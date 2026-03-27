@@ -580,7 +580,7 @@ fn negamax(
         && static_eval < info.static_evals[ply_u - 2] - (60 + 40 * depth as i32);
 
     // Razoring
-    if !is_pv && !in_check && depth <= 3 && ply > 0 {
+    if !is_pv && !in_check && depth <= 2 && ply > 0 {
         let razor_margin = 400 + depth as i32 * 100;
         if static_eval + razor_margin <= alpha {
             let q_score = quiescence(board, info, alpha, beta, ply);
@@ -632,7 +632,7 @@ fn negamax(
 
     // ProbCut
     if !is_pv && !in_check && depth >= 5 {
-        let probcut_beta = beta + 200;
+        let probcut_beta = beta + 170;
         let mut pc_picker = QMovePicker::new(board, false);
         let pc_in_check = in_check;
 
@@ -695,7 +695,7 @@ fn negamax(
         let is_promo = is_promotion(mv);
 
         // Pruning for non-root, non-PV, late moves
-        if !is_root && best_score > -TB_WIN && !in_check {
+        if !is_root && !is_pv && best_score > -TB_WIN && !in_check {
             // Late Move Pruning (LMP) — matches GoChess: base + 50% if improving, 2/3 if failing
             let mut lmp_threshold = 3 + depth as usize * depth as usize;
             if improving && depth >= 3 { lmp_threshold += lmp_threshold / 2; }
@@ -705,8 +705,8 @@ fn negamax(
                 continue;
             }
 
-            // History pruning for quiets
-            if !is_capture && !is_promo && depth <= 8 {
+            // History pruning for quiets (GoChess: depth <= 3)
+            if !is_capture && !is_promo && depth <= 3 {
                 let hist = info.history.quiet_score(board, mv, prev_move);
                 if hist < -1500 * depth as i32 {
                     continue;
@@ -723,14 +723,13 @@ fn negamax(
                 }
             }
 
-            // SEE pruning
-            if depth <= 8 {
-                let see_threshold = if is_capture {
-                    -(depth as i32) * 100
-                } else {
-                    -20 * depth as i32 * depth as i32
-                };
-                if !see_ge(board, mv, see_threshold) {
+            // SEE pruning (separate depth limits for captures and quiets)
+            if is_capture && depth <= 6 {
+                if !see_ge(board, mv, -(depth as i32) * 100) {
+                    continue;
+                }
+            } else if !is_capture && depth <= 8 {
+                if !see_ge(board, mv, -20 * depth as i32 * depth as i32) {
                     continue;
                 }
             }
@@ -803,7 +802,7 @@ fn negamax(
             // failing LMR disabled: over-prunes at current strength
             // if failing { r += 1; }
 
-            r = r.max(1).min(new_depth);
+            r = r.max(0).min(new_depth);
 
             // Reduced-depth search
             score = -negamax(board, info, -alpha - 1, -alpha, new_depth - r, ply + 1, true);
