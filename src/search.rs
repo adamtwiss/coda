@@ -860,6 +860,10 @@ fn negamax(
 
     let safe_ply = ply_u.min(MAX_PLY - 1);
     let prev_move = if ply > 0 { info.prev_moves[safe_ply - 1] } else { NO_MOVE };
+    let tt_move_is_noisy = tt_move != NO_MOVE && {
+        let tt_to = move_to(tt_move);
+        board.piece_type_at(tt_to) != NO_PIECE_TYPE || is_promotion(tt_move)
+    };
     let mut picker = MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move);
 
     let mut best_score = -INFINITY;
@@ -886,10 +890,17 @@ fn negamax(
         let safe = safe_ply.min(127);
         let is_tt_move = tt_move != NO_MOVE && move_from(mv) == move_from(tt_move) && move_to(mv) == move_to(tt_move);
         let is_killer = !is_capture && (mv == info.history.killers[safe][0] || mv == info.history.killers[safe][1]);
+        let is_counter = if prev_move != NO_MOVE {
+            let prev_to = move_to(prev_move);
+            let prev_piece = board.piece_at(prev_to);
+            prev_piece != NO_PIECE && (prev_piece as usize) < 12
+                && mv == info.history.counter[prev_piece as usize][prev_to as usize]
+        } else { false };
+        let is_special = is_tt_move || is_killer || is_counter;
 
         // Pre-make pruning: only things that don't need gives-check info
         // History pruning (pre-make, doesn't need check detection)
-        if !is_root && !is_pv && !is_tt_move && !is_killer
+        if !is_root && !is_pv && !is_special
             && best_score > -TB_WIN && !in_check
         {
             if !is_capture && !is_promo && depth <= 3 && !improving {
@@ -926,7 +937,7 @@ fn negamax(
         // Post-make pruning: now we can detect gives-check
         let gives_check = board.in_check(); // opponent is now in check = our move gave check
 
-        if !is_root && !is_pv && !is_tt_move && !is_killer
+        if !is_root && !is_pv && !is_special
             && best_score > -TB_WIN && !in_check && depth <= 8
         {
             // Bad noisy: prune losing captures when eval is far below alpha
@@ -1002,8 +1013,8 @@ fn negamax(
         // Alpha-reduce disabled: over-prunes with current move ordering strength.
         if new_depth < 0 { new_depth = 0; }
 
-        // LMR (exempt promotions, killers, and check-giving moves)
-        if depth >= 3 && !is_promo && !is_killer && !gives_check && moves_tried > 1 + if is_pv { 1 } else { 0 } {
+        // LMR (exempt promotions, killers, counter-moves, and check-giving moves)
+        if depth >= 3 && !is_promo && !is_killer && !is_counter && !gives_check && moves_tried > 1 + if is_pv { 1 } else { 0 } {
             let mut r = if is_capture {
                 // Capture LMR: separate table (C=1.80), non-PV only
                 if !is_pv { lmr_cap_reduction(depth, moves_tried as i32) } else { 0 }
@@ -1042,11 +1053,15 @@ fn negamax(
             if improving { r -= 1; }
 
             // Reduce more when position is deteriorating
-            // Reduce more when position is deteriorating
             if failing { r += 1; }
 
             // Reduce less in volatile positions
             if unstable { r -= 1; }
+
+            // Reduce more when TT best move is a capture (quiet alternatives less likely)
+            if !is_capture && tt_move_is_noisy {
+                r += 1;
+            }
 
             r = r.max(1).min(new_depth);
 
