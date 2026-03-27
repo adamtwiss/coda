@@ -365,7 +365,7 @@ pub fn init_attacks() {
 
             unsafe {
                 let entry = &mut ATTACK_TABLE[offset as usize + idx];
-                debug_assert!(*entry == 0 || *entry == attacks, "Magic collision for bishop on sq {}", sq);
+                assert!(*entry == 0 || *entry == attacks, "Magic collision for bishop on sq {}", sq);
                 *entry = attacks;
             }
         }
@@ -406,7 +406,7 @@ pub fn init_attacks() {
 
             unsafe {
                 let entry = &mut ATTACK_TABLE[offset as usize + idx];
-                debug_assert!(*entry == 0 || *entry == attacks, "Magic collision for rook on sq {}", sq);
+                assert!(*entry == 0 || *entry == attacks, "Magic collision for rook on sq {}", sq);
                 *entry = attacks;
             }
         }
