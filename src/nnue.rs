@@ -13,6 +13,9 @@ use std::io::{Read as IoRead, BufReader};
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 
+#[cfg(target_arch = "aarch64")]
+use std::arch::aarch64::*;
+
 use crate::bitboard::*;
 use crate::board::Board;
 use crate::types::*;
@@ -501,6 +504,123 @@ unsafe fn simd512_screlu_dot_i8(acc: &[i16], weights_i8: &[i16], h: usize) -> i6
     total + _mm512_reduce_add_epi32(_mm512_add_epi32(sum0, sum1)) as i64
 }
 
+// ---- NEON SIMD helper functions (aarch64) ----
+
+/// Add a weight row to an accumulator (NEON, 8 × i16 per iteration).
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_acc_add(acc: &mut [i16], row: &[i16], h: usize) {
+    let mut i = 0;
+    while i < h {
+        let a = vld1q_s16(acc.as_ptr().add(i));
+        let b = vld1q_s16(row.as_ptr().add(i));
+        vst1q_s16(acc.as_mut_ptr().add(i), vaddq_s16(a, b));
+        i += 8;
+    }
+}
+
+/// Subtract a weight row from an accumulator (NEON).
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_acc_sub(acc: &mut [i16], row: &[i16], h: usize) {
+    let mut i = 0;
+    while i < h {
+        let a = vld1q_s16(acc.as_ptr().add(i));
+        let b = vld1q_s16(row.as_ptr().add(i));
+        vst1q_s16(acc.as_mut_ptr().add(i), vsubq_s16(a, b));
+        i += 8;
+    }
+}
+
+/// Fused copy + add: dst = src + row (NEON).
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_acc_copy_add(dst: &mut [i16], src: &[i16], row: &[i16], h: usize) {
+    let mut i = 0;
+    while i < h {
+        let a = vld1q_s16(src.as_ptr().add(i));
+        let b = vld1q_s16(row.as_ptr().add(i));
+        vst1q_s16(dst.as_mut_ptr().add(i), vaddq_s16(a, b));
+        i += 8;
+    }
+}
+
+/// Fused copy + sub: dst = src - row (NEON).
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_acc_copy_sub(dst: &mut [i16], src: &[i16], row: &[i16], h: usize) {
+    let mut i = 0;
+    while i < h {
+        let a = vld1q_s16(src.as_ptr().add(i));
+        let b = vld1q_s16(row.as_ptr().add(i));
+        vst1q_s16(dst.as_mut_ptr().add(i), vsubq_s16(a, b));
+        i += 8;
+    }
+}
+
+/// CReLU dot product (NEON): clamp [0, QA=255], dot with weights.
+/// Processes 8 × i16 per iteration. Uses i64 accumulation for safety.
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_crelu_dot(acc: &[i16], weights: &[i16], h: usize) -> i64 {
+    let zero = vdupq_n_s16(0);
+    let qa = vdupq_n_s16(QA as i16);
+    let mut sum0 = vdupq_n_s32(0); // 4 × i32
+    let mut sum1 = vdupq_n_s32(0);
+    let mut total: i64 = 0;
+    let mut count = 0u32;
+
+    let mut i = 0;
+    while i < h {
+        let v = vld1q_s16(acc.as_ptr().add(i));
+        let clamped = vminq_s16(vmaxq_s16(v, zero), qa);
+        let w = vld1q_s16(weights.as_ptr().add(i));
+        // Multiply-accumulate: lo 4 pairs and hi 4 pairs
+        let prod_lo = vmull_s16(vget_low_s16(clamped), vget_low_s16(w));
+        let prod_hi = vmull_high_s16(clamped, w);
+        sum0 = vaddq_s32(sum0, prod_lo);
+        sum1 = vaddq_s32(sum1, prod_hi);
+
+        count += 8;
+        if count >= 128 {
+            let combined = vaddq_s32(sum0, sum1);
+            total += vaddlvq_s32(combined) as i64;
+            sum0 = vdupq_n_s32(0);
+            sum1 = vdupq_n_s32(0);
+            count = 0;
+        }
+        i += 8;
+    }
+
+    if count > 0 {
+        let combined = vaddq_s32(sum0, sum1);
+        total += vaddlvq_s32(combined) as i64;
+    }
+    total
+}
+
+/// SCReLU dot product with int8 weights (NEON): clamp [0,255], square, dot.
+/// v*w_i8 fits in i16 (255*127=32385), then v*(v*w) via madd gives i32.
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_screlu_dot_i8(acc: &[i16], weights_i8: &[i16], h: usize) -> i32 {
+    let zero = vdupq_n_s16(0);
+    let qa = vdupq_n_s16(QA as i16);
+    let mut sum0 = vdupq_n_s32(0);
+    let mut sum1 = vdupq_n_s32(0);
+
+    let mut i = 0;
+    while i < h {
+        let v = vld1q_s16(acc.as_ptr().add(i));
+        let clamped = vminq_s16(vmaxq_s16(v, zero), qa);
+        let w = vld1q_s16(weights_i8.as_ptr().add(i));
+        // v*w in i16
+        let vw = vmulq_s16(clamped, w);
+        // v*(v*w) = v²*w: multiply lo/hi halves → i32, accumulate
+        sum0 = vmlal_s16(sum0, vget_low_s16(clamped), vget_low_s16(vw));
+        sum1 = vmlal_high_s16(sum1, clamped, vw);
+
+        i += 8;
+    }
+
+    let combined = vaddq_s32(sum0, sum1);
+    vaddvq_s32(combined)
+}
+
 /// Detect AVX2 support at runtime.
 fn detect_avx2() -> bool {
     #[cfg(target_arch = "x86_64")]
@@ -525,6 +645,14 @@ fn detect_avx512() -> bool {
     }
 }
 
+/// Detect NEON support (always true on aarch64).
+fn detect_neon() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    { true }
+    #[cfg(not(target_arch = "aarch64"))]
+    { false }
+}
+
 /// NNUE network weights (shared, read-only after loading).
 pub struct NNUENet {
     pub hidden_size: usize,
@@ -539,6 +667,7 @@ pub struct NNUENet {
     pub use_screlu: bool,
     pub has_avx2: bool,
     pub has_avx512: bool,
+    pub has_neon: bool,
 }
 
 impl NNUENet {
@@ -607,10 +736,13 @@ impl NNUENet {
 
         let has_avx2 = detect_avx2();
         let has_avx512 = detect_avx512();
+        let has_neon = detect_neon();
         if has_avx512 {
             println!("info string AVX-512 SIMD detected — using 512-bit NNUE inference");
         } else if has_avx2 {
             println!("info string AVX2 SIMD detected — using vectorised NNUE inference");
+        } else if has_neon {
+            println!("info string NEON SIMD detected — using vectorised NNUE inference");
         }
 
         // Quantize output weights to i8 range for fast SCReLU dot product.
@@ -664,6 +796,7 @@ impl NNUENet {
             use_screlu,
             has_avx2,
             has_avx512,
+            has_neon,
         })
     }
 
@@ -753,6 +886,35 @@ impl NNUENet {
                 unsafe {
                     output += simd_crelu_dot(stm_acc, &out_w[..h], h);
                     output += simd_crelu_dot(ntm_acc, &out_w[h..], h);
+                }
+            }
+
+            let mut result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
+            if self.use_screlu {
+                result = result * 4 / 5;
+            }
+            return result;
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        if self.has_neon && h % 8 == 0 {
+            if self.use_screlu {
+                let out_w_i8 = self.output_weight_row_i8(bucket);
+                let scale = self.output_scale[bucket];
+                unsafe {
+                    let stm_sum = neon_screlu_dot_i8(stm_acc, &out_w_i8[..h], h) as i64;
+                    let ntm_sum = neon_screlu_dot_i8(ntm_acc, &out_w_i8[h..], h) as i64;
+                    if scale == 1.0 {
+                        output += stm_sum + ntm_sum;
+                    } else {
+                        output += ((stm_sum + ntm_sum) as f64 * scale as f64) as i64;
+                    }
+                }
+                output /= QA as i64;
+            } else {
+                unsafe {
+                    output += neon_crelu_dot(stm_acc, &out_w[..h], h);
+                    output += neon_crelu_dot(ntm_acc, &out_w[h..], h);
                 }
             }
 
@@ -971,6 +1133,19 @@ impl NNUEAccumulator {
                 }
                 handled = true;
             }
+            #[cfg(target_arch = "aarch64")]
+            if !handled && net.has_neon && h % 8 == 0 {
+                unsafe {
+                    if add {
+                        neon_acc_copy_add(&mut current.white, &parent.white, w_row, h);
+                        neon_acc_copy_add(&mut current.black, &parent.black, b_row, h);
+                    } else {
+                        neon_acc_copy_sub(&mut current.white, &parent.white, w_row, h);
+                        neon_acc_copy_sub(&mut current.black, &parent.black, b_row, h);
+                    }
+                }
+                handled = true;
+            }
             if !handled {
                 if add {
                     for j in 0..h {
@@ -1003,6 +1178,20 @@ impl NNUEAccumulator {
                     } else {
                         simd_acc_sub(&mut current.white, w_row, h);
                         simd_acc_sub(&mut current.black, b_row, h);
+                    }
+                }
+                continue;
+            }
+
+            #[cfg(target_arch = "aarch64")]
+            if net.has_neon && h % 8 == 0 {
+                unsafe {
+                    if add {
+                        neon_acc_add(&mut current.white, w_row, h);
+                        neon_acc_add(&mut current.black, b_row, h);
+                    } else {
+                        neon_acc_sub(&mut current.white, w_row, h);
+                        neon_acc_sub(&mut current.black, b_row, h);
                     }
                 }
                 continue;
@@ -1124,6 +1313,11 @@ fn acc_add(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
         unsafe { simd_acc_add(acc, row, h); }
         return;
     }
+    #[cfg(target_arch = "aarch64")]
+    if net.has_neon && h % 8 == 0 {
+        unsafe { neon_acc_add(acc, row, h); }
+        return;
+    }
     for j in 0..h { acc[j] += row[j]; }
 }
 
@@ -1138,6 +1332,11 @@ fn acc_sub(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
     #[cfg(target_arch = "x86_64")]
     if net.has_avx2 && h % 16 == 0 {
         unsafe { simd_acc_sub(acc, row, h); }
+        return;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if net.has_neon && h % 8 == 0 {
+        unsafe { neon_acc_sub(acc, row, h); }
         return;
     }
     for j in 0..h { acc[j] -= row[j]; }
