@@ -233,10 +233,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     let mut best_move = NO_MOVE;
     let mut prev_score = 0i32;
 
-    // Get a fallback move
-    let legal = generate_legal_moves(board);
-    if legal.len > 0 {
-        best_move = legal.moves[0];
+    // Get a fallback move and keep the legal list for final validation
+    let root_legal = generate_legal_moves(board);
+    if root_legal.len > 0 {
+        best_move = root_legal.moves[0];
     }
 
     let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
@@ -284,10 +284,19 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             if info.should_stop() && depth > 1 { break; }
         }
 
-        // Get best move from TT
+        // Get best move from TT — validate it's a legal move for the root position
         let tt_entry = info.tt.probe(board.hash);
         if tt_entry.hit && tt_entry.best_move != NO_MOVE {
-            best_move = tt_entry.best_move;
+            let tt_from = move_from(tt_entry.best_move);
+            let tt_to = move_to(tt_entry.best_move);
+            // Find matching move in root legal list (ensures correct flags)
+            for i in 0..root_legal.len {
+                let m = root_legal.moves[i];
+                if move_from(m) == tt_from && move_to(m) == tt_to {
+                    best_move = m; // use the legal move (with correct flags)
+                    break;
+                }
+            }
         }
 
         prev_score = if !info.should_stop() { score } else { prev_score };

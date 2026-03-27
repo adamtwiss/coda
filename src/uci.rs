@@ -42,6 +42,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>) {
             "ucinewgame" => {
                 info.tt.clear();
                 info.history.clear();
+                if let Some(acc) = &mut info.nnue_acc { acc.reset(); }
                 board = Board::startpos();
             }
             "position" => {
@@ -82,7 +83,7 @@ fn parse_position(tokens: &[&str], board: &mut Board) {
     if idx >= tokens.len() { return; }
 
     if tokens[idx] == "startpos" {
-        *board = Board::startpos();
+        *board = Board::startpos();  // fresh board with empty undo stack
         idx += 1;
     } else if tokens[idx] == "fen" {
         idx += 1;

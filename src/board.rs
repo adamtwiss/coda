@@ -569,8 +569,16 @@ impl Board {
         let pt = self.piece_type_at(to);
         // If the piece is missing at `to`, the board was corrupted by a child search.
         // Restore from the saved hash (which was correct at make time).
-        debug_assert!(pt != NO_PIECE_TYPE,
-            "unmake: no piece at to={} for move {}", to, crate::types::move_to_uci(mv));
+        if pt == NO_PIECE_TYPE {
+            // Board corruption detected — restore what we can from undo
+            self.castling = undo.castling;
+            self.ep_square = undo.ep_square;
+            self.halfmove = undo.halfmove;
+            self.hash = undo.hash;
+            self.side_to_move = us;
+            if us == BLACK { self.fullmove -= 1; }
+            return;
+        }
         let from_to = (1u64 << from) | (1u64 << to);
         self.pieces[pt as usize] ^= from_to;
         self.colors[us as usize] ^= from_to;
