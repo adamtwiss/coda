@@ -451,12 +451,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 }
 
                 if result <= alpha {
-                    // Fail low: contract beta, widen alpha (GoChess formula)
-                    beta = (alpha + beta) / 2;
+                    // Fail low: contract beta aggressively toward alpha, widen alpha
+                    beta = (3 * alpha + 5 * beta) / 8;
                     alpha = (result - delta).max(-INFINITY);
                 } else if result >= beta {
-                    // Fail high: narrow alpha to beta, widen beta
-                    alpha = beta;
+                    // Fail high: contract alpha toward beta, widen beta
+                    alpha = (5 * alpha + 3 * beta) / 8;
                     beta = (result + delta).min(INFINITY);
                 } else {
                     asp_result = result;
@@ -1100,8 +1100,8 @@ fn negamax(
             score = alpha + 1; // Force full window search for first PV move
         }
 
-        // Full window PV search
-        if is_pv && (moves_tried == 1 || score > alpha) {
+        // Full window PV search (only if score is between alpha and beta — if already >= beta, skip)
+        if is_pv && (moves_tried == 1 || (score > alpha && score < beta)) {
             score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
         }
 
