@@ -37,6 +37,7 @@ pub struct Board {
     pub fullmove: u16,       // fullmove number
 
     pub hash: u64,           // Zobrist hash
+    pub pawn_hash: u64,      // Zobrist hash of pawns only (for correction history)
     pub undo_stack: Vec<UndoInfo>,
 }
 
@@ -78,6 +79,7 @@ impl Board {
             halfmove: 0,
             fullmove: 1,
             hash: 0,
+            pawn_hash: 0,
             undo_stack: Vec::with_capacity(256),
         }
     }
@@ -138,14 +140,18 @@ impl Board {
     #[inline]
     fn put_piece(&mut self, color: Color, pt: u8, sq: u8) {
         self.put_piece_no_hash(color, pt, sq);
-        self.hash ^= piece_key(make_piece(color, pt), sq);
+        let k = piece_key(make_piece(color, pt), sq);
+        self.hash ^= k;
+        if pt == PAWN { self.pawn_hash ^= k; }
     }
 
     /// Remove a piece from the board with hash update.
     #[inline]
     fn remove_piece(&mut self, color: Color, pt: u8, sq: u8) {
         self.remove_piece_no_hash(color, pt, sq);
-        self.hash ^= piece_key(make_piece(color, pt), sq);
+        let k = piece_key(make_piece(color, pt), sq);
+        self.hash ^= k;
+        if pt == PAWN { self.pawn_hash ^= k; }
     }
 
     /// Move a piece on the board with hash update.
@@ -157,7 +163,9 @@ impl Board {
         self.mailbox[from as usize] = NO_PIECE_TYPE;
         self.mailbox[to as usize] = pt;
         let p = make_piece(color, pt);
-        self.hash ^= piece_key(p, from) ^ piece_key(p, to);
+        let k = piece_key(p, from) ^ piece_key(p, to);
+        self.hash ^= k;
+        if pt == PAWN { self.pawn_hash ^= k; }
     }
 
     /// Compute the full Zobrist hash from scratch.
@@ -192,6 +200,7 @@ impl Board {
         self.pieces = [0; 6];
         self.colors = [0; 2];
         self.mailbox = [NO_PIECE_TYPE; 64];
+        self.pawn_hash = 0;
         self.undo_stack.clear();
 
         let parts: Vec<&str> = fen.split_whitespace().collect();
@@ -277,6 +286,15 @@ impl Board {
         };
 
         self.hash = self.compute_hash();
+        // Compute pawn hash
+        self.pawn_hash = 0;
+        for color in 0..2u8 {
+            let mut bb = self.pieces[PAWN as usize] & self.colors[color as usize];
+            while bb != 0 {
+                let sq = pop_lsb(&mut bb) as u8;
+                self.pawn_hash ^= piece_key(make_piece(color, PAWN), sq);
+            }
+        }
     }
 
     /// Create a board from a FEN string.

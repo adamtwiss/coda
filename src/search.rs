@@ -17,6 +17,12 @@ use crate::types::*;
 const MAX_PLY: usize = 128;
 const INFINITY: i32 = 32000;
 
+// Correction history constants
+const CORR_HIST_SIZE: usize = 16384;
+const CORR_HIST_GRAIN: i32 = 256;
+const CORR_HIST_MAX: i32 = 128;
+const CORR_HIST_LIMIT: i32 = 32000;
+
 /// Search limits.
 pub struct SearchLimits {
     pub depth: i32,
@@ -59,6 +65,10 @@ pub struct SearchInfo {
     pub sel_depth: i32,
     prev_moves: [Move; MAX_PLY],
     static_evals: [i32; MAX_PLY],
+    /// Pawn correction history: [color][pawn_hash % size]
+    pawn_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
+    /// Continuation correction history: [piece][to_square]
+    cont_corr: Box<[[i32; 64]; 12]>,
     pub nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
     pub nnue_acc: Option<crate::nnue::NNUEAccumulator>,
 }
@@ -77,6 +87,8 @@ impl SearchInfo {
             sel_depth: 0,
             prev_moves: [NO_MOVE; MAX_PLY],
             static_evals: [0; MAX_PLY],
+            pawn_corr: Box::new([[0; CORR_HIST_SIZE]; 2]),
+            cont_corr: Box::new([[0; 64]; 12]),
             nnue_net: None,
             nnue_acc: None,
         }
@@ -107,6 +119,11 @@ impl SearchInfo {
             }
         }
         false
+    }
+
+    pub fn clear_correction_history(&mut self) {
+        self.pawn_corr = Box::new([[0; CORR_HIST_SIZE]; 2]);
+        self.cont_corr = Box::new([[0; 64]; 12]);
     }
 
     /// Evaluate using NNUE if loaded, otherwise classical PeSTO.
@@ -171,6 +188,70 @@ fn build_dirty_piece(
     d.n_changes = n as u8;
     d.changes = changes;
     d
+}
+
+/// Apply correction history to raw static eval.
+fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
+    let stm = board.side_to_move as usize;
+
+    // Pawn correction
+    let pawn_idx = (board.pawn_hash as usize) % CORR_HIST_SIZE;
+    let pawn_corr = info.pawn_corr[stm][pawn_idx] as i64;
+
+    // Continuation correction (from opponent's last move)
+    let cont_corr = if !board.undo_stack.is_empty() {
+        let last = &board.undo_stack[board.undo_stack.len() - 1];
+        if last.mv != NO_MOVE {
+            let to = move_to(last.mv);
+            let pt = board.piece_type_at(to);
+            if pt < 6 {
+                let piece = make_piece(flip_color(board.side_to_move), pt);
+                if (piece as usize) < 12 {
+                    info.cont_corr[piece as usize][to as usize] as i64
+                } else { 0 }
+            } else { 0 }
+        } else { 0 }
+    } else { 0 };
+
+    // Weighted blend: pawn 512/1024, cont 104/1024 (simplified from GoChess)
+    let total_corr = (pawn_corr * 512 + cont_corr * 104) / 1024;
+    let adjusted = raw_eval + (total_corr as i32) / CORR_HIST_GRAIN;
+    adjusted.clamp(-MATE_SCORE + 100, MATE_SCORE - 100)
+}
+
+/// Update correction history entry with gravity.
+fn update_corr_entry(entry: &mut i32, err: i32, weight: i32) {
+    let err_clamped = err.clamp(-CORR_HIST_MAX, CORR_HIST_MAX);
+    let new_val = (*entry * (CORR_HIST_GRAIN - weight) + err_clamped * CORR_HIST_GRAIN * weight) / CORR_HIST_GRAIN;
+    *entry = new_val.clamp(-CORR_HIST_LIMIT, CORR_HIST_LIMIT);
+}
+
+/// Update all correction history tables.
+fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, raw_eval: i32, depth: i32) {
+    if depth < 3 { return; }
+
+    let err = search_score - raw_eval;
+    let weight = (depth + 1).min(16);
+    let stm = board.side_to_move as usize;
+
+    // Pawn correction
+    let pawn_idx = (board.pawn_hash as usize) % CORR_HIST_SIZE;
+    update_corr_entry(&mut info.pawn_corr[stm][pawn_idx], err, weight);
+
+    // Continuation correction
+    if !board.undo_stack.is_empty() {
+        let last = &board.undo_stack[board.undo_stack.len() - 1];
+        if last.mv != NO_MOVE {
+            let to = move_to(last.mv);
+            let pt = board.piece_type_at(to);
+            if pt < 6 {
+                let piece = make_piece(flip_color(board.side_to_move), pt);
+                if (piece as usize) < 12 {
+                    update_corr_entry(&mut info.cont_corr[piece as usize][to as usize], err, weight);
+                }
+            }
+        }
+    }
 }
 
 /// LMR reduction table.
@@ -426,14 +507,20 @@ fn negamax(
         depth += 1;
     }
 
-    // Static eval
-    let static_eval = if in_check {
-        -INFINITY // Don't trust eval in check
-    } else if tt_entry.hit && tt_entry.static_eval != 0 {
-        tt_entry.static_eval
+    // Static eval with correction history
+    let raw_eval;
+    let static_eval;
+    if in_check {
+        raw_eval = -INFINITY;
+        static_eval = -INFINITY;
     } else {
-        info.eval(board)
-    };
+        raw_eval = if tt_entry.hit && tt_entry.static_eval != 0 {
+            tt_entry.static_eval
+        } else {
+            info.eval(board)
+        };
+        static_eval = corrected_eval(info, board, raw_eval);
+    }
 
     // Store static eval for improving detection
     if ply_u < MAX_PLY {
@@ -762,6 +849,11 @@ fn negamax(
         } else {
             return 0;
         }
+    }
+
+    // Update correction history (only for non-mate, non-check positions with sufficient depth)
+    if !in_check && !is_mate_score(best_score) && raw_eval != -INFINITY {
+        update_correction_history(info, board, best_score, raw_eval, depth);
     }
 
     // Store in TT

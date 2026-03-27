@@ -42,6 +42,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>) {
             "ucinewgame" => {
                 info.tt.clear();
                 info.history.clear();
+                info.clear_correction_history();
                 if let Some(acc) = &mut info.nnue_acc { acc.reset(); }
                 board = Board::startpos();
             }
