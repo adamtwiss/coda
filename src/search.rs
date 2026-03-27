@@ -659,6 +659,8 @@ fn negamax(
     let mut moves_tried = 0;
     let mut quiets_tried = [NO_MOVE; 64];
     let mut n_quiets_tried = 0usize;
+    let mut captures_tried: [(u8, u8, u8); 32] = [(0, 0, 0); 32]; // (piece, to, victim)
+    let mut n_captures_tried = 0usize;
     let mut alpha_raised_count = 0;
 
     loop {
@@ -885,6 +887,15 @@ fn negamax(
                                 &mut info.history.capture[piece as usize][to as usize][victim as usize],
                                 bonus,
                             );
+
+                            // Penalize failed captures
+                            for i in 0..n_captures_tried {
+                                let (cp, ct, cv) = captures_tried[i];
+                                History::update_history(
+                                    &mut info.history.capture[cp as usize][ct as usize][cv as usize],
+                                    -bonus,
+                                );
+                            }
                         }
                     }
 
@@ -897,6 +908,14 @@ fn negamax(
             if n_quiets_tried < 64 {
                 quiets_tried[n_quiets_tried] = mv;
                 n_quiets_tried += 1;
+            }
+        } else if is_capture {
+            // Track captures for penalty on cutoff
+            let piece = board.piece_at(from);
+            let victim = if flags == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(to) };
+            if piece != NO_PIECE && (piece as usize) < 12 && (victim as usize) < 6 && n_captures_tried < 32 {
+                captures_tried[n_captures_tried] = (piece, to, victim);
+                n_captures_tried += 1;
             }
         }
     }
