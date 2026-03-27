@@ -8,84 +8,196 @@ Coda is a UCI chess engine written in Rust. Rewritten from GoChess with all accu
 
 ```bash
 cargo build --release
-cargo test                           # Run all tests including perft
-cargo bench                          # Run benchmarks
+cargo test                                      # Run all tests including perft
 
-./target/release/coda                # UCI mode (default)
-./target/release/coda bench          # Deterministic node count + NPS
-./target/release/coda bench -classical  # Classical eval only (no NNUE)
+./target/release/coda                            # UCI mode (default)
+./target/release/coda -nnue net.nnue             # UCI with NNUE evaluation
+./target/release/coda -nnue net.nnue -book book.bin  # UCI with NNUE + opening book
+./target/release/coda bench [depth]              # Search benchmark (default depth 13)
+./target/release/coda bench 13 -nnue net.nnue    # Bench with NNUE
+./target/release/coda epd wac.epd 1000 0 -nnue net.nnue  # EPD test suite
+./target/release/coda perft [depth] [fen...]     # Perft with divide
+./target/release/coda perft-bench                # Perft benchmark (6 positions)
+./target/release/coda help                       # Show all options
+```
+
+## Project Structure
+
+```
+src/
+  main.rs          Entry point, CLI argument parsing, subcommands
+  board.rs         Board struct (bitboards + mailbox), FEN, make/unmake, Zobrist
+  types.rs         Color, Piece, Square, Move encoding (16-bit), castling
+  bitboard.rs      Bitboard ops, between/line tables
+  attacks.rs       Magic bitboards (PEXT runtime detected), knight/king/pawn tables
+  movegen.rs       Pseudo-legal + capture-only move generation, perft
+  zobrist.rs       Zobrist hash keys (deterministic PRNG)
+  eval.rs          PeSTO material+PST eval (fallback), SEE values, NNUE eval wrapper
+  see.rs           Static Exchange Evaluation
+  tt.rs            Transposition table (4-slot buckets, XOR key verification)
+  movepicker.rs    Staged move ordering, history tables, killer/counter moves
+  search.rs        Negamax, pruning, LMR, correction history, pruning stats
+  nnue.rs          NNUE v5/v6 inference, accumulator stack, Finny table, AVX2/AVX-512 SIMD
+  uci.rs           UCI protocol (position, go, stop, ponder, setoption)
+  epd.rs           EPD test suite runner with SAN formatting
+  book.rs          Polyglot opening book support
+  polyglot_randoms.rs  Standard Polyglot Zobrist random table (781 entries)
+testdata/
+  wac.epd          Win At Chess test suite (201 positions)
 ```
 
 ## Architecture
 
 ### Board Representation
-- Bitboards only: `pieces: [u64; 6]` (by piece type) + `colors: [u64; 2]` (by color)
-- No mailbox/Squares[64] — piece-at-square via bitboard scan when needed
-- Magic bitboards for sliding pieces, PEXT on Intel/Zen3+ (runtime detected)
-- Incremental Zobrist hashing
+- Bitboards: `pieces: [u64; 6]` (by type) + `colors: [u64; 2]` (by color)
+- Mailbox: `mailbox: [u8; 64]` for O(1) piece-at-square lookup
+- Magic bitboards for sliding pieces, PEXT on BMI2 hardware (runtime detected)
+- Incremental Zobrist hashing + incremental pawn hash
 
 ### Move Encoding
-16 bits: from(6) + to(6) + flags(4). Same encoding as GoChess.
+16 bits: from(6) + to(6) + flags(4). Flags: None=0, EP=1, Castle=2, DoublePush=3, PromoteN=4..PromoteQ=7.
 **Critical rule**: Check non-promotion flags with equality (==), not bitwise AND.
 
 ### Search
-Negamax with alpha-beta, iterative deepening, PVS, aspiration windows.
+Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from depth 4).
 
-Features: NMP (with eval >= beta guard, verification at depth >= 12 with ply+1), RFP (depth <= 7), futility (60+d*60), LMR (separate capture/quiet tables, doDeeper/doShallower), LMP, SEE pruning, ProbCut, history pruning (-1500*depth), razoring, hindsight reduction (200cp threshold), recapture extensions, alpha-reduce, failing heuristic, fail-high score blending.
+**Pruning features:**
+- NMP: R=3+depth/3 + (eval-beta)/200, eval>=beta guard, verify at depth>=12, post-capture R--, NMP score dampening (score*2+beta)/3
+- RFP: depth<=7, margin improving?70*d:100*d, returns staticEval-margin
+- Futility: 60+lmrDepth*60, depth<=8, uses estimated LMR depth
+- LMR: separate quiet (C=1.30) and capture (C=1.80) tables, doDeeper/doShallower
+- LMP: non-PV only, depth<=8, threshold 3+d² with improving/failing adjustments
+- SEE pruning: quiet -20d² at depth<=8, capture -d*100 at depth<=6
+- ProbCut: beta+170, staticEval+85 gate, SEE>=0
+- History pruning: -1500*depth at depth<=3, !improving guard
+- Bad noisy: prune losing captures when eval+depth*75<=alpha
+- Razoring: depth<=2, margin 400+d*100
+- IIR: depth>=6, !inCheck, no TT move
+- Recapture extensions
+- Fail-high score blending: (score*depth+beta)/(depth+1) at non-PV
 
-Quiescence with SEE filtering, evasion handling (captHist/16), QS delta (240), beta blending.
+**Move ordering:** TT move → good captures (MVV-LVA + captHist/16) → promotions → killers → counter-move → quiets (main hist + contHist*3 + pawn hist) → bad captures
 
-Move ordering: TT move → good captures (MVV-LVA + captHist/16) → killers → counter-move → quiets (history + contHist) → bad captures.
+**Exemptions:** TT move and killers exempt from all pre-make pruning and from LMR. Promotions exempt from LMR.
 
-History tables: main, capture, continuation (1-ply), pawn history. Multi-source correction history (pawn 512 + white-NP 204 + black-NP 204 + cont 104, /1024).
+**History tables:** main [color][from][to], capture [piece][to][victim], continuation [piece][to][piece][to], pawn [pawnHash%512][piece][to], killers [ply][2], counter [piece][to].
+
+**Correction history:** Multi-source static eval correction. Pawn (512/1024) + white-NP (204/1024) + black-NP (204/1024) + continuation (104/1024). Updated on bestScore > originalAlpha with depth >= 3.
+
+**Other:** Contempt = -10 (prefer playing over drawing). Insufficient material detection (KvK, KNvK, KBvK). Repetition detection via undo stack hash comparison.
 
 ### TT
-- 5-slot buckets, 64 bytes (cache-line aligned)
-- 14-bit staticEval (±8191 cp range, NOT int8*4)
-- Replacement: d > slotDepth-3 for key match (prevents shallow re-searches overwriting deep)
-- Depth-4*age scoring for non-match replacement
+- 4-slot buckets, 64 bytes (cache-line aligned)
+- XOR key verification: `key_xor = hash ^ data` (full 64-bit protection)
+- 14-bit staticEval (±8191 cp range)
+- Replacement: d > slotDepth-3 for same-gen key match; always replace if generation differs
 - TT score dampening: (3*score+beta)/4 on non-PV TTLower cutoffs
+- TT near-miss: accept 1-ply-short entries with 80cp margin (else-if, not unconditional)
 - Fail-high blending: (score*depth+beta)/(depth+1) at non-PV, depth >= 3
-- TT near-miss: accept 1-ply-short entries with 80cp margin
-- PV guard: skip TTLower/TTUpper bound tightening at PV nodes
-- Prefetch: prefetch next TT bucket before move loop
+- QS TT probe with cutoffs
+- Stores raw (uncorrected) static eval to avoid double correction
 
 ### NNUE
-Production: v5/v6 format, 1024 SCReLU, 8 output buckets by material count.
+Supports v5 (CReLU) and v6 (SCReLU flag byte) formats.
+Production: 1024 CReLU (`net-v5-120sb-sb120.nnue`). Strongest tested: 1024 SCReLU w5 (`net-v5-1024s-w5-e400s400.nnue`).
+
 HalfKA features: 16 king buckets × 12 piece types × 64 squares = 12288 inputs.
+Quantization: QA=255 (accumulator), QB=64 (output weights).
 
-- Lazy accumulator (MakeMove stores deltas, Materialize applies on demand)
-- Finny table for king bucket refresh (diff cached vs current bitboards)
-- SIMD via Rust intrinsics: `std::arch::x86_64` for AVX2, `std::arch::aarch64` for NEON
-- CReLU: clamp [0, QA=255], VPMADDWD dot product
-- SCReLU: clamp then square, byte decomposition for VPMADDWD compatibility
-- Quantization: QA=255 (accumulator), QB=64 (output weights)
+- **Lazy accumulator**: push stores DirtyPiece info, materialize on demand (saves work for pruned nodes)
+- **Finny table**: per-perspective, per-bucket cache. On king bucket change, diffs cached vs current bitboards (~5 delta ops vs ~30 full recompute)
+- **SIMD**: AVX2 and AVX-512 via `std::arch::x86_64` (runtime detected). Int8 weight quantization for SCReLU forward pass.
+- **CReLU**: clamp [0, 255], VPMADDWD dot product
+- **SCReLU**: clamp [0, 255], square, int8 byte decomposition for VPMADDUBSW. Scale correction ×0.8 for search threshold compatibility.
+- **Fused accumulator update**: copy + delta in single pass for incremental updates
 
-### Validation Methodology
-**Three-tier (never rely on self-play alone):**
-1. **Self-play SPRT** — fast fail, pass even if mildly negative (down to -10)
-2. **Rival engine gauntlet** (6-8 engines near our Elo) — acceptance criterion
-3. **Broad RR** (10+ engines) — production validation
+### Opening Book
+Polyglot .bin format. Weighted random selection. Polyglot Zobrist hashing with standard 781-entry random table. Castling encoded as king-to-rook, converted to king-to-destination. EP hash only when capture is actually possible.
 
-Self-play SPRT gives contradictory signals to cross-engine. Bug fixes can show -9 self-play but +12 cross-engine. Always run Tier 2.
+### UCI Options
+- `Hash` (spin, 1-4096, default 64) — TT size in MB
+- `NNUEFile` (string) — path to .nnue network file
+- `OwnBook` (check, default true) — use opening book
+- `BookFile` (string) — path to Polyglot .bin book
+- `MoveOverhead` (spin, 0-5000, default 100) — communication latency in ms
+- `Ponder` (check, default false)
 
-### NNUE Training (Bullet GPU)
-- Bullet trainer (Rust, CUDA) on T80 binpack data (12 files, 2023+2024)
-- SCReLU activation, wdl=0.05 for near-zero resolution
-- Warmup LR for hidden layers: 5 SB ramp 0.0001→0.001, then cosine decay
-- Score filter: unsigned_abs() < 10000
-- Monitor neuron health at every checkpoint
-- CReLU kills hidden layer neurons — always use SCReLU for multi-layer
+### Time Management
+- Soft allocation: timeLeft/movesLeft + 80% of increment
+- MoveOverhead subtracted from available time
+- Emergency mode below 1 second: cap at timeLeft/10
+- Default 25 moves left for sudden death
+- Cap at 50% remaining time
 
-### Key Search Parameters (tuned, do not change without cross-engine validation)
-- NMP: R=3+depth/3, divisor 200, verify depth >= 12 with ply+1
-- RFP: depth <= 7, margin 70+100*improving
-- Futility: 60+lmrDepth*60, depth <= 8
+## NNUE Training (Bullet GPU)
+
+We train on **Bullet** (Rust, CUDA) using T80 binpack data (~12B positions across 6-12 files). Training produces `quantised.bin` which is converted to `.nnue` via GoChess's `./tuner convert-bullet`.
+
+Key findings:
+- **CReLU kills hidden layer neurons** during long training (dying ReLU). SCReLU prevents this.
+- **LR warmup is critical for hidden layers**: 5 SB linear warmup 0.0001→0.001, then cosine 0.001→0.0001.
+- **SCReLU scale chain**: keep v² at QA² through matmul, bias×QA² to match, /QA² after.
+- **Hidden→output activation is linear** in Bullet (no SCReLU before output buckets).
+- **v5 architecture is saturated**: 1024 CReLU/SCReLU all within ~20 Elo. Hidden layers (v7) needed to break through.
+
+Bullet LR schedule for hidden layer nets:
+```rust
+lr_scheduler: Sequence {
+    first: LinearDecayLR { initial_lr: 0.0001, final_lr: 0.001, final_superbatch: 5 },
+    second: CosineDecayLR { initial_lr: 0.001, final_lr: 0.0001, final_superbatch: N-5 },
+    first_scheduler_final_superbatch: 5,
+}
+```
+
+## NNUE Model Naming Convention
+
+**v5 (direct FT→output):**
+```
+net-v5-{width}{activation}-w{wdl}-e{epochs}s{snap}.nnue
+```
+
+**v7 (FT→hidden→output):**
+```
+net-v7-{ftWidth}h{layers}{activation}-w{wdl}-e{epochs}s{snap}.nnue
+```
+
+Where:
+- **ftWidth**: 1024, 1536, 768pw (pairwise)
+- **h{layers}**: h16 (L1=16), h16x32 (L1=16, L2=32)
+- **activation**: omit for CReLU, `s` for SCReLU
+- **w{wdl}**: w0 (0.0), w5 (0.05), w10 (0.1)
+- **e{epochs}**: total superbatches in cosine schedule
+- **s{snap}**: snapshot checkpoint
+
+Examples: `net-v5-1024-w0-e120s120.nnue`, `net-v5-1024s-w5-e400s400.nnue`, `net-v7-1024h16x32s-w0-e800s800.nnue`
+
+## Key Search Parameters (from GoChess, tuned)
+- NMP: R=3+depth/3, divisor 200, verify depth>=12
+- RFP: depth<=7, margin improving?70*d:100*d
+- Futility: 60+lmrDepth*60, depth<=8
 - LMR: quiet C=1.30, capture C=1.80
-- History pruning: -1500*depth
-- SEE quiet: -20*depth²
-- SEE capture: -depth*100
+- History pruning: -1500*depth, depth<=3, !improving
+- SEE quiet: -20*depth², SEE capture: -depth*100
 - QS delta: 240
-- Aspiration: delta=15
-- Hindsight: 200cp threshold
-- Correction history: clamp ±128, depth >= 3 gate
+- Aspiration: delta=15, from depth 4
+- ProbCut: beta+170, staticEval+85 gate
+- SEE values: P=100, N=320, B=330, R=500, Q=900
+- History bonus cap: depth²  capped at 1200
+- Contempt: -10
+
+## Current Status
+
+- **Strength**: ~-90 Elo vs Crafty/Rodent/ExChess/GreKo gauntlet; roughly -250 to -300 from GoChess
+- **NPS**: ~1.16M with NNUE CReLU 1024 (AVX2), ~2.5M with PeSTO classical
+- **Missing vs GoChess**: Lazy SMP, gives-check exemptions in LMR/LMP/futility, pawn history in move ordering (partial), v7 hidden layer nets, dynamic time management (best-move stability)
+
+## Key Gotchas
+- Move flag equality vs bitwise: check non-promotion flags with ==, not &
+- EP moves only valid when EP square is empty (occupied square = corruption)
+- TT stores raw (uncorrected) eval to avoid double correction on probe
+- Correction history only updated when bestScore > originalAlpha
+- LMR contHist weight: 3x in move ordering, 1x in reduction adjustment
+- Killers fully exempt from LMR (not just r -= 1)
+- All pruning (LMP, futility, history, SEE) exempts TT move and killers
+- PV nodes skip all TT cutoffs and QS beta blending
+- Polyglot book encodes castling as king-to-rook (must convert to king-to-destination)
