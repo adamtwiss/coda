@@ -374,11 +374,150 @@ unsafe fn hsum_epi64(v: __m256i) -> i64 {
     _mm_cvtsi128_si64(sum64)
 }
 
+// ---- AVX-512 SIMD helper functions ----
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn simd512_acc_add(acc: &mut [i16], row: &[i16], h: usize) {
+    let mut i = 0;
+    while i < h {
+        let a = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
+        let b = _mm512_loadu_si512(row.as_ptr().add(i) as *const __m512i);
+        _mm512_storeu_si512(acc.as_mut_ptr().add(i) as *mut __m512i, _mm512_add_epi16(a, b));
+        i += 32;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn simd512_acc_sub(acc: &mut [i16], row: &[i16], h: usize) {
+    let mut i = 0;
+    while i < h {
+        let a = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
+        let b = _mm512_loadu_si512(row.as_ptr().add(i) as *const __m512i);
+        _mm512_storeu_si512(acc.as_mut_ptr().add(i) as *mut __m512i, _mm512_sub_epi16(a, b));
+        i += 32;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn simd512_acc_copy_add(dst: &mut [i16], src: &[i16], row: &[i16], h: usize) {
+    let mut i = 0;
+    while i < h {
+        let a = _mm512_loadu_si512(src.as_ptr().add(i) as *const __m512i);
+        let b = _mm512_loadu_si512(row.as_ptr().add(i) as *const __m512i);
+        _mm512_storeu_si512(dst.as_mut_ptr().add(i) as *mut __m512i, _mm512_add_epi16(a, b));
+        i += 32;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn simd512_acc_copy_sub(dst: &mut [i16], src: &[i16], row: &[i16], h: usize) {
+    let mut i = 0;
+    while i < h {
+        let a = _mm512_loadu_si512(src.as_ptr().add(i) as *const __m512i);
+        let b = _mm512_loadu_si512(row.as_ptr().add(i) as *const __m512i);
+        _mm512_storeu_si512(dst.as_mut_ptr().add(i) as *mut __m512i, _mm512_sub_epi16(a, b));
+        i += 32;
+    }
+}
+
+/// AVX-512 CReLU dot product. Processes 32 × i16 per iteration.
+/// Uses periodic i64 drain like AVX2 version to prevent i32 overflow.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn simd512_crelu_dot(acc: &[i16], weights: &[i16], h: usize) -> i64 {
+    let zero = _mm512_setzero_si512();
+    let qa = _mm512_set1_epi16(QA as i16);
+    let mut sum32 = _mm512_setzero_si512(); // 16 × i32
+    let mut total: i64 = 0;
+    let mut count = 0u32;
+
+    let mut i = 0;
+    while i < h {
+        let v = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
+        let clamped = _mm512_min_epi16(_mm512_max_epi16(v, zero), qa);
+        let w = _mm512_loadu_si512(weights.as_ptr().add(i) as *const __m512i);
+        sum32 = _mm512_add_epi32(sum32, _mm512_madd_epi16(clamped, w));
+
+        count += 32;
+        if count >= 128 {
+            total += _mm512_reduce_add_epi32(sum32) as i64;
+            sum32 = _mm512_setzero_si512();
+            count = 0;
+        }
+        i += 32;
+    }
+    if count > 0 {
+        total += _mm512_reduce_add_epi32(sum32) as i64;
+    }
+    total
+}
+
+/// AVX-512 SCReLU dot product with int8 weights. Processes 32 × i16 per iteration.
+/// Uses periodic i64 drain to prevent i32 overflow in horizontal reduce.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn simd512_screlu_dot_i8(acc: &[i16], weights_i8: &[i16], h: usize) -> i64 {
+    let zero = _mm512_setzero_si512();
+    let qa = _mm512_set1_epi16(QA as i16);
+    let mut sum0 = _mm512_setzero_si512(); // 16 × i32
+    let mut sum1 = _mm512_setzero_si512();
+    let mut total: i64 = 0;
+    let mut count = 0u32;
+
+    let mut i = 0;
+    while i + 64 <= h {
+        let v0 = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
+        let c0 = _mm512_min_epi16(_mm512_max_epi16(v0, zero), qa);
+        let w0 = _mm512_loadu_si512(weights_i8.as_ptr().add(i) as *const __m512i);
+        sum0 = _mm512_add_epi32(sum0, _mm512_madd_epi16(c0, _mm512_mullo_epi16(c0, w0)));
+
+        let v1 = _mm512_loadu_si512(acc.as_ptr().add(i + 32) as *const __m512i);
+        let c1 = _mm512_min_epi16(_mm512_max_epi16(v1, zero), qa);
+        let w1 = _mm512_loadu_si512(weights_i8.as_ptr().add(i + 32) as *const __m512i);
+        sum1 = _mm512_add_epi32(sum1, _mm512_madd_epi16(c1, _mm512_mullo_epi16(c1, w1)));
+
+        count += 64;
+        if count >= 512 {
+            total += _mm512_reduce_add_epi32(_mm512_add_epi32(sum0, sum1)) as i64;
+            sum0 = _mm512_setzero_si512();
+            sum1 = _mm512_setzero_si512();
+            count = 0;
+        }
+        i += 64;
+    }
+
+    while i < h {
+        let v = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
+        let clamped = _mm512_min_epi16(_mm512_max_epi16(v, zero), qa);
+        let w = _mm512_loadu_si512(weights_i8.as_ptr().add(i) as *const __m512i);
+        sum0 = _mm512_add_epi32(sum0, _mm512_madd_epi16(clamped, _mm512_mullo_epi16(clamped, w)));
+        i += 32;
+    }
+
+    total + _mm512_reduce_add_epi32(_mm512_add_epi32(sum0, sum1)) as i64
+}
+
 /// Detect AVX2 support at runtime.
 fn detect_avx2() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
         is_x86_feature_detected!("avx2")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+/// Detect AVX-512 (F + BW) support at runtime.
+fn detect_avx512() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw")
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -399,6 +538,7 @@ pub struct NNUENet {
     pub output_bias: [i32; NNUE_OUTPUT_BUCKETS],
     pub use_screlu: bool,
     pub has_avx2: bool,
+    pub has_avx512: bool,
 }
 
 impl NNUENet {
@@ -466,7 +606,10 @@ impl NNUENet {
             version, path, if use_screlu { "SCReLU" } else { "CReLU" }, hidden_size);
 
         let has_avx2 = detect_avx2();
-        if has_avx2 {
+        let has_avx512 = detect_avx512();
+        if has_avx512 {
+            println!("info string AVX-512 SIMD detected — using 512-bit NNUE inference");
+        } else if has_avx2 {
             println!("info string AVX2 SIMD detected — using vectorised NNUE inference");
         }
 
@@ -520,6 +663,7 @@ impl NNUENet {
             output_bias,
             use_screlu,
             has_avx2,
+            has_avx512,
         })
     }
 
@@ -562,9 +706,37 @@ impl NNUENet {
         let mut output = self.output_bias[bucket] as i64;
 
         #[cfg(target_arch = "x86_64")]
+        if self.has_avx512 && h % 32 == 0 {
+            if self.use_screlu {
+                let out_w_i8 = self.output_weight_row_i8(bucket);
+                let scale = self.output_scale[bucket];
+                unsafe {
+                    let stm_sum = simd512_screlu_dot_i8(stm_acc, &out_w_i8[..h], h);
+                    let ntm_sum = simd512_screlu_dot_i8(ntm_acc, &out_w_i8[h..], h);
+                    if scale == 1.0 {
+                        output += stm_sum + ntm_sum;
+                    } else {
+                        output += ((stm_sum + ntm_sum) as f64 * scale as f64) as i64;
+                    }
+                }
+                output /= QA as i64;
+            } else {
+                unsafe {
+                    output += simd512_crelu_dot(stm_acc, &out_w[..h], h);
+                    output += simd512_crelu_dot(ntm_acc, &out_w[h..], h);
+                }
+            }
+
+            let mut result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
+            if self.use_screlu {
+                result = result * 4 / 5;
+            }
+            return result;
+        }
+
+        #[cfg(target_arch = "x86_64")]
         if self.has_avx2 && h % 16 == 0 {
             if self.use_screlu {
-                // Fast path: int8-quantized weights (mullo+madd, no i16→i32 unpack)
                 let out_w_i8 = self.output_weight_row_i8(bucket);
                 let scale = self.output_scale[bucket];
                 unsafe {
@@ -772,8 +944,22 @@ impl NNUEAccumulator {
             let b_idx = halfka_index(BLACK, b_king_sq, color, pt, sq);
             let b_row = net.input_weight_row(b_idx);
 
+            let mut handled = false;
             #[cfg(target_arch = "x86_64")]
-            if net.has_avx2 && h % 16 == 0 {
+            if net.has_avx512 && h % 32 == 0 {
+                unsafe {
+                    if add {
+                        simd512_acc_copy_add(&mut current.white, &parent.white, w_row, h);
+                        simd512_acc_copy_add(&mut current.black, &parent.black, b_row, h);
+                    } else {
+                        simd512_acc_copy_sub(&mut current.white, &parent.white, w_row, h);
+                        simd512_acc_copy_sub(&mut current.black, &parent.black, b_row, h);
+                    }
+                }
+                handled = true;
+            }
+            #[cfg(target_arch = "x86_64")]
+            if !handled && net.has_avx2 && h % 16 == 0 {
                 unsafe {
                     if add {
                         simd_acc_copy_add(&mut current.white, &parent.white, w_row, h);
@@ -783,15 +969,19 @@ impl NNUEAccumulator {
                         simd_acc_copy_sub(&mut current.black, &parent.black, b_row, h);
                     }
                 }
-            } else if add {
-                for j in 0..h {
-                    current.white[j] = parent.white[j] + w_row[j];
-                    current.black[j] = parent.black[j] + b_row[j];
-                }
-            } else {
-                for j in 0..h {
-                    current.white[j] = parent.white[j] - w_row[j];
-                    current.black[j] = parent.black[j] - b_row[j];
+                handled = true;
+            }
+            if !handled {
+                if add {
+                    for j in 0..h {
+                        current.white[j] = parent.white[j] + w_row[j];
+                        current.black[j] = parent.black[j] + b_row[j];
+                    }
+                } else {
+                    for j in 0..h {
+                        current.white[j] = parent.white[j] - w_row[j];
+                        current.black[j] = parent.black[j] - b_row[j];
+                    }
                 }
             }
         }
@@ -925,6 +1115,11 @@ pub fn acc_add_pub(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
 #[inline]
 fn acc_add(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
     #[cfg(target_arch = "x86_64")]
+    if net.has_avx512 && h % 32 == 0 {
+        unsafe { simd512_acc_add(acc, row, h); }
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
     if net.has_avx2 && h % 16 == 0 {
         unsafe { simd_acc_add(acc, row, h); }
         return;
@@ -935,6 +1130,11 @@ fn acc_add(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
 /// Subtract a weight row from an accumulator (SIMD-aware).
 #[inline]
 fn acc_sub(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
+    #[cfg(target_arch = "x86_64")]
+    if net.has_avx512 && h % 32 == 0 {
+        unsafe { simd512_acc_sub(acc, row, h); }
+        return;
+    }
     #[cfg(target_arch = "x86_64")]
     if net.has_avx2 && h % 16 == 0 {
         unsafe { simd_acc_sub(acc, row, h); }
