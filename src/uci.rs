@@ -6,14 +6,24 @@ use crate::board::Board;
 use crate::search::*;
 use crate::types::*;
 
-pub fn uci_loop_with_nnue(nnue_path: Option<&str>) {
+pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
     let mut board = Board::startpos();
     let mut info = SearchInfo::new(64);
+    let mut opening_book: Option<crate::book::OpeningBook> = None;
+    let mut use_book = true;
 
     // Pre-load NNUE if path given via CLI
     if let Some(path) = nnue_path {
         if let Err(e) = info.load_nnue(path) {
             eprintln!("Failed to load NNUE: {}", e);
+        }
+    }
+
+    // Pre-load opening book if path given via CLI
+    if let Some(path) = book_path {
+        match crate::book::OpeningBook::load(path) {
+            Ok(b) => opening_book = Some(b),
+            Err(e) => eprintln!("Failed to load book: {}", e),
         }
     }
 
@@ -34,6 +44,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>) {
                 println!("id author Adam Twiss");
                 println!("option name Hash type spin default 64 min 1 max 4096");
                 println!("option name NNUEFile type string default <empty>");
+                println!("option name OwnBook type check default true");
+                println!("option name BookFile type string default <empty>");
                 println!("uciok");
             }
             "isready" => {
@@ -50,12 +62,39 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>) {
                 parse_position(&tokens, &mut board);
             }
             "go" => {
+                // Try opening book first
+                if use_book {
+                    if let Some(ref book) = opening_book {
+                        if let Some(book_move) = book.pick_move(&board) {
+                            println!("bestmove {}", move_to_uci(book_move));
+                            continue;
+                        }
+                    }
+                }
                 let limits = parse_go(&tokens);
                 let best_move = search(&mut board, &mut info, &limits);
                 println!("bestmove {}", move_to_uci(best_move));
             }
             "setoption" => {
                 parse_option(&tokens, &mut info);
+                // Handle book options separately
+                let mut ni = 0; let mut vi = 0;
+                for i in 0..tokens.len() {
+                    if tokens[i] == "name" { ni = i + 1; }
+                    if tokens[i] == "value" { vi = i + 1; }
+                }
+                if ni > 0 && vi > 0 && vi < tokens.len() {
+                    match tokens[ni] {
+                        "OwnBook" => { use_book = tokens[vi] == "true"; }
+                        "BookFile" => {
+                            match crate::book::OpeningBook::load(tokens[vi]) {
+                                Ok(b) => opening_book = Some(b),
+                                Err(e) => eprintln!("info string Book load failed: {}", e),
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
             "loadnnue" => {
                 // Non-standard: loadnnue <path>

@@ -12,6 +12,7 @@ mod search;
 mod uci;
 mod epd;
 pub mod nnue;
+pub mod book;
 
 use board::Board;
 use movegen::{perft, perft_divide};
@@ -129,18 +130,25 @@ fn main() {
             .and_then(|i| args.get(i + 1))
             .map(|s| s.as_str());
 
-        // If args don't match any subcommand and no -nnue flag, show help
-        if args.len() > 1 && nnue_path.is_none() && !args.iter().any(|s| s == "-nnue") {
+        let book_path = args.iter().position(|s| s == "-book")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| s.as_str());
+
+        // If args don't match any subcommand and no flags, show help
+        if args.len() > 1 && nnue_path.is_none() && book_path.is_none()
+            && !args.iter().any(|s| s == "-nnue" || s == "-book")
+        {
             println!("Coda Chess Engine");
             println!("Usage:");
             println!("  coda                           UCI mode (default)");
             println!("  coda -nnue <path>              UCI mode with NNUE net");
+            println!("  coda -book <path>              Load Polyglot opening book");
             println!("  coda bench [depth]             Search benchmark (default depth 13)");
             println!("  coda perft [depth] [fen...]    Perft with divide");
             println!("  coda perft-bench               Perft benchmark suite");
             println!("  coda epd <file> [time] [max]   Run EPD test suite");
         } else {
-            uci::uci_loop_with_nnue(nnue_path);
+            uci::uci_loop_with_nnue(nnue_path, book_path);
         }
     }
 }
