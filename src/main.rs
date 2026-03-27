@@ -101,8 +101,11 @@ fn main() {
     } else if args.len() > 1 && args[1] == "bench" {
         // Search benchmark
         let depth = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(13);
+        let nnue_path = args.iter().position(|s| s == "-nnue")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| s.as_str());
         let start = std::time::Instant::now();
-        let nodes = search::bench(depth);
+        let nodes = search::bench(depth, nnue_path);
         let elapsed = start.elapsed();
         let nps = if elapsed.as_secs_f64() > 0.0 {
             (nodes as f64 / elapsed.as_secs_f64()) as u64

@@ -142,89 +142,130 @@ unsafe fn simd_acc_sub(acc: &mut [i16], row: &[i16], h: usize) {
 
 /// CReLU dot product: clamp acc values to [0, QA=255], dot with output weights.
 /// Returns i64 sum. acc and weights have length h.
+///
+/// Uses VPMADDWD for efficient i16×i16→i32 pairwise multiply-accumulate.
+/// Drains i32 accumulator to i64 every 128 elements to prevent overflow.
+/// (Max per pair: 255*32767 + 255*32767 ≈ 16.7M. After 128 pairs: ≈ 2.1B, near i32 limit.)
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn simd_crelu_dot(acc: &[i16], weights: &[i16], h: usize) -> i64 {
     let zero = _mm256_setzero_si256();
     let qa = _mm256_set1_epi16(QA as i16);
-    let mut sum0 = _mm256_setzero_si256(); // accumulate i32
+    let mut total = _mm256_setzero_si256(); // 4 × i64
+    let mut sum32 = _mm256_setzero_si256(); // 8 × i32
+    let mut count = 0u32;
 
     let mut i = 0;
     while i < h {
-        // Load 16 accumulator values and clamp to [0, 255]
         let v = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
         let clamped = _mm256_min_epi16(_mm256_max_epi16(v, zero), qa);
-
-        // Load 16 output weights
         let w = _mm256_loadu_si256(weights.as_ptr().add(i) as *const __m256i);
-
-        // VPMADDWD: multiply pairs of i16 and add adjacent to i32
-        // (clamped[0]*w[0] + clamped[1]*w[1]), (clamped[2]*w[2] + clamped[3]*w[3]), ...
         let prod = _mm256_madd_epi16(clamped, w);
-        sum0 = _mm256_add_epi32(sum0, prod);
+        sum32 = _mm256_add_epi32(sum32, prod);
+
+        count += 16;
+        // Drain to i64 every 128 elements (8 VPMADDWD results = 64 pairs ≈ 1B max)
+        if count >= 128 {
+            // Sign-extend 8×i32 to 2×4×i64 and add
+            total = _mm256_add_epi64(total, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(sum32)));
+            total = _mm256_add_epi64(total, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(sum32, 1)));
+            sum32 = _mm256_setzero_si256();
+            count = 0;
+        }
 
         i += 16;
     }
 
-    // Horizontal sum of 8 × i32 → i64
-    hsum_epi32_to_i64(sum0)
+    // Drain remaining
+    if count > 0 {
+        total = _mm256_add_epi64(total, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(sum32)));
+        total = _mm256_add_epi64(total, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(sum32, 1)));
+    }
+
+    hsum_epi64(total)
 }
 
 /// SCReLU dot product: clamp acc to [0, QA=255], square, dot with output weights.
 /// Returns i64 sum at scale QA² × QB. acc and weights have length h.
+///
+/// Approach: v²*w computed per-element in i32, accumulated in i64.
+/// Process 16 elements per iteration: unpack i16→i32 in two halves,
+/// square, multiply by weights, widen to i64 and accumulate.
+///
+/// Overflow analysis: v² max = 65025, v²*w max = 65025*32767 ≈ 2.13B < i32::MAX.
+/// Must go to i64 for accumulation since two i32 products can overflow.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn simd_screlu_dot(acc: &[i16], weights: &[i16], h: usize) -> i64 {
     let zero = _mm256_setzero_si256();
     let qa = _mm256_set1_epi16(QA as i16);
-    let mut sum_lo = _mm256_setzero_si256(); // i64 accumulator (low)
-    let mut sum_hi = _mm256_setzero_si256(); // i64 accumulator (high)
+    let mut sum0 = _mm256_setzero_si256(); // 4 × i64
+    let mut sum1 = _mm256_setzero_si256(); // 4 × i64
 
     let mut i = 0;
+    while i + 32 <= h {
+        // === First 16 elements ===
+        let v0 = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
+        let c0 = _mm256_min_epi16(_mm256_max_epi16(v0, zero), qa);
+        let w0 = _mm256_loadu_si256(weights.as_ptr().add(i) as *const __m256i);
+
+        let v0_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(c0));
+        let w0_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(w0));
+        let p0_lo = _mm256_mullo_epi32(_mm256_mullo_epi32(v0_lo, v0_lo), w0_lo);
+
+        let v0_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(c0, 1));
+        let w0_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(w0, 1));
+        let p0_hi = _mm256_mullo_epi32(_mm256_mullo_epi32(v0_hi, v0_hi), w0_hi);
+
+        // === Second 16 elements ===
+        let v1 = _mm256_loadu_si256(acc.as_ptr().add(i + 16) as *const __m256i);
+        let c1 = _mm256_min_epi16(_mm256_max_epi16(v1, zero), qa);
+        let w1 = _mm256_loadu_si256(weights.as_ptr().add(i + 16) as *const __m256i);
+
+        let v1_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(c1));
+        let w1_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(w1));
+        let p1_lo = _mm256_mullo_epi32(_mm256_mullo_epi32(v1_lo, v1_lo), w1_lo);
+
+        let v1_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(c1, 1));
+        let w1_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(w1, 1));
+        let p1_hi = _mm256_mullo_epi32(_mm256_mullo_epi32(v1_hi, v1_hi), w1_hi);
+
+        // Widen i32 → i64 and accumulate (8 widenings for 32 elements)
+        sum0 = _mm256_add_epi64(sum0, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(p0_lo)));
+        sum1 = _mm256_add_epi64(sum1, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(p0_lo, 1)));
+        sum0 = _mm256_add_epi64(sum0, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(p0_hi)));
+        sum1 = _mm256_add_epi64(sum1, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(p0_hi, 1)));
+        sum0 = _mm256_add_epi64(sum0, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(p1_lo)));
+        sum1 = _mm256_add_epi64(sum1, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(p1_lo, 1)));
+        sum0 = _mm256_add_epi64(sum0, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(p1_hi)));
+        sum1 = _mm256_add_epi64(sum1, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(p1_hi, 1)));
+
+        i += 32;
+    }
+
+    // Handle remaining 16 elements (if h is not a multiple of 32)
     while i < h {
-        // Load and clamp to [0, 255]
         let v = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
         let clamped = _mm256_min_epi16(_mm256_max_epi16(v, zero), qa);
-
-        // Square: v² — since values are [0, 255], v² fits in i16 (max 65025) — no, it doesn't!
-        // 255² = 65025 which overflows i16 (max 32767). We need i32 for the squares.
-        // Strategy: unpack to i32, square, multiply by weights (also unpacked), accumulate as i64.
-
         let w = _mm256_loadu_si256(weights.as_ptr().add(i) as *const __m256i);
 
-        // Unpack low 8 values to i32
         let v_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(clamped));
         let w_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(w));
-        let v2_lo = _mm256_mullo_epi32(v_lo, v_lo); // v²
-        let prod_lo = _mm256_mullo_epi32(v2_lo, w_lo); // v² × w (i32, fits: 65025 * 32767 ≈ 2.1B < 2³¹)
-        // Wait — 65025 * weight where weight can be negative and |weight| up to 32767
-        // 65025 * 32767 = 2,130,964,575 which just fits in i32 (max 2,147,483,647). Tight but OK.
-        // Actually if weight is negative: 65025 * -32768 = -2,131,722,240 which fits in i32 (min -2,147,483,648). Also OK.
+        let prod_lo = _mm256_mullo_epi32(_mm256_mullo_epi32(v_lo, v_lo), w_lo);
 
-        // Accumulate into i64 to avoid overflow across many elements
-        // Sign-extend i32 to i64
-        let prod_lo_lo = _mm256_cvtepi32_epi64(_mm256_castsi256_si128(prod_lo));
-        let prod_lo_hi = _mm256_cvtepi32_epi64(_mm256_extracti128_si256(prod_lo, 1));
-        sum_lo = _mm256_add_epi64(sum_lo, prod_lo_lo);
-        sum_hi = _mm256_add_epi64(sum_hi, prod_lo_hi);
-
-        // Unpack high 8 values to i32
         let v_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(clamped, 1));
         let w_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(w, 1));
-        let v2_hi = _mm256_mullo_epi32(v_hi, v_hi);
-        let prod_hi = _mm256_mullo_epi32(v2_hi, w_hi);
+        let prod_hi = _mm256_mullo_epi32(_mm256_mullo_epi32(v_hi, v_hi), w_hi);
 
-        let prod_hi_lo = _mm256_cvtepi32_epi64(_mm256_castsi256_si128(prod_hi));
-        let prod_hi_hi = _mm256_cvtepi32_epi64(_mm256_extracti128_si256(prod_hi, 1));
-        sum_lo = _mm256_add_epi64(sum_lo, prod_hi_lo);
-        sum_hi = _mm256_add_epi64(sum_hi, prod_hi_hi);
+        sum0 = _mm256_add_epi64(sum0, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(prod_lo)));
+        sum1 = _mm256_add_epi64(sum1, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(prod_lo, 1)));
+        sum0 = _mm256_add_epi64(sum0, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(prod_hi)));
+        sum1 = _mm256_add_epi64(sum1, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(prod_hi, 1)));
 
         i += 16;
     }
 
-    // Horizontal sum of i64 accumulators
-    let total = _mm256_add_epi64(sum_lo, sum_hi);
-    hsum_epi64(total)
+    hsum_epi64(_mm256_add_epi64(sum0, sum1))
 }
 
 /// Horizontal sum of 8 × i32 in a __m256i to i64.

@@ -1059,7 +1059,7 @@ fn quiescence(
 }
 
 /// Run bench: fixed-depth search on standard positions, return total nodes.
-pub fn bench(depth: i32) -> u64 {
+pub fn bench(depth: i32, nnue_path: Option<&str>) -> u64 {
     let positions = [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
@@ -1072,6 +1072,11 @@ pub fn bench(depth: i32) -> u64 {
     ];
 
     let mut info = SearchInfo::new(16);
+    if let Some(path) = nnue_path {
+        if let Err(e) = info.load_nnue(path) {
+            eprintln!("Warning: failed to load NNUE: {}", e);
+        }
+    }
     let mut total_nodes = 0u64;
 
     let limits = SearchLimits {
