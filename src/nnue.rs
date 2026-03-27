@@ -10,6 +10,9 @@
 use std::fs::File;
 use std::io::{Read as IoRead, BufReader};
 
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
 use crate::bitboard::*;
 use crate::board::Board;
 use crate::types::*;
@@ -105,6 +108,165 @@ pub fn output_bucket(piece_count: u32) -> usize {
     bucket.clamp(0, NNUE_OUTPUT_BUCKETS as i32 - 1) as usize
 }
 
+// ---- AVX2 SIMD helper functions ----
+
+/// Add a weight row to an accumulator vector (both i16, length h).
+/// SAFETY: requires AVX2. Caller must ensure acc and row have length >= h,
+/// and h is a multiple of 16.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_acc_add(acc: &mut [i16], row: &[i16], h: usize) {
+    let mut i = 0;
+    while i < h {
+        let a = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
+        let b = _mm256_loadu_si256(row.as_ptr().add(i) as *const __m256i);
+        let sum = _mm256_add_epi16(a, b);
+        _mm256_storeu_si256(acc.as_mut_ptr().add(i) as *mut __m256i, sum);
+        i += 16;
+    }
+}
+
+/// Subtract a weight row from an accumulator vector (both i16, length h).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_acc_sub(acc: &mut [i16], row: &[i16], h: usize) {
+    let mut i = 0;
+    while i < h {
+        let a = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
+        let b = _mm256_loadu_si256(row.as_ptr().add(i) as *const __m256i);
+        let diff = _mm256_sub_epi16(a, b);
+        _mm256_storeu_si256(acc.as_mut_ptr().add(i) as *mut __m256i, diff);
+        i += 16;
+    }
+}
+
+/// CReLU dot product: clamp acc values to [0, QA=255], dot with output weights.
+/// Returns i64 sum. acc and weights have length h.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_crelu_dot(acc: &[i16], weights: &[i16], h: usize) -> i64 {
+    let zero = _mm256_setzero_si256();
+    let qa = _mm256_set1_epi16(QA as i16);
+    let mut sum0 = _mm256_setzero_si256(); // accumulate i32
+
+    let mut i = 0;
+    while i < h {
+        // Load 16 accumulator values and clamp to [0, 255]
+        let v = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
+        let clamped = _mm256_min_epi16(_mm256_max_epi16(v, zero), qa);
+
+        // Load 16 output weights
+        let w = _mm256_loadu_si256(weights.as_ptr().add(i) as *const __m256i);
+
+        // VPMADDWD: multiply pairs of i16 and add adjacent to i32
+        // (clamped[0]*w[0] + clamped[1]*w[1]), (clamped[2]*w[2] + clamped[3]*w[3]), ...
+        let prod = _mm256_madd_epi16(clamped, w);
+        sum0 = _mm256_add_epi32(sum0, prod);
+
+        i += 16;
+    }
+
+    // Horizontal sum of 8 × i32 → i64
+    hsum_epi32_to_i64(sum0)
+}
+
+/// SCReLU dot product: clamp acc to [0, QA=255], square, dot with output weights.
+/// Returns i64 sum at scale QA² × QB. acc and weights have length h.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_screlu_dot(acc: &[i16], weights: &[i16], h: usize) -> i64 {
+    let zero = _mm256_setzero_si256();
+    let qa = _mm256_set1_epi16(QA as i16);
+    let mut sum_lo = _mm256_setzero_si256(); // i64 accumulator (low)
+    let mut sum_hi = _mm256_setzero_si256(); // i64 accumulator (high)
+
+    let mut i = 0;
+    while i < h {
+        // Load and clamp to [0, 255]
+        let v = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
+        let clamped = _mm256_min_epi16(_mm256_max_epi16(v, zero), qa);
+
+        // Square: v² — since values are [0, 255], v² fits in i16 (max 65025) — no, it doesn't!
+        // 255² = 65025 which overflows i16 (max 32767). We need i32 for the squares.
+        // Strategy: unpack to i32, square, multiply by weights (also unpacked), accumulate as i64.
+
+        let w = _mm256_loadu_si256(weights.as_ptr().add(i) as *const __m256i);
+
+        // Unpack low 8 values to i32
+        let v_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(clamped));
+        let w_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(w));
+        let v2_lo = _mm256_mullo_epi32(v_lo, v_lo); // v²
+        let prod_lo = _mm256_mullo_epi32(v2_lo, w_lo); // v² × w (i32, fits: 65025 * 32767 ≈ 2.1B < 2³¹)
+        // Wait — 65025 * weight where weight can be negative and |weight| up to 32767
+        // 65025 * 32767 = 2,130,964,575 which just fits in i32 (max 2,147,483,647). Tight but OK.
+        // Actually if weight is negative: 65025 * -32768 = -2,131,722,240 which fits in i32 (min -2,147,483,648). Also OK.
+
+        // Accumulate into i64 to avoid overflow across many elements
+        // Sign-extend i32 to i64
+        let prod_lo_lo = _mm256_cvtepi32_epi64(_mm256_castsi256_si128(prod_lo));
+        let prod_lo_hi = _mm256_cvtepi32_epi64(_mm256_extracti128_si256(prod_lo, 1));
+        sum_lo = _mm256_add_epi64(sum_lo, prod_lo_lo);
+        sum_hi = _mm256_add_epi64(sum_hi, prod_lo_hi);
+
+        // Unpack high 8 values to i32
+        let v_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(clamped, 1));
+        let w_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(w, 1));
+        let v2_hi = _mm256_mullo_epi32(v_hi, v_hi);
+        let prod_hi = _mm256_mullo_epi32(v2_hi, w_hi);
+
+        let prod_hi_lo = _mm256_cvtepi32_epi64(_mm256_castsi256_si128(prod_hi));
+        let prod_hi_hi = _mm256_cvtepi32_epi64(_mm256_extracti128_si256(prod_hi, 1));
+        sum_lo = _mm256_add_epi64(sum_lo, prod_hi_lo);
+        sum_hi = _mm256_add_epi64(sum_hi, prod_hi_hi);
+
+        i += 16;
+    }
+
+    // Horizontal sum of i64 accumulators
+    let total = _mm256_add_epi64(sum_lo, sum_hi);
+    hsum_epi64(total)
+}
+
+/// Horizontal sum of 8 × i32 in a __m256i to i64.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn hsum_epi32_to_i64(v: __m256i) -> i64 {
+    // Extract high and low 128-bit lanes, add as i32
+    let lo = _mm256_castsi256_si128(v);
+    let hi = _mm256_extracti128_si256(v, 1);
+    let sum128 = _mm_add_epi32(lo, hi); // 4 × i32
+    // Shuffle and add pairs
+    let hi64 = _mm_unpackhi_epi64(sum128, sum128);
+    let sum64 = _mm_add_epi32(sum128, hi64); // 2 × i32 in low 64 bits
+    let hi32 = _mm_shuffle_epi32(sum64, 0b_00_00_00_01);
+    let sum32 = _mm_add_epi32(sum64, hi32);
+    _mm_cvtsi128_si32(sum32) as i64
+}
+
+/// Horizontal sum of 4 × i64 in a __m256i.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn hsum_epi64(v: __m256i) -> i64 {
+    let lo = _mm256_castsi256_si128(v);
+    let hi = _mm256_extracti128_si256(v, 1);
+    let sum128 = _mm_add_epi64(lo, hi); // 2 × i64
+    let hi64 = _mm_unpackhi_epi64(sum128, sum128);
+    let sum64 = _mm_add_epi64(sum128, hi64);
+    _mm_cvtsi128_si64(sum64)
+}
+
+/// Detect AVX2 support at runtime.
+fn detect_avx2() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        is_x86_feature_detected!("avx2")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
 /// NNUE network weights (shared, read-only after loading).
 pub struct NNUENet {
     pub hidden_size: usize,
@@ -113,6 +275,7 @@ pub struct NNUENet {
     pub output_weights: Vec<i16>, // [NNUE_OUTPUT_BUCKETS × 2 × hidden_size]
     pub output_bias: [i32; NNUE_OUTPUT_BUCKETS],
     pub use_screlu: bool,
+    pub has_avx2: bool,
 }
 
 impl NNUENet {
@@ -179,6 +342,11 @@ impl NNUENet {
         println!("info string Loaded NNUE v{} {} {} ({})",
             version, path, if use_screlu { "SCReLU" } else { "CReLU" }, hidden_size);
 
+        let has_avx2 = detect_avx2();
+        if has_avx2 {
+            println!("info string AVX2 SIMD detected — using vectorised NNUE inference");
+        }
+
         Ok(NNUENet {
             hidden_size,
             input_weights,
@@ -186,6 +354,7 @@ impl NNUENet {
             output_weights,
             output_bias,
             use_screlu,
+            has_avx2,
         })
     }
 
@@ -219,6 +388,30 @@ impl NNUENet {
 
         let mut output = self.output_bias[bucket] as i64;
 
+        #[cfg(target_arch = "x86_64")]
+        if self.has_avx2 && h % 16 == 0 {
+            if self.use_screlu {
+                // SAFETY: has_avx2 is true, h is multiple of 16
+                unsafe {
+                    output += simd_screlu_dot(stm_acc, &out_w[..h], h);
+                    output += simd_screlu_dot(ntm_acc, &out_w[h..], h);
+                }
+                output /= QA as i64;
+            } else {
+                unsafe {
+                    output += simd_crelu_dot(stm_acc, &out_w[..h], h);
+                    output += simd_crelu_dot(ntm_acc, &out_w[h..], h);
+                }
+            }
+
+            let mut result = (output as i32) * EVAL_SCALE / QAB;
+            if self.use_screlu {
+                result = result * 4 / 5;
+            }
+            return result;
+        }
+
+        // Scalar fallback
         if self.use_screlu {
             // SCReLU: clamp [0, QA] then square
             for i in 0..h {
@@ -332,6 +525,9 @@ impl NNUEAccumulator {
         let w_king_sq = board.king_sq(WHITE);
         let b_king_sq = board.king_sq(BLACK);
 
+        #[cfg(target_arch = "x86_64")]
+        let use_simd = net.has_avx2 && h % 16 == 0;
+
         for color in 0..2u8 {
             for pt in 0..6u8 {
                 let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
@@ -340,12 +536,22 @@ impl NNUEAccumulator {
 
                     let w_idx = halfka_index(WHITE, w_king_sq, color, pt, sq);
                     let w_row = net.input_weight_row(w_idx);
-                    for j in 0..h {
-                        entry.white[j] += w_row[j];
-                    }
 
                     let b_idx = halfka_index(BLACK, b_king_sq, color, pt, sq);
                     let b_row = net.input_weight_row(b_idx);
+
+                    #[cfg(target_arch = "x86_64")]
+                    if use_simd {
+                        unsafe {
+                            simd_acc_add(&mut entry.white, w_row, h);
+                            simd_acc_add(&mut entry.black, b_row, h);
+                        }
+                        continue;
+                    }
+
+                    for j in 0..h {
+                        entry.white[j] += w_row[j];
+                    }
                     for j in 0..h {
                         entry.black[j] += b_row[j];
                     }
@@ -382,6 +588,9 @@ impl NNUEAccumulator {
         let w_king_sq = board.king_sq(WHITE);
         let b_king_sq = board.king_sq(BLACK);
 
+        #[cfg(target_arch = "x86_64")]
+        let use_simd = net.has_avx2 && h % 16 == 0;
+
         for &(add, color, pt, sq) in changes {
             // White perspective
             let w_idx = halfka_index(WHITE, w_king_sq, color, pt, sq);
@@ -391,6 +600,22 @@ impl NNUEAccumulator {
             let b_idx = halfka_index(BLACK, b_king_sq, color, pt, sq);
             let b_row = net.input_weight_row(b_idx);
 
+            #[cfg(target_arch = "x86_64")]
+            if use_simd {
+                // SAFETY: has_avx2 is true, h is multiple of 16
+                unsafe {
+                    if add {
+                        simd_acc_add(&mut current.white, w_row, h);
+                        simd_acc_add(&mut current.black, b_row, h);
+                    } else {
+                        simd_acc_sub(&mut current.white, w_row, h);
+                        simd_acc_sub(&mut current.black, b_row, h);
+                    }
+                }
+                continue;
+            }
+
+            // Scalar fallback
             if add {
                 for j in 0..h {
                     current.white[j] += w_row[j];
