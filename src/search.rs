@@ -747,9 +747,15 @@ fn negamax(
 
     // Failing heuristic: detect significant position deterioration.
     // When eval has dropped well below 2-ply-ago eval, prune/reduce more aggressively.
-    let _failing = !in_check && ply >= 2 && ply_u < MAX_PLY
+    let failing = !in_check && ply >= 2 && ply_u < MAX_PLY
         && info.static_evals[ply_u - 2] > -INFINITY + 100
         && static_eval < info.static_evals[ply_u - 2] - (60 + 40 * depth as i32);
+
+    // Eval instability: sharp eval swing from parent → something tactical happening
+    let unstable = !in_check && ply >= 1 && ply_u > 0
+        && info.static_evals[ply_u - 1] > -INFINITY + 100
+        && static_eval > -INFINITY
+        && (static_eval + info.static_evals[ply_u - 1]).abs() > 200;
 
     // Razoring
     if !is_pv && !in_check && depth <= 2 && ply > 0 {
@@ -937,6 +943,7 @@ fn negamax(
             // LMP (exempt checks)
             let mut lmp_threshold = 3 + depth as usize * depth as usize;
             if improving && depth >= 3 { lmp_threshold += lmp_threshold / 2; }
+            if failing { lmp_threshold = lmp_threshold * 2 / 3; }
             if !is_capture && !is_promo && !gives_check && moves_tried > lmp_threshold {
                 board.unmake_move();
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
@@ -967,7 +974,9 @@ fn negamax(
                         continue;
                     }
                 } else if !is_capture && depth <= 8 {
-                    if !see_ge(board, mv, -20 * depth as i32 * depth as i32) {
+                    let see_quiet_threshold = -20 * depth as i32 * depth as i32
+                        - if unstable { 100 } else { 0 }; // looser in volatile positions
+                    if !see_ge(board, mv, see_quiet_threshold) {
                         board.unmake_move();
                         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
                         info.stats.see_prunes += 1;
@@ -1033,8 +1042,11 @@ fn negamax(
             if improving { r -= 1; }
 
             // Reduce more when position is deteriorating
-            // failing LMR disabled: over-prunes at current strength
-            // if failing { r += 1; }
+            // Reduce more when position is deteriorating
+            if failing { r += 1; }
+
+            // Reduce less in volatile positions
+            if unstable { r -= 1; }
 
             r = r.max(1).min(new_depth);
 
