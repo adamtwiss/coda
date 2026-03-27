@@ -58,6 +58,7 @@ pub struct SearchInfo {
     pub max_nodes: u64,
     pub sel_depth: i32,
     prev_moves: [Move; MAX_PLY],
+    static_evals: [i32; MAX_PLY],
     pub nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
     pub nnue_acc: Option<crate::nnue::NNUEAccumulator>,
 }
@@ -75,6 +76,7 @@ impl SearchInfo {
             max_nodes: 0,
             sel_depth: 0,
             prev_moves: [NO_MOVE; MAX_PLY],
+            static_evals: [0; MAX_PLY],
             nnue_net: None,
             nnue_acc: None,
         }
@@ -362,15 +364,38 @@ fn negamax(
         if board.halfmove >= 100 {
             return 0;
         }
-        // Repetition detection: check if current hash appeared in the undo stack
-        // Only need to check back to the last irreversible move (halfmove clock resets)
+        // Insufficient material: KvK, KNvK, KBvK
+        let occ = board.occupied();
+        let pc = popcount(occ);
+        if pc <= 3 {
+            if pc == 2 { return 0; } // KvK
+            // KN vs K or KB vs K
+            if board.pieces[PAWN as usize] == 0
+                && board.pieces[ROOK as usize] == 0
+                && board.pieces[QUEEN as usize] == 0
+            {
+                return 0;
+            }
+        }
+        // Repetition detection: compare current hash against previous positions.
+        // undo_stack[i].hash = hash of position BEFORE move i was made.
+        // Current position has board.hash. The position 2 half-moves ago
+        // (same side to move) is at undo_stack[len-2].hash (hash before the
+        // opponent's last move, which equals the position after our last move).
+        // Actually: undo[len-1].hash = position before opponent moved = our position.
+        // Wait — no. undo[len-1] was pushed by the OPPONENT's make_move call.
+        // undo[len-1].hash was the position when the opponent was about to move.
+        // That's the position after OUR last move = same side as current (us).
+        // But that's only 1 ply back, not 2.
+        //
+        // Simple approach: just check every entry. The hash includes the side-to-move
+        // key, so only positions with the same side to move will match.
         let hash = board.hash;
         let stack_len = board.undo_stack.len();
         let check_back = (board.halfmove as usize).min(stack_len);
-        for i in (0..check_back).rev().step_by(2) {
-            // step_by(2): same side to move only
+        for i in 0..check_back {
             if board.undo_stack[stack_len - 1 - i].hash == hash {
-                return 0; // repetition — draw
+                return 0;
             }
         }
     }
@@ -410,7 +435,17 @@ fn negamax(
         info.eval(board)
     };
 
-    let improving = !in_check && ply >= 2; // simplified: assume improving until we have eval history
+    // Store static eval for improving detection
+    if ply_u < MAX_PLY {
+        info.static_evals[ply_u] = static_eval;
+    }
+
+    // Position is "improving" if our eval is better than 2 plies ago.
+    // When ply-2 was in check, we stored -INFINITY, so improving=true
+    // (conservative: don't reduce extra when uncertain).
+    let improving = !in_check && ply >= 2 && (
+        ply_u >= MAX_PLY || static_eval > info.static_evals[ply_u - 2]
+    );
 
     // Razoring
     if !is_pv && !in_check && depth <= 3 {
@@ -497,6 +532,8 @@ fn negamax(
     if tt_move == NO_MOVE && depth >= 4 {
         depth -= 1;
     }
+
+    let original_alpha = alpha;
 
     let safe_ply = ply_u.min(MAX_PLY - 1);
     let prev_move = if ply > 0 { info.prev_moves[safe_ply - 1] } else { NO_MOVE };
@@ -588,9 +625,11 @@ fn negamax(
             if cut_node { r += 1; }
             if is_capture { r -= 1; }
 
-            // History-based adjustment
+            // History-based adjustment (use `us` not board.side_to_move — board is post-make)
             if !is_capture {
-                let hist = info.history.quiet_score(board, mv, prev_move);
+                let from = move_from(mv);
+                let to = move_to(mv);
+                let hist = info.history.main[us as usize][from as usize][to as usize];
                 r -= (hist / 5000).clamp(-2, 2);
             }
 
@@ -728,7 +767,7 @@ fn negamax(
     // Store in TT
     let tt_flag = if best_score >= beta {
         TT_FLAG_LOWER
-    } else if best_score > alpha - 1 && is_pv { // improved alpha
+    } else if is_pv && best_score > original_alpha {
         TT_FLAG_EXACT
     } else {
         TT_FLAG_UPPER
