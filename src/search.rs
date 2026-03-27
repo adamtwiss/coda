@@ -644,8 +644,13 @@ fn negamax(
 
         // Pruning for non-root, non-PV, late moves
         if !is_root && best_score > -TB_WIN && !in_check {
-            // Late Move Pruning (LMP)
-            if !is_capture && !is_promo && moves_tried > 3 + depth as usize * depth as usize {
+            // Late Move Pruning (LMP) — more aggressive when not improving
+            let lmp_threshold = if improving {
+                3 + depth as usize * depth as usize
+            } else {
+                (3 + depth as usize * depth as usize) / 2
+            };
+            if !is_capture && !is_promo && moves_tried > lmp_threshold {
                 continue;
             }
 
@@ -657,9 +662,11 @@ fn negamax(
                 }
             }
 
-            // Futility pruning
+            // Futility pruning (uses estimated LMR depth)
             if !is_capture && !is_promo && depth <= 8 {
-                let futility_margin = 60 + (depth as i32) * 60;
+                let est_r = lmr_reduction(depth, moves_tried as i32);
+                let lmr_depth = (depth - est_r).max(1);
+                let futility_margin = 60 + lmr_depth * 60;
                 if static_eval + futility_margin <= alpha {
                     continue;
                 }

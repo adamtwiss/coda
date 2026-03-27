@@ -17,6 +17,7 @@ pub struct UndoInfo {
     pub ep_square: u8,
     pub halfmove: u16,
     pub hash: u64,
+    pub pawn_hash: u64,
     pub checkers: Bitboard,
 }
 
@@ -486,6 +487,7 @@ impl Board {
             ep_square: self.ep_square,
             halfmove: self.halfmove,
             hash: self.hash,
+            pawn_hash: self.pawn_hash,
             checkers: 0, // populated on demand
         });
 
@@ -592,6 +594,7 @@ impl Board {
             self.ep_square = undo.ep_square;
             self.halfmove = undo.halfmove;
             self.hash = undo.hash;
+        self.pawn_hash = undo.pawn_hash;
             self.side_to_move = us;
             if us == BLACK { self.fullmove -= 1; }
             return;
@@ -631,6 +634,7 @@ impl Board {
         self.ep_square = undo.ep_square;
         self.halfmove = undo.halfmove;
         self.hash = undo.hash;
+        self.pawn_hash = undo.pawn_hash;
 
         if us == BLACK {
             self.fullmove -= 1;
@@ -646,6 +650,7 @@ impl Board {
             ep_square: self.ep_square,
             halfmove: self.halfmove,
             hash: self.hash,
+            pawn_hash: self.pawn_hash,
             checkers: 0,
         });
 
@@ -666,6 +671,7 @@ impl Board {
         self.ep_square = undo.ep_square;
         self.halfmove = undo.halfmove;
         self.hash = undo.hash;
+        self.pawn_hash = undo.pawn_hash;
     }
 
     /// Display the board as ASCII art.
