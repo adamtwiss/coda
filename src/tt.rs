@@ -5,9 +5,9 @@
 use crate::types::*;
 
 pub const TT_FLAG_NONE: u8 = 0;
-pub const TT_FLAG_UPPER: u8 = 1; // All-node (fail-low)
-pub const TT_FLAG_LOWER: u8 = 2; // Cut-node (fail-high)
-pub const TT_FLAG_EXACT: u8 = 3; // PV-node
+pub const TT_FLAG_EXACT: u8 = 1; // PV-node (exact score)
+pub const TT_FLAG_LOWER: u8 = 2; // Cut-node (fail-high, score >= beta)
+pub const TT_FLAG_UPPER: u8 = 3; // All-node (fail-low, score <= alpha)
 
 const BUCKET_SIZE: usize = 4;
 // 4 slots × 16 bytes = 64 bytes (cache line aligned)
