@@ -460,10 +460,43 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             format!("score cp {}", prev_score)
         };
 
+        // Extract PV from TT
+        let mut pv_str = String::new();
+        {
+            let mut pv_board = board.clone();
+            let mut pv_moves = 0;
+            // First move is always the best_move
+            pv_str.push_str(&move_to_uci(best_move));
+            pv_board.make_move(best_move);
+            pv_moves += 1;
+            // Follow TT chain for remaining PV moves
+            while pv_moves < depth as usize + 5 {
+                let pv_tt = info.tt.probe(pv_board.hash);
+                if !pv_tt.hit || pv_tt.best_move == NO_MOVE { break; }
+                let pv_from = move_from(pv_tt.best_move);
+                let pv_to = move_to(pv_tt.best_move);
+                // Validate move exists in legal move list
+                let pv_legal = generate_legal_moves(&pv_board);
+                let mut found = NO_MOVE;
+                for i in 0..pv_legal.len {
+                    let m = pv_legal.moves[i];
+                    if move_from(m) == pv_from && move_to(m) == pv_to {
+                        found = m;
+                        break;
+                    }
+                }
+                if found == NO_MOVE { break; }
+                pv_str.push(' ');
+                pv_str.push_str(&move_to_uci(found));
+                pv_board.make_move(found);
+                pv_moves += 1;
+            }
+        }
+
         println!(
             "info depth {} seldepth {} {} nodes {} nps {} time {} hashfull {} pv {}",
             depth, info.sel_depth, score_str, info.nodes, nps, elapsed,
-            info.tt.hashfull(), move_to_uci(best_move)
+            info.tt.hashfull(), pv_str
         );
     }
 
