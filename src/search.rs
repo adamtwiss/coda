@@ -419,7 +419,7 @@ fn negamax(
     cut_node: bool,
 ) -> i32 {
     if info.should_stop() {
-        return 0;
+        return alpha; // return current bound, not 0 (which fakes a draw)
     }
 
     // Quiescence at depth 0
@@ -769,7 +769,7 @@ fn negamax(
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
 
         if info.should_stop() {
-            return best_score.max(0);
+            return best_score;
         }
 
         if score > best_score {
@@ -890,7 +890,7 @@ fn negamax(
         board.hash,
         best_move,
         tt_flag,
-        static_eval,
+        raw_eval,  // store RAW eval, not corrected — avoids double correction on TT hit
         score_to_tt(best_score, ply),
         depth,
     );
@@ -915,7 +915,7 @@ fn quiescence(
     ply: i32,
 ) -> i32 {
     if info.should_stop() {
-        return 0;
+        return alpha;
     }
 
     info.nodes += 1;
