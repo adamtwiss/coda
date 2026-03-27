@@ -491,12 +491,31 @@ fn negamax(
         match tt_entry.flag {
             TT_FLAG_EXACT => return tt_score,
             TT_FLAG_LOWER => {
-                if tt_score >= beta { return tt_score; }
+                if tt_score >= beta {
+                    // TT score dampening: blend toward beta to prevent inflation
+                    if !is_mate_score(tt_score) {
+                        return (3 * tt_score + beta) / 4;
+                    }
+                    return tt_score;
+                }
             }
             TT_FLAG_UPPER => {
                 if tt_score <= alpha { return tt_score; }
             }
             _ => {}
+        }
+    }
+
+    // TT near-miss: accept entries 1 ply short with a score margin
+    if !is_pv && tt_entry.hit && tt_entry.depth >= depth - 1
+        && !is_mate_score(tt_score)
+    {
+        let margin = 80;
+        if tt_entry.flag == TT_FLAG_LOWER && tt_score - margin >= beta {
+            return tt_score - margin;
+        }
+        if tt_entry.flag == TT_FLAG_UPPER && tt_score + margin <= alpha {
+            return tt_score + margin;
         }
     }
 
@@ -568,14 +587,17 @@ fn negamax(
             board.unmake_null_move();
 
             if null_score >= beta {
+                // NMP score dampening: blend toward beta
+                let dampened = (null_score * 2 + beta) / 3;
+
                 // Verification at high depth
                 if depth >= 12 {
                     let v = negamax(board, info, beta - 1, beta, depth - r, ply + 1, false);
                     if v >= beta {
-                        return null_score;
+                        return dampened;
                     }
                 } else {
-                    return null_score;
+                    return dampened;
                 }
             }
         }

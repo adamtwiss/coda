@@ -181,10 +181,15 @@ impl TT {
         let mut replace_score = i32::MAX;
 
         for (i, slot) in bucket.slots.iter().enumerate() {
-            // Exact key match: always replace (simple strategy)
+            // Exact key match
             if slot.data != 0 && (slot.key_xor ^ slot.data) == hash {
-                replace_idx = i;
-                break;
+                // Replace if: depth is close enough OR generation differs
+                if depth > slot.depth() - 3 || gen != slot.generation() {
+                    replace_idx = i;
+                    break;
+                }
+                // Same generation, too shallow — don't overwrite deep entry
+                return;
             }
 
             // Empty slot
