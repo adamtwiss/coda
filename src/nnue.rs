@@ -126,6 +126,32 @@ unsafe fn simd_acc_add(acc: &mut [i16], row: &[i16], h: usize) {
     }
 }
 
+/// Fused copy + add: dst[i] = src[i] + row[i]
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_acc_copy_add(dst: &mut [i16], src: &[i16], row: &[i16], h: usize) {
+    let mut i = 0;
+    while i < h {
+        let a = _mm256_loadu_si256(src.as_ptr().add(i) as *const __m256i);
+        let b = _mm256_loadu_si256(row.as_ptr().add(i) as *const __m256i);
+        _mm256_storeu_si256(dst.as_mut_ptr().add(i) as *mut __m256i, _mm256_add_epi16(a, b));
+        i += 16;
+    }
+}
+
+/// Fused copy + sub: dst[i] = src[i] - row[i]
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_acc_copy_sub(dst: &mut [i16], src: &[i16], row: &[i16], h: usize) {
+    let mut i = 0;
+    while i < h {
+        let a = _mm256_loadu_si256(src.as_ptr().add(i) as *const __m256i);
+        let b = _mm256_loadu_si256(row.as_ptr().add(i) as *const __m256i);
+        _mm256_storeu_si256(dst.as_mut_ptr().add(i) as *mut __m256i, _mm256_sub_epi16(a, b));
+        i += 16;
+    }
+}
+
 /// Subtract a weight row from an accumulator vector (both i16, length h).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
@@ -499,7 +525,7 @@ impl NNUENet {
 
     /// Get input weight row for a feature index.
     #[inline]
-    fn input_weight_row(&self, idx: usize) -> &[i16] {
+    pub fn input_weight_row(&self, idx: usize) -> &[i16] {
         let off = idx * self.hidden_size;
         &self.input_weights[off..off + self.hidden_size]
     }
@@ -726,20 +752,52 @@ impl NNUEAccumulator {
             return;
         }
 
-        // Incremental: copy parent + apply deltas
+        // Incremental: fuse first delta with parent copy, then apply remaining in-place.
+        // This eliminates the separate copy_from_slice (saves ~100ns for h=1024).
         let h = self.hidden_size;
         let (left, right) = self.stack.split_at_mut(self.top);
         let parent = &left[self.top - 1];
         let current = &mut right[0];
 
-        current.white[..h].copy_from_slice(&parent.white[..h]);
-        current.black[..h].copy_from_slice(&parent.black[..h]);
-
         let w_king_sq = board.king_sq(WHITE);
         let b_king_sq = board.king_sq(BLACK);
 
         let n = dirty.n_changes as usize;
-        for i in 0..n {
+
+        // First change: fused copy+delta (reads parent, writes current)
+        {
+            let (add, color, pt, sq) = dirty.changes[0];
+            let w_idx = halfka_index(WHITE, w_king_sq, color, pt, sq);
+            let w_row = net.input_weight_row(w_idx);
+            let b_idx = halfka_index(BLACK, b_king_sq, color, pt, sq);
+            let b_row = net.input_weight_row(b_idx);
+
+            #[cfg(target_arch = "x86_64")]
+            if net.has_avx2 && h % 16 == 0 {
+                unsafe {
+                    if add {
+                        simd_acc_copy_add(&mut current.white, &parent.white, w_row, h);
+                        simd_acc_copy_add(&mut current.black, &parent.black, b_row, h);
+                    } else {
+                        simd_acc_copy_sub(&mut current.white, &parent.white, w_row, h);
+                        simd_acc_copy_sub(&mut current.black, &parent.black, b_row, h);
+                    }
+                }
+            } else if add {
+                for j in 0..h {
+                    current.white[j] = parent.white[j] + w_row[j];
+                    current.black[j] = parent.black[j] + b_row[j];
+                }
+            } else {
+                for j in 0..h {
+                    current.white[j] = parent.white[j] - w_row[j];
+                    current.black[j] = parent.black[j] - b_row[j];
+                }
+            }
+        }
+
+        // Remaining changes: in-place on current
+        for i in 1..n {
             let (add, color, pt, sq) = dirty.changes[i];
             let w_idx = halfka_index(WHITE, w_king_sq, color, pt, sq);
             let w_row = net.input_weight_row(w_idx);
@@ -856,6 +914,11 @@ impl NNUEAccumulator {
             }
         }
     }
+}
+
+/// Public wrapper for profiling.
+pub fn acc_add_pub(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
+    acc_add(net, acc, row, h);
 }
 
 /// Add a weight row to an accumulator (SIMD-aware).
