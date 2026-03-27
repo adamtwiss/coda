@@ -924,6 +924,22 @@ fn negamax(
             }
         }
 
+        // Pre-compute SEE results before make_move (SEE needs pre-make board state)
+        // Only compute when the post-make pruning block will actually use them
+        let do_see = !is_root && !is_pv && !is_special && !in_check
+            && best_score > -TB_WIN && depth <= 8;
+        let see_capture_ok = if do_see && is_capture && depth <= 6 {
+            see_ge(board, mv, -(depth as i32) * 100)
+        } else { true };
+        let see_quiet_ok = if do_see && !is_capture {
+            let see_quiet_threshold = -20 * depth as i32 * depth as i32
+                - if unstable { 100 } else { 0 };
+            see_ge(board, mv, see_quiet_threshold)
+        } else { true };
+        let see_bad_noisy = if do_see && is_capture && !is_promo && depth <= 4 {
+            !see_ge(board, mv, 0)
+        } else { false };
+
         // Record previous move for continuation history
         if safe_ply < MAX_PLY {
             info.prev_moves[safe_ply] = mv;
@@ -955,7 +971,7 @@ fn negamax(
             // Bad noisy: prune losing captures when eval is far below alpha
             if is_capture && !is_promo && !gives_check && depth <= 4
                 && static_eval > -INFINITY && static_eval + depth as i32 * 75 <= alpha
-                && !see_ge(board, mv, 0)
+                && see_bad_noisy
             {
                 board.unmake_move();
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
@@ -987,24 +1003,19 @@ fn negamax(
                 }
             }
 
-            // SEE pruning (exempt checks)
+            // SEE pruning (exempt checks) — uses pre-computed SEE results
             if !gives_check {
-                if is_capture && depth <= 6 {
-                    if !see_ge(board, mv, -(depth as i32) * 100) {
-                        board.unmake_move();
-                        if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-                        info.stats.see_prunes += 1;
-                        continue;
-                    }
-                } else if !is_capture && depth <= 8 {
-                    let see_quiet_threshold = -20 * depth as i32 * depth as i32
-                        - if unstable { 100 } else { 0 }; // looser in volatile positions
-                    if !see_ge(board, mv, see_quiet_threshold) {
-                        board.unmake_move();
-                        if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-                        info.stats.see_prunes += 1;
-                        continue;
-                    }
+                if is_capture && depth <= 6 && !see_capture_ok {
+                    board.unmake_move();
+                    if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                    info.stats.see_prunes += 1;
+                    continue;
+                }
+                if !is_capture && depth <= 8 && !see_quiet_ok {
+                    board.unmake_move();
+                    if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                    info.stats.see_prunes += 1;
+                    continue;
                 }
             }
         }
