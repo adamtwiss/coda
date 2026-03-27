@@ -768,6 +768,18 @@ fn negamax(
         }
     }
 
+    // Hindsight reduction: when both sides think the position is quiet
+    // (parent eval + current eval both positive, sum > 200), reduce depth by 1.
+    if !in_check && ply >= 1 && depth >= 3 && ply_u > 0
+        && info.static_evals[ply_u - 1] > -INFINITY + 100
+        && static_eval > -INFINITY
+    {
+        let eval_sum = info.static_evals[ply_u - 1] + static_eval;
+        if eval_sum > 200 {
+            depth -= 1;
+        }
+    }
+
     // Reverse Futility Pruning (RFP)
     // Reverse Futility Pruning
     if !is_pv && !in_check && depth <= 7 && ply > 0 {
