@@ -699,7 +699,8 @@ fn negamax(
             // Late Move Pruning (LMP) — matches GoChess: base + 50% if improving, 2/3 if failing
             let mut lmp_threshold = 3 + depth as usize * depth as usize;
             if improving && depth >= 3 { lmp_threshold += lmp_threshold / 2; }
-            if failing { lmp_threshold = lmp_threshold * 2 / 3; }
+            // failing LMP disabled: over-prunes at current strength
+            // if failing { lmp_threshold = lmp_threshold * 2 / 3; }
             if !is_capture && !is_promo && moves_tried > lmp_threshold {
                 continue;
             }
@@ -769,10 +770,7 @@ fn negamax(
         let mut score;
         let mut new_depth = depth - 1 + extension;
 
-        // Alpha-reduce: after alpha has been raised, reduce subsequent moves by 1 ply
-        if alpha_raised_count > 0 {
-            new_depth -= 1;
-        }
+        // Alpha-reduce disabled: over-prunes with current move ordering strength.
         if new_depth < 0 { new_depth = 0; }
 
         // LMR
@@ -802,7 +800,8 @@ fn negamax(
             if improving { r -= 1; }
 
             // Reduce more when position is deteriorating
-            if failing { r += 1; }
+            // failing LMR disabled: over-prunes at current strength
+            // if failing { r += 1; }
 
             r = r.max(1).min(new_depth);
 
