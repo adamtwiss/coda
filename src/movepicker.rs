@@ -101,7 +101,8 @@ pub struct MovePicker {
     moves: MoveList,
     scores: [i32; 256],
     idx: usize,
-    bad_captures: Vec<Move>,
+    bad_captures: [Move; 32],
+    bad_capture_len: usize,
     bad_capture_idx: usize,
     pinned: Bitboard,
     checkers: Bitboard,
@@ -142,7 +143,8 @@ impl MovePicker {
             moves: MoveList::new(),
             scores: [0; 256],
             idx: 0,
-            bad_captures: Vec::new(),
+            bad_captures: [NO_MOVE; 32],
+            bad_capture_len: 0,
             bad_capture_idx: 0,
             pinned,
             checkers,
@@ -178,16 +180,21 @@ impl MovePicker {
 
                         // Is it a capture?
                         let to = move_to(mv);
+                        let flags = move_flags(mv);
                         let is_cap = board.piece_type_at(to) != NO_PIECE_TYPE
-                            || move_flags(mv) == FLAG_EN_PASSANT;
+                            || flags == FLAG_EN_PASSANT;
+                        let is_promo = is_promotion(mv);
 
-                        if !is_cap { continue; }
+                        if !is_cap && !is_promo { continue; }
 
                         if !board.is_legal(mv, self.pinned, self.checkers) { continue; }
 
                         // SEE check for good captures
                         if !see_ge(board, mv, 0) {
-                            self.bad_captures.push(mv);
+                            if self.bad_capture_len < 32 {
+                                self.bad_captures[self.bad_capture_len] = mv;
+                                self.bad_capture_len += 1;
+                            }
                             continue;
                         }
 
@@ -266,7 +273,7 @@ impl MovePicker {
                     self.bad_capture_idx = 0;
                 }
                 Stage::BadCaptures => {
-                    if self.bad_capture_idx < self.bad_captures.len() {
+                    if self.bad_capture_idx < self.bad_capture_len {
                         let mv = self.bad_captures[self.bad_capture_idx];
                         self.bad_capture_idx += 1;
                         return mv;
@@ -422,8 +429,8 @@ fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
         if pt != PAWN { return false; }
         if to != board.ep_square { return false; }
         // Verify capture square has enemy pawn
-        let cap_sq = if us == WHITE { to - 8 } else { to + 8 };
-        if (1u64 << cap_sq) & board.pieces[PAWN as usize] & board.colors[them as usize] == 0 {
+        let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
+        if cap_sq >= 64 || (1u64 << cap_sq) & board.pieces[PAWN as usize] & board.colors[them as usize] == 0 {
             return false;
         }
         return true;

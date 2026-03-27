@@ -537,7 +537,7 @@ impl Board {
         // Update en passant
         self.ep_square = NO_SQUARE;
         if flags == FLAG_DOUBLE_PUSH {
-            self.ep_square = if us == WHITE { from + 8 } else { from - 8 };
+            self.ep_square = if us == WHITE { from.wrapping_add(8) } else { from.wrapping_sub(8) };
             self.hash ^= ep_key(file_of(self.ep_square));
         }
 
