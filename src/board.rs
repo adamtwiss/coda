@@ -439,10 +439,13 @@ impl Board {
             return false;
         }
 
-        // Validate EP: ensure there's actually an enemy pawn to capture
+        // Validate EP: ensure there's an enemy pawn to capture AND destination is empty
         if flags == FLAG_EN_PASSANT {
             let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
-            if cap_sq > 63 || (1u64 << cap_sq) & self.pieces[PAWN as usize] & self.colors[them as usize] == 0 {
+            if cap_sq > 63
+                || (1u64 << cap_sq) & self.pieces[PAWN as usize] & self.colors[them as usize] == 0
+                || self.occupied() & (1u64 << to) != 0  // destination must be empty for EP
+            {
                 return false;
             }
         }
@@ -542,6 +545,7 @@ impl Board {
     }
 
     /// Unmake the last move.
+    /// Unmake the last move.
     pub fn unmake_move(&mut self) {
         let undo = self.undo_stack.pop().expect("unmake_move: empty undo stack");
         let mv = undo.mv;
@@ -565,17 +569,8 @@ impl Board {
         let pt = self.piece_type_at(to);
         // If the piece is missing at `to`, the board was corrupted by a child search.
         // Restore from the saved hash (which was correct at make time).
-        if pt == NO_PIECE_TYPE {
-            // Cannot safely unmake — restore hash and return.
-            // The board state is corrupt but the search will abort soon.
-            self.hash = undo.hash;
-            self.castling = undo.castling;
-            self.ep_square = undo.ep_square;
-            self.halfmove = undo.halfmove;
-            self.side_to_move = us;
-            if us == BLACK { self.fullmove -= 1; }
-            return;
-        }
+        debug_assert!(pt != NO_PIECE_TYPE,
+            "unmake: no piece at to={} for move {}", to, crate::types::move_to_uci(mv));
         let from_to = (1u64 << from) | (1u64 << to);
         self.pieces[pt as usize] ^= from_to;
         self.colors[us as usize] ^= from_to;

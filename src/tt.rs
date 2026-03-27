@@ -9,11 +9,12 @@ pub const TT_FLAG_UPPER: u8 = 1; // All-node (fail-low)
 pub const TT_FLAG_LOWER: u8 = 2; // Cut-node (fail-high)
 pub const TT_FLAG_EXACT: u8 = 3; // PV-node
 
-const BUCKET_SIZE: usize = 5;
-// 5 slots * 12 bytes = 60 bytes + 4 padding = 64 bytes (cache line)
+const BUCKET_SIZE: usize = 4;
+// 4 slots × 16 bytes = 64 bytes (cache line aligned)
 
-/// A single TT slot: 12 bytes.
-/// key32: upper 32 bits of Zobrist for verification (reduces false match to ~1 in 4 billion).
+/// A single TT slot: 16 bytes.
+/// Stores `key_xor = hash ^ data` for full 64-bit verification (Stockfish approach).
+/// Any bit flip in either key or data causes the verification to fail.
 /// Packed data (64 bits):
 ///   bits  0-15:  best move (16 bits)
 ///   bits 16-17:  flag (2 bits)
@@ -24,12 +25,12 @@ const BUCKET_SIZE: usize = 5;
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct TTSlot {
-    key32: u32,
+    key_xor: u64,  // hash ^ data — full 64-bit verification
     data: u64,
 }
 
 impl TTSlot {
-    const EMPTY: Self = TTSlot { key32: 0, data: 0 };
+    const EMPTY: Self = TTSlot { key_xor: 0, data: 0 };
 
     #[inline(always)]
     fn best_move(&self) -> Move {
@@ -77,8 +78,7 @@ impl TTSlot {
 /// A bucket of 5 slots = 64 bytes (cache-line aligned).
 #[repr(C, align(64))]
 struct TTBucket {
-    slots: [TTSlot; BUCKET_SIZE],
-    _pad: u32, // 60 bytes of slots + 4 padding = 64
+    slots: [TTSlot; BUCKET_SIZE], // 4 × 16 = 64 bytes
 }
 
 /// The transposition table.
@@ -120,7 +120,6 @@ impl TT {
         for _ in 0..num_buckets {
             buckets.push(TTBucket {
                 slots: [TTSlot::EMPTY; BUCKET_SIZE],
-                _pad: 0,
             });
         }
         TT {
@@ -143,26 +142,20 @@ impl TT {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// Get the bucket index for a hash (uses lower bits).
+    /// Get the bucket index for a hash.
     #[inline(always)]
     fn bucket_index(&self, hash: u64) -> usize {
         (hash as usize) % self.num_buckets
     }
 
-    /// Get the key32 for verification (uses upper 32 bits — no overlap with index).
-    #[inline(always)]
-    fn key32(hash: u64) -> u32 {
-        (hash >> 32) as u32
-    }
-
     /// Probe the TT for a position.
     pub fn probe(&self, hash: u64) -> TTEntry {
         let idx = self.bucket_index(hash);
-        let key = Self::key32(hash);
         let bucket = &self.buckets[idx];
 
         for slot in &bucket.slots {
-            if slot.key32 == key && slot.data != 0 {
+            // Full 64-bit verification: key_xor ^ data == hash
+            if slot.data != 0 && (slot.key_xor ^ slot.data) == hash {
                 return TTEntry {
                     best_move: slot.best_move(),
                     flag: slot.flag(),
@@ -180,7 +173,6 @@ impl TT {
     /// Store an entry in the TT.
     pub fn store(&mut self, hash: u64, best_move: Move, flag: u8, static_eval: i32, score: i32, depth: i32) {
         let idx = self.bucket_index(hash);
-        let key = Self::key32(hash);
         let bucket = &mut self.buckets[idx];
         let gen = self.generation;
 
@@ -190,7 +182,7 @@ impl TT {
 
         for (i, slot) in bucket.slots.iter().enumerate() {
             // Exact key match: always replace if depth is close enough
-            if slot.key32 == key {
+            if slot.data != 0 && (slot.key_xor ^ slot.data) == hash {
                 // d > slotDepth - 3: prevents shallow re-searches overwriting deep entries
                 if depth > slot.depth() - 3 || flag == TT_FLAG_EXACT {
                     replace_idx = i;
@@ -216,9 +208,10 @@ impl TT {
             }
         }
 
+        let data = TTSlot::pack(best_move, flag, static_eval, score, depth, gen);
         bucket.slots[replace_idx] = TTSlot {
-            key32: key,
-            data: TTSlot::pack(best_move, flag, static_eval, score, depth, gen),
+            key_xor: hash ^ data,
+            data,
         };
     }
 

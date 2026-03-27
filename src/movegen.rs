@@ -228,8 +228,8 @@ fn generate_pawn_moves(
         }
     }
 
-    // En passant
-    if board.ep_square != NO_SQUARE {
+    // En passant (only if EP square is empty — a piece may occupy it)
+    if board.ep_square != NO_SQUARE && board.occupied() & (1u64 << board.ep_square) == 0 {
         let mut attackers = pawn_attacks(flip_color(us), board.ep_square as u32) & pawns;
         while attackers != 0 {
             let from = pop_lsb(&mut attackers) as u8;

@@ -472,7 +472,7 @@ fn negamax(
                 score = -negamax(board, info, -probcut_beta, -probcut_beta + 1, depth - 4, ply + 1, !cut_node);
             }
             board.unmake_move();
-        if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+            if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
 
             if score >= probcut_beta {
                 return score;

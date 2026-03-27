@@ -573,9 +573,13 @@ impl NNUEAccumulator {
     ) {
         let h = self.hidden_size;
 
-        // Copy parent accumulator
+        // Copy parent accumulator — parent must be computed
         let parent_idx = self.top - 1;
-        debug_assert!(self.stack[parent_idx].computed);
+        if !self.stack[parent_idx].computed {
+            // Parent not computed (e.g., after null move) — fall back to full recompute
+            self.recompute(net, board);
+            return;
+        }
 
         // Split borrow: copy parent to current
         let (left, right) = self.stack.split_at_mut(self.top);
