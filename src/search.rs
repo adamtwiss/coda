@@ -451,12 +451,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 }
 
                 if result <= alpha {
-                    // Fail low: contract beta more aggressively (GoChess: (3a+5b)/8)
-                    beta = (3 * alpha + 5 * beta) / 8;
+                    // Fail low: contract beta, widen alpha (GoChess formula)
+                    beta = (alpha + beta) / 2;
                     alpha = (result - delta).max(-INFINITY);
                 } else if result >= beta {
-                    // Fail high: contract alpha (GoChess: (5a+3b)/8)
-                    alpha = (5 * alpha + 3 * beta) / 8;
+                    // Fail high: narrow alpha to beta, widen beta
+                    alpha = beta;
                     beta = (result + delta).min(INFINITY);
                 } else {
                     asp_result = result;
@@ -903,7 +903,7 @@ fn negamax(
         if !is_root && !is_pv && !is_special
             && best_score > -TB_WIN && !in_check
         {
-            if !is_capture && !is_promo && depth <= 3 && !improving {
+            if !is_capture && !is_promo && depth <= 3 && !improving && !unstable {
                 let ph_idx2 = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
                 let hist = info.history.quiet_score(board, mv, prev_move, Some(&info.pawn_hist[ph_idx2]));
                 if hist < -1500 * depth as i32 {
@@ -1398,6 +1398,21 @@ fn quiescence(
     if in_check && best_score == -INFINITY {
         return -MATE_SCORE + ply;
     }
+
+    // Store in TT from QS
+    let qs_flag = if best_score >= beta {
+        TT_FLAG_LOWER
+    } else {
+        TT_FLAG_UPPER
+    };
+    info.tt.store(
+        board.hash,
+        NO_MOVE, // no best move tracking in QS
+        qs_flag,
+        static_eval,
+        score_to_tt(best_score, ply),
+        0, // depth 0 for QS entries
+    );
 
     // QS capture fail-high blending (non-PV only)
     if best_score >= beta && beta - alpha == 1 && !is_mate_score(best_score) {
