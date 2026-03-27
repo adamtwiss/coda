@@ -682,21 +682,52 @@ fn negamax(
 
     // TT cutoff (non-PV only)
     if !is_pv && tt_entry.hit && tt_entry.depth >= depth {
+        let mut tt_cutoff = false;
+        let mut tt_return_score = tt_score;
         match tt_entry.flag {
-            TT_FLAG_EXACT => { info.stats.tt_cutoffs += 1; return tt_score; }
+            TT_FLAG_EXACT => { tt_cutoff = true; }
             TT_FLAG_LOWER => {
-                if tt_score >= beta { info.stats.tt_cutoffs += 1;
+                if tt_score >= beta {
+                    tt_cutoff = true;
                     // TT score dampening: blend toward beta to prevent inflation
                     if !is_mate_score(tt_score) {
-                        return (3 * tt_score + beta) / 4;
+                        tt_return_score = (3 * tt_score + beta) / 4;
                     }
-                    return tt_score;
                 }
             }
             TT_FLAG_UPPER => {
-                if tt_score <= alpha { info.stats.tt_cutoffs += 1; return tt_score; }
+                if tt_score <= alpha { tt_cutoff = true; }
             }
             _ => {}
+        }
+        if tt_cutoff {
+            info.stats.tt_cutoffs += 1;
+            // History bonus for TT cutoff move (reinforces move ordering)
+            if tt_move != NO_MOVE {
+                let bonus = (depth as i32 * depth as i32).min(1200);
+                let tt_from = move_from(tt_move);
+                let tt_to = move_to(tt_move);
+                let tt_target = board.piece_type_at(tt_to);
+                let tt_is_cap = tt_target != NO_PIECE_TYPE || move_flags(tt_move) == FLAG_EN_PASSANT;
+                if !tt_is_cap {
+                    // Quiet TT cutoff: update main history
+                    History::update_history(
+                        &mut info.history.main[board.side_to_move as usize][tt_from as usize][tt_to as usize],
+                        bonus,
+                    );
+                } else {
+                    // Capture TT cutoff: update capture history
+                    let piece = board.piece_at(tt_from);
+                    let victim = if move_flags(tt_move) == FLAG_EN_PASSANT { PAWN } else { tt_target };
+                    if piece != NO_PIECE && (piece as usize) < 12 && (victim as usize) < 6 {
+                        History::update_history(
+                            &mut info.history.capture[piece as usize][tt_to as usize][victim as usize],
+                            bonus,
+                        );
+                    }
+                }
+            }
+            return tt_return_score;
         }
     }
 
@@ -725,7 +756,7 @@ fn negamax(
         raw_eval = -INFINITY;
         static_eval = -INFINITY;
     } else {
-        raw_eval = if tt_entry.hit {
+        raw_eval = if tt_entry.hit && tt_entry.static_eval > -INFINITY + 100 {
             tt_entry.static_eval
         } else {
             info.eval(board)
@@ -800,7 +831,8 @@ fn negamax(
             if !board.undo_stack.is_empty() && board.undo_stack.last().unwrap().captured != NO_PIECE_TYPE {
                 r -= 1;
             }
-            let r = r.max(1);
+            // Clamp: ensure R >= 1 and search depth >= 1 (don't go to QS)
+            let r = r.max(1).min(depth - 2);
 
             info.stats.nmp_attempts += 1;
             board.make_null_move();
@@ -1345,7 +1377,7 @@ fn quiescence(
     let in_check = board.in_check();
     let static_eval = if in_check {
         -INFINITY
-    } else if tt_entry.hit {
+    } else if tt_entry.hit && tt_entry.static_eval > -INFINITY + 100 {
         tt_entry.static_eval
     } else {
         info.eval(board)
@@ -1369,7 +1401,9 @@ fn quiescence(
         }
     }
 
+    let original_alpha = alpha;
     let mut best_score = if in_check { -INFINITY } else { static_eval };
+    let mut best_move = NO_MOVE;
     let mut picker = QMovePicker::new(board, in_check);
 
     loop {
@@ -1408,6 +1442,7 @@ fn quiescence(
 
         if score > best_score {
             best_score = score;
+            best_move = mv;
             if score > alpha {
                 alpha = score;
                 if score >= beta {
@@ -1422,15 +1457,17 @@ fn quiescence(
         return -MATE_SCORE + ply;
     }
 
-    // Store in TT from QS
+    // Store in TT from QS (with best move and exact flag)
     let qs_flag = if best_score >= beta {
         TT_FLAG_LOWER
+    } else if best_score > original_alpha {
+        TT_FLAG_EXACT
     } else {
         TT_FLAG_UPPER
     };
     info.tt.store(
         board.hash,
-        NO_MOVE, // no best move tracking in QS
+        best_move,
         qs_flag,
         static_eval,
         score_to_tt(best_score, ply),
