@@ -16,6 +16,7 @@ use crate::types::*;
 
 const MAX_PLY: usize = 128;
 const INFINITY: i32 = 32000;
+const CONTEMPT: i32 = -10; // prefer playing on over drawing
 
 // Correction history constants
 const CORR_HIST_SIZE: usize = 16384;
@@ -486,19 +487,19 @@ fn negamax(
     // Draw detection (not at root)
     if !is_root {
         if board.halfmove >= 100 {
-            return 0;
+            return CONTEMPT;
         }
         // Insufficient material: KvK, KNvK, KBvK
         let occ = board.occupied();
         let pc = popcount(occ);
         if pc <= 3 {
-            if pc == 2 { return 0; } // KvK
+            if pc == 2 { return CONTEMPT; } // KvK
             // KN vs K or KB vs K
             if board.pieces[PAWN as usize] == 0
                 && board.pieces[ROOK as usize] == 0
                 && board.pieces[QUEEN as usize] == 0
             {
-                return 0;
+                return CONTEMPT;
             }
         }
         // Repetition detection: compare current hash against previous positions.
@@ -519,7 +520,7 @@ fn negamax(
         let check_back = (board.halfmove as usize).min(stack_len);
         for i in 0..check_back {
             if board.undo_stack[stack_len - 1 - i].hash == hash {
-                return 0;
+                return CONTEMPT;
             }
         }
     }
@@ -626,7 +627,12 @@ fn negamax(
         let us = board.side_to_move;
         let non_pawn = board.colors[us as usize] & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
         if non_pawn != 0 {
-            let r = 3 + depth / 3 + ((static_eval - beta) / 200).min(3);
+            let mut r = 3 + depth / 3 + ((static_eval - beta) / 200).min(3);
+            // Reduce R when last move was a capture (position may be more volatile)
+            if !board.undo_stack.is_empty() && board.undo_stack.last().unwrap().captured != NO_PIECE_TYPE {
+                r -= 1;
+            }
+            let r = r.max(1);
 
             info.stats.nmp_attempts += 1;
             board.make_null_move();
@@ -804,8 +810,8 @@ fn negamax(
         // Alpha-reduce disabled: over-prunes with current move ordering strength.
         if new_depth < 0 { new_depth = 0; }
 
-        // LMR
-        if depth >= 3 && moves_tried > 1 + if is_pv { 1 } else { 0 } {
+        // LMR (exempt promotions)
+        if depth >= 3 && !is_promo && moves_tried > 1 + if is_pv { 1 } else { 0 } {
             let mut r = lmr_reduction(depth, moves_tried as i32);
 
             // Adjustments
@@ -919,7 +925,7 @@ fn negamax(
                             bonus,
                         );
 
-                        // Penalize other tried quiets
+                        // Penalize other tried quiets (main + continuation history)
                         for &q in &quiets_tried[..n_quiets_tried] {
                             let qf = move_from(q);
                             let qt = move_to(q);
@@ -927,6 +933,20 @@ fn negamax(
                                 &mut info.history.main[color as usize][qf as usize][qt as usize],
                                 -bonus,
                             );
+                            // Continuation history penalty
+                            if prev_move != NO_MOVE {
+                                let prev_to = move_to(prev_move);
+                                let prev_piece = board.piece_at(prev_to);
+                                let q_piece = board.piece_at(qf);
+                                if prev_piece != NO_PIECE && (prev_piece as usize) < 12
+                                    && q_piece != NO_PIECE && (q_piece as usize) < 12
+                                {
+                                    History::update_history(
+                                        &mut info.history.cont_hist[prev_piece as usize][prev_to as usize][q_piece as usize][qt as usize],
+                                        -bonus,
+                                    );
+                                }
+                            }
                         }
 
                         // Update continuation history
