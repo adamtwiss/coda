@@ -6,7 +6,8 @@ use std::time::Instant;
 
 use crate::bitboard::*;
 use crate::board::Board;
-use crate::eval::{evaluate, see_value};
+use crate::eval::{evaluate, evaluate_nnue, see_value};
+use crate::nnue::{NNUENet, NNUEAccumulator};
 use crate::movegen::generate_legal_moves;
 use crate::movepicker::*;
 use crate::see::see_ge;
@@ -56,7 +57,9 @@ pub struct SearchInfo {
     pub max_depth: i32,
     pub max_nodes: u64,
     pub sel_depth: i32,
-    prev_moves: [Move; MAX_PLY], // previous move at each ply
+    prev_moves: [Move; MAX_PLY],
+    pub nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
+    pub nnue_acc: Option<crate::nnue::NNUEAccumulator>,
 }
 
 impl SearchInfo {
@@ -72,7 +75,18 @@ impl SearchInfo {
             max_nodes: 0,
             sel_depth: 0,
             prev_moves: [NO_MOVE; MAX_PLY],
+            nnue_net: None,
+            nnue_acc: None,
         }
+    }
+
+    /// Load an NNUE network.
+    pub fn load_nnue(&mut self, path: &str) -> Result<(), String> {
+        let net = crate::nnue::NNUENet::load(path)?;
+        let acc = crate::nnue::NNUEAccumulator::new(net.hidden_size);
+        self.nnue_net = Some(std::sync::Arc::new(net));
+        self.nnue_acc = Some(acc);
+        Ok(())
     }
 
     fn should_stop(&self) -> bool {
@@ -92,6 +106,68 @@ impl SearchInfo {
         }
         false
     }
+
+    /// Evaluate using NNUE if loaded, otherwise classical PeSTO.
+    fn eval(&mut self, board: &Board) -> i32 {
+        if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
+            evaluate_nnue(board, net, acc)
+        } else {
+            evaluate(board)
+        }
+    }
+}
+
+/// Apply incremental NNUE update after a move.
+/// `board` is in POST-move state, `us`/`them` are the sides BEFORE the move.
+fn nnue_update_after_move(
+    net: &NNUENet,
+    acc: &mut NNUEAccumulator,
+    board: &Board,
+    mv: Move,
+    us: u8,
+    them: u8,
+    moved_pt: u8,
+    captured_pt: u8,
+) {
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let flags = move_flags(mv);
+
+    // King moves: full recompute (bucket may change)
+    if moved_pt == KING {
+        acc.recompute(net, board);
+        return;
+    }
+
+    let mut changes = Vec::with_capacity(5);
+
+    // Remove moved piece from origin
+    changes.push((false, us, moved_pt, from));
+
+    // Remove captured piece
+    if flags == FLAG_EN_PASSANT {
+        let cap_sq = if us == WHITE { to.wrapping_add(8) } else { to.wrapping_sub(8) };
+        changes.push((false, them, PAWN, cap_sq));
+    } else if captured_pt != NO_PIECE_TYPE {
+        changes.push((false, them, captured_pt, to));
+    }
+
+    // Add piece at destination (possibly promoted)
+    let placed_pt = if is_promotion(mv) { promotion_piece_type(mv) } else { moved_pt };
+    changes.push((true, us, placed_pt, to));
+
+    // Castling: also move the rook
+    if flags == FLAG_CASTLE {
+        let (rook_from, rook_to) = if to > from {
+            if us == WHITE { (7u8, 5u8) } else { (63u8, 61u8) }
+        } else {
+            if us == WHITE { (0u8, 3u8) } else { (56u8, 59u8) }
+        };
+        changes.push((false, us, ROOK, rook_from));
+        changes.push((true, us, ROOK, rook_to));
+    }
+
+    acc.update_incremental(net, board, &changes);
 }
 
 /// LMR reduction table.
@@ -120,6 +196,14 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.stop.store(false, Ordering::Relaxed);
     info.nodes = 0;
     info.sel_depth = 0;
+
+    // Reset and initialize NNUE accumulator for root position
+    if let Some(acc) = &mut info.nnue_acc {
+        acc.reset();
+    }
+    if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
+        acc.recompute(net, board);
+    }
 
     // Time management
     let (our_time, our_inc) = if board.side_to_move == WHITE {
@@ -255,7 +339,7 @@ fn negamax(
     let is_pv = beta - alpha > 1;
 
     if ply_u >= MAX_PLY - 1 {
-        return evaluate(board);
+        return info.eval(board);
     }
 
     if ply > info.sel_depth {
@@ -303,10 +387,10 @@ fn negamax(
     } else if tt_entry.hit && tt_entry.static_eval != 0 {
         tt_entry.static_eval
     } else {
-        evaluate(board)
+        info.eval(board)
     };
 
-    let improving = !in_check && ply >= 2 && static_eval > evaluate(board); // simplified
+    let improving = !in_check && ply >= 2; // simplified: assume improving until we have eval history
 
     // Razoring
     if !is_pv && !in_check && depth <= 3 {
@@ -336,7 +420,9 @@ fn negamax(
             let r = 3 + depth / 3 + ((static_eval - beta) / 200).min(3);
 
             board.make_null_move();
+            if let Some(acc) = &mut info.nnue_acc { acc.push(); } // null move: no feature changes, recompute on demand
             let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
+            if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
             board.unmake_null_move();
 
             if null_score >= beta {
@@ -365,12 +451,28 @@ fn negamax(
 
             if !see_ge(board, mv, probcut_beta - static_eval) { continue; }
 
-            if !board.make_move(mv) { continue; }
+            let pc_from = move_from(mv);
+            let pc_to = move_to(mv);
+            let pc_flags = move_flags(mv);
+            let pc_moved_pt = board.piece_type_at(pc_from);
+            let pc_captured_pt = if pc_flags == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(pc_to) };
+            let pc_us = board.side_to_move;
+            let pc_them = flip_color(pc_us);
+
+            if let Some(acc) = &mut info.nnue_acc { acc.push(); }
+            if !board.make_move(mv) {
+                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                continue;
+            }
+            if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
+                nnue_update_after_move(net, acc, board, mv, pc_us, pc_them, pc_moved_pt, pc_captured_pt);
+            }
             let mut score = -quiescence(board, info, -probcut_beta, -probcut_beta + 1, ply + 1);
             if score >= probcut_beta {
                 score = -negamax(board, info, -probcut_beta, -probcut_beta + 1, depth - 4, ply + 1, !cut_node);
             }
             board.unmake_move();
+        if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
 
             if score >= probcut_beta {
                 return score;
@@ -445,9 +547,25 @@ fn negamax(
             info.prev_moves[safe_ply] = mv;
         }
 
-        if !board.make_move(mv) { continue; }
+        // Save move info BEFORE make_move for NNUE incremental update
+        let moved_pt = board.piece_type_at(from);
+        let captured_pt = if flags == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(to) };
+        let us = board.side_to_move;
+        let them = flip_color(us);
 
-        // Verify board integrity after make (catches TT hash collisions)
+        // Push NNUE accumulator
+        if let Some(acc) = &mut info.nnue_acc { acc.push(); }
+
+        if !board.make_move(mv) {
+            if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+            continue;
+        }
+
+        // Apply incremental NNUE update
+        if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
+            nnue_update_after_move(net, acc, board, mv, us, them, moved_pt, captured_pt);
+        }
+
         let mut score;
         let new_depth = depth - 1;
 
@@ -491,6 +609,7 @@ fn negamax(
         }
 
         board.unmake_move();
+        if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
 
         if info.should_stop() {
             return best_score.max(0);
@@ -629,7 +748,7 @@ fn quiescence(
     info.nodes += 1;
 
     if ply as usize >= MAX_PLY - 1 {
-        return evaluate(board);
+        return info.eval(board);
     }
 
     if ply > info.sel_depth {
@@ -637,7 +756,7 @@ fn quiescence(
     }
 
     let in_check = board.in_check();
-    let static_eval = if in_check { -INFINITY } else { evaluate(board) };
+    let static_eval = if in_check { -INFINITY } else { info.eval(board) };
 
     if !in_check {
         if static_eval >= beta {
@@ -676,10 +795,26 @@ fn quiescence(
             }
         }
 
-        if !board.make_move(mv) { continue; }
-        if board.hash != board.compute_hash() { board.unmake_move(); continue; }
+        // Save move info for NNUE update
+        let qs_from = move_from(mv);
+        let qs_to = move_to(mv);
+        let qs_flags = move_flags(mv);
+        let qs_moved_pt = board.piece_type_at(qs_from);
+        let qs_captured_pt = if qs_flags == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(qs_to) };
+        let qs_us = board.side_to_move;
+        let qs_them = flip_color(qs_us);
+
+        if let Some(acc) = &mut info.nnue_acc { acc.push(); }
+        if !board.make_move(mv) {
+            if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+            continue;
+        }
+        if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
+            nnue_update_after_move(net, acc, board, mv, qs_us, qs_them, qs_moved_pt, qs_captured_pt);
+        }
         let score = -quiescence(board, info, -beta, -alpha, ply + 1);
         board.unmake_move();
+        if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
 
         if score > best_score {
             best_score = score;

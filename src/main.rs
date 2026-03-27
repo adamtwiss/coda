@@ -11,6 +11,7 @@ mod movepicker;
 mod search;
 mod uci;
 mod epd;
+pub mod nnue;
 
 use board::Board;
 use movegen::{perft, perft_divide};
@@ -26,6 +27,7 @@ pub fn init() {
         zobrist::init_zobrist();
         board::init_castle_masks();
         search::init_lmr();
+        nnue::init_nnue();
     });
 }
 
@@ -109,11 +111,15 @@ fn main() {
         };
         println!("\n{} nodes {} nps", nodes, nps);
     } else if args.len() > 1 && args[1] == "epd" {
-        // EPD test suite
+        // EPD test suite: epd <file> [time] [max] [-nnue <path>]
         let path = args.get(2).map(|s| s.as_str()).unwrap_or("testdata/wac.epd");
         let time: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(5000);
         let max: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
-        epd::run_epd(path, time, max);
+        // Find -nnue flag
+        let nnue_path = args.iter().position(|s| s == "-nnue")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| s.as_str());
+        epd::run_epd(path, time, max, nnue_path);
     } else if args.len() > 1 {
         println!("Coda Chess Engine");
         println!("Usage:");

@@ -26,6 +26,7 @@ pub fn uci_loop() {
                 println!("id name Coda");
                 println!("id author Adam Twiss");
                 println!("option name Hash type spin default 64 min 1 max 4096");
+                println!("option name NNUEFile type string default <empty>");
                 println!("uciok");
             }
             "isready" => {
@@ -46,6 +47,15 @@ pub fn uci_loop() {
             }
             "setoption" => {
                 parse_option(&tokens, &mut info);
+            }
+            "loadnnue" => {
+                // Non-standard: loadnnue <path>
+                if tokens.len() > 1 {
+                    match info.load_nnue(tokens[1]) {
+                        Ok(_) => println!("info string NNUE loaded"),
+                        Err(e) => println!("info string NNUE load failed: {}", e),
+                    }
+                }
             }
             "quit" => {
                 break;
@@ -157,16 +167,32 @@ fn parse_go(tokens: &[&str]) -> SearchLimits {
 }
 
 fn parse_option(tokens: &[&str], info: &mut SearchInfo) {
-    // setoption name Hash value 128
-    if tokens.len() >= 5 && tokens[1] == "name" && tokens[3] == "value" {
-        match tokens[2] {
-            "Hash" => {
-                if let Ok(mb) = tokens[4].parse::<usize>() {
-                    info.tt = crate::tt::TT::new(mb.max(1).min(4096));
-                }
+    // setoption name X value Y
+    // Find "name" and "value" positions
+    let mut name_idx = 0;
+    let mut value_idx = 0;
+    for i in 0..tokens.len() {
+        if tokens[i] == "name" { name_idx = i + 1; }
+        if tokens[i] == "value" { value_idx = i + 1; }
+    }
+    if name_idx == 0 || value_idx == 0 || value_idx >= tokens.len() { return; }
+
+    let name = tokens[name_idx];
+    let value = tokens[value_idx];
+
+    match name {
+        "Hash" => {
+            if let Ok(mb) = value.parse::<usize>() {
+                info.tt = crate::tt::TT::new(mb.max(1).min(4096));
             }
-            _ => {}
         }
+        "NNUEFile" => {
+            match info.load_nnue(value) {
+                Ok(_) => {}
+                Err(e) => eprintln!("info string Failed to load NNUE: {}", e),
+            }
+        }
+        _ => {}
     }
 }
 

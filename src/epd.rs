@@ -183,7 +183,7 @@ pub fn move_to_san(board: &Board, mv: Move) -> String {
 }
 
 /// Run an EPD test suite.
-pub fn run_epd(path: &str, time_per_pos: u64, max_positions: usize) {
+pub fn run_epd(path: &str, time_per_pos: u64, max_positions: usize, nnue_path: Option<&str>) {
     let positions = parse_epd(path);
     let total = if max_positions > 0 { max_positions.min(positions.len()) } else { positions.len() };
 
@@ -192,6 +192,11 @@ pub fn run_epd(path: &str, time_per_pos: u64, max_positions: usize) {
     println!();
 
     let mut info = SearchInfo::new(64);
+    if let Some(path) = nnue_path {
+        if let Err(e) = info.load_nnue(path) {
+            eprintln!("Warning: failed to load NNUE: {}", e);
+        }
+    }
     let mut passed = 0;
     let mut failed = 0;
     let suite_start = Instant::now();

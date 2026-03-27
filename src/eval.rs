@@ -176,6 +176,17 @@ fn flip_sq(sq: u32) -> u32 {
     sq ^ 56
 }
 
+/// Evaluate with NNUE if available, otherwise fall back to PeSTO.
+pub fn evaluate_nnue(
+    board: &crate::board::Board,
+    net: &crate::nnue::NNUENet,
+    acc: &mut crate::nnue::NNUEAccumulator,
+) -> i32 {
+    acc.materialize(net, board);
+    let pc = crate::nnue::piece_count(board);
+    net.forward(acc, board.side_to_move, pc)
+}
+
 /// Evaluate the position from the side to move's perspective.
 /// Returns score in centipawns.
 pub fn evaluate(board: &crate::board::Board) -> i32 {
