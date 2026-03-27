@@ -221,8 +221,8 @@ pub fn evaluate(board: &crate::board::Board) -> i32 {
 pub const fn see_value(pt: u8) -> i32 {
     match pt {
         0 => 100,   // PAWN
-        1 => 300,   // KNIGHT
-        2 => 300,   // BISHOP
+        1 => 320,   // KNIGHT (GoChess: 320)
+        2 => 330,   // BISHOP (GoChess: 330)
         3 => 500,   // ROOK
         4 => 900,   // QUEEN
         5 => 20000, // KING

@@ -301,18 +301,30 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     }
 }
 
-/// LMR reduction table.
+/// LMR reduction tables (quiet and capture).
 static mut LMR_TABLE: [[i32; 64]; 64] = [[0; 64]; 64];
+static mut LMR_TABLE_CAP: [[i32; 64]; 64] = [[0; 64]; 64];
 
 pub fn init_lmr() {
     for depth in 1..64 {
         for moves in 1..64 {
-            // Quiet: C=1.30, Capture: C=1.80 (we use quiet here, adjust at call site)
             unsafe {
+                // Quiet table: C=1.30
                 LMR_TABLE[depth][moves] = ((depth as f64).ln() * (moves as f64).ln() / 1.30) as i32;
+                // Capture table: C=1.80 (less reduction for captures)
+                if depth >= 3 && moves >= 3 {
+                    let r = ((depth as f64).ln() * (moves as f64).ln() / 1.80) as i32;
+                    LMR_TABLE_CAP[depth][moves] = r.min((depth - 2) as i32);
+                }
             }
         }
     }
+}
+
+fn lmr_cap_reduction(depth: i32, moves: i32) -> i32 {
+    let d = (depth as usize).min(63);
+    let m = (moves as usize).min(63);
+    unsafe { LMR_TABLE_CAP[d][m] }
 }
 
 fn lmr_reduction(depth: i32, moves: i32) -> i32 {
@@ -828,12 +840,18 @@ fn negamax(
 
         // LMR (exempt promotions)
         if depth >= 3 && !is_promo && moves_tried > 1 + if is_pv { 1 } else { 0 } {
-            let mut r = lmr_reduction(depth, moves_tried as i32);
+            let mut r = if is_capture {
+                // Capture LMR: separate table (C=1.80), non-PV only
+                if !is_pv { lmr_cap_reduction(depth, moves_tried as i32) } else { 0 }
+            } else {
+                lmr_reduction(depth, moves_tried as i32)
+            };
 
-            // Adjustments
-            if !is_pv { r += 1; }
-            if cut_node { r += 1; }
-            if is_capture { r -= 1; }
+            // Quiet-only adjustments
+            if !is_capture {
+                if !is_pv { r += 1; }
+                if cut_node { r += 1; }
+            }
 
             // Don't reduce killers
             let safe = safe_ply.min(127);
