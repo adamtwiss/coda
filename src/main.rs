@@ -136,15 +136,23 @@ fn main() {
         }
 
         _ => {
+            // Validate any dash-prefixed args are known flags
+            let known_flags = ["-nnue", "-book", "-h", "--help"];
+            for arg in &args[1..] {
+                if arg.starts_with('-') && !known_flags.contains(&arg.as_str()) {
+                    eprintln!("Unknown option: {}", arg);
+                    print_usage();
+                    std::process::exit(1);
+                }
+            }
+
             // UCI mode (default)
             let nnue_path = flag_value(&args, "-nnue");
             let book_path = flag_value(&args, "-book");
 
             if subcmd.starts_with('-') || subcmd.is_empty() {
-                // Flag or no args — UCI mode
                 uci::uci_loop_with_nnue(nnue_path, book_path);
             } else {
-                // Unknown subcommand
                 eprintln!("Unknown command: {}", subcmd);
                 print_usage();
                 std::process::exit(1);
