@@ -18,6 +18,9 @@ const MAX_PLY: usize = 128;
 const INFINITY: i32 = 32000;
 const CONTEMPT: i32 = -10; // prefer playing on over drawing
 
+// Pawn history table size
+const PAWN_HIST_SIZE: usize = 512;
+
 // Correction history constants
 const CORR_HIST_SIZE: usize = 16384;
 const CORR_HIST_GRAIN: i32 = 256;
@@ -86,6 +89,8 @@ pub struct SearchInfo {
     pub sel_depth: i32,
     prev_moves: [Move; MAX_PLY],
     static_evals: [i32; MAX_PLY],
+    /// Pawn history: [pawn_hash % PAWN_HIST_SIZE][piece][to_square]
+    pawn_hist: Box<[[[i16; 64]; 12]; PAWN_HIST_SIZE]>,
     /// Pawn correction history: [stm][pawn_hash % size]
     pawn_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
     /// Non-pawn correction history: [stm][color][nonpawn_hash % size]
@@ -111,6 +116,7 @@ impl SearchInfo {
             sel_depth: 0,
             prev_moves: [NO_MOVE; MAX_PLY],
             static_evals: [0; MAX_PLY],
+            pawn_hist: Box::new([[[0i16; 64]; 12]; PAWN_HIST_SIZE]),
             pawn_corr: Box::new([[0; CORR_HIST_SIZE]; 2]),
             np_corr: Box::new([[[0; CORR_HIST_SIZE]; 2]; 2]),
             cont_corr: Box::new([[0; 64]; 12]),
@@ -744,7 +750,8 @@ fn negamax(
 
             // History pruning for quiets (GoChess: depth <= 3)
             if !is_capture && !is_promo && depth <= 3 {
-                let hist = info.history.quiet_score(board, mv, prev_move);
+                let ph_idx = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
+                let hist = info.history.quiet_score(board, mv, prev_move, Some(&info.pawn_hist[ph_idx]));
                 if hist < -1500 * depth as i32 {
                     info.stats.history_prunes += 1; continue;
                 }
@@ -924,6 +931,18 @@ fn negamax(
                             &mut info.history.main[color as usize][from as usize][to as usize],
                             bonus,
                         );
+
+                        // Update pawn history
+                        {
+                            let ph_idx = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
+                            let our_piece = board.piece_at(from);
+                            if our_piece != NO_PIECE && (our_piece as usize) < 12 {
+                                let v = info.pawn_hist[ph_idx][our_piece as usize][to as usize] as i32;
+                                let clamped = bonus.clamp(-16384, 16384);
+                                let new_v = v + clamped - v * clamped.abs() / 16384;
+                                info.pawn_hist[ph_idx][our_piece as usize][to as usize] = new_v.clamp(-32000, 32000) as i16;
+                            }
+                        }
 
                         // Penalize other tried quiets (main + continuation history)
                         for &q in &quiets_tried[..n_quiets_tried] {

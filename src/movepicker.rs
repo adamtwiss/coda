@@ -50,15 +50,15 @@ impl History {
         *entry += clamped - *entry * clamped.abs() / MAX_HISTORY;
     }
 
-    /// Get quiet history score for a move.
-    pub fn quiet_score(&self, board: &Board, mv: Move, prev_move: Move) -> i32 {
+    /// Get quiet history score for a move (with optional pawn history).
+    pub fn quiet_score(&self, board: &Board, mv: Move, prev_move: Move, pawn_hist: Option<&[[i16; 64]; 12]>) -> i32 {
         let from = move_from(mv);
         let to = move_to(mv);
         let color = board.side_to_move;
 
         let mut score = self.main[color as usize][from as usize][to as usize];
 
-        // Add continuation history if we have a previous move
+        // Add continuation history if we have a previous move (3x weight)
         if prev_move != NO_MOVE {
             let prev_to = move_to(prev_move);
             let prev_piece = board.piece_at(prev_to);
@@ -67,6 +67,14 @@ impl History {
                 if piece != NO_PIECE && (piece as usize) < 12 {
                     score += self.cont_hist[prev_piece as usize][prev_to as usize][piece as usize][to as usize] * 3;
                 }
+            }
+        }
+
+        // Add pawn history
+        if let Some(ph) = pawn_hist {
+            let piece = board.piece_at(from);
+            if piece != NO_PIECE && (piece as usize) < 12 {
+                score += ph[piece as usize][to as usize] as i32;
             }
         }
 
@@ -316,7 +324,7 @@ impl MovePicker {
                 self.scores[i] = 9_000_000 + see_value(promotion_piece_type(mv));
             } else {
                 // Quiet: history score
-                self.scores[i] = history.quiet_score(board, mv, prev_move);
+                self.scores[i] = history.quiet_score(board, mv, prev_move, None);
             }
         }
     }
