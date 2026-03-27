@@ -761,8 +761,8 @@ fn negamax(
                 info.stats.lmp_prunes += 1; continue;
             }
 
-            // History pruning for quiets (GoChess: depth <= 3)
-            if !is_capture && !is_promo && depth <= 3 {
+            // History pruning for quiets (GoChess: depth <= 3, !improving)
+            if !is_capture && !is_promo && depth <= 3 && !improving {
                 let ph_idx = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
                 let hist = info.history.quiet_score(board, mv, prev_move, Some(&info.pawn_hist[ph_idx]));
                 if hist < -1500 * depth as i32 {
