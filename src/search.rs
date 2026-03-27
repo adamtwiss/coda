@@ -723,14 +723,19 @@ fn negamax(
             r = r.max(1).min(new_depth);
 
             // Reduced-depth search
-            score = -negamax(board, info, -alpha - 1, -alpha, new_depth - r + 1, ply + 1, true);
+            score = -negamax(board, info, -alpha - 1, -alpha, new_depth - r, ply + 1, true);
 
             // doDeeper / doShallower
-            if score > alpha && r > 1 {
-                // Re-search at full depth with null window
-                score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
-            } else if score <= alpha && r < 1 {
-                // doShallower: already searched deep enough
+            if score > alpha && r > 0 {
+                // LMR failed high — check if we need deeper or shallower re-search
+                let mut adj = 0;
+                if score > best_score + 60 + 10 * r {
+                    adj = 1; // score greatly exceeds best → LMR too aggressive → deeper
+                } else if score < best_score + new_depth {
+                    adj = -1; // score barely above alpha → LMR about right → shallower
+                }
+                let re_depth = (new_depth + adj).max(1);
+                score = -negamax(board, info, -alpha - 1, -alpha, re_depth, ply + 1, !cut_node);
             }
         } else if !is_pv || moves_tried > 1 {
             // Non-PV null window search
@@ -798,10 +803,10 @@ fn negamax(
                         }
 
                         // Update continuation history
+                        // Note: board is post-unmake, piece is at `from`
                         if prev_move != NO_MOVE {
                             let prev_to = move_to(prev_move);
                             let prev_piece = board.piece_at(prev_to);
-                            let piece = board.piece_at(to); // after unmake, piece is back at from... need to reconsider
                             let our_piece = board.piece_at(from);
                             if prev_piece != NO_PIECE && (prev_piece as usize) < 12
                                 && our_piece != NO_PIECE && (our_piece as usize) < 12
