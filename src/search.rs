@@ -631,7 +631,7 @@ fn negamax(
             info.stats.nmp_attempts += 1;
             board.make_null_move();
             if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::recompute()); }
-            let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
+            let null_score = -negamax(board, info, -beta, -beta + 1, depth - 1 - r, ply + 1, !cut_node);
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
             board.unmake_null_move();
 
@@ -641,7 +641,7 @@ fn negamax(
 
                 // Verification at high depth
                 if depth >= 12 {
-                    let v = negamax(board, info, beta - 1, beta, depth - r, ply + 1, false);
+                    let v = negamax(board, info, beta - 1, beta, depth - 1 - r, ply + 1, false);
                     if v >= beta {
                         info.stats.nmp_cutoffs += 1; return dampened;
                     }
