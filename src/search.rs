@@ -506,8 +506,8 @@ fn negamax(
         }
     }
 
-    // TT near-miss: accept entries 1 ply short with a score margin
-    if !is_pv && tt_entry.hit && tt_entry.depth >= depth - 1
+    // TT near-miss: accept entries 1 ply short with a score margin (only when full-depth didn't cut)
+    else if !is_pv && tt_entry.hit && tt_entry.depth >= depth - 1
         && !is_mate_score(tt_score)
     {
         let margin = 80;
@@ -531,7 +531,7 @@ fn negamax(
         raw_eval = -INFINITY;
         static_eval = -INFINITY;
     } else {
-        raw_eval = if tt_entry.hit && tt_entry.static_eval != 0 {
+        raw_eval = if tt_entry.hit {
             tt_entry.static_eval
         } else {
             info.eval(board)
@@ -823,7 +823,7 @@ fn negamax(
                 if score >= beta {
                     // Fail high: update history, killers, counter
                     if !is_capture {
-                        let bonus = (depth as i32 * depth as i32).min(400);
+                        let bonus = (depth as i32 * depth as i32).min(1200);
 
                         // Update killer
                         if ply_u < 128 {
@@ -883,7 +883,7 @@ fn negamax(
                             board.piece_type_at(to)
                         };
                         if piece != NO_PIECE && (piece as usize) < 12 && (victim as usize) < 6 {
-                            let bonus = (depth as i32 * depth as i32).min(400);
+                            let bonus = (depth as i32 * depth as i32).min(1200);
                             History::update_history(
                                 &mut info.history.capture[piece as usize][to as usize][victim as usize],
                                 bonus,
@@ -930,8 +930,8 @@ fn negamax(
         }
     }
 
-    // Update correction history (only for non-mate, non-check positions with sufficient depth)
-    if !in_check && !is_mate_score(best_score) && raw_eval != -INFINITY {
+    // Update correction history (only when search improved on eval, non-mate, non-check)
+    if !in_check && best_score > original_alpha && !is_mate_score(best_score) && raw_eval != -INFINITY {
         update_correction_history(info, board, best_score, raw_eval, depth);
     }
 
