@@ -700,8 +700,17 @@ fn negamax(
 
         moves_tried += 1;
 
+        // Recapture extension: extend when capturing on the same square as the previous capture
+        let mut extension = 0;
+        if is_capture && board.undo_stack.len() >= 2 {
+            let prev = &board.undo_stack[board.undo_stack.len() - 2];
+            if prev.captured != NO_PIECE_TYPE && to == move_to(prev.mv) {
+                extension = 1;
+            }
+        }
+
         let mut score;
-        let new_depth = depth - 1;
+        let mut new_depth = depth - 1 + extension;
 
         // LMR
         if depth >= 3 && moves_tried > 1 + if is_pv { 1 } else { 0 } {
@@ -878,6 +887,14 @@ fn negamax(
         score_to_tt(best_score, ply),
         depth,
     );
+
+    // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes.
+    // Deeper cutoffs are more trustworthy, so weight raw score by depth.
+    if best_score >= beta && !is_pv && depth >= 3
+        && !is_mate_score(best_score)
+    {
+        return (best_score * depth + beta) / (depth + 1);
+    }
 
     best_score
 }
