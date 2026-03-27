@@ -404,7 +404,7 @@ impl NNUENet {
                 }
             }
 
-            let mut result = (output as i32) * EVAL_SCALE / QAB;
+            let mut result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
             if self.use_screlu {
                 result = result * 4 / 5;
             }
@@ -438,8 +438,8 @@ impl NNUENet {
         }
 
         // Scale: output is at QA × QB = 16320
-        // centipawns = output * 400 / 16320
-        let mut result = (output as i32) * EVAL_SCALE / QAB;
+        // centipawns = output * 400 / 16320 (do division in i64 to avoid overflow)
+        let mut result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
 
         // SCReLU scale correction: squared activation has wider dynamic range
         if self.use_screlu {

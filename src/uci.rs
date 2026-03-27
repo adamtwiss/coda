@@ -6,9 +6,16 @@ use crate::board::Board;
 use crate::search::*;
 use crate::types::*;
 
-pub fn uci_loop() {
+pub fn uci_loop_with_nnue(nnue_path: Option<&str>) {
     let mut board = Board::startpos();
-    let mut info = SearchInfo::new(64); // 64 MB default hash
+    let mut info = SearchInfo::new(64);
+
+    // Pre-load NNUE if path given via CLI
+    if let Some(path) = nnue_path {
+        if let Err(e) = info.load_nnue(path) {
+            eprintln!("Failed to load NNUE: {}", e);
+        }
+    }
 
     let stdin = io::stdin();
     for line in stdin.lock().lines() {

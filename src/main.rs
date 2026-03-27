@@ -120,16 +120,24 @@ fn main() {
             .and_then(|i| args.get(i + 1))
             .map(|s| s.as_str());
         epd::run_epd(path, time, max, nnue_path);
-    } else if args.len() > 1 {
-        println!("Coda Chess Engine");
-        println!("Usage:");
-        println!("  coda                           UCI mode (default)");
-        println!("  coda bench [depth]             Search benchmark (default depth 13)");
-        println!("  coda perft [depth] [fen...]    Perft with divide");
-        println!("  coda perft-bench               Perft benchmark suite");
-        println!("  coda epd <file> [time] [max]   Run EPD test suite");
     } else {
-        // Default: UCI mode
-        uci::uci_loop();
+        // UCI mode (default). -nnue flag can be anywhere in args.
+        let nnue_path = args.iter().position(|s| s == "-nnue")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| s.as_str());
+
+        // If args don't match any subcommand and no -nnue flag, show help
+        if args.len() > 1 && nnue_path.is_none() && !args.iter().any(|s| s == "-nnue") {
+            println!("Coda Chess Engine");
+            println!("Usage:");
+            println!("  coda                           UCI mode (default)");
+            println!("  coda -nnue <path>              UCI mode with NNUE net");
+            println!("  coda bench [depth]             Search benchmark (default depth 13)");
+            println!("  coda perft [depth] [fen...]    Perft with divide");
+            println!("  coda perft-bench               Perft benchmark suite");
+            println!("  coda epd <file> [time] [max]   Run EPD test suite");
+        } else {
+            uci::uci_loop_with_nnue(nnue_path);
+        }
     }
 }

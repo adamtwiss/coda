@@ -154,21 +154,30 @@ impl MovePicker {
         loop {
             match self.stage {
                 Stage::TTMove => {
-                    self.stage = Stage::GenerateMoves;
-                    if self.tt_move != NO_MOVE {
-                        // Re-derive flags from board state to prevent stale flag corruption
-                        self.tt_move = fixup_move_flags(board, self.tt_move);
-                        if is_pseudo_legal(board, self.tt_move)
-                            && board.is_legal(self.tt_move, self.pinned, self.checkers)
-                        {
-                            return self.tt_move;
-                        }
-                    }
-                }
-                Stage::GenerateMoves => {
+                    // Generate all moves first, then validate TT move against the list
                     self.moves = generate_all_moves(board);
                     self.score_moves(board, history, prev_move);
                     self.idx = 0;
+                    self.stage = Stage::GoodCaptures;
+
+                    if self.tt_move != NO_MOVE {
+                        // Re-derive flags from board state
+                        self.tt_move = fixup_move_flags(board, self.tt_move);
+                        // Verify TT move exists in generated move list
+                        let tt_from = move_from(self.tt_move);
+                        let tt_to = move_to(self.tt_move);
+                        let found = (0..self.moves.len).any(|i| {
+                            let m = self.moves.moves[i];
+                            move_from(m) == tt_from && move_to(m) == tt_to
+                        });
+                        if found && board.is_legal(self.tt_move, self.pinned, self.checkers) {
+                            return self.tt_move;
+                        }
+                    }
+                    self.tt_move = NO_MOVE; // invalidate so it's not skipped later
+                }
+                Stage::GenerateMoves => {
+                    // Already generated in TTMove stage
                     self.stage = Stage::GoodCaptures;
                 }
                 Stage::GoodCaptures => {
@@ -199,10 +208,12 @@ impl MovePicker {
                 Stage::Killers => {
                     self.stage = Stage::CounterMove;
 
-                    // Try killer 1
+                    // Try killer 1 — validate exists in generated move list
                     if self.killer1 != NO_MOVE && self.killer1 != self.tt_move {
                         self.killer1 = fixup_move_flags(board, self.killer1);
-                        if is_pseudo_legal(board, self.killer1) && board.is_legal(self.killer1, self.pinned, self.checkers) {
+                        if move_in_list(&self.moves, self.killer1)
+                            && board.is_legal(self.killer1, self.pinned, self.checkers)
+                        {
                             let to = move_to(self.killer1);
                             if board.piece_type_at(to) == NO_PIECE_TYPE {
                                 return self.killer1;
@@ -213,7 +224,9 @@ impl MovePicker {
                     // Try killer 2
                     if self.killer2 != NO_MOVE && self.killer2 != self.tt_move && self.killer2 != self.killer1 {
                         self.killer2 = fixup_move_flags(board, self.killer2);
-                        if is_pseudo_legal(board, self.killer2) && board.is_legal(self.killer2, self.pinned, self.checkers) {
+                        if move_in_list(&self.moves, self.killer2)
+                            && board.is_legal(self.killer2, self.pinned, self.checkers)
+                        {
                             let to = move_to(self.killer2);
                             if board.piece_type_at(to) == NO_PIECE_TYPE {
                                 return self.killer2;
@@ -231,7 +244,9 @@ impl MovePicker {
                         && self.counter_move != self.killer2
                     {
                         self.counter_move = fixup_move_flags(board, self.counter_move);
-                        if is_pseudo_legal(board, self.counter_move) && board.is_legal(self.counter_move, self.pinned, self.checkers) {
+                        if move_in_list(&self.moves, self.counter_move)
+                            && board.is_legal(self.counter_move, self.pinned, self.checkers)
+                        {
                             let to = move_to(self.counter_move);
                             if board.piece_type_at(to) == NO_PIECE_TYPE {
                                 return self.counter_move;
@@ -329,6 +344,19 @@ impl MovePicker {
         self.idx += 1;
         mv
     }
+}
+
+/// Check if a move (by from/to) exists in a generated move list.
+fn move_in_list(list: &MoveList, mv: Move) -> bool {
+    let from = move_from(mv);
+    let to = move_to(mv);
+    for i in 0..list.len {
+        let m = list.moves[i];
+        if move_from(m) == from && move_to(m) == to {
+            return true;
+        }
+    }
+    false
 }
 
 /// Re-derive move flags from the board state. TT/killer moves may have stale flags.
@@ -447,6 +475,45 @@ fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
     // To square must not have our piece
     if to_bb & board.colors[us as usize] != 0 {
         return false;
+    }
+
+    // Geometric validity: verify the piece can reach the destination
+    let occ = board.occupied();
+    match pt {
+        PAWN => {
+            // Pawn moves: push or capture
+            let diff = (to as i32 - from as i32).abs();
+            if diff != 7 && diff != 8 && diff != 9 && diff != 16 {
+                return false;
+            }
+        }
+        KNIGHT => {
+            if knight_attacks(from as u32) & to_bb == 0 {
+                return false;
+            }
+        }
+        BISHOP => {
+            if bishop_attacks(from as u32, occ) & to_bb == 0 {
+                return false;
+            }
+        }
+        ROOK => {
+            if rook_attacks(from as u32, occ) & to_bb == 0 {
+                return false;
+            }
+        }
+        QUEEN => {
+            if queen_attacks(from as u32, occ) & to_bb == 0 {
+                return false;
+            }
+        }
+        KING => {
+            // King already handled above (castle check)
+            if king_attacks(from as u32) & to_bb == 0 {
+                return false;
+            }
+        }
+        _ => return false,
     }
 
     true

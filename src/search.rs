@@ -139,22 +139,24 @@ fn nnue_update_after_move(
         return;
     }
 
-    let mut changes = Vec::with_capacity(5);
+    let mut changes: [(bool, u8, u8, u8); 5] = [(false, 0, 0, 0); 5];
+    let mut n = 0;
 
     // Remove moved piece from origin
-    changes.push((false, us, moved_pt, from));
+    changes[n] = (false, us, moved_pt, from); n += 1;
 
     // Remove captured piece
     if flags == FLAG_EN_PASSANT {
-        let cap_sq = if us == WHITE { to.wrapping_add(8) } else { to.wrapping_sub(8) };
-        changes.push((false, them, PAWN, cap_sq));
+        // Captured pawn is one rank behind the EP square (below for white, above for black)
+        let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
+        changes[n] = (false, them, PAWN, cap_sq); n += 1;
     } else if captured_pt != NO_PIECE_TYPE {
-        changes.push((false, them, captured_pt, to));
+        changes[n] = (false, them, captured_pt, to); n += 1;
     }
 
     // Add piece at destination (possibly promoted)
     let placed_pt = if is_promotion(mv) { promotion_piece_type(mv) } else { moved_pt };
-    changes.push((true, us, placed_pt, to));
+    changes[n] = (true, us, placed_pt, to); n += 1;
 
     // Castling: also move the rook
     if flags == FLAG_CASTLE {
@@ -163,11 +165,11 @@ fn nnue_update_after_move(
         } else {
             if us == WHITE { (0u8, 3u8) } else { (56u8, 59u8) }
         };
-        changes.push((false, us, ROOK, rook_from));
-        changes.push((true, us, ROOK, rook_to));
+        changes[n] = (false, us, ROOK, rook_from); n += 1;
+        changes[n] = (true, us, ROOK, rook_to); n += 1;
     }
 
-    acc.update_incremental(net, board, &changes);
+    acc.update_incremental(net, board, &changes[..n]);
 }
 
 /// LMR reduction table.
@@ -351,8 +353,17 @@ fn negamax(
         if board.halfmove >= 100 {
             return 0;
         }
-        // Simple repetition: check if current hash appeared before
-        // Full repetition detection would require hash history
+        // Repetition detection: check if current hash appeared in the undo stack
+        // Only need to check back to the last irreversible move (halfmove clock resets)
+        let hash = board.hash;
+        let stack_len = board.undo_stack.len();
+        let check_back = (board.halfmove as usize).min(stack_len);
+        for i in (0..check_back).rev().step_by(2) {
+            // step_by(2): same side to move only
+            if board.undo_stack[stack_len - 1 - i].hash == hash {
+                return 0; // repetition — draw
+            }
+        }
     }
 
     // TT probe
@@ -492,7 +503,8 @@ fn negamax(
     let mut best_score = -INFINITY;
     let mut best_move = NO_MOVE;
     let mut moves_tried = 0;
-    let mut quiets_tried: Vec<Move> = Vec::new();
+    let mut quiets_tried = [NO_MOVE; 64];
+    let mut n_quiets_tried = 0usize;
 
     loop {
         let mv = picker.next(board, &info.history, prev_move);
@@ -503,8 +515,6 @@ fn negamax(
         let flags = move_flags(mv);
         let is_capture = board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT;
         let is_promo = is_promotion(mv);
-
-        moves_tried += 1;
 
         // Pruning for non-root, non-PV, late moves
         if !is_root && best_score > -TB_WIN && !in_check {
@@ -560,6 +570,8 @@ fn negamax(
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
             continue;
         }
+
+        moves_tried += 1;
 
         // Apply incremental NNUE update
         if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
@@ -652,7 +664,7 @@ fn negamax(
                         );
 
                         // Penalize other tried quiets
-                        for &q in &quiets_tried {
+                        for &q in &quiets_tried[..n_quiets_tried] {
                             let qf = move_from(q);
                             let qt = move_to(q);
                             History::update_history(
@@ -699,7 +711,10 @@ fn negamax(
         }
 
         if !is_capture && !is_promo {
-            quiets_tried.push(mv);
+            if n_quiets_tried < 64 {
+                quiets_tried[n_quiets_tried] = mv;
+                n_quiets_tried += 1;
+            }
         }
     }
 
