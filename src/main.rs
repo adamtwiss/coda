@@ -15,6 +15,7 @@ mod uci;
 mod epd;
 pub mod nnue;
 pub mod book;
+pub mod tb;
 
 use board::Board;
 use movegen::{perft, perft_divide};

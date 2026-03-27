@@ -5,6 +5,10 @@ edition = "2021"
 description = "Chess Optimised, Developed Agentically — a UCI chess engine"
 authors = ["Adam Twiss"]
 
+[dependencies]
+shakmaty = "0.30"
+shakmaty-syzygy = "0.28"
+
 [profile.release]
 opt-level = 3
 lto = true

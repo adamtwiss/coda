@@ -12,6 +12,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
     let mut info = SearchInfo::new(64);
     let mut opening_book: Option<crate::book::OpeningBook> = None;
     let mut use_book = true;
+    let mut syzygy: Option<crate::tb::SyzygyTB> = None;
 
     // Pre-load NNUE if path given via CLI
     if let Some(path) = nnue_path {
@@ -49,6 +50,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 println!("option name BookFile type string default <empty>");
                 println!("option name MoveOverhead type spin default 100 min 0 max 5000");
                 println!("option name Ponder type check default false");
+                println!("option name SyzygyPath type string default <empty>");
                 println!("uciok");
             }
             "isready" => {
@@ -65,6 +67,16 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 parse_position(&tokens, &mut board);
             }
             "go" => {
+                // Try Syzygy tablebase at root
+                if let Some(ref tb) = syzygy {
+                    if crate::bitboard::popcount(board.occupied()) as usize <= tb.max_pieces() {
+                        if let Some((tb_move, _wdl)) = tb.probe_root(&board) {
+                            println!("bestmove {}", tb_move);
+                            continue;
+                        }
+                    }
+                }
+
                 // Try opening book first (not in ponder mode)
                 let is_ponder = tokens.iter().any(|&t| t == "ponder");
                 if use_book && !is_ponder {
@@ -103,6 +115,12 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 if ni > 0 && vi > 0 && vi < tokens.len() {
                     match tokens[ni] {
                         "OwnBook" => { use_book = tokens[vi] == "true"; }
+                        "SyzygyPath" => {
+                            match crate::tb::SyzygyTB::new(tokens[vi]) {
+                                Ok(tb) => syzygy = Some(tb),
+                                Err(e) => eprintln!("info string Syzygy load failed: {}", e),
+                            }
+                        }
                         "BookFile" => {
                             match crate::book::OpeningBook::load(tokens[vi]) {
                                 Ok(b) => opening_book = Some(b),
