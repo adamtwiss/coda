@@ -450,20 +450,51 @@ impl NNUENet {
     }
 }
 
+/// Dirty piece info for lazy materialization.
+#[derive(Clone, Copy)]
+pub struct DirtyPiece {
+    /// 0 = needs full recompute (king bucket change), 1+ = incremental
+    pub kind: u8,
+    pub changes: [(bool, u8, u8, u8); 5], // (add, color, pt, sq)
+    pub n_changes: u8,
+}
+
+impl DirtyPiece {
+    pub fn recompute() -> Self {
+        DirtyPiece { kind: 0, changes: [(false, 0, 0, 0); 5], n_changes: 0 }
+    }
+    pub fn incremental(changes: &[(bool, u8, u8, u8)]) -> Self {
+        let mut d = DirtyPiece { kind: 1, changes: [(false, 0, 0, 0); 5], n_changes: changes.len() as u8 };
+        for (i, &c) in changes.iter().enumerate().take(5) {
+            d.changes[i] = c;
+        }
+        d
+    }
+}
+
 /// Single accumulator entry (two perspectives).
 #[derive(Clone)]
 struct AccEntry {
     white: Vec<i16>,
     black: Vec<i16>,
     computed: bool,
+    dirty: DirtyPiece,
 }
 
-/// Accumulator stack for incremental NNUE updates.
-/// Push on make_move, pop on unmake_move.
+/// Finny table entry: cached accumulator for a specific king bucket.
+struct FinnyEntry {
+    acc: Vec<i16>,                      // cached accumulator values
+    piece_bbs: ([Bitboard; 6], [Bitboard; 2]), // piece and color bitboards when cached
+    valid: bool,
+}
+
+/// Accumulator stack with lazy materialization and Finny table.
 pub struct NNUEAccumulator {
     stack: Vec<AccEntry>,
     top: usize,
     hidden_size: usize,
+    /// Finny table: [perspective (0=W,1=B)][king_bucket (0-15)][mirror (0-1)]
+    finny: Vec<Vec<Vec<FinnyEntry>>>, // [2][16][2]
 }
 
 impl NNUEAccumulator {
@@ -474,17 +505,27 @@ impl NNUEAccumulator {
                 white: vec![0; hidden_size],
                 black: vec![0; hidden_size],
                 computed: false,
+                dirty: DirtyPiece::recompute(),
             });
         }
-        NNUEAccumulator { stack, top: 0, hidden_size }
-    }
-
-    fn current(&self) -> &AccEntry {
-        &self.stack[self.top]
-    }
-
-    fn current_mut(&mut self) -> &mut AccEntry {
-        &mut self.stack[self.top]
+        // Build finny table
+        let mut finny = Vec::with_capacity(2);
+        for _ in 0..2 {
+            let mut buckets = Vec::with_capacity(NNUE_KING_BUCKETS);
+            for _ in 0..NNUE_KING_BUCKETS {
+                let mut mirrors = Vec::with_capacity(2);
+                for _ in 0..2 {
+                    mirrors.push(FinnyEntry {
+                        acc: vec![0; hidden_size],
+                        piece_bbs: ([0; 6], [0; 2]),
+                        valid: false,
+                    });
+                }
+                buckets.push(mirrors);
+            }
+            finny.push(buckets);
+        }
+        NNUEAccumulator { stack, top: 0, hidden_size, finny }
     }
 
     pub fn white(&self) -> &[i16] {
@@ -495,95 +536,46 @@ impl NNUEAccumulator {
         &self.stack[self.top].black[..self.hidden_size]
     }
 
-    /// Push a new entry (for make_move). Does NOT copy — caller must update or recompute.
-    pub fn push(&mut self) {
+    /// Push: store dirty info, don't compute yet.
+    pub fn push(&mut self, dirty: DirtyPiece) {
         self.top += 1;
         if self.top >= self.stack.len() {
             self.stack.push(AccEntry {
                 white: vec![0; self.hidden_size],
                 black: vec![0; self.hidden_size],
                 computed: false,
+                dirty: DirtyPiece::recompute(),
             });
         }
         self.stack[self.top].computed = false;
+        self.stack[self.top].dirty = dirty;
     }
 
-    /// Pop (for unmake_move).
     pub fn pop(&mut self) {
         debug_assert!(self.top > 0);
         self.top -= 1;
     }
 
-    /// Recompute both perspectives from scratch at the current stack position.
-    pub fn recompute(&mut self, net: &NNUENet, board: &Board) {
-        let h = self.hidden_size;
-        let entry = &mut self.stack[self.top];
-
-        entry.white[..h].copy_from_slice(&net.input_biases[..h]);
-        entry.black[..h].copy_from_slice(&net.input_biases[..h]);
-
-        let w_king_sq = board.king_sq(WHITE);
-        let b_king_sq = board.king_sq(BLACK);
-
-        #[cfg(target_arch = "x86_64")]
-        let use_simd = net.has_avx2 && h % 16 == 0;
-
-        for color in 0..2u8 {
-            for pt in 0..6u8 {
-                let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
-                while bb != 0 {
-                    let sq = pop_lsb(&mut bb) as u8;
-
-                    let w_idx = halfka_index(WHITE, w_king_sq, color, pt, sq);
-                    let w_row = net.input_weight_row(w_idx);
-
-                    let b_idx = halfka_index(BLACK, b_king_sq, color, pt, sq);
-                    let b_row = net.input_weight_row(b_idx);
-
-                    #[cfg(target_arch = "x86_64")]
-                    if use_simd {
-                        unsafe {
-                            simd_acc_add(&mut entry.white, w_row, h);
-                            simd_acc_add(&mut entry.black, b_row, h);
-                        }
-                        continue;
-                    }
-
-                    for j in 0..h {
-                        entry.white[j] += w_row[j];
-                    }
-                    for j in 0..h {
-                        entry.black[j] += b_row[j];
-                    }
-                }
-            }
-        }
-
-        entry.computed = true;
-    }
-
-    /// Incremental update: copy parent, then apply feature changes.
-    /// Called after make_move. The board should be in the POST-move state.
-    /// `changes` is a list of (add: bool, color, piece_type, square) tuples.
-    pub fn update_incremental(
-        &mut self,
-        net: &NNUENet,
-        board: &Board,
-        changes: &[(bool, u8, u8, u8)], // (add, color, pt, sq)
-    ) {
-        let h = self.hidden_size;
-
-        // Copy parent accumulator — parent must be computed
-        let parent_idx = self.top - 1;
-        if !self.stack[parent_idx].computed {
-            // Parent not computed (e.g., after null move) — fall back to full recompute
-            self.recompute(net, board);
+    /// Materialize: ensure current accumulator is computed.
+    pub fn materialize(&mut self, net: &NNUENet, board: &Board) {
+        if self.stack[self.top].computed {
             return;
         }
 
-        // Split borrow: copy parent to current
+        let dirty = self.stack[self.top].dirty;
+
+        // Full recompute needed?
+        if dirty.kind == 0 || self.top == 0 || !self.stack[self.top - 1].computed {
+            self.refresh_accumulator(net, board, WHITE);
+            self.refresh_accumulator(net, board, BLACK);
+            self.stack[self.top].computed = true;
+            return;
+        }
+
+        // Incremental: copy parent + apply deltas
+        let h = self.hidden_size;
         let (left, right) = self.stack.split_at_mut(self.top);
-        let parent = &left[parent_idx];
+        let parent = &left[self.top - 1];
         let current = &mut right[0];
 
         current.white[..h].copy_from_slice(&parent.white[..h]);
@@ -592,21 +584,16 @@ impl NNUEAccumulator {
         let w_king_sq = board.king_sq(WHITE);
         let b_king_sq = board.king_sq(BLACK);
 
-        #[cfg(target_arch = "x86_64")]
-        let use_simd = net.has_avx2 && h % 16 == 0;
-
-        for &(add, color, pt, sq) in changes {
-            // White perspective
+        let n = dirty.n_changes as usize;
+        for i in 0..n {
+            let (add, color, pt, sq) = dirty.changes[i];
             let w_idx = halfka_index(WHITE, w_king_sq, color, pt, sq);
             let w_row = net.input_weight_row(w_idx);
-
-            // Black perspective
             let b_idx = halfka_index(BLACK, b_king_sq, color, pt, sq);
             let b_row = net.input_weight_row(b_idx);
 
             #[cfg(target_arch = "x86_64")]
-            if use_simd {
-                // SAFETY: has_avx2 is true, h is multiple of 16
+            if net.has_avx2 && h % 16 == 0 {
                 unsafe {
                     if add {
                         simd_acc_add(&mut current.white, w_row, h);
@@ -619,35 +606,124 @@ impl NNUEAccumulator {
                 continue;
             }
 
-            // Scalar fallback
             if add {
-                for j in 0..h {
-                    current.white[j] += w_row[j];
-                    current.black[j] += b_row[j];
-                }
+                for j in 0..h { current.white[j] += w_row[j]; current.black[j] += b_row[j]; }
             } else {
-                for j in 0..h {
-                    current.white[j] -= w_row[j];
-                    current.black[j] -= b_row[j];
-                }
+                for j in 0..h { current.white[j] -= w_row[j]; current.black[j] -= b_row[j]; }
             }
         }
 
         current.computed = true;
     }
 
-    /// Ensure current entry is computed (recompute if needed).
-    pub fn materialize(&mut self, net: &NNUENet, board: &Board) {
-        if !self.stack[self.top].computed {
-            self.recompute(net, board);
+    /// Refresh one perspective using the Finny table.
+    /// Diffs cached vs current piece bitboards, applies only changed features.
+    fn refresh_accumulator(&mut self, net: &NNUENet, board: &Board, perspective: u8) {
+        let h = self.hidden_size;
+        let king_sq = board.king_sq(perspective);
+        let mut ks = king_sq as usize;
+        if perspective == BLACK { ks ^= 56; }
+
+        let bucket = king_bucket(ks);
+        let mirror_idx = if king_mirror(ks) { 1 } else { 0 };
+
+        let entry = &mut self.finny[perspective as usize][bucket][mirror_idx];
+
+        let dst = if perspective == WHITE {
+            &mut self.stack[self.top].white
+        } else {
+            &mut self.stack[self.top].black
+        };
+
+        if !entry.valid {
+            // No cache — full recompute
+            dst[..h].copy_from_slice(&net.input_biases[..h]);
+            for color in 0..2u8 {
+                for pt in 0..6u8 {
+                    let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
+                    while bb != 0 {
+                        let sq = pop_lsb(&mut bb) as u8;
+                        let idx = halfka_index(perspective, king_sq, color, pt, sq);
+                        let row = net.input_weight_row(idx);
+                        acc_add(net, dst, row, h);
+                    }
+                }
+            }
+            // Save to cache
+            entry.acc[..h].copy_from_slice(&dst[..h]);
+            entry.piece_bbs = (board.pieces, board.colors);
+            entry.valid = true;
+            return;
         }
+
+        // Diff cached vs current — apply only changed features to cached acc
+        let cached_acc = &mut entry.acc;
+
+        for color in 0..2u8 {
+            for pt in 0..6u8 {
+                let prev = entry.piece_bbs.0[pt as usize] & entry.piece_bbs.1[color as usize];
+                let curr = board.pieces[pt as usize] & board.colors[color as usize];
+                if prev == curr { continue; }
+
+                // Removed: in prev but not curr
+                let mut removed = prev & !curr;
+                while removed != 0 {
+                    let sq = pop_lsb(&mut removed) as u8;
+                    let idx = halfka_index(perspective, king_sq, color, pt, sq);
+                    let row = net.input_weight_row(idx);
+                    acc_sub(net, cached_acc, row, h);
+                }
+
+                // Added: in curr but not prev
+                let mut added = curr & !prev;
+                while added != 0 {
+                    let sq = pop_lsb(&mut added) as u8;
+                    let idx = halfka_index(perspective, king_sq, color, pt, sq);
+                    let row = net.input_weight_row(idx);
+                    acc_add(net, cached_acc, row, h);
+                }
+            }
+        }
+
+        // Copy updated cache to accumulator
+        dst[..h].copy_from_slice(&cached_acc[..h]);
+        entry.piece_bbs = (board.pieces, board.colors);
     }
 
-    /// Reset to bottom of stack.
+    /// Reset to bottom of stack and invalidate Finny table.
     pub fn reset(&mut self) {
         self.top = 0;
         self.stack[0].computed = false;
+        for p in 0..2 {
+            for bk in 0..NNUE_KING_BUCKETS {
+                for m in 0..2 {
+                    self.finny[p][bk][m].valid = false;
+                }
+            }
+        }
     }
+}
+
+/// Add a weight row to an accumulator (SIMD-aware).
+#[inline]
+fn acc_add(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
+    #[cfg(target_arch = "x86_64")]
+    if net.has_avx2 && h % 16 == 0 {
+        unsafe { simd_acc_add(acc, row, h); }
+        return;
+    }
+    for j in 0..h { acc[j] += row[j]; }
+}
+
+/// Subtract a weight row from an accumulator (SIMD-aware).
+#[inline]
+fn acc_sub(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
+    #[cfg(target_arch = "x86_64")]
+    if net.has_avx2 && h % 16 == 0 {
+        unsafe { simd_acc_sub(acc, row, h); }
+        return;
+    }
+    for j in 0..h { acc[j] -= row[j]; }
 }
 
 /// Count total pieces on the board.

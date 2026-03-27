@@ -7,7 +7,7 @@ use std::time::Instant;
 use crate::bitboard::*;
 use crate::board::Board;
 use crate::eval::{evaluate, evaluate_nnue, see_value};
-use crate::nnue::{NNUENet, NNUEAccumulator};
+use crate::nnue::{NNUENet, NNUEAccumulator, DirtyPiece};
 use crate::movegen::generate_legal_moves;
 use crate::movepicker::*;
 use crate::see::see_ge;
@@ -117,26 +117,22 @@ impl SearchInfo {
     }
 }
 
-/// Apply incremental NNUE update after a move.
-/// `board` is in POST-move state, `us`/`them` are the sides BEFORE the move.
-fn nnue_update_after_move(
-    net: &NNUENet,
-    acc: &mut NNUEAccumulator,
-    board: &Board,
+/// Build a DirtyPiece for lazy NNUE accumulator update.
+/// `us`/`them` are the sides BEFORE the move.
+fn build_dirty_piece(
     mv: Move,
     us: u8,
     them: u8,
     moved_pt: u8,
     captured_pt: u8,
-) {
+) -> DirtyPiece {
     let from = move_from(mv);
     let to = move_to(mv);
     let flags = move_flags(mv);
 
-    // King moves: full recompute (bucket may change)
+    // King moves: need full recompute (bucket may change)
     if moved_pt == KING {
-        acc.recompute(net, board);
-        return;
+        return DirtyPiece::recompute();
     }
 
     let mut changes: [(bool, u8, u8, u8); 5] = [(false, 0, 0, 0); 5];
@@ -147,7 +143,6 @@ fn nnue_update_after_move(
 
     // Remove captured piece
     if flags == FLAG_EN_PASSANT {
-        // Captured pawn is one rank behind the EP square (below for white, above for black)
         let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
         changes[n] = (false, them, PAWN, cap_sq); n += 1;
     } else if captured_pt != NO_PIECE_TYPE {
@@ -169,7 +164,11 @@ fn nnue_update_after_move(
         changes[n] = (true, us, ROOK, rook_to); n += 1;
     }
 
-    acc.update_incremental(net, board, &changes[..n]);
+    let mut d = DirtyPiece::recompute();
+    d.kind = 1;
+    d.n_changes = n as u8;
+    d.changes = changes;
+    d
 }
 
 /// LMR reduction table.
@@ -203,8 +202,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     if let Some(acc) = &mut info.nnue_acc {
         acc.reset();
     }
+    // Materialize root accumulator (populates Finny table)
     if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
-        acc.recompute(net, board);
+        acc.materialize(net, board);
     }
 
     // Time management
@@ -440,7 +440,7 @@ fn negamax(
             let r = 3 + depth / 3 + ((static_eval - beta) / 200).min(3);
 
             board.make_null_move();
-            if let Some(acc) = &mut info.nnue_acc { acc.push(); } // null move: no feature changes, recompute on demand
+            if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::recompute()); }
             let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
             board.unmake_null_move();
@@ -471,21 +471,14 @@ fn negamax(
 
             if !see_ge(board, mv, probcut_beta - static_eval) { continue; }
 
-            let pc_from = move_from(mv);
-            let pc_to = move_to(mv);
-            let pc_flags = move_flags(mv);
-            let pc_moved_pt = board.piece_type_at(pc_from);
-            let pc_captured_pt = if pc_flags == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(pc_to) };
-            let pc_us = board.side_to_move;
-            let pc_them = flip_color(pc_us);
+            let pc_moved_pt = board.piece_type_at(move_from(mv));
+            let pc_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
+            let pc_dirty = build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), pc_moved_pt, pc_captured_pt);
 
-            if let Some(acc) = &mut info.nnue_acc { acc.push(); }
+            if let Some(acc) = &mut info.nnue_acc { acc.push(pc_dirty); }
             if !board.make_move(mv) {
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
                 continue;
-            }
-            if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
-                nnue_update_after_move(net, acc, board, mv, pc_us, pc_them, pc_moved_pt, pc_captured_pt);
             }
             let mut score = -quiescence(board, info, -probcut_beta, -probcut_beta + 1, ply + 1);
             if score >= probcut_beta {
@@ -566,14 +559,15 @@ fn negamax(
             info.prev_moves[safe_ply] = mv;
         }
 
-        // Save move info BEFORE make_move for NNUE incremental update
+        // Build NNUE dirty piece info BEFORE make_move
         let moved_pt = board.piece_type_at(from);
         let captured_pt = if flags == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(to) };
         let us = board.side_to_move;
         let them = flip_color(us);
+        let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt);
 
-        // Push NNUE accumulator
-        if let Some(acc) = &mut info.nnue_acc { acc.push(); }
+        // Push NNUE accumulator with lazy update
+        if let Some(acc) = &mut info.nnue_acc { acc.push(dirty); }
 
         if !board.make_move(mv) {
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
@@ -581,11 +575,6 @@ fn negamax(
         }
 
         moves_tried += 1;
-
-        // Apply incremental NNUE update
-        if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
-            nnue_update_after_move(net, acc, board, mv, us, them, moved_pt, captured_pt);
-        }
 
         let mut score;
         let new_depth = depth - 1;
@@ -819,22 +808,15 @@ fn quiescence(
             }
         }
 
-        // Save move info for NNUE update
-        let qs_from = move_from(mv);
-        let qs_to = move_to(mv);
-        let qs_flags = move_flags(mv);
-        let qs_moved_pt = board.piece_type_at(qs_from);
-        let qs_captured_pt = if qs_flags == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(qs_to) };
-        let qs_us = board.side_to_move;
-        let qs_them = flip_color(qs_us);
+        // Build lazy NNUE update
+        let qs_moved_pt = board.piece_type_at(move_from(mv));
+        let qs_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
+        let qs_dirty = build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt);
 
-        if let Some(acc) = &mut info.nnue_acc { acc.push(); }
+        if let Some(acc) = &mut info.nnue_acc { acc.push(qs_dirty); }
         if !board.make_move(mv) {
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
             continue;
-        }
-        if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
-            nnue_update_after_move(net, acc, board, mv, qs_us, qs_them, qs_moved_pt, qs_captured_pt);
         }
         let score = -quiescence(board, info, -beta, -alpha, ply + 1);
         board.unmake_move();
