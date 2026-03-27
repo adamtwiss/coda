@@ -181,24 +181,10 @@ impl TT {
         let mut replace_score = i32::MAX;
 
         for (i, slot) in bucket.slots.iter().enumerate() {
-            // Exact key match: replace only if depth is close enough
+            // Exact key match: always replace (simple strategy)
             if slot.data != 0 && (slot.key_xor ^ slot.data) == hash {
-                if depth > slot.depth() - 3 || flag == TT_FLAG_EXACT {
-                    replace_idx = i;
-                    break;
-                }
-                // Shallow entry for same position — don't overwrite deep entry,
-                // but still update the best move if we have one
-                if best_move != NO_MOVE {
-                    // Update just the move in the existing entry (keep depth/score)
-                    let old_data = slot.data;
-                    let new_data = (old_data & !0xFFFF) | (best_move as u64);
-                    bucket.slots[i] = TTSlot {
-                        key_xor: hash ^ new_data,
-                        data: new_data,
-                    };
-                }
-                return; // don't replace the deep entry
+                replace_idx = i;
+                break;
             }
 
             // Empty slot
