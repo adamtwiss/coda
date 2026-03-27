@@ -419,7 +419,7 @@ fn negamax(
     cut_node: bool,
 ) -> i32 {
     if info.should_stop() {
-        return alpha; // return current bound, not 0 (which fakes a draw)
+        return 0;
     }
 
     // Quiescence at depth 0
@@ -915,7 +915,7 @@ fn quiescence(
     ply: i32,
 ) -> i32 {
     if info.should_stop() {
-        return alpha;
+        return 0;
     }
 
     info.nodes += 1;
