@@ -14,6 +14,7 @@ Chess engine rewrite in Rust. Ported from GoChess with all accumulated knowledge
 - Benchmark: target ~80-100M nodes/sec perft (vs GoChess ~30M)
 
 ### Phase 2: Search (Day 2)
+- Simple material + PST eval (temporary — enough to validate search, replaced by NNUE in Phase 3)
 - Transposition table (lockless, 5-slot buckets, 14-bit staticEval)
 - Negamax + alpha-beta + PVS + aspiration windows
 - Iterative deepening with time management
@@ -23,7 +24,7 @@ Chess engine rewrite in Rust. Ported from GoChess with all accumulated knowledge
 - History tables: main, capture, continuation (1-ply), pawn history
 - Multi-source correction history (pawn + non-pawn per color + continuation)
 - All search parameters from experiments.md (exact tuned values)
-- **Gate: same move as GoChess on 20+ test positions at depth 12**
+- **Gate: deterministic node counts match expected values; plays sensible moves at depth 12 with material eval**
 
 ### Phase 3: NNUE (Day 3)
 - Load v5/v6 .nnue files (1024 CReLU and SCReLU)
