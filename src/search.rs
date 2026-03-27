@@ -462,7 +462,7 @@ fn negamax(
     // ProbCut
     if !is_pv && !in_check && depth >= 5 {
         let probcut_beta = beta + 200;
-        let mut pc_picker = QMovePicker::new(board);
+        let mut pc_picker = QMovePicker::new(board, false);
         let pc_in_check = in_check;
 
         loop {
@@ -797,7 +797,7 @@ fn quiescence(
     }
 
     let mut best_score = if in_check { -INFINITY } else { static_eval };
-    let mut picker = QMovePicker::new(board);
+    let mut picker = QMovePicker::new(board, in_check);
 
     loop {
         let mv = picker.next(board, in_check);

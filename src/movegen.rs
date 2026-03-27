@@ -290,6 +290,144 @@ fn is_attacked(board: &Board, sq: u8, by_color: Color) -> bool {
     false
 }
 
+/// Generate pseudo-legal captures + queen promotions only (for quiescence search).
+pub fn generate_captures(board: &Board) -> MoveList {
+    let mut list = MoveList::new();
+    let us = board.side_to_move;
+    let them = flip_color(us);
+    let occ = board.occupied();
+    let our_pieces = board.colors[us as usize];
+    let their_pieces = board.colors[them as usize];
+
+    // Pawn captures + promotions
+    let pawns = board.pieces[PAWN as usize] & our_pieces;
+    let promo_rank = if us == WHITE { RANK_8 } else { RANK_1 };
+
+    if us == WHITE {
+        // Capture left (northwest)
+        let mut caps = north_west(pawns) & their_pieces;
+        let mut promo_caps = caps & promo_rank;
+        caps &= !promo_rank;
+        while promo_caps != 0 {
+            let to = pop_lsb(&mut promo_caps) as u8;
+            add_promotions(&mut list, to - 7, to);
+        }
+        while caps != 0 {
+            let to = pop_lsb(&mut caps) as u8;
+            list.push(make_move(to - 7, to, FLAG_NONE));
+        }
+        // Capture right (northeast)
+        let mut caps = north_east(pawns) & their_pieces;
+        let mut promo_caps = caps & promo_rank;
+        caps &= !promo_rank;
+        while promo_caps != 0 {
+            let to = pop_lsb(&mut promo_caps) as u8;
+            add_promotions(&mut list, to - 9, to);
+        }
+        while caps != 0 {
+            let to = pop_lsb(&mut caps) as u8;
+            list.push(make_move(to - 9, to, FLAG_NONE));
+        }
+        // Push promotions (non-capture)
+        let mut promo_push = north(pawns) & !occ & promo_rank;
+        while promo_push != 0 {
+            let to = pop_lsb(&mut promo_push) as u8;
+            add_promotions(&mut list, to - 8, to);
+        }
+    } else {
+        let mut caps = south_west(pawns) & their_pieces;
+        let mut promo_caps = caps & promo_rank;
+        caps &= !promo_rank;
+        while promo_caps != 0 {
+            let to = pop_lsb(&mut promo_caps) as u8;
+            add_promotions(&mut list, to + 9, to);
+        }
+        while caps != 0 {
+            let to = pop_lsb(&mut caps) as u8;
+            list.push(make_move(to + 9, to, FLAG_NONE));
+        }
+        let mut caps = south_east(pawns) & their_pieces;
+        let mut promo_caps = caps & promo_rank;
+        caps &= !promo_rank;
+        while promo_caps != 0 {
+            let to = pop_lsb(&mut promo_caps) as u8;
+            add_promotions(&mut list, to + 7, to);
+        }
+        while caps != 0 {
+            let to = pop_lsb(&mut caps) as u8;
+            list.push(make_move(to + 7, to, FLAG_NONE));
+        }
+        let mut promo_push = south(pawns) & !occ & promo_rank;
+        while promo_push != 0 {
+            let to = pop_lsb(&mut promo_push) as u8;
+            add_promotions(&mut list, to + 8, to);
+        }
+    }
+
+    // En passant
+    if board.ep_square != NO_SQUARE && board.occupied() & (1u64 << board.ep_square) == 0 {
+        let mut attackers = pawn_attacks(flip_color(us), board.ep_square as u32) & pawns;
+        while attackers != 0 {
+            let from = pop_lsb(&mut attackers) as u8;
+            list.push(make_move(from, board.ep_square, FLAG_EN_PASSANT));
+        }
+    }
+
+    // Knights captures
+    let mut knights = board.pieces[KNIGHT as usize] & our_pieces;
+    while knights != 0 {
+        let from = pop_lsb(&mut knights) as u8;
+        let mut attacks = knight_attacks(from as u32) & their_pieces;
+        while attacks != 0 {
+            let to = pop_lsb(&mut attacks) as u8;
+            list.push(make_move(from, to, FLAG_NONE));
+        }
+    }
+
+    // Bishop captures
+    let mut bishops = board.pieces[BISHOP as usize] & our_pieces;
+    while bishops != 0 {
+        let from = pop_lsb(&mut bishops) as u8;
+        let mut attacks = bishop_attacks(from as u32, occ) & their_pieces;
+        while attacks != 0 {
+            let to = pop_lsb(&mut attacks) as u8;
+            list.push(make_move(from, to, FLAG_NONE));
+        }
+    }
+
+    // Rook captures
+    let mut rooks = board.pieces[ROOK as usize] & our_pieces;
+    while rooks != 0 {
+        let from = pop_lsb(&mut rooks) as u8;
+        let mut attacks = rook_attacks(from as u32, occ) & their_pieces;
+        while attacks != 0 {
+            let to = pop_lsb(&mut attacks) as u8;
+            list.push(make_move(from, to, FLAG_NONE));
+        }
+    }
+
+    // Queen captures
+    let mut queens = board.pieces[QUEEN as usize] & our_pieces;
+    while queens != 0 {
+        let from = pop_lsb(&mut queens) as u8;
+        let mut attacks = queen_attacks(from as u32, occ) & their_pieces;
+        while attacks != 0 {
+            let to = pop_lsb(&mut attacks) as u8;
+            list.push(make_move(from, to, FLAG_NONE));
+        }
+    }
+
+    // King captures
+    let ksq = board.king_sq(us);
+    let mut attacks = king_attacks(ksq as u32) & their_pieces;
+    while attacks != 0 {
+        let to = pop_lsb(&mut attacks) as u8;
+        list.push(make_move(ksq, to, FLAG_NONE));
+    }
+
+    list
+}
+
 /// Generate all legal moves (for perft and verification).
 pub fn generate_legal_moves(board: &Board) -> MoveList {
     let pseudo = generate_all_moves(board);

@@ -5,7 +5,7 @@ use crate::attacks::*;
 use crate::bitboard::*;
 use crate::board::Board;
 use crate::eval::see_value;
-use crate::movegen::{generate_all_moves, MoveList};
+use crate::movegen::{generate_all_moves, generate_captures, MoveList};
 use crate::see::see_ge;
 use crate::types::*;
 
@@ -529,10 +529,11 @@ pub struct QMovePicker {
 }
 
 impl QMovePicker {
-    pub fn new(board: &Board) -> Self {
+    pub fn new(board: &Board, in_check: bool) -> Self {
         let pinned = board.pinned();
         let checkers = board.checkers();
-        let moves = generate_all_moves(board);
+        // In check: generate all moves (need evasions). Otherwise: captures only.
+        let moves = if in_check { generate_all_moves(board) } else { generate_captures(board) };
         let mut picker = QMovePicker {
             moves,
             scores: [0; 256],
@@ -541,7 +542,7 @@ impl QMovePicker {
             checkers,
         };
 
-        // Score captures by MVV-LVA
+        // Score by MVV-LVA
         for i in 0..picker.moves.len {
             let mv = picker.moves.moves[i];
             let to = move_to(mv);
@@ -555,7 +556,7 @@ impl QMovePicker {
             } else if is_promotion(mv) {
                 picker.scores[i] = see_value(promotion_piece_type(mv));
             } else {
-                picker.scores[i] = -1_000_000; // non-captures scored low
+                picker.scores[i] = -1_000_000;
             }
         }
 
