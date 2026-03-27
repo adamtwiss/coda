@@ -722,7 +722,8 @@ fn negamax(
     let mut alpha_raised_count = 0;
 
     loop {
-        let mv = picker.next(board, &info.history, prev_move);
+        let ph_idx = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
+        let mv = picker.next(board, &info.history, prev_move, Some(&info.pawn_hist[ph_idx]));
         if mv == NO_MOVE { break; }
 
         let from = move_from(mv);
@@ -765,6 +766,14 @@ fn negamax(
                 if static_eval + futility_margin <= alpha {
                     info.stats.futility_prunes += 1; continue;
                 }
+            }
+
+            // Bad noisy pruning: prune losing captures when eval is far below alpha
+            if is_capture && !is_promo && depth <= 4
+                && static_eval > -INFINITY && static_eval + depth as i32 * 75 <= alpha
+                && !see_ge(board, mv, 0)
+            {
+                continue;
             }
 
             // SEE pruning (separate depth limits for captures and quiets)

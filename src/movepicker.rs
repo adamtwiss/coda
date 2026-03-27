@@ -160,7 +160,7 @@ impl MovePicker {
     }
 
     /// Get the next move to try. Returns NO_MOVE when exhausted.
-    pub fn next(&mut self, board: &Board, history: &History, prev_move: Move) -> Move {
+    pub fn next(&mut self, board: &Board, history: &History, prev_move: Move, pawn_hist: Option<&[[i16; 64]; 12]>) -> Move {
         loop {
             match self.stage {
                 Stage::TTMove => {
@@ -177,7 +177,7 @@ impl MovePicker {
                 }
                 Stage::GenerateMoves => {
                     self.moves = generate_all_moves(board);
-                    self.score_moves(board, history, prev_move);
+                    self.score_moves(board, history, prev_move, pawn_hist);
                     self.idx = 0;
                     self.stage = Stage::GoodCaptures;
                 }
@@ -296,7 +296,7 @@ impl MovePicker {
     }
 
     /// Score moves for sorting.
-    fn score_moves(&mut self, board: &Board, history: &History, prev_move: Move) {
+    fn score_moves(&mut self, board: &Board, history: &History, prev_move: Move, pawn_hist: Option<&[[i16; 64]; 12]>) {
         for i in 0..self.moves.len {
             let mv = self.moves.moves[i];
             let from = move_from(mv);
@@ -323,8 +323,8 @@ impl MovePicker {
             } else if is_promotion(mv) {
                 self.scores[i] = 9_000_000 + see_value(promotion_piece_type(mv));
             } else {
-                // Quiet: history score
-                self.scores[i] = history.quiet_score(board, mv, prev_move, None);
+                // Quiet: history + contHist + pawn history
+                self.scores[i] = history.quiet_score(board, mv, prev_move, pawn_hist);
             }
         }
     }
