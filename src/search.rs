@@ -388,7 +388,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         let score;
 
         // Aspiration windows
-        if depth >= 5 {
+        if depth >= 4 {
             let mut delta = 15i32;
             let mut alpha = (prev_score - delta).max(-INFINITY);
             let mut beta = (prev_score + delta).min(INFINITY);
@@ -838,8 +838,8 @@ fn negamax(
         // Alpha-reduce disabled: over-prunes with current move ordering strength.
         if new_depth < 0 { new_depth = 0; }
 
-        // LMR (exempt promotions)
-        if depth >= 3 && !is_promo && moves_tried > 1 + if is_pv { 1 } else { 0 } {
+        // LMR (exempt promotions and killers)
+        if depth >= 3 && !is_promo && !is_killer && moves_tried > 1 + if is_pv { 1 } else { 0 } {
             let mut r = if is_capture {
                 // Capture LMR: separate table (C=1.80), non-PV only
                 if !is_pv { lmr_cap_reduction(depth, moves_tried as i32) } else { 0 }
@@ -853,11 +853,7 @@ fn negamax(
                 if cut_node { r += 1; }
             }
 
-            // Don't reduce killers
-            let safe = safe_ply.min(127);
-            if !is_capture && (mv == info.history.killers[safe][0] || mv == info.history.killers[safe][1]) {
-                r -= 1;
-            }
+            // (killers are fully exempt from LMR via the condition above)
 
             // History-based adjustment (use `us` not board.side_to_move — board is post-make)
             if !is_capture {
