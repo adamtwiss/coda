@@ -227,13 +227,13 @@ impl TT {
         }
     }
 
-    /// Estimate hashfull (permille of used slots).
+    /// Estimate hashfull (permille of used slots — counts all non-empty, any generation).
     pub fn hashfull(&self) -> u32 {
         let sample = self.num_buckets.min(1000);
         let mut used = 0u32;
         for i in 0..sample {
             for slot in &self.buckets[i].slots {
-                if slot.data != 0 && slot.generation() == self.generation {
+                if slot.data != 0 {
                     used += 1;
                 }
             }
