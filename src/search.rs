@@ -1057,8 +1057,32 @@ fn quiescence(
         info.sel_depth = ply;
     }
 
+    // TT probe in QS
+    let tt_entry = info.tt.probe(board.hash);
+    let tt_score = if tt_entry.hit { score_from_tt(tt_entry.score, ply) } else { 0 };
+
+    // TT cutoff in QS (non-PV only)
+    if tt_entry.hit && tt_entry.depth >= 0 && beta - alpha == 1 {
+        match tt_entry.flag {
+            TT_FLAG_EXACT => return tt_score,
+            TT_FLAG_LOWER => {
+                if tt_score >= beta { return tt_score; }
+            }
+            TT_FLAG_UPPER => {
+                if tt_score <= alpha { return tt_score; }
+            }
+            _ => {}
+        }
+    }
+
     let in_check = board.in_check();
-    let static_eval = if in_check { -INFINITY } else { info.eval(board) };
+    let static_eval = if in_check {
+        -INFINITY
+    } else if tt_entry.hit {
+        tt_entry.static_eval
+    } else {
+        info.eval(board)
+    };
 
     if !in_check {
         if static_eval >= beta {
