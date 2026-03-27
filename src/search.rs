@@ -359,12 +359,33 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     if limits.movetime > 0 {
         info.time_limit = limits.movetime;
     } else if our_time > 0 {
-        let moves_left = if limits.movestogo > 0 { limits.movestogo as u64 } else { 30 };
-        info.time_limit = our_time / moves_left + our_inc / 2;
-        // Don't use more than 50% of remaining time
-        info.time_limit = info.time_limit.min(our_time / 2);
+        // Subtract move overhead (communication latency)
+        let overhead = 100u64; // 100ms default, matches GoChess MoveOverhead
+        let time_left = our_time.saturating_sub(overhead).max(1);
+
+        let moves_left = if limits.movestogo > 0 { limits.movestogo as u64 } else { 25 };
+
+        // Soft allocation: time/movesLeft + 80% of increment
+        let mut soft = time_left / moves_left + our_inc * 4 / 5;
+
+        // Cap at half remaining time
+        let max_alloc = time_left / 2;
+        if soft > max_alloc { soft = max_alloc; }
+
+        // Emergency: below 1 second, be very conservative
+        if time_left < 1000 {
+            let mut emergency = time_left / 10;
+            if our_inc > 0 && our_inc < emergency { emergency = our_inc; }
+            if emergency < 10 { emergency = 10; }
+            if soft > emergency { soft = emergency; }
+        }
+
+        // Floor at 10ms
+        if soft < 10 { soft = 10; }
+
+        info.time_limit = soft;
     } else if !limits.infinite {
-        info.time_limit = 0; // No time limit (depth-limited)
+        info.time_limit = 0;
     }
 
     info.max_depth = limits.depth;
