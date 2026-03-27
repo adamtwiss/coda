@@ -65,8 +65,10 @@ pub struct SearchInfo {
     pub sel_depth: i32,
     prev_moves: [Move; MAX_PLY],
     static_evals: [i32; MAX_PLY],
-    /// Pawn correction history: [color][pawn_hash % size]
+    /// Pawn correction history: [stm][pawn_hash % size]
     pawn_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
+    /// Non-pawn correction history: [stm][color][nonpawn_hash % size]
+    np_corr: Box<[[[i32; CORR_HIST_SIZE]; 2]; 2]>,
     /// Continuation correction history: [piece][to_square]
     cont_corr: Box<[[i32; 64]; 12]>,
     pub nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
@@ -88,6 +90,7 @@ impl SearchInfo {
             prev_moves: [NO_MOVE; MAX_PLY],
             static_evals: [0; MAX_PLY],
             pawn_corr: Box::new([[0; CORR_HIST_SIZE]; 2]),
+            np_corr: Box::new([[[0; CORR_HIST_SIZE]; 2]; 2]),
             cont_corr: Box::new([[0; 64]; 12]),
             nnue_net: None,
             nnue_acc: None,
@@ -123,6 +126,7 @@ impl SearchInfo {
 
     pub fn clear_correction_history(&mut self) {
         self.pawn_corr = Box::new([[0; CORR_HIST_SIZE]; 2]);
+        self.np_corr = Box::new([[[0; CORR_HIST_SIZE]; 2]; 2]);
         self.cont_corr = Box::new([[0; 64]; 12]);
     }
 
@@ -198,6 +202,14 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
     let pawn_idx = (board.pawn_hash as usize) % CORR_HIST_SIZE;
     let pawn_corr = info.pawn_corr[stm][pawn_idx] as i64;
 
+    // Non-pawn corrections (per color). Derive non-pawn key from hash ^ pawn_hash.
+    let np_key = board.hash ^ board.pawn_hash;
+    let np_idx = (np_key as usize) % CORR_HIST_SIZE;
+    let white_np_corr = info.np_corr[stm][WHITE as usize][np_idx] as i64;
+    // Use a different index for black NP (rotate the key)
+    let np_idx_b = (np_key.rotate_right(32) as usize) % CORR_HIST_SIZE;
+    let black_np_corr = info.np_corr[stm][BLACK as usize][np_idx_b] as i64;
+
     // Continuation correction (from opponent's last move)
     let cont_corr = if !board.undo_stack.is_empty() {
         let last = &board.undo_stack[board.undo_stack.len() - 1];
@@ -213,8 +225,8 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
         } else { 0 }
     } else { 0 };
 
-    // Weighted blend: pawn 512/1024, cont 104/1024 (simplified from GoChess)
-    let total_corr = (pawn_corr * 512 + cont_corr * 104) / 1024;
+    // Weighted blend: pawn 512, whiteNP 204, blackNP 204, cont 104 = 1024
+    let total_corr = (pawn_corr * 512 + white_np_corr * 204 + black_np_corr * 204 + cont_corr * 104) / 1024;
     let adjusted = raw_eval + (total_corr as i32) / CORR_HIST_GRAIN;
     adjusted.clamp(-MATE_SCORE + 100, MATE_SCORE - 100)
 }
@@ -237,6 +249,13 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     // Pawn correction
     let pawn_idx = (board.pawn_hash as usize) % CORR_HIST_SIZE;
     update_corr_entry(&mut info.pawn_corr[stm][pawn_idx], err, weight);
+
+    // Non-pawn corrections (per color)
+    let np_key = board.hash ^ board.pawn_hash;
+    let np_idx = (np_key as usize) % CORR_HIST_SIZE;
+    update_corr_entry(&mut info.np_corr[stm][WHITE as usize][np_idx], err, weight);
+    let np_idx_b = (np_key.rotate_right(32) as usize) % CORR_HIST_SIZE;
+    update_corr_entry(&mut info.np_corr[stm][BLACK as usize][np_idx_b], err, weight);
 
     // Continuation correction
     if !board.undo_stack.is_empty() {
@@ -344,9 +363,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 }
 
                 if result <= alpha {
-                    beta = (alpha + beta) / 2;
+                    // Fail low: contract beta more aggressively (GoChess: (3a+5b)/8)
+                    beta = (3 * alpha + 5 * beta) / 8;
                     alpha = (result - delta).max(-INFINITY);
                 } else if result >= beta {
+                    // Fail high: contract alpha (GoChess: (5a+3b)/8)
+                    alpha = (5 * alpha + 3 * beta) / 8;
                     beta = (result + delta).min(INFINITY);
                 } else {
                     asp_result = result;
@@ -762,6 +784,12 @@ fn negamax(
             if cut_node { r += 1; }
             if is_capture { r -= 1; }
 
+            // Don't reduce killers
+            let safe = safe_ply.min(127);
+            if !is_capture && (mv == info.history.killers[safe][0] || mv == info.history.killers[safe][1]) {
+                r -= 1;
+            }
+
             // History-based adjustment (use `us` not board.side_to_move — board is post-make)
             if !is_capture {
                 let from = move_from(mv);
@@ -991,14 +1019,15 @@ fn quiescence(
 
     if !in_check {
         if static_eval >= beta {
-            return static_eval;
+            // QS beta blending: dampen stand-pat cutoff at non-PV
+            return (static_eval + beta) / 2;
         }
         if static_eval > alpha {
             alpha = static_eval;
         }
 
         // Delta pruning
-        if static_eval + 240 + 900 <= alpha { // QS delta + queen value
+        if static_eval + 240 + 900 <= alpha {
             return alpha;
         }
     }
@@ -1054,6 +1083,11 @@ fn quiescence(
     // In check with no moves = checkmate
     if in_check && best_score == -INFINITY {
         return -MATE_SCORE + ply;
+    }
+
+    // QS capture fail-high blending
+    if best_score >= beta && !is_mate_score(best_score) {
+        return (best_score + beta) / 2;
     }
 
     best_score
