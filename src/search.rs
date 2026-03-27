@@ -7,7 +7,7 @@ use std::time::Instant;
 use crate::bitboard::*;
 use crate::board::Board;
 use crate::eval::{evaluate, evaluate_nnue, see_value};
-use crate::nnue::{NNUENet, NNUEAccumulator, DirtyPiece};
+use crate::nnue::DirtyPiece;
 use crate::movegen::generate_legal_moves;
 use crate::movepicker::*;
 use crate::see::see_ge;
@@ -415,7 +415,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             let mut delta = 15i32;
             let mut alpha = (prev_score - delta).max(-INFINITY);
             let mut beta = (prev_score + delta).min(INFINITY);
-            let mut asp_result = prev_score; // fallback
+            #[allow(unused_assignments)]
+            let mut asp_result = prev_score;
 
             loop {
                 let result = negamax(board, info, alpha, beta, depth, 0, false);
@@ -531,7 +532,7 @@ fn negamax(
     board: &mut Board,
     info: &mut SearchInfo,
     mut alpha: i32,
-    mut beta: i32,
+    beta: i32,
     mut depth: i32,
     ply: i32,
     cut_node: bool,
@@ -671,7 +672,7 @@ fn negamax(
 
     // Failing heuristic: detect significant position deterioration.
     // When eval has dropped well below 2-ply-ago eval, prune/reduce more aggressively.
-    let failing = !in_check && ply >= 2 && ply_u < MAX_PLY
+    let _failing = !in_check && ply >= 2 && ply_u < MAX_PLY
         && info.static_evals[ply_u - 2] > -INFINITY + 100
         && static_eval < info.static_evals[ply_u - 2] - (60 + 40 * depth as i32);
 
@@ -787,7 +788,7 @@ fn negamax(
     let mut n_quiets_tried = 0usize;
     let mut captures_tried: [(u8, u8, u8); 32] = [(0, 0, 0); 32]; // (piece, to, victim)
     let mut n_captures_tried = 0usize;
-    let mut alpha_raised_count = 0;
+    let mut _alpha_raised_count = 0;
 
     loop {
         let ph_idx = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
@@ -980,7 +981,7 @@ fn negamax(
 
             if score > alpha {
                 alpha = score;
-                alpha_raised_count += 1;
+                _alpha_raised_count += 1;
 
                 if score >= beta {
                     // Fail high: update history, killers, counter
@@ -1314,7 +1315,7 @@ pub fn bench(depth: i32, nnue_path: Option<&str>) -> u64 {
         info.history.clear();
         info.tt.new_search();
 
-        let mv = search(&mut board, &mut info, &limits);
+        let _mv = search(&mut board, &mut info, &limits);
         total_nodes += info.nodes;
     }
 

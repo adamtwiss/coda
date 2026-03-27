@@ -369,7 +369,7 @@ fn move_in_list(list: &MoveList, mv: Move) -> bool {
 fn fixup_move_flags(board: &Board, mv: Move) -> Move {
     let from = move_from(mv);
     let to = move_to(mv);
-    let flags = move_flags(mv);
+    let _flags = move_flags(mv);
 
     // Keep promotion flags as-is (they're encoded in the move)
     if is_promotion(mv) {

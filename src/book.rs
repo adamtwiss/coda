@@ -92,7 +92,7 @@ impl OpeningBook {
 }
 
 /// Match a Polyglot-encoded move against the legal move list.
-fn match_polyglot_move(pm: u16, legal: &crate::movegen::MoveList, board: &Board) -> Option<Move> {
+fn match_polyglot_move(pm: u16, legal: &crate::movegen::MoveList, _board: &Board) -> Option<Move> {
     let to_file = (pm & 7) as u8;
     let to_rank = ((pm >> 3) & 7) as u8;
     let from_file = ((pm >> 6) & 7) as u8;

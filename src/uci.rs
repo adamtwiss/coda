@@ -2,7 +2,6 @@
 
 use std::io::{self, BufRead};
 use std::sync::atomic::Ordering;
-use std::thread;
 
 use crate::board::Board;
 use crate::search::*;

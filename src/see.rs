@@ -108,7 +108,7 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
 }
 
 /// Find the least valuable attacker and its square.
-fn find_lva(board: &Board, stm_attackers: Bitboard, stm: Color) -> (u8, u32) {
+fn find_lva(board: &Board, stm_attackers: Bitboard, _stm: Color) -> (u8, u32) {
     for pt in 0..6u8 {
         let bb = board.pieces[pt as usize] & stm_attackers;
         if bb != 0 {

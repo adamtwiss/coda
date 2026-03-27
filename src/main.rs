@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod types;
 mod bitboard;
 mod zobrist;
