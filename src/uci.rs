@@ -100,7 +100,12 @@ fn parse_position(tokens: &[&str], board: &mut Board) {
         idx += 1;
         while idx < tokens.len() {
             if let Some(mv) = parse_uci_move(board, tokens[idx]) {
-                board.make_move(mv);
+                if !board.make_move(mv) {
+                    eprintln!("info string WARNING: make_move failed for UCI move {} (parsed as {})",
+                        tokens[idx], crate::types::move_to_uci(mv));
+                }
+            } else {
+                eprintln!("info string WARNING: failed to parse UCI move: {}", tokens[idx]);
             }
             idx += 1;
         }
@@ -204,6 +209,7 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo) {
 }
 
 /// Parse a UCI move string (e.g. "e2e4", "e7e8q") in the context of the current board.
+/// Matches against the generated legal move list to get correct flags.
 fn parse_uci_move(board: &Board, s: &str) -> Option<Move> {
     let bytes = s.as_bytes();
     if bytes.len() < 4 { return None; }
@@ -220,46 +226,44 @@ fn parse_uci_move(board: &Board, s: &str) -> Option<Move> {
     let from = crate::types::square(from_file, from_rank);
     let to = crate::types::square(to_file, to_rank);
 
-    // Detect promotion
-    let promo_flag = if bytes.len() > 4 {
+    // Detect promotion suffix
+    let promo_pt = if bytes.len() > 4 {
         match bytes[4] {
-            b'q' => FLAG_PROMOTE_Q,
-            b'r' => FLAG_PROMOTE_R,
-            b'b' => FLAG_PROMOTE_B,
-            b'n' => FLAG_PROMOTE_N,
-            _ => FLAG_NONE,
+            b'q' => Some(FLAG_PROMOTE_Q),
+            b'r' => Some(FLAG_PROMOTE_R),
+            b'b' => Some(FLAG_PROMOTE_B),
+            b'n' => Some(FLAG_PROMOTE_N),
+            _ => None,
         }
     } else {
-        FLAG_NONE
+        None
     };
 
-    if promo_flag != FLAG_NONE {
-        return Some(make_move(from, to, promo_flag));
-    }
-
-    // Detect special moves by context
-    let pt = board.piece_type_at(from);
-
-    // Castling: king moves 2 squares
-    if pt == KING {
-        let diff = (to as i32 - from as i32).abs();
-        if diff == 2 {
-            return Some(make_move(from, to, FLAG_CASTLE));
+    // Find the matching move in the legal move list
+    let legal = crate::movegen::generate_legal_moves(board);
+    for i in 0..legal.len {
+        let mv = legal.moves[i];
+        if move_from(mv) == from && move_to(mv) == to {
+            // For promotions, match the promotion type
+            if let Some(pf) = promo_pt {
+                if move_flags(mv) == pf {
+                    return Some(mv);
+                }
+            } else if !is_promotion(mv) {
+                return Some(mv);
+            }
         }
     }
 
-    // En passant
-    if pt == PAWN && to == board.ep_square {
-        return Some(make_move(from, to, FLAG_EN_PASSANT));
-    }
-
-    // Double pawn push
-    if pt == PAWN {
-        let diff = (to as i32 - from as i32).abs();
-        if diff == 16 {
-            return Some(make_move(from, to, FLAG_DOUBLE_PUSH));
+    // Fallback: if no promotion specified but there are promotion moves, pick queen
+    if promo_pt.is_none() {
+        for i in 0..legal.len {
+            let mv = legal.moves[i];
+            if move_from(mv) == from && move_to(mv) == to && move_flags(mv) == FLAG_PROMOTE_Q {
+                return Some(mv);
+            }
         }
     }
 
-    Some(make_move(from, to, FLAG_NONE))
+    None
 }
