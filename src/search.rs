@@ -719,8 +719,14 @@ fn negamax(
         let is_capture = board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT;
         let is_promo = is_promotion(mv);
 
-        // Pruning for non-root, non-PV, late moves
-        if !is_root && !is_pv && best_score > -TB_WIN && !in_check && depth <= 8 {
+        // Check if this is a special move (TT, killer, counter) — exempt from pruning
+        let safe = safe_ply.min(127);
+        let is_tt_move = tt_move != NO_MOVE && move_from(mv) == move_from(tt_move) && move_to(mv) == move_to(tt_move);
+        let is_killer = !is_capture && (mv == info.history.killers[safe][0] || mv == info.history.killers[safe][1]);
+
+        // Pruning for non-root, non-PV, late moves (exempt TT move and killers)
+        if !is_root && !is_pv && !is_tt_move && !is_killer
+            && best_score > -TB_WIN && !in_check && depth <= 8 {
             // Late Move Pruning (LMP) — matches GoChess: base + 50% if improving, 2/3 if failing
             let mut lmp_threshold = 3 + depth as usize * depth as usize;
             if improving && depth >= 3 { lmp_threshold += lmp_threshold / 2; }
@@ -1056,8 +1062,11 @@ fn quiescence(
 
     if !in_check {
         if static_eval >= beta {
-            // QS beta blending: dampen stand-pat cutoff at non-PV
-            return (static_eval + beta) / 2;
+            // QS beta blending: dampen stand-pat cutoff at non-PV only
+            if beta - alpha == 1 && !is_mate_score(static_eval) {
+                return (static_eval + beta) / 2;
+            }
+            return static_eval;
         }
         if static_eval > alpha {
             alpha = static_eval;
@@ -1122,8 +1131,8 @@ fn quiescence(
         return -MATE_SCORE + ply;
     }
 
-    // QS capture fail-high blending
-    if best_score >= beta && !is_mate_score(best_score) {
+    // QS capture fail-high blending (non-PV only)
+    if best_score >= beta && beta - alpha == 1 && !is_mate_score(best_score) {
         return (best_score + beta) / 2;
     }
 
