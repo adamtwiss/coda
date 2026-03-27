@@ -65,7 +65,7 @@ impl History {
             if prev_piece != NO_PIECE && (prev_piece as usize) < 12 {
                 let piece = board.piece_at(from);
                 if piece != NO_PIECE && (piece as usize) < 12 {
-                    score += self.cont_hist[prev_piece as usize][prev_to as usize][piece as usize][to as usize];
+                    score += self.cont_hist[prev_piece as usize][prev_to as usize][piece as usize][to as usize] * 3;
                 }
             }
         }

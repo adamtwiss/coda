@@ -791,7 +791,18 @@ fn negamax(
             if !is_capture {
                 let from = move_from(mv);
                 let to = move_to(mv);
-                let hist = info.history.main[us as usize][from as usize][to as usize];
+                let mut hist = info.history.main[us as usize][from as usize][to as usize];
+                // Add continuation history (3x weight, matching GoChess)
+                if prev_move != NO_MOVE {
+                    let prev_to = move_to(prev_move);
+                    let prev_piece = board.piece_at(prev_to);
+                    let our_piece = make_piece(us, moved_pt);
+                    if prev_piece != NO_PIECE && (prev_piece as usize) < 12
+                        && (our_piece as usize) < 12
+                    {
+                        hist += info.history.cont_hist[prev_piece as usize][prev_to as usize][our_piece as usize][to as usize] * 3;
+                    }
+                }
                 r -= (hist / 5000).clamp(-2, 2);
             }
 
