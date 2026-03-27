@@ -46,6 +46,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 println!("option name NNUEFile type string default <empty>");
                 println!("option name OwnBook type check default true");
                 println!("option name BookFile type string default <empty>");
+                println!("option name MoveOverhead type spin default 100 min 0 max 5000");
                 println!("uciok");
             }
             "isready" => {
@@ -243,6 +244,11 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo) {
             match info.load_nnue(value) {
                 Ok(_) => {}
                 Err(e) => eprintln!("info string Failed to load NNUE: {}", e),
+            }
+        }
+        "MoveOverhead" => {
+            if let Ok(ms) = value.parse::<u64>() {
+                info.move_overhead = ms.min(5000);
             }
         }
         _ => {}

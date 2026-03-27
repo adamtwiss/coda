@@ -86,6 +86,7 @@ pub struct SearchInfo {
     pub time_limit: u64,  // ms
     pub max_depth: i32,
     pub max_nodes: u64,
+    pub move_overhead: u64, // ms
     pub sel_depth: i32,
     prev_moves: [Move; MAX_PLY],
     static_evals: [i32; MAX_PLY],
@@ -113,6 +114,7 @@ impl SearchInfo {
             time_limit: 0,
             max_depth: 100,
             max_nodes: 0,
+            move_overhead: 100,
             sel_depth: 0,
             prev_moves: [NO_MOVE; MAX_PLY],
             static_evals: [0; MAX_PLY],
@@ -360,7 +362,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.time_limit = limits.movetime;
     } else if our_time > 0 {
         // Subtract move overhead (communication latency)
-        let overhead = 100u64; // 100ms default, matches GoChess MoveOverhead
+        let overhead = info.move_overhead;
         let time_left = our_time.saturating_sub(overhead).max(1);
 
         let moves_left = if limits.movestogo > 0 { limits.movestogo as u64 } else { 25 };
