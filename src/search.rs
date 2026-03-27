@@ -52,9 +52,29 @@ impl SearchLimits {
     }
 }
 
+/// Pruning counters for diagnostics.
+#[derive(Default)]
+pub struct PruneStats {
+    pub tt_cutoffs: u64,
+    pub tt_near_miss: u64,
+    pub nmp_attempts: u64,
+    pub nmp_cutoffs: u64,
+    pub rfp_cutoffs: u64,
+    pub razor_cutoffs: u64,
+    pub lmp_prunes: u64,
+    pub futility_prunes: u64,
+    pub history_prunes: u64,
+    pub see_prunes: u64,
+    pub probcut_cutoffs: u64,
+    pub lmr_searches: u64,
+    pub recapture_ext: u64,
+    pub qnodes: u64,
+}
+
 /// Search state for one thread.
 pub struct SearchInfo {
     pub nodes: u64,
+    pub stats: PruneStats,
     pub tt: TT,
     pub history: History,
     pub stop: AtomicBool,
@@ -79,6 +99,7 @@ impl SearchInfo {
     pub fn new(tt_mb: usize) -> Self {
         SearchInfo {
             nodes: 0,
+            stats: PruneStats::default(),
             tt: TT::new(tt_mb),
             history: History::new(),
             stop: AtomicBool::new(false),
@@ -511,9 +532,9 @@ fn negamax(
     // TT cutoff (non-PV only)
     if !is_pv && tt_entry.hit && tt_entry.depth >= depth {
         match tt_entry.flag {
-            TT_FLAG_EXACT => return tt_score,
+            TT_FLAG_EXACT => { info.stats.tt_cutoffs += 1; return tt_score; }
             TT_FLAG_LOWER => {
-                if tt_score >= beta {
+                if tt_score >= beta { info.stats.tt_cutoffs += 1;
                     // TT score dampening: blend toward beta to prevent inflation
                     if !is_mate_score(tt_score) {
                         return (3 * tt_score + beta) / 4;
@@ -522,7 +543,7 @@ fn negamax(
                 }
             }
             TT_FLAG_UPPER => {
-                if tt_score <= alpha { return tt_score; }
+                if tt_score <= alpha { info.stats.tt_cutoffs += 1; return tt_score; }
             }
             _ => {}
         }
@@ -534,10 +555,10 @@ fn negamax(
     {
         let margin = 80;
         if tt_entry.flag == TT_FLAG_LOWER && tt_score - margin >= beta {
-            return tt_score - margin;
+            info.stats.tt_near_miss += 1; return tt_score - margin;
         }
         if tt_entry.flag == TT_FLAG_UPPER && tt_score + margin <= alpha {
-            return tt_score + margin;
+            info.stats.tt_near_miss += 1; return tt_score + margin;
         }
     }
 
@@ -585,7 +606,7 @@ fn negamax(
         if static_eval + razor_margin <= alpha {
             let q_score = quiescence(board, info, alpha, beta, ply);
             if q_score <= alpha {
-                return q_score;
+                info.stats.razor_cutoffs += 1; return q_score;
             }
         }
     }
@@ -595,7 +616,7 @@ fn negamax(
     if !is_pv && !in_check && depth <= 7 && ply > 0 {
         let rfp_margin = if improving { depth as i32 * 70 } else { depth as i32 * 100 };
         if static_eval - rfp_margin >= beta {
-            return static_eval - rfp_margin;
+            info.stats.rfp_cutoffs += 1; return static_eval - rfp_margin;
         }
     }
 
@@ -607,6 +628,7 @@ fn negamax(
         if non_pawn != 0 {
             let r = 3 + depth / 3 + ((static_eval - beta) / 200).min(3);
 
+            info.stats.nmp_attempts += 1;
             board.make_null_move();
             if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::recompute()); }
             let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
@@ -621,18 +643,19 @@ fn negamax(
                 if depth >= 12 {
                     let v = negamax(board, info, beta - 1, beta, depth - r, ply + 1, false);
                     if v >= beta {
-                        return dampened;
+                        info.stats.nmp_cutoffs += 1; return dampened;
                     }
                 } else {
-                    return dampened;
+                    info.stats.nmp_cutoffs += 1; return dampened;
                 }
             }
         }
     }
 
-    // ProbCut
+    // ProbCut (with static eval pre-check gate)
     if !is_pv && !in_check && depth >= 5 {
         let probcut_beta = beta + 170;
+        if static_eval + 85 >= probcut_beta {
         let mut pc_picker = QMovePicker::new(board, false);
         let pc_in_check = in_check;
 
@@ -640,7 +663,7 @@ fn negamax(
             let mv = pc_picker.next(board, pc_in_check);
             if mv == NO_MOVE { break; }
 
-            if !see_ge(board, mv, probcut_beta - static_eval) { continue; }
+            if !see_ge(board, mv, 0) { continue; }
 
             let pc_moved_pt = board.piece_type_at(move_from(mv));
             let pc_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
@@ -659,9 +682,11 @@ fn negamax(
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
 
             if score >= probcut_beta {
+                info.stats.probcut_cutoffs += 1;
                 return score;
             }
         }
+        } // static eval pre-check gate
     }
 
     // IIR: Internal Iterative Reduction
@@ -695,21 +720,21 @@ fn negamax(
         let is_promo = is_promotion(mv);
 
         // Pruning for non-root, non-PV, late moves
-        if !is_root && !is_pv && best_score > -TB_WIN && !in_check {
+        if !is_root && !is_pv && best_score > -TB_WIN && !in_check && depth <= 8 {
             // Late Move Pruning (LMP) — matches GoChess: base + 50% if improving, 2/3 if failing
             let mut lmp_threshold = 3 + depth as usize * depth as usize;
             if improving && depth >= 3 { lmp_threshold += lmp_threshold / 2; }
             // failing LMP disabled: over-prunes at current strength
             // if failing { lmp_threshold = lmp_threshold * 2 / 3; }
             if !is_capture && !is_promo && moves_tried > lmp_threshold {
-                continue;
+                info.stats.lmp_prunes += 1; continue;
             }
 
             // History pruning for quiets (GoChess: depth <= 3)
             if !is_capture && !is_promo && depth <= 3 {
                 let hist = info.history.quiet_score(board, mv, prev_move);
                 if hist < -1500 * depth as i32 {
-                    continue;
+                    info.stats.history_prunes += 1; continue;
                 }
             }
 
@@ -719,18 +744,18 @@ fn negamax(
                 let lmr_depth = (depth - est_r).max(1);
                 let futility_margin = 60 + lmr_depth * 60;
                 if static_eval + futility_margin <= alpha {
-                    continue;
+                    info.stats.futility_prunes += 1; continue;
                 }
             }
 
             // SEE pruning (separate depth limits for captures and quiets)
             if is_capture && depth <= 6 {
                 if !see_ge(board, mv, -(depth as i32) * 100) {
-                    continue;
+                    info.stats.see_prunes += 1; continue;
                 }
             } else if !is_capture && depth <= 8 {
                 if !see_ge(board, mv, -20 * depth as i32 * depth as i32) {
-                    continue;
+                    info.stats.see_prunes += 1; continue;
                 }
             }
         }
@@ -763,6 +788,7 @@ fn negamax(
             let prev = &board.undo_stack[board.undo_stack.len() - 2];
             if prev.captured != NO_PIECE_TYPE && to == move_to(prev.mv) {
                 extension = 1;
+                info.stats.recapture_ext += 1;
             }
         }
 
@@ -792,7 +818,7 @@ fn negamax(
                 let from = move_from(mv);
                 let to = move_to(mv);
                 let mut hist = info.history.main[us as usize][from as usize][to as usize];
-                // Add continuation history (3x weight, matching GoChess)
+                // Add continuation history (1x weight for LMR adjustment)
                 if prev_move != NO_MOVE {
                     let prev_to = move_to(prev_move);
                     let prev_piece = board.piece_at(prev_to);
@@ -800,7 +826,7 @@ fn negamax(
                     if prev_piece != NO_PIECE && (prev_piece as usize) < 12
                         && (our_piece as usize) < 12
                     {
-                        hist += info.history.cont_hist[prev_piece as usize][prev_to as usize][our_piece as usize][to as usize] * 3;
+                        hist += info.history.cont_hist[prev_piece as usize][prev_to as usize][our_piece as usize][to as usize];
                     }
                 }
                 r -= (hist / 5000).clamp(-2, 2);
@@ -815,6 +841,7 @@ fn negamax(
 
             r = r.max(1).min(new_depth);
 
+            info.stats.lmr_searches += 1;
             // Reduced-depth search
             score = -negamax(board, info, -alpha - 1, -alpha, new_depth - r, ply + 1, true);
 
@@ -1014,6 +1041,7 @@ fn quiescence(
     }
 
     info.nodes += 1;
+    info.stats.qnodes += 1;
 
     if ply as usize >= MAX_PLY - 1 {
         return info.eval(board);
@@ -1138,6 +1166,25 @@ pub fn bench(depth: i32, nnue_path: Option<&str>) -> u64 {
         let mv = search(&mut board, &mut info, &limits);
         total_nodes += info.nodes;
     }
+
+    // Print pruning stats
+    let s = &info.stats;
+    eprintln!("=== Pruning Stats (cumulative across all bench positions) ===");
+    eprintln!("TT cutoffs:     {:>8}  ({:.1}% of nodes)", s.tt_cutoffs, s.tt_cutoffs as f64 / total_nodes as f64 * 100.0);
+    eprintln!("TT near-miss:   {:>8}", s.tt_near_miss);
+    eprintln!("NMP attempts:   {:>8}  cutoffs: {} ({:.0}%)", s.nmp_attempts, s.nmp_cutoffs,
+        if s.nmp_attempts > 0 { s.nmp_cutoffs as f64 / s.nmp_attempts as f64 * 100.0 } else { 0.0 });
+    eprintln!("RFP cutoffs:    {:>8}  ({:.1}% of nodes)", s.rfp_cutoffs, s.rfp_cutoffs as f64 / total_nodes as f64 * 100.0);
+    eprintln!("Razor cutoffs:  {:>8}", s.razor_cutoffs);
+    eprintln!("LMP prunes:     {:>8}", s.lmp_prunes);
+    eprintln!("Futility prunes:{:>8}", s.futility_prunes);
+    eprintln!("History prunes: {:>8}", s.history_prunes);
+    eprintln!("SEE prunes:     {:>8}", s.see_prunes);
+    eprintln!("ProbCut cutoffs:{:>8}", s.probcut_cutoffs);
+    eprintln!("LMR searches:   {:>8}  ({:.1}% of nodes)", s.lmr_searches, s.lmr_searches as f64 / total_nodes as f64 * 100.0);
+    eprintln!("Recapture ext:  {:>8}", s.recapture_ext);
+    eprintln!("QS nodes:       {:>8}  ({:.1}% of total)", s.qnodes, s.qnodes as f64 / total_nodes as f64 * 100.0);
+    eprintln!("Total nodes:    {:>8}", total_nodes);
 
     total_nodes
 }
