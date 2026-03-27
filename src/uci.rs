@@ -1,6 +1,8 @@
 /// UCI protocol implementation.
 
 use std::io::{self, BufRead};
+use std::sync::atomic::Ordering;
+use std::thread;
 
 use crate::board::Board;
 use crate::search::*;
@@ -47,6 +49,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 println!("option name OwnBook type check default true");
                 println!("option name BookFile type string default <empty>");
                 println!("option name MoveOverhead type spin default 100 min 0 max 5000");
+                println!("option name Ponder type check default false");
                 println!("uciok");
             }
             "isready" => {
@@ -63,8 +66,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 parse_position(&tokens, &mut board);
             }
             "go" => {
-                // Try opening book first
-                if use_book {
+                // Try opening book first (not in ponder mode)
+                let is_ponder = tokens.iter().any(|&t| t == "ponder");
+                if use_book && !is_ponder {
                     if let Some(ref book) = opening_book {
                         if let Some(book_move) = book.pick_move(&board) {
                             println!("bestmove {}", move_to_uci(book_move));
@@ -72,9 +76,22 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                         }
                     }
                 }
-                let limits = parse_go(&tokens);
+                let mut limits = parse_go(&tokens);
+                if is_ponder {
+                    limits.infinite = true;
+                }
+                // Run search synchronously (stop flag checked every 4096 nodes)
+                info.stop.store(false, Ordering::Relaxed);
                 let best_move = search(&mut board, &mut info, &limits);
                 println!("bestmove {}", move_to_uci(best_move));
+            }
+            "stop" => {
+                // Signal the search to stop (checked every 4096 nodes)
+                info.stop.store(true, Ordering::Relaxed);
+            }
+            "ponderhit" => {
+                // Stop pondering — the search will stop at the next check
+                info.stop.store(true, Ordering::Relaxed);
             }
             "setoption" => {
                 parse_option(&tokens, &mut info);
