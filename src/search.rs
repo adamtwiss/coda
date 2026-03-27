@@ -1063,7 +1063,7 @@ fn negamax(
                 r += 1;
             }
 
-            r = r.max(1).min(new_depth);
+            r = r.max(0).min(new_depth);
 
             info.stats.lmr_searches += 1;
             // Reduced-depth search
