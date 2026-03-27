@@ -27,6 +27,8 @@ pub struct Board {
     pub pieces: [Bitboard; 6],
     /// Bitboards by color (WHITE, BLACK)
     pub colors: [Bitboard; 2],
+    /// Mailbox: piece type at each square (NO_PIECE_TYPE if empty). O(1) lookup.
+    pub mailbox: [u8; 64],
 
     pub side_to_move: Color,
     pub castling: u8,        // 4-bit castling rights
@@ -69,6 +71,7 @@ impl Board {
         Board {
             pieces: [0; 6],
             colors: [0; 2],
+            mailbox: [NO_PIECE_TYPE; 64],
             side_to_move: WHITE,
             castling: 0,
             ep_square: NO_SQUARE,
@@ -91,19 +94,10 @@ impl Board {
         !self.occupied()
     }
 
-    /// Get piece type at a square, or NO_PIECE_TYPE.
-    #[inline]
+    /// Get piece type at a square, or NO_PIECE_TYPE. O(1) via mailbox.
+    #[inline(always)]
     pub fn piece_type_at(&self, sq: u8) -> u8 {
-        let bb = 1u64 << sq;
-        if self.occupied() & bb == 0 {
-            return NO_PIECE_TYPE;
-        }
-        for pt in 0..6u8 {
-            if self.pieces[pt as usize] & bb != 0 {
-                return pt;
-            }
-        }
-        NO_PIECE_TYPE // shouldn't happen
+        self.mailbox[sq as usize]
     }
 
     /// Get color at a square. Undefined if square is empty.
@@ -128,6 +122,7 @@ impl Board {
         let bb = 1u64 << sq;
         self.pieces[pt as usize] |= bb;
         self.colors[color as usize] |= bb;
+        self.mailbox[sq as usize] = pt;
     }
 
     /// Remove a piece from the board (no hash update).
@@ -136,6 +131,7 @@ impl Board {
         let bb = 1u64 << sq;
         self.pieces[pt as usize] ^= bb;
         self.colors[color as usize] ^= bb;
+        self.mailbox[sq as usize] = NO_PIECE_TYPE;
     }
 
     /// Put a piece on the board with hash update.
@@ -158,6 +154,8 @@ impl Board {
         let from_to = (1u64 << from) | (1u64 << to);
         self.pieces[pt as usize] ^= from_to;
         self.colors[color as usize] ^= from_to;
+        self.mailbox[from as usize] = NO_PIECE_TYPE;
+        self.mailbox[to as usize] = pt;
         let p = make_piece(color, pt);
         self.hash ^= piece_key(p, from) ^ piece_key(p, to);
     }
@@ -193,6 +191,7 @@ impl Board {
     pub fn set_fen(&mut self, fen: &str) {
         self.pieces = [0; 6];
         self.colors = [0; 2];
+        self.mailbox = [NO_PIECE_TYPE; 64];
         self.undo_stack.clear();
 
         let parts: Vec<&str> = fen.split_whitespace().collect();
@@ -582,6 +581,8 @@ impl Board {
         let from_to = (1u64 << from) | (1u64 << to);
         self.pieces[pt as usize] ^= from_to;
         self.colors[us as usize] ^= from_to;
+        self.mailbox[to as usize] = NO_PIECE_TYPE;
+        self.mailbox[from as usize] = pt;
 
         // Restore captured piece
         if flags == FLAG_EN_PASSANT {
@@ -603,6 +604,8 @@ impl Board {
             let rook_from_to = (1u64 << rook_from) | (1u64 << rook_to);
             self.pieces[ROOK as usize] ^= rook_from_to;
             self.colors[us as usize] ^= rook_from_to;
+            self.mailbox[rook_to as usize] = NO_PIECE_TYPE;
+            self.mailbox[rook_from as usize] = ROOK;
         }
 
         // Restore state
