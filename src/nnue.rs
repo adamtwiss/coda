@@ -268,6 +268,58 @@ unsafe fn simd_screlu_dot(acc: &[i16], weights: &[i16], h: usize) -> i64 {
     hsum_epi64(_mm256_add_epi64(sum0, sum1))
 }
 
+/// Fast SCReLU dot product using int8-quantized weights.
+/// Since v ∈ [0,255] and w_i8 ∈ [-127,127], v*w fits in i16 (max 255*127 = 32385).
+/// Then madd_epi16(v, v*w) gives pairwise i32 sums of v²*w, staying in i16/i32.
+/// Returns i32 sum (no i64 needed for h ≤ 2048).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_screlu_dot_i8(acc: &[i16], weights_i8: &[i16], h: usize) -> i32 {
+    let zero = _mm256_setzero_si256();
+    let qa = _mm256_set1_epi16(QA as i16);
+    let mut sum0 = _mm256_setzero_si256(); // 8 × i32
+    let mut sum1 = _mm256_setzero_si256(); // 8 × i32
+
+    let mut i = 0;
+    while i + 32 <= h {
+        // First 16 elements
+        let v0 = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
+        let c0 = _mm256_min_epi16(_mm256_max_epi16(v0, zero), qa);
+        let w0 = _mm256_loadu_si256(weights_i8.as_ptr().add(i) as *const __m256i);
+        let vw0 = _mm256_mullo_epi16(c0, w0); // v*w in i16 (fits: 255*127=32385)
+        sum0 = _mm256_add_epi32(sum0, _mm256_madd_epi16(c0, vw0)); // pairwise v*(v*w) = v²*w in i32
+
+        // Second 16 elements
+        let v1 = _mm256_loadu_si256(acc.as_ptr().add(i + 16) as *const __m256i);
+        let c1 = _mm256_min_epi16(_mm256_max_epi16(v1, zero), qa);
+        let w1 = _mm256_loadu_si256(weights_i8.as_ptr().add(i + 16) as *const __m256i);
+        let vw1 = _mm256_mullo_epi16(c1, w1);
+        sum1 = _mm256_add_epi32(sum1, _mm256_madd_epi16(c1, vw1));
+
+        i += 32;
+    }
+
+    while i < h {
+        let v = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
+        let clamped = _mm256_min_epi16(_mm256_max_epi16(v, zero), qa);
+        let w = _mm256_loadu_si256(weights_i8.as_ptr().add(i) as *const __m256i);
+        let vw = _mm256_mullo_epi16(clamped, w);
+        sum0 = _mm256_add_epi32(sum0, _mm256_madd_epi16(clamped, vw));
+        i += 16;
+    }
+
+    let total = _mm256_add_epi32(sum0, sum1);
+    // Horizontal sum of 8 × i32
+    let lo = _mm256_castsi256_si128(total);
+    let hi = _mm256_extracti128_si256(total, 1);
+    let sum128 = _mm_add_epi32(lo, hi);
+    let hi64 = _mm_unpackhi_epi64(sum128, sum128);
+    let sum64 = _mm_add_epi32(sum128, hi64);
+    let hi32 = _mm_shuffle_epi32(sum64, 0b_00_00_00_01);
+    let sum32 = _mm_add_epi32(sum64, hi32);
+    _mm_cvtsi128_si32(sum32)
+}
+
 /// Horizontal sum of 8 × i32 in a __m256i to i64.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
@@ -314,6 +366,10 @@ pub struct NNUENet {
     pub input_weights: Vec<i16>,  // [NNUE_INPUT_SIZE × hidden_size]
     pub input_biases: Vec<i16>,   // [hidden_size]
     pub output_weights: Vec<i16>, // [NNUE_OUTPUT_BUCKETS × 2 × hidden_size]
+    /// Quantized output weights for fast SCReLU: i16 but clamped to [-128, 127] range.
+    /// Stored alongside scale factor per bucket for precision recovery.
+    pub output_weights_i8: Vec<i16>, // [NNUE_OUTPUT_BUCKETS × 2 × hidden_size], values in i8 range
+    pub output_scale: [f32; NNUE_OUTPUT_BUCKETS], // per-bucket scale factor
     pub output_bias: [i32; NNUE_OUTPUT_BUCKETS],
     pub use_screlu: bool,
     pub has_avx2: bool,
@@ -388,11 +444,53 @@ impl NNUENet {
             println!("info string AVX2 SIMD detected — using vectorised NNUE inference");
         }
 
+        // Quantize output weights to i8 range for fast SCReLU dot product.
+        // Per-bucket scale: max_abs(weights) / 127.
+        // This lets us use mullo_epi16 + madd_epi16 since v*w_i8 fits in i16.
+        let out_width = 2 * hidden_size;
+        let mut output_weights_i8 = vec![0i16; NNUE_OUTPUT_BUCKETS * out_width];
+        let mut output_scale = [1.0f32; NNUE_OUTPUT_BUCKETS];
+
+        if use_screlu {
+            for bucket in 0..NNUE_OUTPUT_BUCKETS {
+                let off = bucket * out_width;
+                let slice = &output_weights[off..off + out_width];
+                let max_abs = slice.iter().map(|&w| (w as i32).abs()).max().unwrap_or(1).max(1);
+                let scale = max_abs as f32 / 127.0;
+                output_scale[bucket] = scale;
+
+                for j in 0..out_width {
+                    let quantized = ((output_weights[off + j] as f32 / scale).round() as i32).clamp(-127, 127);
+                    output_weights_i8[off + j] = quantized as i16;
+                }
+            }
+
+            // Report quantization stats
+            let total = output_weights.len();
+            let mut max_err: f32 = 0.0;
+            let mut sum_err: f64 = 0.0;
+            for bucket in 0..NNUE_OUTPUT_BUCKETS {
+                let off = bucket * out_width;
+                let scale = output_scale[bucket];
+                for j in 0..out_width {
+                    let orig = output_weights[off + j] as f32;
+                    let reconstructed = output_weights_i8[off + j] as f32 * scale;
+                    let err = (orig - reconstructed).abs();
+                    max_err = max_err.max(err);
+                    sum_err += err as f64;
+                }
+            }
+            println!("info string SCReLU int8 quantization: max_err={:.1} avg_err={:.2}",
+                max_err, sum_err / total as f64);
+        }
+
         Ok(NNUENet {
             hidden_size,
             input_weights,
             input_biases,
             output_weights,
+            output_weights_i8,
+            output_scale,
             output_bias,
             use_screlu,
             has_avx2,
@@ -414,6 +512,14 @@ impl NNUENet {
         &self.output_weights[off..off + w]
     }
 
+    /// Get int8-quantized output weight row for a bucket.
+    #[inline]
+    fn output_weight_row_i8(&self, bucket: usize) -> &[i16] {
+        let w = 2 * self.hidden_size;
+        let off = bucket * w;
+        &self.output_weights_i8[off..off + w]
+    }
+
     /// Forward pass: CReLU or SCReLU activation → dot product with output weights.
     /// Returns centipawns from side-to-move perspective.
     pub fn forward(&self, acc: &NNUEAccumulator, stm: u8, piece_count: u32) -> i32 {
@@ -432,10 +538,17 @@ impl NNUENet {
         #[cfg(target_arch = "x86_64")]
         if self.has_avx2 && h % 16 == 0 {
             if self.use_screlu {
-                // SAFETY: has_avx2 is true, h is multiple of 16
+                // Fast path: int8-quantized weights (mullo+madd, no i16→i32 unpack)
+                let out_w_i8 = self.output_weight_row_i8(bucket);
+                let scale = self.output_scale[bucket];
                 unsafe {
-                    output += simd_screlu_dot(stm_acc, &out_w[..h], h);
-                    output += simd_screlu_dot(ntm_acc, &out_w[h..], h);
+                    let stm_sum = simd_screlu_dot_i8(stm_acc, &out_w_i8[..h], h) as i64;
+                    let ntm_sum = simd_screlu_dot_i8(ntm_acc, &out_w_i8[h..], h) as i64;
+                    if scale == 1.0 {
+                        output += stm_sum + ntm_sum;
+                    } else {
+                        output += ((stm_sum + ntm_sum) as f64 * scale as f64) as i64;
+                    }
                 }
                 output /= QA as i64;
             } else {
