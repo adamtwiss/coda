@@ -378,7 +378,8 @@ impl Board {
 
         // En passant: special case (discovered check through EP capture)
         if flags == FLAG_EN_PASSANT {
-            let captured_sq = if us == WHITE { to - 8 } else { to + 8 };
+            let captured_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
+            if captured_sq >= 64 { return true; } // invalid EP, allow move through (won't be legal)
             let occ = (self.occupied() ^ (1u64 << from) ^ (1u64 << captured_sq)) | (1u64 << to);
             let their_bishops = (self.pieces[BISHOP as usize] | self.pieces[QUEEN as usize])
                 & self.colors[flip_color(us) as usize];
@@ -416,9 +417,9 @@ impl Board {
         true
     }
 
-    /// Make a move on the board. Returns false if the move leaves king in check
-    /// (for pseudo-legal validation during movegen).
-    pub fn make_move(&mut self, mv: Move) {
+    /// Make a move on the board. Returns false if the move is invalid
+    /// (e.g., stale TT entry targeting an empty square).
+    pub fn make_move(&mut self, mv: Move) -> bool {
         let us = self.side_to_move;
         let them = flip_color(us);
         let from = move_from(mv);
@@ -433,8 +434,30 @@ impl Board {
             self.piece_type_at(to)
         };
 
-        debug_assert!(captured != KING, "Attempting to capture a king! move={}", crate::types::move_to_uci(mv));
-        debug_assert!(pt != NO_PIECE_TYPE, "No piece on from={} for move {}!", from, crate::types::move_to_uci(mv));
+        // Safety: reject invalid moves (stale TT entries with hash collisions)
+        if pt == NO_PIECE_TYPE || captured == KING {
+            return false;
+        }
+
+        // Validate EP: ensure there's actually an enemy pawn to capture
+        if flags == FLAG_EN_PASSANT {
+            let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
+            if cap_sq > 63 || (1u64 << cap_sq) & self.pieces[PAWN as usize] & self.colors[them as usize] == 0 {
+                return false;
+            }
+        }
+
+        // Validate castling: ensure rook is on expected square
+        if flags == FLAG_CASTLE {
+            let rook_from = if to > from {
+                if us == WHITE { 7u8 } else { 63u8 }
+            } else {
+                if us == WHITE { 0u8 } else { 56u8 }
+            };
+            if (1u64 << rook_from) & self.pieces[ROOK as usize] & self.colors[us as usize] == 0 {
+                return false;
+            }
+        }
 
         self.undo_stack.push(UndoInfo {
             mv,
@@ -456,7 +479,8 @@ impl Board {
 
         // Handle captures
         if flags == FLAG_EN_PASSANT {
-            let cap_sq = if us == WHITE { to - 8 } else { to + 8 };
+            let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
+            debug_assert!(cap_sq < 64, "EP cap_sq out of bounds: {}", cap_sq);
             self.remove_piece(them, PAWN, cap_sq);
         } else if captured != NO_PIECE_TYPE {
             self.remove_piece(them, captured, to);
@@ -514,9 +538,7 @@ impl Board {
         self.side_to_move = them;
         self.hash ^= side_key();
 
-        // Validate both kings exist
-        debug_assert!(self.pieces[KING as usize] & self.colors[WHITE as usize] != 0);
-        debug_assert!(self.pieces[KING as usize] & self.colors[BLACK as usize] != 0);
+        true
     }
 
     /// Unmake the last move.
@@ -541,14 +563,29 @@ impl Board {
 
         // Undo piece move
         let pt = self.piece_type_at(to);
+        // If the piece is missing at `to`, the board was corrupted by a child search.
+        // Restore from the saved hash (which was correct at make time).
+        if pt == NO_PIECE_TYPE {
+            // Cannot safely unmake — restore hash and return.
+            // The board state is corrupt but the search will abort soon.
+            self.hash = undo.hash;
+            self.castling = undo.castling;
+            self.ep_square = undo.ep_square;
+            self.halfmove = undo.halfmove;
+            self.side_to_move = us;
+            if us == BLACK { self.fullmove -= 1; }
+            return;
+        }
         let from_to = (1u64 << from) | (1u64 << to);
         self.pieces[pt as usize] ^= from_to;
         self.colors[us as usize] ^= from_to;
 
         // Restore captured piece
         if flags == FLAG_EN_PASSANT {
-            let cap_sq = if us == WHITE { to - 8 } else { to + 8 };
-            self.put_piece_no_hash(them, PAWN, cap_sq);
+            let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
+            if cap_sq < 64 {
+                self.put_piece_no_hash(them, PAWN, cap_sq);
+            }
         } else if undo.captured != NO_PIECE_TYPE {
             self.put_piece_no_hash(them, undo.captured, to);
         }

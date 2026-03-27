@@ -10,6 +10,7 @@ mod tt;
 mod movepicker;
 mod search;
 mod uci;
+mod epd;
 
 use board::Board;
 use movegen::{perft, perft_divide};
@@ -107,6 +108,12 @@ fn main() {
             0
         };
         println!("\n{} nodes {} nps", nodes, nps);
+    } else if args.len() > 1 && args[1] == "epd" {
+        // EPD test suite
+        let path = args.get(2).map(|s| s.as_str()).unwrap_or("testdata/wac.epd");
+        let time: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(5000);
+        let max: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
+        epd::run_epd(path, time, max);
     } else if args.len() > 1 {
         println!("Coda Chess Engine");
         println!("Usage:");
@@ -114,6 +121,7 @@ fn main() {
         println!("  coda bench [depth]             Search benchmark (default depth 13)");
         println!("  coda perft [depth] [fen...]    Perft with divide");
         println!("  coda perft-bench               Perft benchmark suite");
+        println!("  coda epd <file> [time] [max]   Run EPD test suite");
     } else {
         // Default: UCI mode
         uci::uci_loop();

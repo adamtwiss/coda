@@ -24,7 +24,7 @@ pub fn uci_loop() {
         match tokens[0] {
             "uci" => {
                 println!("id name Coda");
-                println!("id author Adam Sherwood");
+                println!("id author Adam Twiss");
                 println!("option name Hash type spin default 64 min 1 max 4096");
                 println!("uciok");
             }

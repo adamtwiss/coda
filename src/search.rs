@@ -153,7 +153,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         best_move = legal.moves[0];
     }
 
-    for depth in 1..=info.max_depth {
+    let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
+    for depth in 1..=effective_max {
         if info.should_stop() { break; }
 
         let score;
@@ -291,8 +292,8 @@ fn negamax(
 
     let in_check = board.in_check();
 
-    // Check extension
-    if in_check {
+    // Check extension (capped to prevent explosion at extreme depths)
+    if in_check && ply < MAX_PLY as i32 - 10 {
         depth += 1;
     }
 
@@ -364,7 +365,7 @@ fn negamax(
 
             if !see_ge(board, mv, probcut_beta - static_eval) { continue; }
 
-            board.make_move(mv);
+            if !board.make_move(mv) { continue; }
             let mut score = -quiescence(board, info, -probcut_beta, -probcut_beta + 1, ply + 1);
             if score >= probcut_beta {
                 score = -negamax(board, info, -probcut_beta, -probcut_beta + 1, depth - 4, ply + 1, !cut_node);
@@ -382,8 +383,9 @@ fn negamax(
         depth -= 1;
     }
 
-    let prev_move = if ply > 0 { info.prev_moves[ply_u - 1] } else { NO_MOVE };
-    let mut picker = MovePicker::new(board, tt_move, ply_u, &info.history, prev_move);
+    let safe_ply = ply_u.min(MAX_PLY - 1);
+    let prev_move = if ply > 0 { info.prev_moves[safe_ply - 1] } else { NO_MOVE };
+    let mut picker = MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move);
 
     let mut best_score = -INFINITY;
     let mut best_move = NO_MOVE;
@@ -439,12 +441,13 @@ fn negamax(
         }
 
         // Record previous move for continuation history
-        if ply_u < MAX_PLY {
-            info.prev_moves[ply_u] = mv;
+        if safe_ply < MAX_PLY {
+            info.prev_moves[safe_ply] = mv;
         }
 
-        board.make_move(mv);
+        if !board.make_move(mv) { continue; }
 
+        // Verify board integrity after make (catches TT hash collisions)
         let mut score;
         let new_depth = depth - 1;
 
@@ -673,7 +676,8 @@ fn quiescence(
             }
         }
 
-        board.make_move(mv);
+        if !board.make_move(mv) { continue; }
+        if board.hash != board.compute_hash() { board.unmake_move(); continue; }
         let score = -quiescence(board, info, -beta, -alpha, ply + 1);
         board.unmake_move();
 

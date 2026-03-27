@@ -155,9 +155,12 @@ impl MovePicker {
             match self.stage {
                 Stage::TTMove => {
                     self.stage = Stage::GenerateMoves;
-                    if self.tt_move != NO_MOVE && board.is_legal(self.tt_move, self.pinned, self.checkers) {
-                        // Verify the TT move is pseudo-legal (quick check)
-                        if is_pseudo_legal(board, self.tt_move) {
+                    if self.tt_move != NO_MOVE {
+                        // Re-derive flags from board state to prevent stale flag corruption
+                        self.tt_move = fixup_move_flags(board, self.tt_move);
+                        if is_pseudo_legal(board, self.tt_move)
+                            && board.is_legal(self.tt_move, self.pinned, self.checkers)
+                        {
                             return self.tt_move;
                         }
                     }
@@ -198,8 +201,8 @@ impl MovePicker {
 
                     // Try killer 1
                     if self.killer1 != NO_MOVE && self.killer1 != self.tt_move {
+                        self.killer1 = fixup_move_flags(board, self.killer1);
                         if is_pseudo_legal(board, self.killer1) && board.is_legal(self.killer1, self.pinned, self.checkers) {
-                            // Don't return captures as killers
                             let to = move_to(self.killer1);
                             if board.piece_type_at(to) == NO_PIECE_TYPE {
                                 return self.killer1;
@@ -209,6 +212,7 @@ impl MovePicker {
 
                     // Try killer 2
                     if self.killer2 != NO_MOVE && self.killer2 != self.tt_move && self.killer2 != self.killer1 {
+                        self.killer2 = fixup_move_flags(board, self.killer2);
                         if is_pseudo_legal(board, self.killer2) && board.is_legal(self.killer2, self.pinned, self.checkers) {
                             let to = move_to(self.killer2);
                             if board.piece_type_at(to) == NO_PIECE_TYPE {
@@ -226,6 +230,7 @@ impl MovePicker {
                         && self.counter_move != self.killer1
                         && self.counter_move != self.killer2
                     {
+                        self.counter_move = fixup_move_flags(board, self.counter_move);
                         if is_pseudo_legal(board, self.counter_move) && board.is_legal(self.counter_move, self.pinned, self.checkers) {
                             let to = move_to(self.counter_move);
                             if board.piece_type_at(to) == NO_PIECE_TYPE {
@@ -324,6 +329,47 @@ impl MovePicker {
         self.idx += 1;
         mv
     }
+}
+
+/// Re-derive move flags from the board state. TT/killer moves may have stale flags.
+fn fixup_move_flags(board: &Board, mv: Move) -> Move {
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let flags = move_flags(mv);
+
+    // Keep promotion flags as-is (they're encoded in the move)
+    if is_promotion(mv) {
+        return mv;
+    }
+
+    let pt = board.piece_type_at(from);
+
+    // Re-derive EP: must be pawn moving to ep_square diagonally
+    if pt == PAWN && to == board.ep_square && board.ep_square != NO_SQUARE {
+        let diff = (to as i32 - from as i32).abs();
+        if diff == 7 || diff == 9 {
+            return make_move(from, to, FLAG_EN_PASSANT);
+        }
+    }
+
+    // Re-derive castling: king moving 2 squares
+    if pt == KING {
+        let diff = (to as i32 - from as i32).abs();
+        if diff == 2 {
+            return make_move(from, to, FLAG_CASTLE);
+        }
+    }
+
+    // Re-derive double push: pawn moving 2 ranks
+    if pt == PAWN {
+        let diff = (to as i32 - from as i32).abs();
+        if diff == 16 {
+            return make_move(from, to, FLAG_DOUBLE_PUSH);
+        }
+    }
+
+    // Normal move
+    make_move(from, to, FLAG_NONE)
 }
 
 /// Thorough pseudo-legality check for TT/killer/counter moves.
