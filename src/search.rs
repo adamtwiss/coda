@@ -802,7 +802,7 @@ fn negamax(
             // failing LMR disabled: over-prunes at current strength
             // if failing { r += 1; }
 
-            r = r.max(0).min(new_depth);
+            r = r.max(1).min(new_depth);
 
             // Reduced-depth search
             score = -negamax(board, info, -alpha - 1, -alpha, new_depth - r, ply + 1, true);
