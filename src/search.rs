@@ -553,6 +553,12 @@ fn negamax(
         ply_u >= MAX_PLY || static_eval > info.static_evals[ply_u - 2]
     );
 
+    // Failing heuristic: detect significant position deterioration.
+    // When eval has dropped well below 2-ply-ago eval, prune/reduce more aggressively.
+    let failing = !in_check && ply >= 2 && ply_u < MAX_PLY
+        && info.static_evals[ply_u - 2] > -INFINITY + 100
+        && static_eval < info.static_evals[ply_u - 2] - (60 + 40 * depth as i32);
+
     // Razoring
     if !is_pv && !in_check && depth <= 3 {
         let razor_margin = 400 + depth as i32 * 100;
@@ -653,6 +659,7 @@ fn negamax(
     let mut moves_tried = 0;
     let mut quiets_tried = [NO_MOVE; 64];
     let mut n_quiets_tried = 0usize;
+    let mut alpha_raised_count = 0;
 
     loop {
         let mv = picker.next(board, &info.history, prev_move);
@@ -666,12 +673,11 @@ fn negamax(
 
         // Pruning for non-root, non-PV, late moves
         if !is_root && best_score > -TB_WIN && !in_check {
-            // Late Move Pruning (LMP) — more aggressive when not improving
-            let lmp_threshold = if improving {
-                3 + depth as usize * depth as usize
-            } else {
-                (3 + depth as usize * depth as usize) / 2
-            };
+            // Late Move Pruning (LMP)
+            let mut lmp_threshold = 3 + depth as usize * depth as usize;
+            if improving && depth >= 3 { lmp_threshold += lmp_threshold / 2; }
+            if !improving { lmp_threshold /= 2; }
+            if failing { lmp_threshold = lmp_threshold * 2 / 3; }
             if !is_capture && !is_promo && moves_tried > lmp_threshold {
                 continue;
             }
@@ -741,6 +747,12 @@ fn negamax(
         let mut score;
         let mut new_depth = depth - 1 + extension;
 
+        // Alpha-reduce: after alpha has been raised, reduce subsequent moves by 1 ply
+        if alpha_raised_count > 0 {
+            new_depth -= 1;
+        }
+        if new_depth < 0 { new_depth = 0; }
+
         // LMR
         if depth >= 3 && moves_tried > 1 + if is_pv { 1 } else { 0 } {
             let mut r = lmr_reduction(depth, moves_tried as i32);
@@ -757,6 +769,9 @@ fn negamax(
                 let hist = info.history.main[us as usize][from as usize][to as usize];
                 r -= (hist / 5000).clamp(-2, 2);
             }
+
+            // Reduce more when position is deteriorating
+            if failing { r += 1; }
 
             r = r.max(1).min(new_depth);
 
@@ -800,6 +815,7 @@ fn negamax(
 
             if score > alpha {
                 alpha = score;
+                alpha_raised_count += 1;
 
                 if score >= beta {
                     // Fail high: update history, killers, counter
