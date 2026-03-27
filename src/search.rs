@@ -806,53 +806,16 @@ fn negamax(
         let is_tt_move = tt_move != NO_MOVE && move_from(mv) == move_from(tt_move) && move_to(mv) == move_to(tt_move);
         let is_killer = !is_capture && (mv == info.history.killers[safe][0] || mv == info.history.killers[safe][1]);
 
-        // Pruning for non-root, non-PV, late moves (exempt TT move and killers)
+        // Pre-make pruning: only things that don't need gives-check info
+        // History pruning (pre-make, doesn't need check detection)
         if !is_root && !is_pv && !is_tt_move && !is_killer
-            && best_score > -TB_WIN && !in_check && depth <= 8 {
-            // Late Move Pruning (LMP) — matches GoChess: base + 50% if improving, 2/3 if failing
-            let mut lmp_threshold = 3 + depth as usize * depth as usize;
-            if improving && depth >= 3 { lmp_threshold += lmp_threshold / 2; }
-            // failing LMP disabled: over-prunes at current strength
-            // if failing { lmp_threshold = lmp_threshold * 2 / 3; }
-            if !is_capture && !is_promo && moves_tried > lmp_threshold {
-                info.stats.lmp_prunes += 1; continue;
-            }
-
-            // History pruning for quiets (GoChess: depth <= 3, !improving)
+            && best_score > -TB_WIN && !in_check
+        {
             if !is_capture && !is_promo && depth <= 3 && !improving {
-                let ph_idx = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
-                let hist = info.history.quiet_score(board, mv, prev_move, Some(&info.pawn_hist[ph_idx]));
+                let ph_idx2 = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
+                let hist = info.history.quiet_score(board, mv, prev_move, Some(&info.pawn_hist[ph_idx2]));
                 if hist < -1500 * depth as i32 {
                     info.stats.history_prunes += 1; continue;
-                }
-            }
-
-            // Futility pruning (uses estimated LMR depth)
-            if !is_capture && !is_promo && depth <= 8 {
-                let est_r = lmr_reduction(depth, moves_tried as i32);
-                let lmr_depth = (depth - est_r).max(1);
-                let futility_margin = 60 + lmr_depth * 60;
-                if static_eval + futility_margin <= alpha {
-                    info.stats.futility_prunes += 1; continue;
-                }
-            }
-
-            // Bad noisy pruning: prune losing captures when eval is far below alpha
-            if is_capture && !is_promo && depth <= 4
-                && static_eval > -INFINITY && static_eval + depth as i32 * 75 <= alpha
-                && !see_ge(board, mv, 0)
-            {
-                continue;
-            }
-
-            // SEE pruning (separate depth limits for captures and quiets)
-            if is_capture && depth <= 6 {
-                if !see_ge(board, mv, -(depth as i32) * 100) {
-                    info.stats.see_prunes += 1; continue;
-                }
-            } else if !is_capture && depth <= 8 {
-                if !see_ge(board, mv, -20 * depth as i32 * depth as i32) {
-                    info.stats.see_prunes += 1; continue;
                 }
             }
         }
@@ -879,6 +842,66 @@ fn negamax(
 
         moves_tried += 1;
 
+        // Post-make pruning: now we can detect gives-check
+        let gives_check = board.in_check(); // opponent is now in check = our move gave check
+
+        if !is_root && !is_pv && !is_tt_move && !is_killer
+            && best_score > -TB_WIN && !in_check && depth <= 8
+        {
+            // Bad noisy: prune losing captures when eval is far below alpha
+            if is_capture && !is_promo && !gives_check && depth <= 4
+                && static_eval > -INFINITY && static_eval + depth as i32 * 75 <= alpha
+                && !see_ge(board, mv, 0)
+            {
+                board.unmake_move();
+                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                moves_tried -= 1;
+                continue;
+            }
+
+            // LMP (exempt checks)
+            let mut lmp_threshold = 3 + depth as usize * depth as usize;
+            if improving && depth >= 3 { lmp_threshold += lmp_threshold / 2; }
+            if !is_capture && !is_promo && !gives_check && moves_tried > lmp_threshold {
+                board.unmake_move();
+                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                info.stats.lmp_prunes += 1;
+                continue;
+            }
+
+            // Futility (exempt checks)
+            if !is_capture && !is_promo && !gives_check {
+                let est_r = lmr_reduction(depth, moves_tried as i32);
+                let lmr_depth = (depth - est_r).max(1);
+                let futility_margin = 60 + lmr_depth * 60;
+                if static_eval + futility_margin <= alpha {
+                    board.unmake_move();
+                    if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                    info.stats.futility_prunes += 1;
+                    continue;
+                }
+            }
+
+            // SEE pruning (exempt checks)
+            if !gives_check {
+                if is_capture && depth <= 6 {
+                    if !see_ge(board, mv, -(depth as i32) * 100) {
+                        board.unmake_move();
+                        if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                        info.stats.see_prunes += 1;
+                        continue;
+                    }
+                } else if !is_capture && depth <= 8 {
+                    if !see_ge(board, mv, -20 * depth as i32 * depth as i32) {
+                        board.unmake_move();
+                        if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                        info.stats.see_prunes += 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
         // Recapture extension: extend when capturing on the same square as the previous capture
         let mut extension = 0;
         if is_capture && board.undo_stack.len() >= 2 {
@@ -895,8 +918,8 @@ fn negamax(
         // Alpha-reduce disabled: over-prunes with current move ordering strength.
         if new_depth < 0 { new_depth = 0; }
 
-        // LMR (exempt promotions and killers)
-        if depth >= 3 && !is_promo && !is_killer && moves_tried > 1 + if is_pv { 1 } else { 0 } {
+        // LMR (exempt promotions, killers, and check-giving moves)
+        if depth >= 3 && !is_promo && !is_killer && !gives_check && moves_tried > 1 + if is_pv { 1 } else { 0 } {
             let mut r = if is_capture {
                 // Capture LMR: separate table (C=1.80), non-PV only
                 if !is_pv { lmr_cap_reduction(depth, moves_tried as i32) } else { 0 }
