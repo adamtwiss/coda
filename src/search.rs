@@ -87,6 +87,13 @@ pub struct SearchInfo {
     pub max_depth: i32,
     pub max_nodes: u64,
     pub move_overhead: u64, // ms
+    // Dynamic time management state
+    tm_prev_best: Move,
+    tm_prev_score: i32,
+    tm_best_stable: i32,
+    tm_has_data: bool,
+    soft_limit: u64,  // ms — can be extended/shortened dynamically
+    hard_limit: u64,  // ms — absolute maximum
     pub sel_depth: i32,
     prev_moves: [Move; MAX_PLY],
     static_evals: [i32; MAX_PLY],
@@ -115,6 +122,12 @@ impl SearchInfo {
             max_depth: 100,
             max_nodes: 0,
             move_overhead: 100,
+            tm_prev_best: NO_MOVE,
+            tm_prev_score: 0,
+            tm_best_stable: 0,
+            tm_has_data: false,
+            soft_limit: 0,
+            hard_limit: 0,
             sel_depth: 0,
             prev_moves: [NO_MOVE; MAX_PLY],
             static_evals: [0; MAX_PLY],
@@ -385,7 +398,18 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Floor at 10ms
         if soft < 10 { soft = 10; }
 
-        info.time_limit = soft;
+        // Hard limit: 3x soft for sudden death, 2x for tournament
+        let hard = if limits.movestogo > 0 {
+            (soft * 2).min(time_left / 2)
+        } else {
+            (soft * 3).min(time_left * 3 / 4)
+        };
+
+        info.soft_limit = soft;
+        info.hard_limit = hard.max(soft);
+        info.time_limit = hard; // search uses hard as absolute limit
+        info.tm_has_data = false;
+        info.tm_best_stable = 0;
     } else if !limits.infinite {
         info.time_limit = 0;
     }
@@ -522,6 +546,57 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             depth, info.sel_depth, score_str, info.nodes, nps, elapsed,
             info.tt.hashfull(), pv_str
         );
+
+        // Dynamic time management: adjust soft limit based on stability
+        if info.soft_limit > 0 && depth >= 4 && !info.should_stop() {
+            // Track best-move stability
+            if info.tm_has_data {
+                let bm_from = move_from(best_move);
+                let bm_to = move_to(best_move);
+                let prev_from = move_from(info.tm_prev_best);
+                let prev_to = move_to(info.tm_prev_best);
+                if bm_from == prev_from && bm_to == prev_to {
+                    info.tm_best_stable += 1;
+                } else {
+                    info.tm_best_stable = 0;
+                }
+            }
+
+            // Score delta
+            let score_delta = if info.tm_has_data && !is_mate_score(prev_score) && !is_mate_score(info.tm_prev_score) {
+                (prev_score - info.tm_prev_score).abs()
+            } else {
+                0
+            };
+
+            info.tm_prev_best = best_move;
+            info.tm_prev_score = prev_score;
+            info.tm_has_data = true;
+
+            // Scale factor for soft limit
+            let mut scale = 1.0f64;
+
+            // Stable best move → stop early
+            if info.tm_best_stable >= 8 { scale *= 0.35; }
+            else if info.tm_best_stable >= 5 { scale *= 0.5; }
+            else if info.tm_best_stable >= 3 { scale *= 0.7; }
+            else if info.tm_best_stable >= 1 { scale *= 0.85; }
+
+            // Very stable + stable score → extra reduction
+            if info.tm_best_stable >= 5 && score_delta <= 10 { scale *= 0.8; }
+
+            // Unstable score → extend time
+            if score_delta > 50 { scale *= 2.0; }
+            else if score_delta > 25 { scale *= 1.5; }
+            else if score_delta > 10 { scale *= 1.2; }
+
+            // Check if we should stop at the soft limit
+            let adjusted_soft = (info.soft_limit as f64 * scale) as u64;
+            let adjusted_soft = adjusted_soft.min(info.hard_limit);
+            if elapsed >= adjusted_soft {
+                break;
+            }
+        }
     }
 
     best_move
