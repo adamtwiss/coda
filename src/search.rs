@@ -788,6 +788,12 @@ fn negamax(
         && static_eval > -INFINITY
         && (static_eval + info.static_evals[ply_u - 1]).abs() > 200;
 
+    // IIR: Internal Iterative Reduction — reduce depth when no TT move exists.
+    // Applied FIRST so all subsequent pruning decisions use the reduced depth.
+    if tt_move == NO_MOVE && depth >= 6 && !in_check {
+        depth -= 1;
+    }
+
     // Razoring
     if !is_pv && !in_check && depth <= 2 && ply > 0 {
         let razor_margin = 400 + depth as i32 * 100;
@@ -895,11 +901,6 @@ fn negamax(
         } // static eval pre-check gate
     }
 
-    // IIR: Internal Iterative Reduction
-    if tt_move == NO_MOVE && depth >= 6 && !in_check {
-        depth -= 1;
-    }
-
     let original_alpha = alpha;
 
     let safe_ply = ply_u.min(MAX_PLY - 1);
@@ -917,7 +918,7 @@ fn negamax(
     let mut n_quiets_tried = 0usize;
     let mut captures_tried: [(u8, u8, u8); 32] = [(0, 0, 0); 32]; // (piece, to, victim)
     let mut n_captures_tried = 0usize;
-    let mut _alpha_raised_count = 0;
+    let mut alpha_raised_count = 0;
 
     loop {
         let ph_idx = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
@@ -1065,7 +1066,10 @@ fn negamax(
         let mut score;
         let mut new_depth = depth - 1 + extension;
 
-        // Alpha-reduce disabled: over-prunes with current move ordering strength.
+        // Alpha-reduce: after alpha has been raised, reduce subsequent moves by 1 ply
+        if alpha_raised_count > 0 {
+            new_depth -= 1;
+        }
         if new_depth < 0 { new_depth = 0; }
 
         // LMR (exempt promotions, killers, counter-moves, and check-giving moves)
@@ -1081,6 +1085,11 @@ fn negamax(
             if !is_capture {
                 if !is_pv { r += 1; }
                 if cut_node { r += 1; }
+
+                // Reduce more when multiple moves have already raised alpha
+                if alpha_raised_count > 1 {
+                    r += alpha_raised_count / 2;
+                }
             }
 
             // (killers are fully exempt from LMR via the condition above)
@@ -1101,7 +1110,7 @@ fn negamax(
                         hist += info.history.cont_hist[prev_piece as usize][prev_to as usize][our_piece as usize][to as usize];
                     }
                 }
-                r -= (hist / 5000).clamp(-2, 2);
+                r -= hist / 5000;
             }
 
             // Reduce less when improving
@@ -1161,7 +1170,7 @@ fn negamax(
 
             if score > alpha {
                 alpha = score;
-                _alpha_raised_count += 1;
+                alpha_raised_count += 1;
 
                 if score >= beta {
                     // Fail high: update history, killers, counter
@@ -1204,7 +1213,7 @@ fn negamax(
                             }
                         }
 
-                        // Penalize other tried quiets (main + continuation history)
+                        // Penalize other tried quiets (main + continuation + pawn history)
                         for &q in &quiets_tried[..n_quiets_tried] {
                             let qf = move_from(q);
                             let qt = move_to(q);
@@ -1224,6 +1233,17 @@ fn negamax(
                                         &mut info.history.cont_hist[prev_piece as usize][prev_to as usize][q_piece as usize][qt as usize],
                                         -bonus,
                                     );
+                                }
+                            }
+                            // Pawn history penalty
+                            {
+                                let ph_idx2 = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
+                                let q_piece = board.piece_at(qf);
+                                if q_piece != NO_PIECE && (q_piece as usize) < 12 {
+                                    let v = info.pawn_hist[ph_idx2][q_piece as usize][qt as usize] as i32;
+                                    let clamped = (-bonus).clamp(-16384, 16384);
+                                    let new_v = v + clamped - v * clamped.abs() / 16384;
+                                    info.pawn_hist[ph_idx2][q_piece as usize][qt as usize] = new_v.clamp(-32000, 32000) as i16;
                                 }
                             }
                         }
