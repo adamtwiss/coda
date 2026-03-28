@@ -1,5 +1,6 @@
 /// Main search: negamax with alpha-beta, iterative deepening, PVS, aspiration windows.
 /// All pruning parameters ported from GoChess (tuned values).
+/// This is a literal, faithful translation of GoChess's search.go.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -63,6 +64,8 @@ pub struct PruneStats {
     pub tt_near_miss: u64,
     pub nmp_attempts: u64,
     pub nmp_cutoffs: u64,
+    pub nmp_verify: u64,
+    pub nmp_verify_fail: u64,
     pub rfp_cutoffs: u64,
     pub razor_cutoffs: u64,
     pub lmp_prunes: u64,
@@ -247,7 +250,7 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
     let pawn_idx = (board.pawn_hash as usize) % CORR_HIST_SIZE;
     let pawn_corr = info.pawn_corr[stm][pawn_idx] as i64;
 
-    // Non-pawn corrections (per color) — use independent per-color Zobrist keys
+    // Non-pawn corrections (per color)
     let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) % CORR_HIST_SIZE;
     let white_np_corr = info.np_corr[stm][WHITE as usize][white_np_idx] as i64;
     let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) % CORR_HIST_SIZE;
@@ -276,16 +279,13 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
 
 /// Update correction history entry with gravity.
 fn update_corr_entry(entry: &mut i32, err: i32, weight: i32) {
-    let err_clamped = err.clamp(-CORR_HIST_MAX, CORR_HIST_MAX);
-    let new_val = (*entry * (CORR_HIST_GRAIN - weight) + err_clamped * CORR_HIST_GRAIN * weight) / CORR_HIST_GRAIN;
+    let new_val = (*entry * (CORR_HIST_GRAIN - weight) + err * CORR_HIST_GRAIN * weight) / CORR_HIST_GRAIN;
     *entry = new_val.clamp(-CORR_HIST_LIMIT, CORR_HIST_LIMIT);
 }
 
 /// Update all correction history tables.
 fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, raw_eval: i32, depth: i32) {
-    if depth < 3 { return; }
-
-    let err = search_score - raw_eval;
+    let err = (search_score - raw_eval).clamp(-CORR_HIST_MAX, CORR_HIST_MAX);
     let weight = (depth + 1).min(16);
     let stm = board.side_to_move as usize;
 
@@ -293,7 +293,7 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     let pawn_idx = (board.pawn_hash as usize) % CORR_HIST_SIZE;
     update_corr_entry(&mut info.pawn_corr[stm][pawn_idx], err, weight);
 
-    // Non-pawn corrections (per color) — use independent per-color Zobrist keys
+    // Non-pawn corrections (per color)
     let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) % CORR_HIST_SIZE;
     update_corr_entry(&mut info.np_corr[stm][WHITE as usize][white_np_idx], err, weight);
     let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) % CORR_HIST_SIZE;
@@ -323,8 +323,11 @@ pub fn init_lmr() {
     for depth in 1..64 {
         for moves in 1..64 {
             unsafe {
-                // Quiet table: C=1.30
-                LMR_TABLE[depth][moves] = ((depth as f64).ln() * (moves as f64).ln() / 1.30) as i32;
+                // Quiet table: C=1.30 (GoChess: depth>=3 && moveNum>=3)
+                if depth >= 3 && moves >= 3 {
+                    let r = ((depth as f64).ln() * (moves as f64).ln() / 1.30) as i32;
+                    LMR_TABLE[depth][moves] = r.min((depth - 2) as i32);
+                }
                 // Capture table: C=1.80 (less reduction for captures)
                 if depth >= 3 && moves >= 3 {
                     let r = ((depth as f64).ln() * (moves as f64).ln() / 1.80) as i32;
@@ -607,29 +610,18 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 }
 
 /// Negamax alpha-beta search.
+/// Faithful translation of GoChess's negamax() from search.go.
 fn negamax(
     board: &mut Board,
     info: &mut SearchInfo,
     mut alpha: i32,
-    beta: i32,
+    mut beta: i32,
     mut depth: i32,
     ply: i32,
     _cut_node: bool, // kept for API compatibility, not used (GoChess doesn't have cut_node)
 ) -> i32 {
-    if info.should_stop() {
-        return 0;
-    }
-
-    // Quiescence at depth 0
-    if depth <= 0 {
-        return quiescence(board, info, alpha, beta, ply);
-    }
-
-    info.nodes += 1;
+    // Guard against stack overflow
     let ply_u = ply as usize;
-    let is_root = ply == 0;
-    let is_pv = beta - alpha > 1;
-
     if ply_u >= MAX_PLY - 1 {
         return info.eval(board);
     }
@@ -637,6 +629,23 @@ fn negamax(
     if ply > info.sel_depth {
         info.sel_depth = ply;
     }
+
+    // Check time periodically
+    if info.nodes & 1023 == 0 {
+        if info.should_stop() {
+            return 0;
+        }
+    }
+
+    if info.stop.load(Ordering::Relaxed) {
+        return 0;
+    }
+
+    info.nodes += 1;
+
+    let is_root = ply == 0;
+    let is_pv = beta - alpha > 1;
+    let alpha_orig = alpha;
 
     // Draw detection (not at root)
     if !is_root {
@@ -648,7 +657,6 @@ fn negamax(
         let pc = popcount(occ);
         if pc <= 3 {
             if pc == 2 { return CONTEMPT; } // KvK
-            // KN vs K or KB vs K
             if board.pieces[PAWN as usize] == 0
                 && board.pieces[ROOK as usize] == 0
                 && board.pieces[QUEEN as usize] == 0
@@ -656,19 +664,7 @@ fn negamax(
                 return CONTEMPT;
             }
         }
-        // Repetition detection: compare current hash against previous positions.
-        // undo_stack[i].hash = hash of position BEFORE move i was made.
-        // Current position has board.hash. The position 2 half-moves ago
-        // (same side to move) is at undo_stack[len-2].hash (hash before the
-        // opponent's last move, which equals the position after our last move).
-        // Actually: undo[len-1].hash = position before opponent moved = our position.
-        // Wait — no. undo[len-1] was pushed by the OPPONENT's make_move call.
-        // undo[len-1].hash was the position when the opponent was about to move.
-        // That's the position after OUR last move = same side as current (us).
-        // But that's only 1 ply back, not 2.
-        //
-        // Simple approach: just check every entry. The hash includes the side-to-move
-        // key, so only positions with the same side to move will match.
+        // Repetition detection
         let hash = board.hash;
         let stack_len = board.undo_stack.len();
         let check_back = (board.halfmove as usize).min(stack_len);
@@ -682,125 +678,127 @@ fn negamax(
     // TT probe
     let tt_entry = info.tt.probe(board.hash);
     let tt_move = if tt_entry.hit { tt_entry.best_move } else { NO_MOVE };
-    let tt_score = if tt_entry.hit { score_from_tt(tt_entry.score, ply) } else { 0 };
+    let tt_hit = tt_entry.hit;
 
-    // TT cutoff (non-PV only)
-    if !is_pv && tt_entry.hit && tt_entry.depth >= depth {
-        let mut tt_cutoff = false;
-        let mut tt_return_score = tt_score;
-        match tt_entry.flag {
-            TT_FLAG_EXACT => { tt_cutoff = true; }
-            TT_FLAG_LOWER => {
-                if tt_score >= beta {
-                    tt_cutoff = true;
-                    // TT score dampening: blend toward beta to prevent inflation
-                    if !is_mate_score(tt_score) {
-                        tt_return_score = (3 * tt_score + beta) / 4;
+    // TT cutoff (GoChess: returns TTExact at PV nodes, narrows bounds at non-PV)
+    if tt_hit && !is_root {
+        let tt_depth = tt_entry.depth;
+        let tt_score = score_from_tt(tt_entry.score, ply);
+
+        if tt_depth >= depth {
+            match tt_entry.flag {
+                TT_FLAG_EXACT => {
+                    info.stats.tt_cutoffs += 1;
+                    // History bonus for TT cutoff
+                    if tt_move != NO_MOVE {
+                        let bonus = (depth * depth).min(1200);
+                        update_tt_cutoff_history(info, board, tt_move, bonus);
+                    }
+                    return tt_score;
+                }
+                TT_FLAG_LOWER => {
+                    if !is_pv && tt_score > alpha {
+                        alpha = tt_score;
                     }
                 }
-            }
-            TT_FLAG_UPPER => {
-                if tt_score <= alpha { tt_cutoff = true; }
-            }
-            _ => {}
-        }
-        if tt_cutoff {
-            info.stats.tt_cutoffs += 1;
-            // History bonus for TT cutoff move (reinforces move ordering)
-            if tt_move != NO_MOVE {
-                let bonus = (depth as i32 * depth as i32).min(1200);
-                let tt_from = move_from(tt_move);
-                let tt_to = move_to(tt_move);
-                let tt_target = board.piece_type_at(tt_to);
-                let tt_is_cap = tt_target != NO_PIECE_TYPE || move_flags(tt_move) == FLAG_EN_PASSANT;
-                if !tt_is_cap {
-                    // Quiet TT cutoff: update main history
-                    History::update_history(
-                        &mut info.history.main[board.side_to_move as usize][tt_from as usize][tt_to as usize],
-                        bonus,
-                    );
-                } else {
-                    // Capture TT cutoff: update capture history
-                    let piece = board.piece_at(tt_from);
-                    let victim = if move_flags(tt_move) == FLAG_EN_PASSANT { PAWN } else { tt_target };
-                    if piece != NO_PIECE && (piece as usize) < 12 && (victim as usize) < 6 {
-                        History::update_history(
-                            &mut info.history.capture[piece as usize][tt_to as usize][victim as usize],
-                            bonus,
-                        );
+                TT_FLAG_UPPER => {
+                    if !is_pv && tt_score < beta {
+                        beta = tt_score;
                     }
                 }
+                _ => {}
             }
-            return tt_return_score;
+
+            if alpha >= beta {
+                info.stats.tt_cutoffs += 1;
+                if tt_move != NO_MOVE {
+                    let bonus = (depth * depth).min(1200);
+                    update_tt_cutoff_history(info, board, tt_move, bonus);
+                }
+                // TT score dampening at non-PV lower-bound cutoffs
+                if !is_pv && tt_entry.flag == TT_FLAG_LOWER && !is_mate_score(tt_score) {
+                    return (3 * tt_score + beta) / 4;
+                }
+                return tt_score;
+            }
+        } else if tt_depth >= depth - 1 && !is_pv && !is_mate_score(tt_score) {
+            // TT near-miss cutoffs
+            let margin = 80;
+            if tt_entry.flag == TT_FLAG_LOWER && tt_score - margin >= beta {
+                info.stats.tt_near_miss += 1;
+                return tt_score - margin;
+            }
+            if tt_entry.flag == TT_FLAG_UPPER && tt_score + margin <= alpha {
+                info.stats.tt_near_miss += 1;
+                return tt_score + margin;
+            }
         }
     }
 
-    // TT near-miss: accept entries 1 ply short with a score margin (only when full-depth didn't cut)
-    else if !is_pv && tt_entry.hit && tt_entry.depth >= depth - 1
-        && !is_mate_score(tt_score)
-    {
-        let margin = 80;
-        if tt_entry.flag == TT_FLAG_LOWER && tt_score - margin >= beta {
-            info.stats.tt_near_miss += 1; return tt_score - margin;
-        }
-        if tt_entry.flag == TT_FLAG_UPPER && tt_score + margin <= alpha {
-            info.stats.tt_near_miss += 1; return tt_score + margin;
-        }
+    // Leaf node - go to quiescence search
+    if depth <= 0 {
+        return quiescence(board, info, alpha, beta, ply);
     }
 
     let in_check = board.in_check();
 
-    // Check extensions disabled — proven harmful (-11.2 Elo SPRT in GoChess).
-    // Only recapture extensions are beneficial cross-engine.
-
     // Static eval with correction history
-    let raw_eval;
-    let static_eval;
-    if in_check {
-        raw_eval = -INFINITY;
-        static_eval = -INFINITY;
-    } else {
-        raw_eval = if tt_entry.hit && tt_entry.static_eval > -INFINITY + 100 {
+    let raw_eval: i32;
+    let static_eval: i32;
+    let improving: bool;
+    let failing: bool;
+    if !in_check {
+        raw_eval = if tt_hit && tt_entry.static_eval > -INFINITY + 100 {
             tt_entry.static_eval
         } else {
             info.eval(board)
         };
         static_eval = corrected_eval(info, board, raw_eval);
+        if ply_u < MAX_PLY {
+            info.static_evals[ply_u] = static_eval;
+        }
+        // Improving: our eval is better than 2 plies ago
+        improving = ply >= 2 && ply_u >= 2 && static_eval > info.static_evals[ply_u - 2];
+        // Failing: significant position deterioration
+        failing = ply >= 2 && ply_u >= 2
+            && info.static_evals[ply_u - 2] > -INFINITY + 100
+            && static_eval < info.static_evals[ply_u - 2] - (60 + 40 * depth);
+    } else {
+        raw_eval = -INFINITY;
+        static_eval = -INFINITY;
+        if ply_u < MAX_PLY {
+            info.static_evals[ply_u] = -INFINITY;
+        }
+        improving = false;
+        failing = false;
     }
 
-    // Store static eval for improving detection
-    if ply_u < MAX_PLY {
-        info.static_evals[ply_u] = static_eval;
-    }
-
-    // Position is "improving" if our eval is better than 2 plies ago.
-    // When ply-2 was in check, we stored -INFINITY, so improving=true
-    // (conservative: don't reduce extra when uncertain).
-    let improving = !in_check && ply >= 2 && (
-        ply_u >= MAX_PLY || static_eval > info.static_evals[ply_u - 2]
-    );
-
-    // Failing heuristic: detect significant position deterioration.
-    // When eval has dropped well below 2-ply-ago eval, prune/reduce more aggressively.
-    let failing = !in_check && ply >= 2 && ply_u < MAX_PLY
-        && info.static_evals[ply_u - 2] > -INFINITY + 100
-        && static_eval < info.static_evals[ply_u - 2] - (60 + 40 * depth as i32);
-
-    // Eval instability: sharp eval swing from parent → something tactical happening
-    let unstable = !in_check && ply >= 1 && ply_u > 0
+    // Eval instability: sharp eval swing from parent
+    let unstable = !in_check && ply >= 1 && ply_u >= 1
         && info.static_evals[ply_u - 1] > -INFINITY + 100
         && static_eval > -INFINITY
-        && (static_eval + info.static_evals[ply_u - 1]).abs() > 200;
+        && {
+            let parent_eval = -info.static_evals[ply_u - 1];
+            let diff = (static_eval - parent_eval).abs();
+            diff > 200
+        };
 
-    // IIR: Internal Iterative Reduction — reduce depth when no TT move exists.
-    // Applied FIRST so all subsequent pruning decisions use the reduced depth.
-    if tt_move == NO_MOVE && depth >= 6 && !in_check {
+    // Detect if TT move is a capture
+    let tt_move_noisy = tt_move != NO_MOVE && {
+        let tt_to = move_to(tt_move);
+        board.piece_type_at(tt_to) != NO_PIECE_TYPE || move_flags(tt_move) == FLAG_EN_PASSANT
+    };
+
+    // IIR: Internal Iterative Reduction
+    if depth >= 6 && tt_move == NO_MOVE && !in_check {
         depth -= 1;
     }
 
-    // Hindsight reduction: when both sides think the position is quiet
-    // (parent eval + current eval both positive, sum > 200), reduce depth by 1.
-    if !in_check && ply >= 1 && depth >= 3 && ply_u > 0
+    // Threat square from null-move failure (-1 = no threat detected)
+    let mut _threat_sq: i32 = -1;
+
+    // Hindsight reduction
+    if !in_check && ply >= 1 && depth >= 3 && ply_u >= 1
         && info.static_evals[ply_u - 1] > -INFINITY + 100
         && static_eval > -INFINITY
     {
@@ -810,72 +808,96 @@ fn negamax(
         }
     }
 
-    // Null Move Pruning (before RFP — matches GoChess ordering)
-    if !is_pv && !in_check && depth >= 3 && ply > 0 && static_eval >= beta {
-        // Ensure we have non-pawn material
-        let us = board.side_to_move;
-        let non_pawn = board.colors[us as usize] & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
-        if non_pawn != 0 {
-            let mut r = 3 + depth / 3 + ((static_eval - beta) / 200).min(3);
-            // Reduce R when last move was a capture (position may be more volatile)
-            if !board.undo_stack.is_empty() && board.undo_stack.last().unwrap().captured != NO_PIECE_TYPE {
-                r -= 1;
-            }
-            // Clamp: ensure R >= 1 and search depth >= 1 (don't go to QS)
-            let r = r.max(1).min(depth - 2);
+    // Null-move pruning (GoChess uses beta-alpha==1, not !is_pv)
+    let us = board.side_to_move;
+    let stm_non_pawn = board.colors[us as usize]
+        & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+    if depth >= 3 && !in_check && !is_root && stm_non_pawn != 0
+        && !is_pv && static_eval >= beta
+    {
+        // Adaptive reduction
+        let mut r = 3 + depth / 3;
+        // Reduce less after captures
+        if !board.undo_stack.is_empty() && board.undo_stack.last().unwrap().captured != NO_PIECE_TYPE {
+            r -= 1;
+        }
+        if static_eval > beta {
+            let eval_r = ((static_eval - beta) / 200).min(3);
+            r += eval_r;
+        }
+        // Clamp: null-move search is at least depth 1
+        if depth - 1 - r < 1 {
+            r = depth - 2;
+        }
 
-            info.stats.nmp_attempts += 1;
-            board.make_null_move();
-            if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::recompute()); }
-            let null_score = -negamax(board, info, -beta, -beta + 1, depth - 1 - r, ply + 1, false);
-            if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-            board.unmake_null_move();
+        info.stats.nmp_attempts += 1;
+        board.make_null_move();
+        let null_key = board.hash; // save hash for threat detection
+        if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::recompute()); }
+        let null_score = -negamax(board, info, -beta, -beta + 1, depth - 1 - r, ply + 1, false);
+        if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        board.unmake_null_move();
 
-            if null_score >= beta {
-                // NMP score dampening: blend toward beta
-                let dampened = (null_score * 2 + beta) / 3;
+        if info.stop.load(Ordering::Relaxed) {
+            return 0;
+        }
 
-                // Verification at high depth
-                if depth >= 12 {
-                    let v = negamax(board, info, beta - 1, beta, depth - 1 - r, ply + 1, false);
-                    if v >= beta {
-                        info.stats.nmp_cutoffs += 1; return dampened;
-                    }
-                } else {
-                    info.stats.nmp_cutoffs += 1; return dampened;
+        if null_score >= beta {
+            // NMP score dampening
+            let dampened = (null_score * 2 + beta) / 3;
+
+            // Verification at high depth
+            if depth >= 12 {
+                info.stats.nmp_verify += 1;
+                let v = negamax(board, info, beta - 1, beta, depth - 1 - r, ply + 1, false);
+                if v >= beta {
+                    info.stats.nmp_cutoffs += 1;
+                    return dampened;
                 }
+                info.stats.nmp_verify_fail += 1;
+            } else {
+                info.stats.nmp_cutoffs += 1;
+                return dampened;
+            }
+        } else {
+            // NMP failed low: extract opponent's best reply from TT for threat detection
+            let threat_entry = info.tt.probe(null_key);
+            if threat_entry.hit && threat_entry.best_move != NO_MOVE {
+                _threat_sq = move_to(threat_entry.best_move) as i32;
             }
         }
     }
 
-    // Reverse Futility Pruning (RFP) — after NMP, matching GoChess ordering
-    if !is_pv && !in_check && depth <= 7 && ply > 0 {
-        let rfp_margin = if improving { depth as i32 * 70 } else { depth as i32 * 100 };
-        if static_eval - rfp_margin >= beta {
-            info.stats.rfp_cutoffs += 1; return static_eval - rfp_margin;
+    if !in_check {
+        // Reverse Futility Pruning
+        if depth <= 7 && !is_root {
+            let rfp_margin = if improving { depth * 70 } else { depth * 100 };
+            if static_eval - rfp_margin >= beta {
+                info.stats.rfp_cutoffs += 1;
+                return static_eval - rfp_margin;
+            }
         }
-    }
 
-    // Razoring
-    if !is_pv && !in_check && depth <= 2 && ply > 0 {
-        let razor_margin = 400 + depth as i32 * 100;
-        if static_eval + razor_margin <= alpha {
-            let q_score = quiescence(board, info, alpha, beta, ply);
-            if q_score <= alpha {
-                info.stats.razor_cutoffs += 1; return q_score;
+        // Razoring
+        if depth <= 2 && !is_root {
+            let razor_margin = 400 + depth * 100;
+            if static_eval + razor_margin < alpha {
+                let q_score = quiescence(board, info, alpha, beta, ply);
+                if q_score < alpha {
+                    return q_score;
+                }
+                info.stats.razor_cutoffs += 1;
             }
         }
     }
 
-    // ProbCut (with static eval pre-check gate)
-    if !is_pv && !in_check && depth >= 5 {
-        let probcut_beta = beta + 170;
-        if static_eval + 85 >= probcut_beta {
+    // ProbCut
+    let probcut_beta = beta + 170;
+    if !in_check && !is_root && depth >= 5 && static_eval + 85 >= probcut_beta {
+        let pc_depth = depth - 4;
         let mut pc_picker = QMovePicker::new(board, false);
-        let pc_in_check = in_check;
-
         loop {
-            let mv = pc_picker.next(board, pc_in_check);
+            let mv = pc_picker.next(board, false);
             if mv == NO_MOVE { break; }
 
             if !see_ge(board, mv, 0) { continue; }
@@ -889,39 +911,64 @@ fn negamax(
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
                 continue;
             }
-            let mut score = -quiescence(board, info, -probcut_beta, -probcut_beta + 1, ply + 1);
-            if score >= probcut_beta {
-                score = -negamax(board, info, -probcut_beta, -probcut_beta + 1, depth - 4, ply + 1, false);
-            }
+            let score = -negamax(board, info, -probcut_beta, -probcut_beta + 1, pc_depth, ply + 1, false);
             board.unmake_move();
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+
+            if info.stop.load(Ordering::Relaxed) {
+                return 0;
+            }
 
             if score >= probcut_beta {
                 info.stats.probcut_cutoffs += 1;
                 return score;
             }
         }
-        } // static eval pre-check gate
     }
 
-    let original_alpha = alpha;
+    // Get killers for this ply
+    let safe_ply = ply_u.min(MAX_PLY - 1).min(127);
+    let killers = info.history.killers[safe_ply];
 
-    let safe_ply = ply_u.min(MAX_PLY - 1);
-    let prev_move = if ply > 0 { info.prev_moves[safe_ply - 1] } else { NO_MOVE };
-    let tt_move_is_noisy = tt_move != NO_MOVE && {
-        let tt_to = move_to(tt_move);
-        board.piece_type_at(tt_to) != NO_PIECE_TYPE || is_promotion(tt_move)
+    // Counter-move and continuation history lookup from opponent's last move
+    let prev_move = if !is_root && !board.undo_stack.is_empty() {
+        board.undo_stack[board.undo_stack.len() - 1].mv
+    } else {
+        NO_MOVE
     };
+
+    // Compute enemy pawn attacks for threat-aware LMR
+    let enemy_pawn_attacks = if !in_check {
+        let them = flip_color(us);
+        let enemy_pawns = board.pieces[PAWN as usize] & board.colors[them as usize];
+        if us == WHITE {
+            south_west(enemy_pawns) | south_east(enemy_pawns)
+        } else {
+            north_west(enemy_pawns) | north_east(enemy_pawns)
+        }
+    } else {
+        0
+    };
+
+    // Record prev_move for continuation history
+    if ply_u < MAX_PLY {
+        info.prev_moves[safe_ply] = NO_MOVE; // will be updated per-move
+    }
+
     let mut picker = MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move);
 
     let mut best_score = -INFINITY;
     let mut best_move = NO_MOVE;
-    let mut moves_tried = 0;
+    let mut move_count = 0i32;
+    let mut alpha_raised_count = 0i32;
+
+    // Track quiet moves searched before beta cutoff
     let mut quiets_tried = [NO_MOVE; 64];
-    let mut n_quiets_tried = 0usize;
+    let mut quiets_count = 0usize;
+
+    // Track captures searched before beta cutoff
     let mut captures_tried: [(u8, u8, u8); 32] = [(0, 0, 0); 32]; // (piece, to, victim)
     let mut n_captures_tried = 0usize;
-    let mut alpha_raised_count = 0;
 
     loop {
         let ph_idx = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
@@ -931,72 +978,79 @@ fn negamax(
         let from = move_from(mv);
         let to = move_to(mv);
         let flags = move_flags(mv);
-        let is_capture = board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT;
+        let is_cap = board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT;
         let is_promo = is_promotion(mv);
 
-        // Check if this is a special move (TT, killer, counter) — exempt from pruning
-        let safe = safe_ply.min(127);
-        let is_tt_move = tt_move != NO_MOVE && move_from(mv) == move_from(tt_move) && move_to(mv) == move_to(tt_move);
-        let is_killer = !is_capture && (mv == info.history.killers[safe][0] || mv == info.history.killers[safe][1]);
-        let is_counter = if prev_move != NO_MOVE {
-            let prev_to = move_to(prev_move);
-            let prev_piece = board.piece_at(prev_to);
-            prev_piece != NO_PIECE && (prev_piece as usize) < 12
-                && mv == info.history.counter[prev_piece as usize][prev_to as usize]
-        } else { false };
-        let is_special = is_tt_move || is_killer || is_counter;
+        // Save moved piece before make_move for consistent history indexing
+        let moved_pt = board.piece_type_at(from);
+        let moved_piece = board.piece_at(from);
+        let captured_pt = if is_cap {
+            if flags == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(to) }
+        } else {
+            NO_PIECE_TYPE
+        };
 
-        // Pre-make pruning: only things that don't need gives-check info
-        // History pruning (match GoChess: main + 1x cont_hist, no pawn hist)
-        if !is_root && !is_pv && !is_special
-            && best_score > -TB_WIN && !in_check
+        // SEE capture pruning (before MakeMove, GoChess order)
+        if is_cap && !is_root && !in_check && depth <= 6
+            && mv != tt_move && best_score > -MATE_SCORE + 100
+            && !see_ge(board, mv, -(depth * 100))
         {
-            if !is_capture && !is_promo && depth <= 3 && !improving && !unstable {
-                let mut hist = info.history.main[board.side_to_move as usize][from as usize][to as usize];
-                if prev_move != NO_MOVE {
-                    let prev_to = move_to(prev_move);
-                    let prev_piece = board.piece_at(prev_to);
-                    let piece = board.piece_at(from);
-                    if prev_piece != NO_PIECE && (prev_piece as usize) < 12
-                        && piece != NO_PIECE && (piece as usize) < 12 {
-                        hist += info.history.cont_hist[prev_piece as usize][prev_to as usize][piece as usize][to as usize];
-                    }
+            continue;
+        }
+
+        // SEE quiet pruning: compute SEE before MakeMove
+        let is_killer = !is_cap && (mv == killers[0] || mv == killers[1]);
+        let counter_move = get_counter_move(&info.history, board, prev_move);
+        let is_counter = mv == counter_move;
+
+        let mut check_see_quiet = false;
+        let mut see_quiet_ok = true;
+        if !is_root && !in_check && depth <= 8
+            && !is_cap && !is_promo
+            && !is_killer && mv != counter_move && mv != tt_move
+            && best_score > -MATE_SCORE + 100
+        {
+            let mut see_quiet_threshold = -20 * depth * depth;
+            if unstable {
+                see_quiet_threshold -= 100;
+            }
+            check_see_quiet = true;
+            see_quiet_ok = see_ge(board, mv, see_quiet_threshold);
+        }
+
+        // History-based pruning (GoChess: exempt ttMove, killers, counterMove)
+        if !is_root && !in_check && !improving && !unstable && depth <= 3
+            && !is_cap && !is_promo
+            && mv != tt_move && !is_killer && !is_counter
+            && best_score > -MATE_SCORE + 100
+        {
+            let mut hist_prune_score = info.history.main[us as usize][from as usize][to as usize];
+            // Add continuation history
+            if prev_move != NO_MOVE {
+                let prev_to = move_to(prev_move);
+                let prev_piece = board.piece_at(prev_to);
+                if prev_piece != NO_PIECE && (prev_piece as usize) < 12
+                    && moved_piece != NO_PIECE && (moved_piece as usize) < 12
+                {
+                    hist_prune_score += info.history.cont_hist[prev_piece as usize][prev_to as usize][moved_piece as usize][to as usize];
                 }
-                if hist < -1500 * depth as i32 {
-                    info.stats.history_prunes += 1; continue;
-                }
+            }
+            if hist_prune_score < -1500 * depth {
+                info.stats.history_prunes += 1;
+                continue;
             }
         }
 
-        // Pre-compute SEE results before make_move (SEE needs pre-make board state)
-        // Only compute when the post-make pruning block will actually use them
-        let do_see = !is_root && !is_pv && !is_special && !in_check
-            && best_score > -TB_WIN && depth <= 8;
-        let see_capture_ok = if do_see && is_capture && depth <= 6 {
-            see_ge(board, mv, -(depth as i32) * 100)
-        } else { true };
-        let see_quiet_ok = if do_see && !is_capture {
-            let see_quiet_threshold = -20 * depth as i32 * depth as i32
-                - if unstable { 100 } else { 0 };
-            see_ge(board, mv, see_quiet_threshold)
-        } else { true };
-        let see_bad_noisy = if do_see && is_capture && !is_promo && depth <= 4 {
-            !see_ge(board, mv, 0)
-        } else { false };
-
-        // Record previous move for continuation history
-        if safe_ply < MAX_PLY {
-            info.prev_moves[safe_ply] = mv;
-        }
+        // Bad noisy flag: identify losing captures for tighter futility pruning
+        let is_bad_noisy = is_cap && !in_check && !is_root && depth <= 4 && mv != tt_move
+            && !is_promo && best_score > -MATE_SCORE + 100
+            && static_eval > -INFINITY && static_eval + depth * 75 <= alpha
+            && !see_ge(board, mv, 0);
 
         // Build NNUE dirty piece info BEFORE make_move
-        let moved_pt = board.piece_type_at(from);
-        let captured_pt = if flags == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(to) };
-        let us = board.side_to_move;
-        let them = flip_color(us);
-        let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt);
+        let dirty = build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt);
 
-        // Push NNUE accumulator with lazy update
+        // Push NNUE accumulator
         if let Some(acc) = &mut info.nnue_acc { acc.push(dirty); }
 
         if !board.make_move(mv) {
@@ -1004,79 +1058,78 @@ fn negamax(
             continue;
         }
 
-        moves_tried += 1;
+        move_count += 1;
 
-        // Post-make pruning: now we can detect gives-check
-        let gives_check = board.in_check(); // opponent is now in check = our move gave check
+        // Record previous move for continuation history
+        if safe_ply < MAX_PLY {
+            info.prev_moves[safe_ply] = mv;
+        }
 
-        // Post-make pruning: each mechanism has its own guards (matching GoChess)
-        // GoChess applies most pruning at PV nodes too, and doesn't exempt special moves
+        // Check if move gives check (opponent is now in check)
+        let gives_check = board.in_check();
 
-        // Bad noisy: prune losing captures when eval is far below alpha
-        if !is_root && is_capture && !is_promo && !gives_check && depth <= 4
-            && !in_check && best_score > -TB_WIN && !is_tt_move
-            && static_eval > -INFINITY && static_eval + depth as i32 * 75 <= alpha
-            && see_bad_noisy
-        {
+        // Bad noisy futility: prune losing captures when eval is far below alpha
+        if is_bad_noisy && !gives_check {
             board.unmake_move();
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-            moves_tried -= 1;
+            move_count -= 1;
             continue;
         }
 
-        // Futility pruning (keep !is_pv for now — opening to PV hurts KID-type positions)
-        if !is_root && !is_pv && !in_check && !gives_check && depth <= 8
-            && !is_capture && !is_promo
-            && static_eval > -INFINITY && best_score > -TB_WIN
+        // Futility pruning (GoChess: no !is_pv guard)
+        if static_eval > -INFINITY && depth <= 8 && !in_check && !gives_check
+            && !is_cap && !is_promo
+            && best_score > -MATE_SCORE + 100
         {
-            let est_r = lmr_reduction(depth, moves_tried as i32);
-            let lmr_depth = (depth - est_r).max(1);
-            let futility_margin = 60 + lmr_depth * 60;
-            if static_eval + futility_margin <= alpha {
-                board.unmake_move();
-                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+            // Estimate LMR reduction for this move
+            let mut lmr_depth = depth;
+            if move_count > 1 && depth >= 2 {
+                let d = (depth as usize).min(63);
+                let m = (move_count as usize).min(63);
+                let r = lmr_reduction(d as i32, m as i32);
+                if r > 0 {
+                    lmr_depth = (depth - r).max(1);
+                }
+            }
+            if static_eval + 60 + lmr_depth * 60 <= alpha {
                 info.stats.futility_prunes += 1;
+                board.unmake_move();
+                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
                 continue;
             }
         }
 
-        // LMP (matches GoChess: applies at non-PV only, no special-move exemption)
-        if !is_root && ply > 0 && !in_check && depth <= 8 && !is_pv
-            && !is_capture && !is_promo && !gives_check
-            && best_score > -TB_WIN
+        // Late Move Pruning (GoChess: beta-alpha==1, not !is_pv)
+        if !is_root && !in_check && depth >= 1 && depth <= 8
+            && !is_cap && !is_promo && !gives_check
+            && best_score > -MATE_SCORE + 100 && !is_pv
         {
-            let mut lmp_threshold = 3 + depth as usize * depth as usize;
-            if improving && depth >= 3 { lmp_threshold += lmp_threshold / 2; }
-            if failing { lmp_threshold = lmp_threshold * 2 / 3; }
-            if moves_tried > lmp_threshold {
-                board.unmake_move();
-                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+            let mut lmp_limit = 3 + (depth * depth) as i32;
+            if improving && depth >= 3 {
+                lmp_limit += lmp_limit / 2;
+            }
+            if failing {
+                lmp_limit = lmp_limit * 2 / 3;
+            }
+            if move_count > lmp_limit {
                 info.stats.lmp_prunes += 1;
+                board.unmake_move();
+                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
                 continue;
             }
         }
 
-        // SEE pruning — uses pre-computed SEE results
-        if !is_root && !is_special && !in_check && depth <= 8 && best_score > -TB_WIN {
-            // SEE capture pruning (GoChess doesn't check !gives_check here)
-            if is_capture && depth <= 6 && !see_capture_ok {
-                board.unmake_move();
-                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-                info.stats.see_prunes += 1;
-                continue;
-            }
-            // SEE quiet pruning
-            if !is_capture && !gives_check && !see_quiet_ok {
-                board.unmake_move();
-                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-                info.stats.see_prunes += 1;
-                continue;
-            }
+        // SEE quiet pruning (uses pre-computed result)
+        if check_see_quiet && !gives_check && !see_quiet_ok {
+            info.stats.see_prunes += 1;
+            board.unmake_move();
+            if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+            continue;
         }
 
-        // Recapture extension: extend when capturing on the same square as the previous capture
+        // Recapture extension
         let mut extension = 0;
-        if is_capture && board.undo_stack.len() >= 2 {
+        if is_cap && board.undo_stack.len() >= 2 {
             let prev = &board.undo_stack[board.undo_stack.len() - 2];
             if prev.captured != NO_PIECE_TYPE && to == move_to(prev.mv) {
                 extension = 1;
@@ -1084,101 +1137,176 @@ fn negamax(
             }
         }
 
-        let mut score;
         let mut new_depth = depth - 1 + extension;
 
-        // Alpha-reduce: after alpha has been raised, reduce subsequent moves by 1 ply
+        // Alpha-reduce
         if alpha_raised_count > 0 {
             new_depth -= 1;
         }
         if new_depth < 0 { new_depth = 0; }
 
-        // LMR (exempt promotions, killers, counter-moves, and check-giving moves)
-        // LMR: counter-moves NOT exempt (matches GoChess)
-        if depth >= 3 && !is_promo && !is_killer && !gives_check && moves_tried > 1 + if is_pv { 1 } else { 0 } {
-            let mut r = if is_capture {
-                // Capture LMR: separate table (C=1.80), non-PV only
-                if !is_pv { lmr_cap_reduction(depth, moves_tried as i32) } else { 0 }
-            } else {
-                lmr_reduction(depth, moves_tried as i32)
-            };
+        let score;
 
-            // Adjustments only when base reduction > 0 (matches GoChess)
-            if r > 0 && !is_capture {
-                // PV nodes: reduce less
-                if is_pv { r -= 1; }
-                // Cut nodes (non-PV, not first move): reduce more
-                if !is_pv && moves_tried > 1 { r += 1; }
+        // Track quiet moves for history penalty on beta cutoff
+        if !is_cap && !is_promo && quiets_count < 64 {
+            quiets_tried[quiets_count] = mv;
+            quiets_count += 1;
+        }
 
-                // Reduce more when multiple moves have already raised alpha
-                if alpha_raised_count > 1 {
-                    r += alpha_raised_count / 2;
+        // Track captures for capture history penalty
+        if is_cap && n_captures_tried < 32 {
+            let piece = moved_piece;
+            let victim = captured_pt;
+            if piece != NO_PIECE && (piece as usize) < 12 && (victim as usize) < 6 {
+                captures_tried[n_captures_tried] = (piece, to, victim);
+                n_captures_tried += 1;
+            }
+        }
+
+        // LMR + PVS
+        let mut reduction = 0i32;
+
+        // Quiet LMR
+        if !in_check && !is_cap && !is_promo && !is_killer && !gives_check {
+            let d = (depth as usize).min(63);
+            let m = (move_count as usize).min(63);
+            reduction = lmr_reduction(d as i32, m as i32);
+
+            if reduction > 0 {
+                // Reduce less at PV nodes
+                if is_pv {
+                    reduction -= 1;
                 }
 
-                // History-based adjustment
-                let from = move_from(mv);
-                let to = move_to(mv);
-                let mut hist = info.history.main[us as usize][from as usize][to as usize];
+                // Reduce more at expected cut nodes
+                if !is_pv && move_count > 1 {
+                    reduction += 1;
+                }
+
+                // Reduce less when improving
+                if improving {
+                    reduction -= 1;
+                }
+
+                // Reduce more when failing
+                if failing {
+                    reduction += 1;
+                }
+
+                // Reduce more when multiple alpha raises
+                if alpha_raised_count > 1 {
+                    reduction += alpha_raised_count / 2;
+                }
+
+                // Reduce less when eval is unstable
+                if unstable {
+                    reduction -= 1;
+                }
+
+                // Reduce more when TT move is a capture
+                if tt_move_noisy {
+                    reduction += 1;
+                }
+
+                // Reduce more when opponent has few non-pawn pieces
+                let opp = flip_color(board.side_to_move); // note: board is post-make, opponent is now us
+                let opp_non_pawn = board.colors[opp as usize]
+                    & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+                if popcount(opp_non_pawn) < 3 {
+                    reduction += 1;
+                }
+
+                // Reduce less when moving piece away from pawn-attacked square
+                if enemy_pawn_attacks & (1u64 << from) != 0 {
+                    reduction -= 1;
+                }
+
+                // Continuous history adjustment
+                let mut hist_score = info.history.main[us as usize][from as usize][to as usize];
                 if prev_move != NO_MOVE {
                     let prev_to = move_to(prev_move);
                     let prev_piece = board.piece_at(prev_to);
-                    let our_piece = make_piece(us, moved_pt);
+                    // Note: after make_move the piece is at 'to' now. But for cont_hist
+                    // we need the piece index. moved_piece was captured before make_move.
                     if prev_piece != NO_PIECE && (prev_piece as usize) < 12
-                        && (our_piece as usize) < 12
+                        && moved_piece != NO_PIECE && (moved_piece as usize) < 12
                     {
-                        hist += info.history.cont_hist[prev_piece as usize][prev_to as usize][our_piece as usize][to as usize];
+                        hist_score += info.history.cont_hist[prev_piece as usize][prev_to as usize][moved_piece as usize][to as usize];
                     }
                 }
-                r -= hist / 5000;
+                reduction -= hist_score / 5000;
 
-                // Reduce less when improving
-                if improving { r -= 1; }
-
-                // Reduce more when position is deteriorating
-                if failing { r += 1; }
-
-                // Reduce less in volatile positions
-                if unstable { r -= 1; }
-
-                // Reduce more when TT best move is a capture
-                if tt_move_is_noisy { r += 1; }
+                // Clamp: never extend, never reduce past depth 1
+                if reduction < 0 { reduction = 0; }
+                if reduction > new_depth - 1 { reduction = new_depth - 1; }
             }
-
-            r = r.max(0).min(new_depth);
-
-            info.stats.lmr_searches += 1;
-            // Reduced-depth search
-            score = -negamax(board, info, -alpha - 1, -alpha, new_depth - r, ply + 1, true);
-
-            // doDeeper / doShallower
-            if score > alpha && r > 0 {
-                // LMR failed high — check if we need deeper or shallower re-search
-                let mut adj = 0;
-                if score > best_score + 60 + 10 * r {
-                    adj = 1; // score greatly exceeds best → LMR too aggressive → deeper
-                } else if score < best_score + new_depth {
-                    adj = -1; // score barely above alpha → LMR about right → shallower
-                }
-                let re_depth = (new_depth + adj).max(1);
-                score = -negamax(board, info, -alpha - 1, -alpha, re_depth, ply + 1, false);
-            }
-        } else if !is_pv || moves_tried > 1 {
-            // Non-PV null window search
-            score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, false);
-        } else {
-            score = alpha + 1; // Force full window search for first PV move
         }
 
-        // Full window PV search (only if score is between alpha and beta — if already >= beta, skip)
-        if is_pv && (moves_tried == 1 || (score > alpha && score < beta)) {
+        // Capture LMR: separate capture table with capture history adjustments
+        if !in_check && is_cap && !is_promo && !gives_check && move_count > 1 && mv != tt_move {
+            // Only reduce at non-PV nodes
+            if !is_pv {
+                let d = (depth as usize).min(63);
+                let m = (move_count as usize).min(63);
+                reduction = lmr_cap_reduction(d as i32, m as i32);
+
+                if reduction > 0 {
+                    // Capture history adjustment
+                    let cpt = captured_pt;
+                    if moved_piece != NO_PIECE && (moved_piece as usize) < 12 && (cpt as usize) < 6 {
+                        let capt_hist_val = info.history.capture[moved_piece as usize][to as usize][cpt as usize];
+                        if capt_hist_val > 2000 { reduction -= 1; }
+                        if capt_hist_val < -2000 { reduction += 1; }
+                    }
+
+                    if reduction < 0 { reduction = 0; }
+                    if reduction > new_depth - 1 { reduction = new_depth - 1; }
+                }
+            }
+        }
+
+        if reduction > 0 {
+            info.stats.lmr_searches += 1;
+
+            // LMR: reduced depth, zero window
+            let lmr_depth = new_depth - reduction;
+            let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
+
+            if lmr_score > alpha && !info.stop.load(Ordering::Relaxed) {
+                // doDeeper / doShallower
+                let mut do_deeper_adj = 0;
+                if lmr_score > best_score + 60 + 10 * reduction {
+                    do_deeper_adj = 1;
+                } else if lmr_score < best_score + new_depth {
+                    do_deeper_adj = -1;
+                }
+
+                lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth + do_deeper_adj, ply + 1, false);
+            }
+
+            if lmr_score > alpha && lmr_score < beta && !info.stop.load(Ordering::Relaxed) {
+                // PVS failed high → full window re-search
+                score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
+            } else {
+                score = lmr_score;
+            }
+        } else if move_count > 1 {
+            // PVS: zero-window for non-first moves
+            let mut pvs_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, false);
+            if pvs_score > alpha && pvs_score < beta && !info.stop.load(Ordering::Relaxed) {
+                pvs_score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
+            }
+            score = pvs_score;
+        } else {
+            // First move: always full window
             score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
         }
 
         board.unmake_move();
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
 
-        if info.should_stop() {
-            return best_score;
+        if info.stop.load(Ordering::Relaxed) {
+            return 0;
         }
 
         if score > best_score {
@@ -1189,57 +1317,64 @@ fn negamax(
                 alpha = score;
                 alpha_raised_count += 1;
 
-                if score >= beta {
+                if alpha >= beta {
                     info.stats.beta_cutoffs += 1;
-                    if moves_tried == 1 { info.stats.first_move_cutoffs += 1; }
-                    // Fail high: update history, killers, counter
-                    if !is_capture {
-                        let bonus = (depth as i32 * depth as i32).min(1200);
+                    if move_count == 1 { info.stats.first_move_cutoffs += 1; }
+
+                    // Beta cutoff: update history
+                    if !is_cap {
+                        let bonus = (depth * depth).min(1200);
 
                         // Update killer
-                        if ply_u < 128 {
-                            if info.history.killers[ply_u][0] != mv {
-                                info.history.killers[ply_u][1] = info.history.killers[ply_u][0];
-                                info.history.killers[ply_u][0] = mv;
-                            }
-                        }
-
-                        // Update counter-move
-                        if prev_move != NO_MOVE {
-                            let prev_to = move_to(prev_move);
-                            let prev_piece = board.piece_at(prev_to);
-                            if prev_piece != NO_PIECE && (prev_piece as usize) < 12 {
-                                info.history.counter[prev_piece as usize][prev_to as usize] = mv;
+                        if safe_ply < 128 {
+                            if info.history.killers[safe_ply][0] != mv {
+                                info.history.killers[safe_ply][1] = info.history.killers[safe_ply][0];
+                                info.history.killers[safe_ply][0] = mv;
                             }
                         }
 
                         // Update main history
-                        let color = board.side_to_move;
+                        let color = us;
                         History::update_history(
                             &mut info.history.main[color as usize][from as usize][to as usize],
                             bonus,
                         );
 
-                        // Update pawn history
-                        {
-                            let ph_idx = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
-                            let our_piece = board.piece_at(from);
-                            if our_piece != NO_PIECE && (our_piece as usize) < 12 {
-                                let v = info.pawn_hist[ph_idx][our_piece as usize][to as usize] as i32;
-                                let clamped = bonus.clamp(-16384, 16384);
-                                let new_v = v + clamped - v * clamped.abs() / 16384;
-                                info.pawn_hist[ph_idx][our_piece as usize][to as usize] = new_v.clamp(-32000, 32000) as i16;
+                        // Update continuation history
+                        if prev_move != NO_MOVE {
+                            let prev_to = move_to(prev_move);
+                            let prev_piece = board.piece_at(prev_to);
+                            if prev_piece != NO_PIECE && (prev_piece as usize) < 12
+                                && moved_piece != NO_PIECE && (moved_piece as usize) < 12
+                            {
+                                History::update_history(
+                                    &mut info.history.cont_hist[prev_piece as usize][prev_to as usize][moved_piece as usize][to as usize],
+                                    bonus,
+                                );
                             }
                         }
 
-                        // Penalize other tried quiets (main + continuation + pawn history)
-                        for &q in &quiets_tried[..n_quiets_tried] {
+                        // Update pawn history
+                        {
+                            let ph_idx = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
+                            if moved_piece != NO_PIECE && (moved_piece as usize) < 12 {
+                                let v = info.pawn_hist[ph_idx][moved_piece as usize][to as usize] as i32;
+                                let clamped = bonus.clamp(-16384, 16384);
+                                let new_v = v + clamped - v * clamped.abs() / 16384;
+                                info.pawn_hist[ph_idx][moved_piece as usize][to as usize] = new_v.clamp(-32000, 32000) as i16;
+                            }
+                        }
+
+                        // Penalize quiets tried before cutoff (excluding the cutoff move itself)
+                        for i in 0..(quiets_count - 1) {
+                            let q = quiets_tried[i];
                             let qf = move_from(q);
                             let qt = move_to(q);
                             History::update_history(
                                 &mut info.history.main[color as usize][qf as usize][qt as usize],
                                 -bonus,
                             );
+
                             // Continuation history penalty
                             if prev_move != NO_MOVE {
                                 let prev_to = move_to(prev_move);
@@ -1254,6 +1389,7 @@ fn negamax(
                                     );
                                 }
                             }
+
                             // Pawn history penalty
                             {
                                 let ph_idx2 = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
@@ -1267,38 +1403,27 @@ fn negamax(
                             }
                         }
 
-                        // Update continuation history
-                        // Note: board is post-unmake, piece is at `from`
+                        // Store counter-move
                         if prev_move != NO_MOVE {
                             let prev_to = move_to(prev_move);
                             let prev_piece = board.piece_at(prev_to);
-                            let our_piece = board.piece_at(from);
-                            if prev_piece != NO_PIECE && (prev_piece as usize) < 12
-                                && our_piece != NO_PIECE && (our_piece as usize) < 12
-                            {
-                                History::update_history(
-                                    &mut info.history.cont_hist[prev_piece as usize][prev_to as usize][our_piece as usize][to as usize],
-                                    bonus,
-                                );
+                            if prev_piece != NO_PIECE && (prev_piece as usize) < 12 {
+                                info.history.counter[prev_piece as usize][prev_to as usize] = mv;
                             }
                         }
                     } else {
-                        // Capture history bonus
-                        let piece = board.piece_at(from);
-                        let victim = if flags == FLAG_EN_PASSANT {
-                            PAWN
-                        } else {
-                            board.piece_type_at(to)
-                        };
+                        // Capture caused beta cutoff — update capture history
+                        let bonus = (depth * depth).min(1200);
+                        let piece = moved_piece;
+                        let victim = captured_pt;
                         if piece != NO_PIECE && (piece as usize) < 12 && (victim as usize) < 6 {
-                            let bonus = (depth as i32 * depth as i32).min(1200);
                             History::update_history(
                                 &mut info.history.capture[piece as usize][to as usize][victim as usize],
                                 bonus,
                             );
 
-                            // Penalize failed captures
-                            for i in 0..n_captures_tried {
+                            // Penalize captures tried before cutoff
+                            for i in 0..n_captures_tried.saturating_sub(1) {
                                 let (cp, ct, cv) = captures_tried[i];
                                 History::update_history(
                                     &mut info.history.capture[cp as usize][ct as usize][cv as usize],
@@ -1312,25 +1437,10 @@ fn negamax(
                 }
             }
         }
-
-        if !is_capture && !is_promo {
-            if n_quiets_tried < 64 {
-                quiets_tried[n_quiets_tried] = mv;
-                n_quiets_tried += 1;
-            }
-        } else if is_capture {
-            // Track captures for penalty on cutoff
-            let piece = board.piece_at(from);
-            let victim = if flags == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(to) };
-            if piece != NO_PIECE && (piece as usize) < 12 && (victim as usize) < 6 && n_captures_tried < 32 {
-                captures_tried[n_captures_tried] = (piece, to, victim);
-                n_captures_tried += 1;
-            }
-        }
     }
 
     // Checkmate / stalemate
-    if moves_tried == 0 {
+    if move_count == 0 {
         if in_check {
             return -MATE_SCORE + ply;
         } else {
@@ -1338,31 +1448,34 @@ fn negamax(
         }
     }
 
-    // Update correction history (only when search improved on eval, non-mate, non-check)
-    if !in_check && best_score > original_alpha && !is_mate_score(best_score) && raw_eval != -INFINITY {
-        update_correction_history(info, board, best_score, raw_eval, depth);
-    }
-
     // Store in TT
-    let tt_flag = if best_score >= beta {
-        TT_FLAG_LOWER
-    } else if is_pv && best_score > original_alpha {
-        TT_FLAG_EXACT
-    } else {
+    let tt_flag = if best_score <= alpha_orig {
         TT_FLAG_UPPER
+    } else if best_score >= beta {
+        TT_FLAG_LOWER
+    } else {
+        TT_FLAG_EXACT
     };
 
     info.tt.store(
         board.hash,
         best_move,
         tt_flag,
-        raw_eval,  // store RAW eval, not corrected — avoids double correction on TT hit
+        raw_eval,
         score_to_tt(best_score, ply),
         depth,
     );
 
-    // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes.
-    // Deeper cutoffs are more trustworthy, so weight raw score by depth.
+    // Update correction history
+    if !in_check && best_move != NO_MOVE && depth >= 3
+        && best_score > alpha_orig
+        && !is_mate_score(best_score)
+        && raw_eval > -INFINITY + 100
+    {
+        update_correction_history(info, board, best_score, raw_eval, depth);
+    }
+
+    // Fail-high score blending
     if best_score >= beta && !is_pv && depth >= 3
         && !is_mate_score(best_score)
     {
@@ -1372,20 +1485,69 @@ fn negamax(
     best_score
 }
 
+/// Helper: update history for TT cutoff moves
+fn update_tt_cutoff_history(info: &mut SearchInfo, board: &Board, tt_move: Move, bonus: i32) {
+    let tt_from = move_from(tt_move);
+    let tt_to = move_to(tt_move);
+    let tt_target = board.piece_type_at(tt_to);
+    let tt_is_cap = tt_target != NO_PIECE_TYPE || move_flags(tt_move) == FLAG_EN_PASSANT;
+    if !tt_is_cap {
+        History::update_history(
+            &mut info.history.main[board.side_to_move as usize][tt_from as usize][tt_to as usize],
+            bonus,
+        );
+    } else {
+        let piece = board.piece_at(tt_from);
+        let victim = if move_flags(tt_move) == FLAG_EN_PASSANT { PAWN } else { tt_target };
+        if piece != NO_PIECE && (piece as usize) < 12 && (victim as usize) < 6 {
+            History::update_history(
+                &mut info.history.capture[piece as usize][tt_to as usize][victim as usize],
+                bonus,
+            );
+        }
+    }
+}
+
+/// Helper: get counter-move for the given previous move
+fn get_counter_move(history: &History, board: &Board, prev_move: Move) -> Move {
+    if prev_move != NO_MOVE {
+        let prev_to = move_to(prev_move);
+        let prev_piece = board.piece_at(prev_to);
+        if prev_piece != NO_PIECE && (prev_piece as usize) < 12 {
+            return history.counter[prev_piece as usize][prev_to as usize];
+        }
+    }
+    NO_MOVE
+}
+
 /// Quiescence search.
+/// Faithful translation of GoChess's quiescenceWithDepth() from search.go.
 fn quiescence(
+    board: &mut Board,
+    info: &mut SearchInfo,
+    alpha: i32,
+    beta: i32,
+    ply: i32,
+) -> i32 {
+    quiescence_with_depth(board, info, alpha, beta, ply, 0)
+}
+
+fn quiescence_with_depth(
     board: &mut Board,
     info: &mut SearchInfo,
     mut alpha: i32,
     beta: i32,
     ply: i32,
+    qs_depth: i32,
 ) -> i32 {
-    if info.should_stop() {
-        return 0;
+    info.stats.qnodes += 1;
+
+    // Limit quiescence depth
+    if qs_depth >= 32 {
+        return info.eval(board);
     }
 
     info.nodes += 1;
-    info.stats.qnodes += 1;
 
     if ply as usize >= MAX_PLY - 1 {
         return info.eval(board);
@@ -1395,14 +1557,29 @@ fn quiescence(
         info.sel_depth = ply;
     }
 
-    // TT probe in QS
-    let tt_entry = info.tt.probe(board.hash);
-    let tt_score = if tt_entry.hit { score_from_tt(tt_entry.score, ply) } else { 0 };
+    // Check time periodically
+    if info.nodes & 1023 == 0 {
+        if info.should_stop() {
+            return 0;
+        }
+    }
 
-    // TT cutoff in QS (non-PV only)
-    if tt_entry.hit && tt_entry.depth >= 0 && beta - alpha == 1 {
+    if info.stop.load(Ordering::Relaxed) {
+        return 0;
+    }
+
+    // TT probe
+    let tt_entry = info.tt.probe(board.hash);
+    let _tt_move = if tt_entry.hit { tt_entry.best_move } else { NO_MOVE };
+    let alpha_orig = alpha;
+    let tt_hit = tt_entry.hit;
+
+    // TT cutoff in QS (GoChess: depth >= -1, no !is_pv guard)
+    if tt_hit && tt_entry.depth >= -1 {
+        let tt_score = score_from_tt(tt_entry.score, ply);
+
         match tt_entry.flag {
-            TT_FLAG_EXACT => return tt_score,
+            TT_FLAG_EXACT => { return tt_score; }
             TT_FLAG_LOWER => {
                 if tt_score >= beta { return tt_score; }
             }
@@ -1414,55 +1591,113 @@ fn quiescence(
     }
 
     let in_check = board.in_check();
-    let static_eval = if in_check {
-        -INFINITY
-    } else if tt_entry.hit && tt_entry.static_eval > -INFINITY + 100 {
+
+    // In-check evasion path
+    if in_check {
+        // Continuation history pointer for evasion ordering
+        let _prev_move = if !board.undo_stack.is_empty() {
+            board.undo_stack[board.undo_stack.len() - 1].mv
+        } else { NO_MOVE };
+
+        let mut evasion_picker = QMovePicker::new(board, true);
+        let mut best_score = -INFINITY;
+        let mut best_move = NO_MOVE;
+        let mut move_count = 0;
+
+        loop {
+            let mv = evasion_picker.next(board, true);
+            if mv == NO_MOVE { break; }
+            move_count += 1;
+
+            let qs_moved_pt = board.piece_type_at(move_from(mv));
+            let qs_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
+            let qs_dirty = build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt);
+
+            if let Some(acc) = &mut info.nnue_acc { acc.push(qs_dirty); }
+            if !board.make_move(mv) {
+                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                move_count -= 1;
+                continue;
+            }
+            let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
+            board.unmake_move();
+            if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+
+            if score > best_score {
+                best_score = score;
+                best_move = mv;
+            }
+            if score > alpha {
+                alpha = score;
+                if score >= beta {
+                    break;
+                }
+            }
+        }
+
+        // Checkmate detection
+        if move_count == 0 {
+            return -MATE_SCORE + ply;
+        }
+
+        // Store in TT at depth -1
+        let store_score = score_to_tt(best_score, ply);
+        let flag = if best_score >= beta {
+            TT_FLAG_LOWER
+        } else if best_score <= alpha_orig {
+            TT_FLAG_UPPER
+        } else {
+            TT_FLAG_EXACT
+        };
+        info.tt.store(board.hash, best_move, flag, -INFINITY, store_score, -1);
+        return best_score;
+    }
+
+    // Stand pat (only when not in check)
+    let stand_pat = if tt_hit && tt_entry.static_eval > -INFINITY + 100 {
         tt_entry.static_eval
     } else {
         info.eval(board)
     };
+    let mut best_score = stand_pat;
 
-    if !in_check {
-        if static_eval >= beta {
-            // QS beta blending: dampen stand-pat cutoff at non-PV only
-            if beta - alpha == 1 && !is_mate_score(static_eval) {
-                return (static_eval + beta) / 2;
-            }
-            return static_eval;
+    if best_score >= beta {
+        // QS beta blending: dampen stand-pat cutoff at non-PV nodes
+        if beta - alpha == 1 && !is_mate_score(best_score) {
+            return (best_score + beta) / 2;
         }
-        if static_eval > alpha {
-            alpha = static_eval;
-        }
-
-        // Delta pruning
-        if static_eval + 240 + 900 <= alpha {
-            return alpha;
-        }
+        return best_score;
     }
 
-    let original_alpha = alpha;
-    let mut best_score = if in_check { -INFINITY } else { static_eval };
+    if best_score > alpha {
+        alpha = best_score;
+    }
+
     let mut best_move = NO_MOVE;
-    let mut picker = QMovePicker::new(board, in_check);
+    let mut picker = QMovePicker::new(board, false);
 
     loop {
-        let mv = picker.next(board, in_check);
+        let mv = picker.next(board, false);
         if mv == NO_MOVE { break; }
 
-        // SEE pruning in QS
-        if !in_check && !see_ge(board, mv, 0) {
-            continue;
-        }
-
-        // Delta pruning per-move
-        if !in_check && !is_promotion(mv) {
-            let to = move_to(mv);
-            let captured_pt = board.piece_type_at(to);
-            if captured_pt != NO_PIECE_TYPE {
-                if static_eval + see_value(captured_pt) + 240 <= alpha {
+        // Delta pruning per-move (GoChess: standPat + SEEPieceValues[captured] + 240 <= alpha)
+        if !is_promotion(mv) {
+            let cap_to = move_to(mv);
+            let cap_pt = if move_flags(mv) == FLAG_EN_PASSANT {
+                PAWN
+            } else {
+                board.piece_type_at(cap_to)
+            };
+            if cap_pt != NO_PIECE_TYPE && (cap_pt as usize) < 6 {
+                if stand_pat + see_value(cap_pt) + 240 <= alpha {
                     continue;
                 }
             }
+        }
+
+        // SEE pruning: skip bad captures
+        if !see_ge(board, mv, 0) {
+            continue;
         }
 
         // Build lazy NNUE update
@@ -1475,46 +1710,35 @@ fn quiescence(
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
             continue;
         }
-        let score = -quiescence(board, info, -beta, -alpha, ply + 1);
+        let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
         board.unmake_move();
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
 
         if score > best_score {
             best_score = score;
             best_move = mv;
-            if score > alpha {
-                alpha = score;
-                if score >= beta {
-                    break;
-                }
+        }
+        if score > alpha {
+            alpha = score;
+            if score >= beta {
+                break;
             }
         }
     }
 
-    // In check with no moves = checkmate
-    if in_check && best_score == -INFINITY {
-        return -MATE_SCORE + ply;
-    }
-
-    // Store in TT from QS (with best move and exact flag)
-    let qs_flag = if best_score >= beta {
+    // Store in TT at depth -1
+    let store_score = score_to_tt(best_score, ply);
+    let flag = if best_score >= beta {
         TT_FLAG_LOWER
-    } else if best_score > original_alpha {
-        TT_FLAG_EXACT
-    } else {
+    } else if best_score <= alpha_orig {
         TT_FLAG_UPPER
+    } else {
+        TT_FLAG_EXACT
     };
-    info.tt.store(
-        board.hash,
-        best_move,
-        qs_flag,
-        static_eval,
-        score_to_tt(best_score, ply),
-        0, // depth 0 for QS entries
-    );
+    info.tt.store(board.hash, best_move, flag, stand_pat, store_score, -1);
 
     // QS capture fail-high blending (non-PV only)
-    if best_score >= beta && beta - alpha == 1 && !is_mate_score(best_score) {
+    if best_score >= beta && beta - alpha_orig == 1 && !is_mate_score(best_score) {
         return (best_score + beta) / 2;
     }
 

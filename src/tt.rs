@@ -28,7 +28,7 @@ fn pack_data(best_move: Move, flag: u8, static_eval: i32, score: i32, depth: i32
     let se14 = ((se_clamped as u16).wrapping_add(8192)) & 0x3FFF;
     let se = (se14 as u64) << 18;
     let sc = ((score as i16 as u16) as u64) << 32;
-    let d = ((depth.max(0) as u8) as u64) << 48;
+    let d = ((depth as i8 as u8) as u64) << 48;
     let g = (generation as u64) << 56;
     mv | f | se | sc | d | g
 }
@@ -56,7 +56,7 @@ fn unpack_score(data: u64) -> i32 {
 
 #[inline(always)]
 fn unpack_depth(data: u64) -> i32 {
-    ((data >> 48) & 0xFF) as i32
+    (((data >> 48) & 0xFF) as u8 as i8) as i32
 }
 
 #[inline(always)]
