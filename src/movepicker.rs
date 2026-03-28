@@ -1,11 +1,13 @@
 /// Staged move picker for search.
 /// Order: TT move -> good captures (MVV-LVA + captHist/16) -> killers -> counter-move -> quiets (history) -> bad captures.
+///
+/// True staged generation: captures generated first, quiets only when needed.
 
 use crate::attacks::*;
 use crate::bitboard::*;
 use crate::board::Board;
 use crate::eval::see_value;
-use crate::movegen::{generate_all_moves, generate_captures, MoveList};
+use crate::movegen::{generate_all_moves, generate_captures, generate_quiets, MoveList};
 use crate::see::see_ge;
 use crate::types::*;
 
@@ -85,19 +87,14 @@ impl History {
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Stage {
     TTMove,
-    GenerateMoves,
+    GenerateCaptures,
     GoodCaptures,
     Killers,
     CounterMove,
+    GenerateQuiets,
     Quiets,
     BadCaptures,
     Done,
-}
-
-/// Scored move for sorting.
-struct ScoredMove {
-    mv: Move,
-    score: i32,
 }
 
 pub struct MovePicker {
@@ -106,9 +103,15 @@ pub struct MovePicker {
     killer1: Move,
     killer2: Move,
     counter_move: Move,
-    moves: MoveList,
-    scores: [i32; 256],
-    idx: usize,
+    // Captures (generated first)
+    captures: MoveList,
+    cap_scores: [i32; 256],
+    cap_idx: usize,
+    // Quiets (generated later, only if needed)
+    quiets: MoveList,
+    quiet_scores: [i32; 256],
+    quiet_idx: usize,
+    // Bad captures deferred to end
     bad_captures: [Move; 32],
     bad_capture_len: usize,
     bad_capture_idx: usize,
@@ -148,9 +151,12 @@ impl MovePicker {
             killer1,
             killer2,
             counter_move,
-            moves: MoveList::new(),
-            scores: [0; 256],
-            idx: 0,
+            captures: MoveList::new(),
+            cap_scores: [0; 256],
+            cap_idx: 0,
+            quiets: MoveList::new(),
+            quiet_scores: [0; 256],
+            quiet_idx: 0,
             bad_captures: [NO_MOVE; 32],
             bad_capture_len: 0,
             bad_capture_idx: 0,
@@ -164,7 +170,7 @@ impl MovePicker {
         loop {
             match self.stage {
                 Stage::TTMove => {
-                    self.stage = Stage::GenerateMoves;
+                    self.stage = Stage::GenerateCaptures;
                     if self.tt_move != NO_MOVE {
                         self.tt_move = fixup_move_flags(board, self.tt_move);
                         if is_pseudo_legal(board, self.tt_move)
@@ -175,30 +181,20 @@ impl MovePicker {
                     }
                     self.tt_move = NO_MOVE;
                 }
-                Stage::GenerateMoves => {
-                    self.moves = generate_all_moves(board);
-                    self.score_moves(board, history, prev_move, pawn_hist);
-                    self.idx = 0;
+                Stage::GenerateCaptures => {
+                    self.captures = generate_captures(board);
+                    self.score_captures(board, history);
+                    self.cap_idx = 0;
                     self.stage = Stage::GoodCaptures;
                 }
                 Stage::GoodCaptures => {
-                    while self.idx < self.moves.len {
-                        let mv = self.pick_best();
+                    while self.cap_idx < self.captures.len {
+                        let mv = self.pick_best_capture();
                         if mv == self.tt_move { continue; }
-
-                        // Is it a capture?
-                        let to = move_to(mv);
-                        let flags = move_flags(mv);
-                        let is_cap = board.piece_type_at(to) != NO_PIECE_TYPE
-                            || flags == FLAG_EN_PASSANT;
-                        let is_promo = is_promotion(mv);
-
-                        if !is_cap && !is_promo { continue; }
-
                         if !board.is_legal(mv, self.pinned, self.checkers) { continue; }
 
-                        // SEE check for good captures
-                        if !see_ge(board, mv, 0) {
+                        // Promotions always count as good
+                        if !is_promotion(mv) && !see_ge(board, mv, 0) {
                             if self.bad_capture_len < 32 {
                                 self.bad_captures[self.bad_capture_len] = mv;
                                 self.bad_capture_len += 1;
@@ -209,7 +205,6 @@ impl MovePicker {
                         return mv;
                     }
                     self.stage = Stage::Killers;
-                    self.idx = 0;
                 }
                 Stage::Killers => {
                     self.stage = Stage::CounterMove;
@@ -241,8 +236,7 @@ impl MovePicker {
                     }
                 }
                 Stage::CounterMove => {
-                    self.stage = Stage::Quiets;
-                    self.idx = 0;
+                    self.stage = Stage::GenerateQuiets;
 
                     if self.counter_move != NO_MOVE
                         && self.counter_move != self.tt_move
@@ -260,18 +254,18 @@ impl MovePicker {
                         }
                     }
                 }
+                Stage::GenerateQuiets => {
+                    self.quiets = generate_quiets(board);
+                    self.score_quiets(board, history, prev_move, pawn_hist);
+                    self.quiet_idx = 0;
+                    self.stage = Stage::Quiets;
+                }
                 Stage::Quiets => {
-                    // Reset idx to scan all moves for quiets
-                    while self.idx < self.moves.len {
-                        let mv = self.pick_best();
+                    while self.quiet_idx < self.quiets.len {
+                        let mv = self.pick_best_quiet();
                         if mv == self.tt_move { continue; }
                         if mv == self.killer1 || mv == self.killer2 { continue; }
                         if mv == self.counter_move { continue; }
-
-                        let to = move_to(mv);
-                        let is_cap = board.piece_type_at(to) != NO_PIECE_TYPE
-                            || move_flags(mv) == FLAG_EN_PASSANT;
-                        if is_cap { continue; }
 
                         if !board.is_legal(mv, self.pinned, self.checkers) { continue; }
 
@@ -295,10 +289,10 @@ impl MovePicker {
         }
     }
 
-    /// Score moves for sorting.
-    fn score_moves(&mut self, board: &Board, history: &History, prev_move: Move, pawn_hist: Option<&[[i16; 64]; 12]>) {
-        for i in 0..self.moves.len {
-            let mv = self.moves.moves[i];
+    /// Score capture/promotion moves.
+    fn score_captures(&mut self, board: &Board, history: &History) {
+        for i in 0..self.captures.len {
+            let mv = self.captures.moves[i];
             let from = move_from(mv);
             let to = move_to(mv);
             let flags = move_flags(mv);
@@ -307,7 +301,6 @@ impl MovePicker {
             let is_cap = target_pt != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT;
 
             if is_cap {
-                // MVV-LVA + capture history / 16
                 let victim = if flags == FLAG_EN_PASSANT { PAWN } else { target_pt };
                 let attacker = board.piece_type_at(from);
                 let mvv_lva = see_value(victim) * 10 - see_value(attacker);
@@ -319,35 +312,62 @@ impl MovePicker {
                     0
                 };
 
-                self.scores[i] = 10_000_000 + mvv_lva + cap_hist;
+                self.cap_scores[i] = 10_000_000 + mvv_lva + cap_hist;
             } else if is_promotion(mv) {
-                self.scores[i] = 9_000_000 + see_value(promotion_piece_type(mv));
-            } else {
-                // Quiet: history + contHist + pawn history
-                self.scores[i] = history.quiet_score(board, mv, prev_move, pawn_hist);
+                self.cap_scores[i] = 9_000_000 + see_value(promotion_piece_type(mv));
             }
         }
     }
 
-    /// Selection sort: find best remaining move and swap to current position.
-    fn pick_best(&mut self) -> Move {
-        let mut best_idx = self.idx;
-        let mut best_score = self.scores[self.idx];
+    /// Score quiet moves.
+    fn score_quiets(&mut self, board: &Board, history: &History, prev_move: Move, pawn_hist: Option<&[[i16; 64]; 12]>) {
+        for i in 0..self.quiets.len {
+            let mv = self.quiets.moves[i];
+            self.quiet_scores[i] = history.quiet_score(board, mv, prev_move, pawn_hist);
+        }
+    }
 
-        for j in (self.idx + 1)..self.moves.len {
-            if self.scores[j] > best_score {
-                best_score = self.scores[j];
+    /// Selection sort for captures.
+    fn pick_best_capture(&mut self) -> Move {
+        let mut best_idx = self.cap_idx;
+        let mut best_score = self.cap_scores[self.cap_idx];
+
+        for j in (self.cap_idx + 1)..self.captures.len {
+            if self.cap_scores[j] > best_score {
+                best_score = self.cap_scores[j];
                 best_idx = j;
             }
         }
 
-        if best_idx != self.idx {
-            self.moves.moves.swap(self.idx, best_idx);
-            self.scores.swap(self.idx, best_idx);
+        if best_idx != self.cap_idx {
+            self.captures.moves.swap(self.cap_idx, best_idx);
+            self.cap_scores.swap(self.cap_idx, best_idx);
         }
 
-        let mv = self.moves.moves[self.idx];
-        self.idx += 1;
+        let mv = self.captures.moves[self.cap_idx];
+        self.cap_idx += 1;
+        mv
+    }
+
+    /// Selection sort for quiets.
+    fn pick_best_quiet(&mut self) -> Move {
+        let mut best_idx = self.quiet_idx;
+        let mut best_score = self.quiet_scores[self.quiet_idx];
+
+        for j in (self.quiet_idx + 1)..self.quiets.len {
+            if self.quiet_scores[j] > best_score {
+                best_score = self.quiet_scores[j];
+                best_idx = j;
+            }
+        }
+
+        if best_idx != self.quiet_idx {
+            self.quiets.moves.swap(self.quiet_idx, best_idx);
+            self.quiet_scores.swap(self.quiet_idx, best_idx);
+        }
+
+        let mv = self.quiets.moves[self.quiet_idx];
+        self.quiet_idx += 1;
         mv
     }
 }

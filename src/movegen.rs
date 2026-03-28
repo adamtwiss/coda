@@ -428,6 +428,109 @@ pub fn generate_captures(board: &Board) -> MoveList {
     list
 }
 
+/// Generate pseudo-legal quiet moves (non-captures, non-promotions).
+/// Includes: pawn pushes (non-promo), double pushes, piece/king non-captures, castling.
+/// Excludes: captures, en passant, promotions.
+pub fn generate_quiets(board: &Board) -> MoveList {
+    let mut list = MoveList::new();
+    let us = board.side_to_move;
+    let occ = board.occupied();
+    let our_pieces = board.colors[us as usize];
+    let empty = board.empty();
+
+    // Pawns: pushes only (no captures, no promotions)
+    let pawns = board.pieces[PAWN as usize] & our_pieces;
+    let promo_rank = if us == WHITE { RANK_8 } else { RANK_1 };
+    let third_rank = if us == WHITE { RANK_3 } else { RANK_6 };
+
+    if us == WHITE {
+        // Single push (exclude promotions)
+        let single = north(pawns) & empty;
+        let mut non_promo = single & !promo_rank;
+        while non_promo != 0 {
+            let to = pop_lsb(&mut non_promo) as u8;
+            list.push(make_move(to - 8, to, FLAG_NONE));
+        }
+        // Double push
+        let double = north(single & third_rank) & empty;
+        let mut doubles = double;
+        while doubles != 0 {
+            let to = pop_lsb(&mut doubles) as u8;
+            list.push(make_move(to - 16, to, FLAG_DOUBLE_PUSH));
+        }
+    } else {
+        let single = south(pawns) & empty;
+        let mut non_promo = single & !promo_rank;
+        while non_promo != 0 {
+            let to = pop_lsb(&mut non_promo) as u8;
+            list.push(make_move(to + 8, to, FLAG_NONE));
+        }
+        let double = south(single & third_rank) & empty;
+        let mut doubles = double;
+        while doubles != 0 {
+            let to = pop_lsb(&mut doubles) as u8;
+            list.push(make_move(to + 16, to, FLAG_DOUBLE_PUSH));
+        }
+    }
+
+    // Knights
+    let mut knights = board.pieces[KNIGHT as usize] & our_pieces;
+    while knights != 0 {
+        let from = pop_lsb(&mut knights) as u8;
+        let mut attacks = knight_attacks(from as u32) & empty;
+        while attacks != 0 {
+            let to = pop_lsb(&mut attacks) as u8;
+            list.push(make_move(from, to, FLAG_NONE));
+        }
+    }
+
+    // Bishops
+    let mut bishops = board.pieces[BISHOP as usize] & our_pieces;
+    while bishops != 0 {
+        let from = pop_lsb(&mut bishops) as u8;
+        let mut attacks = bishop_attacks(from as u32, occ) & empty;
+        while attacks != 0 {
+            let to = pop_lsb(&mut attacks) as u8;
+            list.push(make_move(from, to, FLAG_NONE));
+        }
+    }
+
+    // Rooks
+    let mut rooks = board.pieces[ROOK as usize] & our_pieces;
+    while rooks != 0 {
+        let from = pop_lsb(&mut rooks) as u8;
+        let mut attacks = rook_attacks(from as u32, occ) & empty;
+        while attacks != 0 {
+            let to = pop_lsb(&mut attacks) as u8;
+            list.push(make_move(from, to, FLAG_NONE));
+        }
+    }
+
+    // Queens
+    let mut queens = board.pieces[QUEEN as usize] & our_pieces;
+    while queens != 0 {
+        let from = pop_lsb(&mut queens) as u8;
+        let mut attacks = queen_attacks(from as u32, occ) & empty;
+        while attacks != 0 {
+            let to = pop_lsb(&mut attacks) as u8;
+            list.push(make_move(from, to, FLAG_NONE));
+        }
+    }
+
+    // King (non-captures)
+    let ksq = board.king_sq(us);
+    let mut attacks = king_attacks(ksq as u32) & empty;
+    while attacks != 0 {
+        let to = pop_lsb(&mut attacks) as u8;
+        list.push(make_move(ksq, to, FLAG_NONE));
+    }
+
+    // Castling
+    generate_castling(board, &mut list, us, occ);
+
+    list
+}
+
 /// Generate all legal moves (for perft and verification).
 pub fn generate_legal_moves(board: &Board) -> MoveList {
     let pseudo = generate_all_moves(board);
@@ -576,6 +679,115 @@ mod tests {
                 panic!("EP move should be illegal in this position");
             }
         }
+    }
+
+    /// Helper: classify a move as "quiet" (not a capture, not a promotion, not EP).
+    fn is_quiet(board: &Board, mv: Move) -> bool {
+        let to = move_to(mv);
+        let flags = move_flags(mv);
+        if flags == FLAG_EN_PASSANT { return false; }
+        if is_promotion(mv) { return false; }
+        if board.piece_type_at(to) != NO_PIECE_TYPE { return false; }
+        true
+    }
+
+    /// Verify generate_quiets() produces the exact same set of moves as
+    /// the quiet subset of generate_all_moves().
+    fn verify_quiets_match(fen: &str) {
+        let b = Board::from_fen(fen);
+
+        // Get all moves, filter to quiets
+        let all = generate_all_moves(&b);
+        let mut expected: Vec<Move> = (0..all.len)
+            .map(|i| all.moves[i])
+            .filter(|&mv| is_quiet(&b, mv))
+            .collect();
+        expected.sort();
+
+        // Get quiet moves directly
+        let quiets = generate_quiets(&b);
+        let mut actual: Vec<Move> = (0..quiets.len)
+            .map(|i| quiets.moves[i])
+            .collect();
+        actual.sort();
+
+        assert_eq!(
+            expected.len(), actual.len(),
+            "Quiet move count mismatch for FEN: {}\nExpected {} moves, got {}\nExpected: {:?}\nActual:   {:?}",
+            fen, expected.len(), actual.len(),
+            expected.iter().map(|&m| move_to_uci(m)).collect::<Vec<_>>(),
+            actual.iter().map(|&m| move_to_uci(m)).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            expected, actual,
+            "Quiet move set mismatch for FEN: {}",
+            fen,
+        );
+    }
+
+    #[test]
+    fn test_generate_quiets() {
+        init();
+        // Starting position
+        verify_quiets_match("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        // Kiwipete (lots of captures, EP, castling)
+        verify_quiets_match("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        // Position 3 (pawns, rook)
+        verify_quiets_match("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1");
+        // Position 4 (promotions, heavy captures)
+        verify_quiets_match("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1");
+        // Black to move with promotions
+        verify_quiets_match("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 b kq - 0 1");
+        // Position 5 (promotion on d8)
+        verify_quiets_match("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8");
+        // Position 6 (symmetrical)
+        verify_quiets_match("r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10");
+        // EP position
+        verify_quiets_match("8/8/8/8/k2Pp2Q/8/8/3K4 b - d3 0 1");
+        // No pawns
+        verify_quiets_match("4k3/8/8/8/8/8/8/4K2R w K - 0 1");
+        // Endgame with passed pawns
+        verify_quiets_match("8/5k2/3p4/1p1Pp2p/pP2Pp1P/P4P1K/8/8 b - - 0 1");
+    }
+
+    /// Verify captures + quiets == all moves (complete union, no duplicates, no missing).
+    fn verify_union_match(fen: &str) {
+        let b = Board::from_fen(fen);
+
+        let all = generate_all_moves(&b);
+        let mut all_set: Vec<Move> = (0..all.len).map(|i| all.moves[i]).collect();
+        all_set.sort();
+
+        let caps = generate_captures(&b);
+        let quiets = generate_quiets(&b);
+        let mut union: Vec<Move> = (0..caps.len).map(|i| caps.moves[i])
+            .chain((0..quiets.len).map(|i| quiets.moves[i]))
+            .collect();
+        union.sort();
+
+        assert_eq!(
+            all_set.len(), union.len(),
+            "Union count mismatch for FEN: {}\nAll={}, Caps+Quiets={} (caps={}, quiets={})\nAll:   {:?}\nUnion: {:?}",
+            fen, all_set.len(), union.len(), caps.len, quiets.len,
+            all_set.iter().map(|&m| move_to_uci(m)).collect::<Vec<_>>(),
+            union.iter().map(|&m| move_to_uci(m)).collect::<Vec<_>>(),
+        );
+        assert_eq!(all_set, union, "Union set mismatch for FEN: {}", fen);
+    }
+
+    #[test]
+    fn test_captures_plus_quiets_equals_all() {
+        init();
+        verify_union_match("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        verify_union_match("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        verify_union_match("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1");
+        verify_union_match("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1");
+        verify_union_match("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 b kq - 0 1");
+        verify_union_match("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8");
+        verify_union_match("r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10");
+        verify_union_match("8/8/8/8/k2Pp2Q/8/8/3K4 b - d3 0 1");
+        verify_union_match("4k3/8/8/8/8/8/8/4K2R w K - 0 1");
+        verify_union_match("8/5k2/3p4/1p1Pp2p/pP2Pp1P/P4P1K/8/8 b - - 0 1");
     }
 
     #[test]
