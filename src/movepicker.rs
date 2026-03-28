@@ -427,14 +427,14 @@ impl MovePicker {
                 // Bad capture
                 if self.bad_len < 64 {
                     self.bad_moves[self.bad_len] = m;
-                    self.bad_scores[self.bad_len] = Self::capt_hist_score_static(board, history, m);
+                    self.bad_scores[self.bad_len] = capt_hist_score_static(board, history, m);
                     self.bad_len += 1;
                 }
             } else {
                 // Good capture
                 let idx = self.moves.len;
                 self.moves.push(m);
-                self.scores[idx] = mvv_lva(board, m) + Self::capt_hist_score_static(board, history, m) / 16;
+                self.scores[idx] = mvv_lva(board, m) + capt_hist_score_static(board, history, m) / 16;
             }
         }
         self.index = 0;
@@ -526,7 +526,7 @@ impl MovePicker {
                 }
             } else if board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT {
                 // Capture: MVV-LVA + capture history
-                10000 + mvv_lva(board, m) + Self::capt_hist_score_static(board, history, m) / 16
+                10000 + mvv_lva(board, m) + capt_hist_score_static(board, history, m) / 16
             } else {
                 // Quiet: history + continuation history + pawn history
                 let piece = board.piece_at(from);
@@ -594,27 +594,28 @@ impl MovePicker {
         mv
     }
 
-    /// Capture history score for a capture move (static version using explicit history ref).
-    /// Matches GoChess captHistScore().
-    fn capt_hist_score_static(board: &Board, history: &History, m: Move) -> i32 {
-        let from = move_from(m);
-        let to = move_to(m);
-        let piece = board.piece_at(from);
-        if piece == NO_PIECE {
-            return 0;
-        }
-        let victim_pt = board.piece_type_at(to);
-        let ct = if victim_pt == NO_PIECE_TYPE {
-            if move_flags(m) == FLAG_EN_PASSANT {
-                1 // pawn
-            } else {
-                0 // empty
-            }
-        } else {
-            captured_type(victim_pt)
-        };
-        history.capture[go_piece(piece)][to as usize][ct]
+}
+
+/// Capture history score for a capture move.
+/// Matches GoChess captHistScore(). Public for use by QMovePicker.
+pub fn capt_hist_score_static(board: &Board, history: &History, m: Move) -> i32 {
+    let from = move_from(m);
+    let to = move_to(m);
+    let piece = board.piece_at(from);
+    if piece == NO_PIECE {
+        return 0;
     }
+    let victim_pt = board.piece_type_at(to);
+    let ct = if victim_pt == NO_PIECE_TYPE {
+        if move_flags(m) == FLAG_EN_PASSANT {
+            1 // pawn
+        } else {
+            0 // empty
+        }
+    } else {
+        captured_type(victim_pt)
+    };
+    history.capture[go_piece(piece)][to as usize][ct]
 }
 
 /// MVV-LVA score for a capture. Matches GoChess mvvLva().
@@ -800,43 +801,74 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
     true
 }
 
-/// Simple move picker for quiescence search (captures only + check evasions).
+/// Move picker for quiescence search.
+/// Matches GoChess: tries TT move first, scores captures with MVV-LVA + captHist/16.
+/// When in_check, uses evasion mode (all moves, captures scored above quiets).
 pub struct QMovePicker {
+    tt_move: Move,
+    tt_stage: bool, // true = haven't tried TT move yet
     moves: MoveList,
     scores: [i32; 256],
     idx: usize,
     pinned: Bitboard,
     checkers: Bitboard,
+    in_check: bool,
 }
 
 impl QMovePicker {
-    pub fn new(board: &Board, in_check: bool) -> Self {
+    /// Create QS picker matching GoChess InitQuiescence: TT move + captHist scoring.
+    /// When in_check, generates all moves (evasions); otherwise captures only.
+    pub fn new(board: &Board, tt_move: Move, in_check: bool, history: &History) -> Self {
         let pinned = board.pinned();
         let checkers = board.checkers();
-        // In check: generate all moves (need evasions). Otherwise: captures only.
+
         let moves = if in_check { generate_all_moves(board) } else { generate_captures(board) };
         let mut picker = QMovePicker {
+            tt_move: if tt_move != NO_MOVE && is_pseudo_legal(board, tt_move) { tt_move } else { NO_MOVE },
+            tt_stage: true,
             moves,
             scores: [0; 256],
             idx: 0,
             pinned,
             checkers,
+            in_check,
         };
 
-        // Score by MVV-LVA
+        // Score moves: MVV-LVA + captHist/16 for captures (matching GoChess)
         for i in 0..picker.moves.len {
             let mv = picker.moves.moves[i];
+            // Skip TT move in scoring (will be tried first)
+            if mv == picker.tt_move {
+                picker.scores[i] = i32::MIN;
+                continue;
+            }
+
             let to = move_to(mv);
+            let from = move_from(mv);
             let target_pt = board.piece_type_at(to);
             let flags = move_flags(mv);
 
             if target_pt != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT {
+                // Capture: MVV-LVA + captHist/16
                 let victim = if flags == FLAG_EN_PASSANT { PAWN } else { target_pt };
-                let attacker = board.piece_type_at(move_from(mv));
-                picker.scores[i] = see_value(victim) * 10 - see_value(attacker);
+                let attacker = board.piece_type_at(from);
+                let mvv_lva = see_value(victim) * 10 - see_value(attacker);
+                let capt_hist = capt_hist_score_static(board, history, mv);
+                if in_check {
+                    // Evasion captures scored high (matching GoChess: 10000 + mvvlva + captHist/16)
+                    picker.scores[i] = 10000 + mvv_lva + capt_hist / 16;
+                } else {
+                    picker.scores[i] = mvv_lva + capt_hist / 16;
+                }
             } else if is_promotion(mv) {
-                picker.scores[i] = see_value(promotion_piece_type(mv));
+                if in_check {
+                    let pt = promotion_piece_type(mv);
+                    picker.scores[i] = if pt == QUEEN { 9000 } else { -1000 };
+                } else {
+                    picker.scores[i] = see_value(promotion_piece_type(mv));
+                }
             } else {
+                // Quiet (only in evasion mode)
                 picker.scores[i] = -1_000_000;
             }
         }
@@ -844,10 +876,20 @@ impl QMovePicker {
         picker
     }
 
-    /// Get next capture move. Returns NO_MOVE when exhausted.
-    pub fn next(&mut self, board: &Board, in_check: bool) -> Move {
+    /// Get next move. Returns NO_MOVE when exhausted.
+    pub fn next(&mut self, board: &Board) -> Move {
+        // Try TT move first (matching GoChess stageTTMove in QS)
+        if self.tt_stage {
+            self.tt_stage = false;
+            if self.tt_move != NO_MOVE {
+                if board.is_legal(self.tt_move, self.pinned, self.checkers) {
+                    return self.tt_move;
+                }
+            }
+        }
+
         while self.idx < self.moves.len {
-            // Selection sort
+            // Selection sort: find best remaining
             let mut best_idx = self.idx;
             let mut best_score = self.scores[self.idx];
             for j in (self.idx + 1)..self.moves.len {
@@ -862,8 +904,11 @@ impl QMovePicker {
             let mv = self.moves.moves[self.idx];
             self.idx += 1;
 
-            // In check: try all moves (evasions)
-            if !in_check {
+            // Skip TT move (already tried)
+            if mv == self.tt_move { continue; }
+
+            // Not in check: only return captures/promotions
+            if !self.in_check {
                 let to = move_to(mv);
                 let flags = move_flags(mv);
                 let is_cap = board.piece_type_at(to) != NO_PIECE_TYPE

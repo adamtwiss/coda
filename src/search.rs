@@ -184,7 +184,34 @@ impl SearchInfo {
     /// Evaluate using NNUE if loaded, otherwise classical PeSTO.
     fn eval(&mut self, board: &Board) -> i32 {
         let score = if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
-            evaluate_nnue(board, net, acc)
+            let s = evaluate_nnue(board, net, acc);
+            // NNUE verification: recompute from scratch and compare
+            static VERIFY_INIT: std::sync::Once = std::sync::Once::new();
+            static mut VERIFY_ENABLED: bool = false;
+            static VERIFY_MISMATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            static VERIFY_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            VERIFY_INIT.call_once(|| {
+                unsafe { VERIFY_ENABLED = std::env::var("CODA_VERIFY_NNUE").is_ok(); }
+            });
+            if unsafe { VERIFY_ENABLED } {
+                let n = VERIFY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                acc.force_recompute(net, board);
+                let s2 = evaluate_nnue(board, net, acc);
+                if s != s2 {
+                    let m = VERIFY_MISMATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if m < 20 {
+                        eprintln!("NNUE MISMATCH n={} hash={:016x} incremental={} recomputed={} diff={}",
+                            n, board.hash, s, s2, s - s2);
+                    }
+                }
+                if n == 9999 {
+                    let mm = VERIFY_MISMATCHES.load(std::sync::atomic::Ordering::Relaxed);
+                    eprintln!("NNUE verify: {}/{} mismatches after 10000 evals", mm, n + 1);
+                }
+                s2 // use recomputed value when verifying
+            } else {
+                s
+            }
         } else {
             evaluate(board)
         };
@@ -938,9 +965,9 @@ fn negamax(
     let probcut_beta = beta + 170;
     if !in_check && ply > 0 && depth >= 5 && static_eval + 85 >= probcut_beta {
         let pc_depth = depth - 4;
-        let mut pc_picker = QMovePicker::new(board, false);
+        let mut pc_picker = QMovePicker::new(board, NO_MOVE, false, &info.history);
         loop {
-            let mv = pc_picker.next(board, false);
+            let mv = pc_picker.next(board);
             if mv == NO_MOVE { break; }
 
             if !see_ge(board, mv, 0) { continue; }
@@ -1650,7 +1677,7 @@ fn quiescence_with_depth(
 
     // Probe transposition table
     let tt_entry = info.tt.probe(board.hash);
-    let _tt_move = if tt_entry.hit { tt_entry.best_move } else { NO_MOVE };
+    let tt_move = if tt_entry.hit { tt_entry.best_move } else { NO_MOVE };
     let alpha_orig = alpha;
     let tt_hit = tt_entry.hit;
 
@@ -1680,13 +1707,13 @@ fn quiescence_with_depth(
 
     // When in check, generate all evasion moves
     if qs_in_check {
-        let mut evasion_picker = QMovePicker::new(board, true);
+        let mut evasion_picker = QMovePicker::new(board, tt_move, true, &info.history);
         let mut best_score = -INFINITY;
         let mut best_move = NO_MOVE;
         let mut move_count = 0i32;
 
         loop {
-            let mv = evasion_picker.next(board, true);
+            let mv = evasion_picker.next(board);
             if mv == NO_MOVE { break; }
 
             let qs_moved_pt = board.piece_type_at(move_from(mv));
@@ -1758,11 +1785,11 @@ fn quiescence_with_depth(
     }
 
     // Use QMovePicker for captures only
-    let mut picker = QMovePicker::new(board, false);
+    let mut picker = QMovePicker::new(board, tt_move, false, &info.history);
     let mut best_move = NO_MOVE;
 
     loop {
-        let mv = picker.next(board, false);
+        let mv = picker.next(board);
         if mv == NO_MOVE { break; }
 
         // Delta pruning: skip captures that can't possibly raise alpha
