@@ -138,7 +138,7 @@ fn main() {
 
         _ => {
             // Validate any dash-prefixed args are known flags
-            let known_flags = ["-nnue", "-book", "-h", "--help"];
+            let known_flags = ["-nnue", "-book", "-classical", "-h", "--help"];
             for arg in &args[1..] {
                 if arg.starts_with('-') && !known_flags.contains(&arg.as_str()) {
                     eprintln!("Unknown option: {}", arg);
@@ -150,9 +150,10 @@ fn main() {
             // UCI mode (default)
             let nnue_path = flag_value(&args, "-nnue");
             let book_path = flag_value(&args, "-book");
+            let classical = args.iter().any(|a| a == "-classical");
 
             if subcmd.starts_with('-') || subcmd.is_empty() {
-                uci::uci_loop_with_nnue(nnue_path, book_path);
+                uci::uci_loop_with_nnue(nnue_path, book_path, classical);
             } else {
                 eprintln!("Unknown command: {}", subcmd);
                 print_usage();
@@ -166,8 +167,9 @@ fn print_usage() {
     println!("Coda Chess Engine — Chess Optimised, Developed Agentically");
     println!();
     println!("Usage:");
-    println!("  coda                              UCI mode (default)");
-    println!("  coda -nnue <net.nnue>             UCI with NNUE evaluation");
+    println!("  coda                              UCI mode (auto-discovers NNUE from net.txt)");
+    println!("  coda -nnue <net.nnue>             UCI with specific NNUE network");
+    println!("  coda -classical                   UCI with PeSTO eval (no NNUE required)");
     println!("  coda -book <book.bin>             UCI with Polyglot opening book");
     println!("  coda bench [depth] [-nnue <net>]  Search benchmark");
     println!("  coda epd <file> [time] [max] [-nnue <net>]");

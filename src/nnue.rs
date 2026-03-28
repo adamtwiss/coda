@@ -988,9 +988,9 @@ impl DirtyPiece {
 
 /// Single accumulator entry (two perspectives).
 #[derive(Clone)]
-struct AccEntry {
-    white: Vec<i16>,
-    black: Vec<i16>,
+pub struct AccEntry {
+    pub white: Vec<i16>,
+    pub black: Vec<i16>,
     computed: bool,
     dirty: DirtyPiece,
 }
@@ -1048,6 +1048,49 @@ impl NNUEAccumulator {
 
     pub fn black(&self) -> &[i16] {
         &self.stack[self.top].black[..self.hidden_size]
+    }
+
+    /// Get the current accumulator entry for reading.
+    pub fn current(&self) -> &AccEntry {
+        &self.stack[self.top]
+    }
+
+    /// Force a full recompute of both perspectives (for debugging).
+    pub fn force_recompute(&mut self, net: &NNUENet, board: &Board) {
+        let h = self.hidden_size;
+        // White perspective
+        {
+            let dst = &mut self.stack[self.top].white;
+            dst[..h].copy_from_slice(&net.input_biases[..h]);
+            for color in 0..2u8 {
+                for pt in 0..6u8 {
+                    let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
+                    while bb != 0 {
+                        let sq = pop_lsb(&mut bb) as u8;
+                        let idx = halfka_index(WHITE, board.king_sq(WHITE), color, pt, sq);
+                        let row = net.input_weight_row(idx);
+                        for j in 0..h { dst[j] += row[j]; }
+                    }
+                }
+            }
+        }
+        // Black perspective
+        {
+            let dst = &mut self.stack[self.top].black;
+            dst[..h].copy_from_slice(&net.input_biases[..h]);
+            for color in 0..2u8 {
+                for pt in 0..6u8 {
+                    let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
+                    while bb != 0 {
+                        let sq = pop_lsb(&mut bb) as u8;
+                        let idx = halfka_index(BLACK, board.king_sq(BLACK), color, pt, sq);
+                        let row = net.input_weight_row(idx);
+                        for j in 0..h { dst[j] += row[j]; }
+                    }
+                }
+            }
+        }
+        self.stack[self.top].computed = true;
     }
 
     /// Push: store dirty info, don't compute yet.

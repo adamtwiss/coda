@@ -7,17 +7,53 @@ use crate::board::Board;
 use crate::search::*;
 use crate::types::*;
 
-pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
+pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, classical: bool) {
     let mut board = Board::startpos();
     let mut info = SearchInfo::new(64);
     let mut opening_book: Option<crate::book::OpeningBook> = None;
     let mut use_book = true;
     let mut syzygy: Option<crate::tb::SyzygyTB> = None;
 
-    // Pre-load NNUE if path given via CLI
+    // Pre-load NNUE if path given via CLI, otherwise try net.txt auto-discovery
     if let Some(path) = nnue_path {
         if let Err(e) = info.load_nnue(path) {
             eprintln!("Failed to load NNUE: {}", e);
+        }
+    } else {
+        // Auto-discover: look for net.txt in exe dir, then CWD
+        let try_paths = [
+            std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.txt"))),
+            Some(std::path::PathBuf::from("net.txt")),
+        ];
+        let mut loaded = false;
+        for maybe_path in &try_paths {
+            if let Some(path) = maybe_path {
+                if path.exists() {
+                    if let Ok(contents) = std::fs::read_to_string(path) {
+                        let url = contents.trim();
+                        // Extract filename from URL
+                        if let Some(fname) = url.rsplit('/').next() {
+                            let net_dir = path.parent().unwrap_or(std::path::Path::new("."));
+                            let net_path = net_dir.join(fname);
+                            if net_path.exists() {
+                                if let Ok(()) = info.load_nnue(net_path.to_str().unwrap()) {
+                                    loaded = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !loaded && !classical {
+            eprintln!("ERROR: No NNUE net found! Coda requires an NNUE network to play.");
+            eprintln!("  Use -nnue <path> or place net.txt + .nnue file in working directory.");
+            eprintln!("  Use -classical to force PeSTO eval (much weaker, for testing only).");
+            std::process::exit(1);
+        }
+        if !loaded && classical {
+            eprintln!("info string Classical (PeSTO) eval mode — no NNUE net loaded.");
         }
     }
 
@@ -91,6 +127,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 if is_ponder {
                     limits.infinite = true;
                 }
+                // Warn if no NNUE net is loaded
+                if info.nnue_net.is_none() {
+                    println!("info string WARNING: No NNUE net loaded! Playing with classical eval.");
+                }
                 // Run search synchronously (stop flag checked every 4096 nodes)
                 info.stop.store(false, Ordering::Relaxed);
                 let best_move = search(&mut board, &mut info, &limits);
@@ -154,6 +194,33 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 println!("{}", board.display());
                 println!("FEN: {}", board.to_fen());
                 println!("Hash: {:016x}", board.hash);
+            }
+            "eval" => {
+                let score = if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
+                    crate::eval::evaluate_nnue(&board, net, acc)
+                } else {
+                    crate::eval::evaluate(&board)
+                };
+                println!("info string fen {}", board.to_fen());
+                println!("info string hash {:016x}", board.hash);
+                println!("info string raw_nnue {}", score);
+                println!("info string side {}", board.side_to_move);
+
+                // Dump accumulator values
+                if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
+                    // Force full recompute for clean values
+                    acc.force_recompute(net, &board);
+                    let cur = acc.current();
+                    let h = net.hidden_size;
+                    let n = 16.min(h);
+                    let w_vals: Vec<String> = cur.white[..n].iter().map(|v| v.to_string()).collect();
+                    let b_vals: Vec<String> = cur.black[..n].iter().map(|v| v.to_string()).collect();
+                    println!("info string white_acc [{}]", w_vals.join(","));
+                    println!("info string black_acc [{}]", b_vals.join(","));
+                    let pc = crate::nnue::piece_count(&board);
+                    let bucket = crate::nnue::output_bucket(pc);
+                    println!("info string piece_count {} bucket {}", pc, bucket);
+                }
             }
             _ => {}
         }
