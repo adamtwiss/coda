@@ -445,7 +445,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         if soft < 10 { soft = 10; }
 
         // Hard limit (match GoChess)
-        let hard = if limits.movestogo > 0 {
+        let mut hard = if limits.movestogo > 0 {
             // Tournament TC: cap by moves remaining (generous early, tight late)
             let hard_raw = soft * 2;
             let cap_pct = (20 + limits.movestogo as u64 / 2).min(40);
@@ -453,8 +453,17 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             hard_raw.min(mtg_cap)
         } else {
             // Sudden death: allow up to 3x soft
-            (soft * 3).min(time_left * 3 / 4)
+            soft * 3
         };
+
+        // Absolute hard cap (GoChess: never use more than timeLeft/5 + inc)
+        let mut max_hard = time_left / 5 + our_inc;
+        if max_hard > time_left * 3 / 4 {
+            max_hard = time_left * 3 / 4;
+        }
+        if hard > max_hard {
+            hard = max_hard;
+        }
 
         info.soft_limit = soft;
         info.hard_limit = hard.max(soft);
@@ -482,6 +491,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
     for depth in 1..=effective_max {
         if info.should_stop() { break; }
+        let iter_start = std::time::Instant::now();
 
         let score;
 
@@ -642,6 +652,15 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             let adjusted_soft = adjusted_soft.min(info.hard_limit);
             if elapsed >= adjusted_soft {
                 break;
+            }
+
+            // Next-iteration estimate: stop if next iteration would exceed hard limit.
+            // Use 2x last iteration time as estimate (exponential branching). GoChess lines 685-693.
+            if info.hard_limit > 0 {
+                let iter_elapsed = iter_start.elapsed().as_millis() as u64;
+                if elapsed > 0 && info.hard_limit > elapsed && (info.hard_limit - elapsed) < 2 * iter_elapsed {
+                    break;
+                }
             }
         }
     }
