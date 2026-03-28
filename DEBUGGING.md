@@ -119,3 +119,33 @@ Despite fixes, Coda might allocate time differently in practice, causing it to s
 
 ## Commits (this session)
 See `git log --oneline` in the coda repo — 15 commits from this session.
+
+## Update: Correction History Amplifies Divergence (late 2026-03-28)
+
+### LMR Adjustment Analysis
+Average LMR reduction: GoChess 2.493, Coda 2.414 (0.08 less → bigger tree).
+
+Key LMR adjustment rates (at depth 14):
+| Adjustment | GoChess | Coda | Effect |
+|-----------|---------|------|--------|
+| PV (-1) | 16.5% | 14.2% | Similar |
+| cut (+1) | 85.4% | 87.0% | Similar |
+| improving (-1) | 40.5% | 42.0% | Coda reduces less 1.5% more |
+| failing (+1) | 0.4% | 0.8% | Coda reduces more 2x |
+| **unstable (-1)** | **1.9%** | **3.3%** | **Coda reduces less 1.7x** |
+| hist_good (-N) | 0.08% | 0.0% | Negligible |
+
+### Correction History Ablation
+Without correction history, the unstable difference nearly disappears:
+- WITH correction: GoChess unstable=616, Coda=1212 (1.97x)  
+- WITHOUT correction: GoChess unstable=602, Coda=665 (1.10x)
+
+Correction history is amplifying a small underlying divergence. The corrected evals differ between engines (despite same raw NNUE eval), causing the unstable threshold (|eval swing| > 200) to fire 2x more in Coda. This extra unstable → less reduction → bigger tree → more nodes → worse play.
+
+### Root Cause Theory
+The search trees diverge slightly at depth 4+ (1 node difference). This causes different positions to be searched, which updates correction history differently. The different correction values then modify the eval used for pruning/reducing, amplifying the original divergence. This feedback loop is the 300 Elo gap.
+
+### Possible Fix
+1. Disable correction history in both engines to remove the amplifier (test Elo gap)
+2. Find and fix the original depth-4 divergence that seeds the correction difference
+3. The depth-4 divergence is likely in move ordering at tie-break (different move generation order)
