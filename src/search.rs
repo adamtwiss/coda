@@ -1103,8 +1103,8 @@ fn negamax(
                 lmr_reduction(depth, moves_tried as i32)
             };
 
-            // Quiet-only adjustments (match GoChess exactly)
-            if !is_capture {
+            // Adjustments only when base reduction > 0 (matches GoChess)
+            if r > 0 && !is_capture {
                 // PV nodes: reduce less
                 if is_pv { r -= 1; }
                 // Cut nodes (non-PV, not first move): reduce more
@@ -1114,16 +1114,11 @@ fn negamax(
                 if alpha_raised_count > 1 {
                     r += alpha_raised_count / 2;
                 }
-            }
 
-            // (killers are fully exempt from LMR via the condition above)
-
-            // History-based adjustment (use `us` not board.side_to_move — board is post-make)
-            if !is_capture {
+                // History-based adjustment
                 let from = move_from(mv);
                 let to = move_to(mv);
                 let mut hist = info.history.main[us as usize][from as usize][to as usize];
-                // Add continuation history (1x weight for LMR adjustment)
                 if prev_move != NO_MOVE {
                     let prev_to = move_to(prev_move);
                     let prev_piece = board.piece_at(prev_to);
@@ -1135,20 +1130,18 @@ fn negamax(
                     }
                 }
                 r -= hist / 5000;
-            }
 
-            // Reduce less when improving
-            if improving { r -= 1; }
+                // Reduce less when improving
+                if improving { r -= 1; }
 
-            // Reduce more when position is deteriorating
-            if failing { r += 1; }
+                // Reduce more when position is deteriorating
+                if failing { r += 1; }
 
-            // Reduce less in volatile positions
-            if unstable { r -= 1; }
+                // Reduce less in volatile positions
+                if unstable { r -= 1; }
 
-            // Reduce more when TT best move is a capture (quiet alternatives less likely)
-            if !is_capture && tt_move_is_noisy {
-                r += 1;
+                // Reduce more when TT best move is a capture
+                if tt_move_is_noisy { r += 1; }
             }
 
             r = r.max(0).min(new_depth);
