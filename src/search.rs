@@ -488,10 +488,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
 
             score = asp_result;
-            if info.should_stop() && depth > 1 { break; }
+            if info.should_stop() { break; }
         } else {
             score = negamax(board, info, -INFINITY, INFINITY, depth, 0, false);
-            if info.should_stop() && depth > 1 { break; }
+            if info.should_stop() { break; }
         }
 
         // Get best move from TT — validate it's a legal move for the root position
@@ -509,7 +509,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
         }
 
-        prev_score = if !info.should_stop() { score } else { prev_score };
+        prev_score = score;
 
         // UCI info output
         let elapsed = info.start_time.elapsed().as_millis() as u64;
@@ -699,11 +699,7 @@ fn negamax(
             match tt_entry.flag {
                 TT_FLAG_EXACT => {
                     info.stats.tt_cutoffs += 1;
-                    // History bonus for TT cutoff
-                    if tt_move != NO_MOVE {
-                        let bonus = (depth * depth).min(1200);
-                        update_tt_cutoff_history(info, board, tt_move, bonus);
-                    }
+                    // GoChess: return immediately on TTExact, no history bonus
                     return tt_score;
                 }
                 TT_FLAG_LOWER => {
@@ -758,7 +754,7 @@ fn negamax(
     let improving: bool;
     let failing: bool;
     if !in_check {
-        raw_eval = if tt_hit && tt_entry.static_eval > -INFINITY + 100 {
+        raw_eval = if tt_hit && tt_entry.static_eval > -MATE_SCORE + 100 {
             tt_entry.static_eval
         } else {
             info.eval(board)
@@ -771,7 +767,7 @@ fn negamax(
         improving = ply >= 2 && ply_u >= 2 && static_eval > info.static_evals[ply_u - 2];
         // Failing: significant position deterioration
         failing = ply >= 2 && ply_u >= 2
-            && info.static_evals[ply_u - 2] > -INFINITY + 100
+            && info.static_evals[ply_u - 2] > -MATE_SCORE + 100
             && static_eval < info.static_evals[ply_u - 2] - (60 + 40 * depth);
     } else {
         raw_eval = -INFINITY;
@@ -785,7 +781,7 @@ fn negamax(
 
     // Eval instability: sharp eval swing from parent
     let unstable = !in_check && ply >= 1 && ply_u >= 1
-        && info.static_evals[ply_u - 1] > -INFINITY + 100
+        && info.static_evals[ply_u - 1] > -INFINITY
         && static_eval > -INFINITY
         && {
             let parent_eval = -info.static_evals[ply_u - 1];
@@ -809,7 +805,7 @@ fn negamax(
 
     // Hindsight reduction
     if !in_check && ply >= 1 && depth >= 3 && ply_u >= 1
-        && info.static_evals[ply_u - 1] > -INFINITY + 100
+        && info.static_evals[ply_u - 1] > -MATE_SCORE + 100
         && static_eval > -INFINITY
     {
         let eval_sum = info.static_evals[ply_u - 1] + static_eval;
@@ -1480,7 +1476,7 @@ fn negamax(
     if !in_check && best_move != NO_MOVE && depth >= 3
         && best_score > alpha_orig
         && !is_mate_score(best_score)
-        && raw_eval > -INFINITY + 100
+        && raw_eval > -MATE_SCORE + 100
     {
         update_correction_history(info, board, best_score, raw_eval, depth);
     }
@@ -1664,7 +1660,7 @@ fn quiescence_with_depth(
     }
 
     // Stand pat (only when not in check)
-    let stand_pat = if tt_hit && tt_entry.static_eval > -INFINITY + 100 {
+    let stand_pat = if tt_hit && tt_entry.static_eval > -MATE_SCORE + 100 {
         tt_entry.static_eval
     } else {
         info.eval(board)

@@ -267,11 +267,12 @@ impl TT {
 }
 
 /// Adjust mate scores for TT storage (add ply).
+/// Threshold matches GoChess: MateScore - 100 = 28900.
 #[inline]
 pub fn score_to_tt(score: i32, ply: i32) -> i32 {
-    if score > 29000 {
+    if score > MATE_SCORE - 100 {
         score + ply
-    } else if score < -29000 {
+    } else if score < -(MATE_SCORE - 100) {
         score - ply
     } else {
         score
@@ -281,17 +282,17 @@ pub fn score_to_tt(score: i32, ply: i32) -> i32 {
 /// Adjust mate scores from TT retrieval (subtract ply).
 #[inline]
 pub fn score_from_tt(score: i32, ply: i32) -> i32 {
-    if score > 29000 {
+    if score > MATE_SCORE - 100 {
         score - ply
-    } else if score < -29000 {
+    } else if score < -(MATE_SCORE - 100) {
         score + ply
     } else {
         score
     }
 }
 
-pub const MATE_SCORE: i32 = 30000;
-pub const TB_WIN: i32 = 29000;
+pub const MATE_SCORE: i32 = 29000; // GoChess: MateScore = 29000 (distinct from Infinity = 30000)
+pub const TB_WIN: i32 = 28800; // GoChess: TBWinScore = MateScore - 200
 
 #[inline]
 pub fn is_mate_score(score: i32) -> bool {
