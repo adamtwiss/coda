@@ -793,17 +793,6 @@ fn negamax(
         depth -= 1;
     }
 
-    // Razoring
-    if !is_pv && !in_check && depth <= 2 && ply > 0 {
-        let razor_margin = 400 + depth as i32 * 100;
-        if static_eval + razor_margin <= alpha {
-            let q_score = quiescence(board, info, alpha, beta, ply);
-            if q_score <= alpha {
-                info.stats.razor_cutoffs += 1; return q_score;
-            }
-        }
-    }
-
     // Hindsight reduction: when both sides think the position is quiet
     // (parent eval + current eval both positive, sum > 200), reduce depth by 1.
     if !in_check && ply >= 1 && depth >= 3 && ply_u > 0
@@ -816,16 +805,7 @@ fn negamax(
         }
     }
 
-    // Reverse Futility Pruning (RFP)
-    // Reverse Futility Pruning
-    if !is_pv && !in_check && depth <= 7 && ply > 0 {
-        let rfp_margin = if improving { depth as i32 * 70 } else { depth as i32 * 100 };
-        if static_eval - rfp_margin >= beta {
-            info.stats.rfp_cutoffs += 1; return static_eval - rfp_margin;
-        }
-    }
-
-    // Null Move Pruning
+    // Null Move Pruning (before RFP — matches GoChess ordering)
     if !is_pv && !in_check && depth >= 3 && ply > 0 && static_eval >= beta {
         // Ensure we have non-pawn material
         let us = board.side_to_move;
@@ -863,6 +843,25 @@ fn negamax(
         }
     }
 
+    // Reverse Futility Pruning (RFP) — after NMP, matching GoChess ordering
+    if !is_pv && !in_check && depth <= 7 && ply > 0 {
+        let rfp_margin = if improving { depth as i32 * 70 } else { depth as i32 * 100 };
+        if static_eval - rfp_margin >= beta {
+            info.stats.rfp_cutoffs += 1; return static_eval - rfp_margin;
+        }
+    }
+
+    // Razoring
+    if !is_pv && !in_check && depth <= 2 && ply > 0 {
+        let razor_margin = 400 + depth as i32 * 100;
+        if static_eval + razor_margin <= alpha {
+            let q_score = quiescence(board, info, alpha, beta, ply);
+            if q_score <= alpha {
+                info.stats.razor_cutoffs += 1; return q_score;
+            }
+        }
+    }
+
     // ProbCut (with static eval pre-check gate)
     if !is_pv && !in_check && depth >= 5 {
         let probcut_beta = beta + 170;
@@ -887,7 +886,7 @@ fn negamax(
             }
             let mut score = -quiescence(board, info, -probcut_beta, -probcut_beta + 1, ply + 1);
             if score >= probcut_beta {
-                score = -negamax(board, info, -probcut_beta, -probcut_beta + 1, depth - 4, ply + 1, !cut_node);
+                score = -negamax(board, info, -probcut_beta, -probcut_beta + 1, depth - 4, ply + 1, false);
             }
             board.unmake_move();
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
