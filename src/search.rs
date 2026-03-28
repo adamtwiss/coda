@@ -945,6 +945,15 @@ fn negamax(
         0
     };
 
+    // Compute prev_piece/prev_to once (GoChess: before move loop, on pre-move board)
+    let (prev_piece_for_cont, prev_to_for_cont) = if prev_move != NO_MOVE {
+        let pt = move_to(prev_move);
+        let pp = board.piece_at(pt);
+        if pp != NO_PIECE && (pp as usize) < 12 { (pp, pt) } else { (NO_PIECE, 0) }
+    } else {
+        (NO_PIECE, 0)
+    };
+
     // Record prev_move for continuation history
     if ply_u < MAX_PLY {
         info.prev_moves[safe_ply] = NO_MOVE; // will be updated per-move
@@ -1217,16 +1226,10 @@ fn negamax(
 
                 // Continuous history adjustment
                 let mut hist_score = info.history.main[from as usize][to as usize];
-                if prev_move != NO_MOVE {
-                    let prev_to = move_to(prev_move);
-                    let prev_piece = board.piece_at(prev_to);
-                    // Note: after make_move the piece is at 'to' now. But for cont_hist
-                    // we need the piece index. moved_piece was captured before make_move.
-                    if prev_piece != NO_PIECE && (prev_piece as usize) < 12
-                        && moved_piece != NO_PIECE && (moved_piece as usize) < 12
-                    {
-                        hist_score += info.history.cont_hist[prev_piece as usize][prev_to as usize][moved_piece as usize][to as usize];
-                    }
+                if prev_piece_for_cont != NO_PIECE
+                    && moved_piece != NO_PIECE && (moved_piece as usize) < 12
+                {
+                    hist_score += info.history.cont_hist[prev_piece_for_cont as usize][prev_to_for_cont as usize][moved_piece as usize][to as usize];
                 }
                 reduction -= hist_score / 5000;
 
@@ -1334,18 +1337,14 @@ fn negamax(
                             bonus,
                         );
 
-                        // Update continuation history
-                        if prev_move != NO_MOVE {
-                            let prev_to = move_to(prev_move);
-                            let prev_piece = board.piece_at(prev_to);
-                            if prev_piece != NO_PIECE && (prev_piece as usize) < 12
-                                && moved_piece != NO_PIECE && (moved_piece as usize) < 12
-                            {
-                                History::update_history(
-                                    &mut info.history.cont_hist[prev_piece as usize][prev_to as usize][moved_piece as usize][to as usize],
-                                    bonus,
-                                );
-                            }
+                        // Update continuation history (use pre-computed prev_piece)
+                        if prev_piece_for_cont != NO_PIECE
+                            && moved_piece != NO_PIECE && (moved_piece as usize) < 12
+                        {
+                            History::update_history(
+                                &mut info.history.cont_hist[prev_piece_for_cont as usize][prev_to_for_cont as usize][moved_piece as usize][to as usize],
+                                bonus,
+                            );
                         }
 
                         // Update pawn history
@@ -1369,16 +1368,13 @@ fn negamax(
                                 -bonus,
                             );
 
-                            // Continuation history penalty
-                            if prev_move != NO_MOVE {
-                                let prev_to = move_to(prev_move);
-                                let prev_piece = board.piece_at(prev_to);
+                            // Continuation history penalty (use pre-computed prev_piece)
+                            if prev_piece_for_cont != NO_PIECE {
                                 let q_piece = board.piece_at(qf);
-                                if prev_piece != NO_PIECE && (prev_piece as usize) < 12
-                                    && q_piece != NO_PIECE && (q_piece as usize) < 12
+                                if q_piece != NO_PIECE && (q_piece as usize) < 12
                                 {
                                     History::update_history(
-                                        &mut info.history.cont_hist[prev_piece as usize][prev_to as usize][q_piece as usize][qt as usize],
+                                        &mut info.history.cont_hist[prev_piece_for_cont as usize][prev_to_for_cont as usize][q_piece as usize][qt as usize],
                                         -bonus,
                                     );
                                 }
@@ -1397,13 +1393,9 @@ fn negamax(
                             }
                         }
 
-                        // Store counter-move
-                        if prev_move != NO_MOVE {
-                            let prev_to = move_to(prev_move);
-                            let prev_piece = board.piece_at(prev_to);
-                            if prev_piece != NO_PIECE && (prev_piece as usize) < 12 {
-                                info.history.counter[prev_piece as usize][prev_to as usize] = mv;
-                            }
+                        // Store counter-move (use pre-computed prev_piece)
+                        if prev_piece_for_cont != NO_PIECE {
+                            info.history.counter[prev_piece_for_cont as usize][prev_to_for_cont as usize] = mv;
                         }
                     } else {
                         // Capture caused beta cutoff — update capture history
