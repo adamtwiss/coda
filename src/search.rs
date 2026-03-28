@@ -657,31 +657,20 @@ fn negamax(
     let is_pv = beta - alpha > 1;
     let alpha_orig = alpha;
 
-    // Draw detection (not at root)
+    // Draw detection (not at root) — matches GoChess: 50-move + repetition only
     if !is_root {
         if board.halfmove >= 100 {
             return -CONTEMPT;
         }
-        // Insufficient material: KvK, KNvK, KBvK
-        let occ = board.occupied();
-        let pc = popcount(occ);
-        if pc <= 3 {
-            if pc == 2 { return -CONTEMPT; } // KvK
-            if board.pieces[PAWN as usize] == 0
-                && board.pieces[ROOK as usize] == 0
-                && board.pieces[QUEEN as usize] == 0
-            {
-                return -CONTEMPT;
-            }
-        }
-        // Repetition detection
-        let hash = board.hash;
+        // Repetition detection (GoChess: step by 2, start at i=2, same-side positions only)
         let stack_len = board.undo_stack.len();
-        let check_back = (board.halfmove as usize).min(stack_len);
-        for i in 0..check_back {
-            if board.undo_stack[stack_len - 1 - i].hash == hash {
+        let limit = (board.halfmove as usize).min(stack_len);
+        let mut i = 2usize;
+        while i <= limit {
+            if board.undo_stack[stack_len - i].hash == board.hash {
                 return -CONTEMPT;
             }
+            i += 2;
         }
     }
 
@@ -1078,8 +1067,7 @@ fn negamax(
         if is_bad_noisy && !gives_check {
             board.unmake_move();
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-            move_count -= 1;
-            continue;
+            continue; // GoChess: no move_count decrement, pruned move still counts
         }
 
         // Futility pruning (GoChess: no !is_pv guard)

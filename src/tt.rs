@@ -296,7 +296,7 @@ pub const TB_WIN: i32 = 28800; // GoChess: TBWinScore = MateScore - 200
 
 #[inline]
 pub fn is_mate_score(score: i32) -> bool {
-    score.abs() > TB_WIN
+    score.abs() > MATE_SCORE - 100 // GoChess: > MateScore-100 = 28900
 }
 
 #[cfg(test)]
