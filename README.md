@@ -58,7 +58,7 @@ Requires Rust 1.70+ (uses `std::arch` intrinsics).
 
 ## Strength
 
-Competitive with Crafty, ExChess, and GreKo (~2100-2200 Elo estimated). Uses the same NNUE networks as GoChess (v5/v6 format, CReLU or SCReLU activation).
+Competitive with Crafty, ExChess, and GreKo (~3000 Elo estimate based upon CCRL ratings for those engines). Uses the same NNUE networks as GoChess (v5/v6 format, CReLU or SCReLU activation).
 
 ## License
 
