@@ -1366,7 +1366,7 @@ fn negamax(
                         }
 
                         // Penalize quiets tried before cutoff (excluding the cutoff move itself)
-                        for i in 0..(quiets_count - 1) {
+                        for i in 0..quiets_count.saturating_sub(1) {
                             let q = quiets_tried[i];
                             let qf = move_from(q);
                             let qt = move_to(q);
