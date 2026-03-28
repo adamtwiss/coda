@@ -609,7 +609,7 @@ fn negamax(
     beta: i32,
     mut depth: i32,
     ply: i32,
-    cut_node: bool,
+    _cut_node: bool, // kept for API compatibility, not used (GoChess doesn't have cut_node)
 ) -> i32 {
     if info.should_stop() {
         return 0;
@@ -1142,11 +1142,11 @@ fn negamax(
                     adj = -1; // score barely above alpha → LMR about right → shallower
                 }
                 let re_depth = (new_depth + adj).max(1);
-                score = -negamax(board, info, -alpha - 1, -alpha, re_depth, ply + 1, !cut_node);
+                score = -negamax(board, info, -alpha - 1, -alpha, re_depth, ply + 1, false);
             }
         } else if !is_pv || moves_tried > 1 {
             // Non-PV null window search
-            score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
+            score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, false);
         } else {
             score = alpha + 1; // Force full window search for first PV move
         }
