@@ -15,8 +15,8 @@ const MAX_HISTORY: i32 = 16384;
 
 /// History tables shared across the search.
 pub struct History {
-    /// Main history: [color][from][to]
-    pub main: [[[i32; 64]; 64]; 2],
+    /// Main history: [from][to] (shared between colors, matches GoChess)
+    pub main: [[i32; 64]; 64],
     /// Capture history: [piece][to][captured_pt]
     pub capture: [[[i32; 6]; 64]; 12],
     /// Killer moves: [ply][2]
@@ -30,7 +30,7 @@ pub struct History {
 impl History {
     pub fn new() -> Self {
         History {
-            main: [[[0; 64]; 64]; 2],
+            main: [[0; 64]; 64],
             capture: [[[0; 6]; 64]; 12],
             killers: [[NO_MOVE; 2]; 128],
             counter: [[NO_MOVE; 64]; 12],
@@ -39,7 +39,7 @@ impl History {
     }
 
     pub fn clear(&mut self) {
-        self.main = [[[0; 64]; 64]; 2];
+        self.main = [[0; 64]; 64];
         self.capture = [[[0; 6]; 64]; 12];
         self.killers = [[NO_MOVE; 2]; 128];
         self.counter = [[NO_MOVE; 64]; 12];
@@ -58,7 +58,7 @@ impl History {
         let to = move_to(mv);
         let color = board.side_to_move;
 
-        let mut score = self.main[color as usize][from as usize][to as usize];
+        let mut score = self.main[from as usize][to as usize];
 
         // Add continuation history if we have a previous move (3x weight)
         if prev_move != NO_MOVE {

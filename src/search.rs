@@ -180,11 +180,25 @@ impl SearchInfo {
 
     /// Evaluate using NNUE if loaded, otherwise classical PeSTO.
     fn eval(&mut self, board: &Board) -> i32 {
-        if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
+        let score = if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
             evaluate_nnue(board, net, acc)
         } else {
             evaluate(board)
+        };
+        // Debug: dump hash + eval (enabled with CODA_DUMP_EVAL=1)
+        static DUMP_INIT: std::sync::Once = std::sync::Once::new();
+        static DUMP_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        static mut DUMP_ENABLED: bool = false;
+        DUMP_INIT.call_once(|| {
+            unsafe { DUMP_ENABLED = std::env::var("CODA_DUMP_EVAL").is_ok(); }
+        });
+        if unsafe { DUMP_ENABLED } {
+            let n = DUMP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n < 3000 {
+                eprintln!("EVAL n={} hash={:016x} eval={}", n, board.hash, score);
+            }
         }
+        score
     }
 }
 
@@ -1024,7 +1038,7 @@ fn negamax(
             && mv != tt_move && !is_killer && !is_counter
             && best_score > -MATE_SCORE + 100
         {
-            let mut hist_prune_score = info.history.main[us as usize][from as usize][to as usize];
+            let mut hist_prune_score = info.history.main[from as usize][to as usize];
             // Add continuation history
             if prev_move != NO_MOVE {
                 let prev_to = move_to(prev_move);
@@ -1222,7 +1236,7 @@ fn negamax(
                 }
 
                 // Continuous history adjustment
-                let mut hist_score = info.history.main[us as usize][from as usize][to as usize];
+                let mut hist_score = info.history.main[from as usize][to as usize];
                 if prev_move != NO_MOVE {
                     let prev_to = move_to(prev_move);
                     let prev_piece = board.piece_at(prev_to);
@@ -1336,7 +1350,7 @@ fn negamax(
                         // Update main history
                         let color = us;
                         History::update_history(
-                            &mut info.history.main[color as usize][from as usize][to as usize],
+                            &mut info.history.main[from as usize][to as usize],
                             bonus,
                         );
 
@@ -1371,7 +1385,7 @@ fn negamax(
                             let qf = move_from(q);
                             let qt = move_to(q);
                             History::update_history(
-                                &mut info.history.main[color as usize][qf as usize][qt as usize],
+                                &mut info.history.main[qf as usize][qt as usize],
                                 -bonus,
                             );
 
@@ -1493,7 +1507,7 @@ fn update_tt_cutoff_history(info: &mut SearchInfo, board: &Board, tt_move: Move,
     let tt_is_cap = tt_target != NO_PIECE_TYPE || move_flags(tt_move) == FLAG_EN_PASSANT;
     if !tt_is_cap {
         History::update_history(
-            &mut info.history.main[board.side_to_move as usize][tt_from as usize][tt_to as usize],
+            &mut info.history.main[tt_from as usize][tt_to as usize],
             bonus,
         );
     } else {
