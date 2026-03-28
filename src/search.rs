@@ -247,13 +247,11 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
     let pawn_idx = (board.pawn_hash as usize) % CORR_HIST_SIZE;
     let pawn_corr = info.pawn_corr[stm][pawn_idx] as i64;
 
-    // Non-pawn corrections (per color). Derive non-pawn key from hash ^ pawn_hash.
-    let np_key = board.hash ^ board.pawn_hash;
-    let np_idx = (np_key as usize) % CORR_HIST_SIZE;
-    let white_np_corr = info.np_corr[stm][WHITE as usize][np_idx] as i64;
-    // Use a different index for black NP (rotate the key)
-    let np_idx_b = (np_key.rotate_right(32) as usize) % CORR_HIST_SIZE;
-    let black_np_corr = info.np_corr[stm][BLACK as usize][np_idx_b] as i64;
+    // Non-pawn corrections (per color) — use independent per-color Zobrist keys
+    let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) % CORR_HIST_SIZE;
+    let white_np_corr = info.np_corr[stm][WHITE as usize][white_np_idx] as i64;
+    let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) % CORR_HIST_SIZE;
+    let black_np_corr = info.np_corr[stm][BLACK as usize][black_np_idx] as i64;
 
     // Continuation correction (from opponent's last move)
     let cont_corr = if !board.undo_stack.is_empty() {
@@ -295,12 +293,11 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     let pawn_idx = (board.pawn_hash as usize) % CORR_HIST_SIZE;
     update_corr_entry(&mut info.pawn_corr[stm][pawn_idx], err, weight);
 
-    // Non-pawn corrections (per color)
-    let np_key = board.hash ^ board.pawn_hash;
-    let np_idx = (np_key as usize) % CORR_HIST_SIZE;
-    update_corr_entry(&mut info.np_corr[stm][WHITE as usize][np_idx], err, weight);
-    let np_idx_b = (np_key.rotate_right(32) as usize) % CORR_HIST_SIZE;
-    update_corr_entry(&mut info.np_corr[stm][BLACK as usize][np_idx_b], err, weight);
+    // Non-pawn corrections (per color) — use independent per-color Zobrist keys
+    let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) % CORR_HIST_SIZE;
+    update_corr_entry(&mut info.np_corr[stm][WHITE as usize][white_np_idx], err, weight);
+    let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) % CORR_HIST_SIZE;
+    update_corr_entry(&mut info.np_corr[stm][BLACK as usize][black_np_idx], err, weight);
 
     // Continuation correction
     if !board.undo_stack.is_empty() {
