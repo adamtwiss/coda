@@ -78,6 +78,18 @@ pub struct PruneStats {
     pub qnodes: u64,
     pub beta_cutoffs: u64,
     pub first_move_cutoffs: u64,
+    // LMR reduction histogram: [0]=reduction 0 (no LMR), [1]=1, ... [7]=7+
+    pub lmr_reductions: [u64; 8],
+    // new_depth histogram for recursive calls: [0..15]=depth 0-14, [15]=15+
+    pub depth_hist: [u64; 16],
+    // LMR adjustment tracking
+    pub lmr_adj_improving: u64,
+    pub lmr_adj_failing: u64,
+    pub lmr_adj_pv: u64,
+    pub lmr_adj_cut: u64,
+    pub lmr_adj_unstable: u64,
+    pub lmr_adj_history_neg: u64,
+    pub lmr_adj_history_pos: u64,
 }
 
 /// Search state for one thread.
@@ -706,6 +718,7 @@ fn negamax(
     }
 
     info.nodes += 1;
+    info.stats.depth_hist[depth.clamp(0, 15) as usize] += 1;
 
     // Draw detection: repetition and 50-move rule (GoChess: ply > 0)
     if ply > 0 {
@@ -1295,21 +1308,25 @@ fn negamax(
                 // Reduce less at PV nodes where accuracy matters most
                 if beta - alpha > 1 {
                     reduction -= 1;
+                    info.stats.lmr_adj_pv += 1;
                 }
 
                 // Reduce more at expected cut nodes (zero window, not first move)
                 if beta - alpha == 1 && move_count > 1 {
                     reduction += 1;
+                    info.stats.lmr_adj_cut += 1;
                 }
 
                 // Reduce less when the position is improving
                 if improving {
                     reduction -= 1;
+                    info.stats.lmr_adj_improving += 1;
                 }
 
                 // Reduce more when position is deteriorating significantly
                 if failing {
                     reduction += 1;
+                    info.stats.lmr_adj_failing += 1;
                 }
 
                 // Reduce more when multiple moves have already raised alpha
@@ -1320,6 +1337,7 @@ fn negamax(
                 // Reduce less when eval is unstable (sharp swing from parent)
                 if unstable {
                     reduction -= 1;
+                    info.stats.lmr_adj_unstable += 1;
                 }
 
                 // Reduce more when TT move is a capture
@@ -1348,7 +1366,10 @@ fn negamax(
                 {
                     hist_score += info.history.cont_hist[prev_piece_go][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
                 }
-                reduction -= hist_score / 5000;
+                let hist_adj = hist_score / 5000;
+                reduction -= hist_adj;
+                if hist_adj > 0 { info.stats.lmr_adj_history_neg += 1; } // reduces reduction = good history
+                if hist_adj < 0 { info.stats.lmr_adj_history_pos += 1; } // increases reduction = bad history
 
                 // Clamp: never extend (negative), never reduce past depth 1
                 if reduction < 0 {
@@ -1396,6 +1417,7 @@ fn negamax(
 
         if reduction > 0 {
             info.stats.lmr_searches += 1;
+            info.stats.lmr_reductions[reduction.min(7) as usize] += 1;
 
             // LMR: reduced depth, zero window
             let lmr_depth = new_depth - reduction;

@@ -141,6 +141,17 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     s.lmp_prunes, s.futility_prunes, s.history_prunes, s.see_prunes,
                     s.probcut_cutoffs, s.lmr_searches, s.recapture_ext, s.qnodes,
                     fmr, s.first_move_cutoffs, s.beta_cutoffs);
+                println!("info string lmr_hist r1={} r2={} r3={} r4={} r5={} r6={} r7+={}",
+                    s.lmr_reductions[1], s.lmr_reductions[2], s.lmr_reductions[3],
+                    s.lmr_reductions[4], s.lmr_reductions[5], s.lmr_reductions[6], s.lmr_reductions[7]);
+                println!("info string lmr_adj pv={} cut={} improving={} failing={} unstable={} hist_good={} hist_bad={}",
+                    s.lmr_adj_pv, s.lmr_adj_cut, s.lmr_adj_improving, s.lmr_adj_failing,
+                    s.lmr_adj_unstable, s.lmr_adj_history_neg, s.lmr_adj_history_pos);
+                println!("info string depth_hist d0={} d1={} d2={} d3={} d4={} d5={} d6={} d7={} d8+={} ",
+                    s.depth_hist[0], s.depth_hist[1], s.depth_hist[2], s.depth_hist[3],
+                    s.depth_hist[4], s.depth_hist[5], s.depth_hist[6], s.depth_hist[7],
+                    s.depth_hist[8] + s.depth_hist[9] + s.depth_hist[10] + s.depth_hist[11]
+                        + s.depth_hist[12] + s.depth_hist[13] + s.depth_hist[14] + s.depth_hist[15]);
                 println!("bestmove {}", move_to_uci(best_move));
             }
             "stop" => {
