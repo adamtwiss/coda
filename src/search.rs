@@ -397,10 +397,15 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Floor at 10ms
         if soft < 10 { soft = 10; }
 
-        // Hard limit: 3x soft for sudden death, 2x for tournament
+        // Hard limit (match GoChess)
         let hard = if limits.movestogo > 0 {
-            (soft * 2).min(time_left / 2)
+            // Tournament TC: cap by moves remaining (generous early, tight late)
+            let hard_raw = soft * 2;
+            let cap_pct = (20 + limits.movestogo as u64 / 2).min(40);
+            let mtg_cap = time_left * cap_pct / 100;
+            hard_raw.min(mtg_cap)
         } else {
+            // Sudden death: allow up to 3x soft
             (soft * 3).min(time_left * 3 / 4)
         };
 
@@ -942,13 +947,21 @@ fn negamax(
         let is_special = is_tt_move || is_killer || is_counter;
 
         // Pre-make pruning: only things that don't need gives-check info
-        // History pruning (pre-make, doesn't need check detection)
+        // History pruning (match GoChess: main + 1x cont_hist, no pawn hist)
         if !is_root && !is_pv && !is_special
             && best_score > -TB_WIN && !in_check
         {
             if !is_capture && !is_promo && depth <= 3 && !improving && !unstable {
-                let ph_idx2 = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
-                let hist = info.history.quiet_score(board, mv, prev_move, Some(&info.pawn_hist[ph_idx2]));
+                let mut hist = info.history.main[board.side_to_move as usize][from as usize][to as usize];
+                if prev_move != NO_MOVE {
+                    let prev_to = move_to(prev_move);
+                    let prev_piece = board.piece_at(prev_to);
+                    let piece = board.piece_at(from);
+                    if prev_piece != NO_PIECE && (prev_piece as usize) < 12
+                        && piece != NO_PIECE && (piece as usize) < 12 {
+                        hist += info.history.cont_hist[prev_piece as usize][prev_to as usize][piece as usize][to as usize];
+                    }
+                }
                 if hist < -1500 * depth as i32 {
                     info.stats.history_prunes += 1; continue;
                 }
@@ -996,58 +1009,68 @@ fn negamax(
         // Post-make pruning: now we can detect gives-check
         let gives_check = board.in_check(); // opponent is now in check = our move gave check
 
-        if !is_root && !is_pv && !is_special
-            && best_score > -TB_WIN && !in_check && depth <= 8
+        // Post-make pruning: each mechanism has its own guards (matching GoChess)
+        // GoChess applies most pruning at PV nodes too, and doesn't exempt special moves
+
+        // Bad noisy: prune losing captures when eval is far below alpha
+        if !is_root && is_capture && !is_promo && !gives_check && depth <= 4
+            && !in_check && best_score > -TB_WIN && !is_tt_move
+            && static_eval > -INFINITY && static_eval + depth as i32 * 75 <= alpha
+            && see_bad_noisy
         {
-            // Bad noisy: prune losing captures when eval is far below alpha
-            if is_capture && !is_promo && !gives_check && depth <= 4
-                && static_eval > -INFINITY && static_eval + depth as i32 * 75 <= alpha
-                && see_bad_noisy
-            {
+            board.unmake_move();
+            if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+            moves_tried -= 1;
+            continue;
+        }
+
+        // Futility pruning (keep !is_pv for now — opening to PV hurts KID-type positions)
+        if !is_root && !is_pv && !in_check && !gives_check && depth <= 8
+            && !is_capture && !is_promo
+            && static_eval > -INFINITY && best_score > -TB_WIN
+        {
+            let est_r = lmr_reduction(depth, moves_tried as i32);
+            let lmr_depth = (depth - est_r).max(1);
+            let futility_margin = 60 + lmr_depth * 60;
+            if static_eval + futility_margin <= alpha {
                 board.unmake_move();
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-                moves_tried -= 1;
+                info.stats.futility_prunes += 1;
                 continue;
             }
+        }
 
-            // LMP (exempt checks)
+        // LMP (matches GoChess: applies at non-PV only, no special-move exemption)
+        if !is_root && ply > 0 && !in_check && depth <= 8 && !is_pv
+            && !is_capture && !is_promo && !gives_check
+            && best_score > -TB_WIN
+        {
             let mut lmp_threshold = 3 + depth as usize * depth as usize;
             if improving && depth >= 3 { lmp_threshold += lmp_threshold / 2; }
             if failing { lmp_threshold = lmp_threshold * 2 / 3; }
-            if !is_capture && !is_promo && !gives_check && moves_tried > lmp_threshold {
+            if moves_tried > lmp_threshold {
                 board.unmake_move();
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
                 info.stats.lmp_prunes += 1;
                 continue;
             }
+        }
 
-            // Futility (exempt checks)
-            if !is_capture && !is_promo && !gives_check {
-                let est_r = lmr_reduction(depth, moves_tried as i32);
-                let lmr_depth = (depth - est_r).max(1);
-                let futility_margin = 60 + lmr_depth * 60;
-                if static_eval + futility_margin <= alpha {
-                    board.unmake_move();
-                    if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-                    info.stats.futility_prunes += 1;
-                    continue;
-                }
+        // SEE pruning — uses pre-computed SEE results
+        if !is_root && !is_special && !in_check && depth <= 8 && best_score > -TB_WIN {
+            // SEE capture pruning (GoChess doesn't check !gives_check here)
+            if is_capture && depth <= 6 && !see_capture_ok {
+                board.unmake_move();
+                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                info.stats.see_prunes += 1;
+                continue;
             }
-
-            // SEE pruning (exempt checks) — uses pre-computed SEE results
-            if !gives_check {
-                if is_capture && depth <= 6 && !see_capture_ok {
-                    board.unmake_move();
-                    if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-                    info.stats.see_prunes += 1;
-                    continue;
-                }
-                if !is_capture && depth <= 8 && !see_quiet_ok {
-                    board.unmake_move();
-                    if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-                    info.stats.see_prunes += 1;
-                    continue;
-                }
+            // SEE quiet pruning
+            if !is_capture && !gives_check && !see_quiet_ok {
+                board.unmake_move();
+                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                info.stats.see_prunes += 1;
+                continue;
             }
         }
 
@@ -1071,7 +1094,8 @@ fn negamax(
         if new_depth < 0 { new_depth = 0; }
 
         // LMR (exempt promotions, killers, counter-moves, and check-giving moves)
-        if depth >= 3 && !is_promo && !is_killer && !is_counter && !gives_check && moves_tried > 1 + if is_pv { 1 } else { 0 } {
+        // LMR: counter-moves NOT exempt (matches GoChess)
+        if depth >= 3 && !is_promo && !is_killer && !gives_check && moves_tried > 1 + if is_pv { 1 } else { 0 } {
             let mut r = if is_capture {
                 // Capture LMR: separate table (C=1.80), non-PV only
                 if !is_pv { lmr_cap_reduction(depth, moves_tried as i32) } else { 0 }
