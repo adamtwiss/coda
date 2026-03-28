@@ -94,6 +94,13 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 // Run search synchronously (stop flag checked every 4096 nodes)
                 info.stop.store(false, Ordering::Relaxed);
                 let best_move = search(&mut board, &mut info, &limits);
+                let s = &info.stats;
+                let fmr = if s.beta_cutoffs > 0 { s.first_move_cutoffs * 100 / s.beta_cutoffs } else { 0 };
+                println!("info string stats tt={} nmp={} rfp={} razor={} lmp={} futility={} hist={} see={} probcut={} lmr={} recap={} qnodes={} fmr={}%({}/{})",
+                    s.tt_cutoffs, s.nmp_cutoffs, s.rfp_cutoffs, s.razor_cutoffs,
+                    s.lmp_prunes, s.futility_prunes, s.history_prunes, s.see_prunes,
+                    s.probcut_cutoffs, s.lmr_searches, s.recapture_ext, s.qnodes,
+                    fmr, s.first_move_cutoffs, s.beta_cutoffs);
                 println!("bestmove {}", move_to_uci(best_move));
             }
             "stop" => {

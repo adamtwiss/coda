@@ -18,6 +18,7 @@ pub struct UndoInfo {
     pub halfmove: u16,
     pub hash: u64,
     pub pawn_hash: u64,
+    pub non_pawn_key: [u64; 2],
     pub checkers: Bitboard,
 }
 
@@ -39,6 +40,7 @@ pub struct Board {
 
     pub hash: u64,           // Zobrist hash
     pub pawn_hash: u64,      // Zobrist hash of pawns only (for correction history)
+    pub non_pawn_key: [u64; 2], // per-color non-pawn, non-king piece Zobrist keys
     pub undo_stack: Vec<UndoInfo>,
 }
 
@@ -81,6 +83,7 @@ impl Board {
             fullmove: 1,
             hash: 0,
             pawn_hash: 0,
+            non_pawn_key: [0; 2],
             undo_stack: Vec::with_capacity(256),
         }
     }
@@ -144,6 +147,7 @@ impl Board {
         let k = piece_key(make_piece(color, pt), sq);
         self.hash ^= k;
         if pt == PAWN { self.pawn_hash ^= k; }
+        else if pt != KING { self.non_pawn_key[color as usize] ^= k; }
     }
 
     /// Remove a piece from the board with hash update.
@@ -153,6 +157,7 @@ impl Board {
         let k = piece_key(make_piece(color, pt), sq);
         self.hash ^= k;
         if pt == PAWN { self.pawn_hash ^= k; }
+        else if pt != KING { self.non_pawn_key[color as usize] ^= k; }
     }
 
     /// Move a piece on the board with hash update.
@@ -167,6 +172,7 @@ impl Board {
         let k = piece_key(p, from) ^ piece_key(p, to);
         self.hash ^= k;
         if pt == PAWN { self.pawn_hash ^= k; }
+        else if pt != KING { self.non_pawn_key[color as usize] ^= k; }
     }
 
     /// Compute the full Zobrist hash from scratch.
@@ -294,6 +300,17 @@ impl Board {
             while bb != 0 {
                 let sq = pop_lsb(&mut bb) as u8;
                 self.pawn_hash ^= piece_key(make_piece(color, PAWN), sq);
+            }
+        }
+        // Compute per-color non-pawn keys (non-pawn, non-king pieces)
+        self.non_pawn_key = [0; 2];
+        for color in 0..2u8 {
+            for pt in [KNIGHT, BISHOP, ROOK, QUEEN] {
+                let mut bb = self.pieces[pt as usize] & self.colors[color as usize];
+                while bb != 0 {
+                    let sq = pop_lsb(&mut bb) as u8;
+                    self.non_pawn_key[color as usize] ^= piece_key(make_piece(color, pt), sq);
+                }
             }
         }
     }
@@ -488,6 +505,7 @@ impl Board {
             halfmove: self.halfmove,
             hash: self.hash,
             pawn_hash: self.pawn_hash,
+            non_pawn_key: self.non_pawn_key,
             checkers: 0, // populated on demand
         });
 
@@ -594,7 +612,8 @@ impl Board {
             self.ep_square = undo.ep_square;
             self.halfmove = undo.halfmove;
             self.hash = undo.hash;
-        self.pawn_hash = undo.pawn_hash;
+            self.pawn_hash = undo.pawn_hash;
+            self.non_pawn_key = undo.non_pawn_key;
             self.side_to_move = us;
             if us == BLACK { self.fullmove -= 1; }
             return;
@@ -635,6 +654,7 @@ impl Board {
         self.halfmove = undo.halfmove;
         self.hash = undo.hash;
         self.pawn_hash = undo.pawn_hash;
+        self.non_pawn_key = undo.non_pawn_key;
 
         if us == BLACK {
             self.fullmove -= 1;
@@ -651,6 +671,7 @@ impl Board {
             halfmove: self.halfmove,
             hash: self.hash,
             pawn_hash: self.pawn_hash,
+            non_pawn_key: self.non_pawn_key,
             checkers: 0,
         });
 
@@ -672,6 +693,7 @@ impl Board {
         self.halfmove = undo.halfmove;
         self.hash = undo.hash;
         self.pawn_hash = undo.pawn_hash;
+        self.non_pawn_key = undo.non_pawn_key;
     }
 
     /// Display the board as ASCII art.

@@ -73,6 +73,8 @@ pub struct PruneStats {
     pub lmr_searches: u64,
     pub recapture_ext: u64,
     pub qnodes: u64,
+    pub beta_cutoffs: u64,
+    pub first_move_cutoffs: u64,
 }
 
 /// Search state for one thread.
@@ -843,7 +845,7 @@ fn negamax(
             info.stats.nmp_attempts += 1;
             board.make_null_move();
             if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::recompute()); }
-            let null_score = -negamax(board, info, -beta, -beta + 1, depth - 1 - r, ply + 1, !cut_node);
+            let null_score = -negamax(board, info, -beta, -beta + 1, depth - 1 - r, ply + 1, false);
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
             board.unmake_null_move();
 
@@ -1084,7 +1086,8 @@ fn negamax(
             // Quiet-only adjustments
             if !is_capture {
                 if !is_pv { r += 1; }
-                if cut_node { r += 1; }
+                // Use GoChess's cut-node heuristic instead of explicit cut_node flag
+                if !is_pv && moves_tried > 1 { r += 1; }
 
                 // Reduce more when multiple moves have already raised alpha
                 if alpha_raised_count > 1 {
@@ -1173,6 +1176,8 @@ fn negamax(
                 alpha_raised_count += 1;
 
                 if score >= beta {
+                    info.stats.beta_cutoffs += 1;
+                    if moves_tried == 1 { info.stats.first_move_cutoffs += 1; }
                     // Fail high: update history, killers, counter
                     if !is_capture {
                         let bonus = (depth as i32 * depth as i32).min(1200);
