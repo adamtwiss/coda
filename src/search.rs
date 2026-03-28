@@ -15,9 +15,9 @@ use crate::see::see_ge;
 use crate::tt::*;
 use crate::types::*;
 
-const MAX_PLY: usize = 128;
-const INFINITY: i32 = 32000;
-const CONTEMPT: i32 = -10; // prefer playing on over drawing
+const MAX_PLY: usize = 64;
+const INFINITY: i32 = 30000;
+const CONTEMPT: i32 = 10; // prefer playing on over drawing (GoChess: +10)
 
 // Pawn history table size
 const PAWN_HIST_SIZE: usize = 512;
@@ -455,8 +455,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         let score;
 
-        // Aspiration windows
-        if depth >= 4 {
+        // Aspiration windows (GoChess: skip for mate scores)
+        if depth >= 4 && prev_score > -MATE_SCORE + 100 && prev_score < MATE_SCORE - 100 {
             let mut delta = 15i32;
             let mut alpha = (prev_score - delta).max(-INFINITY);
             let mut beta = (prev_score + delta).min(INFINITY);
@@ -485,10 +485,6 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 }
 
                 delta += delta / 2;
-                if delta > 500 {
-                    alpha = -INFINITY;
-                    beta = INFINITY;
-                }
             }
 
             score = asp_result;
@@ -664,18 +660,18 @@ fn negamax(
     // Draw detection (not at root)
     if !is_root {
         if board.halfmove >= 100 {
-            return CONTEMPT;
+            return -CONTEMPT;
         }
         // Insufficient material: KvK, KNvK, KBvK
         let occ = board.occupied();
         let pc = popcount(occ);
         if pc <= 3 {
-            if pc == 2 { return CONTEMPT; } // KvK
+            if pc == 2 { return -CONTEMPT; } // KvK
             if board.pieces[PAWN as usize] == 0
                 && board.pieces[ROOK as usize] == 0
                 && board.pieces[QUEEN as usize] == 0
             {
-                return CONTEMPT;
+                return -CONTEMPT;
             }
         }
         // Repetition detection
@@ -684,7 +680,7 @@ fn negamax(
         let check_back = (board.halfmove as usize).min(stack_len);
         for i in 0..check_back {
             if board.undo_stack[stack_len - 1 - i].hash == hash {
-                return CONTEMPT;
+                return -CONTEMPT;
             }
         }
     }
@@ -1473,11 +1469,11 @@ fn negamax(
 
     info.tt.store(
         board.hash,
-        best_move,
-        tt_flag,
-        raw_eval,
-        score_to_tt(best_score, ply),
         depth,
+        score_to_tt(best_score, ply),
+        tt_flag,
+        best_move,
+        raw_eval,
     );
 
     // Update correction history
@@ -1663,7 +1659,7 @@ fn quiescence_with_depth(
         } else {
             TT_FLAG_EXACT
         };
-        info.tt.store(board.hash, best_move, flag, -INFINITY, store_score, -1);
+        info.tt.store(board.hash, -1, store_score, flag, best_move, -INFINITY);
         return best_score;
     }
 
@@ -1749,7 +1745,7 @@ fn quiescence_with_depth(
     } else {
         TT_FLAG_EXACT
     };
-    info.tt.store(board.hash, best_move, flag, stand_pat, store_score, -1);
+    info.tt.store(board.hash, -1, store_score, flag, best_move, stand_pat);
 
     // QS capture fail-high blending (non-PV only)
     if best_score >= beta && beta - alpha_orig == 1 && !is_mate_score(best_score) {

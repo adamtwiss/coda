@@ -186,7 +186,8 @@ impl TT {
     }
 
     /// Store an entry in the TT.
-    pub fn store(&mut self, hash: u64, best_move: Move, flag: u8, static_eval: i32, score: i32, depth: i32) {
+    /// Argument order matches GoChess: (key, depth, score, flag, move, staticEval)
+    pub fn store(&mut self, hash: u64, depth: i32, score: i32, flag: u8, best_move: Move, static_eval: i32) {
         let idx = self.bucket_index(hash);
         let bucket = &mut self.buckets[idx];
         let gen = self.generation;
@@ -295,4 +296,65 @@ pub const TB_WIN: i32 = 29000;
 #[inline]
 pub fn is_mate_score(score: i32) -> bool {
     score.abs() > TB_WIN
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pack_unpack_roundtrip() {
+        let test_cases = vec![
+            (1234u16, 3u8, 150i32, 300i32, 12i32, 5u8),    // normal
+            (0u16, 1u8, -500i32, -200i32, 0i32, 0u8),       // negative eval/score, depth 0
+            (5000u16, 2u8, 8191i32, 30000i32, 30i32, 255u8), // max values
+            (100u16, 3u8, -8191i32, -30000i32, -1i32, 128u8), // min values, depth -1
+            (0u16, 0u8, 0i32, 0i32, -1i32, 0u8),             // QS depth -1
+        ];
+        
+        for (mv, flag, se, score, depth, gen) in &test_cases {
+            let data = pack_data(*mv as Move, *flag, *se, *score, *depth, *gen);
+            let got_mv = unpack_move(data);
+            let got_flag = unpack_flag(data);
+            let got_se = unpack_static_eval(data);
+            let got_score = unpack_score(data);
+            let got_depth = unpack_depth(data);
+            let got_gen = unpack_generation(data);
+            
+            assert_eq!(got_mv, *mv as Move, "move mismatch for {:?}", (mv, flag, se, score, depth, gen));
+            assert_eq!(got_flag, *flag, "flag mismatch");
+            assert_eq!(got_se, (*se).clamp(-8191, 8191), "static_eval mismatch: packed {} got {}", se, got_se);
+            assert_eq!(got_score, *score as i16 as i32, "score mismatch: packed {} got {}", score, got_score);
+            assert_eq!(got_depth, *depth, "depth mismatch: packed {} got {}", depth, got_depth);
+            assert_eq!(got_gen, *gen, "gen mismatch");
+        }
+    }
+    
+    #[test]
+    fn test_store_probe_roundtrip() {
+        crate::init();
+        let mut tt = TT::new(1);
+        
+        // Store and probe back
+        let hash = 0x123456789ABCDEF0u64;
+        tt.store(hash, 12, 300, TT_FLAG_EXACT, 1234, 150);
+        let entry = tt.probe(hash);
+        
+        assert!(entry.hit, "should hit");
+        assert_eq!(entry.best_move, 1234);
+        assert_eq!(entry.flag, TT_FLAG_EXACT);
+        assert_eq!(entry.static_eval, 150);
+        assert_eq!(entry.score, 300);
+        assert_eq!(entry.depth, 12);
+        
+        // Store at depth -1 (QS) and probe back
+        let hash2 = 0xFEDCBA9876543210u64;
+        tt.store(hash2, -1, -50, TT_FLAG_UPPER, 100, -200);
+        let entry2 = tt.probe(hash2);
+        
+        assert!(entry2.hit, "QS entry should hit");
+        assert_eq!(entry2.depth, -1, "QS depth should be -1, got {}", entry2.depth);
+        assert_eq!(entry2.score, -50);
+        assert_eq!(entry2.static_eval, -200);
+    }
 }
