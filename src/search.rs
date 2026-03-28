@@ -1079,10 +1079,11 @@ fn negamax(
                 lmr_reduction(depth, moves_tried as i32)
             };
 
-            // Quiet-only adjustments
+            // Quiet-only adjustments (match GoChess exactly)
             if !is_capture {
-                if !is_pv { r += 1; }
-                // Use GoChess's cut-node heuristic instead of explicit cut_node flag
+                // PV nodes: reduce less
+                if is_pv { r -= 1; }
+                // Cut nodes (non-PV, not first move): reduce more
                 if !is_pv && moves_tried > 1 { r += 1; }
 
                 // Reduce more when multiple moves have already raised alpha
