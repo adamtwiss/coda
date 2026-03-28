@@ -1,6 +1,6 @@
 /// Transposition table with lockless concurrent access.
 /// 5-slot buckets, cache-line aligned (64 bytes).
-/// 14-bit staticEval for ±8191 cp range.
+/// Matches GoChess: parallel arrays, 32-bit key verification, power-of-2 indexing.
 
 use crate::types::*;
 
@@ -8,85 +8,83 @@ pub const TT_FLAG_NONE: u8 = 0;
 pub const TT_FLAG_UPPER: u8 = 1; // All-node (fail-low, score <= alpha)
 pub const TT_FLAG_LOWER: u8 = 2; // Cut-node (fail-high, score >= beta)
 pub const TT_FLAG_EXACT: u8 = 3; // PV-node (exact score)
-// Note: values differ from GoChess (TTExact=1, TTUpper=3) but this is fine —
-// they're arbitrary constants used only in match/== comparisons, never compared numerically.
 
-const BUCKET_SIZE: usize = 4;
-// 4 slots × 16 bytes = 64 bytes (cache line aligned)
+const BUCKET_SIZE: usize = 5;
 
-/// A single TT slot: 16 bytes.
-/// Stores `key_xor = hash ^ data` for full 64-bit verification (Stockfish approach).
-/// Any bit flip in either key or data causes the verification to fail.
-/// Packed data (64 bits):
+/// Packed data layout (64 bits) — same as GoChess:
 ///   bits  0-15:  best move (16 bits)
 ///   bits 16-17:  flag (2 bits)
-///   bits 18-31:  staticEval (14 bits, signed)
+///   bits 18-31:  staticEval (14 bits, signed, biased)
 ///   bits 32-47:  score (16 bits, signed)
 ///   bits 48-55:  depth (8 bits, unsigned)
 ///   bits 56-63:  generation (8 bits)
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct TTSlot {
-    key_xor: u64,  // hash ^ data — full 64-bit verification
-    data: u64,
+
+#[inline(always)]
+fn pack_data(best_move: Move, flag: u8, static_eval: i32, score: i32, depth: i32, generation: u8) -> u64 {
+    let mv = best_move as u64;
+    let f = (flag as u64 & 3) << 16;
+    // Bias static_eval to unsigned 14-bit: clamp ±8191, add 8192, mask
+    let se_clamped = static_eval.clamp(-8191, 8191) as i16;
+    let se14 = ((se_clamped as u16).wrapping_add(8192)) & 0x3FFF;
+    let se = (se14 as u64) << 18;
+    let sc = ((score as i16 as u16) as u64) << 32;
+    let d = ((depth.max(0) as u8) as u64) << 48;
+    let g = (generation as u64) << 56;
+    mv | f | se | sc | d | g
 }
 
-impl TTSlot {
-    const EMPTY: Self = TTSlot { key_xor: 0, data: 0 };
-
-    #[inline(always)]
-    fn best_move(&self) -> Move {
-        (self.data & 0xFFFF) as Move
-    }
-
-    #[inline(always)]
-    fn flag(&self) -> u8 {
-        ((self.data >> 16) & 3) as u8
-    }
-
-    #[inline(always)]
-    fn static_eval(&self) -> i32 {
-        // 14-bit signed: extract bits 18-31, sign-extend
-        let raw = ((self.data >> 18) & 0x3FFF) as i32;
-        if raw >= 0x2000 { raw - 0x4000 } else { raw }
-    }
-
-    #[inline(always)]
-    fn score(&self) -> i32 {
-        ((self.data >> 32) as i16) as i32
-    }
-
-    #[inline(always)]
-    fn depth(&self) -> i32 {
-        ((self.data >> 48) & 0xFF) as i32
-    }
-
-    #[inline(always)]
-    fn generation(&self) -> u8 {
-        (self.data >> 56) as u8
-    }
-
-    fn pack(best_move: Move, flag: u8, static_eval: i32, score: i32, depth: i32, generation: u8) -> u64 {
-        let mv = best_move as u64;
-        let f = (flag as u64 & 3) << 16;
-        let se = ((static_eval.clamp(-8191, 8191) as u64) & 0x3FFF) << 18;
-        let sc = ((score as i16 as u16) as u64) << 32;
-        let d = ((depth.max(0) as u8) as u64) << 48;
-        let g = (generation as u64) << 56;
-        mv | f | se | sc | d | g
-    }
+#[inline(always)]
+fn unpack_move(data: u64) -> Move {
+    (data & 0xFFFF) as Move
 }
 
-/// A bucket of 5 slots = 64 bytes (cache-line aligned).
+#[inline(always)]
+fn unpack_flag(data: u64) -> u8 {
+    ((data >> 16) & 3) as u8
+}
+
+#[inline(always)]
+fn unpack_static_eval(data: u64) -> i32 {
+    let se14 = ((data >> 18) & 0x3FFF) as u16;
+    (se14 as i16 - 8192) as i32
+}
+
+#[inline(always)]
+fn unpack_score(data: u64) -> i32 {
+    ((data >> 32) as i16) as i32
+}
+
+#[inline(always)]
+fn unpack_depth(data: u64) -> i32 {
+    ((data >> 48) & 0xFF) as i32
+}
+
+#[inline(always)]
+fn unpack_generation(data: u64) -> u8 {
+    (data >> 56) as u8
+}
+
+/// A bucket of 5 slots using parallel arrays (matches GoChess layout).
+/// data[5] = 40 bytes, keys[5] = 20 bytes, _pad = 4 bytes → 64 bytes.
 #[repr(C, align(64))]
 struct TTBucket {
-    slots: [TTSlot; BUCKET_SIZE], // 4 × 16 = 64 bytes
+    data: [u64; BUCKET_SIZE],    // 40 bytes — packed entry data
+    keys: [u32; BUCKET_SIZE],    // 20 bytes — upper32(hash) XOR lower32(data)
+    _pad: [u8; 4],               // 4 bytes padding to 64
+}
+
+impl TTBucket {
+    const EMPTY: Self = TTBucket {
+        data: [0; BUCKET_SIZE],
+        keys: [0; BUCKET_SIZE],
+        _pad: [0; 4],
+    };
 }
 
 /// The transposition table.
 pub struct TT {
     buckets: Vec<TTBucket>,
-    num_buckets: usize,
+    mask: usize,  // num_buckets - 1 (power of 2)
     generation: u8,
 }
 
@@ -117,16 +115,20 @@ impl TT {
     /// Create a new TT with the given size in megabytes.
     pub fn new(mb: usize) -> Self {
         let bytes = mb * 1024 * 1024;
-        let num_buckets = (bytes / 64).max(1);
-        let mut buckets = Vec::with_capacity(num_buckets);
-        for _ in 0..num_buckets {
-            buckets.push(TTBucket {
-                slots: [TTSlot::EMPTY; BUCKET_SIZE],
-            });
+        let num_buckets_raw = bytes / 64;
+        // Round down to power of 2
+        let mut size = 1usize;
+        while size * 2 <= num_buckets_raw {
+            size *= 2;
+        }
+        let size = size.max(1);
+        let mut buckets = Vec::with_capacity(size);
+        for _ in 0..size {
+            buckets.push(TTBucket::EMPTY);
         }
         TT {
             buckets,
-            num_buckets,
+            mask: size - 1,
             generation: 0,
         }
     }
@@ -134,7 +136,7 @@ impl TT {
     /// Clear all entries.
     pub fn clear(&mut self) {
         for bucket in self.buckets.iter_mut() {
-            bucket.slots = [TTSlot::EMPTY; BUCKET_SIZE];
+            *bucket = TTBucket::EMPTY;
         }
         self.generation = 0;
     }
@@ -144,29 +146,40 @@ impl TT {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// Get the bucket index for a hash.
+    /// Get the bucket index for a hash (power-of-2 masking, matches GoChess).
     #[inline(always)]
     fn bucket_index(&self, hash: u64) -> usize {
-        (hash as usize) % self.num_buckets
+        (hash as usize) & self.mask
     }
 
     /// Probe the TT for a position.
     pub fn probe(&self, hash: u64) -> TTEntry {
         let idx = self.bucket_index(hash);
         let bucket = &self.buckets[idx];
+        let key_upper = (hash >> 32) as u32;
 
-        for slot in &bucket.slots {
-            // Full 64-bit verification: key_xor ^ data == hash
-            if slot.data != 0 && (slot.key_xor ^ slot.data) == hash {
-                return TTEntry {
-                    best_move: slot.best_move(),
-                    flag: slot.flag(),
-                    static_eval: slot.static_eval(),
-                    score: slot.score(),
-                    depth: slot.depth(),
-                    hit: true,
-                };
+        for i in 0..BUCKET_SIZE {
+            let data = bucket.data[i];
+            let stored_key = bucket.keys[i];
+
+            // 32-bit verification: stored_key XOR lower32(data) == upper32(hash)
+            if stored_key ^ (data as u32) != key_upper {
+                continue;
             }
+
+            let flag = unpack_flag(data);
+            if flag == TT_FLAG_NONE {
+                continue;
+            }
+
+            return TTEntry {
+                best_move: unpack_move(data),
+                flag,
+                static_eval: unpack_static_eval(data),
+                score: unpack_score(data),
+                depth: unpack_depth(data),
+                hit: true,
+            };
         }
 
         TTEntry::miss()
@@ -177,43 +190,52 @@ impl TT {
         let idx = self.bucket_index(hash);
         let bucket = &mut self.buckets[idx];
         let gen = self.generation;
+        let key_upper = (hash >> 32) as u32;
 
-        // Find replacement slot
+        let new_data = pack_data(best_move, flag, static_eval, score, depth, gen);
+        let new_key = key_upper ^ (new_data as u32);
+
+        // Scan all 5 slots: key match, empty, or worst-scoring
         let mut replace_idx = 0;
         let mut replace_score = i32::MAX;
 
-        for (i, slot) in bucket.slots.iter().enumerate() {
-            // Exact key match
-            if slot.data != 0 && (slot.key_xor ^ slot.data) == hash {
-                // Replace if: depth is close enough OR generation differs
-                if depth > slot.depth() - 3 || gen != slot.generation() {
-                    replace_idx = i;
-                    break;
-                }
-                // Same generation, too shallow — don't overwrite deep entry
+        for i in 0..BUCKET_SIZE {
+            let slot_data = bucket.data[i];
+            let slot_key = bucket.keys[i];
+            let recovered_upper = slot_key ^ (slot_data as u32);
+
+            let slot_flag = unpack_flag(slot_data);
+            let slot_depth = unpack_depth(slot_data);
+            let slot_gen = unpack_generation(slot_data);
+
+            // Empty slot: use immediately
+            if slot_flag == TT_FLAG_NONE {
+                bucket.data[i] = new_data;
+                bucket.keys[i] = new_key;
                 return;
             }
 
-            // Empty slot
-            if slot.data == 0 {
-                replace_idx = i;
-                break;
+            // Key match: update if newer generation or sufficiently deep
+            if recovered_upper == key_upper {
+                if depth > slot_depth - 3 || gen != slot_gen {
+                    bucket.data[i] = new_data;
+                    bucket.keys[i] = new_key;
+                }
+                return;
             }
 
-            // Replacement scoring: prefer replacing old, shallow entries
-            let age_diff = gen.wrapping_sub(slot.generation());
-            let slot_score = slot.depth() as i32 - (age_diff as i32) * 4;
+            // Track worst slot for replacement: depth - 4*age
+            let age = gen.wrapping_sub(slot_gen) as i32;
+            let slot_score = slot_depth - age * 4;
             if slot_score < replace_score {
                 replace_score = slot_score;
                 replace_idx = i;
             }
         }
 
-        let data = TTSlot::pack(best_move, flag, static_eval, score, depth, gen);
-        bucket.slots[replace_idx] = TTSlot {
-            key_xor: hash ^ data,
-            data,
-        };
+        // No key match and no empty slot: replace worst-scoring slot
+        bucket.data[replace_idx] = new_data;
+        bucket.keys[replace_idx] = new_key;
     }
 
     /// Prefetch the bucket for a hash (hint to CPU cache).
@@ -227,13 +249,14 @@ impl TT {
         }
     }
 
-    /// Estimate hashfull (permille of used slots — counts all non-empty, any generation).
+    /// Estimate hashfull (permille of used slots).
     pub fn hashfull(&self) -> u32 {
-        let sample = self.num_buckets.min(1000);
+        let sample = (self.mask + 1).min(1000);
         let mut used = 0u32;
         for i in 0..sample {
-            for slot in &self.buckets[i].slots {
-                if slot.data != 0 {
+            for j in 0..BUCKET_SIZE {
+                let flag = unpack_flag(self.buckets[i].data[j]);
+                if flag != TT_FLAG_NONE {
                     used += 1;
                 }
             }
