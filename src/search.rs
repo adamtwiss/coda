@@ -112,6 +112,9 @@ pub struct SearchInfo {
     soft_limit: u64,  // ms — can be extended/shortened dynamically
     hard_limit: u64,  // ms — absolute maximum
     pub sel_depth: i32,
+    /// Triangular PV table (matching GoChess)
+    pv_table: [[Move; MAX_PLY + 1]; MAX_PLY + 1],
+    pv_len: [usize; MAX_PLY + 1],
     prev_moves: [Move; MAX_PLY + 1],
     static_evals: [i32; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
@@ -151,6 +154,8 @@ impl SearchInfo {
             prev_moves: [NO_MOVE; MAX_PLY + 1],
             static_evals: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
+            pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
+            pv_len: [0; MAX_PLY + 1],
             pawn_hist: Box::new([[[0i16; 64]; 13]; PAWN_HIST_SIZE]),
             pawn_corr: Box::new([[0; CORR_HIST_SIZE]; 2]),
             np_corr: Box::new([[[0; CORR_HIST_SIZE]; 2]; 2]),
@@ -546,17 +551,32 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             if info.should_stop() { break; }
         }
 
-        // Get best move from TT — validate it's a legal move for the root position
-        let tt_entry = info.tt.probe(board.hash);
-        if tt_entry.hit && tt_entry.best_move != NO_MOVE {
-            let tt_from = move_from(tt_entry.best_move);
-            let tt_to = move_to(tt_entry.best_move);
-            // Find matching move in root legal list (ensures correct flags)
+        // Get best move from PV table (GoChess: bestMove = info.pvTable[0][0])
+        // Fall back to TT probe if PV table is empty
+        if info.pv_len[0] > 0 {
+            let pv_move = info.pv_table[0][0];
+            // Validate against root legal list (ensures correct flags)
+            let pv_from = move_from(pv_move);
+            let pv_to = move_to(pv_move);
             for i in 0..root_legal.len {
                 let m = root_legal.moves[i];
-                if move_from(m) == tt_from && move_to(m) == tt_to {
-                    best_move = m; // use the legal move (with correct flags)
+                if move_from(m) == pv_from && move_to(m) == pv_to {
+                    best_move = m;
                     break;
+                }
+            }
+        } else {
+            // Fallback: probe TT
+            let tt_entry = info.tt.probe(board.hash);
+            if tt_entry.hit && tt_entry.best_move != NO_MOVE {
+                let tt_from = move_from(tt_entry.best_move);
+                let tt_to = move_to(tt_entry.best_move);
+                for i in 0..root_legal.len {
+                    let m = root_legal.moves[i];
+                    if move_from(m) == tt_from && move_to(m) == tt_to {
+                        best_move = m;
+                        break;
+                    }
                 }
             }
         }
@@ -577,36 +597,42 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             format!("score cp {}", prev_score)
         };
 
-        // Extract PV from TT
+        // Extract PV from PV table (GoChess style), extend with TT if short
         let mut pv_str = String::new();
         {
-            let mut pv_board = board.clone();
-            let mut pv_moves = 0;
-            // First move is always the best_move
-            pv_str.push_str(&move_to_uci(best_move));
-            pv_board.make_move(best_move);
-            pv_moves += 1;
-            // Follow TT chain for remaining PV moves
-            while pv_moves < depth as usize + 5 {
-                let pv_tt = info.tt.probe(pv_board.hash);
-                if !pv_tt.hit || pv_tt.best_move == NO_MOVE { break; }
-                let pv_from = move_from(pv_tt.best_move);
-                let pv_to = move_to(pv_tt.best_move);
-                // Validate move exists in legal move list
-                let pv_legal = generate_legal_moves(&pv_board);
-                let mut found = NO_MOVE;
-                for i in 0..pv_legal.len {
-                    let m = pv_legal.moves[i];
-                    if move_from(m) == pv_from && move_to(m) == pv_to {
-                        found = m;
-                        break;
-                    }
+            // Use PV table first
+            let pv_len = info.pv_len[0].min(MAX_PLY);
+            for i in 0..pv_len {
+                if i > 0 { pv_str.push(' '); }
+                pv_str.push_str(&move_to_uci(info.pv_table[0][i]));
+            }
+            // If PV table is short, extend with TT
+            if pv_len < depth as usize {
+                let mut pv_board = board.clone();
+                for i in 0..pv_len {
+                    pv_board.make_move(info.pv_table[0][i]);
                 }
-                if found == NO_MOVE { break; }
-                pv_str.push(' ');
-                pv_str.push_str(&move_to_uci(found));
-                pv_board.make_move(found);
-                pv_moves += 1;
+                let mut pv_moves = pv_len;
+                while pv_moves < depth as usize + 5 {
+                    let pv_tt = info.tt.probe(pv_board.hash);
+                    if !pv_tt.hit || pv_tt.best_move == NO_MOVE { break; }
+                    let pv_from = move_from(pv_tt.best_move);
+                    let pv_to = move_to(pv_tt.best_move);
+                    let pv_legal = generate_legal_moves(&pv_board);
+                    let mut found = NO_MOVE;
+                    for i in 0..pv_legal.len {
+                        let m = pv_legal.moves[i];
+                        if move_from(m) == pv_from && move_to(m) == pv_to {
+                            found = m;
+                            break;
+                        }
+                    }
+                    if found == NO_MOVE { break; }
+                    if !pv_str.is_empty() { pv_str.push(' '); }
+                    pv_str.push_str(&move_to_uci(found));
+                    pv_board.make_move(found);
+                    pv_moves += 1;
+                }
             }
         }
 
@@ -700,6 +726,11 @@ fn negamax(
 
     // Prefetch TT bucket early to hide memory latency
     info.tt.prefetch(board.hash);
+
+    // Clear PV for this node (GoChess: info.pvLen[ply] = 0)
+    if ply_u <= MAX_PLY {
+        info.pv_len[ply_u] = 0;
+    }
 
     // Track seldepth
     if ply > info.sel_depth {
@@ -1469,7 +1500,16 @@ fn negamax(
                 alpha = score;
                 alpha_raised_count += 1;
 
-                // GoChess: PV table update skipped (Coda doesn't have PV table)
+                // Update PV table (triangular) matching GoChess
+                if ply_u <= MAX_PLY {
+                    info.pv_table[ply_u][0] = mv;
+                    let child_len = if ply_u + 1 <= MAX_PLY { info.pv_len[ply_u + 1] } else { 0 };
+                    let copy_len = child_len.min(MAX_PLY - ply_u);
+                    for i in 0..copy_len {
+                        info.pv_table[ply_u][1 + i] = info.pv_table[ply_u + 1][i];
+                    }
+                    info.pv_len[ply_u] = 1 + child_len;
+                }
 
                 if alpha >= beta {
                     info.stats.beta_cutoffs += 1;
