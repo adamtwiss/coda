@@ -104,8 +104,8 @@ pub struct SearchInfo {
     static_evals: [i32; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
     excluded_move: [Move; MAX_PLY + 1],
-    /// Pawn history: [pawn_hash % PAWN_HIST_SIZE][piece][to_square]
-    pawn_hist: Box<[[[i16; 64]; 12]; PAWN_HIST_SIZE]>,
+    /// Pawn history: [pawn_hash % PAWN_HIST_SIZE][piece 1-12][to_square] (GoChess indexing, slot 0 unused)
+    pawn_hist: Box<[[[i16; 64]; 13]; PAWN_HIST_SIZE]>,
     /// Pawn correction history: [stm][pawn_hash % size]
     pawn_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
     /// Non-pawn correction history: [stm][color][nonpawn_hash % size]
@@ -139,7 +139,7 @@ impl SearchInfo {
             prev_moves: [NO_MOVE; MAX_PLY + 1],
             static_evals: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
-            pawn_hist: Box::new([[[0i16; 64]; 12]; PAWN_HIST_SIZE]),
+            pawn_hist: Box::new([[[0i16; 64]; 13]; PAWN_HIST_SIZE]),
             pawn_corr: Box::new([[0; CORR_HIST_SIZE]; 2]),
             np_corr: Box::new([[[0; CORR_HIST_SIZE]; 2]; 2]),
             cont_corr: Box::new([[0; 64]; 12]),
@@ -735,16 +735,18 @@ fn negamax(
                                 bonus,
                             );
                         } else if tt_is_cap && tt_piece != NO_PIECE {
-                            let mut cpt = board.piece_type_at(move_to(tt_move));
-                            if move_flags(tt_move) == FLAG_EN_PASSANT {
-                                cpt = PAWN;
-                            }
-                            if (tt_piece as usize) < 12 && (cpt as usize) < 6 {
-                                History::update_history(
-                                    &mut info.history.capture[tt_piece as usize][move_to(tt_move) as usize][cpt as usize],
-                                    bonus,
-                                );
-                            }
+                            let cpt_pt = board.piece_type_at(move_to(tt_move));
+                            let ct = if move_flags(tt_move) == FLAG_EN_PASSANT {
+                                captured_type(PAWN)
+                            } else if cpt_pt != NO_PIECE_TYPE {
+                                captured_type(cpt_pt)
+                            } else {
+                                0 // empty
+                            };
+                            History::update_history(
+                                &mut info.history.capture[go_piece(tt_piece)][move_to(tt_move) as usize][ct],
+                                bonus,
+                            );
                         }
                     }
                     // TT score dampening: at non-PV nodes with non-mate lower-bound cutoffs,
@@ -780,8 +782,10 @@ fn negamax(
         return quiescence(board, info, alpha, beta, ply);
     }
 
-    // Compute in_check
-    let in_check = board.in_check();
+    // Compute pinned, checkers, in_check
+    let pinned = board.pinned();
+    let checkers = board.checkers();
+    let in_check = checkers != 0;
 
     // Compute static eval for pruning and LMR improving detection
     let mut static_eval = -INFINITY;
@@ -966,8 +970,8 @@ fn negamax(
     }
 
     // Get killers for this ply
-    let safe_ply = ply_u.min(MAX_PLY - 1).min(127);
-    let killers = if safe_ply < 128 {
+    let safe_ply = ply_u.min(MAX_PLY - 1).min(63);
+    let killers = if safe_ply < 64 {
         info.history.killers[safe_ply]
     } else {
         [NO_MOVE; 2]
@@ -975,16 +979,17 @@ fn negamax(
 
     // Counter-move and continuation history lookup from opponent's last move
     let mut counter_move = NO_MOVE;
-    let mut prev_piece_for_cont: Piece = NO_PIECE;
+    let mut prev_piece_go: usize = 0; // GoChess piece index (1-12), 0 = none
     let mut prev_to_for_cont: u8 = 0;
     if !board.undo_stack.is_empty() {
         let undo = &board.undo_stack[board.undo_stack.len() - 1];
         let pm = undo.mv;
         if pm != NO_MOVE {
             let prev_piece = board.piece_at(move_to(pm));
-            if prev_piece != NO_PIECE && (prev_piece as usize) < 12 {
-                counter_move = info.history.counter[prev_piece as usize][move_to(pm) as usize];
-                prev_piece_for_cont = prev_piece;
+            if prev_piece != NO_PIECE {
+                let gp = go_piece(prev_piece);
+                counter_move = info.history.counter[gp][move_to(pm) as usize];
+                prev_piece_go = gp;
                 prev_to_for_cont = move_to(pm);
             }
         }
@@ -1012,7 +1017,12 @@ fn negamax(
     } else {
         NO_MOVE
     };
-    let mut picker = MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move);
+    let pawn_hist_ref = Some(&info.pawn_hist[ph_idx] as &[[i16; 64]; 13]);
+    let mut picker = if in_check {
+        MovePicker::new_evasion(board, tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref)
+    } else {
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref)
+    };
 
     let mut best_move = NO_MOVE;
     let mut best_score = -INFINITY;
@@ -1028,7 +1038,7 @@ fn negamax(
     let mut n_captures_tried = 0usize;
 
     loop {
-        let mv = picker.next(board, &info.history, prev_move, Some(&info.pawn_hist[ph_idx]));
+        let mv = picker.next(board);
         if mv == NO_MOVE { break; }
 
         // Skip excluded move (singular extension verification search)
@@ -1036,8 +1046,10 @@ fn negamax(
             continue;
         }
 
-        // Legality is handled by MovePicker (returns only legal moves)
-        // Coda uses make_move() return value for legality check below
+        // Legality check: evasion picker returns legal moves, non-evasion needs explicit check
+        if !in_check && !board.is_legal(mv, pinned, checkers) {
+            continue;
+        }
 
         let from = move_from(mv);
         let to = move_to(mv);
@@ -1091,10 +1103,10 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
         {
             let mut hist_prune_score = info.history.main[from as usize][to as usize];
-            if prev_piece_for_cont != NO_PIECE
-                && moved_piece != NO_PIECE && (moved_piece as usize) < 12
+            if prev_piece_go != 0
+                && moved_piece != NO_PIECE
             {
-                hist_prune_score += info.history.cont_hist[prev_piece_for_cont as usize][prev_to_for_cont as usize][moved_piece as usize][to as usize];
+                hist_prune_score += info.history.cont_hist[prev_piece_go][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
             }
             if hist_prune_score < -1500 * depth as i32 {
                 info.stats.history_prunes += 1;
@@ -1215,9 +1227,11 @@ fn negamax(
         }
 
         // Track captures for capture history penalty on beta cutoff
+        // Store GoChess-indexed (go_piece, to, captured_type) for direct use in history penalty
         if is_cap && n_captures_tried < 32 {
-            if moved_piece != NO_PIECE && (moved_piece as usize) < 12 && (captured_pt as usize) < 6 {
-                captures_tried[n_captures_tried] = (moved_piece, to, captured_pt);
+            if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
+                let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
+                captures_tried[n_captures_tried] = (go_piece(moved_piece) as u8, to, ct as u8);
                 n_captures_tried += 1;
             }
         }
@@ -1283,10 +1297,10 @@ fn negamax(
 
                 // Continuous history adjustment: good history reduces less, bad more
                 let mut hist_score = info.history.main[from as usize][to as usize];
-                if prev_piece_for_cont != NO_PIECE
-                    && moved_piece != NO_PIECE && (moved_piece as usize) < 12
+                if prev_piece_go != 0
+                    && moved_piece != NO_PIECE
                 {
-                    hist_score += info.history.cont_hist[prev_piece_for_cont as usize][prev_to_for_cont as usize][moved_piece as usize][to as usize];
+                    hist_score += info.history.cont_hist[prev_piece_go][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
                 }
                 reduction -= hist_score / 5000;
 
@@ -1310,8 +1324,9 @@ fn negamax(
 
                 if reduction > 0 {
                     // Continuous capture history adjustment
-                    if moved_piece != NO_PIECE && (moved_piece as usize) < 12 && (captured_pt as usize) < 6 {
-                        let capt_hist_val = info.history.capture[moved_piece as usize][to as usize][captured_pt as usize];
+                    if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
+                        let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
+                        let capt_hist_val = info.history.capture[go_piece(moved_piece)][to as usize][ct];
                         // Positive capture history: reduce less
                         if capt_hist_val > 2000 {
                             reduction -= 1;
@@ -1397,7 +1412,7 @@ fn negamax(
                         let bonus = history_bonus(depth);
 
                         // Store killer
-                        if safe_ply < 128 {
+                        if safe_ply < 64 {
                             if info.history.killers[safe_ply][0] != mv {
                                 info.history.killers[safe_ply][1] = info.history.killers[safe_ply][0];
                                 info.history.killers[safe_ply][0] = mv;
@@ -1411,21 +1426,22 @@ fn negamax(
                         );
 
                         // Update continuation history
-                        if prev_piece_for_cont != NO_PIECE
-                            && moved_piece != NO_PIECE && (moved_piece as usize) < 12
+                        if prev_piece_go != 0
+                            && moved_piece != NO_PIECE
                         {
-                            History::update_history(
-                                &mut info.history.cont_hist[prev_piece_for_cont as usize][prev_to_for_cont as usize][moved_piece as usize][to as usize],
+                            History::update_cont_history(
+                                &mut info.history.cont_hist[prev_piece_go][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize],
                                 bonus,
                             );
                         }
 
                         // Update pawn history
-                        if moved_piece != NO_PIECE && (moved_piece as usize) < 12 {
-                            let v = info.pawn_hist[ph_idx][moved_piece as usize][to as usize] as i32;
+                        if moved_piece != NO_PIECE {
+                            let gp = go_piece(moved_piece);
+                            let v = info.pawn_hist[ph_idx][gp][to as usize] as i32;
                             let clamped = bonus.clamp(-16384, 16384);
                             let new_v = v + clamped - v * clamped.abs() / 16384;
-                            info.pawn_hist[ph_idx][moved_piece as usize][to as usize] = new_v.clamp(-32000, 32000) as i16;
+                            info.pawn_hist[ph_idx][gp][to as usize] = new_v.clamp(-32000, 32000) as i16;
                         }
 
                         // Penalize all quiet moves tried before the cutoff move
@@ -1439,11 +1455,11 @@ fn negamax(
                             );
 
                             // Penalize continuation history
-                            if prev_piece_for_cont != NO_PIECE {
+                            if prev_piece_go != 0 {
                                 let q_piece = board.piece_at(qf);
-                                if q_piece != NO_PIECE && (q_piece as usize) < 12 {
-                                    History::update_history(
-                                        &mut info.history.cont_hist[prev_piece_for_cont as usize][prev_to_for_cont as usize][q_piece as usize][qt as usize],
+                                if q_piece != NO_PIECE {
+                                    History::update_cont_history(
+                                        &mut info.history.cont_hist[prev_piece_go][prev_to_for_cont as usize][go_piece(q_piece)][qt as usize],
                                         -bonus,
                                     );
                                 }
@@ -1452,11 +1468,12 @@ fn negamax(
                             // Penalize pawn history
                             {
                                 let q_piece = board.piece_at(qf);
-                                if q_piece != NO_PIECE && (q_piece as usize) < 12 {
-                                    let v = info.pawn_hist[ph_idx][q_piece as usize][qt as usize] as i32;
+                                if q_piece != NO_PIECE {
+                                    let gp = go_piece(q_piece);
+                                    let v = info.pawn_hist[ph_idx][gp][qt as usize] as i32;
                                     let clamped = (-bonus).clamp(-16384, 16384);
                                     let new_v = v + clamped - v * clamped.abs() / 16384;
-                                    info.pawn_hist[ph_idx][q_piece as usize][qt as usize] = new_v.clamp(-32000, 32000) as i16;
+                                    info.pawn_hist[ph_idx][gp][qt as usize] = new_v.clamp(-32000, 32000) as i16;
                                 }
                             }
                         }
@@ -1467,21 +1484,22 @@ fn negamax(
                             let pm = undo.mv;
                             if pm != NO_MOVE {
                                 let prev_piece = board.piece_at(move_to(pm));
-                                if prev_piece != NO_PIECE && (prev_piece as usize) < 12 {
-                                    info.history.counter[prev_piece as usize][move_to(pm) as usize] = mv;
+                                if prev_piece != NO_PIECE {
+                                    info.history.counter[go_piece(prev_piece)][move_to(pm) as usize] = mv;
                                 }
                             }
                         }
                     } else {
                         // Capture caused beta cutoff: update capture history
                         let bonus = history_bonus(depth);
-                        if moved_piece != NO_PIECE && (moved_piece as usize) < 12 && (captured_pt as usize) < 6 {
-                            let mut cpt = captured_pt;
-                            if flags == FLAG_EN_PASSANT {
-                                cpt = PAWN;
-                            }
+                        if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
+                            let cpt = if flags == FLAG_EN_PASSANT {
+                                captured_type(PAWN)
+                            } else {
+                                captured_type(captured_pt)
+                            };
                             History::update_history(
-                                &mut info.history.capture[moved_piece as usize][to as usize][cpt as usize],
+                                &mut info.history.capture[go_piece(moved_piece)][to as usize][cpt],
                                 bonus,
                             );
 
@@ -1573,8 +1591,8 @@ fn get_counter_move(history: &History, board: &Board, prev_move: Move) -> Move {
     if prev_move != NO_MOVE {
         let prev_to = move_to(prev_move);
         let prev_piece = board.piece_at(prev_to);
-        if prev_piece != NO_PIECE && (prev_piece as usize) < 12 {
-            return history.counter[prev_piece as usize][prev_to as usize];
+        if prev_piece != NO_PIECE {
+            return history.counter[go_piece(prev_piece)][prev_to as usize];
         }
     }
     NO_MOVE

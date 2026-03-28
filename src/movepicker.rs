@@ -1,7 +1,12 @@
 /// Staged move picker for search.
-/// Order: TT move -> good captures (MVV-LVA + captHist/16) -> killers -> counter-move -> quiets (history) -> bad captures.
+/// Literal translation of GoChess movepicker.go.
 ///
-/// True staged generation: captures generated first, quiets only when needed.
+/// Order: TT move -> good captures (MVV-LVA + captHist/16) -> killer1 -> killer2 ->
+///        counter-move -> quiets (history) -> bad captures.
+///
+/// Evasion order: TT move -> evasions (captures scored above quiets).
+///
+/// No legality checks — returns pseudo-legal moves; search caller does legality.
 
 use crate::attacks::*;
 use crate::bitboard::*;
@@ -17,33 +22,37 @@ const MAX_HISTORY: i32 = 16384;
 pub struct History {
     /// Main history: [from][to] (shared between colors, matches GoChess)
     pub main: [[i32; 64]; 64],
-    /// Capture history: [piece][to][captured_pt]
-    pub capture: [[[i32; 6]; 64]; 12],
+    /// Capture history: [piece 1-12][to][captured_type 0-6]
+    /// piece uses GoChess 1-12 indexing (slot 0 unused).
+    /// captured_type uses GoChess 0-6 scheme (0=empty, 1=pawn, ..., 6=king).
+    pub capture: [[[i32; 7]; 64]; 13],
     /// Killer moves: [ply][2]
-    pub killers: [[Move; 2]; 128],
-    /// Counter-move: [piece][to]
-    pub counter: [[Move; 64]; 12],
-    /// Continuation history: [piece][to][piece][to]
-    pub cont_hist: [[[[i32; 64]; 12]; 64]; 12],
+    pub killers: [[Move; 2]; 64],
+    /// Counter-move: [piece 1-12][to]
+    /// piece uses GoChess 1-12 indexing (slot 0 unused).
+    pub counter: [[Move; 64]; 13],
+    /// Continuation history: [piece 1-12][to][piece 1-12][to]
+    /// piece uses GoChess 1-12 indexing (slot 0 unused).
+    pub cont_hist: [[[[i16; 64]; 13]; 64]; 13],
 }
 
 impl History {
     pub fn new() -> Self {
         History {
             main: [[0; 64]; 64],
-            capture: [[[0; 6]; 64]; 12],
-            killers: [[NO_MOVE; 2]; 128],
-            counter: [[NO_MOVE; 64]; 12],
-            cont_hist: [[[[0; 64]; 12]; 64]; 12],
+            capture: [[[0; 7]; 64]; 13],
+            killers: [[NO_MOVE; 2]; 64],
+            counter: [[NO_MOVE; 64]; 13],
+            cont_hist: [[[[0; 64]; 13]; 64]; 13],
         }
     }
 
     pub fn clear(&mut self) {
         self.main = [[0; 64]; 64];
-        self.capture = [[[0; 6]; 64]; 12];
-        self.killers = [[NO_MOVE; 2]; 128];
-        self.counter = [[NO_MOVE; 64]; 12];
-        self.cont_hist = [[[[0; 64]; 12]; 64]; 12];
+        self.capture = [[[0; 7]; 64]; 13];
+        self.killers = [[NO_MOVE; 2]; 64];
+        self.counter = [[NO_MOVE; 64]; 13];
+        self.cont_hist = [[[[0; 64]; 13]; 64]; 13];
     }
 
     /// Update history with gravity (bonus capped, decayed toward zero).
@@ -52,92 +61,106 @@ impl History {
         *entry += clamped - *entry * clamped.abs() / MAX_HISTORY;
     }
 
-    /// Get quiet history score for a move (with optional pawn history).
-    pub fn quiet_score(&self, board: &Board, mv: Move, prev_move: Move, pawn_hist: Option<&[[i16; 64]; 12]>) -> i32 {
-        let from = move_from(mv);
-        let to = move_to(mv);
-        let color = board.side_to_move;
-
-        let mut score = self.main[from as usize][to as usize];
-
-        // Add continuation history if we have a previous move (3x weight)
-        if prev_move != NO_MOVE {
-            let prev_to = move_to(prev_move);
-            let prev_piece = board.piece_at(prev_to);
-            if prev_piece != NO_PIECE && (prev_piece as usize) < 12 {
-                let piece = board.piece_at(from);
-                if piece != NO_PIECE && (piece as usize) < 12 {
-                    score += self.cont_hist[prev_piece as usize][prev_to as usize][piece as usize][to as usize] * 3;
-                }
-            }
-        }
-
-        // Add pawn history
-        if let Some(ph) = pawn_hist {
-            let piece = board.piece_at(from);
-            if piece != NO_PIECE && (piece as usize) < 12 {
-                score += ph[piece as usize][to as usize] as i32;
-            }
-        }
-
-        score
+    /// Update continuation history (i16 entries) with gravity.
+    /// Uses same formula as update_history but with i16 values and MAX_HISTORY divisor.
+    pub fn update_cont_history(entry: &mut i16, bonus: i32) {
+        let clamped = bonus.clamp(-MAX_HISTORY, MAX_HISTORY);
+        let val = *entry as i32;
+        let new_val = val + clamped - val * clamped.abs() / MAX_HISTORY;
+        *entry = new_val.clamp(-32000, 32000) as i16;
     }
 }
 
+/// Map a Coda piece (0-11, color*6+pt) to GoChess piece index (1-12).
+/// GoChess: White 1-6 (Pawn..King), Black 7-12 (Pawn..King).
+/// Coda: White 0-5, Black 6-11.
+/// Mapping: coda_piece + 1.
+#[inline(always)]
+pub fn go_piece(p: Piece) -> usize {
+    debug_assert!(p < 12, "go_piece called with NO_PIECE");
+    (p + 1) as usize
+}
+
+/// Map a Coda piece type (0-5: PAWN..KING) to GoChess captured type (1-6).
+/// GoChess capturedType: 0=empty, 1=pawn, 2=knight, 3=bishop, 4=rook, 5=queen, 6=king.
+/// Coda PieceType: 0=PAWN, 1=KNIGHT, 2=BISHOP, 3=ROOK, 4=QUEEN, 5=KING.
+/// Mapping: pt + 1.
+#[inline(always)]
+pub fn captured_type(pt: PieceType) -> usize {
+    debug_assert!(pt <= 5, "captured_type called with NO_PIECE_TYPE");
+    (pt + 1) as usize
+}
+
+/// MovePicker stages (matches GoChess exactly).
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Stage {
     TTMove,
     GenerateCaptures,
     GoodCaptures,
-    Killers,
+    Killer1,
+    Killer2,
     CounterMove,
     GenerateQuiets,
     Quiets,
     BadCaptures,
     Done,
+
+    // Evasion stages (used when in check)
+    EvasionTTMove,
+    GenerateEvasions,
+    Evasions,
 }
 
 pub struct MovePicker {
     stage: Stage,
     tt_move: Move,
-    killer1: Move,
-    killer2: Move,
+    killers: [Move; 2],
     counter_move: Move,
-    // Captures (generated first)
-    captures: MoveList,
-    cap_scores: [i32; 256],
-    cap_idx: usize,
-    // Quiets (generated later, only if needed)
-    quiets: MoveList,
-    quiet_scores: [i32; 256],
-    quiet_idx: usize,
-    // Bad captures deferred to end
-    bad_captures: [Move; 32],
-    bad_capture_len: usize,
-    bad_capture_idx: usize,
-    pinned: Bitboard,
+    // Pointer to the History struct (lives for the duration of search)
+    history: *const History,
+    // Continuation history sub-table pointer: &cont_hist[prev_piece][prev_to], indexed [piece][to]
+    cont_hist_sub: Option<*const [[i16; 64]; 13]>,
+    pawn_hist_ptr: Option<*const [[i16; 64]; 13]>,
+    // Main moves list and scores
+    moves: MoveList,
+    scores: [i32; 256],
+    index: usize,
+    // Bad captures saved from partition
+    bad_moves: [Move; 64],
+    bad_scores: [i32; 64],
+    bad_len: usize,
+    // Ply for killer indexing
+    ply: usize,
+    skip_quiet: bool,
+    // Evasion support
     checkers: Bitboard,
+    pinned: Bitboard,
+    // NMP threat square (-1 = none)
+    pub threat_sq: i32,
 }
 
 impl MovePicker {
+    /// Create a new MovePicker for main search (non-evasion).
+    /// Matches GoChess Init().
     pub fn new(
         board: &Board,
         tt_move: Move,
         ply: usize,
         history: &History,
         prev_move: Move,
+        pawn_hist: Option<&[[i16; 64]; 13]>,
     ) -> Self {
-        let pinned = board.pinned();
-        let checkers = board.checkers();
-
-        let killer1 = if ply < 128 { history.killers[ply][0] } else { NO_MOVE };
-        let killer2 = if ply < 128 { history.killers[ply][1] } else { NO_MOVE };
+        let killers = if ply < 64 {
+            history.killers[ply]
+        } else {
+            [NO_MOVE; 2]
+        };
 
         let counter_move = if prev_move != NO_MOVE {
             let prev_to = move_to(prev_move);
             let prev_piece = board.piece_at(prev_to);
-            if prev_piece != NO_PIECE && (prev_piece as usize) < 12 {
-                history.counter[prev_piece as usize][prev_to as usize]
+            if prev_piece != NO_PIECE {
+                history.counter[go_piece(prev_piece)][prev_to as usize]
             } else {
                 NO_MOVE
             }
@@ -145,251 +168,484 @@ impl MovePicker {
             NO_MOVE
         };
 
+        // Get continuation history sub-table pointer
+        let cont_hist_sub = if prev_move != NO_MOVE {
+            let prev_to = move_to(prev_move);
+            let prev_piece = board.piece_at(prev_to);
+            if prev_piece != NO_PIECE {
+                let gp = go_piece(prev_piece);
+                Some(&history.cont_hist[gp][prev_to as usize] as *const [[i16; 64]; 13])
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let pawn_hist_ptr = pawn_hist.map(|ph| ph as *const [[i16; 64]; 13]);
+
         MovePicker {
             stage: Stage::TTMove,
             tt_move,
-            killer1,
-            killer2,
+            killers,
             counter_move,
-            captures: MoveList::new(),
-            cap_scores: [0; 256],
-            cap_idx: 0,
-            quiets: MoveList::new(),
-            quiet_scores: [0; 256],
-            quiet_idx: 0,
-            bad_captures: [NO_MOVE; 32],
-            bad_capture_len: 0,
-            bad_capture_idx: 0,
-            pinned,
+            history: history as *const History,
+            cont_hist_sub,
+            pawn_hist_ptr,
+            moves: MoveList::new(),
+            scores: [0; 256],
+            index: 0,
+            bad_moves: [NO_MOVE; 64],
+            bad_scores: [0; 64],
+            bad_len: 0,
+            ply,
+            skip_quiet: false,
+            checkers: 0,
+            pinned: 0,
+            threat_sq: -1,
+        }
+    }
+
+    /// Create a MovePicker for quiescence search (captures only).
+    /// Matches GoChess InitQuiescence().
+    pub fn new_quiescence(
+        _board: &Board,
+        tt_move: Move,
+        history: &History,
+    ) -> Self {
+        MovePicker {
+            stage: Stage::TTMove,
+            tt_move,
+            killers: [NO_MOVE; 2],
+            counter_move: NO_MOVE,
+            history: history as *const History,
+            cont_hist_sub: None,
+            pawn_hist_ptr: None,
+            moves: MoveList::new(),
+            scores: [0; 256],
+            index: 0,
+            bad_moves: [NO_MOVE; 64],
+            bad_scores: [0; 64],
+            bad_len: 0,
+            ply: 0,
+            skip_quiet: true,
+            checkers: 0,
+            pinned: 0,
+            threat_sq: -1,
+        }
+    }
+
+    /// Create a MovePicker for evasion mode (when in check).
+    /// Matches GoChess InitEvasion().
+    /// Evasion moves are generated as all moves then filtered for legality during generation.
+    pub fn new_evasion(
+        board: &Board,
+        tt_move: Move,
+        ply: usize,
+        checkers: Bitboard,
+        pinned: Bitboard,
+        history: &History,
+        prev_move: Move,
+        pawn_hist: Option<&[[i16; 64]; 13]>,
+    ) -> Self {
+        let cont_hist_sub = if prev_move != NO_MOVE {
+            let prev_to = move_to(prev_move);
+            let prev_piece = board.piece_at(prev_to);
+            if prev_piece != NO_PIECE {
+                let gp = go_piece(prev_piece);
+                Some(&history.cont_hist[gp][prev_to as usize] as *const [[i16; 64]; 13])
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let pawn_hist_ptr = pawn_hist.map(|ph| ph as *const [[i16; 64]; 13]);
+
+        MovePicker {
+            stage: Stage::EvasionTTMove,
+            tt_move,
+            killers: [NO_MOVE; 2],
+            counter_move: NO_MOVE,
+            history: history as *const History,
+            cont_hist_sub,
+            pawn_hist_ptr,
+            moves: MoveList::new(),
+            scores: [0; 256],
+            index: 0,
+            bad_moves: [NO_MOVE; 64],
+            bad_scores: [0; 64],
+            bad_len: 0,
+            ply,
+            skip_quiet: false,
             checkers,
+            pinned,
+            threat_sq: -1,
         }
     }
 
     /// Get the next move to try. Returns NO_MOVE when exhausted.
-    pub fn next(&mut self, board: &Board, history: &History, prev_move: Move, pawn_hist: Option<&[[i16; 64]; 12]>) -> Move {
+    /// No legality checks — caller must check legality.
+    /// Matches GoChess Next().
+    pub fn next(&mut self, board: &Board) -> Move {
         loop {
             match self.stage {
                 Stage::TTMove => {
                     self.stage = Stage::GenerateCaptures;
-                    if self.tt_move != NO_MOVE {
-                        self.tt_move = fixup_move_flags(board, self.tt_move);
-                        if is_pseudo_legal(board, self.tt_move)
-                            && board.is_legal(self.tt_move, self.pinned, self.checkers)
-                        {
-                            return self.tt_move;
-                        }
+                    if self.tt_move != NO_MOVE && is_pseudo_legal(board, self.tt_move) {
+                        return self.tt_move;
                     }
-                    self.tt_move = NO_MOVE;
                 }
+
                 Stage::GenerateCaptures => {
-                    self.captures = generate_captures(board);
-                    self.score_captures(board, history);
-                    self.cap_idx = 0;
+                    self.generate_and_score_captures(board);
                     self.stage = Stage::GoodCaptures;
+                    self.index = 0;
                 }
+
                 Stage::GoodCaptures => {
-                    while self.cap_idx < self.captures.len {
-                        let mv = self.pick_best_capture();
-                        if mv == self.tt_move { continue; }
-                        if !board.is_legal(mv, self.pinned, self.checkers) { continue; }
-
-                        // Promotions always count as good
-                        if !is_promotion(mv) && !see_ge(board, mv, 0) {
-                            if self.bad_capture_len < 32 {
-                                self.bad_captures[self.bad_capture_len] = mv;
-                                self.bad_capture_len += 1;
-                            }
-                            continue;
-                        }
-
-                        return mv;
+                    // TT move already filtered during scoring
+                    if self.index < self.moves.len {
+                        return self.pick_best();
                     }
-                    self.stage = Stage::Killers;
+                    if self.skip_quiet {
+                        self.stage = Stage::BadCaptures;
+                        self.restore_bad_captures();
+                    } else {
+                        self.stage = Stage::Killer1;
+                    }
                 }
-                Stage::Killers => {
+
+                Stage::Killer1 => {
+                    self.stage = Stage::Killer2;
+                    if self.killers[0] != NO_MOVE && self.killers[0] != self.tt_move {
+                        let k = fixup_move_flags(board, self.killers[0]);
+                        self.killers[0] = k;
+                        if is_pseudo_legal(board, k) && !is_capture(board, k) {
+                            return k;
+                        }
+                    }
+                }
+
+                Stage::Killer2 => {
                     self.stage = Stage::CounterMove;
-
-                    // Try killer 1
-                    if self.killer1 != NO_MOVE && self.killer1 != self.tt_move {
-                        self.killer1 = fixup_move_flags(board, self.killer1);
-                        if is_pseudo_legal(board, self.killer1)
-                            && board.is_legal(self.killer1, self.pinned, self.checkers)
-                        {
-                            let to = move_to(self.killer1);
-                            if board.piece_type_at(to) == NO_PIECE_TYPE {
-                                return self.killer1;
-                            }
-                        }
-                    }
-
-                    // Try killer 2
-                    if self.killer2 != NO_MOVE && self.killer2 != self.tt_move && self.killer2 != self.killer1 {
-                        self.killer2 = fixup_move_flags(board, self.killer2);
-                        if is_pseudo_legal(board, self.killer2)
-                            && board.is_legal(self.killer2, self.pinned, self.checkers)
-                        {
-                            let to = move_to(self.killer2);
-                            if board.piece_type_at(to) == NO_PIECE_TYPE {
-                                return self.killer2;
-                            }
+                    if self.killers[1] != NO_MOVE
+                        && self.killers[1] != self.tt_move
+                        && self.killers[1] != self.killers[0]
+                    {
+                        let k = fixup_move_flags(board, self.killers[1]);
+                        self.killers[1] = k;
+                        if is_pseudo_legal(board, k) && !is_capture(board, k) {
+                            return k;
                         }
                     }
                 }
+
                 Stage::CounterMove => {
                     self.stage = Stage::GenerateQuiets;
-
                     if self.counter_move != NO_MOVE
                         && self.counter_move != self.tt_move
-                        && self.counter_move != self.killer1
-                        && self.counter_move != self.killer2
+                        && self.counter_move != self.killers[0]
+                        && self.counter_move != self.killers[1]
                     {
-                        self.counter_move = fixup_move_flags(board, self.counter_move);
-                        if is_pseudo_legal(board, self.counter_move)
-                            && board.is_legal(self.counter_move, self.pinned, self.checkers)
-                        {
-                            let to = move_to(self.counter_move);
-                            if board.piece_type_at(to) == NO_PIECE_TYPE {
-                                return self.counter_move;
-                            }
+                        let cm = fixup_move_flags(board, self.counter_move);
+                        self.counter_move = cm;
+                        if is_pseudo_legal(board, cm) && !is_capture(board, cm) {
+                            return cm;
                         }
                     }
                 }
+
                 Stage::GenerateQuiets => {
-                    self.quiets = generate_quiets(board);
-                    self.score_quiets(board, history, prev_move, pawn_hist);
-                    self.quiet_idx = 0;
+                    self.generate_and_score_quiets(board);
                     self.stage = Stage::Quiets;
                 }
+
                 Stage::Quiets => {
-                    while self.quiet_idx < self.quiets.len {
-                        let mv = self.pick_best_quiet();
-                        if mv == self.tt_move { continue; }
-                        if mv == self.killer1 || mv == self.killer2 { continue; }
-                        if mv == self.counter_move { continue; }
-
-                        if !board.is_legal(mv, self.pinned, self.checkers) { continue; }
-
-                        return mv;
+                    // TT/killers/counter already filtered during scoring
+                    if self.index < self.moves.len {
+                        return self.pick_best();
                     }
                     self.stage = Stage::BadCaptures;
-                    self.bad_capture_idx = 0;
+                    self.restore_bad_captures();
                 }
+
                 Stage::BadCaptures => {
-                    if self.bad_capture_idx < self.bad_capture_len {
-                        let mv = self.bad_captures[self.bad_capture_idx];
-                        self.bad_capture_idx += 1;
-                        return mv;
+                    // TT move already filtered during capture scoring
+                    if self.index < self.moves.len {
+                        return self.pick_best();
                     }
                     self.stage = Stage::Done;
                 }
+
                 Stage::Done => {
                     return NO_MOVE;
+                }
+
+                // Evasion stages
+                Stage::EvasionTTMove => {
+                    self.stage = Stage::GenerateEvasions;
+                    if self.tt_move != NO_MOVE && is_pseudo_legal(board, self.tt_move) {
+                        if board.is_legal(self.tt_move, self.pinned, self.checkers) {
+                            return self.tt_move;
+                        }
+                    }
+                }
+
+                Stage::GenerateEvasions => {
+                    self.generate_and_score_evasions(board);
+                    self.stage = Stage::Evasions;
+                }
+
+                Stage::Evasions => {
+                    // TT move already filtered during evasion scoring
+                    if self.index < self.moves.len {
+                        return self.pick_best();
+                    }
+                    self.stage = Stage::Done;
                 }
             }
         }
     }
 
-    /// Score capture/promotion moves.
-    fn score_captures(&mut self, board: &Board, history: &History) {
-        for i in 0..self.captures.len {
-            let mv = self.captures.moves[i];
-            let from = move_from(mv);
-            let to = move_to(mv);
-            let flags = move_flags(mv);
+    /// Generate all captures, partition into good (SEE >= 0) and bad (SEE < 0).
+    /// TT move is filtered out. Matches GoChess generateAndScoreCaptures().
+    fn generate_and_score_captures(&mut self, board: &Board) {
+        let caps = generate_captures(board);
+        self.moves = MoveList::new();
+        self.bad_len = 0;
 
-            let target_pt = board.piece_type_at(to);
-            let is_cap = target_pt != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT;
+        let history = unsafe { &*self.history };
 
-            if is_cap {
-                let victim = if flags == FLAG_EN_PASSANT { PAWN } else { target_pt };
-                let attacker = board.piece_type_at(from);
-                let mvv_lva = see_value(victim) * 10 - see_value(attacker);
+        for i in 0..caps.len {
+            let m = caps.moves[i];
+            if m == self.tt_move {
+                continue;
+            }
+            if !see_ge(board, m, 0) {
+                // Bad capture
+                if self.bad_len < 64 {
+                    self.bad_moves[self.bad_len] = m;
+                    self.bad_scores[self.bad_len] = Self::capt_hist_score_static(board, history, m);
+                    self.bad_len += 1;
+                }
+            } else {
+                // Good capture
+                let idx = self.moves.len;
+                self.moves.push(m);
+                self.scores[idx] = mvv_lva(board, m) + Self::capt_hist_score_static(board, history, m) / 16;
+            }
+        }
+        self.index = 0;
+    }
 
-                let piece = make_piece(board.side_to_move, attacker);
-                let cap_hist = if (piece as usize) < 12 && (victim as usize) < 6 {
-                    history.capture[piece as usize][to as usize][victim as usize] / 16
+    /// Generate quiet moves and score by history.
+    /// TT, killers, counter filtered out. Matches GoChess generateAndScoreQuiets().
+    fn generate_and_score_quiets(&mut self, board: &Board) {
+        let quiets = generate_quiets(board);
+        self.moves = MoveList::new();
+
+        let history = unsafe { &*self.history };
+
+        for i in 0..quiets.len {
+            let m = quiets.moves[i];
+            if m == self.tt_move
+                || m == self.killers[0]
+                || m == self.killers[1]
+                || m == self.counter_move
+            {
+                continue;
+            }
+
+            let from = move_from(m);
+            let to = move_to(m);
+            let piece = board.piece_at(from);
+
+            let mut score = history.main[from as usize][to as usize];
+
+            // Continuation history (3x weight)
+            if let Some(sub_ptr) = self.cont_hist_sub {
+                if piece != NO_PIECE {
+                    let sub = unsafe { &*sub_ptr };
+                    score += 3 * sub[go_piece(piece)][to as usize] as i32;
+                }
+            }
+
+            // Pawn history
+            if let Some(ph_ptr) = self.pawn_hist_ptr {
+                if piece != NO_PIECE {
+                    let ph = unsafe { &*ph_ptr };
+                    score += ph[go_piece(piece)][to as usize] as i32;
+                }
+            }
+
+            // Null-move threat: bonus for escaping the threatened square
+            if self.threat_sq >= 0 && from as i32 == self.threat_sq {
+                score += 8000;
+            }
+
+            let idx = self.moves.len;
+            self.moves.push(m);
+            self.scores[idx] = score;
+        }
+        self.index = 0;
+    }
+
+    /// Generate evasion moves and score them.
+    /// Captures scored above quiets. TT move filtered out.
+    /// Matches GoChess generateAndScoreEvasions().
+    ///
+    /// Since Coda doesn't have a dedicated generate_evasions function,
+    /// we use generate_all_moves and filter for legality here.
+    fn generate_and_score_evasions(&mut self, board: &Board) {
+        let all = generate_all_moves(board);
+        self.moves = MoveList::new();
+
+        let history = unsafe { &*self.history };
+
+        for i in 0..all.len {
+            let m = all.moves[i];
+            if m == self.tt_move {
+                continue;
+            }
+            // Evasions must be legal
+            if !board.is_legal(m, self.pinned, self.checkers) {
+                continue;
+            }
+
+            let from = move_from(m);
+            let to = move_to(m);
+            let flags = move_flags(m);
+
+            let score = if is_promotion(m) {
+                if flags == FLAG_PROMOTE_Q {
+                    9000
                 } else {
-                    0
-                };
+                    -1000 // underpromotions
+                }
+            } else if board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT {
+                // Capture: MVV-LVA + capture history
+                10000 + mvv_lva(board, m) + Self::capt_hist_score_static(board, history, m) / 16
+            } else {
+                // Quiet: history + continuation history + pawn history
+                let piece = board.piece_at(from);
 
-                self.cap_scores[i] = 10_000_000 + mvv_lva + cap_hist;
-            } else if is_promotion(mv) {
-                self.cap_scores[i] = 9_000_000 + see_value(promotion_piece_type(mv));
-            }
+                let mut s = history.main[from as usize][to as usize];
+
+                if let Some(sub_ptr) = self.cont_hist_sub {
+                    if piece != NO_PIECE {
+                        let sub = unsafe { &*sub_ptr };
+                        s += 3 * sub[go_piece(piece)][to as usize] as i32;
+                    }
+                }
+
+                if let Some(ph_ptr) = self.pawn_hist_ptr {
+                    if piece != NO_PIECE {
+                        let ph = unsafe { &*ph_ptr };
+                        s += ph[go_piece(piece)][to as usize] as i32;
+                    }
+                }
+
+                s
+            };
+
+            let idx = self.moves.len;
+            self.moves.push(m);
+            self.scores[idx] = score;
         }
+        self.index = 0;
     }
 
-    /// Score quiet moves.
-    fn score_quiets(&mut self, board: &Board, history: &History, prev_move: Move, pawn_hist: Option<&[[i16; 64]; 12]>) {
-        for i in 0..self.quiets.len {
-            let mv = self.quiets.moves[i];
-            self.quiet_scores[i] = history.quiet_score(board, mv, prev_move, pawn_hist);
+    /// Swap in the saved bad captures. Matches GoChess restoreBadCaptures().
+    fn restore_bad_captures(&mut self) {
+        self.moves = MoveList::new();
+        for i in 0..self.bad_len {
+            self.moves.push(self.bad_moves[i]);
+            self.scores[i] = self.bad_scores[i];
         }
+        self.index = 0;
     }
 
-    /// Selection sort for captures.
-    fn pick_best_capture(&mut self) -> Move {
-        let mut best_idx = self.cap_idx;
-        let mut best_score = self.cap_scores[self.cap_idx];
+    /// Selection sort: find best from current index, swap to front, return it.
+    /// Matches GoChess pickBest().
+    fn pick_best(&mut self) -> Move {
+        if self.index >= self.moves.len {
+            return NO_MOVE;
+        }
 
-        for j in (self.cap_idx + 1)..self.captures.len {
-            if self.cap_scores[j] > best_score {
-                best_score = self.cap_scores[j];
-                best_idx = j;
+        let mut best_idx = self.index;
+        let mut best_score = self.scores[self.index];
+
+        for i in (self.index + 1)..self.moves.len {
+            if self.scores[i] > best_score {
+                best_score = self.scores[i];
+                best_idx = i;
             }
         }
 
-        if best_idx != self.cap_idx {
-            self.captures.moves.swap(self.cap_idx, best_idx);
-            self.cap_scores.swap(self.cap_idx, best_idx);
+        if best_idx != self.index {
+            self.moves.moves.swap(self.index, best_idx);
+            self.scores.swap(self.index, best_idx);
         }
 
-        let mv = self.captures.moves[self.cap_idx];
-        self.cap_idx += 1;
+        let mv = self.moves.moves[self.index];
+        self.index += 1;
         mv
     }
 
-    /// Selection sort for quiets.
-    fn pick_best_quiet(&mut self) -> Move {
-        let mut best_idx = self.quiet_idx;
-        let mut best_score = self.quiet_scores[self.quiet_idx];
-
-        for j in (self.quiet_idx + 1)..self.quiets.len {
-            if self.quiet_scores[j] > best_score {
-                best_score = self.quiet_scores[j];
-                best_idx = j;
+    /// Capture history score for a capture move (static version using explicit history ref).
+    /// Matches GoChess captHistScore().
+    fn capt_hist_score_static(board: &Board, history: &History, m: Move) -> i32 {
+        let from = move_from(m);
+        let to = move_to(m);
+        let piece = board.piece_at(from);
+        if piece == NO_PIECE {
+            return 0;
+        }
+        let victim_pt = board.piece_type_at(to);
+        let ct = if victim_pt == NO_PIECE_TYPE {
+            if move_flags(m) == FLAG_EN_PASSANT {
+                1 // pawn
+            } else {
+                0 // empty
             }
-        }
-
-        if best_idx != self.quiet_idx {
-            self.quiets.moves.swap(self.quiet_idx, best_idx);
-            self.quiet_scores.swap(self.quiet_idx, best_idx);
-        }
-
-        let mv = self.quiets.moves[self.quiet_idx];
-        self.quiet_idx += 1;
-        mv
+        } else {
+            captured_type(victim_pt)
+        };
+        history.capture[go_piece(piece)][to as usize][ct]
     }
 }
 
-/// Check if a move (by from/to) exists in a generated move list.
-fn move_in_list(list: &MoveList, mv: Move) -> bool {
-    let from = move_from(mv);
-    let to = move_to(mv);
-    for i in 0..list.len {
-        let m = list.moves[i];
-        if move_from(m) == from && move_to(m) == to {
-            return true;
+/// MVV-LVA score for a capture. Matches GoChess mvvLva().
+fn mvv_lva(board: &Board, m: Move) -> i32 {
+    let to = move_to(m);
+    let from = move_from(m);
+
+    let target_pt = board.piece_type_at(to);
+    if target_pt == NO_PIECE_TYPE {
+        // En passant
+        if move_flags(m) == FLAG_EN_PASSANT {
+            return see_value(PAWN) * 10 - see_value(PAWN);
         }
+        return 0;
     }
-    false
+
+    let attacker_pt = board.piece_type_at(from);
+
+    // MVV-LVA: maximize victim value, minimize attacker value
+    see_value(target_pt) * 10 - see_value(attacker_pt)
+}
+
+/// Check if a move is a capture. Matches GoChess isCapture().
+fn is_capture(board: &Board, m: Move) -> bool {
+    board.piece_type_at(move_to(m)) != NO_PIECE_TYPE || move_flags(m) == FLAG_EN_PASSANT
 }
 
 /// Re-derive move flags from the board state. TT/killer moves may have stale flags.
-fn fixup_move_flags(board: &Board, mv: Move) -> Move {
+pub fn fixup_move_flags(board: &Board, mv: Move) -> Move {
     let from = move_from(mv);
     let to = move_to(mv);
-    let _flags = move_flags(mv);
 
     // Keep promotion flags as-is (they're encoded in the move)
     if is_promotion(mv) {
@@ -428,7 +684,7 @@ fn fixup_move_flags(board: &Board, mv: Move) -> Move {
 
 /// Thorough pseudo-legality check for TT/killer/counter moves.
 /// Must validate all special flags to prevent board corruption.
-fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
+pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
     if mv == NO_MOVE { return false; }
     let from = move_from(mv);
     let to = move_to(mv);
@@ -534,7 +790,6 @@ fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
             }
         }
         KING => {
-            // King already handled above (castle check)
             if king_attacks(from as u32) & to_bb == 0 {
                 return false;
             }
