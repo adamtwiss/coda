@@ -222,6 +222,19 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     println!("info string piece_count {} bucket {}", pc, bucket);
                 }
             }
+            "see" => {
+                // Dump SEE values for all captures from current position
+                let caps = crate::movegen::generate_captures(&board);
+                for i in 0..caps.len {
+                    let mv = caps.moves[i];
+                    let val = crate::see::see_value_of(&board, mv);
+                    let from = crate::types::move_from(mv);
+                    let to = crate::types::move_to(mv);
+                    let flags = crate::types::move_flags(mv);
+                    let ge0 = crate::see::see_ge(&board, mv, 0);
+                    println!("SEE from={} to={} flags={} val={} ge0={}", from, to, flags, val, ge0);
+                }
+            }
             _ => {}
         }
     }

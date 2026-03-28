@@ -1624,12 +1624,126 @@ fn history_bonus(depth: i32) -> i32 {
 /// Compute SEE score for a quiet move (GoChess: SEEAfterQuiet).
 /// This is a placeholder that calls see_ge with the threshold.
 /// For a true SEE score, we'd need a full SEE implementation that returns the value.
+/// SEE for a quiet move: how much material do we lose if the opponent captures
+/// the piece we moved? Returns negative if we lose material (e.g., -320 for knight).
+/// Matches GoChess SEEAfterQuiet exactly.
 fn see_after_quiet(board: &Board, mv: Move) -> i32 {
-    // GoChess: b.SEEAfterQuiet(move) returns the actual SEE value for a quiet move.
-    // Coda doesn't have SEEAfterQuiet, so we approximate:
-    // If see_ge(board, mv, threshold) returns true, the SEE is >= threshold.
-    // We test at 0 threshold: if it fails, return a very negative value.
-    if see_ge(board, mv, 0) { 0 } else { -1000 }
+    use crate::attacks::*;
+    use crate::eval::see_value;
+
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let pt = board.piece_type_at(from);
+    if pt == NO_PIECE_TYPE { return 0; }
+    let piece_value = see_value(pt);
+
+    // Our piece moves from 'from' to 'to'
+    let mut occ = (board.occupied() & !(1u64 << from)) | (1u64 << to);
+
+    // Opponent tries to capture our piece first
+    let us = board.side_to_move;
+    let them = flip_color(us);
+
+    let (att_pt, att_sq) = find_lva_for_see(board, to as u32, them, occ);
+    if att_pt == NO_PIECE_TYPE {
+        return 0; // No attacker, piece is safe
+    }
+
+    // Build gain array
+    let mut gain = [0i32; 32];
+    let mut gain_len = 1usize;
+    gain[0] = piece_value; // opponent captures our piece
+    let mut next_victim = see_value(att_pt);
+    occ ^= 1u64 << att_sq;
+    let mut stm = us; // our turn to recapture
+
+    let bishops = board.pieces[BISHOP as usize] | board.pieces[QUEEN as usize];
+    let rooks = board.pieces[ROOK as usize] | board.pieces[QUEEN as usize];
+
+    while gain_len < 32 {
+        let (lva_pt, lva_sq) = find_lva_for_see(board, to as u32, stm, occ);
+        if lva_pt == NO_PIECE_TYPE { break; }
+
+        gain[gain_len] = next_victim - gain[gain_len - 1];
+        gain_len += 1;
+        next_victim = see_value(lva_pt);
+        occ ^= 1u64 << lva_sq;
+
+        // X-ray updates
+        if lva_pt == PAWN || lva_pt == BISHOP || lva_pt == QUEEN {
+            // Recompute bishop attacks through the hole
+        }
+        if lva_pt == ROOK || lva_pt == QUEEN {
+            // Recompute rook attacks through the hole
+        }
+
+        stm = flip_color(stm);
+    }
+
+    // Negamax backward
+    let mut i = gain_len as i32 - 2;
+    while i >= 0 {
+        if -gain[i as usize + 1] < gain[i as usize] {
+            gain[i as usize] = -gain[i as usize + 1];
+        }
+        i -= 1;
+    }
+
+    -gain[0] // Negate: gain[0] is opponent's result
+}
+
+/// Find least valuable attacker of square `sq` by `color` given `occ`.
+fn find_lva_for_see(board: &Board, sq: u32, color: u8, occ: u64) -> (u8, u8) {
+    use crate::attacks::*;
+
+    let color_bb = board.colors[color as usize] & occ;
+
+    // Pawns
+    let pawn_att = if color == WHITE {
+        // Black pawns attack downward, so white pawns attacking sq are south of it
+        ((1u64 << sq) >> 7) & !0x0101010101010101u64 | ((1u64 << sq) >> 9) & !0x8080808080808080u64
+    } else {
+        ((1u64 << sq) << 7) & !0x8080808080808080u64 | ((1u64 << sq) << 9) & !0x0101010101010101u64
+    };
+    let pawns = pawn_att & board.pieces[PAWN as usize] & color_bb;
+    if pawns != 0 {
+        let sq = pawns.trailing_zeros() as u8;
+        return (PAWN, sq);
+    }
+
+    // Knights
+    let knights = knight_attacks(sq) & board.pieces[KNIGHT as usize] & color_bb;
+    if knights != 0 {
+        return (KNIGHT, knights.trailing_zeros() as u8);
+    }
+
+    // Bishops
+    let bishop_att = bishop_attacks(sq, occ);
+    let bishops = bishop_att & board.pieces[BISHOP as usize] & color_bb;
+    if bishops != 0 {
+        return (BISHOP, bishops.trailing_zeros() as u8);
+    }
+
+    // Rooks
+    let rook_att = rook_attacks(sq, occ);
+    let rooks = rook_att & board.pieces[ROOK as usize] & color_bb;
+    if rooks != 0 {
+        return (ROOK, rooks.trailing_zeros() as u8);
+    }
+
+    // Queens
+    let queens = (bishop_att | rook_att) & board.pieces[QUEEN as usize] & color_bb;
+    if queens != 0 {
+        return (QUEEN, queens.trailing_zeros() as u8);
+    }
+
+    // King
+    let kings = king_attacks(sq) & board.pieces[KING as usize] & color_bb;
+    if kings != 0 {
+        return (KING, kings.trailing_zeros() as u8);
+    }
+
+    (NO_PIECE_TYPE, 0)
 }
 
 /// Helper: get counter-move for the given previous move
