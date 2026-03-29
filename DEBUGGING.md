@@ -218,7 +218,30 @@ A small tie-breaking or ordering difference at depth 5 causes one different beta
 
 Prime suspect: **FLAG_DOUBLE_PUSH** (Coda flag=3 vs GoChess flag=0). This changes the 16-bit move value for pawn double pushes, potentially affecting move comparisons (`mv == killers[0]`, etc.) if the same physical move has different encodings in different contexts.
 
+### Ruled Out (late 2026-03-29)
+- **FLAG_DOUBLE_PUSH**: Removing it made things WORSE (-346 Elo). The flag is correct and helpful.
+- **QMovePicker vs main MovePicker**: Switching QSearch to use main MovePicker's quiescence mode didn't help (-265 still). Capture ordering is equivalent.
+- **SEE**: Tested 25+ captures across 9 positions + edge cases. Zero differences.
+- **Score blending** (Atlas): Ablating all blending didn't help (-269 Elo).
+
+### Deep Trace Findings (Atlas + Hercules, late 2026-03-29)
+On subposition `r1bq1rk1/pp2ppbp/2np2p1/3n4/3NP3/2N1BP2/PPPQ2PP/2KR1B1R w - - 2 8`:
+1. First 138 QSearch boundary entries are IDENTICAL between engines
+2. Divergence at node ~542: same position (hash 97e19503d8299514), same moves in same order
+3. First child returns identical QSearch score (1016)
+4. GoChess searches 2 more children, Coda gets earlier cutoff
+5. Cause: alpha/beta WINDOW at this node differs — from TT bound narrowing at grandparent
+6. The same position appears at ply 5 in GoChess and ply 6 in Coda (transposition, not counting bug)
+
+### The Remaining Mystery
+The basic search is proven identical (no-ordering + no-pruning ablation). All scoring formulas match. All generation matches. Yet with full ordering, depth 5 stores different TT entries on every position tested.
+
+The divergence seed must be something incredibly subtle — possibly:
+1. **Integer rounding** in a scoring formula that differs between Go and Rust
+2. **Selection sort tie-breaking** on moves with equal scores (depends on array order, which depends on movegen micro-ordering for FLAG_DOUBLE_PUSH moves)
+3. **Quiet scoring overflow/truncation** differences (i32 vs int)
+
 ### Next Steps
-1. **Investigate FLAG_DOUBLE_PUSH**: check if any move comparison fails because a stored move has flag=0 but generated move has flag=3
-2. **Dump TT entries at depth 5**: compare which entry first differs between engines
-3. **Try removing FLAG_DOUBLE_PUSH**: use flag=0 for double pushes (matching GoChess) and test if gap closes
+1. Add per-node tracing at depth 5 to find the FIRST node where a different move is tried
+2. Compare history values at that node between engines
+3. Test if Go's integer division rounds differently from Rust's for the same operands
