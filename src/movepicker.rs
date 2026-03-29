@@ -600,6 +600,7 @@ impl MovePicker {
 
 /// Capture history score for a capture move.
 /// Matches GoChess captHistScore(). Public for use by QMovePicker.
+#[inline]
 pub fn capt_hist_score_static(board: &Board, history: &History, m: Move) -> i32 {
     let from = move_from(m);
     let to = move_to(m);
@@ -641,6 +642,7 @@ fn mvv_lva(board: &Board, m: Move) -> i32 {
 }
 
 /// Check if a move is a capture. Matches GoChess isCapture().
+#[inline(always)]
 fn is_capture(board: &Board, m: Move) -> bool {
     board.piece_type_at(move_to(m)) != NO_PIECE_TYPE || move_flags(m) == FLAG_EN_PASSANT
 }

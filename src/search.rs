@@ -243,9 +243,9 @@ impl SearchInfo {
     }
 
     pub fn clear_correction_history(&mut self) {
-        self.pawn_corr = Box::new([[0; CORR_HIST_SIZE]; 2]);
-        self.np_corr = Box::new([[[0; CORR_HIST_SIZE]; 2]; 2]);
-        self.cont_corr = Box::new([[0; 64]; 12]);
+        for row in self.pawn_corr.iter_mut() { row.fill(0); }
+        for mat in self.np_corr.iter_mut() { for row in mat.iter_mut() { row.fill(0); } }
+        for row in self.cont_corr.iter_mut() { row.fill(0); }
     }
 
     /// Evaluate using NNUE if loaded, otherwise classical PeSTO.
@@ -288,6 +288,7 @@ impl SearchInfo {
 
 /// Build a DirtyPiece for lazy NNUE accumulator update.
 /// `us`/`them` are the sides BEFORE the move.
+#[inline]
 fn build_dirty_piece(
     mv: Move,
     us: u8,
@@ -341,6 +342,7 @@ fn build_dirty_piece(
 }
 
 /// Apply correction history to raw static eval.
+#[inline]
 fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
     let stm = board.side_to_move as usize;
 
@@ -1080,7 +1082,7 @@ fn negamax(
         // Adaptive reduction: scales with depth and eval margin above beta
         let mut r = 3 + depth / 3;
         // Reduce less after captures
-        if !board.undo_stack.is_empty() && board.undo_stack.last().unwrap().captured != NO_PIECE_TYPE {
+        if !board.undo_stack.is_empty() && board.undo_stack[board.undo_stack.len() - 1].captured != NO_PIECE_TYPE {
             r -= 1;
         }
         if static_eval > beta {
@@ -1827,6 +1829,7 @@ fn history_bonus(depth: i32) -> i32 {
 /// SEE for a quiet move: how much material do we lose if the opponent captures
 /// the piece we moved? Returns negative if we lose material (e.g., -320 for knight).
 /// Matches GoChess SEEAfterQuiet exactly.
+#[inline]
 fn see_after_quiet(board: &Board, mv: Move) -> i32 {
     use crate::eval::see_value;
 
@@ -1883,6 +1886,7 @@ fn see_after_quiet(board: &Board, mv: Move) -> i32 {
 }
 
 /// Find least valuable attacker of square `sq` by `color` given `occ`.
+#[inline]
 fn find_lva_for_see(board: &Board, sq: u32, color: u8, occ: u64) -> (u8, u8) {
     use crate::attacks::*;
 

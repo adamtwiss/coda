@@ -8,6 +8,7 @@ use crate::eval::see_value;
 use crate::types::*;
 
 /// Returns true if the SEE of the move is >= threshold.
+#[inline]
 pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
     let from = move_from(mv) as u32;
     let to = move_to(mv) as u32;
@@ -99,6 +100,7 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
 }
 
 /// Find the least valuable attacker and its square.
+#[inline]
 fn find_lva(board: &Board, stm_attackers: Bitboard, _stm: Color) -> (u8, u32) {
     for pt in 0..6u8 {
         let bb = board.pieces[pt as usize] & stm_attackers;

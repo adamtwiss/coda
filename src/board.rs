@@ -84,7 +84,7 @@ impl Board {
             hash: 0,
             pawn_hash: 0,
             non_pawn_key: [0; 2],
-            undo_stack: Vec::with_capacity(256),
+            undo_stack: Vec::with_capacity(512),
         }
     }
 
@@ -581,7 +581,6 @@ impl Board {
         true
     }
 
-    /// Unmake the last move.
     /// Unmake the last move.
     pub fn unmake_move(&mut self) {
         let undo = self.undo_stack.pop().expect("unmake_move: empty undo stack");
