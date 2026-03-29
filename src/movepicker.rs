@@ -672,15 +672,7 @@ pub fn fixup_move_flags(board: &Board, mv: Move) -> Move {
         }
     }
 
-    // Re-derive double push: pawn moving 2 ranks
-    if pt == PAWN {
-        let diff = (to as i32 - from as i32).abs();
-        if diff == 16 {
-            return make_move(from, to, FLAG_DOUBLE_PUSH);
-        }
-    }
-
-    // Normal move
+    // Normal move (double pushes use FLAG_NONE=0, detected by distance in make_move)
     make_move(from, to, FLAG_NONE)
 }
 
@@ -746,10 +738,7 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
         return true;
     }
 
-    // Double push: must be a pawn
-    if flags == FLAG_DOUBLE_PUSH {
-        if pt != PAWN { return false; }
-    }
+    // Double push check removed: FLAG_DOUBLE_PUSH=0=FLAG_NONE, detected by distance in make_move
 
     // Promotion: must be a pawn on the 7th rank
     if is_promotion(mv) {

@@ -552,9 +552,9 @@ impl Board {
         // Update castling rights (for any move from/to relevant squares)
         self.castling &= castle_mask(from) & castle_mask(to);
 
-        // Update en passant
+        // Update en passant — detect double push by distance (matches GoChess)
         self.ep_square = NO_SQUARE;
-        if flags == FLAG_DOUBLE_PUSH {
+        if pt == PAWN && ((to as i32) - (from as i32)).unsigned_abs() == 16 {
             self.ep_square = if us == WHITE { from.wrapping_add(8) } else { from.wrapping_sub(8) };
             self.hash ^= ep_key(file_of(self.ep_square));
         }
