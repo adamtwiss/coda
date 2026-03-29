@@ -755,10 +755,14 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
     match pt {
         PAWN => {
             // Pawn moves: push, double push, or capture
-            let diff = (to as i32 - from as i32).abs();
+            let signed_diff = to as i32 - from as i32;
+            let diff = signed_diff.unsigned_abs() as i32;
             if diff != 7 && diff != 8 && diff != 9 && diff != 16 {
                 return false;
             }
+            // Direction check: white pawns move up (positive diff), black down (negative)
+            if us == WHITE && signed_diff <= 0 { return false; }
+            if us == BLACK && signed_diff >= 0 { return false; }
             // Double push: intermediate square must be empty
             if diff == 16 {
                 let mid = ((from as u32 + to as u32) / 2) as u8;
