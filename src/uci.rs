@@ -17,7 +17,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     // Pre-load NNUE if path given via CLI, otherwise try net.txt auto-discovery
     if let Some(path) = nnue_path {
         if let Err(e) = info.load_nnue(path) {
-            eprintln!("Failed to load NNUE: {}", e);
+            println!("info string Failed to load NNUE from {}: {}", path, e);
         }
     } else {
         // Auto-discover: look for net.txt in exe dir, then CWD
@@ -47,10 +47,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
             }
         }
         if !loaded && !classical {
-            eprintln!("ERROR: No NNUE net found! Coda requires an NNUE network to play.");
-            eprintln!("  Use -nnue <path> or place net.txt + .nnue file in working directory.");
-            eprintln!("  Use -classical to force PeSTO eval (much weaker, for testing only).");
-            std::process::exit(1);
+            println!("info string WARNING: No NNUE net found. Use 'setoption name NNUEFile value <path>' or -nnue flag.");
         }
         if !loaded && classical {
             eprintln!("info string Classical (PeSTO) eval mode — no NNUE net loaded.");
@@ -378,7 +375,7 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo) {
         "NNUEFile" => {
             match info.load_nnue(value) {
                 Ok(_) => {}
-                Err(e) => eprintln!("info string Failed to load NNUE: {}", e),
+                Err(e) => println!("info string Failed to load NNUE from {}: {}", value, e),
             }
         }
         "MoveOverhead" => {
