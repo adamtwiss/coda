@@ -280,19 +280,6 @@ impl SearchInfo {
         } else {
             evaluate(board)
         };
-        // Debug: dump hash + eval (enabled with CODA_DUMP_EVAL=1)
-        static DUMP_INIT: std::sync::Once = std::sync::Once::new();
-        static DUMP_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        static mut DUMP_ENABLED: bool = false;
-        DUMP_INIT.call_once(|| {
-            unsafe { DUMP_ENABLED = std::env::var("CODA_DUMP_EVAL").is_ok(); }
-        });
-        if unsafe { DUMP_ENABLED } {
-            let n = DUMP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if n < 3000 {
-                eprintln!("EVAL n={} hash={:016x} eval={}", n, board.hash, score);
-            }
-        }
         score
     }
 }
@@ -632,12 +619,6 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         let score;
 
-        // Dump TT after iteration 4 (before depth 5)
-        if depth == 5 && std::env::var("DUMP_TT").is_ok() {
-            let _ = info.tt.dump_to_file("/tmp/coda_tt_d4.txt");
-            eprintln!("Coda TT dumped after d4");
-        }
-
         // Aspiration windows (GoChess: skip for mate scores)
         if depth >= 4 && prev_score > -MATE_SCORE + 100 && prev_score < MATE_SCORE - 100 {
             let mut delta = 15i32;
@@ -647,16 +628,6 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             let mut asp_result = prev_score;
 
             loop {
-                // Probe divergent hash at start of each aspiration attempt
-                if std::env::var("TRACE_NODES").is_ok() && depth == 5 {
-                    let probe = info.tt.probe(0x5cac71485b008015u64);
-                    if probe.hit {
-                        eprintln!("PRE-D5 asp a={} b={}: TT HIT at 5cac71485b008015 mv={} sc={} d={} f={}",
-                            alpha, beta, crate::types::move_to_uci(probe.best_move), probe.score, probe.depth, probe.flag);
-                    } else {
-                        eprintln!("PRE-D5 asp a={} b={}: TT MISS at 5cac71485b008015", alpha, beta);
-                    }
-                }
                 let result = negamax(board, info, alpha, beta, depth, 0, false);
 
                 if info.should_stop() {
@@ -886,12 +857,6 @@ fn negamax(
 
     info.nodes += 1;
     {
-        static TRACE_INIT: std::sync::Once = std::sync::Once::new();
-        static mut TRACE_NODES: bool = false;
-        TRACE_INIT.call_once(|| { unsafe { TRACE_NODES = std::env::var("TRACE_NODES").is_ok(); } });
-        if unsafe { TRACE_NODES } && info.nodes <= 30000 {
-            eprintln!("NM {} d={} p={} a={} b={} h={:016x}", info.nodes, depth, ply, alpha, beta, board.hash);
-        }
     }
     info.stats.depth_hist[depth.clamp(0, 15) as usize] += 1;
 
@@ -1430,13 +1395,11 @@ fn negamax(
             && unsafe { FEAT_LMP }
         {
             let mut lmp_limit = 3 + depth * depth;
-            if !std::env::var("LMP_BASE_ONLY").is_ok() {
-                if improving && depth >= 3 {
-                    lmp_limit += lmp_limit / 2;
-                }
-                if failing {
-                    lmp_limit = lmp_limit * 2 / 3;
-                }
+            if improving && depth >= 3 {
+                lmp_limit += lmp_limit / 2;
+            }
+            if failing {
+                lmp_limit = lmp_limit * 2 / 3;
             }
             if move_count > lmp_limit {
                 info.stats.lmp_prunes += 1;
@@ -1652,15 +1615,7 @@ fn negamax(
             score = pvs_score;
         } else {
             // First move: always full window
-            if std::env::var("TRACE_CALLS").is_ok() && info.nodes <= 3000 {
-                eprintln!("CALL n={} mv={} d={} p={} a={} b={}",
-                    info.nodes, crate::types::move_to_uci(mv), new_depth, ply+1, -beta, -alpha);
-            }
             score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
-            if std::env::var("TRACE_CALLS").is_ok() && info.nodes <= 3000 {
-                eprintln!("RETN n={} mv={} d={} p={} ret={}",
-                    info.nodes, crate::types::move_to_uci(mv), new_depth, ply+1, score);
-            }
         }
 
         board.unmake_move();
@@ -2034,14 +1989,6 @@ fn quiescence_with_depth(
 
     info.nodes += 1;
 
-    // QSearch node trace
-    static QS_TRACE_INIT: std::sync::Once = std::sync::Once::new();
-    static mut QS_TRACE: bool = false;
-    QS_TRACE_INIT.call_once(|| { unsafe { QS_TRACE = std::env::var("TRACE_NODES").is_ok(); } });
-    if unsafe { QS_TRACE } && info.nodes <= 30000 {
-        eprintln!("QS {} p={} a={} b={} h={:016x} qd={}", info.nodes, ply, alpha, beta, board.hash, qs_depth);
-    }
-
     // Track seldepth
     if ply > info.sel_depth {
         info.sel_depth = ply;
@@ -2063,16 +2010,6 @@ fn quiescence_with_depth(
     let tt_move = if tt_entry.hit { tt_entry.best_move } else { NO_MOVE };
     let alpha_orig = alpha;
 
-    // Trace TT probe for divergent hash
-    if unsafe { QS_TRACE } && board.hash == 0x5cac71485b008015u64 {
-        if tt_entry.hit {
-            eprintln!("QS-TT h={:016x} hit mv={} score={} depth={} flag={}",
-                board.hash, crate::types::move_to_uci(tt_entry.best_move),
-                tt_entry.score, tt_entry.depth, tt_entry.flag);
-        } else {
-            eprintln!("QS-TT h={:016x} miss", board.hash);
-        }
-    }
     let tt_hit = tt_entry.hit;
 
     if tt_hit && tt_entry.depth >= -1 {
@@ -2213,12 +2150,6 @@ fn quiescence_with_depth(
     loop {
         let mv = picker.next(board);
         if mv == NO_MOVE { break; }
-
-        // Trace captures at the divergent hash
-        if unsafe { QS_TRACE } && board.hash == 0x5cac71485b008015u64 {
-            eprintln!("QS-CAP h={:016x} mv={} see={}", board.hash,
-                crate::types::move_to_uci(mv), if see_ge(board, mv, 0) { "Y" } else { "N" });
-        }
 
         // Delta pruning: skip captures that can't possibly raise alpha
         if !is_promotion(mv) {
