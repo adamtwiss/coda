@@ -889,7 +889,7 @@ fn negamax(
         static TRACE_INIT: std::sync::Once = std::sync::Once::new();
         static mut TRACE_NODES: bool = false;
         TRACE_INIT.call_once(|| { unsafe { TRACE_NODES = std::env::var("TRACE_NODES").is_ok(); } });
-        if unsafe { TRACE_NODES } && info.nodes <= 5000 {
+        if unsafe { TRACE_NODES } && info.nodes <= 30000 {
             eprintln!("NM {} d={} p={} a={} b={} h={:016x}", info.nodes, depth, ply, alpha, beta, board.hash);
         }
     }
@@ -1430,11 +1430,13 @@ fn negamax(
             && unsafe { FEAT_LMP }
         {
             let mut lmp_limit = 3 + depth * depth;
-            if improving && depth >= 3 {
-                lmp_limit += lmp_limit / 2;
-            }
-            if failing {
-                lmp_limit = lmp_limit * 2 / 3;
+            if !std::env::var("LMP_BASE_ONLY").is_ok() {
+                if improving && depth >= 3 {
+                    lmp_limit += lmp_limit / 2;
+                }
+                if failing {
+                    lmp_limit = lmp_limit * 2 / 3;
+                }
             }
             if move_count > lmp_limit {
                 info.stats.lmp_prunes += 1;
@@ -1650,7 +1652,15 @@ fn negamax(
             score = pvs_score;
         } else {
             // First move: always full window
+            if std::env::var("TRACE_CALLS").is_ok() && info.nodes <= 3000 {
+                eprintln!("CALL n={} mv={} d={} p={} a={} b={}",
+                    info.nodes, crate::types::move_to_uci(mv), new_depth, ply+1, -beta, -alpha);
+            }
             score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
+            if std::env::var("TRACE_CALLS").is_ok() && info.nodes <= 3000 {
+                eprintln!("RETN n={} mv={} d={} p={} ret={}",
+                    info.nodes, crate::types::move_to_uci(mv), new_depth, ply+1, score);
+            }
         }
 
         board.unmake_move();
@@ -2028,7 +2038,7 @@ fn quiescence_with_depth(
     static QS_TRACE_INIT: std::sync::Once = std::sync::Once::new();
     static mut QS_TRACE: bool = false;
     QS_TRACE_INIT.call_once(|| { unsafe { QS_TRACE = std::env::var("TRACE_NODES").is_ok(); } });
-    if unsafe { QS_TRACE } && info.nodes <= 5000 {
+    if unsafe { QS_TRACE } && info.nodes <= 30000 {
         eprintln!("QS {} p={} a={} b={} h={:016x} qd={}", info.nodes, ply, alpha, beta, board.hash, qs_depth);
     }
 

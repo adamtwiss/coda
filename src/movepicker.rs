@@ -754,10 +754,32 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
     let occ = board.occupied();
     match pt {
         PAWN => {
-            // Pawn moves: push or capture
+            // Pawn moves: push, double push, or capture
             let diff = (to as i32 - from as i32).abs();
             if diff != 7 && diff != 8 && diff != 9 && diff != 16 {
                 return false;
+            }
+            // Double push: intermediate square must be empty
+            if diff == 16 {
+                let mid = ((from as u32 + to as u32) / 2) as u8;
+                if occ & (1u64 << mid) != 0 {
+                    return false;
+                }
+                // Must also be from starting rank
+                if us == WHITE && (from >> 3) != 1 { return false; }
+                if us == BLACK && (from >> 3) != 6 { return false; }
+                // Destination must be empty (not a capture)
+                if board.piece_type_at(to) != NO_PIECE_TYPE { return false; }
+            }
+            // Single push: destination must be empty
+            if diff == 8 {
+                if board.piece_type_at(to) != NO_PIECE_TYPE { return false; }
+            }
+            // Capture: destination must have enemy piece (or be EP square)
+            if diff == 7 || diff == 9 {
+                if board.piece_type_at(to) == NO_PIECE_TYPE && to != board.ep_square {
+                    return false;
+                }
             }
         }
         KNIGHT => {
