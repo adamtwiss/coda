@@ -1825,7 +1825,6 @@ fn history_bonus(depth: i32) -> i32 {
 /// the piece we moved? Returns negative if we lose material (e.g., -320 for knight).
 /// Matches GoChess SEEAfterQuiet exactly.
 fn see_after_quiet(board: &Board, mv: Move) -> i32 {
-    use crate::attacks::*;
     use crate::eval::see_value;
 
     let from = move_from(mv);
@@ -1853,9 +1852,6 @@ fn see_after_quiet(board: &Board, mv: Move) -> i32 {
     let mut next_victim = see_value(att_pt);
     occ ^= 1u64 << att_sq;
     let mut stm = us; // our turn to recapture
-
-    let bishops = board.pieces[BISHOP as usize] | board.pieces[QUEEN as usize];
-    let rooks = board.pieces[ROOK as usize] | board.pieces[QUEEN as usize];
 
     while gain_len < 32 {
         let (lva_pt, lva_sq) = find_lva_for_see(board, to as u32, stm, occ);
