@@ -418,6 +418,26 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.nodes = 0;
     info.sel_depth = 0;
 
+    // Clear all search heuristics (matches GoChess: fresh SearchInfo per go command).
+    // Only TT persists across moves. History, killers, counters, correction — all reset.
+    info.history.clear();
+    info.clear_correction_history();
+    info.stats = PruneStats::default();
+    // Clear pawn history
+    for entry in info.pawn_hist.iter_mut() {
+        *entry = [[0i16; 64]; 13];
+    }
+    // Clear static evals and excluded moves
+    info.static_evals = [0; MAX_PLY + 1];
+    info.excluded_move = [NO_MOVE; MAX_PLY + 1];
+    info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
+    info.pv_len = [0; MAX_PLY + 1];
+    // Clear TM state
+    info.tm_prev_best = NO_MOVE;
+    info.tm_prev_score = 0;
+    info.tm_best_stable = 0;
+    info.tm_has_data = false;
+
     // Reset and initialize NNUE accumulator for root position
     if let Some(acc) = &mut info.nnue_acc {
         acc.reset();
@@ -792,7 +812,13 @@ fn negamax(
             if tt_depth >= depth {
                 match tt_entry.flag {
                     TT_FLAG_EXACT => {
-                        // GoChess: PV table update skipped (Coda doesn't have PV table)
+                        // Update PV table with TT move (matching GoChess)
+                        if tt_move != NO_MOVE && ply_u <= MAX_PLY {
+                            info.pv_table[ply_u][0] = tt_move;
+                            info.pv_len[ply_u] = 1;
+                        } else if ply_u <= MAX_PLY {
+                            info.pv_len[ply_u] = 0;
+                        }
                         info.stats.tt_cutoffs += 1;
                         return tt_score;
                     }
@@ -812,7 +838,11 @@ fn negamax(
                 if alpha >= beta {
                     if tt_move != NO_MOVE {
                         info.stats.tt_cutoffs += 1;
-                        // GoChess: PV table update skipped
+                        // Update PV table with TT move (matching GoChess)
+                        if ply_u <= MAX_PLY {
+                            info.pv_table[ply_u][0] = tt_move;
+                            info.pv_len[ply_u] = 1;
+                        }
 
                         // History bonus for TT cutoff: reinforce move ordering
                         let bonus = history_bonus(depth);
@@ -838,6 +868,8 @@ fn negamax(
                                 bonus,
                             );
                         }
+                    } else if ply_u <= MAX_PLY {
+                        info.pv_len[ply_u] = 0;
                     }
                     // TT score dampening: at non-PV nodes with non-mate lower-bound cutoffs,
                     // blend the TT score toward beta to prevent score inflation
