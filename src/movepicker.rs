@@ -131,6 +131,7 @@ pub struct MovePicker {
     bad_scores: [i32; 64],
     bad_len: usize,
     // Ply for killer indexing
+    #[allow(dead_code)]
     ply: usize,
     skip_quiet: bool,
     // Evasion support

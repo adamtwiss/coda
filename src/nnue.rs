@@ -1338,11 +1338,6 @@ impl NNUEAccumulator {
     }
 }
 
-/// Public wrapper for profiling.
-pub fn acc_add_pub(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
-    acc_add(net, acc, row, h);
-}
-
 /// Add a weight row to an accumulator (SIMD-aware).
 #[inline]
 fn acc_add(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {

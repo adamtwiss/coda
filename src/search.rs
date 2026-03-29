@@ -58,6 +58,7 @@ pub fn disable_all_features() {
 }
 
 /// Enable all features (normal play)
+#[allow(dead_code)]
 pub fn enable_all_features() {
     unsafe {
         FEAT_NMP = true; FEAT_RFP = true; FEAT_RAZORING = true;
@@ -163,6 +164,7 @@ pub struct SearchInfo {
     /// Triangular PV table (matching GoChess)
     pv_table: [[Move; MAX_PLY + 1]; MAX_PLY + 1],
     pv_len: [usize; MAX_PLY + 1],
+    #[allow(dead_code)]
     prev_moves: [Move; MAX_PLY + 1],
     static_evals: [i32; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
@@ -856,8 +858,6 @@ fn negamax(
     }
 
     info.nodes += 1;
-    {
-    }
     info.stats.depth_hist[depth.clamp(0, 15) as usize] += 1;
 
     // Draw detection: repetition and 50-move rule (GoChess: ply > 0)
@@ -1304,8 +1304,6 @@ fn negamax(
 
         // Singular extension: disabled (SingularExtEnabled = false in GoChess)
         // Code preserved structurally but will never trigger
-        let singular_extension = 0i32;
-        let _ = singular_extension; // singular extensions currently disabled
 
         // Save moved piece before MakeMove for consistent history indexing
         let moved_piece = board.piece_at(from);
@@ -1861,14 +1859,8 @@ fn see_after_quiet(board: &Board, mv: Move) -> i32 {
         gain_len += 1;
         next_victim = see_value(lva_pt);
         occ ^= 1u64 << lva_sq;
-
-        // X-ray updates
-        if lva_pt == PAWN || lva_pt == BISHOP || lva_pt == QUEEN {
-            // Recompute bishop attacks through the hole
-        }
-        if lva_pt == ROOK || lva_pt == QUEEN {
-            // Recompute rook attacks through the hole
-        }
+        // X-ray attacks handled implicitly: find_lva_for_see recomputes
+        // slider attacks with updated occ, revealing pieces behind removed ones.
 
         stm = flip_color(stm);
     }
@@ -1940,17 +1932,6 @@ fn find_lva_for_see(board: &Board, sq: u32, color: u8, occ: u64) -> (u8, u8) {
 }
 
 /// Helper: get counter-move for the given previous move
-fn get_counter_move(history: &History, board: &Board, prev_move: Move) -> Move {
-    if prev_move != NO_MOVE {
-        let prev_to = move_to(prev_move);
-        let prev_piece = board.piece_at(prev_to);
-        if prev_piece != NO_PIECE {
-            return history.counter[go_piece(prev_piece)][prev_to as usize];
-        }
-    }
-    NO_MOVE
-}
-
 /// Quiescence search wrapper.
 /// Faithful translation of GoChess's quiescence() from search.go.
 fn quiescence(
