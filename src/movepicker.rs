@@ -714,25 +714,44 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
         return true;
     }
 
-    // Castling: validate rights and path
+    // Castling: validate rights, path, and no attacks on king/intermediate/destination
     if flags == FLAG_CASTLE {
         if pt != KING { return false; }
         let occ = board.occupied();
+        let them_bb = board.colors[flip_color(us) as usize];
         if us == WHITE {
+            if from != 4 { return false; } // king must be on e1
             if to == 6 { // kingside
                 if board.castling & CASTLE_WK == 0 { return false; }
                 if occ & 0x60 != 0 { return false; }
+                // King(e1), f1, g1 must not be attacked
+                if board.attackers_to(4, occ) & them_bb != 0 { return false; }
+                if board.attackers_to(5, occ) & them_bb != 0 { return false; }
+                if board.attackers_to(6, occ) & them_bb != 0 { return false; }
             } else if to == 2 { // queenside
                 if board.castling & CASTLE_WQ == 0 { return false; }
                 if occ & 0x0E != 0 { return false; }
+                // King(e1), d1, c1 must not be attacked
+                if board.attackers_to(4, occ) & them_bb != 0 { return false; }
+                if board.attackers_to(3, occ) & them_bb != 0 { return false; }
+                if board.attackers_to(2, occ) & them_bb != 0 { return false; }
             } else { return false; }
         } else {
+            if from != 60 { return false; } // king must be on e8
             if to == 62 { // kingside
                 if board.castling & CASTLE_BK == 0 { return false; }
                 if occ & (0x60u64 << 56) != 0 { return false; }
+                // King(e8), f8, g8 must not be attacked
+                if board.attackers_to(60, occ) & them_bb != 0 { return false; }
+                if board.attackers_to(61, occ) & them_bb != 0 { return false; }
+                if board.attackers_to(62, occ) & them_bb != 0 { return false; }
             } else if to == 58 { // queenside
                 if board.castling & CASTLE_BQ == 0 { return false; }
                 if occ & (0x0Eu64 << 56) != 0 { return false; }
+                // King(e8), d8, c8 must not be attacked
+                if board.attackers_to(60, occ) & them_bb != 0 { return false; }
+                if board.attackers_to(59, occ) & them_bb != 0 { return false; }
+                if board.attackers_to(58, occ) & them_bb != 0 { return false; }
             } else { return false; }
         }
         return true;
