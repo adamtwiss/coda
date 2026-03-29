@@ -214,6 +214,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 };
                 println!("info string fen {}", board.to_fen());
                 println!("info string hash {:016x}", board.hash);
+                println!("info string pawn_hash {:016x}", board.pawn_hash);
+                println!("info string npkey_w {:016x}", board.non_pawn_key[0]);
+                println!("info string npkey_b {:016x}", board.non_pawn_key[1]);
                 println!("info string raw_nnue {}", score);
                 println!("info string side {}", board.side_to_move);
 

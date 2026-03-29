@@ -2207,8 +2207,6 @@ fn quiescence_with_depth(
 
     // Use main MovePicker in quiescence mode (matching GoChess InitQuiescence).
     // This partitions captures into good (SEE>=0) and bad, and uses staged ordering.
-    // Previously used QMovePicker which had no SEE partition — different capture order
-    // caused different TT best moves to be stored, seeding all search divergence.
     let mut picker = MovePicker::new_quiescence(board, tt_move, &info.history);
     let mut best_move = NO_MOVE;
 
