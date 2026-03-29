@@ -928,7 +928,7 @@ fn negamax(
     }
 
     // Threat square from null-move failure
-    let mut _threat_sq: i32 = -1;
+    let mut threat_sq: i32 = -1;
 
     // Hindsight reduction: when both sides think the position is quiet
     if !in_check && ply >= 1 && depth >= 3 && ply_u >= 1
@@ -995,7 +995,7 @@ fn negamax(
             // NMP failed low: extract opponent's best reply from TT for threat detection
             let threat_entry = info.tt.probe(null_key);
             if threat_entry.hit && threat_entry.best_move != NO_MOVE {
-                _threat_sq = move_to(threat_entry.best_move) as i32;
+                threat_sq = move_to(threat_entry.best_move) as i32;
             }
         }
     }
@@ -1113,6 +1113,7 @@ fn negamax(
     } else {
         MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref)
     };
+    picker.threat_sq = threat_sq;
 
     let mut best_move = NO_MOVE;
     let mut best_score = -INFINITY;
@@ -1140,6 +1141,11 @@ fn negamax(
         if !in_check && !board.is_legal(mv, pinned, checkers) {
             continue;
         }
+
+        // Increment move count BEFORE pruning (matches GoChess: moveCount++ at line 1433).
+        // Pruned moves still count for LMR/LMP purposes — later moves in the ordering
+        // should be reduced more regardless of whether earlier moves were pruned.
+        move_count += 1;
 
         let from = move_from(mv);
         let to = move_to(mv);
@@ -1220,8 +1226,6 @@ fn negamax(
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
             continue;
         }
-
-        move_count += 1;
 
         // Check if move gives check (opponent is now in check after make_move)
         let gives_check = board.in_check();
@@ -1897,12 +1901,32 @@ fn quiescence_with_depth(
         }
     }
 
-    // Check detection
-    let qs_in_check = board.in_check();
+    // Check detection (matches GoChess: PinnedAndCheckers for both check and evasion data)
+    let qs_pinned = board.pinned();
+    let qs_checkers = board.checkers();
+    let qs_in_check = qs_checkers != 0;
 
-    // When in check, generate all evasion moves
+    // When in check, generate all evasion moves using main MovePicker
+    // (matches GoChess: InitEvasion with full history scoring for quiet evasions)
     if qs_in_check {
-        let mut evasion_picker = QMovePicker::new(board, tt_move, true, &info.history);
+        let qs_prev_move = if !board.undo_stack.is_empty() {
+            board.undo_stack[board.undo_stack.len() - 1].mv
+        } else {
+            NO_MOVE
+        };
+        let qs_ph_idx = if !info.pawn_hist.is_empty() {
+            (board.pawn_hash as usize) % info.pawn_hist.len()
+        } else {
+            0
+        };
+        let qs_pawn_hist_ref = if !info.pawn_hist.is_empty() {
+            Some(&info.pawn_hist[qs_ph_idx] as &[[i16; 64]; 13])
+        } else {
+            None
+        };
+        let mut evasion_picker = MovePicker::new_evasion(
+            board, tt_move, 0, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
+        );
         let mut best_score = -INFINITY;
         let mut best_move = NO_MOVE;
         let mut move_count = 0i32;
