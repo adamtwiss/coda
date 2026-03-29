@@ -149,3 +149,55 @@ The search trees diverge slightly at depth 4+ (1 node difference). This causes d
 1. Disable correction history in both engines to remove the amplifier (test Elo gap)
 2. Find and fix the original depth-4 divergence that seeds the correction difference
 3. The depth-4 divergence is likely in move ordering at tie-break (different move generation order)
+
+## Session 2: 2026-03-29
+
+### Key Discovery: QNodes Double-Counting
+GoChess had `info.QNodes++` twice per quiescence call (search.go:2000-2001). The "0.52x QSearch" smoking gun was WRONG — real QSearch ratio is ~1.13x. The entire "Coda enters QSearch less" theory was based on a buggy counter. Fixed.
+
+### Bugs Fixed
+1. **move_count timing** (search.rs): increment before SEE capture pruning and history pruning, matching GoChess. Pruned-but-legal moves must count for LMR/LMP/PVS thresholds.
+2. **QSearch evasion scoring** (search.rs): use main MovePicker with full history scoring (main + 3×contHist + pawnHist) instead of QMovePicker which scored quiet evasions at -1M.
+3. **threat_sq unused** (search.rs): computed on NMP fail-low but never passed to MovePicker. GoChess gives +8000 bonus for escaping threats.
+4. **History carry-over** (search.rs): GoChess creates fresh SearchInfo per `go` command — all history/killers/counters/correction start at zero. Coda was accumulating across the entire game. Now cleared per search.
+5. **Capture history type** (movepicker.rs): GoChess uses int16 with truncation. Coda used i32 causing different gravity behavior. Fixed to i16.
+6. **PV table on TT cutoffs** (search.rs): GoChess sets pvTable[ply] on TTExact and bound-narrowing cutoffs. Coda left it empty, causing 9000+ "Illegal PV move" warnings per match.
+
+### Elo Progress
+- Pre-fixes: ~-320 Elo
+- Post-fixes: ~-266 Elo (+54 improvement)
+- TT clearing ablation: clearing TT makes it WORSE → TT accumulation is not the issue
+- History clearing helps ~50 Elo
+
+### What Has Been Ruled Out (2026-03-29)
+- **NNUE eval**: bit-for-bit identical on 5 test positions
+- **Zobrist hashing**: zero hash corruptions across 4 full games (every node verified)
+- **TT structure**: identical packing, replacement, probe/store logic
+- **TT accumulation**: clearing TT between moves makes Coda WORSE
+- **LMR tables**: identical formula and values (C=1.30/1.80)
+- **Aspiration windows**: identical code
+- **Time management**: identical logic, same average depths in timed games (14.5 vs 14.6)
+- **Board corruption**: zero hits on unmake_move corruption path
+- **Depth reached**: identical average depth in timed games
+- **No time forfeits, no illegal moves**: all losses by adjudication
+
+### Tree Shape (after fixes, startpos d14)
+| Metric | GoChess | Coda | Ratio |
+|--------|---------|------|-------|
+| Total nodes | 240,121 | 257,109 | 1.07x |
+| QSearch (corrected) | ~73,600 | 83,213 | 1.13x |
+| FMR | 81% | 81% | same |
+| Score | +77 | +59 | -18cp |
+
+### Node Trace Analysis (depth 5, startpos)
+- Depths 1-4: **identical** node sets (same hashes, same count)
+- Depth 5: GoChess 848 nodes, Coda 841 (7 fewer). 28 unique positions only in GoChess, 25 only in Coda.
+- The divergence is at the LEAF level — different pruning at ply 3-5, likely from different alpha/beta propagating from earlier nodes.
+
+### Score Divergence at Depth (r4r1k/1pp2qp1/1b1ppnnp/1P2p3/4P3/BQPP1NP1/5PKP/R3RN2 w)
+Depths 1-7 match, then scores swing wildly at d8+. The direction of divergence varies by position and build — scores are unstable and sensitive to search order. This instability reduces playing strength over many games.
+
+### Next Steps
+1. **Ablation testing**: disable LMR adjustments, correction history, or all pruning in BOTH engines to isolate which subsystem diverges
+2. **Move ordering trace**: at the depth-5 divergence point, log which moves are tried in which order to find the first ordering difference
+3. **Check time-check granularity**: Coda checks every 4096 nodes vs GoChess 1024 (minor, ~2-5 Elo)
