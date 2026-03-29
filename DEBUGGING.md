@@ -245,3 +245,41 @@ The divergence seed must be something incredibly subtle — possibly:
 1. Add per-node tracing at depth 5 to find the FIRST node where a different move is tried
 2. Compare history values at that node between engines
 3. Test if Go's integer division rounds differently from Rust's for the same operands
+
+### Breakthrough: Feature Flag Ablation (2026-03-29 evening)
+
+**The basic search is CORRECT.** With all 20 features disabled (DISABLE_ALL=1):
+- Scores match GoChess at ALL depths tested (1-4)
+- Node counts match at depths 1-4 with full features enabled
+- The minimax algorithm, eval, TT packing, movegen, board mechanics are all verified correct
+
+**Depth 5 divergence: 14 nodes, same score (39cp).** 
+- Not from TT collisions (tested 16MB→1024MB, identical diff)
+- Not from FLAG_DOUBLE_PUSH encoding (fixed to 0, identical diff)
+- Not from TT flag numbering (swapped to match GoChess, identical diff)
+
+**Feature flag binary search found TT near-miss as the main AMPLIFIER:**
+
+| Feature disabled | Depth 7 nodes | Diff from GoChess (3238) |
+|-----------------|---------------|--------------------------|
+| None (normal) | 3116 | -122 |
+| TT_NEARMISS | 3189 | -49 |
+| CORRECTION | - | -45 at depth 5 |
+| All others | ~same as normal | ~-14 at depth 5 |
+
+TT near-miss amplifies the depth-5 divergence at deeper depths. The near-miss code is identical between engines — it's not buggy, just amplifying.
+
+**Root cause of the 14-node depth-5 seed is still unknown.** It's NOT in:
+- Any individual pruning feature (all produce ~-14 when disabled individually)
+- TT structure or collision patterns
+- Move encoding or flag values
+- The basic alpha-beta algorithm
+
+It IS in the interaction between multiple features and TT entries from iterations 1-4.
+
+### Testing Infrastructure
+- Feature flags: `FEAT_NMP`, `FEAT_RFP`, ..., `FEAT_QS_CAPTURES` (20 total)
+- Env vars: `DISABLE_ALL=1`, `NO_XXX=1`, `ENABLE_XXX=1`
+- TT dump: `DUMP_TT=1` dumps all entries to file
+- Node trace: `TRACE_NODES=1` logs every negamax/QS entry
+- Call trace: `TRACE_CALLS=1` logs every child negamax call with return values

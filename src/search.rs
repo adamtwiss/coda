@@ -462,8 +462,55 @@ fn lmr_reduction(depth: i32, moves: i32) -> i32 {
 /// Run iterative deepening search.
 pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -> Move {
     // Feature flag control via env var (for ablation testing)
+    // NO_XXX=1 disables individual features
+    unsafe {
+        if std::env::var("NO_NMP").is_ok() { FEAT_NMP = false; }
+        if std::env::var("NO_RFP").is_ok() { FEAT_RFP = false; }
+        if std::env::var("NO_RAZORING").is_ok() { FEAT_RAZORING = false; }
+        if std::env::var("NO_PROBCUT").is_ok() { FEAT_PROBCUT = false; }
+        if std::env::var("NO_LMR").is_ok() { FEAT_LMR = false; }
+        if std::env::var("NO_LMP").is_ok() { FEAT_LMP = false; }
+        if std::env::var("NO_FUTILITY").is_ok() { FEAT_FUTILITY = false; }
+        if std::env::var("NO_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE = false; }
+        if std::env::var("NO_HIST_PRUNE").is_ok() { FEAT_HIST_PRUNE = false; }
+        if std::env::var("NO_BAD_NOISY").is_ok() { FEAT_BAD_NOISY = false; }
+        if std::env::var("NO_EXTENSIONS").is_ok() { FEAT_EXTENSIONS = false; }
+        if std::env::var("NO_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE = false; }
+        if std::env::var("NO_IIR").is_ok() { FEAT_IIR = false; }
+        if std::env::var("NO_HINDSIGHT").is_ok() { FEAT_HINDSIGHT = false; }
+        if std::env::var("NO_CORRECTION").is_ok() { FEAT_CORRECTION = false; }
+        if std::env::var("NO_PVS").is_ok() { FEAT_PVS = false; }
+        if std::env::var("NO_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF = false; }
+        if std::env::var("NO_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS = false; }
+        if std::env::var("NO_TT_STORE").is_ok() { FEAT_TT_STORE = false; }
+        if std::env::var("NO_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES = false; }
+    }
+    // DISABLE_ALL=1 disables everything, then ENABLE_XXX=1 re-enables individual features
     if std::env::var("DISABLE_ALL").is_ok() {
         disable_all_features();
+        // Re-enable individual features if requested
+        unsafe {
+            if std::env::var("ENABLE_NMP").is_ok() { FEAT_NMP = true; }
+            if std::env::var("ENABLE_RFP").is_ok() { FEAT_RFP = true; }
+            if std::env::var("ENABLE_RAZORING").is_ok() { FEAT_RAZORING = true; }
+            if std::env::var("ENABLE_PROBCUT").is_ok() { FEAT_PROBCUT = true; }
+            if std::env::var("ENABLE_LMR").is_ok() { FEAT_LMR = true; }
+            if std::env::var("ENABLE_LMP").is_ok() { FEAT_LMP = true; }
+            if std::env::var("ENABLE_FUTILITY").is_ok() { FEAT_FUTILITY = true; }
+            if std::env::var("ENABLE_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE = true; }
+            if std::env::var("ENABLE_HIST_PRUNE").is_ok() { FEAT_HIST_PRUNE = true; }
+            if std::env::var("ENABLE_BAD_NOISY").is_ok() { FEAT_BAD_NOISY = true; }
+            if std::env::var("ENABLE_EXTENSIONS").is_ok() { FEAT_EXTENSIONS = true; }
+            if std::env::var("ENABLE_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE = true; }
+            if std::env::var("ENABLE_IIR").is_ok() { FEAT_IIR = true; }
+            if std::env::var("ENABLE_HINDSIGHT").is_ok() { FEAT_HINDSIGHT = true; }
+            if std::env::var("ENABLE_CORRECTION").is_ok() { FEAT_CORRECTION = true; }
+            if std::env::var("ENABLE_PVS").is_ok() { FEAT_PVS = true; }
+            if std::env::var("ENABLE_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF = true; }
+            if std::env::var("ENABLE_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS = true; }
+            if std::env::var("ENABLE_TT_STORE").is_ok() { FEAT_TT_STORE = true; }
+            if std::env::var("ENABLE_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES = true; }
+        }
     }
 
     info.start_time = Instant::now();
