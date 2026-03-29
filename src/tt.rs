@@ -5,9 +5,9 @@
 use crate::types::*;
 
 pub const TT_FLAG_NONE: u8 = 0;
-pub const TT_FLAG_UPPER: u8 = 1; // All-node (fail-low, score <= alpha)
-pub const TT_FLAG_LOWER: u8 = 2; // Cut-node (fail-high, score >= beta)
-pub const TT_FLAG_EXACT: u8 = 3; // PV-node (exact score)
+pub const TT_FLAG_EXACT: u8 = 1; // PV-node (exact score) — matches GoChess TTExact=1
+pub const TT_FLAG_LOWER: u8 = 2; // Cut-node (fail-high, score >= beta) — matches GoChess TTLower=2
+pub const TT_FLAG_UPPER: u8 = 3; // All-node (fail-low, score <= alpha) — matches GoChess TTUpper=3
 
 const BUCKET_SIZE: usize = 5;
 
@@ -357,5 +357,79 @@ mod tests {
         assert_eq!(entry2.depth, -1, "QS depth should be -1, got {}", entry2.depth);
         assert_eq!(entry2.score, -50);
         assert_eq!(entry2.static_eval, -200);
+    }
+}
+
+#[cfg(test)]
+mod targeted_tests {
+    use super::*;
+
+    #[test]
+    fn test_divergent_hash_probe() {
+        crate::init();
+        let mut tt = TT::new(64);
+
+        let target_hash = 0x5cac71485b008015u64;
+        // b8=1, d7=51: move = (51 << 6) | 1 = 3265
+        let mv: Move = (51 << 6) | 1; // b8d7
+
+        // Store: (hash, depth, score, flag, move, static_eval)
+        tt.store(target_hash, -1, -20, TT_FLAG_LOWER, mv, -100);
+
+        let entry = tt.probe(target_hash);
+        assert!(entry.hit, "Should find the stored entry!");
+        assert_eq!(entry.best_move, mv);
+        assert_eq!(entry.score, -20);
+        assert_eq!(entry.depth, -1);
+        assert_eq!(entry.flag, TT_FLAG_LOWER);
+        println!("Direct store+probe: OK");
+
+        // Store entries that map to the SAME bucket to test eviction
+        let mask = (64 * 1024 * 1024 / 64) - 1;
+        let bucket_idx = target_hash as usize & mask;
+
+        // Store 10 entries to the same bucket
+        for i in 0..10u64 {
+            let h = ((i + 1) << 20) | (bucket_idx as u64);
+            if h != target_hash {
+                tt.store(h, (i as i32) + 1, 0, TT_FLAG_EXACT, 0, 0);
+            }
+        }
+
+        let entry2 = tt.probe(target_hash);
+        if entry2.hit {
+            println!("After 10 bucket colliders: Still found! depth={}", entry2.depth);
+        } else {
+            println!("After 10 bucket colliders: EVICTED!");
+        }
+    }
+}
+
+impl TT {
+    /// Dump all non-empty TT entries to a file (for comparison with GoChess).
+    /// Format: one line per entry: "bucket_idx slot_idx hash depth score flag move static_eval"
+    pub fn dump_to_file(&self, path: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::File::create(path)?;
+        let num_buckets = self.mask + 1;
+        for bi in 0..num_buckets {
+            let bucket = &self.buckets[bi];
+            for si in 0..BUCKET_SIZE {
+                let data = bucket.data[si];
+                let key = bucket.keys[si];
+                let flag = unpack_flag(data);
+                if flag == TT_FLAG_NONE { continue; }
+                // Recover the hash: upper32 = key ^ lower32(data), full hash = upper32 << 32 | (bi & mask)
+                let upper32 = key ^ (data as u32);
+                let hash = ((upper32 as u64) << 32) | (bi as u64); // approximate — lower bits are bucket index
+                let depth = unpack_depth(data);
+                let score = unpack_score(data);
+                let mv = unpack_move(data);
+                let se = unpack_static_eval(data);
+                let gen = unpack_generation(data);
+                writeln!(f, "{} {} {:016x} {} {} {} {} {} {}", bi, si, hash, depth, score, flag, mv, se, gen)?;
+            }
+        }
+        Ok(())
     }
 }

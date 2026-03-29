@@ -532,6 +532,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         let score;
 
+        // Dump TT after iteration 4 (before depth 5)
+        if depth == 5 && std::env::var("DUMP_TT").is_ok() {
+            let _ = info.tt.dump_to_file("/tmp/coda_tt_d4.txt");
+            eprintln!("Coda TT dumped after d4");
+        }
+
         // Aspiration windows (GoChess: skip for mate scores)
         if depth >= 4 && prev_score > -MATE_SCORE + 100 && prev_score < MATE_SCORE - 100 {
             let mut delta = 15i32;
@@ -541,6 +547,16 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             let mut asp_result = prev_score;
 
             loop {
+                // Probe divergent hash at start of each aspiration attempt
+                if std::env::var("TRACE_NODES").is_ok() && depth == 5 {
+                    let probe = info.tt.probe(0x5cac71485b008015u64);
+                    if probe.hit {
+                        eprintln!("PRE-D5 asp a={} b={}: TT HIT at 5cac71485b008015 mv={} sc={} d={} f={}",
+                            alpha, beta, crate::types::move_to_uci(probe.best_move), probe.score, probe.depth, probe.flag);
+                    } else {
+                        eprintln!("PRE-D5 asp a={} b={}: TT MISS at 5cac71485b008015", alpha, beta);
+                    }
+                }
                 let result = negamax(board, info, alpha, beta, depth, 0, false);
 
                 if info.should_stop() {
@@ -769,6 +785,14 @@ fn negamax(
     }
 
     info.nodes += 1;
+    {
+        static TRACE_INIT: std::sync::Once = std::sync::Once::new();
+        static mut TRACE_NODES: bool = false;
+        TRACE_INIT.call_once(|| { unsafe { TRACE_NODES = std::env::var("TRACE_NODES").is_ok(); } });
+        if unsafe { TRACE_NODES } && info.nodes <= 5000 {
+            eprintln!("NM {} d={} p={} a={} b={} h={:016x}", info.nodes, depth, ply, alpha, beta, board.hash);
+        }
+    }
     info.stats.depth_hist[depth.clamp(0, 15) as usize] += 1;
 
     // Draw detection: repetition and 50-move rule (GoChess: ply > 0)
@@ -1890,6 +1914,14 @@ fn quiescence_with_depth(
 
     info.nodes += 1;
 
+    // QSearch node trace
+    static QS_TRACE_INIT: std::sync::Once = std::sync::Once::new();
+    static mut QS_TRACE: bool = false;
+    QS_TRACE_INIT.call_once(|| { unsafe { QS_TRACE = std::env::var("TRACE_NODES").is_ok(); } });
+    if unsafe { QS_TRACE } && info.nodes <= 5000 {
+        eprintln!("QS {} p={} a={} b={} h={:016x} qd={}", info.nodes, ply, alpha, beta, board.hash, qs_depth);
+    }
+
     // Track seldepth
     if ply > info.sel_depth {
         info.sel_depth = ply;
@@ -1910,6 +1942,17 @@ fn quiescence_with_depth(
     let tt_entry = info.tt.probe(board.hash);
     let tt_move = if tt_entry.hit { tt_entry.best_move } else { NO_MOVE };
     let alpha_orig = alpha;
+
+    // Trace TT probe for divergent hash
+    if unsafe { QS_TRACE } && board.hash == 0x5cac71485b008015u64 {
+        if tt_entry.hit {
+            eprintln!("QS-TT h={:016x} hit mv={} score={} depth={} flag={}",
+                board.hash, crate::types::move_to_uci(tt_entry.best_move),
+                tt_entry.score, tt_entry.depth, tt_entry.flag);
+        } else {
+            eprintln!("QS-TT h={:016x} miss", board.hash);
+        }
+    }
     let tt_hit = tt_entry.hit;
 
     if tt_hit && tt_entry.depth >= -1 {
@@ -2045,6 +2088,12 @@ fn quiescence_with_depth(
     loop {
         let mv = picker.next(board);
         if mv == NO_MOVE { break; }
+
+        // Trace captures at the divergent hash
+        if unsafe { QS_TRACE } && board.hash == 0x5cac71485b008015u64 {
+            eprintln!("QS-CAP h={:016x} mv={} see={}", board.hash,
+                crate::types::move_to_uci(mv), if see_ge(board, mv, 0) { "Y" } else { "N" });
+        }
 
         // Delta pruning: skip captures that can't possibly raise alpha
         if !is_promotion(mv) {
