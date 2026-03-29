@@ -197,7 +197,28 @@ GoChess had `info.QNodes++` twice per quiescence call (search.go:2000-2001). The
 ### Score Divergence at Depth (r4r1k/1pp2qp1/1b1ppnnp/1P2p3/4P3/BQPP1NP1/5PKP/R3RN2 w)
 Depths 1-7 match, then scores swing wildly at d8+. The direction of divergence varies by position and build — scores are unstable and sensitive to search order. This instability reduces playing strength over many games.
 
+### Critical Ablation Results (late 2026-03-29)
+
+| Ablation | Elo gap | Conclusion |
+|----------|---------|------------|
+| Full engines | -266 | Baseline |
+| No pruning + no ordering | **0** | Basic alpha-beta + TT + QSearch + eval is IDENTICAL |
+| No TT (Atlas) | -90 | TT is the primary amplifier (~176 Elo) |
+| No pruning (with ordering) | -100 to -300 | Ordering state diverges even without pruning |
+| No correction history (Atlas) | fixes specific wrong-move positions | Correction amplifies the divergence |
+
+**The basic search is proven correct.** At depth 4 on multiple positions with no ordering and no pruning, both engines produce identical scores, nodes, and PVs.
+
+**TT is the primary culprit.** Removing TT entirely drops the gap from -266 to -90. The TT stores entries during iterative deepening that feed back into move ordering, amplifying a small initial divergence into a large score difference.
+
+**The remaining ~90 without TT** comes from killers/history accumulating differently during each search. Same amplification mechanism, just the non-TT portion.
+
+### Root Cause Theory (revised)
+A small tie-breaking or ordering difference at depth 5 causes one different beta cutoff. This updates one different killer/history entry. At depth 6, the TT entry from depth 5 + the different killer/history causes more divergence. By depth 12+, the trees are completely different.
+
+Prime suspect: **FLAG_DOUBLE_PUSH** (Coda flag=3 vs GoChess flag=0). This changes the 16-bit move value for pawn double pushes, potentially affecting move comparisons (`mv == killers[0]`, etc.) if the same physical move has different encodings in different contexts.
+
 ### Next Steps
-1. **Ablation testing**: disable LMR adjustments, correction history, or all pruning in BOTH engines to isolate which subsystem diverges
-2. **Move ordering trace**: at the depth-5 divergence point, log which moves are tried in which order to find the first ordering difference
-3. **Check time-check granularity**: Coda checks every 4096 nodes vs GoChess 1024 (minor, ~2-5 Elo)
+1. **Investigate FLAG_DOUBLE_PUSH**: check if any move comparison fails because a stored move has flag=0 but generated move has flag=3
+2. **Dump TT entries at depth 5**: compare which entry first differs between engines
+3. **Try removing FLAG_DOUBLE_PUSH**: use flag=0 for double pushes (matching GoChess) and test if gap closes
