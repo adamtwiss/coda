@@ -25,7 +25,8 @@ pub struct History {
     /// Capture history: [piece 1-12][to][captured_type 0-6]
     /// piece uses GoChess 1-12 indexing (slot 0 unused).
     /// captured_type uses GoChess 0-6 scheme (0=empty, 1=pawn, ..., 6=king).
-    pub capture: [[[i32; 7]; 64]; 13],
+    /// int16 matches GoChess (was i32 — caused different gravity behavior).
+    pub capture: [[[i16; 7]; 64]; 13],
     /// Killer moves: [ply][2]
     pub killers: [[Move; 2]; 64],
     /// Counter-move: [piece 1-12][to]
@@ -40,7 +41,7 @@ impl History {
     pub fn new() -> Self {
         History {
             main: [[0; 64]; 64],
-            capture: [[[0; 7]; 64]; 13],
+            capture: [[[0i16; 7]; 64]; 13],
             killers: [[NO_MOVE; 2]; 64],
             counter: [[NO_MOVE; 64]; 13],
             cont_hist: [[[[0; 64]; 13]; 64]; 13],
@@ -49,7 +50,7 @@ impl History {
 
     pub fn clear(&mut self) {
         self.main = [[0; 64]; 64];
-        self.capture = [[[0; 7]; 64]; 13];
+        self.capture = [[[0i16; 7]; 64]; 13];
         self.killers = [[NO_MOVE; 2]; 64];
         self.counter = [[NO_MOVE; 64]; 13];
         self.cont_hist = [[[[0; 64]; 13]; 64]; 13];
@@ -615,7 +616,7 @@ pub fn capt_hist_score_static(board: &Board, history: &History, m: Move) -> i32 
     } else {
         captured_type(victim_pt)
     };
-    history.capture[go_piece(piece)][to as usize][ct]
+    history.capture[go_piece(piece)][to as usize][ct] as i32
 }
 
 /// MVV-LVA score for a capture. Matches GoChess mvvLva().

@@ -863,7 +863,7 @@ fn negamax(
                             } else {
                                 0 // empty
                             };
-                            History::update_history(
+                            History::update_cont_history(
                                 &mut info.history.capture[go_piece(tt_piece)][move_to(tt_move) as usize][ct],
                                 bonus,
                             );
@@ -1642,7 +1642,7 @@ fn negamax(
                             } else {
                                 captured_type(captured_pt)
                             };
-                            History::update_history(
+                            History::update_cont_history(
                                 &mut info.history.capture[go_piece(moved_piece)][to as usize][cpt],
                                 bonus,
                             );
@@ -1650,7 +1650,7 @@ fn negamax(
                             // Penalize captures tried before cutoff
                             for i in 0..n_captures_tried.saturating_sub(1) {
                                 let (cp, ct, cv) = captures_tried[i];
-                                History::update_history(
+                                History::update_cont_history(
                                     &mut info.history.capture[cp as usize][ct as usize][cv as usize],
                                     -bonus,
                                 );
