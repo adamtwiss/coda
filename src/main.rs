@@ -17,6 +17,7 @@ pub mod nnue;
 pub mod book;
 pub mod tb;
 pub mod binpack;
+pub mod datagen;
 
 use board::Board;
 use movegen::{perft, perft_divide};
@@ -133,6 +134,33 @@ fn main() {
             epd::run_epd(path, time, max, nnue_path);
         }
 
+        "datagen" => {
+            let nnue_path = flag_value(&args, "-nnue").unwrap_or("").to_string();
+            let output = flag_value(&args, "-output").unwrap_or("data.binpack").to_string();
+            let depth: i32 = flag_value(&args, "-depth").and_then(|s| s.parse().ok()).unwrap_or(8);
+            let games: usize = flag_value(&args, "-games").and_then(|s| s.parse().ok()).unwrap_or(1000);
+            let hash: usize = flag_value(&args, "-hash").and_then(|s| s.parse().ok()).unwrap_or(16);
+            let blunder: f64 = flag_value(&args, "-blunder").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let epd_path = flag_value(&args, "-epd");
+
+            let mode = if let Some(epd) = epd_path {
+                datagen::DatagenMode::Material { source_epd: epd.to_string() }
+            } else {
+                datagen::DatagenMode::SelfPlay { blunder_rate: blunder }
+            };
+
+            let config = datagen::DatagenConfig {
+                nnue_path,
+                output_path: output,
+                mode,
+                depth,
+                num_games: games,
+                threads: 1,
+                hash_mb: hash,
+            };
+            datagen::run_datagen(&config);
+        }
+
         "help" | "--help" | "-h" => {
             print_usage();
         }
@@ -177,6 +205,13 @@ fn print_usage() {
     println!("                                    Run EPD test suite");
     println!("  coda perft [depth] [fen...]       Perft with divide");
     println!("  coda perft-bench                  Perft benchmark suite");
+    println!("  coda datagen -nnue <net> -output <file.binpack> [options]");
+    println!("                                    Generate training data (SF binpack format)");
+    println!("    -depth <N>                      Search depth per position (default 8)");
+    println!("    -games <N>                      Number of self-play games (default 1000)");
+    println!("    -hash <MB>                      Hash table size (default 16)");
+    println!("    -blunder <rate>                 Random move rate 0.0-1.0 (default 0.0)");
+    println!("    -epd <file>                     Material mode: remove pieces from EPD positions");
     println!("  coda help                         Show this help");
     println!();
     println!("UCI options:");

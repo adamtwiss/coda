@@ -152,7 +152,7 @@ impl Board {
 
     /// Remove a piece from the board with hash update.
     #[inline]
-    fn remove_piece(&mut self, color: Color, pt: u8, sq: u8) {
+    pub fn remove_piece(&mut self, color: Color, pt: u8, sq: u8) {
         self.remove_piece_no_hash(color, pt, sq);
         let k = piece_key(make_piece(color, pt), sq);
         self.hash ^= k;

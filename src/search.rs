@@ -90,6 +90,10 @@ pub struct SearchLimits {
     pub infinite: bool,
 }
 
+impl Default for SearchLimits {
+    fn default() -> Self { Self::new() }
+}
+
 impl SearchLimits {
     pub fn new() -> Self {
         SearchLimits {
@@ -161,6 +165,7 @@ pub struct SearchInfo {
     soft_limit: u64,  // ms — can be extended/shortened dynamically
     hard_limit: u64,  // ms — absolute maximum
     pub sel_depth: i32,
+    pub last_score: i32,
     /// Triangular PV table (matching GoChess)
     pv_table: [[Move; MAX_PLY + 1]; MAX_PLY + 1],
     pv_len: [usize; MAX_PLY + 1],
@@ -201,6 +206,7 @@ impl SearchInfo {
             soft_limit: 0,
             hard_limit: 0,
             sel_depth: 0,
+            last_score: 0,
             prev_moves: [NO_MOVE; MAX_PLY + 1],
             static_evals: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
@@ -744,6 +750,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         }
 
         prev_score = score;
+        info.last_score = score;
 
         // UCI info output
         let elapsed = info.start_time.elapsed().as_millis() as u64;
