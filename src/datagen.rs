@@ -4,15 +4,23 @@
 ///   selfplay  — play games against itself, record positions + search scores
 ///   material  — remove pieces from positions, deep-search each variant
 ///
-/// Output: Stockfish BINP binpack format (chain-compressed).
-/// Multi-threaded: each worker thread plays games independently, sends
-/// completed chains to the writer thread via channel.
+/// Output: Stockfish BINP binpack format via sfbinpack crate.
+/// Multi-threaded: each worker plays games independently, sends entries
+/// to writer thread via channel.
 
 use crate::board::Board;
 use crate::search::{self, SearchInfo, SearchLimits};
-use crate::binpack::{BinpackWriter, TrainChain, TrainSample};
 use crate::types::*;
 use crate::movegen::generate_legal_moves;
+
+use sfbinpack::chess::position::Position as SfPosition;
+use sfbinpack::chess::r#move::{Move as SfMove, MoveType as SfMoveType};
+use sfbinpack::chess::coords::Square as SfSquare;
+use sfbinpack::chess::piece::Piece as SfPiece;
+use sfbinpack::chess::color::Color as SfColor;
+use sfbinpack::chess::piecetype::PieceType as SfPieceType;
+use sfbinpack::TrainingDataEntry;
+use sfbinpack::CompressedTrainingDataEntryWriter;
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -20,7 +28,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Configuration for data generation.
 pub struct DatagenConfig {
     pub nnue_path: String,
     pub output_path: String,
@@ -32,8 +39,51 @@ pub struct DatagenConfig {
 }
 
 pub enum DatagenMode {
-    SelfPlay { blunder_rate: f64 },   // 0.0 = no blunders, 0.1 = 10% random moves
-    Material { source_epd: String },  // remove pieces from EPD positions
+    SelfPlay { blunder_rate: f64 },
+    Material { source_epd: String },
+}
+
+/// Convert Coda board + move + score to sfbinpack TrainingDataEntry.
+fn to_sf_entry(board: &Board, mv: Move, score: i16, result: i16, ply: u16) -> Option<TrainingDataEntry> {
+    let fen = board.to_fen();
+    let pos = SfPosition::from_fen(&fen).ok()?;
+
+    let from = SfSquare::new(move_from(mv) as u32);
+    let to = SfSquare::new(move_to(mv) as u32);
+    let flags = move_flags(mv);
+
+    let sf_move = if flags == FLAG_EN_PASSANT {
+        SfMove::new(from, to, SfMoveType::EnPassant, SfPiece::none())
+    } else if flags == FLAG_CASTLE {
+        // sfbinpack expects king→rook (not king→destination)
+        let rook_sq = match move_to(mv) {
+            6 => SfSquare::new(7),   // g1 → h1
+            2 => SfSquare::new(0),   // c1 → a1
+            62 => SfSquare::new(63), // g8 → h8
+            58 => SfSquare::new(56), // c8 → a8
+            _ => to,
+        };
+        SfMove::new(from, rook_sq, SfMoveType::Castle, SfPiece::none())
+    } else if is_promotion(mv) {
+        let sf_color = if board.side_to_move == WHITE { SfColor::White } else { SfColor::Black };
+        let promo_piece = match promotion_piece_type(mv) {
+            KNIGHT => SfPiece::new(SfPieceType::Knight, sf_color),
+            BISHOP => SfPiece::new(SfPieceType::Bishop, sf_color),
+            ROOK => SfPiece::new(SfPieceType::Rook, sf_color),
+            _ => SfPiece::new(SfPieceType::Queen, sf_color),
+        };
+        SfMove::new(from, to, SfMoveType::Promotion, promo_piece)
+    } else {
+        SfMove::new(from, to, SfMoveType::Normal, SfPiece::none())
+    };
+
+    Some(TrainingDataEntry {
+        pos,
+        mv: sf_move,
+        score,
+        ply,
+        result,
+    })
 }
 
 /// Run data generation.
@@ -41,12 +91,10 @@ pub fn run_datagen(config: &DatagenConfig) {
     let start = Instant::now();
     let threads = config.threads.max(1);
 
-    // Shared counters
     let games_done = Arc::new(AtomicU64::new(0));
     let positions_done = Arc::new(AtomicU64::new(0));
 
-    // Channel: workers send chains, writer thread receives
-    let (tx, rx) = std::sync::mpsc::channel::<TrainChain>();
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<TrainingDataEntry>>();
 
     // Writer thread
     let output_path = config.output_path.clone();
@@ -55,16 +103,19 @@ pub fn run_datagen(config: &DatagenConfig) {
         let file = File::create(&output_path)
             .expect(&format!("Failed to create output file: {}", output_path));
         let buf = BufWriter::with_capacity(1 << 20, file);
-        let mut writer = BinpackWriter::new(buf);
+        let mut writer = CompressedTrainingDataEntryWriter::new(buf)
+            .expect("Failed to create binpack writer");
+        let mut total = 0u64;
 
-        for chain in rx {
-            let n = chain.samples.len() as u64;
-            writer.write_chain(&chain).expect("Failed to write chain");
-            positions_done_w.fetch_add(n, Ordering::Relaxed);
+        for entries in rx {
+            for entry in &entries {
+                writer.write_entry(entry).expect("Failed to write entry");
+                total += 1;
+            }
+            positions_done_w.fetch_add(entries.len() as u64, Ordering::Relaxed);
         }
-
-        writer.finish().expect("Failed to flush binpack output");
-        (writer.chains_written(), writer.positions_written())
+        // writer drops here, flushing automatically
+        total
     });
 
     match &config.mode {
@@ -80,21 +131,15 @@ pub fn run_datagen(config: &DatagenConfig) {
                 let nnue_path = config.nnue_path.clone();
                 let depth = config.depth;
                 let hash_mb = config.hash_mb;
-                let total_games = config.num_games;
                 let my_games = games_per_thread + if thread_id < remainder { 1 } else { 0 };
 
                 handles.push(std::thread::Builder::new()
-                    .stack_size(16 * 1024 * 1024) // 16MB stack for search + NNUE
+                    .stack_size(16 * 1024 * 1024)
                     .spawn(move || {
-                    selfplay_worker(
-                        thread_id, my_games, total_games,
-                        &nnue_path, depth, hash_mb, blunder_rate,
-                        &tx, &games_done,
-                    );
+                    selfplay_worker(thread_id, my_games, &nnue_path, depth, hash_mb,
+                        blunder_rate, &tx, &games_done);
                 }).expect("Failed to spawn worker thread"));
             }
-
-            // Drop our copy of tx so the channel closes when all workers finish
             drop(tx);
 
             // Progress reporting
@@ -105,24 +150,20 @@ pub fn run_datagen(config: &DatagenConfig) {
                 let p = positions_done.load(Ordering::Relaxed);
                 let elapsed = start.elapsed().as_secs_f64();
                 if elapsed > 0.0 {
-                    println!("Progress: {}/{} games, {} positions ({:.0} pos/s, {:.0} games/s)",
-                        g, total, p, p as f64 / elapsed, g as f64 / elapsed);
+                    println!("Progress: {}/{} games, {} positions ({:.0} pos/s)",
+                        g, total, p, p as f64 / elapsed);
                 }
                 if g >= total { break; }
             }
-
-            for h in handles {
-                h.join().expect("Worker thread panicked");
-            }
+            for h in handles { h.join().expect("Worker panicked"); }
         }
         DatagenMode::Material { source_epd } => {
             let contents = std::fs::read_to_string(source_epd)
-                .expect(&format!("Failed to read EPD file: {}", source_epd));
+                .expect(&format!("Failed to read EPD: {}", source_epd));
             let lines: Vec<String> = contents.lines()
                 .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
                 .map(|l| l.split(';').next().unwrap_or(l).trim().to_string())
                 .collect();
-
             let lines = Arc::new(lines);
             let line_idx = Arc::new(AtomicU64::new(0));
 
@@ -138,42 +179,27 @@ pub fn run_datagen(config: &DatagenConfig) {
                 handles.push(std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)
                     .spawn(move || {
-                    material_worker(
-                        thread_id, &lines, &line_idx,
-                        &nnue_path, depth, hash_mb, &tx,
-                    );
+                    material_worker(thread_id, &lines, &line_idx, &nnue_path, depth, hash_mb, &tx);
                 }).expect("Failed to spawn worker thread"));
             }
-
             drop(tx);
-
-            for h in handles {
-                h.join().expect("Worker thread panicked");
-            }
+            for h in handles { h.join().expect("Worker panicked"); }
         }
     }
 
-    let (chains, positions) = writer_handle.join().expect("Writer thread panicked");
+    let total = writer_handle.join().expect("Writer panicked");
     let elapsed = start.elapsed().as_secs_f64();
-    println!("Datagen complete: {} chains, {} positions in {:.1}s ({:.0} pos/s) [{} threads]",
-        chains, positions, elapsed, positions as f64 / elapsed, threads);
+    println!("Datagen complete: {} positions in {:.1}s ({:.0} pos/s) [{} threads]",
+        total, elapsed, total as f64 / elapsed, threads);
 }
 
-/// Self-play worker thread. Plays games and sends chains via channel.
 fn selfplay_worker(
-    thread_id: usize,
-    my_games: usize,
-    _total_games: usize,
-    nnue_path: &str,
-    depth: i32,
-    hash_mb: usize,
-    blunder_rate: f64,
-    tx: &std::sync::mpsc::Sender<TrainChain>,
+    thread_id: usize, my_games: usize, nnue_path: &str,
+    depth: i32, hash_mb: usize, blunder_rate: f64,
+    tx: &std::sync::mpsc::Sender<Vec<TrainingDataEntry>>,
     games_done: &AtomicU64,
 ) {
     let mut rng = SimpleRng::new(0xDEADBEEF ^ (thread_id as u64 * 0x9E3779B97F4A7C15));
-
-    // Each thread gets its own SearchInfo (own TT, NNUE accumulator)
     let mut info = SearchInfo::new(hash_mb);
     info.silent = true;
     if let Err(e) = info.load_nnue(nnue_path) {
@@ -182,37 +208,28 @@ fn selfplay_worker(
     }
 
     for _ in 0..my_games {
-        let chain = play_one_game(&mut info, &mut rng, depth, blunder_rate);
-
-        if !chain.samples.is_empty() {
-            if tx.send(chain).is_err() {
-                break; // writer closed
-            }
+        let entries = play_one_game(&mut info, &mut rng, depth, blunder_rate);
+        if !entries.is_empty() {
+            if tx.send(entries).is_err() { break; }
         }
-
-        // Reset TT between games for data diversity
         info.tt.clear();
         games_done.fetch_add(1, Ordering::Relaxed);
     }
 }
 
-/// Play a single self-play game, returning the chain of training samples.
-fn play_one_game(
-    info: &mut SearchInfo,
-    rng: &mut SimpleRng,
-    depth: i32,
-    blunder_rate: f64,
-) -> TrainChain {
+fn play_one_game(info: &mut SearchInfo, rng: &mut SimpleRng, depth: i32, blunder_rate: f64)
+    -> Vec<TrainingDataEntry>
+{
     let mut board = Board::startpos();
-    let mut chain = TrainChain { samples: Vec::with_capacity(200) };
+    let mut entries: Vec<(Board, Move, i16, u16)> = Vec::with_capacity(200);
     let mut ply = 0u16;
     let mut result: Option<i16> = None;
 
-    // Play a few random opening moves for diversity
-    let random_opening_plies = 4 + (rng.next_u64() % 6) as u16; // 4-9 random moves
-    for _ in 0..random_opening_plies {
+    // Random opening for diversity
+    let random_plies = 4 + (rng.next_u64() % 6) as u16;
+    for _ in 0..random_plies {
         let legal = generate_legal_moves(&board);
-        if legal.len == 0 { return chain; }
+        if legal.len == 0 { return Vec::new(); }
         let idx = rng.next_u64() as usize % legal.len;
         board.make_move(legal.moves[idx]);
         ply += 1;
@@ -221,14 +238,11 @@ fn play_one_game(
     loop {
         let legal = generate_legal_moves(&board);
         if legal.len == 0 {
-            if board.in_check() {
-                result = Some(if board.side_to_move == WHITE { -1 } else { 1 });
-            } else {
-                result = Some(0);
-            }
+            result = Some(if board.in_check() {
+                if board.side_to_move == WHITE { -1 } else { 1 }
+            } else { 0 });
             break;
         }
-
         if board.halfmove >= 100 { result = Some(0); break; }
         if is_repetition(&board) { result = Some(0); break; }
         if ply > 500 { result = Some(0); break; }
@@ -237,7 +251,6 @@ fn play_one_game(
         let best_move = search::search(&mut board, info, &limits);
         let score = info.last_score;
 
-        // Adjudicate
         if score.abs() > 3000 && ply > 10 {
             result = Some(if score > 0 {
                 if board.side_to_move == WHITE { 1 } else { -1 }
@@ -247,18 +260,10 @@ fn play_one_game(
             break;
         }
 
-        // Record position (skip positions in check, extreme scores, early plies)
         if ply >= 8 && !board.in_check() && score.abs() < 10000 {
-            chain.samples.push(TrainSample {
-                board: board.clone(),
-                mv: best_move,
-                score: score.clamp(-32000, 32000) as i16,
-                result: 0, // filled in later
-                ply,
-            });
+            entries.push((board.clone(), best_move, score.clamp(-32000, 32000) as i16, ply));
         }
 
-        // Blunder mode
         let mv = if blunder_rate > 0.0 && rng.next_f64() < blunder_rate && ply >= 4 {
             let idx = rng.next_u64() as usize % legal.len;
             legal.moves[idx]
@@ -271,28 +276,21 @@ fn play_one_game(
         ply += 1;
     }
 
-    // Fill in game result
     let game_result = result.unwrap_or(0);
-    for sample in chain.samples.iter_mut() {
-        sample.result = if sample.board.side_to_move == WHITE {
-            game_result
-        } else {
-            -game_result
-        };
+    let mut sf_entries = Vec::with_capacity(entries.len());
+    for (board, mv, score, ply) in &entries {
+        let r = if board.side_to_move == WHITE { game_result } else { -game_result };
+        if let Some(entry) = to_sf_entry(&board, *mv, *score, r, *ply) {
+            sf_entries.push(entry);
+        }
     }
-
-    chain
+    sf_entries
 }
 
-/// Material removal worker thread.
 fn material_worker(
-    thread_id: usize,
-    lines: &[String],
-    line_idx: &AtomicU64,
-    nnue_path: &str,
-    depth: i32,
-    hash_mb: usize,
-    tx: &std::sync::mpsc::Sender<TrainChain>,
+    thread_id: usize, lines: &[String], line_idx: &AtomicU64,
+    nnue_path: &str, depth: i32, hash_mb: usize,
+    tx: &std::sync::mpsc::Sender<Vec<TrainingDataEntry>>,
 ) {
     let mut info = SearchInfo::new(hash_mb);
     info.silent = true;
@@ -306,8 +304,8 @@ fn material_worker(
         if idx >= lines.len() { break; }
 
         let base_board = Board::from_fen(&lines[idx]);
+        let mut batch = Vec::new();
 
-        // For each non-king piece, remove it and deep-search
         for sq in 0..64u8 {
             let pt = base_board.piece_type_at(sq);
             if pt == NO_PIECE_TYPE || pt == KING { continue; }
@@ -323,22 +321,20 @@ fn material_worker(
             let score = info.last_score;
 
             if best_move != NO_MOVE && score.abs() < 10000 {
-                let chain = TrainChain {
-                    samples: vec![TrainSample {
-                        board: modified,
-                        mv: best_move,
-                        score: score.clamp(-32000, 32000) as i16,
-                        result: 0,
-                        ply: 0,
-                    }],
-                };
-                if tx.send(chain).is_err() { return; }
+                if let Some(entry) = to_sf_entry(&modified, best_move,
+                    score.clamp(-32000, 32000) as i16, 0, 0)
+                {
+                    batch.push(entry);
+                }
             }
+        }
+
+        if !batch.is_empty() {
+            if tx.send(batch).is_err() { return; }
         }
     }
 }
 
-/// Check for 3-fold repetition in the undo stack.
 fn is_repetition(board: &Board) -> bool {
     let stack_len = board.undo_stack.len();
     let limit = (board.halfmove as usize).min(stack_len);
@@ -354,31 +350,20 @@ fn is_repetition(board: &Board) -> bool {
     false
 }
 
-/// Basic position validity check.
 fn is_valid_position(board: &Board) -> bool {
     let wk = board.pieces[KING as usize] & board.colors[WHITE as usize];
     let bk = board.pieces[KING as usize] & board.colors[BLACK as usize];
-    if wk == 0 || bk == 0 { return false; }
-    if wk.count_ones() != 1 || bk.count_ones() != 1 { return false; }
-    true
+    wk != 0 && bk != 0 && wk.count_ones() == 1 && bk.count_ones() == 1
 }
 
-/// Simple xorshift PRNG for reproducible data generation.
-struct SimpleRng {
-    state: u64,
-}
-
+struct SimpleRng { state: u64 }
 impl SimpleRng {
-    fn new(seed: u64) -> Self {
-        SimpleRng { state: seed.max(1) }
-    }
+    fn new(seed: u64) -> Self { SimpleRng { state: seed.max(1) } }
     fn next_u64(&mut self) -> u64 {
         self.state ^= self.state << 13;
         self.state ^= self.state >> 7;
         self.state ^= self.state << 17;
         self.state
     }
-    fn next_f64(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
-    }
+    fn next_f64(&mut self) -> f64 { (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64 }
 }

@@ -9,6 +9,7 @@ authors = ["Adam Twiss"]
 shakmaty = "0.30"
 shakmaty-syzygy = "0.28"
 libc = "0.2"
+sfbinpack = "0.6.0"
 
 [profile.release]
 opt-level = 3
