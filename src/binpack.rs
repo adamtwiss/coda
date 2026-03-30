@@ -70,6 +70,25 @@ impl BitWriter {
         }
     }
 
+    /// Write VLE (variable-length encoding) with block size 4.
+    /// Matches Stockfish's writeVle16.
+    fn write_vle(&mut self, mut v: u16) {
+        const BLOCK_SIZE: u32 = 4;
+        let mask = (1u16 << BLOCK_SIZE) - 1;
+        loop {
+            let block = v & mask;
+            v >>= BLOCK_SIZE;
+            if v > 0 {
+                // More blocks to come: set extension bit
+                self.write_bits((block | (1 << BLOCK_SIZE)) as u32, (BLOCK_SIZE + 1) as usize);
+            } else {
+                // Last block: no extension bit
+                self.write_bits(block as u32, (BLOCK_SIZE + 1) as usize);
+                break;
+            }
+        }
+    }
+
     fn bytes(&self) -> &[u8] {
         &self.data
     }
@@ -295,48 +314,43 @@ fn encode_move(bw: &mut BitWriter, mv: Move, board: &Board) {
             }
         }
         KING => {
-            // King destinations: normal moves + castling
-            let mut destinations = king_attacks(from as u32) & !our_pieces;
+            // King encoding: normal attack squares + castling (separate counts)
+            let attacks = king_attacks(from as u32) & !our_pieces;
+            let attacks_count = attacks.count_ones() as usize;
 
-            // Add castling destinations (rook squares as targets, matching BINP convention)
-            if us == WHITE {
-                if board.castling & CASTLE_WK != 0 {
-                    destinations |= 1u64 << 7; // h1 rook
-                }
-                if board.castling & CASTLE_WQ != 0 {
-                    destinations |= 1u64 << 0; // a1 rook
-                }
+            // Count castling options (ordered: queenside first, then kingside)
+            let (our_castle_qs, our_castle_ks) = if us == WHITE {
+                (board.castling & CASTLE_WQ != 0, board.castling & CASTLE_WK != 0)
             } else {
-                if board.castling & CASTLE_BK != 0 {
-                    destinations |= 1u64 << 63; // h8 rook
-                }
-                if board.castling & CASTLE_BQ != 0 {
-                    destinations |= 1u64 << 56; // a8 rook
-                }
-            }
-
-            let dest_count = destinations.count_ones() as usize;
-            // For castling moves, 'to' in our format is the king destination,
-            // but BINP uses rook square. Convert.
-            let binp_to = if flags == FLAG_CASTLE {
-                if to == 6 { 7u8 }       // g1 → h1
-                else if to == 2 { 0u8 }  // c1 → a1
-                else if to == 62 { 63u8 } // g8 → h8
-                else { 56u8 }             // c8 → a8
-            } else { to };
-
-            let dest_idx = {
-                let mut idx = 0u32;
-                let mut d = destinations;
-                while d != 0 {
-                    let sq = d.trailing_zeros() as u8;
-                    if sq == binp_to { break; }
-                    idx += 1;
-                    d &= d - 1;
-                }
-                idx
+                (board.castling & CASTLE_BQ != 0, board.castling & CASTLE_BK != 0)
             };
-            bw.write_bits(dest_idx, used_bits(dest_count));
+            let num_castlings = our_castle_qs as usize + our_castle_ks as usize;
+
+            if flags == FLAG_CASTLE {
+                // Castling: moveId = attacks_count + castling_index
+                // Queenside = index 0 (if available), kingside = next
+                let is_kingside = to == 6 || to == 62; // g1 or g8
+                let castle_idx = if is_kingside {
+                    if our_castle_qs { 1 } else { 0 } // kingside is second if queenside exists
+                } else {
+                    0 // queenside is always first
+                };
+                bw.write_bits((attacks_count + castle_idx) as u32, used_bits(attacks_count + num_castlings));
+            } else {
+                // Normal king move: index of 'to' in attacks bitboard
+                let dest_idx = {
+                    let mut idx = 0u32;
+                    let mut d = attacks;
+                    while d != 0 {
+                        let sq = d.trailing_zeros() as u8;
+                        if sq == to { break; }
+                        idx += 1;
+                        d &= d - 1;
+                    }
+                    idx
+                };
+                bw.write_bits(dest_idx, used_bits(attacks_count + num_castlings));
+            }
         }
         KNIGHT => {
             let destinations = knight_attacks(from as u32) & !our_pieces;
@@ -406,14 +420,6 @@ fn encode_move(bw: &mut BitWriter, mv: Move, board: &Board) {
     }
 }
 
-/// Encode score + result for movetext entries.
-fn encode_score_result(bw: &mut BitWriter, score: i16, result: i16) {
-    let s = signed_to_unsigned(score);
-    bw.write_bits(s as u32, 16);
-    let r = signed_to_unsigned(result);
-    bw.write_bits(r as u32, 16); // Stockfish uses 4 bits but some implementations use 16
-}
-
 /// BINP chunk writer. Buffers chains and writes complete chunks.
 pub struct BinpackWriter<W: Write> {
     writer: W,
@@ -466,18 +472,23 @@ impl<W: Write> BinpackWriter<W> {
 
         self.positions_written += 1;
 
-        // Movetext: encode each continuation move + score + result
+        // Movetext: encode move + VLE score delta (matching Stockfish format)
+        // Score delta: VLE of signedToUnsigned(plyScore - m_lastScore)
+        // m_lastScore starts as -stem.score, alternates sign each ply
         if num_plies > 0 {
             let mut bw = BitWriter::new();
+            let mut m_last_score = -(stem.score as i16);
+
             for i in 1..chain.samples.len() {
                 let sample = &chain.samples[i];
                 encode_move(&mut bw, sample.mv, &sample.board);
-                let s = signed_to_unsigned(sample.score);
-                bw.write_bits(s as u32, 16);
-                // Encode result in top 2 bits, ply in lower 14 bits (16 total)
-                let r_enc = signed_to_unsigned(sample.result) & 3;
-                let pr = (r_enc << 14) | (sample.ply & 0x3FFF);
-                bw.write_bits(pr as u32, 16);
+
+                // VLE score delta
+                let ply_score = sample.score;
+                let delta = signed_to_unsigned(ply_score - m_last_score);
+                bw.write_vle(delta);
+                m_last_score = -ply_score;
+
                 self.positions_written += 1;
             }
             bw.flush();
