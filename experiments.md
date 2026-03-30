@@ -3112,3 +3112,11 @@ Disabled each search feature individually, 300 games each vs Minic/Ethereal/Texe
 | SE multi-cut + neg ext | +24 |
 | SE positive extension | +22 |
 | **Total estimated** | **~+80 Elo** |
+
+## 2026-03-30: Double extension v2 (with ply guard)
+
+- **Change**: Extend +2 when `singular_score < singular_beta - 15` AND `ply < depth * 2` (non-PV only). Ply guard prevents explosive tree growth (Obsidian/Berserk pattern).
+- **Gauntlet (453g)**: +21 Elo (vs SE+posext +49, baseline +3). Still -25 vs single extension.
+- **Result**: Rejected. Even with ply guard, double extension costs ~25 Elo vs single extension at our strength. Consistent with the pattern: more aggressive extensions hurt.
+- **Prior attempt**: depth*3 margin without ply guard scored +13 (worse).
+- **Notes**: May work when engine is stronger. All top engines have double extensions with various limiters.
