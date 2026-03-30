@@ -100,8 +100,9 @@ pub fn run_datagen(config: &DatagenConfig) {
     let output_path = config.output_path.clone();
     let positions_done_w = positions_done.clone();
     let writer_handle = std::thread::spawn(move || {
-        let file = File::create(&output_path)
-            .expect(&format!("Failed to create output file: {}", output_path));
+        let file = std::fs::OpenOptions::new()
+            .create(true).append(true).open(&output_path)
+            .expect(&format!("Failed to open output file: {}", output_path));
         let buf = BufWriter::with_capacity(1 << 20, file);
         let mut writer = CompressedTrainingDataEntryWriter::new(buf)
             .expect("Failed to create binpack writer");
