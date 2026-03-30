@@ -1120,13 +1120,15 @@ struct FinnyEntry {
     valid: bool,
 }
 
+const FINNY_SIZE: usize = 2 * NNUE_KING_BUCKETS * 2; // [perspective][bucket][mirror]
+
 /// Accumulator stack with lazy materialization and Finny table.
 pub struct NNUEAccumulator {
     stack: Vec<AccEntry>,
     top: usize,
     hidden_size: usize,
-    /// Finny table: [perspective (0=W,1=B)][king_bucket (0-15)][mirror (0-1)]
-    finny: Vec<Vec<Vec<FinnyEntry>>>, // [2][16][2]
+    /// Finny table: flat [perspective * 32 + bucket * 2 + mirror]
+    finny: Vec<FinnyEntry>, // length = FINNY_SIZE (64)
 }
 
 impl NNUEAccumulator {
@@ -1140,22 +1142,14 @@ impl NNUEAccumulator {
                 dirty: DirtyPiece::recompute(),
             });
         }
-        // Build finny table
-        let mut finny = Vec::with_capacity(2);
-        for _ in 0..2 {
-            let mut buckets = Vec::with_capacity(NNUE_KING_BUCKETS);
-            for _ in 0..NNUE_KING_BUCKETS {
-                let mut mirrors = Vec::with_capacity(2);
-                for _ in 0..2 {
-                    mirrors.push(FinnyEntry {
-                        acc: vec![0; hidden_size],
-                        piece_bbs: ([0; 6], [0; 2]),
-                        valid: false,
-                    });
-                }
-                buckets.push(mirrors);
-            }
-            finny.push(buckets);
+        // Build finny table (flat array)
+        let mut finny = Vec::with_capacity(FINNY_SIZE);
+        for _ in 0..FINNY_SIZE {
+            finny.push(FinnyEntry {
+                acc: vec![0; hidden_size],
+                piece_bbs: ([0; 6], [0; 2]),
+                valid: false,
+            });
         }
         NNUEAccumulator { stack, top: 0, hidden_size, finny }
     }
@@ -1379,7 +1373,7 @@ impl NNUEAccumulator {
         let bucket = king_bucket(ks);
         let mirror_idx = if king_mirror(ks) { 1 } else { 0 };
 
-        let entry = &mut self.finny[perspective as usize][bucket][mirror_idx];
+        let entry = &mut self.finny[perspective as usize * 32 + bucket * 2 + mirror_idx];
 
         let dst = if perspective == WHITE {
             &mut self.stack[self.top].white
@@ -1446,12 +1440,8 @@ impl NNUEAccumulator {
     pub fn reset(&mut self) {
         self.top = 0;
         self.stack[0].computed = false;
-        for p in 0..2 {
-            for bk in 0..NNUE_KING_BUCKETS {
-                for m in 0..2 {
-                    self.finny[p][bk][m].valid = false;
-                }
-            }
+        for entry in self.finny.iter_mut() {
+            entry.valid = false;
         }
     }
 }
