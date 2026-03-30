@@ -3,6 +3,7 @@
 /// Matches GoChess: parallel arrays, 32-bit key verification, power-of-2 indexing.
 
 use crate::types::*;
+use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 
 pub const TT_FLAG_NONE: u8 = 0;
 pub const TT_FLAG_EXACT: u8 = 1; // PV-node (exact score) — matches GoChess TTExact=1
@@ -66,19 +67,35 @@ fn unpack_generation(data: u64) -> u8 {
 
 /// A bucket of 5 slots using parallel arrays (matches GoChess layout).
 /// data[5] = 40 bytes, keys[5] = 20 bytes, _pad = 4 bytes → 64 bytes.
+/// Uses atomics for lockless Lazy SMP. On x86-64, Relaxed atomics = plain MOV.
 #[repr(C, align(64))]
 struct TTBucket {
-    data: [u64; BUCKET_SIZE],    // 40 bytes — packed entry data
-    keys: [u32; BUCKET_SIZE],    // 20 bytes — upper32(hash) XOR lower32(data)
-    _pad: [u8; 4],               // 4 bytes padding to 64
+    data: [AtomicU64; BUCKET_SIZE],  // 40 bytes — packed entry data
+    keys: [AtomicU32; BUCKET_SIZE],  // 20 bytes — upper32(hash) XOR lower32(data)
+    _pad: [u8; 4],                   // 4 bytes padding to 64
 }
 
 impl TTBucket {
-    const EMPTY: Self = TTBucket {
-        data: [0; BUCKET_SIZE],
-        keys: [0; BUCKET_SIZE],
-        _pad: [0; 4],
-    };
+    fn new_empty() -> Self {
+        TTBucket {
+            data: [
+                AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+                AtomicU64::new(0), AtomicU64::new(0),
+            ],
+            keys: [
+                AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+                AtomicU32::new(0), AtomicU32::new(0),
+            ],
+            _pad: [0; 4],
+        }
+    }
+
+    fn clear(&self) {
+        for i in 0..BUCKET_SIZE {
+            self.data[i].store(0, Ordering::Relaxed);
+            self.keys[i].store(0, Ordering::Relaxed);
+        }
+    }
 }
 
 /// The transposition table.
@@ -124,7 +141,7 @@ impl TT {
         let size = size.max(1);
         let mut buckets = Vec::with_capacity(size);
         for _ in 0..size {
-            buckets.push(TTBucket::EMPTY);
+            buckets.push(TTBucket::new_empty());
         }
         // Hint to use huge pages for the TT allocation (Linux transparent huge pages)
         #[cfg(target_os = "linux")]
@@ -141,11 +158,10 @@ impl TT {
     }
 
     /// Clear all entries.
-    pub fn clear(&mut self) {
-        for bucket in self.buckets.iter_mut() {
-            *bucket = TTBucket::EMPTY;
+    pub fn clear(&self) {
+        for bucket in self.buckets.iter() {
+            bucket.clear();
         }
-        self.generation = 0;
     }
 
     /// Increment generation (called at each new search).
@@ -159,17 +175,17 @@ impl TT {
         (hash as usize) & self.mask
     }
 
-    /// Probe the TT for a position.
+    /// Probe the TT for a position. Lock-free via atomic loads.
     pub fn probe(&self, hash: u64) -> TTEntry {
         let idx = self.bucket_index(hash);
         let bucket = &self.buckets[idx];
         let key_upper = (hash >> 32) as u32;
 
         for i in 0..BUCKET_SIZE {
-            let data = bucket.data[i];
-            let stored_key = bucket.keys[i];
+            let data = bucket.data[i].load(Ordering::Relaxed);
+            let stored_key = bucket.keys[i].load(Ordering::Relaxed);
 
-            // 32-bit verification: stored_key XOR lower32(data) == upper32(hash)
+            // 32-bit XOR verification: detects torn reads from concurrent writes
             if stored_key ^ (data as u32) != key_upper {
                 continue;
             }
@@ -192,11 +208,11 @@ impl TT {
         TTEntry::miss()
     }
 
-    /// Store an entry in the TT.
+    /// Store an entry in the TT. Lock-free via atomic stores.
     /// Argument order matches GoChess: (key, depth, score, flag, move, staticEval)
-    pub fn store(&mut self, hash: u64, depth: i32, score: i32, flag: u8, best_move: Move, static_eval: i32) {
+    pub fn store(&self, hash: u64, depth: i32, score: i32, flag: u8, best_move: Move, static_eval: i32) {
         let idx = self.bucket_index(hash);
-        let bucket = &mut self.buckets[idx];
+        let bucket = &self.buckets[idx];
         let gen = self.generation;
         let key_upper = (hash >> 32) as u32;
 
@@ -208,8 +224,8 @@ impl TT {
         let mut replace_score = i32::MAX;
 
         for i in 0..BUCKET_SIZE {
-            let slot_data = bucket.data[i];
-            let slot_key = bucket.keys[i];
+            let slot_data = bucket.data[i].load(Ordering::Relaxed);
+            let slot_key = bucket.keys[i].load(Ordering::Relaxed);
             let recovered_upper = slot_key ^ (slot_data as u32);
 
             let slot_flag = unpack_flag(slot_data);
@@ -218,16 +234,16 @@ impl TT {
 
             // Empty slot: use immediately
             if slot_flag == TT_FLAG_NONE {
-                bucket.data[i] = new_data;
-                bucket.keys[i] = new_key;
+                bucket.data[i].store(new_data, Ordering::Relaxed);
+                bucket.keys[i].store(new_key, Ordering::Relaxed);
                 return;
             }
 
             // Key match: update if newer generation or sufficiently deep
             if recovered_upper == key_upper {
                 if depth > slot_depth - 3 || gen != slot_gen {
-                    bucket.data[i] = new_data;
-                    bucket.keys[i] = new_key;
+                    bucket.data[i].store(new_data, Ordering::Relaxed);
+                    bucket.keys[i].store(new_key, Ordering::Relaxed);
                 }
                 return;
             }
@@ -242,8 +258,8 @@ impl TT {
         }
 
         // No key match and no empty slot: replace worst-scoring slot
-        bucket.data[replace_idx] = new_data;
-        bucket.keys[replace_idx] = new_key;
+        bucket.data[replace_idx].store(new_data, Ordering::Relaxed);
+        bucket.keys[replace_idx].store(new_key, Ordering::Relaxed);
     }
 
     /// Prefetch the bucket for a hash (hint to CPU cache).
@@ -263,7 +279,7 @@ impl TT {
         let mut used = 0u32;
         for i in 0..sample {
             for j in 0..BUCKET_SIZE {
-                let flag = unpack_flag(self.buckets[i].data[j]);
+                let flag = unpack_flag(self.buckets[i].data[j].load(Ordering::Relaxed));
                 if flag != TT_FLAG_NONE {
                     used += 1;
                 }
@@ -422,11 +438,10 @@ impl TT {
         for bi in 0..num_buckets {
             let bucket = &self.buckets[bi];
             for si in 0..BUCKET_SIZE {
-                let data = bucket.data[si];
-                let key = bucket.keys[si];
+                let data = bucket.data[si].load(Ordering::Relaxed);
+                let key = bucket.keys[si].load(Ordering::Relaxed);
                 let flag = unpack_flag(data);
                 if flag == TT_FLAG_NONE { continue; }
-                // Recover the hash: upper32 = key ^ lower32(data), full hash = upper32 << 32 | (bi & mask)
                 let upper32 = key ^ (data as u32);
                 let hash = ((upper32 as u64) << 32) | (bi as u64); // approximate — lower bits are bucket index
                 let depth = unpack_depth(data);
