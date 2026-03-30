@@ -1285,12 +1285,12 @@ fn negamax(
     let us = board.side_to_move;
     let stm_non_pawn = board.colors[us as usize]
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
-    if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
+    if depth >= 4 && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
         && unsafe { FEAT_NMP }
     {
         // Adaptive reduction: scales with depth and eval margin above beta
-        let mut r = 3 + depth / 3;
+        let mut r = 4 + depth / 3;
         // Reduce less after captures
         if !board.undo_stack.is_empty() && board.undo_stack[board.undo_stack.len() - 1].captured != NO_PIECE_TYPE {
             r -= 1;
