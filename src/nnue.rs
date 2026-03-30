@@ -294,6 +294,73 @@ unsafe fn simd_pairwise_dot(acc_first: &[i16], acc_second: &[i16], weights: &[i1
     hsum_epi64(total)
 }
 
+/// Pack SCReLU'd accumulator into uint8: clamp [0,255], v²/255 → [0,255].
+/// Output buffer must be at least h bytes. h must be multiple of 16.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
+    let zero = _mm256_setzero_si256();
+    let qa = _mm256_set1_epi16(QA as i16);
+    let mut i = 0;
+    while i + 32 <= h {
+        // Load 32 i16 values (two YMM registers)
+        let v0 = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
+        let v1 = _mm256_loadu_si256(acc.as_ptr().add(i + 16) as *const __m256i);
+        let c0 = _mm256_min_epi16(_mm256_max_epi16(v0, zero), qa);
+        let c1 = _mm256_min_epi16(_mm256_max_epi16(v1, zero), qa);
+        // v²: PMULLW gives low 16 bits (max 65025, fits in u16)
+        let sq0 = _mm256_mullo_epi16(c0, c0);
+        let sq1 = _mm256_mullo_epi16(c1, c1);
+        // Divide by 255: v²/255 ≈ (v² + 128) >> 8 for values in [0, 65025]
+        // More precise: v²/255 = (v² * 257 + 32768) >> 16 but >>8 is close enough
+        let d0 = _mm256_srli_epi16(sq0, 8); // [0, 254]
+        let d1 = _mm256_srli_epi16(sq1, 8);
+        // Pack i16 → u8 with saturation: _mm256_packus_epi16 packs with lane crossing
+        let packed = _mm256_packus_epi16(d0, d1);
+        // Fix lane crossing: packus interleaves 128-bit lanes, need permute
+        let fixed = _mm256_permute4x64_epi64(packed, 0xD8); // 0,2,1,3
+        _mm256_storeu_si256(out.as_mut_ptr().add(i) as *mut __m256i, fixed);
+        i += 32;
+    }
+    // Handle remaining 16 if h is not multiple of 32
+    while i < h {
+        let v = (acc[i] as i32).clamp(0, 255);
+        out[i] = ((v * v) >> 8) as u8;
+        i += 1;
+    }
+}
+
+/// L1 int8 matmul: packed u8 input × i8 transposed weights → i32 output.
+/// Computes hidden[neuron] += sum_j(packed[j] * weights_t[neuron*h + j]) for one neuron.
+/// Uses VPMADDUBSW (u8 × i8 → i16) + VPMADDWD (i16 pairs → i32).
+/// h must be multiple of 32.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_l1_int8_dot(packed: &[u8], weights: &[i8], h: usize) -> i32 {
+    let ones = _mm256_set1_epi16(1);
+    let mut sum = _mm256_setzero_si256(); // 8 × i32
+    let mut i = 0;
+    while i < h {
+        let a = _mm256_loadu_si256(packed.as_ptr().add(i) as *const __m256i);
+        let b = _mm256_loadu_si256(weights.as_ptr().add(i) as *const __m256i);
+        // VPMADDUBSW: u8 × i8 → 16 × i16 (pairs summed)
+        let prod = _mm256_maddubs_epi16(a, b);
+        // VPMADDWD with ones: 16 × i16 → 8 × i32 (pairs summed)
+        let widened = _mm256_madd_epi16(prod, ones);
+        sum = _mm256_add_epi32(sum, widened);
+        i += 32;
+    }
+    // Horizontal sum of 8 × i32
+    let hi = _mm256_extracti128_si256(sum, 1);
+    let lo = _mm256_castsi256_si128(sum);
+    let sum128 = _mm_add_epi32(lo, hi);
+    let shuf = _mm_shuffle_epi32(sum128, 0x4E); // swap pairs
+    let sum128 = _mm_add_epi32(sum128, shuf);
+    let shuf = _mm_shuffle_epi32(sum128, 0xB1); // swap singles
+    let sum128 = _mm_add_epi32(sum128, shuf);
+    _mm_cvtsi128_si32(sum128)
+}
+
 /// SCReLU dot product: clamp acc to [0, QA=255], square, dot with output weights.
 /// Returns i64 sum at scale QA² × QB. acc and weights have length h.
 ///
@@ -749,7 +816,9 @@ pub struct NNUENet {
     pub l1_size: usize,           // 0 = no hidden layer (v5/v6)
     pub l2_size: usize,           // 0 = no L2 (L1 → output directly)
     pub l1_scale: i32,            // QA_L1: 255 for int16, 64 for int8
-    pub l1_weights: Vec<i16>,     // [2*hidden_size × l1_size]
+    pub l1_weights: Vec<i16>,     // [2*hidden_size × l1_size] row-major
+    pub l1_weights_t: Vec<i16>,   // [l1_size × 2*hidden_size] transposed for SIMD
+    pub l1_weights_8t: Vec<i8>,   // [l1_size × 2*hidden_size] transposed int8 for VPMADDUBSW
     pub l1_biases: Vec<i16>,      // [l1_size]
     pub l2_weights_f: Vec<f32>,   // [l1_size × l2_size] — float for precision
     pub l2_biases_f: Vec<f32>,    // [l2_size]
@@ -878,6 +947,35 @@ impl NNUENet {
             println!("info string Loaded NNUE v{} {} {} ({})", version, path, activation, hidden_size);
         }
 
+        // Transpose L1 weights for SIMD: [j*L1+i] → [i*H+j] per perspective
+        // L1WeightsT[0..L1*H] = STM, L1WeightsT[L1*H..2*L1*H] = NTM
+        let l1_weights_t = if l1_size > 0 {
+            let h = hidden_size;
+            let l1 = l1_size;
+            let mut wt = vec![0i16; 2 * l1 * h];
+            // STM: l1_weights[j*L1+i] → wt[i*H+j]
+            for i in 0..l1 {
+                for j in 0..h {
+                    wt[i * h + j] = l1_weights[j * l1 + i];
+                }
+            }
+            // NTM: l1_weights[(H+j)*L1+i] → wt[L1*H + i*H + j]
+            let ntm_off = l1 * h;
+            for i in 0..l1 {
+                for j in 0..h {
+                    wt[ntm_off + i * h + j] = l1_weights[(h + j) * l1 + i];
+                }
+            }
+            wt
+        } else {
+            Vec::new()
+        };
+
+        // Convert transposed L1 weights to int8 (clamp to [-128, 127])
+        let l1_weights_8t: Vec<i8> = l1_weights_t.iter().map(|&w| {
+            w.clamp(-128, 127) as i8
+        }).collect();
+
         // Prepare float weights for v7 hidden layer forward pass
         // L2 and output use QA_L1 (not QA) for dequantization — matches GoChess prepareFloatWeights
         let qa_l1_f = if l1_scale != 0 { l1_scale as f32 } else { QA as f32 };
@@ -954,6 +1052,8 @@ impl NNUENet {
             l1_size,
             l2_size,
             l1_scale,
+            l1_weights_t,
+            l1_weights_8t,
             l1_weights,
             l1_biases,
             l2_weights_f,
@@ -1017,24 +1117,104 @@ impl NNUENet {
             hidden[i] = self.l1_biases[i] as i64 * bias_scale;
         }
 
-        // STM perspective
-        for j in 0..h {
-            let v = (stm_acc[j] as i64).clamp(0, qa);
-            if v == 0 { continue; }
-            let vsq = v * v; // scale QA²
-            let w_off = j * l1;
+        // SIMD int8 path: pack SCReLU to u8, then VPMADDUBSW L1 matmul
+        #[cfg(target_arch = "x86_64")]
+        if self.has_avx2 && h % 32 == 0 && !self.l1_weights_8t.is_empty() {
+            let mut stm_packed = vec![0u8; h];
+            let mut ntm_packed = vec![0u8; h];
+            unsafe {
+                simd_screlu_pack(stm_acc, &mut stm_packed, h);
+                simd_screlu_pack(ntm_acc, &mut ntm_packed, h);
+            }
+            // Int8 matmul: input at scale QA (v²/255), weights at scale QA_L1
+            // Result at scale QA × QA_L1. Bias at scale QA_L1, scaled by QA to match.
+            let qa_int = QA as i32;
             for i in 0..l1 {
-                hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
+                hidden[i] = self.l1_biases[i] as i64 * qa_int as i64; // bias × QA
+            }
+            for i in 0..l1 {
+                let stm_w = &self.l1_weights_8t[i * h..(i + 1) * h];
+                let ntm_w = &self.l1_weights_8t[l1 * h + i * h..l1 * h + (i + 1) * h];
+                unsafe {
+                    hidden[i] += simd_l1_int8_dot(&stm_packed, stm_w, h) as i64;
+                    hidden[i] += simd_l1_int8_dot(&ntm_packed, ntm_w, h) as i64;
+                }
+            }
+            // Dequantize: result at scale QA × QA_L1. Divide by QA to get scale QA_L1.
+            // Then clamp [0, QA_L1], square for SCReLU → scale QA_L1².
+            let qa_l1_sq = qa_l1 as f32 * qa_l1 as f32;
+            let mut l1_out = [0.0f32; 64];
+            for i in 0..l1 {
+                let mut h_val = (hidden[i] / qa as i64) as i32; // scale QA_L1
+                h_val = h_val.clamp(0, qa_l1 as i32);
+                let hsq = h_val * h_val; // SCReLU → scale QA_L1²
+                l1_out[i] = hsq as f32 / qa_l1_sq; // → [0, 1]
+            }
+
+            // L2 or output — float
+            if self.l2_size > 0 {
+                let l2 = self.l2_size;
+                let mut h2 = [0.0f32; 64];
+                for k in 0..l2 { h2[k] = self.l2_biases_f[k]; }
+                for i in 0..l1 {
+                    if l1_out[i] == 0.0 { continue; }
+                    let w_off = i * l2;
+                    for k in 0..l2 { h2[k] += l1_out[i] * self.l2_weights_f[w_off + k]; }
+                }
+                for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; }
+                let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
+                let mut out_f = self.out_bias_f[bucket];
+                for k in 0..l2 { out_f += h2[k] * out_w[k]; }
+                return (out_f * EVAL_SCALE as f32) as i32;
+            }
+            let out_w = &self.out_weights_f[bucket * l1..bucket * l1 + l1];
+            let mut out_f = self.out_bias_f[bucket];
+            for i in 0..l1 { out_f += l1_out[i] * out_w[i]; }
+            return (out_f * EVAL_SCALE as f32) as i32;
+        }
+
+        // Scalar fallback
+        #[cfg(target_arch = "x86_64")]
+        if !(self.has_avx2 && h % 32 == 0 && !self.l1_weights_8t.is_empty()) {
+            for j in 0..h {
+                let v = (stm_acc[j] as i64).clamp(0, qa);
+                if v == 0 { continue; }
+                let vsq = v * v;
+                let w_off = j * l1;
+                for i in 0..l1 {
+                    hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
+                }
+            }
+            for j in 0..h {
+                let v = (ntm_acc[j] as i64).clamp(0, qa);
+                if v == 0 { continue; }
+                let vsq = v * v;
+                let w_off = (h + j) * l1;
+                for i in 0..l1 {
+                    hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
+                }
             }
         }
-        // NTM perspective
-        for j in 0..h {
-            let v = (ntm_acc[j] as i64).clamp(0, qa);
-            if v == 0 { continue; }
-            let vsq = v * v;
-            let w_off = (h + j) * l1;
-            for i in 0..l1 {
-                hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
+
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            for j in 0..h {
+                let v = (stm_acc[j] as i64).clamp(0, qa);
+                if v == 0 { continue; }
+                let vsq = v * v;
+                let w_off = j * l1;
+                for i in 0..l1 {
+                    hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
+                }
+            }
+            for j in 0..h {
+                let v = (ntm_acc[j] as i64).clamp(0, qa);
+                if v == 0 { continue; }
+                let vsq = v * v;
+                let w_off = (h + j) * l1;
+                for i in 0..l1 {
+                    hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
+                }
             }
         }
 
