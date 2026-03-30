@@ -3148,3 +3148,9 @@ Disabled each search feature individually, 300 games each vs Minic/Ethereal/Texe
 - **Change**: Raise FH blend minimum depth from 3 to 4. Reduces score dampening at shallow depths.
 - **Gauntlet (591g)**: +13 ±24 Elo (raw -10 vs baseline +23).
 - **Result**: Rejected. Blending at depth 3 helps; removing it loses ~10 Elo.
+
+## 2026-03-30: NMP eval divisor 170 (was 200)
+
+- **Change**: More aggressive eval-dependent NMP reduction. Lower divisor means larger R bonus per centipawn above beta.
+- **Gauntlet (563g)**: -9 ±24 Elo (raw -32 vs baseline +23).
+- **Result**: Rejected. Same pattern as NMP R=4 — more aggressive NMP hurts at our strength.
