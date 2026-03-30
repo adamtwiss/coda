@@ -1141,6 +1141,7 @@ fn negamax(
         }
 
         board.make_null_move();
+        info.tt.prefetch(board.hash);
         let null_key = board.hash; // save hash for threat detection after unmake
         if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::recompute()); }
         let null_score = -negamax(board, info, -beta, -beta + 1, depth - 1 - r, ply + 1, false);
@@ -1221,6 +1222,7 @@ fn negamax(
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
                 continue;
             }
+            info.tt.prefetch(board.hash);
             let score = -negamax(board, info, -probcut_beta, -probcut_beta + 1, pc_depth, ply + 1, false);
             board.unmake_move();
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
@@ -1404,6 +1406,9 @@ fn negamax(
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
             continue;
         }
+
+        // Prefetch TT bucket for the new position
+        info.tt.prefetch(board.hash);
 
         // Check if move gives check (opponent is now in check after make_move)
         let gives_check = board.in_check();
@@ -2108,6 +2113,7 @@ fn quiescence_with_depth(
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
                 continue;
             }
+            info.tt.prefetch(board.hash);
             move_count += 1;
 
             let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
@@ -2213,6 +2219,7 @@ fn quiescence_with_depth(
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
             continue;
         }
+        info.tt.prefetch(board.hash);
         let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
         board.unmake_move();
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
