@@ -2,7 +2,7 @@
 /// All pruning parameters ported from GoChess (tuned values).
 /// This is a literal, faithful translation of GoChess's search.go.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::bitboard::*;
@@ -148,10 +148,11 @@ pub struct PruneStats {
 /// Search state for one thread.
 pub struct SearchInfo {
     pub nodes: u64,
+    pub global_nodes: std::sync::Arc<AtomicU64>,  // aggregate nodes across SMP threads
     pub silent: bool,  // suppress UCI output (for datagen)
     pub stats: PruneStats,
     pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
-    pub history: History,
+    pub history: Box<History>,
     pub stop: std::sync::Arc<AtomicBool>,  // shared stop flag
     pub start_time: Instant,
     pub time_limit: u64,  // ms
@@ -191,10 +192,11 @@ impl SearchInfo {
     pub fn new(tt_mb: usize) -> Self {
         SearchInfo {
             nodes: 0,
+            global_nodes: std::sync::Arc::new(AtomicU64::new(0)),
             silent: false,
             stats: PruneStats::default(),
             tt: std::sync::Arc::new(TT::new(tt_mb)),
-            history: History::new(),
+            history: alloc_zeroed_box(),
             stop: std::sync::Arc::new(AtomicBool::new(false)),
             start_time: Instant::now(),
             time_limit: 0,
@@ -214,10 +216,10 @@ impl SearchInfo {
             excluded_move: [NO_MOVE; MAX_PLY + 1],
             pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
             pv_len: [0; MAX_PLY + 1],
-            pawn_hist: Box::new([[[0i16; 64]; 13]; PAWN_HIST_SIZE]),
-            pawn_corr: Box::new([[0; CORR_HIST_SIZE]; 2]),
-            np_corr: Box::new([[[0; CORR_HIST_SIZE]; 2]; 2]),
-            cont_corr: Box::new([[0; 64]; 12]),
+            pawn_hist: alloc_zeroed_box(),
+            pawn_corr: alloc_zeroed_box(),
+            np_corr: alloc_zeroed_box(),
+            cont_corr: alloc_zeroed_box(),
             nnue_net: None,
             nnue_acc: None,
         }
@@ -238,6 +240,10 @@ impl SearchInfo {
         }
         if self.max_nodes > 0 && self.nodes >= self.max_nodes {
             return true;
+        }
+        // Flush local node count to global counter every 4096 nodes
+        if self.nodes & 4095 == 0 {
+            self.global_nodes.fetch_add(4096, Ordering::Relaxed);
         }
         // Check time every 4096 nodes
         if self.nodes & 4095 == 0 && self.time_limit > 0 {
@@ -559,6 +565,150 @@ fn init_feature_flags() {
     });
 }
 
+/// Allocate a zeroed Box on the heap without stack intermediary.
+fn alloc_zeroed_box<T>() -> Box<T> {
+    unsafe {
+        let layout = std::alloc::Layout::new::<T>();
+        let ptr = std::alloc::alloc_zeroed(layout) as *mut T;
+        if ptr.is_null() { std::alloc::handle_alloc_error(layout); }
+        Box::from_raw(ptr)
+    }
+}
+
+/// Create a helper SearchInfo that shares TT and stop flag with the main thread.
+fn create_helper_info(main: &SearchInfo) -> SearchInfo {
+    let mut helper = SearchInfo::new(1); // dummy TT, will be replaced
+    helper.tt = main.tt.clone();             // share the same TT
+    helper.stop = main.stop.clone();         // share the same stop flag
+    helper.global_nodes = main.global_nodes.clone(); // share node counter
+    helper.silent = true;                // helpers don't output UCI
+    helper.nnue_net = main.nnue_net.clone(); // share NNUE weights (read-only)
+    // Create fresh NNUE accumulator for the helper
+    if let Some(net) = &helper.nnue_net {
+        helper.nnue_acc = Some(crate::nnue::NNUEAccumulator::new(net.hidden_size));
+    }
+    helper.time_limit = main.time_limit;
+    helper.move_overhead = main.move_overhead;
+    helper
+}
+
+/// Run Lazy SMP search: main thread + N-1 helper threads.
+pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits, threads: usize) -> Move {
+    if threads <= 1 {
+        return search(board, info, limits);
+    }
+
+    // Reset shared state
+    info.stop.store(false, Ordering::Relaxed);
+    info.tt.new_search();
+
+    // Spawn helper threads
+    let mut handles = Vec::new();
+    for thread_id in 1..threads {
+        let mut helper = create_helper_info(info);
+        let mut helper_board = board.clone();
+        let helper_limits = SearchLimits {
+            depth: limits.depth,
+            movetime: limits.movetime,
+            wtime: limits.wtime, btime: limits.btime,
+            winc: limits.winc, binc: limits.binc,
+            movestogo: limits.movestogo,
+            nodes: 0, // helpers don't have node limits
+            infinite: limits.infinite,
+        };
+
+        handles.push(std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                // Helpers search at offset depths for diversity
+                helper.start_time = Instant::now();
+                // Reset NNUE for this position
+                if let Some(acc) = &mut helper.nnue_acc {
+                    acc.reset();
+                }
+                if let (Some(net), Some(acc)) = (&helper.nnue_net, &mut helper.nnue_acc) {
+                    acc.materialize(net, &helper_board);
+                }
+                // Time management for helpers (same as main)
+                let (our_time, our_inc) = if helper_board.side_to_move == WHITE {
+                    (helper_limits.wtime, helper_limits.winc)
+                } else {
+                    (helper_limits.btime, helper_limits.binc)
+                };
+                if helper_limits.movetime > 0 {
+                    helper.time_limit = helper_limits.movetime;
+                } else if our_time > 0 {
+                    let overhead = helper.move_overhead;
+                    let time_left = our_time.saturating_sub(overhead).max(1);
+                    let base_time = time_left / 20 + our_inc * 3 / 4;
+                    helper.soft_limit = base_time.min(time_left);
+                    helper.hard_limit = (base_time * 5).min(time_left);
+                    helper.time_limit = helper.hard_limit;
+                }
+                helper.max_depth = helper_limits.depth;
+
+                // Search with depth offset for diversity (standard Lazy SMP trick)
+                let _mv = search_helper(&mut helper_board, &mut helper, &helper_limits, thread_id);
+                helper.nodes // return node count
+            }).expect("Failed to spawn SMP helper"));
+    }
+
+    // Main thread searches normally
+    let best_move = search(board, info, limits);
+
+    // Signal all helpers to stop
+    info.stop.store(true, Ordering::Relaxed);
+
+    // Collect helper node counts
+    let mut total_nodes = info.nodes;
+    for h in handles {
+        if let Ok(helper_nodes) = h.join() {
+            total_nodes += helper_nodes;
+        }
+    }
+    info.nodes = total_nodes;
+
+    best_move
+}
+
+/// Helper thread search — same as main but silent and with depth offset.
+fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimits, thread_id: usize) -> Move {
+    init_feature_flags();
+
+    info.history.clear();
+    info.clear_correction_history();
+    info.stats = PruneStats::default();
+    for entry in info.pawn_hist.iter_mut() {
+        *entry = [[0i16; 64]; 13];
+    }
+    info.static_evals = [0; MAX_PLY + 1];
+    info.excluded_move = [NO_MOVE; MAX_PLY + 1];
+    info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
+    info.pv_len = [0; MAX_PLY + 1];
+    info.nodes = 0;
+
+    let root_legal = generate_legal_moves(board);
+    let mut best_move = if root_legal.len > 0 { root_legal.moves[0] } else { NO_MOVE };
+
+    let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
+    for depth in 1..=effective_max {
+        if info.stop.load(Ordering::Relaxed) { break; }
+
+        // Depth offset for thread diversity: even threads +1, odd threads +0
+        let search_depth = depth + (thread_id % 2) as i32;
+        if search_depth > effective_max { break; }
+
+        let _score = negamax(board, info, -INFINITY, INFINITY, search_depth, 0, false);
+        if info.stop.load(Ordering::Relaxed) { break; }
+
+        if info.pv_len[0] > 0 {
+            best_move = info.pv_table[0][0];
+        }
+    }
+
+    best_move
+}
+
 /// Run iterative deepening search.
 pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -> Move {
     init_feature_flags();
@@ -566,6 +716,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.start_time = Instant::now();
     info.stop.store(false, Ordering::Relaxed);
     info.nodes = 0;
+    info.global_nodes.store(0, Ordering::Relaxed);
     info.sel_depth = 0;
 
     // Clear all search heuristics (matches GoChess: fresh SearchInfo per go command).
@@ -756,7 +907,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         // UCI info output
         let elapsed = info.start_time.elapsed().as_millis() as u64;
-        let nps = if elapsed > 0 { info.nodes * 1000 / elapsed } else { 0 };
+        let global = info.global_nodes.load(Ordering::Relaxed);
+        let nps = if elapsed > 0 { global * 1000 / elapsed } else { 0 };
         let score_str = if is_mate_score(prev_score) {
             let mate_in = if prev_score > 0 {
                 (MATE_SCORE - prev_score + 1) / 2
@@ -810,7 +962,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         if !info.silent {
             println!(
                 "info depth {} seldepth {} {} nodes {} nps {} time {} hashfull {} pv {}",
-                depth, info.sel_depth, score_str, info.nodes, nps, elapsed,
+                depth, info.sel_depth, score_str,
+                global, nps, elapsed,
                 info.tt.hashfull(), pv_str
             );
         }

@@ -13,6 +13,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut opening_book: Option<crate::book::OpeningBook> = None;
     let mut use_book = true;
     let mut syzygy: Option<crate::tb::SyzygyTB> = None;
+    let mut num_threads: usize = 1;
 
     // Pre-load NNUE if path given via CLI, otherwise try net.txt auto-discovery
     if let Some(path) = nnue_path {
@@ -78,6 +79,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("id name Coda");
                 println!("id author Adam Twiss");
                 println!("option name Hash type spin default 64 min 1 max 4096");
+                println!("option name Threads type spin default 1 min 1 max 256");
                 println!("option name NNUEFile type string default <empty>");
                 println!("option name OwnBook type check default true");
                 println!("option name BookFile type string default <empty>");
@@ -129,9 +131,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 if info.nnue_net.is_none() {
                     println!("info string WARNING: No NNUE net loaded! Playing with classical eval.");
                 }
-                // Run search synchronously (stop flag checked every 4096 nodes)
-                info.stop.store(false, Ordering::Relaxed);
-                let best_move = search(&mut board, &mut info, &limits);
+                // Run search (Lazy SMP if threads > 1)
+                let best_move = search_smp(&mut board, &mut info, &limits, num_threads);
                 let s = &info.stats;
                 let fmr = if s.beta_cutoffs > 0 { s.first_move_cutoffs * 100 / s.beta_cutoffs } else { 0 };
                 println!("info string stats tt={} nmp={} rfp={} razor={} lmp={} futility={} hist={} see={} probcut={} lmr={} recap={} qnodes={} fmr={}%({}/{})",
@@ -161,7 +162,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 info.stop.store(true, Ordering::Relaxed);
             }
             "setoption" => {
-                parse_option(&tokens, &mut info);
+                parse_option(&tokens, &mut info, &mut num_threads);
                 // Handle book options separately
                 let mut ni = 0; let mut vi = 0;
                 for i in 0..tokens.len() {
@@ -353,7 +354,7 @@ fn parse_go(tokens: &[&str]) -> SearchLimits {
     limits
 }
 
-fn parse_option(tokens: &[&str], info: &mut SearchInfo) {
+fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize) {
     // setoption name X value Y
     // Find "name" and "value" positions
     let mut name_idx = 0;
@@ -377,6 +378,12 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo) {
             match info.load_nnue(value) {
                 Ok(_) => {}
                 Err(e) => println!("info string Failed to load NNUE from {}: {}", value, e),
+            }
+        }
+        "Threads" => {
+            if let Ok(t) = value.parse::<usize>() {
+                *num_threads = t.max(1).min(256);
+                println!("info string Threads = {}", *num_threads);
             }
         }
         "MoveOverhead" => {
