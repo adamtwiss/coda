@@ -214,6 +214,80 @@ unsafe fn simd_crelu_dot(acc: &[i16], weights: &[i16], h: usize) -> i64 {
     hsum_epi64(total)
 }
 
+/// Pairwise dot product: clamp(a[i],0,255) * clamp(b[i],0,255) * weights[i]
+/// where a = first half, b = second half of accumulator.
+/// Returns i64 sum (caller divides by QA=255).
+///
+/// Uses byte decomposition: a*b ∈ [0,65025] = byte0 + byte1*256.
+/// byte0 = (a*b) & 0xFF, byte1 = (a*b) >> 8.
+/// Both accumulated via VPMADDWD, then byte1 shifted left by 8 before combining.
+/// Drains i32 → i64 every 128 elements. count must be multiple of 16.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_pairwise_dot(acc_first: &[i16], acc_second: &[i16], weights: &[i16], count: usize) -> i64 {
+    let zero = _mm256_setzero_si256();
+    let qa = _mm256_set1_epi16(QA as i16); // 255 = clamp ceiling + byte0 mask
+    let mut total = _mm256_setzero_si256(); // 4 × i64
+    let mut sum32_b0 = _mm256_setzero_si256(); // byte0 accumulator (8 × i32)
+    let mut sum32_b1 = _mm256_setzero_si256(); // byte1 accumulator (8 × i32)
+    let mut batch = 0u32;
+
+    let mut i = 0;
+    while i < count {
+        // Load and clamp a[i..i+16] to [0, 255]
+        let a = _mm256_loadu_si256(acc_first.as_ptr().add(i) as *const __m256i);
+        let a_clamped = _mm256_min_epi16(_mm256_max_epi16(a, zero), qa);
+
+        // Load and clamp b[i..i+16] to [0, 255]
+        let b = _mm256_loadu_si256(acc_second.as_ptr().add(i) as *const __m256i);
+        let b_clamped = _mm256_min_epi16(_mm256_max_epi16(b, zero), qa);
+
+        // a*b in u16 (max 65025, fits in u16)
+        let prod = _mm256_mullo_epi16(a_clamped, b_clamped);
+
+        // Load weights
+        let w = _mm256_loadu_si256(weights.as_ptr().add(i) as *const __m256i);
+
+        // byte0 = prod & 0xFF
+        let byte0 = _mm256_and_si256(prod, qa); // qa = 0x00FF
+        // byte1 = prod >> 8
+        let byte1 = _mm256_srli_epi16(prod, 8);
+
+        // VPMADDWD: pairwise i16×i16 → i32 (adjacent pairs summed)
+        sum32_b0 = _mm256_add_epi32(sum32_b0, _mm256_madd_epi16(byte0, w));
+        sum32_b1 = _mm256_add_epi32(sum32_b1, _mm256_madd_epi16(byte1, w));
+
+        batch += 16;
+        if batch >= 128 {
+            // Drain byte0: sign-extend i32 → i64
+            total = _mm256_add_epi64(total, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(sum32_b0)));
+            total = _mm256_add_epi64(total, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(sum32_b0, 1)));
+            // Drain byte1: shift left 8 then add
+            let b1_lo = _mm256_slli_epi64(_mm256_cvtepi32_epi64(_mm256_castsi256_si128(sum32_b1)), 8);
+            let b1_hi = _mm256_slli_epi64(_mm256_cvtepi32_epi64(_mm256_extracti128_si256(sum32_b1, 1)), 8);
+            total = _mm256_add_epi64(total, b1_lo);
+            total = _mm256_add_epi64(total, b1_hi);
+            sum32_b0 = _mm256_setzero_si256();
+            sum32_b1 = _mm256_setzero_si256();
+            batch = 0;
+        }
+
+        i += 16;
+    }
+
+    // Drain remaining
+    if batch > 0 {
+        total = _mm256_add_epi64(total, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(sum32_b0)));
+        total = _mm256_add_epi64(total, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(sum32_b0, 1)));
+        let b1_lo = _mm256_slli_epi64(_mm256_cvtepi32_epi64(_mm256_castsi256_si128(sum32_b1)), 8);
+        let b1_hi = _mm256_slli_epi64(_mm256_cvtepi32_epi64(_mm256_extracti128_si256(sum32_b1, 1)), 8);
+        total = _mm256_add_epi64(total, b1_lo);
+        total = _mm256_add_epi64(total, b1_hi);
+    }
+
+    hsum_epi64(total)
+}
+
 /// SCReLU dot product: clamp acc to [0, QA=255], square, dot with output weights.
 /// Returns i64 sum at scale QA² × QB. acc and weights have length h.
 ///
@@ -853,7 +927,20 @@ impl NNUENet {
         if self.use_pairwise {
             let pw = h / 2; // pairwise output size per perspective
 
-            // Scalar pairwise dot — TODO: add SIMD kernel
+            #[cfg(target_arch = "x86_64")]
+            if self.has_avx2 && pw % 16 == 0 {
+                let bias = output; // save bias before adding dot products
+                let mut sum: i64;
+                unsafe {
+                    sum = simd_pairwise_dot(&stm_acc[..pw], &stm_acc[pw..], &out_w[..pw], pw);
+                    sum += simd_pairwise_dot(&ntm_acc[..pw], &ntm_acc[pw..], &out_w[pw..], pw);
+                }
+                output = sum / QA as i64 + bias;
+                let result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
+                return result;
+            }
+
+            // Scalar fallback
             for i in 0..pw {
                 let a = (stm_acc[i] as i32).clamp(0, QA as i32);
                 let b = (stm_acc[i + pw] as i32).clamp(0, QA as i32);
