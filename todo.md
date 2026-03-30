@@ -34,9 +34,15 @@ Mark items DONE with date when completed. Move to experiments.md when tested.
 - [ ] **Retry: LMP Failing /2** — +0.8, LMP needs recalibration generally
 - [ ] **Retry: Opponent Material LMR <4** — +1.9, one-directional signal
 - [ ] **Retry: History Pruning Depth 4** — -0.5 but +5.5 at 1141g
-- [ ] **No killers / counter-move** — Reckless uses history alone. Radical but proven. Test removing killers and see if history compensates. (Source: Reckless review)
-- [ ] **Alpha-raise LMR tracking** — more reduction after alpha has been raised. (Source: Reckless review)
+- [ ] **No killers / counter-move** — SF/Reckless/Viridithas all dropped these. Rich history replaces them. Test removing. (Source: SF/Reckless/Viridithas reviews)
+- [ ] **Alpha-raise LMR tracking** — more reduction after alpha has been raised. (Source: Reckless/Stormphrax reviews)
 - [ ] **Soft stop thread consensus** — 65% of SMP threads must agree on best move before stopping. (Source: Reckless review)
+- [ ] **Cuckoo cycle detection** — proactive repetition avoidance before it occurs. Eval-agnostic, should transfer. (Source: Berserk/Viridithas reviews)
+- [ ] **Opponent easy captures for pruning gates** — gate RFP/NMP on whether opponent has easy captures. (Source: Berserk review)
+- [ ] **History aging (×0.80 per iteration)** — decay history tables each ID iteration. SF does this. (Source: SF review)
+- [ ] **CReLU vs SCReLU for v7** — Berserk uses CReLU specifically for better sparsity in sparse L1. SCReLU kills sparsity. Consider CReLU for pairwise+hidden arch. (Source: Berserk review)
+- [ ] **Threat-aware history (4D indexed)** — [stm][from_threatened][to_threatened][from_to]. Consensus across SF/Reckless/Viridithas/Stormphrax/Berserk/Caissa. Our flat bonus approach failed; need proper table indexing. (Source: all reviews)
+- [ ] **6-ply continuation history** — SF/Caissa use 6-ply. We just added 4-ply. (Source: SF/Caissa reviews)
 
 ## NNUE / Model
 
@@ -49,6 +55,9 @@ Mark items DONE with date when completed. Move to experiments.md when tested.
 
 ### Medium Priority
 
+- [ ] **Threat accumulator** — Reckless/Stormphrax encode piece-attack relationships as a second NNUE input (60K+ features). This is why our history-based threat awareness fails — the signal needs to be in the eval. Requires Bullet training support. (Source: Reckless/Stormphrax reviews)
+- [ ] **Dual net (big+small)** — SF selects 1024-wide or 128-wide net by material. Saves NPS in simple positions. (Source: SF review)
+- [ ] **Layer stacks (material-bucketed)** — SF uses 8 sub-networks selected by material count. Different from output buckets. (Source: SF review)
 - [ ] **WDL sweep for 768pw** — w3/w5/w7 were flat in self-play for 1024s. Test for 768pw which showed different behaviour.
 - [ ] **Dual activation (ReLU + x^2)** — Obsidian feeds both to L2, doubling information. (Source: Obsidian review)
 - [ ] **Weight repermutation** — reorder FT neurons for NNZ locality. Viridithas does co-occurrence analysis. (Source: Viridithas review)
