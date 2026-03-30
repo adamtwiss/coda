@@ -3142,3 +3142,9 @@ Disabled each search feature individually, 300 games each vs Minic/Ethereal/Texe
 - **Futility 50+d*50 alone (600g)**: +20 ±24 Elo (raw -3). Neutral.
 - **Result**: Both individually neutral. Combined +18 was likely noise. Neither committed.
 - **Notes**: The combined test illustrates the danger of testing two changes together — synergistic noise can look like a real gain.
+
+## 2026-03-30: Fail-high blend depth gate 4 (was 3)
+
+- **Change**: Raise FH blend minimum depth from 3 to 4. Reduces score dampening at shallow depths.
+- **Gauntlet (591g)**: +13 ±24 Elo (raw -10 vs baseline +23).
+- **Result**: Rejected. Blending at depth 3 helps; removing it loses ~10 Elo.
