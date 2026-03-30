@@ -148,6 +148,7 @@ pub struct PruneStats {
 /// Search state for one thread.
 pub struct SearchInfo {
     pub nodes: u64,
+    pub silent: bool,  // suppress UCI output (for datagen)
     pub stats: PruneStats,
     pub tt: TT,
     pub history: History,
@@ -190,6 +191,7 @@ impl SearchInfo {
     pub fn new(tt_mb: usize) -> Self {
         SearchInfo {
             nodes: 0,
+            silent: false,
             stats: PruneStats::default(),
             tt: TT::new(tt_mb),
             history: History::new(),
@@ -805,11 +807,13 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
         }
 
-        println!(
-            "info depth {} seldepth {} {} nodes {} nps {} time {} hashfull {} pv {}",
-            depth, info.sel_depth, score_str, info.nodes, nps, elapsed,
-            info.tt.hashfull(), pv_str
-        );
+        if !info.silent {
+            println!(
+                "info depth {} seldepth {} {} nodes {} nps {} time {} hashfull {} pv {}",
+                depth, info.sel_depth, score_str, info.nodes, nps, elapsed,
+                info.tt.hashfull(), pv_str
+            );
+        }
 
         // Dynamic time management: adjust soft limit based on stability
         if info.soft_limit > 0 && depth >= 4 && !info.should_stop() {

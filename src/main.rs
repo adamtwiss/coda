@@ -140,6 +140,7 @@ fn main() {
             let depth: i32 = flag_value(&args, "-depth").and_then(|s| s.parse().ok()).unwrap_or(8);
             let games: usize = flag_value(&args, "-games").and_then(|s| s.parse().ok()).unwrap_or(1000);
             let hash: usize = flag_value(&args, "-hash").and_then(|s| s.parse().ok()).unwrap_or(16);
+            let threads: usize = flag_value(&args, "-threads").and_then(|s| s.parse().ok()).unwrap_or(1);
             let blunder: f64 = flag_value(&args, "-blunder").and_then(|s| s.parse().ok()).unwrap_or(0.0);
             let epd_path = flag_value(&args, "-epd");
 
@@ -155,7 +156,7 @@ fn main() {
                 mode,
                 depth,
                 num_games: games,
-                threads: 1,
+                threads,
                 hash_mb: hash,
             };
             datagen::run_datagen(&config);
@@ -209,7 +210,8 @@ fn print_usage() {
     println!("                                    Generate training data (SF binpack format)");
     println!("    -depth <N>                      Search depth per position (default 8)");
     println!("    -games <N>                      Number of self-play games (default 1000)");
-    println!("    -hash <MB>                      Hash table size (default 16)");
+    println!("    -threads <N>                    Worker threads (default 1)");
+    println!("    -hash <MB>                      Hash table size per thread (default 16)");
     println!("    -blunder <rate>                 Random move rate 0.0-1.0 (default 0.0)");
     println!("    -epd <file>                     Material mode: remove pieces from EPD positions");
     println!("  coda help                         Show this help");
