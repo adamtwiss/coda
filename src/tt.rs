@@ -98,12 +98,16 @@ impl TTBucket {
     }
 }
 
-/// The transposition table.
+/// The transposition table. Thread-safe for Lazy SMP.
 pub struct TT {
     buckets: Vec<TTBucket>,
     mask: usize,  // num_buckets - 1 (power of 2)
-    generation: u8,
+    generation: std::sync::atomic::AtomicU8,
 }
+
+// TT is safe to share: all fields use atomics or are immutable after construction.
+unsafe impl Sync for TT {}
+unsafe impl Send for TT {}
 
 /// Result of a TT probe.
 pub struct TTEntry {
@@ -153,7 +157,7 @@ impl TT {
         TT {
             buckets,
             mask: size - 1,
-            generation: 0,
+            generation: std::sync::atomic::AtomicU8::new(0),
         }
     }
 
@@ -165,8 +169,8 @@ impl TT {
     }
 
     /// Increment generation (called at each new search).
-    pub fn new_search(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
+    pub fn new_search(&self) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Get the bucket index for a hash (power-of-2 masking, matches GoChess).
@@ -213,7 +217,7 @@ impl TT {
     pub fn store(&self, hash: u64, depth: i32, score: i32, flag: u8, best_move: Move, static_eval: i32) {
         let idx = self.bucket_index(hash);
         let bucket = &self.buckets[idx];
-        let gen = self.generation;
+        let gen = self.generation.load(Ordering::Relaxed);
         let key_upper = (hash >> 32) as u32;
 
         let new_data = pack_data(best_move, flag, static_eval, score, depth, gen);

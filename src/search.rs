@@ -150,9 +150,9 @@ pub struct SearchInfo {
     pub nodes: u64,
     pub silent: bool,  // suppress UCI output (for datagen)
     pub stats: PruneStats,
-    pub tt: TT,
+    pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
     pub history: History,
-    pub stop: AtomicBool,
+    pub stop: std::sync::Arc<AtomicBool>,  // shared stop flag
     pub start_time: Instant,
     pub time_limit: u64,  // ms
     pub max_depth: i32,
@@ -193,9 +193,9 @@ impl SearchInfo {
             nodes: 0,
             silent: false,
             stats: PruneStats::default(),
-            tt: TT::new(tt_mb),
+            tt: std::sync::Arc::new(TT::new(tt_mb)),
             history: History::new(),
-            stop: AtomicBool::new(false),
+            stop: std::sync::Arc::new(AtomicBool::new(false)),
             start_time: Instant::now(),
             time_limit: 0,
             max_depth: 100,

@@ -370,7 +370,7 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo) {
     match name {
         "Hash" => {
             if let Ok(mb) = value.parse::<usize>() {
-                info.tt = crate::tt::TT::new(mb.max(1).min(4096));
+                info.tt = std::sync::Arc::new(crate::tt::TT::new(mb.max(1).min(4096)));
             }
         }
         "NNUEFile" => {
