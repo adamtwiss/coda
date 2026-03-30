@@ -18,6 +18,7 @@ pub mod book;
 pub mod tb;
 pub mod binpack;
 pub mod datagen;
+pub mod nnue_export;
 
 use board::Board;
 use movegen::{perft, perft_divide};
@@ -162,6 +163,26 @@ fn main() {
             datagen::run_datagen(&config);
         }
 
+        "convert-checkpoint" => {
+            let nnue_path = flag_value(&args, "-nnue")
+                .expect("Usage: coda convert-checkpoint -nnue <net.nnue> -output <dir> [-ft N] [-l1 N] [-l2 N]");
+            let output = flag_value(&args, "-output").unwrap_or("v7_checkpoint");
+            let ft: usize = flag_value(&args, "-ft").and_then(|s| s.parse().ok()).unwrap_or(1024);
+            let l1: usize = flag_value(&args, "-l1").and_then(|s| s.parse().ok()).unwrap_or(16);
+            let l2: usize = flag_value(&args, "-l2").and_then(|s| s.parse().ok()).unwrap_or(32);
+            if let Err(e) = nnue_export::nnue_to_bullet_checkpoint(nnue_path, output, ft, l1, l2) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+
+        "check-net" => {
+            let net_path = args.get(2).expect("Usage: coda check-net <net.nnue>");
+            // TODO: port check-net from GoChess tuner
+            println!("check-net not yet implemented — use GoChess tuner for now");
+            println!("  ./tuner check-net {}", net_path);
+        }
+
         "help" | "--help" | "-h" => {
             print_usage();
         }
@@ -208,6 +229,9 @@ fn print_usage() {
     println!("  coda perft-bench                  Perft benchmark suite");
     println!("  coda datagen -nnue <net> -output <file.binpack> [options]");
     println!("                                    Generate training data (SF binpack format)");
+    println!("  coda convert-checkpoint -nnue <v5.nnue> -output <dir> [-ft 1024] [-l1 16] [-l2 32]");
+    println!("                                    Convert .nnue to Bullet checkpoint for v7 transfer learning");
+    println!("  coda check-net <net.nnue>         NNUE health check (TODO)");
     println!("    -depth <N>                      Search depth per position (default 8)");
     println!("    -games <N>                      Number of self-play games (default 1000)");
     println!("    -threads <N>                    Worker threads (default 1)");
