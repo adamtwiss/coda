@@ -738,14 +738,23 @@ pub struct NNUENet {
     pub hidden_size: usize,
     pub input_weights: Vec<i16>,  // [NNUE_INPUT_SIZE × hidden_size]
     pub input_biases: Vec<i16>,   // [hidden_size]
-    pub output_weights: Vec<i16>, // [NNUE_OUTPUT_BUCKETS × 2 × hidden_size]
+    pub output_weights: Vec<i16>, // [NNUE_OUTPUT_BUCKETS × out_width]
     /// Quantized output weights for fast SCReLU: i16 but clamped to [-128, 127] range.
-    /// Stored alongside scale factor per bucket for precision recovery.
-    pub output_weights_i8: Vec<i16>, // [NNUE_OUTPUT_BUCKETS × 2 × hidden_size], values in i8 range
-    pub output_scale: [f32; NNUE_OUTPUT_BUCKETS], // per-bucket scale factor
+    pub output_weights_i8: Vec<i16>,
+    pub output_scale: [f32; NNUE_OUTPUT_BUCKETS],
     pub output_bias: [i32; NNUE_OUTPUT_BUCKETS],
     pub use_screlu: bool,
     pub use_pairwise: bool,
+    // v7 hidden layers
+    pub l1_size: usize,           // 0 = no hidden layer (v5/v6)
+    pub l2_size: usize,           // 0 = no L2 (L1 → output directly)
+    pub l1_scale: i32,            // QA_L1: 255 for int16, 64 for int8
+    pub l1_weights: Vec<i16>,     // [2*hidden_size × l1_size]
+    pub l1_biases: Vec<i16>,      // [l1_size]
+    pub l2_weights_f: Vec<f32>,   // [l1_size × l2_size] — float for precision
+    pub l2_biases_f: Vec<f32>,    // [l2_size]
+    pub out_weights_f: Vec<f32>,  // [NNUE_OUTPUT_BUCKETS × out_l_size] — float output
+    pub out_bias_f: Vec<f32>,     // [NNUE_OUTPUT_BUCKETS]
     pub has_avx2: bool,
     pub has_avx512: bool,
     pub has_neon: bool,
@@ -767,34 +776,49 @@ impl NNUENet {
         let version = read_u32(&mut reader)?;
         let mut use_screlu = false;
         let mut use_pairwise = false;
+        let mut l1_size = 0usize;
+        let mut l2_size = 0usize;
+        let mut l1_scale = QA as i32; // default int16 scale
+        let hidden_size: usize;
 
-        let header_size: u64 = match version {
-            5 => 8, // magic + version
+        match version {
+            5 => {
+                // Infer hidden size from file size
+                let file_meta = std::fs::metadata(path).map_err(|e| format!("stat {}: {}", path, e))?;
+                let body_size = file_meta.len() - 8;
+                let h_denom = 2 * (NNUE_INPUT_SIZE as u64 + 1 + 16);
+                let h_numer = body_size - 32;
+                if h_numer % h_denom != 0 {
+                    return Err(format!("cannot infer hidden size from file size (body {})", body_size));
+                }
+                hidden_size = (h_numer / h_denom) as usize;
+            }
             6 => {
                 let flags = read_u8(&mut reader)?;
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
-                9
+                let file_meta = std::fs::metadata(path).map_err(|e| format!("stat {}: {}", path, e))?;
+                let body_size = file_meta.len() - 9;
+                let out_mul: u64 = if use_pairwise { 8 } else { 16 };
+                let h_denom = 2 * (NNUE_INPUT_SIZE as u64 + 1 + out_mul);
+                let h_numer = body_size - 32;
+                if h_numer % h_denom != 0 {
+                    return Err(format!("cannot infer hidden size from file size (body {})", body_size));
+                }
+                hidden_size = (h_numer / h_denom) as usize;
+            }
+            7 => {
+                let flags = read_u8(&mut reader)?;
+                use_screlu = flags & 1 != 0;
+                use_pairwise = flags & 2 != 0;
+                if flags & 4 != 0 { l1_scale = 64; } // int8 L1 weights
+                let ft_size = read_u16(&mut reader)? as usize;
+                l1_size = read_u16(&mut reader)? as usize;
+                l2_size = read_u16(&mut reader)? as usize;
+                hidden_size = ft_size;
             }
             _ => return Err(format!("unsupported NNUE version: {}", version)),
         };
-
-        // Infer hidden size from file size
-        let file_meta = std::fs::metadata(path).map_err(|e| format!("stat {}: {}", path, e))?;
-        let file_size = file_meta.len();
-        let body_size = file_size - header_size;
-
-        // body = InputWeights(NNUE_INPUT_SIZE * H * 2) + InputBiases(H * 2)
-        //      + OutputWeights(8 * out_mul * H * 2) + OutputBias(8 * 4)
-        // out_mul = 2 (plain: both perspectives) or 1 (pairwise: halved)
-        // body - 32 = 2*H*(NNUE_INPUT_SIZE + 1 + 8*out_mul)
-        let out_mul: u64 = if use_pairwise { 8 } else { 16 };
-        let h_denom = 2 * (NNUE_INPUT_SIZE as u64 + 1 + out_mul);
-        let h_numer = body_size - 32;
-        if h_numer % h_denom != 0 {
-            return Err(format!("cannot infer hidden size from file size {} (body {})", file_size, body_size));
-        }
-        let hidden_size = (h_numer / h_denom) as usize;
 
         // Read input weights
         let mut input_weights = vec![0i16; NNUE_INPUT_SIZE * hidden_size];
@@ -804,9 +828,36 @@ impl NNUENet {
         let mut input_biases = vec![0i16; hidden_size];
         read_i16_slice(&mut reader, &mut input_biases)?;
 
+        // Read L1 hidden layer weights (v7)
+        let mut l1_weights = Vec::new();
+        let mut l1_biases = Vec::new();
+        if l1_size > 0 {
+            l1_weights = vec![0i16; 2 * hidden_size * l1_size];
+            read_i16_slice(&mut reader, &mut l1_weights)?;
+            l1_biases = vec![0i16; l1_size];
+            read_i16_slice(&mut reader, &mut l1_biases)?;
+        }
+
+        // Read L2 hidden layer weights (v7)
+        let mut l2_weights_raw = Vec::new();
+        let mut l2_biases_raw = Vec::new();
+        if l2_size > 0 {
+            l2_weights_raw = vec![0i16; l1_size * l2_size];
+            read_i16_slice(&mut reader, &mut l2_weights_raw)?;
+            l2_biases_raw = vec![0i16; l2_size];
+            read_i16_slice(&mut reader, &mut l2_biases_raw)?;
+        }
+
         // Read output weights: 8 buckets × out_width
-        // Plain: out_width = 2*H (stm + ntm), Pairwise: out_width = H (pairwise halves it)
-        let out_width = if use_pairwise { hidden_size } else { 2 * hidden_size };
+        let out_width = if l2_size > 0 {
+            l2_size
+        } else if l1_size > 0 {
+            l1_size
+        } else if use_pairwise {
+            hidden_size
+        } else {
+            2 * hidden_size
+        };
         let mut output_weights = vec![0i16; NNUE_OUTPUT_BUCKETS * out_width];
         read_i16_slice(&mut reader, &mut output_weights)?;
 
@@ -817,7 +868,28 @@ impl NNUENet {
         }
 
         let activation = if use_pairwise { "pairwise" } else if use_screlu { "SCReLU" } else { "CReLU" };
-        println!("info string Loaded NNUE v{} {} {} ({})", version, path, activation, hidden_size);
+        if l1_size > 0 {
+            if l2_size > 0 {
+                println!("info string Loaded NNUE v{} {} {} (FT={} L1={} L2={})", version, path, activation, hidden_size, l1_size, l2_size);
+            } else {
+                println!("info string Loaded NNUE v{} {} {} (FT={} L1={})", version, path, activation, hidden_size, l1_size);
+            }
+        } else {
+            println!("info string Loaded NNUE v{} {} {} ({})", version, path, activation, hidden_size);
+        }
+
+        // Prepare float weights for v7 hidden layer forward pass
+        // L2 and output use QA_L1 (not QA) for dequantization — matches GoChess prepareFloatWeights
+        let qa_l1_f = if l1_scale != 0 { l1_scale as f32 } else { QA as f32 };
+        let qb_f = QB as f32;
+        let l2_weights_f: Vec<f32> = l2_weights_raw.iter().map(|&w| w as f32 / qa_l1_f).collect();
+        let l2_biases_f: Vec<f32> = l2_biases_raw.iter().map(|&b| b as f32 / qa_l1_f).collect();
+        let out_weights_f: Vec<f32> = if l1_size > 0 {
+            output_weights.iter().map(|&w| w as f32 / qb_f).collect()
+        } else { Vec::new() };
+        let out_bias_f: Vec<f32> = if l1_size > 0 {
+            output_bias.iter().map(|&b| b as f32 / (qa_l1_f * qb_f)).collect()
+        } else { Vec::new() };
 
         let has_avx2 = detect_avx2();
         let has_avx512 = detect_avx512();
@@ -879,6 +951,15 @@ impl NNUENet {
             output_bias,
             use_screlu,
             use_pairwise,
+            l1_size,
+            l2_size,
+            l1_scale,
+            l1_weights,
+            l1_biases,
+            l2_weights_f,
+            l2_biases_f,
+            out_weights_f,
+            out_bias_f,
             has_avx2,
             has_avx512,
             has_neon,
@@ -892,10 +973,13 @@ impl NNUENet {
         &self.input_weights[off..off + self.hidden_size]
     }
 
-    /// Output width per bucket: 2*H (plain) or H (pairwise).
+    /// Output width per bucket.
     #[inline]
     fn output_width(&self) -> usize {
-        if self.use_pairwise { self.hidden_size } else { 2 * self.hidden_size }
+        if self.l2_size > 0 { self.l2_size }
+        else if self.l1_size > 0 { self.l1_size }
+        else if self.use_pairwise { self.hidden_size }
+        else { 2 * self.hidden_size }
     }
 
     /// Get output weight row for a bucket.
@@ -914,6 +998,93 @@ impl NNUENet {
         &self.output_weights_i8[off..off + w]
     }
 
+    /// v7 hidden layer forward pass (SCReLU).
+    /// acc → SCReLU (clamp+square, scale QA²) → L1 matmul → /QA² → SCReLU → float L2 → output
+    fn forward_with_l1(&self, stm_acc: &[i16], ntm_acc: &[i16], bucket: usize) -> i32 {
+        let h = self.hidden_size;
+        let l1 = self.l1_size;
+        let qa = QA as i64;
+        let qa2 = qa * qa; // 65025
+        let qa_l1 = self.l1_scale as i64;
+
+        // L1 matmul: SCReLU(acc) × L1_weights → hidden
+        // SCReLU: clamp [0, QA], square → scale QA²
+        // L1 weights at scale QA_L1, bias at scale QA_L1
+        // Result at scale QA² × QA_L1, bias scaled up by QA² to match
+        let bias_scale = qa2;
+        let mut hidden = [0i64; 64];
+        for i in 0..l1 {
+            hidden[i] = self.l1_biases[i] as i64 * bias_scale;
+        }
+
+        // STM perspective
+        for j in 0..h {
+            let v = (stm_acc[j] as i64).clamp(0, qa);
+            if v == 0 { continue; }
+            let vsq = v * v; // scale QA²
+            let w_off = j * l1;
+            for i in 0..l1 {
+                hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
+            }
+        }
+        // NTM perspective
+        for j in 0..h {
+            let v = (ntm_acc[j] as i64).clamp(0, qa);
+            if v == 0 { continue; }
+            let vsq = v * v;
+            let w_off = (h + j) * l1;
+            for i in 0..l1 {
+                hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
+            }
+        }
+
+        // Divide by QA² to get hidden at scale QA_L1, then SCReLU: clamp [0, QA_L1], square
+        let qa_l1_sq = qa_l1 as f32 * qa_l1 as f32;
+        let mut l1_out = [0.0f32; 64];
+        for i in 0..l1 {
+            let mut h_val = (hidden[i] / qa2) as i32;
+            h_val = h_val.clamp(0, qa_l1 as i32);
+            let hsq = h_val * h_val; // SCReLU → scale QA_L1²
+            l1_out[i] = hsq as f32 / qa_l1_sq; // → [0, 1]
+        }
+
+        // L2 layer (if present) — float
+        if self.l2_size > 0 {
+            let l2 = self.l2_size;
+            let mut h2 = [0.0f32; 64];
+            for k in 0..l2 {
+                h2[k] = self.l2_biases_f[k];
+            }
+            for i in 0..l1 {
+                if l1_out[i] == 0.0 { continue; }
+                let w_off = i * l2;
+                for k in 0..l2 {
+                    h2[k] += l1_out[i] * self.l2_weights_f[w_off + k];
+                }
+            }
+            // SCReLU on L2: clamp [0, 1], square
+            for k in 0..l2 {
+                h2[k] = h2[k].clamp(0.0, 1.0);
+                h2[k] = h2[k] * h2[k];
+            }
+            // Output dot in float
+            let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
+            let mut out_f = self.out_bias_f[bucket];
+            for k in 0..l2 {
+                out_f += h2[k] * out_w[k];
+            }
+            return (out_f * EVAL_SCALE as f32) as i32;
+        }
+
+        // L1 → output (no L2)
+        let out_w = &self.out_weights_f[bucket * l1..bucket * l1 + l1];
+        let mut out_f = self.out_bias_f[bucket];
+        for i in 0..l1 {
+            out_f += l1_out[i] * out_w[i];
+        }
+        (out_f * EVAL_SCALE as f32) as i32
+    }
+
     /// Forward pass: CReLU or SCReLU activation → dot product with output weights.
     /// Returns centipawns from side-to-move perspective.
     pub fn forward(&self, acc: &NNUEAccumulator, stm: u8, piece_count: u32) -> i32 {
@@ -928,6 +1099,11 @@ impl NNUENet {
         };
 
         let mut output = self.output_bias[bucket] as i64;
+
+        // v7 hidden layer path
+        if self.l1_size > 0 {
+            return self.forward_with_l1(stm_acc, ntm_acc, bucket);
+        }
 
         // Pairwise path: split acc into halves, clamp, multiply pairs, dot with weights
         if self.use_pairwise {
@@ -1504,6 +1680,12 @@ fn read_u8(r: &mut impl IoRead) -> Result<u8, String> {
     let mut buf = [0u8; 1];
     r.read_exact(&mut buf).map_err(|e| format!("read u8: {}", e))?;
     Ok(buf[0])
+}
+
+fn read_u16(r: &mut impl IoRead) -> Result<u16, String> {
+    let mut buf = [0u8; 2];
+    r.read_exact(&mut buf).map_err(|e| format!("read u16: {}", e))?;
+    Ok(u16::from_le_bytes(buf))
 }
 
 fn read_u32(r: &mut impl IoRead) -> Result<u32, String> {
