@@ -18,6 +18,10 @@ cargo test                                      # Run all tests including perft
 ./target/release/coda epd wac.epd 1000 0 -nnue net.nnue  # EPD test suite
 ./target/release/coda perft [depth] [fen...]     # Perft with divide
 ./target/release/coda perft-bench                # Perft benchmark (6 positions)
+./target/release/coda datagen [options]          # Generate training data (SF binpack)
+./target/release/coda convert-bullet [options]   # Bullet quantised.bin → .nnue
+./target/release/coda convert-checkpoint [opts]  # .nnue → Bullet checkpoint (transfer learning)
+./target/release/coda check-net <net.nnue>       # NNUE health check (TODO)
 ./target/release/coda help                       # Show all options
 ```
 
@@ -59,11 +63,11 @@ testdata/
 - Incremental Zobrist hashing + incremental pawn hash
 
 ### Move Encoding
-16 bits: from(6) + to(6) + flags(4). Flags: None=0, EP=1, Castle=2, DoublePush=3, PromoteN=4..PromoteQ=7.
+16 bits: from(6) + to(6) + flags(4). Flags: None=0, EP=1, Castle=2, PromoteN=4..PromoteQ=7. Double push has no flag (FLAG_DOUBLE_PUSH=0), detected by distance in make_move.
 **Critical rule**: Check non-promotion flags with equality (==), not bitwise AND.
 
 ### Search
-Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from depth 4).
+Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from depth 4). Lazy SMP: helper threads search at offset depths sharing the TT (atomic) and stop flag.
 
 **Pruning features:**
 - NMP: R=3+depth/3 + (eval-beta)/200, eval>=beta guard, verify at depth>=12, post-capture R--, NMP score dampening (score*2+beta)/3
@@ -113,7 +117,10 @@ Quantization: QA=255 (accumulator), QB=64 (output weights).
 - **SIMD**: AVX2 and AVX-512 via `std::arch::x86_64` (runtime detected). Int8 weight quantization for SCReLU forward pass.
 - **CReLU**: clamp [0, 255], VPMADDWD dot product
 - **SCReLU**: clamp [0, 255], square, int8 byte decomposition for VPMADDUBSW. Scale correction ×0.8 for search threshold compatibility.
+- **Pairwise**: split accumulator halves, CReLU-clamp, multiply pairs. SIMD byte decomposition like SCReLU.
+- **v7 hidden layers**: SCReLU pack to uint8, int8 L1 matmul via VPMADDUBSW, float L2→output. 673K NPS (12% faster than GoChess).
 - **Fused accumulator update**: copy + delta in single pass for incremental updates
+- **TT prefetch**: prefetch TT bucket after make_move, before child node TT probe
 
 ### Opening Book
 Polyglot .bin format. Weighted random selection. Polyglot Zobrist hashing with standard 781-entry random table. Castling encoded as king-to-rook, converted to king-to-destination. EP hash only when capture is actually possible.
