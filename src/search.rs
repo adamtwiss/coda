@@ -1576,14 +1576,15 @@ fn negamax(
                     return singular_beta;
                 }
 
-                if singular_score >= singular_beta {
+                if singular_score < singular_beta {
+                    // TT move is singular — no competitive alternatives. Extend +1.
+                    // (Previously omitted due to GoChess interaction with alpha-reduce/blending,
+                    // but retesting after Coda bug fixes and improvements.)
+                    singular_extension = 1;
+                } else {
                     // Alternatives are competitive — negative extension (reduce TT move)
                     singular_extension = -1;
                 }
-
-                // Note: positive extension (+1 when singular_score < singular_beta) is
-                // deliberately omitted. It costs ~30 Elo in our engine due to interactions
-                // with alpha-reduce and score blending. See experiments.md / se-diagnosis.md.
             }
         }
 
