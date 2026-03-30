@@ -1,698 +1,489 @@
-# Stormphrax Chess Engine - Crib Notes
+# Stormphrax Chess Engine - Technical Review
 
 Source: `~/chess/engines/Stormphrax/`
 Author: Ciekce
 Version: 7.0.70
-Strength: CCRL ~3500+, #8 in our RR at +210 Elo (318 above GoChess-v5)
+Strength: CCRL ~3500+, top-15 engine
 Net: `net066_255_128_q6_nc.nnue`
+Language: C++20, Clang-only (no GCC support)
 
 ---
 
 ## 1. NNUE Architecture
 
-### Network: (704x16hm+60144 -> 640)x2 -> (32x2 -> 32 -> 1)x8
+### Current: `(704x16hm+60144 -> 640)x2 -> (32x2 -> 32 -> 1)x8`
 
-This is a highly advanced architecture with several cutting-edge features:
+**Ref:** `src/eval/arch.h`, `src/eval/nnue/arch/multilayer.h`, `src/eval/nnue/network.h`
 
-**Feature Transformer (Input Layer)**:
-- **PSQ features**: 704 piece-square inputs per king bucket (12 pieces x 64 squares minus kings = approx, but 704 from the bucket config)
-- **16 king buckets** with horizontal mirroring (ABCD-side only, so 4 files x ranks grouped). Layout:
+This is one of the most sophisticated NNUE architectures in any open-source engine.
+
+### Feature Transformer
+
+**PSQ Features** (`src/eval/nnue/features/psq.h`):
+- 704 inputs per king bucket (merged kings: 11 piece types x 64 squares)
+- 16 king buckets with ABCD-side horizontal mirroring
+- King bucket layout (visually flipped, a1=0):
   ```
-  14 14 15 15    (ranks 7-8 share buckets)
+  14 14 15 15    ranks 7-8 share
   14 14 15 15
-  12 12 13 13    (ranks 5-6 share buckets)
+  12 12 13 13    ranks 5-6 share
   12 12 13 13
-   8  9 10 11    (ranks 3-4 share buckets)
+   8  9 10 11    ranks 3-4 share
    8  9 10 11
-   4  5  6  7    (ranks 1-2, individual)
-   0  1  2  3    (rank 0, individual)
+   4  5  6  7    rank 2
+   0  1  2  3    rank 1
   ```
-- **Threat features**: 60,144 additional threat inputs (attacker x attackerSq x attacked x attackedSq, king-relative). These are incrementally updated alongside PSQ features, with separate accumulator.
-- FT output: 640 neurons per perspective (i16)
-- FT quantization: QA=255 (8-bit), scale bits=7
+- Total PSQ features: 704 x 16 = 11,264 per perspective
+- Refresh table size: 32 (16 buckets x 2 mirror states)
 
-**Pairwise Activation (FT -> L1)**:
-- Pairs first-half[i] * second-half[i] (within each perspective's 640 outputs, pairs 320 x 320)
-- Clipped to [0, 255], multiplied, shifted right by 7 (scale bits)
-- Output is u8 (unsigned 8-bit) -- ready for int8 L1 matmul
-- **PSQ + threat accumulator values are summed before pairwise activation**
-- Result: 640 u8 values (320 from stm + 320 from nstm)
+**Threat Features** (`src/eval/nnue/features/threats.h`, `threats.cpp`):
+- 60,144 additional threat input features
+- Encoded as (attacker, attackerSq, attacked, attackedSq) tuples, king-relative
+- Separate i8-typed weights (vs i16 for PSQ)
+- Separate threat accumulator alongside PSQ accumulator, both lazy/incremental
+- Incrementally updated: on each move, computes threat deltas (adds/removes) rather than recomputing
+- Per-piece attack tables with directional encoding (forwards vs backwards)
+- Threat refresh triggered when king crosses the e-file (mirror flip changes)
 
-**L1: 640 -> 32 (int8 weights, sparse)**:
-- i8 quantized weights, dpbusd (VNNI) or equivalent SIMD
-- **Sparse computation**: tracks non-zero 4-byte chunks in FT output, only multiplies non-zero entries
-- 8 output buckets x 32 outputs
-- Output undergoes **dual activation**: CReLU side (clamp [0,64], shift left 6) + SCReLU side (square then clip to 64^2)
-- Effective L2 input: 64 values (32 CReLU + 32 SCReLU)
+> **Coda comparison:** We have no threat features. This is the most novel NNUE feature in Stormphrax. The 60K threat features are a second parallel accumulator that encodes attack relationships. This is fundamentally different from what any engine we've reviewed has -- most use only PSQ (piece-square) features. The threat accumulator is additive with the PSQ accumulator at the FT activation stage (lines 93-95, 116-121 of `multilayer.h`): `inputs = add(psqInputs, threatInputs)`. This means threat features act as a bias correction on the main accumulator.
 
-**L2: 64 -> 32 (i32 weights)**:
-- Standard dense matmul, i32 weights
-- Per output bucket
+### Hidden Layers
 
-**L3: 32 -> 1 (i32 weights)**:
-- CReLU activation (clamp to [0, 64^3])
-- Per output bucket
-- Final: `l3Out * 400 / (64^3)`
+**Architecture** (`src/eval/nnue/arch/multilayer.h`):
+- FT output: 640 neurons (320 per perspective, pairwise)
+- L1: 640 -> 32 (int8 weights, int32 biases) x 8 output buckets
+- L2: 64 -> 32 (32 CReLU + 32 SCReLU via dual activation) x 8 output buckets
+- L3: 32 -> 1 x 8 output buckets
+- Output bucketing: `MaterialCount<8>` -- (popcount - 2) / 4
 
-**Output Buckets**: 8, based on linear material count: `(popcount - 2) / 4`
+**Activation Chain:**
+1. **FT -> L1**: Pairwise CReLU (multiply pairs, clip to [0, 255], pack to u8)
+2. **L1 -> L2**: Dual activation (`kDualActivation = true`):
+   - CReLU side: clamp [0, Q], shift left by kQuantBits
+   - SCReLU side: square then clip to Q^2 (SF-style square-then-clip)
+   - Concatenated: L2 gets 32 CReLU + 32 SCReLU = 64 inputs
+3. **L2 -> L3**: CReLU (clamp [0, Q^3])
+4. **L3 -> output**: Linear dot product
 
-**Refresh Table (FinnyTable)**:
-- Per-king-bucket, per-color accumulator cache with stored bitboard state
-- On king bucket change, computes delta (added/removed pieces) vs cached state, applies incrementally instead of full recompute
-- Separate PSQ and threat refresh paths
+> **Coda comparison:** Our v7 arch is 1024 -> 16 -> 32 -> 1x8. Stormphrax uses 640 accumulator (pairwise from 1280) with the same 3-layer hidden structure but wider (32 -> 32 -> 1 vs our 16 -> 32 -> 1). The dual CReLU+SCReLU activation at L1 is unique -- they concatenate both activations to double the L2 input width without doubling L1 output neurons. **This is worth investigating:** it's essentially free from a training perspective (Bullet supports it) and doubles L2 information for minimal inference cost.
 
-### Compared to Our NNUE
-| Feature | Stormphrax | GoChess |
-|---------|-----------|---------|
-| Input features | 704 PSQ + 60K threats per bucket | 12288 HalfKA (40960 total) |
-| King buckets | 16 (mirrored, merged) | 16 |
-| FT width | 640 | 256 |
-| Hidden layers | 3 (640->32->32->1) | v5: shallow wide (Nx2->1x8, pairwise) |
-| Pairwise | Yes (FT output) | Yes (FT output) |
-| Dual activation | Yes (CReLU + SCReLU on L1 output) | CReLU or SCReLU (UPDATE: now supports both) |
-| Threat features | 60,144 per bucket, incremental | None |
-| Output buckets | 8 (linear material) | 8 (material-based) |
-| FT quantization | 8-bit (QA=255) | 16-bit |
-| L1 quantization | 7-bit (int8 weights) | int8 weights |
-| Sparse L1 | Yes (NNZ chunk tracking) | No |
-| Refresh table | Yes (FinnyTable) | Yes (Finny tables, UPDATE: merged) |
-| Scale | 400 | varies |
+### Quantization
 
-**Key differences**: Stormphrax's threat feature inputs are unique -- they encode which pieces attack which other pieces, giving the network explicit tactical awareness. The dual CReLU+SCReLU activation on L1 doubles the effective input width to L2. The sparse L1 computation skips zero-valued FT outputs, saving significant compute. The FinnyTable reduces king-bucket-change cost from full recompute to incremental delta.
+**Ref:** `src/eval/arch.h`
+
+```
+kFtQBits  = 8   (FT quantization: 256)
+kL1QBits  = 7   (L1 quantization: 128)
+kFtScaleBits = 7 (pairwise scale)
+kQuantBits = 6   (hidden layer Q = 64)
+```
+
+- FT weights: i16 (PSQ), i8 (threat)
+- FT output: i16 (accumulator), packed to u8 after pairwise activation
+- L1 weights: i8 (enables VNNI `dpbusd`)
+- L1 biases: i32
+- L2/L3 weights: i32
+- L2/L3 biases: i32
+- Scale: 400
+
+> **Coda comparison:** We use QA=255, QB=64. Stormphrax uses power-of-2 quantization (256, 128, 64) which is shift-friendly. The i8 L1 weights are key for VNNI performance. Our v7 also uses int8 L1 but with QA_L1=64.
+
+### Sparse L1 MatMul
+
+**Ref:** `src/eval/nnue/arch/util/sparse_default.h`, `sparse_vbmi2.h`
+
+This is one of Stormphrax's most important performance innovations.
+
+**Concept:** After FT activation, many outputs are zero (pairwise CReLU). Instead of doing a dense 640x32 matmul, track which 4-byte chunks are nonzero and only multiply those.
+
+**Default (AVX2/NEON) implementation** (`sparse_default.h`):
+- After FT activation, scan output in SIMD-width chunks
+- For each chunk pair (a, b), compute `nonzeroMask` -- a bitmask of which i32-sized groups are nonzero
+- Use a precomputed 256-entry LUT (`kNonZeroIndices`) to convert each byte of the mask to indices of nonzero elements
+- Store nonzero indices into a compact array, track count
+- L1 matmul iterates only over nonzero chunks (in groups of 4 for ILP):
+  ```cpp
+  for (chunk = 0; chunk < quadChunks; chunk += 4) {
+      // load 4 nonzero input groups, broadcast each to SIMD
+      // load corresponding weight rows, dpbusd accumulate
+  }
+  ```
+
+**VBMI2 (AVX-512) implementation** (`sparse_vbmi2.h`):
+- Uses `_mm512_maskz_compress_epi16` (VBMI2 instruction) to compress nonzero indices in a single instruction
+- Much simpler: just compress, store, popcount
+- `_mm512_kunpackw` to merge two 32-bit masks into a 64-bit kmask
+
+> **Coda comparison:** We do not have sparse L1. This is a significant NPS optimization -- typically 30-60% of FT outputs are zero after pairwise CReLU, meaning the L1 matmul can skip 30-60% of work. **High priority to adopt.** The default implementation works on AVX2 without special instructions. The VBMI2 path is a bonus for Ice Lake+.
+
+### Finny Tables (Refresh Table)
+
+**Ref:** `src/eval/nnue.h`, lines 483-546
+
+Standard Finny table implementation:
+- Per-perspective `[RefreshTableSize]` cache (32 entries = 16 buckets x 2 mirror states)
+- On king bucket change: diff cached vs current bitboards, apply only changed features
+- Batched 4-at-a-time for adds and subs (`activateFourFeatures`, `deactivateFourFeatures`)
+- Lazy accumulator with backtrack: scans backward to find last clean accumulator, then forward-applies all deltas
+
+> **Coda comparison:** Similar to our Finny table. The 4-at-a-time batching is nice -- we could batch our delta applications similarly for better ILP.
+
+### Network Loading
+
+**Ref:** `src/eval/header.h`, `src/eval/nnue/loader.cpp`
+
+- 64-byte header with magic, version, flags, arch ID, activation type, dimensions
+- Supports zstd compression (embedded nets are zstd-compressed)
+- Pre-permutation step: a separate `preprocess/permute.cpp` tool rearranges FT weights for SIMD-friendly memory layout at build time (AVX-512 `packus` produces non-sequential output, so weights must be reordered)
+- NUMA-aware: network replicated per NUMA node
 
 ---
 
-## 2. Search Architecture
+## 2. Search
 
-Standard iterative deepening with aspiration windows and PVS. C++ templates for PV/root nodes (compile-time specialization). Lazy SMP with barrier-based thread coordination.
+**Ref:** `src/search.cpp` (1400+ lines)
 
-### Iterative Deepening
-- Depth 1 to kMaxDepth
-- Checks soft time limit after each completed depth
-- Aspiration windows enabled at depth >= 3
+### Iterative Deepening + Aspiration Windows
+- Initial window: 16 (tunable)
+- Widening factor: `delta += delta * 17/16`
+- Aspiration reduction: on fail-high, reduce search depth by up to 3
+- Re-center on fail-low: `beta = (alpha + beta) / 2`
 
-### Aspiration Windows
-- Initial delta: 16 (`initialAspWindow = 16`)
-- On fail-low: `beta = (alpha + beta) / 2`, widen alpha by delta, reset aspReduction to 0
-- On fail-high: widen beta by delta, **aspReduction += 1** (capped at 3). Search depth reduced by aspReduction
-- Delta growth: `delta += delta * 17 / 16` (multiply by ~2.06 each iteration)
-- **Optimism**: Per-side score bias based on running average: `optimismScale(150) * avgScore / (|avgScore| + optimismStretch(100))`
+### Null Move Pruning
+- R = 6 + depth/5 (no eval-based reduction)
+- Verification search at depth > 14: re-search at depth - R with cutnode=true
+- NMP ply limit: prevents recursive NMP verification within 3/4 of remaining depth
+- Guard: TT upper bound < beta prevents NMP
 
-### Draw Detection
-- `pos.isDrawn()` checks fifty-move and repetition
-- `pos.hasCycle()` for upcoming repetition (Cuckoo hashing) -- checked early in search and qsearch, only when alpha < 0
-- Draw scores randomized: `2 - (nodes % 4)` (range [-1, +2])
-
-### Mate Distance Pruning
-- Applied at all non-root nodes: `alpha = max(alpha, -MATE + ply)`, `beta = min(beta, MATE - ply - 1)`
-- Cutoff if alpha >= beta
-
----
-
-## 3. Pruning Techniques
-
-### IIR (Internal Iterative Reduction)
-- Conditions: `depth >= 3 && !excluded && (pvNode || cutnode) && (!ttMove || ttEntry.depth + 3 < depth)`
-- Reduces depth by 1
-- Note: triggered on PV/cut nodes when TT move is missing OR TT depth is too shallow
-
-### Hindsight Reduction/Extension (Parent-Eval Feedback)
-- **Extension (+1 depth)**: `parent.reduction >= 3 && parent.staticEval != NONE && curr.staticEval + parent.staticEval <= 0`
-  - "If we were reduced and both sides think the position is bad, search deeper"
-- **Reduction (-1 depth)**: `depth >= 2 && parent.reduction >= 2 && parent.staticEval != NONE && curr.staticEval + parent.staticEval >= 200`
-  - "If we were reduced and both sides think the position is good (quiet), search shallower"
-- Compare to ours: We don't have this. 5+ engines use it. Alexandria's variant is simplest.
-
-### Reverse Futility Pruning (RFP)
-- Conditions: `!pvNode && !inCheck && !excluded`
-- Depth guard: `depth <= 6`
-- Margin: `71 * max(depth - improving, 0)` (`rfpMargin = 71`)
-- **Complexity adjustment**: `margin += corrDelta * 64 / 128` where corrDelta = |corrected_eval - raw_eval|
-  - Higher correction magnitude = higher margin = more conservative pruning
-- Return: `(staticEval + beta) / 2` when not decisive (score blending), else staticEval
-- Compare to ours: We use 80*d (from futility tightening). They have complexity adjustment (novel) and RFP return blending.
+### Reverse Futility Pruning
+- `depth <= 6 && staticEval - margin >= beta`
+- Margin: `rfpMargin (71) * max(depth - improving, 0) + complexity * rfpCorrplexityScale / 128`
+- Complexity from correction history delta
+- Soft return: `(staticEval + beta) / 2` unless decisive
 
 ### Razoring
-- Conditions: `!pvNode && !inCheck && !excluded`
-- Depth guard: `depth <= 4`
-- Margin: `315 * depth` (`razoringMargin = 315`), also `abs(alpha) < 2000`
-- Formula: `staticEval + 315 * depth <= alpha` => drop to qsearch with null window
-- Compare to ours: We use 400 + depth*100 (depth 1: 500, depth 2: 600). They use 315*d (depth 1: 315, depth 2: 630). Tighter at low depth.
-
-### Null Move Pruning (NMP)
-- Conditions: `depth >= 4 && ply >= minNmpPly && staticEval >= beta && !parent.move.isNull() && !(ttFlag==UPPER && ttScore < beta) && hasNonPawnMaterial`
-- Reduction: `R = 6 + depth / 5` (flat formula, no eval-based component)
-- **Verification search at depth > 14**: if NMP score >= beta AND (depth <= 14 || minNmpPly > 0), return. Otherwise set `minNmpPly = ply + (depth - R) * 3/4` and run verification search at depth-R
-- Returns `beta` for winning scores, raw score otherwise
-- Compare to ours: We use `R = 3 + depth/3 + min((eval-beta)/200, 3)`. They use `R = 6 + depth/5` (simpler, larger base). Our min depth is 3, theirs is 4.
+- `depth <= 4 && staticEval + 315 * depth <= alpha` => qsearch verification
 
 ### ProbCut
-- Conditions: `!ttpv && depth >= 7 && !decisive(beta) && (!ttMove || ttMoveNoisy) && !(ttHit && ttDepth >= probcutDepth && ttScore < probcutBeta)`
-- probcutBeta: `beta + 303` (`probcutMargin = 303`)
-- probcutDepth: `max(depth - 3, 1)`
-- **SEE threshold**: `(probcutBeta - staticEval) * 17 / 16` -- dynamic, eval-scaled
-- **Two-stage**: QSearch first, then full search only if QSearch passes (`-qsearch >= probcutBeta` -> negamax)
-- Compare to ours: We use margin 170, gate 85. They use margin 303 (much wider). They have the QS pre-filter that Alexandria also uses (2 engines now). The dynamic SEE threshold is unique.
+- `depth >= 7 && !ttpv && beta + 303 undecisive`
+- SEE threshold: `(probcutBeta - staticEval) * 17/16`
+- Two-phase: qsearch first, then full search at probcutDepth - 1
 
-### Late Move Pruning (LMP)
-- Table-based: `[improving][depth]` where threshold = `(3 + depth^2) / (2 - improving)`
-  - depth 1: 2 (not imp) / 4 (imp)
-  - depth 5: 14 (not imp) / 28 (imp)
-  - depth 15: 114 (not imp) / 228 (imp)
-- Max depth: 15 (table extends to 15)
-- Triggers `skipQuiets()` (staged generator skips all remaining quiet moves)
-- Compare to ours: We use `3 + d^2` (+50% improving). Same formula essentially.
-
-### Futility Pruning
-- Conditions: `!inCheck && lmrDepth <= 8 && abs(alpha) < 2000`
-- Margin: `fpMargin(261) + depth * fpScale(68) + history / fpHistoryDivisor(128)`
-  - depth 1: 329 + history/128
-  - depth 5: 601 + history/128
-- Formula: `staticEval + margin <= alpha` => `skipQuiets()`
-- **History-adjusted**: moves with good history have wider futility margin (less likely to be pruned)
-- Compare to ours: We use 80 + lmrDepth*80 (from tightening). They use 261 + depth*68, which is wider. The history adjustment is novel.
-
-### History Pruning (Quiet)
-- Conditions: quiet, `lmrDepth <= 5`
-- Threshold: `history < -2314 * depth + (-1157)` (`quietHistPruningMargin = -2314, quietHistPruningOffset = -1157`)
-  - depth 1: history < -3471
-  - depth 3: history < -8099
-- Triggers `skipQuiets()`
-- Compare to ours: We use -2000*depth. They use -2314*d - 1157 (tighter with offset).
-
-### History Pruning (Noisy/Capture)
-- Conditions: noisy, `depth <= 4`
-- Threshold: `history < -1000 * depth^2 + (-1000)` (`noisyHistPruningMargin = -1000, noisyHistPruningOffset = -1000`)
-  - depth 1: -2000, depth 2: -5000, depth 3: -10000
-- Per-move continue (skip individual capture)
-
-### SEE Pruning
-- Conditions: `quietOrLosing` stage (past good noisy phase), not best score is loss
-- Quiet threshold: `-16 * lmrDepth^2` (`seePruningThresholdQuiet = -16`)
-  - lmrDepth 1: -16, lmrDepth 3: -144, lmrDepth 5: -400
-- Noisy threshold: `min(-112 * depth - history / 64, 0)` (`seePruningThresholdNoisy = -112, seePruningNoisyHistDivisor = 64`)
-  - History adjustment: captures with good history get a better SEE threshold
-- Compare to ours: We use -20*d^2 for quiets. They use -16*lmrDepth^2 (similar but on lmrDepth). Noisy SEE with history adjustment is novel.
-
-### QSearch Pruning
-- **Stand-pat beta blending**: `(eval + beta) / 2` when not decisive (same as QS beta blending, MERGED in GoChess at +4.9 Elo)
-- **QSearch futility**: `futility = eval + 135`. If `futility <= alpha && !SEE(move, 1)`, skip. Also prune stand_pat = futility.
-- **QSearch SEE threshold**: All moves checked with `SEE(move, -97)` (`qsearchSeeThreshold = -97`)
-- **QSearch move limit**: `legalMoves >= 2` => break. Only 2 captures searched in QS!
-- **QSearch quiet moves**: Searched in evasions. Also searched when TT has a quiet best move with lower bound flag (`!pvNode && ttMove && ttFlag != UPPER && !isNoisy(ttMove)`).
-- Compare to ours: We have QS beta blending. The 2-move QS limit is aggressive and unique.
-
----
-
-## 4. Extensions
+### Internal Iterative Reduction (IIR)
+- `depth >= 3 && !excluded && (pvNode || cutnode) && (!ttMove || ttEntry.depth + 3 < depth)` => depth--
 
 ### Singular Extensions
-- Depth guard: `depth >= 6 + ttpv` (6 for non-PV, 7+ for ttpv nodes, effectively 6-7)
-- TT conditions: `ttEntry.depth >= depth - 5 && ttFlag != UPPER && !decisive(ttScore)`
-- sBeta margin: `ttScore - depth * sBetaBaseMargin(14) / 16`, with `+ sBetaPrevPvMargin(16) * (ttpv && !pvNode)`
-  - Effective: `ttScore - depth * 14/16` normally, `ttScore - depth * 30/16` on prev-PV non-PV nodes
-- Singularity depth: `(depth - 1) / 2`
-- Ply limiter: `ply < rootDepth * 2`
+- Conditions: `depth >= 6 + ttpv`, TT depth >= depth - 5, not upper bound, not decisive
+- sBeta: `ttEntry.score - depth * (14 + 16 * (ttpv && !pvNode)) / 16`
+- Search at `(depth - 1) / 2` with excluded move
+- Double extension: `score < sBeta - 11` (non-PV only)
+- Triple extension: `score < sBeta - 105` (non-PV, quiet TT move)
+- Negative extensions: cutnode => -2, TT score >= beta => -1
+- `cutnode |= extension < 0` (propagate cutnode on negative extension)
 
-**Extension levels**:
-- **Single (+1)**: score < sBeta
-- **Double (+2)**: `!pvNode && score < sBeta - 11` (`doubleExtMargin = 11`)
-- **Triple (+3)**: `!pvNode && !ttMoveNoisy && score < sBeta - 105` (`tripleExtMargin = 105`)
-- **Multi-cut**: `!pvNode && score >= beta` => return `(score + beta) / 2` (blended) or score if decisive
-- **Negative extension (-2)**: cutnode (when not singular)
-- **Negative extension (-1)**: `ttEntry.score >= beta` (when not singular, not cutnode)
-- After negative extension: `cutnode |= true`
+**Low-Depth Singular Extension (LDSE):**
+- `depth <= 7 && !inCheck && staticEval <= alpha - 26 && ttFlag == LowerBound` => extension = 1
 
-### LDSE (Low-Depth Singular Extension fallback)
-- When SE conditions not met: `depth <= 7 && !inCheck && staticEval <= alpha - 26 && ttFlag == LOWER`
-- Extension: +1
-- "If we're at low depth, eval is below alpha, but TT says this move is a fail-high, extend it"
+> **Coda comparison:** We removed singular extensions as harmful cross-engine. Stormphrax keeps them. Key differences: their sBeta includes a ttpv adjustment, they have LDSE (a simpler extension for shallow depths), and the `cutnode |= extension < 0` propagation is interesting -- negative singular extensions make the node act as a cutnode.
 
-### No Check Extension
-- No unconditional check extension (unlike Midnight)
+### Late Move Reductions (LMR)
 
-Compare to ours: Our SE is broken (tested at -58 to -85 Elo). Stormphrax has the full modern SE suite: double/triple extensions, multi-cut, negative extensions, ply limiter, prev-PV-aware margin. These are the highest-priority fixes for GoChess.
+**Table:** `[noisy][depth][legalMoves]` precomputed with:
+- Quiet: `base=83, divisor=218` => `base/128 + ln(depth) * ln(moves) / (divisor/128)`
+- Noisy: `base=-12, divisor=248`
 
----
+**Adjustments (all scaled by /128):**
+- +131 non-PV
+- -130 ttpv
+- -history/10835 (quiet) or -history/10835 (noisy)
+- -148 improving
+- -111 gives check
+- +257 cutnode
+- +128 ttpv fail-low (TT hit with score <= alpha)
+- +64 * alphaRaises (number of times alpha was raised)
+- -128 high complexity (corrDelta > 70)
 
-## 5. LMR (Late Move Reductions)
+**Deeper/shallower re-search:**
+- If LMR result > alpha and reduced < newDepth:
+  - Deeper: score > bestScore + 38 + 4 * newDepth
+  - Shallower: score < bestScore + newDepth
+  - `newDepth += doDeeperSearch - doShallowerSearch`
 
-### Table Initialization
-Two separate tables (stored as fixed-point * 128):
-- **Quiet**: `128 * (0.83 + ln(depth) * ln(moves) / 2.18)` (base=83/100, divisor=218/100)
-- **Noisy**: `128 * (-0.12 + ln(depth) * ln(moves) / 2.48)` (base=-12/100, divisor=248/100)
+**LMR ttpv extension:**
+- If ttpv and r < -128: add +1 to reduced depth (effectively extend by 1 in PV-adjacent nodes)
 
-Compare to ours: We use quiet C=1.50 / capture C=1.80 (already split, MERGED +43.5 Elo). Their quiet base 0.83 is lower than our ~1.50, meaning more base reduction for quiets. Their noisy base -0.12 is negative, meaning captures start with essentially 0 reduction.
+> **Coda comparison:** Similar LMR framework to ours. Notable differences: (1) separate quiet/noisy LMR tables (we have this), (2) alphaRaises counter as a reduction term (novel -- tracks how many moves raised alpha, increases reduction for later moves), (3) ttpv extension threshold, (4) high complexity reduction from correction history. The alphaRaises feature is interesting -- it's a cheap proxy for "this node is well-explored" that doesn't require additional data structures.
 
-### Application Conditions
-- `depth >= 2 && legalMoves >= 2 + kRootNode` (root: move 3+, non-root: move 2+)
-- No explicit in_check guard (but checks not extended, so this is implicit)
+### Hindsight Reduction
+- `depth >= 2 && parent.reduction >= 2 && parent.staticEval + curr.staticEval >= 200` => depth--
 
-### Reduction Adjustments (all scaled by /128)
-- `+lmrNonPvReductionScale(131)` for non-PV nodes (~+1.02 ply)
-- `-lmrTtpvReductionScale(130)` for ttpv nodes (~-1.02 ply)
-- `-history * 128 / lmrQuietHistoryDivisor(10835)` for quiets, or `/ lmrNoisyHistoryDivisor(10835)` for noisies
-- `-lmrImprovingReductionScale(148)` if improving (~-1.16 ply)
-- `-lmrCheckReductionScale(111)` if gives check (~-0.87 ply)
-- `+lmrCutnodeReductionScale(257)` at cut nodes (~+2.01 ply) -- **very aggressive**
-- `+lmrTtpvFailLowReductionScale(128)` if ttpv and ttScore <= alpha (~+1.00 ply)
-- `+lmrAlphaRaiseReductionScale(64) * alphaRaises` (~+0.50 per alpha raise)
-- `-lmrHighComplexityReductionScale(128)` if complexity > 70 (~-1.00 ply)
-- Additional: `+pvNode + (ttpv && r < -128)` as extension (after clamping)
+### Hindsight Extension (Inverse)
+- `parent.reduction >= 3 && parent.staticEval + curr.staticEval <= 0` => depth++
 
-### Clamping
-- `min(max(newDepth - r/128, 1), newDepth) + pvNode + ttPvExtension`
-- Never reduces below depth 1; PV nodes get +1
+> **Coda comparison:** We have hindsight reduction at margin 200 (same). Their hindsight extension (both evals sum to <= 0) is the inverse -- extend when the position became much worse than expected. We should test this.
 
-### DoDeeper / DoShallower (after LMR re-search)
-- **DoDeeper**: `score > bestScore + 38 + 4 * newDepth` (`lmrDeeperBase = 38, lmrDeeperScale = 4`)
-- **DoShallower**: `score < bestScore + newDepth`
-- `newDepth += doDeeperSearch - doShallowerSearch`
+### Late Move Pruning (LMP)
+- Table: `(3 + depth^2) / (2 - improving)`
+- Identical to our formula
 
-### Post-LMR Continuation History Update
-- If `!noisy && (score <= alpha || score >= beta) && !stopped`: update conthist with bonus/penalty based on outcome
-- "Quiet moves that either fail low or cause cutoff after LMR re-search deserve conthist reinforcement"
+### Futility Pruning
+- `lmrDepth <= 8 && |alpha| < 2000 && staticEval + 261 + depth * 68 + history/128 <= alpha`
 
-Compare to ours: Their LMR is significantly more sophisticated. Key differences:
-1. Cutnode +2.01 ply reduction (we tested +2 as separate experiment)
-2. Alpha-raise count in reduction (novel, 2 engines now)
-3. Complexity-based reduction (novel)
-4. TT-PV fail-low extra reduction
-5. TT-PV extension when reduction is negative
-6. Post-LMR conthist update
-7. History divisor 10835 vs our 5000 (less history influence)
+### History Pruning
+- Quiet: `lmrDepth <= 5 && history < -2314 * depth + -1157`
+- Noisy: `depth <= 4 && history < -1000 * depth^2 + -1000`
 
----
+### SEE Pruning
+- Quiet: `-16 * lmrDepth^2` (after good-noisy stage)
+- Noisy: `min(-112 * depth - history/64, 0)` (history-adjusted)
 
-## 6. Move Ordering
+### Good Noisy SEE Threshold
+- `-score/4 + 15` -- SEE threshold is history-adjusted for good captures
 
-### Staged Move Generator
-Stages: TT Move -> Gen Noisy -> Good Noisy -> Killer -> Gen Quiet -> Quiet -> Bad Noisy
+> **Coda comparison:** The good noisy SEE using `-score/4 + offset` where score is the capture history is clever -- it means well-scored captures need less SEE margin to be considered "good". We use a fixed threshold.
 
-### Score Hierarchy
+### Fail-High Score Blending
+- `bestScore = (bestScore * depth + beta) / (depth + 1)` when beta is exceeded (undecisive scores)
 
-1. **TT move**: Returned directly from stage, no scoring needed
-2. **Good noisy (captures)**: `noisyHistory / 8 + see::value(captured)` (MVV + capHist/8). Filtered by dynamic SEE: `-score/4 + goodNoisySeeOffset(15)`. Captures failing SEE go to bad noisy list.
-3. **Killer**: Single killer per ply (returned directly)
-4. **Quiet moves**: `mainHist + contHist`
-   - mainHist = `(butterfly + pieceTo) / 2` (average of two tables)
-   - contHist = `contHist[ply-1] + contHist[ply-2] + contHist[ply-4] / 2`
-5. **Bad noisy**: Moves that failed good-noisy SEE threshold
+### QSearch
+- Standing pat with beta blending: `(eval + beta) / 2` when undecisive
+- Futility: `eval + 135`
+- SEE threshold: -97
+- Evasion handling with quiet generation
+- Quiet search in qsearch: if TT move is quiet and TT flag is not upper bound
 
-### History Tables
+### Cycle Detection (Cuckoo Hashing)
+**Ref:** `src/cuckoo.h`, `src/cuckoo.cpp`
 
-**Butterfly history**: `[64][64][2][2]` = from, to, fromAttacked, toAttacked
-- **4x threat-indexed** (from-threatened x to-threatened booleans)
-- This is the threat-aware history that 12+ engines now use
+Uses Stockfish-style cuckoo hashing to detect upcoming repetitions before they happen. `pos.hasCycle(ply, keyHistory)` is checked early in both search and qsearch.
 
-**PieceTo history**: `[12][64][2][2]` = piece, to, fromAttacked, toAttacked
-- Same 4x threat indexing as butterfly
-- mainHist = average of butterfly and pieceTo
-
-**Continuation history**: `[12][64][12][64]` = prevPiece, prevTo, currPiece, currTo
-- Read at plies 1, 2, and 4 (half weight at ply 4)
-- Write at plies 1, 2, and 4 (with base-relative update)
-- **Base-relative update**: `bonus_applied = bonus - base * |bonus| / maxHistory` where `base = contHist + mainHist/2`
-  - Moves with already-high scores get smaller incremental updates (convergence control)
-
-**Capture/Noisy history**: `[64][64][13][2]` = from, to, captured (+1 for promo), defended
-- Defended flag: `threats[move.toSq()]`
-- Used in noisy scoring (`noisyHistory / 8`), noisy history pruning, noisy SEE pruning adjustment
-
-**Killers**: 1 slot per ply (single killer, not 2)
-
-**History bonus**: `min(depth * 280 - 432, 2576)` (`maxHistoryBonus = 2576, historyBonusDepthScale = 280, historyBonusOffset = 432`)
-**History penalty**: `-min(depth * 343 - 161, 1239)` (`maxHistoryPenalty = 1239`)
-**Gravity**: `entry += bonus - entry * |bonus| / maxHistory(15769)`
-
-**History depth bonus**: `historyDepth = depth + (!inCheck && staticEval <= bestScore)` -- +1 depth for surprising cutoffs (from Alexandria)
-
-Compare to ours:
-| Feature | Stormphrax | GoChess |
-|---------|-----------|---------|
-| Butterfly | [64][64][2][2] (threat-aware) | [2][64][64] (color only) |
-| PieceTo | [12][64][2][2] (threat-aware) | None |
-| ContHist plies | 1, 2, 4 (half at 4) | 1, 2 |
-| Capture hist | [64][64][13][2] (defended) | [12][64][12] |
-| Killers | 1 per ply | 2 per ply |
-| Counter-move | None | Yes |
-| Max history | 15769 | ~10000 |
-| History bonus | min(d*280-432, 2576) | similar |
-| Gravity | entry - entry*|bonus|/15769 | entry - entry*|bonus|/divisor |
-
-Key differences: Threat-aware butterfly (4x table), PieceTo table, ply-4 contHist, defended-flag in capture history. They lack counter-move heuristic (we have it).
+> **Coda comparison:** We check for drawn positions via `isDrawn()` which includes repetition. The cuckoo approach is more proactive -- it detects when a repetition is *available* to either side, allowing the engine to score the position as a draw before the repetition actually occurs. This prevents the engine from entering lines where the opponent can force a draw. **Worth adopting.**
 
 ---
 
-## 7. Correction History
+## 3. Move Ordering
 
-### 7 Sources (4 positional + 3 continuation)
-1. **Pawn hash** (`pawnKey % 16384`) -- weight 133
-2. **Black non-pawn Zobrist key** (`blackNonPawnKey % 16384`) -- STM weight 142 / NSTM weight 142
-3. **White non-pawn Zobrist key** (`whiteNonPawnKey % 16384`) -- STM weight 142 / NSTM weight 142
-4. **Major piece key** (`majorKey % 16384`) -- weight 129
-5. **Continuation correction ply 1** (`key ^ keyHistory[-1] % 16384`) -- weight 128
-6. **Continuation correction ply 2** (`key ^ keyHistory[-2] % 16384`) -- weight 192
-7. **Continuation correction ply 4** (`key ^ keyHistory[-4] % 16384`) -- weight 192
+**Ref:** `src/movepick.h`
 
-### Weighted Blend
-- `correction = sum(weight_i * table_i[hash]) / 2048`
-- Per-color non-pawn keys (STM gets stmNonPawnCorrhistWeight, NSTM gets nstmNonPawnCorrhistWeight)
-- Both weights are 142, but they distinguish STM from NSTM for the black/white keys
+### Stages
+1. TT move
+2. Generate noisy -> good noisy (SEE-filtered with history-adjusted threshold)
+3. Killer (single killer)
+4. Generate quiet -> quiet (history-scored)
+5. Bad noisy (failed SEE in stage 2)
+
+### Good Noisy SEE Filter
+Captures that fail SEE at threshold `-score/4 + goodNoisySeeOffset()` are deferred to bad noisy stage. The score includes capture history, so well-scored captures have a lower SEE bar.
+
+### Scoring
+
+**Noisy:** `captureHistory/8 + SEE_value(captured) + promo_bonus`
+
+**Quiet:** `mainHist + conthist` where:
+- mainHist = `(butterfly + pieceTo) / 2`
+- conthist = `cont[ply-1] + cont[ply-2] + cont[ply-4]/2`
+
+### Selection Sort
+Uses an optimized `findNext()` that packs score and index into a u64 for branchless max-finding:
+```cpp
+auto best = toU64(score) | (256 - idx);
+best = std::max(best, curr);
+bestIdx = 256 - (best & 0xFFFFFFFF);
+```
+
+> **Coda comparison:** Similar to our ordering. They use a single killer (we use 2). Their branchless selection sort trick is nice but minor. The SEE-adjusted good noisy filter is the main novelty.
+
+---
+
+## 4. History Tables
+
+**Ref:** `src/history.h`
+
+### Threat-Aware History
+
+**All quiet history tables are 4-dimensional with threat awareness:**
+- Butterfly: `[from][to][fromAttacked][toAttacked]` (64x64x2x2)
+- PieceTo: `[piece][to][fromAttacked][toAttacked]` (12x64x2x2)
+
+The `threats` bitboard (all opponent attacks) is used to index whether the from-square and to-square are under attack. This doubles the history table granularity.
+
+**Update formula:**
+```cpp
+value += bonus - value * abs(bonus) / maxHistory  // gravity
+```
+maxHistory = 15769 (tunable)
+
+**Conthist with base-aware update:**
+```cpp
+// base = conthist_score + mainHist/2
+value += bonus - base * abs(bonus) / maxHistory
+```
+The conthist update uses the *combined* quiet score as the gravity base rather than the entry's own value. This means heavily-used moves in other contexts get less aggressive updates.
+
+### Capture History
+- `[from][to][captured][defended]` (64x64x13x2)
+- Extra slot for non-capture queen promotions (index 12)
+- `defended` = whether the target square is attacked by opponent
+
+### Continuation History
+- Standard `[piece][to]` subtables at ply-1, ply-2, ply-4
+- ply-4 contribution is halved in scoring
+
+### History Bonus/Penalty
+- Bonus: `min(depth * 280 - 432, 2576)`
+- Penalty: `-min(depth * 343 - 161, 1239)`
+- Asymmetric: penalty cap (1239) is lower than bonus cap (2576)
+
+> **Coda comparison:** Our history is `[from][to]` (4096 entries). Stormphrax's `[from][to][fromAttacked][toAttacked]` is 4x larger (16384 entries) but much more informative. Moves from/to attacked squares are fundamentally different from safe moves. The conthist base-aware update is also novel. **Both are high-priority improvements.**
+
+---
+
+## 5. Correction History
+
+**Ref:** `src/correction.h`
+
+### Tables (per color, shared across threads via atomics)
+1. **Pawn** hash (16384 entries)
+2. **Black non-pawn** material hash (16384 entries)
+3. **White non-pawn** material hash (16384 entries)
+4. **Major** piece hash (16384 entries)
+5. **Continuation** hash at ply-1, ply-2, ply-4 (single table, keyed by `pos.key() ^ keyHistory[size - offset]`)
+
+### Weights (tunable)
+```
+pawnCorrhistWeight        = 133
+stmNonPawnCorrhistWeight  = 142
+nstmNonPawnCorrhistWeight = 142
+majorCorrhistWeight       = 129
+contCorrhist1Weight       = 128
+contCorrhist2Weight       = 192
+contCorrhist4Weight       = 192
+```
 
 ### Update
 - `bonus = clamp((searchScore - staticEval) * depth / 8, -256, 256)`
 - Gravity: `v += bonus - v * |bonus| / 1024`
-- Entries are atomic i16 with relaxed ordering
-- Updates all 7 tables on every qualifying node
+- Entries are `atomic<i16>` (lock-free sharing across threads)
 
-### Complexity Signal
-- `corrDelta = |eval_before_correction - eval_after_correction|`
-- Used in RFP margin adjustment and LMR reduction adjustment
-- High complexity = big correction = uncertain eval
+### Correction Application
+- `correction = sum(weight_i * table_i) / 2048`
+- STM/NSTM non-pawn weights are swapped based on side to move
+- Applied after material scaling and halfmove scaling
 
-Compare to ours: We only have pawn hash correction. They have 7 sources. This is the #1 priority retry: implement per-color non-pawn keys + continuation correction. Our XOR-bitboard approach failed (-11.8 Elo); proper Zobrist-based keys are needed.
+### Eval Adjustment Pipeline
+1. Static eval from NNUE
+2. Contempt addition
+3. Material scaling: `eval * (26500 + npMaterial) / 32768`
+4. Optimism: `optimism * (2000 + npMaterial) / 32768`
+5. Halfmove scaling: `eval * (200 - halfmove) / 200`
+6. Correction history application
+7. Clamp to [-ScoreWin+1, ScoreWin-1]
 
----
+**Complexity:**
+- `corrDelta = abs(eval_before_correction - eval_after_correction)`
+- Used in RFP margin and LMR high-complexity reduction
 
-## 8. Eval Pipeline
-
-1. **NNUE inference** -> raw eval (i32)
-2. **Contempt**: `eval += contempt[stm]`
-3. **Material scaling**: `eval = eval * (26500 + npMaterial) / 32768`
-   - npMaterial = 450*N + 450*B + 650*R + 1250*Q
-   - **Optimism**: `optimism[stm] * (2000 + npMaterial) / 32768` added
-4. **50-move decay**: `eval = eval * (200 - halfmove) / 200`
-5. **Correction history**: weighted blend of 7 tables
-6. **Clamp** to `[-kScoreWin+1, kScoreWin-1]`
-
-Compare to ours: We don't have material scaling, 50-move decay, or optimism. These are all proven in multiple engines.
+> **Coda comparison:** We have pawn hash correction only. Stormphrax has 7 correction sources (pawn, 2x nonpawn, major, 3x continuation). The continuation correction history (keyed by XOR of current key with ancestor keys) is particularly interesting -- it captures position-pair relationships. The "complexity" metric derived from correction magnitude is used to modulate search depth. **Multi-source correction history is high priority.**
 
 ---
 
-## 9. Transposition Table
+## 6. Performance / Build System
 
-### Structure
-- 3 entries per cluster, 32-byte aligned clusters
-- Entry: 10 bytes (key16, score16, staticEval16, move16, offsetDepth8, agePvFlag8)
-- Index: `(key * clusterCount) >> 64` (Fibonacci hashing, not modulo)
-- Huge page support (madvise MADV_HUGEPAGE)
+**Ref:** `Makefile`, `src/arch.h`
 
-### Replacement Policy
-Replace if ANY of:
-- Flag is EXACT
-- Different key (new position)
-- Age mismatch (stale entry)
-- `depth + 4 + pv*2 > entry.depth` (depth threshold with PV bonus)
+### Build Tiers
+| Target | Flags | Key Features |
+|--------|-------|-------------|
+| `avx512` | `-march=icelake-client -mtune=znver4` | VNNI512, VBMI2, BMI2 |
+| `avx2-bmi2` | `-march=haswell -mtune=znver3` | AVX2, BMI2 |
+| `zen2` | `-march=bdver4 -mtune=znver2` | AVX2, no BMI2 (slow PEXT) |
+| `armv8_4` | `-march=armv8.4-a` | NEON, dotprod |
+| `native` | `-march=native` | Auto-detect |
 
-### TT Cutoff Conditions
-- `!pvNode && ttEntry.depth >= depth && (ttEntry.score <= alpha || cutnode)`
-  - AND standard bound checks (exact, upper+alpha, lower+beta)
-- The **`cutnode` guard** is notable: at cut nodes, accept TT cutoffs even when score is between alpha and beta (more aggressive)
-- **TT cutoff history update**: On beta cutoff with quiet TT move, give it a history bonus
+### VNNI Usage
+- `dpbusd` (VPDPBUSD): u8 x i8 dot product accumulate. Used in L1 matmul (sparse).
+- `dpwssd` (VPDPWSSD): i16 x i16 dot product accumulate. Used in mulAddAdjAcc (FT activation).
+- Both have 512-bit (VNNI512) and fallback (madd+add) paths.
+- VNNI256 explicitly disabled (`SP_HAS_VNNI256 0`) with comment "slowdown on any cpu that would use it"
 
-### Static Eval Storage
-- `putStaticEval()` stores raw static eval with depth=-6 (below any real depth)
-- Used to avoid recomputing static eval at revisited nodes
+### Weight Permutation
+A separate preprocessing step (`preprocess/permute.cpp`) reorders FT weights for SIMD-friendly memory access. AVX-512 `packus` produces non-sequential output (interleaved 256-bit halves), so weights must be pre-permuted to match. This happens at build time, not runtime.
 
-Compare to ours: We use 4-slot buckets with lockless atomics. They use 3-entry clusters with age/PV replacement. Their cutnode guard on TT cutoffs is novel. We should test `cutNode == (ttScore >= beta)` (Alexandria-style).
+### Network Embedding
+- Net file is zstd-compressed and linked as binary data
+- Decompressed at startup
+- Pre-permuted for the target architecture at build time
 
----
+### NUMA Support
+- Optional libnuma integration (`-DSP_USE_LIBNUMA`)
+- Network replicated per NUMA node
+- Thread binding via `numa::bindThread(threadId)`
+- Correction history allocated per NUMA node
 
-## 10. Time Management
+### Attack Generation
+- Two backends: **Black Magic** (magic bitboards) and **BMI2** (PEXT-based)
+- BMI2 used on Intel + Zen3+, Black Magic on Zen1/Zen2 (slow PEXT)
+- Zen2 build excludes BMI2 sources entirely
 
-### Base Allocation
-- `movesToGo` = provided or `defaultMovesToGo(19)`
-- `baseTime = remaining / movesToGo + increment * 0.83`
-- `optTime = min(baseTime * 0.68, maxTime)`
-- `maxTime = remaining * 0.56`
+### TT Implementation
+- 10-byte entries, 3 per cluster (30 bytes + 2 padding = 32-byte aligned cluster)
+- 5-bit age, 1-bit PV, 2-bit flag packed into single byte
+- Index: `(u128(key) * u128(count)) >> 64` (single multiply, no modulo)
+- Lazy initialization: TT memory allocated but not touched until first use (avoids startup cost)
 
-### Multi-Dimensional Scaling
-Three multiplicative factors, all tuned:
+### Optimism
+- Per-side optimism from average root score: `scale * avgScore / (|avgScore| + stretch)`
+- scale=150, stretch=100
+- Applied during eval adjustment alongside material scaling
 
-**1. Node-Based Scaling (Best Move Node Fraction)**:
-- `bestMoveNodeFraction = pvMove.nodes / totalNodes`
-- `scale *= max(2.63 - fraction * 1.7, 0.102)` (nodeTmBase, nodeTmScale, nodeTmScaleMin)
-- If best move uses 50% of nodes: 1.78x. If 90%: 1.10x. If 10%: 2.46x.
-
-**2. Best Move Stability**:
-- Tracks consecutive iterations with same best move (counter, +1 same / reset to 1 on change)
-- `scale *= min(2.4, 0.75 + 9.11 * (stability + 0.8)^(-2.7))` (power law)
-- Stability 1: ~2.4x (capped). Stability 5: ~0.85x. Stability 10+: ~0.76x.
-
-**3. Score Trend (Running Average)**:
-- Maintains exponential moving average of score (`ilerp<8>`: 1/8 new + 7/8 old)
-- `scoreChange = (score - avgScore) / 4.58`
-- `invScale = scoreChange * 0.41 / (|scoreChange| + 0.8) * (positive ? 1.09 : 1.04)`
-- `scale *= clamp(1.0 - invScale, 0.6, 1.7)`
-- Score dropping: extend time. Score rising: save time.
-
-### Final Scale
-- `scale = max(combined_scale, 0.07)` (minimum 7% of optTime)
-- `stopSoft = time >= optTime * scale`
-- `stopHard = time >= maxTime`
-
-### Hard Time Check
-- Every 1024 nodes (kTimeCheckInterval)
-
-Compare to ours: We use instability factor (200) based on best move changes. They have a full 3-factor system. This is significantly more sophisticated. Node-based TM alone is estimated at +5-15 Elo across multiple engines. **(UPDATE 2026-03-21: GoChess now has score-drop time extension with 2.0x/1.5x/1.2x tiered scaling, addressing the "score is dropping" case. Node-based TM is still missing.)**
+> **Coda comparison:** The VBMI2 sparse matmul is the biggest NPS win we're missing. Weight pre-permutation at build time is a nice trick (we do runtime detection). NUMA support is relevant for server testing. The TT lazy init is a good UX improvement.
 
 ---
 
-## 11. Lazy SMP
+## 7. Novel Features Summary (Priority for Coda)
 
-### Thread Coordination
-- Barrier-based synchronization (not just shared TT)
-- Thread data fully per-thread: SearchData, Position, NNUE state, history, search stack
-- Correction history shared via NUMA-aware allocation (atomic entries)
-- Main thread (id 0) does reporting and time management
+### HIGH PRIORITY
+1. **Sparse L1 MatMul**: Track NNZ in FT output, skip zero chunks in L1 matmul. 30-60% speedup on L1. Default impl works on AVX2. (`sparse_default.h`)
+2. **Threat-Aware History**: `[from][to][fromAttacked][toAttacked]` doubles history granularity. Simple to implement, likely +10-20 Elo. (`history.h`)
+3. **Multi-Source Correction History**: Pawn + nonpawn(x2) + major + continuation(x3). Seven tables vs our one. (`correction.h`)
+4. **Dual CReLU+SCReLU Activation**: Concatenate both activation types at L1 to double L2 input width. Free expressiveness. (`multilayer.h` lines 230-248)
 
-### Thread Selection (for bestmove)
-- SF-ported algorithm: weighted vote by `(score - lowestScore + 10) * depthCompleted`
-- Each thread votes for its best move
-- Highest-voted move wins; ties broken by thread weight
-- Special handling for decisive scores (wins/losses)
+### MEDIUM PRIORITY
+5. **Cuckoo Cycle Detection**: Detect upcoming repetitions proactively. Prevents entering drawable lines. (`cuckoo.h`)
+6. **Conthist Base-Aware Update**: Use combined quiet score as gravity base for continuation history updates. (`history.h` lines 112-125)
+7. **Complexity from Correction Delta**: Use magnitude of correction history adjustment as a search depth modulator. (`search.cpp` lines 704-732)
+8. **Alpha Raises Counter**: Track how many moves raised alpha as an LMR adjustment. (`search.cpp` line 1033)
+9. **Good Noisy SEE History Adjustment**: `-captureScore/4 + offset` as SEE threshold for good captures. (`movepick.h` line 113)
 
-### Node Counting
-- Per-thread atomic relaxed loads/stores (no fetch_add overhead)
-- Total nodes summed across threads for time management
+### LOW PRIORITY / SITUATIONAL
+10. **VBMI2 Sparse Path**: Only relevant for Ice Lake+ CPUs. Nice bonus over default sparse.
+11. **Weight Pre-Permutation**: Build-time tool for SIMD-optimal weight layout. Saves ~1ms per startup.
+12. **NUMA Replication**: Network + correction history per NUMA node. Matters for multi-socket.
+13. **Hindsight Extension**: Inverse of hindsight reduction -- extend when position became worse. (`search.cpp` lines 748-752)
+14. **TT Lazy Init**: Don't clear TT until first use after resize.
 
-Compare to ours: We have Lazy SMP with shared TT only. They share correction history atomically across threads. Their thread selection algorithm is more sophisticated than just using main thread's result.
-
----
-
-## 12. Unique Techniques
-
-### 1. Threat Feature Inputs in NNUE (60,144 features)
-- Encodes piece-attacks-piece relationships as direct NNUE inputs
-- Incrementally updated alongside PSQ features
-- Separate accumulator for threat features, added to PSQ accumulator before pairwise activation
-- **No other engine in our review has this** -- completely unique to Stormphrax
-
-### 2. Dual CReLU+SCReLU Activation (L1)
-- L1 output goes through both CReLU (linear clamp) and SCReLU (square clamp)
-- Doubles effective L2 input width (32 CReLU + 32 SCReLU = 64 inputs)
-- Captures both linear and nonlinear patterns from same hidden layer
-
-### 3. Sparse L1 Computation
-- Tracks non-zero 4-byte chunks in u8 FT output
-- Only multiplies chunks where input is non-zero
-- Processes 4 chunks at a time for SIMD efficiency
-
-### 4. Optimism (Eval Bias)
-- Per-side bias based on running average score: `150 * avgScore / (|avgScore| + 100)`
-- Material-weighted: `optimism * (2000 + npMaterial) / 32768`
-- Encourages the engine to play for wins when ahead, draws when behind
-
-### 5. Dynamic ProbCut SEE Threshold
-- `seeThreshold = (probcutBeta - staticEval) * 17 / 16`
-- Captures must gain enough material to plausibly exceed probcut margin
-- Adapts to the gap between static eval and required score
-
-### 6. QSearch 2-Move Limit
-- `if (legalMoves >= 2) break;`
-- Only searches 2 captures in quiescence (after futility/SEE filtering)
-- Very aggressive but saves significant time
-
-### 7. Alpha-Raise Count in LMR
-- Tracks `alphaRaises` counter at each node
-- Each alpha raise adds `64/128 = 0.5` ply of reduction to subsequent moves
-- "If we've already found good moves, remaining moves are less likely to be good"
-
-### 8. Cuckoo Hashing for Upcoming Repetition
-- `pos.hasCycle()` detects upcoming repetitions without full search
-- Uses Cuckoo hash table of Zobrist key differences
-- Called early in search (before depth check) and in QSearch
-- Only checked when `alpha < 0` (can only help the side with negative alpha)
+### DO NOT ADOPT
+- **Singular Extensions**: Stormphrax uses them but our cross-engine testing showed them harmful for our engine. Their implementation has novel details (LDSE, cutnode propagation) but the fundamental concern remains.
+- **VNNI256 disabled**: They found it's a slowdown. Don't bother with AVX2-VNNI.
 
 ---
 
-## 13. Notable Differences from GoChess
+## 8. Architecture Comparison Table
 
-### Things Stormphrax has that we don't:
-1. **Threat feature NNUE inputs** (60K features, incremental) -- unique in chess engines
-2. **Dual CReLU+SCReLU activation** on L1 output
-3. **Sparse L1 computation** (NNZ chunk tracking)
-4. ~~**FinnyTable**~~ (refresh table for king bucket changes) **(UPDATE 2026-03-21: GoChess now has Finny tables)**
-5. **7-source correction history** (pawn + 2 non-pawn + major + 3 continuation)
-6. **Threat-aware butterfly history** (4x table: fromThreatened x toThreatened)
-7. **PieceTo history table** (averaged with butterfly for mainHist)
-8. **Hindsight extension/reduction** (parent eval + child eval feedback)
-9. **Optimism** (per-side eval bias)
-10. **Material scaling** of eval
-11. **50-move decay** of eval
-12. **Cuckoo hashing** for upcoming repetition detection
-13. **3-factor time management** (node fraction + stability + score trend)
-14. **ProbCut QS pre-filter** (2-stage ProbCut)
-15. **Dynamic ProbCut SEE threshold**
-16. **Alpha-raise count in LMR**
-17. **Complexity-adjusted RFP and LMR**
-18. **RFP return blending** (`(eval + beta) / 2`)
-19. **Full singular extension suite** (double/triple ext, multi-cut, negative ext, ply limiter)
-20. **LDSE** (low-depth singular extension fallback)
-21. **QSearch 2-move limit**
-22. **History-adjusted noisy SEE pruning threshold**
-23. **Eval-based history depth bonus** (`depth + (eval <= bestScore)`)
-24. **Post-LMR conthist update**
-
-### Things we have that Stormphrax doesn't:
-1. **Counter-move heuristic** (they only have 1 killer)
-2. **2 killers per ply** (they have 1)
-3. **NMP threat detection** (our +12.4 Elo win)
-4. **Alpha-reduce** (our +13.0 Elo win)
-5. **TT score dampening** (our +22.1 Elo win)
-6. **TT near-miss cutoffs** (our +21.7 Elo win)
-7. **Failing heuristic** (our eval deterioration detection)
-
----
-
-## 14. Parameter Comparison Table
-
-| Feature | Stormphrax | GoChess |
-|---------|-----------|---------|
-| RFP margin | 71*max(d-imp,0), depth<=6 | 80*d, depth<=8 |
-| RFP complexity | Yes (corrDelta*64/128) | No |
-| RFP return | (eval+beta)/2 | eval |
-| Razoring | 315*d, depth<=4 | 400+100*d, depth<=3 |
-| NMP min depth | 4 | 3 |
-| NMP R formula | 6+d/5 | 3+d/3+min((eval-beta)/200,3) |
-| NMP verification | depth > 14 | depth >= 12 |
-| ProbCut margin | 303, depth>=7 | 170, depth>=5 |
-| ProbCut QS pre-filter | Yes | No |
-| LMR quiet base | 0.83 | 1.50 |
-| LMR quiet divisor | 2.18 | ~2.36 |
-| LMR noisy base | -0.12 | ~1.80 |
-| LMR noisy divisor | 2.48 | ~2.36 |
-| LMR cutnode | +2.01 ply | No |
-| LMR alpha-raise | +0.50/raise | No |
-| LMR complexity | -1.00 if high | No |
-| LMR history div | 10835 | 5000 |
-| LMP formula | (3+d^2)/(2-imp) | 3+d^2 (+50% imp) |
-| Futility | 261+68*d+hist/128, d<=8 | 80+80*lmrD |
-| SEE quiet | -16*lmrD^2 | -20*d^2 |
-| SEE noisy | -112*d-hist/64 | similar |
-| SE depth | >=6+ttpv | >=10 |
-| SE margin | ttScore-d*14/16 | ttScore-d*3 |
-| SE double/triple | Yes (margins 11, 105) | No |
-| SE multi-cut | Yes (return (score+beta)/2) | No |
-| SE negative ext | -2 cutnode, -1 ttScore>=beta | No |
-| Aspiration delta | 16 | 15 |
-| Asp fail-high | reduce depth up to 3 | No |
-| History max | 15769 | ~10000 |
-| Killers | 1 per ply | 2 per ply |
-| Counter-move | No | Yes |
-| ContHist plies | 1, 2, 4 | 1, 2 |
+| Feature | Stormphrax | GoChess/Coda |
+|---------|-----------|-------------|
+| FT width | 640 (pairwise from 1280) | 1024 |
+| King buckets | 16, ABCD-mirrored | Varies by net version |
+| Merged kings | Yes (704 inputs) | No (768 inputs) |
+| Threat features | 60,144 | None |
+| FT activation | Pairwise CReLU -> u8 | CReLU or SCReLU -> i16 |
+| L1 | 640->32, i8 weights, sparse | 1024->16, i8 weights, dense |
+| L1 activation | Dual CReLU+SCReLU | SCReLU |
+| L2 | 64->32, i32 weights | 16->32, i16 weights |
+| L3 | 32->1, i32 weights | 32->1, i16 weights |
+| Output buckets | 8 (material count) | 8 (material count) |
+| Sparse L1 | Yes (NNZ tracking) | No |
+| History dims | 4D (from/to/attacked/attacked) | 2D (from/to) |
 | Correction sources | 7 | 1 (pawn) |
-| Time: movesToGo | 19 | similar |
-| Time: soft scale | 0.68 | similar |
-| Time: hard scale | 0.56 | similar |
-| Time: node-based | Yes (3-factor) | Instability only |
-
----
-
-## 15. Ideas Worth Testing from Stormphrax
-
-### Already Merged from Stormphrax (via earlier reviews):
-- LMR separate tables (cap/quiet) -- +43.5 Elo
-- Fail-high score blending -- +14.7 Elo
-- QS beta blending -- +4.9 Elo
-
-### Priority 1: Fix Singular Extensions (CRITICAL)
-Our SE is broken at -58 to -85 Elo. Stormphrax's full suite confirms the Alexandria pattern:
-- Depth >= 6 (not 10), ply limiter `ply < rootDepth * 2`
-- Tighter margin: `ttScore - depth*14/16` (not `depth*3`)
-- Multi-cut return on `score >= beta`: `(score+beta)/2`
-- Double ext at sBeta-11, triple at sBeta-105
-- Negative ext -2 at cutnode, -1 when ttScore >= beta
-- LDSE fallback at low depth
-- **Est. Elo**: +20 to +50 (recovering from -58 is massive)
-
-### Priority 2: Multi-Source Correction History
-7 tables vs our 1. This is now confirmed by 11+ engines.
-- Per-color non-pawn Zobrist keys (not XOR of bitboards)
-- Continuation correction at plies 1, 2, 4
-- Major piece key
-- Weighted blend with tuned weights
-- **Est. Elo**: +5 to +15
-
-### Priority 3: Node-Based Time Management
-Their 3-factor system (node fraction + stability + score trend) is much richer than our instability-only approach.
-- Start with node fraction scaling: `max(2.63 - fraction * 1.7, 0.102)`
-- Add score trend: running average with asymmetric scaling
-- 6+ engines now
-- **Est. Elo**: +5 to +15
-
-### Priority 4: Threat-Aware Butterfly History
-4x table indexed by [from][to][fromAttacked][toAttacked]. 12+ engines now.
-- Also: PieceTo table averaged with butterfly
-- **Est. Elo**: +3 to +8
-
-### Priority 5: Hindsight Reduction/Extension
-Parent eval + child eval feedback. 5 engines now.
-- Extension when both evals negative AND parent reduced >= 3
-- Reduction when both evals positive AND parent reduced >= 2
-- **Est. Elo**: +2 to +5
-
-### Priority 6: ProbCut QS Pre-Filter
-Two-stage ProbCut (QS first, then full search). 2 engines (Stormphrax + Alexandria).
-- Our ProbCut is already proven (+10 Elo). Adding QS pre-filter saves nodes in deep ProbCut.
-- Dynamic SEE threshold: `(probcutBeta - staticEval) * 17/16`
-- **Est. Elo**: +3 to +8
-
-### Priority 7: Cutnode +2 LMR
-They use +2.01 ply at cut nodes (lmrCutnodeReductionScale = 257). 3 engines now.
-- We are currently testing this.
-- **Est. Elo**: +2 to +5
-
-### Priority 8: Complexity-Adjusted RFP
-Use |corrected_eval - raw_eval| as complexity signal. Unique to Stormphrax.
-- Higher complexity = larger RFP margin = less pruning
-- Simple: `rfpMargin += corrDelta * 64 / 128`
-- **Est. Elo**: +2 to +4
-
-### Lower Priority (from Stormphrax, confirm with other engines):
-- Alpha-raise count in LMR (2 engines now: Stormphrax + Altair)
-- History-adjusted noisy SEE pruning
-- QSearch 2-move limit (unique, risky)
-- LDSE (low-depth SE fallback)
-- Eval-based history depth bonus (also in Alexandria)
-- Optimism (eval bias) -- interesting but complex
-- Material scaling + 50-move decay (also in Alexandria)
-- Post-LMR conthist update
-- Cuckoo repetition detection
-
----
-
-## 16. NNUE Architecture Lessons
-
-Stormphrax's NNUE is substantially more advanced than ours. Key architectural lessons:
-
-1. **Threat features are powerful**: 60K explicit threat inputs give the network tactical awareness without needing to learn it purely from position. This is unique and likely accounts for significant strength.
-
-2. **Dual activation doubles effective width cheaply**: CReLU+SCReLU on L1 output gives 64 inputs to L2 from 32 neurons. The linear (CReLU) path captures magnitude; the squared (SCReLU) path captures nonlinear interactions.
-
-3. **Sparse L1 is essential at this width**: With 640 FT outputs, many will be zero after pairwise activation. Sparse computation saves ~30-50% of L1 time.
-
-4. **FinnyTable amortizes king bucket changes**: Instead of full recompute on king moves, delta-update from cached state. Critical at 16 king buckets. **(UPDATE 2026-03-21: GoChess now has this.)**
-
-5. **Our v5 architecture** (`(768x16->N)x2->1x8` with SCReLU/pairwise/Finny tables) is now at Stormphrax's scale. **(UPDATE 2026-03-21: GoChess v5 has pairwise mul, SCReLU, dynamic width, and Finny tables.)** Still lacks threat features, dual activation, and NNZ sparsity.
+| Cycle detection | Cuckoo hashing | Repetition check |
+| Build system | Makefile, Clang-only | Go build |
