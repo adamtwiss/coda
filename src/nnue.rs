@@ -70,6 +70,12 @@ fn king_mirror(sq: usize) -> bool {
     unsafe { KING_MIRROR[sq] }
 }
 
+/// Public accessors for same-bucket king move detection in search.
+#[inline]
+pub fn king_bucket_pub(sq: usize) -> usize { king_bucket(sq) }
+#[inline]
+pub fn king_mirror_pub(sq: usize) -> bool { king_mirror(sq) }
+
 /// Piece index for HalfKA: maps (color, piece_type) to 0-11.
 /// White pieces: 0-5, Black pieces: 6-11.
 #[inline]
