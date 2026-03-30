@@ -3134,3 +3134,11 @@ Disabled each search feature individually, 300 games each vs Minic/Ethereal/Texe
 - **1200 games vs Minic/Ethereal/Texel**: +23 ±17 Elo
 - **Includes**: cont-hist 4-ply, drop LVA, NMP R=4, SE with positive ext
 - **Use this for all future experiments**
+
+## 2026-03-30: History Divisor 4000 + Futility 50+d*50
+
+- **Combined (600g)**: +41 ±24 Elo (raw +18). Promising but...
+- **History 4000 alone (567g)**: +25 ±24 Elo (raw +2). Neutral.
+- **Futility 50+d*50 alone (600g)**: +20 ±24 Elo (raw -3). Neutral.
+- **Result**: Both individually neutral. Combined +18 was likely noise. Neither committed.
+- **Notes**: The combined test illustrates the danger of testing two changes together — synergistic noise can look like a real gain.
