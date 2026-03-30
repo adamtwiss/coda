@@ -16,6 +16,7 @@ mod epd;
 pub mod nnue;
 pub mod book;
 pub mod tb;
+pub mod binpack;
 
 use board::Board;
 use movegen::{perft, perft_divide};
