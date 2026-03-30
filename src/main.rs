@@ -19,6 +19,7 @@ pub mod tb;
 pub mod binpack;
 pub mod datagen;
 pub mod nnue_export;
+pub mod bullet_convert;
 
 use board::Board;
 use movegen::{perft, perft_divide};
@@ -176,6 +177,27 @@ fn main() {
             }
         }
 
+        "convert-bullet" => {
+            let input = flag_value(&args, "-input")
+                .expect("Usage: coda convert-bullet -input <quantised.bin> -output <net.nnue> [options]");
+            let output = flag_value(&args, "-output").unwrap_or("net.nnue");
+            let screlu = args.iter().any(|a| a == "-screlu");
+            let pairwise = args.iter().any(|a| a == "-pairwise");
+            let l1: usize = flag_value(&args, "-hidden").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let l2: usize = flag_value(&args, "-hidden2").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let int8l1 = args.iter().any(|a| a == "-int8l1");
+
+            let result = if l1 > 0 {
+                bullet_convert::convert_v7(input, output, screlu, pairwise, l1, l2, int8l1)
+            } else {
+                bullet_convert::convert_v5(input, output, screlu, pairwise)
+            };
+            if let Err(e) = result {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+
         "check-net" => {
             let net_path = args.get(2).expect("Usage: coda check-net <net.nnue>");
             // TODO: port check-net from GoChess tuner
@@ -229,6 +251,13 @@ fn print_usage() {
     println!("  coda perft-bench                  Perft benchmark suite");
     println!("  coda datagen -nnue <net> -output <file.binpack> [options]");
     println!("                                    Generate training data (SF binpack format)");
+    println!("  coda convert-bullet -input <quantised.bin> -output <net.nnue> [options]");
+    println!("                                    Convert Bullet quantised.bin to .nnue");
+    println!("    -screlu                         SCReLU activation");
+    println!("    -pairwise                       Pairwise multiplication");
+    println!("    -hidden <N>                     L1 hidden layer (v7)");
+    println!("    -hidden2 <N>                    L2 hidden layer (v7)");
+    println!("    -int8l1                         L1 weights are int8 (QA=64)");
     println!("  coda convert-checkpoint -nnue <v5.nnue> -output <dir> [-ft 1024] [-l1 16] [-l2 32]");
     println!("                                    Convert .nnue to Bullet checkpoint for v7 transfer learning");
     println!("  coda check-net <net.nnue>         NNUE health check (TODO)");
