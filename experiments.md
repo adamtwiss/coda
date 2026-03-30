@@ -3120,3 +3120,17 @@ Disabled each search feature individually, 300 games each vs Minic/Ethereal/Texe
 - **Result**: Rejected. Even with ply guard, double extension costs ~25 Elo vs single extension at our strength. Consistent with the pattern: more aggressive extensions hurt.
 - **Prior attempt**: depth*3 margin without ply guard scored +13 (worse).
 - **Notes**: May work when engine is stronger. All top engines have double extensions with various limiters.
+
+## 2026-03-30: Mate Distance Pruning
+
+- **Change**: Narrow alpha/beta window based on ply — can't mate in fewer plies than current distance from root. Universal technique in strong engines.
+- **Bug found**: Initial implementation set `alpha_orig` AFTER MDP narrowing, corrupting the PV/non-PV detection for TT. Fixed by saving `alpha_orig` before MDP.
+- **Gauntlet (600g, fixed)**: +16 ±24 Elo (new baseline +23 ±17). Raw: -7 Elo.
+- **Result**: Rejected. Mate situations too rare at 10+0.1 to offset any interference with aspiration.
+- **Notes**: Buggy version scored +24 (actually worse than baseline too). May help at longer TC.
+
+## New Baseline (2026-03-30, post-SE)
+
+- **1200 games vs Minic/Ethereal/Texel**: +23 ±17 Elo
+- **Includes**: cont-hist 4-ply, drop LVA, NMP R=4, SE with positive ext
+- **Use this for all future experiments**
