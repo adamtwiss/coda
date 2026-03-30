@@ -281,6 +281,9 @@ Examples: `net-v5-1024-w0-e120s120.nnue`, `net-v5-1024s-w5-e400s400.nnue`, `net-
 - EP moves only valid when EP square is empty (occupied square = corruption)
 - TT stores raw (uncorrected) eval to avoid double correction on probe
 - Correction history only updated when bestScore > originalAlpha
+- **is_pseudo_legal must be thorough**: TT hash collisions inject illegal moves. Pawn validation must check direction, intermediate squares (double push), starting rank, destination empty (pushes), enemy piece (captures). Castling must check rights, path clear, king/intermediate/destination not attacked, king on correct square. All three bugs cost 320 Elo combined.
+- **PV error warnings = TT collision bugs**: Every "Illegal PV move" from cutechess-cli means a TT collision passed is_pseudo_legal and corrupted the search tree. Treat as critical, not cosmetic.
+- **Feature flag ablation**: env var controlled flags (NO_XXX, ENABLE_XXX, DISABLE_ALL) for systematic search feature testing. Parsed once at startup via std::sync::Once.
 - LMR contHist weight: 3x in move ordering, 1x in reduction adjustment
 - Killers fully exempt from LMR (not just r -= 1)
 - All pruning (LMP, futility, history, SEE) exempts TT move and killers
