@@ -10,6 +10,7 @@ use crate::types::*;
 pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, classical: bool) {
     let mut board = Board::startpos();
     let mut info = SearchInfo::new(64);
+    let mut stop_flag = info.stop.clone(); // keep a handle to signal stop from UCI loop
     let mut opening_book: Option<crate::book::OpeningBook> = None;
     let mut use_book = true;
     let mut syzygy: Option<crate::tb::SyzygyTB> = None;
@@ -63,6 +64,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
         }
     }
 
+    // Search thread handle — returns SearchInfo back after search completes
+    let mut search_handle: Option<std::thread::JoinHandle<SearchInfo>> = None;
+
     let stdin = io::stdin();
     for line in stdin.lock().lines() {
         let line = match line {
@@ -103,6 +107,14 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 parse_position(&tokens, &mut board);
             }
             "go" => {
+                // Wait for any pending search to finish first
+                if let Some(handle) = search_handle.take() {
+                    stop_flag.store(true, Ordering::Relaxed);
+                    if let Ok(returned_info) = handle.join() {
+                        info = returned_info;
+                        stop_flag = info.stop.clone();
+                    }
+                }
                 // Try Syzygy tablebase at root
                 if let Some(ref tb) = syzygy {
                     if crate::bitboard::popcount(board.occupied()) as usize <= tb.max_pieces() {
@@ -131,31 +143,34 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 if info.nnue_net.is_none() {
                     println!("info string WARNING: No NNUE net loaded! Playing with classical eval.");
                 }
-                // Run search (Lazy SMP if threads > 1)
-                let best_move = search_smp(&mut board, &mut info, &limits, num_threads);
-                let s = &info.stats;
-                let fmr = if s.beta_cutoffs > 0 { s.first_move_cutoffs * 100 / s.beta_cutoffs } else { 0 };
-                println!("info string stats tt={} nmp={} rfp={} razor={} lmp={} futility={} hist={} see={} probcut={} lmr={} recap={} qnodes={} fmr={}%({}/{})",
-                    s.tt_cutoffs, s.nmp_cutoffs, s.rfp_cutoffs, s.razor_cutoffs,
-                    s.lmp_prunes, s.futility_prunes, s.history_prunes, s.see_prunes,
-                    s.probcut_cutoffs, s.lmr_searches, s.recapture_ext, s.qnodes,
-                    fmr, s.first_move_cutoffs, s.beta_cutoffs);
-                println!("info string lmr_hist r1={} r2={} r3={} r4={} r5={} r6={} r7+={}",
-                    s.lmr_reductions[1], s.lmr_reductions[2], s.lmr_reductions[3],
-                    s.lmr_reductions[4], s.lmr_reductions[5], s.lmr_reductions[6], s.lmr_reductions[7]);
-                println!("info string lmr_adj pv={} cut={} improving={} failing={} unstable={} hist_good={} hist_bad={}",
-                    s.lmr_adj_pv, s.lmr_adj_cut, s.lmr_adj_improving, s.lmr_adj_failing,
-                    s.lmr_adj_unstable, s.lmr_adj_history_neg, s.lmr_adj_history_pos);
-                println!("info string depth_hist d0={} d1={} d2={} d3={} d4={} d5={} d6={} d7={} d8+={} ",
-                    s.depth_hist[0], s.depth_hist[1], s.depth_hist[2], s.depth_hist[3],
-                    s.depth_hist[4], s.depth_hist[5], s.depth_hist[6], s.depth_hist[7],
-                    s.depth_hist[8] + s.depth_hist[9] + s.depth_hist[10] + s.depth_hist[11]
-                        + s.depth_hist[12] + s.depth_hist[13] + s.depth_hist[14] + s.depth_hist[15]);
-                println!("bestmove {}", move_to_uci(best_move));
+
+                // Move info into search thread, get it back when search finishes
+                let mut search_board = board.clone();
+                let shared_tt = info.tt.clone();
+                let shared_net = info.nnue_net.clone();
+                let shared_stop = stop_flag.clone();
+                let search_info = std::mem::replace(&mut info, SearchInfo::new_with_shared(
+                    shared_stop, shared_tt, shared_net,
+                ));
+                let threads = num_threads;
+                search_handle = Some(std::thread::Builder::new()
+                    .stack_size(16 * 1024 * 1024)
+                    .spawn(move || {
+                        let mut si = search_info;
+                        let best_move = search_smp(&mut search_board, &mut si, &limits, threads);
+                        println!("bestmove {}", move_to_uci(best_move));
+                        si // return SearchInfo for reuse
+                    }).expect("Failed to spawn search thread"));
             }
             "stop" => {
-                // Signal the search to stop (checked every 4096 nodes)
-                info.stop.store(true, Ordering::Relaxed);
+                stop_flag.store(true, Ordering::Relaxed);
+                // Wait for search thread to finish and recover SearchInfo
+                if let Some(handle) = search_handle.take() {
+                    if let Ok(returned_info) = handle.join() {
+                        info = returned_info;
+                        stop_flag = info.stop.clone();
+                    }
+                }
             }
             "ponderhit" => {
                 // Stop pondering — the search will stop at the next check
@@ -198,6 +213,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
             }
             "quit" => {
+                stop_flag.store(true, Ordering::Relaxed);
+                if let Some(handle) = search_handle.take() {
+                    let _ = handle.join();
+                }
                 break;
             }
             "d" | "display" => {

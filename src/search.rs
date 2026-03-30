@@ -225,6 +225,20 @@ impl SearchInfo {
         }
     }
 
+    /// Create a placeholder SearchInfo sharing TT, stop flag, and NNUE net.
+    /// Used by UCI loop while the real SearchInfo is in the search thread.
+    pub fn new_with_shared(
+        stop: std::sync::Arc<AtomicBool>,
+        tt: std::sync::Arc<crate::tt::TT>,
+        nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
+    ) -> Self {
+        let mut si = Self::new(1); // tiny dummy TT, replaced below
+        si.stop = stop;
+        si.tt = tt;
+        si.nnue_net = nnue_net;
+        si
+    }
+
     /// Load an NNUE network.
     pub fn load_nnue(&mut self, path: &str) -> Result<(), String> {
         let net = crate::nnue::NNUENet::load(path)?;
