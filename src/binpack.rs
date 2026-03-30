@@ -52,13 +52,14 @@ impl BitWriter {
             self.data.push(0);
         }
         if bit != 0 {
-            self.data[byte_idx] |= 1 << bit_idx;
+            self.data[byte_idx] |= 1 << (7 - bit_idx); // MSB-first, matching Stockfish
         }
         self.bit_pos += 1;
     }
 
     fn write_bits(&mut self, val: u32, n: usize) {
-        for i in 0..n {
+        // MSB-first: write most significant bit of value first
+        for i in (0..n).rev() {
             self.write_bit(((val >> i) & 1) as u8);
         }
     }
