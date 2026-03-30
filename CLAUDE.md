@@ -37,11 +37,15 @@ src/
   tt.rs            Transposition table (4-slot buckets, XOR key verification)
   movepicker.rs    Staged move ordering, history tables, killer/counter moves
   search.rs        Negamax, pruning, LMR, correction history, pruning stats
-  nnue.rs          NNUE v5/v6 inference, accumulator stack, Finny table, AVX2/AVX-512 SIMD
+  nnue.rs          NNUE v5/v6/v7 inference, accumulator stack, Finny table, AVX2/AVX-512 SIMD
   uci.rs           UCI protocol (position, go, stop, ponder, setoption)
   epd.rs           EPD test suite runner with SAN formatting
   book.rs          Polyglot opening book support
   polyglot_randoms.rs  Standard Polyglot Zobrist random table (781 entries)
+  datagen.rs       Multi-threaded training data generation (self-play, material removal)
+  binpack.rs       SF BINP binpack format writer (chain-compressed)
+  bullet_convert.rs  Bullet quantised.bin → .nnue converter (v5/v6/v7)
+  nnue_export.rs   .nnue → Bullet checkpoint converter (for transfer learning)
 testdata/
   wac.epd          Win At Chess test suite (201 positions)
 ```
@@ -87,8 +91,8 @@ Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from dept
 **Other:** Contempt = -10 (prefer playing over drawing). Insufficient material detection (KvK, KNvK, KBvK). Repetition detection via undo stack hash comparison.
 
 ### TT
-- 4-slot buckets, 64 bytes (cache-line aligned)
-- XOR key verification: `key_xor = hash ^ data` (full 64-bit protection)
+- 5-slot buckets, 64 bytes (cache-line aligned), AtomicU64/AtomicU32 for lockless Lazy SMP
+- XOR key verification: `key_xor = hash ^ data` (detects torn reads from concurrent writes)
 - 14-bit staticEval (±8191 cp range)
 - Replacement: d > slotDepth-3 for same-gen key match; always replace if generation differs
 - TT score dampening: (3*score+beta)/4 on non-PV TTLower cutoffs
@@ -98,8 +102,8 @@ Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from dept
 - Stores raw (uncorrected) static eval to avoid double correction
 
 ### NNUE
-Supports v5 (CReLU) and v6 (SCReLU flag byte) formats.
-Production: 1024 CReLU (`net-v5-120sb-sb120.nnue`). Strongest tested: 1024 SCReLU w5 (`net-v5-1024s-w5-e400s400.nnue`).
+Supports v5 (CReLU), v6 (SCReLU, pairwise), and v7 (hidden layers) formats.
+Strongest cross-engine: 768pw w5 (`net-v5-768pw-w5-e800-s800.nnue`). Strongest self-play: 1024s w5 (`net-v5-1024s-w5-e800-s800.nnue`).
 
 HalfKA features: 16 king buckets × 12 piece types × 64 squares = 12288 inputs.
 Quantization: QA=255 (accumulator), QB=64 (output weights).
@@ -116,11 +120,14 @@ Polyglot .bin format. Weighted random selection. Polyglot Zobrist hashing with s
 
 ### UCI Options
 - `Hash` (spin, 1-4096, default 64) — TT size in MB
+- `Threads` (spin, 1-256, default 1) — Lazy SMP thread count
 - `NNUEFile` (string) — path to .nnue network file
 - `OwnBook` (check, default true) — use opening book
 - `BookFile` (string) — path to Polyglot .bin book
 - `MoveOverhead` (spin, 0-5000, default 100) — communication latency in ms
 - `Ponder` (check, default false)
+- `SparseL1` (check, default false) — sparse L1 matmul for v7 (experimental)
+- `SyzygyPath` (string) — path to Syzygy tablebase files
 
 ### Time Management
 - Soft allocation: timeLeft/movesLeft + 80% of increment
@@ -131,14 +138,83 @@ Polyglot .bin format. Weighted random selection. Polyglot Zobrist hashing with s
 
 ## NNUE Training (Bullet GPU)
 
-We train on **Bullet** (Rust, CUDA) using T80 binpack data (~12B positions across 6-12 files). Training produces `quantised.bin` which is converted to `.nnue` via GoChess's `./tuner convert-bullet`.
+We train on **Bullet** (Rust, CUDA, fork: `adamtwiss/bullet`) using T80 binpack data (~30B positions across 12 files). Training produces `quantised.bin` which is converted to `.nnue` via `coda convert-bullet`.
 
-Key findings:
+### GPU Host Setup
+
+All GPU hosts should use the forked Bullet trainer:
+```bash
+git clone git@github.com:adamtwiss/bullet.git
+cd bullet && cargo build --release
+```
+
+**Output directory**: All trained models and checkpoints go in `coda/nets/`:
+```
+coda/nets/
+  v5-1024s-w5-e800/           # training run directory
+    quantised-s100.bin         # checkpoint at SB 100
+    quantised-s400.bin         # checkpoint at SB 400
+    quantised-s800.bin         # final checkpoint
+    net-v5-1024s-w5-e800s800.nnue   # converted .nnue
+  v7-1024h16x32s-w0-e800/     # v7 training run
+    ...
+```
+
+Create the directory if it doesn't exist: `mkdir -p coda/nets`
+
+### Model Conversion
+
+Convert Bullet output to .nnue format (run on the GPU host after training):
+```bash
+# v5 (no hidden layers)
+coda convert-bullet -input quantised.bin -output net.nnue -screlu
+
+# v5 pairwise
+coda convert-bullet -input quantised.bin -output net.nnue -pairwise
+
+# v7 (hidden layers)
+coda convert-bullet -input quantised.bin -output net.nnue -screlu -hidden 16 -hidden2 32 -int8l1
+```
+
+### v7 Transfer Learning (Frozen FT)
+
+To train v7 hidden layers using pre-trained v5 FT weights:
+```bash
+# 1. Convert best v5 .nnue to Bullet checkpoint
+coda convert-checkpoint -nnue net-v5-1024s-w5-e800s800.nnue -output v7_checkpoint -l1 16 -l2 32
+
+# 2. In Bullet training config, load checkpoint and freeze FT:
+#    trainer.load_from_checkpoint("v7_checkpoint");
+#    trainer.optimiser.freeze("l0w");
+#    trainer.optimiser.freeze("l0b");
+#    // After 50 SBs, unfreeze in superbatch_callback
+```
+
+The `adamtwiss/bullet` fork adds `freeze()`/`unfreeze()` support for per-weight training control.
+
+### Training Data Generation
+
+Coda can generate supplementary training data (material-imbalance positions, self-play with blunders):
+```bash
+# Material removal: remove pieces from EPD positions, deep-search each
+coda datagen -nnue net.nnue -epd positions.epd -depth 10 -threads 32 -output material.binpack
+
+# Self-play with blunders
+coda datagen -nnue net.nnue -games 50000 -depth 8 -threads 32 -blunder 0.1 -output selfplay.binpack
+```
+
+Output is SF BINP binpack format, directly usable by Bullet.
+
+### Key Training Findings
+
 - **CReLU kills hidden layer neurons** during long training (dying ReLU). SCReLU prevents this.
-- **LR warmup is critical for hidden layers**: 5 SB linear warmup 0.0001→0.001, then cosine 0.001→0.0001.
+- **LR warmup is critical for hidden layers**: 5-10 SB linear warmup 0.0001→0.001, then cosine 0.001→0.0001.
 - **SCReLU scale chain**: keep v² at QA² through matmul, bias×QA² to match, /QA² after.
 - **Hidden→output activation is linear** in Bullet (no SCReLU before output buckets).
-- **v5 architecture is saturated**: 1024 CReLU/SCReLU all within ~20 Elo. Hidden layers (v7) needed to break through.
+- **v5 architecture is saturated**: 1024 CReLU/SCReLU/768pw all within ~20 Elo cross-engine. Hidden layers (v7) needed to break through.
+- **WDL blend**: w0 is better than w5 for v7 hidden layer nets (+30 Elo). w3-w5 are equivalent for v5.
+- **12-file training data** gives +33 Elo over 6-file for 768pw (data diversity matters).
+- **v7 hidden layers need better training**: current v7 nets are ~40-80 Elo weaker than v5 due to hidden layer quality. Transfer learning (frozen FT) and supplementary material-imbalance data are being investigated.
 
 Bullet LR schedule for hidden layer nets:
 ```rust
@@ -185,11 +261,13 @@ Examples: `net-v5-1024-w0-e120s120.nnue`, `net-v5-1024s-w5-e400s400.nnue`, `net-
 - History bonus cap: depth²  capped at 1200
 - Contempt: -10
 
-## Current Status
+## Current Status (2026-03-30)
 
-- **Strength**: ~-90 Elo vs Crafty/Rodent/ExChess/GreKo gauntlet; roughly -250 to -300 from GoChess
-- **NPS**: ~1.16M with NNUE CReLU 1024 (AVX2), ~2.5M with PeSTO classical
-- **Missing vs GoChess**: Lazy SMP, gives-check exemptions in LMR/LMP/futility, pawn history in move ordering (partial), v7 hidden layer nets, dynamic time management (best-move stability)
+- **Strength**: -7 Elo in 13-engine cross-engine gauntlet (with 768pw net). In the Winter/Midnight/Weiss/Minic tier.
+- **NPS**: ~1,350K (v5 1024 CReLU), ~1,464K (768pw), ~673K (v7 hidden layer) — all with AVX2 SIMD
+- **vs GoChess**: +19 Elo from NPS advantage (15-26% faster depending on net type)
+- **Lazy SMP**: Implemented. 4 threads gives ~4x NPS and +2 depth.
+- **Features implemented**: All search features from GoChess, TT prefetch, v5/v6/v7 NNUE, datagen (multi-threaded), SF binpack output, Bullet convert, transfer learning checkpoint converter
 
 ## Key Gotchas
 - Move flag equality vs bitwise: check non-promotion flags with ==, not &
