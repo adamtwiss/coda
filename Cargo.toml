@@ -8,6 +8,7 @@ authors = ["Adam Twiss"]
 [dependencies]
 shakmaty = "0.30"
 shakmaty-syzygy = "0.28"
+libc = "0.2"
 
 [profile.release]
 opt-level = 3

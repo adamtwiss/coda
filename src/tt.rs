@@ -126,6 +126,13 @@ impl TT {
         for _ in 0..size {
             buckets.push(TTBucket::EMPTY);
         }
+        // Hint to use huge pages for the TT allocation (Linux transparent huge pages)
+        #[cfg(target_os = "linux")]
+        unsafe {
+            let ptr = buckets.as_ptr() as *mut libc::c_void;
+            let len = size * std::mem::size_of::<TTBucket>();
+            libc::madvise(ptr, len, libc::MADV_HUGEPAGE);
+        }
         TT {
             buckets,
             mask: size - 1,
