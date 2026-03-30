@@ -3088,3 +3088,27 @@ Disabled each search feature individually, 300 games each vs Minic/Ethereal/Texe
 3. 300-game gauntlets have ~±35 Elo error bars. Use 600+ game baselines to anchor experiments.
 4. Features that are "universal across strong engines" don't automatically translate — they assume better move ordering and deeper search.
 5. The strongest gains come from **adding information** (cont-hist plies) rather than **tweaking thresholds** (NMP R, SEE margins, LMP limits).
+
+## 2026-03-30: Singular extensions — the breakthrough
+
+### SE v7: multi-cut + negative extensions (no positive ext)
+- **Change**: Verification search at half depth when TT move exists at sufficient depth (>=8). NMP gated inside verification (critical fix from GoChess diagnosis). Multi-cut prunes entire node when alternatives are strong enough. Negative extension reduces TT move by 1 when alternatives are competitive.
+- **Gauntlet (600g)**: +27 ±24 Elo (baseline +3). Raw: +24 Elo.
+- **Result**: Committed.
+
+### SE positive extension (+1 for singular moves)
+- **Change**: When verification confirms TT move is singular (no competitive alternatives), extend by +1 ply.
+- **Gauntlet (600g)**: +49 ±24 Elo (baseline +3). Raw: +46 Elo. +22 on top of SE-v7.
+- **Result**: Committed. This is the feature that cost GoChess -30 Elo but now works in Coda.
+- **Why it works now**: The is_legal fixes, capture scoring cleanup, cont-hist 4-ply reads, and NMP-gated verification created the conditions for SE to function properly. The GoChess SE diagnosis identified 5 bugs; all were addressed in Coda.
+
+### Combined session gains (2026-03-30)
+| Change | Elo gain |
+|--------|----------|
+| Same-bucket king NNUE | +7 |
+| Cont-hist 4-ply reads | +14 |
+| Drop LVA + raw captHist | +14 |
+| NMP R=4, depth>=4 | ~0 (consensus) |
+| SE multi-cut + neg ext | +24 |
+| SE positive extension | +22 |
+| **Total estimated** | **~+80 Elo** |
