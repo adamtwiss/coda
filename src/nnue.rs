@@ -665,6 +665,7 @@ pub struct NNUENet {
     pub output_scale: [f32; NNUE_OUTPUT_BUCKETS], // per-bucket scale factor
     pub output_bias: [i32; NNUE_OUTPUT_BUCKETS],
     pub use_screlu: bool,
+    pub use_pairwise: bool,
     pub has_avx2: bool,
     pub has_avx512: bool,
     pub has_neon: bool,
@@ -685,12 +686,14 @@ impl NNUENet {
         // Read version
         let version = read_u32(&mut reader)?;
         let mut use_screlu = false;
+        let mut use_pairwise = false;
 
         let header_size: u64 = match version {
             5 => 8, // magic + version
             6 => {
                 let flags = read_u8(&mut reader)?;
                 use_screlu = flags & 1 != 0;
+                use_pairwise = flags & 2 != 0;
                 9
             }
             _ => return Err(format!("unsupported NNUE version: {}", version)),
@@ -702,15 +705,16 @@ impl NNUENet {
         let body_size = file_size - header_size;
 
         // body = InputWeights(NNUE_INPUT_SIZE * H * 2) + InputBiases(H * 2)
-        //      + OutputWeights(8 * 2 * H * 2) + OutputBias(8 * 4)
-        // body = 2*H*(NNUE_INPUT_SIZE + 1 + 16) + 32
-        // body - 32 = 2*H*(12288 + 17) = 2*H*12305
+        //      + OutputWeights(8 * out_mul * H * 2) + OutputBias(8 * 4)
+        // out_mul = 2 (plain: both perspectives) or 1 (pairwise: halved)
+        // body - 32 = 2*H*(NNUE_INPUT_SIZE + 1 + 8*out_mul)
+        let out_mul: u64 = if use_pairwise { 8 } else { 16 };
+        let h_denom = 2 * (NNUE_INPUT_SIZE as u64 + 1 + out_mul);
         let h_numer = body_size - 32;
-        let h_denom = 2 * 12305;
-        if h_numer % h_denom as u64 != 0 {
+        if h_numer % h_denom != 0 {
             return Err(format!("cannot infer hidden size from file size {} (body {})", file_size, body_size));
         }
-        let hidden_size = (h_numer / h_denom as u64) as usize;
+        let hidden_size = (h_numer / h_denom) as usize;
 
         // Read input weights
         let mut input_weights = vec![0i16; NNUE_INPUT_SIZE * hidden_size];
@@ -720,8 +724,9 @@ impl NNUENet {
         let mut input_biases = vec![0i16; hidden_size];
         read_i16_slice(&mut reader, &mut input_biases)?;
 
-        // Read output weights: 8 buckets × (2 × hidden_size)
-        let out_width = 2 * hidden_size;
+        // Read output weights: 8 buckets × out_width
+        // Plain: out_width = 2*H (stm + ntm), Pairwise: out_width = H (pairwise halves it)
+        let out_width = if use_pairwise { hidden_size } else { 2 * hidden_size };
         let mut output_weights = vec![0i16; NNUE_OUTPUT_BUCKETS * out_width];
         read_i16_slice(&mut reader, &mut output_weights)?;
 
@@ -731,8 +736,8 @@ impl NNUENet {
             output_bias[i] = read_i32(&mut reader)?;
         }
 
-        println!("info string Loaded NNUE v{} {} {} ({})",
-            version, path, if use_screlu { "SCReLU" } else { "CReLU" }, hidden_size);
+        let activation = if use_pairwise { "pairwise" } else if use_screlu { "SCReLU" } else { "CReLU" };
+        println!("info string Loaded NNUE v{} {} {} ({})", version, path, activation, hidden_size);
 
         let has_avx2 = detect_avx2();
         let has_avx512 = detect_avx512();
@@ -748,7 +753,6 @@ impl NNUENet {
         // Quantize output weights to i8 range for fast SCReLU dot product.
         // Per-bucket scale: max_abs(weights) / 127.
         // This lets us use mullo_epi16 + madd_epi16 since v*w_i8 fits in i16.
-        let out_width = 2 * hidden_size;
         let mut output_weights_i8 = vec![0i16; NNUE_OUTPUT_BUCKETS * out_width];
         let mut output_scale = [1.0f32; NNUE_OUTPUT_BUCKETS];
 
@@ -794,6 +798,7 @@ impl NNUENet {
             output_scale,
             output_bias,
             use_screlu,
+            use_pairwise,
             has_avx2,
             has_avx512,
             has_neon,
@@ -807,10 +812,16 @@ impl NNUENet {
         &self.input_weights[off..off + self.hidden_size]
     }
 
+    /// Output width per bucket: 2*H (plain) or H (pairwise).
+    #[inline]
+    fn output_width(&self) -> usize {
+        if self.use_pairwise { self.hidden_size } else { 2 * self.hidden_size }
+    }
+
     /// Get output weight row for a bucket.
     #[inline]
     fn output_weight_row(&self, bucket: usize) -> &[i16] {
-        let w = 2 * self.hidden_size;
+        let w = self.output_width();
         let off = bucket * w;
         &self.output_weights[off..off + w]
     }
@@ -818,7 +829,7 @@ impl NNUENet {
     /// Get int8-quantized output weight row for a bucket.
     #[inline]
     fn output_weight_row_i8(&self, bucket: usize) -> &[i16] {
-        let w = 2 * self.hidden_size;
+        let w = self.output_width();
         let off = bucket * w;
         &self.output_weights_i8[off..off + w]
     }
@@ -837,6 +848,26 @@ impl NNUENet {
         };
 
         let mut output = self.output_bias[bucket] as i64;
+
+        // Pairwise path: split acc into halves, clamp, multiply pairs, dot with weights
+        if self.use_pairwise {
+            let pw = h / 2; // pairwise output size per perspective
+
+            // Scalar pairwise dot — TODO: add SIMD kernel
+            for i in 0..pw {
+                let a = (stm_acc[i] as i32).clamp(0, QA as i32);
+                let b = (stm_acc[i + pw] as i32).clamp(0, QA as i32);
+                output += ((a * b) / QA as i32) as i64 * out_w[i] as i64;
+            }
+            for i in 0..pw {
+                let a = (ntm_acc[i] as i32).clamp(0, QA as i32);
+                let b = (ntm_acc[i + pw] as i32).clamp(0, QA as i32);
+                output += ((a * b) / QA as i32) as i64 * out_w[pw + i] as i64;
+            }
+
+            let result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
+            return result;
+        }
 
         #[cfg(target_arch = "x86_64")]
         if self.has_avx512 && h % 32 == 0 {
