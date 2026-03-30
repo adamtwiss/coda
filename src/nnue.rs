@@ -361,6 +361,50 @@ unsafe fn simd_l1_int8_dot(packed: &[u8], weights: &[i8], h: usize) -> i32 {
     _mm_cvtsi128_si32(sum128)
 }
 
+/// Find non-zero 32-byte chunk indices in a packed u8 buffer.
+/// Returns the number of NNZ chunks. nnz_indices[0..count] contains the byte offsets.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn find_nnz_chunks(packed: &[u8], nnz_indices: &mut [u16], h: usize) -> usize {
+    let mut count = 0usize;
+    let mut i = 0;
+    while i < h {
+        let v = _mm256_loadu_si256(packed.as_ptr().add(i) as *const __m256i);
+        // Check if any byte is non-zero
+        if _mm256_testz_si256(v, v) == 0 {
+            nnz_indices[count] = i as u16;
+            count += 1;
+        }
+        i += 32;
+    }
+    count
+}
+
+/// Sparse L1 int8 matmul: only process NNZ chunks of the packed input.
+/// nnz_indices[0..nnz_count] are byte offsets of non-zero 32-byte chunks.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_l1_int8_dot_sparse(packed: &[u8], weights: &[i8], nnz_indices: &[u16], nnz_count: usize) -> i32 {
+    let ones = _mm256_set1_epi16(1);
+    let mut sum = _mm256_setzero_si256();
+    for k in 0..nnz_count {
+        let off = nnz_indices[k] as usize;
+        let a = _mm256_loadu_si256(packed.as_ptr().add(off) as *const __m256i);
+        let b = _mm256_loadu_si256(weights.as_ptr().add(off) as *const __m256i);
+        let prod = _mm256_maddubs_epi16(a, b);
+        let widened = _mm256_madd_epi16(prod, ones);
+        sum = _mm256_add_epi32(sum, widened);
+    }
+    let hi = _mm256_extracti128_si256(sum, 1);
+    let lo = _mm256_castsi256_si128(sum);
+    let sum128 = _mm_add_epi32(lo, hi);
+    let shuf = _mm_shuffle_epi32(sum128, 0x4E);
+    let sum128 = _mm_add_epi32(sum128, shuf);
+    let shuf = _mm_shuffle_epi32(sum128, 0xB1);
+    let sum128 = _mm_add_epi32(sum128, shuf);
+    _mm_cvtsi128_si32(sum128)
+}
+
 /// SCReLU dot product: clamp acc to [0, QA=255], square, dot with output weights.
 /// Returns i64 sum at scale QA² × QB. acc and weights have length h.
 ///
@@ -824,6 +868,7 @@ pub struct NNUENet {
     pub l2_biases_f: Vec<f32>,    // [l2_size]
     pub out_weights_f: Vec<f32>,  // [NNUE_OUTPUT_BUCKETS × out_l_size] — float output
     pub out_bias_f: Vec<f32>,     // [NNUE_OUTPUT_BUCKETS]
+    pub use_sparse_l1: std::sync::atomic::AtomicBool, // feature flag: sparse L1 matmul
     pub has_avx2: bool,
     pub has_avx512: bool,
     pub has_neon: bool,
@@ -1060,6 +1105,7 @@ impl NNUENet {
             l2_biases_f,
             out_weights_f,
             out_bias_f,
+            use_sparse_l1: std::sync::atomic::AtomicBool::new(false), // disabled: dense int8 is faster at H=1024
             has_avx2,
             has_avx512,
             has_neon,
@@ -1120,8 +1166,8 @@ impl NNUENet {
         // SIMD int8 path: pack SCReLU to u8, then VPMADDUBSW L1 matmul
         #[cfg(target_arch = "x86_64")]
         if self.has_avx2 && h % 32 == 0 && !self.l1_weights_8t.is_empty() {
-            let mut stm_packed = vec![0u8; h];
-            let mut ntm_packed = vec![0u8; h];
+            let mut stm_packed = [0u8; 2048]; // max accumulator size
+            let mut ntm_packed = [0u8; 2048];
             unsafe {
                 simd_screlu_pack(stm_acc, &mut stm_packed, h);
                 simd_screlu_pack(ntm_acc, &mut ntm_packed, h);
@@ -1132,12 +1178,32 @@ impl NNUENet {
             for i in 0..l1 {
                 hidden[i] = self.l1_biases[i] as i64 * qa_int as i64; // bias × QA
             }
-            for i in 0..l1 {
-                let stm_w = &self.l1_weights_8t[i * h..(i + 1) * h];
-                let ntm_w = &self.l1_weights_8t[l1 * h + i * h..l1 * h + (i + 1) * h];
+            if self.use_sparse_l1.load(std::sync::atomic::Ordering::Relaxed) {
+                // Sparse path: find NNZ chunks, only multiply those
+                let mut stm_nnz = [0u16; 64]; // max 2048/32 = 64 chunks
+                let mut ntm_nnz = [0u16; 64];
+                let (stm_nnz_count, ntm_nnz_count);
                 unsafe {
-                    hidden[i] += simd_l1_int8_dot(&stm_packed, stm_w, h) as i64;
-                    hidden[i] += simd_l1_int8_dot(&ntm_packed, ntm_w, h) as i64;
+                    stm_nnz_count = find_nnz_chunks(&stm_packed, &mut stm_nnz, h);
+                    ntm_nnz_count = find_nnz_chunks(&ntm_packed, &mut ntm_nnz, h);
+                }
+                for i in 0..l1 {
+                    let stm_w = &self.l1_weights_8t[i * h..(i + 1) * h];
+                    let ntm_w = &self.l1_weights_8t[l1 * h + i * h..l1 * h + (i + 1) * h];
+                    unsafe {
+                        hidden[i] += simd_l1_int8_dot_sparse(&stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
+                        hidden[i] += simd_l1_int8_dot_sparse(&ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
+                    }
+                }
+            } else {
+                // Dense path
+                for i in 0..l1 {
+                    let stm_w = &self.l1_weights_8t[i * h..(i + 1) * h];
+                    let ntm_w = &self.l1_weights_8t[l1 * h + i * h..l1 * h + (i + 1) * h];
+                    unsafe {
+                        hidden[i] += simd_l1_int8_dot(&stm_packed, stm_w, h) as i64;
+                        hidden[i] += simd_l1_int8_dot(&ntm_packed, ntm_w, h) as i64;
+                    }
                 }
             }
             // Dequantize: result at scale QA × QA_L1. Divide by QA to get scale QA_L1.
