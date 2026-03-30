@@ -11,7 +11,7 @@ Mark items DONE with date when completed. Move to experiments.md when tested.
 - [ ] **Retry: FH Blend Depth Gate 4** — +1.9 self-play, SE changes fail-high patterns
 - [ ] **Retry: History Divisor 4000** — +1-3 persistent, history profile changed by SE
 - [ ] **Retry: Futility 50+d*50** — +1.9 self-play, tighter futility with stronger eval
-- [ ] **4-ply continuation history** — Viridithas/Obsidian/Reckless all use plies 1,2,4,6. We use 1-ply. (Source: engine reviews)
+- [x] **2026-03-30** 4-ply continuation history (+14 Elo gauntlet) — Viridithas/Obsidian/Reckless all use plies 1,2,4,6. We use 1-ply. (Source: engine reviews)
 - [ ] **Correction history expansion (4→6)** — add minor piece and major piece correction tables. All top engines have 6. (Source: Viridithas/Reckless/Obsidian reviews)
 - [ ] **Pin-aware SEE** — exclude pinned pieces from attacker set. Simple correctness fix. (Source: Reckless review)
 - [ ] **GHI mitigation (50mr hash)** — XOR halfmove clock into TT key to prevent draw-related TT corruption. Cheap. (Source: Obsidian/Reckless reviews)
@@ -83,3 +83,8 @@ Mark items DONE with date when completed. Move to experiments.md when tested.
 - [x] **2026-03-30** convert-bullet: Bullet quantised.bin → .nnue
 - [x] **2026-03-30** convert-checkpoint: .nnue → Bullet checkpoint for transfer learning
 - [x] **2026-03-29** is_pseudo_legal fixes: pawn direction, castling attacks (+320 Elo)
+- [x] **2026-03-30** Drop LVA from capture scoring, raw captHist (+14 Elo gauntlet)
+- [x] **2026-03-30** NMP R=4, depth>=4 (neutral, consensus alignment)
+- [x] **2026-03-30** Same-bucket king NNUE optimization (+7 Elo SPRT)
+- [x] **2026-03-30** Feature ablation study (16 features, 300g each)
+- [x] **2026-03-30** Double extension tested — rejected (too aggressive at depth*3 margin)
