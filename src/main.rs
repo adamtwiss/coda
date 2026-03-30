@@ -164,6 +164,65 @@ fn main() {
             datagen::run_datagen(&config);
         }
 
+        "sample-positions" => {
+            let input = flag_value(&args, "-input")
+                .expect("Usage: coda sample-positions -input <data.binpack> -output <positions.epd> [-n 1000000]");
+            let output = flag_value(&args, "-output").unwrap_or("positions.epd");
+            let n: usize = flag_value(&args, "-n").and_then(|s| s.parse().ok()).unwrap_or(1_000_000);
+            let sample_rate: f64 = flag_value(&args, "-rate").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+
+            use sfbinpack::CompressedTrainingDataEntryReader;
+            use std::io::Write;
+
+            println!("Sampling ~{} positions from {}", n, input);
+            let file = std::fs::File::open(input).expect(&format!("Failed to open {}", input));
+            let reader = CompressedTrainingDataEntryReader::new(file)
+                .expect(&format!("Failed to parse binpack {}", input));
+
+            let mut out = std::io::BufWriter::new(
+                std::fs::File::create(output).expect(&format!("Failed to create {}", output))
+            );
+
+            let mut count = 0usize;
+            let mut total = 0usize;
+            let mut rng_state = 0xDEADBEEF42u64;
+            let mut reader = reader;
+
+            while reader.has_next() {
+                let entry = reader.next();
+                total += 1;
+                // Simple xorshift for sampling
+                rng_state ^= rng_state << 13;
+                rng_state ^= rng_state >> 7;
+                rng_state ^= rng_state << 17;
+
+                // Skip positions with extreme scores or in check
+                if entry.score.unsigned_abs() > 2000 { continue; }
+                if entry.pos.is_checked(entry.pos.side_to_move()) { continue; }
+
+                // Sample: either by rate or by count
+                let keep = if sample_rate > 0.0 {
+                    let rand_val = (rng_state >> 11) as f64 / ((1u64 << 53) as f64);
+                    rand_val < sample_rate
+                } else {
+                    true // keep all, stop at n
+                };
+
+                if keep {
+                    let fen = entry.pos.fen().unwrap_or_default();
+                    writeln!(out, "{}", fen).expect("write failed");
+                    count += 1;
+                    if count >= n { break; }
+                }
+
+                if total % 10_000_000 == 0 {
+                    println!("  scanned {}M positions, sampled {}", total / 1_000_000, count);
+                }
+            }
+
+            println!("Sampled {} positions from {} scanned → {}", count, total, output);
+        }
+
         "convert-checkpoint" => {
             let nnue_path = flag_value(&args, "-nnue")
                 .expect("Usage: coda convert-checkpoint -nnue <net.nnue> -output <dir> [-ft N] [-l1 N] [-l2 N]");
