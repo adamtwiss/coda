@@ -445,7 +445,7 @@ impl MovePicker {
                 // Good capture
                 let idx = self.moves.len;
                 self.moves.push(m);
-                self.scores[idx] = mvv_lva(board, m) + capt_hist_score_static(board, history, m) / 16;
+                self.scores[idx] = mvv_lva(board, m) + capt_hist_score_static(board, history, m);
             }
         }
         self.index = 0;
@@ -542,7 +542,7 @@ impl MovePicker {
                 }
             } else if board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT {
                 // Capture: MVV-LVA + capture history
-                10000 + mvv_lva(board, m) + capt_hist_score_static(board, history, m) / 16
+                10000 + mvv_lva(board, m) + capt_hist_score_static(board, history, m)
             } else {
                 // Quiet: history + continuation history + pawn history
                 let piece = board.piece_at(from);
@@ -648,15 +648,15 @@ fn mvv_lva(board: &Board, m: Move) -> i32 {
     if target_pt == NO_PIECE_TYPE {
         // En passant
         if move_flags(m) == FLAG_EN_PASSANT {
-            return see_value(PAWN) * 10 - see_value(PAWN);
+            return see_value(PAWN) * 16;
         }
         return 0;
     }
 
     let attacker_pt = board.piece_type_at(from);
 
-    // MVV-LVA: maximize victim value, minimize attacker value
-    see_value(target_pt) * 10 - see_value(attacker_pt)
+    // MVV only (no LVA), x16 — matches Obsidian/Alexandria/Berserk
+    see_value(target_pt) * 16
 }
 
 /// Check if a move is a capture. Matches GoChess isCapture().
@@ -912,9 +912,9 @@ impl QMovePicker {
                 let capt_hist = capt_hist_score_static(board, history, mv);
                 if in_check {
                     // Evasion captures scored high (matching GoChess: 10000 + mvvlva + captHist/16)
-                    picker.scores[i] = 10000 + mvv_lva + capt_hist / 16;
+                    picker.scores[i] = 10000 + mvv_lva + capt_hist;
                 } else {
-                    picker.scores[i] = mvv_lva + capt_hist / 16;
+                    picker.scores[i] = mvv_lva + capt_hist;
                 }
             } else if is_promotion(mv) {
                 if in_check {
