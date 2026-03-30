@@ -119,8 +119,9 @@ pub struct MovePicker {
     counter_move: Move,
     // Pointer to the History struct (lives for the duration of search)
     history: *const History,
-    // Continuation history sub-table pointer: &cont_hist[prev_piece][prev_to], indexed [piece][to]
-    cont_hist_sub: Option<*const [[i16; 64]; 13]>,
+    // Continuation history sub-table pointers at plies 1, 2, 4, 6 back.
+    // cont_hist_subs[0] = ply-1 (3x weight), [1] = ply-2 (3x), [2] = ply-4 (1x), [3] = ply-6 (1x)
+    cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4],
     pawn_hist_ptr: Option<*const [[i16; 64]; 13]>,
     // Main moves list and scores
     moves: MoveList,
@@ -170,19 +171,23 @@ impl MovePicker {
             NO_MOVE
         };
 
-        // Get continuation history sub-table pointer
-        let cont_hist_sub = if prev_move != NO_MOVE {
-            let prev_to = move_to(prev_move);
-            let prev_piece = board.piece_at(prev_to);
-            if prev_piece != NO_PIECE {
-                let gp = go_piece(prev_piece);
-                Some(&history.cont_hist[gp][prev_to as usize] as *const [[i16; 64]; 13])
-            } else {
-                None
+        // Get continuation history sub-table pointers at plies 1, 2, 4, 6 back.
+        // Each uses the piece that moved to the destination square N plies ago.
+        let mut cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4] = [None; 4];
+        let stack_len = board.undo_stack.len();
+        let offsets = [1usize, 2, 4, 6]; // ply-1, ply-2, ply-4, ply-6
+        for (i, &off) in offsets.iter().enumerate() {
+            if stack_len >= off {
+                let undo = &board.undo_stack[stack_len - off];
+                if undo.mv != NO_MOVE {
+                    let to = move_to(undo.mv);
+                    let piece = board.piece_at(to);
+                    if piece != NO_PIECE {
+                        cont_hist_subs[i] = Some(&history.cont_hist[go_piece(piece)][to as usize] as *const [[i16; 64]; 13]);
+                    }
+                }
             }
-        } else {
-            None
-        };
+        }
 
         let pawn_hist_ptr = pawn_hist.map(|ph| ph as *const [[i16; 64]; 13]);
 
@@ -192,7 +197,7 @@ impl MovePicker {
             killers,
             counter_move,
             history: history as *const History,
-            cont_hist_sub,
+            cont_hist_subs,
             pawn_hist_ptr,
             moves: MoveList::new(),
             scores: [0; 256],
@@ -221,7 +226,7 @@ impl MovePicker {
             killers: [NO_MOVE; 2],
             counter_move: NO_MOVE,
             history: history as *const History,
-            cont_hist_sub: None,
+            cont_hist_subs: [None; 4],
             pawn_hist_ptr: None,
             moves: MoveList::new(),
             scores: [0; 256],
@@ -250,18 +255,22 @@ impl MovePicker {
         prev_move: Move,
         pawn_hist: Option<&[[i16; 64]; 13]>,
     ) -> Self {
-        let cont_hist_sub = if prev_move != NO_MOVE {
-            let prev_to = move_to(prev_move);
-            let prev_piece = board.piece_at(prev_to);
-            if prev_piece != NO_PIECE {
-                let gp = go_piece(prev_piece);
-                Some(&history.cont_hist[gp][prev_to as usize] as *const [[i16; 64]; 13])
-            } else {
-                None
+        // Build cont-hist pointers for evasion (same as main picker)
+        let mut cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4] = [None; 4];
+        let stack_len = board.undo_stack.len();
+        let offsets = [1usize, 2, 4, 6];
+        for (i, &off) in offsets.iter().enumerate() {
+            if stack_len >= off {
+                let undo = &board.undo_stack[stack_len - off];
+                if undo.mv != NO_MOVE {
+                    let to = move_to(undo.mv);
+                    let piece = board.piece_at(to);
+                    if piece != NO_PIECE {
+                        cont_hist_subs[i] = Some(&history.cont_hist[go_piece(piece)][to as usize] as *const [[i16; 64]; 13]);
+                    }
+                }
             }
-        } else {
-            None
-        };
+        }
 
         let pawn_hist_ptr = pawn_hist.map(|ph| ph as *const [[i16; 64]; 13]);
 
@@ -271,7 +280,7 @@ impl MovePicker {
             killers: [NO_MOVE; 2],
             counter_move: NO_MOVE,
             history: history as *const History,
-            cont_hist_sub,
+            cont_hist_subs,
             pawn_hist_ptr,
             moves: MoveList::new(),
             scores: [0; 256],
@@ -466,11 +475,16 @@ impl MovePicker {
 
             let mut score = history.main[from as usize][to as usize];
 
-            // Continuation history (3x weight)
-            if let Some(sub_ptr) = self.cont_hist_sub {
-                if piece != NO_PIECE {
-                    let sub = unsafe { &*sub_ptr };
-                    score += 3 * sub[go_piece(piece)][to as usize] as i32;
+            // Continuation history: plies 1,2 at 3x weight, plies 4,6 at 1x weight.
+            // Matches Obsidian/Alexandria/Berserk pattern.
+            if piece != NO_PIECE {
+                let gp = go_piece(piece);
+                let weights = [3i32, 3, 1, 1]; // ply-1, ply-2, ply-4, ply-6
+                for (i, &w) in weights.iter().enumerate() {
+                    if let Some(sub_ptr) = self.cont_hist_subs[i] {
+                        let sub = unsafe { &*sub_ptr };
+                        score += w * sub[gp][to as usize] as i32;
+                    }
                 }
             }
 
@@ -535,10 +549,14 @@ impl MovePicker {
 
                 let mut s = history.main[from as usize][to as usize];
 
-                if let Some(sub_ptr) = self.cont_hist_sub {
-                    if piece != NO_PIECE {
-                        let sub = unsafe { &*sub_ptr };
-                        s += 3 * sub[go_piece(piece)][to as usize] as i32;
+                if piece != NO_PIECE {
+                    let gp = go_piece(piece);
+                    let weights = [3i32, 3, 1, 1];
+                    for (i, &w) in weights.iter().enumerate() {
+                        if let Some(sub_ptr) = self.cont_hist_subs[i] {
+                            let sub = unsafe { &*sub_ptr };
+                            s += w * sub[gp][to as usize] as i32;
+                        }
                     }
                 }
 
