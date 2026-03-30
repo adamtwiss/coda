@@ -3154,3 +3154,9 @@ Disabled each search feature individually, 300 games each vs Minic/Ethereal/Texe
 - **Change**: More aggressive eval-dependent NMP reduction. Lower divisor means larger R bonus per centipawn above beta.
 - **Gauntlet (563g)**: -9 ±24 Elo (raw -32 vs baseline +23).
 - **Result**: Rejected. Same pattern as NMP R=4 — more aggressive NMP hurts at our strength.
+
+## 2026-03-30: TT near-miss margin 96 (was 80)
+
+- **Change**: Widen TT near-miss cutoff margin from 80 to 96.
+- **Gauntlet (587g)**: 0 ±24 Elo (raw -23 vs baseline +23).
+- **Result**: Rejected. Wider margin allows too many approximate cutoffs with inaccurate scores.
