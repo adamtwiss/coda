@@ -1301,6 +1301,7 @@ fn negamax(
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
     if depth >= 4 && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
+        && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && unsafe { FEAT_NMP }
     {
         // Adaptive reduction: scales with depth and eval margin above beta
@@ -1535,8 +1536,56 @@ fn negamax(
             check_see_quiet = true;
         }
 
-        // Singular extension: disabled (SingularExtEnabled = false in GoChess)
-        // Code preserved structurally but will never trigger
+        // Singular extension verification search (v7: multi-cut + negative ext, no positive ext)
+        // Based on GoChess SE diagnosis: NMP must be gated inside verification search,
+        // but RFP/ProbCut are safe to keep. Only multi-cut and negative extensions are used
+        // (positive +1 extension hurt by ~30 Elo in GoChess due to alpha-reduce/blending interaction).
+        let mut singular_extension = 0i32;
+        if mv == tt_move
+            && tt_move != NO_MOVE
+            && ply > 0
+            && depth >= 8
+            && !in_check
+            && info.excluded_move[ply_u] == NO_MOVE
+            && tt_hit
+            && tt_entry.flag != TT_FLAG_UPPER
+            && tt_entry.depth >= depth - 3
+        {
+            let tt_score_local = {
+                let mut s = tt_entry.score;
+                if s > MATE_SCORE - 100 { s -= ply; }
+                else if s < -(MATE_SCORE - 100) { s += ply; }
+                s
+            };
+
+            // Skip SE for mate scores (margin comparison meaningless)
+            if tt_score_local > -(MATE_SCORE - 100) && tt_score_local < MATE_SCORE - 100 {
+                let singular_beta = tt_score_local - depth;
+                let singular_depth = (depth - 1) / 2;
+
+                info.excluded_move[ply_u] = tt_move;
+                let singular_score = negamax(board, info, singular_beta - 1, singular_beta, singular_depth, ply, false);
+                info.excluded_move[ply_u] = NO_MOVE;
+
+                if info.stop.load(Ordering::Relaxed) {
+                    return 0;
+                }
+
+                if singular_score >= singular_beta && singular_beta >= beta {
+                    // Multi-cut: alternatives are also good enough — prune the whole node
+                    return singular_beta;
+                }
+
+                if singular_score >= singular_beta {
+                    // Alternatives are competitive — negative extension (reduce TT move)
+                    singular_extension = -1;
+                }
+
+                // Note: positive extension (+1 when singular_score < singular_beta) is
+                // deliberately omitted. It costs ~30 Elo in our engine due to interactions
+                // with alpha-reduce and score blending. See experiments.md / se-diagnosis.md.
+            }
+        }
 
         // Save moved piece before MakeMove for consistent history indexing
         let moved_piece = board.piece_at(from);
@@ -1665,7 +1714,7 @@ fn negamax(
             }
         }
 
-        let mut new_depth = depth - 1 + extension;
+        let mut new_depth = depth - 1 + extension + singular_extension;
 
         // Alpha-reduce: after alpha has been raised, reduce subsequent moves by 1 ply
         if alpha_raised_count > 0 && unsafe { FEAT_ALPHA_REDUCE } {
