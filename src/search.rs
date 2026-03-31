@@ -1415,7 +1415,12 @@ fn negamax(
 
     if !in_check {
         // Reverse Futility Pruning (Static Null Move Pruning)
-        if depth <= 7 && ply > 0 && FEAT_RFP.load(Ordering::Relaxed) {
+        // RFP TT quiet guard: skip RFP when TT has a quiet best move (Tucano/Weiss).
+        // If we know a good quiet move exists, don't prune based on static eval alone.
+        let tt_move_is_quiet = tt_move != NO_MOVE
+            && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
+            && move_flags(tt_move) != FLAG_EN_PASSANT;
+        if depth <= 7 && ply > 0 && !tt_move_is_quiet && FEAT_RFP.load(Ordering::Relaxed) {
             let margin = if improving { depth * 70 } else { depth * 100 };
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
