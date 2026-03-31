@@ -213,36 +213,43 @@ pub fn convert_v7(
         }
     }
 
-    // l1b: [BUCKETS*L1] f32
+    // Quantization scales for f32 → int conversion
+    // l1w is already quantised (i8@64 or i16@255 by Bullet)
+    // But l1b, l2w, l2b, outw, outb are raw f32 and need scaling
+    let qa_l1 = if int8_l1 { 64.0f32 } else { 255.0 };
+    let qb = 64.0f32;
+
+    // l1b: [BUCKETS*L1] f32 → i16 scaled by QA_L1
     let mut l1_biases = vec![0i16; bl1];
     for i in 0..bl1 {
         let f = read_f32_le(&data, offset);
-        l1_biases[i] = f.round() as i16;
+        l1_biases[i] = (f * qa_l1).round() as i16;
         offset += 4;
     }
 
-    // L2 weights: [L1][BUCKETS*L2] f32, biases: [BUCKETS*L2] f32
+    // L2 weights: [L1][BUCKETS*L2] f32 → i16 scaled by QA_L1
+    // L2 biases: [BUCKETS*L2] f32 → i16 scaled by QA_L1
     let mut l2_weights = vec![0i16; l1_size * bl2];
     let mut l2_biases = vec![0i16; bl2];
     if l2_size > 0 {
         for i in 0..l1_size * bl2 {
             let f = read_f32_le(&data, offset);
-            l2_weights[i] = f.round() as i16;
+            l2_weights[i] = (f * qa_l1).round() as i16;
             offset += 4;
         }
         for i in 0..bl2 {
             let f = read_f32_le(&data, offset);
-            l2_biases[i] = f.round() as i16;
+            l2_biases[i] = (f * qa_l1).round() as i16;
             offset += 4;
         }
     }
 
-    // Output weights: [L2][BUCKETS] f32 — transpose to [BUCKETS][L2]
+    // Output weights: [L2][BUCKETS] f32 → i16 scaled by QB, transpose to [BUCKETS][L2]
     let mut out_w_raw = vec![[0i16; NNUE_OUTPUT_BUCKETS]; out_input];
     for i in 0..out_input {
         for b in 0..NNUE_OUTPUT_BUCKETS {
             let f = read_f32_le(&data, offset);
-            out_w_raw[i][b] = f.round() as i16;
+            out_w_raw[i][b] = (f * qb).round() as i16;
             offset += 4;
         }
     }
@@ -253,11 +260,11 @@ pub fn convert_v7(
         }
     }
 
-    // Output bias: [BUCKETS] f32
+    // Output bias: [BUCKETS] f32 → i32 scaled by QA_L1 * QB
     let mut output_bias = [0i32; NNUE_OUTPUT_BUCKETS];
     for b in 0..NNUE_OUTPUT_BUCKETS {
         let f = read_f32_le(&data, offset);
-        output_bias[b] = f.round() as i32;
+        output_bias[b] = (f * qa_l1 * qb).round() as i32;
         offset += 4;
     }
 

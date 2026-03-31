@@ -857,8 +857,11 @@ pub struct NNUENet {
     pub use_screlu: bool,
     pub use_pairwise: bool,
     // v7 hidden layers
-    pub l1_size: usize,           // 0 = no hidden layer (v5/v6)
-    pub l2_size: usize,           // 0 = no L2 (L1 → output directly)
+    pub l1_size: usize,           // total L1 size (bucketed if applicable)
+    pub l2_size: usize,           // total L2 size (bucketed if applicable)
+    pub l1_per_bucket: usize,     // per-bucket L1 size (= l1_size for unbucketed)
+    pub l2_per_bucket: usize,     // per-bucket L2 size (= l2_size for unbucketed)
+    pub bucketed_hidden: bool,    // output buckets baked into L1/L2 dimensions
     pub l1_scale: i32,            // QA_L1: 255 for int16, 64 for int8
     pub l1_weights: Vec<i16>,     // [2*hidden_size × l1_size] row-major
     pub l1_weights_t: Vec<i16>,   // [l1_size × 2*hidden_size] transposed for SIMD
@@ -1002,12 +1005,10 @@ impl NNUENet {
         }
 
         // Transpose L1 weights for SIMD: [j*L1+i] → [i*H+j] per perspective
-        // L1WeightsT[0..L1*H] = STM, L1WeightsT[L1*H..2*L1*H] = NTM
+        // For bucketed nets, bl1 is the total L1 dimension in the weight array
         let l1_weights_t = if l1_size > 0 {
             let h = hidden_size;
-            let l1 = l1_size;
-            // Pairwise: L1 input is PW per perspective (PW = H/2), total = H
-            // Direct: L1 input is H per perspective, total = 2*H
+            let l1 = bl1; // use bucketed L1 size for correct array stride
             let per_perspective = if use_pairwise { h / 2 } else { h };
             let total_input = if use_pairwise { h } else { 2 * h };
             let mut wt = vec![0i16; l1 * total_input];
@@ -1109,6 +1110,9 @@ impl NNUENet {
             use_pairwise,
             l1_size: bl1,
             l2_size: bl2,
+            l1_per_bucket: l1_size,  // original per-bucket size from header
+            l2_per_bucket: l2_size,
+            bucketed_hidden,
             l1_scale,
             l1_weights_t,
             l1_weights_8t,
@@ -1132,11 +1136,11 @@ impl NNUENet {
         &self.input_weights[off..off + self.hidden_size]
     }
 
-    /// Output width per bucket.
+    /// Output width per bucket (always per-bucket size, not total bucketed size).
     #[inline]
     fn output_width(&self) -> usize {
-        if self.l2_size > 0 { self.l2_size }
-        else if self.l1_size > 0 { self.l1_size }
+        if self.l2_per_bucket > 0 { self.l2_per_bucket }
+        else if self.l1_per_bucket > 0 { self.l1_per_bucket }
         else if self.use_pairwise { self.hidden_size }
         else { 2 * self.hidden_size }
     }
@@ -1163,18 +1167,22 @@ impl NNUENet {
     fn forward_with_l1_pairwise(&self, stm_acc: &[i16], ntm_acc: &[i16], bucket: usize) -> i32 {
         let h = self.hidden_size;
         let pw = h / 2; // pairwise output per perspective
-        let l1 = self.l1_size;
+        let l1_total = self.l1_size; // total L1 neurons (bucketed or not)
+        let l1_pb = self.l1_per_bucket; // per-bucket L1 size
         let qa = QA as i32;
         let qa_l1 = self.l1_scale as i32;
 
+        // For bucketed nets: only compute neurons for this bucket
+        let l1_off = if self.bucketed_hidden { bucket * l1_pb } else { 0 };
+        let l1 = if self.bucketed_hidden { l1_pb } else { l1_total };
+
         // CReLU + pairwise for each perspective → pw values each
-        // Then pack to uint8 for int8 L1 matmul: pairwise(a,b) = clamp(a)*clamp(b)/QA ∈ [0, QA]
         let mut stm_pw = [0u8; 2048];
         let mut ntm_pw = [0u8; 2048];
         for i in 0..pw {
             let a = (stm_acc[i] as i32).clamp(0, qa);
             let b = (stm_acc[i + pw] as i32).clamp(0, qa);
-            stm_pw[i] = ((a * b) >> 8) as u8; // /255 ≈ >>8, result in [0, 254]
+            stm_pw[i] = ((a * b) >> 8) as u8;
         }
         for i in 0..pw {
             let a = (ntm_acc[i] as i32).clamp(0, qa);
@@ -1182,81 +1190,55 @@ impl NNUENet {
             ntm_pw[i] = ((a * b) >> 8) as u8;
         }
 
-        // L1 int8 matmul: pairwise output (u8) × L1 weights (i8) → hidden
-        // Input: stm_pw[0..pw] concat ntm_pw[0..pw] = h values
-        // But L1 weights are stored as [h × l1] where h = hidden_size
-        // STM weights: l1_weights_8t[0..l1*pw], NTM weights: l1_weights_8t[l1*pw..l1*h]
-        let qa_int = qa;
-        let mut hidden32 = [0i32; 64];
+        // L1 int8 matmul — only compute l1 neurons starting at l1_off
+        let mut hidden32 = [0i32; 512];
         for i in 0..l1 {
-            hidden32[i] = self.l1_biases[i] as i32 * qa_int; // bias × QA to match matmul scale
+            hidden32[i] = self.l1_biases[l1_off + i] as i32 * qa;
         }
-
-        #[cfg(target_arch = "x86_64")]
-        if self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty() {
-            for i in 0..l1 {
-                let stm_w = &self.l1_weights_8t[i * pw..(i + 1) * pw];
-                let ntm_w = &self.l1_weights_8t[l1 * pw + i * pw..l1 * pw + (i + 1) * pw];
-                unsafe {
-                    hidden32[i] += simd_l1_int8_dot(&stm_pw[..pw], stm_w, pw) as i32;
-                    hidden32[i] += simd_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw) as i32;
-                }
-            }
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        if !(self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty()) {
-            // Scalar fallback
-            for i in 0..l1 {
-                for j in 0..pw {
-                    hidden32[i] += stm_pw[j] as i32 * self.l1_weights[j * l1 + i] as i32;
-                }
-                for j in 0..pw {
-                    hidden32[i] += ntm_pw[j] as i32 * self.l1_weights[(pw + j) * l1 + i] as i32;
-                }
-            }
-        }
-
-        #[cfg(not(target_arch = "x86_64"))]
+        // Scalar path
+        // l1_weights layout: [input][neuron] = [h][bl1] (Bullet .transpose() = [in][out])
         {
             for i in 0..l1 {
+                let gi = l1_off + i; // global neuron index
                 for j in 0..pw {
-                    hidden32[i] += stm_pw[j] as i32 * self.l1_weights[j * l1 + i] as i32;
+                    hidden32[i] += stm_pw[j] as i32 * self.l1_weights[j * l1_total + gi] as i32;
                 }
                 for j in 0..pw {
-                    hidden32[i] += ntm_pw[j] as i32 * self.l1_weights[(pw + j) * l1 + i] as i32;
+                    hidden32[i] += ntm_pw[j] as i32 * self.l1_weights[(pw + j) * l1_total + gi] as i32;
                 }
             }
         }
 
-        // Dequantize: result at scale QA × QA_L1. Divide by QA → scale QA_L1.
-        // ReLU: clamp [0, QA_L1]. Then dequant to float [0, 1].
-        let mut l1_out = [0.0f32; 64];
+        // Dequantize + ReLU
+        let mut l1_out = [0.0f32; 512];
         for i in 0..l1 {
-            let mut h_val = hidden32[i] / qa_int; // scale QA_L1
+            let mut h_val = hidden32[i] / qa;
             h_val = h_val.clamp(0, qa_l1);
-            l1_out[i] = h_val as f32 / qa_l1 as f32; // → [0, 1]
+            l1_out[i] = h_val as f32 / qa_l1 as f32;
         }
 
-        // L2 or output — float (same as SCReLU path)
-        if self.l2_size > 0 {
-            let l2 = self.l2_size;
-            let mut h2 = [0.0f32; 64];
-            for k in 0..l2 { h2[k] = self.l2_biases_f[k]; }
+        // L2 or output
+        if self.l2_per_bucket > 0 {
+            let l2_pb = self.l2_per_bucket;
+            let l2_total = self.l2_size;
+            let l2_off = if self.bucketed_hidden { bucket * l2_pb } else { 0 };
+            let l2 = if self.bucketed_hidden { l2_pb } else { l2_total };
+            let mut h2 = [0.0f32; 512];
+            for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
             for i in 0..l1 {
                 if l1_out[i] == 0.0 { continue; }
-                let w_off = i * l2;
-                for k in 0..l2 { h2[k] += l1_out[i] * self.l2_weights_f[w_off + k]; }
+                for k in 0..l2 {
+                    h2[k] += l1_out[i] * self.l2_weights_f[i * l2_total + l2_off + k];
+                }
             }
-            // ReLU on L2 (not SCReLU — pairwise nets use ReLU for hidden layers)
             for k in 0..l2 { h2[k] = h2[k].max(0.0).min(1.0); }
-            let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
+            let out_w = &self.out_weights_f[bucket * l2_pb..bucket * l2_pb + l2_pb];
             let mut out_f = self.out_bias_f[bucket];
             for k in 0..l2 { out_f += h2[k] * out_w[k]; }
             return (out_f * EVAL_SCALE as f32) as i32;
         }
 
-        let out_w = &self.out_weights_f[bucket * l1..bucket * l1 + l1];
+        let out_w = &self.out_weights_f[bucket * l1_pb..bucket * l1_pb + l1_pb];
         let mut out_f = self.out_bias_f[bucket];
         for i in 0..l1 { out_f += l1_out[i] * out_w[i]; }
         (out_f * EVAL_SCALE as f32) as i32
