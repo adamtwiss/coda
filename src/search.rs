@@ -877,11 +877,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             let mut delta = 15i32;
             let mut alpha = (prev_score - delta).max(-INFINITY);
             let mut beta = (prev_score + delta).min(INFINITY);
+            let mut asp_depth = depth;
             #[allow(unused_assignments)]
             let mut asp_result = prev_score;
 
             loop {
-                let result = negamax(board, info, alpha, beta, depth, 0, false);
+                let result = negamax(board, info, alpha, beta, asp_depth, 0, false);
 
                 if info.should_stop() {
                     asp_result = result;
@@ -896,6 +897,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // Fail high: contract alpha toward beta, widen beta
                     alpha = (5 * alpha + 3 * beta) / 8;
                     beta = (result + delta).min(INFINITY);
+                    // Reduce depth for re-search (Alexandria/Midnight/Seer pattern)
+                    asp_depth = (asp_depth - 1).max(1);
                 } else {
                     asp_result = result;
                     break;
