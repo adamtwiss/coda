@@ -1200,9 +1200,38 @@ impl NNUENet {
         for i in 0..l1 {
             hidden32[i] = self.l1_biases[l1_off + i] as i32 * pw_scale;
         }
-        // Scalar path
-        // l1_weights layout: [input][neuron] = [h][bl1] (Bullet .transpose() = [in][out])
+        // L1 matmul: use SIMD int8 dot with transposed weights when available
+        #[cfg(target_arch = "x86_64")]
+        if self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty() {
+            let ntm_base = l1_total * pw; // NTM block starts after STM block in transposed array
+            for i in 0..l1 {
+                let gi = l1_off + i;
+                let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
+                let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
+                unsafe {
+                    hidden32[i] += simd_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
+                    hidden32[i] += simd_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
+                }
+            }
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if !(self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty()) {
+            // Scalar fallback — raw weights in [input][neuron] layout
+            for i in 0..l1 {
+                let gi = l1_off + i;
+                for j in 0..pw {
+                    hidden32[i] += stm_pw[j] as i32 * self.l1_weights[j * l1_total + gi] as i32;
+                }
+                for j in 0..pw {
+                    hidden32[i] += ntm_pw[j] as i32 * self.l1_weights[(pw + j) * l1_total + gi] as i32;
+                }
+            }
+        }
+
+        #[cfg(not(target_arch = "x86_64"))]
         {
+            // Scalar fallback for non-x86
             for i in 0..l1 {
                 let gi = l1_off + i;
                 for j in 0..pw {
