@@ -19,8 +19,6 @@ pub struct UndoInfo {
     pub hash: u64,
     pub pawn_hash: u64,
     pub non_pawn_key: [u64; 2],
-    pub minor_key: [u64; 2],
-    pub major_key: [u64; 2],
     pub checkers: Bitboard,
 }
 
@@ -43,8 +41,6 @@ pub struct Board {
     pub hash: u64,           // Zobrist hash
     pub pawn_hash: u64,      // Zobrist hash of pawns only (for correction history)
     pub non_pawn_key: [u64; 2], // per-color non-pawn, non-king piece Zobrist keys
-    pub minor_key: [u64; 2],   // per-color knight+bishop Zobrist keys
-    pub major_key: [u64; 2],   // per-color rook+queen Zobrist keys
     pub undo_stack: Vec<UndoInfo>,
 }
 
@@ -88,8 +84,6 @@ impl Board {
             hash: 0,
             pawn_hash: 0,
             non_pawn_key: [0; 2],
-            minor_key: [0; 2],
-            major_key: [0; 2],
             undo_stack: Vec::with_capacity(512),
         }
     }
@@ -153,11 +147,7 @@ impl Board {
         let k = piece_key(make_piece(color, pt), sq);
         self.hash ^= k;
         if pt == PAWN { self.pawn_hash ^= k; }
-        else if pt != KING {
-            self.non_pawn_key[color as usize] ^= k;
-            if pt == KNIGHT || pt == BISHOP { self.minor_key[color as usize] ^= k; }
-            else { self.major_key[color as usize] ^= k; } // ROOK or QUEEN
-        }
+        else if pt != KING { self.non_pawn_key[color as usize] ^= k; }
     }
 
     /// Remove a piece from the board with hash update.
@@ -167,11 +157,7 @@ impl Board {
         let k = piece_key(make_piece(color, pt), sq);
         self.hash ^= k;
         if pt == PAWN { self.pawn_hash ^= k; }
-        else if pt != KING {
-            self.non_pawn_key[color as usize] ^= k;
-            if pt == KNIGHT || pt == BISHOP { self.minor_key[color as usize] ^= k; }
-            else { self.major_key[color as usize] ^= k; } // ROOK or QUEEN
-        }
+        else if pt != KING { self.non_pawn_key[color as usize] ^= k; }
     }
 
     /// Move a piece on the board with hash update.
@@ -186,11 +172,7 @@ impl Board {
         let k = piece_key(p, from) ^ piece_key(p, to);
         self.hash ^= k;
         if pt == PAWN { self.pawn_hash ^= k; }
-        else if pt != KING {
-            self.non_pawn_key[color as usize] ^= k;
-            if pt == KNIGHT || pt == BISHOP { self.minor_key[color as usize] ^= k; }
-            else { self.major_key[color as usize] ^= k; } // ROOK or QUEEN
-        }
+        else if pt != KING { self.non_pawn_key[color as usize] ^= k; }
     }
 
     /// Compute the full Zobrist hash from scratch.
@@ -320,19 +302,14 @@ impl Board {
                 self.pawn_hash ^= piece_key(make_piece(color, PAWN), sq);
             }
         }
-        // Compute per-color non-pawn / minor / major keys
+        // Compute per-color non-pawn keys (non-pawn, non-king pieces)
         self.non_pawn_key = [0; 2];
-        self.minor_key = [0; 2];
-        self.major_key = [0; 2];
         for color in 0..2u8 {
             for pt in [KNIGHT, BISHOP, ROOK, QUEEN] {
                 let mut bb = self.pieces[pt as usize] & self.colors[color as usize];
                 while bb != 0 {
                     let sq = pop_lsb(&mut bb) as u8;
-                    let k = piece_key(make_piece(color, pt), sq);
-                    self.non_pawn_key[color as usize] ^= k;
-                    if pt == KNIGHT || pt == BISHOP { self.minor_key[color as usize] ^= k; }
-                    else { self.major_key[color as usize] ^= k; }
+                    self.non_pawn_key[color as usize] ^= piece_key(make_piece(color, pt), sq);
                 }
             }
         }
@@ -529,8 +506,6 @@ impl Board {
             hash: self.hash,
             pawn_hash: self.pawn_hash,
             non_pawn_key: self.non_pawn_key,
-            minor_key: self.minor_key,
-            major_key: self.major_key,
             checkers: 0, // populated on demand
         });
 
@@ -638,8 +613,6 @@ impl Board {
             self.hash = undo.hash;
             self.pawn_hash = undo.pawn_hash;
             self.non_pawn_key = undo.non_pawn_key;
-            self.minor_key = undo.minor_key;
-            self.major_key = undo.major_key;
             self.side_to_move = us;
             if us == BLACK { self.fullmove -= 1; }
             return;
@@ -698,8 +671,6 @@ impl Board {
             hash: self.hash,
             pawn_hash: self.pawn_hash,
             non_pawn_key: self.non_pawn_key,
-            minor_key: self.minor_key,
-            major_key: self.major_key,
             checkers: 0,
         });
 

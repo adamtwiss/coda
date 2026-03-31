@@ -182,10 +182,6 @@ pub struct SearchInfo {
     pawn_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
     /// Non-pawn correction history: [stm][color][nonpawn_hash % size]
     np_corr: Box<[[[i32; CORR_HIST_SIZE]; 2]; 2]>,
-    /// Minor piece correction history: [stm][minor_hash % size]
-    minor_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
-    /// Major piece correction history: [stm][major_hash % size]
-    major_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
     /// Continuation correction history: [piece][to_square]
     cont_corr: Box<[[i32; 64]; 12]>,
     pub nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
@@ -223,8 +219,6 @@ impl SearchInfo {
             pawn_hist: alloc_zeroed_box(),
             pawn_corr: alloc_zeroed_box(),
             np_corr: alloc_zeroed_box(),
-            minor_corr: alloc_zeroed_box(),
-            major_corr: alloc_zeroed_box(),
             cont_corr: alloc_zeroed_box(),
             nnue_net: None,
             nnue_acc: None,
@@ -279,8 +273,6 @@ impl SearchInfo {
     pub fn clear_correction_history(&mut self) {
         for row in self.pawn_corr.iter_mut() { row.fill(0); }
         for mat in self.np_corr.iter_mut() { for row in mat.iter_mut() { row.fill(0); } }
-        for row in self.minor_corr.iter_mut() { row.fill(0); }
-        for row in self.major_corr.iter_mut() { row.fill(0); }
         for row in self.cont_corr.iter_mut() { row.fill(0); }
     }
 
@@ -438,14 +430,6 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
     let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) % CORR_HIST_SIZE;
     let black_np_corr = info.np_corr[stm][BLACK as usize][black_np_idx] as i64;
 
-    // Minor piece correction (knight+bishop hash)
-    let minor_idx = (board.minor_key[WHITE as usize] ^ board.minor_key[BLACK as usize]) as usize % CORR_HIST_SIZE;
-    let minor_corr = info.minor_corr[stm][minor_idx] as i64;
-
-    // Major piece correction (rook+queen hash)
-    let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize % CORR_HIST_SIZE;
-    let major_corr = info.major_corr[stm][major_idx] as i64;
-
     // Continuation correction (from opponent's last move)
     let cont_corr = if !board.undo_stack.is_empty() {
         let last = &board.undo_stack[board.undo_stack.len() - 1];
@@ -461,9 +445,8 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
         } else { 0 }
     } else { 0 };
 
-    // Weighted blend: pawn 384, whiteNP 154, blackNP 154, minor 102, major 102, cont 128 = 1024
-    let total_corr = (pawn_corr * 384 + white_np_corr * 154 + black_np_corr * 154
-        + minor_corr * 102 + major_corr * 102 + cont_corr * 128) / 1024;
+    // Weighted blend: pawn 512, whiteNP 204, blackNP 204, cont 104 = 1024
+    let total_corr = (pawn_corr * 512 + white_np_corr * 204 + black_np_corr * 204 + cont_corr * 104) / 1024;
     let adjusted = raw_eval + (total_corr as i32) / CORR_HIST_GRAIN;
     adjusted.clamp(-MATE_SCORE + 100, MATE_SCORE - 100)
 }
@@ -489,14 +472,6 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     update_corr_entry(&mut info.np_corr[stm][WHITE as usize][white_np_idx], err, weight);
     let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) % CORR_HIST_SIZE;
     update_corr_entry(&mut info.np_corr[stm][BLACK as usize][black_np_idx], err, weight);
-
-    // Minor piece correction
-    let minor_idx = (board.minor_key[WHITE as usize] ^ board.minor_key[BLACK as usize]) as usize % CORR_HIST_SIZE;
-    update_corr_entry(&mut info.minor_corr[stm][minor_idx], err, weight);
-
-    // Major piece correction
-    let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize % CORR_HIST_SIZE;
-    update_corr_entry(&mut info.major_corr[stm][major_idx], err, weight);
 
     // Continuation correction
     if !board.undo_stack.is_empty() {
