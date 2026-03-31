@@ -5,44 +5,52 @@ Mark items DONE with date when completed. Move to experiments.md when tested.
 
 ## Search Improvements
 
-### High Priority (likely +5-20 Elo each)
+### High Priority — Untested or Conditions Changed
 
-- [ ] **Retry: LMP depth 9** — +4 Elo at 1500g self-play, needs x-engine retest with current SE/search
-- [x] **Retry: FH Blend Depth Gate 4** — REJECTED (-10 raw Atlas). Negative with SE.
-- [x] **Retry: History Divisor 4000** — Neutral (+2 raw Atlas). Not worth merging alone.
-- [x] **Retry: Futility 50+d*50** — Neutral (Atlas). Not worth merging alone.
-- [x] **2026-03-30** 4-ply continuation history (+14 Elo gauntlet) — Viridithas/Obsidian/Reckless all use plies 1,2,4,6. We use 1-ply. (Source: engine reviews)
-- [x] **Correction history expansion (4→6)** — MERGED (+11 combined gauntlet). Added minor_key + major_key.
-- [x] **Pin-aware SEE** — REJECTED (-7.8 raw). Asymmetric pin mask biases SEE. Revisit with both-side pins.
-- [x] **GHI mitigation (50mr hash)** — REJECTED (-28.5 raw). TT fragmentation too costly at our hash size.
-- [ ] **NMP cutNode restriction** — Obsidian restricts NMP to cut nodes only. Our NMP ablation showed only -18 Elo, suggesting it fires too broadly. (Source: Obsidian review, ablation data)
+- [ ] **Retry: No killers / counter-move** — was -530 with old search, but we now have 4D threat-aware history which is the prerequisite SF/Reckless/Viridithas used when dropping killers. #1 retest priority.
+- [ ] **SE margin tuning** — SE just added (2026-03-30) with GoChess params (depth>=8, margin=depth, verify=(depth-1)/2). Never tuned for Coda. Try margin=depth*2/3, depth gate 6 or 10, double-ext margin 20/25.
+- [ ] **Weiss NMP skip after null move** — anti-chain NMP. From Batch C, never tested.
+- [ ] **Reverse direction history in cont-hist** — extend Arasan reverse-hist idea to cont-hist tables. From Batch C, never tested.
+- [ ] **Passed pawn push exemption from pruning** — From Batch C, never tested.
 
-### Medium Priority (likely +3-10 Elo each)
+### Medium Priority — Retry Candidates (small positives, conditions changed)
 
-- [x] **Retry: NMP Divisor 170** — REJECTED (-32 raw Atlas). Strongly negative.
-- [x] **Retry: TT Near-Miss Margin 96** — REJECTED (-23 raw Atlas). Negative.
-- [ ] **Retry: NMP Deep Reduction d>=14** — +0.6 but +4-9 early, deeper search from SE
-- [x] **Retry: Mate Distance Pruning** — REJECTED (Atlas). Negative.
-- [ ] **Retry: LMP 4+d^2** — +2.3, LMP showed 0 in ablation so formula needs work
-- [ ] **Retry: Threat-Aware SEE Quiet** — +0.8 but +12.6 early, sound idea
-- [x] **Complexity-aware LMR** — MERGED (+9 raw Atlas combined with cont-hist writes)
-- [x] **Eval-dependent aspiration delta** — MERGED (+75 cross-engine Weiss/Laser/Texel). Formula: 13 + avg²/23660.
-- [x] **TT cutoff retroactive history** — MERGED (+19 raw Atlas combined with asp depth reduction)
+- [ ] **Retry: NMP Deep Reduction d>=14** — +0.6 for 1657g, showed +4-9 early. Post-cuckoo NMP dynamics may differ.
+- [ ] **Retry: LMP Failing /2** — +0.8 for 1693g, persistent +2-4 throughout.
+- [ ] **Retry: History Pruning Depth 4** — -0.5 for 1321g, showed +5.5 at 1141g.
+- [ ] **Retry: Threat-Aware SEE Quiet** — +0.8 for 1675g, showed +12.6 early. Post-4D history may change dynamics.
+- [ ] **Retry: Opponent Material LMR <4** — +1.9 for 2710g, one-directional signal.
+- [ ] **Soft stop thread consensus** — 65% of SMP threads must agree on best move before stopping. (Source: Reckless review)
+- [ ] **Opponent easy captures for pruning gates** — gate RFP/NMP on whether opponent has easy captures. (Source: Berserk review)
 
 ### Lower Priority / Exploratory
 
-- [ ] **Retry: LMP Failing /2** — +0.8, LMP needs recalibration generally
-- [ ] **Retry: Opponent Material LMR <4** — +1.9, one-directional signal
-- [ ] **Retry: History Pruning Depth 4** — -0.5 but +5.5 at 1141g
-- [ ] **No killers / counter-move** — SF/Reckless/Viridithas all dropped these. Rich history replaces them. Test removing. (Source: SF/Reckless/Viridithas reviews)
-- [ ] **Alpha-raise LMR tracking** — more reduction after alpha has been raised. (Source: Reckless/Stormphrax reviews)
-- [ ] **Soft stop thread consensus** — 65% of SMP threads must agree on best move before stopping. (Source: Reckless review)
-- [ ] **Cuckoo cycle detection** — proactive repetition avoidance before it occurs. Eval-agnostic, should transfer. (Source: Berserk/Viridithas reviews)
-- [ ] **Opponent easy captures for pruning gates** — gate RFP/NMP on whether opponent has easy captures. (Source: Berserk review)
-- [ ] **History aging (×0.80 per iteration)** — decay history tables each ID iteration. SF does this. (Source: SF review)
 - [ ] **CReLU vs SCReLU for v7** — Berserk uses CReLU specifically for better sparsity in sparse L1. SCReLU kills sparsity. Consider CReLU for pairwise+hidden arch. (Source: Berserk review)
-- [x] **Threat-aware history (4D indexed)** — MERGED (+18 H2H, +16 cross-engine). [from_threatened][to_threatened][from][to] with enemy pawn attacks.
-- [ ] **6-ply continuation history** — SF/Caissa use 6-ply. We just added 4-ply. (Source: SF/Caissa reviews)
+
+### Done / Rejected (2026-03-30 and earlier)
+
+- [x] **Cont-hist 4-ply reads AND writes at plies 1,2,4,6** — MERGED (+14 gauntlet). Writes at half bonus for plies 2/4/6. 6-ply is already included.
+- [x] **Correction history expansion (4→6)** — MERGED (+11 combined gauntlet). Added minor_key + major_key.
+- [x] **Threat-aware history (4D indexed)** — MERGED (+18 H2H, +16 cross-engine).
+- [x] **Eval-dependent aspiration delta** — MERGED (+75 cross-engine).
+- [x] **TT cutoff retroactive history** — MERGED (+19 raw Atlas combined with asp depth reduction).
+- [x] **Complexity-aware LMR** — MERGED (+9 raw Atlas).
+- [x] **Cuckoo cycle detection** — MERGED (+48 Elo, Hercules).
+- [x] **Alpha-raise LMR tracking** — Already implemented (alpha_raised_count / 2 extra reduction).
+- [x] **History aging (×0.80 per game)** — MERGED (+11 combined, Hercules).
+- [x] **Pin-aware SEE** — REJECTED (-7.8 raw). Asymmetric pin mask biases SEE.
+- [x] **GHI mitigation (50mr hash)** — REJECTED (-28.5 raw). TT fragmentation too costly.
+- [x] **NMP cutNode restriction** — REJECTED (-23 raw). Too restrictive.
+- [x] **LMP depth 9** — REJECTED multiple times. 3+d² at depth<=8 confirmed optimal.
+- [x] **LMP 4+d²** — REJECTED (-4.9 raw after landscape shift). 3+d² confirmed.
+- [x] **NMP Divisor 170** — REJECTED (-32 raw Atlas, -15.8 post-landscape). NMP 200 confirmed.
+- [x] **TT Near-Miss Margin 96** — REJECTED (-23 raw Atlas). Margin 80 confirmed.
+- [x] **Mate Distance Pruning** — REJECTED (dead flat, triggers too rarely at 10+0.1).
+- [x] **FH Blend Depth Gate 4** — REJECTED (-10 raw Atlas).
+- [x] **History Divisor 4000** — REJECTED (neutral at best, never gains).
+- [x] **Futility 50+d*50** — MERGED on v5 after landscape shift (+10.2), then stable.
+- [x] **Eval-depth bonus** — REJECTED (-11 raw, unchanged post-4D).
+- [x] **SEE history gate** — REJECTED (-21 raw post-4D).
 
 ## NNUE / Model
 

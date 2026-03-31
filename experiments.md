@@ -3021,7 +3021,7 @@ Disabled each search feature individually, 300 games each vs Minic/Ethereal/Texe
 - **Change**: Read continuation history at plies 1, 2, 4, 6 (was only 1, 2). Plies 1-2 at 3x weight, plies 4-6 at 1x weight. Matches Obsidian/Alexandria/Berserk/Stormphrax.
 - **Gauntlet (300g)**: +41 Elo* (vs +3 baseline = ~+38 raw, but noisy)
 - **Result**: Committed. Genuine improvement — adds information without pruning risk.
-- **Notes**: Only reads added; writes still ply-1 only. Writing plies 2/4/6 could add more but needs careful implementation.
+- **Notes**: Initially only reads added; writes at plies 2/4/6 added later (half bonus, Obsidian pattern). Full read+write at plies 1,2,4,6.
 
 ## 2026-03-30: NMP R=4, depth>=4
 

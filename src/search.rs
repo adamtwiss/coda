@@ -1617,9 +1617,9 @@ fn negamax(
         }
 
         // Singular extension verification search (v7: multi-cut + negative ext, no positive ext)
-        // Based on GoChess SE diagnosis: NMP must be gated inside verification search,
-        // but RFP/ProbCut are safe to keep. Only multi-cut and negative extensions are used
-        // (positive +1 extension hurt by ~30 Elo in GoChess due to alpha-reduce/blending interaction).
+        // Singular extensions: verify TT move is uniquely best by searching with excluded move.
+        // NMP must be gated inside verification search (critical fix from GoChess diagnosis).
+        // All components working: positive ext (+1), double ext (+2), multi-cut, negative ext (-1).
         let mut singular_extension = 0i32;
         if mv == tt_move
             && tt_move != NO_MOVE
