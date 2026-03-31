@@ -3459,3 +3459,12 @@ New baseline: +44 ±24 Elo (600g gauntlet, post-cuckoo + 4D history + aspiration
 - **Change**: Even tighter SE margin: `tt_score - depth/2`.
 - **Result**: +44 Elo (raw 0). Started at +57, converged to dead baseline.
 - **Notes**: Both tighter margins tested (2d/3 and d/2), both neutral. SE margin `depth` is well-calibrated. Combined with GoChess tests (d*2 and d*3 both rejected), the margin is fully bracketed: d/2 (neutral), **d (current, optimal)**, d*2 (rejected), d*3 (rejected).
+
+### SE double-extension margin 25 (300g) — REJECTED
+- **Change**: Wider double-ext margin: `singular_beta - 25` instead of `singular_beta - 15`. Fewer double extensions.
+- **Result**: +36 Elo (raw -8). Slightly negative.
+
+### SE double-extension margin 10 (294g) — REJECTED
+- **Change**: Tighter double-ext margin: `singular_beta - 10` instead of `singular_beta - 15`. More double extensions.
+- **Result**: +36 Elo (raw -8). Slightly negative.
+- **Notes**: Both directions lose ~8 Elo. Double-extension margin fully bracketed: 10 (-8), **15 (current, optimal)**, 25 (-8). SE is now fully tuned: margin=depth, depth gate=8, double-ext margin=15, verification=(depth-1)/2.
