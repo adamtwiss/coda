@@ -2028,6 +2028,12 @@ fn negamax(
                             &mut info.history.main[from as usize][to as usize],
                             bonus,
                         );
+                        // Reverse direction penalty: penalize the "take-back" move (Arasan pattern).
+                        // If moving from A to B is good, moving from B to A is usually bad.
+                        History::update_history(
+                            &mut info.history.main[to as usize][from as usize],
+                            -bonus / 2,
+                        );
 
                         // Update continuation history at plies 1, 2, 4, 6
                         // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
