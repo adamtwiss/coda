@@ -872,7 +872,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         // Aspiration windows (GoChess: skip for mate scores)
         if depth >= 4 && prev_score > -MATE_SCORE + 100 && prev_score < MATE_SCORE - 100 {
-            let mut delta = 15i32;
+            // Eval-dependent aspiration delta: wider for extreme scores (Reckless pattern)
+            // Calm positions (avg~0): delta=13, winning (avg~500): delta=24, crushing (avg~1000): delta=55
+            let avg = prev_score;
+            let mut delta = 13 + (avg as i64 * avg as i64 / 23660) as i32;
             let mut alpha = (prev_score - delta).max(-INFINITY);
             let mut beta = (prev_score + delta).min(INFINITY);
             let mut asp_depth = depth;
@@ -1094,6 +1097,15 @@ fn negamax(
     // Prefetch TT bucket early to hide memory latency
     info.tt.prefetch(board.hash);
 
+    // Compute enemy pawn attacks for threat-aware history indexing (cheap: ~3 ops)
+    let them_color = flip_color(board.side_to_move);
+    let their_pawns = board.pieces[PAWN as usize] & board.colors[them_color as usize];
+    let enemy_attacks: u64 = if them_color == WHITE {
+        ((their_pawns & !0x0101010101010101u64) << 7) | ((their_pawns & !0x8080808080808080u64) << 9)
+    } else {
+        ((their_pawns & !0x8080808080808080u64) >> 7) | ((their_pawns & !0x0101010101010101u64) >> 9)
+    };
+
     // Clear PV for this node (GoChess: info.pvLen[ply] = 0)
     if ply_u <= MAX_PLY {
         info.pv_len[ply_u] = 0;
@@ -1198,7 +1210,7 @@ fn negamax(
                             || move_flags(tt_move) == FLAG_EN_PASSANT;
                         if !tt_is_cap && tt_piece != NO_PIECE {
                             History::update_history(
-                                &mut info.history.main[move_from(tt_move) as usize][move_to(tt_move) as usize],
+                                info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
                                 bonus,
                             );
                         } else if tt_is_cap && tt_piece != NO_PIECE {
@@ -1530,7 +1542,7 @@ fn negamax(
     let mut picker = if in_check {
         MovePicker::new_evasion(board, tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref)
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks)
     };
     picker.threat_sq = threat_sq;
 
@@ -1667,7 +1679,7 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
             && FEAT_HIST_PRUNE.load(Ordering::Relaxed)
         {
-            let mut hist_prune_score = info.history.main[from as usize][to as usize];
+            let mut hist_prune_score = info.history.main_score(from, to, enemy_attacks);
             if prev_piece_go != 0
                 && moved_piece != NO_PIECE
             {
@@ -1874,7 +1886,7 @@ fn negamax(
                 }
 
                 // Continuous history adjustment: good history reduces less, bad more
-                let mut hist_score = info.history.main[from as usize][to as usize];
+                let mut hist_score = info.history.main_score(from, to, enemy_attacks);
                 if prev_piece_go != 0
                     && moved_piece != NO_PIECE
                 {
@@ -2025,7 +2037,7 @@ fn negamax(
 
                         // Update main history
                         History::update_history(
-                            &mut info.history.main[from as usize][to as usize],
+                            info.history.main_entry(from, to, enemy_attacks),
                             bonus,
                         );
                         // Reverse direction penalty: penalize the "take-back" move (Arasan pattern).
@@ -2074,7 +2086,7 @@ fn negamax(
                             let qf = move_from(q);
                             let qt = move_to(q);
                             History::update_history(
-                                &mut info.history.main[qf as usize][qt as usize],
+                                info.history.main_entry(qf, qt, enemy_attacks),
                                 -bonus,
                             );
 

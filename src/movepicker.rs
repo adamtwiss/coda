@@ -18,10 +18,14 @@ use crate::types::*;
 
 const MAX_HISTORY: i32 = 16384;
 
+/// Bitboard type alias for threat computation.
+pub type Threats = u64;
+
 /// History tables shared across the search.
 pub struct History {
-    /// Main history: [from][to] (shared between colors, matches GoChess)
-    pub main: [[i32; 64]; 64],
+    /// Main history: [from_threatened][to_threatened][from][to]
+    /// Threat-aware 4D indexing — separate history for moves escaping/entering threats.
+    pub main: [[[[i32; 64]; 64]; 2]; 2],
     /// Capture history: [piece 1-12][to][captured_type 0-6]
     /// piece uses GoChess 1-12 indexing (slot 0 unused).
     /// captured_type uses GoChess 0-6 scheme (0=empty, 1=pawn, ..., 6=king).
@@ -38,9 +42,25 @@ pub struct History {
 }
 
 impl History {
+    /// Get main history score for a move given enemy threat bitboard.
+    #[inline(always)]
+    pub fn main_score(&self, from: u8, to: u8, threats: Threats) -> i32 {
+        let ft = ((threats >> from) & 1) as usize;
+        let tt = ((threats >> to) & 1) as usize;
+        self.main[ft][tt][from as usize][to as usize]
+    }
+
+    /// Get mutable reference to main history entry for a move given enemy threats.
+    #[inline(always)]
+    pub fn main_entry(&mut self, from: u8, to: u8, threats: Threats) -> &mut i32 {
+        let ft = ((threats >> from) & 1) as usize;
+        let tt = ((threats >> to) & 1) as usize;
+        &mut self.main[ft][tt][from as usize][to as usize]
+    }
+
     pub fn new() -> Self {
         History {
-            main: [[0; 64]; 64],
+            main: [[[[0; 64]; 64]; 2]; 2],
             capture: [[[0i16; 7]; 64]; 13],
             killers: [[NO_MOVE; 2]; 64],
             counter: [[NO_MOVE; 64]; 13],
@@ -49,7 +69,7 @@ impl History {
     }
 
     pub fn clear(&mut self) {
-        self.main = [[0; 64]; 64];
+        self.main = [[[[0; 64]; 64]; 2]; 2];
         self.capture = [[[0i16; 7]; 64]; 13];
         self.killers = [[NO_MOVE; 2]; 64];
         self.counter = [[NO_MOVE; 64]; 13];
@@ -60,8 +80,12 @@ impl History {
     /// Preserves useful information from prior searches while letting new data dominate.
     /// Killers and counter-moves are cleared (they're position-specific, not transferable).
     pub fn age(&mut self, factor: i32, divisor: i32) {
-        for row in self.main.iter_mut() {
-            for v in row.iter_mut() { *v = *v * factor / divisor; }
+        for t0 in self.main.iter_mut() {
+            for t1 in t0.iter_mut() {
+                for row in t1.iter_mut() {
+                    for v in row.iter_mut() { *v = *v * factor / divisor; }
+                }
+            }
         }
         for plane in self.capture.iter_mut() {
             for row in plane.iter_mut() {
@@ -158,6 +182,7 @@ pub struct MovePicker {
     #[allow(dead_code)]
     ply: usize,
     skip_quiet: bool,
+    threats: Threats, // enemy attack bitboard for threat-aware history
     // Evasion support
     checkers: Bitboard,
     pinned: Bitboard,
@@ -175,6 +200,7 @@ impl MovePicker {
         history: &History,
         prev_move: Move,
         pawn_hist: Option<&[[i16; 64]; 13]>,
+        threats: Threats,
     ) -> Self {
         let killers = if ply < 64 {
             history.killers[ply]
@@ -230,6 +256,7 @@ impl MovePicker {
             bad_len: 0,
             ply,
             skip_quiet: false,
+            threats,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -259,6 +286,7 @@ impl MovePicker {
             bad_len: 0,
             ply: 0,
             skip_quiet: true,
+            threats: 0,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -313,6 +341,7 @@ impl MovePicker {
             bad_len: 0,
             ply,
             skip_quiet: false,
+            threats: 0, // evasions don't use threat-aware history
             checkers,
             pinned,
             threat_sq: -1,
@@ -496,7 +525,7 @@ impl MovePicker {
             let to = move_to(m);
             let piece = board.piece_at(from);
 
-            let mut score = history.main[from as usize][to as usize];
+            let mut score = history.main_score(from, to, self.threats);
 
             // Continuation history: plies 1,2 at 3x weight, plies 4,6 at 1x weight.
             // Matches Obsidian/Alexandria/Berserk pattern.
@@ -570,7 +599,7 @@ impl MovePicker {
                 // Quiet: history + continuation history + pawn history
                 let piece = board.piece_at(from);
 
-                let mut s = history.main[from as usize][to as usize];
+                let mut s = history.main_score(from, to, self.threats);
 
                 if piece != NO_PIECE {
                     let gp = go_piece(piece);
