@@ -97,3 +97,27 @@ Mark items DONE with date when completed. Move to experiments.md when tested.
 - [x] **2026-03-30** Same-bucket king NNUE optimization (+7 Elo SPRT)
 - [x] **2026-03-30** Feature ablation study (16 features, 300g each)
 - [x] **2026-03-30** Double extension tested — rejected (too aggressive at depth*3 margin)
+
+## Done (2026-03-31)
+
+- [x] **2026-03-31** Correction history 4→6 sources (+11 combined, Hercules gauntlet)
+- [x] **2026-03-31** History aging ×0.80 instead of clear (+11 combined, Hercules gauntlet)
+- [x] **2026-03-31** Atlas: Complexity-aware LMR + cont-hist deep writes (+9 raw, Atlas gauntlet)
+- [x] **2026-03-31** Atlas: TT cutoff retroactive cont-hist penalty (+19 raw combined, Atlas gauntlet)
+- [x] **2026-03-31** Atlas: Aspiration fail-high depth reduction (+19 raw combined, Atlas gauntlet)
+- [x] **2026-03-31** Atlas: Cut node tracking (foundation for NMP/LMR/IIR gating)
+- [x] **2026-03-31** Pairwise+v7 inference support in Coda (forward path + converter)
+- [x] **2026-03-31** sample-positions: extract random positions from T80 binpack as EPD
+- [x] **2026-03-31** 12 engine reviews (Stockfish, Reckless, Obsidian, Berserk, Caissa, Stormphrax, Viridithas, Koivisto, Seer, Quanticade, PlentyChess, Halogen)
+- [x] **2026-03-31** v7 768pw training config for GPU hosts
+- [x] **2026-03-31** 33-engine RR: Coda #18 (-14), +36 over GoChess
+- [x] **2026-03-31** TM v2: extend time on best-move instability (+27 raw, testing)
+
+## Rejected (2026-03-31)
+
+- [x] GHI mitigation (50mr TT key bucketing) — -28.5 raw, TT fragmentation too costly
+- [x] Pin-aware SEE (side-to-move only) — -7.8 raw, asymmetric pin mask biases SEE
+- [x] TM v1 unified refactor — -17 raw, disrupted existing calibration
+- [x] Atlas: Opponent move feedback + eval depth bonus — -17 raw combined
+- [x] Atlas: Pawn hist in LMR — rejected
+- [x] Atlas: Various retry candidates (NMP 170, FH blend, TT margin 96) — all negative
