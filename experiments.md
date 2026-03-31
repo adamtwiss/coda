@@ -3348,3 +3348,28 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - Weiss NMP skip after null move (anti-chain)
 - Passed pawn push exemption (needs helper function)
 - Reverse direction history in cont-hist (extend Arasan idea deeper)
+
+## 2026-03-31: v5 WDL Net Cross-Engine RR
+
+- **Test**: Round-robin with 4 Coda nets (w0-prod, w3, w5, w7) + 3 rivals (Weiss, Laser, Texel)
+- **Games**: 510 (of 2100 planned), tc=10+0.1, concurrency 16
+- **Binary**: Latest Coda (4D history + aspiration delta merged)
+- **Nets**: w0=net-v5-120sb-sb120.nnue (CReLU e120), w3/w5/w7=net-v5-1024s-{w3,w5,w7}-e800 (SCReLU e800)
+
+| Rank | Net | Elo | ±Error | Score | Draw% |
+|------|-----|-----|--------|-------|-------|
+| 1 | **Coda-w7** | **+77** | ±41 | 60.8% | 49.0% |
+| 2 | Coda-w3 | +61 | ±43 | 58.7% | 43.8% |
+| 3 | Coda-w5 | +37 | ±41 | 55.3% | 48.6% |
+| 4 | Weiss | +27 | ±48 | 53.9% | 31.7% |
+| 5 | Coda-w0(prod) | +12 | ±45 | 51.7% | 37.8% |
+| 6 | Texel | -22 | ±44 | 46.9% | 42.0% |
+| 7 | Laser | -213 | ±57 | 22.7% | 21.7% |
+
+**Key findings**:
+- All WDL nets beat w0 cross-engine despite looking flat in self-play
+- w7 is clearly best (+65 over w0), w3 and w5 roughly tied (+49/+25 over w0)
+- WDL nets have much higher draw rates (44-49%) vs w0 (38%) — better draw recognition
+- Self-play WDL testing was actively misleading: showed no difference, cross-engine shows +25-65
+- Caveat: single training run per WDL value, seed variance not yet quantified
+- **Action**: Switch production net to w7. Test w10 when GPU available.
