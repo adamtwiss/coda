@@ -3277,3 +3277,11 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Result**: INVERTED. Longer training helps self-play but hurts cross-engine.
 - **Why**: Likely eval scale shift (check-net: miss-pawn weakened -122→-85, EG queen-up widened 1760→2073). Search thresholds calibrated for e800's scale are suboptimal for e1200's shifted range. Both sides share the same miscalibration in self-play so it cancels.
 - **Implications**: Don't assume longer training = better. Always validate model changes cross-engine. e800 remains our strongest v5 for match play. The e1600 (training on GPU3) may show the same pattern.
+
+## 2026-03-31: Fifty-move eval scaling — REJECTED (Hercules)
+
+- **Change**: `eval *= (193 - halfmove) / 200`. Dampens eval as 50-move draw approaches.
+- **Source**: Quanticade, PlentyChess, Halogen all use this.
+- **Gauntlet (157g, combined with TM v2)**: Elo +19.9, raw -6.7 vs baseline. TM alone was +24. Suggests FMR scaling costs ~30 Elo.
+- **Result**: REJECTED. The scaling dampens eval at ALL halfmove values (3.5% at move 0, 13.5% at move 20). Our search thresholds are calibrated for full-strength evals — dampening them by 10-15% makes pruning too aggressive.
+- **Revisit**: Only apply at halfmove > 60, or retune thresholds with scaling active. Top engines that use this have thresholds tuned WITH the scaling.
