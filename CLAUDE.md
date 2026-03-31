@@ -289,3 +289,65 @@ Examples: `net-v5-1024-w0-e120s120.nnue`, `net-v5-1024s-w5-e400s400.nnue`, `net-
 - All pruning (LMP, futility, history, SEE) exempts TT move and killers
 - PV nodes skip all TT cutoffs and QS beta blending
 - Polyglot book encodes castling as king-to-rook (must convert to king-to-destination)
+
+## Testing Methodology
+
+### Cross-Engine Gauntlet (primary test method)
+
+Self-play SPRT is unreliable for search changes (positive self-play can be negative cross-engine). All search/eval changes are validated by cross-engine gauntlet.
+
+**Gauntlet opponents** (roughly equal strength to Coda):
+- Minic: `~/chess/engines/Minic/Dist/Minic3/minic_dev_linux_x64`
+- Ethereal: `~/chess/engines/Ethereal/src/Ethereal`
+- Texel: `~/chess/engines/texel/build/texel`
+
+**Baseline** (1200 Coda games, run once per significant code change):
+```bash
+cutechess-cli \
+    -tournament gauntlet \
+    -engine name=CodaBaseline cmd=./target/release/coda dir=/home/adam/code/coda proto=uci \
+        option.NNUEFile=net-v5-1024s-w5-e800-s800.nnue option.OwnBook=false \
+    -engine name=Minic cmd=$HOME/chess/engines/Minic/Dist/Minic3/minic_dev_linux_x64 proto=uci \
+    -engine name=Ethereal cmd=$HOME/chess/engines/Ethereal/src/Ethereal proto=uci \
+    -engine name=Texel cmd=$HOME/chess/engines/texel/build/texel proto=uci \
+    -each tc=0/10+0.1 \
+    -games 2 -rounds 200 -concurrency 16 \
+    -openings file=/home/adam/code/gochess/testdata/noob_3moves.epd format=epd order=random \
+    -pgnout /tmp/baseline.pgn -recover \
+    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
+```
+
+**Experiment** (600 Coda games):
+Same as above but `-rounds 100` and different binary/PGN path.
+
+**Scoring** (extract Coda Elo from PGN):
+```python
+import re, math
+with open('test.pgn') as f:
+    content = f.read()
+results = []
+for m in re.finditer(r'\[White \"(.*?)\"\].*?\[Result \"(.*?)\"\]', content, re.DOTALL):
+    white, result = m.groups()
+    is_coda = 'Coda' in white
+    if result == '1-0': results.append(1.0 if is_coda else 0.0)
+    elif result == '0-1': results.append(0.0 if is_coda else 1.0)
+    elif result == '1/2-1/2': results.append(0.5)
+n = len(results)
+score = sum(results)/n
+elo = -400*math.log10(1/score-1)
+print(f'{n} games, score {score:.3f}, Elo {elo:+.1f}')
+```
+
+**Decision framework**:
+- Compare experiment Elo to baseline Elo. Raw gain = experiment − baseline.
+- Error bars: ±17 (baseline 1200g) + ±24 (experiment 600g) = ~±29 combined.
+- Merge if: x-engine neutral to positive AND improves code quality AND consensus among top engines.
+- Reject if: clearly negative (>20 Elo below baseline at 200+ games).
+- Small gains (+3 to +8) that are consensus features: merge. They compound.
+
+**Key principles**:
+- Gauntlet, not RR: all games involve Coda (no wasted opponent-vs-opponent games).
+- Baseline is amortised across all experiments. Re-establish after major code changes.
+- CPU matters: baseline Elo varies by machine (Intel vs AMD, clock speed). Always compare experiment to baseline on the same machine.
+- Periodic big RR (13+ engines, 600g each) for absolute strength validation.
+- Log all results to experiments.md with game count, Elo, and raw gain vs baseline.
