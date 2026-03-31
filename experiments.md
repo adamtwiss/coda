@@ -3336,3 +3336,15 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Queen promotion extension (300g)**: +9 ±33 (raw -28). SE already handles important promotions. Extra extension wastes nodes.
 - **RFP TT quiet guard (300g)**: +41 ±33 (raw +4). Committed — logically sound guard against over-pruning.
 - **Combined TripleB (300g)**: +6 ±33 (raw -31). At least one strongly negative. Lesson: test individually at our hit rate.
+
+## 2026-03-31: Reverse direction history penalty
+
+- **Change**: On beta cutoff, penalize history[to][from] at -bonus/2. "Don't take back a good move."
+- **Gauntlet (300g)**: +44 ±33 Elo (raw +7). Suggestive positive.
+- **Result**: Committed. Novel (only Arasan), logically sound, simple.
+
+## Batch C experiments still to test:
+- History gate on SEE pruning (threshold TBD)
+- Weiss NMP skip after null move (anti-chain)
+- Passed pawn push exemption (needs helper function)
+- Reverse direction history in cont-hist (extend Arasan idea deeper)
