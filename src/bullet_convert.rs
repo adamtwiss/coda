@@ -18,6 +18,10 @@ fn read_i32_le(data: &[u8], offset: usize) -> i32 {
     i32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
 }
 
+fn read_f32_le(data: &[u8], offset: usize) -> f32 {
+    f32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
+}
+
 fn write_u32_le(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
@@ -148,19 +152,36 @@ pub fn convert_v7(
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
     let data_len = strip_footer(&data);
 
-    let out_input_width = if l2_size > 0 { l2_size } else { l1_size };
     let l1w_bytes_per = if int8_l1 { 1 } else { 2 };
-    let l2_bytes = if l2_size > 0 { l1_size * l2_size * 2 + l2_size * 2 } else { 0 };
-    let fixed_bytes = l1_size * 2 + l2_bytes + out_input_width * NNUE_OUTPUT_BUCKETS * 2 + NNUE_OUTPUT_BUCKETS * 4;
-    // Pairwise: L1 input is H (not 2*H), so L1 weights are H*L1 (not 2*H*L1)
+    // Bullet bakes output buckets into hidden layer dimensions:
+    //   l1: [H][BUCKETS*L1] weights, [BUCKETS*L1] biases
+    //   l2: [L1][BUCKETS*L2] weights, [BUCKETS*L2] biases
+    //   l3: [L2][BUCKETS] weights, [BUCKETS] biases
+    // l1w is i8 or i16 (quantised). Everything else after l1w is f32.
+    let bl1 = NNUE_OUTPUT_BUCKETS * l1_size;
+    let bl2 = NNUE_OUTPUT_BUCKETS * l2_size;
+    let l1b_bytes = bl1 * 4; // f32
+    let l2_bytes = if l2_size > 0 { l1_size * bl2 * 4 + bl2 * 4 } else { 0 }; // f32
+    let out_input = if l2_size > 0 { l2_size } else { l1_size };
+    let out_bytes = out_input * NNUE_OUTPUT_BUCKETS * 4 + NNUE_OUTPUT_BUCKETS * 4; // f32
+    let fixed_bytes = l1b_bytes + l2_bytes + out_bytes;
+    // Pairwise: L1 input is H (after CReLU+pairwise+concat = ft_size)
+    // Direct: L1 input is 2*H
     let l1_mul = if use_pairwise { 1 } else { 2 };
-    let bytes_per_neuron = NNUE_INPUT_SIZE * 2 + 2 + l1_mul * l1_size * l1w_bytes_per;
+    let bytes_per_neuron = NNUE_INPUT_SIZE * 2 + 2 + l1_mul * bl1 * l1w_bytes_per;
     let h = (data_len - fixed_bytes) / bytes_per_neuron;
 
-    let _l1_scale: i32 = if int8_l1 { 64 } else { 255 };
+    println!("Input: {} bytes, FT={} L1={}{} L2={} (bucketed: {}x{}, {}x{})",
+        data.len(), h, l1_size, if int8_l1 { "(i8)" } else { "" }, l2_size, bl1, bl2,
+        NNUE_OUTPUT_BUCKETS, l1_size);
 
-    println!("Input: {} bytes, FT={} L1={}{} L2={}", data.len(), h, l1_size,
-        if int8_l1 { "(i8)" } else { "" }, l2_size);
+    // Verify size
+    let l1_input = l1_mul * h;
+    let expected = NNUE_INPUT_SIZE * h * 2 + h * 2 + l1_input * bl1 * l1w_bytes_per
+        + l1b_bytes + l2_bytes + out_bytes;
+    if expected != data_len {
+        return Err(format!("Size mismatch: expected {} bytes for FT={}, got {}", expected, h, data_len));
+    }
 
     let mut offset = 0;
 
@@ -178,67 +199,69 @@ pub fn convert_v7(
         offset += 2;
     }
 
-    // l1w: [L1_input][L1] — int8 or int16
-    // Pairwise: L1_input = H (pairwise halves each perspective, concat = H)
-    // Direct: L1_input = 2*H
-    let l1_input = l1_mul * h;
-    let mut l1_weights = vec![0i16; l1_input * l1_size];
+    // l1w: [L1_input][BUCKETS*L1] — i8 or i16 (transposed in Bullet save)
+    let mut l1_weights = vec![0i16; l1_input * bl1];
     if int8_l1 {
-        for i in 0..l1_input * l1_size {
+        for i in 0..l1_input * bl1 {
             l1_weights[i] = data[offset] as i8 as i16;
             offset += 1;
         }
     } else {
-        for i in 0..l1_input * l1_size {
+        for i in 0..l1_input * bl1 {
             l1_weights[i] = read_i16_le(&data, offset);
             offset += 2;
         }
     }
 
-    // l1b: [L1] i16
-    let mut l1_biases = vec![0i16; l1_size];
-    for i in 0..l1_size {
-        l1_biases[i] = read_i16_le(&data, offset);
-        offset += 2;
-    }
-
-    // L2 (if present)
-    let mut l2_weights = vec![0i16; l1_size * l2_size];
-    let mut l2_biases = vec![0i16; l2_size];
-    if l2_size > 0 {
-        for i in 0..l1_size * l2_size {
-            l2_weights[i] = read_i16_le(&data, offset);
-            offset += 2;
-        }
-        for i in 0..l2_size {
-            l2_biases[i] = read_i16_le(&data, offset);
-            offset += 2;
-        }
-    }
-
-    // Output weights: [outInputWidth][buckets] i16 — transpose
-    let mut out_w_raw = vec![[0i16; NNUE_OUTPUT_BUCKETS]; out_input_width];
-    for i in 0..out_input_width {
-        for b in 0..NNUE_OUTPUT_BUCKETS {
-            out_w_raw[i][b] = read_i16_le(&data, offset);
-            offset += 2;
-        }
-    }
-    let mut output_weights = vec![0i16; NNUE_OUTPUT_BUCKETS * out_input_width];
-    for b in 0..NNUE_OUTPUT_BUCKETS {
-        for i in 0..out_input_width {
-            output_weights[b * out_input_width + i] = out_w_raw[i][b];
-        }
-    }
-
-    // Output bias: [buckets] i32
-    let mut output_bias = [0i32; NNUE_OUTPUT_BUCKETS];
-    for b in 0..NNUE_OUTPUT_BUCKETS {
-        output_bias[b] = read_i32_le(&data, offset);
+    // l1b: [BUCKETS*L1] f32
+    let mut l1_biases = vec![0i16; bl1];
+    for i in 0..bl1 {
+        let f = read_f32_le(&data, offset);
+        l1_biases[i] = f.round() as i16;
         offset += 4;
     }
 
-    println!("Parsed {} bytes of {}", offset, data.len());
+    // L2 weights: [L1][BUCKETS*L2] f32, biases: [BUCKETS*L2] f32
+    let mut l2_weights = vec![0i16; l1_size * bl2];
+    let mut l2_biases = vec![0i16; bl2];
+    if l2_size > 0 {
+        for i in 0..l1_size * bl2 {
+            let f = read_f32_le(&data, offset);
+            l2_weights[i] = f.round() as i16;
+            offset += 4;
+        }
+        for i in 0..bl2 {
+            let f = read_f32_le(&data, offset);
+            l2_biases[i] = f.round() as i16;
+            offset += 4;
+        }
+    }
+
+    // Output weights: [L2][BUCKETS] f32 — transpose to [BUCKETS][L2]
+    let mut out_w_raw = vec![[0i16; NNUE_OUTPUT_BUCKETS]; out_input];
+    for i in 0..out_input {
+        for b in 0..NNUE_OUTPUT_BUCKETS {
+            let f = read_f32_le(&data, offset);
+            out_w_raw[i][b] = f.round() as i16;
+            offset += 4;
+        }
+    }
+    let mut output_weights = vec![0i16; NNUE_OUTPUT_BUCKETS * out_input];
+    for b in 0..NNUE_OUTPUT_BUCKETS {
+        for i in 0..out_input {
+            output_weights[b * out_input + i] = out_w_raw[i][b];
+        }
+    }
+
+    // Output bias: [BUCKETS] f32
+    let mut output_bias = [0i32; NNUE_OUTPUT_BUCKETS];
+    for b in 0..NNUE_OUTPUT_BUCKETS {
+        let f = read_f32_le(&data, offset);
+        output_bias[b] = f.round() as i32;
+        offset += 4;
+    }
+
+    println!("Parsed {} bytes of {} (FT={})", offset, data.len(), h);
 
     // Write v7 .nnue
     let mut buf = Vec::new();
@@ -249,21 +272,23 @@ pub fn convert_v7(
     if use_screlu { flags |= 1; }
     if use_pairwise { flags |= 2; }
     if int8_l1 { flags |= 4; }
+    flags |= 8; // bit 3 = bucketed hidden layers (output buckets baked into L1/L2)
     buf.push(flags);
-    write_u16_le(&mut buf, h as u16);
-    write_u16_le(&mut buf, l1_size as u16);
-    write_u16_le(&mut buf, l2_size as u16);
+    write_u16_le(&mut buf, h as u16);       // FT size
+    write_u16_le(&mut buf, l1_size as u16); // per-bucket L1 size
+    write_u16_le(&mut buf, l2_size as u16); // per-bucket L2 size
 
+    // Write weights — hidden layers have bucketed dimensions
     for &w in &input_weights { write_i16_le(&mut buf, w); }
     for &b in &input_biases { write_i16_le(&mut buf, b); }
-    for &w in &l1_weights { write_i16_le(&mut buf, w); }
-    for &b in &l1_biases { write_i16_le(&mut buf, b); }
+    for &w in &l1_weights { write_i16_le(&mut buf, w); } // [L1_input][BUCKETS*L1]
+    for &b in &l1_biases { write_i16_le(&mut buf, b); }   // [BUCKETS*L1]
     if l2_size > 0 {
-        for &w in &l2_weights { write_i16_le(&mut buf, w); }
-        for &b in &l2_biases { write_i16_le(&mut buf, b); }
+        for &w in &l2_weights { write_i16_le(&mut buf, w); } // [L1][BUCKETS*L2]
+        for &b in &l2_biases { write_i16_le(&mut buf, b); }   // [BUCKETS*L2]
     }
-    for &w in &output_weights { write_i16_le(&mut buf, w); }
-    for &b in &output_bias { write_i32_le(&mut buf, b); }
+    for &w in &output_weights { write_i16_le(&mut buf, w); } // [BUCKETS][L2]
+    for &b in &output_bias { write_i32_le(&mut buf, b); }     // [BUCKETS]
 
     std::fs::File::create(output_path)
         .and_then(|mut f| f.write_all(&buf))

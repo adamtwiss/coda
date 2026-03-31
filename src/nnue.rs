@@ -926,9 +926,15 @@ impl NNUENet {
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
                 if flags & 4 != 0 { l1_scale = 64; } // int8 L1 weights
+                let bucketed_hidden = flags & 8 != 0; // output buckets baked into L1/L2
                 let ft_size = read_u16(&mut reader)? as usize;
                 l1_size = read_u16(&mut reader)? as usize;
                 l2_size = read_u16(&mut reader)? as usize;
+                if bucketed_hidden {
+                    // L1/L2 sizes in header are per-bucket; actual arrays are BUCKETS * that
+                    l1_size *= NNUE_OUTPUT_BUCKETS;
+                    l2_size *= NNUE_OUTPUT_BUCKETS;
+                }
                 hidden_size = ft_size;
             }
             _ => return Err(format!("unsupported NNUE version: {}", version)),
