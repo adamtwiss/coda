@@ -3174,3 +3174,13 @@ Disabled each search feature individually, 300 games each vs Minic/Ethereal/Texe
 - **v2 (extend only)**: Only extend time when best move uses <30% of nodes. +6 ±24 Elo (raw -17). Score-delta scaling already catches volatility.
 - **Result**: Both rejected. Our existing TM (stability counter + score-delta + next-iteration estimate) already covers the same signals. Node fraction adds redundant information.
 - **Insight**: Node-based TM works well in engines that don't have detailed score-delta/stability tracking (Alexandria, BlackMarlin). We already have those signals, so node fraction is marginal.
+
+## 2026-03-31: NMP cutNode restriction
+
+- **Change**: Only allow NMP at cut nodes (Obsidian pattern). All-nodes unlikely to produce a cutoff from NMP.
+- **Gauntlet (584g)**: 0 ±24 Elo (raw -23 vs baseline +23).
+- **Result**: Rejected. Too restrictive — NMP at all-nodes does succeed often enough to justify the node cost.
+
+## Testing methodology update (2026-03-31)
+
+Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some games were between non-Coda opponents (wasted signal). Switching to `-tournament gauntlet` to ensure all games involve Coda. Requires new baseline.
