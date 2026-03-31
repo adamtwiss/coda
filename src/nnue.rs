@@ -330,6 +330,56 @@ unsafe fn simd_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
     }
 }
 
+/// CReLU + pairwise pack: acc[0..pw] and acc[pw..2*pw] → out[0..pw] u8.
+/// clamp(a, 0, 255) * clamp(b, 0, 255) >> 8 for each pair.
+/// pw must be multiple of 16.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
+    let zero = _mm256_setzero_si256();
+    let qa = _mm256_set1_epi16(QA as i16);
+    let mut i = 0;
+    while i + 16 <= pw {
+        // Load 16 values from each half
+        let a = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
+        let b = _mm256_loadu_si256(acc.as_ptr().add(pw + i) as *const __m256i);
+        // Clamp [0, QA]
+        let ca = _mm256_min_epi16(_mm256_max_epi16(a, zero), qa);
+        let cb = _mm256_min_epi16(_mm256_max_epi16(b, zero), qa);
+        // Multiply: a*b (low 16 bits, max 65025 fits u16)
+        let prod = _mm256_mullo_epi16(ca, cb);
+        // >> 8 to get [0, 254]
+        let d = _mm256_srli_epi16(prod, 8);
+        // Pack i16 → u8: need to combine with next 16 for full 32 output
+        if i + 32 <= pw {
+            let a2 = _mm256_loadu_si256(acc.as_ptr().add(i + 16) as *const __m256i);
+            let b2 = _mm256_loadu_si256(acc.as_ptr().add(pw + i + 16) as *const __m256i);
+            let ca2 = _mm256_min_epi16(_mm256_max_epi16(a2, zero), qa);
+            let cb2 = _mm256_min_epi16(_mm256_max_epi16(b2, zero), qa);
+            let prod2 = _mm256_mullo_epi16(ca2, cb2);
+            let d2 = _mm256_srli_epi16(prod2, 8);
+            let packed = _mm256_packus_epi16(d, d2);
+            let fixed = _mm256_permute4x64_epi64(packed, 0xD8);
+            _mm256_storeu_si256(out.as_mut_ptr().add(i) as *mut __m256i, fixed);
+            i += 32;
+        } else {
+            // Remaining 16: pack with zeros
+            let packed = _mm256_packus_epi16(d, zero);
+            let fixed = _mm256_permute4x64_epi64(packed, 0xD8);
+            // Only store 16 bytes (lower half)
+            _mm_storeu_si128(out.as_mut_ptr().add(i) as *mut __m128i,
+                _mm256_castsi256_si128(fixed));
+            i += 16;
+        }
+    }
+    while i < pw {
+        let a = (acc[i] as i32).clamp(0, 255);
+        let b = (acc[pw + i] as i32).clamp(0, 255);
+        out[i] = ((a * b) >> 8) as u8;
+        i += 1;
+    }
+}
+
 /// L1 int8 matmul: packed u8 input × i8 transposed weights → i32 output.
 /// Computes hidden[neuron] += sum_j(packed[j] * weights_t[neuron*h + j]) for one neuron.
 /// Uses VPMADDUBSW (u8 × i8 → i16) + VPMADDWD (i16 pairs → i32).
@@ -1179,15 +1229,38 @@ impl NNUENet {
         // CReLU + pairwise for each perspective → pw values each
         let mut stm_pw = [0u8; 2048];
         let mut ntm_pw = [0u8; 2048];
-        for i in 0..pw {
-            let a = (stm_acc[i] as i32).clamp(0, qa);
-            let b = (stm_acc[i + pw] as i32).clamp(0, qa);
-            stm_pw[i] = ((a * b) >> 8) as u8;
+
+        #[cfg(target_arch = "x86_64")]
+        if self.has_avx2 && pw % 16 == 0 {
+            unsafe {
+                simd_pairwise_pack(stm_acc, &mut stm_pw, pw);
+                simd_pairwise_pack(ntm_acc, &mut ntm_pw, pw);
+            }
+        } else {
+            for i in 0..pw {
+                let a = (stm_acc[i] as i32).clamp(0, qa);
+                let b = (stm_acc[i + pw] as i32).clamp(0, qa);
+                stm_pw[i] = ((a * b) >> 8) as u8;
+            }
+            for i in 0..pw {
+                let a = (ntm_acc[i] as i32).clamp(0, qa);
+                let b = (ntm_acc[i + pw] as i32).clamp(0, qa);
+                ntm_pw[i] = ((a * b) >> 8) as u8;
+            }
         }
-        for i in 0..pw {
-            let a = (ntm_acc[i] as i32).clamp(0, qa);
-            let b = (ntm_acc[i + pw] as i32).clamp(0, qa);
-            ntm_pw[i] = ((a * b) >> 8) as u8;
+
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            for i in 0..pw {
+                let a = (stm_acc[i] as i32).clamp(0, qa);
+                let b = (stm_acc[i + pw] as i32).clamp(0, qa);
+                stm_pw[i] = ((a * b) >> 8) as u8;
+            }
+            for i in 0..pw {
+                let a = (ntm_acc[i] as i32).clamp(0, qa);
+                let b = (ntm_acc[i + pw] as i32).clamp(0, qa);
+                ntm_pw[i] = ((a * b) >> 8) as u8;
+            }
         }
 
         // L1 int8 matmul — only compute l1 neurons starting at l1_off
