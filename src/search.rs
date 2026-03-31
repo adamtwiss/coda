@@ -23,37 +23,37 @@ const CONTEMPT: i32 = 10; // prefer playing on over drawing (GoChess: +10)
 const PAWN_HIST_SIZE: usize = 512;
 
 // Feature flags for ablation testing. All true = normal play.
-pub static mut FEAT_NMP: bool = true;
-pub static mut FEAT_RFP: bool = true;
-pub static mut FEAT_RAZORING: bool = true;
-pub static mut FEAT_PROBCUT: bool = true;
-pub static mut FEAT_LMR: bool = true;
-pub static mut FEAT_LMP: bool = true;
-pub static mut FEAT_FUTILITY: bool = true;
-pub static mut FEAT_SEE_PRUNE: bool = true;
-pub static mut FEAT_HIST_PRUNE: bool = true;
-pub static mut FEAT_BAD_NOISY: bool = true;
-pub static mut FEAT_EXTENSIONS: bool = true;
-pub static mut FEAT_ALPHA_REDUCE: bool = true;
-pub static mut FEAT_IIR: bool = true;
-pub static mut FEAT_HINDSIGHT: bool = true;
-pub static mut FEAT_CORRECTION: bool = true;
-pub static mut FEAT_PVS: bool = true;
-pub static mut FEAT_TT_CUTOFF: bool = true;
-pub static mut FEAT_TT_NEARMISS: bool = true;
-pub static mut FEAT_TT_STORE: bool = true;
-pub static mut FEAT_QS_CAPTURES: bool = true; // false = QS returns eval immediately
+pub static FEAT_NMP: AtomicBool = AtomicBool::new(true);
+pub static FEAT_RFP: AtomicBool = AtomicBool::new(true);
+pub static FEAT_RAZORING: AtomicBool = AtomicBool::new(true);
+pub static FEAT_PROBCUT: AtomicBool = AtomicBool::new(true);
+pub static FEAT_LMR: AtomicBool = AtomicBool::new(true);
+pub static FEAT_LMP: AtomicBool = AtomicBool::new(true);
+pub static FEAT_FUTILITY: AtomicBool = AtomicBool::new(true);
+pub static FEAT_SEE_PRUNE: AtomicBool = AtomicBool::new(true);
+pub static FEAT_HIST_PRUNE: AtomicBool = AtomicBool::new(true);
+pub static FEAT_BAD_NOISY: AtomicBool = AtomicBool::new(true);
+pub static FEAT_EXTENSIONS: AtomicBool = AtomicBool::new(true);
+pub static FEAT_ALPHA_REDUCE: AtomicBool = AtomicBool::new(true);
+pub static FEAT_IIR: AtomicBool = AtomicBool::new(true);
+pub static FEAT_HINDSIGHT: AtomicBool = AtomicBool::new(true);
+pub static FEAT_CORRECTION: AtomicBool = AtomicBool::new(true);
+pub static FEAT_PVS: AtomicBool = AtomicBool::new(true);
+pub static FEAT_TT_CUTOFF: AtomicBool = AtomicBool::new(true);
+pub static FEAT_TT_NEARMISS: AtomicBool = AtomicBool::new(true);
+pub static FEAT_TT_STORE: AtomicBool = AtomicBool::new(true);
+pub static FEAT_QS_CAPTURES: AtomicBool = AtomicBool::new(true); // false = QS returns eval immediately
 
 /// Disable all features (pure negamax + eval)
 pub fn disable_all_features() {
     unsafe {
-        FEAT_NMP = false; FEAT_RFP = false; FEAT_RAZORING = false;
-        FEAT_PROBCUT = false; FEAT_LMR = false; FEAT_LMP = false;
-        FEAT_FUTILITY = false; FEAT_SEE_PRUNE = false; FEAT_HIST_PRUNE = false;
-        FEAT_BAD_NOISY = false; FEAT_EXTENSIONS = false; FEAT_ALPHA_REDUCE = false;
-        FEAT_IIR = false; FEAT_HINDSIGHT = false; FEAT_CORRECTION = false;
-        FEAT_PVS = false; FEAT_TT_CUTOFF = false; FEAT_TT_NEARMISS = false;
-        FEAT_TT_STORE = false; FEAT_QS_CAPTURES = false;
+        FEAT_NMP.store(false, Ordering::Relaxed); FEAT_RFP.store(false, Ordering::Relaxed); FEAT_RAZORING.store(false, Ordering::Relaxed);
+        FEAT_PROBCUT.store(false, Ordering::Relaxed); FEAT_LMR.store(false, Ordering::Relaxed); FEAT_LMP.store(false, Ordering::Relaxed);
+        FEAT_FUTILITY.store(false, Ordering::Relaxed); FEAT_SEE_PRUNE.store(false, Ordering::Relaxed); FEAT_HIST_PRUNE.store(false, Ordering::Relaxed);
+        FEAT_BAD_NOISY.store(false, Ordering::Relaxed); FEAT_EXTENSIONS.store(false, Ordering::Relaxed); FEAT_ALPHA_REDUCE.store(false, Ordering::Relaxed);
+        FEAT_IIR.store(false, Ordering::Relaxed); FEAT_HINDSIGHT.store(false, Ordering::Relaxed); FEAT_CORRECTION.store(false, Ordering::Relaxed);
+        FEAT_PVS.store(false, Ordering::Relaxed); FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); FEAT_TT_NEARMISS.store(false, Ordering::Relaxed);
+        FEAT_TT_STORE.store(false, Ordering::Relaxed); FEAT_QS_CAPTURES.store(false, Ordering::Relaxed);
     }
 }
 
@@ -61,13 +61,13 @@ pub fn disable_all_features() {
 #[allow(dead_code)]
 pub fn enable_all_features() {
     unsafe {
-        FEAT_NMP = true; FEAT_RFP = true; FEAT_RAZORING = true;
-        FEAT_PROBCUT = true; FEAT_LMR = true; FEAT_LMP = true;
-        FEAT_FUTILITY = true; FEAT_SEE_PRUNE = true; FEAT_HIST_PRUNE = true;
-        FEAT_BAD_NOISY = true; FEAT_EXTENSIONS = true; FEAT_ALPHA_REDUCE = true;
-        FEAT_IIR = true; FEAT_HINDSIGHT = true; FEAT_CORRECTION = true;
-        FEAT_PVS = true; FEAT_TT_CUTOFF = true; FEAT_TT_NEARMISS = true;
-        FEAT_TT_STORE = true; FEAT_QS_CAPTURES = true;
+        FEAT_NMP.store(true, Ordering::Relaxed); FEAT_RFP.store(true, Ordering::Relaxed); FEAT_RAZORING.store(true, Ordering::Relaxed);
+        FEAT_PROBCUT.store(true, Ordering::Relaxed); FEAT_LMR.store(true, Ordering::Relaxed); FEAT_LMP.store(true, Ordering::Relaxed);
+        FEAT_FUTILITY.store(true, Ordering::Relaxed); FEAT_SEE_PRUNE.store(true, Ordering::Relaxed); FEAT_HIST_PRUNE.store(true, Ordering::Relaxed);
+        FEAT_BAD_NOISY.store(true, Ordering::Relaxed); FEAT_EXTENSIONS.store(true, Ordering::Relaxed); FEAT_ALPHA_REDUCE.store(true, Ordering::Relaxed);
+        FEAT_IIR.store(true, Ordering::Relaxed); FEAT_HINDSIGHT.store(true, Ordering::Relaxed); FEAT_CORRECTION.store(true, Ordering::Relaxed);
+        FEAT_PVS.store(true, Ordering::Relaxed); FEAT_TT_CUTOFF.store(true, Ordering::Relaxed); FEAT_TT_NEARMISS.store(true, Ordering::Relaxed);
+        FEAT_TT_STORE.store(true, Ordering::Relaxed); FEAT_QS_CAPTURES.store(true, Ordering::Relaxed);
     }
 }
 
@@ -262,7 +262,8 @@ impl SearchInfo {
             return true;
         }
         // Flush local node count to global counter every 4096 nodes
-        if self.nodes & 4095 == 0 {
+        // (skip at nodes==0 to avoid phantom 4096 at search start)
+        if self.nodes & 4095 == 0 && self.nodes > 0 {
             self.global_nodes.fetch_add(4096, Ordering::Relaxed);
         }
         // Check time every 4096 nodes
@@ -289,14 +290,10 @@ impl SearchInfo {
         let score = if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
             let s = evaluate_nnue(board, net, acc);
             // NNUE verification: recompute from scratch and compare
-            static VERIFY_INIT: std::sync::Once = std::sync::Once::new();
-            static mut VERIFY_ENABLED: bool = false;
+            static VERIFY_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             static VERIFY_MISMATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             static VERIFY_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            VERIFY_INIT.call_once(|| {
-                unsafe { VERIFY_ENABLED = std::env::var("CODA_VERIFY_NNUE").is_ok(); }
-            });
-            if unsafe { VERIFY_ENABLED } {
+            if *VERIFY_ENABLED.get_or_init(|| std::env::var("CODA_VERIFY_NNUE").is_ok()) {
                 let n = VERIFY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 acc.force_recompute(net, board);
                 let s2 = evaluate_nnue(board, net, acc);
@@ -558,47 +555,47 @@ fn init_feature_flags() {
         unsafe {
             if std::env::var("DISABLE_ALL").is_ok() {
                 disable_all_features();
-                if std::env::var("ENABLE_NMP").is_ok() { FEAT_NMP = true; }
-                if std::env::var("ENABLE_RFP").is_ok() { FEAT_RFP = true; }
-                if std::env::var("ENABLE_RAZORING").is_ok() { FEAT_RAZORING = true; }
-                if std::env::var("ENABLE_PROBCUT").is_ok() { FEAT_PROBCUT = true; }
-                if std::env::var("ENABLE_LMR").is_ok() { FEAT_LMR = true; }
-                if std::env::var("ENABLE_LMP").is_ok() { FEAT_LMP = true; }
-                if std::env::var("ENABLE_FUTILITY").is_ok() { FEAT_FUTILITY = true; }
-                if std::env::var("ENABLE_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE = true; }
-                if std::env::var("ENABLE_HIST_PRUNE").is_ok() { FEAT_HIST_PRUNE = true; }
-                if std::env::var("ENABLE_BAD_NOISY").is_ok() { FEAT_BAD_NOISY = true; }
-                if std::env::var("ENABLE_EXTENSIONS").is_ok() { FEAT_EXTENSIONS = true; }
-                if std::env::var("ENABLE_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE = true; }
-                if std::env::var("ENABLE_IIR").is_ok() { FEAT_IIR = true; }
-                if std::env::var("ENABLE_HINDSIGHT").is_ok() { FEAT_HINDSIGHT = true; }
-                if std::env::var("ENABLE_CORRECTION").is_ok() { FEAT_CORRECTION = true; }
-                if std::env::var("ENABLE_PVS").is_ok() { FEAT_PVS = true; }
-                if std::env::var("ENABLE_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF = true; }
-                if std::env::var("ENABLE_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS = true; }
-                if std::env::var("ENABLE_TT_STORE").is_ok() { FEAT_TT_STORE = true; }
-                if std::env::var("ENABLE_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES = true; }
+                if std::env::var("ENABLE_NMP").is_ok() { FEAT_NMP.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_RFP").is_ok() { FEAT_RFP.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_RAZORING").is_ok() { FEAT_RAZORING.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_PROBCUT").is_ok() { FEAT_PROBCUT.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_LMR").is_ok() { FEAT_LMR.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_LMP").is_ok() { FEAT_LMP.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_FUTILITY").is_ok() { FEAT_FUTILITY.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_HIST_PRUNE").is_ok() { FEAT_HIST_PRUNE.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_BAD_NOISY").is_ok() { FEAT_BAD_NOISY.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_EXTENSIONS").is_ok() { FEAT_EXTENSIONS.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_IIR").is_ok() { FEAT_IIR.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_HINDSIGHT").is_ok() { FEAT_HINDSIGHT.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_CORRECTION").is_ok() { FEAT_CORRECTION.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_PVS").is_ok() { FEAT_PVS.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_TT_STORE").is_ok() { FEAT_TT_STORE.store(true, Ordering::Relaxed); }
+                if std::env::var("ENABLE_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES.store(true, Ordering::Relaxed); }
             } else {
-                if std::env::var("NO_NMP").is_ok() { FEAT_NMP = false; }
-                if std::env::var("NO_RFP").is_ok() { FEAT_RFP = false; }
-                if std::env::var("NO_RAZORING").is_ok() { FEAT_RAZORING = false; }
-                if std::env::var("NO_PROBCUT").is_ok() { FEAT_PROBCUT = false; }
-                if std::env::var("NO_LMR").is_ok() { FEAT_LMR = false; }
-                if std::env::var("NO_LMP").is_ok() { FEAT_LMP = false; }
-                if std::env::var("NO_FUTILITY").is_ok() { FEAT_FUTILITY = false; }
-                if std::env::var("NO_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE = false; }
-                if std::env::var("NO_HIST_PRUNE").is_ok() { FEAT_HIST_PRUNE = false; }
-                if std::env::var("NO_BAD_NOISY").is_ok() { FEAT_BAD_NOISY = false; }
-                if std::env::var("NO_EXTENSIONS").is_ok() { FEAT_EXTENSIONS = false; }
-                if std::env::var("NO_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE = false; }
-                if std::env::var("NO_IIR").is_ok() { FEAT_IIR = false; }
-                if std::env::var("NO_HINDSIGHT").is_ok() { FEAT_HINDSIGHT = false; }
-                if std::env::var("NO_CORRECTION").is_ok() { FEAT_CORRECTION = false; }
-                if std::env::var("NO_PVS").is_ok() { FEAT_PVS = false; }
-                if std::env::var("NO_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF = false; }
-                if std::env::var("NO_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS = false; }
-                if std::env::var("NO_TT_STORE").is_ok() { FEAT_TT_STORE = false; }
-                if std::env::var("NO_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES = false; }
+                if std::env::var("NO_NMP").is_ok() { FEAT_NMP.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_RFP").is_ok() { FEAT_RFP.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_RAZORING").is_ok() { FEAT_RAZORING.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_PROBCUT").is_ok() { FEAT_PROBCUT.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_LMR").is_ok() { FEAT_LMR.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_LMP").is_ok() { FEAT_LMP.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_FUTILITY").is_ok() { FEAT_FUTILITY.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_HIST_PRUNE").is_ok() { FEAT_HIST_PRUNE.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_BAD_NOISY").is_ok() { FEAT_BAD_NOISY.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_EXTENSIONS").is_ok() { FEAT_EXTENSIONS.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_IIR").is_ok() { FEAT_IIR.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_HINDSIGHT").is_ok() { FEAT_HINDSIGHT.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_CORRECTION").is_ok() { FEAT_CORRECTION.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_PVS").is_ok() { FEAT_PVS.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_TT_STORE").is_ok() { FEAT_TT_STORE.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES.store(false, Ordering::Relaxed); }
             }
         }
     });
@@ -637,9 +634,10 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
         return search(board, info, limits);
     }
 
-    // Reset shared state
+    // Reset shared state (TT generation is advanced in search(), not here,
+    // to avoid double-increment which makes entries appear 2x staler)
     info.stop.store(false, Ordering::Relaxed);
-    info.tt.new_search();
+    info.global_nodes.store(0, Ordering::Relaxed); // Reset before helpers start
 
     // Spawn helper threads
     let mut handles = Vec::new();
@@ -733,7 +731,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     for depth in 1..=effective_max {
         if info.stop.load(Ordering::Relaxed) { break; }
 
-        // Depth offset for thread diversity: even threads +1, odd threads +0
+        // Depth offset for thread diversity: odd threads +1, even threads +0
         let search_depth = depth + (thread_id % 2) as i32;
         if search_depth > effective_max { break; }
 
@@ -1157,7 +1155,7 @@ fn negamax(
                 tt_score += ply;
             }
 
-            if tt_depth >= depth && unsafe { FEAT_TT_CUTOFF } {
+            if tt_depth >= depth && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 match tt_entry.flag {
                     TT_FLAG_EXACT => {
                         // Update PV table with TT move (matching GoChess)
@@ -1257,7 +1255,7 @@ fn negamax(
             } else if tt_depth >= depth - 1
                 && beta - alpha_orig == 1
                 && tt_score > -(MATE_SCORE - 100) && tt_score < MATE_SCORE - 100
-                && unsafe { FEAT_TT_NEARMISS }
+                && FEAT_TT_NEARMISS.load(Ordering::Relaxed)
             {
                 // TT near-miss cutoffs: accept entries 1 ply short with a score margin
                 let margin = 80;
@@ -1295,7 +1293,7 @@ fn negamax(
             raw_eval = info.eval(board);
         }
         // Apply correction history
-        static_eval = if unsafe { FEAT_CORRECTION } { corrected_eval(info, board, raw_eval) } else { raw_eval };
+        static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, raw_eval) } else { raw_eval };
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = static_eval;
         }
@@ -1332,7 +1330,7 @@ fn negamax(
     // Restricted to PV/cut nodes (Obsidian/Berserk/Stormphrax pattern).
     // All-nodes have tight bounds already, IIR there wastes depth.
     let is_pv = beta - alpha_orig > 1;
-    if depth >= 4 && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && unsafe { FEAT_IIR } {
+    if depth >= 4 && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
         depth -= 1;
     }
 
@@ -1343,7 +1341,7 @@ fn negamax(
     if !in_check && ply >= 1 && depth >= 3 && ply_u >= 1
         && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
         && static_eval > -INFINITY
-        && unsafe { FEAT_HINDSIGHT }
+        && FEAT_HINDSIGHT.load(Ordering::Relaxed)
     {
         let eval_sum = info.static_evals[ply_u - 1] + static_eval;
         if eval_sum > 200 {
@@ -1358,8 +1356,9 @@ fn negamax(
     if depth >= 4 && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
-        && unsafe { FEAT_NMP }
+        && FEAT_NMP.load(Ordering::Relaxed)
     {
+        info.stats.nmp_attempts += 1;
         // Adaptive reduction: scales with depth and eval margin above beta
         let mut r = 4 + depth / 3;
         // Reduce less after captures
@@ -1415,7 +1414,7 @@ fn negamax(
 
     if !in_check {
         // Reverse Futility Pruning (Static Null Move Pruning)
-        if depth <= 7 && ply > 0 && unsafe { FEAT_RFP } {
+        if depth <= 7 && ply > 0 && FEAT_RFP.load(Ordering::Relaxed) {
             let margin = if improving { depth * 70 } else { depth * 100 };
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
@@ -1424,7 +1423,7 @@ fn negamax(
         }
 
         // Razoring: at shallow depths, if eval is far below alpha, drop to quiescence
-        if depth <= 2 && ply > 0 && unsafe { FEAT_RAZORING } {
+        if depth <= 2 && ply > 0 && FEAT_RAZORING.load(Ordering::Relaxed) {
             let razoring_margin = 400 + depth * 100;
             if static_eval + razoring_margin < alpha {
                 let q_score = quiescence(board, info, alpha, beta, ply);
@@ -1439,7 +1438,7 @@ fn negamax(
     // ProbCut: at moderate+ depths, if a shallow search of captures with
     // raised beta confirms the position is winning, prune the node
     let probcut_beta = beta + 170;
-    if !in_check && ply > 0 && depth >= 5 && static_eval + 85 >= probcut_beta && unsafe { FEAT_PROBCUT } {
+    if !in_check && ply > 0 && depth >= 5 && static_eval + 85 >= probcut_beta && FEAT_PROBCUT.load(Ordering::Relaxed) {
         let pc_depth = depth - 4;
         let mut pc_picker = QMovePicker::new(board, NO_MOVE, false, &info.history);
         loop {
@@ -1573,7 +1572,7 @@ fn negamax(
         if is_cap && ply > 0 && !in_check && depth <= 6
             && mv != tt_move && best_score > -(MATE_SCORE - 100)
             && !see_ge(board, mv, -(depth * 100))
-            && unsafe { FEAT_SEE_PRUNE }
+            && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
             continue;
         }
@@ -1586,7 +1585,7 @@ fn negamax(
             && mv != killers[0] && mv != killers[1]
             && mv != counter_move && mv != tt_move
             && best_score > -(MATE_SCORE - 100)
-            && unsafe { FEAT_SEE_PRUNE }
+            && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
             see_quiet_score = see_after_quiet(board, mv);
             check_see_quiet = true;
@@ -1660,7 +1659,7 @@ fn negamax(
             && mv != killers[0] && mv != killers[1]
             && mv != counter_move
             && best_score > -(MATE_SCORE - 100)
-            && unsafe { FEAT_HIST_PRUNE }
+            && FEAT_HIST_PRUNE.load(Ordering::Relaxed)
         {
             let mut hist_prune_score = info.history.main[from as usize][to as usize];
             if prev_piece_go != 0
@@ -1675,7 +1674,7 @@ fn negamax(
         }
 
         // Bad noisy flag: identify losing captures for tighter futility pruning
-        let is_bad_noisy = unsafe { FEAT_BAD_NOISY } && is_cap && !in_check && ply > 0 && depth <= 4 && mv != tt_move
+        let is_bad_noisy = FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= 4 && mv != tt_move
             && !is_promo && best_score > -(MATE_SCORE - 100)
             && static_eval > -INFINITY && static_eval + depth * 75 <= alpha
             && !see_ge(board, mv, 0);
@@ -1708,7 +1707,7 @@ fn negamax(
         if static_eval > -INFINITY && depth <= 8 && !in_check && !gives_check
             && !is_cap && !is_promo
             && best_score > -(MATE_SCORE - 100)
-            && unsafe { FEAT_FUTILITY }
+            && FEAT_FUTILITY.load(Ordering::Relaxed)
         {
             // Estimate LMR reduction for this move
             let mut lmr_depth = depth;
@@ -1732,7 +1731,7 @@ fn negamax(
         if ply > 0 && !in_check && depth >= 1 && depth <= 8
             && !is_cap && !is_promo && !gives_check
             && best_score > -(MATE_SCORE - 100) && beta - alpha == 1
-            && unsafe { FEAT_LMP }
+            && FEAT_LMP.load(Ordering::Relaxed)
         {
             let mut lmp_limit = 3 + depth * depth;
             if improving && depth >= 3 {
@@ -1766,7 +1765,7 @@ fn negamax(
         if is_cap && board.undo_stack.len() >= 2 {
             let prev_undo = &board.undo_stack[board.undo_stack.len() - 2];
             if prev_undo.captured != NO_PIECE_TYPE && to == move_to(prev_undo.mv) {
-                extension = if unsafe { FEAT_EXTENSIONS } { 1 } else { 0 };
+                extension = if FEAT_EXTENSIONS.load(Ordering::Relaxed) { 1 } else { 0 };
                 if extension > 0 { info.stats.recapture_ext += 1; }
             }
         }
@@ -1774,7 +1773,7 @@ fn negamax(
         let mut new_depth = depth - 1 + extension + singular_extension;
 
         // Alpha-reduce: after alpha has been raised, reduce subsequent moves by 1 ply
-        if alpha_raised_count > 0 && unsafe { FEAT_ALPHA_REDUCE } {
+        if alpha_raised_count > 0 && FEAT_ALPHA_REDUCE.load(Ordering::Relaxed) {
             new_depth -= 1;
         }
         if new_depth < 0 {
@@ -1803,7 +1802,7 @@ fn negamax(
         let is_killer = mv == killers[0] || mv == killers[1];
 
         let mut reduction = 0i32;
-        if !in_check && !is_cap && !is_promo && !is_killer && !gives_check && unsafe { FEAT_LMR } {
+        if !in_check && !is_cap && !is_promo && !is_killer && !gives_check && FEAT_LMR.load(Ordering::Relaxed) {
             let d = (depth as usize).min(63);
             let m = (move_count as usize).min(63);
             reduction = lmr_reduction(d as i32, m as i32);
@@ -1894,7 +1893,7 @@ fn negamax(
         }
 
         // LMR for captures: use separate capture LMR table with capture history adjustments
-        if !in_check && is_cap && !is_promo && !gives_check && move_count > 1 && mv != tt_move && unsafe { FEAT_LMR } {
+        if !in_check && is_cap && !is_promo && !gives_check && move_count > 1 && mv != tt_move && FEAT_LMR.load(Ordering::Relaxed) {
             // Only reduce at non-PV nodes (zero window search)
             if beta - alpha == 1 {
                 let d = (depth as usize).min(63);
@@ -1953,7 +1952,7 @@ fn negamax(
             } else {
                 score = lmr_score;
             }
-        } else if move_count > 1 && unsafe { FEAT_PVS } {
+        } else if move_count > 1 && FEAT_PVS.load(Ordering::Relaxed) {
             // PVS: zero-window for non-first moves
             let mut pvs_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
             if pvs_score > alpha && pvs_score < beta && !info.stop.load(Ordering::Relaxed) {
@@ -2164,7 +2163,7 @@ fn negamax(
         // Adjust mate score for storage (relative to this position)
         let store_score = score_to_tt(best_score, ply);
 
-        if unsafe { FEAT_TT_STORE } {
+        if FEAT_TT_STORE.load(Ordering::Relaxed) {
             info.tt.store(board.hash, depth, store_score, flag, best_move, raw_eval);
         }
     }
@@ -2467,7 +2466,7 @@ fn quiescence_with_depth(
         } else {
             TT_FLAG_EXACT
         };
-        if unsafe { FEAT_TT_STORE } {
+        if FEAT_TT_STORE.load(Ordering::Relaxed) {
             info.tt.store(board.hash, -1, store_score, flag, best_move, -INFINITY);
         }
         return best_score;
@@ -2497,7 +2496,7 @@ fn quiescence_with_depth(
     }
 
     // FEAT_QS_CAPTURES: when disabled, skip the capture loop entirely
-    if !unsafe { FEAT_QS_CAPTURES } {
+    if !FEAT_QS_CAPTURES.load(Ordering::Relaxed) {
         return best_score;
     }
 
@@ -2566,7 +2565,7 @@ fn quiescence_with_depth(
     } else {
         TT_FLAG_EXACT
     };
-    if unsafe { FEAT_TT_STORE } {
+    if FEAT_TT_STORE.load(Ordering::Relaxed) {
         info.tt.store(board.hash, -1, store_score, flag, best_move, stand_pat);
     }
 
