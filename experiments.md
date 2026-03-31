@@ -3373,3 +3373,27 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - Self-play WDL testing was actively misleading: showed no difference, cross-engine shows +25-65
 - Caveat: single training run per WDL value, seed variance not yet quantified
 - **Action**: Switch production net to w7. Test w10 when GPU available.
+
+## 2026-03-31: v7 Hidden Layer Net Cross-Engine RR
+
+- **Test**: Round-robin with 3 v7 nets (w0, w5, w5-ramp) + v5-w7 reference + 3 rivals
+- **Games**: 741 (of 2100 planned), tc=10+0.1, concurrency 16
+- **Binary**: Latest Coda (4D history + aspiration delta merged)
+
+| Rank | Net | Elo | ±Error | Score | Draw% |
+|------|-----|-----|--------|-------|-------|
+| 1 | **v5-w7(best)** | **+105** | ±36 | 64.6% | 42.5% |
+| 2 | Weiss | +66 | ±37 | 59.4% | 38.7% |
+| 3 | v7-w5-ramp | +3 | ±31 | 50.5% | 55.7% |
+| 4 | Texel | -12 | ±35 | 48.3% | 43.6% |
+| 5 | v7-w5 | -13 | ±35 | 48.1% | 44.3% |
+| 6 | v7-w0 | -22 | ±34 | 46.9% | 47.1% |
+| 7 | Laser | -131 | ±40 | 32.0% | 33.6% |
+
+**Key findings**:
+- v5-w7 dominates all v7 nets by ~100 Elo — hidden layer NPS penalty (~2.5x) not yet compensated by eval quality
+- v7 nets cluster around Texel-level strength, ~100 Elo below v5-w7
+- WDL blending helps v7 too: w5-ramp (+3) > w5 (-13) > w0 (-22)
+- 20sb warmup ramp gives small edge over 5sb default (+16 Elo)
+- v7 needs pairwise FT (faster + richer features) and/or frozen-FT transfer learning to compete
+- **Action**: Wait for pairwise v7 training results. Try frozen-FT from v5-w7.
