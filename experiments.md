@@ -3216,3 +3216,35 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Aspiration fail-high depth**: Reduce asp_depth by 1 on fail-high re-search. Score is already above window — shallower re-search with wider window is sufficient. Matches Alexandria/Midnight/Seer. Uses separate asp_depth variable (not outer loop depth — previous GoChess bug).
 - **Combined gauntlet (300g)**: +56 ±33 Elo (baseline +37). Raw: +19.
 - **Result**: Both committed as separate commits.
+
+## 2026-03-31: v7 20sb ramp vs 5sb ramp — H2H + 5-way RR (Hercules)
+
+- **Change**: v7 1024h16x32s w5 e800 trained with 20sb LR warmup vs 5sb warmup
+- **H2H (200g self-play)**: 24-21-55, +10.5 Elo for 20sb ramp. Suggestive positive.
+- **5-way RR (200g each, vs Minic/Ethereal/Texel)**: 
+  - v7-20sb-ramp: -40 Elo
+  - v7-5sb-ramp: -81 Elo
+  - **Cross-engine delta: +41 Elo for 20sb ramp** (vs +10 self-play)
+- **Result**: Slower ramp clearly better. Cross-engine effect amplified vs self-play.
+- **Implications**: Hidden layers need more stability during early training. Frozen-FT approach (the extreme version) should be even better. 40sb ramp training started.
+
+## 2026-03-31: v5 1024s e1200 vs e800 — H2H (Hercules)
+
+- **Change**: Same architecture (1024 SCReLU w5), extended training from 800 to 1200 SBs
+- **H2H (200g self-play)**: 29-21-50, +28 Elo for e1200
+- **Check-net**: Flat (no improvement in material detection). Gains are in positional refinement.
+- **5-way RR**: Running, results pending.
+- **Result**: Longer training helps v5 despite flat check-net. "Free" Elo for GPU time.
+- **Implications**: Always train v5 to e1200+. e1600 training started to find the plateau.
+
+## 2026-03-31: GHI mitigation (50mr TT key bucketing) — REJECTED (Hercules)
+
+- **Change**: XOR halfmove clock bucket into TT key.
+- **Gauntlet (600g)**: raw -28.5 vs baseline. Strongly negative.
+- **Why**: TT fragmentation costs more than rare GHI bug prevention.
+
+## 2026-03-31: Pin-aware SEE (side-to-move only) — REJECTED (Hercules)
+
+- **Change**: Exclude pinned pieces from SEE attacker set.
+- **Gauntlet (578g)**: raw -7.8 vs baseline. Slightly negative.
+- **Why**: Asymmetric pin mask (only our side) may bias SEE.
