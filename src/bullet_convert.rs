@@ -227,8 +227,8 @@ pub fn convert_v7(
         offset += 4;
     }
 
-    // L2 weights: [L1][BUCKETS*L2] f32 → i16 scaled by QA_L1
-    // L2 biases: [BUCKETS*L2] f32 → i16 scaled by QA_L1
+    // L2 weights: Bullet .transpose() saves as [L1][BL2] f32 (input × output)
+    // This is the layout the forward pass expects: l2_weights[in * BL2 + out]
     let mut l2_weights = vec![0i16; l1_size * bl2];
     let mut l2_biases = vec![0i16; bl2];
     if l2_size > 0 {
@@ -244,7 +244,8 @@ pub fn convert_v7(
         }
     }
 
-    // Output weights: [L2][BUCKETS] f32 → i16 scaled by QB, transpose to [BUCKETS][L2]
+    // Output weights: Bullet .transpose() saves as [L2][BUCKETS] f32
+    // Transpose to [BUCKETS][L2] (matches GoChess converter)
     let mut out_w_raw = vec![[0i16; NNUE_OUTPUT_BUCKETS]; out_input];
     for i in 0..out_input {
         for b in 0..NNUE_OUTPUT_BUCKETS {
