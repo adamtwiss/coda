@@ -3320,3 +3320,11 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Change**: Material scaling: `eval * (22400 + materialValue) / 32 / 1024` (Alexandria). Halfmove decay: `eval * (200 - halfmove) / 200` (Reckless). Both dampen eval in draws/endgames.
 - **Gauntlet (300g, combined)**: +37 ±33 Elo (raw +0). Dead neutral.
 - **Result**: Rejected. NNUE output buckets already handle material-dependent eval scaling internally.
+
+## 2026-03-31: 3 killers per ply (was 2) — REJECTED (Hercules)
+
+- **Change**: Expand killer slots from 2 to 3. Add Killer3 stage in movepicker.
+- **Motivation**: Killers are worth ~500 Elo (from no-killers test). More slots = more hits.
+- **Gauntlet (157g, with TM v2)**: Elo +15.5, raw -11.1. TM alone was +24. So 3 killers costs ~35 Elo.
+- **Result**: REJECTED. The 3rd killer is low quality (bumped out by 2 better moves), wastes a node trying it, and the pruning exemption for killers applies to a weaker move.
+- **Lesson**: 2 killers is the right number — the 1st killer is very strong, the 2nd decent, the 3rd is noise. Quality > quantity for killers.
