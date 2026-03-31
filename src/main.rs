@@ -261,9 +261,7 @@ fn main() {
 
         "check-net" => {
             let net_path = args.get(2).expect("Usage: coda check-net <net.nnue>");
-            // TODO: port check-net from GoChess tuner
-            println!("check-net not yet implemented — use GoChess tuner for now");
-            println!("  ./tuner check-net {}", net_path);
+            run_check_net(net_path);
         }
 
         "help" | "--help" | "-h" => {
@@ -297,6 +295,78 @@ fn main() {
     }
 }
 
+fn run_check_net(net_path: &str) {
+    use nnue::{NNUENet, NNUEAccumulator, DirtyPiece, output_bucket};
+
+    let net = match NNUENet::load(net_path) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("Error loading net: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Print architecture info
+    let mut arch = format!("FT={}", net.hidden_size);
+    if net.l1_size > 0 { arch += &format!(" L1={}", net.l1_size); }
+    if net.l2_size > 0 { arch += &format!(" L2={}", net.l2_size); }
+    if net.use_screlu { arch += " SCReLU"; }
+    if net.use_pairwise { arch += " pairwise"; }
+    if net.l1_scale == 64 { arch += " int8L1"; }
+    println!("Net: {} ({})", net_path, arch);
+    println!();
+
+    // Eval a position using raw NNUE forward pass
+    let eval_fen = |fen: &str| -> i32 {
+        let board = Board::from_fen(fen);
+        let h = net.hidden_size;
+        let mut acc = NNUEAccumulator::new(h);
+        // Full recompute for both perspectives
+        acc.materialize(&net, &board);
+        let occ = board.colors[0] | board.colors[1];
+        let piece_count = occ.count_ones();
+        net.forward(&acc, board.side_to_move, piece_count)
+    };
+
+    struct TestPos { name: &'static str, fen: &'static str, expect_min: i32, expect_max: i32 }
+
+    let positions = [
+        TestPos { name: "startpos",     fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",   expect_min: -50,   expect_max: 50 },
+        TestPos { name: "miss pawn",    fen: "rnbqkbnr/pppppppp/8/8/8/8/1PPPPPPP/RNBQKBNR w KQkq - 0 1",   expect_min: -200,  expect_max: -20 },
+        TestPos { name: "miss knight",  fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/R1BQKBNR w KQkq - 0 1",   expect_min: -500,  expect_max: -80 },
+        TestPos { name: "miss bishop",  fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RN1QKBNR w KQkq - 0 1",   expect_min: -500,  expect_max: -80 },
+        TestPos { name: "miss rook",    fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBN1 w Qkq - 0 1",    expect_min: -800,  expect_max: -120 },
+        TestPos { name: "miss queen",   fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR w KQkq - 0 1",   expect_min: -1500, expect_max: -200 },
+        TestPos { name: "EG rook up",   fen: "4k3/8/8/8/8/8/4PPPP/4K2R w K - 0 1",                          expect_min: 400,   expect_max: 2500 },
+        TestPos { name: "EG queen up",  fen: "4k3/8/8/8/8/8/4PPPP/3QK3 w - - 0 1",                          expect_min: 500,   expect_max: 3000 },
+    ];
+
+    println!("{:<14}  {:>8}  {:>8}  {:>8}  {}", "Position", "Score", "Min", "Max", "Status");
+    println!("{:<14}  {:>8}  {:>8}  {:>8}  {}", "--------", "--------", "--------", "--------", "------");
+
+    let mut issues = 0;
+    for pos in &positions {
+        let score = eval_fen(pos.fen);
+        let status = if score < pos.expect_min {
+            issues += 1;
+            "LOW"
+        } else if score > pos.expect_max {
+            issues += 1;
+            "HIGH"
+        } else {
+            "OK"
+        };
+        println!("{:<14}  {:>8}  {:>8}  {:>8}  {}", pos.name, score, pos.expect_min, pos.expect_max, status);
+    }
+
+    println!();
+    if issues == 0 {
+        println!("All checks passed.");
+    } else {
+        println!("{} issue(s) found — eval scale may be collapsed or miscalibrated.", issues);
+    }
+}
+
 fn print_usage() {
     println!("Coda Chess Engine — Chess Optimised, Developed Agentically");
     println!();
@@ -321,7 +391,7 @@ fn print_usage() {
     println!("    -int8l1                         L1 weights are int8 (QA=64)");
     println!("  coda convert-checkpoint -nnue <v5.nnue> -output <dir> [-ft 1024] [-l1 16] [-l2 32]");
     println!("                                    Convert .nnue to Bullet checkpoint for v7 transfer learning");
-    println!("  coda check-net <net.nnue>         NNUE health check (TODO)");
+    println!("  coda check-net <net.nnue>         NNUE health check");
     println!("    -depth <N>                      Search depth per position (default 8)");
     println!("    -games <N>                      Number of self-play games (default 1000)");
     println!("    -threads <N>                    Worker threads (default 1)");

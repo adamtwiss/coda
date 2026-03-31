@@ -893,6 +893,7 @@ impl NNUENet {
         let mut l1_size = 0usize;
         let mut l2_size = 0usize;
         let mut l1_scale = QA as i32; // default int16 scale
+        let mut bucketed_hidden = false; // bit 3: output buckets baked into L1/L2 dims
         let hidden_size: usize;
 
         match version {
@@ -926,15 +927,10 @@ impl NNUENet {
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
                 if flags & 4 != 0 { l1_scale = 64; } // int8 L1 weights
-                let bucketed_hidden = flags & 8 != 0; // output buckets baked into L1/L2
+                bucketed_hidden = flags & 8 != 0; // output buckets baked into L1/L2
                 let ft_size = read_u16(&mut reader)? as usize;
                 l1_size = read_u16(&mut reader)? as usize;
                 l2_size = read_u16(&mut reader)? as usize;
-                if bucketed_hidden {
-                    // L1/L2 sizes in header are per-bucket; actual arrays are BUCKETS * that
-                    l1_size *= NNUE_OUTPUT_BUCKETS;
-                    l2_size *= NNUE_OUTPUT_BUCKETS;
-                }
                 hidden_size = ft_size;
             }
             _ => return Err(format!("unsupported NNUE version: {}", version)),
@@ -949,15 +945,18 @@ impl NNUENet {
         read_i16_slice(&mut reader, &mut input_biases)?;
 
         // Read L1 hidden layer weights (v7)
+        // Bucketed: actual array sizes are BUCKETS * l1_size / BUCKETS * l2_size
+        let bl1 = if bucketed_hidden { NNUE_OUTPUT_BUCKETS * l1_size } else { l1_size };
+        let bl2 = if bucketed_hidden { NNUE_OUTPUT_BUCKETS * l2_size } else { l2_size };
         let mut l1_weights = Vec::new();
         let mut l1_biases = Vec::new();
         if l1_size > 0 {
             // Pairwise: L1 input is H (pairwise halves each perspective, concat = H)
             // Direct: L1 input is 2*H (two full accumulators concatenated)
             let l1_input_size = if use_pairwise { hidden_size } else { 2 * hidden_size };
-            l1_weights = vec![0i16; l1_input_size * l1_size];
+            l1_weights = vec![0i16; l1_input_size * bl1];
             read_i16_slice(&mut reader, &mut l1_weights)?;
-            l1_biases = vec![0i16; l1_size];
+            l1_biases = vec![0i16; bl1];
             read_i16_slice(&mut reader, &mut l1_biases)?;
         }
 
@@ -965,17 +964,18 @@ impl NNUENet {
         let mut l2_weights_raw = Vec::new();
         let mut l2_biases_raw = Vec::new();
         if l2_size > 0 {
-            l2_weights_raw = vec![0i16; l1_size * l2_size];
+            l2_weights_raw = vec![0i16; l1_size * bl2];
             read_i16_slice(&mut reader, &mut l2_weights_raw)?;
-            l2_biases_raw = vec![0i16; l2_size];
+            l2_biases_raw = vec![0i16; bl2];
             read_i16_slice(&mut reader, &mut l2_biases_raw)?;
         }
 
-        // Read output weights: 8 buckets × out_width
+        // Read output weights: for bucketed nets, output is [BUCKETS][per-bucket L2]
+        // For unbucketed: [BUCKETS][l2_size or l1_size or 2*hidden_size]
         let out_width = if l2_size > 0 {
-            l2_size
+            l2_size  // per-bucket L2 size (not bucketed)
         } else if l1_size > 0 {
-            l1_size
+            l1_size  // per-bucket L1 size
         } else if use_pairwise {
             hidden_size
         } else {
@@ -1107,8 +1107,8 @@ impl NNUENet {
             output_bias,
             use_screlu,
             use_pairwise,
-            l1_size,
-            l2_size,
+            l1_size: bl1,
+            l2_size: bl2,
             l1_scale,
             l1_weights_t,
             l1_weights_8t,
