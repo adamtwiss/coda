@@ -3397,3 +3397,11 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - 20sb warmup ramp gives small edge over 5sb default (+16 Elo)
 - v7 needs pairwise FT (faster + richer features) and/or frozen-FT transfer learning to compete
 - **Action**: Wait for pairwise v7 training results. Try frozen-FT from v5-w7.
+
+## 2026-03-31: Retests with 4D history + aspiration delta
+
+New baseline post-4D: +44 ±24 Elo (600g).
+
+- **SEE lmrDepth retest (300g)**: +31 (raw -13). Still negative — tighter thresholds for late moves don't help regardless of ordering.
+- **Double extensions v3 (300g)**: +62 (raw +18). **COMMITTED!** The 4D history + better aspiration made verification search reliable enough for double extensions. Previously -25 raw.
+- **TT-NMP retest (300g)**: +37 (raw -7). Improved from -24 but still slightly negative. TT lower bounds are too unreliable for NMP eval.
