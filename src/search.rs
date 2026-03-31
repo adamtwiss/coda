@@ -758,9 +758,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.global_nodes.store(0, Ordering::Relaxed);
     info.sel_depth = 0;
 
-    // Age history tables (×0.80) to preserve useful move ordering from prior searches.
-    // Killers and counter-moves are cleared (position-specific). Correction history reset.
-    info.history.age(4, 5);
+    // Clear all search heuristics (matches GoChess: fresh SearchInfo per go command).
+    // Only TT persists across moves. History, killers, counters, correction — all reset.
+    info.history.clear();
     info.clear_correction_history();
     info.stats = PruneStats::default();
     // Clear pawn history
