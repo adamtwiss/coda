@@ -3217,6 +3217,7 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Combined gauntlet (300g)**: +56 ±33 Elo (baseline +37). Raw: +19.
 - **Result**: Both committed as separate commits.
 
+<<<<<<< HEAD
 ## 2026-03-31: v7 20sb ramp vs 5sb ramp — H2H + 5-way RR (Hercules)
 
 - **Change**: v7 1024h16x32s w5 e800 trained with 20sb LR warmup vs 5sb warmup
@@ -3248,3 +3249,12 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Change**: Exclude pinned pieces from SEE attacker set.
 - **Gauntlet (578g)**: raw -7.8 vs baseline. Slightly negative.
 - **Why**: Asymmetric pin mask (only our side) may bias SEE.
+
+## 2026-03-31: Opponent move feedback + eval-based history depth bonus
+
+- **Combined (300g)**: +20 ±33 Elo (raw -17). Negative.
+- **Eval bonus alone (300g)**: +26 ±33 Elo (raw -11). Slightly negative.
+- **Opponent feedback alone**: Not isolated, but combined minus eval-only implies ~-6 additional.
+- **Result**: Both rejected.
+- **Why opponent feedback failed**: Updating butterfly history at every node based on eval sum is too noisy. The eval sum `(parent + current)` is an unreliable signal — it conflates position quality with move quality. Alexandria's version uses more careful scaling and only updates the opponent's own history table (which we don't have).
+- **Why eval bonus failed**: +1 depth to history bonus on surprising cutoffs over-reinforces. The extra depth applies to both the bonus and all penalties, making both too strong. May need a more nuanced approach (e.g., only bonus, not penalty scaling).
