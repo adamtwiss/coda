@@ -1042,6 +1042,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             else if info.tm_best_stable >= 5 { scale *= 0.5; }
             else if info.tm_best_stable >= 3 { scale *= 0.7; }
             else if info.tm_best_stable >= 1 { scale *= 0.85; }
+            else if info.tm_best_stable == 0 && info.tm_has_data { scale *= 1.3; } // best move just changed — extend
 
             // Very stable + stable score → extra reduction
             if info.tm_best_stable >= 5 && score_delta <= 10 { scale *= 0.8; }
