@@ -1199,7 +1199,7 @@ impl NNUENet {
         // l1_weights layout: [input][neuron] = [h][bl1] (Bullet .transpose() = [in][out])
         {
             for i in 0..l1 {
-                let gi = l1_off + i; // global neuron index
+                let gi = l1_off + i;
                 for j in 0..pw {
                     hidden32[i] += stm_pw[j] as i32 * self.l1_weights[j * l1_total + gi] as i32;
                 }
