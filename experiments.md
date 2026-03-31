@@ -3200,3 +3200,12 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Result**: +37 ±24 Elo
 - **Includes**: All prior commits + corr-hist-6 (Hercules, +11.4 Elo) + history aging (Hercules)
 - **Note**: Gauntlet format gives equal weight to each opponent. Prior RR baseline was +23 ±17.
+
+## 2026-03-31: Pin-aware SEE (side-to-move pins only) — REJECTED (Hercules)
+
+- **Change**: Pass pre-computed pinned mask to SEE, exclude side-to-move's pinned pieces from attacker set.
+- **Source**: Reckless engine review.
+- **Gauntlet (578g, Hercules)**: Elo +25.3, raw -7.8 vs baseline +33.1
+- **Result**: REJECTED. Slightly negative.
+- **Why**: Asymmetric — only our pins excluded, not opponent's. May bias SEE.
+- **Revisit**: With both-side pin mask if SEE accuracy becomes a priority.
