@@ -3405,3 +3405,9 @@ New baseline post-4D: +44 ±24 Elo (600g).
 - **SEE lmrDepth retest (300g)**: +31 (raw -13). Still negative — tighter thresholds for late moves don't help regardless of ordering.
 - **Double extensions v3 (300g)**: +62 (raw +18). **COMMITTED!** The 4D history + better aspiration made verification search reliable enough for double extensions. Previously -25 raw.
 - **TT-NMP retest (300g)**: +37 (raw -7). Improved from -24 but still slightly negative. TT lower bounds are too unreliable for NMP eval.
+
+## 2026-03-31: Eval-depth bonus + SEE history gate retests (post-4D)
+
+- **Eval-depth bonus retest (300g)**: +33 (raw -11). Unchanged from pre-4D test. Over-reinforcing surprising cutoffs consistently hurts.
+- **SEE history gate (300g)**: +23 (raw -21). Exempting high-history moves from SEE pruning wastes nodes — tactically unsound moves shouldn't be saved by history alone.
+- **Result**: Both rejected again. These two ideas don't benefit from improved move ordering.
