@@ -1651,9 +1651,12 @@ fn negamax(
 
                 if singular_score < singular_beta {
                     // TT move is singular — no competitive alternatives. Extend +1.
-                    // (Previously omitted due to GoChess interaction with alpha-reduce/blending,
-                    // but retesting after Coda bug fixes and improvements.)
                     singular_extension = 1;
+                    // Double extension: overwhelmingly singular AND not too deep in tree.
+                    // Ply guard prevents explosive tree growth.
+                    if beta - alpha == 1 && singular_score < singular_beta - 15 && ply < depth * 2 {
+                        singular_extension = 2;
+                    }
                 } else {
                     // Alternatives are competitive — negative extension (reduce TT move)
                     singular_extension = -1;
