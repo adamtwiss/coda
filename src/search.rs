@@ -1140,6 +1140,9 @@ fn negamax(
                             info.pv_len[ply_u] = 0;
                         }
                         info.stats.tt_cutoffs += 1;
+                        // Penalise opponent's last move — position cut off quickly,
+                        // so their move was likely poor
+                        penalise_opponent_last_move(info, board, depth);
                         return tt_score;
                     }
                     TT_FLAG_LOWER => {
@@ -2098,6 +2101,30 @@ fn negamax(
 
 /// History bonus: depth-based bonus for history updates, capped to avoid
 /// over-weighting very deep searches. Matches GoChess historyBonus().
+/// Penalise the opponent's last move in continuation history.
+/// Called on TT cutoff — the position cut off quickly, so the opponent's
+/// move that led here was probably weak.
+fn penalise_opponent_last_move(info: &mut SearchInfo, board: &Board, depth: i32) {
+    if board.undo_stack.is_empty() { return; }
+    let last = &board.undo_stack[board.undo_stack.len() - 1];
+    if last.mv == NO_MOVE { return; }
+    let to = move_to(last.mv);
+    let from = move_from(last.mv);
+    let pt = board.piece_type_at(to);
+    if pt >= 6 { return; } // no piece at destination (shouldn't happen)
+    // Only penalise quiet moves (captures were probably forced)
+    if last.captured != NO_PIECE_TYPE { return; }
+    let piece = make_piece(flip_color(board.side_to_move), pt);
+    if piece >= 12 { return; }
+    let malus = -history_bonus(depth);
+    // Update opponent's move in continuation history
+    let gp = go_piece(piece);
+    History::update_cont_history(
+        &mut info.history.cont_hist[gp][to as usize][gp][from as usize],
+        malus,
+    );
+}
+
 fn history_bonus(depth: i32) -> i32 {
     (depth * depth).min(1200)
 }
