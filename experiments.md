@@ -3184,3 +3184,12 @@ Disabled each search feature individually, 300 games each vs Minic/Ethereal/Texe
 ## Testing methodology update (2026-03-31)
 
 Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some games were between non-Coda opponents (wasted signal). Switching to `-tournament gauntlet` to ensure all games involve Coda. Requires new baseline.
+
+## 2026-03-31: GHI mitigation (50mr TT key bucketing) — REJECTED
+
+- **Change**: XOR halfmove clock bucket (8-ply groups, 16 buckets) into TT probe/store/prefetch key. Positions with different 50-move progress get different TT entries.
+- **Source**: Obsidian/Reckless engine reviews. Universal technique for preventing Graph History Interaction.
+- **Gauntlet (600g, Hercules)**: Elo +4.6, raw -28.5 vs new baseline +33.1
+- **Result**: REJECTED. Strongly negative.
+- **Why it failed**: TT fragmentation. The same position with different halfmove clocks now uses different TT slots, reducing hit rate. At our hash size (64MB) and search efficiency, TT hits are precious — losing them costs more than the rare GHI bug. Top engines using this have larger effective TTs and more efficient searches. Also, our explicit halfmove >= 100 draw check already handles most 50-move scenarios.
+- **Lesson**: Not every consensus feature helps at every strength level. GHI is a rare edge case; TT efficiency matters more for us right now.
