@@ -1213,6 +1213,31 @@ fn negamax(
                                 bonus,
                             );
                         }
+                        // TT cutoff retroactive history: penalise opponent's last quiet
+                        // move in cont-hist. "Your move led to a position we know is bad
+                        // for you." Matches Alexandria/Obsidian pattern.
+                        if !tt_is_cap {
+                            let stack_len = board.undo_stack.len();
+                            if stack_len >= 1 {
+                                let prev_undo = &board.undo_stack[stack_len - 1];
+                                let pm = prev_undo.mv;
+                                if pm != NO_MOVE {
+                                    let prev_to = move_to(pm);
+                                    let prev_piece = board.piece_at(prev_to);
+                                    // Only penalise quiet opponent moves
+                                    let prev_was_cap = prev_undo.captured != NO_PIECE_TYPE;
+                                    if !prev_was_cap && prev_piece != NO_PIECE {
+                                        let penalty = -(bonus.min(385));
+                                        // Penalise in cont-hist: opponent's move indexed by our TT move
+                                        History::update_cont_history(
+                                            &mut info.history.cont_hist[go_piece(prev_piece)][prev_to as usize]
+                                                [go_piece(tt_piece)][move_to(tt_move) as usize],
+                                            penalty,
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     } else if ply_u <= MAX_PLY {
                         info.pv_len[ply_u] = 0;
                     }
