@@ -56,6 +56,29 @@ impl History {
         self.cont_hist = [[[[0; 64]; 13]; 64]; 13];
     }
 
+    /// Age all history tables by multiplying by factor/divisor (e.g. 4/5 = 0.80).
+    /// Preserves useful information from prior searches while letting new data dominate.
+    /// Killers and counter-moves are cleared (they're position-specific, not transferable).
+    pub fn age(&mut self, factor: i32, divisor: i32) {
+        for row in self.main.iter_mut() {
+            for v in row.iter_mut() { *v = *v * factor / divisor; }
+        }
+        for plane in self.capture.iter_mut() {
+            for row in plane.iter_mut() {
+                for v in row.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
+            }
+        }
+        for plane0 in self.cont_hist.iter_mut() {
+            for plane1 in plane0.iter_mut() {
+                for row in plane1.iter_mut() {
+                    for v in row.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
+                }
+            }
+        }
+        self.killers = [[NO_MOVE; 2]; 64];
+        self.counter = [[NO_MOVE; 64]; 13];
+    }
+
     /// Update history with gravity (bonus capped, decayed toward zero).
     pub fn update_history(entry: &mut i32, bonus: i32) {
         let clamped = bonus.clamp(-MAX_HISTORY, MAX_HISTORY);
