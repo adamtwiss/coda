@@ -1055,7 +1055,7 @@ fn negamax(
     mut beta: i32,
     mut depth: i32,
     ply: i32,
-    _cut_node: bool, // kept for API compatibility, not used (GoChess doesn't have cut_node)
+    cut_node: bool, // true at expected cut nodes (child of all-node, non-first child of PV)
 ) -> i32 {
     let ply_u = ply as usize;
 
@@ -1275,8 +1275,11 @@ fn negamax(
             || move_flags(tt_move) == FLAG_EN_PASSANT
     };
 
-    // Internal Iterative Reduction: reduce depth when no TT move exists
-    if depth >= 6 && tt_move == NO_MOVE && !in_check && unsafe { FEAT_IIR } {
+    // Internal Iterative Reduction: reduce depth when no TT move exists.
+    // Restricted to PV/cut nodes (Obsidian/Berserk/Stormphrax pattern).
+    // All-nodes have tight bounds already, IIR there wastes depth.
+    let is_pv = beta - alpha_orig > 1;
+    if depth >= 4 && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && unsafe { FEAT_IIR } {
         depth -= 1;
     }
 
@@ -1323,7 +1326,7 @@ fn negamax(
         info.tt.prefetch(board.hash);
         let null_key = board.hash; // save hash for threat detection after unmake
         if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::recompute()); }
-        let null_score = -negamax(board, info, -beta, -beta + 1, depth - 1 - r, ply + 1, false);
+        let null_score = -negamax(board, info, -beta, -beta + 1, depth - 1 - r, ply + 1, !cut_node);
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
         board.unmake_null_move();
 
@@ -1402,7 +1405,7 @@ fn negamax(
                 continue;
             }
             info.tt.prefetch(board.hash);
-            let score = -negamax(board, info, -probcut_beta, -probcut_beta + 1, pc_depth, ply + 1, false);
+            let score = -negamax(board, info, -probcut_beta, -probcut_beta + 1, pc_depth, ply + 1, !cut_node);
             board.unmake_move();
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
 
@@ -1760,7 +1763,7 @@ fn negamax(
                 }
 
                 // Reduce more at expected cut nodes (zero window, not first move)
-                if beta - alpha == 1 && move_count > 1 {
+                if !is_pv && move_count > 1 {
                     reduction += 1;
                     info.stats.lmr_adj_cut += 1;
                 }
@@ -1869,7 +1872,7 @@ fn negamax(
 
             // LMR: reduced depth, zero window
             let lmr_depth = new_depth - reduction;
-            let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, false);
+            let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
 
             if lmr_score > alpha && !info.stop.load(Ordering::Relaxed) {
                 // LMR failed high: doDeeper/doShallower before re-search
@@ -1880,7 +1883,7 @@ fn negamax(
                     do_deeper_adj = -1;
                 }
 
-                lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth + do_deeper_adj, ply + 1, false);
+                lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth + do_deeper_adj, ply + 1, !cut_node);
             }
 
             if lmr_score > alpha && lmr_score < beta && !info.stop.load(Ordering::Relaxed) {
@@ -1891,7 +1894,7 @@ fn negamax(
             }
         } else if move_count > 1 && unsafe { FEAT_PVS } {
             // PVS: zero-window for non-first moves
-            let mut pvs_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, false);
+            let mut pvs_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
             if pvs_score > alpha && pvs_score < beta && !info.stop.load(Ordering::Relaxed) {
                 // Failed high: full window re-search
                 pvs_score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
