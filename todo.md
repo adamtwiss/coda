@@ -8,26 +8,26 @@ Mark items DONE with date when completed. Move to experiments.md when tested.
 ### High Priority (likely +5-20 Elo each)
 
 - [ ] **Retry: LMP depth 9** — +4 Elo at 1500g self-play, needs x-engine retest with current SE/search
-- [ ] **Retry: FH Blend Depth Gate 4** — +1.9 self-play, SE changes fail-high patterns
-- [ ] **Retry: History Divisor 4000** — +1-3 persistent, history profile changed by SE
-- [ ] **Retry: Futility 50+d*50** — +1.9 self-play, tighter futility with stronger eval
+- [x] **Retry: FH Blend Depth Gate 4** — REJECTED (-10 raw Atlas). Negative with SE.
+- [x] **Retry: History Divisor 4000** — Neutral (+2 raw Atlas). Not worth merging alone.
+- [x] **Retry: Futility 50+d*50** — Neutral (Atlas). Not worth merging alone.
 - [x] **2026-03-30** 4-ply continuation history (+14 Elo gauntlet) — Viridithas/Obsidian/Reckless all use plies 1,2,4,6. We use 1-ply. (Source: engine reviews)
-- [ ] **Correction history expansion (4→6)** — add minor piece and major piece correction tables. All top engines have 6. (Source: Viridithas/Reckless/Obsidian reviews)
-- [ ] **Pin-aware SEE** — exclude pinned pieces from attacker set. Simple correctness fix. (Source: Reckless review)
-- [ ] **GHI mitigation (50mr hash)** — XOR halfmove clock into TT key to prevent draw-related TT corruption. Cheap. (Source: Obsidian/Reckless reviews)
+- [x] **Correction history expansion (4→6)** — MERGED (+11 combined gauntlet). Added minor_key + major_key.
+- [x] **Pin-aware SEE** — REJECTED (-7.8 raw). Asymmetric pin mask biases SEE. Revisit with both-side pins.
+- [x] **GHI mitigation (50mr hash)** — REJECTED (-28.5 raw). TT fragmentation too costly at our hash size.
 - [ ] **NMP cutNode restriction** — Obsidian restricts NMP to cut nodes only. Our NMP ablation showed only -18 Elo, suggesting it fires too broadly. (Source: Obsidian review, ablation data)
 
 ### Medium Priority (likely +3-10 Elo each)
 
-- [ ] **Retry: NMP Divisor 170** — +2.7 at 3963g, eval scale changed with new nets
-- [ ] **Retry: TT Near-Miss Margin 96** — +1.6, TT more accurate with better search
+- [x] **Retry: NMP Divisor 170** — REJECTED (-32 raw Atlas). Strongly negative.
+- [x] **Retry: TT Near-Miss Margin 96** — REJECTED (-23 raw Atlas). Negative.
 - [ ] **Retry: NMP Deep Reduction d>=14** — +0.6 but +4-9 early, deeper search from SE
-- [ ] **Retry: Mate Distance Pruning** — +0.7, universal technique
+- [x] **Retry: Mate Distance Pruning** — REJECTED (Atlas). Negative.
 - [ ] **Retry: LMP 4+d^2** — +2.3, LMP showed 0 in ablation so formula needs work
 - [ ] **Retry: Threat-Aware SEE Quiet** — +0.8 but +12.6 early, sound idea
-- [ ] **Complexity-aware LMR** — Obsidian uses correction magnitude to reduce LMR less in complex positions. (Source: Obsidian review)
+- [x] **Complexity-aware LMR** — MERGED (+9 raw Atlas combined with cont-hist writes)
 - [ ] **Eval-dependent aspiration delta** — Reckless uses `13 + avg^2/23660`. Adapts window to position complexity. (Source: Reckless review)
-- [ ] **TT cutoff retroactive history** — penalise opponent's last move in cont history on TT cutoff. (Source: Obsidian review)
+- [x] **TT cutoff retroactive history** — MERGED (+19 raw Atlas combined with asp depth reduction)
 
 ### Lower Priority / Exploratory
 
