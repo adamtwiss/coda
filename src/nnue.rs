@@ -1191,9 +1191,14 @@ impl NNUENet {
         }
 
         // L1 int8 matmul — only compute l1 neurons starting at l1_off
+        // Pairwise: input = (a*b)>>8, u8 at scale QA²/256 ≈ 254.
+        // L1 weights at scale QA_L1(64). Matmul at scale 254*64.
+        // Bias at scale QA_L1(64), scaled by 254 to match matmul.
+        // After matmul: divide by 254 → scale QA_L1.
+        let pw_scale = 254i32; // (QA*QA) >> 8 ≈ 254
         let mut hidden32 = [0i32; 512];
         for i in 0..l1 {
-            hidden32[i] = self.l1_biases[l1_off + i] as i32 * qa;
+            hidden32[i] = self.l1_biases[l1_off + i] as i32 * pw_scale;
         }
         // Scalar path
         // l1_weights layout: [input][neuron] = [h][bl1] (Bullet .transpose() = [in][out])
@@ -1210,10 +1215,10 @@ impl NNUENet {
         }
 
         // Dequantize + ReLU
+        // hidden32 at scale pw_scale * QA_L1. Divide by pw_scale → scale QA_L1.
         let mut l1_out = [0.0f32; 512];
         for i in 0..l1 {
-            let mut h_val = hidden32[i] / qa;
-            h_val = h_val.clamp(0, qa_l1);
+            let h_val = (hidden32[i] / pw_scale).clamp(0, qa_l1);
             l1_out[i] = h_val as f32 / qa_l1 as f32;
         }
 
