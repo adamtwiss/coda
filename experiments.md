@@ -3209,3 +3209,10 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Result**: REJECTED. Slightly negative.
 - **Why**: Asymmetric — only our pins excluded, not opponent's. May bias SEE.
 - **Revisit**: With both-side pin mask if SEE accuracy becomes a priority.
+
+## 2026-03-31: TT cutoff retroactive cont-hist + aspiration fail-high depth reduction
+
+- **TT cutoff retroactive**: Penalise opponent's last quiet move in cont-hist when TT cutoff occurs. "Your move led to a position we know is bad for you." Matches Alexandria/Obsidian.
+- **Aspiration fail-high depth**: Reduce asp_depth by 1 on fail-high re-search. Score is already above window — shallower re-search with wider window is sufficient. Matches Alexandria/Midnight/Seer. Uses separate asp_depth variable (not outer loop depth — previous GoChess bug).
+- **Combined gauntlet (300g)**: +56 ±33 Elo (baseline +37). Raw: +19.
+- **Result**: Both committed as separate commits.
