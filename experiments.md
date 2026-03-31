@@ -3217,7 +3217,6 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Combined gauntlet (300g)**: +56 ±33 Elo (baseline +37). Raw: +19.
 - **Result**: Both committed as separate commits.
 
-<<<<<<< HEAD
 ## 2026-03-31: v7 20sb ramp vs 5sb ramp — H2H + 5-way RR (Hercules)
 
 - **Change**: v7 1024h16x32s w5 e800 trained with 20sb LR warmup vs 5sb warmup
@@ -3293,3 +3292,11 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Gauntlet (166g, combined with TM v2)**: Elo +27.3, raw +0.7 vs old baseline. TM alone was +24. Suggests corr-gate costs ~23 Elo.
 - **Result**: REJECTED. Gating filters too aggressively — removes informative "disagreement" corrections where the bound type contradicts the eval error. These disagreement cases may be the most valuable corrections.
 - **Revisit**: Try gating only exact-flag updates, or relax the condition.
+## 2026-03-31: Aspiration delta + LMR research skip + NMP soft cutNode
+
+- **Combined (300g)**: -15 ±33 Elo (raw -52). Clearly negative.
+- **Aspiration delta alone (300g)**: +17 ±33 Elo (raw -20). Score-adaptive formula gives tighter windows at typical scores, causing more aspiration failures.
+- **LMR research skip**: Not isolated (part of combined -52). The TT upper bound check may be too conservative with depth-4 threshold.
+- **NMP R-1 at all-nodes**: Not isolated (part of combined -52). Softer version of the full cutNode restriction that scored -23 raw.
+- **Result**: All rejected. The combined -52 raw is dominated by at least one strongly negative change.
+- **Aspiration lesson**: Our fixed delta=15 is already well-tuned. Score-adaptive widening (Reckless: 13+avg²/23660) assumes extreme scores need wider windows, but at 10+0.1 TC our aspiration rarely sees extreme scores and the tighter default makes failures more frequent.
