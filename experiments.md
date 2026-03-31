@@ -3193,3 +3193,10 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Result**: REJECTED. Strongly negative.
 - **Why it failed**: TT fragmentation. The same position with different halfmove clocks now uses different TT slots, reducing hit rate. At our hash size (64MB) and search efficiency, TT hits are precious — losing them costs more than the rare GHI bug. Top engines using this have larger effective TTs and more efficient searches. Also, our explicit halfmove >= 100 draw check already handles most 50-move scenarios.
 - **Lesson**: Not every consensus feature helps at every strength level. GHI is a rare edge case; TT efficiency matters more for us right now.
+
+## New Gauntlet Baseline (2026-03-31, post corr-hist-6 + history aging)
+
+- **Method**: `-tournament gauntlet` (all games involve Coda), 600g vs Minic/Ethereal/Texel
+- **Result**: +37 ±24 Elo
+- **Includes**: All prior commits + corr-hist-6 (Hercules, +11.4 Elo) + history aging (Hercules)
+- **Note**: Gauntlet format gives equal weight to each opponent. Prior RR baseline was +23 ±17.
