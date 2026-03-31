@@ -3258,3 +3258,10 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Result**: Both rejected.
 - **Why opponent feedback failed**: Updating butterfly history at every node based on eval sum is too noisy. The eval sum `(parent + current)` is an unreliable signal — it conflates position quality with move quality. Alexandria's version uses more careful scaling and only updates the opponent's own history table (which we don't have).
 - **Why eval bonus failed**: +1 depth to history bonus on surprising cutoffs over-reinforces. The extra depth applies to both the bonus and all penalties, making both too strong. May need a more nuanced approach (e.g., only bonus, not penalty scaling).
+
+## 2026-03-31: Pawn history in LMR adjustment
+
+- **Change**: Add pawn_hist score to the LMR history adjustment (alongside main + cont-hist). Pawn structure context for reduction decisions.
+- **Gauntlet (300g)**: +26 ±33 Elo (raw -11 vs baseline +37).
+- **Result**: Rejected. Pawn history values may have different scaling from main/cont-hist, diluting the signal when summed with /5000 divisor.
+- **Note**: Might work with a separate divisor or weighted contribution.
