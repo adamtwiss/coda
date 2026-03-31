@@ -1803,7 +1803,7 @@ fn negamax(
         let is_killer = mv == killers[0] || mv == killers[1];
 
         let mut reduction = 0i32;
-        if !in_check && !is_cap && !is_promo && !is_killer && !gives_check && FEAT_LMR.load(Ordering::Relaxed) {
+        if !in_check && !is_cap && !is_promo && !is_killer && FEAT_LMR.load(Ordering::Relaxed) {
             let d = (depth as usize).min(63);
             let m = (move_count as usize).min(63);
             reduction = lmr_reduction(d as i32, m as i32);
@@ -1863,6 +1863,11 @@ fn negamax(
                     reduction -= 1;
                 }
 
+                // Reduce less when move gives check (Obsidian/Alexandria/Berserk pattern)
+                if gives_check {
+                    reduction -= 1;
+                }
+
                 // Continuous history adjustment: good history reduces less, bad more
                 let mut hist_score = info.history.main[from as usize][to as usize];
                 if prev_piece_go != 0
@@ -1894,7 +1899,7 @@ fn negamax(
         }
 
         // LMR for captures: use separate capture LMR table with capture history adjustments
-        if !in_check && is_cap && !is_promo && !gives_check && move_count > 1 && mv != tt_move && FEAT_LMR.load(Ordering::Relaxed) {
+        if !in_check && is_cap && !is_promo && move_count > 1 && mv != tt_move && FEAT_LMR.load(Ordering::Relaxed) {
             // Only reduce at non-PV nodes (zero window search)
             if beta - alpha == 1 {
                 let d = (depth as usize).min(63);
@@ -1914,6 +1919,11 @@ fn negamax(
                         if capt_hist_val < -2000 {
                             reduction += 1;
                         }
+                    }
+
+                    // Reduce less for captures that give check
+                    if gives_check {
+                        reduction -= 1;
                     }
 
                     if reduction < 0 {
