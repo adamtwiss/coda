@@ -13,10 +13,11 @@
 ///
 /// Output: quantised.bin in coda/nets/v7-768pw-h16x32-w0-e800/
 ///
-/// IMPORTANT: convert-bullet and check-net do NOT yet support pairwise+v7 combined.
-/// Do NOT try to convert the output — just save the quantised.bin checkpoints.
-/// Conversion support is being added to Coda. For now, keep the raw Bullet output.
-/// Name checkpoints as: quantised-v7-768pw-h16x32-w0-e800-sNNN.bin
+/// Convert (after pulling latest Coda):
+///   coda convert-bullet -input quantised.bin -output net.nnue -pairwise -hidden 16 -hidden2 32 -int8l1
+/// Check-net (GoChess tuner should also work):
+///   tuner check-net net.nnue
+/// Name output as: net-v7-768pwh16x32-w0-e800sNNN.nnue
 
 use bullet_lib::{
     game::{
