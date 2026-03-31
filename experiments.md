@@ -3285,3 +3285,11 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Gauntlet (157g, combined with TM v2)**: Elo +19.9, raw -6.7 vs baseline. TM alone was +24. Suggests FMR scaling costs ~30 Elo.
 - **Result**: REJECTED. The scaling dampens eval at ALL halfmove values (3.5% at move 0, 13.5% at move 20). Our search thresholds are calibrated for full-strength evals — dampening them by 10-15% makes pruning too aggressive.
 - **Revisit**: Only apply at halfmove > 60, or retune thresholds with scaling active. Top engines that use this have thresholds tuned WITH the scaling.
+
+## 2026-03-31: Correction history gating by TT flag — REJECTED (Hercules)
+
+- **Change**: Only update correction history when TT flag direction agrees with correction direction. Fail-high + positive correction → OK. Fail-low + negative → OK. Disagreements filtered.
+- **Source**: Quanticade engine review.
+- **Gauntlet (166g, combined with TM v2)**: Elo +27.3, raw +0.7 vs old baseline. TM alone was +24. Suggests corr-gate costs ~23 Elo.
+- **Result**: REJECTED. Gating filters too aggressively — removes informative "disagreement" corrections where the bound type contradicts the eval error. These disagreement cases may be the most valuable corrections.
+- **Revisit**: Try gating only exact-flag updates, or relax the condition.
