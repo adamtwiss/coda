@@ -3425,3 +3425,37 @@ New baseline post-4D: +44 ±24 Elo (600g).
 | 5 | v7-5sb | -7 | ±41 | 44.8% |
 
 **Findings**: 20sb warmup is best (+23 over 5sb default). 40sb warmup is slightly better than 5sb but worse than 20sb — longer warmup protects hidden layers but also constrains their early learning. 20sb is the sweet spot. Weight analysis confirms: 40sb has 1 dead L2 neuron vs 0 for 20sb, and lower weight magnitudes (L1 mean|w| 7.27 vs 7.88).
+
+## 2026-03-31: Batch of 5 experiments (post-cuckoo baseline)
+
+New baseline: +44 ±24 Elo (600g gauntlet, post-cuckoo + 4D history + aspiration delta).
+
+### No killers retest (90g) — REJECTED
+- **Change**: Remove killer/counter-move stages from movepicker, remove killer exemptions from LMR/pruning.
+- **Result**: -4 Elo (raw -48 vs baseline). Still clearly negative.
+- **Notes**: Was -530 Elo before 4D threat-aware history. Now -48 — massive improvement proving 4D history covers most of the killer signal. But not all of it. Killers still needed, likely for position-specific refutations that history (which aggregates across positions) can't capture.
+
+### NMP anti-chain (84g) — REJECTED
+- **Change**: Skip NMP when grandparent move was null move (prevents NMP chains). Weiss pattern.
+- **Result**: 0 Elo (raw -44). Classic early noise — started at +48 at 29 games, collapsed to 0.
+- **Notes**: NMP chains are already rare enough that preventing them doesn't save meaningful nodes. Our NMP with verification at depth>=14 handles the edge cases.
+
+### SE depth gate 6 (36g) — REJECTED
+- **Change**: Lower SE depth gate from depth>=8 to depth>=6.
+- **Result**: 0 Elo (raw -44 early). Killed at 36 games.
+- **Notes**: SE at depth 6-7 fires on too-shallow positions where the verification search cost isn't justified. Depth 8 confirmed as floor.
+
+### Reverse cont-hist penalty (107g) — REJECTED
+- **Change**: On quiet beta cutoff, penalize the reverse move (to→from) in cont-hist at -bonus/2. Extension of merged Arasan reverse main-history pattern.
+- **Result**: +3 Elo (raw -41). Dead neutral.
+- **Notes**: The reverse pattern works for main history (generic from/to pairs) but not for cont-hist (move-pair context). The "don't take back" signal is position-independent; cont-hist is position-dependent.
+
+### SE margin 2d/3 (228g) — REJECTED
+- **Change**: Tighter SE margin: `tt_score - depth*2/3` instead of `tt_score - depth`.
+- **Result**: +48 Elo (raw +4). Started at +71 at 30g, converged to baseline.
+- **Notes**: Classic early noise collapse. Tighter margin (more singular moves) doesn't improve play.
+
+### SE margin d/2 (432g) — REJECTED
+- **Change**: Even tighter SE margin: `tt_score - depth/2`.
+- **Result**: +44 Elo (raw 0). Started at +57, converged to dead baseline.
+- **Notes**: Both tighter margins tested (2d/3 and d/2), both neutral. SE margin `depth` is well-calibrated. Combined with GoChess tests (d*2 and d*3 both rejected), the margin is fully bracketed: d/2 (neutral), **d (current, optimal)**, d*2 (rejected), d*3 (rejected).
