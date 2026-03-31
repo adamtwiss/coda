@@ -3300,3 +3300,10 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **NMP R-1 at all-nodes**: Not isolated (part of combined -52). Softer version of the full cutNode restriction that scored -23 raw.
 - **Result**: All rejected. The combined -52 raw is dominated by at least one strongly negative change.
 - **Aspiration lesson**: Our fixed delta=15 is already well-tuned. Score-adaptive widening (Reckless: 13+avg²/23660) assumes extreme scores need wider windows, but at 10+0.1 TC our aspiration rarely sees extreme scores and the tighter default makes failures more frequent.
+
+## 2026-03-31: Remove killers (pure history ordering) — CATASTROPHIC (Hercules)
+
+- **Change**: Skip killer stages in movepicker. History alone orders quiet moves.
+- **Source**: SF/Reckless/Viridithas all dropped killers.
+- **Gauntlet (155g)**: -530 Elo. Catastrophic.
+- **Why**: Our history tables aren't rich enough. Need 4D threat-aware history first.
