@@ -2043,7 +2043,7 @@ fn negamax(
                         // Reverse direction penalty: penalize the "take-back" move (Arasan pattern).
                         // If moving from A to B is good, moving from B to A is usually bad.
                         History::update_history(
-                            &mut info.history.main[to as usize][from as usize],
+                            info.history.main_entry(to, from, enemy_attacks),
                             -bonus / 2,
                         );
 
