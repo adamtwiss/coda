@@ -3411,3 +3411,17 @@ New baseline post-4D: +44 ±24 Elo (600g).
 - **Eval-depth bonus retest (300g)**: +33 (raw -11). Unchanged from pre-4D test. Over-reinforcing surprising cutoffs consistently hurts.
 - **SEE history gate (300g)**: +23 (raw -21). Exempting high-history moves from SEE pruning wastes nodes — tactically unsound moves shouldn't be saved by history alone.
 - **Result**: Both rejected again. These two ideas don't benefit from improved move ordering.
+
+## 2026-03-31: v7 LR Warmup Duration Cross-Engine RR
+
+- **Test**: Round-robin with 3 warmup variants (5sb, 20sb, 40sb) + 3 rivals (Weiss, Laser, Texel)
+- **Games**: 463, tc=10+0.1, concurrency 16
+- **Nets**: net-v7-1024h16x32s-w5-e800{i8-s800, s800-20sb-ramp, s800-40sb-ramp}
+
+| Rank | Net | Elo | ±Error | Draw% |
+|------|-----|-----|--------|-------|
+| 3 | **v7-20sb** | **+16** | ±41 | 44.1% |
+| 4 | v7-40sb | +2 | ±43 | 38.3% |
+| 5 | v7-5sb | -7 | ±41 | 44.8% |
+
+**Findings**: 20sb warmup is best (+23 over 5sb default). 40sb warmup is slightly better than 5sb but worse than 20sb — longer warmup protects hidden layers but also constrains their early learning. 20sb is the sweet spot. Weight analysis confirms: 40sb has 1 dead L2 neuron vs 0 for 20sb, and lower weight magnitudes (L1 mean|w| 7.27 vs 7.88).
