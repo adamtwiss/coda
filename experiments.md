@@ -3160,3 +3160,10 @@ Disabled each search feature individually, 300 games each vs Minic/Ethereal/Texe
 - **Change**: Widen TT near-miss cutoff margin from 80 to 96.
 - **Gauntlet (587g)**: 0 ±24 Elo (raw -23 vs baseline +23).
 - **Result**: Rejected. Wider margin allows too many approximate cutoffs with inaccurate scores.
+
+## 2026-03-31: Cut node tracking + IIR PV/cut + cut-node LMR
+
+- **Combined (595g)**: -2 ±24 Elo (raw -25). Cut-node LMR +1 too aggressive.
+- **CN plumbing + IIR PV/cut only (600g)**: +22 ±24 Elo (raw -1). Neutral.
+- **Result**: Committed CN plumbing + IIR restriction. Cut-node LMR rejected.
+- **Notes**: Cut node tracking is zero-cost infrastructure. IIR PV/cut is consensus-aligned. Neither gains Elo now but enables future features.
