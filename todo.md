@@ -26,7 +26,7 @@ Mark items DONE with date when completed. Move to experiments.md when tested.
 - [ ] **Retry: LMP 4+d^2** — +2.3, LMP showed 0 in ablation so formula needs work
 - [ ] **Retry: Threat-Aware SEE Quiet** — +0.8 but +12.6 early, sound idea
 - [x] **Complexity-aware LMR** — MERGED (+9 raw Atlas combined with cont-hist writes)
-- [ ] **Eval-dependent aspiration delta** — Reckless uses `13 + avg^2/23660`. Adapts window to position complexity. (Source: Reckless review)
+- [x] **Eval-dependent aspiration delta** — MERGED (+75 cross-engine Weiss/Laser/Texel). Formula: 13 + avg²/23660.
 - [x] **TT cutoff retroactive history** — MERGED (+19 raw Atlas combined with asp depth reduction)
 
 ### Lower Priority / Exploratory
@@ -41,7 +41,7 @@ Mark items DONE with date when completed. Move to experiments.md when tested.
 - [ ] **Opponent easy captures for pruning gates** — gate RFP/NMP on whether opponent has easy captures. (Source: Berserk review)
 - [ ] **History aging (×0.80 per iteration)** — decay history tables each ID iteration. SF does this. (Source: SF review)
 - [ ] **CReLU vs SCReLU for v7** — Berserk uses CReLU specifically for better sparsity in sparse L1. SCReLU kills sparsity. Consider CReLU for pairwise+hidden arch. (Source: Berserk review)
-- [ ] **Threat-aware history (4D indexed)** — [stm][from_threatened][to_threatened][from_to]. Consensus across SF/Reckless/Viridithas/Stormphrax/Berserk/Caissa. Our flat bonus approach failed; need proper table indexing. (Source: all reviews)
+- [x] **Threat-aware history (4D indexed)** — MERGED (+18 H2H, +16 cross-engine). [from_threatened][to_threatened][from][to] with enemy pawn attacks.
 - [ ] **6-ply continuation history** — SF/Caissa use 6-ply. We just added 4-ply. (Source: SF/Caissa reviews)
 
 ## NNUE / Model
