@@ -3307,3 +3307,16 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Source**: SF/Reckless/Viridithas all dropped killers.
 - **Gauntlet (155g)**: -530 Elo. Catastrophic.
 - **Why**: Our history tables aren't rich enough. Need 4D threat-aware history first.
+
+## 2026-03-31: Check-giving moves LMR with R-1 (was full exemption)
+
+- **Change**: Apply LMR to check-giving moves with R-1 adjustment (was fully exempt). Matches Obsidian/Alexandria/Berserk/Stormphrax — none exempt checks from LMR.
+- **Gauntlet (300g)**: +40 ±33 Elo (raw +3). Neutral.
+- **Result**: Committed for consensus alignment. Code is cleaner.
+- **Key finding**: No strong engine uses classic check extensions anymore. All use LMR reduction suppression.
+
+## 2026-03-31: Material scaling + halfmove eval decay
+
+- **Change**: Material scaling: `eval * (22400 + materialValue) / 32 / 1024` (Alexandria). Halfmove decay: `eval * (200 - halfmove) / 200` (Reckless). Both dampen eval in draws/endgames.
+- **Gauntlet (300g, combined)**: +37 ±33 Elo (raw +0). Dead neutral.
+- **Result**: Rejected. NNUE output buckets already handle material-dependent eval scaling internally.
