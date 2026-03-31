@@ -22,7 +22,6 @@ use sfbinpack::chess::piecetype::PieceType as SfPieceType;
 use sfbinpack::TrainingDataEntry;
 use sfbinpack::CompressedTrainingDataEntryWriter;
 
-use std::fs::File;
 use std::io::BufWriter;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

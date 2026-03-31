@@ -157,7 +157,7 @@ pub fn convert_v7(
     let bytes_per_neuron = NNUE_INPUT_SIZE * 2 + 2 + l1_mul * l1_size * l1w_bytes_per;
     let h = (data_len - fixed_bytes) / bytes_per_neuron;
 
-    let l1_scale: i32 = if int8_l1 { 64 } else { 255 };
+    let _l1_scale: i32 = if int8_l1 { 64 } else { 255 };
 
     println!("Input: {} bytes, FT={} L1={}{} L2={}", data.len(), h, l1_size,
         if int8_l1 { "(i8)" } else { "" }, l2_size);

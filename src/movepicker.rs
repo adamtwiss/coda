@@ -275,7 +275,7 @@ impl MovePicker {
         checkers: Bitboard,
         pinned: Bitboard,
         history: &History,
-        prev_move: Move,
+        _prev_move: Move,
         pawn_hist: Option<&[[i16; 64]; 13]>,
     ) -> Self {
         // Build cont-hist pointers for evasion (same as main picker)
@@ -676,7 +676,7 @@ fn mvv_lva(board: &Board, m: Move) -> i32 {
         return 0;
     }
 
-    let attacker_pt = board.piece_type_at(from);
+    let _attacker_pt = board.piece_type_at(from);
 
     // MVV only (no LVA), x16 — matches Obsidian/Alexandria/Berserk
     see_value(target_pt) * 16
