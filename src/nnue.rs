@@ -946,7 +946,10 @@ impl NNUENet {
         let mut l1_weights = Vec::new();
         let mut l1_biases = Vec::new();
         if l1_size > 0 {
-            l1_weights = vec![0i16; 2 * hidden_size * l1_size];
+            // Pairwise: L1 input is H (pairwise halves each perspective, concat = H)
+            // Direct: L1 input is 2*H (two full accumulators concatenated)
+            let l1_input_size = if use_pairwise { hidden_size } else { 2 * hidden_size };
+            l1_weights = vec![0i16; l1_input_size * l1_size];
             read_i16_slice(&mut reader, &mut l1_weights)?;
             l1_biases = vec![0i16; l1_size];
             read_i16_slice(&mut reader, &mut l1_biases)?;
@@ -997,18 +1000,22 @@ impl NNUENet {
         let l1_weights_t = if l1_size > 0 {
             let h = hidden_size;
             let l1 = l1_size;
-            let mut wt = vec![0i16; 2 * l1 * h];
-            // STM: l1_weights[j*L1+i] → wt[i*H+j]
+            // Pairwise: L1 input is PW per perspective (PW = H/2), total = H
+            // Direct: L1 input is H per perspective, total = 2*H
+            let per_perspective = if use_pairwise { h / 2 } else { h };
+            let total_input = if use_pairwise { h } else { 2 * h };
+            let mut wt = vec![0i16; l1 * total_input];
+            // STM: l1_weights[j*L1+i] → wt[i*per_perspective+j]
             for i in 0..l1 {
-                for j in 0..h {
-                    wt[i * h + j] = l1_weights[j * l1 + i];
+                for j in 0..per_perspective {
+                    wt[i * per_perspective + j] = l1_weights[j * l1 + i];
                 }
             }
-            // NTM: l1_weights[(H+j)*L1+i] → wt[L1*H + i*H + j]
-            let ntm_off = l1 * h;
+            // NTM: l1_weights[(per_perspective+j)*L1+i] → wt[L1*per_perspective + i*per_perspective + j]
+            let ntm_off = l1 * per_perspective;
             for i in 0..l1 {
-                for j in 0..h {
-                    wt[ntm_off + i * h + j] = l1_weights[(h + j) * l1 + i];
+                for j in 0..per_perspective {
+                    wt[ntm_off + i * per_perspective + j] = l1_weights[(per_perspective + j) * l1 + i];
                 }
             }
             wt
@@ -1142,6 +1149,111 @@ impl NNUENet {
         let w = self.output_width();
         let off = bucket * w;
         &self.output_weights_i8[off..off + w]
+    }
+
+    /// v7 pairwise hidden layer forward pass.
+    /// acc → CReLU → pairwise_mul → L1 matmul → ReLU → float L2 → ReLU → output
+    /// L1 input is H (hidden_size) after pairwise halves each perspective.
+    fn forward_with_l1_pairwise(&self, stm_acc: &[i16], ntm_acc: &[i16], bucket: usize) -> i32 {
+        let h = self.hidden_size;
+        let pw = h / 2; // pairwise output per perspective
+        let l1 = self.l1_size;
+        let qa = QA as i32;
+        let qa_l1 = self.l1_scale as i32;
+
+        // CReLU + pairwise for each perspective → pw values each
+        // Then pack to uint8 for int8 L1 matmul: pairwise(a,b) = clamp(a)*clamp(b)/QA ∈ [0, QA]
+        let mut stm_pw = [0u8; 2048];
+        let mut ntm_pw = [0u8; 2048];
+        for i in 0..pw {
+            let a = (stm_acc[i] as i32).clamp(0, qa);
+            let b = (stm_acc[i + pw] as i32).clamp(0, qa);
+            stm_pw[i] = ((a * b) >> 8) as u8; // /255 ≈ >>8, result in [0, 254]
+        }
+        for i in 0..pw {
+            let a = (ntm_acc[i] as i32).clamp(0, qa);
+            let b = (ntm_acc[i + pw] as i32).clamp(0, qa);
+            ntm_pw[i] = ((a * b) >> 8) as u8;
+        }
+
+        // L1 int8 matmul: pairwise output (u8) × L1 weights (i8) → hidden
+        // Input: stm_pw[0..pw] concat ntm_pw[0..pw] = h values
+        // But L1 weights are stored as [h × l1] where h = hidden_size
+        // STM weights: l1_weights_8t[0..l1*pw], NTM weights: l1_weights_8t[l1*pw..l1*h]
+        let qa_int = qa;
+        let mut hidden32 = [0i32; 64];
+        for i in 0..l1 {
+            hidden32[i] = self.l1_biases[i] as i32 * qa_int; // bias × QA to match matmul scale
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty() {
+            for i in 0..l1 {
+                let stm_w = &self.l1_weights_8t[i * pw..(i + 1) * pw];
+                let ntm_w = &self.l1_weights_8t[l1 * pw + i * pw..l1 * pw + (i + 1) * pw];
+                unsafe {
+                    hidden32[i] += simd_l1_int8_dot(&stm_pw[..pw], stm_w, pw) as i32;
+                    hidden32[i] += simd_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw) as i32;
+                }
+            }
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if !(self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty()) {
+            // Scalar fallback
+            for i in 0..l1 {
+                for j in 0..pw {
+                    hidden32[i] += stm_pw[j] as i32 * self.l1_weights[j * l1 + i] as i32;
+                }
+                for j in 0..pw {
+                    hidden32[i] += ntm_pw[j] as i32 * self.l1_weights[(pw + j) * l1 + i] as i32;
+                }
+            }
+        }
+
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            for i in 0..l1 {
+                for j in 0..pw {
+                    hidden32[i] += stm_pw[j] as i32 * self.l1_weights[j * l1 + i] as i32;
+                }
+                for j in 0..pw {
+                    hidden32[i] += ntm_pw[j] as i32 * self.l1_weights[(pw + j) * l1 + i] as i32;
+                }
+            }
+        }
+
+        // Dequantize: result at scale QA × QA_L1. Divide by QA → scale QA_L1.
+        // ReLU: clamp [0, QA_L1]. Then dequant to float [0, 1].
+        let mut l1_out = [0.0f32; 64];
+        for i in 0..l1 {
+            let mut h_val = hidden32[i] / qa_int; // scale QA_L1
+            h_val = h_val.clamp(0, qa_l1);
+            l1_out[i] = h_val as f32 / qa_l1 as f32; // → [0, 1]
+        }
+
+        // L2 or output — float (same as SCReLU path)
+        if self.l2_size > 0 {
+            let l2 = self.l2_size;
+            let mut h2 = [0.0f32; 64];
+            for k in 0..l2 { h2[k] = self.l2_biases_f[k]; }
+            for i in 0..l1 {
+                if l1_out[i] == 0.0 { continue; }
+                let w_off = i * l2;
+                for k in 0..l2 { h2[k] += l1_out[i] * self.l2_weights_f[w_off + k]; }
+            }
+            // ReLU on L2 (not SCReLU — pairwise nets use ReLU for hidden layers)
+            for k in 0..l2 { h2[k] = h2[k].max(0.0).min(1.0); }
+            let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
+            let mut out_f = self.out_bias_f[bucket];
+            for k in 0..l2 { out_f += h2[k] * out_w[k]; }
+            return (out_f * EVAL_SCALE as f32) as i32;
+        }
+
+        let out_w = &self.out_weights_f[bucket * l1..bucket * l1 + l1];
+        let mut out_f = self.out_bias_f[bucket];
+        for i in 0..l1 { out_f += l1_out[i] * out_w[i]; }
+        (out_f * EVAL_SCALE as f32) as i32
     }
 
     /// v7 hidden layer forward pass (SCReLU).
@@ -1348,6 +1460,9 @@ impl NNUENet {
 
         // v7 hidden layer path
         if self.l1_size > 0 {
+            if self.use_pairwise {
+                return self.forward_with_l1_pairwise(stm_acc, ntm_acc, bucket);
+            }
             return self.forward_with_l1(stm_acc, ntm_acc, bucket);
         }
 

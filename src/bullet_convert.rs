@@ -152,7 +152,9 @@ pub fn convert_v7(
     let l1w_bytes_per = if int8_l1 { 1 } else { 2 };
     let l2_bytes = if l2_size > 0 { l1_size * l2_size * 2 + l2_size * 2 } else { 0 };
     let fixed_bytes = l1_size * 2 + l2_bytes + out_input_width * NNUE_OUTPUT_BUCKETS * 2 + NNUE_OUTPUT_BUCKETS * 4;
-    let bytes_per_neuron = NNUE_INPUT_SIZE * 2 + 2 + 2 * l1_size * l1w_bytes_per;
+    // Pairwise: L1 input is H (not 2*H), so L1 weights are H*L1 (not 2*H*L1)
+    let l1_mul = if use_pairwise { 1 } else { 2 };
+    let bytes_per_neuron = NNUE_INPUT_SIZE * 2 + 2 + l1_mul * l1_size * l1w_bytes_per;
     let h = (data_len - fixed_bytes) / bytes_per_neuron;
 
     let l1_scale: i32 = if int8_l1 { 64 } else { 255 };
@@ -176,15 +178,18 @@ pub fn convert_v7(
         offset += 2;
     }
 
-    // l1w: [2*H][L1] — int8 or int16
-    let mut l1_weights = vec![0i16; 2 * h * l1_size];
+    // l1w: [L1_input][L1] — int8 or int16
+    // Pairwise: L1_input = H (pairwise halves each perspective, concat = H)
+    // Direct: L1_input = 2*H
+    let l1_input = l1_mul * h;
+    let mut l1_weights = vec![0i16; l1_input * l1_size];
     if int8_l1 {
-        for i in 0..2 * h * l1_size {
+        for i in 0..l1_input * l1_size {
             l1_weights[i] = data[offset] as i8 as i16;
             offset += 1;
         }
     } else {
-        for i in 0..2 * h * l1_size {
+        for i in 0..l1_input * l1_size {
             l1_weights[i] = read_i16_le(&data, offset);
             offset += 2;
         }
