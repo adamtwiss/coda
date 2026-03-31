@@ -347,7 +347,34 @@ print(f'{n} games, score {score:.3f}, Elo {elo:+.1f}')
 
 **Key principles**:
 - Gauntlet, not RR: all games involve Coda (no wasted opponent-vs-opponent games).
+- One change per test. Stack only after individual validation.
 - Baseline is amortised across all experiments. Re-establish after major code changes.
 - CPU matters: baseline Elo varies by machine (Intel vs AMD, clock speed). Always compare experiment to baseline on the same machine.
 - Periodic big RR (13+ engines, 600g each) for absolute strength validation.
 - Log all results to experiments.md with game count, Elo, and raw gain vs baseline.
+
+### Model Comparison Testing
+
+For comparing NNUE nets (different architectures, training schedules, WDL blends):
+
+1. **Quick H2H** (200 games, self-play): same engine, two different nets. Fast signal.
+2. **5-way RR** (50 rounds): two nets under test + 3 rival engines (Minic/Ethereal/Texel).
+   This gives both self-play delta AND cross-engine validation in one test.
+   Self-play and cross-engine can give different signals for models — the RR catches this.
+
+```bash
+cutechess-cli \
+    -tournament round-robin \
+    -engine name=NetA cmd=./coda proto=uci option.NNUEFile=net_a.nnue option.OwnBook=false \
+    -engine name=NetB cmd=./coda proto=uci option.NNUEFile=net_b.nnue option.OwnBook=false \
+    -engine name=Minic cmd=... proto=uci \
+    -engine name=Ethereal cmd=... proto=uci \
+    -engine name=Texel cmd=... proto=uci \
+    -each tc=0/10+0.1 \
+    -rounds 50 -concurrency 16 \
+    -openings file=noob_3moves.epd format=epd order=random \
+    -pgnout /tmp/model_test.pgn -recover -ratinginterval 20 \
+    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
+```
+
+Note: RR is correct here (not gauntlet) — we want both nets to play each other AND the rivals.
