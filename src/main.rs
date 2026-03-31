@@ -20,6 +20,7 @@ pub mod binpack;
 pub mod datagen;
 pub mod nnue_export;
 pub mod bullet_convert;
+mod cuckoo;
 
 use board::Board;
 use movegen::{perft, perft_divide};
@@ -35,6 +36,7 @@ pub fn init() {
         zobrist::init_zobrist();
         board::init_castle_masks();
         search::init_lmr();
+        cuckoo::init_cuckoo();
         nnue::init_nnue();
     });
 }

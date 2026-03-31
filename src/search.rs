@@ -1147,7 +1147,14 @@ fn negamax(
         }
     }
 
-    // Syzygy WDL probe: skipped (Coda handles Syzygy elsewhere)
+    // Cuckoo cycle detection: proactive repetition avoidance (Stockfish/Berserk/Viridithas)
+    // If we're losing (alpha < 0) and a repetition can be forced, raise alpha to draw score.
+    if ply > 0 && alpha < 0 && crate::cuckoo::has_game_cycle(board, ply) {
+        alpha = 0;
+        if alpha >= beta {
+            return alpha;
+        }
+    }
 
     // Probe transposition table
     let mut tt_move = NO_MOVE;
@@ -2397,6 +2404,14 @@ fn quiescence_with_depth(
 
     if info.stop.load(Ordering::Relaxed) {
         return 0;
+    }
+
+    // Cuckoo cycle detection in quiescence
+    if alpha < 0 && crate::cuckoo::has_game_cycle(board, ply) {
+        alpha = 0;
+        if alpha >= beta {
+            return alpha;
+        }
     }
 
     // Probe transposition table
