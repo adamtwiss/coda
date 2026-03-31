@@ -3265,3 +3265,15 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Gauntlet (300g)**: +26 ±33 Elo (raw -11 vs baseline +37).
 - **Result**: Rejected. Pawn history values may have different scaling from main/cont-hist, diluting the signal when summed with /5000 divisor.
 - **Note**: Might work with a separate divisor or weighted contribution.
+
+## 2026-03-31: v5 1024s e1200 vs e800 — 5-way RR (Hercules)
+
+- **Change**: Same architecture (1024 SCReLU w5), extended training 800→1200 SBs
+- **H2H (200g self-play)**: +28 Elo for e1200
+- **5-way RR (200g each, vs Minic/Ethereal/Texel)**:
+  - v5-e800: +16 Elo
+  - v5-e1200: -7 Elo
+  - **Cross-engine delta: -23 Elo for e1200** (vs +28 self-play)
+- **Result**: INVERTED. Longer training helps self-play but hurts cross-engine.
+- **Why**: Likely eval scale shift (check-net: miss-pawn weakened -122→-85, EG queen-up widened 1760→2073). Search thresholds calibrated for e800's scale are suboptimal for e1200's shifted range. Both sides share the same miscalibration in self-play so it cancels.
+- **Implications**: Don't assume longer training = better. Always validate model changes cross-engine. e800 remains our strongest v5 for match play. The e1600 (training on GPU3) may show the same pattern.
