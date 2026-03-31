@@ -3167,3 +3167,10 @@ Disabled each search feature individually, 300 games each vs Minic/Ethereal/Texe
 - **CN plumbing + IIR PV/cut only (600g)**: +22 ±24 Elo (raw -1). Neutral.
 - **Result**: Committed CN plumbing + IIR restriction. Cut-node LMR rejected.
 - **Notes**: Cut node tracking is zero-cost infrastructure. IIR PV/cut is consensus-aligned. Neither gains Elo now but enables future features.
+
+## 2026-03-31: Node-based time management
+
+- **v1 (full scaling)**: `(1.5 - bestMoveNodesFrac) * 1.7`, clamped [0.5, 1.5]. +14 ±24 Elo (raw -9). Double-counts stability signal with existing best-move stability counter.
+- **v2 (extend only)**: Only extend time when best move uses <30% of nodes. +6 ±24 Elo (raw -17). Score-delta scaling already catches volatility.
+- **Result**: Both rejected. Our existing TM (stability counter + score-delta + next-iteration estimate) already covers the same signals. Node fraction adds redundant information.
+- **Insight**: Node-based TM works well in engines that don't have detailed score-delta/stability tracking (Alexandria, BlackMarlin). We already have those signals, so node fraction is marginal.
