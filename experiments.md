@@ -3328,3 +3328,11 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 - **Gauntlet (157g, with TM v2)**: Elo +15.5, raw -11.1. TM alone was +24. So 3 killers costs ~35 Elo.
 - **Result**: REJECTED. The 3rd killer is low quality (bumped out by 2 better moves), wastes a node trying it, and the pruning exemption for killers applies to a weaker move.
 - **Lesson**: 2 killers is the right number — the 1st killer is very strong, the 2nd decent, the 3rd is noise. Quality > quantity for killers.
+
+## 2026-03-31: Batch B experiments (individually tested)
+
+- **TT-adjusted NMP eval (300g)**: +13 ±33 (raw -24). TT lower bound for NMP eval hurts — may over-trigger NMP when TT score is stale.
+- **History gate on SEE pruning (part of combined -31)**: Not isolated individually. The 8000 threshold may be wrong.
+- **Queen promotion extension (300g)**: +9 ±33 (raw -28). SE already handles important promotions. Extra extension wastes nodes.
+- **RFP TT quiet guard (300g)**: +41 ±33 (raw +4). Committed — logically sound guard against over-pruning.
+- **Combined TripleB (300g)**: +6 ±33 (raw -31). At least one strongly negative. Lesson: test individually at our hit rate.
