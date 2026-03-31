@@ -1822,6 +1822,14 @@ fn negamax(
                 if hist_adj > 0 { info.stats.lmr_adj_history_neg += 1; } // reduces reduction = good history
                 if hist_adj < 0 { info.stats.lmr_adj_history_pos += 1; } // increases reduction = bad history
 
+                // Complexity-aware LMR: reduce less when correction history
+                // magnitude is high (uncertain eval → search deeper).
+                // Matches Obsidian: R -= complexity / 120.
+                if raw_eval > -INFINITY {
+                    let complexity = (static_eval - raw_eval).abs();
+                    reduction -= complexity / 120;
+                }
+
                 // Clamp: never extend (negative), never reduce past depth 1
                 if reduction < 0 {
                     reduction = 0;
@@ -1953,14 +1961,28 @@ fn negamax(
                             bonus,
                         );
 
-                        // Update continuation history
-                        if prev_piece_go != 0
-                            && moved_piece != NO_PIECE
-                        {
-                            History::update_cont_history(
-                                &mut info.history.cont_hist[prev_piece_go][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize],
-                                bonus,
-                            );
+                        // Update continuation history at plies 1, 2, 4, 6
+                        // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
+                        if moved_piece != NO_PIECE {
+                            let gp_mv = go_piece(moved_piece);
+                            let stack_len = board.undo_stack.len();
+                            let ch_offsets = [1usize, 2, 4, 6];
+                            for &off in &ch_offsets {
+                                if stack_len >= off {
+                                    let undo = &board.undo_stack[stack_len - off];
+                                    if undo.mv != NO_MOVE {
+                                        let uto = move_to(undo.mv);
+                                        let upiece = board.piece_at(uto);
+                                        if upiece != NO_PIECE {
+                                            let ch_bonus = if off <= 1 { bonus } else { bonus / 2 };
+                                            History::update_cont_history(
+                                                &mut info.history.cont_hist[go_piece(upiece)][uto as usize][gp_mv][to as usize],
+                                                ch_bonus,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         // Update pawn history
@@ -1982,14 +2004,29 @@ fn negamax(
                                 -bonus,
                             );
 
-                            // Penalize continuation history
-                            if prev_piece_go != 0 {
+                            // Penalize continuation history at plies 1, 2, 4, 6
+                            {
                                 let q_piece = board.piece_at(qf);
                                 if q_piece != NO_PIECE {
-                                    History::update_cont_history(
-                                        &mut info.history.cont_hist[prev_piece_go][prev_to_for_cont as usize][go_piece(q_piece)][qt as usize],
-                                        -bonus,
-                                    );
+                                    let gp_q = go_piece(q_piece);
+                                    let stack_len = board.undo_stack.len();
+                                    let ch_offsets = [1usize, 2, 4, 6];
+                                    for &off in &ch_offsets {
+                                        if stack_len >= off {
+                                            let undo = &board.undo_stack[stack_len - off];
+                                            if undo.mv != NO_MOVE {
+                                                let uto = move_to(undo.mv);
+                                                let upiece = board.piece_at(uto);
+                                                if upiece != NO_PIECE {
+                                                    let ch_pen = if off <= 1 { -bonus } else { -bonus / 2 };
+                                                    History::update_cont_history(
+                                                        &mut info.history.cont_hist[go_piece(upiece)][uto as usize][gp_q][qt as usize],
+                                                        ch_pen,
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
