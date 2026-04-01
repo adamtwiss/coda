@@ -931,8 +931,9 @@ impl NNUENet {
     /// Load from a byte slice (for embedded nets). Writes to temp file and loads.
     pub fn load_from_bytes(data: &[u8]) -> Result<Self, String> {
         use std::io::Write;
-        let pid = std::process::id();
-        let tmp_path = std::env::temp_dir().join(format!("coda_embedded_{}.nnue", pid));
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp_path = std::env::temp_dir().join(format!("coda_embedded_{}_{}.nnue", std::process::id(), id));
         let mut f = File::create(&tmp_path).map_err(|e| format!("create temp: {}", e))?;
         f.write_all(data).map_err(|e| format!("write temp: {}", e))?;
         drop(f);
