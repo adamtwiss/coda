@@ -2614,20 +2614,36 @@ pub fn bench(depth: i32, nnue_path: Option<&str>) -> u64 {
             eprintln!("Warning: failed to load NNUE: {}", e);
         }
     } else {
-        // Auto-discover net.nnue in CWD or exe dir (matches UCI auto-discovery)
-        let try_paths = [
-            std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.nnue"))),
-            Some(std::path::PathBuf::from("net.nnue")),
-        ];
-        for maybe_path in &try_paths {
-            if let Some(path) = maybe_path {
-                if path.exists() {
-                    if let Ok(()) = info.load_nnue(path.to_str().unwrap()) {
-                        break;
+        // Auto-discover NNUE net: compile-time EVALFILE, then net.nnue in CWD/exe dir
+        let mut found = false;
+
+        // 1. Compile-time embedded path (OpenBench sets CODA_EVALFILE during make)
+        if let Some(evalfile) = option_env!("CODA_EVALFILE") {
+            if std::path::Path::new(evalfile).exists() {
+                if let Ok(()) = info.load_nnue(evalfile) {
+                    found = true;
+                }
+            }
+        }
+
+        // 2. net.nnue in exe dir or CWD
+        if !found {
+            let try_paths = [
+                std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.nnue"))),
+                Some(std::path::PathBuf::from("net.nnue")),
+            ];
+            for maybe_path in &try_paths {
+                if let Some(path) = maybe_path {
+                    if path.exists() {
+                        if let Ok(()) = info.load_nnue(path.to_str().unwrap()) {
+                            found = true;
+                            break;
+                        }
                     }
                 }
             }
         }
+        let _ = found;
     }
     let mut total_nodes = 0u64;
 

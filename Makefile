@@ -31,9 +31,9 @@ export RUSTFLAGS := -Ctarget-cpu=native
 rule: check-rust
 	cargo rustc --release -- --emit link=$(NAME)
 
-# OpenBench target
-openbench: check-rust net
-	cargo rustc --release -- --emit link=$(NAME)
+# OpenBench target — passes EVALFILE path to binary via compile-time env
+openbench: check-rust
+	CODA_EVALFILE=$(EVALFILE) cargo rustc --release -- --emit link=$(NAME)
 
 # PGO build (profile-guided optimization, ~3% NPS gain)
 TARGET_TUPLE := $(shell rustc --print host-tuple 2>/dev/null)
