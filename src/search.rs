@@ -25,18 +25,17 @@ const PAWN_HIST_SIZE: usize = 512;
 // Feature flags for ablation testing. All true = normal play.
 pub static FEAT_NMP: AtomicBool = AtomicBool::new(true);
 pub static FEAT_RFP: AtomicBool = AtomicBool::new(true);
-pub static FEAT_RAZORING: AtomicBool = AtomicBool::new(true);
-pub static FEAT_PROBCUT: AtomicBool = AtomicBool::new(true);
+pub static FEAT_PROBCUT: AtomicBool = AtomicBool::new(false); // disabled: ablation showed +4 Elo without it, needs better eval to work
 pub static FEAT_LMR: AtomicBool = AtomicBool::new(true);
 pub static FEAT_LMP: AtomicBool = AtomicBool::new(true);
 pub static FEAT_FUTILITY: AtomicBool = AtomicBool::new(true);
-pub static FEAT_SEE_PRUNE: AtomicBool = AtomicBool::new(true);
-pub static FEAT_HIST_PRUNE: AtomicBool = AtomicBool::new(true);
-pub static FEAT_BAD_NOISY: AtomicBool = AtomicBool::new(true);
+pub static FEAT_SEE_PRUNE: AtomicBool = AtomicBool::new(false); // disabled: ablation showed +12 Elo without, eval not accurate enough
+pub static FEAT_HIST_PRUNE: AtomicBool = AtomicBool::new(false); // disabled: ablation showed +3 Elo without
+pub static FEAT_BAD_NOISY: AtomicBool = AtomicBool::new(false); // disabled: ablation showed +3 Elo without
 pub static FEAT_EXTENSIONS: AtomicBool = AtomicBool::new(true);
-pub static FEAT_ALPHA_REDUCE: AtomicBool = AtomicBool::new(true);
+pub static FEAT_ALPHA_REDUCE: AtomicBool = AtomicBool::new(false); // disabled: -9 Elo in ablation, needs retuning
 pub static FEAT_IIR: AtomicBool = AtomicBool::new(true);
-pub static FEAT_HINDSIGHT: AtomicBool = AtomicBool::new(true);
+pub static FEAT_HINDSIGHT: AtomicBool = AtomicBool::new(false); // disabled: -9 Elo in ablation, needs retuning
 pub static FEAT_CORRECTION: AtomicBool = AtomicBool::new(true);
 pub static FEAT_PVS: AtomicBool = AtomicBool::new(true);
 pub static FEAT_TT_CUTOFF: AtomicBool = AtomicBool::new(true);
@@ -48,29 +47,25 @@ pub static FEAT_CUCKOO: AtomicBool = AtomicBool::new(true); // cuckoo cycle dete
 
 /// Disable all features (pure negamax + eval)
 pub fn disable_all_features() {
-    unsafe {
-        FEAT_NMP.store(false, Ordering::Relaxed); FEAT_RFP.store(false, Ordering::Relaxed); FEAT_RAZORING.store(false, Ordering::Relaxed);
-        FEAT_PROBCUT.store(false, Ordering::Relaxed); FEAT_LMR.store(false, Ordering::Relaxed); FEAT_LMP.store(false, Ordering::Relaxed);
-        FEAT_FUTILITY.store(false, Ordering::Relaxed); FEAT_SEE_PRUNE.store(false, Ordering::Relaxed); FEAT_HIST_PRUNE.store(false, Ordering::Relaxed);
-        FEAT_BAD_NOISY.store(false, Ordering::Relaxed); FEAT_EXTENSIONS.store(false, Ordering::Relaxed); FEAT_ALPHA_REDUCE.store(false, Ordering::Relaxed);
-        FEAT_IIR.store(false, Ordering::Relaxed); FEAT_HINDSIGHT.store(false, Ordering::Relaxed); FEAT_CORRECTION.store(false, Ordering::Relaxed);
-        FEAT_PVS.store(false, Ordering::Relaxed); FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); FEAT_TT_NEARMISS.store(false, Ordering::Relaxed);
-        FEAT_TT_STORE.store(false, Ordering::Relaxed); FEAT_QS_CAPTURES.store(false, Ordering::Relaxed);
-    }
+    FEAT_NMP.store(false, Ordering::Relaxed); FEAT_RFP.store(false, Ordering::Relaxed);
+    FEAT_PROBCUT.store(false, Ordering::Relaxed); FEAT_LMR.store(false, Ordering::Relaxed); FEAT_LMP.store(false, Ordering::Relaxed);
+    FEAT_FUTILITY.store(false, Ordering::Relaxed); FEAT_SEE_PRUNE.store(false, Ordering::Relaxed); FEAT_HIST_PRUNE.store(false, Ordering::Relaxed);
+    FEAT_BAD_NOISY.store(false, Ordering::Relaxed); FEAT_EXTENSIONS.store(false, Ordering::Relaxed); FEAT_ALPHA_REDUCE.store(false, Ordering::Relaxed);
+    FEAT_IIR.store(false, Ordering::Relaxed); FEAT_HINDSIGHT.store(false, Ordering::Relaxed); FEAT_CORRECTION.store(false, Ordering::Relaxed);
+    FEAT_PVS.store(false, Ordering::Relaxed); FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); FEAT_TT_NEARMISS.store(false, Ordering::Relaxed);
+    FEAT_TT_STORE.store(false, Ordering::Relaxed); FEAT_QS_CAPTURES.store(false, Ordering::Relaxed);
 }
 
 /// Enable all features (normal play)
 #[allow(dead_code)]
 pub fn enable_all_features() {
-    unsafe {
-        FEAT_NMP.store(true, Ordering::Relaxed); FEAT_RFP.store(true, Ordering::Relaxed); FEAT_RAZORING.store(true, Ordering::Relaxed);
-        FEAT_PROBCUT.store(true, Ordering::Relaxed); FEAT_LMR.store(true, Ordering::Relaxed); FEAT_LMP.store(true, Ordering::Relaxed);
-        FEAT_FUTILITY.store(true, Ordering::Relaxed); FEAT_SEE_PRUNE.store(true, Ordering::Relaxed); FEAT_HIST_PRUNE.store(true, Ordering::Relaxed);
-        FEAT_BAD_NOISY.store(true, Ordering::Relaxed); FEAT_EXTENSIONS.store(true, Ordering::Relaxed); FEAT_ALPHA_REDUCE.store(true, Ordering::Relaxed);
-        FEAT_IIR.store(true, Ordering::Relaxed); FEAT_HINDSIGHT.store(true, Ordering::Relaxed); FEAT_CORRECTION.store(true, Ordering::Relaxed);
-        FEAT_PVS.store(true, Ordering::Relaxed); FEAT_TT_CUTOFF.store(true, Ordering::Relaxed); FEAT_TT_NEARMISS.store(true, Ordering::Relaxed);
-        FEAT_TT_STORE.store(true, Ordering::Relaxed); FEAT_QS_CAPTURES.store(true, Ordering::Relaxed);
-    }
+    FEAT_NMP.store(true, Ordering::Relaxed); FEAT_RFP.store(true, Ordering::Relaxed);
+    FEAT_PROBCUT.store(true, Ordering::Relaxed); FEAT_LMR.store(true, Ordering::Relaxed); FEAT_LMP.store(true, Ordering::Relaxed);
+    FEAT_FUTILITY.store(true, Ordering::Relaxed); FEAT_SEE_PRUNE.store(true, Ordering::Relaxed); FEAT_HIST_PRUNE.store(true, Ordering::Relaxed);
+    FEAT_BAD_NOISY.store(true, Ordering::Relaxed); FEAT_EXTENSIONS.store(true, Ordering::Relaxed); FEAT_ALPHA_REDUCE.store(true, Ordering::Relaxed);
+    FEAT_IIR.store(true, Ordering::Relaxed); FEAT_HINDSIGHT.store(true, Ordering::Relaxed); FEAT_CORRECTION.store(true, Ordering::Relaxed);
+    FEAT_PVS.store(true, Ordering::Relaxed); FEAT_TT_CUTOFF.store(true, Ordering::Relaxed); FEAT_TT_NEARMISS.store(true, Ordering::Relaxed);
+    FEAT_TT_STORE.store(true, Ordering::Relaxed); FEAT_QS_CAPTURES.store(true, Ordering::Relaxed);
 }
 
 // Correction history constants
@@ -122,7 +117,6 @@ pub struct PruneStats {
     pub nmp_verify: u64,
     pub nmp_verify_fail: u64,
     pub rfp_cutoffs: u64,
-    pub razor_cutoffs: u64,
     pub lmp_prunes: u64,
     pub futility_prunes: u64,
     pub history_prunes: u64,
@@ -176,6 +170,8 @@ pub struct SearchInfo {
     #[allow(dead_code)]
     prev_moves: [Move; MAX_PLY + 1],
     static_evals: [i32; MAX_PLY + 1],
+    /// LMR reduction applied at each ply (for hindsight reduction gating)
+    reductions: [i32; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
     excluded_move: [Move; MAX_PLY + 1],
     /// Pawn history: [pawn_hash % PAWN_HIST_SIZE][piece 1-12][to_square] (GoChess indexing, slot 0 unused)
@@ -219,6 +215,7 @@ impl SearchInfo {
             last_score: 0,
             prev_moves: [NO_MOVE; MAX_PLY + 1],
             static_evals: [0; MAX_PLY + 1],
+            reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
             pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
             pv_len: [0; MAX_PLY + 1],
@@ -554,53 +551,49 @@ fn lmr_reduction(depth: i32, moves: i32) -> i32 {
 fn init_feature_flags() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
-        unsafe {
-            if std::env::var("DISABLE_ALL").is_ok() {
-                disable_all_features();
-                if std::env::var("ENABLE_NMP").is_ok() { FEAT_NMP.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_RFP").is_ok() { FEAT_RFP.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_RAZORING").is_ok() { FEAT_RAZORING.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_PROBCUT").is_ok() { FEAT_PROBCUT.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_LMR").is_ok() { FEAT_LMR.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_LMP").is_ok() { FEAT_LMP.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_FUTILITY").is_ok() { FEAT_FUTILITY.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_HIST_PRUNE").is_ok() { FEAT_HIST_PRUNE.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_BAD_NOISY").is_ok() { FEAT_BAD_NOISY.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_EXTENSIONS").is_ok() { FEAT_EXTENSIONS.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_IIR").is_ok() { FEAT_IIR.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_HINDSIGHT").is_ok() { FEAT_HINDSIGHT.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_CORRECTION").is_ok() { FEAT_CORRECTION.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_PVS").is_ok() { FEAT_PVS.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_TT_STORE").is_ok() { FEAT_TT_STORE.store(true, Ordering::Relaxed); }
-                if std::env::var("ENABLE_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES.store(true, Ordering::Relaxed); }
-            } else {
-                if std::env::var("NO_NMP").is_ok() { FEAT_NMP.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_RFP").is_ok() { FEAT_RFP.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_RAZORING").is_ok() { FEAT_RAZORING.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_PROBCUT").is_ok() { FEAT_PROBCUT.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_LMR").is_ok() { FEAT_LMR.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_LMP").is_ok() { FEAT_LMP.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_FUTILITY").is_ok() { FEAT_FUTILITY.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_HIST_PRUNE").is_ok() { FEAT_HIST_PRUNE.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_BAD_NOISY").is_ok() { FEAT_BAD_NOISY.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_EXTENSIONS").is_ok() { FEAT_EXTENSIONS.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_IIR").is_ok() { FEAT_IIR.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_HINDSIGHT").is_ok() { FEAT_HINDSIGHT.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_CORRECTION").is_ok() { FEAT_CORRECTION.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_PVS").is_ok() { FEAT_PVS.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_TT_STORE").is_ok() { FEAT_TT_STORE.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_SINGULAR").is_ok() { FEAT_SINGULAR.store(false, Ordering::Relaxed); }
-                if std::env::var("NO_CUCKOO").is_ok() { FEAT_CUCKOO.store(false, Ordering::Relaxed); }
-            }
+        if std::env::var("DISABLE_ALL").is_ok() {
+            disable_all_features();
+            if std::env::var("ENABLE_NMP").is_ok() { FEAT_NMP.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_RFP").is_ok() { FEAT_RFP.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_PROBCUT").is_ok() { FEAT_PROBCUT.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_LMR").is_ok() { FEAT_LMR.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_LMP").is_ok() { FEAT_LMP.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_FUTILITY").is_ok() { FEAT_FUTILITY.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_HIST_PRUNE").is_ok() { FEAT_HIST_PRUNE.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_BAD_NOISY").is_ok() { FEAT_BAD_NOISY.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_EXTENSIONS").is_ok() { FEAT_EXTENSIONS.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_IIR").is_ok() { FEAT_IIR.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_HINDSIGHT").is_ok() { FEAT_HINDSIGHT.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_CORRECTION").is_ok() { FEAT_CORRECTION.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_PVS").is_ok() { FEAT_PVS.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_TT_STORE").is_ok() { FEAT_TT_STORE.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES.store(true, Ordering::Relaxed); }
+        } else {
+            if std::env::var("NO_NMP").is_ok() { FEAT_NMP.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_RFP").is_ok() { FEAT_RFP.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_PROBCUT").is_ok() { FEAT_PROBCUT.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_LMR").is_ok() { FEAT_LMR.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_LMP").is_ok() { FEAT_LMP.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_FUTILITY").is_ok() { FEAT_FUTILITY.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_HIST_PRUNE").is_ok() { FEAT_HIST_PRUNE.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_BAD_NOISY").is_ok() { FEAT_BAD_NOISY.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_EXTENSIONS").is_ok() { FEAT_EXTENSIONS.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_IIR").is_ok() { FEAT_IIR.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_HINDSIGHT").is_ok() { FEAT_HINDSIGHT.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_CORRECTION").is_ok() { FEAT_CORRECTION.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_PVS").is_ok() { FEAT_PVS.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_TT_STORE").is_ok() { FEAT_TT_STORE.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_SINGULAR").is_ok() { FEAT_SINGULAR.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_CUCKOO").is_ok() { FEAT_CUCKOO.store(false, Ordering::Relaxed); }
         }
     });
 }
@@ -723,6 +716,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
         *entry = [[0i16; 64]; 13];
     }
     info.static_evals = [0; MAX_PLY + 1];
+    info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
@@ -771,6 +765,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     }
     // Clear static evals and excluded moves
     info.static_evals = [0; MAX_PLY + 1];
+    info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
@@ -1335,14 +1330,18 @@ fn negamax(
     // Threat square from null-move failure
     let mut threat_sq: i32 = -1;
 
-    // Hindsight reduction: when both sides think the position is quiet
-    if !in_check && ply >= 1 && depth >= 3 && ply_u >= 1
+    // Hindsight reduction: when parent was LMR-reduced and both sides
+    // think the position is quiet, reduce depth further.
+    // Gate on prior_reduction (Stockfish >= 2, Alexandria >= 1).
+    let prior_reduction = if ply_u >= 1 { info.reductions[ply_u - 1] } else { 0 };
+    if !in_check && ply >= 1 && depth >= 2 && ply_u >= 1
+        && prior_reduction >= 2
         && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
         && static_eval > -INFINITY
         && FEAT_HINDSIGHT.load(Ordering::Relaxed)
     {
         let eval_sum = info.static_evals[ply_u - 1] + static_eval;
-        if eval_sum > 200 {
+        if eval_sum > 195 {
             depth -= 1;
         }
     }
@@ -1425,17 +1424,6 @@ fn negamax(
             }
         }
 
-        // Razoring: at shallow depths, if eval is far below alpha, drop to quiescence
-        if depth <= 2 && ply > 0 && FEAT_RAZORING.load(Ordering::Relaxed) {
-            let razoring_margin = 400 + depth * 100;
-            if static_eval + razoring_margin < alpha {
-                let q_score = quiescence(board, info, alpha, beta, ply);
-                if q_score < alpha {
-                    return q_score;
-                }
-                info.stats.razor_cutoffs += 1;
-            }
-        }
     }
 
     // ProbCut: at moderate+ depths, if a shallow search of captures with
@@ -1707,7 +1695,9 @@ fn negamax(
             continue;
         }
 
-        // Futility pruning: use estimated post-LMR depth for tighter margin
+        // Futility pruning: use estimated post-LMR depth for margin
+        // Margin widened from 60+60*d to 90+100*d (SF uses 42+120*d, Viridithas 86+70*d)
+        // History adjustment: good history widens margin (harder to prune)
         if static_eval > -INFINITY && depth <= 8 && !in_check && !gives_check
             && !is_cap && !is_promo
             && best_score > -(MATE_SCORE - 100)
@@ -1723,7 +1713,8 @@ fn negamax(
                     lmr_depth = (depth - r).max(1);
                 }
             }
-            if static_eval + 60 + lmr_depth * 60 <= alpha {
+            let hist_adj = info.history.main_score(from, to, enemy_attacks) / 128;
+            if static_eval + 90 + lmr_depth * 100 + hist_adj <= alpha {
                 info.stats.futility_prunes += 1;
                 board.unmake_move();
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
@@ -1939,6 +1930,9 @@ fn negamax(
                 }
             }
         }
+
+        // Store reduction for child's hindsight gating
+        info.reductions[ply_u] = reduction;
 
         if reduction > 0 {
             info.stats.lmr_searches += 1;
@@ -2646,7 +2640,6 @@ pub fn bench(depth: i32, nnue_path: Option<&str>) -> u64 {
     eprintln!("NMP attempts:   {:>8}  cutoffs: {} ({:.0}%)", s.nmp_attempts, s.nmp_cutoffs,
         if s.nmp_attempts > 0 { s.nmp_cutoffs as f64 / s.nmp_attempts as f64 * 100.0 } else { 0.0 });
     eprintln!("RFP cutoffs:    {:>8}  ({:.1}% of nodes)", s.rfp_cutoffs, s.rfp_cutoffs as f64 / total_nodes as f64 * 100.0);
-    eprintln!("Razor cutoffs:  {:>8}", s.razor_cutoffs);
     eprintln!("LMP prunes:     {:>8}", s.lmp_prunes);
     eprintln!("Futility prunes:{:>8}", s.futility_prunes);
     eprintln!("History prunes: {:>8}", s.history_prunes);

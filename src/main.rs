@@ -296,7 +296,7 @@ fn main() {
 }
 
 fn run_check_net(net_path: &str) {
-    use nnue::{NNUENet, NNUEAccumulator, DirtyPiece, output_bucket};
+    use nnue::{NNUENet, NNUEAccumulator};
 
     let net = match NNUENet::load(net_path) {
         Ok(n) => n,

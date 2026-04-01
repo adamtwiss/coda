@@ -25,15 +25,15 @@ Changes in Coda that were never SPRT-validated. Currently in the codebase.
 
 | Change | Commit | Source | Risk | Status |
 |--------|--------|--------|------|--------|
-| Singular extensions (+1) | e30bfbd | Day 2, untested | **High** | Ablation running (Atlas A1) |
-| SE multi-cut + negative ext | b811a17 | Day 2, untested | **High** | Covered by A1 |
-| NMP R=4, depth≥4 | e489477 | Day 2, untested | **Medium** | Ablation running (Titan T2) |
+| Singular extensions (+1) | e30bfbd | Day 2, untested | **Low** | ✅ Ablation: +15.6 Elo (Titan T9) |
+| SE multi-cut + negative ext | b811a17 | Day 2, untested | **Low** | ✅ Covered by Titan T9 |
+| NMP R=4, depth≥4 | e489477 | Day 2, untested | **Low** | ✅ Ablation: +18.3 Elo (Titan T2) |
 | Capture scoring: raw captHist | 65dac27 | Day 2, untested | **Medium** | Not yet tested |
 | Cont hist plies 4+6 | af684d0 | Day 2, untested | **Low** | Not yet tested |
-| 4D threat-aware history | e7f52b5 | Day 3, H0 at 0 Elo | **Medium** | Kept as infrastructure |
-| Aspiration delta 13+avg²/23660 | e7f52b5 | Day 3, H0 at 0 Elo | **Medium** | Kept as infrastructure |
+| 4D threat-aware history | e7f52b5 | Day 3, H0 at 0 Elo | **Low** | Kept as infrastructure (0 Elo cost) |
+| Aspiration delta 13+avg²/23660 | e7f52b5 | Day 3, H0 at 0 Elo | **Low** | Kept as infrastructure (0 Elo cost) |
 | RFP TT quiet guard | 04b1f7b | Day 3, inconclusive +2.5 at 6125g | **Low** | In codebase |
-| Cuckoo cycle detection | 8ac542b | Day 3, H1 at +5 | **Low** | [SPRT-validated] |
+| Cuckoo cycle detection | 8ac542b | Day 3, H1 at +5 | **Low** | ✅ [SPRT-validated] |
 | Check-giving LMR R-1 | b42ff78 | Day 3, +9 at 1609g (97.5% LOS) | **Low** | Near-pass, kept |
 
 ## Suspects: Potential False Negatives (rejected, may deserve retest)
@@ -3507,3 +3507,70 @@ New baseline: +44 ±24 Elo (600g gauntlet, post-cuckoo + 4D history + aspiration
 - **Change**: Tighter double-ext margin: `singular_beta - 10` instead of `singular_beta - 15`. More double extensions.
 - **Result**: +36 Elo (raw -8). Slightly negative.
 - **Notes**: Both directions lose ~8 Elo. Double-extension margin fully bracketed: 10 (-8), **15 (current, optimal)**, 25 (-8). SE is now fully tuned: margin=depth, depth gate=8, double-ext margin=15, verification=(depth-1)/2.
+
+---
+
+## 2026-04-01: Comprehensive Ablation Sweep [ablation]
+
+Self-play SPRT (elo0=-5, elo1=5), TC 10+0.1, Hash=64, net-v5-1024s-w5-e800-s800.nnue.
+Disabling each feature individually to measure its contribution.
+
+### Titan Results (9/9 complete)
+
+| Rank | Feature | Elo cost of disabling | Games | LLR | Verdict |
+|------|---------|----------------------|-------|-----|---------|
+| 1 | LMR | +262 ±80.7 | 58 | 2.98 | **KEEP** |
+| 2 | QS captures | +111 ±40.9 | 123 | 2.97 | **KEEP** |
+| 3 | RFP | +56 ±27.6 | 238 | 2.95 | **KEEP** |
+| 4 | LMP | +22.2 ±17.0 | 565 | 2.96 | **KEEP** |
+| 5 | IIR | +18.9 ±15.5 | 644 | 3.01 | **KEEP** |
+| 6 | NMP | +18.3 ±15.3 | 683 | 3.02 | **KEEP** |
+| 7 | Singular ext. | +15.6 ±14.1 | 601 | H1 | **KEEP** |
+| 8 | Futility | +6.1 ±8.8 | 1820 | H1 | **KEEP** (marginal) |
+| 9 | Razoring | -19.8 ±16.1 | 527 | -2.95 | **REMOVE** |
+
+### Atlas Results (7/8 complete, 2 still running)
+
+| Test | Feature | Elo | Games | LLR | Verdict |
+|------|---------|-----|-------|-----|---------|
+| A1 | Extensions (all) | -9 | 1372 | -2.97 (H0) | **KEEP** |
+| A2 | Correction history | -3 | 4584 | H0 | **KEEP** (barely) |
+| A3 | Hindsight reduction | +9 | 1263 | 3.02 (H1) | **REMOVE** |
+| A4 | Alpha-reduce | +9 | 1307 | 2.97 (H1) | **REMOVE** |
+| A5 | ProbCut (old impl) | +4 | 3079 | H1 | **REMOVE** |
+| A6 | Hist prune | ~0 | ~2700 | grinding | Still running |
+| A7 | Bad noisy pruning | ~0 | ~2600 | grinding | Still running |
+| A8 | SEE prune | — | early | — | Still running |
+
+### Actions Taken
+
+- **Razoring**: Fully removed from codebase (obsolete technique, removed by SF ~2019)
+- **Hindsight**: Disabled by default (FEAT_HINDSIGHT=false). Root cause identified: missing `prior_reduction >= N` gate that Stockfish/Alexandria use. Fixed implementation prepared (V1: gate>=1/thresh 200, V2: gate>=2/thresh 195). Awaiting SPRT.
+- **Alpha-reduce**: Disabled by default (FEAT_ALPHA_REDUCE=false). Needs retuning.
+- **ProbCut (old)**: Atlas working on improved implementation with dynamic SEE threshold, qsearch pre-verification, improving adjustment.
+- **Futility**: Marginal at +6.1 after 1820 games. Research shows our margin (60+lmrDepth*60) is tightest of all surveyed engines. SF uses 42+120*lmrDepth. Candidate for widening margins and adding history adjustment.
+
+### Key Insights
+
+- NMP had misleading early start (43% win rate at 120 games → recovered to 52% at 683). Reinforces: always let SPRT finish.
+- Singular extensions confirmed at +15.6 — not the drag we suspected. Extensions overall (-9) includes the recapture and check extensions too.
+- ~40 Elo of "bad stuff" removed (razoring -20, hindsight -9, alpha-reduce -9, probcut -4).
+
+## 2026-04-01: Hercules Net and Parameter SPRTs [SPRT-validated]
+
+Self-play SPRT (elo0=0, elo1=10), TC 10+0.1, Hash=64.
+
+### LMR C=1.20 vs C=1.30
+
+- **Result**: **H0**, -2.0 ±9.6 Elo, 1360 games. C=1.30 remains optimal.
+- **Notes**: C=1.30 fully bracketed: C=1.20 (H0 -2), **C=1.30 (current)**, C=1.375 (flat), C=1.50 (H0 from GoChess era). Do not revisit.
+
+### w10 vs w7 net (same e800 training, different WDL lambda)
+
+- **Result**: **H0**, -3.3 ±10.3 Elo, 1465 games. w7 remains best WDL lambda.
+- **Notes**: Was +31.4 at 244 games — classic early noise. Completely regressed to baseline. WDL lambda progression: w0 < w3 < w5 < **w7 (optimal)** > w10. Do not increase WDL lambda beyond 0.07.
+
+### e1600-w5 vs e800-w5 net (longer training, same WDL lambda)
+
+- **Result**: **H0**, -18.7 ±17.4 Elo, 688 games. Longer training hurts for w5.
+- **Notes**: e1600 actively worse than e800. Possible overtraining or LR schedule mismatch. The e800 cosine schedule is well-calibrated for this dataset size.
