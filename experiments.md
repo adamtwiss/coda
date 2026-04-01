@@ -1,10 +1,49 @@
 # Experiment Log
 
-Structured record of all search/eval tuning experiments. Each entry captures the change, SPRT result, baseline context, and lessons learned. Revisit failed experiments when conditions change (new NNUE net, new search features, etc.).
+Structured record of all search/eval tuning experiments.
 
-**SPRT settings** (unless noted): `elo0=-10 elo1=5 alpha=0.05 beta=0.05`, tc=10+0.1, Hash=64, OwnBook=false, openings=noob_3moves.epd.
+## ⚠️ RELIABILITY WARNING (2026-04-01)
+
+**Results before 2026-04-01 are unreliable.** They were measured using narrow 3-engine gauntlets (Minic/Ethereal/Texel, 200-600 games) which gave systematically inflated Elo estimates. Validation on 2026-04-01 showed:
+- Changes claimed at +20 to +67 by gauntlet were 0 to -17 in self-play SPRT
+- 4 of 10 changes merged that day were later reverted as H0 (rejected) by SPRT
+- The narrow gauntlet overfits to specific opponents, similar to self-play blindspots
+
+**Results tagged [SPRT-validated]** used self-play SPRT with tight bounds and are trustworthy.
+**Results tagged [gauntlet-only]** used narrow cross-engine gauntlet and may be false positives or false negatives.
+**Results tagged [ablation]** are feature-disable tests — direction reliable, magnitude approximate.
+
+Going forward, all changes must pass self-play SPRT before merging (see CLAUDE.md for methodology).
+
+**SPRT settings**: Tier A: `elo0=-5 elo1=5`, Tier B: `elo0=0 elo1=10`. tc=10+0.1, Hash=64, OwnBook=false, openings=noob_3moves.epd.
 
 **Net convention**: All experiments use the checked-in `net.nnue`, referenced by commit hash.
+
+## Suspects: Potential False Positives (merged, need SPRT retest)
+
+Changes in Coda that were never SPRT-validated. Currently in the codebase.
+
+| Change | Commit | Source | Risk | Status |
+|--------|--------|--------|------|--------|
+| Singular extensions (+1) | e30bfbd | Day 2, untested | **High** | Ablation running (Atlas A1) |
+| SE multi-cut + negative ext | b811a17 | Day 2, untested | **High** | Covered by A1 |
+| NMP R=4, depth≥4 | e489477 | Day 2, untested | **Medium** | Ablation running (Titan T2) |
+| Capture scoring: raw captHist | 65dac27 | Day 2, untested | **Medium** | Not yet tested |
+| Cont hist plies 4+6 | af684d0 | Day 2, untested | **Low** | Not yet tested |
+| 4D threat-aware history | e7f52b5 | Day 3, H0 at 0 Elo | **Medium** | Kept as infrastructure |
+| Aspiration delta 13+avg²/23660 | e7f52b5 | Day 3, H0 at 0 Elo | **Medium** | Kept as infrastructure |
+| RFP TT quiet guard | 04b1f7b | Day 3, inconclusive +2.5 at 6125g | **Low** | In codebase |
+| Cuckoo cycle detection | 8ac542b | Day 3, H1 at +5 | **Low** | [SPRT-validated] |
+| Check-giving LMR R-1 | b42ff78 | Day 3, +9 at 1609g (97.5% LOS) | **Low** | Near-pass, kept |
+
+## Suspects: Potential False Negatives (rejected, may deserve retest)
+
+| Change | Elo measured | Method | Why retest |
+|--------|-------------|--------|------------|
+| Corr-gate | -23 | gauntlet-only | Narrow gauntlet may have been wrong |
+| FMR scaling | -30 | gauntlet-only | Threshold calibration issue, not fundamentally bad |
+| LMP 4+d² | +2.3 | gauntlet-only | Persistent small positive, may pass Tier A |
+| History pruning depth 4 | -0.5/+5.5 | gauntlet-only | Inconsistent signal |
 
 ## Retry Candidates (Tighter SPRT Bounds)
 
