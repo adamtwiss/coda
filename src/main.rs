@@ -125,13 +125,36 @@ fn main() {
         "bench" => {
             let depth = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(13);
             let nnue_path = flag_value(&args, "-nnue");
+            let threads: usize = flag_value(&args, "-threads")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1);
+
             let start = std::time::Instant::now();
-            let nodes = search::bench(depth, nnue_path);
-            let elapsed = start.elapsed();
-            let nps = if elapsed.as_secs_f64() > 0.0 {
-                (nodes as f64 / elapsed.as_secs_f64()) as u64
-            } else { 0 };
-            println!("\n{} nodes {} nps", nodes, nps);
+            if threads <= 1 {
+                let nodes = search::bench(depth, nnue_path);
+                let elapsed = start.elapsed();
+                let nps = if elapsed.as_secs_f64() > 0.0 {
+                    (nodes as f64 / elapsed.as_secs_f64()) as u64
+                } else { 0 };
+                println!("\n{} nodes {} nps", nodes, nps);
+            } else {
+                let nnue_owned = nnue_path.map(|s| s.to_string());
+                let handles: Vec<_> = (0..threads).map(|_| {
+                    let np = nnue_owned.clone();
+                    std::thread::spawn(move || {
+                        search::bench_silent(depth, np.as_deref())
+                    })
+                }).collect();
+                let mut total_nodes = 0u64;
+                for h in handles {
+                    total_nodes += h.join().unwrap();
+                }
+                let elapsed = start.elapsed();
+                let nps = if elapsed.as_secs_f64() > 0.0 {
+                    (total_nodes as f64 / elapsed.as_secs_f64()) as u64
+                } else { 0 };
+                println!("\n{} nodes {} nps", total_nodes, nps);
+            }
         }
 
         "epd" => {
@@ -413,7 +436,7 @@ fn print_usage() {
     println!("  coda -classical                   UCI with PeSTO eval (no NNUE required)");
     println!("  coda -book <book.bin>             UCI with Polyglot opening book");
     println!("  coda fetch-net                    Download NNUE net from net.txt URL");
-    println!("  coda bench [depth] [-nnue <net>]  Search benchmark");
+    println!("  coda bench [depth] [-nnue <net>] [-threads N]  Search benchmark");
     println!("  coda epd <file> [time] [max] [-nnue <net>]");
     println!("                                    Run EPD test suite");
     println!("  coda perft [depth] [fen...]       Perft with divide");

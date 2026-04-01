@@ -2602,6 +2602,15 @@ fn quiescence_with_depth(
 
 /// Run bench: fixed-depth search on standard positions, return total nodes.
 pub fn bench(depth: i32, nnue_path: Option<&str>) -> u64 {
+    bench_inner(depth, nnue_path, true)
+}
+
+/// Run bench without printing stats (for multi-threaded bench).
+pub fn bench_silent(depth: i32, nnue_path: Option<&str>) -> u64 {
+    bench_inner(depth, nnue_path, false)
+}
+
+fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     let positions = [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
@@ -2614,6 +2623,7 @@ pub fn bench(depth: i32, nnue_path: Option<&str>) -> u64 {
     ];
 
     let mut info = SearchInfo::new(16);
+    info.silent = !print_stats;
     if let Some(path) = nnue_path {
         if let Err(e) = info.load_nnue(path) {
             eprintln!("Warning: failed to load NNUE: {}", e);
@@ -2696,6 +2706,8 @@ pub fn bench(depth: i32, nnue_path: Option<&str>) -> u64 {
         let _mv = search(&mut board, &mut info, &limits);
         total_nodes += info.nodes;
     }
+
+    if !print_stats { return total_nodes; }
 
     // Print pruning stats
     let s = &info.stats;
