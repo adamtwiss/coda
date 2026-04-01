@@ -931,11 +931,14 @@ impl NNUENet {
     /// Load from a byte slice (for embedded nets). Writes to temp file and loads.
     pub fn load_from_bytes(data: &[u8]) -> Result<Self, String> {
         use std::io::Write;
-        let tmp_path = std::env::temp_dir().join("coda_embedded.nnue");
+        let pid = std::process::id();
+        let tmp_path = std::env::temp_dir().join(format!("coda_embedded_{}.nnue", pid));
         let mut f = File::create(&tmp_path).map_err(|e| format!("create temp: {}", e))?;
         f.write_all(data).map_err(|e| format!("write temp: {}", e))?;
         drop(f);
-        Self::load(tmp_path.to_str().unwrap())
+        let result = Self::load(tmp_path.to_str().unwrap());
+        let _ = std::fs::remove_file(&tmp_path);
+        result
     }
 
     /// Load a v5/v6 .nnue file.
