@@ -35,12 +35,13 @@ rule: check-rust
 openbench: check-rust net
 	cargo rustc --release -- --emit link=$(NAME)
 
-# PGO build (profile-guided optimization)
+# PGO build (profile-guided optimization, ~3% NPS gain)
+TARGET_TUPLE := $(shell rustc --print host-tuple 2>/dev/null)
 pgo: check-rust net
 	cargo pgo instrument build
-	cargo pgo run -- bench
+	LLVM_PROFILE_FILE=target/pgo-profiles/coda_%m_%p.profraw ./target/$(TARGET_TUPLE)/release/coda bench 13
 	cargo pgo optimize build
-	mv target/release/coda $(NAME) 2>/dev/null || true
+	cp target/$(TARGET_TUPLE)/release/coda $(NAME)
 
 # Download production NNUE net
 net:
