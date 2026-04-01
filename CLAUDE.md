@@ -292,66 +292,101 @@ Examples: `net-v5-1024-w0-e120s120.nnue`, `net-v5-1024s-w5-e400s400.nnue`, `net-
 
 ## Testing Methodology
 
-### Cross-Engine Gauntlet (primary test method)
+### CRITICAL LESSON (2026-04-01)
 
-Self-play SPRT is unreliable for search changes (positive self-play can be negative cross-engine). All search/eval changes are validated by cross-engine gauntlet.
+Narrow cross-engine gauntlets (3 engines, 200 games) gave us inflated Elo estimates (+20 to +67) for changes that self-play SPRT later proved were 0 to -17. The narrow gauntlet overfits to specific opponents just like self-play overfits to shared eval blindspots. **Never merge based on narrow gauntlet results alone.**
 
-**Gauntlet opponents** (roughly equal strength to Coda):
-- Minic: `~/chess/engines/Minic/Dist/Minic3/minic_dev_linux_x64`
-- Ethereal: `~/chess/engines/Ethereal/src/Ethereal`
-- Texel: `~/chess/engines/texel/build/texel`
+Self-play SPRT with tight bounds is the primary acceptance criterion. It is disciplined (runs until statistically significant), reproducible, and — while it has known limitations — the direction of its results consistently matched broader cross-engine testing in our validation experiments.
 
-**Baseline** (1200 Coda games, run once per significant code change):
+### Self-Play SPRT (primary acceptance test)
+
+All search/eval changes must pass self-play SPRT before merging.
+
+**Two tiers of bounds:**
+
+**Tier A: `elo0=-5 elo1=5`** — "Don't ship regressions"
+- For: code cleanup, refactoring, consensus features, infrastructure changes
+- Question: "is this at least not harmful?"
+- Typically resolves in 1000-3000 games
+- Use when the change has structural value beyond pure Elo (e.g., cuckoo, 4D history)
+
+**Tier B: `elo0=0 elo1=10`** — "Prove it helps"
+- For: novel search ideas, parameter tuning, pruning changes
+- Question: "is this genuinely positive?"
+- Typically resolves in 1000-5000 games (longer for small gains)
+- Use for anything that adds complexity or changes search behaviour
+
+**SPRT command template:**
 ```bash
 cutechess-cli \
     -tournament gauntlet \
-    -engine name=CodaBaseline cmd=./target/release/coda dir=/home/adam/code/coda proto=uci \
-        option.NNUEFile=net-v5-1024s-w5-e800-s800.nnue option.OwnBook=false \
-    -engine name=Minic cmd=$HOME/chess/engines/Minic/Dist/Minic3/minic_dev_linux_x64 proto=uci \
-    -engine name=Ethereal cmd=$HOME/chess/engines/Ethereal/src/Ethereal proto=uci \
-    -engine name=Texel cmd=$HOME/chess/engines/texel/build/texel proto=uci \
+    -engine name=Contender cmd=<NEW_BINARY> proto=uci \
+        option.NNUEFile=<NET> option.OwnBook=false option.Hash=64 option.MoveOverhead=100 \
+    -engine name=Base cmd=<OLD_BINARY> proto=uci \
+        option.NNUEFile=<NET> option.OwnBook=false option.Hash=64 option.MoveOverhead=100 \
     -each tc=0/10+0.1 \
-    -games 2 -rounds 200 -concurrency 16 \
+    -rounds 10000 -concurrency 4 \
+    -sprt elo0=<ELO0> elo1=<ELO1> alpha=0.05 beta=0.05 \
     -openings file=/home/adam/code/gochess/testdata/noob_3moves.epd format=epd order=random \
-    -pgnout /tmp/baseline.pgn -recover \
+    -pgnout /tmp/sprt_<name>.pgn -recover -ratinginterval 100 \
+    -draw movenumber=20 movecount=10 score=10 \
+    -resign movecount=3 score=500 twosided=true
+```
+
+**Key rules:**
+- Both engines MUST use the same net file
+- Contender = prior commit + one change. Never stack untested changes.
+- Wait for H0 or H1. Do not stop early based on "looks good" — that's optimism bias.
+- H0 = reject (revert). H1 = accept (merge). No exceptions.
+- Log result to experiments.md with: H0/H1, Elo, games, LLR, tier used.
+
+### Cross-Engine Validation (secondary, for milestones)
+
+Self-play SPRT is reliable for direction but magnitude may differ cross-engine. Periodically validate cumulative progress with a peer-group gauntlet.
+
+**Peer-group gauntlet** (after every 3-5 merged changes):
+- Base binary + contender binary + 4-6 peer engines
+- Peers: Midnight, Winter, Minic, Tucano, Weiss, Texel (adjust as Coda's strength changes)
+- Gauntlet format (every game involves a Coda)
+- 200+ games, check that contender ≥ base relative to peers
+
+**Broad RR** (monthly milestone):
+- 15-30 engines spanning full strength range
+- Maximum 2 Coda variants (more causes Coda-on-Coda contamination that distorts results)
+- 100+ rounds for ±30 error bars
+
+### Model Comparison Testing
+
+For comparing NNUE nets (architectures, training, WDL blends):
+
+**5-way RR**: two nets under test + 3-4 rival engines.
+Self-play between nets is uninformative for WDL changes (WDL differences are invisible in self-play). Cross-engine RR is essential.
+
+```bash
+cutechess-cli \
+    -tournament round-robin \
+    -engine name=NetA cmd=./coda proto=uci option.NNUEFile=net_a.nnue option.OwnBook=false \
+    -engine name=NetB cmd=./coda proto=uci option.NNUEFile=net_b.nnue option.OwnBook=false \
+    -engine name=Weiss cmd=... proto=uci \
+    -engine name=Texel cmd=... proto=uci \
+    -engine name=Winter cmd=... proto=uci \
+    -each tc=0/10+0.1 \
+    -rounds 50 -concurrency 16 \
+    -openings file=noob_3moves.epd format=epd order=random \
+    -pgnout /tmp/model_test.pgn -recover -ratinginterval 20 \
     -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
 ```
 
-**Experiment** (600 Coda games):
-Same as above but `-rounds 100` and different binary/PGN path.
+Note: RR is correct here (not gauntlet) — we want both nets to play each other AND the rivals.
 
-**Scoring** (extract Coda Elo from PGN):
-```python
-import re, math
-with open('test.pgn') as f:
-    content = f.read()
-results = []
-for m in re.finditer(r'\[White \"(.*?)\"\].*?\[Result \"(.*?)\"\]', content, re.DOTALL):
-    white, result = m.groups()
-    is_coda = 'Coda' in white
-    if result == '1-0': results.append(1.0 if is_coda else 0.0)
-    elif result == '0-1': results.append(0.0 if is_coda else 1.0)
-    elif result == '1/2-1/2': results.append(0.5)
-n = len(results)
-score = sum(results)/n
-elo = -400*math.log10(1/score-1)
-print(f'{n} games, score {score:.3f}, Elo {elo:+.1f}')
-```
+### Known Testing Pitfalls
 
-**Decision framework**:
-- Compare experiment Elo to baseline Elo. Raw gain = experiment − baseline.
-- Error bars: ±17 (baseline 1200g) + ±24 (experiment 600g) = ~±29 combined.
-- Merge if: x-engine neutral to positive AND improves code quality AND consensus among top engines.
-- Reject if: clearly negative (>20 Elo below baseline at 200+ games).
-- Small gains (+3 to +8) that are consensus features: merge. They compound.
-
-**Key principles**:
-- Gauntlet, not RR: all games involve Coda (no wasted opponent-vs-opponent games).
-- One change per test. Stack only after individual validation.
-- Baseline is amortised across all experiments. Re-establish after major code changes.
-- CPU matters: baseline Elo varies by machine (Intel vs AMD, clock speed). Always compare experiment to baseline on the same machine.
-- Periodic big RR (13+ engines, 600g each) for absolute strength validation.
-- Log all results to experiments.md with game count, Elo, and raw gain vs baseline.
+- **Narrow gauntlet inflation**: 3 engines × 200 games gave +67 for a change that was actually 0. Use SPRT instead.
+- **Coda-on-Coda contamination**: Multiple Coda variants in a RR amplify shared eval biases. Keep to max 2 Coda variants.
+- **Optimism bias**: Stopping a test early because "it looks positive" leads to false positives. Let SPRT decide.
+- **False negatives**: A change rejected at -5 with wide error bars might be +5. Retest when conditions change.
+- **WDL blindspot**: WDL blending improvements are invisible in self-play. Must use cross-engine RR.
+- **Self-play discount**: Self-play Elo ≠ cross-engine Elo. Direction is usually reliable, magnitude varies.
 
 ### Model Comparison Testing
 
