@@ -973,14 +973,19 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 if i > 0 { pv_str.push(' '); }
                 pv_str.push_str(&move_to_uci(info.pv_table[0][i]));
             }
-            // If PV table is short, extend with TT
+            // If PV table is short, extend with TT (detect cycles to avoid looping PVs)
             if pv_len < depth as usize {
                 let mut pv_board = board.clone();
                 for i in 0..pv_len {
                     pv_board.make_move(info.pv_table[0][i]);
                 }
                 let mut pv_moves = pv_len;
+                let mut seen_hashes = Vec::new();
                 while pv_moves < depth as usize + 5 {
+                    // Cycle detection: stop if we've seen this position before
+                    if seen_hashes.contains(&pv_board.hash) { break; }
+                    seen_hashes.push(pv_board.hash);
+
                     let pv_tt = info.tt.probe(pv_board.hash);
                     if !pv_tt.hit || pv_tt.best_move == NO_MOVE { break; }
                     let pv_from = move_from(pv_tt.best_move);
