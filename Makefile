@@ -31,13 +31,10 @@ export RUSTFLAGS := -Ctarget-cpu=native
 rule: check-rust
 	cargo rustc --release -- --emit link=$(NAME)
 
-# OpenBench target — embeds NNUE net in binary when EVALFILE is provided
-openbench: check-rust
-ifdef EVALFILE
-	CODA_EVALFILE=$(EVALFILE) cargo rustc --release --features embedded-net -- --emit link=$(NAME)
-else
-	cargo rustc --release -- --emit link=$(NAME)
-endif
+# OpenBench target — embeds NNUE net in binary
+# Downloads from net.txt if net.nnue not present
+openbench: check-rust net
+	CODA_EVALFILE=$(CURDIR)/net.nnue cargo rustc --release --features embedded-net -- --emit link=$(NAME)
 
 # PGO build (profile-guided optimization, ~3% NPS gain)
 TARGET_TUPLE := $(shell rustc --print host-tuple 2>/dev/null)
