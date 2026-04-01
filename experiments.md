@@ -3529,32 +3529,59 @@ Disabling each feature individually to measure its contribution.
 | 8 | Futility | +6.1 ±8.8 | 1820 | H1 | **KEEP** (marginal) |
 | 9 | Razoring | -19.8 ±16.1 | 527 | -2.95 | **REMOVE** |
 
-### Atlas Results (7/8 complete, 2 still running)
+### Atlas Results — Initial (CPU STARVED, unreliable)
 
-| Test | Feature | Elo | Games | LLR | Verdict |
-|------|---------|-----|-------|-----|---------|
-| A1 | Extensions (all) | -9 | 1372 | -2.97 (H0) | **KEEP** |
-| A2 | Correction history | -3 | 4584 | H0 | **KEEP** (barely) |
-| A3 | Hindsight reduction | +9 | 1263 | 3.02 (H1) | **REMOVE** |
-| A4 | Alpha-reduce | +9 | 1307 | 2.97 (H1) | **REMOVE** |
-| A5 | ProbCut (old impl) | +4 | 3079 | H1 | **REMOVE** |
-| A6 | Hist prune | ~0 | ~2700 | grinding | Still running |
-| A7 | Bad noisy pruning | ~0 | ~2600 | grinding | Still running |
-| A8 | SEE prune | — | early | — | Still running |
+⚠️ Atlas was running a 36-engine RR alongside ablation, halving effective TC. All pruning-class results were systematically wrong. See clean CPU retests below.
+
+| Test | Feature | Elo (starved) | Games | Verdict (WRONG) |
+|------|---------|---------------|-------|-----------------|
+| A1 | Extensions (all) | -9 | 1372 | KEEP (correct) |
+| A2 | Correction history | -3 | 4584 | KEEP (understated) |
+| A3 | Hindsight reduction | +9 | 1263 | REMOVE (WRONG) |
+| A4 | Alpha-reduce | +9 | 1307 | REMOVE (WRONG) |
+| A5 | ProbCut (old impl) | +4 | 3079 | REMOVE (WRONG) |
+| A6 | Hist prune | +3 | 4804 | REMOVE (WRONG) |
+| A7 | Bad noisy pruning | +3 | 3697 | REMOVE (WRONG) |
+| A8 | SEE prune | +12 | 1054 | REMOVE (WRONG) |
+
+### Atlas Results — Clean CPU Retests (reliable)
+
+| Feature | Starved | Clean CPU | Flipped? |
+|---------|---------|-----------|----------|
+| Correction | -3 (4584g) | **-10** (1140g) | No — 3x stronger |
+| Hist prune | +3 (4804g) | **-17** (631g) | **YES** |
+| Bad noisy | +3 (3697g) | **-26** (394g) | **YES** |
+| SEE prune | +12 (1054g) | **-17** (742g) | **YES** |
+| Hindsight | +9 (1263g) | **-18** (629g) | **YES** |
+| Alpha-reduce | +9 (1307g) | **-4** (1116g, trending keep) | **YES** |
+| ProbCut | +4 (3079g) | ~0 (1731g, dead zero) | Partially |
+
+**5 of 5 retested pruning features flipped from REMOVE to KEEP.** CPU contention systematically biased against pruning features whose value scales with search depth.
+
+### Titan Feature Tests (Tier B: elo0=0, elo1=10)
+
+| Change | Elo | Games | LLR | Result |
+|--------|-----|-------|-----|--------|
+| Hindsight V2 (prior_r≥2, threshold 195) | -7.5 ±12.7 | 877 | -2.97 (H0) | **REJECTED** |
+| Futility V2 (90+100d+hist/128) | -0.9 ±8.6 | 2014 | H0 | **REJECTED** |
+| Correction clamp 192 vs 128 | -0.5 ±8.4 | 1965 | H0 | **REJECTED** |
 
 ### Actions Taken
 
-- **Razoring**: Fully removed from codebase (obsolete technique, removed by SF ~2019)
-- **Hindsight**: Disabled by default (FEAT_HINDSIGHT=false). Root cause identified: missing `prior_reduction >= N` gate that Stockfish/Alexandria use. Fixed implementation prepared (V1: gate>=1/thresh 200, V2: gate>=2/thresh 195). Awaiting SPRT.
-- **Alpha-reduce**: Disabled by default (FEAT_ALPHA_REDUCE=false). Needs retuning.
-- **ProbCut (old)**: Atlas working on improved implementation with dynamic SEE threshold, qsearch pre-verification, improving adjustment.
-- **Futility**: Marginal at +6.1 after 1820 games. Research shows our margin (60+lmrDepth*60) is tightest of all surveyed engines. SF uses 42+120*lmrDepth. Candidate for widening margins and adding history adjustment.
+- **Razoring**: Fully removed from codebase (obsolete technique, confirmed -20 Elo on Titan quiet CPU)
+- **ProbCut**: Disabled by default. Dead zero on clean CPU retest. Atlas ProbCut rewrites also failed (-24 and -2).
+- **All other features**: Re-enabled after clean CPU retests confirmed they help (hindsight -18, SEE prune -17, hist prune -17, bad noisy -26, alpha-reduce -4).
+- **Hindsight V2** (prior_reduction gate): Rejected at -7.5. Original hindsight works better than SF-style gated version.
+- **Futility V2** (wider margins + history): Rejected. Current margins (60+60*lmrDepth) are well-calibrated.
+- **Correction clamp 192**: Rejected. Clamp 128 is optimal (bracketed: 96 flat, 128 optimal, 192 flat).
 
 ### Key Insights
 
+- **CPU contention is catastrophic for ablation testing.** Halved TC (~1 ply less) systematically inverts pruning feature results. Always verify idle CPU before SPRT.
 - NMP had misleading early start (43% win rate at 120 games → recovered to 52% at 683). Reinforces: always let SPRT finish.
-- Singular extensions confirmed at +15.6 — not the drag we suspected. Extensions overall (-9) includes the recapture and check extensions too.
-- ~40 Elo of "bad stuff" removed (razoring -20, hindsight -9, alpha-reduce -9, probcut -4).
+- Singular extensions confirmed at +15.6 — not the drag we suspected.
+- The only genuine removal from the entire sweep is **razoring** (confirmed on Titan quiet CPU).
+- **ProbCut** is the only feature at true zero — disabled but kept behind feature flag for future re-evaluation.
 
 ## 2026-04-01: Hercules Net and Parameter SPRTs [SPRT-validated]
 
@@ -3574,3 +3601,23 @@ Self-play SPRT (elo0=0, elo1=10), TC 10+0.1, Hash=64.
 
 - **Result**: **H0**, -18.7 ±17.4 Elo, 688 games. Longer training hurts for w5.
 - **Notes**: e1600 actively worse than e800. Possible overtraining or LR schedule mismatch. The e800 cosine schedule is well-calibrated for this dataset size.
+
+### NMP V1 (divisor 173, no dampening, no capture adj)
+
+- **Result**: **H0**, -4.4 ±11.1 Elo, ~1400 games. Current NMP is well-calibrated.
+- **Notes**: Bundled three SF-style changes: eval divisor 200→173, removed score dampening (return beta instead of blend), removed capture R-1 adjustment. None helped. NMP formula (R=4+depth/3, divisor 200, dampened return, capture -1) is optimal.
+
+### Futility V1 (wider margins 90+100*lmrDepth)
+
+- **Result**: **H0**, +0.9 ±7.3 Elo, ~2800 games. Dead flat.
+- **Notes**: Widening from 60+60*d to 90+100*d (closer to SF's 42+120*d). No benefit. Current margins are well-calibrated. Combined with Titan's V2 rejection (history adjustment), futility is fully tuned.
+
+### s1200-w5 vs s800-w5 net (longer training, same architecture)
+
+- **Result**: **H0**, -5.3 ±11.6 Elo, ~1000 games. e800 is optimal training length.
+- **Notes**: Combined with e1600 rejection (-18.7 Elo), training length is bracketed: **e800 (optimal)** > e1200 (-5) > e1600 (-19). Diminishing returns become negative past s800 for 1024s w5.
+
+### 768pw-w5 vs 1024s-w5 (pairwise vs standard, both e800)
+
+- **Result**: Dead flat at +0.7 after 1945 games, killed.
+- **Notes**: Pairwise 768 matches standard 1024 in self-play — remarkable efficiency (768 params doing 1024's work). Cross-engine may differentiate. Neither architecture is strictly better in self-play.
