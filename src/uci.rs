@@ -22,25 +22,46 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
             println!("info string Failed to load NNUE from {}: {}", path, e);
         }
     } else {
-        // Auto-discover: look for net.txt in exe dir, then CWD
-        let try_paths = [
-            std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.txt"))),
-            Some(std::path::PathBuf::from("net.txt")),
-        ];
+        // Auto-discover NNUE net:
+        // 1. Try net.nnue in exe dir and CWD (OpenBench / Makefile convention)
+        // 2. Try net.txt → extract filename from URL → load that file
         let mut loaded = false;
-        for maybe_path in &try_paths {
+
+        // Check for net.nnue directly
+        let net_nnue_paths = [
+            std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.nnue"))),
+            Some(std::path::PathBuf::from("net.nnue")),
+        ];
+        for maybe_path in &net_nnue_paths {
             if let Some(path) = maybe_path {
                 if path.exists() {
-                    if let Ok(contents) = std::fs::read_to_string(path) {
-                        let url = contents.trim();
-                        // Extract filename from URL
-                        if let Some(fname) = url.rsplit('/').next() {
-                            let net_dir = path.parent().unwrap_or(std::path::Path::new("."));
-                            let net_path = net_dir.join(fname);
-                            if net_path.exists() {
-                                if let Ok(()) = info.load_nnue(net_path.to_str().unwrap()) {
-                                    loaded = true;
-                                    break;
+                    if let Ok(()) = info.load_nnue(path.to_str().unwrap()) {
+                        loaded = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Fall back to net.txt discovery
+        if !loaded {
+            let try_paths = [
+                std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.txt"))),
+                Some(std::path::PathBuf::from("net.txt")),
+            ];
+            for maybe_path in &try_paths {
+                if let Some(path) = maybe_path {
+                    if path.exists() {
+                        if let Ok(contents) = std::fs::read_to_string(path) {
+                            let url = contents.trim();
+                            if let Some(fname) = url.rsplit('/').next() {
+                                let net_dir = path.parent().unwrap_or(std::path::Path::new("."));
+                                let net_path = net_dir.join(fname);
+                                if net_path.exists() {
+                                    if let Ok(()) = info.load_nnue(net_path.to_str().unwrap()) {
+                                        loaded = true;
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -48,8 +69,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
             }
         }
+
         if !loaded && !classical {
-            println!("info string WARNING: No NNUE net found. Use 'setoption name NNUEFile value <path>' or -nnue flag.");
+            println!("info string WARNING: No NNUE net found. Use 'setoption name NNUEFile value <path>', -nnue flag, or 'coda fetch-net'.");
         }
         if !loaded && classical {
             eprintln!("info string Classical (PeSTO) eval mode — no NNUE net loaded.");

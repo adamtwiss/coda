@@ -118,6 +118,10 @@ fn main() {
             }
         }
 
+        "fetch-net" => {
+            run_fetch_net();
+        }
+
         "bench" => {
             let depth = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(13);
             let nnue_path = flag_value(&args, "-nnue");
@@ -367,6 +371,39 @@ fn run_check_net(net_path: &str) {
     }
 }
 
+fn run_fetch_net() {
+    let net_txt = std::path::Path::new("net.txt");
+    if !net_txt.exists() {
+        eprintln!("Error: net.txt not found in current directory");
+        std::process::exit(1);
+    }
+    let url = std::fs::read_to_string(net_txt).unwrap().trim().to_string();
+    if url.is_empty() {
+        eprintln!("Error: net.txt is empty");
+        std::process::exit(1);
+    }
+    let fname = url.rsplit('/').next().unwrap_or("net.nnue");
+    let out_path = std::path::Path::new(fname);
+    if out_path.exists() {
+        println!("{} already exists, skipping download", fname);
+        return;
+    }
+    println!("Downloading {} ...", url);
+    let output = std::process::Command::new("curl")
+        .args(["-sL", &url, "-o", fname])
+        .status();
+    match output {
+        Ok(status) if status.success() => {
+            let size = std::fs::metadata(fname).map(|m| m.len()).unwrap_or(0);
+            println!("Downloaded {} ({} bytes)", fname, size);
+        }
+        _ => {
+            eprintln!("Error: failed to download {}", url);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn print_usage() {
     println!("Coda Chess Engine — Chess Optimised, Developed Agentically");
     println!();
@@ -375,6 +412,7 @@ fn print_usage() {
     println!("  coda -nnue <net.nnue>             UCI with specific NNUE network");
     println!("  coda -classical                   UCI with PeSTO eval (no NNUE required)");
     println!("  coda -book <book.bin>             UCI with Polyglot opening book");
+    println!("  coda fetch-net                    Download NNUE net from net.txt URL");
     println!("  coda bench [depth] [-nnue <net>]  Search benchmark");
     println!("  coda epd <file> [time] [max] [-nnue <net>]");
     println!("                                    Run EPD test suite");
