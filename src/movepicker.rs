@@ -45,17 +45,25 @@ impl History {
     /// Get main history score for a move given enemy threat bitboard.
     #[inline(always)]
     pub fn main_score(&self, from: u8, to: u8, threats: Threats) -> i32 {
-        let ft = ((threats >> from) & 1) as usize;
-        let tt = ((threats >> to) & 1) as usize;
-        self.main[ft][tt][from as usize][to as usize]
+        if crate::search::FEAT_4D_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
+            let ft = ((threats >> from) & 1) as usize;
+            let tt = ((threats >> to) & 1) as usize;
+            self.main[ft][tt][from as usize][to as usize]
+        } else {
+            self.main[0][0][from as usize][to as usize]
+        }
     }
 
     /// Get mutable reference to main history entry for a move given enemy threats.
     #[inline(always)]
     pub fn main_entry(&mut self, from: u8, to: u8, threats: Threats) -> &mut i32 {
-        let ft = ((threats >> from) & 1) as usize;
-        let tt = ((threats >> to) & 1) as usize;
-        &mut self.main[ft][tt][from as usize][to as usize]
+        if crate::search::FEAT_4D_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
+            let ft = ((threats >> from) & 1) as usize;
+            let tt = ((threats >> to) & 1) as usize;
+            &mut self.main[ft][tt][from as usize][to as usize]
+        } else {
+            &mut self.main[0][0][from as usize][to as usize]
+        }
     }
 
     pub fn new() -> Self {

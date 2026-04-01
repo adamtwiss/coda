@@ -44,6 +44,7 @@ pub static FEAT_TT_STORE: AtomicBool = AtomicBool::new(true);
 pub static FEAT_QS_CAPTURES: AtomicBool = AtomicBool::new(true); // false = QS returns eval immediately
 pub static FEAT_SINGULAR: AtomicBool = AtomicBool::new(true); // singular extensions specifically
 pub static FEAT_CUCKOO: AtomicBool = AtomicBool::new(true); // cuckoo cycle detection
+pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 4D history indexing
 
 /// Disable all features (pure negamax + eval)
 pub fn disable_all_features() {
@@ -594,6 +595,7 @@ fn init_feature_flags() {
             if std::env::var("NO_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES.store(false, Ordering::Relaxed); }
             if std::env::var("NO_SINGULAR").is_ok() { FEAT_SINGULAR.store(false, Ordering::Relaxed); }
             if std::env::var("NO_CUCKOO").is_ok() { FEAT_CUCKOO.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_4D_HISTORY").is_ok() { FEAT_4D_HISTORY.store(false, Ordering::Relaxed); }
         }
     });
 }
