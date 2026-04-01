@@ -57,7 +57,7 @@ net:
 # Check Rust toolchain version
 check-rust:
 	@command -v cargo >/dev/null 2>&1 || { echo "Error: cargo not found. Install Rust from https://rustup.rs"; exit 1; }
-	@RUST_VERSION=$$(rustc --version | grep -oP '\d+\.\d+\.\d+'); \
+	@RUST_VERSION=$$(rustc --version | sed 's/rustc \([0-9]*\.[0-9]*\.[0-9]*\).*/\1/'); \
 	MIN="$(MIN_RUST_VERSION)"; \
 	if [ "$$(printf '%s\n' "$$MIN" "$$RUST_VERSION" | sort -V | head -n1)" != "$$MIN" ]; then \
 		echo "Error: Rust $$RUST_VERSION is too old. Need >= $$MIN. Run: rustup update"; \
