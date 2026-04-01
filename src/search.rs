@@ -31,7 +31,7 @@ pub static FEAT_LMP: AtomicBool = AtomicBool::new(true);
 pub static FEAT_FUTILITY: AtomicBool = AtomicBool::new(true);
 pub static FEAT_SEE_PRUNE: AtomicBool = AtomicBool::new(false); // disabled: ablation showed +12 Elo without, eval not accurate enough
 pub static FEAT_HIST_PRUNE: AtomicBool = AtomicBool::new(true); // confirmed: -17 Elo without (retested without CPU contention)
-pub static FEAT_BAD_NOISY: AtomicBool = AtomicBool::new(false); // disabled: ablation showed +3 Elo without
+pub static FEAT_BAD_NOISY: AtomicBool = AtomicBool::new(true); // confirmed: -26 Elo without (retested without CPU contention)
 pub static FEAT_EXTENSIONS: AtomicBool = AtomicBool::new(true);
 pub static FEAT_ALPHA_REDUCE: AtomicBool = AtomicBool::new(false); // disabled: -9 Elo in ablation, needs retuning
 pub static FEAT_IIR: AtomicBool = AtomicBool::new(true);
@@ -1358,12 +1358,9 @@ fn negamax(
         info.stats.nmp_attempts += 1;
         // Adaptive reduction: scales with depth and eval margin above beta
         let mut r = 4 + depth / 3;
-        // Reduce less after captures
-        if !board.undo_stack.is_empty() && board.undo_stack[board.undo_stack.len() - 1].captured != NO_PIECE_TYPE {
-            r -= 1;
-        }
+        // Eval-based bonus (SF uses /173, we had /200)
         if static_eval > beta {
-            let eval_r = ((static_eval - beta) / 200).min(3);
+            let eval_r = ((static_eval - beta) / 173).min(3);
             r += eval_r;
         }
         // Clamp so null-move search is at least depth 1
@@ -1384,8 +1381,9 @@ fn negamax(
         }
 
         if null_score >= beta {
-            // NMP score dampening: blend toward beta to prevent inflated scores
-            let dampened = (null_score * 2 + beta) / 3;
+            // Return beta (not null_score) to avoid inflated scores from null-move search
+            // Exception: preserve mate scores since they carry distance information
+            let nmp_return = if null_score.abs() > MATE_SCORE - 100 { null_score } else { beta };
 
             // Verification search at high depths to guard against zugzwang
             if depth >= 12 {
@@ -1393,12 +1391,12 @@ fn negamax(
                 let v_score = negamax(board, info, beta - 1, beta, depth - 1 - r, ply + 1, false);
                 if v_score >= beta {
                     info.stats.nmp_cutoffs += 1;
-                    return dampened;
+                    return nmp_return;
                 }
                 info.stats.nmp_verify_fail += 1;
             } else {
                 info.stats.nmp_cutoffs += 1;
-                return dampened;
+                return nmp_return;
             }
         } else {
             // NMP failed low: extract opponent's best reply from TT for threat detection
