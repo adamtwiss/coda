@@ -149,11 +149,37 @@ We train on **Bullet** (Rust, CUDA, fork: `adamtwiss/bullet`) using T80 binpack 
 
 ### GPU Host Setup
 
-All GPU hosts should use the forked Bullet trainer:
+All GPU hosts should use the forked Bullet trainer at `~/code/bullet`:
 ```bash
-git clone git@github.com:adamtwiss/bullet.git
-cd bullet && cargo build --release
+# Should already be cloned; if not:
+git clone https://github.com/adamtwiss/bullet ~/code/bullet
+cd ~/code/bullet && cargo build --release
 ```
+
+The Coda repo should also be cloned for the converter:
+```bash
+git clone https://github.com/adamtwiss/coda ~/code/coda
+cd ~/code/coda && cargo build --release
+```
+
+### Training Data Locations
+
+**GPU hosts** (cloud): `/workspace/data/`
+**Dev hosts** (Hercules, Atlas, Titan): `/training/data/`
+
+```
+# T80 binpack data (~30B positions across 12 files)
+T80_test-80-2024-10-d12-3B.binpack          # 3B positions
+T80_test-80-2024-01-d9-12B.binpack          # 12B positions
+T80_test-80-2024-04-d12-6B.binpack          # 6B positions
+T80_test-80-2024-06-d12-6B.binpack          # 6B positions
+...                                          # additional T80 files
+
+# Supplementary data
+blunders-0.2.binpack                         # Self-play with 20% blunder rate (~1B positions)
+```
+
+Bullet training configs reference these paths directly. When setting up a new GPU host, ensure the data directory is populated (symlink or copy from storage).
 
 **Output directory**: All trained models and checkpoints go in `coda/nets/`:
 ```
@@ -339,6 +365,18 @@ cutechess-cli \
 - Wait for H0 or H1. Do not stop early based on "looks good" — that's optimism bias.
 - H0 = reject (revert). H1 = accept (merge). No exceptions.
 - Log result to experiments.md with: H0/H1, Elo, games, LLR, tier used.
+
+### Commit Messages
+
+**Every commit that changes search/eval must include `Bench: <nodes>` in the commit message.** OpenBench uses this to verify the correct binary was built. Get the value by running `coda bench` with the production net loaded. Example:
+
+```
+Fix razoring margin at depth 2
+
+Bench: 1375565
+```
+
+If the change doesn't affect bench (e.g. comments, docs, tooling), the bench line is optional.
 
 ### Cross-Engine Validation (secondary, for milestones)
 
