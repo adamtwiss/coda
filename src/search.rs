@@ -2614,16 +2614,18 @@ pub fn bench(depth: i32, nnue_path: Option<&str>) -> u64 {
             eprintln!("Warning: failed to load NNUE: {}", e);
         }
     } else {
-        // Auto-discover NNUE net: compile-time EVALFILE, then net.nnue in CWD/exe dir
+        // Auto-discover NNUE net
         let mut found = false;
 
-        // 1. Compile-time embedded path (OpenBench sets CODA_EVALFILE during make)
-        if let Some(evalfile) = option_env!("CODA_EVALFILE") {
-            if std::path::Path::new(evalfile).exists() {
-                if let Ok(()) = info.load_nnue(evalfile) {
-                    found = true;
-                }
-            }
+        // 1. Embedded net (compiled in via CODA_EVALFILE env var during build)
+        #[cfg(feature = "embedded-net")]
+        {
+            static EMBEDDED_NET: &[u8] = include_bytes!(env!("CODA_EVALFILE"));
+            let net = crate::nnue::NNUENet::load_from_bytes(EMBEDDED_NET).expect("embedded NNUE corrupt");
+            let acc = crate::nnue::NNUEAccumulator::new(net.hidden_size);
+            info.nnue_net = Some(std::sync::Arc::new(net));
+            info.nnue_acc = Some(acc);
+            found = true;
         }
 
         // 2. net.nnue in exe dir or CWD
@@ -2638,6 +2640,33 @@ pub fn bench(depth: i32, nnue_path: Option<&str>) -> u64 {
                         if let Ok(()) = info.load_nnue(path.to_str().unwrap()) {
                             found = true;
                             break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. net.txt discovery (extract filename from URL)
+        if !found {
+            let try_paths = [
+                std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.txt"))),
+                Some(std::path::PathBuf::from("net.txt")),
+            ];
+            for maybe_path in &try_paths {
+                if let Some(path) = maybe_path {
+                    if path.exists() {
+                        if let Ok(contents) = std::fs::read_to_string(path) {
+                            let url = contents.trim();
+                            if let Some(fname) = url.rsplit('/').next() {
+                                let net_dir = path.parent().unwrap_or(std::path::Path::new("."));
+                                let net_path = net_dir.join(fname);
+                                if net_path.exists() {
+                                    if let Ok(()) = info.load_nnue(net_path.to_str().unwrap()) {
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                            }
                         }
                     }
                 }

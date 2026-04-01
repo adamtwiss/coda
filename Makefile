@@ -31,9 +31,13 @@ export RUSTFLAGS := -Ctarget-cpu=native
 rule: check-rust
 	cargo rustc --release -- --emit link=$(NAME)
 
-# OpenBench target — passes EVALFILE path to binary via compile-time env
+# OpenBench target — embeds NNUE net in binary when EVALFILE is provided
 openbench: check-rust
-	CODA_EVALFILE=$(EVALFILE) cargo rustc --release -- --emit link=$(NAME)
+ifdef EVALFILE
+	CODA_EVALFILE=$(EVALFILE) cargo rustc --release --features embedded-net -- --emit link=$(NAME)
+else
+	cargo rustc --release -- --emit link=$(NAME)
+endif
 
 # PGO build (profile-guided optimization, ~3% NPS gain)
 TARGET_TUPLE := $(shell rustc --print host-tuple 2>/dev/null)
