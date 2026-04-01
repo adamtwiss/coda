@@ -43,6 +43,8 @@ pub static FEAT_TT_CUTOFF: AtomicBool = AtomicBool::new(true);
 pub static FEAT_TT_NEARMISS: AtomicBool = AtomicBool::new(true);
 pub static FEAT_TT_STORE: AtomicBool = AtomicBool::new(true);
 pub static FEAT_QS_CAPTURES: AtomicBool = AtomicBool::new(true); // false = QS returns eval immediately
+pub static FEAT_SINGULAR: AtomicBool = AtomicBool::new(true); // singular extensions specifically
+pub static FEAT_CUCKOO: AtomicBool = AtomicBool::new(true); // cuckoo cycle detection
 
 /// Disable all features (pure negamax + eval)
 pub fn disable_all_features() {
@@ -596,6 +598,8 @@ fn init_feature_flags() {
                 if std::env::var("NO_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS.store(false, Ordering::Relaxed); }
                 if std::env::var("NO_TT_STORE").is_ok() { FEAT_TT_STORE.store(false, Ordering::Relaxed); }
                 if std::env::var("NO_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_SINGULAR").is_ok() { FEAT_SINGULAR.store(false, Ordering::Relaxed); }
+                if std::env::var("NO_CUCKOO").is_ok() { FEAT_CUCKOO.store(false, Ordering::Relaxed); }
             }
         }
     });
@@ -1148,7 +1152,7 @@ fn negamax(
 
     // Cuckoo cycle detection: proactive repetition avoidance (Stockfish/Berserk/Viridithas)
     // If we're losing (alpha < 0) and a repetition can be forced, raise alpha to draw score.
-    if ply > 0 && alpha < 0 && crate::cuckoo::has_game_cycle(board, ply) {
+    if ply > 0 && alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
         alpha = 0;
         if alpha >= beta {
             return alpha;
@@ -1604,6 +1608,7 @@ fn negamax(
             && tt_hit
             && tt_entry.flag != TT_FLAG_UPPER
             && tt_entry.depth >= depth - 3
+            && FEAT_SINGULAR.load(Ordering::Relaxed)
         {
             let tt_score_local = {
                 let mut s = tt_entry.score;
@@ -2372,7 +2377,7 @@ fn quiescence_with_depth(
     }
 
     // Cuckoo cycle detection in quiescence
-    if alpha < 0 && crate::cuckoo::has_game_cycle(board, ply) {
+    if alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
         alpha = 0;
         if alpha >= beta {
             return alpha;
