@@ -27,14 +27,12 @@ endif
 # Rust flags
 export RUSTFLAGS := -Ctarget-cpu=native
 
-# Default: build with native optimizations
-rule: check-rust
-	cargo rustc --release -- --emit link=$(NAME)
-
-# OpenBench target — embeds NNUE net in binary
-# Downloads from net.txt if net.nnue not present
-openbench: check-rust net
+# Default: build with embedded NNUE net (downloads from net.txt if needed)
+rule: check-rust net
 	CODA_EVALFILE=$(CURDIR)/net.nnue cargo rustc --release --features embedded-net -- --emit link=$(NAME)
+
+# Alias for OpenBench compatibility
+openbench: rule
 
 # PGO build (profile-guided optimization, ~3% NPS gain)
 TARGET_TUPLE := $(shell rustc --print host-tuple 2>/dev/null)
