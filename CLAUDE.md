@@ -381,6 +381,7 @@ Note: RR is correct here (not gauntlet) — we want both nets to play each other
 
 ### Known Testing Pitfalls
 
+- **CPU contention**: Ensure CPU cores are fairly idle before starting SPRT tests. Background load (other tests, RRs, compilation) halves effective TC and distorts marginal results. In our ablation sweep, CPU contention flipped history pruning from +3 (false H1) to -17 (real H0) and correction history from -3 to -10. Always check `htop` or equivalent before launching tests.
 - **Narrow gauntlet inflation**: 3 engines × 200 games gave +67 for a change that was actually 0. Use SPRT instead.
 - **Coda-on-Coda contamination**: Multiple Coda variants in a RR amplify shared eval biases. Keep to max 2 Coda variants.
 - **Optimism bias**: Stopping a test early because "it looks positive" leads to false positives. Let SPRT decide.
