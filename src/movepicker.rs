@@ -504,7 +504,7 @@ impl MovePicker {
                 // Good capture
                 let idx = self.moves.len;
                 self.moves.push(m);
-                self.scores[idx] = mvv_lva(board, m) + capt_hist_score_static(board, history, m);
+                self.scores[idx] = mvv_lva(board, m) + capt_hist_score_static(board, history, m) / 16;
             }
         }
         self.index = 0;
