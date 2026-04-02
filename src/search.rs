@@ -162,7 +162,7 @@ pub struct SearchInfo {
     reductions: [i32; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
     excluded_move: [Move; MAX_PLY + 1],
-    /// Pawn history: [pawn_hash % PAWN_HIST_SIZE][piece 1-12][to_square] (slot 0 unused)
+    /// Pawn history: [pawn_hash & (PAWN_HIST_SIZE - 1)][piece 1-12][to_square] (slot 0 unused)
     pawn_hist: Box<[[[i16; 64]; 13]; PAWN_HIST_SIZE]>,
     /// Pawn correction history: [stm][pawn_hash % size]
     pawn_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
@@ -412,21 +412,21 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
     let stm = board.side_to_move as usize;
 
     // Pawn correction
-    let pawn_idx = (board.pawn_hash as usize) % CORR_HIST_SIZE;
+    let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
     let pawn_corr = info.pawn_corr[stm][pawn_idx] as i64;
 
     // Non-pawn corrections (per color)
-    let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) % CORR_HIST_SIZE;
+    let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
     let white_np_corr = info.np_corr[stm][WHITE as usize][white_np_idx] as i64;
-    let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) % CORR_HIST_SIZE;
+    let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
     let black_np_corr = info.np_corr[stm][BLACK as usize][black_np_idx] as i64;
 
     // Minor piece correction (knight+bishop hash)
-    let minor_idx = (board.minor_key[WHITE as usize] ^ board.minor_key[BLACK as usize]) as usize % CORR_HIST_SIZE;
+    let minor_idx = (board.minor_key[WHITE as usize] ^ board.minor_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
     let minor_corr = info.minor_corr[stm][minor_idx] as i64;
 
     // Major piece correction (rook+queen hash)
-    let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize % CORR_HIST_SIZE;
+    let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
     let major_corr = info.major_corr[stm][major_idx] as i64;
 
     // Continuation correction (from opponent's last move)
@@ -464,21 +464,21 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     let stm = board.side_to_move as usize;
 
     // Pawn correction
-    let pawn_idx = (board.pawn_hash as usize) % CORR_HIST_SIZE;
+    let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
     update_corr_entry(&mut info.pawn_corr[stm][pawn_idx], err, weight);
 
     // Non-pawn corrections (per color)
-    let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) % CORR_HIST_SIZE;
+    let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
     update_corr_entry(&mut info.np_corr[stm][WHITE as usize][white_np_idx], err, weight);
-    let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) % CORR_HIST_SIZE;
+    let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
     update_corr_entry(&mut info.np_corr[stm][BLACK as usize][black_np_idx], err, weight);
 
     // Minor piece correction
-    let minor_idx = (board.minor_key[WHITE as usize] ^ board.minor_key[BLACK as usize]) as usize % CORR_HIST_SIZE;
+    let minor_idx = (board.minor_key[WHITE as usize] ^ board.minor_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
     update_corr_entry(&mut info.minor_corr[stm][minor_idx], err, weight);
 
     // Major piece correction
-    let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize % CORR_HIST_SIZE;
+    let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
     update_corr_entry(&mut info.major_corr[stm][major_idx], err, weight);
 
     // Continuation correction
@@ -1484,7 +1484,7 @@ fn negamax(
     }
 
     // Pawn history pointer for this position's pawn structure
-    let ph_idx = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
+    let ph_idx = (board.pawn_hash as usize) & (PAWN_HIST_SIZE - 1);
 
     // Use MovePicker for staged move generation
     let prev_move = if !board.undo_stack.is_empty() {
