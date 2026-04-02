@@ -129,18 +129,6 @@ pub struct PruneStats {
     pub qnodes: u64,
     pub beta_cutoffs: u64,
     pub first_move_cutoffs: u64,
-    // LMR reduction histogram: [0]=reduction 0 (no LMR), [1]=1, ... [7]=7+
-    pub lmr_reductions: [u64; 8],
-    // new_depth histogram for recursive calls: [0..15]=depth 0-14, [15]=15+
-    pub depth_hist: [u64; 16],
-    // LMR adjustment tracking
-    pub lmr_adj_improving: u64,
-    pub lmr_adj_failing: u64,
-    pub lmr_adj_pv: u64,
-    pub lmr_adj_cut: u64,
-    pub lmr_adj_unstable: u64,
-    pub lmr_adj_history_neg: u64,
-    pub lmr_adj_history_pos: u64,
 }
 
 /// Search state for one thread.
@@ -1132,7 +1120,7 @@ fn negamax(
     }
 
     info.nodes += 1;
-    info.stats.depth_hist[depth.clamp(0, 15) as usize] += 1;
+
 
     // Draw detection: repetition and 50-move rule
     if ply > 0 {
@@ -1498,19 +1486,6 @@ fn negamax(
     // Pawn history pointer for this position's pawn structure
     let ph_idx = (board.pawn_hash as usize) % PAWN_HIST_SIZE;
 
-    // Compute enemy pawn attacks for threat-aware LMR
-    let enemy_pawn_attacks = if !in_check {
-        let them = flip_color(us);
-        let enemy_pawns = board.pieces[PAWN as usize] & board.colors[them as usize];
-        if us == WHITE {
-            south_west(enemy_pawns) | south_east(enemy_pawns)
-        } else {
-            north_west(enemy_pawns) | north_east(enemy_pawns)
-        }
-    } else {
-        0
-    };
-
     // Use MovePicker for staged move generation
     let prev_move = if !board.undo_stack.is_empty() {
         board.undo_stack[board.undo_stack.len() - 1].mv
@@ -1810,25 +1785,21 @@ fn negamax(
                 // Reduce less at PV nodes where accuracy matters most
                 if beta - alpha > 1 {
                     reduction -= 1;
-                    info.stats.lmr_adj_pv += 1;
                 }
 
                 // Reduce more at expected cut nodes (zero window, not first move)
                 if !is_pv && move_count > 1 {
                     reduction += 1;
-                    info.stats.lmr_adj_cut += 1;
                 }
 
                 // Reduce less when the position is improving
                 if improving {
                     reduction -= 1;
-                    info.stats.lmr_adj_improving += 1;
                 }
 
                 // Reduce more when position is deteriorating significantly
                 if failing {
                     reduction += 1;
-                    info.stats.lmr_adj_failing += 1;
                 }
 
                 // Reduce more when multiple moves have already raised alpha
@@ -1839,7 +1810,6 @@ fn negamax(
                 // Reduce less when eval is unstable (sharp swing from parent)
                 if unstable {
                     reduction -= 1;
-                    info.stats.lmr_adj_unstable += 1;
                 }
 
                 // Reduce more when TT move is a capture
@@ -1857,7 +1827,7 @@ fn negamax(
                 }
 
                 // Reduce less when moving a piece away from a pawn-attacked square
-                if enemy_pawn_attacks & (1u64 << from) != 0 {
+                if enemy_attacks & (1u64 << from) != 0 {
                     reduction -= 1;
                 }
 
@@ -1875,8 +1845,6 @@ fn negamax(
                 }
                 let hist_adj = hist_score / 5000;
                 reduction -= hist_adj;
-                if hist_adj > 0 { info.stats.lmr_adj_history_neg += 1; } // reduces reduction = good history
-                if hist_adj < 0 { info.stats.lmr_adj_history_pos += 1; } // increases reduction = bad history
 
                 // Complexity-aware LMR: reduce less when correction history
                 // magnitude is high (uncertain eval → search deeper).
@@ -1940,7 +1908,6 @@ fn negamax(
 
         if reduction > 0 {
             info.stats.lmr_searches += 1;
-            info.stats.lmr_reductions[reduction.min(7) as usize] += 1;
 
             // LMR: reduced depth, zero window
             let lmr_depth = new_depth - reduction;
