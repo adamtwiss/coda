@@ -1423,8 +1423,9 @@ fn negamax(
     // raised beta confirms the position is winning, prune the node
     let probcut_beta = beta + 170;
     if !in_check && ply > 0 && depth >= 5
-        && static_eval + 85 >= probcut_beta
+        && beta.abs() < MATE_SCORE - 100  // skip for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
+        && !(tt_hit && tt_entry.depth >= depth - 3 && tt_entry.score < probcut_beta)  // TT says no chance
         && FEAT_PROBCUT.load(Ordering::Relaxed)
     {
         // SEE threshold: only consider captures that gain enough material
