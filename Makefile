@@ -28,8 +28,9 @@ endif
 export RUSTFLAGS := -Ctarget-cpu=native
 
 # Default: build with embedded NNUE net (downloads from net.txt if needed)
+# EVALFILE may be overridden by OpenBench with an absolute path to the network
 rule: check-rust net
-	CODA_EVALFILE=$(CURDIR)/net.nnue cargo rustc --release --features embedded-net -- --emit link=$(NAME)
+	CODA_EVALFILE=$(abspath $(EVALFILE)) cargo rustc --release --features embedded-net -- --emit link=$(NAME)
 
 # Alias for OpenBench compatibility
 openbench: rule
