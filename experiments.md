@@ -3630,3 +3630,53 @@ First test on OpenBench. Reference NPS was set too high (1.1M vs actual 0.3-0.6M
 
 - **Result**: **H1**, +3.5 Elo, 14,910 games. LLR 2.94. Longest SPRT ever run.
 - **Notes**: Razoring helps by ~3.5 Elo at effectively LTC (2-3x target TC). This contradicts Titan's -20 at STC. Razoring is **TC-dependent**: hurts at STC (shallow search), helps at LTC (deeper search saves more by pruning hopeless shallow nodes). Decision: **keep removed**. The benefit is marginal, TC-dependent, and every top engine has removed it. When reference NPS is corrected, future tests will run at proper STC where razoring hurts.
+
+## 2026-04-02: OpenBench Tests — Code Review and Engine Analysis [SPRT-validated]
+
+All tests via OpenBench (https://ob.atwiss.com/), self-play SPRT [0.00, 5.00], TC 10+0.1 scaled by NPS.
+
+### Completed / Stopped Tests
+
+| # | Test | Elo | Games | LLR | Result | Action |
+|---|------|-----|-------|-----|--------|--------|
+| 5 | 4file-blunders vs 4file (SB100) | +1.2 | 26,970 | -0.71 | Flat | Stopped. SB100 too short to differentiate. |
+| 6 | 4D history ablation (NO_4D_HISTORY) | ~0 | 13,002 | -2.96 | **H0** | Confirmed zero Elo. |
+| 7 | retry-lmp-depth9 | -0.49 | 7,216 | -0.97 | Stopped (trending H0) | Was +5 early, regressed. |
+| 8 | retry-opp-material-4 | -3.1 | 7,482 | -1.71 | Stopped (trending H0) | Not helping. |
+| 9 | retry-fh-blend-depth4 | ~flat | 5,772 | -1.57 | Stopped (trending H0) | Not helping. |
+| 12 | fix-tt-exact-pv | -0.35 | 8,060 | -0.94 | Stopped. Neutral. | **Merged** as correctness fix. |
+| 14 | fix-corr-hist-modulo | +0.55 | 7,370 | -0.47 | Stopped. Neutral. | **Merged** (bitmask is objectively correct). |
+| 15 | fix-cutnode-lmr (+2 at cut nodes) | -15.7 | 3,040 | -2.95 | **H0** | Rejected. Too aggressive for our engine. |
+| 20 | cleanup-search-hot-path | ~0 | 6,144 | 0.09 | Stopped. No regression. | **Merged** as code quality improvement. |
+
+### Still Running
+
+| # | Test | Elo | Games | LLR | Source |
+|---|------|-----|-------|-----|--------|
+| 13 | fix-asp-depth-clamp | ~+5 | ~950 | 0.36 | Code review: depth-2 min on fail-high |
+| 16 | fix-strong-failhigh-bonus | ~flat | ~1,700 | 0.00 | Engine review: depth+1 when score > beta+95 |
+| 17 | 768pw-w7 vs production | ~flat | ~4,300 | -1.04 | Net comparison |
+| 29 | fix-cuckoo-init (3 bugs) | ~-3 | ~3,400 | -0.87 | Critical: XOR init, obstruction, pliesFromNull |
+| 21 | fix-nmp-bugs (3 bugs) | early | — | — | Verify depth, capture R, depth>=2 |
+| 22 | fix-lmr-nonpawn | early | — | — | Wrong side non-pawn check |
+| 23 | fix-se-extensions (3 fixes) | early | — | — | Limiter, negative ext, multi-cut |
+| 24 | fix-futility-exemptions | early | — | — | TT/killer exempt, ply>0 guard |
+| 25 | fix-histprune-score | early | — | — | Full combined history for pruning |
+| 26 | fix-histprune-no-improving | early | — | — | Remove !improving+!unstable guards |
+| 27 | fix-histprune-no-unstable | early | — | — | Remove !unstable guard only |
+| 28 | fix-capthist-scale | early | — | — | Restore captHist/16 scaling |
+
+### Bug Inventory (discovered 2026-04-02)
+
+Systematic feature-by-feature deep review by Titan uncovered implementation bugs in nearly every search feature. Key findings:
+
+**Cuckoo** (3 bugs): XOR chain init wrong (dead code), obstruction missing dest square, no pliesFromNull limit.
+**NMP** (3 bugs): Verification depth too shallow, capture R inverted, depth gate too conservative.
+**LMR** (1 bug): Wrong side non-pawn piece check (reducing when WE have few pieces, not opponent).
+**SE** (3 issues): No extension limiter, weak negative extensions, multi-cut returns wrong score.
+**Futility** (2 bugs): Missing TT/killer exemptions, no ply>0 guard.
+**SEE** (2 bugs): Promotions completely unhandled (major), EP pawn not removed from occupancy.
+**RFP** (2 bugs): Missing !is_pv guard, missing excluded_move guard.
+**History Pruning** (2 issues): Incomplete history score, overly conservative guards.
+
+All fixes branched and SPRT testing in progress.
