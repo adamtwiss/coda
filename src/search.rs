@@ -1855,7 +1855,7 @@ fn negamax(
                 let opp = flip_color(board.side_to_move);
                 let opp_non_pawn = board.colors[opp as usize]
                     & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
-                if popcount(opp_non_pawn) < 3 {
+                if popcount(opp_non_pawn) < 4 {
                     reduction += 1;
                 }
 
