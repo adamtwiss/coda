@@ -2194,7 +2194,7 @@ fn negamax(
     }
 
     // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes
-    if best_score >= beta && beta - alpha_orig == 1 && depth >= 3
+    if best_score >= beta && beta - alpha_orig == 1 && depth >= 4
         && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
     {
         return (best_score * depth + beta) / (depth + 1);
