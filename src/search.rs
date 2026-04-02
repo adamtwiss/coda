@@ -1182,15 +1182,17 @@ fn negamax(
             if tt_depth >= depth && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 match tt_entry.flag {
                     TT_FLAG_EXACT => {
-                        // Update PV table with TT move
-                        if tt_move != NO_MOVE && ply_u <= MAX_PLY {
-                            info.pv_table[ply_u][0] = tt_move;
-                            info.pv_len[ply_u] = 1;
-                        } else if ply_u <= MAX_PLY {
-                            info.pv_len[ply_u] = 0;
+                        // Skip exact TT cutoffs at PV nodes to preserve full PV line
+                        if beta - alpha_orig == 1 {
+                            if tt_move != NO_MOVE && ply_u <= MAX_PLY {
+                                info.pv_table[ply_u][0] = tt_move;
+                                info.pv_len[ply_u] = 1;
+                            } else if ply_u <= MAX_PLY {
+                                info.pv_len[ply_u] = 0;
+                            }
+                            info.stats.tt_cutoffs += 1;
+                            return tt_score;
                         }
-                        info.stats.tt_cutoffs += 1;
-                        return tt_score;
                     }
                     TT_FLAG_LOWER => {
                         if beta - alpha_orig == 1 && tt_score > alpha {
