@@ -21,6 +21,7 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
 
     let target_pt = board.piece_type_at(to as u8);
     let attacker_pt = board.piece_type_at(from as u8);
+    let is_promo = is_promotion(mv);
 
     // Initial balance: capture value minus threshold
     let mut balance = if flags == FLAG_EN_PASSANT {
@@ -31,14 +32,21 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
         0
     };
 
-    // Promotions treated as pawn captures for SEE purposes
+    // Promotion: gain the promoted piece, lose the pawn
+    if is_promo {
+        let promo_pt = promotion_piece_type(mv);
+        balance += see_value(promo_pt) - see_value(PAWN);
+    }
+
     balance -= threshold;
     if balance < 0 {
         return false;
     }
 
-    // Assume we lose the attacker
-    balance -= see_value(attacker_pt);
+    // Assume we lose the piece on the destination after capture
+    // For promotions, the piece at risk is the promoted piece, not the pawn
+    let risk_value = if is_promo { see_value(promotion_piece_type(mv)) } else { see_value(attacker_pt) };
+    balance -= risk_value;
 
     if balance >= 0 {
         return true;
