@@ -32,7 +32,8 @@ NNUE: (768x16 -> 1536)x2 -> 16 -> 32 -> 1x8 (SCReLU + dual activation, FinnyTabl
 ```
 - Mirrored horizontally when king is on files e-h (`flip = get_file[kingSq] > 3`)
 - Perspective: white king square flipped vertically (`kingSq ^ 56`), black king square used directly
-- **GoChess comparison**: Our 16 buckets are similar. Their bucket map gives more granularity on ranks 1-2 (8 distinct buckets) vs ranks 3-8 (8 buckets). Compare to our layout.
+
+**Coda comparison**: Coda also uses 16 king buckets with HalfKA features. Similar layout.
 
 ### Dual Activation (Key Innovation)
 After L1, instead of a single activation function, Alexandria produces TWO outputs per neuron:
@@ -41,7 +42,7 @@ After L1, instead of a single activation function, Alexandria produces TWO outpu
 
 This doubles the effective L2 input size from 16 to 32 (`EFFECTIVE_L2_SIZE = 16 * (1 + DUAL_ACTIVATION) = 32`).
 
-**GoChess comparison**: We use CReLU only. Dual activation is a cheap way to add expressiveness without increasing L1 width. This is the key architectural difference vs our planned SCReLU migration.
+**Coda comparison**: Coda's v7 uses SCReLU for hidden layers (squared activation). Dual activation (linear + squared in parallel) is a different approach that could be explored in Bullet training.
 
 ### Pairwise Multiplication (Feature Transformer)
 The FT activation uses pairwise multiplication:
@@ -50,8 +51,10 @@ The FT activation uses pairwise multiplication:
 - Multiply pairs: `output[i] = clipped0[i] * clipped1[i] >> 10`
 - Output is uint8, feeding into int8 L1 weights
 
-**Shift**: `FT_SHIFT = 10` (vs our approach using `/255`)
+**Shift**: `FT_SHIFT = 10` (vs Coda's `/255`)
 **Weight clipping**: 1.98 -- L1 weights clipped to [-1.98*L1_QUANT, 1.98*L1_QUANT] = [-127, 127]
+
+**IMPLEMENTED in Coda**: Coda supports pairwise (v6) with 768pw architecture, including AVX2 SIMD for pairwise CReLU pack.
 
 ### Quantization Scheme
 | Layer | Weight Type | Quantization | Notes |
@@ -61,25 +64,12 @@ The FT activation uses pairwise multiplication:
 | L2 | float | None | Small enough that float is fine |
 | L3 | float | None | Single output per bucket |
 
+**Coda comparison**: Coda uses QA=255 (accumulator), QB=64 (output weights). Same quantization scheme for FT and L1.
+
 ### FinnyTable (Accumulator Cache)
-Per-king-bucket cache of accumulator state + occupancy bitmaps:
-```cpp
-struct FinnyTableEntry {
-    PovAccumulator accumCache;     // int16[1536]
-    Bitboard occupancies[12] = {}; // per-piece bitboards
-};
-// Indexed by [side][king_bucket][flip]
-using FinnyTable = array<array<array<FinnyTableEntry, 2>, INPUT_BUCKETS>, 2>;
-```
+Per-king-bucket cache of accumulator state + occupancy bitmaps.
 
-On each evaluation, instead of full recompute on king bucket change:
-1. Compare cached occupancies vs actual bitboards per piece type
-2. Compute add/remove delta lists
-3. Apply incremental updates (add/sub/move) to cached accumulator
-
-This avoids full 12288-element recomputation even when the king changes buckets. Very efficient -- only pays the cost proportional to pieces that changed since the cached state.
-
-**GoChess comparison**: **(UPDATE 2026-03-21: GoChess now has Finny tables for v5 NNUE accumulator refresh, merged.)** Previously we used lazy accumulators with delta tracking; FinnyTable persists across king moves and search tree branches.
+**IMPLEMENTED in Coda**: Coda has per-perspective, per-bucket Finny table cache. On king bucket change, diffs cached vs current bitboards (~5 delta ops vs ~30 full recompute).
 
 ### Factoriser
 The FT has a separate `Factoriser[768 * 1536]` matrix that is added to all king bucket weights during quantization:
@@ -87,6 +77,8 @@ The FT has a separate `Factoriser[768 * 1536]` matrix that is added to all king 
 float w = FTWeights[bucket_offset + i] + Factoriser[i];
 ```
 This is a shared base that all buckets inherit, reducing the effective parameter count while still allowing per-bucket specialization. Applied at quantization time, not inference time.
+
+**Coda comparison**: Not implemented. This is a training-side optimization that could be added to the Bullet training pipeline.
 
 ### Output Bucket Formula
 ```cpp
@@ -102,8 +94,6 @@ Non-linear: finer granularity in the middlegame (20-30 pieces), coarser in endga
 | 23-26 | 5-6 |
 | <=22 | 7 |
 
-**GoChess comparison**: We use simple `min(pieceCount/4, 7)` which is linear. Their formula puts more emphasis on middlegame transitions.
-
 ### L1 Sparse Multiplication
 Alexandria tracks non-zero (NNZ) indices in the pairwise output and uses sparse multiplication for L1:
 - After pairwise activation, track which 4-byte chunks have any non-zero bytes via NNZ mask
@@ -111,13 +101,15 @@ Alexandria tracks non-zero (NNZ) indices in the pairwise output and uses sparse 
 - Uses VPMADDUBSW (AVX2) / VNNI (AVX-512) for int8*uint8 multiplication
 - Unrolled by 2 for additional throughput
 
-**GoChess comparison**: We don't do NNZ-sparse L1. With 1536->16, sparsity exploitation is very valuable since many FT outputs will be zero.
+**IMPLEMENTED in Coda**: Coda has NNZ-sparse L1 via `SparseL1` UCI option (default true for v7). Uses `find_nnz_chunks` + `simd_l1_int8_dot_sparse`.
 
 ### SIMD Support
 - **AVX-512**: Full support with VNNI dpbusd intrinsics
 - **AVX2**: Fallback via maddubs emulation
-- **No ARM/NEON support** (unlike GoChess which has both AVX2 and NEON)
+- **No ARM/NEON support**
 - Unified abstraction layer in `simd.h` with inline wrappers
+
+**Coda comparison**: Coda has AVX2 and AVX-512 via `std::arch::x86_64` (runtime detected). No ARM/NEON either.
 
 ---
 
@@ -145,17 +137,17 @@ int materialValue = pawns*100 + knights*422 + bishops*422 + rooks*642 + queens*1
 int scale = (22400 + materialValue) / 32;
 eval = eval * scale / 1024;
 ```
-This scales eval upward when more material is on the board, downward in endgames. With all pieces: scale ~ (22400+8280)/32 = 959/1024 ~ 0.94x. With just kings: scale ~ 22400/32 = 700/1024 ~ 0.68x.
+This scales eval upward when more material is on the board, downward in endgames. With all pieces: scale ~ 0.94x. With just kings: scale ~ 0.68x.
 
-**GoChess comparison**: We don't have material scaling of NNUE output. This is a cheap post-processing step that could help with endgame evaluation accuracy.
+**Coda comparison**: Not implemented. Cheap post-processing step that could help with endgame evaluation accuracy. Worth testing.
 
 ### 50-Move Rule Decay
 ```cpp
 eval = eval * (200 - fiftyMoveCounter) / 200;
 ```
-Scales eval toward zero as 50-move counter increases. At halfmove=100, eval becomes 50% of raw. At halfmove=0, no scaling.
+Scales eval toward zero as 50-move counter increases.
 
-**GoChess comparison**: We tested this as "50-move eval scaling" and got H0 (-3.0 Elo). Alexandria's is integrated into the adjustEval pipeline alongside material scaling -- the combination may be what makes it work.
+**Coda comparison**: Not implemented. Was tested in the GoChess era and got H0 (-3.0 Elo). Alexandria's is integrated alongside material scaling -- the combination may be what makes it work.
 
 ---
 
@@ -168,21 +160,21 @@ Scales eval toward zero as 50-move counter increases. At halfmove=100, eval beco
 - `seldepth` reset between ID iterations
 
 ### Aspiration Windows
-- **Delta**: 12 (vs our 15)
-- **Enabled at**: depth >= 3 (vs our depth >= 5)
+- **Delta**: 12 (vs Coda's 15)
+- **Enabled at**: depth >= 3 (vs Coda's depth >= 4)
 - **Fail-low**: Contract beta toward alpha: `beta = (alpha + beta) / 2`, widen alpha by delta
 - **Fail-high**: Widen beta by delta, **reduce depth by 1** (`depth = max(depth-1, 1)`)
-- **Delta growth**: `delta *= 1.44` (vs our 1.5x)
+- **Delta growth**: `delta *= 1.44`
 - **No full-width fallback** -- keeps widening until resolution
 
-**GoChess comparison**: Tighter initial delta (12 vs 15), earlier activation (depth 3 vs 5). **(UPDATE 2026-03-21: GoChess now has asymmetric aspiration contraction: fail-low (3a+5b)/8, fail-high (5a+3b)/8, delta=15, growth 1.5x.)** Fail-high depth reduction is something we tested and got -353.8 Elo, but that was an implementation bug (modified outer loop depth). Worth retesting with correct implementation.
+**Coda comparison**: Tighter initial delta and earlier activation. Fail-high depth reduction was tested in the GoChess era and got -353.8 Elo due to implementation bug. Worth retesting with correct implementation.
 
 ### Draw Detection
 - 2-fold repetition within search tree, 3-fold including pre-root
 - 50-move rule with checkmate verification
-- **Upcoming repetition detection** via Cuckoo hashing (from Stockfish) -- detects when a position *could* repeat via a reversible move without actually searching the move
+- **Upcoming repetition detection** via Cuckoo hashing (from Stockfish)
 
-**GoChess comparison**: We don't have upcoming repetition detection (Cuckoo). This prevents the engine from entering clearly drawn lines earlier, saving search time.
+**IMPLEMENTED in Coda**: Coda has Cuckoo cycle detection (proactive repetition avoidance). Used in both main search and QSearch.
 
 ### Mate Distance Pruning
 ```cpp
@@ -191,42 +183,40 @@ beta = min(beta, MATE_SCORE - ply - 1);
 if (alpha >= beta) return alpha;
 ```
 
-**GoChess comparison**: We don't have this. Trivial to implement, 3 lines.
+**Coda comparison**: Not implemented. Trivial to add, 3 lines. Low-impact but free.
 
 ---
 
 ## 4. Pruning Techniques
 
 ### Reverse Futility Pruning (RFP)
-- **Depth**: < 10 (vs our <= 7)
+- **Depth**: < 10 (vs Coda's <= 7)
 - **Margin**: `75*depth - 61*improving - 76*canIIR` (tuned parameters)
   - At depth 5, not improving, no IIR: 375
   - At depth 5, improving: 314
   - At depth 5, improving + IIR: 238
 - **Guard**: `ttMove == NOMOVE || isTactical(ttMove)` -- skips RFP when TT has a quiet best move
-- **Return value**: `(eval - margin + beta) / 2` -- blended return (our dampening pattern!)
+- **Return value**: `(eval - margin + beta) / 2` -- blended return
 - **canIIR** = `depth >= 4 && ttBound == HFNONE` -- no TT data means less confident, reduce margin
 
-**GoChess comparison**:
-- Our margin is 80+d*80 (merged at +33.6 Elo). Their 75*d is similar for shallow depths but scales differently.
-- Their `improving` offset (61) and IIR offset (76) are tuned separately.
-- Blended return `(eval-margin+beta)/2` is exactly our dampening pattern. We tested RFP blending and got -16.7 Elo, but that was with our old margins. Worth retesting with current margins.
-- **ttMove guard** (skip RFP when TT has quiet move) -- we tested this and it was -17.4 Elo. Alexandria has it gated differently: `ttMove == NOMOVE || isTactical(ttMove)`.
-- **IIR margin reduction** is novel -- reduces margin when we have no TT info (higher uncertainty). This is a smart idea.
+**Coda comparison**: Coda uses margin improving?70*d:100*d. Key differences:
+- Alexandria's deeper threshold (< 10 vs <= 7) -- more aggressive.
+- IIR margin reduction (badNode flag) is an idea Coda doesn't have -- reduces margin when uncertain.
+- Blended return `(eval-margin+beta)/2` -- Coda returns staticEval-margin. Could test blended return.
 
 ### Null Move Pruning (NMP)
 - **Conditions**: `eval >= staticEval && eval >= beta && staticEval >= beta - 28*depth + 204`
-  - Extra condition: `staticEval >= beta - 28*depth + 204` prevents NMP when staticEval is too far below beta
-- **Reduction**: `R = 4 + depth/3 + min((eval-beta)/221, 3)` (base 4 vs our 3)
+  - Extra condition prevents NMP when staticEval is too far below beta
+- **Reduction**: `R = 4 + depth/3 + min((eval-beta)/221, 3)` (base 4 vs Coda's 3)
 - **badNode reduction**: `-badNode` added to reduction (reduces R by 1 when no TT data)
 - **Verification**: At depth >= 15, do verification search with `nmpPlies = ply + (depth-R)*2/3`
 - **Mate clamp**: Returns beta if nmpScore is a mate
 
-**GoChess comparison**:
-- Base reduction 4 vs our 3 -- more aggressive. The `28*depth + 204` condition compensates.
-- Eval divisor 221 matches ours.
-- Extra condition `staticEval >= beta - 28*depth + 204` is important -- prevents NMP when eval is barely above beta but staticEval is poor.
-- `badNode` reduction is novel -- reduce NMP R by 1 when no TT info.
+**Coda comparison**: Coda uses R=3+depth/3 + (eval-beta)/200, verify at depth>=12, NMP score dampening (score*2+beta)/3. Key differences:
+- Base reduction 4 vs 3 (more aggressive).
+- Extra `staticEval >= beta - 28*depth + 204` guard (Coda doesn't have this).
+- `badNode` reduction (reduce R by 1 when no TT info).
+- Eval divisor 221 is similar to Coda's 200.
 
 ### Razoring
 - **Depth**: <= 5
@@ -234,7 +224,7 @@ if (alpha >= beta) return alpha;
 - Drops to QSearch if `eval + 258*depth < alpha`
 - Returns razorScore if <= alpha
 
-**GoChess comparison**: Our razoring uses 400+d*100. Their 258*d is tighter for deeper depths (depth 5: 1290 vs our 900). Different tradeoff.
+**Coda comparison**: Coda uses depth <= 2, margin 400+d*100. Alexandria's is deeper (<=5) with tighter per-depth margin (258*d). For depth 2: Alexandria 516 vs Coda 600.
 
 ### ProbCut
 - **Depth**: > 4
@@ -243,9 +233,9 @@ if (alpha >= beta) return alpha;
 - **Two-stage**: First runs QSearch with `-pcBeta`, then if QSearch passes, runs full `Negamax` at `depth-4`
 - **SEE threshold**: `pcBeta - staticEval` for capture filtering
 
-**GoChess comparison**:
-- Our ProbCut margin is 170 (merged at +10 Elo). Their base 287 is much larger, but with the improving offset of 54, non-improving is 287, improving is 233.
-- **Two-stage QSearch pre-filter** is exactly what we identified as idea #6 in SUMMARY.md. This saves significant nodes by not running the expensive depth-4 search when QSearch already fails to confirm.
+**Coda comparison**: Coda uses beta+170, staticEval+85 gate, SEE>=0. Key differences:
+- Larger base margin (287 vs 170), but with improving offset (54).
+- **Two-stage QSearch pre-filter** saves significant nodes. Coda doesn't pre-filter with QSearch before the ProbCut search. Worth testing.
 
 ### Futility Pruning (Quiet Moves)
 - **Depth**: `lmrDepth < 13`
@@ -255,7 +245,7 @@ if (alpha >= beta) return alpha;
 - **Best score update**: If `bestScore <= futilityValue`, updates bestScore to futilityValue (avoids returning -infinity)
 - Sets `skipQuiets = true` after triggering
 
-**GoChess comparison**: Our futility is `80 + d*80` (depth 1: 160, depth 5: 480). Their margin is significantly larger, but note they use `lmrDepth` (which accounts for LMR reduction) rather than raw depth, so effective depth is often lower.
+**Coda comparison**: Coda uses 60+lmrDepth*60, depth<=8. Alexandria's margin is significantly larger (118/ply vs 60/ply). Both use lmrDepth. The `skipQuiets` flag pattern is an optimization to avoid scoring remaining quiets.
 
 ### Late Move Pruning (LMP)
 ```cpp
@@ -270,20 +260,20 @@ lmp_margin[depth][1] = 3.0 + 1.0 * depth^2  // Improving
 | 4 | 9 | 19 |
 | 5 | 14 | 28 |
 
-**GoChess comparison**: Our `3+d^2` formula is similar to their improving formula. Their non-improving formula is tighter.
+**Coda comparison**: Coda uses 3+d^2 with improving/failing adjustments, depth<=8. Similar to Alexandria's improving formula. Coda applies only in non-PV.
 
 ### History Pruning
 ```cpp
 if (isQuiet && moveHistory < -3753 * depth) skipQuiets = true;
 ```
 
-**GoChess comparison**: Different formula but similar concept.
+**Coda comparison**: Coda uses -1500*depth at depth<=3, !improving guard. Alexandria's threshold (-3753) is more permissive per depth unit but has no depth limit.
 
 ### SEE Pruning
 - **Quiet moves**: `seeQuietMargin * lmrDepth = -98 * lmrDepth`
 - **Noisy moves**: `seeNoisyMargin * lmrDepth^2 = -27 * lmrDepth^2`
 
-**GoChess comparison**: Our single `-20*depth^2` is different. Their separate quiet/noisy thresholds with lmrDepth is more nuanced. Quiet: linear scaling, Noisy: quadratic scaling.
+**Coda comparison**: Coda uses quiet -20*d^2 at depth<=8, capture -d*100 at depth<=6. Alexandria separates quiet (linear) from noisy (quadratic) with lmrDepth. Different scaling approach.
 
 ### Hindsight Reduction
 ```cpp
@@ -294,13 +284,13 @@ if (depth >= 2 && (ss-1)->reduction >= 1
 ```
 If the parent move was reduced (LMR) and the sum of parent and current static evals is >= 155 (both sides think position is good = quiet position), reduce depth by 1.
 
-**GoChess comparison**: We don't have this. Cheap to implement (2 lines). The insight is that positions where both sides have positive eval are likely quiet and can be searched less deeply.
+**IMPLEMENTED in Coda**: Coda has hindsight reduction with equivalent logic. Confirmed +18 Elo without it (clean CPU retest).
 
 ---
 
 ## 5. Extensions
 
-### Singular Extensions (CRITICAL -- our SE is catastrophically failing)
+### Singular Extensions
 **Conditions**:
 ```
 !rootNode && depth >= 6 && move == ttMove && !excludedMove
@@ -308,7 +298,7 @@ If the parent move was reduced (LMR) and the sum of parent and current static ev
 ```
 
 **Singular beta**: `ttScore - depth*5/8 - depth*(ttPv && !pvNode)`
-- PV-aware: when TT says we were on PV but current node is not PV, reduce margin further (more likely to extend)
+- PV-aware: when TT says we were on PV but current node is not PV, reduce margin further
 
 **Singular depth**: `(depth - 1) / 2`
 
@@ -337,22 +327,16 @@ else if (cutNode)
 
 **Extension limit**: `ply * 2 < RootDepth * 5` (allows up to 2.5x root depth in extensions)
 
-**Key differences from GoChess**:
-1. **Depth threshold**: 6 vs our 10 -- MUCH more aggressive activation
-2. **Singular beta margin**: `ttScore - depth*5/8` vs our `ttScore - depth*3` -- Alexandria's is tighter (smaller margin = harder to be singular = fewer extensions)
-3. **PV-awareness**: Extra `depth*(ttPv && !pvNode)` reduces singular beta further on former PV nodes
-4. **Double/triple extensions**: At -10 and -75 below singular beta
-5. **Multi-cut shortcut**: Returns singularScore directly if >= beta (skips searching the TT move entirely)
-6. **Negative extensions of -2** (not -1): Both for ttScore >= beta and for cut nodes
-7. **Shallow depth boost**: `depth += (depth < 10)` when double-extending
-8. **Extension limiter**: `ply * 2 < RootDepth * 5` prevents explosive tree growth
+**Coda comparison**: Coda has SE at depth >= 8 with singular_beta = tt_score - depth, singular_depth = (depth-1)/2. Coda has multi-cut and negative extensions (-1). Key differences from Alexandria:
+1. **Depth threshold**: 8 vs Alexandria's 6 -- less aggressive activation
+2. **Singular beta margin**: `ttScore - depth` vs `ttScore - depth*5/8` -- Coda's margin is wider (easier to trigger singularity)
+3. **No PV-awareness**: Coda doesn't adjust margin for former PV nodes
+4. **No double/triple extensions**: Coda extends by 1 only (no +2 or +3)
+5. **Negative extensions**: Coda uses -1 vs Alexandria's -2
+6. **No extension limiter**: Coda doesn't cap total ply depth (risk of tree explosion)
+7. **No shallow depth boost**: Coda doesn't add extra depth when double-extending
 
-**Our SE problem diagnosis**: Our SE is -58 to -85 Elo. Possible causes:
-- Our depth threshold (10) means we rarely trigger SE, and when we do, the margin (depth*3 = 30 at depth 10) may be too aggressive
-- We lack multi-cut (the `singularScore >= beta` return), which is a powerful pruning shortcut
-- We lack negative extensions, which help balance the tree growth from positive extensions
-- We may lack the extension limiter (`ply * 2 < RootDepth * 5`)
-- Our singular depth formula may differ
+Items 4, 6, and 7 are the most impactful remaining differences. The extension limiter (`ply*2 < RootDepth*5`) is a safety mechanism that should probably be added.
 
 ---
 
@@ -398,20 +382,14 @@ const bool doDeeperSearch = score > (bestScore + 77 + 2*newDepth);
 const bool doShallowerSearch = score < (bestScore + newDepth);
 newDepth += doDeeperSearch - doShallowerSearch;
 ```
-After the reduced search beats alpha:
-- If score is very high (>bestScore+77+2*newDepth), search deeper
-- If score is barely above bestScore, search shallower
-- Then re-search at adjusted depth
 
-**Plus**: Bonus continuation history update based on whether re-search beat alpha.
+**IMPLEMENTED in Coda**: Coda has doDeeper/doShallower with similar logic.
 
-**GoChess comparison**:
-- Cut node +2: We have this from Weiss/Obsidian/BlackMarlin.
-- Complexity adjustment: Uses `abs(eval - rawEval) / abs(eval) * 100`. We identified this as idea #27.
-- History divisor 8049 vs our 5000 -- less aggressive history-based reduction.
-- Noisy history divisor 5922 -- we don't have separate noisy LMR history.
-- DoDeeper margin 77 vs the various values we tested. Our test got -13.7 Elo.
-- PV node +1 on reduced depth is interesting.
+**Coda comparison**: Coda has most LMR adjustments (history, improving, cut-node, contHist, complexity). Key differences:
+- Alexandria uses history divisor 8049 (less aggressive than Coda's approach)
+- Noisy history divisor 5922 -- separate from quiet
+- Former PV (ttPv) adjustment: `-1 - cutNode` -- Coda may not have this
+- PV node +1 on reduced depth
 
 ---
 
@@ -427,6 +405,8 @@ After the reduced search beats alpha:
 7. **Pick Quiets** (PICK_QUIETS) -- partial insertion sort
 8. **Bad Captures** (PICK_BAD_NOISY) -- captures that failed SEE
 
+**Coda comparison**: Similar staged ordering. Coda uses TT move -> good captures (MVV-LVA + captHist/16) -> promotions -> killers -> counter-move -> quiets (main hist + contHist*3 + pawn hist) -> bad captures.
+
 ### Capture Scoring
 ```cpp
 score = SEEValue[capturedPiece] * 16 + GetCapthistScore(pos, sd, move);
@@ -437,7 +417,9 @@ MVV scaled by 16, plus capture history.
 ```cpp
 SEEThreshold = -score / 32 + 236;
 ```
-Dynamic: higher-scored captures get a tighter SEE threshold. A capture scored 0 needs SEE >= 236. A capture scored 7680 (queen capture + max capthist) needs SEE >= -4.
+Dynamic: higher-scored captures get a tighter SEE threshold.
+
+**Coda comparison**: Not implemented. Coda uses a fixed SEE threshold for good/bad capture separation. Dynamic thresholds could improve capture ordering quality.
 
 ### Quiet Scoring
 ```cpp
@@ -457,12 +439,12 @@ score = HH + CH(ply-1) + CH(ply-2) + CH(ply-4) + CH(ply-6) + 4*RH (if root)
 Written to: 1, 2, 4, 6
 Read from: 1, 2, 4, 6
 
-**GoChess comparison**: We read/write plies 1 and 2 only. Plies 4 and 6 are in our testing queue.
+**IMPLEMENTED in Coda**: Coda reads/writes continuation history at plies 1, 2, 4, 6 with weights 3x, 3x, 1x, 1x.
 
 ### Root History
 Dedicated history table for root moves, weighted 4x in scoring. Cleared before each search. Gets separate bonus/malus tuning.
 
-**GoChess comparison**: We don't have this. Simple to implement, provides better move ordering at root.
+**Coda comparison**: Not implemented. Simple to add, provides better move ordering at root. Low complexity, potentially meaningful impact.
 
 ### Opponent History Update (Eval History)
 ```cpp
@@ -471,9 +453,9 @@ if (!inCheck && (ss-1)->staticEval != SCORE_NONE && isQuiet((ss-1)->move)) {
     updateOppHHScore(pos, sd, (ss-1)->move, bonus);
 }
 ```
-After computing static eval, if the opponent's last move was quiet, update THEIR butterfly history based on the eval change. If both sides think the position is bad for the side that moved, penalize that move.
+After computing static eval, if the opponent's last move was quiet, update THEIR butterfly history based on the eval change.
 
-**GoChess comparison**: This is the "Eval History / Opponent Move Quality Feedback" idea #23 in our SUMMARY.md. Alexandria's formula is: bonus when opponent's move caused mutual dissatisfaction, penalty when it improved things.
+**Coda comparison**: Not implemented. Interesting concept for improving move ordering by penalizing opponent moves that led to bad positions.
 
 ### History Bonus/Malus (Tuned Separately)
 Each history type has independent bonus/malus formulas:
@@ -488,9 +470,9 @@ bonus(depth) = min(mul*depth + offset, max)
 | ContHist | 159/-135/2538 | 401/114/806 |
 | Root | 225/165/1780 | 402/75/892 |
 
-Notable: **HH malus max is only 452** vs bonus max 2910 -- heavily asymmetric. Good moves get strong positive reinforcement, bad moves get only mild penalty.
+Notable: **HH malus max is only 452** vs bonus max 2910 -- heavily asymmetric.
 
-**GoChess comparison**: We use a single bonus/malus formula for all history types. Asymmetric bonuses could help.
+**Coda comparison**: Coda uses a single bonus formula (depth^2 capped at 1200). Asymmetric per-table tuning is more sophisticated but requires SPSA.
 
 ### TT Cutoff Continuation History Malus
 ```cpp
@@ -498,9 +480,9 @@ if (ttMove && ttScore >= beta && (ss-1)->moveCount < 4 && isQuiet((ss-1)->move))
     updateCHScore((ss-1), (ss-1)->move, -min(155*depth, 385));
 }
 ```
-When we get a TT cutoff, penalize the opponent's last quiet move in continuation history if they've only tried a few moves. This means "the opponent's move led to a position where we already have a good result cached."
+When we get a TT cutoff, penalize the opponent's last quiet move in continuation history.
 
-**GoChess comparison**: Novel idea we don't have. Uses TT cutoff information to improve move ordering.
+**Coda comparison**: Not implemented. Novel use of TT cutoff information to improve move ordering.
 
 ---
 
@@ -525,7 +507,6 @@ Weighted sum with tuned weights, then divided by 256 (CORRHIST_GRAIN).
 ### Update
 ```cpp
 int bonus = clamp(diff * depth / 8, -CORRHIST_MAX/4, CORRHIST_MAX/4);
-// Standard gravity scaling per table entry
 ```
 Where diff = bestScore - staticEval. CORRHIST_MAX = 1024.
 
@@ -536,9 +517,9 @@ if (!inCheck && (!bestMove || !isTactical(bestMove))
     && !(bound == UPPER && bestScore >= staticEval))
     updateCorrHistScore(...)
 ```
-Only update when the correction is meaningful: not when the bound direction already agrees with static eval vs bestScore.
+Only update when the correction is meaningful.
 
-**GoChess comparison**: We have only pawn correction history. Their 4-table approach with proper Zobrist-based non-pawn keys and continuation correction is exactly what SUMMARY.md idea #7 describes. Our previous XOR-of-bitboards approach failed (-11.8 Elo). Alexandria shows the correct implementation using per-color Zobrist non-pawn keys.
+**IMPLEMENTED in Coda**: Coda has multi-source correction history: pawn (512/1024) + white-NP (204/1024) + black-NP (204/1024) + continuation (104/1024). Uses proper per-color non-pawn Zobrist keys, incrementally updated. Coda's weights differ from Alexandria's but the architecture is equivalent.
 
 ---
 
@@ -550,15 +531,6 @@ Only update when the correction is meaningful: not when the bound direction alre
 - **Key verification**: 16-bit TTKey (upper bits of Zobrist)
 - **Age/Bound/PV packed**: lower 2 bits = bound, bit 2 = PV flag, upper 5 bits = age
 
-### Replacement Policy
-1. Match on key16 -> replace that entry
-2. Otherwise, find lowest-priority entry: `depth - (AGE_DELTA) * 4`
-3. Overwrite conditions (SF-derived):
-   - Exact bound always overwrites
-   - Different key always overwrites
-   - Deeper by 5 + 2*pv overwrites
-   - Different age overwrites
-
 ### TT Cutoff Conditions
 ```cpp
 !pvNode && ttScore != SCORE_NONE && ttDepth >= depth
@@ -567,12 +539,14 @@ Only update when the correction is meaningful: not when the bound direction alre
 && (ttBound & (ttScore >= beta ? LOWER : UPPER))
 ```
 
-The `cutNode == (ttScore >= beta)` condition is interesting: only allow TT cutoffs when the expected node type matches. At cut nodes, only accept fail-highs; at non-cut nodes, only accept fail-lows.
+The `cutNode == (ttScore >= beta)` condition: only allow TT cutoffs when the expected node type matches. At cut nodes, only accept fail-highs; at non-cut nodes, only accept fail-lows.
 
-**GoChess comparison**: We don't have the `cutNode == (ttScore >= beta)` guard. This is a precision improvement that prevents using stale TT data that contradicts the expected node behavior.
+**Coda comparison**: Not implemented. Coda doesn't have the `cutNode == (ttScore >= beta)` guard. This is a precision improvement that could reduce search instability. Worth testing.
 
 ### Huge Pages
-Linux: aligned to 2MB, uses `madvise(MADV_HUGEPAGE)`. Other platforms: 4KB alignment.
+Linux: aligned to 2MB, uses `madvise(MADV_HUGEPAGE)`.
+
+**Coda comparison**: Coda uses 5-slot buckets (64-byte cache-line aligned), AtomicU64/AtomicU32 for lockless Lazy SMP, XOR key verification. Different TT structure but similar goals.
 
 ---
 
@@ -584,14 +558,12 @@ optScale = min(25/1000, 200/1000 * time / timeLeft)
 optime = optScale * timeLeft
 maxtime = 0.76 * time - overhead
 ```
-For cyclic TC: `min(0.90/movesToGo, 0.88 * time / timeLeft)`
 
 ### Node-Based Scaling
 ```cpp
 bestMoveNodesFraction = nodeSpentTable[bestmove] / totalNodes;
 nodeScalingFactor = (1.53 - bestMoveNodesFraction) * 1.74;
 ```
-When best move uses a small fraction of nodes (unstable), spend more time. When it dominates (stable), spend less.
 
 ### Best Move Stability Scaling
 5-level stability factor (0-4), with tuned scales:
@@ -605,7 +577,6 @@ If best move has been stable for 4+ iterations, multiply time by 0.71 (save 29%)
 ```
 [1.25, 1.15, 1.03, 0.92, 0.87]
 ```
-Stable eval = less time, volatile eval = more time.
 
 ### Final Time Calculation
 ```cpp
@@ -613,14 +584,7 @@ stoptimeOpt = starttime + baseOpt * nodeScale * bestMoveScale * evalScale;
 stoptimeOpt = min(stoptimeOpt, stoptimeMax);
 ```
 
-### Time Check Frequency
-`TimeOver` checks every 1024 nodes: `(nodes & 1023) == 1023`
-
-**GoChess comparison**:
-- **(UPDATE 2026-03-21: GoChess now has score-drop time extension with 2.0x/1.5x/1.2x tiered scaling, merged.)** Still lacks node-based and bestmove-stability scaling.
-- Alexandria has THREE scaling factors (nodes, bestmove stability, eval stability) that multiply together.
-- Node-based TM is idea #24 in our SUMMARY.md, estimated +5 to +15 Elo.
-- The bestmove stability scaling alone is very high value -- a move that's been best for 4 iterations in a row should not get more time.
+**Coda comparison**: Coda uses simple soft allocation (timeLeft/movesLeft + 80% increment) with MoveOverhead subtraction, emergency mode, and cap at 50% remaining. Lacks all three of Alexandria's scaling factors (node-based, bestmove stability, eval stability). This is probably the single highest-impact area for improvement -- estimated +5-15 Elo.
 
 ---
 
@@ -631,14 +595,8 @@ stoptimeOpt = min(stoptimeOpt, stoptimeMax);
 - Each thread gets own `ThreadData` (position copy, search data, key history, FinnyTable)
 - All threads share the TT (no locks, no atomics visible -- relies on TTKey16 for collision detection)
 - Helper threads start at depth 1, main thread manages time
-- Main thread can stop helpers via `info.stopped` flag
 
-### Thread Data Isolation
-Per-thread: Position, SearchData (all history tables), SearchInfo, keyHistory, FinnyTable, RootDepth, nmpPlies
-
-Shared: TT (global), pvTable (global, only written by main thread)
-
-**GoChess comparison**: Similar to our approach. Key difference: their FinnyTable is per-thread (necessary since it's position-dependent).
+**Coda comparison**: Similar approach. Coda uses Lazy SMP with helper threads at offset depths sharing atomic TT and stop flag.
 
 ---
 
@@ -652,13 +610,9 @@ if (bestScore >= beta) {
     return bestScore;
 }
 ```
-**Double blending**: Both at stand-pat AND at final return:
-```cpp
-if (bestScore >= beta && !isDecisive(bestScore) && !isDecisive(beta))
-    bestScore = (bestScore + beta) / 2;
-```
+**Double blending**: Both at stand-pat AND at final return.
 
-**GoChess comparison**: We have QS beta blending (merged at +4.9 Elo). Alexandria applies it at both stand-pat and final return.
+**IMPLEMENTED in Coda**: Coda has QS beta blending at both stand-pat and final return.
 
 ### QS Futility
 ```cpp
@@ -667,10 +621,14 @@ if (futilityBase <= alpha && !SEE(pos, move, 1))
     bestScore = max(futilityBase, bestScore);
     continue;
 ```
-Combined eval-based + SEE gate: only prune moves that don't win material AND where eval + margin is below alpha.
+Combined eval-based + SEE gate.
+
+**Coda comparison**: Coda uses QS delta of 240. Similar approach.
 
 ### Upcoming Repetition in QS
-Alexandria checks for upcoming repetition (game cycle) even in QSearch, which prevents QS from reporting misleadingly high scores in positions that could lead to draws.
+Alexandria checks for upcoming repetition (game cycle) even in QSearch.
+
+**IMPLEMENTED in Coda**: Coda has Cuckoo cycle detection in both main search and QSearch.
 
 ---
 
@@ -681,92 +639,103 @@ Alexandria checks for upcoming repetition (game cycle) even in QSearch, which pr
 int complexity = abs(eval - rawEval) / abs(eval) * 100;
 // If complexity > 50, reduce LMR by 1
 ```
-Uses the ratio of correction magnitude to eval as a measure of position complexity. High complexity = uncertain eval = search deeper.
+
+**IMPLEMENTED in Coda**: Coda has complexity-aware LMR: `reduction -= complexity / 120` (matches Obsidian style).
 
 ### 2. badNode Flag
 ```cpp
 const bool badNode = depth >= 4 && ttBound == HFNONE;
 ```
-Identifies nodes with no TT information at all. Used in:
-- IIR: `depth -= 1` when badNode
-- RFP: Extra 76 margin reduction (less aggressive pruning when uncertain)
-- NMP: Reduces R by 1
+Identifies nodes with no TT information at all. Used in IIR, RFP margin reduction, and NMP R reduction.
 
-This is a unifying concept: "when we have no TT data, we're more uncertain, so be more conservative with pruning but also use IIR to find information."
+**Coda comparison**: Not implemented as a unified concept. Coda has IIR but doesn't use the badNode flag to adjust RFP margins or NMP reduction. The unifying concept is worth testing.
 
 ### 3. Eval-Based History Depth Bonus
 ```cpp
 UpdateHistories(pos, sd, ss, depth + (eval <= alpha), bestMove, ...);
 ```
-When eval was at or below alpha (the position was worse than expected), give a +1 depth bonus to history updates. This means surprising beta-cutoff moves get stronger history bonuses.
+When eval was at or below alpha, give a +1 depth bonus to history updates.
+
+**Coda comparison**: Not implemented. Cheap to add, gives stronger history signal for surprising cutoffs.
 
 ### 4. Dynamic SEE Threshold for Good Captures
 ```cpp
 SEEThreshold = -score / 32 + 236;
 ```
-Higher-valued captures need less SEE safety margin. A queen capture with good history only needs SEE > -4, while a low-scored capture needs SEE > 236.
+
+**Coda comparison**: Not implemented. Coda uses fixed SEE threshold for good/bad capture separation.
 
 ### 5. Draw Score Randomization
 ```cpp
 return (info->nodes & 2) - 1;  // Returns -1 or 1
 ```
-On draws, returns a small random value based on node count parity. Prevents the engine from entering draw loops while maintaining deterministic behavior per position.
+
+**Coda comparison**: Coda uses contempt = -10 (prefer playing over drawing). Different approach to the same problem of draw avoidance.
 
 ### 6. TT Cutoff Node-Type Guard
 ```cpp
 cutNode == (ttScore >= beta)
 ```
-Only accept TT cutoffs when the expected node type (cut/all) matches the TT score direction.
+
+**Coda comparison**: Not implemented. See TT section above.
 
 ---
 
-## 14. Summary: Key Differences from GoChess
+## 14. Summary: Key Differences from Coda
 
-### Things Alexandria Has That We DON'T (Prioritized by Impact)
+### Things Alexandria Has That Coda Does NOT (Prioritized by Impact)
 
-1. **4-table correction history** (pawn + white non-pawn + black non-pawn + continuation) with proper Zobrist keys -- HIGH PRIORITY
-2. ~~**FinnyTable NNUE accumulator cache**~~ -- **(UPDATE 2026-03-21: MERGED)**
-3. **Node-based time management** with bestmove stability + eval stability scaling -- estimated +5-15 Elo
-4. **Working singular extensions** with multi-cut and negative extensions -- our SE is broken, understanding their implementation is crucial
-5. **Root history table** -- separate history for root moves, 4x weight
-6. **Upcoming repetition detection** (Cuckoo hashing)
-7. **Dual activation** in NNUE (linear + squared) -- relevant for our NNUE migration
-8. **Hindsight reduction** -- 2 lines, cheap
-9. **Mate distance pruning** -- 3 lines
-10. **ProbCut QSearch pre-filter** (two-stage ProbCut)
-11. **Opponent history update** (eval-based feedback)
-12. **Continuation history plies 4, 6** (we only use 1, 2)
-13. **IIR margin in RFP** (badNode flag reduces RFP margin)
-14. **TT cutoff node-type guard** (`cutNode == (ttScore >= beta)`)
-15. **Eval-based history depth bonus** (`depth + (eval <= alpha)`)
-16. **TT cutoff continuation history malus** (penalize opponent's last move on TT cutoff)
-17. **Material scaling of NNUE output**
-18. **Asymmetric history bonus/malus** per table type
-19. **NNZ-sparse L1 multiplication**
-20. **Factoriser in FT** (shared base for all king buckets)
+1. **Advanced time management** (node-based + bestmove stability + eval stability scaling) -- estimated +5-15 Elo
+2. **SE double/triple extensions** and **extension limiter** (`ply*2 < RootDepth*5`) -- Coda has basic SE but lacks these safety/power features
+3. **Root history table** -- separate history for root moves, 4x weight
+4. **Mate distance pruning** -- 3 lines, free
+5. **ProbCut QSearch pre-filter** (two-stage ProbCut)
+6. **Opponent history update** (eval-based feedback on opponent's moves)
+7. **badNode flag** as unified concept (adjusts RFP margin and NMP R)
+8. **TT cutoff node-type guard** (`cutNode == (ttScore >= beta)`)
+9. **Eval-based history depth bonus** (`depth + (eval <= alpha)`)
+10. **TT cutoff continuation history malus** (penalize opponent's last move on TT cutoff)
+11. **Material scaling of NNUE output** (scale down in endgame)
+12. **50-move rule eval decay**
+13. **Asymmetric history bonus/malus** per table type
+14. **Dynamic SEE threshold for good captures**
+15. **Factoriser in FT** (shared base for all king buckets -- training-side)
+
+### Things Coda Has That Alexandria Lacks
+- NMP score dampening ((score*2+beta)/3)
+- Fail-high score blending ((score*depth+beta)/(depth+1))
+- TT near-miss (accept 1-ply-short entries with 80cp margin)
+- Bad noisy pruning (prune losing captures when eval+depth*75<=alpha)
+- Pawn history in move ordering
+
+### IMPLEMENTED Since GoChess Era (No Longer Relevant)
+- ~~4-table correction history~~ -- IMPLEMENTED (pawn + white-NP + black-NP + continuation)
+- ~~FinnyTable NNUE accumulator cache~~ -- IMPLEMENTED
+- ~~Cuckoo cycle detection~~ -- IMPLEMENTED
+- ~~Hindsight reduction~~ -- IMPLEMENTED
+- ~~DoDeeper/DoShallower~~ -- IMPLEMENTED
+- ~~Continuation history plies 4, 6~~ -- IMPLEMENTED
+- ~~Complexity-aware LMR~~ -- IMPLEMENTED
+- ~~QS beta blending~~ -- IMPLEMENTED
+- ~~Singular extensions with multi-cut and negative extensions~~ -- IMPLEMENTED
+- ~~NNZ-sparse L1 multiplication~~ -- IMPLEMENTED
+- ~~Pairwise FT activation~~ -- IMPLEMENTED (v6)
 
 ### Significantly Different Parameters
-| Parameter | Alexandria | GoChess | Notes |
-|-----------|-----------|---------|-------|
+| Parameter | Alexandria | Coda | Notes |
+|-----------|-----------|------|-------|
 | Aspiration delta | 12 | 15 | Tighter |
+| Aspiration start | depth >= 3 | depth >= 4 | Earlier |
 | RFP depth | < 10 | <= 7 | Deeper |
-| RFP margin | 75*d | 80+80*d | Different formula |
+| RFP margin | 75*d | improving?70*d:100*d | Different formula |
 | NMP base R | 4 | 3 | More aggressive |
-| SE depth threshold | >= 6 | >= 10 | Much more aggressive |
-| SE margin | d*5/8 | d*3 | Tighter |
-| LMR history divisor | 8049 | 5000 | Less reduction from history |
-| LMR noisy divisor | 5922 | N/A | We don't split |
+| SE depth threshold | >= 6 | >= 8 | More aggressive |
+| SE margin | d*5/8 | d (ttScore-depth) | Different |
+| SE negative ext | -2 | -1 | More aggressive |
+| LMR history divisor | 8049 | varies | Less reduction from history |
 | SEE quiet margin | -98*lmrDepth | -20*d^2 | Different scaling |
-| SEE noisy margin | -27*lmrDepth^2 | -20*d^2 | Different scaling |
+| SEE noisy margin | -27*lmrDepth^2 | -d*100 | Different scaling |
+| Razoring depth | <= 5 | <= 2 | Deeper |
+| ProbCut margin | 287-54*imp | 170 | Larger with improving |
 | QS futility | 268 | 240 | Similar |
-| NET_SCALE | 362 | 400 | Different NNUE scale |
-
-### Critical Insight: Our Singular Extensions Problem
-Alexandria's SE implementation differs from ours in at least 7 ways (see section 5). The most likely causes of our -58 to -85 Elo:
-1. **Missing extension limiter** (`ply*2 < RootDepth*5`) -- without this, extensions can cause exponential tree growth
-2. **Missing multi-cut** (`singularScore >= beta` return) -- this is a powerful pruning shortcut that balances the cost of the singular search
-3. **Missing negative extensions** (-2 for ttScore >= beta and cut nodes) -- these balance positive extensions
-4. **Too high depth threshold** (10 vs 6) -- fewer SE activations means less data to amortize the cost
-5. **Too wide margin** (d*3 vs d*5/8) -- at depth 10, our margin is 30 vs their 6.25
-
-The combination of (1) no limiter + (3) no negative extensions likely causes explosive tree growth when SE activates, dwarfing any benefit from the extensions themselves.
+| History bonus cap | varies per table | 1200 (depth^2) | Per-table tuning |

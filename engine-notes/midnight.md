@@ -23,6 +23,7 @@ Standard iterative deepening with aspiration windows and PVS. C++ templates for 
 - On fail-high: widen beta by delta, **reduce depth by 1** (`depth = max(depth-1, 1)`)
 - Delta growth: `delta += delta * 2 / 3` (i.e., multiply by ~1.67 each iteration)
 - Full-width fallback when alpha < -3500 or beta > 3500
+- **Coda comparison**: Coda uses eval-dependent delta (13+avg^2/23660), fail-low contraction (3a+5b)/8, fail-high contraction (5a+3b)/8 + depth reduce, delta growth 1.5x. Both have fail-high depth reduction and fail-low beta contraction.
 
 ### Draw Detection
 - Fifty-move rule: `>=100` half-moves
@@ -42,26 +43,27 @@ Standard iterative deepening with aspiration windows and PVS. C++ templates for 
 - Margin: `75 * depth` (`RFP_MARGIN = 75`)
 - Formula: `static_eval >= beta + 75 * depth` => return static_eval
 - **No improving adjustment** (same margin regardless of improving flag)
-- Compare to ours: we use 85*depth improving / 60*depth not-improving, depth<=8
+- **Coda comparison**: Coda uses 70*d (improving) / 100*d (not), depth<=7. Midnight allows deeper RFP (depth 8) with a slightly higher margin.
 
 ### Razoring
 - Conditions: `!pv_node && !in_check && !excluding_move`
 - Depth guard: `depth <= 3`
 - Margin: `-63 + 182 * depth` (i.e., depth 1: 119, depth 2: 301, depth 3: 483)
 - Formula: `static_eval - 63 + 182 * depth <= alpha` => drop to qsearch
-- Compare to ours: we use 400 + depth*100 (depth 1: 500, depth 2: 600, depth 3: 700)
+- **Coda comparison**: Coda has no razoring.
 
 ### Null Move Pruning (NMP)
 - Conditions: `depth >= 3 && !in_check && !pv_node && !excluding_move && do_null && static_eval >= beta`
 - Reduction: `3 + depth/3 + min((static_eval - beta) / 200, 3)`, clamped to min 3
-- **Identical formula to ours**
 - Returns null_eval if >= beta (does NOT clamp to beta, returns raw null_eval)
+- **Coda comparison**: Coda uses R=4+d/3+(eval-beta)/200 (base R is 4, not 3), verify at depth>=12, post-capture R--, score dampening (2s+b)/3. Coda's base R=4 is more aggressive.
 
 ### Internal Iterative Reduction (IIR)
 - Condition: `!static_eval_tt.entry_found && depth >= 4`
 - Reduces depth by 1
 - Note: this is triggered when there's no TT eval entry at all (not just no TT move)
 - Uses probe_eval() which matches on hash only (no depth requirement)
+- **Coda comparison**: Coda has IIR at depth>=4, no TT move, PV/cut node only.
 
 ### Late Move Pruning (LMP) - Two variants
 
@@ -76,26 +78,28 @@ Standard iterative deepening with aspiration windows and PVS. C++ templates for 
 - Conditions: `!pv_node && depth <= 6 && move.is_quiet()`
 - Threshold: `move_idx > depth * 9`
 - This is essentially a second, looser LMP for deeper depths (4-6)
+- **Coda comparison**: Coda uses 3+d^2 with improving +50% / failing -33%, depth<=8. Coda's single variant is simpler but applies at higher depths.
 
 ### Futility Pruning
 - Conditions: `value > -MATE_BOUND && depth < 6` (`FP_DEPTH = 6`)
 - Margin: `depth * 100 + 75` (`FP_COEFFICIENT = 100, FP_MARGIN = 75`)
   - depth 1: 175, depth 2: 275, depth 3: 375, depth 4: 475, depth 5: 575
-- Formula: `static_eval + margin <= alpha` => break (prunes all remaining moves)
+- Formula: `static_eval + margin <= alpha` => break (prunes ALL remaining moves)
 - **Note: this is a break, not a continue** -- it prunes ALL remaining moves once triggered
-- Compare to ours: we use 100 + lmrDepth*100 per-move (continue), not break
+- **Coda comparison**: Coda uses 60+lmrDepth*60, per-move (continue). Midnight's break is more aggressive.
 
 ### History Pruning
 - Conditions: `!pv_node && value > -MATE_BOUND && depth < 3`
 - Threshold: `history[color][from][to] < -1024 * depth`
   - depth 1: history < -1024, depth 2: history < -2048
-- Compare to ours: we use -2000*depth, they use -1024*depth (tighter)
+- **Coda comparison**: Coda uses -1500*depth at depth<=3.
 
 ### SEE Pruning
 - Conditions: `!pv_node && depth < 7 && value > -MATE_BOUND` (`SEE_PVS_MIN_DEPTH = 7`)
 - Quiet margin: `-50 * depth` (`SEE_PVS_QUIET_MARGIN = -50`)
 - Tactical margin: `-90 * depth` (`SEE_PVS_TACTICAL_MARGIN = -90`)
 - Prunes if SEE fails the threshold
+- **Coda comparison**: Coda uses quiet -20d^2 (depth<=8, quadratic) and capture -d*100 (depth<=6, linear). Midnight uses linear margins for both.
 
 ### QSearch Futility
 - Margin: stand_pat + 60 (`Q_SEARCH_FUTILITY_MARGIN = 60`)
@@ -113,7 +117,7 @@ Standard iterative deepening with aspiration windows and PVS. C++ templates for 
 - Singularity depth: `(depth - 1) / 2` (integer division)
 - If singularity score < singularity_beta: **+1 extension**
 - **Negative extension (-1)**: if tt_value >= beta OR tt_value <= alpha (multi-cut / negative extension)
-- Compare to ours: we use `depth * 3` as margin; they use `2 * depth` (tighter)
+- **Coda comparison**: Both use depth>=8. Midnight uses margin=2*depth, Coda uses margin=depth (tighter). Both have multi-cut and negative extension.
 
 ### Check Extension
 - +1 depth unconditionally when in_check (applied at top of pvs before depth==0 check)
@@ -130,7 +134,7 @@ Two separate tables for captures vs quiets:
 - **Captures**: `LMR_BASE_CAPTURE(1.40) + log(depth) * log(moveIdx) / LMR_DIVISOR_CAPTURE(1.80)`
 - **Quiets**: `LMR_BASE_QUIET(1.50) + log(depth) * log(moveIdx) / LMR_DIVISOR_QUIET(1.75)`
 
-Compare to ours: we use a single table with `C=1.5` (similar to their quiet base).
+**Coda comparison**: Coda uses ln(d)*ln(m)/1.30 (quiet) and ln(d)*ln(m)/1.80 (capture), no additive base. Midnight's additive base (1.40/1.50) makes reductions more aggressive at all depths.
 
 ### Application Conditions
 - `depth >= 3 && move_idx > lmr_depth && !in_check`
@@ -142,11 +146,12 @@ Compare to ours: we use a single table with `C=1.5` (similar to their quiet base
 - `+1` for not improving
 - Clamped to `[0, depth-1]`
 
-### What they DON'T have (that we do or could add):
+### What Midnight lacks (that Coda has):
 - No history-based reduction adjustment
 - No capture-specific reduction logic beyond the separate table
 - No TT-based adjustments
-- No singular extension interaction with LMR
+- No doDeeper/doShallower
+- No cutnode LMR adjustment
 
 ---
 
@@ -176,21 +181,19 @@ Unlike most engines, Midnight does NOT use a staged move picker. It generates AL
 **Main history**: `history[2][64][64]` -- color, from, to
 - Bonus: `depth^2 + depth - 1`
 - Gravity formula: `entry -= (entry * |bonus|) / 324; entry += bonus * 32`
-- Max effective value capped by the gravity formula (converges around +/-10,000)
 
 **Continuation history**: `continuation_history[12][64][12][64]` -- prev_piece, prev_to, curr_piece, curr_to
 - 1-ply and 2-ply lookback
 - Same bonus and gravity formula as main history
 
 **Capture history**: `capture_history[12][64][12]` -- attacker_piece, to_square, victim_piece
-- Same bonus and gravity formula
 
 **Killers**: 2 slots per ply
 
 ### Novel: Opponent Pawn Territory Penalty
 - Quiet moves that land on squares attacked by opponent pawns get -350 penalty
-- This is unusual -- most engines don't have this in move ordering
 - Effectively deprioritizes moves into pawn-attacked squares
+- **Coda**: Does not have this. Related to Coda's threat-aware 4D history which achieves a similar goal through different means.
 
 ---
 
@@ -217,11 +220,7 @@ Unlike most engines, Midnight does NOT use a staged move picker. It generates AL
 - Effect: if best move uses 50% of nodes, scale = 1.35x. If 90%, scale = 0.81x. If 10%, scale = 1.89x
 - **No fail-low extension** -- there's no special handling for fail-low at root
 
-### Aspiration Window Fail-High Depth Reduction
-- On fail-high in aspiration loop, depth is reduced by 1
-- This effectively shortens the iteration on fail-high, saving time
-
-Compare to ours: we use instability factor (200) based on best move changes. They use continuous node-based scaling which is more granular.
+**Coda comparison**: Coda uses time_left/20 + 3*inc/4 (soft), 5x (hard). Similar base allocation. No node-ratio scaling.
 
 ---
 
@@ -236,11 +235,10 @@ Compare to ours: we use instability factor (200) based on best move changes. The
 - Scale: 400
 - Final: `(sum + output_bias) * 400 / (181 * 64)`
 
-### Compared to our NNUE
-- Ours: v5 shallow wide (768x16->N)x2->1x8 (16 king buckets, 8 output buckets, CReLU/SCReLU, Finny tables) **(UPDATE 2026-03-21: GoChess now supports SCReLU, pairwise multiplication, dynamic width, and Finny tables)**
-- Theirs: Simple 768->768->1 (piece-square only, no king buckets)
-- No output buckets
-- SCReLU activation (we now also support SCReLU)
+### Compared to Coda's NNUE
+- Coda: HalfKA with 16 king buckets, 8 output buckets, v5/v6/v7 architectures, CReLU/SCReLU/pairwise, Finny tables, AVX2/AVX-512 SIMD
+- Midnight: Simple 768->768->1 (piece-square only, no king buckets, no output buckets)
+- Midnight's simpler architecture means fewer features but faster inference
 
 ### Accumulator
 - Stack-based (push_copy on make, pop on unmake)
@@ -273,61 +271,64 @@ Replace if ANY of:
 
 ---
 
-## 9. Notable Differences from GoChess
+## 9. Notable Differences from Coda
 
-### Things Midnight has that we don't:
+### Things Midnight has that Coda doesn't:
 1. **Opponent pawn territory penalty in move ordering** (-350 for moves into pawn-attacked squares)
-2. **Separate LMR tables for captures vs quiets** (captures get less reduction: base 1.40 vs 1.50)
-3. **Two-tier LMP**: strict table-based LMP at depth<=3, plus loose `depth*9` quiet LMP at depth<=6
-4. **Aspiration fail-high depth reduction** (reduce search depth on fail-high)
-5. **Aspiration fail-low beta narrowing**: `beta = (alpha + 3*beta) / 4` on fail-low **(UPDATE 2026-03-21: GoChess now has aspiration contraction: fail-low (3a+5b)/8, fail-high (5a+3b)/8)**
-6. **Capture history in SEE-based capture ordering** (100,000 + cap_hist) * SEE_pass
+2. **Two-tier LMP**: strict table-based LMP at depth<=3, plus loose `depth*9` quiet LMP at depth<=6
+3. **Razoring** (-63 + 182*depth, depth<=3)
 
-### Things we have that Midnight doesn't:
-1. **Lazy SMP** (they're single-threaded)
+### IMPLEMENTED (Coda already has these):
+- **Separate LMR tables for captures vs quiets** (Coda: C=1.30/C=1.80)
+- **Aspiration fail-high depth reduction**
+- **Aspiration fail-low beta narrowing** (Coda: (3a+5b)/8)
+- **Capture history in capture ordering**
+
+### Things Coda has that Midnight doesn't:
+1. **Lazy SMP** (Midnight is single-threaded)
 2. **King buckets in NNUE** (HalfKA vs simple 768)
 3. **Counter-move heuristic**
-4. **ProbCut**
+4. **ProbCut** (disabled in Coda, but implemented)
 5. **History-based LMR adjustments**
 6. **Recapture extensions**
-7. **Correction history**
-8. **Staged move generation** (they generate all moves upfront)
-9. **Multi-bucket TT** (they use single-entry)
-10. **Lockless TT** (they have no thread safety)
+7. **Multi-source correction history**
+8. **Staged move generation** (Midnight generates all moves upfront)
+9. **Multi-bucket TT** (Midnight uses single-entry)
+10. **Lockless TT** (Midnight has no thread safety)
+11. **Pawn history**
+12. **Threat-aware 4D history**
+13. **DoDeeper/DoShallower**
+14. **Cuckoo cycle detection**
+15. **Hindsight reduction**
+16. **Fail-high score blending**
 
 ### Parameter Comparison Table
 
-| Feature | Midnight | GoChess |
-|---------|----------|---------|
-| RFP margin | 75*depth, depth<9 | 85*d (imp) / 60*d (not), depth<=8 |
+| Feature | Midnight | Coda |
+|---------|----------|------|
+| RFP margin | 75*depth, depth<9 | 70*d (imp) / 100*d (not), depth<=7 |
 | RFP improving | No distinction | Yes, different margins |
-| Razoring | -63+182*d, depth<=3 | 400+100*d, depth<=3 |
-| NMP reduction | 3+d/3+min((eval-beta)/200,3) | 3+d/3+min((eval-beta)/200,3) |
-| NMP min depth | 3 | 3 |
-| LMR base (quiet) | 1.50 | 1.50 (C=1.5) |
-| LMR divisor (quiet) | 1.75 | ~2.36 (implicit) |
-| LMR base (capture) | 1.40 | same as quiet |
-| LMR start (non-PV) | move 4+ | move 4+ |
-| LMP depth | <=3 (strict) + <=6 (loose) | 3+d^2 (+50% improving) |
-| Futility margin | 100*d+75, depth<6 | 100+lmrDepth*100 |
-| SEE quiet margin | -50*d, depth<7 | similar |
-| SEE tactical margin | -90*d, depth<7 | similar |
+| Razoring | -63+182*d, depth<=3 | None |
+| NMP reduction | 3+d/3+min((eval-beta)/200,3) | 4+d/3+(eval-beta)/200, R-- after cap |
+| NMP min depth | 3 | 4 |
+| NMP verification | None | depth >= 12 |
+| NMP dampening | None | (2*score+beta)/3 |
+| LMR base (quiet) | 1.50 + ln(d)*ln(m)/1.75 | ln(d)*ln(m)/1.30 |
+| LMR base (capture) | 1.40 + ln(d)*ln(m)/1.80 | ln(d)*ln(m)/1.80 |
+| LMR start (non-PV) | move 4+ | move 3+ |
+| LMP depth | <=3 (strict) + <=6 (loose) | <=8, 3+d^2 |
+| Futility margin | 100*d+75, depth<6 | 60+lmrDepth*60, depth<=8 |
+| SEE quiet margin | -50*d, depth<7 | -20*d^2, depth<=8 |
+| SEE tactical margin | -90*d, depth<7 | -d*100, depth<=6 |
 | Singular depth | >=8 | >=8 |
-| Singular beta | tt_val - 2*depth | tt_val - 3*depth |
-| Aspiration window | 12 initial, delta 16 | 15 initial |
-| History bonus | d^2+d-1 | similar |
-| History gravity | entry -= entry*|bonus|/324; entry += bonus*32 | entry += bonus - entry*|bonus|/divisor |
-| QS futility | stand_pat + 60 | N/A (we use SEE filtering) |
-| Time soft | time/40 + 3*inc/4 | similar |
-| Time hard | time/5 + 3*inc/4 | similar |
+| Singular beta | tt_val - 2*depth | tt_score - depth |
+| Aspiration delta | 12 initial, delta 16 | 13+avg^2/23660 |
+| QS futility | stand_pat + 60 | QS delta 240 |
 
 ---
 
 ## 10. Ideas Worth Testing from Midnight
 
-1. **Separate LMR tables for captures vs quiets** -- captures with lower base reduction (1.40 vs 1.50) could reduce more aggressively on losing captures while being gentler on good ones
-2. **Opponent pawn territory penalty** in move ordering -- cheap to compute, might improve ordering
-3. **Two-tier LMP** with a loose quiet-only tier at depth<=6 (`depth*9` threshold)
-4. **Aspiration fail-high depth reduction** -- saves time when score is above window
-5. **Aspiration fail-low beta narrowing** -- `beta = (alpha+3*beta)/4` focuses the re-search
-6. **QSearch futility + SEE combo** -- stand_pat+60 combined with SEE threshold of 1
+1. **Opponent pawn territory penalty** in move ordering -- cheap to compute, might improve ordering. However, Coda's 4D threat-aware history may already capture this effect.
+2. **Two-tier LMP** with a loose quiet-only tier at depth<=6 (`depth*9` threshold) -- simple and complementary to existing LMP.
+3. **Razoring** -- Coda has no razoring at all. Midnight's -63+182*d is worth trying, though razoring results are often marginal for NNUE engines.

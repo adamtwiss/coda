@@ -20,8 +20,9 @@ Net-based evaluation (NNUE-like). No classical eval fallback.
 ### IIR for PV nodes without TT entry (separate)
 - **Condition**: PV node, not root, `depth >= 5`, no TT entry
 - **Action**: `depth--`
-- Credited to talkchess idea (http://talkchess.com/forum3/viewtopic.php?f=7&t=74769)
 - This stacks with the general IIR above, so PV nodes without TT entry at depth>=5 get depth reduced by 2 total
+
+**Coda comparison**: Coda has IIR at depth >= 6, !inCheck, no TT move. The stacking PV IIR is an idea worth testing.
 
 ### Static Null Move Pruning (Reverse Futility Pruning)
 - **Node type**: Non-PV only (`kNW`)
@@ -36,6 +37,8 @@ Net-based evaluation (NNUE-like). No classical eval fallback.
 - **Prune if**: `eval > beta + margin`
 - **Return value**: `(eval + beta) / 2` (average of eval and beta, not just beta)
 
+**Coda comparison**: Coda's RFP uses depth <= 7, margin improving?70*d:100*d. Winter's SNMP return of `(eval+beta)/2` is the same blending idea Coda uses in fail-high blending and TT dampening.
+
 ### Null Move Pruning (NMP)
 - **Condition**: `eval >= beta`, `depth > 1`, side to move has non-pawn material, non-PV, not in check, `beta.is_static_eval()`
 - **Reduction formula**: `R = (kNMPBase + depth * kNMPScale) / 128`
@@ -47,28 +50,27 @@ Net-based evaluation (NNUE-like). No classical eval fallback.
 - **No verification search**
 - **Tracks NMP failure**: `nmp_failed_node = true` if NMP fails, used to grant double singular extension
 
+**Coda comparison**: Coda uses R=3+depth/3 + (eval-beta)/200, verify at depth>=12, NMP score dampening (score*2+beta)/3. Winter's NMP is simpler (no verification, no dampening) but tracks failure for double SE.
+
 ### Futility Pruning
 - **Node type**: Non-PV only
 - **Depth guard**: `depth - reduction <= 3` (uses LMR-reduced depth)
 - **Condition**: not in check, move not giving direct check, not root, lower_bound >= kMinStaticEval, move is quiet (type < kEnPassant)
 - **Margin formula**: `kFutileMargin[depth] + kFutilityImproving * depth * improving`
-  - `kFutileMargin[d] = kFutilityOffset + kFutilityScaling * d`
   - `kFutilityOffset = 127`, `kFutilityScaling = 685`
   - `kFutilityImproving = 149`
-  - Margin at depth 1: 127 + 685 = 812 (+ 149 if improving)
-  - Margin at depth 2: 127 + 1370 = 1497 (+ 298 if improving)
-  - Margin at depth 3: 127 + 2055 = 2182 (+ 447 if improving)
+  - Margin at depth 1: 812 (+ 149 if improving)
+  - Margin at depth 2: 1497 (+ 298 if improving)
+  - Margin at depth 3: 2182 (+ 447 if improving)
   - (These are WDL-space values, scale=4000, not centipawns)
 - **Prune if**: `eval < alpha - margin`
+
+**Coda comparison**: Coda uses 60+lmrDepth*60, depth<=8. WDL-space margins are not directly comparable to centipawn values.
 
 ### Late Move Pruning (LMP)
 - **Depth guard**: `depth < 6` (kLMP array size is 6)
 - **Condition**: not root, not in check, move not giving direct check, lower_bound >= kMinStaticEval, move is quiet (type < kEnPassant)
 - **Formula**: `lmp[isPV][improving][depth] = (base + scalar*(d-1) + quad*(d-1)^2) / 128`
-  - Non-PV, not improving: base=408, scalar=122, quad=53
-  - Non-PV, improving: base=678, scalar=188, quad=83
-  - PV, not improving: base=817, scalar=122, quad=53
-  - PV, improving: base=569, scalar=188, quad=83
 
   Computed LMP thresholds (moves allowed before pruning):
 
@@ -80,10 +82,14 @@ Net-based evaluation (NNUE-like). No classical eval fallback.
   | 4     | 7   | 15     | 13  | 16     |
   | 5     | 10  | 21     | 17  | 23     |
 
+**Coda comparison**: Coda uses 3+d^2 with improving/failing adjustments, depth<=8, non-PV only. Winter applies LMP in PV nodes too.
+
 ### SEE Pruning (depth 1)
 - **Condition**: `depth == 1`, move is not en passant, not in check, not giving check
 - **Action**: Skip moves with negative SEE
 - Only at depth 1; no deeper SEE pruning for quiets
+
+**Coda comparison**: Coda has SEE pruning for quiets at -20*d^2 through depth 8, and captures at -d*100 through depth 6. Much more aggressive than Winter.
 
 ### QSearch SEE Pruning
 - In quiescence search: skip captures with negative SEE (except en passant and when in check)
@@ -91,6 +97,8 @@ Net-based evaluation (NNUE-like). No classical eval fallback.
 ### TT Score Capping (Non-PV)
 - When TT score > beta and not a mate score: returns `(score * 3 + beta) / 4` instead of raw TT score
 - Dampens TT cutoff scores toward beta
+
+**IMPLEMENTED in Coda**: Coda has the same formula: `(3 * tt_score + beta) / 4` for non-PV TT lower-bound cutoffs.
 
 ---
 
@@ -101,14 +109,18 @@ Net-based evaluation (NNUE-like). No classical eval fallback.
 - **TT depth requirement**: `entry->depth >= max(depth, kSingularExtensionDepth) - 3 = max(depth, 9) - 3`
 - **Condition**: First move (i==0), not root, TT entry exists, TT bound is not upper bound, TT score is static eval, not (PV with only 1 legal move)
 - **Singular beta**: `rBeta = WDLScore{beta.win - 2*depth, beta.loss + 2*depth}` (shrink toward draw by 2*depth on each side)
-- **Singular depth**: `rDepth = (depth - 3) / 2`
+- **Singular depth**: `(depth - 3) / 2`
 - **On singularity confirmed** (score <= rAlpha): extend by 1 ply. If NMP also failed at this node, extend by 2 plies (double extension)
 - **Multi-cut**: If singular search score >= beta, return score immediately (prune the whole subtree)
+
+**Coda comparison**: Coda has SE at depth >= 8 with singular_beta = tt_score - depth, singular_depth = (depth-1)/2. Coda has multi-cut and negative extensions (-1), but no double extensions on NMP-failed nodes (Winter's unique feature).
 
 ### One-move PV Extension
 - If PV node and only 1 legal move: `depth++`
 
 ### No check extensions, no passed pawn extensions, no recapture extensions
+
+**Coda comparison**: Coda has recapture extensions but no check extensions or one-move PV extensions.
 
 ---
 
@@ -165,6 +177,8 @@ The scoring is additive with pre-tuned integer weights (hardcoded in `hardcoded_
 
 ### No capture history table (captures scored by MVV-LVA + SEE in SortML features)
 
+**Coda comparison**: Coda has main history, capture history, continuation history (plies 1,2,4,6), pawn history, killers, and counter moves. Winter's ML-trained ordering is a fundamentally different approach -- interesting but not directly portable.
+
 ---
 
 ## 4. LMR (Late Move Reductions)
@@ -174,15 +188,11 @@ The scoring is additive with pre-tuned integer weights (hardcoded in `hardcoded_
 
 Base formula: `floor(offset + log(depth) * log(moveCount) * multiplier)`
 
-Parameters (internal representation, all multiplied by 0.01 scale):
-- **Non-PV quiet**: offset = kLMROffset * 0.01 = -0.16, mult = kLMRMult * 0.01 = 0.86
-  - `floor(-0.16 + log(d+1) * log(m+1) * 0.86)`
-- **Non-PV capture**: offset = kLMROffsetCap * 0.01 = 0.15, mult = 0.86 * kLMRMultCap * 0.01 = 0.86 * 0.51 = 0.4386
-  - `floor(0.15 + log(d+1) * log(m+1) * 0.4386)`
-- **PV quiet**: offset = kLMROffsetPV * 0.01 = 0.21, mult = 0.86 * kLMRMultPV * 0.01 = 0.86 * 0.86 = 0.7396
-  - `floor(0.21 + log(d+1) * log(m+1) * 0.7396)`
-- **PV capture**: offset = kLMROffsetPVCap * 0.01 = 0.23, mult = 0.86 * 0.86 * 0.51 = 0.3772
-  - `floor(0.23 + log(d+1) * log(m+1) * 0.3772)`
+Parameters:
+- **Non-PV quiet**: offset=-0.16, mult=0.86 -> `floor(-0.16 + log(d+1)*log(m+1)*0.86)`
+- **Non-PV capture**: offset=0.15, mult=0.4386 -> `floor(0.15 + log(d+1)*log(m+1)*0.4386)`
+- **PV quiet**: offset=0.21, mult=0.7396 -> `floor(0.21 + log(d+1)*log(m+1)*0.7396)`
+- **PV capture**: offset=0.23, mult=0.3772 -> `floor(0.23 + log(d+1)*log(m+1)*0.3772)`
 
 Result clamped to `[0, depth-1]`.
 
@@ -191,7 +201,6 @@ Result clamped to `[0, depth-1]`.
 - **NOT applied when**: in check, or move gives direct check
 - No history-based reduction adjustment
 - No improving-based reduction adjustment
-- No separate quiet vs capture adjustments beyond the table selection
 - PV re-search: if reduced search beats alpha, full-depth re-search with full window (PVS pattern)
 
 ### Example LMR values (non-PV quiet):
@@ -202,6 +211,8 @@ Result clamped to `[0, depth-1]`.
 | 8          | 2   | 3   | 3   | 4   |
 | 16         | 2   | 3   | 4   | 5   |
 | 32         | 3   | 4   | 5   | 6   |
+
+**Coda comparison**: Coda uses separate quiet (C=1.30) and capture (C=1.80) tables with many dynamic adjustments (history, improving, cut-node, contHist, complexity). Winter's approach is notably simpler -- no dynamic adjustments at all.
 
 ---
 
@@ -229,6 +240,8 @@ Default `moves_to_go = 22` when not specified (sudden death).
 - `skip_time_check` counter: decremented each node, actual time check only when counter hits 0
 - Counter reset to `min(512, max_nodes - current_nodes)` after each actual check
 
+**Coda comparison**: Coda uses soft allocation (timeLeft/movesLeft + 80% increment), default 25 moves to go, cap at 50% remaining, emergency mode below 1s. Winter's best-move stability factor is a useful time management idea that Coda lacks.
+
 ---
 
 ## 6. Aspiration Windows
@@ -239,11 +252,13 @@ Default `moves_to_go = 22` when not specified (sudden death).
 - On fail-low: also tightens beta slightly toward score: `beta = (max(score, kMinStaticEval) + beta*3) / 4`
 - On fail-high: tightens alpha similarly: `alpha = (alpha*3 + min(kMaxStaticEval, score)) / 4`
 
+**Coda comparison**: Coda uses delta=15 from depth 4. Winter's asymmetric contraction on fail is an interesting idea.
+
 ---
 
 ## 7. Correction History (Error History)
 
-Winter has a sophisticated **multi-dimensional correction history** that adjusts the static evaluation based on search error patterns. This is analogous to Stockfish's correction history but more elaborate.
+Winter has a sophisticated **multi-dimensional correction history** that adjusts the static evaluation based on search error patterns.
 
 ### Types of correction history:
 1. **Pawn correction**: Keyed by pawn hash, scale = 0.705
@@ -263,6 +278,8 @@ Winter has a sophisticated **multi-dimensional correction history** that adjusts
 - Gravity update: `entry += value - entry * (abs(value) + leak) / 1024`
 - Leak factor: `kCorrectionLeakScale * min(depth, 16)` where `kCorrectionLeakScale = 1.2`
 
+**Coda comparison**: Coda has multi-source correction history: pawn (512/1024) + white-NP (204/1024) + black-NP (204/1024) + continuation (104/1024). Winter's approach differs in using WDL-space corrections (win% and loss% independently) and RNG-based hash corrections (16 additional entries). The RNG correction is a unique noise-averaging technique that Coda lacks.
+
 ---
 
 ## 8. Lazy SMP
@@ -271,6 +288,8 @@ Winter has a sophisticated **multi-dimensional correction history** that adjusts
 - Per-thread: board, killers, counter moves, history, continuation history, error history, eval stack
 - Helper thread depth scheduling: if >= half of threads are at or above current depth, skip depths based on `(id % 3) != (depth % 3)` and increment depth (avoids redundant work at same depth)
 - Thread initialization is lazy (first search call)
+
+**Coda comparison**: Similar approach. Coda uses helper threads at offset depths sharing the TT (atomic) and stop flag.
 
 ---
 
@@ -288,10 +307,12 @@ The most distinctive feature. All scores are 2D (win, loss) rather than 1D centi
 Move ordering uses ~117 pre-tuned feature weights (separate sets for in-check and not-in-check), trained via SPSA. This is unusual -- most engines use ad-hoc scoring with MVV-LVA + history. Winter's approach is more like a lightweight linear model over hand-crafted features.
 
 ### TT score dampening
-On non-PV TT cutoffs where score > beta and not mate: returns `(3*score + beta)/4` instead of raw score. This dampens the effect of possibly inflated TT scores.
+**IMPLEMENTED in Coda**: `(3*score + beta)/4` for non-PV TT cutoffs. Both Coda and Winter have this.
 
 ### SNMP returns average
 SNMP (reverse futility) returns `(eval + beta) / 2` rather than just `eval` or `beta`. This softens the pruning return value.
+
+**Coda comparison**: Coda's RFP returns staticEval-margin (not blended). The blending idea is present in Coda's fail-high blending: `(score*depth+beta)/(depth+1)`.
 
 ### No check extensions
 Winter does NOT extend checks. It only has singular extensions and a one-move PV extension. This is unusual for a competitive engine.
@@ -302,47 +323,57 @@ LMR has no adjustment for history score, improving status, or any other dynamic 
 ### Double singular extension on NMP-failed nodes
 If both NMP failed (score < beta after null move) AND the TT move is singular, extend by 2 plies instead of 1.
 
+**Coda comparison**: Coda does not track NMP failure for double SE. This is a targeted idea worth testing.
+
 ### Correction history in WDL space
-Rather than correcting a single centipawn value, Winter corrects win% and loss% independently, using pawn hash, major piece hash, minor piece hash, and 16 RNG-based hash corrections. This is significantly more correction dimensions than typical engines.
+Rather than correcting a single centipawn value, Winter corrects win% and loss% independently, using pawn hash, major piece hash, minor piece hash, and 16 RNG-based hash corrections. Significantly more correction dimensions than typical engines.
 
 ### No razoring, no ProbCut, no history pruning
 Winter lacks several common techniques:
-- No razoring (dropping to QSearch at low depth with bad eval)
-- No ProbCut (shallow search to prove a beta cutoff)
-- No history-based pruning (pruning quiet moves with very negative history)
-- No SEE pruning for quiets at depth > 1
+- No razoring (Coda has this)
+- No ProbCut (Coda has this)
+- No history-based pruning (Coda has this)
+- No SEE pruning for quiets at depth > 1 (Coda has this through depth 8)
 
 ---
 
-## 10. Comparison with GoChess
+## 10. Comparison with Coda
 
-### Techniques Winter has that GoChess might benefit from:
-- **TT score dampening**: `(3*score + beta)/4` for non-PV TT cutoffs -- could reduce search instability
-- **SNMP returning (eval+beta)/2** instead of eval -- softer pruning
-- **Multi-dimensional correction history**: pawn hash + major hash + minor hash + RNG hash corrections
-- **ML-tuned move ordering weights**: systematic optimization of feature weights for move ordering
+### Techniques Winter has that Coda could benefit from:
+- **SNMP returning (eval+beta)/2** instead of eval -- softer pruning return (Coda uses blending elsewhere but not in RFP return)
 - **Double singular extension on NMP-failed nodes**: extra extension when both NMP and singularity signal
+- **Stacking PV IIR**: PV nodes without TT entry at depth>=5 get double IIR (depth reduced by 2)
+- **One-move PV extension**: extend when only one legal move in PV node
+- **Best-move stability time scaling**: reduce time allocation to 50% when best move is stable across iterations
+- **RNG-based correction history**: 16 additional noise-averaged correction entries
 
-### Techniques GoChess has that Winter lacks:
-- Check extensions
+### Techniques Coda has that Winter lacks:
 - Razoring
 - ProbCut
-- History-based LMR adjustment
+- History-based LMR adjustment (contHist, main hist, complexity)
 - History-based pruning
-- SEE pruning at depth > 1 for quiets
+- SEE pruning at depth > 1 for quiets and captures
 - Recapture extensions
-- Passed pawn extensions (removed in GoChess too)
-- Capture history table (separate from continuation history)
+- Capture history table
+- Pawn history table
+- Continuation history plies 4 and 6
+- NMP verification search
+- NMP score dampening
+- Cuckoo cycle detection
+- Hindsight reduction
+- DoDeeper/DoShallower
+- Fail-high score blending
 
 ### Parameter comparison (approximate, WDL values converted where possible):
 
-| Feature | Winter | GoChess |
-|---------|--------|---------|
-| NMP R | 3.79 + 0.31*d | 3 + d/3 |
-| RFP depth | <= 5 | <= 8 |
-| Futility depth | <= 3 (after LMR) | lmrDepth-based |
-| LMP depth | < 6 | depth-based |
-| Singular depth | >= 7 | depth-based |
+| Feature | Winter | Coda |
+|---------|--------|------|
+| NMP R | 3.79 + 0.31*d | 3 + d/3 + (eval-beta)/200 |
+| RFP depth | <= 5 | <= 7 |
+| Futility depth | <= 3 (after LMR) | <= 8 (lmrDepth-based) |
+| LMP depth | < 6 | <= 8 |
+| Singular depth | >= 7 | >= 8 |
 | Aspiration delta | 72 (WDL) | 15 (cp) |
-| IIR depth | >= 2 | varies |
-| Check extension | NO | YES (was removed) |
+| IIR depth | >= 2 | >= 6 |
+| Check extension | NO | NO |
+| SE margin | 2*depth (WDL) | ttScore - depth (cp) |

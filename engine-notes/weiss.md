@@ -2,7 +2,6 @@
 
 Source: `~/chess/engines/weiss/src/`
 Author: Terje Kirstihagen
-Rating: #19 in our RR at -2 Elo (106 above GoChess-v5)
 Eval: Classical (tapered HCE with mobility, king safety, passed pawns, threats). No NNUE.
 
 ---
@@ -23,13 +22,14 @@ Standard iterative deepening with aspiration windows, PVS, and Lazy SMP. Written
 - On fail-high: widen beta by delta, **reduce depth by 1** (only for non-terminal scores)
 - Delta growth: `delta += delta / 3` (multiply by ~1.33 each iteration)
 - **Trend bonus**: `x = CLAMP(prevScore/2, -32, 32)`, applied as S(x, x/2) to eval. Biases eval in direction of last score.
-- Compare to ours: we use fixed delta=15, growth 1.5x. **(UPDATE 2026-03-21: GoChess now has fail-low contraction (3a+5b)/8 and fail-high contraction (5a+3b)/8.)** Their score-dependent delta is novel. Trend bonus is unique.
+- **Coda comparison**: Coda uses eval-dependent delta (13+avg^2/23660), fail-low beta contraction (3a+5b)/8, fail-high alpha contraction (5a+3b)/8 + depth reduce, delta growth 1.5x. Both use score-dependent delta. Weiss's trend bonus is unique.
 
 ### Draw Detection
 - Repetition: **any** two-fold (checks all `i += 2` up to `min(rule50, histPly)`)
 - Upcoming repetition: `HasCycle(pos, ply)` -- Cuckoo-based upcoming repetition detection (alpha < 0 only)
 - 50-move rule: `rule50 >= 100`
 - Draw randomization: `8 - (nodes & 0x7)` -- small positive score +1 to +8
+- **Coda comparison**: Coda has Cuckoo cycle detection (FEAT_CUCKOO). No draw randomization.
 
 ### Check Extension
 - `extension = MAX(extension, 1)` when in check, after singular extension logic
@@ -46,9 +46,7 @@ Standard iterative deepening with aspiration windows, PVS, and Lazy SMP. Written
 - Using node-time mode
 - In infinite mode: after 1000ms or 5000ms (varies by context)
 
-This prevents aggressive pruning in very early iterations where eval is unstable. The flag is checked before RFP, NMP, and all per-move pruning.
-
-Compare to ours: we have no such gating. This is listed in SUMMARY.md as idea #43 (Tier 3).
+This prevents aggressive pruning in very early iterations where eval is unstable. The flag is checked before RFP, NMP, and all per-move pruning. Coda has no such gating.
 
 ### Pruning Skip Conditions
 All pruning is skipped when: `inCheck || pvNode || !doPruning || ss->excluded || isTerminal(beta) || lastMoveNullMove`
@@ -62,7 +60,7 @@ All pruning is skipped when: `inCheck || pvNode || !doPruning || ss->excluded ||
   - If there IS a TT move with low history (<=6450), RFP is skipped
   - This prevents RFP when there's a known quiet TT move that might be strong
 - Formula: `eval - 77*(depth-improving) - (ss-1)->histScore/131 >= beta`
-- Compare to ours: we use 85*d (improving) / 60*d (not improving), depth<=8. They use 77*(d-imp), depth<7. Their histScore adjustment and TT move guard are novel.
+- **Coda comparison**: Coda uses 70*d (improving) / 100*d (not), depth<=7. Coda has an RFP TT quiet guard (skip when TT has quiet move) but not the history adjustment from opponent's last move.
 
 ### Null Move Pruning (NMP)
 - Conditions: `eval >= beta && eval >= staticEval && staticEval >= beta + 138 - 13*depth`
@@ -71,14 +69,14 @@ All pruning is skipped when: `inCheck || pvNode || !doPruning || ss->excluded ||
 - Material guard: `nonPawnCount[stm] > (depth > 8)` -- at depth > 8, need at least 2 non-pawn pieces
 - Reduction: `4 + depth/4 + MIN(3, (eval-beta)/227)`
 - Returns raw score (no beta clamping) if `>= beta`, but filters terminal wins to just beta
-- Compare to ours: we use `3 + depth/3 + MIN(3, (eval-beta)/200)`. Their base R=4 (vs our 3) and divisor d/4 (vs our d/3) means less reduction overall. Their histScore gate is novel.
+- **Coda comparison**: Coda uses R=4+d/3+(eval-beta)/200, verify at depth>=12, post-capture R--, score dampening (2s+b)/3. No depth-dependent eval gate or history gate.
 
 ### Internal Iterative Reduction (IIR)
 - Two separate conditions:
   1. PV node: `pvNode && depth >= 3 && !ttMove` -> `depth--`
   2. Cut node: `cutnode && depth >= 8 && !ttMove` -> `depth--`
 - These are **additive** -- a PV node at depth 8 with no TT move doesn't get double IIR (pvNode skips pruning so cutnode branch is never hit on PV)
-- Compare to ours: we have IIR at depth >= 4 with no TT move. Their PV/cutnode split is more targeted.
+- **Coda comparison**: Coda has IIR at depth>=4 with no TT move on PV/cut nodes.
 
 ### ProbCut
 - Threshold: `beta + 200`
@@ -88,22 +86,22 @@ All pruning is skipped when: `inCheck || pvNode || !doPruning || ss->excluded ||
 - SEE threshold for captures: `probCutBeta - staticEval` (dynamic, based on margin needed)
 - Only searches moves that pass NOISY_GOOD stage (SEE-filtered)
 - Return adjustment: `score - 160` for non-terminal wins (dampens ProbCut score)
-- Compare to ours: we have ProbCut margin 170, gate 85, depth >= 5. Their two-stage QS pre-filter is in SUMMARY.md as idea #6 (Tier 1). Their score dampening (`-160`) is novel.
+- **Coda comparison**: Coda has ProbCut (beta+170, depth>=5, eval+85 gate) but it is DISABLED. Weiss's two-stage QS pre-filter and score dampening are notable improvements if ProbCut is re-enabled.
 
 ### Late Move Pruning (LMP)
 - Formula: `moveCount > (improving ? 2 + depth*depth : depth*depth/2)`
 - Sets `mp.onlyNoisy = true` (skips all remaining quiets, but still searches captures)
-- Compare to ours: we use `3 + d^2` (+50% improving). Their formula: `depth*depth/2` (not improving) vs our `3+d^2`, and `2+depth*depth` (improving). At depth 3: theirs = 4/11, ours = 12/18.
+- **Coda comparison**: Coda uses 3+d^2 with improving +50% / failing -33%. At depth 3: Weiss=4/11, Coda=12/18. Weiss is much tighter.
 
 ### History Pruning
 - Conditions: `quiet && lmrDepth < 3 && histScore < -1024 * depth`
 - Note: uses `lmrDepth` (reduced depth) not raw depth
-- Compare to ours: we use `-2000*depth`. They use `-1024*depth` but on lmrDepth (smaller), so effective threshold is tighter.
+- **Coda comparison**: Coda uses -1500*depth at depth<=3.
 
 ### SEE Pruning
 - Conditions: `lmrDepth < 7`
 - Single threshold: `-73 * depth` for ALL moves (quiet and noisy)
-- Compare to ours: we have separate quiet/tactical margins. They use one uniform margin.
+- **Coda comparison**: Coda uses separate quiet (-20d^2) and tactical (-d*100) margins.
 
 ### QSearch Pruning
 - Futility: `eval + 165` is the futility value
@@ -112,7 +110,6 @@ All pruning is skipped when: `inCheck || pvNode || !doPruning || ss->excluded ||
 - Stage filter: `mp.stage > NOISY_GOOD` -> break (stop searching bad captures entirely)
 - Mate distance pruning in QS (applied before moves)
 - Upcoming repetition detection in QS (`HasCycle`)
-- Compare to ours: our QS delta = 240. Their futility margin of 165 is tighter. They also have the SEE(1) filter.
 
 ---
 
@@ -129,11 +126,7 @@ All pruning is skipped when: `inCheck || pvNode || !doPruning || ss->excluded ||
 - **Multi-cut**: `singularBeta >= beta` -> return singularBeta immediately
 - **Negative extension (-1)**: `ttScore >= beta` (not singular, but likely still beats beta)
 - Extension limiter: `ss->ply >= thread->depth * 2` skips all extensions
-- Compare to ours: our SE is currently problematic. Key differences:
-  - Weiss depth >= 5 vs our 10
-  - Weiss margin 2*depth (non-PV) / depth (PV) vs our 3*depth
-  - Weiss has double ext cap (5), multi-cut return, negative ext, ply limiter
-  - These are all recommended fixes in SUMMARY.md idea #4
+- **Coda comparison**: Coda has SE at depth>=8, margin=tt_score-depth, multi-cut, negative ext. No double extensions or extension limiter. Weiss's lower SE depth (5 vs 8) and double extensions with cap are worth testing.
 
 ### Check Extension
 - `extension = MAX(extension, 1)` unconditionally when in check
@@ -151,7 +144,9 @@ Two separate tables for captures and quiets:
 - **Captures**: `0.38 + log(depth) * log(moves) / 3.76`
 - **Quiets**: `2.01 + log(depth) * log(moves) / 2.32`
 
-Compare to ours: we use separate tables with C_cap=1.80 / C_quiet=1.50. Weiss has a much higher quiet base (2.01 vs our 1.50) -- very aggressive quiet reduction. Lower capture base (0.38 vs ~0.69 in our formula).
+Weiss has a much higher quiet base (2.01) -- very aggressive quiet reduction. Lower capture base (0.38).
+
+**Coda comparison**: Coda uses C_quiet=1.30 / C_cap=1.80 (divisor-style). Different formula but Coda's quiet reductions are less aggressive.
 
 ### Application Conditions
 - `depth > 2 && moveCount > MAX(1, pvNode + !ttMove + root + !quiet) && doPruning`
@@ -164,26 +159,22 @@ Compare to ours: we use separate tables with C_cap=1.80 / C_quiet=1.50. Weiss ha
 - `-= histScore / 8870` (history-based, uses combined quiet+cont history)
 - `-= pvNode` (reduce less in PV)
 - `-= improving` (reduce less when improving)
-- `+= moveIsCapture(ttMove)` (reduce more when TT move is noisy -- **same as our TT noisy detection**)
+- `+= moveIsCapture(ttMove)` (reduce more when TT move is noisy)
 - `+= nonPawnCount[opponent] < 2` (reduce more in endgame with few opponent pieces)
 - `+= 2 * cutnode` (reduce more at cut nodes -- **+2 per cut node, very aggressive**)
 - Clamped to `[1, newDepth]`
+- **Coda**: Does not have cutnode +2 LMR or opponent material LMR adjustment.
 
-### DoDeeper Search
+### DoDeeper Search (IMPLEMENTED in Coda)
 After LMR re-search beats alpha:
 - `deeper = score > bestScore + 1 + 6 * (newDepth - lmrDepth)`
 - If deeper is true: `newDepth += 1` before full re-search
-- Reduction-proportional threshold: the more the move was reduced, the higher the bar to deepen
-- Compare to ours: we don't have doDeeper/doShallower. Listed in SUMMARY.md idea #1 (Tier 1).
+- Coda has doDeeper (+1 if score > best+50) and doShallower (-1 if score < best+new_depth).
 
 ### Continuation History Update on Re-search
 - If quiet and re-search result `<= alpha || >= beta`: update cont histories with bonus/malus
 - This gives history feedback even for LMR re-searches
-
-### What they DON'T have:
-- No doShallower (only doDeeper)
-- No TT-PV flag adjustment
-- No eval-distance-based adjustment
+- **Coda**: Does not update history on LMR re-searches.
 
 ---
 
@@ -205,7 +196,6 @@ Stages: TTMOVE -> GEN_NOISY -> NOISY_GOOD -> KILLER -> GEN_QUIET -> QUIET -> NOI
 ### Partial Insertion Sort
 - After scoring, uses partial insertion sort with threshold `-750 * depth`
 - Only moves above threshold are fully sorted; the rest are left in generation order
-- This is a performance optimization: at shallow depth, don't bother sorting all moves
 
 ### History Tables
 
@@ -214,9 +204,8 @@ Stages: TTMOVE -> GEN_NOISY -> NOISY_GOOD -> KILLER -> GEN_QUIET -> QUIET -> NOI
 - Bonus: `MIN(2418, 251*depth - 267)`
 - Malus: `-MIN(693, 532*depth - 163)` (asymmetric -- malus is smaller than bonus!)
 
-**Pawn history**: `pawnHistory[512][16][64]` -- pawn structure hash % 512, piece, to square
+**Pawn history** (IMPLEMENTED in Coda): `pawnHistory[512][16][64]` -- pawn structure hash % 512, piece, to square
 - Gravity divisor: 8663 (slower adaptation than butterfly)
-- Used in both scoring and updates
 
 **Capture history**: `captureHistory[16][64][8]` -- piece, to, captured piece type
 - Gravity divisor: 14387 (very slow adaptation)
@@ -232,13 +221,13 @@ Stages: TTMOVE -> GEN_NOISY -> NOISY_GOOD -> KILLER -> GEN_QUIET -> QUIET -> NOI
 ### Notable: No Counter-Move Heuristic
 Weiss has NO counter-move table. Only 1 killer per ply. This is compensated by the richer history tables (pawn history, deeper cont-hist).
 
-Compare to ours: we have 2 killers + counter-move. They have 1 killer + pawn history + cont-hist ply 4.
+**Coda comparison**: Coda has 2 killers + counter-move + pawn history + cont-hist plies 1, 2, 4, 6.
 
 ---
 
 ## 6. Correction History (Multi-Source)
 
-This is Weiss's most sophisticated feature. **10 correction history components** with tuned weights:
+This is Weiss's most sophisticated feature. **10 correction history components** with tuned weights.
 
 ### Components
 1. **Pawn correction**: `pawnCorrHistory[2][16384]` indexed by pawnKey, weight 5868
@@ -282,7 +271,7 @@ Gravity divisors: 1651 (pawn), 1142 (minor), 1222 (major), 1063 (non-pawn), 1514
 Applied in `CorrectEval`: `correctedEval *= (256 - rule50) / 256.0` when `rule50 > 7`
 - This is integrated into the correction pipeline, not eval itself
 
-Compare to ours: we have single pawn correction history. Weiss has 10 components with tuned weights. This is SUMMARY.md idea #7 (Tier 1, 11+ engines). The key implementation detail: separate Zobrist keys for minor, major, and per-color non-pawn pieces.
+**Coda comparison**: Coda has multi-source correction history: pawn + non-pawn(per color) + minor + major + continuation. Similar architecture to Weiss. Coda does NOT have continuation correction at plies 3-7 (only one ply of continuation correction), the 50-move decay, or tuned per-component weights. Weiss's 10-component weighted blend with 6 continuation correction plies is more sophisticated.
 
 ---
 
@@ -311,7 +300,7 @@ Replace if ANY of:
 ### Prefetch
 - `TTPrefetch(key)` via `__builtin_prefetch` (called in makemove)
 
-Compare to ours: we use 4-slot buckets with lockless atomics. Their 2-entry buckets are simpler. They store eval in TT (we do too). Their generation-based aging with combined genBound byte is clean.
+**Coda comparison**: Coda uses 5-slot buckets with lockless atomics (XOR key verification). TT cutoff history bonus is something Coda doesn't have.
 
 ---
 
@@ -349,66 +338,13 @@ Effect: if best move uses 50% of nodes, nodeRatio=0.5, timeRatio=2.39. If 90%, t
   - When `!doPruning && elapsed >= optimalUsage/32`, enable pruning
   - This means early iterations run without pruning (more accurate but slower)
 
-Compare to ours: we use instability factor (200) based on best move changes. Their continuous node-ratio scaling is more granular and includes an `uncertain` flag from aspiration results. Listed in SUMMARY.md idea #24 (Tier 2).
+**Coda comparison**: Coda uses simpler time management (time_left/20 + 3*inc/4 soft, 5x hard). No node-ratio scaling, no uncertain flag, no pruning gate.
 
 ---
 
 ## 9. Evaluation (Classical HCE)
 
-Weiss uses a hand-crafted evaluation with tapered scoring (midgame/endgame phase interpolation). **No NNUE.**
-
-### Material + PST
-- Piece values: P=104/204, N=420/632, B=427/659, R=569/1111, Q=1485/1963
-- Incremental material + PSQT maintained in `pos->material`
-- Phase: based on PhaseValue (N=1, B=1, R=2, Q=4)
-- Tempo: +18 for side to move
-
-### Pawn Evaluation (cached)
-- Doubled pawns (adjacent and 1-gap): -11/-48 and -10/-25
-- Isolated pawns: -8/-16
-- Pawn support (pawns defending pawns): +22/+17
-- Open pawns (no opposing pawn ahead, not pawn-defended): -14/-19
-- Phalanx: rank-based bonus up to +231/+367 at rank 7
-- Passed pawns: rank-based, with defended bonus
-- Pawn cache: `pawnKey % PAWN_CACHE_SIZE` with single entry per slot
-
-### Piece Evaluation
-- Mobility: x-ray attack BBs filtered by mobility area (not blocked by own pawns on rank 2/3 or behind pawn, not attacked by enemy pawns)
-- Bishop pair: +33/+110
-- Minor behind pawn: +9/+32 per piece
-- Bad bishop pawns: penalty per (same-color pawn count * central blocked pawn count)
-- Rook forward: +28/+31 (fully open), +17/+15 (semi-open)
-
-### King Safety
-- King zone attacks: accumulated per attacking piece type
-- AttackPower: N=36, B=22, R=23, Q=78
-- CheckPower: N=68, B=44, R=88, Q=92
-- CountModifier: table indexed by attack count (0-7)
-- KingLineDanger: 28-entry table based on queen-like mobility from king
-- Pawn shelter: count of own pawns in front of king, not attacked by opponent pawns
-
-### Passed Pawn Evaluation
-- Rank-based bonus with defended bonus
-- PassedBlocked / PassedFreeAdv by rank (rank 4+)
-- Distance to own and enemy king
-- Rook behind passed pawn bonus
-- Square rule (promotion race)
-
-### Threats
-- PawnThreat: pawns attacking non-pawns (+80/+34 per)
-- PushThreat: pawn-push attacks on non-pawns (+25/+6 per)
-- ThreatByMinor/ThreatByRook: piece-type specific tables
-
-### Scale Factor
-- Fewer pawns for stronger side: `128 - (8-pawnCount)^2`
-- Pawns only on one side: -20
-- Opposite-colored bishop endgame: 64 (only minors) or 96 (1 extra piece each)
-
-### Endgame Table
-- Material-key indexed endgame recognition (KK, KNK, KBK, KNkn, KBkb, KNNk, etc.)
-- Currently only trivial draws
-
-Compare to ours: we use NNUE. Their classical eval is well-structured but fundamentally weaker than NNUE. Not relevant for borrowing eval ideas, but their correction history infrastructure is excellent.
+Weiss uses a hand-crafted evaluation with tapered scoring (midgame/endgame phase interpolation). **No NNUE.** Not relevant for borrowing eval ideas, but their search and correction history infrastructure is excellent.
 
 ---
 
@@ -421,117 +357,113 @@ Compare to ours: we use NNUE. Their classical eval is well-structured but fundam
 - Thread index 0 is main thread; only main thread handles time and prints output
 - `ABORT_SIGNAL`: atomic bool, checked every 2048 nodes
 
-Compare to ours: very similar design. We use packed atomics for TT, they don't (simpler but technically racy on non-x86).
+**Coda comparison**: Very similar design. Coda uses packed atomics for TT (proper lockless access).
 
 ---
 
-## 11. Notable Differences from GoChess
+## 11. Notable Differences from Coda
 
-### Things Weiss has that we don't:
-1. **10-component correction history** with tuned weights (pawn + minor + major + per-color non-pawn + cont-corr plies 2-7)
-2. **Pawn history table** (`pawnHistory[512][piece][to]` indexed by pawn structure hash)
-3. **Continuation history ply 4** (plies 1, 2, 4 -- skips 3)
-4. **ProbCut QS pre-filter** (two-stage: QS first, then reduced search)
-5. **ProbCut score dampening** (`score - 160` on non-terminal returns)
-6. **DoDeeper search** (reduction-proportional threshold after LMR re-search)
-7. **Aspiration score-dependent delta** (`9 + prevScore^2/16384`)
-8. ~~**Aspiration fail-low beta contraction**~~ (`beta = (alpha+3*beta)/4`) **(UPDATE 2026-03-21: GoChess now has aspiration contraction (3a+5b)/8)**
-9. **Aspiration fail-high depth reduction** (inner loop only)
-10. **Time-adaptive pruning enable** (`doPruning` flag delayed by time/depth)
-11. **NMP depth-dependent eval gate** (`staticEval >= beta + 138 - 13*depth`)
-12. **NMP opponent history gate** (`(ss-1)->histScore < 28500`)
-13. **RFP history adjustment** (`(ss-1)->histScore / 131` subtracted from margin)
-14. **RFP TT move history guard** (`!ttMove || GetHistory(ttMove) > 6450`)
-15. **Cut-node +2 LMR** (`r += 2 * cutnode`)
-16. **Opponent material LMR** (`r += nonPawnCount[opponent] < 2`)
-17. **TT cutoff history bonus** (quiet TT moves get butterfly + pawn history bonus on cutoff)
-18. **Upcoming repetition detection** (Cuckoo-based `HasCycle`)
-19. **Eval trend bonus** (biases eval toward previous iteration's score)
-20. **50-move decay in correction** (`(256-rule50)/256` factor)
-21. **Cont-hist update on LMR re-search** (score <= alpha or >= beta -> cont-hist update)
-22. **Asymmetric history bonus/malus** (bonus up to 2418, malus capped at 693)
-23. **Mate distance pruning** (both main search and QS)
-24. **Double extension cap** (max 5 per line via `ss->doubleExtensions`)
+### Things Weiss has that Coda doesn't:
+1. **Continuation correction plies 3-7** with tuned weights (Coda has 1 ply of cont-corr)
+2. **ProbCut QS pre-filter** (two-stage: QS first, then reduced search)
+3. **ProbCut score dampening** (`score - 160` on non-terminal returns)
+4. **Time-adaptive pruning enable** (`doPruning` flag delayed by time/depth)
+5. **NMP depth-dependent eval gate** (`staticEval >= beta + 138 - 13*depth`)
+6. **NMP opponent history gate** (`(ss-1)->histScore < 28500`)
+7. **RFP history adjustment** (`(ss-1)->histScore / 131` subtracted from margin)
+8. **Cut-node +2 LMR** (`r += 2 * cutnode`)
+9. **Opponent material LMR** (`r += nonPawnCount[opponent] < 2`)
+10. **TT cutoff history bonus** (quiet TT moves get butterfly + pawn history bonus on cutoff)
+11. **Eval trend bonus** (biases eval toward previous iteration's score)
+12. **50-move decay in correction** (`(256-rule50)/256` factor)
+13. **Cont-hist update on LMR re-search** (score <= alpha or >= beta -> cont-hist update)
+14. **Asymmetric history bonus/malus** (bonus up to 2418, malus capped at 693)
+15. **Mate distance pruning** (both main search and QS)
+16. **Double extension cap** (max 5 per line via `ss->doubleExtensions`)
+17. **Node-ratio time management** (continuous scaling vs Coda's fixed allocation)
+18. **Draw randomization** (+1 to +8)
+19. **Singular extension depth >= 5** (Coda uses >= 8)
+20. **Singular PV-aware margin** (depth on PV vs 2*depth on non-PV)
 
-### Things we have that Weiss doesn't:
-1. **NNUE** (they use classical eval -- major strength difference)
-2. **Counter-move heuristic** (they have none)
-3. **2 killers per ply** (they have 1)
-4. **Lockless TT** (they rely on natural alignment atomicity)
+### Things Coda has that Weiss doesn't:
+1. **NNUE** (Weiss uses classical eval)
+2. **Counter-move heuristic** (Weiss has none)
+3. **2 killers per ply** (Weiss has 1)
+4. **Lockless TT** (proper atomic access)
 5. **Recapture extensions**
-6. **Alpha-reduce** (depth-1 after alpha raised)
-7. **Fail-high score blending** in main search
-8. **TT score dampening** at cutoffs
-9. **TT near-miss cutoffs** (1 ply shallower with margin)
-10. **TT noisy move detection** (+1 LMR for quiets when TT is noisy)
-11. **QS beta blending**
-12. **NMP threat detection** (escape bonus)
+6. **Fail-high score blending** in main search
+7. **TT score dampening** at cutoffs
+8. **TT near-miss cutoffs** (1 ply shallower with margin)
+9. **NMP verification search** at depth >= 12
+10. **Hindsight reduction**
+11. **Threat-aware 4D history**
+12. **Cont-hist plies 4 and 6** (Weiss uses 1, 2, 4; Coda uses 1, 2, 4, 6)
 
 ---
 
 ## 12. Parameter Comparison Table
 
-| Feature | Weiss | GoChess |
-|---------|-------|---------|
-| RFP margin | 77*(d-improving), depth<7 | 85*d (imp) / 60*d (not), depth<=8 |
-| RFP extra | -(ss-1)->histScore/131, TT guard | None |
-| NMP base R | 4 + d/4 | 3 + d/3 |
+| Feature | Weiss | Coda |
+|---------|-------|------|
+| RFP margin | 77*(d-improving), depth<7 | 70*d (imp) / 100*d (not), depth<=7 |
+| RFP extra | -(ss-1)->histScore/131, TT guard | TT quiet guard |
+| NMP base R | 4 + d/4 | 4 + d/3 |
 | NMP eval-beta div | 227 | 200 |
 | NMP extra gate | staticEval >= beta+138-13*d, histScore<28500 | None |
-| LMR base (quiet) | 2.01 | 1.50 |
-| LMR div (quiet) | 2.32 | ~2.36 |
-| LMR base (capture) | 0.38 | ~0.69 (C=1.80) |
-| LMR div (capture) | 3.76 | ~2.76 |
-| LMR cutnode | +2 | +0 |
+| NMP verification | None | depth >= 12 |
+| NMP dampening | None | (2*score+beta)/3 |
+| LMR base (quiet) | 2.01 | ln(d)*ln(m)/1.30 |
+| LMR div (quiet) | 2.32 | 1.30 |
+| LMR base (capture) | 0.38 | ln(d)*ln(m)/1.80 |
+| LMR div (capture) | 3.76 | 1.80 |
+| LMR cutnode | +2 | None |
 | LMR endgame | +1 if oppo nonPawn<2 | None |
-| LMR history div | 8870 | 5000 |
-| LMP (not improving) | d^2/2 | 3+d^2 |
-| LMP (improving) | 2+d^2 | (3+d^2)*1.5 |
-| Futility | 80+lmrD*80 (ours) | 80+lmrD*80 |
-| SEE pruning | -73*d (uniform) | Separate quiet/tactical |
-| SE min depth | 5 | 10 |
-| SE margin | d*(2-pvNode) | d*3 |
+| LMR history div | 8870 | (various) |
+| LMP (not improving) | d^2/2 | 3+d^2 (failing: *2/3) |
+| LMP (improving) | 2+d^2 | (3+d^2)*3/2 |
+| Futility | 80+lmrD*80 | 60+lmrD*60 |
+| SEE pruning | -73*d (uniform) | Quiet: -20d^2, Cap: -d*100 |
+| SE min depth | 5 | 8 |
+| SE margin | d*(2-pvNode) | tt_score - depth |
 | SE double ext | +2 if score < singBeta-1, cap 5 | None |
-| SE multi-cut | return singBeta if >= beta | None |
-| SE negative ext | -1 if ttScore >= beta | None |
-| ProbCut margin | beta+200 | beta+170 |
+| SE multi-cut | return singBeta if >= beta | return singBeta if >= beta |
+| ProbCut margin | beta+200 | beta+170 (disabled) |
 | ProbCut QS pre-filter | Yes | No |
-| Aspiration delta | 9+score^2/16384 | 15 |
-| History bonus | MIN(2418, 251*d-267) | similar |
+| Aspiration delta | 9+score^2/16384 | 13+avg^2/23660 |
+| History bonus | MIN(2418, 251*d-267) | depth^2 capped 1200 |
 | History malus | -MIN(693, 532*d-163) | symmetric with bonus |
-| History gravity (butterfly) | div 4373 | div ~5000 |
-| Correction sources | 10 | 1 (pawn only) |
-| Pawn history | Yes (512 buckets) | No |
-| ContHist plies | 1, 2, 4 | 1, 2 |
+| Correction sources | 10 (pawn+minor+major+nonpawn+contCorr 2-7) | 6 (pawn+minor+major+nonpawn+contCorr) |
+| Pawn history | Yes (512 buckets) | Yes (512 buckets) |
+| ContHist plies | 1, 2, 4 | 1, 2, 4, 6 |
 | Killers | 1 per ply | 2 per ply |
 | Counter-move | No | Yes |
-| TT buckets | 2 entries | 4 slots |
+| TT buckets | 2 entries | 5 slots |
 | Draw randomization | 1-8 | None |
 
 ---
 
 ## 13. Ideas Worth Testing from Weiss
 
-### Already noted in SUMMARY.md (reinforces priority):
-1. **Multi-source correction history** -- Weiss is the reference implementation for 10-component weighted blend. Priority HIGH. (SUMMARY #7)
-2. **ProbCut QS pre-filter** -- two-stage ProbCut confirmed in Weiss. (SUMMARY #6)
-3. **DoDeeper search** -- reduction-proportional threshold `score > bestScore + 1 + 6*(newDepth-lmrDepth)`. (SUMMARY #1)
-4. **Cut-node +2 LMR** -- `r += 2 * cutnode`. (SUMMARY #25)
-5. **Opponent material LMR** -- `r += nonPawnCount[opponent] < 2`. (SUMMARY #26)
-6. **Pawn history** -- `[pawnKey%512][piece][to]`. (SUMMARY #22)
-7. **Cont-hist ply 4** -- adds ply 4 to ordering and updates, skips ply 3. (SUMMARY #20)
-8. **Time-adaptive pruning** -- `doPruning` flag. (SUMMARY #43)
-9. **ASP fail-high depth reduce** -- inner loop `depth = MAX(1, depth-1)`. (SUMMARY #14)
-10. **ASP fail-low beta contraction** -- `beta = (alpha+3*beta)/4`. (SUMMARY #14)
+### High priority (reinforces consensus features):
+1. **Additional continuation correction plies** (3-7) with tuned weights -- Weiss has 6 plies of cont-corr, Coda has 1. This is the biggest gap.
+2. **Cut-node +2 LMR** -- `r += 2 * cutnode`. Aggressive but widely adopted.
+3. **Opponent material LMR** -- `r += nonPawnCount[opponent] < 2`. Simple endgame awareness.
+4. **Lower SE depth** (5 vs 8) -- more aggressive singular extension activation.
+5. **Double extensions** (+2 when well below singular beta, capped at 5 per line).
+6. **Mate distance pruning** -- 3 lines, universal technique.
 
-### New or reinforced ideas from Weiss:
-11. **ProbCut score dampening** (`score - 160`) -- prevents ProbCut from returning inflated scores. Very simple, aligns with our pattern #1 (dampening at noisy boundaries). **Est. Elo: +2 to +5**.
-12. **NMP depth-dependent eval gate** (`staticEval >= beta + 138 - 13*depth`) -- adds a second eval condition that relaxes with depth. Prevents NMP at shallow depth when eval is barely above beta. **Est. Elo: +2 to +5**.
-13. **NMP opponent history gate** (`(ss-1)->histScore < 28500`) -- skip NMP when opponent's last move has very high history (strongly expected move). **Est. Elo: +1 to +3**.
-14. **RFP history adjustment** (`(ss-1)->histScore / 131`) -- tighten RFP margin when opponent's last move had good history. Aligns with pattern #6 (guards). **Est. Elo: +2 to +4**.
-15. **Asymmetric history bonus/malus** -- malus capped much lower than bonus (693 vs 2418). Prevents over-penalization of moves that failed in one position but may be good elsewhere. **Est. Elo: +1 to +3**.
-16. **Eval trend bonus** -- `CLAMP(prevScore/2, -32, 32)` as S(x, x/2) added to eval. Biases toward expected score trajectory. Novel, untested. **Est. Elo: +1 to +3**.
-17. **Cont-hist update on LMR re-search** -- when LMR re-search score `<= alpha || >= beta`, update cont-hist with bonus/malus. Provides history feedback from reduced searches. **Est. Elo: +1 to +3**.
-18. **TT cutoff history bonus** -- quiet TT moves that cause cutoff get butterfly + pawn history bonus. Leverages TT cutoffs for move ordering improvement. **Est. Elo: +2 to +4**.
-19. **Score-dependent aspiration delta** (`9 + prevScore^2/16384`) -- larger windows for extreme scores where volatility is higher. **Est. Elo: +1 to +3**.
-20. **Mate distance pruning** -- 3 lines, both main search and QS. Universal technique. **Est. Elo: +1 to +2**.
+### Medium priority:
+7. **ProbCut QS pre-filter** -- two-stage ProbCut. Relevant if ProbCut is re-enabled.
+8. **ProbCut score dampening** (`score - 160`) -- prevents inflated ProbCut scores.
+9. **NMP depth-dependent eval gate** (`staticEval >= beta + 138 - 13*depth`).
+10. **RFP history adjustment** (`(ss-1)->histScore / 131`).
+11. **TT cutoff history bonus** -- quiet TT moves that cause cutoff get history bonus.
+12. **Asymmetric history bonus/malus** (malus much smaller than bonus).
+13. **Node-ratio time management** -- continuous scaling vs fixed allocation.
+
+### Lower priority:
+14. **Eval trend bonus** -- biases eval toward previous score. Novel, untested.
+15. **50-move decay in correction** -- simple multiplication factor.
+16. **Cont-hist update on LMR re-search** -- history feedback from reduced searches.
+17. **NMP opponent history gate** (`histScore < 28500`).
+18. **Draw randomization** -- small positive draw score. Simple anti-draw-blindness.

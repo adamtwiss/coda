@@ -14,11 +14,13 @@ Author: Peter Osterlund
 - On fail high/low: retry with window * 1.5 each time (`betaRetryDelta = betaRetryDelta * 3 / 2`)
 - Win scores: aspiration delta jumps to 3000 (essentially full window for mate searches)
 - Mate searches: if score is win/lose, set retry delta to MATE0 to avoid aspiration window
+- **Coda comparison**: Coda uses eval-dependent delta (13+avg^2/23660), fail-low beta contraction (3a+5b)/8, fail-high alpha contraction (5a+3b)/8 + depth reduce. Texel is simpler with fixed delta and no contraction.
 
 ### Mate Distance Pruning
 
 - `beta = min(beta, MATE0-ply-1); if alpha >= beta return alpha`
 - Standard. Applied at top of search.
+- **Coda**: Does not have mate distance pruning. Worth adding (3 lines, universal technique).
 
 ### Null-Move Pruning
 
@@ -30,6 +32,7 @@ Author: Peter Osterlund
 - **Reduction R**: `min(depth, 4)` -- fixed R=4 (capped at depth)
 - **Verification search**: if score >= beta AND depth >= 10, do a verification search at depth-R with null move disabled. Must still pass beta.
 - **Score capping**: if score >= beta and isWinScore(score), clamp score to beta
+- **Coda comparison**: Coda uses R=4+d/3+(eval-beta)/200, verify at depth>=12, post-capture R--, score dampening (2s+b)/3. Texel's fixed R=4 is simpler. Both have verification searches. Texel has a TT-based skip and pawn requirement that Coda lacks.
 
 ### Razoring
 
@@ -39,6 +42,7 @@ Author: Peter Osterlund
   - depth <= 1: razorMargin1 = **86**
   - depth 2-3: razorMargin2 = **353**
 - **Method**: if eval < beta - margin, do QS at (alpha-margin, beta-margin). If QS score <= alpha-margin, return.
+- **Coda**: No razoring.
 
 ### Reverse Futility Pruning (Static Null Move Pruning)
 
@@ -51,6 +55,7 @@ Author: Peter Osterlund
   - depth 3: reverseFutilityMargin3 = **267**
   - depth 4: reverseFutilityMargin4 = **394**
 - **Return value**: evalScore - margin (not just beta)
+- **Coda comparison**: Coda uses 70*d (improving) / 100*d (not), depth<=7. Texel's RFP is much shallower (depth<=4) with hand-tuned per-depth margins.
 
 ### Futility Pruning (Forward)
 
@@ -62,6 +67,7 @@ Author: Peter Osterlund
   - depth 3: futilityMargin3 = **268**
   - depth 4: futilityMargin4 = **334**
 - **Method**: set `futilityPrune = true` if eval + margin <= alpha. Then for each reducible quiet move that doesn't give check and isn't a passed pawn push, skip search and use futilityScore as the move's score.
+- **Coda comparison**: Coda uses 60+lmrDepth*60, depth<=8. Texel applies at shallower depths.
 
 ### Late Move Pruning (LMP)
 
@@ -73,6 +79,7 @@ Author: Peter Osterlund
   - depth 4: normal **24**, bad prev move **15**
 - **Applied to**: reducible moves (score < 30, not captures with good SEE, not promotions) that don't give check and aren't passed pawn pushes
 - Default lmpMoveCountLimit = 256 (no pruning) for depth >= 5
+- **Coda comparison**: Coda uses 3+d^2 with improving +50% / failing -33%. Texel's `badPrevMove` adjustment is a unique eval-drop heuristic. Texel only applies LMP at depth<=4.
 
 ### Internal Iterative Deepening / Reduction (IID/IIR)
 
@@ -80,6 +87,7 @@ Author: Peter Osterlund
 - **PV nodes**: always do IID search at depth-2
 - **Non-PV nodes**: do IID search at depth * 3/8 (only if depth > 8)
 - **After IID**: probe TT to get hash move, then **always reduce depth by 1** (IIR)
+- **Coda comparison**: Coda has IIR at depth>=4, no TT move, PV/cut node. Coda does not do an actual IID search, just the depth reduction.
 
 ### Singular Extensions
 
@@ -87,6 +95,7 @@ Author: Peter Osterlund
 - **Conditions**: hash move selected, not already in singular search, TT entry not upper bound (not T_LE), TT depth >= depth-3, not a win score (or not normal bound), ply+depth < MAX_SEARCH_DEPTH, hash move is legal
 - **Search**: at depth/2, with beta = ttScore - depth
 - **Result**: if singular search fails low, extend hash move by 1. If singular search score >= beta, return beta (multi-cut).
+- **Coda comparison**: Coda uses depth>=8, margin=tt_score-depth. Texel at depth>5 is more aggressive. Both have multi-cut. Texel lacks negative extension.
 
 ### Check Extensions
 
@@ -106,6 +115,7 @@ Author: Peter Osterlund
   - **Bad history score** (move.score < 20): +1
 - **Defense move reduction cancel**: if move is a "defense move" (moving a piece away from threat by lesser piece), reset lmr to 0. Only for non-captures.
 - **Re-search**: if LMR score > alpha, re-search at full depth.
+- **Coda comparison**: Coda uses log-log LMR with separate quiet/capture tables and many adjustments (history, PV, improving, threat, etc.). Much more granular than Texel's discrete thresholds.
 
 ### Root LMR
 
@@ -119,12 +129,14 @@ Author: Peter Osterlund
 - **Delta pruning**: margin = **152**. If evalScore + captureValue + promoValue + 152 < alpha, skip (unless gives check, or insufficient material for safety). Tracks best optimistic score for the return value.
 - **SEE filtering**: all non-evasion captures with negative SEE are skipped. Non-capture checks also skipped if negative SEE.
 - **Move sorting**: MVV-LVA, only sort first `quiesceMaxSortMoves = 8` moves (optimization: if 8 moves fail to cut, likely ALL node, don't bother sorting rest)
+- **Coda comparison**: Coda uses QS delta=240, captures only (no checks in QS). Texel's QS is more sophisticated with check generation, hard move limits, and sort cutoff.
 
 ### ABDADA Parallel Search
 
 - Uses ABDADA (Alpha-Beta Distributed-ish with Aging) parallel search via `abdadaExclusive` flag
 - At depth >= 7: uses TT "busy" bit to mark nodes being searched. If a sibling thread finds a node busy, returns BUSY score and defers it to a second pass.
 - Two-pass move loop: pass 0 tries all moves but may get BUSY results; pass 1 retries BUSY moves.
+- **Coda comparison**: Coda uses Lazy SMP (simpler). ABDADA reduces redundant work but adds complexity.
 
 ---
 
@@ -213,9 +225,7 @@ Author: Peter Osterlund
 - `searchNeedMoreTime` flag: when set, shouldStop uses maxTimeMillis instead of minTimeMillis
 - Adjusted minTimeMillis: if earlyStopPercentage <= 100, use `min(minTime * hardFactor, maxTime)`
 
-### Move-Time Mode
-
-- `earlyStopPercentage = 10000` (effectively disables early stopping)
+**Coda comparison**: Coda uses simpler time management (time_left/20 + 3*inc/4, 5x hard). No node-ratio scaling or hard factor. Texel's multi-factor approach with smoothed hardFactor is more sophisticated.
 
 ---
 
@@ -235,7 +245,7 @@ elif moveIndex >= 2:                           lmr = 1
 
 - **Expected cut node**: +1. Determined by walking up the tree: count consecutive "first moves" from current ply. If the first non-first-move ancestor has even count of first-moves above it, it's an expected cut node.
 - **Bad previous move**: +1 if current eval < eval 2 plies ago
-- **Bad history**: +1 if move.score() < 20
+- **Bad history**: +1 if move.score < 20
 
 ### Reduction Cancellation
 
@@ -254,15 +264,21 @@ elif moveIndex >= 2:                           lmr = 1
 
 Texel computes whether a node is an "expected cut node" by examining the move order in ancestor nodes. It walks up from the current ply counting consecutive first-move nodes. If the count of first-moves is even when a non-first-move is found, the node is expected to cut. This is used to increase LMR by +1 at expected cut nodes. This is a form of node-type prediction that goes beyond simply tracking PV vs non-PV.
 
+**Coda comparison**: Coda has a `cut_node` parameter passed through the search, but it's the standard alternating heuristic, not Texel's tree-walk approach.
+
 ### Defense Move Heuristic
 
 The `defenseMove()` function detects when a piece is moving away from a threatening lesser piece. For rooks/queens: checks if the from-square is attacked by enemy pawns/knights/bishops but the to-square is not. For bishops/knights: checks if from-square is attacked by enemy pawns but to-square is not. Defense moves get their LMR cancelled (reduced less). This is specific to Texel and not commonly seen.
+
+**Coda comparison**: Coda has threat-aware 4D history which captures some of this (moves from/to threatened squares have separate history), but no explicit defense move detection for LMR cancellation.
 
 ### Bad Previous Move (Eval Drop)
 
 `badPrevMove = (evalScore != UNKNOWN && ply >= 2 && evalScore < eval_2_plies_ago)`. Used in two places:
 1. LMP: tighter move count limits when badPrevMove (e.g., 2 instead of 3 at depth 1)
 2. LMR: +1 reduction adjustment
+
+**Coda comparison**: Coda has a `failing` heuristic (eval < eval_2_plies_ago - threshold) used for LMP adjustment. Similar concept but with a margin threshold rather than raw comparison.
 
 ### History Table Design
 
@@ -286,15 +302,16 @@ No explicit history-based pruning threshold for quiet moves. Only LMP and futili
 
 ### Null Move Verification at Depth >= 10
 
-Instead of just using the null move score, Texel does a reduced-depth verification search with null move disabled when depth >= 10 and initial null move search failed high.
+Instead of just using the null move score, Texel does a reduced-depth verification search with null move disabled when depth >= 10 and initial null move search failed high. Coda has this at depth >= 12.
 
 ### QS Move Sort Cutoff
 
 Only sorts the first 8 moves in QS (quiesceMaxSortMoves = 8). If the first 8 moves didn't cut, assumes it's an ALL node and stops sorting. Saves time on wide QS nodes.
+- **Coda**: Does not have this optimization. Worth considering.
 
 ### ABDADA Parallel Search
 
-Uses TT busy-bit marking at depth >= 7. Moves that find a BUSY node are deferred to a second pass. This avoids redundant work when multiple threads explore the same subtree.
+Uses TT busy-bit marking at depth >= 7. Moves that find a BUSY node are deferred to a second pass. This avoids redundant work when multiple threads explore the same subtree. More sophisticated than Lazy SMP but more complex to implement.
 
 ### TT Cutoff Restrictions
 
@@ -306,41 +323,64 @@ For endgame tablebase draws, Texel computes "swindle scores" (small positive/neg
 
 ### Half-Move Factor
 
-A table of 10 entries that apparently scales evaluation based on half-move clock proximity to the 50-move rule:
+A table of 10 entries that scales evaluation based on half-move clock proximity to the 50-move rule:
 ```
 {128, 128, 128, 128, 44, 35, 29, 25, 20, 17}
 ```
 Values are out of 128 (full scale). Late in the 50-move clock, evaluation is discounted significantly.
+- **Coda**: Does not have 50-move eval scaling. Related to Weiss's 50-move decay in correction history.
 
 ---
 
-## 6. Comparison to GoChess (things we have that Texel lacks, and vice versa)
+## 6. Comparison to Coda
 
-### Texel has, we lack:
-- **Expected cut node** heuristic for LMR adjustment
+### Texel has, Coda lacks:
+- **Expected cut node** heuristic for LMR adjustment (tree-walk approach)
 - **Defense move** heuristic (LMR cancellation for tactical retreats)
-- **Bad previous move** dual use (LMP tightening + LMR increase)
-- **ABDADA** parallel search (we use Lazy SMP)
-- **Null move verification** search at depth >= 10
+- **ABDADA** parallel search (Coda uses Lazy SMP)
 - **QS sort cutoff** after N moves (quiesceMaxSortMoves = 8)
-- **TT cutoff depth*2 <= ply** condition
+- **TT cutoff depth*2 <= ply** condition for PV nodes
 - **Half-move factor** for 50-move rule eval scaling
 - **Swindle scores** for TB draws
+- **Mate distance pruning**
+- **Razoring** (depth<=3)
+- **NMP TT-based skip** and pawn requirement
+- **QS check generation** (first ply of QS)
 
-### We have, Texel lacks:
-- **Continuation history** (we have it, 3x weighted)
+### Coda has, Texel lacks:
+- **Continuation history** (Texel has none at all)
 - **Capture history**
-- **ProbCut**
-- **History pruning** (we prune moves with bad history)
-- **NNUE evaluation**
-- **Log-log LMR table** (ours is more granular)
-- **Correction history**
+- **ProbCut** (disabled in Coda)
+- **History pruning** (Texel has no history-based pruning)
+- **NNUE evaluation** (Texel uses HCE)
+- **Log-log LMR table** (Coda's is more granular)
+- **Multi-source correction history**
 - **Improving flag** for RFP/LMP/futility
+- **Pawn history**
+- **Threat-aware 4D history**
+- **DoDeeper/DoShallower**
+- **Cuckoo cycle detection**
+- **Hindsight reduction**
+- **Fail-high score blending**
+- **TT near-miss cutoffs**
+- **Staged move picker**
 
 ### Different approaches:
-- **History**: we use additive bonus/malus with divisor; Texel uses weighted moving average
-- **RFP**: we use depth-scaled margin with improving flag; Texel uses fixed per-depth margins
-- **LMR**: we use log(depth)*log(moveCount) formula with many adjustments; Texel uses discrete thresholds
-- **NMP**: we use depth/3 + 3 reduction with eval/200 bonus; Texel uses fixed R=min(depth,4) with verification
-- **Futility**: we use lmrDepth*100+100; Texel uses fixed per-depth margins
-- **LMP**: we use d^2+3 formula with improving; Texel uses fixed per-depth limits with badPrevMove
+- **History**: Coda uses additive bonus/malus with gravity; Texel uses weighted moving average
+- **RFP**: Coda uses depth-scaled margin with improving flag; Texel uses fixed per-depth margins
+- **LMR**: Coda uses log(depth)*log(moveCount) with many adjustments; Texel uses discrete thresholds
+- **NMP**: Coda uses adaptive R with depth/eval scaling; Texel uses fixed R=min(depth,4) with verification
+- **Futility**: Coda uses lmrDepth*60+60; Texel uses fixed per-depth margins
+- **LMP**: Coda uses d^2+3 formula with improving/failing; Texel uses fixed per-depth limits with badPrevMove
+- **Parallel**: Coda uses Lazy SMP; Texel uses ABDADA
+
+---
+
+## 7. Ideas Worth Testing from Texel
+
+1. **Mate distance pruning** -- 3 lines, universal technique. Reinforced by multiple engines.
+2. **QS sort cutoff** -- only sort first 8 captures in QS. Simple NPS optimization.
+3. **Half-move eval scaling** -- discount eval near 50-move rule. Related to Weiss's 50-move correction decay.
+4. **Defense move LMR cancellation** -- detect pieces retreating from threats by lesser pieces, reduce less. Coda's 4D history partially captures this but explicit detection may help.
+5. **QS check generation** at first ply -- generate checks as well as captures at QS depth 0. Most engines do this.
+6. **NMP TT-based skip** -- skip NMP when TT entry has upper bound below beta. Also in Ethereal.
