@@ -982,8 +982,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 let mut pv_moves = pv_len;
                 let mut seen_hashes = Vec::new();
                 while pv_moves < depth as usize + 5 {
-                    // Cycle detection: stop if we've seen this position before
+                    // Stop at draw conditions: cycle or fifty-move rule
                     if seen_hashes.contains(&pv_board.hash) { break; }
+                    if pv_board.halfmove >= 100 { break; }
                     seen_hashes.push(pv_board.hash);
 
                     let pv_tt = info.tt.probe(pv_board.hash);
