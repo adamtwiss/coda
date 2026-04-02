@@ -1705,10 +1705,10 @@ fn negamax(
         }
 
         // Futility pruning: use estimated post-LMR depth for margin
-        // Margin widened from 60+60*d to 90+100*d (SF uses 42+120*d, Viridithas 86+70*d)
         // History adjustment: good history widens margin (harder to prune)
-        if static_eval > -INFINITY && depth <= 8 && !in_check && !gives_check
+        if ply > 0 && static_eval > -INFINITY && depth <= 8 && !in_check && !gives_check
             && !is_cap && !is_promo
+            && mv != tt_move && mv != killers[0] && mv != killers[1]
             && best_score > -(MATE_SCORE - 100)
             && FEAT_FUTILITY.load(Ordering::Relaxed)
         {
