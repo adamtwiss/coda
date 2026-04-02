@@ -928,33 +928,29 @@ pub struct NNUENet {
 }
 
 impl NNUENet {
-    /// Load from a byte slice (for embedded nets). Writes to temp file and loads.
+    /// Load from a byte slice (for embedded nets). No temp files needed.
     pub fn load_from_bytes(data: &[u8]) -> Result<Self, String> {
-        use std::io::Write;
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp_path = std::env::temp_dir().join(format!("coda_embedded_{}_{}.nnue", std::process::id(), id));
-        let mut f = File::create(&tmp_path).map_err(|e| format!("create temp: {}", e))?;
-        f.write_all(data).map_err(|e| format!("write temp: {}", e))?;
-        drop(f);
-        let result = Self::load(tmp_path.to_str().unwrap());
-        let _ = std::fs::remove_file(&tmp_path);
-        result
+        let mut reader = std::io::Cursor::new(data);
+        Self::load_from_reader(&mut reader, data.len() as u64, "<embedded>")
     }
 
-    /// Load a v5/v6 .nnue file.
+    /// Load a v5/v6/v7 .nnue file.
     pub fn load(path: &str) -> Result<Self, String> {
+        let file_len = std::fs::metadata(path).map_err(|e| format!("stat {}: {}", path, e))?.len();
         let file = File::open(path).map_err(|e| format!("open {}: {}", path, e))?;
         let mut reader = BufReader::new(file);
+        Self::load_from_reader(&mut reader, file_len, path)
+    }
 
+    fn load_from_reader(reader: &mut impl IoRead, data_len: u64, source_name: &str) -> Result<Self, String> {
         // Read magic
-        let magic = read_u32(&mut reader)?;
+        let magic = read_u32(reader)?;
         if magic != NNUE_MAGIC {
             return Err(format!("invalid NNUE magic: 0x{:X}", magic));
         }
 
         // Read version
-        let version = read_u32(&mut reader)?;
+        let version = read_u32(reader)?;
         let mut use_screlu = false;
         let mut use_pairwise = false;
         let mut l1_size = 0usize;
@@ -965,9 +961,8 @@ impl NNUENet {
 
         match version {
             5 => {
-                // Infer hidden size from file size
-                let file_meta = std::fs::metadata(path).map_err(|e| format!("stat {}: {}", path, e))?;
-                let body_size = file_meta.len() - 8;
+                // Infer hidden size from data size
+                let body_size = data_len - 8;
                 let h_denom = 2 * (NNUE_INPUT_SIZE as u64 + 1 + 16);
                 let h_numer = body_size - 32;
                 if h_numer % h_denom != 0 {
@@ -976,11 +971,10 @@ impl NNUENet {
                 hidden_size = (h_numer / h_denom) as usize;
             }
             6 => {
-                let flags = read_u8(&mut reader)?;
+                let flags = read_u8(reader)?;
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
-                let file_meta = std::fs::metadata(path).map_err(|e| format!("stat {}: {}", path, e))?;
-                let body_size = file_meta.len() - 9;
+                let body_size = data_len - 9;
                 let out_mul: u64 = if use_pairwise { 8 } else { 16 };
                 let h_denom = 2 * (NNUE_INPUT_SIZE as u64 + 1 + out_mul);
                 let h_numer = body_size - 32;
@@ -990,14 +984,14 @@ impl NNUENet {
                 hidden_size = (h_numer / h_denom) as usize;
             }
             7 => {
-                let flags = read_u8(&mut reader)?;
+                let flags = read_u8(reader)?;
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
                 if flags & 4 != 0 { l1_scale = 64; } // int8 L1 weights
                 bucketed_hidden = flags & 8 != 0; // output buckets baked into L1/L2
-                let ft_size = read_u16(&mut reader)? as usize;
-                l1_size = read_u16(&mut reader)? as usize;
-                l2_size = read_u16(&mut reader)? as usize;
+                let ft_size = read_u16(reader)? as usize;
+                l1_size = read_u16(reader)? as usize;
+                l2_size = read_u16(reader)? as usize;
                 hidden_size = ft_size;
             }
             _ => return Err(format!("unsupported NNUE version: {}", version)),
@@ -1005,11 +999,11 @@ impl NNUENet {
 
         // Read input weights
         let mut input_weights = vec![0i16; NNUE_INPUT_SIZE * hidden_size];
-        read_i16_slice(&mut reader, &mut input_weights)?;
+        read_i16_slice(reader, &mut input_weights)?;
 
         // Read input biases
         let mut input_biases = vec![0i16; hidden_size];
-        read_i16_slice(&mut reader, &mut input_biases)?;
+        read_i16_slice(reader, &mut input_biases)?;
 
         // Read L1 hidden layer weights (v7)
         // Bucketed: actual array sizes are BUCKETS * l1_size / BUCKETS * l2_size
@@ -1022,9 +1016,9 @@ impl NNUENet {
             // Direct: L1 input is 2*H (two full accumulators concatenated)
             let l1_input_size = if use_pairwise { hidden_size } else { 2 * hidden_size };
             l1_weights = vec![0i16; l1_input_size * bl1];
-            read_i16_slice(&mut reader, &mut l1_weights)?;
+            read_i16_slice(reader, &mut l1_weights)?;
             l1_biases = vec![0i16; bl1];
-            read_i16_slice(&mut reader, &mut l1_biases)?;
+            read_i16_slice(reader, &mut l1_biases)?;
         }
 
         // Read L2 hidden layer weights (v7)
@@ -1032,9 +1026,9 @@ impl NNUENet {
         let mut l2_biases_raw = Vec::new();
         if l2_size > 0 {
             l2_weights_raw = vec![0i16; l1_size * bl2];
-            read_i16_slice(&mut reader, &mut l2_weights_raw)?;
+            read_i16_slice(reader, &mut l2_weights_raw)?;
             l2_biases_raw = vec![0i16; bl2];
-            read_i16_slice(&mut reader, &mut l2_biases_raw)?;
+            read_i16_slice(reader, &mut l2_biases_raw)?;
         }
 
         // Read output weights: for bucketed nets, output is [BUCKETS][per-bucket L2]
@@ -1049,23 +1043,23 @@ impl NNUENet {
             2 * hidden_size
         };
         let mut output_weights = vec![0i16; NNUE_OUTPUT_BUCKETS * out_width];
-        read_i16_slice(&mut reader, &mut output_weights)?;
+        read_i16_slice(reader, &mut output_weights)?;
 
         // Read output bias
         let mut output_bias = [0i32; NNUE_OUTPUT_BUCKETS];
         for i in 0..NNUE_OUTPUT_BUCKETS {
-            output_bias[i] = read_i32(&mut reader)?;
+            output_bias[i] = read_i32(reader)?;
         }
 
         let activation = if use_pairwise { "pairwise" } else if use_screlu { "SCReLU" } else { "CReLU" };
         if l1_size > 0 {
             if l2_size > 0 {
-                println!("info string Loaded NNUE v{} {} {} (FT={} L1={} L2={})", version, path, activation, hidden_size, l1_size, l2_size);
+                println!("info string Loaded NNUE v{} {} {} (FT={} L1={} L2={})", version, source_name, activation, hidden_size, l1_size, l2_size);
             } else {
-                println!("info string Loaded NNUE v{} {} {} (FT={} L1={})", version, path, activation, hidden_size, l1_size);
+                println!("info string Loaded NNUE v{} {} {} (FT={} L1={})", version, source_name, activation, hidden_size, l1_size);
             }
         } else {
-            println!("info string Loaded NNUE v{} {} {} ({})", version, path, activation, hidden_size);
+            println!("info string Loaded NNUE v{} {} {} ({})", version, source_name, activation, hidden_size);
         }
 
         // Transpose L1 weights for SIMD: [j*L1+i] → [i*H+j] per perspective
