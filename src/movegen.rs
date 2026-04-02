@@ -38,7 +38,7 @@ impl MoveList {
     }
 }
 
-/// Add pawn promotions (Q, R, B, N — same order as GoChess).
+/// Add pawn promotions (Q, R, B, N).
 #[inline]
 fn add_promotions(list: &mut MoveList, from: u8, to: u8) {
     list.push(make_move(from, to, FLAG_PROMOTE_Q));
@@ -48,7 +48,7 @@ fn add_promotions(list: &mut MoveList, from: u8, to: u8) {
 }
 
 // ---------------------------------------------------------------------------
-// Captures (matches GoChess GenerateCapturesAppend exactly)
+// Capture move generation
 // Order: pawn captures (left, right with promo), non-capture promotions, EP,
 //        knight caps, bishop caps, rook caps, queen caps, king caps
 // ---------------------------------------------------------------------------
@@ -222,7 +222,7 @@ pub fn generate_captures(board: &Board) -> MoveList {
 }
 
 // ---------------------------------------------------------------------------
-// Quiets (matches GoChess GenerateQuietsAppend exactly)
+// Quiet move generation
 // Order: pawn single push (non-promo), pawn double push,
 //        knight, bishop, rook, queen, king, castling
 // ---------------------------------------------------------------------------
@@ -331,7 +331,7 @@ pub fn generate_quiets(board: &Board) -> MoveList {
 }
 
 // ---------------------------------------------------------------------------
-// Castling (matches GoChess generateCastlingMovesAppend)
+// Castling move generation
 // ---------------------------------------------------------------------------
 
 fn generate_castling(board: &Board, list: &mut MoveList, us: Color, occ: Bitboard) {
@@ -405,7 +405,7 @@ fn is_attacked_with_occ(board: &Board, sq: u8, by_color: Color, occ: Bitboard) -
 }
 
 // ---------------------------------------------------------------------------
-// All moves = captures + quiets (matches GoChess GenerateAllMovesAppend)
+// All moves = captures + quiets
 // ---------------------------------------------------------------------------
 
 /// Generate all pseudo-legal moves (captures first, then quiets).
@@ -428,7 +428,7 @@ pub fn generate_all_moves(board: &Board) -> MoveList {
 }
 
 // ---------------------------------------------------------------------------
-// Evasions (matches GoChess GenerateEvasionsAppend exactly)
+// Evasion move generation (in check)
 // Fully legal evasion moves when in check. No IsLegal filtering needed.
 // ---------------------------------------------------------------------------
 

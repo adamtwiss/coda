@@ -1,18 +1,18 @@
 /// Transposition table with lockless concurrent access.
 /// 5-slot buckets, cache-line aligned (64 bytes).
-/// Matches GoChess: parallel arrays, 32-bit key verification, power-of-2 indexing.
+/// Parallel arrays, 32-bit XOR key verification, power-of-2 indexing.
 
 use crate::types::*;
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 
 pub const TT_FLAG_NONE: u8 = 0;
-pub const TT_FLAG_EXACT: u8 = 1; // PV-node (exact score) — matches GoChess TTExact=1
-pub const TT_FLAG_LOWER: u8 = 2; // Cut-node (fail-high, score >= beta) — matches GoChess TTLower=2
-pub const TT_FLAG_UPPER: u8 = 3; // All-node (fail-low, score <= alpha) — matches GoChess TTUpper=3
+pub const TT_FLAG_EXACT: u8 = 1; // PV-node (exact score)
+pub const TT_FLAG_LOWER: u8 = 2; // Cut-node (fail-high, score >= beta)
+pub const TT_FLAG_UPPER: u8 = 3; // All-node (fail-low, score <= alpha)
 
 const BUCKET_SIZE: usize = 5;
 
-/// Packed data layout (64 bits) — same as GoChess:
+/// Packed data layout (64 bits):
 ///   bits  0-15:  best move (16 bits)
 ///   bits 16-17:  flag (2 bits)
 ///   bits 18-31:  staticEval (14 bits, signed, biased)
@@ -65,7 +65,7 @@ fn unpack_generation(data: u64) -> u8 {
     (data >> 56) as u8
 }
 
-/// A bucket of 5 slots using parallel arrays (matches GoChess layout).
+/// A bucket of 5 slots using parallel arrays.
 /// data[5] = 40 bytes, keys[5] = 20 bytes, _pad = 4 bytes → 64 bytes.
 /// Uses atomics for lockless Lazy SMP. On x86-64, Relaxed atomics = plain MOV.
 #[repr(C, align(64))]
@@ -173,7 +173,7 @@ impl TT {
         self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Get the bucket index for a hash (power-of-2 masking, matches GoChess).
+    /// Get the bucket index for a hash (power-of-2 masking).
     #[inline(always)]
     fn bucket_index(&self, hash: u64) -> usize {
         (hash as usize) & self.mask
@@ -213,7 +213,7 @@ impl TT {
     }
 
     /// Store an entry in the TT. Lock-free via atomic stores.
-    /// Argument order matches GoChess: (key, depth, score, flag, move, staticEval)
+    /// Store an entry: (key, depth, score, flag, move, staticEval)
     pub fn store(&self, hash: u64, depth: i32, score: i32, flag: u8, best_move: Move, static_eval: i32) {
         let idx = self.bucket_index(hash);
         let bucket = &self.buckets[idx];
@@ -294,7 +294,7 @@ impl TT {
 }
 
 /// Adjust mate scores for TT storage (add ply).
-/// Threshold matches GoChess: MateScore - 100 = 28900.
+/// Threshold: MateScore - 100 = 28900.
 #[inline]
 pub fn score_to_tt(score: i32, ply: i32) -> i32 {
     if score > MATE_SCORE - 100 {
@@ -318,12 +318,12 @@ pub fn score_from_tt(score: i32, ply: i32) -> i32 {
     }
 }
 
-pub const MATE_SCORE: i32 = 29000; // GoChess: MateScore = 29000 (distinct from Infinity = 30000)
-pub const TB_WIN: i32 = 28800; // GoChess: TBWinScore = MateScore - 200
+pub const MATE_SCORE: i32 = 29000; // distinct from Infinity = 30000
+pub const TB_WIN: i32 = 28800;
 
 #[inline]
 pub fn is_mate_score(score: i32) -> bool {
-    score.abs() > MATE_SCORE - 100 // GoChess: > MateScore-100 = 28900
+    score.abs() > MATE_SCORE - 100
 }
 
 #[cfg(test)]
@@ -433,7 +433,7 @@ mod targeted_tests {
 }
 
 impl TT {
-    /// Dump all non-empty TT entries to a file (for comparison with GoChess).
+    /// Dump all non-empty TT entries to a file (debug/diagnostic).
     /// Format: one line per entry: "bucket_idx slot_idx hash depth score flag move static_eval"
     pub fn dump_to_file(&self, path: &str) -> std::io::Result<()> {
         use std::io::Write;

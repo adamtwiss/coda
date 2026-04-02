@@ -72,7 +72,7 @@ pub fn queen_attacks(sq: u32, occ: Bitboard) -> Bitboard {
     bishop_attacks(sq, occ) | rook_attacks(sq, occ)
 }
 
-// Precomputed magic numbers (from well-known tables, same as Stockfish/GoChess)
+// Precomputed magic numbers (from well-known tables)
 const ROOK_MAGICS_CONST: [u64; 64] = [
     0x0080001020400080, 0x0040001000200040, 0x0080081000200080, 0x0080040800100080,
     0x0080020400080080, 0x0080010200040080, 0x0080008001000200, 0x0080002040800100,

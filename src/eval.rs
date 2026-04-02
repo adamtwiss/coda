@@ -1,5 +1,5 @@
-/// Temporary material + PST evaluation.
-/// This is a placeholder until NNUE is implemented in Phase 3.
+/// Classical PeSTO material+PST evaluation.
+/// Used as fallback when no NNUE net is loaded.
 /// Uses PeSTO tables for piece-square values with tapered eval.
 
 use crate::bitboard::*;
@@ -226,8 +226,8 @@ pub fn evaluate(board: &crate::board::Board) -> i32 {
 pub const fn see_value(pt: u8) -> i32 {
     match pt {
         0 => 100,   // PAWN
-        1 => 320,   // KNIGHT (GoChess: 320)
-        2 => 330,   // BISHOP (GoChess: 330)
+        1 => 320,   // KNIGHT
+        2 => 330,   // BISHOP
         3 => 500,   // ROOK
         4 => 900,   // QUEEN
         5 => 20000, // KING

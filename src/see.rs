@@ -23,7 +23,6 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
     let attacker_pt = board.piece_type_at(from as u8);
 
     // Initial balance: capture value minus threshold
-    // GoChess: gain[0] = SEEPieceValues[captured]
     let mut balance = if flags == FLAG_EN_PASSANT {
         see_value(PAWN) // EP always captures a pawn
     } else if target_pt != NO_PIECE_TYPE {
@@ -32,23 +31,20 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
         0
     };
 
-    // GoChess does NOT handle promotion in SEE — match this behavior
-    // (promotions are treated as pawn captures for SEE purposes)
-
+    // Promotions treated as pawn captures for SEE purposes
     balance -= threshold;
     if balance < 0 {
         return false;
     }
 
-    // Now assume we lose the attacker (GoChess: nextVictimValue = SEEPieceValues[attacker])
+    // Assume we lose the attacker
     balance -= see_value(attacker_pt);
 
     if balance >= 0 {
         return true;
     }
 
-    // Iterative SEE
-    // GoChess: occupied &^= SquareBB(from) — only removes initial attacker
+    // Iterative SEE — remove initial attacker from occupied
     // (victim at 'to' stays in occupied; for EP, captured pawn also stays)
     let mut occ = board.occupied() ^ (1u64 << from);
 

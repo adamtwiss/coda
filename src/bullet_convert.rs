@@ -245,7 +245,7 @@ pub fn convert_v7(
     }
 
     // Output weights: Bullet .transpose() saves as [L2][BUCKETS] f32
-    // Transpose to [BUCKETS][L2] (matches GoChess converter)
+    // Transpose to [BUCKETS][L2]
     let mut out_w_raw = vec![[0i16; NNUE_OUTPUT_BUCKETS]; out_input];
     for i in 0..out_input {
         for b in 0..NNUE_OUTPUT_BUCKETS {

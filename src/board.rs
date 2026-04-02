@@ -1,7 +1,7 @@
-/// Board representation using bitboards only (no mailbox).
+/// Board representation using bitboards + mailbox.
 ///
-/// Pieces: pieces[6] (by type) + colors[2] (by color).
-/// Piece-at-square: scan bitboards when needed.
+/// Bitboards: pieces[6] (by type) + colors[2] (by color).
+/// Mailbox: mailbox[64] for O(1) piece-at-square lookup.
 
 use crate::bitboard::*;
 use crate::attacks::*;
@@ -577,7 +577,7 @@ impl Board {
         // Update castling rights (for any move from/to relevant squares)
         self.castling &= castle_mask(from) & castle_mask(to);
 
-        // Update en passant — detect double push by distance (matches GoChess)
+        // Update en passant — detect double push by distance
         self.ep_square = NO_SQUARE;
         if pt == PAWN && ((to as i32) - (from as i32)).unsigned_abs() == 16 {
             self.ep_square = if us == WHITE { from.wrapping_add(8) } else { from.wrapping_sub(8) };

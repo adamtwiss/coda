@@ -1,4 +1,4 @@
-// Auto-generated: GoChess Zobrist keys from math/rand seed 0x1234567890ABCDEF
+// Auto-generated: Zobrist keys from Go math/rand seed 0x1234567890ABCDEF
 // DO NOT EDIT — regenerate with gen_zobrist2.go
 
 static PIECE_KEYS_INIT: [[u64; 64]; 12] = [

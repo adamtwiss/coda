@@ -1094,7 +1094,7 @@ impl NNUENet {
         }).collect();
 
         // Prepare float weights for v7 hidden layer forward pass
-        // L2 and output use QA_L1 (not QA) for dequantization — matches GoChess prepareFloatWeights
+        // L2 and output use QA_L1 (not QA) for dequantization
         let qa_l1_f = if l1_scale != 0 { l1_scale as f32 } else { QA as f32 };
         let qb_f = QB as f32;
         let l2_weights_f: Vec<f32> = l2_weights_raw.iter().map(|&w| w as f32 / qa_l1_f).collect();

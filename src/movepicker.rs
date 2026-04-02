@@ -1,5 +1,4 @@
 /// Staged move picker for search.
-/// Literal translation of GoChess movepicker.go.
 ///
 /// Order: TT move -> good captures (MVV-LVA + captHist/16) -> killer1 -> killer2 ->
 ///        counter-move -> quiets (history) -> bad captures.
@@ -27,17 +26,17 @@ pub struct History {
     /// Threat-aware 4D indexing — separate history for moves escaping/entering threats.
     pub main: [[[[i32; 64]; 64]; 2]; 2],
     /// Capture history: [piece 1-12][to][captured_type 0-6]
-    /// piece uses GoChess 1-12 indexing (slot 0 unused).
-    /// captured_type uses GoChess 0-6 scheme (0=empty, 1=pawn, ..., 6=king).
-    /// int16 matches GoChess (was i32 — caused different gravity behavior).
+    /// piece uses 1-12 indexing (slot 0 unused).
+    /// captured_type uses 0-6 scheme (0=empty, 1=pawn, ..., 6=king).
+    /// int16 values (i32 causes different gravity behavior).
     pub capture: [[[i16; 7]; 64]; 13],
     /// Killer moves: [ply][2]
     pub killers: [[Move; 2]; 64],
     /// Counter-move: [piece 1-12][to]
-    /// piece uses GoChess 1-12 indexing (slot 0 unused).
+    /// piece uses 1-12 indexing (slot 0 unused).
     pub counter: [[Move; 64]; 13],
     /// Continuation history: [piece 1-12][to][piece 1-12][to]
-    /// piece uses GoChess 1-12 indexing (slot 0 unused).
+    /// piece uses 1-12 indexing (slot 0 unused).
     pub cont_hist: [[[[i16; 64]; 13]; 64]; 13],
 }
 
@@ -127,8 +126,8 @@ impl History {
     }
 }
 
-/// Map a Coda piece (0-11, color*6+pt) to GoChess piece index (1-12).
-/// GoChess: White 1-6 (Pawn..King), Black 7-12 (Pawn..King).
+/// Map a Coda piece (0-11, color*6+pt) to history piece index (1-12).
+/// White 1-6 (Pawn..King), Black 7-12 (Pawn..King).
 /// Coda: White 0-5, Black 6-11.
 /// Mapping: coda_piece + 1.
 #[inline(always)]
@@ -137,8 +136,8 @@ pub fn go_piece(p: Piece) -> usize {
     (p + 1) as usize
 }
 
-/// Map a Coda piece type (0-5: PAWN..KING) to GoChess captured type (1-6).
-/// GoChess capturedType: 0=empty, 1=pawn, 2=knight, 3=bishop, 4=rook, 5=queen, 6=king.
+/// Map a piece type (0-5: PAWN..KING) to captured type index (1-6).
+/// 0=empty, 1=pawn, 2=knight, 3=bishop, 4=rook, 5=queen, 6=king.
 /// Coda PieceType: 0=PAWN, 1=KNIGHT, 2=BISHOP, 3=ROOK, 4=QUEEN, 5=KING.
 /// Mapping: pt + 1.
 #[inline(always)]
@@ -147,7 +146,7 @@ pub fn captured_type(pt: PieceType) -> usize {
     (pt + 1) as usize
 }
 
-/// MovePicker stages (matches GoChess exactly).
+/// MovePicker stages.
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Stage {
     TTMove,
@@ -200,7 +199,7 @@ pub struct MovePicker {
 
 impl MovePicker {
     /// Create a new MovePicker for main search (non-evasion).
-    /// Matches GoChess Init().
+    /// Initialize for main search.
     pub fn new(
         board: &Board,
         tt_move: Move,
@@ -272,7 +271,7 @@ impl MovePicker {
     }
 
     /// Create a MovePicker for quiescence search (captures only).
-    /// Matches GoChess InitQuiescence().
+    /// Initialize for quiescence search.
     pub fn new_quiescence(
         _board: &Board,
         tt_move: Move,
@@ -302,7 +301,7 @@ impl MovePicker {
     }
 
     /// Create a MovePicker for evasion mode (when in check).
-    /// Matches GoChess InitEvasion().
+    /// Initialize for evasion generation.
     /// Evasion moves are generated as all moves then filtered for legality during generation.
     pub fn new_evasion(
         board: &Board,
@@ -358,7 +357,7 @@ impl MovePicker {
 
     /// Get the next move to try. Returns NO_MOVE when exhausted.
     /// No legality checks — caller must check legality.
-    /// Matches GoChess Next().
+    /// Get next move in staged order.
     pub fn next(&mut self, board: &Board) -> Move {
         loop {
             match self.stage {
@@ -481,7 +480,7 @@ impl MovePicker {
     }
 
     /// Generate all captures, partition into good (SEE >= 0) and bad (SEE < 0).
-    /// TT move is filtered out. Matches GoChess generateAndScoreCaptures().
+    /// Generate and score captures. TT move is filtered out.
     fn generate_and_score_captures(&mut self, board: &Board) {
         let caps = generate_captures(board);
         self.moves = MoveList::new();
@@ -512,7 +511,7 @@ impl MovePicker {
     }
 
     /// Generate quiet moves and score by history.
-    /// TT, killers, counter filtered out. Matches GoChess generateAndScoreQuiets().
+    /// Generate and score quiets. TT, killers, counter filtered out.
     fn generate_and_score_quiets(&mut self, board: &Board) {
         let quiets = generate_quiets(board);
         self.moves = MoveList::new();
@@ -570,7 +569,7 @@ impl MovePicker {
 
     /// Generate evasion moves and score them.
     /// Captures scored above quiets. TT move filtered out.
-    /// Matches GoChess generateAndScoreEvasions().
+    /// Generate and score evasions.
     ///
     /// Since Coda doesn't have a dedicated generate_evasions function,
     /// we use generate_all_moves and filter for legality here.
@@ -637,7 +636,7 @@ impl MovePicker {
         self.index = 0;
     }
 
-    /// Swap in the saved bad captures. Matches GoChess restoreBadCaptures().
+    /// Swap in the saved bad captures.
     fn restore_bad_captures(&mut self) {
         self.moves = MoveList::new();
         for i in 0..self.bad_len {
@@ -648,7 +647,7 @@ impl MovePicker {
     }
 
     /// Selection sort: find best from current index, swap to front, return it.
-    /// Matches GoChess pickBest().
+    /// Selection sort: find best scored move and swap to front.
     fn pick_best(&mut self) -> Move {
         if self.index >= self.moves.len {
             return NO_MOVE;
@@ -677,7 +676,7 @@ impl MovePicker {
 }
 
 /// Capture history score for a capture move.
-/// Matches GoChess captHistScore(). Public for use by QMovePicker.
+/// Capture history score lookup. Public for use by QMovePicker.
 #[inline]
 pub fn capt_hist_score_static(board: &Board, history: &History, m: Move) -> i32 {
     let from = move_from(m);
@@ -699,7 +698,7 @@ pub fn capt_hist_score_static(board: &Board, history: &History, m: Move) -> i32 
     history.capture[go_piece(piece)][to as usize][ct] as i32
 }
 
-/// MVV-LVA score for a capture. Matches GoChess mvvLva().
+/// MVV-LVA score for a capture.
 fn mvv_lva(board: &Board, m: Move) -> i32 {
     let to = move_to(m);
     let from = move_from(m);
@@ -719,7 +718,7 @@ fn mvv_lva(board: &Board, m: Move) -> i32 {
     see_value(target_pt) * 16
 }
 
-/// Check if a move is a capture. Matches GoChess isCapture().
+/// Check if a move is a capture.
 #[inline(always)]
 fn is_capture(board: &Board, m: Move) -> bool {
     board.piece_type_at(move_to(m)) != NO_PIECE_TYPE || move_flags(m) == FLAG_EN_PASSANT
@@ -918,7 +917,7 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
 }
 
 /// Move picker for quiescence search.
-/// Matches GoChess: tries TT move first, scores captures with MVV-LVA + captHist/16.
+/// QS move picker: TT move first, then captures scored by MVV-LVA + captHist.
 /// When in_check, uses evasion mode (all moves, captures scored above quiets).
 pub struct QMovePicker {
     tt_move: Move,
@@ -932,7 +931,7 @@ pub struct QMovePicker {
 }
 
 impl QMovePicker {
-    /// Create QS picker matching GoChess InitQuiescence: TT move + captHist scoring.
+    /// Create QS picker: TT move first, then captures scored by MVV-LVA + captHist.
     /// When in_check, generates all moves (evasions); otherwise captures only.
     pub fn new(board: &Board, tt_move: Move, in_check: bool, history: &History) -> Self {
         let pinned = board.pinned();
@@ -950,7 +949,7 @@ impl QMovePicker {
             in_check,
         };
 
-        // Score moves: MVV-LVA + captHist/16 for captures (matching GoChess)
+        // Score moves: MVV-LVA + captHist for captures
         for i in 0..picker.moves.len {
             let mv = picker.moves.moves[i];
             // Skip TT move in scoring (will be tried first)
@@ -971,7 +970,7 @@ impl QMovePicker {
                 let mvv_lva = see_value(victim) * 10 - see_value(attacker);
                 let capt_hist = capt_hist_score_static(board, history, mv);
                 if in_check {
-                    // Evasion captures scored high (matching GoChess: 10000 + mvvlva + captHist/16)
+                    // Evasion captures scored high (10000 + mvvlva + captHist)
                     picker.scores[i] = 10000 + mvv_lva + capt_hist;
                 } else {
                     picker.scores[i] = mvv_lva + capt_hist;
@@ -994,7 +993,7 @@ impl QMovePicker {
 
     /// Get next move. Returns NO_MOVE when exhausted.
     pub fn next(&mut self, board: &Board) -> Move {
-        // Try TT move first (matching GoChess stageTTMove in QS)
+        // Try TT move first
         if self.tt_stage {
             self.tt_stage = false;
             if self.tt_move != NO_MOVE {
