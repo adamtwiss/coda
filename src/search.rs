@@ -43,7 +43,7 @@ pub static FEAT_TT_NEARMISS: AtomicBool = AtomicBool::new(true);
 pub static FEAT_TT_STORE: AtomicBool = AtomicBool::new(true);
 pub static FEAT_QS_CAPTURES: AtomicBool = AtomicBool::new(true); // false = QS returns eval immediately
 pub static FEAT_SINGULAR: AtomicBool = AtomicBool::new(true); // singular extensions specifically
-pub static FEAT_CUCKOO: AtomicBool = AtomicBool::new(false); // disabled: H0 after bug fixes, revisit when search depth increases
+pub static FEAT_CUCKOO: AtomicBool = AtomicBool::new(true);
 pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 4D history indexing
 
 /// Disable all features (pure negamax + eval)
