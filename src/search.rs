@@ -1365,9 +1365,12 @@ fn negamax(
         info.stats.nmp_attempts += 1;
         // Adaptive reduction: scales with depth and eval margin above beta
         let mut r = 4 + depth / 3;
-        // Eval-based bonus (SF uses /173, we had /200)
+        // Reduce less after captures
+        if !board.undo_stack.is_empty() && board.undo_stack[board.undo_stack.len() - 1].captured != NO_PIECE_TYPE {
+            r -= 1;
+        }
         if static_eval > beta {
-            let eval_r = ((static_eval - beta) / 173).min(3);
+            let eval_r = ((static_eval - beta) / 200).min(3);
             r += eval_r;
         }
         // Clamp so null-move search is at least depth 1
@@ -1388,9 +1391,8 @@ fn negamax(
         }
 
         if null_score >= beta {
-            // Return beta (not null_score) to avoid inflated scores from null-move search
-            // Exception: preserve mate scores since they carry distance information
-            let nmp_return = if null_score.abs() > MATE_SCORE - 100 { null_score } else { beta };
+            // NMP score dampening: blend toward beta to prevent inflated scores
+            let dampened = (null_score * 2 + beta) / 3;
 
             // Verification search at high depths to guard against zugzwang
             if depth >= 12 {
@@ -1398,12 +1400,12 @@ fn negamax(
                 let v_score = negamax(board, info, beta - 1, beta, depth - 1 - r, ply + 1, false);
                 if v_score >= beta {
                     info.stats.nmp_cutoffs += 1;
-                    return nmp_return;
+                    return dampened;
                 }
                 info.stats.nmp_verify_fail += 1;
             } else {
                 info.stats.nmp_cutoffs += 1;
-                return nmp_return;
+                return dampened;
             }
         } else {
             // NMP failed low: extract opponent's best reply from TT for threat detection
