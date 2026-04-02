@@ -25,7 +25,7 @@ const PAWN_HIST_SIZE: usize = 512;
 // Feature flags for ablation testing. All true = normal play.
 pub static FEAT_NMP: AtomicBool = AtomicBool::new(true);
 pub static FEAT_RFP: AtomicBool = AtomicBool::new(true);
-pub static FEAT_PROBCUT: AtomicBool = AtomicBool::new(false); // disabled: ablation showed +4 Elo without it, needs better eval to work
+pub static FEAT_PROBCUT: AtomicBool = AtomicBool::new(true); // re-enabled after fixing missing qsearch filter, SEE threshold, and excluded_move guard
 pub static FEAT_LMR: AtomicBool = AtomicBool::new(true);
 pub static FEAT_LMP: AtomicBool = AtomicBool::new(true);
 pub static FEAT_FUTILITY: AtomicBool = AtomicBool::new(true);
@@ -60,8 +60,7 @@ pub fn disable_all_features() {
 /// Enable all features (normal play)
 #[allow(dead_code)]
 pub fn enable_all_features() {
-    FEAT_NMP.store(true, Ordering::Relaxed); FEAT_RFP.store(true, Ordering::Relaxed);
-    // Note: FEAT_PROBCUT intentionally excluded — ablation confirmed it hurts
+    FEAT_NMP.store(true, Ordering::Relaxed); FEAT_RFP.store(true, Ordering::Relaxed); FEAT_PROBCUT.store(true, Ordering::Relaxed);
     FEAT_LMR.store(true, Ordering::Relaxed); FEAT_LMP.store(true, Ordering::Relaxed);
     FEAT_FUTILITY.store(true, Ordering::Relaxed); FEAT_SEE_PRUNE.store(true, Ordering::Relaxed); FEAT_HIST_PRUNE.store(true, Ordering::Relaxed);
     FEAT_BAD_NOISY.store(true, Ordering::Relaxed); FEAT_EXTENSIONS.store(true, Ordering::Relaxed); FEAT_ALPHA_REDUCE.store(true, Ordering::Relaxed);
@@ -1423,14 +1422,20 @@ fn negamax(
     // ProbCut: at moderate+ depths, if a shallow search of captures with
     // raised beta confirms the position is winning, prune the node
     let probcut_beta = beta + 170;
-    if !in_check && ply > 0 && depth >= 5 && static_eval + 85 >= probcut_beta && FEAT_PROBCUT.load(Ordering::Relaxed) {
+    if !in_check && ply > 0 && depth >= 5
+        && static_eval + 85 >= probcut_beta
+        && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
+        && FEAT_PROBCUT.load(Ordering::Relaxed)
+    {
+        // SEE threshold: only consider captures that gain enough material
+        let see_threshold = (probcut_beta - static_eval).max(0);
         let pc_depth = depth - 4;
         let mut pc_picker = QMovePicker::new(board, NO_MOVE, false, &info.history);
         loop {
             let mv = pc_picker.next(board);
             if mv == NO_MOVE { break; }
 
-            if !see_ge(board, mv, 0) { continue; }
+            if !see_ge(board, mv, see_threshold) { continue; }
 
             let pc_moved_pt = board.piece_type_at(move_from(mv));
             let pc_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
@@ -1442,7 +1447,15 @@ fn negamax(
                 continue;
             }
             info.tt.prefetch(board.hash);
-            let score = -negamax(board, info, -probcut_beta, -probcut_beta + 1, pc_depth, ply + 1, !cut_node);
+
+            // Cheap qsearch verification before expensive negamax (Stockfish pattern)
+            let mut score = -quiescence(board, info, -probcut_beta, -probcut_beta + 1, ply + 1);
+
+            // Only do deeper search if qsearch also beats probcut_beta
+            if score >= probcut_beta && pc_depth > 0 {
+                score = -negamax(board, info, -probcut_beta, -probcut_beta + 1, pc_depth, ply + 1, !cut_node);
+            }
+
             board.unmake_move();
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
 
@@ -1452,6 +1465,8 @@ fn negamax(
 
             if score >= probcut_beta {
                 info.stats.probcut_cutoffs += 1;
+                // Store in TT as lower bound so sibling nodes benefit
+                info.tt.store(board.hash, depth - 3, score_to_tt(score, ply), TT_FLAG_LOWER, mv, raw_eval);
                 return score;
             }
         }
