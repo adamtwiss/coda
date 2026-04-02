@@ -1776,10 +1776,11 @@ fn negamax(
 
         let mut new_depth = depth - 1 + extension + singular_extension;
 
-        // Alpha-reduce: after alpha has been raised, reduce subsequent moves by 1 ply
-        if alpha_raised_count > 0 && FEAT_ALPHA_REDUCE.load(Ordering::Relaxed) {
-            new_depth -= 1;
-        }
+        // Alpha-reduce Component 1 removed: the unconditional new_depth -= 1 after
+        // alpha was raised bypassed all move quality exemptions (TT move, killers,
+        // captures, promotions, check evasions). No reference engine does this.
+        // Component 2 (extra LMR reduction proportional to alpha_raised_count) is
+        // kept in the quiet LMR block below, which is properly guarded.
         if new_depth < 0 {
             new_depth = 0;
         }
