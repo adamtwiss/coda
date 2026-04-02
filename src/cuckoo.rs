@@ -111,7 +111,7 @@ pub fn init_cuckoo() {
 /// Returns true if such a cycle exists in the game history.
 pub fn has_game_cycle(board: &Board, ply: i32) -> bool {
     let stack_len = board.undo_stack.len();
-    let end = (board.halfmove as usize).min(stack_len);
+    let end = (board.halfmove as usize).min(board.plies_from_null as usize).min(stack_len);
     if end < 3 {
         return false;
     }
@@ -126,7 +126,8 @@ pub fn has_game_cycle(board: &Board, ply: i32) -> bool {
 
     // Track XOR chain: if `other == 0`, positions at distance i differ
     // from current by exactly one piece move (Stockfish pattern).
-    let mut other: u64 = 0;
+    // Pre-seed with first pair so the XOR accumulation works correctly.
+    let mut other: u64 = original_key ^ key_at(1) ^ side_key();
 
     for i in (3..=end).step_by(2) {
         other ^= key_at(i - 1) ^ key_at(i - 2) ^ side_key();
@@ -155,8 +156,8 @@ pub fn has_game_cycle(board: &Board, ply: i32) -> bool {
         let from = unpack_from(packed);
         let to = unpack_to(packed);
 
-        // Verify the path between from and to is unobstructed
-        if (between(from as u32, to as u32) & occ) != 0 {
+        // Verify the path between from and to is unobstructed (including destination)
+        if ((between(from as u32, to as u32) ^ (1u64 << to)) & occ) != 0 {
             continue;
         }
 
