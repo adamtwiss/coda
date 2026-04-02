@@ -393,6 +393,31 @@ Bench: 1375565
 
 If the change doesn't affect bench (e.g. comments, docs, tooling), the bench line is optional.
 
+### SPRT Testing Policy
+
+**Every change that affects node count or playing strength must be SPRT tested before merging to main.** This includes:
+- Search logic changes (pruning, reduction, extension parameters)
+- Move ordering changes (history, scoring, sorting)
+- Bug fixes in search code (even "obvious" fixes can regress)
+- NPS optimizations (faster code = deeper search = potential Elo gain or regression)
+- NNUE inference changes
+
+**Workflow:**
+1. Create a feature branch from main with the change
+2. Add `Bench: <nodes>` to the commit message (run `coda bench` with production net)
+3. Push the branch to GitHub
+4. Submit SPRT test via OpenBench (https://ob.atwiss.com/) or `scripts/ob_submit.py`
+5. Wait for H0 (reject) or H1 (accept). Do not stop early.
+6. If H1: merge to main, update bench in main's commit message
+7. If H0: do not merge, log result in experiments.md
+
+**What does NOT need SPRT:**
+- Comments, documentation, tooling changes
+- Code cleanup that doesn't change compiled output (verify with bench)
+- New feature flags (disabled by default)
+
+**OpenBench test submission:** Use `scripts/ob_submit.py` or the web UI. Reference NPS is 500K. Default bounds [0.00, 5.00] for novel changes. Always verify bench matches before submitting.
+
 ### Cross-Engine Validation (secondary, for milestones)
 
 Self-play SPRT is reliable for direction but magnitude may differ cross-engine. Periodically validate cumulative progress with a peer-group gauntlet.
