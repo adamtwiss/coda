@@ -1183,8 +1183,8 @@ fn negamax(
 
             if tt_depth >= depth && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 match tt_entry.flag {
-                    TT_FLAG_EXACT => {
-                        // Update PV table with TT move (matching GoChess)
+                    TT_FLAG_EXACT if beta - alpha == 1 => {
+                        // TT exact cutoff: only at non-PV nodes to avoid truncating the PV
                         if tt_move != NO_MOVE && ply_u <= MAX_PLY {
                             info.pv_table[ply_u][0] = tt_move;
                             info.pv_len[ply_u] = 1;
