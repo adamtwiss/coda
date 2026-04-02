@@ -16,6 +16,7 @@ pub struct UndoInfo {
     pub castling: u8,
     pub ep_square: u8,
     pub halfmove: u16,
+    pub plies_from_null: u16,
     pub hash: u64,
     pub pawn_hash: u64,
     pub non_pawn_key: [u64; 2],
@@ -39,6 +40,7 @@ pub struct Board {
     pub ep_square: u8,       // NO_SQUARE if none
     pub halfmove: u16,       // halfmove clock for 50-move rule
     pub fullmove: u16,       // fullmove number
+    pub plies_from_null: u16, // plies since last null move (for cuckoo cycle detection)
 
     pub hash: u64,           // Zobrist hash
     pub pawn_hash: u64,      // Zobrist hash of pawns only (for correction history)
@@ -85,6 +87,7 @@ impl Board {
             ep_square: NO_SQUARE,
             halfmove: 0,
             fullmove: 1,
+            plies_from_null: 0,
             hash: 0,
             pawn_hash: 0,
             non_pawn_key: [0; 2],
@@ -302,6 +305,7 @@ impl Board {
         } else {
             0
         };
+        self.plies_from_null = self.halfmove; // assume no null moves in initial position
 
         // Fullmove number
         self.fullmove = if parts.len() > 5 {
@@ -526,6 +530,7 @@ impl Board {
             castling: self.castling,
             ep_square: self.ep_square,
             halfmove: self.halfmove,
+            plies_from_null: self.plies_from_null,
             hash: self.hash,
             pawn_hash: self.pawn_hash,
             non_pawn_key: self.non_pawn_key,
@@ -593,6 +598,7 @@ impl Board {
         } else {
             self.halfmove += 1;
         }
+        self.plies_from_null += 1;
 
         // Update fullmove
         if us == BLACK {
@@ -635,6 +641,7 @@ impl Board {
             self.castling = undo.castling;
             self.ep_square = undo.ep_square;
             self.halfmove = undo.halfmove;
+            self.plies_from_null = undo.plies_from_null;
             self.hash = undo.hash;
             self.pawn_hash = undo.pawn_hash;
             self.non_pawn_key = undo.non_pawn_key;
@@ -678,6 +685,7 @@ impl Board {
         self.castling = undo.castling;
         self.ep_square = undo.ep_square;
         self.halfmove = undo.halfmove;
+        self.plies_from_null = undo.plies_from_null;
         self.hash = undo.hash;
         self.pawn_hash = undo.pawn_hash;
         self.non_pawn_key = undo.non_pawn_key;
@@ -695,6 +703,7 @@ impl Board {
             castling: self.castling,
             ep_square: self.ep_square,
             halfmove: self.halfmove,
+            plies_from_null: self.plies_from_null,
             hash: self.hash,
             pawn_hash: self.pawn_hash,
             non_pawn_key: self.non_pawn_key,
@@ -711,6 +720,7 @@ impl Board {
         self.side_to_move = flip_color(self.side_to_move);
         self.hash ^= side_key();
         self.halfmove += 1;
+        self.plies_from_null = 0; // reset on null move for cuckoo
     }
 
     /// Unmake a null move.
@@ -719,6 +729,7 @@ impl Board {
         self.side_to_move = flip_color(self.side_to_move);
         self.ep_square = undo.ep_square;
         self.halfmove = undo.halfmove;
+        self.plies_from_null = undo.plies_from_null;
         self.hash = undo.hash;
         self.pawn_hash = undo.pawn_hash;
         self.non_pawn_key = undo.non_pawn_key;
