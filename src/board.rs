@@ -681,6 +681,8 @@ impl Board {
         self.hash = undo.hash;
         self.pawn_hash = undo.pawn_hash;
         self.non_pawn_key = undo.non_pawn_key;
+        self.minor_key = undo.minor_key;
+        self.major_key = undo.major_key;
 
         if us == BLACK {
             self.fullmove -= 1;
@@ -722,6 +724,8 @@ impl Board {
         self.hash = undo.hash;
         self.pawn_hash = undo.pawn_hash;
         self.non_pawn_key = undo.non_pawn_key;
+        self.minor_key = undo.minor_key;
+        self.major_key = undo.major_key;
     }
 
     /// Display the board as ASCII art.
