@@ -3621,3 +3621,12 @@ Self-play SPRT (elo0=0, elo1=10), TC 10+0.1, Hash=64.
 
 - **Result**: Dead flat at +0.7 after 1945 games, killed.
 - **Notes**: Pairwise 768 matches standard 1024 in self-play — remarkable efficiency (768 params doing 1024's work). Cross-engine may differentiate. Neither architecture is strictly better in self-play.
+
+## 2026-04-01: OpenBench Razoring Test (inflated TC) [SPRT-validated]
+
+First test on OpenBench. Reference NPS was set too high (1.1M vs actual 0.3-0.6M), so all machines played at 2-3x intended TC (~20-33s+0.2-0.3 instead of 10+0.1).
+
+### with-razoring vs main (OpenBench test #1)
+
+- **Result**: **H1**, +3.5 Elo, 14,910 games. LLR 2.94. Longest SPRT ever run.
+- **Notes**: Razoring helps by ~3.5 Elo at effectively LTC (2-3x target TC). This contradicts Titan's -20 at STC. Razoring is **TC-dependent**: hurts at STC (shallow search), helps at LTC (deeper search saves more by pruning hopeless shallow nodes). Decision: **keep removed**. The benefit is marginal, TC-dependent, and every top engine has removed it. When reference NPS is corrected, future tests will run at proper STC where razoring hurts.
