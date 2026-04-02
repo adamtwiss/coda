@@ -1730,7 +1730,7 @@ fn negamax(
         }
 
         // Late Move Pruning: at shallow depths, skip late quiet moves
-        if ply > 0 && !in_check && depth >= 1 && depth <= 8
+        if ply > 0 && !in_check && depth >= 1 && depth <= 9
             && !is_cap && !is_promo && !gives_check
             && best_score > -(MATE_SCORE - 100) && beta - alpha == 1
             && FEAT_LMP.load(Ordering::Relaxed)
