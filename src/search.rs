@@ -1,6 +1,6 @@
-/// Main search: negamax with alpha-beta, iterative deepening, PVS, aspiration windows.
-/// All pruning parameters ported from GoChess (tuned values).
-/// This is a literal, faithful translation of GoChess's search.go.
+/// Negamax alpha-beta search with iterative deepening, PVS, aspiration windows, and Lazy SMP.
+/// Features: NMP, RFP, LMR, LMP, futility, SEE pruning, history pruning,
+/// singular extensions, cuckoo cycle detection, correction history.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
@@ -17,7 +17,7 @@ use crate::types::*;
 
 const MAX_PLY: usize = 64;
 const INFINITY: i32 = 30000;
-const CONTEMPT: i32 = 10; // prefer playing on over drawing (GoChess: +10)
+const CONTEMPT: i32 = 10; // prefer playing on over drawing
 
 // Pawn history table size
 const PAWN_HIST_SIZE: usize = 512;
@@ -165,17 +165,15 @@ pub struct SearchInfo {
     hard_limit: u64,  // ms — absolute maximum
     pub sel_depth: i32,
     pub last_score: i32,
-    /// Triangular PV table (matching GoChess)
+    /// Triangular PV table
     pv_table: [[Move; MAX_PLY + 1]; MAX_PLY + 1],
     pv_len: [usize; MAX_PLY + 1],
-    #[allow(dead_code)]
-    prev_moves: [Move; MAX_PLY + 1],
     static_evals: [i32; MAX_PLY + 1],
     /// LMR reduction applied at each ply (for hindsight reduction gating)
     reductions: [i32; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
     excluded_move: [Move; MAX_PLY + 1],
-    /// Pawn history: [pawn_hash % PAWN_HIST_SIZE][piece 1-12][to_square] (GoChess indexing, slot 0 unused)
+    /// Pawn history: [pawn_hash % PAWN_HIST_SIZE][piece 1-12][to_square] (slot 0 unused)
     pawn_hist: Box<[[[i16; 64]; 13]; PAWN_HIST_SIZE]>,
     /// Pawn correction history: [stm][pawn_hash % size]
     pawn_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
@@ -214,7 +212,6 @@ impl SearchInfo {
             hard_limit: 0,
             sel_depth: 0,
             last_score: 0,
-            prev_moves: [NO_MOVE; MAX_PLY + 1],
             static_evals: [0; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
@@ -519,7 +516,7 @@ pub fn init_lmr() {
     for depth in 1..64 {
         for moves in 1..64 {
             unsafe {
-                // Quiet table: C=1.30 (GoChess: depth>=3 && moveNum>=3)
+                // Quiet table: C=1.30
                 if depth >= 3 && moves >= 3 {
                     let r = ((depth as f64).ln() * (moves as f64).ln() / 1.30) as i32;
                     LMR_TABLE[depth][moves] = r.min((depth - 2) as i32);
@@ -820,7 +817,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Floor at 10ms
         if soft < 10 { soft = 10; }
 
-        // Hard limit (match GoChess)
+        // Hard limit
         let mut hard = if limits.movestogo > 0 {
             // Tournament TC: cap by moves remaining (generous early, tight late)
             let hard_raw = soft * 2;
@@ -832,7 +829,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             soft * 3
         };
 
-        // Absolute hard cap (GoChess: never use more than timeLeft/5 + inc)
+        // Absolute hard cap: never use more than timeLeft/5 + inc
         let mut max_hard = time_left / 5 + our_inc;
         if max_hard > time_left * 3 / 4 {
             max_hard = time_left * 3 / 4;
@@ -871,7 +868,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         let score;
 
-        // Aspiration windows (GoChess: skip for mate scores)
+        // Aspiration windows (skip for mate scores)
         if depth >= 4 && prev_score > -MATE_SCORE + 100 && prev_score < MATE_SCORE - 100 {
             // Eval-dependent aspiration delta: wider for extreme scores (Reckless pattern)
             // Calm positions (avg~0): delta=13, winning (avg~500): delta=24, crushing (avg~1000): delta=55
@@ -916,7 +913,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             if info.should_stop() { break; }
         }
 
-        // Get best move from PV table (GoChess: bestMove = info.pvTable[0][0])
+        // Get best move from PV table
         // Fall back to TT probe if PV table is empty
         if info.pv_len[0] > 0 {
             let pv_move = info.pv_table[0][0];
@@ -964,7 +961,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             format!("score cp {}", prev_score)
         };
 
-        // Extract PV from PV table (GoChess style), extend with TT if short
+        // Extract PV from PV table, extend with TT if short
         let mut pv_str = String::new();
         {
             // Use PV table first
@@ -1069,7 +1066,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
 
             // Next-iteration estimate: stop if next iteration would exceed hard limit.
-            // Use 2x last iteration time as estimate (exponential branching). GoChess lines 685-693.
+            // Use 2x last iteration time as estimate (exponential branching)
             if info.hard_limit > 0 {
                 let iter_elapsed = iter_start.elapsed().as_millis() as u64;
                 if elapsed > 0 && info.hard_limit > elapsed && (info.hard_limit - elapsed) < 2 * iter_elapsed {
@@ -1083,7 +1080,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 }
 
 /// Negamax alpha-beta search.
-/// Line-by-line translation of GoChess's negamax() from search.go (lines 976-1963).
+/// Main negamax search with all pruning, extensions, and reductions.
 fn negamax(
     board: &mut Board,
     info: &mut SearchInfo,
@@ -1095,7 +1092,7 @@ fn negamax(
 ) -> i32 {
     let ply_u = ply as usize;
 
-    // Guard against stack overflow (GoChess: ply >= MaxPly)
+    // Guard against stack overflow
     if ply_u >= MAX_PLY {
         return info.eval(board);
     }
@@ -1112,7 +1109,7 @@ fn negamax(
         ((their_pawns & !0x8080808080808080u64) >> 7) | ((their_pawns & !0x0101010101010101u64) >> 9)
     };
 
-    // Clear PV for this node (GoChess: info.pvLen[ply] = 0)
+    // Clear PV for this node
     if ply_u <= MAX_PLY {
         info.pv_len[ply_u] = 0;
     }
@@ -1122,7 +1119,7 @@ fn negamax(
         info.sel_depth = ply;
     }
 
-    // Check time periodically (GoChess: info.Nodes&1023 == 0)
+    // Check time periodically
     if info.nodes & 1023 == 0 {
         if info.should_stop() {
             return 0;
@@ -1136,7 +1133,7 @@ fn negamax(
     info.nodes += 1;
     info.stats.depth_hist[depth.clamp(0, 15) as usize] += 1;
 
-    // Draw detection: repetition and 50-move rule (GoChess: ply > 0)
+    // Draw detection: repetition and 50-move rule
     if ply > 0 {
         if board.halfmove >= 100 {
             return -CONTEMPT;
@@ -1184,7 +1181,7 @@ fn negamax(
             if tt_depth >= depth && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 match tt_entry.flag {
                     TT_FLAG_EXACT => {
-                        // Update PV table with TT move (matching GoChess)
+                        // Update PV table with TT move
                         if tt_move != NO_MOVE && ply_u <= MAX_PLY {
                             info.pv_table[ply_u][0] = tt_move;
                             info.pv_len[ply_u] = 1;
@@ -1210,7 +1207,7 @@ fn negamax(
                 if alpha >= beta {
                     if tt_move != NO_MOVE {
                         info.stats.tt_cutoffs += 1;
-                        // Update PV table with TT move (matching GoChess)
+                        // Update PV table with TT move
                         if ply_u <= MAX_PLY {
                             info.pv_table[ply_u][0] = tt_move;
                             info.pv_len[ply_u] = 1;
@@ -1481,7 +1478,7 @@ fn negamax(
 
     // Counter-move and continuation history lookup from opponent's last move
     let mut counter_move = NO_MOVE;
-    let mut prev_piece_go: usize = 0; // GoChess piece index (1-12), 0 = none
+    let mut prev_piece_for_cont: usize = 0; // piece index (1-12), 0 = none
     let mut prev_to_for_cont: u8 = 0;
     if !board.undo_stack.is_empty() {
         let undo = &board.undo_stack[board.undo_stack.len() - 1];
@@ -1491,7 +1488,7 @@ fn negamax(
             if prev_piece != NO_PIECE {
                 let gp = go_piece(prev_piece);
                 counter_move = info.history.counter[gp][move_to(pm) as usize];
-                prev_piece_go = gp;
+                prev_piece_for_cont = gp;
                 prev_to_for_cont = move_to(pm);
             }
         }
@@ -1554,7 +1551,7 @@ fn negamax(
             continue;
         }
 
-        // Increment move count BEFORE pruning (matches GoChess: moveCount++ at line 1433).
+        // Count before pruning: move ordering position affects LMR/LMP thresholds.
         // Pruned moves still count for LMR/LMP purposes — later moves in the ordering
         // should be reduced more regardless of whether earlier moves were pruned.
         move_count += 1;
@@ -1592,7 +1589,7 @@ fn negamax(
 
         // Singular extension verification search (v7: multi-cut + negative ext, no positive ext)
         // Singular extensions: verify TT move is uniquely best by searching with excluded move.
-        // NMP must be gated inside verification search (critical fix from GoChess diagnosis).
+        // NMP must be gated during singular extension verification search.
         // All components working: positive ext (+1), double ext (+2), multi-cut, negative ext (-1).
         let mut singular_extension = 0i32;
         if mv == tt_move
@@ -1633,8 +1630,6 @@ fn negamax(
 
                 if singular_score < singular_beta {
                     // TT move is singular — no competitive alternatives. Extend +1.
-                    // (Previously omitted due to GoChess interaction with alpha-reduce/blending,
-                    // but retesting after Coda bug fixes and improvements.)
                     singular_extension = 1;
                 } else {
                     // Alternatives are competitive — negative extension (reduce TT move)
@@ -1662,10 +1657,10 @@ fn negamax(
             && FEAT_HIST_PRUNE.load(Ordering::Relaxed)
         {
             let mut hist_prune_score = info.history.main_score(from, to, enemy_attacks);
-            if prev_piece_go != 0
+            if prev_piece_for_cont != 0
                 && moved_piece != NO_PIECE
             {
-                hist_prune_score += info.history.cont_hist[prev_piece_go][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
+                hist_prune_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
             }
             if hist_prune_score < -1500 * depth as i32 {
                 info.stats.history_prunes += 1;
@@ -1792,7 +1787,7 @@ fn negamax(
         }
 
         // Track captures for capture history penalty on beta cutoff
-        // Store GoChess-indexed (go_piece, to, captured_type) for direct use in history penalty
+        // Store piece/to/captured for history updates after search
         if is_cap && n_captures_tried < 32 {
             if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                 let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
@@ -1872,10 +1867,10 @@ fn negamax(
 
                 // Continuous history adjustment: good history reduces less, bad more
                 let mut hist_score = info.history.main_score(from, to, enemy_attacks);
-                if prev_piece_go != 0
+                if prev_piece_for_cont != 0
                     && moved_piece != NO_PIECE
                 {
-                    hist_score += info.history.cont_hist[prev_piece_go][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
+                    hist_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
                 }
                 let hist_adj = hist_score / 5000;
                 reduction -= hist_adj;
@@ -1996,7 +1991,7 @@ fn negamax(
                 alpha = score;
                 alpha_raised_count += 1;
 
-                // Update PV table (triangular) matching GoChess
+                // Update triangular PV table
                 if ply_u <= MAX_PLY {
                     info.pv_table[ply_u][0] = mv;
                     let child_len = if ply_u + 1 <= MAX_PLY { info.pv_len[ply_u + 1] } else { 0 };
@@ -2205,17 +2200,14 @@ fn negamax(
 }
 
 /// History bonus: depth-based bonus for history updates, capped to avoid
-/// over-weighting very deep searches. Matches GoChess historyBonus().
+/// over-weighting very deep searches.
 fn history_bonus(depth: i32) -> i32 {
     (depth * depth).min(1200)
 }
 
-/// Compute SEE score for a quiet move (GoChess: SEEAfterQuiet).
-/// This is a placeholder that calls see_ge with the threshold.
-/// For a true SEE score, we'd need a full SEE implementation that returns the value.
 /// SEE for a quiet move: how much material do we lose if the opponent captures
 /// the piece we moved? Returns negative if we lose material (e.g., -320 for knight).
-/// Matches GoChess SEEAfterQuiet exactly.
+/// Full SEE with gain array and negamax backward pass.
 #[inline]
 fn see_after_quiet(board: &Board, mv: Move) -> i32 {
     use crate::eval::see_value;
@@ -2329,7 +2321,7 @@ fn find_lva_for_see(board: &Board, sq: u32, color: u8, occ: u64) -> (u8, u8) {
 
 /// Helper: get counter-move for the given previous move
 /// Quiescence search wrapper.
-/// Faithful translation of GoChess's quiescence() from search.go.
+/// Quiescence search wrapper.
 fn quiescence(
     board: &mut Board,
     info: &mut SearchInfo,
@@ -2341,7 +2333,7 @@ fn quiescence(
 }
 
 /// Quiescence search with depth tracking.
-/// Line-by-line translation of GoChess's quiescenceWithDepth() from search.go (lines 1973-2201).
+/// Quiescence search with depth tracking.
 fn quiescence_with_depth(
     board: &mut Board,
     info: &mut SearchInfo,
@@ -2414,13 +2406,13 @@ fn quiescence_with_depth(
         }
     }
 
-    // Check detection (matches GoChess: PinnedAndCheckers for both check and evasion data)
+    // Check detection
     let qs_pinned = board.pinned();
     let qs_checkers = board.checkers();
     let qs_in_check = qs_checkers != 0;
 
     // When in check, generate all evasion moves using main MovePicker
-    // (matches GoChess: InitEvasion with full history scoring for quiet evasions)
+    // Full history scoring for quiet evasions
     if qs_in_check {
         let qs_prev_move = if !board.undo_stack.is_empty() {
             board.undo_stack[board.undo_stack.len() - 1].mv
@@ -2524,7 +2516,7 @@ fn quiescence_with_depth(
         return best_score;
     }
 
-    // Use main MovePicker in quiescence mode (matching GoChess InitQuiescence).
+    // Use main MovePicker in quiescence mode.
     // This partitions captures into good (SEE>=0) and bad, and uses staged ordering.
     let mut picker = MovePicker::new_quiescence(board, tt_move, &info.history);
     let mut best_move = NO_MOVE;
