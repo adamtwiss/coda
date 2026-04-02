@@ -32,3 +32,8 @@ target
 
 # PGN game files
 *.pgn
+nets/
+
+# Build output
+/coda
+Cargo.lock

@@ -2630,7 +2630,6 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         }
     } else {
         // Auto-discover NNUE net
-        let mut found = false;
 
         // 1. Embedded net (compiled in via CODA_EVALFILE env var during build)
         #[cfg(feature = "embedded-net")]
@@ -2640,11 +2639,10 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
             let acc = crate::nnue::NNUEAccumulator::new(net.hidden_size);
             info.nnue_net = Some(std::sync::Arc::new(net));
             info.nnue_acc = Some(acc);
-            found = true;
         }
 
         // 2. net.nnue in exe dir or CWD
-        if !found {
+        if info.nnue_net.is_none() {
             let try_paths = [
                 std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.nnue"))),
                 Some(std::path::PathBuf::from("net.nnue")),
@@ -2653,7 +2651,6 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
                 if let Some(path) = maybe_path {
                     if path.exists() {
                         if let Ok(()) = info.load_nnue(path.to_str().unwrap()) {
-                            found = true;
                             break;
                         }
                     }
@@ -2662,7 +2659,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         }
 
         // 3. net.txt discovery (extract filename from URL)
-        if !found {
+        if info.nnue_net.is_none() {
             let try_paths = [
                 std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.txt"))),
                 Some(std::path::PathBuf::from("net.txt")),
@@ -2677,7 +2674,6 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
                                 let net_path = net_dir.join(fname);
                                 if net_path.exists() {
                                     if let Ok(()) = info.load_nnue(net_path.to_str().unwrap()) {
-                                        found = true;
                                         break;
                                     }
                                 }
@@ -2687,7 +2683,6 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
                 }
             }
         }
-        let _ = found;
     }
     let mut total_nodes = 0u64;
 
