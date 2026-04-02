@@ -11,6 +11,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut board = Board::startpos();
     let mut info = SearchInfo::new(64);
     let mut stop_flag = info.stop.clone(); // keep a handle to signal stop from UCI loop
+    let mut ponderhit_flag = info.ponderhit_time.clone(); // shared ponderhit time limit
+    let mut ponder_limits: Option<SearchLimits> = None; // pending limits for ponderhit
     let mut opening_book: Option<crate::book::OpeningBook> = None;
     let mut use_book = true;
     let mut syzygy: Option<crate::tb::SyzygyTB> = None;
@@ -159,7 +161,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
                 let mut limits = parse_go(&tokens);
                 if is_ponder {
+                    ponder_limits = Some(limits.clone());
                     limits.infinite = true;
+                } else {
+                    ponder_limits = None;
                 }
                 // Warn if no NNUE net is loaded
                 if info.nnue_net.is_none() {
@@ -174,6 +179,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 let search_info = std::mem::replace(&mut info, SearchInfo::new_with_shared(
                     shared_stop, shared_tt, shared_net,
                 ));
+                ponderhit_flag = search_info.ponderhit_time.clone();
                 let threads = num_threads;
                 search_handle = Some(std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)
@@ -195,8 +201,21 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
             }
             "ponderhit" => {
-                // Stop pondering — the search will stop at the next check
-                info.stop.store(true, Ordering::Relaxed);
+                // Switch from infinite ponder to timed search
+                if let Some(ref pl) = ponder_limits {
+                    // Compute time allocation from the stored limits
+                    let our_time = if board.side_to_move == 0 { pl.wtime } else { pl.btime };
+                    let our_inc = if board.side_to_move == 0 { pl.winc } else { pl.binc };
+                    let overhead = info.move_overhead;
+                    let time_left = our_time.saturating_sub(overhead).max(1);
+                    let moves_left = if pl.movestogo > 0 { pl.movestogo as u64 } else { 25 };
+                    let soft = (time_left / moves_left + our_inc * 4 / 5).min(time_left / 2).max(10);
+                    // Set the shared ponderhit time limit (search thread picks it up)
+                    ponderhit_flag.store(soft, Ordering::Relaxed);
+                } else {
+                    // No stored limits — just stop
+                    stop_flag.store(true, Ordering::Relaxed);
+                }
             }
             "setoption" => {
                 parse_option(&tokens, &mut info, &mut num_threads);
