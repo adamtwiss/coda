@@ -3680,3 +3680,28 @@ Systematic feature-by-feature deep review by Titan uncovered implementation bugs
 **History Pruning** (2 issues): Incomplete history score, overly conservative guards.
 
 All fixes branched and SPRT testing in progress.
+
+Additional bugs found in second/third review passes:
+**ProbCut** (3 bugs): Missing excluded_move guard, no qsearch filter, SEE threshold too low. Plus: unique static eval gate too restrictive, missing TT guard, missing mate guard.
+**is_pseudo_legal** (5 gaps): Back-rank pawns without promo, EP diagonal without EP flag, invalid flag values 3/8-15.
+**make/unmake** (1 bug): minor_key/major_key not restored in unmake — corrupts ALL correction history lookups.
+**Time management** (2 bugs): Ponderhit kills search, movestogo=1 wastes 50% of time.
+**Lazy SMP** (1 bug): Helper threads set shared stop flag on timeout.
+**Alpha-reduce** (1 design bug): Component 1 bypasses all move quality exemptions unconditionally.
+**Hindsight** (1 sign bug): eval_sum adds opposite-perspective evals without negating.
+**Cuckoo** (2 more bugs found by Atlas): XOR chain indices wrong (i-2 should be i), obstruction check incorrectly included destination square.
+**Repetition** (1 issue): No pliesFromNull guard on lookback.
+
+### Concluded Tests (Day 2 continued)
+
+| # | Test | Elo | Games | LLR | Result | Action |
+|---|------|-----|-------|-----|--------|--------|
+| 13 | fix-asp-depth-clamp | -4.34 | 4,808 | -1.80 | Trending H0 | Shallow re-searches serve as cheap filter |
+| 15 | fix-cutnode-lmr (+2) | -15.7 | 3,040 | -2.95 | **H0** | +2 too aggressive for our engine |
+| 17 | 768pw-w7 vs production | -2.94 | 4,608 | -1.34 | Stopped (flat) | Confirms 768pw = 1024s (3rd test) |
+| 29 | fix-cuckoo-init (bugs 1-3) | -3.68 | ~4,000 | H0 | **H0** | Fixes merged, cuckoo disabled. Atlas found 2 more bugs. |
+| 30 | 13file-blunders e800 vs production | -1.77 | ongoing | — | Trending flat | Blunder data neutral at e800 |
+
+### Architecture Decision: 768pw
+
+768pw-w5 and 768pw-w7 both match 1024s in self-play across 3 separate tests (~12,000 total games). Decision: **adopt 768pw as default architecture** for 10-15% NPS advantage and v7 readiness. All top engines use 768pw as FT layer.
