@@ -7,8 +7,12 @@ Coda is a UCI chess engine written in Rust. Rewritten from GoChess with all accu
 ## Build and Test
 
 ```bash
-cargo build --release
-cargo test                                      # Run all tests including perft
+make                                             # Build with native CPU optimizations
+make pgo                                         # PGO-optimized build (~5% faster)
+make net                                         # Download production NNUE net
+make openbench                                   # OpenBench-compatible build
+cargo build --release                            # Plain release build
+cargo test                                       # Run all tests including perft
 
 ./target/release/coda                            # UCI mode (default)
 ./target/release/coda -nnue net.nnue             # UCI with NNUE evaluation
@@ -21,7 +25,8 @@ cargo test                                      # Run all tests including perft
 ./target/release/coda datagen [options]          # Generate training data (SF binpack)
 ./target/release/coda convert-bullet [options]   # Bullet quantised.bin → .nnue
 ./target/release/coda convert-checkpoint [opts]  # .nnue → Bullet checkpoint (transfer learning)
-./target/release/coda check-net <net.nnue>       # NNUE health check (TODO)
+./target/release/coda fetch-net                  # Download NNUE net from net.txt URL
+./target/release/coda sample-positions [options]  # Sample positions from binpack to EPD
 ./target/release/coda help                       # Show all options
 ```
 
@@ -36,11 +41,14 @@ src/
   attacks.rs       Magic bitboards (PEXT runtime detected), knight/king/pawn tables
   movegen.rs       Pseudo-legal + capture-only move generation, perft
   zobrist.rs       Zobrist hash keys (deterministic PRNG)
+  zobrist_keys.rs  Auto-generated Zobrist key constants
   eval.rs          PeSTO material+PST eval (fallback), SEE values, NNUE eval wrapper
   see.rs           Static Exchange Evaluation
-  tt.rs            Transposition table (4-slot buckets, XOR key verification)
-  movepicker.rs    Staged move ordering, history tables, killer/counter moves
-  search.rs        Negamax, pruning, LMR, correction history, pruning stats
+  tt.rs            Transposition table (5-slot buckets, XOR key verification)
+  movepicker.rs    Staged move ordering, 4D history tables, killer/counter moves
+  search.rs        Negamax, pruning, LMR, correction history, cuckoo, pruning stats
+  cuckoo.rs        Cuckoo cycle detection for proactive repetition avoidance
+  tb.rs            Syzygy tablebase probing (via shakmaty-syzygy)
   nnue.rs          NNUE v5/v6/v7 inference, accumulator stack, Finny table, AVX2/AVX-512 SIMD
   uci.rs           UCI protocol (position, go, stop, ponder, setoption)
   epd.rs           EPD test suite runner with SAN formatting
@@ -50,8 +58,13 @@ src/
   binpack.rs       SF BINP binpack format writer (chain-compressed)
   bullet_convert.rs  Bullet quantised.bin → .nnue converter (v5/v6/v7)
   nnue_export.rs   .nnue → Bullet checkpoint converter (for transfer learning)
+Makefile           Build targets: make, make pgo, make openbench, make net
+scripts/
+  ob_submit.py     OpenBench job submission script
+training/configs/  Bullet training configs (.rs) for each net architecture
 testdata/
   wac.epd          Win At Chess test suite (201 positions)
+net.txt            Production NNUE net URL (used by make net / fetch-net)
 ```
 
 ## Architecture
@@ -70,29 +83,31 @@ testdata/
 Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from depth 4). Lazy SMP: helper threads search at offset depths sharing the TT (atomic) and stop flag.
 
 **Pruning features:**
-- NMP: R=3+depth/3 + (eval-beta)/200, eval>=beta guard, verify at depth>=12, post-capture R--, NMP score dampening (score*2+beta)/3
+- NMP: R=4+depth/3 + (eval-beta)/200, eval>=beta guard, verify at depth>=12, post-capture R--, NMP score dampening (score*2+beta)/3
 - RFP: depth<=7, margin improving?70*d:100*d, returns staticEval-margin
-- Futility: 60+lmrDepth*60, depth<=8, uses estimated LMR depth
+- Futility: 90+lmrDepth*100+histAdj/128, depth<=8, uses estimated LMR depth
 - LMR: separate quiet (C=1.30) and capture (C=1.80) tables, doDeeper/doShallower
 - LMP: non-PV only, depth<=8, threshold 3+d² with improving/failing adjustments
 - SEE pruning: quiet -20d² at depth<=8, capture -d*100 at depth<=6
-- ProbCut: beta+170, staticEval+85 gate, SEE>=0
+- ProbCut: beta+170, staticEval+85 gate, SEE>=0 **(disabled by default — needs better eval)**
 - History pruning: -1500*depth at depth<=3, !improving guard
 - Bad noisy: prune losing captures when eval+depth*75<=alpha
-- Razoring: depth<=2, margin 400+d*100
-- IIR: depth>=6, !inCheck, no TT move
+- IIR: depth>=4, !inCheck, no TT move, PV or cut node
+- Singular extensions (FEAT_SINGULAR)
+- Cuckoo cycle detection for proactive repetition avoidance (FEAT_CUCKOO)
+- Hindsight reduction: reduce when parent was LMR-reduced (>=2) and both sides quiet (FEAT_HINDSIGHT)
 - Recapture extensions
 - Fail-high score blending: (score*depth+beta)/(depth+1) at non-PV
 
-**Move ordering:** TT move → good captures (MVV-LVA + captHist/16) → promotions → killers → counter-move → quiets (main hist + contHist*3 + pawn hist) → bad captures
+**Move ordering:** TT move → good captures (MVV-LVA + captHist/16) → killers → counter-move → quiets (queen promos scored high, then main hist + contHist*3 + pawn hist) → bad captures
 
 **Exemptions:** TT move and killers exempt from all pre-make pruning and from LMR. Promotions exempt from LMR.
 
-**History tables:** main [color][from][to], capture [piece][to][victim], continuation [piece][to][piece][to], pawn [pawnHash%512][piece][to], killers [ply][2], counter [piece][to].
+**History tables:** main [from_threatened][to_threatened][from][to] (4D threat-aware, FEAT_4D_HISTORY), capture [piece][to][victim], continuation [piece][to][piece][to], pawn [pawnHash%512][piece][to], killers [ply][2], counter [piece][to].
 
-**Correction history:** Multi-source static eval correction. Pawn (512/1024) + white-NP (204/1024) + black-NP (204/1024) + continuation (104/1024). Updated on bestScore > originalAlpha with depth >= 3.
+**Correction history:** Multi-source static eval correction (6 sources). Pawn (384/1024) + white-NP (154/1024) + black-NP (154/1024) + minor pieces (102/1024) + major pieces (102/1024) + continuation (128/1024). Updated on bestScore > originalAlpha with depth >= 3.
 
-**Other:** Contempt = -10 (prefer playing over drawing). Insufficient material detection (KvK, KNvK, KBvK). Repetition detection via undo stack hash comparison.
+**Other:** Contempt = 10 (applied as -CONTEMPT for draws, prefer playing over drawing). Insufficient material detection (KvK, KNvK, KBvK). Repetition detection via undo stack hash comparison + cuckoo cycle detection.
 
 ### TT
 - 5-slot buckets, 64 bytes (cache-line aligned), AtomicU64/AtomicU32 for lockless Lazy SMP
@@ -133,7 +148,7 @@ Polyglot .bin format. Weighted random selection. Polyglot Zobrist hashing with s
 - `BookFile` (string) — path to Polyglot .bin book
 - `MoveOverhead` (spin, 0-5000, default 100) — communication latency in ms
 - `Ponder` (check, default false)
-- `SparseL1` (check, default false) — sparse L1 matmul for v7 (experimental)
+- `SparseL1` (check, default true) — sparse L1 matmul for v7
 - `SyzygyPath` (string) — path to Syzygy tablebase files
 
 ### Time Management
@@ -280,19 +295,19 @@ Where:
 
 Examples: `net-v5-1024-w0-e120s120.nnue`, `net-v5-1024s-w5-e400s400.nnue`, `net-v7-1024h16x32s-w0-e800s800.nnue`
 
-## Key Search Parameters (from GoChess, tuned)
-- NMP: R=3+depth/3, divisor 200, verify depth>=12
+## Key Search Parameters
+- NMP: R=4+depth/3, divisor 200, verify depth>=12
 - RFP: depth<=7, margin improving?70*d:100*d
-- Futility: 60+lmrDepth*60, depth<=8
+- Futility: 90+lmrDepth*100+histAdj/128, depth<=8
 - LMR: quiet C=1.30, capture C=1.80
 - History pruning: -1500*depth, depth<=3, !improving
 - SEE quiet: -20*depth², SEE capture: -depth*100
 - QS delta: 240
-- Aspiration: delta=15, from depth 4
-- ProbCut: beta+170, staticEval+85 gate
+- Aspiration: delta=13+score²/23660 (eval-dependent), from depth 4
+- ProbCut: beta+170, staticEval+85 gate (disabled by default)
 - SEE values: P=100, N=320, B=330, R=500, Q=900
-- History bonus cap: depth²  capped at 1200
-- Contempt: -10
+- History bonus cap: depth² capped at 1200
+- Contempt: 10 (applied as -CONTEMPT)
 
 ## Current Status (2026-03-30)
 
