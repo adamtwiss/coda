@@ -1827,10 +1827,6 @@ fn negamax(
                     reduction -= 1;
                 }
 
-                // Reduce more when position is deteriorating significantly
-                if failing {
-                    reduction += 1;
-                }
 
                 // Reduce more when multiple moves have already raised alpha
                 if alpha_raised_count > 1 {
