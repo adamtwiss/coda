@@ -607,7 +607,7 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     if let Some(net) = &helper.nnue_net {
         helper.nnue_acc = Some(crate::nnue::NNUEAccumulator::new(net.hidden_size));
     }
-    helper.time_limit = main.time_limit;
+    helper.time_limit = 0; // helpers don't do time management
     helper.move_overhead = main.move_overhead;
     helper
 }
@@ -650,22 +650,11 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
                 if let (Some(net), Some(acc)) = (&helper.nnue_net, &mut helper.nnue_acc) {
                     acc.materialize(net, &helper_board);
                 }
-                // Time management for helpers (same as main)
-                let (our_time, our_inc) = if helper_board.side_to_move == WHITE {
-                    (helper_limits.wtime, helper_limits.winc)
-                } else {
-                    (helper_limits.btime, helper_limits.binc)
-                };
-                if helper_limits.movetime > 0 {
-                    helper.time_limit = helper_limits.movetime;
-                } else if our_time > 0 {
-                    let overhead = helper.move_overhead;
-                    let time_left = our_time.saturating_sub(overhead).max(1);
-                    let base_time = time_left / 20 + our_inc * 3 / 4;
-                    helper.soft_limit = base_time.min(time_left);
-                    helper.hard_limit = (base_time * 5).min(time_left);
-                    helper.time_limit = helper.hard_limit;
-                }
+                // Helpers don't do time management — they stop when the main
+                // thread sets the shared stop flag. Only main thread controls timing.
+                helper.time_limit = 0;
+                helper.soft_limit = 0;
+                helper.hard_limit = 0;
                 helper.max_depth = helper_limits.depth;
 
                 // Search with depth offset for diversity (standard Lazy SMP trick)
