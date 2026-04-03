@@ -1637,10 +1637,16 @@ fn negamax(
                 if singular_score < singular_beta {
                     // TT move is singular — no competitive alternatives. Extend +1.
                     singular_extension = 1;
-                } else {
-                    // Alternatives are competitive — negative extension (reduce TT move)
-                    singular_extension = -1;
+                } else if tt_score_local >= beta {
+                    // TT move fails high and alternatives competitive — strong reduce
+                    // Consensus: -3 non-PV, -2 PV (SF/Viridithas/Obsidian)
+                    let is_pv = beta - alpha_orig > 1;
+                    singular_extension = -3 + is_pv as i32;
+                } else if cut_node {
+                    // Cut node with competitive alternatives — moderate reduce
+                    singular_extension = -2;
                 }
+                // else: alternatives competitive but not at cutNode — no extension/reduction
             }
         }
 
