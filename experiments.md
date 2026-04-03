@@ -3743,3 +3743,28 @@ Additional bugs found in second/third review passes:
 | NMP decomposed (3 tests) | — | early | — | Capture R, verify depth, depth gate tested individually |
 | fix-hindsight-sign | — | rebased | — | Negate parent eval for correct perspective |
 | + many more from Titan bug hunt | — | queued | — | SE, futility, RFP, hist prune, alpha-reduce, is_pseudo_legal, SMP, TM |
+
+### H1 Passed — Merged (Day 3)
+
+| # | Test | Elo | Games | Result | Description |
+|---|------|-----|-------|--------|-------------|
+| 50 | fix-nmp-search-depth | **+11.0** | ~5,000 | **H1** | depth-1-r → depth-r. Every NMP search was 1 ply too shallow. Biggest single fix. |
+
+**Total confirmed Elo from bug fixes: ~+27.5** (probcut +5.86, unmake keys +5.67, SEE promo ~+5, NMP depth +11)
+
+### H0 Failed (Day 3)
+
+| # | Test | Elo | Games | Notes |
+|---|------|-----|-------|-------|
+| 22 | fix-lmr-nonpawn | H0 | 4,686 | Wrong-side fix hurts — engine tuned around it |
+| 25 | fix-histprune-score | H0 | 3,044 | Full history score too aggressive |
+| 48 | fix-hindsight-sign | H0 | 4,154 | Sign fix hurts — feature captures useful signal as-is |
+| 23 | fix-se-extensions | H0 | 2,544 | SE fixes hurt — parameters tuned for current behavior |
+| 13 | fix-asp-depth-clamp | H0 | 6,784 | Shallow re-searches serve as cheap filter |
+| 21 | fix-nmp-bugs (bundled) | H0 | 1,820 | 3 NMP fixes together -29 Elo. Decomposed. |
+| — | fix-histprune-full | H0 | ~3,000 | Consensus reimplementation too aggressive |
+| — | fix-futility-full | trending H0 | ~2,000 | Consensus reimplementation regressed to -2 |
+
+### Key Lesson
+
+Many "correctness fixes" test negative because the engine was tuned around the bugs. The NMP search depth fix (+11) succeeded because it was a pure 1-line change with minimal parameter interaction. Holistic reimplementations based on top-engine consensus failed — our engine's parameter landscape is different. Conservative single-change approach is more reliable.
