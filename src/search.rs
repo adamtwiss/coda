@@ -22,6 +22,75 @@ const CONTEMPT: i32 = 10; // prefer playing on over drawing
 // Pawn history table size
 const PAWN_HIST_SIZE: usize = 512;
 
+// ============================================================================
+// Tunable search parameters (exposed as UCI options for SPSA tuning)
+// ============================================================================
+use std::sync::atomic::AtomicI32;
+
+macro_rules! tunable {
+    ($name:ident, $default:expr, $min:expr, $max:expr) => {
+        pub static $name: AtomicI32 = AtomicI32::new($default);
+    };
+}
+
+// NMP parameters
+tunable!(NMP_BASE_R,         4,    2,    8);
+tunable!(NMP_DEPTH_DIV,      3,    2,    6);    // R = base + depth/div
+tunable!(NMP_EVAL_DIV,     200,  100,  400);    // eval bonus = (eval-beta)/div
+tunable!(NMP_EVAL_MAX,       3,    1,    6);    // max eval bonus
+tunable!(NMP_VERIFY_DEPTH, 12,    8,   20);    // depth threshold for verification
+
+// RFP parameters
+tunable!(RFP_DEPTH,          7,    4,   10);
+tunable!(RFP_MARGIN_IMP,    70,   30,  150);    // margin when improving
+tunable!(RFP_MARGIN_NOIMP, 100,   50,  200);    // margin when not improving
+
+// Futility parameters
+tunable!(FUT_BASE,          90,   20,  200);
+tunable!(FUT_PER_DEPTH,    100,   40,  250);
+
+// History pruning
+tunable!(HIST_PRUNE_DEPTH,   3,    1,    8);
+tunable!(HIST_PRUNE_MULT, 1500,  500, 5000);   // threshold = -mult * depth
+
+// SEE pruning
+tunable!(SEE_QUIET_MULT,   20,    5,   50);    // threshold = -mult * depth²
+tunable!(SEE_CAP_MULT,    100,   30,  200);    // threshold = -mult * depth
+
+// LMR history divisor
+tunable!(LMR_HIST_DIV,   5000, 2000, 15000);
+
+// Singular extensions
+tunable!(SE_DEPTH,           8,    4,   12);
+
+/// Get a tunable parameter value (inline for hot paths)
+#[inline(always)]
+fn tp(param: &AtomicI32) -> i32 {
+    param.load(Ordering::Relaxed)
+}
+
+/// List of all tunable parameters for UCI/SPSA
+pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32)> {
+    vec![
+        ("NMP_BASE_R",         &NMP_BASE_R,         4,    2,    8),
+        ("NMP_DEPTH_DIV",      &NMP_DEPTH_DIV,      3,    2,    6),
+        ("NMP_EVAL_DIV",       &NMP_EVAL_DIV,      200, 100,  400),
+        ("NMP_EVAL_MAX",       &NMP_EVAL_MAX,        3,    1,    6),
+        ("NMP_VERIFY_DEPTH",   &NMP_VERIFY_DEPTH,   12,    8,   20),
+        ("RFP_DEPTH",          &RFP_DEPTH,           7,    4,   10),
+        ("RFP_MARGIN_IMP",     &RFP_MARGIN_IMP,     70,   30,  150),
+        ("RFP_MARGIN_NOIMP",   &RFP_MARGIN_NOIMP,  100,   50,  200),
+        ("FUT_BASE",           &FUT_BASE,            90,   20,  200),
+        ("FUT_PER_DEPTH",      &FUT_PER_DEPTH,      100,   40,  250),
+        ("HIST_PRUNE_DEPTH",   &HIST_PRUNE_DEPTH,    3,    1,    8),
+        ("HIST_PRUNE_MULT",    &HIST_PRUNE_MULT,  1500,  500, 5000),
+        ("SEE_QUIET_MULT",     &SEE_QUIET_MULT,     20,    5,   50),
+        ("SEE_CAP_MULT",       &SEE_CAP_MULT,      100,   30,  200),
+        ("LMR_HIST_DIV",       &LMR_HIST_DIV,     5000, 2000, 15000),
+        ("SE_DEPTH",           &SE_DEPTH,             8,    4,   12),
+    ]
+}
+
 // Feature flags for ablation testing. All true = normal play.
 pub static FEAT_NMP: AtomicBool = AtomicBool::new(true);
 pub static FEAT_RFP: AtomicBool = AtomicBool::new(true);
@@ -1364,13 +1433,13 @@ fn negamax(
     {
         info.stats.nmp_attempts += 1;
         // Adaptive reduction: scales with depth and eval margin above beta
-        let mut r = 4 + depth / 3;
+        let mut r = tp(&NMP_BASE_R) + depth / tp(&NMP_DEPTH_DIV);
         // Reduce less after captures
         if !board.undo_stack.is_empty() && board.undo_stack[board.undo_stack.len() - 1].captured != NO_PIECE_TYPE {
             r -= 1;
         }
         if static_eval > beta {
-            let eval_r = ((static_eval - beta) / 200).min(3);
+            let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp(&NMP_EVAL_MAX));
             r += eval_r;
         }
         // Clamp so null-move search is at least depth 1
@@ -1395,7 +1464,7 @@ fn negamax(
             let dampened = (null_score * 2 + beta) / 3;
 
             // Verification search at high depths to guard against zugzwang
-            if depth >= 12 {
+            if depth >= tp(&NMP_VERIFY_DEPTH) {
                 info.stats.nmp_verify += 1;
                 let v_score = negamax(board, info, beta - 1, beta, depth - r, ply + 1, false);
                 if v_score >= beta {
@@ -1423,8 +1492,8 @@ fn negamax(
         let tt_move_is_quiet = tt_move != NO_MOVE
             && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
             && move_flags(tt_move) != FLAG_EN_PASSANT;
-        if depth <= 7 && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
-            let margin = if improving { depth * 70 } else { depth * 100 };
+        if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
+            let margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
@@ -1601,7 +1670,7 @@ fn negamax(
         if mv == tt_move
             && tt_move != NO_MOVE
             && ply > 0
-            && depth >= 8
+            && depth >= tp(&SE_DEPTH)
             && !in_check
             && info.excluded_move[ply_u] == NO_MOVE
             && tt_hit
@@ -1654,7 +1723,7 @@ fn negamax(
         };
 
         // History-based pruning: prune quiet moves with deeply negative history at shallow depths
-        if ply > 0 && !in_check && !improving && !unstable && depth <= 3
+        if ply > 0 && !in_check && !improving && !unstable && depth <= tp(&HIST_PRUNE_DEPTH)
             && !is_cap && !is_promo
             && mv != tt_move
             && mv != killers[0] && mv != killers[1]
@@ -1668,7 +1737,7 @@ fn negamax(
             {
                 hist_prune_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
             }
-            if hist_prune_score < -1500 * depth as i32 {
+            if hist_prune_score < -tp(&HIST_PRUNE_MULT) * depth as i32 {
                 info.stats.history_prunes += 1;
                 continue;
             }
@@ -1723,7 +1792,7 @@ fn negamax(
                 }
             }
             let hist_adj = info.history.main_score(from, to, enemy_attacks) / 128;
-            if static_eval + 90 + lmr_depth * 100 + hist_adj <= alpha {
+            if static_eval + tp(&FUT_BASE) + lmr_depth * tp(&FUT_PER_DEPTH) + hist_adj <= alpha {
                 info.stats.futility_prunes += 1;
                 board.unmake_move();
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
@@ -1753,7 +1822,7 @@ fn negamax(
         }
 
         // SEE quiet pruning: prune quiet moves where piece lands on a losing square
-        let mut see_quiet_threshold = -20 * depth * depth;
+        let mut see_quiet_threshold = -tp(&SEE_QUIET_MULT) * depth * depth;
         if unstable {
             see_quiet_threshold -= 100; // more lenient when position is volatile
         }
@@ -1873,7 +1942,7 @@ fn negamax(
                 {
                     hist_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
                 }
-                let hist_adj = hist_score / 5000;
+                let hist_adj = hist_score / tp(&LMR_HIST_DIV);
                 reduction -= hist_adj;
 
                 // Complexity-aware LMR: reduce less when correction history

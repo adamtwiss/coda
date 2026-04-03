@@ -115,6 +115,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("option name Ponder type check default false");
                 println!("option name SyzygyPath type string default <empty>");
                 println!("option name SparseL1 type check default true");
+                // Tunable search parameters (for SPSA)
+                for (name, _, default, min, max) in crate::search::tunable_params() {
+                    println!("option name {} type spin default {} min {} max {}", name, default, min, max);
+                }
                 println!("uciok");
             }
             "isready" => {
@@ -457,7 +461,19 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
                 println!("info string SparseL1 = {}", value == "true");
             }
         }
-        _ => {}
+        _ => {
+            // Check tunable search parameters
+            for (pname, param, _, min, max) in crate::search::tunable_params() {
+                if name == pname {
+                    if let Ok(v) = value.parse::<i32>() {
+                        let clamped = v.max(min).min(max);
+                        param.store(clamped, std::sync::atomic::Ordering::Relaxed);
+                        println!("info string {} = {}", pname, clamped);
+                    }
+                    break;
+                }
+            }
+        }
     }
 }
 
