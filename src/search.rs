@@ -1837,10 +1837,6 @@ fn negamax(
                     reduction += alpha_raised_count / 2;
                 }
 
-                // Reduce less when eval is unstable (sharp swing from parent)
-                if unstable {
-                    reduction -= 1;
-                }
 
                 // Reduce more when TT move is a capture
                 if tt_move_noisy {
