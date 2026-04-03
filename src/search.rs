@@ -221,6 +221,9 @@ pub struct SearchInfo {
     tm_has_data: bool,
     soft_limit: u64,  // ms — can be extended/shortened dynamically
     hard_limit: u64,  // ms — absolute maximum
+    /// Node-based TM: nodes spent per root move [from*64+to]
+    root_move_nodes: [u64; 4096],
+    root_total_nodes: u64,
     /// Ponderhit: shared atomic time limit (ms). 0 = ponder mode (infinite).
     /// Set by UCI thread on ponderhit to switch from infinite to timed search.
     pub ponderhit_time: std::sync::Arc<AtomicU64>,
@@ -269,6 +272,8 @@ impl SearchInfo {
             tm_prev_score: 0,
             tm_best_stable: 0,
             tm_has_data: false,
+            root_move_nodes: [0; 4096],
+            root_total_nodes: 0,
             soft_limit: 0,
             hard_limit: 0,
             ponderhit_time: std::sync::Arc::new(AtomicU64::new(0)),
@@ -926,6 +931,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     for depth in 1..=effective_max {
         if info.should_stop() { break; }
         let iter_start = std::time::Instant::now();
+        // Reset per-iteration root move node tracking
+        info.root_move_nodes = [0; 4096];
+        info.root_total_nodes = info.nodes;
 
         let score;
 
@@ -1104,6 +1112,17 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
             // Scale factor for soft limit
             let mut scale = 1.0f64;
+
+            // Node-based TM: adjust based on best move's node fraction (Berserk pattern)
+            // Only apply after depth >= 6 when node counts are meaningful
+            if depth >= 6 {
+                let bm_idx = (move_from(best_move) as usize) * 64 + (move_to(best_move) as usize);
+                let iter_nodes = (info.nodes - info.root_total_nodes).max(1) as f64;
+                let bm_nodes = info.root_move_nodes[bm_idx] as f64;
+                let not_best_frac = 1.0 - bm_nodes / iter_nodes;
+                let node_factor = (not_best_frac * 2.27 + 0.45).max(0.56).min(2.0);
+                scale *= node_factor;
+            }
 
             // Stable best move → stop early
             if info.tm_best_stable >= 8 { scale *= 0.35; }
@@ -1631,6 +1650,9 @@ fn negamax(
         // should be reduced more regardless of whether earlier moves were pruned.
         move_count += 1;
 
+        // Track nodes per root move for node-based TM
+        let root_nodes_before = if ply == 0 { info.nodes } else { 0 };
+
         let from = move_from(mv);
         let to = move_to(mv);
         let flags = move_flags(mv);
@@ -2045,6 +2067,12 @@ fn negamax(
 
         board.unmake_move();
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+
+        // Credit nodes to root move for node-based TM
+        if ply == 0 {
+            let idx = (from as usize) * 64 + (to as usize);
+            info.root_move_nodes[idx] += info.nodes - root_nodes_before;
+        }
 
         if info.stop.load(Ordering::Relaxed) {
             return 0;
