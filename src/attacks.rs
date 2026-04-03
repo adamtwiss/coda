@@ -3,6 +3,34 @@
 use crate::bitboard::*;
 use crate::types::*;
 
+/// Returns true if the CPU has fast (single-cycle) PEXT.
+/// AMD Zen 1/2 (family 0x17) has BMI2 but PEXT is microcoded (~18 cycles).
+/// AMD Zen 3+ (family 0x19+) and all Intel BMI2 CPUs have fast PEXT.
+#[cfg(target_arch = "x86_64")]
+fn has_fast_pext() -> bool {
+    // CPUID leaf 0: get vendor string
+    let cpuid0 = std::arch::x86_64::__cpuid(0);
+    let vendor = [cpuid0.ebx, cpuid0.edx, cpuid0.ecx];
+    let is_amd = vendor == [0x6874_7541, 0x6974_6E65, 0x444D_4163]; // "AuthenticAMD"
+
+    if !is_amd {
+        return true; // Intel (and others) with BMI2 have fast PEXT
+    }
+
+    // CPUID leaf 1: EAX bits [11:8] = family, [27:20] = extended family
+    let cpuid1 = std::arch::x86_64::__cpuid(1);
+    let base_family = (cpuid1.eax >> 8) & 0xF;
+    let ext_family = (cpuid1.eax >> 20) & 0xFF;
+    let family = if base_family == 0xF {
+        base_family + ext_family
+    } else {
+        base_family
+    };
+
+    // AMD family 0x19 = Zen 3, 0x1A = Zen 5. Family 0x17 = Zen 1/2 (slow PEXT).
+    family >= 0x19
+}
+
 // Precomputed leaper attacks
 static mut KNIGHT_ATTACKS: [Bitboard; 64] = [0; 64];
 static mut KING_ATTACKS: [Bitboard; 64] = [0; 64];
@@ -285,11 +313,13 @@ pub fn init_attacks() {
         }
     }
 
-    // Detect PEXT support
+    // Detect PEXT support — only enable when fast (not microcoded)
+    // AMD Zen 1/2 (family 0x17) has BMI2 but PEXT is ~18 cycles (microcoded).
+    // AMD Zen 3+ (family 0x19+) and all Intel BMI2 CPUs have fast (1 cycle) PEXT.
     #[cfg(target_arch = "x86_64")]
     {
         unsafe {
-            USE_PEXT = is_x86_feature_detected!("bmi2");
+            USE_PEXT = is_x86_feature_detected!("bmi2") && has_fast_pext();
         }
     }
 
