@@ -1832,10 +1832,6 @@ fn negamax(
                     reduction += 1;
                 }
 
-                // Reduce more when multiple moves have already raised alpha
-                if alpha_raised_count > 1 {
-                    reduction += alpha_raised_count / 2;
-                }
 
                 // Reduce less when eval is unstable (sharp swing from parent)
                 if unstable {
