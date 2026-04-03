@@ -1357,7 +1357,7 @@ fn negamax(
     let us = board.side_to_move;
     let stm_non_pawn = board.colors[us as usize]
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
-    if depth >= 4 && !in_check && ply > 0 && stm_non_pawn != 0
+    if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && FEAT_NMP.load(Ordering::Relaxed)
