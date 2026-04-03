@@ -130,7 +130,7 @@ pub fn has_game_cycle(board: &Board, ply: i32) -> bool {
     let mut other: u64 = original_key ^ key_at(1) ^ side_key();
 
     for i in (3..=end).step_by(2) {
-        other ^= key_at(i - 1) ^ key_at(i - 2) ^ side_key();
+        other ^= key_at(i - 1) ^ key_at(i) ^ side_key();
 
         if other != 0 {
             continue;
@@ -156,8 +156,8 @@ pub fn has_game_cycle(board: &Board, ply: i32) -> bool {
         let from = unpack_from(packed);
         let to = unpack_to(packed);
 
-        // Verify the path between from and to is unobstructed (including destination)
-        if ((between(from as u32, to as u32) ^ (1u64 << to)) & occ) != 0 {
+        // Verify the path between from and to is unobstructed (strictly between only)
+        if (between(from as u32, to as u32) & occ) != 0 {
             continue;
         }
 
