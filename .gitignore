@@ -37,3 +37,10 @@ nets/
 # Build output
 /coda
 Cargo.lock
+
+# Old test artifacts
+*.log
+coda-*
+!coda
+debug_*.go
+run_*.sh
