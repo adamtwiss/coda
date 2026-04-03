@@ -1374,15 +1374,15 @@ fn negamax(
             r += eval_r;
         }
         // Clamp so null-move search is at least depth 1
-        if depth - 1 - r < 1 {
-            r = depth - 2;
+        if depth - r < 1 {
+            r = depth - 1;
         }
 
         board.make_null_move();
         info.tt.prefetch(board.hash);
         let null_key = board.hash; // save hash for threat detection after unmake
         if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::recompute()); }
-        let null_score = -negamax(board, info, -beta, -beta + 1, depth - 1 - r, ply + 1, !cut_node);
+        let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
         board.unmake_null_move();
 
@@ -1397,7 +1397,7 @@ fn negamax(
             // Verification search at high depths to guard against zugzwang
             if depth >= 12 {
                 info.stats.nmp_verify += 1;
-                let v_score = negamax(board, info, beta - 1, beta, depth - 1 - r, ply + 1, false);
+                let v_score = negamax(board, info, beta - 1, beta, depth - r, ply + 1, false);
                 if v_score >= beta {
                     info.stats.nmp_cutoffs += 1;
                     return dampened;
