@@ -53,8 +53,12 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
     }
 
     // Iterative SEE — remove initial attacker from occupied
-    // (victim at 'to' stays in occupied; for EP, captured pawn also stays)
     let mut occ = board.occupied() ^ (1u64 << from);
+    // For EP, also remove the captured pawn (on same file as to, same rank as from)
+    if flags == FLAG_EN_PASSANT {
+        let ep_victim_sq = (to & 7) | (from & !7); // file of to, rank of from
+        occ ^= 1u64 << ep_victim_sq;
+    }
 
     let bishops = board.pieces[BISHOP as usize] | board.pieces[QUEEN as usize];
     let rooks = board.pieces[ROOK as usize] | board.pieces[QUEEN as usize];
