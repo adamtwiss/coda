@@ -76,6 +76,7 @@ const CORR_HIST_MAX: i32 = 128;
 const CORR_HIST_LIMIT: i32 = 32000;
 
 /// Search limits.
+#[derive(Clone)]
 pub struct SearchLimits {
     pub depth: i32,
     pub movetime: u64,    // milliseconds
@@ -151,6 +152,9 @@ pub struct SearchInfo {
     tm_has_data: bool,
     soft_limit: u64,  // ms — can be extended/shortened dynamically
     hard_limit: u64,  // ms — absolute maximum
+    /// Ponderhit: shared atomic time limit (ms). 0 = ponder mode (infinite).
+    /// Set by UCI thread on ponderhit to switch from infinite to timed search.
+    pub ponderhit_time: std::sync::Arc<AtomicU64>,
     pub sel_depth: i32,
     pub last_score: i32,
     /// Triangular PV table
@@ -198,6 +202,7 @@ impl SearchInfo {
             tm_has_data: false,
             soft_limit: 0,
             hard_limit: 0,
+            ponderhit_time: std::sync::Arc::new(AtomicU64::new(0)),
             sel_depth: 0,
             last_score: 0,
             static_evals: [0; MAX_PLY + 1],
@@ -252,9 +257,12 @@ impl SearchInfo {
             self.global_nodes.fetch_add(4096, Ordering::Relaxed);
         }
         // Check time every 4096 nodes
-        if self.nodes & 4095 == 0 && self.time_limit > 0 {
+        if self.nodes & 4095 == 0 {
             let elapsed = self.start_time.elapsed().as_millis() as u64;
-            if elapsed >= self.time_limit {
+            // Check ponderhit: UCI thread sets this to switch from infinite to timed
+            let ph_time = self.ponderhit_time.load(Ordering::Relaxed);
+            let effective_limit = if ph_time > 0 { ph_time } else { self.time_limit };
+            if effective_limit > 0 && elapsed >= effective_limit {
                 self.stop.store(true, Ordering::Relaxed);
                 return true;
             }
@@ -779,8 +787,14 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Soft allocation: time/movesLeft + 80% of increment
         let mut soft = time_left / moves_left + our_inc * 4 / 5;
 
-        // Cap at half remaining time
-        let max_alloc = time_left / 2;
+        // Cap soft allocation: scale with moves remaining
+        // movestogo=1: allow up to 90%, movestogo=2: 70%, sudden death (25): 50%
+        let max_pct = if limits.movestogo > 0 {
+            (95 - limits.movestogo as u64 * 5).max(30).min(90)
+        } else {
+            50
+        };
+        let max_alloc = time_left * max_pct / 100;
         if soft > max_alloc { soft = max_alloc; }
 
         // Emergency: below 1 second, be very conservative
@@ -796,10 +810,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         // Hard limit
         let mut hard = if limits.movestogo > 0 {
-            // Tournament TC: cap by moves remaining (generous early, tight late)
+            // Tournament TC: cap based on moves remaining
+            // movestogo=1: 90%, movestogo=2: 60%, scales down to 30% min
             let hard_raw = soft * 2;
-            let cap_pct = (20 + limits.movestogo as u64 / 2).min(40);
-            let mtg_cap = time_left * cap_pct / 100;
+            let hard_pct = (95 - limits.movestogo as u64 * 10).max(30).min(90);
+            let mtg_cap = time_left * hard_pct / 100;
             hard_raw.min(mtg_cap)
         } else {
             // Sudden death: allow up to 3x soft
