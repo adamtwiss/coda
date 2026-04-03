@@ -770,6 +770,11 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
     let to_bb = 1u64 << to;
     let flags = move_flags(mv);
 
+    // Reject invalid flag values (valid: 0,1,2,4,5,6,7)
+    if flags == 3 || flags > FLAG_PROMOTE_Q {
+        return false;
+    }
+
     // From square must have our piece
     if from_bb & board.colors[us as usize] == 0 {
         return false;
@@ -843,6 +848,11 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
     if is_promotion(mv) {
         if pt != PAWN { return false; }
     }
+    // Non-promotion pawn moves must not reach back rank (Stockfish pattern)
+    if !is_promotion(mv) && pt == PAWN {
+        let rank = to >> 3;
+        if rank == 0 || rank == 7 { return false; }
+    }
 
     // To square must not have our piece
     if to_bb & board.colors[us as usize] != 0 {
@@ -878,9 +888,10 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
             if diff == 8 {
                 if board.piece_type_at(to) != NO_PIECE_TYPE { return false; }
             }
-            // Capture: destination must have enemy piece (or be EP square)
+            // Capture: destination must have enemy piece
+            // (EP is handled above with FLAG_EN_PASSANT and returns early)
             if diff == 7 || diff == 9 {
-                if board.piece_type_at(to) == NO_PIECE_TYPE && to != board.ep_square {
+                if board.piece_type_at(to) == NO_PIECE_TYPE {
                     return false;
                 }
             }
