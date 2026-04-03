@@ -862,6 +862,206 @@ unsafe fn neon_screlu_dot_i8(acc: &[i16], weights_i8: &[i16], h: usize) -> i32 {
     vaddvq_s32(combined)
 }
 
+/// Pairwise dot product (NEON): clamp [0,255], multiply pairs, dot with weights.
+/// Uses byte decomposition: prod = byte0 + byte1*256, then dot each with weights.
+/// Processes 8 × i16 per iteration, drains i32 to i64 every 128 elements.
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_pairwise_dot(acc_first: &[i16], acc_second: &[i16], weights: &[i16], count: usize) -> i64 {
+    let zero = vdupq_n_s16(0);
+    let qa = vdupq_n_s16(QA as i16); // 255 — clamp ceiling and byte0 mask
+    let mut sum_b0_lo = vdupq_n_s32(0);
+    let mut sum_b0_hi = vdupq_n_s32(0);
+    let mut sum_b1_lo = vdupq_n_s32(0);
+    let mut sum_b1_hi = vdupq_n_s32(0);
+    let mut total: i64 = 0;
+    let mut batch = 0u32;
+
+    let mut i = 0;
+    while i < count {
+        let a = vld1q_s16(acc_first.as_ptr().add(i));
+        let a_cl = vminq_s16(vmaxq_s16(a, zero), qa);
+        let b = vld1q_s16(acc_second.as_ptr().add(i));
+        let b_cl = vminq_s16(vmaxq_s16(b, zero), qa);
+        let w = vld1q_s16(weights.as_ptr().add(i));
+
+        // a*b: u16 [0, 65025] stored as i16 bit pattern
+        let prod = vmulq_s16(a_cl, b_cl);
+        // byte0 = prod & 0xFF (using qa as mask)
+        let byte0 = vandq_s16(prod, qa);
+        // byte1 = prod >> 8 (unsigned shift)
+        let byte1 = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(prod)));
+
+        // Widening multiply-accumulate: i16 × i16 → i32
+        sum_b0_lo = vmlal_s16(sum_b0_lo, vget_low_s16(byte0), vget_low_s16(w));
+        sum_b0_hi = vmlal_high_s16(sum_b0_hi, byte0, w);
+        sum_b1_lo = vmlal_s16(sum_b1_lo, vget_low_s16(byte1), vget_low_s16(w));
+        sum_b1_hi = vmlal_high_s16(sum_b1_hi, byte1, w);
+
+        batch += 8;
+        if batch >= 128 {
+            let b0 = vaddq_s32(sum_b0_lo, sum_b0_hi);
+            let b1 = vaddq_s32(sum_b1_lo, sum_b1_hi);
+            total += vaddlvq_s32(b0);
+            total += vaddlvq_s32(b1) << 8;
+            sum_b0_lo = vdupq_n_s32(0);
+            sum_b0_hi = vdupq_n_s32(0);
+            sum_b1_lo = vdupq_n_s32(0);
+            sum_b1_hi = vdupq_n_s32(0);
+            batch = 0;
+        }
+        i += 8;
+    }
+
+    if batch > 0 {
+        let b0 = vaddq_s32(sum_b0_lo, sum_b0_hi);
+        let b1 = vaddq_s32(sum_b1_lo, sum_b1_hi);
+        total += vaddlvq_s32(b0);
+        total += vaddlvq_s32(b1) << 8;
+    }
+    total
+}
+
+/// Pack SCReLU'd accumulator into uint8 (NEON): clamp [0,255], v²/256 → [0,254].
+/// Output buffer must be at least h bytes.
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
+    let zero = vdupq_n_s16(0);
+    let qa = vdupq_n_s16(QA as i16);
+    let mut i = 0;
+    while i + 16 <= h {
+        let v0 = vld1q_s16(acc.as_ptr().add(i));
+        let v1 = vld1q_s16(acc.as_ptr().add(i + 8));
+        let c0 = vminq_s16(vmaxq_s16(v0, zero), qa);
+        let c1 = vminq_s16(vmaxq_s16(v1, zero), qa);
+        // v²: bit pattern is u16 [0, 65025]
+        let sq0 = vmulq_s16(c0, c0);
+        let sq1 = vmulq_s16(c1, c1);
+        // >> 8 (unsigned shift) → [0, 254]
+        let d0 = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(sq0)));
+        let d1 = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(sq1)));
+        // Narrow i16 → u8 with unsigned saturation (values are [0, 254])
+        let lo = vqmovun_s16(d0);
+        let hi = vqmovun_s16(d1);
+        vst1q_u8(out.as_mut_ptr().add(i), vcombine_u8(lo, hi));
+        i += 16;
+    }
+    while i < h {
+        let v = (acc[i] as i32).clamp(0, 255);
+        out[i] = ((v * v) >> 8) as u8;
+        i += 1;
+    }
+}
+
+/// CReLU + pairwise pack (NEON): acc[0..pw] × acc[pw..2*pw] → out[0..pw] u8.
+/// clamp(a, 0, 255) * clamp(b, 0, 255) >> 8 for each pair.
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
+    let zero = vdupq_n_s16(0);
+    let qa = vdupq_n_s16(QA as i16);
+    let mut i = 0;
+    while i + 16 <= pw {
+        let a0 = vld1q_s16(acc.as_ptr().add(i));
+        let b0 = vld1q_s16(acc.as_ptr().add(pw + i));
+        let a1 = vld1q_s16(acc.as_ptr().add(i + 8));
+        let b1 = vld1q_s16(acc.as_ptr().add(pw + i + 8));
+        let ca0 = vminq_s16(vmaxq_s16(a0, zero), qa);
+        let cb0 = vminq_s16(vmaxq_s16(b0, zero), qa);
+        let ca1 = vminq_s16(vmaxq_s16(a1, zero), qa);
+        let cb1 = vminq_s16(vmaxq_s16(b1, zero), qa);
+        let prod0 = vmulq_s16(ca0, cb0);
+        let prod1 = vmulq_s16(ca1, cb1);
+        let d0 = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(prod0)));
+        let d1 = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(prod1)));
+        let lo = vqmovun_s16(d0);
+        let hi = vqmovun_s16(d1);
+        vst1q_u8(out.as_mut_ptr().add(i), vcombine_u8(lo, hi));
+        i += 16;
+    }
+    while i + 8 <= pw {
+        let a = vld1q_s16(acc.as_ptr().add(i));
+        let b = vld1q_s16(acc.as_ptr().add(pw + i));
+        let ca = vminq_s16(vmaxq_s16(a, zero), qa);
+        let cb = vminq_s16(vmaxq_s16(b, zero), qa);
+        let prod = vmulq_s16(ca, cb);
+        let d = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(prod)));
+        vst1_u8(out.as_mut_ptr().add(i), vqmovun_s16(d));
+        i += 8;
+    }
+    while i < pw {
+        let a = (acc[i] as i32).clamp(0, 255);
+        let b = (acc[pw + i] as i32).clamp(0, 255);
+        out[i] = ((a * b) >> 8) as u8;
+        i += 1;
+    }
+}
+
+/// L1 int8 matmul (NEON): packed u8 input × i8 weights → i32 output.
+/// Widens u8→i16 and i8→i16, then uses widening multiply-accumulate to i32.
+/// h must be multiple of 16.
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_l1_int8_dot(packed: &[u8], weights: &[i8], h: usize) -> i32 {
+    let mut sum0 = vdupq_n_s32(0);
+    let mut sum1 = vdupq_n_s32(0);
+    let mut i = 0;
+    while i < h {
+        // Load 16 × u8 and 16 × i8
+        let a = vld1q_u8(packed.as_ptr().add(i));
+        let b = vld1q_s8(weights.as_ptr().add(i));
+        // Widen to i16: u8→u16 reinterpreted as i16 (safe: max 254 fits i16)
+        let a_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(a)));
+        let a_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(a)));
+        let b_lo = vmovl_s8(vget_low_s8(b));
+        let b_hi = vmovl_s8(vget_high_s8(b));
+        // Widening multiply-accumulate: i16 × i16 → i32
+        sum0 = vmlal_s16(sum0, vget_low_s16(a_lo), vget_low_s16(b_lo));
+        sum0 = vmlal_high_s16(sum0, a_lo, b_lo);
+        sum1 = vmlal_s16(sum1, vget_low_s16(a_hi), vget_low_s16(b_hi));
+        sum1 = vmlal_high_s16(sum1, a_hi, b_hi);
+        i += 16;
+    }
+    vaddvq_s32(vaddq_s32(sum0, sum1))
+}
+
+/// Find non-zero 16-byte chunk indices in a packed u8 buffer (NEON).
+/// Returns the number of NNZ chunks. nnz_indices[0..count] contains byte offsets.
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_find_nnz_chunks(packed: &[u8], nnz_indices: &mut [u16], h: usize) -> usize {
+    let mut count = 0usize;
+    let mut i = 0;
+    while i < h {
+        let v = vld1q_u8(packed.as_ptr().add(i));
+        // If max byte > 0, this chunk has non-zero elements
+        if vmaxvq_u8(v) != 0 {
+            nnz_indices[count] = i as u16;
+            count += 1;
+        }
+        i += 16;
+    }
+    count
+}
+
+/// Sparse L1 int8 matmul (NEON): only process NNZ 16-byte chunks of packed input.
+/// nnz_indices[0..nnz_count] are byte offsets of non-zero chunks.
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_l1_int8_dot_sparse(packed: &[u8], weights: &[i8], nnz_indices: &[u16], nnz_count: usize) -> i32 {
+    let mut sum0 = vdupq_n_s32(0);
+    let mut sum1 = vdupq_n_s32(0);
+    for k in 0..nnz_count {
+        let off = nnz_indices[k] as usize;
+        let a = vld1q_u8(packed.as_ptr().add(off));
+        let b = vld1q_s8(weights.as_ptr().add(off));
+        let a_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(a)));
+        let a_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(a)));
+        let b_lo = vmovl_s8(vget_low_s8(b));
+        let b_hi = vmovl_s8(vget_high_s8(b));
+        sum0 = vmlal_s16(sum0, vget_low_s16(a_lo), vget_low_s16(b_lo));
+        sum0 = vmlal_high_s16(sum0, a_lo, b_lo);
+        sum1 = vmlal_s16(sum1, vget_low_s16(a_hi), vget_low_s16(b_hi));
+        sum1 = vmlal_high_s16(sum1, a_hi, b_hi);
+    }
+    vaddvq_s32(vaddq_s32(sum0, sum1))
+}
+
 /// Detect AVX2 support at runtime.
 fn detect_avx2() -> bool {
     #[cfg(target_arch = "x86_64")]
@@ -1257,7 +1457,15 @@ impl NNUENet {
             }
         }
 
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(target_arch = "aarch64")]
+        {
+            unsafe {
+                neon_pairwise_pack(stm_acc, &mut stm_pw, pw);
+                neon_pairwise_pack(ntm_acc, &mut ntm_pw, pw);
+            }
+        }
+
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
             for i in 0..pw {
                 let a = (stm_acc[i] as i32).clamp(0, qa);
@@ -1310,9 +1518,36 @@ impl NNUENet {
             }
         }
 
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(target_arch = "aarch64")]
+        if self.has_neon && pw % 16 == 0 && !self.l1_weights_8t.is_empty() {
+            let ntm_base = l1_total * pw;
+            for i in 0..l1 {
+                let gi = l1_off + i;
+                let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
+                let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
+                unsafe {
+                    hidden32[i] += neon_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
+                    hidden32[i] += neon_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
+                }
+            }
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        if !(self.has_neon && pw % 16 == 0 && !self.l1_weights_8t.is_empty()) {
+            for i in 0..l1 {
+                let gi = l1_off + i;
+                for j in 0..pw {
+                    hidden32[i] += stm_pw[j] as i32 * self.l1_weights[j * l1_total + gi] as i32;
+                }
+                for j in 0..pw {
+                    hidden32[i] += ntm_pw[j] as i32 * self.l1_weights[(pw + j) * l1_total + gi] as i32;
+                }
+            }
+        }
+
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
-            // Scalar fallback for non-x86
+            // Scalar fallback for other architectures
             for i in 0..l1 {
                 let gi = l1_off + i;
                 for j in 0..pw {
@@ -1454,6 +1689,81 @@ impl NNUENet {
             return (out_f * EVAL_SCALE as f32) as i32;
         }
 
+        // NEON int8 path: pack SCReLU to u8, then NEON L1 matmul
+        #[cfg(target_arch = "aarch64")]
+        if self.has_neon && h % 16 == 0 && !self.l1_weights_8t.is_empty() {
+            let mut stm_packed = [0u8; 2048];
+            let mut ntm_packed = [0u8; 2048];
+            unsafe {
+                neon_screlu_pack(stm_acc, &mut stm_packed, h);
+                neon_screlu_pack(ntm_acc, &mut ntm_packed, h);
+            }
+            // Int8 matmul: input at scale QA (v²/255), weights at scale QA_L1
+            // Result at scale QA × QA_L1. Bias at scale QA_L1, scaled by QA to match.
+            let qa_int = QA as i32;
+            for i in 0..l1 {
+                hidden[i] = self.l1_biases[i] as i64 * qa_int as i64; // bias × QA
+            }
+            if self.use_sparse_l1.load(std::sync::atomic::Ordering::Relaxed) {
+                // Sparse path: find NNZ 16-byte chunks, only multiply those
+                let mut stm_nnz = [0u16; 128]; // max 2048/16 = 128 chunks
+                let mut ntm_nnz = [0u16; 128];
+                let (stm_nnz_count, ntm_nnz_count);
+                unsafe {
+                    stm_nnz_count = neon_find_nnz_chunks(&stm_packed, &mut stm_nnz, h);
+                    ntm_nnz_count = neon_find_nnz_chunks(&ntm_packed, &mut ntm_nnz, h);
+                }
+                for i in 0..l1 {
+                    let stm_w = &self.l1_weights_8t[i * h..(i + 1) * h];
+                    let ntm_w = &self.l1_weights_8t[l1 * h + i * h..l1 * h + (i + 1) * h];
+                    unsafe {
+                        hidden[i] += neon_l1_int8_dot_sparse(&stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
+                        hidden[i] += neon_l1_int8_dot_sparse(&ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
+                    }
+                }
+            } else {
+                // Dense path
+                for i in 0..l1 {
+                    let stm_w = &self.l1_weights_8t[i * h..(i + 1) * h];
+                    let ntm_w = &self.l1_weights_8t[l1 * h + i * h..l1 * h + (i + 1) * h];
+                    unsafe {
+                        hidden[i] += neon_l1_int8_dot(&stm_packed, stm_w, h) as i64;
+                        hidden[i] += neon_l1_int8_dot(&ntm_packed, ntm_w, h) as i64;
+                    }
+                }
+            }
+            // Dequantize: result at scale QA × QA_L1. Divide by QA to get scale QA_L1.
+            let qa_l1_sq = qa_l1 as f32 * qa_l1 as f32;
+            let mut l1_out = [0.0f32; 64];
+            for i in 0..l1 {
+                let mut h_val = (hidden[i] / qa as i64) as i32; // scale QA_L1
+                h_val = h_val.clamp(0, qa_l1 as i32);
+                let hsq = h_val * h_val; // SCReLU → scale QA_L1²
+                l1_out[i] = hsq as f32 / qa_l1_sq; // → [0, 1]
+            }
+
+            // L2 or output — float
+            if self.l2_size > 0 {
+                let l2 = self.l2_size;
+                let mut h2 = [0.0f32; 64];
+                for k in 0..l2 { h2[k] = self.l2_biases_f[k]; }
+                for i in 0..l1 {
+                    if l1_out[i] == 0.0 { continue; }
+                    let w_off = i * l2;
+                    for k in 0..l2 { h2[k] += l1_out[i] * self.l2_weights_f[w_off + k]; }
+                }
+                for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; }
+                let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
+                let mut out_f = self.out_bias_f[bucket];
+                for k in 0..l2 { out_f += h2[k] * out_w[k]; }
+                return (out_f * EVAL_SCALE as f32) as i32;
+            }
+            let out_w = &self.out_weights_f[bucket * l1..bucket * l1 + l1];
+            let mut out_f = self.out_bias_f[bucket];
+            for i in 0..l1 { out_f += l1_out[i] * out_w[i]; }
+            return (out_f * EVAL_SCALE as f32) as i32;
+        }
+
         // Scalar fallback
         #[cfg(target_arch = "x86_64")]
         if !(self.has_avx2 && h % 32 == 0 && !self.l1_weights_8t.is_empty()) {
@@ -1477,7 +1787,29 @@ impl NNUENet {
             }
         }
 
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(target_arch = "aarch64")]
+        if !(self.has_neon && h % 16 == 0 && !self.l1_weights_8t.is_empty()) {
+            for j in 0..h {
+                let v = (stm_acc[j] as i64).clamp(0, qa);
+                if v == 0 { continue; }
+                let vsq = v * v;
+                let w_off = j * l1;
+                for i in 0..l1 {
+                    hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
+                }
+            }
+            for j in 0..h {
+                let v = (ntm_acc[j] as i64).clamp(0, qa);
+                if v == 0 { continue; }
+                let vsq = v * v;
+                let w_off = (h + j) * l1;
+                for i in 0..l1 {
+                    hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
+                }
+            }
+        }
+
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
             for j in 0..h {
                 let v = (stm_acc[j] as i64).clamp(0, qa);
@@ -1580,6 +1912,19 @@ impl NNUENet {
                 unsafe {
                     sum = simd_pairwise_dot(&stm_acc[..pw], &stm_acc[pw..], &out_w[..pw], pw);
                     sum += simd_pairwise_dot(&ntm_acc[..pw], &ntm_acc[pw..], &out_w[pw..], pw);
+                }
+                output = sum / QA as i64 + bias;
+                let result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
+                return result;
+            }
+
+            #[cfg(target_arch = "aarch64")]
+            if self.has_neon && pw % 8 == 0 {
+                let bias = output;
+                let mut sum: i64;
+                unsafe {
+                    sum = neon_pairwise_dot(&stm_acc[..pw], &stm_acc[pw..], &out_w[..pw], pw);
+                    sum += neon_pairwise_dot(&ntm_acc[..pw], &ntm_acc[pw..], &out_w[pw..], pw);
                 }
                 output = sum / QA as i64 + bias;
                 let result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
