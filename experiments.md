@@ -3700,8 +3700,46 @@ Additional bugs found in second/third review passes:
 | 15 | fix-cutnode-lmr (+2) | -15.7 | 3,040 | -2.95 | **H0** | +2 too aggressive for our engine |
 | 17 | 768pw-w7 vs production | -2.94 | 4,608 | -1.34 | Stopped (flat) | Confirms 768pw = 1024s (3rd test) |
 | 29 | fix-cuckoo-init (bugs 1-3) | -3.68 | ~4,000 | H0 | **H0** | Fixes merged, cuckoo disabled. Atlas found 2 more bugs. |
-| 30 | 13file-blunders e800 vs production | -1.77 | ongoing | — | Trending flat | Blunder data neutral at e800 |
+| 30 | 13file-blunders e800 vs production | +2.58 | 5,200 | 0.30 | Stopped (mildly +ve) | Blunders help slightly at ~8% ratio. Try 20-30%. |
 
 ### Architecture Decision: 768pw
 
 768pw-w5 and 768pw-w7 both match 1024s in self-play across 3 separate tests (~12,000 total games). Decision: **adopt 768pw as default architecture** for 10-15% NPS advantage and v7 readiness. All top engines use 768pw as FT layer.
+
+## 2026-04-03: H1 Winners and Ongoing Tests
+
+### H1 Passed — Merged to main
+
+| # | Test | Elo | Games | Result | Description |
+|---|------|-----|-------|--------|-------------|
+| 44 | fix-probcut | **+5.86 ±4.22** | 11,272 | **H1** | ProbCut revival: removed static eval gate, added qsearch filter, SEE threshold, TT/mate guards |
+| 37 | fix-unmake-keys | **+5.67 ±4.10** | 11,526 | **H1** | Restore minor_key/major_key in unmake — was corrupting all correction history |
+| 31 | fix-see-promotion | **~+5** | ~10,000 | Stopped +ve | Handle promotions in SEE (gain + risk value). Correctness fix, consistently positive. |
+
+**Combined merged Elo: ~+16.5** from three bug fixes.
+
+### H0 Failed
+
+| # | Test | Elo | Games | Result | Notes |
+|---|------|-----|-------|--------|-------|
+| 21 | fix-nmp-bugs (bundled) | -29 | 1,820 | **H0** | 3 NMP fixes together too aggressive. Decomposed into 3 individual tests. |
+| 32 | fix-see-ep | H0 | 9,740 | **H0** | EP pawn occupancy fix — too rare to show. Merge as correctness. |
+| 13 | fix-asp-depth-clamp | -4.34 | 4,808 | Trending H0 | Shallow re-searches serve as cheap filter. Don't clamp. |
+
+### Stopped / Noted
+
+| # | Test | Elo | Games | Notes |
+|---|------|-----|-------|-------|
+| 30 | 13file-blunders e800 | +2.58 | 5,200 | Blunders help slightly at ~8% ratio. Try 20-30% next time. |
+| 29 | fix-cuckoo-init v1 | -3.68 | ~5,600 | H0. Fixes had 2 additional bugs found by Atlas. |
+
+### Still Running (key tests)
+
+| # | Test | Elo (latest) | Games | Notes |
+|---|------|-------------|-------|-------|
+| 43 | fix-cuckoo-bugs (Atlas v2) | ~+2 | ~19,000 | Mildly positive, grinding |
+| 16 | fix-strong-failhigh-bonus | ~+4 | ~5,600 | Trending toward H1 |
+| 44v2 | fix-probcut (improved) | early | — | Removed static eval gate, added TT/mate guards |
+| NMP decomposed (3 tests) | — | early | — | Capture R, verify depth, depth gate tested individually |
+| fix-hindsight-sign | — | rebased | — | Negate parent eval for correct perspective |
+| + many more from Titan bug hunt | — | queued | — | SE, futility, RFP, hist prune, alpha-reduce, is_pseudo_legal, SMP, TM |
