@@ -1,0 +1,1481 @@
+Indexing opening suite...
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 2 of 600 (Crafty vs Monolith)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 4 of 600 (Coda-cutfix vs Crafty)
+Started game 1 of 600 (Coda-cutfix vs Rodent3)
+Warning: Monolith doesn't have option MoveOverhead
+Started game 5 of 600 (Coda-rewrite vs Monolith)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 3 of 600 (Coda-rewrite vs Rodent3)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 6 of 600 (Rodent3 vs Crafty)
+Warning: Monolith doesn't have option MoveOverhead
+Started game 7 of 600 (Coda-rewrite vs Crafty)
+Started game 8 of 600 (Monolith vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(4)
+Finished game 3 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Started game 9 of 600 (Coda-rewrite vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(8)
+Finished game 5 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 10 of 600 (Monolith vs Rodent3)
+Terminating process of engine Coda-rewrite(12)
+Finished game 7 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 11 of 600 (Rodent3 vs Coda-cutfix)
+Finished game 8 (Monolith vs Coda-cutfix): 1-0 {White wins by adjudication}
+Finished game 4 (Coda-cutfix vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 12 of 600 (Monolith vs Crafty)
+Started game 13 of 600 (Rodent3 vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(16)
+Finished game 9 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 14 of 600 (Crafty vs Coda-cutfix)
+Finished game 1 (Coda-cutfix vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 15 of 600 (Monolith vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(29)
+Finished game 15 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 16 of 600 (Crafty vs Rodent3)
+Finished game 6 (Rodent3 vs Crafty): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 17 of 600 (Crafty vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(25)
+Finished game 13 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 18 of 600 (Coda-cutfix vs Monolith)
+Finished game 11 (Rodent3 vs Coda-cutfix): 1-0 {White wins by adjudication}
+Started game 19 of 600 (Coda-cutfix vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(33)
+Finished game 17 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 20 of 600 (Rodent3 vs Monolith)
+Terminating process of engine Coda-rewrite(37)
+Finished game 19 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 21 of 600 (Coda-cutfix vs Rodent3)
+Finished game 10 (Monolith vs Rodent3): 1/2-1/2 {Draw by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 22 of 600 (Crafty vs Monolith)
+Warning: Illegal ponder move from Monolith: c7c1
+Warning: Illegal ponder move from Monolith: b6b7
+Finished game 2 (Crafty vs Monolith): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 23 of 600 (Coda-rewrite vs Rodent3)
+Finished game 14 (Crafty vs Coda-cutfix): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 24 of 600 (Coda-cutfix vs Crafty)
+Finished game 12 (Monolith vs Crafty): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 25 of 600 (Coda-rewrite vs Monolith)
+Terminating process of engine Coda-rewrite(44)
+Finished game 23 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 26 of 600 (Rodent3 vs Crafty)
+Finished game 18 (Coda-cutfix vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 27 of 600 (Coda-rewrite vs Crafty)
+Finished game 16 (Crafty vs Rodent3): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 28 of 600 (Monolith vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(47)
+Finished game 25 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Started game 29 of 600 (Coda-rewrite vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(51)
+Finished game 27 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 30 of 600 (Monolith vs Rodent3)
+Finished game 21 (Coda-cutfix vs Rodent3): 0-1 {Black wins by adjudication}
+Started game 31 of 600 (Rodent3 vs Coda-cutfix)
+Finished game 20 (Rodent3 vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 32 of 600 (Monolith vs Crafty)
+Finished game 24 (Coda-cutfix vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 33 of 600 (Rodent3 vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(55)
+Finished game 29 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 34 of 600 (Crafty vs Coda-cutfix)
+Finished game 22 (Crafty vs Monolith): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 35 of 600 (Monolith vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(62)
+Finished game 33 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 36 of 600 (Crafty vs Rodent3)
+Finished game 28 (Monolith vs Coda-cutfix): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 37 of 600 (Crafty vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(66)
+Finished game 35 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 38 of 600 (Coda-cutfix vs Monolith)
+Terminating process of engine Coda-rewrite(70)
+Finished game 37 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Started game 39 of 600 (Coda-cutfix vs Coda-rewrite)
+Finished game 26 (Rodent3 vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 40 of 600 (Rodent3 vs Monolith)
+Terminating process of engine Coda-rewrite(74)
+Finished game 39 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 41 of 600 (Coda-cutfix vs Rodent3)
+Finished game 31 (Rodent3 vs Coda-cutfix): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 42 of 600 (Crafty vs Monolith)
+Finished game 38 (Coda-cutfix vs Monolith): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 43 of 600 (Coda-rewrite vs Rodent3)
+Finished game 30 (Monolith vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 44 of 600 (Coda-cutfix vs Crafty)
+Finished game 34 (Crafty vs Coda-cutfix): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 45 of 600 (Coda-rewrite vs Monolith)
+Terminating process of engine Coda-rewrite(81)
+Finished game 43 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 46 of 600 (Rodent3 vs Crafty)
+Finished game 36 (Crafty vs Rodent3): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 47 of 600 (Coda-rewrite vs Crafty)
+Warning: Illegal ponder move from Monolith: a2a3
+Finished game 32 (Monolith vs Crafty): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 48 of 600 (Monolith vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(89)
+Finished game 47 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Started game 49 of 600 (Coda-rewrite vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(85)
+Finished game 45 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 50 of 600 (Monolith vs Rodent3)
+Finished game 42 (Crafty vs Monolith): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 51 of 600 (Rodent3 vs Coda-cutfix)
+Finished game 40 (Rodent3 vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 52 of 600 (Monolith vs Crafty)
+Finished game 41 (Coda-cutfix vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 53 of 600 (Rodent3 vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(93)
+Finished game 49 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 54 of 600 (Crafty vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(102)
+Finished game 53 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 55 of 600 (Monolith vs Coda-rewrite)
+Finished game 44 (Coda-cutfix vs Crafty): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 56 of 600 (Crafty vs Rodent3)
+Finished game 48 (Monolith vs Coda-cutfix): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 57 of 600 (Crafty vs Coda-rewrite)
+Finished game 50 (Monolith vs Rodent3): 1/2-1/2 {Draw by 3-fold repetition}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   1 Monolith                      269     230      20   82.5%   15.0% 
+   2 Crafty                        114     178      19   65.8%    5.3% 
+   3 Rodent3                       108     165      20   65.0%   10.0% 
+   4 Coda-cutfix                   -70     169      20   40.0%    0.0% 
+   5 Coda-rewrite                 -inf     nan      21    0.0%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Monolith doesn't have option MoveOverhead
+Started game 58 of 600 (Coda-cutfix vs Monolith)
+Terminating process of engine Coda-rewrite(110)
+Finished game 57 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Started game 59 of 600 (Coda-cutfix vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(106)
+Finished game 55 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 60 of 600 (Rodent3 vs Monolith)
+Finished game 51 (Rodent3 vs Coda-cutfix): 0-1 {Black wins by adjudication}
+Started game 61 of 600 (Coda-cutfix vs Rodent3)
+Finished game 46 (Rodent3 vs Crafty): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 62 of 600 (Crafty vs Monolith)
+Finished game 52 (Monolith vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 63 of 600 (Coda-rewrite vs Rodent3)
+Terminating process of engine Coda-rewrite(114)
+Finished game 59 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 64 of 600 (Coda-cutfix vs Crafty)
+Finished game 54 (Crafty vs Coda-cutfix): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 65 of 600 (Coda-rewrite vs Monolith)
+Terminating process of engine Coda-rewrite(123)
+Finished game 65 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 66 of 600 (Rodent3 vs Crafty)
+Terminating process of engine Coda-rewrite(119)
+Finished game 63 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 67 of 600 (Coda-rewrite vs Crafty)
+Finished game 58 (Coda-cutfix vs Monolith): 1-0 {White wins by adjudication}
+Started game 68 of 600 (Monolith vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(127)
+Finished game 67 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Started game 69 of 600 (Coda-rewrite vs Coda-cutfix)
+Finished game 56 (Crafty vs Rodent3): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 70 of 600 (Monolith vs Rodent3)
+Finished game 60 (Rodent3 vs Monolith): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 71 of 600 (Rodent3 vs Coda-cutfix)
+Finished game 61 (Coda-cutfix vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 72 of 600 (Monolith vs Crafty)
+Terminating process of engine Coda-rewrite(129)
+Finished game 69 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 73 of 600 (Rodent3 vs Coda-rewrite)
+Finished game 62 (Crafty vs Monolith): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 74 of 600 (Crafty vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(138)
+Finished game 73 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 75 of 600 (Monolith vs Coda-rewrite)
+Finished game 64 (Coda-cutfix vs Crafty): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 76 of 600 (Crafty vs Rodent3)
+Terminating process of engine Coda-rewrite(142)
+Finished game 75 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 77 of 600 (Crafty vs Coda-rewrite)
+Finished game 68 (Monolith vs Coda-cutfix): 1-0 {White wins by adjudication}
+Started game 78 of 600 (Coda-cutfix vs Monolith)
+Finished game 66 (Rodent3 vs Crafty): 0-1 {Black mates}
+Started game 79 of 600 (Coda-cutfix vs Coda-rewrite)
+Finished game 70 (Monolith vs Rodent3): 1-0 {White wins by adjudication}
+Started game 80 of 600 (Rodent3 vs Monolith)
+Finished game 71 (Rodent3 vs Coda-cutfix): 1/2-1/2 {Draw by 3-fold repetition}
+Started game 81 of 600 (Coda-cutfix vs Rodent3)
+Terminating process of engine Coda-rewrite(146)
+Finished game 77 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 82 of 600 (Crafty vs Monolith)
+Terminating process of engine Coda-rewrite(148)
+Finished game 79 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 83 of 600 (Coda-rewrite vs Rodent3)
+Terminating process of engine Coda-rewrite(151)
+Finished game 83 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 84 of 600 (Coda-cutfix vs Crafty)
+Finished game 81 (Coda-cutfix vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 85 of 600 (Coda-rewrite vs Monolith)
+Terminating process of engine Coda-rewrite(155)
+Finished game 85 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 86 of 600 (Rodent3 vs Crafty)
+Finished game 74 (Crafty vs Coda-cutfix): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 87 of 600 (Coda-rewrite vs Crafty)
+Finished game 72 (Monolith vs Crafty): 1/2-1/2 {Draw by insufficient mating material}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 88 of 600 (Monolith vs Coda-cutfix)
+Finished game 78 (Coda-cutfix vs Monolith): 0-1 {Black wins by adjudication}
+Finished game 80 (Rodent3 vs Monolith): 0-1 {Black wins by adjudication}
+Started game 90 of 600 (Monolith vs Rodent3)
+Started game 89 of 600 (Coda-rewrite vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(159)
+Finished game 87 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 91 of 600 (Rodent3 vs Coda-cutfix)
+Finished game 84 (Coda-cutfix vs Crafty): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 92 of 600 (Monolith vs Crafty)
+Warning: Illegal ponder move from Monolith: d1e2
+Finished game 82 (Crafty vs Monolith): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 93 of 600 (Rodent3 vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(163)
+Finished game 89 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 94 of 600 (Crafty vs Coda-cutfix)
+Finished game 76 (Crafty vs Rodent3): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 95 of 600 (Monolith vs Coda-rewrite)
+Finished game 86 (Rodent3 vs Crafty): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 96 of 600 (Crafty vs Rodent3)
+Terminating process of engine Coda-rewrite(170)
+Finished game 93 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 97 of 600 (Crafty vs Coda-rewrite)
+Finished game 91 (Rodent3 vs Coda-cutfix): 1-0 {White mates}
+Finished game 88 (Monolith vs Coda-cutfix): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 98 of 600 (Coda-cutfix vs Monolith)
+Started game 99 of 600 (Coda-cutfix vs Coda-rewrite)
+Finished game 90 (Monolith vs Rodent3): 1-0 {White wins by adjudication}
+Started game 100 of 600 (Rodent3 vs Monolith)
+Terminating process of engine Coda-rewrite(177)
+Finished game 97 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 101 of 600 (Coda-cutfix vs Rodent3)
+Terminating process of engine Coda-rewrite(174)
+Finished game 95 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 102 of 600 (Crafty vs Monolith)
+Terminating process of engine Coda-rewrite(181)
+Finished game 99 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 103 of 600 (Coda-rewrite vs Rodent3)
+Finished game 94 (Crafty vs Coda-cutfix): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 104 of 600 (Coda-cutfix vs Crafty)
+Finished game 92 (Monolith vs Crafty): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 105 of 600 (Coda-rewrite vs Monolith)
+Terminating process of engine Coda-rewrite(186)
+Finished game 103 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 106 of 600 (Rodent3 vs Crafty)
+Terminating process of engine Coda-rewrite(189)
+Finished game 105 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 107 of 600 (Coda-rewrite vs Crafty)
+Terminating process of engine Coda-rewrite(193)
+Finished game 107 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   1 Monolith                      235     129      39   79.5%   15.4% 
+   2 Crafty                        179     125      40   73.8%    7.5% 
+   3 Rodent3                        63     108      39   59.0%   10.3% 
+   4 Coda-cutfix                   -54     113      39   42.3%    2.6% 
+   5 Coda-rewrite                 -inf     nan      43    0.0%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Monolith doesn't have option MoveOverhead
+Started game 108 of 600 (Monolith vs Coda-cutfix)
+Finished game 96 (Crafty vs Rodent3): 1-0 {White mates}
+Started game 109 of 600 (Coda-rewrite vs Coda-cutfix)
+Finished game 98 (Coda-cutfix vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 110 of 600 (Monolith vs Rodent3)
+Finished game 104 (Coda-cutfix vs Crafty): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 111 of 600 (Rodent3 vs Coda-cutfix)
+Finished game 100 (Rodent3 vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 112 of 600 (Monolith vs Crafty)
+Terminating process of engine Coda-rewrite(197)
+Finished game 109 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 113 of 600 (Rodent3 vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(206)
+Finished game 113 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 114 of 600 (Crafty vs Coda-cutfix)
+Warning: Illegal ponder move from Monolith: h1h2
+Finished game 102 (Crafty vs Monolith): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 115 of 600 (Monolith vs Coda-rewrite)
+Finished game 106 (Rodent3 vs Crafty): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 116 of 600 (Crafty vs Rodent3)
+Finished game 101 (Coda-cutfix vs Rodent3): 1/2-1/2 {Draw by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 117 of 600 (Crafty vs Coda-rewrite)
+Finished game 110 (Monolith vs Rodent3): 1/2-1/2 {Draw by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 118 of 600 (Coda-cutfix vs Monolith)
+Terminating process of engine Coda-rewrite(213)
+Finished game 117 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Started game 119 of 600 (Coda-cutfix vs Coda-rewrite)
+Finished game 108 (Monolith vs Coda-cutfix): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 120 of 600 (Rodent3 vs Monolith)
+Terminating process of engine Coda-rewrite(217)
+Finished game 119 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 121 of 600 (Coda-cutfix vs Rodent3)
+Finished game 111 (Rodent3 vs Coda-cutfix): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 122 of 600 (Crafty vs Monolith)
+Finished game 112 (Monolith vs Crafty): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 123 of 600 (Coda-rewrite vs Rodent3)
+Terminating process of engine Coda-rewrite(210)
+Finished game 115 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 124 of 600 (Coda-cutfix vs Crafty)
+Finished game 116 (Crafty vs Rodent3): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 125 of 600 (Coda-rewrite vs Monolith)
+Terminating process of engine Coda-rewrite(224)
+Finished game 123 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 126 of 600 (Rodent3 vs Crafty)
+Finished game 118 (Coda-cutfix vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 127 of 600 (Coda-rewrite vs Crafty)
+Terminating process of engine Coda-rewrite(228)
+Finished game 125 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 128 of 600 (Monolith vs Coda-cutfix)
+Finished game 114 (Crafty vs Coda-cutfix): 0-1 {Black mates}
+Started game 129 of 600 (Coda-rewrite vs Coda-cutfix)
+Finished game 121 (Coda-cutfix vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 130 of 600 (Monolith vs Rodent3)
+Terminating process of engine Coda-rewrite(236)
+Finished game 129 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 131 of 600 (Rodent3 vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(232)
+Finished game 127 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 132 of 600 (Monolith vs Crafty)
+Finished game 122 (Crafty vs Monolith): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 133 of 600 (Rodent3 vs Coda-rewrite)
+Finished game 124 (Coda-cutfix vs Crafty): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 134 of 600 (Crafty vs Coda-cutfix)
+Finished game 128 (Monolith vs Coda-cutfix): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 135 of 600 (Monolith vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(248)
+Finished game 135 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 136 of 600 (Crafty vs Rodent3)
+Terminating process of engine Coda-rewrite(245)
+Finished game 133 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 137 of 600 (Crafty vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(252)
+Finished game 137 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 138 of 600 (Coda-cutfix vs Monolith)
+Finished game 126 (Rodent3 vs Crafty): 1/2-1/2 {Draw by 3-fold repetition}
+Started game 139 of 600 (Coda-cutfix vs Coda-rewrite)
+Finished game 120 (Rodent3 vs Monolith): 0-1 {Black wins by adjudication}
+Started game 140 of 600 (Rodent3 vs Monolith)
+Terminating process of engine Coda-rewrite(256)
+Finished game 139 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Finished game 130 (Monolith vs Rodent3): 1-0 {White wins by adjudication}
+Started game 141 of 600 (Coda-cutfix vs Rodent3)
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 142 of 600 (Crafty vs Monolith)
+Finished game 131 (Rodent3 vs Coda-cutfix): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 143 of 600 (Coda-rewrite vs Rodent3)
+Finished game 134 (Crafty vs Coda-cutfix): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 144 of 600 (Coda-cutfix vs Crafty)
+Terminating process of engine Coda-rewrite(261)
+Finished game 143 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 145 of 600 (Coda-rewrite vs Monolith)
+Terminating process of engine Coda-rewrite(264)
+Finished game 145 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 146 of 600 (Rodent3 vs Crafty)
+Warning: Illegal ponder move from Monolith: d5c4
+Finished game 132 (Monolith vs Crafty): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 147 of 600 (Coda-rewrite vs Crafty)
+Finished game 136 (Crafty vs Rodent3): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 148 of 600 (Monolith vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(268)
+Finished game 147 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Started game 149 of 600 (Coda-rewrite vs Coda-cutfix)
+Finished game 140 (Rodent3 vs Monolith): 0-1 {Black wins by adjudication}
+Started game 150 of 600 (Monolith vs Rodent3)
+Finished game 141 (Coda-cutfix vs Rodent3): 0-1 {Black wins by adjudication}
+Started game 151 of 600 (Rodent3 vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(272)
+Finished game 149 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 152 of 600 (Monolith vs Crafty)
+Finished game 144 (Coda-cutfix vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 153 of 600 (Rodent3 vs Coda-rewrite)
+Warning: Illegal ponder move from Monolith: h4g4
+Warning: Illegal ponder move from Monolith: f8d6
+Warning: Illegal ponder move from Monolith: h4g4
+Finished game 138 (Coda-cutfix vs Monolith): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 154 of 600 (Crafty vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(277)
+Finished game 153 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 155 of 600 (Monolith vs Coda-rewrite)
+Warning: Illegal ponder move from Monolith: h2g2
+Finished game 142 (Crafty vs Monolith): 0-1 {Black mates}
+Terminating process of engine Coda-rewrite(281)
+Finished game 155 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 156 of 600 (Crafty vs Rodent3)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 157 of 600 (Crafty vs Coda-rewrite)
+Finished game 146 (Rodent3 vs Crafty): 1-0 {White mates}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   1 Monolith                      276     111      59   83.1%   13.6% 
+   2 Crafty                        140      93      60   69.2%    8.3% 
+   3 Rodent3                        41      85      60   55.8%   11.7% 
+   4 Coda-cutfix                   -41      88      59   44.1%    6.8% 
+   5 Coda-rewrite                 -inf     nan      62    0.0%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Monolith doesn't have option MoveOverhead
+Started game 158 of 600 (Coda-cutfix vs Monolith)
+Finished game 148 (Monolith vs Coda-cutfix): 1-0 {White wins by adjudication}
+Started game 159 of 600 (Coda-cutfix vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(285)
+Finished game 157 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 160 of 600 (Rodent3 vs Monolith)
+Finished game 151 (Rodent3 vs Coda-cutfix): 1-0 {White wins by adjudication}
+Started game 161 of 600 (Coda-cutfix vs Rodent3)
+Terminating process of engine Coda-rewrite(289)
+Finished game 159 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 162 of 600 (Crafty vs Monolith)
+Finished game 152 (Monolith vs Crafty): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 163 of 600 (Coda-rewrite vs Rodent3)
+Terminating process of engine Coda-rewrite(294)
+Finished game 163 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 164 of 600 (Coda-cutfix vs Crafty)
+Finished game 150 (Monolith vs Rodent3): 1/2-1/2 {Draw by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 165 of 600 (Coda-rewrite vs Monolith)
+Terminating process of engine Coda-rewrite(298)
+Finished game 165 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 166 of 600 (Rodent3 vs Crafty)
+Finished game 160 (Rodent3 vs Monolith): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 167 of 600 (Coda-rewrite vs Crafty)
+Finished game 158 (Coda-cutfix vs Monolith): 1-0 {White wins by adjudication}
+Started game 168 of 600 (Monolith vs Coda-cutfix)
+Finished game 154 (Crafty vs Coda-cutfix): 0-1 {Black mates}
+Started game 169 of 600 (Coda-rewrite vs Coda-cutfix)
+Finished game 161 (Coda-cutfix vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 170 of 600 (Monolith vs Rodent3)
+Terminating process of engine Coda-rewrite(302)
+Finished game 167 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 171 of 600 (Rodent3 vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(304)
+Finished game 169 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 172 of 600 (Monolith vs Crafty)
+Finished game 156 (Crafty vs Rodent3): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 173 of 600 (Rodent3 vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(313)
+Finished game 173 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 174 of 600 (Crafty vs Coda-cutfix)
+Finished game 162 (Crafty vs Monolith): 1/2-1/2 {Draw by insufficient mating material}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 175 of 600 (Monolith vs Coda-rewrite)
+Finished game 168 (Monolith vs Coda-cutfix): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 176 of 600 (Crafty vs Rodent3)
+Terminating process of engine Coda-rewrite(317)
+Finished game 175 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 177 of 600 (Crafty vs Coda-rewrite)
+Finished game 170 (Monolith vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 178 of 600 (Coda-cutfix vs Monolith)
+Finished game 164 (Coda-cutfix vs Crafty): 1-0 {White mates}
+Terminating process of engine Coda-rewrite(321)
+Started game 179 of 600 (Coda-cutfix vs Coda-rewrite)
+Finished game 177 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 180 of 600 (Rodent3 vs Monolith)
+Finished game 171 (Rodent3 vs Coda-cutfix): 1-0 {White wins by adjudication}
+Started game 181 of 600 (Coda-cutfix vs Rodent3)
+Finished game 166 (Rodent3 vs Crafty): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 182 of 600 (Crafty vs Monolith)
+Terminating process of engine Coda-rewrite(325)
+Finished game 179 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 183 of 600 (Coda-rewrite vs Rodent3)
+Finished game 174 (Crafty vs Coda-cutfix): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 184 of 600 (Coda-cutfix vs Crafty)
+Terminating process of engine Coda-rewrite(330)
+Finished game 183 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 185 of 600 (Coda-rewrite vs Monolith)
+Finished game 172 (Monolith vs Crafty): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 186 of 600 (Rodent3 vs Crafty)
+Terminating process of engine Coda-rewrite(333)
+Finished game 185 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 187 of 600 (Coda-rewrite vs Crafty)
+Finished game 178 (Coda-cutfix vs Monolith): 0-1 {Black wins by adjudication}
+Started game 188 of 600 (Monolith vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(337)
+Finished game 187 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Started game 189 of 600 (Coda-rewrite vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(339)
+Finished game 189 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 190 of 600 (Monolith vs Rodent3)
+Warning: Illegal ponder move from Monolith: c6d4
+Warning: Illegal ponder move from Monolith: c6d4
+Finished game 180 (Rodent3 vs Monolith): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 191 of 600 (Rodent3 vs Coda-cutfix)
+Finished game 176 (Crafty vs Rodent3): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 192 of 600 (Monolith vs Crafty)
+Finished game 181 (Coda-cutfix vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 193 of 600 (Rodent3 vs Coda-rewrite)
+Finished game 188 (Monolith vs Coda-cutfix): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 194 of 600 (Crafty vs Coda-cutfix)
+Finished game 191 (Rodent3 vs Coda-cutfix): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 195 of 600 (Monolith vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(352)
+Finished game 195 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 196 of 600 (Crafty vs Rodent3)
+Finished game 184 (Coda-cutfix vs Crafty): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 197 of 600 (Crafty vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(348)
+Finished game 193 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 198 of 600 (Coda-cutfix vs Monolith)
+Terminating process of engine Coda-rewrite(356)
+Finished game 197 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Started game 199 of 600 (Coda-cutfix vs Coda-rewrite)
+Finished game 186 (Rodent3 vs Crafty): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 200 of 600 (Rodent3 vs Monolith)
+Warning: Illegal ponder move from Monolith: f5e5
+Warning: Illegal ponder move from Monolith: f5e5
+Finished game 190 (Monolith vs Rodent3): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 201 of 600 (Coda-cutfix vs Rodent3)
+Terminating process of engine Coda-rewrite(360)
+Finished game 199 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 202 of 600 (Crafty vs Monolith)
+Finished game 194 (Crafty vs Coda-cutfix): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 203 of 600 (Coda-rewrite vs Rodent3)
+Finished game 182 (Crafty vs Monolith): 1/2-1/2 {Draw by fifty moves rule}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 204 of 600 (Coda-cutfix vs Crafty)
+Finished game 192 (Monolith vs Crafty): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 205 of 600 (Coda-rewrite vs Monolith)
+Finished game 204 (Coda-cutfix vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 206 of 600 (Rodent3 vs Crafty)
+Terminating process of engine Coda-rewrite(367)
+Finished game 203 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 207 of 600 (Coda-rewrite vs Crafty)
+Terminating process of engine Coda-rewrite(375)
+Finished game 207 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   1 Monolith                      249      86      78   80.8%   17.9% 
+   2 Crafty                        111      77      81   65.4%    9.9% 
+   3 Rodent3                        67      73      79   59.5%   15.2% 
+   4 Coda-cutfix                   -26      75      80   46.3%    5.0% 
+   5 Coda-rewrite                 -inf     nan      82    0.0%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Monolith doesn't have option MoveOverhead
+Started game 208 of 600 (Monolith vs Coda-cutfix)
+Finished game 196 (Crafty vs Rodent3): 0-1 {Black mates}
+Started game 209 of 600 (Coda-rewrite vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(371)
+Finished game 205 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 210 of 600 (Monolith vs Rodent3)
+Finished game 200 (Rodent3 vs Monolith): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 211 of 600 (Rodent3 vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(379)
+Finished game 209 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 212 of 600 (Monolith vs Crafty)
+Finished game 198 (Coda-cutfix vs Monolith): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 213 of 600 (Rodent3 vs Coda-rewrite)
+Finished game 201 (Coda-cutfix vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 214 of 600 (Crafty vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(388)
+Finished game 213 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 215 of 600 (Monolith vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(392)
+Finished game 215 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 216 of 600 (Crafty vs Rodent3)
+Finished game 206 (Rodent3 vs Crafty): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 217 of 600 (Crafty vs Coda-rewrite)
+Finished game 202 (Crafty vs Monolith): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 218 of 600 (Coda-cutfix vs Monolith)
+Finished game 208 (Monolith vs Coda-cutfix): 1-0 {White wins by adjudication}
+Started game 219 of 600 (Coda-cutfix vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(396)
+Finished game 217 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 220 of 600 (Rodent3 vs Monolith)
+Terminating process of engine Coda-rewrite(400)
+Finished game 219 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 221 of 600 (Coda-cutfix vs Rodent3)
+Finished game 210 (Monolith vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 222 of 600 (Crafty vs Monolith)
+Finished game 211 (Rodent3 vs Coda-cutfix): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 223 of 600 (Coda-rewrite vs Rodent3)
+Finished game 214 (Crafty vs Coda-cutfix): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 224 of 600 (Coda-cutfix vs Crafty)
+Finished game 218 (Coda-cutfix vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 225 of 600 (Coda-rewrite vs Monolith)
+Terminating process of engine Coda-rewrite(407)
+Finished game 223 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 226 of 600 (Rodent3 vs Crafty)
+Finished game 220 (Rodent3 vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 227 of 600 (Coda-rewrite vs Crafty)
+Finished game 221 (Coda-cutfix vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 228 of 600 (Monolith vs Coda-cutfix)
+Finished game 212 (Monolith vs Crafty): 1/2-1/2 {Draw by 3-fold repetition}
+Terminating process of engine Coda-rewrite(410)
+Finished game 225 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 229 of 600 (Coda-rewrite vs Coda-cutfix)
+Warning: Monolith doesn't have option MoveOverhead
+Started game 230 of 600 (Monolith vs Rodent3)
+Terminating process of engine Coda-rewrite(418)
+Finished game 229 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 231 of 600 (Rodent3 vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(414)
+Finished game 227 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 232 of 600 (Monolith vs Crafty)
+Finished game 224 (Coda-cutfix vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 233 of 600 (Rodent3 vs Coda-rewrite)
+Finished game 222 (Crafty vs Monolith): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 234 of 600 (Crafty vs Coda-cutfix)
+Finished game 226 (Rodent3 vs Crafty): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 235 of 600 (Monolith vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(427)
+Finished game 233 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 236 of 600 (Crafty vs Rodent3)
+Finished game 216 (Crafty vs Rodent3): 1/2-1/2 {Draw by fifty moves rule}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 237 of 600 (Crafty vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(431)
+Finished game 235 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 238 of 600 (Coda-cutfix vs Monolith)
+Finished game 228 (Monolith vs Coda-cutfix): 0-1 {Black wins by adjudication}
+Started game 239 of 600 (Coda-cutfix vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(435)
+Finished game 237 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 240 of 600 (Rodent3 vs Monolith)
+Finished game 231 (Rodent3 vs Coda-cutfix): 0-1 {Black wins by adjudication}
+Started game 241 of 600 (Coda-cutfix vs Rodent3)
+Terminating process of engine Coda-rewrite(439)
+Finished game 239 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 242 of 600 (Crafty vs Monolith)
+Finished game 234 (Crafty vs Coda-cutfix): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 243 of 600 (Coda-rewrite vs Rodent3)
+Finished game 230 (Monolith vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 244 of 600 (Coda-cutfix vs Crafty)
+Finished game 238 (Coda-cutfix vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 245 of 600 (Coda-rewrite vs Monolith)
+Finished game 236 (Crafty vs Rodent3): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 246 of 600 (Rodent3 vs Crafty)
+Terminating process of engine Coda-rewrite(444)
+Finished game 243 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 247 of 600 (Coda-rewrite vs Crafty)
+Terminating process of engine Coda-rewrite(451)
+Finished game 247 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 248 of 600 (Monolith vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(448)
+Finished game 245 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Started game 249 of 600 (Coda-rewrite vs Coda-cutfix)
+Finished game 240 (Rodent3 vs Monolith): 1/2-1/2 {Draw by 3-fold repetition}
+Started game 250 of 600 (Monolith vs Rodent3)
+Finished game 241 (Coda-cutfix vs Rodent3): 1-0 {White wins by adjudication}
+Started game 251 of 600 (Rodent3 vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(455)
+Finished game 249 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 252 of 600 (Monolith vs Crafty)
+Finished game 244 (Coda-cutfix vs Crafty): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 253 of 600 (Rodent3 vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(460)
+Finished game 253 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 254 of 600 (Crafty vs Coda-cutfix)
+Finished game 232 (Monolith vs Crafty): 1/2-1/2 {Draw by insufficient mating material}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 255 of 600 (Monolith vs Coda-rewrite)
+Finished game 242 (Crafty vs Monolith): 1/2-1/2 {Draw by insufficient mating material}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 256 of 600 (Crafty vs Rodent3)
+Finished game 248 (Monolith vs Coda-cutfix): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 257 of 600 (Crafty vs Coda-rewrite)
+Finished game 246 (Rodent3 vs Crafty): 1-0 {White mates}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   1 Monolith                      239      74      99   79.8%   18.2% 
+   2 Crafty                        100      67     100   64.0%   12.0% 
+   3 Rodent3                        53      64     100   57.5%   15.0% 
+   4 Coda-cutfix                    -3      67     100   49.5%    5.0% 
+   5 Coda-rewrite                 -inf     nan     101    0.0%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Monolith doesn't have option MoveOverhead
+Started game 258 of 600 (Coda-cutfix vs Monolith)
+Terminating process of engine Coda-rewrite(464)
+Finished game 255 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Started game 259 of 600 (Coda-cutfix vs Coda-rewrite)
+Finished game 251 (Rodent3 vs Coda-cutfix): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 260 of 600 (Rodent3 vs Monolith)
+Terminating process of engine Coda-rewrite(472)
+Finished game 259 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 261 of 600 (Coda-cutfix vs Rodent3)
+Terminating process of engine Coda-rewrite(468)
+Finished game 257 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 262 of 600 (Crafty vs Monolith)
+Finished game 250 (Monolith vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 263 of 600 (Coda-rewrite vs Rodent3)
+Finished game 254 (Crafty vs Coda-cutfix): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 264 of 600 (Coda-cutfix vs Crafty)
+Finished game 252 (Monolith vs Crafty): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 265 of 600 (Coda-rewrite vs Monolith)
+Terminating process of engine Coda-rewrite(479)
+Finished game 263 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 266 of 600 (Rodent3 vs Crafty)
+Terminating process of engine Coda-rewrite(482)
+Finished game 265 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 267 of 600 (Coda-rewrite vs Crafty)
+Finished game 256 (Crafty vs Rodent3): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 268 of 600 (Monolith vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(486)
+Finished game 267 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Started game 269 of 600 (Coda-rewrite vs Coda-cutfix)
+Finished game 260 (Rodent3 vs Monolith): 0-1 {Black wins by adjudication}
+Started game 270 of 600 (Monolith vs Rodent3)
+Finished game 258 (Coda-cutfix vs Monolith): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 271 of 600 (Rodent3 vs Coda-cutfix)
+Finished game 264 (Coda-cutfix vs Crafty): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 272 of 600 (Monolith vs Crafty)
+Terminating process of engine Coda-rewrite(490)
+Finished game 269 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 273 of 600 (Rodent3 vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(497)
+Finished game 273 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 274 of 600 (Crafty vs Coda-cutfix)
+Finished game 268 (Monolith vs Coda-cutfix): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 275 of 600 (Monolith vs Coda-rewrite)
+Finished game 261 (Coda-cutfix vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 276 of 600 (Crafty vs Rodent3)
+Finished game 262 (Crafty vs Monolith): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 277 of 600 (Crafty vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(501)
+Finished game 275 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 278 of 600 (Coda-cutfix vs Monolith)
+Finished game 266 (Rodent3 vs Crafty): 0-1 {Black mates}
+Started game 279 of 600 (Coda-cutfix vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(505)
+Finished game 277 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 280 of 600 (Rodent3 vs Monolith)
+Finished game 271 (Rodent3 vs Coda-cutfix): 0-1 {Black wins by adjudication}
+Started game 281 of 600 (Coda-cutfix vs Rodent3)
+Terminating process of engine Coda-rewrite(509)
+Finished game 279 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 282 of 600 (Crafty vs Monolith)
+Finished game 270 (Monolith vs Rodent3): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 283 of 600 (Coda-rewrite vs Rodent3)
+Terminating process of engine Coda-rewrite(514)
+Finished game 283 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 284 of 600 (Coda-cutfix vs Crafty)
+Finished game 280 (Rodent3 vs Monolith): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 285 of 600 (Coda-rewrite vs Monolith)
+Finished game 272 (Monolith vs Crafty): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 286 of 600 (Rodent3 vs Crafty)
+Finished game 274 (Crafty vs Coda-cutfix): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 287 of 600 (Coda-rewrite vs Crafty)
+Finished game 276 (Crafty vs Rodent3): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 288 of 600 (Monolith vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(518)
+Finished game 285 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Started game 289 of 600 (Coda-rewrite vs Coda-cutfix)
+Finished game 281 (Coda-cutfix vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 290 of 600 (Monolith vs Rodent3)
+Terminating process of engine Coda-rewrite(526)
+Finished game 289 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 291 of 600 (Rodent3 vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(522)
+Finished game 287 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 292 of 600 (Monolith vs Crafty)
+Finished game 284 (Coda-cutfix vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 293 of 600 (Rodent3 vs Coda-rewrite)
+Finished game 278 (Coda-cutfix vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 294 of 600 (Crafty vs Coda-cutfix)
+Finished game 282 (Crafty vs Monolith): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 295 of 600 (Monolith vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(535)
+Finished game 293 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 296 of 600 (Crafty vs Rodent3)
+Finished game 291 (Rodent3 vs Coda-cutfix): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 297 of 600 (Crafty vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(539)
+Finished game 295 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 298 of 600 (Coda-cutfix vs Monolith)
+Finished game 288 (Monolith vs Coda-cutfix): 1-0 {White wins by adjudication}
+Started game 299 of 600 (Coda-cutfix vs Coda-rewrite)
+Finished game 290 (Monolith vs Rodent3): 1-0 {White wins by adjudication}
+Started game 300 of 600 (Rodent3 vs Monolith)
+Finished game 286 (Rodent3 vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 301 of 600 (Coda-cutfix vs Rodent3)
+Finished game 298 (Coda-cutfix vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 302 of 600 (Crafty vs Monolith)
+Terminating process of engine Coda-rewrite(547)
+Finished game 299 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Terminating process of engine Coda-rewrite(543)
+Warning: Rodent3 doesn't have option MoveOverhead
+Finished game 297 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Started game 303 of 600 (Coda-rewrite vs Rodent3)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 304 of 600 (Coda-cutfix vs Crafty)
+Finished game 294 (Crafty vs Coda-cutfix): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 305 of 600 (Coda-rewrite vs Monolith)
+Terminating process of engine Coda-rewrite(552)
+Finished game 303 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 306 of 600 (Rodent3 vs Crafty)
+Terminating process of engine Coda-rewrite(556)
+Finished game 305 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 307 of 600 (Coda-rewrite vs Crafty)
+Finished game 292 (Monolith vs Crafty): 0-1 {Black mates}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   1 Monolith                      228      68     120   78.8%   15.8% 
+   2 Crafty                        118      63     119   66.4%   10.1% 
+   3 Rodent3                        44      59     119   56.3%   13.4% 
+   4 Coda-cutfix                    -3      61     120   49.6%    4.2% 
+   5 Coda-rewrite                 -inf     nan     122    0.0%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Monolith doesn't have option MoveOverhead
+Started game 308 of 600 (Monolith vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(560)
+Finished game 307 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Finished game 296 (Crafty vs Rodent3): 1-0 {White mates}
+Started game 309 of 600 (Coda-rewrite vs Coda-cutfix)
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 310 of 600 (Monolith vs Rodent3)
+Finished game 301 (Coda-cutfix vs Rodent3): 0-1 {Black wins by adjudication}
+Started game 311 of 600 (Rodent3 vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(564)
+Finished game 309 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 312 of 600 (Monolith vs Crafty)
+Finished game 304 (Coda-cutfix vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 313 of 600 (Rodent3 vs Coda-rewrite)
+Finished game 300 (Rodent3 vs Monolith): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 314 of 600 (Crafty vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(571)
+Finished game 313 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 315 of 600 (Monolith vs Coda-rewrite)
+Finished game 308 (Monolith vs Coda-cutfix): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 316 of 600 (Crafty vs Rodent3)
+Terminating process of engine Coda-rewrite(575)
+Finished game 315 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 317 of 600 (Crafty vs Coda-rewrite)
+Finished game 306 (Rodent3 vs Crafty): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 318 of 600 (Coda-cutfix vs Monolith)
+Terminating process of engine Coda-rewrite(579)
+Finished game 317 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Started game 319 of 600 (Coda-cutfix vs Coda-rewrite)
+Warning: Illegal ponder move from Monolith: b1a2
+Finished game 302 (Crafty vs Monolith): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 320 of 600 (Rodent3 vs Monolith)
+Terminating process of engine Coda-rewrite(583)
+Finished game 319 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 321 of 600 (Coda-cutfix vs Rodent3)
+Finished game 310 (Monolith vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 322 of 600 (Crafty vs Monolith)
+Finished game 314 (Crafty vs Coda-cutfix): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 323 of 600 (Coda-rewrite vs Rodent3)
+Terminating process of engine Coda-rewrite(590)
+Finished game 323 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 324 of 600 (Coda-cutfix vs Crafty)
+Finished game 316 (Crafty vs Rodent3): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 325 of 600 (Coda-rewrite vs Monolith)
+Finished game 311 (Rodent3 vs Coda-cutfix): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 326 of 600 (Rodent3 vs Crafty)
+Finished game 318 (Coda-cutfix vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 327 of 600 (Coda-rewrite vs Crafty)
+Finished game 321 (Coda-cutfix vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 328 of 600 (Monolith vs Coda-cutfix)
+Finished game 312 (Monolith vs Crafty): 1-0 {White mates}
+Started game 329 of 600 (Coda-rewrite vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(594)
+Finished game 325 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 330 of 600 (Monolith vs Rodent3)
+Terminating process of engine Coda-rewrite(598)
+Finished game 327 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 331 of 600 (Rodent3 vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(602)
+Finished game 329 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 332 of 600 (Monolith vs Crafty)
+Finished game 322 (Crafty vs Monolith): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 333 of 600 (Rodent3 vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(611)
+Finished game 333 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 334 of 600 (Crafty vs Coda-cutfix)
+Finished game 320 (Rodent3 vs Monolith): 1/2-1/2 {Draw by insufficient mating material}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 335 of 600 (Monolith vs Coda-rewrite)
+Finished game 324 (Coda-cutfix vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 336 of 600 (Crafty vs Rodent3)
+Finished game 328 (Monolith vs Coda-cutfix): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 337 of 600 (Crafty vs Coda-rewrite)
+Finished game 326 (Rodent3 vs Crafty): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 338 of 600 (Coda-cutfix vs Monolith)
+Finished game 331 (Rodent3 vs Coda-cutfix): 1-0 {White wins by adjudication}
+Started game 339 of 600 (Coda-cutfix vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(619)
+Finished game 337 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 340 of 600 (Rodent3 vs Monolith)
+Terminating process of engine Coda-rewrite(615)
+Finished game 335 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 341 of 600 (Coda-cutfix vs Rodent3)
+Terminating process of engine Coda-rewrite(623)
+Finished game 339 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 342 of 600 (Crafty vs Monolith)
+Finished game 332 (Monolith vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 343 of 600 (Coda-rewrite vs Rodent3)
+Finished game 334 (Crafty vs Coda-cutfix): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 344 of 600 (Coda-cutfix vs Crafty)
+Warning: Illegal ponder move from Monolith: f6f7
+Warning: Illegal ponder move from Monolith: f6h6
+Finished game 338 (Coda-cutfix vs Monolith): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 345 of 600 (Coda-rewrite vs Monolith)
+Terminating process of engine Coda-rewrite(630)
+Finished game 343 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 346 of 600 (Rodent3 vs Crafty)
+Terminating process of engine Coda-rewrite(633)
+Finished game 345 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 347 of 600 (Coda-rewrite vs Crafty)
+Finished game 330 (Monolith vs Rodent3): 1/2-1/2 {Draw by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 348 of 600 (Monolith vs Coda-cutfix)
+Finished game 341 (Coda-cutfix vs Rodent3): 0-1 {Black wins by adjudication}
+Started game 349 of 600 (Coda-rewrite vs Coda-cutfix)
+Finished game 340 (Rodent3 vs Monolith): 1-0 {White wins by adjudication}
+Started game 350 of 600 (Monolith vs Rodent3)
+Finished game 336 (Crafty vs Rodent3): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 351 of 600 (Rodent3 vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(641)
+Finished game 349 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 352 of 600 (Monolith vs Crafty)
+Terminating process of engine Coda-rewrite(637)
+Finished game 347 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 353 of 600 (Rodent3 vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(648)
+Finished game 353 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 354 of 600 (Crafty vs Coda-cutfix)
+Finished game 346 (Rodent3 vs Crafty): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 355 of 600 (Monolith vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(652)
+Finished game 355 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 356 of 600 (Crafty vs Rodent3)
+Finished game 348 (Monolith vs Coda-cutfix): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 357 of 600 (Crafty vs Coda-rewrite)
+Finished game 344 (Coda-cutfix vs Crafty): 0-1 {Black mates}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   1 Monolith                      217      62     139   77.7%   15.8% 
+   2 Crafty                        122      58     139   66.9%   10.1% 
+   3 Rodent3                        58      55     140   58.2%   13.6% 
+   4 Coda-cutfix                   -12      57     140   48.2%    5.0% 
+   5 Coda-rewrite                 -inf     nan     142    0.0%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Monolith doesn't have option MoveOverhead
+Started game 358 of 600 (Coda-cutfix vs Monolith)
+Finished game 342 (Crafty vs Monolith): 1-0 {White mates}
+Started game 359 of 600 (Coda-cutfix vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(660)
+Finished game 359 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 360 of 600 (Rodent3 vs Monolith)
+Terminating process of engine Coda-rewrite(656)
+Finished game 357 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 361 of 600 (Coda-cutfix vs Rodent3)
+Finished game 350 (Monolith vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 362 of 600 (Crafty vs Monolith)
+Finished game 351 (Rodent3 vs Coda-cutfix): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 363 of 600 (Coda-rewrite vs Rodent3)
+Terminating process of engine Coda-rewrite(667)
+Finished game 363 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 364 of 600 (Coda-cutfix vs Crafty)
+Finished game 354 (Crafty vs Coda-cutfix): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 365 of 600 (Coda-rewrite vs Monolith)
+Finished game 361 (Coda-cutfix vs Rodent3): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 366 of 600 (Rodent3 vs Crafty)
+Finished game 352 (Monolith vs Crafty): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 367 of 600 (Coda-rewrite vs Crafty)
+Finished game 358 (Coda-cutfix vs Monolith): 1/2-1/2 {Draw by 3-fold repetition}
+Started game 368 of 600 (Monolith vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(671)
+Finished game 365 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Started game 369 of 600 (Coda-rewrite vs Coda-cutfix)
+Finished game 356 (Crafty vs Rodent3): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 370 of 600 (Monolith vs Rodent3)
+Terminating process of engine Coda-rewrite(677)
+Finished game 369 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 371 of 600 (Rodent3 vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(675)
+Finished game 367 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 372 of 600 (Monolith vs Crafty)
+Finished game 360 (Rodent3 vs Monolith): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Rodent3 doesn't have option MoveOverhead
+Finished game 364 (Coda-cutfix vs Crafty): 0-1 {Black mates}
+Started game 373 of 600 (Rodent3 vs Coda-rewrite)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 374 of 600 (Crafty vs Coda-cutfix)
+Finished game 362 (Crafty vs Monolith): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 375 of 600 (Monolith vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(689)
+Finished game 375 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 376 of 600 (Crafty vs Rodent3)
+Terminating process of engine Coda-rewrite(686)
+Finished game 373 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 377 of 600 (Crafty vs Coda-rewrite)
+Finished game 371 (Rodent3 vs Coda-cutfix): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 378 of 600 (Coda-cutfix vs Monolith)
+Terminating process of engine Coda-rewrite(693)
+Finished game 377 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Started game 379 of 600 (Coda-cutfix vs Coda-rewrite)
+Finished game 368 (Monolith vs Coda-cutfix): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 380 of 600 (Rodent3 vs Monolith)
+Finished game 366 (Rodent3 vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 381 of 600 (Coda-cutfix vs Rodent3)
+Finished game 370 (Monolith vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 382 of 600 (Crafty vs Monolith)
+Terminating process of engine Coda-rewrite(697)
+Finished game 379 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 383 of 600 (Coda-rewrite vs Rodent3)
+Terminating process of engine Coda-rewrite(704)
+Finished game 383 (Coda-rewrite vs Rodent3): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 384 of 600 (Coda-cutfix vs Crafty)
+Warning: Illegal ponder move from Monolith: c3e5
+Finished game 372 (Monolith vs Crafty): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 385 of 600 (Coda-rewrite vs Monolith)
+Finished game 374 (Crafty vs Coda-cutfix): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 386 of 600 (Rodent3 vs Crafty)
+Finished game 376 (Crafty vs Rodent3): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 387 of 600 (Coda-rewrite vs Crafty)
+Terminating process of engine Coda-rewrite(708)
+Finished game 385 (Coda-rewrite vs Monolith): 0-1 {White disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 388 of 600 (Monolith vs Coda-cutfix)
+Finished game 378 (Coda-cutfix vs Monolith): 0-1 {Black wins by adjudication}
+Started game 389 of 600 (Coda-rewrite vs Coda-cutfix)
+Finished game 380 (Rodent3 vs Monolith): 1/2-1/2 {Draw by 3-fold repetition}
+Started game 390 of 600 (Monolith vs Rodent3)
+Finished game 381 (Coda-cutfix vs Rodent3): 1/2-1/2 {Draw by 3-fold repetition}
+Started game 391 of 600 (Rodent3 vs Coda-cutfix)
+Terminating process of engine Coda-rewrite(712)
+Finished game 387 (Coda-rewrite vs Crafty): 0-1 {White disconnects}
+Warning: Monolith doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 392 of 600 (Monolith vs Crafty)
+Warning: Illegal ponder move from Monolith: h1h2
+Finished game 382 (Crafty vs Monolith): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 393 of 600 (Rodent3 vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(716)
+Finished game 389 (Coda-rewrite vs Coda-cutfix): 0-1 {White disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 394 of 600 (Crafty vs Coda-cutfix)
+Finished game 384 (Coda-cutfix vs Crafty): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 395 of 600 (Monolith vs Coda-rewrite)
+Finished game 390 (Monolith vs Rodent3): 1-0 {White wins by adjudication}
+Terminating process of engine Coda-rewrite(721)
+Finished game 393 (Rodent3 vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 396 of 600 (Crafty vs Rodent3)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 397 of 600 (Crafty vs Coda-rewrite)
+Finished game 388 (Monolith vs Coda-cutfix): 1-0 {White wins by adjudication}
+Started game 398 of 600 (Coda-cutfix vs Monolith)
+Finished game 386 (Rodent3 vs Crafty): 1-0 {White mates}
+Started game 399 of 600 (Coda-cutfix vs Coda-rewrite)
+Terminating process of engine Coda-rewrite(729)
+Finished game 397 (Crafty vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 400 of 600 (Rodent3 vs Monolith)
+Terminating process of engine Coda-rewrite(725)
+Finished game 395 (Monolith vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 401 of 600 (Coda-cutfix vs Rodent3)
+Terminating process of engine Coda-rewrite(731)
+Finished game 399 (Coda-cutfix vs Coda-rewrite): 1-0 {Black disconnects}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 402 of 600 (Crafty vs Monolith)
+Finished game 391 (Rodent3 vs Coda-cutfix): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 403 of 600 (Coda-rewrite vs Rodent3)
+Finished game 394 (Crafty vs Coda-cutfix): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 404 of 600 (Coda-cutfix vs Crafty)

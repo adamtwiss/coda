@@ -1,0 +1,571 @@
+Indexing opening suite...
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 4 of 150 (Crafty vs Coda-fix2-asp)
+Warning: Monolith doesn't have option MoveOverhead
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 3 of 150 (Coda-fix2-asp vs Rodent3)
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 5 of 150 (Monolith vs Coda-fix2-asp)
+Started game 9 of 150 (Coda-fix2-asp vs Rodent3)
+Warning: Monolith doesn't have option MoveOverhead
+Started game 1 of 150 (Coda-fix2-asp vs Crafty)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 10 of 150 (Crafty vs Coda-fix2-asp)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 13 of 150 (Coda-fix2-asp vs Crafty)
+Warning: Monolith doesn't have option MoveOverhead
+Started game 2 of 150 (Coda-fix2-asp vs Monolith)
+Started game 7 of 150 (Coda-fix2-asp vs Crafty)
+Started game 11 of 150 (Monolith vs Coda-fix2-asp)
+Started game 6 of 150 (Rodent3 vs Coda-fix2-asp)
+Started game 14 of 150 (Coda-fix2-asp vs Monolith)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 8 of 150 (Coda-fix2-asp vs Monolith)
+Started game 12 of 150 (Rodent3 vs Coda-fix2-asp)
+Started game 16 of 150 (Crafty vs Coda-fix2-asp)
+Started game 15 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 15 (Coda-fix2-asp vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 17 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 11 (Monolith vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 18 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 9 (Coda-fix2-asp vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 19 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 10 (Crafty vs Coda-fix2-asp): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 20 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 14 (Coda-fix2-asp vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 21 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 5 (Monolith vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Finished game 1 (Coda-fix2-asp vs Crafty): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 22 of 150 (Crafty vs Coda-fix2-asp)
+Warning: Monolith doesn't have option MoveOverhead
+Started game 23 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 6 (Rodent3 vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Started game 24 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 3 (Coda-fix2-asp vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 25 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 2 (Coda-fix2-asp vs Monolith): 0-1 {Black wins by adjudication}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-fix2-asp                -241     nan      10   20.0%    0.0% 
+   1 Monolith                      inf     nan       4  100.0%    0.0% 
+   2 Rodent3                       191     nan       4   75.0%    0.0% 
+   3 Crafty                          0     nan       2   50.0%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Started game 26 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 8 (Coda-fix2-asp vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 27 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 16 (Crafty vs Coda-fix2-asp): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 28 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 12 (Rodent3 vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Finished game 4 (Crafty vs Coda-fix2-asp): 0-1 {Black mates}
+Started game 29 of 150 (Monolith vs Coda-fix2-asp)
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 30 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 7 (Coda-fix2-asp vs Crafty): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 31 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 18 (Rodent3 vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 32 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 13 (Coda-fix2-asp vs Crafty): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 33 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 21 (Coda-fix2-asp vs Rodent3): 1-0 {White wins by adjudication}
+Finished game 24 (Rodent3 vs Coda-fix2-asp): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 34 of 150 (Crafty vs Coda-fix2-asp)
+Warning: Monolith doesn't have option MoveOverhead
+Finished game 27 (Coda-fix2-asp vs Rodent3): 1/2-1/2 {Draw by 3-fold repetition}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-fix2-asp                 -89     155      20   37.5%   15.0% 
+   1 Monolith                      inf     nan       5  100.0%    0.0% 
+   2 Rodent3                       120     264       9   66.7%   22.2% 
+   3 Crafty                       -191     nan       6   25.0%   16.7% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Started game 36 of 150 (Rodent3 vs Coda-fix2-asp)
+Started game 35 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 26 (Coda-fix2-asp vs Monolith): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 37 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 17 (Monolith vs Coda-fix2-asp): 1/2-1/2 {Draw by 3-fold repetition}
+Started game 38 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 28 (Crafty vs Coda-fix2-asp): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 39 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 33 (Coda-fix2-asp vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 40 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 20 (Coda-fix2-asp vs Monolith): 0-1 {Black wins by adjudication}
+Started game 41 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 25 (Coda-fix2-asp vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 42 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 31 (Coda-fix2-asp vs Crafty): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 43 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 29 (Monolith vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Started game 44 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 22 (Crafty vs Coda-fix2-asp): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Finished game 30 (Rodent3 vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-fix2-asp                 -47     121      30   43.3%   13.3% 
+   1 Monolith                      166     453       9   72.2%   11.1% 
+   2 Rodent3                        32     209      11   54.5%   18.2% 
+   3 Crafty                        -35     237      10   45.0%   10.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Crafty doesn't have option MoveOverhead
+Started game 45 of 150 (Coda-fix2-asp vs Rodent3)
+Started game 46 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 23 (Monolith vs Coda-fix2-asp): 1/2-1/2 {Draw by 3-fold repetition}
+Started game 47 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 32 (Coda-fix2-asp vs Monolith): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 48 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 19 (Coda-fix2-asp vs Crafty): 1/2-1/2 {Draw by fifty moves rule}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 49 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 42 (Rodent3 vs Coda-fix2-asp): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 50 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 38 (Coda-fix2-asp vs Monolith): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 51 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 35 (Monolith vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 52 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 41 (Monolith vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Started game 53 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 40 (Crafty vs Coda-fix2-asp): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 54 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 36 (Rodent3 vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 55 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 43 (Coda-fix2-asp vs Crafty): 1-0 {White mates}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-fix2-asp                  -9     100      40   48.8%   17.5% 
+   1 Monolith                       50     187      14   57.1%   14.3% 
+   2 Rodent3                         0     180      13   50.0%   23.1% 
+   3 Crafty                        -27     192      13   46.2%   15.4% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Monolith doesn't have option MoveOverhead
+Started game 56 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 37 (Coda-fix2-asp vs Crafty): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 57 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 39 (Coda-fix2-asp vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 58 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 34 (Crafty vs Coda-fix2-asp): 1/2-1/2 {Draw by insufficient mating material}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 59 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 45 (Coda-fix2-asp vs Rodent3): 1-0 {White wins by adjudication}
+Started game 60 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 46 (Crafty vs Coda-fix2-asp): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 61 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 57 (Coda-fix2-asp vs Rodent3): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 62 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 51 (Coda-fix2-asp vs Rodent3): 0-1 {Black wins by adjudication}
+Started game 63 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 48 (Rodent3 vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 64 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 52 (Crafty vs Coda-fix2-asp): 0-1 {Black mates}
+Finished game 44 (Coda-fix2-asp vs Monolith): 1-0 {White wins by adjudication}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-fix2-asp                  14      88      50   52.0%   20.0% 
+   1 Monolith                       23     178      15   53.3%   13.3% 
+   2 Crafty                        -20     154      17   47.1%   23.5% 
+   3 Rodent3                       -39     151      18   44.4%   22.2% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 66 of 150 (Rodent3 vs Coda-fix2-asp)
+Started game 65 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 47 (Monolith vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 67 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 50 (Coda-fix2-asp vs Monolith): 0-1 {Black wins by adjudication}
+Started game 68 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 49 (Coda-fix2-asp vs Crafty): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 69 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 55 (Coda-fix2-asp vs Crafty): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 70 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 54 (Rodent3 vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 71 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 60 (Rodent3 vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Started game 72 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 63 (Coda-fix2-asp vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 73 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 62 (Coda-fix2-asp vs Monolith): 0-1 {Black wins by adjudication}
+Started game 74 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 53 (Monolith vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 75 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 56 (Coda-fix2-asp vs Monolith): 1/2-1/2 {Draw by adjudication}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-fix2-asp                  17      81      60   52.5%   18.3% 
+   1 Monolith                       17     149      20   52.5%   15.0% 
+   2 Crafty                        -18     147      19   47.4%   21.1% 
+   3 Rodent3                       -50     143      21   42.9%   19.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Crafty doesn't have option MoveOverhead
+Started game 76 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 59 (Monolith vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Started game 77 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 66 (Rodent3 vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Started game 78 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 61 (Coda-fix2-asp vs Crafty): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 79 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 65 (Monolith vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Started game 80 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 67 (Coda-fix2-asp vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 81 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 69 (Coda-fix2-asp vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 82 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 68 (Coda-fix2-asp vs Monolith): 1-0 {White wins by adjudication}
+Started game 83 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 64 (Crafty vs Coda-fix2-asp): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 84 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 58 (Crafty vs Coda-fix2-asp): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 85 of 150 (Coda-fix2-asp vs Crafty)
+Warning: Illegal ponder move from Monolith: a2b3
+Warning: Illegal ponder move from Monolith: a2b3
+Finished game 74 (Coda-fix2-asp vs Monolith): 1/2-1/2 {Draw by 3-fold repetition}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-fix2-asp                  40      76      70   55.7%   17.1% 
+   1 Monolith                        0     133      24   50.0%   16.7% 
+   2 Crafty                        -46     137      23   43.5%   17.4% 
+   3 Rodent3                       -77     139      23   39.1%   17.4% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Started game 86 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 71 (Monolith vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 87 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 75 (Coda-fix2-asp vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 88 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 70 (Crafty vs Coda-fix2-asp): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 89 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 76 (Crafty vs Coda-fix2-asp): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 90 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 77 (Monolith vs Coda-fix2-asp): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 91 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 80 (Coda-fix2-asp vs Monolith): 1-0 {White wins by adjudication}
+Started game 92 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 84 (Rodent3 vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Started game 93 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 81 (Coda-fix2-asp vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 94 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 83 (Monolith vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Started game 95 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 73 (Coda-fix2-asp vs Crafty): 1/2-1/2 {Draw by fifty moves rule}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-fix2-asp                  35      70      80   55.0%   17.5% 
+   1 Rodent3                       -27     129      26   46.2%   15.4% 
+   2 Monolith                      -37     122      28   44.6%   17.9% 
+   3 Crafty                        -40     126      26   44.2%   19.2% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 96 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 78 (Rodent3 vs Coda-fix2-asp): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 97 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 82 (Crafty vs Coda-fix2-asp): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 98 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 72 (Rodent3 vs Coda-fix2-asp): 1/2-1/2 {Draw by fifty moves rule}
+Started game 99 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 87 (Coda-fix2-asp vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 100 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 79 (Coda-fix2-asp vs Crafty): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 101 of 150 (Monolith vs Coda-fix2-asp)
+Terminating process of engine Coda-fix2-asp(95)
+Finished game 85 (Coda-fix2-asp vs Crafty): 0-1 {White disconnects}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 102 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 86 (Coda-fix2-asp vs Monolith): 1/2-1/2 {Draw by stalemate}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 103 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 88 (Crafty vs Coda-fix2-asp): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 104 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 89 (Monolith vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 105 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 93 (Coda-fix2-asp vs Rodent3): 1-0 {White wins by adjudication}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-fix2-asp                  27      65      90   53.9%   18.9% 
+   1 Crafty                        -12     118      30   48.3%   16.7% 
+   2 Rodent3                       -23     115      30   46.7%   20.0% 
+   3 Monolith                      -47     116      30   43.3%   20.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Crafty doesn't have option MoveOverhead
+Started game 106 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 90 (Rodent3 vs Coda-fix2-asp): 1/2-1/2 {Draw by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 107 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 91 (Coda-fix2-asp vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 108 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 100 (Crafty vs Coda-fix2-asp): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 109 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 96 (Rodent3 vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 110 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 97 (Coda-fix2-asp vs Crafty): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Finished game 95 (Monolith vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Started game 111 of 150 (Coda-fix2-asp vs Rodent3)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 112 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 102 (Rodent3 vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 113 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 99 (Coda-fix2-asp vs Rodent3): 0-1 {Black wins by adjudication}
+Started game 114 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 92 (Coda-fix2-asp vs Monolith): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 115 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 94 (Crafty vs Coda-fix2-asp): 0-1 {Black mates}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-fix2-asp                  21      62     100   53.0%   18.0% 
+   1 Rodent3                        10     107      34   51.5%   20.6% 
+   2 Crafty                        -10     111      34   48.5%   14.7% 
+   3 Monolith                      -66     114      32   40.6%   18.8% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Monolith doesn't have option MoveOverhead
+Started game 116 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 98 (Coda-fix2-asp vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 117 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 108 (Rodent3 vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 118 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 107 (Monolith vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Started game 119 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 105 (Coda-fix2-asp vs Rodent3): 1-0 {White wins by adjudication}
+Started game 120 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 103 (Coda-fix2-asp vs Crafty): 1-0 {White mates}
+Finished game 117 (Coda-fix2-asp vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 121 of 150 (Coda-fix2-asp vs Crafty)
+Warning: Monolith doesn't have option MoveOverhead
+Started game 122 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 106 (Crafty vs Coda-fix2-asp): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Finished game 116 (Coda-fix2-asp vs Monolith): 0-1 {Black wins by adjudication}
+Started game 123 of 150 (Coda-fix2-asp vs Rodent3)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 124 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 101 (Monolith vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Started game 125 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 104 (Coda-fix2-asp vs Monolith): 1-0 {White wins by adjudication}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-fix2-asp                  25      60     110   53.6%   16.4% 
+   1 Rodent3                        19     104      37   52.7%   18.9% 
+   2 Crafty                        -29     109      36   45.8%   13.9% 
+   3 Monolith                      -67     108      37   40.5%   16.2% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 126 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 109 (Coda-fix2-asp vs Crafty): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 127 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 114 (Rodent3 vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 128 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 112 (Crafty vs Coda-fix2-asp): 0-1 {Black mates}
+Finished game 110 (Coda-fix2-asp vs Monolith): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 129 of 150 (Coda-fix2-asp vs Rodent3)
+Started game 130 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 113 (Monolith vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Started game 131 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 125 (Monolith vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 132 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 121 (Coda-fix2-asp vs Crafty): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 133 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 118 (Crafty vs Coda-fix2-asp): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 134 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 120 (Rodent3 vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Started game 135 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 122 (Coda-fix2-asp vs Monolith): 1-0 {White wins by adjudication}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-fix2-asp                  29      58     120   54.2%   15.0% 
+   1 Rodent3                        18     102      39   52.6%   17.9% 
+   2 Crafty                        -44     104      40   43.8%   12.5% 
+   3 Monolith                      -60     102      41   41.5%   14.6% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Crafty doesn't have option MoveOverhead
+Started game 136 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 128 (Coda-fix2-asp vs Monolith): 0-1 {Black wins by adjudication}
+Started game 137 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 124 (Crafty vs Coda-fix2-asp): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 138 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 130 (Crafty vs Coda-fix2-asp): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 139 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 123 (Coda-fix2-asp vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 140 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 119 (Monolith vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 141 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 126 (Rodent3 vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 142 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 127 (Coda-fix2-asp vs Crafty): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 143 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 111 (Coda-fix2-asp vs Rodent3): 1/2-1/2 {Draw by fifty moves rule}
+Started game 144 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 129 (Coda-fix2-asp vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 145 of 150 (Coda-fix2-asp vs Crafty)
+Finished game 132 (Rodent3 vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-fix2-asp                  32      56     130   54.6%   15.4% 
+   1 Rodent3                         0      95      44   50.0%   18.2% 
+   2 Crafty                        -41      99      43   44.2%   14.0% 
+   3 Monolith                      -57     100      43   41.9%   14.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Monolith doesn't have option MoveOverhead
+Started game 146 of 150 (Coda-fix2-asp vs Monolith)
+Finished game 115 (Coda-fix2-asp vs Crafty): 1/2-1/2 {Draw by fifty moves rule}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 147 of 150 (Coda-fix2-asp vs Rodent3)
+Finished game 131 (Monolith vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 148 of 150 (Crafty vs Coda-fix2-asp)
+Finished game 133 (Coda-fix2-asp vs Crafty): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 149 of 150 (Monolith vs Coda-fix2-asp)
+Finished game 143 (Monolith vs Coda-fix2-asp): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 150 of 150 (Rodent3 vs Coda-fix2-asp)
+Finished game 135 (Coda-fix2-asp vs Rodent3): 0-1 {Black wins by adjudication}
+Finished game 141 (Coda-fix2-asp vs Rodent3): 1-0 {White wins by adjudication}
+Finished game 144 (Rodent3 vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Finished game 139 (Coda-fix2-asp vs Crafty): 0-1 {Black mates}
+Finished game 137 (Monolith vs Coda-fix2-asp): 0-1 {Black wins by adjudication}
+Finished game 138 (Rodent3 vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-fix2-asp                  30      53     140   54.3%   15.7% 
+   1 Rodent3                         0      92      48   50.0%   16.7% 
+   2 Crafty                        -23      95      46   46.7%   15.2% 
+   3 Monolith                      -69      96      46   40.2%   15.2% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Finished game 146 (Coda-fix2-asp vs Monolith): 0-1 {Black wins by adjudication}
+Finished game 142 (Crafty vs Coda-fix2-asp): 1-0 {White mates}
+Finished game 140 (Coda-fix2-asp vs Monolith): 0-1 {Black wins by adjudication}
+Finished game 134 (Coda-fix2-asp vs Monolith): 1/2-1/2 {Draw by adjudication}
+Finished game 147 (Coda-fix2-asp vs Rodent3): 0-1 {Black wins by adjudication}
+Finished game 149 (Monolith vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Finished game 145 (Coda-fix2-asp vs Crafty): 1-0 {White mates}
+Finished game 150 (Rodent3 vs Coda-fix2-asp): 1-0 {White wins by adjudication}
+Finished game 136 (Crafty vs Coda-fix2-asp): 1/2-1/2 {Draw by fifty moves rule}
+Finished game 148 (Crafty vs Coda-fix2-asp): 1/2-1/2 {Draw by 3-fold repetition}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-fix2-asp                  16      51     150   52.3%   16.7% 
+   1 Rodent3                        14      90      50   52.0%   16.0% 
+   2 Crafty                        -21      89      50   47.0%   18.0% 
+   3 Monolith                      -42      91      50   44.0%   16.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+
+Player: Coda-fix2-asp
+   "Draw by 3-fold repetition": 14
+   "Draw by adjudication": 3
+   "Draw by fifty moves rule": 6
+   "Draw by insufficient mating material": 1
+   "Draw by stalemate": 1
+   "Loss: Black mates": 7
+   "Loss: Black wins by adjudication": 22
+   "Loss: White disconnects": 1
+   "Loss: White mates": 11
+   "Loss: White wins by adjudication": 18
+   "Win: Black mates": 10
+   "Win: Black wins by adjudication": 23
+   "Win: White mates": 12
+   "Win: White wins by adjudication": 21
+Player: Crafty
+   "Draw by 3-fold repetition": 4
+   "Draw by fifty moves rule": 4
+   "Draw by insufficient mating material": 1
+   "Loss: Black mates": 10
+   "Loss: White mates": 12
+   "Win: Black mates": 7
+   "Win: White disconnects": 1
+   "Win: White mates": 11
+Player: Monolith
+   "Draw by 3-fold repetition": 5
+   "Draw by adjudication": 2
+   "Draw by stalemate": 1
+   "Loss: Black wins by adjudication": 14
+   "Loss: White wins by adjudication": 10
+   "Win: Black wins by adjudication": 11
+   "Win: White wins by adjudication": 7
+Player: Rodent3
+   "Draw by 3-fold repetition": 5
+   "Draw by adjudication": 1
+   "Draw by fifty moves rule": 2
+   "Loss: Black wins by adjudication": 9
+   "Loss: White wins by adjudication": 11
+   "Win: Black wins by adjudication": 11
+   "Win: White wins by adjudication": 11
+Finished match

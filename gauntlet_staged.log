@@ -1,0 +1,588 @@
+Indexing opening suite...
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 3 of 150 (Coda-staged vs Rodent3)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 4 of 150 (Crafty vs Coda-staged)
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Warning: Crafty doesn't have option MoveOverhead
+Started game 7 of 150 (Coda-staged vs Crafty)
+Started game 2 of 150 (Coda-staged vs Monolith)
+Warning: Monolith doesn't have option MoveOverhead
+Started game 6 of 150 (Rodent3 vs Coda-staged)
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 10 of 150 (Crafty vs Coda-staged)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 9 of 150 (Coda-staged vs Rodent3)
+Warning: Monolith doesn't have option MoveOverhead
+Started game 1 of 150 (Coda-staged vs Crafty)
+Started game 5 of 150 (Monolith vs Coda-staged)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 11 of 150 (Monolith vs Coda-staged)
+Started game 12 of 150 (Rodent3 vs Coda-staged)
+Started game 8 of 150 (Coda-staged vs Monolith)
+Started game 15 of 150 (Coda-staged vs Rodent3)
+Warning: Monolith doesn't have option MoveOverhead
+Started game 13 of 150 (Coda-staged vs Crafty)
+Started game 14 of 150 (Coda-staged vs Monolith)
+Started game 16 of 150 (Crafty vs Coda-staged)
+Finished game 12 (Rodent3 vs Coda-staged): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 17 of 150 (Monolith vs Coda-staged)
+Finished game 10 (Crafty vs Coda-staged): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 18 of 150 (Rodent3 vs Coda-staged)
+Finished game 13 (Coda-staged vs Crafty): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 19 of 150 (Coda-staged vs Crafty)
+Finished game 9 (Coda-staged vs Rodent3): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 20 of 150 (Coda-staged vs Monolith)
+Warning: Illegal ponder move from Monolith: c3c4
+Finished game 2 (Coda-staged vs Monolith): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 21 of 150 (Coda-staged vs Rodent3)
+Finished game 3 (Coda-staged vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 22 of 150 (Crafty vs Coda-staged)
+Warning: Illegal ponder move from Monolith: c5c4
+Finished game 17 (Monolith vs Coda-staged): 1-0 {White mates}
+Started game 23 of 150 (Monolith vs Coda-staged)
+Finished game 16 (Crafty vs Coda-staged): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 24 of 150 (Rodent3 vs Coda-staged)
+Finished game 15 (Coda-staged vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 25 of 150 (Coda-staged vs Crafty)
+Finished game 4 (Crafty vs Coda-staged): 1-0 {White mates}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-staged                  -382     nan      10   10.0%    0.0% 
+   1 Monolith                      inf     nan       2  100.0%    0.0% 
+   2 Crafty                        inf     nan       4  100.0%    0.0% 
+   3 Rodent3                       191     nan       4   75.0%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Monolith doesn't have option MoveOverhead
+Started game 26 of 150 (Coda-staged vs Monolith)
+Warning: Illegal ponder move from Monolith: f7e8
+Finished game 11 (Monolith vs Coda-staged): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 27 of 150 (Coda-staged vs Rodent3)
+Finished game 6 (Rodent3 vs Coda-staged): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 28 of 150 (Crafty vs Coda-staged)
+Finished game 7 (Coda-staged vs Crafty): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 29 of 150 (Monolith vs Coda-staged)
+Finished game 5 (Monolith vs Coda-staged): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 30 of 150 (Rodent3 vs Coda-staged)
+Finished game 8 (Coda-staged vs Monolith): 1/2-1/2 {Draw by 3-fold repetition}
+Finished game 1 (Coda-staged vs Crafty): 1-0 {White mates}
+Started game 32 of 150 (Coda-staged vs Monolith)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 31 of 150 (Coda-staged vs Crafty)
+Finished game 14 (Coda-staged vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 33 of 150 (Coda-staged vs Rodent3)
+Finished game 28 (Crafty vs Coda-staged): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 34 of 150 (Crafty vs Coda-staged)
+Finished game 18 (Rodent3 vs Coda-staged): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 35 of 150 (Monolith vs Coda-staged)
+Finished game 19 (Coda-staged vs Crafty): 0-1 {Black mates}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-staged                  -241     228      20   20.0%   10.0% 
+   1 Rodent3                       280     nan       6   83.3%    0.0% 
+   2 Monolith                      280     nan       6   83.3%   33.3% 
+   3 Crafty                        191     nan       8   75.0%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Rodent3 doesn't have option MoveOverhead
+Finished game 23 (Monolith vs Coda-staged): 1-0 {White wins by adjudication}
+Started game 36 of 150 (Rodent3 vs Coda-staged)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 37 of 150 (Coda-staged vs Crafty)
+Finished game 24 (Rodent3 vs Coda-staged): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 38 of 150 (Coda-staged vs Monolith)
+Finished game 22 (Crafty vs Coda-staged): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 39 of 150 (Coda-staged vs Rodent3)
+Finished game 20 (Coda-staged vs Monolith): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 40 of 150 (Crafty vs Coda-staged)
+Finished game 25 (Coda-staged vs Crafty): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 41 of 150 (Monolith vs Coda-staged)
+Finished game 38 (Coda-staged vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 42 of 150 (Rodent3 vs Coda-staged)
+Finished game 26 (Coda-staged vs Monolith): 0-1 {Black wins by adjudication}
+Finished game 21 (Coda-staged vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Monolith doesn't have option MoveOverhead
+Started game 43 of 150 (Coda-staged vs Crafty)
+Started game 44 of 150 (Coda-staged vs Monolith)
+Finished game 27 (Coda-staged vs Rodent3): 1-0 {White wins by adjudication}
+Started game 45 of 150 (Coda-staged vs Rodent3)
+Finished game 34 (Crafty vs Coda-staged): 1-0 {White mates}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-staged                  -176     148      30   26.7%    6.7% 
+   1 Monolith                      241     nan      10   80.0%   20.0% 
+   2 Rodent3                       218     nan       9   77.8%    0.0% 
+   3 Crafty                         97     265      11   63.6%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Crafty doesn't have option MoveOverhead
+Started game 46 of 150 (Crafty vs Coda-staged)
+Finished game 33 (Coda-staged vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 47 of 150 (Monolith vs Coda-staged)
+Finished game 29 (Monolith vs Coda-staged): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Finished game 35 (Monolith vs Coda-staged): 1-0 {White mates}
+Started game 48 of 150 (Rodent3 vs Coda-staged)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 49 of 150 (Coda-staged vs Crafty)
+Finished game 30 (Rodent3 vs Coda-staged): 0-1 {Black wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 50 of 150 (Coda-staged vs Monolith)
+Finished game 31 (Coda-staged vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 51 of 150 (Coda-staged vs Rodent3)
+Finished game 42 (Rodent3 vs Coda-staged): 1-0 {White mates}
+Finished game 39 (Coda-staged vs Rodent3): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 52 of 150 (Crafty vs Coda-staged)
+Warning: Monolith doesn't have option MoveOverhead
+Started game 53 of 150 (Monolith vs Coda-staged)
+Finished game 41 (Monolith vs Coda-staged): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 54 of 150 (Rodent3 vs Coda-staged)
+Finished game 37 (Coda-staged vs Crafty): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 55 of 150 (Coda-staged vs Crafty)
+Finished game 36 (Rodent3 vs Coda-staged): 1-0 {White mates}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-staged                  -147     121      40   30.0%    5.0% 
+   1 Monolith                      209     284      13   76.9%   15.4% 
+   2 Rodent3                       159     264      14   71.4%    0.0% 
+   3 Crafty                         82     226      13   61.5%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Monolith doesn't have option MoveOverhead
+Started game 56 of 150 (Coda-staged vs Monolith)
+Finished game 45 (Coda-staged vs Rodent3): 0-1 {Black mates}
+Started game 57 of 150 (Coda-staged vs Rodent3)
+Warning: Illegal ponder move from Monolith: h2g3
+Finished game 44 (Coda-staged vs Monolith): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 58 of 150 (Crafty vs Coda-staged)
+Finished game 50 (Coda-staged vs Monolith): 0-1 {Black wins by adjudication}
+Started game 59 of 150 (Monolith vs Coda-staged)
+Finished game 32 (Coda-staged vs Monolith): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 60 of 150 (Rodent3 vs Coda-staged)
+Finished game 40 (Crafty vs Coda-staged): 1-0 {White mates}
+Finished game 47 (Monolith vs Coda-staged): 1-0 {White wins by adjudication}
+Started game 62 of 150 (Coda-staged vs Monolith)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 61 of 150 (Coda-staged vs Crafty)
+Finished game 43 (Coda-staged vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 63 of 150 (Coda-staged vs Rodent3)
+Finished game 46 (Crafty vs Coda-staged): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 64 of 150 (Crafty vs Coda-staged)
+Finished game 51 (Coda-staged vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 65 of 150 (Monolith vs Coda-staged)
+Warning: Illegal ponder move from Monolith: f6e5
+Finished game 53 (Monolith vs Coda-staged): 1-0 {White mates}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-staged                  -147     107      50   30.0%    4.0% 
+   1 Monolith                      218     226      18   77.8%   11.1% 
+   2 Rodent3                       137     219      16   68.8%    0.0% 
+   3 Crafty                         89     199      16   62.5%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Rodent3 doesn't have option MoveOverhead
+Finished game 48 (Rodent3 vs Coda-staged): 1-0 {White wins by adjudication}
+Started game 66 of 150 (Rodent3 vs Coda-staged)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 67 of 150 (Coda-staged vs Crafty)
+Finished game 52 (Crafty vs Coda-staged): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 68 of 150 (Coda-staged vs Monolith)
+Finished game 55 (Coda-staged vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 69 of 150 (Coda-staged vs Rodent3)
+Finished game 60 (Rodent3 vs Coda-staged): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 70 of 150 (Crafty vs Coda-staged)
+Finished game 66 (Rodent3 vs Coda-staged): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 71 of 150 (Monolith vs Coda-staged)
+Finished game 49 (Coda-staged vs Crafty): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 72 of 150 (Rodent3 vs Coda-staged)
+Finished game 56 (Coda-staged vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 73 of 150 (Coda-staged vs Crafty)
+Finished game 57 (Coda-staged vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 74 of 150 (Coda-staged vs Monolith)
+Warning: Illegal ponder move from Monolith: h2g2
+Finished game 62 (Coda-staged vs Monolith): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Finished game 54 (Rodent3 vs Coda-staged): 1-0 {White wins by adjudication}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-staged                  -161     100      60   28.3%    3.3% 
+   1 Monolith                      241     228      20   80.0%   10.0% 
+   2 Rodent3                       159     191      21   71.4%    0.0% 
+   3 Crafty                         94     179      19   63.2%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Started game 75 of 150 (Coda-staged vs Rodent3)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 76 of 150 (Crafty vs Coda-staged)
+Finished game 68 (Coda-staged vs Monolith): 0-1 {Black mates}
+Started game 77 of 150 (Monolith vs Coda-staged)
+Finished game 58 (Crafty vs Coda-staged): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 78 of 150 (Rodent3 vs Coda-staged)
+Finished game 59 (Monolith vs Coda-staged): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Finished game 69 (Coda-staged vs Rodent3): 0-1 {Black mates}
+Started game 79 of 150 (Coda-staged vs Crafty)
+Warning: Monolith doesn't have option MoveOverhead
+Started game 80 of 150 (Coda-staged vs Monolith)
+Finished game 64 (Crafty vs Coda-staged): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 81 of 150 (Coda-staged vs Rodent3)
+Finished game 67 (Coda-staged vs Crafty): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 82 of 150 (Crafty vs Coda-staged)
+Finished game 63 (Coda-staged vs Rodent3): 0-1 {Black wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 83 of 150 (Monolith vs Coda-staged)
+Finished game 61 (Coda-staged vs Crafty): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 84 of 150 (Rodent3 vs Coda-staged)
+Finished game 77 (Monolith vs Coda-staged): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 85 of 150 (Coda-staged vs Crafty)
+Finished game 76 (Crafty vs Coda-staged): 1-0 {White mates}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-staged                  -184      95      70   25.7%    2.9% 
+   1 Monolith                      271     231      23   82.6%    8.7% 
+   2 Rodent3                       181     189      23   73.9%    0.0% 
+   3 Crafty                        120     162      24   66.7%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Monolith doesn't have option MoveOverhead
+Started game 86 of 150 (Coda-staged vs Monolith)
+Finished game 82 (Crafty vs Coda-staged): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 87 of 150 (Coda-staged vs Rodent3)
+Finished game 65 (Monolith vs Coda-staged): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 88 of 150 (Crafty vs Coda-staged)
+Finished game 70 (Crafty vs Coda-staged): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 89 of 150 (Monolith vs Coda-staged)
+Finished game 72 (Rodent3 vs Coda-staged): 0-1 {Black wins by adjudication}
+Started game 90 of 150 (Rodent3 vs Coda-staged)
+Finished game 71 (Monolith vs Coda-staged): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 91 of 150 (Coda-staged vs Crafty)
+Finished game 73 (Coda-staged vs Crafty): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 92 of 150 (Coda-staged vs Monolith)
+Finished game 80 (Coda-staged vs Monolith): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 93 of 150 (Coda-staged vs Rodent3)
+Finished game 84 (Rodent3 vs Coda-staged): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Finished game 75 (Coda-staged vs Rodent3): 0-1 {Black mates}
+Started game 94 of 150 (Crafty vs Coda-staged)
+Warning: Monolith doesn't have option MoveOverhead
+Started game 95 of 150 (Monolith vs Coda-staged)
+Warning: Illegal ponder move from Monolith: c6d6
+Warning: Illegal ponder move from Monolith: e2e3
+Finished game 74 (Coda-staged vs Monolith): 1/2-1/2 {Draw by 3-fold repetition}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-staged                  -163      85      80   28.1%    3.8% 
+   1 Monolith                      280     197      27   83.3%   11.1% 
+   2 Rodent3                       141     159      26   69.2%    0.0% 
+   3 Crafty                         92     145      27   63.0%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 96 of 150 (Rodent3 vs Coda-staged)
+Finished game 83 (Monolith vs Coda-staged): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 97 of 150 (Coda-staged vs Crafty)
+Finished game 81 (Coda-staged vs Rodent3): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 98 of 150 (Coda-staged vs Monolith)
+Finished game 78 (Rodent3 vs Coda-staged): 0-1 {Black wins by adjudication}
+Started game 99 of 150 (Coda-staged vs Rodent3)
+Finished game 85 (Coda-staged vs Crafty): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 100 of 150 (Crafty vs Coda-staged)
+Finished game 79 (Coda-staged vs Crafty): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 101 of 150 (Monolith vs Coda-staged)
+Finished game 90 (Rodent3 vs Coda-staged): 1-0 {White mates}
+Started game 102 of 150 (Rodent3 vs Coda-staged)
+Finished game 96 (Rodent3 vs Coda-staged): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 103 of 150 (Coda-staged vs Crafty)
+Finished game 95 (Monolith vs Coda-staged): 1-0 {White wins by adjudication}
+Started game 104 of 150 (Coda-staged vs Monolith)
+Finished game 86 (Coda-staged vs Monolith): 1/2-1/2 {Draw by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 105 of 150 (Coda-staged vs Rodent3)
+Finished game 87 (Coda-staged vs Rodent3): 0-1 {Black mates}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-staged                  -147      78      90   30.0%    4.4% 
+   1 Monolith                      241     158      30   80.0%   13.3% 
+   2 Rodent3                       155     147      31   71.0%    0.0% 
+   3 Crafty                         61     135      29   58.6%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Crafty doesn't have option MoveOverhead
+Started game 106 of 150 (Crafty vs Coda-staged)
+Finished game 93 (Coda-staged vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 107 of 150 (Monolith vs Coda-staged)
+Finished game 92 (Coda-staged vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 108 of 150 (Rodent3 vs Coda-staged)
+Finished game 89 (Monolith vs Coda-staged): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Warning: Illegal ponder move from Monolith: b7b6
+Finished game 98 (Coda-staged vs Monolith): 0-1 {Black mates}
+Started game 110 of 150 (Coda-staged vs Monolith)
+Started game 109 of 150 (Coda-staged vs Crafty)
+Finished game 103 (Coda-staged vs Crafty): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 111 of 150 (Coda-staged vs Rodent3)
+Finished game 88 (Crafty vs Coda-staged): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 112 of 150 (Crafty vs Coda-staged)
+Finished game 91 (Coda-staged vs Crafty): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 113 of 150 (Monolith vs Coda-staged)
+Warning: Illegal ponder move from Monolith: a3f8
+Finished game 104 (Coda-staged vs Monolith): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 114 of 150 (Rodent3 vs Coda-staged)
+Finished game 99 (Coda-staged vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 115 of 150 (Coda-staged vs Crafty)
+Finished game 105 (Coda-staged vs Rodent3): 0-1 {Black wins by adjudication}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-staged                  -147      74     100   30.0%    4.0% 
+   1 Monolith                      235     147      34   79.4%   11.8% 
+   2 Rodent3                       128     133      34   67.6%    0.0% 
+   3 Crafty                         89     131      32   62.5%    0.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Monolith doesn't have option MoveOverhead
+Started game 116 of 150 (Coda-staged vs Monolith)
+Finished game 97 (Coda-staged vs Crafty): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Rodent3 doesn't have option MoveOverhead
+Warning: Illegal ponder move from Monolith: d6b7
+Finished game 101 (Monolith vs Coda-staged): 1-0 {White mates}
+Started game 117 of 150 (Coda-staged vs Rodent3)
+Warning: Crafty doesn't have option MoveOverhead
+Started game 118 of 150 (Crafty vs Coda-staged)
+Finished game 94 (Crafty vs Coda-staged): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 119 of 150 (Monolith vs Coda-staged)
+Finished game 114 (Rodent3 vs Coda-staged): 1-0 {White mates}
+Started game 120 of 150 (Rodent3 vs Coda-staged)
+Finished game 100 (Crafty vs Coda-staged): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 121 of 150 (Coda-staged vs Crafty)
+Finished game 107 (Monolith vs Coda-staged): 1-0 {White wins by adjudication}
+Started game 122 of 150 (Coda-staged vs Monolith)
+Finished game 112 (Crafty vs Coda-staged): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 123 of 150 (Coda-staged vs Rodent3)
+Finished game 106 (Crafty vs Coda-staged): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 124 of 150 (Crafty vs Coda-staged)
+Finished game 108 (Rodent3 vs Coda-staged): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 125 of 150 (Monolith vs Coda-staged)
+Finished game 102 (Rodent3 vs Coda-staged): 1/2-1/2 {Draw by 3-fold repetition}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-staged                  -140      69     110   30.9%    5.5% 
+   1 Monolith                      247     146      36   80.6%   11.1% 
+   2 Rodent3                       138     126      37   68.9%    2.7% 
+   3 Crafty                         57     116      37   58.1%    2.7% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Started game 126 of 150 (Rodent3 vs Coda-staged)
+Finished game 110 (Coda-staged vs Monolith): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 127 of 150 (Coda-staged vs Crafty)
+Finished game 109 (Coda-staged vs Crafty): 0-1 {Black mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 128 of 150 (Coda-staged vs Monolith)
+Warning: Illegal ponder move from Monolith: c8c2
+Finished game 119 (Monolith vs Coda-staged): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 129 of 150 (Coda-staged vs Rodent3)
+Warning: Illegal ponder move from Monolith: c2b3
+Finished game 122 (Coda-staged vs Monolith): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 130 of 150 (Crafty vs Coda-staged)
+Finished game 117 (Coda-staged vs Rodent3): 1/2-1/2 {Draw by 3-fold repetition}
+Finished game 115 (Coda-staged vs Crafty): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 131 of 150 (Monolith vs Coda-staged)
+Started game 132 of 150 (Rodent3 vs Coda-staged)
+Finished game 113 (Monolith vs Coda-staged): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 133 of 150 (Coda-staged vs Crafty)
+Finished game 111 (Coda-staged vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 134 of 150 (Coda-staged vs Monolith)
+Finished game 116 (Coda-staged vs Monolith): 1-0 {White wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 135 of 150 (Coda-staged vs Rodent3)
+Finished game 129 (Coda-staged vs Rodent3): 0-1 {Black mates}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-staged                  -124      65     120   32.9%    5.8% 
+   1 Monolith                      197     124      41   75.6%    9.8% 
+   2 Rodent3                       127     117      40   67.5%    5.0% 
+   3 Crafty                         54     113      39   57.7%    2.6% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Crafty doesn't have option MoveOverhead
+Started game 136 of 150 (Crafty vs Coda-staged)
+Finished game 120 (Rodent3 vs Coda-staged): 0-1 {Black wins by adjudication}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 137 of 150 (Monolith vs Coda-staged)
+Finished game 126 (Rodent3 vs Coda-staged): 1-0 {White mates}
+Started game 138 of 150 (Rodent3 vs Coda-staged)
+Finished game 123 (Coda-staged vs Rodent3): 1-0 {White wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 139 of 150 (Coda-staged vs Crafty)
+Finished game 124 (Crafty vs Coda-staged): 1/2-1/2 {Draw by 3-fold repetition}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 140 of 150 (Coda-staged vs Monolith)
+Finished game 121 (Coda-staged vs Crafty): 1-0 {White mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Finished game 118 (Crafty vs Coda-staged): 0-1 {Black mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 142 of 150 (Crafty vs Coda-staged)
+Started game 141 of 150 (Coda-staged vs Rodent3)
+Finished game 125 (Monolith vs Coda-staged): 0-1 {Black wins by adjudication}
+Started game 143 of 150 (Monolith vs Coda-staged)
+Finished game 128 (Coda-staged vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 144 of 150 (Rodent3 vs Coda-staged)
+Finished game 127 (Coda-staged vs Crafty): 1-0 {White mates}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 145 of 150 (Coda-staged vs Crafty)
+Finished game 139 (Coda-staged vs Crafty): 0-1 {Black mates}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-staged                  -105      61     130   35.4%    6.2% 
+   1 Monolith                      186     119      43   74.4%    9.3% 
+   2 Rodent3                       108     111      43   65.1%    4.7% 
+   3 Crafty                         32     104      44   54.5%    4.5% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Warning: Monolith doesn't have option MoveOverhead
+Started game 146 of 150 (Coda-staged vs Monolith)
+Finished game 135 (Coda-staged vs Rodent3): 0-1 {Black wins by adjudication}
+Started game 147 of 150 (Coda-staged vs Rodent3)
+Finished game 132 (Rodent3 vs Coda-staged): 0-1 {Black wins by adjudication}
+Warning: Crafty doesn't have option MoveOverhead
+Started game 148 of 150 (Crafty vs Coda-staged)
+Finished game 138 (Rodent3 vs Coda-staged): 1-0 {White mates}
+Warning: Monolith doesn't have option MoveOverhead
+Started game 149 of 150 (Monolith vs Coda-staged)
+Finished game 130 (Crafty vs Coda-staged): 0-1 {Black mates}
+Warning: Rodent3 doesn't have option MoveOverhead
+Started game 150 of 150 (Rodent3 vs Coda-staged)
+Finished game 142 (Crafty vs Coda-staged): 1-0 {White mates}
+Finished game 140 (Coda-staged vs Monolith): 0-1 {Black wins by adjudication}
+Warning: Illegal ponder move from Monolith: f5f7
+Finished game 137 (Monolith vs Coda-staged): 1-0 {White mates}
+Finished game 134 (Coda-staged vs Monolith): 0-1 {Black wins by adjudication}
+Finished game 147 (Coda-staged vs Rodent3): 0-1 {Black wins by adjudication}
+Finished game 143 (Monolith vs Coda-staged): 0-1 {Black wins by adjudication}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-staged                  -108      59     140   35.0%    5.7% 
+   1 Monolith                      186     114      47   74.5%    8.5% 
+   2 Rodent3                       115     106      47   66.0%    4.3% 
+   3 Crafty                         30     101      46   54.3%    4.3% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+Finished game 144 (Rodent3 vs Coda-staged): 1-0 {White wins by adjudication}
+Finished game 136 (Crafty vs Coda-staged): 1-0 {White mates}
+Finished game 145 (Coda-staged vs Crafty): 0-1 {Black mates}
+Finished game 141 (Coda-staged vs Rodent3): 0-1 {Black mates}
+Finished game 131 (Monolith vs Coda-staged): 1-0 {White mates}
+Finished game 148 (Crafty vs Coda-staged): 1-0 {White mates}
+Finished game 133 (Coda-staged vs Crafty): 1-0 {White mates}
+Finished game 150 (Rodent3 vs Coda-staged): 0-1 {Black wins by adjudication}
+Finished game 149 (Monolith vs Coda-staged): 0-1 {Black wins by adjudication}
+Finished game 146 (Coda-staged vs Monolith): 0-1 {Black wins by adjudication}
+Rank Name                          Elo     +/-   Games   Score    Draw 
+   0 Coda-staged                  -110      57     150   34.7%    5.3% 
+   1 Monolith                      182     110      50   74.0%    8.0% 
+   2 Rodent3                       115     103      50   66.0%    4.0% 
+   3 Crafty                         42      97      50   56.0%    4.0% 
+
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+
+Player: Coda-staged
+   "Draw by 3-fold repetition": 7
+   "Draw by adjudication": 1
+   "Loss: Black mates": 28
+   "Loss: Black wins by adjudication": 16
+   "Loss: White mates": 37
+   "Loss: White wins by adjudication": 13
+   "Win: Black mates": 8
+   "Win: Black wins by adjudication": 14
+   "Win: White mates": 13
+   "Win: White wins by adjudication": 13
+Player: Crafty
+   "Draw by 3-fold repetition": 2
+   "Loss: Black mates": 8
+   "Loss: White mates": 13
+   "Win: Black mates": 11
+   "Win: White mates": 16
+Player: Monolith
+   "Draw by 3-fold repetition": 3
+   "Draw by adjudication": 1
+   "Loss: Black wins by adjudication": 7
+   "Loss: White wins by adjudication": 4
+   "Win: Black mates": 8
+   "Win: Black wins by adjudication": 10
+   "Win: White mates": 10
+   "Win: White wins by adjudication": 7
+Player: Rodent3
+   "Draw by 3-fold repetition": 2
+   "Loss: Black wins by adjudication": 7
+   "Loss: White wins by adjudication": 9
+   "Win: Black mates": 9
+   "Win: Black wins by adjudication": 6
+   "Win: White mates": 11
+   "Win: White wins by adjudication": 6
+Finished match
