@@ -1513,6 +1513,21 @@ fn negamax(
         }
     }
 
+    // Continuation history ply-2 (grandparent move — our move 2 plies ago)
+    let mut prev2_piece_for_cont: usize = 0;
+    let mut prev2_to_for_cont: u8 = 0;
+    if board.undo_stack.len() >= 2 {
+        let undo2 = &board.undo_stack[board.undo_stack.len() - 2];
+        let pm2 = undo2.mv;
+        if pm2 != NO_MOVE {
+            let prev2_piece = board.piece_at(move_to(pm2));
+            if prev2_piece != NO_PIECE {
+                prev2_piece_for_cont = go_piece(prev2_piece);
+                prev2_to_for_cont = move_to(pm2);
+            }
+        }
+    }
+
     // Pawn history pointer for this position's pawn structure
     let ph_idx = (board.pawn_hash as usize) & (PAWN_HIST_SIZE - 1);
 
@@ -1663,12 +1678,17 @@ fn negamax(
             && FEAT_HIST_PRUNE.load(Ordering::Relaxed)
         {
             let mut hist_prune_score = info.history.main_score(from, to, enemy_attacks);
-            if prev_piece_for_cont != 0
-                && moved_piece != NO_PIECE
-            {
-                hist_prune_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
+            if moved_piece != NO_PIECE {
+                // Cont hist ply-1
+                if prev_piece_for_cont != 0 {
+                    hist_prune_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
+                }
+                // Cont hist ply-2 (consensus: every top engine uses this)
+                if prev2_piece_for_cont != 0 {
+                    hist_prune_score += info.history.cont_hist[prev2_piece_for_cont][prev2_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
+                }
             }
-            if hist_prune_score < -1500 * depth as i32 {
+            if hist_prune_score < -2250 * depth as i32 {
                 info.stats.history_prunes += 1;
                 continue;
             }
