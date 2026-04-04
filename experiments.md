@@ -3855,3 +3855,14 @@ Many "correctness fixes" test negative because the engine was tuned around the b
 ### Key Finding: Ply-2 Continuation History Piece Lookup Bug
 
 The ply-2 cont hist piece lookup via `board.piece_at(move_to(pm2))` is unreliable — the piece may have been captured by ply-1's move. This explains why adding ply-2 cont hist to history pruning was -58/-68 Elo regardless of threshold tuning. The fix requires a `moved_piece` field on the search stack (so each ply records what piece it moved, independent of current board state). Added to todo.md.
+
+## 2026-04-04: SPSA Round 1 — H1 at +31.48 Elo [SPRT-validated]
+
+**Biggest single Elo gain in Coda's history.** First SPSA parameter optimization via OpenBench.
+
+- **Result**: **H1**, +31.48 ±11.26 Elo, 1,616 games, LLR 2.98.
+- **Commit**: cbdcefe
+- **SPSA config**: 16 parameters, 1,672 iterations (~27K games), 5 machines.
+- **Key parameter changes**: NMP_EVAL_DIV 200→164, NMP_BASE_R 4→3, RFP_DEPTH 7→6, RFP_MARGIN_IMP 70→84, FUT_BASE 90→103, HIST_PRUNE_DEPTH 3→2, LMR_HIST_DIV 5000→5489, SE_DEPTH 8→9.
+- **Lesson**: Simultaneous optimization finds gains that individual SPRT cannot detect. Parameters interact — NMP wants aggressive eval scaling (164) but only when RFP margins widen simultaneously. No single change tests positive, but the combination is +31.
+- **Next**: SPSA round 2 with 26 parameters on 768pw-w7 net after model switch.
