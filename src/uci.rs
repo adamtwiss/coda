@@ -25,21 +25,42 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
         }
     } else {
         // Auto-discover NNUE net:
+        // 0. Embedded net (compiled in via CODA_EVALFILE env var during build)
         // 1. Try net.nnue in exe dir and CWD (OpenBench / Makefile convention)
         // 2. Try net.txt → extract filename from URL → load that file
         let mut loaded = false;
 
-        // Check for net.nnue directly
-        let net_nnue_paths = [
-            std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.nnue"))),
-            Some(std::path::PathBuf::from("net.nnue")),
-        ];
-        for maybe_path in &net_nnue_paths {
-            if let Some(path) = maybe_path {
-                if path.exists() {
-                    if let Ok(()) = info.load_nnue(path.to_str().unwrap()) {
-                        loaded = true;
-                        break;
+        // Embedded net (fat binary)
+        #[cfg(feature = "embedded-net")]
+        {
+            static EMBEDDED_NET: &[u8] = include_bytes!(env!("CODA_EVALFILE"));
+            match crate::nnue::NNUENet::load_from_bytes(EMBEDDED_NET) {
+                Ok(net) => {
+                    let acc = crate::nnue::NNUEAccumulator::new(net.hidden_size);
+                    println!("info string Loaded embedded NNUE ({}x2)", net.hidden_size);
+                    info.nnue_net = Some(std::sync::Arc::new(net));
+                    info.nnue_acc = Some(acc);
+                    loaded = true;
+                }
+                Err(e) => {
+                    println!("info string WARNING: embedded NNUE corrupt: {}", e);
+                }
+            }
+        }
+
+        // Check for net.nnue directly (overrides embedded if present)
+        if !loaded {
+            let net_nnue_paths = [
+                std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.nnue"))),
+                Some(std::path::PathBuf::from("net.nnue")),
+            ];
+            for maybe_path in &net_nnue_paths {
+                if let Some(path) = maybe_path {
+                    if path.exists() {
+                        if let Ok(()) = info.load_nnue(path.to_str().unwrap()) {
+                            loaded = true;
+                            break;
+                        }
                     }
                 }
             }
