@@ -686,6 +686,15 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     }
     helper.time_limit = 0; // helpers don't do time management
     helper.move_overhead = main.move_overhead;
+    // Copy main thread's history for better initial move ordering (Alexandria pattern)
+    // Helpers start with the main thread's learned history instead of zeroed tables
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            main.history.as_ref() as *const _ as *const u8,
+            helper.history.as_mut() as *mut _ as *mut u8,
+            std::mem::size_of::<crate::movepicker::History>(),
+        );
+    }
     helper
 }
 
