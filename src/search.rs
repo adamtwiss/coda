@@ -1796,12 +1796,18 @@ fn negamax(
             && FEAT_HIST_PRUNE.load(Ordering::Relaxed)
         {
             let mut hist_prune_score = info.history.main_score(from, to, enemy_attacks);
-            if prev_piece_for_cont != 0
-                && moved_piece != NO_PIECE
-            {
-                hist_prune_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
+            if moved_piece != NO_PIECE {
+                // Cont hist ply-1
+                if prev_piece_for_cont != 0 {
+                    hist_prune_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
+                }
+                // Cont hist ply-2 (using search stack — correct even if ply-1 captured)
+                if prev2_piece_for_cont != 0 {
+                    hist_prune_score += info.history.cont_hist[prev2_piece_for_cont][prev2_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
+                }
             }
-            if hist_prune_score < -tp(&HIST_PRUNE_MULT) * depth as i32 {
+            // Threshold scaled for 3 signals (was -1500*d for 2 signals)
+            if hist_prune_score < -2250 * depth as i32 {
                 info.stats.history_prunes += 1;
                 continue;
             }
