@@ -1409,9 +1409,9 @@ fn negamax(
         && static_eval > -INFINITY
         && FEAT_HINDSIGHT.load(Ordering::Relaxed)
     {
-        // Negate parent eval to convert to current side's perspective
-        // (static_evals are stored relative to the side-to-move at each ply)
-        let eval_sum = -info.static_evals[ply_u - 1] + static_eval;
+        // Both sides optimistic about their position (eval_sum > threshold)
+        // correlates with quiet positions where reduction is safe.
+        let eval_sum = info.static_evals[ply_u - 1] + static_eval;
         if eval_sum > 195 {
             depth -= 1;
         }
