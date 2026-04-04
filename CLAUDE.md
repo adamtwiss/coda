@@ -83,7 +83,7 @@ net.txt            Production NNUE net URL (used by make net / fetch-net)
 Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from depth 4). Lazy SMP: helper threads search at offset depths sharing the TT (atomic) and stop flag.
 
 **Pruning features:**
-- NMP: R=4+depth/3 + (eval-beta)/200, eval>=beta guard, depth>=3, verify at depth>=12 (depth-r), post-capture R--, NMP score dampening (score*2+beta)/3. All parameters SPSA-tunable.
+- NMP: R=3+depth/4 + (eval-beta)/164, eval>=beta guard, depth>=3, verify at depth>=13 (depth-r), post-capture R--, NMP score dampening (score*2+beta)/3. All parameters SPSA-tunable (values from SPSA round 1).
 - RFP: depth<=7, margin improving?70*d:100*d, returns staticEval-margin
 - Futility: 90+lmrDepth*100+histAdj/128, depth<=8, uses estimated LMR depth
 - LMR: separate quiet (C=1.30) and capture (C=1.80) tables, doDeeper/doShallower
@@ -427,6 +427,15 @@ If the change doesn't affect bench (e.g. comments, docs, tooling), the bench lin
 SPSA format per parameter: `NAME, int, default, min, max, c_end, r_end`
 
 When LMR_C_QUIET or LMR_C_CAP change, LMR tables are automatically reinitialized.
+
+**Practical guidance (from round 1):**
+- 1500-2000 iterations is sufficient for 16 parameters. Values stabilise well before 5000.
+- c_end ~5-10% of parameter range, r_end 0.002 are good defaults.
+- Alpha 0.602, gamma 0.101, A_ratio 0.1 (standard SPSA constants).
+- Create via web UI at `/tune/new/` (scripts API doesn't support tune creation).
+- SPRT the final values against main before merging — SPSA can overfit.
+- Round 1 found +31 Elo from 16 parameters. Parameters interact — NMP eval divisor only works at 164 when RFP margins widen simultaneously.
+- Plan SPSA after merging correctness fixes and before/after net switches (eval changes shift optimal parameters).
 
 ### Cross-Engine Validation (secondary, for milestones)
 
