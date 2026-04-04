@@ -958,7 +958,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     alpha = (5 * alpha + 3 * beta) / 8;
                     beta = (result + delta).min(INFINITY);
                     // Reduce depth for re-search (Alexandria/Midnight/Seer pattern)
-                    asp_depth = (asp_depth - 1).max(1);
+                    if result.abs() < 2000 { asp_depth = (asp_depth - 1).max(1); }
                 } else {
                     asp_result = result;
                     break;
