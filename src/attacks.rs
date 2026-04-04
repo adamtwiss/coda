@@ -9,7 +9,8 @@ use crate::types::*;
 #[cfg(target_arch = "x86_64")]
 fn has_fast_pext() -> bool {
     // CPUID leaf 0: get vendor string
-    let cpuid0 = std::arch::x86_64::__cpuid(0);
+    // Safety: CPUID is always available on x86_64
+    let cpuid0 = unsafe { std::arch::x86_64::__cpuid(0) };
     let vendor = [cpuid0.ebx, cpuid0.edx, cpuid0.ecx];
     let is_amd = vendor == [0x6874_7541, 0x6974_6E65, 0x444D_4163]; // "AuthenticAMD"
 
@@ -18,7 +19,7 @@ fn has_fast_pext() -> bool {
     }
 
     // CPUID leaf 1: EAX bits [11:8] = family, [27:20] = extended family
-    let cpuid1 = std::arch::x86_64::__cpuid(1);
+    let cpuid1 = unsafe { std::arch::x86_64::__cpuid(1) };
     let base_family = (cpuid1.eax >> 8) & 0xF;
     let ext_family = (cpuid1.eax >> 20) & 0xFF;
     let family = if base_family == 0xF {
