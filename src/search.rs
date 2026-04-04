@@ -2564,6 +2564,25 @@ fn quiescence_with_depth(
     };
     let mut best_score = stand_pat;
 
+    // TT bound refinement of stand-pat (consensus: every top engine does this)
+    // Use TT score as a better estimate when the bound direction agrees
+    if tt_hit {
+        let tt_score = {
+            let mut s = tt_entry.score;
+            if s > MATE_SCORE - 100 { s -= ply; }
+            else if s < -(MATE_SCORE - 100) { s += ply; }
+            s
+        };
+        if tt_score.abs() < MATE_SCORE - 100 {
+            if (tt_entry.flag == TT_FLAG_LOWER && tt_score > best_score)
+                || (tt_entry.flag == TT_FLAG_UPPER && tt_score < best_score)
+                || tt_entry.flag == TT_FLAG_EXACT
+            {
+                best_score = tt_score;
+            }
+        }
+    }
+
     if best_score >= beta {
         // QS beta blending: dampen stand-pat cutoff at non-PV nodes
         if beta - alpha == 1
