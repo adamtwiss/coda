@@ -264,6 +264,11 @@ pub struct SearchInfo {
     reductions: [i32; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
     excluded_move: [Move; MAX_PLY + 1],
+    /// Per-ply moved piece (go_piece index 1-12, 0=none). Set before make_move.
+    /// Used for correct cont hist lookups at ply-2+ (avoids stale board.piece_at).
+    moved_piece_stack: [u8; MAX_PLY + 1],
+    /// Per-ply move destination square. Used alongside moved_piece_stack.
+    moved_to_stack: [u8; MAX_PLY + 1],
     /// Pawn history: [pawn_hash & (PAWN_HIST_SIZE - 1)][piece 1-12][to_square] (slot 0 unused)
     pawn_hist: Box<[[[i16; 64]; 13]; PAWN_HIST_SIZE]>,
     /// Pawn correction history: [stm][pawn_hash % size]
@@ -307,6 +312,8 @@ impl SearchInfo {
             static_evals: [0; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
+            moved_piece_stack: [0; MAX_PLY + 1],
+            moved_to_stack: [0; MAX_PLY + 1],
             pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
             pv_len: [0; MAX_PLY + 1],
             pawn_hist: alloc_zeroed_box(),
@@ -812,6 +819,8 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.static_evals = [0; MAX_PLY + 1];
     info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
+    info.moved_piece_stack = [0; MAX_PLY + 1];
+    info.moved_to_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
     info.nodes = 0;
@@ -861,6 +870,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.static_evals = [0; MAX_PLY + 1];
     info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
+    info.moved_piece_stack = [0; MAX_PLY + 1];
+    info.moved_to_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
     // Clear TM state
@@ -1601,21 +1612,31 @@ fn negamax(
         [NO_MOVE; 2]
     };
 
-    // Counter-move and continuation history lookup from opponent's last move
+    // Counter-move and continuation history lookup from search stack
     let mut counter_move = NO_MOVE;
-    let mut prev_piece_for_cont: usize = 0; // piece index (1-12), 0 = none
+    let mut prev_piece_for_cont: usize = 0; // go_piece index (1-12), 0 = none
     let mut prev_to_for_cont: u8 = 0;
-    if !board.undo_stack.is_empty() {
-        let undo = &board.undo_stack[board.undo_stack.len() - 1];
-        let pm = undo.mv;
-        if pm != NO_MOVE {
-            let prev_piece = board.piece_at(move_to(pm));
-            if prev_piece != NO_PIECE {
-                let gp = go_piece(prev_piece);
-                counter_move = info.history.counter[gp][move_to(pm) as usize];
-                prev_piece_for_cont = gp;
-                prev_to_for_cont = move_to(pm);
-            }
+    let mut prev2_piece_for_cont: usize = 0; // ply-2 (grandparent move)
+    let mut prev2_to_for_cont: u8 = 0;
+
+    // Ply-1: parent's move (from search stack for consistency)
+    if ply_u >= 1 {
+        let gp = info.moved_piece_stack[ply_u - 1] as usize;
+        let to_sq = info.moved_to_stack[ply_u - 1];
+        if gp != 0 {
+            counter_move = info.history.counter[gp][to_sq as usize];
+            prev_piece_for_cont = gp;
+            prev_to_for_cont = to_sq;
+        }
+    }
+
+    // Ply-2: grandparent's move (correct — uses stack, not stale board.piece_at)
+    if ply_u >= 2 {
+        let gp2 = info.moved_piece_stack[ply_u - 2] as usize;
+        let to_sq2 = info.moved_to_stack[ply_u - 2];
+        if gp2 != 0 {
+            prev2_piece_for_cont = gp2;
+            prev2_to_for_cont = to_sq2;
         }
     }
 
@@ -1753,6 +1774,12 @@ fn negamax(
         // Save moved piece before MakeMove for consistent history indexing
         let moved_piece = board.piece_at(from);
         let moved_pt = board.piece_type_at(from);
+
+        // Record on search stack for correct ply-2+ cont hist lookups
+        if moved_piece != NO_PIECE && ply_u <= MAX_PLY {
+            info.moved_piece_stack[ply_u] = go_piece(moved_piece) as u8;
+            info.moved_to_stack[ply_u] = to;
+        }
         let captured_pt = if is_cap {
             if flags == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(to) }
         } else {
