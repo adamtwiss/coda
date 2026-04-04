@@ -3768,3 +3768,39 @@ Additional bugs found in second/third review passes:
 ### Key Lesson
 
 Many "correctness fixes" test negative because the engine was tuned around the bugs. The NMP search depth fix (+11) succeeded because it was a pure 1-line change with minimal parameter interaction. Holistic reimplementations based on top-engine consensus failed — our engine's parameter landscape is different. Conservative single-change approach is more reliable.
+
+## 2026-04-04: Ongoing Results
+
+### H1 Passed — Merged
+
+| # | Test | Elo | Games | Description |
+|---|------|-----|-------|-------------|
+| 74 | fix-qs-tt-stand-pat | **+6.5** | H1 | QS TT bound refinement of stand-pat. Every top engine does this. |
+| 47 | fix-nmp-depth-gate | **+0.68** | 2,048 | NMP depth gate >= 4 → >= 3. Correctness, mildly positive. |
+
+**Running total merged Elo: ~+35** (NMP depth +11, probcut +5.86, unmake keys +5.67, SEE promo ~+5, QS stand-pat +6.5, NMP depth gate ~+0.7)
+
+### Stopped / Noted
+
+| # | Test | Elo | Games | Notes |
+|---|------|-----|-------|-------|
+| 56 | const-attack-tables | +1.5 | 45,000 | NPS gain from compile-time tables. Conflicts with runtime PEXT detection. Revisit later. |
+| 55 | compile-time-pext | ~0 | — | Superseded by runtime PEXT detection (AMD Zen1/2 +20% NPS). |
+| 76 | fix-tm-node-based v1 | -31 | 628 | Bug: cumulative node tracking across iterations. |
+| 77 | fix-tm-node-based v2 | -10 | — | Fixed per-iteration reset but parameters still wrong. Needs more work. |
+| 57 | fix-histprune-add-cont2 v1 | -68 | 352 | Threshold -1500 too tight for 3 signals. Resubmitted at -2250. |
+| 53 | fix-lmr-remove-alpha-raised (old base) | -2.3 | 5,866 | Stale — tested against pre-merge main. Replaced by #65. |
+
+### H0 Failed (Day 3-4)
+
+| # | Test | Elo | Games | Notes |
+|---|------|-----|-------|-------|
+| 49 | fix-histprune-full | H0 | ~3,000 | Consensus reimplementation too aggressive |
+| 52 | fix-futility-full | H0 | ~7,000 | Consensus reimplementation regressed |
+
+### NPS Optimization Notes
+
+- **Runtime PEXT detection** (Thor): +20% NPS on AMD Zen1/2 (~13 Elo). Auto-detects at startup. Merged to main.
+- **Const-attack-tables**: +1-2 Elo from compile-time tables but conflicts with runtime PEXT. Defer.
+- **Compile-time-pext**: Superseded by runtime approach. Dropped.
+- **Incremental-checkers-pinned**: -10 Elo. Eager compute worse than on-demand. Needs true incremental update (cozy-chess style) to be useful.
