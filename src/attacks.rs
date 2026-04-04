@@ -7,6 +7,7 @@ use crate::types::*;
 /// AMD Zen 1/2 (family 0x17) has BMI2 but PEXT is microcoded (~18 cycles).
 /// AMD Zen 3+ (family 0x19+) and all Intel BMI2 CPUs have fast PEXT.
 #[cfg(target_arch = "x86_64")]
+#[allow(unused_unsafe)]
 fn has_fast_pext() -> bool {
     // CPUID leaf 0: get vendor string
     // Safety: CPUID is always available on x86_64
