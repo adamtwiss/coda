@@ -10,6 +10,7 @@ shakmaty = "0.30"
 shakmaty-syzygy = "0.28"
 libc = "0.2"
 sfbinpack = "0.6.0"
+clap = { version = "4.6.0", features = ["derive"] }
 
 [features]
 embedded-net = []
