@@ -745,6 +745,57 @@ unsafe fn simd512_screlu_dot_i8(acc: &[i16], weights_i8: &[i16], h: usize) -> i6
     total + _mm512_reduce_add_epi32(_mm512_add_epi32(sum0, sum1)) as i64
 }
 
+/// AVX-512 pairwise dot product: clamp two halves to [0,255], multiply pairs,
+/// byte-decompose the product, dot with weights. 32 elements per iteration.
+/// Same byte-decomposition as AVX2 version but 2× wider.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn simd512_pairwise_dot(acc_first: &[i16], acc_second: &[i16], weights: &[i16], count: usize) -> i64 {
+    let zero = _mm512_setzero_si512();
+    let qa = _mm512_set1_epi16(QA as i16);
+    let mask_lo = _mm512_set1_epi16(0x00FF);
+    let mut sum32_b0 = _mm512_setzero_si512(); // 16 × i32
+    let mut sum32_b1 = _mm512_setzero_si512(); // 16 × i32
+    let mut total: i64 = 0;
+    let mut batch = 0u32;
+
+    let mut i = 0;
+    while i < count {
+        let a = _mm512_loadu_si512(acc_first.as_ptr().add(i) as *const __m512i);
+        let a_clamped = _mm512_min_epi16(_mm512_max_epi16(a, zero), qa);
+        let b = _mm512_loadu_si512(acc_second.as_ptr().add(i) as *const __m512i);
+        let b_clamped = _mm512_min_epi16(_mm512_max_epi16(b, zero), qa);
+
+        let prod = _mm512_mullo_epi16(a_clamped, b_clamped);
+        let w = _mm512_loadu_si512(weights.as_ptr().add(i) as *const __m512i);
+
+        let byte0 = _mm512_and_si512(prod, mask_lo);
+        let byte1 = _mm512_srli_epi16(prod, 8);
+
+        sum32_b0 = _mm512_add_epi32(sum32_b0, _mm512_madd_epi16(byte0, w));
+        sum32_b1 = _mm512_add_epi32(sum32_b1, _mm512_madd_epi16(byte1, w));
+
+        batch += 32;
+        if batch >= 128 {
+            // Drain: total += b0_sum + b1_sum * 256
+            total += _mm512_reduce_add_epi32(sum32_b0) as i64;
+            total += (_mm512_reduce_add_epi32(sum32_b1) as i64) << 8;
+            sum32_b0 = _mm512_setzero_si512();
+            sum32_b1 = _mm512_setzero_si512();
+            batch = 0;
+        }
+
+        i += 32;
+    }
+
+    if batch > 0 {
+        total += _mm512_reduce_add_epi32(sum32_b0) as i64;
+        total += (_mm512_reduce_add_epi32(sum32_b1) as i64) << 8;
+    }
+
+    total
+}
+
 // ---- NEON SIMD helper functions (aarch64) ----
 
 /// Add a weight row to an accumulator (NEON, 8 × i16 per iteration).
@@ -1906,8 +1957,21 @@ impl NNUENet {
             let pw = h / 2; // pairwise output size per perspective
 
             #[cfg(target_arch = "x86_64")]
+            if self.has_avx512 && pw % 32 == 0 {
+                let bias = output;
+                let mut sum: i64;
+                unsafe {
+                    sum = simd512_pairwise_dot(&stm_acc[..pw], &stm_acc[pw..], &out_w[..pw], pw);
+                    sum += simd512_pairwise_dot(&ntm_acc[..pw], &ntm_acc[pw..], &out_w[pw..], pw);
+                }
+                output = sum / QA as i64 + bias;
+                let result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
+                return result;
+            }
+
+            #[cfg(target_arch = "x86_64")]
             if self.has_avx2 && pw % 16 == 0 {
-                let bias = output; // save bias before adding dot products
+                let bias = output;
                 let mut sum: i64;
                 unsafe {
                     sum = simd_pairwise_dot(&stm_acc[..pw], &stm_acc[pw..], &out_w[..pw], pw);
