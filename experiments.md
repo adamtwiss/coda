@@ -3804,3 +3804,54 @@ Many "correctness fixes" test negative because the engine was tuned around the b
 - **Const-attack-tables**: +1-2 Elo from compile-time tables but conflicts with runtime PEXT. Defer.
 - **Compile-time-pext**: Superseded by runtime approach. Dropped.
 - **Incremental-checkers-pinned**: -10 Elo. Eager compute worse than on-demand. Needs true incremental update (cozy-chess style) to be useful.
+
+### Reverted
+
+| Test | Elo | Notes |
+|------|-----|-------|
+| fix-rep-pliesnull | -38 | PliesnullNull limit on repetition detection was wrong — cut lookback too short, missed real repetitions. Limit should only apply to cuckoo, not normal rep detection. |
+| fix-hindsight-sign | -10 (H0) | Original "wrong" sign captures useful mutual-optimism signal. Revert confirmed correct. |
+
+### Stopped (Day 4 continued)
+
+| Test | Elo | Games | Notes |
+|------|-----|-------|-------|
+| incremental-checkers-pinned | -10 | — | Eager compute worse than on-demand |
+| fix-tm-node-based v1 | -31 | 628 | Cumulative node tracking bug |
+| fix-tm-node-based v2 | -10 | — | Per-iteration reset but params still wrong |
+| fix-histprune-add-cont2 v1 | -68 | 352 | Threshold too tight for 3 signals |
+| fix-histprune-add-cont2 v2 | -58 | — | Even at -2250 threshold, ply-2 piece lookup is buggy (stale board state) |
+
+### H0 Failed (Day 4 continued)
+
+| Test | Elo | Notes |
+|------|-----|-------|
+| fix-histprune-full | H0 | Consensus reimplementation too aggressive |
+| fix-futility-full | H0 | Consensus reimplementation regressed |
+| fix-nmp-no-dampening | trending H0 (-1.9) | NMP dampening removal not beneficial |
+| fix-nmp-capture-r | trending H0 (-1.6) | NMP capture reduction not beneficial |
+| Various LMR removals | trending H0 | Multiple LMR feature removals all trending negative |
+
+### SPSA Tuning (in progress)
+
+- **Round 1**: 16 parameters, 5000 iterations target. At ~860 iterations, strong signals:
+  - NMP_EVAL_DIV: 200 → 164 (most aggressive mover)
+  - NMP_BASE_R: 4 → 3
+  - RFP_DEPTH: 7 → 6
+  - RFP_MARGIN_IMP: 70 → 81
+  - FUT_BASE: 90 → 102
+  - HIST_PRUNE_DEPTH: 3 → 2
+- **Round 2**: 10 more parameters added (aspiration, LMR C, LMP, probcut, etc.)
+- 26 tunable UCI parameters exposed for SPSA.
+
+### Infrastructure (Day 4)
+
+- **Thor** (5th machine) added: AMD Ryzen 8C/16T, 1.1M NPS
+- **Runtime PEXT detection**: +20% NPS on AMD Zen1/2
+- **NEON pairwise SIMD** for ARM
+- **clap argument parser** replacing manual parsing
+- **26 tunable UCI parameters** for SPSA
+
+### Key Finding: Ply-2 Continuation History Piece Lookup Bug
+
+The ply-2 cont hist piece lookup via `board.piece_at(move_to(pm2))` is unreliable — the piece may have been captured by ply-1's move. This explains why adding ply-2 cont hist to history pruning was -58/-68 Elo regardless of threshold tuning. The fix requires a `moved_piece` field on the search stack (so each ply records what piece it moved, independent of current board state). Added to todo.md.
