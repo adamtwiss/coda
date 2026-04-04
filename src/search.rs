@@ -951,7 +951,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
                 if result <= alpha {
                     // Fail low: contract beta aggressively toward alpha, widen alpha
-                    beta = (3 * alpha + 5 * beta) / 8;
+                    beta = (alpha + beta) / 2; // simple midpoint (consensus)
                     alpha = (result - delta).max(-INFINITY);
                 } else if result >= beta {
                     // Fail high: contract alpha toward beta, widen beta
