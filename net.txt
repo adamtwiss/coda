@@ -1,1 +1,1 @@
-https://github.com/adamtwiss/coda/releases/download/v0.1.0-nets/net-v5-1024s-w5-e800-s800.nnue
+https://github.com/adamtwiss/coda/releases/download/v0.1.0-nets/net-v5-768pw-w7-e800s800.nnue
