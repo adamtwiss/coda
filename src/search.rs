@@ -63,6 +63,27 @@ tunable!(LMR_HIST_DIV,   5000, 2000, 15000);
 // Singular extensions
 tunable!(SE_DEPTH,           8,    4,   12);
 
+// Aspiration windows
+tunable!(ASP_DELTA,         13,    5,   30);     // initial delta
+tunable!(ASP_SCORE_DIV,  23660, 8000, 50000);   // score-dependent delta divisor
+
+// LMR (C value * 100 for integer representation)
+tunable!(LMR_C_QUIET,     130,   80,  300);     // quiet LMR constant (divided by 100)
+tunable!(LMR_C_CAP,       180,  100,  350);     // capture LMR constant (divided by 100)
+
+// LMP
+tunable!(LMP_BASE,           3,    1,    6);
+tunable!(LMP_DEPTH,          8,    4,   12);
+
+// Bad noisy
+tunable!(BAD_NOISY_MARGIN,  75,   30,  150);    // depth * margin
+
+// ProbCut
+tunable!(PROBCUT_MARGIN,   170,   80,  300);
+
+// Hindsight
+tunable!(HINDSIGHT_THRESH, 195,   50,  400);
+
 /// Get a tunable parameter value (inline for hot paths)
 #[inline(always)]
 fn tp(param: &AtomicI32) -> i32 {
@@ -88,6 +109,15 @@ pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32)
         ("SEE_CAP_MULT",       &SEE_CAP_MULT,      100,   30,  200),
         ("LMR_HIST_DIV",       &LMR_HIST_DIV,     5000, 2000, 15000),
         ("SE_DEPTH",           &SE_DEPTH,             8,    4,   12),
+        ("ASP_DELTA",          &ASP_DELTA,            13,    5,   30),
+        ("ASP_SCORE_DIV",      &ASP_SCORE_DIV,     23660, 8000, 50000),
+        ("LMR_C_QUIET",        &LMR_C_QUIET,        130,   80,  300),
+        ("LMR_C_CAP",          &LMR_C_CAP,          180,  100,  350),
+        ("LMP_BASE",           &LMP_BASE,              3,    1,    6),
+        ("LMP_DEPTH",          &LMP_DEPTH,             8,    4,   12),
+        ("BAD_NOISY_MARGIN",   &BAD_NOISY_MARGIN,     75,   30,  150),
+        ("PROBCUT_MARGIN",     &PROBCUT_MARGIN,       170,   80,  300),
+        ("HINDSIGHT_THRESH",   &HINDSIGHT_THRESH,     195,   50,  400),
     ]
 }
 
@@ -581,14 +611,16 @@ pub fn init_lmr() {
     for depth in 1..64 {
         for moves in 1..64 {
             unsafe {
-                // Quiet table: C=1.30
+                // Quiet table: C from tunable (default 130 = 1.30)
                 if depth >= 3 && moves >= 3 {
-                    let r = ((depth as f64).ln() * (moves as f64).ln() / 1.30) as i32;
+                    let c = tp(&LMR_C_QUIET) as f64 / 100.0;
+                    let r = ((depth as f64).ln() * (moves as f64).ln() / c) as i32;
                     LMR_TABLE[depth][moves] = r.min((depth - 2) as i32);
                 }
-                // Capture table: C=1.80 (less reduction for captures)
+                // Capture table: C from tunable (default 180 = 1.80)
                 if depth >= 3 && moves >= 3 {
-                    let r = ((depth as f64).ln() * (moves as f64).ln() / 1.80) as i32;
+                    let c = tp(&LMR_C_CAP) as f64 / 100.0;
+                    let r = ((depth as f64).ln() * (moves as f64).ln() / c) as i32;
                     LMR_TABLE_CAP[depth][moves] = r.min((depth - 2) as i32);
                 }
             }
@@ -934,7 +966,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Eval-dependent aspiration delta: wider for extreme scores (Reckless pattern)
             // Calm positions (avg~0): delta=13, winning (avg~500): delta=24, crushing (avg~1000): delta=55
             let avg = prev_score;
-            let mut delta = 13 + (avg as i64 * avg as i64 / 23660) as i32;
+            let mut delta = tp(&ASP_DELTA) + (avg as i64 * avg as i64 / tp(&ASP_SCORE_DIV) as i64) as i32;
             let mut alpha = (prev_score - delta).max(-INFINITY);
             let mut beta = (prev_score + delta).min(INFINITY);
             let mut asp_depth = depth;
@@ -1412,7 +1444,7 @@ fn negamax(
         // Both sides optimistic about their position (eval_sum > threshold)
         // correlates with quiet positions where reduction is safe.
         let eval_sum = info.static_evals[ply_u - 1] + static_eval;
-        if eval_sum > 195 {
+        if eval_sum > tp(&HINDSIGHT_THRESH) {
             depth -= 1;
         }
     }
@@ -1499,7 +1531,7 @@ fn negamax(
 
     // ProbCut: at moderate+ depths, if a shallow search of captures with
     // raised beta confirms the position is winning, prune the node
-    let probcut_beta = beta + 170;
+    let probcut_beta = beta + tp(&PROBCUT_MARGIN);
     if !in_check && ply > 0 && depth >= 5
         && beta.abs() < MATE_SCORE - 100  // skip for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
@@ -1741,7 +1773,7 @@ fn negamax(
         // Bad noisy flag: identify losing captures for tighter futility pruning
         let is_bad_noisy = FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= 4 && mv != tt_move
             && !is_promo && best_score > -(MATE_SCORE - 100)
-            && static_eval > -INFINITY && static_eval + depth * 75 <= alpha
+            && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
             && !see_ge(board, mv, 0);
 
         // Build NNUE dirty piece info BEFORE make_move
@@ -1796,12 +1828,12 @@ fn negamax(
         }
 
         // Late Move Pruning: at shallow depths, skip late quiet moves
-        if ply > 0 && !in_check && depth >= 1 && depth <= 8
+        if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
             && !is_cap && !is_promo && !gives_check
             && best_score > -(MATE_SCORE - 100) && beta - alpha == 1
             && FEAT_LMP.load(Ordering::Relaxed)
         {
-            let mut lmp_limit = 3 + depth * depth;
+            let mut lmp_limit = tp(&LMP_BASE) + depth * depth;
             if improving && depth >= 3 {
                 lmp_limit += lmp_limit / 2;
             }
