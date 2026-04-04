@@ -83,7 +83,7 @@ net.txt            Production NNUE net URL (used by make net / fetch-net)
 Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from depth 4). Lazy SMP: helper threads search at offset depths sharing the TT (atomic) and stop flag.
 
 **Pruning features:**
-- NMP: R=4+depth/3 + (eval-beta)/200, eval>=beta guard, verify at depth>=12, post-capture R--, NMP score dampening (score*2+beta)/3
+- NMP: R=4+depth/3 + (eval-beta)/200, eval>=beta guard, depth>=3, verify at depth>=12 (depth-r), post-capture R--, NMP score dampening (score*2+beta)/3. All parameters SPSA-tunable.
 - RFP: depth<=7, margin improving?70*d:100*d, returns staticEval-margin
 - Futility: 90+lmrDepth*100+histAdj/128, depth<=8, uses estimated LMR depth
 - LMR: separate quiet (C=1.30) and capture (C=1.80) tables, doDeeper/doShallower
@@ -296,7 +296,7 @@ Where:
 Examples: `net-v5-1024-w0-e120s120.nnue`, `net-v5-1024s-w5-e400s400.nnue`, `net-v7-1024h16x32s-w0-e800s800.nnue`
 
 ## Key Search Parameters
-- NMP: R=4+depth/3, divisor 200, verify depth>=12
+- NMP: R=4+depth/3, divisor 200, depth>=3, verify depth>=12 (depth-r), dampening (score*2+beta)/3
 - RFP: depth<=7, margin improving?70*d:100*d
 - Futility: 90+lmrDepth*100+histAdj/128, depth<=8
 - LMR: quiet C=1.30, capture C=1.80
@@ -388,7 +388,7 @@ cutechess-cli \
 ```
 Fix razoring margin at depth 2
 
-Bench: 1375565
+Bench: 1443162
 ```
 
 If the change doesn't affect bench (e.g. comments, docs, tooling), the bench line is optional.
@@ -416,7 +416,17 @@ If the change doesn't affect bench (e.g. comments, docs, tooling), the bench lin
 - Code cleanup that doesn't change compiled output (verify with bench)
 - New feature flags (disabled by default)
 
-**OpenBench test submission:** Use `scripts/ob_submit.py` or the web UI. Reference NPS is 500K. Default bounds [0.00, 5.00] for novel changes. Always verify bench matches before submitting.
+**OpenBench test submission:** Use `scripts/ob_submit.py` or the web UI at https://ob.atwiss.com/. Reference NPS is 500K. Default bounds [0.00, 5.00] for novel changes. Always verify bench matches before submitting.
+
+**Current bench: 1443162** (with production net, x86-64). Update this when search changes are merged.
+
+### SPSA Parameter Tuning
+
+26 search parameters are exposed as UCI options for SPSA optimization via OpenBench. Create a "Tune" workload (not "Test") on the web UI. Key parameters: NMP (base R, depth divisor, eval divisor, eval max, verify depth), RFP (depth, margins), futility (base, per-depth), history pruning (depth, multiplier), SEE pruning (quiet/capture multipliers), LMR (history divisor, C values for quiet/capture), LMP (base, depth), aspiration (delta, score divisor), probcut margin, hindsight threshold, SE depth.
+
+SPSA format per parameter: `NAME, int, default, min, max, c_end, r_end`
+
+When LMR_C_QUIET or LMR_C_CAP change, LMR tables are automatically reinitialized.
 
 ### Cross-Engine Validation (secondary, for milestones)
 
