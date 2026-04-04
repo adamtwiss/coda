@@ -529,8 +529,11 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
 
 /// Update correction history entry with gravity.
 fn update_corr_entry(entry: &mut i32, err: i32, weight: i32) {
-    let new_val = (*entry * (CORR_HIST_GRAIN - weight) + err * CORR_HIST_GRAIN * weight) / CORR_HIST_GRAIN;
-    *entry = new_val.clamp(-CORR_HIST_LIMIT, CORR_HIST_LIMIT);
+    // Proportional gravity (consensus: every top engine uses this)
+    // Self-limiting: values near the limit get pulled back harder
+    let bonus = (err * weight).clamp(-CORR_HIST_LIMIT / 4, CORR_HIST_LIMIT / 4);
+    *entry += bonus - *entry * bonus.abs() / CORR_HIST_LIMIT;
+    *entry = (*entry).clamp(-CORR_HIST_LIMIT, CORR_HIST_LIMIT);
 }
 
 /// Update all correction history tables.
