@@ -36,29 +36,29 @@ macro_rules! tunable {
 // NMP parameters
 tunable!(NMP_BASE_R,         3,    2,    8);
 tunable!(NMP_DEPTH_DIV,      4,    2,    6);    // R = base + depth/div
-tunable!(NMP_EVAL_DIV,     164,  100,  400);    // eval bonus = (eval-beta)/div
+tunable!(NMP_EVAL_DIV,     158,  100,  400);    // eval bonus = (eval-beta)/div
 tunable!(NMP_EVAL_MAX,       2,    1,    6);    // max eval bonus
-tunable!(NMP_VERIFY_DEPTH, 13,    8,   20);    // depth threshold for verification
+tunable!(NMP_VERIFY_DEPTH, 14,    8,   20);    // depth threshold for verification
 
 // RFP parameters
 tunable!(RFP_DEPTH,          6,    4,   10);
-tunable!(RFP_MARGIN_IMP,    84,   30,  150);    // margin when improving
-tunable!(RFP_MARGIN_NOIMP, 107,   50,  200);    // margin when not improving
+tunable!(RFP_MARGIN_IMP,    91,   30,  150);    // margin when improving
+tunable!(RFP_MARGIN_NOIMP, 114,   50,  200);    // margin when not improving
 
 // Futility parameters
-tunable!(FUT_BASE,          103,   20,  200);
-tunable!(FUT_PER_DEPTH,    109,   40,  250);
+tunable!(FUT_BASE,          98,   20,  200);
+tunable!(FUT_PER_DEPTH,    102,   40,  250);
 
 // History pruning
 tunable!(HIST_PRUNE_DEPTH,   2,    1,    8);
-tunable!(HIST_PRUNE_MULT, 1558,  500, 5000);   // threshold = -mult * depth
+tunable!(HIST_PRUNE_MULT, 1460,  500, 5000);   // threshold = -mult * depth
 
 // SEE pruning
 tunable!(SEE_QUIET_MULT,   18,    5,   50);    // threshold = -mult * depth²
-tunable!(SEE_CAP_MULT,    106,   30,  200);    // threshold = -mult * depth
+tunable!(SEE_CAP_MULT,    105,   30,  200);    // threshold = -mult * depth
 
 // LMR history divisor
-tunable!(LMR_HIST_DIV,   5489, 2000, 15000);
+tunable!(LMR_HIST_DIV,   5327, 2000, 15000);
 
 // Singular extensions
 tunable!(SE_DEPTH,           9,    4,   12);
