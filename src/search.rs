@@ -34,34 +34,34 @@ macro_rules! tunable {
 }
 
 // NMP parameters
-tunable!(NMP_BASE_R,         4,    2,    8);
-tunable!(NMP_DEPTH_DIV,      3,    2,    6);    // R = base + depth/div
-tunable!(NMP_EVAL_DIV,     200,  100,  400);    // eval bonus = (eval-beta)/div
-tunable!(NMP_EVAL_MAX,       3,    1,    6);    // max eval bonus
-tunable!(NMP_VERIFY_DEPTH, 12,    8,   20);    // depth threshold for verification
+tunable!(NMP_BASE_R,         3,    2,    8);
+tunable!(NMP_DEPTH_DIV,      4,    2,    6);    // R = base + depth/div
+tunable!(NMP_EVAL_DIV,     164,  100,  400);    // eval bonus = (eval-beta)/div
+tunable!(NMP_EVAL_MAX,       2,    1,    6);    // max eval bonus
+tunable!(NMP_VERIFY_DEPTH, 13,    8,   20);    // depth threshold for verification
 
 // RFP parameters
-tunable!(RFP_DEPTH,          7,    4,   10);
-tunable!(RFP_MARGIN_IMP,    70,   30,  150);    // margin when improving
-tunable!(RFP_MARGIN_NOIMP, 100,   50,  200);    // margin when not improving
+tunable!(RFP_DEPTH,          6,    4,   10);
+tunable!(RFP_MARGIN_IMP,    84,   30,  150);    // margin when improving
+tunable!(RFP_MARGIN_NOIMP, 107,   50,  200);    // margin when not improving
 
 // Futility parameters
-tunable!(FUT_BASE,          90,   20,  200);
-tunable!(FUT_PER_DEPTH,    100,   40,  250);
+tunable!(FUT_BASE,          103,   20,  200);
+tunable!(FUT_PER_DEPTH,    109,   40,  250);
 
 // History pruning
-tunable!(HIST_PRUNE_DEPTH,   3,    1,    8);
-tunable!(HIST_PRUNE_MULT, 1500,  500, 5000);   // threshold = -mult * depth
+tunable!(HIST_PRUNE_DEPTH,   2,    1,    8);
+tunable!(HIST_PRUNE_MULT, 1558,  500, 5000);   // threshold = -mult * depth
 
 // SEE pruning
-tunable!(SEE_QUIET_MULT,   20,    5,   50);    // threshold = -mult * depth²
-tunable!(SEE_CAP_MULT,    100,   30,  200);    // threshold = -mult * depth
+tunable!(SEE_QUIET_MULT,   18,    5,   50);    // threshold = -mult * depth²
+tunable!(SEE_CAP_MULT,    106,   30,  200);    // threshold = -mult * depth
 
 // LMR history divisor
-tunable!(LMR_HIST_DIV,   5000, 2000, 15000);
+tunable!(LMR_HIST_DIV,   5489, 2000, 15000);
 
 // Singular extensions
-tunable!(SE_DEPTH,           8,    4,   12);
+tunable!(SE_DEPTH,           9,    4,   12);
 
 // Aspiration windows
 tunable!(ASP_DELTA,         13,    5,   30);     // initial delta
@@ -93,22 +93,22 @@ fn tp(param: &AtomicI32) -> i32 {
 /// List of all tunable parameters for UCI/SPSA
 pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32)> {
     vec![
-        ("NMP_BASE_R",         &NMP_BASE_R,         4,    2,    8),
-        ("NMP_DEPTH_DIV",      &NMP_DEPTH_DIV,      3,    2,    6),
-        ("NMP_EVAL_DIV",       &NMP_EVAL_DIV,      200, 100,  400),
-        ("NMP_EVAL_MAX",       &NMP_EVAL_MAX,        3,    1,    6),
-        ("NMP_VERIFY_DEPTH",   &NMP_VERIFY_DEPTH,   12,    8,   20),
-        ("RFP_DEPTH",          &RFP_DEPTH,           7,    4,   10),
-        ("RFP_MARGIN_IMP",     &RFP_MARGIN_IMP,     70,   30,  150),
-        ("RFP_MARGIN_NOIMP",   &RFP_MARGIN_NOIMP,  100,   50,  200),
-        ("FUT_BASE",           &FUT_BASE,            90,   20,  200),
-        ("FUT_PER_DEPTH",      &FUT_PER_DEPTH,      100,   40,  250),
-        ("HIST_PRUNE_DEPTH",   &HIST_PRUNE_DEPTH,    3,    1,    8),
-        ("HIST_PRUNE_MULT",    &HIST_PRUNE_MULT,  1500,  500, 5000),
-        ("SEE_QUIET_MULT",     &SEE_QUIET_MULT,     20,    5,   50),
-        ("SEE_CAP_MULT",       &SEE_CAP_MULT,      100,   30,  200),
-        ("LMR_HIST_DIV",       &LMR_HIST_DIV,     5000, 2000, 15000),
-        ("SE_DEPTH",           &SE_DEPTH,             8,    4,   12),
+        ("NMP_BASE_R",         &NMP_BASE_R,         3,    2,    8),
+        ("NMP_DEPTH_DIV",      &NMP_DEPTH_DIV,      4,    2,    6),
+        ("NMP_EVAL_DIV",       &NMP_EVAL_DIV,      164, 100,  400),
+        ("NMP_EVAL_MAX",       &NMP_EVAL_MAX,        2,    1,    6),
+        ("NMP_VERIFY_DEPTH",   &NMP_VERIFY_DEPTH,   13,    8,   20),
+        ("RFP_DEPTH",          &RFP_DEPTH,           6,    4,   10),
+        ("RFP_MARGIN_IMP",     &RFP_MARGIN_IMP,     84,   30,  150),
+        ("RFP_MARGIN_NOIMP",   &RFP_MARGIN_NOIMP,  107,   50,  200),
+        ("FUT_BASE",           &FUT_BASE,            103,   20,  200),
+        ("FUT_PER_DEPTH",      &FUT_PER_DEPTH,      109,   40,  250),
+        ("HIST_PRUNE_DEPTH",   &HIST_PRUNE_DEPTH,    2,    1,    8),
+        ("HIST_PRUNE_MULT",    &HIST_PRUNE_MULT,  1558,  500, 5000),
+        ("SEE_QUIET_MULT",     &SEE_QUIET_MULT,     18,    5,   50),
+        ("SEE_CAP_MULT",       &SEE_CAP_MULT,      106,   30,  200),
+        ("LMR_HIST_DIV",       &LMR_HIST_DIV,     5489, 2000, 15000),
+        ("SE_DEPTH",           &SE_DEPTH,             9,    4,   12),
         ("ASP_DELTA",          &ASP_DELTA,            13,    5,   30),
         ("ASP_SCORE_DIV",      &ASP_SCORE_DIV,     23660, 8000, 50000),
         ("LMR_C_QUIET",        &LMR_C_QUIET,        130,   80,  300),
