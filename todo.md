@@ -7,6 +7,10 @@ Mark items DONE with date when completed. Move to experiments.md when tested.
 
 ### High Priority — Untested or Conditions Changed
 
+- [ ] **Store moved piece in search stack** — Currently ply-2 cont hist looks up piece via `board.piece_at(move_to(pm2))` which returns stale/wrong piece ~10-20% of the time (when ply-1 captured on that square). This makes ply-2 pruning catastrophic (-58 Elo) and degrades ply-2 LMR. Fix: add `moved_piece` field to per-ply search info, set before make_move. Enables correct ply-2+ cont hist for both LMR and pruning. Do when branch backlog is clear.
+- [ ] **Node-based time management** — Concept proven (every top engine), but implementation failed twice (-31, -10). Needs: per-iteration node reset (done), correct parameters (Berserk 2.27/0.45 too aggressive for us), depth gate >= 6 (done). Try more conservative params or Alexandria-style (0.63 + notBest * 2.0).
+- [ ] **Const attack tables + runtime PEXT reconciliation** — Const tables showed +1-2 Elo but conflicts with runtime AMD PEXT detection (+20% NPS). Need to make both coexist.
+
 - [ ] **Retry: No killers / counter-move** — was -530 with old search, but we now have 4D threat-aware history which is the prerequisite SF/Reckless/Viridithas used when dropping killers. #1 retest priority.
 - [ ] **SE margin tuning** — SE just added (2026-03-30) with GoChess params (depth>=8, margin=depth, verify=(depth-1)/2). Never tuned for Coda. Try margin=depth*2/3, depth gate 6 or 10, double-ext margin 20/25.
 - [ ] **Weiss NMP skip after null move** — anti-chain NMP. From Batch C, never tested.
