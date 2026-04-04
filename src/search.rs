@@ -955,7 +955,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     alpha = (result - delta).max(-INFINITY);
                 } else if result >= beta {
                     // Fail high: contract alpha toward beta, widen beta
-                    alpha = (5 * alpha + 3 * beta) / 8;
+                    // No alpha contraction on fail-high (consensus: 4/5 engines)
                     beta = (result + delta).min(INFINITY);
                     // Reduce depth for re-search (Alexandria/Midnight/Seer pattern)
                     asp_depth = (asp_depth - 1).max(1);
