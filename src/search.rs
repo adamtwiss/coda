@@ -36,53 +36,53 @@ macro_rules! tunable {
 // NMP parameters
 tunable!(NMP_BASE_R,         3,    2,    8);
 tunable!(NMP_DEPTH_DIV,      4,    2,    6);    // R = base + depth/div
-tunable!(NMP_EVAL_DIV,     158,  100,  400);    // eval bonus = (eval-beta)/div
+tunable!(NMP_EVAL_DIV,     143,  100,  400);    // eval bonus = (eval-beta)/div
 tunable!(NMP_EVAL_MAX,       2,    1,    6);    // max eval bonus
-tunable!(NMP_VERIFY_DEPTH, 14,    8,   20);    // depth threshold for verification
+tunable!(NMP_VERIFY_DEPTH, 13,    8,   20);    // depth threshold for verification
 
 // RFP parameters
 tunable!(RFP_DEPTH,          6,    4,   10);
-tunable!(RFP_MARGIN_IMP,    91,   30,  150);    // margin when improving
-tunable!(RFP_MARGIN_NOIMP, 114,   50,  200);    // margin when not improving
+tunable!(RFP_MARGIN_IMP,    94,   30,  150);    // margin when improving
+tunable!(RFP_MARGIN_NOIMP, 134,   50,  200);    // margin when not improving
 
 // Futility parameters
-tunable!(FUT_BASE,          98,   20,  200);
-tunable!(FUT_PER_DEPTH,    102,   40,  250);
+tunable!(FUT_BASE,          88,   20,  200);
+tunable!(FUT_PER_DEPTH,    116,   40,  250);
 
 // History pruning
 tunable!(HIST_PRUNE_DEPTH,   2,    1,    8);
-tunable!(HIST_PRUNE_MULT, 1460,  500, 5000);   // threshold = -mult * depth
+tunable!(HIST_PRUNE_MULT, 1471,  500, 5000);   // threshold = -mult * depth
 
 // SEE pruning
-tunable!(SEE_QUIET_MULT,   18,    5,   50);    // threshold = -mult * depth²
-tunable!(SEE_CAP_MULT,    105,   30,  200);    // threshold = -mult * depth
+tunable!(SEE_QUIET_MULT,   17,    5,   50);    // threshold = -mult * depth²
+tunable!(SEE_CAP_MULT,    114,   30,  200);    // threshold = -mult * depth
 
 // LMR history divisor
-tunable!(LMR_HIST_DIV,   5327, 2000, 15000);
+tunable!(LMR_HIST_DIV,   4692, 2000, 15000);
 
 // Singular extensions
-tunable!(SE_DEPTH,           9,    4,   12);
+tunable!(SE_DEPTH,           10,    4,   12);
 
 // Aspiration windows
 tunable!(ASP_DELTA,         13,    5,   30);     // initial delta
-tunable!(ASP_SCORE_DIV,  23660, 8000, 50000);   // score-dependent delta divisor
+tunable!(ASP_SCORE_DIV,  28601, 8000, 50000);   // score-dependent delta divisor
 
 // LMR (C value * 100 for integer representation)
-tunable!(LMR_C_QUIET,     130,   80,  300);     // quiet LMR constant (divided by 100)
-tunable!(LMR_C_CAP,       180,  100,  350);     // capture LMR constant (divided by 100)
+tunable!(LMR_C_QUIET,     134,   80,  300);     // quiet LMR constant (divided by 100)
+tunable!(LMR_C_CAP,       179,  100,  350);     // capture LMR constant (divided by 100)
 
 // LMP
-tunable!(LMP_BASE,           3,    1,    6);
+tunable!(LMP_BASE,           1,    1,    6);
 tunable!(LMP_DEPTH,          8,    4,   12);
 
 // Bad noisy
-tunable!(BAD_NOISY_MARGIN,  75,   30,  150);    // depth * margin
+tunable!(BAD_NOISY_MARGIN,  79,   30,  150);    // depth * margin
 
 // ProbCut
-tunable!(PROBCUT_MARGIN,   170,   80,  300);
+tunable!(PROBCUT_MARGIN,   166,   80,  300);
 
 // Hindsight
-tunable!(HINDSIGHT_THRESH, 195,   50,  400);
+tunable!(HINDSIGHT_THRESH, 186,   50,  400);
 
 // QS parameters
 tunable!(QS_DELTA_MARGIN,  240,  100,  500);    // delta pruning margin in QS
@@ -108,29 +108,29 @@ pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32)
     vec![
         ("NMP_BASE_R",         &NMP_BASE_R,         3,    2,    8),
         ("NMP_DEPTH_DIV",      &NMP_DEPTH_DIV,      4,    2,    6),
-        ("NMP_EVAL_DIV",       &NMP_EVAL_DIV,      158, 100,  400),
+        ("NMP_EVAL_DIV",       &NMP_EVAL_DIV,      143, 100,  400),
         ("NMP_EVAL_MAX",       &NMP_EVAL_MAX,        2,    1,    6),
-        ("NMP_VERIFY_DEPTH",   &NMP_VERIFY_DEPTH,   14,    8,   20),
+        ("NMP_VERIFY_DEPTH",   &NMP_VERIFY_DEPTH,   13,    8,   20),
         ("RFP_DEPTH",          &RFP_DEPTH,           6,    4,   10),
-        ("RFP_MARGIN_IMP",     &RFP_MARGIN_IMP,     91,   30,  150),
-        ("RFP_MARGIN_NOIMP",   &RFP_MARGIN_NOIMP,  114,   50,  200),
-        ("FUT_BASE",           &FUT_BASE,            98,   20,  200),
-        ("FUT_PER_DEPTH",      &FUT_PER_DEPTH,      102,   40,  250),
+        ("RFP_MARGIN_IMP",     &RFP_MARGIN_IMP,     94,   30,  150),
+        ("RFP_MARGIN_NOIMP",   &RFP_MARGIN_NOIMP,  134,   50,  200),
+        ("FUT_BASE",           &FUT_BASE,            88,   20,  200),
+        ("FUT_PER_DEPTH",      &FUT_PER_DEPTH,      116,   40,  250),
         ("HIST_PRUNE_DEPTH",   &HIST_PRUNE_DEPTH,    2,    1,    8),
-        ("HIST_PRUNE_MULT",    &HIST_PRUNE_MULT,  1460,  500, 5000),
-        ("SEE_QUIET_MULT",     &SEE_QUIET_MULT,     18,    5,   50),
-        ("SEE_CAP_MULT",       &SEE_CAP_MULT,      105,   30,  200),
-        ("LMR_HIST_DIV",       &LMR_HIST_DIV,     5327, 2000, 15000),
-        ("SE_DEPTH",           &SE_DEPTH,             9,    4,   12),
+        ("HIST_PRUNE_MULT",    &HIST_PRUNE_MULT,  1471,  500, 5000),
+        ("SEE_QUIET_MULT",     &SEE_QUIET_MULT,     17,    5,   50),
+        ("SEE_CAP_MULT",       &SEE_CAP_MULT,      114,   30,  200),
+        ("LMR_HIST_DIV",       &LMR_HIST_DIV,     4692, 2000, 15000),
+        ("SE_DEPTH",           &SE_DEPTH,             10,    4,   12),
         ("ASP_DELTA",          &ASP_DELTA,            13,    5,   30),
-        ("ASP_SCORE_DIV",      &ASP_SCORE_DIV,     23660, 8000, 50000),
-        ("LMR_C_QUIET",        &LMR_C_QUIET,        130,   80,  300),
-        ("LMR_C_CAP",          &LMR_C_CAP,          180,  100,  350),
-        ("LMP_BASE",           &LMP_BASE,              3,    1,    6),
+        ("ASP_SCORE_DIV",      &ASP_SCORE_DIV,     28601, 8000, 50000),
+        ("LMR_C_QUIET",        &LMR_C_QUIET,        134,   80,  300),
+        ("LMR_C_CAP",          &LMR_C_CAP,          179,  100,  350),
+        ("LMP_BASE",           &LMP_BASE,              1,    1,    6),
         ("LMP_DEPTH",          &LMP_DEPTH,             8,    4,   12),
-        ("BAD_NOISY_MARGIN",   &BAD_NOISY_MARGIN,     75,   30,  150),
-        ("PROBCUT_MARGIN",     &PROBCUT_MARGIN,       170,   80,  300),
-        ("HINDSIGHT_THRESH",   &HINDSIGHT_THRESH,     195,   50,  400),
+        ("BAD_NOISY_MARGIN",   &BAD_NOISY_MARGIN,     79,   30,  150),
+        ("PROBCUT_MARGIN",     &PROBCUT_MARGIN,       166,   80,  300),
+        ("HINDSIGHT_THRESH",   &HINDSIGHT_THRESH,     186,   50,  400),
         ("QS_DELTA_MARGIN",    &QS_DELTA_MARGIN,      240,  100,  500),
         ("CORR_W_PAWN",        &CORR_W_PAWN,          384,  100,  600),
         ("CORR_W_NP",          &CORR_W_NP,            154,   50,  400),
