@@ -84,6 +84,19 @@ tunable!(PROBCUT_MARGIN,   170,   80,  300);
 // Hindsight
 tunable!(HINDSIGHT_THRESH, 195,   50,  400);
 
+// QS parameters
+tunable!(QS_DELTA_MARGIN,  240,  100,  500);    // delta pruning margin in QS
+
+// Correction history weights (sum should be ~1024 for /1024 normalization)
+tunable!(CORR_W_PAWN,      384,  100,  600);
+tunable!(CORR_W_NP,        154,   50,  400);    // per-color non-pawn weight
+tunable!(CORR_W_MINOR,     102,   30,  300);
+tunable!(CORR_W_MAJOR,     102,   30,  300);
+tunable!(CORR_W_CONT,      128,   30,  400);
+
+// Fail-high blend
+tunable!(FH_BLEND_DEPTH,     3,    1,    8);    // minimum depth for fail-high blending
+
 /// Get a tunable parameter value (inline for hot paths)
 #[inline(always)]
 fn tp(param: &AtomicI32) -> i32 {
@@ -118,6 +131,13 @@ pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32)
         ("BAD_NOISY_MARGIN",   &BAD_NOISY_MARGIN,     75,   30,  150),
         ("PROBCUT_MARGIN",     &PROBCUT_MARGIN,       170,   80,  300),
         ("HINDSIGHT_THRESH",   &HINDSIGHT_THRESH,     195,   50,  400),
+        ("QS_DELTA_MARGIN",    &QS_DELTA_MARGIN,      240,  100,  500),
+        ("CORR_W_PAWN",        &CORR_W_PAWN,          384,  100,  600),
+        ("CORR_W_NP",          &CORR_W_NP,            154,   50,  400),
+        ("CORR_W_MINOR",       &CORR_W_MINOR,         102,   30,  300),
+        ("CORR_W_MAJOR",       &CORR_W_MAJOR,         102,   30,  300),
+        ("CORR_W_CONT",        &CORR_W_CONT,          128,   30,  400),
+        ("FH_BLEND_DEPTH",     &FH_BLEND_DEPTH,         3,    1,    8),
     ]
 }
 
@@ -558,8 +578,8 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
     } else { 0 };
 
     // Weighted blend: pawn 384, whiteNP 154, blackNP 154, minor 102, major 102, cont 128 = 1024
-    let total_corr = (pawn_corr * 384 + white_np_corr * 154 + black_np_corr * 154
-        + minor_corr * 102 + major_corr * 102 + cont_corr * 128) / 1024;
+    let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
+        + minor_corr * tp(&CORR_W_MINOR) as i64 + major_corr * tp(&CORR_W_MAJOR) as i64 + cont_corr * tp(&CORR_W_CONT) as i64) / 1024;
     let adjusted = raw_eval + (total_corr as i32) / CORR_HIST_GRAIN;
     adjusted.clamp(-MATE_SCORE + 100, MATE_SCORE - 100)
 }
@@ -2321,7 +2341,7 @@ fn negamax(
     }
 
     // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes
-    if best_score >= beta && beta - alpha_orig == 1 && depth >= 3
+    if best_score >= beta && beta - alpha_orig == 1 && depth >= tp(&FH_BLEND_DEPTH)
         && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
     {
         return (best_score * depth + beta) / (depth + 1);
@@ -2684,7 +2704,7 @@ fn quiescence_with_depth(
                 board.piece_type_at(cap_to)
             };
             if cap_pt != NO_PIECE_TYPE && (cap_pt as usize) < 6 {
-                if stand_pat + see_value(cap_pt) + 240 <= alpha {
+                if stand_pat + see_value(cap_pt) + tp(&QS_DELTA_MARGIN) <= alpha {
                     continue;
                 }
             }
