@@ -1496,8 +1496,9 @@ fn negamax(
         }
 
         if null_score >= beta {
-            // NMP score dampening: blend toward beta to prevent inflated scores
-            let dampened = (null_score * 2 + beta) / 3;
+            // Return null score directly (no dampening — no top engine uses it)
+            // Clamp mate scores to beta to avoid inflated mate distance
+            let nmp_score = if null_score.abs() > MATE_SCORE - 100 { beta } else { null_score };
 
             // Verification search at high depths to guard against zugzwang
             if depth >= tp(&NMP_VERIFY_DEPTH) {
@@ -1505,12 +1506,12 @@ fn negamax(
                 let v_score = negamax(board, info, beta - 1, beta, depth - r, ply + 1, false);
                 if v_score >= beta {
                     info.stats.nmp_cutoffs += 1;
-                    return dampened;
+                    return nmp_score;
                 }
                 info.stats.nmp_verify_fail += 1;
             } else {
                 info.stats.nmp_cutoffs += 1;
-                return dampened;
+                return nmp_score;
             }
         } else {
             // NMP failed low: extract opponent's best reply from TT for threat detection
