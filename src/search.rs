@@ -38,61 +38,61 @@ tunable!(NMP_BASE_R,         3,    2,    8);
 tunable!(NMP_DEPTH_DIV,      4,    2,    6);    // R = base + depth/div
 tunable!(NMP_EVAL_DIV,     143,  100,  400);    // eval bonus = (eval-beta)/div
 tunable!(NMP_EVAL_MAX,       2,    1,    6);    // max eval bonus
-tunable!(NMP_VERIFY_DEPTH, 13,    8,   20);    // depth threshold for verification
+tunable!(NMP_VERIFY_DEPTH,  14,    8,   20);    // depth threshold for verification
 
 // RFP parameters
 tunable!(RFP_DEPTH,          6,    4,   10);
-tunable!(RFP_MARGIN_IMP,    94,   30,  150);    // margin when improving
-tunable!(RFP_MARGIN_NOIMP, 134,   50,  200);    // margin when not improving
+tunable!(RFP_MARGIN_IMP,    99,   30,  150);    // margin when improving
+tunable!(RFP_MARGIN_NOIMP, 131,   50,  200);    // margin when not improving
 
 // Futility parameters
-tunable!(FUT_BASE,          88,   20,  200);
-tunable!(FUT_PER_DEPTH,    116,   40,  250);
+tunable!(FUT_BASE,          86,   20,  200);
+tunable!(FUT_PER_DEPTH,    109,   40,  250);
 
 // History pruning
-tunable!(HIST_PRUNE_DEPTH,   2,    1,    8);
-tunable!(HIST_PRUNE_MULT, 1471,  500, 5000);   // threshold = -mult * depth
+tunable!(HIST_PRUNE_DEPTH,   3,    1,    8);
+tunable!(HIST_PRUNE_MULT, 1407,  500, 5000);   // threshold = -mult * depth
 
 // SEE pruning
-tunable!(SEE_QUIET_MULT,   17,    5,   50);    // threshold = -mult * depth²
-tunable!(SEE_CAP_MULT,    114,   30,  200);    // threshold = -mult * depth
+tunable!(SEE_QUIET_MULT,   15,    5,   50);    // threshold = -mult * depth²
+tunable!(SEE_CAP_MULT,    116,   30,  200);    // threshold = -mult * depth
 
 // LMR history divisor
-tunable!(LMR_HIST_DIV,   4692, 2000, 15000);
+tunable!(LMR_HIST_DIV,   4383, 2000, 15000);
 
 // Singular extensions
 tunable!(SE_DEPTH,           10,    4,   12);
 
 // Aspiration windows
 tunable!(ASP_DELTA,         13,    5,   30);     // initial delta
-tunable!(ASP_SCORE_DIV,  28601, 8000, 50000);   // score-dependent delta divisor
+tunable!(ASP_SCORE_DIV,  28450, 8000, 50000);   // score-dependent delta divisor
 
 // LMR (C value * 100 for integer representation)
-tunable!(LMR_C_QUIET,     134,   80,  300);     // quiet LMR constant (divided by 100)
-tunable!(LMR_C_CAP,       179,  100,  350);     // capture LMR constant (divided by 100)
+tunable!(LMR_C_QUIET,     137,   80,  300);     // quiet LMR constant (divided by 100)
+tunable!(LMR_C_CAP,       177,  100,  350);     // capture LMR constant (divided by 100)
 
 // LMP
 tunable!(LMP_BASE,           1,    1,    6);
 tunable!(LMP_DEPTH,          8,    4,   12);
 
 // Bad noisy
-tunable!(BAD_NOISY_MARGIN,  79,   30,  150);    // depth * margin
+tunable!(BAD_NOISY_MARGIN,  80,   30,  150);    // depth * margin
 
 // ProbCut
-tunable!(PROBCUT_MARGIN,   166,   80,  300);
+tunable!(PROBCUT_MARGIN,   171,   80,  300);
 
 // Hindsight
-tunable!(HINDSIGHT_THRESH, 186,   50,  400);
+tunable!(HINDSIGHT_THRESH, 203,   50,  400);
 
 // QS parameters
-tunable!(QS_DELTA_MARGIN,  240,  100,  500);    // delta pruning margin in QS
+tunable!(QS_DELTA_MARGIN,  234,  100,  500);    // delta pruning margin in QS
 
 // Correction history weights (sum should be ~1024 for /1024 normalization)
-tunable!(CORR_W_PAWN,      384,  100,  600);
-tunable!(CORR_W_NP,        154,   50,  400);    // per-color non-pawn weight
-tunable!(CORR_W_MINOR,     102,   30,  300);
-tunable!(CORR_W_MAJOR,     102,   30,  300);
-tunable!(CORR_W_CONT,      128,   30,  400);
+tunable!(CORR_W_PAWN,      421,  100,  600);
+tunable!(CORR_W_NP,        151,   50,  400);    // per-color non-pawn weight
+tunable!(CORR_W_MINOR,     100,   30,  300);
+tunable!(CORR_W_MAJOR,     101,   30,  300);
+tunable!(CORR_W_CONT,      121,   30,  400);
 
 // Fail-high blend
 tunable!(FH_BLEND_DEPTH,     3,    1,    8);    // minimum depth for fail-high blending
