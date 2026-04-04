@@ -370,6 +370,69 @@ impl SearchInfo {
         Ok(())
     }
 
+    /// Auto-discover NNUE net. Single source of truth for all code paths (UCI, bench, etc).
+    /// Priority: embedded (fat binary) > net.nnue on disk > net.txt filename discovery.
+    /// Returns true if a net was loaded.
+    pub fn auto_discover_nnue(&mut self) -> bool {
+        // 1. Embedded net (compiled in via CODA_EVALFILE env var during build)
+        #[cfg(feature = "embedded-net")]
+        {
+            static EMBEDDED_NET: &[u8] = include_bytes!(env!("CODA_EVALFILE"));
+            match crate::nnue::NNUENet::load_from_bytes(EMBEDDED_NET) {
+                Ok(net) => {
+                    let acc = crate::nnue::NNUEAccumulator::new(net.hidden_size);
+                    self.nnue_net = Some(std::sync::Arc::new(net));
+                    self.nnue_acc = Some(acc);
+                    return true;
+                }
+                Err(e) => {
+                    eprintln!("WARNING: embedded NNUE corrupt: {}", e);
+                }
+            }
+        }
+
+        // 2. net.nnue in exe dir or CWD
+        let net_nnue_paths = [
+            std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.nnue"))),
+            Some(std::path::PathBuf::from("net.nnue")),
+        ];
+        for maybe_path in &net_nnue_paths {
+            if let Some(path) = maybe_path {
+                if path.exists() {
+                    if let Ok(()) = self.load_nnue(path.to_str().unwrap()) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // 3. net.txt discovery (extract filename from URL)
+        let net_txt_paths = [
+            std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.txt"))),
+            Some(std::path::PathBuf::from("net.txt")),
+        ];
+        for maybe_path in &net_txt_paths {
+            if let Some(path) = maybe_path {
+                if path.exists() {
+                    if let Ok(contents) = std::fs::read_to_string(path) {
+                        let url = contents.trim();
+                        if let Some(fname) = url.rsplit('/').next() {
+                            let net_dir = path.parent().unwrap_or(std::path::Path::new("."));
+                            let net_path = net_dir.join(fname);
+                            if net_path.exists() {
+                                if let Ok(()) = self.load_nnue(net_path.to_str().unwrap()) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
     fn should_stop(&self) -> bool {
         if self.stop.load(Ordering::Relaxed) {
             return true;
@@ -2794,60 +2857,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
             eprintln!("Warning: failed to load NNUE: {}", e);
         }
     } else {
-        // Auto-discover NNUE net
-
-        // 1. Embedded net (compiled in via CODA_EVALFILE env var during build)
-        #[cfg(feature = "embedded-net")]
-        {
-            static EMBEDDED_NET: &[u8] = include_bytes!(env!("CODA_EVALFILE"));
-            let net = crate::nnue::NNUENet::load_from_bytes(EMBEDDED_NET).expect("embedded NNUE corrupt");
-            let acc = crate::nnue::NNUEAccumulator::new(net.hidden_size);
-            info.nnue_net = Some(std::sync::Arc::new(net));
-            info.nnue_acc = Some(acc);
-        }
-
-        // 2. net.nnue in exe dir or CWD
-        if info.nnue_net.is_none() {
-            let try_paths = [
-                std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.nnue"))),
-                Some(std::path::PathBuf::from("net.nnue")),
-            ];
-            for maybe_path in &try_paths {
-                if let Some(path) = maybe_path {
-                    if path.exists() {
-                        if let Ok(()) = info.load_nnue(path.to_str().unwrap()) {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. net.txt discovery (extract filename from URL)
-        if info.nnue_net.is_none() {
-            let try_paths = [
-                std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.txt"))),
-                Some(std::path::PathBuf::from("net.txt")),
-            ];
-            for maybe_path in &try_paths {
-                if let Some(path) = maybe_path {
-                    if path.exists() {
-                        if let Ok(contents) = std::fs::read_to_string(path) {
-                            let url = contents.trim();
-                            if let Some(fname) = url.rsplit('/').next() {
-                                let net_dir = path.parent().unwrap_or(std::path::Path::new("."));
-                                let net_path = net_dir.join(fname);
-                                if net_path.exists() {
-                                    if let Ok(()) = info.load_nnue(net_path.to_str().unwrap()) {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        info.auto_discover_nnue();
     }
     let mut total_nodes = 0u64;
 

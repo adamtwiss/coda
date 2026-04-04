@@ -18,81 +18,13 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut syzygy: Option<crate::tb::SyzygyTB> = None;
     let mut num_threads: usize = 1;
 
-    // Pre-load NNUE if path given via CLI, otherwise try net.txt auto-discovery
+    // Pre-load NNUE if path given via CLI, otherwise auto-discover
     if let Some(path) = nnue_path {
         if let Err(e) = info.load_nnue(path) {
             println!("info string Failed to load NNUE from {}: {}", path, e);
         }
     } else {
-        // Auto-discover NNUE net:
-        // 0. Embedded net (compiled in via CODA_EVALFILE env var during build)
-        // 1. Try net.nnue in exe dir and CWD (OpenBench / Makefile convention)
-        // 2. Try net.txt → extract filename from URL → load that file
-        let mut loaded = false;
-
-        // Embedded net (fat binary)
-        #[cfg(feature = "embedded-net")]
-        {
-            static EMBEDDED_NET: &[u8] = include_bytes!(env!("CODA_EVALFILE"));
-            match crate::nnue::NNUENet::load_from_bytes(EMBEDDED_NET) {
-                Ok(net) => {
-                    let acc = crate::nnue::NNUEAccumulator::new(net.hidden_size);
-                    println!("info string Loaded embedded NNUE ({}x2)", net.hidden_size);
-                    info.nnue_net = Some(std::sync::Arc::new(net));
-                    info.nnue_acc = Some(acc);
-                    loaded = true;
-                }
-                Err(e) => {
-                    println!("info string WARNING: embedded NNUE corrupt: {}", e);
-                }
-            }
-        }
-
-        // Check for net.nnue directly (overrides embedded if present)
-        if !loaded {
-            let net_nnue_paths = [
-                std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.nnue"))),
-                Some(std::path::PathBuf::from("net.nnue")),
-            ];
-            for maybe_path in &net_nnue_paths {
-                if let Some(path) = maybe_path {
-                    if path.exists() {
-                        if let Ok(()) = info.load_nnue(path.to_str().unwrap()) {
-                            loaded = true;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fall back to net.txt discovery
-        if !loaded {
-            let try_paths = [
-                std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.txt"))),
-                Some(std::path::PathBuf::from("net.txt")),
-            ];
-            for maybe_path in &try_paths {
-                if let Some(path) = maybe_path {
-                    if path.exists() {
-                        if let Ok(contents) = std::fs::read_to_string(path) {
-                            let url = contents.trim();
-                            if let Some(fname) = url.rsplit('/').next() {
-                                let net_dir = path.parent().unwrap_or(std::path::Path::new("."));
-                                let net_path = net_dir.join(fname);
-                                if net_path.exists() {
-                                    if let Ok(()) = info.load_nnue(net_path.to_str().unwrap()) {
-                                        loaded = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
+        let loaded = info.auto_discover_nnue();
         if !loaded && !classical {
             println!("info string WARNING: No NNUE net found. Use 'setoption name NNUEFile value <path>', -nnue flag, or 'coda fetch-net'.");
         }
