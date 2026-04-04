@@ -1199,17 +1199,12 @@ fn negamax(
         if board.halfmove >= 100 {
             return -CONTEMPT;
         }
-        // Repetition detection: limit lookback by halfmove AND plies since last null move
-        // (null moves change the hash, so repetitions across null moves are spurious)
+        // Repetition detection: look back up to halfmove clock entries
+        // Note: null moves change hash via side_key XOR, so false matches across
+        // null moves are extremely unlikely. No pliesFromNull limit needed here
+        // (that limit only applies to cuckoo cycle detection).
         let stack_len = board.undo_stack.len();
-        let mut plies_from_null = stack_len;
-        for j in 1..=stack_len {
-            if board.undo_stack[stack_len - j].mv == NO_MOVE {
-                plies_from_null = j - 1;
-                break;
-            }
-        }
-        let limit = (board.halfmove as usize).min(stack_len).min(plies_from_null);
+        let limit = (board.halfmove as usize).min(stack_len);
         let mut i = 2usize;
         while i <= limit {
             if board.undo_stack[stack_len - i].hash == board.hash {
