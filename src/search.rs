@@ -964,7 +964,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     break;
                 }
 
-                delta += delta / 2;
+                delta += delta / 3; // x1.33 growth (consensus: SF/Viridithas/Obsidian)
             }
 
             score = asp_result;
