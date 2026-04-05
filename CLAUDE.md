@@ -415,10 +415,21 @@ Bench: 1443162
 6. If H1: merge to main, update bench in main's commit message
 7. If H0: do not merge, log result in experiments.md
 
+**Choosing SPRT bounds** — encode your prior belief about the change:
+
+| Bounds | When to use | Example |
+|--------|-------------|---------|
+| `[-10, 5]` | Structurally correct / consensus fix. Merge unless clear regression. | Pre-MakeMove migration, removing unique heuristic |
+| `[0, 5]` | Expect small gain, confirm not harmful. | Parameter tweaks, minor corrections |
+| `[0, 10]` | Expect meaningful gain from structural fix. | SEE quiet fix, futility reimplementation |
+| `[-5, 5]` | Pure non-regression check. | Adding tunables at default values, NPS-only changes |
+
+This avoids endless grinding on changes we'd merge at neutral — a correctness fix doesn't need to prove +10 Elo, just prove it's not -10. Conversely, a novel feature should demonstrate clear positive signal.
+
 **What does NOT need SPRT:**
 - Comments, documentation, tooling changes
 - Code cleanup that doesn't change compiled output (verify with bench)
-- New feature flags (disabled by default)
+- New tunables at default values that don't change behavior (verify bench unchanged)
 
 **OpenBench scripts** (all require `OPENBENCH_PASSWORD` env var, username defaults to `claude`):
 ```bash
