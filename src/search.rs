@@ -936,6 +936,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
     info.start_time = Instant::now();
     info.stop.store(false, Ordering::Relaxed);
+    info.ponderhit_time.store(0, Ordering::Relaxed); // Reset from any previous ponderhit
     info.nodes = 0;
     info.global_nodes.store(0, Ordering::Relaxed);
     info.sel_depth = 0;
@@ -979,7 +980,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         (limits.btime, limits.binc)
     };
 
-    if limits.movetime > 0 {
+    if limits.infinite {
+        info.time_limit = 0;
+        info.soft_limit = 0;
+        info.hard_limit = 0;
+    } else if limits.movetime > 0 {
         info.time_limit = limits.movetime;
     } else if our_time > 0 {
         // Subtract move overhead (communication latency)
@@ -1043,7 +1048,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.time_limit = 0;
     }
 
-    info.max_depth = limits.depth;
+    info.max_depth = if limits.depth > 0 { limits.depth } else { MAX_PLY as i32 / 2 };
     info.max_nodes = limits.nodes;
 
     info.tt.new_search();
