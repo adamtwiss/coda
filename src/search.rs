@@ -54,7 +54,7 @@ tunable!(HIST_PRUNE_DEPTH,   2,    1,    8);
 tunable!(HIST_PRUNE_MULT, 1471,  500, 5000);   // threshold = -mult * depth
 
 // SEE pruning
-tunable!(SEE_QUIET_MULT,   17,    5,   50);    // threshold = -mult * depth²
+tunable!(SEE_QUIET_MULT,   25,    5,   80);    // threshold = -mult * lmrDepth²
 tunable!(SEE_CAP_MULT,    114,   30,  200);    // threshold = -mult * depth
 
 // LMR history divisor
@@ -118,7 +118,7 @@ pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32)
         ("FUT_PER_DEPTH",      &FUT_PER_DEPTH,      116,   40,  250),
         ("HIST_PRUNE_DEPTH",   &HIST_PRUNE_DEPTH,    2,    1,    8),
         ("HIST_PRUNE_MULT",    &HIST_PRUNE_MULT,  1471,  500, 5000),
-        ("SEE_QUIET_MULT",     &SEE_QUIET_MULT,     17,    5,   50),
+        ("SEE_QUIET_MULT",     &SEE_QUIET_MULT,     25,    5,   80),
         ("SEE_CAP_MULT",       &SEE_CAP_MULT,      114,   30,  200),
         ("LMR_HIST_DIV",       &LMR_HIST_DIV,     4692, 2000, 15000),
         ("SE_DEPTH",           &SE_DEPTH,             10,    4,   12),
@@ -1789,18 +1789,31 @@ fn negamax(
             continue;
         }
 
-        // SEE quiet pruning: compute SEE before MakeMove (doesn't modify board)
-        let mut see_quiet_score = 0i32;
-        let mut check_see_quiet = false;
-        if ply > 0 && !in_check && depth <= 8
+        // SEE quiet pruning: prune quiet moves landing on attacked squares.
+        // Use lmrDepth² scaling (matching Stockfish/Berserk/Obsidian).
+        // Applied before MakeMove for efficiency — all top engines do this pre-move.
+        if ply > 0 && !in_check
             && !is_cap && !is_promo
             && mv != killers[0] && mv != killers[1]
             && mv != counter_move && mv != tt_move
             && best_score > -(MATE_SCORE - 100)
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
-            see_quiet_score = see_after_quiet(board, mv);
-            check_see_quiet = true;
+            // Estimate LMR depth for threshold scaling
+            let mut lmr_d = depth;
+            if move_count > 1 && depth >= 2 {
+                let d = (depth as usize).min(63);
+                let m = (move_count as usize).min(63);
+                let r = lmr_reduction(d as i32, m as i32);
+                if r > 0 {
+                    lmr_d = (depth - r).max(1);
+                }
+            }
+            let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
+            if !see_ge(board, mv, see_quiet_threshold) {
+                info.stats.see_prunes += 1;
+                continue;
+            }
         }
 
         // Singular extension verification search (v7: multi-cut + negative ext, no positive ext)
@@ -1968,17 +1981,7 @@ fn negamax(
             }
         }
 
-        // SEE quiet pruning: prune quiet moves where piece lands on a losing square
-        let mut see_quiet_threshold = -tp(&SEE_QUIET_MULT) * depth * depth;
-        if unstable {
-            see_quiet_threshold -= 100; // more lenient when position is volatile
-        }
-        if check_see_quiet && !gives_check && see_quiet_score < see_quiet_threshold {
-            info.stats.see_prunes += 1;
-            board.unmake_move();
-            if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-            continue;
-        }
+        // (SEE quiet pruning moved before MakeMove — see above)
 
         // Recapture extension: extend when recapturing on the same square
         let mut extension = 0;
@@ -2417,120 +2420,6 @@ fn negamax(
 /// over-weighting very deep searches.
 fn history_bonus(depth: i32) -> i32 {
     (depth * depth).min(1200)
-}
-
-/// SEE for a quiet move: how much material do we lose if the opponent captures
-/// the piece we moved? Returns negative if we lose material (e.g., -320 for knight).
-/// Full SEE with gain array and negamax backward pass.
-#[inline]
-fn see_after_quiet(board: &Board, mv: Move) -> i32 {
-    use crate::eval::see_value;
-
-    let from = move_from(mv);
-    let to = move_to(mv);
-    let pt = board.piece_type_at(from);
-    if pt == NO_PIECE_TYPE { return 0; }
-    let piece_value = see_value(pt);
-
-    // Our piece moves from 'from' to 'to'
-    let mut occ = (board.occupied() & !(1u64 << from)) | (1u64 << to);
-
-    // Opponent tries to capture our piece first
-    let us = board.side_to_move;
-    let them = flip_color(us);
-
-    let (att_pt, att_sq) = find_lva_for_see(board, to as u32, them, occ);
-    if att_pt == NO_PIECE_TYPE {
-        return 0; // No attacker, piece is safe
-    }
-
-    // Build gain array
-    let mut gain = [0i32; 32];
-    let mut gain_len = 1usize;
-    gain[0] = piece_value; // opponent captures our piece
-    let mut next_victim = see_value(att_pt);
-    occ ^= 1u64 << att_sq;
-    let mut stm = us; // our turn to recapture
-
-    while gain_len < 32 {
-        let (lva_pt, lva_sq) = find_lva_for_see(board, to as u32, stm, occ);
-        if lva_pt == NO_PIECE_TYPE { break; }
-
-        gain[gain_len] = next_victim - gain[gain_len - 1];
-        gain_len += 1;
-        next_victim = see_value(lva_pt);
-        occ ^= 1u64 << lva_sq;
-        // X-ray attacks handled implicitly: find_lva_for_see recomputes
-        // slider attacks with updated occ, revealing pieces behind removed ones.
-
-        stm = flip_color(stm);
-    }
-
-    // Negamax backward
-    let mut i = gain_len as i32 - 2;
-    while i >= 0 {
-        if -gain[i as usize + 1] < gain[i as usize] {
-            gain[i as usize] = -gain[i as usize + 1];
-        }
-        i -= 1;
-    }
-
-    -gain[0] // Negate: gain[0] is opponent's result
-}
-
-/// Find least valuable attacker of square `sq` by `color` given `occ`.
-#[inline]
-fn find_lva_for_see(board: &Board, sq: u32, color: u8, occ: u64) -> (u8, u8) {
-    use crate::attacks::*;
-
-    let color_bb = board.colors[color as usize] & occ;
-
-    // Pawns
-    let pawn_att = if color == WHITE {
-        // Black pawns attack downward, so white pawns attacking sq are south of it
-        ((1u64 << sq) >> 7) & !0x0101010101010101u64 | ((1u64 << sq) >> 9) & !0x8080808080808080u64
-    } else {
-        ((1u64 << sq) << 7) & !0x8080808080808080u64 | ((1u64 << sq) << 9) & !0x0101010101010101u64
-    };
-    let pawns = pawn_att & board.pieces[PAWN as usize] & color_bb;
-    if pawns != 0 {
-        let sq = pawns.trailing_zeros() as u8;
-        return (PAWN, sq);
-    }
-
-    // Knights
-    let knights = knight_attacks(sq) & board.pieces[KNIGHT as usize] & color_bb;
-    if knights != 0 {
-        return (KNIGHT, knights.trailing_zeros() as u8);
-    }
-
-    // Bishops
-    let bishop_att = bishop_attacks(sq, occ);
-    let bishops = bishop_att & board.pieces[BISHOP as usize] & color_bb;
-    if bishops != 0 {
-        return (BISHOP, bishops.trailing_zeros() as u8);
-    }
-
-    // Rooks
-    let rook_att = rook_attacks(sq, occ);
-    let rooks = rook_att & board.pieces[ROOK as usize] & color_bb;
-    if rooks != 0 {
-        return (ROOK, rooks.trailing_zeros() as u8);
-    }
-
-    // Queens
-    let queens = (bishop_att | rook_att) & board.pieces[QUEEN as usize] & color_bb;
-    if queens != 0 {
-        return (QUEEN, queens.trailing_zeros() as u8);
-    }
-
-    // King
-    let kings = king_attacks(sq) & board.pieces[KING as usize] & color_bb;
-    if kings != 0 {
-        return (KING, kings.trailing_zeros() as u8);
-    }
-
-    (NO_PIECE_TYPE, 0)
 }
 
 /// Helper: get counter-move for the given previous move
