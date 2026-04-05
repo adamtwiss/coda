@@ -86,6 +86,7 @@ tunable!(HINDSIGHT_THRESH, 186,   50,  400);
 
 // QS parameters
 tunable!(QS_DELTA_MARGIN,  240,  100,  500);    // delta pruning margin in QS
+tunable!(QS_SEE_THRESHOLD, -30, -200,    0);    // SEE threshold for QS captures (Obsidian -32, Viridithas -141)
 
 // Correction history weights (sum should be ~1024 for /1024 normalization)
 tunable!(CORR_W_PAWN,      384,  100,  600);
@@ -132,6 +133,7 @@ pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32)
         ("PROBCUT_MARGIN",     &PROBCUT_MARGIN,       166,   80,  300),
         ("HINDSIGHT_THRESH",   &HINDSIGHT_THRESH,     186,   50,  400),
         ("QS_DELTA_MARGIN",    &QS_DELTA_MARGIN,      240,  100,  500),
+        ("QS_SEE_THRESHOLD",   &QS_SEE_THRESHOLD,     -30, -200,    0),
         ("CORR_W_PAWN",        &CORR_W_PAWN,          384,  100,  600),
         ("CORR_W_NP",          &CORR_W_NP,            154,   50,  400),
         ("CORR_W_MINOR",       &CORR_W_MINOR,         102,   30,  300),
@@ -2673,8 +2675,10 @@ fn quiescence_with_depth(
             }
         }
 
-        // Skip bad captures (SEE < 0)
-        if !see_ge(board, mv, 0) {
+        // Skip bad captures (SEE below threshold)
+        // Negative threshold allows slightly losing captures (e.g. BxN)
+        // Obsidian uses -32, Viridithas -141
+        if !see_ge(board, mv, tp(&QS_SEE_THRESHOLD)) {
             continue;
         }
 
