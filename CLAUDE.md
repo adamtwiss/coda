@@ -395,6 +395,8 @@ Bench: 1443162
 
 If the change doesn't affect bench (e.g. comments, docs, tooling), the bench line is optional.
 
+**CRITICAL: When merging a branch, the bench in the merge commit must be the bench of the merged result, not the branch's standalone bench.** If a branch was created from an older main, the merge combines both the branch changes and any changes made to main since. Always run `make && ./coda bench` after merging and use that value. OpenBench reads the bench from the commit message — a wrong value causes tests to fail immediately with a bench mismatch.
+
 ### SPRT Testing Policy
 
 **Every change that affects node count or playing strength must be SPRT tested before merging to main.** This includes:
