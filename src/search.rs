@@ -212,6 +212,9 @@ pub struct PruneStats {
     pub qnodes: u64,
     pub beta_cutoffs: u64,
     pub first_move_cutoffs: u64,
+    // Move ordering quality: sum of move_count² at beta cutoff (lower = better ordering)
+    pub cutoff_movecount_sq_sum: u64,
+    pub cutoff_movecount_sum: u64,
 }
 
 /// Search state for one thread.
@@ -2183,6 +2186,8 @@ fn negamax(
                 if alpha >= beta {
                     info.stats.beta_cutoffs += 1;
                     if move_count == 1 { info.stats.first_move_cutoffs += 1; }
+                    info.stats.cutoff_movecount_sum += move_count as u64;
+                    info.stats.cutoff_movecount_sq_sum += (move_count as u64) * (move_count as u64);
 
                     // Beta cutoff - update killer moves, history, and counter-move for quiet moves
                     if !is_cap {
@@ -2752,6 +2757,13 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     eprintln!("LMR searches:   {:>8}  ({:.1}% of nodes)", s.lmr_searches, s.lmr_searches as f64 / total_nodes as f64 * 100.0);
     eprintln!("Recapture ext:  {:>8}", s.recapture_ext);
     eprintln!("QS nodes:       {:>8}  ({:.1}% of total)", s.qnodes, s.qnodes as f64 / total_nodes as f64 * 100.0);
+    if s.beta_cutoffs > 0 {
+        let avg_pos = s.cutoff_movecount_sum as f64 / s.beta_cutoffs as f64;
+        let avg_sq = s.cutoff_movecount_sq_sum as f64 / s.beta_cutoffs as f64;
+        let first_pct = s.first_move_cutoffs as f64 / s.beta_cutoffs as f64 * 100.0;
+        eprintln!("Move ordering:  avg cutoff pos {:.2}, avg pos² {:.1}, first-move {:.1}%",
+            avg_pos, avg_sq, first_pct);
+    }
     eprintln!("Total nodes:    {:>8}", total_nodes);
 
     total_nodes
