@@ -3866,3 +3866,84 @@ The ply-2 cont hist piece lookup via `board.piece_at(move_to(pm2))` is unreliabl
 - **Key parameter changes**: NMP_EVAL_DIV 200→164, NMP_BASE_R 4→3, RFP_DEPTH 7→6, RFP_MARGIN_IMP 70→84, FUT_BASE 90→103, HIST_PRUNE_DEPTH 3→2, LMR_HIST_DIV 5000→5489, SE_DEPTH 8→9.
 - **Lesson**: Simultaneous optimization finds gains that individual SPRT cannot detect. Parameters interact — NMP wants aggressive eval scaling (164) but only when RFP margins widen simultaneously. No single change tests positive, but the combination is +31.
 - **Next**: SPSA round 2 with 26 parameters on 768pw-w7 net after model switch.
+
+## 2026-04-05: Structural Fixes + SPSA Round 4
+
+### Methodology Breakthrough: Detect → Diagnose → Fix → Tune
+
+Discovered that SPSA detuning signals indicate structural implementation flaws. When SPSA aggressively moves a parameter away from its starting value, the feature may be broken. Deep cross-engine comparison (8 engines) diagnoses the issue, fix is SPRT tested, then SPSA retunes the corrected base.
+
+**Key structural finding**: Multiple pruning features were applied AFTER MakeMove when every top engine does them BEFORE. This wasted MakeMove + NNUE push/pop per pruned move and made features redundant with earlier pruning. Migrated all pruning pre-MakeMove.
+
+### H1 Passed — Merged (Day 5)
+
+| # | Test | Elo | Games | Description |
+|---|------|-----|-------|-------------|
+| 94 | fix-see-quiet-pruning | **+11.4** | 2,020 | SEE quiet: pre-MakeMove, lmrDepth² scaling, use see_ge. SPSA was detuning 17→6. |
+| 114 | spsa-r4-final | **+17.0** | 1,230 | 32 params, 5000 iterations on corrected base. Biggest movers: FUT_PER_DEPTH 116→140, LMR_C_CAP 179→196. |
+| 109 | fix-bad-noisy-pre-move | **+2.9** | 2,846 | Bad noisy: pre-MakeMove, drop gives_check exemption. Completes pre-MakeMove migration. |
+| 112 | fix-lmp-reimplementation | **+2.3** | 3,492 | LMP: pre-MakeMove, SF formula (BASE+d²)/(2-improving), BASE=5 from focused SPSA. |
+| 85 | fix-corr-proportional-gravity | **+3.9** | 2,466 | Correction history: proportional gravity (consensus). |
+| 84 | fix-corr-no-depth-gate | **~0** | 924 | Correction history: remove depth≥3 gate (consensus, correctness merge). |
+| 105 | fix-lmr-cont2-stat-v2 | **+2.5** | 3,396 | LMR: ply-2 cont hist in stat score at half weight (consensus). |
+| 106 | fix-tm-forced-move | **+1.3** | 2,064 | TM: forced move detection, cap time at 10ms with 1 legal move. |
+| 107 | fix-qs-negative-see | **~0** | 3,098 | QS: add QS_SEE_THRESHOLD tunable (default 0, no behavior change). |
+| — | fix-qs-move-count-cutoff | **~0** | — | QS: add QS_MAX_CAPTURES tunable (default 32, no behavior change). |
+
+**Running total merged Elo (Day 5): ~+41** (SEE quiet +11.4, SPSA r4 +17, bad noisy +2.9, LMP +2.3, corr gravity +3.9, LMR cont2 +2.5, forced move +1.3)
+
+### H0 Failed / Rejected (Day 5)
+
+| # | Test | Elo | Games | Notes |
+|---|------|-----|-------|-------|
+| 93 | spsa-r3-snapshot-1000 | +1.6 | 5,676 | Too early snapshot (1000 iters), killed. |
+| 97 | spsa-r3-snapshot-8054 | -7.6 | 960 | Tested against stale main (pre-futility merge). |
+| 95 | fix-futility-pruning v1 | -18.6 | 578 | bestScore update polluted TT. Fixed in v2. |
+| 96 | fix-futility-pruning v2 | +1.5 | 3,962 | Correctness merge (gate fix, pre-MakeMove). |
+| 100 | fix-corr-clamp-1024 | -7.0 | 1,830 | GRAIN not scaled with LIMIT. V2 fixed but still neutral. |
+| 104 | fix-corr-clamp-1024-v2 | +1.5 | 2,816 | Properly scaled constants, but no benefit. Our 32000 limit works fine. |
+| 102 | fix-lmr-cont2-stat v1 | -5.3 | 2,304 | Ply-2 at full weight over-scaled hist_score. Fixed in v2 (half weight). |
+| 101 | fix-corr-cont-2ply | +0.4 | 8,908 | 2-ply continuation correction. H0 — ply-2 context too noisy for correction signal. |
+| 108 | fix-lmp-reimplementation v1 | -6.3 | 2,082 | BASE=3 too aggressive. Fixed in v2 (BASE=5 from focused SPSA). |
+| 113 | fix-qs-max-captures-5 | -1.5 | 4,456 | QS capture limit at 5. Mildly negative standalone. |
+| 71 | fix-se-ply-gate | -7.5 | 5,168 | SE ply gate doesn't suit our engine. |
+| 83 | fix-asp-delta-133 | -5.3 | 3,288 | Our x1.5 growth works better than consensus x1.33. |
+| 82 | fix-asp-skip-winning | -6.2 | 3,696 | Skip depth reduction for winning fail-highs hurts. |
+| 90 | fix-histprune-cont2-stack | -8.4 | 4,780 | Ply-2 cont hist in hist pruning. Threshold not scaled for 3 signals. |
+
+### Stopped / Not Merged (Day 5)
+
+| # | Test | Elo | Games | Notes |
+|---|------|-----|-------|-------|
+| 80 | fix-asp-no-fh-alpha | +1.1 | 3,036 | Remove alpha contraction on fail-high. Flat, stopped. |
+| 81 | fix-asp-fl-midpoint | +1.2 | 4,252 | Fail-low beta to midpoint. Flat, stopped. |
+| 58 | fix-nmp-no-dampening | -0.6 | 5,794 | Already merged earlier, SPRT was confirming non-regression. Stopped. |
+| 86 | fix-smp-copy-history | +5.9 | 2,300 | Already merged earlier, confirming non-regression. Stopped. |
+
+### SPSA Tuning
+
+- **Round 3**: 32 parameters on 768pw-w7. Multiple snapshots tested (1000 iter, 8054 iter). Early snapshot too unstable. Later snapshot stale vs new main. Killed in favor of r4.
+- **Round 4**: 32 parameters on corrected base (all pruning pre-MakeMove). 5000 iterations. **H1 at +17.0 Elo, 1230 games.** Key: FUT_PER_DEPTH 116→140, LMR_C_CAP 179→196, SE_DEPTH 10→8, LMP_BASE 1→3.
+- **Round 5**: 34 parameters (added QS_SEE_THRESHOLD, QS_MAX_CAPTURES). Running on post-LMP-merge base. QS_MAX_CAPTURES starting at 16.
+- **LMP focused tune**: 2 params (LMP_BASE, LMP_DEPTH), 359 iterations. BASE converged 3→4.5. Used BASE=5 for SPRT.
+- **QS_MAX_CAPTURES mini-tune**: 1 param, 200 iterations. Converged at 5.3. SPRT at 5 was -1.5 (H0). Value may be useful in full SPSA context.
+
+### Infrastructure / Code Quality (Day 5)
+
+- **Embedded NNUE fix**: UCI mode now uses fat binary's embedded net (was silently falling back to disk).
+- **auto_discover_nnue()**: Single function for all net loading paths (bench, UCI, etc.).
+- **Pondering fixed**: ponder move output, TM skip for infinite mode, ponderhit_time reset.
+- **tunables! macro**: Single source of truth for parameter definitions (eliminated duplication).
+- **Code review cleanup**: dedup lmrDepth computation, fix FEAT flags, fix forced move under movetime, remove stale comments.
+- **Pre-MakeMove migration complete**: ALL pruning (history, futility, SEE quiet, LMP, bad noisy, SEE capture) now before MakeMove.
+- **Force-captures datagen**: New --force-captures mode for training data diversity.
+- **ob_stop.py**: Script to stop OpenBench tests.
+
+### Key Lessons (Day 5)
+
+1. **SPSA detuning = structural bug signal.** SEE_QUIET_MULT driven to 5 → found 3 structural issues. FUT_PER_DEPTH driven to 99 → found gate/margin mismatch. LMP_BASE driven to 3 → found post-MakeMove + wrong formula.
+2. **Pre-MakeMove is universal.** Every pruning feature we moved pre-MakeMove gained Elo. The pattern was systematic, not feature-specific.
+3. **Fix first, tune second.** Structural fixes compound — SPSA r4 gained +17 because it tuned a corrected base, not a broken one.
+4. **SPRT bounds should match intent.** [-10,5] for correctness fixes, [0,10] for expected gains. Saved weeks of grinding on features we'd merge anyway.
+5. **V2 attempts matter.** fix-lmr-cont2 v1 was -5.3, v2 was +2.5 (half weight fix). fix-corr-clamp v1 was -7.0, v2 was +1.5 (scaled constants). fix-lmp v1 was -6.3, v2 was +2.3 (SPSA-tuned BASE).
+6. **Blunder training data improves eval calibration.** SB20/SB60 models trained on blunder data show piece values much closer to Obsidian (reference engine). T80 alone creates miscalibrated piece ordering (knight > queen). Blend is the answer.
