@@ -36,7 +36,6 @@ nets/
 
 # Build output
 /coda
-Cargo.lock
 
 # Old test artifacts
 *.log
