@@ -72,9 +72,9 @@ tunables!(
     // Aspiration windows
     (ASP_DELTA,         14,    5,   30),
     (ASP_SCORE_DIV,  28788, 8000, 50000),
-    // LMP
-    (LMP_BASE,           3,    1,    6),
-    (LMP_DEPTH,          8,    4,   12),
+    // LMP — formula: (LMP_BASE + depth²) / (2 - improving)
+    (LMP_BASE,           5,    1,   10),
+    (LMP_DEPTH,         12,    4,   20),
     // Bad noisy
     (BAD_NOISY_MARGIN,  77,   30,  150),
     // ProbCut
@@ -1898,6 +1898,20 @@ fn negamax(
             }
         }
 
+        // Late Move Pruning: at shallow depths, skip late quiet moves.
+        // Applied before MakeMove. Formula: (LMP_BASE + depth²) / (2 - improving)
+        if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
+            && !is_cap && !is_promo
+            && best_score > -(MATE_SCORE - 100)
+            && FEAT_LMP.load(Ordering::Relaxed)
+        {
+            let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
+            if move_count > lmp_limit {
+                info.stats.lmp_prunes += 1;
+                continue;
+            }
+        }
+
         // Bad noisy pruning: skip losing captures when eval is far below alpha.
         // Applied before MakeMove — no gives_check exemption (matches pre-move pattern).
         if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= 4 && mv != tt_move
@@ -1924,27 +1938,6 @@ fn negamax(
 
         // Check if move gives check (opponent is now in check after make_move)
         let gives_check = board.in_check();
-
-        // Late Move Pruning: at shallow depths, skip late quiet moves
-        if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
-            && !is_cap && !is_promo && !gives_check
-            && best_score > -(MATE_SCORE - 100) && beta - alpha == 1
-            && FEAT_LMP.load(Ordering::Relaxed)
-        {
-            let mut lmp_limit = tp(&LMP_BASE) + depth * depth;
-            if improving && depth >= 3 {
-                lmp_limit += lmp_limit / 2;
-            }
-            if failing {
-                lmp_limit = lmp_limit * 2 / 3;
-            }
-            if move_count > lmp_limit {
-                info.stats.lmp_prunes += 1;
-                board.unmake_move();
-                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-                continue;
-            }
-        }
 
         // Recapture extension: extend when recapturing on the same square
         let mut extension = 0;
