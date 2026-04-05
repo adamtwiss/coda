@@ -87,6 +87,7 @@ tunable!(HINDSIGHT_THRESH, 186,   50,  400);
 // QS parameters
 tunable!(QS_DELTA_MARGIN,  240,  100,  500);    // delta pruning margin in QS
 tunable!(QS_SEE_THRESHOLD,   0, -200,    0);    // SEE threshold for QS captures (default 0 = current behavior, SPSA can explore negative)
+tunable!(QS_MAX_CAPTURES,   32,    2,   32);    // max captures to search in QS (default 32 = no effective limit, Obsidian uses 3)
 
 // Correction history weights (sum should be ~1024 for /1024 normalization)
 tunable!(CORR_W_PAWN,      384,  100,  600);
@@ -134,6 +135,7 @@ pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32)
         ("HINDSIGHT_THRESH",   &HINDSIGHT_THRESH,     186,   50,  400),
         ("QS_DELTA_MARGIN",    &QS_DELTA_MARGIN,      240,  100,  500),
         ("QS_SEE_THRESHOLD",   &QS_SEE_THRESHOLD,       0, -200,    0),
+        ("QS_MAX_CAPTURES",    &QS_MAX_CAPTURES,       32,    2,   32),
         ("CORR_W_PAWN",        &CORR_W_PAWN,          384,  100,  600),
         ("CORR_W_NP",          &CORR_W_NP,            154,   50,  400),
         ("CORR_W_MINOR",       &CORR_W_MINOR,         102,   30,  300),
@@ -2668,10 +2670,18 @@ fn quiescence_with_depth(
     // This partitions captures into good (SEE>=0) and bad, and uses staged ordering.
     let mut picker = MovePicker::new_quiescence(board, tt_move, &info.history);
     let mut best_move = NO_MOVE;
+    let mut qs_move_count = 0i32;
+    let qs_max_caps = tp(&QS_MAX_CAPTURES);
 
     loop {
         let mv = picker.next(board);
         if mv == NO_MOVE { break; }
+
+        // Move count cutoff: stop searching after N captures (Obsidian: 3)
+        qs_move_count += 1;
+        if qs_move_count > qs_max_caps {
+            break;
+        }
 
         // Delta pruning: skip captures that can't possibly raise alpha
         if !is_promotion(mv) {
