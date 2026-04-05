@@ -178,6 +178,8 @@ pub fn disable_all_features() {
     FEAT_IIR.store(false, Ordering::Relaxed); FEAT_HINDSIGHT.store(false, Ordering::Relaxed); FEAT_CORRECTION.store(false, Ordering::Relaxed);
     FEAT_PVS.store(false, Ordering::Relaxed); FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); FEAT_TT_NEARMISS.store(false, Ordering::Relaxed);
     FEAT_TT_STORE.store(false, Ordering::Relaxed); FEAT_QS_CAPTURES.store(false, Ordering::Relaxed);
+    FEAT_SINGULAR.store(false, Ordering::Relaxed); FEAT_CUCKOO.store(false, Ordering::Relaxed);
+    FEAT_4D_HISTORY.store(false, Ordering::Relaxed);
 }
 
 /// Enable all features (normal play)
@@ -190,6 +192,8 @@ pub fn enable_all_features() {
     FEAT_IIR.store(true, Ordering::Relaxed); FEAT_HINDSIGHT.store(true, Ordering::Relaxed); FEAT_CORRECTION.store(true, Ordering::Relaxed);
     FEAT_PVS.store(true, Ordering::Relaxed); FEAT_TT_CUTOFF.store(true, Ordering::Relaxed); FEAT_TT_NEARMISS.store(true, Ordering::Relaxed);
     FEAT_TT_STORE.store(true, Ordering::Relaxed); FEAT_QS_CAPTURES.store(true, Ordering::Relaxed);
+    FEAT_SINGULAR.store(true, Ordering::Relaxed); FEAT_CUCKOO.store(true, Ordering::Relaxed);
+    FEAT_4D_HISTORY.store(true, Ordering::Relaxed);
 }
 
 // Correction history constants
@@ -1071,7 +1075,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
     // Forced move: only one legal move, skip full search (just return it quickly).
     // Still search to depth 1 for a score to display, but cap time at 10ms.
-    if root_legal.len == 1 && info.soft_limit > 0 {
+    if root_legal.len == 1 && (info.soft_limit > 0 || info.time_limit > 0) {
         info.soft_limit = 10;
         info.hard_limit = 10;
         info.time_limit = 10;
@@ -1809,9 +1813,18 @@ fn negamax(
             continue;
         }
 
+        // Estimated LMR depth for pre-MakeMove pruning (SEE quiet, futility).
+        // Computed once and shared — no depth ceiling; at high depths lmr_d
+        // collapses to 1, so thresholds naturally become permissive.
+        let lmr_d = if move_count > 1 && depth >= 2 {
+            let r = lmr_reduction((depth as usize).min(63) as i32, (move_count as usize).min(63) as i32);
+            if r > 0 { (depth - r).max(1) } else { depth }
+        } else {
+            depth
+        };
+
         // SEE quiet pruning: prune quiet moves landing on attacked squares.
         // Use lmrDepth² scaling (matching Stockfish/Berserk/Obsidian).
-        // Applied before MakeMove for efficiency — all top engines do this pre-move.
         if ply > 0 && !in_check
             && !is_cap && !is_promo
             && mv != killers[0] && mv != killers[1]
@@ -1819,16 +1832,6 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
-            // Estimate LMR depth for threshold scaling
-            let mut lmr_d = depth;
-            if move_count > 1 && depth >= 2 {
-                let d = (depth as usize).min(63);
-                let m = (move_count as usize).min(63);
-                let r = lmr_reduction(d as i32, m as i32);
-                if r > 0 {
-                    lmr_d = (depth - r).max(1);
-                }
-            }
             let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
             if !see_ge(board, mv, see_quiet_threshold) {
                 info.stats.see_prunes += 1;
@@ -1924,30 +1927,18 @@ fn negamax(
         }
 
         // Futility pruning: skip quiet moves when static eval + margin is below alpha.
-        // Applied before MakeMove (matching all top engines). Uses lmrDepth for both
-        // gate and margin (matching SF/Obsidian/Berserk/PlentyChess/Viridithas).
+        // Uses shared lmr_d for both gate and margin (SF/Obsidian/Berserk consensus).
         if ply > 0 && static_eval > -INFINITY && !in_check
             && !is_cap && !is_promo
             && best_score > -(MATE_SCORE - 100)
             && FEAT_FUTILITY.load(Ordering::Relaxed)
+            && lmr_d <= 10
         {
-            // Estimate LMR reduction for this move
-            let mut lmr_depth = depth;
-            if move_count > 1 && depth >= 2 {
-                let d = (depth as usize).min(63);
-                let m = (move_count as usize).min(63);
-                let r = lmr_reduction(d as i32, m as i32);
-                if r > 0 {
-                    lmr_depth = (depth - r).max(1);
-                }
-            }
-            if lmr_depth <= 10 {
-                let hist_adj = info.history.main_score(from, to, enemy_attacks) / 128;
-                let futility_value = static_eval + tp(&FUT_BASE) + lmr_depth * tp(&FUT_PER_DEPTH) + hist_adj;
-                if futility_value <= alpha {
-                    info.stats.futility_prunes += 1;
-                    continue;
-                }
+            let hist_adj = info.history.main_score(from, to, enemy_attacks) / 128;
+            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj;
+            if futility_value <= alpha {
+                info.stats.futility_prunes += 1;
+                continue;
             }
         }
 
@@ -1978,10 +1969,6 @@ fn negamax(
         // Check if move gives check (opponent is now in check after make_move)
         let gives_check = board.in_check();
 
-        // (Bad noisy pruning moved before MakeMove — see above)
-
-        // (Futility pruning moved before MakeMove — see above)
-
         // Late Move Pruning: at shallow depths, skip late quiet moves
         if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
             && !is_cap && !is_promo && !gives_check
@@ -2002,8 +1989,6 @@ fn negamax(
                 continue;
             }
         }
-
-        // (SEE quiet pruning moved before MakeMove — see above)
 
         // Recapture extension: extend when recapturing on the same square
         let mut extension = 0;
@@ -2449,8 +2434,6 @@ fn history_bonus(depth: i32) -> i32 {
     (depth * depth).min(1200)
 }
 
-/// Helper: get counter-move for the given previous move
-/// Quiescence search wrapper.
 /// Quiescence search wrapper.
 fn quiescence(
     board: &mut Board,
@@ -2462,7 +2445,6 @@ fn quiescence(
     quiescence_with_depth(board, info, alpha, beta, ply, 0)
 }
 
-/// Quiescence search with depth tracking.
 /// Quiescence search with depth tracking.
 fn quiescence_with_depth(
     board: &mut Board,
