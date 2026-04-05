@@ -1939,11 +1939,15 @@ fn negamax(
             }
         }
 
-        // Bad noisy flag: identify losing captures for tighter futility pruning
-        let is_bad_noisy = FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= 4 && mv != tt_move
+        // Bad noisy pruning: skip losing captures when eval is far below alpha.
+        // Applied before MakeMove — no gives_check exemption (matches pre-move pattern).
+        if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= 4 && mv != tt_move
             && !is_promo && best_score > -(MATE_SCORE - 100)
             && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
-            && !see_ge(board, mv, 0);
+            && !see_ge(board, mv, 0)
+        {
+            continue;
+        }
 
         // Build NNUE dirty piece info BEFORE make_move
         let dirty = build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt);
@@ -1962,12 +1966,7 @@ fn negamax(
         // Check if move gives check (opponent is now in check after make_move)
         let gives_check = board.in_check();
 
-        // Bad noisy futility: prune losing captures when eval is far below alpha
-        if is_bad_noisy && !gives_check {
-            board.unmake_move();
-            if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-            continue;
-        }
+        // (Bad noisy pruning moved before MakeMove — see above)
 
         // (Futility pruning moved before MakeMove — see above)
 
