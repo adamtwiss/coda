@@ -277,8 +277,8 @@ pub struct SearchInfo {
     pub sel_depth: i32,
     pub last_score: i32,
     /// Triangular PV table
-    pv_table: [[Move; MAX_PLY + 1]; MAX_PLY + 1],
-    pv_len: [usize; MAX_PLY + 1],
+    pub pv_table: [[Move; MAX_PLY + 1]; MAX_PLY + 1],
+    pub pv_len: [usize; MAX_PLY + 1],
     static_evals: [i32; MAX_PLY + 1],
     /// LMR reduction applied at each ply (for hindsight reduction gating)
     reductions: [i32; MAX_PLY + 1],

@@ -143,7 +143,12 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     .spawn(move || {
                         let mut si = search_info;
                         let best_move = search_smp(&mut search_board, &mut si, &limits, threads);
-                        println!("bestmove {}", move_to_uci(best_move));
+                        // Output ponder move from PV if available
+                        if si.pv_len[0] >= 2 && si.pv_table[0][1] != crate::types::NO_MOVE {
+                            println!("bestmove {} ponder {}", move_to_uci(best_move), move_to_uci(si.pv_table[0][1]));
+                        } else {
+                            println!("bestmove {}", move_to_uci(best_move));
+                        }
                         si // return SearchInfo for reuse
                     }).expect("Failed to spawn search thread"));
             }
