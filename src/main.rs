@@ -123,6 +123,10 @@ enum Commands {
         /// Blunder rate (0.0 - 1.0)
         #[arg(long, default_value_t = 0.0)]
         blunder: f64,
+        /// Force-capture rate (0.0 - 1.0): probability of playing a random capture
+        /// instead of best move, creating material-imbalanced games for training diversity
+        #[arg(long, default_value_t = 0.0)]
+        force_captures: f64,
         /// Source EPD for material removal mode
         #[arg(long)]
         epd: Option<String>,
@@ -266,12 +270,12 @@ fn main() {
             run_check_net(&path);
         }
 
-        Some(Commands::Datagen { output, depth, games, threads, hash, blunder, epd }) => {
+        Some(Commands::Datagen { output, depth, games, threads, hash, blunder, force_captures, epd }) => {
             let nnue_path = cli.nnue.unwrap_or_default();
             let mode = if let Some(epd_path) = epd {
                 datagen::DatagenMode::Material { source_epd: epd_path }
             } else {
-                datagen::DatagenMode::SelfPlay { blunder_rate: blunder }
+                datagen::DatagenMode::SelfPlay { blunder_rate: blunder, force_capture_rate: force_captures }
             };
             let config = datagen::DatagenConfig {
                 nnue_path,

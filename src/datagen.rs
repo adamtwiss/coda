@@ -38,7 +38,7 @@ pub struct DatagenConfig {
 }
 
 pub enum DatagenMode {
-    SelfPlay { blunder_rate: f64 },
+    SelfPlay { blunder_rate: f64, force_capture_rate: f64 },
     Material { source_epd: String },
 }
 
@@ -119,8 +119,9 @@ pub fn run_datagen(config: &DatagenConfig) {
     });
 
     match &config.mode {
-        DatagenMode::SelfPlay { blunder_rate } => {
+        DatagenMode::SelfPlay { blunder_rate, force_capture_rate } => {
             let blunder_rate = *blunder_rate;
+            let force_capture_rate = *force_capture_rate;
             let games_per_thread = config.num_games / threads;
             let remainder = config.num_games % threads;
 
@@ -137,7 +138,7 @@ pub fn run_datagen(config: &DatagenConfig) {
                     .stack_size(16 * 1024 * 1024)
                     .spawn(move || {
                     selfplay_worker(thread_id, my_games, &nnue_path, depth, hash_mb,
-                        blunder_rate, &tx, &games_done);
+                        blunder_rate, force_capture_rate, &tx, &games_done);
                 }).expect("Failed to spawn worker thread"));
             }
             drop(tx);
@@ -195,7 +196,7 @@ pub fn run_datagen(config: &DatagenConfig) {
 
 fn selfplay_worker(
     thread_id: usize, my_games: usize, nnue_path: &str,
-    depth: i32, hash_mb: usize, blunder_rate: f64,
+    depth: i32, hash_mb: usize, blunder_rate: f64, force_capture_rate: f64,
     tx: &std::sync::mpsc::Sender<Vec<TrainingDataEntry>>,
     games_done: &AtomicU64,
 ) {
@@ -208,7 +209,7 @@ fn selfplay_worker(
     }
 
     for _ in 0..my_games {
-        let entries = play_one_game(&mut info, &mut rng, depth, blunder_rate);
+        let entries = play_one_game(&mut info, &mut rng, depth, blunder_rate, force_capture_rate);
         if !entries.is_empty() {
             if tx.send(entries).is_err() { break; }
         }
@@ -217,7 +218,7 @@ fn selfplay_worker(
     }
 }
 
-fn play_one_game(info: &mut SearchInfo, rng: &mut SimpleRng, depth: i32, blunder_rate: f64)
+fn play_one_game(info: &mut SearchInfo, rng: &mut SimpleRng, depth: i32, blunder_rate: f64, force_capture_rate: f64)
     -> Vec<TrainingDataEntry>
 {
     let mut board = Board::startpos();
@@ -264,7 +265,21 @@ fn play_one_game(info: &mut SearchInfo, rng: &mut SimpleRng, depth: i32, blunder
             entries.push((board.clone(), best_move, score.clamp(-32000, 32000) as i16, ply));
         }
 
-        let mv = if blunder_rate > 0.0 && rng.next_f64() < blunder_rate && ply >= 4 {
+        let mv = if force_capture_rate > 0.0 && rng.next_f64() < force_capture_rate && ply >= 4 {
+            // Force a random capture if any are available
+            let captures: Vec<Move> = (0..legal.len)
+                .map(|i| legal.moves[i])
+                .filter(|&m| {
+                    board.piece_type_at(move_to(m)) != NO_PIECE_TYPE
+                    || move_flags(m) == FLAG_EN_PASSANT
+                })
+                .collect();
+            if captures.is_empty() {
+                best_move // no captures available, play normally
+            } else {
+                captures[rng.next_u64() as usize % captures.len()]
+            }
+        } else if blunder_rate > 0.0 && rng.next_f64() < blunder_rate && ply >= 4 {
             let idx = rng.next_u64() as usize % legal.len;
             legal.moves[idx]
         } else {
