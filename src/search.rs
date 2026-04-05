@@ -192,7 +192,7 @@ pub fn enable_all_features() {
 const CORR_HIST_SIZE: usize = 16384;
 const CORR_HIST_GRAIN: i32 = 256;
 const CORR_HIST_MAX: i32 = 128;
-const CORR_HIST_LIMIT: i32 = 32000;
+const CORR_HIST_LIMIT: i32 = 1024;
 
 /// Search limits.
 #[derive(Clone)]
