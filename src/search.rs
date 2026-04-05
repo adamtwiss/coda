@@ -71,9 +71,9 @@ tunable!(ASP_SCORE_DIV,  28601, 8000, 50000);   // score-dependent delta divisor
 tunable!(LMR_C_QUIET,     134,   80,  300);     // quiet LMR constant (divided by 100)
 tunable!(LMR_C_CAP,       179,  100,  350);     // capture LMR constant (divided by 100)
 
-// LMP
-tunable!(LMP_BASE,           1,    1,    6);
-tunable!(LMP_DEPTH,          8,    4,   12);
+// LMP — formula: (LMP_BASE + depth²) / (2 - improving)
+tunable!(LMP_BASE,           5,    1,   10);
+tunable!(LMP_DEPTH,         12,    4,   20);    // depth gate (SF: no limit, we use 12)
 
 // Bad noisy
 tunable!(BAD_NOISY_MARGIN,  79,   30,  150);    // depth * margin
@@ -126,8 +126,8 @@ pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32)
         ("ASP_SCORE_DIV",      &ASP_SCORE_DIV,     28601, 8000, 50000),
         ("LMR_C_QUIET",        &LMR_C_QUIET,        134,   80,  300),
         ("LMR_C_CAP",          &LMR_C_CAP,          179,  100,  350),
-        ("LMP_BASE",           &LMP_BASE,              1,    1,    6),
-        ("LMP_DEPTH",          &LMP_DEPTH,             8,    4,   12),
+        ("LMP_BASE",           &LMP_BASE,              5,    1,   10),
+        ("LMP_DEPTH",          &LMP_DEPTH,             12,    4,   20),
         ("BAD_NOISY_MARGIN",   &BAD_NOISY_MARGIN,     79,   30,  150),
         ("PROBCUT_MARGIN",     &PROBCUT_MARGIN,       166,   80,  300),
         ("HINDSIGHT_THRESH",   &HINDSIGHT_THRESH,     186,   50,  400),
@@ -1939,6 +1939,21 @@ fn negamax(
             }
         }
 
+        // Late Move Pruning: at shallow depths, skip late quiet moves.
+        // Applied before MakeMove (matching all top engines).
+        // Formula: (LMP_BASE + depth²) / (2 - improving)  [Stockfish/Obsidian consensus]
+        if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
+            && !is_cap && !is_promo
+            && best_score > -(MATE_SCORE - 100)
+            && FEAT_LMP.load(Ordering::Relaxed)
+        {
+            let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
+            if move_count > lmp_limit {
+                info.stats.lmp_prunes += 1;
+                continue;
+            }
+        }
+
         // Bad noisy flag: identify losing captures for tighter futility pruning
         let is_bad_noisy = FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= 4 && mv != tt_move
             && !is_promo && best_score > -(MATE_SCORE - 100)
@@ -1971,26 +1986,7 @@ fn negamax(
 
         // (Futility pruning moved before MakeMove — see above)
 
-        // Late Move Pruning: at shallow depths, skip late quiet moves
-        if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
-            && !is_cap && !is_promo && !gives_check
-            && best_score > -(MATE_SCORE - 100) && beta - alpha == 1
-            && FEAT_LMP.load(Ordering::Relaxed)
-        {
-            let mut lmp_limit = tp(&LMP_BASE) + depth * depth;
-            if improving && depth >= 3 {
-                lmp_limit += lmp_limit / 2;
-            }
-            if failing {
-                lmp_limit = lmp_limit * 2 / 3;
-            }
-            if move_count > lmp_limit {
-                info.stats.lmp_prunes += 1;
-                board.unmake_move();
-                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-                continue;
-            }
-        }
+        // (LMP moved before MakeMove — see above)
 
         // (SEE quiet pruning moved before MakeMove — see above)
 
