@@ -104,9 +104,64 @@ Ideas that failed on the old parameter baseline but may work after SPSA retuning
 - thread_id % 2 depth diversity (no engine does explicit offsets)
 
 ## Infrastructure Built
-- OpenBench at ob.atwiss.com (5 machines, ~100 threads)
-- SPSA tuning via OpenBench (26 tunable parameters)
-- 16 parameters tuned in round 1 (+31.48 Elo)
-- ob_status.py and ob_submit.py scripts
+- OpenBench at ob.atwiss.com (9 machines, ~126 threads)
+- SPSA tuning via OpenBench (32 tunable parameters)
+- 16 parameters tuned in round 1 (+31.48 Elo), 26 in round 2 (+25 Elo), round 4 in progress
+- ob_status.py, ob_submit.py, ob_stop.py scripts
 - Runtime PEXT detection (+20% NPS AMD)
 - clap argument parsing
+
+## Current Status (2026-04-05)
+
+### Merged
+| Change | Elo | Notes |
+|--------|-----|-------|
+| SEE quiet pruning fix (pre-MakeMove, lmrDepth², use see_ge) | +11.4 | Structural fix, 3 issues found |
+| Correction history proportional gravity | +3.9 | Consensus |
+| Futility pruning fix (pre-MakeMove, lmrDepth gate) | +2.6 | Correctness |
+| Correction history no depth gate | ~0 | Consensus, 1-line |
+| NMP no dampening | ~0 | Consensus, simplification |
+| SMP copy history to helpers | +5.9 | Non-regression confirmed |
+| Pondering fix (ponder move output, TM skip, ponderhit reset) | — | Functional fix |
+| Embedded net fix (UCI mode wasn't using fat binary net) | — | Critical bug |
+
+### Rejected (H0)
+| Change | Elo | Notes |
+|--------|-----|-------|
+| SE ply gate | -4.6 | 4566 games, doesn't suit our engine |
+| SE negative extensions | -10.5 | |
+| Dynamic SEE threshold for captures | -26.7 | |
+| Asp delta x1.33 | -6.7 | Our x1.5 works better |
+| Asp skip winning depth reduction | -8.0 | |
+| Asp fail-low midpoint | +0.7 | Flat, 4216 games |
+| Asp fail-high alpha contraction | +0.8 | Flat, 3006 games |
+| LMR remove alpha_raised | -0.2 | |
+| LMR remove unstable | -3.0 | |
+| LMR remove failing | -4.1 | |
+| History pruning full reimplementation | -6.7 | |
+| History pruning cont2 stack | -8.4 | Threshold wrong for 3 signals |
+| Futility TT/killer exemptions | -2.3 | |
+| NMP capture R flip | -7.1 | |
+| Node-based TM v1/v2 | -31/-10 | Needs major rework |
+
+### Not Yet Tried (prioritized)
+
+**High priority:**
+1. Correction history entry clamp 32000 → 1024 (every engine uses 1024)
+2. Correction history 2-ply continuation (consensus, search stack now available)
+3. LMR TTPV flag (5/5 consensus, reduce less for TT PV moves)
+4. LMR multi-ply cont hist in stat score (consensus)
+5. QS two-stage futility (eval+margin then SEE verify)
+
+**Medium priority:**
+6. QS move count cutoff (Obsidian: break after 3)
+7. QS negative SEE threshold (Obsidian -32, Viridithas -141)
+8. TM score stability rolling average (SF uses 4-iter)
+9. TM forced move detection
+10. Cont hist weights (our 3x/3x/1x/1x unusual, consensus equal)
+
+**Low priority / risky:**
+11. SE double/triple extensions (SE ply gate H0'd, SE may not suit us)
+12. LMR killer/counter reduction (our unique adjustments cover similar ground)
+13. Lazy SMP voting (needs multi-threaded testing)
+14. Node-based TM (concept good, needs major rework)
