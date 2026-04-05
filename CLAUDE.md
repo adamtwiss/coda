@@ -393,7 +393,7 @@ Fix razoring margin at depth 2
 Bench: 1443162
 ```
 
-If the change doesn't affect bench (e.g. comments, docs, tooling), the bench line is optional.
+**Always include the bench line on main** — even for doc/tooling commits — because OpenBench reads bench from the latest commit message on the branch.
 
 **CRITICAL: When merging a branch, the bench in the merge commit must be the bench of the merged result, not the branch's standalone bench.** If a branch was created from an older main, the merge combines both the branch changes and any changes made to main since. Always run `make && ./coda bench` after merging and use that value. OpenBench reads the bench from the commit message — a wrong value causes tests to fail immediately with a bench mismatch.
 
