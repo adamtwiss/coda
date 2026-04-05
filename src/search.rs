@@ -2405,7 +2405,7 @@ fn negamax(
     }
 
     // Update pawn-hash correction history when we have a reliable score
-    if !in_check && best_move != NO_MOVE && depth >= 3
+    if !in_check && best_move != NO_MOVE
         && info.excluded_move[ply_u] == NO_MOVE
         && best_score > alpha_orig
         && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
