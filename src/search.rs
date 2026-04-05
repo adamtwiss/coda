@@ -1067,6 +1067,14 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         best_move = root_legal.moves[0];
     }
 
+    // Forced move: only one legal move, skip full search (just return it quickly).
+    // Still search to depth 1 for a score to display, but cap time at 10ms.
+    if root_legal.len == 1 && info.soft_limit > 0 {
+        info.soft_limit = 10;
+        info.hard_limit = 10;
+        info.time_limit = 10;
+    }
+
     let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
     for depth in 1..=effective_max {
         if info.should_stop() { break; }
