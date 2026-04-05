@@ -1903,6 +1903,34 @@ fn negamax(
             }
         }
 
+        // Futility pruning: skip quiet moves when static eval + margin is below alpha.
+        // Applied before MakeMove (matching all top engines). Uses lmrDepth for both
+        // gate and margin (matching SF/Obsidian/Berserk/PlentyChess/Viridithas).
+        if ply > 0 && static_eval > -INFINITY && !in_check
+            && !is_cap && !is_promo
+            && best_score > -(MATE_SCORE - 100)
+            && FEAT_FUTILITY.load(Ordering::Relaxed)
+        {
+            // Estimate LMR reduction for this move
+            let mut lmr_depth = depth;
+            if move_count > 1 && depth >= 2 {
+                let d = (depth as usize).min(63);
+                let m = (move_count as usize).min(63);
+                let r = lmr_reduction(d as i32, m as i32);
+                if r > 0 {
+                    lmr_depth = (depth - r).max(1);
+                }
+            }
+            if lmr_depth <= 10 {
+                let hist_adj = info.history.main_score(from, to, enemy_attacks) / 128;
+                let futility_value = static_eval + tp(&FUT_BASE) + lmr_depth * tp(&FUT_PER_DEPTH) + hist_adj;
+                if futility_value <= alpha {
+                    info.stats.futility_prunes += 1;
+                    continue;
+                }
+            }
+        }
+
         // Bad noisy flag: identify losing captures for tighter futility pruning
         let is_bad_noisy = FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= 4 && mv != tt_move
             && !is_promo && best_score > -(MATE_SCORE - 100)
@@ -1933,32 +1961,7 @@ fn negamax(
             continue;
         }
 
-        // Futility pruning: use estimated post-LMR depth for margin
-        // Margin widened from 60+60*d to 90+100*d (SF uses 42+120*d, Viridithas 86+70*d)
-        // History adjustment: good history widens margin (harder to prune)
-        if static_eval > -INFINITY && depth <= 8 && !in_check && !gives_check
-            && !is_cap && !is_promo
-            && best_score > -(MATE_SCORE - 100)
-            && FEAT_FUTILITY.load(Ordering::Relaxed)
-        {
-            // Estimate LMR reduction for this move
-            let mut lmr_depth = depth;
-            if move_count > 1 && depth >= 2 {
-                let d = (depth as usize).min(63);
-                let m = (move_count as usize).min(63);
-                let r = lmr_reduction(d as i32, m as i32);
-                if r > 0 {
-                    lmr_depth = (depth - r).max(1);
-                }
-            }
-            let hist_adj = info.history.main_score(from, to, enemy_attacks) / 128;
-            if static_eval + tp(&FUT_BASE) + lmr_depth * tp(&FUT_PER_DEPTH) + hist_adj <= alpha {
-                info.stats.futility_prunes += 1;
-                board.unmake_move();
-                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-                continue;
-            }
-        }
+        // (Futility pruning moved before MakeMove — see above)
 
         // Late Move Pruning: at shallow depths, skip late quiet moves
         if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
