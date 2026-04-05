@@ -61,6 +61,8 @@ src/
 Makefile           Build targets: make, make pgo, make openbench, make net
 scripts/
   ob_submit.py     OpenBench job submission script
+  ob_stop.py       Stop an OpenBench test by ID
+  ob_status.py     Fleet status and test results
 training/configs/  Bullet training configs (.rs) for each net architecture
 testdata/
   wac.epd          Win At Chess test suite (201 positions)
@@ -416,7 +418,13 @@ If the change doesn't affect bench (e.g. comments, docs, tooling), the bench lin
 - Code cleanup that doesn't change compiled output (verify with bench)
 - New feature flags (disabled by default)
 
-**OpenBench test submission:** Use `scripts/ob_submit.py` or the web UI at https://ob.atwiss.com/. Reference NPS is 500K. Default bounds [0.00, 5.00] for novel changes. Always verify bench matches before submitting.
+**OpenBench scripts** (all require `OPENBENCH_PASSWORD` env var, username defaults to `claude`):
+```bash
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> <bench> [--bounds '[0,10]'] [--priority 1]
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_stop.py <test_id>
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_status.py
+```
+Reference NPS is 500K. Default bounds [0.00, 5.00] for novel changes. Always verify bench matches before submitting.
 
 **Current bench: 1443162** (with production net, x86-64). Update this when search changes are merged.
 
@@ -485,6 +493,42 @@ Note: RR is correct here (not gauntlet) — we want both nets to play each other
 - **False negatives**: A change rejected at -5 with wide error bars might be +5. Retest when conditions change.
 - **WDL blindspot**: WDL blending improvements are invisible in self-play. Must use cross-engine RR.
 - **Self-play discount**: Self-play Elo ≠ cross-engine Elo. Direction is usually reliable, magnitude varies.
+
+### Feature Improvement Cycle (Detect → Diagnose → Fix → Tune)
+
+Systematic approach for finding and fixing search feature issues. Each cycle compounds — fixing one feature shifts the optimal parameters for everything else, revealing the next weak feature.
+
+**1. Detect weak features**
+- **SPSA detuning**: If SPSA is aggressively moving a parameter away from its starting value (>30% shift), the feature may have a structural flaw. The tuner compensates for bugs by detuning. Example: SEE_QUIET_MULT driven from 17 to 6 (nearly disabled) because the implementation was broken.
+- **Ablation anomaly**: If disabling a feature gains Elo, or gains less than expected, investigate.
+- **Cross-engine parameter divergence**: If our value for a parameter is far outside the consensus range, understand why before assuming we're special.
+
+**2. Diagnose via cross-engine comparison**
+- Compare the specific feature implementation against 6-8 top engines with source code available. Engine sources are in `/home/adam/chess/engines/`.
+- Reference engines (strongest, most relevant): Stockfish, Viridithas (Rust), Obsidian, Berserk, Reckless (Rust), PlentyChess, Caissa, RubiChess, Halogen, Stormphrax.
+- For each engine: exact formula, gating conditions, position in move loop (before/after MakeMove), depth variable used (raw depth vs lmrDepth), history adjustments, numeric values.
+- Common structural issues found so far:
+  - **Pre-move vs post-move**: Pruning after MakeMove wastes make/unmake + NNUE push/pop per pruned move, and makes the feature redundant with earlier pruning (futility, LMP catch most candidates first).
+  - **Raw depth vs lmrDepth**: Using raw depth for depth² scaling is far more aggressive than intended. Engines using depth² all use lmrDepth. Engines using raw depth compensate with linear scaling.
+  - **Duplicate SEE functions**: Using a separate SEE implementation instead of the standard `see_ge` risks correctness bugs.
+
+**3. Fix and SPRT test**
+- Create a feature branch with the structural fix.
+- Set parameter defaults to match consensus (e.g., Stockfish's value for the same formula).
+- SPRT test against main with bounds [0, 10]. The fix should be positive even with untuned constants if the structural change is correct.
+- If SPRT fails, review for secondary bugs (missing ply>0 guard, bestScore pollution, etc.).
+
+**4. SPSA tune the corrected feature**
+- **Focused tune first** (2-4 params, ~1000 iterations): Just the new/changed parameters. Fast convergence, finds the right ballpark.
+- **Full tune after** (all 32 params, 5000+ iterations): Rebalances everything — other params were compensating for the broken feature and need to readjust.
+- Merge the focused tune values, then run the full tune as the next round.
+
+**5. Repeat**
+The retuned baseline exposes the next weak feature. Check SPSA trends for the next parameter being aggressively detuned.
+
+**Results from this approach (2026-04-05):**
+- SEE quiet pruning: SPSA flagged (17→6), deep dive found 3 structural issues (post-move, raw depth², duplicate SEE fn), fix tested +10.8 Elo.
+- Futility pruning: SPSA flagged (116→99), deep dive found gate/margin mismatch (raw depth gate, lmrDepth margin), fix in testing.
 
 ### Model Comparison Testing
 
