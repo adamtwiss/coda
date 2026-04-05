@@ -27,122 +27,78 @@ const PAWN_HIST_SIZE: usize = 512;
 // ============================================================================
 use std::sync::atomic::AtomicI32;
 
-macro_rules! tunable {
-    ($name:ident, $default:expr, $min:expr, $max:expr) => {
-        pub static $name: AtomicI32 = AtomicI32::new($default);
+/// Declare a tunable search parameter with default, min, max.
+/// Single source of truth — used for both the static AtomicI32 and the UCI/SPSA parameter list.
+macro_rules! tunables {
+    ( $( ($name:ident, $default:expr, $min:expr, $max:expr) ),* $(,)? ) => {
+        // Declare each as a pub static AtomicI32
+        $( pub static $name: AtomicI32 = AtomicI32::new($default); )*
+
+        /// List of all tunable parameters for UCI/SPSA
+        pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32)> {
+            vec![
+                $( (stringify!($name), &$name, $default, $min, $max), )*
+            ]
+        }
     };
 }
 
-// NMP parameters
-tunable!(NMP_BASE_R,         3,    2,    8);
-tunable!(NMP_DEPTH_DIV,      4,    2,    6);    // R = base + depth/div
-tunable!(NMP_EVAL_DIV,     143,  100,  400);    // eval bonus = (eval-beta)/div
-tunable!(NMP_EVAL_MAX,       2,    1,    6);    // max eval bonus
-tunable!(NMP_VERIFY_DEPTH, 13,    8,   20);    // depth threshold for verification
-
-// RFP parameters
-tunable!(RFP_DEPTH,          6,    4,   10);
-tunable!(RFP_MARGIN_IMP,    94,   30,  150);    // margin when improving
-tunable!(RFP_MARGIN_NOIMP, 134,   50,  200);    // margin when not improving
-
-// Futility parameters
-tunable!(FUT_BASE,          88,   20,  200);
-tunable!(FUT_PER_DEPTH,    116,   40,  250);
-
-// History pruning
-tunable!(HIST_PRUNE_DEPTH,   2,    1,    8);
-tunable!(HIST_PRUNE_MULT, 1471,  500, 5000);   // threshold = -mult * depth
-
-// SEE pruning
-tunable!(SEE_QUIET_MULT,   25,    5,   80);    // threshold = -mult * lmrDepth²
-tunable!(SEE_CAP_MULT,    114,   30,  200);    // threshold = -mult * depth
-
-// LMR history divisor
-tunable!(LMR_HIST_DIV,   4692, 2000, 15000);
-
-// Singular extensions
-tunable!(SE_DEPTH,           10,    4,   12);
-
-// Aspiration windows
-tunable!(ASP_DELTA,         13,    5,   30);     // initial delta
-tunable!(ASP_SCORE_DIV,  28601, 8000, 50000);   // score-dependent delta divisor
-
-// LMR (C value * 100 for integer representation)
-tunable!(LMR_C_QUIET,     134,   80,  300);     // quiet LMR constant (divided by 100)
-tunable!(LMR_C_CAP,       179,  100,  350);     // capture LMR constant (divided by 100)
-
-// LMP
-tunable!(LMP_BASE,           1,    1,    6);
-tunable!(LMP_DEPTH,          8,    4,   12);
-
-// Bad noisy
-tunable!(BAD_NOISY_MARGIN,  79,   30,  150);    // depth * margin
-
-// ProbCut
-tunable!(PROBCUT_MARGIN,   166,   80,  300);
-
-// Hindsight
-tunable!(HINDSIGHT_THRESH, 186,   50,  400);
-
-// QS parameters
-tunable!(QS_DELTA_MARGIN,  240,  100,  500);    // delta pruning margin in QS
-tunable!(QS_SEE_THRESHOLD,   0, -200,    0);    // SEE threshold for QS captures (default 0 = current behavior, SPSA can explore negative)
-tunable!(QS_MAX_CAPTURES,   32,    2,   32);    // max captures to search in QS (default 32 = no effective limit, Obsidian uses 3)
-
-// Correction history weights (sum should be ~1024 for /1024 normalization)
-tunable!(CORR_W_PAWN,      384,  100,  600);
-tunable!(CORR_W_NP,        154,   50,  400);    // per-color non-pawn weight
-tunable!(CORR_W_MINOR,     102,   30,  300);
-tunable!(CORR_W_MAJOR,     102,   30,  300);
-tunable!(CORR_W_CONT,      128,   30,  400);
-
-// Fail-high blend
-tunable!(FH_BLEND_DEPTH,     3,    1,    8);    // minimum depth for fail-high blending
+tunables!(
+    // NMP
+    (NMP_BASE_R,         3,    2,    8),
+    (NMP_DEPTH_DIV,      4,    2,    6),
+    (NMP_EVAL_DIV,     143,  100,  400),
+    (NMP_EVAL_MAX,       2,    1,    6),
+    (NMP_VERIFY_DEPTH,  13,    8,   20),
+    // RFP
+    (RFP_DEPTH,          6,    4,   10),
+    (RFP_MARGIN_IMP,    94,   30,  150),
+    (RFP_MARGIN_NOIMP, 134,   50,  200),
+    // Futility
+    (FUT_BASE,          88,   20,  200),
+    (FUT_PER_DEPTH,    116,   40,  250),
+    // History pruning
+    (HIST_PRUNE_DEPTH,   2,    1,    8),
+    (HIST_PRUNE_MULT, 1471,  500, 5000),
+    // SEE pruning
+    (SEE_QUIET_MULT,   25,    5,   80),
+    (SEE_CAP_MULT,    114,   30,  200),
+    // LMR
+    (LMR_HIST_DIV,   4692, 2000, 15000),
+    (LMR_C_QUIET,     134,   80,  300),
+    (LMR_C_CAP,       179,  100,  350),
+    // Singular extensions
+    (SE_DEPTH,          10,    4,   12),
+    // Aspiration windows
+    (ASP_DELTA,         13,    5,   30),
+    (ASP_SCORE_DIV,  28601, 8000, 50000),
+    // LMP
+    (LMP_BASE,           1,    1,    6),
+    (LMP_DEPTH,          8,    4,   12),
+    // Bad noisy
+    (BAD_NOISY_MARGIN,  79,   30,  150),
+    // ProbCut
+    (PROBCUT_MARGIN,   166,   80,  300),
+    // Hindsight
+    (HINDSIGHT_THRESH, 186,   50,  400),
+    // QS
+    (QS_DELTA_MARGIN,  240,  100,  500),
+    (QS_SEE_THRESHOLD,   0, -200,    0),
+    (QS_MAX_CAPTURES,   32,    2,   32),
+    // Correction history weights
+    (CORR_W_PAWN,      384,  100,  600),
+    (CORR_W_NP,        154,   50,  400),
+    (CORR_W_MINOR,     102,   30,  300),
+    (CORR_W_MAJOR,     102,   30,  300),
+    (CORR_W_CONT,      128,   30,  400),
+    // Fail-high blend
+    (FH_BLEND_DEPTH,     3,    1,    8),
+);
 
 /// Get a tunable parameter value (inline for hot paths)
 #[inline(always)]
 fn tp(param: &AtomicI32) -> i32 {
     param.load(Ordering::Relaxed)
-}
-
-/// List of all tunable parameters for UCI/SPSA
-pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32)> {
-    vec![
-        ("NMP_BASE_R",         &NMP_BASE_R,         3,    2,    8),
-        ("NMP_DEPTH_DIV",      &NMP_DEPTH_DIV,      4,    2,    6),
-        ("NMP_EVAL_DIV",       &NMP_EVAL_DIV,      143, 100,  400),
-        ("NMP_EVAL_MAX",       &NMP_EVAL_MAX,        2,    1,    6),
-        ("NMP_VERIFY_DEPTH",   &NMP_VERIFY_DEPTH,   13,    8,   20),
-        ("RFP_DEPTH",          &RFP_DEPTH,           6,    4,   10),
-        ("RFP_MARGIN_IMP",     &RFP_MARGIN_IMP,     94,   30,  150),
-        ("RFP_MARGIN_NOIMP",   &RFP_MARGIN_NOIMP,  134,   50,  200),
-        ("FUT_BASE",           &FUT_BASE,            88,   20,  200),
-        ("FUT_PER_DEPTH",      &FUT_PER_DEPTH,      116,   40,  250),
-        ("HIST_PRUNE_DEPTH",   &HIST_PRUNE_DEPTH,    2,    1,    8),
-        ("HIST_PRUNE_MULT",    &HIST_PRUNE_MULT,  1471,  500, 5000),
-        ("SEE_QUIET_MULT",     &SEE_QUIET_MULT,     25,    5,   80),
-        ("SEE_CAP_MULT",       &SEE_CAP_MULT,      114,   30,  200),
-        ("LMR_HIST_DIV",       &LMR_HIST_DIV,     4692, 2000, 15000),
-        ("SE_DEPTH",           &SE_DEPTH,             10,    4,   12),
-        ("ASP_DELTA",          &ASP_DELTA,            13,    5,   30),
-        ("ASP_SCORE_DIV",      &ASP_SCORE_DIV,     28601, 8000, 50000),
-        ("LMR_C_QUIET",        &LMR_C_QUIET,        134,   80,  300),
-        ("LMR_C_CAP",          &LMR_C_CAP,          179,  100,  350),
-        ("LMP_BASE",           &LMP_BASE,              1,    1,    6),
-        ("LMP_DEPTH",          &LMP_DEPTH,             8,    4,   12),
-        ("BAD_NOISY_MARGIN",   &BAD_NOISY_MARGIN,     79,   30,  150),
-        ("PROBCUT_MARGIN",     &PROBCUT_MARGIN,       166,   80,  300),
-        ("HINDSIGHT_THRESH",   &HINDSIGHT_THRESH,     186,   50,  400),
-        ("QS_DELTA_MARGIN",    &QS_DELTA_MARGIN,      240,  100,  500),
-        ("QS_SEE_THRESHOLD",   &QS_SEE_THRESHOLD,       0, -200,    0),
-        ("QS_MAX_CAPTURES",    &QS_MAX_CAPTURES,       32,    2,   32),
-        ("CORR_W_PAWN",        &CORR_W_PAWN,          384,  100,  600),
-        ("CORR_W_NP",          &CORR_W_NP,            154,   50,  400),
-        ("CORR_W_MINOR",       &CORR_W_MINOR,         102,   30,  300),
-        ("CORR_W_MAJOR",       &CORR_W_MAJOR,         102,   30,  300),
-        ("CORR_W_CONT",        &CORR_W_CONT,          128,   30,  400),
-        ("FH_BLEND_DEPTH",     &FH_BLEND_DEPTH,         3,    1,    8),
-    ]
 }
 
 // Feature flags for ablation testing. All true = normal play.
