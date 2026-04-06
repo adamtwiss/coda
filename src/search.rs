@@ -2230,7 +2230,8 @@ fn negamax(
 
                     // Beta cutoff - update killer moves, history, and counter-move for quiet moves
                     if !is_cap {
-                        let bonus = history_bonus(depth);
+                        // Surprising cutoffs (eval was <= alpha) get +1 depth bonus (Alexandria)
+                        let bonus = history_bonus(depth + (static_eval <= alpha_orig) as i32);
 
                         // Store killer
                         if safe_ply < 64 {
