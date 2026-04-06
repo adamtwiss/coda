@@ -261,10 +261,6 @@ fn play_one_game(info: &mut SearchInfo, rng: &mut SimpleRng, depth: i32, blunder
             break;
         }
 
-        if ply >= 8 && !board.in_check() && score.abs() < 10000 {
-            entries.push((board.clone(), best_move, score.clamp(-32000, 32000) as i16, ply));
-        }
-
         let mv = if force_capture_rate > 0.0 && rng.next_f64() < force_capture_rate && ply >= 4 {
             // Force a random capture if any are available
             let captures: Vec<Move> = (0..legal.len)
@@ -285,6 +281,12 @@ fn play_one_game(info: &mut SearchInfo, rng: &mut SimpleRng, depth: i32, blunder
         } else {
             best_move
         };
+
+        // Write ALL positions for chain continuity (matches T80 format).
+        // Store the ACTUALLY PLAYED move (not best_move) so pos.after_move(mv)
+        // matches the next entry's position — required for binpack chain compression.
+        // Score is still from search (best_move's score). Filtering done at training time.
+        entries.push((board.clone(), mv, score.clamp(-32000, 32000) as i16, ply));
 
         if mv == NO_MOVE { break; }
         board.make_move(mv);
