@@ -2382,10 +2382,12 @@ fn negamax(
     best_score
 }
 
-/// History bonus: depth-based bonus for history updates, capped to avoid
-/// over-weighting very deep searches.
+/// History bonus: linear depth-based bonus for history updates.
+/// Consensus: SF min(1469, 155*d-93), Clarity min(1632, 276*d-119),
+/// Obsidian min(1400, 175*d-50). Our old depth² formula gave 25 at d=5
+/// vs SF's 682 — history values were 27× too small to influence ordering.
 fn history_bonus(depth: i32) -> i32 {
-    (depth * depth).min(1200)
+    (170 * depth - 50).clamp(0, 1400)
 }
 
 /// Quiescence search wrapper.
