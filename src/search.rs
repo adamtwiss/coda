@@ -2230,7 +2230,8 @@ fn negamax(
 
                     // Beta cutoff - update killer moves, history, and counter-move for quiet moves
                     if !is_cap {
-                        let bonus = history_bonus(depth);
+                        // Strong fail-highs (score > beta + 95) get +1 depth bonus (Obsidian)
+                        let bonus = history_bonus(depth + (best_score > beta + 95) as i32);
 
                         // Store killer
                         if safe_ply < 64 {
