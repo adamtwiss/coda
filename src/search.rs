@@ -1276,6 +1276,22 @@ fn negamax(
         return info.eval(board);
     }
 
+    // Mate distance pruning (non-PV only, matching Clarity/Velvet)
+    // Clamp alpha/beta to the best/worst possible mate at this ply.
+    // Earliest mate delivery is at ply+1 (not ply).
+    let is_pv = beta - alpha > 1;
+    if !is_pv {
+        let best_possible = MATE_SCORE - ply - 1;  // earliest we can mate is next ply
+        let worst_possible = -MATE_SCORE + ply;     // earliest we can be mated is this ply
+        let md_alpha = alpha.max(worst_possible);
+        let md_beta = beta.min(best_possible);
+        if md_alpha >= md_beta {
+            return md_alpha;
+        }
+        alpha = md_alpha;
+        beta = md_beta;
+    }
+
     // Prefetch TT bucket early to hide memory latency
     info.tt.prefetch(board.hash);
 
