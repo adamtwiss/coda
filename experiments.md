@@ -4049,3 +4049,54 @@ the landscape is completely different. Priority retry list:
 4. **Threat escape bonuses** — 4D history was also dead, explicit bonuses may now be redundant for the right reason
 5. **Double extensions** — better history → better move quality → extensions on more accurate moves
 6. **LMP with lower BASE** — working history means late moves are genuinely bad, LMP can prune more aggressively
+
+## 2026-04-06 Evening: Retries + Atlas Experiments
+
+### Context
+After history magnitude fix (+31.6 Elo) and capture history fix (+5.4),
+retesting features that previously failed on dead-history base.
+
+### H1 Passed — Pending Merge
+
+| # | Test | Elo | Games | Description |
+|---|------|-----|-------|-------------|
+| 141 | retry-lmp-base5 | +3.5 | 8210 | LMP BASE 9→5. Working history enables better move ordering. Trending H1. |
+
+### H0 Failed (Retries)
+
+| # | Test | Elo | Games | Notes |
+|---|------|-----|-------|-------|
+| 140 | retry-cont-hist-1x | -1.1 | 4922 | 3x/3x genuinely better, not just compensating for dead history. DROP. |
+| 142 | retry-root-history | -7.9 | 1800 | Third failure across different bases. DROP permanently. |
+| 143 | retry-double-ext-margin4 | +0.3 | 8346 | Margin=4 too aggressive. Our margin=10 is right. DROP. |
+
+### Atlas Experiments (running)
+
+| # | Test | Elo | Games | Notes |
+|---|------|-----|-------|-------|
+| 144 | retry-dynamic-capture-see | +0.7 | 4096 | 4th attempt with -captHist/18. Flat, likely H0. |
+| 145 | fix-50move-eval-scaling | +1.7 | 1860 | eval*(200-hm)/200. Early, positive. |
+| 147 | fix-strong-failhigh-bonus-v2 | +3.2 | 2938 | depth+(score>beta+95) for history. Promising. |
+| 146 | fix-eval-history-bonus | -3.8 | 3098 | depth+(eval<=alpha). Heading H0. |
+| 148/149 | fix-tt-cutoff-nodetype | -109/resubmitted | — | Missing condition in v1. v2 submitted. |
+
+### SPSA Tune r8 (running, 2500/5000)
+Key movers: HIST_PRUNE_MULT 2119→3736 (+76%), FUT_PER_DEPTH 151→159,
+LMR_C_CAP 184→174, SE_DEPTH 6→5.7. Mainly calibrating history pruning
+threshold for 27× larger values.
+
+### Training Experiments
+
+| # | Config | Result |
+|---|--------|--------|
+| L | v5 768pw, 2 output buckets, MSE, production config | HEALTHY. Check-net: knight>queen ordering persists. Output bucket hypothesis DISPROVEN. |
+
+Check-net tool was fixed: FENs had Black missing pieces (should be White).
+Piece ordering issue traced to LC0 training data scoring by win probability,
+not material — a data characteristic, not a bug.
+
+### Key Lessons (Day 6 Evening)
+1. Retries after history fix: LMP improved (as predicted), cont-hist-1x and root-history still fail (3x/3x is genuinely better, root ordering already good).
+2. Output bucketing doesn't cause piece ordering — LC0 data does.
+3. Power-2.6 loss collapses in Bullet without weight decay (all attempts failed).
+4. 11 of 12 GPU training experiments failed today — mostly config bugs from template-derived configs. Always use exact production config as base.
