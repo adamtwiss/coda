@@ -3947,3 +3947,33 @@ Discovered that SPSA detuning signals indicate structural implementation flaws. 
 4. **SPRT bounds should match intent.** [-10,5] for correctness fixes, [0,10] for expected gains. Saved weeks of grinding on features we'd merge anyway.
 5. **V2 attempts matter.** fix-lmr-cont2 v1 was -5.3, v2 was +2.5 (half weight fix). fix-corr-clamp v1 was -7.0, v2 was +1.5 (scaled constants). fix-lmp v1 was -6.3, v2 was +2.3 (SPSA-tuned BASE).
 6. **Blunder training data improves eval calibration.** SB20/SB60 models trained on blunder data show piece values much closer to Obsidian (reference engine). T80 alone creates miscalibrated piece ordering (knight > queen). Blend is the answer.
+
+## 2026-04-06: Capture History Investigation [SPRT-pending]
+
+### Dynamic Capture SEE Threshold v1 — REJECTED (OB #120)
+- **Change**: Replace binary SEE≥0 for good/bad capture split with `-capScore/32` (MVV + captHist in the score).
+- **Result**: H0, -4.6 Elo, 2632 games.
+
+### Dynamic Capture SEE Threshold v2 — REJECTED (OB #128)
+- **Change**: Use only captHist (not MVV) for threshold: `-captHist/18`, matching Stockfish's divisor.
+- **Result**: H0, -11.5 Elo, 2828 games. Worse than v1.
+
+### Root Cause: Capture History Was Non-Functional
+Deep comparison with Stockfish/Obsidian/Viridithas/Clarity revealed two critical bugs:
+
+**Bug 1: Capture history bonus 5-25x too small.** `history_bonus(depth) = depth*depth capped at 1200` gives bonus of 25 at depth 5, 100 at depth 10. Every top engine uses linear formulas giving 500-1600 at same depths (Obsidian: `min(175*d-50, 1400)`, SF: `min(128*d-77, 1529)`). CaptHist values were too tiny to influence ordering — MVV dominated completely.
+
+**Bug 2: Missing unconditional capture malus.** Coda only updated capture history when a capture caused the cutoff. When a quiet caused cutoff, all tried-and-failed captures got NO malus. Every top engine (SF, Obsidian, Viridithas, Clarity) unconditionally penalizes tried captures on any cutoff. This systematically inflated capture history values.
+
+**Consequence**: LMR capture thresholds (±2000) were dead code — values never reached that range. Dynamic SEE threshold was adding noise, not signal.
+
+### Capture History Fix (OB #pending) — fix-capture-history
+- **Changes**: (1) New `capture_history_bonus(depth) = min(175*d - 50, 1400)` (Obsidian-style), separate from quiet bonus. (2) Unconditional capture malus: penalize all tried captures on any beta cutoff, not just when a capture is best.
+- **Bench**: 1108435 (12% fewer nodes than main = capture ordering actually cutting off earlier).
+- **Impact**: If this passes, should revisit: fix-dynamic-capture-see, fix-capthist-scale, and any other feature that depends on capture history signal.
+
+### Features to Revisit After Capture History Fix
+- Dynamic capture SEE threshold (v1 and v2 both failed with broken captHist)
+- CaptHist scaling in move ordering (fix-capthist-scale, H0)
+- LMR capture history adjustments (thresholds were dead code)
+- Capture history weight in scoring (MVV×16 + captHist — ratio may need retuning)
