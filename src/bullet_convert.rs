@@ -54,19 +54,21 @@ pub fn convert_v5(
     output_path: &str,
     use_screlu: bool,
     use_pairwise: bool,
+    src_output_buckets: usize,
 ) -> Result<(), String> {
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
     let data_len = strip_footer(&data);
 
-    // Infer hidden size
-    let out_mul = if use_pairwise { NNUE_OUTPUT_BUCKETS } else { NNUE_OUTPUT_BUCKETS * 2 };
+    // Infer hidden size using source bucket count (may differ from NNUE_OUTPUT_BUCKETS=8)
+    let ob = src_output_buckets;
+    let out_mul = if use_pairwise { ob } else { ob * 2 };
     let bytes_per_neuron = NNUE_INPUT_SIZE * 2 + 2 + out_mul * 2;
-    let bias_bytes = NNUE_OUTPUT_BUCKETS * 4;
+    let bias_bytes = ob * 4;
     let h = (data_len - bias_bytes) / bytes_per_neuron;
     let output_width = if use_pairwise { h } else { 2 * h };
 
-    let expected = NNUE_INPUT_SIZE * h * 2 + h * 2 + output_width * NNUE_OUTPUT_BUCKETS * 2 + NNUE_OUTPUT_BUCKETS * 4;
-    println!("Input: {} bytes, hidden size: {}, expected: {} bytes", data.len(), h, expected);
+    let expected = NNUE_INPUT_SIZE * h * 2 + h * 2 + output_width * ob * 2 + ob * 4;
+    println!("Input: {} bytes, hidden size: {}, src buckets: {}, expected: {} bytes", data.len(), h, ob, expected);
     if data_len < expected {
         return Err(format!("file too small: got {}, need {}", data_len, expected));
     }
@@ -87,26 +89,32 @@ pub fn convert_v5(
         offset += 2;
     }
 
-    // Read output weights: [outputWidth][buckets] i16 — transpose to [bucket][outputWidth]
-    let mut out_w_raw = vec![[0i16; NNUE_OUTPUT_BUCKETS]; output_width];
+    // Read output weights: [outputWidth][src_buckets] i16
+    let mut out_w_src = vec![vec![0i16; ob]; output_width];
     for i in 0..output_width {
-        for b in 0..NNUE_OUTPUT_BUCKETS {
-            out_w_raw[i][b] = read_i16_le(&data, offset);
+        for b in 0..ob {
+            out_w_src[i][b] = read_i16_le(&data, offset);
             offset += 2;
         }
     }
-    let mut output_weights = vec![0i16; NNUE_OUTPUT_BUCKETS * output_width];
-    for b in 0..NNUE_OUTPUT_BUCKETS {
-        for i in 0..output_width {
-            output_weights[b * output_width + i] = out_w_raw[i][b];
-        }
+
+    // Read output bias: [src_buckets] i32
+    let mut out_bias_src = vec![0i32; ob];
+    for b in 0..ob {
+        out_bias_src[b] = read_i32_le(&data, offset);
+        offset += 4;
     }
 
-    // Read output bias: [buckets] i32
+    // Pad/map to NNUE_OUTPUT_BUCKETS (8) for inference compatibility.
+    // Each inference bucket maps to the nearest source bucket.
+    let mut output_weights = vec![0i16; NNUE_OUTPUT_BUCKETS * output_width];
     let mut output_bias = [0i32; NNUE_OUTPUT_BUCKETS];
     for b in 0..NNUE_OUTPUT_BUCKETS {
-        output_bias[b] = read_i32_le(&data, offset);
-        offset += 4;
+        let src_b = b * ob / NNUE_OUTPUT_BUCKETS; // map 8 buckets to ob buckets
+        for i in 0..output_width {
+            output_weights[b * output_width + i] = out_w_src[i][src_b];
+        }
+        output_bias[b] = out_bias_src[src_b];
     }
 
     println!("Parsed {} bytes of {}", offset, data.len());
