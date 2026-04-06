@@ -33,7 +33,7 @@ fn main() {
     let initial_lr: f32 = 0.001;
     let final_lr: f32 = 0.00001;
 
-    const NUM_OUTPUT_BUCKETS: usize = 1;
+    const NUM_OUTPUT_BUCKETS: usize = 2;
 
     #[rustfmt::skip]
     const BUCKET_LAYOUT: [usize; 32] = [
