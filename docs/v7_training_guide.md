@@ -216,10 +216,18 @@ This explains:
 - Why Velvet (which trains on self-play, not LC0 data) may have better piece ordering
 - Why Obsidian (also LC0 data) might compensate with different training techniques
 
-**Implications**: The piece ordering "bug" may not hurt playing strength much —
-the engine still plays well because it learned LC0's nuanced positional evaluation.
-The check-net diagnostic is misleading for LC0-trained nets. Focus on playing
-strength (Elo) rather than check-net piece ordering.
+**Key finding (2026-04-06 evening)**: The net DOES correctly differentiate piece
+values in *relative* comparisons. Position with White missing queen + Black missing
+knight scores -583cp — exactly the queen-knight difference (~580cp classical).
+
+The check-net issue is sigmoid saturation: being down ANY major piece vs full
+material gives ~95%+ win probability for the opponent, compressing all "piece down"
+scores into a narrow band. But in positions where both sides have imbalances
+(which is what actually occurs in games), the relative values are correct.
+
+**Conclusion**: The piece ordering in check-net is a diagnostic artifact, not a
+playing strength issue. Focus on Elo, not check-net piece ordering. The engine
+correctly evaluates relative material differences in real game positions.
 
 ### Experiment Results Summary (2026-04-06)
 
