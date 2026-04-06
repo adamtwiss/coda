@@ -548,3 +548,70 @@ This suggests Velvet's Elo advantage comes from:
 7. **RFP blended return** (less pruning overconfidence)
 
 The biggest low-hanging fruit for Coda: **mate distance pruning + double extensions + lower SE depth**. These are consensus features that Velvet has and Coda lacks.
+
+---
+
+## 18. GPU Trainer Analysis (2026-04-06)
+
+Velvet uses a **custom PyTorch trainer** (via `tch-rs` Rust bindings to libtorch),
+NOT Bullet. Key differences from our Bullet-based training:
+
+### Loss Function: Power 2.6
+```rust
+const ERR_EXP: f64 = 2.6;
+// loss = abs(predicted - target).pow(2.6).mean()
+```
+NOT MSE (power 2.0). Cosmo's research found power-2.5 gained +16-24 Elo.
+Velvet uses 2.6 which penalizes large errors even more heavily.
+
+### LR Schedule: Patience-Based Decay (NOT cosine)
+- Initial LR: 0.001
+- On validation plateau: multiply LR by 0.4
+- Initial patience: 8 epochs (each epoch = 200M positions)
+- Patience halves on each decay: 8 → 4 → 2 → 2 → ...
+- Stops at LR ≤ 0.00000166
+- Reloads best model checkpoint on patience exhaustion
+
+This is classic ML early-stopping + LR decay, completely different from our
+fixed cosine schedule. It adapts to training dynamics — decays faster when
+learning stalls, keeps high LR while making progress.
+
+### Optimizer: AdamW with weight decay 0.01
+```rust
+let mut opt = nn::AdamW::default().build(vs, initial_lr).unwrap();
+opt.set_weight_decay(0.01);
+```
+Our Bullet configs don't set explicit weight decay (uses Bullet's default).
+
+### Batch Size: 32000
+Double our 16384. Larger batches = more stable gradients = potentially better
+for single-layer training.
+
+### Target: Sigmoid of Scaled Score (no WDL)
+```rust
+// K_DIV = K / (400.0 / SCORE_SCALE)
+target = (label * K_DIV).sigmoid()
+predicted = forward(inputs).sigmoid() * K_DIV
+```
+Pure score-based, no WDL blending. Score is scaled and passed through sigmoid
+before loss computation.
+
+### Validation-Based Checkpointing
+- Checks validation error every 200M positions
+- Saves model only when validation improves
+- Reloads best model on patience exhaustion
+- Always saves after first 4 epochs regardless of improvement
+
+### Data Format
+- Custom LZ4-compressed format, NOT binpack
+- 200K positions per set file
+- Self-play data, not Stockfish/LC0 data
+- Shuffled per batch
+
+### Implications for Coda Training
+1. **Power-2.6 loss**: High priority to test. Can be set in Bullet via custom loss_fn.
+2. **Patience-based LR**: Would need custom schedule in Bullet (not built-in).
+3. **Weight decay 0.01**: Should add to our AdamW config.
+4. **Batch size 32K**: Easy to test in Bullet.
+5. **No WDL**: Confirms that pure score training can work well.
+6. **Validation checkpointing**: Bullet doesn't support this — would need wrapper.

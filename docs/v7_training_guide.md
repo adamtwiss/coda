@@ -147,6 +147,44 @@ The `v7_768pw_h16x32.rs` config uses `.relu()` on hidden layers instead of `.scr
 - **WDL**: 0.0 (pure score training, but w7 = 0.07 was optimal for v5)
 - **Optimizer**: AdamW with stricter clipping (0.99) for FT/factoriser weights
 
+## Velvet Trainer Findings (2026-04-06)
+
+Velvet (+100-200 Elo above us) uses a **custom PyTorch trainer**, not Bullet.
+Key differences that likely contribute to their net quality:
+
+1. **Power-2.6 loss** (not MSE) — penalizes large errors more. Cosmo found +16-24 Elo.
+2. **Patience-based LR decay** — starts 0.001, ×0.4 on plateau, patience halves each time.
+   Adapts to training dynamics vs our fixed cosine schedule.
+3. **Weight decay 0.01** (AdamW) — we don't set explicit weight decay.
+4. **Batch size 32K** — double our 16384. More stable gradients.
+5. **Validation-based checkpointing** — saves best model, reloads on plateau.
+6. **No WDL blending** — pure sigmoid(score) targets.
+7. **Self-play data** — not T80/LC0 data.
+
+### What We Should Try (in Bullet)
+- Power-2.6 loss: `|output.sigmoid() - target|.pow(2.6).mean()` (custom loss_fn)
+- Weight decay: add to AdamW config
+- Batch size 32K: change batch_size param
+- Score filter tightening: Velvet scores are self-play (capped), not LC0 (uncapped)
+
+### v7 Training Failure (2026-04-06)
+All three 768pw v7 experiments (A, C, E) produced **completely collapsed nets**:
+- Exp A (SCReLU baseline): all scores ≈ -6409 (dead hidden layers)
+- Exp C (lower final LR): all scores = 0 (zero output)
+- Exp E (position weighting): all scores ≈ -38403 (diverged)
+
+Raw weight analysis of Exp A quantised.bin: FT weights ±11 (should be ±100-300),
+output layer weights exploded to 10³¹. Classic gradient instability: output layer
+gets huge gradients, FT gets vanishing gradients through hidden layer bottleneck.
+
+**The 768pw + hidden layers combination doesn't train in our Bullet pipeline.**
+Previous 1024h (non-pairwise) models worked — the pairwise→hidden path is the
+specific failure mode. The CReLU→pairwise creates a gradient bottleneck that
+prevents the FT from learning while the output explodes.
+
+**Revised strategy**: Focus on Velvet-style v5 improvements (32 king buckets,
+1 output bucket, power-2.6 loss) before attempting hidden layers.
+
 ## Research Findings
 
 ### From Cosmo/Viridithas (2024-2026)
