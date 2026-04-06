@@ -88,6 +88,23 @@ pub fn run_datagen(config: &DatagenConfig) {
     let start = Instant::now();
     let threads = config.threads.max(1);
 
+    // Verify NNUE loading on thread 0 before spawning workers
+    {
+        let mut test_info = SearchInfo::new(1);
+        test_info.silent = true;
+        let loaded = if !config.nnue_path.is_empty() {
+            test_info.load_nnue(&config.nnue_path).is_ok()
+        } else {
+            test_info.auto_discover_nnue()
+        };
+        if !loaded {
+            eprintln!("Error: No NNUE net found. Use --nnue or build with 'make' for embedded net.");
+            return;
+        }
+        eprintln!("Datagen using NNUE: {} threads, depth {}, {} games",
+            threads, config.depth, config.num_games);
+    }
+
     let games_done = Arc::new(AtomicU64::new(0));
     let positions_done = Arc::new(AtomicU64::new(0));
 
@@ -201,8 +218,13 @@ fn selfplay_worker(
     let mut rng = SimpleRng::new(0xDEADBEEF ^ (thread_id as u64 * 0x9E3779B97F4A7C15));
     let mut info = SearchInfo::new(hash_mb);
     info.silent = true;
-    if let Err(e) = info.load_nnue(nnue_path) {
-        eprintln!("Thread {}: Failed to load NNUE: {}", thread_id, e);
+    if !nnue_path.is_empty() {
+        if let Err(e) = info.load_nnue(nnue_path) {
+            eprintln!("Thread {}: Failed to load NNUE: {}", thread_id, e);
+            return;
+        }
+    } else if !info.auto_discover_nnue() {
+        eprintln!("Thread {}: No NNUE net found", thread_id);
         return;
     }
 
@@ -342,8 +364,13 @@ fn material_worker(
 ) {
     let mut info = SearchInfo::new(hash_mb);
     info.silent = true;
-    if let Err(e) = info.load_nnue(nnue_path) {
-        eprintln!("Thread {}: Failed to load NNUE: {}", thread_id, e);
+    if !nnue_path.is_empty() {
+        if let Err(e) = info.load_nnue(nnue_path) {
+            eprintln!("Thread {}: Failed to load NNUE: {}", thread_id, e);
+            return;
+        }
+    } else if !info.auto_discover_nnue() {
+        eprintln!("Thread {}: No NNUE net found", thread_id);
         return;
     }
 
