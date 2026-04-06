@@ -73,7 +73,7 @@ tunables!(
     (ASP_DELTA,         16,    5,   30),
     (ASP_SCORE_DIV,  28828, 8000, 50000),
     // LMP — formula: (LMP_BASE + depth²) / (2 - improving)
-    (LMP_BASE,           9,    1,   15),
+    (LMP_BASE,           5,    1,   15),
     (LMP_DEPTH,         12,    4,   20),
     // Bad noisy
     (BAD_NOISY_MARGIN,  86,   30,  150),
