@@ -195,6 +195,9 @@ pub struct MovePicker {
     pinned: Bitboard,
     // NMP threat square (-1 = none)
     pub threat_sq: i32,
+    // Checking squares: from which squares does each piece type give direct check?
+    // Indexed by piece type (0=PAWN..5=KING). Computed once per node.
+    checking_sqs: [Bitboard; 6],
 }
 
 impl MovePicker {
@@ -247,6 +250,24 @@ impl MovePicker {
 
         let pawn_hist_ptr = pawn_hist.map(|ph| ph as *const [[i16; 64]; 13]);
 
+        // Checking squares: from which squares does each piece type give direct check?
+        let opponent = if board.side_to_move == 0 { 1u8 } else { 0u8 };
+        let their_king_bb = board.pieces[KING as usize] & board.colors[opponent as usize];
+        let their_king_sq = if their_king_bb != 0 { their_king_bb.trailing_zeros() } else { 64 };
+        let occ = board.occupied();
+        let checking_sqs = if their_king_sq < 64 {
+            [
+                pawn_attacks(opponent, their_king_sq),   // PAWN
+                knight_attacks(their_king_sq),            // KNIGHT
+                bishop_attacks(their_king_sq, occ),       // BISHOP
+                rook_attacks(their_king_sq, occ),         // ROOK
+                bishop_attacks(their_king_sq, occ) | rook_attacks(their_king_sq, occ), // QUEEN
+                0, // KING (can't give direct check)
+            ]
+        } else {
+            [0; 6]
+        };
+
         MovePicker {
             stage: Stage::TTMove,
             tt_move,
@@ -267,6 +288,7 @@ impl MovePicker {
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
+            checking_sqs,
         }
     }
 
@@ -297,6 +319,7 @@ impl MovePicker {
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
+            checking_sqs: [0; 6], // not used in QS
         }
     }
 
@@ -352,6 +375,7 @@ impl MovePicker {
             checkers,
             pinned,
             threat_sq: -1,
+            checking_sqs: [0; 6], // not used in evasions
         }
     }
 
@@ -558,6 +582,14 @@ impl MovePicker {
             // Null-move threat: bonus for escaping the threatened square
             if self.threat_sq >= 0 && from as i32 == self.threat_sq {
                 score += 8000;
+            }
+
+            // Quiet check bonus: moves that give direct check (SF +16384, Viridithas +10000)
+            if piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                if pt < 6 && self.checking_sqs[pt as usize] & (1u64 << to) != 0 {
+                    score += 10000;
+                }
             }
 
             let idx = self.moves.len;
