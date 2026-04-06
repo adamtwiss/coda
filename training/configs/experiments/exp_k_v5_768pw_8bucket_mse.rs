@@ -144,9 +144,9 @@ fn main() {
         entry.score.unsigned_abs() < 10000
     });
 
-    println!("=== Experiment K: 8 output buckets, MSE (control)
+    println!("=== Experiment K: 8 output buckets, MSE (control) ===");
     println!("768pw → CReLU → pairwise, 8 output buckets");
-    println!("Standard MSE loss (control, matches production)
+    println!("Standard MSE loss (control, matches production), WDL={}, 12 T80 files, warmup {} SBs", wdl_val, warmup_sbs);
     trainer.run(&schedule, &settings, &dataloader);
 }
 

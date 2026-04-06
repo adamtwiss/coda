@@ -144,9 +144,9 @@ fn main() {
         entry.score.unsigned_abs() < 10000
     });
 
-    println!("=== Experiment J: 1 output bucket, MSE loss
+    println!("=== Experiment J: 1 output bucket, MSE loss ===");
     println!("768pw → CReLU → pairwise, 1 output bucket (tests bucket hypothesis)");
-    println!("Standard MSE loss (proven working)
+    println!("Standard MSE loss (proven working), WDL={}, 12 T80 files, warmup {} SBs", wdl_val, warmup_sbs);
     trainer.run(&schedule, &settings, &dataloader);
 }
 
