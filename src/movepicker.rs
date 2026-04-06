@@ -195,6 +195,10 @@ pub struct MovePicker {
     pinned: Bitboard,
     // NMP threat square (-1 = none)
     pub threat_sq: i32,
+    // Opponent threat bitboards by attacker type (for piece-type escape bonuses)
+    threats_by_pawn: Bitboard,
+    threats_by_minor: Bitboard,
+    threats_by_rook: Bitboard,
 }
 
 impl MovePicker {
@@ -247,6 +251,24 @@ impl MovePicker {
 
         let pawn_hist_ptr = pawn_hist.map(|ph| ph as *const [[i16; 64]; 13]);
 
+        // Compute opponent's threat bitboards by attacker type
+        let opponent = if board.side_to_move == 0 { 1u8 } else { 0u8 };
+        let opp_pawns = board.pieces[PAWN as usize] & board.colors[opponent as usize];
+        let threats_by_pawn = if opponent == 0 {
+            ((opp_pawns & !0x0101010101010101u64) << 7) | ((opp_pawns & !0x8080808080808080u64) << 9)
+        } else {
+            ((opp_pawns & !0x8080808080808080u64) >> 7) | ((opp_pawns & !0x0101010101010101u64) >> 9)
+        };
+        let occ = board.occupied();
+        let mut threats_by_minor = 0u64;
+        let mut bb = board.pieces[KNIGHT as usize] & board.colors[opponent as usize];
+        while bb != 0 { let sq = bb.trailing_zeros(); threats_by_minor |= knight_attacks(sq); bb &= bb - 1; }
+        bb = board.pieces[BISHOP as usize] & board.colors[opponent as usize];
+        while bb != 0 { let sq = bb.trailing_zeros(); threats_by_minor |= bishop_attacks(sq, occ); bb &= bb - 1; }
+        let mut threats_by_rook = 0u64;
+        bb = board.pieces[ROOK as usize] & board.colors[opponent as usize];
+        while bb != 0 { let sq = bb.trailing_zeros(); threats_by_rook |= rook_attacks(sq, occ); bb &= bb - 1; }
+
         MovePicker {
             stage: Stage::TTMove,
             tt_move,
@@ -267,6 +289,9 @@ impl MovePicker {
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
+            threats_by_pawn,
+            threats_by_minor,
+            threats_by_rook,
         }
     }
 
@@ -297,6 +322,9 @@ impl MovePicker {
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
+            threats_by_pawn: 0,
+            threats_by_minor: 0,
+            threats_by_rook: 0,
         }
     }
 
@@ -352,6 +380,9 @@ impl MovePicker {
             checkers,
             pinned,
             threat_sq: -1,
+            threats_by_pawn: 0,
+            threats_by_minor: 0,
+            threats_by_rook: 0,
         }
     }
 
@@ -558,6 +589,31 @@ impl MovePicker {
             // Null-move threat: bonus for escaping the threatened square
             if self.threat_sq >= 0 && from as i32 == self.threat_sq {
                 score += 8000;
+            }
+
+            // Piece-type threat escape/enter bonuses (Obsidian/Berserk/Viridithas pattern)
+            if piece != NO_PIECE {
+                let from_bb = 1u64 << from;
+                let to_bb = 1u64 << to;
+                let pt = board.piece_type_at(from);
+                match pt {
+                    QUEEN => {
+                        // Queen escaping rook/minor attack
+                        if (self.threats_by_rook | self.threats_by_minor) & from_bb != 0 { score += 20000; }
+                        if (self.threats_by_rook | self.threats_by_minor) & to_bb != 0 { score -= 20000; }
+                    }
+                    ROOK => {
+                        // Rook escaping minor/pawn attack
+                        if (self.threats_by_minor | self.threats_by_pawn) & from_bb != 0 { score += 14000; }
+                        if (self.threats_by_minor | self.threats_by_pawn) & to_bb != 0 { score -= 14000; }
+                    }
+                    KNIGHT | BISHOP => {
+                        // Minor escaping pawn attack
+                        if self.threats_by_pawn & from_bb != 0 { score += 8000; }
+                        if self.threats_by_pawn & to_bb != 0 { score -= 8000; }
+                    }
+                    _ => {}
+                }
             }
 
             let idx = self.moves.len;
