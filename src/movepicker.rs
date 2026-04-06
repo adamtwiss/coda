@@ -534,11 +534,10 @@ impl MovePicker {
 
             let mut score = history.main_score(from, to, self.threats);
 
-            // Continuation history: plies 1,2 at 3x weight, plies 4,6 at 1x weight.
-            // Matches Obsidian/Alexandria/Berserk pattern.
+            // Continuation history: plies 1,2 at 2x weight, plies 4,6 at 1x (Berserk pattern).
             if piece != NO_PIECE {
                 let gp = go_piece(piece);
-                let weights = [3i32, 3, 1, 1]; // ply-1, ply-2, ply-4, ply-6
+                let weights = [2i32, 2, 1, 1]; // ply-1, ply-2, ply-4, ply-6
                 for (i, &w) in weights.iter().enumerate() {
                     if let Some(sub_ptr) = self.cont_hist_subs[i] {
                         let sub = unsafe { &*sub_ptr };
