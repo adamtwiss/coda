@@ -431,11 +431,13 @@ fn run_check_net(net_path: &str) {
 
     let test_positions = [
         ("startpos", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", -50, 50),
-        ("miss pawn", "rnbqkbnr/ppppppp1/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", -200, -20),
-        ("miss knight", "rnbqkb1r/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", -500, -80),
-        ("miss bishop", "rnbqk1nr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", -500, -80),
-        ("miss rook", "rnbqkbn1/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", -800, -120),
-        ("miss queen", "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", -1500, -200),
+        // White missing a piece — score should be negative (White is worse)
+        ("miss pawn", "rnbqkbnr/pppppppp/8/8/8/8/1PPPPPPP/RNBQKBNR w KQkq - 0 1", -200, -20),
+        ("miss knight", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/R1BQKBNR w KQkq - 0 1", -500, -80),
+        ("miss bishop", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RN1QKBNR w KQkq - 0 1", -500, -80),
+        ("miss rook", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBN1 w Qkq - 0 1", -800, -120),
+        ("miss queen", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR w KQkq - 0 1", -1500, -200),
+        // White up material — score should be positive
         ("EG rook up", "4k3/8/8/8/8/8/PPPPPPPP/R3K3 w Q - 0 1", 400, 2500),
         ("EG queen up", "4k3/8/8/8/8/8/PPPPPPPP/3QK3 w - - 0 1", 500, 3000),
     ];
