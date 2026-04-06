@@ -2301,8 +2301,8 @@ fn negamax(
                             }
                         }
                     } else {
-                        // Capture caused beta cutoff: update capture history
-                        let bonus = history_bonus(depth);
+                        // Capture caused beta cutoff: bonus the cutoff capture
+                        let cap_bonus = capture_history_bonus(depth);
                         if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                             let cpt = if flags == FLAG_EN_PASSANT {
                                 captured_type(PAWN)
@@ -2311,17 +2311,23 @@ fn negamax(
                             };
                             History::update_cont_history(
                                 &mut info.history.capture[go_piece(moved_piece)][to as usize][cpt],
-                                bonus,
+                                cap_bonus,
                             );
+                        }
+                    }
 
-                            // Penalize captures tried before cutoff
-                            for i in 0..n_captures_tried.saturating_sub(1) {
-                                let (cp, ct, cv) = captures_tried[i];
-                                History::update_cont_history(
-                                    &mut info.history.capture[cp as usize][ct as usize][cv as usize],
-                                    -bonus,
-                                );
-                            }
+                    // Unconditionally penalize all tried captures that didn't cause cutoff
+                    // (matching Stockfish/Obsidian/Viridithas — captures that fail should be
+                    // penalized regardless of whether the best move was quiet or tactical)
+                    {
+                        let cap_malus = capture_history_bonus(depth);
+                        let cap_count = if is_cap { n_captures_tried.saturating_sub(1) } else { n_captures_tried };
+                        for i in 0..cap_count {
+                            let (cp, ct, cv) = captures_tried[i];
+                            History::update_cont_history(
+                                &mut info.history.capture[cp as usize][ct as usize][cv as usize],
+                                -cap_malus,
+                            );
                         }
                     }
                     break;
@@ -2386,6 +2392,13 @@ fn negamax(
 /// over-weighting very deep searches.
 fn history_bonus(depth: i32) -> i32 {
     (depth * depth).min(1200)
+}
+
+/// Capture history bonus: linear formula matching top engines (Obsidian-style).
+/// Produces much larger values than history_bonus at typical depths (5-15),
+/// giving capture history enough signal to influence move ordering.
+fn capture_history_bonus(depth: i32) -> i32 {
+    (175 * depth - 50).clamp(0, 1400)
 }
 
 /// Quiescence search wrapper.
