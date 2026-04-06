@@ -914,6 +914,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // Age history tables (×0.80) to preserve useful move ordering from prior searches.
     // Killers and counter-moves are cleared (position-specific). Correction history reset.
     info.history.age(4, 5);
+    info.history.clear_root_hist(); // fresh root history each search
     info.clear_correction_history();
     info.stats = PruneStats::default();
     // Clear pawn history
@@ -2207,6 +2208,14 @@ fn negamax(
                             bonus,
                         );
 
+                        // Update root history (only at root)
+                        if ply == 0 {
+                            History::update_history(
+                                &mut info.history.root_hist[from as usize][to as usize],
+                                bonus,
+                            );
+                        }
+
                         // Update continuation history at plies 1, 2, 4, 6
                         // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
                         if moved_piece != NO_PIECE {
@@ -2249,6 +2258,13 @@ fn negamax(
                                 info.history.main_entry(qf, qt, enemy_attacks),
                                 -bonus,
                             );
+                            // Penalize root history (only at root)
+                            if ply == 0 {
+                                History::update_history(
+                                    &mut info.history.root_hist[qf as usize][qt as usize],
+                                    -bonus,
+                                );
+                            }
 
                             // Penalize continuation history at plies 1, 2, 4, 6
                             {
