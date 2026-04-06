@@ -47,52 +47,52 @@ tunables!(
     // NMP
     (NMP_BASE_R,         3,    2,    8),
     (NMP_DEPTH_DIV,      3,    2,    6),
-    (NMP_EVAL_DIV,     168,  100,  400),
+    (NMP_EVAL_DIV,     165,  100,  400),
     (NMP_EVAL_MAX,       2,    1,    6),
     (NMP_VERIFY_DEPTH,  13,    8,   20),
     // RFP
     (RFP_DEPTH,          6,    4,   10),
-    (RFP_MARGIN_IMP,    85,   30,  150),
-    (RFP_MARGIN_NOIMP, 125,   50,  200),
+    (RFP_MARGIN_IMP,    78,   30,  150),
+    (RFP_MARGIN_NOIMP, 121,   50,  200),
     // Futility
-    (FUT_BASE,          83,   20,  200),
-    (FUT_PER_DEPTH,    140,   40,  250),
+    (FUT_BASE,          87,   20,  200),
+    (FUT_PER_DEPTH,    145,   40,  250),
     // History pruning
     (HIST_PRUNE_DEPTH,   2,    1,    8),
     (HIST_PRUNE_MULT, 1332,  500, 5000),
     // SEE pruning
     (SEE_QUIET_MULT,   26,    5,   80),
-    (SEE_CAP_MULT,    130,   30,  200),
+    (SEE_CAP_MULT,    133,   30,  200),
     // LMR
-    (LMR_HIST_DIV,   4313, 2000, 15000),
-    (LMR_C_QUIET,     137,   80,  300),
-    (LMR_C_CAP,       196,  100,  350),
+    (LMR_HIST_DIV,   4055, 2000, 15000),
+    (LMR_C_QUIET,     140,   80,  300),
+    (LMR_C_CAP,       199,  100,  350),
     // Singular extensions
-    (SE_DEPTH,           8,    4,   12),
+    (SE_DEPTH,           7,    4,   12),
     // Aspiration windows
-    (ASP_DELTA,         14,    5,   30),
-    (ASP_SCORE_DIV,  28788, 8000, 50000),
+    (ASP_DELTA,         15,    5,   30),
+    (ASP_SCORE_DIV,  29931, 8000, 50000),
     // LMP — formula: (LMP_BASE + depth²) / (2 - improving)
-    (LMP_BASE,           5,    1,   10),
+    (LMP_BASE,           9,    1,   10),
     (LMP_DEPTH,         12,    4,   20),
     // Bad noisy
-    (BAD_NOISY_MARGIN,  77,   30,  150),
+    (BAD_NOISY_MARGIN,  80,   30,  150),
     // ProbCut
-    (PROBCUT_MARGIN,   182,   80,  300),
+    (PROBCUT_MARGIN,   176,   80,  300),
     // Hindsight
-    (HINDSIGHT_THRESH, 183,   50,  400),
-    // QS — not in this SPSA round, keep current defaults
-    (QS_DELTA_MARGIN,  232,  100,  500),
+    (HINDSIGHT_THRESH, 196,   50,  400),
+    // QS
+    (QS_DELTA_MARGIN,  238,  100,  500),
     (QS_SEE_THRESHOLD,   0, -200,    0),
     (QS_MAX_CAPTURES,   32,    2,   32),
     // Correction history weights
-    (CORR_W_PAWN,      389,  100,  600),
-    (CORR_W_NP,        152,   50,  400),
+    (CORR_W_PAWN,      373,  100,  600),
+    (CORR_W_NP,        144,   50,  400),
     (CORR_W_MINOR,     108,   30,  300),
-    (CORR_W_MAJOR,      99,   30,  300),
-    (CORR_W_CONT,      109,   30,  400),
+    (CORR_W_MAJOR,      86,   30,  300),
+    (CORR_W_CONT,      115,   30,  400),
     // Fail-high blend
-    (FH_BLEND_DEPTH,     3,    1,    8),
+    (FH_BLEND_DEPTH,     2,    1,    8),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
