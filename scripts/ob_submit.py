@@ -2,9 +2,13 @@
 """Submit SPRT tests to OpenBench via the scripts API.
 
 Usage:
-    python3 ob_submit.py <dev_branch> <dev_bench> [options]
-    python3 ob_submit.py with-razoring 968352
-    python3 ob_submit.py nmp-v1 1234567 --bounds '[0.00, 10.00]'
+    python3 ob_submit.py <dev_branch> [options]
+    python3 ob_submit.py fix-nmp-bugs
+    python3 ob_submit.py fix-nmp-bugs --bounds '[0.00, 10.00]'
+    python3 ob_submit.py fix-nmp-bugs 1234567  # optional explicit bench
+
+Bench values are auto-detected by OpenBench from the commit message
+(Bench: NNNNNN). Explicit values override if provided.
 
 Environment variables (or use --flags):
     OPENBENCH_SERVER   (default: https://ob.atwiss.com)
@@ -95,9 +99,9 @@ def submit_test(args):
 def main():
     p = argparse.ArgumentParser(description='Submit SPRT test to OpenBench')
     p.add_argument('dev_branch', help='Dev branch name')
-    p.add_argument('dev_bench', type=int, help='Dev bench node count')
+    p.add_argument('dev_bench', nargs='?', type=int, default=0, help='Dev bench (optional, OB auto-detects from commit)')
     p.add_argument('--base-branch', default='main', help='Base branch (default: main)')
-    p.add_argument('--base-bench', type=int, default=1375565, help='Base bench (default: 1375565)')
+    p.add_argument('--base-bench', type=int, default=0, help='Base bench (optional, OB auto-detects from commit)')
     p.add_argument('--bounds', default='[0.00, 5.00]', help='SPRT bounds (default: [0.00, 5.00])')
     p.add_argument('--tc', default='10.0+0.1', help='Time control (default: 10.0+0.1)')
     p.add_argument('--options', default='Threads=1 Hash=64', help='UCI options')
