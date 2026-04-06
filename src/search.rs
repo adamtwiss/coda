@@ -1161,10 +1161,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     pv_board.make_move(info.pv_table[0][i]);
                 }
                 let mut pv_moves = pv_len;
-                let mut seen_hashes = Vec::new();
+                // Seed with game history hashes to detect threefold across game + PV
+                let mut seen_hashes: Vec<u64> = board.undo_stack.iter().map(|u| u.hash).collect();
+                seen_hashes.push(board.hash);
                 while pv_moves < depth as usize + 5 {
-                    // Stop at draw conditions: cycle or fifty-move rule
-                    if seen_hashes.contains(&pv_board.hash) { break; }
+                    // Stop at draw conditions: repetition (including game history) or fifty-move rule
+                    if seen_hashes.iter().filter(|&&h| h == pv_board.hash).count() >= 2 { break; }
                     if pv_board.halfmove >= 100 { break; }
                     seen_hashes.push(pv_board.hash);
 
