@@ -588,7 +588,7 @@ impl MovePicker {
             if piece != NO_PIECE {
                 let pt = board.piece_type_at(from);
                 if pt < 6 && self.checking_sqs[pt as usize] & (1u64 << to) != 0 {
-                    score += 10000;
+                    score += crate::search::QUIET_CHECK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
                 }
             }
 

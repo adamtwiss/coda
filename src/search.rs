@@ -93,6 +93,21 @@ tunables!(
     (CORR_W_CONT,      110,   30,  400),
     // Fail-high blend
     (FH_BLEND_DEPTH,     2,    1,    8),
+    // History bonus formula: min(HIST_BONUS_MAX, HIST_BONUS_MULT * depth - HIST_BONUS_BASE)
+    (HIST_BONUS_MULT,  170,   50,  400),
+    (HIST_BONUS_BASE,   50,    0,  200),
+    (HIST_BONUS_MAX,  1400,  500, 3000),
+    // Capture history bonus (separate from main history)
+    (CAP_HIST_MULT,    175,   50,  400),
+    (CAP_HIST_BASE,     50,    0,  200),
+    (CAP_HIST_MAX,    1400,  500, 3000),
+    // Double extensions
+    (DEXT_MARGIN,       10,    2,   50),
+    (DEXT_CAP,          16,    4,   32),
+    // Quiet check bonus in move ordering
+    (QUIET_CHECK_BONUS, 10000, 2000, 30000),
+    // LMR complexity divisor (correction history magnitude)
+    (LMR_COMPLEXITY_DIV, 120, 30, 500),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -1867,8 +1882,8 @@ fn negamax(
                 if singular_score < singular_beta {
                     // TT move is singular — no competitive alternatives.
                     let is_pv = beta - alpha > 1;
-                    if !is_pv && singular_score < singular_beta - 10
-                        && info.double_ext_count[ply_u] < 16
+                    if !is_pv && singular_score < singular_beta - tp(&DEXT_MARGIN)
+                        && info.double_ext_count[ply_u] < tp(&DEXT_CAP)
                     {
                         // Double extension (+2): well below singular beta (margin=10, Velvet uses 4)
                         singular_extension = 2;
@@ -2103,7 +2118,7 @@ fn negamax(
                 // Matches Obsidian: R -= complexity / 120.
                 if raw_eval > -INFINITY {
                     let complexity = (static_eval - raw_eval).abs();
-                    reduction -= complexity / 120;
+                    reduction -= complexity / tp(&LMR_COMPLEXITY_DIV);
                 }
 
                 // Clamp: never extend (negative), never reduce past depth 1
@@ -2432,14 +2447,11 @@ fn negamax(
 /// Obsidian min(1400, 175*d-50). Our old depth² formula gave 25 at d=5
 /// vs SF's 682 — history values were 27× too small to influence ordering.
 fn history_bonus(depth: i32) -> i32 {
-    (170 * depth - 50).clamp(0, 1400)
+    (tp(&HIST_BONUS_MULT) * depth - tp(&HIST_BONUS_BASE)).clamp(0, tp(&HIST_BONUS_MAX))
 }
 
-/// Capture history bonus: linear formula matching top engines (Obsidian-style).
-/// Produces much larger values than history_bonus at typical depths (5-15),
-/// giving capture history enough signal to influence move ordering.
 fn capture_history_bonus(depth: i32) -> i32 {
-    (175 * depth - 50).clamp(0, 1400)
+    (tp(&CAP_HIST_MULT) * depth - tp(&CAP_HIST_BASE)).clamp(0, tp(&CAP_HIST_MAX))
 }
 
 /// Quiescence search wrapper.
