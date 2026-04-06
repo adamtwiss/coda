@@ -251,6 +251,8 @@ pub struct SearchInfo {
     reductions: [i32; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
     excluded_move: [Move; MAX_PLY + 1],
+    /// Double extension counter — propagated from parent, capped to prevent search explosion
+    double_ext_count: [i32; MAX_PLY + 1],
     /// Per-ply moved piece (go_piece index 1-12, 0=none). Set before make_move.
     /// Used for correct cont hist lookups at ply-2+ (avoids stale board.piece_at).
     moved_piece_stack: [u8; MAX_PLY + 1],
@@ -299,6 +301,7 @@ impl SearchInfo {
             static_evals: [0; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
+            double_ext_count: [0; MAX_PLY + 1],
             moved_piece_stack: [0; MAX_PLY + 1],
             moved_to_stack: [0; MAX_PLY + 1],
             pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
@@ -873,6 +876,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
+    info.double_ext_count = [0; MAX_PLY + 1];
     info.moved_to_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
@@ -925,6 +929,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
+    info.double_ext_count = [0; MAX_PLY + 1];
     info.moved_to_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
@@ -1840,8 +1845,16 @@ fn negamax(
                 }
 
                 if singular_score < singular_beta {
-                    // TT move is singular — no competitive alternatives. Extend +1.
-                    singular_extension = 1;
+                    // TT move is singular — no competitive alternatives.
+                    let is_pv = beta - alpha > 1;
+                    if !is_pv && singular_score < singular_beta - 10
+                        && info.double_ext_count[ply_u] < 16
+                    {
+                        // Double extension (+2): well below singular beta (margin=10, Velvet uses 4)
+                        singular_extension = 2;
+                    } else {
+                        singular_extension = 1;
+                    }
                 } else {
                     // Alternatives are competitive — negative extension (reduce TT move)
                     singular_extension = -1;
@@ -1953,6 +1966,12 @@ fn negamax(
         }
 
         let mut new_depth = depth - 1 + extension + singular_extension;
+
+        // Propagate double extension counter to child
+        if ply_u + 1 <= MAX_PLY {
+            info.double_ext_count[ply_u + 1] = info.double_ext_count[ply_u]
+                + if singular_extension >= 2 { 1 } else { 0 };
+        }
 
         // Alpha-reduce: after alpha has been raised, reduce subsequent moves by 1 ply
         if alpha_raised_count > 0 && FEAT_ALPHA_REDUCE.load(Ordering::Relaxed) {
