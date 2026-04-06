@@ -175,6 +175,9 @@ enum Commands {
         /// Use int8 quantization for L1
         #[arg(long)]
         int8l1: bool,
+        /// Source output bucket count (default 8, set to 2 for 2-bucket nets)
+        #[arg(long, default_value_t = 8)]
+        output_buckets: usize,
     },
     /// Convert .nnue to Bullet checkpoint (for transfer learning)
     ConvertCheckpoint {
@@ -303,11 +306,11 @@ fn main() {
             run_sample_positions(&input, &output, count, rate);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1 }) => {
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, output_buckets }) => {
             let result = if hidden > 0 {
                 bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1)
             } else {
-                bullet_convert::convert_v5(&input, &output, screlu, pairwise)
+                bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets)
             };
             if let Err(e) = result {
                 eprintln!("Error: {}", e);

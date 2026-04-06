@@ -1867,7 +1867,7 @@ fn negamax(
                 if singular_score < singular_beta {
                     // TT move is singular — no competitive alternatives.
                     let is_pv = beta - alpha > 1;
-                    if !is_pv && singular_score < singular_beta - 10
+                    if !is_pv && singular_score < singular_beta - 4
                         && info.double_ext_count[ply_u] < 16
                     {
                         // Double extension (+2): well below singular beta (margin=10, Velvet uses 4)
