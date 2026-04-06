@@ -3977,3 +3977,75 @@ Deep comparison with Stockfish/Obsidian/Viridithas/Clarity revealed two critical
 - CaptHist scaling in move ordering (fix-capthist-scale, H0)
 - LMR capture history adjustments (thresholds were dead code)
 - Capture history weight in scoring (MVV×16 + captHist — ratio may need retuning)
+
+## 2026-04-06: History Magnitude Discovery + Move Ordering + Training
+
+### The History Magnitude Bug (biggest finding)
+
+Dynamic capture SEE failed 3 times (v1 -4.6, Atlas v2 -11.6, our v1 -4.6).
+Instead of giving up, pushed Atlas to investigate **why** captHist values
+were too small to matter. Found: `history_bonus = (depth²).min(1200)` gave
+25 at depth 5, vs SF's 682 and Obsidian's 825. **27× too small.**
+
+This affected ALL history tables: main butterfly, capture, continuation,
+and pawn history. The entire history system was effectively dead.
+
+Fix: `(170 * depth - 50).clamp(0, 1400)` — linear formula matching consensus.
+
+### H1 Passed — Merged (Day 6)
+
+| # | Test | Elo | Games | Description |
+|---|------|-----|-------|-------------|
+| 132 | fix-history-bonus-magnitude | **+31.6** | 364 | Biggest single change ever. All history 27× too small. |
+| 122 | fix-quiet-check-bonus | **+6.0** | 5,000 | Checking squares bitboard, +10K quiet check bonus |
+| 117 | spsa-r5-final | **+9.9** | 2,392 | SPSA on LMP-corrected base |
+| 129 | fix-mate-distance-pruning-v2 | **+1.7** | 4,164 | ply+1 fix, non-PV only (v1 H0'd at -3.6) |
+| 131 | fix-capture-history | **~+5** | trending H1 | Unconditional capture malus + linear bonus |
+
+**Running total merged Elo (Day 6): ~+54** (history +31.6, check bonus +6.0, SPSA r5 +9.9, MDP +1.7, capture hist ~+5)
+
+### H0 Failed (Day 6)
+
+| # | Test | Elo | Games | Notes |
+|---|------|-----|-------|-------|
+| 125 | fix-mate-distance-pruning v1 | -3.6 | 4,866 | Missing ply+1, applied at PV. Fixed in v2. |
+| 124 | fix-root-history | -0.8 | 5,320 | Root history table not helpful. |
+| 123 | fix-threat-escape-bonus | -2.6 | 3,488 | 4D history already handles threats. |
+| 126 | fix-double-extensions v1 | +0.7 | 10K+ | Margin 30 too conservative. v2 testing margin 10. |
+| 128 | fix-dynamic-capture-see v2 (Atlas) | -11.6 | 2,828 | Led to captHist magnitude discovery. |
+| 120 | fix-dynamic-capture-see v1 | -4.6 | 2,632 | Same root cause — tiny captHist. |
+| 121 | fix-cont-hist-equal-weights | -6.3 | 2,032 | 3x→2x hurts (3x compensated for tiny magnitudes). |
+
+### Active SPRTs
+
+| # | Test | Status | Notes |
+|---|------|--------|-------|
+| 133 | fix-dynamic-capture-see-v3 | Just started | Atlas's version on history-fixed base |
+| 130 | fix-double-extensions-v2 | Just started | Margin 30→10 (closer to Velvet's 4) |
+| 131 | fix-capture-history | +5.1, LLR 1.68 | Trending H1 |
+
+### Training Experiments
+
+- **Exp A/C/E (768pw v7)**: All collapsed — dead hidden layers, gradient instability through pairwise bottleneck.
+- **Exp G (1024 SCReLU v7 + tricks)**: Running, SB ~36/100
+- **Exp H (v5 768pw + power-2.6 loss)**: Running, SB ~36/100
+- **Exp I (v5 768pw + 1 output bucket)**: Running, SB ~36/100
+
+### Key Lessons (Day 6)
+
+1. **Don't accept consensus H0s**: Dynamic capture SEE failing 3 times led to the biggest discovery (+31.6 Elo from history magnitude fix). Always ask WHY.
+2. **Compare actual magnitudes, not just code structure**: The history bonus formula *looked* correct (depth-based, gravity, capping). Only comparing exact numbers at specific depths revealed the 27× scaling bug.
+3. **Cascading discoveries**: capture SEE → captHist too small → ALL history too small. One investigation chain led to fixing the entire history system.
+4. **v7 pairwise+hidden training broken in Bullet**: CReLU→pairwise creates gradient bottleneck that kills FT learning. 1024 SCReLU v7 works. Velvet-style v5 is the recommended path.
+
+### Features to Retry After SPSA Retune
+
+These features H0'd on a base with dead history. With working history (27× larger values),
+the landscape is completely different. Priority retry list:
+
+1. **Dynamic capture SEE** — v3 already testing on fixed base
+2. **Cont hist weights** (3x→2x or 1x) — 3x was compensating for tiny values
+3. **Root history** — tiny values meant 4× of nothing was still nothing
+4. **Threat escape bonuses** — 4D history was also dead, explicit bonuses may now be redundant for the right reason
+5. **Double extensions** — better history → better move quality → extensions on more accurate moves
+6. **LMP with lower BASE** — working history means late moves are genuinely bad, LMP can prune more aggressively

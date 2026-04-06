@@ -506,6 +506,7 @@ Note: RR is correct here (not gauntlet) — we want both nets to play each other
 - **False negatives**: A change rejected at -5 with wide error bars might be +5. Retest when conditions change.
 - **WDL blindspot**: WDL blending improvements are invisible in self-play. Must use cross-engine RR.
 - **Self-play discount**: Self-play Elo ≠ cross-engine Elo. Direction is usually reliable, magnitude varies.
+- **Dig deeper on consensus H0s**: When a feature that every top engine uses fails (H0), the feature isn't wrong — your implementation or its dependencies are broken. Don't accept "doesn't work for our engine." Ask **why** it doesn't work, compare actual numeric values with reference engines, and look for magnitude/scaling bugs. Example: dynamic capture SEE H0'd three times because capture history values were 27× too small. Fixing the magnitude (+31.6 Elo) was the biggest single gain in Coda's history, discovered by refusing to give up on a consensus feature.
 
 ### Feature Improvement Cycle (Detect → Diagnose → Fix → Tune)
 
