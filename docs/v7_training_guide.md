@@ -1,9 +1,38 @@
-# V7 NNUE Training Guide
+# NNUE Training Guide
 
-Comprehensive guide for training Coda's v7 hidden-layer NNUE nets.
-Covers architecture, training, quantization, known issues, and experiment plan.
+Comprehensive guide for training Coda's NNUE nets — from v5 improvements
+through v7 hidden layers. Covers architecture options, training, known issues,
+and experiment plan.
 
-## Target Architecture
+## Architecture Options
+
+### Option A: Velvet-Style (simplest, proven +100-200 Elo above us)
+
+**768 → 1 (single output, no hidden layers, 32 king buckets, CReLU)**
+
+Velvet is +100-200 Elo above Coda with this simple architecture:
+- 768 FT width, CReLU activation
+- 32 king buckets (vs our 16) — more positional granularity
+- **1 output bucket** (no material-count bucketing)
+- **No hidden layers** — direct FT→output
+- No pairwise, no SCReLU
+
+Key insight: output bucketing broke our piece value ordering (check-net showed
+knight > queen with buckets, correct ordering without). Velvet avoids this.
+32 king buckets may compensate for the lost expressiveness of output buckets.
+
+This is the **recommended first step** — a well-trained Velvet-style net on our
+infrastructure, before attempting hidden layers.
+
+### Option B: Single Hidden Layer (stepping stone to v7)
+
+**768pw → 16 → 1×8 (or 768 → 16 → 1)**
+
+One hidden layer adds capacity without the complexity of v7's dual layers.
+Easier to train (fewer parameters, simpler gradients). Can validate that our
+training pipeline produces healthy hidden layers before adding L2.
+
+### Option C: Full v7 (target, matching top engines)
 
 **768pw → 16 → 32 → 1×8** (matching Obsidian, Viridithas, Reckless, Halogen)
 
@@ -29,9 +58,13 @@ Input: HalfKA 768 features (12 pieces × 64 squares) per king bucket
 | Alexandria | 1536 | No | dual (CReLU+SCReLU) | 16→32 | 32 | 1×8 | int8 | float | None |
 | Halogen | 640 | Yes | SCReLU→pairwise | 16 | 32 | 1×8 | int8 | float | Threat features |
 | Stormphrax | 128+ | Yes | SCReLU | 16 | 32 | 1×8 | int8 | float | 60K threat features |
-| **Coda (target)** | 1536 (768pw) | Yes | CReLU→pairwise | 16 | 32 | 1×8 | int8 | float | None |
+| **Velvet** | 768 | No | CReLU | — | — | **1** | — | — | 32 king buckets |
+| **Coda v5 (current)** | 768pw | Yes | CReLU→pairwise | — | — | 1×8 | — | — | 16 king buckets |
+| **Coda v7 (target)** | 768pw | Yes | CReLU→pairwise | 16 | 32 | 1×8 | int8 | float | None |
 
-**Universal consensus**: L1=16, L2=32, float for L2+, 8 output buckets, SCReLU on hidden layers.
+**Note**: Velvet is +100-200 Elo above us with NO hidden layers, NO output buckets,
+and simpler move ordering. This suggests net quality and training matter more than
+architecture complexity at our level.
 
 ### Key Architecture Insights (from Cosmo/Viridithas research)
 
@@ -163,68 +196,109 @@ The `v7_768pw_h16x32.rs` config uses `.relu()` on hidden layers instead of `.scr
 
 Each experiment changes ONE variable from a known baseline. Define success criteria before running. Use 3 GPU hosts for parallel experiments.
 
-### Phase 1: Fix V5 Eval Quality (fastest feedback loop)
+### Phase 0: Velvet-Style Baseline (fastest path to better net)
 
-**Baseline**: current production v5-768pw-w7-e800
-
-| # | Experiment | Change | Success metric | Time |
-|---|-----------|--------|----------------|------|
-| 1a | Suicide-chess data | Blend 5% forced-capture self-play data | Check-net queen > knight | 1h datagen + 1h train |
-| 1b | Tighter score filter | 10000 → 2000 | Check-net values closer to Obsidian | 1h |
-| 1c | Power-2.5 loss | MSE → power-2.5 | Lower test loss, better check-net | 1h |
-| 1d | WDL=0.07 + suicide data | Combine best of 1a with proven WDL | Self-play vs baseline | 1h |
-
-**Decision gate**: If any of 1a-1d fixes v5 check-net ordering, apply same fix to v7 training.
-
-### Phase 2: V7 Architecture Fixes
-
-**Baseline**: v7-1024h16x32s with best training recipe from Phase 1
+Test whether simpler architecture with better training produces stronger nets.
 
 | # | Experiment | Change | Success metric | Time |
 |---|-----------|--------|----------------|------|
-| 2a | Fix 768pw config | ReLU→SCReLU on hidden layers | Better loss than CReLU | 1h |
-| 2b | Single hidden layer | 768pw→16→1×8 (no L2) | Does L1 train at all? | 1h |
-| 2c | Frozen FT | Load v5 FT weights, freeze, train L1+L2 only | Hidden layers learn | 1h |
-| 2d | Frozen FT + unfreeze | 2c then unfreeze FT at 0.1× LR for 50 SB | Better than 2c | 2h |
+| 0a | 768 CReLU, 1 output, 32KB | Velvet-style: no pairwise, no buckets, 32 king buckets | Check-net ordering + bench first-move% | 1.5h |
+| 0b | 768pw, 1 output, 16KB | Our pairwise FT but no output buckets | Compare vs 0a and current v5 | 1.5h |
+| 0c | 768pw, 1 output, 32KB | Pairwise + 32 king buckets, no output buckets | Best of 0a and 0b combined | 1.5h |
 
-### Phase 3: Training Tricks
+**Decision gate**: If any of 0a-0c has correct piece ordering (queen > knight)
+and competitive first-move%, it validates that output buckets are the problem.
+Scale to e800 and SPRT against production v5.
+
+### Phase 1: V7 Training Experiments (running 2026-04-06)
+
+Six SB100 experiments on 768pw v7 (16→32 hidden layers). Configs in
+`training/configs/experiments/`.
+
+| # | Config | Change from baseline | Status |
+|---|--------|---------------------|--------|
+| A | exp_a_baseline_screlu | Control: SCReLU fix (was ReLU) | Running |
+| B | exp_b_wdl030 | WDL=0.3 | Queued |
+| C | exp_c_lower_final_lr | Final LR ×0.3⁵ (match Bullet) | Running |
+| D | exp_d_wdl030_low_lr | WDL=0.3 + lower final LR | Queued |
+| E | exp_e_weight_imbalance | 2× loss weight for \|score\|>500 | Running |
+| F | exp_f_wdl_dynamic | Dynamic WDL scaling with \|score\| | Queued |
+
+**Evaluation**: check-net values, bench first-move%, self-play H2H.
+
+### Phase 1b: V5 Eval Quality (data experiments)
+
+| # | Experiment | Change | Result |
+|---|-----------|--------|--------|
+| ✓ | Blunders-only e20/e60 | 100% blunder data | Better calibration but much weaker play |
+| ✓ | T80+blunders blend e60 | 95% T80 + 5% blunders | No improvement — blend too dilute |
+| — | Force-capture data | 70M positions generated, not yet trained | Pending |
+| — | Higher blend ratio | 20-30% diverse data | Need more data first |
+
+**Finding**: Blunder data dramatically improves piece value calibration but can't
+replace T80 for playing strength. The check-net ordering issue is likely caused by
+output bucketing (pre-bucket v4 models had correct ordering), not data distribution.
+
+### Phase 2: Single Hidden Layer (stepping stone)
+
+After Phase 0 establishes a good single-layer baseline:
 
 | # | Experiment | Change | Success metric | Time |
 |---|-----------|--------|----------------|------|
-| 3a | AdamW beta1=0.95 | Default 0.9 → 0.95 | Lower test loss | 1h |
-| 3b | Tighter weight clipping | 0.99 → 0.5 | Better quantized eval | 1h |
-| 3c | L1 activation sparsity | Add L1-norm penalty on FT activations | >70% block-sparsity | 1h |
-| 3d | Knowledge distillation | Train v7 to match v5 output | Faster convergence | 1h |
+| 2a | 768pw→16→1 | Single hidden, SCReLU, no output buckets | Better than Phase 0 best | 1.5h |
+| 2b | Frozen FT from 0-best | Load best v5 FT, freeze, train L1 only | L1 learns healthy weights | 1.5h |
+| 2c | Unfreeze FT | 2b then unfreeze at 0.1× LR | Better than 2b | 2h |
 
-### Phase 4: Scale Up
+### Phase 3: Full v7 (dual hidden layers)
 
-Take the best recipe from Phases 1-3 and train a full e800. Compare against production v5 via cross-engine RR.
+Only after Phase 2 validates single hidden layer training:
+
+| # | Experiment | Change | Success metric | Time |
+|---|-----------|--------|----------------|------|
+| 3a | 768pw→16→32→1×8 SCReLU | Full v7 with best training recipe | Better than Phase 2 | 1.5h |
+| 3b | + lower final LR | If Phase 1 C/D show this helps | Better convergence | 1.5h |
+| 3c | + position weighting | If Phase 1 E/F show this helps | Better calibration | 1.5h |
+
+### Phase 4: Training Tricks (apply to whichever phase works)
+
+| # | Experiment | Change | Time |
+|---|-----------|--------|------|
+| 4a | AdamW beta1=0.95 | +4 Elo in Cosmo's testing | 1.5h |
+| 4b | Power-2.5 loss | +16-24 Elo in Cosmo's testing | 1.5h |
+| 4c | Knowledge distillation | Train new arch to match best v5 output | 1.5h |
+
+### Phase 5: Scale Up
+
+Take best recipe and train e800. Compare against production v5 via cross-engine RR.
 
 ## Data Generation
 
-### Current data
-- 12× T80 binpack files (~24B positions)
-- 100M Coda self-play with blunder diversity
+### T80 Data (primary training data)
+- 12× T80 binpack files, **~30B total positions** (confirmed via binpack-stats)
+- 2.6 bytes/position (excellent chain compression, avg chain 108 positions)
+- 6.2% in-check positions included, 55.7% draws
+- `min-v2` = filtered (low-signal positions removed), `v6` = binpack format version
+- Unfiltered — all positions from games, filtering at Bullet training time
 
-### Planned: Suicide-Chess Generator
+### Self-Play Data
+- **Blunders**: 69M positions, 16.1 bytes/pos, 6.8% draws, avg chain 69
+- **Force-captures**: 66M positions, 13.3 bytes/pos, 19.9% draws, avg chain 66
+- **Pure selfplay**: 10.1 bytes/pos, avg chain 111
 
-Add a `--force-captures` mode to Coda's datagen command:
-- Play normal self-play games
-- At configurable probability (e.g. 30-50%), force a random capture move instead of best move
-- Creates natural games with organic material imbalances
-- Sequential positions compress well in binpack format
-- Labels come from the engine's own eval at each position
+### Compression Finding (2026-04-06)
+Our data compresses 4-6× worse than T80 (10-16 bytes/pos vs 2.6). Root cause:
+position filtering in datagen broke chain continuity. Fix applied: write ALL
+positions unfiltered, filter at training time via Bullet loader. Also must store
+the actually-played move (not best_move) for chain compression.
 
-This directly addresses the T80 data distribution gap — the training data will include positions where one side is materially down, which T80 almost never has.
+Remaining gap (still ~4× vs T80) likely due to sfbinpack Rust crate vs
+Stockfish's C++ writer, or shorter game lengths.
 
-### Piece-Removal Generator (built, not yet used)
-
-Loads EPD positions and randomly removes pieces. Creates material imbalances but:
-- Non-sequential positions (bad binpack compression)
-- Artificial piece placement patterns
-- No search scores (needs separate evaluation pass)
-
-Suicide-chess approach is preferred.
+### Key Data Insight
+The check-net piece value ordering issue (knight > queen) is caused by
+**output bucketing**, not data distribution. Pre-bucket v4 models had correct
+ordering. Blunder/force-capture data improves calibration but doesn't fix the
+root cause. Removing output buckets (Velvet-style) is the direct fix.
 
 ## Quantization Reference
 
