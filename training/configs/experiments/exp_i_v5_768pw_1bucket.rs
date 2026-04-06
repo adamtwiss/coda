@@ -69,7 +69,7 @@ fn main() {
         ])
         // Power-2.6 loss (Velvet uses this, Cosmo found +16-24 Elo for power-2.5)
         .loss_fn(|output, target| {
-            (output.sigmoid() - target).abs().powf(2.6)
+            (output.sigmoid() - target).abs_pow(2.6)
         })
         .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
             let l0f = builder.new_weights("l0f", Shape::new(ft_size, 768), InitSettings::Zeroed);
