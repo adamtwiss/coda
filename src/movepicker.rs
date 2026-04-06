@@ -517,18 +517,25 @@ impl MovePicker {
             if m == self.tt_move {
                 continue;
             }
-            if !see_ge(board, m, 0) {
+            // Score capture: MVV + capture history
+            let capt_hist = capt_hist_score_static(board, history, m);
+            let cap_score = mvv_lva(board, m) + capt_hist;
+            // Dynamic SEE threshold: use captHist only (not MVV) to decide good/bad
+            // split. SF uses -value/18 but includes 7×PieceValue; we use captHist
+            // only with /18 to avoid MVV×16 inflating the threshold.
+            let see_threshold = -capt_hist / 18;
+            if !see_ge(board, m, see_threshold) {
                 // Bad capture
                 if self.bad_len < 64 {
                     self.bad_moves[self.bad_len] = m;
-                    self.bad_scores[self.bad_len] = capt_hist_score_static(board, history, m);
+                    self.bad_scores[self.bad_len] = cap_score;
                     self.bad_len += 1;
                 }
             } else {
                 // Good capture
                 let idx = self.moves.len;
                 self.moves.push(m);
-                self.scores[idx] = mvv_lva(board, m) + capt_hist_score_static(board, history, m);
+                self.scores[idx] = cap_score;
             }
         }
         self.index = 0;
