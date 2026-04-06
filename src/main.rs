@@ -146,6 +146,12 @@ enum Commands {
         #[arg(long, default_value_t = 0.0)]
         rate: f64,
     },
+    /// Show statistics for a binpack file
+    BinpackStats {
+        /// Input binpack file
+        #[arg(long, short = 'i')]
+        input: String,
+    },
     /// Convert Bullet quantised.bin to .nnue
     ConvertBullet {
         /// Input quantised.bin path
@@ -287,6 +293,10 @@ fn main() {
                 hash_mb: hash,
             };
             datagen::run_datagen(&config);
+        }
+
+        Some(Commands::BinpackStats { input }) => {
+            run_binpack_stats(&input);
         }
 
         Some(Commands::SamplePositions { input, output, count, rate }) => {
@@ -443,6 +453,93 @@ fn run_check_net(net_path: &str) {
         println!("All checks passed.");
     } else {
         println!("{} issue(s) found — eval scale may be collapsed or miscalibrated.", issues);
+    }
+}
+
+fn run_binpack_stats(input: &str) {
+    use sfbinpack::CompressedTrainingDataEntryReader;
+
+    let file_size = std::fs::metadata(input)
+        .unwrap_or_else(|_| panic!("Failed to stat {}", input))
+        .len();
+    println!("File: {} ({:.2} GB)", input, file_size as f64 / 1_073_741_824.0);
+
+    let file = std::fs::File::open(input).unwrap_or_else(|_| panic!("Failed to open {}", input));
+    let mut reader = CompressedTrainingDataEntryReader::new(file)
+        .unwrap_or_else(|_| panic!("Failed to parse binpack {}", input));
+
+    let mut total_positions = 0u64;
+    let mut score_sum = 0i64;
+    let mut score_abs_sum = 0u64;
+    let mut score_max = 0i16;
+    let mut score_min = 0i16;
+    let mut results = [0u64; 3]; // loss/draw/win
+    let mut in_check = 0u64;
+    let mut score_buckets = [0u64; 10]; // <100, <200, <500, <1000, <2000, <5000, <10000, <20000, <30000, 30000+
+    let start = std::time::Instant::now();
+
+    while reader.has_next() {
+        let entry = reader.next();
+        total_positions += 1;
+
+        let score = entry.score;
+        score_sum += score as i64;
+        score_abs_sum += score.unsigned_abs() as u64;
+        if score > score_max { score_max = score; }
+        if score < score_min { score_min = score; }
+
+        match entry.result {
+            -1 => results[0] += 1,
+            0 => results[1] += 1,
+            1 => results[2] += 1,
+            _ => {}
+        }
+
+        if entry.pos.is_checked(entry.pos.side_to_move()) {
+            in_check += 1;
+        }
+
+        let abs = score.unsigned_abs();
+        let bucket = if abs < 100 { 0 } else if abs < 200 { 1 } else if abs < 500 { 2 }
+            else if abs < 1000 { 3 } else if abs < 2000 { 4 } else if abs < 5000 { 5 }
+            else if abs < 10000 { 6 } else if abs < 20000 { 7 } else if abs < 30000 { 8 }
+            else { 9 };
+        score_buckets[bucket] += 1;
+
+        if total_positions % 10_000_000 == 0 {
+            let elapsed = start.elapsed().as_secs_f64();
+            eprint!("\r{:.0}M positions scanned ({:.0}M/s)...",
+                total_positions as f64 / 1e6, total_positions as f64 / elapsed / 1e6);
+        }
+    }
+    eprintln!();
+
+    let elapsed = start.elapsed().as_secs_f64();
+    let bytes_per_pos = file_size as f64 / total_positions as f64;
+    let avg_score = score_sum as f64 / total_positions as f64;
+    let avg_abs_score = score_abs_sum as f64 / total_positions as f64;
+
+    println!("\n=== Binpack Statistics ===");
+    println!("Positions:      {:>12} ({:.2}M)", total_positions, total_positions as f64 / 1e6);
+    println!("Bytes/position: {:>12.1}", bytes_per_pos);
+    println!("Scan time:      {:>12.1}s ({:.1}M pos/s)", elapsed, total_positions as f64 / elapsed / 1e6);
+    println!();
+    println!("Score range:    {} to {}", score_min, score_max);
+    println!("Avg score:      {:.1}", avg_score);
+    println!("Avg |score|:    {:.1}", avg_abs_score);
+    println!("In check:       {:>12} ({:.1}%)", in_check, in_check as f64 / total_positions as f64 * 100.0);
+    println!();
+    println!("Results: W {:.1}%  D {:.1}%  L {:.1}%",
+        results[2] as f64 / total_positions as f64 * 100.0,
+        results[1] as f64 / total_positions as f64 * 100.0,
+        results[0] as f64 / total_positions as f64 * 100.0);
+    println!();
+    println!("Score distribution:");
+    let labels = ["<100", "<200", "<500", "<1000", "<2000", "<5000", "<10000", "<20000", "<30000", "30000+"];
+    for (i, label) in labels.iter().enumerate() {
+        let pct = score_buckets[i] as f64 / total_positions as f64 * 100.0;
+        let bar = "#".repeat((pct * 2.0) as usize);
+        println!("  {:>8}: {:>10} ({:>5.1}%) {}", label, score_buckets[i], pct, bar);
     }
 }
 
