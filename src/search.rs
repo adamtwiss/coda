@@ -1146,26 +1146,28 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         };
 
         // Extract PV from PV table, extend with TT if short
+        // Track game history hashes throughout to stop at threefold repetition
         let mut pv_str = String::new();
         {
-            // Use PV table first
+            let mut seen_hashes: Vec<u64> = board.undo_stack.iter().map(|u| u.hash).collect();
+            seen_hashes.push(board.hash);
+            let mut pv_board = board.clone();
+            let mut pv_moves = 0usize;
+
+            // Use PV table first (stop at repetition)
             let pv_len = info.pv_len[0].min(MAX_PLY);
             for i in 0..pv_len {
-                if i > 0 { pv_str.push(' '); }
+                pv_board.make_move(info.pv_table[0][i]);
+                if seen_hashes.iter().filter(|&&h| h == pv_board.hash).count() >= 2 { break; }
+                seen_hashes.push(pv_board.hash);
+                if !pv_str.is_empty() { pv_str.push(' '); }
                 pv_str.push_str(&move_to_uci(info.pv_table[0][i]));
+                pv_moves += 1;
             }
-            // If PV table is short, extend with TT (detect cycles to avoid looping PVs)
-            if pv_len < depth as usize {
-                let mut pv_board = board.clone();
-                for i in 0..pv_len {
-                    pv_board.make_move(info.pv_table[0][i]);
-                }
-                let mut pv_moves = pv_len;
-                // Seed with game history hashes to detect threefold across game + PV
-                let mut seen_hashes: Vec<u64> = board.undo_stack.iter().map(|u| u.hash).collect();
-                seen_hashes.push(board.hash);
+
+            // Extend with TT if PV table was short
+            if pv_moves < depth as usize {
                 while pv_moves < depth as usize + 5 {
-                    // Stop at draw conditions: repetition (including game history) or fifty-move rule
                     if seen_hashes.iter().filter(|&&h| h == pv_board.hash).count() >= 2 { break; }
                     if pv_board.halfmove >= 100 { break; }
                     seen_hashes.push(pv_board.hash);
