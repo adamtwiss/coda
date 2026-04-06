@@ -112,16 +112,16 @@ fn main() {
         // Base WDL=0.5 — the dynamic function scales it per-position
         wdl_scheduler: wdl::ConstantWDL { value: 0.5 },
         lr_scheduler: lr::Sequence {
-            first: Box::new(lr::LinearDecayLR {
+            first: lr::LinearDecayLR {
                 initial_lr: initial_lr * 0.1,
                 final_lr: initial_lr,
                 final_superbatch: warmup_sbs,
-            }),
-            second: Box::new(lr::CosineDecayLR {
+            },
+            second: lr::CosineDecayLR {
                 initial_lr,
                 final_lr,
                 final_superbatch: superbatches - warmup_sbs,
-            }),
+            },
             first_scheduler_final_superbatch: warmup_sbs,
         },
         save_rate,
