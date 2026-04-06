@@ -1386,18 +1386,32 @@ fn negamax(
             }
 
             if tt_depth >= depth && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
-                match tt_entry.flag {
-                    TT_FLAG_EXACT if beta - alpha == 1 => {
-                        // TT exact cutoff: only at non-PV nodes to avoid truncating the PV
-                        if tt_move != NO_MOVE && ply_u <= MAX_PLY {
-                            info.pv_table[ply_u][0] = tt_move;
-                            info.pv_len[ply_u] = 1;
-                        } else if ply_u <= MAX_PLY {
-                            info.pv_len[ply_u] = 0;
-                        }
-                        info.stats.tt_cutoffs += 1;
-                        return tt_score;
+                // Unified TT cutoff with node-type guard (Alexandria pattern):
+                // At non-PV nodes, accept TT cutoff when:
+                // - cut_node matches score direction (cut expects fail-high, all expects fail-low)
+                // - TT bound type matches (LOWER for fail-high, UPPER for fail-low)
+                // - Not too close to 50-move rule (avoid drawing positions incorrectly)
+                let score_above_beta = tt_score >= beta;
+                let bound_matches = if score_above_beta {
+                    tt_entry.flag == TT_FLAG_LOWER || tt_entry.flag == TT_FLAG_EXACT
+                } else {
+                    tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT
+                };
+                if !is_pv && cut_node == score_above_beta && bound_matches
+                    && board.halfmove < 90
+                {
+                    info.stats.tt_cutoffs += 1;
+                    if tt_move != NO_MOVE && ply_u <= MAX_PLY {
+                        info.pv_table[ply_u][0] = tt_move;
+                        info.pv_len[ply_u] = 1;
+                    } else if ply_u <= MAX_PLY {
+                        info.pv_len[ply_u] = 0;
                     }
+                    return tt_score;
+                }
+
+                // Fall through: use TT bounds to narrow alpha/beta window at non-PV nodes
+                match tt_entry.flag {
                     TT_FLAG_LOWER => {
                         if beta - alpha_orig == 1 && tt_score > alpha {
                             alpha = tt_score;
