@@ -183,7 +183,60 @@ specific failure mode. The CReLU→pairwise creates a gradient bottleneck that
 prevents the FT from learning while the output explodes.
 
 **Revised strategy**: Focus on Velvet-style v5 improvements (32 king buckets,
-1 output bucket, power-2.6 loss) before attempting hidden layers.
+training quality) before attempting hidden layers.
+
+### Power-2.6 Loss Failure (2026-04-06)
+Experiments G, H, I all collapsed with power-2.6 loss — scores of 44M.
+The loss function produces larger gradients than MSE, causing output weight
+explosion without explicit weight decay (Velvet uses 0.01). Bullet's
+default AdamW may not include sufficient weight decay.
+
+### Output Bucket Hypothesis — DISPROVEN (2026-04-06)
+Tested 2 output buckets vs 8 (exp L vs production). Both show the same
+piece ordering issue (knight > queen). Pre-bucket v4 models had correct
+ordering, but that was GoChess with different training — not a bucket effect.
+
+**Root cause of piece ordering issue**: LC0-scored T80 data.
+
+LC0 evaluates based on **win probability**, not material. A position where
+White is down a knight might be scored -200cp (modest disadvantage) if there's
+compensation. A position down a queen might be -300cp if there's activity.
+LC0 doesn't score proportionally to material value — it scores based on how
+likely each side is to win from that position.
+
+Our NNUE learns these LC0 score distributions. It never sees "queen down =
+-900cp" because LC0 doesn't think in material terms. The net correctly learns
+LC0's evaluation style, which happens to not differentiate piece values the
+way traditional engines expect.
+
+This explains:
+- Why all our models (v4, v5, 2-bucket, 8-bucket) show similar queen/knight confusion
+- Why blunder self-play data (scored by our engine with material-aware eval) showed
+  better calibration — our eval scores queen-down much more negatively than LC0
+- Why Velvet (which trains on self-play, not LC0 data) may have better piece ordering
+- Why Obsidian (also LC0 data) might compensate with different training techniques
+
+**Implications**: The piece ordering "bug" may not hurt playing strength much —
+the engine still plays well because it learned LC0's nuanced positional evaluation.
+The check-net diagnostic is misleading for LC0-trained nets. Focus on playing
+strength (Elo) rather than check-net piece ordering.
+
+### Experiment Results Summary (2026-04-06)
+
+| # | Experiment | Architecture | Change | Result |
+|---|-----------|-------------|--------|--------|
+| A | 768pw v7 SCReLU | Hidden 16→32 | Baseline with SCReLU fix | COLLAPSED (gradient instability) |
+| C | 768pw v7 lower LR | Hidden 16→32 | Lower final LR | COLLAPSED (zero output) |
+| E | 768pw v7 weight imb | Hidden 16→32 | 2× weight for imbalanced | COLLAPSED (diverged) |
+| G | 1024 v7 + power-2.6 | Hidden 16→32 | Power-2.6 loss | COLLAPSED (output explosion) |
+| H | 768pw v5 + power-2.6 | No hidden | Power-2.6 loss, 8 buckets | COLLAPSED (output explosion) |
+| I | 768pw v5 + power-2.6 | No hidden | Power-2.6 loss, 1 bucket | COLLAPSED (output explosion) |
+| J | 768pw v5, 2 bucket | No hidden | Wrong ft_size in config | CONVERTER ERROR |
+| K | 768pw v5, 8 bucket | No hidden | Wrong ft_size in config | WRONG SCALE (44M) |
+| L | 768pw v5, 2 bucket | No hidden | Clean production copy | HEALTHY — piece ordering still wrong |
+
+11 of 12 experiments failed due to config bugs or untested loss functions.
+Only exp L (exact production copy with 1 line changed) produced a healthy model.
 
 ## Research Findings
 
