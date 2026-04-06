@@ -42,11 +42,16 @@ pub enum DatagenMode {
     Material { source_epd: String },
 }
 
-/// Convert Coda board + move + score to sfbinpack TrainingDataEntry.
+/// Convert Coda board + move + score to sfbinpack entry (standalone, no chaining).
+/// Used by material_worker where positions aren't sequential.
 fn to_sf_entry(board: &Board, mv: Move, score: i16, result: i16, ply: u16) -> Option<TrainingDataEntry> {
-    let fen = board.to_fen();
-    let pos = SfPosition::from_fen(&fen).ok()?;
+    let pos = SfPosition::from_fen(&board.to_fen()).ok()?;
+    let sf_move = make_sf_move(&pos, mv, board)?;
+    Some(TrainingDataEntry { pos, mv: sf_move, score, ply, result })
+}
 
+/// Convert a Coda move to sfbinpack Move format.
+fn make_sf_move(_pos: &SfPosition, mv: Move, board: &Board) -> Option<SfMove> {
     let from = SfSquare::new(move_from(mv) as u32);
     let to = SfSquare::new(move_to(mv) as u32);
     let flags = move_flags(mv);
@@ -75,14 +80,7 @@ fn to_sf_entry(board: &Board, mv: Move, score: i16, result: i16, ply: u16) -> Op
     } else {
         SfMove::new(from, to, SfMoveType::Normal, SfPiece::none())
     };
-
-    Some(TrainingDataEntry {
-        pos,
-        mv: sf_move,
-        score,
-        ply,
-        result,
-    })
+    Some(sf_move)
 }
 
 /// Run data generation.
@@ -295,11 +293,44 @@ fn play_one_game(info: &mut SearchInfo, rng: &mut SimpleRng, depth: i32, blunder
 
     let game_result = result.unwrap_or(0);
     let mut sf_entries = Vec::with_capacity(entries.len());
+
+    // Build chained SfPositions: first from FEN, then via after_move().
+    // This guarantees is_continuation() passes for the compressed writer,
+    // avoiding 32-byte packed entries where 2-3 byte continuations should be.
+    let mut running_pos: Option<SfPosition> = None;
     for (board, mv, score, ply) in &entries {
         let r = if board.side_to_move == WHITE { game_result } else { -game_result };
-        if let Some(entry) = to_sf_entry(&board, *mv, *score, r, *ply) {
-            sf_entries.push(entry);
-        }
+
+        let pos = if let Some(ref prev_pos) = running_pos {
+            // Use chained position from previous after_move
+            prev_pos.clone()
+        } else {
+            // First entry: create from FEN
+            match SfPosition::from_fen(&board.to_fen()) {
+                Ok(p) => p,
+                Err(_) => continue,
+            }
+        };
+
+        // Convert our move to sfbinpack move
+        let sf_mv = match make_sf_move(&pos, *mv, board) {
+            Some(m) => m,
+            None => {
+                running_pos = None; // break chain on conversion failure
+                continue;
+            }
+        };
+
+        sf_entries.push(TrainingDataEntry {
+            pos,
+            mv: sf_mv,
+            score: *score,
+            ply: *ply,
+            result: r,
+        });
+
+        // Advance running position for next entry's chain
+        running_pos = Some(sf_entries.last().unwrap().pos.after_move(sf_mv));
     }
     sf_entries
 }
