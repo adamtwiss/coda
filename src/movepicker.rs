@@ -38,6 +38,9 @@ pub struct History {
     /// Continuation history: [piece 1-12][to][piece 1-12][to]
     /// piece uses 1-12 indexing (slot 0 unused).
     pub cont_hist: [[[[i16; 64]; 13]; 64]; 13],
+    /// Root history: [from][to] — dedicated butterfly table for root moves only.
+    /// Cleared before each search, weighted 4× in quiet scoring at root.
+    pub root_hist: [[i32; 64]; 64],
 }
 
 impl History {
@@ -72,6 +75,7 @@ impl History {
             killers: [[NO_MOVE; 2]; 64],
             counter: [[NO_MOVE; 64]; 13],
             cont_hist: [[[[0; 64]; 13]; 64]; 13],
+            root_hist: [[0; 64]; 64],
         }
     }
 
@@ -81,6 +85,12 @@ impl History {
         self.killers = [[NO_MOVE; 2]; 64];
         self.counter = [[NO_MOVE; 64]; 13];
         self.cont_hist = [[[[0; 64]; 13]; 64]; 13];
+        self.root_hist = [[0; 64]; 64];
+    }
+
+    /// Clear root history (called at the start of each search).
+    pub fn clear_root_hist(&mut self) {
+        self.root_hist = [[0; 64]; 64];
     }
 
     /// Age all history tables by multiplying by factor/divisor (e.g. 4/5 = 0.80).
@@ -590,6 +600,12 @@ impl MovePicker {
                 if pt < 6 && self.checking_sqs[pt as usize] & (1u64 << to) != 0 {
                     score += 10000;
                 }
+            }
+
+            // Root history: 4× weighted at root for better root move ordering (Alexandria pattern)
+            if self.ply == 0 {
+                let history = unsafe { &*self.history };
+                score += 4 * history.root_hist[from as usize][to as usize];
             }
 
             let idx = self.moves.len;
