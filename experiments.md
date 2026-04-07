@@ -4100,3 +4100,40 @@ not material — a data characteristic, not a bug.
 2. Output bucketing doesn't cause piece ordering — LC0 data does.
 3. Power-2.6 loss collapses in Bullet without weight decay (all attempts failed).
 4. 11 of 12 GPU training experiments failed today — mostly config bugs from template-derived configs. Always use exact production config as base.
+
+## 2026-04-07: Overnight Results + New Experiments
+
+### H1 Passed — Merged
+
+| # | Test | Elo | Games | Description |
+|---|------|-----|-------|-------------|
+| 152 | spsa-r8-snapshot | **+3.5** | 2,598 | HIST_PRUNE_MULT 2119→4170 recalibration |
+| 149 | fix-tt-cutoff-nodetype | **+2.4** | 29,632 | Only accept TT cutoffs matching expected node type (Alexandria) |
+| 153 | spsa-r9-snapshot | **+6.4** | 1,514 | 45-param tune. HIST_PRUNE_MULT→7224, FUT_BASE→94, NMP_EVAL_DIV→148 |
+
+### H0 Failed
+
+| # | Test | Elo | Games | Notes |
+|---|------|-----|-------|-------|
+| 144 | retry-dynamic-capture-see | -0.5 | 20,122 | 5th failure. PERMANENTLY DROPPED. |
+| 146 | fix-eval-history-bonus | -0.4 | 21,392 | depth+(eval<=alpha) doesn't help. Drop. |
+| 147 | fix-strong-failhigh-bonus-v2 | -1.2 | 14,576 | depth+(score>beta+95) doesn't help. Drop. |
+| 145 | fix-50move-eval-scaling | +0.8 | 31,020 | Neutral at 31K games. Stopped. |
+
+### SPSA Tune r9 (45 params, 2500 iterations)
+New params (11 added): HIST_BONUS_MULT/BASE/MAX, CAP_HIST_MULT/BASE/MAX,
+DEXT_MARGIN/CAP, QUIET_CHECK_BONUS, LMR_COMPLEXITY_DIV. Most new params
+stable at starting values — defaults were well-calibrated. HIST_BONUS_MAX
+moved from 1400→1505, CAP_HIST_BASE from 50→45.
+
+HIST_PRUNE_MULT continues to be the dominant mover: 4170→7224 (+73%).
+Still climbing after 3 consecutive tunes. Focused 5-param tune running.
+
+### Focused Tune (5 params on r9 branch)
+Running: HIST_PRUNE_MULT, FUT_BASE, HIST_BONUS_MAX, LMP_BASE, NMP_EVAL_DIV.
+These showed the most movement and may not have converged in the full tune.
+
+### Branches Prepared (pending r9 merge + rebase)
+- fix-badnode-flag: RFP +25% margin, NMP R-1 when no TT data
+- fix-tt-cutoff-conthist-malus: penalize opponent's quiet on TT beta cutoff
+- fix-history-extensions: extend when both ply-1/2 cont hist > 10000
