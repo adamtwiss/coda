@@ -1387,6 +1387,10 @@ fn negamax(
     let tt_entry = info.tt.probe(board.hash);
     let tt_hit = tt_entry.hit;
 
+    // Sticky PV flag: once a position is searched as PV, it stays PV in the TT.
+    // Used to reduce LMR for moves that lead to historically important positions.
+    let tt_pv = is_pv || (tt_hit && tt_entry.tt_pv);
+
     if tt_hit {
         tt_move = tt_entry.best_move;
 
@@ -1718,7 +1722,7 @@ fn negamax(
             if score >= probcut_beta {
                 info.stats.probcut_cutoffs += 1;
                 // Store in TT as lower bound so sibling nodes benefit
-                info.tt.store(board.hash, depth - 3, score_to_tt(score, ply), TT_FLAG_LOWER, mv, raw_eval);
+                info.tt.store(board.hash, depth - 3, score_to_tt(score, ply), TT_FLAG_LOWER, mv, raw_eval, false);
                 return score;
             }
         }
@@ -2112,6 +2116,12 @@ fn negamax(
                     reduction -= 1;
                 }
 
+                // Reduce less when position was previously a PV node (Alexandria/Obsidian/Seer pattern).
+                // Sticky: once a position is searched as PV, tt_pv stays set even at non-PV nodes.
+                if tt_pv {
+                    reduction -= 1;
+                }
+
                 // Continuous history adjustment: good history reduces less, bad more
                 // Uses main history + ply-1 + ply-2 continuation history (consensus).
                 // Ply-2 weighted at half to avoid over-scaling the total.
@@ -2432,7 +2442,7 @@ fn negamax(
         let store_score = score_to_tt(best_score, ply);
 
         if FEAT_TT_STORE.load(Ordering::Relaxed) {
-            info.tt.store(board.hash, depth, store_score, flag, best_move, raw_eval);
+            info.tt.store(board.hash, depth, store_score, flag, best_move, raw_eval, tt_pv);
         }
     }
 
@@ -2629,7 +2639,7 @@ fn quiescence_with_depth(
             TT_FLAG_EXACT
         };
         if FEAT_TT_STORE.load(Ordering::Relaxed) {
-            info.tt.store(board.hash, -1, store_score, flag, best_move, -INFINITY);
+            info.tt.store(board.hash, -1, store_score, flag, best_move, -INFINITY, false);
         }
         return best_score;
     }
@@ -2757,7 +2767,7 @@ fn quiescence_with_depth(
         TT_FLAG_EXACT
     };
     if FEAT_TT_STORE.load(Ordering::Relaxed) {
-        info.tt.store(board.hash, -1, store_score, flag, best_move, stand_pat);
+        info.tt.store(board.hash, -1, store_score, flag, best_move, stand_pat, false);
     }
 
     // QS beta blending: dampen capture fail-high at non-PV nodes
