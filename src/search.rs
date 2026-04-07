@@ -47,26 +47,26 @@ tunables!(
     // NMP
     (NMP_BASE_R,         3,    2,    8),
     (NMP_DEPTH_DIV,      3,    2,    6),
-    (NMP_EVAL_DIV,     148,  100,  400),
+    (NMP_EVAL_DIV,     135,  100,  400),  // malus tune: 148→135
     (NMP_EVAL_MAX,       1,    1,    6),
     (NMP_VERIFY_DEPTH,  11,    8,   20),
     // RFP
     (RFP_DEPTH,          5,    4,   10),
-    (RFP_MARGIN_IMP,    92,   30,  150),
-    (RFP_MARGIN_NOIMP, 140,   50,  200),
+    (RFP_MARGIN_IMP,    94,   30,  150),  // malus tune: 92→94
+    (RFP_MARGIN_NOIMP, 137,   50,  200),  // malus tune: 140→137
     // Futility
-    (FUT_BASE,          94,   20,  200),
-    (FUT_PER_DEPTH,    161,   40,  250),
+    (FUT_BASE,         109,   20,  200),  // malus tune: 94→109
+    (FUT_PER_DEPTH,    173,   40,  250),  // malus tune: 161→173
     // History pruning
     (HIST_PRUNE_DEPTH,   2,    1,    8),
-    (HIST_PRUNE_MULT, 7224,  500, 50000),
+    (HIST_PRUNE_MULT, 6930,  500, 50000),  // malus tune: 7224→6930
     // SEE pruning
-    (SEE_QUIET_MULT,   23,    5,   80),
+    (SEE_QUIET_MULT,   24,    5,   80),  // malus tune: 23→24
     (SEE_CAP_MULT,    122,   30,  200),
     // LMR
-    (LMR_HIST_DIV,   9110, 2000, 100000),
-    (LMR_C_QUIET,     138,   80,  300),
-    (LMR_C_CAP,       169,  100,  350),
+    (LMR_HIST_DIV,   7454, 2000, 100000),  // malus tune: 9110→7454
+    (LMR_C_QUIET,     132,   80,  300),  // malus tune: 138→132
+    (LMR_C_CAP,       164,  100,  350),  // malus tune: 169→164
     // Singular extensions
     (SE_DEPTH,           6,    4,   12),
     // Aspiration windows
@@ -74,9 +74,9 @@ tunables!(
     (ASP_SCORE_DIV,  30338, 8000, 50000),
     // LMP — formula: (LMP_BASE + depth²) / (2 - improving)
     (LMP_BASE,           7,    1,   15),
-    (LMP_DEPTH,         13,    4,   20),
+    (LMP_DEPTH,         14,    4,   20),  // malus tune: 13→14
     // Bad noisy
-    (BAD_NOISY_MARGIN,  91,   30,  150),
+    (BAD_NOISY_MARGIN,  92,   30,  150),  // malus tune: 91→92
     // ProbCut
     (PROBCUT_MARGIN,   167,   80,  300),
     // Hindsight
@@ -107,7 +107,7 @@ tunables!(
     // Quiet check bonus in move ordering
     (QUIET_CHECK_BONUS, 9946, 2000, 30000),
     // LMR complexity divisor (correction history magnitude)
-    (LMR_COMPLEXITY_DIV, 122, 30, 500),
+    (LMR_COMPLEXITY_DIV, 133, 30, 500),  // malus tune: 122→133
 );
 
 /// Get a tunable parameter value (inline for hot paths)
