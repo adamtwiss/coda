@@ -1463,6 +1463,29 @@ fn negamax(
                     } else if ply_u <= MAX_PLY {
                         info.pv_len[ply_u] = 0;
                     }
+                    // TT cutoff cont-hist malus: penalize opponent's last quiet move
+                    // in context of our move before that (Alexandria pattern).
+                    // "Your move led to a position we already know is lost for you."
+                    let stack_len = board.undo_stack.len();
+                    if score_above_beta && stack_len >= 2 {
+                        let opp_undo = &board.undo_stack[stack_len - 1];
+                        let our_undo = &board.undo_stack[stack_len - 2];
+                        if opp_undo.mv != NO_MOVE && opp_undo.captured == NO_PIECE_TYPE
+                            && our_undo.mv != NO_MOVE
+                        {
+                            let opp_to = move_to(opp_undo.mv);
+                            let opp_piece = board.piece_at(opp_to);
+                            let our_to = move_to(our_undo.mv);
+                            let our_piece = board.piece_at(our_to);
+                            if opp_piece != NO_PIECE && our_piece != NO_PIECE {
+                                let malus = -((155 * depth).min(385));
+                                History::update_cont_history(
+                                    &mut info.history.cont_hist[go_piece(our_piece)][our_to as usize][go_piece(opp_piece)][opp_to as usize],
+                                    malus,
+                                );
+                            }
+                        }
+                    }
                     return tt_score;
                 }
 
