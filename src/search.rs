@@ -258,6 +258,9 @@ pub struct SearchInfo {
     pub ponderhit_time: std::sync::Arc<AtomicU64>,
     pub sel_depth: i32,
     pub last_score: i32,
+    /// Per-depth cumulative node counts (for EBF calculation in bench)
+    pub depth_nodes: [u64; MAX_PLY + 1],
+    pub completed_depth: i32,
     /// Triangular PV table
     pub pv_table: [[Move; MAX_PLY + 1]; MAX_PLY + 1],
     pub pv_len: [usize; MAX_PLY + 1],
@@ -313,6 +316,8 @@ impl SearchInfo {
             ponderhit_time: std::sync::Arc::new(AtomicU64::new(0)),
             sel_depth: 0,
             last_score: 0,
+            depth_nodes: [0; MAX_PLY + 1],
+            completed_depth: 0,
             static_evals: [0; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
@@ -939,8 +944,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     for entry in info.pawn_hist.iter_mut() {
         *entry = [[0i16; 64]; 13];
     }
-    // Clear static evals and excluded moves
+    // Clear static evals, excluded moves, depth tracking
     info.static_evals = [0; MAX_PLY + 1];
+    info.depth_nodes = [0; MAX_PLY + 1];
+    info.completed_depth = 0;
     info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
@@ -1144,6 +1151,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         prev_score = score;
         info.last_score = score;
+
+        // Record cumulative nodes at this depth (for EBF calculation)
+        if (depth as usize) < MAX_PLY {
+            info.depth_nodes[depth as usize] = info.nodes;
+            info.completed_depth = depth;
+        }
 
         // UCI info output
         let elapsed = info.start_time.elapsed().as_millis() as u64;
@@ -2812,6 +2825,8 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         info.auto_discover_nnue();
     }
     let mut total_nodes = 0u64;
+    let mut ebf_ln_sum = 0.0f64;
+    let mut ebf_count = 0u32;
 
     let limits = SearchLimits {
         depth,
@@ -2827,6 +2842,17 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
 
         let _mv = search(&mut board, &mut info, &limits);
         total_nodes += info.nodes;
+
+        // Accumulate EBF data across all positions
+        let max_d = info.completed_depth as usize;
+        for d in 5..max_d {
+            let prev = info.depth_nodes[d];
+            let curr = info.depth_nodes[d + 1];
+            if prev > 100 && curr > prev {
+                ebf_ln_sum += (curr as f64 / prev as f64).ln();
+                ebf_count += 1;
+            }
+        }
     }
 
     if !print_stats { return total_nodes; }
@@ -2853,6 +2879,13 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         let first_pct = s.first_move_cutoffs as f64 / s.beta_cutoffs as f64 * 100.0;
         eprintln!("Move ordering:  avg cutoff pos {:.2}, avg pos² {:.1}, first-move {:.1}%",
             avg_pos, avg_sq, first_pct);
+    }
+    // Effective branching factor: geometric mean of node ratios between consecutive depths
+    // Accumulated across all bench positions for a robust estimate
+    if ebf_count > 0 {
+        let mean_ebf = (ebf_ln_sum / ebf_count as f64).exp();
+        eprintln!("EBF (depth 5+): {:.2} (geometric mean, {} transitions across {} positions)",
+            mean_ebf, ebf_count, positions.len());
     }
     eprintln!("Total nodes:    {:>8}", total_nodes);
 
