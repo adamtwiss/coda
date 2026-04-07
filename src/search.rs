@@ -1568,6 +1568,11 @@ fn negamax(
         depth -= 1;
     }
 
+    // badNode: no TT data at meaningful depth — position is unexplored.
+    // Reduce RFP margin and NMP R since eval is less reliable here.
+    // Alexandria pattern.
+    let bad_node = !tt_hit && depth >= 4;
+
     // Threat square from null-move failure
     let mut threat_sq: i32 = -1;
 
@@ -1601,6 +1606,8 @@ fn negamax(
         info.stats.nmp_attempts += 1;
         // Adaptive reduction: scales with depth and eval margin above beta
         let mut r = tp(&NMP_BASE_R) + depth / tp(&NMP_DEPTH_DIV);
+        // Reduce more when position is unexplored — prune more aggressively (Alexandria)
+        if bad_node { r += 1; }
         // Reduce less after captures
         if !board.undo_stack.is_empty() && board.undo_stack[board.undo_stack.len() - 1].captured != NO_PIECE_TYPE {
             r -= 1;
@@ -1661,7 +1668,8 @@ fn negamax(
             && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
             && move_flags(tt_move) != FLAG_EN_PASSANT;
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
-            let margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            if bad_node { margin -= margin / 4; } // reduce margin when unexplored — prune more aggressively (Alexandria)
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
