@@ -47,26 +47,26 @@ tunables!(
     // NMP
     (NMP_BASE_R,         3,    2,    8),  // SPSA r10: 3.46→3 (rounded)
     (NMP_DEPTH_DIV,      3,    2,    6),
-    (NMP_EVAL_DIV,     146,  100,  400),  // SPSA r10: 148→146
+    (NMP_EVAL_DIV,     135,  100,  400),  // malus tune: 148→135
     (NMP_EVAL_MAX,       1,    1,    6),
     (NMP_VERIFY_DEPTH,  11,    8,   20),
     // RFP
     (RFP_DEPTH,          5,    4,   10),
-    (RFP_MARGIN_IMP,    95,   30,  150),  // SPSA r10: 92→95
-    (RFP_MARGIN_NOIMP, 136,   50,  200),  // SPSA r10: 140→136
+    (RFP_MARGIN_IMP,    94,   30,  150),  // malus tune: 92→94
+    (RFP_MARGIN_NOIMP, 137,   50,  200),  // malus tune: 140→137
     // Futility
-    (FUT_BASE,          99,   20,  200),  // SPSA r10: 94→99
-    (FUT_PER_DEPTH,    165,   40,  250),  // SPSA r10: 161→165
+    (FUT_BASE,         109,   20,  200),  // malus tune: 94→109
+    (FUT_PER_DEPTH,    173,   40,  250),  // malus tune: 161→173
     // History pruning
     (HIST_PRUNE_DEPTH,   2,    1,    8),
-    (HIST_PRUNE_MULT, 7563,  500, 50000),  // SPSA r10: 7224→7563
+    (HIST_PRUNE_MULT, 6930,  500, 50000),  // malus tune: 7224→6930
     // SEE pruning
-    (SEE_QUIET_MULT,   24,    5,   80),  // SPSA r10: 23→24
-    (SEE_CAP_MULT,    127,   30,  200),  // SPSA r10: 122→127
+    (SEE_QUIET_MULT,   24,    5,   80),  // malus tune: 23→24
+    (SEE_CAP_MULT,    122,   30,  200),
     // LMR
-    (LMR_HIST_DIV,   8782, 2000, 100000),  // SPSA r10: 9110→8782
-    (LMR_C_QUIET,     136,   80,  300),  // SPSA r10: 138→136
-    (LMR_C_CAP,       164,  100,  350),  // SPSA r10: 169→164
+    (LMR_HIST_DIV,   7454, 2000, 100000),  // malus tune: 9110→7454
+    (LMR_C_QUIET,     132,   80,  300),  // malus tune: 138→132
+    (LMR_C_CAP,       164,  100,  350),  // malus tune: 169→164
     // Singular extensions
     (SE_DEPTH,           6,    4,   12),
     // Aspiration windows
@@ -74,9 +74,9 @@ tunables!(
     (ASP_SCORE_DIV,  30338, 8000, 50000),
     // LMP — formula: (LMP_BASE + depth²) / (2 - improving)
     (LMP_BASE,           7,    1,   15),
-    (LMP_DEPTH,         13,    4,   20),  // SPSA r10: 12.5→13 (rounded)
+    (LMP_DEPTH,         14,    4,   20),  // malus tune: 13→14
     // Bad noisy
-    (BAD_NOISY_MARGIN,  93,   30,  150),  // SPSA r10: 91→93
+    (BAD_NOISY_MARGIN,  92,   30,  150),  // malus tune: 91→92
     // ProbCut
     (PROBCUT_MARGIN,   167,   80,  300),
     // Hindsight
@@ -107,7 +107,7 @@ tunables!(
     // Quiet check bonus in move ordering
     (QUIET_CHECK_BONUS, 9946, 2000, 30000),
     // LMR complexity divisor (correction history magnitude)
-    (LMR_COMPLEXITY_DIV, 124, 30, 500),  // SPSA r10: 122→124
+    (LMR_COMPLEXITY_DIV, 133, 30, 500),  // malus tune: 122→133
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -1462,6 +1462,29 @@ fn negamax(
                         info.pv_len[ply_u] = 1;
                     } else if ply_u <= MAX_PLY {
                         info.pv_len[ply_u] = 0;
+                    }
+                    // TT cutoff cont-hist malus: penalize opponent's last quiet move
+                    // in context of our move before that (Alexandria pattern).
+                    // "Your move led to a position we already know is lost for you."
+                    let stack_len = board.undo_stack.len();
+                    if score_above_beta && stack_len >= 2 {
+                        let opp_undo = &board.undo_stack[stack_len - 1];
+                        let our_undo = &board.undo_stack[stack_len - 2];
+                        if opp_undo.mv != NO_MOVE && opp_undo.captured == NO_PIECE_TYPE
+                            && our_undo.mv != NO_MOVE
+                        {
+                            let opp_to = move_to(opp_undo.mv);
+                            let opp_piece = board.piece_at(opp_to);
+                            let our_to = move_to(our_undo.mv);
+                            let our_piece = board.piece_at(our_to);
+                            if opp_piece != NO_PIECE && our_piece != NO_PIECE {
+                                let malus = -((155 * depth).min(385));
+                                History::update_cont_history(
+                                    &mut info.history.cont_hist[go_piece(our_piece)][our_to as usize][go_piece(opp_piece)][opp_to as usize],
+                                    malus,
+                                );
+                            }
+                        }
                     }
                     return tt_score;
                 }
