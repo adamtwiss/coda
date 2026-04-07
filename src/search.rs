@@ -253,6 +253,9 @@ pub struct SearchInfo {
     tm_has_data: bool,
     soft_limit: u64,  // ms — can be extended/shortened dynamically
     hard_limit: u64,  // ms — absolute maximum
+    /// Per-root-move node counts for node-based time management.
+    /// Indexed by from_sq * 64 + to_sq. Reset each search.
+    root_move_nodes: Box<[u64; 4096]>,
     /// Ponderhit: shared atomic time limit (ms). 0 = ponder mode (infinite).
     /// Set by UCI thread on ponderhit to switch from infinite to timed search.
     pub ponderhit_time: std::sync::Arc<AtomicU64>,
@@ -313,6 +316,7 @@ impl SearchInfo {
             tm_has_data: false,
             soft_limit: 0,
             hard_limit: 0,
+            root_move_nodes: alloc_zeroed_box(),
             ponderhit_time: std::sync::Arc::new(AtomicU64::new(0)),
             sel_depth: 0,
             last_score: 0,
@@ -960,6 +964,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.tm_prev_score = 0;
     info.tm_best_stable = 0;
     info.tm_has_data = false;
+    // Reset per-root-move node counts
+    for v in info.root_move_nodes.iter_mut() { *v = 0; }
 
     // Reset and initialize NNUE accumulator for root position
     if let Some(acc) = &mut info.nnue_acc {
@@ -1231,7 +1237,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             );
         }
 
-        // Dynamic time management: adjust soft limit based on stability
+        // Dynamic time management: 3-factor model (Obsidian/Clarity pattern)
+        // Combines node fraction, best-move stability, and score trend.
         if info.soft_limit > 0 && depth >= 4 && !info.should_stop() {
             // Track best-move stability
             if info.tm_has_data {
@@ -1246,9 +1253,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 }
             }
 
-            // Score delta
-            let score_delta = if info.tm_has_data && !is_mate_score(prev_score) && !is_mate_score(info.tm_prev_score) {
-                (prev_score - info.tm_prev_score).abs()
+            // Score trend: how much has the score dropped since last iteration?
+            // Positive = score is dropping (need more time), negative = improving
+            let score_drop = if info.tm_has_data && !is_mate_score(prev_score) && !is_mate_score(info.tm_prev_score) {
+                info.tm_prev_score - prev_score  // positive when eval is falling
             } else {
                 0
             };
@@ -1257,22 +1265,38 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             info.tm_prev_score = prev_score;
             info.tm_has_data = true;
 
-            // Scale factor for soft limit
-            let mut scale = 1.0f64;
+            // Factor 1: Node fraction (Obsidian pattern)
+            // How concentrated is the search on the best move?
+            // High fraction → confident → use less time. Low fraction → uncertain → use more.
+            let nodes_factor = if depth > 9 && best_move != NO_MOVE {
+                let bm_from = move_from(best_move) as usize;
+                let bm_to = move_to(best_move) as usize;
+                let best_nodes = info.root_move_nodes[bm_from * 64 + bm_to];
+                let total = info.nodes;
+                if total > 0 {
+                    let frac = best_nodes as f64 / total as f64;
+                    // Obsidian: 0.63 + (1.0 - frac) * 2.0
+                    // frac=0.9 → 0.83, frac=0.5 → 1.63, frac=0.2 → 2.23
+                    0.63 + (1.0 - frac) * 2.0
+                } else {
+                    1.25  // default when no data (Clarity pattern)
+                }
+            } else {
+                1.25  // early depths: use default multiplier
+            };
 
-            // Stable best move → stop early
-            if info.tm_best_stable >= 8 { scale *= 0.35; }
-            else if info.tm_best_stable >= 5 { scale *= 0.5; }
-            else if info.tm_best_stable >= 3 { scale *= 0.7; }
-            else if info.tm_best_stable >= 1 { scale *= 0.85; }
+            // Factor 2: Best-move stability (Obsidian linear pattern)
+            // Each stable iteration reduces time by 8%
+            // 0 stable: 1.71x, 5 stable: 1.31x, 10 stable: 0.91x
+            let stability_factor = (1.71 - info.tm_best_stable as f64 * 0.08).max(0.5);
 
-            // Very stable + stable score → extra reduction
-            if info.tm_best_stable >= 5 && score_delta <= 10 { scale *= 0.8; }
+            // Factor 3: Score trend (Obsidian pattern, simplified)
+            // Dropping score → use more time. Rising score → slightly less.
+            // scoreFactor = clamp(0.86 + 0.010 * scoreDrop, 0.81, 1.50)
+            let score_factor = (0.86 + 0.010 * score_drop as f64).clamp(0.81, 1.50);
 
-            // Unstable score → extend time
-            if score_delta > 50 { scale *= 2.0; }
-            else if score_delta > 25 { scale *= 1.5; }
-            else if score_delta > 10 { scale *= 1.2; }
+            // Combined: all three factors multiply against the soft limit
+            let scale = nodes_factor * stability_factor * score_factor;
 
             // Check if we should stop at the soft limit
             let adjusted_soft = (info.soft_limit as f64 * scale) as u64;
@@ -2210,6 +2234,9 @@ fn negamax(
         // Store reduction for child's hindsight gating
         info.reductions[ply_u] = reduction;
 
+        // Track nodes per root move for node-based time management
+        let nodes_before = if ply == 0 { info.nodes } else { 0 };
+
         if reduction > 0 {
             info.stats.lmr_searches += 1;
 
@@ -2250,6 +2277,12 @@ fn negamax(
 
         board.unmake_move();
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+
+        // Accumulate nodes for this root move
+        if ply == 0 {
+            let idx = (from as usize) * 64 + (to as usize);
+            info.root_move_nodes[idx] += info.nodes - nodes_before;
+        }
 
         if info.stop.load(Ordering::Relaxed) {
             return 0;
