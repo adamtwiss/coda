@@ -1965,8 +1965,14 @@ fn negamax(
 
         // Late Move Pruning: at shallow depths, skip late quiet moves.
         // Applied before MakeMove. Formula: (LMP_BASE + depth²) / (2 - improving)
+        // Non-pawn material guard: disable in pawn endgames where every move is critical
+        // (SF/Obsidian/Velvet pattern — missing this caused SPSA to push BASE to 7-9)
+        let us = board.side_to_move;
+        let has_npm = (board.pieces[KNIGHT as usize] | board.pieces[BISHOP as usize]
+            | board.pieces[ROOK as usize] | board.pieces[QUEEN as usize])
+            & board.colors[us as usize] != 0;
         if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
-            && !is_cap && !is_promo
+            && !is_cap && !is_promo && has_npm
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
         {
