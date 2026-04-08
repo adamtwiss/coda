@@ -47,36 +47,36 @@ tunables!(
     // NMP
     (NMP_BASE_R,         3,    2,    8),  // SPSA r10: 3.46→3 (rounded)
     (NMP_DEPTH_DIV,      3,    2,    6),
-    (NMP_EVAL_DIV,     129,  100,  400),  // malus tune: 148→135
+    (NMP_EVAL_DIV,     146,  100,  400),  // malus tune: 148→135
     (NMP_EVAL_MAX,       1,    1,    6),
     (NMP_VERIFY_DEPTH,  11,    8,   20),
     // RFP
     (RFP_DEPTH,          5,    4,   10),
     (RFP_MARGIN_IMP,    91,   30,  150),  // malus tune: 92→94
-    (RFP_MARGIN_NOIMP, 134,   50,  200),  // malus tune: 140→137
+    (RFP_MARGIN_NOIMP, 139,   50,  200),  // malus tune: 140→137
     // Futility
-    (FUT_BASE,         110,   20,  200),  // malus tune: 94→109
-    (FUT_PER_DEPTH,    179,   40,  250),  // malus tune: 161→173
+    (FUT_BASE,         103,   20,  200),  // malus tune: 94→109
+    (FUT_PER_DEPTH,    184,   40,  250),  // malus tune: 161→173
     // History pruning
     (HIST_PRUNE_DEPTH,   2,    1,    8),
-    (HIST_PRUNE_MULT, 6323,  500, 50000),  // malus tune: 7224→6930
+    (HIST_PRUNE_MULT, 6554,  500, 50000),  // malus tune: 7224→6930
     // SEE pruning
-    (SEE_QUIET_MULT,   20,    5,   80),  // malus tune: 23→24
-    (SEE_CAP_MULT,    117,   30,  200),
+    (SEE_QUIET_MULT,   25,    5,   80),  // malus tune: 23→24
+    (SEE_CAP_MULT,    125,   30,  200),
     // LMR
-    (LMR_HIST_DIV,   6835, 2000, 100000),  // malus tune: 9110→7454
+    (LMR_HIST_DIV,   6823, 2000, 100000),  // malus tune: 9110→7454
     (LMR_C_QUIET,     127,   80,  300),  // malus tune: 138→132
-    (LMR_C_CAP,       163,  100,  350),  // malus tune: 169→164
+    (LMR_C_CAP,       164,  100,  350),  // malus tune: 169→164
     // Singular extensions
     (SE_DEPTH,           6,    4,   12),
     // Aspiration windows
     (ASP_DELTA,         17,    5,   30),
     (ASP_SCORE_DIV,  30338, 8000, 50000),
     // LMP — formula: (LMP_BASE + depth²) / (2 - improving)
-    (LMP_BASE,           8,    1,   15),
-    (LMP_DEPTH,         14,    4,   20),  // malus tune: 13→14
+    (LMP_BASE,           7,    1,   15),
+    (LMP_DEPTH,         15,    4,   20),  // malus tune: 13→14
     // Bad noisy
-    (BAD_NOISY_MARGIN,  90,   30,  150),  // malus tune: 91→92
+    (BAD_NOISY_MARGIN,  92,   30,  150),  // malus tune: 91→92
     // ProbCut
     (PROBCUT_MARGIN,   167,   80,  300),
     // Hindsight
@@ -107,7 +107,7 @@ tunables!(
     // Quiet check bonus in move ordering
     (QUIET_CHECK_BONUS, 9946, 2000, 30000),
     // LMR complexity divisor (correction history magnitude)
-    (LMR_COMPLEXITY_DIV, 134, 30, 500),  // malus tune: 122→133
+    (LMR_COMPLEXITY_DIV, 139, 30, 500),  // malus tune: 122→133
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -289,8 +289,9 @@ pub struct SearchInfo {
     minor_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
     /// Major piece correction history: [stm][major_hash % size]
     major_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
-    /// Continuation correction history: [piece][to_square]
+    /// Continuation correction history: [piece][to_square] (ply-1 and ply-2)
     cont_corr: Box<[[i32; 64]; 12]>,
+    cont_corr2: Box<[[i32; 64]; 12]>,
     pub nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
     pub nnue_acc: Option<crate::nnue::NNUEAccumulator>,
 }
@@ -336,6 +337,7 @@ impl SearchInfo {
             minor_corr: alloc_zeroed_box(),
             major_corr: alloc_zeroed_box(),
             cont_corr: alloc_zeroed_box(),
+            cont_corr2: alloc_zeroed_box(),
             nnue_net: None,
             nnue_acc: None,
         }
@@ -459,6 +461,7 @@ impl SearchInfo {
         for row in self.minor_corr.iter_mut() { row.fill(0); }
         for row in self.major_corr.iter_mut() { row.fill(0); }
         for row in self.cont_corr.iter_mut() { row.fill(0); }
+        for row in self.cont_corr2.iter_mut() { row.fill(0); }
     }
 
     /// Evaluate using NNUE if loaded, otherwise classical PeSTO.
@@ -598,7 +601,7 @@ fn build_dirty_piece(
 
 /// Apply correction history to raw static eval.
 #[inline]
-fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
+fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32, ply: usize) -> i32 {
     let stm = board.side_to_move as usize;
 
     // Pawn correction
@@ -619,7 +622,7 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
     let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
     let major_corr = info.major_corr[stm][major_idx] as i64;
 
-    // Continuation correction (from opponent's last move)
+    // Continuation correction ply-1 (from opponent's last move)
     let cont_corr = if !board.undo_stack.is_empty() {
         let last = &board.undo_stack[board.undo_stack.len() - 1];
         if last.mv != NO_MOVE {
@@ -634,9 +637,19 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
         } else { 0 }
     } else { 0 };
 
-    // Weighted blend: pawn 384, whiteNP 154, blackNP 154, minor 102, major 102, cont 128 = 1024
+    // Continuation correction ply-2 (from our move 2 plies ago, via search stack)
+    let cont_corr2 = if ply >= 2 {
+        let piece2 = info.moved_piece_stack[ply - 2] as usize;
+        let to2 = info.moved_to_stack[ply - 2] as usize;
+        if piece2 > 0 && piece2 < 12 && to2 < 64 {
+            info.cont_corr2[piece2][to2] as i64
+        } else { 0 }
+    } else { 0 };
+
+    // Weighted blend: pawn + 2*NP + minor + major + cont1 + cont2 = ~1024
     let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
-        + minor_corr * tp(&CORR_W_MINOR) as i64 + major_corr * tp(&CORR_W_MAJOR) as i64 + cont_corr * tp(&CORR_W_CONT) as i64) / 1024;
+        + minor_corr * tp(&CORR_W_MINOR) as i64 + major_corr * tp(&CORR_W_MAJOR) as i64
+        + cont_corr * tp(&CORR_W_CONT) as i64 + cont_corr2 * tp(&CORR_W_CONT) as i64) / 1024;
     let adjusted = raw_eval + (total_corr as i32) / CORR_HIST_GRAIN;
     adjusted.clamp(-MATE_SCORE + 100, MATE_SCORE - 100)
 }
@@ -651,7 +664,7 @@ fn update_corr_entry(entry: &mut i32, err: i32, weight: i32) {
 }
 
 /// Update all correction history tables.
-fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, raw_eval: i32, depth: i32) {
+fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, raw_eval: i32, depth: i32, ply: usize) {
     let err = (search_score - raw_eval).clamp(-CORR_HIST_MAX, CORR_HIST_MAX);
     let weight = (depth + 1).min(16);
     let stm = board.side_to_move as usize;
@@ -674,7 +687,7 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
     update_corr_entry(&mut info.major_corr[stm][major_idx], err, weight);
 
-    // Continuation correction
+    // Continuation correction ply-1
     if !board.undo_stack.is_empty() {
         let last = &board.undo_stack[board.undo_stack.len() - 1];
         if last.mv != NO_MOVE {
@@ -686,6 +699,15 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
                     update_corr_entry(&mut info.cont_corr[piece as usize][to as usize], err, weight);
                 }
             }
+        }
+    }
+
+    // Continuation correction ply-2 (via search stack)
+    if ply >= 2 {
+        let piece2 = info.moved_piece_stack[ply - 2] as usize;
+        let to2 = info.moved_to_stack[ply - 2] as usize;
+        if piece2 > 0 && piece2 < 12 && to2 < 64 {
+            update_corr_entry(&mut info.cont_corr2[piece2][to2], err, weight);
         }
     }
 }
@@ -1591,7 +1613,7 @@ fn negamax(
             raw_eval = info.eval(board);
         }
         // Apply correction history
-        static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, raw_eval) } else { raw_eval };
+        static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, raw_eval, ply_u) } else { raw_eval };
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = static_eval;
         }
@@ -2086,7 +2108,10 @@ fn negamax(
                 + if singular_extension >= 2 { 1 } else { 0 };
         }
 
-        // Removed: alpha-reduce (depends on alpha_raised_count, part of LMR simplify)
+        // Alpha-reduce: after alpha has been raised, reduce subsequent moves by 1 ply
+        if alpha_raised_count > 0 && FEAT_ALPHA_REDUCE.load(Ordering::Relaxed) {
+            new_depth -= 1;
+        }
         if new_depth < 0 {
             new_depth = 0;
         }
@@ -2134,9 +2159,20 @@ fn negamax(
                     reduction -= 1;
                 }
 
-                // Removed: failing (+1), alpha_raised_count (/2), unstable (-1)
-                // These are unique to Coda. Removing simplifies LMR and changes
-                // tree shape significantly — retune candidate.
+                // Reduce more when position is deteriorating significantly
+                if failing {
+                    reduction += 1;
+                }
+
+                // Reduce more when multiple moves have already raised alpha
+                if alpha_raised_count > 1 {
+                    reduction += alpha_raised_count / 2;
+                }
+
+                // Reduce less when eval is unstable (sharp swing from parent)
+                if unstable {
+                    reduction -= 1;
+                }
 
                 // Reduce more when TT move is a capture
                 if tt_move_noisy {
@@ -2508,7 +2544,7 @@ fn negamax(
         && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
         && raw_eval > -(MATE_SCORE - 100)
     {
-        update_correction_history(info, board, best_score, raw_eval, depth);
+        update_correction_history(info, board, best_score, raw_eval, depth, ply_u);
     }
 
     // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes
