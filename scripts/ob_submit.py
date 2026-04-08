@@ -25,7 +25,35 @@ SERVER   = os.environ.get('OPENBENCH_SERVER',   'https://ob.atwiss.com')
 USERNAME = os.environ.get('OPENBENCH_USERNAME', 'claude')
 PASSWORD = os.environ.get('OPENBENCH_PASSWORD', '')
 
+def parse_bench_from_git(branch):
+    """Parse Bench: NNNN from the latest commit message on a local or remote branch."""
+    import subprocess, re
+    for ref in [branch, f'origin/{branch}']:
+        try:
+            msg = subprocess.check_output(
+                ['git', 'log', ref, '-1', '--format=%B'],
+                stderr=subprocess.DEVNULL, text=True
+            )
+            m = re.search(r'Bench:\s*(\d+)', msg)
+            if m:
+                return int(m.group(1))
+        except subprocess.CalledProcessError:
+            continue
+    return None
+
 def submit_test(args):
+    # Auto-detect bench from local git if not provided
+    if not args.dev_bench:
+        args.dev_bench = parse_bench_from_git(args.dev_branch)
+        if not args.dev_bench:
+            print(f'Error: could not parse bench from {args.dev_branch} commit message')
+            return False
+    if not args.base_bench:
+        args.base_bench = parse_bench_from_git(args.base_branch)
+        if not args.base_bench:
+            print(f'Error: could not parse bench from {args.base_branch} commit message')
+            return False
+
     s = requests.Session()
 
     # Login
@@ -50,7 +78,7 @@ def submit_test(args):
         'dev_repo':         args.repo,
         'dev_engine':       'Coda',
         'dev_branch':       args.dev_branch,
-        'dev_bench':        str(args.dev_bench) if args.dev_bench else '',
+        'dev_bench':        str(args.dev_bench),
         'dev_options':      args.options,
         'dev_time_control': args.tc,
         'dev_network':      '',
@@ -58,7 +86,7 @@ def submit_test(args):
         'base_repo':         args.repo,
         'base_engine':       'Coda',
         'base_branch':       args.base_branch,
-        'base_bench':        str(args.base_bench) if args.base_bench else '',
+        'base_bench':        str(args.base_bench),
         'base_options':      args.options,
         'base_time_control': args.tc,
         'base_network':      '',
@@ -84,9 +112,7 @@ def submit_test(args):
     location = r.headers.get('Location', '')
 
     if '/index/' in location:
-        bench_info = f' (bench {args.dev_bench})' if args.dev_bench else ''
-        base_info = f' (bench {args.base_bench})' if args.base_bench else ''
-        print(f'Test submitted: {args.dev_branch}{bench_info} vs {args.base_branch}{base_info}')
+        print(f'Test submitted: {args.dev_branch} (bench {args.dev_bench}) vs {args.base_branch} (bench {args.base_bench})')
         print(f'Bounds: {args.bounds}, TC: {args.tc}')
         return True
 
