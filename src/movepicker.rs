@@ -407,7 +407,7 @@ impl MovePicker {
                         self.stage = Stage::BadCaptures;
                         self.restore_bad_captures();
                     } else {
-                        self.stage = Stage::Killer1;
+                        self.stage = Stage::GenerateQuiets;  // Skip killers/counter (SF pattern: history handles ordering)
                     }
                 }
 
@@ -544,11 +544,7 @@ impl MovePicker {
 
         for i in 0..quiets.len {
             let m = quiets.moves[i];
-            if m == self.tt_move
-                || m == self.killers[0]
-                || m == self.killers[1]
-                || m == self.counter_move
-            {
+            if m == self.tt_move {
                 continue;
             }
 
