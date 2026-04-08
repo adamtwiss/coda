@@ -156,8 +156,9 @@ enum Stage {
     Killer2,
     CounterMove,
     GenerateQuiets,
-    Quiets,
+    GoodQuiets,
     BadCaptures,
+    BadQuiets,
     Done,
 
     // Evasion stages (used when in check)
@@ -185,6 +186,10 @@ pub struct MovePicker {
     bad_moves: [Move; 64],
     bad_scores: [i32; 64],
     bad_len: usize,
+    // Bad quiets: score below threshold, tried after bad captures (SF pattern)
+    bad_quiet_moves: [Move; 128],
+    bad_quiet_scores: [i32; 128],
+    bad_quiet_len: usize,
     // Ply for killer indexing
     #[allow(dead_code)]
     ply: usize,
@@ -282,6 +287,9 @@ impl MovePicker {
             bad_moves: [NO_MOVE; 64],
             bad_scores: [0; 64],
             bad_len: 0,
+            bad_quiet_moves: [NO_MOVE; 128],
+            bad_quiet_scores: [0; 128],
+            bad_quiet_len: 0,
             ply,
             skip_quiet: false,
             threats,
@@ -313,6 +321,9 @@ impl MovePicker {
             bad_moves: [NO_MOVE; 64],
             bad_scores: [0; 64],
             bad_len: 0,
+            bad_quiet_moves: [NO_MOVE; 128],
+            bad_quiet_scores: [0; 128],
+            bad_quiet_len: 0,
             ply: 0,
             skip_quiet: true,
             threats: 0,
@@ -369,6 +380,9 @@ impl MovePicker {
             bad_moves: [NO_MOVE; 64],
             bad_scores: [0; 64],
             bad_len: 0,
+            bad_quiet_moves: [NO_MOVE; 128],
+            bad_quiet_scores: [0; 128],
+            bad_quiet_len: 0,
             ply,
             skip_quiet: false,
             threats: 0, // evasions don't use threat-aware history
@@ -453,20 +467,44 @@ impl MovePicker {
 
                 Stage::GenerateQuiets => {
                     self.generate_and_score_quiets(board);
-                    self.stage = Stage::Quiets;
+                    self.bad_quiet_len = 0;
+                    self.stage = Stage::GoodQuiets;
                 }
 
-                Stage::Quiets => {
-                    // TT/killers/counter already filtered during scoring
-                    if self.index < self.moves.len {
-                        return self.pick_best();
+                Stage::GoodQuiets => {
+                    // Good/bad quiet split (SF pattern): yield quiets with score > -14000,
+                    // save the rest for after bad captures. Moves with deeply negative
+                    // history are almost never best — try losing captures first.
+                    loop {
+                        if self.index >= self.moves.len {
+                            self.stage = Stage::BadCaptures;
+                            self.restore_bad_captures();
+                            break;
+                        }
+                        let mv = self.pick_best();
+                        let score = self.scores[self.index - 1];
+                        if score > crate::search::QUIET_SPLIT_THRESH.load(std::sync::atomic::Ordering::Relaxed) {
+                            return mv;
+                        }
+                        // Bad quiet: save for later (after bad captures)
+                        if self.bad_quiet_len < 128 {
+                            self.bad_quiet_moves[self.bad_quiet_len] = mv;
+                            self.bad_quiet_scores[self.bad_quiet_len] = score;
+                            self.bad_quiet_len += 1;
+                        }
                     }
-                    self.stage = Stage::BadCaptures;
-                    self.restore_bad_captures();
                 }
 
                 Stage::BadCaptures => {
                     // TT move already filtered during capture scoring
+                    if self.index < self.moves.len {
+                        return self.pick_best();
+                    }
+                    self.stage = Stage::BadQuiets;
+                    self.restore_bad_quiets();
+                }
+
+                Stage::BadQuiets => {
                     if self.index < self.moves.len {
                         return self.pick_best();
                     }
@@ -664,6 +702,16 @@ impl MovePicker {
             let idx = self.moves.len;
             self.moves.push(m);
             self.scores[idx] = score;
+        }
+        self.index = 0;
+    }
+
+    /// Swap in the saved bad quiets.
+    fn restore_bad_quiets(&mut self) {
+        self.moves = MoveList::new();
+        for i in 0..self.bad_quiet_len {
+            self.moves.push(self.bad_quiet_moves[i]);
+            self.scores[i] = self.bad_quiet_scores[i];
         }
         self.index = 0;
     }
