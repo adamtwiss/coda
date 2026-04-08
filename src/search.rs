@@ -45,27 +45,27 @@ macro_rules! tunables {
 
 tunables!(
     // NMP
-    (NMP_BASE_R,         3,    2,    8),  // SPSA r10: 3.46→3 (rounded)
+    (NMP_BASE_R,         4,    2,    8),  // SPSA r10: 3.46→3 (rounded)
     (NMP_DEPTH_DIV,      3,    2,    6),
-    (NMP_EVAL_DIV,     135,  100,  400),  // malus tune: 148→135
+    (NMP_EVAL_DIV,     132,  100,  400),  // malus tune: 148→135
     (NMP_EVAL_MAX,       1,    1,    6),
     (NMP_VERIFY_DEPTH,  11,    8,   20),
     // RFP
     (RFP_DEPTH,          5,    4,   10),
-    (RFP_MARGIN_IMP,    94,   30,  150),  // malus tune: 92→94
-    (RFP_MARGIN_NOIMP, 137,   50,  200),  // malus tune: 140→137
+    (RFP_MARGIN_IMP,    96,   30,  150),  // malus tune: 92→94
+    (RFP_MARGIN_NOIMP, 140,   50,  200),  // malus tune: 140→137
     // Futility
-    (FUT_BASE,         109,   20,  200),  // malus tune: 94→109
-    (FUT_PER_DEPTH,    173,   40,  250),  // malus tune: 161→173
+    (FUT_BASE,         113,   20,  200),  // malus tune: 94→109
+    (FUT_PER_DEPTH,    174,   40,  250),  // malus tune: 161→173
     // History pruning
     (HIST_PRUNE_DEPTH,   2,    1,    8),
-    (HIST_PRUNE_MULT, 6930,  500, 50000),  // malus tune: 7224→6930
+    (HIST_PRUNE_MULT, 6088,  500, 50000),  // malus tune: 7224→6930
     // SEE pruning
-    (SEE_QUIET_MULT,   24,    5,   80),  // malus tune: 23→24
-    (SEE_CAP_MULT,    122,   30,  200),
+    (SEE_QUIET_MULT,   23,    5,   80),  // malus tune: 23→24
+    (SEE_CAP_MULT,    130,   30,  200),
     // LMR
-    (LMR_HIST_DIV,   7454, 2000, 100000),  // malus tune: 9110→7454
-    (LMR_C_QUIET,     132,   80,  300),  // malus tune: 138→132
+    (LMR_HIST_DIV,   6973, 2000, 100000),  // malus tune: 9110→7454
+    (LMR_C_QUIET,     124,   80,  300),  // malus tune: 138→132
     (LMR_C_CAP,       164,  100,  350),  // malus tune: 169→164
     // Singular extensions
     (SE_DEPTH,           6,    4,   12),
@@ -76,7 +76,7 @@ tunables!(
     (LMP_BASE,           7,    1,   15),
     (LMP_DEPTH,         14,    4,   20),  // malus tune: 13→14
     // Bad noisy
-    (BAD_NOISY_MARGIN,  92,   30,  150),  // malus tune: 91→92
+    (BAD_NOISY_MARGIN,  87,   30,  150),  // malus tune: 91→92
     // ProbCut
     (PROBCUT_MARGIN,   167,   80,  300),
     // Hindsight
@@ -107,7 +107,7 @@ tunables!(
     // Quiet check bonus in move ordering
     (QUIET_CHECK_BONUS, 9946, 2000, 30000),
     // LMR complexity divisor (correction history magnitude)
-    (LMR_COMPLEXITY_DIV, 133, 30, 500),  // malus tune: 122→133
+    (LMR_COMPLEXITY_DIV, 124, 30, 500),  // malus tune: 122→133
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -2012,18 +2012,25 @@ fn negamax(
         }
 
         // Futility pruning: skip quiet moves when static eval + margin is below alpha.
-        // Uses shared lmr_d for both gate and margin (SF/Obsidian/Berserk consensus).
+        // History adjusts effective lmr_depth (SF/Alexandria pattern): bad history
+        // lowers the depth, making it easier to prune. bestScore updated to avoid
+        // returning -infinity when all moves are futility-pruned.
         if ply > 0 && static_eval > -INFINITY && !in_check
             && !is_cap && !is_promo
             && best_score > -(MATE_SCORE - 100)
             && FEAT_FUTILITY.load(Ordering::Relaxed)
-            && lmr_d <= 10
         {
-            let hist_adj = info.history.main_score(from, to, enemy_attacks) / 128;
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj;
-            if futility_value <= alpha {
-                info.stats.futility_prunes += 1;
-                continue;
+            let hist_score = info.history.main_score(from, to, enemy_attacks);
+            let fut_depth = (lmr_d + hist_score / 5000).max(0);
+            if fut_depth <= 10 {
+                let futility_value = static_eval + tp(&FUT_BASE) + fut_depth * tp(&FUT_PER_DEPTH);
+                if futility_value <= alpha {
+                    if best_score < futility_value {
+                        best_score = futility_value;
+                    }
+                    info.stats.futility_prunes += 1;
+                    continue;
+                }
             }
         }
 
