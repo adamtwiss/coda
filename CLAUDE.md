@@ -60,7 +60,9 @@ src/
   nnue_export.rs   .nnue → Bullet checkpoint converter (for transfer learning)
 Makefile           Build targets: make, make pgo, make openbench, make net
 scripts/
-  ob_submit.py     OpenBench job submission script
+  ob_submit.py     OpenBench SPRT job submission
+  ob_tune.py       OpenBench SPSA tune submission
+  ob_tune_status.py  Read SPSA tune results and compare branches
   ob_stop.py       Stop an OpenBench test by ID
   ob_status.py     Fleet status and test results
 training/configs/  Bullet training configs (.rs) for each net architecture
@@ -439,24 +441,72 @@ OPENBENCH_PASSWORD=<pw> python3 scripts/ob_status.py
 ```
 Reference NPS is 500K. Default bounds [0.00, 5.00] for novel changes. Always verify bench matches before submitting.
 
-**Current bench: 1443162** (with production net, x86-64). Update this when search changes are merged.
+**Current bench: 1780721** (with production net, x86-64). Update this when search changes are merged.
+**Do not pass explicit bench values** when submitting — let OB auto-detect from commit messages. Only override if OB fails to parse.
 
 ### SPSA Parameter Tuning
 
-26 search parameters are exposed as UCI options for SPSA optimization via OpenBench. Create a "Tune" workload (not "Test") on the web UI. Key parameters: NMP (base R, depth divisor, eval divisor, eval max, verify depth), RFP (depth, margins), futility (base, per-depth), history pruning (depth, multiplier), SEE pruning (quiet/capture multipliers), LMR (history divisor, C values for quiet/capture), LMP (base, depth), aspiration (delta, score divisor), probcut margin, hindsight threshold, SE depth.
+45 search parameters are exposed as UCI options for SPSA optimization via OpenBench. The `tunables!` macro in `search.rs` is the single source of truth.
 
-SPSA format per parameter: `NAME, int, default, min, max, c_end, r_end`
+**Submitting tunes:**
+```bash
+# Submit via script (preferred):
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune.py <branch> [bench] --params-file scripts/tune_pruning_18.txt --iterations 2500
+
+# Or with inline params:
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune.py <branch> [bench] --params "LMR_C_QUIET, int, 132, 80, 300, 10.0, 0.002
+LMR_C_CAP, int, 164, 100, 350, 10.0, 0.002"
+
+# Bench is auto-detected from commit message. Pass explicitly only if OB can't parse it.
+```
+
+**Reading tune results:**
+```bash
+# Show all active tunes with parameter values and % change:
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune_status.py
+
+# Show specific tune:
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune_status.py 175
+
+# Get SPSA outputs (for applying to code):
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune_status.py 175 --outputs
+
+# Compare two tunes side by side:
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune_status.py --compare 175 176
+
+# Raw digest API (used by scripts):
+# GET /api/spsa/{tune_id}/digest/   → CSV of current values
+# GET /api/spsa/{tune_id}/outputs/  → SPSA input format with current values
+# GET /api/spsa/{tune_id}/inputs/   → Original SPSA inputs
+```
+
+**SPSA format per parameter:** `NAME, int, default, min, max, c_end, r_end`
 
 When LMR_C_QUIET or LMR_C_CAP change, LMR tables are automatically reinitialized.
 
-**Practical guidance (from round 1):**
-- 1500-2000 iterations is sufficient for 16 parameters. Values stabilise well before 5000.
+**Practical guidance:**
+- 2500 iterations (×8 pairs = 40000 games) is standard. Values stabilise by ~800 iterations.
 - c_end ~5-10% of parameter range, r_end 0.002 are good defaults.
 - Alpha 0.602, gamma 0.101, A_ratio 0.1 (standard SPSA constants).
-- Create via web UI at `/tune/new/` (scripts API doesn't support tune creation).
 - SPRT the final values against main before merging — SPSA can overfit.
-- Round 1 found +31 Elo from 16 parameters. Parameters interact — NMP eval divisor only works at 164 when RFP margins widen simultaneously.
-- Plan SPSA after merging correctness fixes and before/after net switches (eval changes shift optimal parameters).
+- Cumulative SPSA Elo: ~+102 across 10 rounds.
+- Plan SPSA after merging structural fixes (eval/search changes shift optimal parameters).
+- A standard 18-param pruning tune spec is at `scripts/tune_pruning_18.txt`.
+
+### Retune-on-Branch Methodology (discovered 2026-04-07)
+
+Some features are neutral without retuning but gain significant Elo when pruning parameters are recalibrated on their branch. The workflow:
+
+1. **Create feature branch** on current main
+2. **Submit SPSA tune** on the branch (same 18 pruning params as baseline)
+3. **Compare parameter convergence** against a baseline tune on main
+4. **If parameters diverge significantly** (>5% on multiple params): the feature is shifting the search landscape. Apply tuned values and SPRT the branch+tune against main.
+5. **If parameters converge to same values as main**: the feature is truly neutral, drop it.
+
+**Validated examples:**
+- TT PV flag: +4.5 raw → retune added +4.0 more (nearly doubled)
+- Cont-hist malus: flat (-0.15 at 16K games) → +6.5 with retune
+- Pattern: big bench/node change but flat Elo → retune candidate
 
 ### Cross-Engine Validation (secondary, for milestones)
 
