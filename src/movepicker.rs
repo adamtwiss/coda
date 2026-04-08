@@ -558,6 +558,13 @@ impl MovePicker {
 
             let mut score = history.main_score(from, to, self.threats);
 
+            // Low-ply history bonus: amplify history signal near the root (SF pattern).
+            // At ply 0: 8x, ply 1: 4x, ply 2: 3x, ply 3+: 1x (no bonus).
+            // Root moves benefit most from learned ordering.
+            if self.ply <= 2 {
+                score += score * (7 / (1 + self.ply as i32));
+            }
+
             // Continuation history: plies 1,2 at 3x weight, plies 4,6 at 1x weight.
             // Matches Obsidian/Alexandria/Berserk pattern.
             if piece != NO_PIECE {
