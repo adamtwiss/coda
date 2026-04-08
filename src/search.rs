@@ -2883,6 +2883,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     let mut total_nodes = 0u64;
     let mut ebf_ln_sum = 0.0f64;
     let mut ebf_count = 0u32;
+    let mut total_stats = PruneStats::default();
 
     let limits = SearchLimits {
         depth,
@@ -2899,6 +2900,25 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         let _mv = search(&mut board, &mut info, &limits);
         total_nodes += info.nodes;
 
+        // Accumulate stats across all positions
+        total_stats.tt_cutoffs += info.stats.tt_cutoffs;
+        total_stats.tt_near_miss += info.stats.tt_near_miss;
+        total_stats.nmp_attempts += info.stats.nmp_attempts;
+        total_stats.nmp_cutoffs += info.stats.nmp_cutoffs;
+        total_stats.rfp_cutoffs += info.stats.rfp_cutoffs;
+        total_stats.lmp_prunes += info.stats.lmp_prunes;
+        total_stats.futility_prunes += info.stats.futility_prunes;
+        total_stats.history_prunes += info.stats.history_prunes;
+        total_stats.see_prunes += info.stats.see_prunes;
+        total_stats.probcut_cutoffs += info.stats.probcut_cutoffs;
+        total_stats.lmr_searches += info.stats.lmr_searches;
+        total_stats.recapture_ext += info.stats.recapture_ext;
+        total_stats.qnodes += info.stats.qnodes;
+        total_stats.beta_cutoffs += info.stats.beta_cutoffs;
+        total_stats.first_move_cutoffs += info.stats.first_move_cutoffs;
+        total_stats.cutoff_movecount_sum += info.stats.cutoff_movecount_sum;
+        total_stats.cutoff_movecount_sq_sum += info.stats.cutoff_movecount_sq_sum;
+
         // Accumulate EBF data across all positions
         let max_d = info.completed_depth as usize;
         for d in 5..max_d {
@@ -2913,8 +2933,8 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
 
     if !print_stats { return total_nodes; }
 
-    // Print pruning stats
-    let s = &info.stats;
+    // Print pruning stats (accumulated across all positions)
+    let s = &total_stats;
     eprintln!("=== Pruning Stats (cumulative across all bench positions) ===");
     eprintln!("TT cutoffs:     {:>8}  ({:.1}% of nodes)", s.tt_cutoffs, s.tt_cutoffs as f64 / total_nodes as f64 * 100.0);
     eprintln!("TT near-miss:   {:>8}", s.tt_near_miss);
@@ -2943,6 +2963,25 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         eprintln!("EBF (depth 5+): {:.2} (geometric mean, {} transitions across {} positions)",
             mean_ebf, ebf_count, positions.len());
     }
+
+    // Tree shape fingerprint: per-1K-node rates for easy diffing between branches.
+    // A change in any of these rates indicates the tree shape has changed,
+    // even if total node count is similar. Prune counts can exceed nodes
+    // (multiple prunes per node in the move loop), so per-1K is clearer.
+    let kn = total_nodes as f64 / 1000.0;
+    eprintln!("--- Tree Shape (per 1K nodes) ---");
+    eprintln!("TT cutoffs:     {:>6.1}/Kn", s.tt_cutoffs as f64 / kn);
+    eprintln!("NMP cutoffs:    {:>6.1}/Kn  ({:.0}% of attempts)", s.nmp_cutoffs as f64 / kn,
+        if s.nmp_attempts > 0 { s.nmp_cutoffs as f64 / s.nmp_attempts as f64 * 100.0 } else { 0.0 });
+    eprintln!("RFP cutoffs:    {:>6.1}/Kn", s.rfp_cutoffs as f64 / kn);
+    eprintln!("LMP prunes:     {:>6.1}/Kn", s.lmp_prunes as f64 / kn);
+    eprintln!("Futility:       {:>6.1}/Kn", s.futility_prunes as f64 / kn);
+    eprintln!("Hist prune:     {:>6.1}/Kn", s.history_prunes as f64 / kn);
+    eprintln!("SEE prune:      {:>6.1}/Kn", s.see_prunes as f64 / kn);
+    eprintln!("LMR searches:   {:>6.1}/Kn", s.lmr_searches as f64 / kn);
+    eprintln!("QS nodes:       {:>5.1}%", s.qnodes as f64 / total_nodes as f64 * 100.0);
+    eprintln!("First-move cut: {:>5.1}%", if s.beta_cutoffs > 0 { s.first_move_cutoffs as f64 / s.beta_cutoffs as f64 * 100.0 } else { 0.0 });
+
     eprintln!("Total nodes:    {:>8}", total_nodes);
 
     total_nodes
