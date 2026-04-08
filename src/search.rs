@@ -45,38 +45,38 @@ macro_rules! tunables {
 
 tunables!(
     // NMP
-    (NMP_BASE_R,         3,    2,    8),  // SPSA r10: 3.46→3 (rounded)
+    (NMP_BASE_R,         4,    2,    8),  // SPSA r10: 3.46→3 (rounded)
     (NMP_DEPTH_DIV,      3,    2,    6),
-    (NMP_EVAL_DIV,     129,  100,  400),  // malus tune: 148→135
+    (NMP_EVAL_DIV,     135,  100,  400),  // malus tune: 148→135
     (NMP_EVAL_MAX,       1,    1,    6),
     (NMP_VERIFY_DEPTH,  11,    8,   20),
     // RFP
     (RFP_DEPTH,          5,    4,   10),
-    (RFP_MARGIN_IMP,    91,   30,  150),  // malus tune: 92→94
-    (RFP_MARGIN_NOIMP, 134,   50,  200),  // malus tune: 140→137
+    (RFP_MARGIN_IMP,    96,   30,  150),  // malus tune: 92→94
+    (RFP_MARGIN_NOIMP, 135,   50,  200),  // malus tune: 140→137
     // Futility
     (FUT_BASE,         110,   20,  200),  // malus tune: 94→109
-    (FUT_PER_DEPTH,    179,   40,  250),  // malus tune: 161→173
+    (FUT_PER_DEPTH,    178,   40,  250),  // malus tune: 161→173
     // History pruning
     (HIST_PRUNE_DEPTH,   2,    1,    8),
-    (HIST_PRUNE_MULT, 6323,  500, 50000),  // malus tune: 7224→6930
+    (HIST_PRUNE_MULT, 6040,  500, 50000),  // malus tune: 7224→6930
     // SEE pruning
-    (SEE_QUIET_MULT,   20,    5,   80),  // malus tune: 23→24
-    (SEE_CAP_MULT,    117,   30,  200),
+    (SEE_QUIET_MULT,   23,    5,   80),  // malus tune: 23→24
+    (SEE_CAP_MULT,    120,   30,  200),
     // LMR
-    (LMR_HIST_DIV,   6835, 2000, 100000),  // malus tune: 9110→7454
-    (LMR_C_QUIET,     127,   80,  300),  // malus tune: 138→132
-    (LMR_C_CAP,       163,  100,  350),  // malus tune: 169→164
+    (LMR_HIST_DIV,   7270, 2000, 100000),  // malus tune: 9110→7454
+    (LMR_C_QUIET,     133,   80,  300),  // malus tune: 138→132
+    (LMR_C_CAP,       162,  100,  350),  // malus tune: 169→164
     // Singular extensions
     (SE_DEPTH,           6,    4,   12),
     // Aspiration windows
     (ASP_DELTA,         17,    5,   30),
     (ASP_SCORE_DIV,  30338, 8000, 50000),
     // LMP — formula: (LMP_BASE + depth²) / (2 - improving)
-    (LMP_BASE,           8,    1,   15),
+    (LMP_BASE,           7,    1,   15),
     (LMP_DEPTH,         14,    4,   20),  // malus tune: 13→14
     // Bad noisy
-    (BAD_NOISY_MARGIN,  90,   30,  150),  // malus tune: 91→92
+    (BAD_NOISY_MARGIN,  94,   30,  150),  // malus tune: 91→92
     // ProbCut
     (PROBCUT_MARGIN,   167,   80,  300),
     // Hindsight
@@ -107,7 +107,7 @@ tunables!(
     // Quiet check bonus in move ordering
     (QUIET_CHECK_BONUS, 9946, 2000, 30000),
     // LMR complexity divisor (correction history magnitude)
-    (LMR_COMPLEXITY_DIV, 134, 30, 500),  // malus tune: 122→133
+    (LMR_COMPLEXITY_DIV, 139, 30, 500),  // malus tune: 122→133
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -1583,7 +1583,8 @@ fn negamax(
     let mut static_eval = -INFINITY;
     let mut raw_eval = -INFINITY;
     let mut improving = false;
-    let mut failing = false;
+    #[allow(unused)]
+    let failing = false;  // Dead code — LMR failing adjustment removed in simplify v1
     if !in_check {
         if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
             raw_eval = tt_entry.static_eval;
@@ -1599,10 +1600,7 @@ fn negamax(
         if ply >= 2 && ply_u >= 2 {
             improving = static_eval > info.static_evals[ply_u - 2];
         }
-        // Failing heuristic: detect significant position deterioration
-        failing = ply >= 2 && ply_u >= 2
-            && info.static_evals[ply_u - 2] > -(MATE_SCORE - 100)
-            && static_eval < info.static_evals[ply_u - 2] - (60 + 40 * depth);
+        // Failing heuristic removed — was used by LMR adjustments removed in simplify v1
     } else {
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = -INFINITY;
@@ -2143,19 +2141,8 @@ fn negamax(
                     reduction += 1;
                 }
 
-                // Reduce more when opponent has few non-pawn pieces
-                // Note: board is post-make_move, so SideToMove is now the opponent
-                let opp = flip_color(board.side_to_move);
-                let opp_non_pawn = board.colors[opp as usize]
-                    & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
-                if popcount(opp_non_pawn) < 3 {
-                    reduction += 1;
-                }
-
-                // Reduce less when moving a piece away from a pawn-attacked square
-                if enemy_attacks & (1u64 << from) != 0 {
-                    reduction -= 1;
-                }
+                // Removed: opp non-pawn count (+1) — only Weiss has similar, non-standard
+                // Removed: pawn-attack escape (-1) — no other engine, redundant with 4D threat history
 
                 // Reduce less when move gives check (Obsidian/Alexandria/Berserk pattern)
                 if gives_check {
