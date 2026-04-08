@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Submit SPRT tests to OpenBench via the scripts API.
+"""Submit SPRT tests to OpenBench.
 
 Usage:
-    python3 ob_submit.py <dev_branch> [options]
-    python3 ob_submit.py fix-nmp-bugs
-    python3 ob_submit.py fix-nmp-bugs --bounds '[0.00, 10.00]'
-    python3 ob_submit.py fix-nmp-bugs 1234567  # optional explicit bench
+    python3 ob_submit.py <dev_branch>                          # OB auto-detects bench from commit
+    python3 ob_submit.py <dev_branch> --bounds '[-3, 3]'       # Custom SPRT bounds
+    python3 ob_submit.py <dev_branch> --tc '40.0+0.4'          # Custom time control
+    python3 ob_submit.py <dev_branch> --base-branch b98c0a1    # Explicit base commit
+    python3 ob_submit.py <dev_branch> 1234567                  # Override dev bench (avoid if possible)
 
-Bench values are auto-detected by OpenBench from the commit message
-(Bench: NNNNNN). Explicit values override if provided.
+Best practice: let OB auto-detect bench from commit messages (Bench: NNNNNN).
+Only pass explicit bench if OB fails to parse.
 
-Environment variables (or use --flags):
+Environment variables:
     OPENBENCH_SERVER   (default: https://ob.atwiss.com)
     OPENBENCH_USERNAME (default: claude)
     OPENBENCH_PASSWORD (required)
@@ -18,7 +19,6 @@ Environment variables (or use --flags):
 
 import argparse
 import os
-import re
 import requests
 
 SERVER   = os.environ.get('OPENBENCH_SERVER',   'https://ob.atwiss.com')
@@ -28,11 +28,9 @@ PASSWORD = os.environ.get('OPENBENCH_PASSWORD', '')
 def submit_test(args):
     s = requests.Session()
 
-    # Step 1: Get CSRF token from login page
+    # Login
     s.get(f'{args.server}/login/')
     csrf = s.cookies.get('csrftoken')
-
-    # Step 2: Login to get session
     r = s.post(f'{args.server}/login/', data={
         'username': args.username,
         'password': args.password,
@@ -43,8 +41,8 @@ def submit_test(args):
         print('Error: login failed')
         return False
 
-    # Step 3: Submit test via scripts endpoint
-    r = s.post(f'{args.server}/scripts/', data={
+    # Build form data — let OB auto-detect bench unless explicitly overridden
+    data = {
         'username': args.username,
         'password': args.password,
         'action': 'CREATE_TEST',
@@ -52,7 +50,7 @@ def submit_test(args):
         'dev_repo':         args.repo,
         'dev_engine':       'Coda',
         'dev_branch':       args.dev_branch,
-        'dev_bench':        str(args.dev_bench),
+        'dev_bench':        str(args.dev_bench) if args.dev_bench else '',
         'dev_options':      args.options,
         'dev_time_control': args.tc,
         'dev_network':      '',
@@ -60,7 +58,7 @@ def submit_test(args):
         'base_repo':         args.repo,
         'base_engine':       'Coda',
         'base_branch':       args.base_branch,
-        'base_bench':        str(args.base_bench),
+        'base_bench':        str(args.base_bench) if args.base_bench else '',
         'base_options':      args.options,
         'base_time_control': args.tc,
         'base_network':      '',
@@ -79,17 +77,21 @@ def submit_test(args):
         'upload_pgns':     'FALSE',
         'syzygy_wdl':      'OPTIONAL',
         'syzygy_adj':      'OPTIONAL',
-    }, allow_redirects=False)
+    }
+
+    r = s.post(f'{args.server}/scripts/', data=data, allow_redirects=False)
 
     location = r.headers.get('Location', '')
 
-    # Success redirects to /index/
     if '/index/' in location:
-        print(f'Test submitted: {args.dev_branch} (bench {args.dev_bench}) vs {args.base_branch} (bench {args.base_bench})')
+        bench_info = f' (bench {args.dev_bench})' if args.dev_bench else ''
+        base_info = f' (bench {args.base_bench})' if args.base_bench else ''
+        print(f'Test submitted: {args.dev_branch}{bench_info} vs {args.base_branch}{base_info}')
         print(f'Bounds: {args.bounds}, TC: {args.tc}')
         return True
 
     # Error — follow redirect to get message
+    import re
     r2 = s.get(f'{args.server}{location}')
     for pat in [r'error-message.*?<pre>(.*?)</pre>', r'status-message.*?<pre>(.*?)</pre>']:
         for m in re.findall(pat, r2.text, re.DOTALL):
@@ -99,9 +101,9 @@ def submit_test(args):
 def main():
     p = argparse.ArgumentParser(description='Submit SPRT test to OpenBench')
     p.add_argument('dev_branch', help='Dev branch name')
-    p.add_argument('dev_bench', nargs='?', type=int, default=0, help='Dev bench (optional, OB auto-detects from commit)')
+    p.add_argument('dev_bench', nargs='?', type=int, default=None, help='Dev bench (omit to let OB auto-detect)')
     p.add_argument('--base-branch', default='main', help='Base branch (default: main)')
-    p.add_argument('--base-bench', type=int, default=0, help='Base bench (optional, OB auto-detects from commit)')
+    p.add_argument('--base-bench', type=int, default=None, help='Base bench (omit to let OB auto-detect)')
     p.add_argument('--bounds', default='[0.00, 5.00]', help='SPRT bounds (default: [0.00, 5.00])')
     p.add_argument('--tc', default='10.0+0.1', help='Time control (default: 10.0+0.1)')
     p.add_argument('--options', default='Threads=1 Hash=64', help='UCI options')

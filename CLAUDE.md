@@ -86,37 +86,42 @@ net.txt            Production NNUE net URL (used by make net / fetch-net)
 ### Search
 Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from depth 4). Lazy SMP: helper threads search at offset depths sharing the TT (atomic) and stop flag.
 
-**Pruning features:**
-- NMP: R=3+depth/4 + (eval-beta)/164, eval>=beta guard, depth>=3, verify at depth>=13 (depth-r), post-capture R--, NMP score dampening (score*2+beta)/3. All parameters SPSA-tunable (values from SPSA round 1).
-- RFP: depth<=7, margin improving?70*d:100*d, returns staticEval-margin
-- Futility: 90+lmrDepth*100+histAdj/128, depth<=8, uses estimated LMR depth
-- LMR: separate quiet (C=1.30) and capture (C=1.80) tables, doDeeper/doShallower
-- LMP: non-PV only, depth<=8, threshold 3+d² with improving/failing adjustments
-- SEE pruning: quiet -20d² at depth<=8, capture -d*100 at depth<=6
-- ProbCut: beta+170, staticEval+85 gate, SEE>=0 **(disabled by default — needs better eval)**
-- History pruning: -1500*depth at depth<=3, !improving guard
-- Bad noisy: prune losing captures when eval+depth*75<=alpha
+**Pruning features** (all SPSA-tunable via `tunables!` macro, 45 parameters):
+- NMP: R=BASE_R+depth/DEPTH_DIV + (eval-beta)/EVAL_DIV, verify at depth>=VERIFY_DEPTH, post-capture R++
+- RFP: depth<=RFP_DEPTH, margin improving?RFP_MARGIN_IMP*d:RFP_MARGIN_NOIMP*d
+- Futility: FUT_BASE+lmrDepth*FUT_PER_DEPTH, history adjusts effective lmr_depth (SF pattern)
+- LMR: separate quiet and capture tables (C_QUIET/C_CAP), doDeeper/doShallower, tt_pv reduces less
+- LMP: non-PV only, depth<=LMP_DEPTH, threshold (LMP_BASE+d²)/(2-improving)
+- SEE pruning: quiet -SEE_QUIET_MULT*d² at shallow depth, capture -SEE_CAP_MULT*d
+- ProbCut: beta+PROBCUT_MARGIN, staticEval gate, SEE>=0
+- History pruning: -HIST_PRUNE_MULT*depth at depth<=HIST_PRUNE_DEPTH
+- Bad noisy: prune losing captures when SEE < -BAD_NOISY_MARGIN
 - IIR: depth>=4, !inCheck, no TT move, PV or cut node
-- Singular extensions (FEAT_SINGULAR)
-- Cuckoo cycle detection for proactive repetition avoidance (FEAT_CUCKOO)
-- Hindsight reduction: reduce when parent was LMR-reduced (>=2) and both sides quiet (FEAT_HINDSIGHT)
+- Singular extensions + double extensions (margin=DEXT_MARGIN, cap=DEXT_CAP)
+- Cuckoo cycle detection for proactive repetition avoidance
+- Hindsight reduction: reduce when parent was LMR-reduced and both sides quiet
 - Recapture extensions
-- Fail-high score blending: (score*depth+beta)/(depth+1) at non-PV
+- Fail-high score blending at non-PV nodes
+- TT cutoff node-type guard (Alexandria pattern)
+- TT cutoff cont-hist malus (penalize opponent's quiet on cutoff)
+- Mate distance pruning (non-PV, ply+1 offset)
 
-**Move ordering:** TT move → good captures (MVV-LVA + captHist/16) → killers → counter-move → quiets (queen promos scored high, then main hist + contHist*3 + pawn hist) → bad captures
+**Move ordering:** TT move → good captures (MVV×16 + captHist) → quiets (main hist + contHist×3 + pawn hist + quiet check bonus) → bad captures. Good/bad quiet split being tested (SF pattern: defer low-history quiets after bad captures).
 
-**Exemptions:** TT move and killers exempt from all pre-make pruning and from LMR. Promotions exempt from LMR.
+**Exemptions:** TT move exempt from pruning. Promotions exempt from LMR.
 
-**History tables:** main [from_threatened][to_threatened][from][to] (4D threat-aware, FEAT_4D_HISTORY), capture [piece][to][victim], continuation [piece][to][piece][to], pawn [pawnHash%512][piece][to], killers [ply][2], counter [piece][to].
+**History tables:** main [from_threatened][to_threatened][from][to] (4D threat-aware), capture [piece][to][victim], continuation [piece][to][piece][to] (4 plies: 1,2,4,6), pawn [pawnHash%512][piece][to]. Linear bonus formula: min(HIST_BONUS_MAX, HIST_BONUS_MULT*depth - HIST_BONUS_BASE).
 
-**Correction history:** Multi-source static eval correction (6 sources). Pawn (384/1024) + white-NP (154/1024) + black-NP (154/1024) + minor pieces (102/1024) + major pieces (102/1024) + continuation (128/1024). Updated on bestScore > originalAlpha with depth >= 3.
+**Correction history:** Multi-source static eval correction (5 sources, SPSA-tunable weights). Pawn + white-NP + black-NP + minor + major + continuation. Proportional gravity update.
 
-**Other:** Contempt = 10 (applied as -CONTEMPT for draws, prefer playing over drawing). Insufficient material detection (KvK, KNvK, KBvK). Repetition detection via undo stack hash comparison + cuckoo cycle detection.
+**Time management:** 3-factor multiplicative model (Obsidian/Clarity). Node fraction (tracks per-root-move nodes), best-move stability (linear), score trend. Validated at LTC (40+0.4) — TM features invisible at STC.
+
+**Other:** Contempt = 10. Insufficient material detection. Repetition + cuckoo cycle detection.
 
 ### TT
 - 5-slot buckets, 64 bytes (cache-line aligned), AtomicU64/AtomicU32 for lockless Lazy SMP
 - XOR key verification: `key_xor = hash ^ data` (detects torn reads from concurrent writes)
-- 14-bit staticEval (±8191 cp range)
+- 13-bit staticEval (±4095 cp range), 1-bit tt_pv flag (sticky PV marker for LMR)
 - Replacement: d > slotDepth-3 for same-gen key match; always replace if generation differs
 - TT score dampening: (3*score+beta)/4 on non-PV TTLower cutoffs
 - TT near-miss: accept 1-ply-short entries with 80cp margin (else-if, not unconditional)
@@ -300,26 +305,25 @@ Where:
 Examples: `net-v5-1024-w0-e120s120.nnue`, `net-v5-1024s-w5-e400s400.nnue`, `net-v7-1024h16x32s-w0-e800s800.nnue`
 
 ## Key Search Parameters
-- NMP: R=4+depth/3, divisor 200, depth>=3, verify depth>=12 (depth-r), dampening (score*2+beta)/3
-- RFP: depth<=7, margin improving?70*d:100*d
-- Futility: 90+lmrDepth*100+histAdj/128, depth<=8
-- LMR: quiet C=1.30, capture C=1.80
-- History pruning: -1500*depth, depth<=3, !improving
-- SEE quiet: -20*depth², SEE capture: -depth*100
-- QS delta: 240
-- Aspiration: delta=13+score²/23660 (eval-dependent), from depth 4
-- ProbCut: beta+170, staticEval+85 gate (disabled by default)
+
+All parameters are SPSA-tunable via the `tunables!` macro in `search.rs` (45 parameters).
+Current values reflect SPSA rounds 1-10 + retune-on-branch calibration. See the macro
+for authoritative defaults — values below are approximate.
+
 - SEE values: P=100, N=320, B=330, R=500, Q=900
-- History bonus cap: depth² capped at 1200
+- History bonus: linear formula min(MAX, MULT*depth - BASE), ~170*d-50 capped at 1505
 - Contempt: 10 (applied as -CONTEMPT)
 
-## Current Status (2026-03-30)
+## Current Status (2026-04-08)
 
-- **Strength**: -7 Elo in 13-engine cross-engine gauntlet (with 768pw net). In the Winter/Midnight/Weiss/Minic tier.
-- **NPS**: ~1,350K (v5 1024 CReLU), ~1,464K (768pw), ~673K (v7 hidden layer) — all with AVX2 SIMD
-- **vs GoChess**: +19 Elo from NPS advantage (15-26% faster depending on net type)
-- **Lazy SMP**: Implemented. 4 threads gives ~4x NPS and +2 depth.
-- **Features implemented**: All search features from GoChess, TT prefetch, v5/v6/v7 NNUE, datagen (multi-threaded), SF binpack output, Bullet convert, transfer learning checkpoint converter
+- **Strength**: Estimated ~+180 self-play Elo above initial Coda. Lichess bot deployed as `codabot`.
+- **NPS**: ~600K (production 768pw net, x86-64 AVX2)
+- **Bench**: 1,780,721 nodes (depth 13, 8 positions)
+- **EBF**: 1.87 (effective branching factor)
+- **Lazy SMP**: Implemented. Helpers share TT + history tables.
+- **SPSA**: 10 rounds completed (~+102 cumulative Elo from tuning)
+- **OpenBench**: Deployed at ob.atwiss.com, 4 machines / ~84 threads
+- **Testing methodology**: Self-play SPRT primary, retune-on-branch for tree-shape-changing features, LTC (40+0.4) for TM features
 
 ## Key Gotchas
 - Move flag equality vs bitwise: check non-promotion flags with ==, not &
@@ -329,9 +333,7 @@ Examples: `net-v5-1024-w0-e120s120.nnue`, `net-v5-1024s-w5-e400s400.nnue`, `net-
 - **is_pseudo_legal must be thorough**: TT hash collisions inject illegal moves. Pawn validation must check direction, intermediate squares (double push), starting rank, destination empty (pushes), enemy piece (captures). Castling must check rights, path clear, king/intermediate/destination not attacked, king on correct square. All three bugs cost 320 Elo combined.
 - **PV error warnings = TT collision bugs**: Every "Illegal PV move" from cutechess-cli means a TT collision passed is_pseudo_legal and corrupted the search tree. Treat as critical, not cosmetic.
 - **Feature flag ablation**: env var controlled flags (NO_XXX, ENABLE_XXX, DISABLE_ALL) for systematic search feature testing. Parsed once at startup via std::sync::Once.
-- LMR contHist weight: 3x in move ordering, 1x in reduction adjustment
-- Killers fully exempt from LMR (not just r -= 1)
-- All pruning (LMP, futility, history, SEE) exempts TT move and killers
+- LMR contHist weight: 3x in move ordering, ply-1+ply-2 in reduction adjustment
 - PV nodes skip all TT cutoffs and QS beta blending
 - Polyglot book encodes castling as king-to-rook (must convert to king-to-destination)
 
@@ -347,57 +349,38 @@ Self-play SPRT with tight bounds is the primary acceptance criterion. It is disc
 
 All search/eval changes must pass self-play SPRT before merging.
 
-**Two tiers of bounds:**
+**Default bounds: `[0.00, 5.00]`** — standard for all changes. Resolves in 2-20K games depending on effect size. For small gains (+2-3 Elo), consider `[-3.00, 3.00]` which resolves genuine +3 in ~15K games.
 
-**Tier A: `elo0=-5 elo1=5`** — "Don't ship regressions"
-- For: code cleanup, refactoring, consensus features, infrastructure changes
-- Question: "is this at least not harmful?"
-- Typically resolves in 1000-3000 games
-- Use when the change has structural value beyond pure Elo (e.g., cuckoo, 4D history)
+**LTC testing (40+0.4)** for time management changes — TM features are invisible at STC (10+0.1) where each move gets ~200ms. Node-based TM failed 3x at STC but passed at +11.9 LTC.
 
-**Tier B: `elo0=0 elo1=10`** — "Prove it helps"
-- For: novel search ideas, parameter tuning, pruning changes
-- Question: "is this genuinely positive?"
-- Typically resolves in 1000-5000 games (longer for small gains)
-- Use for anything that adds complexity or changes search behaviour
-
-**SPRT command template:**
+**SPRT via OpenBench** (preferred):
 ```bash
-cutechess-cli \
-    -tournament gauntlet \
-    -engine name=Contender cmd=<NEW_BINARY> proto=uci \
-        option.NNUEFile=<NET> option.OwnBook=false option.Hash=64 option.MoveOverhead=100 \
-    -engine name=Base cmd=<OLD_BINARY> proto=uci \
-        option.NNUEFile=<NET> option.OwnBook=false option.Hash=64 option.MoveOverhead=100 \
-    -each tc=0/10+0.1 \
-    -rounds 10000 -concurrency 4 \
-    -sprt elo0=<ELO0> elo1=<ELO1> alpha=0.05 beta=0.05 \
-    -openings file=/home/adam/code/gochess/testdata/noob_3moves.epd format=epd order=random \
-    -pgnout /tmp/sprt_<name>.pgn -recover -ratinginterval 100 \
-    -draw movenumber=20 movecount=10 score=10 \
-    -resign movecount=3 score=500 twosided=true
+# Let OB auto-detect bench from commit messages:
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch>
+
+# With explicit base commit (if main ref is stale):
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> --base-branch <commit>
+
+# Custom TC or bounds:
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> --tc '40.0+0.4' --bounds '[-3, 3]'
 ```
 
 **Key rules:**
-- Both engines MUST use the same net file
-- Contender = prior commit + one change. Never stack untested changes.
-- Wait for H0 or H1. Do not stop early based on "looks good" — that's optimism bias.
-- H0 = reject (revert). H1 = accept (merge). No exceptions.
-- Log result to experiments.md with: H0/H1, Elo, games, LLR, tier used.
+- One change per branch. Never stack untested changes.
+- Wait for H0 or H1. Do not stop early based on "looks good".
+- H0 = reject. H1 = accept. Log result to experiments.md.
+- For tree-shape-changing features: retune-on-branch before deciding (see methodology below).
+- Do not pass explicit bench values unless OB fails to auto-detect.
 
 ### Commit Messages
 
-**Every commit that changes search/eval must include `Bench: <nodes>` in the commit message.** OpenBench uses this to verify the correct binary was built. Get the value by running `coda bench` with the production net loaded. Example:
+**Every commit that changes search/eval must include `Bench: <nodes>` in the commit message.** OpenBench uses this to verify the correct binary was built. Run `coda bench` with the production net.
 
 ```
 Fix razoring margin at depth 2
 
-Bench: 1443162
+Bench: 1780721
 ```
-
-**Always include the bench line on main** — even for doc/tooling commits — because OpenBench reads bench from the latest commit message on the branch.
-
-**CRITICAL: When merging a branch, the bench in the merge commit must be the bench of the merged result, not the branch's standalone bench.** If a branch was created from an older main, the merge combines both the branch changes and any changes made to main since. Always run `make && ./coda bench` after merging and use that value. OpenBench reads the bench from the commit message — a wrong value causes tests to fail immediately with a bench mismatch.
 
 ### SPRT Testing Policy
 
@@ -508,44 +491,11 @@ Some features are neutral without retuning but gain significant Elo when pruning
 - Cont-hist malus: flat (-0.15 at 16K games) → +6.5 with retune
 - Pattern: big bench/node change but flat Elo → retune candidate
 
-### Cross-Engine Validation (secondary, for milestones)
+### Cross-Engine and Model Testing
 
-Self-play SPRT is reliable for direction but magnitude may differ cross-engine. Periodically validate cumulative progress with a peer-group gauntlet.
+Self-play SPRT is the primary acceptance criterion for search changes.
 
-**Peer-group gauntlet** (after every 3-5 merged changes):
-- Base binary + contender binary + 4-6 peer engines
-- Peers: Midnight, Winter, Minic, Tucano, Weiss, Texel (adjust as Coda's strength changes)
-- Gauntlet format (every game involves a Coda)
-- 200+ games, check that contender ≥ base relative to peers
-
-**Broad RR** (monthly milestone):
-- 15-30 engines spanning full strength range
-- Maximum 2 Coda variants (more causes Coda-on-Coda contamination that distorts results)
-- 100+ rounds for ±30 error bars
-
-### Model Comparison Testing
-
-For comparing NNUE nets (architectures, training, WDL blends):
-
-**5-way RR**: two nets under test + 3-4 rival engines.
-Self-play between nets is uninformative for WDL changes (WDL differences are invisible in self-play). Cross-engine RR is essential.
-
-```bash
-cutechess-cli \
-    -tournament round-robin \
-    -engine name=NetA cmd=./coda proto=uci option.NNUEFile=net_a.nnue option.OwnBook=false \
-    -engine name=NetB cmd=./coda proto=uci option.NNUEFile=net_b.nnue option.OwnBook=false \
-    -engine name=Weiss cmd=... proto=uci \
-    -engine name=Texel cmd=... proto=uci \
-    -engine name=Winter cmd=... proto=uci \
-    -each tc=0/10+0.1 \
-    -rounds 50 -concurrency 16 \
-    -openings file=noob_3moves.epd format=epd order=random \
-    -pgnout /tmp/model_test.pgn -recover -ratinginterval 20 \
-    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
-```
-
-Note: RR is correct here (not gauntlet) — we want both nets to play each other AND the rivals.
+**Model comparison** (different NNUE nets): Self-play H2H is effective — two nets in the same engine. The eval biases are in the nets, not the search. 200+ games gives a fast signal.
 
 ### Known Testing Pitfalls
 
@@ -590,32 +540,11 @@ Systematic approach for finding and fixing search feature issues. Each cycle com
 **5. Repeat**
 The retuned baseline exposes the next weak feature. Check SPSA trends for the next parameter being aggressively detuned.
 
-**Results from this approach (2026-04-05):**
-- SEE quiet pruning: SPSA flagged (17→6), deep dive found 3 structural issues (post-move, raw depth², duplicate SEE fn), fix tested +10.8 Elo.
-- Futility pruning: SPSA flagged (116→99), deep dive found gate/margin mismatch (raw depth gate, lmrDepth margin), fix in testing.
+**Results from this approach (through 2026-04-08):**
+- SEE quiet pruning: SPSA flagged, 3 structural issues found, +11.4 Elo
+- History magnitude: consensus H0 investigated, found 27× scaling bug, +31.6 Elo
+- LMR simplify: removed unique adjustments + retune, +6.3 Elo
+- Cont-hist malus: fixed indexing bug + retune, +6.5 Elo
+- NMP capture R: consensus flip + retune, +3.5 Elo
+- Node-based TM: failed 3x at STC, retested at LTC, +11.9 Elo
 
-### Model Comparison Testing
-
-For comparing NNUE nets (different architectures, training schedules, WDL blends):
-
-1. **Quick H2H** (200 games, self-play): same engine, two different nets. Fast signal.
-2. **5-way RR** (50 rounds): two nets under test + 3 rival engines (Minic/Ethereal/Texel).
-   This gives both self-play delta AND cross-engine validation in one test.
-   Self-play and cross-engine can give different signals for models — the RR catches this.
-
-```bash
-cutechess-cli \
-    -tournament round-robin \
-    -engine name=NetA cmd=./coda proto=uci option.NNUEFile=net_a.nnue option.OwnBook=false \
-    -engine name=NetB cmd=./coda proto=uci option.NNUEFile=net_b.nnue option.OwnBook=false \
-    -engine name=Minic cmd=... proto=uci \
-    -engine name=Ethereal cmd=... proto=uci \
-    -engine name=Texel cmd=... proto=uci \
-    -each tc=0/10+0.1 \
-    -rounds 50 -concurrency 16 \
-    -openings file=noob_3moves.epd format=epd order=random \
-    -pgnout /tmp/model_test.pgn -recover -ratinginterval 20 \
-    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
-```
-
-Note: RR is correct here (not gauntlet) — we want both nets to play each other AND the rivals.
