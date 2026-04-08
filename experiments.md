@@ -4133,7 +4133,93 @@ Still climbing after 3 consecutive tunes. Focused 5-param tune running.
 Running: HIST_PRUNE_MULT, FUT_BASE, HIST_BONUS_MAX, LMP_BASE, NMP_EVAL_DIV.
 These showed the most movement and may not have converged in the full tune.
 
-### Branches Prepared (pending r9 merge + rebase)
-- fix-badnode-flag: RFP +25% margin, NMP R-1 when no TT data
-- fix-tt-cutoff-conthist-malus: penalize opponent's quiet on TT beta cutoff
-- fix-history-extensions: extend when both ply-1/2 cont hist > 10000
+## 2026-04-07 Afternoon: TT PV Flag, Node-Based TM, Atlas Retries
+
+### H1 Passed — Merged
+
+| # | Test | Elo | Games | Description |
+|---|------|-----|-------|-------------|
+| 160 | fix-tt-pv-flag | **+4.5** | 10,780 | Sticky PV bit in TT, LMR -1 for PV positions. 30% node increase. |
+| 172 | fix-node-based-tm | **+11.9** | 1,196 | 3-factor TM (Obsidian/Clarity). **Tested at 40+0.4 LTC.** Failed 3x at STC. |
+| 173 | spsa-r10-snapshot | **+4.0** | 14,408 | 18-param pruning retune post-tt-pv. Nodes -8.3%. |
+
+### H0 Failed — Atlas Retries (bug fixes on previously-failed features)
+
+| # | Test | Elo | Games | Notes |
+|---|------|-----|-------|-------|
+| 166 | fix-badnode-flag v3 | -3.7 | 6,882 | Fixed RFP/NMP direction. Still no help. Permanently dropped. |
+| 167 | fix-history-extensions v2 | -0.4 | 21,690 | Lower threshold (10K→5K). Dead flat. Permanently dropped. |
+| 168 | fix-lmp-npm-guard v2 | -3.8 | 6,810 | NPM guard only (no BASE change). Permanently dropped. |
+| 169 | fix-tt-cutoff-conthist-malus v2 | -0.5 | 20,570 | Fixed self-referencing indexing bug. Flat without retune. |
+
+### Key Methodology Discoveries (Day 7)
+
+1. **TM changes need LTC validation.** Node-based TM failed 3x at STC (-31, -10, -3.2) but passed at 40+0.4 (+11.9). At STC (~200ms/move) stop/continue decisions have too little leverage.
+2. **Features that shift tree shape need retuning.** TT PV flag +4.5 raw, retune added another +4.0 (nearly doubled).
+3. **Cont-hist malus: flat without retune, +6.5 with.** First validation of retune-on-branch methodology. Feature was -0.15 at 16K games, then +6.5 after SPSA found different optima (LMR_HIST_DIV -15%, HIST_PRUNE_MULT -8.4%).
+
+## 2026-04-08: Retune-on-Branch Systematic Testing
+
+### Philosophy
+
+Previously-rejected features that change tree shape may gain Elo when pruning parameters
+are recalibrated on their branch. Workflow: feature branch → SPSA tune (18 pruning params,
+~600-1000 iterations) → compare parameter divergence vs main baseline → SPRT with tuned values.
+
+### Round 1: Retune Candidates (from reject pile)
+
+All tested against main at b98c0a1 (bench 1780721).
+
+| # | Test | Elo | Games | Original result | Tune divergence | Status |
+|---|------|-----|-------|-----------------|-----------------|--------|
+| 183 | fix-lmr-simplify + tune | **+6.3** | 7,366 | -2 to -4 (each adj individually) | High: SEE_QUIET -17%, HIST_PRUNE -9% | **H1 ✓** |
+| 181 | fix-corr-clamp-1024-v2 + tune | +2.1 | 9,890 | -7.0 (v1), +1.5 (v2) | Highest: HIST_PRUNE -15%, SEE_CAP -11% | Stopped, merge as correctness |
+| 180 | fix-50move-eval-scaling + tune | -2.9 | 8,878 | +0.8 (31K games) | Moderate (FUT_BASE, FUT_PER_DEPTH) | **H0 ✗** |
+| 182 | fix-se-negative-ext-v2 + tune | +1.4 | 22,572 | -10.5 | Lowest (closest to baseline) | Running (+1.4, grinding) |
+
+### Round 2: More Retune Candidates
+
+| # | Test | Elo | Games | Original result | Tune divergence | Status |
+|---|------|-----|-------|-----------------|-----------------|--------|
+| 195 | fix-nmp-capture-r + tune | **+3.5** | 16,718 | -0.2/-7.1 | Moderate: SEE_CAP -2.5%, FUT_BASE -6% | **H1 ✓** |
+| 194 | fix-futility-full + tune | -2.5 | 9,714 | -1.0/-2.2 | High: HIST_PRUNE -12%, LMR_C_QUIET -6% | **H0 ✗** |
+| 197 | fix-se-ply-gate + tune | -5.6 | 5,310 | -7.5 | Moderate: HIST_PRUNE -8% | **H0 ✗** |
+| 198 | fix-histprune-no-improving + tune | +0.5 | 12,264 | -3.7 | Low (calmest tune) | Running (flat) |
+| 196 | fix-corr-cont-2ply + tune | +1.3 | 12,866 | +0.4 (8.9K) | Highest of R2: FUT -7%, NMP_EVAL +8% | Stopped, retuning further |
+| 199 | fix-good-bad-quiet-split | -0.0 | 4,444 | N/A (new feature) | N/A (direct SPRT, now tuning) | Stopped, tuning |
+
+### Merge Batch (pending — holding for all experiments to complete)
+
+| Feature | Elo | Method | Notes |
+|---------|-----|--------|-------|
+| LMR simplify + tune | +6.3 | Retune-on-branch | Remove failing/alpha_raised/unstable |
+| NMP capture R + tune | +3.5 | Retune-on-branch | Flip r-=1 to r+=1 after captures |
+| Corr-clamp 1024 + tune | +2.1 | Correctness merge | Consensus clamp value |
+| (cont-hist malus + tune) | +6.5 | Retune-on-branch | Already merged |
+
+### New Features Being Tuned
+
+| Feature | Bench | Node Δ | Tree shape signal | Tune status |
+|---------|-------|--------|-------------------|-------------|
+| Good/bad quiet split | 1,701,572 | -4.4% | Avg cutoff 1.92→1.82, TT hits +8.3% | Tune running |
+| Remove killers/counters | 1,695,682 | -4.8% | TT hits +13.6%, LMR +14.7%, EBF 1.87→1.82 | Tune running (600 iter) |
+| Corr-cont-2ply (re-tune) | — | -21.5% | Biggest tree shape change of any candidate | Tune restarted |
+
+### Infrastructure
+
+- **ob_tune.py**: New script for submitting SPSA tunes programmatically
+- **ob_tune_status.py**: Read tune results, compare branches side-by-side
+- **ob_status.py**: Updated to separate active vs finished tests
+- **tune_pruning_18.txt**: Standard 18-param pruning tune specification
+- **Tree shape fingerprint**: Added to bench output (per-1K-node pruning rates)
+- **EBF metric**: Added to bench (effective branching factor)
+- **Lichess bot**: Deployed on `lo` as `codabot`, playing on lichess.org
+
+### Key Lessons (Day 8)
+
+1. **Retune-on-branch is validated.** 4 features rescued from reject pile: LMR simplify (+6.3), cont-hist malus (+6.5), NMP capture R (+3.5), corr-clamp (+2.1). Combined ~+18 Elo from "dead" features.
+2. **Tune divergence predicts SPRT success.** High divergence (corr-clamp, LMR simplify) → passed. Low divergence (SE neg ext, histprune) → flat/failed. Use tune divergence as a fast filter.
+3. **600-1000 SPSA iterations is sufficient** for branch tunes. Values converge by ~800 and don't shift meaningfully after. Confirmed by comparing 800 vs 1600 iteration snapshots on 50-move branch.
+4. **Tree shape fingerprint detects retune candidates.** Node count alone is insufficient — per-1K-node pruning rates reveal tree shape changes even when total nodes are similar.
+5. **Not all rejected features benefit from retuning.** 50-move (-2.9), futility-full (-2.5), SE ply gate (-5.6) all failed despite retuning. The feature must add genuine information, not just shift the tree.
+6. **De-pruning trend continues.** Most positive changes increase tree size. SPSA compensates by tightening other pruning. The virtuous cycle: accuracy improvement → retune → smarter tree at similar size.
