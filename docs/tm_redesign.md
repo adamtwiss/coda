@@ -202,6 +202,55 @@ Once profiles look correct, SPRT at 40+0.4 for Elo validation.
 
 Update codabot, monitor rating change and time profiles in live games.
 
+## Ponder Handling
+
+Current issue: ponderhit path calculates a basic soft limit without
+dynamic factors, and doesn't account for time already spent pondering.
+
+### Current behavior
+On ponderhit: `soft = time_left/25 + inc*0.8` → search stops when
+elapsed >= soft. No hard limit, no dynamic factors, no ponder credit.
+
+### Problems
+1. Doesn't use the same TM logic as normal search (separate code path)
+2. Already-pondered depth is "free" — we should be MORE willing to
+   spend time after a ponder hit, not use a bare-minimum allocation
+3. If ponder was correct, we've gained the opponent's think time for
+   free. This banked time should partially carry forward.
+4. Uses stale moves_left=25 (not updated with TM fixes)
+
+### Proposed fix
+Ponderhit should use the SAME TM calculation as normal search, with
+the ponder duration as a bonus:
+
+```
+// On ponderhit:
+ponder_duration = elapsed_since_ponder_start
+normal_soft = calculate_soft_limit(time_left, inc, phase, ...)
+normal_hard = calculate_hard_limit(...)
+
+// Credit: we've already searched for ponder_duration "for free"
+// Allow extra time proportional to what we saved
+ponder_bonus = ponder_duration * 0.3  // spend 30% of saved time
+
+adjusted_soft = normal_soft + ponder_bonus
+adjusted_hard = normal_hard + ponder_bonus
+
+// Apply dynamic factors as normal
+// (stability will likely be high since we've been searching this position)
+```
+
+The key insight: a ponder hit means we predicted correctly. The search
+is already deep. Dynamic factors (high stability, high node fraction)
+will naturally reduce time. The ponder bonus counteracts this —
+"you predicted right, spend some of the saved time going deeper."
+
+### Edge cases
+- Ponder miss (opponent played different move): no bonus, normal TM
+- Very long ponder (opponent thought 30s): bonus = 9s. Generous but
+  capped by hard limit.
+- Very short ponder (opponent moved instantly): bonus ≈ 0. Normal TM.
+
 ## Risks
 
 1. **Flagging at no-increment TCs**: Mitigated by safety_buffer and hard_mult=3
