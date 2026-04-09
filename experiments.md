@@ -4223,3 +4223,62 @@ All tested against main at b98c0a1 (bench 1780721).
 4. **Tree shape fingerprint detects retune candidates.** Node count alone is insufficient — per-1K-node pruning rates reveal tree shape changes even when total nodes are similar.
 5. **Not all rejected features benefit from retuning.** 50-move (-2.9), futility-full (-2.5), SE ply gate (-5.6) all failed despite retuning. The feature must add genuine information, not just shift the tree.
 6. **De-pruning trend continues.** Most positive changes increase tree size. SPSA compensates by tightening other pruning. The virtuous cycle: accuracy improvement → retune → smarter tree at similar size.
+
+## 2026-04-09: Batch Merge + Killer Removal + TM Fix + Model Comparison
+
+### H1 Passed — Merged (batch merge day)
+
+| # | Test | Elo | Games | Description |
+|---|------|-----|-------|-------------|
+| 182 | fix-se-negative-ext-v2 + tune | **+2.67** | 26,270 | Differentiated -3/-2/-1. Previously -10.5 without retune. |
+| 181 | fix-corr-clamp-1024-v2 + tune | **+2.1** | 9,890 | Correctness merge. Consensus clamp 1024. |
+| 195 | fix-nmp-capture-r + tune | **+3.5** | 16,718 | Flip r-=1 to r+=1. Previously -7.1 without retune. |
+| 215 | fix-remove-killers-counters + tune | **+3.77** | 14,764 | Remove killers and counter-moves. History handles ordering. |
+
+**Batch total: ~+12 Elo merged today.** All four features validated via retune-on-branch.
+
+### H0 Failed
+
+| # | Test | Elo | Games | Notes |
+|---|------|-----|-------|-------|
+| 213 | fix-corr-cont-2ply-v2 | -1.1 | 27,520 | Dead flat at 28K. 2-ply continuation adds noise. |
+| 217 | fix-lmr-simplify-v2 | -1.7 | 12,030 | Remove opp-non-pawn + pawn-escape. Those adjustments help. |
+| 216 | fix-good-bad-quiet-split + tune | -3.6 | 7,680 | SF-only feature. Neither direct nor tuned helped. |
+| 222 | fix-futility-full-v2 (rebased) | -5.7 | 5,076 | History→lmrDepth. Rebase didn't save it. |
+| 221 | fix-se-ply-gate-v2 (rebased) | -7.7 | 4,158 | ply<2*rootDepth. Rebase didn't save it. |
+| 223 | fix-50move-eval-scaling-v2 (rebased) | -1.9 | 11,282 | Rebase didn't help. Truly neutral. |
+| 220 | fix-histprune-no-improving-v2 (rebased) | -3.4 | 9,104 | Faded from +5.4 early. Rebase didn't help. |
+| 209 | fix-low-ply-history-bonus | -2.9 | 8,674 | 8x at ply 0 doesn't help. |
+
+### Running
+
+| # | Test | Elo | Games | Notes |
+|---|------|-----|-------|-------|
+| 227 | fix-tm-conservative v2 (LTC) | +2.6 | 2,168 | Hard limit ×5, stability 0.70, eval-based reduction. |
+
+### Self-Play Model Comparison
+
+| # | Test | Elo | Games | Notes |
+|---|------|-----|-------|-------|
+| 212 | selfplay (untuned) vs T80 e120 | -60 | 310 | 7x less data, no parameter calibration |
+| 219 | selfplay (tuned) vs T80 e120 | -32 | 566 | Retune closed 28 Elo. Data quality matches, needs volume. |
+
+### NNUE Training Data Discovery
+
+T80 dataset is ~46.7B positions (not 12B as previously thought). At SB800 (80B positions seen),
+each position is seen ~1.7 times — barely adequate coverage. Self-play dataset at 800M positions
+growing on Titan. Target: 2-3B for fair comparison, 16B for full training.
+
+### Infrastructure
+
+- **Lichess bot** (`codabot`): 2856 rating, 9W 1L 2D. Observed conservative TM in live games.
+- **Killer removal merged**: 53 lines removed, engine simplified. History tables handle ordering.
+- **Bench**: 1781171 after batch merge (down from 2275554).
+
+### Key Lessons (Day 9)
+
+1. **Killer/counter-move removal works.** +3.77 Elo from removing a feature that's been in chess engines since the 1980s. History tables (27× stronger after magnitude fix) make killers redundant.
+2. **Rebase matters.** Branches off old main were testing at ~6 Elo disadvantage (missing LMR simplify). Some results were contaminated. Always check branch parent.
+3. **Not all rebased features recover.** Futility-full, SE ply gate, 50-move, histprune all failed despite rebase. The +6 boost wasn't enough.
+4. **TM needs LTC validation AND correct base.** The conservative TM at -7 on wrong base became +2.6 on correct base at LTC.
+5. **Self-play data quality matches T80 per-position.** -32 Elo with 7× less data + retune. With equal data volume, self-play could match or beat T80.
