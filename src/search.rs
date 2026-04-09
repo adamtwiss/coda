@@ -47,36 +47,36 @@ tunables!(
     // NMP
     (NMP_BASE_R,         3,    2,    8),  // SPSA r10: 3.46→3 (rounded)
     (NMP_DEPTH_DIV,      3,    2,    6),
-    (NMP_EVAL_DIV,     129,  100,  400),  // malus tune: 148→135
+    (NMP_EVAL_DIV,     130,  100,  400),  // malus tune: 148→135
     (NMP_EVAL_MAX,       1,    1,    6),
     (NMP_VERIFY_DEPTH,  11,    8,   20),
     // RFP
     (RFP_DEPTH,          5,    4,   10),
-    (RFP_MARGIN_IMP,    91,   30,  150),  // malus tune: 92→94
+    (RFP_MARGIN_IMP,    96,   30,  150),  // malus tune: 92→94
     (RFP_MARGIN_NOIMP, 134,   50,  200),  // malus tune: 140→137
     // Futility
-    (FUT_BASE,         110,   20,  200),  // malus tune: 94→109
-    (FUT_PER_DEPTH,    179,   40,  250),  // malus tune: 161→173
+    (FUT_BASE,         103,   20,  200),  // malus tune: 94→109
+    (FUT_PER_DEPTH,    184,   40,  250),  // malus tune: 161→173
     // History pruning
     (HIST_PRUNE_DEPTH,   2,    1,    8),
-    (HIST_PRUNE_MULT, 6323,  500, 50000),  // malus tune: 7224→6930
+    (HIST_PRUNE_MULT, 7091,  500, 50000),  // malus tune: 7224→6930
     // SEE pruning
-    (SEE_QUIET_MULT,   20,    5,   80),  // malus tune: 23→24
-    (SEE_CAP_MULT,    117,   30,  200),
+    (SEE_QUIET_MULT,   23,    5,   80),  // malus tune: 23→24
+    (SEE_CAP_MULT,    124,   30,  200),
     // LMR
-    (LMR_HIST_DIV,   6835, 2000, 100000),  // malus tune: 9110→7454
-    (LMR_C_QUIET,     127,   80,  300),  // malus tune: 138→132
-    (LMR_C_CAP,       163,  100,  350),  // malus tune: 169→164
+    (LMR_HIST_DIV,   6853, 2000, 100000),  // malus tune: 9110→7454
+    (LMR_C_QUIET,     129,   80,  300),  // malus tune: 138→132
+    (LMR_C_CAP,       165,  100,  350),  // malus tune: 169→164
     // Singular extensions
     (SE_DEPTH,           6,    4,   12),
     // Aspiration windows
     (ASP_DELTA,         17,    5,   30),
     (ASP_SCORE_DIV,  30338, 8000, 50000),
     // LMP — formula: (LMP_BASE + depth²) / (2 - improving)
-    (LMP_BASE,           8,    1,   15),
+    (LMP_BASE,           6,    1,   15),
     (LMP_DEPTH,         14,    4,   20),  // malus tune: 13→14
     // Bad noisy
-    (BAD_NOISY_MARGIN,  90,   30,  150),  // malus tune: 91→92
+    (BAD_NOISY_MARGIN,  91,   30,  150),  // malus tune: 91→92
     // ProbCut
     (PROBCUT_MARGIN,   167,   80,  300),
     // Hindsight
@@ -107,7 +107,7 @@ tunables!(
     // Quiet check bonus in move ordering
     (QUIET_CHECK_BONUS, 9946, 2000, 30000),
     // LMR complexity divisor (correction history magnitude)
-    (LMR_COMPLEXITY_DIV, 134, 30, 500),  // malus tune: 122→133
+    (LMR_COMPLEXITY_DIV, 131, 30, 500),  // malus tune: 122→133
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -491,7 +491,10 @@ impl SearchInfo {
         } else {
             evaluate(board)
         };
-        score
+        // 50-move eval scaling: decay eval toward zero as halfmove clock advances
+        // (Clarity: (200-hm)/200, Velvet: (128-hm)/128, Reckless: (200-hm)/200)
+        let hm = board.halfmove.min(200) as i32;
+        score * (200 - hm) / 200
     }
 }
 
