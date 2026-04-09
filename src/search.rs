@@ -47,26 +47,26 @@ tunables!(
     // NMP
     (NMP_BASE_R,         3,    2,    8),  // SPSA r10: 3.46→3 (rounded)
     (NMP_DEPTH_DIV,      3,    2,    6),
-    (NMP_EVAL_DIV,     136,  100,  400),  // malus tune: 148→135
+    (NMP_EVAL_DIV,     137,  100,  400),  // malus tune: 148→135
     (NMP_EVAL_MAX,       1,    1,    6),
     (NMP_VERIFY_DEPTH,  11,    8,   20),
     // RFP
     (RFP_DEPTH,          5,    4,   10),
-    (RFP_MARGIN_IMP,    100,   30,  150),  // malus tune: 92→94
-    (RFP_MARGIN_NOIMP, 137,   50,  200),  // malus tune: 140→137
+    (RFP_MARGIN_IMP,    95,   30,  150),  // malus tune: 92→94
+    (RFP_MARGIN_NOIMP, 140,   50,  200),  // malus tune: 140→137
     // Futility
     (FUT_BASE,         102,   20,  200),  // malus tune: 94→109
-    (FUT_PER_DEPTH,    170,   40,  250),  // malus tune: 161→173
+    (FUT_PER_DEPTH,    171,   40,  250),  // malus tune: 161→173
     // History pruning
     (HIST_PRUNE_DEPTH,   2,    1,    8),
-    (HIST_PRUNE_MULT, 5903,  500, 50000),  // malus tune: 7224→6930
+    (HIST_PRUNE_MULT, 6655,  500, 50000),  // malus tune: 7224→6930
     // SEE pruning
-    (SEE_QUIET_MULT,   25,    5,   80),  // malus tune: 23→24
-    (SEE_CAP_MULT,    108,   30,  200),
+    (SEE_QUIET_MULT,   22,    5,   80),  // malus tune: 23→24
+    (SEE_CAP_MULT,    119,   30,  200),
     // LMR
-    (LMR_HIST_DIV,   6888, 2000, 100000),  // malus tune: 9110→7454
+    (LMR_HIST_DIV,   7589, 2000, 100000),  // malus tune: 9110→7454
     (LMR_C_QUIET,     125,   80,  300),  // malus tune: 138→132
-    (LMR_C_CAP,       161,  100,  350),  // malus tune: 169→164
+    (LMR_C_CAP,       160,  100,  350),  // malus tune: 169→164
     // Singular extensions
     (SE_DEPTH,           6,    4,   12),
     // Aspiration windows
@@ -76,7 +76,7 @@ tunables!(
     (LMP_BASE,           7,    1,   15),
     (LMP_DEPTH,         15,    4,   20),  // malus tune: 13→14
     // Bad noisy
-    (BAD_NOISY_MARGIN,  94,   30,  150),  // malus tune: 91→92
+    (BAD_NOISY_MARGIN,  86,   30,  150),  // malus tune: 91→92
     // ProbCut
     (PROBCUT_MARGIN,   167,   80,  300),
     // Hindsight
@@ -107,7 +107,7 @@ tunables!(
     // Quiet check bonus in move ordering
     (QUIET_CHECK_BONUS, 9946, 2000, 30000),
     // LMR complexity divisor (correction history magnitude)
-    (LMR_COMPLEXITY_DIV, 137, 30, 500),  // malus tune: 122→133
+    (LMR_COMPLEXITY_DIV, 129, 30, 500),  // malus tune: 122→133
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -1665,9 +1665,10 @@ fn negamax(
         info.stats.nmp_attempts += 1;
         // Adaptive reduction: scales with depth and eval margin above beta
         let mut r = tp(&NMP_BASE_R) + depth / tp(&NMP_DEPTH_DIV);
-        // Reduce less after captures
+        // Reduce more after captures: opponent just captured, null move more likely to work
+        // (Consensus: SF/Obsidian increase R after captures, not decrease)
         if !board.undo_stack.is_empty() && board.undo_stack[board.undo_stack.len() - 1].captured != NO_PIECE_TYPE {
-            r -= 1;
+            r += 1;
         }
         if static_eval > beta {
             let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp(&NMP_EVAL_MAX));
