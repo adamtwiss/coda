@@ -184,6 +184,17 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     let max_pct = if has_increment { 40 } else { 25 };
                     let max_alloc = time_left * max_pct / 100;
                     if soft > max_alloc { soft = max_alloc; }
+
+                    // Safety floor: when time is low, don't spend more than
+                    // the increment to avoid draining the clock
+                    if has_increment && time_left < 30000 {
+                        // Below 30s: cap at increment to keep clock stable
+                        soft = soft.min(our_inc);
+                    }
+                    if !has_increment && time_left < 15000 {
+                        // Below 15s with no increment: minimal time
+                        soft = soft.min(time_left / 20);
+                    }
                     if soft < 10 { soft = 10; }
 
                     ponderhit_flag.store(soft, Ordering::Relaxed);
