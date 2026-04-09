@@ -77,8 +77,12 @@ impl OpeningBook {
 
         if candidates.is_empty() { return None; }
 
-        // Weighted random selection (simple LCG)
-        let r = (board.hash as u32) % total_weight;
+        // Weighted random selection using wall-clock nanoseconds as entropy
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        let r = nanos % total_weight;
         let mut cumulative = 0;
         for (m, w) in &candidates {
             cumulative += w;
