@@ -47,34 +47,34 @@ tunables!(
     // NMP
     (NMP_BASE_R,         3,    2,    8),  // SPSA r10: 3.46→3 (rounded)
     (NMP_DEPTH_DIV,      3,    2,    6),
-    (NMP_EVAL_DIV,     129,  100,  400),  // malus tune: 148→135
+    (NMP_EVAL_DIV,     136,  100,  400),  // malus tune: 148→135
     (NMP_EVAL_MAX,       1,    1,    6),
     (NMP_VERIFY_DEPTH,  11,    8,   20),
     // RFP
     (RFP_DEPTH,          5,    4,   10),
-    (RFP_MARGIN_IMP,    94,   30,  150),  // malus tune: 92→94
-    (RFP_MARGIN_NOIMP, 136,   50,  200),  // malus tune: 140→137
+    (RFP_MARGIN_IMP,    100,   30,  150),  // malus tune: 92→94
+    (RFP_MARGIN_NOIMP, 137,   50,  200),  // malus tune: 140→137
     // Futility
-    (FUT_BASE,         108,   20,  200),  // malus tune: 94→109
-    (FUT_PER_DEPTH,    169,   40,  250),  // malus tune: 161→173
+    (FUT_BASE,         102,   20,  200),  // malus tune: 94→109
+    (FUT_PER_DEPTH,    170,   40,  250),  // malus tune: 161→173
     // History pruning
     (HIST_PRUNE_DEPTH,   2,    1,    8),
-    (HIST_PRUNE_MULT, 6982,  500, 50000),  // malus tune: 7224→6930
+    (HIST_PRUNE_MULT, 5903,  500, 50000),  // malus tune: 7224→6930
     // SEE pruning
     (SEE_QUIET_MULT,   25,    5,   80),  // malus tune: 23→24
-    (SEE_CAP_MULT,    122,   30,  200),
+    (SEE_CAP_MULT,    108,   30,  200),
     // LMR
-    (LMR_HIST_DIV,   7084, 2000, 100000),  // malus tune: 9110→7454
-    (LMR_C_QUIET,     131,   80,  300),  // malus tune: 138→132
-    (LMR_C_CAP,       163,  100,  350),  // malus tune: 169→164
+    (LMR_HIST_DIV,   6888, 2000, 100000),  // malus tune: 9110→7454
+    (LMR_C_QUIET,     125,   80,  300),  // malus tune: 138→132
+    (LMR_C_CAP,       161,  100,  350),  // malus tune: 169→164
     // Singular extensions
     (SE_DEPTH,           6,    4,   12),
     // Aspiration windows
     (ASP_DELTA,         17,    5,   30),
     (ASP_SCORE_DIV,  30338, 8000, 50000),
     // LMP — formula: (LMP_BASE + depth²) / (2 - improving)
-    (LMP_BASE,           8,    1,   15),
-    (LMP_DEPTH,         14,    4,   20),  // malus tune: 13→14
+    (LMP_BASE,           7,    1,   15),
+    (LMP_DEPTH,         15,    4,   20),  // malus tune: 13→14
     // Bad noisy
     (BAD_NOISY_MARGIN,  94,   30,  150),  // malus tune: 91→92
     // ProbCut
@@ -107,7 +107,7 @@ tunables!(
     // Quiet check bonus in move ordering
     (QUIET_CHECK_BONUS, 9946, 2000, 30000),
     // LMR complexity divisor (correction history magnitude)
-    (LMR_COMPLEXITY_DIV, 131, 30, 500),  // malus tune: 122→133
+    (LMR_COMPLEXITY_DIV, 137, 30, 500),  // malus tune: 122→133
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -169,9 +169,9 @@ pub fn enable_all_features() {
 
 // Correction history constants
 const CORR_HIST_SIZE: usize = 16384;
-const CORR_HIST_GRAIN: i32 = 256;
-const CORR_HIST_MAX: i32 = 128;
-const CORR_HIST_LIMIT: i32 = 32000;
+const CORR_HIST_GRAIN: i32 = 8;       // Scaled with LIMIT: 256/32000 ≈ 8/1024
+const CORR_HIST_MAX: i32 = 4;         // Scaled: 128/32000 ≈ 4/1024
+const CORR_HIST_LIMIT: i32 = 1024;    // Consensus (SF, Viridithas, Obsidian)
 
 /// Search limits.
 #[derive(Clone)]
