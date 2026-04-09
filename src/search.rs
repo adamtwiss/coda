@@ -52,20 +52,20 @@ tunables!(
     (NMP_VERIFY_DEPTH,  11,    8,   20),
     // RFP
     (RFP_DEPTH,          5,    4,   10),
-    (RFP_MARGIN_IMP,    95,   30,  150),  // malus tune: 92→94
+    (RFP_MARGIN_IMP,    97,   30,  150),  // malus tune: 92→94
     (RFP_MARGIN_NOIMP, 140,   50,  200),  // malus tune: 140→137
     // Futility
     (FUT_BASE,         102,   20,  200),  // malus tune: 94→109
-    (FUT_PER_DEPTH,    171,   40,  250),  // malus tune: 161→173
+    (FUT_PER_DEPTH,    175,   40,  250),  // malus tune: 161→173
     // History pruning
     (HIST_PRUNE_DEPTH,   2,    1,    8),
-    (HIST_PRUNE_MULT, 6655,  500, 50000),  // malus tune: 7224→6930
+    (HIST_PRUNE_MULT, 6802,  500, 50000),  // malus tune: 7224→6930
     // SEE pruning
     (SEE_QUIET_MULT,   22,    5,   80),  // malus tune: 23→24
-    (SEE_CAP_MULT,    119,   30,  200),
+    (SEE_CAP_MULT,    126,   30,  200),
     // LMR
-    (LMR_HIST_DIV,   7589, 2000, 100000),  // malus tune: 9110→7454
-    (LMR_C_QUIET,     125,   80,  300),  // malus tune: 138→132
+    (LMR_HIST_DIV,   7082, 2000, 100000),  // malus tune: 9110→7454
+    (LMR_C_QUIET,     134,   80,  300),  // malus tune: 138→132
     (LMR_C_CAP,       160,  100,  350),  // malus tune: 169→164
     // Singular extensions
     (SE_DEPTH,           6,    4,   12),
@@ -74,9 +74,9 @@ tunables!(
     (ASP_SCORE_DIV,  30338, 8000, 50000),
     // LMP — formula: (LMP_BASE + depth²) / (2 - improving)
     (LMP_BASE,           7,    1,   15),
-    (LMP_DEPTH,         15,    4,   20),  // malus tune: 13→14
+    (LMP_DEPTH,         14,    4,   20),  // malus tune: 13→14
     // Bad noisy
-    (BAD_NOISY_MARGIN,  86,   30,  150),  // malus tune: 91→92
+    (BAD_NOISY_MARGIN,  94,   30,  150),  // malus tune: 91→92
     // ProbCut
     (PROBCUT_MARGIN,   167,   80,  300),
     // Hindsight
@@ -107,7 +107,7 @@ tunables!(
     // Quiet check bonus in move ordering
     (QUIET_CHECK_BONUS, 9946, 2000, 30000),
     // LMR complexity divisor (correction history magnitude)
-    (LMR_COMPLEXITY_DIV, 129, 30, 500),  // malus tune: 122→133
+    (LMR_COMPLEXITY_DIV, 138, 30, 500),  // malus tune: 122→133
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -1789,27 +1789,18 @@ fn negamax(
         }
     }
 
-    // Get killers for this ply
+    // Continuation history lookup from search stack (killers/counter removed — SF pattern)
     let safe_ply = ply_u.min(MAX_PLY - 1).min(63);
-    let killers = if safe_ply < 64 {
-        info.history.killers[safe_ply]
-    } else {
-        [NO_MOVE; 2]
-    };
-
-    // Counter-move and continuation history lookup from search stack
-    let mut counter_move = NO_MOVE;
     let mut prev_piece_for_cont: usize = 0; // go_piece index (1-12), 0 = none
     let mut prev_to_for_cont: u8 = 0;
     let mut prev2_piece_for_cont: usize = 0; // ply-2 (grandparent move)
     let mut prev2_to_for_cont: u8 = 0;
 
-    // Ply-1: parent's move (from search stack for consistency)
+    // Ply-1: parent's move (for continuation history)
     if ply_u >= 1 {
         let gp = info.moved_piece_stack[ply_u - 1] as usize;
         let to_sq = info.moved_to_stack[ply_u - 1];
         if gp != 0 {
-            counter_move = info.history.counter[gp][to_sq as usize];
             prev_piece_for_cont = gp;
             prev_to_for_cont = to_sq;
         }
@@ -1905,8 +1896,7 @@ fn negamax(
         // Use lmrDepth² scaling (matching Stockfish/Berserk/Obsidian).
         if ply > 0 && !in_check
             && !is_cap && !is_promo
-            && mv != killers[0] && mv != killers[1]
-            && mv != counter_move && mv != tt_move
+            && mv != tt_move
             && best_score > -(MATE_SCORE - 100)
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
@@ -2002,8 +1992,6 @@ fn negamax(
         if ply > 0 && !in_check && !improving && !unstable && depth <= tp(&HIST_PRUNE_DEPTH)
             && !is_cap && !is_promo
             && mv != tt_move
-            && mv != killers[0] && mv != killers[1]
-            && mv != counter_move
             && best_score > -(MATE_SCORE - 100)
             && FEAT_HIST_PRUNE.load(Ordering::Relaxed)
         {
@@ -2118,10 +2106,8 @@ fn negamax(
         }
 
         // Late Move Reductions (LMR) + Principal Variation Search (PVS)
-        let is_killer = mv == killers[0] || mv == killers[1];
-
         let mut reduction = 0i32;
-        if !in_check && !is_cap && !is_promo && !is_killer && FEAT_LMR.load(Ordering::Relaxed) {
+        if !in_check && !is_cap && !is_promo && FEAT_LMR.load(Ordering::Relaxed) {
             let d = (depth as usize).min(63);
             let m = (move_count as usize).min(63);
             reduction = lmr_reduction(d as i32, m as i32);
@@ -2330,17 +2316,9 @@ fn negamax(
                     info.stats.cutoff_movecount_sum += move_count as u64;
                     info.stats.cutoff_movecount_sq_sum += (move_count as u64) * (move_count as u64);
 
-                    // Beta cutoff - update killer moves, history, and counter-move for quiet moves
+                    // Beta cutoff - update history for quiet moves (killers/counter removed — SF pattern)
                     if !is_cap {
                         let bonus = history_bonus(depth);
-
-                        // Store killer
-                        if safe_ply < 64 {
-                            if info.history.killers[safe_ply][0] != mv {
-                                info.history.killers[safe_ply][1] = info.history.killers[safe_ply][0];
-                                info.history.killers[safe_ply][0] = mv;
-                            }
-                        }
 
                         // Update main history
                         History::update_history(
@@ -2430,17 +2408,6 @@ fn negamax(
                             }
                         }
 
-                        // Store counter-move
-                        if !board.undo_stack.is_empty() {
-                            let undo = &board.undo_stack[board.undo_stack.len() - 1];
-                            let pm = undo.mv;
-                            if pm != NO_MOVE {
-                                let prev_piece = board.piece_at(move_to(pm));
-                                if prev_piece != NO_PIECE {
-                                    info.history.counter[go_piece(prev_piece)][move_to(pm) as usize] = mv;
-                                }
-                            }
-                        }
                     } else {
                         // Capture caused beta cutoff: bonus the cutoff capture
                         let cap_bonus = capture_history_bonus(depth);
