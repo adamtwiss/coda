@@ -997,18 +997,42 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Subtract move overhead (communication latency)
         let overhead = info.move_overhead;
         let time_left = our_time.saturating_sub(overhead).max(1);
+        let fullmove = board.fullmove as u64;
 
-        let moves_left = if limits.movestogo > 0 { limits.movestogo as u64 } else { 25 };
+        // TC regime: how safe is our time situation?
+        // inc_ratio > 0.3 = generous increment (can be aggressive)
+        // inc_ratio = 0 = no increment (must be conservative)
+        let base_per_move = time_left / 40; // rough estimate
+        let inc_ratio = if base_per_move > 0 { our_inc as f64 / base_per_move as f64 } else { 0.0 };
+        let has_increment = our_inc > 0;
 
-        // Soft allocation: time/movesLeft + 80% of increment
-        let mut soft = time_left / moves_left + our_inc * 4 / 5;
+        let moves_left = if limits.movestogo > 0 {
+            limits.movestogo as u64
+        } else if has_increment {
+            30  // with increment, expect ~30 more moves
+        } else {
+            35  // without increment, be more conservative
+        };
 
-        // Cap soft allocation: scale with moves remaining
-        // movestogo=1: allow up to 90%, movestogo=2: 70%, sudden death (25): 50%
+        // Phase-based allocation (Reckless-inspired):
+        // Spend less at low move numbers (opening), more in middlegame, plateau in endgame.
+        // Dampened for no-increment TCs where time is irreplaceable.
+        let base_phase = 0.025 + 0.040 * (1.0 - (-0.050 * fullmove as f64).exp());
+        // phase_scale with inc: move 5→0.035, move 15→0.050, move 25→0.058
+        // phase_scale no inc:  move 5→0.026, move 15→0.037, move 25→0.043
+        let phase_scale = if has_increment { base_phase } else { base_phase * 0.75 };
+
+        // Base soft: phase-scaled portion of remaining time + increment budget
+        let inc_budget = our_inc * 85 / 100; // use 85% of increment
+        let mut soft = (phase_scale * time_left as f64) as u64 + inc_budget;
+
+        // Cap soft allocation based on TC regime
         let max_pct = if limits.movestogo > 0 {
             (95 - limits.movestogo as u64 * 5).max(30).min(90)
+        } else if has_increment {
+            40  // with increment: cap at 40% (increment provides safety net)
         } else {
-            50
+            25  // without increment: cap at 25% (must preserve time)
         };
         let max_alloc = time_left * max_pct / 100;
         if soft > max_alloc { soft = max_alloc; }
@@ -1024,23 +1048,23 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Floor at 10ms
         if soft < 10 { soft = 10; }
 
-        // Hard limit
+        // Hard limit: scales with TC regime
         let mut hard = if limits.movestogo > 0 {
-            // Tournament TC: cap based on moves remaining
-            // movestogo=1: 90%, movestogo=2: 60%, scales down to 30% min
             let hard_raw = soft * 2;
             let hard_pct = (95 - limits.movestogo as u64 * 10).max(30).min(90);
             let mtg_cap = time_left * hard_pct / 100;
             hard_raw.min(mtg_cap)
+        } else if has_increment {
+            // With increment: allow 6x soft (increment prevents flagging)
+            soft * 6
         } else {
-            // Sudden death: allow up to 5x soft (was 3x — too restrictive,
-            // every other engine allows 10-18x. Dynamic factors need room.)
-            soft * 5
+            // Without increment: only 3x soft (must preserve time)
+            soft * 3
         };
 
-        // Absolute hard cap: never use more than timeLeft/3 + inc
-        // (was timeLeft/5, too conservative — Obsidian uses 80%, Clarity 50%)
-        let mut max_hard = time_left / 3 + our_inc;
+        // Absolute hard cap: TC-regime dependent
+        let hard_cap_pct = if has_increment { 30 } else { 20 }; // % of time_left
+        let mut max_hard = time_left * hard_cap_pct / 100 + our_inc;
         if max_hard > time_left * 3 / 4 {
             max_hard = time_left * 3 / 4;
         }
