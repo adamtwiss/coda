@@ -163,16 +163,29 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
             }
             "ponderhit" => {
-                // Switch from infinite ponder to timed search
+                // Switch from infinite ponder to timed search.
+                // Use phase-based allocation matching main TM — don't
+                // shortchange moves where we predicted correctly.
                 if let Some(ref pl) = ponder_limits {
-                    // Compute time allocation from the stored limits
                     let our_time = if board.side_to_move == 0 { pl.wtime } else { pl.btime };
                     let our_inc = if board.side_to_move == 0 { pl.winc } else { pl.binc };
                     let overhead = info.move_overhead;
                     let time_left = our_time.saturating_sub(overhead).max(1);
-                    let moves_left = if pl.movestogo > 0 { pl.movestogo as u64 } else { 25 };
-                    let soft = (time_left / moves_left + our_inc * 4 / 5).min(time_left / 2).max(10);
-                    // Set the shared ponderhit time limit (search thread picks it up)
+                    let has_increment = our_inc > 0;
+
+                    // Phase-based allocation (mirrors main TM path in search.rs)
+                    let fullmove = board.fullmove as f64;
+                    let base_phase = 0.025 + 0.040 * (1.0 - (-0.050 * fullmove).exp());
+                    let phase_scale = if has_increment { base_phase } else { base_phase * 0.75 };
+                    let inc_budget = our_inc * 85 / 100;
+                    let mut soft = (phase_scale * time_left as f64) as u64 + inc_budget;
+
+                    // Cap based on TC regime
+                    let max_pct = if has_increment { 40 } else { 25 };
+                    let max_alloc = time_left * max_pct / 100;
+                    if soft > max_alloc { soft = max_alloc; }
+                    if soft < 10 { soft = 10; }
+
                     ponderhit_flag.store(soft, Ordering::Relaxed);
                 } else {
                     // No stored limits — just stop
