@@ -36,17 +36,12 @@ rule: check-rust net
 openbench: rule
 
 # PGO build (profile-guided optimization, ~3% NPS gain)
+# Requires: rustup component add llvm-tools-preview
 TARGET_TUPLE := $(shell rustc --print host-tuple 2>/dev/null)
-# Find llvm-profdata matching rustc's LLVM version (needed for PGO)
-# Search order: rustc's bundled copy (always matches), versioned Linux, brew (macOS)
-RUSTC_SYSROOT := $(shell rustc --print sysroot 2>/dev/null)
-RUSTC_LLVM_VER := $(shell rustc --version --verbose 2>/dev/null | awk '/LLVM version:/ {split($$3,v,"."); print v[1]}')
-PGO_LLVM := $(or $(wildcard $(RUSTC_SYSROOT)/lib/rustlib/*/bin/llvm-profdata),$(wildcard /usr/bin/llvm-profdata-$(RUSTC_LLVM_VER)),$(wildcard /usr/lib/llvm-$(RUSTC_LLVM_VER)/bin/llvm-profdata),$(wildcard $(shell brew --prefix llvm@$(RUSTC_LLVM_VER) 2>/dev/null)/bin/llvm-profdata))
-PGO_PATH := $(if $(PGO_LLVM),$(dir $(PGO_LLVM)):$(PATH),$(PATH))
 pgo: check-rust net
-	LLVM_PROFDATA="$(PGO_LLVM)" cargo pgo instrument build
+	cargo pgo instrument build
 	LLVM_PROFILE_FILE=target/pgo-profiles/coda_%m_%p.profraw ./target/$(TARGET_TUPLE)/release/coda bench 13
-	LLVM_PROFDATA="$(PGO_LLVM)" PATH="$(PGO_PATH)" cargo pgo optimize build
+	cargo pgo optimize build
 	cp target/$(TARGET_TUPLE)/release/coda $(NAME)
 
 # Download production NNUE net
