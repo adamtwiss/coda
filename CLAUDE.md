@@ -6,12 +6,18 @@ Coda is a UCI chess engine written in Rust. Rewritten from GoChess with all accu
 
 ## Build and Test
 
+**Prerequisites:** Rust 1.70+. For PGO builds:
+```bash
+cargo install cargo-pgo
+rustup component add llvm-tools-preview
+```
+
 ```bash
 make                                             # Build with native CPU optimizations
-make pgo                                         # PGO-optimized build (~5% faster)
+make pgo                                         # PGO-optimized build (~3-5% faster NPS)
 make net                                         # Download production NNUE net
 make openbench                                   # OpenBench-compatible build
-cargo build --release                            # Plain release build
+cargo build --release                            # Plain release build (no embedded net)
 cargo test                                       # Run all tests including perft
 
 ./target/release/coda                            # UCI mode (default)
