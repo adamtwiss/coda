@@ -1600,7 +1600,6 @@ fn negamax(
     let mut static_eval = -INFINITY;
     let mut raw_eval = -INFINITY;
     let mut improving = false;
-    let mut failing = false;
     if !in_check {
         if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
             raw_eval = tt_entry.static_eval;
@@ -1616,10 +1615,6 @@ fn negamax(
         if ply >= 2 && ply_u >= 2 {
             improving = static_eval > info.static_evals[ply_u - 2];
         }
-        // Failing heuristic: detect significant position deterioration
-        failing = ply >= 2 && ply_u >= 2
-            && info.static_evals[ply_u - 2] > -(MATE_SCORE - 100)
-            && static_eval < info.static_evals[ply_u - 2] - (60 + 40 * depth);
     } else {
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = -INFINITY;
@@ -1853,8 +1848,6 @@ fn negamax(
     let mut best_move = NO_MOVE;
     let mut best_score = -INFINITY;
     let mut move_count = 0i32;
-    let mut alpha_raised_count = 0i32;
-
     // Track quiet moves searched before beta cutoff for history penalty
     let mut quiets_tried = [NO_MOVE; 64];
     let mut quiets_count = 0usize;
@@ -2099,7 +2092,6 @@ fn negamax(
                 + if singular_extension >= 2 { 1 } else { 0 };
         }
 
-        // Removed: alpha-reduce (depends on alpha_raised_count, part of LMR simplify)
         if new_depth < 0 {
             new_depth = 0;
         }
@@ -2144,10 +2136,6 @@ fn negamax(
                 if improving {
                     reduction -= 1;
                 }
-
-                // Removed: failing (+1), alpha_raised_count (/2), unstable (-1)
-                // These are unique to Coda. Removing simplifies LMR and changes
-                // tree shape significantly — retune candidate.
 
                 // Reduce more when TT move is a capture
                 if tt_move_noisy {
@@ -2314,7 +2302,6 @@ fn negamax(
 
             if score > alpha {
                 alpha = score;
-                alpha_raised_count += 1;
 
                 // Update triangular PV table
                 if ply_u <= MAX_PLY {
