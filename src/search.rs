@@ -491,7 +491,11 @@ impl SearchInfo {
         } else {
             evaluate(board)
         };
-        score
+        // 50-move eval scaling: decay eval toward zero as halfmove clock advances.
+        // Prevents the engine from thinking it's winning in positions heading for
+        // a 50-move draw. Consensus: Clarity (200-hm)/200, Velvet (128-hm)/128.
+        let hm = board.halfmove.min(200) as i32;
+        score * (200 - hm) / 200
     }
 }
 
