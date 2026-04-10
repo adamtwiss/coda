@@ -85,21 +85,31 @@ is acceptable.
 
 ## Hard Limit Formula
 
+**CRITICAL: Hard limit must be based on BASE soft, not dynamically-scaled
+soft.** Dynamic factors can scale soft by up to ~2.5x (stability=0 ×
+node_fraction=2.23). If hard_mult applies to the scaled value, the
+effective maximum becomes soft × 2.5 × 3 = soft × 7.5, recreating
+the overspend problem. The hard limit is an ABSOLUTE safety cap.
+
 ```
-// TC-aware hard limit multiplier
+// TC-aware hard limit multiplier (applied to BASE soft, not scaled)
 let seconds_per_move = time_left / 25;  // rough estimate
 let hard_mult = if seconds_per_move < 2 { 2.0 }       // bullet
     else if seconds_per_move < 5 { 2.5 }               // blitz
     else if seconds_per_move < 15 { 3.0 }              // rapid
     else { 4.0 };                                       // classical
 
-hard = min(soft * hard_mult, time_left * max_single_pct / 100)
+// Hard limit from BASE soft (before dynamic factors)
+hard = min(base_soft * hard_mult, time_left * max_single_pct / 100)
+
+// Dynamic factors adjust soft but NEVER exceed hard
+adjusted_soft = (base_soft * scale).min(hard)
 ```
 
 The `max_single_pct` prevents any single move from being catastrophic:
 ```
 let max_single_pct = if seconds_per_move < 2 { 5 }
-    else if seconds_per_move < 5 { 10 }
+    else if seconds_per_move < 5 { 8 }     // was 10, tightened per review
     else if seconds_per_move < 15 { 12 }
     else { 15 };
 ```
@@ -113,26 +123,31 @@ By ponderhit, the engine already has a deep, well-searched result. The
 ponderhit allocation should be SMALL — just enough to complete the current
 iteration or verify the best move.
 
+**Key finding: instant ponderhit stop (0 seconds) produced 99% accuracy
+at 2950 Lichess rating.** The ponder search result is usually good enough.
+Any ponderhit budget is gravy, not necessity. Start conservative.
+
 ```
-// Ponderhit budget: conservative — ponder already searched deeply
+// Ponderhit budget: very conservative — ponder already searched deeply
+// Start at inc * 1.5, can loosen later if proven safe
 let ponderhit_soft = min(
     time_left / moves_left + inc * 0.8,  // normal per-move budget
     time_left / 10,                       // never more than 10% of remaining
-    inc * 3                               // never more than 3x increment
+    inc * 1.5                             // never more than 1.5x increment
 );
 ```
 
 For 3+2 at move 20 with 120s remaining:
 - Normal budget: 120/25 + 1.6 = 6.4s
 - 10% cap: 12s
-- 3× increment: 6s
-- Result: min(6.4, 12, 6) = **6s** (reasonable)
+- 1.5× increment: 3s
+- Result: min(6.4, 12, 3) = **3s** (conservative, can increase later)
 
 For 3+2 at move 5 with 180s remaining (the problem case):
 - Normal budget: 180/25 + 1.6 = 8.8s
 - 10% cap: 18s
-- 3× increment: 6s
-- Result: min(8.8, 18, 6) = **6s** (capped by increment, prevents 40s spend)
+- 1.5× increment: 3s
+- Result: min(8.8, 18, 3) = **3s** (capped by increment, prevents overspend)
 
 ### Ponderhit must set both soft and hard limits
 
@@ -193,6 +208,34 @@ Validate no regression at LTC where the changes should help.
 
 ### Step 4: Cross-engine RR
 Compare against rivals at both STC and LTC to confirm no regression.
+
+## Additional Considerations (from code review)
+
+### Dynamic TM after ponderhit — DEFER
+
+Setting soft_limit when ponderhit is detected is architecturally complex
+(needs atomic soft_limit or cross-thread signaling) and introduces
+instability risk. **Defer entirely until everything else is stable.**
+Instant ponderhit stop is simple and proven at 99% accuracy.
+
+### Time-rich scenarios
+
+When the opponent moves very fast (1-2s per move) and our ponder prediction
+rate is high, we accumulate time. In a 3+2 game we might have 4+ minutes.
+The engine should NOT overspend even when time-rich — the hard limit and
+max_single_pct caps must apply regardless of how much time we have.
+
+### Eval factor — bring back with higher threshold
+
+Removing eval_factor entirely means spending full time on mate-in-5.
+Bring it back with a conservative threshold:
+```
+let eval_factor = if is_mate_score(prev_score) { 0.3 }
+    else if prev_score.abs() > 800 { 0.75 }  // clearly won/lost
+    else { 1.0 };
+```
+Higher threshold (800 vs 300/500 before) and gentler reduction (0.75 vs
+0.5) to avoid affecting competitive positions.
 
 ## Risks (revised)
 
