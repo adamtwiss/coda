@@ -1326,11 +1326,18 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 break;
             }
 
-            // Next-iteration estimate: stop if next iteration would exceed hard limit.
-            // Use 2x last iteration time as estimate (exponential branching)
-            if info.hard_limit > 0 {
+            // Next-iteration estimate: stop if next iteration would exceed time limit.
+            // Use 2x last iteration time as estimate (exponential branching).
+            // Check both hard_limit (normal) and ponderhit_time (after ponderhit).
+            // Without this, ponder searches start arbitrarily deep iterations after
+            // ponderhit, get stopped mid-search, and leave incomplete TT entries.
+            let effective_hard = {
+                let ph = info.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed);
+                if ph > 0 { ph } else { info.hard_limit }
+            };
+            if effective_hard > 0 {
                 let iter_elapsed = iter_start.elapsed().as_millis() as u64;
-                if elapsed > 0 && info.hard_limit > elapsed && (info.hard_limit - elapsed) < 2 * iter_elapsed {
+                if elapsed > 0 && effective_hard > elapsed && (effective_hard - elapsed) < 2 * iter_elapsed {
                     break;
                 }
             }
