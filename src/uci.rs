@@ -166,48 +166,11 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
             }
             "ponderhit" => {
-                // Switch from infinite ponder to timed search.
-                // Use phase-based allocation matching main TM — don't
-                // shortchange moves where we predicted correctly.
-                if let Some(ref pl) = ponder_limits {
-                    let our_time = if board.side_to_move == 0 { pl.wtime } else { pl.btime };
-                    let our_inc = if board.side_to_move == 0 { pl.winc } else { pl.binc };
-                    let overhead = info.move_overhead;
-                    let time_left = our_time.saturating_sub(overhead).max(1);
-                    let has_increment = our_inc > 0;
-
-                    // Ponderhit allocation: the ponder search already did the heavy
-                    // lifting. Give just the increment plus a small fraction to verify.
-                    // This prevents overspending on correct predictions — the ponder
-                    // result is already deep, we just need to confirm.
-                    let mut soft = our_inc + time_left / 80;
-
-                    // Cap: never use more than 5% of remaining time on ponderhit
-                    let max_alloc = time_left / 20;
-                    if soft > max_alloc { soft = max_alloc; }
-
-                    // Safety floor: when time is low, don't spend more than
-                    // the increment to avoid draining the clock
-                    if has_increment && time_left < 30000 {
-                        // Below 30s: cap at increment to keep clock stable
-                        soft = soft.min(our_inc);
-                    }
-                    if !has_increment && time_left < 15000 {
-                        // Below 15s with no increment: minimal time
-                        soft = soft.min(time_left / 20);
-                    }
-                    if soft < 10 { soft = 10; }
-
-                    // Add elapsed time since search started so should_stop() comparison
-                    // works correctly (it checks elapsed >= ponderhit_time)
-                    let elapsed = ponder_search_start
-                        .map(|t| t.elapsed().as_millis() as u64)
-                        .unwrap_or(0);
-                    ponderhit_flag.store(soft + elapsed, Ordering::Relaxed);
-                } else {
-                    // No stored limits — just stop
-                    stop_flag.store(true, Ordering::Relaxed);
-                }
+                // Play the ponder result immediately. At fast TC (3+2), the ponder
+                // search already had several seconds — the result is deep and good.
+                // Giving additional time risks destabilizing deeper iterations.
+                // This matched our 2950-rated behavior before the TM changes.
+                stop_flag.store(true, Ordering::Relaxed);
             }
             "setoption" => {
                 parse_option(&tokens, &mut info, &mut num_threads);
