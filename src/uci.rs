@@ -176,11 +176,40 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
             }
             "ponderhit" => {
-                // Play the ponder result immediately. At fast TC (3+2), the ponder
-                // search already had several seconds — the result is deep and good.
-                // Giving additional time risks destabilizing deeper iterations.
-                // This matched our 2950-rated behavior before the TM changes.
-                stop_flag.store(true, Ordering::Relaxed);
+                // Give a small verification budget instead of instant stop.
+                // The ponder search already has a deep result; this just allows
+                // completing the current iteration or verifying the best move.
+                //
+                // Budget = min(inc + time_left/60, time_left/10)
+                // Scales with banked time: more time = more verification.
+                // At 3+2/140s: 4.3s. At 3+2/250s (time-rich): 6.2s.
+                if let (Some(ref pl), Some(start)) = (&ponder_limits, ponder_search_start) {
+                    let our_time = if board.side_to_move == crate::types::WHITE {
+                        pl.wtime
+                    } else {
+                        pl.btime
+                    };
+                    let our_inc = if board.side_to_move == crate::types::WHITE {
+                        pl.winc
+                    } else {
+                        pl.binc
+                    };
+                    if our_time > 0 {
+                        let base = our_inc + our_time / 60;
+                        let budget = base.min(our_time / 10);
+                        let budget = budget.max(10); // minimum 10ms
+                        // Store as deadline: elapsed_since_search_start + budget
+                        let elapsed = start.elapsed().as_millis() as u64;
+                        let deadline = elapsed + budget;
+                        ponderhit_flag.store(deadline, Ordering::Relaxed);
+                    } else {
+                        // No time info: instant stop
+                        stop_flag.store(true, Ordering::Relaxed);
+                    }
+                } else {
+                    // No ponder limits saved: instant stop
+                    stop_flag.store(true, Ordering::Relaxed);
+                }
             }
             "setoption" => {
                 parse_option(&tokens, &mut info, &mut num_threads);

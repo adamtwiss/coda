@@ -1043,48 +1043,30 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Floor at 10ms
         if soft < 10 { soft = 10; }
 
-        // Save base soft before dynamic factors scale it
+        // Save base soft before dynamic factors scale it.
+        // CRITICAL: hard limit uses base_soft, not dynamically-scaled soft.
+        // Dynamic factors can scale soft by up to ~2.5x (stability=0 ×
+        // node_fraction=2.23). If hard uses scaled soft, the effective maximum
+        // becomes soft × 2.5 × 3 = soft × 7.5, recreating the overspend problem.
         let base_soft = soft;
 
-        // Hard limit (TMv2): soft * 3 baseline + max-single-move safety cap.
-        //
-        // The soft*3 multiplier is proven (baseline for 2950 Lichess rating).
-        // The max_pct cap prevents the old catastrophic overspend at longer TCs
-        // where dynamic scaling could push soft up and soft*3 became too large.
-        //
-        // max_pct scales continuously with TC:
-        //   spm=0.4s → 5%, spm=7s → 8%, spm=96s → 12%
-        //   No-increment: 0.75x (no safety net for recovery)
-        let has_inc = our_inc > 0;
-        let spm_sec = (spm as f64 / 1000.0).max(0.1);
-        let ln_spm = spm_sec.ln();
-
+        // Hard limit
         let mut hard = if limits.movestogo > 0 {
-            // Tournament TC: 2x soft, capped by moves remaining
+            // Tournament TC: cap based on moves remaining
             let hard_raw = base_soft * 2;
             let hard_pct = (95 - limits.movestogo as u64 * 10).max(30).min(90);
             let mtg_cap = time_left * hard_pct / 100;
             hard_raw.min(mtg_cap)
         } else {
-            // Sudden death: 3x base soft (proven baseline)
+            // Sudden death: allow up to 3x BASE soft
             base_soft * 3
         };
 
-        // Max single-move percentage: absolute safety cap.
-        // Prevents catastrophic overspend where dynamic TM scales soft up
-        // and soft*3 becomes too large a fraction of remaining time.
-        // Only kicks in at longer TCs where the risk is real.
-        let max_pct_f = {
-            let base = 5.0 + 1.5 * ln_spm;
-            let scaled = if has_inc { base } else { base * 0.75 };
-            scaled.clamp(5.0, 15.0)
-        };
-        // Absolute hard cap: prevents catastrophic single-move overspend.
-        // Old formula (time_left/5 + inc) allowed 20%+ at blitz — caused 40s moves.
-        // New: continuous max_pct cap, but floored at time_left/8 to preserve
-        // dynamic TM headroom at fast TCs where soft*3 is already safe.
-        let max_single = (time_left as f64 * max_pct_f / 100.0) as u64;
-        let max_hard = max_single.max(time_left / 8 + our_inc);
+        // Absolute hard cap: never use more than timeLeft/5 + inc
+        let mut max_hard = time_left / 5 + our_inc;
+        if max_hard > time_left * 3 / 4 {
+            max_hard = time_left * 3 / 4;
+        }
         if hard > max_hard {
             hard = max_hard;
         }
@@ -1342,17 +1324,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // scoreFactor = clamp(0.86 + 0.010 * scoreDrop, 0.81, 1.50)
             let score_factor = (0.86 + 0.010 * score_drop as f64).clamp(0.81, 1.50);
 
-            // Factor 4: Eval factor — reduce time on clearly won/lost positions
-            let eval_factor = if is_mate_score(prev_score) {
-                0.3  // mate found: just play it
-            } else if prev_score.abs() > 800 {
-                0.75  // clearly won/lost: less time needed
-            } else {
-                1.0
-            };
-
-            // Combined: all four factors multiply against the soft limit
-            let scale = nodes_factor * stability_factor * score_factor * eval_factor;
+            // Combined: all three factors multiply against the soft limit
+            let scale = nodes_factor * stability_factor * score_factor;
 
             // Check if we should stop at the soft limit
             let adjusted_soft = (info.soft_limit as f64 * scale) as u64;
