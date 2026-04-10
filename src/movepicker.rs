@@ -764,10 +764,11 @@ pub fn fixup_move_flags(board: &Board, mv: Move) -> Move {
 
     let pt = board.piece_type_at(from);
 
-    // Re-derive EP: must be pawn moving to ep_square diagonally
+    // Re-derive EP: must be pawn moving to ep_square diagonally (file-adjacent)
     if pt == PAWN && to == board.ep_square && board.ep_square != NO_SQUARE {
         let diff = (to as i32 - from as i32).abs();
-        if diff == 7 || diff == 9 {
+        let file_diff = ((from & 7) as i32 - (to & 7) as i32).unsigned_abs();
+        if (diff == 7 || diff == 9) && file_diff == 1 {
             return make_move(from, to, FLAG_EN_PASSANT);
         }
     }
@@ -872,9 +873,11 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
 
     // Double push check removed: FLAG_DOUBLE_PUSH=0=FLAG_NONE, detected by distance in make_move
 
-    // Promotion: must be a pawn on the 7th rank
+    // Promotion: must be a pawn on the 7th rank (2nd rank for Black)
     if is_promotion(mv) {
         if pt != PAWN { return false; }
+        if us == WHITE && (from >> 3) != 6 { return false; }
+        if us == BLACK && (from >> 3) != 1 { return false; }
     }
     // Non-promotion pawn moves must not reach back rank (Stockfish pattern)
     if !is_promotion(mv) && pt == PAWN {
@@ -916,9 +919,14 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
             if diff == 8 {
                 if board.piece_type_at(to) != NO_PIECE_TYPE { return false; }
             }
-            // Capture: destination must have enemy piece
+            // Capture: destination must have enemy piece and be file-adjacent
             // (EP is handled above with FLAG_EN_PASSANT and returns early)
             if diff == 7 || diff == 9 {
+                // File adjacency: prevent wrap from h-file to a-file (or vice versa)
+                let from_file = from & 7;
+                let to_file = to & 7;
+                let file_diff = (from_file as i32 - to_file as i32).unsigned_abs();
+                if file_diff != 1 { return false; }
                 if board.piece_type_at(to) == NO_PIECE_TYPE {
                     return false;
                 }
