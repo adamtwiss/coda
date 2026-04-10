@@ -1033,14 +1033,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             let mtg_cap = time_left * hard_pct / 100;
             hard_raw.min(mtg_cap)
         } else {
-            // Sudden death: allow up to 5x soft (was 3x — too restrictive,
-            // every other engine allows 10-18x. Dynamic factors need room.)
-            soft * 5
+            // Sudden death: allow up to 3x soft
+            soft * 3
         };
 
-        // Absolute hard cap: never use more than timeLeft/3 + inc
-        // (was timeLeft/5, too conservative — Obsidian uses 80%, Clarity 50%)
-        let mut max_hard = time_left / 3 + our_inc;
+        // Absolute hard cap: never use more than timeLeft/5 + inc
+        let mut max_hard = time_left / 5 + our_inc;
         if max_hard > time_left * 3 / 4 {
             max_hard = time_left * 3 / 4;
         }
@@ -1293,31 +1291,16 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
             // Factor 2: Best-move stability (Obsidian linear pattern)
             // Each stable iteration reduces time by 8%
-            // 0 stable: 1.60x, 5 stable: 1.20x, 10 stable: 0.80x, 12+: 0.70x
-            // (was 1.71/0.5 — too aggressive decay, caused premature stops)
-            let stability_factor = (1.60 - info.tm_best_stable as f64 * 0.08).max(0.70);
+            // 0 stable: 1.71x, 5 stable: 1.31x, 10 stable: 0.91x
+            let stability_factor = (1.71 - info.tm_best_stable as f64 * 0.08).max(0.5);
 
             // Factor 3: Score trend (Obsidian pattern, simplified)
             // Dropping score → use more time. Rising score → slightly less.
             // scoreFactor = clamp(0.86 + 0.010 * scoreDrop, 0.81, 1.50)
             let score_factor = (0.86 + 0.010 * score_drop as f64).clamp(0.81, 1.50);
 
-            // Factor 4: Winning/losing position (spend less time when outcome is clear)
-            // |eval| > 500cp → 0.5x (half time, position is decided)
-            // |eval| > 300cp → 0.75x (strong advantage, less time needed)
-            // Mate scores → 0.3x (just execute the mate quickly)
-            let eval_factor = if is_mate_score(prev_score) {
-                0.3
-            } else if prev_score.abs() > 500 {
-                0.5
-            } else if prev_score.abs() > 300 {
-                0.75
-            } else {
-                1.0
-            };
-
-            // Combined: all four factors multiply against the soft limit
-            let scale = nodes_factor * stability_factor * score_factor * eval_factor;
+            // Combined: all three factors multiply against the soft limit
+            let scale = nodes_factor * stability_factor * score_factor;
 
             // Check if we should stop at the soft limit
             let adjusted_soft = (info.soft_limit as f64 * scale) as u64;
