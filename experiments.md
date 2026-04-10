@@ -4282,3 +4282,64 @@ growing on Titan. Target: 2-3B for fair comparison, 16B for full training.
 3. **Not all rebased features recover.** Futility-full, SE ply gate, 50-move, histprune all failed despite rebase. The +6 boost wasn't enough.
 4. **TM needs LTC validation AND correct base.** The conservative TM at -7 on wrong base became +2.6 on correct base at LTC.
 5. **Self-play data quality matches T80 per-position.** -32 Elo with 7× less data + retune. With equal data volume, self-play could match or beat T80.
+
+---
+
+## Day 10 (2026-04-10): Training Pipeline Breakthroughs + TM/Correctness Fixes
+
+### NNUE Training Experiments [SPRT-validated]
+
+Three training config changes tested against baseline `720pw-w7-s120` (768pw, WDL=0.07, standard cosine LR 0.001→0.0001, s120 snapshot, T80 data).
+
+| Experiment | Config Change | Bench | First-move Cut | SPRT Result | Status |
+|-----------|--------------|-------|---------------|-------------|--------|
+| Low final LR | final_lr=0.000005 (was 0.0001, 20× lower) | 1,587,033 | 79.9% | **+46.7 Elo, H1 ✓** | **MERGED** |
+| WDL 0.25 | WDL proportion 0.07→0.25 | 2,631,360 | 76.1% | **-24.2 Elo, H0 ✗** | Rejected |
+| Filtered data | ply≥16, no checks, no captures, no tactical | 2,820,607 | 81.1% | Pending | Running |
+
+**Key finding: final LR was 20× too high.** Our cosine schedule decayed from 0.001 to 0.0001, but Bullet's own examples use 0.001 × 0.3^5 = 2.4e-6. The net was oscillating in late training instead of converging. One config line change = +47 Elo. Full e800 run started with low LR.
+
+**WDL 0.25 failed due to eval scale mismatch.** Higher WDL shifts eval magnitudes, making all pruning thresholds (RFP, futility, SEE, LMR) miscalibrated. Would need retune-on-branch to show benefit. Our WDL=0.07 is an outlier vs consensus (0.3-0.4), but can't change without retuning.
+
+**Filtered data has best move ordering (81.1%)** but inflated eval scale (miss queen -2211 vs baseline -608). Like WDL, the scale change may need retune. SPRT pending.
+
+### Training Config Gaps Identified
+
+| Parameter | Coda | Consensus | Gap |
+|-----------|------|-----------|-----|
+| Data filtering | score < 10000 only | ply≥16, no checks/captures/tactical | Major |
+| WDL proportion | 0.07 | 0.3-0.4 | Major (needs retune) |
+| Final LR | 0.0001 (10% of initial) | ~2.4e-6 (0.24% of initial) | **Fixed: +47 Elo** |
+| LR schedule | Cosine 0.001→0.0001 | Similar but much lower final | Fixed |
+
+### Correctness Fixes Merged
+
+| Fix | SPRT | Commit | Impact |
+|-----|------|--------|--------|
+| Contempt root-relative | +1.1 ±9.1 | 1b15219 | Fixes draw-seeking with time advantage |
+| Ponderhit race condition | N/A (local test) | 9233540 | Fixes hang when opponent responds instantly |
+| Ponder move validation | N/A | 9233540 | Prevents illegal ponder moves from stale PV |
+| History review (pawn aging + TT cap bonus) | +2.6 ±9.0 | 4a9f4f5 | Consistency fixes |
+| Pawn wrap is_pseudo_legal | -2.2 ±5.0 | 4689571 | Prevents TT collision illegal moves |
+| TB interior WDL probing | +1.4 ±6.3 | 87691ca | Search now uses tablebases at interior nodes |
+| Datagen output path validation | N/A | 1c4786e | Prevents silent hang on bad output path |
+
+### TMv2 Attempts (Problematic — DO NOT merge without ponder validation)
+
+| Attempt | Change | SPRT | Issue |
+|---------|--------|------|-------|
+| #240 | Bucketed hard limits | -38.9, H0 ✗ | Bullet bracket too tight at OB STC |
+| #242 | Continuous scaling | -27.0, H0 ✗ | max_pct cap too tight at fast TC |
+| #244 | Continuous + eval factor | -8.8 | Eval factor hurts at STC |
+| #245 | Continuous, no eval factor | -12.9, H0 ✗ | time_left/8 floor too tight |
+| #246 | base_soft*3 + old cap | **+2.6, H1 ✓** | Minimal change, proven at STC |
+
+**Lesson: TMv2 changes that test positive in self-play SPRT (ponder off) caused 88-93% accuracy on Lichess (ponder on).** The interaction between ponderhit stopping, TT pollution, and time limits produces bad moves that self-play can't detect. TM changes MUST be validated with ponder-on testing before deploying to Lichess.
+
+### Key Lessons (Day 10)
+
+1. **Final LR is the biggest training knob.** +47 Elo from reducing final LR by 20×. Check Bullet examples for baseline configs before training.
+2. **Eval scale changes need retune.** WDL and filtering both changed the eval scale, breaking calibrated pruning thresholds. Can't A/B test in isolation.
+3. **TM + ponder = dangerous.** Four TMv2 iterations failed at STC. The one that passed (+2.6) still showed degraded accuracy on Lichess with ponder on. Self-play SPRT is necessary but not sufficient for TM changes.
+4. **Ponder testing framework works.** cutechess-cli with `ponder` flag, local testing catches ponderhit bugs that OB can't test (no ponder in FastChess/OB).
+5. **Code review finds real bugs.** Deep review by Atlas found pawn file-wrapping (is_pseudo_legal), history table inconsistencies, and TB interior probe missing. All confirmed by SPRT or testing.
