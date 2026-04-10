@@ -176,16 +176,14 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     let time_left = our_time.saturating_sub(overhead).max(1);
                     let has_increment = our_inc > 0;
 
-                    // Phase-based allocation (mirrors main TM path in search.rs)
-                    let fullmove = board.fullmove as f64;
-                    let base_phase = 0.025 + 0.040 * (1.0 - (-0.050 * fullmove).exp());
-                    let phase_scale = if has_increment { base_phase } else { base_phase * 0.75 };
-                    let inc_budget = our_inc * 85 / 100;
-                    let mut soft = (phase_scale * time_left as f64) as u64 + inc_budget;
+                    // Ponderhit allocation: the ponder search already did the heavy
+                    // lifting. Give just the increment plus a small fraction to verify.
+                    // This prevents overspending on correct predictions — the ponder
+                    // result is already deep, we just need to confirm.
+                    let mut soft = our_inc + time_left / 80;
 
-                    // Cap based on TC regime
-                    let max_pct = if has_increment { 40 } else { 25 };
-                    let max_alloc = time_left * max_pct / 100;
+                    // Cap: never use more than 5% of remaining time on ponderhit
+                    let max_alloc = time_left / 20;
                     if soft > max_alloc { soft = max_alloc; }
 
                     // Safety floor: when time is low, don't spend more than
