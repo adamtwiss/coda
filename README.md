@@ -27,6 +27,12 @@ cargo build --release  # Plain release build
 
 Requires Rust 1.70+ (uses `std::arch` intrinsics).
 
+For PGO builds, install prerequisites:
+```bash
+rustup component add llvm-tools-preview
+cargo install cargo-pgo
+```
+
 ## Run
 
 ```bash
