@@ -218,7 +218,51 @@ Setting soft_limit when ponderhit is detected is architecturally complex
 instability risk. **Defer entirely until everything else is stable.**
 Instant ponderhit stop is simple and proven at 99% accuracy.
 
-### Time-rich scenarios
+### Time-rich ponderhit scenario (discovered 2026-04-10)
+
+When the opponent moves quickly and our ponder prediction rate is high,
+we accumulate massive time advantages (e.g. 1:34 vs 0:17 in 3+2). But
+with instant ponderhit stop, every correct prediction is played with 0s
+of verification — even when we have minutes of banked time.
+
+**Observed in Lichess game:** Over half the moves were instant (correct
+ponder predictions). Engine accumulated 1:22 vs opponent's 0:11. But
+inaccuracies occurred on the few moves where it searched normally. Result:
+93% accuracy in a position it should have converted easily.
+
+**The problem:** Instant ponderhit is optimal when time-tight (don't
+risk overspending), but suboptimal when time-rich (we should verify the
+ponder result). The engine should spend more time when it has a large
+time advantage, not less.
+
+**Proposed approach:** Scale ponderhit budget by time ratio:
+```
+let time_ratio = our_time / opponent_time;
+let ponderhit_budget = if time_ratio < 1.0 {
+    0  // less time than opponent: instant stop (safe)
+} else if time_ratio < 2.0 {
+    inc * 0.5  // moderate advantage: brief verify
+} else {
+    min(inc * 1.5, our_time / 20)  // big advantage: use some surplus
+};
+```
+
+This is a natural extension of the conservative ponderhit allocation
+above. Defer until the base ponderhit allocation is stable.
+
+### Ponderhit race condition (fixed 2026-04-10)
+
+When the opponent responds instantly to our ponderhit (0ms), cutechess
+sends `go ponder` + `ponderhit` in the same millisecond. The search
+thread clears `stop=false` at startup, **overwriting** the ponderhit's
+`stop=true`. The engine then searches infinitely in ponder mode with
+no time limits, causing time loss.
+
+**Fix:** Clear the stop flag in the UCI thread (before spawning the
+search thread), not in `search()`/`search_smp()`. This way, ponderhit
+can safely set stop after the spawn without being overwritten.
+
+### Time-rich scenarios (general)
 
 When the opponent moves very fast (1-2s per move) and our ponder prediction
 rate is high, we accumulate time. In a 3+2 game we might have 4+ minutes.
@@ -241,8 +285,9 @@ Higher threshold (800 vs 300/500 before) and gentler reduction (0.75 vs
 
 1. **Blitz overspending** — HIGHEST RISK. Mitigated by TC-aware hard limit
    and max-single-move cap. Must test at 3+2 specifically.
-2. **Ponderhit TT pollution** — fixed by next-iteration guard, but must
-   verify with ponder-on testing (not available in cutechess/fastchess).
+2. **Ponderhit TT pollution** — fixed by next-iteration guard, must
+   verify with ponder-on testing (cutechess-cli supports ponder; FastChess
+   does NOT — see scripts/run_ponder_test.sh).
 3. **Self-play masking** — TM bugs are invisible in self-play SPRT.
    Must use cross-engine testing and Lichess for validation.
 4. **Regression at LTC** — unlikely (v1 showed +47 at LTC) but must verify.
