@@ -833,7 +833,9 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
 
     // Reset shared state (TT generation is advanced in search(), not here,
     // to avoid double-increment which makes entries appear 2x staler)
-    info.stop.store(false, Ordering::Relaxed);
+    // Note: stop flag is cleared by the UCI thread before spawning the search
+    // thread, not here. Clearing here races with ponderhit (which sets stop
+    // before the search thread starts).
     info.global_nodes.store(0, Ordering::Relaxed); // Reset before helpers start
 
     // Spawn helper threads
@@ -941,7 +943,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     init_feature_flags();
 
     info.start_time = Instant::now();
-    info.stop.store(false, Ordering::Relaxed);
+    // Note: stop flag is cleared by the UCI thread before spawning the search
+    // thread, not here. Clearing here races with ponderhit.
     info.ponderhit_time.store(0, Ordering::Relaxed); // Reset from any previous ponderhit
     info.nodes = 0;
     info.global_nodes.store(0, Ordering::Relaxed);
@@ -953,9 +956,13 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.history.age(4, 5);
     info.clear_correction_history();
     info.stats = PruneStats::default();
-    // Clear pawn history
+    // Age pawn history (×0.80, matching main/capture history aging)
     for entry in info.pawn_hist.iter_mut() {
-        *entry = [[0i16; 64]; 13];
+        for piece in entry.iter_mut() {
+            for val in piece.iter_mut() {
+                *val = (*val as i32 * 4 / 5) as i16;
+            }
+        }
     }
     // Clear static evals, excluded moves, depth tracking
     info.static_evals = [0; MAX_PLY + 1];
@@ -1530,16 +1537,17 @@ fn negamax(
                         }
 
                         // History bonus for TT cutoff: reinforce move ordering
-                        let bonus = history_bonus(depth);
                         let tt_piece = board.piece_at(move_from(tt_move));
                         let tt_is_cap = board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
                             || move_flags(tt_move) == FLAG_EN_PASSANT;
                         if !tt_is_cap && tt_piece != NO_PIECE {
+                            let bonus = history_bonus(depth);
                             History::update_history(
                                 info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
                                 bonus,
                             );
                         } else if tt_is_cap && tt_piece != NO_PIECE {
+                            let bonus = capture_history_bonus(depth);
                             let cpt_pt = board.piece_type_at(move_to(tt_move));
                             let ct = if move_flags(tt_move) == FLAG_EN_PASSANT {
                                 captured_type(PAWN)

@@ -131,6 +131,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
 
                 // Move info into search thread, get it back when search finishes
+                // Clear stop flag here (not in search thread) to avoid race with
+                // ponderhit: if ponderhit arrives between spawn and search start,
+                // the search thread must NOT overwrite it.
+                stop_flag.store(false, Ordering::Relaxed);
                 ponder_search_start = Some(std::time::Instant::now());
                 let mut search_board = board.clone();
                 let shared_tt = info.tt.clone();
@@ -146,8 +150,14 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     .spawn(move || {
                         let mut si = search_info;
                         let best_move = search_smp(&mut search_board, &mut si, &limits, threads);
-                        // Output ponder move from PV if available
-                        if si.pv_len[0] >= 2 && si.pv_table[0][1] != crate::types::NO_MOVE {
+                        // Output ponder move from PV if available.
+                        // Validate PV[0] matches best_move: if the search was stopped
+                        // mid-iteration, the PV may belong to a different root move.
+                        let pv_consistent = si.pv_len[0] >= 2
+                            && si.pv_table[0][1] != crate::types::NO_MOVE
+                            && move_from(si.pv_table[0][0]) == move_from(best_move)
+                            && move_to(si.pv_table[0][0]) == move_to(best_move);
+                        if pv_consistent {
                             println!("bestmove {} ponder {}", move_to_uci(best_move), move_to_uci(si.pv_table[0][1]));
                         } else {
                             println!("bestmove {}", move_to_uci(best_move));
