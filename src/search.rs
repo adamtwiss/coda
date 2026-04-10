@@ -45,69 +45,69 @@ macro_rules! tunables {
 
 tunables!(
     // NMP
-    (NMP_BASE_R,         3,    2,    8),  // SPSA r10: 3.46→3 (rounded)
+    (NMP_BASE_R,         4,    2,    8),  // SPSA r10: 3.46→3 (rounded)
     (NMP_DEPTH_DIV,      3,    2,    6),
-    (NMP_EVAL_DIV,     137,  100,  400),  // malus tune: 148→135
+    (NMP_EVAL_DIV,     124,  100,  400),  // malus tune: 148→135
     (NMP_EVAL_MAX,       1,    1,    6),
-    (NMP_VERIFY_DEPTH,  11,    8,   20),
+    (NMP_VERIFY_DEPTH,  10,    8,   20),
     // RFP
     (RFP_DEPTH,          5,    4,   10),
-    (RFP_MARGIN_IMP,    97,   30,  150),  // malus tune: 92→94
-    (RFP_MARGIN_NOIMP, 140,   50,  200),  // malus tune: 140→137
+    (RFP_MARGIN_IMP,    94,   30,  150),  // malus tune: 92→94
+    (RFP_MARGIN_NOIMP, 142,   50,  200),  // malus tune: 140→137
     // Futility
-    (FUT_BASE,         102,   20,  200),  // malus tune: 94→109
-    (FUT_PER_DEPTH,    175,   40,  250),  // malus tune: 161→173
+    (FUT_BASE,         106,   20,  200),  // malus tune: 94→109
+    (FUT_PER_DEPTH,    172,   40,  250),  // malus tune: 161→173
     // History pruning
     (HIST_PRUNE_DEPTH,   2,    1,    8),
-    (HIST_PRUNE_MULT, 6802,  500, 50000),  // malus tune: 7224→6930
+    (HIST_PRUNE_MULT, 5471,  500, 50000),  // malus tune: 7224→6930
     // SEE pruning
-    (SEE_QUIET_MULT,   22,    5,   80),  // malus tune: 23→24
+    (SEE_QUIET_MULT,   17,    5,   80),  // malus tune: 23→24
     (SEE_CAP_MULT,    126,   30,  200),
     // LMR
-    (LMR_HIST_DIV,   7082, 2000, 100000),  // malus tune: 9110→7454
-    (LMR_C_QUIET,     134,   80,  300),  // malus tune: 138→132
-    (LMR_C_CAP,       160,  100,  350),  // malus tune: 169→164
+    (LMR_HIST_DIV,   6731, 2000, 100000),  // malus tune: 9110→7454
+    (LMR_C_QUIET,     131,   80,  300),  // malus tune: 138→132
+    (LMR_C_CAP,       152,  100,  350),  // malus tune: 169→164
     // Singular extensions
     (SE_DEPTH,           6,    4,   12),
     // Aspiration windows
     (ASP_DELTA,         17,    5,   30),
-    (ASP_SCORE_DIV,  30338, 8000, 50000),
+    (ASP_SCORE_DIV,  30285, 8000, 50000),
     // LMP — formula: (LMP_BASE + depth²) / (2 - improving)
     (LMP_BASE,           7,    1,   15),
     (LMP_DEPTH,         14,    4,   20),  // malus tune: 13→14
     // Bad noisy
-    (BAD_NOISY_MARGIN,  94,   30,  150),  // malus tune: 91→92
+    (BAD_NOISY_MARGIN,  91,   30,  150),  // malus tune: 91→92
     // ProbCut
-    (PROBCUT_MARGIN,   167,   80,  300),
+    (PROBCUT_MARGIN,   171,   80,  300),
     // Hindsight
-    (HINDSIGHT_THRESH, 201,   50,  400),
+    (HINDSIGHT_THRESH, 199,   50,  400),
     // QS
-    (QS_DELTA_MARGIN,  264,  100,  500),
-    (QS_SEE_THRESHOLD, -15, -200,    0),
-    (QS_MAX_CAPTURES,   30,    2,   32),
+    (QS_DELTA_MARGIN,  291,  100,  500),
+    (QS_SEE_THRESHOLD, -17, -200,    0),
+    (QS_MAX_CAPTURES,   29,    2,   32),
     // Correction history weights
-    (CORR_W_PAWN,      347,  100,  600),
-    (CORR_W_NP,        146,   50,  400),
-    (CORR_W_MINOR,      94,   30,  300),
-    (CORR_W_MAJOR,      92,   30,  300),
-    (CORR_W_CONT,      108,   30,  400),
+    (CORR_W_PAWN,      333,  100,  600),
+    (CORR_W_NP,        165,   50,  400),
+    (CORR_W_MINOR,      102,   30,  300),
+    (CORR_W_MAJOR,      85,   30,  300),
+    (CORR_W_CONT,      119,   30,  400),
     // Fail-high blend
-    (FH_BLEND_DEPTH,     2,    1,    8),
+    (FH_BLEND_DEPTH,     3,    1,    8),
     // History bonus formula: min(HIST_BONUS_MAX, HIST_BONUS_MULT * depth - HIST_BONUS_BASE)
-    (HIST_BONUS_MULT,  168,   50,  400),
-    (HIST_BONUS_BASE,   51,    0,  200),
-    (HIST_BONUS_MAX,  1505,  500, 3000),
+    (HIST_BONUS_MULT,  175,   50,  400),
+    (HIST_BONUS_BASE,   46,    0,  200),
+    (HIST_BONUS_MAX,  1509,  500, 3000),
     // Capture history bonus (separate from main history)
-    (CAP_HIST_MULT,    178,   50,  400),
-    (CAP_HIST_BASE,     45,    0,  200),
-    (CAP_HIST_MAX,    1408,  500, 3000),
+    (CAP_HIST_MULT,    175,   50,  400),
+    (CAP_HIST_BASE,     43,    0,  200),
+    (CAP_HIST_MAX,    1334,  500, 3000),
     // Double extensions
-    (DEXT_MARGIN,       11,    2,   50),
-    (DEXT_CAP,          15,    4,   32),
+    (DEXT_MARGIN,       14,    2,   50),
+    (DEXT_CAP,          16,    4,   32),
     // Quiet check bonus in move ordering
-    (QUIET_CHECK_BONUS, 9946, 2000, 30000),
+    (QUIET_CHECK_BONUS, 9427, 2000, 30000),
     // LMR complexity divisor (correction history magnitude)
-    (LMR_COMPLEXITY_DIV, 138, 30, 500),  // malus tune: 122→133
+    (LMR_COMPLEXITY_DIV, 143, 30, 500),  // malus tune: 122→133
 );
 
 /// Get a tunable parameter value (inline for hot paths)
