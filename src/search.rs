@@ -261,6 +261,8 @@ pub struct SearchInfo {
     pub ponderhit_time: std::sync::Arc<AtomicU64>,
     pub sel_depth: i32,
     pub last_score: i32,
+    /// Root side-to-move (for contempt: penalize draws from our perspective)
+    pub root_stm: u8,
     /// Per-depth cumulative node counts (for EBF calculation in bench)
     pub depth_nodes: [u64; MAX_PLY + 1],
     pub completed_depth: i32,
@@ -320,6 +322,7 @@ impl SearchInfo {
             ponderhit_time: std::sync::Arc::new(AtomicU64::new(0)),
             sel_depth: 0,
             last_score: 0,
+            root_stm: WHITE,
             depth_nodes: [0; MAX_PLY + 1],
             completed_depth: 0,
             static_evals: [0; MAX_PLY + 1],
@@ -809,6 +812,7 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     }
     helper.time_limit = 0; // helpers don't do time management
     helper.move_overhead = main.move_overhead;
+    helper.root_stm = main.root_stm; // contempt needs to know who started the search
     // Copy main thread's history for better initial move ordering (Alexandria pattern)
     // Helpers start with the main thread's learned history instead of zeroed tables
     unsafe {
@@ -942,6 +946,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.nodes = 0;
     info.global_nodes.store(0, Ordering::Relaxed);
     info.sel_depth = 0;
+    info.root_stm = board.side_to_move;
 
     // Age history tables (×0.80) to preserve useful move ordering from prior searches.
     // Killers and counter-moves are cleared (position-specific). Correction history reset.
@@ -1401,20 +1406,20 @@ fn negamax(
 
 
     // Draw detection: repetition and 50-move rule
+    // Contempt is relative to the ROOT side (us): we get -CONTEMPT for draws
+    // (we don't want to draw), opponent gets +CONTEMPT (we're happy if they draw).
+    // This prevents us from playing INTO repetitions when we have an advantage.
     if ply > 0 {
+        let draw_score = if board.side_to_move == info.root_stm { -CONTEMPT } else { CONTEMPT };
         if board.halfmove >= 100 {
-            return -CONTEMPT;
+            return draw_score;
         }
-        // Repetition detection: look back up to halfmove clock entries
-        // Note: null moves change hash via side_key XOR, so false matches across
-        // null moves are extremely unlikely. No pliesFromNull limit needed here
-        // (that limit only applies to cuckoo cycle detection).
         let stack_len = board.undo_stack.len();
         let limit = (board.halfmove as usize).min(stack_len);
         let mut i = 2usize;
         while i <= limit {
             if board.undo_stack[stack_len - i].hash == board.hash {
-                return -CONTEMPT;
+                return draw_score;
             }
             i += 2;
         }
