@@ -1016,6 +1016,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         let moves_left = if limits.movestogo > 0 { limits.movestogo as u64 } else { 25 };
 
+        // TC regime classification: seconds per move estimate
+        let spm = time_left / moves_left.max(1);
+
         // Soft allocation: time/movesLeft + 80% of increment
         let mut soft = time_left / moves_left + our_inc * 4 / 5;
 
@@ -1040,17 +1043,23 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Floor at 10ms
         if soft < 10 { soft = 10; }
 
+        // Save base soft before dynamic factors scale it.
+        // CRITICAL: hard limit uses base_soft, not dynamically-scaled soft.
+        // Dynamic factors can scale soft by up to ~2.5x (stability=0 ×
+        // node_fraction=2.23). If hard uses scaled soft, the effective maximum
+        // becomes soft × 2.5 × 3 = soft × 7.5, recreating the overspend problem.
+        let base_soft = soft;
+
         // Hard limit
         let mut hard = if limits.movestogo > 0 {
             // Tournament TC: cap based on moves remaining
-            // movestogo=1: 90%, movestogo=2: 60%, scales down to 30% min
-            let hard_raw = soft * 2;
+            let hard_raw = base_soft * 2;
             let hard_pct = (95 - limits.movestogo as u64 * 10).max(30).min(90);
             let mtg_cap = time_left * hard_pct / 100;
             hard_raw.min(mtg_cap)
         } else {
-            // Sudden death: allow up to 3x soft
-            soft * 3
+            // Sudden death: allow up to 3x BASE soft
+            base_soft * 3
         };
 
         // Absolute hard cap: never use more than timeLeft/5 + inc
@@ -1064,7 +1073,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         info.soft_limit = soft;
         info.hard_limit = hard.max(soft);
-        info.time_limit = hard; // search uses hard as absolute limit
+        info.time_limit = hard.max(soft); // search uses hard as absolute limit
         info.tm_has_data = false;
         info.tm_best_stable = 0;
     } else if !limits.infinite {
