@@ -15,7 +15,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut ponder_limits: Option<SearchLimits> = None; // pending limits for ponderhit
     let mut opening_book: Option<crate::book::OpeningBook> = None;
     let mut use_book = true;
-    let mut syzygy: Option<crate::tb::SyzygyTB> = None;
+    let mut syzygy: Option<std::sync::Arc<crate::tb::SyzygyTB>> = None;
     let mut num_threads: usize = 1;
 
     // Pre-load NNUE if path given via CLI, otherwise auto-discover
@@ -195,7 +195,11 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         "OwnBook" => { use_book = tokens[vi] == "true"; }
                         "SyzygyPath" => {
                             match crate::tb::SyzygyTB::new(tokens[vi]) {
-                                Ok(tb) => syzygy = Some(tb),
+                                Ok(tb) => {
+                                    let tb_arc = std::sync::Arc::new(tb);
+                                    info.syzygy = Some(tb_arc.clone());
+                                    syzygy = Some(tb_arc);
+                                }
                                 Err(e) => eprintln!("info string Syzygy load failed: {}", e),
                             }
                         }
