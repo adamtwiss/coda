@@ -43,6 +43,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
 
     // Search thread handle — returns SearchInfo back after search completes
     let mut search_handle: Option<std::thread::JoinHandle<SearchInfo>> = None;
+    // Track when the current search started (for ponderhit time calculation)
+    let mut ponder_search_start: Option<std::time::Instant> = None;
 
     let stdin = io::stdin();
     for line in stdin.lock().lines() {
@@ -129,6 +131,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
 
                 // Move info into search thread, get it back when search finishes
+                ponder_search_start = Some(std::time::Instant::now());
                 let mut search_board = board.clone();
                 let shared_tt = info.tt.clone();
                 let shared_net = info.nnue_net.clone();
@@ -197,7 +200,12 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     }
                     if soft < 10 { soft = 10; }
 
-                    ponderhit_flag.store(soft, Ordering::Relaxed);
+                    // Add elapsed time since search started so should_stop() comparison
+                    // works correctly (it checks elapsed >= ponderhit_time)
+                    let elapsed = ponder_search_start
+                        .map(|t| t.elapsed().as_millis() as u64)
+                        .unwrap_or(0);
+                    ponderhit_flag.store(soft + elapsed, Ordering::Relaxed);
                 } else {
                     // No stored limits — just stop
                     stop_flag.store(true, Ordering::Relaxed);
