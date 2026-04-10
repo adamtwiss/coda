@@ -28,12 +28,20 @@ def get_status():
     active_start = html.find('>Active')
     finished_start = html.find('>Finished')
 
-    if active_start < 0 or finished_start < 0:
+    if active_start < 0 and finished_start < 0:
         print('Error: could not parse index page sections')
         return
 
-    active_html = html[active_start:finished_start]
-    finished_html = html[finished_start:]
+    # Handle missing sections (e.g. no active tests)
+    if active_start < 0:
+        active_html = ''
+        finished_html = html[finished_start:] if finished_start >= 0 else ''
+    elif finished_start < 0:
+        active_html = html[active_start:]
+        finished_html = ''
+    else:
+        active_html = html[active_start:finished_start]
+        finished_html = html[finished_start:]
 
     def parse_tests(section_html):
         """Extract test IDs from a section of the index page."""
@@ -61,8 +69,6 @@ def get_status():
             continue
 
         games = int(games_match.group(1))
-        if games == 0:
-            continue
 
         elo = float(elo_match.group(1)) if elo_match else 0
         elo_err = float(elo_match.group(2)) if elo_match else 0
