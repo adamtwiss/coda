@@ -1,268 +1,218 @@
-# Time Management Redesign
+# Time Management Redesign (v2 — updated 2026-04-10)
 
-## Problem Statement
+## Lessons Learned (hard-won)
 
-Codabot consistently stockpiles time on Lichess (3+2 blitz):
-- Average time utilisation: 62% (should be 85-95%)
-- Finishes with 1:40/3:00 remaining in won endgames
-- Spends ~3.5s/move in middlegame vs SF's ~4.5s/move
-- Ponder hits bank time instead of spending it on depth
+### What went wrong with v1
 
-The current TM is too conservative across all game phases, especially
-in the middlegame where depth matters most.
+1. **Hard limit `soft×5` was catastrophic at blitz.** At 3+2, a single move
+   could use 44s (5× the 8.9s soft). One overspend ruins the entire game.
+   The old `soft×3` was safer. We saw 40-second moves at move 3.
 
-## Design Goals
+2. **Ponderhit allocation was far too generous.** Giving a full phase-based
+   budget on top of ponder time meant the engine spent 15+ seconds per
+   ponderhit. The ponder search already did the heavy lifting — ponderhit
+   should only verify, not re-search.
 
-1. **Use 85-95% of available time** by move 50 in a typical game
-2. **Adapt to TC regime** — generous increment vs no increment vs ultra-bullet
-3. **Spend more in middlegame** (moves 15-35) where games are decided
-4. **Spend less in opening** (book covers this) and **won endgames** (eval-based)
-5. **Never flag** — maintain a safety buffer proportional to risk
+3. **No dynamic TM during ponder transition.** After ponderhit, soft_limit
+   stays at 0 so the ID loop's stability/node-fraction checks don't fire.
+   The engine uses the ENTIRE ponderhit budget with no early stop.
+
+4. **Starting iterations without time to finish them.** During ponder, the
+   next-iteration guard (hard_limit check) doesn't fire because hard_limit=0.
+   The engine starts depth 25 with 2 seconds of ponderhit budget, gets stopped
+   mid-search, and pollutes the TT with incomplete entries → blunders.
+
+5. **Same hard limit multiplier for all TCs.** `soft×5` at 40+0.4 is 10% of
+   time (fine). At 3+2 it's 22% of time (fatal). Hard limit must scale with TC.
+
+6. **Self-play SPRT can't catch TM bugs.** Both sides are equally affected,
+   so TM overspend is invisible. Cross-engine RR caught the LTC benefit but
+   Lichess (with ponder) exposed the blitz regression.
+
+7. **The old "broken" ponderhit was accidentally safe.** Instant stop on
+   ponderhit meant clean TT entries and no overspending. "Fixing" it exposed
+   deeper issues. Sometimes a bug masks a worse bug.
+
+### What worked
+
+- Phase-based allocation concept (spend less in opening, more in middlegame)
+- TC regime awareness (different strategies for inc vs no-inc)
+- Eval-based time reduction (less time when winning/losing clearly)
+- 50-move eval scaling (correctness fix, SPRT-neutral but prevents 200-move draws)
+- The TM changes genuinely helped at LTC (+47 Elo in cross-engine RR)
+
+## Problem Statement (revised)
+
+Two distinct problems:
+
+**Problem 1: Blitz overspending** (3+2 and faster)
+- Hard limit allows catastrophic single-move overspend
+- Ponderhit gives too much time on top of ponder search
+- Engine burns all time in middlegame, rushes endgame
+- Observed: 40s on move 3, 0:10 remaining at move 29
+
+**Problem 2: LTC underspending** (40+0.4 and slower)
+- Underspends in middlegame vs SF (5.0s vs 6.5s)
+- Stockpiles time in won endgames (140s remaining)
+- Ponder time is wasted (instant stop or no additional search)
+
+These are CONFLICTING requirements. The solution must be TC-aware,
+not a single set of parameters.
+
+## Design Goals (revised)
+
+1. **Never allow a single move to use >15% of remaining time** at any TC
+2. **Hard limit must scale with TC** — tighter at blitz, wider at rapid
+3. **Ponderhit must be conservative** — verify only, not full re-search
+4. **Dynamic TM must work after ponderhit** — stability/node-fraction
+5. **Never start an iteration you can't finish** — guard in ponder too
+6. **Test with ponder on** — SPRT without ponder misses critical bugs
 
 ## TC Regimes
 
-The ratio `increment / (base_time / 50)` characterises the TC:
+| TC | Base | Inc | Strategy | Hard mult | Max single move |
+|----|------|-----|----------|-----------|----------------|
+| 1+0 | 60s | 0 | Ultra-conservative | 2× | 5% of time |
+| 1+1 | 60s | 1 | Increment-driven | 2.5× | 8% of time |
+| 3+0 | 180s | 0 | Conservative | 2.5× | 8% of time |
+| 3+2 | 180s | 2 | Moderate | 3× | 10% of time |
+| 10+5 | 600s | 5 | Moderate-generous | 4× | 12% of time |
+| 40+0.4 | 2400s | 0.4 | Generous | 5× | 15% of time |
 
-| TC | Base | Inc | Inc ratio | Regime | Strategy |
-|----|------|-----|-----------|--------|----------|
-| 1+0 | 60s | 0 | 0.00 | Ultra-bullet | Very conservative, latency dominates |
-| 1+1 | 60s | 1 | 0.83 | Bullet + inc | Inc IS the time budget |
-| 3+0 | 180s | 0 | 0.00 | Blitz no-inc | Conservative, can't recover time |
-| 3+2 | 180s | 2 | 0.56 | Blitz + inc | Aggressive — inc covers most moves |
-| 5+3 | 300s | 3 | 0.50 | Blitz + inc | Similar to 3+2 |
-| 10+5 | 600s | 5 | 0.42 | Rapid | Deep thinks, very generous |
-| 15+10 | 900s | 10 | 0.56 | Rapid + inc | Classical-like depth |
+Key: hard_mult and max-single-move INCREASE with TC. At blitz, the
+penalty for one bad move is game-losing. At rapid, one deep think
+is acceptable.
 
-### Key insight: inc_ratio > 0.3 = "safe" TC
-
-When increment covers >30% of per-move base time, flagging is nearly
-impossible. The engine can be aggressive with base time knowing increment
-provides a safety net. When inc_ratio = 0 (no increment), every second
-is irreplaceable.
-
-## Target Time Profiles
-
-### 3+2 (180s base, 2s increment)
-
-Available time = 180s base + ~100s increment over 50 moves = 280s total.
-Target: use 250s by move 50 (89%), leave ~30s buffer.
+## Hard Limit Formula
 
 ```
-Moves  1-10: 0.5s avg (book/opening, accumulate increment)
-Moves 11-20: 6.0s avg (early middlegame, building advantage)
-Moves 21-30: 8.0s avg (critical middlegame, spend heavily)
-Moves 31-40: 5.0s avg (late middlegame/early endgame)
-Moves 41-50: 2.0s avg (endgame, mostly technique)
-Moves 50+:   1.0s avg (deep endgame, increment covers)
+// TC-aware hard limit multiplier
+let seconds_per_move = time_left / 25;  // rough estimate
+let hard_mult = if seconds_per_move < 2 { 2.0 }       // bullet
+    else if seconds_per_move < 5 { 2.5 }               // blitz
+    else if seconds_per_move < 15 { 3.0 }              // rapid
+    else { 4.0 };                                       // classical
 
-Total: 5 + 60 + 80 + 50 + 20 + 10 = 225s used + ~25 buffer
+hard = min(soft * hard_mult, time_left * max_single_pct / 100)
 ```
 
-### 3+0 (180s base, no increment)
-
-Available time = 180s total. No recovery.
-Target: use 160s by move 50 (89%), leave 20s emergency buffer.
-
+The `max_single_pct` prevents any single move from being catastrophic:
 ```
-Moves  1-10: 0.5s avg (book)
-Moves 11-20: 4.5s avg (middlegame)
-Moves 21-30: 5.5s avg (critical)
-Moves 31-40: 3.5s avg (late game)
-Moves 41-50: 1.5s avg (endgame)
-Moves 50+:   0.5s avg (flag avoidance)
-
-Total: 5 + 45 + 55 + 35 + 15 + 5 = 160s + 20 buffer
+let max_single_pct = if seconds_per_move < 2 { 5 }
+    else if seconds_per_move < 5 { 10 }
+    else if seconds_per_move < 15 { 12 }
+    else { 15 };
 ```
 
-## Proposed Architecture
+## Ponderhit Allocation
 
-### Phase 1: Base allocation
+### Principle: ponder did the work, ponderhit just verifies
 
-```
-safety_buffer = if inc > 0 { move_overhead * 3 } else { time_left * 0.10 }
-spendable = time_left - safety_buffer
-inc_budget = inc * 0.85  // 85% of increment, reserve 15% for latency spikes
-
-// Game phase factor: spend more in middlegame
-// Reckless-inspired exponential ramp
-phase_factor = 0.025 + 0.040 * (1.0 - exp(-0.050 * fullmove))
-// Move 5: 0.034, Move 20: 0.053, Move 40: 0.059 (plateau)
-
-soft = phase_factor * spendable + inc_budget
-```
-
-This naturally:
-- Spends less in opening (phase_factor low)
-- Peaks in middlegame (phase_factor rising)
-- Plateaus in endgame (asymptote)
-- Adapts to remaining time (spendable shrinks)
-- Uses increment as guaranteed per-move budget
-
-### Phase 2: Hard limit
+The ponder search runs for the full opponent's think time (often 5-15s).
+By ponderhit, the engine already has a deep, well-searched result. The
+ponderhit allocation should be SMALL — just enough to complete the current
+iteration or verify the best move.
 
 ```
-// Hard limit scales with TC regime
-hard_mult = if inc > 0 { 6.0 } else { 3.0 }
-hard = min(soft * hard_mult, spendable * 0.25)
+// Ponderhit budget: conservative — ponder already searched deeply
+let ponderhit_soft = min(
+    time_left / moves_left + inc * 0.8,  // normal per-move budget
+    time_left / 10,                       // never more than 10% of remaining
+    inc * 3                               // never more than 3x increment
+);
 ```
 
-With increment: allow 6× soft (confidence that inc prevents flagging).
-Without increment: only 3× soft (must preserve time).
-Cap at 25% of spendable to prevent any single move from catastrophic time loss.
+For 3+2 at move 20 with 120s remaining:
+- Normal budget: 120/25 + 1.6 = 6.4s
+- 10% cap: 12s
+- 3× increment: 6s
+- Result: min(6.4, 12, 6) = **6s** (reasonable)
 
-### Phase 3: Dynamic factors (after each iteration)
+For 3+2 at move 5 with 180s remaining (the problem case):
+- Normal budget: 180/25 + 1.6 = 8.8s
+- 10% cap: 18s
+- 3× increment: 6s
+- Result: min(8.8, 18, 6) = **6s** (capped by increment, prevents 40s spend)
 
-Same 3-factor multiplicative model, with additions:
+### Ponderhit must set both soft and hard limits
+
+The search's next-iteration guard uses hard_limit. If hard_limit stays
+at 0 (from ponder mode), the guard doesn't fire and the engine starts
+iterations it can't finish.
 
 ```
-// Factor 1: Node fraction (unchanged, Obsidian pattern)
-nodes_factor = 0.63 + (1.0 - best_frac) * 2.0
-
-// Factor 2: Stability (unchanged)
-stability_factor = max(0.70, 1.60 - tm_best_stable * 0.08)
-
-// Factor 3: Score trend (ENHANCED with cross-search trending)
-prev_iter_drop = tm_prev_score - prev_score
-cross_search_drop = if tm_search_prev_score != 0 {
-    tm_search_prev_score - prev_score
-} else { 0 }
-score_factor = clamp(0.86 + 0.010 * prev_iter_drop + 0.025 * cross_search_drop,
-                      0.81, 1.50)
-
-// Factor 4: Eval magnitude (SMOOTHED, not discrete)
-eval_factor = if is_mate_score(prev_score) {
-    0.3
-} else {
-    1.0 - (prev_score.abs() as f64 / 1500.0).min(0.6)
-    // 0cp: 1.0, 300cp: 0.8, 750cp: 0.5, 1500cp+: 0.4
-}
-
-// Factor 5: Fail-low bonus (NEW — extend time on complex positions)
-fail_low_factor = if search_failed_low { 1.0 + fail_low_count * 0.25 } else { 1.0 }
-fail_low_factor = fail_low_factor.min(1.50)
-
-scale = nodes_factor * stability_factor * score_factor * eval_factor * fail_low_factor
-adjusted_soft = (soft * scale).min(hard)
+// On ponderhit: set BOTH limits via the atomic
+// The deadline conversion (budget + elapsed) is critical
+let elapsed = search_start_time.elapsed();
+let deadline = elapsed + ponderhit_soft;
+ponderhit_flag.store(deadline, Relaxed);
+// Also need hard_limit set for next-iteration guard
+// This requires either making hard_limit atomic, or
+// piggybacking on ponderhit_time with a separate check
 ```
 
-### Phase 4: Ponder time accounting
+### Dynamic TM after ponderhit
 
-When a ponder hit occurs, the time saved should be partially "spent":
+Currently, the ID loop's dynamic TM only fires when soft_limit > 0.
+During ponder, soft_limit = 0. After ponderhit, it stays 0.
+
+Fix: when ponderhit is detected in should_stop(), also set soft_limit
+so the iteration-level checks work:
 ```
-// On ponderhit: we gained opponent's think time for free
-// Don't just bank it — allow the next move to use some of the bonus
-if ponderhit {
-    ponder_bonus = opponent_think_time * 0.3  // Use 30% of saved time
-    adjusted_soft += ponder_bonus
+if ponderhit_detected {
+    self.soft_limit = ponderhit_deadline;  // enables dynamic TM
+    self.hard_limit = ponderhit_deadline + 2000;  // small hard margin
 }
 ```
 
-### Phase 5: Forced-move detection (future)
+This requires soft_limit/hard_limit to be atomic or the ponderhit
+conversion to happen in the search thread (where they're mutable).
 
-After each iteration at depth >= 10:
-```
-// Search depth/2 excluding best move
-// If no good alternative exists, reduce time
-if is_forced_move(board, best_move, depth) {
-    adjusted_soft *= 0.4
-}
-```
+## Validation Plan (revised)
 
-## Validation Plan
+### Step 0: Revert to known-good state
+Revert all TM changes. Confirm codabot plays 98%+ accuracy on Lichess.
+This is the baseline to beat.
 
-### Step 1: Profile comparison (no SPRT needed)
+### Step 1: Implement and profile locally
+Apply changes. Run cutechess games at 3+2, 3+0, 10+5 against SF.
+Compare time profiles using tm_profile.py.
 
-Run 50 games at 3+2 against a fixed opponent (SF/Reckless) with clock logging.
-Produce per-game profile:
+**Critical metrics:**
+- No single move uses >15% of remaining time at 3+2
+- Middlegame avg within 20% of SF's allocation
+- SD > 3.0 (adaptive time use)
 
-```
-Game N: vs Reckless (W/L/D)
-  Phase     Coda avg  Opp avg   Coda SD   Opp SD
-  Opening   0.5s      0.3s      0.2       0.1
-  Middle    7.2s      6.8s      3.1       2.9
-  Late      3.5s      3.2s      1.8       1.5
-  Endgame   1.2s      1.0s      0.5       0.3
-  Time remaining at move 40: 35s vs 28s
-```
+### Step 2: Lichess test (WITH PONDER)
+Deploy to codabot. Monitor first 5 games via SF analysis.
+Must see 95%+ accuracy, 0 mistakes, 0 blunders.
+If any game has a mistake, STOP and investigate.
 
-**Target metrics:**
-- Coda avg middlegame ≥ opponent avg (currently we're 50% less)
-- Time remaining at move 40: < 40s (currently ~140s)
-- SD of time per move > 3.0 (currently ~1.5, too flat)
+### Step 3: SPRT at LTC (ponder off)
+Validate no regression at LTC where the changes should help.
 
-### Step 2: Regime testing
+### Step 4: Cross-engine RR
+Compare against rivals at both STC and LTC to confirm no regression.
 
-Repeat for 3+0, 1+1, 10+5 to verify no flagging and reasonable profiles.
+## Risks (revised)
 
-### Step 3: SPRT at LTC
+1. **Blitz overspending** — HIGHEST RISK. Mitigated by TC-aware hard limit
+   and max-single-move cap. Must test at 3+2 specifically.
+2. **Ponderhit TT pollution** — fixed by next-iteration guard, but must
+   verify with ponder-on testing (not available in cutechess/fastchess).
+3. **Self-play masking** — TM bugs are invisible in self-play SPRT.
+   Must use cross-engine testing and Lichess for validation.
+4. **Regression at LTC** — unlikely (v1 showed +47 at LTC) but must verify.
 
-Once profiles look correct, SPRT at 40+0.4 for Elo validation.
+## Implementation Order (revised)
 
-### Step 4: Lichess deployment
-
-Update codabot, monitor rating change and time profiles in live games.
-
-## Ponder Handling
-
-Current issue: ponderhit path calculates a basic soft limit without
-dynamic factors, and doesn't account for time already spent pondering.
-
-### Current behavior
-On ponderhit: `soft = time_left/25 + inc*0.8` → search stops when
-elapsed >= soft. No hard limit, no dynamic factors, no ponder credit.
-
-### Problems
-1. Doesn't use the same TM logic as normal search (separate code path)
-2. Already-pondered depth is "free" — we should be MORE willing to
-   spend time after a ponder hit, not use a bare-minimum allocation
-3. If ponder was correct, we've gained the opponent's think time for
-   free. This banked time should partially carry forward.
-4. Uses stale moves_left=25 (not updated with TM fixes)
-
-### Proposed fix
-Ponderhit should use the SAME TM calculation as normal search, with
-the ponder duration as a bonus:
-
-```
-// On ponderhit:
-ponder_duration = elapsed_since_ponder_start
-normal_soft = calculate_soft_limit(time_left, inc, phase, ...)
-normal_hard = calculate_hard_limit(...)
-
-// Credit: we've already searched for ponder_duration "for free"
-// Allow extra time proportional to what we saved
-ponder_bonus = ponder_duration * 0.3  // spend 30% of saved time
-
-adjusted_soft = normal_soft + ponder_bonus
-adjusted_hard = normal_hard + ponder_bonus
-
-// Apply dynamic factors as normal
-// (stability will likely be high since we've been searching this position)
-```
-
-The key insight: a ponder hit means we predicted correctly. The search
-is already deep. Dynamic factors (high stability, high node fraction)
-will naturally reduce time. The ponder bonus counteracts this —
-"you predicted right, spend some of the saved time going deeper."
-
-### Edge cases
-- Ponder miss (opponent played different move): no bonus, normal TM
-- Very long ponder (opponent thought 30s): bonus = 9s. Generous but
-  capped by hard limit.
-- Very short ponder (opponent moved instantly): bonus ≈ 0. Normal TM.
-
-## Risks
-
-1. **Flagging at no-increment TCs**: Mitigated by safety_buffer and hard_mult=3
-2. **Over-spending in middlegame**: Mitigated by phase plateau and hard cap
-3. **Network latency spikes**: Mitigated by move_overhead and inc reserve
-4. **Ponder bonus abuse**: Capped at 30% of saved time
-
-## Implementation Order
-
-1. Cross-search score trending (10 min, low risk)
-2. Smooth eval factor (5 min, low risk)
-3. Phase-based allocation with TC regime awareness (1 hour)
-4. Fail-low bonus (15 min)
-5. Profile comparison testing (2 hours)
-6. Forced-move detection (2-3 hours, after validation)
+1. **Revert to known-good TM** — stabilise codabot
+2. **TC-aware hard limit** — single most important change
+3. **Conservative ponderhit allocation** — cap at 3× increment
+4. **Dynamic TM after ponderhit** — enable stability/node-fraction
+5. **Next-iteration guard during ponder** — prevent TT pollution
+6. **Profile at 3+2 and 40+0.4** — verify both TCs
+7. **Lichess deployment with ponder** — the real test
+8. **Phase-based soft allocation** — only AFTER hard limit is safe
+9. **Cross-search score trending** — low risk enhancement
+10. **Forced-move detection** — future, after everything else stable
