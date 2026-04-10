@@ -295,6 +295,8 @@ pub struct SearchInfo {
     cont_corr: Box<[[i32; 64]; 12]>,
     pub nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
     pub nnue_acc: Option<crate::nnue::NNUEAccumulator>,
+    /// Syzygy tablebases (shared, read-only). Interior WDL probes in search.
+    pub syzygy: Option<std::sync::Arc<crate::tb::SyzygyTB>>,
 }
 
 impl SearchInfo {
@@ -341,6 +343,7 @@ impl SearchInfo {
             cont_corr: alloc_zeroed_box(),
             nnue_net: None,
             nnue_acc: None,
+            syzygy: None,
         }
     }
 
@@ -813,6 +816,7 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     helper.time_limit = 0; // helpers don't do time management
     helper.move_overhead = main.move_overhead;
     helper.root_stm = main.root_stm; // contempt needs to know who started the search
+    helper.syzygy = main.syzygy.clone(); // share tablebases (read-only)
     // Copy main thread's history for better initial move ordering (Alexandria pattern)
     // Helpers start with the main thread's learned history instead of zeroed tables
     unsafe {
@@ -1429,6 +1433,32 @@ fn negamax(
                 return draw_score;
             }
             i += 2;
+        }
+    }
+
+    // Syzygy tablebase probe at interior nodes.
+    // Probe WDL when piece count is within TB range. Returns a score that
+    // causes a cutoff, so the search doesn't waste time in solved endgames.
+    // Only at non-root (ply > 0) and non-excluded (not in singular verification).
+    if ply > 0 && info.excluded_move[ply_u] == NO_MOVE {
+        if let Some(ref tb) = info.syzygy {
+            if crate::bitboard::popcount(board.occupied()) as usize <= tb.max_pieces() {
+                if let Some(wdl) = tb.probe_wdl(board) {
+                    // Convert WDL to a score with ply adjustment (like mate scores)
+                    let tb_score = if wdl > 0 {
+                        MATE_SCORE - 200 - ply  // winning: large positive, closer = better
+                    } else if wdl < 0 {
+                        -(MATE_SCORE - 200) + ply  // losing: large negative
+                    } else {
+                        0  // draw
+                    };
+
+                    if tb_score >= beta { return tb_score; }
+                    if tb_score <= alpha { return tb_score; }
+                    // Exact score in window: tighten bounds
+                    alpha = tb_score;
+                }
+            }
         }
     }
 
