@@ -215,8 +215,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         let time_ratio = our_time as f64 / opp_time.max(1) as f64;
                         let overhead = info.move_overhead;
 
-                        let budget = if time_ratio < 1.0 {
-                            // Behind on time: instant stop
+                        // At very fast TCs (inc < 500ms), instant stop — the
+                        // verification budget isn't worth the time loss risk.
+                        let budget = if our_inc < 500 || time_ratio < 1.0 {
                             0u64
                         } else if time_ratio > 5.0 {
                             // Massive time advantage: think carefully
@@ -229,9 +230,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             our_inc
                         };
                         // Cap at increment to prevent spending multiple increments
-                        // on a single ponderhit (critical at fast TCs like 20+0.2).
-                        // Then reserve move overhead for communication latency.
-                        let budget = budget.min(our_inc).saturating_sub(overhead).max(10);
+                        // on a single ponderhit. Reserve move overhead for latency.
+                        let budget = if budget == 0 { 0 } else {
+                            budget.min(our_inc).saturating_sub(overhead).max(10)
+                        };
                         // Store as deadline: elapsed_since_search_start + budget
                         let elapsed = start.elapsed().as_millis() as u64;
                         let deadline = elapsed + budget;
