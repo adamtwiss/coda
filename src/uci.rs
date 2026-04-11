@@ -12,6 +12,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut info = SearchInfo::new(64);
     let mut stop_flag = info.stop.clone(); // keep a handle to signal stop from UCI loop
     let mut ponderhit_flag = info.ponderhit_time.clone(); // shared ponderhit time limit
+    let mut ponder_depth_flag = info.ponder_depth.clone(); // completed depth during ponder
     let mut ponder_limits: Option<SearchLimits> = None; // pending limits for ponderhit
     let mut opening_book: Option<crate::book::OpeningBook> = None;
     let mut use_book = true;
@@ -144,12 +145,25 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     shared_stop, shared_tt, shared_net,
                 ));
                 ponderhit_flag = search_info.ponderhit_time.clone();
+                ponder_depth_flag = search_info.ponder_depth.clone();
                 let threads = num_threads;
+                let is_ponder_search = is_ponder;
                 search_handle = Some(std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)
                     .spawn(move || {
                         let mut si = search_info;
                         let best_move = search_smp(&mut search_board, &mut si, &limits, threads);
+                        // In ponder mode, if search completed naturally (not stopped),
+                        // wait for stop/ponderhit before outputting bestmove.
+                        // Outputting bestmove while GUI expects pondering is a protocol violation.
+                        if is_ponder_search && !si.stop.load(std::sync::atomic::Ordering::Relaxed)
+                            && si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                            // Search hit max depth — wait for stop signal
+                            while !si.stop.load(std::sync::atomic::Ordering::Relaxed)
+                                && si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                            }
+                        }
                         // Output ponder move from PV if available.
                         // Validate PV[0] matches best_move: if the search was stopped
                         // mid-iteration, the PV may belong to a different root move.
@@ -176,18 +190,20 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
             }
             "ponderhit" => {
-                // Give a small verification budget instead of instant stop.
-                // The ponder search already has a deep result; this just allows
-                // completing the current iteration or verifying the best move.
-                //
-                // Budget = min(inc + time_left/60, time_left/10)
-                // Scales with banked time: more time = more verification.
-                // At 3+2/140s: 4.3s. At 3+2/250s (time-rich): 6.2s.
+                // Ponderhit budget scales with time ratio and ponder depth.
+                // Time-rich + shallow ponder → more verification time.
+                // Behind on time → instant stop.
+                // Deep ponder → result is reliable, less verification needed.
                 if let (Some(ref pl), Some(start)) = (&ponder_limits, ponder_search_start) {
                     let our_time = if board.side_to_move == crate::types::WHITE {
                         pl.wtime
                     } else {
                         pl.btime
+                    };
+                    let opp_time = if board.side_to_move == crate::types::WHITE {
+                        pl.btime
+                    } else {
+                        pl.wtime
                     };
                     let our_inc = if board.side_to_move == crate::types::WHITE {
                         pl.winc
@@ -195,13 +211,32 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         pl.binc
                     };
                     if our_time > 0 {
-                        let base = our_inc + our_time / 60;
-                        let budget = base.min(our_time / 10);
-                        let budget = budget.max(10); // minimum 10ms
-                        // Store as deadline: elapsed_since_search_start + budget
-                        let elapsed = start.elapsed().as_millis() as u64;
-                        let deadline = elapsed + budget;
-                        ponderhit_flag.store(deadline, Ordering::Relaxed);
+                        let depth = ponder_depth_flag.load(Ordering::Relaxed);
+                        let time_ratio = our_time as f64 / opp_time.max(1) as f64;
+                        let overhead = info.move_overhead;
+
+                        // At very fast TCs (inc < 500ms) or behind on time:
+                        // instant stop via stop flag — no deadline mechanism.
+                        if our_inc < 500 || time_ratio < 1.0 {
+                            stop_flag.store(true, Ordering::Relaxed);
+                        } else {
+                            let budget = if time_ratio > 5.0 {
+                                // Massive time advantage: think carefully
+                                (our_time / 15).min(our_time - opp_time)
+                            } else if time_ratio > 2.0 || depth < 16 {
+                                // Good advantage or shallow ponder: moderate think
+                                (our_inc + our_time / 30).min(our_time / 10)
+                            } else {
+                                // Slight advantage, deep ponder: brief verification
+                                our_inc
+                            };
+                            // Cap at increment. Reserve move overhead for latency.
+                            let budget = budget.min(our_inc).saturating_sub(overhead).max(10);
+                            // Store as deadline: elapsed_since_search_start + budget
+                            let elapsed = start.elapsed().as_millis() as u64;
+                            let deadline = elapsed + budget;
+                            ponderhit_flag.store(deadline, Ordering::Relaxed);
+                        }
                     } else {
                         // No time info: instant stop
                         stop_flag.store(true, Ordering::Relaxed);

@@ -105,12 +105,6 @@ pub fn run_datagen(config: &DatagenConfig) {
             threads, config.depth, config.num_games);
     }
 
-    // Validate output path before spawning threads
-    if let Err(e) = std::fs::OpenOptions::new().create(true).append(true).open(&config.output_path) {
-        eprintln!("Error: cannot open output file '{}': {}", config.output_path, e);
-        return;
-    }
-
     let games_done = Arc::new(AtomicU64::new(0));
     let positions_done = Arc::new(AtomicU64::new(0));
 
