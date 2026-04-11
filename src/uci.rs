@@ -228,8 +228,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             // Slight advantage, deep ponder: brief verification
                             our_inc
                         };
-                        // Reserve move overhead for communication latency
-                        let budget = budget.saturating_sub(overhead).max(10);
+                        // Cap at increment to prevent spending multiple increments
+                        // on a single ponderhit (critical at fast TCs like 20+0.2).
+                        // Then reserve move overhead for communication latency.
+                        let budget = budget.min(our_inc).saturating_sub(overhead).max(10);
                         // Store as deadline: elapsed_since_search_start + budget
                         let elapsed = start.elapsed().as_millis() as u64;
                         let deadline = elapsed + budget;
