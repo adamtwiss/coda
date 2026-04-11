@@ -147,11 +147,23 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 ponderhit_flag = search_info.ponderhit_time.clone();
                 ponder_depth_flag = search_info.ponder_depth.clone();
                 let threads = num_threads;
+                let is_ponder_search = is_ponder;
                 search_handle = Some(std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)
                     .spawn(move || {
                         let mut si = search_info;
                         let best_move = search_smp(&mut search_board, &mut si, &limits, threads);
+                        // In ponder mode, if search completed naturally (not stopped),
+                        // wait for stop/ponderhit before outputting bestmove.
+                        // Outputting bestmove while GUI expects pondering is a protocol violation.
+                        if is_ponder_search && !si.stop.load(std::sync::atomic::Ordering::Relaxed)
+                            && si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                            // Search hit max depth — wait for stop signal
+                            while !si.stop.load(std::sync::atomic::Ordering::Relaxed)
+                                && si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                            }
+                        }
                         // Output ponder move from PV if available.
                         // Validate PV[0] matches best_move: if the search was stopped
                         // mid-iteration, the PV may belong to a different root move.
