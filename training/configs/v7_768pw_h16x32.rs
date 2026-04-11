@@ -34,6 +34,9 @@ use bullet_lib::{
         settings::LocalSettings,
     },
     value::{ValueTrainerBuilder, loader::SfBinpackLoader},
+
+
+use sfbinpack::chess::{piecetype::PieceType, r#move::MoveType};
 };
 
 fn main() {
@@ -50,7 +53,7 @@ fn main() {
     let wdl_proportion: f32 = get_arg(&args, "--wdl", "0.0").parse().unwrap();
     let initial_lr: f32 = get_arg(&args, "--lr", "0.001").parse().unwrap();
     let warmup_sbs: usize = get_arg(&args, "--warmup", "20").parse().unwrap();
-    let final_lr = initial_lr * 0.01; // 100x decay
+    let final_lr = initial_lr * 0.3f32.powi(5); // Bullet example: ~2.43e-6
 
     const NUM_OUTPUT_BUCKETS: usize = 8;
 
@@ -156,9 +159,17 @@ fn main() {
         test_set: None,
     };
 
-    let dataloader = SfBinpackLoader::new(&dataset_path, 256, 4, |entry| {
-        entry.score.unsigned_abs() < 10000
-    });
+    // Standard filter: quiet non-tactical positions only.
+    let filter = |entry: &sfbinpack::TrainingDataEntry| {
+        let stm = entry.pos.side_to_move();
+        entry.ply >= 16
+            && !entry.pos.is_checked(stm)
+            && entry.score.unsigned_abs() <= 10000
+            && entry.mv.mtype() == MoveType::Normal
+            && entry.pos.piece_at(entry.mv.to()).piece_type() == PieceType::None
+    };
+
+    let dataloader = SfBinpackLoader::new(&dataset_path, 256, 4, filter);
 
     println!("=== Coda v7 768pw Training ===");
     println!("FT: {} → CReLU → pairwise → {}", ft_size, ft_size / 2);

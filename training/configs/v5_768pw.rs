@@ -8,6 +8,11 @@
 ///     --dataset /workspace/data/test80-2024-01-jan-2tb7p.min-v2.v6.binpack \
 ///     --superbatches 800 --wdl 0.07 --save-rate 100
 ///
+/// Key training findings (2026-04-10):
+/// - Low final LR (0.001 * 0.3^5 = 2.43e-6): +47 Elo vs old 0.0001
+/// - Filtering (quiet positions only): +22 untuned, +48 with retune
+/// - Combined: +80 Elo over baseline at s120
+///
 /// Output: quantised.bin in checkpoints/
 ///
 /// Convert:
@@ -31,6 +36,8 @@ use bullet_lib::{
     value::{ValueTrainerBuilder, loader::SfBinpackLoader},
 };
 
+use sfbinpack::chess::{piecetype::PieceType, r#move::MoveType};
+
 fn main() {
     let ft_size = 768; // after pairwise: 384 per perspective, 768 concat
 
@@ -39,7 +46,7 @@ fn main() {
     let superbatches: usize = get_arg(&args, "--superbatches", "800").parse().unwrap();
     let wdl_proportion: f32 = get_arg(&args, "--wdl", "0.07").parse().unwrap();
     let initial_lr: f32 = get_arg(&args, "--lr", "0.001").parse().unwrap();
-    let final_lr: f32 = get_arg(&args, "--final-lr", "0.0001").parse().unwrap();
+    let final_lr: f32 = get_arg(&args, "--final-lr", &format!("{}", initial_lr * 0.3f32.powi(5))).parse().unwrap();
     let save_rate: usize = get_arg(&args, "--save-rate", "100").parse().unwrap();
 
     const NUM_OUTPUT_BUCKETS: usize = 8;
@@ -119,9 +126,19 @@ fn main() {
         test_set: None,
     };
 
-    let dataloader = SfBinpackLoader::new(&dataset_path, 256, 4, |entry| {
-        entry.score.unsigned_abs() < 10000
-    });
+    // Standard filter: quiet non-tactical positions only (Bullet example pattern).
+    // Skip openings (ply < 16), in-check, captures, and tactical moves.
+    // NNUE eval is only called at quiet nodes — train on what matters.
+    let filter = |entry: &sfbinpack::TrainingDataEntry| {
+        let stm = entry.pos.side_to_move();
+        entry.ply >= 16
+            && !entry.pos.is_checked(stm)
+            && entry.score.unsigned_abs() <= 10000
+            && entry.mv.mtype() == MoveType::Normal
+            && entry.pos.piece_at(entry.mv.to()).piece_type() == PieceType::None
+    };
+
+    let dataloader = SfBinpackLoader::new(&dataset_path, 256, 4, filter);
 
     println!("=== Coda v5 768 Pairwise ===");
     println!("FT: {} → CReLU → pairwise → {} per perspective", ft_size, ft_size / 2);
