@@ -448,9 +448,17 @@ impl SearchInfo {
         // Check time every 4096 nodes
         if self.nodes & 4095 == 0 {
             let elapsed = self.start_time.elapsed().as_millis() as u64;
-            // Check ponderhit: UCI thread sets this to switch from infinite to timed
+            // For ponderhit: allow a grace period beyond the deadline so the
+            // current iteration can finish cleanly. But hard-stop if the grace
+            // period expires to prevent time loss. The ID loop also checks the
+            // deadline (without grace) between iterations to prevent starting
+            // new iterations after the budget expires.
             let ph_time = self.ponderhit_time.load(Ordering::Relaxed);
-            let effective_limit = if ph_time > 0 { ph_time } else { self.time_limit };
+            let effective_limit = if ph_time > 0 {
+                ph_time + 3000  // 3s grace period for iteration completion
+            } else {
+                self.time_limit
+            };
             if effective_limit > 0 && elapsed >= effective_limit {
                 self.stop.store(true, Ordering::Relaxed);
                 return true;
@@ -1105,6 +1113,13 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
     for depth in 1..=effective_max {
         if info.should_stop() { break; }
+        // Ponderhit check: stop between iterations (not mid-search) to avoid
+        // partial TT entries and PV inconsistency. The engine completes the
+        // current iteration fully before stopping, producing clean state.
+        let ph = info.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed);
+        if ph > 0 && info.start_time.elapsed().as_millis() as u64 >= ph {
+            break;
+        }
         let iter_start = std::time::Instant::now();
 
         let score;
