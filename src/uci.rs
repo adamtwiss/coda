@@ -213,6 +213,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     if our_time > 0 {
                         let depth = ponder_depth_flag.load(Ordering::Relaxed);
                         let time_ratio = our_time as f64 / opp_time.max(1) as f64;
+                        let overhead = info.move_overhead;
 
                         let budget = if time_ratio < 1.0 {
                             // Behind on time: instant stop
@@ -227,7 +228,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             // Slight advantage, deep ponder: brief verification
                             our_inc
                         };
-                        let budget = budget.max(10); // minimum 10ms
+                        // Reserve move overhead for communication latency
+                        let budget = budget.saturating_sub(overhead).max(10);
                         // Store as deadline: elapsed_since_search_start + budget
                         let elapsed = start.elapsed().as_millis() as u64;
                         let deadline = elapsed + budget;
