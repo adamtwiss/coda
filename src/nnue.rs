@@ -1649,19 +1649,23 @@ impl NNUENet {
     /// acc → SCReLU (clamp+square, scale QA²) → L1 matmul → /QA² → SCReLU → float L2 → output
     fn forward_with_l1(&self, stm_acc: &[i16], ntm_acc: &[i16], bucket: usize) -> i32 {
         let h = self.hidden_size;
-        let l1 = self.l1_size;
+        let l1 = self.l1_per_bucket;  // per-bucket size (e.g. 16), not total (e.g. 128)
+        let l1_total = self.l1_size;  // total bucketed size (buckets × l1_per_bucket)
         let qa = QA as i64;
         let qa2 = qa * qa; // 65025
         let qa_l1 = self.l1_scale as i64;
+
+        // Bucket offset into weight/bias arrays
+        let b_off = bucket * l1;
 
         // L1 matmul: SCReLU(acc) × L1_weights → hidden
         // SCReLU: clamp [0, QA], square → scale QA²
         // L1 weights at scale QA_L1, bias at scale QA_L1
         // Result at scale QA² × QA_L1, bias scaled up by QA² to match
         let bias_scale = qa2;
-        let mut hidden = [0i64; 64];
+        let mut hidden = [0i64; 256]; // max L1 per-bucket size
         for i in 0..l1 {
-            hidden[i] = self.l1_biases[i] as i64 * bias_scale;
+            hidden[i] = self.l1_biases[b_off + i] as i64 * bias_scale;
         }
 
         // SIMD int8 path: pack SCReLU to u8, then VPMADDUBSW L1 matmul
@@ -1677,11 +1681,12 @@ impl NNUENet {
             // Result at scale QA × QA_L1. Bias at scale QA_L1, scaled by QA to match.
             let qa_int = QA as i32;
             for i in 0..l1 {
-                hidden[i] = self.l1_biases[i] as i64 * qa_int as i64; // bias × QA
+                hidden[i] = self.l1_biases[b_off + i] as i64 * qa_int as i64; // bias × QA
             }
+            // Weight layout: l1_weights_8t[neuron * h] for STM, [l1_total*h + neuron*h] for NTM
+            // With bucket offset: STM starts at (b_off + i) * h, NTM at l1_total*h + (b_off+i)*h
             if self.use_sparse_l1.load(std::sync::atomic::Ordering::Relaxed) {
-                // Sparse path: find NNZ chunks, only multiply those
-                let mut stm_nnz = [0u16; 64]; // max 2048/32 = 64 chunks
+                let mut stm_nnz = [0u16; 64];
                 let mut ntm_nnz = [0u16; 64];
                 let (stm_nnz_count, ntm_nnz_count);
                 unsafe {
@@ -1689,18 +1694,19 @@ impl NNUENet {
                     ntm_nnz_count = find_nnz_chunks(&ntm_packed, &mut ntm_nnz, h);
                 }
                 for i in 0..l1 {
-                    let stm_w = &self.l1_weights_8t[i * h..(i + 1) * h];
-                    let ntm_w = &self.l1_weights_8t[l1 * h + i * h..l1 * h + (i + 1) * h];
+                    let gi = b_off + i; // global index into weight array
+                    let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
+                    let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
                     unsafe {
                         hidden[i] += simd_l1_int8_dot_sparse(&stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
                         hidden[i] += simd_l1_int8_dot_sparse(&ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
                     }
                 }
             } else {
-                // Dense path
                 for i in 0..l1 {
-                    let stm_w = &self.l1_weights_8t[i * h..(i + 1) * h];
-                    let ntm_w = &self.l1_weights_8t[l1 * h + i * h..l1 * h + (i + 1) * h];
+                    let gi = b_off + i;
+                    let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
+                    let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
                     unsafe {
                         hidden[i] += simd_l1_int8_dot(&stm_packed, stm_w, h) as i64;
                         hidden[i] += simd_l1_int8_dot(&ntm_packed, ntm_w, h) as i64;
@@ -1718,14 +1724,15 @@ impl NNUENet {
                 l1_out[i] = hsq as f32 / qa_l1_sq; // → [0, 1]
             }
 
-            // L2 or output — float
+            // L2 or output — float (bucket-aware indexing)
             if self.l2_size > 0 {
-                let l2 = self.l2_size;
-                let mut h2 = [0.0f32; 64];
-                for k in 0..l2 { h2[k] = self.l2_biases_f[k]; }
+                let l2 = self.l2_per_bucket;
+                let l2_off = bucket * l2;
+                let mut h2 = [0.0f32; 256];
+                for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
                 for i in 0..l1 {
                     if l1_out[i] == 0.0 { continue; }
-                    let w_off = i * l2;
+                    let w_off = (b_off + i) * self.l2_per_bucket;
                     for k in 0..l2 { h2[k] += l1_out[i] * self.l2_weights_f[w_off + k]; }
                 }
                 for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; }
@@ -1753,11 +1760,10 @@ impl NNUENet {
             // Result at scale QA × QA_L1. Bias at scale QA_L1, scaled by QA to match.
             let qa_int = QA as i32;
             for i in 0..l1 {
-                hidden[i] = self.l1_biases[i] as i64 * qa_int as i64; // bias × QA
+                hidden[i] = self.l1_biases[b_off + i] as i64 * qa_int as i64; // bias × QA
             }
             if self.use_sparse_l1.load(std::sync::atomic::Ordering::Relaxed) {
-                // Sparse path: find NNZ 16-byte chunks, only multiply those
-                let mut stm_nnz = [0u16; 128]; // max 2048/16 = 128 chunks
+                let mut stm_nnz = [0u16; 128];
                 let mut ntm_nnz = [0u16; 128];
                 let (stm_nnz_count, ntm_nnz_count);
                 unsafe {
@@ -1765,18 +1771,19 @@ impl NNUENet {
                     ntm_nnz_count = neon_find_nnz_chunks(&ntm_packed, &mut ntm_nnz, h);
                 }
                 for i in 0..l1 {
-                    let stm_w = &self.l1_weights_8t[i * h..(i + 1) * h];
-                    let ntm_w = &self.l1_weights_8t[l1 * h + i * h..l1 * h + (i + 1) * h];
+                    let gi = b_off + i;
+                    let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
+                    let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
                     unsafe {
                         hidden[i] += neon_l1_int8_dot_sparse(&stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
                         hidden[i] += neon_l1_int8_dot_sparse(&ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
                     }
                 }
             } else {
-                // Dense path
                 for i in 0..l1 {
-                    let stm_w = &self.l1_weights_8t[i * h..(i + 1) * h];
-                    let ntm_w = &self.l1_weights_8t[l1 * h + i * h..l1 * h + (i + 1) * h];
+                    let gi = b_off + i;
+                    let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
+                    let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
                     unsafe {
                         hidden[i] += neon_l1_int8_dot(&stm_packed, stm_w, h) as i64;
                         hidden[i] += neon_l1_int8_dot(&ntm_packed, ntm_w, h) as i64;
@@ -1785,7 +1792,7 @@ impl NNUENet {
             }
             // Dequantize: result at scale QA × QA_L1. Divide by QA to get scale QA_L1.
             let qa_l1_sq = qa_l1 as f32 * qa_l1 as f32;
-            let mut l1_out = [0.0f32; 64];
+            let mut l1_out = [0.0f32; 256];
             for i in 0..l1 {
                 let mut h_val = (hidden[i] / qa as i64) as i32; // scale QA_L1
                 h_val = h_val.clamp(0, qa_l1 as i32);
@@ -1793,14 +1800,15 @@ impl NNUENet {
                 l1_out[i] = hsq as f32 / qa_l1_sq; // → [0, 1]
             }
 
-            // L2 or output — float
+            // L2 or output — float (bucket-aware indexing)
             if self.l2_size > 0 {
-                let l2 = self.l2_size;
-                let mut h2 = [0.0f32; 64];
-                for k in 0..l2 { h2[k] = self.l2_biases_f[k]; }
+                let l2 = self.l2_per_bucket;
+                let l2_off = bucket * l2;
+                let mut h2 = [0.0f32; 256];
+                for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
                 for i in 0..l1 {
                     if l1_out[i] == 0.0 { continue; }
-                    let w_off = i * l2;
+                    let w_off = (b_off + i) * self.l2_per_bucket;
                     for k in 0..l2 { h2[k] += l1_out[i] * self.l2_weights_f[w_off + k]; }
                 }
                 for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; }
@@ -1815,14 +1823,14 @@ impl NNUENet {
             return (out_f * EVAL_SCALE as f32) as i32;
         }
 
-        // Scalar fallback
+        // Scalar fallback (bucket-aware: offset into l1_weights by b_off)
         #[cfg(target_arch = "x86_64")]
         if !(self.has_avx2 && h % 32 == 0 && !self.l1_weights_8t.is_empty()) {
             for j in 0..h {
                 let v = (stm_acc[j] as i64).clamp(0, qa);
                 if v == 0 { continue; }
                 let vsq = v * v;
-                let w_off = j * l1;
+                let w_off = j * l1_total + b_off;
                 for i in 0..l1 {
                     hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
                 }
@@ -1831,7 +1839,7 @@ impl NNUENet {
                 let v = (ntm_acc[j] as i64).clamp(0, qa);
                 if v == 0 { continue; }
                 let vsq = v * v;
-                let w_off = (h + j) * l1;
+                let w_off = (h + j) * l1_total + b_off;
                 for i in 0..l1 {
                     hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
                 }
@@ -1844,7 +1852,7 @@ impl NNUENet {
                 let v = (stm_acc[j] as i64).clamp(0, qa);
                 if v == 0 { continue; }
                 let vsq = v * v;
-                let w_off = j * l1;
+                let w_off = j * l1_total + b_off;
                 for i in 0..l1 {
                     hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
                 }
@@ -1853,7 +1861,7 @@ impl NNUENet {
                 let v = (ntm_acc[j] as i64).clamp(0, qa);
                 if v == 0 { continue; }
                 let vsq = v * v;
-                let w_off = (h + j) * l1;
+                let w_off = (h + j) * l1_total + b_off;
                 for i in 0..l1 {
                     hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
                 }
