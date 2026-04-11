@@ -459,7 +459,12 @@ impl SearchInfo {
             // new iterations after the budget expires.
             let ph_time = self.ponderhit_time.load(Ordering::Relaxed);
             let effective_limit = if ph_time > 0 {
-                ph_time + 3000  // 3s grace period for iteration completion
+                // Grace period scales with remaining budget: enough to finish
+                // an iteration but not enough to risk flagging. Caps at 500ms
+                // and shrinks to near-zero when budget is almost used.
+                let remaining = if ph_time > elapsed { ph_time - elapsed } else { 0 };
+                let grace = (remaining / 4).min(500);
+                ph_time + grace
             } else {
                 self.time_limit
             };
