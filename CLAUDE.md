@@ -278,6 +278,41 @@ Output is SF BINP binpack format, directly usable by Bullet.
 - **WDL blend**: w0 is better than w5 for v7 hidden layer nets (+30 Elo). w3-w5 are equivalent for v5.
 - **12-file training data** gives +33 Elo over 6-file for 768pw (data diversity matters).
 - **v7 hidden layers need better training**: current v7 nets are ~40-80 Elo weaker than v5 due to hidden layer quality. Transfer learning (frozen FT) and supplementary material-imbalance data are being investigated.
+- **Low final LR is critical**: Our cosine 0.001→0.0001 final LR was 20× too high. Bullet examples use `0.001 * 0.3^5 = 2.4e-6`. Reducing to ~5e-6 gave **+47 Elo**. The net was oscillating in late training instead of converging.
+- **Data filtering**: Training on quiet positions only (ply≥16, no checks, no captures, no tactical moves) gave **+22 Elo untuned, +48 tuned**. Aligns with how NNUE eval is used (only at quiet nodes after QS).
+- **Combined (filter + low LR)**: +32 untuned, +80 with retune at s120. The gains are partially additive.
+- **WDL 0.25**: -24 Elo due to eval scale mismatch. Needs retune to show benefit. Our w7 (0.07) is an outlier vs consensus (0.3-0.4).
+
+### EVAL_SCALE Calibration
+
+`EVAL_SCALE` (nnue.rs:33, default 400) converts raw network output to centipawns. Different training configs (filtering, WDL, LR) produce different eval scales. When the scale changes, all search thresholds (RFP, futility, SEE, LMR) become miscalibrated.
+
+**Measuring scale**: Evaluate 500 positions from selfplay data and compute RMS:
+```bash
+# Sample positions
+./coda sample-positions -i /training/coda/selfplay.binpack -o /tmp/sample.epd -n 500 --rate 0.001
+
+# Evaluate with the net and compute RMS
+python3 -c "
+import subprocess, re, math
+positions = [l.strip() for l in open('/tmp/sample.epd').readlines()[:500]]
+cmds = 'uci\nisready\n'
+for fen in positions:
+    cmds += f'position fen {fen}\neval\n'
+cmds += 'quit\n'
+result = subprocess.run(['./target/release/coda', '-n', 'path/to/net.nnue'],
+    input=cmds, capture_output=True, text=True, timeout=30)
+scores = [int(m.group(1)) for m in re.finditer(r'raw_nnue\s+([-\d]+)', result.stdout)]
+rms = math.sqrt(sum(s*s for s in scores) / len(scores))
+print(f'RMS={rms:.0f}, ratio to baseline(580)={rms/580:.2f}x')
+"
+```
+
+**Baseline RMS**: 580 (production net with EVAL_SCALE=400). Target: RMS ≈ 580 after adjustment.
+
+**WARNING**: EVAL_SCALE does NOT scale linearly for pairwise nets. The pairwise architecture squares values, so large EVAL_SCALE causes integer overflow in quantized inference. Always verify RMS after changing — don't just compute `400 * baseline_rms / net_rms`.
+
+**Alternatives to EVAL_SCALE adjustment**: SPSA retune (preferred). The tune recalibrates all thresholds to the net's natural scale. EVAL_SCALE adjustment is a quick hack; retune is the proper fix.
 
 Bullet LR schedule for hidden layer nets:
 ```rust
