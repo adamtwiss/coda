@@ -81,6 +81,8 @@ tunables!(
     (PROBCUT_MARGIN,   163,   80,  300),
     // Hindsight
     (HINDSIGHT_THRESH, 213,   50,  400),
+    // Unstable position detection: eval changed by more than this between plies
+    (UNSTABLE_THRESH,  200,   50,  500),
     // QS
     (QS_DELTA_MARGIN,  255,  100,  500),
     (QS_SEE_THRESHOLD, -15, -200,    0),
@@ -1698,7 +1700,7 @@ fn negamax(
         && {
             let parent_eval = -info.static_evals[ply_u - 1];
             let diff = (static_eval - parent_eval).abs();
-            diff > 200
+            diff > tp(&UNSTABLE_THRESH)
         };
 
     // Detect if TT move is a capture
