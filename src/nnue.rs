@@ -30,7 +30,7 @@ const NNUE_NUM_PIECE_TYPES: usize = 12;
 const QA: i32 = 255;  // accumulator scale (CReLU/SCReLU clip max)
 const QB: i32 = 64;   // output weight scale
 const QAB: i32 = QA * QB; // 16320
-const EVAL_SCALE: i32 = 400; // sigmoid → centipawns
+const EVAL_SCALE: i32 = 250; // scaled for filtered+lowlr net (400/1.60) // sigmoid → centipawns
 
 // File magic
 const NNUE_MAGIC: u32 = 0x4E4E5545; // "NNUE" in LE
