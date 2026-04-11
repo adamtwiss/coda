@@ -146,6 +146,15 @@ enum Commands {
         #[arg(long, default_value_t = 0.0)]
         rate: f64,
     },
+    /// Evaluate positions from binpack to measure eval scale distribution
+    EvalDist {
+        /// Input binpack file
+        #[arg(long, short = 'i')]
+        input: String,
+        /// Number of positions to evaluate
+        #[arg(long, short = 'c', default_value_t = 1_000_000)]
+        count: usize,
+    },
     /// Show statistics for a binpack file
     BinpackStats {
         /// Input binpack file
@@ -304,6 +313,10 @@ fn main() {
 
         Some(Commands::SamplePositions { input, output, count, rate }) => {
             run_sample_positions(&input, &output, count, rate);
+        }
+
+        Some(Commands::EvalDist { input, count }) => {
+            run_eval_dist(&input, count, &cli.nnue);
         }
 
         Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, output_buckets }) => {
@@ -596,4 +609,176 @@ fn run_sample_positions(input: &str, output: &str, n: usize, sample_rate: f64) {
     }
 
     println!("Sampled {} positions from {} scanned → {}", count, total, output);
+}
+
+fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>) {
+    use sfbinpack::CompressedTrainingDataEntryReader;
+
+    // Load NNUE
+    let mut info = search::SearchInfo::new(1);
+    info.silent = true;
+    if let Some(path) = nnue_path {
+        info.load_nnue(path).expect("Failed to load NNUE");
+    } else if !info.auto_discover_nnue() {
+        eprintln!("Error: No NNUE net. Use -n <path>");
+        return;
+    }
+
+    println!("Evaluating {} positions from {}", n, input);
+    let file = std::fs::File::open(input).unwrap_or_else(|_| panic!("Failed to open {}", input));
+    let reader = CompressedTrainingDataEntryReader::new(file)
+        .unwrap_or_else(|_| panic!("Failed to parse binpack {}", input));
+
+    let mut scores: Vec<i32> = Vec::with_capacity(n);
+    let mut results: Vec<f64> = Vec::with_capacity(n); // 1.0=white win, 0.5=draw, 0.0=black win
+    let mut total = 0usize;
+    let mut reader = reader;
+
+    while reader.has_next() && scores.len() < n {
+        let entry = reader.next();
+        total += 1;
+
+        // Skip checks and extreme scores (same filter as training)
+        if entry.pos.is_checked(entry.pos.side_to_move()) { continue; }
+        if entry.score.unsigned_abs() > 10000 { continue; }
+
+        // Convert to our Board and evaluate
+        let fen = match entry.pos.fen() {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        let board = board::Board::from_fen(&fen);
+
+        let score = if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
+            eval::evaluate_nnue(&board, net, acc)
+        } else {
+            continue;
+        };
+
+        // Game result from STM perspective: 1.0=stm wins, 0.0=stm loses
+        // entry.result: 1=white win, 0=draw, -1=black win
+        let stm_is_white = entry.pos.side_to_move() == sfbinpack::chess::color::Color::White;
+        let result_f = match entry.result {
+            1 => if stm_is_white { 1.0 } else { 0.0 },
+            -1 => if stm_is_white { 0.0 } else { 1.0 },
+            _ => 0.5, // draw
+        };
+
+        scores.push(score);
+        results.push(result_f);
+        // Also track search score from binpack for comparison
+        // (uncomment to use search score instead of static eval for WDL fit)
+
+        if scores.len() % 100_000 == 0 {
+            eprint!("\r  {} / {} evaluated ({} scanned)", scores.len(), n, total);
+        }
+    }
+    eprintln!();
+
+    let count = scores.len();
+    if count == 0 {
+        println!("No positions evaluated");
+        return;
+    }
+
+    // Debug: result distribution
+    let wins = results.iter().filter(|&&r| r > 0.7).count();
+    let draws = results.iter().filter(|&&r| r > 0.3 && r < 0.7).count();
+    let losses = results.iter().filter(|&&r| r < 0.3).count();
+    println!("  Results: {} wins, {} draws, {} losses", wins, draws, losses);
+
+    // Statistics
+    let sum: f64 = scores.iter().map(|&s| s as f64).sum();
+    let sum_sq: f64 = scores.iter().map(|&s| (s as f64) * (s as f64)).sum();
+    let abs_sum: f64 = scores.iter().map(|&s| (s as f64).abs()).sum();
+    let mean = sum / count as f64;
+    let rms = (sum_sq / count as f64).sqrt();
+    let abs_mean = abs_sum / count as f64;
+
+    let mut sorted = scores.clone();
+    sorted.sort();
+
+    println!("=== Eval Distribution ({} positions, {} scanned) ===", count, total);
+    println!("  Mean:     {:+.1}", mean);
+    println!("  Abs mean: {:.1}", abs_mean);
+    println!("  RMS:      {:.1}", rms);
+    println!("  Ratio to baseline (580): {:.2}x", rms / 580.0);
+    println!();
+    println!("  Percentiles:");
+    println!("    p1:  {:+}", sorted[count / 100]);
+    println!("    p5:  {:+}", sorted[count * 5 / 100]);
+    println!("    p10: {:+}", sorted[count / 10]);
+    println!("    p25: {:+}", sorted[count / 4]);
+    println!("    p50: {:+}", sorted[count / 2]);
+    println!("    p75: {:+}", sorted[count * 3 / 4]);
+    println!("    p90: {:+}", sorted[count * 9 / 10]);
+    println!("    p95: {:+}", sorted[count * 95 / 100]);
+    println!("    p99: {:+}", sorted[count * 99 / 100]);
+    println!();
+
+    // === WDL Logistic Fit (SF approach) ===
+    // Fit: win_rate(eval) = 1 / (1 + exp(-eval / K))
+    // Find K (NormalizeToPawnValue) where EVAL_SCALE should be set so that
+    // 100cp of NNUE output ≈ 50% win probability.
+    //
+    // Uses our static NNUE eval paired with game outcomes from the binpack.
+    // NOTE: For best results, use data generated by the SAME net being evaluated,
+    // or T80 data with a net trained on T80. Mismatched eval/results gives poor fit.
+    println!("=== WDL Logistic Fit (NNUE eval vs game outcome) ===");
+
+    let mut best_k = 200.0f64;
+    let mut best_err = f64::MAX;
+
+    // Binary search over K from 50 to 2000
+    for k_int in 50..=2000 {
+        let k = k_int as f64;
+        let mut err_sum = 0.0f64;
+        for i in 0..count {
+            let eval = scores[i] as f64;
+            let predicted = 1.0 / (1.0 + (-eval / k).exp());
+            let actual = results[i];
+            let diff = predicted - actual;
+            err_sum += diff * diff;
+        }
+        if err_sum < best_err {
+            best_err = err_sum;
+            best_k = k;
+        }
+    }
+
+    let mse = best_err / count as f64;
+    println!("  Best K (NormalizeToPawnValue): {:.0}", best_k);
+    println!("  MSE: {:.6}", mse);
+    println!("  → EVAL_SCALE should be {:.0} so that 100cp ≈ 50% win", best_k);
+    println!();
+
+    // Show calibration: predicted win% at key eval values
+    println!("  Calibration (eval → predicted win%):");
+    for &ev in &[25, 50, 100, 150, 200, 300, 500] {
+        let p = 1.0 / (1.0 + (-(ev as f64) / best_k).exp());
+        println!("    {:+4}cp → {:.1}% win", ev, p * 100.0);
+    }
+    println!();
+
+    // Show actual win rates in eval buckets for validation
+    println!("  Actual win rates by eval bucket:");
+    let buckets: Vec<(i32, i32)> = vec![
+        (-500, -200), (-200, -100), (-100, -50), (-50, -25),
+        (-25, 0), (0, 25), (25, 50), (50, 100),
+        (100, 200), (200, 500),
+    ];
+    for (lo, hi) in &buckets {
+        let mut wins = 0.0f64;
+        let mut n_bucket = 0usize;
+        for i in 0..count {
+            if scores[i] >= *lo && scores[i] < *hi {
+                wins += results[i];
+                n_bucket += 1;
+            }
+        }
+        if n_bucket > 100 {
+            println!("    [{:+4}, {:+4}): {:.1}% win (n={})",
+                lo, hi, wins / n_bucket as f64 * 100.0, n_bucket);
+        }
+    }
 }
