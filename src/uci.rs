@@ -202,10 +202,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
             }
             "ponderhit" => {
-                // Ponderhit budget scales with time ratio and ponder depth.
-                // Time-rich + shallow ponder → more verification time.
-                // Behind on time → instant stop.
-                // Deep ponder → result is reliable, less verification needed.
+                // Ponderhit = our ponder move was played. Now it's our turn.
+                // The ponder search gave us a head start — use normal time
+                // allocation to push deeper. Don't waste the free thinking
+                // time by moving instantly.
                 if let (Some(ref pl), Some(start)) = (&ponder_limits, ponder_search_start) {
                     let our_time = if board.side_to_move == crate::types::WHITE {
                         pl.wtime
@@ -219,30 +219,23 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     };
                     if our_time > 0 {
                         let overhead = info.move_overhead;
+                        let time_left = our_time.saturating_sub(overhead).max(1);
+                        let elapsed = start.elapsed().as_millis() as u64;
 
-                        // Ponderhit verification budget — must work at ALL TCs:
-                        // Bullet 1+0: tiny budget (just don't flag)
-                        // Blitz 3+2: ~1s verification
-                        // Classical 40+0: ~1-2s verification
-                        // Tournament 90+30: ~4s verification
-                        //
-                        // Budget = min(base, time_cap) - overhead
-                        // base: half increment, or time/40 if no increment
-                        // time_cap: 5% of remaining time (never risk flagging)
-                        let base = if our_inc > 0 {
-                            our_inc / 2  // half the increment
-                        } else {
-                            our_time / 40  // no increment: use 2.5% of clock
-                        };
-                        let budget = base.min(our_time / 20); // cap at 5% of remaining
+                        // Normal time allocation (same formula as go command)
+                        let moves_left = if pl.movestogo > 0 { pl.movestogo as u64 } else { 25 };
+                        let soft = (time_left / moves_left + our_inc * 4 / 5)
+                            .min(time_left / 2);
+                        // Hard = 3x soft, capped at timeLeft/5 + inc
+                        let hard = (soft * 3)
+                            .min(time_left / 5 + our_inc)
+                            .min(time_left * 3 / 4);
 
                         // Very low time (< 2s with no inc): instant stop
-                        if budget <= overhead && our_inc == 0 && our_time < 2000 {
+                        if hard <= overhead && our_inc == 0 && our_time < 2000 {
                             stop_flag.store(true, Ordering::Relaxed);
                         } else {
-                            let budget = budget.saturating_sub(overhead).max(10);
-                            let elapsed = start.elapsed().as_millis() as u64;
-                            let deadline = elapsed + budget;
+                            let deadline = elapsed + hard.max(10);
                             ponderhit_flag.store(deadline, Ordering::Relaxed);
                         }
                     } else {
