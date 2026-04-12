@@ -34,10 +34,9 @@ use bullet_lib::{
         settings::LocalSettings,
     },
     value::{ValueTrainerBuilder, loader::SfBinpackLoader},
-
+};
 
 use sfbinpack::chess::{piecetype::PieceType, r#move::MoveType};
-};
 
 fn main() {
     // Architecture: (768×16 → 1536) → CReLU → pairwise → 768 per perspective

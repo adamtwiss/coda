@@ -32,10 +32,9 @@ use bullet_lib::{
         settings::LocalSettings,
     },
     value::{ValueTrainerBuilder, loader::SfBinpackLoader},
-
+};
 
 use sfbinpack::chess::{piecetype::PieceType, r#move::MoveType};
-};
 
 fn main() {
     let ft_size = 1024;
