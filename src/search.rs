@@ -17,7 +17,7 @@ use crate::types::*;
 
 const MAX_PLY: usize = 64;
 const INFINITY: i32 = 30000;
-const CONTEMPT: i32 = 10; // prefer playing on over drawing
+// CONTEMPT is now tunable as CONTEMPT_VAL
 
 // Pawn history table size
 const PAWN_HIST_SIZE: usize = 512;
@@ -114,6 +114,10 @@ tunables!(
     (QUIET_CHECK_BONUS, 10074, 2000, 30000),
     // LMR complexity divisor (correction history magnitude)
     (LMR_COMPLEXITY_DIV, 146, 30, 500),
+    // Contempt: prefer playing on over drawing. Positive = avoid draws.
+    (CONTEMPT_VAL,       10,    0,   50),
+    // Correction history divisor: scales how much correction adjusts static eval
+    (CORR_HIST_DIV,    1024,  256, 4096),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -669,7 +673,7 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
 
     // Weighted blend: pawn 384, whiteNP 154, blackNP 154, minor 102, major 102, cont 128 = 1024
     let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
-        + minor_corr * tp(&CORR_W_MINOR) as i64 + major_corr * tp(&CORR_W_MAJOR) as i64 + cont_corr * tp(&CORR_W_CONT) as i64) / 1024;
+        + minor_corr * tp(&CORR_W_MINOR) as i64 + major_corr * tp(&CORR_W_MAJOR) as i64 + cont_corr * tp(&CORR_W_CONT) as i64) / tp(&CORR_HIST_DIV) as i64;
     let adjusted = raw_eval + (total_corr as i32) / CORR_HIST_GRAIN;
     adjusted.clamp(-MATE_SCORE + 100, MATE_SCORE - 100)
 }
@@ -1461,7 +1465,8 @@ fn negamax(
     // (we don't want to draw), opponent gets +CONTEMPT (we're happy if they draw).
     // This prevents us from playing INTO repetitions when we have an advantage.
     if ply > 0 {
-        let draw_score = if board.side_to_move == info.root_stm { -CONTEMPT } else { CONTEMPT };
+        let contempt = tp(&CONTEMPT_VAL);
+        let draw_score = if board.side_to_move == info.root_stm { -contempt } else { contempt };
         if board.halfmove >= 100 {
             return draw_score;
         }
