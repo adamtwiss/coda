@@ -106,18 +106,17 @@ fn main() {
             l0.init_with_effective_input_size(32);
             l0.weights = l0.weights + expanded_factoriser;
 
-            // Hidden layers with output buckets
-            // After pairwise: 768 per perspective, concat = 1536 (= ft_size)
-            let l1 = builder.new_affine("l1", ft_size, NUM_OUTPUT_BUCKETS * l1_size);
-            let l2 = builder.new_affine("l2", l1_size, NUM_OUTPUT_BUCKETS * l2_size);
+            // Shared hidden layers (not bucketed) — only output is bucketed
+            let l1 = builder.new_affine("l1", ft_size, l1_size);
+            let l2 = builder.new_affine("l2", l1_size, l2_size);
             let l3 = builder.new_affine("l3", l2_size, NUM_OUTPUT_BUCKETS);
 
             // Forward: FT → CReLU → pairwise → concat → L1 → ReLU → L2 → ReLU → output
             let stm_hidden = l0.forward(stm_inputs).crelu().pairwise_mul();
             let ntm_hidden = l0.forward(ntm_inputs).crelu().pairwise_mul();
             let hl1 = stm_hidden.concat(ntm_hidden);
-            let hl2 = l1.forward(hl1).select(output_buckets).relu();
-            let hl3 = l2.forward(hl2).select(output_buckets).relu();
+            let hl2 = l1.forward(hl1).relu();
+            let hl3 = l2.forward(hl2).relu();
             l3.forward(hl3).select(output_buckets)
         });
 

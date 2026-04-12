@@ -10,6 +10,7 @@
 ///
 /// Convert:
 ///   coda convert-bullet -input quantised.bin -output net.nnue -screlu -hidden 16 -hidden2 32 -int8l1
+/// Note: hidden layers are now shared (unbucketed). Do NOT pass --bucketed-hidden.
 /// Name: net-v7-1024h16x32s-w0-e800sNNN.nnue
 ///
 /// CRITICAL: Monitor hidden layer health at every checkpoint (check-net).
@@ -98,15 +99,16 @@ fn main() {
             l0.init_with_effective_input_size(32);
             l0.weights = l0.weights + expanded_factoriser;
 
-            // Hidden layers with output buckets baked in
-            let l1 = builder.new_affine("l1", 2 * ft_size, NUM_OUTPUT_BUCKETS * l1_size);
-            let l2 = builder.new_affine("l2", l1_size, NUM_OUTPUT_BUCKETS * l2_size);
+            // Shared hidden layers (not bucketed) — only output is bucketed
+            // Bucketing L1/L2 starves them of gradient signal (16×32 = 512 params per bucket)
+            let l1 = builder.new_affine("l1", 2 * ft_size, l1_size);
+            let l2 = builder.new_affine("l2", l1_size, l2_size);
             let l3 = builder.new_affine("l3", l2_size, NUM_OUTPUT_BUCKETS);
 
             let stm = l0.forward(stm_inputs).screlu();
             let ntm = l0.forward(ntm_inputs).screlu();
-            let h1 = l1.forward(stm.concat(ntm)).select(output_buckets).screlu();
-            let h2 = l2.forward(h1).select(output_buckets).screlu();
+            let h1 = l1.forward(stm.concat(ntm)).screlu();
+            let h2 = l2.forward(h1).screlu();
             l3.forward(h2).select(output_buckets)
         });
 

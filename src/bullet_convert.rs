@@ -156,18 +156,16 @@ pub fn convert_v7(
     l1_size: usize,
     l2_size: usize,
     int8_l1: bool,
+    bucketed_hidden: bool,
 ) -> Result<(), String> {
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
     let data_len = strip_footer(&data);
 
     let l1w_bytes_per = if int8_l1 { 1 } else { 2 };
-    // Bullet bakes output buckets into hidden layer dimensions:
-    //   l1: [H][BUCKETS*L1] weights, [BUCKETS*L1] biases
-    //   l2: [L1][BUCKETS*L2] weights, [BUCKETS*L2] biases
-    //   l3: [L2][BUCKETS] weights, [BUCKETS] biases
-    // l1w is i8 or i16 (quantised). Everything else after l1w is f32.
-    let bl1 = NNUE_OUTPUT_BUCKETS * l1_size;
-    let bl2 = NNUE_OUTPUT_BUCKETS * l2_size;
+    // Bucketed: Bullet bakes output buckets into hidden layer dimensions
+    // Unbucketed: hidden layers are shared, only output is bucketed
+    let bl1 = if bucketed_hidden { NNUE_OUTPUT_BUCKETS * l1_size } else { l1_size };
+    let bl2 = if bucketed_hidden { NNUE_OUTPUT_BUCKETS * l2_size } else { l2_size };
     let l1b_bytes = bl1 * 4; // f32
     let l2_bytes = if l2_size > 0 { l1_size * bl2 * 4 + bl2 * 4 } else { 0 }; // f32
     let out_input = if l2_size > 0 { l2_size } else { l1_size };
@@ -288,7 +286,7 @@ pub fn convert_v7(
     if use_screlu { flags |= 1; }
     if use_pairwise { flags |= 2; }
     if int8_l1 { flags |= 4; }
-    flags |= 8; // bit 3 = bucketed hidden layers (output buckets baked into L1/L2)
+    if bucketed_hidden { flags |= 8; } // bit 3 = bucketed hidden layers
     buf.push(flags);
     write_u16_le(&mut buf, h as u16);       // FT size
     write_u16_le(&mut buf, l1_size as u16); // per-bucket L1 size
