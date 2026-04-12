@@ -2159,8 +2159,30 @@ fn negamax(
         // Check if move gives check (opponent is now in check after make_move)
         let gives_check = board.in_check();
 
-        // Recapture extension: extend when recapturing on the same square
+        // History-based extension: extend when both ply-1 and ply-2 cont-hist
+        // strongly agree this move is good (Igel/Altair pattern).
         let mut extension = 0;
+        if !is_cap && !is_pv && moved_piece != NO_PIECE && ply > 0 {
+            let gp = go_piece(moved_piece);
+            let stack_len = board.undo_stack.len();
+            let mut strong = true;
+            for &off in &[1usize, 2] {
+                if stack_len >= off {
+                    let undo = &board.undo_stack[stack_len - off];
+                    if undo.mv != NO_MOVE {
+                        let prev_to = move_to(undo.mv);
+                        let prev_piece = board.piece_at(prev_to);
+                        if prev_piece != NO_PIECE {
+                            let ch = info.history.cont_hist[go_piece(prev_piece)][prev_to as usize][gp][to as usize];
+                            if (ch as i32) < 5000 { strong = false; break; }
+                        } else { strong = false; break; }
+                    } else { strong = false; break; }
+                } else { strong = false; break; }
+            }
+            if strong { extension = 1; }
+        }
+
+        // Recapture extension: extend when recapturing on the same square
         if is_cap && board.undo_stack.len() >= 2 {
             let prev_undo = &board.undo_stack[board.undo_stack.len() - 2];
             if prev_undo.captured != NO_PIECE_TYPE && to == move_to(prev_undo.mv) {
