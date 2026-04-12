@@ -224,12 +224,15 @@ pub fn evaluate(board: &crate::board::Board) -> i32 {
 
 /// Material-only value of a piece type (midgame, for SEE).
 pub const fn see_value(pt: u8) -> i32 {
+    // Values aligned with consensus from top engines (Berserk, Obsidian,
+    // Stormphrax, Viridithas). Old textbook values (100/320/330/500/900)
+    // underestimated minor pieces by ~25% and rook/queen by ~20%.
     match pt {
         0 => 100,   // PAWN
-        1 => 320,   // KNIGHT
-        2 => 330,   // BISHOP
-        3 => 500,   // ROOK
-        4 => 900,   // QUEEN
+        1 => 420,   // KNIGHT (was 320)
+        2 => 420,   // BISHOP (was 330, N=B consensus)
+        3 => 640,   // ROOK (was 500)
+        4 => 1200,  // QUEEN (was 900)
         5 => 20000, // KING
         _ => 0,
     }
