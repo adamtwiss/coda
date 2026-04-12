@@ -1649,14 +1649,14 @@ impl NNUENet {
     /// acc → SCReLU (clamp+square, scale QA²) → L1 matmul → /QA² → SCReLU → float L2 → output
     fn forward_with_l1(&self, stm_acc: &[i16], ntm_acc: &[i16], bucket: usize) -> i32 {
         let h = self.hidden_size;
-        let l1 = self.l1_per_bucket;  // per-bucket size (e.g. 16), not total (e.g. 128)
-        let l1_total = self.l1_size;  // total bucketed size (buckets × l1_per_bucket)
+        let l1 = if self.bucketed_hidden { self.l1_per_bucket } else { self.l1_size };
+        let l1_total = self.l1_size;  // total size (bucketed or not)
         let qa = QA as i64;
         let qa2 = qa * qa; // 65025
         let qa_l1 = self.l1_scale as i64;
 
-        // Bucket offset into weight/bias arrays
-        let b_off = bucket * l1;
+        // Bucket offset into weight/bias arrays (0 for unbucketed nets)
+        let b_off = if self.bucketed_hidden { bucket * l1 } else { 0 };
 
         // L1 matmul: SCReLU(acc) × L1_weights → hidden
         // SCReLU: clamp [0, QA], square → scale QA²
@@ -1724,15 +1724,19 @@ impl NNUENet {
                 l1_out[i] = hsq as f32 / qa_l1_sq; // → [0, 1]
             }
 
-            // L2 or output — float (bucket-aware indexing)
+            // L2 or output — float (handles both bucketed and unbucketed)
             if self.l2_size > 0 {
-                let l2 = self.l2_per_bucket;
-                let l2_off = bucket * l2;
+                let l2 = if self.bucketed_hidden { self.l2_per_bucket } else { self.l2_size };
+                let l2_off = if self.bucketed_hidden { bucket * l2 } else { 0 };
                 let mut h2 = [0.0f32; 256];
                 for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
                 for i in 0..l1 {
                     if l1_out[i] == 0.0 { continue; }
-                    let w_off = i * self.l2_size + bucket * self.l2_per_bucket;
+                    let w_off = if self.bucketed_hidden {
+                        i * self.l2_size + bucket * self.l2_per_bucket
+                    } else {
+                        i * self.l2_size
+                    };
                     for k in 0..l2 { h2[k] += l1_out[i] * self.l2_weights_f[w_off + k]; }
                 }
                 for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; }
@@ -1800,15 +1804,19 @@ impl NNUENet {
                 l1_out[i] = hsq as f32 / qa_l1_sq; // → [0, 1]
             }
 
-            // L2 or output — float (bucket-aware indexing)
+            // L2 or output — float (handles both bucketed and unbucketed)
             if self.l2_size > 0 {
-                let l2 = self.l2_per_bucket;
-                let l2_off = bucket * l2;
+                let l2 = if self.bucketed_hidden { self.l2_per_bucket } else { self.l2_size };
+                let l2_off = if self.bucketed_hidden { bucket * l2 } else { 0 };
                 let mut h2 = [0.0f32; 256];
                 for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
                 for i in 0..l1 {
                     if l1_out[i] == 0.0 { continue; }
-                    let w_off = i * self.l2_size + bucket * self.l2_per_bucket;
+                    let w_off = if self.bucketed_hidden {
+                        i * self.l2_size + bucket * self.l2_per_bucket
+                    } else {
+                        i * self.l2_size
+                    };
                     for k in 0..l2 { h2[k] += l1_out[i] * self.l2_weights_f[w_off + k]; }
                 }
                 for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; }
@@ -1904,17 +1912,21 @@ impl NNUENet {
             l1_out[i] = hsq as f32 / qa_l1_sq; // → [0, 1]
         }
 
-        // L2 layer (if present) — float (bucket-aware)
+        // L2 layer (if present) — float (handles bucketed and unbucketed)
         if self.l2_size > 0 {
-            let l2 = self.l2_per_bucket;
-            let l2_off = bucket * l2;
+            let l2 = if self.bucketed_hidden { self.l2_per_bucket } else { self.l2_size };
+            let l2_off = if self.bucketed_hidden { bucket * l2 } else { 0 };
             let mut h2 = [0.0f32; 256];
             for k in 0..l2 {
                 h2[k] = self.l2_biases_f[l2_off + k];
             }
             for i in 0..l1 {
                 if l1_out[i] == 0.0 { continue; }
-                let w_off = i * self.l2_size + bucket * self.l2_per_bucket;
+                let w_off = if self.bucketed_hidden {
+                    i * self.l2_size + bucket * self.l2_per_bucket
+                } else {
+                    i * self.l2_size
+                };
                 for k in 0..l2 {
                     h2[k] += l1_out[i] * self.l2_weights_f[w_off + k];
                 }
