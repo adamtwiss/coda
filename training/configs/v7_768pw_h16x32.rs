@@ -53,6 +53,7 @@ fn main() {
     let wdl_proportion: f32 = get_arg(&args, "--wdl", "0.0").parse().unwrap();
     let initial_lr: f32 = get_arg(&args, "--lr", "0.001").parse().unwrap();
     let warmup_sbs: usize = get_arg(&args, "--warmup", "20").parse().unwrap();
+    let loss_power: f32 = get_arg(&args, "--loss-power", "2.5").parse().unwrap();
     let final_lr = initial_lr * 0.3f32.powi(5); // Bullet example: ~2.43e-6
 
     const NUM_OUTPUT_BUCKETS: usize = 8;
@@ -94,7 +95,7 @@ fn main() {
             SavedFormat::id("l3w").transpose(),
             SavedFormat::id("l3b"),
         ])
-        .loss_fn(|output, target| output.sigmoid().squared_error(target))
+        .loss_fn(move |output, target| output.sigmoid().power_error(target, loss_power))
         .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
             // Factoriser for weight sharing across king buckets
             let l0f = builder.new_weights("l0f", Shape::new(ft_size, 768), InitSettings::Zeroed);
@@ -174,7 +175,7 @@ fn main() {
     println!("=== Coda v7 768pw Training ===");
     println!("FT: {} → CReLU → pairwise → {}", ft_size, ft_size / 2);
     println!("Hidden: {} → {} → 1×{}", l1_size, l2_size, NUM_OUTPUT_BUCKETS);
-    println!("Warmup: {} SBs, Schedule: {} SBs, WDL: {}", warmup_sbs, superbatches, wdl_proportion);
+    println!("Warmup: {} SBs, Schedule: {} SBs, WDL: {}, Loss: power({})", warmup_sbs, superbatches, wdl_proportion, loss_power);
     println!("Data: {}", dataset_path);
     println!();
 

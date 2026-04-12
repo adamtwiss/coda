@@ -8,9 +8,10 @@
 ///     --dataset /workspace/data/test80-2024-01-jan-2tb7p.min-v2.v6.binpack \
 ///     --superbatches 800 --wdl 0.07 --save-rate 100
 ///
-/// Key training findings (2026-04-10):
+/// Key training findings:
 /// - Low final LR (0.001 * 0.3^5 = 2.43e-6): +47 Elo vs old 0.0001
 /// - Filtering (quiet positions only): +22 untuned, +48 with retune
+/// - Power-2.5 loss: +17 Elo vs MSE (2026-04-12, OB #291 H1)
 /// - Combined: +80 Elo over baseline at s120
 ///
 /// Output: quantised.bin in checkpoints/
@@ -47,6 +48,7 @@ fn main() {
     let wdl_proportion: f32 = get_arg(&args, "--wdl", "0.07").parse().unwrap();
     let initial_lr: f32 = get_arg(&args, "--lr", "0.001").parse().unwrap();
     let final_lr: f32 = get_arg(&args, "--final-lr", &format!("{}", initial_lr * 0.3f32.powi(5))).parse().unwrap();
+    let loss_power: f32 = get_arg(&args, "--loss-power", "2.5").parse().unwrap();
     let save_rate: usize = get_arg(&args, "--save-rate", "100").parse().unwrap();
 
     const NUM_OUTPUT_BUCKETS: usize = 8;
@@ -84,7 +86,7 @@ fn main() {
             SavedFormat::id("l1w").round().quantise::<i16>(64),
             SavedFormat::id("l1b").round().quantise::<i32>(255 * 64),
         ])
-        .loss_fn(|output, target| output.sigmoid().squared_error(target))
+        .loss_fn(move |output, target| output.sigmoid().power_error(target, loss_power))
         .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
             let l0f = builder.new_weights("l0f", Shape::new(ft_size, 768), InitSettings::Zeroed);
             let expanded_factoriser = l0f.repeat(NUM_INPUT_BUCKETS);
@@ -142,7 +144,7 @@ fn main() {
 
     println!("=== Coda v5 768 Pairwise ===");
     println!("FT: {} → CReLU → pairwise → {} per perspective", ft_size, ft_size / 2);
-    println!("Schedule: {} SBs, WDL: {}, LR: {}→{}", superbatches, wdl_proportion, initial_lr, final_lr);
+    println!("Schedule: {} SBs, WDL: {}, LR: {}→{}, Loss: power({})", superbatches, wdl_proportion, initial_lr, final_lr, loss_power);
     println!("Data: {}", dataset_path);
     println!();
 
