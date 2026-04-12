@@ -1492,13 +1492,16 @@ fn negamax(
         if let Some(ref tb) = info.syzygy {
             if crate::bitboard::popcount(board.occupied()) as usize <= tb.max_pieces() {
                 if let Some(wdl) = tb.probe_wdl(board) {
-                    // Convert WDL to a score with ply adjustment (like mate scores)
-                    let tb_score = if wdl > 0 {
-                        MATE_SCORE - 200 - ply  // winning: large positive, closer = better
-                    } else if wdl < 0 {
-                        -(MATE_SCORE - 200) + ply  // losing: large negative
+                    // wdl from ambiguous_wdl_to_score: ±20000 = definite, ±1 = ambiguous, 0 = draw
+                    // Only use large TB scores for definite Win/Loss.
+                    // Ambiguous results (CursedWin=1, MaybeLoss=-1) stay small
+                    // so the search treats them as near-draw, not resignation triggers.
+                    let tb_score = if wdl > 1 {
+                        TB_WIN - ply  // definite win
+                    } else if wdl < -1 {
+                        -TB_WIN + ply  // definite loss
                     } else {
-                        0  // draw
+                        wdl  // ambiguous (±1) or draw (0): use as-is
                     };
 
                     if tb_score >= beta { return tb_score; }
