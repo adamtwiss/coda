@@ -136,15 +136,35 @@ The `v7_768pw_h16x32.rs` config uses `.relu()` on hidden layers instead of `.scr
 - **GPU hosts**: 3 available for parallel experiments
 - **Timing**: e100 ≈ 1 hour, e800 ≈ 8 hours
 
-### Key Training Parameters
+### Key Training Parameters (updated 2026-04-12)
 - **eval_scale**: 400.0 (converts sigmoid to centipawn space)
 - **batch_size**: 16,384
 - **batches_per_superbatch**: 6104 (~100M positions per SB)
-- **score_filter**: `unsigned_abs() < 10000` (consider tightening to 2000)
-- **LR**: 0.001 peak, cosine decay to 0.00001
-- **Warmup**: 20 SB linear ramp (0.0001 → 0.001)
-- **WDL**: 0.0 (pure score training, but w7 = 0.07 was optimal for v5)
+- **Position filter**: ply≥16, no checks, no captures, no tactical moves (+22-48 Elo)
+- **LR**: 0.001 peak, cosine decay to **5e-6** (was 1e-4 — **+47 Elo from fix**)
+- **Warmup**: 20 SB linear ramp (0.0001 → 0.001) — essential for v7 hidden layers
+- **WDL for v5**: 0.07 (pure score works for v5's 12M FT params)
+- **WDL for v7**: **0.4** (Viridithas uses this — hidden layers need game outcome signal)
 - **Optimizer**: AdamW with stricter clipping (0.99) for FT/factoriser weights
+- **Training length**: 400 SBs is the sweet spot (Viridithas finding). 800 gives marginal +1-2 Elo.
+
+### Training Improvements Roadmap (from Viridithas research, 2026-04-12)
+
+| Change | Expected Impact | Effort | Status |
+|--------|----------------|--------|--------|
+| Low final LR (5e-6) | **+47 Elo (proven)** | Config change | ✅ Done |
+| Position filtering | **+22-48 Elo (proven)** | Config change | ✅ Done |
+| WDL 0.4 for v7 | +10-20 Elo | Config change | Training overnight |
+| Power loss 2.5 | +16-24 Elo (Cosmo) | 1-line config change | Not yet tried |
+| Fresh self-play data | +37 Elo (Viridithas "stalker") | Datagen run | Generating on Titan |
+| AdamW beta1=0.95 | +4 Elo | 1-line config change | Not yet tried |
+| L1 activation regularization | Unknown but positive | May need custom code | Not yet tried |
+
+Power loss is available in Bullet:
+```rust
+// One-line change from MSE to power-2.5:
+.loss_fn(|output, target| output.sigmoid().power_error(target, 2.5))
+```
 
 ## Velvet Trainer Findings (2026-04-06)
 
@@ -274,18 +294,89 @@ Only exp L (exact production copy with 1 line changed) produced a healthy model.
 - Dual-net approach (big+small) saves NPS on lopsided positions.
 - King bucket count and layout affect training efficiency.
 
+## v7 Inference Investigation (2026-04-12)
+
+### Validated: Inference is Correct for Unbucketed Nets
+
+Loaded GoChess v7 `net-v7-1024h16x32s-w0-e1200-12f-s1200.nnue` (unbucketed, flags=0x05)
+in Coda successfully. Results match GoChess direction:
+
+| Position | Coda (v7 unbucketed) | GoChess | Status |
+|----------|---------------------|---------|--------|
+| startpos | +24 | ~same | ✓ OK |
+| miss pawn | -12 | ~same | ✓ OK |
+| miss rook | -475 | -1803 | ✓ Same sign |
+| EG rook up | +2172 | ~same | ✓ OK |
+| EG queen up | +2118 | ~same | ✓ OK |
+
+All SIMD paths (AVX2, NEON) and scalar fallback produce identical results.
+
+### Bucketed vs Unbucketed Formats
+
+Two v7 .nnue formats exist:
+- **Unbucketed** (GoChess, flags bit 3 = 0): L1/L2 are flat (per-bucket size).
+  Output layer has bucket selection. File ~25.2MB.
+- **Bucketed** (Coda, flags bit 3 = 1): L1/L2 dimensions are multiplied by
+  NUM_OUTPUT_BUCKETS. Bucket selection at each layer. File ~25.7MB.
+
+Both are now supported in Coda's inference code.
+
+### Root Cause: Training, Not Inference
+
+The Coda v7 net (w0 + filtered, s800) produces near-constant output (~16cp for
+all positions). Investigation confirmed:
+- L1 weights are alive in quantised.bin: ~42% nonzero, mean|w|=2.3
+- L1 weights correctly transferred to .nnue file: ~36.5% nonzero
+- Both SIMD and scalar paths produce identical (constant) results
+- Output weights alive in .nnue file (nonzero, correct offset)
+
+The hidden layers simply didn't learn position-dependent features during training.
+
+### Why Training Failed: w0 + Filtering
+
+- **w0 (0% WDL)**: Hidden layers only see search scores as training signal.
+  The 33K parameters of 16→32 hidden layers need cleaner gradients than noisy
+  search scores provide. w0 works for v5's 12M FT parameters but not for tiny
+  hidden layers.
+- **Position filtering** (quiet positions only): Removes exactly the positions
+  where material differences are most visible — captures and tactical positions.
+  Hidden layers need these to learn piece value relationships.
+- **Viridithas uses w=0.4 (40% WDL)** for their v7 nets. Game outcome signal
+  provides cleaner gradients: "this side won" is unambiguous vs "search scored
+  this +247 or maybe +198 depending on depth."
+
+### Fix: Train with w=0.4 WDL
+
+Next v7 training run should use `--wdl 0.4` (matching Viridithas). Config
+`v7_1024h16x32s.rs` is ready. Everything else stays the same:
+- 1024 SCReLU, L1=16, L2=32
+- Filtering (quiet positions)
+- Low final LR (5e-6 or Bullet formula)
+- Warmup 20 SBs
+- e800, 12 T80 files
+
+### Bugs Fixed During Investigation
+
+1. **L1 bucket indexing**: `b_off = bucket * l1_per_bucket` for biases and weights
+   (AVX2, NEON, scalar paths)
+2. **L2 weight stride**: `i * l2_size + bucket * l2_per_bucket` (was `(b_off + i) * l2_per_bucket`)
+3. **Scalar fallback buffers**: `[64]` → `[256]` for bucketed nets
+4. **Unbucketed support**: `b_off = 0`, `l2_off = 0` when `bucketed_hidden = false`
+5. **Display**: check-net now shows per-bucket L1/L2 sizes, not total bucketed
+
 ## Open Questions
 
 1. ~~Is the piece value ordering a v5 problem too?~~ RESOLVED — check-net methodology was misleading (sigmoid saturation).
 2. ~~Is it a data distribution issue?~~ RESOLVED — same root cause as above.
-3. **Is eval_scale=400 correct?** Does it match what other Bullet-trained engines use?
-4. **Is the score filter (10000) too loose?** Standard is to also filter ply<16, in-check, and tactical positions.
+3. ~~**Is eval_scale=400 correct?**~~ RESOLVED — eval_scale=400 is correct for all nets. Clipped eval RMS matches across nets. The apparent scale differences were from tails, not the search-relevant range.
+4. ~~**Is the score filter (10000) too loose?**~~ RESOLVED — standard filtering (ply≥16, no checks, no captures, no tactical) gives +22-48 Elo.
 5. **Are 8 output buckets by material count optimal?** Berserk uses 1 bucket successfully.
 6. **Are 16 king buckets right?** Obsidian uses 13, Reckless 10. Different granularity.
 7. **Do we need threat features?** Reckless, Halogen, Stormphrax all use them. Biggest architectural gap.
 8. **Should we try power-2.5 loss?** +16-24 Elo in Cosmo's testing.
 9. **Should we try beta1=0.95?** +4 Elo in Motor.
 10. **Is suicide-chess data generation viable?** Natural material-imbalance positions via forced-capture self-play.
+11. **v7 with w=0.4 WDL**: Will this produce viable hidden layers? GPU4 training queued.
 
 ## Experiment Plan
 
