@@ -2543,7 +2543,10 @@ fn negamax(
     }
 
     // Store in transposition table (skip during singular verification)
-    if info.excluded_move[ply_u] == NO_MOVE {
+    // Also skip if search was stopped — partial results corrupt the TT.
+    // Child nodes that completed before stop are individually valid but
+    // the parent's best_score is based on an incomplete move list.
+    if info.excluded_move[ply_u] == NO_MOVE && !info.stop.load(Ordering::Relaxed) {
         let flag = if best_score <= alpha_orig {
             TT_FLAG_UPPER
         } else if best_score >= beta {
@@ -2743,7 +2746,7 @@ fn quiescence_with_depth(
             return -MATE_SCORE + ply;
         }
 
-        // Store in TT
+        // Store in TT (skip if stopped — partial QS results corrupt TT)
         let store_score = score_to_tt(best_score, ply);
         let flag = if best_score >= beta {
             TT_FLAG_LOWER
@@ -2752,7 +2755,7 @@ fn quiescence_with_depth(
         } else {
             TT_FLAG_EXACT
         };
-        if FEAT_TT_STORE.load(Ordering::Relaxed) {
+        if FEAT_TT_STORE.load(Ordering::Relaxed) && !info.stop.load(Ordering::Relaxed) {
             info.tt.store(board.hash, -1, store_score, flag, best_move, -INFINITY, false);
         }
         return best_score;
@@ -2871,7 +2874,7 @@ fn quiescence_with_depth(
         }
     }
 
-    // Store in TT
+    // Store in TT (skip if stopped — partial QS results corrupt TT)
     let store_score = score_to_tt(best_score, ply);
     let flag = if best_score >= beta {
         TT_FLAG_LOWER
@@ -2880,7 +2883,7 @@ fn quiescence_with_depth(
     } else {
         TT_FLAG_EXACT
     };
-    if FEAT_TT_STORE.load(Ordering::Relaxed) {
+    if FEAT_TT_STORE.load(Ordering::Relaxed) && !info.stop.load(Ordering::Relaxed) {
         info.tt.store(board.hash, -1, store_score, flag, best_move, stand_pat, false);
     }
 
