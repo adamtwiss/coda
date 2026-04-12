@@ -2220,6 +2220,11 @@ fn negamax(
                     reduction += 1;
                 }
 
+                // Extra reduction at cut nodes (SF/Clarity/Obsidian pattern)
+                if cut_node {
+                    reduction += 1;
+                }
+
                 // Reduce less when the position is improving
                 if improving {
                     reduction -= 1;
