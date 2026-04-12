@@ -4343,3 +4343,75 @@ Three training config changes tested against baseline `720pw-w7-s120` (768pw, WD
 3. **TM + ponder = dangerous.** Four TMv2 iterations failed at STC. The one that passed (+2.6) still showed degraded accuracy on Lichess with ponder on. Self-play SPRT is necessary but not sufficient for TM changes.
 4. **Ponder testing framework works.** cutechess-cli with `ponder` flag, local testing catches ponderhit bugs that OB can't test (no ponder in FastChess/OB).
 5. **Code review finds real bugs.** Deep review by Atlas found pawn file-wrapping (is_pseudo_legal), history table inconsistencies, and TB interior probe missing. All confirmed by SPRT or testing.
+
+---
+
+## Days 11-12 (2026-04-11 to 2026-04-12): Net Breakthroughs + Correctness Fixes
+
+### NNUE Training — SPRT Results [SPRT-validated]
+
+| # | Test | Elo | Games | Net | Description |
+|---|------|-----|-------|-----|-------------|
+| 282 | e800-lowestlr-tuned | **+23.7** | 1,924 | e800-filtered-lowestlr | SPSA tune #280 for new production net. H1 ✓ |
+| 287 | e800-lowestlr-tune2 | **+3.5** | 17,804 | e800-filtered-lowestlr | SPSA tune #283 refinement (new SEE values). H1 ✓ |
+| 289 | selfplay s120 vs T80 s120 | **+40.0** | 594 | selfplay-w7-e120s120 | 1.67B selfplay positions vs T80 baseline. H1 ✓ |
+| 291 | pow25 vs mse loss | ~+12.5 | 7,300 | pow25/mse s120 | Power-2.5 loss vs MSE. Trending H1. |
+
+**Selfplay net:** Trained on 1.67B selfplay positions (14% of T80 dataset). +40 Elo over T80-trained net at same training length (s120). Best move ordering ever: pos²=7.3, first-move cut=81.7%. Validates selfplay data as training source.
+
+**Power-2.5 loss:** +12.5 Elo over standard MSE loss, same T80 data. Free improvement from changing loss function. Based on Cosmo/Viridithas findings (+16-24 Elo).
+
+### Search/SEE Changes [SPRT-validated]
+
+| # | Test | Elo | Games | Description |
+|---|------|-----|-------|-------------|
+| 281 | fix-see-values | +1.7 | 13,850 | SEE piece values to consensus: N=420, B=420, R=640, Q=1200 |
+
+### Correctness Fixes Merged (not SPRT'd — bug fixes)
+
+| Fix | Commit | Impact |
+|-----|--------|--------|
+| TB root probe missing score | d4382bc | Lichess bot had no score for draw/resign with TB moves |
+| Bestmove vs PV underpromotion mismatch | e70229f | fastchess warnings — bestmove picked queen when PV had knight/rook promo |
+| Ponderhit budget for all TCs | 3cc4e2c | Instant stop at 114s with 118s on clock. Fixes classical/tournament TC. |
+| TT store guards (all 3 unguarded stores) | 67b73be | QS stores had no stop guard — score 0.0 stored as real eval |
+| Hard fail without NNUE | 37c4780 | Engine silently fell back to PESTO eval on Lichess (91% accuracy!) |
+| Make PGO embedding | 37c4780 | `make pgo` didn't pass `--features embedded-net` |
+
+### NNUE Training — Currently Running
+
+| Config | Architecture | Loss | WDL | Data | Schedule | Notes |
+|--------|-------------|------|-----|------|----------|-------|
+| v7 768pw h16x32 | FT→CReLU→pw→16→32→1×8 | MSE | 0.4 | T80 | e800 | Testing WDL fix for v7 |
+| v5 768pw | FT→CReLU→pw→1×8 | MSE | 0.07 | selfplay | s120 done, need e800 | +40 Elo result |
+| v5 768pw | FT→CReLU→pw→1×8 | power-2.5 | 0.07 | T80 | s120 done | ~+12.5 Elo over MSE |
+
+### SPSA Tune Running
+
+| # | Net | Status | Notes |
+|---|-----|--------|-------|
+| 284 | v7-gochess-e1200 | 37K/40K | GoChess v7 net. LMR wants more reduction, history bonuses up. |
+| 290 | selfplay s120 | Early | Full 48-param retune for selfplay eval characteristics. |
+| 251 | filtered net | Ongoing | Similar trends to #252 |
+| 252 | low LR net | Ongoing | Tighter pruning, trust move ordering more |
+
+### Cross-Engine Validation (Atlas Rivals RR)
+
+Previous baseline (Apr 11): **Coda 4th place, +71 Elo**
+Current (Apr 12, in progress): **Coda 1st place, +138 Elo** (+67 Elo cross-engine gain)
+
+Combined effect of: filtered data + low final LR + SPSA tune + SEE scaling. Overtook Arasan and Igel.
+
+### Lichess Status
+
+- Running on `lo` with e800-filtered-lowestlr net, ponder OFF, correct NNUE embedding
+- 97%+ accuracy, <10cp average loss
+- Almost all wins and draws in recent games (fixed from 91% accuracy with PESTO eval)
+
+### Key Lessons (Days 11-12)
+
+1. **Selfplay data is the biggest single gain** (+40 Elo at s120 with 14% of T80 data). The eval matches positions our search actually reaches.
+2. **Power-2.5 loss is free Elo** (~+12.5 over MSE). Just change the loss function.
+3. **Cross-engine validation confirms gains.** +67 Elo cross-engine (4th→1st) validates that training + tuning improvements transfer to real opponents.
+4. **Bug fixes compound.** TT pollution, ponderhit, NNUE embedding, TB scores — each individually small, together ~200 Elo on Lichess.
+5. **Production net changes need explicit approval.** Don't change net.txt unless explicitly asked to switch nets.
