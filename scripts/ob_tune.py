@@ -82,7 +82,7 @@ def submit_tune(args):
         'throughput':   str(args.throughput),
         'win_adj':      'movecount=3 score=500',
         'draw_adj':     'movenumber=20 movecount=10 score=10',
-        'scale_nps':    '1100000',
+        'scale_nps':    '500000',
         'scale_method': 'DEV',
         'syzygy_wdl':   'OPTIONAL',
         'syzygy_adj':   'OPTIONAL',

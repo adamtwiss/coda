@@ -104,7 +104,7 @@ def submit_test(args):
         'throughput':       str(args.throughput),
         'workload_size':   '32',
         'scale_method':    'BASE',
-        'scale_nps':       '1100000',
+        'scale_nps':       '500000',
         'win_adj':         'movecount=3 score=500',
         'draw_adj':        'movenumber=20 movecount=10 score=10',
         'upload_pgns':     'FALSE',
