@@ -17,9 +17,10 @@ Velvet is +100-200 Elo above Coda with this simple architecture:
 - **No hidden layers** — direct FT→output
 - No pairwise, no SCReLU
 
-Key insight: output bucketing broke our piece value ordering (check-net showed
-knight > queen with buckets, correct ordering without). Velvet avoids this.
-32 king buckets may compensate for the lost expressiveness of output buckets.
+Note: early check-net analysis suggested output bucketing broke piece value
+ordering, but this was a misleading metric (sigmoid saturation — see Known
+Issues section). Output buckets are standard and used by most top engines.
+32 king buckets provide more positional granularity.
 
 This is the **recommended first step** — a well-trained Velvet-style net on our
 infrastructure, before attempting hidden layers.
@@ -88,24 +89,22 @@ architecture complexity at our level.
 
 ### Known Issues
 
-**1. Eval scale miscalibration (affects v5 AND v7)**
+**1. Check-net piece value ordering — RESOLVED (misleading metric)**
 
-Check-net comparison shows our nets have wrong piece value ordering:
+Early check-net analysis showed apparent piece value misordering (knight > queen)
+by comparing absolute evals of "remove one piece" positions. This was misleading
+due to **sigmoid saturation**: at high skill levels, being up a bishop or up a
+queen from the start both map to ~99% win probability. The absolute scores
+("miss knight" = -951 vs "miss queen" = -718) are compressed into the sigmoid
+plateau and don't reflect relative piece values.
 
-| Position | Obsidian | Our v5 | Our v7 e800i8 | Expected |
-|----------|---------|--------|---------------|----------|
-| startpos | +10 | +54 | +47 | ~0 |
-| miss pawn | -62 | -150 | -102 | -100 |
-| miss knight | -615 | -951 | -2044 | -320 |
-| miss bishop | -674 | -1062 | -2032 | -330 |
-| miss rook | -739 | -1091 | -1529 | -500 |
-| miss queen | -998 | -718 | -580 | -900 |
+The correct methodology: remove a queen from one side AND a bishop from the
+other, measuring the **relative** eval difference. This produces logical piece
+value orderings because the position is competitive (not saturated).
 
-Our v5: queen(-718) scored less negative than knight(-951) — fundamentally wrong.
-Our v7: even worse, knight(-2044) is 3.5× queen(-580).
-Obsidian: correct ordering queen > rook > bishop > knight > pawn.
-
-**Root cause hypothesis**: T80 training data never contains "queen-down in opening" positions. The net has never learned the relative value of major pieces in material-imbalanced positions.
+The earlier "root cause hypothesis" (T80 data lacking queen-down positions)
+was incorrect — the issue was purely the check-net methodology, not the training
+data or output bucketing.
 
 **2. v7 plays ~50-100 Elo behind v5**
 
@@ -192,11 +191,10 @@ explosion without explicit weight decay (Velvet uses 0.01). Bullet's
 default AdamW may not include sufficient weight decay.
 
 ### Output Bucket Hypothesis — DISPROVEN (2026-04-06)
-Tested 2 output buckets vs 8 (exp L vs production). Both show the same
-piece ordering issue (knight > queen). Pre-bucket v4 models had correct
-ordering, but that was GoChess with different training — not a bucket effect.
-
-**Root cause of piece ordering issue**: LC0-scored T80 data.
+Tested 2 output buckets vs 8 (exp L vs production). Both showed similar
+check-net results. The apparent "piece ordering issue" was a check-net
+methodology problem (sigmoid saturation), not a real eval defect.
+See Known Issues section for full explanation.
 
 LC0 evaluates based on **win probability**, not material. A position where
 White is down a knight might be scored -200cp (modest disadvantage) if there's
@@ -278,10 +276,10 @@ Only exp L (exact production copy with 1 line changed) produced a healthy model.
 
 ## Open Questions
 
-1. **Is the piece value ordering a v5 problem too?** If yes, fixing it on v5 first is faster feedback.
-2. **Is it a data distribution issue?** T80 never has "queen down in opening." Need diverse material-imbalance training data.
+1. ~~Is the piece value ordering a v5 problem too?~~ RESOLVED — check-net methodology was misleading (sigmoid saturation).
+2. ~~Is it a data distribution issue?~~ RESOLVED — same root cause as above.
 3. **Is eval_scale=400 correct?** Does it match what other Bullet-trained engines use?
-4. **Is the score filter (10000) too loose?** Tightening to 2000 might help by excluding extreme positions.
+4. **Is the score filter (10000) too loose?** Standard is to also filter ply<16, in-check, and tactical positions.
 5. **Are 8 output buckets by material count optimal?** Berserk uses 1 bucket successfully.
 6. **Are 16 king buckets right?** Obsidian uses 13, Reckless 10. Different granularity.
 7. **Do we need threat features?** Reckless, Halogen, Stormphrax all use them. Biggest architectural gap.
@@ -334,9 +332,9 @@ Six SB100 experiments on 768pw v7 (16→32 hidden layers). Configs in
 | — | Force-capture data | 70M positions generated, not yet trained | Pending |
 | — | Higher blend ratio | 20-30% diverse data | Need more data first |
 
-**Finding**: Blunder data dramatically improves piece value calibration but can't
-replace T80 for playing strength. The check-net ordering issue is likely caused by
-output bucketing (pre-bucket v4 models had correct ordering), not data distribution.
+**Finding**: Blunder data improves calibration but can't replace T80 for playing
+strength. The apparent "check-net ordering issue" was a methodology artifact
+(sigmoid saturation), not a real training defect. See Known Issues section.
 
 ### Phase 2: Single Hidden Layer (stepping stone)
 
@@ -393,11 +391,10 @@ the actually-played move (not best_move) for chain compression.
 Remaining gap (still ~4× vs T80) likely due to sfbinpack Rust crate vs
 Stockfish's C++ writer, or shorter game lengths.
 
-### Key Data Insight
-The check-net piece value ordering issue (knight > queen) is caused by
-**output bucketing**, not data distribution. Pre-bucket v4 models had correct
-ordering. Blunder/force-capture data improves calibration but doesn't fix the
-root cause. Removing output buckets (Velvet-style) is the direct fix.
+### Key Data Insight (updated 2026-04-12)
+The apparent "piece value ordering issue" in check-net was a misleading metric
+caused by sigmoid saturation at extreme material imbalances — not a real eval
+defect. See Known Issues section. Output buckets are standard and not harmful.
 
 ## Quantization Reference
 
