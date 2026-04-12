@@ -12,7 +12,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut info = SearchInfo::new(64);
     let mut stop_flag = info.stop.clone(); // keep a handle to signal stop from UCI loop
     let mut ponderhit_flag = info.ponderhit_time.clone(); // shared ponderhit time limit
-    let _ponder_depth_flag = info.ponder_depth.clone(); // reserved for future depth-aware budget
+    let mut _ponder_depth_flag = info.ponder_depth.clone(); // reserved for future depth-aware budget
     let mut ponder_limits: Option<SearchLimits> = None; // pending limits for ponderhit
     let mut opening_book: Option<crate::book::OpeningBook> = None;
     let mut use_book = true;
