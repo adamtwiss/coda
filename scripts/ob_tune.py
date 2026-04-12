@@ -63,7 +63,7 @@ def submit_tune(args):
         'dev_repo':         args.repo,
         'dev_branch':       args.branch,
         'dev_bench':        str(args.bench),
-        'dev_network':      '',
+        'dev_network':      args.dev_network,
         'dev_options':      args.options,
         'dev_time_control': args.tc,
 
@@ -123,6 +123,7 @@ def main():
     p.add_argument('--pairs-per', type=int, default=8, help='Game pairs per iteration (default: 8)')
     p.add_argument('--tc', default='10.0+0.1', help='Time control (default: 10.0+0.1)')
     p.add_argument('--options', default='Threads=1 Hash=64', help='UCI options')
+    p.add_argument('--dev-network', default='', help='Dev network SHA256 hash (8 chars, from ob_upload_net.py)')
     p.add_argument('--priority', type=int, default=0, help='Priority (default: 0)')
     p.add_argument('--throughput', type=int, default=100, help='Throughput (default: 100)')
     p.add_argument('--repo', default='https://github.com/adamtwiss/coda', help='GitHub repo URL')
