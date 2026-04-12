@@ -87,8 +87,11 @@ fn ambiguous_wdl_to_score(wdl: AmbiguousWdl) -> i32 {
 }
 
 fn dtz_to_wdl_score(dtz: MaybeRounded<Dtz>) -> i32 {
+    // shakmaty-syzygy DTZ convention: negative = side to move wins,
+    // positive = side to move loses. Invert for our score convention
+    // (positive = good for side to move).
     let d = dtz.ignore_rounding();
-    if d.0 > 0 { 20000 }
-    else if d.0 < 0 { -20000 }
+    if d.0 < 0 { 20000 }
+    else if d.0 > 0 { -20000 }
     else { 0 }
 }
