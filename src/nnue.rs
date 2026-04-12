@@ -1732,7 +1732,7 @@ impl NNUENet {
                 for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
                 for i in 0..l1 {
                     if l1_out[i] == 0.0 { continue; }
-                    let w_off = (b_off + i) * self.l2_per_bucket;
+                    let w_off = i * self.l2_size + bucket * self.l2_per_bucket;
                     for k in 0..l2 { h2[k] += l1_out[i] * self.l2_weights_f[w_off + k]; }
                 }
                 for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; }
@@ -1808,7 +1808,7 @@ impl NNUENet {
                 for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
                 for i in 0..l1 {
                     if l1_out[i] == 0.0 { continue; }
-                    let w_off = (b_off + i) * self.l2_per_bucket;
+                    let w_off = i * self.l2_size + bucket * self.l2_per_bucket;
                     for k in 0..l2 { h2[k] += l1_out[i] * self.l2_weights_f[w_off + k]; }
                 }
                 for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; }
@@ -1823,25 +1823,29 @@ impl NNUENet {
             return (out_f * EVAL_SCALE as f32) as i32;
         }
 
-        // Scalar fallback (bucket-aware: offset into l1_weights by b_off)
+        // Scalar fallback (bucket-aware)
+        // L1 weights layout: [bl1 × l1_input] (output-major, from Bullet .transpose())
+        // Weight from STM input j to output neuron gi: l1_weights[gi * l1_input + j]
+        // Weight from NTM input j to output neuron gi: l1_weights[gi * l1_input + h + j]
+        let l1_input = if self.use_pairwise { h } else { 2 * h };
         #[cfg(target_arch = "x86_64")]
         if !(self.has_avx2 && h % 32 == 0 && !self.l1_weights_8t.is_empty()) {
             for j in 0..h {
                 let v = (stm_acc[j] as i64).clamp(0, qa);
                 if v == 0 { continue; }
                 let vsq = v * v;
-                let w_off = j * l1_total + b_off;
                 for i in 0..l1 {
-                    hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
+                    let gi = b_off + i;
+                    hidden[i] += vsq * self.l1_weights[gi * l1_input + j] as i64;
                 }
             }
             for j in 0..h {
                 let v = (ntm_acc[j] as i64).clamp(0, qa);
                 if v == 0 { continue; }
                 let vsq = v * v;
-                let w_off = (h + j) * l1_total + b_off;
                 for i in 0..l1 {
-                    hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
+                    let gi = b_off + i;
+                    hidden[i] += vsq * self.l1_weights[gi * l1_input + h + j] as i64;
                 }
             }
         }
@@ -1892,7 +1896,7 @@ impl NNUENet {
 
         // Divide by QA² to get hidden at scale QA_L1, then SCReLU: clamp [0, QA_L1], square
         let qa_l1_sq = qa_l1 as f32 * qa_l1 as f32;
-        let mut l1_out = [0.0f32; 64];
+        let mut l1_out = [0.0f32; 256]; // max per-bucket L1 size
         for i in 0..l1 {
             let mut h_val = (hidden[i] / qa2) as i32;
             h_val = h_val.clamp(0, qa_l1 as i32);
@@ -1900,16 +1904,17 @@ impl NNUENet {
             l1_out[i] = hsq as f32 / qa_l1_sq; // → [0, 1]
         }
 
-        // L2 layer (if present) — float
+        // L2 layer (if present) — float (bucket-aware)
         if self.l2_size > 0 {
-            let l2 = self.l2_size;
-            let mut h2 = [0.0f32; 64];
+            let l2 = self.l2_per_bucket;
+            let l2_off = bucket * l2;
+            let mut h2 = [0.0f32; 256];
             for k in 0..l2 {
-                h2[k] = self.l2_biases_f[k];
+                h2[k] = self.l2_biases_f[l2_off + k];
             }
             for i in 0..l1 {
                 if l1_out[i] == 0.0 { continue; }
-                let w_off = i * l2;
+                let w_off = i * self.l2_size + bucket * self.l2_per_bucket;
                 for k in 0..l2 {
                     h2[k] += l1_out[i] * self.l2_weights_f[w_off + k];
                 }
