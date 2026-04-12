@@ -94,7 +94,7 @@ fn main() {
             SavedFormat::id("l3w").transpose(),
             SavedFormat::id("l3b"),
         ])
-        .loss_fn(move |output, target| output.sigmoid().power_error(target, loss_power))
+        .loss_fn(|output, target| output.sigmoid().power_error(target, 2.5))
         .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
             // Factoriser for weight sharing across king buckets
             let l0f = builder.new_weights("l0f", Shape::new(ft_size, 768), InitSettings::Zeroed);
