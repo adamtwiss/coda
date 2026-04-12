@@ -211,28 +211,19 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         pl.binc
                     };
                     if our_time > 0 {
-                        let depth = ponder_depth_flag.load(Ordering::Relaxed);
-                        let time_ratio = our_time as f64 / opp_time.max(1) as f64;
                         let overhead = info.move_overhead;
 
-                        // At very fast TCs (inc < 500ms) or behind on time:
-                        // instant stop via stop flag — no deadline mechanism.
-                        if our_inc < 500 || time_ratio < 1.0 {
+                        // At very fast TCs (inc < 500ms): instant stop.
+                        if our_inc < 500 {
                             stop_flag.store(true, Ordering::Relaxed);
                         } else {
-                            let budget = if time_ratio > 5.0 {
-                                // Massive time advantage: think carefully
-                                (our_time / 15).min(our_time - opp_time)
-                            } else if time_ratio > 2.0 || depth < 16 {
-                                // Good advantage or shallow ponder: moderate think
-                                (our_inc + our_time / 30).min(our_time / 10)
-                            } else {
-                                // Slight advantage, deep ponder: brief verification
-                                our_inc
-                            };
-                            // Cap at increment. Reserve move overhead for latency.
-                            let budget = budget.min(our_inc).saturating_sub(overhead).max(10);
-                            // Store as deadline: elapsed_since_search_start + budget
+                            // Always verify the ponder result. Budget scales with
+                            // what we can afford, regardless of time advantage.
+                            // With 114s on clock and 2s increment, spending 1s to
+                            // verify is always worthwhile.
+                            let budget = (our_inc / 2)  // half the increment
+                                .min(our_time / 20);     // cap at 5% of remaining
+                            let budget = budget.saturating_sub(overhead).max(10);
                             let elapsed = start.elapsed().as_millis() as u64;
                             let deadline = elapsed + budget;
                             ponderhit_flag.store(deadline, Ordering::Relaxed);
