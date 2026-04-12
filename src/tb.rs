@@ -95,3 +95,93 @@ fn dtz_to_wdl_score(dtz: MaybeRounded<Dtz>) -> i32 {
     else if d.0 > 0 { -20000 }
     else { 0 }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::board::Board;
+    use std::path::Path;
+
+    fn tb_path() -> Option<String> {
+        // Check common tablebase locations
+        for path in &["/tablebases", "/home/adam/chess/syzygy", "/syzygy"] {
+            if Path::new(path).exists() {
+                return Some(path.to_string());
+            }
+        }
+        None
+    }
+
+    fn make_tb() -> Option<SyzygyTB> {
+        let path = tb_path()?;
+        SyzygyTB::new(&path).ok()
+    }
+
+    #[test]
+    fn tb_root_probe_signs() {
+        let tb = match make_tb() {
+            Some(tb) => tb,
+            None => { eprintln!("Skipping TB test: no tablebases found"); return; }
+        };
+
+        // KQP vs K: White winning
+        // White to move → positive (STM winning)
+        let board = Board::from_fen("4k3/8/8/8/8/4P3/8/3QK3 w - - 0 1");
+        let (_, wdl) = tb.probe_root(&board).expect("probe should succeed");
+        assert!(wdl > 0, "KQP vs K, White to move: expected positive, got {}", wdl);
+
+        // Black to move → negative (STM losing)
+        let board = Board::from_fen("4k3/8/8/8/8/4P3/8/3QK3 b - - 0 1");
+        let (_, wdl) = tb.probe_root(&board).expect("probe should succeed");
+        assert!(wdl < 0, "KQP vs K, Black to move: expected negative, got {}", wdl);
+
+        // KRP vs KR: Black winning (the original bug position)
+        // Black to move → positive (STM winning)
+        let board = Board::from_fen("5R2/8/8/8/4r3/4p3/4k3/2K5 b - - 0 71");
+        let (_, wdl) = tb.probe_root(&board).expect("probe should succeed");
+        assert!(wdl > 0, "KRP vs KR, Black to move (winning): expected positive, got {}", wdl);
+
+        // White to move → negative (STM losing)
+        let board = Board::from_fen("5R2/8/8/8/4r3/4p3/4k3/2K5 w - - 0 71");
+        let (_, wdl) = tb.probe_root(&board).expect("probe should succeed");
+        assert!(wdl < 0, "KRP vs KR, White to move (losing): expected negative, got {}", wdl);
+
+        // KBN vs K: White winning
+        let board = Board::from_fen("4k3/8/8/8/8/8/8/2BNK3 w - - 0 1");
+        let (_, wdl) = tb.probe_root(&board).expect("probe should succeed");
+        assert!(wdl > 0, "KBN vs K, White to move: expected positive, got {}", wdl);
+
+        // KR vs KR: drawn (rooks can't capture each other)
+        let board = Board::from_fen("4k3/4r3/8/8/8/8/4R3/4K3 w - - 0 1");
+        let (_, wdl) = tb.probe_root(&board).expect("probe should succeed");
+        assert!(wdl == 0, "KR vs KR (drawn): expected 0, got {}", wdl);
+    }
+
+    #[test]
+    fn tb_wdl_probe_signs() {
+        let tb = match make_tb() {
+            Some(tb) => tb,
+            None => { eprintln!("Skipping TB test: no tablebases found"); return; }
+        };
+
+        // KQP vs K: White winning, White to move → positive
+        let board = Board::from_fen("4k3/8/8/8/8/4P3/8/3QK3 w - - 0 1");
+        let wdl = tb.probe_wdl(&board).expect("WDL probe should succeed");
+        assert!(wdl > 0, "WDL KQP vs K, White to move: expected positive, got {}", wdl);
+
+        // KQP vs K: White winning, Black to move → negative
+        let board = Board::from_fen("4k3/8/8/8/8/4P3/8/3QK3 b - - 0 1");
+        let wdl = tb.probe_wdl(&board).expect("WDL probe should succeed");
+        assert!(wdl < 0, "WDL KQP vs K, Black to move: expected negative, got {}", wdl);
+
+        // KRP vs KR: Black winning, Black to move → positive
+        let board = Board::from_fen("5R2/8/8/8/4r3/4p3/4k3/2K5 b - - 0 1");
+        let wdl = tb.probe_wdl(&board).expect("WDL probe should succeed");
+        assert!(wdl > 0, "WDL KRP vs KR, Black to move: expected positive, got {}", wdl);
+
+        // KR vs KR: drawn
+        let board = Board::from_fen("4k3/4r3/8/8/8/8/4R3/4K3 w - - 0 1");
+        let wdl = tb.probe_wdl(&board).expect("WDL probe should succeed");
+        assert!(wdl == 0, "WDL KR vs KR (drawn): expected 0, got {}", wdl);
+    }
+}
