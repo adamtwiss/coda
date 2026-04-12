@@ -5,7 +5,7 @@
 /// Usage on GPU host:
 ///   cd ~/code/bullet
 ///   cargo run --release --example coda_v7_1024h16x32s -- \
-///     --dataset /workspace/data/test80-2024-01-jan-2tb7p.min-v2.v6.binpack \
+///     --dataset-dir /workspace/data \
 ///     --superbatches 800 --wdl 0.0 --warmup 20 --save-rate 100
 ///
 /// Convert:
@@ -42,7 +42,7 @@ fn main() {
     let l2_size = 32;
 
     let args: Vec<String> = std::env::args().collect();
-    let dataset_path = get_arg(&args, "--dataset", "/workspace/data/test80-2024-01-jan-2tb7p.min-v2.v6.binpack");
+    let dataset_dir = get_arg(&args, "--dataset-dir", "/workspace/data");
     let superbatches: usize = get_arg(&args, "--superbatches", "800").parse().unwrap();
     let wdl_proportion: f32 = get_arg(&args, "--wdl", "0.0").parse().unwrap();
     let initial_lr: f32 = get_arg(&args, "--lr", "0.001").parse().unwrap();
@@ -159,12 +159,27 @@ fn main() {
             && entry.pos.piece_at(entry.mv.to()).piece_type() == PieceType::None
     };
 
-    let dataloader = SfBinpackLoader::new(&dataset_path, 256, 4, filter);
+    // Find all T80 binpack files in the dataset directory
+    let data_files: Vec<String> = std::fs::read_dir(&dataset_dir)
+        .unwrap_or_else(|e| panic!("Cannot read dataset dir {}: {}", dataset_dir, e))
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if path.extension().map_or(false, |ext| ext == "binpack") {
+                Some(path.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(!data_files.is_empty(), "No .binpack files found in {}", dataset_dir);
+    let data_refs: Vec<&str> = data_files.iter().map(|s| s.as_str()).collect();
+
+    let dataloader = SfBinpackLoader::new_concat_multiple(&data_refs, 256, 4, filter);
 
     println!("=== Coda v7 1024 SCReLU + Hidden Layers ===");
     println!("FT: {} → SCReLU, L1: {}, L2: {}, Output: 1×{}", ft_size, l1_size, l2_size, NUM_OUTPUT_BUCKETS);
     println!("Warmup: {} SBs, Schedule: {} SBs, WDL: {}, Loss: power({})", warmup_sbs, superbatches, wdl_proportion, loss_power);
-    println!("Data: {}", dataset_path);
+    println!("Data: {} ({} files)", dataset_dir, data_files.len());
     println!();
 
     trainer.run(&schedule, &settings, &dataloader);
