@@ -10,11 +10,13 @@ Cross-referencing 29 engines against Coda. Ranked by estimated impact, implement
 1. Score dampening works at noisy boundaries (TT cutoffs, QS) — not at well-calibrated margins (RFP)
 2. Search byproducts improve move ordering (NMP threat, TT move in QS)
 3. Table-based approaches beat hard-coded thresholds (LMR split)
-4. History table changes tend to fail — our tables are well-tuned
+4. ~~History table changes tend to fail~~ History magnitude fix (+31.6 Elo) changed everything — history is now the primary ordering signal
 5. Node-level pruning benefits from tightening; per-move pruning needs slack
 6. Guards that prevent pruning in tactical positions (threats, captures) are high-value
 
-**Key ablation finding (2026-04-01)**: All pruning features confirmed helpful via self-play SPRT on quiet CPU. Only ProbCut is dead weight (disabled). Bad noisy pruning (-26 Elo), hindsight (-18), hist prune (-17), SEE prune (-17), correction (-10), extensions (-9) all confirmed valuable.
+**Key ablation finding (2026-04-01)**: All pruning features confirmed helpful via self-play SPRT on quiet CPU. ProbCut re-enabled after fixing missing qsearch filter, SEE threshold, and excluded_move guard. Bad noisy pruning (-26 Elo), hindsight (-18), hist prune (-17), SEE prune (-17), correction (-10), extensions (-9) all confirmed valuable.
+
+**Updated 2026-04-12**: Many Tier 1/2 ideas now implemented. Killers/counters removed (history handles ordering). 48 SPSA-tunable parameters. Production net: 768pw v5 with filtered data + low final LR + power-2.5 loss.
 
 ---
 
@@ -27,7 +29,7 @@ These ideas from engine reviews have been implemented and confirmed:
 | LMR separate tables (cap C=1.80 / quiet C=1.30) | Midnight, Caissa | Implemented |
 | TT score dampening `(3*score+beta)/4` | Winter, Caissa | Implemented |
 | Fail-high score blending `(score*d+beta)/(d+1)` | Caissa, Stormphrax, Berserk | Implemented |
-| Alpha-raise reduction (alpha_raised_count/2) | Caissa, Altair, Reckless | Implemented |
+| ~~Alpha-raise reduction~~ | Caissa, Altair, Reckless | Removed — SPSA zeroed it out |
 | QS beta blending (bestScore+beta)/2 | Caissa, Berserk, Stormphrax | Implemented |
 | TT near-miss cutoffs (1 ply, 80cp margin) | Minic, Ethereal | Implemented |
 | TT noisy move detection (+1 LMR for quiets) | Obsidian, Berserk | Implemented |
@@ -41,92 +43,82 @@ These ideas from engine reviews have been implemented and confirmed:
 | Cuckoo cycle detection | Weiss, Stockfish | Implemented |
 | Finny table (NNUE accumulator cache) | Obsidian, Alexandria | Implemented |
 | Aspiration fail-low beta contraction | Midnight, Altair, Alexandria | Implemented |
-| NMP R-1 after captures | Tucano | Implemented |
+| NMP R+1 after captures (flipped from R-1) | Tucano | Implemented, retune +3.5 |
 | Recapture extensions | Multiple | Implemented |
 | Bad noisy pruning (eval+depth*75<=alpha) | Reckless | Implemented |
 | Score-drop time extension | Tucano | Implemented |
 | IIR (depth >= 6, no TT move) | Multiple | Implemented |
 | NMP verification (depth >= 12) | Altair, classical | Implemented |
+| Node-based TM (node fraction + stability + score drop) | BlackMarlin, Berserk, Clarity | Implemented |
+| TT PV flag in LMR (-1 reduction for PV positions) | Berserk, Stormphrax, Clarity | Implemented, +4.5 |
+| TT cutoff cont-hist malus | Alexandria | Implemented, +6.5 (with retune) |
+| Complexity-adjusted LMR (raw-corrected eval) | Obsidian | Implemented |
+| Killer/counter-move removal (pure history ordering) | Stockfish | Implemented, +3.77 (with retune) |
+| Quiet check bonus in move ordering | Multiple | Implemented, +6.0 |
+| Double extensions (with ply cap) | Seer, Berserk, Clarity, Velvet | Implemented |
+| ProbCut (re-enabled after fixes) | Multiple | Implemented |
+| Contempt (draw avoidance) | Multiple | Implemented, SPSA-tunable |
 
 ---
 
 ## Tier 1: High Confidence — Test Next
 
-### 1. Node-Based Time Management ⭐ HIGHEST PRIORITY
-Use node count ratio (bestmove nodes / total nodes) + best-move stability multiplier.
-- **Engines**: BlackMarlin, Berserk, Caissa, Koivisto, Alexandria, **Clarity** (7-level stability: 0.9x-2.2x + node fraction), **Velvet** (node fraction scaling)
-- **Clarity**: `tmScale = stability_mult * (1.5 - node_fraction) * 1.6` with 7-level best-move stability (0.90/1.00/1.05/1.20/1.40/1.80/2.20)
-- **Complexity**: Medium — track per-root-move node counts + best-move changes.
-- **Est. Elo**: +5 to +15. Highest expected gain. **7+ engines** — strongest consensus of any idea.
+### 1. ~~Node-Based Time Management~~ ✅ IMPLEMENTED
+~~Use node count ratio (bestmove nodes / total nodes) + best-move stability multiplier.~~
+- **Status**: Implemented. 3-factor model: node fraction + best-move stability + score trend.
 
 ### 2. Mate Distance Pruning
 If we already have a forced mate shorter than current ply, prune.
 - **Engines**: Tucano, RubiChess, Altair, Alexandria, **Clarity**, **Velvet**
 - **Complexity**: Trivial — 5 lines at top of negamax.
 - **Est. Elo**: +1 to +3. Universal technique, 6+ engines.
-- **Note**: Both engines +100-200 above us have this. We don't.
+- **Note**: Both engines +100-200 above us have this. We don't. Tested neutral on old baseline (OB #163), worth retrying with current eval.
 
-### 3. Double/Triple Singular Extensions
-When singular score is far below threshold, extend by +2 or +3. Cap total double extensions per line.
-- **Engines**: Seer, Berserk, Stormphrax, Koivisto, RubiChess, Minic, Tucano, Weiss, Obsidian, BlackMarlin, **Clarity** (+2/+3 with cap 21), **Velvet** (+2 with cap 12)
-- **Clarity**: `+2 if score < singBeta - 28`, `+3 if score < singBeta - 81`, max 21 per line
-- **Velvet**: `+2 if score < singBeta - 22`, max 12 per line
-- **Complexity**: Low — 5 lines in SE block + counter on search stack.
-- **Est. Elo**: +3 to +8. **12+ engines** — very strong consensus.
+### 3. ~~Double/Triple Singular Extensions~~ ✅ IMPLEMENTED
+- **Status**: Implemented with DEXT_MARGIN and DEXT_CAP tunables. Ply guard included.
 
 ### 4. Cutnode LMR Extra Reduction
 Extra LMR reduction (+2 plies) at cut nodes.
 - **Engines**: Weiss, Obsidian, BlackMarlin, Stockfish, **Clarity** (+2)
 - **Complexity**: Trivial — 1 line.
 - **Est. Elo**: +2 to +5.
+- **Note**: Not yet tested in Coda.
 
-### 5. Root History Table
-Dedicated butterfly history table for root moves only, weighted 4x in quiet move scoring.
-- **Engines**: Alexandria, Stockfish
-- **Complexity**: Low — duplicate butterfly table, zero on search start, update only at root.
-- **Est. Elo**: +3 to +8.
+### 5. ~~Root History Table~~ ❌ REJECTED
+- **Status**: Tested 3× (OB era), -0.8 to -7.9 Elo. Root ordering already good with 4D history.
 
 ### 6. TT Cutoff Node-Type Guard
 Only accept TT cutoffs when expected node type matches: `cutNode == (ttScore >= beta)`.
 - **Engines**: Alexandria
 - **Complexity**: Trivial — 1 extra condition in TT cutoff check.
 - **Est. Elo**: +2 to +5.
+- **Note**: Not yet tested.
 
 ### 7. badNode Flag (IIR-Aware Pruning)
 When no TT data at all (`depth >= 4 && ttBound == NONE`), reduce RFP margin, reduce NMP R by 1.
 - **Engines**: Alexandria (`badNode` flag used in RFP margin, NMP R, IIR)
 - **Complexity**: Low — compute flag once, use in 3 places.
 - **Est. Elo**: +2 to +5.
+- **Note**: Not yet tested.
 
-### 8. 50-Move Eval Scaling
-Scale eval toward zero as halfmove clock advances.
-- **Engines**: Reckless, Berserk, **Clarity** (`eval * (200 - hmClock) / 200`), **Velvet** (`eval * (128 - hmClock) / 128`)
-- **Complexity**: Trivial — 1 line in eval.
-- **Note**: Both engines above us have this.
+### 8. ~~50-Move Eval Scaling~~ ❌ REJECTED
+- **Status**: Tested twice (OB #223, GoChess era). Neutral both times.
 
 ### 9. Opponent-Threats Guard on RFP/NMP
 Compute "good threats" bitboard. Only allow RFP when opponent has no good threats.
 - **Engines**: Minic (from Koivisto), Berserk
 - **Complexity**: Medium — need attack map computation.
 - **Est. Elo**: +3 to +8.
+- **Note**: Not yet tested.
 
-### 10. TT PV Flag in LMR
-Reduce non-PV TT entries more aggressively in LMR.
-- **Engines**: Berserk (+2 reduction if !ttPv), Stormphrax, **Clarity** (+1 if !ttPv)
-- **Complexity**: 2 lines. Store PV flag in TT.
-- **Caveat**: Requires adding a PV flag bit to packed TT entries.
+### 10. ~~TT PV Flag in LMR~~ ✅ IMPLEMENTED
+- **Status**: Implemented. Sticky PV bit, -1 LMR for PV positions. +4.5 Elo.
 
-### 11. TT Cutoff Continuation History Malus
-When TT cutoff gives beta cutoff, penalize opponent's last quiet move in cont-hist.
-- **Engines**: Alexandria (`updateCHScore((ss-1), (ss-1)->move, -min(155*depth, 385))`)
-- **Complexity**: Low — 3 lines in TT cutoff path.
-- **Est. Elo**: +2 to +4.
+### 11. ~~TT Cutoff Continuation History Malus~~ ✅ IMPLEMENTED
+- **Status**: Implemented with retune. +6.5 Elo.
 
-### 12. Lower SE Depth Threshold
-Coda uses depth >= 8 for SE. Velvet uses depth >= 6, Clarity uses depth >= 7. Lower threshold = more SE firing.
-- **Engines**: **Velvet** (>= 6), **Clarity** (>= 7), Stockfish (>= 4)
-- **Complexity**: 1 constant change. Needs SPRT.
-- **Note**: Both engines above us use a lower threshold than Coda.
+### 12. ~~Lower SE Depth Threshold~~ ✅ IMPLEMENTED (SPSA-tunable)
+- **Status**: SE_DEPTH is SPSA-tunable, currently at 5 (SPSA converged from 8).
 
 ---
 
@@ -136,16 +128,16 @@ Coda uses depth >= 8 for SE. Velvet uses depth >= 6, Clarity uses depth >= 7. Lo
 When bestMove causes beta cutoff and eval was <= alpha (surprising cutoff), give +1 depth to history bonus.
 - **Engines**: Alexandria (`UpdateHistories(... depth + (eval <= alpha) ...)`)
 - **Complexity**: Trivial — change 1 argument.
+- **Note**: Not yet tested.
 
 ### 10. Material Scaling of NNUE Output
 Scale NNUE eval by material count: `eval * (22400 + materialValue) / 32 / 1024`.
 - **Engines**: Alexandria
 - **Complexity**: Low — 3 lines in eval function.
+- **Note**: Not yet tested.
 
-### 11. Complexity-Adjusted LMR
-Use difference between raw static eval and corrected eval as "complexity" signal.
-- **Engines**: Obsidian (`R -= complexity / 120`)
-- **Complexity**: Low — 2 lines. Already have raw/corrected eval.
+### 11. ~~Complexity-Adjusted LMR~~ ✅ IMPLEMENTED
+- **Status**: Implemented. LMR_COMPLEXITY_DIV is SPSA-tunable (currently 118).
 
 ### 12. Opponent Material-Based LMR
 Increase LMR reduction when opponent has few non-pawn pieces.
@@ -240,8 +232,12 @@ Enable forward pruning only after a time threshold.
 
 ## Rejected / Not Applicable
 
-- **ProbCut**: Disabled in Coda. Ablation confirmed dead weight. Two rewrite attempts failed (-24 and -2 Elo). Not viable at current eval quality.
 - **Razoring**: Fully removed from codebase. Confirmed -20 Elo on quiet CPU.
 - **NMP threat detection**: Was in GoChess, not ported to Coda. May retest later.
-- **50-move eval scaling**: Tested neutral in GoChess era.
+- **50-move eval scaling**: Tested neutral twice (OB #223, GoChess era). Both directions tried.
 - **RFP score dampening**: Tested negative — RFP margins are well-calibrated, dampening hurts.
+- **Root history table**: Tested 3× (OB era), -0.8 to -7.9. Root ordering good with 4D history.
+- **Alpha-raise LMR reduction**: Removed via SPSA — retune found it unhelpful. Was in "implemented" but SPSA zeroed it out.
+- **Good/bad quiet split**: SF-only feature, tested -3.6 (OB #216). May revisit with better nets.
+- **Low-ply history bonus**: Tested -2.9 (OB #209). 8× at ply 0 doesn't help.
+- **Killers/counters**: Removed (+3.77 Elo). History tables fully replaced them post magnitude fix.
