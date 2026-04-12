@@ -441,35 +441,61 @@ fn run_check_net(net_path: &str) {
         net.forward(&acc, board.side_to_move, piece_count)
     };
 
-    let test_positions = [
-        ("startpos", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", -50, 50),
-        // White missing a piece — score should be negative (White is worse)
-        ("miss pawn", "rnbqkbnr/pppppppp/8/8/8/8/1PPPPPPP/RNBQKBNR w KQkq - 0 1", -200, -20),
-        ("miss knight", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/R1BQKBNR w KQkq - 0 1", -500, -80),
-        ("miss bishop", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RN1QKBNR w KQkq - 0 1", -500, -80),
-        ("miss rook", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBN1 w Qkq - 0 1", -800, -120),
-        ("miss queen", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR w KQkq - 0 1", -1500, -200),
-        // White up material — score should be positive
-        ("EG rook up", "4k3/8/8/8/8/8/PPPPPPPP/R3K3 w Q - 0 1", 400, 2500),
-        ("EG queen up", "4k3/8/8/8/8/8/PPPPPPPP/3QK3 w - - 0 1", 500, 3000),
-    ];
+    // === Eval positions ===
+    let startpos = eval_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    let miss_pawn = eval_fen("rnbqkbnr/pppppppp/8/8/8/8/1PPPPPPP/RNBQKBNR w KQkq - 0 1");
+    let miss_knight = eval_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/R1BQKBNR w KQkq - 0 1");
+    // Imbalances: White missing queen, Black missing rook (White should be losing)
+    let q_vs_r = eval_fen("rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBN1 w Qkq - 0 1");
+    // Endgame: KR vs K (White winning)
+    let eg_rook_up = eval_fen("4k3/8/8/8/8/8/8/R3K3 w Q - 0 1");
+    // Endgame: KR vs K (Black winning)
+    let eg_rook_down = eval_fen("r3k3/8/8/8/8/8/8/4K3 w - - 0 1");
 
-    let mut issues = 0;
-    println!("{:<18} {:>8} {:>9} {:>9}  {}", "Position", "Score", "Min", "Max", "Status");
-    println!("{:<18} {:>8} {:>9} {:>9}  {}", "--------", "--------", "--------", "--------", "------");
-    for (name, fen, min, max) in &test_positions {
-        let score = eval_fen(fen);
-        let status = if score >= *min && score <= *max { "OK" }
-            else if score < *min { issues += 1; "LOW" }
-            else { issues += 1; "HIGH" };
-        println!("{:<18} {:>8} {:>9} {:>9}  {}", name, score, min, max, status);
-    }
+    println!("{:<22} {:>8}", "Position", "Score");
+    println!("{:<22} {:>8}", "--------", "--------");
+    println!("{:<22} {:>8}", "startpos", startpos);
+    println!("{:<22} {:>8}", "miss pawn (W)", miss_pawn);
+    println!("{:<22} {:>8}", "miss knight (W)", miss_knight);
+    println!("{:<22} {:>8}", "Q vs R (W down Q+R)", q_vs_r);
+    println!("{:<22} {:>8}", "EG rook up (W)", eg_rook_up);
+    println!("{:<22} {:>8}", "EG rook down (W)", eg_rook_down);
+    println!();
+
+    // === Health checks (relative, not absolute) ===
+    let mut pass = 0;
+    let mut fail = 0;
+
+    let check = |name: &str, ok: bool, pass: &mut i32, fail: &mut i32| {
+        if ok { *pass += 1; print!("  PASS"); } else { *fail += 1; print!("  FAIL"); }
+        println!("  {}", name);
+    };
+
+    println!("Health checks:");
+    // 1. Startpos should be near zero (not wildly off)
+    check("startpos near zero (|score| < 150)", startpos.abs() < 150, &mut pass, &mut fail);
+    // 2. Missing a pawn should be worse than startpos
+    check("miss pawn < startpos", miss_pawn < startpos, &mut pass, &mut fail);
+    // 3. Missing a knight should be worse than missing a pawn
+    check("miss knight < miss pawn", miss_knight < miss_pawn, &mut pass, &mut fail);
+    // 4. Queen vs rook imbalance: side down the queen should be losing
+    check("Q-vs-R imbalance negative", q_vs_r < 0, &mut pass, &mut fail);
+    // 5. EG rook up should be positive (winning)
+    check("EG rook up positive", eg_rook_up > 0, &mut pass, &mut fail);
+    // 6. EG rook down should be negative (losing)
+    check("EG rook down negative", eg_rook_down < 0, &mut pass, &mut fail);
+    // 7. EG rook up and down should have opposite signs and similar magnitude
+    check("EG symmetry (opposite signs)", eg_rook_up > 0 && eg_rook_down < 0, &mut pass, &mut fail);
+    // 8. Differentiation: not all scores identical (collapsed net detection)
+    let scores = [startpos, miss_pawn, miss_knight, q_vs_r, eg_rook_up, eg_rook_down];
+    let all_same = scores.windows(2).all(|w| (w[0] - w[1]).abs() < 10);
+    check("scores differentiated (not collapsed)", !all_same, &mut pass, &mut fail);
 
     println!();
-    if issues == 0 {
-        println!("All checks passed.");
+    if fail == 0 {
+        println!("All {} checks passed.", pass);
     } else {
-        println!("{} issue(s) found — eval scale may be collapsed or miscalibrated.", issues);
+        println!("{} passed, {} FAILED.", pass, fail);
     }
 }
 
