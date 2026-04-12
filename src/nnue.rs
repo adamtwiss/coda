@@ -1842,18 +1842,18 @@ impl NNUENet {
                 let v = (stm_acc[j] as i64).clamp(0, qa);
                 if v == 0 { continue; }
                 let vsq = v * v;
+                let w_off = j * l1_total + b_off;
                 for i in 0..l1 {
-                    let gi = b_off + i;
-                    hidden[i] += vsq * self.l1_weights[gi * l1_input + j] as i64;
+                    hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
                 }
             }
             for j in 0..h {
                 let v = (ntm_acc[j] as i64).clamp(0, qa);
                 if v == 0 { continue; }
                 let vsq = v * v;
+                let w_off = (h + j) * l1_total + b_off;
                 for i in 0..l1 {
-                    let gi = b_off + i;
-                    hidden[i] += vsq * self.l1_weights[gi * l1_input + h + j] as i64;
+                    hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
                 }
             }
         }
@@ -1886,7 +1886,7 @@ impl NNUENet {
                 let v = (stm_acc[j] as i64).clamp(0, qa);
                 if v == 0 { continue; }
                 let vsq = v * v;
-                let w_off = j * l1;
+                let w_off = j * l1_total + b_off;
                 for i in 0..l1 {
                     hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
                 }
@@ -1895,7 +1895,7 @@ impl NNUENet {
                 let v = (ntm_acc[j] as i64).clamp(0, qa);
                 if v == 0 { continue; }
                 let vsq = v * v;
-                let w_off = (h + j) * l1;
+                let w_off = (h + j) * l1_total + b_off;
                 for i in 0..l1 {
                     hidden[i] += vsq * self.l1_weights[w_off + i] as i64;
                 }

@@ -433,11 +433,7 @@ fn run_check_net(net_path: &str) {
         let h = net.hidden_size;
         let mut acc = NNUEAccumulator::new(h);
         // Full recompute for both perspectives
-        let piece_count = (board.pieces[types::PAWN as usize]
-            | board.pieces[types::KNIGHT as usize]
-            | board.pieces[types::BISHOP as usize]
-            | board.pieces[types::ROOK as usize]
-            | board.pieces[types::QUEEN as usize]).count_ones();
+        let piece_count = board.occupied().count_ones();
         acc.force_recompute(&net, &board);
         net.forward(&acc, board.side_to_move, piece_count)
     };
