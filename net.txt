@@ -1,1 +1,1 @@
-https://github.com/adamtwiss/coda/releases/download/v0.1.0-nets/net-v5-768pw-selfplay-w7-e120s120.nnue
+https://github.com/adamtwiss/coda/releases/download/v0.1.0-nets/net-v5-768pw-w7-e800s800-filtered-lowestlr.nnue
