@@ -932,8 +932,10 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.history.clear();
     info.clear_correction_history();
     info.stats = PruneStats::default();
+    // Pessimistic pawn history initialization (PlentyChess pattern):
+    // unknown moves in a pawn structure are assumed slightly bad until proven.
     for entry in info.pawn_hist.iter_mut() {
-        *entry = [[0i16; 64]; 13];
+        *entry = [[-1000i16; 64]; 13];
     }
     info.static_evals = [0; MAX_PLY + 1];
     info.reductions = [0; MAX_PLY + 1];
