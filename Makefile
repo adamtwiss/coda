@@ -39,9 +39,9 @@ openbench: rule
 # Requires: rustup component add llvm-tools-preview
 TARGET_TUPLE := $(shell rustc --print host-tuple 2>/dev/null)
 pgo: check-rust net
-	cargo pgo instrument build
+	CODA_EVALFILE=$(abspath $(EVALFILE)) cargo pgo instrument build -- --features embedded-net
 	LLVM_PROFILE_FILE=target/pgo-profiles/coda_%m_%p.profraw ./target/$(TARGET_TUPLE)/release/coda bench 13
-	cargo pgo optimize build
+	CODA_EVALFILE=$(abspath $(EVALFILE)) cargo pgo optimize build -- --features embedded-net
 	cp target/$(TARGET_TUPLE)/release/coda $(NAME)
 
 # Download production NNUE net

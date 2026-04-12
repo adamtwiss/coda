@@ -12,7 +12,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut info = SearchInfo::new(64);
     let mut stop_flag = info.stop.clone(); // keep a handle to signal stop from UCI loop
     let mut ponderhit_flag = info.ponderhit_time.clone(); // shared ponderhit time limit
-    let mut ponder_depth_flag = info.ponder_depth.clone(); // completed depth during ponder
+    let _ponder_depth_flag = info.ponder_depth.clone(); // reserved for future depth-aware budget
     let mut ponder_limits: Option<SearchLimits> = None; // pending limits for ponderhit
     let mut opening_book: Option<crate::book::OpeningBook> = None;
     let mut use_book = true;
@@ -27,7 +27,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     } else {
         let loaded = info.auto_discover_nnue();
         if !loaded && !classical {
-            println!("info string WARNING: No NNUE net found. Use 'setoption name NNUEFile value <path>', -nnue flag, or 'coda fetch-net'.");
+            eprintln!("Error: No NNUE net found. Cannot play without NNUE.");
+            eprintln!("  Use: -nnue <path>, 'setoption name NNUEFile value <path>',");
+            eprintln!("       'make' to embed, or '--classical' for PeSTO eval.");
+            std::process::exit(1);
         }
         if !loaded && classical {
             eprintln!("info string Classical (PeSTO) eval mode — no NNUE net loaded.");
@@ -145,7 +148,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     shared_stop, shared_tt, shared_net,
                 ));
                 ponderhit_flag = search_info.ponderhit_time.clone();
-                ponder_depth_flag = search_info.ponder_depth.clone();
+                _ponder_depth_flag = search_info.ponder_depth.clone();
                 let threads = num_threads;
                 let is_ponder_search = is_ponder;
                 search_handle = Some(std::thread::Builder::new()
