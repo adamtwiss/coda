@@ -1729,6 +1729,9 @@ fn negamax(
         depth -= 1;
     }
 
+    // Bad node: no TT hit at moderate+ depth — eval estimate is less trustworthy
+    let bad_node = depth >= 4 && !tt_hit;
+
     // Threat square from null-move failure
     let mut threat_sq: i32 = -1;
 
@@ -1770,6 +1773,10 @@ fn negamax(
         if static_eval > beta {
             let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp(&NMP_EVAL_MAX));
             r += eval_r;
+        }
+        // Reduce R when no TT data — less confident in eval
+        if bad_node {
+            r -= 1;
         }
         // Clamp so null-move search is at least depth 1
         if depth - r < 1 {
@@ -1823,7 +1830,9 @@ fn negamax(
             && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
             && move_flags(tt_move) != FLAG_EN_PASSANT;
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
-            let margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            // Reduce margin when no TT data — less confident in static eval
+            if bad_node { margin = margin * 3 / 4; }
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
