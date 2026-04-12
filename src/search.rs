@@ -83,6 +83,10 @@ tunables!(
     (HINDSIGHT_THRESH, 213,   50,  400),
     // Unstable position detection: eval changed by more than this between plies
     (UNSTABLE_THRESH,  200,   50,  500),
+    // SEE piece value scaling (percentage). Bridges classical material values
+    // (pawn=100, knight=320, etc.) with NNUE eval scale. SPSA can optimize
+    // this to match the net's internal piece valuation.
+    (SEE_MATERIAL_SCALE, 100, 30, 300),
     // QS
     (QS_DELTA_MARGIN,  255,  100,  500),
     (QS_SEE_THRESHOLD, -15, -200,    0),
@@ -1959,7 +1963,7 @@ fn negamax(
         // SEE capture pruning: at shallow depths, prune captures that lose material
         if is_cap && ply > 0 && !in_check && depth <= 6
             && mv != tt_move && best_score > -(MATE_SCORE - 100)
-            && !see_ge(board, mv, -(depth * 100))
+            && !see_ge(board, mv, -(depth * tp(&SEE_MATERIAL_SCALE)))
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
             continue;
@@ -2824,7 +2828,7 @@ fn quiescence_with_depth(
                 board.piece_type_at(cap_to)
             };
             if cap_pt != NO_PIECE_TYPE && (cap_pt as usize) < 6 {
-                if stand_pat + see_value(cap_pt) + tp(&QS_DELTA_MARGIN) <= alpha {
+                if stand_pat + see_value(cap_pt) * tp(&SEE_MATERIAL_SCALE) / 100 + tp(&QS_DELTA_MARGIN) <= alpha {
                     continue;
                 }
             }
