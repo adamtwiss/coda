@@ -1042,7 +1042,6 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         let moves_left = if limits.movestogo > 0 { limits.movestogo as u64 } else { 25 };
 
         // TC regime classification: seconds per move estimate
-        let spm = time_left / moves_left.max(1);
 
         // Soft allocation: time/movesLeft + 80% of increment
         let mut soft = time_left / moves_left + our_inc * 4 / 5;

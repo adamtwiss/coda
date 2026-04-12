@@ -200,11 +200,6 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     } else {
                         pl.btime
                     };
-                    let opp_time = if board.side_to_move == crate::types::WHITE {
-                        pl.btime
-                    } else {
-                        pl.wtime
-                    };
                     let our_inc = if board.side_to_move == crate::types::WHITE {
                         pl.winc
                     } else {
@@ -213,16 +208,26 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     if our_time > 0 {
                         let overhead = info.move_overhead;
 
-                        // At very fast TCs (inc < 500ms): instant stop.
-                        if our_inc < 500 {
+                        // Ponderhit verification budget — must work at ALL TCs:
+                        // Bullet 1+0: tiny budget (just don't flag)
+                        // Blitz 3+2: ~1s verification
+                        // Classical 40+0: ~1-2s verification
+                        // Tournament 90+30: ~4s verification
+                        //
+                        // Budget = min(base, time_cap) - overhead
+                        // base: half increment, or time/40 if no increment
+                        // time_cap: 5% of remaining time (never risk flagging)
+                        let base = if our_inc > 0 {
+                            our_inc / 2  // half the increment
+                        } else {
+                            our_time / 40  // no increment: use 2.5% of clock
+                        };
+                        let budget = base.min(our_time / 20); // cap at 5% of remaining
+
+                        // Very low time (< 2s with no inc): instant stop
+                        if budget <= overhead && our_inc == 0 && our_time < 2000 {
                             stop_flag.store(true, Ordering::Relaxed);
                         } else {
-                            // Always verify the ponder result. Budget scales with
-                            // what we can afford, regardless of time advantage.
-                            // With 114s on clock and 2s increment, spending 1s to
-                            // verify is always worthwhile.
-                            let budget = (our_inc / 2)  // half the increment
-                                .min(our_time / 20);     // cap at 5% of remaining
                             let budget = budget.saturating_sub(overhead).max(10);
                             let elapsed = start.elapsed().as_millis() as u64;
                             let deadline = elapsed + budget;
