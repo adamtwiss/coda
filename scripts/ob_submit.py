@@ -7,6 +7,11 @@ Usage:
     python3 ob_submit.py <dev_branch> --tc '40.0+0.4'          # Custom time control
     python3 ob_submit.py <dev_branch> --base-branch b98c0a1    # Explicit base commit
     python3 ob_submit.py <dev_branch> 1234567                  # Override dev bench (avoid if possible)
+    python3 ob_submit.py <dev_branch> --dev-network ABCD1234   # Custom NNUE net for dev
+    python3 ob_submit.py <dev_branch> --base-network ABCD1234  # Custom NNUE net for base
+
+Network hashes are the first 8 chars of SHA256 (uppercase). Use ob_upload_net.py to
+upload nets and get their hashes, or check https://ob.atwiss.com/networks/.
 
 Best practice: let OB auto-detect bench from commit messages (Bench: NNNNNN).
 Only pass explicit bench if OB fails to parse.
@@ -81,7 +86,7 @@ def submit_test(args):
         'dev_bench':        str(args.dev_bench),
         'dev_options':      args.options,
         'dev_time_control': args.tc,
-        'dev_network':      '',
+        'dev_network':      args.dev_network,
 
         'base_repo':         args.repo,
         'base_engine':       'Coda',
@@ -89,7 +94,7 @@ def submit_test(args):
         'base_bench':        str(args.base_bench),
         'base_options':      args.options,
         'base_time_control': args.tc,
-        'base_network':      '',
+        'base_network':      args.base_network,
 
         'test_mode':       'SPRT',
         'test_bounds':     args.bounds,
@@ -114,6 +119,10 @@ def submit_test(args):
     if '/index/' in location:
         print(f'Test submitted: {args.dev_branch} (bench {args.dev_bench}) vs {args.base_branch} (bench {args.base_bench})')
         print(f'Bounds: {args.bounds}, TC: {args.tc}')
+        if args.dev_network:
+            print(f'Dev network: {args.dev_network}')
+        if args.base_network:
+            print(f'Base network: {args.base_network}')
         return True
 
     # Error — follow redirect to get message
@@ -133,6 +142,8 @@ def main():
     p.add_argument('--bounds', default='[0.00, 5.00]', help='SPRT bounds (default: [0.00, 5.00])')
     p.add_argument('--tc', default='10.0+0.1', help='Time control (default: 10.0+0.1)')
     p.add_argument('--options', default='Threads=1 Hash=64', help='UCI options')
+    p.add_argument('--dev-network', default='', help='Dev network SHA256 hash (8 chars, from ob_upload_net.py)')
+    p.add_argument('--base-network', default='', help='Base network SHA256 hash (8 chars, from ob_upload_net.py)')
     p.add_argument('--priority', type=int, default=0, help='Priority (default: 0)')
     p.add_argument('--throughput', type=int, default=100, help='Throughput (default: 100)')
     p.add_argument('--repo', default='https://github.com/adamtwiss/coda', help='GitHub repo URL')

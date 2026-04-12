@@ -105,7 +105,16 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 // Try Syzygy tablebase at root
                 if let Some(ref tb) = syzygy {
                     if crate::bitboard::popcount(board.occupied()) as usize <= tb.max_pieces() {
-                        if let Some((tb_move, _wdl)) = tb.probe_root(&board) {
+                        if let Some((tb_move, wdl)) = tb.probe_root(&board) {
+                            // Report score so GUIs/bots can handle draw/resign
+                            let score_str = if wdl > 0 {
+                                format!("score cp {}", crate::tt::TB_WIN)
+                            } else if wdl < 0 {
+                                format!("score cp -{}", crate::tt::TB_WIN)
+                            } else {
+                                "score cp 0".to_string()
+                            };
+                            println!("info depth 1 seldepth 1 {} tbhits 1 pv {}", score_str, tb_move);
                             println!("bestmove {}", tb_move);
                             continue;
                         }

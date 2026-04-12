@@ -13,6 +13,7 @@ Environment variables:
 """
 
 import argparse
+import hashlib
 import os
 import requests
 
@@ -28,6 +29,10 @@ def upload_net(args):
     name = args.name or os.path.splitext(os.path.basename(args.file))[0]
     size_mb = os.path.getsize(args.file) / 1024 / 1024
 
+    # Compute SHA256 hash (first 8 chars, uppercase) — same as OB
+    with open(args.file, 'rb') as f:
+        sha256 = hashlib.sha256(f.read()).hexdigest()[:8].upper()
+    print(f'SHA256: {sha256}')
     print(f'Uploading {name} ({size_mb:.1f} MB)...')
 
     s = requests.Session()
