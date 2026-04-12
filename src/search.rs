@@ -1189,12 +1189,15 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Fall back to TT probe if PV table is empty
         if info.pv_len[0] > 0 {
             let pv_move = info.pv_table[0][0];
-            // Validate against root legal list (ensures correct flags)
+            // Validate against root legal list (match from/to/flags for promotions)
             let pv_from = move_from(pv_move);
             let pv_to = move_to(pv_move);
+            let pv_flags = move_flags(pv_move);
             for i in 0..root_legal.len {
                 let m = root_legal.moves[i];
-                if move_from(m) == pv_from && move_to(m) == pv_to {
+                if move_from(m) == pv_from && move_to(m) == pv_to
+                    && (!is_promotion(pv_move) || move_flags(m) == pv_flags)
+                {
                     best_move = m;
                     break;
                 }
@@ -1205,9 +1208,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             if tt_entry.hit && tt_entry.best_move != NO_MOVE {
                 let tt_from = move_from(tt_entry.best_move);
                 let tt_to = move_to(tt_entry.best_move);
+                let tt_flags = move_flags(tt_entry.best_move);
                 for i in 0..root_legal.len {
                     let m = root_legal.moves[i];
-                    if move_from(m) == tt_from && move_to(m) == tt_to {
+                    if move_from(m) == tt_from && move_to(m) == tt_to
+                        && (!is_promotion(tt_entry.best_move) || move_flags(m) == tt_flags)
+                    {
                         best_move = m;
                         break;
                     }
