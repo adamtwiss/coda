@@ -1501,12 +1501,12 @@ impl NNUENet {
             for i in 0..pw {
                 let a = (stm_acc[i] as i32).clamp(0, qa);
                 let b = (stm_acc[i + pw] as i32).clamp(0, qa);
-                stm_pw[i] = ((a * b) >> 8) as u8;
+                stm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
             for i in 0..pw {
                 let a = (ntm_acc[i] as i32).clamp(0, qa);
                 let b = (ntm_acc[i + pw] as i32).clamp(0, qa);
-                ntm_pw[i] = ((a * b) >> 8) as u8;
+                ntm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
         }
 
@@ -1523,12 +1523,12 @@ impl NNUENet {
             for i in 0..pw {
                 let a = (stm_acc[i] as i32).clamp(0, qa);
                 let b = (stm_acc[i + pw] as i32).clamp(0, qa);
-                stm_pw[i] = ((a * b) >> 8) as u8;
+                stm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
             for i in 0..pw {
                 let a = (ntm_acc[i] as i32).clamp(0, qa);
                 let b = (ntm_acc[i + pw] as i32).clamp(0, qa);
-                ntm_pw[i] = ((a * b) >> 8) as u8;
+                ntm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
         }
 
@@ -1612,8 +1612,10 @@ impl NNUENet {
             }
         }
 
-        // Dequantize + ReLU
+        // Dequantize + ReLU: clamp [0, QA_L1] → [0, 1]
         // hidden32 at scale pw_scale * QA_L1. Divide by pw_scale → scale QA_L1.
+        // Note: activation (ReLU vs SCReLU) must match training config.
+        // Pairwise nets currently trained with .relu() on hidden layers.
         let mut l1_out = [0.0f32; 512];
         for i in 0..l1 {
             let h_val = (hidden32[i] / pw_scale).clamp(0, qa_l1);
@@ -1634,7 +1636,7 @@ impl NNUENet {
                     h2[k] += l1_out[i] * self.l2_weights_f[i * l2_total + l2_off + k];
                 }
             }
-            for k in 0..l2 { h2[k] = h2[k].max(0.0).min(1.0); }
+            for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); } // ReLU
             let out_w = &self.out_weights_f[bucket * l2_pb..bucket * l2_pb + l2_pb];
             let mut out_f = self.out_bias_f[bucket];
             for k in 0..l2 { out_f += h2[k] * out_w[k]; }

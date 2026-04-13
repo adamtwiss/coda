@@ -80,11 +80,11 @@ fn main() {
         .save_format(&[
             SavedFormat::id("l0w").round().quantise::<i16>(255),
             SavedFormat::id("l0b").round().quantise::<i16>(255),
-            SavedFormat::id("l1w").transpose().round().quantise::<i8>(64),
+            SavedFormat::id("l1w").round().quantise::<i8>(64),
             SavedFormat::id("l1b"),
-            SavedFormat::id("l2w").transpose(),
+            SavedFormat::id("l2w"),
             SavedFormat::id("l2b"),
-            SavedFormat::id("l3w").transpose(),
+            SavedFormat::id("l3w"),
             SavedFormat::id("l3b"),
         ])
         .loss_fn(|output, target| output.sigmoid().power_error(target, 2.5))

@@ -221,7 +221,9 @@ pub fn convert_v7(
         offset += 2;
     }
 
-    // l1w: [L1_input][BUCKETS*L1] — i8 or i16 (transposed in Bullet save)
+    // l1w: [l1_input][bl1] — i8 or i16
+    // Training configs must NOT use .transpose() on L1/L2/L3 save format.
+    // The .nnue loader handles transposition for SIMD internally.
     let mut l1_weights = vec![0i16; l1_input * bl1];
     if int8_l1 {
         for i in 0..l1_input * bl1 {
