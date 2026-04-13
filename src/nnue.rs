@@ -1612,14 +1612,15 @@ impl NNUENet {
             }
         }
 
-        // Dequantize + ReLU: clamp [0, QA_L1] → [0, 1]
+        // Dequantize + SCReLU: clamp [0, QA_L1], square → [0, 1]
         // hidden32 at scale pw_scale * QA_L1. Divide by pw_scale → scale QA_L1.
-        // Note: activation (ReLU vs SCReLU) must match training config.
-        // Pairwise nets currently trained with .relu() on hidden layers.
+        // Must match training config (.screlu() on hidden layers).
+        let qa_l1_sq = qa_l1 as f32 * qa_l1 as f32;
         let mut l1_out = [0.0f32; 512];
         for i in 0..l1 {
             let h_val = (hidden32[i] / pw_scale).clamp(0, qa_l1);
-            l1_out[i] = h_val as f32 / qa_l1 as f32;
+            let hsq = h_val * h_val; // SCReLU
+            l1_out[i] = hsq as f32 / qa_l1_sq;
         }
 
         // L2 or output
@@ -1636,7 +1637,7 @@ impl NNUENet {
                     h2[k] += l1_out[i] * self.l2_weights_f[i * l2_total + l2_off + k];
                 }
             }
-            for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); } // ReLU
+            for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; } // SCReLU
             let out_w = &self.out_weights_f[bucket * l2_pb..bucket * l2_pb + l2_pb];
             let mut out_f = self.out_bias_f[bucket];
             for k in 0..l2 { out_f += h2[k] * out_w[k]; }
