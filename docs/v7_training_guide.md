@@ -67,6 +67,42 @@ Input: HalfKA 768 features (12 pieces × 64 squares) per king bucket
 and simpler move ordering. This suggests net quality and training matter more than
 architecture complexity at our level.
 
+### FT→L1 Packing: Consensus Analysis (2026-04-13)
+
+**How top engines pack FT output to int8 for L1 matmul:**
+
+| Engine | FT activation | Packing to u8/i8 | Shift | L1 QB |
+|--------|--------------|-------------------|-------|-------|
+| Viridithas | CReLU→paired product | `clamp(left,0,255) * clamp(right,0,255) >> 9` → u8 | 9 | 64 |
+| Obsidian | CReLU→paired product | `clamp(left,0,255) * clamp(right,0,255) >> 9` → u8 | 9 | 128 |
+| Berserk | CReLU | `clamp(x, 0, 127<<5) >> 5` → i8 | 5 | integer chain |
+| Reckless | SCReLU→pairwise | (not yet verified) | — | — |
+| Stockfish | SCReLU+CReLU dual | (unique dual-net architecture) | — | — |
+| **Coda (broken)** | **SCReLU (x²)** | `clamp(x,0,255)² >> 8` → u8 | 8 | 64 |
+
+**Key insight:** Viridithas and Obsidian both use **paired/gated product** (left_half × right_half),
+NOT SCReLU squaring. This is effectively CReLU→pairwise_mul — the same as our v5 FT activation.
+The paired product naturally preserves perspective symmetry and has better dynamic range than
+self-squaring.
+
+**Our SCReLU i8 failure mode:** SCReLU squares the accumulator values (x²), which compresses
+the value range differently than the paired product. With only 16 L1 neurons and i8 precision,
+the squaring destroys the sign structure needed for perspective-relative evaluation. The paired
+product (two independent halves multiplied) maintains better information content per u8 value.
+
+**Decision (2026-04-13):** Our v7 target architecture should use CReLU→pairwise on the FT
+(matching Viridithas/Obsidian consensus and our v5 architecture), with i8 L1 using the
+standard >>9 shift paired product packing. SCReLU on hidden layers (L1→L2, L2→output) is
+fine — that's where top engines use it.
+
+**What failed and why (history):**
+1. Factoriser (l0f + init_with_effective_input_size) — kills hidden layers entirely
+2. Bucketed hidden layers (.select(output_buckets) on L1/L2) — gradient starvation
+3. SCReLU on FT with i8 L1 — perspective symmetry corruption
+4. SCReLU on FT with i16 L1 — works but slow (no VPMADDUBSW kernel)
+5. CReLU→pairwise on FT with i16 L1 — works (GoChess-style, proven)
+6. CReLU→pairwise on FT with i8 L1 — **target** (matches consensus, not yet tested)
+
 ### Key Architecture Insights (from Cosmo/Viridithas research)
 
 - **SCReLU dominates CReLU** on hidden layers — worth ~50% network size increase
