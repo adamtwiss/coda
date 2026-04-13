@@ -105,18 +105,34 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 // Try Syzygy tablebase at root
                 if let Some(ref tb) = syzygy {
                     if crate::bitboard::popcount(board.occupied()) as usize <= tb.max_pieces() {
-                        if let Some((tb_move, wdl)) = tb.probe_root(&board) {
-                            // Report score so GUIs/bots can handle draw/resign
-                            let score_str = if wdl > 0 {
-                                format!("score cp {}", crate::tt::TB_WIN)
-                            } else if wdl < 0 {
-                                format!("score cp -{}", crate::tt::TB_WIN)
-                            } else {
-                                "score cp 0".to_string()
-                            };
-                            println!("info depth 1 seldepth 1 {} tbhits 1 pv {}", score_str, tb_move);
-                            println!("bestmove {}", tb_move);
-                            continue;
+                        if let Some((tb_move_str, wdl)) = tb.probe_root(&board) {
+                            // Validate TB move against legal move list.
+                            // TB can return "king capture" moves in checkmate positions
+                            // which are illegal in UCI. Only play if it's a real legal move.
+                            let legal = crate::movegen::generate_legal_moves(&board);
+                            let mut tb_valid = false;
+                            if let Some(parsed) = parse_uci_move(&board, &tb_move_str) {
+                                for i in 0..legal.len {
+                                    if move_from(legal.moves[i]) == move_from(parsed)
+                                        && move_to(legal.moves[i]) == move_to(parsed) {
+                                        tb_valid = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if tb_valid {
+                                let score_str = if wdl > 0 {
+                                    format!("score cp {}", crate::tt::TB_WIN)
+                                } else if wdl < 0 {
+                                    format!("score cp -{}", crate::tt::TB_WIN)
+                                } else {
+                                    "score cp 0".to_string()
+                                };
+                                println!("info depth 1 seldepth 1 {} tbhits 1 pv {}", score_str, tb_move_str);
+                                println!("bestmove {}", tb_move_str);
+                                continue;
+                            }
+                            // TB move invalid — fall through to search (which has interior TB probes)
                         }
                     }
                 }
