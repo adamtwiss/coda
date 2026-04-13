@@ -139,7 +139,7 @@ pub fn see_value_of(board: &Board, mv: Move) -> i32 {
 mod see_tests {
     use super::*;
     use crate::board::Board;
-    use crate::types::*;
+    
     use crate::movegen::generate_legal_moves;
 
     fn init() { crate::init(); }
@@ -208,7 +208,7 @@ mod see_tests {
 mod see_xray_tests {
     use super::*;
     use crate::board::Board;
-    use crate::types::*;
+    
     use crate::movegen::generate_legal_moves;
 
     fn init() { crate::init(); }

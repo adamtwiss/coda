@@ -814,7 +814,7 @@ mod tests {
     fn test_ep_legal() {
         init();
         // Position where EP capture would leave king in check (discovered check)
-        let mut b = Board::from_fen("8/8/8/8/k2Pp2Q/8/8/3K4 b - d3 0 1");
+        let b = Board::from_fen("8/8/8/8/k2Pp2Q/8/8/3K4 b - d3 0 1");
         let moves = generate_legal_moves(&b);
         // EP capture e4xd3 should be illegal because it discovers check from Qh4
         for i in 0..moves.len {
@@ -937,7 +937,7 @@ mod tests {
     #[test]
     fn test_promotion_captures() {
         init();
-        let mut b = Board::from_fen("r3k2r/1P6/8/8/8/8/8/4K3 w kq - 0 1");
+        let b = Board::from_fen("r3k2r/1P6/8/8/8/8/8/4K3 w kq - 0 1");
         let moves = generate_legal_moves(&b);
         // b7b8 promotions (4) + b7xa8 capture promotions (4) = 8 pawn moves minimum
         let promo_moves: Vec<_> = (0..moves.len)

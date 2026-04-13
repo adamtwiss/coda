@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn test_store_probe_roundtrip() {
         crate::init();
-        let mut tt = TT::new(1);
+        let tt = TT::new(1);
         
         // Store and probe back
         let hash = 0x123456789ABCDEF0u64;
@@ -408,7 +408,7 @@ mod targeted_tests {
     #[test]
     fn test_divergent_hash_probe() {
         crate::init();
-        let mut tt = TT::new(64);
+        let tt = TT::new(64);
 
         let target_hash = 0x5cac71485b008015u64;
         // b8=1, d7=51: move = (51 << 6) | 1 = 3265

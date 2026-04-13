@@ -1835,7 +1835,7 @@ impl NNUENet {
         // L1 weights layout: [bl1 × l1_input] (output-major, from Bullet .transpose())
         // Weight from STM input j to output neuron gi: l1_weights[gi * l1_input + j]
         // Weight from NTM input j to output neuron gi: l1_weights[gi * l1_input + h + j]
-        let l1_input = if self.use_pairwise { h } else { 2 * h };
+        let _l1_input = if self.use_pairwise { h } else { 2 * h };
         #[cfg(target_arch = "x86_64")]
         if !(self.has_avx2 && h % 32 == 0 && !self.l1_weights_8t.is_empty()) {
             for j in 0..h {
