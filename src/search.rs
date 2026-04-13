@@ -1718,6 +1718,27 @@ fn negamax(
             diff > tp(&UNSTABLE_THRESH)
         };
 
+    // Eval history: update opponent's main history based on eval change (Obsidian/Alexandria)
+    // theirLoss = parent_eval + current_eval (sum from opposite perspectives)
+    // Positive = opponent's move was bad for them, negative = their move was good
+    if !in_check && ply >= 1 && ply_u >= 1
+        && info.static_evals[ply_u - 1] > -INFINITY
+        && static_eval > -INFINITY
+    {
+        let their_loss = info.static_evals[ply_u - 1] + static_eval;
+        let bonus = (-10 * their_loss).clamp(-1500, 1500);
+        let last = &board.undo_stack[board.undo_stack.len() - 1];
+        if last.mv != NO_MOVE && last.captured == NO_PIECE_TYPE {
+            let opp_from = move_from(last.mv);
+            let opp_to = move_to(last.mv);
+            // Use 0 for threats — we don't have the opponent's threat bitboard
+            History::update_history(
+                info.history.main_entry(opp_from, opp_to, 0),
+                bonus,
+            );
+        }
+    }
+
     // Detect if TT move is a capture
     let tt_move_noisy = tt_move != NO_MOVE && {
         board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
