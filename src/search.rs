@@ -2113,9 +2113,11 @@ fn negamax(
             && FEAT_FUTILITY.load(Ordering::Relaxed)
             && lmr_d <= 10
         {
-            let hist_adj = info.history.main_score(from, to, enemy_attacks) / 128;
+            let main_hist = info.history.main_score(from, to, enemy_attacks);
+            let hist_adj = main_hist / 128;
             let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj;
-            if futility_value <= alpha {
+            // Don't futility-prune moves with very strong history (Igel pattern)
+            if futility_value <= alpha && main_hist < 12000 {
                 info.stats.futility_prunes += 1;
                 continue;
             }
