@@ -78,10 +78,12 @@ fn board_to_shakmaty(board: &Board) -> Option<Chess> {
 fn ambiguous_wdl_to_score(wdl: AmbiguousWdl) -> i32 {
     match wdl {
         AmbiguousWdl::Win => 20000,
-        AmbiguousWdl::MaybeLoss => -1,
-        AmbiguousWdl::CursedWin | AmbiguousWdl::MaybeWin => 1,
+        AmbiguousWdl::MaybeLoss => -1,       // Genuinely ambiguous (DTZ rounding)
+        AmbiguousWdl::CursedWin => 20000,     // Definite win (draws only by 50-move rule claim)
+        AmbiguousWdl::MaybeWin => 1,           // Genuinely ambiguous (DTZ rounding)
         AmbiguousWdl::Draw => 0,
-        AmbiguousWdl::BlessedLoss => -1,
+        AmbiguousWdl::BlessedLoss => -20000,   // Definite loss (saved only by 50-move claim)
+
         AmbiguousWdl::Loss => -20000,
     }
 }
