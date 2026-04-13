@@ -11,8 +11,10 @@
 
 # Configuration
 EXE := coda
-EVALFILE := net.nnue
 NET_URL := $(shell cat net.txt 2>/dev/null)
+# EVALFILE: defaults to the filename from net.txt (e.g. net-v5-768pw-w7-e800s800-filtered-lowestlr.nnue)
+# OB overrides this with an absolute path to the network file.
+EVALFILE := $(if $(NET_URL),$(notdir $(NET_URL)),net.nnue)
 MIN_RUST_VERSION := 1.70.0
 
 # Platform detection
@@ -44,7 +46,7 @@ pgo: check-rust net
 	CODA_EVALFILE=$(abspath $(EVALFILE)) cargo pgo optimize build -- --features embedded-net
 	cp target/$(TARGET_TUPLE)/release/coda $(NAME)
 
-# Download production NNUE net
+# Download production NNUE net (uses actual filename from net.txt, not generic net.nnue)
 net:
 	@if [ ! -f "$(EVALFILE)" ] && [ -n "$(NET_URL)" ]; then \
 		echo "Downloading NNUE net from $(NET_URL)..."; \
