@@ -2237,10 +2237,9 @@ fn negamax(
                     reduction += 1;
                 }
 
-                // Reduce more when opponent has few non-pawn pieces
-                // Note: board is post-make_move, so SideToMove is now the opponent
-                let opp = flip_color(board.side_to_move);
-                let opp_non_pawn = board.colors[opp as usize]
+                // Reduce more when opponent has few non-pawn pieces (simpler position)
+                // Note: board is post-make_move, so side_to_move IS the opponent
+                let opp_non_pawn = board.colors[board.side_to_move as usize]
                     & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
                 if popcount(opp_non_pawn) < 3 {
                     reduction += 1;
