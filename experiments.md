@@ -4506,3 +4506,13 @@ Note: These were tested locally with tablebases enabled on all engines (not viab
 | 323 | pow2.5 e800 vs production | **+12.0** | ~2,000 | Power-2.5 loss, 12 T80 files, e800 | **H1 ✓** |
 
 New production net: `net-v5-768pw-w7-e800s800-pow25-12f.nnue`. Node count +44% vs old production — retune needed to recalibrate pruning for new eval distribution.
+
+### Material Eval Scaling — MERGED (OB #313)
+- **Change**: `score = score * (22400 + material) / 32 / 1024` (Alexandria pattern)
+- **Result**: **H1, +3.97 Elo, 13,552 games.**
+- **Notes**: Dampens NNUE eval in low-material endgames. Tested against old MSE production net — may interact differently with pow2.5 net since both increase tree size. Per-piece scaling values (P=100, N=422, B=422, R=642, Q=1015) could be made SPSA-tunable in future.
+
+### v7 Training Root Cause: .transpose() in Bullet Save Format
+- **Bug**: `.transpose()` on L1w/L2w/L3w in Coda training configs caused double-transpose. Converter+loader expected input-major but got neuron-major from Bullet's transpose. All i8 L1 weights were scrambled.
+- **Fix**: Removed `.transpose()` from L1w/L2w/L3w in training configs. GoChess-style (no transpose) always worked because it matched expectations.
+- **Status**: Retraining 768pw v7 with fixed config on GPU.
