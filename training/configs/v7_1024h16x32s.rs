@@ -23,7 +23,6 @@ use bullet_lib::{
         outputs::MaterialCount,
     },
     nn::{
-        InitSettings, Shape,
         optimiser::{AdamW, AdamWParams},
     },
     trainer::{
@@ -74,13 +73,7 @@ fn main() {
         .inputs(ChessBucketsMirrored::new(BUCKET_LAYOUT))
         .output_buckets(MaterialCount::<NUM_OUTPUT_BUCKETS>)
         .save_format(&[
-            SavedFormat::id("l0w")
-                .transform(|store, weights| {
-                    let factoriser = store.get("l0f").values.repeat(NUM_INPUT_BUCKETS);
-                    weights.into_iter().zip(factoriser).map(|(a, b)| a + b).collect()
-                })
-                .round()
-                .quantise::<i16>(255),
+            SavedFormat::id("l0w").round().quantise::<i16>(255),
             SavedFormat::id("l0b").round().quantise::<i16>(255),
             SavedFormat::id("l1w").transpose().round().quantise::<i8>(64),
             SavedFormat::id("l1b"),
@@ -91,12 +84,8 @@ fn main() {
         ])
         .loss_fn(|output, target| output.sigmoid().power_error(target, 2.5))
         .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
-            let l0f = builder.new_weights("l0f", Shape::new(ft_size, 768), InitSettings::Zeroed);
-            let expanded_factoriser = l0f.repeat(NUM_INPUT_BUCKETS);
-
-            let mut l0 = builder.new_affine("l0", 768 * NUM_INPUT_BUCKETS, ft_size);
-            l0.init_with_effective_input_size(32);
-            l0.weights = l0.weights + expanded_factoriser;
+            // No factoriser — plain FT (factoriser kills hidden layers)
+            let l0 = builder.new_affine("l0", 768 * NUM_INPUT_BUCKETS, ft_size);
 
             // Shared hidden layers (not bucketed) — only output is bucketed
             // Bucketing L1/L2 starves them of gradient signal (16×32 = 512 params per bucket)
@@ -113,7 +102,7 @@ fn main() {
 
     let stricter_clipping = AdamWParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
     trainer.optimiser.set_params_for_weight("l0w", stricter_clipping);
-    trainer.optimiser.set_params_for_weight("l0f", stricter_clipping);
+    // l0f removed (no factoriser)
 
     // LR schedule: warmup then cosine decay (critical for hidden layers)
     let schedule = TrainingSchedule {
