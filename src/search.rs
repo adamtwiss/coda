@@ -287,6 +287,9 @@ pub struct SearchInfo {
     excluded_move: [Move; MAX_PLY + 1],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
     double_ext_count: [i32; MAX_PLY + 1],
+    /// Per-ply cutoff count — incremented when a child causes beta cutoff.
+    /// Used by parent to adjust LMR (Reckless pattern).
+    cutoff_count: [i32; MAX_PLY + 1],
     /// Per-ply moved piece (go_piece index 1-12, 0=none). Set before make_move.
     /// Used for correct cont hist lookups at ply-2+ (avoids stale board.piece_at).
     moved_piece_stack: [u8; MAX_PLY + 1],
@@ -343,6 +346,7 @@ impl SearchInfo {
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
             double_ext_count: [0; MAX_PLY + 1],
+            cutoff_count: [0; MAX_PLY + 1],
             moved_piece_stack: [0; MAX_PLY + 1],
             moved_to_stack: [0; MAX_PLY + 1],
             pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
@@ -1405,6 +1409,8 @@ fn negamax(
     cut_node: bool, // true at expected cut nodes (child of all-node, non-first child of PV)
 ) -> i32 {
     let ply_u = ply as usize;
+    // Reset child cutoff counter for this ply
+    if ply_u <= MAX_PLY { info.cutoff_count[ply_u] = 0; }
 
     // Guard against stack overflow
     if ply_u >= MAX_PLY {
@@ -2239,6 +2245,11 @@ fn negamax(
                     reduction += 1;
                 }
 
+                // Reduce more when children are consistently causing cutoffs (Reckless pattern)
+                if info.cutoff_count[ply_u] > 2 {
+                    reduction += 1;
+                }
+
                 // Reduce less when moving a piece away from a pawn-attacked square
                 if enemy_attacks & (1u64 << from) != 0 {
                     reduction -= 1;
@@ -2382,6 +2393,11 @@ fn negamax(
 
         if info.stop.load(Ordering::Relaxed) {
             return 0;
+        }
+
+        // Track child cutoffs for LMR adjustment (Reckless pattern)
+        if score >= beta && ply_u + 1 <= MAX_PLY {
+            info.cutoff_count[ply_u] += 1;
         }
 
         if score > best_score {
