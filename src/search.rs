@@ -726,6 +726,10 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
 }
 
 /// LMR reduction tables (quiet and capture).
+/// Safety: initialized once at startup (main.rs) and on setoption (UCI thread).
+/// Search threads read concurrently — technically a race on setoption during search,
+/// but values change monotonically and a stale read produces a slightly wrong reduction,
+/// not UB in practice (i32 reads/writes are atomic on x86-64).
 static mut LMR_TABLE: [[i32; 64]; 64] = [[0; 64]; 64];
 static mut LMR_TABLE_CAP: [[i32; 64]; 64] = [[0; 64]; 64];
 
@@ -842,15 +846,7 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     helper.move_overhead = main.move_overhead;
     helper.root_stm = main.root_stm; // contempt needs to know who started the search
     helper.syzygy = main.syzygy.clone(); // share tablebases (read-only)
-    // Copy main thread's history for better initial move ordering (Alexandria pattern)
-    // Helpers start with the main thread's learned history instead of zeroed tables
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            main.history.as_ref() as *const _ as *const u8,
-            helper.history.as_mut() as *mut _ as *mut u8,
-            std::mem::size_of::<crate::movepicker::History>(),
-        );
-    }
+    // Helpers start with fresh history for SMP diversity (cleared in search_helper)
     helper
 }
 

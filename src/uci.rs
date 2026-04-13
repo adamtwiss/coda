@@ -12,8 +12,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut info = SearchInfo::new(64);
     let mut stop_flag = info.stop.clone(); // keep a handle to signal stop from UCI loop
     let mut ponderhit_flag = info.ponderhit_time.clone(); // shared ponderhit time limit
-    let mut _ponder_depth_flag = info.ponder_depth.clone(); // reserved for future depth-aware budget
     let mut ponder_limits: Option<SearchLimits> = None; // pending limits for ponderhit
+    let mut ponder_stm: u8 = crate::types::WHITE; // side to move at ponder start
     let mut opening_book: Option<crate::book::OpeningBook> = None;
     let mut use_book = true;
     let mut syzygy: Option<std::sync::Arc<crate::tb::SyzygyTB>> = None;
@@ -134,6 +134,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 let mut limits = parse_go(&tokens);
                 if is_ponder {
                     ponder_limits = Some(limits.clone());
+                    ponder_stm = board.side_to_move;
                     limits.infinite = true;
                 } else {
                     ponder_limits = None;
@@ -157,7 +158,6 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     shared_stop, shared_tt, shared_net,
                 ));
                 ponderhit_flag = search_info.ponderhit_time.clone();
-                _ponder_depth_flag = search_info.ponder_depth.clone();
                 let threads = num_threads;
                 let is_ponder_search = is_ponder;
                 search_handle = Some(std::thread::Builder::new()
@@ -207,12 +207,13 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 // allocation to push deeper. Don't waste the free thinking
                 // time by moving instantly.
                 if let (Some(ref pl), Some(start)) = (&ponder_limits, ponder_search_start) {
-                    let our_time = if board.side_to_move == crate::types::WHITE {
+                    // Use cached STM from go-ponder time (board may be stale)
+                    let our_time = if ponder_stm == crate::types::WHITE {
                         pl.wtime
                     } else {
                         pl.btime
                     };
-                    let our_inc = if board.side_to_move == crate::types::WHITE {
+                    let our_inc = if ponder_stm == crate::types::WHITE {
                         pl.winc
                     } else {
                         pl.binc

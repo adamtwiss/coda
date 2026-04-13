@@ -187,6 +187,8 @@ pub fn convert_v7(
     let bytes_per_neuron = NNUE_INPUT_SIZE * 2 + 2 + l1_mul * bl1 * l1w_bytes_per;
     let h = if ft_size_override > 0 {
         ft_size_override
+    } else if data_len < fixed_bytes {
+        return Err(format!("file too small: {} bytes, need at least {} for headers", data_len, fixed_bytes));
     } else {
         (data_len - fixed_bytes) / bytes_per_neuron
     };

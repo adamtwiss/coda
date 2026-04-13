@@ -1686,7 +1686,8 @@ impl NNUENet {
             // Weight layout: l1_weights_8t[neuron * h] for STM, [l1_total*h + neuron*h] for NTM
             // With bucket offset: STM starts at (b_off + i) * h, NTM at l1_total*h + (b_off+i)*h
             if self.use_sparse_l1.load(std::sync::atomic::Ordering::Relaxed) {
-                let mut stm_nnz = [0u16; 64];
+                debug_assert!(h <= 2048, "sparse NNZ buffer too small for h={}", h);
+                let mut stm_nnz = [0u16; 64]; // safe for h <= 2048 (64 × 32-byte chunks)
                 let mut ntm_nnz = [0u16; 64];
                 let (stm_nnz_count, ntm_nnz_count);
                 unsafe {
@@ -1832,10 +1833,7 @@ impl NNUENet {
         }
 
         // Scalar fallback (bucket-aware)
-        // L1 weights layout: [bl1 × l1_input] (output-major, from Bullet .transpose())
-        // Weight from STM input j to output neuron gi: l1_weights[gi * l1_input + j]
-        // Weight from NTM input j to output neuron gi: l1_weights[gi * l1_input + h + j]
-        let _l1_input = if self.use_pairwise { h } else { 2 * h };
+        // L1 weight layout: transposed [neuron × h] per perspective, accessed via l1_total + b_off
         #[cfg(target_arch = "x86_64")]
         if !(self.has_avx2 && h % 32 == 0 && !self.l1_weights_8t.is_empty()) {
             for j in 0..h {
