@@ -1501,7 +1501,7 @@ fn negamax(
                     };
 
                     if tb_score >= beta { return tb_score; }
-                    if tb_score <= alpha { return tb_score; }
+                    if tb_score < alpha { return tb_score; }
                     // Exact score in window: tighten bounds
                     alpha = tb_score;
                 }
