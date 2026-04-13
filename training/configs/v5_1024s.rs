@@ -135,14 +135,14 @@ fn main() {
         .unwrap_or_else(|e| panic!("Cannot read dataset dir {}: {}", dataset_dir, e))
         .filter_map(|entry| {
             let path = entry.ok()?.path();
-            if path.extension().map_or(false, |ext| ext == "binpack") {
+            if path.extension().map_or(false, |ext| ext == "binpack") && path.file_name().map_or(false, |n| n.to_string_lossy().starts_with("test80")) {
                 Some(path.to_string_lossy().to_string())
             } else {
                 None
             }
         })
         .collect();
-    assert!(!data_files.is_empty(), "No .binpack files found in {}", dataset_dir);
+    assert!(!data_files.is_empty(), "No test80*.binpack files found in {}", dataset_dir);
     let data_refs: Vec<&str> = data_files.iter().map(|s| s.as_str()).collect();
 
     let dataloader = SfBinpackLoader::new_concat_multiple(&data_refs, 256, 4, filter);
