@@ -4516,3 +4516,8 @@ New production net: `net-v5-768pw-w7-e800s800-pow25-12f.nnue`. Node count +44% v
 - **Bug**: `.transpose()` on L1w/L2w/L3w in Coda training configs caused double-transpose. Converter+loader expected input-major but got neuron-major from Bullet's transpose. All i8 L1 weights were scrambled.
 - **Fix**: Removed `.transpose()` from L1w/L2w/L3w in training configs. GoChess-style (no transpose) always worked because it matched expectations.
 - **Status**: Retraining 768pw v7 with fixed config on GPU.
+
+### SEE Threshold Floor — REJECTED (OB #315)
+- **Change**: `.max(-200)` floor on dynamic capture SEE threshold (`-captHist/18`)
+- **Result**: **H0, -2.42 Elo, 10,336 games.**
+- **Notes**: The dynamic threshold works fine without a floor. Extreme negative captHist values creating high positive thresholds is a theoretical concern but doesn't hurt in practice. Feature confirmed working as-is.
