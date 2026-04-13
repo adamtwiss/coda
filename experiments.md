@@ -4487,3 +4487,22 @@ GoChess-style experiment config created (no factoriser, i16 quant). Training sta
 3. **Dynamic capture SEE revived.** Previously "permanently dropped" after 5 failed attempts. New SEE values + SEE_MATERIAL_SCALE made it viable: +4.4 Elo H1 (#294).
 4. **Selfplay s400 >> s120.** +11.5 Elo from longer training. But still -45 vs production (data volume gap).
 5. **Ponderhit TM was wasting time.** Budget of inc/2 = 1s meant instant moves. Normal allocation lets the engine think 5-20s on ponderhits.
+
+### TB Feature SPRTs (local, Hercules, with /tablebases)
+
+| Test | Elo | Games | Description | Status |
+|------|-----|-------|-------------|--------|
+| fix-cursed-win | -7.4 | 1,179 | Treat CursedWin/BlessedLoss as definite ±20000 | **H0 ✗** |
+| fix-tb-alpha-strict | -2.8 | ~1,720 | `< alpha` instead of `<= alpha` for TB cutoff | **H0 ✗** (killed) |
+
+Both TB changes rejected. The conservative treatment (ambiguous ±1 for cursed/blessed, `<=` alpha cutoff) is correct — the engine plays better when it doesn't overcommit to technically-won-but-50-move-drawable positions.
+
+Note: These were tested locally with tablebases enabled on all engines (not viable on OB where most workers lack TBs).
+
+### Production Net Update
+
+| # | Test | Elo | Games | Description | Status |
+|---|------|-----|-------|-------------|--------|
+| 323 | pow2.5 e800 vs production | **+12.0** | ~2,000 | Power-2.5 loss, 12 T80 files, e800 | **H1 ✓** |
+
+New production net: `net-v5-768pw-w7-e800s800-pow25-12f.nnue`. Node count +44% vs old production — retune needed to recalibrate pruning for new eval distribution.
