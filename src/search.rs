@@ -1446,6 +1446,12 @@ fn negamax(
         ((their_pawns & !0x8080808080808080u64) >> 7) | ((their_pawns & !0x0101010101010101u64) >> 9)
     };
 
+    // Compute opponent's pawn threats on our non-pawn pieces (Minic/Koivisto/Berserk).
+    // Used to gate RFP — don't prune when opponent's pawns attack our pieces.
+    let our_non_pawns = board.colors[board.side_to_move as usize]
+        & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+    let has_good_threats = (enemy_attacks & our_non_pawns) != 0;
+
     // Clear PV for this node
     if ply_u <= MAX_PLY {
         info.pv_len[ply_u] = 0;
@@ -1833,7 +1839,9 @@ fn negamax(
             && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
             && move_flags(tt_move) != FLAG_EN_PASSANT;
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
-            let margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            // Widen margin when opponent has pawn threats on our pieces — position is tactical
+            if has_good_threats { margin += margin / 3; }
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
