@@ -46,12 +46,12 @@ macro_rules! tunables {
 tunables!(
     // NMP — SPSA tune #283 for e800 lowestlr (refinement with new SEE values)
     (NMP_BASE_R,         4,    2,    8),
-    (NMP_DEPTH_DIV,      2,    2,    6),
+    (NMP_DEPTH_DIV,      2,    1,    6),
     (NMP_EVAL_DIV,     135,  100,  400),
     (NMP_EVAL_MAX,       1,    1,    6),
     (NMP_VERIFY_DEPTH,  11,    8,   20),
-    // RFP
-    (RFP_DEPTH,          4,    4,   10),
+    // RFP — widened range (was at floor min=4, consensus 8-11)
+    (RFP_DEPTH,          4,    2,   12),
     (RFP_MARGIN_IMP,    84,   30,  150),
     (RFP_MARGIN_NOIMP, 128,   50,  200),
     // Futility
