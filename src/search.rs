@@ -1764,8 +1764,12 @@ fn negamax(
     let us = board.side_to_move;
     let stm_non_pawn = board.colors[us as usize]
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+    // Skip NMP when TT move is a good capture (Seer pattern):
+    // if the best known move is a winning capture, position is tactical
+    let tt_good_capture = tt_move != NO_MOVE && tt_move_noisy && see_ge(board, tt_move, 200);
     if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
+        && !tt_good_capture
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && FEAT_NMP.load(Ordering::Relaxed)
     {
