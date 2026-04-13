@@ -689,10 +689,13 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
 
 /// Update correction history entry with gravity.
 fn update_corr_entry(entry: &mut i32, err: i32, weight: i32) {
-    // Proportional gravity (consensus: every top engine uses this)
-    // Self-limiting: values near the limit get pulled back harder
-    let bonus = (err * weight).clamp(-CORR_HIST_LIMIT / 4, CORR_HIST_LIMIT / 4);
-    *entry += bonus - *entry * bonus.abs() / CORR_HIST_LIMIT;
+    // Stockfish formula: entry += (err - entry * |err| / LIMIT) * weight / 256
+    // Weight only scales the final adjustment, NOT the gravity term.
+    // Previous bug: weight was multiplied into bonus before gravity,
+    // causing 16× stronger gravity at high depth (weight=16).
+    let clamped_err = err.clamp(-CORR_HIST_LIMIT / 4, CORR_HIST_LIMIT / 4);
+    let adjustment = clamped_err - *entry * clamped_err.abs() / CORR_HIST_LIMIT;
+    *entry += adjustment * weight / 256;
     *entry = (*entry).clamp(-CORR_HIST_LIMIT, CORR_HIST_LIMIT);
 }
 
@@ -2237,10 +2240,9 @@ fn negamax(
                     reduction += 1;
                 }
 
-                // Reduce more when opponent has few non-pawn pieces
-                // Note: board is post-make_move, so SideToMove is now the opponent
-                let opp = flip_color(board.side_to_move);
-                let opp_non_pawn = board.colors[opp as usize]
+                // Reduce more when opponent has few non-pawn pieces (simpler position)
+                // Note: board is post-make_move, so side_to_move IS the opponent
+                let opp_non_pawn = board.colors[board.side_to_move as usize]
                     & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
                 if popcount(opp_non_pawn) < 3 {
                     reduction += 1;
