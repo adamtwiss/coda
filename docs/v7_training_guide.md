@@ -106,9 +106,33 @@ The earlier "root cause hypothesis" (T80 data lacking queen-down positions)
 was incorrect — the issue was purely the check-net methodology, not the training
 data or output bucketing.
 
-**2. v7 plays ~50-100 Elo behind v5**
+**2. v7 hidden layers collapsed — RESOLVED: factoriser was the cause**
 
-Partly NPS (~2.5× penalty from hidden layer matmul), partly eval quality. The v7 eval scale is more extreme (wider scores for minor pieces), which interacts badly with search thresholds tuned for v5.
+All Coda v7 nets trained with our standard config produced collapsed evals
+(all scores identical, wrong signs on endgames). Ruled out as causes:
+- Bucketed vs unbucketed hidden layers (both collapsed)
+- WDL proportion (w=0 and w=0.4 both collapsed)
+- Data volume (single file has 3-4B positions, plenty for s100)
+- Data filtering (not the issue)
+
+**Root cause: the factoriser** (`l0f` weight sharing + `init_with_effective_input_size(32)`).
+The GoChess v7 config (which produces healthy nets) uses plain `new_affine` without a
+factoriser. Removing the factoriser from our config immediately produced a healthy v7 net
+(all 8 check-net tests pass, good differentiation).
+
+Secondary factor: **i16 quantisation** for hidden layers. GoChess uses i16 at QA=255 for
+L1/L2/L3. Our config used i8 at QA=64 for L1 and float for L2/L3. The i8 quantisation
+may contribute to precision loss in the narrow 16-neuron L1 layer. Not yet tested
+independently — the factoriser removal alone was sufficient.
+
+**Working v7 training recipe** (2026-04-13):
+- No factoriser (plain `new_affine` for FT)
+- i16 quantisation for all hidden layers (QA=255 for L1/L2, QB=64 for output)
+- SCReLU activation
+- LR warmup (20 SBs)
+- Position filtering + power-2.5 loss + low final LR
+- Config: `v7_1024h16x32s_gochess_style.rs`
+- Convert: `coda convert-bullet --screlu --hidden 16 --hidden2 32 --ft-size 1024 --int16-hidden`
 
 **3. 768pw training config uses ReLU, not SCReLU**
 
@@ -116,7 +140,7 @@ The `v7_768pw_h16x32.rs` config uses `.relu()` on hidden layers instead of `.scr
 
 **4. LR warmup helps but may not be enough**
 
-20 SB linear warmup prevents immediate neuron death. But the overall training dynamics still produce miscalibrated evals. The warmup solves stability, not quality.
+20 SB linear warmup prevents immediate neuron death. But with the factoriser, the overall training dynamics still produced collapsed evals. Without the factoriser, warmup + SCReLU produces healthy nets.
 
 ## Training Configs
 
@@ -126,8 +150,9 @@ The `v7_768pw_h16x32.rs` config uses `.relu()` on hidden layers instead of `.scr
 |--------|-----|--------|-----------|--------|
 | v5_768pw.rs | 768pw | None | CReLU→pairwise | Production |
 | v5_1024s.rs | 1024 | None | SCReLU | Working |
-| v7_1024h16x32s.rs | 1024 | 16→32 | SCReLU | Trained, weak eval |
-| v7_768pw_h16x32.rs | 768pw | 16→32 | CReLU+ReLU (BUG) | Needs SCReLU fix |
+| v7_1024h16x32s.rs | 1024 | 16→32 | SCReLU | Has factoriser (broken) |
+| v7_768pw_h16x32.rs | 768pw | 16→32 | CReLU+ReLU | Has factoriser (broken) |
+| v7_1024h16x32s_gochess_style.rs | 1024 | 16→32 | SCReLU | **No factoriser — WORKS** |
 
 ### Training Infrastructure
 - **Bullet GPU trainer** (Rust, CUDA)
