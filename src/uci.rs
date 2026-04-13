@@ -227,9 +227,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         let moves_left = if pl.movestogo > 0 { pl.movestogo as u64 } else { 25 };
                         let soft = (time_left / moves_left + our_inc * 4 / 5)
                             .min(time_left / 2);
-                        // Hard = 3x soft, capped at timeLeft/5 + inc
+                        // Hard = 3x soft, capped at time/20 + inc
                         let hard = (soft * 3)
-                            .min(time_left / 5 + our_inc)
+                            .min(time_left / 20 + our_inc)
                             .min(time_left * 3 / 4);
 
                         // Very low time (< 2s with no inc): instant stop
