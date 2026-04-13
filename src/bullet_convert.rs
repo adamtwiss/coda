@@ -157,6 +157,8 @@ pub fn convert_v7(
     l2_size: usize,
     int8_l1: bool,
     bucketed_hidden: bool,
+    ft_size_override: usize,
+    int16_hidden: bool,
 ) -> Result<(), String> {
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
     let data_len = strip_footer(&data);
@@ -166,16 +168,28 @@ pub fn convert_v7(
     // Unbucketed: hidden layers are shared, only output is bucketed
     let bl1 = if bucketed_hidden { NNUE_OUTPUT_BUCKETS * l1_size } else { l1_size };
     let bl2 = if bucketed_hidden { NNUE_OUTPUT_BUCKETS * l2_size } else { l2_size };
-    let l1b_bytes = bl1 * 4; // f32
-    let l2_bytes = if l2_size > 0 { l1_size * bl2 * 4 + bl2 * 4 } else { 0 }; // f32
+    // i16 hidden: all hidden layer weights/biases are i16 (GoChess-style)
+    // f32 hidden (default): l1b is f32, l2/l3 are f32
+    let hbytes = if int16_hidden { 2 } else { 4 }; // bytes per hidden weight/bias element
+    let l1b_bytes = bl1 * hbytes;
+    let l2_bytes = if l2_size > 0 { l1_size * bl2 * hbytes + bl2 * hbytes } else { 0 };
     let out_input = if l2_size > 0 { l2_size } else { l1_size };
-    let out_bytes = out_input * NNUE_OUTPUT_BUCKETS * 4 + NNUE_OUTPUT_BUCKETS * 4; // f32
+    // Output: i16 weights at QB + i32 biases for i16 mode, f32 for f32 mode
+    let out_bytes = if int16_hidden {
+        out_input * NNUE_OUTPUT_BUCKETS * 2 + NNUE_OUTPUT_BUCKETS * 4 // i16 weights + i32 biases
+    } else {
+        out_input * NNUE_OUTPUT_BUCKETS * 4 + NNUE_OUTPUT_BUCKETS * 4 // f32
+    };
     let fixed_bytes = l1b_bytes + l2_bytes + out_bytes;
     // Pairwise: L1 input is H (after CReLU+pairwise+concat = ft_size)
     // Direct: L1 input is 2*H
     let l1_mul = if use_pairwise { 1 } else { 2 };
     let bytes_per_neuron = NNUE_INPUT_SIZE * 2 + 2 + l1_mul * bl1 * l1w_bytes_per;
-    let h = (data_len - fixed_bytes) / bytes_per_neuron;
+    let h = if ft_size_override > 0 {
+        ft_size_override
+    } else {
+        (data_len - fixed_bytes) / bytes_per_neuron
+    };
 
     println!("Input: {} bytes, FT={} L1={}{} L2={} (bucketed: {}x{}, {}x{})",
         data.len(), h, l1_size, if int8_l1 { "(i8)" } else { "" }, l2_size, bl1, bl2,
@@ -221,43 +235,72 @@ pub fn convert_v7(
 
     // Quantization scales for f32 → int conversion
     // l1w is already quantised (i8@64 or i16@255 by Bullet)
-    // But l1b, l2w, l2b, outw, outb are raw f32 and need scaling
     let qa_l1 = if int8_l1 { 64.0f32 } else { 255.0 };
     let qb = 64.0f32;
 
-    // l1b: [BUCKETS*L1] f32 → i16 scaled by QA_L1
+    // l1b: [BUCKETS*L1]
     let mut l1_biases = vec![0i16; bl1];
-    for i in 0..bl1 {
-        let f = read_f32_le(&data, offset);
-        l1_biases[i] = (f * qa_l1).round() as i16;
-        offset += 4;
+    if int16_hidden {
+        // Already quantised as i16 at QA=255
+        for i in 0..bl1 {
+            l1_biases[i] = read_i16_le(&data, offset);
+            offset += 2;
+        }
+    } else {
+        // f32 → i16 scaled by QA_L1
+        for i in 0..bl1 {
+            let f = read_f32_le(&data, offset);
+            l1_biases[i] = (f * qa_l1).round() as i16;
+            offset += 4;
+        }
     }
 
-    // L2 weights: Bullet .transpose() saves as [L1][BL2] f32 (input × output)
-    // This is the layout the forward pass expects: l2_weights[in * BL2 + out]
+    // L2 weights and biases
     let mut l2_weights = vec![0i16; l1_size * bl2];
     let mut l2_biases = vec![0i16; bl2];
     if l2_size > 0 {
-        for i in 0..l1_size * bl2 {
-            let f = read_f32_le(&data, offset);
-            l2_weights[i] = (f * qa_l1).round() as i16;
-            offset += 4;
-        }
-        for i in 0..bl2 {
-            let f = read_f32_le(&data, offset);
-            l2_biases[i] = (f * qa_l1).round() as i16;
-            offset += 4;
+        if int16_hidden {
+            // Already quantised as i16 at QA=255
+            for i in 0..l1_size * bl2 {
+                l2_weights[i] = read_i16_le(&data, offset);
+                offset += 2;
+            }
+            for i in 0..bl2 {
+                l2_biases[i] = read_i16_le(&data, offset);
+                offset += 2;
+            }
+        } else {
+            // f32 → i16 scaled by QA_L1
+            for i in 0..l1_size * bl2 {
+                let f = read_f32_le(&data, offset);
+                l2_weights[i] = (f * qa_l1).round() as i16;
+                offset += 4;
+            }
+            for i in 0..bl2 {
+                let f = read_f32_le(&data, offset);
+                l2_biases[i] = (f * qa_l1).round() as i16;
+                offset += 4;
+            }
         }
     }
 
-    // Output weights: Bullet .transpose() saves as [L2][BUCKETS] f32
-    // Transpose to [BUCKETS][L2]
+    // Output weights: [out_input][BUCKETS] → transpose to [BUCKETS][out_input]
     let mut out_w_raw = vec![[0i16; NNUE_OUTPUT_BUCKETS]; out_input];
-    for i in 0..out_input {
-        for b in 0..NNUE_OUTPUT_BUCKETS {
-            let f = read_f32_le(&data, offset);
-            out_w_raw[i][b] = (f * qb).round() as i16;
-            offset += 4;
+    if int16_hidden {
+        // Already quantised as i16 at QB=64
+        for i in 0..out_input {
+            for b in 0..NNUE_OUTPUT_BUCKETS {
+                out_w_raw[i][b] = read_i16_le(&data, offset);
+                offset += 2;
+            }
+        }
+    } else {
+        for i in 0..out_input {
+            for b in 0..NNUE_OUTPUT_BUCKETS {
+                let f = read_f32_le(&data, offset);
+                out_w_raw[i][b] = (f * qb).round() as i16;
+                offset += 4;
+            }
         }
     }
     let mut output_weights = vec![0i16; NNUE_OUTPUT_BUCKETS * out_input];
@@ -267,12 +310,20 @@ pub fn convert_v7(
         }
     }
 
-    // Output bias: [BUCKETS] f32 → i32 scaled by QA_L1 * QB
+    // Output bias: [BUCKETS]
     let mut output_bias = [0i32; NNUE_OUTPUT_BUCKETS];
-    for b in 0..NNUE_OUTPUT_BUCKETS {
-        let f = read_f32_le(&data, offset);
-        output_bias[b] = (f * qa_l1 * qb).round() as i32;
-        offset += 4;
+    if int16_hidden {
+        // Already quantised as i32 at QA*QB
+        for b in 0..NNUE_OUTPUT_BUCKETS {
+            output_bias[b] = read_i32_le(&data, offset);
+            offset += 4;
+        }
+    } else {
+        for b in 0..NNUE_OUTPUT_BUCKETS {
+            let f = read_f32_le(&data, offset);
+            output_bias[b] = (f * qa_l1 * qb).round() as i32;
+            offset += 4;
+        }
     }
 
     println!("Parsed {} bytes of {} (FT={})", offset, data.len(), h);
