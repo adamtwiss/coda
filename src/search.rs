@@ -492,6 +492,12 @@ impl SearchInfo {
         for row in self.cont_corr.iter_mut() { row.fill(0); }
     }
 
+    pub fn clear_pawn_hist(&mut self) {
+        for entry in self.pawn_hist.iter_mut() {
+            *entry = [[0i16; 64]; 13];
+        }
+    }
+
     /// Evaluate using NNUE if loaded, otherwise classical PeSTO.
     fn eval(&mut self, board: &Board) -> i32 {
         let score = if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
@@ -864,6 +870,7 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
 /// Run Lazy SMP search: main thread + N-1 helper threads.
 pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits, threads: usize) -> Move {
     if threads <= 1 {
+        info.global_nodes.store(0, Ordering::Relaxed);
         return search(board, info, limits);
     }
 
@@ -983,7 +990,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // thread, not here. Clearing here races with ponderhit.
     info.ponderhit_time.store(0, Ordering::Relaxed); // Reset from any previous ponderhit
     info.nodes = 0;
-    info.global_nodes.store(0, Ordering::Relaxed);
+    // Note: global_nodes reset is done by callers (search_smp, bench) to avoid
+    // clobbering helper thread contributions in SMP mode.
     info.sel_depth = 0;
     info.root_stm = board.side_to_move;
 
@@ -1285,11 +1293,14 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     if !pv_tt.hit || pv_tt.best_move == NO_MOVE { break; }
                     let pv_from = move_from(pv_tt.best_move);
                     let pv_to = move_to(pv_tt.best_move);
+                    let pv_flags = move_flags(pv_tt.best_move);
                     let pv_legal = generate_legal_moves(&pv_board);
                     let mut found = NO_MOVE;
                     for i in 0..pv_legal.len {
                         let m = pv_legal.moves[i];
-                        if move_from(m) == pv_from && move_to(m) == pv_to {
+                        if move_from(m) == pv_from && move_to(m) == pv_to
+                            && (!is_promotion(pv_tt.best_move) || move_flags(m) == pv_flags)
+                        {
                             found = m;
                             break;
                         }

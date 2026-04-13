@@ -84,9 +84,19 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("readyok");
             }
             "ucinewgame" => {
+                // Wait for any active search to finish before clearing state
+                if let Some(handle) = search_handle.take() {
+                    stop_flag.store(true, Ordering::Relaxed);
+                    if let Ok(returned_info) = handle.join() {
+                        info = returned_info;
+                        stop_flag = info.stop.clone();
+                        ponderhit_flag = info.ponderhit_time.clone();
+                    }
+                }
                 info.tt.clear();
                 info.history.clear();
                 info.clear_correction_history();
+                info.clear_pawn_hist(); // was missing — stale data leaked between games
                 if let Some(acc) = &mut info.nnue_acc { acc.reset(); }
                 board = Board::startpos();
             }
@@ -305,6 +315,15 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
             }
             "setoption" => {
+                // Wait for any active search to finish before changing options
+                if let Some(handle) = search_handle.take() {
+                    stop_flag.store(true, Ordering::Relaxed);
+                    if let Ok(returned_info) = handle.join() {
+                        info = returned_info;
+                        stop_flag = info.stop.clone();
+                        ponderhit_flag = info.ponderhit_time.clone();
+                    }
+                }
                 parse_option(&tokens, &mut info, &mut num_threads);
                 // Handle book options separately
                 let mut ni = 0; let mut vi = 0;
