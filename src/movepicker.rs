@@ -521,7 +521,7 @@ impl MovePicker {
             // forgiving threshold. Use captHist only (not MVV) to avoid inflation.
             let capt_hist = capt_hist_score_static(board, history, m);
             let cap_score = mvv_lva(board, m) + capt_hist;
-            let see_threshold = -capt_hist / 18;
+            let see_threshold = (-capt_hist / 18).max(-200);
             if !see_ge(board, m, see_threshold) {
                 // Bad capture
                 if self.bad_len < 64 {
