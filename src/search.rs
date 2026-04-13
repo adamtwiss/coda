@@ -1476,7 +1476,10 @@ fn negamax(
     // This prevents us from playing INTO repetitions when we have an advantage.
     if ply > 0 {
         let contempt = tp(&CONTEMPT_VAL);
-        let draw_score = if board.side_to_move == info.root_stm { -contempt } else { contempt };
+        // Jitter draw score by ±2 to prevent all draws being identical (Koivisto pattern).
+        // Breaks ties between different draw paths, reducing repetition-seeking.
+        let jitter = 2 - (info.nodes & 3) as i32; // range: -1 to +2
+        let draw_score = if board.side_to_move == info.root_stm { -contempt + jitter } else { contempt + jitter };
         if board.halfmove >= 100 {
             return draw_score;
         }
