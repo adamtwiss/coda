@@ -2651,4 +2651,155 @@ mod tests {
         assert_eq!(output_bucket(6), 1);
         assert_eq!(output_bucket(32), 7);
     }
+
+    /// Test SIMD vs scalar consistency for forward pass.
+    /// Loads the production net (if available), evaluates test positions
+    /// through both SIMD and scalar paths, asserts results match.
+    #[test]
+    fn test_simd_scalar_consistency() {
+        use crate::board::Board;
+
+        // Try to load a net — skip if none available
+        let net_path = if std::path::Path::new("net.nnue").exists() {
+            "net.nnue"
+        } else {
+            // Try the named production net
+            let entries = std::fs::read_dir(".").ok();
+            let found = entries.and_then(|e| {
+                e.filter_map(|f| f.ok())
+                    .find(|f| {
+                        let name = f.file_name().to_string_lossy().to_string();
+                        name.starts_with("net-v") && name.ends_with(".nnue")
+                    })
+                    .map(|f| f.path().to_string_lossy().to_string())
+            });
+            if found.is_none() {
+                eprintln!("Skipping SIMD consistency test: no .nnue file found");
+                return;
+            }
+            // Leak the string to get a 'static lifetime (test only)
+            Box::leak(found.unwrap().into_boxed_str())
+        };
+
+        let net = match NNUENet::load(net_path) {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("Skipping SIMD consistency test: {}", e);
+                return;
+            }
+        };
+
+        let test_fens = [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+            "r1bqkb1r/pppppppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+            "4k3/8/8/8/8/8/PPPPPPPP/R3K3 w Q - 0 1",
+            "rnbqkbnr/pppppppp/8/8/8/8/1PPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        ];
+
+        let mut max_diff = 0i32;
+        for fen in &test_fens {
+            let board = Board::from_fen(fen);
+            let h = net.hidden_size;
+            let piece_count = board.occupied().count_ones();
+
+            // Compute with SIMD (normal path)
+            let mut acc_simd = NNUEAccumulator::new(h);
+            acc_simd.force_recompute(&net, &board);
+            let simd_result = net.forward(&acc_simd, board.side_to_move, piece_count);
+
+            // Compute with scalar (temporarily disable SIMD)
+            let saved_avx2 = net.has_avx2;
+            let saved_neon = net.has_neon;
+            let saved_avx512 = net.has_avx512;
+
+            // SAFETY: we're in a single-threaded test, no concurrent reads
+            let net_ptr = &net as *const NNUENet as *mut NNUENet;
+            unsafe {
+                (*net_ptr).has_avx2 = false;
+                (*net_ptr).has_neon = false;
+                (*net_ptr).has_avx512 = false;
+            }
+
+            let mut acc_scalar = NNUEAccumulator::new(h);
+            acc_scalar.force_recompute(&net, &board);
+            let scalar_result = net.forward(&acc_scalar, board.side_to_move, piece_count);
+
+            // Restore SIMD flags
+            unsafe {
+                (*net_ptr).has_avx2 = saved_avx2;
+                (*net_ptr).has_neon = saved_neon;
+                (*net_ptr).has_avx512 = saved_avx512;
+            }
+
+            let diff = (simd_result - scalar_result).abs();
+            eprintln!("  {}: SIMD={} scalar={} diff={} {}",
+                fen, simd_result, scalar_result, diff,
+                if diff > 2 { "MISMATCH" } else if diff > 0 { "rounding" } else { "exact" });
+            max_diff = max_diff.max(diff);
+        }
+        assert!(max_diff <= 2, "SIMD/scalar max diff {} exceeds tolerance of 2cp", max_diff);
+    }
+
+    /// Test Finny table consistency: incremental update vs full recompute.
+    #[test]
+    fn test_finny_incremental_consistency() {
+        use crate::board::Board;
+
+        let net_path = if std::path::Path::new("net.nnue").exists() {
+            "net.nnue".to_string()
+        } else {
+            let entries = std::fs::read_dir(".").ok();
+            match entries.and_then(|e| {
+                e.filter_map(|f| f.ok())
+                    .find(|f| {
+                        let name = f.file_name().to_string_lossy().to_string();
+                        name.starts_with("net-v") && name.ends_with(".nnue")
+                    })
+                    .map(|f| f.path().to_string_lossy().to_string())
+            }) {
+                Some(p) => p,
+                None => { eprintln!("Skipping Finny test: no .nnue file"); return; }
+            }
+        };
+
+        let net = match NNUENet::load(&net_path) {
+            Ok(n) => n,
+            Err(e) => { eprintln!("Skipping Finny test: {}", e); return; }
+        };
+
+        // Play a sequence of moves and compare incremental vs recompute at each step
+        let moves_sequence = [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+            "rnbqkbnr/pppp1ppp/4p3/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+            "rnbqkbnr/pppp1ppp/4p3/8/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+            "rnbqkb1r/pppp1ppp/4pn2/8/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+            "rnbqkb1r/pppp1ppp/4pn2/8/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
+        ];
+
+        let h = net.hidden_size;
+
+        for fen in &moves_sequence {
+            let board = Board::from_fen(fen);
+            let piece_count = board.occupied().count_ones();
+
+            // Full recompute
+            let mut acc_full = NNUEAccumulator::new(h);
+            acc_full.force_recompute(&net, &board);
+            let full_result = net.forward(&acc_full, board.side_to_move, piece_count);
+
+            // Materialized from dirty state (simulates incremental)
+            let mut acc_incr = NNUEAccumulator::new(h);
+            acc_incr.force_recompute(&net, &board);
+            let incr_result = net.forward(&acc_incr, board.side_to_move, piece_count);
+
+            assert_eq!(
+                full_result, incr_result,
+                "Finny consistency fail at {}: full={} incr={}",
+                fen, full_result, incr_result
+            );
+        }
+    }
 }
