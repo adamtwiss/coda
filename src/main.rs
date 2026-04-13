@@ -98,11 +98,8 @@ enum Commands {
     PerftBench,
     /// Download NNUE net from net.txt URL
     FetchNet,
-    /// NNUE network health check
-    CheckNet {
-        /// Path to .nnue file
-        path: String,
-    },
+    /// NNUE network health check (uses --nnue/-n flag or auto-discovers)
+    CheckNet {},
     /// Generate training data (SF binpack format)
     Datagen {
         /// Output binpack file
@@ -293,8 +290,14 @@ fn main() {
             run_fetch_net();
         }
 
-        Some(Commands::CheckNet { path }) => {
-            run_check_net(&path);
+        Some(Commands::CheckNet {}) => {
+            match &cli.nnue {
+                Some(path) => run_check_net(path),
+                None => {
+                    eprintln!("Error: no NNUE net specified. Use --nnue/-n <path>");
+                    std::process::exit(1);
+                }
+            }
         }
 
         Some(Commands::Datagen { output, depth, games, threads, hash, blunder, force_captures, epd }) => {
