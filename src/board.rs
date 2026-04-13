@@ -442,6 +442,14 @@ impl Board {
         if flags == FLAG_EN_PASSANT {
             let captured_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
             if captured_sq >= 64 { return true; } // invalid EP, allow move through (won't be legal)
+            // If in check, EP only resolves it if the captured pawn is the checker
+            if checkers != 0 {
+                // Double check: only king moves resolve (EP is never a king move)
+                if checkers & (checkers - 1) != 0 { return false; }
+                let checker_sq = crate::bitboard::lsb(checkers) as u32;
+                // EP only resolves check if captured pawn is the checker
+                if checker_sq != captured_sq { return false; }
+            }
             let occ = (self.occupied() ^ (1u64 << from) ^ (1u64 << captured_sq)) | (1u64 << to);
             let their_bishops = (self.pieces[BISHOP as usize] | self.pieces[QUEEN as usize])
                 & self.colors[flip_color(us) as usize];
