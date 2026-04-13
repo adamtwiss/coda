@@ -1934,9 +1934,9 @@ fn negamax(
     };
     let pawn_hist_ref = Some(&info.pawn_hist[ph_idx] as &[[i16; 64]; 13]);
     let mut picker = if in_check {
-        MovePicker::new_evasion(board, tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref)
+        MovePicker::new_evasion(board, tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks)
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
 
@@ -2429,21 +2429,17 @@ fn negamax(
                         // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
                         if moved_piece != NO_PIECE {
                             let gp_mv = go_piece(moved_piece);
-                            let stack_len = board.undo_stack.len();
                             let ch_offsets = [1usize, 2, 4, 6];
                             for &off in &ch_offsets {
-                                if stack_len >= off {
-                                    let undo = &board.undo_stack[stack_len - off];
-                                    if undo.mv != NO_MOVE {
-                                        let uto = move_to(undo.mv);
-                                        let upiece = board.piece_at(uto);
-                                        if upiece != NO_PIECE {
-                                            let ch_bonus = if off <= 1 { bonus } else { bonus / 2 };
-                                            History::update_cont_history(
-                                                &mut info.history.cont_hist[go_piece(upiece)][uto as usize][gp_mv][to as usize],
-                                                ch_bonus,
-                                            );
-                                        }
+                                if ply_u >= off {
+                                    let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
+                                    let prior_to = info.moved_to_stack[ply_u - off] as usize;
+                                    if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
+                                        let ch_bonus = if off <= 1 { bonus } else { bonus / 2 };
+                                        History::update_cont_history(
+                                            &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
+                                            ch_bonus,
+                                        );
                                     }
                                 }
                             }
@@ -2473,21 +2469,17 @@ fn negamax(
                                 let q_piece = board.piece_at(qf);
                                 if q_piece != NO_PIECE {
                                     let gp_q = go_piece(q_piece);
-                                    let stack_len = board.undo_stack.len();
                                     let ch_offsets = [1usize, 2, 4, 6];
                                     for &off in &ch_offsets {
-                                        if stack_len >= off {
-                                            let undo = &board.undo_stack[stack_len - off];
-                                            if undo.mv != NO_MOVE {
-                                                let uto = move_to(undo.mv);
-                                                let upiece = board.piece_at(uto);
-                                                if upiece != NO_PIECE {
-                                                    let ch_pen = if off <= 1 { -bonus } else { -bonus / 2 };
-                                                    History::update_cont_history(
-                                                        &mut info.history.cont_hist[go_piece(upiece)][uto as usize][gp_q][qt as usize],
-                                                        ch_pen,
-                                                    );
-                                                }
+                                        if ply_u >= off {
+                                            let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
+                                            let prior_to = info.moved_to_stack[ply_u - off] as usize;
+                                            if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
+                                                let ch_pen = if off <= 1 { -bonus } else { -bonus / 2 };
+                                                History::update_cont_history(
+                                                    &mut info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize],
+                                                    ch_pen,
+                                                );
                                             }
                                         }
                                     }
@@ -2718,7 +2710,8 @@ fn quiescence_with_depth(
             None
         };
         let mut evasion_picker = MovePicker::new_evasion(
-            board, tt_move, 0, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
+            board, tt_move, ply as usize, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
+            &info.moved_piece_stack, &info.moved_to_stack,
         );
         let mut best_score = -INFINITY;
         let mut best_move = NO_MOVE;
