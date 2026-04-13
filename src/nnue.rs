@@ -798,6 +798,152 @@ unsafe fn simd512_pairwise_dot(acc_first: &[i16], acc_second: &[i16], weights: &
     total
 }
 
+/// AVX-512 pairwise pack: acc[0..pw] and acc[pw..2*pw] → out[0..pw] u8.
+/// clamp(a, 0, 255) * clamp(b, 0, 255) >> FT_SHIFT for each pair.
+/// pw must be multiple of 32.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn simd512_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
+    let zero = _mm512_setzero_si512();
+    let qa = _mm512_set1_epi16(QA as i16);
+    // Permutation index to fix lane ordering after packus_epi16
+    // _mm512_packus_epi16 interleaves 128-bit lanes: [0,4,1,5,2,6,3,7]
+    // We need: [0,1,2,3,4,5,6,7] → permute qwords by [0,2,4,6,1,3,5,7]
+    let perm_idx = _mm512_set_epi64(7, 5, 3, 1, 6, 4, 2, 0);
+    let mut i = 0;
+    while i + 32 <= pw {
+        // Load 32 values from each half (two ZMM registers of i16)
+        let a0 = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
+        let b0 = _mm512_loadu_si512(acc.as_ptr().add(pw + i) as *const __m512i);
+        let ca0 = _mm512_min_epi16(_mm512_max_epi16(a0, zero), qa);
+        let cb0 = _mm512_min_epi16(_mm512_max_epi16(b0, zero), qa);
+        let prod0 = _mm512_mullo_epi16(ca0, cb0);
+        let d0 = _mm512_srli_epi16(prod0, FT_SHIFT as u32);
+
+        if i + 64 <= pw {
+            let a1 = _mm512_loadu_si512(acc.as_ptr().add(i + 32) as *const __m512i);
+            let b1 = _mm512_loadu_si512(acc.as_ptr().add(pw + i + 32) as *const __m512i);
+            let ca1 = _mm512_min_epi16(_mm512_max_epi16(a1, zero), qa);
+            let cb1 = _mm512_min_epi16(_mm512_max_epi16(b1, zero), qa);
+            let prod1 = _mm512_mullo_epi16(ca1, cb1);
+            let d1 = _mm512_srli_epi16(prod1, FT_SHIFT as u32);
+            // Pack 2×32 i16 → 64 u8
+            let packed = _mm512_packus_epi16(d0, d1);
+            let fixed = _mm512_permutexvar_epi64(perm_idx, packed);
+            _mm512_storeu_si512(out.as_mut_ptr().add(i) as *mut __m512i, fixed);
+            i += 64;
+        } else {
+            // Remaining 32: pack with zeros into 64 bytes, store lower 32
+            let packed = _mm512_packus_epi16(d0, zero);
+            let fixed = _mm512_permutexvar_epi64(perm_idx, packed);
+            _mm256_storeu_si256(out.as_mut_ptr().add(i) as *mut __m256i,
+                _mm512_castsi512_si256(fixed));
+            i += 32;
+        }
+    }
+    // Tail (< 32 elements) handled by scalar
+    while i < pw {
+        let a = (acc[i] as i32).clamp(0, 255);
+        let b = (acc[pw + i] as i32).clamp(0, 255);
+        out[i] = ((a * b) >> FT_SHIFT) as u8;
+        i += 1;
+    }
+}
+
+/// AVX-512 SCReLU pack: clamp [0,255], v²/255 → [0,255] as u8.
+/// h must be multiple of 64.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn simd512_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
+    let zero = _mm512_setzero_si512();
+    let qa = _mm512_set1_epi16(QA as i16);
+    let perm_idx = _mm512_set_epi64(7, 5, 3, 1, 6, 4, 2, 0);
+    let mut i = 0;
+    while i + 64 <= h {
+        let v0 = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
+        let v1 = _mm512_loadu_si512(acc.as_ptr().add(i + 32) as *const __m512i);
+        let c0 = _mm512_min_epi16(_mm512_max_epi16(v0, zero), qa);
+        let c1 = _mm512_min_epi16(_mm512_max_epi16(v1, zero), qa);
+        let sq0 = _mm512_mullo_epi16(c0, c0);
+        let sq1 = _mm512_mullo_epi16(c1, c1);
+        let d0 = _mm512_srli_epi16(sq0, 8);
+        let d1 = _mm512_srli_epi16(sq1, 8);
+        let packed = _mm512_packus_epi16(d0, d1);
+        let fixed = _mm512_permutexvar_epi64(perm_idx, packed);
+        _mm512_storeu_si512(out.as_mut_ptr().add(i) as *mut __m512i, fixed);
+        i += 64;
+    }
+    // Tail: 32 elements
+    while i + 32 <= h {
+        let v = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
+        let c = _mm512_min_epi16(_mm512_max_epi16(v, zero), qa);
+        let sq = _mm512_mullo_epi16(c, c);
+        let d = _mm512_srli_epi16(sq, 8);
+        let packed = _mm512_packus_epi16(d, zero);
+        let fixed = _mm512_permutexvar_epi64(perm_idx, packed);
+        _mm256_storeu_si256(out.as_mut_ptr().add(i) as *mut __m256i,
+            _mm512_castsi512_si256(fixed));
+        i += 32;
+    }
+}
+
+/// AVX-512 L1 int8 matmul: packed u8 input × i8 transposed weights → i32.
+/// Uses VPMADDUBSW (u8 × i8 → i16) + VPMADDWD (i16 pairs → i32).
+/// h must be multiple of 64. For h not divisible by 64, use AVX2 fallback.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn simd512_l1_int8_dot(packed: &[u8], weights: &[i8], h: usize) -> i32 {
+    let ones = _mm512_set1_epi16(1);
+    let mut sum = _mm512_setzero_si512(); // 16 × i32
+    let mut i = 0;
+    while i < h {
+        let a = _mm512_loadu_si512(packed.as_ptr().add(i) as *const __m512i);
+        let b = _mm512_loadu_si512(weights.as_ptr().add(i) as *const __m512i);
+        let prod = _mm512_maddubs_epi16(a, b);
+        let widened = _mm512_madd_epi16(prod, ones);
+        sum = _mm512_add_epi32(sum, widened);
+        i += 64;
+    }
+    _mm512_reduce_add_epi32(sum)
+}
+
+/// AVX-512 sparse L1 int8 matmul: only process NNZ 64-byte chunks.
+/// nnz_indices[0..nnz_count] are byte offsets of non-zero 64-byte chunks.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn simd512_l1_int8_dot_sparse(packed: &[u8], weights: &[i8], nnz_indices: &[u16], nnz_count: usize) -> i32 {
+    let ones = _mm512_set1_epi16(1);
+    let mut sum = _mm512_setzero_si512();
+    for k in 0..nnz_count {
+        let off = nnz_indices[k] as usize;
+        let a = _mm512_loadu_si512(packed.as_ptr().add(off) as *const __m512i);
+        let b = _mm512_loadu_si512(weights.as_ptr().add(off) as *const __m512i);
+        let prod = _mm512_maddubs_epi16(a, b);
+        let widened = _mm512_madd_epi16(prod, ones);
+        sum = _mm512_add_epi32(sum, widened);
+    }
+    _mm512_reduce_add_epi32(sum)
+}
+
+/// Find non-zero 64-byte chunk indices in a packed u8 buffer (AVX-512).
+/// Returns the number of NNZ chunks. nnz_indices[0..count] contains byte offsets.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn find_nnz_chunks_512(packed: &[u8], nnz_indices: &mut [u16], h: usize) -> usize {
+    let mut count = 0usize;
+    let mut i = 0;
+    while i < h {
+        let v = _mm512_loadu_si512(packed.as_ptr().add(i) as *const __m512i);
+        let mask = _mm512_test_epi8_mask(v, v);
+        if mask != 0 {
+            nnz_indices[count] = i as u16;
+            count += 1;
+        }
+        i += 64;
+    }
+    count
+}
+
 // ---- NEON SIMD helper functions (aarch64) ----
 
 /// Add a weight row to an accumulator (NEON, 8 × i16 per iteration).
@@ -1492,7 +1638,12 @@ impl NNUENet {
         let mut ntm_pw = [0u8; 2048];
 
         #[cfg(target_arch = "x86_64")]
-        if self.has_avx2 && pw % 16 == 0 {
+        if self.has_avx512 && pw % 32 == 0 {
+            unsafe {
+                simd512_pairwise_pack(stm_acc, &mut stm_pw, pw);
+                simd512_pairwise_pack(ntm_acc, &mut ntm_pw, pw);
+            }
+        } else if self.has_avx2 && pw % 16 == 0 {
             unsafe {
                 simd_pairwise_pack(stm_acc, &mut stm_pw, pw);
                 simd_pairwise_pack(ntm_acc, &mut ntm_pw, pw);
@@ -1544,7 +1695,18 @@ impl NNUENet {
         }
         // L1 matmul: use SIMD int8 dot with transposed weights when available
         #[cfg(target_arch = "x86_64")]
-        if self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty() {
+        if self.has_avx512 && pw % 64 == 0 && !self.l1_weights_8t.is_empty() {
+            let ntm_base = l1_total * pw;
+            for i in 0..l1 {
+                let gi = l1_off + i;
+                let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
+                let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
+                unsafe {
+                    hidden32[i] += simd512_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
+                    hidden32[i] += simd512_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
+                }
+            }
+        } else if self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty() {
             let ntm_base = l1_total * pw; // NTM block starts after STM block in transposed array
             for i in 0..l1 {
                 let gi = l1_off + i;
@@ -1558,7 +1720,8 @@ impl NNUENet {
         }
 
         #[cfg(target_arch = "x86_64")]
-        if !(self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty()) {
+        if !(self.has_avx512 && pw % 64 == 0 && !self.l1_weights_8t.is_empty())
+            && !(self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty()) {
             // Scalar fallback — raw weights in [input][neuron] layout
             for i in 0..l1 {
                 let gi = l1_off + i;
@@ -1675,12 +1838,19 @@ impl NNUENet {
 
         // SIMD int8 path: pack SCReLU to u8, then VPMADDUBSW L1 matmul
         #[cfg(target_arch = "x86_64")]
-        if self.has_avx2 && h % 32 == 0 && !self.l1_weights_8t.is_empty() {
+        if (self.has_avx512 || self.has_avx2) && h % 32 == 0 && !self.l1_weights_8t.is_empty() {
             let mut stm_packed = [0u8; 2048]; // max accumulator size
             let mut ntm_packed = [0u8; 2048];
-            unsafe {
-                simd_screlu_pack(stm_acc, &mut stm_packed, h);
-                simd_screlu_pack(ntm_acc, &mut ntm_packed, h);
+            if self.has_avx512 && h % 64 == 0 {
+                unsafe {
+                    simd512_screlu_pack(stm_acc, &mut stm_packed, h);
+                    simd512_screlu_pack(ntm_acc, &mut ntm_packed, h);
+                }
+            } else {
+                unsafe {
+                    simd_screlu_pack(stm_acc, &mut stm_packed, h);
+                    simd_screlu_pack(ntm_acc, &mut ntm_packed, h);
+                }
             }
             // Int8 matmul: input at scale QA (v²/255), weights at scale QA_L1
             // Result at scale QA × QA_L1. Bias at scale QA_L1, scaled by QA to match.
@@ -1690,32 +1860,64 @@ impl NNUENet {
             }
             // Weight layout: l1_weights_8t[neuron * h] for STM, [l1_total*h + neuron*h] for NTM
             // With bucket offset: STM starts at (b_off + i) * h, NTM at l1_total*h + (b_off+i)*h
-            if self.use_sparse_l1.load(std::sync::atomic::Ordering::Relaxed) {
-                debug_assert!(h <= 2048, "sparse NNZ buffer too small for h={}", h);
-                let mut stm_nnz = [0u16; 64]; // safe for h <= 2048 (64 × 32-byte chunks)
-                let mut ntm_nnz = [0u16; 64];
-                let (stm_nnz_count, ntm_nnz_count);
-                unsafe {
-                    stm_nnz_count = find_nnz_chunks(&stm_packed, &mut stm_nnz, h);
-                    ntm_nnz_count = find_nnz_chunks(&ntm_packed, &mut ntm_nnz, h);
-                }
-                for i in 0..l1 {
-                    let gi = b_off + i; // global index into weight array
-                    let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
-                    let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
+            if self.has_avx512 && h % 64 == 0 {
+                if self.use_sparse_l1.load(std::sync::atomic::Ordering::Relaxed) {
+                    debug_assert!(h <= 2048, "sparse NNZ buffer too small for h={}", h);
+                    let mut stm_nnz = [0u16; 32]; // safe for h <= 2048 (32 × 64-byte chunks)
+                    let mut ntm_nnz = [0u16; 32];
+                    let (stm_nnz_count, ntm_nnz_count);
                     unsafe {
-                        hidden[i] += simd_l1_int8_dot_sparse(&stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
-                        hidden[i] += simd_l1_int8_dot_sparse(&ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
+                        stm_nnz_count = find_nnz_chunks_512(&stm_packed, &mut stm_nnz, h);
+                        ntm_nnz_count = find_nnz_chunks_512(&ntm_packed, &mut ntm_nnz, h);
+                    }
+                    for i in 0..l1 {
+                        let gi = b_off + i;
+                        let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
+                        let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
+                        unsafe {
+                            hidden[i] += simd512_l1_int8_dot_sparse(&stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
+                            hidden[i] += simd512_l1_int8_dot_sparse(&ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
+                        }
+                    }
+                } else {
+                    for i in 0..l1 {
+                        let gi = b_off + i;
+                        let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
+                        let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
+                        unsafe {
+                            hidden[i] += simd512_l1_int8_dot(&stm_packed, stm_w, h) as i64;
+                            hidden[i] += simd512_l1_int8_dot(&ntm_packed, ntm_w, h) as i64;
+                        }
                     }
                 }
             } else {
-                for i in 0..l1 {
-                    let gi = b_off + i;
-                    let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
-                    let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
+                if self.use_sparse_l1.load(std::sync::atomic::Ordering::Relaxed) {
+                    debug_assert!(h <= 2048, "sparse NNZ buffer too small for h={}", h);
+                    let mut stm_nnz = [0u16; 64]; // safe for h <= 2048 (64 × 32-byte chunks)
+                    let mut ntm_nnz = [0u16; 64];
+                    let (stm_nnz_count, ntm_nnz_count);
                     unsafe {
-                        hidden[i] += simd_l1_int8_dot(&stm_packed, stm_w, h) as i64;
-                        hidden[i] += simd_l1_int8_dot(&ntm_packed, ntm_w, h) as i64;
+                        stm_nnz_count = find_nnz_chunks(&stm_packed, &mut stm_nnz, h);
+                        ntm_nnz_count = find_nnz_chunks(&ntm_packed, &mut ntm_nnz, h);
+                    }
+                    for i in 0..l1 {
+                        let gi = b_off + i;
+                        let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
+                        let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
+                        unsafe {
+                            hidden[i] += simd_l1_int8_dot_sparse(&stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
+                            hidden[i] += simd_l1_int8_dot_sparse(&ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
+                        }
+                    }
+                } else {
+                    for i in 0..l1 {
+                        let gi = b_off + i;
+                        let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
+                        let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
+                        unsafe {
+                            hidden[i] += simd_l1_int8_dot(&stm_packed, stm_w, h) as i64;
+                            hidden[i] += simd_l1_int8_dot(&ntm_packed, ntm_w, h) as i64;
+                        }
                     }
                 }
             }
@@ -1840,7 +2042,7 @@ impl NNUENet {
         // Scalar fallback (bucket-aware)
         // L1 weight layout: transposed [neuron × h] per perspective, accessed via l1_total + b_off
         #[cfg(target_arch = "x86_64")]
-        if !(self.has_avx2 && h % 32 == 0 && !self.l1_weights_8t.is_empty()) {
+        if !((self.has_avx512 || self.has_avx2) && h % 32 == 0 && !self.l1_weights_8t.is_empty()) {
             for j in 0..h {
                 let v = (stm_acc[j] as i64).clamp(0, qa);
                 if v == 0 { continue; }
