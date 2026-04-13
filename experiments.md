@@ -4415,3 +4415,28 @@ Combined effect of: filtered data + low final LR + SPSA tune + SEE scaling. Over
 3. **Cross-engine validation confirms gains.** +67 Elo cross-engine (4th→1st) validates that training + tuning improvements transfer to real opponents.
 4. **Bug fixes compound.** TT pollution, ponderhit, NNUE embedding, TB scores — each individually small, together ~200 Elo on Lichess.
 5. **Production net changes need explicit approval.** Don't change net.txt unless explicitly asked to switch nets.
+
+## 2026-04-13: Overnight Retry Batch
+
+### Dynamic Capture SEE Threshold v6 — MERGED (OB #294)
+- **Change**: `-captHist/18` as SEE threshold for good/bad capture split. CaptHist only (not MVV).
+- **Result**: **H1, +4.4 Elo, 12378 games.** 6th attempt — finally worked with new SEE values (420/420/640/1200) and properly calibrated capture history (post magnitude fix).
+- **Notes**: Previous 5 attempts failed (-0.5 to -11.6) with old SEE values and broken captHist. The combination of consensus SEE values + working capture history (27× magnitude fix + unconditional malus) was needed.
+
+### Pawn History Pessimistic Init (-1000) — REJECTED (OB #295)
+- **Change**: Initialize pawn history to -1000 instead of 0 (PlentyChess pattern).
+- **Result**: H0, -1.0 Elo, 16468 games. True zero.
+- **Notes**: Pessimistic prior for unknown pawn structures didn't help. Pawn history fills quickly enough from search that initialization doesn't matter.
+
+### History-Based Extensions v3 (threshold 5000) — REJECTED (OB #297)
+- **Change**: Extend +1 when both ply-1 and ply-2 cont-hist exceed 5000 for a quiet move (Igel/Altair pattern).
+- **Result**: H0, -0.1 Elo, 26414 games. Dead flat.
+- **Notes**: 2nd attempt (v2 was -2.3 with threshold 5000 on old base). Cont-hist agreement at a threshold doesn't provide useful extension signal for us.
+
+### badNode Flag v4 (NMP R+1, RFP -25%) — REJECTED (OB #296)
+- **Change**: When !tt_hit && depth >= 4, increase NMP R by 1 and reduce RFP margin by 25% (Alexandria pattern: more aggressive pruning when position unexplored).
+- **Result**: H0, -2.5 Elo, 9762 games.
+- **Notes**: 4th attempt across 3 different implementations. Alexandria's "unexplored = prune more" pattern consistently doesn't work for us. Our search may already handle unexplored positions well via IIR.
+
+### Key Lesson
+Dynamic capture SEE finally proved that **revisiting failed features when underlying systems change** is valuable. 5 failures over 2 weeks, then H1 on the 6th try after SEE values and captHist were both fixed. Persistence pays when you understand WHY it failed before.

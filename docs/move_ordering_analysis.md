@@ -38,6 +38,7 @@ and better NNUE models. Stockfish achieves 85-90% — gap closing fast.
 | SEE piece values update | +1.7 | Apr 10 | #281 | N=420, B=420, R=640, Q=1200 (consensus) |
 | SPSA tune #280 (e800 lowestlr net) | +23.7 | Apr 10 | #282 | Full 48-param retune for new net |
 | SPSA tune #283 (refinement) | +3.5 | Apr 12 | #287 | SEE values + new tunables calibration |
+| Dynamic capture SEE threshold | +4.4 | Apr 13 | #294 | 6th attempt — worked with new SEE values + fixed captHist |
 
 ### Resolved — Not Merging
 | Feature | Attempts | Result | OB # | Notes |
@@ -50,17 +51,18 @@ and better NNUE models. Stockfish achieves 85-90% — gap closing fast.
 | Corr-cont-2ply + tune | 1 | -1.1 | #213 | Dead flat at 28K games. May revisit. |
 | Histprune no-improving + tune | 1 | -3.4 | #220 | Faded from early positive |
 | Futility-full + tune | 1 | -5.7 | #222 | History→lmrDepth. Didn't help. |
+| Pawn hist pessimistic init (-1000) | 1 | -1.0 | #295 | PlentyChess pattern. No effect. |
+| History-based extensions (5000) | 2 | -0.1 to -2.3 | #297 | Cont-hist threshold never informative enough |
+| badNode flag (NMP+RFP) | 3 | -0.7 to -2.5 | #296,#300 | Alexandria pattern. Not helpful for us. |
 
 ### Revisit Candidates
-Features that failed previously but conditions have changed (new nets, new SEE values, better SPSA calibration):
+Features that failed previously but conditions have changed:
 
 | Feature | Previous Result | Why Revisit |
 |---------|----------------|-------------|
-| Dynamic capture SEE threshold | -0.5 to -11.6 (5 attempts) | SEE values and SEE_MATERIAL_SCALE completely changed. Worth one more try. |
 | Good/bad quiet split | -3.6 (#216) | Selfplay net has much better move ordering (pos² 7.3 vs 12.6). Threshold may work now. |
-| Corr-cont-2ply | -1.1 (#213) | Eval improvements may make 2-ply correction signal cleaner. |
-| Pawn history initialisation | Untested | PlentyChess pattern: -1000 pessimistic prior. |
-| Capture scoring MVV×16 → lower | Failed 5× | With SEE_MATERIAL_SCALE at 159 and new values, ratios changed. |
+| Capture scoring MVV×16 → lower | Failed 5× | With new SEE values, ratios changed. |
+| Cutnode LMR +2 | -6.2 (#299) | Hercules implementation may have had other changes stacked. Clean retry with +2 only. |
 
 ## LMP Interaction (resolved)
 
