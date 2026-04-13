@@ -1764,8 +1764,12 @@ fn negamax(
     let us = board.side_to_move;
     let stm_non_pawn = board.colors[us as usize]
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+    // Guard against consecutive null moves: check that the previous move wasn't null
+    let prev_was_null = !board.undo_stack.is_empty()
+        && board.undo_stack[board.undo_stack.len() - 1].mv == NO_MOVE;
     if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
+        && !prev_was_null  // Prevent consecutive null moves
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && FEAT_NMP.load(Ordering::Relaxed)
     {
@@ -1806,7 +1810,8 @@ fn negamax(
             // Verification search at high depths to guard against zugzwang
             if depth >= tp(&NMP_VERIFY_DEPTH) {
                 info.stats.nmp_verify += 1;
-                let v_score = negamax(board, info, beta - 1, beta, depth - r, ply + 1, false);
+                // Verification re-searches current position (no move made), so ply stays same
+                let v_score = negamax(board, info, beta - 1, beta, depth - r, ply, false);
                 if v_score >= beta {
                     info.stats.nmp_cutoffs += 1;
                     return nmp_score;
@@ -2682,13 +2687,17 @@ fn quiescence_with_depth(
             tt_score += ply;
         }
 
+        let qs_is_pv = beta - alpha > 1;
         match tt_entry.flag {
-            TT_FLAG_EXACT => { return tt_score; }
+            TT_FLAG_EXACT => {
+                if !qs_is_pv { return tt_score; }
+                // At PV nodes, don't cut off — let the search find the full PV
+            }
             TT_FLAG_LOWER => {
-                if tt_score >= beta { return tt_score; }
+                if !qs_is_pv && tt_score >= beta { return tt_score; }
             }
             TT_FLAG_UPPER => {
-                if tt_score <= alpha { return tt_score; }
+                if !qs_is_pv && tt_score <= alpha { return tt_score; }
             }
             _ => {}
         }
