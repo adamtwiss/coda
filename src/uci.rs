@@ -218,7 +218,47 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
             }
             "ponderhit" => {
-                // Ponderhit = our ponder move was played. Now it's our turn.
+                // Check TB first: in TB-range endgames, play the TB-optimal move
+                // instead of the ponder result. The ponder search uses NNUE eval
+                // which doesn't distinguish optimal from merely winning moves.
+                if let Some(ref tb) = syzygy {
+                    if crate::bitboard::popcount(board.occupied()) as usize <= tb.max_pieces() {
+                        if let Some((tb_move_str, wdl)) = tb.probe_root(&board) {
+                            // Validate TB move against legal moves
+                            let legal = crate::movegen::generate_legal_moves(&board);
+                            let mut tb_valid = false;
+                            if let Some(parsed) = parse_uci_move(&board, &tb_move_str) {
+                                for i in 0..legal.len {
+                                    if move_from(legal.moves[i]) == move_from(parsed)
+                                        && move_to(legal.moves[i]) == move_to(parsed) {
+                                        tb_valid = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if tb_valid && wdl != 0 {
+                                // Stop search and play TB move
+                                stop_flag.store(true, Ordering::Relaxed);
+                                if let Some(handle) = search_handle.take() {
+                                    if let Ok(returned_info) = handle.join() {
+                                        info = returned_info;
+                                        stop_flag = info.stop.clone();
+                                    }
+                                }
+                                let score_str = if wdl > 0 {
+                                    format!("score cp {}", crate::tt::TB_WIN)
+                                } else {
+                                    format!("score cp -{}", crate::tt::TB_WIN)
+                                };
+                                println!("info depth 1 seldepth 1 {} tbhits 1 pv {}", score_str, tb_move_str);
+                                println!("bestmove {}", tb_move_str);
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                // Normal ponderhit: our ponder move was played. Now it's our turn.
                 // The ponder search gave us a head start — use normal time
                 // allocation to push deeper. Don't waste the free thinking
                 // time by moving instantly.
