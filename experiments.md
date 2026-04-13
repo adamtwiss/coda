@@ -4416,7 +4416,7 @@ Combined effect of: filtered data + low final LR + SPSA tune + SEE scaling. Over
 4. **Bug fixes compound.** TT pollution, ponderhit, NNUE embedding, TB scores — each individually small, together ~200 Elo on Lichess.
 5. **Production net changes need explicit approval.** Don't change net.txt unless explicitly asked to switch nets.
 
-## 2026-04-13: Overnight Retry Batch
+## 2026-04-13: Overnight Retry Batch (Atlas)
 
 ### Dynamic Capture SEE Threshold v6 — MERGED (OB #294)
 - **Change**: `-captHist/18` as SEE threshold for good/bad capture split. CaptHist only (not MVV).
@@ -4440,3 +4440,50 @@ Combined effect of: filtered data + low final LR + SPSA tune + SEE scaling. Over
 
 ### Key Lesson
 Dynamic capture SEE finally proved that **revisiting failed features when underlying systems change** is valuable. 5 failures over 2 weeks, then H1 on the 6th try after SEE values and captHist were both fixed. Persistence pays when you understand WHY it failed before.
+
+---
+
+## Day 13 (2026-04-13): Search Experiments + Bug Fixes + Selfplay Progress
+
+### Search Experiments [SPRT-validated]
+
+| # | Test | Elo | Games | Description | Status |
+|---|------|-----|-------|-------------|--------|
+| 298 | fix-mate-distance-pruning | +1.6 | 37,276 | MDP on all nodes (was non-PV only) | →H1 (grinding) |
+| 299 | fix-cutnode-lmr (+2) | -6.2 | 5,234 | Too aggressive at +2 | H0 ✗ |
+| 303 | fix-cutnode-lmr (+1) | — | 0 | Retry with +1 (consensus value) | Running |
+| 300 | fix-bad-node | -0.7 | 18,486 | Reduce NMP R-1 and RFP ×3/4 without TT hit | H0 ✗ |
+
+### Selfplay Net Progress [SPRT-validated]
+
+| # | Test | Elo | Games | Description | Status |
+|---|------|-----|-------|-------------|--------|
+| 301 | SP400 vs SP120 | **+11.5** | 1,996 | Longer selfplay training helps | **H1 ✓** |
+| 302 | SP400 vs production | -44.7 | 430 | Expected — production has 12× data | H0 ✗ |
+
+### Correctness Fixes Merged
+
+| Fix | Commit | Impact |
+|-----|--------|--------|
+| TB root probe DTZ sign inverted | 542e8cb | **Resigned won games.** shakmaty DTZ: negative=winning. Was backwards. |
+| TB interior probe ambiguous WDL amplification | c984753 | MaybeLoss (-1) was amplified to -28800. Now passes through as-is. |
+| TB regression tests | befc1c8 | Root + interior probe sign tests, skip without TBs. |
+| Ponderhit TM: normal allocation instead of minimal | fa5199c | Was banking 3+ minutes unused. Now spends time productively. |
+| check-net rewrite: relative health checks | eefb46b | No false alarms on eval scale. Tests signs, ordering, symmetry. |
+| Bestmove underpromotion mismatch | e70229f | PV had knight promo, bestmove picked queen. |
+| OB scale_nps 1.1M→500K | dbacefd | Was inflating TC on workers. Match engine config. |
+
+### v7 Training Investigation
+
+Unbucketed hidden layers (matching GoChess) still produced collapsed eval.
+Ruled out: bucketing, WDL proportion, data volume (single file has 3-4B positions).
+Remaining suspects: factoriser, L1 i8 quantization, L2/L3 float format.
+GoChess-style experiment config created (no factoriser, i16 quant). Training started.
+
+### Key Lessons (Day 13)
+
+1. **DTZ sign convention cost us a game.** shakmaty-syzygy: negative DTZ = STM winning. We had it backwards since TB support was added. Regression tests now prevent recurrence.
+2. **Cutnode LMR +2 is too much.** Consensus is +1. The initial +17.6 at 572 games was noise.
+3. **Dynamic capture SEE revived.** Previously "permanently dropped" after 5 failed attempts. New SEE values + SEE_MATERIAL_SCALE made it viable: +4.4 Elo H1 (#294).
+4. **Selfplay s400 >> s120.** +11.5 Elo from longer training. But still -45 vs production (data volume gap).
+5. **Ponderhit TM was wasting time.** Budget of inc/2 = 1s meant instant moves. Normal allocation lets the engine think 5-20s on ponderhits.
