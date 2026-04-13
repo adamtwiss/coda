@@ -1070,20 +1070,21 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // becomes soft × 2.5 × 3 = soft × 7.5, recreating the overspend problem.
         let base_soft = soft;
 
-        // Hard limit
+        // Hard limit: 3x base soft, but never more than time/20 + inc
+        // The time/20 + inc cap prevents overspend at all TCs:
+        //   60+0: max = 3000ms    60+2: max = 5000ms
+        //   180+2: max = 11000ms  600+5: max = 35000ms
         let mut hard = if limits.movestogo > 0 {
-            // Tournament TC: cap based on moves remaining
             let hard_raw = base_soft * 2;
             let hard_pct = (95 - limits.movestogo as u64 * 10).max(30).min(90);
             let mtg_cap = time_left * hard_pct / 100;
             hard_raw.min(mtg_cap)
         } else {
-            // Sudden death: allow up to 3x BASE soft
             base_soft * 3
         };
 
-        // Absolute hard cap: never use more than timeLeft/5 + inc
-        let mut max_hard = time_left / 5 + our_inc;
+        // Absolute hard cap: time/20 + inc (never risk more than 5% of clock + 1 increment)
+        let mut max_hard = time_left / 20 + our_inc;
         if max_hard > time_left * 3 / 4 {
             max_hard = time_left * 3 / 4;
         }
