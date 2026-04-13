@@ -522,9 +522,20 @@ impl SearchInfo {
         } else {
             evaluate(board)
         };
+        // Material scaling: dampen eval in low-material endgames (Alexandria pattern).
+        // NNUE tends to overestimate advantages when fewer pieces remain.
+        // P=100, N=422, B=422, R=642, Q=1015
+        let material = {
+            let pawns = popcount(board.pieces[PAWN as usize]) as i32 * 100;
+            let knights = popcount(board.pieces[KNIGHT as usize]) as i32 * 422;
+            let bishops = popcount(board.pieces[BISHOP as usize]) as i32 * 422;
+            let rooks = popcount(board.pieces[ROOK as usize]) as i32 * 642;
+            let queens = popcount(board.pieces[QUEEN as usize]) as i32 * 1015;
+            pawns + knights + bishops + rooks + queens
+        };
+        let score = score * (22400 + material) / 32 / 1024;
+
         // 50-move eval scaling: decay eval toward zero as halfmove clock advances.
-        // Prevents the engine from thinking it's winning in positions heading for
-        // a 50-move draw. Consensus: Clarity (200-hm)/200, Velvet (128-hm)/128.
         let hm = board.halfmove.min(200) as i32;
         score * (200 - hm) / 200
     }
