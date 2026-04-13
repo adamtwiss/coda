@@ -2018,17 +2018,21 @@ impl NNUENet {
                 return result;
             }
 
-            // Scalar fallback
+            // Scalar fallback — accumulate a*b*w in i64, divide by QA once at end
+            // (matches SIMD path which preserves full precision before division)
+            let bias = output;
+            let mut sum: i64 = 0;
             for i in 0..pw {
                 let a = (stm_acc[i] as i32).clamp(0, QA as i32);
                 let b = (stm_acc[i + pw] as i32).clamp(0, QA as i32);
-                output += ((a * b) / QA as i32) as i64 * out_w[i] as i64;
+                sum += (a * b) as i64 * out_w[i] as i64;
             }
             for i in 0..pw {
                 let a = (ntm_acc[i] as i32).clamp(0, QA as i32);
                 let b = (ntm_acc[i + pw] as i32).clamp(0, QA as i32);
-                output += ((a * b) / QA as i32) as i64 * out_w[pw + i] as i64;
+                sum += (a * b) as i64 * out_w[pw + i] as i64;
             }
+            output = sum / QA as i64 + bias;
 
             let result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
             return result;
@@ -2698,18 +2702,20 @@ mod tests {
             "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
         ];
 
+        let h = net.hidden_size;
         let mut max_diff = 0i32;
         for fen in &test_fens {
             let board = Board::from_fen(fen);
-            let h = net.hidden_size;
             let piece_count = board.occupied().count_ones();
 
-            // Compute with SIMD (normal path)
-            let mut acc_simd = NNUEAccumulator::new(h);
-            acc_simd.force_recompute(&net, &board);
-            let simd_result = net.forward(&acc_simd, board.side_to_move, piece_count);
+            // Compute accumulator once with SIMD (normal path)
+            let mut acc = NNUEAccumulator::new(h);
+            acc.force_recompute(&net, &board);
 
-            // Compute with scalar (temporarily disable SIMD)
+            // Forward with SIMD
+            let simd_result = net.forward(&acc, board.side_to_move, piece_count);
+
+            // Forward with scalar (same accumulator, just different forward path)
             let saved_avx2 = net.has_avx2;
             let saved_neon = net.has_neon;
             let saved_avx512 = net.has_avx512;
@@ -2722,9 +2728,7 @@ mod tests {
                 (*net_ptr).has_avx512 = false;
             }
 
-            let mut acc_scalar = NNUEAccumulator::new(h);
-            acc_scalar.force_recompute(&net, &board);
-            let scalar_result = net.forward(&acc_scalar, board.side_to_move, piece_count);
+            let scalar_result = net.forward(&acc, board.side_to_move, piece_count);
 
             // Restore SIMD flags
             unsafe {
@@ -2739,7 +2743,55 @@ mod tests {
                 if diff > 2 { "MISMATCH" } else if diff > 0 { "rounding" } else { "exact" });
             max_diff = max_diff.max(diff);
         }
-        assert!(max_diff <= 2, "SIMD/scalar max diff {} exceeds tolerance of 2cp", max_diff);
+        assert!(max_diff <= 2, "Forward SIMD/scalar max diff {} exceeds tolerance of 2cp", max_diff);
+
+        // Phase 2: Test accumulator recompute SIMD vs scalar consistency
+        // force_recompute with SIMD vs scalar should produce identical accumulators
+        let net_ptr = &net as *const NNUENet as *mut NNUENet;
+        let saved_avx2 = net.has_avx2;
+        let saved_neon = net.has_neon;
+        let saved_avx512 = net.has_avx512;
+        let mut max_acc_diff = 0i16;
+        for fen in &test_fens {
+            let board = Board::from_fen(fen);
+
+            // Recompute with SIMD
+            unsafe {
+                (*net_ptr).has_avx2 = saved_avx2;
+                (*net_ptr).has_neon = saved_neon;
+                (*net_ptr).has_avx512 = saved_avx512;
+            }
+            let mut acc_simd = NNUEAccumulator::new(h);
+            acc_simd.force_recompute(&net, &board);
+
+            // Recompute with scalar
+            unsafe {
+                (*net_ptr).has_avx2 = false;
+                (*net_ptr).has_neon = false;
+                (*net_ptr).has_avx512 = false;
+            }
+            let mut acc_scalar = NNUEAccumulator::new(h);
+            acc_scalar.force_recompute(&net, &board);
+            unsafe {
+                (*net_ptr).has_avx2 = saved_avx2;
+                (*net_ptr).has_neon = saved_neon;
+                (*net_ptr).has_avx512 = saved_avx512;
+            }
+
+            // Compare all accumulator values
+            let mut pos_diff = 0i16;
+            for i in 0..h {
+                let d = (acc_simd.white()[i] - acc_scalar.white()[i]).abs();
+                pos_diff = pos_diff.max(d);
+                let d = (acc_simd.black()[i] - acc_scalar.black()[i]).abs();
+                pos_diff = pos_diff.max(d);
+            }
+            if pos_diff > 0 {
+                eprintln!("  Acc recompute diff at {}: max_diff={}", fen, pos_diff);
+            }
+            max_acc_diff = max_acc_diff.max(pos_diff);
+        }
+        assert!(max_acc_diff == 0, "Accumulator SIMD/scalar max diff {} (should be exact)", max_acc_diff);
     }
 
     /// Test Finny table consistency: incremental update vs full recompute.
