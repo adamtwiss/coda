@@ -2237,6 +2237,12 @@ fn negamax(
                     reduction += 1;
                 }
 
+                // Reduce more at cut-nodes when eval already exceeds beta (Minic pattern)
+                // Position is clearly winning — late moves are very unlikely to matter
+                if cut_node && static_eval - 100 > beta {
+                    reduction += 1;
+                }
+
                 // Reduce more when opponent has few non-pawn pieces
                 // Note: board is post-make_move, so SideToMove is now the opponent
                 let opp = flip_color(board.side_to_move);
