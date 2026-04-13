@@ -123,6 +123,39 @@ fine — that's where top engines use it.
 - Converter: `coda convert-bullet`
 - Check-net diagnostic tool
 
+### Coda v7 vs Top Engine Consensus (2026-04-13)
+
+| Feature | Coda v7 (current) | Consensus | Status |
+|---------|-------------------|-----------|--------|
+| FT width | 768×16 → 1536 | 640-2560 | ✓ Match |
+| FT activation | CReLU → pairwise | CReLU → pairwise | ✓ Match |
+| FT shift | >>9 | >>9 | ✓ Match |
+| King buckets | 16 | 8-32 | ✓ Match |
+| L1 size | 16 | 16 (most) | ✓ Match |
+| L1 quant | i8 QB=64 | i8 QB=64 | ✓ Match |
+| L1 matmul | Dense VPMADDUBSW | **Sparse** + NNZ | ✗ Missing |
+| L1 activation | SCReLU | **Dual** (CReLU+SCReLU) | ✗ Single only |
+| L2 size | 32 | 32 | ✓ Match |
+| L2 precision | float | float (most) | ✓ Match |
+| L2 activation | SCReLU | SCReLU / squared CReLU | ✓ Close |
+| Output buckets | 8 | 8 | ✓ Match |
+| Threat features | None | **60K-80K** (4/5 engines) | ✗ Missing |
+| L1 activation reg | None | L1-norm penalty | ✗ Missing |
+| Factoriser | None | Mixed | ✓ OK |
+
+### v7 Roadmap (priority order)
+
+1. **Eval quality** — s400 training with pow2.5 loss, filtering, low final LR, WDL (running)
+2. **Sparse L1 matmul** — code exists (`find_nnz_chunks` + `simd_l1_int8_dot_sparse`), needs wiring into pairwise path. ~30-50% L1 speedup.
+3. **Dual L1 activation** — CReLU+SCReLU concatenated, doubles L2 input (16→32) for free. Training config + inference change. 4/5 engines have this.
+4. **L1 activation regularisation** — L1-norm penalty on FT outputs drives sparsity for sparse matmul. Training-side only.
+5. **Threat features** — 60K-80K extra input features. Major training + inference work. Biggest architectural gap vs top engines.
+6. **Multi-neuron SIMD** — compute all 16 L1 neurons in one pass instead of 32 separate dot products. Reduces memory loads.
+7. **VNNI/DPBUSD** — single-instruction VPMADDUBSW+VPMADDWD on newer CPUs. Runtime detection.
+
+**Current NPS**: ~600K (2× slower than v5 at 1.3M). Sparse L1 should close to ~1.5×.
+**Target**: v7 eval quality must be 40-50+ Elo better per-node than v5 to compensate for NPS gap.
+
 ### Known Issues
 
 **1. Check-net piece value ordering — RESOLVED (misleading metric)**
