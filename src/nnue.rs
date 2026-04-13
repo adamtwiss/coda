@@ -31,6 +31,8 @@ const QA: i32 = 255;  // accumulator scale (CReLU/SCReLU clip max)
 const QB: i32 = 64;   // output weight scale
 const QAB: i32 = QA * QB; // 16320
 const EVAL_SCALE: i32 = 400; // sigmoid → centipawns
+const FT_SHIFT: i32 = 9; // pairwise product shift for v7 L1 input (consensus: 9)
+const PW_SCALE: i32 = (QA * QA) >> FT_SHIFT; // max packed value after shift (127 for >>9)
 
 // File magic
 const NNUE_MAGIC: u32 = 0x4E4E5545; // "NNUE" in LE
@@ -348,8 +350,8 @@ unsafe fn simd_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
         let cb = _mm256_min_epi16(_mm256_max_epi16(b, zero), qa);
         // Multiply: a*b (low 16 bits, max 65025 fits u16)
         let prod = _mm256_mullo_epi16(ca, cb);
-        // >> 8 to get [0, 254]
-        let d = _mm256_srli_epi16(prod, 8);
+        // >> FT_SHIFT to get [0, 127] (safe for VPMADDUBSW in L1)
+        let d = _mm256_srli_epi16(prod, FT_SHIFT);
         // Pack i16 → u8: need to combine with next 16 for full 32 output
         if i + 32 <= pw {
             let a2 = _mm256_loadu_si256(acc.as_ptr().add(i + 16) as *const __m256i);
@@ -357,7 +359,7 @@ unsafe fn simd_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
             let ca2 = _mm256_min_epi16(_mm256_max_epi16(a2, zero), qa);
             let cb2 = _mm256_min_epi16(_mm256_max_epi16(b2, zero), qa);
             let prod2 = _mm256_mullo_epi16(ca2, cb2);
-            let d2 = _mm256_srli_epi16(prod2, 8);
+            let d2 = _mm256_srli_epi16(prod2, FT_SHIFT);
             let packed = _mm256_packus_epi16(d, d2);
             let fixed = _mm256_permute4x64_epi64(packed, 0xD8);
             _mm256_storeu_si256(out.as_mut_ptr().add(i) as *mut __m256i, fixed);
@@ -375,7 +377,7 @@ unsafe fn simd_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
     while i < pw {
         let a = (acc[i] as i32).clamp(0, 255);
         let b = (acc[pw + i] as i32).clamp(0, 255);
-        out[i] = ((a * b) >> 8) as u8;
+        out[i] = ((a * b) >> FT_SHIFT) as u8;
         i += 1;
     }
 }
@@ -940,7 +942,7 @@ unsafe fn neon_pairwise_dot(acc_first: &[i16], acc_second: &[i16], weights: &[i1
         // byte0 = prod & 0xFF (using qa as mask)
         let byte0 = vandq_s16(prod, qa);
         // byte1 = prod >> 8 (unsigned shift)
-        let byte1 = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(prod)));
+        let byte1 = vreinterpretq_s16_u16(vshrq_n_u16::<9>(vreinterpretq_u16_s16(prod)));
 
         // Widening multiply-accumulate: i16 × i16 → i32
         sum_b0_lo = vmlal_s16(sum_b0_lo, vget_low_s16(byte0), vget_low_s16(w));
@@ -988,8 +990,8 @@ unsafe fn neon_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
         let sq0 = vmulq_s16(c0, c0);
         let sq1 = vmulq_s16(c1, c1);
         // >> 8 (unsigned shift) → [0, 254]
-        let d0 = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(sq0)));
-        let d1 = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(sq1)));
+        let d0 = vreinterpretq_s16_u16(vshrq_n_u16::<9>(vreinterpretq_u16_s16(sq0)));
+        let d1 = vreinterpretq_s16_u16(vshrq_n_u16::<9>(vreinterpretq_u16_s16(sq1)));
         // Narrow i16 → u8 with unsigned saturation (values are [0, 254])
         let lo = vqmovun_s16(d0);
         let hi = vqmovun_s16(d1);
@@ -1021,8 +1023,8 @@ unsafe fn neon_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
         let cb1 = vminq_s16(vmaxq_s16(b1, zero), qa);
         let prod0 = vmulq_s16(ca0, cb0);
         let prod1 = vmulq_s16(ca1, cb1);
-        let d0 = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(prod0)));
-        let d1 = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(prod1)));
+        let d0 = vreinterpretq_s16_u16(vshrq_n_u16::<9>(vreinterpretq_u16_s16(prod0)));
+        let d1 = vreinterpretq_s16_u16(vshrq_n_u16::<9>(vreinterpretq_u16_s16(prod1)));
         let lo = vqmovun_s16(d0);
         let hi = vqmovun_s16(d1);
         vst1q_u8(out.as_mut_ptr().add(i), vcombine_u8(lo, hi));
@@ -1034,14 +1036,14 @@ unsafe fn neon_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
         let ca = vminq_s16(vmaxq_s16(a, zero), qa);
         let cb = vminq_s16(vmaxq_s16(b, zero), qa);
         let prod = vmulq_s16(ca, cb);
-        let d = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(prod)));
+        let d = vreinterpretq_s16_u16(vshrq_n_u16::<9>(vreinterpretq_u16_s16(prod)));
         vst1_u8(out.as_mut_ptr().add(i), vqmovun_s16(d));
         i += 8;
     }
     while i < pw {
         let a = (acc[i] as i32).clamp(0, 255);
         let b = (acc[pw + i] as i32).clamp(0, 255);
-        out[i] = ((a * b) >> 8) as u8;
+        out[i] = ((a * b) >> FT_SHIFT) as u8;
         i += 1;
     }
 }
@@ -1531,11 +1533,11 @@ impl NNUENet {
         }
 
         // L1 int8 matmul — only compute l1 neurons starting at l1_off
-        // Pairwise: input = (a*b)>>8, u8 at scale QA²/256 ≈ 254.
-        // L1 weights at scale QA_L1(64). Matmul at scale 254*64.
-        // Bias at scale QA_L1(64), scaled by 254 to match matmul.
-        // After matmul: divide by 254 → scale QA_L1.
-        let pw_scale = 254i32; // (QA*QA) >> 8 ≈ 254
+        // Pairwise: input = (a*b)>>FT_SHIFT, u8 at scale QA²>>FT_SHIFT ≈ PW_SCALE.
+        // L1 weights at scale QA_L1(64). Matmul at scale PW_SCALE*QA_L1.
+        // Bias at scale QA_L1(64), scaled by PW_SCALE to match matmul.
+        // After matmul: divide by PW_SCALE → scale QA_L1.
+        let pw_scale = PW_SCALE; // (QA*QA) >> FT_SHIFT = 127
         let mut hidden32 = [0i32; 512];
         for i in 0..l1 {
             hidden32[i] = self.l1_biases[l1_off + i] as i32 * pw_scale;
