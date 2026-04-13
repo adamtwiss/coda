@@ -2840,6 +2840,15 @@ fn quiescence_with_depth(
             break;
         }
 
+        // At deep QS (>5 capture plies), restrict to recaptures only (Minic pattern).
+        // Reduces QS explosion in complex tactical positions.
+        if qs_depth > 5 && !board.undo_stack.is_empty() {
+            let prev_to = move_to(board.undo_stack[board.undo_stack.len() - 1].mv);
+            if move_to(mv) != prev_to {
+                continue;
+            }
+        }
+
         // Delta pruning: skip captures that can't possibly raise alpha
         if !is_promotion(mv) {
             let cap_to = move_to(mv);
