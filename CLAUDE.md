@@ -325,25 +325,52 @@ lr_scheduler: Sequence {
 
 ## NNUE Model Naming Convention
 
+### Accumulator width clarification (2026-04-14)
+
+**IMPORTANT**: The "width" in net names refers to different things historically:
+- `768pw` in **v5** names: 768 accumulator per perspective (768 FT outputs, pairwise → 384)
+- `768pw` in **v7** names: **actually 1536 accumulator** (1536 FT outputs, pairwise → 768).
+  The "768" refers to the 768 input features (12×64), not the accumulator width.
+- `1024` / `1024s`: 1024 accumulator, no pairwise (direct concat → 2048 L1 input)
+
+This naming inconsistency is historical. Going forward, new architectures use
+accumulator width explicitly.
+
+Cross-engine comparison:
+- Coda v7 "768pw": accum=1536, same as Alexandria/Obsidian
+- Reckless: accum=768, pairwise → 384, plus 67K threat features
+- Our threat target (v9): accum=768, matching Reckless
+
 **v5 (direct FT→output):**
 ```
 net-v5-{width}{activation}-w{wdl}-e{epochs}s{snap}.nnue
 ```
 
-**v7 (FT→hidden→output):**
+**v7/v8 (FT→hidden→output):**
 ```
 net-v7-{ftWidth}h{layers}{activation}-w{wdl}-e{epochs}s{snap}.nnue
 ```
 
+**v9 (FT + threats → hidden → output, target architecture):**
+```
+net-v9-{accumWidth}t{activation}h{layers}-w{wdl}-e{epochs}s{snap}.nnue
+```
+
 Where:
-- **ftWidth**: 1024, 1536, 768pw (pairwise)
+- **width/ftWidth**: historical — 768pw, 1024, 1536 (see clarification above)
+- **accumWidth**: actual accumulator width per perspective (v9+)
+- **t**: threat features present
+- **d**: dual L1 activation (CReLU+SCReLU)
 - **h{layers}**: h16 (L1=16), h16x32 (L1=16, L2=32)
 - **activation**: omit for CReLU, `s` for SCReLU
-- **w{wdl}**: w0 (0.0), w5 (0.05), w10 (0.1)
+- **w{wdl}**: w0 (0.0), w5 (0.05), w10 (0.1), w15 (0.15)
 - **e{epochs}**: total superbatches in cosine schedule
 - **s{snap}**: snapshot checkpoint
 
-Examples: `net-v5-1024-w0-e120s120.nnue`, `net-v5-1024s-w5-e400s400.nnue`, `net-v7-1024h16x32s-w0-e800s800.nnue`
+Examples:
+- `net-v5-768pw-w7-e800s800.nnue` — v5 production (768 accum, pairwise)
+- `net-v7-768pwh16x32-w15-e100s100.nnue` — v7 (actually 1536 accum, historical name)
+- `net-v9-768th16x32-w15-e400s400.nnue` — v9 target (768 accum, threats, 16→32)
 
 ## Key Search Parameters
 

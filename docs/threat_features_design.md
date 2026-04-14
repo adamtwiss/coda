@@ -16,20 +16,26 @@ engines at similar FT widths.
 
 ## Architecture
 
-```
-Current (v7/v8):
-  768 PSQ features × i16 weights → 1536 accumulator per perspective
-  → CReLU → pairwise → 768 per perspective → concat → 1536 → L1(16) → L2(32) → 1×8
+**Target: 768 accumulator (matching Reckless), not our current 1536.**
 
-With threats:
+Reckless is #2 on CCRL with 768 accumulator + threats. Our current 1536 accumulator
+without threats is ~50-60 Elo behind v5. The extra width isn't earning its NPS cost.
+Narrowing to 768 gives us: 2× faster FT updates, half the L1 matmul work, half the
+threat weight memory (~50MB instead of ~100MB), and a proven reference architecture.
+
+```
+Current v7/v8 (1536 accumulator, NO threats):
+  768 PSQ features × i16 weights → 1536 accum → pairwise → 768/persp → 1536 L1 input
+
+Target v9 (768 accumulator, WITH threats):
   768 PSQ features × i16 weights ─┐
-                                   ├─ element-wise add → 1536 accumulator per perspective
+                                   ├─ add → 768 accum → pairwise → 384/persp → 768 L1 input
   ~67K threat features × i8 weights┘
-  → CReLU → pairwise → 768 per perspective → concat → 1536 → L1(16) → L2(32) → 1×8
 ```
 
-The L1 matmul, L2, and output layers are completely unchanged. Only the FT accumulator
-receives additional signal from the threat features.
+This halves both the FT and L1 dimensions while adding threat features. The hidden
+layers (L1=16, L2=32, output) are unchanged. Net effect: smaller, faster FT with
+richer input signal. Should improve both NPS and eval quality.
 
 ## Phase 1: Threat Feature Encoding (inference-only, no training)
 
@@ -89,7 +95,7 @@ positions. We can instrument both engines to dump feature lists and verify they 
 
 ```rust
 struct ThreatAccumulator {
-    values: [[i16; FT_SIZE]; 2],  // per perspective, FT_SIZE=1536 for us
+    values: [[i16; FT_SIZE]; 2],  // per perspective, FT_SIZE=768 (matching Reckless)
     accurate: [bool; 2],
 }
 ```
@@ -116,15 +122,7 @@ threat_weights: Vec<i8>,  // [num_threat_features × FT_SIZE]
 ```
 
 i8 quantization (not i16 like PSQ weights). Widened to i16 at update time via
-`_mm256_cvtepi8_epi16`. This keeps memory manageable: 67K × 1536 × 1 byte ≈ 100MB.
-
-Note: Reckless uses 768 accumulator so their threat weights are 67K × 768 = ~50MB.
-Our 1536 accumulator means ~100MB. This is larger but acceptable — it's loaded once
-and accessed via cache-friendly sequential reads during updates.
-
-**Alternative**: We could consider narrowing to 768 accumulator to match Reckless and
-halve the threat weight memory. This is a separate decision — threat features work at
-any accumulator width.
+`_mm256_cvtepi8_epi16`. Memory: 67K × 768 × 1 byte ≈ 50MB (matching Reckless exactly).
 
 ### Incremental updates
 
@@ -179,15 +177,16 @@ The build closure receives threat input nodes alongside PSQ input nodes.
 **5. Training config** (`examples/coda_v9_768pw_threats.rs`):
 ```rust
 .build(|builder, stm_inputs, ntm_inputs, stm_threats, ntm_threats, output_buckets| {
-    let ft_psq = builder.new_affine("ft_psq", 768 * BUCKETS, 1536);
-    let ft_threat = builder.new_affine("ft_threat", 66864, 1536);
+    let ft_psq = builder.new_affine("ft_psq", 768 * BUCKETS, 768);  // 768 accum (not 1536)
+    let ft_threat = builder.new_affine("ft_threat", 66864, 768);
     
     let stm = ft_psq.forward(stm_inputs) + ft_threat.forward(stm_threats);
     let ntm = ft_psq.forward(ntm_inputs) + ft_threat.forward(ntm_threats);
     
-    let stm_pw = stm.crelu().pairwise_mul();
+    let stm_pw = stm.crelu().pairwise_mul();  // 768 → 384 per perspective
     let ntm_pw = ntm.crelu().pairwise_mul();
-    // ... rest unchanged
+    let hl1 = stm_pw.concat(ntm_pw);          // 384 + 384 = 768 L1 input
+    // L1(768→16) → L2(16→32) → output(32→1×8) ... unchanged
 })
 .save_format(&[
     SavedFormat::id("ft_psq_w").quantise::<i16>(255),
@@ -286,14 +285,15 @@ expected, this blocks training. Mitigation: start Phase 3 early in parallel with
 ### Naming convention
 
 ```
-net-v9-768pwth16x32-wNN-eNNNsNNN.nnue
+net-v9-768th16x32-wNN-eNNNsNNN.nnue
 ```
-`t` after `pw` denotes threat features. Version v9.
+768 = accumulator width (matching Reckless), `t` = threat features, version v9.
+No `pw` suffix needed — pairwise is implied by the 768 accumulator with hidden layers.
 
 ### Open questions
 
-1. **Accumulator width**: Keep 1536 or narrow to 768 (matching Reckless)? Wider = more
-   capacity but 2× threat weight memory (100MB vs 50MB). Could test both.
+1. ~~**Accumulator width**~~ DECIDED: 768, matching Reckless. Halves FT/L1 cost, proven
+   architecture, 50MB threat weights instead of 100MB.
 
 2. **Which piece-pair interactions to include?** Start with Reckless's map (proven) or
    start with a simpler subset (e.g., only enemy attacks, not defenses)?
@@ -301,11 +301,16 @@ net-v9-768pwth16x32-wNN-eNNNsNNN.nnue
 3. **Threat feature count**: Match Reckless (~67K) or start smaller (~30K with fewer
    piece-pair types) for faster iteration?
 
-4. **Pawn threats**: Pawns are cheap to compute but their threats rarely change. Worth
-   including from the start or add later?
-
-5. **X-ray attacks**: Discovered attacks through moved pieces. Reckless tracks these.
+4. **X-ray attacks**: Discovered attacks through moved pieces. Reckless tracks these.
    Add from the start or simplify the first version?
+
+5. **Dual L1 activation**: Do we also include dual activation (v8) in the v9 target,
+   or keep it simpler? Reckless uses CReLU on L1, not dual. Recommend matching
+   Reckless first, add dual later if needed.
+
+6. **King bucket layout**: Use consensus fine-near/coarse-far or Reckless's 10-bucket
+   layout? Recommend our consensus 16-bucket layout (already implemented) unless
+   Reckless's specific layout proves important.
 
 ## Recommended decomposition for first iteration
 
