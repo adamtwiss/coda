@@ -22,7 +22,7 @@
 
 use bullet_lib::{
     game::{
-        inputs::{ChessBucketsMirrored, get_num_buckets},
+        inputs::ChessBucketsMirrored,
         outputs::MaterialCount,
     },
     nn::{
@@ -98,7 +98,7 @@ fn main() {
         .output_buckets(MaterialCount::<NUM_OUTPUT_BUCKETS>)
         .save_format(&[
             SavedFormat::id("l0w")
-                .transform(|store, weights| {
+                .transform(move |store, weights| {
                     let factoriser = store.get("l0f").values.repeat(num_input_buckets);
                     weights.into_iter().zip(factoriser).map(|(a, b)| a + b).collect()
                 })
