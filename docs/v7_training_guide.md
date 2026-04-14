@@ -177,41 +177,80 @@ The earlier "root cause hypothesis" (T80 data lacking queen-down positions)
 was incorrect — the issue was purely the check-net methodology, not the training
 data or output bucketing.
 
-**2. v7 hidden layers collapsed — RESOLVED: factoriser was the cause**
+**2. v7 hidden layers collapsed — RESOLVED: factoriser + init interaction**
 
-All Coda v7 nets trained with our standard config produced collapsed evals
-(all scores identical, wrong signs on endgames). Ruled out as causes:
-- Bucketed vs unbucketed hidden layers (both collapsed)
-- WDL proportion (w=0 and w=0.4 both collapsed)
-- Data volume (single file has 3-4B positions, plenty for s100)
-- Data filtering (not the issue)
+All Coda v7 nets trained with our standard config produced collapsed evals.
+Removing the factoriser fixed it. Root cause analysis (2026-04-14):
 
-**Root cause: the factoriser** (`l0f` weight sharing + `init_with_effective_input_size(32)`).
-The GoChess v7 config (which produces healthy nets) uses plain `new_affine` without a
-factoriser. Removing the factoriser from our config immediately produced a healthy v7 net
-(all 8 check-net tests pass, good differentiation).
+The specific failure was the interaction between the factoriser and
+`init_with_effective_input_size(32)`:
+```rust
+let l0f = builder.new_weights("l0f", Shape::new(ft_size, 768), InitSettings::Zeroed);
+let mut l0 = builder.new_affine("l0", 768 * NUM_INPUT_BUCKETS, ft_size);
+l0.init_with_effective_input_size(32);  // ← scales init for sparse inputs
+l0.weights = l0.weights + expanded_factoriser;
+```
 
-Secondary factor: **i16 quantisation** for hidden layers. GoChess uses i16 at QA=255 for
-L1/L2/L3. Our config used i8 at QA=64 for L1 and float for L2/L3. The i8 quantisation
-may contribute to precision loss in the narrow 16-neuron L1 layer. Not yet tested
-independently — the factoriser removal alone was sufficient.
+The factoriser starts at zero and receives gradients from all 16 buckets
+simultaneously — giving it 16× larger gradient than per-bucket weights. This
+creates a tug-of-war: per-bucket weights try to specialise, factoriser tries
+to average, and the 16× gradient advantage lets the factoriser dominate and
+flatten everything.
 
-**Working v7 training recipe** (2026-04-13):
+**Why Alexandria makes it work:**
+- May use different initialisation (not `init_with_effective_input_size`)
+- Stricter clipping specifically for factoriser weights
+- 1536 FT width (more capacity to absorb factoriser tension)
+- May have tuned factoriser LR independently
+
+**Viridithas disabled theirs** in latest code (`UNQUANTISED_HAS_FACTORISER: bool =
+false`). Was important early (+31.6 Elo when added), less needed with abundant data.
+
+**How to retry the factoriser (if desired):**
+- Use separate LR for factoriser weights (0.1-0.5× of main LR)
+- Do NOT combine with `init_with_effective_input_size`
+- Try on 1024 or 1536 FT width rather than 768pw
+- Most valuable for consensus king buckets where rare-position buckets
+  (ranks 5-8) have limited training data
+
+**Working v7/v8 training recipe** (2026-04-14):
 - No factoriser (plain `new_affine` for FT)
-- i16 quantisation for all hidden layers (QA=255 for L1/L2, QB=64 for output)
-- SCReLU activation
+- i8 L1 at QA=64, float L2 (production path)
+- SCReLU on hidden layers, CReLU→pairwise on FT
 - LR warmup (20 SBs)
-- Position filtering + power-2.5 loss + low final LR
-- Config: `v7_1024h16x32s_gochess_style.rs`
-- Convert: `coda convert-bullet --screlu --hidden 16 --hidden2 32 --ft-size 1024 --int16-hidden`
+- Position filtering + power-2.5 loss + low final LR (2.43e-6)
+- Configs: `v7_768pw_h16x32.rs`, `v8_768pw_h16x32_dual.rs`
+- Convert: `coda convert-bullet --pairwise --hidden 16 --hidden2 32 --int8l1 [--dual]`
 
-**3. 768pw training config uses ReLU, not SCReLU**
+**3. Sparse L1 matmul — NOT beneficial for 768pw (2026-04-14)**
 
-The `v7_768pw_h16x32.rs` config uses `.relu()` on hidden layers instead of `.screlu()`. This contradicts consensus — every top engine uses SCReLU on hidden layers. The `v7_1024h16x32s.rs` config correctly uses SCReLU.
+Benchmarking showed 768pw nets have 89% natural sparsity in the packed L1 input,
+but the sparse kernel provides **zero NPS benefit** over the dense kernel. The L1
+input dimension (768 = 384 per perspective after pairwise) is too small for NNZ
+chunk-level skipping to offset the bookkeeping overhead.
 
-**4. LR warmup helps but may not be enough**
+Engines that benefit from sparse L1 all have L1 input ≥1536:
 
-20 SB linear warmup prevents immediate neuron death. But with the factoriser, the overall training dynamics still produced collapsed evals. Without the factoriser, warmup + SCReLU produces healthy nets.
+| Engine | FT Width | After Pairwise | L1 Input | Sparse L1? |
+|--------|----------|----------------|----------|------------|
+| Stockfish | 3072 | N/A | 6144 | Yes |
+| Obsidian | 1536 | 768 | 1536 | Yes |
+| Viridithas | 2560 | 1280 | 2560 | Yes |
+| Berserk | 1024 | N/A | 2048 | Yes |
+| **Coda** | **768pw** | **384** | **768** | **No benefit** |
+| Reckless | 768 | 384 | 768 | No |
+| PlentyChess | 640 | 320 | 640 | No |
+
+Sparse matmul only becomes relevant if we scale to 1024+ FT width.
+
+**L1 activation regularisation** was also tested to try to increase sparsity:
+lambda=0.001 collapsed hidden layers entirely, lambda=0.0001 also failed.
+Shelved — not needed since sparse L1 doesn't help for our architecture.
+
+**4. LR warmup is essential for hidden layers**
+
+20 SB linear warmup prevents immediate neuron death. Without the factoriser,
+warmup + SCReLU produces healthy nets reliably.
 
 ## Training Configs
 
