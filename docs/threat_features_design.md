@@ -139,12 +139,28 @@ Full recompute triggers:
 - King crosses the e-file boundary (mirroring changes)
 - No accurate ancestor in the stack
 
+### Finny table / caching
+
+The threat accumulator needs invalidation when the king changes bucket (same as PSQ
+accumulator). Reckless does NOT use a Finny table for threats — it does full recompute
+on king bucket change. We should match this initially.
+
+When a king moves:
+- PSQ Finny table handles the PSQ accumulator recompute (existing)
+- Threat accumulator does full recompute (new — zero + iterate all threats)
+- Both accumulators must be invalidated together
+
+The PSQ and threat accumulators must stay synchronised — if PSQ is accurate for a
+position, threat must be too. The `accurate` flags should be tracked independently per
+perspective per accumulator type.
+
 ### Deliverable
 
 - Threat accumulator struct with push/pop semantics matching existing NNUE accumulator
 - SIMD update functions (AVX2: `_mm256_cvtepi8_epi16` + `_mm256_add_epi16`)
 - Integration into `forward_with_l1` / `forward_with_l1_pairwise` paths
 - Full recompute function for positions without incremental history
+- Invalidation on king bucket changes (coordinated with PSQ Finny table)
 
 **Validation**: Load a position, compute threat accumulator from scratch, make a move,
 compute incrementally, verify values match full recompute. Fuzz with random positions.
@@ -246,49 +262,91 @@ end-to-end validation (training → conversion → inference → check-net passe
 
 ### Phase breakdown with estimated effort
 
+**Parallel tracks**: Phase 1 (inference) and Phase 3 (Bullet) should run in parallel.
+Phase 3 is the highest-risk item and the threat feature encoder for Bullet doesn't
+depend on the inference-side code — only the index computation (Phase 1a) is shared.
+
 | Phase | What | Effort | Dependencies | Testable independently? |
 |-------|------|--------|-------------|------------------------|
+| **Track A: Inference** | | | | |
 | 1a | Threat index computation | 2-3 days | None | Yes — unit tests, compare vs Reckless |
 | 1b | Threat enumeration for a position | 1 day | 1a | Yes — dump features, verify counts |
-| 2a | Threat accumulator (full recompute only) | 2-3 days | 1b | Yes — check-net with random weights |
-| 2b | Forward pass integration (PSQ + threat sum) | 1 day | 2a | Yes — verify eval changes with threat weights |
-| 2c | Incremental threat updates | 3-5 days | 2a | Yes — compare incremental vs full recompute |
+| 2a | Threat accumulator (full recompute) + Finny | 2-3 days | 1b | Yes — check-net with random weights |
+| 2b | Forward pass integration (PSQ + threat sum) | 1 day | 2a | Yes — verify eval changes |
+| 2c | Incremental threat updates | 3-5 days | 2a | Yes — compare vs full recompute |
 | 2d | SIMD optimisation | 2-3 days | 2c | Yes — NPS benchmarks |
-| 3 | Bullet trainer fork | 3-5 days | 1a (for feature encoder) | Yes — train tiny net, verify gradients |
+| **Track B: Training** | | | | |
+| 3 | Bullet trainer fork | 5-7 days | 1a (shared encoder) | Yes — train tiny net, verify gradients |
+| **Integration** | | | | |
 | 4 | Converter + file format | 1-2 days | 3 | Yes — round-trip test |
-| 5 | First real training run + evaluation | 1-2 days | 3, 4 | H2H vs non-threat net |
+| 5 | First training run + evaluation | 1-2 days | 2b, 3, 4 | check-net, fixed-node H2H |
+| 5b | Time-controlled H2H (needs incremental) | 1 day | 2c, 5 | SPRT at real TC |
 
-**Total: ~3-4 weeks**, with testable milestones every 2-3 days.
+**Total: ~4-5 weeks**, with testable milestones every 2-3 days.
+Budget extra time for debugging — the first training run will likely need 2-3 iterations
+to fix encoding bugs, weight init issues, or gradient problems.
+
+**Fallback for Phase 3**: If Bullet modifications stall, a simple PyTorch training script
+can validate the concept. Even a slow CPU trainer is fine for producing a test net.
 
 ### Critical path
 
-Phase 3 (Bullet fork) is the highest-risk item. If Bullet modifications prove harder than
-expected, this blocks training. Mitigation: start Phase 3 early in parallel with Phase 1.
+```
+Phase 1a ──→ Phase 1b ──→ Phase 2a ──→ Phase 2b ──→ Phase 5 (fixed-node)
+    │                                                      ↑
+    └──→ Phase 3 (Bullet fork, parallel) ──→ Phase 4 ─────┘
+                                                           ↓
+                                        Phase 2c ──→ Phase 5b (time-controlled)
+```
+
+Phase 3 and Phase 1/2 run in parallel. First testable net at Phase 5 (full recompute,
+check-net + fixed-node only). Real strength testing at Phase 5b after incremental updates.
+
+### NPS expectations
+
+- **Full recompute** (Phase 2a-2b): NPS will be poor (~50-100K estimated). Computing
+  ~60-100 active threats from scratch per eval means ~60-100 random 768-byte reads from
+  a 50MB weight table per position. Fine for check-net and fixed-node testing, NOT for
+  time-controlled play.
+- **With incremental updates** (Phase 2c): NPS should be reasonable (~300-400K estimated).
+  Only ~10-30 threat deltas per move, each a single 768-byte weight row add/sub.
+  The 768 accumulator (half our current 1536) also speeds up FT and L1.
+- **With SIMD optimisation** (Phase 2d): Target ~400K+ NPS.
+
+**Note on all-piece attack computation** (Atlas review point): Threat feature computation
+needs attack bitboards for ALL pieces on the board, not just side to move. This means
+~32 magic lookups per eval in the full recompute path. We already have the infrastructure
+(attacks.rs) but the per-eval cost should be benchmarked in Phase 1b.
 
 ### Testing strategy
 
 1. **Phase 1 validation**: Dump threat features for 10 standard positions. Manually verify
    a few (e.g., "e4 pawn should have threats on d5/f5 if occupied"). Cross-check feature
-   count against Reckless for the same positions.
+   count against Reckless for the same positions if possible.
 
 2. **Phase 2 validation**: Load a net with random threat weights. Verify eval differs from
    zero-threat eval. Make/unmake moves, verify incremental accumulator matches full
-   recompute. Fuzz test with 10K random positions.
+   recompute. Fuzz test with 10K random positions. Verify Finny table invalidation on
+   king moves that cross the e-file mirror boundary.
 
 3. **Phase 3 validation**: Train tiny net (FT=32, 100 threats, 100 SBs). Verify loss
    decreases. Check that threat weight gradients are non-zero. Then train full-size net
-   (FT=1536, 67K threats, s100) and run check-net.
+   (FT=768, 67K threats, s100) and run check-net.
 
-4. **End-to-end**: Convert trained net, load in engine, run check-net (all 8 tests pass),
-   bench (NPS reasonable), H2H vs best non-threat v7/v8 net.
+4. **End-to-end (fixed-node)**: Convert trained net, load in engine, run check-net (all 8
+   tests pass), fixed-node H2H vs best non-threat v7/v8 net. This validates eval quality
+   WITHOUT needing good NPS.
+
+5. **Time-controlled (after incremental)**: SPRT at real TC once incremental updates are
+   working. This is the real strength test.
 
 ### Naming convention
 
 ```
-net-v9-768th16x32-wNN-eNNNsNNN.nnue
+net-v9-768pwth16x32-wNN-eNNNsNNN.nnue
 ```
-768 = accumulator width (matching Reckless), `t` = threat features, version v9.
-No `pw` suffix needed — pairwise is implied by the 768 accumulator with hidden layers.
+768 = accumulator width (matching Reckless), `pw` = pairwise, `t` = threat features.
+Keep `pw` suffix for clarity since pairwise is an architectural choice, not implied by width.
 
 ### Open questions
 
@@ -323,9 +381,14 @@ For the fastest path to a testable net:
    bitboard & occupied). This simplifies incremental updates significantly — we only
    need to track the moved piece's attacks and attacks on the from/to squares.
 
-3. **Full recompute only** for the first training run. Incremental updates are an NPS
-   optimisation — the eval quality comes from the features themselves. We can train and
-   test with full recompute, then add incremental updates for production NPS.
+3. **Full recompute for training** (GPU doesn't care about NPS). For inference validation,
+   full recompute is fine for check-net and fixed-node H2H. But implement incremental
+   updates BEFORE any time-controlled testing — full recompute will give ~50-100K NPS
+   which is too slow for meaningful SPRT.
 
 4. **Match Reckless's encoding exactly** for the feature indices. This lets us validate
    against their implementation and avoids encoding bugs that could waste a training run.
+
+5. **Start Phase 3 (Bullet fork) immediately** in parallel with Phase 1. It's the
+   highest-risk item and doesn't depend on inference code. The threat feature encoder
+   only needs the index computation from Phase 1a.
