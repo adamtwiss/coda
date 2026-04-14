@@ -695,10 +695,11 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
 
 /// Update correction history entry with gravity.
 fn update_corr_entry(entry: &mut i32, err: i32, weight: i32) {
-    // Proportional gravity (consensus: every top engine uses this)
-    // Self-limiting: values near the limit get pulled back harder
-    let bonus = (err * weight).clamp(-CORR_HIST_LIMIT / 4, CORR_HIST_LIMIT / 4);
-    *entry += bonus - *entry * bonus.abs() / CORR_HIST_LIMIT;
+    // Stockfish formula: entry += (err - entry * |err| / LIMIT) * weight / 256
+    // Weight only scales the final adjustment, NOT the gravity term.
+    let clamped_err = err.clamp(-CORR_HIST_LIMIT / 4, CORR_HIST_LIMIT / 4);
+    let adjustment = clamped_err - *entry * clamped_err.abs() / CORR_HIST_LIMIT;
+    *entry += adjustment * weight / 256;
     *entry = (*entry).clamp(-CORR_HIST_LIMIT, CORR_HIST_LIMIT);
 }
 
@@ -1777,8 +1778,12 @@ fn negamax(
     let us = board.side_to_move;
     let stm_non_pawn = board.colors[us as usize]
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+    // Guard against consecutive null moves
+    let prev_was_null = !board.undo_stack.is_empty()
+        && board.undo_stack[board.undo_stack.len() - 1].mv == NO_MOVE;
     if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
+        && !prev_was_null  // Prevent consecutive null moves
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && FEAT_NMP.load(Ordering::Relaxed)
@@ -1820,7 +1825,8 @@ fn negamax(
             // Verification search at high depths to guard against zugzwang
             if depth >= tp(&NMP_VERIFY_DEPTH) {
                 info.stats.nmp_verify += 1;
-                let v_score = negamax(board, info, beta - 1, beta, depth - r, ply + 1, false);
+                // Verification re-searches current position (no move made), so ply stays same
+                let v_score = negamax(board, info, beta - 1, beta, depth - r, ply, false);
                 if v_score >= beta {
                     info.stats.nmp_cutoffs += 1;
                     return nmp_score;
@@ -1951,9 +1957,9 @@ fn negamax(
     };
     let pawn_hist_ref = Some(&info.pawn_hist[ph_idx] as &[[i16; 64]; 13]);
     let mut picker = if in_check {
-        MovePicker::new_evasion(board, tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref)
+        MovePicker::new_evasion(board, tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks)
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
 
@@ -2254,10 +2260,9 @@ fn negamax(
                     reduction += 1;
                 }
 
-                // Reduce more when opponent has few non-pawn pieces
-                // Note: board is post-make_move, so SideToMove is now the opponent
-                let opp = flip_color(board.side_to_move);
-                let opp_non_pawn = board.colors[opp as usize]
+                // Reduce more when opponent has few non-pawn pieces (simpler position)
+                // Note: board is post-make_move, so side_to_move IS the opponent
+                let opp_non_pawn = board.colors[board.side_to_move as usize]
                     & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
                 if popcount(opp_non_pawn) < 3 {
                     reduction += 1;
@@ -2446,21 +2451,17 @@ fn negamax(
                         // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
                         if moved_piece != NO_PIECE {
                             let gp_mv = go_piece(moved_piece);
-                            let stack_len = board.undo_stack.len();
                             let ch_offsets = [1usize, 2, 4, 6];
                             for &off in &ch_offsets {
-                                if stack_len >= off {
-                                    let undo = &board.undo_stack[stack_len - off];
-                                    if undo.mv != NO_MOVE {
-                                        let uto = move_to(undo.mv);
-                                        let upiece = board.piece_at(uto);
-                                        if upiece != NO_PIECE {
-                                            let ch_bonus = if off <= 1 { bonus } else { bonus / 2 };
-                                            History::update_cont_history(
-                                                &mut info.history.cont_hist[go_piece(upiece)][uto as usize][gp_mv][to as usize],
-                                                ch_bonus,
-                                            );
-                                        }
+                                if ply_u >= off {
+                                    let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
+                                    let prior_to = info.moved_to_stack[ply_u - off] as usize;
+                                    if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
+                                        let ch_bonus = if off <= 1 { bonus } else { bonus / 2 };
+                                        History::update_cont_history(
+                                            &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
+                                            ch_bonus,
+                                        );
                                     }
                                 }
                             }
@@ -2493,18 +2494,15 @@ fn negamax(
                                     let stack_len = board.undo_stack.len();
                                     let ch_offsets = [1usize, 2, 4, 6];
                                     for &off in &ch_offsets {
-                                        if stack_len >= off {
-                                            let undo = &board.undo_stack[stack_len - off];
-                                            if undo.mv != NO_MOVE {
-                                                let uto = move_to(undo.mv);
-                                                let upiece = board.piece_at(uto);
-                                                if upiece != NO_PIECE {
-                                                    let ch_pen = if off <= 1 { -bonus } else { -bonus / 2 };
-                                                    History::update_cont_history(
-                                                        &mut info.history.cont_hist[go_piece(upiece)][uto as usize][gp_q][qt as usize],
-                                                        ch_pen,
-                                                    );
-                                                }
+                                        if ply_u >= off {
+                                            let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
+                                            let prior_to = info.moved_to_stack[ply_u - off] as usize;
+                                            if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
+                                                let ch_pen = if off <= 1 { -bonus } else { -bonus / 2 };
+                                                History::update_cont_history(
+                                                    &mut info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize],
+                                                    ch_pen,
+                                                );
                                             }
                                         }
                                     }
@@ -2711,13 +2709,16 @@ fn quiescence_with_depth(
             tt_score += ply;
         }
 
+        let qs_is_pv = beta - alpha > 1;
         match tt_entry.flag {
-            TT_FLAG_EXACT => { return tt_score; }
+            TT_FLAG_EXACT => {
+                if !qs_is_pv { return tt_score; }
+            }
             TT_FLAG_LOWER => {
-                if tt_score >= beta { return tt_score; }
+                if !qs_is_pv && tt_score >= beta { return tt_score; }
             }
             TT_FLAG_UPPER => {
-                if tt_score <= alpha { return tt_score; }
+                if !qs_is_pv && tt_score <= alpha { return tt_score; }
             }
             _ => {}
         }
@@ -2747,7 +2748,8 @@ fn quiescence_with_depth(
             None
         };
         let mut evasion_picker = MovePicker::new_evasion(
-            board, tt_move, 0, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
+            board, tt_move, ply as usize, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
+            &info.moved_piece_stack, &info.moved_to_stack,
         );
         let mut best_score = -INFINITY;
         let mut best_move = NO_MOVE;
