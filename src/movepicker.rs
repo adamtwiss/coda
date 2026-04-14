@@ -211,6 +211,8 @@ impl MovePicker {
         prev_move: Move,
         pawn_hist: Option<&[[i16; 64]; 13]>,
         threats: Threats,
+        moved_piece_stack: &[u8],
+        moved_to_stack: &[u8],
     ) -> Self {
         let killers = if ply < 64 {
             history.killers[ply]
@@ -231,19 +233,15 @@ impl MovePicker {
         };
 
         // Get continuation history sub-table pointers at plies 1, 2, 4, 6 back.
-        // Each uses the piece that moved to the destination square N plies ago.
+        // Uses moved_piece_stack for correct piece lookup (avoids stale board.piece_at).
         let mut cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4] = [None; 4];
-        let stack_len = board.undo_stack.len();
-        let offsets = [1usize, 2, 4, 6]; // ply-1, ply-2, ply-4, ply-6
+        let offsets = [1usize, 2, 4, 6];
         for (i, &off) in offsets.iter().enumerate() {
-            if stack_len >= off {
-                let undo = &board.undo_stack[stack_len - off];
-                if undo.mv != NO_MOVE {
-                    let to = move_to(undo.mv);
-                    let piece = board.piece_at(to);
-                    if piece != NO_PIECE {
-                        cont_hist_subs[i] = Some(&history.cont_hist[go_piece(piece)][to as usize] as *const [[i16; 64]; 13]);
-                    }
+            if ply >= off {
+                let prior_piece = moved_piece_stack[ply - off] as usize;
+                let prior_to = moved_to_stack[ply - off] as usize;
+                if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
+                    cont_hist_subs[i] = Some(&history.cont_hist[prior_piece][prior_to] as *const [[i16; 64]; 13]);
                 }
             }
         }
@@ -335,20 +333,18 @@ impl MovePicker {
         history: &History,
         _prev_move: Move,
         pawn_hist: Option<&[[i16; 64]; 13]>,
+        moved_piece_stack: &[u8],
+        moved_to_stack: &[u8],
     ) -> Self {
         // Build cont-hist pointers for evasion (same as main picker)
         let mut cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4] = [None; 4];
-        let stack_len = board.undo_stack.len();
         let offsets = [1usize, 2, 4, 6];
         for (i, &off) in offsets.iter().enumerate() {
-            if stack_len >= off {
-                let undo = &board.undo_stack[stack_len - off];
-                if undo.mv != NO_MOVE {
-                    let to = move_to(undo.mv);
-                    let piece = board.piece_at(to);
-                    if piece != NO_PIECE {
-                        cont_hist_subs[i] = Some(&history.cont_hist[go_piece(piece)][to as usize] as *const [[i16; 64]; 13]);
-                    }
+            if ply >= off {
+                let prior_piece = moved_piece_stack[ply - off] as usize;
+                let prior_to = moved_to_stack[ply - off] as usize;
+                if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
+                    cont_hist_subs[i] = Some(&history.cont_hist[prior_piece][prior_to] as *const [[i16; 64]; 13]);
                 }
             }
         }
