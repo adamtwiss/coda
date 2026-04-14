@@ -32,6 +32,7 @@ use bullet_lib::{
     },
     nn::{
         optimiser::{AdamW, AdamWParams},
+        Shape,
     },
     trainer::{
         save::SavedFormat,
@@ -120,12 +121,27 @@ fn main() {
             let main_loss = output.sigmoid().power_error(targets, 2.5);
 
             // L1 activation regularization on FT outputs (encourages sparsity)
-            // abs_pow(1.0) = L1 norm, reduce across batch to get scalar penalty
-            let stm_l1 = stm_for_reg.abs_pow(1.0).reduce_avg_across_batch();
-            let ntm_l1 = ntm_for_reg.abs_pow(1.0).reduce_avg_across_batch();
-            let reg_penalty = stm_l1.linear_comb(lambda, ntm_l1, lambda);
+            //
+            // Shape chain:
+            //   CReLU output: (ft_size, batch)
+            //   abs_pow(1.0): (ft_size, batch) — element-wise absolute values
+            //   reduce_avg_across_batch: (ft_size, 1) — average |activation| per feature
+            //   ones.matmul(...): (1, ft_size) × (ft_size, 1) = (1, 1) — scalar avg L1
+            //
+            // The ones vector is scaled by 1/ft_size so the result is mean(|a|) not sum(|a|).
+            let ones_vec: Vec<f32> = vec![1.0 / ft_size as f32; ft_size];
+            let ones = builder.new_constant(Shape::new(1, ft_size), &ones_vec);
 
-            // Total loss = main_loss + lambda * (stm_l1 + ntm_l1)
+            let stm_l1 = stm_for_reg.abs_pow(1.0).reduce_avg_across_batch(); // (ft_size, 1)
+            let stm_l1_scalar = ones.matmul(stm_l1); // (1, 1)
+
+            let ntm_l1 = ntm_for_reg.abs_pow(1.0).reduce_avg_across_batch(); // (ft_size, 1)
+            let ntm_l1_scalar = ones.matmul(ntm_l1); // (1, 1)  (ones is Copy)
+
+            // Combine: lambda * (mean_stm_l1 + mean_ntm_l1)
+            let reg_penalty = stm_l1_scalar.linear_comb(lambda, ntm_l1_scalar, lambda);
+
+            // Total loss = main_loss + reg_penalty
             let total_loss = main_loss.linear_comb(1.0, reg_penalty, 1.0);
 
             (output, total_loss)
