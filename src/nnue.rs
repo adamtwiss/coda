@@ -1428,6 +1428,8 @@ impl NNUENet {
         let mut bucketed_hidden = false; // bit 3: output buckets baked into L1/L2 dims
         let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
         let mut consensus_buckets = false; // bit 5: consensus king bucket layout
+        let mut has_threats = false; // bit 6: threat features (v9)
+        let mut num_threat_features = 0usize;
         let hidden_size: usize;
 
         match version {
@@ -1455,7 +1457,7 @@ impl NNUENet {
                 }
                 hidden_size = (h_numer / h_denom) as usize;
             }
-            7 | 8 => {
+            7 | 8 | 9 => {
                 let flags = read_u8(reader)?;
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
@@ -1463,9 +1465,13 @@ impl NNUENet {
                 bucketed_hidden = flags & 8 != 0; // output buckets baked into L1/L2
                 dual_l1 = flags & 16 != 0; // dual L1 activation (CReLU+SCReLU)
                 consensus_buckets = flags & 32 != 0; // consensus king bucket layout
+                has_threats = flags & 64 != 0; // v9 threat features
                 let ft_size = read_u16(reader)? as usize;
                 l1_size = read_u16(reader)? as usize;
                 l2_size = read_u16(reader)? as usize;
+                if has_threats {
+                    num_threat_features = read_u32(reader)? as usize;
+                }
                 hidden_size = ft_size;
             }
             _ => return Err(format!("unsupported NNUE version: {}", version)),
@@ -1478,6 +1484,21 @@ impl NNUENet {
         // Read input biases
         let mut input_biases = vec![0i16; hidden_size];
         read_i16_slice(reader, &mut input_biases)?;
+
+        // Read threat weights (v9): i8 [num_threat_features × hidden_size]
+        let mut threat_weights = Vec::new();
+        if has_threats && num_threat_features > 0 {
+            let total = num_threat_features * hidden_size;
+            threat_weights = vec![0i8; total];
+            let mut bytes = vec![0u8; total];
+            reader.read_exact(&mut bytes).map_err(|e| format!("read threat weights: {}", e))?;
+            for i in 0..total {
+                threat_weights[i] = bytes[i] as i8;
+            }
+            println!("info string Loaded {} threat features ({}×{}, {}MB)",
+                num_threat_features, num_threat_features, hidden_size,
+                total / (1024 * 1024));
+        }
 
         // Read L1 hidden layer weights (v7)
         // Bucketed: actual array sizes are BUCKETS * l1_size / BUCKETS * l2_size
@@ -1535,14 +1556,15 @@ impl NNUENet {
         let activation = if use_pairwise { "pairwise" } else if use_screlu { "SCReLU" } else { "CReLU" };
         let dual_str = if dual_l1 { " dual" } else { "" };
         let bucket_str = if consensus_buckets { " consensus-kb" } else { "" };
+        let threat_str = if has_threats { format!(" threats={}", num_threat_features) } else { String::new() };
         if l1_size > 0 {
             if l2_size > 0 {
-                println!("info string Loaded NNUE v{} {} {}{}{} (FT={} L1={} L2={})", version, source_name, activation, dual_str, bucket_str, hidden_size, l1_size, l2_size);
+                println!("info string Loaded NNUE v{} {} {}{}{}{} (FT={} L1={} L2={})", version, source_name, activation, dual_str, bucket_str, threat_str, hidden_size, l1_size, l2_size);
             } else {
-                println!("info string Loaded NNUE v{} {} {}{}{} (FT={} L1={})", version, source_name, activation, dual_str, bucket_str, hidden_size, l1_size);
+                println!("info string Loaded NNUE v{} {} {}{}{}{} (FT={} L1={})", version, source_name, activation, dual_str, bucket_str, threat_str, hidden_size, l1_size);
             }
         } else {
-            println!("info string Loaded NNUE v{} {} {}{} ({})", version, source_name, activation, bucket_str, hidden_size);
+            println!("info string Loaded NNUE v{} {} {}{}{} ({})", version, source_name, activation, bucket_str, threat_str, hidden_size);
         }
 
         // Transpose L1 weights for SIMD: [j*L1+i] → [i*H+j] per perspective
@@ -1664,9 +1686,9 @@ impl NNUENet {
             out_weights_f,
             out_bias_f,
             dual_l1,
-            threat_weights: Vec::new(),
-            num_threat_features: 0,
-            has_threats: false,
+            threat_weights,
+            num_threat_features,
+            has_threats,
             use_sparse_l1: std::sync::atomic::AtomicBool::new(false), // disabled: dense int8 is faster at H=1024
             has_avx2,
             has_avx512,

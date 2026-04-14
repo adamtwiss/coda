@@ -163,6 +163,7 @@ pub fn convert_v7(
     int16_hidden: bool,
     dual_l1: bool,
     consensus_buckets: bool,
+    num_threats: usize,
 ) -> Result<(), String> {
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
     let data_len = strip_footer(&data);
@@ -224,6 +225,18 @@ pub fn convert_v7(
     for i in 0..h {
         input_biases[i] = read_i16_le(&data, offset);
         offset += 2;
+    }
+
+    // Threat weights: [num_threats × H] i8 (v9)
+    let mut threat_weights = Vec::new();
+    if num_threats > 0 {
+        threat_weights = vec![0i8; num_threats * h];
+        for i in 0..num_threats * h {
+            threat_weights[i] = data[offset] as i8;
+            offset += 1;
+        }
+        println!("Read {} threat weights ({}×{}, {} bytes)",
+            num_threats * h, num_threats, h, num_threats * h);
     }
 
     // l1w: [l1_input][bl1] — i8 or i16
@@ -339,8 +352,8 @@ pub fn convert_v7(
 
     println!("Parsed {} bytes of {} (FT={})", offset, data.len(), h);
 
-    // Write .nnue — v8 for dual L1, v7 otherwise
-    let version = if dual_l1 { 8u32 } else { 7u32 };
+    // Write .nnue — v9 for threats, v8 for dual L1, v7 otherwise
+    let version = if num_threats > 0 { 9u32 } else if dual_l1 { 8u32 } else { 7u32 };
     let mut buf = Vec::new();
     write_u32_le(&mut buf, NNUE_MAGIC);
     write_u32_le(&mut buf, version);
@@ -354,14 +367,23 @@ pub fn convert_v7(
     if dual_l1 { flags |= 16; }
     // bit 5 = consensus king bucket layout (fine-near, coarse-far)
     if consensus_buckets { flags |= 32; }
+    // bit 6 = threat features present (v9)
+    if num_threats > 0 { flags |= 64; }
     buf.push(flags);
     write_u16_le(&mut buf, h as u16);       // FT size
     write_u16_le(&mut buf, l1_size as u16); // per-bucket L1 size
     write_u16_le(&mut buf, l2_size as u16); // per-bucket L2 size
+    if num_threats > 0 {
+        write_u32_le(&mut buf, num_threats as u32); // threat feature count
+    }
 
     // Write weights — hidden layers have bucketed dimensions
     for &w in &input_weights { write_i16_le(&mut buf, w); }
     for &b in &input_biases { write_i16_le(&mut buf, b); }
+    // Threat weights: i8 (written as raw bytes)
+    if num_threats > 0 {
+        for &w in &threat_weights { buf.push(w as u8); }
+    }
     for &w in &l1_weights { write_i16_le(&mut buf, w); } // [L1_input][BUCKETS*L1]
     for &b in &l1_biases { write_i16_le(&mut buf, b); }   // [BUCKETS*L1]
     if l2_size > 0 {
@@ -376,6 +398,7 @@ pub fn convert_v7(
         .map_err(|e| format!("write {}: {}", output_path, e))?;
 
     let dual_str = if dual_l1 { " dual" } else { "" };
-    println!("Saved {} ({} bytes, v{}{} FT={} L1={} L2={})", output_path, buf.len(), version, dual_str, h, l1_size, l2_size);
+    let threat_str = if num_threats > 0 { format!(" threats={}", num_threats) } else { String::new() };
+    println!("Saved {} ({} bytes, v{}{}{} FT={} L1={} L2={})", output_path, buf.len(), version, dual_str, threat_str, h, l1_size, l2_size);
     Ok(())
 }
