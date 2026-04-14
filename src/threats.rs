@@ -71,7 +71,7 @@ pub fn num_threat_features() -> usize {
 
 /// Colored piece index: 0=WP, 1=WN, 2=WB, 3=WR, 4=WQ, 5=WK, 6=BP, ..., 11=BK
 #[inline]
-fn colored_piece(color: Color, piece_type: u8) -> usize {
+pub fn colored_piece(color: Color, piece_type: u8) -> usize {
     color as usize * 6 + piece_type as usize
 }
 

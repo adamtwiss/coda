@@ -154,6 +154,12 @@ enum Commands {
         #[arg(long, short = 'c', default_value_t = 1_000_000)]
         count: usize,
     },
+    /// Dump threat features for a FEN position (for cross-checking with Bullet)
+    DumpThreats {
+        /// FEN string
+        #[arg(default_value = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")]
+        fen: String,
+    },
     /// Show statistics for a binpack file
     BinpackStats {
         /// Input binpack file
@@ -328,6 +334,65 @@ fn main() {
                 hash_mb: hash,
             };
             datagen::run_datagen(&config);
+        }
+
+        Some(Commands::DumpThreats { fen }) => {
+            let mut board = board::Board::new();
+            board.set_fen(&fen);
+            let occ = board.colors[0] | board.colors[1];
+            let piece_names = ["P", "N", "B", "R", "Q", "K"];
+            let color_names = ["w", "b"];
+            let sq_name = |sq: u32| -> String {
+                let file = (b'a' + (sq % 8) as u8) as char;
+                let rank = (b'1' + (sq / 8) as u8) as char;
+                format!("{}{}", file, rank)
+            };
+
+            for pov in [types::WHITE, types::BLACK] {
+                let king_sq = (board.pieces[types::KING as usize] & board.colors[pov as usize]).trailing_zeros();
+                let mirrored = (king_sq % 8) >= 4;
+                println!("# POV={} king={} mirrored={}", color_names[pov as usize], sq_name(king_sq), mirrored);
+
+                let mut features: Vec<(usize, String)> = Vec::new();
+                threats::enumerate_threats(
+                    &board.pieces, &board.colors, &board.mailbox,
+                    occ, pov, mirrored,
+                    |feat_idx| {
+                        features.push((feat_idx, String::new()));
+                    },
+                );
+
+                // Re-enumerate with detail for printing
+                let white_bb = board.colors[types::WHITE as usize];
+                for color in [types::WHITE, types::BLACK] {
+                    for pt in 0..6u8 {
+                        let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
+                        while bb != 0 {
+                            let sq = bb.trailing_zeros();
+                            bb &= bb - 1;
+                            let attacks = threats::piece_attacks_occ(pt, color, sq, occ);
+                            let mut attacked_occ = attacks & occ;
+                            while attacked_occ != 0 {
+                                let target_sq = attacked_occ.trailing_zeros();
+                                attacked_occ &= attacked_occ - 1;
+                                let victim_pt = board.mailbox[target_sq as usize];
+                                if victim_pt >= 6 { continue; }
+                                let victim_color = if white_bb & (1u64 << target_sq) != 0 { types::WHITE } else { types::BLACK };
+                                let cp = threats::colored_piece(color, pt);
+                                let vcp = threats::colored_piece(victim_color, victim_pt);
+                                let idx = threats::threat_index(cp, sq, vcp, target_sq, mirrored, pov);
+                                if idx >= 0 {
+                                    println!("{} {}{}({}) {} {}{}({}) → index {}",
+                                        color_names[color as usize], piece_names[pt as usize], sq_name(sq), cp,
+                                        color_names[victim_color as usize], piece_names[victim_pt as usize], sq_name(target_sq), vcp,
+                                        idx);
+                                }
+                            }
+                        }
+                    }
+                }
+                println!();
+            }
         }
 
         Some(Commands::BinpackStats { input }) => {
