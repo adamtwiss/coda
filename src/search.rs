@@ -44,29 +44,29 @@ macro_rules! tunables {
 }
 
 tunables!(
-    // 5-fix retune #351 (1000 iters, seeded from #348)
+    // Bundle-3 retune #353 (1000 iters)
     (NMP_BASE_R,         4,    2,    8),
     (NMP_DEPTH_DIV,      3,    1,    6),
-    (NMP_EVAL_DIV,     141,  100,  400),
+    (NMP_EVAL_DIV,     140,  100,  400),
     (NMP_EVAL_MAX,       3,    1,    6),
     (NMP_VERIFY_DEPTH,  11,    8,   20),
     // RFP
     (RFP_DEPTH,          7,    2,   12),
-    (RFP_MARGIN_IMP,    81,   30,  150),
-    (RFP_MARGIN_NOIMP, 131,   50,  200),
+    (RFP_MARGIN_IMP,    78,   30,  150),
+    (RFP_MARGIN_NOIMP, 136,   50,  200),
     // Futility
-    (FUT_BASE,         100,   20,  200),
-    (FUT_PER_DEPTH,    154,   40,  250),
+    (FUT_BASE,         104,   20,  200),
+    (FUT_PER_DEPTH,    157,   40,  250),
     // History pruning
     (HIST_PRUNE_DEPTH,   3,    1,    8),
-    (HIST_PRUNE_MULT, 7923,  500, 50000),
+    (HIST_PRUNE_MULT, 7882,  500, 50000),
     // SEE pruning
-    (SEE_QUIET_MULT,   25,    5,   80),
-    (SEE_CAP_MULT,    137,   30,  200),
+    (SEE_QUIET_MULT,   26,    5,   80),
+    (SEE_CAP_MULT,    138,   30,  200),
     // LMR
-    (LMR_HIST_DIV,   6515, 2000, 100000),
-    (LMR_C_QUIET,     144,   80,  300),
-    (LMR_C_CAP,       150,  100,  350),
+    (LMR_HIST_DIV,   6517, 2000, 100000),
+    (LMR_C_QUIET,     140,   80,  300),
+    (LMR_C_CAP,       144,  100,  350),
     // Singular extensions
     (SE_DEPTH,           5,    4,   12),
     // Aspiration windows
@@ -98,8 +98,8 @@ tunables!(
     // Fail-high blend
     (FH_BLEND_DEPTH,     1,    1,    8),
     // History bonus
-    (HIST_BONUS_MULT,  237,   50,  400),
-    (HIST_BONUS_BASE,   39,    0,  200),
+    (HIST_BONUS_MULT,  243,   50,  400),
+    (HIST_BONUS_BASE,   35,    0,  200),
     (HIST_BONUS_MAX,  1750,  500, 3000),
     // Capture history bonus
     (CAP_HIST_MULT,    215,   50,  400),
@@ -111,11 +111,11 @@ tunables!(
     // Quiet check bonus
     (QUIET_CHECK_BONUS, 10918, 2000, 30000),
     // LMR complexity
-    (LMR_COMPLEXITY_DIV, 115, 30, 500),
+    (LMR_COMPLEXITY_DIV, 123, 30, 500),
     // Contempt
     (CONTEMPT_VAL,       11,    0,   50),
     // Correction history divisor
-    (CORR_HIST_DIV,     852,  256, 4096),
+    (CORR_HIST_DIV,     841,  256, 4096),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -1458,6 +1458,10 @@ fn negamax(
     } else {
         ((their_pawns & !0x8080808080808080u64) >> 7) | ((their_pawns & !0x0101010101010101u64) >> 9)
     };
+    // Opponent pawn threats on our non-pawn pieces (for RFP threat guard)
+    let our_non_pawns = board.colors[board.side_to_move as usize]
+        & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+    let has_pawn_threats = (enemy_attacks & our_non_pawns) != 0;
 
     // Clear PV for this node
     if ply_u <= MAX_PLY {
@@ -1489,7 +1493,9 @@ fn negamax(
     // This prevents us from playing INTO repetitions when we have an advantage.
     if ply > 0 {
         let contempt = tp(&CONTEMPT_VAL);
-        let draw_score = if board.side_to_move == info.root_stm { -contempt } else { contempt };
+        // Jitter draw score by ±2 to break ties between draw paths (Koivisto pattern)
+        let jitter = 2 - (info.nodes & 3) as i32; // range: -1 to +2
+        let draw_score = if board.side_to_move == info.root_stm { -contempt + jitter } else { contempt + jitter };
         if board.halfmove >= 100 {
             return draw_score;
         }
@@ -1852,7 +1858,9 @@ fn negamax(
             && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
             && move_flags(tt_move) != FLAG_EN_PASSANT;
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
-            let margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
+            if has_pawn_threats { margin += margin / 3; }
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
@@ -2142,9 +2150,11 @@ fn negamax(
             && FEAT_FUTILITY.load(Ordering::Relaxed)
             && lmr_d <= 10
         {
-            let hist_adj = info.history.main_score(from, to, enemy_attacks) / 128;
+            let main_hist = info.history.main_score(from, to, enemy_attacks);
+            let hist_adj = main_hist / 128;
             let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj;
-            if futility_value <= alpha {
+            // Don't futility-prune moves with very strong history (Igel pattern)
+            if futility_value <= alpha && main_hist < 12000 {
                 info.stats.futility_prunes += 1;
                 continue;
             }
