@@ -392,4 +392,71 @@ mod tests {
         assert!(count > 0, "Should have some threats in startpos");
         assert!(count < 200, "Shouldn't have too many threats in startpos");
     }
+
+    #[test]
+    fn test_bench_threat_enumeration() {
+        crate::init();
+
+        // Test positions: startpos + several middlegame/endgame positions
+        let fens = [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            "2r3k1/pp3ppp/2n1b3/3pP3/3P4/2NB4/PP3PPP/R4RK1 w - - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        ];
+
+        let mut total_threats = 0usize;
+        let mut total_positions = 0usize;
+
+        for fen in &fens {
+            let mut board = crate::board::Board::new();
+            board.set_fen(fen);
+            let occ = board.colors[0] | board.colors[1];
+            let king_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
+            let mirrored = (king_sq % 8) >= 4;
+
+            let mut count = 0;
+            enumerate_threats(
+                &board.pieces, &board.colors, &board.mailbox,
+                occ, WHITE, mirrored,
+                |_idx| { count += 1; },
+            );
+            eprintln!("  {} → {} threats", fen, count);
+            total_threats += count;
+            total_positions += 1;
+        }
+
+        eprintln!("Average threats per position: {}", total_threats / total_positions);
+
+        // Benchmark: enumerate threats 100K times on the complex middlegame position
+        let mut board = crate::board::Board::new();
+        board.set_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        let occ = board.colors[0] | board.colors[1];
+        let king_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
+        let mirrored = (king_sq % 8) >= 4;
+
+        let iterations = 100_000;
+        let start = std::time::Instant::now();
+        let mut total = 0usize;
+        for _ in 0..iterations {
+            enumerate_threats(
+                &board.pieces, &board.colors, &board.mailbox,
+                occ, WHITE, mirrored,
+                |_idx| { total += 1; },
+            );
+        }
+        let elapsed = start.elapsed();
+        let per_call_ns = elapsed.as_nanos() / iterations as u128;
+        let calls_per_sec = if elapsed.as_secs_f64() > 0.0 {
+            iterations as f64 / elapsed.as_secs_f64()
+        } else { 0.0 };
+        eprintln!("Threat enumeration benchmark (kiwipete, {}x):", iterations);
+        eprintln!("  Total time: {:?}", elapsed);
+        eprintln!("  Per call: {} ns ({:.0} K calls/sec)", per_call_ns, calls_per_sec / 1000.0);
+        eprintln!("  Threats per call: {}", total / iterations);
+
+        // Sanity: should complete in reasonable time
+        assert!(elapsed.as_secs() < 10, "Benchmark took too long: {:?}", elapsed);
+    }
 }

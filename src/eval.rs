@@ -183,11 +183,12 @@ pub fn evaluate_nnue(
     acc: &mut crate::nnue::NNUEAccumulator,
 ) -> i32 {
     acc.materialize(net, board);
+    // Full recompute threats every eval (Phase 2a — no incremental updates yet)
+    if net.has_threats {
+        acc.recompute_threats(net, board);
+    }
     let pc = crate::nnue::piece_count(board);
     let score = net.forward(acc, board.side_to_move, pc);
-
-    // Accumulator verified correct: zero mismatches across 3 positions at depth 10
-    // checking every eval. Lazy updates match full recomputes perfectly.
 
     score
 }

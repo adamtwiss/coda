@@ -1386,6 +1386,10 @@ pub struct NNUENet {
     pub out_weights_f: Vec<f32>,  // [NNUE_OUTPUT_BUCKETS × out_l_size] — float output
     pub out_bias_f: Vec<f32>,     // [NNUE_OUTPUT_BUCKETS]
     pub dual_l1: bool,            // v8: dual L1 activation (CReLU+SCReLU on L1 output)
+    // v9 threat features
+    pub threat_weights: Vec<i8>,  // [num_threat_features × hidden_size] i8 weights
+    pub num_threat_features: usize,
+    pub has_threats: bool,
     pub use_sparse_l1: std::sync::atomic::AtomicBool, // feature flag: sparse L1 matmul
     pub has_avx2: bool,
     pub has_avx512: bool,
@@ -1660,6 +1664,9 @@ impl NNUENet {
             out_weights_f,
             out_bias_f,
             dual_l1,
+            threat_weights: Vec::new(),
+            num_threat_features: 0,
+            has_threats: false,
             use_sparse_l1: std::sync::atomic::AtomicBool::new(false), // disabled: dense int8 is faster at H=1024
             has_avx2,
             has_avx512,
@@ -2314,10 +2321,28 @@ impl NNUENet {
         let h = self.hidden_size;
         let out_w = self.output_weight_row(bucket);
 
-        let (stm_acc, ntm_acc) = if stm == WHITE {
+        let (stm_acc_raw, ntm_acc_raw) = if stm == WHITE {
             (acc.white(), acc.black())
         } else {
             (acc.black(), acc.white())
+        };
+
+        // If threats are present, combine PSQ + threat accumulators
+        let mut stm_combined = [0i16; 4096]; // max accumulator size
+        let mut ntm_combined = [0i16; 4096];
+        let (stm_acc, ntm_acc) = if self.has_threats && acc.current().threat_computed {
+            let (t_stm, t_ntm) = if stm == WHITE {
+                (&acc.current().threat_white, &acc.current().threat_black)
+            } else {
+                (&acc.current().threat_black, &acc.current().threat_white)
+            };
+            for i in 0..h {
+                stm_combined[i] = stm_acc_raw[i].saturating_add(t_stm[i]);
+                ntm_combined[i] = ntm_acc_raw[i].saturating_add(t_ntm[i]);
+            }
+            (&stm_combined[..h], &ntm_combined[..h])
+        } else {
+            (stm_acc_raw, ntm_acc_raw)
         };
 
         let mut output = self.output_bias[bucket] as i64;
@@ -2548,6 +2573,10 @@ pub struct AccEntry {
     pub black: Vec<i16>,
     computed: bool,
     dirty: DirtyPiece,
+    // Threat accumulator (v9): separate i16 values summed with PSQ at activation
+    pub threat_white: Vec<i16>,
+    pub threat_black: Vec<i16>,
+    threat_computed: bool,
 }
 
 /// Finny table entry: cached accumulator for a specific king bucket.
@@ -2577,6 +2606,9 @@ impl NNUEAccumulator {
                 black: vec![0; hidden_size],
                 computed: false,
                 dirty: DirtyPiece::recompute(),
+                threat_white: Vec::new(), // allocated on first use if net has threats
+                threat_black: Vec::new(),
+                threat_computed: false,
             });
         }
         // Build finny table (flat array)
@@ -2642,6 +2674,58 @@ impl NNUEAccumulator {
         self.stack[self.top].computed = true;
     }
 
+    /// Compute threat accumulator from scratch for both perspectives.
+    /// Full recompute: iterates all pieces, computes attacks, adds i8 weight rows.
+    pub fn recompute_threats(&mut self, net: &NNUENet, board: &crate::board::Board) {
+        if !net.has_threats { return; }
+        let h = self.hidden_size;
+        let entry = &mut self.stack[self.top];
+
+        // Allocate threat vectors if needed
+        if entry.threat_white.len() < h {
+            entry.threat_white.resize(h, 0);
+            entry.threat_black.resize(h, 0);
+        }
+
+        let occ = board.colors[0] | board.colors[1];
+
+        // White perspective
+        entry.threat_white[..h].fill(0); // threats have no bias
+        let wk_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
+        let w_mirrored = (wk_sq % 8) >= 4;
+        crate::threats::enumerate_threats(
+            &board.pieces, &board.colors, &board.mailbox,
+            occ, WHITE, w_mirrored,
+            |feat_idx| {
+                if feat_idx < net.num_threat_features {
+                    let w_off = feat_idx * h;
+                    for j in 0..h {
+                        entry.threat_white[j] += net.threat_weights[w_off + j] as i16;
+                    }
+                }
+            },
+        );
+
+        // Black perspective
+        entry.threat_black[..h].fill(0);
+        let bk_sq = (board.pieces[KING as usize] & board.colors[BLACK as usize]).trailing_zeros();
+        let b_mirrored = (bk_sq % 8) >= 4;
+        crate::threats::enumerate_threats(
+            &board.pieces, &board.colors, &board.mailbox,
+            occ, BLACK, b_mirrored,
+            |feat_idx| {
+                if feat_idx < net.num_threat_features {
+                    let w_off = feat_idx * h;
+                    for j in 0..h {
+                        entry.threat_black[j] += net.threat_weights[w_off + j] as i16;
+                    }
+                }
+            },
+        );
+
+        entry.threat_computed = true;
+    }
+
     /// Push: store dirty info, don't compute yet.
     pub fn push(&mut self, dirty: DirtyPiece) {
         self.top += 1;
@@ -2651,6 +2735,9 @@ impl NNUEAccumulator {
                 black: vec![0; self.hidden_size],
                 computed: false,
                 dirty: DirtyPiece::recompute(),
+                threat_white: Vec::new(),
+                threat_black: Vec::new(),
+                threat_computed: false,
             });
         }
         self.stack[self.top].computed = false;
