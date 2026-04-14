@@ -6,11 +6,12 @@ and experiment plan.
 
 ## Architecture Options
 
-### Option A: Velvet-Style (simplest, proven +100-200 Elo above us)
+### Option A: Velvet-Style (reference architecture)
 
 **768 → 1 (single output, no hidden layers, 32 king buckets, CReLU)**
 
-Velvet is +100-200 Elo above Coda with this simple architecture:
+Velvet uses this simple architecture and is ~50 Elo above Coda (gap closed from
+100-200 after our training improvements: pow2.5 loss, data filtering, low final LR):
 - 768 FT width, CReLU activation
 - 32 king buckets (vs our 16) — more positional granularity
 - **1 output bucket** (no material-count bucketing)
@@ -21,9 +22,6 @@ Note: early check-net analysis suggested output bucketing broke piece value
 ordering, but this was a misleading metric (sigmoid saturation — see Known
 Issues section). Output buckets are standard and used by most top engines.
 32 king buckets provide more positional granularity.
-
-This is the **recommended first step** — a well-trained Velvet-style net on our
-infrastructure, before attempting hidden layers.
 
 ### Option B: Single Hidden Layer (stepping stone to v7)
 
@@ -61,11 +59,11 @@ Input: HalfKA 768 features (12 pieces × 64 squares) per king bucket
 | Stormphrax | 128+ | Yes | SCReLU | 16 | 32 | 1×8 | int8 | float | 60K threat features |
 | **Velvet** | 768 | No | CReLU | — | — | **1** | — | — | 32 king buckets |
 | **Coda v5 (current)** | 768pw | Yes | CReLU→pairwise | — | — | 1×8 | — | — | 16 king buckets |
-| **Coda v7 (target)** | 768pw | Yes | CReLU→pairwise | 16 | 32 | 1×8 | int8 | float | None |
+| **Coda v7** | 768pw | Yes | CReLU→pairwise | 16 | 32 | 1×8 | int8 | float | None |
+| **Coda v8 (target)** | 768pw | Yes | CReLU→pairwise | 16 | 32 | 1×8 | int8 | float | Dual L1 activation |
 
-**Note**: Velvet is +100-200 Elo above us with NO hidden layers, NO output buckets,
-and simpler move ordering. This suggests net quality and training matter more than
-architecture complexity at our level.
+**Note**: Velvet is ~50 Elo above us (down from 100-200 after pow2.5, filtering, low LR
+improvements). The remaining gap is likely king bucket layout + training data quality.
 
 ### FT→L1 Packing: Consensus Analysis (2026-04-13)
 
@@ -107,7 +105,7 @@ fine — that's where top engines use it.
 
 - **SCReLU dominates CReLU** on hidden layers — worth ~50% network size increase
 - **Pairwise multiplication** halves FT width before L1, making hidden layers practical
-- **Sparse L1 matmul** is essential — with ~70% block-sparsity, effective L1 cost is ~0.3× dense
+- **Sparse L1 matmul** — theoretically ~0.3× dense cost at 70% sparsity, but **not beneficial for 768pw** (see below)
 - **Float for L2/L3** — too small for quantization to be worthwhile, avoids precision loss
 - **Hard-Swish on L1** gained +14 Elo over SCReLU in Viridithas (but needs L1 activation regularization to maintain sparsity)
 - **SwiGLU on L2** gained +5.5 Elo on top of Hard-Swish in Viridithas
@@ -118,43 +116,47 @@ fine — that's where top engines use it.
 
 ### What We Have
 - v7 inference code: FT→16→32→1×8, SCReLU, int8 L1, float L2+
+- v8 dual L1 activation: CReLU+SCReLU on L1 output, doubles L2 input (implemented 2026-04-14)
 - AVX2 and NEON SIMD for all paths
-- Bullet training configs for v7_1024h16x32s and v7_768pw_h16x32
-- Converter: `coda convert-bullet`
+- Bullet training configs for v7 and v8 (dual)
+- Converter: `coda convert-bullet` (supports `-dual` flag for v8)
 - Check-net diagnostic tool
+- Sparsity benchmarking tool (`--sparsity` flag on bench)
 
-### Coda v7 vs Top Engine Consensus (2026-04-13)
+### Coda vs Top Engine Consensus (updated 2026-04-14)
 
-| Feature | Coda v7 (current) | Consensus | Status |
-|---------|-------------------|-----------|--------|
+| Feature | Coda (current) | Consensus | Status |
+|---------|----------------|-----------|--------|
 | FT width | 768×16 → 1536 | 640-2560 | ✓ Match |
 | FT activation | CReLU → pairwise | CReLU → pairwise | ✓ Match |
 | FT shift | >>9 | >>9 | ✓ Match |
-| King buckets | 16 | 8-32 | ✓ Match |
+| King buckets | 16 (uniform) | 16 (**fine-near, coarse-far**) | ✗ Wrong layout |
 | L1 size | 16 | 16 (most) | ✓ Match |
 | L1 quant | i8 QB=64 | i8 QB=64 | ✓ Match |
-| L1 matmul | Dense VPMADDUBSW | **Sparse** + NNZ | ✗ Missing |
-| L1 activation | SCReLU | **Dual** (CReLU+SCReLU) | ✗ Single only |
+| L1 matmul | Dense VPMADDUBSW | Sparse + NNZ | ✗ N/A for 768pw |
+| L1 activation | SCReLU (v7) / Dual (v8) | **Dual** (CReLU+SCReLU) | ✓ v8 matches |
 | L2 size | 32 | 32 | ✓ Match |
 | L2 precision | float | float (most) | ✓ Match |
 | L2 activation | SCReLU | SCReLU / squared CReLU | ✓ Close |
 | Output buckets | 8 | 8 | ✓ Match |
 | Threat features | None | **60K-80K** (4/5 engines) | ✗ Missing |
-| L1 activation reg | None | L1-norm penalty | ✗ Missing |
-| Factoriser | None | Mixed | ✓ OK |
+| Factoriser | None | Mixed (kills v7 hidden layers) | ✓ Correctly omitted |
 
-### v7 Roadmap (priority order)
+### v7/v8 Roadmap (updated 2026-04-14)
 
-1. **Eval quality** — s400 training with pow2.5 loss, filtering, low final LR, WDL (running)
-2. **Sparse L1 matmul** — code exists (`find_nnz_chunks` + `simd_l1_int8_dot_sparse`), needs wiring into pairwise path. ~30-50% L1 speedup.
-3. **Dual L1 activation** — CReLU+SCReLU concatenated, doubles L2 input (16→32) for free. Training config + inference change. 4/5 engines have this.
-4. **L1 activation regularisation** — L1-norm penalty on FT outputs drives sparsity for sparse matmul. Training-side only.
-5. **Threat features** — 60K-80K extra input features. Major training + inference work. Biggest architectural gap vs top engines.
-6. **Multi-neuron SIMD** — compute all 16 L1 neurons in one pass instead of 32 separate dot products. Reduces memory loads.
-7. **VNNI/DPBUSD** — single-instruction VPMADDUBSW+VPMADDWD on newer CPUs. Runtime detection.
+1. ~~**Eval quality**~~ ✅ Done — pow2.5 loss, filtering, low final LR all applied. WDL sweep (w10-w30) shows w10-w15 optimal (RR in progress).
+2. ~~**Dual L1 activation**~~ ✅ Implemented — v8 format with CReLU+SCReLU on L1 output. Training on GPU5.
+3. **King bucket layout** — switch from uniform 4×4 to consensus fine-near/coarse-far. +5-15 Elo expected. Requires retraining only.
+4. **Threat features** — 60K-80K extra input features. Major training + inference work. Biggest architectural gap vs top engines.
+5. **Multi-neuron SIMD** — compute all 16 L1 neurons in one pass instead of 32 separate dot products. Reduces memory loads.
+6. **VNNI/DPBUSD** — single-instruction VPMADDUBSW+VPMADDWD on newer CPUs. Runtime detection.
 
-**Current NPS**: ~600K (2× slower than v5 at 1.3M). Sparse L1 should close to ~1.5×.
-**Target**: v7 eval quality must be 40-50+ Elo better per-node than v5 to compensate for NPS gap.
+~~**Sparse L1 matmul**~~ — **Not beneficial for 768pw.** Benchmarking (2026-04-14) showed 768pw nets have 89% natural sparsity, but the input dimension (384) is too small for NNZ chunk skipping to pay off — dense and sparse kernels give identical NPS. Only relevant for larger FT widths (1024+).
+
+~~**L1 activation regularisation**~~ — **Not needed.** Natural sparsity is already 89% for 768pw, and sparse L1 doesn't help anyway. Lambda=0.001 collapsed hidden layers; lambda=0.0001 also failed. Shelved.
+
+**Current NPS**: v7/v8 ~280K vs v5 ~600K (2× slower, consistent with other engines).
+**Target**: v7/v8 eval quality must be ~70+ Elo better per-node than v5 to compensate for NPS gap.
 
 ### Known Issues
 
@@ -220,8 +222,9 @@ The `v7_768pw_h16x32.rs` config uses `.relu()` on hidden layers instead of `.scr
 | v5_768pw.rs | 768pw | None | CReLU→pairwise | Production |
 | v5_1024s.rs | 1024 | None | SCReLU | Working |
 | v7_1024h16x32s.rs | 1024 | 16→32 | SCReLU | Has factoriser (broken) |
-| v7_768pw_h16x32.rs | 768pw | 16→32 | CReLU+ReLU | Has factoriser (broken) |
-| v7_1024h16x32s_gochess_style.rs | 1024 | 16→32 | SCReLU | **No factoriser — WORKS** |
+| v7_768pw_h16x32.rs | 768pw | 16→32 | CReLU→pw+SCReLU | **Working** (no factoriser) |
+| v7_1024h16x32s_gochess_style.rs | 1024 | 16→32 | SCReLU | No factoriser — works |
+| **v8_768pw_h16x32_dual.rs** | 768pw | 16→dual(32)→32 | CReLU→pw + dual L1 | **New** — training on GPU5 |
 
 ### Training Infrastructure
 - **Bullet GPU trainer** (Rust, CUDA)
@@ -237,33 +240,29 @@ The `v7_768pw_h16x32.rs` config uses `.relu()` on hidden layers instead of `.scr
 - **Position filter**: ply≥16, no checks, no captures, no tactical moves (+22-48 Elo)
 - **LR**: 0.001 peak, cosine decay to **5e-6** (was 1e-4 — **+47 Elo from fix**)
 - **Warmup**: 20 SB linear ramp (0.0001 → 0.001) — essential for v7 hidden layers
+- **Loss**: power-2.5 (`output.sigmoid().power_error(target, 2.5)`) — proven gain over MSE
 - **WDL for v5**: 0.07 (pure score works for v5's 12M FT params)
-- **WDL for v7**: **0.4** (Viridithas uses this — hidden layers need game outcome signal)
-- **Optimizer**: AdamW with stricter clipping (0.99) for FT/factoriser weights
+- **WDL for v7/v8**: **0.10-0.15** (RR in progress, w10-w15 leading; w40 was Viridithas recommendation but our data shows lower is better for our architecture)
+- **Optimizer**: AdamW with stricter clipping (0.99) for FT weights. **No factoriser** (kills v7 hidden layers).
 - **Training length**: 400 SBs is the sweet spot (Viridithas finding). 800 gives marginal +1-2 Elo.
 
-### Training Improvements Roadmap (from Viridithas research, 2026-04-12)
+### Training Improvements Roadmap (updated 2026-04-14)
 
 | Change | Expected Impact | Effort | Status |
 |--------|----------------|--------|--------|
 | Low final LR (5e-6) | **+47 Elo (proven)** | Config change | ✅ Done |
 | Position filtering | **+22-48 Elo (proven)** | Config change | ✅ Done |
-| WDL 0.4 for v7 | +10-20 Elo | Config change | Training overnight |
-| Power loss 2.5 | +16-24 Elo (Cosmo) | 1-line config change | Not yet tried |
-| Fresh self-play data | +37 Elo (Viridithas "stalker") | Datagen run | Generating on Titan |
+| Power loss 2.5 | **+16-24 Elo (proven)** | Config change | ✅ Done |
+| WDL 0.10-0.15 for v7/v8 | Best WDL for hidden layers | Config change | ✅ RR in progress, w10-w15 leading |
+| King bucket layout | **+5-15 Elo (estimated)** | Config + inference change | Planned (see King Bucket Analysis) |
+| v8 dual L1 activation | Unknown, consensus feature | Config + inference change | ✅ Training on GPU5 |
+| Fresh self-play data | +37 Elo (Viridithas "stalker") | Datagen run | Not yet started |
 | AdamW beta1=0.95 | +4 Elo | 1-line config change | Not yet tried |
-| L1 activation regularization | Unknown but positive | May need custom code | Not yet tried |
 
-Power loss is available in Bullet:
-```rust
-// One-line change from MSE to power-2.5:
-.loss_fn(|output, target| output.sigmoid().power_error(target, 2.5))
-```
+## Velvet Trainer Findings (2026-04-06, updated 2026-04-14)
 
-## Velvet Trainer Findings (2026-04-06)
-
-Velvet (+100-200 Elo above us) uses a **custom PyTorch trainer**, not Bullet.
-Key differences that likely contribute to their net quality:
+Velvet (~50 Elo above us after our training improvements) uses a **custom PyTorch
+trainer**, not Bullet. Key differences that likely contribute to remaining gap:
 
 1. **Power-2.6 loss** (not MSE) — penalizes large errors more. Cosmo found +16-24 Elo.
 2. **Patience-based LR decay** — starts 0.001, ×0.4 on plateau, patience halves each time.
@@ -280,23 +279,21 @@ Key differences that likely contribute to their net quality:
 - Batch size 32K: change batch_size param
 - Score filter tightening: Velvet scores are self-play (capped), not LC0 (uncapped)
 
-### v7 Training Failure (2026-04-06)
-All three 768pw v7 experiments (A, C, E) produced **completely collapsed nets**:
-- Exp A (SCReLU baseline): all scores ≈ -6409 (dead hidden layers)
-- Exp C (lower final LR): all scores = 0 (zero output)
-- Exp E (position weighting): all scores ≈ -38403 (diverged)
+### v7 Training Failure (2026-04-06) — RESOLVED
 
-Raw weight analysis of Exp A quantised.bin: FT weights ±11 (should be ±100-300),
-output layer weights exploded to 10³¹. Classic gradient instability: output layer
-gets huge gradients, FT gets vanishing gradients through hidden layer bottleneck.
+All three 768pw v7 experiments (A, C, E) produced completely collapsed nets.
+**Root cause: the factoriser** (`l0f` weight sharing). Removing it fixed the issue.
+768pw + hidden layers now trains successfully (see Known Issues #2).
 
-**The 768pw + hidden layers combination doesn't train in our Bullet pipeline.**
-Previous 1024h (non-pairwise) models worked — the pairwise→hidden path is the
-specific failure mode. The CReLU→pairwise creates a gradient bottleneck that
-prevents the FT from learning while the output explodes.
+Current working 768pw v7/v8 configs use `new_affine` (no factoriser), SCReLU on
+hidden layers, i8 L1 at QA=64, float L2. Multiple healthy nets produced at s100
+and s400.
 
-**Revised strategy**: Focus on Velvet-style v5 improvements (32 king buckets,
-training quality) before attempting hidden layers.
+**Note:** Alexandria uses the factoriser successfully with hidden layers, so the
+issue may be specific to our config (e.g., `init_with_effective_input_size(32)`,
+interaction with our LR/warmup schedule, or pairwise-specific gradient dynamics).
+Worth revisiting once the basic v8 architecture is proven — the factoriser should
+help king bucket generalisation.
 
 ### Power-2.6 Loss Failure (2026-04-06)
 Experiments G, H, I all collapsed with power-2.6 loss — scores of 44M.
@@ -376,8 +373,10 @@ Only exp L (exact production copy with 1 line changed) produced a healthy model.
 - Overfitting unlikely with billions of positions and small nets.
 
 **Inference:**
-- Sparse L1 matmul with ~70% block-sparsity cuts L1 cost to ~0.3×.
-- L1 activation regularization during training drives sparsity.
+- Sparse L1 matmul with ~70% block-sparsity theoretically cuts L1 cost to ~0.3×.
+  **However**, benchmarking (2026-04-14) showed this does not help for 768pw: natural
+  sparsity is already 89% but the input dimension (384 per perspective) is too small
+  for NNZ chunk skipping to offset the tracking overhead. Only relevant for 1024+ FT.
 - `VPMADDUBSW` (u8×i8→i16) is the workhorse instruction for L1.
 - Finny tables, lazy accumulators, fused updates all critical for NPS.
 
@@ -439,15 +438,16 @@ The hidden layers simply didn't learn position-dependent features during trainin
   provides cleaner gradients: "this side won" is unambiguous vs "search scored
   this +247 or maybe +198 depending on depth."
 
-### Fix: Train with w=0.4 WDL
+### WDL Findings (2026-04-14)
 
-Next v7 training run should use `--wdl 0.4` (matching Viridithas). Config
-`v7_1024h16x32s.rs` is ready. Everything else stays the same:
-- 1024 SCReLU, L1=16, L2=32
-- Filtering (quiet positions)
-- Low final LR (5e-6 or Bullet formula)
-- Warmup 20 SBs
-- e800, 12 T80 files
+Initial hypothesis was w=0.4 (Viridithas recommendation). Actual RR testing of
+w0/w10/w15/w20/w25/w30 on 768pw v7 s100 nets shows **w10-w15 optimal** for our
+architecture. w30 was weakest. The difference is small (~20 Elo spread across all
+WDL values) so this is not critical, but w10-w15 is the recommended default.
+
+This contradicts the Viridithas recommendation (w=0.4) but is consistent with our
+v5 finding (w7 production). Our pairwise architecture may benefit less from WDL
+signal than Viridithas's 2560-width non-pairwise architecture.
 
 ### Bugs Fixed During Investigation
 
@@ -508,10 +508,12 @@ const BUCKET_LAYOUT: [usize; 32] = [
 - **Expected gain**: +5-15 Elo based on the mismatch between Coda's uniform layout
   and the consensus. The gain comes from better positional granularity in the opening
   and middlegame (ranks 1-2) without wasting parameters on rare king positions.
-- **Factoriser recommended** — when retraining with the new layout, use Bullet's
-  built-in factoriser (`l0f` weight). This helps the net learn shared features across
-  buckets, especially important with limited training data. Already used by
-  Alexandria and available in our Bullet configs.
+- **Factoriser may help** — Alexandria uses `l0f` weight sharing successfully with
+  hidden layers. Our earlier attempt broke training, but likely due to
+  `init_with_effective_input_size(32)` or interaction with our specific config. Worth
+  retesting carefully with the new layout — the factoriser helps share features across
+  buckets, which is more important with non-uniform layouts where some buckets see
+  much less training data.
 
 ### Key Insights
 
@@ -527,15 +529,17 @@ const BUCKET_LAYOUT: [usize; 32] = [
 
 1. ~~Is the piece value ordering a v5 problem too?~~ RESOLVED — check-net methodology was misleading (sigmoid saturation).
 2. ~~Is it a data distribution issue?~~ RESOLVED — same root cause as above.
-3. ~~**Is eval_scale=400 correct?**~~ RESOLVED — eval_scale=400 is correct for all nets. Clipped eval RMS matches across nets. The apparent scale differences were from tails, not the search-relevant range.
-4. ~~**Is the score filter (10000) too loose?**~~ RESOLVED — standard filtering (ply≥16, no checks, no captures, no tactical) gives +22-48 Elo.
-5. **Are 8 output buckets by material count optimal?** Berserk uses 1 bucket successfully.
-6. **Are 16 king buckets right?** Obsidian uses 13, Reckless 10. Different granularity.
-7. **Do we need threat features?** Reckless, Halogen, Stormphrax all use them. Biggest architectural gap.
-8. **Should we try power-2.5 loss?** +16-24 Elo in Cosmo's testing.
-9. **Should we try beta1=0.95?** +4 Elo in Motor.
-10. **Is suicide-chess data generation viable?** Natural material-imbalance positions via forced-capture self-play.
-11. **v7 with w=0.4 WDL**: Will this produce viable hidden layers? GPU4 training queued.
+3. ~~**Is eval_scale=400 correct?**~~ RESOLVED — eval_scale=400 is correct for all nets.
+4. ~~**Is the score filter (10000) too loose?**~~ RESOLVED — standard filtering gives +22-48 Elo.
+5. ~~**Should we try power-2.5 loss?**~~ RESOLVED — ✅ Done, proven gain.
+6. ~~**Are 16 king buckets right?**~~ RESOLVED — 16 is correct, but layout should be fine-near/coarse-far (see King Bucket Analysis).
+7. ~~**v7 with high WDL?**~~ RESOLVED — RR shows w10-w15 optimal for our architecture, not w40.
+8. ~~**Sparse L1 for NPS?**~~ RESOLVED — not beneficial for 768pw (89% natural sparsity, input too small for chunk skipping).
+9. **Are 8 output buckets by material count optimal?** Berserk uses 1 bucket successfully.
+10. **Do we need threat features?** Reckless, Halogen, Stormphrax all use them. Biggest architectural gap.
+11. **Should we try beta1=0.95?** +4 Elo in Motor.
+12. **Why did the factoriser break our v7 training?** Alexandria uses it successfully. Likely our specific config, not a fundamental incompatibility.
+13. **Can v8 dual L1 close the v5-v7 eval quality gap?** Training on GPU5.
 
 ## Experiment Plan
 
