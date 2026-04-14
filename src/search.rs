@@ -1112,7 +1112,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         }
 
         info.soft_limit = soft;
-        info.hard_limit = hard.max(soft);
+        // Ensure hard >= soft (but soft is also capped by max_hard for movestogo safety)
+        if soft > hard { soft = hard; }
+        info.hard_limit = hard;
         info.time_limit = hard.max(soft); // search uses hard as absolute limit
         info.tm_has_data = false;
         info.tm_best_stable = 0;
@@ -1777,6 +1779,7 @@ fn negamax(
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
     if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
+        && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && FEAT_NMP.load(Ordering::Relaxed)
     {
@@ -1900,9 +1903,12 @@ fn negamax(
 
             if score >= probcut_beta {
                 info.stats.probcut_cutoffs += 1;
-                // Store in TT as lower bound so sibling nodes benefit
-                info.tt.store(board.hash, depth - 3, score_to_tt(score, ply), TT_FLAG_LOWER, mv, raw_eval, false);
-                return score;
+                // Dampen toward beta — score was verified at probcut_beta, not beta
+                // (Stockfish: value - (probCutBeta - beta), Reckless: (3*score+beta)/4)
+                let dampened = score - (probcut_beta - beta);
+                // Store dampened score in TT
+                info.tt.store(board.hash, depth - 3, score_to_tt(dampened, ply), TT_FLAG_LOWER, mv, raw_eval, false);
+                return dampened;
             }
         }
     }
@@ -2642,6 +2648,18 @@ fn quiescence_with_depth(
     qs_depth: i32,
 ) -> i32 {
     info.stats.qnodes += 1;
+
+    // Draw detection: repetition and 50-move rule
+    let draw_score = if info.root_stm == board.side_to_move { -tp(&CONTEMPT_VAL) } else { tp(&CONTEMPT_VAL) };
+    if board.halfmove >= 100 {
+        return draw_score;
+    }
+    // Check for repetition in game history
+    let hash = board.hash;
+    for undo in board.undo_stack.iter().rev().skip(1).step_by(2) {
+        if undo.hash == hash { return draw_score; }
+        if undo.halfmove == 0 { break; } // irreversible move
+    }
 
     // Limit quiescence depth to prevent stack overflow
     if qs_depth >= 32 {
