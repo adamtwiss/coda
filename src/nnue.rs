@@ -413,6 +413,54 @@ unsafe fn simd_l1_int8_dot(packed: &[u8], weights: &[i8], h: usize) -> i32 {
     _mm_cvtsi128_si32(sum128)
 }
 
+/// Multi-neuron L1 int8 dot: compute 4 neurons at once, loading input only once per chunk.
+/// packed: u8 input [h], weights: i8 [4][h] (4 weight rows contiguous), h: input length.
+/// Returns 4 i32 dot products.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_l1_int8_dot_x4(packed: &[u8], w0: &[i8], w1: &[i8], w2: &[i8], w3: &[i8], h: usize) -> [i32; 4] {
+    let ones = _mm256_set1_epi16(1);
+    let mut sum0 = _mm256_setzero_si256();
+    let mut sum1 = _mm256_setzero_si256();
+    let mut sum2 = _mm256_setzero_si256();
+    let mut sum3 = _mm256_setzero_si256();
+    let mut i = 0;
+    while i < h {
+        let a = _mm256_loadu_si256(packed.as_ptr().add(i) as *const __m256i);
+        // Neuron 0
+        let b0 = _mm256_loadu_si256(w0.as_ptr().add(i) as *const __m256i);
+        let p0 = _mm256_maddubs_epi16(a, b0);
+        sum0 = _mm256_add_epi32(sum0, _mm256_madd_epi16(p0, ones));
+        // Neuron 1
+        let b1 = _mm256_loadu_si256(w1.as_ptr().add(i) as *const __m256i);
+        let p1 = _mm256_maddubs_epi16(a, b1);
+        sum1 = _mm256_add_epi32(sum1, _mm256_madd_epi16(p1, ones));
+        // Neuron 2
+        let b2 = _mm256_loadu_si256(w2.as_ptr().add(i) as *const __m256i);
+        let p2 = _mm256_maddubs_epi16(a, b2);
+        sum2 = _mm256_add_epi32(sum2, _mm256_madd_epi16(p2, ones));
+        // Neuron 3
+        let b3 = _mm256_loadu_si256(w3.as_ptr().add(i) as *const __m256i);
+        let p3 = _mm256_maddubs_epi16(a, b3);
+        sum3 = _mm256_add_epi32(sum3, _mm256_madd_epi16(p3, ones));
+        i += 32;
+    }
+    // Horizontal sums
+    fn hsum(v: __m256i) -> i32 {
+        unsafe {
+            let hi = _mm256_extracti128_si256(v, 1);
+            let lo = _mm256_castsi256_si128(v);
+            let sum128 = _mm_add_epi32(lo, hi);
+            let shuf = _mm_shuffle_epi32(sum128, 0x4E);
+            let sum128 = _mm_add_epi32(sum128, shuf);
+            let shuf = _mm_shuffle_epi32(sum128, 0xB1);
+            let sum128 = _mm_add_epi32(sum128, shuf);
+            _mm_cvtsi128_si32(sum128)
+        }
+    }
+    [hsum(sum0), hsum(sum1), hsum(sum2), hsum(sum3)]
+}
+
 /// Find non-zero 32-byte chunk indices in a packed u8 buffer.
 /// Returns the number of NNZ chunks. nnz_indices[0..count] contains the byte offsets.
 #[cfg(target_arch = "x86_64")]
@@ -1707,8 +1755,36 @@ impl NNUENet {
                 }
             }
         } else if self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty() {
-            let ntm_base = l1_total * pw; // NTM block starts after STM block in transposed array
-            for i in 0..l1 {
+            let ntm_base = l1_total * pw;
+            // Multi-neuron: process 4 neurons at once, loading input once per chunk
+            let mut i = 0;
+            while i + 4 <= l1 {
+                let gi = l1_off + i;
+                unsafe {
+                    let stm_results = simd_l1_int8_dot_x4(
+                        &stm_pw[..pw],
+                        &self.l1_weights_8t[gi * pw..(gi + 1) * pw],
+                        &self.l1_weights_8t[(gi + 1) * pw..(gi + 2) * pw],
+                        &self.l1_weights_8t[(gi + 2) * pw..(gi + 3) * pw],
+                        &self.l1_weights_8t[(gi + 3) * pw..(gi + 4) * pw],
+                        pw,
+                    );
+                    let ntm_results = simd_l1_int8_dot_x4(
+                        &ntm_pw[..pw],
+                        &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw],
+                        &self.l1_weights_8t[ntm_base + (gi + 1) * pw..ntm_base + (gi + 2) * pw],
+                        &self.l1_weights_8t[ntm_base + (gi + 2) * pw..ntm_base + (gi + 3) * pw],
+                        &self.l1_weights_8t[ntm_base + (gi + 3) * pw..ntm_base + (gi + 4) * pw],
+                        pw,
+                    );
+                    for k in 0..4 {
+                        hidden32[i + k] += stm_results[k] + ntm_results[k];
+                    }
+                }
+                i += 4;
+            }
+            // Handle remaining neurons (if l1 not divisible by 4)
+            while i < l1 {
                 let gi = l1_off + i;
                 let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
                 let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
@@ -1716,6 +1792,7 @@ impl NNUENet {
                     hidden32[i] += simd_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
                     hidden32[i] += simd_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
                 }
+                i += 1;
             }
         }
 
