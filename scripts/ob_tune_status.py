@@ -41,7 +41,8 @@ def get_tune_info(s, server, tid):
     r = s.get(f'{server}/tune/{tid}/')
     branch = re.search(r'Branch.*?<td[^>]*>(.*?)</td>', r.text, re.DOTALL)
     branch_name = branch.group(1).strip() if branch else '?'
-    iters = re.search(r'Iterations.*?(\d+)\s*/\s*(\d+)', r.text, re.DOTALL)
+    # OB format: "1203/2500 Iterations" (number before label)
+    iters = re.search(r'(\d+)\s*/\s*(\d+)\s*Iterations', r.text)
     progress = f'{iters.group(1)}/{iters.group(2)}' if iters else '?'
     return branch_name, progress
 
