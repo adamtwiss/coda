@@ -458,6 +458,71 @@ Next v7 training run should use `--wdl 0.4` (matching Viridithas). Config
 4. **Unbucketed support**: `b_off = 0`, `l2_off = 0` when `bucketed_hidden = false`
 5. **Display**: check-net now shows per-bucket L1/L2 sizes, not total bucketed
 
+## King Bucket Analysis (2026-04-14)
+
+### Comparison Across Top Engines
+
+| Engine | Buckets | Layout | FT Width | Factoriser | Notes |
+|--------|---------|--------|----------|------------|-------|
+| **Stockfish** | 32 | 4 files × 8 ranks (per-square) | 3072 | No | Can afford max granularity at huge FT |
+| **Obsidian** | 13 | Fine ranks 1-2, coarse 3+ | 1536 | No | 2x6x64 feature set |
+| **Berserk** | 16 | Fine ranks 1-2, coarse 5+ | 1024 | No | Similar FT to Coda |
+| **Viridithas** | 16 | Fine ranks 1-2, 2x2 ranks 5+ | 2560 | Was on, now off | Dual half-mirroring |
+| **Alexandria** | 16 | Fine ranks 1-2, 2x2 ranks 5+ | 1536 | **Yes** | Same layout as Viridithas |
+| **Reckless** | 10 | Fine ranks 1-2 only | 768 | No | Compensates with threat inputs |
+| **PlentyChess** | 12 | Fine ranks 1-2, coarse 3+ | 640 | No | Compensates with threat inputs |
+| **Coda** | 16 | **Uniform 4×4 (outlier)** | 768pw | **No** | Every bucket = 2 ranks × 1 file |
+
+### Consensus: "Fine Near, Coarse Far"
+
+Every top engine except Coda gives more bucket resolution to ranks 1-2 (where kings
+spend most of the game). The universal pattern:
+- **Ranks 1-2**: per-square resolution (4 files × 2 ranks = 8 buckets)
+- **Ranks 3-4**: 2×1 or 2×2 grouping (4 or 2 buckets)
+- **Ranks 5+**: large groups 2×2 to 4×4 (2-4 buckets)
+
+**Coda's uniform layout wastes resolution** on ranks 5-8 (king rarely there) and lacks
+resolution on ranks 1-2 (king almost always there).
+
+### Recommended Layout for Coda (Alexandria/Viridithas consensus)
+
+```rust
+const BUCKET_LAYOUT: [usize; 32] = [
+     0,  1,  2,  3,   // rank 1: per-square (4 buckets)
+     4,  5,  6,  7,   // rank 2: per-square (4 buckets)
+     8,  9, 10, 11,   // rank 3-4: per-square, 2 ranks share (4 buckets)
+     8,  9, 10, 11,
+    12, 12, 13, 13,   // rank 5-6: 2x2 groups (2 buckets)
+    12, 12, 13, 13,
+    14, 14, 15, 15,   // rank 7-8: 2x2 groups (2 buckets)
+    14, 14, 15, 15,
+];
+// Still 16 buckets, still mirrored — same parameter count, better distribution.
+```
+
+### Impact and Implementation
+
+- **Requires retraining** — bucket layout is baked into weights at training time.
+- **Inference change is minimal** — replace the formula in `nnue.rs` `init_nnue()` with
+  a static lookup table matching the training config.
+- **Expected gain**: +5-15 Elo based on the mismatch between Coda's uniform layout
+  and the consensus. The gain comes from better positional granularity in the opening
+  and middlegame (ranks 1-2) without wasting parameters on rare king positions.
+- **Factoriser recommended** — when retraining with the new layout, use Bullet's
+  built-in factoriser (`l0f` weight). This helps the net learn shared features across
+  buckets, especially important with limited training data. Already used by
+  Alexandria and available in our Bullet configs.
+
+### Key Insights
+
+1. **16 buckets is the sweet spot** for FT widths of 768-1536. More (32) requires
+   Stockfish-scale FT and data. Fewer (10-12) works if compensated by threat inputs.
+2. **The factoriser reduces the cost** of more buckets. Each bucket only learns the
+   delta from the shared baseline, requiring less per-bucket data.
+3. **Bucket layout geometry matters more than count.** 16 well-placed buckets
+   (fine near, coarse far) beat 16 uniformly-placed buckets.
+4. **Do NOT go to 32 buckets** at our FT width — would overfit with our data volume.
+
 ## Open Questions
 
 1. ~~Is the piece value ordering a v5 problem too?~~ RESOLVED — check-net methodology was misleading (sigmoid saturation).
