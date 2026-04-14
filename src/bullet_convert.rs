@@ -55,6 +55,7 @@ pub fn convert_v5(
     use_screlu: bool,
     use_pairwise: bool,
     src_output_buckets: usize,
+    consensus_buckets: bool,
 ) -> Result<(), String> {
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
     let data_len = strip_footer(&data);
@@ -130,6 +131,7 @@ pub fn convert_v5(
         let mut flags = 0u8;
         if use_screlu { flags |= 1; }
         if use_pairwise { flags |= 2; }
+        if consensus_buckets { flags |= 32; } // bit 5: consensus king bucket layout
         buf.push(flags);
     }
 
@@ -160,6 +162,7 @@ pub fn convert_v7(
     ft_size_override: usize,
     int16_hidden: bool,
     dual_l1: bool,
+    consensus_buckets: bool,
 ) -> Result<(), String> {
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
     let data_len = strip_footer(&data);
@@ -349,6 +352,8 @@ pub fn convert_v7(
     if bucketed_hidden { flags |= 8; } // bit 3 = bucketed hidden layers
     // bit 4 = dual L1 activation (v8): CReLU+SCReLU on L1 output, doubles L2 input
     if dual_l1 { flags |= 16; }
+    // bit 5 = consensus king bucket layout (fine-near, coarse-far)
+    if consensus_buckets { flags |= 32; }
     buf.push(flags);
     write_u16_le(&mut buf, h as u16);       // FT size
     write_u16_le(&mut buf, l1_size as u16); // per-bucket L1 size

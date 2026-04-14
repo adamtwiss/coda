@@ -50,11 +50,13 @@ fn main() {
     let final_lr: f32 = get_arg(&args, "--final-lr", &format!("{}", initial_lr * 0.3f32.powi(5))).parse().unwrap();
     let loss_power: f32 = get_arg(&args, "--loss-power", "2.5").parse().unwrap();
     let save_rate: usize = get_arg(&args, "--save-rate", "100").parse().unwrap();
+    let bucket_layout_name = get_arg(&args, "--bucket-layout", "uniform");
 
     const NUM_OUTPUT_BUCKETS: usize = 8;
 
+    // Uniform: original Coda layout (2 ranks × 1 file per bucket)
     #[rustfmt::skip]
-    const BUCKET_LAYOUT: [usize; 32] = [
+    const LAYOUT_UNIFORM: [usize; 32] = [
          0,  4,  8, 12,
          0,  4,  8, 12,
          1,  5,  9, 13,
@@ -65,18 +67,39 @@ fn main() {
          3,  7, 11, 15,
     ];
 
-    const NUM_INPUT_BUCKETS: usize = get_num_buckets(&BUCKET_LAYOUT);
+    // Consensus: fine-near, coarse-far (Alexandria/Viridithas pattern)
+    // Ranks 1-2: per-square (8 buckets), ranks 3-4: shared (4), ranks 5-8: 2x2 (4)
+    #[rustfmt::skip]
+    const LAYOUT_CONSENSUS: [usize; 32] = [
+         0,  1,  2,  3,   // rank 1: per-square (4 buckets)
+         4,  5,  6,  7,   // rank 2: per-square (4 buckets)
+         8,  9, 10, 11,   // rank 3-4: per-square, 2 ranks share (4 buckets)
+         8,  9, 10, 11,
+        12, 12, 13, 13,   // rank 5-6: 2x2 groups (2 buckets)
+        12, 12, 13, 13,
+        14, 14, 15, 15,   // rank 7-8: 2x2 groups (2 buckets)
+        14, 14, 15, 15,
+    ];
+
+    let bucket_layout: [usize; 32] = match bucket_layout_name.as_str() {
+        "uniform" => LAYOUT_UNIFORM,
+        "consensus" => LAYOUT_CONSENSUS,
+        _ => panic!("Unknown bucket layout '{}'. Use 'uniform' or 'consensus'.", bucket_layout_name),
+    };
+
+    // Both layouts use 16 buckets (max index = 15)
+    let num_input_buckets: usize = 16;
 
     let mut trainer = ValueTrainerBuilder::default()
         .dual_perspective()
         .optimiser(AdamW)
         .use_threads(4)
-        .inputs(ChessBucketsMirrored::new(BUCKET_LAYOUT))
+        .inputs(ChessBucketsMirrored::new(bucket_layout))
         .output_buckets(MaterialCount::<NUM_OUTPUT_BUCKETS>)
         .save_format(&[
             SavedFormat::id("l0w")
                 .transform(|store, weights| {
-                    let factoriser = store.get("l0f").values.repeat(NUM_INPUT_BUCKETS);
+                    let factoriser = store.get("l0f").values.repeat(num_input_buckets);
                     weights.into_iter().zip(factoriser).map(|(a, b)| a + b).collect()
                 })
                 .round()
@@ -89,9 +112,9 @@ fn main() {
         .loss_fn(|output, target| output.sigmoid().power_error(target, 2.5))
         .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
             let l0f = builder.new_weights("l0f", Shape::new(ft_size, 768), InitSettings::Zeroed);
-            let expanded_factoriser = l0f.repeat(NUM_INPUT_BUCKETS);
+            let expanded_factoriser = l0f.repeat(num_input_buckets);
 
-            let mut l0 = builder.new_affine("l0", 768 * NUM_INPUT_BUCKETS, ft_size);
+            let mut l0 = builder.new_affine("l0", 768 * num_input_buckets, ft_size);
             l0.init_with_effective_input_size(32);
             l0.weights = l0.weights + expanded_factoriser;
 
@@ -158,6 +181,7 @@ fn main() {
 
     println!("=== Coda v5 768 Pairwise ===");
     println!("FT: {} → CReLU → pairwise → {} per perspective", ft_size, ft_size / 2);
+    println!("King buckets: {} ({})", num_input_buckets, bucket_layout_name);
     println!("Schedule: {} SBs, WDL: {}, LR: {}→{}, Loss: power({})", superbatches, wdl_proportion, initial_lr, final_lr, loss_power);
     println!("Data: {} ({} files)", dataset_dir, data_files.len());
     println!();

@@ -193,6 +193,9 @@ enum Commands {
         /// Dual L1 activation (CReLU+SCReLU concat, v8 format)
         #[arg(long)]
         dual: bool,
+        /// Use consensus king bucket layout (fine-near, coarse-far)
+        #[arg(long)]
+        consensus_buckets: bool,
         /// Source output bucket count (default 8, set to 2 for 2-bucket nets)
         #[arg(long, default_value_t = 8)]
         output_buckets: usize,
@@ -334,11 +337,11 @@ fn main() {
             run_eval_dist(&input, count, &cli.nnue);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, output_buckets }) => {
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, output_buckets }) => {
             let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual)
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets)
             } else {
-                bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets)
+                bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, consensus_buckets)
             };
             if let Err(e) = result {
                 eprintln!("Error: {}", e);

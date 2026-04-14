@@ -42,7 +42,20 @@ const NNUE_MAGIC: u32 = 0x4E4E5545; // "NNUE" in LE
 static mut KING_BUCKET: [usize; 64] = [0; 64];
 static mut KING_MIRROR: [bool; 64] = [false; 64];
 
+/// Consensus king bucket layout: fine-near, coarse-far (Alexandria/Viridithas)
+/// Indexed by [mirrored_file (0-3)][rank (0-7)]
+const CONSENSUS_BUCKETS: [[usize; 8]; 4] = [
+    [ 0,  4,  8,  8, 12, 12, 14, 14], // file a/h (mirrored file 0)
+    [ 1,  5,  9,  9, 12, 12, 14, 14], // file b/g
+    [ 2,  6, 10, 10, 13, 13, 15, 15], // file c/f
+    [ 3,  7, 11, 11, 13, 13, 15, 15], // file d/e
+];
+
 pub fn init_nnue() {
+    init_king_buckets(false);
+}
+
+pub fn init_king_buckets(consensus: bool) {
     for sq in 0..64 {
         let file = sq % 8;
         let rank = sq / 8;
@@ -53,10 +66,14 @@ pub fn init_nnue() {
             (file, false)
         };
 
-        let rank_group = rank / 2;
+        let bucket = if consensus {
+            CONSENSUS_BUCKETS[mirrored_file][rank]
+        } else {
+            mirrored_file * 4 + rank / 2 // uniform layout
+        };
 
         unsafe {
-            KING_BUCKET[sq] = mirrored_file * 4 + rank_group;
+            KING_BUCKET[sq] = bucket;
             KING_MIRROR[sq] = mirror;
         }
     }
@@ -1406,6 +1423,7 @@ impl NNUENet {
         let mut l1_scale = QA as i32; // default int16 scale
         let mut bucketed_hidden = false; // bit 3: output buckets baked into L1/L2 dims
         let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
+        let mut consensus_buckets = false; // bit 5: consensus king bucket layout
         let hidden_size: usize;
 
         match version {
@@ -1423,6 +1441,7 @@ impl NNUENet {
                 let flags = read_u8(reader)?;
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
+                consensus_buckets = flags & 32 != 0;
                 let body_size = data_len - 9;
                 let out_mul: u64 = if use_pairwise { 8 } else { 16 };
                 let h_denom = 2 * (NNUE_INPUT_SIZE as u64 + 1 + out_mul);
@@ -1439,6 +1458,7 @@ impl NNUENet {
                 if flags & 4 != 0 { l1_scale = 64; } // int8 L1 weights
                 bucketed_hidden = flags & 8 != 0; // output buckets baked into L1/L2
                 dual_l1 = flags & 16 != 0; // dual L1 activation (CReLU+SCReLU)
+                consensus_buckets = flags & 32 != 0; // consensus king bucket layout
                 let ft_size = read_u16(reader)? as usize;
                 l1_size = read_u16(reader)? as usize;
                 l2_size = read_u16(reader)? as usize;
@@ -1503,16 +1523,22 @@ impl NNUENet {
             output_bias[i] = read_i32(reader)?;
         }
 
+        // Reinitialise king bucket layout if net uses consensus layout
+        if consensus_buckets {
+            init_king_buckets(true);
+        }
+
         let activation = if use_pairwise { "pairwise" } else if use_screlu { "SCReLU" } else { "CReLU" };
         let dual_str = if dual_l1 { " dual" } else { "" };
+        let bucket_str = if consensus_buckets { " consensus-kb" } else { "" };
         if l1_size > 0 {
             if l2_size > 0 {
-                println!("info string Loaded NNUE v{} {} {}{} (FT={} L1={} L2={})", version, source_name, activation, dual_str, hidden_size, l1_size, l2_size);
+                println!("info string Loaded NNUE v{} {} {}{}{} (FT={} L1={} L2={})", version, source_name, activation, dual_str, bucket_str, hidden_size, l1_size, l2_size);
             } else {
-                println!("info string Loaded NNUE v{} {} {}{} (FT={} L1={})", version, source_name, activation, dual_str, hidden_size, l1_size);
+                println!("info string Loaded NNUE v{} {} {}{}{} (FT={} L1={})", version, source_name, activation, dual_str, bucket_str, hidden_size, l1_size);
             }
         } else {
-            println!("info string Loaded NNUE v{} {} {} ({})", version, source_name, activation, hidden_size);
+            println!("info string Loaded NNUE v{} {} {}{} ({})", version, source_name, activation, bucket_str, hidden_size);
         }
 
         // Transpose L1 weights for SIMD: [j*L1+i] → [i*H+j] per perspective
