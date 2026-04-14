@@ -190,6 +190,9 @@ enum Commands {
         /// Hidden layers quantised as i16 (GoChess-style, default is f32)
         #[arg(long)]
         int16_hidden: bool,
+        /// Dual L1 activation (CReLU+SCReLU concat, v8 format)
+        #[arg(long)]
+        dual: bool,
         /// Source output bucket count (default 8, set to 2 for 2-bucket nets)
         #[arg(long, default_value_t = 8)]
         output_buckets: usize,
@@ -331,9 +334,9 @@ fn main() {
             run_eval_dist(&input, count, &cli.nnue);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, output_buckets }) => {
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, output_buckets }) => {
             let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden)
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual)
             } else {
                 bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets)
             };

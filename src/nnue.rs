@@ -1364,10 +1364,11 @@ pub struct NNUENet {
     pub l1_weights_t: Vec<i16>,   // [l1_size × 2*hidden_size] transposed for SIMD
     pub l1_weights_8t: Vec<i8>,   // [l1_size × 2*hidden_size] transposed int8 for VPMADDUBSW
     pub l1_biases: Vec<i16>,      // [l1_size]
-    pub l2_weights_f: Vec<f32>,   // [l1_size × l2_size] — float for precision
+    pub l2_weights_f: Vec<f32>,   // [l2_input × l2_size] — float (l2_input = l1*2 if dual)
     pub l2_biases_f: Vec<f32>,    // [l2_size]
     pub out_weights_f: Vec<f32>,  // [NNUE_OUTPUT_BUCKETS × out_l_size] — float output
     pub out_bias_f: Vec<f32>,     // [NNUE_OUTPUT_BUCKETS]
+    pub dual_l1: bool,            // v8: dual L1 activation (CReLU+SCReLU on L1 output)
     pub use_sparse_l1: std::sync::atomic::AtomicBool, // feature flag: sparse L1 matmul
     pub has_avx2: bool,
     pub has_avx512: bool,
@@ -1404,6 +1405,7 @@ impl NNUENet {
         let mut l2_size = 0usize;
         let mut l1_scale = QA as i32; // default int16 scale
         let mut bucketed_hidden = false; // bit 3: output buckets baked into L1/L2 dims
+        let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
         let hidden_size: usize;
 
         match version {
@@ -1430,12 +1432,13 @@ impl NNUENet {
                 }
                 hidden_size = (h_numer / h_denom) as usize;
             }
-            7 => {
+            7 | 8 => {
                 let flags = read_u8(reader)?;
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
                 if flags & 4 != 0 { l1_scale = 64; } // int8 L1 weights
                 bucketed_hidden = flags & 8 != 0; // output buckets baked into L1/L2
+                dual_l1 = flags & 16 != 0; // dual L1 activation (CReLU+SCReLU)
                 let ft_size = read_u16(reader)? as usize;
                 l1_size = read_u16(reader)? as usize;
                 l2_size = read_u16(reader)? as usize;
@@ -1468,11 +1471,13 @@ impl NNUENet {
             read_i16_slice(reader, &mut l1_biases)?;
         }
 
-        // Read L2 hidden layer weights (v7)
+        // Read L2 hidden layer weights (v7/v8)
+        // Dual L1 activation: L2 input = l1_size * 2 (CReLU + SCReLU concatenated)
+        let l2_input_size = if dual_l1 { l1_size * 2 } else { l1_size };
         let mut l2_weights_raw = Vec::new();
         let mut l2_biases_raw = Vec::new();
         if l2_size > 0 {
-            l2_weights_raw = vec![0i16; l1_size * bl2];
+            l2_weights_raw = vec![0i16; l2_input_size * bl2];
             read_i16_slice(reader, &mut l2_weights_raw)?;
             l2_biases_raw = vec![0i16; bl2];
             read_i16_slice(reader, &mut l2_biases_raw)?;
@@ -1499,11 +1504,12 @@ impl NNUENet {
         }
 
         let activation = if use_pairwise { "pairwise" } else if use_screlu { "SCReLU" } else { "CReLU" };
+        let dual_str = if dual_l1 { " dual" } else { "" };
         if l1_size > 0 {
             if l2_size > 0 {
-                println!("info string Loaded NNUE v{} {} {} (FT={} L1={} L2={})", version, source_name, activation, hidden_size, l1_size, l2_size);
+                println!("info string Loaded NNUE v{} {} {}{} (FT={} L1={} L2={})", version, source_name, activation, dual_str, hidden_size, l1_size, l2_size);
             } else {
-                println!("info string Loaded NNUE v{} {} {} (FT={} L1={})", version, source_name, activation, hidden_size, l1_size);
+                println!("info string Loaded NNUE v{} {} {}{} (FT={} L1={})", version, source_name, activation, dual_str, hidden_size, l1_size);
             }
         } else {
             println!("info string Loaded NNUE v{} {} {} ({})", version, source_name, activation, hidden_size);
@@ -1627,6 +1633,7 @@ impl NNUENet {
             l2_biases_f,
             out_weights_f,
             out_bias_f,
+            dual_l1,
             use_sparse_l1: std::sync::atomic::AtomicBool::new(false), // disabled: dense int8 is faster at H=1024
             has_avx2,
             has_avx512,
@@ -1852,15 +1859,23 @@ impl NNUENet {
             }
         }
 
-        // Dequantize + SCReLU: clamp [0, QA_L1], square → [0, 1]
-        // hidden32 at scale pw_scale * QA_L1. Divide by pw_scale → scale QA_L1.
-        // Must match training config (.screlu() on hidden layers).
-        let qa_l1_sq = qa_l1 as f32 * qa_l1 as f32;
-        let mut l1_out = [0.0f32; 512];
-        for i in 0..l1 {
-            let h_val = (hidden32[i] / pw_scale).clamp(0, qa_l1);
-            let hsq = h_val * h_val; // SCReLU
-            l1_out[i] = hsq as f32 / qa_l1_sq;
+        // Dequantize + activation
+        let qa_l1_f = qa_l1 as f32;
+        let qa_l1_sq = qa_l1_f * qa_l1_f;
+        let l1_out_count = if self.dual_l1 { l1 * 2 } else { l1 };
+        let mut l1_out = [0.0f32; 1024]; // max: 512 neurons × 2 for dual
+        if self.dual_l1 {
+            // Dual L1 activation: CReLU(L1) concat SCReLU(L1)
+            for i in 0..l1 {
+                let h_val = (hidden32[i] / pw_scale).clamp(0, qa_l1);
+                l1_out[i] = h_val as f32 / qa_l1_f;               // CReLU: [0, 1]
+                l1_out[l1 + i] = (h_val * h_val) as f32 / qa_l1_sq; // SCReLU: [0, 1]
+            }
+        } else {
+            for i in 0..l1 {
+                let h_val = (hidden32[i] / pw_scale).clamp(0, qa_l1);
+                l1_out[i] = (h_val * h_val) as f32 / qa_l1_sq; // SCReLU
+            }
         }
 
         // L2 or output
@@ -1869,9 +1884,11 @@ impl NNUENet {
             let l2_total = self.l2_size;
             let l2_off = if self.bucketed_hidden { bucket * l2_pb } else { 0 };
             let l2 = if self.bucketed_hidden { l2_pb } else { l2_total };
+            let l2_stride = if self.dual_l1 { self.l1_per_bucket * 2 } else { self.l1_per_bucket };
+            let _ = l2_stride;
             let mut h2 = [0.0f32; 512];
             for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
-            for i in 0..l1 {
+            for i in 0..l1_out_count {
                 if l1_out[i] == 0.0 { continue; }
                 for k in 0..l2 {
                     h2[k] += l1_out[i] * self.l2_weights_f[i * l2_total + l2_off + k];
@@ -1999,23 +2016,35 @@ impl NNUENet {
                 }
             }
             // Dequantize: result at scale QA × QA_L1. Divide by QA to get scale QA_L1.
-            // Then clamp [0, QA_L1], square for SCReLU → scale QA_L1².
-            let qa_l1_sq = qa_l1 as f32 * qa_l1 as f32;
-            let mut l1_out = [0.0f32; 64];
-            for i in 0..l1 {
-                let mut h_val = (hidden[i] / qa as i64) as i32; // scale QA_L1
-                h_val = h_val.clamp(0, qa_l1 as i32);
-                let hsq = h_val * h_val; // SCReLU → scale QA_L1²
-                l1_out[i] = hsq as f32 / qa_l1_sq; // → [0, 1]
+            let qa_l1_f = qa_l1 as f32;
+            let qa_l1_sq = qa_l1_f * qa_l1_f;
+            let l1_out_count = if self.dual_l1 { l1 * 2 } else { l1 };
+            let mut l1_out = [0.0f32; 128]; // max: 64 neurons × 2 for dual
+            if self.dual_l1 {
+                // Dual L1 activation: CReLU(L1) concat SCReLU(L1)
+                for i in 0..l1 {
+                    let h_val = ((hidden[i] / qa as i64) as i32).clamp(0, qa_l1 as i32);
+                    l1_out[i] = h_val as f32 / qa_l1_f;               // CReLU: [0, 1]
+                    l1_out[l1 + i] = (h_val * h_val) as f32 / qa_l1_sq; // SCReLU: [0, 1]
+                }
+            } else {
+                // Standard SCReLU only
+                for i in 0..l1 {
+                    let h_val = ((hidden[i] / qa as i64) as i32).clamp(0, qa_l1 as i32);
+                    l1_out[i] = (h_val * h_val) as f32 / qa_l1_sq; // → [0, 1]
+                }
             }
 
             // L2 or output — float (handles both bucketed and unbucketed)
             if self.l2_size > 0 {
                 let l2 = if self.bucketed_hidden { self.l2_per_bucket } else { self.l2_size };
                 let l2_off = if self.bucketed_hidden { bucket * l2 } else { 0 };
+                let l2_stride = if self.dual_l1 { self.l1_per_bucket * 2 } else { self.l1_per_bucket };
+                let l2_total_stride = if self.bucketed_hidden { l2_stride * NNUE_OUTPUT_BUCKETS } else { l2_stride };
+                let _ = l2_total_stride; // used below
                 let mut h2 = [0.0f32; 256];
                 for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
-                for i in 0..l1 {
+                for i in 0..l1_out_count {
                     if l1_out[i] == 0.0 { continue; }
                     let w_off = if self.bucketed_hidden {
                         i * self.l2_size + bucket * self.l2_per_bucket
@@ -2079,14 +2108,22 @@ impl NNUENet {
                     }
                 }
             }
-            // Dequantize: result at scale QA × QA_L1. Divide by QA to get scale QA_L1.
-            let qa_l1_sq = qa_l1 as f32 * qa_l1 as f32;
-            let mut l1_out = [0.0f32; 256];
-            for i in 0..l1 {
-                let mut h_val = (hidden[i] / qa as i64) as i32; // scale QA_L1
-                h_val = h_val.clamp(0, qa_l1 as i32);
-                let hsq = h_val * h_val; // SCReLU → scale QA_L1²
-                l1_out[i] = hsq as f32 / qa_l1_sq; // → [0, 1]
+            // Dequantize + activation
+            let qa_l1_f = qa_l1 as f32;
+            let qa_l1_sq = qa_l1_f * qa_l1_f;
+            let l1_out_count = if self.dual_l1 { l1 * 2 } else { l1 };
+            let mut l1_out = [0.0f32; 512]; // max: 256 × 2 for dual
+            if self.dual_l1 {
+                for i in 0..l1 {
+                    let h_val = ((hidden[i] / qa as i64) as i32).clamp(0, qa_l1 as i32);
+                    l1_out[i] = h_val as f32 / qa_l1_f;
+                    l1_out[l1 + i] = (h_val * h_val) as f32 / qa_l1_sq;
+                }
+            } else {
+                for i in 0..l1 {
+                    let h_val = ((hidden[i] / qa as i64) as i32).clamp(0, qa_l1 as i32);
+                    l1_out[i] = (h_val * h_val) as f32 / qa_l1_sq;
+                }
             }
 
             // L2 or output — float (handles both bucketed and unbucketed)
@@ -2095,7 +2132,7 @@ impl NNUENet {
                 let l2_off = if self.bucketed_hidden { bucket * l2 } else { 0 };
                 let mut h2 = [0.0f32; 256];
                 for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
-                for i in 0..l1 {
+                for i in 0..l1_out_count {
                     if l1_out[i] == 0.0 { continue; }
                     let w_off = if self.bucketed_hidden {
                         i * self.l2_size + bucket * self.l2_per_bucket
@@ -2184,14 +2221,22 @@ impl NNUENet {
             }
         }
 
-        // Divide by QA² to get hidden at scale QA_L1, then SCReLU: clamp [0, QA_L1], square
-        let qa_l1_sq = qa_l1 as f32 * qa_l1 as f32;
-        let mut l1_out = [0.0f32; 256]; // max per-bucket L1 size
-        for i in 0..l1 {
-            let mut h_val = (hidden[i] / qa2) as i32;
-            h_val = h_val.clamp(0, qa_l1 as i32);
-            let hsq = h_val * h_val; // SCReLU → scale QA_L1²
-            l1_out[i] = hsq as f32 / qa_l1_sq; // → [0, 1]
+        // Divide by QA² to get hidden at scale QA_L1, then activation
+        let qa_l1_f = qa_l1 as f32;
+        let qa_l1_sq = qa_l1_f * qa_l1_f;
+        let l1_out_count = if self.dual_l1 { l1 * 2 } else { l1 };
+        let mut l1_out = [0.0f32; 512]; // max: 256 × 2 for dual
+        if self.dual_l1 {
+            for i in 0..l1 {
+                let h_val = ((hidden[i] / qa2) as i32).clamp(0, qa_l1 as i32);
+                l1_out[i] = h_val as f32 / qa_l1_f;
+                l1_out[l1 + i] = (h_val * h_val) as f32 / qa_l1_sq;
+            }
+        } else {
+            for i in 0..l1 {
+                let h_val = ((hidden[i] / qa2) as i32).clamp(0, qa_l1 as i32);
+                l1_out[i] = (h_val * h_val) as f32 / qa_l1_sq;
+            }
         }
 
         // L2 layer (if present) — float (handles bucketed and unbucketed)
@@ -2202,7 +2247,7 @@ impl NNUENet {
             for k in 0..l2 {
                 h2[k] = self.l2_biases_f[l2_off + k];
             }
-            for i in 0..l1 {
+            for i in 0..l1_out_count {
                 if l1_out[i] == 0.0 { continue; }
                 let w_off = if self.bucketed_hidden {
                     i * self.l2_size + bucket * self.l2_per_bucket

@@ -159,6 +159,7 @@ pub fn convert_v7(
     bucketed_hidden: bool,
     ft_size_override: usize,
     int16_hidden: bool,
+    dual_l1: bool,
 ) -> Result<(), String> {
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
     let data_len = strip_footer(&data);
@@ -172,7 +173,8 @@ pub fn convert_v7(
     // f32 hidden (default): l1b is f32, l2/l3 are f32
     let hbytes = if int16_hidden { 2 } else { 4 }; // bytes per hidden weight/bias element
     let l1b_bytes = bl1 * hbytes;
-    let l2_bytes = if l2_size > 0 { l1_size * bl2 * hbytes + bl2 * hbytes } else { 0 };
+    let l2_in = if dual_l1 { l1_size * 2 } else { l1_size }; // dual doubles L2 input
+    let l2_bytes = if l2_size > 0 { l2_in * bl2 * hbytes + bl2 * hbytes } else { 0 };
     let out_input = if l2_size > 0 { l2_size } else { l1_size };
     // Output: i16 weights at QB + i32 biases for i16 mode, f32 for f32 mode
     let out_bytes = if int16_hidden {
@@ -260,12 +262,14 @@ pub fn convert_v7(
     }
 
     // L2 weights and biases
-    let mut l2_weights = vec![0i16; l1_size * bl2];
+    // Dual L1 activation: L2 input = l1_size * 2 (CReLU + SCReLU concatenated)
+    let l2_input = if dual_l1 { l1_size * 2 } else { l1_size };
+    let mut l2_weights = vec![0i16; l2_input * bl2];
     let mut l2_biases = vec![0i16; bl2];
     if l2_size > 0 {
         if int16_hidden {
             // Already quantised as i16 at QA=255
-            for i in 0..l1_size * bl2 {
+            for i in 0..l2_input * bl2 {
                 l2_weights[i] = read_i16_le(&data, offset);
                 offset += 2;
             }
@@ -275,7 +279,7 @@ pub fn convert_v7(
             }
         } else {
             // f32 → i16 scaled by QA_L1
-            for i in 0..l1_size * bl2 {
+            for i in 0..l2_input * bl2 {
                 let f = read_f32_le(&data, offset);
                 l2_weights[i] = (f * qa_l1).round() as i16;
                 offset += 4;
@@ -332,16 +336,19 @@ pub fn convert_v7(
 
     println!("Parsed {} bytes of {} (FT={})", offset, data.len(), h);
 
-    // Write v7 .nnue
+    // Write .nnue — v8 for dual L1, v7 otherwise
+    let version = if dual_l1 { 8u32 } else { 7u32 };
     let mut buf = Vec::new();
     write_u32_le(&mut buf, NNUE_MAGIC);
-    write_u32_le(&mut buf, 7); // v7
+    write_u32_le(&mut buf, version);
 
     let mut flags = 0u8;
     if use_screlu { flags |= 1; }
     if use_pairwise { flags |= 2; }
     if int8_l1 { flags |= 4; }
     if bucketed_hidden { flags |= 8; } // bit 3 = bucketed hidden layers
+    // bit 4 = dual L1 activation (v8): CReLU+SCReLU on L1 output, doubles L2 input
+    if dual_l1 { flags |= 16; }
     buf.push(flags);
     write_u16_le(&mut buf, h as u16);       // FT size
     write_u16_le(&mut buf, l1_size as u16); // per-bucket L1 size
@@ -363,6 +370,7 @@ pub fn convert_v7(
         .and_then(|mut f| f.write_all(&buf))
         .map_err(|e| format!("write {}: {}", output_path, e))?;
 
-    println!("Saved {} ({} bytes, v7 FT={} L1={} L2={})", output_path, buf.len(), h, l1_size, l2_size);
+    let dual_str = if dual_l1 { " dual" } else { "" };
+    println!("Saved {} ({} bytes, v{}{} FT={} L1={} L2={})", output_path, buf.len(), version, dual_str, h, l1_size, l2_size);
     Ok(())
 }
