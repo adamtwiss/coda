@@ -22,7 +22,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     // Pre-load NNUE if path given via CLI, otherwise auto-discover
     if let Some(path) = nnue_path {
         if let Err(e) = info.load_nnue(path) {
-            println!("info string Failed to load NNUE from {}: {}", path, e);
+            eprintln!("ERROR: Failed to load NNUE from {}: {}", path, e);
+            std::process::exit(1);
         }
     } else {
         let loaded = info.auto_discover_nnue();
@@ -359,7 +360,11 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 if tokens.len() > 1 {
                     match info.load_nnue(tokens[1]) {
                         Ok(_) => println!("info string NNUE loaded"),
-                        Err(e) => println!("info string NNUE load failed: {}", e),
+                        Err(e) => {
+                            eprintln!("ERROR: Failed to load NNUE from {}: {}", tokens[1], e);
+                            println!("info string ERROR: Failed to load NNUE from {}: {}", tokens[1], e);
+                            std::process::exit(1);
+                        }
                     }
                 }
             }
@@ -547,7 +552,11 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
         "NNUEFile" => {
             match info.load_nnue(value) {
                 Ok(_) => {}
-                Err(e) => println!("info string Failed to load NNUE from {}: {}", value, e),
+                Err(e) => {
+                    eprintln!("ERROR: Failed to load NNUE from {}: {}", value, e);
+                    println!("info string ERROR: Failed to load NNUE from {}: {}", value, e);
+                    std::process::exit(1);
+                }
             }
         }
         "Threads" => {
