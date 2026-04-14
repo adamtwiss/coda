@@ -1458,6 +1458,10 @@ fn negamax(
     } else {
         ((their_pawns & !0x8080808080808080u64) >> 7) | ((their_pawns & !0x0101010101010101u64) >> 9)
     };
+    // Opponent pawn threats on our non-pawn pieces (for RFP threat guard)
+    let our_non_pawns = board.colors[board.side_to_move as usize]
+        & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+    let has_pawn_threats = (enemy_attacks & our_non_pawns) != 0;
 
     // Clear PV for this node
     if ply_u <= MAX_PLY {
@@ -1489,7 +1493,9 @@ fn negamax(
     // This prevents us from playing INTO repetitions when we have an advantage.
     if ply > 0 {
         let contempt = tp(&CONTEMPT_VAL);
-        let draw_score = if board.side_to_move == info.root_stm { -contempt } else { contempt };
+        // Jitter draw score by ±2 to break ties between draw paths (Koivisto pattern)
+        let jitter = 2 - (info.nodes & 3) as i32; // range: -1 to +2
+        let draw_score = if board.side_to_move == info.root_stm { -contempt + jitter } else { contempt + jitter };
         if board.halfmove >= 100 {
             return draw_score;
         }
@@ -1852,7 +1858,9 @@ fn negamax(
             && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
             && move_flags(tt_move) != FLAG_EN_PASSANT;
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
-            let margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
+            if has_pawn_threats { margin += margin / 3; }
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
@@ -2142,9 +2150,11 @@ fn negamax(
             && FEAT_FUTILITY.load(Ordering::Relaxed)
             && lmr_d <= 10
         {
-            let hist_adj = info.history.main_score(from, to, enemy_attacks) / 128;
+            let main_hist = info.history.main_score(from, to, enemy_attacks);
+            let hist_adj = main_hist / 128;
             let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj;
-            if futility_value <= alpha {
+            // Don't futility-prune moves with very strong history (Igel pattern)
+            if futility_value <= alpha && main_hist < 12000 {
                 info.stats.futility_prunes += 1;
                 continue;
             }
