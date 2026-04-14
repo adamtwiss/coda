@@ -47,23 +47,49 @@ Input: HalfKA 768 features (12 pieces × 64 squares) per king bucket
 
 ### Top Engine Architecture Comparison
 
-| Engine | FT width | Pairwise | FT activation | L1 | L2 | Output | L1 quant | L2+ | Extra features |
-|--------|---------|----------|--------------|-----|-----|--------|----------|-----|----------------|
-| Stockfish | 1024 | No | SCReLU+CReLU dual | 31 | 32 | 1 | int8 | float | Dual net (big+small) |
-| Obsidian | 1536 | Yes | CReLU→pairwise | 16 | 32 | 1×8 | int8 sparse | float | None |
-| Viridithas | 2560 | Yes | CReLU→pairwise | 16 | 32 | 1×8 | int8 sparse | float | None |
-| Reckless | 768 | Yes | SCReLU→pairwise | 16 | 32 | 1×8 | int8 | float | 66K threat features |
-| Berserk | 1024 | No | CReLU | 16 | 32 | 1 | int8 sparse | float | Threat score |
-| Alexandria | 1536 | No | dual (CReLU+SCReLU) | 16→32 | 32 | 1×8 | int8 | float | None |
-| Halogen | 640 | Yes | SCReLU→pairwise | 16 | 32 | 1×8 | int8 | float | Threat features |
-| Stormphrax | 128+ | Yes | SCReLU | 16 | 32 | 1×8 | int8 | float | 60K threat features |
-| **Velvet** | 768 | No | CReLU | — | — | **1** | — | — | 32 king buckets |
-| **Coda v5 (current)** | 768pw | Yes | CReLU→pairwise | — | — | 1×8 | — | — | 16 king buckets |
-| **Coda v7** | 768pw | Yes | CReLU→pairwise | 16 | 32 | 1×8 | int8 | float | None |
-| **Coda v8 (target)** | 768pw | Yes | CReLU→pairwise | 16 | 32 | 1×8 | int8 | float | Dual L1 activation |
+**IMPORTANT: "FT width" vs "Accumulator width" clarification (2026-04-14)**
 
-**Note**: Velvet is ~50 Elo above us (down from 100-200 after pow2.5, filtering, low LR
-improvements). The remaining gap is likely king bucket layout + training data quality.
+All engines use 768 input features (12 pieces × 64 squares). The "FT width" or
+"accumulator width" is the output dimension of the feature transformer per perspective.
+With pairwise activation, this is halved. When we say "768pw", the 768 refers to the
+input features, but **our accumulator is actually 1536** (matching Alexandria/Obsidian).
+
+| Engine | Accum/persp | Pairwise | L1 input | Threats | Threat count | L1→L2 | CCRL |
+|--------|------------|----------|----------|---------|-------------|-------|------|
+| Stockfish | 1024+128 | No | 2048+256 | **Yes** (dual stream) | 60,144 | 31→32 | #1 |
+| **Reckless** | **768** | Yes | **768** | **Yes** (i8) | **66,864** | 16→32 | **#2** |
+| Viridithas | 2560 | Yes | 2560 | No | — | 16→32 | Top 5 |
+| Alexandria | 1536 | Yes | 1536 | No | — | 16→32 | Top 5 |
+| Obsidian | 1536 | Yes | 1536 | No | — | 16→32 | Top 5 |
+| **Stormphrax** | 640 | Yes | 640 | **Yes** (i8) | **60,144** | 16→32 | Top 10 |
+| **Halogen** | 640 | Yes | 640 | **Yes** (i8) | **79,856** | 16→32 | Top 10 |
+| **PlentyChess** | 640 | Yes | 640 | **Yes** (i8) | **79,856** | 16→32 | Top 10 |
+| Berserk | 1024 | No | 2048 | No | — | 16→32 | Top 10 |
+| **Coda v7/v8** | **1536** | Yes | **1536** | **No** | — | 16→32 | — |
+
+**Key insight (2026-04-14):** Coda's 1536 accumulator already matches Alexandria/Obsidian
+and is **2× wider than Reckless** (#2 on CCRL). Widening FT further is pointless — we're
+already at the wide end. Reckless proves that a 768 accumulator + 67K threat features
+beats our 1536 accumulator without threats. **Threat features are the critical missing piece.**
+
+### Two Paths to Strong Hidden Layers
+
+**Path 1: Wide accumulator, no threats** (Alexandria 1536, Obsidian 1536, Viridithas 2560).
+The wide FT provides enough representational capacity for hidden layers to learn relational
+patterns from piece-square features alone. **Coda is already on this path at 1536 — and
+our hidden layers are only ~+10 Elo net of NPS cost.**
+
+**Path 2: Narrow accumulator + threats** (Reckless 768, Halogen 640, Stormphrax 640,
+PlentyChess 640). Threat features explicitly encode which-piece-attacks-which-piece
+relationships. Hidden layers combine these patterns. **This is where the big Elo gains
+come from for narrow-FT engines — and Reckless proves it works at our exact architecture.**
+
+Viridithas measured hidden layers at only **+9.4 Elo at LTC** without threats (hyperstition
+vs pendragon). The "+100 Elo from hidden layers" commonly attributed to top engines is
+confounded with threat features, training improvements, and wider FT.
+
+**Our strategy: add threat features (Path 2).** We already have a wide-enough accumulator.
+The missing ingredient is input diversity, not width.
 
 ### FT→L1 Packing: Consensus Analysis (2026-04-13)
 
@@ -127,36 +153,111 @@ fine — that's where top engines use it.
 
 | Feature | Coda (current) | Consensus | Status |
 |---------|----------------|-----------|--------|
-| FT width | 768×16 → 1536 | 640-2560 | ✓ Match |
+| Accum width | 1536 per perspective | 640-2560 | ✓ Match (same as Alexandria/Obsidian) |
 | FT activation | CReLU → pairwise | CReLU → pairwise | ✓ Match |
 | FT shift | >>9 | >>9 | ✓ Match |
 | King buckets | 16 (uniform) | 16 (**fine-near, coarse-far**) | ✗ Wrong layout |
 | L1 size | 16 | 16 (most) | ✓ Match |
 | L1 quant | i8 QB=64 | i8 QB=64 | ✓ Match |
-| L1 matmul | Dense VPMADDUBSW | Sparse + NNZ | ✗ N/A for 768pw |
-| L1 activation | SCReLU (v7) / Dual (v8) | **Dual** (CReLU+SCReLU) | ✓ v8 matches |
+| L1 activation | SCReLU (v7) / Dual (v8) | Dual (CReLU+SCReLU) | ✓ v8 matches |
 | L2 size | 32 | 32 | ✓ Match |
-| L2 precision | float | float (most) | ✓ Match |
-| L2 activation | SCReLU | SCReLU / squared CReLU | ✓ Close |
 | Output buckets | 8 | 8 | ✓ Match |
-| Threat features | None | **60K-80K** (4/5 engines) | ✗ Missing |
-| Factoriser | None | Mixed (kills v7 hidden layers) | ✓ Correctly omitted |
+| **Threat features** | **None** | **60-80K (5/10 top engines)** | **✗ CRITICAL GAP** |
+| King bucket layout | Uniform 4×4 | Fine-near, coarse-far | ✗ Wrong layout |
+| Factoriser | None | Mixed (broken for us, see notes) | ✓ Correctly omitted for now |
 
 ### v7/v8 Roadmap (updated 2026-04-14)
 
-1. ~~**Eval quality**~~ ✅ Done — pow2.5 loss, filtering, low final LR all applied. WDL sweep (w10-w30) shows w10-w15 optimal (RR in progress).
-2. ~~**Dual L1 activation**~~ ✅ Implemented — v8 format with CReLU+SCReLU on L1 output. Training on GPU5.
-3. **King bucket layout** — switch from uniform 4×4 to consensus fine-near/coarse-far. +5-15 Elo expected. Requires retraining only.
-4. **Threat features** — 60K-80K extra input features. Major training + inference work. Biggest architectural gap vs top engines.
-5. **Multi-neuron SIMD** — compute all 16 L1 neurons in one pass instead of 32 separate dot products. Reduces memory loads.
-6. **VNNI/DPBUSD** — single-instruction VPMADDUBSW+VPMADDWD on newer CPUs. Runtime detection.
+**Priority 1 — THREAT FEATURES (critical path)**
 
-~~**Sparse L1 matmul**~~ — **Not beneficial for 768pw.** Benchmarking (2026-04-14) showed 768pw nets have 89% natural sparsity, but the input dimension (384) is too small for NNZ chunk skipping to pay off — dense and sparse kernels give identical NPS. Only relevant for larger FT widths (1024+).
+This is the single biggest architectural gap between Coda and the top engines.
+Reckless (#2 CCRL) uses our exact architecture (768pw, 16→32 hidden) plus 67K
+threat features. Our 1536 accumulator is already wider than Reckless's 768 —
+the missing ingredient is input diversity, not width.
 
-~~**L1 activation regularisation**~~ — **Not needed.** Natural sparsity is already 89% for 768pw, and sparse L1 doesn't help anyway. Lambda=0.001 collapsed hidden layers; lambda=0.0001 also failed. Shelved.
+Estimated gain: **+40-60 Elo** of eval quality (based on threat engines vs
+non-threat engines at similar FT widths).
+
+Implementation requires:
+- Threat feature computation (~300 lines): encode (attacker, attacker_sq, victim,
+  victim_sq) tuples using attack bitboards we already compute for movegen.
+- Separate threat accumulator with incremental updates (~500 lines)
+- Bullet trainer fork: data pipeline needs dual sparse input support (4-5 files
+  in bullet_lib — graph layer already supports the architecture, see Bullet
+  Investigation section below)
+- Converter and .nnue format extension (~100 lines)
+
+Effort: 2-4 weeks. This is a significant lift but the highest-value work available.
+
+**Priority 2 — In progress / near-term:**
+
+1. ~~**Eval quality**~~ ✅ Done — pow2.5 loss, filtering, low final LR.
+2. ~~**Dual L1 activation**~~ ✅ Implemented (v8). Training on GPU5.
+3. **King bucket layout** — consensus fine-near/coarse-far. Code ready. +5-15 Elo. Training on GPU3.
+4. **Full 48-param SPSA retune** — running (#355, 20+0.2 TC, 5000 iterations).
+5. **WDL optimisation** — RR shows w10-w15 optimal. Small effect (~20 Elo spread).
+
+**Lower priority / shelved:**
+
+- ~~Sparse L1 matmul~~ — not beneficial for 768pw (input dim too small, see analysis below)
+- ~~L1 activation regularisation~~ — shelved (lambda experiments failed, sparse L1 not needed)
+- ~~Widen FT~~ — **our 1536 accumulator already matches Alexandria/Obsidian.** Widening
+  further without adding threat features would be wasted capacity.
+- Multi-neuron SIMD — marginal gain (~2%), bottleneck is memory not compute
+- VNNI/DPBUSD — nice to have, newer CPUs only
 
 **Current NPS**: v7/v8 ~280K vs v5 ~600K (2× slower, consistent with other engines).
-**Target**: v7/v8 eval quality must be ~70+ Elo better per-node than v5 to compensate for NPS gap.
+**Target**: v7/v8 eval quality must be ~70+ Elo better per-node than v5 to compensate.
+**Threat features are the most likely path to closing this gap.**
+
+### Threat Feature Implementation Details (from cross-engine research, 2026-04-14)
+
+All five threat-feature engines (Stockfish, Reckless, Stormphrax, Halogen, PlentyChess)
+follow the **same consensus pattern**:
+
+1. **Separate weight matrices**: PSQ weights are i16, threat weights are **i8**. Both map
+   to the same accumulator width. The i8 quantization keeps memory manageable
+   (67K × 768 × 1 byte = ~50MB for threats vs 12K × 1536 × 2 bytes = ~38MB for PSQ).
+
+2. **Separate accumulators**: Each perspective has independent PSQ and threat `i16[]`
+   accumulators. Maintained separately with independent dirty tracking.
+
+3. **Summed at activation**: `output = pairwise(PSQ_acc + threat_acc)`. One SIMD add
+   per chunk — negligible cost.
+
+4. **Both incrementally updated**: Threat accumulators support add/sub deltas. Full
+   recompute only on king moves that change perspective mirroring.
+
+5. **Feature encoding**: (attacker_piece, attacker_sq, victim_piece, victim_sq) tuples.
+   A piece-pair interaction map filters valid combinations. Index uses attack ray
+   lookups and popcount-based compact encoding. ~60-80K features across all engines.
+
+6. **Reckless reference implementation** (closest to our arch):
+   - 768 accumulator + 66,864 threat features
+   - `ft_piece_weights: [[i16; 768]; 10 * 768]` (PSQ)
+   - `ft_threat_weights: [[i8; 768]; 66864]` (threats)
+   - Incremental threat updates via `ThreatAccumulator` with delta tracking
+   - Source: `/home/adam/chess/engines/Reckless/src/nnue/`
+
+### Bullet Trainer Investigation (2026-04-14)
+
+**Can Bullet handle dual-input (PSQ i16 + threat i8) features?**
+
+- **Graph layer (acyclib)**: YES — supports element-wise addition of two affine outputs,
+  mixed quantization in SavedFormat (i16 and i8 per weight tensor).
+- **Data pipeline (bullet_lib)**: NO — `ValueTrainerBuilder` is generic over a single
+  `SparseInputType`. `PreparedData` only populates `stm`/`nstm`/`buckets` from one
+  feature encoder. A second sparse input would never receive data.
+
+**Required Bullet fork** (moderate effort, 4-5 files):
+1. `PreparedData` — add second `SparseInput` field for threats
+2. `PreparedBatchHost` — insert threat sparse matrix under new key
+3. `ValueTrainerBuilder` — accept second `SparseInputType`
+4. `build`/`build_custom` closures — expose threat input node
+5. Data loader — call threat feature encoder alongside PSQ encoder
+
+The graph operations (SparseAffineActivate, LinearCombination, mixed-quant SavedFormat)
+all work without modification. The fork is in the plumbing, not the math.
 
 ### Known Issues
 
