@@ -21,6 +21,7 @@ pub mod datagen;
 pub mod nnue_export;
 pub mod bullet_convert;
 mod cuckoo;
+pub mod threats;
 
 use board::Board;
 use movegen::{perft, perft_divide};
@@ -39,6 +40,7 @@ pub fn init() {
         search::init_lmr();
         cuckoo::init_cuckoo();
         nnue::init_nnue();
+        threats::init_threats();
     });
 }
 
