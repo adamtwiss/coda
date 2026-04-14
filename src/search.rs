@@ -44,78 +44,78 @@ macro_rules! tunables {
 }
 
 tunables!(
-    // Pow2.5 tune #326 (40K iterations on pow2.5 production net)
+    // 5-fix retune #351 (1000 iters, seeded from #348)
     (NMP_BASE_R,         4,    2,    8),
     (NMP_DEPTH_DIV,      3,    1,    6),
-    (NMP_EVAL_DIV,     128,  100,  400),
+    (NMP_EVAL_DIV,     141,  100,  400),
     (NMP_EVAL_MAX,       3,    1,    6),
     (NMP_VERIFY_DEPTH,  11,    8,   20),
-    // RFP — deeper (consensus: 7)
+    // RFP
     (RFP_DEPTH,          7,    2,   12),
-    (RFP_MARGIN_IMP,    86,   30,  150),
-    (RFP_MARGIN_NOIMP, 129,   50,  200),
+    (RFP_MARGIN_IMP,    81,   30,  150),
+    (RFP_MARGIN_NOIMP, 131,   50,  200),
     // Futility
-    (FUT_BASE,          97,   20,  200),
-    (FUT_PER_DEPTH,    155,   40,  250),
+    (FUT_BASE,         100,   20,  200),
+    (FUT_PER_DEPTH,    154,   40,  250),
     // History pruning
     (HIST_PRUNE_DEPTH,   3,    1,    8),
-    (HIST_PRUNE_MULT, 7114,  500, 50000),
+    (HIST_PRUNE_MULT, 7923,  500, 50000),
     // SEE pruning
-    (SEE_QUIET_MULT,   24,    5,   80),
-    (SEE_CAP_MULT,    130,   30,  200),
-    // LMR — history much more influential
-    (LMR_HIST_DIV,   4668, 2000, 100000),
-    (LMR_C_QUIET,     153,   80,  300),
-    (LMR_C_CAP,       155,  100,  350),
+    (SEE_QUIET_MULT,   25,    5,   80),
+    (SEE_CAP_MULT,    137,   30,  200),
+    // LMR
+    (LMR_HIST_DIV,   6515, 2000, 100000),
+    (LMR_C_QUIET,     144,   80,  300),
+    (LMR_C_CAP,       150,  100,  350),
     // Singular extensions
     (SE_DEPTH,           5,    4,   12),
     // Aspiration windows
     (ASP_DELTA,         17,    5,   30),
-    (ASP_SCORE_DIV,  31050, 8000, 50000),
+    (ASP_SCORE_DIV,  30292, 8000, 50000),
     // LMP
     (LMP_BASE,           8,    1,   15),
     (LMP_DEPTH,         14,    4,   20),
     // Bad noisy
-    (BAD_NOISY_MARGIN,  92,   30,  150),
+    (BAD_NOISY_MARGIN,  93,   30,  150),
     // ProbCut
-    (PROBCUT_MARGIN,   183,   80,  300),
+    (PROBCUT_MARGIN,   191,   80,  300),
     // Hindsight
-    (HINDSIGHT_THRESH, 158,   50,  400),
+    (HINDSIGHT_THRESH, 153,   50,  400),
     // Unstable position detection
-    (UNSTABLE_THRESH,  159,   50,  500),
+    (UNSTABLE_THRESH,  166,   50,  500),
     // SEE piece value scaling
-    (SEE_MATERIAL_SCALE, 178, 30, 300),
+    (SEE_MATERIAL_SCALE, 183, 30, 300),
     // QS
     (QS_DELTA_MARGIN,  319,  100,  500),
-    (QS_SEE_THRESHOLD, -38, -200,    0),
-    (QS_MAX_CAPTURES,   28,    2,   32),
+    (QS_SEE_THRESHOLD, -43, -200,    0),
+    (QS_MAX_CAPTURES,   29,    2,   32),
     // Correction history weights
-    (CORR_W_PAWN,      321,  100,  600),
-    (CORR_W_NP,         95,   50,  400),
-    (CORR_W_MINOR,      43,   30,  300),
-    (CORR_W_MAJOR,      69,   30,  300),
-    (CORR_W_CONT,       50,   30,  400),
+    (CORR_W_PAWN,      337,  100,  600),
+    (CORR_W_NP,        109,   50,  400),
+    (CORR_W_MINOR,      39,   30,  300),
+    (CORR_W_MAJOR,      73,   30,  300),
+    (CORR_W_CONT,       42,   30,  400),
     // Fail-high blend
     (FH_BLEND_DEPTH,     1,    1,    8),
-    // History bonus — larger
-    (HIST_BONUS_MULT,  218,   50,  400),
-    (HIST_BONUS_BASE,   49,    0,  200),
-    (HIST_BONUS_MAX,  1762,  500, 3000),
+    // History bonus
+    (HIST_BONUS_MULT,  237,   50,  400),
+    (HIST_BONUS_BASE,   39,    0,  200),
+    (HIST_BONUS_MAX,  1750,  500, 3000),
     // Capture history bonus
-    (CAP_HIST_MULT,    200,   50,  400),
+    (CAP_HIST_MULT,    215,   50,  400),
     (CAP_HIST_BASE,     32,    0,  200),
-    (CAP_HIST_MAX,    1507,  500, 3000),
+    (CAP_HIST_MAX,    1476,  500, 3000),
     // Double extensions
-    (DEXT_MARGIN,       14,    2,   50),
-    (DEXT_CAP,          13,    4,   32),
+    (DEXT_MARGIN,       13,    2,   50),
+    (DEXT_CAP,          12,    4,   32),
     // Quiet check bonus
-    (QUIET_CHECK_BONUS, 10719, 2000, 30000),
+    (QUIET_CHECK_BONUS, 10918, 2000, 30000),
     // LMR complexity
-    (LMR_COMPLEXITY_DIV, 118, 30, 500),
+    (LMR_COMPLEXITY_DIV, 115, 30, 500),
     // Contempt
-    (CONTEMPT_VAL,       10,    0,   50),
+    (CONTEMPT_VAL,       11,    0,   50),
     // Correction history divisor
-    (CORR_HIST_DIV,     774,  256, 4096),
+    (CORR_HIST_DIV,     852,  256, 4096),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -1777,8 +1777,12 @@ fn negamax(
     let us = board.side_to_move;
     let stm_non_pawn = board.colors[us as usize]
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+    // Guard against consecutive null moves
+    let prev_was_null = !board.undo_stack.is_empty()
+        && board.undo_stack[board.undo_stack.len() - 1].mv == NO_MOVE;
     if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
+        && !prev_was_null  // Prevent consecutive null moves
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && FEAT_NMP.load(Ordering::Relaxed)
@@ -1820,7 +1824,8 @@ fn negamax(
             // Verification search at high depths to guard against zugzwang
             if depth >= tp(&NMP_VERIFY_DEPTH) {
                 info.stats.nmp_verify += 1;
-                let v_score = negamax(board, info, beta - 1, beta, depth - r, ply + 1, false);
+                // Verification re-searches current position (no move made), so ply stays same
+                let v_score = negamax(board, info, beta - 1, beta, depth - r, ply, false);
                 if v_score >= beta {
                     info.stats.nmp_cutoffs += 1;
                     return nmp_score;
@@ -1951,9 +1956,9 @@ fn negamax(
     };
     let pawn_hist_ref = Some(&info.pawn_hist[ph_idx] as &[[i16; 64]; 13]);
     let mut picker = if in_check {
-        MovePicker::new_evasion(board, tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref)
+        MovePicker::new_evasion(board, tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks)
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
 
@@ -2254,10 +2259,9 @@ fn negamax(
                     reduction += 1;
                 }
 
-                // Reduce more when opponent has few non-pawn pieces
-                // Note: board is post-make_move, so SideToMove is now the opponent
-                let opp = flip_color(board.side_to_move);
-                let opp_non_pawn = board.colors[opp as usize]
+                // Reduce more when opponent has few non-pawn pieces (simpler position)
+                // Note: board is post-make_move, so side_to_move IS the opponent
+                let opp_non_pawn = board.colors[board.side_to_move as usize]
                     & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
                 if popcount(opp_non_pawn) < 3 {
                     reduction += 1;
@@ -2446,21 +2450,17 @@ fn negamax(
                         // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
                         if moved_piece != NO_PIECE {
                             let gp_mv = go_piece(moved_piece);
-                            let stack_len = board.undo_stack.len();
                             let ch_offsets = [1usize, 2, 4, 6];
                             for &off in &ch_offsets {
-                                if stack_len >= off {
-                                    let undo = &board.undo_stack[stack_len - off];
-                                    if undo.mv != NO_MOVE {
-                                        let uto = move_to(undo.mv);
-                                        let upiece = board.piece_at(uto);
-                                        if upiece != NO_PIECE {
-                                            let ch_bonus = if off <= 1 { bonus } else { bonus / 2 };
-                                            History::update_cont_history(
-                                                &mut info.history.cont_hist[go_piece(upiece)][uto as usize][gp_mv][to as usize],
-                                                ch_bonus,
-                                            );
-                                        }
+                                if ply_u >= off {
+                                    let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
+                                    let prior_to = info.moved_to_stack[ply_u - off] as usize;
+                                    if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
+                                        let ch_bonus = if off <= 1 { bonus } else { bonus / 2 };
+                                        History::update_cont_history(
+                                            &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
+                                            ch_bonus,
+                                        );
                                     }
                                 }
                             }
@@ -2490,21 +2490,17 @@ fn negamax(
                                 let q_piece = board.piece_at(qf);
                                 if q_piece != NO_PIECE {
                                     let gp_q = go_piece(q_piece);
-                                    let stack_len = board.undo_stack.len();
                                     let ch_offsets = [1usize, 2, 4, 6];
                                     for &off in &ch_offsets {
-                                        if stack_len >= off {
-                                            let undo = &board.undo_stack[stack_len - off];
-                                            if undo.mv != NO_MOVE {
-                                                let uto = move_to(undo.mv);
-                                                let upiece = board.piece_at(uto);
-                                                if upiece != NO_PIECE {
-                                                    let ch_pen = if off <= 1 { -bonus } else { -bonus / 2 };
-                                                    History::update_cont_history(
-                                                        &mut info.history.cont_hist[go_piece(upiece)][uto as usize][gp_q][qt as usize],
-                                                        ch_pen,
-                                                    );
-                                                }
+                                        if ply_u >= off {
+                                            let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
+                                            let prior_to = info.moved_to_stack[ply_u - off] as usize;
+                                            if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
+                                                let ch_pen = if off <= 1 { -bonus } else { -bonus / 2 };
+                                                History::update_cont_history(
+                                                    &mut info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize],
+                                                    ch_pen,
+                                                );
                                             }
                                         }
                                     }
@@ -2711,13 +2707,16 @@ fn quiescence_with_depth(
             tt_score += ply;
         }
 
+        let qs_is_pv = beta - alpha > 1;
         match tt_entry.flag {
-            TT_FLAG_EXACT => { return tt_score; }
+            TT_FLAG_EXACT => {
+                if !qs_is_pv { return tt_score; }
+            }
             TT_FLAG_LOWER => {
-                if tt_score >= beta { return tt_score; }
+                if !qs_is_pv && tt_score >= beta { return tt_score; }
             }
             TT_FLAG_UPPER => {
-                if tt_score <= alpha { return tt_score; }
+                if !qs_is_pv && tt_score <= alpha { return tt_score; }
             }
             _ => {}
         }
@@ -2747,7 +2746,8 @@ fn quiescence_with_depth(
             None
         };
         let mut evasion_picker = MovePicker::new_evasion(
-            board, tt_move, 0, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
+            board, tt_move, ply as usize, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
+            &info.moved_piece_stack, &info.moved_to_stack,
         );
         let mut best_score = -INFINITY;
         let mut best_move = NO_MOVE;
