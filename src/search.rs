@@ -44,29 +44,29 @@ macro_rules! tunables {
 }
 
 tunables!(
-    // Seeded from 6-fix retune #348 (2500 iters), for 5-fix retune
+    // 5-fix retune #351 (1000 iters, seeded from #348)
     (NMP_BASE_R,         4,    2,    8),
     (NMP_DEPTH_DIV,      3,    1,    6),
-    (NMP_EVAL_DIV,     138,  100,  400),
+    (NMP_EVAL_DIV,     141,  100,  400),
     (NMP_EVAL_MAX,       3,    1,    6),
     (NMP_VERIFY_DEPTH,  11,    8,   20),
     // RFP
     (RFP_DEPTH,          7,    2,   12),
-    (RFP_MARGIN_IMP,    78,   30,  150),
-    (RFP_MARGIN_NOIMP, 132,   50,  200),
+    (RFP_MARGIN_IMP,    81,   30,  150),
+    (RFP_MARGIN_NOIMP, 131,   50,  200),
     // Futility
-    (FUT_BASE,         104,   20,  200),
-    (FUT_PER_DEPTH,    149,   40,  250),
+    (FUT_BASE,         100,   20,  200),
+    (FUT_PER_DEPTH,    154,   40,  250),
     // History pruning
     (HIST_PRUNE_DEPTH,   3,    1,    8),
-    (HIST_PRUNE_MULT, 7948,  500, 50000),
+    (HIST_PRUNE_MULT, 7923,  500, 50000),
     // SEE pruning
-    (SEE_QUIET_MULT,   27,    5,   80),
-    (SEE_CAP_MULT,    138,   30,  200),
+    (SEE_QUIET_MULT,   25,    5,   80),
+    (SEE_CAP_MULT,    137,   30,  200),
     // LMR
-    (LMR_HIST_DIV,   6773, 2000, 100000),
-    (LMR_C_QUIET,     146,   80,  300),
-    (LMR_C_CAP,       152,  100,  350),
+    (LMR_HIST_DIV,   6515, 2000, 100000),
+    (LMR_C_QUIET,     144,   80,  300),
+    (LMR_C_CAP,       150,  100,  350),
     // Singular extensions
     (SE_DEPTH,           5,    4,   12),
     // Aspiration windows
@@ -76,7 +76,7 @@ tunables!(
     (LMP_BASE,           8,    1,   15),
     (LMP_DEPTH,         14,    4,   20),
     // Bad noisy
-    (BAD_NOISY_MARGIN,  89,   30,  150),
+    (BAD_NOISY_MARGIN,  93,   30,  150),
     // ProbCut
     (PROBCUT_MARGIN,   191,   80,  300),
     // Hindsight
@@ -98,7 +98,7 @@ tunables!(
     // Fail-high blend
     (FH_BLEND_DEPTH,     1,    1,    8),
     // History bonus
-    (HIST_BONUS_MULT,  233,   50,  400),
+    (HIST_BONUS_MULT,  237,   50,  400),
     (HIST_BONUS_BASE,   39,    0,  200),
     (HIST_BONUS_MAX,  1750,  500, 3000),
     // Capture history bonus
@@ -111,11 +111,11 @@ tunables!(
     // Quiet check bonus
     (QUIET_CHECK_BONUS, 10918, 2000, 30000),
     // LMR complexity
-    (LMR_COMPLEXITY_DIV, 114, 30, 500),
+    (LMR_COMPLEXITY_DIV, 115, 30, 500),
     // Contempt
     (CONTEMPT_VAL,       11,    0,   50),
     // Correction history divisor
-    (CORR_HIST_DIV,     859,  256, 4096),
+    (CORR_HIST_DIV,     852,  256, 4096),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
