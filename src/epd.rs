@@ -206,6 +206,7 @@ pub fn run_epd(path: &str, time_per_pos: u64, max_positions: usize, nnue_path: O
 
         let mut board = Board::from_fen(&pos.fen);
         info.nodes = 0;
+        info.stop.store(false, std::sync::atomic::Ordering::Relaxed);
         info.history.clear();
         info.tt.clear();
 

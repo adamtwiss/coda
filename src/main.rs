@@ -79,10 +79,10 @@ enum Commands {
         #[arg(default_value = "testdata/wac.epd")]
         path: String,
         /// Time per position (ms)
-        #[arg(default_value_t = 5000)]
+        #[arg(short = 't', long = "time", default_value_t = 100)]
         time: u64,
         /// Maximum positions (0 = all)
-        #[arg(default_value_t = 0)]
+        #[arg(short = 'm', long = "max", default_value_t = 0)]
         max: usize,
     },
     /// Perft with divide
