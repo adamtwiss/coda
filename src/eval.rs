@@ -184,9 +184,6 @@ pub fn evaluate_nnue(
     threat_stack: &crate::threat_accum::ThreatStack,
 ) -> i32 {
     acc.materialize(net, board);
-    if net.has_threats && !threat_stack.active {
-        acc.recompute_threats_if_needed(net, board);
-    }
     let pc = crate::nnue::piece_count(board);
 
     // DEBUG: compare ThreatStack vs full recompute

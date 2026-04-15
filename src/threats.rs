@@ -48,7 +48,8 @@ impl PiecePair {
     }
 
     /// Returns the base index with ordering correction.
-    /// If semi-excluded and attacker_sq >= attacked_sq, returns negative (skip).
+    /// If semi-excluded and attacking_sq < attacked_sq, returns negative (skip).
+    /// This keeps the pair where attacking_sq >= attacked_sq (matches Reckless).
     const fn base(self, attacking_sq: u32, attacked_sq: u32) -> i32 {
         let below = ((attacking_sq as u8) < (attacked_sq as u8)) as u32;
         ((self.inner.wrapping_add(below << 30)) & 0x80FFFFFF) as i32

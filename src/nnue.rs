@@ -414,12 +414,6 @@ unsafe fn simd_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut [u
     }
 }
 
-/// Legacy pairwise pack without threat combine.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn simd_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
-    simd_pairwise_pack_fused(acc, std::ptr::null(), out, pw);
-}
 
 /// L1 int8 matmul: packed u8 input × i8 transposed weights → i32 output.
 /// Computes hidden[neuron] += sum_j(packed[j] * weights_t[neuron*h + j]) for one neuron.
@@ -1767,7 +1761,9 @@ impl NNUENet {
     /// Adds threat values inside the pairwise loop, eliminating a separate combine pass.
     /// Pairwise forward with fused PSQ+threat combine (Reckless activate_ft pattern).
     /// Pairwise forward with threat combine.
-    /// Combines PSQ + threat accumulators, then delegates to the SIMD pairwise path.
+    /// Pairwise forward with fused PSQ+threat combine.
+    /// Passes threat pointers through to the SIMD pairwise pack, combining
+    /// PSQ + threats in the same SIMD pass (no separate stack combine).
     #[inline(always)]
     fn forward_with_l1_pairwise_fused(&self, stm_acc: &[i16], ntm_acc: &[i16],
         stm_threat: &[i16], ntm_threat: &[i16], bucket: usize) -> i32
@@ -1775,18 +1771,22 @@ impl NNUENet {
         if stm_threat.is_empty() {
             return self.forward_with_l1_pairwise(stm_acc, ntm_acc, bucket);
         }
-        let h = self.hidden_size;
-        // Combine PSQ + threat on the stack (768 × 2 bytes × 2 = 3KB)
-        let mut stm_combined = [0i16; 768];
-        let mut ntm_combined = [0i16; 768];
-        for i in 0..h {
-            stm_combined[i] = stm_acc[i].wrapping_add(stm_threat[i]);
-            ntm_combined[i] = ntm_acc[i].wrapping_add(ntm_threat[i]);
-        }
-        self.forward_with_l1_pairwise(&stm_combined[..h], &ntm_combined[..h], bucket)
+        self.forward_with_l1_pairwise_threats(stm_acc, ntm_acc, stm_threat, ntm_threat, bucket)
     }
 
     fn forward_with_l1_pairwise(&self, stm_acc: &[i16], ntm_acc: &[i16], bucket: usize) -> i32 {
+        self.forward_with_l1_pairwise_inner(stm_acc, ntm_acc, &[], &[], bucket)
+    }
+
+    fn forward_with_l1_pairwise_threats(&self, stm_acc: &[i16], ntm_acc: &[i16],
+        stm_threat: &[i16], ntm_threat: &[i16], bucket: usize) -> i32
+    {
+        self.forward_with_l1_pairwise_inner(stm_acc, ntm_acc, stm_threat, ntm_threat, bucket)
+    }
+
+    fn forward_with_l1_pairwise_inner(&self, stm_acc: &[i16], ntm_acc: &[i16],
+        stm_threat: &[i16], ntm_threat: &[i16], bucket: usize) -> i32
+    {
         let h = self.hidden_size;
         let pw = h / 2; // pairwise output per perspective
         let l1_total = self.l1_size; // total L1 neurons (bucketed or not)
@@ -1798,7 +1798,10 @@ impl NNUENet {
         let l1_off = if self.bucketed_hidden { bucket * l1_pb } else { 0 };
         let l1 = if self.bucketed_hidden { l1_pb } else { l1_total };
 
+        let has_threats = !stm_threat.is_empty();
+
         // CReLU + pairwise for each perspective → pw values each
+        // When threats are present, fuses PSQ+threat combine into the SIMD pack
         let mut stm_pw = [0u8; 2048];
         let mut ntm_pw = [0u8; 2048];
 
@@ -1810,18 +1813,27 @@ impl NNUENet {
             }
         } else if self.has_avx2 && pw % 16 == 0 {
             unsafe {
-                simd_pairwise_pack(stm_acc, &mut stm_pw, pw);
-                simd_pairwise_pack(ntm_acc, &mut ntm_pw, pw);
+                if has_threats {
+                    simd_pairwise_pack_fused(stm_acc, stm_threat.as_ptr(), &mut stm_pw, pw);
+                    simd_pairwise_pack_fused(ntm_acc, ntm_threat.as_ptr(), &mut ntm_pw, pw);
+                } else {
+                    simd_pairwise_pack_fused(stm_acc, std::ptr::null(), &mut stm_pw, pw);
+                    simd_pairwise_pack_fused(ntm_acc, std::ptr::null(), &mut ntm_pw, pw);
+                }
             }
         } else {
             for i in 0..pw {
-                let a = (stm_acc[i] as i32).clamp(0, qa);
-                let b = (stm_acc[i + pw] as i32).clamp(0, qa);
+                let ta = if has_threats { stm_threat[i] as i32 } else { 0 };
+                let tb = if has_threats { stm_threat[i + pw] as i32 } else { 0 };
+                let a = (stm_acc[i] as i32 + ta).clamp(0, qa);
+                let b = (stm_acc[i + pw] as i32 + tb).clamp(0, qa);
                 stm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
             for i in 0..pw {
-                let a = (ntm_acc[i] as i32).clamp(0, qa);
-                let b = (ntm_acc[i + pw] as i32).clamp(0, qa);
+                let ta = if has_threats { ntm_threat[i] as i32 } else { 0 };
+                let tb = if has_threats { ntm_threat[i + pw] as i32 } else { 0 };
+                let a = (ntm_acc[i] as i32 + ta).clamp(0, qa);
+                let b = (ntm_acc[i + pw] as i32 + tb).clamp(0, qa);
                 ntm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
         }
@@ -1837,13 +1849,17 @@ impl NNUENet {
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
             for i in 0..pw {
-                let a = (stm_acc[i] as i32).clamp(0, qa);
-                let b = (stm_acc[i + pw] as i32).clamp(0, qa);
+                let ta = if has_threats { stm_threat[i] as i32 } else { 0 };
+                let tb = if has_threats { stm_threat[i + pw] as i32 } else { 0 };
+                let a = (stm_acc[i] as i32 + ta).clamp(0, qa);
+                let b = (stm_acc[i + pw] as i32 + tb).clamp(0, qa);
                 stm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
             for i in 0..pw {
-                let a = (ntm_acc[i] as i32).clamp(0, qa);
-                let b = (ntm_acc[i + pw] as i32).clamp(0, qa);
+                let ta = if has_threats { ntm_threat[i] as i32 } else { 0 };
+                let tb = if has_threats { ntm_threat[i + pw] as i32 } else { 0 };
+                let a = (ntm_acc[i] as i32 + ta).clamp(0, qa);
+                let b = (ntm_acc[i + pw] as i32 + tb).clamp(0, qa);
                 ntm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
         }
@@ -2437,7 +2453,7 @@ impl NNUENet {
             let bucket = output_bucket(piece_count);
             let h = self.hidden_size;
 
-            let (stm_acc_raw, ntm_acc_raw) = if stm == WHITE {
+            let (stm_acc, ntm_acc) = if stm == WHITE {
                 (acc.white(), acc.black())
             } else {
                 (acc.black(), acc.white())
@@ -2446,31 +2462,28 @@ impl NNUENet {
             let t_stm = threat_stack.values(if stm == WHITE { WHITE } else { BLACK });
             let t_ntm = threat_stack.values(if stm == WHITE { BLACK } else { WHITE });
 
-            // Combine PSQ + threat
-            let mut stm_combined = [0i16; 768];
-            let mut ntm_combined = [0i16; 768];
-            for i in 0..h {
-                stm_combined[i] = stm_acc_raw[i].wrapping_add(t_stm[i]);
-                ntm_combined[i] = ntm_acc_raw[i].wrapping_add(t_ntm[i]);
-            }
-
-            let mut output = self.output_bias[bucket] as i64;
             if self.l1_size > 0 {
                 if self.use_pairwise {
-                    return self.forward_with_l1_pairwise(&stm_combined[..h], &ntm_combined[..h], bucket);
+                    return self.forward_with_l1_pairwise_threats(stm_acc, ntm_acc, t_stm, t_ntm, bucket);
+                }
+                // Non-pairwise with threats: combine on stack (rare path)
+                let mut stm_combined = [0i16; 768];
+                let mut ntm_combined = [0i16; 768];
+                for i in 0..h {
+                    stm_combined[i] = stm_acc[i].wrapping_add(t_stm[i]);
+                    ntm_combined[i] = ntm_acc[i].wrapping_add(t_ntm[i]);
                 }
                 return self.forward_with_l1(&stm_combined[..h], &ntm_combined[..h], bucket);
             }
 
             // Non-hidden-layer path (shouldn't happen for v9 but handle it)
             let out_w = self.output_weight_row(bucket);
-            let stm_acc = &stm_combined[..h];
-            let ntm_acc = &ntm_combined[..h];
+            let mut output = self.output_bias[bucket] as i64;
             if self.use_pairwise {
                 let pw = h / 2;
                 for i in 0..pw {
-                    let a = (stm_acc[i] as i32).clamp(0, QA);
-                    let b = (stm_acc[i + pw] as i32).clamp(0, QA);
+                    let a = (stm_acc[i] as i32 + t_stm[i] as i32).clamp(0, QA);
+                    let b = (stm_acc[i + pw] as i32 + t_stm[i + pw] as i32).clamp(0, QA);
                     let v = ((a * b) >> FT_SHIFT) as i64;
                     output += v * out_w[i] as i64;
                 }

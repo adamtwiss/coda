@@ -222,23 +222,32 @@ pub fn convert_v7(
         offset += 2;
     }
 
-    // Threat weights: read from combined FT block (i16 at QA=255), convert to i8
+    // Threat weights: read from combined FT block (i16 at QA=255), clamp to i8
     // In Atlas's Bullet approach, the FT has (PSQ_inputs + threat_inputs) combined.
     // PSQ weights are the first NNUE_INPUT_SIZE rows (already read above).
     // Threat weights are the next num_threats rows, stored as i16 at QA=255.
-    // We convert to i8 by rescaling: i8_val = clamp(i16_val * 64 / 255, -128, 127)
+    // We clamp directly to i8 [-128, 127] preserving QA=255 scale.
+    // This is correct because threat values are added to the PSQ accumulator
+    // (also at QA=255) before the pairwise activation clamp at QA=255.
+    // TODO: monitor overflow rate after training changes — if >1% of weights
+    // exceed [-127, 127], consider storing threats as i16 in the .nnue format.
     let mut threat_weights = Vec::new();
     if num_threats > 0 {
         threat_weights = vec![0i8; num_threats * h];
+        let mut clipped = 0u64;
         for i in 0..num_threats * h {
             let val_i16 = read_i16_le(&data, offset);
             offset += 2;
-            // Rescale from QA=255 to QA=64
-            let rescaled = (val_i16 as i32 * 64 / 255).clamp(-128, 127) as i8;
-            threat_weights[i] = rescaled;
+            if val_i16 < -127 || val_i16 > 127 { clipped += 1; }
+            threat_weights[i] = (val_i16 as i32).clamp(-127, 127) as i8;
         }
-        println!("Read and rescaled {} threat weights ({}×{}, i16→i8)",
-            num_threats * h, num_threats, h);
+        let total = (num_threats * h) as u64;
+        let pct = 100.0 * clipped as f64 / total as f64;
+        println!("Read {} threat weights ({}×{}, i16→i8 clamp, {:.4}% clipped)",
+            total, num_threats, h, pct);
+        if pct > 1.0 {
+            eprintln!("WARNING: {:.2}% of threat weights clipped to i8 — consider i16 storage", pct);
+        }
     }
 
     // l0b: [H] i16

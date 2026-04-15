@@ -16,10 +16,13 @@ use crate::types::*;
 const MAX_PLY: usize = 256;
 
 /// Fixed-capacity array (no heap, like ArrayVec but simpler).
+/// Tracks overflow so callers can force full recompute instead of
+/// silently using incomplete deltas.
 #[derive(Clone)]
 pub struct DeltaVec {
     data: [RawThreatDelta; MAX_THREAT_DELTAS],
     len: usize,
+    overflowed: bool,
 }
 
 impl DeltaVec {
@@ -27,17 +30,20 @@ impl DeltaVec {
         Self {
             data: [RawThreatDelta { attacker_cp: 0, from_sq: 0, victim_cp: 0, to_sq: 0, add: false }; MAX_THREAT_DELTAS],
             len: 0,
+            overflowed: false,
         }
     }
 
     #[inline]
-    pub fn clear(&mut self) { self.len = 0; }
+    pub fn clear(&mut self) { self.len = 0; self.overflowed = false; }
 
     #[inline]
     pub fn push(&mut self, d: RawThreatDelta) {
         if self.len < MAX_THREAT_DELTAS {
             self.data[self.len] = d;
             self.len += 1;
+        } else {
+            self.overflowed = true;
         }
     }
 
@@ -49,6 +55,9 @@ impl DeltaVec {
 
     #[inline]
     pub fn is_empty(&self) -> bool { self.len == 0 }
+
+    #[inline]
+    pub fn overflowed(&self) -> bool { self.overflowed }
 }
 
 /// Single threat accumulator entry (one ply).
@@ -173,8 +182,8 @@ impl ThreatStack {
             if entry.mv == NO_MOVE {
                 continue; // null move, safe
             }
-            if entry.delta.is_empty() {
-                return None; // real move without deltas, can't pass
+            if entry.delta.is_empty() || entry.delta.overflowed() {
+                return None; // real move without deltas or overflow, can't pass
             }
             if entry.moved_pt == KING {
                 let from = move_from(entry.mv);

@@ -1931,7 +1931,6 @@ fn negamax(
                 continue;
             }
                     if info.threat_stack.active { let entry = info.threat_stack.current_mut(); entry.delta.clear(); for d in board.threat_deltas.iter() { entry.delta.push(*d); } let ul = board.undo_stack.len(); if ul > 0 { let u = &board.undo_stack[ul-1]; entry.mv = u.mv; if u.mv != crate::types::NO_MOVE { entry.moved_pt = board.mailbox[crate::types::move_to(u.mv) as usize]; } } }
-if let Some(acc) = &mut info.nnue_acc { acc.store_threat_deltas(board); }
             info.tt.prefetch(board.hash);
 
             // Cheap qsearch verification before expensive negamax (Stockfish pattern)
@@ -2234,7 +2233,6 @@ if let Some(acc) = &mut info.nnue_acc { acc.store_threat_deltas(board); }
         }
         // Store threat deltas from make_move into accumulator stack
                 if info.threat_stack.active { let entry = info.threat_stack.current_mut(); entry.delta.clear(); for d in board.threat_deltas.iter() { entry.delta.push(*d); } let ul = board.undo_stack.len(); if ul > 0 { let u = &board.undo_stack[ul-1]; entry.mv = u.mv; if u.mv != crate::types::NO_MOVE { entry.moved_pt = board.mailbox[crate::types::move_to(u.mv) as usize]; } } }
-if let Some(acc) = &mut info.nnue_acc { acc.store_threat_deltas(board); }
 
         // Prefetch TT bucket for the new position
         info.tt.prefetch(board.hash);
@@ -2821,7 +2819,6 @@ fn quiescence_with_depth(
                 continue;
             }
                     if info.threat_stack.active { let entry = info.threat_stack.current_mut(); entry.delta.clear(); for d in board.threat_deltas.iter() { entry.delta.push(*d); } let ul = board.undo_stack.len(); if ul > 0 { let u = &board.undo_stack[ul-1]; entry.mv = u.mv; if u.mv != crate::types::NO_MOVE { entry.moved_pt = board.mailbox[crate::types::move_to(u.mv) as usize]; } } }
-if let Some(acc) = &mut info.nnue_acc { acc.store_threat_deltas(board); }
             info.tt.prefetch(board.hash);
             move_count += 1;
 
@@ -2961,7 +2958,6 @@ if let Some(acc) = &mut info.nnue_acc { acc.store_threat_deltas(board); }
             continue;
         }
                 if info.threat_stack.active { let entry = info.threat_stack.current_mut(); entry.delta.clear(); for d in board.threat_deltas.iter() { entry.delta.push(*d); } let ul = board.undo_stack.len(); if ul > 0 { let u = &board.undo_stack[ul-1]; entry.mv = u.mv; if u.mv != crate::types::NO_MOVE { entry.moved_pt = board.mailbox[crate::types::move_to(u.mv) as usize]; } } }
-if let Some(acc) = &mut info.nnue_acc { acc.store_threat_deltas(board); }
         info.tt.prefetch(board.hash);
         let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
         board.unmake_move();
