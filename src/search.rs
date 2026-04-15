@@ -400,6 +400,10 @@ impl SearchInfo {
             match crate::nnue::NNUENet::load_from_bytes(EMBEDDED_NET) {
                 Ok(net) => {
                     let acc = crate::nnue::NNUEAccumulator::new(net.hidden_size);
+                    if net.has_threats {
+                        self.threat_stack = crate::threat_accum::ThreatStack::new(net.hidden_size);
+                        self.threat_stack.active = true;
+                    }
                     self.nnue_net = Some(std::sync::Arc::new(net));
                     self.nnue_acc = Some(acc);
                     return true;
