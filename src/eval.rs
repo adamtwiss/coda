@@ -184,16 +184,48 @@ pub fn evaluate_nnue(
     threat_stack: &crate::threat_accum::ThreatStack,
 ) -> i32 {
     acc.materialize(net, board);
-    // Threats are computed by ThreatStack.ensure_computed() called before eval.
-    // The old AccEntry threat path is kept for backwards compatibility but
-    // ThreatStack is the primary path when active.
     if net.has_threats && !threat_stack.active {
-        // Fallback: old AccEntry path (for when ThreatStack isn't wired yet)
         acc.recompute_threats_if_needed(net, board);
     }
     let pc = crate::nnue::piece_count(board);
-    let score = net.forward_with_threats(acc, board.side_to_move, pc, threat_stack);
 
+    // DEBUG: compare ThreatStack vs full recompute
+    #[cfg(debug_assertions)]
+    if threat_stack.active && net.has_threats {
+        static DBG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let c = DBG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if c < 20 {
+            let h = net.hidden_size;
+            let occ = board.colors[0] | board.colors[1];
+            let wk = (board.pieces[crate::types::KING as usize] & board.colors[0]).trailing_zeros();
+            let bk = (board.pieces[crate::types::KING as usize] & board.colors[1]).trailing_zeros();
+            // Full recompute from scratch
+            let mut check_w = vec![0i16; h];
+            let mut check_b = vec![0i16; h];
+            crate::threats::enumerate_threats(
+                &board.pieces, &board.colors, &board.mailbox,
+                occ, crate::types::WHITE, (wk % 8) >= 4,
+                |idx| { if idx < net.num_threat_features { let w = idx * h; for j in 0..h { check_w[j] += net.threat_weights[w + j] as i16; } } },
+            );
+            crate::threats::enumerate_threats(
+                &board.pieces, &board.colors, &board.mailbox,
+                occ, crate::types::BLACK, (bk % 8) >= 4,
+                |idx| { if idx < net.num_threat_features { let w = idx * h; for j in 0..h { check_b[j] += net.threat_weights[w + j] as i16; } } },
+            );
+            let ts_w = threat_stack.values(crate::types::WHITE);
+            let ts_b = threat_stack.values(crate::types::BLACK);
+            let mut w_diff: i32 = 0;
+            let mut b_diff: i32 = 0;
+            for j in 0..h { w_diff += (ts_w[j] as i32 - check_w[j] as i32).abs(); }
+            for j in 0..h { b_diff += (ts_b[j] as i32 - check_b[j] as i32).abs(); }
+            if w_diff > 0 || b_diff > 0 {
+                eprintln!("THREAT_STACK MISMATCH #{}: wdiff={} bdiff={} w_acc=[{},{}] w_chk=[{},{}]",
+                    c, w_diff, b_diff, ts_w[0], ts_w[1], check_w[0], check_w[1]);
+            }
+        }
+    }
+
+    let score = net.forward_with_threats(acc, board.side_to_move, pc, threat_stack);
     score
 }
 
