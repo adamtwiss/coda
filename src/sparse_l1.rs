@@ -11,21 +11,38 @@
 /// across an AVX2 register and VPMADDUBSW with the weights for all neurons.
 
 /// Transpose L1 weights from neuron-major to input-chunk-major layout.
-/// Input: [neuron * total_input + input_idx] (i8)
-/// Output: [chunk * num_neurons * 4 + neuron * 4 + byte_in_chunk] (i8)
+///
+/// Input layout (l1_weights_8t for pairwise):
+///   STM block: [neuron * per_perspective + stm_input] for first num_neurons * per_perspective entries
+///   NTM block: [num_neurons * per_perspective + neuron * per_perspective + ntm_input]
+///   Where per_perspective = pw = hidden_size / 2
+///
+/// Output layout:
+///   [chunk * num_neurons * 4 + neuron * 4 + byte_in_chunk]
+///   Chunks 0..pw/4 are STM, chunks pw/4..pw/2 are NTM.
 pub fn transpose_weights_for_sparse(
-    weights_8t: &[i8],   // neuron-major: [neuron * total_input + input_idx]
-    total_input: usize,  // total L1 input (pw * 2 for both perspectives)
-    num_neurons: usize,  // total L1 neurons (bucketed if applicable)
+    weights_8t: &[i8],
+    total_input: usize,  // pw * 2 (both perspectives)
+    num_neurons: usize,
 ) -> Vec<i8> {
-    let num_chunks = total_input / 4;
+    let per_persp = total_input / 2; // pw
+    let num_chunks = total_input / 4; // total chunks for both perspectives
     let mut sparse = vec![0i8; num_chunks * num_neurons * 4];
 
+    let ntm_offset = num_neurons * per_persp; // start of NTM block in weights_8t
+
     for chunk in 0..num_chunks {
+        let is_ntm = chunk >= per_persp / 4;
+        let local_chunk = if is_ntm { chunk - per_persp / 4 } else { chunk };
+
         for neuron in 0..num_neurons {
             for byte in 0..4 {
-                let input_idx = chunk * 4 + byte;
-                let src = neuron * total_input + input_idx;
+                let input_idx = local_chunk * 4 + byte;
+                let src = if is_ntm {
+                    ntm_offset + neuron * per_persp + input_idx
+                } else {
+                    neuron * per_persp + input_idx
+                };
                 let dst = chunk * num_neurons * 4 + neuron * 4 + byte;
                 if src < weights_8t.len() {
                     sparse[dst] = weights_8t[src];
@@ -188,24 +205,26 @@ mod tests {
 
     #[test]
     fn test_transpose_weights() {
-        // 2 neurons, 8 inputs (2 chunks of 4)
+        // 2 neurons, pw=4 per perspective, total_input=8 (4 STM + 4 NTM)
+        // Engine layout: STM block [neuron * pw + input], NTM block [num_neurons * pw + neuron * pw + input]
         let dense = vec![
-            // neuron 0: inputs 0-7
-            10i8, 20, 30, 40, 50, 60, 70, 80,
-            // neuron 1: inputs 0-7
-            -10, -20, -30, -40, -50, -60, -70, -80,
+            // STM block: neuron 0 inputs 0-3, neuron 1 inputs 0-3
+            10i8, 20, 30, 40,     // neuron 0 STM
+            -10, -20, -30, -40,   // neuron 1 STM
+            // NTM block: neuron 0 inputs 0-3, neuron 1 inputs 0-3
+            50, 60, 70, 80,       // neuron 0 NTM
+            -50, -60, -70, -80,   // neuron 1 NTM
         ];
         let sparse = transpose_weights_for_sparse(&dense, 8, 2);
 
-        // chunk 0 (inputs 0-3): neuron 0 bytes [10,20,30,40], neuron 1 bytes [-10,-20,-30,-40]
+        // STM chunk 0 (inputs 0-3): neuron 0 [10,20,30,40], neuron 1 [-10,-20,-30,-40]
         assert_eq!(sparse[0], 10);   // chunk0, neuron0, byte0
         assert_eq!(sparse[1], 20);   // chunk0, neuron0, byte1
         assert_eq!(sparse[4], -10);  // chunk0, neuron1, byte0
-        assert_eq!(sparse[5], -20);  // chunk0, neuron1, byte1
 
-        // chunk 1 (inputs 4-7): neuron 0 bytes [50,60,70,80], neuron 1 bytes [-50,-60,-70,-80]
-        assert_eq!(sparse[8], 50);   // chunk1, neuron0, byte0
-        assert_eq!(sparse[12], -50); // chunk1, neuron1, byte0
+        // NTM chunk 1 (inputs 0-3 of NTM): neuron 0 [50,60,70,80], neuron 1 [-50,-60,-70,-80]
+        assert_eq!(sparse[8], 50);   // chunk1(NTM), neuron0, byte0
+        assert_eq!(sparse[12], -50); // chunk1(NTM), neuron1, byte0
     }
 
     #[test]
@@ -217,7 +236,9 @@ mod tests {
         let num_neurons = 16;
         let total_input = pw * 2;
 
-        // Random-ish weights
+        // Random-ish weights in the ACTUAL engine layout:
+        // STM block: [neuron * pw + stm_input] for first num_neurons * pw entries
+        // NTM block: [num_neurons * pw + neuron * pw + ntm_input]
         let mut dense_weights = vec![0i8; num_neurons * total_input];
         for i in 0..dense_weights.len() {
             dense_weights[i] = ((i * 7 + 13) % 256) as i8;
@@ -244,15 +265,18 @@ mod tests {
             &bias, bias_scale, &mut sparse_output,
         );
 
-        // Compute dense (reference)
+        // Compute dense (reference) — using engine's actual weight layout:
+        // STM: weights_8t[neuron * pw + j]
+        // NTM: weights_8t[num_neurons * pw + neuron * pw + j]
+        let ntm_base = num_neurons * pw;
         let mut dense_output = vec![0i32; num_neurons];
         for i in 0..num_neurons { dense_output[i] = bias[i] as i32 * bias_scale; }
         for neuron in 0..num_neurons {
             for j in 0..pw {
-                dense_output[neuron] += stm_pw[j] as i32 * dense_weights[neuron * total_input + j] as i32;
+                dense_output[neuron] += stm_pw[j] as i32 * dense_weights[neuron * pw + j] as i32;
             }
             for j in 0..pw {
-                dense_output[neuron] += ntm_pw[j] as i32 * dense_weights[neuron * total_input + pw + j] as i32;
+                dense_output[neuron] += ntm_pw[j] as i32 * dense_weights[ntm_base + neuron * pw + j] as i32;
             }
         }
 

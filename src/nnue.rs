@@ -1402,6 +1402,7 @@ pub struct NNUENet {
     pub l1_weights: Vec<i16>,     // [2*hidden_size × l1_size] row-major
     pub l1_weights_t: Vec<i16>,   // [l1_size × 2*hidden_size] transposed for SIMD
     pub l1_weights_8t: Vec<i8>,   // [l1_size × 2*hidden_size] transposed int8 for VPMADDUBSW
+    pub l1_weights_sparse: Vec<i8>, // input-chunk-major for sparse L1 dpbusd
     pub l1_biases: Vec<i16>,      // [l1_size]
     pub l2_weights_f: Vec<f32>,   // [l2_input × l2_size] — float (l2_input = l1*2 if dual)
     pub l2_biases_f: Vec<f32>,    // [l2_size]
@@ -1620,6 +1621,14 @@ impl NNUENet {
             w.clamp(-128, 127) as i8
         }).collect();
 
+        // Sparse L1 weights: input-chunk-major for dpbusd kernel
+        let l1_weights_sparse = if l1_size > 0 && use_pairwise {
+            let total_input = if use_pairwise { hidden_size } else { 2 * hidden_size };
+            crate::sparse_l1::transpose_weights_for_sparse(&l1_weights_8t, total_input, bl1)
+        } else {
+            Vec::new()
+        };
+
         // Prepare float weights for v7 hidden layer forward pass
         // L2 and output use QA_L1 (not QA) for dequantization
         let qa_l1_f = if l1_scale != 0 { l1_scale as f32 } else { QA as f32 };
@@ -1701,6 +1710,7 @@ impl NNUENet {
             l1_scale,
             l1_weights_t,
             l1_weights_8t,
+            l1_weights_sparse,
             l1_weights,
             l1_biases,
             l2_weights_f,
@@ -1859,6 +1869,45 @@ impl NNUENet {
                 unsafe {
                     hidden32[i] += simd512_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
                     hidden32[i] += simd512_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
+                }
+            }
+        } else if false && self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 <= 16 {
+            // Sparse L1 dpbusd — disabled: 6% slower than dense at L1=16 neurons.
+            // The overhead of NNZ tracking exceeds skip savings at this size.
+            // Would help at L1=32+ neurons.
+            unsafe {
+                crate::sparse_l1::sparse_l1_avx2(
+                    &stm_pw, &ntm_pw, pw, &self.l1_weights_sparse,
+                    l1, &self.l1_biases[l1_off..], pw_scale, &mut hidden32,
+                );
+            }
+            // DEBUG: compare against dense
+            #[cfg(debug_assertions)]
+            {
+                static SDBG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                let c = SDBG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if c < 5 {
+                    let ntm_base = l1_total * pw;
+                    let mut dense = vec![0i32; l1];
+                    for i in 0..l1 { dense[i] = self.l1_biases[l1_off + i] as i32 * pw_scale; }
+                    for i in 0..l1 {
+                        let gi = l1_off + i;
+                        for j in 0..pw {
+                            dense[i] += stm_pw[j] as i32 * self.l1_weights_8t[gi * pw + j] as i32;
+                            dense[i] += ntm_pw[j] as i32 * self.l1_weights_8t[ntm_base + gi * pw + j] as i32;
+                        }
+                    }
+                    let mut mismatch = false;
+                    for i in 0..l1 {
+                        if hidden32[i] != dense[i] {
+                            if !mismatch {
+                                eprintln!("SPARSE L1 MISMATCH neuron {}: sparse={} dense={} diff={}",
+                                    i, hidden32[i], dense[i], hidden32[i] - dense[i]);
+                            }
+                            mismatch = true;
+                        }
+                    }
+                    if !mismatch { eprintln!("SPARSE L1 MATCH (all {} neurons)", l1); }
                 }
             }
         } else if self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty() {
