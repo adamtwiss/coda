@@ -183,9 +183,11 @@ pub fn evaluate_nnue(
     acc: &mut crate::nnue::NNUEAccumulator,
 ) -> i32 {
     acc.materialize(net, board);
-    // Full recompute threats every eval (Phase 2a — no incremental updates yet)
     if net.has_threats {
-        acc.recompute_threats(net, board);
+        // Full recompute for now — incremental deltas need more work to be correct.
+        // The delta computation from post-move board state doesn't match Reckless's
+        // mid-move callback approach. Phase 2c needs proper BoardObserver-style hooks.
+        acc.recompute_threats_if_needed(net, board);
     }
     let pc = crate::nnue::piece_count(board);
     let score = net.forward(acc, board.side_to_move, pc);

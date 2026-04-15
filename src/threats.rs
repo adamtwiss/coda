@@ -282,6 +282,208 @@ pub fn enumerate_threats<F: FnMut(usize)>(
     }
 }
 
+/// Maximum threat deltas per ply. Reckless uses 80; we use 128 for safety.
+pub const MAX_THREAT_DELTAS: usize = 128;
+
+/// Raw threat delta: stores piece data, not pre-computed indices.
+/// Indices are computed per-perspective during accumulator update.
+#[derive(Copy, Clone)]
+pub struct RawThreatDelta {
+    pub attacker_cp: u8,
+    pub from_sq: u8,
+    pub victim_cp: u8,
+    pub to_sq: u8,
+    pub add: bool,
+}
+
+/// Compute raw threat deltas when a piece moves from `from` to `to`.
+/// Must be called BEFORE the move is applied on the board (board still has old state).
+/// `occ_without_dest` = occupancy with `from` removed but `to` not yet occupied.
+pub fn push_threats_on_move(
+    deltas: &mut Vec<RawThreatDelta>,
+    pieces_bb: &[Bitboard; 6],
+    colors_bb: &[Bitboard; 2],
+    mailbox: &[u8; 64],
+    occ: Bitboard,
+    piece_color: Color,
+    piece_type: u8,
+    from: u32,
+    to: u32,
+) {
+    let white_bb = colors_bb[WHITE as usize];
+    let cp = colored_piece(piece_color, piece_type);
+    // Use occupancy with the moving piece removed from `from` but not yet at `to`
+    // This matches how Reckless handles it: occ ^ to_bb
+    let occ_transit = occ ^ (1u64 << to);
+
+    // Remove threats from old square
+    push_threats_for_piece(deltas, pieces_bb, colors_bb, mailbox, occ_transit, white_bb, cp, piece_color, piece_type, from, false);
+    // Add threats at new square
+    push_threats_for_piece(deltas, pieces_bb, colors_bb, mailbox, occ_transit, white_bb, cp, piece_color, piece_type, to, true);
+}
+
+/// Compute raw threat deltas when a piece appears or disappears.
+pub fn push_threats_on_change(
+    deltas: &mut Vec<RawThreatDelta>,
+    pieces_bb: &[Bitboard; 6],
+    colors_bb: &[Bitboard; 2],
+    mailbox: &[u8; 64],
+    occ: Bitboard,
+    piece_color: Color,
+    piece_type: u8,
+    square: u32,
+    add: bool,
+) {
+    let white_bb = colors_bb[WHITE as usize];
+    let cp = colored_piece(piece_color, piece_type);
+    push_threats_for_piece(deltas, pieces_bb, colors_bb, mailbox, occ, white_bb, cp, piece_color, piece_type, square, add);
+}
+
+/// Core: compute all threat deltas for a piece on a square.
+/// Handles: threats from this piece, threats to this piece, and x-ray discoveries.
+fn push_threats_for_piece(
+    deltas: &mut Vec<RawThreatDelta>,
+    pieces_bb: &[Bitboard; 6],
+    colors_bb: &[Bitboard; 2],
+    mailbox: &[u8; 64],
+    occ: Bitboard,
+    white_bb: Bitboard,
+    cp: usize,
+    piece_color: Color,
+    piece_type: u8,
+    square: u32,
+    add: bool,
+) {
+    // 1. Threats FROM this piece to occupied squares
+    let attacks = piece_attacks_occ(piece_type, piece_color, square, occ);
+    let mut attacked_occ = attacks & occ;
+    while attacked_occ != 0 {
+        let target_sq = attacked_occ.trailing_zeros();
+        attacked_occ &= attacked_occ - 1;
+        let victim_pt = mailbox[target_sq as usize];
+        if victim_pt >= 6 { continue; }
+        let victim_color = if white_bb & (1u64 << target_sq) != 0 { WHITE } else { BLACK };
+        deltas.push(RawThreatDelta {
+            attacker_cp: cp as u8,
+            from_sq: square as u8,
+            victim_cp: colored_piece(victim_color, victim_pt) as u8,
+            to_sq: target_sq as u8,
+            add,
+        });
+    }
+
+    // 2. Sliding pieces that attack THROUGH this square (x-ray threats)
+    let rook_att = rook_attacks(square, occ);
+    let bishop_att = bishop_attacks(square, occ);
+
+    let diagonal_sliders = (pieces_bb[BISHOP as usize] | pieces_bb[QUEEN as usize]) & bishop_att;
+    let orthogonal_sliders = (pieces_bb[ROOK as usize] | pieces_bb[QUEEN as usize]) & rook_att;
+
+    let mut sliders = (diagonal_sliders | orthogonal_sliders) & occ;
+    while sliders != 0 {
+        let slider_sq = sliders.trailing_zeros();
+        sliders &= sliders - 1;
+        let slider_pt = mailbox[slider_sq as usize];
+        if slider_pt >= 6 { continue; }
+        let slider_color = if white_bb & (1u64 << slider_sq) != 0 { WHITE } else { BLACK };
+        let slider_cp = colored_piece(slider_color, slider_pt);
+
+        // The slider attacks this piece's square
+        deltas.push(RawThreatDelta {
+            attacker_cp: slider_cp as u8,
+            from_sq: slider_sq as u8,
+            victim_cp: cp as u8,
+            to_sq: square as u8,
+            add,
+        });
+
+        // X-ray: does removing this piece reveal a new target behind it?
+        // Compute the ray from slider through this square
+        let ray = ray_between(slider_sq, square);
+        let beyond = ray_beyond(slider_sq, square) & occ;
+        if beyond != 0 {
+            let xray_target = if slider_sq < square {
+                beyond.trailing_zeros() // first piece beyond
+            } else {
+                63 - beyond.leading_zeros() // last piece in other direction
+            };
+            // Wait — we need proper ray extension, not just any piece in beyond.
+            // Skip x-rays for now (matching design doc: "skip x-ray initially")
+            let _ = xray_target;
+        }
+    }
+
+    // 3. Non-sliding pieces that attack this square
+    // Pawns
+    let black_pawns = pieces_bb[PAWN as usize] & colors_bb[BLACK as usize] & pawn_attacks(WHITE, square);
+    let white_pawns = pieces_bb[PAWN as usize] & colors_bb[WHITE as usize] & pawn_attacks(BLACK, square);
+    // Knights
+    let knights = pieces_bb[KNIGHT as usize] & knight_attacks(square);
+    // Kings
+    let kings = pieces_bb[KING as usize] & king_attacks(square);
+
+    let mut non_sliders = (black_pawns | white_pawns | knights | kings) & occ;
+    while non_sliders != 0 {
+        let ns_sq = non_sliders.trailing_zeros();
+        non_sliders &= non_sliders - 1;
+        let ns_pt = mailbox[ns_sq as usize];
+        if ns_pt >= 6 { continue; }
+        let ns_color = if white_bb & (1u64 << ns_sq) != 0 { WHITE } else { BLACK };
+        deltas.push(RawThreatDelta {
+            attacker_cp: colored_piece(ns_color, ns_pt) as u8,
+            from_sq: ns_sq as u8,
+            victim_cp: cp as u8,
+            to_sq: square as u8,
+            add,
+        });
+    }
+}
+
+/// Placeholder for ray_between and ray_beyond — needed for x-ray threats.
+/// For now returns 0 (x-rays skipped per design doc).
+fn ray_between(_from: u32, _to: u32) -> Bitboard { 0 }
+fn ray_beyond(_from: u32, _to: u32) -> Bitboard { 0 }
+
+/// Apply raw threat deltas to update the threat accumulator incrementally.
+/// Copies from `prev` and applies all deltas for a specific perspective.
+pub fn apply_threat_deltas(
+    dst: &mut [i16],           // destination threat accumulator (one perspective)
+    src: &[i16],               // source (previous position's threat accumulator)
+    deltas: &[RawThreatDelta],
+    threat_weights: &[i8],     // [num_threats × hidden_size]
+    hidden_size: usize,
+    num_threats: usize,
+    pov: Color,
+    mirrored: bool,
+) {
+    // Copy from previous position
+    dst[..hidden_size].copy_from_slice(&src[..hidden_size]);
+
+    // Apply each delta
+    for delta in deltas {
+        let idx = threat_index(
+            delta.attacker_cp as usize,
+            delta.from_sq as u32,
+            delta.victim_cp as usize,
+            delta.to_sq as u32,
+            mirrored,
+            pov,
+        );
+        if idx < 0 || (idx as usize) >= num_threats { continue; }
+
+        let w_off = idx as usize * hidden_size;
+        if delta.add {
+            for j in 0..hidden_size {
+                dst[j] += threat_weights[w_off + j] as i16;
+            }
+        } else {
+            for j in 0..hidden_size {
+                dst[j] -= threat_weights[w_off + j] as i16;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

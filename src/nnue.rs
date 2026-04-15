@@ -2598,7 +2598,8 @@ pub struct AccEntry {
     // Threat accumulator (v9): separate i16 values summed with PSQ at activation
     pub threat_white: Vec<i16>,
     pub threat_black: Vec<i16>,
-    threat_computed: bool,
+    pub threat_computed: bool,
+    pub threat_deltas: Vec<crate::threats::RawThreatDelta>,
 }
 
 /// Finny table entry: cached accumulator for a specific king bucket.
@@ -2631,6 +2632,7 @@ impl NNUEAccumulator {
                 threat_white: Vec::new(), // allocated on first use if net has threats
                 threat_black: Vec::new(),
                 threat_computed: false,
+                threat_deltas: Vec::new(),
             });
         }
         // Build finny table (flat array)
@@ -2643,6 +2645,16 @@ impl NNUEAccumulator {
             });
         }
         NNUEAccumulator { stack, top: 0, hidden_size, finny }
+    }
+
+    pub fn top(&self) -> usize { self.top }
+
+    pub fn prev_threat_computed(&self) -> bool {
+        self.top > 0 && self.stack[self.top - 1].threat_computed
+    }
+
+    pub fn set_threat_deltas(&mut self, deltas: Vec<crate::threats::RawThreatDelta>) {
+        self.stack[self.top].threat_deltas = deltas;
     }
 
     pub fn white(&self) -> &[i16] {
@@ -2696,14 +2708,20 @@ impl NNUEAccumulator {
         self.stack[self.top].computed = true;
     }
 
-    /// Compute threat accumulator from scratch for both perspectives.
-    /// Full recompute: iterates all pieces, computes attacks, adds i8 weight rows.
-    pub fn recompute_threats(&mut self, net: &NNUENet, board: &crate::board::Board) {
+    /// Compute threat accumulator if not already done.
+    /// Currently full recompute only. Incremental updates (Phase 2c) need
+    /// BoardObserver-style hooks during make_move for correct delta computation.
+    pub fn recompute_threats_if_needed(&mut self, net: &NNUENet, board: &crate::board::Board) {
         if !net.has_threats { return; }
+        if self.stack[self.top].threat_computed { return; }
+        self.recompute_threats_full(net, board);
+    }
+
+    /// Full recompute: iterates all pieces, computes attacks, adds i8 weight rows.
+    fn recompute_threats_full(&mut self, net: &NNUENet, board: &crate::board::Board) {
         let h = self.hidden_size;
         let entry = &mut self.stack[self.top];
 
-        // Allocate threat vectors if needed
         if entry.threat_white.len() < h {
             entry.threat_white.resize(h, 0);
             entry.threat_black.resize(h, 0);
@@ -2712,7 +2730,7 @@ impl NNUEAccumulator {
         let occ = board.colors[0] | board.colors[1];
 
         // White perspective
-        entry.threat_white[..h].fill(0); // threats have no bias
+        entry.threat_white[..h].fill(0);
         let wk_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
         let w_mirrored = (wk_sq % 8) >= 4;
         crate::threats::enumerate_threats(
@@ -2760,9 +2778,11 @@ impl NNUEAccumulator {
                 threat_white: Vec::new(),
                 threat_black: Vec::new(),
                 threat_computed: false,
+                threat_deltas: Vec::new(),
             });
         }
         self.stack[self.top].computed = false;
+        self.stack[self.top].threat_computed = false;
         self.stack[self.top].dirty = dirty;
     }
 
