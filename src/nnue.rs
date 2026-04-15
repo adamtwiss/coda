@@ -2600,6 +2600,9 @@ pub struct AccEntry {
     pub threat_black: Vec<i16>,
     pub threat_computed: bool,
     pub threat_deltas: Vec<crate::threats::RawThreatDelta>,
+    // Stored threat feature indices for diff-based incremental (per perspective)
+    pub threat_features_white: Vec<usize>,
+    pub threat_features_black: Vec<usize>,
 }
 
 /// Finny table entry: cached accumulator for a specific king bucket.
@@ -2633,6 +2636,8 @@ impl NNUEAccumulator {
                 threat_black: Vec::new(),
                 threat_computed: false,
                 threat_deltas: Vec::new(),
+                threat_features_white: Vec::new(),
+                threat_features_black: Vec::new(),
             });
         }
         // Build finny table (flat array)
@@ -2708,9 +2713,9 @@ impl NNUEAccumulator {
         self.stack[self.top].computed = true;
     }
 
-    /// Compute threat accumulator if not already done.
-    /// Currently full recompute only. Incremental updates (Phase 2c) need
-    /// BoardObserver-style hooks during make_move for correct delta computation.
+    /// Compute threat accumulator if not already done. Full recompute for now.
+    /// True incremental needs local-delta computation (only process squares affected
+    /// by the last move) to avoid the 3.7µs full enumeration cost.
     pub fn recompute_threats_if_needed(&mut self, net: &NNUENet, board: &crate::board::Board) {
         if !net.has_threats { return; }
         if self.stack[self.top].threat_computed { return; }
@@ -2779,6 +2784,8 @@ impl NNUEAccumulator {
                 threat_black: Vec::new(),
                 threat_computed: false,
                 threat_deltas: Vec::new(),
+                threat_features_white: Vec::new(),
+                threat_features_black: Vec::new(),
             });
         }
         self.stack[self.top].computed = false;
