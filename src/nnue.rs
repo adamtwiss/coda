@@ -2834,6 +2834,43 @@ impl NNUEAccumulator {
         self.recompute_threats_full(net, board);
     }
 
+    /// DEBUG: verify threat accumulator matches full recompute for any position.
+    #[cfg(debug_assertions)]
+    pub fn verify_threats(&self, net: &NNUENet, board: &crate::board::Board) {
+        if !net.has_threats || !self.stack[self.top].threat_computed { return; }
+        let h = self.hidden_size;
+        let occ = board.colors[0] | board.colors[1];
+        let wk_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
+        let bk_sq = (board.pieces[KING as usize] & board.colors[BLACK as usize]).trailing_zeros();
+
+        let mut check_w = vec![0i16; h];
+        crate::threats::enumerate_threats(
+            &board.pieces, &board.colors, &board.mailbox,
+            occ, WHITE, (wk_sq % 8) >= 4,
+            |idx| { if idx < net.num_threat_features { let w = idx * h; for j in 0..h { check_w[j] += net.threat_weights[w + j] as i16; } } },
+        );
+        let mut check_b = vec![0i16; h];
+        crate::threats::enumerate_threats(
+            &board.pieces, &board.colors, &board.mailbox,
+            occ, BLACK, (bk_sq % 8) >= 4,
+            |idx| { if idx < net.num_threat_features { let w = idx * h; for j in 0..h { check_b[j] += net.threat_weights[w + j] as i16; } } },
+        );
+
+        let curr = &self.stack[self.top];
+        let w_diff: i32 = (0..h).map(|j| (curr.threat_white[j] as i32 - check_w[j] as i32).abs()).sum();
+        let b_diff: i32 = (0..h).map(|j| (curr.threat_black[j] as i32 - check_b[j] as i32).abs()).sum();
+        if w_diff > 0 || b_diff > 0 {
+            eprintln!("  h={} tw_len={} got_w0={} exp_w0={}", h, curr.threat_white.len(), curr.threat_white[0], check_w[0]);
+            // Was this from incremental or full recompute?
+            let last_mv = if !board.undo_stack.is_empty() {
+                let u = &board.undo_stack[board.undo_stack.len() - 1];
+                if u.mv == NO_MOVE { "null".to_string() }
+                else { format!("{}{}", crate::types::square_name(move_from(u.mv)), crate::types::square_name(move_to(u.mv))) }
+            } else { "root".to_string() };
+            eprintln!("VERIFY FAIL mv={} wdiff={} bdiff={} top={}", last_mv, w_diff, b_diff, self.top);
+        }
+    }
+
     /// Full recompute: iterates all pieces, computes attacks, adds i8 weight rows.
     fn recompute_threats_full(&mut self, net: &NNUENet, board: &crate::board::Board) {
         let h = self.hidden_size;
@@ -3125,6 +3162,7 @@ impl NNUEAccumulator {
     pub fn reset(&mut self) {
         self.top = 0;
         self.stack[0].computed = false;
+        self.stack[0].threat_computed = false;
         for entry in self.finny.iter_mut() {
             entry.valid = false;
         }

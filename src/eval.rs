@@ -188,6 +188,8 @@ pub fn evaluate_nnue(
         // The delta computation from post-move board state doesn't match Reckless's
         // mid-move callback approach. Phase 2c needs proper BoardObserver-style hooks.
         acc.recompute_threats_if_needed(net, board);
+        #[cfg(debug_assertions)]
+        acc.verify_threats(net, board);
     }
     let pc = crate::nnue::piece_count(board);
     let score = net.forward(acc, board.side_to_move, pc);
