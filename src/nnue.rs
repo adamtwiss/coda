@@ -2713,12 +2713,124 @@ impl NNUEAccumulator {
         self.stack[self.top].computed = true;
     }
 
-    /// Compute threat accumulator if not already done. Full recompute for now.
-    /// True incremental needs local-delta computation (only process squares affected
-    /// by the last move) to avoid the 3.7µs full enumeration cost.
+    /// Compute threat accumulator if not already done.
+    /// Uses incremental diff when previous ply is available: enumerates threats
+    /// only for affected squares, copies previous accumulator and applies deltas.
+    /// Falls back to full recompute when no previous state exists.
     pub fn recompute_threats_if_needed(&mut self, net: &NNUENet, board: &crate::board::Board) {
         if !net.has_threats { return; }
         if self.stack[self.top].threat_computed { return; }
+
+        let h = self.hidden_size;
+        if self.stack[self.top].threat_white.len() < h {
+            self.stack[self.top].threat_white.resize(h, 0);
+            self.stack[self.top].threat_black.resize(h, 0);
+        }
+
+        // Try incremental from previous ply
+        let can_incr = self.top > 0
+            && self.stack[self.top - 1].threat_computed
+            && !board.undo_stack.is_empty();
+
+        if can_incr {
+            let undo = &board.undo_stack[board.undo_stack.len() - 1];
+
+            // Null move: no pieces changed, copy parent's threat accumulator
+            if undo.mv == NO_MOVE {
+                let (prev_slice, curr_slice) = self.stack.split_at_mut(self.top);
+                let prev = &prev_slice[self.top - 1];
+                let curr = &mut curr_slice[0];
+                curr.threat_white[..h].copy_from_slice(&prev.threat_white[..h]);
+                curr.threat_black[..h].copy_from_slice(&prev.threat_black[..h]);
+                curr.threat_computed = true;
+                return;
+            }
+
+            if undo.mv != NO_MOVE {
+                let from = move_from(undo.mv) as u32;
+                let to = move_to(undo.mv) as u32;
+                let moved_pt = board.mailbox[to as usize];
+                let captured_pt = undo.captured;
+
+                // King crossing e-file forces full recompute (mirror changes)
+                let king_crossed = moved_pt == KING
+                    && ((from % 8 >= 4) != (to % 8 >= 4));
+
+                if moved_pt < 6 && !king_crossed && !board.threat_deltas.is_empty() {
+                    // Use deltas computed during make_move (BoardObserver pattern)
+                    let deltas = &board.threat_deltas;
+
+                    let wk_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
+                    let bk_sq = (board.pieces[KING as usize] & board.colors[BLACK as usize]).trailing_zeros();
+                    let w_mirrored = (wk_sq % 8) >= 4;
+                    let b_mirrored = (bk_sq % 8) >= 4;
+
+                    // Apply deltas to both perspectives
+                    {
+                        let (prev_slice, curr_slice) = self.stack.split_at_mut(self.top);
+                        let prev = &prev_slice[self.top - 1];
+                        let curr = &mut curr_slice[0];
+                        crate::threats::apply_threat_deltas(
+                            &mut curr.threat_white, &prev.threat_white,
+                            deltas, &net.threat_weights, h, net.num_threat_features,
+                            WHITE, w_mirrored,
+                        );
+                        crate::threats::apply_threat_deltas(
+                            &mut curr.threat_black, &prev.threat_black,
+                            deltas, &net.threat_weights, h, net.num_threat_features,
+                            BLACK, b_mirrored,
+                        );
+                    }
+
+                    // DEBUG: compare feature sets (not accumulator values)
+                    #[cfg(debug_assertions)]
+                    {
+                        static DEBUG_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                        let count = DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if count < 50 { // first 50 mismatches
+                            let occ = board.colors[0] | board.colors[1];
+                            // Get current (full recompute) features
+                            let mut full_w: Vec<usize> = Vec::new();
+                            crate::threats::enumerate_threats(
+                                &board.pieces, &board.colors, &board.mailbox,
+                                occ, WHITE, w_mirrored,
+                                |idx| { full_w.push(idx); },
+                            );
+                            // Get previous features
+                            let prev = &self.stack[self.top - 1];
+                            let mut prev_w: Vec<usize> = Vec::new();
+                            // We don't have stored prev features... let me just verify accum values
+                            let mut check_w = vec![0i16; h];
+                            for &idx in &full_w {
+                                if idx < net.num_threat_features {
+                                    let w_off = idx * h;
+                                    for j in 0..h { check_w[j] += net.threat_weights[w_off + j] as i16; }
+                                }
+                            }
+                            let curr = &self.stack[self.top];
+                            if curr.threat_white[0] != check_w[0] {
+                                let mv_str = format!("{}{}", crate::types::square_name(from as u8), crate::types::square_name(to as u8));
+                                eprintln!("MISMATCH move={} cap={} ndeltas={} w[0]: incr={} full={} nfeat={}",
+                                    mv_str, captured_pt, deltas.len(), curr.threat_white[0], check_w[0], full_w.len());
+                                // Print the deltas
+                                for (i, d) in deltas.iter().enumerate() {
+                                    let idx = crate::threats::threat_index(
+                                        d.attacker_cp as usize, d.from_sq as u32,
+                                        d.victim_cp as usize, d.to_sq as u32, w_mirrored, WHITE);
+                                    eprintln!("  delta[{}]: a={} f={} v={} t={} add={} idx={}",
+                                        i, d.attacker_cp, crate::types::square_name(d.from_sq),
+                                        d.victim_cp, crate::types::square_name(d.to_sq), d.add, idx);
+                                }
+                            }
+                        }
+                    }
+
+                    self.stack[self.top].threat_computed = true;
+                    return;
+                }
+            }
+        }
+
         self.recompute_threats_full(net, board);
     }
 

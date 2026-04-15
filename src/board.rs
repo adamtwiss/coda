@@ -48,6 +48,9 @@ pub struct Board {
     pub minor_key: [u64; 2],   // per-color knight+bishop Zobrist keys
     pub major_key: [u64; 2],   // per-color rook+queen Zobrist keys
     pub undo_stack: Vec<UndoInfo>,
+    /// Threat deltas accumulated during make_move (cleared on each make_move).
+    /// Used by the NNUE threat accumulator for incremental updates.
+    pub threat_deltas: Vec<crate::threats::RawThreatDelta>,
 }
 
 /// Castling rook positions (from, to) indexed by castling flag bit.
@@ -94,6 +97,7 @@ impl Board {
             minor_key: [0; 2],
             major_key: [0; 2],
             undo_stack: Vec::with_capacity(512),
+            threat_deltas: Vec::with_capacity(128),
         }
     }
 
@@ -555,23 +559,45 @@ impl Board {
         // Remove old castling hash
         self.hash ^= castle_key(self.castling);
 
+        // Clear threat deltas for this move
+        self.threat_deltas.clear();
+
         // Handle captures
         if flags == FLAG_EN_PASSANT {
             let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
             debug_assert!(cap_sq < 64, "EP cap_sq out of bounds: {}", cap_sq);
             self.remove_piece(them, PAWN, cap_sq);
+            // Threat callback: captured pawn disappears
+            crate::threats::push_threats_on_change(
+                &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
+                self.colors[0] | self.colors[1], them, PAWN, cap_sq as u32, false);
         } else if captured != NO_PIECE_TYPE {
             self.remove_piece(them, captured, to);
+            // Threat callback: captured piece disappears
+            crate::threats::push_threats_on_change(
+                &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
+                self.colors[0] | self.colors[1], them, captured, to as u32, false);
         }
 
         // Move the piece
         self.move_piece(us, pt, from, to);
+        // Threat callback: piece moves from→to
+        crate::threats::push_threats_on_move(
+            &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
+            self.colors[0] | self.colors[1], us, pt, from as u32, to as u32);
 
         // Handle promotion
         if is_promotion(mv) {
             let promo_pt = promotion_piece_type(mv);
             self.remove_piece(us, pt, to);   // remove pawn
             self.put_piece(us, promo_pt, to); // put promoted piece
+            // Threat callback: pawn becomes promoted piece (sub old, add new)
+            crate::threats::push_threats_on_change(
+                &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
+                self.colors[0] | self.colors[1], us, pt, to as u32, false);
+            crate::threats::push_threats_on_change(
+                &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
+                self.colors[0] | self.colors[1], us, promo_pt, to as u32, true);
         }
 
         // Handle castling
@@ -585,6 +611,10 @@ impl Board {
                 if us == WHITE { (0u8, 3u8) } else { (56u8, 59u8) }
             };
             self.move_piece(us, ROOK, rook_from, rook_to);
+            // Threat callback: rook moves
+            crate::threats::push_threats_on_move(
+                &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
+                self.colors[0] | self.colors[1], us, ROOK, rook_from as u32, rook_to as u32);
         }
 
         // Update castling rights (for any move from/to relevant squares)
@@ -619,6 +649,8 @@ impl Board {
 
         true
     }
+
+    // Threat delta methods use free functions to avoid borrow issues with &mut self
 
     /// Unmake the last move.
     pub fn unmake_move(&mut self) {
@@ -707,6 +739,7 @@ impl Board {
 
     /// Make a null move (just flip side, update EP).
     pub fn make_null_move(&mut self) {
+        self.threat_deltas.clear(); // null move = no piece changes = no threat deltas
         self.undo_stack.push(UndoInfo {
             mv: NO_MOVE,
             captured: NO_PIECE_TYPE,

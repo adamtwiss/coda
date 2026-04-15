@@ -340,7 +340,10 @@ pub fn push_threats_on_change(
 }
 
 /// Core: compute all threat deltas for a piece on a square.
-/// Handles: threats from this piece, threats to this piece, and x-ray discoveries.
+/// Matches Reckless's push_threats_single exactly:
+/// 1. Threats FROM this piece to occupied squares
+/// 2. Sliders that see this square + x-ray targets behind it
+/// 3. Non-sliders (pawns, knights, kings) that attack this square
 fn push_threats_for_piece(
     deltas: &mut Vec<RawThreatDelta>,
     pieces_bb: &[Bitboard; 6],
@@ -355,8 +358,8 @@ fn push_threats_for_piece(
     add: bool,
 ) {
     // 1. Threats FROM this piece to occupied squares
-    let attacks = piece_attacks_occ(piece_type, piece_color, square, occ);
-    let mut attacked_occ = attacks & occ;
+    let my_attacks = piece_attacks_occ(piece_type, piece_color, square, occ);
+    let mut attacked_occ = my_attacks & occ;
     while attacked_occ != 0 {
         let target_sq = attacked_occ.trailing_zeros();
         attacked_occ &= attacked_occ - 1;
@@ -364,17 +367,16 @@ fn push_threats_for_piece(
         if victim_pt >= 6 { continue; }
         let victim_color = if white_bb & (1u64 << target_sq) != 0 { WHITE } else { BLACK };
         deltas.push(RawThreatDelta {
-            attacker_cp: cp as u8,
-            from_sq: square as u8,
-            victim_cp: colored_piece(victim_color, victim_pt) as u8,
-            to_sq: target_sq as u8,
-            add,
+            attacker_cp: cp as u8, from_sq: square as u8,
+            victim_cp: colored_piece(victim_color, victim_pt) as u8, to_sq: target_sq as u8, add,
         });
     }
 
-    // 2. Sliding pieces that attack THROUGH this square (x-ray threats)
+    // 2. Sliding pieces that see this square (Reckless pattern)
+    // Compute rook/bishop attacks FROM this square to find which sliders can reach it
     let rook_att = rook_attacks(square, occ);
     let bishop_att = bishop_attacks(square, occ);
+    let queen_att = rook_att | bishop_att;
 
     let diagonal_sliders = (pieces_bb[BISHOP as usize] | pieces_bb[QUEEN as usize]) & bishop_att;
     let orthogonal_sliders = (pieces_bb[ROOK as usize] | pieces_bb[QUEEN as usize]) & rook_att;
@@ -388,38 +390,51 @@ fn push_threats_for_piece(
         let slider_color = if white_bb & (1u64 << slider_sq) != 0 { WHITE } else { BLACK };
         let slider_cp = colored_piece(slider_color, slider_pt);
 
-        // The slider attacks this piece's square
-        deltas.push(RawThreatDelta {
-            attacker_cp: slider_cp as u8,
-            from_sq: slider_sq as u8,
-            victim_cp: cp as u8,
-            to_sq: square as u8,
-            add,
-        });
+        // X-ray: compare slider's attacks WITH vs WITHOUT piece on this square.
+        // occ may or may not include the piece at `square` (depends on transit state),
+        // so always explicitly construct both cases.
+        let occ_with = occ | (1u64 << square);
+        let occ_without = occ & !(1u64 << square);
+        let slider_att_through = piece_attacks_occ(slider_pt, slider_color, slider_sq, occ_without);
+        let slider_att_blocked = piece_attacks_occ(slider_pt, slider_color, slider_sq, occ_with);
+        let revealed = slider_att_through & !slider_att_blocked & occ & queen_att;
 
-        // X-ray: does removing this piece reveal a new target behind it?
-        // Compute the ray from slider through this square
-        let ray = ray_between(slider_sq, square);
-        let beyond = ray_beyond(slider_sq, square) & occ;
-        if beyond != 0 {
-            let xray_target = if slider_sq < square {
-                beyond.trailing_zeros() // first piece beyond
+        if revealed != 0 {
+            // Take the first revealed piece (closest on the ray)
+            // Use the ray direction: if slider < square, revealed pieces are > square
+            let xray_sq = if slider_sq < square {
+                // Ray goes upward, take lowest revealed square above `square`
+                let above = revealed & !((1u64 << (square + 1)) - 1);
+                if above != 0 { above.trailing_zeros() } else { 64 }
             } else {
-                63 - beyond.leading_zeros() // last piece in other direction
+                // Ray goes downward, take highest revealed square below `square`
+                let below = revealed & ((1u64 << square) - 1);
+                if below != 0 { 63 - below.leading_zeros() } else { 64 }
             };
-            // Wait — we need proper ray extension, not just any piece in beyond.
-            // Skip x-rays for now (matching design doc: "skip x-ray initially")
-            let _ = xray_target;
+
+            if xray_sq < 64 {
+                let xpt = mailbox[xray_sq as usize];
+                if xpt < 6 {
+                    let xcolor = if white_bb & (1u64 << xray_sq) != 0 { WHITE } else { BLACK };
+                    deltas.push(RawThreatDelta {
+                        attacker_cp: slider_cp as u8, from_sq: slider_sq as u8,
+                        victim_cp: colored_piece(xcolor, xpt) as u8, to_sq: xray_sq as u8, add: !add,
+                    });
+                }
+            }
         }
+
+        // The slider itself attacks/no longer attacks this square
+        deltas.push(RawThreatDelta {
+            attacker_cp: slider_cp as u8, from_sq: slider_sq as u8,
+            victim_cp: cp as u8, to_sq: square as u8, add,
+        });
     }
 
     // 3. Non-sliding pieces that attack this square
-    // Pawns
     let black_pawns = pieces_bb[PAWN as usize] & colors_bb[BLACK as usize] & pawn_attacks(WHITE, square);
     let white_pawns = pieces_bb[PAWN as usize] & colors_bb[WHITE as usize] & pawn_attacks(BLACK, square);
-    // Knights
     let knights = pieces_bb[KNIGHT as usize] & knight_attacks(square);
-    // Kings
     let kings = pieces_bb[KING as usize] & king_attacks(square);
 
     let mut non_sliders = (black_pawns | white_pawns | knights | kings) & occ;
@@ -430,19 +445,361 @@ fn push_threats_for_piece(
         if ns_pt >= 6 { continue; }
         let ns_color = if white_bb & (1u64 << ns_sq) != 0 { WHITE } else { BLACK };
         deltas.push(RawThreatDelta {
-            attacker_cp: colored_piece(ns_color, ns_pt) as u8,
-            from_sq: ns_sq as u8,
-            victim_cp: cp as u8,
-            to_sq: square as u8,
-            add,
+            attacker_cp: colored_piece(ns_color, ns_pt) as u8, from_sq: ns_sq as u8,
+            victim_cp: cp as u8, to_sq: square as u8, add,
         });
     }
 }
 
-/// Placeholder for ray_between and ray_beyond — needed for x-ray threats.
-/// For now returns 0 (x-rays skipped per design doc).
+#[allow(dead_code)]
 fn ray_between(_from: u32, _to: u32) -> Bitboard { 0 }
+#[allow(dead_code)]
 fn ray_beyond(_from: u32, _to: u32) -> Bitboard { 0 }
+
+/// Compute threat deltas from post-move board state + undo info.
+/// This reconstructs what changed without needing pre-move board access.
+///
+/// For each perspective (pov), computes adds/subs to the threat accumulator:
+/// - Threats from/to the moved piece at old vs new square
+/// - Threats from/to the captured piece (removed)
+/// - Threats from sliders whose rays are affected by the from/to squares
+/// - Threats from non-sliders that attack the from/to squares
+///
+/// `board` is the POST-move state. `from`, `to`, `moved_pt`, `moved_color` describe
+/// the move that was just made. `captured_pt` is NO_PIECE_TYPE if no capture.
+pub fn compute_move_deltas(
+    deltas: &mut Vec<RawThreatDelta>,
+    board_pieces: &[Bitboard; 6],
+    board_colors: &[Bitboard; 2],
+    board_mailbox: &[u8; 64],
+    moved_color: Color,
+    moved_pt: u8,
+    from: u32,
+    to: u32,
+    captured_pt: u8,
+    captured_color: Color,
+) {
+    let post_occ = board_colors[0] | board_colors[1];
+    // Pre-move occupancy: piece was at `from` not `to`, captured piece was at `to` (for captures)
+    let pre_occ = (post_occ | (1u64 << from)) & !(1u64 << to)
+        | if captured_pt != NO_PIECE_TYPE { 1u64 << to } else { 0 };
+
+    let moved_cp = colored_piece(moved_color, moved_pt);
+    let white_bb_post = board_colors[WHITE as usize];
+
+    // Helper: get victim info at a square in the POST-move board
+    let victim_at_post = |sq: u32| -> Option<(u8, Color, usize)> {
+        let pt = board_mailbox[sq as usize];
+        if pt >= 6 { return None; }
+        let color = if white_bb_post & (1u64 << sq) != 0 { WHITE } else { BLACK };
+        Some((pt, color, colored_piece(color, pt)))
+    };
+
+    // 1. Remove threats FROM moved piece at old square (using pre-move occ)
+    let old_attacks = piece_attacks_occ(moved_pt, moved_color, from, pre_occ);
+    let mut old_targets = old_attacks & pre_occ & !(1u64 << from);
+    while old_targets != 0 {
+        let tsq = old_targets.trailing_zeros();
+        old_targets &= old_targets - 1;
+        // Target might have been the captured piece (at `to`) or a piece still on the board
+        if tsq == to && captured_pt != NO_PIECE_TYPE {
+            // Threat was to the captured piece
+            let vcp = colored_piece(captured_color, captured_pt);
+            deltas.push(RawThreatDelta { attacker_cp: moved_cp as u8, from_sq: from as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: false });
+        } else if let Some((_, _, vcp)) = victim_at_post(tsq) {
+            deltas.push(RawThreatDelta { attacker_cp: moved_cp as u8, from_sq: from as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: false });
+        }
+    }
+
+    // 2. Add threats FROM moved piece at new square (using post-move occ)
+    let new_attacks = piece_attacks_occ(moved_pt, moved_color, to, post_occ);
+    let mut new_targets = new_attacks & post_occ & !(1u64 << to);
+    while new_targets != 0 {
+        let tsq = new_targets.trailing_zeros();
+        new_targets &= new_targets - 1;
+        if let Some((_, _, vcp)) = victim_at_post(tsq) {
+            deltas.push(RawThreatDelta { attacker_cp: moved_cp as u8, from_sq: to as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: true });
+        }
+    }
+
+    // 3. Pieces that attacked the FROM square (they lose a threat)
+    // Non-sliders: pawns, knights, kings
+    let from_pawn_attackers_w = board_pieces[PAWN as usize] & board_colors[WHITE as usize] & pawn_attacks(BLACK, from);
+    let from_pawn_attackers_b = board_pieces[PAWN as usize] & board_colors[BLACK as usize] & pawn_attacks(WHITE, from);
+    let from_knight_attackers = board_pieces[KNIGHT as usize] & knight_attacks(from);
+    let from_king_attackers = board_pieces[KING as usize] & king_attacks(from);
+    let mut from_ns = (from_pawn_attackers_w | from_pawn_attackers_b | from_knight_attackers | from_king_attackers) & post_occ;
+    // Remove the moved piece itself (it's no longer at from)
+    from_ns &= !(1u64 << to); // moved piece is now at `to`, not relevant for `from` attackers
+    while from_ns != 0 {
+        let asq = from_ns.trailing_zeros();
+        from_ns &= from_ns - 1;
+        let apt = board_mailbox[asq as usize];
+        if apt >= 6 { continue; }
+        let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
+        let acp = colored_piece(acolor, apt);
+        // This piece used to attack the moved piece at `from` — remove that threat
+        deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: moved_cp as u8, to_sq: from as u8, add: false });
+    }
+
+    // Sliders that attacked through from (using pre-move occ to find them)
+    let from_rook_att = rook_attacks(from, pre_occ);
+    let from_bishop_att = bishop_attacks(from, pre_occ);
+    let from_diag = (board_pieces[BISHOP as usize] | board_pieces[QUEEN as usize]) & from_bishop_att & post_occ;
+    let from_orth = (board_pieces[ROOK as usize] | board_pieces[QUEEN as usize]) & from_rook_att & post_occ;
+    let mut from_sliders = from_diag | from_orth;
+    while from_sliders != 0 {
+        let asq = from_sliders.trailing_zeros();
+        from_sliders &= from_sliders - 1;
+        let apt = board_mailbox[asq as usize];
+        if apt >= 6 { continue; }
+        let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
+        let acp = colored_piece(acolor, apt);
+        // Remove: this slider attacked the moved piece at `from`
+        deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: moved_cp as u8, to_sq: from as u8, add: false });
+    }
+
+    // 4. Pieces that attack the TO square (they gain a threat to the moved piece)
+    let to_pawn_attackers_w = board_pieces[PAWN as usize] & board_colors[WHITE as usize] & pawn_attacks(BLACK, to);
+    let to_pawn_attackers_b = board_pieces[PAWN as usize] & board_colors[BLACK as usize] & pawn_attacks(WHITE, to);
+    let to_knight_attackers = board_pieces[KNIGHT as usize] & knight_attacks(to);
+    let to_king_attackers = board_pieces[KING as usize] & king_attacks(to);
+    let mut to_ns = (to_pawn_attackers_w | to_pawn_attackers_b | to_knight_attackers | to_king_attackers) & post_occ;
+    to_ns &= !(1u64 << to); // exclude the moved piece attacking itself
+    while to_ns != 0 {
+        let asq = to_ns.trailing_zeros();
+        to_ns &= to_ns - 1;
+        let apt = board_mailbox[asq as usize];
+        if apt >= 6 { continue; }
+        let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
+        let acp = colored_piece(acolor, apt);
+        deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: moved_cp as u8, to_sq: to as u8, add: true });
+    }
+
+    // Sliders that attack to (using post-move occ)
+    let to_rook_att = rook_attacks(to, post_occ);
+    let to_bishop_att = bishop_attacks(to, post_occ);
+    let to_diag = (board_pieces[BISHOP as usize] | board_pieces[QUEEN as usize]) & to_bishop_att & post_occ;
+    let to_orth = (board_pieces[ROOK as usize] | board_pieces[QUEEN as usize]) & to_rook_att & post_occ;
+    let mut to_sliders = to_diag | to_orth;
+    to_sliders &= !(1u64 << to); // exclude the moved piece
+    while to_sliders != 0 {
+        let asq = to_sliders.trailing_zeros();
+        to_sliders &= to_sliders - 1;
+        let apt = board_mailbox[asq as usize];
+        if apt >= 6 { continue; }
+        let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
+        let acp = colored_piece(acolor, apt);
+        deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: moved_cp as u8, to_sq: to as u8, add: true });
+    }
+
+    // 5. Captured piece: remove all its threats
+    if captured_pt != NO_PIECE_TYPE {
+        let cap_cp = colored_piece(captured_color, captured_pt);
+        // Remove threats FROM captured piece
+        let cap_attacks = piece_attacks_occ(captured_pt, captured_color, to, pre_occ);
+        let mut cap_targets = cap_attacks & pre_occ & !(1u64 << to);
+        while cap_targets != 0 {
+            let tsq = cap_targets.trailing_zeros();
+            cap_targets &= cap_targets - 1;
+            if tsq == from {
+                // Was attacking the moved piece at its old square
+                deltas.push(RawThreatDelta { attacker_cp: cap_cp as u8, from_sq: to as u8, victim_cp: moved_cp as u8, to_sq: from as u8, add: false });
+            } else if let Some((_, _, vcp)) = victim_at_post(tsq) {
+                deltas.push(RawThreatDelta { attacker_cp: cap_cp as u8, from_sq: to as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: false });
+            }
+        }
+        // Remove threats TO captured piece (from non-sliders)
+        let cap_pawn_w = board_pieces[PAWN as usize] & board_colors[WHITE as usize] & pawn_attacks(BLACK, to);
+        let cap_pawn_b = board_pieces[PAWN as usize] & board_colors[BLACK as usize] & pawn_attacks(WHITE, to);
+        let cap_knights = board_pieces[KNIGHT as usize] & knight_attacks(to);
+        let cap_kings = board_pieces[KING as usize] & king_attacks(to);
+        let mut cap_attackers = (cap_pawn_w | cap_pawn_b | cap_knights | cap_kings) & post_occ;
+        cap_attackers &= !(1u64 << to);
+        while cap_attackers != 0 {
+            let asq = cap_attackers.trailing_zeros();
+            cap_attackers &= cap_attackers - 1;
+            let apt = board_mailbox[asq as usize];
+            if apt >= 6 { continue; }
+            let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
+            let acp = colored_piece(acolor, apt);
+            deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: cap_cp as u8, to_sq: to as u8, add: false });
+        }
+        // Sliders that attacked captured piece
+        let cap_rook_att = rook_attacks(to, pre_occ);
+        let cap_bishop_att = bishop_attacks(to, pre_occ);
+        let cap_diag = (board_pieces[BISHOP as usize] | board_pieces[QUEEN as usize]) & cap_bishop_att & post_occ;
+        let cap_orth = (board_pieces[ROOK as usize] | board_pieces[QUEEN as usize]) & cap_rook_att & post_occ;
+        let mut cap_sliders = cap_diag | cap_orth;
+        cap_sliders &= !(1u64 << to);
+        while cap_sliders != 0 {
+            let asq = cap_sliders.trailing_zeros();
+            cap_sliders &= cap_sliders - 1;
+            let apt = board_mailbox[asq as usize];
+            if apt >= 6 { continue; }
+            let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
+            let acp = colored_piece(acolor, apt);
+            deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: cap_cp as u8, to_sq: to as u8, add: false });
+        }
+    }
+
+    // 6. X-ray discoveries: sliders that were blocked by the piece at `from` now
+    // see through to new targets. Also, sliders that now see `to` may be blocked
+    // by the piece that just arrived there.
+    //
+    // For the vacated `from` square: find sliders that attack through `from` in the
+    // POST-move board (piece gone). Compare their attacks with pre-move attacks.
+    // New targets = attacks with piece gone minus attacks with piece present.
+
+    // Sliders that see through `from` in post-move (piece removed)
+    let post_rook_from = rook_attacks(from, post_occ);
+    let post_bishop_from = bishop_attacks(from, post_occ);
+    let pre_rook_from = rook_attacks(from, pre_occ);
+    let pre_bishop_from = bishop_attacks(from, pre_occ);
+
+    // Orthogonal sliders (rooks + queens) near `from`
+    let orth_sliders = (board_pieces[ROOK as usize] | board_pieces[QUEEN as usize]) & post_occ;
+    let diag_sliders = (board_pieces[BISHOP as usize] | board_pieces[QUEEN as usize]) & post_occ;
+
+    // Find sliders on the same rank/file/diagonal as `from` that gain new targets
+    let mut orth_near = orth_sliders & (post_rook_from | pre_rook_from);
+    while orth_near != 0 {
+        let asq = orth_near.trailing_zeros();
+        orth_near &= orth_near - 1;
+        if asq == to { continue; } // the moved piece, already handled
+        let apt = board_mailbox[asq as usize];
+        if apt >= 6 { continue; }
+        let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
+        let acp = colored_piece(acolor, apt);
+
+        let old_att = rook_attacks(asq, pre_occ) & pre_occ;
+        let new_att = rook_attacks(asq, post_occ) & post_occ;
+
+        // New targets (gained)
+        let mut gained = new_att & !old_att & !(1u64 << from) & !(1u64 << to);
+        while gained != 0 {
+            let tsq = gained.trailing_zeros();
+            gained &= gained - 1;
+            if let Some((_, _, vcp)) = victim_at_post(tsq) {
+                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: true });
+            }
+        }
+        // Lost targets
+        let mut lost = old_att & !new_att & !(1u64 << from) & !(1u64 << to);
+        while lost != 0 {
+            let tsq = lost.trailing_zeros();
+            lost &= lost - 1;
+            if let Some((_, _, vcp)) = victim_at_post(tsq) {
+                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: false });
+            }
+        }
+    }
+
+    let mut diag_near = diag_sliders & (post_bishop_from | pre_bishop_from);
+    while diag_near != 0 {
+        let asq = diag_near.trailing_zeros();
+        diag_near &= diag_near - 1;
+        if asq == to { continue; }
+        let apt = board_mailbox[asq as usize];
+        if apt >= 6 { continue; }
+        let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
+        let acp = colored_piece(acolor, apt);
+
+        let old_att = bishop_attacks(asq, pre_occ) & pre_occ;
+        let new_att = bishop_attacks(asq, post_occ) & post_occ;
+
+        let mut gained = new_att & !old_att & !(1u64 << from) & !(1u64 << to);
+        while gained != 0 {
+            let tsq = gained.trailing_zeros();
+            gained &= gained - 1;
+            if let Some((_, _, vcp)) = victim_at_post(tsq) {
+                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: true });
+            }
+        }
+        let mut lost = old_att & !new_att & !(1u64 << from) & !(1u64 << to);
+        while lost != 0 {
+            let tsq = lost.trailing_zeros();
+            lost &= lost - 1;
+            if let Some((_, _, vcp)) = victim_at_post(tsq) {
+                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: false });
+            }
+        }
+    }
+
+    // 7. X-ray changes at `to` square: sliders that used to see through `to`
+    // (or see pieces beyond `to`) may now be blocked by the moved piece.
+    // Also, if `to` was occupied (capture), sliders might have new visibility.
+    // Only process sliders not already handled in sections 3-4.
+    let post_rook_to = rook_attacks(to, post_occ);
+    let post_bishop_to = bishop_attacks(to, post_occ);
+    let pre_rook_to = rook_attacks(to, pre_occ);
+    let pre_bishop_to = bishop_attacks(to, pre_occ);
+
+    let mut orth_near_to = orth_sliders & (post_rook_to | pre_rook_to);
+    orth_near_to &= !(1u64 << to); // exclude moved piece
+    while orth_near_to != 0 {
+        let asq = orth_near_to.trailing_zeros();
+        orth_near_to &= orth_near_to - 1;
+        // Skip if already processed in the `from` section
+        if (post_rook_from | pre_rook_from) & (1u64 << asq) != 0 { continue; }
+        let apt = board_mailbox[asq as usize];
+        if apt >= 6 { continue; }
+        let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
+        let acp = colored_piece(acolor, apt);
+
+        let old_att = rook_attacks(asq, pre_occ) & pre_occ;
+        let new_att = rook_attacks(asq, post_occ) & post_occ;
+
+        let mut gained = new_att & !old_att & !(1u64 << from) & !(1u64 << to);
+        while gained != 0 {
+            let tsq = gained.trailing_zeros();
+            gained &= gained - 1;
+            if let Some((_, _, vcp)) = victim_at_post(tsq) {
+                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: true });
+            }
+        }
+        let mut lost = old_att & !new_att & !(1u64 << from) & !(1u64 << to);
+        while lost != 0 {
+            let tsq = lost.trailing_zeros();
+            lost &= lost - 1;
+            if let Some((_, _, vcp)) = victim_at_post(tsq) {
+                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: false });
+            }
+        }
+    }
+
+    let mut diag_near_to = diag_sliders & (post_bishop_to | pre_bishop_to);
+    diag_near_to &= !(1u64 << to);
+    while diag_near_to != 0 {
+        let asq = diag_near_to.trailing_zeros();
+        diag_near_to &= diag_near_to - 1;
+        if (post_bishop_from | pre_bishop_from) & (1u64 << asq) != 0 { continue; }
+        let apt = board_mailbox[asq as usize];
+        if apt >= 6 { continue; }
+        let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
+        let acp = colored_piece(acolor, apt);
+
+        let old_att = bishop_attacks(asq, pre_occ) & pre_occ;
+        let new_att = bishop_attacks(asq, post_occ) & post_occ;
+
+        let mut gained = new_att & !old_att & !(1u64 << from) & !(1u64 << to);
+        while gained != 0 {
+            let tsq = gained.trailing_zeros();
+            gained &= gained - 1;
+            if let Some((_, _, vcp)) = victim_at_post(tsq) {
+                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: true });
+            }
+        }
+        let mut lost = old_att & !new_att & !(1u64 << from) & !(1u64 << to);
+        while lost != 0 {
+            let tsq = lost.trailing_zeros();
+            lost &= lost - 1;
+            if let Some((_, _, vcp)) = victim_at_post(tsq) {
+                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: false });
+            }
+        }
+    }
+}
 
 /// Apply raw threat deltas to update the threat accumulator incrementally.
 /// Copies from `prev` and applies all deltas for a specific perspective.
