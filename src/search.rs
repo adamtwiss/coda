@@ -1900,6 +1900,7 @@ fn negamax(
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
                 continue;
             }
+            if let Some(acc) = &mut info.nnue_acc { acc.store_threat_deltas(board); }
             info.tt.prefetch(board.hash);
 
             // Cheap qsearch verification before expensive negamax (Stockfish pattern)
@@ -2197,6 +2198,8 @@ fn negamax(
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
             continue;
         }
+        // Store threat deltas from make_move into accumulator stack
+        if let Some(acc) = &mut info.nnue_acc { acc.store_threat_deltas(board); }
 
         // Prefetch TT bucket for the new position
         info.tt.prefetch(board.hash);
@@ -2779,6 +2782,7 @@ fn quiescence_with_depth(
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
                 continue;
             }
+            if let Some(acc) = &mut info.nnue_acc { acc.store_threat_deltas(board); }
             info.tt.prefetch(board.hash);
             move_count += 1;
 
@@ -2914,6 +2918,7 @@ fn quiescence_with_depth(
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
             continue;
         }
+        if let Some(acc) = &mut info.nnue_acc { acc.store_threat_deltas(board); }
         info.tt.prefetch(board.hash);
         let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
         board.unmake_move();
