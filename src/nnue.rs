@@ -2719,11 +2719,11 @@ impl NNUEAccumulator {
 
     /// Copy threat deltas from board into current stack entry.
     /// Must be called after push() and after board.make_move().
-    pub fn store_threat_deltas(&mut self, board: &crate::board::Board) {
+    pub fn store_threat_deltas(&mut self, board: &mut crate::board::Board) {
         if board.generate_threat_deltas {
             let entry = &mut self.stack[self.top];
-            entry.threat_deltas.clear();
-            entry.threat_deltas.extend_from_slice(&board.threat_deltas);
+            // Swap deltas from board into stack entry (avoids copy, board gets the old buffer)
+            std::mem::swap(&mut entry.threat_deltas, &mut board.threat_deltas);
             // Store move info for king mirror check (Reckless pattern)
             let undo_len = board.undo_stack.len();
             if undo_len > 0 {
@@ -2799,9 +2799,10 @@ impl NNUEAccumulator {
     pub fn recompute_threats_if_needed(&mut self, net: &NNUENet, board: &crate::board::Board) {
         if !net.has_threats { return; }
         if self.stack[self.top].threat_computed { return; }
-        let _prof_start = std::time::Instant::now();
-
         let h = self.hidden_size;
+
+        // Profile: 90.5% incremental (chain=1.1), 9.5% full recompute.
+        // Per-eval cost ~5µs weighted average (Reckless: ~2.5µs).
 
         // Walk back to find nearest ancestor with computed threats (Reckless pattern).
         // Then verify the entire chain from ancestor to top has no king e-file crossings.
@@ -2890,6 +2891,7 @@ impl NNUEAccumulator {
 
             self.stack[ply].threat_computed = true;
         }
+
     }
 
     /// DEBUG: verify threat accumulator matches full recompute for any position.
