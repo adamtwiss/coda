@@ -858,8 +858,10 @@ pub fn apply_threat_deltas(
     }
 }
 
-/// AVX2 SIMD: apply threat weight rows to accumulator.
-/// Processes 16 i16 elements per iteration using i8→i16 widening.
+/// AVX2 SIMD: apply threat weight rows to accumulator using register tiling.
+/// Loads accumulator chunk into registers ONCE, applies ALL deltas while in
+/// registers, then stores ONCE. This is Reckless's pattern — 21× less memory
+/// traffic than per-delta streaming.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn apply_deltas_avx2(
@@ -872,57 +874,64 @@ unsafe fn apply_deltas_avx2(
     use std::arch::x86_64::*;
 
     let dst_ptr = dst.as_mut_ptr();
+    let w_ptr = threat_weights.as_ptr();
 
-    // Process paired add+sub (Reckless pattern: one add + one sub per pass)
-    let mut ai = 0;
-    let mut si = 0;
-    while ai < adds.len() && si < subs.len() {
-        let add_w = threat_weights.as_ptr().add(adds[ai] * hidden_size);
-        let sub_w = threat_weights.as_ptr().add(subs[si] * hidden_size);
+    // 8 AVX2 registers × 16 i16 = 128 elements per chunk
+    const REGS: usize = 8;
+    const CHUNK: usize = REGS * 16; // 128 elements
 
-        let mut j = 0;
-        while j + 16 <= hidden_size {
-            let acc = _mm256_loadu_si256(dst_ptr.add(j) as *const __m256i);
-            let add_i8 = _mm_loadu_si128(add_w.add(j) as *const __m128i);
-            let sub_i8 = _mm_loadu_si128(sub_w.add(j) as *const __m128i);
-            let add_i16 = _mm256_cvtepi8_epi16(add_i8);
-            let sub_i16 = _mm256_cvtepi8_epi16(sub_i8);
-            let result = _mm256_sub_epi16(_mm256_add_epi16(acc, add_i16), sub_i16);
-            _mm256_storeu_si256(dst_ptr.add(j) as *mut __m256i, result);
-            j += 16;
+    let mut offset = 0;
+    while offset < hidden_size {
+        let chunk_size = (hidden_size - offset).min(CHUNK);
+        let nregs = (chunk_size + 15) / 16;
+
+        // Load accumulator chunk into registers
+        let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
+        for i in 0..nregs {
+            regs[i] = _mm256_loadu_si256(dst_ptr.add(offset + i * 16) as *const __m256i);
         }
-        ai += 1;
-        si += 1;
-    }
 
-    // Remaining adds
-    while ai < adds.len() {
-        let add_w = threat_weights.as_ptr().add(adds[ai] * hidden_size);
-        let mut j = 0;
-        while j + 16 <= hidden_size {
-            let acc = _mm256_loadu_si256(dst_ptr.add(j) as *const __m256i);
-            let add_i8 = _mm_loadu_si128(add_w.add(j) as *const __m128i);
-            let add_i16 = _mm256_cvtepi8_epi16(add_i8);
-            let result = _mm256_add_epi16(acc, add_i16);
-            _mm256_storeu_si256(dst_ptr.add(j) as *mut __m256i, result);
-            j += 16;
+        // Apply paired add+sub
+        let mut ai = 0;
+        let mut si = 0;
+        while ai < adds.len() && si < subs.len() {
+            let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+            let sw = w_ptr.add(subs[si] * hidden_size + offset);
+            for i in 0..nregs {
+                let add_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(aw.add(i * 16) as *const __m128i));
+                let sub_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(sw.add(i * 16) as *const __m128i));
+                regs[i] = _mm256_sub_epi16(_mm256_add_epi16(regs[i], add_w), sub_w);
+            }
+            ai += 1;
+            si += 1;
         }
-        ai += 1;
-    }
 
-    // Remaining subs
-    while si < subs.len() {
-        let sub_w = threat_weights.as_ptr().add(subs[si] * hidden_size);
-        let mut j = 0;
-        while j + 16 <= hidden_size {
-            let acc = _mm256_loadu_si256(dst_ptr.add(j) as *const __m256i);
-            let sub_i8 = _mm_loadu_si128(sub_w.add(j) as *const __m128i);
-            let sub_i16 = _mm256_cvtepi8_epi16(sub_i8);
-            let result = _mm256_sub_epi16(acc, sub_i16);
-            _mm256_storeu_si256(dst_ptr.add(j) as *mut __m256i, result);
-            j += 16;
+        // Remaining adds
+        while ai < adds.len() {
+            let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+            for i in 0..nregs {
+                let add_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(aw.add(i * 16) as *const __m128i));
+                regs[i] = _mm256_add_epi16(regs[i], add_w);
+            }
+            ai += 1;
         }
-        si += 1;
+
+        // Remaining subs
+        while si < subs.len() {
+            let sw = w_ptr.add(subs[si] * hidden_size + offset);
+            for i in 0..nregs {
+                let sub_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(sw.add(i * 16) as *const __m128i));
+                regs[i] = _mm256_sub_epi16(regs[i], sub_w);
+            }
+            si += 1;
+        }
+
+        // Store registers back
+        for i in 0..nregs {
+            _mm256_storeu_si256(dst_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
+        }
+
+        offset += CHUNK;
     }
 }
 

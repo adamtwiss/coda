@@ -184,9 +184,6 @@ pub fn evaluate_nnue(
 ) -> i32 {
     acc.materialize(net, board);
     if net.has_threats {
-        // Full recompute for now — incremental deltas need more work to be correct.
-        // The delta computation from post-move board state doesn't match Reckless's
-        // mid-move callback approach. Phase 2c needs proper BoardObserver-style hooks.
         acc.recompute_threats_if_needed(net, board);
         #[cfg(debug_assertions)]
         acc.verify_threats(net, board);
