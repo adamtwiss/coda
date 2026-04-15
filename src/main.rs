@@ -24,6 +24,7 @@ mod cuckoo;
 pub mod threats;
 pub mod threat_profile;
 pub mod threat_accum;
+pub mod sparse_l1;
 
 use board::Board;
 use movegen::{perft, perft_divide};
