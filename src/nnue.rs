@@ -2819,11 +2819,11 @@ impl NNUEAccumulator {
                 // This is approximate for intermediate plies — if the king moved
                 // during the replay chain, the mirroring might be wrong.
                 // For now this is acceptable; king moves are rare in the chain.
+                // Swap deltas out to avoid borrow conflict (no allocation)
+                let mut deltas = std::mem::take(&mut self.stack[ply].threat_deltas);
                 let (prev_slice, curr_slice) = self.stack.split_at_mut(ply);
                 let prev = &prev_slice[src];
                 let curr = &mut curr_slice[0];
-                // Clone deltas to avoid borrow conflict
-                let deltas: Vec<_> = curr.threat_deltas.iter().copied().collect();
                 crate::threats::apply_threat_deltas(
                     &mut curr.threat_white, &prev.threat_white,
                     &deltas, &net.threat_weights, h, net.num_threat_features,
@@ -2834,6 +2834,8 @@ impl NNUEAccumulator {
                     &deltas, &net.threat_weights, h, net.num_threat_features,
                     BLACK, b_mirrored,
                 );
+                // Swap back
+                self.stack[ply].threat_deltas = deltas;
             }
 
             self.stack[ply].threat_computed = true;

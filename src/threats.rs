@@ -816,9 +816,11 @@ pub fn apply_threat_deltas(
     // Copy from previous position
     dst[..hidden_size].copy_from_slice(&src[..hidden_size]);
 
-    // Collect valid add/sub indices
-    let mut adds: Vec<usize> = Vec::with_capacity(deltas.len());
-    let mut subs: Vec<usize> = Vec::with_capacity(deltas.len());
+    // Collect valid add/sub indices (stack-allocated, no heap)
+    let mut adds = [0usize; MAX_THREAT_DELTAS];
+    let mut subs = [0usize; MAX_THREAT_DELTAS];
+    let mut n_adds = 0usize;
+    let mut n_subs = 0usize;
     for delta in deltas {
         let idx = threat_index(
             delta.attacker_cp as usize,
@@ -829,8 +831,11 @@ pub fn apply_threat_deltas(
             pov,
         );
         if idx < 0 || (idx as usize) >= num_threats { continue; }
-        if delta.add { adds.push(idx as usize); } else { subs.push(idx as usize); }
+        if delta.add { adds[n_adds] = idx as usize; n_adds += 1; }
+        else { subs[n_subs] = idx as usize; n_subs += 1; }
     }
+    let adds = &adds[..n_adds];
+    let subs = &subs[..n_subs];
 
     // Apply weight rows with SIMD when available
     #[cfg(target_arch = "x86_64")]
@@ -844,13 +849,13 @@ pub fn apply_threat_deltas(
     }
 
     // Scalar fallback
-    for &idx in &adds {
+    for &idx in adds {
         let w_off = idx * hidden_size;
         for j in 0..hidden_size {
             dst[j] += threat_weights[w_off + j] as i16;
         }
     }
-    for &idx in &subs {
+    for &idx in subs {
         let w_off = idx * hidden_size;
         for j in 0..hidden_size {
             dst[j] -= threat_weights[w_off + j] as i16;
