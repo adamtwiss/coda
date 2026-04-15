@@ -1756,80 +1756,23 @@ impl NNUENet {
     /// Pairwise forward with fused PSQ+threat combine (Reckless activate_ft pattern).
     /// Adds threat values inside the pairwise loop, eliminating a separate combine pass.
     /// Pairwise forward with fused PSQ+threat combine (Reckless activate_ft pattern).
+    /// Pairwise forward with threat combine.
+    /// Combines PSQ + threat accumulators, then delegates to the SIMD pairwise path.
+    #[inline(always)]
     fn forward_with_l1_pairwise_fused(&self, stm_acc: &[i16], ntm_acc: &[i16],
         stm_threat: &[i16], ntm_threat: &[i16], bucket: usize) -> i32
     {
-        // If no threats, delegate to the non-fused path
         if stm_threat.is_empty() {
             return self.forward_with_l1_pairwise(stm_acc, ntm_acc, bucket);
         }
-
         let h = self.hidden_size;
-        let pw = h / 2;
-        let l1_total = self.l1_size;
-        let l1_pb = self.l1_per_bucket;
-        let qa_l1 = self.l1_scale as i32;
-        let l1_off = if self.bucketed_hidden { bucket * l1_pb } else { 0 };
-        let l1 = if self.bucketed_hidden { l1_pb } else { l1_total };
-
-        // Fused pairwise pack: PSQ + threat combined in one SIMD pass
-        let mut stm_pw = [0u8; 2048];
-        let mut ntm_pw = [0u8; 2048];
-
-        #[cfg(target_arch = "x86_64")]
-        if self.has_avx2 && pw % 16 == 0 {
-            unsafe {
-                simd_pairwise_pack_fused(stm_acc, stm_threat.as_ptr(), &mut stm_pw, pw);
-                simd_pairwise_pack_fused(ntm_acc, ntm_threat.as_ptr(), &mut ntm_pw, pw);
-            }
-        } else {
-            let qa = QA as i32;
-            for i in 0..pw {
-                let a = (stm_acc[i] as i32 + stm_threat[i] as i32).clamp(0, qa);
-                let b = (stm_acc[i + pw] as i32 + stm_threat[i + pw] as i32).clamp(0, qa);
-                stm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
-            }
-            for i in 0..pw {
-                let a = (ntm_acc[i] as i32 + ntm_threat[i] as i32).clamp(0, qa);
-                let b = (ntm_acc[i + pw] as i32 + ntm_threat[i + pw] as i32).clamp(0, qa);
-                ntm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
-            }
-        }
-
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            let qa = QA as i32;
-            for i in 0..pw {
-                let a = (stm_acc[i] as i32 + stm_threat[i] as i32).clamp(0, qa);
-                let b = (stm_acc[i + pw] as i32 + stm_threat[i + pw] as i32).clamp(0, qa);
-                stm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
-            }
-            for i in 0..pw {
-                let a = (ntm_acc[i] as i32 + ntm_threat[i] as i32).clamp(0, qa);
-                let b = (ntm_acc[i + pw] as i32 + ntm_threat[i + pw] as i32).clamp(0, qa);
-                ntm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
-            }
-        }
-
-        // inject_sparsity removed (was for benchmarking only)
-
-        // Delegate to the existing L1→L2→output path via the non-fused function
-        // by calling the pairwise forward with the already-packed pw arrays.
-        // We need to directly invoke the L1 matmul code...
-        // The simplest approach: construct combined accumulators from the pw arrays
-        // and call the rest of the existing forward path.
-        // Actually, the forward_with_l1_pairwise does pairwise pack THEN L1 matmul.
-        // We've done the pairwise pack. We need just the L1 matmul onward.
-        // For now, let's combine and call the non-fused path — the fused pairwise
-        // pack is the main win, the combine overhead is already eliminated.
-        // TODO: extract L1-onward into a shared helper.
-
-        // Reconstruct fake combined accumulators for the non-fused path
-        // This is wasteful but preserves correctness while we refactor.
+        // Combine PSQ + threat on the stack (768 × 2 bytes × 2 = 3KB)
         let mut stm_combined = [0i16; 768];
         let mut ntm_combined = [0i16; 768];
-        for i in 0..h { stm_combined[i] = stm_acc[i].wrapping_add(stm_threat[i]); }
-        for i in 0..h { ntm_combined[i] = ntm_acc[i].wrapping_add(ntm_threat[i]); }
+        for i in 0..h {
+            stm_combined[i] = stm_acc[i].wrapping_add(stm_threat[i]);
+            ntm_combined[i] = ntm_acc[i].wrapping_add(ntm_threat[i]);
+        }
         self.forward_with_l1_pairwise(&stm_combined[..h], &ntm_combined[..h], bucket)
     }
 
