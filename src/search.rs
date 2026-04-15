@@ -985,6 +985,9 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
 pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -> Move {
     init_feature_flags();
 
+    // Enable threat delta generation if we have a threat net
+    board.generate_threat_deltas = info.nnue_net.as_ref().map_or(false, |n| n.has_threats);
+
     info.start_time = Instant::now();
     // Note: stop flag is cleared by the UCI thread before spawning the search
     // thread, not here. Clearing here races with ponderhit.

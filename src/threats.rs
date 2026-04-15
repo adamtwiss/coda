@@ -816,7 +816,9 @@ pub fn apply_threat_deltas(
     // Copy from previous position
     dst[..hidden_size].copy_from_slice(&src[..hidden_size]);
 
-    // Apply each delta
+    // Collect valid add/sub indices
+    let mut adds: Vec<usize> = Vec::with_capacity(deltas.len());
+    let mut subs: Vec<usize> = Vec::with_capacity(deltas.len());
     for delta in deltas {
         let idx = threat_index(
             delta.attacker_cp as usize,
@@ -827,17 +829,100 @@ pub fn apply_threat_deltas(
             pov,
         );
         if idx < 0 || (idx as usize) >= num_threats { continue; }
+        if delta.add { adds.push(idx as usize); } else { subs.push(idx as usize); }
+    }
 
-        let w_off = idx as usize * hidden_size;
-        if delta.add {
-            for j in 0..hidden_size {
-                dst[j] += threat_weights[w_off + j] as i16;
+    // Apply weight rows with SIMD when available
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && hidden_size % 16 == 0 {
+            unsafe {
+                apply_deltas_avx2(dst, threat_weights, hidden_size, &adds, &subs);
             }
-        } else {
-            for j in 0..hidden_size {
-                dst[j] -= threat_weights[w_off + j] as i16;
-            }
+            return;
         }
+    }
+
+    // Scalar fallback
+    for &idx in &adds {
+        let w_off = idx * hidden_size;
+        for j in 0..hidden_size {
+            dst[j] += threat_weights[w_off + j] as i16;
+        }
+    }
+    for &idx in &subs {
+        let w_off = idx * hidden_size;
+        for j in 0..hidden_size {
+            dst[j] -= threat_weights[w_off + j] as i16;
+        }
+    }
+}
+
+/// AVX2 SIMD: apply threat weight rows to accumulator.
+/// Processes 16 i16 elements per iteration using i8→i16 widening.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn apply_deltas_avx2(
+    dst: &mut [i16],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    adds: &[usize],
+    subs: &[usize],
+) {
+    use std::arch::x86_64::*;
+
+    let dst_ptr = dst.as_mut_ptr();
+
+    // Process paired add+sub (Reckless pattern: one add + one sub per pass)
+    let mut ai = 0;
+    let mut si = 0;
+    while ai < adds.len() && si < subs.len() {
+        let add_w = threat_weights.as_ptr().add(adds[ai] * hidden_size);
+        let sub_w = threat_weights.as_ptr().add(subs[si] * hidden_size);
+
+        let mut j = 0;
+        while j + 16 <= hidden_size {
+            let acc = _mm256_loadu_si256(dst_ptr.add(j) as *const __m256i);
+            let add_i8 = _mm_loadu_si128(add_w.add(j) as *const __m128i);
+            let sub_i8 = _mm_loadu_si128(sub_w.add(j) as *const __m128i);
+            let add_i16 = _mm256_cvtepi8_epi16(add_i8);
+            let sub_i16 = _mm256_cvtepi8_epi16(sub_i8);
+            let result = _mm256_sub_epi16(_mm256_add_epi16(acc, add_i16), sub_i16);
+            _mm256_storeu_si256(dst_ptr.add(j) as *mut __m256i, result);
+            j += 16;
+        }
+        ai += 1;
+        si += 1;
+    }
+
+    // Remaining adds
+    while ai < adds.len() {
+        let add_w = threat_weights.as_ptr().add(adds[ai] * hidden_size);
+        let mut j = 0;
+        while j + 16 <= hidden_size {
+            let acc = _mm256_loadu_si256(dst_ptr.add(j) as *const __m256i);
+            let add_i8 = _mm_loadu_si128(add_w.add(j) as *const __m128i);
+            let add_i16 = _mm256_cvtepi8_epi16(add_i8);
+            let result = _mm256_add_epi16(acc, add_i16);
+            _mm256_storeu_si256(dst_ptr.add(j) as *mut __m256i, result);
+            j += 16;
+        }
+        ai += 1;
+    }
+
+    // Remaining subs
+    while si < subs.len() {
+        let sub_w = threat_weights.as_ptr().add(subs[si] * hidden_size);
+        let mut j = 0;
+        while j + 16 <= hidden_size {
+            let acc = _mm256_loadu_si256(dst_ptr.add(j) as *const __m256i);
+            let sub_i8 = _mm_loadu_si128(sub_w.add(j) as *const __m128i);
+            let sub_i16 = _mm256_cvtepi8_epi16(sub_i8);
+            let result = _mm256_sub_epi16(acc, sub_i16);
+            _mm256_storeu_si256(dst_ptr.add(j) as *mut __m256i, result);
+            j += 16;
+        }
+        si += 1;
     }
 }
 
