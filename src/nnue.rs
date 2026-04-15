@@ -2350,19 +2350,20 @@ impl NNUENet {
         };
 
         // If threats are present, combine PSQ + threat accumulators
-        let mut stm_combined = [0i16; 4096]; // max accumulator size
-        let mut ntm_combined = [0i16; 4096];
-        let (stm_acc, ntm_acc) = if self.has_threats && acc.current().threat_computed {
+        // Use exact-sized stack array (768 × 2 bytes = 1.5KB per perspective, not 8KB)
+        let mut stm_buf = [0i16; 768]; // max v9 accumulator size
+        let mut ntm_buf = [0i16; 768];
+        let (stm_acc, ntm_acc) = if self.has_threats && acc.current().threat_computed && h <= 768 {
             let (t_stm, t_ntm) = if stm == WHITE {
                 (&acc.current().threat_white, &acc.current().threat_black)
             } else {
                 (&acc.current().threat_black, &acc.current().threat_white)
             };
             for i in 0..h {
-                stm_combined[i] = stm_acc_raw[i].saturating_add(t_stm[i]);
-                ntm_combined[i] = ntm_acc_raw[i].saturating_add(t_ntm[i]);
+                stm_buf[i] = stm_acc_raw[i].wrapping_add(t_stm[i]);
+                ntm_buf[i] = ntm_acc_raw[i].wrapping_add(t_ntm[i]);
             }
-            (&stm_combined[..h], &ntm_combined[..h])
+            (&stm_buf[..h], &ntm_buf[..h])
         } else {
             (stm_acc_raw, ntm_acc_raw)
         };
@@ -2750,6 +2751,7 @@ impl NNUEAccumulator {
     pub fn recompute_threats_if_needed(&mut self, net: &NNUENet, board: &crate::board::Board) {
         if !net.has_threats { return; }
         if self.stack[self.top].threat_computed { return; }
+        let _prof_start = std::time::Instant::now();
 
         let h = self.hidden_size;
 

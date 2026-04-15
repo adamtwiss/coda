@@ -564,6 +564,7 @@ impl Board {
 
         // Clear threat deltas for this move
         let gen_threats = self.generate_threat_deltas;
+        let _t0 = if gen_threats { Some(std::time::Instant::now()) } else { None };
         if gen_threats { self.threat_deltas.clear(); }
 
         // Handle captures
@@ -613,6 +614,14 @@ impl Board {
             if gen_threats { crate::threats::push_threats_on_move(
                 &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
                 self.colors[0] | self.colors[1], us, ROOK, rook_from as u32, rook_to as u32); }
+        }
+
+        // Record threat delta timing
+        if let Some(t0) = _t0 {
+            let elapsed = t0.elapsed().as_nanos() as u64;
+            crate::threat_profile::MAKE_MOVE_DELTA_NS.fetch_add(elapsed, std::sync::atomic::Ordering::Relaxed);
+            crate::threat_profile::MAKE_MOVE_DELTA_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            crate::threat_profile::DELTAS_PER_MOVE.fetch_add(self.threat_deltas.len() as u64, std::sync::atomic::Ordering::Relaxed);
         }
 
         // Update castling rights (for any move from/to relevant squares)
