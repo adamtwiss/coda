@@ -507,8 +507,14 @@ impl SearchInfo {
 
     /// Evaluate using NNUE if loaded, otherwise classical PeSTO.
     fn eval(&mut self, board: &Board) -> i32 {
+        // Ensure threat accumulator is computed before eval
+        if self.threat_stack.active {
+            if let Some(ref net) = self.nnue_net {
+                self.threat_stack.ensure_computed(&net.threat_weights, net.num_threat_features, board);
+            }
+        }
         let score = if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
-            let s = evaluate_nnue(board, net, acc);
+            let s = evaluate_nnue(board, net, acc, &self.threat_stack);
             // NNUE verification: recompute from scratch and compare
             static VERIFY_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             static VERIFY_MISMATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -516,7 +522,7 @@ impl SearchInfo {
             if *VERIFY_ENABLED.get_or_init(|| std::env::var("CODA_VERIFY_NNUE").is_ok()) {
                 let n = VERIFY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 acc.force_recompute(net, board);
-                let s2 = evaluate_nnue(board, net, acc);
+                let s2 = evaluate_nnue(board, net, acc, &self.threat_stack);
                 if s != s2 {
                     let m = VERIFY_MISMATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if m < 20 {
@@ -994,6 +1000,15 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
     // Enable threat delta generation if we have a threat net
     board.generate_threat_deltas = info.nnue_net.as_ref().map_or(false, |n| n.has_threats);
+
+    // Initialize root position threat accumulator
+    if info.threat_stack.active {
+        info.threat_stack.reset();
+        if let Some(ref net) = info.nnue_net {
+            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, WHITE);
+            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, BLACK);
+        }
+    }
 
     info.start_time = Instant::now();
     // Note: stop flag is cleared by the UCI thread before spawning the search
@@ -1824,8 +1839,10 @@ fn negamax(
         info.tt.prefetch(board.hash);
         let null_key = board.hash; // save hash for threat detection after unmake
         if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::recompute()); }
+        if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
         let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
         board.unmake_null_move();
 
         if info.stop.load(Ordering::Relaxed) {
@@ -1903,11 +1920,14 @@ fn negamax(
             let pc_dirty = build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), pc_moved_pt, pc_captured_pt);
 
             if let Some(acc) = &mut info.nnue_acc { acc.push(pc_dirty); }
+        if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
             if !board.make_move(mv) {
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
                 continue;
             }
             if let Some(acc) = &mut info.nnue_acc { acc.store_threat_deltas(board); }
+        if info.threat_stack.active { let entry = info.threat_stack.current_mut(); entry.delta.clear(); for d in board.threat_deltas.iter() { entry.delta.push(*d); } let ul = board.undo_stack.len(); if ul > 0 { let u = &board.undo_stack[ul-1]; entry.mv = u.mv; if u.mv != crate::types::NO_MOVE { entry.moved_pt = board.mailbox[crate::types::move_to(u.mv) as usize]; } } }
             info.tt.prefetch(board.hash);
 
             // Cheap qsearch verification before expensive negamax (Stockfish pattern)
@@ -1920,6 +1940,7 @@ fn negamax(
 
             board.unmake_move();
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
 
             if info.stop.load(Ordering::Relaxed) {
                 return 0;
@@ -2200,13 +2221,16 @@ fn negamax(
 
         // Push NNUE accumulator
         if let Some(acc) = &mut info.nnue_acc { acc.push(dirty); }
+        if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
 
         if !board.make_move(mv) {
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
             continue;
         }
         // Store threat deltas from make_move into accumulator stack
         if let Some(acc) = &mut info.nnue_acc { acc.store_threat_deltas(board); }
+        if info.threat_stack.active { let entry = info.threat_stack.current_mut(); entry.delta.clear(); for d in board.threat_deltas.iter() { entry.delta.push(*d); } let ul = board.undo_stack.len(); if ul > 0 { let u = &board.undo_stack[ul-1]; entry.mv = u.mv; if u.mv != crate::types::NO_MOVE { entry.moved_pt = board.mailbox[crate::types::move_to(u.mv) as usize]; } } }
 
         // Prefetch TT bucket for the new position
         info.tt.prefetch(board.hash);
@@ -2424,6 +2448,7 @@ fn negamax(
 
         board.unmake_move();
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
 
         // Accumulate nodes for this root move
         if ply == 0 {
@@ -2785,17 +2810,21 @@ fn quiescence_with_depth(
             let qs_dirty = build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt);
 
             if let Some(acc) = &mut info.nnue_acc { acc.push(qs_dirty); }
+        if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
             if !board.make_move(mv) {
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
                 continue;
             }
             if let Some(acc) = &mut info.nnue_acc { acc.store_threat_deltas(board); }
+        if info.threat_stack.active { let entry = info.threat_stack.current_mut(); entry.delta.clear(); for d in board.threat_deltas.iter() { entry.delta.push(*d); } let ul = board.undo_stack.len(); if ul > 0 { let u = &board.undo_stack[ul-1]; entry.mv = u.mv; if u.mv != crate::types::NO_MOVE { entry.moved_pt = board.mailbox[crate::types::move_to(u.mv) as usize]; } } }
             info.tt.prefetch(board.hash);
             move_count += 1;
 
             let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
             board.unmake_move();
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
 
             if score > best_score {
                 best_score = score;
@@ -2921,15 +2950,19 @@ fn quiescence_with_depth(
         let qs_dirty = build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt);
 
         if let Some(acc) = &mut info.nnue_acc { acc.push(qs_dirty); }
+        if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
         if !board.make_move(mv) {
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
             continue;
         }
         if let Some(acc) = &mut info.nnue_acc { acc.store_threat_deltas(board); }
+        if info.threat_stack.active { let entry = info.threat_stack.current_mut(); entry.delta.clear(); for d in board.threat_deltas.iter() { entry.delta.push(*d); } let ul = board.undo_stack.len(); if ul > 0 { let u = &board.undo_stack[ul-1]; entry.mv = u.mv; if u.mv != crate::types::NO_MOVE { entry.moved_pt = board.mailbox[crate::types::move_to(u.mv) as usize]; } } }
         info.tt.prefetch(board.hash);
         let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
         board.unmake_move();
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
 
         if score > best_score {
             best_score = score;

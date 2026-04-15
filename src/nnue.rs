@@ -2381,6 +2381,58 @@ impl NNUENet {
         (out_f * EVAL_SCALE as f32) as i32
     }
 
+    /// Forward pass with ThreatStack (new path).
+    pub fn forward_with_threats(&self, acc: &NNUEAccumulator, stm: u8, piece_count: u32,
+                                threat_stack: &crate::threat_accum::ThreatStack) -> i32 {
+        if threat_stack.active && self.has_threats {
+            let bucket = output_bucket(piece_count);
+            let h = self.hidden_size;
+
+            let (stm_acc_raw, ntm_acc_raw) = if stm == WHITE {
+                (acc.white(), acc.black())
+            } else {
+                (acc.black(), acc.white())
+            };
+
+            let t_stm = threat_stack.values(if stm == WHITE { WHITE } else { BLACK });
+            let t_ntm = threat_stack.values(if stm == WHITE { BLACK } else { WHITE });
+
+            // Combine PSQ + threat
+            let mut stm_combined = [0i16; 768];
+            let mut ntm_combined = [0i16; 768];
+            for i in 0..h {
+                stm_combined[i] = stm_acc_raw[i].wrapping_add(t_stm[i]);
+                ntm_combined[i] = ntm_acc_raw[i].wrapping_add(t_ntm[i]);
+            }
+
+            let mut output = self.output_bias[bucket] as i64;
+            if self.l1_size > 0 {
+                if self.use_pairwise {
+                    return self.forward_with_l1_pairwise(&stm_combined[..h], &ntm_combined[..h], bucket);
+                }
+                return self.forward_with_l1(&stm_combined[..h], &ntm_combined[..h], bucket);
+            }
+
+            // Non-hidden-layer path (shouldn't happen for v9 but handle it)
+            let out_w = self.output_weight_row(bucket);
+            let stm_acc = &stm_combined[..h];
+            let ntm_acc = &ntm_combined[..h];
+            if self.use_pairwise {
+                let pw = h / 2;
+                for i in 0..pw {
+                    let a = (stm_acc[i] as i32).clamp(0, QA);
+                    let b = (stm_acc[i + pw] as i32).clamp(0, QA);
+                    let v = ((a * b) >> FT_SHIFT) as i64;
+                    output += v * out_w[i] as i64;
+                }
+            }
+            return (output * EVAL_SCALE as i64 / (QA as i64 * QB as i64)) as i32;
+        }
+
+        // Fallback to old forward path
+        self.forward(acc, stm, piece_count)
+    }
+
     /// Forward pass: CReLU or SCReLU activation → dot product with output weights.
     /// Returns centipawns from side-to-move perspective.
     pub fn forward(&self, acc: &NNUEAccumulator, stm: u8, piece_count: u32) -> i32 {

@@ -382,7 +382,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
             }
             "eval" => {
                 let score = if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
-                    crate::eval::evaluate_nnue(&board, net, acc)
+                    { let ts = crate::threat_accum::ThreatStack::new(0); crate::eval::evaluate_nnue(&board, net, acc, &ts) }
                 } else {
                     crate::eval::evaluate(&board)
                 };

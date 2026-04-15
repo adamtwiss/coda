@@ -181,15 +181,18 @@ pub fn evaluate_nnue(
     board: &crate::board::Board,
     net: &crate::nnue::NNUENet,
     acc: &mut crate::nnue::NNUEAccumulator,
+    threat_stack: &crate::threat_accum::ThreatStack,
 ) -> i32 {
     acc.materialize(net, board);
-    if net.has_threats {
+    // Threats are computed by ThreatStack.ensure_computed() called before eval.
+    // The old AccEntry threat path is kept for backwards compatibility but
+    // ThreatStack is the primary path when active.
+    if net.has_threats && !threat_stack.active {
+        // Fallback: old AccEntry path (for when ThreatStack isn't wired yet)
         acc.recompute_threats_if_needed(net, board);
-        #[cfg(debug_assertions)]
-        acc.verify_threats(net, board);
     }
     let pc = crate::nnue::piece_count(board);
-    let score = net.forward(acc, board.side_to_move, pc);
+    let score = net.forward_with_threats(acc, board.side_to_move, pc, threat_stack);
 
     score
 }

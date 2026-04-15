@@ -762,7 +762,7 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>) {
         let board = board::Board::from_fen(&fen);
 
         let score = if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
-            eval::evaluate_nnue(&board, net, acc)
+            { let ts = crate::threat_accum::ThreatStack::new(0); eval::evaluate_nnue(&board, net, acc, &ts) }
         } else {
             continue;
         };
