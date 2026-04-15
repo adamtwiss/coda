@@ -837,6 +837,27 @@ pub fn apply_threat_deltas(
     let adds = &adds[..n_adds];
     let subs = &subs[..n_subs];
 
+    // Prefetch weight rows for upcoming deltas (hide L3 latency)
+    #[cfg(target_arch = "x86_64")]
+    {
+        for &idx in adds.iter().take(4) {
+            unsafe {
+                std::arch::x86_64::_mm_prefetch(
+                    threat_weights.as_ptr().add(idx * hidden_size) as *const i8,
+                    std::arch::x86_64::_MM_HINT_T0,
+                );
+            }
+        }
+        for &idx in subs.iter().take(4) {
+            unsafe {
+                std::arch::x86_64::_mm_prefetch(
+                    threat_weights.as_ptr().add(idx * hidden_size) as *const i8,
+                    std::arch::x86_64::_MM_HINT_T0,
+                );
+            }
+        }
+    }
+
     // Apply weight rows with SIMD when available
     #[cfg(target_arch = "x86_64")]
     {

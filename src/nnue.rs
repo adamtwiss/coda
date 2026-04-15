@@ -2396,7 +2396,9 @@ impl NNUENet {
 
         // Get threat accumulators (may be empty for non-threat nets)
         let empty_threat = &[][..];
-        let (t_stm, t_ntm) = if self.has_threats && acc.current().threat_computed {
+        let stm_idx = stm as usize;
+        let ntm_idx = (stm ^ 1) as usize;
+        let (t_stm, t_ntm) = if self.has_threats && acc.current().threat_accurate[stm_idx] && acc.current().threat_accurate[ntm_idx] {
             if stm == WHITE {
                 (acc.current().threat_white.as_slice(), acc.current().threat_black.as_slice())
             } else {
@@ -2647,7 +2649,7 @@ pub struct AccEntry {
     // Threat accumulator (v9): separate i16 values summed with PSQ at activation
     pub threat_white: Vec<i16>,
     pub threat_black: Vec<i16>,
-    pub threat_computed: bool,
+    pub threat_accurate: [bool; 2], // per-perspective [WHITE, BLACK]
     pub threat_deltas: Vec<crate::threats::RawThreatDelta>,
     pub threat_move: Move, // the move that produced this ply (for king mirror check)
     pub threat_moved_pt: u8, // piece type that moved
@@ -2686,7 +2688,7 @@ impl NNUEAccumulator {
                 dirty: DirtyPiece::recompute(),
                 threat_white: Vec::new(), // allocated on first use if net has threats
                 threat_black: Vec::new(),
-                threat_computed: false,
+                threat_accurate: [false; 2],
                 threat_deltas: Vec::new(),
                 threat_move: NO_MOVE,
                 threat_moved_pt: NO_PIECE_TYPE,
@@ -2710,7 +2712,7 @@ impl NNUEAccumulator {
     pub fn top(&self) -> usize { self.top }
 
     pub fn prev_threat_computed(&self) -> bool {
-        self.top > 0 && self.stack[self.top - 1].threat_computed
+        self.top > 0 && self.stack[self.top - 1].threat_accurate[0] && self.stack[self.top - 1].threat_accurate[1]
     }
 
     pub fn set_threat_deltas(&mut self, deltas: Vec<crate::threats::RawThreatDelta>) {
@@ -2798,7 +2800,7 @@ impl NNUEAccumulator {
     /// store_threat_deltas() after make_move. Matches Reckless's pattern.
     pub fn recompute_threats_if_needed(&mut self, net: &NNUENet, board: &crate::board::Board) {
         if !net.has_threats { return; }
-        if self.stack[self.top].threat_computed { return; }
+        if self.stack[self.top].threat_accurate[0] && self.stack[self.top].threat_accurate[1] { return; }
         let h = self.hidden_size;
 
         // Profile: 90.5% incremental (chain=1.1), 9.5% full recompute.
@@ -2808,7 +2810,7 @@ impl NNUEAccumulator {
         // Then verify the entire chain from ancestor to top has no king e-file crossings.
         let mut ancestor: Option<usize> = None;
         'walk: for i in (0..self.top).rev() {
-            if self.stack[i].threat_computed {
+            if self.stack[i].threat_accurate[0] && self.stack[i].threat_accurate[1] {
                 // Found ancestor. Now check the chain i+1..=self.top for king crossings.
                 for j in (i + 1)..=self.top {
                     let entry = &self.stack[j];
@@ -2889,7 +2891,7 @@ impl NNUEAccumulator {
                 self.stack[ply].threat_deltas = deltas;
             }
 
-            self.stack[ply].threat_computed = true;
+            self.stack[ply].threat_accurate = [true; 2];
         }
 
     }
@@ -2897,7 +2899,7 @@ impl NNUEAccumulator {
     /// DEBUG: verify threat accumulator matches full recompute for any position.
     #[cfg(debug_assertions)]
     pub fn verify_threats(&self, net: &NNUENet, board: &crate::board::Board) {
-        if !net.has_threats || !self.stack[self.top].threat_computed { return; }
+        if !net.has_threats || !self.stack[self.top].threat_accurate[0] || !self.stack[self.top].threat_accurate[1] { return; }
         let h = self.hidden_size;
         let occ = board.colors[0] | board.colors[1];
         let wk_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
@@ -2977,7 +2979,7 @@ impl NNUEAccumulator {
             },
         );
 
-        entry.threat_computed = true;
+        entry.threat_accurate = [true; 2];
     }
 
     /// Push: store dirty info, don't compute yet.
@@ -2991,7 +2993,7 @@ impl NNUEAccumulator {
                 dirty: DirtyPiece::recompute(),
                 threat_white: Vec::new(),
                 threat_black: Vec::new(),
-                threat_computed: false,
+                threat_accurate: [false; 2],
                 threat_deltas: Vec::new(),
                 threat_move: NO_MOVE,
                 threat_moved_pt: NO_PIECE_TYPE,
@@ -3001,7 +3003,7 @@ impl NNUEAccumulator {
             });
         }
         self.stack[self.top].computed = false;
-        self.stack[self.top].threat_computed = false;
+        self.stack[self.top].threat_accurate = [false; 2];
         self.stack[self.top].threat_deltas.clear();
         self.stack[self.top].dirty = dirty;
     }
@@ -3226,7 +3228,7 @@ impl NNUEAccumulator {
     pub fn reset(&mut self) {
         self.top = 0;
         self.stack[0].computed = false;
-        self.stack[0].threat_computed = false;
+        self.stack[0].threat_accurate = [false; 2];
         for entry in self.finny.iter_mut() {
             entry.valid = false;
         }
