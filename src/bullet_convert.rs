@@ -190,7 +190,9 @@ pub fn convert_v7(
     // Pairwise: L1 input is H (after CReLU+pairwise+concat = ft_size)
     // Direct: L1 input is 2*H
     let l1_mul = if use_pairwise { 1 } else { 2 };
-    let bytes_per_neuron = NNUE_INPUT_SIZE * 2 + 2 + l1_mul * bl1 * l1w_bytes_per;
+    // Combined FT: (PSQ_inputs + threat_inputs) share one weight matrix, all i16
+    let total_ft_inputs = NNUE_INPUT_SIZE + num_threats;
+    let bytes_per_neuron = total_ft_inputs * 2 + 2 + l1_mul * bl1 * l1w_bytes_per;
     let h = if ft_size_override > 0 {
         ft_size_override
     } else if data_len < fixed_bytes {
@@ -199,25 +201,44 @@ pub fn convert_v7(
         (data_len - fixed_bytes) / bytes_per_neuron
     };
 
-    println!("Input: {} bytes, FT={} L1={}{} L2={} (bucketed: {}x{}, {}x{})",
-        data.len(), h, l1_size, if int8_l1 { "(i8)" } else { "" }, l2_size, bl1, bl2,
+    println!("Input: {} bytes, FT={} L1={}{} L2={} threats={} (bucketed: {}x{}, {}x{})",
+        data.len(), h, l1_size, if int8_l1 { "(i8)" } else { "" }, l2_size, num_threats, bl1, bl2,
         NNUE_OUTPUT_BUCKETS, l1_size);
 
     // Verify size
     let l1_input = l1_mul * h;
-    let expected = NNUE_INPUT_SIZE * h * 2 + h * 2 + l1_input * bl1 * l1w_bytes_per
+    let expected = total_ft_inputs * h * 2 + h * 2 + l1_input * bl1 * l1w_bytes_per
         + l1b_bytes + l2_bytes + out_bytes;
     if expected != data_len {
-        return Err(format!("Size mismatch: expected {} bytes for FT={}, got {}", expected, h, data_len));
+        return Err(format!("Size mismatch: expected {} bytes for FT={}, got {} (total_ft_inputs={})", expected, h, data_len, total_ft_inputs));
     }
 
     let mut offset = 0;
 
-    // l0w: [InputSize][H] i16
+    // l0w: [InputSize][H] i16 — PSQ features
     let mut input_weights = vec![0i16; NNUE_INPUT_SIZE * h];
     for i in 0..NNUE_INPUT_SIZE * h {
         input_weights[i] = read_i16_le(&data, offset);
         offset += 2;
+    }
+
+    // Threat weights: read from combined FT block (i16 at QA=255), convert to i8
+    // In Atlas's Bullet approach, the FT has (PSQ_inputs + threat_inputs) combined.
+    // PSQ weights are the first NNUE_INPUT_SIZE rows (already read above).
+    // Threat weights are the next num_threats rows, stored as i16 at QA=255.
+    // We convert to i8 by rescaling: i8_val = clamp(i16_val * 64 / 255, -128, 127)
+    let mut threat_weights = Vec::new();
+    if num_threats > 0 {
+        threat_weights = vec![0i8; num_threats * h];
+        for i in 0..num_threats * h {
+            let val_i16 = read_i16_le(&data, offset);
+            offset += 2;
+            // Rescale from QA=255 to QA=64
+            let rescaled = (val_i16 as i32 * 64 / 255).clamp(-128, 127) as i8;
+            threat_weights[i] = rescaled;
+        }
+        println!("Read and rescaled {} threat weights ({}×{}, i16→i8)",
+            num_threats * h, num_threats, h);
     }
 
     // l0b: [H] i16
@@ -225,18 +246,6 @@ pub fn convert_v7(
     for i in 0..h {
         input_biases[i] = read_i16_le(&data, offset);
         offset += 2;
-    }
-
-    // Threat weights: [num_threats × H] i8 (v9)
-    let mut threat_weights = Vec::new();
-    if num_threats > 0 {
-        threat_weights = vec![0i8; num_threats * h];
-        for i in 0..num_threats * h {
-            threat_weights[i] = data[offset] as i8;
-            offset += 1;
-        }
-        println!("Read {} threat weights ({}×{}, {} bytes)",
-            num_threats * h, num_threats, h, num_threats * h);
     }
 
     // l1w: [l1_input][bl1] — i8 or i16
