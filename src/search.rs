@@ -306,6 +306,7 @@ pub struct SearchInfo {
     cont_corr: Box<[[i32; 64]; 12]>,
     pub nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
     pub nnue_acc: Option<crate::nnue::NNUEAccumulator>,
+    pub threat_stack: crate::threat_accum::ThreatStack,
     /// Syzygy tablebases (shared, read-only). Interior WDL probes in search.
     pub syzygy: Option<std::sync::Arc<crate::tb::SyzygyTB>>,
 }
@@ -355,6 +356,7 @@ impl SearchInfo {
             cont_corr: alloc_zeroed_box(),
             nnue_net: None,
             nnue_acc: None,
+            threat_stack: crate::threat_accum::ThreatStack::new(768), // max v9 accum size
             syzygy: None,
         }
     }
@@ -377,6 +379,11 @@ impl SearchInfo {
     pub fn load_nnue(&mut self, path: &str) -> Result<(), String> {
         let net = crate::nnue::NNUENet::load(path)?;
         let acc = crate::nnue::NNUEAccumulator::new(net.hidden_size);
+        // Activate threat stack if net has threat features
+        if net.has_threats {
+            self.threat_stack = crate::threat_accum::ThreatStack::new(net.hidden_size);
+            self.threat_stack.active = true;
+        }
         self.nnue_net = Some(std::sync::Arc::new(net));
         self.nnue_acc = Some(acc);
         Ok(())

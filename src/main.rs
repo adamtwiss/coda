@@ -23,6 +23,7 @@ pub mod bullet_convert;
 mod cuckoo;
 pub mod threats;
 pub mod threat_profile;
+pub mod threat_accum;
 
 use board::Board;
 use movegen::{perft, perft_divide};
