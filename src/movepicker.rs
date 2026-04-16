@@ -581,6 +581,18 @@ impl MovePicker {
                 score += 8000;
             }
 
+            // Escape-capture bonus: bonus for moving a piece off a threatened square
+            // (Reckless pattern). Values are tunable via SPSA.
+            if self.threats & (1u64 << from) != 0 && piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                score += match pt {
+                    4 => crate::search::ESCAPE_BONUS_Q.load(std::sync::atomic::Ordering::Relaxed),
+                    3 => crate::search::ESCAPE_BONUS_R.load(std::sync::atomic::Ordering::Relaxed),
+                    1 | 2 => crate::search::ESCAPE_BONUS_MINOR.load(std::sync::atomic::Ordering::Relaxed),
+                    _ => 0,
+                };
+            }
+
             // Quiet check bonus: moves that give direct check (SF +16384, Viridithas +10000)
             if piece != NO_PIECE {
                 let pt = board.piece_type_at(from);

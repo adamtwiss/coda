@@ -116,6 +116,11 @@ tunables!(
     (CONTEMPT_VAL,       19,    0,   50),
     // Correction history divisor
     (CORR_HIST_DIV,     967,  256, 4096),
+    // Escape-capture bonuses (Reckless pattern): move ordering bonus for
+    // moving a piece off a square attacked by enemy pawns
+    (ESCAPE_BONUS_Q,   20000, 5000, 40000),
+    (ESCAPE_BONUS_R,   14000, 3000, 30000),
+    (ESCAPE_BONUS_MINOR, 8000, 2000, 20000),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
