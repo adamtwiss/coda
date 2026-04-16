@@ -267,7 +267,7 @@ pub fn enumerate_threats<F: FnMut(usize)>(
                 // Compute attacks for this piece (with occupancy for sliders)
                 let attacks = piece_attacks_occ(pt, color, sq, occ);
 
-                // Find attacked occupied squares
+                // Find attacked occupied squares (direct threats)
                 let mut attacked_occ = attacks & occ;
                 while attacked_occ != 0 {
                     let target_sq = attacked_occ.trailing_zeros();
@@ -281,6 +281,49 @@ pub fn enumerate_threats<F: FnMut(usize)>(
                     let idx = threat_index(cp, sq, victim_cp, target_sq, mirrored, pov);
                     if idx >= 0 {
                         callback(idx as usize);
+                    }
+                }
+
+                // X-ray threats: for sliders, find the second piece on each ray
+                // (the piece behind the directly attacked piece). Matches Bullet
+                // training enumeration at ebdf398.
+                if pt == BISHOP || pt == ROOK || pt == QUEEN {
+                    // Check each ray direction using attack comparison
+                    // For each directly attacked piece, see if removing it reveals another
+                    let mut direct_targets = attacks & occ;
+                    while direct_targets != 0 {
+                        let blocker_sq = direct_targets.trailing_zeros();
+                        direct_targets &= direct_targets - 1;
+
+                        // Compute slider attacks without the blocking piece
+                        let occ_without = occ & !(1u64 << blocker_sq);
+                        let attacks_through = piece_attacks_occ(pt, color, sq, occ_without);
+
+                        // Newly revealed squares: attacked without blocker but not with
+                        let revealed = attacks_through & !attacks & occ_without;
+                        if revealed == 0 { continue; }
+
+                        // Take the closest revealed piece on the ray
+                        // Direction: if slider < blocker, xray is above blocker
+                        let xray_sq = if sq < blocker_sq {
+                            let above = revealed & !((1u64 << (blocker_sq + 1)) - 1);
+                            if above != 0 { above.trailing_zeros() } else { 64 }
+                        } else {
+                            let below = revealed & ((1u64 << blocker_sq) - 1);
+                            if below != 0 { 63 - below.leading_zeros() } else { 64 }
+                        };
+
+                        if xray_sq < 64 {
+                            let xpt = mailbox[xray_sq as usize];
+                            if xpt < 6 {
+                                let xcolor = if white_bb & (1u64 << xray_sq) != 0 { WHITE } else { BLACK };
+                                let xcp = colored_piece(xcolor, xpt);
+                                let idx = threat_index(cp, sq, xcp, xray_sq, mirrored, pov);
+                                if idx >= 0 {
+                                    callback(idx as usize);
+                                }
+                            }
+                        }
                     }
                 }
             }
