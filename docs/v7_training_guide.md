@@ -170,55 +170,132 @@ on `feature/threat-inputs` branch. Matches Reckless's architecture exactly.
 | Accum width | 768 per perspective | 640-2560 | ✓ Match (same as Reckless) |
 | FT activation | CReLU → pairwise | CReLU → pairwise | ✓ Match |
 | FT shift | >>9 | >>9 | ✓ Match |
-| King buckets | 16 (consensus layout) | 16 (fine-near, coarse-far) | ✓ Match |
+| King buckets | **16 (uniform)** | **Reckless: 10 custom** | **✗ DIFF — 60% more params** |
 | L1 size | 16 | 16 (most) | ✓ Match |
 | L1 quant | i8 QB=64 | i8 QB=64 | ✓ Match |
+| **L1/L2 activation** | **SCReLU** | **Reckless: clipped ReLU** | **✗ DIFF** |
 | L2 size | 32 | 32 | ✓ Match |
-| Output buckets | 8 | 8 | ✓ Match |
+| **Output buckets** | **8 (uniform)** | **Reckless: 8 (non-uniform)** | **✗ DIFF** |
 | **Threat features** | **66,864** | **60-80K** | **✓ Match** |
-| X-ray threats in training | Not yet | Reckless has them | Training in progress (Atlas) |
+| **NETWORK_SCALE** | **400** | **Reckless: 380** | **✗ DIFF (minor)** |
+| X-ray threats in training | Not yet | Reckless has them | In progress (Atlas) |
+| Sparse L1 (NNZ) | No | Reckless: Yes | ✗ (NPS only, not eval) |
 | Factoriser | None | Mixed | ✓ Correctly omitted |
+
+### Detailed Reckless Architecture Differences (2026-04-16)
+
+**King buckets**: Reckless uses 10 buckets with aggressive far-rank merging:
+```
+Rank 1: buckets 0,1,2,3 (4 file groups, mirrored)
+Rank 2: buckets 4,5,6,7 (4 file groups, mirrored)
+Rank 3: bucket 8 (one bucket)
+Ranks 4-8: bucket 9 (one bucket for ALL far ranks)
+```
+We use 16 uniform buckets = 60% more PSQ parameters, each getting less training data.
+At s400, this significantly hurts training quality.
+
+**L1/L2 activation**: Reckless uses `clamp(0.0, 1.0)` (clipped ReLU) on hidden layers.
+We use SCReLU (clamp then square). Viridithas found SCReLU = +50% effective network size,
+but Reckless achieves #2 CCRL with plain clipped ReLU. May train more stably or may
+not matter with narrow (16→32) hidden layers.
+
+**Output bucket mapping**: Reckless non-uniform (indexed by piece count 0-32):
+```
+0-8 pieces: bucket 0 (lumps all endgames)
+9-12: bucket 1 | 13-16: bucket 2 | 17-19: bucket 3
+20-22: bucket 4 | 23-25: bucket 5 | 26-28: bucket 6
+29-32: bucket 7 (full material)
+```
+Our uniform `(count-2)/4` wastes bucket capacity on rare endgame piece counts.
 
 ### v9 Roadmap (updated 2026-04-16)
 
-**Active work:**
+**Merged to v9 trunk:**
+- Escape-capture bonuses: +3.6 Elo (H1 #390). Halves search tree.
+- Pawn history in LMR: trending +2.8 at 14K games (#384, likely H1 soon).
+- Bullet compatibility: semi-exclusion fix (correctness, Elo-neutral).
+- NPS optimizations: +17% (SIMD refresh, packed deltas, register blocking).
+- Two SPSA tune rounds: +134 cumulative Elo.
 
-1. **Training**: s800 net in progress (~4 hours). s200+xray and s200+xray+w15 also training.
-2. **Search tuning**: 51-param SPSA with escape bonuses (#385, running).
-3. **Search features**: Pawn history in LMR (+4.1 trending H1), escape-capture bonuses (testing),
-   threat-aware futility (+4.4 trending H1), razoring (just submitted).
-4. **Merge to main**: v9 code ready for merge. Features gate on `threat_stack.active`.
+**Search experiments running:**
+- Threat-aware futility (#386): +4.4 at 1K games, still running.
+- Razoring (#389): +1.1 at 5K games, still running.
+- Threat-density LMR (#387): trending H0. Novel idea, doesn't work.
+- Threat-singular ext (#388): trending H0. Novel idea, doesn't work.
 
-**Training improvements in pipeline:**
+**Next: SPSA retune** after #384 merges. 1000 iterations with `--scale-nps 250000`.
 
-| Change | Expected Impact | Status |
-|--------|----------------|--------|
-| s800 training | +10-20 Elo (extrapolating s200→s400=+19.5) | Training now |
-| X-ray threats in training | Unknown, significant feature gap | Training now (Atlas) |
-| WDL 0.15 blend | Unknown, testing alongside x-rays | Training now |
-| Low final LR | Already applied | ✅ Done |
-| Position filtering | Already applied | ✅ Done |
-| Data diversity (selfplay) | -40 Elo vs T80 at s200 (needs investigation) | Tested, unclear |
+### Training Experiment Queue (2026-04-16)
+
+All experiments at s200 (~5 hours each). Compare against current s200 baseline.
+Run on GPU hosts as they become free. Priority order reflects expected impact.
+
+**Priority 1 — Architecture alignment with Reckless:**
+
+| # | Experiment | Change | Expected Impact | Notes |
+|---|-----------|--------|-----------------|-------|
+| T1 | Consensus king buckets | 16 buckets, fine-near coarse-far layout | +15-25 Elo | Code ready. Proven +15 on v5. |
+| T2 | Reckless king buckets | 10 buckets, Reckless exact layout | +15-30 Elo? | Fewer params = better trained. Test after T1. |
+| T3 | X-ray threats | Add x-ray features to training data | +15-30 Elo? | Atlas working on Bullet code. In progress. |
+| T4 | Clipped ReLU on hidden layers | `clamp(0,1)` instead of SCReLU | Unknown | Reckless uses this at #2 CCRL. Quick to test. |
+
+**Priority 2 — Training quality:**
+
+| # | Experiment | Change | Expected Impact | Notes |
+|---|-----------|--------|-----------------|-------|
+| T5 | Remove ply >= 16 filter | Include opening positions | +5-15 Elo? | T80 has 14.3% well-scored opening data we discard |
+| T6 | WDL 0.10 | Lower WDL blend | Unknown | v5 uses 0.07, current v9 = 0.0 (w0) |
+| T7 | WDL 0.15 | Medium WDL blend | Unknown | In progress alongside x-ray |
+| T8 | WDL 0.25 | Higher WDL blend | Unknown | Closer to consensus (0.3-0.4) |
+| T9 | Progressive WDL | Start w0, ramp to w15 over training | Unknown | Avoids early WDL noise, gets late WDL benefit |
+| T10 | Raise score filter to 20000 | Keep decisive non-mate positions | +0-5 Elo? | Low impact (6.6% more data) |
+
+**Priority 3 — Output architecture:**
+
+| # | Experiment | Change | Expected Impact | Notes |
+|---|-----------|--------|-----------------|-------|
+| T11 | Reckless output buckets | Non-uniform piece count mapping | +5-10 Elo? | Better bucket efficiency for common material |
+| T12 | Lower final LR (1e-6) | Even more convergence | +0-5 Elo? | Current 2.4e-6 might already be optimal |
+
+**Experiment methodology:**
+- Each experiment changes ONE variable from the s200 baseline config.
+- Convert with `coda convert-bullet` and SPRT against baseline s200 on OB.
+- Use `--scale-nps 250000` for v9 tests.
+- Positive results get promoted to longer training (s800+).
+- Multiple positives get combined into a single optimised config for production training.
+
+**Current training runs (in progress):**
+
+| Run | GPU | Config | ETA |
+|-----|-----|--------|-----|
+| s800 (baseline) | GPU1 | Current v9 config, no x-ray, w0 | ~1-2 hours |
+| s200 + x-ray | GPU2 | Add x-ray threats, w0 | ~2-3 hours |
+| s200 + x-ray + w15 | GPU3 | Add x-ray + WDL 0.15 | Restarted (disk space) |
 
 **NPS findings (2026-04-16):**
 
 - v9 NPS (545K) is at **parity with Reckless single-threaded** (~550K).
-  Reckless's 960K bench includes ~2 threads.
+  Reckless's 960K bench includes ~2 threads (confirmed via perf).
 - The ~2.8× gap from v5 (1535K) is fundamental threat overhead: 18KB memory
   traffic per eval for threat accumulator updates.
-- PGO doesn't help v9 (10% regression from code layout issues).
+- PGO doesn't help v9 (10% regression — investigated, not binary size).
 - Optimizations applied: +17% from SIMD refresh, packed deltas, register blocking.
 - See `docs/v9_nps_optimization_plan.md` for full profiling results.
 
 **Search findings with v9 eval:**
 
 - Tune gains are massive (+134 cumulative) because v9 eval scale is ~3× v5.
-  All search thresholds needed recalibration.
-- Threat-aware history (4D) and NNUE eval carry most of the signal.
+- Threat-aware history (4D) and NNUE eval carry most signal implicitly.
   Explicit threat logic in pruning formulas (LMR density, singular beta) does NOT help.
-- Escape-capture bonuses (Reckless pattern) halve the search tree. Testing in progress.
-- Pawn history in LMR: +4 Elo, low-hanging fruit for any architecture.
-- Previously rejected features (razoring, etc.) worth retesting due to different eval scale.
+- Escape-capture bonuses (Reckless pattern) halve the search tree: +3.6 Elo H1.
+- Pawn history in LMR: +2.8 Elo trending H1.
+- Razoring: slightly positive (+1.1 at 5K games), still running.
+
+**T80 training data analysis** (see `docs/t80_data_analysis.md`):
+- 14.3% opening positions (ply 0-15) discarded by our ply >= 16 filter.
+- 18.3% mate scores (>=32001), 6.6% near-mate (20K-30K) removed by score filter.
+- 18.9% captures, 6.1% in check — correctly filtered (noisy scores).
+- Bucket 0 (32 pieces) has 12.6% of data — well-populated if we don't filter by ply.
 
 **Lower priority / shelved:**
 
@@ -226,8 +303,8 @@ on `feature/threat-inputs` branch. Matches Reckless's architecture exactly.
 - ~~L1 activation regularisation~~ — shelved
 - ~~Widen FT~~ — v9 uses 768 (matching Reckless), wider is unnecessary with threats
 - ~~v8 dual L1~~ — superseded by v9 threat architecture
-- Const generic dimensions — no measurable gain from specialization attempts
-- SIMD ray-based delta generation (Reckless pattern) — potential 5-10% NPS, complex rewrite
+- Const generic dimensions — no measurable NPS gain from specialization attempts
+- SIMD ray-based delta generation — potential 5-10% NPS, complex rewrite
 
 ### Threat Feature Implementation Details (from cross-engine research, 2026-04-14)
 
