@@ -4521,3 +4521,61 @@ New production net: `net-v5-768pw-w7-e800s800-pow25-12f.nnue`. Node count +44% v
 - **Change**: `.max(-200)` floor on dynamic capture SEE threshold (`-captHist/18`)
 - **Result**: **H0, -2.42 Elo, 10,336 games.**
 - **Notes**: The dynamic threshold works fine without a floor. Extreme negative captHist values creating high positive thresholds is a theoretical concern but doesn't hurt in practice. Feature confirmed working as-is.
+
+## 2026-04-16: v9 Threat Feature Experiments
+
+### Escape-Capture Bonuses + Pawn History in LMR — H1 (OB #390)
+- **Change**: Two features combined on feature/threat-inputs:
+  1. Escape-capture bonuses (Reckless pattern): move ordering bonus for moving pieces off
+     enemy-pawn-attacked squares. Q=20000, R=14000, N/B=8000. Tunable via SPSA.
+  2. Pawn history in LMR: added pawn_hist[pawn_hash][piece][to] to LMR history adjustment
+     and history pruning decision (was only used in move scoring, not LMR).
+- **Result**: **H1, +3.6 Elo ±5.6, 6800 games.** LLR 3.03.
+- **Notes**: Escape bonuses halve the search tree (bench 2.07M → 1.09M) with first-move cut
+  rate 70% → 75%. Massive tree shape change. Tested at untuned defaults; SPSA retune expected
+  to find more Elo. Pawn history in LMR was separately trending +4.1 at 14K games (#384).
+  Both are v9-specific: escape bonuses leverage threat-aware move ordering, pawn history
+  leverages the richer eval for pawn-structure-dependent decisions.
+
+### v9 Tune Round 1 — H1 (OB #376)
+- **Change**: 48-param SPSA tune (#373, 1000 iterations) on v9 s400 threat net.
+  Started from v5-calibrated defaults.
+- **Result**: **H1, +104.3 Elo ±22.7, 614 games.** Massive eval scale recalibration.
+- **Notes**: v9 eval is ~3× scale of v5. Key shifts: SE_DEPTH +103%, HIST_PRUNE_MULT -43%,
+  LMR_HIST_DIV +65%, NMP_EVAL_MAX +44%, RFP_MARGIN_IMP +27%.
+
+### v9 Tune Round 2 — H1 (OB #382)
+- **Change**: 48-param SPSA tune (#380, 2500 iterations) seeded from round 1 values.
+- **Result**: **H1, +30.6 Elo ±11.0, 1638 games.**
+- **Notes**: Continued large shifts: FUT_BASE -22%, LMR_C_QUIET -14%, ASP_DELTA -20%,
+  CONTEMPT_VAL +38%, SE_DEPTH +18%. Confirms round 1 hadn't converged.
+
+### Bullet Compatibility Fix: Semi-Exclusion — FLAT (OB #392)
+- **Change**: Align semi-exclusion convention with Bullet training. Training uses physical
+  square ordering for same-piece-type pairs; inference was using perspective-flipped squares.
+  ~3-5% NTM feature mismatch.
+- **Result**: Flat/slightly negative at ~200 games (still running).
+- **Notes**: Fix is correct (training/inference should match) but the affected features are too
+  few (~2-4 per position) and too low-weight to matter with current s400 net. May become
+  relevant with longer training. Keep fix for correctness.
+
+### Threat-Density LMR — TRENDING H0 (OB #387)
+- **Change**: Reduce LMR less when multiple pieces under pawn attack (threat_count / LMR_THREAT_DIV).
+- **Result**: -1.9 Elo at 3460 games, trending H0.
+- **Notes**: Novel idea, not from Reckless. Too blunt — blanket LMR reduction for all quiet moves
+  in tactical positions doesn't help. Reckless relies on threat-aware history for this signal.
+
+### Threat-Aware Singular Extension — TRENDING H0 (OB #388)
+- **Change**: Widen singular beta by SE_THREAT_MARGIN when pieces under pawn attack.
+- **Result**: -1.8 Elo at 3980 games, trending H0.
+- **Notes**: Novel idea, not from Reckless. Explicit threat logic in singular extensions doesn't
+  help. The NNUE eval and threat-aware history already capture this signal implicitly.
+
+### Threat-Aware Futility — STILL RUNNING (OB #386)
+- **Change**: Widen futility margin by FUT_THREAT_MARGIN when pieces under pawn attack.
+- **Result**: +4.4 Elo at 1036 games (early, still running).
+
+### Razoring on v9 — STILL RUNNING (OB #389)
+- **Change**: Re-add razoring (removed from v5) with tunable margins scaled for v9 eval.
+  RAZOR_BASE=900, RAZOR_MULT=756 (3× Reckless defaults for v9 scale).
+- **Result**: +1.1 Elo at 5122 games (still running, slightly positive).
