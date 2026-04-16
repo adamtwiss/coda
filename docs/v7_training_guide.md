@@ -239,11 +239,13 @@ Run on GPU hosts as they become free. Priority order reflects expected impact.
 | T3 | X-ray threats | Add x-ray features to training data | +15-30 Elo? | Atlas working on Bullet code. In progress. |
 | T4 | Clipped ReLU on hidden layers | `clamp(0,1)` instead of SCReLU | Unknown | Reckless uses this at #2 CCRL. Quick to test. |
 
-**Priority 2 — Training quality:**
+**Priority 1b — Filtering (quick win, one-line change):**
 
 | # | Experiment | Change | Expected Impact | Notes |
 |---|-----------|--------|-----------------|-------|
-| T5 | Remove ply >= 16 filter | Include opening positions | +5-15 Elo? | T80 has 14.3% well-scored opening data we discard |
+| T5 | Remove ply >= 16 filter | Include opening positions | +5-15 Elo? | T80 has 14.3% well-scored opening data we discard. Bucket 0 starved. |
+
+**Priority 2 — Training quality:**
 | T6 | WDL 0.10 | Lower WDL blend | Unknown | v5 uses 0.07, current v9 = 0.0 (w0) |
 | T7 | WDL 0.15 | Medium WDL blend | Unknown | In progress alongside x-ray |
 | T8 | WDL 0.25 | Higher WDL blend | Unknown | Closer to consensus (0.3-0.4) |
