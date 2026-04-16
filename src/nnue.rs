@@ -180,6 +180,61 @@ unsafe fn simd_acc_copy_sub(dst: &mut [i16], src: &[i16], row: &[i16], h: usize)
     }
 }
 
+/// Register-blocked batch apply for Finny table refresh (Reckless pattern).
+/// Loads 8 SIMD registers from acc, applies ALL adds then ALL subs, stores once.
+/// Much faster than per-piece acc_add/acc_sub which loads/stores each time.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn finny_batch_apply_avx2(
+    acc: &mut [i16],
+    input_weights: &[i16],
+    h: usize,
+    adds: &[usize],
+    subs: &[usize],
+) {
+    const REGS: usize = 8;
+    const CHUNK: usize = REGS * 16; // 128 i16 elements per chunk
+
+    let acc_ptr = acc.as_mut_ptr();
+    let w_ptr = input_weights.as_ptr();
+
+    let mut offset = 0;
+    while offset < h {
+        let nregs = ((h - offset).min(CHUNK) + 15) / 16;
+
+        // Load accumulator chunk into registers
+        let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
+        for i in 0..nregs {
+            regs[i] = _mm256_loadu_si256(acc_ptr.add(offset + i * 16) as *const __m256i);
+        }
+
+        // Apply ALL adds (weight rows are i16, no widening needed)
+        for &idx in adds {
+            let row = w_ptr.add(idx * h + offset);
+            for i in 0..nregs {
+                let w = _mm256_loadu_si256(row.add(i * 16) as *const __m256i);
+                regs[i] = _mm256_add_epi16(regs[i], w);
+            }
+        }
+
+        // Apply ALL subs
+        for &idx in subs {
+            let row = w_ptr.add(idx * h + offset);
+            for i in 0..nregs {
+                let w = _mm256_loadu_si256(row.add(i * 16) as *const __m256i);
+                regs[i] = _mm256_sub_epi16(regs[i], w);
+            }
+        }
+
+        // Store registers back
+        for i in 0..nregs {
+            _mm256_storeu_si256(acc_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
+        }
+
+        offset += CHUNK;
+    }
+}
+
 /// Subtract a weight row from an accumulator vector (both i16, length h).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
@@ -3284,17 +3339,28 @@ impl NNUEAccumulator {
         };
 
         if !entry.valid {
-            // No cache — full recompute
+            // No cache — full recompute with register blocking
             dst[..h].copy_from_slice(&net.input_biases[..h]);
+            let mut piece_indices: [usize; 32] = [0; 32];
+            let mut n_pieces = 0usize;
             for color in 0..2u8 {
                 for pt in 0..6u8 {
                     let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
                     while bb != 0 {
                         let sq = pop_lsb(&mut bb) as u8;
                         let idx = halfka_index(perspective, king_sq, color, pt, sq);
-                        let row = net.input_weight_row(idx);
-                        acc_add(net, dst, row, h);
+                        if n_pieces < 32 { piece_indices[n_pieces] = idx; n_pieces += 1; }
                     }
+                }
+            }
+            #[cfg(target_arch = "x86_64")]
+            if net.has_avx2 && h % 16 == 0 {
+                let empty: [usize; 0] = [];
+                unsafe { finny_batch_apply_avx2(dst, &net.input_weights, h, &piece_indices[..n_pieces], &empty); }
+            } else {
+                for &idx in &piece_indices[..n_pieces] {
+                    let row = net.input_weight_row(idx);
+                    for j in 0..h { dst[j] += row[j]; }
                 }
             }
             // Save to cache
@@ -3304,8 +3370,15 @@ impl NNUEAccumulator {
             return;
         }
 
-        // Diff cached vs current — apply only changed features to cached acc
+        // Diff cached vs current — collect all changes, then batch apply
+        // Register-blocking: load 8 regs once, apply ALL adds/subs, store once
         let cached_acc = &mut entry.acc;
+
+        // Collect feature indices for adds and subs
+        let mut add_rows: [usize; 32] = [0; 32];
+        let mut sub_rows: [usize; 32] = [0; 32];
+        let mut n_adds = 0usize;
+        let mut n_subs = 0usize;
 
         for color in 0..2u8 {
             for pt in 0..6u8 {
@@ -3313,22 +3386,41 @@ impl NNUEAccumulator {
                 let curr = board.pieces[pt as usize] & board.colors[color as usize];
                 if prev == curr { continue; }
 
-                // Removed: in prev but not curr
                 let mut removed = prev & !curr;
                 while removed != 0 {
                     let sq = pop_lsb(&mut removed) as u8;
                     let idx = halfka_index(perspective, king_sq, color, pt, sq);
-                    let row = net.input_weight_row(idx);
-                    acc_sub(net, cached_acc, row, h);
+                    if n_subs < 32 { sub_rows[n_subs] = idx; n_subs += 1; }
                 }
 
-                // Added: in curr but not prev
                 let mut added = curr & !prev;
                 while added != 0 {
                     let sq = pop_lsb(&mut added) as u8;
                     let idx = halfka_index(perspective, king_sq, color, pt, sq);
+                    if n_adds < 32 { add_rows[n_adds] = idx; n_adds += 1; }
+                }
+            }
+        }
+
+        // Batch apply with register blocking (Reckless pattern)
+        if n_adds > 0 || n_subs > 0 {
+            #[cfg(target_arch = "x86_64")]
+            if net.has_avx2 && h % 16 == 0 {
+                unsafe {
+                    finny_batch_apply_avx2(
+                        cached_acc, &net.input_weights, h,
+                        &add_rows[..n_adds], &sub_rows[..n_subs],
+                    );
+                }
+            } else {
+                // Scalar fallback
+                for &idx in &add_rows[..n_adds] {
                     let row = net.input_weight_row(idx);
-                    acc_add(net, cached_acc, row, h);
+                    for j in 0..h { cached_acc[j] += row[j]; }
+                }
+                for &idx in &sub_rows[..n_subs] {
+                    let row = net.input_weight_row(idx);
+                    for j in 0..h { cached_acc[j] -= row[j]; }
                 }
             }
         }
