@@ -28,7 +28,7 @@ pub struct DeltaVec {
 impl DeltaVec {
     pub const fn new() -> Self {
         Self {
-            data: [RawThreatDelta { attacker_cp: 0, from_sq: 0, victim_cp: 0, to_sq: 0, add: false }; MAX_THREAT_DELTAS],
+            data: [RawThreatDelta::ZERO; MAX_THREAT_DELTAS],
             len: 0,
             overflowed: false,
         }
@@ -221,13 +221,13 @@ impl ThreatStack {
 
                 for delta in curr[0].delta.data[..curr[0].delta.len].iter() {
                     let idx = crate::threats::threat_index(
-                        delta.attacker_cp as usize, delta.from_sq as u32,
-                        delta.victim_cp as usize, delta.to_sq as u32,
+                        delta.attacker_cp() as usize, delta.from_sq() as u32,
+                        delta.victim_cp() as usize, delta.to_sq() as u32,
                         mirrored, pov,
                     );
                     if idx < 0 || (idx as usize) >= num_features { continue; }
                     let w_off = idx as usize * h;
-                    if delta.add {
+                    if delta.add() {
                         for j in 0..h {
                             curr[0].values[p][j] += net_weights[w_off + j] as i16;
                         }

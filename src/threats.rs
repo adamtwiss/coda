@@ -286,15 +286,28 @@ pub fn enumerate_threats<F: FnMut(usize)>(
 /// Maximum threat deltas per ply. Reckless uses 80; we use 128 for safety.
 pub const MAX_THREAT_DELTAS: usize = 128;
 
-/// Raw threat delta: stores piece data, not pre-computed indices.
-/// Indices are computed per-perspective during accumulator update.
+/// Packed threat delta (4 bytes, matching Reckless's ThreatDelta).
+/// Layout: [attacker_cp:8][from_sq:8][victim_cp:8][to_sq:7][add:1]
 #[derive(Copy, Clone)]
-pub struct RawThreatDelta {
-    pub attacker_cp: u8,
-    pub from_sq: u8,
-    pub victim_cp: u8,
-    pub to_sq: u8,
-    pub add: bool,
+pub struct RawThreatDelta(u32);
+
+impl RawThreatDelta {
+    #[inline(always)]
+    pub const fn new(attacker_cp: u8, from_sq: u8, victim_cp: u8, to_sq: u8, add: bool) -> Self {
+        Self(attacker_cp as u32
+            | (from_sq as u32) << 8
+            | (victim_cp as u32) << 16
+            | ((to_sq as u32) & 0x7F) << 24
+            | if add { 1u32 << 31 } else { 0 })
+    }
+
+    pub const ZERO: Self = Self(0);
+
+    #[inline(always)] pub fn attacker_cp(self) -> u8 { self.0 as u8 }
+    #[inline(always)] pub fn from_sq(self) -> u8 { (self.0 >> 8) as u8 }
+    #[inline(always)] pub fn victim_cp(self) -> u8 { (self.0 >> 16) as u8 }
+    #[inline(always)] pub fn to_sq(self) -> u8 { ((self.0 >> 24) & 0x7F) as u8 }
+    #[inline(always)] pub fn add(self) -> bool { self.0 & (1 << 31) != 0 }
 }
 
 /// Compute raw threat deltas when a piece moves from `from` to `to`.
@@ -367,10 +380,7 @@ fn push_threats_for_piece(
         let victim_pt = mailbox[target_sq as usize];
         if victim_pt >= 6 { continue; }
         let victim_color = if white_bb & (1u64 << target_sq) != 0 { WHITE } else { BLACK };
-        deltas.push(RawThreatDelta {
-            attacker_cp: cp as u8, from_sq: square as u8,
-            victim_cp: colored_piece(victim_color, victim_pt) as u8, to_sq: target_sq as u8, add,
-        });
+        deltas.push(RawThreatDelta::new(cp as u8, square as u8, colored_piece(victim_color, victim_pt) as u8, target_sq as u8, add));
     }
 
     // 2. Sliding pieces that see this square (Reckless pattern)
@@ -417,19 +427,13 @@ fn push_threats_for_piece(
                 let xpt = mailbox[xray_sq as usize];
                 if xpt < 6 {
                     let xcolor = if white_bb & (1u64 << xray_sq) != 0 { WHITE } else { BLACK };
-                    deltas.push(RawThreatDelta {
-                        attacker_cp: slider_cp as u8, from_sq: slider_sq as u8,
-                        victim_cp: colored_piece(xcolor, xpt) as u8, to_sq: xray_sq as u8, add: !add,
-                    });
+                    deltas.push(RawThreatDelta::new(slider_cp as u8, slider_sq as u8, colored_piece(xcolor, xpt) as u8, xray_sq as u8, !add));
                 }
             }
         }
 
         // The slider itself attacks/no longer attacks this square
-        deltas.push(RawThreatDelta {
-            attacker_cp: slider_cp as u8, from_sq: slider_sq as u8,
-            victim_cp: cp as u8, to_sq: square as u8, add,
-        });
+        deltas.push(RawThreatDelta::new(slider_cp as u8, slider_sq as u8, cp as u8, square as u8, add));
     }
 
     // 3. Non-sliding pieces that attack this square
@@ -445,10 +449,7 @@ fn push_threats_for_piece(
         let ns_pt = mailbox[ns_sq as usize];
         if ns_pt >= 6 { continue; }
         let ns_color = if white_bb & (1u64 << ns_sq) != 0 { WHITE } else { BLACK };
-        deltas.push(RawThreatDelta {
-            attacker_cp: colored_piece(ns_color, ns_pt) as u8, from_sq: ns_sq as u8,
-            victim_cp: cp as u8, to_sq: square as u8, add,
-        });
+        deltas.push(RawThreatDelta::new(colored_piece(ns_color, ns_pt) as u8, ns_sq as u8, cp as u8, square as u8, add));
     }
 }
 
@@ -506,9 +507,9 @@ pub fn compute_move_deltas(
         if tsq == to && captured_pt != NO_PIECE_TYPE {
             // Threat was to the captured piece
             let vcp = colored_piece(captured_color, captured_pt);
-            deltas.push(RawThreatDelta { attacker_cp: moved_cp as u8, from_sq: from as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: false });
+            deltas.push(RawThreatDelta::new(moved_cp as u8, from as u8, vcp as u8, tsq as u8, false));
         } else if let Some((_, _, vcp)) = victim_at_post(tsq) {
-            deltas.push(RawThreatDelta { attacker_cp: moved_cp as u8, from_sq: from as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: false });
+            deltas.push(RawThreatDelta::new(moved_cp as u8, from as u8, vcp as u8, tsq as u8, false));
         }
     }
 
@@ -519,7 +520,7 @@ pub fn compute_move_deltas(
         let tsq = new_targets.trailing_zeros();
         new_targets &= new_targets - 1;
         if let Some((_, _, vcp)) = victim_at_post(tsq) {
-            deltas.push(RawThreatDelta { attacker_cp: moved_cp as u8, from_sq: to as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: true });
+            deltas.push(RawThreatDelta::new(moved_cp as u8, to as u8, vcp as u8, tsq as u8, true));
         }
     }
 
@@ -540,7 +541,7 @@ pub fn compute_move_deltas(
         let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
         let acp = colored_piece(acolor, apt);
         // This piece used to attack the moved piece at `from` — remove that threat
-        deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: moved_cp as u8, to_sq: from as u8, add: false });
+        deltas.push(RawThreatDelta::new(acp as u8, asq as u8, moved_cp as u8, from as u8, false));
     }
 
     // Sliders that attacked through from (using pre-move occ to find them)
@@ -557,7 +558,7 @@ pub fn compute_move_deltas(
         let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
         let acp = colored_piece(acolor, apt);
         // Remove: this slider attacked the moved piece at `from`
-        deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: moved_cp as u8, to_sq: from as u8, add: false });
+        deltas.push(RawThreatDelta::new(acp as u8, asq as u8, moved_cp as u8, from as u8, false));
     }
 
     // 4. Pieces that attack the TO square (they gain a threat to the moved piece)
@@ -574,7 +575,7 @@ pub fn compute_move_deltas(
         if apt >= 6 { continue; }
         let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
         let acp = colored_piece(acolor, apt);
-        deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: moved_cp as u8, to_sq: to as u8, add: true });
+        deltas.push(RawThreatDelta::new(acp as u8, asq as u8, moved_cp as u8, to as u8, true));
     }
 
     // Sliders that attack to (using post-move occ)
@@ -591,7 +592,7 @@ pub fn compute_move_deltas(
         if apt >= 6 { continue; }
         let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
         let acp = colored_piece(acolor, apt);
-        deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: moved_cp as u8, to_sq: to as u8, add: true });
+        deltas.push(RawThreatDelta::new(acp as u8, asq as u8, moved_cp as u8, to as u8, true));
     }
 
     // 5. Captured piece: remove all its threats
@@ -605,9 +606,9 @@ pub fn compute_move_deltas(
             cap_targets &= cap_targets - 1;
             if tsq == from {
                 // Was attacking the moved piece at its old square
-                deltas.push(RawThreatDelta { attacker_cp: cap_cp as u8, from_sq: to as u8, victim_cp: moved_cp as u8, to_sq: from as u8, add: false });
+                deltas.push(RawThreatDelta::new(cap_cp as u8, to as u8, moved_cp as u8, from as u8, false));
             } else if let Some((_, _, vcp)) = victim_at_post(tsq) {
-                deltas.push(RawThreatDelta { attacker_cp: cap_cp as u8, from_sq: to as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: false });
+                deltas.push(RawThreatDelta::new(cap_cp as u8, to as u8, vcp as u8, tsq as u8, false));
             }
         }
         // Remove threats TO captured piece (from non-sliders)
@@ -624,7 +625,7 @@ pub fn compute_move_deltas(
             if apt >= 6 { continue; }
             let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
             let acp = colored_piece(acolor, apt);
-            deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: cap_cp as u8, to_sq: to as u8, add: false });
+            deltas.push(RawThreatDelta::new(acp as u8, asq as u8, cap_cp as u8, to as u8, false));
         }
         // Sliders that attacked captured piece
         let cap_rook_att = rook_attacks(to, pre_occ);
@@ -640,7 +641,7 @@ pub fn compute_move_deltas(
             if apt >= 6 { continue; }
             let acolor = if white_bb_post & (1u64 << asq) != 0 { WHITE } else { BLACK };
             let acp = colored_piece(acolor, apt);
-            deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: cap_cp as u8, to_sq: to as u8, add: false });
+            deltas.push(RawThreatDelta::new(acp as u8, asq as u8, cap_cp as u8, to as u8, false));
         }
     }
 
@@ -682,7 +683,7 @@ pub fn compute_move_deltas(
             let tsq = gained.trailing_zeros();
             gained &= gained - 1;
             if let Some((_, _, vcp)) = victim_at_post(tsq) {
-                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: true });
+                deltas.push(RawThreatDelta::new(acp as u8, asq as u8, vcp as u8, tsq as u8, true));
             }
         }
         // Lost targets
@@ -691,7 +692,7 @@ pub fn compute_move_deltas(
             let tsq = lost.trailing_zeros();
             lost &= lost - 1;
             if let Some((_, _, vcp)) = victim_at_post(tsq) {
-                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: false });
+                deltas.push(RawThreatDelta::new(acp as u8, asq as u8, vcp as u8, tsq as u8, false));
             }
         }
     }
@@ -714,7 +715,7 @@ pub fn compute_move_deltas(
             let tsq = gained.trailing_zeros();
             gained &= gained - 1;
             if let Some((_, _, vcp)) = victim_at_post(tsq) {
-                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: true });
+                deltas.push(RawThreatDelta::new(acp as u8, asq as u8, vcp as u8, tsq as u8, true));
             }
         }
         let mut lost = old_att & !new_att & !(1u64 << from) & !(1u64 << to);
@@ -722,7 +723,7 @@ pub fn compute_move_deltas(
             let tsq = lost.trailing_zeros();
             lost &= lost - 1;
             if let Some((_, _, vcp)) = victim_at_post(tsq) {
-                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: false });
+                deltas.push(RawThreatDelta::new(acp as u8, asq as u8, vcp as u8, tsq as u8, false));
             }
         }
     }
@@ -756,7 +757,7 @@ pub fn compute_move_deltas(
             let tsq = gained.trailing_zeros();
             gained &= gained - 1;
             if let Some((_, _, vcp)) = victim_at_post(tsq) {
-                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: true });
+                deltas.push(RawThreatDelta::new(acp as u8, asq as u8, vcp as u8, tsq as u8, true));
             }
         }
         let mut lost = old_att & !new_att & !(1u64 << from) & !(1u64 << to);
@@ -764,7 +765,7 @@ pub fn compute_move_deltas(
             let tsq = lost.trailing_zeros();
             lost &= lost - 1;
             if let Some((_, _, vcp)) = victim_at_post(tsq) {
-                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: false });
+                deltas.push(RawThreatDelta::new(acp as u8, asq as u8, vcp as u8, tsq as u8, false));
             }
         }
     }
@@ -788,7 +789,7 @@ pub fn compute_move_deltas(
             let tsq = gained.trailing_zeros();
             gained &= gained - 1;
             if let Some((_, _, vcp)) = victim_at_post(tsq) {
-                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: true });
+                deltas.push(RawThreatDelta::new(acp as u8, asq as u8, vcp as u8, tsq as u8, true));
             }
         }
         let mut lost = old_att & !new_att & !(1u64 << from) & !(1u64 << to);
@@ -796,7 +797,7 @@ pub fn compute_move_deltas(
             let tsq = lost.trailing_zeros();
             lost &= lost - 1;
             if let Some((_, _, vcp)) = victim_at_post(tsq) {
-                deltas.push(RawThreatDelta { attacker_cp: acp as u8, from_sq: asq as u8, victim_cp: vcp as u8, to_sq: tsq as u8, add: false });
+                deltas.push(RawThreatDelta::new(acp as u8, asq as u8, vcp as u8, tsq as u8, false));
             }
         }
     }
@@ -824,15 +825,15 @@ pub fn apply_threat_deltas(
     let mut n_subs = 0usize;
     for delta in deltas {
         let idx = threat_index(
-            delta.attacker_cp as usize,
-            delta.from_sq as u32,
-            delta.victim_cp as usize,
-            delta.to_sq as u32,
+            delta.attacker_cp() as usize,
+            delta.from_sq() as u32,
+            delta.victim_cp() as usize,
+            delta.to_sq() as u32,
             mirrored,
             pov,
         );
         if idx < 0 || (idx as usize) >= num_threats { continue; }
-        if delta.add { adds[n_adds] = idx as usize; n_adds += 1; }
+        if delta.add() { adds[n_adds] = idx as usize; n_adds += 1; }
         else { subs[n_subs] = idx as usize; n_subs += 1; }
     }
     let adds = &adds[..n_adds];
