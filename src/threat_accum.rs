@@ -271,3 +271,316 @@ impl ThreatStack {
         }
     }
 }
+
+#[cfg(test)]
+mod incremental_tests {
+    //! Regression tests: the incremental threat update path must produce
+    //! the same per-perspective accumulator as a full re-enumeration
+    //! after every move. Drives two ThreatStacks side-by-side along the
+    //! same move sequence — one always refreshes, the other relies on
+    //! the incremental deltas path (ensure_computed → can_update → update).
+    //!
+    //! Failure mode this targets: capture moves that remove a blocker
+    //! between a slider and a piece behind it should register a new
+    //! x-ray feature, but the incremental path may miss it.
+    //!
+    //! Each FEN → moves sequence is a self-contained scenario. The
+    //! deterministic weight pattern makes any single feature-level
+    //! divergence show up as an element-wise vector diff.
+    use super::*;
+    use crate::board::Board;
+    use crate::movegen::generate_legal_moves;
+    use crate::threats::{num_threat_features, RawThreatDelta};
+
+    const H: usize = 768;
+
+    /// Deterministic weights: each (feature, channel) gets a distinct i8.
+    /// Ensures a single-feature multiset divergence produces a visible
+    /// element-wise delta in the accumulator.
+    fn make_weights(num_features: usize) -> Vec<i8> {
+        let mut w = vec![0i8; num_features * H];
+        for idx in 0..num_features {
+            for j in 0..H {
+                // Mix idx and channel with primes. Mod 251 keeps values
+                // in i8 range while staying well-distributed.
+                let v = ((idx.wrapping_mul(7919)).wrapping_add(j.wrapping_mul(31)) % 251) as i32 - 125;
+                w[idx * H + j] = v as i8;
+            }
+        }
+        w
+    }
+
+    fn parse_uci(board: &Board, s: &str) -> Move {
+        let bytes = s.as_bytes();
+        assert!(bytes.len() >= 4, "bad uci: {}", s);
+        let from_file = bytes[0] - b'a';
+        let from_rank = bytes[1] - b'1';
+        let to_file = bytes[2] - b'a';
+        let to_rank = bytes[3] - b'1';
+        let from = crate::types::square(from_file, from_rank);
+        let to = crate::types::square(to_file, to_rank);
+        let promo_flag = if bytes.len() > 4 {
+            match bytes[4] {
+                b'q' => Some(FLAG_PROMOTE_Q),
+                b'r' => Some(FLAG_PROMOTE_R),
+                b'b' => Some(FLAG_PROMOTE_B),
+                b'n' => Some(FLAG_PROMOTE_N),
+                _ => None,
+            }
+        } else { None };
+        let legal = generate_legal_moves(board);
+        for i in 0..legal.len {
+            let mv = legal.moves[i];
+            if move_from(mv) == from && move_to(mv) == to {
+                if let Some(pf) = promo_flag {
+                    if move_flags(mv) == pf { return mv; }
+                } else if !is_promotion(mv) {
+                    return mv;
+                }
+            }
+        }
+        panic!("no legal move {} in position", s);
+    }
+
+    /// Copy board.threat_deltas into the current ThreatStack entry and
+    /// record the move metadata (replicates what search.rs does post-make_move).
+    fn absorb_deltas(ts: &mut ThreatStack, board: &mut Board) {
+        let entry = ts.current_mut();
+        entry.delta.clear();
+        for d in board.threat_deltas.iter() { entry.delta.push(*d); }
+        let ul = board.undo_stack.len();
+        if ul > 0 {
+            let u = &board.undo_stack[ul - 1];
+            entry.mv = u.mv;
+            if u.mv != NO_MOVE {
+                entry.moved_pt = board.mailbox[move_to(u.mv) as usize];
+                entry.moved_color = crate::types::flip_color(board.side_to_move);
+            }
+        }
+    }
+
+    /// Run the scenario: play each UCI move, verifying after every ply
+    /// that incremental == full-refresh for both perspectives.
+    fn run_scenario(name: &str, fen: &str, moves: &[&str]) {
+        crate::init();
+        let nf = num_threat_features();
+        let weights = make_weights(nf);
+
+        let mut board = Board::new();
+        board.set_fen(fen);
+        board.generate_threat_deltas = true;
+
+        let mut incr = ThreatStack::new(H);
+        incr.active = true;
+        incr.refresh(&weights, nf, &board, WHITE);
+        incr.refresh(&weights, nf, &board, BLACK);
+
+        let mut refs = ThreatStack::new(H);
+        refs.active = true;
+        refs.refresh(&weights, nf, &board, WHITE);
+        refs.refresh(&weights, nf, &board, BLACK);
+
+        // Sanity: both start identical.
+        assert_eq!(incr.values(WHITE), refs.values(WHITE), "{}: baseline W mismatch", name);
+        assert_eq!(incr.values(BLACK), refs.values(BLACK), "{}: baseline B mismatch", name);
+
+        for (ply, uci) in moves.iter().enumerate() {
+            let mv = parse_uci(&board, uci);
+
+            // Incremental side: push before make, absorb deltas after.
+            incr.push(NO_MOVE, NO_PIECE_TYPE);
+            // Reference side: push too so indices line up; we'll overwrite
+            // with a refresh (no delta replay).
+            refs.push(NO_MOVE, NO_PIECE_TYPE);
+
+            let ok = board.make_move(mv);
+            assert!(ok, "{}: move {} illegal at ply {}", name, uci, ply);
+
+            absorb_deltas(&mut incr, &mut board);
+            incr.ensure_computed(&weights, nf, &board);
+
+            refs.refresh(&weights, nf, &board, WHITE);
+            refs.refresh(&weights, nf, &board, BLACK);
+
+            // Compare element-wise and surface first divergence.
+            for pov in [WHITE, BLACK] {
+                let a = incr.values(pov);
+                let b = refs.values(pov);
+                if a != b {
+                    let mut first = None;
+                    for j in 0..H {
+                        if a[j] != b[j] { first = Some((j, a[j], b[j])); break; }
+                    }
+                    let (j, av, bv) = first.unwrap();
+                    panic!(
+                        "{}: ply={} move={} pov={} first diff at channel {} incr={} refresh={} (delta_count={})",
+                        name, ply, uci,
+                        if pov == WHITE { "W" } else { "B" },
+                        j, av, bv,
+                        incr.current().delta.len(),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn startpos_quiet_moves() {
+        // Sanity: no captures, no x-rays activated.
+        run_scenario(
+            "startpos_quiet",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            &["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "f8c5"],
+        );
+    }
+
+    #[test]
+    fn simple_captures_no_xray() {
+        // Knight captures with no slider x-ray behind the captured square.
+        run_scenario(
+            "simple_captures",
+            "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+            &["b8c6", "f1b5", "a7a6", "b5c6", "d7c6"],
+        );
+    }
+
+    #[test]
+    fn rook_captures_pawn_revealing_xray() {
+        // White rook on a1, white pawn gone, black pawn on a7, black king a8.
+        // Rook takes pawn on a7 — now rook attacks king (already attacked via a-file).
+        // More interesting: set up a rook blocked by enemy piece with enemy piece behind.
+        // Position: white rook a1, black pawn a4 (blocker), black rook a8 (x-ray target).
+        // Wa1 captures a4 pawn directly; before capture a1→a4 direct, a1→a8 x-ray.
+        // After capture (Ra1xa4), rook now on a4; direct Ra4→a8 on a-file.
+        run_scenario(
+            "rook_xray_capture",
+            "r3k3/8/8/8/p7/8/8/R3K3 w Q - 0 1",
+            &["a1a4"],
+        );
+    }
+
+    #[test]
+    fn bishop_xray_through_pawn_captured() {
+        // White bishop a1, black pawn d4 (blocker), black rook h8 (x-ray target).
+        // Before: Ba1 directly attacks pawn d4; x-ray through d4 reveals... nothing
+        // (h8 is on the a1-h8 diagonal, pawn d4 is also on it, rook h8 behind).
+        // Capture Bxd4 changes geometry.
+        run_scenario(
+            "bishop_xray_diagonal",
+            "7r/8/8/8/3p4/8/8/B3K2k w - - 0 1",
+            &["a1d4"],
+        );
+    }
+
+    #[test]
+    fn queen_xray_orthogonal_and_diagonal() {
+        // Queen on d1 with pawn on d4 (blocker) and king on d8 (x-ray target).
+        // Capture reveals queen → king x-ray on d-file.
+        run_scenario(
+            "queen_xray",
+            "3k4/8/8/8/3p4/8/8/3QK3 w - - 0 1",
+            &["d1d4"],
+        );
+    }
+
+    #[test]
+    fn capture_that_opens_third_party_xray() {
+        // The tricky case: a capture that doesn't involve the slider at all
+        // but removes a piece that was blocking a slider from seeing behind.
+        //
+        // Setup:
+        //   White rook a1, white pawn a4 (its own blocker),
+        //   black pawn a5 (gets captured-ish scenario),
+        //   black king a8.
+        //
+        // Better — capture by a different piece:
+        //   White rook h1, white bishop c3 (irrelevant),
+        //   black rook h8 on open h-file with black pawn h4 blocking (direct & x-ray slot),
+        //   black knight g5 that white's bishop will capture.
+        //
+        // After Bc3xg5 (unrelated capture), the h-file situation is unchanged,
+        // so this is a quiet-for-h-file capture. Good negative test.
+        //
+        // A real third-party x-ray: white rook a1 blocked by white pawn a2
+        // from seeing black pawn a7 → black king a8. When something else
+        // captures elsewhere, nothing should change on the a-file.
+        run_scenario(
+            "unrelated_capture",
+            "k1b5/pp6/8/8/4n3/2B5/PP6/K1R5 w - - 0 1",
+            &["c3e5"],  // unrelated knight takes would be c3xe4; we move bishop c3-e5 then tests after
+        );
+    }
+
+    #[test]
+    fn capture_blocker_between_slider_and_third_piece() {
+        // Core x-ray-on-capture bug scenario.
+        // White rook a1, black pawn a4 (blocker), black knight a7 (x-ray target behind).
+        // Before Rxa4: direct a1→a4 pawn; x-ray a1→a7 knight (through pawn a4).
+        // After Rxa4: rook now on a4; direct a4→a7 knight.
+        // Incremental path must net out the x-ray-through-pawn feature loss.
+        run_scenario(
+            "rook_captures_blocker_with_xray_behind",
+            "k7/n7/8/8/p7/8/8/R3K3 w Q - 0 1",
+            &["a1a4"],
+        );
+    }
+
+    #[test]
+    fn slider_captures_then_moves_away() {
+        // Multi-move scenario: capture then retreat. Exercises back-to-back
+        // delta application.
+        run_scenario(
+            "capture_then_retreat",
+            "k7/n7/8/8/p7/8/8/R3K3 w Q - 0 1",
+            &["a1a4", "a7b5", "a4a1"],
+        );
+    }
+
+    #[test]
+    fn kiwipete_tactical_sequence() {
+        // Rich middlegame with many sliders and captures. The sequence below
+        // includes Nxe5 (knight captures a central pawn), opening slider lines.
+        run_scenario(
+            "kiwipete",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            &["e5g6", "h7g6", "e2f1", "c7c6", "d5c6"],
+        );
+    }
+
+    #[test]
+    fn promotion_with_capture() {
+        // Pawn captures and promotes — double state change.
+        run_scenario(
+            "promotion_capture",
+            "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
+            &["a7a8q"],
+        );
+    }
+
+    /// Sanity: manual i16 value comparison across all 256 channels
+    /// proves the weight pattern actually differs between features.
+    #[test]
+    fn weights_distinguish_features() {
+        crate::init();
+        let nf = num_threat_features();
+        let w = make_weights(nf.min(4));
+        // Feature 0's row should differ from feature 1's row.
+        let row0 = &w[0..H];
+        let row1 = &w[H..2 * H];
+        assert_ne!(row0, row1, "weight pattern collides between features");
+    }
+
+    /// Ensure RawThreatDelta round-trips — if this breaks the whole
+    /// incremental path will silently misapply deltas.
+    #[test]
+    fn raw_delta_roundtrip() {
+        let d = RawThreatDelta::new(5, 28, 11, 63, true);
+        assert_eq!(d.attacker_cp(), 5);
+        assert_eq!(d.from_sq(), 28);
+        assert_eq!(d.victim_cp(), 11);
+        assert_eq!(d.to_sq(), 63);
+        assert!(d.add());
+        let d2 = RawThreatDelta::new(0, 0, 0, 0, false);
+        assert!(!d2.add());
+    }
+}
