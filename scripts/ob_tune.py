@@ -82,7 +82,7 @@ def submit_tune(args):
         'throughput':   str(args.throughput),
         'win_adj':      'movecount=3 score=500',
         'draw_adj':     'movenumber=20 movecount=10 score=10',
-        'scale_nps':    '500000',
+        'scale_nps':    str(args.scale_nps),
         'scale_method': 'DEV',
         'syzygy_wdl':   'OPTIONAL',
         'syzygy_adj':   'OPTIONAL',
@@ -126,6 +126,7 @@ def main():
     p.add_argument('--dev-network', default='', help='Dev network SHA256 hash (8 chars, from ob_upload_net.py)')
     p.add_argument('--priority', type=int, default=0, help='Priority (default: 0)')
     p.add_argument('--throughput', type=int, default=100, help='Throughput (default: 100)')
+    p.add_argument('--scale-nps', type=int, default=500000, help='Reference NPS for TC scaling (default: 500000, use ~250000 for v9)')
     p.add_argument('--repo', default='https://github.com/adamtwiss/coda', help='GitHub repo URL')
     p.add_argument('--server', default=SERVER, help=f'Server (default: {SERVER})')
     p.add_argument('--username', default=USERNAME, help='Username')
