@@ -44,78 +44,78 @@ macro_rules! tunables {
 }
 
 tunables!(
-    // v9 threat net tune #373 (1000 iters on s400 fixed net)
+    // v9 threat net tune #380 round 2 (2500 iters, seeded from #373)
     (NMP_BASE_R,         5,    2,    8),
     (NMP_DEPTH_DIV,      2,    1,    6),
-    (NMP_EVAL_DIV,     161,  100,  400),
+    (NMP_EVAL_DIV,     165,  100,  400),
     (NMP_EVAL_MAX,       4,    1,    6),
-    (NMP_VERIFY_DEPTH,  12,    8,   20),
+    (NMP_VERIFY_DEPTH,  11,    8,   20),
     // RFP
     (RFP_DEPTH,          7,    2,   12),
-    (RFP_MARGIN_IMP,    99,   30,  150),
-    (RFP_MARGIN_NOIMP, 137,   50,  200),
+    (RFP_MARGIN_IMP,   104,   30,  150),
+    (RFP_MARGIN_NOIMP, 127,   50,  200),
     // Futility
-    (FUT_BASE,          96,   20,  200),
-    (FUT_PER_DEPTH,    156,   40,  250),
+    (FUT_BASE,          73,   20,  200),
+    (FUT_PER_DEPTH,    169,   40,  250),
     // History pruning
-    (HIST_PRUNE_DEPTH,   3,    1,    8),
-    (HIST_PRUNE_MULT, 4498,  500, 50000),
+    (HIST_PRUNE_DEPTH,   4,    1,    8),
+    (HIST_PRUNE_MULT, 4707,  500, 50000),
     // SEE pruning
-    (SEE_QUIET_MULT,   33,    5,   80),
-    (SEE_CAP_MULT,    141,   30,  200),
+    (SEE_QUIET_MULT,   35,    5,   80),
+    (SEE_CAP_MULT,    144,   30,  200),
     // LMR
-    (LMR_HIST_DIV,  10774, 2000, 100000),
-    (LMR_C_QUIET,     140,   80,  300),
-    (LMR_C_CAP,       116,  100,  350),
+    (LMR_HIST_DIV,  12291, 2000, 100000),
+    (LMR_C_QUIET,     109,   80,  300),
+    (LMR_C_CAP,       118,  100,  350),
     // Singular extensions
-    (SE_DEPTH,          10,    4,   12),
+    (SE_DEPTH,          12,    4,   12),
     // Aspiration windows
-    (ASP_DELTA,         16,    5,   30),
-    (ASP_SCORE_DIV,  34209, 8000, 50000),
+    (ASP_DELTA,          7,    5,   30),
+    (ASP_SCORE_DIV,  33932, 8000, 50000),
     // LMP
-    (LMP_BASE,           8,    1,   15),
-    (LMP_DEPTH,         12,    4,   20),
+    (LMP_BASE,          12,    1,   15),
+    (LMP_DEPTH,         10,    4,   20),
     // Bad noisy
-    (BAD_NOISY_MARGIN, 107,   30,  150),
+    (BAD_NOISY_MARGIN, 120,   30,  150),
     // ProbCut
-    (PROBCUT_MARGIN,   220,   80,  300),
+    (PROBCUT_MARGIN,   192,   80,  300),
     // Hindsight
-    (HINDSIGHT_THRESH, 151,   50,  400),
+    (HINDSIGHT_THRESH, 163,   50,  400),
     // Unstable position detection
-    (UNSTABLE_THRESH,  181,   50,  500),
+    (UNSTABLE_THRESH,  168,   50,  500),
     // SEE piece value scaling
-    (SEE_MATERIAL_SCALE, 176, 30, 300),
+    (SEE_MATERIAL_SCALE, 179, 30, 300),
     // QS
-    (QS_DELTA_MARGIN,  302,  100,  500),
-    (QS_SEE_THRESHOLD, -29, -200,    0),
+    (QS_DELTA_MARGIN,  306,  100,  500),
+    (QS_SEE_THRESHOLD, -26, -200,    0),
     (QS_MAX_CAPTURES,   29,    2,   32),
     // Correction history weights
-    (CORR_W_PAWN,      358,  100,  600),
-    (CORR_W_NP,         98,   50,  400),
-    (CORR_W_MINOR,      34,   30,  300),
-    (CORR_W_MAJOR,      73,   30,  300),
-    (CORR_W_CONT,       32,   30,  400),
+    (CORR_W_PAWN,      331,  100,  600),
+    (CORR_W_NP,        109,   50,  400),
+    (CORR_W_MINOR,      30,   30,  300),
+    (CORR_W_MAJOR,      75,   30,  300),
+    (CORR_W_CONT,       30,   30,  400),
     // Fail-high blend
     (FH_BLEND_DEPTH,     1,    1,    8),
     // History bonus
-    (HIST_BONUS_MULT,  262,   50,  400),
-    (HIST_BONUS_BASE,    7,    0,  200),
-    (HIST_BONUS_MAX,  1600,  500, 3000),
+    (HIST_BONUS_MULT,  257,   50,  400),
+    (HIST_BONUS_BASE,   12,    0,  200),
+    (HIST_BONUS_MAX,  1664,  500, 3000),
     // Capture history bonus
-    (CAP_HIST_MULT,    264,   50,  400),
+    (CAP_HIST_MULT,    243,   50,  400),
     (CAP_HIST_BASE,     32,    0,  200),
-    (CAP_HIST_MAX,    1577,  500, 3000),
+    (CAP_HIST_MAX,    1595,  500, 3000),
     // Double extensions
-    (DEXT_MARGIN,       10,    2,   50),
+    (DEXT_MARGIN,       12,    2,   50),
     (DEXT_CAP,          14,    4,   32),
     // Quiet check bonus
-    (QUIET_CHECK_BONUS, 10877, 2000, 30000),
+    (QUIET_CHECK_BONUS, 10475, 2000, 30000),
     // LMR complexity
-    (LMR_COMPLEXITY_DIV, 160, 30, 500),
+    (LMR_COMPLEXITY_DIV, 150, 30, 500),
     // Contempt
-    (CONTEMPT_VAL,       12,    0,   50),
+    (CONTEMPT_VAL,       19,    0,   50),
     // Correction history divisor
-    (CORR_HIST_DIV,     870,  256, 4096),
+    (CORR_HIST_DIV,     967,  256, 4096),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
