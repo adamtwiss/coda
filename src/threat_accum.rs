@@ -182,6 +182,7 @@ impl ThreatStack {
     /// Check if we can incrementally update this perspective by walking back.
     /// Returns Some(ancestor_index) or None (need full refresh).
     /// Matches Reckless's can_update_threats.
+    #[inline]
     pub fn can_update(&self, pov: Color) -> Option<usize> {
         for i in (0..self.index).rev() {
             if self.stack[i].accurate[pov as usize] {
@@ -193,8 +194,8 @@ impl ThreatStack {
             if entry.mv == NO_MOVE {
                 continue; // null move, safe
             }
-            if entry.delta.is_empty() || entry.delta.overflowed() {
-                return None; // real move without deltas or overflow, can't pass
+            if entry.delta.overflowed() {
+                return None; // overflow means incomplete deltas, can't replay
             }
             if entry.moved_pt == KING && entry.moved_color == pov {
                 let from = move_from(entry.mv);
@@ -252,12 +253,14 @@ impl ThreatStack {
 
     /// Ensure both perspectives are computed for the current position.
     /// Matches Reckless's evaluate() pattern.
+    #[inline]
     pub fn ensure_computed(&mut self, net_weights: &[i8], num_features: usize,
                           board: &crate::board::Board) {
         if !self.active { return; }
 
+        let idx = self.index;
         for pov in [WHITE, BLACK] {
-            if self.stack[self.index].accurate[pov as usize] {
+            if self.stack[idx].accurate[pov as usize] {
                 continue;
             }
 

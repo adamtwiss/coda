@@ -283,7 +283,7 @@ pub fn enumerate_threats<F: FnMut(usize)>(
     }
 }
 
-/// Maximum threat deltas per ply. Reckless uses 80; we use 128 for safety.
+/// Maximum threat deltas per ply.
 pub const MAX_THREAT_DELTAS: usize = 128;
 
 /// Packed threat delta (4 bytes, matching Reckless's ThreatDelta).
@@ -1017,9 +1017,13 @@ unsafe fn add_weight_rows_avx2(
             regs[i] = _mm256_loadu_si256(dst_ptr.add(offset + i * 16) as *const __m256i);
         }
 
-        // Add all weight rows
-        for &idx in indices {
+        // Add all weight rows with prefetch for next row
+        for (fi, &idx) in indices.iter().enumerate() {
             let aw = w_ptr.add(idx * hidden_size + offset);
+            // Prefetch next feature's weight row
+            if fi + 1 < indices.len() {
+                _mm_prefetch(w_ptr.add(indices[fi + 1] * hidden_size + offset) as *const i8, _MM_HINT_T0);
+            }
             for i in 0..nregs {
                 let add_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(aw.add(i * 16) as *const __m128i));
                 regs[i] = _mm256_add_epi16(regs[i], add_w);
