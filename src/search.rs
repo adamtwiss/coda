@@ -2166,10 +2166,14 @@ fn negamax(
             && FEAT_HIST_PRUNE.load(Ordering::Relaxed)
         {
             let mut hist_prune_score = info.history.main_score(from, to, enemy_attacks);
-            if prev_piece_for_cont != 0
-                && moved_piece != NO_PIECE
-            {
-                hist_prune_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
+            if moved_piece != NO_PIECE {
+                let gp = go_piece(moved_piece);
+                if prev_piece_for_cont != 0 {
+                    hist_prune_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize] as i32;
+                }
+                // Pawn history in pruning decision
+                let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
+                hist_prune_score += info.pawn_hist[ph_idx][gp][to as usize] as i32;
             }
             if hist_prune_score < -tp(&HIST_PRUNE_MULT) * depth as i32 {
                 info.stats.history_prunes += 1;
@@ -2337,12 +2341,16 @@ fn negamax(
                 // Ply-2 weighted at half to avoid over-scaling the total.
                 let mut hist_score = info.history.main_score(from, to, enemy_attacks);
                 if moved_piece != NO_PIECE {
+                    let gp = go_piece(moved_piece);
                     if prev_piece_for_cont != 0 {
-                        hist_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
+                        hist_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize] as i32;
                     }
                     if prev2_piece_for_cont != 0 {
-                        hist_score += info.history.cont_hist[prev2_piece_for_cont][prev2_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32 / 2;
+                        hist_score += info.history.cont_hist[prev2_piece_for_cont][prev2_to_for_cont as usize][gp][to as usize] as i32 / 2;
                     }
+                    // Pawn history: pawn-structure-aware move quality (SF/Alexandria pattern)
+                    let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
+                    hist_score += info.pawn_hist[ph_idx][gp][to as usize] as i32;
                 }
                 let hist_adj = hist_score / tp(&LMR_HIST_DIV);
                 reduction -= hist_adj;
