@@ -325,7 +325,6 @@ impl MovePicker {
     /// Initialize for evasion generation.
     /// Evasion moves are generated as all moves then filtered for legality during generation.
     pub fn new_evasion(
-        board: &Board,
         tt_move: Move,
         ply: usize,
         checkers: Bitboard,
