@@ -37,7 +37,8 @@ rule: check-rust net
 # Alias for OpenBench compatibility
 openbench: rule
 
-# PGO build (profile-guided optimization, ~3% NPS gain)
+# PGO build (profile-guided optimization, ~3% NPS gain for v5 nets)
+# Note: PGO regresses NPS for v9 nets due to 67MB embedded binary disrupting icache.
 # Requires: rustup component add llvm-tools-preview
 TARGET_TUPLE := $(shell rustc --print host-tuple 2>/dev/null)
 pgo: check-rust net
