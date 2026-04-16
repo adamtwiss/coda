@@ -121,6 +121,9 @@ tunables!(
     (ESCAPE_BONUS_Q,   20000, 5000, 40000),
     (ESCAPE_BONUS_R,   14000, 3000, 30000),
     (ESCAPE_BONUS_MINOR, 8000, 2000, 20000),
+    // Threat-aware futility: widen margin when our pieces are under pawn attack.
+    // Tactical positions need deeper search, so prune less aggressively.
+    (FUT_THREAT_MARGIN,   50,    0,  200),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -2196,7 +2199,9 @@ fn negamax(
         {
             let main_hist = info.history.main_score(from, to, enemy_attacks);
             let hist_adj = main_hist / 128;
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj;
+            // Widen margin when position has threats (need deeper search for accuracy)
+            let threat_adj = if has_pawn_threats { tp(&FUT_THREAT_MARGIN) } else { 0 };
+            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threat_adj;
             // Don't futility-prune moves with very strong history (Igel pattern)
             if futility_value <= alpha && main_hist < 12000 {
                 info.stats.futility_prunes += 1;
