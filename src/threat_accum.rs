@@ -73,6 +73,8 @@ pub struct ThreatEntry {
     pub mv: Move,
     /// Piece type that moved (for king mirror detection)
     pub moved_pt: u8,
+    /// Color that moved (for per-perspective king mirror check)
+    pub moved_color: u8,
 }
 
 impl ThreatEntry {
@@ -83,6 +85,7 @@ impl ThreatEntry {
             delta: DeltaVec::new(),
             mv: NO_MOVE,
             moved_pt: NO_PIECE_TYPE,
+            moved_color: WHITE,
         }
     }
 }
@@ -141,6 +144,7 @@ impl ThreatStack {
     }
 
     /// Full refresh for one perspective: zero + enumerate all threats.
+    /// Collects feature indices first, then applies with SIMD.
     pub fn refresh(&mut self, net_weights: &[i8], num_features: usize,
                    board: &crate::board::Board, pov: Color) {
         let h = self.hidden_size;
@@ -152,17 +156,24 @@ impl ThreatStack {
         let king_sq = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
         let mirrored = (king_sq % 8) >= 4;
 
+        // Collect feature indices, then apply with SIMD
+        let mut indices = [0usize; 256]; // max active threat features per position
+        let mut n_indices = 0usize;
+
         crate::threats::enumerate_threats(
             &board.pieces, &board.colors, &board.mailbox,
             occ, pov, mirrored,
             |feat_idx| {
-                if feat_idx < num_features {
-                    let w_off = feat_idx * h;
-                    for j in 0..h {
-                        entry.values[p][j] += net_weights[w_off + j] as i16;
-                    }
+                if feat_idx < num_features && n_indices < indices.len() {
+                    indices[n_indices] = feat_idx;
+                    n_indices += 1;
                 }
             },
+        );
+
+        // Apply all weight rows with SIMD
+        crate::threats::add_weight_rows(
+            &mut entry.values[p][..h], net_weights, h, &indices[..n_indices],
         );
 
         entry.accurate[p] = true;
@@ -185,13 +196,11 @@ impl ThreatStack {
             if entry.delta.is_empty() || entry.delta.overflowed() {
                 return None; // real move without deltas or overflow, can't pass
             }
-            if entry.moved_pt == KING {
+            if entry.moved_pt == KING && entry.moved_color == pov {
                 let from = move_from(entry.mv);
                 let to = move_to(entry.mv);
                 if (from % 8 >= 4) != (to % 8 >= 4) {
-                    // King crossed e-file — mirroring changed for this perspective
-                    // Only invalidates if it's THIS perspective's king
-                    // For simplicity, invalidate either perspective's king crossing
+                    // This perspective's king crossed e-file — mirroring changed
                     return None;
                 }
             }
@@ -200,6 +209,7 @@ impl ThreatStack {
     }
 
     /// Incremental update: replay from ancestor to current index for one perspective.
+    /// Uses SIMD apply_threat_deltas for the inner loop (AVX2 register tiling).
     pub fn update(&mut self, ancestor: usize, net_weights: &[i8], num_features: usize,
                   board: &crate::board::Board, pov: Color) {
         let h = self.hidden_size;
@@ -215,28 +225,19 @@ impl ThreatStack {
                 let (prev, curr) = self.stack.split_at_mut(ply);
                 curr[0].values[p][..h].copy_from_slice(&prev[ply - 1].values[p][..h]);
             } else {
-                // Apply deltas
+                // Copy deltas to local buffer to avoid borrow conflict with split_at_mut
+                let n_deltas = self.stack[ply].delta.len;
+                let mut local_deltas = [crate::threats::RawThreatDelta::ZERO; 128];
+                local_deltas[..n_deltas].copy_from_slice(&self.stack[ply].delta.data[..n_deltas]);
+                // Use SIMD apply_threat_deltas (copies src + applies adds/subs)
                 let (prev, curr) = self.stack.split_at_mut(ply);
-                curr[0].values[p][..h].copy_from_slice(&prev[ply - 1].values[p][..h]);
-
-                for delta in curr[0].delta.data[..curr[0].delta.len].iter() {
-                    let idx = crate::threats::threat_index(
-                        delta.attacker_cp() as usize, delta.from_sq() as u32,
-                        delta.victim_cp() as usize, delta.to_sq() as u32,
-                        mirrored, pov,
-                    );
-                    if idx < 0 || (idx as usize) >= num_features { continue; }
-                    let w_off = idx as usize * h;
-                    if delta.add() {
-                        for j in 0..h {
-                            curr[0].values[p][j] += net_weights[w_off + j] as i16;
-                        }
-                    } else {
-                        for j in 0..h {
-                            curr[0].values[p][j] -= net_weights[w_off + j] as i16;
-                        }
-                    }
-                }
+                crate::threats::apply_threat_deltas(
+                    &mut curr[0].values[p][..h],
+                    &prev[ply - 1].values[p][..h],
+                    &local_deltas[..n_deltas],
+                    net_weights, h, num_features,
+                    pov, mirrored,
+                );
             }
 
             self.stack[ply].accurate[p] = true;

@@ -963,6 +963,78 @@ unsafe fn apply_deltas_avx2(
     }
 }
 
+/// Add multiple weight rows to an accumulator (SIMD for refresh).
+/// dst is already zeroed. Adds weight rows for each feature index.
+pub fn add_weight_rows(
+    dst: &mut [i16],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    indices: &[usize],
+) {
+    if indices.is_empty() { return; }
+
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx2") {
+        unsafe {
+            add_weight_rows_avx2(dst, threat_weights, hidden_size, indices);
+        }
+        return;
+    }
+
+    // Scalar fallback
+    for &idx in indices {
+        let w_off = idx * hidden_size;
+        for j in 0..hidden_size {
+            dst[j] += threat_weights[w_off + j] as i16;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn add_weight_rows_avx2(
+    dst: &mut [i16],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    indices: &[usize],
+) {
+    use std::arch::x86_64::*;
+
+    let dst_ptr = dst.as_mut_ptr();
+    let w_ptr = threat_weights.as_ptr();
+
+    const REGS: usize = 8;
+    const CHUNK: usize = REGS * 16; // 128 elements
+
+    let mut offset = 0;
+    while offset < hidden_size {
+        let chunk_size = (hidden_size - offset).min(CHUNK);
+        let nregs = (chunk_size + 15) / 16;
+
+        // Load accumulator chunk into registers
+        let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
+        for i in 0..nregs {
+            regs[i] = _mm256_loadu_si256(dst_ptr.add(offset + i * 16) as *const __m256i);
+        }
+
+        // Add all weight rows
+        for &idx in indices {
+            let aw = w_ptr.add(idx * hidden_size + offset);
+            for i in 0..nregs {
+                let add_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(aw.add(i * 16) as *const __m128i));
+                regs[i] = _mm256_add_epi16(regs[i], add_w);
+            }
+        }
+
+        // Store registers back
+        for i in 0..nregs {
+            _mm256_storeu_si256(dst_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
+        }
+
+        offset += CHUNK;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
