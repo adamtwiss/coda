@@ -138,77 +138,96 @@ fine — that's where top engines use it.
 - **Activation choice differs by layer** — PlentyChess found CReLU best for L1, SCReLU for L2
 - **L1 activation regularization** (L1-norm penalty on FT outputs) drives sparsity for sparse matmul
 
-## Current Status
+## Current Status (updated 2026-04-16)
+
+### v9 Threat Architecture — IMPLEMENTED AND WORKING
+
+The v9 architecture (768 accum + 67K threats + 16→32 hidden) is fully implemented
+on `feature/threat-inputs` branch. Matches Reckless's architecture exactly.
+
+**Key results:**
+- **Scale bug fixed**: converter was rescaling threats QA=255→QA=64 (4× too weak). Recovered ~570 Elo.
+- **Tune gains**: +104 Elo (round 1) + +30 Elo (round 2) from SPSA recalibration.
+- **WAC**: v9 169/201 (84%) vs v5 152/201 (76%) — eval quality is real.
+- **Current gap to v5**: ~-163 Elo (NPS accounts for ~80-100 of that).
+- **NPS**: 545K (v9) vs 1535K (v5). At parity with Reckless single-threaded.
+- **s200→s400**: +19.5 Elo (H1). Training quality improving.
 
 ### What We Have
-- v7 inference code: FT→16→32→1×8, SCReLU, int8 L1, float L2+
-- v8 dual L1 activation: CReLU+SCReLU on L1 output, doubles L2 input (implemented 2026-04-14)
-- AVX2 and NEON SIMD for all paths
-- Bullet training configs for v7 and v8 (dual)
-- Converter: `coda convert-bullet` (supports `-dual` flag for v8)
-- Check-net diagnostic tool
-- Sparsity benchmarking tool (`--sparsity` flag on bench)
+- v9 inference: 768pw + 67K threats + 16→32 hidden, AVX2 SIMD, ThreatStack
+- v8 dual L1 activation (CReLU+SCReLU, implemented but v9 is the focus)
+- Bullet trainer fork with threat feature support (Atlas's `feature/threat-inputs` branch)
+- Converter: `coda convert-bullet --threats 66864` for v9
+- Incremental threat accumulator with per-perspective king-file mirroring
+- Fused PSQ+threat SIMD pairwise pack
+- Register-blocked Finny table refresh
+- Consensus king buckets (production v5, +15 Elo proven)
 
-### Coda vs Top Engine Consensus (updated 2026-04-14)
+### Coda vs Top Engine Consensus (updated 2026-04-16)
 
-| Feature | Coda (current) | Consensus | Status |
-|---------|----------------|-----------|--------|
-| Accum width | 1536 per perspective | 640-2560 | ✓ Match (same as Alexandria/Obsidian) |
+| Feature | Coda v9 | Consensus | Status |
+|---------|---------|-----------|--------|
+| Accum width | 768 per perspective | 640-2560 | ✓ Match (same as Reckless) |
 | FT activation | CReLU → pairwise | CReLU → pairwise | ✓ Match |
 | FT shift | >>9 | >>9 | ✓ Match |
-| King buckets | 16 (uniform) | 16 (**fine-near, coarse-far**) | ✗ Wrong layout |
+| King buckets | 16 (consensus layout) | 16 (fine-near, coarse-far) | ✓ Match |
 | L1 size | 16 | 16 (most) | ✓ Match |
 | L1 quant | i8 QB=64 | i8 QB=64 | ✓ Match |
-| L1 activation | SCReLU (v7) / Dual (v8) | Dual (CReLU+SCReLU) | ✓ v8 matches |
 | L2 size | 32 | 32 | ✓ Match |
 | Output buckets | 8 | 8 | ✓ Match |
-| **Threat features** | **None** | **60-80K (5/10 top engines)** | **✗ CRITICAL GAP** |
-| King bucket layout | Uniform 4×4 | Fine-near, coarse-far | ✗ Wrong layout |
-| Factoriser | None | Mixed (broken for us, see notes) | ✓ Correctly omitted for now |
+| **Threat features** | **66,864** | **60-80K** | **✓ Match** |
+| X-ray threats in training | Not yet | Reckless has them | Training in progress (Atlas) |
+| Factoriser | None | Mixed | ✓ Correctly omitted |
 
-### v7/v8 Roadmap (updated 2026-04-14)
+### v9 Roadmap (updated 2026-04-16)
 
-**Priority 1 — THREAT FEATURES (critical path)**
+**Active work:**
 
-This is the single biggest architectural gap between Coda and the top engines.
-Reckless (#2 CCRL) uses our exact architecture (768pw, 16→32 hidden) plus 67K
-threat features. Our 1536 accumulator is already wider than Reckless's 768 —
-the missing ingredient is input diversity, not width.
+1. **Training**: s800 net in progress (~4 hours). s200+xray and s200+xray+w15 also training.
+2. **Search tuning**: 51-param SPSA with escape bonuses (#385, running).
+3. **Search features**: Pawn history in LMR (+4.1 trending H1), escape-capture bonuses (testing),
+   threat-aware futility (+4.4 trending H1), razoring (just submitted).
+4. **Merge to main**: v9 code ready for merge. Features gate on `threat_stack.active`.
 
-Estimated gain: **+40-60 Elo** of eval quality (based on threat engines vs
-non-threat engines at similar FT widths).
+**Training improvements in pipeline:**
 
-Implementation requires:
-- Threat feature computation (~300 lines): encode (attacker, attacker_sq, victim,
-  victim_sq) tuples using attack bitboards we already compute for movegen.
-- Separate threat accumulator with incremental updates (~500 lines)
-- Bullet trainer fork: data pipeline needs dual sparse input support (4-5 files
-  in bullet_lib — graph layer already supports the architecture, see Bullet
-  Investigation section below)
-- Converter and .nnue format extension (~100 lines)
+| Change | Expected Impact | Status |
+|--------|----------------|--------|
+| s800 training | +10-20 Elo (extrapolating s200→s400=+19.5) | Training now |
+| X-ray threats in training | Unknown, significant feature gap | Training now (Atlas) |
+| WDL 0.15 blend | Unknown, testing alongside x-rays | Training now |
+| Low final LR | Already applied | ✅ Done |
+| Position filtering | Already applied | ✅ Done |
+| Data diversity (selfplay) | -40 Elo vs T80 at s200 (needs investigation) | Tested, unclear |
 
-Effort: 2-4 weeks. This is a significant lift but the highest-value work available.
+**NPS findings (2026-04-16):**
 
-**Priority 2 — In progress / near-term:**
+- v9 NPS (545K) is at **parity with Reckless single-threaded** (~550K).
+  Reckless's 960K bench includes ~2 threads.
+- The ~2.8× gap from v5 (1535K) is fundamental threat overhead: 18KB memory
+  traffic per eval for threat accumulator updates.
+- PGO doesn't help v9 (10% regression from code layout issues).
+- Optimizations applied: +17% from SIMD refresh, packed deltas, register blocking.
+- See `docs/v9_nps_optimization_plan.md` for full profiling results.
 
-1. ~~**Eval quality**~~ ✅ Done — pow2.5 loss, filtering, low final LR.
-2. ~~**Dual L1 activation**~~ ✅ Implemented (v8). Training on GPU5.
-3. **King bucket layout** — consensus fine-near/coarse-far. Code ready. +5-15 Elo. Training on GPU3.
-4. **Full 48-param SPSA retune** — running (#355, 20+0.2 TC, 5000 iterations).
-5. **WDL optimisation** — RR shows w10-w15 optimal. Small effect (~20 Elo spread).
+**Search findings with v9 eval:**
+
+- Tune gains are massive (+134 cumulative) because v9 eval scale is ~3× v5.
+  All search thresholds needed recalibration.
+- Threat-aware history (4D) and NNUE eval carry most of the signal.
+  Explicit threat logic in pruning formulas (LMR density, singular beta) does NOT help.
+- Escape-capture bonuses (Reckless pattern) halve the search tree. Testing in progress.
+- Pawn history in LMR: +4 Elo, low-hanging fruit for any architecture.
+- Previously rejected features (razoring, etc.) worth retesting due to different eval scale.
 
 **Lower priority / shelved:**
 
-- ~~Sparse L1 matmul~~ — not beneficial for 768pw (input dim too small, see analysis below)
-- ~~L1 activation regularisation~~ — shelved (lambda experiments failed, sparse L1 not needed)
-- ~~Widen FT~~ — **our 1536 accumulator already matches Alexandria/Obsidian.** Widening
-  further without adding threat features would be wasted capacity.
-- Multi-neuron SIMD — marginal gain (~2%), bottleneck is memory not compute
-- VNNI/DPBUSD — nice to have, newer CPUs only
-
-**Current NPS**: v7/v8 ~280K vs v5 ~600K (2× slower, consistent with other engines).
-**Target**: v7/v8 eval quality must be ~70+ Elo better per-node than v5 to compensate.
-**Threat features are the most likely path to closing this gap.**
+- ~~Sparse L1 matmul~~ — not beneficial at 768pw (see analysis below)
+- ~~L1 activation regularisation~~ — shelved
+- ~~Widen FT~~ — v9 uses 768 (matching Reckless), wider is unnecessary with threats
+- ~~v8 dual L1~~ — superseded by v9 threat architecture
+- Const generic dimensions — no measurable gain from specialization attempts
+- SIMD ray-based delta generation (Reckless pattern) — potential 5-10% NPS, complex rewrite
 
 ### Threat Feature Implementation Details (from cross-engine research, 2026-04-14)
 
