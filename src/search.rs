@@ -121,6 +121,9 @@ tunables!(
     (ESCAPE_BONUS_Q,   20000, 5000, 40000),
     (ESCAPE_BONUS_R,   14000, 3000, 30000),
     (ESCAPE_BONUS_MINOR, 8000, 2000, 20000),
+    // Threat-aware singular extension: widen singular beta in tactical positions.
+    // When pieces are under pawn attack, the TT move is more likely truly singular.
+    (SE_THREAT_MARGIN,    5,    0,   20),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -2107,7 +2110,10 @@ fn negamax(
 
             // Skip SE for mate scores (margin comparison meaningless)
             if tt_score_local > -(MATE_SCORE - 100) && tt_score_local < MATE_SCORE - 100 {
-                let singular_beta = tt_score_local - depth;
+                // Widen singular beta when position has threats — tactical positions
+                // benefit more from extensions (the TT move is more likely truly singular).
+                let threat_widen = if has_pawn_threats { tp(&SE_THREAT_MARGIN) } else { 0 };
+                let singular_beta = tt_score_local - depth - threat_widen;
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
