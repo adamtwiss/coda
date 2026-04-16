@@ -121,6 +121,11 @@ tunables!(
     (ESCAPE_BONUS_Q,   20000, 5000, 40000),
     (ESCAPE_BONUS_R,   14000, 3000, 30000),
     (ESCAPE_BONUS_MINOR, 8000, 2000, 20000),
+    // Razoring: drop to QS when eval far below alpha at shallow depth.
+    // Margin = RAZOR_BASE + RAZOR_MULT * depth². Scaled ~3× from Reckless
+    // for v9 eval scale. SPSA will find optimal.
+    (RAZOR_BASE,       900,   200, 2000),
+    (RAZOR_MULT,       756,   100, 1500),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -1887,6 +1892,19 @@ fn negamax(
     }
 
     if !in_check {
+        // Razoring: if eval is far below alpha at shallow depth, verify with QS.
+        // Tunable margins scaled for v9 eval (~3× Reckless's 299/252).
+        if !is_pv && ply > 0 && depth <= 2
+            && static_eval < alpha - tp(&RAZOR_BASE) - tp(&RAZOR_MULT) * depth * depth
+            && alpha < MATE_SCORE - 100
+            && info.excluded_move[ply_u] == NO_MOVE
+        {
+            let qs_score = quiescence(board, info, alpha - 1, alpha, ply);
+            if qs_score < alpha {
+                return qs_score;
+            }
+        }
+
         // Reverse Futility Pruning (Static Null Move Pruning)
         // RFP TT quiet guard: skip RFP when TT has a quiet best move (Tucano/Weiss).
         // If we know a good quiet move exists, don't prune based on static eval alone.
