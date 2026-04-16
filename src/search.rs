@@ -44,83 +44,82 @@ macro_rules! tunables {
 }
 
 tunables!(
-    // v9 threat net tune #380 round 2 (2500 iters, seeded from #373)
+    // v9 s800 tune #402 (1000 iters)
     (NMP_BASE_R,         5,    2,    8),
     (NMP_DEPTH_DIV,      2,    1,    6),
-    (NMP_EVAL_DIV,     165,  100,  400),
-    (NMP_EVAL_MAX,       4,    1,    6),
-    (NMP_VERIFY_DEPTH,  11,    8,   20),
+    (NMP_EVAL_DIV,     156,  100,  400),
+    (NMP_EVAL_MAX,       5,    1,    6),
+    (NMP_VERIFY_DEPTH,  10,    8,   20),
     // RFP
-    (RFP_DEPTH,          7,    2,   12),
-    (RFP_MARGIN_IMP,   104,   30,  150),
+    (RFP_DEPTH,          6,    2,   12),
+    (RFP_MARGIN_IMP,   103,   30,  150),
     (RFP_MARGIN_NOIMP, 127,   50,  200),
     // Futility
     (FUT_BASE,          73,   20,  200),
-    (FUT_PER_DEPTH,    169,   40,  250),
+    (FUT_PER_DEPTH,    158,   40,  250),
     // History pruning
     (HIST_PRUNE_DEPTH,   4,    1,    8),
-    (HIST_PRUNE_MULT, 4707,  500, 50000),
+    (HIST_PRUNE_MULT, 5630,  500, 50000),
     // SEE pruning
-    (SEE_QUIET_MULT,   35,    5,   80),
-    (SEE_CAP_MULT,    144,   30,  200),
+    (SEE_QUIET_MULT,   33,    5,   80),
+    (SEE_CAP_MULT,    155,   30,  200),
     // LMR
-    (LMR_HIST_DIV,  12291, 2000, 100000),
-    (LMR_C_QUIET,     109,   80,  300),
-    (LMR_C_CAP,       118,  100,  350),
+    (LMR_HIST_DIV,  12588, 2000, 100000),
+    (LMR_C_QUIET,     100,   80,  300),
+    (LMR_C_CAP,       120,  100,  350),
     // Singular extensions
     (SE_DEPTH,          12,    4,   12),
     // Aspiration windows
-    (ASP_DELTA,          7,    5,   30),
-    (ASP_SCORE_DIV,  33932, 8000, 50000),
+    (ASP_DELTA,          6,    5,   30),
+    (ASP_SCORE_DIV,  33419, 8000, 50000),
     // LMP
-    (LMP_BASE,          12,    1,   15),
-    (LMP_DEPTH,         10,    4,   20),
+    (LMP_BASE,          13,    1,   15),
+    (LMP_DEPTH,          8,    4,   20),
     // Bad noisy
-    (BAD_NOISY_MARGIN, 120,   30,  150),
+    (BAD_NOISY_MARGIN, 124,   30,  150),
     // ProbCut
-    (PROBCUT_MARGIN,   192,   80,  300),
+    (PROBCUT_MARGIN,   188,   80,  300),
     // Hindsight
-    (HINDSIGHT_THRESH, 163,   50,  400),
+    (HINDSIGHT_THRESH, 164,   50,  400),
     // Unstable position detection
-    (UNSTABLE_THRESH,  168,   50,  500),
+    (UNSTABLE_THRESH,  170,   50,  500),
     // SEE piece value scaling
-    (SEE_MATERIAL_SCALE, 179, 30, 300),
+    (SEE_MATERIAL_SCALE, 169, 30, 300),
     // QS
-    (QS_DELTA_MARGIN,  306,  100,  500),
-    (QS_SEE_THRESHOLD, -26, -200,    0),
-    (QS_MAX_CAPTURES,   29,    2,   32),
+    (QS_DELTA_MARGIN,  300,  100,  500),
+    (QS_SEE_THRESHOLD, -25, -200,    0),
+    (QS_MAX_CAPTURES,   30,    2,   32),
     // Correction history weights
-    (CORR_W_PAWN,      331,  100,  600),
-    (CORR_W_NP,        109,   50,  400),
-    (CORR_W_MINOR,      30,   30,  300),
-    (CORR_W_MAJOR,      75,   30,  300),
-    (CORR_W_CONT,       30,   30,  400),
+    (CORR_W_PAWN,      307,  100,  600),
+    (CORR_W_NP,         99,   50,  400),
+    (CORR_W_MINOR,      33,   30,  300),
+    (CORR_W_MAJOR,      84,   30,  300),
+    (CORR_W_CONT,       32,   30,  400),
     // Fail-high blend
     (FH_BLEND_DEPTH,     1,    1,    8),
     // History bonus
-    (HIST_BONUS_MULT,  257,   50,  400),
-    (HIST_BONUS_BASE,   12,    0,  200),
-    (HIST_BONUS_MAX,  1664,  500, 3000),
+    (HIST_BONUS_MULT,  262,   50,  400),
+    (HIST_BONUS_BASE,   10,    0,  200),
+    (HIST_BONUS_MAX,  1777,  500, 3000),
     // Capture history bonus
-    (CAP_HIST_MULT,    243,   50,  400),
+    (CAP_HIST_MULT,    249,   50,  400),
     (CAP_HIST_BASE,     32,    0,  200),
-    (CAP_HIST_MAX,    1595,  500, 3000),
+    (CAP_HIST_MAX,    1626,  500, 3000),
     // Double extensions
     (DEXT_MARGIN,       12,    2,   50),
-    (DEXT_CAP,          14,    4,   32),
+    (DEXT_CAP,          13,    4,   32),
     // Quiet check bonus
-    (QUIET_CHECK_BONUS, 10475, 2000, 30000),
+    (QUIET_CHECK_BONUS, 9647, 2000, 30000),
     // LMR complexity
-    (LMR_COMPLEXITY_DIV, 150, 30, 500),
+    (LMR_COMPLEXITY_DIV, 151, 30, 500),
     // Contempt
     (CONTEMPT_VAL,       19,    0,   50),
     // Correction history divisor
-    (CORR_HIST_DIV,     967,  256, 4096),
-    // Escape-capture bonuses (Reckless pattern): move ordering bonus for
-    // moving a piece off a square attacked by enemy pawns
-    (ESCAPE_BONUS_Q,   20000, 5000, 40000),
-    (ESCAPE_BONUS_R,   14000, 3000, 30000),
-    (ESCAPE_BONUS_MINOR, 8000, 2000, 20000),
+    (CORR_HIST_DIV,     971,  256, 4096),
+    // Escape-capture bonuses (Reckless pattern)
+    (ESCAPE_BONUS_Q,   18638, 5000, 40000),
+    (ESCAPE_BONUS_R,   12968, 3000, 30000),
+    (ESCAPE_BONUS_MINOR, 7079, 2000, 20000),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
