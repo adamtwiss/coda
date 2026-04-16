@@ -90,6 +90,15 @@ enum Commands {
         #[arg(short = 'm', long = "max", default_value_t = 0)]
         max: usize,
     },
+    /// Inspect binpack training data (ply distribution, score stats)
+    InspectBinpack {
+        /// Input binpack file
+        #[arg(short = 'i', long = "input")]
+        input: String,
+        /// Max positions to read (0 = all)
+        #[arg(short = 'n', long = "count", default_value_t = 1000000)]
+        count: u64,
+    },
     /// Perft with divide
     Perft {
         /// Search depth
@@ -279,6 +288,99 @@ fn main() {
 
         Some(Commands::Epd { path, time, max }) => {
             epd::run_epd(&path, time, max, cli.nnue.as_deref());
+        }
+
+        Some(Commands::InspectBinpack { input, count }) => {
+            use sfbinpack::CompressedTrainingDataEntryReader;
+            let file = std::fs::File::open(&input).expect("Failed to open binpack");
+            let mut reader = CompressedTrainingDataEntryReader::new(file).expect("Failed to read binpack");
+
+            let mut ply_hist = vec![0u64; 500];
+            let mut total = 0u64;
+            let mut score_zero = 0u64;
+            let mut in_check = 0u64;
+            let mut is_capture = 0u64;
+            let mut is_promo = 0u64;
+            let mut score_sum = 0i64;
+            let mut piece_count_hist = vec![0u64; 33];
+            // Score range histogram
+            let mut score_ranges = [0u64; 10]; // <100, <500, <1000, <2000, <5000, <10000, <20000, <30000, >=30000, =32001
+            let limit = if count == 0 { u64::MAX } else { count };
+
+            while reader.has_next() && total < limit {
+                let entry = reader.next();
+                total += 1;
+                let ply = entry.ply as usize;
+                if ply < 500 { ply_hist[ply] += 1; }
+                if entry.score == 0 { score_zero += 1; }
+                let abs_score = entry.score.unsigned_abs() as u32;
+                score_sum += abs_score as i64;
+                match abs_score {
+                    0..=99 => score_ranges[0] += 1,
+                    100..=499 => score_ranges[1] += 1,
+                    500..=999 => score_ranges[2] += 1,
+                    1000..=1999 => score_ranges[3] += 1,
+                    2000..=4999 => score_ranges[4] += 1,
+                    5000..=9999 => score_ranges[5] += 1,
+                    10000..=19999 => score_ranges[6] += 1,
+                    20000..=29999 => score_ranges[7] += 1,
+                    30000..=32000 => score_ranges[8] += 1,
+                    _ => score_ranges[9] += 1, // 32001+ (mate scores?)
+                }
+
+                let stm = entry.pos.side_to_move();
+                if entry.pos.is_checked(stm) { in_check += 1; }
+
+                let mt = entry.mv.mtype();
+                // Check if destination has a piece (capture)
+                let dest_piece = entry.pos.piece_at(entry.mv.to());
+                if dest_piece != sfbinpack::chess::piece::Piece::NONE {
+                    is_capture += 1;
+                }
+                if entry.mv.mtype() == sfbinpack::chess::r#move::MoveType::Promotion {
+                    is_promo += 1;
+                }
+
+                // Count pieces for output bucket analysis
+                let pc = entry.pos.occupied().count() as usize;
+                if pc < 33 { piece_count_hist[pc] += 1; }
+            }
+
+            println!("Inspected {} positions from {}", total, input);
+            println!("\n=== Ply Distribution ===");
+            for ply in 0..60 {
+                if ply_hist[ply] > 0 {
+                    println!("  ply {:3}: {:8} ({:.2}%)", ply, ply_hist[ply],
+                        100.0 * ply_hist[ply] as f64 / total as f64);
+                }
+            }
+            let below_16: u64 = ply_hist[..16].iter().sum();
+            let above_16: u64 = ply_hist[16..].iter().sum();
+            println!("\n  ply < 16:  {:8} ({:.1}%)", below_16, 100.0 * below_16 as f64 / total as f64);
+            println!("  ply >= 16: {:8} ({:.1}%)", above_16, 100.0 * above_16 as f64 / total as f64);
+
+            println!("\n=== Position Stats ===");
+            println!("  Score = 0: {:8} ({:.1}%)", score_zero, 100.0 * score_zero as f64 / total as f64);
+            println!("  In check:  {:8} ({:.1}%)", in_check, 100.0 * in_check as f64 / total as f64);
+            println!("  Captures:  {:8} ({:.1}%)", is_capture, 100.0 * is_capture as f64 / total as f64);
+            println!("  Promos:    {:8} ({:.1}%)", is_promo, 100.0 * is_promo as f64 / total as f64);
+            println!("  Avg |score|: {:.1}", score_sum as f64 / total as f64);
+            println!("\n=== Score Distribution ===");
+            let labels = ["    0-99", "  100-499", "  500-999", "1000-1999", "2000-4999",
+                         "5000-9999", "10K-19999", "20K-29999", "30K-32000", "  >=32001"];
+            for (i, label) in labels.iter().enumerate() {
+                println!("  |score| {}: {:8} ({:.1}%)", label, score_ranges[i],
+                    100.0 * score_ranges[i] as f64 / total as f64);
+            }
+
+            println!("\n=== Piece Count (Output Bucket proxy) ===");
+            for pc in (2..33).rev() {
+                if piece_count_hist[pc] > 0 {
+                    let bucket = std::cmp::min(7, (32 - pc) / 4); // approximate MaterialCount bucketing
+                    println!("  {} pieces (bucket ~{}): {:8} ({:.2}%)", pc, bucket,
+                        piece_count_hist[pc], 100.0 * piece_count_hist[pc] as f64 / total as f64);
+                }
+            }
         }
 
         Some(Commands::Perft { depth, fen }) => {
