@@ -202,20 +202,14 @@ pub fn init_threats() {
 #[inline]
 pub fn threat_index(
     attacker_cp: usize, // colored piece index of attacker
-    mut from: u32,      // attacker square
+    from: u32,          // attacker square (physical, pre-flip)
     victim_cp: usize,   // colored piece index of victim
-    mut to: u32,        // victim square
+    to: u32,            // victim square (physical, pre-flip)
     mirrored: bool,
     pov: Color,
 ) -> i32 {
-    // Perspective flip: rank flip for black, file flip if mirrored
-    let flip = (7 * mirrored as u32) ^ (56 * pov as u32);
-    from ^= flip;
-    to ^= flip;
-
     // Remap piece colors relative to POV
     let attacking = if pov == BLACK {
-        // Swap color: WP(0)↔BP(6), WN(1)↔BN(7), etc.
         (attacker_cp + 6) % 12
     } else {
         attacker_cp
@@ -228,12 +222,23 @@ pub fn threat_index(
 
     unsafe {
         let pair = PIECE_PAIR_LOOKUP[attacking][attacked];
+        // Semi-exclusion uses PHYSICAL squares to match Bullet training.
+        // Bullet decides once per pair using physical square ordering;
+        // both perspectives see the same decision. Previously we used
+        // perspective-flipped squares here, causing ~3-5% NTM feature
+        // mismatch vs training.
         let base = pair.base(from, to);
         if base < 0 {
-            return base; // excluded pair
+            return base; // excluded or semi-excluded pair
         }
-        base + PIECE_OFFSET_LOOKUP[attacking][from as usize]
-            + ATTACK_INDEX_LOOKUP[attacking][from as usize][to as usize] as i32
+
+        // Perspective flip for index computation only
+        let flip = (7 * mirrored as u32) ^ (56 * pov as u32);
+        let from_f = from ^ flip;
+        let to_f = to ^ flip;
+
+        base + PIECE_OFFSET_LOOKUP[attacking][from_f as usize]
+            + ATTACK_INDEX_LOOKUP[attacking][from_f as usize][to_f as usize] as i32
     }
 }
 
