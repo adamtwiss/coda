@@ -121,6 +121,10 @@ tunables!(
     (ESCAPE_BONUS_Q,   19569, 5000, 40000),
     (ESCAPE_BONUS_R,   14998, 3000, 30000),
     (ESCAPE_BONUS_MINOR, 8538, 2000, 20000),
+    // Threat-density LMR: reduce less when more pieces are threatened.
+    // threat_count / LMR_THREAT_DIV subtracted from reduction.
+    // Higher = less effect (2 means reduce 1 less per 2 threatened pieces).
+    (LMR_THREAT_DIV,      2,    1,    5),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -1496,6 +1500,7 @@ fn negamax(
     let our_non_pawns = board.colors[board.side_to_move as usize]
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
     let has_pawn_threats = (enemy_attacks & our_non_pawns) != 0;
+    let threat_count = popcount(enemy_attacks & our_non_pawns) as i32;
 
     // Clear PV for this node
     if ply_u <= MAX_PLY {
@@ -2367,6 +2372,10 @@ fn negamax(
                     let complexity = (static_eval - raw_eval).abs();
                     reduction -= complexity / tp(&LMR_COMPLEXITY_DIV);
                 }
+
+                // Threat-density LMR: reduce less when multiple pieces are
+                // under pawn attack. Tactical positions need deeper search.
+                reduction -= threat_count / tp(&LMR_THREAT_DIV);
 
                 // Clamp: never extend (negative), never reduce past depth 1
                 if reduction < 0 {
