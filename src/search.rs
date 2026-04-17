@@ -44,83 +44,83 @@ macro_rules! tunables {
 }
 
 tunables!(
-    // v9 tune #394 round 3 (1000 iters, post escape+semi-exclusion)
+    // v9 tune #409 (2500 iters, post x-ray-fix on w15 s200 xray-fixed net)
     (NMP_BASE_R,         5,    2,    8),
-    (NMP_DEPTH_DIV,      2,    1,    6),
-    (NMP_EVAL_DIV,     171,  100,  400),
-    (NMP_EVAL_MAX,       5,    1,    6),
-    (NMP_VERIFY_DEPTH,  11,    8,   20),
+    (NMP_DEPTH_DIV,      3,    1,    6),
+    (NMP_EVAL_DIV,     144,  100,  400),
+    (NMP_EVAL_MAX,       2,    1,    6),
+    (NMP_VERIFY_DEPTH,  13,    8,   20),
     // RFP
-    (RFP_DEPTH,          7,    2,   12),
-    (RFP_MARGIN_IMP,   107,   30,  150),
-    (RFP_MARGIN_NOIMP, 125,   50,  200),
+    (RFP_DEPTH,          6,    2,   12),
+    (RFP_MARGIN_IMP,    86,   30,  150),
+    (RFP_MARGIN_NOIMP, 123,   50,  200),
     // Futility
-    (FUT_BASE,          78,   20,  200),
-    (FUT_PER_DEPTH,    169,   40,  250),
+    (FUT_BASE,          95,   20,  200),
+    (FUT_PER_DEPTH,    136,   40,  250),
     // History pruning
-    (HIST_PRUNE_DEPTH,   4,    1,    8),
-    (HIST_PRUNE_MULT, 4935,  500, 50000),
+    (HIST_PRUNE_DEPTH,   2,    1,    8),
+    (HIST_PRUNE_MULT, 9890,  500, 50000),
     // SEE pruning
-    (SEE_QUIET_MULT,   31,    5,   80),
-    (SEE_CAP_MULT,    136,   30,  200),
+    (SEE_QUIET_MULT,   29,    5,   80),
+    (SEE_CAP_MULT,    139,   30,  200),
     // LMR
-    (LMR_HIST_DIV,  12323, 2000, 100000),
-    (LMR_C_QUIET,      99,   80,  300),
-    (LMR_C_CAP,       115,  100,  350),
+    (LMR_HIST_DIV,   9586, 2000, 100000),
+    (LMR_C_QUIET,     122,   80,  300),
+    (LMR_C_CAP,       147,  100,  350),
     // Singular extensions
-    (SE_DEPTH,          12,    4,   12),
+    (SE_DEPTH,          10,    4,   12),
     // Aspiration windows
-    (ASP_DELTA,          6,    5,   30),
-    (ASP_SCORE_DIV,  34971, 8000, 50000),
+    (ASP_DELTA,         16,    5,   30),
+    (ASP_SCORE_DIV,  27915, 8000, 50000),
     // LMP
-    (LMP_BASE,          13,    1,   15),
-    (LMP_DEPTH,         10,    4,   20),
+    (LMP_BASE,          10,    1,   15),
+    (LMP_DEPTH,         15,    4,   20),
     // Bad noisy
-    (BAD_NOISY_MARGIN, 122,   30,  150),
+    (BAD_NOISY_MARGIN,  84,   30,  150),
     // ProbCut
-    (PROBCUT_MARGIN,   200,   80,  300),
+    (PROBCUT_MARGIN,   193,   80,  300),
     // Hindsight
-    (HINDSIGHT_THRESH, 160,   50,  400),
+    (HINDSIGHT_THRESH, 165,   50,  400),
     // Unstable position detection
-    (UNSTABLE_THRESH,  168,   50,  500),
+    (UNSTABLE_THRESH,  162,   50,  500),
     // SEE piece value scaling
-    (SEE_MATERIAL_SCALE, 174, 30, 300),
+    (SEE_MATERIAL_SCALE, 192, 30, 300),
     // QS
-    (QS_DELTA_MARGIN,  310,  100,  500),
-    (QS_SEE_THRESHOLD, -32, -200,    0),
-    (QS_MAX_CAPTURES,   28,    2,   32),
+    (QS_DELTA_MARGIN,  320,  100,  500),
+    (QS_SEE_THRESHOLD, -43, -200,    0),
+    (QS_MAX_CAPTURES,   30,    2,   32),
     // Correction history weights
-    (CORR_W_PAWN,      342,  100,  600),
-    (CORR_W_NP,        109,   50,  400),
-    (CORR_W_MINOR,      33,   30,  300),
-    (CORR_W_MAJOR,      71,   30,  300),
-    (CORR_W_CONT,       35,   30,  400),
+    (CORR_W_PAWN,      345,  100,  600),
+    (CORR_W_NP,         88,   50,  400),
+    (CORR_W_MINOR,      38,   30,  300),
+    (CORR_W_MAJOR,      56,   30,  300),
+    (CORR_W_CONT,       41,   30,  400),
     // Fail-high blend
     (FH_BLEND_DEPTH,     1,    1,    8),
     // History bonus
-    (HIST_BONUS_MULT,  264,   50,  400),
-    (HIST_BONUS_BASE,   14,    0,  200),
-    (HIST_BONUS_MAX,  1691,  500, 3000),
+    (HIST_BONUS_MULT,  257,   50,  400),
+    (HIST_BONUS_BASE,   36,    0,  200),
+    (HIST_BONUS_MAX,  1831,  500, 3000),
     // Capture history bonus
-    (CAP_HIST_MULT,    240,   50,  400),
-    (CAP_HIST_BASE,     31,    0,  200),
-    (CAP_HIST_MAX,    1641,  500, 3000),
+    (CAP_HIST_MULT,    195,   50,  400),
+    (CAP_HIST_BASE,     40,    0,  200),
+    (CAP_HIST_MAX,    1582,  500, 3000),
     // Double extensions
-    (DEXT_MARGIN,       11,    2,   50),
-    (DEXT_CAP,          14,    4,   32),
+    (DEXT_MARGIN,       14,    2,   50),
+    (DEXT_CAP,          12,    4,   32),
     // Quiet check bonus
-    (QUIET_CHECK_BONUS, 10090, 2000, 30000),
+    (QUIET_CHECK_BONUS, 10551, 2000, 30000),
     // LMR complexity
-    (LMR_COMPLEXITY_DIV, 156, 30, 500),
+    (LMR_COMPLEXITY_DIV, 151, 30, 500),
     // Contempt
-    (CONTEMPT_VAL,       21,    0,   50),
+    (CONTEMPT_VAL,       15,    0,   50),
     // Correction history divisor
-    (CORR_HIST_DIV,     982,  256, 4096),
+    (CORR_HIST_DIV,     766,  256, 4096),
     // Escape-capture bonuses (Reckless pattern): move ordering bonus for
     // moving a piece off a square attacked by enemy pawns
-    (ESCAPE_BONUS_Q,   19569, 5000, 40000),
-    (ESCAPE_BONUS_R,   14998, 3000, 30000),
-    (ESCAPE_BONUS_MINOR, 8538, 2000, 20000),
+    (ESCAPE_BONUS_Q,   20004, 5000, 40000),
+    (ESCAPE_BONUS_R,   17401, 3000, 30000),
+    (ESCAPE_BONUS_MINOR, 7359, 2000, 20000),
     // Threat-density LMR: reduce less when more pieces are threatened.
     // threat_count / LMR_THREAT_DIV subtracted from reduction.
     // Higher = less effect (2 means reduce 1 less per 2 threatened pieces).
