@@ -1092,6 +1092,81 @@ mod tests {
         assert_eq!(b.hash, hash_before);
     }
 
+    /// Deterministic fuzzer: plays random legal games from several start
+    /// positions and verifies that the incremental hash (maintained by
+    /// make_move/unmake_move) exactly equals compute_hash() at every ply.
+    ///
+    /// This catches any drift in the conditional ep_key XOR — if the
+    /// condition used at "remove old ep_key" disagrees with the condition
+    /// used at "add new ep_key" for any move sequence, the incremental
+    /// hash diverges from compute_hash and TT lookup breaks.
+    ///
+    /// Not a behavioural test — purely a hash-invariant guard for the
+    /// 2026-04-17 Zobrist EP fix. Analogous to threat_accum::fuzz_random_games.
+    #[test]
+    fn fuzz_hash_incremental_matches_compute() {
+        use crate::movegen::generate_legal_moves;
+        init();
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            // EP-rich positions: lots of pawns near rank 5 / rank 4
+            "rnbqkbnr/1ppp1ppp/p7/3Pp3/8/8/PPP1PPPP/RNBQKBNR w KQkq e6 0 3",
+            "rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2",
+            // Dead-EP position: double push available with no adjacent enemy pawn
+            "4k3/p7/8/8/8/8/1P6/4K3 w - - 0 1",
+            "4k3/8/8/8/8/8/PPPPPPPP/4K3 w - - 0 1",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const PLIES: usize = 80;
+        const GAMES: usize = 30;
+
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for game in 0..GAMES {
+                let seed: u32 = 0x1EE7D00Du32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::from_fen(fen);
+                // Baseline invariant on starting position.
+                assert_eq!(
+                    board.hash, board.compute_hash(),
+                    "start hash mismatch at fen_idx={} fen={}", fen_idx, fen
+                );
+
+                for ply in 0..PLIES {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+
+                    board.make_move(mv);
+
+                    let incr = board.hash;
+                    let fresh = board.compute_hash();
+                    if incr != fresh {
+                        panic!(
+                            "hash drift: fen_idx={} game={} ply={} move={} \
+                             incremental={:#x} compute_hash={:#x} diff={:#x} seed={:#x}\n\
+                             fen={} ep={}",
+                            fen_idx, game, ply,
+                            crate::types::move_to_uci(mv),
+                            incr, fresh, incr ^ fresh, seed,
+                            board.to_fen(), board.ep_square,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Regression: the Zobrist hash must include ep_key iff an enemy pawn
     /// can actually make the EP capture. Without this guard, the same
     /// physical position reached via a double-push with no adjacent enemy
