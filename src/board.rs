@@ -81,6 +81,42 @@ fn castle_mask(sq: u8) -> u8 {
     unsafe { CASTLE_MASK[sq as usize] }
 }
 
+/// Returns true if `ep_sq` is an EP target that `capturing_side` can actually
+/// reach with a pawn — i.e., `capturing_side` has a pawn on a file-adjacent
+/// square on the same rank as the just-double-pushed pawn.
+///
+/// The double-pushed pawn's square is implied by `ep_sq`:
+///   - if capturing_side == BLACK, white just pushed; pushed pawn = ep_sq + 8
+///   - if capturing_side == WHITE, black just pushed; pushed pawn = ep_sq - 8
+///
+/// The Zobrist hash must XOR `ep_key(file_of(ep_sq))` iff this returns true.
+/// Otherwise two physically identical positions — one reached via a double
+/// push with no adjacent enemy pawn, one reached any other way — would hash
+/// differently, silently breaking threefold-repetition detection.
+pub fn ep_capture_available(
+    pieces: &[Bitboard; 6],
+    colors: &[Bitboard; 2],
+    capturing_side: Color,
+    ep_sq: u8,
+) -> bool {
+    if ep_sq >= 64 { return false; }
+    // Pushed pawn square (on capturing_side's 4th rank from its own POV).
+    let pushed_sq = if capturing_side == BLACK {
+        // White pushed: pawn on rank 4 == ep_sq (rank 3) + 8.
+        ep_sq.wrapping_add(8)
+    } else {
+        // Black pushed: pawn on rank 5 == ep_sq (rank 6) - 8.
+        ep_sq.wrapping_sub(8)
+    };
+    if pushed_sq >= 64 { return false; }
+    let pushed_bb = 1u64 << pushed_sq;
+    // Enemy (capturing_side) pawns that could EP-capture sit on files adjacent
+    // to pushed_sq on the same rank.
+    let adj = ((pushed_bb << 1) & NOT_FILE_A) | ((pushed_bb >> 1) & NOT_FILE_H);
+    let capturing_pawns = pieces[PAWN as usize] & colors[capturing_side as usize];
+    adj & capturing_pawns != 0
+}
+
 impl Board {
     pub fn new() -> Self {
         Board {
@@ -217,7 +253,13 @@ impl Board {
             }
         }
 
-        if self.ep_square != NO_SQUARE {
+        // Only hash ep_square if an enemy pawn can actually make the EP capture.
+        // Without this guard, the same physical position reached with or without
+        // a recent double-push would hash differently, breaking rep detection
+        // (Stockfish/Viridithas pattern).
+        if self.ep_square != NO_SQUARE
+            && ep_capture_available(&self.pieces, &self.colors, self.side_to_move, self.ep_square)
+        {
             h ^= ep_key(file_of(self.ep_square));
         }
 
@@ -554,8 +596,12 @@ impl Board {
             checkers: 0, // populated on demand
         });
 
-        // Remove EP hash
-        if self.ep_square != NO_SQUARE {
+        // Remove EP hash — only if the old EP was "legal" (we, side_to_move,
+        // have a pawn that could actually make the EP capture). Must mirror
+        // the condition used when the key was XOR'd in, or the hash breaks.
+        if self.ep_square != NO_SQUARE
+            && ep_capture_available(&self.pieces, &self.colors, self.side_to_move, self.ep_square)
+        {
             self.hash ^= ep_key(file_of(self.ep_square));
         }
 
@@ -618,11 +664,19 @@ impl Board {
         // Update castling rights (for any move from/to relevant squares)
         self.castling &= castle_mask(from) & castle_mask(to);
 
-        // Update en passant — detect double push by distance
+        // Update en passant — detect double push by distance.
+        // Only XOR ep_key into the hash if the OTHER side (them = the next
+        // mover) actually has a pawn that could EP-capture. Otherwise the
+        // ep_square is physically recorded but invisible to the hash, so
+        // positions reachable with-or-without this double-push still
+        // collide correctly for rep detection.
         self.ep_square = NO_SQUARE;
         if pt == PAWN && ((to as i32) - (from as i32)).unsigned_abs() == 16 {
-            self.ep_square = if us == WHITE { from.wrapping_add(8) } else { from.wrapping_sub(8) };
-            self.hash ^= ep_key(file_of(self.ep_square));
+            let new_ep = if us == WHITE { from.wrapping_add(8) } else { from.wrapping_sub(8) };
+            self.ep_square = new_ep;
+            if ep_capture_available(&self.pieces, &self.colors, them, new_ep) {
+                self.hash ^= ep_key(file_of(new_ep));
+            }
         }
 
         // Update castling hash
@@ -754,7 +808,10 @@ impl Board {
         });
 
         if self.ep_square != NO_SQUARE {
-            self.hash ^= ep_key(file_of(self.ep_square));
+            // Mirror the conditional XOR used when the key was added.
+            if ep_capture_available(&self.pieces, &self.colors, self.side_to_move, self.ep_square) {
+                self.hash ^= ep_key(file_of(self.ep_square));
+            }
             self.ep_square = NO_SQUARE;
         }
 
@@ -1033,5 +1090,190 @@ mod tests {
         b.unmake_move();
         assert_eq!(b.to_fen(), fen_before);
         assert_eq!(b.hash, hash_before);
+    }
+
+    /// Deterministic fuzzer: plays random legal games from several start
+    /// positions and verifies that the incremental hash (maintained by
+    /// make_move/unmake_move) exactly equals compute_hash() at every ply.
+    ///
+    /// This catches any drift in the conditional ep_key XOR — if the
+    /// condition used at "remove old ep_key" disagrees with the condition
+    /// used at "add new ep_key" for any move sequence, the incremental
+    /// hash diverges from compute_hash and TT lookup breaks.
+    ///
+    /// Not a behavioural test — purely a hash-invariant guard for the
+    /// 2026-04-17 Zobrist EP fix. Analogous to threat_accum::fuzz_random_games.
+    #[test]
+    fn fuzz_hash_incremental_matches_compute() {
+        use crate::movegen::generate_legal_moves;
+        init();
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            // EP-rich positions: lots of pawns near rank 5 / rank 4
+            "rnbqkbnr/1ppp1ppp/p7/3Pp3/8/8/PPP1PPPP/RNBQKBNR w KQkq e6 0 3",
+            "rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2",
+            // Dead-EP position: double push available with no adjacent enemy pawn
+            "4k3/p7/8/8/8/8/1P6/4K3 w - - 0 1",
+            "4k3/8/8/8/8/8/PPPPPPPP/4K3 w - - 0 1",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const PLIES: usize = 80;
+        const GAMES: usize = 30;
+
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for game in 0..GAMES {
+                let seed: u32 = 0x1EE7D00Du32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::from_fen(fen);
+                // Baseline invariant on starting position.
+                assert_eq!(
+                    board.hash, board.compute_hash(),
+                    "start hash mismatch at fen_idx={} fen={}", fen_idx, fen
+                );
+
+                for ply in 0..PLIES {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+
+                    board.make_move(mv);
+
+                    let incr = board.hash;
+                    let fresh = board.compute_hash();
+                    if incr != fresh {
+                        panic!(
+                            "hash drift: fen_idx={} game={} ply={} move={} \
+                             incremental={:#x} compute_hash={:#x} diff={:#x} seed={:#x}\n\
+                             fen={} ep={}",
+                            fen_idx, game, ply,
+                            crate::types::move_to_uci(mv),
+                            incr, fresh, incr ^ fresh, seed,
+                            board.to_fen(), board.ep_square,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Regression: the Zobrist hash must include ep_key iff an enemy pawn
+    /// can actually make the EP capture. Without this guard, the same
+    /// physical position reached via a double-push with no adjacent enemy
+    /// pawn would hash differently from the same position reached by a
+    /// single-push path, silently breaking threefold-repetition detection.
+    ///
+    /// Caught by an `info depth ... pv` warning from fastchess on a v9
+    /// game where a forced-rep endgame was scored as -80cp instead of the
+    /// draw contempt value (~-19cp).
+    #[test]
+    fn zobrist_ep_only_when_capturable() {
+        init();
+
+        // Case A: double push where NO enemy pawn can capture.
+        // White pushes d2-d4. Black has no pawn on c4 or e4. EP is illegal.
+        // The same physical position is reachable via two d-pawn single-pushes
+        // (d2-d3, then d3-d4). Both hashes must be equal.
+        let mut b_double = Board::from_fen("4k3/8/8/8/8/8/3P4/4K3 w - - 0 1");
+        let d2d4 = make_move(11, 27, FLAG_NONE); // d2 -> d4 (distance 16 triggers EP)
+        b_double.make_move(d2d4);
+        // After d2-d4 with no enemy pawn to capture, ep_square may be set to
+        // d3 (internal state) but the hash must NOT include ep_key(d).
+        // Give black a no-op and white another no-op to reach a comparable state.
+        let ke8f8 = make_move(60, 61, FLAG_NONE); // e8 -> f8 (just to flip sides)
+        // Actually simpler: compare the single-push-path hash directly.
+        let b_single = {
+            let mut b = Board::from_fen("4k3/8/8/8/8/8/3P4/4K3 w - - 0 1");
+            let d2d3 = make_move(11, 19, FLAG_NONE);
+            b.make_move(d2d3);       // d2-d3 (pawn to d3; black to move)
+            let ke8f8 = make_move(60, 61, FLAG_NONE);
+            b.make_move(ke8f8);      // black king idle
+            let d3d4 = make_move(19, 27, FLAG_NONE);
+            b.make_move(d3d4);       // d3-d4 (no EP here either)
+            b
+        };
+        // Reach the same physical position from the double-push path:
+        // after d2-d4, play Ke8-f8, then a null move slot... we need white to move
+        // for the physical state to match b_single. Instead, just arrange
+        // b_double to end with black to move and compare to a b_single with black
+        // to move after d2-d4.
+        //
+        // Easier form: compare *after the double push*, black-to-move, against
+        // *after single-push + black no-op + single-push*, black-to-move.
+        let _ = ke8f8; // silence unused
+        drop(b_double);
+
+        // Simpler head-to-head: two black-to-move positions that should be identical.
+        let fen_after_double = {
+            let mut b = Board::from_fen("4k3/8/8/8/8/8/3P4/4K3 w - - 0 1");
+            let d2d4 = make_move(11, 27, FLAG_NONE);
+            b.make_move(d2d4);
+            b
+        };
+        let fen_after_two_single = {
+            let mut b = Board::from_fen("4k3/8/8/8/8/3P4/8/4K3 w - - 0 1");
+            let d3d4 = make_move(19, 27, FLAG_NONE);
+            b.make_move(d3d4);
+            b
+        };
+        // Physical state must match (piece bitboards, side, castling, no EP effect).
+        assert_eq!(fen_after_double.pieces, fen_after_two_single.pieces);
+        assert_eq!(fen_after_double.colors, fen_after_two_single.colors);
+        assert_eq!(fen_after_double.side_to_move, fen_after_two_single.side_to_move);
+        assert_eq!(fen_after_double.castling, fen_after_two_single.castling);
+        // Hashes must be equal — EP is not legal in either (no black pawn on c4/e4).
+        assert_eq!(
+            fen_after_double.hash, fen_after_two_single.hash,
+            "Zobrist hashes must match when EP is physically unreachable.\n\
+             double-push hash = {:#x}, single-push hash = {:#x}",
+            fen_after_double.hash, fen_after_two_single.hash
+        );
+
+        // Case B: double push where EP IS legal (black pawn on e4).
+        // In that case, the hash should include ep_key(d) AND not match the
+        // no-EP version.
+        let ep_legal_pos = {
+            let mut b = Board::from_fen("4k3/8/8/8/4p3/8/3P4/4K3 w - - 0 1");
+            let d2d4 = make_move(11, 27, FLAG_NONE); // d2-d4, ep_sq=d3, black pawn on e4 can capture
+            b.make_move(d2d4);
+            b
+        };
+        let no_ep_version = {
+            let mut b = Board::from_fen("4k3/8/8/8/4p3/3P4/8/4K3 w - - 0 1");
+            let d3d4 = make_move(19, 27, FLAG_NONE);
+            b.make_move(d3d4);
+            b
+        };
+        // Physical bitboards should match, but the EP-legal version must have
+        // ep_key XOR'd in.
+        assert_eq!(ep_legal_pos.pieces, no_ep_version.pieces);
+        assert_eq!(ep_legal_pos.colors, no_ep_version.colors);
+        assert_ne!(
+            ep_legal_pos.hash, no_ep_version.hash,
+            "Zobrist hashes MUST differ when EP is legal — ep_key(d) should \
+             distinguish them. double-push hash = {:#x}, no-EP hash = {:#x}",
+            ep_legal_pos.hash, no_ep_version.hash
+        );
+        // The XOR of the two must equal ep_key(d-file = 3).
+        assert_eq!(
+            ep_legal_pos.hash ^ no_ep_version.hash,
+            crate::zobrist::ep_key(3),
+            "hash difference should be exactly ep_key(d)"
+        );
+
+        // Case C: incremental hash vs. from-scratch compute_hash must agree
+        // in both cases (hash invariant).
+        assert_eq!(fen_after_double.hash, fen_after_double.compute_hash());
+        assert_eq!(ep_legal_pos.hash, ep_legal_pos.compute_hash());
     }
 }
