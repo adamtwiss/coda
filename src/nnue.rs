@@ -3844,6 +3844,253 @@ mod tests {
         assert!(max_acc_diff == 0, "Accumulator SIMD/scalar max diff {} (should be exact)", max_acc_diff);
     }
 
+    /// Helper: find and load any available v9 net for eval tests.
+    fn try_load_v9_net() -> Option<NNUENet> {
+        // Prefer the xray-fixed w15 s200 net (our best v9), fall back to others.
+        let candidates = [
+            "nets/net-v9-768th16x32-w15-e200s200-xray-fixed.nnue",
+            "nets/net-v9-768th16x32-w0-e200s200-xray-fixed.nnue",
+            "nets/net-v9-768th16x32-w0-e400s400-noxray.nnue",
+            "nets/net-v9-768pwth16x32-w0-e200s200.nnue",
+        ];
+        for p in candidates.iter() {
+            if std::path::Path::new(p).exists() {
+                if let Ok(net) = NNUENet::load(p) {
+                    return Some(net);
+                }
+            }
+        }
+        None
+    }
+
+    /// Mirror a FEN: rank-flip board, swap piece colors (case), flip
+    /// side-to-move, flip castling rights case, flip EP square rank.
+    /// Result represents the same "position content" reflected: a correct
+    /// NNUE must produce the identical evaluation from STM's perspective
+    /// for a position and its mirror.
+    fn mirror_fen(fen: &str) -> String {
+        let parts: Vec<&str> = fen.split_whitespace().collect();
+        assert!(parts.len() >= 4, "FEN missing fields: {}", fen);
+
+        // 1. Board: rank-flip + case-swap.
+        let ranks: Vec<&str> = parts[0].split('/').collect();
+        let mut new_ranks: Vec<String> = Vec::with_capacity(ranks.len());
+        for r in ranks.iter().rev() {
+            let swapped: String = r.chars().map(|c| {
+                if c.is_ascii_uppercase() { c.to_ascii_lowercase() }
+                else if c.is_ascii_lowercase() { c.to_ascii_uppercase() }
+                else { c }
+            }).collect();
+            new_ranks.push(swapped);
+        }
+        let new_board = new_ranks.join("/");
+
+        // 2. Side-to-move.
+        let new_stm = if parts[1] == "w" { "b" } else { "w" };
+
+        // 3. Castling rights: swap case (K↔k, Q↔q, etc.), then sort so the
+        //    output is canonical. Order K,Q,k,q.
+        let new_castle: String = if parts[2] == "-" {
+            "-".to_string()
+        } else {
+            let mut chars: Vec<char> = parts[2].chars().map(|c| {
+                if c.is_ascii_uppercase() { c.to_ascii_lowercase() }
+                else if c.is_ascii_lowercase() { c.to_ascii_uppercase() }
+                else { c }
+            }).collect();
+            chars.sort_by_key(|c| match c {
+                'K' => 0, 'Q' => 1, 'k' => 2, 'q' => 3, _ => 4,
+            });
+            chars.iter().collect()
+        };
+
+        // 4. EP square: flip rank (e.g. e3 → e6).
+        let new_ep: String = if parts[3] == "-" {
+            "-".to_string()
+        } else {
+            let bytes = parts[3].as_bytes();
+            let file = bytes[0] as char;
+            let rank = bytes[1] as char;
+            let new_rank = match rank {
+                '1' => '8', '2' => '7', '3' => '6', '4' => '5',
+                '5' => '4', '6' => '3', '7' => '2', '8' => '1',
+                _ => rank,
+            };
+            format!("{}{}", file, new_rank)
+        };
+
+        let hm = parts.get(4).unwrap_or(&"0");
+        let fm = parts.get(5).unwrap_or(&"1");
+        format!("{} {} {} {} {} {}", new_board, new_stm, new_castle, new_ep, hm, fm)
+    }
+
+    /// Tier-1 discovery test: eval(pos) ≈ eval(mirror(pos)) from STM's
+    /// perspective. Differences beyond a gross threshold indicate a real
+    /// perspective/flip bug (accumulator mirror, halfka index, threat
+    /// mirror, king-file handling).
+    ///
+    /// Tolerance is intentionally generous (50cp). Expected small
+    /// asymmetries come from:
+    /// - Semi-exclusion in threat features uses PHYSICAL square ordering
+    ///   (same decision in both perspectives, by design, matching Bullet
+    ///   training). This is orientation-dependent, so mirrored positions
+    ///   activate different feature indices. A well-trained net learns
+    ///   near-symmetric weights at those indices; an s200-trained net
+    ///   still has visible residual (~10-20cp on tactical positions).
+    /// - Integer quantization produces small (<5cp) rounding drift
+    ///   between the two forward passes.
+    ///
+    /// A symmetry diff > 50cp signals a real bug — the test fails and
+    /// prints all positions + diffs for triage.
+    #[test]
+    fn test_eval_color_symmetry() {
+        use crate::board::Board;
+        use crate::threat_accum::ThreatStack;
+
+        crate::init();
+        let net = match try_load_v9_net() {
+            Some(n) => n,
+            None => { eprintln!("Skipping eval symmetry test: no v9 net available"); return; }
+        };
+
+        let fens = [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "4k3/8/8/8/8/8/PPPPPPPP/R3K3 w Q - 0 1",
+            "2r3k1/pp3ppp/2n1b3/3pP3/3P4/2NB4/PP3PPP/R4RK1 b - - 0 1",
+            // King on e-file — exercises mirror-flip boundary specifically
+            "4k3/4p3/8/8/8/8/4P3/4K3 w - - 0 1",
+            // King on h-file — heavy mirror territory
+            "7k/8/8/8/8/8/8/7K w - - 0 1",
+        ];
+
+        const TOLERANCE_CP: i32 = 50;
+        let h = net.hidden_size;
+        let mut max_diff = 0i32;
+        let mut fails: Vec<(String, i32, i32, i32)> = Vec::new();
+
+        eprintln!("eval symmetry: tolerance = {} cp", TOLERANCE_CP);
+        for fen in &fens {
+            let mirrored = mirror_fen(fen);
+
+            let b1 = Board::from_fen(fen);
+            let mut acc1 = NNUEAccumulator::new(h);
+            let mut ts1 = ThreatStack::new(h);
+            ts1.active = net.has_threats;
+            if ts1.active {
+                ts1.refresh(&net.threat_weights, net.num_threat_features, &b1, crate::types::WHITE);
+                ts1.refresh(&net.threat_weights, net.num_threat_features, &b1, crate::types::BLACK);
+            }
+            let e1 = crate::eval::evaluate_nnue(&b1, &net, &mut acc1, &ts1);
+
+            let b2 = Board::from_fen(&mirrored);
+            let mut acc2 = NNUEAccumulator::new(h);
+            let mut ts2 = ThreatStack::new(h);
+            ts2.active = net.has_threats;
+            if ts2.active {
+                ts2.refresh(&net.threat_weights, net.num_threat_features, &b2, crate::types::WHITE);
+                ts2.refresh(&net.threat_weights, net.num_threat_features, &b2, crate::types::BLACK);
+            }
+            let e2 = crate::eval::evaluate_nnue(&b2, &net, &mut acc2, &ts2);
+
+            let diff = (e1 - e2).abs();
+            eprintln!("  {}: eval={} mirror={} diff={}{}",
+                fen, e1, e2, diff,
+                if diff > TOLERANCE_CP { " FAIL" } else if diff > 5 { " (residual)" } else { "" }
+            );
+            max_diff = max_diff.max(diff);
+            if diff > TOLERANCE_CP {
+                fails.push((fen.to_string(), e1, e2, diff));
+            }
+        }
+
+        eprintln!("eval symmetry max diff = {} cp (tolerance {} cp)", max_diff, TOLERANCE_CP);
+        assert!(fails.is_empty(),
+            "eval symmetry failed on {} positions (> {}cp tolerance). Details above.",
+            fails.len(), TOLERANCE_CP);
+    }
+
+    /// Tier-1 discovery test: eval changes monotonically when removing
+    /// piece types in value order. Removes one piece at a time from a
+    /// balanced starting position; the eval delta ranking must be
+    /// roughly Queen > Rook > Bishop ≈ Knight > Pawn, all negative for
+    /// the side losing material.
+    ///
+    /// Detects: inverted piece values, eval-scale sign bugs, bucket
+    /// mis-selection producing non-monotone evals at material boundaries.
+    #[test]
+    fn test_eval_piece_value_monotonicity() {
+        use crate::board::Board;
+        use crate::threat_accum::ThreatStack;
+
+        crate::init();
+        let net = match try_load_v9_net() {
+            Some(n) => n,
+            None => { eprintln!("Skipping monotonicity test: no v9 net available"); return; }
+        };
+
+        let h = net.hidden_size;
+
+        fn eval_fen(net: &NNUENet, fen: &str) -> i32 {
+            let b = Board::from_fen(fen);
+            let h = net.hidden_size;
+            let mut acc = NNUEAccumulator::new(h);
+            let mut ts = ThreatStack::new(h);
+            ts.active = net.has_threats;
+            if ts.active {
+                ts.refresh(&net.threat_weights, net.num_threat_features, &b, crate::types::WHITE);
+                ts.refresh(&net.threat_weights, net.num_threat_features, &b, crate::types::BLACK);
+            }
+            crate::eval::evaluate_nnue(&b, net, &mut acc, &ts)
+        }
+
+        // Startpos (balanced). Evals are STM-relative = 0 on a balanced position.
+        let base = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        let e_base = eval_fen(&net, base);
+
+        // Remove one black piece at a time; STM is white so each removal
+        // should return a POSITIVE eval (white is relatively ahead).
+        let cases = [
+            ("black queen",  "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+            ("black rook",   "1nbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+            ("black bishop", "rn1qkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+            ("black knight", "r1bqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+            ("black pawn",   "rnbqkbnr/1ppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+        ];
+
+        let evals: Vec<(&str, i32, i32)> = cases.iter().map(|(name, f)| {
+            let e = eval_fen(&net, f);
+            (*name, e, e - e_base)
+        }).collect();
+
+        eprintln!("Base (startpos) eval: {} cp", e_base);
+        for (name, e, delta) in &evals {
+            eprintln!("  Remove {}: eval={} cp, delta from base = +{} cp", name, e, delta);
+        }
+
+        // All removals should produce positive evals (white better off).
+        for (name, e, _) in &evals {
+            assert!(*e > 0, "Removing {} gave eval={} — expected >0 (white up material)", name, e);
+        }
+
+        // Ordering check: queen removal should be the biggest gain;
+        // pawn removal should be the smallest. Bishop/knight may swap
+        // but should both be well above pawn and well below rook.
+        let q = evals[0].2;
+        let r = evals[1].2;
+        let b = evals[2].2;
+        let n = evals[3].2;
+        let p = evals[4].2;
+
+        assert!(q > r, "Queen removal delta ({}) not > Rook removal ({})", q, r);
+        assert!(r > b && r > n, "Rook removal ({}) not > Bishop ({}) and Knight ({})", r, b, n);
+        assert!(b > p, "Bishop removal ({}) not > Pawn ({})", b, p);
+        assert!(n > p, "Knight removal ({}) not > Pawn ({})", n, p);
+        assert!(p > 0, "Pawn removal gave non-positive delta: {}", p);
+    }
+
     /// Test Finny table consistency: incremental update vs full recompute.
     #[test]
     fn test_finny_incremental_consistency() {
