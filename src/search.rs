@@ -301,7 +301,7 @@ pub struct SearchInfo {
     /// LMR reduction applied at each ply (for hindsight reduction gating)
     reductions: [i32; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
-    excluded_move: [Move; MAX_PLY + 1],
+    pub excluded_move: [Move; MAX_PLY + 1],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
     double_ext_count: [i32; MAX_PLY + 1],
     /// Per-ply moved piece (go_piece index 1-12, 0=none). Set before make_move.
@@ -3166,3 +3166,46 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
 
     total_nodes
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Singular extensions set `info.excluded_move[ply]` during verification
+    /// search and MUST clear it after. A leak would silently corrupt the
+    /// next search iteration (subsequent SE would skip, or move loops would
+    /// skip a random move).
+    ///
+    /// Audit 2026-04-17: confirmed the set/clear pair at search.rs:2103-2105
+    /// has no early-return path between them. This test guards the invariant
+    /// against future regressions.
+    #[test]
+    fn test_excluded_move_cleared_after_search() {
+        use crate::board::Board;
+
+        crate::init();
+        let mut info = SearchInfo::new(16);
+        info.silent = true;
+
+        let mut board = Board::from_fen(
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+
+        let limits = SearchLimits {
+            depth: 8, // enough to hit SE at SE_DEPTH threshold
+            movetime: 0,
+            wtime: 0, btime: 0, winc: 0, binc: 0,
+            movestogo: 0, nodes: 0, infinite: false,
+        };
+
+        search(&mut board, &mut info, &limits);
+
+        for (i, &mv) in info.excluded_move.iter().enumerate() {
+            assert_eq!(
+                mv, NO_MOVE,
+                "excluded_move[{}] = {} after search — SE verification leaked",
+                i, crate::types::move_to_uci(mv)
+            );
+        }
+    }
+}
+
