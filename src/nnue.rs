@@ -1945,8 +1945,24 @@ impl NNUENet {
 
         // CReLU + pairwise for each perspective → pw values each
         // When threats are present, fuses PSQ+threat combine into the SIMD pack
-        let mut stm_pw = [0u8; 2048];
-        let mut ntm_pw = [0u8; 2048];
+        //
+        // Stack buffers sized for max pw (=1024 for FT=2048 nets); only 0..pw
+        // are written by the SIMD packers and only 0..pw are read downstream.
+        // Skip the implicit zero-init (was ~4KB of zero-writes per forward call).
+        // SAFETY: `simd*_pairwise_pack*` writes exactly `pw` bytes into `out`;
+        // all downstream reads use `stm_pw[..pw]` / `ntm_pw[..pw]`.
+        let mut stm_pw_buf: [std::mem::MaybeUninit<u8>; 2048] = unsafe {
+            std::mem::MaybeUninit::uninit().assume_init()
+        };
+        let mut ntm_pw_buf: [std::mem::MaybeUninit<u8>; 2048] = unsafe {
+            std::mem::MaybeUninit::uninit().assume_init()
+        };
+        let mut stm_pw: &mut [u8] = unsafe {
+            std::slice::from_raw_parts_mut(stm_pw_buf.as_mut_ptr() as *mut u8, 2048)
+        };
+        let mut ntm_pw: &mut [u8] = unsafe {
+            std::slice::from_raw_parts_mut(ntm_pw_buf.as_mut_ptr() as *mut u8, 2048)
+        };
 
         #[cfg(target_arch = "x86_64")]
         if self.has_avx512 && pw % 32 == 0 {
@@ -2241,8 +2257,20 @@ impl NNUENet {
         // SIMD int8 path: pack SCReLU to u8, then VPMADDUBSW L1 matmul
         #[cfg(target_arch = "x86_64")]
         if (self.has_avx512 || self.has_avx2) && h % 32 == 0 && !self.l1_weights_8t.is_empty() {
-            let mut stm_packed = [0u8; 2048]; // max accumulator size
-            let mut ntm_packed = [0u8; 2048];
+            // Skip zero-init of max-sized stack buffers (~4KB per call).
+            // SAFETY: SIMD packers write exactly `h` bytes; all reads use [..h].
+            let mut stm_packed_buf: [std::mem::MaybeUninit<u8>; 2048] = unsafe {
+                std::mem::MaybeUninit::uninit().assume_init()
+            };
+            let mut ntm_packed_buf: [std::mem::MaybeUninit<u8>; 2048] = unsafe {
+                std::mem::MaybeUninit::uninit().assume_init()
+            };
+            let mut stm_packed: &mut [u8] = unsafe {
+                std::slice::from_raw_parts_mut(stm_packed_buf.as_mut_ptr() as *mut u8, 2048)
+            };
+            let mut ntm_packed: &mut [u8] = unsafe {
+                std::slice::from_raw_parts_mut(ntm_packed_buf.as_mut_ptr() as *mut u8, 2048)
+            };
             if self.has_avx512 && h % 64 == 0 {
                 unsafe {
                     simd512_screlu_pack(stm_acc, &mut stm_packed, h);
@@ -2376,8 +2404,19 @@ impl NNUENet {
         // NEON int8 path: pack SCReLU to u8, then NEON L1 matmul
         #[cfg(target_arch = "aarch64")]
         if self.has_neon && h % 16 == 0 && !self.l1_weights_8t.is_empty() {
-            let mut stm_packed = [0u8; 2048];
-            let mut ntm_packed = [0u8; 2048];
+            // Skip zero-init; NEON packer writes exactly h bytes.
+            let mut stm_packed_buf: [std::mem::MaybeUninit<u8>; 2048] = unsafe {
+                std::mem::MaybeUninit::uninit().assume_init()
+            };
+            let mut ntm_packed_buf: [std::mem::MaybeUninit<u8>; 2048] = unsafe {
+                std::mem::MaybeUninit::uninit().assume_init()
+            };
+            let mut stm_packed: &mut [u8] = unsafe {
+                std::slice::from_raw_parts_mut(stm_packed_buf.as_mut_ptr() as *mut u8, 2048)
+            };
+            let mut ntm_packed: &mut [u8] = unsafe {
+                std::slice::from_raw_parts_mut(ntm_packed_buf.as_mut_ptr() as *mut u8, 2048)
+            };
             unsafe {
                 neon_screlu_pack(stm_acc, &mut stm_packed, h);
                 neon_screlu_pack(ntm_acc, &mut ntm_packed, h);
@@ -3014,6 +3053,13 @@ impl NNUEAccumulator {
     /// Get the current accumulator entry for reading.
     pub fn current(&self) -> &AccEntry {
         &self.stack[self.top]
+    }
+
+    /// Get the current accumulator entry for mutation. Used by tests
+    /// that manually install accumulator state (microbenchmarks etc.).
+    #[allow(dead_code)]
+    pub fn current_mut(&mut self) -> &mut AccEntry {
+        &mut self.stack[self.top]
     }
 
     /// Force a full recompute of both perspectives (for debugging).
@@ -4198,6 +4244,83 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Microbenchmark: forward pass ns/call on a v9 net.
+    ///
+    /// Run with: `cargo test --release bench_forward_pass -- --nocapture --ignored`
+    ///
+    /// Measures `net.forward()` in a tight loop. Much more sensitive than
+    /// `coda bench` (which mixes move-gen, threats, search, etc.) — picks up
+    /// sub-1% changes in the forward pass that whole-search bench can't see.
+    /// Essential for NPS micro-optimizations like the planned
+    /// `NNUENet<const H: usize>` monomorphization.
+    ///
+    /// Output: avg ns per forward() call, calls per second.
+    #[test]
+    #[ignore]
+    fn bench_forward_pass() {
+        use crate::board::Board;
+        use crate::threat_accum::ThreatStack;
+        use std::time::Instant;
+
+        crate::init();
+        let net_path = ["nets/net-v9-768th16x32-w15-e200s200-xray-fixed.nnue",
+                        "nets/net-v9-768th16x32-w0-e400s400-noxray.nnue",
+                        "net.nnue"]
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .map(|p| p.to_string())
+            .expect("no net available for forward bench");
+        let net = NNUENet::load(&net_path).expect("net load");
+        let h = net.hidden_size;
+
+        // Use a realistic middlegame position.
+        let fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
+        let board = Board::from_fen(fen);
+
+        let mut acc = NNUEAccumulator::new(h);
+        acc.force_recompute(&net, &board);
+
+        let mut ts = ThreatStack::new(h);
+        ts.active = net.has_threats;
+        if ts.active {
+            ts.refresh(&net.threat_weights, net.num_threat_features, &board, crate::types::WHITE);
+            ts.refresh(&net.threat_weights, net.num_threat_features, &board, crate::types::BLACK);
+        }
+
+        // Mirror evaluate_nnue's threat injection into the accumulator.
+        if ts.active {
+            let ae = acc.current_mut();
+            ae.threat_white.clear();
+            ae.threat_white.extend_from_slice(ts.values(crate::types::WHITE));
+            ae.threat_black.clear();
+            ae.threat_black.extend_from_slice(ts.values(crate::types::BLACK));
+            ae.threat_accurate = [true; 2];
+        }
+
+        let piece_count = crate::bitboard::popcount(board.occupied()) as u32;
+
+        // Warmup
+        let mut sink: i32 = 0;
+        for _ in 0..10_000 {
+            sink = sink.wrapping_add(net.forward(&acc, board.side_to_move, piece_count));
+        }
+
+        const ITERS: u64 = 1_000_000;
+        let start = Instant::now();
+        for _ in 0..ITERS {
+            sink = sink.wrapping_add(net.forward(&acc, board.side_to_move, piece_count));
+        }
+        let elapsed = start.elapsed();
+        let ns_per = elapsed.as_nanos() as f64 / ITERS as f64;
+        let per_sec = ITERS as f64 / elapsed.as_secs_f64();
+
+        eprintln!("net.forward() microbench:");
+        eprintln!("  {} iterations in {:?}", ITERS, elapsed);
+        eprintln!("  avg {:.1} ns/call", ns_per);
+        eprintln!("  {:.0} K calls/sec", per_sec / 1000.0);
+        eprintln!("  sink = {}", sink); // prevent dead-code elimination
     }
 
     /// Test Finny table consistency: incremental update vs full recompute.
