@@ -116,6 +116,19 @@ tunables!(
     (CONTEMPT_VAL,       19,    0,   50),
     // Correction history divisor
     (CORR_HIST_DIV,    1072,  256, 4096),
+    // Correction history update weight cap: weight = min(CORR_UPDATE_WEIGHT_MAX, depth + 1).
+    // SF hardcodes 16; exposing as a tunable lets SPSA compensate when other
+    // logic reduces the update volume (e.g. filtering noisy best_moves).
+    (CORR_UPDATE_WEIGHT_MAX, 16,  4,   48),
+    // Fraction of CORR_HIST_LIMIT that caps a single update's bonus magnitude.
+    // Higher divisor = smaller caps, more conservative updates. SF uses 4.
+    (CORR_BONUS_CAP_DIV,  4,     1,   16),
+    // Divisor when applying blended correction to raw eval: eval += corr / GRAIN.
+    // Higher = less aggressive correction effect.
+    (CORR_HIST_GRAIN_T,   8,     1,   32),
+    // Clamps the per-update error (search_score - raw_eval) before training.
+    // Scaled relative to CORR_HIST_LIMIT; SF uses 128/32000 ≈ 4/1024 equivalent.
+    (CORR_HIST_ERR_MAX,   4,     1,   64),
     // Escape-capture bonuses (Reckless pattern): move ordering bonus for
     // moving a piece off a square attacked by enemy pawns
     (ESCAPE_BONUS_Q,   19458, 5000, 40000),
@@ -723,42 +736,45 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
     // Weighted blend: pawn 384, whiteNP 154, blackNP 154, minor 102, major 102, cont 128 = 1024
     let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
         + minor_corr * tp(&CORR_W_MINOR) as i64 + major_corr * tp(&CORR_W_MAJOR) as i64 + cont_corr * tp(&CORR_W_CONT) as i64) / tp(&CORR_HIST_DIV) as i64;
-    let adjusted = raw_eval + (total_corr as i32) / CORR_HIST_GRAIN;
+    let adjusted = raw_eval + (total_corr as i32) / tp(&CORR_HIST_GRAIN_T);
     adjusted.clamp(-MATE_SCORE + 100, MATE_SCORE - 100)
 }
 
 /// Update correction history entry with gravity.
-fn update_corr_entry(entry: &mut i32, err: i32, weight: i32) {
+fn update_corr_entry(entry: &mut i32, err: i32, weight: i32, cap_div: i32) {
     // Proportional gravity (consensus: every top engine uses this)
     // Self-limiting: values near the limit get pulled back harder
-    let bonus = (err * weight).clamp(-CORR_HIST_LIMIT / 4, CORR_HIST_LIMIT / 4);
+    let cap = CORR_HIST_LIMIT / cap_div.max(1);
+    let bonus = (err * weight).clamp(-cap, cap);
     *entry += bonus - *entry * bonus.abs() / CORR_HIST_LIMIT;
     *entry = (*entry).clamp(-CORR_HIST_LIMIT, CORR_HIST_LIMIT);
 }
 
 /// Update all correction history tables.
 fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, raw_eval: i32, depth: i32) {
-    let err = (search_score - raw_eval).clamp(-CORR_HIST_MAX, CORR_HIST_MAX);
-    let weight = (depth + 1).min(16);
+    let err_max = tp(&CORR_HIST_ERR_MAX);
+    let err = (search_score - raw_eval).clamp(-err_max, err_max);
+    let weight = (depth + 1).min(tp(&CORR_UPDATE_WEIGHT_MAX));
+    let cap_div = tp(&CORR_BONUS_CAP_DIV);
     let stm = board.side_to_move as usize;
 
     // Pawn correction
     let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&mut info.pawn_corr[stm][pawn_idx], err, weight);
+    update_corr_entry(&mut info.pawn_corr[stm][pawn_idx], err, weight, cap_div);
 
     // Non-pawn corrections (per color)
     let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&mut info.np_corr[stm][WHITE as usize][white_np_idx], err, weight);
+    update_corr_entry(&mut info.np_corr[stm][WHITE as usize][white_np_idx], err, weight, cap_div);
     let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&mut info.np_corr[stm][BLACK as usize][black_np_idx], err, weight);
+    update_corr_entry(&mut info.np_corr[stm][BLACK as usize][black_np_idx], err, weight, cap_div);
 
     // Minor piece correction
     let minor_idx = (board.minor_key[WHITE as usize] ^ board.minor_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&mut info.minor_corr[stm][minor_idx], err, weight);
+    update_corr_entry(&mut info.minor_corr[stm][minor_idx], err, weight, cap_div);
 
     // Major piece correction
     let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&mut info.major_corr[stm][major_idx], err, weight);
+    update_corr_entry(&mut info.major_corr[stm][major_idx], err, weight, cap_div);
 
     // Continuation correction
     if !board.undo_stack.is_empty() {
@@ -769,7 +785,7 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
             if pt < 6 {
                 let piece = make_piece(flip_color(board.side_to_move), pt);
                 if (piece as usize) < 12 {
-                    update_corr_entry(&mut info.cont_corr[piece as usize][to as usize], err, weight);
+                    update_corr_entry(&mut info.cont_corr[piece as usize][to as usize], err, weight, cap_div);
                 }
             }
         }
