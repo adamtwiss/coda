@@ -1,7 +1,8 @@
 /// UCI protocol implementation.
 
 use std::io::{self, BufRead};
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::board::Board;
 use crate::search::*;
@@ -12,6 +13,11 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut info = SearchInfo::new(64);
     let mut stop_flag = info.stop.clone(); // keep a handle to signal stop from UCI loop
     let mut ponderhit_flag = info.ponderhit_time.clone(); // shared ponderhit time limit
+    // Separate flag set ONLY by external UCI "stop"/"ponderhit"/"quit" — distinct
+    // from info.stop (which search_smp also sets internally when main search
+    // returns). Used by the ponder wait loop below so it waits for an actual
+    // external ack rather than racing with search_smp's internal teardown.
+    let external_stop: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let mut ponder_limits: Option<SearchLimits> = None; // pending limits for ponderhit
     let mut ponder_stm: u8 = crate::types::WHITE; // side to move at ponder start
     let mut opening_book: Option<crate::book::OpeningBook> = None;
@@ -87,6 +93,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
             "ucinewgame" => {
                 // Wait for any active search to finish before clearing state
                 if let Some(handle) = search_handle.take() {
+                    external_stop.store(true, Ordering::Relaxed);
                     stop_flag.store(true, Ordering::Relaxed);
                     if let Ok(returned_info) = handle.join() {
                         info = returned_info;
@@ -107,6 +114,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
             "go" => {
                 // Wait for any pending search to finish first
                 if let Some(handle) = search_handle.take() {
+                    external_stop.store(true, Ordering::Relaxed);
                     stop_flag.store(true, Ordering::Relaxed);
                     if let Ok(returned_info) = handle.join() {
                         info = returned_info;
@@ -176,6 +184,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 // ponderhit: if ponderhit arrives between spawn and search start,
                 // the search thread must NOT overwrite it.
                 stop_flag.store(false, Ordering::Relaxed);
+                // Also clear external_stop for this new search so the ponder
+                // wait loop below correctly waits for a fresh external ack.
+                external_stop.store(false, Ordering::Relaxed);
                 ponder_search_start = Some(std::time::Instant::now());
                 let mut search_board = board.clone();
                 let shared_tt = info.tt.clone();
@@ -187,18 +198,23 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 ponderhit_flag = search_info.ponderhit_time.clone();
                 let threads = num_threads;
                 let is_ponder_search = is_ponder;
+                let ext_stop = external_stop.clone();
                 search_handle = Some(std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)
                     .spawn(move || {
                         let mut si = search_info;
                         let best_move = search_smp(&mut search_board, &mut si, &limits, threads);
-                        // In ponder mode, if search completed naturally (not stopped),
-                        // wait for stop/ponderhit before outputting bestmove.
-                        // Outputting bestmove while GUI expects pondering is a protocol violation.
-                        if is_ponder_search && !si.stop.load(std::sync::atomic::Ordering::Relaxed)
+                        // In ponder mode, if search completed naturally (not stopped
+                        // externally), wait for stop/ponderhit before outputting
+                        // bestmove. Outputting bestmove while GUI expects pondering
+                        // is a protocol violation. We watch the *external* stop flag
+                        // here — info.stop may have been set by search_smp itself
+                        // when helpers were signaled, which is an internal event,
+                        // not a GUI ack.
+                        if is_ponder_search && !ext_stop.load(std::sync::atomic::Ordering::Relaxed)
                             && si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed) == 0 {
-                            // Search hit max depth — wait for stop signal
-                            while !si.stop.load(std::sync::atomic::Ordering::Relaxed)
+                            // Search hit max depth — wait for external stop or ponderhit
+                            while !ext_stop.load(std::sync::atomic::Ordering::Relaxed)
                                 && si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed) == 0 {
                                 std::thread::sleep(std::time::Duration::from_millis(1));
                             }
@@ -219,6 +235,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     }).expect("Failed to spawn search thread"));
             }
             "stop" => {
+                // Signal external stop FIRST so the ponder wait loop (which
+                // watches external_stop) sees it before we join the handle.
+                external_stop.store(true, Ordering::Relaxed);
                 stop_flag.store(true, Ordering::Relaxed);
                 // Wait for search thread to finish and recover SearchInfo
                 if let Some(handle) = search_handle.take() {
@@ -249,6 +268,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             }
                             if tb_valid && wdl != 0 {
                                 // Stop search and play TB move
+                                external_stop.store(true, Ordering::Relaxed);
                                 stop_flag.store(true, Ordering::Relaxed);
                                 if let Some(handle) = search_handle.take() {
                                     if let Ok(returned_info) = handle.join() {
@@ -301,6 +321,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
 
                         // Very low time (< 2s with no inc): instant stop
                         if hard <= overhead && our_inc == 0 && our_time < 2000 {
+                            external_stop.store(true, Ordering::Relaxed);
                             stop_flag.store(true, Ordering::Relaxed);
                         } else {
                             let deadline = elapsed + hard.max(10);
@@ -308,16 +329,19 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         }
                     } else {
                         // No time info: instant stop
+                        external_stop.store(true, Ordering::Relaxed);
                         stop_flag.store(true, Ordering::Relaxed);
                     }
                 } else {
                     // No ponder limits saved: instant stop
+                    external_stop.store(true, Ordering::Relaxed);
                     stop_flag.store(true, Ordering::Relaxed);
                 }
             }
             "setoption" => {
                 // Wait for any active search to finish before changing options
                 if let Some(handle) = search_handle.take() {
+                    external_stop.store(true, Ordering::Relaxed);
                     stop_flag.store(true, Ordering::Relaxed);
                     if let Ok(returned_info) = handle.join() {
                         info = returned_info;
@@ -369,6 +393,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
             }
             "quit" => {
+                external_stop.store(true, Ordering::Relaxed);
                 stop_flag.store(true, Ordering::Relaxed);
                 if let Some(handle) = search_handle.take() {
                     let _ = handle.join();
