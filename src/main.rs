@@ -213,9 +213,18 @@ enum Commands {
         /// Dual L1 activation (CReLU+SCReLU concat, v8 format)
         #[arg(long)]
         dual: bool,
-        /// Use consensus king bucket layout (fine-near, coarse-far)
+        /// [LEGACY] Use consensus king bucket layout (fine-near, coarse-far).
+        /// Equivalent to --kb-layout consensus. Ignored if --kb-layout is set explicitly.
         #[arg(long)]
         consensus_buckets: bool,
+        /// King bucket layout: uniform | consensus | reckless.
+        /// Reckless implies kb-count 10; uniform/consensus default to 16.
+        #[arg(long, default_value = "")]
+        kb_layout: String,
+        /// King bucket count. Overrides the default for the chosen kb-layout
+        /// (only useful for experimental configs — normally derived from layout).
+        #[arg(long, default_value_t = 0)]
+        kb_count: usize,
         /// Number of threat features (0 = no threats, v9 format)
         #[arg(long, default_value_t = 0)]
         threats: usize,
@@ -512,11 +521,25 @@ fn main() {
             run_eval_dist(&input, count, &cli.nnue);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, threats, output_buckets }) => {
-            let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, threats)
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets }) => {
+            // Resolve king bucket layout and count. Explicit --kb-layout wins;
+            // --consensus-buckets is the legacy path for 16-bucket consensus.
+            let layout = if !kb_layout.is_empty() {
+                match bullet_convert::KbLayout::from_name(&kb_layout) {
+                    Ok(l) => l,
+                    Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+                }
+            } else if consensus_buckets {
+                bullet_convert::KbLayout::Consensus
             } else {
-                bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, consensus_buckets)
+                bullet_convert::KbLayout::Uniform
+            };
+            let count = if kb_count > 0 { kb_count } else { layout.default_count() };
+
+            let result = if hidden > 0 {
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats)
+            } else {
+                bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, layout, count)
             };
             if let Err(e) = result {
                 eprintln!("Error: {}", e);
