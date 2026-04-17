@@ -9,6 +9,11 @@ Usage:
 
     python3 ob_tune.py <branch> --params-file params.txt --iterations 2500
 
+    # Generate params from live src/search.rs defaults (preferred — avoids
+    # starting the tune from stale hand-maintained defaults):
+    python3 ob_tune.py <branch> \\
+        --params "$(python3 scripts/gen_tune_params.py)" --iterations 2500
+
 Environment variables:
     OPENBENCH_SERVER   (default: https://ob.atwiss.com)
     OPENBENCH_USERNAME (default: claude)
