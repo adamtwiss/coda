@@ -473,6 +473,23 @@ fn push_threats_for_piece(
     let diagonal_sliders = (pieces_bb[BISHOP as usize] | pieces_bb[QUEEN as usize]) & bishop_att;
     let orthogonal_sliders = (pieces_bb[ROOK as usize] | pieces_bb[QUEEN as usize]) & rook_att;
 
+    // Z-finding cull (analogous to 2b's cull). The Z-level x-ray delta
+    // inside the slider loop below needs a chain S→square→Y→Z where Y is
+    // the first occupant past `square` on the slider's ray and Z is the
+    // first occupant past Y. If NO ray from `square` has 2+ occupants,
+    // no slider on any ray can produce a Z delta — skip the whole
+    // Z-finding block and just emit the direct threat.
+    //
+    // Shared with 2b's cull below (lines ~625+): `rays_from_sq_empty`
+    // is computed once here and reused. Cost: 2 magic lookups + 4
+    // bitwise ops. Savings per skipped slider: 2 magic lookups.
+    // Break-even at 1 skipped slider.
+    let ortho_ray_mask = rook_attacks(square, 0);
+    let diag_ray_mask  = bishop_attacks(square, 0);
+    let rays_from_sq_empty = ortho_ray_mask | diag_ray_mask;
+    let past_first_region  = rays_from_sq_empty & !queen_att;
+    let do_z_finding       = (occ & past_first_region) != 0;
+
     let mut sliders = (diagonal_sliders | orthogonal_sliders) & occ;
     while sliders != 0 {
         let slider_sq = sliders.trailing_zeros();
@@ -494,49 +511,51 @@ fn push_threats_for_piece(
         // piece at `square` disappears, Z is GAINED. The Y feature is
         // unchanged in both directions.
         //
-        // The slider's direct attack on `square` itself is emitted below at
-        // line 484. This block emits only the Z-level delta.
-        let occ_with = occ | (1u64 << square);
-        let occ_without = occ & !(1u64 << square);
-        let slider_att_through = piece_attacks_occ(slider_pt, slider_color, slider_sq, occ_without);
-        let slider_att_blocked = piece_attacks_occ(slider_pt, slider_color, slider_sq, occ_with);
-        let revealed_y = slider_att_through & !slider_att_blocked & occ & queen_att;
+        // The slider's direct attack on `square` itself is emitted below.
+        // This block emits only the Z-level delta.
+        if do_z_finding {
+            let occ_with = occ | (1u64 << square);
+            let occ_without = occ & !(1u64 << square);
+            let slider_att_through = piece_attacks_occ(slider_pt, slider_color, slider_sq, occ_without);
+            let slider_att_blocked = piece_attacks_occ(slider_pt, slider_color, slider_sq, occ_with);
+            let revealed_y = slider_att_through & !slider_att_blocked & occ & queen_att;
 
-        if revealed_y != 0 {
-            let y_sq = if slider_sq < square {
-                let above = revealed_y & !((1u64 << (square + 1)) - 1);
-                if above != 0 { above.trailing_zeros() } else { 64 }
-            } else {
-                let below = revealed_y & ((1u64 << square) - 1);
-                if below != 0 { 63 - below.leading_zeros() } else { 64 }
-            };
+            if revealed_y != 0 {
+                let y_sq = if slider_sq < square {
+                    let above = revealed_y & !((1u64 << (square + 1)) - 1);
+                    if above != 0 { above.trailing_zeros() } else { 64 }
+                } else {
+                    let below = revealed_y & ((1u64 << square) - 1);
+                    if below != 0 { 63 - below.leading_zeros() } else { 64 }
+                };
 
-            if y_sq < 64 {
-                // Remove Y from occ too and look for Z behind it on the same ray.
-                // The slider→square ray direction is already enforced by the
-                // through/blocked difference — no queen_att filter here
-                // because queen_att from `square` stops at the first blocker
-                // (which is Y), so Z would be incorrectly excluded.
-                let occ_without_both = occ_without & !(1u64 << y_sq);
-                let attacks_past_y = piece_attacks_occ(slider_pt, slider_color, slider_sq, occ_without_both);
-                let revealed_z = attacks_past_y & !slider_att_through & occ_without_both;
-                if revealed_z != 0 {
-                    let z_sq = if slider_sq < square {
-                        let above = revealed_z & !((1u64 << (y_sq + 1)) - 1);
-                        if above != 0 { above.trailing_zeros() } else { 64 }
-                    } else {
-                        let below = revealed_z & ((1u64 << y_sq) - 1);
-                        if below != 0 { 63 - below.leading_zeros() } else { 64 }
-                    };
-                    if z_sq < 64 {
-                        let zpt = mailbox[z_sq as usize];
-                        if zpt < 6 {
-                            let zcolor = if white_bb & (1u64 << z_sq) != 0 { WHITE } else { BLACK };
-                            deltas.push(RawThreatDelta::new(
-                                slider_cp as u8, slider_sq as u8,
-                                colored_piece(zcolor, zpt) as u8, z_sq as u8,
-                                !add,
-                            ));
+                if y_sq < 64 {
+                    // Remove Y from occ too and look for Z behind it on the same ray.
+                    // The slider→square ray direction is already enforced by the
+                    // through/blocked difference — no queen_att filter here
+                    // because queen_att from `square` stops at the first blocker
+                    // (which is Y), so Z would be incorrectly excluded.
+                    let occ_without_both = occ_without & !(1u64 << y_sq);
+                    let attacks_past_y = piece_attacks_occ(slider_pt, slider_color, slider_sq, occ_without_both);
+                    let revealed_z = attacks_past_y & !slider_att_through & occ_without_both;
+                    if revealed_z != 0 {
+                        let z_sq = if slider_sq < square {
+                            let above = revealed_z & !((1u64 << (y_sq + 1)) - 1);
+                            if above != 0 { above.trailing_zeros() } else { 64 }
+                        } else {
+                            let below = revealed_z & ((1u64 << y_sq) - 1);
+                            if below != 0 { 63 - below.leading_zeros() } else { 64 }
+                        };
+                        if z_sq < 64 {
+                            let zpt = mailbox[z_sq as usize];
+                            if zpt < 6 {
+                                let zcolor = if white_bb & (1u64 << z_sq) != 0 { WHITE } else { BLACK };
+                                deltas.push(RawThreatDelta::new(
+                                    slider_cp as u8, slider_sq as u8,
+                                    colored_piece(zcolor, zpt) as u8, z_sq as u8,
+                                    !add,
+                                ));
+                            }
                         }
                     }
                 }
@@ -566,8 +585,9 @@ fn push_threats_for_piece(
     // has nothing to emit. Culls most endgame/quiet positions before the
     // 8-direction ray walks below (measured ~5% of total CPU before filter).
     // Skip 2b only — section 3 (non-slider attackers) must still run.
-    let ortho_ray_mask   = rook_attacks(square, 0);
-    let diag_ray_mask    = bishop_attacks(square, 0);
+    //
+    // `ortho_ray_mask` and `diag_ray_mask` are computed above (section 2's
+    // Z-finding cull) — reused here to avoid two magic bitboard lookups.
     let ortho_sliders = (pieces_bb[ROOK as usize] | pieces_bb[QUEEN as usize]) & ortho_ray_mask;
     let diag_sliders  = (pieces_bb[BISHOP as usize] | pieces_bb[QUEEN as usize]) & diag_ray_mask;
     let do_2b = ortho_sliders != 0 || diag_sliders != 0;
@@ -1443,5 +1463,95 @@ mod tests {
 
         // Sanity: should complete in reasonable time
         assert!(elapsed.as_secs() < 10, "Benchmark took too long: {:?}", elapsed);
+    }
+
+    /// Section 2 Z-finding cull: regression guard.
+    ///
+    /// The cull skips the Z-level x-ray delta block when no ray from
+    /// `square` has 2+ occupants. These tests pin down the semantics:
+    /// (a) an endgame with 0/1 occupants per ray must produce the same
+    ///     delta list as a no-cull reference (trivially, since the cull's
+    ///     "skipped" branch produces no Z deltas and the Z block also
+    ///     short-circuits at `revealed_y == 0` / `revealed_z == 0`).
+    /// (b) a position with a genuine Z-chain (S → square → Y → Z) MUST
+    ///     emit the Z delta — the cull must NOT fire.
+    ///
+    /// The primary correctness net is `threat_accum::fuzz_random_games`
+    /// which plays thousands of random moves and compares incremental vs
+    /// refresh. These targeted tests pin the specific cull boundary.
+    #[test]
+    fn test_z_finding_cull_endgame_no_z() {
+        crate::init();
+        // KP endgame: two kings, one pawn. No sliders means Z-finding
+        // doesn't even enter the slider loop, but this exercises the
+        // pre-check bitboard shape (rays_from_sq_empty, past_first_region)
+        // on a real position.
+        let b = crate::board::Board::from_fen("4k3/8/8/8/8/4P3/8/4K3 w - - 0 1");
+        let mut deltas: Vec<RawThreatDelta> = Vec::new();
+        // Enumerate on the pawn's square (e3 = 20). With no sliders,
+        // section 2 has nothing to emit regardless of cull state.
+        push_threats_for_piece(
+            &mut deltas,
+            &b.pieces, &b.colors, &b.mailbox,
+            b.occupied(), b.colors[WHITE as usize],
+            colored_piece(WHITE, PAWN), WHITE, PAWN,
+            20, true,
+        );
+        // No sliders in this position, no slider → square threats.
+        // Pawn attacks nothing (e3 attacks d4/f4, both empty).
+        // Nothing in sections 1/2/3 applies meaningfully.
+        // The key assertion is we don't panic / produce a sane output.
+        for d in &deltas {
+            assert!(d.from_sq() < 64);
+            assert!(d.to_sq() < 64);
+        }
+    }
+
+    #[test]
+    fn test_z_finding_cull_has_z_chain() {
+        crate::init();
+        // A position with a genuine slider → square → Y → Z chain:
+        //   R on a1, pawn on a4 (Y), pawn on a6 (Z), enumerate on a2 (square).
+        // Slider (R@a1) sees a2 (direct threat). Y = a4 (first past a2 on
+        // rank-file going up). Z = a6 (first past Y). The Z delta MUST
+        // be emitted when push_threats_for_piece is called for the piece
+        // at a2 appearing (or disappearing).
+        //
+        // Use a white knight on a2 as the subject (so we trigger a real
+        // section 2 walk; any piece works since section 2 is about
+        // sliders seeing `square`).
+        let b = crate::board::Board::from_fen("4k3/8/P7/8/P7/8/N7/R3K3 w - - 0 1");
+        let mut deltas: Vec<RawThreatDelta> = Vec::new();
+        push_threats_for_piece(
+            &mut deltas,
+            &b.pieces, &b.colors, &b.mailbox,
+            b.occupied(), b.colors[WHITE as usize],
+            colored_piece(WHITE, KNIGHT), WHITE, KNIGHT,
+            8, true,  // a2 = 8
+        );
+
+        // Expect: section 2 emits slider R@a1 → N@a2 direct threat.
+        // AND: the Z-level delta for (R@a1, pawn@a6) is emitted (the
+        // x-ray target that flips when a2 gets a piece).
+        //
+        // Sanity check: the rook at a1 should appear as an attacker to
+        // a2 in the emitted deltas.
+        let r = colored_piece(WHITE, ROOK) as u8;
+        let has_r_to_a2 = deltas.iter().any(|d| {
+            d.attacker_cp() == r && d.from_sq() == 0 && d.to_sq() == 8
+        });
+        assert!(has_r_to_a2, "expected R@a1 → square a2 direct threat in deltas");
+
+        // The Z-chain: rook's Y is a4 (sq 24), Z is a6 (sq 40).
+        // The Z delta is a rook-to-a6 entry with `add = !true = false`
+        // (because the piece at square is "appearing", Z is "lost").
+        let has_r_to_a6 = deltas.iter().any(|d| {
+            d.attacker_cp() == r && d.from_sq() == 0 && d.to_sq() == 40
+        });
+        assert!(has_r_to_a6,
+            "expected Z-level delta (R@a1 → pawn@a6) — Z-finding cull must NOT fire here.\n\
+             deltas: {:?}",
+            deltas.iter().map(|d| (d.attacker_cp(), d.from_sq(), d.victim_cp(), d.to_sq(), d.add())).collect::<Vec<_>>()
+        );
     }
 }
