@@ -528,22 +528,68 @@ mod incremental_tests {
     #[test]
     fn slider_captures_then_moves_away() {
         // Multi-move scenario: capture then retreat. Exercises back-to-back
-        // delta application.
+        // delta application. The BN on a7 is pinned against BK on a8 once
+        // the rook lands on a4, so use a black pawn move between the two
+        // white moves to test incremental survival across a black move.
         run_scenario(
             "capture_then_retreat",
-            "k7/n7/8/8/p7/8/8/R3K3 w Q - 0 1",
-            &["a1a4", "a7b5", "a4a1"],
+            "k7/n5p1/8/8/p7/8/8/R3K3 w Q - 0 1",
+            &["a1a4", "g7g6", "a4a1"],
         );
     }
 
     #[test]
     fn kiwipete_tactical_sequence() {
-        // Rich middlegame with many sliders and captures. The sequence below
-        // includes Nxe5 (knight captures a central pawn), opening slider lines.
+        // Rich middlegame with many sliders and captures.
+        // e5g6: Nxg6 (captures BP). f7g6: black pawn recapture.
         run_scenario(
             "kiwipete",
             "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-            &["e5g6", "h7g6", "e2f1", "c7c6", "d5c6"],
+            &["e5g6", "f7g6", "e2f1", "c7c6", "d5c6"],
+        );
+    }
+
+    #[test]
+    fn en_passant_capture() {
+        // EP captures remove a piece from a square other than the move's `to`.
+        // Tests push_threats_on_change for EP cap_sq + push_threats_on_move for pawn.
+        run_scenario(
+            "ep_capture",
+            "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
+            &["e5f6"],  // exf6 en passant
+        );
+    }
+
+    #[test]
+    fn castling_kingside() {
+        // Castle moves both king and rook — tests back-to-back deltas
+        // plus per-perspective king-file-mirror change.
+        run_scenario(
+            "castle_ks",
+            "r3k2r/pppqppbp/2np1np1/4P3/2B5/2NQ1N2/PPP2PPP/R1B1K2R w KQkq - 0 1",
+            &["e1g1"],  // O-O
+        );
+    }
+
+    #[test]
+    fn slider_move_reveals_x_ray_for_other_slider() {
+        // WQ on d1, WR on d2 blocking. WR moves to d5 — WQ's rank/file view
+        // shifts: gains direct d-file targets, loses the blocker.
+        run_scenario(
+            "slider_move_reveals_xray",
+            "4k3/8/8/3r4/8/8/3R4/3QK3 w - - 0 1",
+            &["d2d4"],
+        );
+    }
+
+    #[test]
+    fn chain_of_captures() {
+        // Back-to-back captures — pawn trades leaving the incremental
+        // state to absorb multiple small deltas in sequence.
+        run_scenario(
+            "chain_captures",
+            "4k3/8/3p4/4p3/3P4/2N5/8/4K3 w - - 0 1",
+            &["d4e5", "d6e5", "c3e4", "e8d8"],
         );
     }
 
@@ -568,6 +614,286 @@ mod incremental_tests {
         let row0 = &w[0..H];
         let row1 = &w[H..2 * H];
         assert_ne!(row0, row1, "weight pattern collides between features");
+    }
+
+    /// Diagnostic: print the multiset symmetric diff between the
+    /// incremental-applied feature indices and the refresh-enumerated
+    /// indices for a single move. Not a pass/fail test — run with
+    /// `cargo test dump_diff -- --nocapture` to inspect.
+    #[test]
+    #[ignore]
+    fn dump_diff_b8c6_quiet_knight() {
+        crate::init();
+        let nf = num_threat_features();
+        let mut board = Board::new();
+        // Position after 1.e4 e5 — white to move, then black plays Nc6 on next ply.
+        // Set up mid-game FEN so it's black-to-move playing b8c6 immediately.
+        board.set_fen("rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2");
+        board.generate_threat_deltas = true;
+
+        // Multiset diff, same structure as dump_diff_rook_capture_with_xray but parametric on pov.
+        for pov in [WHITE, BLACK] {
+            let mut pre: Vec<usize> = Vec::new();
+            {
+                let occ = board.colors[0] | board.colors[1];
+                let k = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
+                crate::threats::enumerate_threats(
+                    &board.pieces, &board.colors, &board.mailbox,
+                    occ, pov, (k % 8) >= 4,
+                    |idx| if idx < nf { pre.push(idx) },
+                );
+            }
+            eprintln!("[pov={}] pre count={}", if pov == WHITE { "W" } else { "B" }, pre.len());
+        }
+
+        let mv = parse_uci(&board, "b8c6");
+        board.make_move(mv);
+
+        for pov in [WHITE, BLACK] {
+            let mut post: Vec<usize> = Vec::new();
+            {
+                let occ = board.colors[0] | board.colors[1];
+                let k = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
+                crate::threats::enumerate_threats(
+                    &board.pieces, &board.colors, &board.mailbox,
+                    occ, pov, (k % 8) >= 4,
+                    |idx| if idx < nf { post.push(idx) },
+                );
+            }
+
+            let k = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
+            let mirrored = (k % 8) >= 4;
+
+            let mut actual_adds: Vec<usize> = Vec::new();
+            let mut actual_subs: Vec<usize> = Vec::new();
+            for d in board.threat_deltas.iter() {
+                let idx = crate::threats::threat_index(
+                    d.attacker_cp() as usize, d.from_sq() as u32,
+                    d.victim_cp() as usize, d.to_sq() as u32,
+                    mirrored, pov,
+                );
+                if idx < 0 || (idx as usize) >= nf { continue; }
+                if d.add() { actual_adds.push(idx as usize); }
+                else { actual_subs.push(idx as usize); }
+            }
+
+            // Rebuild pre from the delta'd post to expose divergence.
+            // expected_pre = post - adds + subs (treat as multiset)
+            // For a matching path: expected_pre == pre.
+            let mut reconstructed = post.clone();
+            for a in &actual_adds {
+                if let Some(p) = reconstructed.iter().position(|x| x == a) {
+                    reconstructed.swap_remove(p);
+                }
+            }
+            reconstructed.extend(actual_subs.iter());
+
+            // Sort both for comparison.
+            let mut pre: Vec<usize> = Vec::new();
+            {
+                // recompute pre via a pre-state snapshot via UNDO — but our board
+                // already applied the move. Recompute using full pre-move FEN.
+                let mut pre_board = Board::new();
+                pre_board.set_fen("rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2");
+                let occ = pre_board.colors[0] | pre_board.colors[1];
+                let k0 = (pre_board.pieces[KING as usize] & pre_board.colors[pov as usize]).trailing_zeros();
+                crate::threats::enumerate_threats(
+                    &pre_board.pieces, &pre_board.colors, &pre_board.mailbox,
+                    occ, pov, (k0 % 8) >= 4,
+                    |idx| if idx < nf { pre.push(idx) },
+                );
+            }
+
+            let mut pre_sorted = pre.clone(); pre_sorted.sort();
+            let mut recon_sorted = reconstructed.clone(); recon_sorted.sort();
+
+            let missing: Vec<usize> = pre_sorted.iter().filter(|x| !recon_sorted.contains(x)).cloned().collect();
+            let extra: Vec<usize> = recon_sorted.iter().filter(|x| !pre_sorted.contains(x)).cloned().collect();
+            eprintln!("[pov={}] pre={} post={} adds={} subs={} missing_from_recon={:?} extra_in_recon={:?}",
+                if pov == WHITE { "W" } else { "B" }, pre.len(), post.len(), actual_adds.len(), actual_subs.len(), missing, extra);
+            if !missing.is_empty() || !extra.is_empty() {
+                // Enumerate post-state tuples that map to the extra index.
+                let extra_set = extra.clone();
+                eprintln!("  tuples in post that hit each 'extra' index:");
+                let occ_post = board.colors[0] | board.colors[1];
+                let mailbox_post = &board.mailbox;
+                let white_bb = board.colors[0];
+                let pieces_bb = &board.pieces;
+                for extra_idx in &extra_set {
+                    for color in [0u8, 1u8] {
+                        for pt in 0..6u8 {
+                            let mut bb = pieces_bb[pt as usize] & board.colors[color as usize];
+                            while bb != 0 {
+                                let sq = bb.trailing_zeros();
+                                bb &= bb - 1;
+                                let cp_a = crate::threats::colored_piece(color, pt);
+                                let atts = crate::threats::piece_attacks_occ(pt, color, sq, occ_post) & occ_post;
+                                let mut t = atts;
+                                while t != 0 {
+                                    let tsq = t.trailing_zeros();
+                                    t &= t - 1;
+                                    let vpt = mailbox_post[tsq as usize];
+                                    if vpt >= 6 { continue; }
+                                    let vcol = if white_bb & (1u64 << tsq) != 0 { 0 } else { 1 };
+                                    let cp_v = crate::threats::colored_piece(vcol, vpt);
+                                    let i = crate::threats::threat_index(
+                                        cp_a, sq, cp_v, tsq as u32, mirrored, pov,
+                                    );
+                                    if i as usize == *extra_idx {
+                                        eprintln!("    idx={} direct {}@{} -> {}@{}", i, cp_a, sq, cp_v, tsq);
+                                    }
+                                }
+                                // x-ray
+                                if pt == BISHOP || pt == ROOK || pt == QUEEN {
+                                    let mut dt = atts;
+                                    while dt != 0 {
+                                        let bsq = dt.trailing_zeros();
+                                        dt &= dt - 1;
+                                        let ow = occ_post & !(1u64 << bsq);
+                                        let through = crate::threats::piece_attacks_occ(pt, color, sq, ow);
+                                        let revealed = through & !atts & ow;
+                                        if revealed == 0 { continue; }
+                                        let xsq = if sq < bsq {
+                                            let a = revealed & !((1u64 << (bsq + 1)) - 1);
+                                            if a != 0 { a.trailing_zeros() } else { 64 }
+                                        } else {
+                                            let b = revealed & ((1u64 << bsq) - 1);
+                                            if b != 0 { 63 - b.leading_zeros() } else { 64 }
+                                        };
+                                        if xsq < 64 {
+                                            let xpt = mailbox_post[xsq as usize];
+                                            if xpt < 6 {
+                                                let xcol = if white_bb & (1u64 << xsq) != 0 { 0 } else { 1 };
+                                                let cp_x = crate::threats::colored_piece(xcol, xpt);
+                                                let i = crate::threats::threat_index(
+                                                    cp_a, sq, cp_x, xsq, mirrored, pov,
+                                                );
+                                                if i as usize == *extra_idx {
+                                                    eprintln!("    idx={} xray  {}@{} -> {}@{}", i, cp_a, sq, cp_x, xsq);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                eprintln!("  raw deltas (idx = threat_index for this pov):");
+                for d in board.threat_deltas.iter() {
+                    let idx = crate::threats::threat_index(
+                        d.attacker_cp() as usize, d.from_sq() as u32,
+                        d.victim_cp() as usize, d.to_sq() as u32,
+                        mirrored, pov,
+                    );
+                    eprintln!("    a_cp={} from={} v_cp={} to={} add={} idx={}",
+                        d.attacker_cp(), d.from_sq(), d.victim_cp(), d.to_sq(), d.add(), idx);
+                }
+                // Dump pre and post multisets too (sorted).
+                let mut pre_sorted2 = pre.clone(); pre_sorted2.sort();
+                let mut post_sorted = post.clone(); post_sorted.sort();
+                eprintln!("  pre : {:?}", pre_sorted2);
+                eprintln!("  post: {:?}", post_sorted);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn dump_diff_rook_capture_with_xray() {
+        crate::init();
+        let nf = num_threat_features();
+        let mut board = Board::new();
+        board.set_fen("k7/n7/8/8/p7/8/8/R3K3 w Q - 0 1");
+        board.generate_threat_deltas = true;
+
+        // Baseline multiset: enumerate_threats at position BEFORE move.
+        let mut pre_indices_w: Vec<usize> = Vec::new();
+        {
+            let occ = board.colors[0] | board.colors[1];
+            let wk = (board.pieces[KING as usize] & board.colors[0]).trailing_zeros();
+            crate::threats::enumerate_threats(
+                &board.pieces, &board.colors, &board.mailbox,
+                occ, WHITE, (wk % 8) >= 4,
+                |idx| if idx < nf { pre_indices_w.push(idx) },
+            );
+        }
+
+        let mv = parse_uci(&board, "a1a4");
+        board.make_move(mv);
+
+        // Refresh multiset at post-move position.
+        let mut post_indices_w: Vec<usize> = Vec::new();
+        {
+            let occ = board.colors[0] | board.colors[1];
+            let wk = (board.pieces[KING as usize] & board.colors[0]).trailing_zeros();
+            crate::threats::enumerate_threats(
+                &board.pieces, &board.colors, &board.mailbox,
+                occ, WHITE, (wk % 8) >= 4,
+                |idx| if idx < nf { post_indices_w.push(idx) },
+            );
+        }
+
+        // Expected delta multiset: (post - pre)_add, (pre - post)_sub.
+        let mut expected_adds = post_indices_w.clone();
+        let mut expected_subs = pre_indices_w.clone();
+        // Remove intersection to get the symmetric difference (net change).
+        for i in (0..expected_adds.len()).rev() {
+            if let Some(p) = expected_subs.iter().position(|&x| x == expected_adds[i]) {
+                expected_subs.swap_remove(p);
+                expected_adds.swap_remove(i);
+            }
+        }
+        expected_adds.sort();
+        expected_subs.sort();
+
+        // Incremental multiset: walk board.threat_deltas through threat_index.
+        let wk = (board.pieces[KING as usize] & board.colors[0]).trailing_zeros();
+        let mirrored = (wk % 8) >= 4;
+        let mut actual_adds: Vec<usize> = Vec::new();
+        let mut actual_subs: Vec<usize> = Vec::new();
+        for d in board.threat_deltas.iter() {
+            let idx = crate::threats::threat_index(
+                d.attacker_cp() as usize, d.from_sq() as u32,
+                d.victim_cp() as usize, d.to_sq() as u32,
+                mirrored, WHITE,
+            );
+            if idx < 0 || (idx as usize) >= nf { continue; }
+            if d.add() { actual_adds.push(idx as usize); }
+            else { actual_subs.push(idx as usize); }
+        }
+        // Net out the actual delta too (incremental deltas can include
+        // add+sub pairs for the same feature that cancel out).
+        for i in (0..actual_adds.len()).rev() {
+            if let Some(p) = actual_subs.iter().position(|&x| x == actual_adds[i]) {
+                actual_subs.swap_remove(p);
+                actual_adds.swap_remove(i);
+            }
+        }
+        actual_adds.sort();
+        actual_subs.sort();
+
+        eprintln!("=== Rxa4 (a1→a4 capture, knight on a7 behind) WHITE pov ===");
+        eprintln!("expected_adds (post - pre): {:?}", expected_adds);
+        eprintln!("expected_subs (pre - post): {:?}", expected_subs);
+        eprintln!("actual_adds   (from deltas): {:?}", actual_adds);
+        eprintln!("actual_subs   (from deltas): {:?}", actual_subs);
+
+        let missing_adds: Vec<_> = expected_adds.iter().filter(|i| !actual_adds.contains(i)).collect();
+        let extra_adds: Vec<_> = actual_adds.iter().filter(|i| !expected_adds.contains(i)).collect();
+        let missing_subs: Vec<_> = expected_subs.iter().filter(|i| !actual_subs.contains(i)).collect();
+        let extra_subs: Vec<_> = actual_subs.iter().filter(|i| !expected_subs.contains(i)).collect();
+        eprintln!("missing adds (expected but not emitted): {:?}", missing_adds);
+        eprintln!("extra   adds (emitted but not expected): {:?}", extra_adds);
+        eprintln!("missing subs (expected but not emitted): {:?}", missing_subs);
+        eprintln!("extra   subs (emitted but not expected): {:?}", extra_subs);
+
+        // Print raw deltas too.
+        eprintln!("raw deltas:");
+        for d in board.threat_deltas.iter() {
+            eprintln!("  attacker_cp={} from={} victim_cp={} to={} add={}",
+                d.attacker_cp(), d.from_sq(), d.victim_cp(), d.to_sq(), d.add());
+        }
     }
 
     /// Ensure RawThreatDelta round-trips — if this breaks the whole

@@ -267,7 +267,7 @@ pub fn enumerate_threats<F: FnMut(usize)>(
                 // Compute attacks for this piece (with occupancy for sliders)
                 let attacks = piece_attacks_occ(pt, color, sq, occ);
 
-                // Find attacked occupied squares
+                // Find attacked occupied squares (direct threats)
                 let mut attacked_occ = attacks & occ;
                 while attacked_occ != 0 {
                     let target_sq = attacked_occ.trailing_zeros();
@@ -281,6 +281,49 @@ pub fn enumerate_threats<F: FnMut(usize)>(
                     let idx = threat_index(cp, sq, victim_cp, target_sq, mirrored, pov);
                     if idx >= 0 {
                         callback(idx as usize);
+                    }
+                }
+
+                // X-ray threats: for sliders, find the second piece on each ray
+                // (the piece behind the directly attacked piece). Matches Bullet
+                // training enumeration at ebdf398.
+                if pt == BISHOP || pt == ROOK || pt == QUEEN {
+                    // Check each ray direction using attack comparison
+                    // For each directly attacked piece, see if removing it reveals another
+                    let mut direct_targets = attacks & occ;
+                    while direct_targets != 0 {
+                        let blocker_sq = direct_targets.trailing_zeros();
+                        direct_targets &= direct_targets - 1;
+
+                        // Compute slider attacks without the blocking piece
+                        let occ_without = occ & !(1u64 << blocker_sq);
+                        let attacks_through = piece_attacks_occ(pt, color, sq, occ_without);
+
+                        // Newly revealed squares: attacked without blocker but not with
+                        let revealed = attacks_through & !attacks & occ_without;
+                        if revealed == 0 { continue; }
+
+                        // Take the closest revealed piece on the ray
+                        // Direction: if slider < blocker, xray is above blocker
+                        let xray_sq = if sq < blocker_sq {
+                            let above = revealed & !((1u64 << (blocker_sq + 1)) - 1);
+                            if above != 0 { above.trailing_zeros() } else { 64 }
+                        } else {
+                            let below = revealed & ((1u64 << blocker_sq) - 1);
+                            if below != 0 { 63 - below.leading_zeros() } else { 64 }
+                        };
+
+                        if xray_sq < 64 {
+                            let xpt = mailbox[xray_sq as usize];
+                            if xpt < 6 {
+                                let xcolor = if white_bb & (1u64 << xray_sq) != 0 { WHITE } else { BLACK };
+                                let xcp = colored_piece(xcolor, xpt);
+                                let idx = threat_index(cp, sq, xcp, xray_sq, mirrored, pov);
+                                if idx >= 0 {
+                                    callback(idx as usize);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -388,6 +431,39 @@ fn push_threats_for_piece(
         deltas.push(RawThreatDelta::new(cp as u8, square as u8, colored_piece(victim_color, victim_pt) as u8, target_sq as u8, add));
     }
 
+    // 1b. X-ray threats FROM this piece, if it's a slider. Mirrors the
+    // x-ray branch in enumerate_threats: for each direct target, find
+    // the piece one step past it on the same ray.
+    if piece_type == BISHOP || piece_type == ROOK || piece_type == QUEEN {
+        let mut direct_targets = my_attacks & occ;
+        while direct_targets != 0 {
+            let blocker_sq = direct_targets.trailing_zeros();
+            direct_targets &= direct_targets - 1;
+
+            let occ_without_blocker = occ & !(1u64 << blocker_sq);
+            let attacks_through =
+                piece_attacks_occ(piece_type, piece_color, square, occ_without_blocker);
+            let revealed = attacks_through & !my_attacks & occ_without_blocker;
+            if revealed == 0 { continue; }
+
+            let xray_sq = if square < blocker_sq {
+                let above = revealed & !((1u64 << (blocker_sq + 1)) - 1);
+                if above != 0 { above.trailing_zeros() } else { 64 }
+            } else {
+                let below = revealed & ((1u64 << blocker_sq) - 1);
+                if below != 0 { 63 - below.leading_zeros() } else { 64 }
+            };
+            if xray_sq >= 64 { continue; }
+            let xpt = mailbox[xray_sq as usize];
+            if xpt >= 6 { continue; }
+            let xcolor = if white_bb & (1u64 << xray_sq) != 0 { WHITE } else { BLACK };
+            deltas.push(RawThreatDelta::new(
+                cp as u8, square as u8,
+                colored_piece(xcolor, xpt) as u8, xray_sq as u8, add,
+            ));
+        }
+    }
+
     // 2. Sliding pieces that see this square (Reckless pattern)
     // Compute rook/bishop attacks FROM this square to find which sliders can reach it
     let rook_att = rook_attacks(square, occ);
@@ -406,39 +482,169 @@ fn push_threats_for_piece(
         let slider_color = if white_bb & (1u64 << slider_sq) != 0 { WHITE } else { BLACK };
         let slider_cp = colored_piece(slider_color, slider_pt);
 
-        // X-ray: compare slider's attacks WITH vs WITHOUT piece on this square.
-        // occ may or may not include the piece at `square` (depends on transit state),
-        // so always explicitly construct both cases.
+        // X-ray book-keeping when the piece at `square` appears/disappears:
+        //
+        //   Let Y = first piece past `square` on the slider's ray.
+        //   Let Z = piece past Y on the same ray (if any).
+        //
+        // When the piece at `square` appears, the slider's feature for Y is
+        // unchanged — was a direct threat, becomes an x-ray to the same index.
+        // The slider's feature for Z (previously x-ray through Y) is LOST
+        // because x-ray depth is only 1 past the first blocker. When the
+        // piece at `square` disappears, Z is GAINED. The Y feature is
+        // unchanged in both directions.
+        //
+        // The slider's direct attack on `square` itself is emitted below at
+        // line 484. This block emits only the Z-level delta.
         let occ_with = occ | (1u64 << square);
         let occ_without = occ & !(1u64 << square);
         let slider_att_through = piece_attacks_occ(slider_pt, slider_color, slider_sq, occ_without);
         let slider_att_blocked = piece_attacks_occ(slider_pt, slider_color, slider_sq, occ_with);
-        let revealed = slider_att_through & !slider_att_blocked & occ & queen_att;
+        let revealed_y = slider_att_through & !slider_att_blocked & occ & queen_att;
 
-        if revealed != 0 {
-            // Take the first revealed piece (closest on the ray)
-            // Use the ray direction: if slider < square, revealed pieces are > square
-            let xray_sq = if slider_sq < square {
-                // Ray goes upward, take lowest revealed square above `square`
-                let above = revealed & !((1u64 << (square + 1)) - 1);
+        if revealed_y != 0 {
+            let y_sq = if slider_sq < square {
+                let above = revealed_y & !((1u64 << (square + 1)) - 1);
                 if above != 0 { above.trailing_zeros() } else { 64 }
             } else {
-                // Ray goes downward, take highest revealed square below `square`
-                let below = revealed & ((1u64 << square) - 1);
+                let below = revealed_y & ((1u64 << square) - 1);
                 if below != 0 { 63 - below.leading_zeros() } else { 64 }
             };
 
-            if xray_sq < 64 {
-                let xpt = mailbox[xray_sq as usize];
-                if xpt < 6 {
-                    let xcolor = if white_bb & (1u64 << xray_sq) != 0 { WHITE } else { BLACK };
-                    deltas.push(RawThreatDelta::new(slider_cp as u8, slider_sq as u8, colored_piece(xcolor, xpt) as u8, xray_sq as u8, !add));
+            if y_sq < 64 {
+                // Remove Y from occ too and look for Z behind it on the same ray.
+                // The slider→square ray direction is already enforced by the
+                // through/blocked difference — no queen_att filter here
+                // because queen_att from `square` stops at the first blocker
+                // (which is Y), so Z would be incorrectly excluded.
+                let occ_without_both = occ_without & !(1u64 << y_sq);
+                let attacks_past_y = piece_attacks_occ(slider_pt, slider_color, slider_sq, occ_without_both);
+                let revealed_z = attacks_past_y & !slider_att_through & occ_without_both;
+                if revealed_z != 0 {
+                    let z_sq = if slider_sq < square {
+                        let above = revealed_z & !((1u64 << (y_sq + 1)) - 1);
+                        if above != 0 { above.trailing_zeros() } else { 64 }
+                    } else {
+                        let below = revealed_z & ((1u64 << y_sq) - 1);
+                        if below != 0 { 63 - below.leading_zeros() } else { 64 }
+                    };
+                    if z_sq < 64 {
+                        let zpt = mailbox[z_sq as usize];
+                        if zpt < 6 {
+                            let zcolor = if white_bb & (1u64 << z_sq) != 0 { WHITE } else { BLACK };
+                            deltas.push(RawThreatDelta::new(
+                                slider_cp as u8, slider_sq as u8,
+                                colored_piece(zcolor, zpt) as u8, z_sq as u8,
+                                !add,
+                            ));
+                        }
+                    }
                 }
             }
         }
 
         // The slider itself attacks/no longer attacks this square
         deltas.push(RawThreatDelta::new(slider_cp as u8, slider_sq as u8, cp as u8, square as u8, add));
+    }
+
+    // 2b. Sliders whose X-RAY target is `square` (through one blocker Y
+    // between the slider and `square`). When the piece at `square`
+    // appears/disappears, such a slider's x-ray feature changes from
+    // (S, Y) direct + (S, sq) x-ray ↔ (S, Y) direct + (S, next_past_sq) x-ray.
+    //
+    // The (S, Y) direct feature is unchanged. The (S, cp, sq) x-ray
+    // feature appears/disappears with `add`. Any piece beyond sq on the
+    // same ray that was/would-be the x-ray target in the other state is
+    // handled separately — only the sq-itself delta goes here.
+    //
+    // Walking 8 rays from `square` finds Y (first blocker) and S (second
+    // blocker). If S is the right kind of slider for that ray direction,
+    // emit a (S, cp, sq) delta with `add`.
+    //
+    // Build occ_for_rays with sq treated as empty — so ray walks from
+    // sq's neighbours don't hit sq itself as Y.
+    let occ_rays = occ & !(1u64 << square);
+    let file = (square % 8) as i32;
+    let rank = (square / 8) as i32;
+
+    // (df, dr, is_orthogonal)
+    const DIRS: [(i32, i32, bool); 8] = [
+        ( 1,  0, true),  (-1,  0, true),
+        ( 0,  1, true),  ( 0, -1, true),
+        ( 1,  1, false), ( 1, -1, false),
+        (-1,  1, false), (-1, -1, false),
+    ];
+
+    for &(df, dr, ortho) in DIRS.iter() {
+        // Walk in direction (df, dr) from sq until first occupied square = Y.
+        let mut f = file + df;
+        let mut r = rank + dr;
+        let mut y_sq: i32 = -1;
+        while (0..8).contains(&f) && (0..8).contains(&r) {
+            let s = (r * 8 + f) as u32;
+            if occ_rays & (1u64 << s) != 0 {
+                y_sq = s as i32;
+                break;
+            }
+            f += df; r += dr;
+        }
+        if y_sq < 0 { continue; }
+
+        // Continue past Y to find S.
+        f += df; r += dr;
+        let mut s_sq: i32 = -1;
+        while (0..8).contains(&f) && (0..8).contains(&r) {
+            let s = (r * 8 + f) as u32;
+            if occ_rays & (1u64 << s) != 0 {
+                s_sq = s as i32;
+                break;
+            }
+            f += df; r += dr;
+        }
+        if s_sq < 0 { continue; }
+
+        let s_pt = mailbox[s_sq as usize];
+        if s_pt >= 6 { continue; }
+        let is_slider_match = if ortho {
+            s_pt == ROOK || s_pt == QUEEN
+        } else {
+            s_pt == BISHOP || s_pt == QUEEN
+        };
+        if !is_slider_match { continue; }
+
+        let s_color = if white_bb & (1u64 << s_sq) != 0 { WHITE } else { BLACK };
+        let s_cp = colored_piece(s_color, s_pt);
+        // (S, cp_at_sq, sq) x-ray feature appears/disappears with `add`.
+        deltas.push(RawThreatDelta::new(
+            s_cp as u8, s_sq as u8, cp as u8, square as u8, add,
+        ));
+
+        // The other side of the delta: when the piece at sq changes, S's
+        // x-ray through Y flips between sq and W (first piece past sq on
+        // the ray from S, continuing in direction (-df, -dr) from sq).
+        // If cp disappears, x-ray becomes W (add). If cp appears, x-ray
+        // was W and becomes cp (sub W).
+        let mut wf = file - df;
+        let mut wr = rank - dr;
+        let mut w_sq: i32 = -1;
+        while (0..8).contains(&wf) && (0..8).contains(&wr) {
+            let s = (wr * 8 + wf) as u32;
+            if occ_rays & (1u64 << s) != 0 {
+                w_sq = s as i32;
+                break;
+            }
+            wf -= df; wr -= dr;
+        }
+        if w_sq >= 0 {
+            let w_pt = mailbox[w_sq as usize];
+            if w_pt < 6 {
+                let w_color = if white_bb & (1u64 << w_sq) != 0 { WHITE } else { BLACK };
+                let w_cp = colored_piece(w_color, w_pt);
+                deltas.push(RawThreatDelta::new(
+                    s_cp as u8, s_sq as u8, w_cp as u8, w_sq as u8, !add,
+                ));
+            }
+        }
     }
 
     // 3. Non-sliding pieces that attack this square
