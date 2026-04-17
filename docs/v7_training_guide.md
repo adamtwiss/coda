@@ -327,13 +327,19 @@ w15 net (`net-v9-768th16x32-w15-e200s200-xray-fixed`, `57A1D192`).
 
 **NPS findings (2026-04-16):**
 
-- v9 NPS (545K) is at **parity with Reckless single-threaded** (~550K).
-  Reckless's 960K bench includes ~2 threads (confirmed via perf).
-- The ~2.8× gap from v5 (1535K) is fundamental threat overhead: 18KB memory
-  traffic per eval for threat accumulator updates.
-- PGO doesn't help v9 (10% regression — investigated, not binary size).
-- Optimizations applied: +17% from SIMD refresh, packed deltas, register blocking.
-- See `docs/v9_nps_optimization_plan.md` for full profiling results.
+- v9 NPS (~485K post-xray-fix, post-2b-cull) vs Reckless ~960K single-thread.
+  Real ~2× gap, not a threading artefact.
+- The gap from v5 (1535K) includes fundamental threat overhead: 18KB memory
+  traffic per eval for threat accumulator updates, plus ~17.6% NPS cost from
+  x-ray enumeration (confirmed via disable-xray bench A/B).
+- **PGO regresses v9 by ~10%** (investigation 2026-04-17). Not binary size,
+  not net-mismatch — PGO's instrument-bench captures a counter-burdened hot
+  path where small SIMD functions dominate, and the resulting inlining
+  decisions over-bloat push_threats_for_piece and friends. Use `make openbench`
+  on the threat branch; `make pgo` is on main-branch only. See Makefile.
+- Optimizations applied: +17% from SIMD refresh, packed deltas, register
+  blocking, + ~2.7% from section 2b cull (2026-04-17).
+- See `docs/v9_nps_optimization_plan.md` and `docs/v9_nps_profile_2026-04-17.md`.
 
 **Search findings with v9 eval:**
 

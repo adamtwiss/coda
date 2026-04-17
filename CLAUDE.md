@@ -14,7 +14,7 @@ rustup component add llvm-tools-preview
 
 ```bash
 make                                             # Build with native CPU optimizations
-make pgo                                         # PGO-optimized build (~3-5% faster NPS)
+make pgo                                         # PGO-optimized build (~3-5% faster v5 on main; regresses v9 — see Makefile)
 make net                                         # Download production NNUE net
 make openbench                                   # OpenBench-compatible build
 cargo build --release                            # Plain release build (no embedded net)
