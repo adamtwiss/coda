@@ -3845,7 +3845,23 @@ mod tests {
     }
 
     /// Helper: find and load any available v9 net for eval tests.
+    ///
+    /// Override via `CODA_TEST_NET=<path>` env var to target a specific net —
+    /// essential for validating new/untested inference paths (e.g. Reckless
+    /// 10-KB layout) against the existing fuzzers.
     fn try_load_v9_net() -> Option<NNUENet> {
+        // Explicit override wins.
+        if let Ok(override_path) = std::env::var("CODA_TEST_NET") {
+            if std::path::Path::new(&override_path).exists() {
+                if let Ok(net) = NNUENet::load(&override_path) {
+                    eprintln!("try_load_v9_net: using CODA_TEST_NET override: {}", override_path);
+                    return Some(net);
+                }
+                eprintln!("try_load_v9_net: CODA_TEST_NET path exists but failed to load: {}", override_path);
+            } else {
+                eprintln!("try_load_v9_net: CODA_TEST_NET path does not exist: {}", override_path);
+            }
+        }
         // Prefer the xray-fixed w15 s200 net (our best v9), fall back to others.
         let candidates = [
             "nets/net-v9-768th16x32-w15-e200s200-xray-fixed.nnue",
@@ -4108,12 +4124,16 @@ mod tests {
 
         crate::init();
 
-        let net_path = ["nets/net-v9-768th16x32-w15-e200s200-xray-fixed.nnue",
-                        "nets/net-v9-768th16x32-w0-e400s400-noxray.nnue",
-                        "net.nnue"]
-            .iter()
-            .find(|p| std::path::Path::new(p).exists())
-            .map(|p| p.to_string());
+        let net_path = std::env::var("CODA_TEST_NET").ok()
+            .filter(|p| std::path::Path::new(p).exists())
+            .or_else(|| {
+                ["nets/net-v9-768th16x32-w15-e200s200-xray-fixed.nnue",
+                 "nets/net-v9-768th16x32-w0-e400s400-noxray.nnue",
+                 "net.nnue"]
+                    .iter()
+                    .find(|p| std::path::Path::new(p).exists())
+                    .map(|p| p.to_string())
+            });
         let net_path = match net_path {
             Some(p) => p,
             None => { eprintln!("Skipping PSQ fuzzer: no net available"); return; }
