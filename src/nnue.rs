@@ -3296,64 +3296,42 @@ impl NNUEAccumulator {
     /// Materialize: ensure current accumulator is computed.
     #[inline]
     pub fn materialize(&mut self, net: &NNUENet, board: &Board) {
-        // Super-fast path: both perspectives have the common case of
-        // parent-computed + single-ply incremental (no bucket crossings).
-        // This is 95%+ of materialize calls in a middlegame search. We
-        // run the original interleaved-both-povs loop, which has better
-        // instruction-level parallelism than two separate per-pov passes.
-        //
-        // Slow path is outlined as #[cold] to keep this function small
-        // enough that callers can inline it.
-        if self.top > 0
-            && !self.stack[self.top].computed[0]
-            && !self.stack[self.top].computed[1]
-            && !self.stack[self.top].dirty.needs_refresh[0]
-            && !self.stack[self.top].dirty.needs_refresh[1]
-            && self.stack[self.top - 1].computed[0]
-            && self.stack[self.top - 1].computed[1]
-        {
+        if self.stack[self.top].computed[0] && self.stack[self.top].computed[1] { return; }
+
+        let dirty = self.stack[self.top].dirty;
+
+        // Determine refresh need per-pov. Refresh when either:
+        // (a) the moving side's king crossed a bucket/mirror (dirty.needs_refresh[pov])
+        // (b) we're at the root (top == 0)
+        // (c) parent's pov is not yet computed (lazy-eval chain break — preserved
+        //     from pre-refactor semantics; multi-ply walkback proved a net loss).
+        let w_refresh = dirty.needs_refresh[0]
+            || self.top == 0
+            || !self.stack[self.top - 1].computed[0];
+        let b_refresh = dirty.needs_refresh[1]
+            || self.top == 0
+            || !self.stack[self.top - 1].computed[1];
+
+        if !w_refresh && !b_refresh {
+            // Common case: both povs apply dirty changes from parent.
+            // Original interleaved-both-povs loop preserves ILP.
             self.apply_incremental_both_povs(net, board);
-            self.stack[self.top].computed = [true; 2];
-            return;
+        } else if w_refresh && b_refresh {
+            // Both need refresh (root, or lazy chain). Original two refreshes.
+            self.refresh_accumulator(net, board, WHITE);
+            self.refresh_accumulator(net, board, BLACK);
+        } else if w_refresh {
+            // White refresh, black incremental. The king-bucket-crossing case
+            // — this is the whole point of the per-pov refactor.
+            self.refresh_accumulator(net, board, WHITE);
+            self.apply_incremental_for_pov_at(net, board, BLACK, self.top);
+        } else {
+            // Black refresh, white incremental.
+            self.apply_incremental_for_pov_at(net, board, WHITE, self.top);
+            self.refresh_accumulator(net, board, BLACK);
         }
-        self.materialize_slow(net, board);
-    }
 
-    /// Out-of-line slow path: per-perspective logic with refresh and
-    /// multi-ply chain walkback. Matches Reckless's `can_update_pst` +
-    /// `update_pst_accumulator`.
-    #[cold]
-    #[inline(never)]
-    fn materialize_slow(&mut self, net: &NNUENet, board: &Board) {
-        for pov in [WHITE, BLACK] {
-            let pov_idx = pov as usize;
-            if self.stack[self.top].computed[pov_idx] { continue; }
-
-            let mut ancestor: Option<usize> = None;
-            let mut i = self.top;
-            loop {
-                if self.stack[i].dirty.needs_refresh[pov_idx] { break; }
-                if i == 0 { break; }
-                if self.stack[i - 1].computed[pov_idx] {
-                    ancestor = Some(i - 1);
-                    break;
-                }
-                i -= 1;
-            }
-
-            match ancestor {
-                Some(a) => {
-                    for k in (a + 1)..=self.top {
-                        self.apply_incremental_for_pov_at(net, board, pov, k);
-                    }
-                }
-                None => {
-                    self.refresh_accumulator(net, board, pov);
-                }
-            }
-
-            self.stack[self.top].computed[pov_idx] = true;
-        }
+        self.stack[self.top].computed = [true; 2];
     }
 
     /// Fast path: both perspectives do a single-ply incremental from the
@@ -4486,6 +4464,126 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Microbenchmark: materialize ns/iter across three regimes.
+    #[test]
+    #[ignore]
+    fn bench_materialize() {
+        use crate::board::Board;
+        use crate::search::build_dirty_piece;
+        use crate::types::{flip_color, move_from, move_to};
+        use std::time::Instant;
+
+        crate::init();
+        let net_path = ["nets/net-v9-768th16x32-w15-e200s200-xray-fixed.nnue",
+                        "nets/net-v9-768th16x32-w0-e400s400-noxray.nnue",
+                        "net.nnue"]
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .map(|p| p.to_string())
+            .expect("no net");
+        let net = NNUENet::load(&net_path).expect("load net");
+        let h = net.hidden_size;
+
+        // Scenario 1: single-ply normal case (knight move)
+        {
+            let mut board = Board::from_fen(
+                "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+            let mut acc = NNUEAccumulator::new(h);
+            acc.force_recompute(&net, &board);
+            let mv = crate::types::make_move(18, 33, crate::types::FLAG_NONE);
+            let us = board.side_to_move;
+            let them = flip_color(us);
+            let moved_pt = board.piece_type_at(move_from(mv));
+            let captured_pt = board.piece_type_at(move_to(mv));
+            let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt);
+            const ITERS: u64 = 100_000;
+            for _ in 0..1000 {
+                assert!(board.make_move(mv));
+                acc.push(dirty);
+                acc.materialize(&net, &board);
+                acc.pop();
+                board.unmake_move();
+            }
+            let start = Instant::now();
+            for _ in 0..ITERS {
+                assert!(board.make_move(mv));
+                acc.push(dirty);
+                acc.materialize(&net, &board);
+                acc.pop();
+                board.unmake_move();
+            }
+            let elapsed = start.elapsed();
+            let total_ns = elapsed.as_nanos() as f64 / ITERS as f64;
+            eprintln!("materialize single-ply (knight): {:.1} ns/iter", total_ns);
+        }
+
+        // Scenario 2: king within-bucket
+        {
+            let mut board = Board::from_fen("8/8/8/8/8/8/8/4K2k w - - 0 1");
+            let mut acc = NNUEAccumulator::new(h);
+            acc.force_recompute(&net, &board);
+            let mv = crate::types::make_move(4, 5, crate::types::FLAG_NONE);
+            let us = board.side_to_move;
+            let them = flip_color(us);
+            let moved_pt = board.piece_type_at(move_from(mv));
+            let captured_pt = board.piece_type_at(move_to(mv));
+            let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt);
+            const ITERS: u64 = 100_000;
+            for _ in 0..1000 {
+                assert!(board.make_move(mv));
+                acc.push(dirty);
+                acc.materialize(&net, &board);
+                acc.pop();
+                board.unmake_move();
+            }
+            let start = Instant::now();
+            for _ in 0..ITERS {
+                assert!(board.make_move(mv));
+                acc.push(dirty);
+                acc.materialize(&net, &board);
+                acc.pop();
+                board.unmake_move();
+            }
+            let elapsed = start.elapsed();
+            let total_ns = elapsed.as_nanos() as f64 / ITERS as f64;
+            eprintln!("materialize king within-bucket: {:.1} ns/iter", total_ns);
+        }
+
+        // Scenario 3: lazy-eval chain
+        {
+            let mut board = Board::from_fen(
+                "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+            let mut acc = NNUEAccumulator::new(h);
+            acc.force_recompute(&net, &board);
+            let moves = [
+                crate::types::make_move(18, 33, crate::types::FLAG_NONE),
+                crate::types::make_move(41, 34, crate::types::FLAG_NONE),
+                crate::types::make_move(28, 36, crate::types::FLAG_NONE),
+            ];
+            const ITERS: u64 = 30_000;
+            let start = Instant::now();
+            for _ in 0..ITERS {
+                for mv in moves {
+                    let us = board.side_to_move;
+                    let them = flip_color(us);
+                    let moved_pt = board.piece_type_at(move_from(mv));
+                    let captured_pt = board.piece_type_at(move_to(mv));
+                    let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt);
+                    if !board.make_move(mv) { break; }
+                    acc.push(dirty);
+                }
+                acc.materialize(&net, &board);
+                for _ in 0..3 {
+                    acc.pop();
+                    board.unmake_move();
+                }
+            }
+            let elapsed = start.elapsed();
+            let total_ns = elapsed.as_nanos() as f64 / ITERS as f64;
+            eprintln!("materialize lazy chain (3 plies): {:.1} ns/iter", total_ns);
         }
     }
 
