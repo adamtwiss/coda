@@ -595,57 +595,10 @@ pub fn build_dirty_piece(
     let to = move_to(mv);
     let flags = move_flags(mv);
 
-    // King moves: check if bucket+mirror change for the moving side's perspective
-    if moved_pt == KING {
-        let mut from_ks = from as usize;
-        let mut to_ks = to as usize;
-        if us == BLACK { from_ks ^= 56; to_ks ^= 56; }
-
-        let from_bucket = crate::nnue::king_bucket_pub(from_ks);
-        let to_bucket = crate::nnue::king_bucket_pub(to_ks);
-        let from_mirror = crate::nnue::king_mirror_pub(from_ks);
-        let to_mirror = crate::nnue::king_mirror_pub(to_ks);
-
-        if from_bucket != to_bucket || from_mirror != to_mirror {
-            // Bucket or mirror changed: full recompute needed
-            return DirtyPiece::recompute();
-        }
-
-        // Same bucket+mirror: only the king feature changes for our perspective.
-        // The opponent's perspective is always incremental (their king didn't move).
-        // We can treat this as a normal incremental update.
-        let mut changes: [(bool, u8, u8, u8); 5] = [(false, 0, 0, 0); 5];
-        let mut n = 0;
-
-        // Remove king from origin
-        changes[n] = (false, us, KING, from); n += 1;
-
-        // Remove captured piece (king captures)
-        if captured_pt != NO_PIECE_TYPE {
-            changes[n] = (false, them, captured_pt, to); n += 1;
-        }
-
-        // Add king at destination
-        changes[n] = (true, us, KING, to); n += 1;
-
-        // Castling: also move the rook
-        if flags == FLAG_CASTLE {
-            let (rook_from, rook_to) = if to > from {
-                if us == WHITE { (7u8, 5u8) } else { (63u8, 61u8) }
-            } else {
-                if us == WHITE { (0u8, 3u8) } else { (56u8, 59u8) }
-            };
-            changes[n] = (false, us, ROOK, rook_from); n += 1;
-            changes[n] = (true, us, ROOK, rook_to); n += 1;
-        }
-
-        let mut d = DirtyPiece::recompute();
-        d.kind = 1;
-        d.n_changes = n as u8;
-        d.changes = changes;
-        return d;
-    }
-
+    // Build the incremental changes list (removals and additions of piece
+    // features). These are the SAME changes regardless of whether the
+    // moving side's king crosses a bucket — the non-moving side can
+    // always use these incrementally since its own king is unchanged.
     let mut changes: [(bool, u8, u8, u8); 5] = [(false, 0, 0, 0); 5];
     let mut n = 0;
 
@@ -660,7 +613,8 @@ pub fn build_dirty_piece(
         changes[n] = (false, them, captured_pt, to); n += 1;
     }
 
-    // Add piece at destination (possibly promoted)
+    // Add piece at destination (possibly promoted — promotions are only for
+    // pawns, so no interaction with the king-bucket path below)
     let placed_pt = if is_promotion(mv) { promotion_piece_type(mv) } else { moved_pt };
     changes[n] = (true, us, placed_pt, to); n += 1;
 
@@ -675,10 +629,33 @@ pub fn build_dirty_piece(
         changes[n] = (true, us, ROOK, rook_to); n += 1;
     }
 
-    let mut d = DirtyPiece::recompute();
-    d.kind = 1;
-    d.n_changes = n as u8;
-    d.changes = changes;
+    let mut d = DirtyPiece {
+        kind: 1,
+        changes,
+        n_changes: n as u8,
+        needs_refresh: [false; 2],
+    };
+
+    // King moves: check if bucket+mirror change for the moving side's
+    // perspective. If so, the moving side needs a refresh (all its features
+    // re-index with the new king position), but the non-moving side can
+    // still apply the `changes` list incrementally — its features index
+    // by its own (unchanged) king. Reckless per-pov pattern.
+    if moved_pt == KING {
+        let mut from_ks = from as usize;
+        let mut to_ks = to as usize;
+        if us == BLACK { from_ks ^= 56; to_ks ^= 56; }
+
+        let from_bucket = crate::nnue::king_bucket_pub(from_ks);
+        let to_bucket = crate::nnue::king_bucket_pub(to_ks);
+        let from_mirror = crate::nnue::king_mirror_pub(from_ks);
+        let to_mirror = crate::nnue::king_mirror_pub(to_ks);
+
+        if from_bucket != to_bucket || from_mirror != to_mirror {
+            d.needs_refresh[us as usize] = true;
+        }
+    }
+
     d
 }
 

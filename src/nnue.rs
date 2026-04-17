@@ -2877,18 +2877,35 @@ impl NNUENet {
 /// Dirty piece info for lazy materialization.
 #[derive(Clone, Copy)]
 pub struct DirtyPiece {
-    /// 0 = needs full recompute (king bucket change), 1+ = incremental
+    /// 0 = needs full recompute for both perspectives (kept for legacy callers
+    /// that do a blanket rebuild), 1+ = incremental.
     pub kind: u8,
     pub changes: [(bool, u8, u8, u8); 5], // (add, color, pt, sq)
     pub n_changes: u8,
+    /// Per-perspective refresh hint. When a king crosses a bucket/mirror
+    /// boundary, only the moving side's perspective needs a Finny refresh;
+    /// the opposite side can still apply the incremental `changes` list
+    /// (which includes the king move plus any capture/castling) because
+    /// its own king is unchanged. Matches Reckless's per-pov refresh.
+    pub needs_refresh: [bool; 2],
 }
 
 impl DirtyPiece {
     pub fn recompute() -> Self {
-        DirtyPiece { kind: 0, changes: [(false, 0, 0, 0); 5], n_changes: 0 }
+        DirtyPiece {
+            kind: 0,
+            changes: [(false, 0, 0, 0); 5],
+            n_changes: 0,
+            needs_refresh: [true; 2],
+        }
     }
     pub fn incremental(changes: &[(bool, u8, u8, u8)]) -> Self {
-        let mut d = DirtyPiece { kind: 1, changes: [(false, 0, 0, 0); 5], n_changes: changes.len() as u8 };
+        let mut d = DirtyPiece {
+            kind: 1,
+            changes: [(false, 0, 0, 0); 5],
+            n_changes: changes.len() as u8,
+            needs_refresh: [false; 2],
+        };
         for (i, &c) in changes.iter().enumerate().take(5) {
             d.changes[i] = c;
         }
@@ -2901,7 +2918,10 @@ impl DirtyPiece {
 pub struct AccEntry {
     pub white: Vec<i16>,
     pub black: Vec<i16>,
-    computed: bool,
+    /// Per-perspective "computed" flag. Allows one perspective to stay on the
+    /// incremental path while the other does a Finny-refresh after a king-bucket
+    /// crossing — matches Reckless's `pst_stack[i].accurate[pov]`.
+    computed: [bool; 2],
     dirty: DirtyPiece,
     // Threat accumulator (v9): separate i16 values summed with PSQ at activation
     pub threat_white: Vec<i16>,
@@ -2944,7 +2964,7 @@ impl NNUEAccumulator {
             stack.push(AccEntry {
                 white: vec![0; hidden_size],
                 black: vec![0; hidden_size],
-                computed: false,
+                computed: [false; 2],
                 dirty: DirtyPiece::recompute(),
                 threat_white: Vec::new(), // allocated on first use if net has threats
                 threat_black: Vec::new(),
@@ -3051,7 +3071,7 @@ impl NNUEAccumulator {
                 }
             }
         }
-        self.stack[self.top].computed = true;
+        self.stack[self.top].computed = [true; 2];
     }
 
     /// Compute threat accumulator if not already done.
@@ -3249,7 +3269,7 @@ impl NNUEAccumulator {
             self.stack.push(AccEntry {
                 white: vec![0; self.hidden_size],
                 black: vec![0; self.hidden_size],
-                computed: false,
+                computed: [false; 2],
                 dirty: DirtyPiece::recompute(),
                 threat_white: Vec::new(),
                 threat_black: Vec::new(),
@@ -3262,7 +3282,7 @@ impl NNUEAccumulator {
                 threat_features_black: Vec::new(),
             });
         }
-        self.stack[self.top].computed = false;
+        self.stack[self.top].computed = [false; 2];
         self.stack[self.top].threat_accurate = [false; 2];
         self.stack[self.top].threat_deltas.clear();
         self.stack[self.top].dirty = dirty;
@@ -3274,23 +3294,73 @@ impl NNUEAccumulator {
     }
 
     /// Materialize: ensure current accumulator is computed.
+    #[inline]
     pub fn materialize(&mut self, net: &NNUENet, board: &Board) {
-        if self.stack[self.top].computed {
+        // Super-fast path: both perspectives have the common case of
+        // parent-computed + single-ply incremental (no bucket crossings).
+        // This is 95%+ of materialize calls in a middlegame search. We
+        // run the original interleaved-both-povs loop, which has better
+        // instruction-level parallelism than two separate per-pov passes.
+        //
+        // Slow path is outlined as #[cold] to keep this function small
+        // enough that callers can inline it.
+        if self.top > 0
+            && !self.stack[self.top].computed[0]
+            && !self.stack[self.top].computed[1]
+            && !self.stack[self.top].dirty.needs_refresh[0]
+            && !self.stack[self.top].dirty.needs_refresh[1]
+            && self.stack[self.top - 1].computed[0]
+            && self.stack[self.top - 1].computed[1]
+        {
+            self.apply_incremental_both_povs(net, board);
+            self.stack[self.top].computed = [true; 2];
             return;
         }
+        self.materialize_slow(net, board);
+    }
 
-        let dirty = self.stack[self.top].dirty;
+    /// Out-of-line slow path: per-perspective logic with refresh and
+    /// multi-ply chain walkback. Matches Reckless's `can_update_pst` +
+    /// `update_pst_accumulator`.
+    #[cold]
+    #[inline(never)]
+    fn materialize_slow(&mut self, net: &NNUENet, board: &Board) {
+        for pov in [WHITE, BLACK] {
+            let pov_idx = pov as usize;
+            if self.stack[self.top].computed[pov_idx] { continue; }
 
-        // Full recompute needed?
-        if dirty.kind == 0 || self.top == 0 || !self.stack[self.top - 1].computed {
-            self.refresh_accumulator(net, board, WHITE);
-            self.refresh_accumulator(net, board, BLACK);
-            self.stack[self.top].computed = true;
-            return;
+            let mut ancestor: Option<usize> = None;
+            let mut i = self.top;
+            loop {
+                if self.stack[i].dirty.needs_refresh[pov_idx] { break; }
+                if i == 0 { break; }
+                if self.stack[i - 1].computed[pov_idx] {
+                    ancestor = Some(i - 1);
+                    break;
+                }
+                i -= 1;
+            }
+
+            match ancestor {
+                Some(a) => {
+                    for k in (a + 1)..=self.top {
+                        self.apply_incremental_for_pov_at(net, board, pov, k);
+                    }
+                }
+                None => {
+                    self.refresh_accumulator(net, board, pov);
+                }
+            }
+
+            self.stack[self.top].computed[pov_idx] = true;
         }
+    }
 
-        // Incremental: fuse first delta with parent copy, then apply remaining in-place.
-        // This eliminates the separate copy_from_slice (saves ~100ns for h=1024).
+    /// Fast path: both perspectives do a single-ply incremental from the
+    /// parent. Exactly the pre-refactor code path, restored here to avoid
+    /// the per-pov split overhead in the 95%+ common case.
+    #[inline(always)]
+    fn apply_incremental_both_povs(&mut self, net: &NNUENet, board: &Board) {
         let h = self.hidden_size;
         let (left, right) = self.stack.split_at_mut(self.top);
         let parent = &left[self.top - 1];
@@ -3299,6 +3369,7 @@ impl NNUEAccumulator {
         let w_king_sq = board.king_sq(WHITE);
         let b_king_sq = board.king_sq(BLACK);
 
+        let dirty = current.dirty;
         let n = dirty.n_changes as usize;
 
         // First change: fused copy+delta (reads parent, writes current)
@@ -3385,7 +3456,6 @@ impl NNUEAccumulator {
                 }
                 continue;
             }
-
             #[cfg(target_arch = "aarch64")]
             if net.has_neon && h % 8 == 0 {
                 unsafe {
@@ -3399,15 +3469,116 @@ impl NNUEAccumulator {
                 }
                 continue;
             }
-
             if add {
                 for j in 0..h { current.white[j] += w_row[j]; current.black[j] += b_row[j]; }
             } else {
                 for j in 0..h { current.white[j] -= w_row[j]; current.black[j] -= b_row[j]; }
             }
         }
+    }
 
-        current.computed = true;
+    /// Apply ply `k`'s dirty changes to one perspective's accumulator,
+    /// using ply `k-1`'s accumulator as the starting point.
+    /// Precondition: `self.stack[k - 1].computed[pov] == true` and no
+    /// needs_refresh blockers exist in [k..=self.top] for this pov
+    /// (guaranteed by the caller's chain walk).
+    ///
+    /// Uses the CURRENT board's king_sq — valid because the chain has no
+    /// bucket/mirror crossings for this pov, and halfka_index is invariant
+    /// under king_sq within the same bucket+mirror.
+    #[inline(always)]
+    fn apply_incremental_for_pov_at(
+        &mut self,
+        net: &NNUENet,
+        board: &Board,
+        pov: Color,
+        k: usize,
+    ) {
+        let h = self.hidden_size;
+        let (left, right) = self.stack.split_at_mut(k);
+        let parent = &left[k - 1];
+        let current = &mut right[0];
+
+        let king_sq = board.king_sq(pov);
+        let dirty = current.dirty;
+        let n = dirty.n_changes as usize;
+
+        let (parent_acc, current_acc): (&[i16], &mut [i16]) = if pov == WHITE {
+            (&parent.white, &mut current.white)
+        } else {
+            (&parent.black, &mut current.black)
+        };
+
+        // First change: fused copy+delta (reads parent, writes current)
+        {
+            let (add, color, pt, sq) = dirty.changes[0];
+            let idx = halfka_index(pov, king_sq, color, pt, sq);
+            let row = net.input_weight_row(idx);
+
+            let mut handled = false;
+            #[cfg(target_arch = "x86_64")]
+            if net.has_avx512 && h % 32 == 0 {
+                unsafe {
+                    if add { simd512_acc_copy_add(current_acc, parent_acc, row, h); }
+                    else   { simd512_acc_copy_sub(current_acc, parent_acc, row, h); }
+                }
+                handled = true;
+            }
+            #[cfg(target_arch = "x86_64")]
+            if !handled && net.has_avx2 && h % 16 == 0 {
+                unsafe {
+                    if add { simd_acc_copy_add(current_acc, parent_acc, row, h); }
+                    else   { simd_acc_copy_sub(current_acc, parent_acc, row, h); }
+                }
+                handled = true;
+            }
+            #[cfg(target_arch = "aarch64")]
+            if !handled && net.has_neon && h % 8 == 0 {
+                unsafe {
+                    if add { neon_acc_copy_add(current_acc, parent_acc, row, h); }
+                    else   { neon_acc_copy_sub(current_acc, parent_acc, row, h); }
+                }
+                handled = true;
+            }
+            if !handled {
+                if add {
+                    for j in 0..h { current_acc[j] = parent_acc[j] + row[j]; }
+                } else {
+                    for j in 0..h { current_acc[j] = parent_acc[j] - row[j]; }
+                }
+            }
+        }
+
+        // Remaining changes: in-place on current_acc
+        for i in 1..n {
+            let (add, color, pt, sq) = dirty.changes[i];
+            let idx = halfka_index(pov, king_sq, color, pt, sq);
+            let row = net.input_weight_row(idx);
+
+            #[cfg(target_arch = "x86_64")]
+            if net.has_avx2 && h % 16 == 0 {
+                unsafe {
+                    if add { simd_acc_add(current_acc, row, h); }
+                    else   { simd_acc_sub(current_acc, row, h); }
+                }
+                continue;
+            }
+
+            #[cfg(target_arch = "aarch64")]
+            if net.has_neon && h % 8 == 0 {
+                unsafe {
+                    if add { neon_acc_add(current_acc, row, h); }
+                    else   { neon_acc_sub(current_acc, row, h); }
+                }
+                continue;
+            }
+
+            if add {
+                for j in 0..h { current_acc[j] += row[j]; }
+            } else {
+                for j in 0..h { current_acc[j] -= row[j]; }
+            }
+        }
     }
 
     /// Refresh one perspective using the Finny table.
@@ -3524,7 +3695,7 @@ impl NNUEAccumulator {
     /// Reset to bottom of stack and invalidate Finny table.
     pub fn reset(&mut self) {
         self.top = 0;
-        self.stack[0].computed = false;
+        self.stack[0].computed = [false; 2];
         self.stack[0].threat_accurate = [false; 2];
         for entry in self.finny.iter_mut() {
             entry.valid = false;
@@ -4193,6 +4364,124 @@ mod tests {
                                 crate::types::move_to_uci(mv),
                                 name, j, got[j], refv[j], seed,
                             );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Lazy-eval fuzzer: push multiple plies WITHOUT materialising, then
+    /// materialise at the end and compare against a fresh force_recompute.
+    /// Directly exercises the multi-ply chain walkback in materialize
+    /// (the primary Reckless optimisation landed 2026-04-17).
+    ///
+    /// If the walkback is wrong, the incremental chain will give a
+    /// different accumulator than the reference — test fails with the
+    /// first divergent channel.
+    #[test]
+    fn fuzz_psq_lazy_eval_chain() {
+        use crate::board::Board;
+        use crate::movegen::generate_legal_moves;
+        use crate::search::build_dirty_piece;
+        use crate::types::{flip_color, move_from, move_to, NO_PIECE_TYPE};
+
+        crate::init();
+
+        let net_path = ["nets/net-v9-768th16x32-w15-e200s200-xray-fixed.nnue",
+                        "nets/net-v9-768th16x32-w0-e400s400-noxray.nnue",
+                        "net.nnue"]
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .map(|p| p.to_string());
+        let net_path = match net_path {
+            Some(p) => p,
+            None => { eprintln!("Skipping lazy-eval fuzzer: no net"); return; }
+        };
+        let net = match NNUENet::load(&net_path) {
+            Ok(n) => n,
+            Err(e) => { eprintln!("Skipping lazy-eval fuzzer: {}", e); return; }
+        };
+        let h = net.hidden_size;
+
+        const FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            // Promotion-rich endgame (triggers many halfka re-indexings)
+            "4k3/P6P/8/8/8/8/p6p/4K3 w - - 0 1",
+            // Kings near bucket boundaries (increases king-bucket crossing rate)
+            "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        // Use a range of batch sizes: 1 (matches existing fuzzer), 3, 7.
+        // 1 tests single-step; 3 and 7 force the multi-ply walkback path.
+        for &batch in &[1usize, 3, 7] {
+            for (fen_idx, fen) in FENS.iter().enumerate() {
+                for game in 0..10 {
+                    let seed: u32 = 0xDA1A_C0DEu32
+                        .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                        .wrapping_add((game as u32).wrapping_mul(7919))
+                        .wrapping_add((batch as u32).wrapping_mul(31337));
+                    let mut rng = if seed == 0 { 1 } else { seed };
+
+                    let mut board = Board::from_fen(fen);
+                    let mut acc = NNUEAccumulator::new(h);
+                    acc.force_recompute(&net, &board);
+
+                    let mut unmaterialised: usize = 0;
+
+                    for ply in 0..60 {
+                        let legal = generate_legal_moves(&board);
+                        if legal.len == 0 { break; }
+                        let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+
+                        let us = board.side_to_move;
+                        let them = flip_color(us);
+                        let moved_pt = board.piece_type_at(move_from(mv));
+                        let captured_pt = board.piece_type_at(move_to(mv));
+                        let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt);
+
+                        let ok = board.make_move(mv);
+                        assert!(ok);
+
+                        acc.push(dirty);
+                        unmaterialised += 1;
+
+                        // Materialise every `batch` plies — in between, the stack
+                        // has multiple unmaterialised entries.
+                        if unmaterialised >= batch {
+                            acc.materialize(&net, &board);
+
+                            // Reference: fresh force_recompute on current board.
+                            let mut ref_acc = NNUEAccumulator::new(h);
+                            ref_acc.force_recompute(&net, &board);
+
+                            for (name, got, refv) in [
+                                ("white",
+                                 &acc.stack[acc.top].white,
+                                 &ref_acc.stack[ref_acc.top].white),
+                                ("black",
+                                 &acc.stack[acc.top].black,
+                                 &ref_acc.stack[ref_acc.top].black),
+                            ] {
+                                if got[..h] != refv[..h] {
+                                    let j = (0..h).find(|&j| got[j] != refv[j]).unwrap();
+                                    panic!(
+                                        "lazy-eval divergence: batch={} fen_idx={} game={} ply={} \
+                                         move={} pov={} channel={} incr={} refresh={} seed={:#x}",
+                                        batch, fen_idx, game, ply,
+                                        crate::types::move_to_uci(mv),
+                                        name, j, got[j], refv[j], seed,
+                                    );
+                                }
+                            }
+                            unmaterialised = 0;
                         }
                     }
                 }
