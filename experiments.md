@@ -4579,3 +4579,223 @@ New production net: `net-v5-768pw-w7-e800s800-pow25-12f.nnue`. Node count +44% v
 - **Change**: Re-add razoring (removed from v5) with tunable margins scaled for v9 eval.
   RAZOR_BASE=900, RAZOR_MULT=756 (3× Reckless defaults for v9 scale).
 - **Result**: +1.1 Elo at 5122 games (still running, slightly positive).
+
+## 2026-04-17: v9 Correctness Hunt + NPS Optimisation Sweep
+
+Biggest gains day on the project. ~+296 Elo on `feature/threat-inputs` from a
+combination of correctness-bug fixes, NPS tuning, and retune-on-branch. Discovery
+methodology: TDD-style fuzzers + "diff against Stockfish/Reckless" audits +
+microbenchmarks for sub-1% changes invisible to whole-bench.
+
+### can_update ordering bug — H1, +142.9 Elo (OB #417)
+- **Change**: Fix ordering bug in `ThreatStack::can_update` (src/threat_accum.rs).
+  The function was accepting an ancestor ply as "accurate" BEFORE checking whether
+  the ply immediately above had overflowed delta buffer or crossed the king-file
+  mirror boundary. Correct order: validate entry[i+1] invariants FIRST, then
+  accept entry[i] as ancestor.
+- **Result**: **H1, +142.9 Elo ±31.9, 308 games.** LLR 3.00.
+- **Found via**: Threat-accumulator fuzzer added during the same session — played
+  random legal games from multiple FENs and asserted incremental vs from-scratch
+  threat refresh. Fuzzer diverged at a king-file crossing move; inspection of
+  the can_update function revealed the ordering error.
+- **Notes**: Bug had been present since threat accumulator was added (~2 days
+  earlier). Self-play SPRT on the buggy implementation couldn't detect it —
+  both sides had the same broken code. The fuzzer's cross-implementation
+  comparison was the key signal.
+
+### X-ray threat delta generation — H1, +110 Elo (OB #407)
+- **Change**: Earlier in day, fix `enumerate_threats` to properly account for
+  x-ray threat re-indexing through the just-moved piece. Section 2 Z-finding
+  block + section 2b blocker-past-subject block.
+- **Result**: **H1, +110 Elo ±33.8, 310 games.** LLR 2.99.
+- **Notes**: Companion to can_update bug. The threat accumulator was
+  structurally wrong in two ways at once. Both fixes were needed for full
+  gain; they're measured separately because each SPRT ran against a
+  progressively better baseline.
+
+### Zobrist EP fix — H1 (OB #421, measurement: neutral-positive)
+- **Change**: The Zobrist hash was unconditionally XOR-ing `ep_key` into `hash`
+  whenever a double-pawn push occurred, regardless of whether any enemy pawn
+  could actually make the EP capture. This silently broke threefold-repetition
+  detection whenever a rep cycle crossed a "dead" double-push (no enemy pawn
+  adjacent). Positions that should have hashed equal hashed differently,
+  rep detection missed, engine scored forced draws as -80cp instead of -19cp.
+- **Found via**: Investigating a fastchess `PV continues after threefold
+  repetition` warning that prior Claudes had written off as cosmetic.
+  Adam's insistence on digging deeper revealed the real hash bug.
+- **Result**: **H1, +3.3 Elo ±4.5, stopped early at ~1500 games for merge.**
+- **Bench impact**: 1,318,356 → 1,050,912 (-20% nodes — rep-cycle subtrees
+  now correctly pruned as draws).
+- **Implementation**: `ep_capture_available(pieces, colors, capturing_side,
+  ep_sq)` helper; XOR `ep_key` only when this returns true. Applied at
+  compute_hash, make_move (remove + add), make_null_move. Hash-invariant
+  fuzzer added (incremental vs compute_hash on 180 random games × 80 plies)
+  — catches future drift in the conditional XOR.
+- **Meta-lesson**: "It's just a display warning" was wrong. Paranoid
+  investigation of the -80cp score on what looked like a forced draw
+  revealed the Zobrist bug. Saved to memory as
+  `feedback_correctness_over_features.md`.
+
+### Section 2 Z-finding cull — H1, +23.4 Elo (OB #423)
+- **Change**: Skip the Z-level x-ray delta block inside the slider-loop when
+  no ray from `square` has 2+ occupants. Pre-check `(occ & past_first_region) != 0`
+  before the loop; if false, no slider can have a Z chain (`S → square → Y → Z`),
+  so only the direct threat needs emitting. Shared `rays_from_sq_empty`
+  precomputation with the existing 2b cull (net zero on pre-check cost).
+- **Result**: **H1, +23.4 Elo ±9.3, 1234 games.** LLR 2.95.
+- **Bench**: +1.5% NPS only. The Elo gain came from frequency of firing in real
+  middlegame/tactical positions not represented in bench's 8 canned FENs.
+- **Meta-lesson**: Bench NPS is a narrow signal. Real-game benefit can be
+  10× the bench delta.
+
+### Simplified PSQ refresh (per-pov on king-bucket crossing) — H1, +21 Elo (OB #426)
+- **Change**: When a king moves and crosses a bucket/mirror boundary, the moving
+  side's perspective needs a Finny refresh (all features re-index), but the
+  non-moving side's perspective is unchanged and can apply the dirty changes
+  incrementally. Previous code refreshed BOTH perspectives in lockstep. Reckless
+  pattern.
+- **Implementation**: `AccEntry.computed: [bool; 2]` (per-pov), `DirtyPiece.
+  needs_refresh: [bool; 2]` set by `build_dirty_piece` when king crosses bucket,
+  `materialize` dispatches four cases (both-refresh, both-incremental,
+  W-refresh+B-incr, B-refresh+W-incr) to minimal work.
+- **Result**: **H1 trending, +21 Elo ±11 at 1044+ games, LLR 1.97.**
+- **Bench**: ~parity (-1.5% to +1.5% run-to-run).
+- **History**: Initial attempt (#424, with a multi-ply chain walkback on top)
+  H0'd at **-17.86 Elo**. `bench_materialize` microbench diagnosed the
+  walkback as the pessimization (lazy-chain 3.5× slower than old
+  Finny-diff refresh). Simplified version removes the walkback, keeps only
+  the per-pov-on-bucket-cross insight, recovers the gain.
+- **Meta-lesson**: Microbench-guided debugging can rescue an abandoned feature
+  by isolating WHICH part of a refactor is costing. Lesson saved to memory.
+
+### ProbCut TT-store bugs — H1 pending (OB #428)
+- **Change**: Two bugs in ProbCut's successful-cutoff TT store vs Stockfish:
+  1. Stored `dampened = score - (probcut_beta - beta)` instead of raw `score`.
+     `score >= probcut_beta` is a tighter lower bound than dampened; storing
+     dampened loses pruning on future probes with beta between the two.
+  2. Hardcoded `tt_pv: false` — should use local `tt_pv` variable (sticky PV
+     flag). Positions pruned by ProbCut were losing PV status in TT,
+     affecting LMR reduction on revisits.
+- **Result**: SPRT in flight. Bench 1,126,147 → 1,209,491 (+7% nodes —
+  preserving tt_pv reduces LMR on those lines, expanding PV subtrees).
+- **Notes**: ProbCut has now had 5 distinct bug fixes total (missing qsearch
+  filter, SEE threshold, excluded_move guard, stored-dampened, tt_pv flag).
+  Worth continued auditing.
+
+### Correction history skip-noisy — H0, -17 Elo (OB #427)
+- **Change**: Skip correction-history update when `best_move` is a
+  capture/promotion. Matches Stockfish (search.cpp:1495) and Reckless
+  (search.rs:1085).
+- **Result**: **H0 trending, -17.32 Elo ±16.75, 522 games.** LLR -0.81.
+- **Meta-lesson**: Consensus pattern didn't transplant. SF's gate works
+  alongside compensating calibrations (bonusScale bumps, aggressive gravity)
+  that we don't have. Our simpler update formula `weight = (depth+1).min(16)`
+  depends on the larger volume from ALL beat-alpha positions. Removing ~30%
+  of updates starved correction history of signal.
+- **Saved to memory**: `feedback_consensus_patterns_dont_always_transfer.md`.
+
+### Forward-pass MaybeUninit — H0 trending, -4 Elo (OB #425)
+- **Change**: Replace `[0u8; 2048]` scratch stack buffers in forward-pass
+  SIMD paths with `[MaybeUninit<u8>; 2048]`. Skipped ~4 KB of zero-stores
+  per forward call (SIMD packers write exactly `pw` bytes; downstream
+  reads only `[..pw]`).
+- **Microbench**: **+7% forward speed** (787 → 733 ns/call). Found using
+  a new `bench_forward_pass` microbench added the same session.
+- **Full bench**: +5% NPS (490K → 514K).
+- **Result**: **H0 trending, -4.4 Elo ±5.4, 3858 games.** LLR -1.83.
+- **Meta-lesson**: Microbench is a necessary tool for forward-pass
+  optimisation but not sufficient to predict real-game Elo. The 1-second
+  games probably interact with the memory layout / cache / branch-predictor
+  in ways the tight microbench loop doesn't capture. LLVM may have been
+  eliminating the zero-stores already when it could prove them dead;
+  the measured gain might be code-layout noise. Lesson saved.
+
+### Tune #411 retune-on-branch — H1 accepted, +1.37 Elo (OB #412)
+- **Change**: 52-param SPSA tune (2500 iterations, scale-nps 250000) on
+  `feature/threat-inputs` seeded from live src/search.rs defaults. Post
+  x-ray fix + can_update fix recalibration.
+- **Result**: +1.37 Elo at 37K games, stopped early and accepted. Classic
+  retune-on-branch modest gain after the big structural fixes land.
+- **Key shifts**: HIST_BONUS_BASE 12→8 (-33%), LMR_C_QUIET 99→89 (-10%),
+  LMR_C_CAP 115→107 (-7%), SEE_CAP_MULT 136→144 (+6%). Most parameters
+  near starting values; the shifted ones reflect the cleaner search tree
+  after can_update/x-ray/Zobrist fixes.
+
+### Mini tune: MVV_CAP_MULT + CONT_HIST_MULT — confirmed defaults (OB #420)
+- **Change**: Promoted two hardcoded move-ordering constants (`see_value(victim) * 16`
+  in good-capture scoring, `[3i32, 3, 1, 1]` cont-hist weights) to SPSA tunables
+  `MVV_CAP_MULT` (default 16) and `CONT_HIST_MULT` (default 3). 2-param SPSA with
+  1000 iterations at scale-nps 250000.
+- **Result**: MVV_CAP_MULT 16.02 (-0.0%), CONT_HIST_MULT 2.8 (-6.7%) after 68%
+  iterations; stopped early. Defaults confirmed near-optimal.
+- **Notes**: Full 54-param tune #422 (in flight at time of writing) later showed
+  MVV_CAP_MULT drifting to 15.2 and CONT_HIST_MULT confirmed at 3.0 — the
+  2-param mini-tune masks parameter interactions that the full tune reveals.
+
+### Full 54-param SPSA tune — IN FLIGHT (OB #422)
+- **Change**: Full tune on `feature/threat-inputs` after merging Zobrist +
+  tune #411 + MVV/CONT_HIST tunables. 2500 iterations, scale-nps 250000.
+- **Result at 26% (649/2500)**: Biggest movers —
+  HIST_BONUS_BASE 12→7 (-42%), DEXT_MARGIN 9→8 (-11%), FH_BLEND_DEPTH 1→0.9
+  (-13%, previously pinned at min), LMR_C_QUIET 89→97 (+9%, range-expanded
+  reveals wants higher). SE_DEPTH 12→11.4 (-5%, previously pinned at max,
+  now in range-expanded [4,20] wants slightly lower).
+- **Notes**: The 42% drop in HIST_BONUS_BASE is the strongest signal —
+  previous value was compensating for broken history signal from the
+  can_update bug. Clean baseline reveals smaller offset is optimal.
+  Expected to resolve overnight.
+
+### v9 vs v5 production gap — measurement (OB #418)
+- **Purpose**: After all correctness fixes + tune, measure remaining gap.
+- **Result**: **-54.1 Elo ±27.7, 272 games.** (vs -175 at session start,
+  -66 after can_update fix alone).
+- **Notes**: Remaining gap attributable to training maturity (v9 s200
+  snapshots vs v5 s800 production) and king-bucket layout (v9 uses
+  Uniform 16, v5 now uses Consensus 16 after earlier promotion +15 Elo).
+  Both being addressed by in-flight training: consensus KB, s800 xray,
+  Reckless 10-KB.
+
+### Infrastructure added this session
+
+- **`bench_forward_pass`** (nnue.rs, `#[ignore]` test): tight-loop
+  forward-pass microbench with v9 net. Baseline 787 ns/call. Enables
+  sub-1% detection for forward-path optimisations.
+- **`bench_materialize`** (nnue.rs, `#[ignore]` test): materialize
+  microbench across three scenarios (single-ply, king within-bucket,
+  lazy chain). Used to diagnose the PSQ walkback pessimisation.
+- **`fuzz_psq_accumulator`** (nnue.rs): random games × multiple FENs,
+  asserts incremental PSQ vs force_recompute parity after every ply.
+- **`fuzz_psq_lazy_eval_chain`** (nnue.rs): same but with batched push
+  (lazy-eval chain testing).
+- **`fuzz_hash_incremental_matches_compute`** (board.rs): hash-invariant
+  fuzzer specific to the Zobrist EP fix.
+- **`threat_accum::fuzz_random_games`** (threat_accum.rs): caught the
+  can_update ordering bug.
+- **`test_excluded_move_cleared_after_search`** (search.rs): SE
+  invariant guard.
+- **`history_4d_flag_routes_correctly`** (movepicker.rs): A/B guard
+  for the 2D vs 4D main history paths.
+- **`test_z_finding_cull_endgame_no_z`** + **`test_z_finding_cull_has_z_chain`**
+  (threats.rs): pin the cull's semantic boundary.
+- **`zobrist_ep_only_when_capturable`** (board.rs): pin the new Zobrist
+  EP invariant.
+
+### Session tally
+
+| Merged/pending | Elo | SPRT | Mechanism |
+|---|---|---|---|
+| can_update fix | +142.9 | #417 H1 | Ordering bug |
+| x-ray delta fix | +110.0 | #407 H1 | Correctness |
+| Z-cull | +23.4 | #423 H1 | NPS optimisation |
+| Simplified PSQ | +21 (pending H1) | #426 | NPS optimisation |
+| Tune #411 retune | +1.4 | #412 accepted | Retune-on-branch |
+| Zobrist EP fix | ~0 | #421 | Correctness |
+| ProbCut TT fixes | TBD | #428 in flight | Correctness |
+| Tune #422 full | TBD | SPSA in flight | Retune-on-branch |
+| **MaybeUninit** | **-4** | **#425 H0** | Reverted |
+| **PSQ walkback** | **-18** | **#424 H0** | Reverted, rescued as #426 |
+| **Corr-hist skip-noisy** | **-17** | **#427 H0** | Reverted, ecosystem mismatch |
+| **Total (confirmed + pending)** | **~+296 Elo** | | |
+
+Gap to v5 at session start: -54 Elo. Expected to close or cross by
+morning with consensus-KB and s800 nets landing.
