@@ -65,10 +65,10 @@ tunables!(
     (SEE_CAP_MULT,    144,   30,  200),
     // LMR
     (LMR_HIST_DIV,  12796, 2000, 100000),
-    (LMR_C_QUIET,      89,   80,  300),
+    (LMR_C_QUIET,      89,   40,  300),
     (LMR_C_CAP,       107,  100,  350),
     // Singular extensions
-    (SE_DEPTH,          12,    4,   12),
+    (SE_DEPTH,          12,    4,   20),
     // Aspiration windows
     (ASP_DELTA,          6,    5,   30),
     (ASP_SCORE_DIV,  34871, 8000, 50000),
@@ -96,7 +96,7 @@ tunables!(
     (CORR_W_MAJOR,      78,   30,  300),
     (CORR_W_CONT,       49,   30,  400),
     // Fail-high blend
-    (FH_BLEND_DEPTH,     1,    1,    8),
+    (FH_BLEND_DEPTH,     1,    0,    8),
     // History bonus
     (HIST_BONUS_MULT,  270,   50,  400),
     (HIST_BONUS_BASE,   12,    0,  200),
@@ -125,6 +125,14 @@ tunables!(
     // threat_count / LMR_THREAT_DIV subtracted from reduction.
     // Higher = less effect (2 means reduce 1 less per 2 threatened pieces).
     (LMR_THREAT_DIV,      2,    1,    5),
+    // MVV multiplier in capture move ordering (historical default 16).
+    // Captures scored as see_value(victim) * MVV_CAP_MULT + captHist.
+    // Higher = weight MVV more vs capture history.
+    (MVV_CAP_MULT,       16,    4,   64),
+    // Continuation history multiplier for plies 1,2 in quiet move ordering.
+    // Plies 4,6 always weight 1; this controls the close-ply weight.
+    // Historical default 3 (Obsidian/Alexandria/Berserk pattern).
+    (CONT_HIST_MULT,      3,    1,    8),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -576,7 +584,7 @@ impl SearchInfo {
 /// Build a DirtyPiece for lazy NNUE accumulator update.
 /// `us`/`them` are the sides BEFORE the move.
 #[inline]
-fn build_dirty_piece(
+pub fn build_dirty_piece(
     mv: Move,
     us: u8,
     them: u8,
