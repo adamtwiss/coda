@@ -203,33 +203,55 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     .stack_size(16 * 1024 * 1024)
                     .spawn(move || {
                         let mut si = search_info;
+                        let go_received = std::time::Instant::now();
                         let best_move = search_smp(&mut search_board, &mut si, &limits, threads);
+                        let search_elapsed = go_received.elapsed();
                         // In ponder mode, if search completed naturally (not stopped
                         // externally), wait for stop/ponderhit before outputting
-                        // bestmove. Outputting bestmove while GUI expects pondering
-                        // is a protocol violation. We watch the *external* stop flag
-                        // here — info.stop may have been set by search_smp itself
-                        // when helpers were signaled, which is an internal event,
-                        // not a GUI ack.
+                        // bestmove.
+                        let wait_start = std::time::Instant::now();
                         if is_ponder_search && !ext_stop.load(std::sync::atomic::Ordering::Relaxed)
                             && si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed) == 0 {
-                            // Search hit max depth — wait for external stop or ponderhit
                             while !ext_stop.load(std::sync::atomic::Ordering::Relaxed)
                                 && si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed) == 0 {
                                 std::thread::sleep(std::time::Duration::from_millis(1));
                             }
                         }
-                        // Output ponder move from PV if available.
-                        // Validate PV[0] matches best_move: if the search was stopped
-                        // mid-iteration, the PV may belong to a different root move.
+                        let wait_elapsed = wait_start.elapsed();
+
                         let pv_consistent = si.pv_len[0] >= 2
                             && si.pv_table[0][1] != crate::types::NO_MOVE
                             && move_from(si.pv_table[0][0]) == move_from(best_move)
                             && move_to(si.pv_table[0][0]) == move_to(best_move);
+                        // Measure println wall-clock — if it blocks on stdout (slow
+                        // reader on the other end), this is how we catch it.
+                        let pr_start = std::time::Instant::now();
                         if pv_consistent {
                             println!("bestmove {} ponder {}", move_to_uci(best_move), move_to_uci(si.pv_table[0][1]));
                         } else {
                             println!("bestmove {}", move_to_uci(best_move));
+                        }
+                        // Explicit flush: default stdout is LineWriter which *should*
+                        // flush on \n, but when piped to another process (cutechess)
+                        // there are edge cases where writes sit in a buffer. This
+                        // guarantees cutechess sees bestmove immediately.
+                        use std::io::Write;
+                        let _ = std::io::stdout().lock().flush();
+                        let pr_elapsed = pr_start.elapsed();
+                        // Log anything suspiciously long to stderr (cutechess doesn't
+                        // account stderr against the engine clock).
+                        if pr_elapsed.as_millis() > 20
+                            || wait_elapsed.as_millis() > 2000
+                            || (!is_ponder_search && search_elapsed.as_millis() > (si.time_limit + 500) as u128)
+                        {
+                            eprintln!(
+                                "TM_TRACE search={}ms time_limit={}ms wait={}ms println={}ms ponder={} pv_ok={}",
+                                search_elapsed.as_millis(),
+                                si.time_limit,
+                                wait_elapsed.as_millis(),
+                                pr_elapsed.as_millis(),
+                                is_ponder_search, pv_consistent,
+                            );
                         }
                         si // return SearchInfo for reuse
                     }).expect("Failed to spawn search thread"));
