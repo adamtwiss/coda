@@ -1985,12 +1985,18 @@ fn negamax(
 
             if score >= probcut_beta {
                 info.stats.probcut_cutoffs += 1;
-                // Dampen toward beta — score was verified at probcut_beta, not beta
-                // (Stockfish: value - (probCutBeta - beta), Reckless: (3*score+beta)/4)
-                let dampened = score - (probcut_beta - beta);
-                // Store dampened score in TT
-                info.tt.store(board.hash, depth - 3, score_to_tt(dampened, ply), TT_FLAG_LOWER, mv, raw_eval, false);
-                return dampened;
+                // TT stores the RAW verified score (a tighter lower bound than
+                // the dampened value) and preserves the sticky PV flag — matches
+                // Stockfish search.cpp:994-995. Prior code stored `dampened` and
+                // hardcoded tt_pv=false, losing both pruning information on
+                // future probes and the PV stickiness used by LMR reduction
+                // decisions. Return value is still dampened — score was
+                // verified at probcut_beta = beta+margin, not beta.
+                info.tt.store(
+                    board.hash, depth - 3, score_to_tt(score, ply),
+                    TT_FLAG_LOWER, mv, raw_eval, tt_pv,
+                );
+                return score - (probcut_beta - beta);
             }
         }
     }
