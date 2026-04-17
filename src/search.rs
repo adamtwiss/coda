@@ -2693,8 +2693,21 @@ fn negamax(
         }
     }
 
-    // Update pawn-hash correction history when we have a reliable score
+    // Update pawn-hash correction history when we have a reliable score.
+    //
+    // Skip when best_move is a capture/promotion: the score delta
+    // (best_score - raw_eval) is then dominated by material change, not the
+    // positional-eval miscalibration correction history is trying to learn.
+    // Training on noisy bestmoves pollutes the tables. Matches Stockfish
+    // (search.cpp:1495: `!(bestMove && pos.capture(bestMove))`) and Reckless
+    // (search.rs:1085: `|| best_move.is_noisy()`).
+    let best_move_noisy = best_move != NO_MOVE && {
+        board.piece_type_at(move_to(best_move)) != NO_PIECE_TYPE
+            || move_flags(best_move) == FLAG_EN_PASSANT
+            || is_promotion(best_move)
+    };
     if !in_check && best_move != NO_MOVE
+        && !best_move_noisy
         && info.excluded_move[ply_u] == NO_MOVE
         && best_score > alpha_orig
         && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
