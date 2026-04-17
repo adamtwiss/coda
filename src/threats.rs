@@ -561,6 +561,17 @@ fn push_threats_for_piece(
     // blocker). If S is the right kind of slider for that ray direction,
     // emit a (S, cp, sq) delta with `add`.
     //
+    // Fast pre-filter: if no sliders lie on any empty-board ray from
+    // `square`, no slider can x-ray to sq through a blocker and section 2b
+    // has nothing to emit. Culls most endgame/quiet positions before the
+    // 8-direction ray walks below (measured ~5% of total CPU before filter).
+    // Skip 2b only — section 3 (non-slider attackers) must still run.
+    let ortho_ray_mask   = rook_attacks(square, 0);
+    let diag_ray_mask    = bishop_attacks(square, 0);
+    let ortho_sliders = (pieces_bb[ROOK as usize] | pieces_bb[QUEEN as usize]) & ortho_ray_mask;
+    let diag_sliders  = (pieces_bb[BISHOP as usize] | pieces_bb[QUEEN as usize]) & diag_ray_mask;
+    let do_2b = ortho_sliders != 0 || diag_sliders != 0;
+
     // Build occ_for_rays with sq treated as empty — so ray walks from
     // sq's neighbours don't hit sq itself as Y.
     let occ_rays = occ & !(1u64 << square);
@@ -576,6 +587,12 @@ fn push_threats_for_piece(
     ];
 
     for &(df, dr, ortho) in DIRS.iter() {
+        if !do_2b { break; }
+        // Per-direction cull: skip orthogonal directions if no rooks/queens
+        // are on any ortho ray from sq; same for diagonals.
+        if (ortho && ortho_sliders == 0) || (!ortho && diag_sliders == 0) {
+            continue;
+        }
         // Walk in direction (df, dr) from sq until first occupied square = Y.
         let mut f = file + df;
         let mut r = rank + dr;
