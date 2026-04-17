@@ -21,10 +21,43 @@ use crate::board::Board;
 use crate::types::*;
 
 // Network dimensions
-pub const NNUE_INPUT_SIZE: usize = 12288; // 16 buckets × 12 piece types × 64 squares
+/// PSQ inputs per king bucket (12 piece types × 64 squares).
+pub const PSQ_INPUTS_PER_BUCKET: usize = 768;
+/// Default PSQ input size for 16-bucket layouts. Per-net actual size is
+/// `net.num_king_buckets * PSQ_INPUTS_PER_BUCKET`.
+pub const NNUE_INPUT_SIZE: usize = 16 * PSQ_INPUTS_PER_BUCKET;
 pub const NNUE_OUTPUT_BUCKETS: usize = 8;
-pub const NNUE_KING_BUCKETS: usize = 16;
+/// Maximum king bucket count we allocate static tables for (covers all
+/// known layouts: uniform/consensus=16, Reckless=10).
+pub const NNUE_MAX_KING_BUCKETS: usize = 16;
 const NNUE_NUM_PIECE_TYPES: usize = 12;
+
+/// King bucket layout identifier. Mirrors `bullet_convert::KbLayout` so the
+/// values round-trip through the .nnue header byte.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum KbLayout {
+    Uniform = 0,
+    Consensus = 1,
+    Reckless = 2,
+}
+
+impl KbLayout {
+    pub fn from_id(id: u8) -> Option<Self> {
+        match id {
+            0 => Some(KbLayout::Uniform),
+            1 => Some(KbLayout::Consensus),
+            2 => Some(KbLayout::Reckless),
+            _ => None,
+        }
+    }
+
+    pub fn default_count(self) -> usize {
+        match self {
+            KbLayout::Uniform | KbLayout::Consensus => 16,
+            KbLayout::Reckless => 10,
+        }
+    }
+}
 
 // Quantization
 const QA: i32 = 255;  // accumulator scale (CReLU/SCReLU clip max)
@@ -51,25 +84,48 @@ const CONSENSUS_BUCKETS: [[usize; 8]; 4] = [
     [ 3,  7, 11, 11, 13, 13, 15, 15], // file d/e
 ];
 
+/// Reckless king bucket layout: 10 buckets. Per-file ranks 1-2 (4 + 4),
+/// one bucket rank 3, one bucket ranks 4-8. See Reckless/src/nnue.rs:71-80.
+/// Indexed by [sq] directly (already mirror-aware via Bullet-style [0,1,2,3,3,2,1,0]).
+#[rustfmt::skip]
+const RECKLESS_BUCKETS_FLAT: [usize; 64] = [
+    0, 1, 2, 3, 3, 2, 1, 0,
+    4, 5, 6, 7, 7, 6, 5, 4,
+    8, 8, 8, 8, 8, 8, 8, 8,
+    9, 9, 9, 9, 9, 9, 9, 9,
+    9, 9, 9, 9, 9, 9, 9, 9,
+    9, 9, 9, 9, 9, 9, 9, 9,
+    9, 9, 9, 9, 9, 9, 9, 9,
+    9, 9, 9, 9, 9, 9, 9, 9,
+];
+
 pub fn init_nnue() {
-    init_king_buckets(false);
+    init_king_buckets_layout(KbLayout::Uniform);
 }
 
+/// Legacy bool-based initialiser kept for existing callers. Maps `false`
+/// → Uniform, `true` → Consensus.
 pub fn init_king_buckets(consensus: bool) {
+    init_king_buckets_layout(if consensus { KbLayout::Consensus } else { KbLayout::Uniform });
+}
+
+pub fn init_king_buckets_layout(layout: KbLayout) {
     for sq in 0..64 {
         let file = sq % 8;
         let rank = sq / 8;
 
+        // File mirror applies to Uniform and Consensus; Reckless bakes the
+        // mirror into its flat table already (see RECKLESS_BUCKETS_FLAT).
         let (mirrored_file, mirror) = if file >= 4 {
             (7 - file, true)
         } else {
             (file, false)
         };
 
-        let bucket = if consensus {
-            CONSENSUS_BUCKETS[mirrored_file][rank]
-        } else {
-            mirrored_file * 4 + rank / 2 // uniform layout
+        let bucket = match layout {
+            KbLayout::Uniform   => mirrored_file * 4 + rank / 2,
+            KbLayout::Consensus => CONSENSUS_BUCKETS[mirrored_file][rank],
+            KbLayout::Reckless  => RECKLESS_BUCKETS_FLAT[sq],
         };
 
         unsafe {
@@ -1462,6 +1518,11 @@ pub struct NNUENet {
     pub threat_weights: Vec<i8>,  // [num_threat_features × hidden_size] i8 weights
     pub num_threat_features: usize,
     pub has_threats: bool,
+    /// Number of king buckets in this net (10 for Reckless, 16 for others).
+    /// PSQ weight block is sized `num_king_buckets * 768 * hidden_size`.
+    pub num_king_buckets: usize,
+    /// King bucket layout identifier — drives which static lookup table is used.
+    pub kb_layout: KbLayout,
     pub use_sparse_l1: std::sync::atomic::AtomicBool, // feature flag: sparse L1 matmul
     pub has_avx2: bool,
     pub has_avx512: bool,
@@ -1502,6 +1563,9 @@ impl NNUENet {
         let mut consensus_buckets = false; // bit 5: consensus king bucket layout
         let mut has_threats = false; // bit 6: threat features (v9)
         let mut num_threat_features = 0usize;
+        let mut extended_kb = false; // bit 7: extended KB header follows
+        let mut num_king_buckets: usize = 16; // default (uniform/consensus)
+        let mut kb_layout = KbLayout::Uniform;
         let hidden_size: usize;
 
         match version {
@@ -1536,21 +1600,39 @@ impl NNUENet {
                 if flags & 4 != 0 { l1_scale = 64; } // int8 L1 weights
                 bucketed_hidden = flags & 8 != 0; // output buckets baked into L1/L2
                 dual_l1 = flags & 16 != 0; // dual L1 activation (CReLU+SCReLU)
-                consensus_buckets = flags & 32 != 0; // consensus king bucket layout
+                consensus_buckets = flags & 32 != 0; // consensus king bucket layout (legacy 16-bucket)
                 has_threats = flags & 64 != 0; // v9 threat features
+                extended_kb = flags & 128 != 0; // bit 7: extended KB header
                 let ft_size = read_u16(reader)? as usize;
                 l1_size = read_u16(reader)? as usize;
                 l2_size = read_u16(reader)? as usize;
                 if has_threats {
                     num_threat_features = read_u32(reader)? as usize;
                 }
+                if extended_kb {
+                    // Two extra bytes follow: kb_count (u8), kb_layout_id (u8).
+                    num_king_buckets = read_u8(reader)? as usize;
+                    let layout_id = read_u8(reader)?;
+                    kb_layout = KbLayout::from_id(layout_id)
+                        .ok_or_else(|| format!("unknown kb_layout_id: {}", layout_id))?;
+                    // Consistency check: layout's default count matches unless
+                    // caller has intentionally overridden it (rare).
+                    if !(1..=NNUE_MAX_KING_BUCKETS).contains(&num_king_buckets) {
+                        return Err(format!("invalid num_king_buckets: {}", num_king_buckets));
+                    }
+                } else {
+                    // Legacy 16-bucket path: consensus bit 5 picks layout.
+                    kb_layout = if consensus_buckets { KbLayout::Consensus } else { KbLayout::Uniform };
+                    num_king_buckets = 16;
+                }
                 hidden_size = ft_size;
             }
             _ => return Err(format!("unsupported NNUE version: {}", version)),
         };
 
-        // Read input weights
-        let mut input_weights = vec![0i16; NNUE_INPUT_SIZE * hidden_size];
+        // Read input weights (PSQ block sized by kb_count × 768).
+        let psq_input_size = num_king_buckets * PSQ_INPUTS_PER_BUCKET;
+        let mut input_weights = vec![0i16; psq_input_size * hidden_size];
         read_i16_slice(reader, &mut input_weights)?;
 
         // Read input biases
@@ -1620,14 +1702,18 @@ impl NNUENet {
             output_bias[i] = read_i32(reader)?;
         }
 
-        // Reinitialise king bucket layout if net uses consensus layout
-        if consensus_buckets {
-            init_king_buckets(true);
-        }
+        // Initialise king bucket table from this net's layout. Affects the
+        // global `KING_BUCKET[64]` lookup, which search/eval read for every
+        // king square. Multi-net loads must re-run this on each load.
+        init_king_buckets_layout(kb_layout);
 
         let activation = if use_pairwise { "pairwise" } else if use_screlu { "SCReLU" } else { "CReLU" };
         let dual_str = if dual_l1 { " dual" } else { "" };
-        let bucket_str = if consensus_buckets { " consensus-kb" } else { "" };
+        let bucket_str = match kb_layout {
+            KbLayout::Uniform   => "",
+            KbLayout::Consensus => " consensus-kb",
+            KbLayout::Reckless  => " reckless-kb10",
+        };
         let threat_str = if has_threats { format!(" threats={}", num_threat_features) } else { String::new() };
         if l1_size > 0 {
             if l2_size > 0 {
@@ -1770,6 +1856,8 @@ impl NNUENet {
             threat_weights,
             num_threat_features,
             has_threats,
+            num_king_buckets,
+            kb_layout,
             use_sparse_l1: std::sync::atomic::AtomicBool::new(false), // disabled: dense int8 is faster at H=1024
             has_avx2,
             has_avx512,
@@ -2835,7 +2923,10 @@ struct FinnyEntry {
     valid: bool,
 }
 
-const FINNY_SIZE: usize = 2 * NNUE_KING_BUCKETS * 2; // [perspective][bucket][mirror]
+// Finny slots sized for the maximum supported bucket count. Nets with fewer
+// buckets (e.g. Reckless 10) use the low indices only; remaining slots sit
+// unused but cost nothing significant (~1KB per slot × 12 unused ≈ 12KB).
+const FINNY_SIZE: usize = 2 * NNUE_MAX_KING_BUCKETS * 2; // [perspective][bucket][mirror]
 
 /// Accumulator stack with lazy materialization and Finny table.
 pub struct NNUEAccumulator {
@@ -3538,6 +3629,52 @@ mod tests {
         assert!(king_mirror(4));
         // a1 no mirror
         assert!(!king_mirror(0));
+    }
+
+    /// Verify the Reckless king bucket layout matches Reckless's
+    /// INPUT_BUCKETS_LAYOUT from `Reckless/src/nnue.rs:71-80` exactly.
+    /// Catches drift if either the flat table here or the derivation in
+    /// `init_king_buckets_layout` changes incompatibly.
+    #[test]
+    fn test_reckless_king_buckets() {
+        init_king_buckets_layout(KbLayout::Reckless);
+        #[rustfmt::skip]
+        const EXPECTED: [usize; 64] = [
+            0, 1, 2, 3, 3, 2, 1, 0,
+            4, 5, 6, 7, 7, 6, 5, 4,
+            8, 8, 8, 8, 8, 8, 8, 8,
+            9, 9, 9, 9, 9, 9, 9, 9,
+            9, 9, 9, 9, 9, 9, 9, 9,
+            9, 9, 9, 9, 9, 9, 9, 9,
+            9, 9, 9, 9, 9, 9, 9, 9,
+            9, 9, 9, 9, 9, 9, 9, 9,
+        ];
+        for sq in 0..64 {
+            assert_eq!(
+                king_bucket(sq), EXPECTED[sq],
+                "reckless kb mismatch at sq={} got {} expected {}",
+                sq, king_bucket(sq), EXPECTED[sq]
+            );
+        }
+        // Mirror flag still toggles on files e-h (Reckless's layout bakes
+        // mirror into bucket ids but the rest of inference still needs the
+        // mirror flag for feature indexing).
+        assert!(king_mirror(4));   // e1
+        assert!(!king_mirror(0));  // a1
+        // Restore default layout for subsequent tests.
+        init_king_buckets_layout(KbLayout::Uniform);
+    }
+
+    #[test]
+    fn test_kb_layout_roundtrip() {
+        // File-format byte must round-trip through KbLayout::from_id.
+        assert_eq!(KbLayout::from_id(0), Some(KbLayout::Uniform));
+        assert_eq!(KbLayout::from_id(1), Some(KbLayout::Consensus));
+        assert_eq!(KbLayout::from_id(2), Some(KbLayout::Reckless));
+        assert_eq!(KbLayout::from_id(3), None);
+        assert_eq!(KbLayout::Uniform.default_count(), 16);
+        assert_eq!(KbLayout::Consensus.default_count(), 16);
+        assert_eq!(KbLayout::Reckless.default_count(), 10);
     }
 
     #[test]
