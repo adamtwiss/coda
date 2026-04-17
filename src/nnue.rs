@@ -4091,6 +4091,115 @@ mod tests {
         assert!(p > 0, "Pawn removal gave non-positive delta: {}", p);
     }
 
+    /// Deterministic PSQ fuzzer: plays random legal games from several
+    /// positions, after each move compares the incremental PSQ
+    /// accumulator (push(dirty) + materialize) against a full refresh
+    /// on a fresh accumulator. Finds mirror/bucket/capture/castling/EP
+    /// bugs that curated positions can miss.
+    ///
+    /// Counterpart to the threat_accum fuzzer — same approach, for the
+    /// PSQ (king-piece-square) half of the net.
+    #[test]
+    fn fuzz_psq_accumulator() {
+        use crate::board::Board;
+        use crate::movegen::generate_legal_moves;
+        use crate::search::build_dirty_piece;
+        use crate::types::{flip_color, move_from, move_to, NO_PIECE_TYPE};
+
+        crate::init();
+
+        let net_path = ["nets/net-v9-768th16x32-w15-e200s200-xray-fixed.nnue",
+                        "nets/net-v9-768th16x32-w0-e400s400-noxray.nnue",
+                        "net.nnue"]
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .map(|p| p.to_string());
+        let net_path = match net_path {
+            Some(p) => p,
+            None => { eprintln!("Skipping PSQ fuzzer: no net available"); return; }
+        };
+        let net = match NNUENet::load(&net_path) {
+            Ok(n) => n,
+            Err(e) => { eprintln!("Skipping PSQ fuzzer: {}", e); return; }
+        };
+        let h = net.hidden_size;
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "4k3/P6P/8/8/8/8/p6p/4K3 w - - 0 1", // promotion testbed
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const MAX_PLIES: usize = 80;
+        const GAMES_PER_FEN: usize = 10;
+
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for game in 0..GAMES_PER_FEN {
+                let seed: u32 = 0xC0DA_BEEFu32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::from_fen(fen);
+
+                let mut acc = NNUEAccumulator::new(h);
+                acc.force_recompute(&net, &board);
+
+                for ply in 0..MAX_PLIES {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+
+                    let us = board.side_to_move;
+                    let them = flip_color(us);
+                    let moved_pt = board.piece_type_at(move_from(mv));
+                    let captured_pt = board.piece_type_at(move_to(mv));
+                    let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt);
+
+                    let ok = board.make_move(mv);
+                    assert!(ok, "psq fuzz {} game {} ply {}: move {} illegal?",
+                        fen_idx, game, ply, crate::types::move_to_uci(mv));
+
+                    acc.push(dirty);
+                    acc.materialize(&net, &board);
+
+                    // Reference: fresh accumulator, full refresh on post-move board.
+                    let mut ref_acc = NNUEAccumulator::new(h);
+                    ref_acc.force_recompute(&net, &board);
+
+                    let got_w = &acc.stack[acc.top].white;
+                    let got_b = &acc.stack[acc.top].black;
+                    let ref_w = &ref_acc.stack[ref_acc.top].white;
+                    let ref_b = &ref_acc.stack[ref_acc.top].black;
+
+                    for (name, got, refv) in [
+                        ("white", got_w, ref_w),
+                        ("black", got_b, ref_b),
+                    ] {
+                        if got[..h] != refv[..h] {
+                            let j = (0..h).find(|&j| got[j] != refv[j]).unwrap();
+                            panic!(
+                                "psq fuzz divergence: fen_idx={} game={} ply={} move={} \
+                                 pov={} channel={} incr={} refresh={} seed={:#x}",
+                                fen_idx, game, ply,
+                                crate::types::move_to_uci(mv),
+                                name, j, got[j], refv[j], seed,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Test Finny table consistency: incremental update vs full recompute.
     #[test]
     fn test_finny_incremental_consistency() {

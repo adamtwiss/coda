@@ -555,11 +555,12 @@ impl MovePicker {
 
             let mut score = history.main_score(from, to, self.threats);
 
-            // Continuation history: plies 1,2 at 3x weight, plies 4,6 at 1x weight.
-            // Matches Obsidian/Alexandria/Berserk pattern.
+            // Continuation history: plies 1,2 at CONT_HIST_MULT weight, plies 4,6 at 1x weight.
+            // Matches Obsidian/Alexandria/Berserk pattern (default 3).
             if piece != NO_PIECE {
                 let gp = go_piece(piece);
-                let weights = [3i32, 3, 1, 1]; // ply-1, ply-2, ply-4, ply-6
+                let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
+                let weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
                 for (i, &w) in weights.iter().enumerate() {
                     if let Some(sub_ptr) = self.cont_hist_subs[i] {
                         let sub = unsafe { &*sub_ptr };
@@ -651,7 +652,8 @@ impl MovePicker {
 
                 if piece != NO_PIECE {
                     let gp = go_piece(piece);
-                    let weights = [3i32, 3, 1, 1];
+                    let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
+                    let weights = [cm, cm, 1i32, 1];
                     for (i, &w) in weights.iter().enumerate() {
                         if let Some(sub_ptr) = self.cont_hist_subs[i] {
                             let sub = unsafe { &*sub_ptr };
@@ -744,19 +746,20 @@ fn mvv_lva(board: &Board, m: Move) -> i32 {
     let to = move_to(m);
     let from = move_from(m);
 
+    let mult = crate::search::MVV_CAP_MULT.load(std::sync::atomic::Ordering::Relaxed);
     let target_pt = board.piece_type_at(to);
     if target_pt == NO_PIECE_TYPE {
         // En passant
         if move_flags(m) == FLAG_EN_PASSANT {
-            return see_value(PAWN) * 16;
+            return see_value(PAWN) * mult;
         }
         return 0;
     }
 
     let _attacker_pt = board.piece_type_at(from);
 
-    // MVV only (no LVA), x16 — matches Obsidian/Alexandria/Berserk
-    see_value(target_pt) * 16
+    // MVV only (no LVA), multiplier SPSA-tunable (Obsidian/Alexandria/Berserk default 16)
+    see_value(target_pt) * mult
 }
 
 /// Check if a move is a capture.
@@ -1100,5 +1103,58 @@ impl QMovePicker {
         }
 
         NO_MOVE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::FEAT_4D_HISTORY;
+    use std::sync::atomic::Ordering;
+
+    /// Regression test: FEAT_4D_HISTORY toggles which slice of main hist is read.
+    ///
+    /// When 4D is on, threats at from/to select among 4 tables:
+    /// main[from_threatened][to_threatened][from][to].
+    /// When 4D is off, main_score/main_entry must always hit [0][0][...],
+    /// regardless of the threats bitboard.
+    ///
+    /// This guards the A/B experiment branch: a future change to the
+    /// 4D indexing must not accidentally corrupt the 2D fallback path.
+    #[test]
+    fn history_4d_flag_routes_correctly() {
+        let mut h = History::new();
+        // Give each table slot a distinct value so we can prove which branch ran.
+        h.main[0][0][12][28] = 1;
+        h.main[0][1][12][28] = 2;
+        h.main[1][0][12][28] = 3;
+        h.main[1][1][12][28] = 4;
+
+        // Threats bitboard with BOTH from (12) and to (28) set:
+        let threats: Threats = (1u64 << 12) | (1u64 << 28);
+
+        let saved = FEAT_4D_HISTORY.load(Ordering::Relaxed);
+
+        // 4D on: lookup must see slot [1][1] = 4.
+        FEAT_4D_HISTORY.store(true, Ordering::Relaxed);
+        assert_eq!(h.main_score(12, 28, threats), 4,
+            "4D on: expected main[1][1][12][28]=4");
+        *h.main_entry(12, 28, threats) = 40;
+        assert_eq!(h.main[1][1][12][28], 40, "4D on: main_entry wrote to [1][1]");
+        h.main[1][1][12][28] = 4; // restore
+
+        // 4D off: lookup must always see slot [0][0] = 1 regardless of threats.
+        FEAT_4D_HISTORY.store(false, Ordering::Relaxed);
+        assert_eq!(h.main_score(12, 28, threats), 1,
+            "4D off: expected main[0][0][12][28]=1");
+        assert_eq!(h.main_score(12, 28, 0), 1,
+            "4D off: expected main[0][0] with zero threats");
+        *h.main_entry(12, 28, threats) = 10;
+        assert_eq!(h.main[0][0][12][28], 10, "4D off: main_entry wrote to [0][0]");
+        // The other slots must not have been touched by the 2D write path.
+        assert_eq!(h.main[1][1][12][28], 4, "4D off: [1][1] unchanged");
+
+        // Restore original flag so other tests are unaffected.
+        FEAT_4D_HISTORY.store(saved, Ordering::Relaxed);
     }
 }
