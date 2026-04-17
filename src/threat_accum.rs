@@ -185,25 +185,33 @@ impl ThreatStack {
     #[inline]
     pub fn can_update(&self, pov: Color) -> Option<usize> {
         for i in (0..self.index).rev() {
-            if self.stack[i].accurate[pov as usize] {
-                return Some(i);
-            }
-
-            // Check the entry at i+1 for king crossing e-file
+            // Validate the move that produced entry[i+1] BEFORE accepting
+            // entry[i] as an ancestor. If the move at i+1 is a king crossing
+            // (changes mirror for this perspective) or has overflowed deltas,
+            // we cannot replay from any ancestor at or below i — the stored
+            // deltas would apply with the wrong mirror or be incomplete.
+            //
+            // Earlier code returned Some(i) on `accurate[i]` *before* doing
+            // this check, so a king-file-crossing at the current ply slipped
+            // through whenever the prior ply was accurate (the common case).
+            // Caught by the threat-accumulator fuzzer on 2026-04-17.
             let entry = &self.stack[i + 1];
-            if entry.mv == NO_MOVE {
-                continue; // null move, safe
-            }
-            if entry.delta.overflowed() {
-                return None; // overflow means incomplete deltas, can't replay
-            }
-            if entry.moved_pt == KING && entry.moved_color == pov {
-                let from = move_from(entry.mv);
-                let to = move_to(entry.mv);
-                if (from % 8 >= 4) != (to % 8 >= 4) {
-                    // This perspective's king crossed e-file — mirroring changed
+            if entry.mv != NO_MOVE {
+                if entry.delta.overflowed() {
                     return None;
                 }
+                if entry.moved_pt == KING && entry.moved_color == pov {
+                    let from = move_from(entry.mv);
+                    let to = move_to(entry.mv);
+                    if (from % 8 >= 4) != (to % 8 >= 4) {
+                        // This perspective's king crossed e-file — mirroring changed.
+                        return None;
+                    }
+                }
+            }
+
+            if self.stack[i].accurate[pov as usize] {
+                return Some(i);
             }
         }
         None
@@ -601,6 +609,130 @@ mod incremental_tests {
             "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
             &["a7a8q"],
         );
+    }
+
+    /// Deterministic fuzzer: plays random legal moves from several
+    /// starting positions and asserts incremental == refresh after
+    /// every move. Covers move-type combinations that curated scenarios
+    /// can miss (EP in slider ray, promotion into pin, castling through
+    /// x-ray target, etc.).
+    ///
+    /// This is the counterpart to the curated scenario list above —
+    /// those pin down specific failure modes; this one finds whatever
+    /// we haven't thought of. If it fires on a new pattern, add a
+    /// curated scenario for that pattern and keep the fuzzer for
+    /// regression.
+    #[test]
+    fn fuzz_random_games() {
+        crate::init();
+        let nf = num_threat_features();
+        let weights = make_weights(nf);
+
+        // Several varied starting positions — opening, kiwipete middle-game,
+        // tactical midgame with heavy slider activity, and an endgame.
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "4k3/P6P/8/8/8/8/p6p/4K3 w - - 0 1", // promotion testbed
+        ];
+
+        // Deterministic xorshift32 PRNG — reproducible failures.
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *state = x;
+            x
+        }
+
+        const MAX_PLIES_PER_GAME: usize = 120;
+        const GAMES_PER_FEN: usize = 20;
+
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for game in 0..GAMES_PER_FEN {
+                let seed: u32 = 0xDEADBEEFu32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::new();
+                board.set_fen(fen);
+                board.generate_threat_deltas = true;
+
+                let mut incr = ThreatStack::new(H);
+                incr.active = true;
+                incr.refresh(&weights, nf, &board, WHITE);
+                incr.refresh(&weights, nf, &board, BLACK);
+
+                let mut refs = ThreatStack::new(H);
+                refs.active = true;
+                refs.refresh(&weights, nf, &board, WHITE);
+                refs.refresh(&weights, nf, &board, BLACK);
+
+                for ply in 0..MAX_PLIES_PER_GAME {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 {
+                        break; // stalemate or checkmate
+                    }
+                    let idx = (next_u32(&mut rng) as usize) % legal.len;
+                    let mv = legal.moves[idx];
+
+                    incr.push(NO_MOVE, NO_PIECE_TYPE);
+                    refs.push(NO_MOVE, NO_PIECE_TYPE);
+
+                    let ok = board.make_move(mv);
+                    assert!(ok, "fuzz {} game {} ply {}: move {} illegal?",
+                        fen_idx, game, ply, crate::types::move_to_uci(mv));
+
+                    // Absorb deltas into incremental stack.
+                    {
+                        let entry = incr.current_mut();
+                        entry.delta.clear();
+                        for d in board.threat_deltas.iter() { entry.delta.push(*d); }
+                        let ul = board.undo_stack.len();
+                        if ul > 0 {
+                            let u = &board.undo_stack[ul - 1];
+                            entry.mv = u.mv;
+                            if u.mv != NO_MOVE {
+                                entry.moved_pt = board.mailbox[move_to(u.mv) as usize];
+                                entry.moved_color = crate::types::flip_color(board.side_to_move);
+                            }
+                        }
+                    }
+
+                    incr.ensure_computed(&weights, nf, &board);
+                    refs.refresh(&weights, nf, &board, WHITE);
+                    refs.refresh(&weights, nf, &board, BLACK);
+
+                    for pov in [WHITE, BLACK] {
+                        let a = incr.values(pov);
+                        let b = refs.values(pov);
+                        if a != b {
+                            // Find first divergent channel for a useful panic message.
+                            let mut first = None;
+                            for j in 0..H {
+                                if a[j] != b[j] {
+                                    first = Some((j, a[j], b[j]));
+                                    break;
+                                }
+                            }
+                            let (j, av, bv) = first.unwrap();
+                            panic!(
+                                "fuzz divergence: fen_idx={} game={} ply={} move={} pov={} \
+                                 channel={} incr={} refresh={} seed={:#x}",
+                                fen_idx, game, ply,
+                                crate::types::move_to_uci(mv),
+                                if pov == WHITE { "W" } else { "B" },
+                                j, av, bv, seed,
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Sanity: manual i16 value comparison across all 256 channels
