@@ -138,20 +138,46 @@ fine — that's where top engines use it.
 - **Activation choice differs by layer** — PlentyChess found CReLU best for L1, SCReLU for L2
 - **L1 activation regularization** (L1-norm penalty on FT outputs) drives sparsity for sparse matmul
 
-## Current Status (updated 2026-04-16)
+## Current Status (updated 2026-04-17)
 
-### v9 Threat Architecture — IMPLEMENTED AND WORKING
+### v9 Threat Architecture — IMPLEMENTED AND WORKING (with x-rays)
 
-The v9 architecture (768 accum + 67K threats + 16→32 hidden) is fully implemented
-on `feature/threat-inputs` branch. Matches Reckless's architecture exactly.
+The v9 architecture (768 accum + 67K threats + 16→32 hidden, WITH x-rays)
+is fully implemented on `feature/threat-inputs` branch. Matches Reckless's
+architecture with one addition: we track two-deep x-ray targets through
+sliders, Reckless only tracks first-piece-on-ray.
 
 **Key results:**
-- **Scale bug fixed**: converter was rescaling threats QA=255→QA=64 (4× too weak). Recovered ~570 Elo.
+- **Scale bug fixed** (2026-04-14): converter was rescaling threats QA=255→QA=64 (4× too weak). Recovered ~570 Elo.
+- **X-ray delta bug fixed** (2026-04-17): three bugs in incremental threat
+  accumulator update silently drifted after every move with slider-ray
+  geometry change. With the fix, the x-ray-trained net (w0 s200) went from
+  **-60/-85 Elo regression to +110 Elo H1** vs the no-x-ray baseline at
+  s200. ~200 Elo swing from one structural correctness fix. See
+  `project_xray_bug_fix.md` memory entry.
 - **Tune gains**: +104 Elo (round 1) + +30 Elo (round 2) from SPSA recalibration.
+- **w15 vs w0 at s200**: +8.1 Elo H1 (both x-ray-fixed). Small but consistent
+  positive — w15 adopted as production default.
 - **WAC**: v9 169/201 (84%) vs v5 152/201 (76%) — eval quality is real.
-- **Current gap to v5**: ~-163 Elo (NPS accounts for ~80-100 of that).
-- **NPS**: 545K (v9) vs 1535K (v5). At parity with Reckless single-threaded.
+- **NPS**: 545K (v9) vs 1535K (v5). Single-threaded Reckless is ~960K — real
+  NPS gap, not a threading artefact. Const-generic and Finny work still on
+  the table.
 - **s200→s400**: +19.5 Elo (H1). Training quality improving.
+
+### Current v9 gap to Reckless (~400 Elo raw) — component view
+
+| Source | Before x-ray fix | After x-ray fix | Plausible ceiling |
+|--------|------------------|-----------------|-------------------|
+| NPS (1.76× gap) | ~100 | ~100 | ~50-70 with const generics + Finny work |
+| Training quality | 150-200 | ~50-100 | 20-40 |
+| SPSA maturity on fixed v9 eval | 80-120 | 80-120 | 20-30 post-retune |
+| Architecture micro-diffs (KBs, output buckets, clipped ReLU) | 30-60 | 30-60 | 10-20 |
+| Broken x-ray | -170 (banked) | — | — |
+| **Total gap** | **~400** | **~240-370** | **~100-160** |
+
+Realistic trajectory: +15-30 from no-ply-filter, +5-15 from consensus 16 KB,
++10-25 from Reckless 10 KB, +20-40 from SPSA retune on fixed eval, +20-30
+from x-ray s800. Stacking these should close another 80-140 Elo.
 
 ### What We Have
 - v9 inference: 768pw + 67K threats + 16→32 hidden, AVX2 SIMD, ThreatStack
@@ -163,22 +189,22 @@ on `feature/threat-inputs` branch. Matches Reckless's architecture exactly.
 - Register-blocked Finny table refresh
 - Consensus king buckets (production v5, +15 Elo proven)
 
-### Coda vs Top Engine Consensus (updated 2026-04-16)
+### Coda vs Top Engine Consensus (updated 2026-04-17)
 
 | Feature | Coda v9 | Consensus | Status |
 |---------|---------|-----------|--------|
 | Accum width | 768 per perspective | 640-2560 | ✓ Match (same as Reckless) |
 | FT activation | CReLU → pairwise | CReLU → pairwise | ✓ Match |
 | FT shift | >>9 | >>9 | ✓ Match |
-| King buckets | **16 (uniform)** | **Reckless: 10 custom** | **✗ DIFF — 60% more params** |
+| King buckets | **16 (uniform)** | **Reckless: 10 custom** | **✗ DIFF — queued for s200 test** |
 | L1 size | 16 | 16 (most) | ✓ Match |
 | L1 quant | i8 QB=64 | i8 QB=64 | ✓ Match |
 | **L1/L2 activation** | **SCReLU** | **Reckless: clipped ReLU** | **✗ DIFF** |
 | L2 size | 32 | 32 | ✓ Match |
 | **Output buckets** | **8 (uniform)** | **Reckless: 8 (non-uniform)** | **✗ DIFF** |
 | **Threat features** | **66,864** | **60-80K** | **✓ Match** |
+| **X-ray threats** | **Yes (2-deep, our extra)** | **Reckless: no** | **✓ Our win — +110 Elo proven** |
 | **NETWORK_SCALE** | **400** | **Reckless: 380** | **✗ DIFF (minor)** |
-| X-ray threats in training | Not yet | Reckless has them | In progress (Atlas) |
 | Sparse L1 (NNZ) | No | Reckless: Yes | ✗ (NPS only, not eval) |
 | Factoriser | None | Mixed | ✓ Correctly omitted |
 
@@ -208,71 +234,96 @@ not matter with narrow (16→32) hidden layers.
 ```
 Our uniform `(count-2)/4` wastes bucket capacity on rare endgame piece counts.
 
-### v9 Roadmap (updated 2026-04-16)
+### v9 Roadmap (updated 2026-04-17)
 
 **Merged to v9 trunk:**
 - Escape-capture bonuses: +3.6 Elo (H1 #390). Halves search tree.
-- Pawn history in LMR: trending +2.8 at 14K games (#384, likely H1 soon).
+- Pawn history in LMR: +3.1 Elo H1 (17.7K games, #384).
 - Bullet compatibility: semi-exclusion fix (correctness, Elo-neutral).
 - NPS optimizations: +17% (SIMD refresh, packed deltas, register blocking).
 - Two SPSA tune rounds: +134 cumulative Elo.
+- **X-ray delta generation fix (2026-04-17): +110 Elo H1** vs no-x-ray baseline.
+  Three structural bugs in `push_threats_for_piece` caused incremental threat
+  accumulator to drift after every slider geometry change. Regression tests in
+  `src/threat_accum.rs::incremental_tests` (16 scenarios) prevent recurrence.
 
-**Search experiments running:**
-- Threat-aware futility (#386): +4.4 at 1K games, still running.
-- Razoring (#389): +1.1 at 5K games, still running.
-- Threat-density LMR (#387): trending H0. Novel idea, doesn't work.
-- Threat-singular ext (#388): trending H0. Novel idea, doesn't work.
+**Search experiments (resolved):**
+- Threat-aware futility (#386): H1 +4.9 Elo ✓
+- Threat-density LMR (#387): H1 +1.3 Elo ✓
+- Threat-singular ext (#388): H0 ✗ (novel idea, didn't work)
+- Razoring (#389): H0 ✗
 
-**Next: SPSA retune** after #384 merges. 1000 iterations with `--scale-nps 250000`.
+**Next:** SPSA retune on x-ray-fixed v9 eval (tune #411 running), then
+architecture experiments queued below.
 
-### Training Experiment Queue (2026-04-16)
+### Training Methodology Principle (2026-04-17)
 
-All experiments at s200 (~5 hours each). Compare against current s200 baseline.
-Run on GPU hosts as they become free. Priority order reflects expected impact.
+**Test everything at s200 for iteration speed.** s200 runs in ~5 hours
+vs s800's ~24 hours — we can ablate 4-5 things in a day at s200 vs one at
+s800. Sequence:
 
-**Priority 1 — Architecture alignment with Reckless:**
+1. **s200** for all architecture/training experiments (filter, KBs, WDL, activations, etc.)
+2. **s200→s400** sanity extension for anything that wins at s200
+3. **Stacked s200** of winners before committing to s800 (catches anti-composing wins)
+4. **s800** only for the best-known-combination production candidate
 
-| # | Experiment | Change | Expected Impact | Notes |
-|---|-----------|--------|-----------------|-------|
-| T1 | Consensus king buckets | 16 buckets, fine-near coarse-far layout | +15-25 Elo | Code ready. Proven +15 on v5. |
-| T2 | Reckless king buckets | 10 buckets, Reckless exact layout | +15-30 Elo? | Fewer params = better trained. Test after T1. |
-| T3 | X-ray threats | Add x-ray features to training data | +15-30 Elo? | Atlas working on Bullet code. In progress. |
-| T4 | Clipped ReLU on hidden layers | `clamp(0,1)` instead of SCReLU | Unknown | Reckless uses this at #2 CCRL. Quick to test. |
+Each experiment changes ONE variable from the s200 baseline. Convert with
+`coda convert-bullet` and SPRT on OB at `--scale-nps 250000`. Losers are
+logged and shelved; winners are combined into a stacked config.
 
-**Priority 1b — Filtering (quick win, one-line change):**
+### SPSA Tune Starting Points (2026-04-17)
 
-| # | Experiment | Change | Expected Impact | Notes |
-|---|-----------|--------|-----------------|-------|
-| T5 | Remove ply >= 16 filter | Include opening positions | +5-15 Elo? | T80 has 14.3% well-scored opening data we discard. Bucket 0 starved. |
+Never submit a tune from a hand-maintained static params file — it will be
+stale vs current code defaults, wasting iterations climbing to a local
+optimum that's worse than where we are. Use `scripts/gen_tune_params.py` to
+generate the params file from `src/search.rs` tunables at submission time:
+
+```bash
+scripts/gen_tune_params.py > /tmp/params.txt
+scripts/ob_tune.py <branch> --params-file /tmp/params.txt --iterations 2500
+```
+
+**Known hazard**: tune #409 was submitted from stale `tune_full_48.txt`
+defaults. It converged to values better-than-stale but worse-than-current,
+SPRT H0 at -25 Elo. Tune #411 (re-run from current defaults) is the correct
+methodology baseline.
+
+### Training Experiment Queue (2026-04-17)
+
+All experiments at s200 (~5 hours each). Baseline: current s200 x-ray-fixed
+w15 net (`net-v9-768th16x32-w15-e200s200-xray-fixed`, `57A1D192`).
+
+**Priority 1 — Architecture alignment (sequential, stack the winners):**
+
+| # | Experiment | Change | Expected | Notes |
+|---|-----------|--------|----------|-------|
+| T1 | Consensus 16 KB | Fine-near/coarse-far layout | +5-15 Elo | Proven +15 on v5. Inference path already in `nnue.rs:47-52` via `init_king_buckets(true)`. |
+| T2 | Reckless 10 KB | 4×2 per-square rank 1-2, 1 bucket rank 3, 1 bucket ranks 4-8 | +10-25 Elo | Needs Bullet fork + inference changes. NPS bonus from fewer king-refresh triggers. |
+| T3 | No ply filter | Keep other filters; include openings | +15-30 Elo | Loss is ~16-18% lower at every SB vs filtered. Part memorization effect; SPRT will settle. |
+| T4 | Clipped ReLU on L1/L2 | `clamp(0,1)` instead of SCReLU | Unknown | Reckless uses this at #2 CCRL. Cheap to test. |
 
 **Priority 2 — Training quality:**
-| T6 | WDL 0.10 | Lower WDL blend | Unknown | v5 uses 0.07, current v9 = 0.0 (w0) |
-| T7 | WDL 0.15 | Medium WDL blend | Unknown | In progress alongside x-ray |
-| T8 | WDL 0.25 | Higher WDL blend | Unknown | Closer to consensus (0.3-0.4) |
-| T9 | Progressive WDL | Start w0, ramp to w15 over training | Unknown | Avoids early WDL noise, gets late WDL benefit |
-| T10 | Raise score filter to 20000 | Keep decisive non-mate positions | +0-5 Elo? | Low impact (6.6% more data) |
+
+| # | Experiment | Change | Expected | Notes |
+|---|-----------|--------|----------|-------|
+| T5 | WDL 0.25 | Higher blend | Unknown | Closer to Viridithas consensus; our w15 already H1 over w0. |
+| T6 | Progressive WDL | Start w0, ramp to w15 | Unknown | Avoid early WDL noise, get late benefit. |
+| T7 | Raise score filter to 20000 | Keep decisive non-mate | +0-5 | Low impact (6.6% data). |
 
 **Priority 3 — Output architecture:**
 
-| # | Experiment | Change | Expected Impact | Notes |
-|---|-----------|--------|-----------------|-------|
-| T11 | Reckless output buckets | Non-uniform piece count mapping | +5-10 Elo? | Better bucket efficiency for common material |
-| T12 | Lower final LR (1e-6) | Even more convergence | +0-5 Elo? | Current 2.4e-6 might already be optimal |
+| # | Experiment | Change | Expected | Notes |
+|---|-----------|--------|----------|-------|
+| T8 | Reckless output buckets | Non-uniform piece count mapping | +5-10 | Better bucket efficiency for common material. |
+| T9 | Lower final LR (1e-6) | Even more convergence | +0-5 | Current 2.4e-6 may already be optimal. |
 
-**Experiment methodology:**
-- Each experiment changes ONE variable from the s200 baseline config.
-- Convert with `coda convert-bullet` and SPRT against baseline s200 on OB.
-- Use `--scale-nps 250000` for v9 tests.
-- Positive results get promoted to longer training (s800+).
-- Multiple positives get combined into a single optimised config for production training.
+**Active training runs (2026-04-17):**
 
-**Current training runs (in progress):**
-
-| Run | GPU | Config | ETA |
-|-----|-----|--------|-----|
-| s800 (baseline) | GPU1 | Current v9 config, no x-ray, w0 | ~1-2 hours |
-| s200 + x-ray | GPU2 | Add x-ray threats, w0 | ~2-3 hours |
-| s200 + x-ray + w15 | GPU3 | Add x-ray + WDL 0.15 | Restarted (disk space) |
+| Run | Config | Status |
+|-----|--------|--------|
+| s800 x-ray w15 (production candidate) | Current v9 + x-rays + w15 | In progress (~24h) |
+| No-ply-filter s400 x-ray w15 | T3 validation | In progress |
+| SPSA tune #411 | 52 params, 2500 iters on `57A1D192` | Running |
 
 **NPS findings (2026-04-16):**
 

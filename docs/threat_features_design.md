@@ -1,5 +1,29 @@
 # Threat Features Design Doc
 
+## Status: IMPLEMENTED AND VALIDATED (2026-04-17)
+
+v9 architecture with threat features (including x-rays) is shipped on
+`feature/threat-inputs`. Key milestones:
+
+- **Inference & training**: complete. Converter, SIMD paths, incremental
+  deltas, Finny table, king-bucket mirroring all working.
+- **Correctness**: 16-scenario regression test suite in
+  `src/threat_accum.rs::incremental_tests` enforces incremental delta path
+  matches full refresh for every slider geometry change (including x-rays,
+  captures that reveal x-rays, and unrelated moves that shift sliders'
+  x-ray targets).
+- **Strength**: x-ray-fixed v9 at s200 is **+110 Elo H1** vs non-x-ray
+  baseline (test #407, 2026-04-17). Represents a ~200 Elo swing from the
+  pre-fix regression (-60 to -85) and validates the entire threat pipeline.
+- **Scale**: 66,864 threat features, i8 weights at QB=64, 768 accumulator
+  matching Reckless. Our x-ray enumeration is 2-deep (vs Reckless's direct-only)
+  — this is the one architectural choice that differs from Reckless's
+  reference implementation.
+
+Sections below describe the design as of implementation. The "Lessons
+Learned" and "Open Questions" sections at the bottom reflect what was
+actually discovered during build-out.
+
 ## Overview
 
 Add ~67K threat input features to Coda's NNUE, following the Reckless implementation
@@ -8,8 +32,12 @@ pattern. Threat features encode (attacker, attacker_sq, victim, victim_sq) relat
 via a separate i8 weight matrix, summed with the existing i16 PSQ accumulator at activation
 time.
 
-**Expected gain**: +40-60 Elo of eval quality, based on comparison of threat vs non-threat
+**Initial expected gain**: +40-60 Elo of eval quality, based on comparison of threat vs non-threat
 engines at similar FT widths.
+
+**Realized gain** (2026-04-17): +110 Elo H1 at s200 with x-ray-fixed inference
+(test #407). Expected to grow further with s800 training, SPSA retune on the
+fixed eval, and stacked architecture wins (no-ply-filter + Reckless 10 KB).
 
 **Reference implementation**: Reckless (`/home/adam/chess/engines/Reckless/src/nnue/`)
 — same base architecture as Coda (768 accumulator, pairwise, 16→32 hidden layers).
@@ -348,27 +376,87 @@ net-v9-768pwth16x32-wNN-eNNNsNNN.nnue
 768 = accumulator width (matching Reckless), `pw` = pairwise, `t` = threat features.
 Keep `pw` suffix for clarity since pairwise is an architectural choice, not implied by width.
 
-### Open questions
+### Open questions (resolved)
 
-1. ~~**Accumulator width**~~ DECIDED: 768, matching Reckless. Halves FT/L1 cost, proven
-   architecture, 50MB threat weights instead of 100MB.
+1. ~~**Accumulator width**~~ → **DECIDED: 768**, matching Reckless.
 
-2. **Which piece-pair interactions to include?** Start with Reckless's map (proven) or
-   start with a simpler subset (e.g., only enemy attacks, not defenses)?
+2. ~~**Which piece-pair interactions**~~ → **DECIDED: full Reckless map**.
+   Interaction map is at `src/threats.rs:18-25`. Pawn→{P,N,R} only (B/Q/K excluded),
+   Rook→{P,N,B,R} (Q/K excluded), etc. 66,864 total features.
 
-3. **Threat feature count**: Match Reckless (~67K) or start smaller (~30K with fewer
-   piece-pair types) for faster iteration?
+3. ~~**Threat feature count**~~ → **DECIDED: 66,864** (matches Reckless exactly).
 
-4. **X-ray attacks**: Discovered attacks through moved pieces. Reckless tracks these.
-   Add from the start or simplify the first version?
+4. ~~**X-ray attacks**~~ → **DECIDED: included, 2-deep** (the one place we
+   diverge from Reckless). For each slider's direct target, we also enumerate
+   the next piece on the ray behind it. The incremental delta path handles
+   three distinct cases: x-rays from the moving piece, x-rays from other
+   sliders whose direct target is the subject square, and x-rays from sliders
+   whose x-ray target is the subject square (through one blocker). Bugs in
+   each of these three cases cost ~200 Elo before being fixed on 2026-04-17.
 
-5. **Dual L1 activation**: Do we also include dual activation (v8) in the v9 target,
-   or keep it simpler? Reckless uses CReLU on L1, not dual. Recommend matching
-   Reckless first, add dual later if needed.
+5. ~~**Dual L1 activation**~~ → **DECIDED: no dual**. v9 uses single SCReLU
+   on L1/L2 (matching Reckless's shape, not their activation — Reckless uses
+   clipped ReLU `clamp(0,1)` on L1/L2, which is still an open experiment for us).
 
-6. **King bucket layout**: Use consensus fine-near/coarse-far or Reckless's 10-bucket
-   layout? Recommend our consensus 16-bucket layout (already implemented) unless
-   Reckless's specific layout proves important.
+6. **King bucket layout**: still the main open architectural question.
+   Currently using 16 uniform buckets (default) or 16 consensus fine-near /
+   coarse-far (toggleable via `init_king_buckets(true)`, trained on v5 for
+   +15 Elo but not yet re-tested on v9). Reckless uses 10 with aggressive
+   far-rank merging. Queued as T1 (consensus 16) and T2 (Reckless 10) in the
+   training experiment queue. See `docs/v7_training_guide.md` T1-T2.
+
+## Lessons Learned (2026-04-17)
+
+### The delta path must match full refresh to the feature, not just the sum
+
+The implementation was initially "tested" by running 16 random moves and
+comparing the overall accumulator sum to a full recompute. That test
+passed — but 8 out of 12 targeted scenarios (in `threat_accum.rs::incremental_tests`)
+fail on that code. The random test missed three distinct bugs:
+
+1. The moving slider's x-rays from its new position were never emitted.
+2. Section 2's x-ray delta targeted the *unchanged* feature (first piece on
+   the ray past the appearing/disappearing piece — same feature index in
+   direct and x-ray form).
+3. Sliders whose x-ray target is the changed square (but whose direct target
+   is elsewhere) were entirely missed.
+
+**Takeaway**: For any incremental accumulator, the test must be
+per-feature-activation element-wise, not a summed scalar. A scalar test
+can't distinguish "features A and B active" from "features C and D active"
+if A+B = C+D numerically. Random move fuzzing is not a substitute for
+handcrafted scenarios that exercise each delta-path code branch.
+
+### Training-inference pair validation
+
+When training and inference diverge silently, the symptoms look like "the
+trainer makes bad models". We spent hours blaming training instability
+(s800 regressed -50, x-ray nets regressed -60 to -85) before realising the
+inference path was corrupting the accumulator on every capture. Cross-check
+training-vs-inference feature indices on test positions EARLY — don't let
+a training run finish before confirming the two paths agree on multiset
+feature activation.
+
+### The "brittle training" hypothesis was wrong
+
+The pre-fix data suggested training was unstable (s800 loss went up after
+SB 720, x-ray nets regressed). Post-fix, the data shows training is fine
+and x-rays add +110 Elo. Multiple "training is fragile" hypotheses were
+actually masking one structural inference bug. When several experiments
+all regress in correlated ways, suspect a shared dependency before
+concluding the training pipeline is unstable.
+
+### Scalar benchmarks don't catch feature-level bugs
+
+The scale bug fix (QA=255→QA=64 converter rescale) and the x-ray delta bug
+were both inference-side correctness issues that no training-time metric
+could expose. For any future NNUE feature:
+
+1. Unit-test inference correctness per-feature before shipping.
+2. Cross-check feature indices against reference implementation on curated
+   positions.
+3. When inference seems fine but strength regresses, assume an inference
+   bug before retraining.
 
 ## Recommended decomposition for first iteration
 
