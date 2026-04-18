@@ -149,15 +149,45 @@ def analyse_game(game, who, fmt):
     max_move_pct = max(move_pcts) if move_pcts else 0
     short_move_frac = short_moves / max(1, n_moves)
 
+    # Clock-growth detection: count consecutive move runs where clock increases
+    # (= our think time is less than the increment). If this happens frequently,
+    # we're not using our time — the "instant ponder-hit" stockpile pattern.
+    # Skips the very early game and opening book.
+    growth_runs = []
+    cur_run = 0
+    for i in range(3, len(clock) - 1):
+        if clock[i+1] > clock[i]:
+            cur_run += 1
+        else:
+            if cur_run >= 2: growth_runs.append(cur_run)
+            cur_run = 0
+    if cur_run >= 2: growth_runs.append(cur_run)
+    longest_growth_run = max(growth_runs) if growth_runs else 0
+    growth_moves = sum(growth_runs)
+    growth_move_frac = growth_moves / max(1, n_moves)
+
+    # Instant-emit detection: count moves where think time is < 10% of increment
+    # (or absolute <50ms). These are often ponderhit-instant emits in engines.
+    instant_threshold = max(inc_ms // 10, 50) if inc_ms > 0 else 50
+    instant_moves = sum(1 for t in times if t is not None and t < instant_threshold)
+    instant_frac = instant_moves / max(1, n_moves)
+
     forfeit = "time forfeit" in term.lower() or "time" in term.lower() and "forfeit" in term.lower()
     coda_lost = (color == chess.WHITE and result == "0-1") or \
                 (color == chess.BLACK and result == "1-0")
     forfeit_on_us = forfeit and coda_lost
 
-    # Classification
+    # Classification — tightened thresholds to catch the "instant ponderhit"
+    # stockpile pattern observed on lichess (PZ7pCyrx): long runs of clock-
+    # growing moves, sub-increment think times, finished with high clock.
     tags = []
     if forfeit_on_us: tags.append("FORFEIT")
-    if final_clock_pct > 40 and short_move_frac > 0.3: tags.append("STOCKPILE")
+    # STOCKPILE: finished with ≥35% clock + ≥20% short moves
+    if final_clock_pct > 35 and short_move_frac > 0.2: tags.append("STOCKPILE")
+    # INSTANT_EMIT: sustained clock-growth run ≥3 AND ≥20% sub-inc/10 think times
+    # (both conditions — either alone is normal variance)
+    if longest_growth_run >= 3 and instant_frac > 0.2:
+        tags.append("INSTANT_EMIT")
     if min_clock_pct < 10 and not forfeit_on_us: tags.append("TIME_TROUBLE")
     if not tags: tags.append("CLEAN")
 
@@ -170,6 +200,9 @@ def analyse_game(game, who, fmt):
         "final_clock_pct": final_clock_pct,
         "max_move_pct": max_move_pct,
         "short_move_frac": short_move_frac * 100,
+        "longest_growth_run": longest_growth_run,
+        "growth_move_frac": growth_move_frac * 100,
+        "instant_frac": instant_frac * 100,
         "forfeit_on_us": forfeit_on_us,
         "tags": tags,
     }
@@ -213,25 +246,27 @@ def main():
     # Aggregate
     def avg(key): return sum(r[key] for r in results) / len(results)
     stock = sum(1 for r in results if "STOCKPILE" in r["tags"])
+    instant = sum(1 for r in results if "INSTANT_EMIT" in r["tags"])
     trouble = sum(1 for r in results if "TIME_TROUBLE" in r["tags"])
     forfeit = sum(1 for r in results if "FORFEIT" in r["tags"])
     clean = sum(1 for r in results if r["tags"] == ["CLEAN"])
 
-    # Score: higher is better. 100 = ideal.
-    # Penalize stockpiling, time trouble, and forfeits.
     score_pct = 100 * clean / len(results)
 
     print()
     print(f"=== TM score for {args.who} across {len(results)} games ===")
-    print(f"  avg time_used_pct:     {avg('time_used_pct'):5.1f}  (ideal: 70-90%)")
-    print(f"  avg min_clock_pct:     {avg('min_clock_pct'):5.1f}  (ideal: >10)")
-    print(f"  avg final_clock_pct:   {avg('final_clock_pct'):5.1f}  (ideal: <30)")
-    print(f"  avg max_move_pct:      {avg('max_move_pct'):5.1f}  (ideal: <25)")
-    print(f"  avg short_move_frac%:  {avg('short_move_frac'):5.1f}  (ideal: <30)")
+    print(f"  avg time_used_pct:      {avg('time_used_pct'):5.1f}  (ideal: 70-90%)")
+    print(f"  avg min_clock_pct:      {avg('min_clock_pct'):5.1f}  (ideal: >10)")
+    print(f"  avg final_clock_pct:    {avg('final_clock_pct'):5.1f}  (ideal: <30)")
+    print(f"  avg max_move_pct:       {avg('max_move_pct'):5.1f}  (ideal: <25)")
+    print(f"  avg short_move_frac%:   {avg('short_move_frac'):5.1f}  (ideal: <30)")
+    print(f"  avg longest_growth:     {avg('longest_growth_run'):5.1f}  (ideal: <4) — consecutive clock-gain moves")
+    print(f"  avg instant_frac%:      {avg('instant_frac'):5.1f}  (ideal: <15) — moves under 10% of inc")
     print()
     print(f"  Classification counts:")
     print(f"    FORFEIT:      {forfeit:3d} / {len(results)}")
     print(f"    STOCKPILE:    {stock:3d} / {len(results)}  (finished with >40% clock + many short moves)")
+    print(f"    INSTANT_EMIT: {instant:3d} / {len(results)}  (sustained clock-growth run ≥5 AND >25% near-instant moves)")
     print(f"    TIME_TROUBLE: {trouble:3d} / {len(results)}  (dipped below 10% at some point)")
     print(f"    CLEAN:        {clean:3d} / {len(results)}")
     print()
