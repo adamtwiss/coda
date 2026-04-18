@@ -754,78 +754,47 @@ fn push_threats_for_piece(
     // same ray that was/would-be the x-ray target in the other state is
     // handled separately — only the sq-itself delta goes here.
     //
-    // Walking 8 rays from `square` finds Y (first blocker) and S (second
-    // blocker). If S is the right kind of slider for that ray direction,
-    // emit a (S, cp, sq) delta with `add`.
+    // Implementation: iterate sliders on empty-board rays from `sq` and
+    // test `between(S, sq) & occ` for exactly one blocker Y. This replaces
+    // the previous 8-direction scalar ray walks with a slider iteration
+    // driven by the precomputed `between()` table. Per-call work now
+    // scales with number of sliders on aligned rays (typically 0-4),
+    // not fixed at 8 directions.
     //
-    // Fast pre-filter: if no sliders lie on any empty-board ray from
-    // `square`, no slider can x-ray to sq through a blocker and section 2b
-    // has nothing to emit. Culls most endgame/quiet positions before the
-    // 8-direction ray walks below (measured ~5% of total CPU before filter).
-    // Skip 2b only — section 3 (non-slider attackers) must still run.
+    // Correctness: sliders with 0 blockers between them and sq are direct
+    // attackers handled by section 2; sliders with 2+ blockers are 2+
+    // level x-rays not encoded in the feature set (skip). Exactly-one-
+    // blocker is the 2b case.
+    //
+    // Set membership guarantees piece-type match: rook/queen on ortho ray,
+    // bishop/queen on diag ray. A queen cannot simultaneously be on both
+    // an ortho and diag ray from the same sq (disjoint ray directions).
     //
     // `ortho_ray_mask` and `diag_ray_mask` are computed above (section 2's
     // Z-finding cull) — reused here to avoid two magic bitboard lookups.
-    let ortho_sliders = (pieces_bb[ROOK as usize] | pieces_bb[QUEEN as usize]) & ortho_ray_mask;
-    let diag_sliders  = (pieces_bb[BISHOP as usize] | pieces_bb[QUEEN as usize]) & diag_ray_mask;
-    let do_2b = ortho_sliders != 0 || diag_sliders != 0;
+    let ortho_candidates = (pieces_bb[ROOK as usize] | pieces_bb[QUEEN as usize]) & ortho_ray_mask;
+    let diag_candidates  = (pieces_bb[BISHOP as usize] | pieces_bb[QUEEN as usize]) & diag_ray_mask;
+    let mut candidates = ortho_candidates | diag_candidates;
 
-    // Build occ_for_rays with sq treated as empty — so ray walks from
-    // sq's neighbours don't hit sq itself as Y.
-    let occ_rays = occ & !(1u64 << square);
-    let file = (square % 8) as i32;
-    let rank = (square / 8) as i32;
+    while candidates != 0 {
+        let s_sq = candidates.trailing_zeros();
+        candidates &= candidates - 1;
 
-    // (df, dr, is_orthogonal)
-    const DIRS: [(i32, i32, bool); 8] = [
-        ( 1,  0, true),  (-1,  0, true),
-        ( 0,  1, true),  ( 0, -1, true),
-        ( 1,  1, false), ( 1, -1, false),
-        (-1,  1, false), (-1, -1, false),
-    ];
-
-    for &(df, dr, ortho) in DIRS.iter() {
-        if !do_2b { break; }
-        // Per-direction cull: skip orthogonal directions if no rooks/queens
-        // are on any ortho ray from sq; same for diagonals.
-        if (ortho && ortho_sliders == 0) || (!ortho && diag_sliders == 0) {
+        // Count blockers strictly between S and sq. between() excludes
+        // endpoints, so occ (not occ_rays) is the right mask — sq is not
+        // in the between set.
+        let between_mask = crate::bitboard::between(s_sq, square);
+        let blockers_between = between_mask & occ;
+        if blockers_between.count_ones() != 1 {
+            // 0 → direct attacker (section 2 handles). 2+ → 2+ level x-ray
+            // (not encoded). Neither emits a 2b delta.
             continue;
         }
-        // Walk in direction (df, dr) from sq until first occupied square = Y.
-        let mut f = file + df;
-        let mut r = rank + dr;
-        let mut y_sq: i32 = -1;
-        while (0..8).contains(&f) && (0..8).contains(&r) {
-            let s = (r * 8 + f) as u32;
-            if occ_rays & (1u64 << s) != 0 {
-                y_sq = s as i32;
-                break;
-            }
-            f += df; r += dr;
-        }
-        if y_sq < 0 { continue; }
-
-        // Continue past Y to find S.
-        f += df; r += dr;
-        let mut s_sq: i32 = -1;
-        while (0..8).contains(&f) && (0..8).contains(&r) {
-            let s = (r * 8 + f) as u32;
-            if occ_rays & (1u64 << s) != 0 {
-                s_sq = s as i32;
-                break;
-            }
-            f += df; r += dr;
-        }
-        if s_sq < 0 { continue; }
 
         let s_pt = mailbox[s_sq as usize];
+        // Set-membership already guarantees slider-type match for ray.
+        // Defensive check retained for robustness; should never fail.
         if s_pt >= 6 { continue; }
-        let is_slider_match = if ortho {
-            s_pt == ROOK || s_pt == QUEEN
-        } else {
-            s_pt == BISHOP || s_pt == QUEEN
-        };
-        if !is_slider_match { continue; }
 
         let s_color = if white_bb & (1u64 << s_sq) != 0 { WHITE } else { BLACK };
         let s_cp = colored_piece(s_color, s_pt);
@@ -834,23 +803,18 @@ fn push_threats_for_piece(
             s_cp as u8, s_sq as u8, cp as u8, square as u8, add,
         ));
 
-        // The other side of the delta: when the piece at sq changes, S's
-        // x-ray through Y flips between sq and W (first piece past sq on
-        // the ray from S, continuing in direction (-df, -dr) from sq).
-        // If cp disappears, x-ray becomes W (add). If cp appears, x-ray
-        // was W and becomes cp (sub W).
-        let mut wf = file - df;
-        let mut wr = rank - dr;
-        let mut w_sq: i32 = -1;
-        while (0..8).contains(&wf) && (0..8).contains(&wr) {
-            let s = (wr * 8 + wf) as u32;
-            if occ_rays & (1u64 << s) != 0 {
-                w_sq = s as i32;
-                break;
-            }
-            wf -= df; wr -= dr;
-        }
-        if w_sq >= 0 {
+        // W = first piece past sq on the ray from S, continuing in the
+        // S→sq direction (away from S past sq). ray_extension(S, sq)
+        // returns squares strictly beyond sq on that ray.
+        // Direction: if S < sq we extend upward (pick lowest bit);
+        //            if S > sq we extend downward (pick highest bit).
+        let w_candidates_bb = crate::bitboard::ray_extension(s_sq, square) & occ;
+        if w_candidates_bb != 0 {
+            let w_sq = if s_sq < square {
+                w_candidates_bb.trailing_zeros()
+            } else {
+                63 - w_candidates_bb.leading_zeros()
+            };
             let w_pt = mailbox[w_sq as usize];
             if w_pt < 6 {
                 let w_color = if white_bb & (1u64 << w_sq) != 0 { WHITE } else { BLACK };
