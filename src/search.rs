@@ -146,6 +146,11 @@ tunables!(
     // threat_count / LMR_THREAT_DIV subtracted from reduction.
     // Higher = less effect (2 means reduce 1 less per 2 threatened pieces).
     (LMR_THREAT_DIV,      2,    1,    5),
+    // King-zone-pressure LMR modifier: reduce less when enemy pressures
+    // our king. Same signal as NMP gate (#466) and probcut gate (A3).
+    // Tactical king positions need deeper search. Higher = less effect.
+    // 9 = disabled (effect 0), 2 = aggressive (-4 reduction at 9-pressure).
+    (LMR_KING_PRESSURE_DIV, 4, 2,    9),
     // MVV multiplier in capture move ordering (historical default 16).
     // Captures scored as see_value(victim) * MVV_CAP_MULT + captHist.
     // Higher = weight MVV more vs capture history.
@@ -2429,6 +2434,11 @@ fn negamax(
                 // Threat-density LMR: reduce less when multiple pieces are
                 // under pawn attack. Tactical positions need deeper search.
                 reduction -= threat_count / tp(&LMR_THREAT_DIV);
+
+                // King-pressure LMR modifier: reduce less when enemy has
+                // many attackers on our king zone. Parent-node signal reused
+                // from NMP/ProbCut gates — tactical king positions need depth.
+                reduction -= king_zone_pressure / tp(&LMR_KING_PRESSURE_DIV);
 
                 // Clamp: never extend (negative), never reduce past depth 1
                 if reduction < 0 {
