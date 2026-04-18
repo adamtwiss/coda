@@ -240,13 +240,15 @@ impl ThreatStack {
                 local_deltas[..n_deltas].copy_from_slice(&self.stack[ply].delta.data[..n_deltas]);
                 // Use SIMD apply_threat_deltas (copies src + applies adds/subs)
                 let (prev, curr) = self.stack.split_at_mut(ply);
-                crate::threats::apply_threat_deltas(
-                    &mut curr[0].values[p][..h],
-                    &prev[ply - 1].values[p][..h],
-                    &local_deltas[..n_deltas],
-                    net_weights, h, num_features,
-                    pov, mirrored,
-                );
+                unsafe {
+                    crate::threats::apply_threat_deltas(
+                        &mut curr[0].values[p][..h],
+                        &prev[ply - 1].values[p][..h],
+                        &local_deltas[..n_deltas],
+                        net_weights, h, num_features,
+                        pov, mirrored,
+                    );
+                }
             }
 
             self.stack[ply].accurate[p] = true;
