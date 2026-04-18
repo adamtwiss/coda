@@ -47,78 +47,78 @@ tunables!(
     // v9 tune #411 (2500 iters, live defaults, post-xray-fix on w15 s200 xray-fixed net)
     (NMP_BASE_R,         5,    2,    8),
     (NMP_DEPTH_DIV,      3,    1,    6),
-    (NMP_EVAL_DIV,     149,  100,  400),
+    (NMP_EVAL_DIV,     136,  100,  400),
     (NMP_EVAL_MAX,       5,    1,    6),
     (NMP_VERIFY_DEPTH,  12,    8,   20),
     // RFP
     (RFP_DEPTH,          7,    2,   12),
-    (RFP_MARGIN_IMP,   87,   30,  150),
+    (RFP_MARGIN_IMP,   83,   30,  150),
     (RFP_MARGIN_NOIMP, 124,   50,  200),
     // Futility
-    (FUT_BASE,          66,   20,  200),
-    (FUT_PER_DEPTH,    166,   40,  250),
+    (FUT_BASE,          72,   20,  200),
+    (FUT_PER_DEPTH,    159,   40,  250),
     // History pruning
     (HIST_PRUNE_DEPTH,   4,    1,    8),
-    (HIST_PRUNE_MULT, 3981,  500, 50000),
+    (HIST_PRUNE_MULT, 4943,  500, 50000),
     // SEE pruning
     (SEE_QUIET_MULT,   44,    5,   80),
-    (SEE_CAP_MULT,    142,   30,  200),
+    (SEE_CAP_MULT,    146,   30,  200),
     // LMR
-    (LMR_HIST_DIV,  13958, 2000, 100000),
-    (LMR_C_QUIET,      121,   40,  300),
-    (LMR_C_CAP,       109,  100,  350),
+    (LMR_HIST_DIV,  11685, 2000, 100000),
+    (LMR_C_QUIET,      123,   40,  300),
+    (LMR_C_CAP,       100,  100,  350),
     // Singular extensions
-    (SE_DEPTH,          6,    4,   20),
+    (SE_DEPTH,          5,    4,   20),
     // Aspiration windows
-    (ASP_DELTA,          10,    5,   30),
-    (ASP_SCORE_DIV,  33695, 8000, 50000),
+    (ASP_DELTA,          11,    5,   30),
+    (ASP_SCORE_DIV,  33446, 8000, 50000),
     // LMP
     (LMP_BASE,          13,    1,   15),
     (LMP_DEPTH,         9,    4,   20),
     // Bad noisy
-    (BAD_NOISY_MARGIN, 121,   30,  150),
+    (BAD_NOISY_MARGIN, 125,   30,  150),
     // ProbCut
-    (PROBCUT_MARGIN,   191,   80,  300),
+    (PROBCUT_MARGIN,   194,   80,  300),
     // Hindsight
-    (HINDSIGHT_THRESH, 173,   50,  400),
+    (HINDSIGHT_THRESH, 177,   50,  400),
     // Unstable position detection
-    (UNSTABLE_THRESH,  161,   50,  500),
+    (UNSTABLE_THRESH,  162,   50,  500),
     // SEE piece value scaling
-    (SEE_MATERIAL_SCALE, 182, 30, 300),
+    (SEE_MATERIAL_SCALE, 187, 30, 300),
     // QS
-    (QS_DELTA_MARGIN,  349,  100,  500),
+    (QS_DELTA_MARGIN,  355,  100,  500),
     (QS_SEE_THRESHOLD, -39, -200,    0),
     (QS_MAX_CAPTURES,   27,    2,   32),
     // Correction history weights
-    (CORR_W_PAWN,      316,  100,  600),
-    (CORR_W_NP,        122,   50,  400),
-    (CORR_W_MINOR,      51,   30,  300),
+    (CORR_W_PAWN,      311,  100,  600),
+    (CORR_W_NP,        121,   50,  400),
+    (CORR_W_MINOR,      48,   30,  300),
     (CORR_W_MAJOR,      89,   30,  300),
-    (CORR_W_CONT,       36,   30,  400),
+    (CORR_W_CONT,       40,   30,  400),
     // Fail-high blend
     (FH_BLEND_DEPTH,     1,    0,    8),
     // History bonus
-    (HIST_BONUS_MULT,  293,   50,  400),
-    (HIST_BONUS_MAX,  1668,  500, 3000),
+    (HIST_BONUS_MULT,  299,   50,  400),
+    (HIST_BONUS_MAX,  1637,  500, 3000),
     // Capture history bonus
-    (CAP_HIST_MULT,    257,   50,  400),
-    (CAP_HIST_BASE,     18,    0,  200),
-    (CAP_HIST_MAX,    1650,  500, 3000),
+    (CAP_HIST_MULT,    262,   50,  400),
+    (CAP_HIST_BASE,     10,    0,  200),
+    (CAP_HIST_MAX,    1676,  500, 3000),
     // Double extensions
     (DEXT_MARGIN,        9,    2,   50),
     (DEXT_CAP,          18,    4,   32),
     // Quiet check bonus
-    (QUIET_CHECK_BONUS, 8505, 2000, 30000),
+    (QUIET_CHECK_BONUS, 7993, 2000, 30000),
     // LMR complexity
-    (LMR_COMPLEXITY_DIV, 183, 30, 500),
+    (LMR_COMPLEXITY_DIV, 177, 30, 500),
     // Contempt
-    (CONTEMPT_VAL,       19,    0,   50),
+    (CONTEMPT_VAL,       18,    0,   50),
     // Correction history divisor
-    (CORR_HIST_DIV,    1293,  256, 4096),
+    (CORR_HIST_DIV,    1222,  256, 4096),
     // Correction history update weight cap: weight = min(CORR_UPDATE_WEIGHT_MAX, depth + 1).
     // SF hardcodes 16; exposing as a tunable lets SPSA compensate when other
     // logic reduces the update volume (e.g. filtering noisy best_moves).
-    (CORR_UPDATE_WEIGHT_MAX, 16,  4,   48),
+    (CORR_UPDATE_WEIGHT_MAX, 17,  4,   48),
     // Fraction of CORR_HIST_LIMIT that caps a single update's bonus magnitude.
     // Higher divisor = smaller caps, more conservative updates. SF uses 4.
     (CORR_BONUS_CAP_DIV,  4,     1,   16),
@@ -127,12 +127,12 @@ tunables!(
     (CORR_HIST_GRAIN_T,   9,     1,   32),
     // Clamps the per-update error (search_score - raw_eval) before training.
     // Scaled relative to CORR_HIST_LIMIT; SF uses 128/32000 ≈ 4/1024 equivalent.
-    (CORR_HIST_ERR_MAX,   7,     1,   64),
+    (CORR_HIST_ERR_MAX,   5,     1,   64),
     // Escape-capture bonuses (Reckless pattern): move ordering bonus for
     // moving a piece off a square attacked by enemy pawns
-    (ESCAPE_BONUS_Q,   17285, 5000, 40000),
-    (ESCAPE_BONUS_R,   14712, 3000, 30000),
-    (ESCAPE_BONUS_MINOR, 10077, 2000, 20000),
+    (ESCAPE_BONUS_Q,   16175, 5000, 40000),
+    (ESCAPE_BONUS_R,   14723, 3000, 30000),
+    (ESCAPE_BONUS_MINOR, 10190, 2000, 20000),
     // King-zone-pressure NMP gate: skip null move when enemy has this
     // many or more attackers on our king zone (king sq + 8 neighbours).
     // 9 = never skip (gate disabled), 2 = aggressive gating. Conservative
