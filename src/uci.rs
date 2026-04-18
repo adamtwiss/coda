@@ -204,7 +204,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     .spawn(move || {
                         let mut si = search_info;
                         let go_received = std::time::Instant::now();
-                        let best_move = search_smp(&mut search_board, &mut si, &limits, threads);
+                        let mut best_move = search_smp(&mut search_board, &mut si, &limits, threads);
                         let search_elapsed = go_received.elapsed();
                         // In ponder mode, if search completed naturally (not stopped
                         // externally), wait for stop/ponderhit before outputting
@@ -218,6 +218,39 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             }
                         }
                         let wait_elapsed = wait_start.elapsed();
+
+                        // If we exited the wait-loop via ponderhit (not external stop)
+                        // AND the allocated hard_limit hasn't been reached yet, run a
+                        // FRESH timed search for the remaining budget. This fixes the
+                        // case where ponder reached max_depth in a trivial position
+                        // and we'd otherwise emit bestmove instantly — ignoring the
+                        // clock budget the ponderhit handler computed for us.
+                        //
+                        // Why: the ponder's TT work is preserved (shared via Arc<TT>),
+                        // so the fresh search starts with a hot TT and goes deeper
+                        // than it would cold. The engine still gets the "ponder benefit"
+                        // — just as extra depth rather than instant emit.
+                        let mut fresh_elapsed = std::time::Duration::ZERO;
+                        if is_ponder_search && !ext_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            let ph_deadline = si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed);
+                            let now_elapsed = go_received.elapsed().as_millis() as u64;
+                            if ph_deadline > now_elapsed + 5 {
+                                // Budget remaining — run a fresh search on the real
+                                // position (which IS what we were pondering on, since
+                                // ponderhit means opponent played our predicted move).
+                                let remaining = ph_deadline - now_elapsed;
+                                si.stop.store(false, std::sync::atomic::Ordering::Relaxed);
+                                si.ponderhit_time.store(0, std::sync::atomic::Ordering::Relaxed);
+                                let fresh_limits = SearchLimits {
+                                    infinite: false,
+                                    movetime: remaining,
+                                    ..SearchLimits::new()
+                                };
+                                let fresh_start = std::time::Instant::now();
+                                best_move = search_smp(&mut search_board, &mut si, &fresh_limits, threads);
+                                fresh_elapsed = fresh_start.elapsed();
+                            }
+                        }
 
                         let pv_consistent = si.pv_len[0] >= 2
                             && si.pv_table[0][1] != crate::types::NO_MOVE
@@ -245,8 +278,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             || (!is_ponder_search && search_elapsed.as_millis() > (si.time_limit + 500) as u128)
                         {
                             eprintln!(
-                                "TM_TRACE search={}ms time_limit={}ms wait={}ms println={}ms ponder={} pv_ok={}",
+                                "TM_TRACE search={}ms fresh={}ms time_limit={}ms wait={}ms println={}ms ponder={} pv_ok={}",
                                 search_elapsed.as_millis(),
+                                fresh_elapsed.as_millis(),
                                 si.time_limit,
                                 wait_elapsed.as_millis(),
                                 pr_elapsed.as_millis(),
