@@ -99,7 +99,6 @@ tunables!(
     (FH_BLEND_DEPTH,     1,    0,    8),
     // History bonus
     (HIST_BONUS_MULT,  293,   50,  400),
-    (HIST_BONUS_BASE,   2,    0,  200),
     (HIST_BONUS_MAX,  1685,  500, 3000),
     // Capture history bonus
     (CAP_HIST_MULT,    254,   50,  400),
@@ -2731,7 +2730,7 @@ fn negamax(
 /// Obsidian min(1400, 175*d-50). Our old depth² formula gave 25 at d=5
 /// vs SF's 682 — history values were 27× too small to influence ordering.
 fn history_bonus(depth: i32) -> i32 {
-    (tp(&HIST_BONUS_MULT) * depth - tp(&HIST_BONUS_BASE)).clamp(0, tp(&HIST_BONUS_MAX))
+    (tp(&HIST_BONUS_MULT) * depth).min(tp(&HIST_BONUS_MAX))
 }
 
 fn capture_history_bonus(depth: i32) -> i32 {
