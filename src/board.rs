@@ -8,6 +8,15 @@ use crate::attacks::*;
 use crate::types::*;
 use crate::zobrist::*;
 
+/// Attack bitboards from one color, split by attacker piece class.
+/// Used by search for attacker-stratified move ordering and pruning.
+pub struct StratifiedAttacks {
+    pub pawn: Bitboard,
+    pub minor: Bitboard,      // knights + bishops
+    pub rook_plus: Bitboard,  // rooks + queens
+    pub king: Bitboard,
+}
+
 /// Undo information stored before each move for unmaking.
 #[derive(Clone, Copy)]
 pub struct UndoInfo {
@@ -421,51 +430,59 @@ impl Board {
     /// non-QS node.
     #[inline]
     pub fn attacks_by_color(&self, color: Color) -> Bitboard {
+        let s = self.stratified_attacks_by_color(color);
+        s.pawn | s.minor | s.rook_plus | s.king
+    }
+
+    /// Attack bitboards stratified by attacker piece class.
+    ///
+    /// Used by search to drive attacker-type-aware move ordering (A1a —
+    /// escape bonus by attacker type) and capture-opportunity gating
+    /// (A1c — can_win_material RFP loosener). Same iteration cost as
+    /// `attacks_by_color` but accumulates into separate bitboards.
+    pub fn stratified_attacks_by_color(&self, color: Color) -> StratifiedAttacks {
         let c = color as usize;
         let occ = self.colors[0] | self.colors[1];
-        let mut attacks: Bitboard = 0;
 
-        // Pawns (dir depends on color)
         let their_pawns = self.pieces[PAWN as usize] & self.colors[c];
-        attacks |= if color == WHITE {
+        let pawn = if color == WHITE {
             ((their_pawns & !FILE_A) << 7) | ((their_pawns & !FILE_H) << 9)
         } else {
             ((their_pawns & !FILE_H) >> 7) | ((their_pawns & !FILE_A) >> 9)
         };
 
-        // Knights
+        let mut minor: Bitboard = 0;
         let mut knights = self.pieces[KNIGHT as usize] & self.colors[c];
         while knights != 0 {
             let sq = knights.trailing_zeros();
             knights &= knights - 1;
-            attacks |= knight_attacks(sq);
+            minor |= knight_attacks(sq);
+        }
+        let mut bishops = self.pieces[BISHOP as usize] & self.colors[c];
+        while bishops != 0 {
+            let sq = bishops.trailing_zeros();
+            bishops &= bishops - 1;
+            minor |= bishop_attacks(sq, occ);
         }
 
-        // Bishops & queens (diagonal)
-        let mut diag = (self.pieces[BISHOP as usize] | self.pieces[QUEEN as usize])
-            & self.colors[c];
-        while diag != 0 {
-            let sq = diag.trailing_zeros();
-            diag &= diag - 1;
-            attacks |= bishop_attacks(sq, occ);
+        let mut rook_plus: Bitboard = 0;
+        let mut rooks = self.pieces[ROOK as usize] & self.colors[c];
+        while rooks != 0 {
+            let sq = rooks.trailing_zeros();
+            rooks &= rooks - 1;
+            rook_plus |= rook_attacks(sq, occ);
+        }
+        let mut queens = self.pieces[QUEEN as usize] & self.colors[c];
+        while queens != 0 {
+            let sq = queens.trailing_zeros();
+            queens &= queens - 1;
+            rook_plus |= rook_attacks(sq, occ) | bishop_attacks(sq, occ);
         }
 
-        // Rooks & queens (orthogonal)
-        let mut orth = (self.pieces[ROOK as usize] | self.pieces[QUEEN as usize])
-            & self.colors[c];
-        while orth != 0 {
-            let sq = orth.trailing_zeros();
-            orth &= orth - 1;
-            attacks |= rook_attacks(sq, occ);
-        }
+        let king_bb = self.pieces[KING as usize] & self.colors[c];
+        let king = if king_bb != 0 { king_attacks(king_bb.trailing_zeros()) } else { 0 };
 
-        // King
-        let king = self.pieces[KING as usize] & self.colors[c];
-        if king != 0 {
-            attacks |= king_attacks(king.trailing_zeros());
-        }
-
-        attacks
+        StratifiedAttacks { pawn, minor, rook_plus, king }
     }
 
     /// Get bitboard of all pieces attacking a square.
