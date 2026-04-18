@@ -1431,6 +1431,22 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         }
     }
 
+    // Don't stockpile: if the ID loop finished below the soft_floor (e.g. all
+    // iterations were TT hits in a repetitive endgame), wait out the rest of
+    // the floor time before emitting. Prevents clock growth from instant emits
+    // at 1s-inc bullet on lichess (PZ7pCyrx). Polls the stop flag so the UCI
+    // thread can still interrupt. Skip when there's no time budget (depth/
+    // node-limited search) or when already stopped.
+    if info.soft_floor > 0 && !info.stop.load(Ordering::Relaxed) {
+        loop {
+            let elapsed = info.start_time.elapsed().as_millis() as u64;
+            if elapsed >= info.soft_floor { break; }
+            if info.stop.load(Ordering::Relaxed) { break; }
+            let remaining = info.soft_floor - elapsed;
+            std::thread::sleep(std::time::Duration::from_millis(remaining.min(25)));
+        }
+    }
+
     best_move
 }
 
