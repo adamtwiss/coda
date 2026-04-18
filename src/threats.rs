@@ -772,8 +772,14 @@ fn push_threats_for_piece(
     //
     // `ortho_ray_mask` and `diag_ray_mask` are computed above (section 2's
     // Z-finding cull) — reused here to avoid two magic bitboard lookups.
-    let ortho_candidates = (pieces_bb[ROOK as usize] | pieces_bb[QUEEN as usize]) & ortho_ray_mask;
-    let diag_candidates  = (pieces_bb[BISHOP as usize] | pieces_bb[QUEEN as usize]) & diag_ray_mask;
+    //
+    // `& occ` filters out phantom candidates during push_threats_on_move:
+    // the moved piece is in pieces_bb at `to`, but `occ_transit = occ ^ (1<<to)`
+    // has `to` cleared. Without this mask, a moved slider would be iterated
+    // as an x-ray candidate for its own source square and emit a spurious
+    // 2b delta. Section 2 applies the same filter (`sliders & occ`).
+    let ortho_candidates = (pieces_bb[ROOK as usize] | pieces_bb[QUEEN as usize]) & ortho_ray_mask & occ;
+    let diag_candidates  = (pieces_bb[BISHOP as usize] | pieces_bb[QUEEN as usize]) & diag_ray_mask & occ;
     let mut candidates = ortho_candidates | diag_candidates;
 
     while candidates != 0 {
