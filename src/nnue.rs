@@ -2095,12 +2095,19 @@ impl NNUENet {
                     hidden32[i] += simd512_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
                 }
             }
-        } else if false && self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 <= 16 {
-            // Sparse L1 dpbusd — disabled: 6% slower than dense at L1=16 neurons.
-            // The overhead of NNZ tracking exceeds skip savings at this size.
-            // Would help at L1=32+ neurons.
+        } else if self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 <= 16 {
+            // Column-major (input-chunk-major) L1 matmul — Reckless's pattern.
+            // For each 4-byte input chunk, splat_i32 broadcast + maddubs/madd
+            // contributes to all L1 outputs simultaneously via 2 AVX2 registers.
+            // Replaces the row-major path that scanned the full input per
+            // output neuron (16× cache-line touches per input chunk).
+            //
+            // Dense variant (no zero-check): pairwise-CReLU inputs have high
+            // density (~89%), so the if-check overhead in the sparse variant
+            // exceeded the skip savings at L1=16. The dense path is
+            // straight-line SIMD with input-chunk-major weight access.
             unsafe {
-                crate::sparse_l1::sparse_l1_avx2(
+                crate::sparse_l1::dense_l1_avx2(
                     &stm_pw, &ntm_pw, pw, &self.l1_weights_sparse,
                     l1, &self.l1_biases[l1_off..], pw_scale, &mut hidden32,
                 );

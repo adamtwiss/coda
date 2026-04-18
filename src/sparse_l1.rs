@@ -199,6 +199,86 @@ pub unsafe fn sparse_l1_avx2(
     }
 }
 
+/// Dense column-major L1 matmul: identical layout to sparse_l1_avx2 but
+/// without the zero-chunk skip check. For pairwise-CReLU inputs where
+/// most chunks are non-zero, the if-check overhead exceeds the skip
+/// savings. Dense processing is straight-line SIMD: each 4-byte input
+/// chunk contributes to all L1 neurons via splat_i32+dpbusd emulation
+/// in one pass over the input.
+///
+/// Benefit vs row-major: input chunk loaded once per chunk (instead of
+/// once per output), weights accessed sequentially in input-chunk-major
+/// order (better cache behaviour than strided per-output rows).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+pub unsafe fn dense_l1_avx2(
+    stm_pw: &[u8],
+    ntm_pw: &[u8],
+    pw: usize,
+    sparse_weights: &[i8],  // input-chunk-major layout (same as sparse_l1_avx2)
+    num_neurons: usize,
+    bias: &[i16],
+    bias_scale: i32,
+    output: &mut [i32],
+) {
+    use std::arch::x86_64::*;
+
+    let chunk_stride = num_neurons * 4;
+    let ones = _mm256_set1_epi16(1);
+
+    // Initialize with biases
+    for i in 0..num_neurons { output[i] = bias[i] as i32 * bias_scale; }
+
+    let mut acc0 = _mm256_setzero_si256();
+    let mut acc1 = _mm256_setzero_si256();
+
+    let w_ptr = sparse_weights.as_ptr();
+
+    // STM perspective — all chunks, no zero-skip.
+    let stm_chunks = std::slice::from_raw_parts(stm_pw.as_ptr() as *const u32, pw / 4);
+    for chunk_idx in 0..pw / 4 {
+        let val = *stm_chunks.get_unchecked(chunk_idx);
+        let input = _mm256_set1_epi32(val as i32);
+        let w_off = chunk_idx * chunk_stride;
+
+        let w0 = _mm256_loadu_si256(w_ptr.add(w_off) as *const __m256i);
+        let prod0 = _mm256_maddubs_epi16(input, w0);
+        acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(prod0, ones));
+
+        if num_neurons > 8 {
+            let w1 = _mm256_loadu_si256(w_ptr.add(w_off + 32) as *const __m256i);
+            let prod1 = _mm256_maddubs_epi16(input, w1);
+            acc1 = _mm256_add_epi32(acc1, _mm256_madd_epi16(prod1, ones));
+        }
+    }
+
+    // NTM perspective
+    let ntm_chunk_offset = pw / 4;
+    let ntm_chunks = std::slice::from_raw_parts(ntm_pw.as_ptr() as *const u32, pw / 4);
+    for chunk_idx in 0..pw / 4 {
+        let val = *ntm_chunks.get_unchecked(chunk_idx);
+        let input = _mm256_set1_epi32(val as i32);
+        let w_off = (ntm_chunk_offset + chunk_idx) * chunk_stride;
+
+        let w0 = _mm256_loadu_si256(w_ptr.add(w_off) as *const __m256i);
+        let prod0 = _mm256_maddubs_epi16(input, w0);
+        acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(prod0, ones));
+
+        if num_neurons > 8 {
+            let w1 = _mm256_loadu_si256(w_ptr.add(w_off + 32) as *const __m256i);
+            let prod1 = _mm256_maddubs_epi16(input, w1);
+            acc1 = _mm256_add_epi32(acc1, _mm256_madd_epi16(prod1, ones));
+        }
+    }
+
+    let mut results = [0i32; 16];
+    _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, acc0);
+    _mm256_storeu_si256(results.as_mut_ptr().add(8) as *mut __m256i, acc1);
+    for i in 0..num_neurons {
+        output[i] += results[i];
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
