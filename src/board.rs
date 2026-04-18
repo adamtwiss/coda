@@ -1276,4 +1276,319 @@ mod tests {
         assert_eq!(fen_after_double.hash, fen_after_double.compute_hash());
         assert_eq!(ep_legal_pos.hash, ep_legal_pos.compute_hash());
     }
+
+    /// Recompute the four auxiliary Zobrist keys (pawn_hash, non_pawn_key,
+    /// minor_key, major_key) from the current piece/color bitboards. Mirrors
+    /// the logic in `set_fen` at the "Compute per-color" block. Used by
+    /// fuzzers to verify incremental updates in put_piece / remove_piece /
+    /// move_piece stay coherent.
+    fn recompute_aux_keys(b: &Board) -> (u64, [u64; 2], [u64; 2], [u64; 2]) {
+        let mut pawn = 0u64;
+        let mut np = [0u64; 2];
+        let mut minor = [0u64; 2];
+        let mut major = [0u64; 2];
+        for color in 0..2u8 {
+            let mut pbb = b.pieces[PAWN as usize] & b.colors[color as usize];
+            while pbb != 0 {
+                let sq = pop_lsb(&mut pbb) as u8;
+                pawn ^= piece_key(make_piece(color, PAWN), sq);
+            }
+            for pt in [KNIGHT, BISHOP, ROOK, QUEEN] {
+                let mut bb = b.pieces[pt as usize] & b.colors[color as usize];
+                while bb != 0 {
+                    let sq = pop_lsb(&mut bb) as u8;
+                    let k = piece_key(make_piece(color, pt), sq);
+                    np[color as usize] ^= k;
+                    if pt == KNIGHT || pt == BISHOP { minor[color as usize] ^= k; }
+                    else { major[color as usize] ^= k; }
+                }
+            }
+        }
+        (pawn, np, minor, major)
+    }
+
+    /// Property-based fuzzer for the four auxiliary Zobrist keys
+    /// (pawn_hash, non_pawn_key, minor_key, major_key) used by correction
+    /// history. After every move, incremental values must equal from-scratch
+    /// recomputation. These hashes drive correction-history indexing — a
+    /// silent divergence would poison per-bucket corrections and show up as
+    /// degraded search quality with no other symptom.
+    ///
+    /// Analogous to `fuzz_hash_incremental_matches_compute` for the main
+    /// Zobrist key, but for the four auxiliary keys which have no standalone
+    /// from-scratch computation in production code.
+    #[test]
+    fn fuzz_aux_keys_match_incremental() {
+        use crate::movegen::generate_legal_moves;
+        init();
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2",
+            // Rich in promotions / captures
+            "4k3/PPPPPPPP/8/8/8/8/pppppppp/4K3 w - - 0 1",
+            // Mostly minors to exercise minor_key
+            "4k3/pp6/2nb4/8/8/2NB4/PP6/4K3 w - - 0 1",
+            // Mostly majors to exercise major_key
+            "r2qk2r/8/8/8/8/8/8/R2QK2R w KQkq - 0 1",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const PLIES: usize = 80;
+        const GAMES: usize = 20;
+
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for game in 0..GAMES {
+                let seed: u32 = 0xA11CEFu32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::from_fen(fen);
+                // Baseline invariant on starting position.
+                let (p, np, mi, ma) = recompute_aux_keys(&board);
+                assert_eq!(board.pawn_hash, p, "start pawn_hash mismatch fen={}", fen);
+                assert_eq!(board.non_pawn_key, np, "start np mismatch fen={}", fen);
+                assert_eq!(board.minor_key, mi, "start minor mismatch fen={}", fen);
+                assert_eq!(board.major_key, ma, "start major mismatch fen={}", fen);
+
+                for ply in 0..PLIES {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+
+                    board.make_move(mv);
+
+                    let (p, np, mi, ma) = recompute_aux_keys(&board);
+                    if board.pawn_hash != p || board.non_pawn_key != np
+                        || board.minor_key != mi || board.major_key != ma
+                    {
+                        panic!(
+                            "aux key drift: fen_idx={} game={} ply={} move={} seed={:#x}\n\
+                             pawn  incr={:#x} fresh={:#x}\n\
+                             np    incr=[{:#x},{:#x}] fresh=[{:#x},{:#x}]\n\
+                             minor incr=[{:#x},{:#x}] fresh=[{:#x},{:#x}]\n\
+                             major incr=[{:#x},{:#x}] fresh=[{:#x},{:#x}]\n\
+                             fen={}",
+                            fen_idx, game, ply,
+                            crate::types::move_to_uci(mv), seed,
+                            board.pawn_hash, p,
+                            board.non_pawn_key[0], board.non_pawn_key[1], np[0], np[1],
+                            board.minor_key[0], board.minor_key[1], mi[0], mi[1],
+                            board.major_key[0], board.major_key[1], ma[0], ma[1],
+                            board.to_fen(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Null-move round-trip fuzzer. Interleaves null moves with regular
+    /// moves and verifies full state is restored after unmake.
+    /// Null moves never happen while in check (gated in search), which
+    /// mirrors real usage.
+    #[test]
+    fn fuzz_null_move_round_trip() {
+        use crate::movegen::generate_legal_moves;
+        init();
+
+        const FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            // EP-triggering
+            "rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2",
+            "4k3/p7/8/1P6/8/8/8/4K3 b - - 0 1",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const PLIES: usize = 40;
+        const GAMES: usize = 15;
+
+        for (fen_idx, fen) in FENS.iter().enumerate() {
+            for game in 0..GAMES {
+                let seed: u32 = 0xDEADBEEFu32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::from_fen(fen);
+                let orig_hash = board.hash;
+                let orig_fen = board.to_fen();
+                let orig_pawn = board.pawn_hash;
+                let orig_np = board.non_pawn_key;
+                let orig_minor = board.minor_key;
+                let orig_major = board.major_key;
+
+                // Track whether each op was null (true) or regular (false)
+                // so we unmake with the right function.
+                let mut ops: Vec<bool> = Vec::new();
+                for _ in 0..PLIES {
+                    // 1 in 3 chance of null, but only if not in check.
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let want_null = (next_u32(&mut rng) % 3) == 0;
+                    let in_check = board.checkers() != 0;
+                    if want_null && !in_check {
+                        board.make_null_move();
+                        ops.push(true);
+                    } else {
+                        let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                        board.make_move(mv);
+                        ops.push(false);
+                    }
+
+                    // After every op, incremental hash must match compute_hash.
+                    assert_eq!(
+                        board.hash, board.compute_hash(),
+                        "hash drift during null/regular mix: fen_idx={} game={} op_count={}",
+                        fen_idx, game, ops.len()
+                    );
+                }
+
+                for is_null in ops.iter().rev() {
+                    if *is_null { board.unmake_null_move(); }
+                    else { board.unmake_move(); }
+                }
+
+                assert_eq!(board.to_fen(), orig_fen,
+                    "fen drift after null/regular roundtrip fen_idx={} game={}", fen_idx, game);
+                assert_eq!(board.hash, orig_hash);
+                assert_eq!(board.pawn_hash, orig_pawn);
+                assert_eq!(board.non_pawn_key, orig_np);
+                assert_eq!(board.minor_key, orig_minor);
+                assert_eq!(board.major_key, orig_major);
+            }
+        }
+    }
+
+    /// Full make/unmake round-trip fuzzer. Plays a random sequence of
+    /// moves, then unmakes them all one at a time and asserts full state
+    /// equality with the starting position. Covers every field modified
+    /// by make_move/unmake_move: mailbox, bitboards, castling, ep_square,
+    /// halfmove, fullmove, all 4+1 hashes. If unmake silently
+    /// omits restoring any field, this detects it.
+    ///
+    /// Complements `fuzz_hash_incremental_matches_compute` (make-only)
+    /// and `fuzz_aux_keys_match_incremental` (make-only, aux keys).
+    #[test]
+    fn fuzz_make_unmake_round_trip() {
+        use crate::movegen::generate_legal_moves;
+        init();
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            // Promotion-rich: many different unmake scenarios
+            "4k3/PPPPPPPP/8/8/8/8/pppppppp/4K3 w - - 0 1",
+            // EP-triggerable
+            "rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2",
+            "4k3/p7/8/1P6/8/8/8/4K3 b - - 0 1",
+            // Endgame with castling rights intact
+            "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const PLIES: usize = 40;
+        const GAMES: usize = 15;
+
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for game in 0..GAMES {
+                let seed: u32 = 0xB00B1E5u32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::from_fen(fen);
+                // Save full baseline state.
+                let orig_fen = board.to_fen();
+                let orig_hash = board.hash;
+                let orig_pawn = board.pawn_hash;
+                let orig_np = board.non_pawn_key;
+                let orig_minor = board.minor_key;
+                let orig_major = board.major_key;
+                let orig_mailbox = board.mailbox;
+                let orig_pieces = board.pieces;
+                let orig_colors = board.colors;
+                let orig_castling = board.castling;
+                let orig_ep = board.ep_square;
+                let orig_halfmove = board.halfmove;
+                let orig_fullmove = board.fullmove;
+                let orig_stm = board.side_to_move;
+
+                // Random sequence of legal moves.
+                let mut move_count = 0;
+                for _ in 0..PLIES {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                    board.make_move(mv);
+                    move_count += 1;
+                }
+
+                // Unmake everything.
+                for _ in 0..move_count {
+                    board.unmake_move();
+                }
+
+                // Full state equality check.
+                let mismatch =
+                    board.hash != orig_hash
+                    || board.pawn_hash != orig_pawn
+                    || board.non_pawn_key != orig_np
+                    || board.minor_key != orig_minor
+                    || board.major_key != orig_major
+                    || board.mailbox != orig_mailbox
+                    || board.pieces != orig_pieces
+                    || board.colors != orig_colors
+                    || board.castling != orig_castling
+                    || board.ep_square != orig_ep
+                    || board.halfmove != orig_halfmove
+                    || board.fullmove != orig_fullmove
+                    || board.side_to_move != orig_stm;
+                if mismatch {
+                    panic!(
+                        "round-trip mismatch: fen_idx={} game={} plies={} seed={:#x}\n\
+                         orig fen   = {}\n\
+                         post-unmake= {}\n\
+                         hash   orig={:#x} now={:#x}\n\
+                         pawn   orig={:#x} now={:#x}\n\
+                         np     orig={:?} now={:?}\n\
+                         minor  orig={:?} now={:?}\n\
+                         major  orig={:?} now={:?}\n\
+                         castle orig={} now={}  ep orig={} now={}\n\
+                         stm    orig={} now={}  hm orig={} now={} fm orig={} now={}",
+                        fen_idx, game, move_count, seed,
+                        orig_fen, board.to_fen(),
+                        orig_hash, board.hash,
+                        orig_pawn, board.pawn_hash,
+                        orig_np, board.non_pawn_key,
+                        orig_minor, board.minor_key,
+                        orig_major, board.major_key,
+                        orig_castling, board.castling,
+                        orig_ep, board.ep_square,
+                        orig_stm, board.side_to_move,
+                        orig_halfmove, board.halfmove,
+                        orig_fullmove, board.fullmove,
+                    );
+                }
+            }
+        }
+    }
 }
