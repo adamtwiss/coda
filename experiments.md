@@ -4986,3 +4986,158 @@ hours for e400.
   `feedback_epd_not_for_model_testing.md`,
   `feedback_piece_value_test_design.md`,
   `feedback_never_stop_sprt_without_verify.md`.
+
+## 2026-04-18 (afternoon/evening): Major tune + NPS wins + v5 gap closure
+
+### HIST_BONUS_BASE removal — H1 +3.7 Elo (OB #452)
+
+- Tunable repeatedly pulled to 0 across independent SPSA runs
+  (#422 trunk, #449 selfplay). Dead weight at MULT=293, BASE=2 —
+  shifts bonus by 0.7%. Removed parameter and simplified formula
+  to match Stockfish's `min(MAX, MULT*d)`.
+- SPRT [-5, 5]: +3.7 Elo H1 at 5300+ games.
+- Freed one SPSA dimension (58 → 57 params).
+
+### Skip-noisy correction history merge — Neutral +tune values
+
+- After #441 flat at 15k games, merged tune/corr-history-skip-noisy-r1
+  (SF/Reckless pattern: skip correction-history updates when best_move
+  is a capture/promotion). Took tune #433's 1000-iter values.
+- Correctness-first: zero ELO regression with a consensus correctness
+  improvement.
+
+### Trunk retune on e800s800 net (tune #454) — H1 +38.6 Elo (OB #456)
+
+**Biggest single tune in v9's history.**
+
+- SPSA 2500 iterations, `feature/threat-inputs` with e800s800 net
+  (hash 6AEA210B), `--scale-nps 250000`.
+- Biggest parameter shifts — direction: trust the (better) s800 eval more:
+  - NMP_DEPTH_DIV    2 → 3     +50% (lighter NMP reduction)
+  - SE_DEPTH         10 → 6    -40% (SE kicks in earlier)
+  - HIST_PRUNE_MULT  5861 → 3981 -32% (lighter history pruning)
+  - LMR_HIST_DIV     11392 → 13958 +22%
+  - LMR_C_QUIET      107 → 121  +13%
+  - NMP_EVAL_DIV     169 → 149  -12%
+  - RFP_MARGIN_IMP   101 → 87   -14%
+  - ASP_DELTA        8 → 10     +25%
+  - SEE_QUIET_MULT   37 → 44    +19%
+
+- Bench: 1,798,525 → 2,401,107 (+33% nodes, tree-shape shift)
+- **Principle confirmed: "tune on your best net."** This third-round
+  tune on the s800 net delivered ~2× the +16.5 Elo of the prior
+  s200-based tune.
+
+### v5 gap measurement — before/after the major tune
+
+- **Pre-tune gap** (SPRT #453, v9 e800s800 vs v5 prod, both on
+  feature/threat-inputs): **-74 Elo H0** (370 games)
+- **Post-tune gap** (SPRT #459, tuned v9 e800s800 vs main + v5 prod):
+  **-19.82 Elo H0** (1386 games, [-5, 5] bounds rejected)
+- **~54 Elo of gap closed in one day** via the single tune + TM
+  fixes (on main, not yet in feature/threat-inputs).
+
+Gap moved into the "all-in on v9" threshold zone (-20 to -30 Elo).
+Decision to merge v9 trunk to main now depends on whether pending
+experiments (Reckless KB at s400, low-final-lr, const-generic NPS
+refactor) can close the remaining ~20 Elo.
+
+### NPS structural wins (cumulative)
+
+Three structural fixes to the NNUE/threat incremental-update path,
+all test-only infrastructure validated against existing fuzzers:
+
+| Commit | Change | NPS gain |
+|---|---|---|
+| 317deab | Fuse PSQ incremental update — all deltas in single pass | +0.4% |
+| 2218233 | Fuse threat-accum copy+apply — no separate memcpy pass | +2.6% |
+| afd2fcd | Enable column-major L1 matmul via dense_l1_avx2 | +1.2% |
+| **Total** | | **+3.8%** |
+
+Baseline 548K → 569K NPS (10-run mean). Bench 1,798,525 unchanged
+(correctness preserved). All fuzzers (`fuzz_psq_accumulator`,
+`threat_accum::fuzz_random_games`, `finny_king_march_consistency`)
+pass.
+
+### Audit suite (25 new property-based tests)
+
+Permanent regression coverage, all pass on current HEAD:
+
+- **Zobrist aux keys** fuzzer (pawn_hash, non_pawn_key, minor_key,
+  major_key) — matches from-scratch recomputation after every move.
+- **Make/unmake round-trip** + **null-move round-trip** — full state
+  restore after random game sequences.
+- **is_pseudo_legal** positive/negative fuzzers — every legal move
+  accepted; every corrupted move rejected or matches generate_all.
+- **Repetition detection** (main-search + QS variants) — 4-ply knight
+  dance detected, halfmove cap honoured, random-games agreement.
+- **SEE correctness** (9 assertive tests) — hand-computed values
+  match, monotonicity of `see_ge` across thresholds.
+- **Cuckoo cycle detection** (6 tests) — table populated (3668
+  entries), every entry valid, knight-dance cycle detected.
+- **Correction history** — update formula directionality, bounds,
+  gravity saturation, zero-err no-op, read/write index symmetry.
+- **Finny king-march** — 14-step king walk forces cross-bucket
+  refresh on every ply, asserts against force_recompute.
+- **TT bucket replacement** (6 tests) — roundtrip, 5-slot
+  coexistence, XOR-key verification, same-key update, depth-gated
+  replacement, eviction arithmetic.
+
+Session bug count: 0. Infrastructure locked in for future NPS work.
+
+### PGO re-investigation — still regresses
+
+Tested vanilla `cargo pgo` today on v9 trunk:
+- Non-PGO: ~549K NPS
+- PGO: ~491K NPS (**-10.4% regression**)
+
+Tried panic="abort", removed embedded-net feature — neither recovered
+the regression. Reckless on same hardware gains +1.5% from PGO
+(974K → 989K). Structural difference in Coda's hot path that PGO
+inlining misjudges; unclear without deep LLVM investigation.
+Shelved for now.
+
+### Training experiments dispatched (pending results)
+
+Kicked off this morning, ~2 hours to land:
+
+1. **Low final_lr** Reckless s200: `--final-lr 2.43e-7` (10× lower
+   than default 2.43e-6). Tests whether v9 sparse threat features
+   benefit from even lower LR tail.
+2. **Short warmup** Reckless s200: `--warmup 5` (vs 20 default).
+   Ablation of warmup length.
+3. **Reckless e400 baseline**: full 400-SB schedule with Reckless
+   KB. Measures KB × schedule-length economics jointly.
+
+### Pending SPRT queue
+
+- **#455** — selfplay-tuned (tune #449 applied) vs 1xT80 (trunk tune).
+  Post-tune re-test of the earlier H0 -46 pre-tune result.
+
+### v9 schedule-length curve (as measured pre-tune #454)
+
+| Snapshot | Elo vs e800s200 |
+|---|---|
+| e400s400 | +3.1 |
+| e800s800 | +9.4 |
+
+Log-linear ~3-6 Elo per SB doubling, front-loaded onto the
+low-LR tail (not evenly spread per SB). The +38.6 tune may shift
+this curve; re-measurement under the new tune is worth doing once
+SPRT fleet has capacity.
+
+### Lever stack toward v5 parity (2026-04-18 evening)
+
+Current gap: -19.82 Elo (SPRT #459 H0). Realistic candidate gains:
+
+| Lever | Projected | Status |
+|---|---|---|
+| Reckless KB net at s400 | +15-25 | In-flight training |
+| Retune on Reckless KB | +15-40 (compounds with above) | Queued |
+| Low-final-LR variant | +5-15? speculative | In-flight training |
+| Const-generic PARAMETERS refactor | +10-15 | Not started (scoped) |
+| s1600 full schedule | +5-10 | Deferred (48h train) |
+
+Any 2 of (Reckless+retune, const-generic, low-LR) landing positive
+puts us at or above v5. All-in merge decision deferred pending
+results.
