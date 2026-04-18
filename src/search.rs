@@ -133,6 +133,11 @@ tunables!(
     (ESCAPE_BONUS_Q,   17285, 5000, 40000),
     (ESCAPE_BONUS_R,   14712, 3000, 30000),
     (ESCAPE_BONUS_MINOR, 10077, 2000, 20000),
+    // King-zone-pressure NMP gate: skip null move when enemy has this
+    // many or more attackers on our king zone (king sq + 8 neighbours).
+    // 9 = never skip (gate disabled), 2 = aggressive gating. Conservative
+    // initial 5 fires only in high-attack positions.
+    (NMP_KING_ZONE_MAX,   5,    2,    9),
     // Threat-density LMR: reduce less when more pieces are threatened.
     // threat_count / LMR_THREAT_DIV subtracted from reduction.
     // Higher = less effect (2 means reduce 1 less per 2 threatened pieces).
@@ -1854,11 +1859,19 @@ fn negamax(
     // Guard against consecutive null moves
     let prev_was_null = !board.undo_stack.is_empty()
         && board.undo_stack[board.undo_stack.len() - 1].mv == NO_MOVE;
+    // King-zone-pressure gate: skip NMP when enemy has many attackers
+    // on our king zone. A null move in an attacking position gives
+    // opponent an extra tempo at the worst moment.
+    let our_king_sq = board.king_sq(board.side_to_move);
+    let king_zone = crate::attacks::king_attacks(our_king_sq as u32) | (1u64 << our_king_sq);
+    let king_zone_pressure = popcount(enemy_attacks & king_zone) as i32;
+
     if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
         && !prev_was_null  // Prevent consecutive null moves
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
+        && king_zone_pressure < tp(&NMP_KING_ZONE_MAX)  // New gate
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
