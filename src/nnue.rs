@@ -2056,16 +2056,23 @@ impl NNUENet {
     }
 
     fn forward_with_l1_pairwise(&self, stm_acc: &[i16], ntm_acc: &[i16], bucket: usize) -> i32 {
-        self.forward_with_l1_pairwise_inner(stm_acc, ntm_acc, &[], &[], bucket)
+        unsafe { self.forward_with_l1_pairwise_inner(stm_acc, ntm_acc, &[], &[], bucket) }
     }
 
     fn forward_with_l1_pairwise_threats(&self, stm_acc: &[i16], ntm_acc: &[i16],
         stm_threat: &[i16], ntm_threat: &[i16], bucket: usize) -> i32
     {
-        self.forward_with_l1_pairwise_inner(stm_acc, ntm_acc, stm_threat, ntm_threat, bucket)
+        unsafe { self.forward_with_l1_pairwise_inner(stm_acc, ntm_acc, stm_threat, ntm_threat, bucket) }
     }
 
-    fn forward_with_l1_pairwise_inner(&self, stm_acc: &[i16], ntm_acc: &[i16],
+    /// Marked `#[target_feature]` to propagate AVX2 codegen context through
+    /// the inlined SIMD helpers. LTO was already inlining the helpers across
+    /// the boundary, but the attribute gives LLVM permission to emit tighter
+    /// AVX2 sequences inside the inlined region (measured +~5% NPS, identical
+    /// bench node count). Callers must ensure AVX2 is available; on x86_64
+    /// with `-Ctarget-cpu=native` it is.
+    #[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx2"))]
+    unsafe fn forward_with_l1_pairwise_inner(&self, stm_acc: &[i16], ntm_acc: &[i16],
         stm_threat: &[i16], ntm_threat: &[i16], bucket: usize) -> i32
     {
         let h = self.hidden_size;
@@ -3282,16 +3289,18 @@ impl NNUEAccumulator {
                 let (prev_slice, curr_slice) = self.stack.split_at_mut(ply);
                 let prev = &prev_slice[src];
                 let curr = &mut curr_slice[0];
-                crate::threats::apply_threat_deltas(
-                    &mut curr.threat_white, &prev.threat_white,
-                    &deltas, &net.threat_weights, h, net.num_threat_features,
-                    WHITE, w_mirrored,
-                );
-                crate::threats::apply_threat_deltas(
-                    &mut curr.threat_black, &prev.threat_black,
-                    &deltas, &net.threat_weights, h, net.num_threat_features,
-                    BLACK, b_mirrored,
-                );
+                unsafe {
+                    crate::threats::apply_threat_deltas(
+                        &mut curr.threat_white, &prev.threat_white,
+                        &deltas, &net.threat_weights, h, net.num_threat_features,
+                        WHITE, w_mirrored,
+                    );
+                    crate::threats::apply_threat_deltas(
+                        &mut curr.threat_black, &prev.threat_black,
+                        &deltas, &net.threat_weights, h, net.num_threat_features,
+                        BLACK, b_mirrored,
+                    );
+                }
                 // Swap back
                 self.stack[ply].threat_deltas = deltas;
             }

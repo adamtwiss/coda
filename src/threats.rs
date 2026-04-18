@@ -1241,7 +1241,14 @@ pub fn compute_move_deltas(
 
 /// Apply raw threat deltas to update the threat accumulator incrementally.
 /// Copies from `prev` and applies all deltas for a specific perspective.
-pub fn apply_threat_deltas(
+///
+/// Marked `#[target_feature]` to propagate AVX2 codegen context into the
+/// inlined `apply_deltas_avx2` helper. LTO was already inlining the helper,
+/// but the attribute gives LLVM permission to emit tighter AVX2 sequences
+/// inside the inlined region. Callers must ensure AVX2 is available; on
+/// x86_64 with `-Ctarget-cpu=native` it is.
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx2"))]
+pub unsafe fn apply_threat_deltas(
     dst: &mut [i16],           // destination threat accumulator (one perspective)
     src: &[i16],               // source (previous position's threat accumulator)
     deltas: &[RawThreatDelta],
