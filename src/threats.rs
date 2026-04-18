@@ -431,29 +431,28 @@ fn push_threats_for_piece(
         deltas.push(RawThreatDelta::new(cp as u8, square as u8, colored_piece(victim_color, victim_pt) as u8, target_sq as u8, add));
     }
 
-    // 1b. X-ray threats FROM this piece, if it's a slider. Mirrors the
-    // x-ray branch in enumerate_threats: for each direct target, find
-    // the piece one step past it on the same ray.
+    // 1b. X-ray threats FROM this piece, if it's a slider. For each
+    // direct target (blocker), find the next occupant on the same ray
+    // STRICTLY BEYOND the blocker. Previously recomputed full attacks
+    // with the blocker removed per-iteration (one magic lookup each).
+    // Now uses the precomputed RAY_EXTENSION table: one array read
+    // replaces the per-blocker magic lookup.
     if piece_type == BISHOP || piece_type == ROOK || piece_type == QUEEN {
         let mut direct_targets = my_attacks & occ;
         while direct_targets != 0 {
             let blocker_sq = direct_targets.trailing_zeros();
             direct_targets &= direct_targets - 1;
 
-            let occ_without_blocker = occ & !(1u64 << blocker_sq);
-            let attacks_through =
-                piece_attacks_occ(piece_type, piece_color, square, occ_without_blocker);
-            let revealed = attacks_through & !my_attacks & occ_without_blocker;
-            if revealed == 0 { continue; }
+            let extension = crate::bitboard::ray_extension(square, blocker_sq);
+            let xray_candidates = extension & occ;
+            if xray_candidates == 0 { continue; }
 
+            // First occupant past the blocker on the same ray direction.
             let xray_sq = if square < blocker_sq {
-                let above = revealed & !((1u64 << (blocker_sq + 1)) - 1);
-                if above != 0 { above.trailing_zeros() } else { 64 }
+                xray_candidates.trailing_zeros()
             } else {
-                let below = revealed & ((1u64 << blocker_sq) - 1);
-                if below != 0 { 63 - below.leading_zeros() } else { 64 }
+                63 - xray_candidates.leading_zeros()
             };
-            if xray_sq >= 64 { continue; }
             let xpt = mailbox[xray_sq as usize];
             if xpt >= 6 { continue; }
             let xcolor = if white_bb & (1u64 << xray_sq) != 0 { WHITE } else { BLACK };

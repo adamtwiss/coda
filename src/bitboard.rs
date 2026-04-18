@@ -128,6 +128,12 @@ impl Iterator for BitIterator {
 static mut BETWEEN: [[Bitboard; 64]; 64] = [[0; 64]; 64];
 /// Line masks: full line through two squares (if on same rank/file/diagonal).
 static mut LINE: [[Bitboard; 64]; 64] = [[0; 64]; 64];
+/// Ray extension: squares on the ray from `from` through `blocker`,
+/// STRICTLY BEYOND `blocker`, in the same direction, until the board
+/// edge. Zero when the two squares are not on the same slider ray.
+/// Used by threat-generation x-ray scanning to avoid per-blocker
+/// magic-table lookups.
+static mut RAY_EXTENSION: [[Bitboard; 64]; 64] = [[0; 64]; 64];
 
 pub fn between(sq1: u32, sq2: u32) -> Bitboard {
     unsafe { BETWEEN[sq1 as usize][sq2 as usize] }
@@ -137,24 +143,34 @@ pub fn line(sq1: u32, sq2: u32) -> Bitboard {
     unsafe { LINE[sq1 as usize][sq2 as usize] }
 }
 
+/// Return the bitboard of squares on the ray from `from` through
+/// `blocker`, strictly beyond `blocker`. Returns 0 if the two squares
+/// are not aligned on a slider ray, or if `blocker` is on a board edge
+/// in the relevant direction.
+#[inline(always)]
+pub fn ray_extension(from: u32, blocker: u32) -> Bitboard {
+    unsafe { RAY_EXTENSION[from as usize][blocker as usize] }
+}
+
 /// Initialize between and line tables. Must be called once at startup.
 pub fn init_bitboards() {
     // We need attack tables first, so this is called after attacks::init()
     // For now, compute ray-based between/line using simple loops
     for sq1 in 0..64u32 {
         for sq2 in 0..64u32 {
-            let (bb_between, bb_line) = compute_between_and_line(sq1, sq2);
+            let (bb_between, bb_line, bb_ext) = compute_between_and_line(sq1, sq2);
             unsafe {
                 BETWEEN[sq1 as usize][sq2 as usize] = bb_between;
                 LINE[sq1 as usize][sq2 as usize] = bb_line;
+                RAY_EXTENSION[sq1 as usize][sq2 as usize] = bb_ext;
             }
         }
     }
 }
 
-fn compute_between_and_line(sq1: u32, sq2: u32) -> (Bitboard, Bitboard) {
+fn compute_between_and_line(sq1: u32, sq2: u32) -> (Bitboard, Bitboard, Bitboard) {
     if sq1 == sq2 {
-        return (0, 0);
+        return (0, 0, 0);
     }
 
     let r1 = sq1 / 8;
@@ -173,7 +189,7 @@ fn compute_between_and_line(sq1: u32, sq2: u32) -> (Bitboard, Bitboard) {
     } else if dr.abs() == df.abs() {
         (if dr > 0 { 1 } else { -1 }, if df > 0 { 1 } else { -1 })
     } else {
-        return (0, 0); // Not on same ray
+        return (0, 0, 0); // Not on same ray
     };
 
     // Between: squares strictly between sq1 and sq2
@@ -196,16 +212,19 @@ fn compute_between_and_line(sq1: u32, sq2: u32) -> (Bitboard, Bitboard) {
         r -= step_r;
         f -= step_f;
     }
-    // Extend forward from sq2
+    // Extend forward from sq2 — also captures ray-extension bits
+    let mut extension_bb = 0u64;
     let mut r = r2 as i32 + step_r;
     let mut f = f2 as i32 + step_f;
     while r >= 0 && r < 8 && f >= 0 && f < 8 {
-        line_bb |= 1u64 << (r * 8 + f);
+        let bit = 1u64 << (r * 8 + f);
+        line_bb |= bit;
+        extension_bb |= bit;
         r += step_r;
         f += step_f;
     }
 
-    (between_bb, line_bb)
+    (between_bb, line_bb, extension_bb)
 }
 
 #[cfg(test)]
