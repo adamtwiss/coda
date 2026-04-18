@@ -142,6 +142,12 @@ tunables!(
     // threat_count / LMR_THREAT_DIV subtracted from reduction.
     // Higher = less effect (2 means reduce 1 less per 2 threatened pieces).
     (LMR_THREAT_DIV,      2,    1,    5),
+    // our_defenses futility widener: widen futility margin by
+    // FUT_THREATS_MARGIN per non-pawn-of-ours under any enemy attack.
+    // Tactical positions (many of our pieces attacked) deserve less
+    // aggressive pruning — wider margin keeps potentially-winning lines
+    // from being dropped on static-eval alone. 0 = disabled.
+    (FUT_THREATS_MARGIN, 40,    0,   200),
     // MVV multiplier in capture move ordering (historical default 16).
     // Captures scored as see_value(victim) * MVV_CAP_MULT + captHist.
     // Higher = weight MVV more vs capture history.
@@ -1535,6 +1541,10 @@ fn negamax(
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
     let has_pawn_threats = (enemy_pawn_attacks & our_non_pawns) != 0;
     let threat_count = popcount(enemy_pawn_attacks & our_non_pawns) as i32;
+    // our_defenses signal for futility widener: count of our non-pawn
+    // pieces under any enemy attack (pawn OR piece). Widens margin in
+    // tactical positions. Uses existing enemy_attacks — no new bitboard.
+    let any_threat_count = popcount(enemy_attacks & our_non_pawns) as i32;
 
     // Clear PV for this node
     if ply_u <= MAX_PLY {
@@ -2249,7 +2259,10 @@ fn negamax(
         {
             let main_hist = info.history.main_score(from, to, enemy_attacks);
             let hist_adj = main_hist / 128;
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj;
+            // our_defenses widener: add margin per our-piece-under-attack so
+            // tactical positions keep more lines from being pruned on eval.
+            let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
+            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
             // Don't futility-prune moves with very strong history (Igel pattern)
             if futility_value <= alpha && main_hist < 12000 {
                 info.stats.futility_prunes += 1;
