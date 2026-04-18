@@ -190,6 +190,12 @@ pub struct MovePicker {
     ply: usize,
     skip_quiet: bool,
     threats: Threats, // enemy attack bitboard for threat-aware history
+    // A1a: attacker-class-stratified enemy attacks. Drives escape-bonus
+    // stratification so Q on rook-attacked square, R on minor-attacked
+    // square get attacker-specific ordering boosts.
+    their_pawn_attacks: Threats,
+    their_minor_attacks: Threats,
+    their_rplus_attacks: Threats,
     // Evasion support
     checkers: Bitboard,
     pinned: Bitboard,
@@ -211,6 +217,9 @@ impl MovePicker {
         prev_move: Move,
         pawn_hist: Option<&[[i16; 64]; 13]>,
         threats: Threats,
+        their_pawn_attacks: Threats,
+        their_minor_attacks: Threats,
+        their_rplus_attacks: Threats,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
     ) -> Self {
@@ -283,6 +292,9 @@ impl MovePicker {
             ply,
             skip_quiet: false,
             threats,
+            their_pawn_attacks,
+            their_minor_attacks,
+            their_rplus_attacks,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -314,6 +326,9 @@ impl MovePicker {
             ply: 0,
             skip_quiet: true,
             threats: 0,
+            their_pawn_attacks: 0,
+            their_minor_attacks: 0,
+            their_rplus_attacks: 0,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -368,6 +383,9 @@ impl MovePicker {
             ply,
             skip_quiet: false,
             threats: 0, // evasions don't use threat-aware history
+            their_pawn_attacks: 0,
+            their_minor_attacks: 0,
+            their_rplus_attacks: 0,
             checkers,
             pinned,
             threat_sq: -1,
@@ -592,6 +610,22 @@ impl MovePicker {
                     1 | 2 => crate::search::ESCAPE_BONUS_MINOR.load(std::sync::atomic::Ordering::Relaxed),
                     _ => 0,
                 };
+
+                // A1a: attacker-class-aware escape bonuses, stacked on top.
+                // Our Q attacked by rook+ (R or Q) — running from a major threat.
+                // Our R attacked by minor (N or B) — running from a cheaper piece.
+                // Both fire only when the pawn-level trigger is also active
+                // (outer `self.threats` guard is the union of all attack classes).
+                let fbit = 1u64 << from;
+                match pt {
+                    4 if self.their_rplus_attacks & fbit != 0 => {
+                        score += crate::search::ESCAPE_BONUS_Q_RPLUS.load(std::sync::atomic::Ordering::Relaxed);
+                    }
+                    3 if self.their_minor_attacks & fbit != 0 => {
+                        score += crate::search::ESCAPE_BONUS_R_MINOR.load(std::sync::atomic::Ordering::Relaxed);
+                    }
+                    _ => {}
+                }
             }
 
             // Quiet check bonus: moves that give direct check (SF +16384, Viridithas +10000)

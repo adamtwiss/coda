@@ -157,6 +157,19 @@ tunables!(
     // aggressive pruning — wider margin keeps potentially-winning lines
     // from being dropped on static-eval alone. 0 = disabled.
     (FUT_THREATS_MARGIN, 40,    0,   200),
+    // A1c: can_win_material RFP margin widener. When we have a capture
+    // available that wins material (our lower-value piece attacks their
+    // higher-value piece), widen RFP margin by margin/N so we don't skip
+    // potentially-winning lines. Higher = less effect (100 = +1% margin,
+    // 3 = +33% margin). Fires in parallel with has_pawn_threats widener.
+    // Post-SPSA-486 tuned value: 6 (unchanged from default)
+    (RFP_CAN_WIN_DIV,     6,    2,   20),
+    // A1a: stratified escape bonuses — attacker-class-aware. Fire when
+    // our piece occupies a square attacked by a strictly-cheaper enemy.
+    // These stack with the (pawn-only) ESCAPE_BONUS_{Q,R,MINOR} above.
+    // Post-SPSA-486 tuned values: Q_RPLUS 11401 (-5.0%), R_MINOR 10201 (+2.0%)
+    (ESCAPE_BONUS_Q_RPLUS,    11401, 3000, 30000),
+    (ESCAPE_BONUS_R_MINOR,    10201, 2000, 25000),
     // MVV multiplier in capture move ordering (historical default 16).
     // Captures scored as see_value(victim) * MVV_CAP_MULT + captHist.
     // Higher = weight MVV more vs capture history.
@@ -1534,18 +1547,15 @@ fn negamax(
     // Threat-aware history indexing: upgrade from pawn-only to all-enemy-pieces.
     // `enemy_attacks` keys the 4D main history slot (from_threatened, to_threatened);
     // broader threat coverage → finer move-ordering distinctions.
+    // Stratified version (A1a) also drives attacker-class-aware escape bonuses.
     // Cost: 8-12 extra magic lookups per node, only at non-QS non-TT-cut nodes.
     let them_color = flip_color(board.side_to_move);
-    let enemy_attacks: u64 = board.attacks_by_color(them_color);
+    let their_strat = board.stratified_attacks_by_color(them_color);
+    let enemy_attacks: u64 = their_strat.pawn | their_strat.minor | their_strat.rook_plus | their_strat.king;
+    let enemy_pawn_attacks: u64 = their_strat.pawn;
 
     // Pawn-specific threat count kept separate: RFP margin adjustment and
     // LMR_THREAT_DIV are tuned on the pawn-only scale.
-    let their_pawns = board.pieces[PAWN as usize] & board.colors[them_color as usize];
-    let enemy_pawn_attacks: u64 = if them_color == WHITE {
-        ((their_pawns & !0x0101010101010101u64) << 7) | ((their_pawns & !0x8080808080808080u64) << 9)
-    } else {
-        ((their_pawns & !0x8080808080808080u64) >> 7) | ((their_pawns & !0x0101010101010101u64) >> 9)
-    };
     let our_non_pawns = board.colors[board.side_to_move as usize]
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
     let has_pawn_threats = (enemy_pawn_attacks & our_non_pawns) != 0;
@@ -1963,6 +1973,18 @@ fn negamax(
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
+            // A1c: widen margin when we have a profitable capture available.
+            // Our lower-value piece attacks their higher-value piece → a line
+            // exists where we gain material; don't skip it on static eval alone.
+            let our_strat = board.stratified_attacks_by_color(board.side_to_move);
+            let their_minors = (board.pieces[KNIGHT as usize] | board.pieces[BISHOP as usize])
+                & board.colors[them_color as usize];
+            let their_rooks = board.pieces[ROOK as usize] & board.colors[them_color as usize];
+            let their_queens = board.pieces[QUEEN as usize] & board.colors[them_color as usize];
+            let can_win_material = (our_strat.pawn & (their_minors | their_rooks | their_queens)) != 0
+                || (our_strat.minor & (their_rooks | their_queens)) != 0
+                || (our_strat.rook_plus & their_queens) != 0;
+            if can_win_material { margin += margin / tp(&RFP_CAN_WIN_DIV); }
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
@@ -2079,7 +2101,7 @@ fn negamax(
     let mut picker = if in_check {
         MovePicker::new_evasion(board, tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, their_strat.pawn, their_strat.minor, their_strat.rook_plus, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
 
