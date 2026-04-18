@@ -274,6 +274,10 @@ pub struct SearchInfo {
     pub last_score: i32,
     /// Root side-to-move (for contempt: penalize draws from our perspective)
     pub root_stm: u8,
+    /// Opponent's clock in ms at start of this search (from go command's wtime/btime).
+    /// Used by dynamic TM to avoid early-stopping when opp is in time pressure.
+    /// 0 = unknown / no clock context.
+    pub opp_time: u64,
     /// Per-depth cumulative node counts (for EBF calculation in bench)
     pub depth_nodes: [u64; MAX_PLY + 1],
     pub completed_depth: i32,
@@ -337,6 +341,7 @@ impl SearchInfo {
             sel_depth: 0,
             last_score: 0,
             root_stm: WHITE,
+            opp_time: 0,
             depth_nodes: [0; MAX_PLY + 1],
             completed_depth: 0,
             static_evals: [0; MAX_PLY + 1],
@@ -1042,6 +1047,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     } else {
         (limits.btime, limits.binc)
     };
+    // Cache opp's clock for the dynamic TM stability guard below.
+    info.opp_time = if board.side_to_move == WHITE { limits.btime } else { limits.wtime };
 
     if limits.infinite {
         info.time_limit = 0;
@@ -1376,7 +1383,27 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Factor 2: Best-move stability (Obsidian linear pattern)
             // Each stable iteration reduces time by 8%
             // 0 stable: 1.71x, 5 stable: 1.31x, 10 stable: 0.91x
-            let stability_factor = (1.71 - info.tm_best_stable as f64 * 0.08).max(0.5);
+            let mut stability_factor = (1.71 - info.tm_best_stable as f64 * 0.08).max(0.5);
+
+            // Clock-surplus guard: when opp is in time pressure, don't let
+            // stability cut below 1.0x — a stable move is fine, but burning
+            // our clock advantage when opp is short on time is wasteful.
+            //
+            // Heuristic: trigger if opp's time is less than ~6× our hard_limit
+            // (i.e., opp doesn't have enough time for many more full-budget
+            // moves) AND absolute opp time < 30s (avoid firing in very long TCs
+            // where "opp has 50s" isn't really pressure).
+            //
+            // Motivated by lichess NLyqWj8w where Coda finished with 96% clock
+            // vs an opponent under real time pressure — the stability cut was
+            // making Coda rush instead of punishing opp's low clock.
+            if info.opp_time > 0 && info.hard_limit > 0 {
+                let opp_in_pressure = info.opp_time < info.hard_limit.saturating_mul(6)
+                    && info.opp_time < 30_000;
+                if opp_in_pressure {
+                    stability_factor = stability_factor.max(1.0);
+                }
+            }
 
             // Factor 3: Score trend (Obsidian pattern, simplified)
             // Dropping score → use more time. Rising score → slightly less.
