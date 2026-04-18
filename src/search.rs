@@ -1773,8 +1773,9 @@ fn negamax(
                             } else {
                                 0 // empty
                             };
+                            let tt_def = ((enemy_attacks >> move_to(tt_move)) & 1) as usize;
                             History::update_cont_history(
-                                &mut info.history.capture[go_piece(tt_piece)][move_to(tt_move) as usize][ct],
+                                &mut info.history.capture[go_piece(tt_piece)][move_to(tt_move) as usize][ct][tt_def],
                                 bonus,
                             );
                         }
@@ -2109,7 +2110,7 @@ fn negamax(
     let mut quiets_count = 0usize;
 
     // Track captures searched before beta cutoff for capture history penalty
-    let mut captures_tried: [(u8, u8, u8); 32] = [(0, 0, 0); 32]; // (piece, to, victim)
+    let mut captures_tried: [(u8, u8, u8, u8); 32] = [(0, 0, 0, 0); 32]; // (piece, to, victim, defended)
     let mut n_captures_tried = 0usize;
 
     loop {
@@ -2378,7 +2379,8 @@ fn negamax(
         if is_cap && n_captures_tried < 32 {
             if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                 let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
-                captures_tried[n_captures_tried] = (go_piece(moved_piece) as u8, to, ct as u8);
+                let def = ((enemy_attacks >> to) & 1) as u8;
+                captures_tried[n_captures_tried] = (go_piece(moved_piece) as u8, to, ct as u8, def);
                 n_captures_tried += 1;
             }
         }
@@ -2493,7 +2495,8 @@ fn negamax(
                     // Continuous capture history adjustment
                     if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                         let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
-                        let capt_hist_val = info.history.capture[go_piece(moved_piece)][to as usize][ct];
+                        let def = ((enemy_attacks >> to) & 1) as usize;
+                        let capt_hist_val = info.history.capture[go_piece(moved_piece)][to as usize][ct][def];
                         // Positive capture history: reduce less
                         if capt_hist_val > 2000 {
                             reduction -= 1;
@@ -2695,8 +2698,9 @@ fn negamax(
                             } else {
                                 captured_type(captured_pt)
                             };
+                            let def = ((enemy_attacks >> to) & 1) as usize;
                             History::update_cont_history(
-                                &mut info.history.capture[go_piece(moved_piece)][to as usize][cpt],
+                                &mut info.history.capture[go_piece(moved_piece)][to as usize][cpt][def],
                                 cap_bonus,
                             );
                         }
@@ -2709,9 +2713,9 @@ fn negamax(
                         let cap_malus = capture_history_bonus(depth);
                         let cap_count = if is_cap { n_captures_tried.saturating_sub(1) } else { n_captures_tried };
                         for i in 0..cap_count {
-                            let (cp, ct, cv) = captures_tried[i];
+                            let (cp, ct, cv, cd) = captures_tried[i];
                             History::update_cont_history(
-                                &mut info.history.capture[cp as usize][ct as usize][cv as usize],
+                                &mut info.history.capture[cp as usize][ct as usize][cv as usize][cd as usize],
                                 -cap_malus,
                             );
                         }

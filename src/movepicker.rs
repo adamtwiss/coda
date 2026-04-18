@@ -25,11 +25,15 @@ pub struct History {
     /// Main history: [from_threatened][to_threatened][from][to]
     /// Threat-aware 4D indexing — separate history for moves escaping/entering threats.
     pub main: [[[[i32; 64]; 64]; 2]; 2],
-    /// Capture history: [piece 1-12][to][captured_type 0-6]
+    /// Capture history: [piece 1-12][to][captured_type 0-6][defended 0-1]
     /// piece uses 1-12 indexing (slot 0 unused).
     /// captured_type uses 0-6 scheme (0=empty, 1=pawn, ..., 6=king).
+    /// defended: 0 if `to` not attacked by any enemy piece, 1 otherwise.
     /// int16 values (i32 causes different gravity behavior).
-    pub capture: [[[i16; 7]; 64]; 13],
+    /// Direct analogue of the +14.2 Elo full-attacks-history key upgrade
+    /// (quiet side). Uses the enemy_attacks bitboard already computed for
+    /// NMP/RFP, so zero new per-node cost.
+    pub capture: [[[[i16; 2]; 7]; 64]; 13],
     /// Killer moves: [ply][2]
     pub killers: [[Move; 2]; 64],
     /// Counter-move: [piece 1-12][to]
@@ -68,7 +72,7 @@ impl History {
     pub fn new() -> Self {
         History {
             main: [[[[0; 64]; 64]; 2]; 2],
-            capture: [[[0i16; 7]; 64]; 13],
+            capture: [[[[0i16; 2]; 7]; 64]; 13],
             killers: [[NO_MOVE; 2]; 64],
             counter: [[NO_MOVE; 64]; 13],
             cont_hist: [[[[0; 64]; 13]; 64]; 13],
@@ -77,7 +81,7 @@ impl History {
 
     pub fn clear(&mut self) {
         self.main = [[[[0; 64]; 64]; 2]; 2];
-        self.capture = [[[0i16; 7]; 64]; 13];
+        self.capture = [[[[0i16; 2]; 7]; 64]; 13];
         self.killers = [[NO_MOVE; 2]; 64];
         self.counter = [[NO_MOVE; 64]; 13];
         self.cont_hist = [[[[0; 64]; 13]; 64]; 13];
@@ -96,7 +100,9 @@ impl History {
         }
         for plane in self.capture.iter_mut() {
             for row in plane.iter_mut() {
-                for v in row.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
+                for vslot in row.iter_mut() {
+                    for v in vslot.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
+                }
             }
         }
         for plane0 in self.cont_hist.iter_mut() {
@@ -521,7 +527,7 @@ impl MovePicker {
             }
             // Dynamic SEE threshold: captures with strong history get a more
             // forgiving threshold. Use captHist only (not MVV) to avoid inflation.
-            let capt_hist = capt_hist_score_static(board, history, m);
+            let capt_hist = capt_hist_score_static(board, history, m, self.threats);
             let cap_score = mvv_lva(board, m) + capt_hist;
             let see_threshold = -capt_hist / 18;
             if !see_ge(board, m, see_threshold) {
@@ -657,7 +663,7 @@ impl MovePicker {
                 }
             } else if board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT {
                 // Capture: MVV-LVA + capture history
-                10000 + mvv_lva(board, m) + capt_hist_score_static(board, history, m)
+                10000 + mvv_lva(board, m) + capt_hist_score_static(board, history, m, self.threats)
             } else {
                 // Quiet: history + continuation history + pawn history
                 let piece = board.piece_at(from);
@@ -734,8 +740,11 @@ impl MovePicker {
 
 /// Capture history score for a capture move.
 /// Capture history score lookup. Public for use by QMovePicker.
+///
+/// `enemy_attacks` keys the defender-aware dim: 0 if victim square
+/// is not attacked by any enemy piece (free capture), 1 otherwise.
 #[inline]
-pub fn capt_hist_score_static(board: &Board, history: &History, m: Move) -> i32 {
+pub fn capt_hist_score_static(board: &Board, history: &History, m: Move, enemy_attacks: Threats) -> i32 {
     let from = move_from(m);
     let to = move_to(m);
     let piece = board.piece_at(from);
@@ -752,7 +761,8 @@ pub fn capt_hist_score_static(board: &Board, history: &History, m: Move) -> i32 
     } else {
         captured_type(victim_pt)
     };
-    history.capture[go_piece(piece)][to as usize][ct] as i32
+    let defended = ((enemy_attacks >> to) & 1) as usize;
+    history.capture[go_piece(piece)][to as usize][ct][defended] as i32
 }
 
 /// MVV-LVA score for a capture.
@@ -1045,7 +1055,10 @@ impl QMovePicker {
                 let victim = if flags == FLAG_EN_PASSANT { PAWN } else { target_pt };
                 let attacker = board.piece_type_at(from);
                 let mvv_lva = see_value(victim) * 10 - see_value(attacker);
-                let capt_hist = capt_hist_score_static(board, history, mv);
+                // QS passes 0 for enemy_attacks: defended bit always lands
+                // in the [undefended] bucket. Computing full enemy_attacks in
+                // QS would add ~15 magic lookups to the hottest path.
+                let capt_hist = capt_hist_score_static(board, history, mv, 0);
                 if in_check {
                     // Evasion captures scored high (10000 + mvvlva + captHist)
                     picker.scores[i] = 10000 + mvv_lva + capt_hist;
