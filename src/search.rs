@@ -261,6 +261,12 @@ pub struct SearchInfo {
     tm_has_data: bool,
     soft_limit: u64,  // ms — can be extended/shortened dynamically
     hard_limit: u64,  // ms — absolute maximum
+    /// Minimum think time per move: the increment we're about to gain, minus
+    /// move overhead. Floors the dynamically-scaled soft limit so stability
+    /// cuts in stable endgames can't push think time below the increment,
+    /// which would grow the clock instead of spending it (stockpile). 0 when
+    /// there is no increment.
+    soft_floor: u64,
     /// Per-root-move node counts for node-based time management.
     /// Indexed by from_sq * 64 + to_sq. Reset each search.
     root_move_nodes: Box<[u64; 4096]>,
@@ -331,6 +337,7 @@ impl SearchInfo {
             tm_has_data: false,
             soft_limit: 0,
             hard_limit: 0,
+            soft_floor: 0,
             root_move_nodes: alloc_zeroed_box(),
             ponderhit_time: std::sync::Arc::new(AtomicU64::new(0)),
             ponder_depth: std::sync::Arc::new(AtomicU64::new(0)),
@@ -913,6 +920,7 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
                 helper.time_limit = 0;
                 helper.soft_limit = 0;
                 helper.hard_limit = 0;
+                helper.soft_floor = 0;
                 helper.max_depth = helper_limits.depth;
 
                 // Search with depth offset for diversity (standard Lazy SMP trick)
@@ -1049,8 +1057,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.time_limit = 0;
         info.soft_limit = 0;
         info.hard_limit = 0;
+        info.soft_floor = 0;
     } else if limits.movetime > 0 {
         info.time_limit = limits.movetime;
+        info.soft_floor = 0;
     } else if our_time > 0 {
         // Subtract move overhead (communication latency)
         let overhead = info.move_overhead;
@@ -1117,6 +1127,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Ensure hard >= soft (but soft is also capped by max_hard for movestogo safety)
         if soft > hard { soft = hard; }
         info.hard_limit = hard;
+        // Soft floor: never spend less than the increment we gain, so the
+        // dynamic stability cut can't produce clock-growing instant emits
+        // in stable endgames (lichess PZ7pCyrx stockpile). Capped at hard
+        // to preserve the absolute maximum. Zero when inc is zero.
+        info.soft_floor = our_inc.saturating_sub(overhead).min(hard);
         info.time_limit = hard.max(soft); // search uses hard as absolute limit
         info.tm_has_data = false;
         info.tm_best_stable = 0;
@@ -1144,6 +1159,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.soft_limit = 10;
         info.hard_limit = 10;
         info.time_limit = 10;
+        info.soft_floor = 0;
     }
 
     let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
@@ -1388,9 +1404,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Combined: all three factors multiply against the soft limit
             let scale = nodes_factor * stability_factor * score_factor;
 
-            // Check if we should stop at the soft limit
+            // Check if we should stop at the soft limit.
+            // Floor at soft_floor (≈ increment) so stability cuts in stable
+            // endgames can't produce clock-growing instant emits.
             let adjusted_soft = (info.soft_limit as f64 * scale) as u64;
-            let adjusted_soft = adjusted_soft.min(info.hard_limit);
+            let adjusted_soft = adjusted_soft.max(info.soft_floor).min(info.hard_limit);
             if elapsed >= adjusted_soft {
                 break;
             }
