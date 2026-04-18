@@ -1662,6 +1662,11 @@ pub struct NNUENet {
     /// King bucket layout identifier — drives which static lookup table is used.
     pub kb_layout: KbLayout,
     pub use_sparse_l1: std::sync::atomic::AtomicBool, // feature flag: sparse L1 matmul
+    /// Use clipped ReLU (not SCReLU) on L1/L2 hidden layers. Set via UCI
+    /// option `HiddenActivation = crelu`. Experimental — nets trained with
+    /// .crelu() on L1/L2 in Bullet need this set to match training-time
+    /// activation. Default false (SCReLU, matching all existing v7/v9 nets).
+    pub crelu_hidden: std::sync::atomic::AtomicBool,
     pub has_avx2: bool,
     pub has_avx512: bool,
     pub has_neon: bool,
@@ -1997,6 +2002,7 @@ impl NNUENet {
             num_king_buckets,
             kb_layout,
             use_sparse_l1: std::sync::atomic::AtomicBool::new(false), // disabled: dense int8 is faster at H=1024
+            crelu_hidden: std::sync::atomic::AtomicBool::new(false),
             has_avx2,
             has_avx512,
             has_neon,
@@ -2331,6 +2337,12 @@ impl NNUENet {
                 l1_out[i] = h_val as f32 / qa_l1_f;               // CReLU: [0, 1]
                 l1_out[l1 + i] = (h_val * h_val) as f32 / qa_l1_sq; // SCReLU: [0, 1]
             }
+        } else if self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed) {
+            // Clipped ReLU variant (for nets trained with .crelu() on L1/L2 in Bullet)
+            for i in 0..l1 {
+                let h_val = (hidden32[i] / pw_scale).clamp(0, qa_l1);
+                l1_out[i] = h_val as f32 / qa_l1_f; // CReLU: [0, 1]
+            }
         } else {
             for i in 0..l1 {
                 let h_val = (hidden32[i] / pw_scale).clamp(0, qa_l1);
@@ -2354,7 +2366,11 @@ impl NNUENet {
                     h2[k] += l1_out[i] * self.l2_weights_f[i * l2_total + l2_off + k];
                 }
             }
-            for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; } // SCReLU
+            if self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed) {
+                for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); } // CReLU
+            } else {
+                for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; } // SCReLU
+            }
             let out_w = &self.out_weights_f[bucket * l2_pb..bucket * l2_pb + l2_pb];
             let mut out_f = self.out_bias_f[bucket];
             for k in 0..l2 { out_f += h2[k] * out_w[k]; }
@@ -2487,6 +2503,12 @@ impl NNUENet {
                     l1_out[i] = h_val as f32 / qa_l1_f;               // CReLU: [0, 1]
                     l1_out[l1 + i] = (h_val * h_val) as f32 / qa_l1_sq; // SCReLU: [0, 1]
                 }
+            } else if self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed) {
+                // Clipped ReLU variant
+                for i in 0..l1 {
+                    let h_val = ((hidden[i] / qa as i64) as i32).clamp(0, qa_l1 as i32);
+                    l1_out[i] = h_val as f32 / qa_l1_f; // CReLU: [0, 1]
+                }
             } else {
                 // Standard SCReLU only
                 for i in 0..l1 {
@@ -2513,7 +2535,11 @@ impl NNUENet {
                     };
                     for k in 0..l2 { h2[k] += l1_out[i] * self.l2_weights_f[w_off + k]; }
                 }
-                for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; }
+                if self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed) {
+                    for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); } // CReLU
+                } else {
+                    for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; } // SCReLU
+                }
                 let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
                 let mut out_f = self.out_bias_f[bucket];
                 for k in 0..l2 { out_f += h2[k] * out_w[k]; }
@@ -2601,7 +2627,11 @@ impl NNUENet {
                     };
                     for k in 0..l2 { h2[k] += l1_out[i] * self.l2_weights_f[w_off + k]; }
                 }
-                for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; }
+                if self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed) {
+                    for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); }
+                } else {
+                    for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; }
+                }
                 let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
                 let mut out_f = self.out_bias_f[bucket];
                 for k in 0..l2 { out_f += h2[k] * out_w[k]; }
@@ -2692,6 +2722,11 @@ impl NNUENet {
                 l1_out[i] = h_val as f32 / qa_l1_f;
                 l1_out[l1 + i] = (h_val * h_val) as f32 / qa_l1_sq;
             }
+        } else if self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed) {
+            for i in 0..l1 {
+                let h_val = ((hidden[i] / qa2) as i32).clamp(0, qa_l1 as i32);
+                l1_out[i] = h_val as f32 / qa_l1_f;
+            }
         } else {
             for i in 0..l1 {
                 let h_val = ((hidden[i] / qa2) as i32).clamp(0, qa_l1 as i32);
@@ -2718,10 +2753,14 @@ impl NNUENet {
                     h2[k] += l1_out[i] * self.l2_weights_f[w_off + k];
                 }
             }
-            // SCReLU on L2: clamp [0, 1], square
-            for k in 0..l2 {
-                h2[k] = h2[k].clamp(0.0, 1.0);
-                h2[k] = h2[k] * h2[k];
+            // L2 activation: CReLU or SCReLU
+            if self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed) {
+                for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); }
+            } else {
+                for k in 0..l2 {
+                    h2[k] = h2[k].clamp(0.0, 1.0);
+                    h2[k] = h2[k] * h2[k];
+                }
             }
             // Output dot in float
             let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
