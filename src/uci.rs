@@ -239,12 +239,21 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             let ph_deadline = si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed);
                             let now_elapsed = go_received.elapsed().as_millis() as u64;
                             if ph_deadline > now_elapsed + 5 {
-                                let remaining = ph_deadline - now_elapsed;
                                 si.stop.store(false, std::sync::atomic::Ordering::Relaxed);
                                 si.ponderhit_time.store(0, std::sync::atomic::Ordering::Relaxed);
+                                // Use the ORIGINAL wtime/btime/winc/binc from `go ponder`
+                                // (not movetime) so search() runs the full TM setup —
+                                // soft_limit, hard_limit, dynamic TM (stability, nodes,
+                                // score), and opp_time are all populated. Without this,
+                                // the movetime path skips all that and we stockpile in
+                                // trivial endgames (observed on lichess PZ7pCyrx).
                                 let fresh_limits = SearchLimits {
                                     infinite: false,
-                                    movetime: remaining,
+                                    wtime: limits.wtime,
+                                    btime: limits.btime,
+                                    winc: limits.winc,
+                                    binc: limits.binc,
+                                    movestogo: limits.movestogo,
                                     ..SearchLimits::new()
                                 };
                                 let fresh_start = std::time::Instant::now();
