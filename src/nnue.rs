@@ -236,6 +236,71 @@ unsafe fn simd_acc_copy_sub(dst: &mut [i16], src: &[i16], row: &[i16], h: usize)
     }
 }
 
+/// Fused accumulator update: dst = src + Σ add_rows - Σ sub_rows in ONE pass.
+/// Replaces the copy+per-delta-pass pattern with a single load/compute/store
+/// sequence per accumulator chunk.
+///
+/// For a capture (3 deltas: sub moving-from, add moving-to, sub captured),
+/// the previous code paid 3 passes over the full accumulator (1 fused
+/// copy+delta + 2 separate in-place passes = ~3 × 2h bytes of memory
+/// traffic). With this fused kernel, total traffic is 2h bytes (read src
+/// once, write dst once) regardless of delta count. Reckless-style pattern.
+///
+/// Register blocking with REGS=8 SIMD lanes processes 128 i16s per chunk,
+/// keeping the hot accumulator values in registers while all deltas are
+/// applied. For typical h=768 this is 6 chunks per perspective.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_acc_fused_avx2(
+    dst: &mut [i16],
+    src: &[i16],
+    add_rows: &[&[i16]],
+    sub_rows: &[&[i16]],
+    h: usize,
+) {
+    const REGS: usize = 8;
+    const CHUNK: usize = REGS * 16;
+
+    let dst_ptr = dst.as_mut_ptr();
+    let src_ptr = src.as_ptr();
+
+    let mut offset = 0;
+    while offset < h {
+        let nregs = ((h - offset).min(CHUNK) + 15) / 16;
+
+        // Load src chunk into registers (seeds the per-chunk accumulator).
+        let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
+        for i in 0..nregs {
+            regs[i] = _mm256_loadu_si256(src_ptr.add(offset + i * 16) as *const __m256i);
+        }
+
+        // Apply all adds in-register.
+        for row in add_rows {
+            let row_ptr = row.as_ptr().add(offset);
+            for i in 0..nregs {
+                let w = _mm256_loadu_si256(row_ptr.add(i * 16) as *const __m256i);
+                regs[i] = _mm256_add_epi16(regs[i], w);
+            }
+        }
+
+        // Apply all subs in-register.
+        for row in sub_rows {
+            let row_ptr = row.as_ptr().add(offset);
+            for i in 0..nregs {
+                let w = _mm256_loadu_si256(row_ptr.add(i * 16) as *const __m256i);
+                regs[i] = _mm256_sub_epi16(regs[i], w);
+            }
+        }
+
+        // Store once per chunk.
+        for i in 0..nregs {
+            _mm256_storeu_si256(dst_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
+        }
+
+        offset += CHUNK;
+    }
+}
+
 /// Register-blocked batch apply for Finny table refresh (Reckless pattern).
 /// Loads 8 SIMD registers from acc, applies ALL adds then ALL subs, stores once.
 /// Much faster than per-piece acc_add/acc_sub which loads/stores each time.
@@ -3289,8 +3354,14 @@ impl NNUEAccumulator {
             return;
         }
 
-        // Incremental: fuse first delta with parent copy, then apply remaining in-place.
-        // This eliminates the separate copy_from_slice (saves ~100ns for h=1024).
+        // Incremental update: gather all deltas for this move, then apply them
+        // in a SINGLE fused pass per perspective. Replaces the previous
+        // copy+per-delta-pass pattern which did N passes over the full
+        // accumulator for an N-change move (capture = 3, castling = 4).
+        //
+        // Reckless pattern: for each perspective, read parent once, apply
+        // all add/sub weight rows while the chunk is in registers, write
+        // current once. Memory traffic is constant in N.
         let h = self.hidden_size;
         let (left, right) = self.stack.split_at_mut(self.top);
         let parent = &left[self.top - 1];
@@ -3301,110 +3372,57 @@ impl NNUEAccumulator {
 
         let n = dirty.n_changes as usize;
 
-        // First change: fused copy+delta (reads parent, writes current)
-        {
-            let (add, color, pt, sq) = dirty.changes[0];
-            let w_idx = halfka_index(WHITE, w_king_sq, color, pt, sq);
-            let w_row = net.input_weight_row(w_idx);
-            let b_idx = halfka_index(BLACK, b_king_sq, color, pt, sq);
-            let b_row = net.input_weight_row(b_idx);
+        // Collect add/sub weight rows per perspective. Max ~4 deltas per move
+        // (promotion capture = 4); using 8-slot stack arrays gives headroom.
+        let mut w_adds: [&[i16]; 8] = [&[]; 8];
+        let mut w_subs: [&[i16]; 8] = [&[]; 8];
+        let mut b_adds: [&[i16]; 8] = [&[]; 8];
+        let mut b_subs: [&[i16]; 8] = [&[]; 8];
+        let mut nwa = 0usize;
+        let mut nws = 0usize;
+        let mut nba = 0usize;
+        let mut nbs = 0usize;
 
-            let mut handled = false;
-            #[cfg(target_arch = "x86_64")]
-            if net.has_avx512 && h % 32 == 0 {
-                unsafe {
-                    if add {
-                        simd512_acc_copy_add(&mut current.white, &parent.white, w_row, h);
-                        simd512_acc_copy_add(&mut current.black, &parent.black, b_row, h);
-                    } else {
-                        simd512_acc_copy_sub(&mut current.white, &parent.white, w_row, h);
-                        simd512_acc_copy_sub(&mut current.black, &parent.black, b_row, h);
-                    }
-                }
-                handled = true;
-            }
-            #[cfg(target_arch = "x86_64")]
-            if !handled && net.has_avx2 && h % 16 == 0 {
-                unsafe {
-                    if add {
-                        simd_acc_copy_add(&mut current.white, &parent.white, w_row, h);
-                        simd_acc_copy_add(&mut current.black, &parent.black, b_row, h);
-                    } else {
-                        simd_acc_copy_sub(&mut current.white, &parent.white, w_row, h);
-                        simd_acc_copy_sub(&mut current.black, &parent.black, b_row, h);
-                    }
-                }
-                handled = true;
-            }
-            #[cfg(target_arch = "aarch64")]
-            if !handled && net.has_neon && h % 8 == 0 {
-                unsafe {
-                    if add {
-                        neon_acc_copy_add(&mut current.white, &parent.white, w_row, h);
-                        neon_acc_copy_add(&mut current.black, &parent.black, b_row, h);
-                    } else {
-                        neon_acc_copy_sub(&mut current.white, &parent.white, w_row, h);
-                        neon_acc_copy_sub(&mut current.black, &parent.black, b_row, h);
-                    }
-                }
-                handled = true;
-            }
-            if !handled {
-                if add {
-                    for j in 0..h {
-                        current.white[j] = parent.white[j] + w_row[j];
-                        current.black[j] = parent.black[j] + b_row[j];
-                    }
-                } else {
-                    for j in 0..h {
-                        current.white[j] = parent.white[j] - w_row[j];
-                        current.black[j] = parent.black[j] - b_row[j];
-                    }
-                }
-            }
-        }
-
-        // Remaining changes: in-place on current
-        for i in 1..n {
+        for i in 0..n {
             let (add, color, pt, sq) = dirty.changes[i];
             let w_idx = halfka_index(WHITE, w_king_sq, color, pt, sq);
             let w_row = net.input_weight_row(w_idx);
             let b_idx = halfka_index(BLACK, b_king_sq, color, pt, sq);
             let b_row = net.input_weight_row(b_idx);
-
-            #[cfg(target_arch = "x86_64")]
-            if net.has_avx2 && h % 16 == 0 {
-                unsafe {
-                    if add {
-                        simd_acc_add(&mut current.white, w_row, h);
-                        simd_acc_add(&mut current.black, b_row, h);
-                    } else {
-                        simd_acc_sub(&mut current.white, w_row, h);
-                        simd_acc_sub(&mut current.black, b_row, h);
-                    }
-                }
-                continue;
-            }
-
-            #[cfg(target_arch = "aarch64")]
-            if net.has_neon && h % 8 == 0 {
-                unsafe {
-                    if add {
-                        neon_acc_add(&mut current.white, w_row, h);
-                        neon_acc_add(&mut current.black, b_row, h);
-                    } else {
-                        neon_acc_sub(&mut current.white, w_row, h);
-                        neon_acc_sub(&mut current.black, b_row, h);
-                    }
-                }
-                continue;
-            }
-
             if add {
-                for j in 0..h { current.white[j] += w_row[j]; current.black[j] += b_row[j]; }
+                w_adds[nwa] = w_row; nwa += 1;
+                b_adds[nba] = b_row; nba += 1;
             } else {
-                for j in 0..h { current.white[j] -= w_row[j]; current.black[j] -= b_row[j]; }
+                w_subs[nws] = w_row; nws += 1;
+                b_subs[nbs] = b_row; nbs += 1;
             }
+        }
+
+        let w_adds = &w_adds[..nwa];
+        let w_subs = &w_subs[..nws];
+        let b_adds = &b_adds[..nba];
+        let b_subs = &b_subs[..nbs];
+
+        #[cfg(target_arch = "x86_64")]
+        if net.has_avx2 && h % 16 == 0 {
+            unsafe {
+                simd_acc_fused_avx2(&mut current.white, &parent.white, w_adds, w_subs, h);
+                simd_acc_fused_avx2(&mut current.black, &parent.black, b_adds, b_subs, h);
+            }
+            current.computed = true;
+            return;
+        }
+
+        // Scalar fallback: single-pass apply, analogous to SIMD path.
+        for j in 0..h {
+            let mut w = parent.white[j];
+            let mut b = parent.black[j];
+            for row in w_adds { w += row[j]; }
+            for row in w_subs { w -= row[j]; }
+            for row in b_adds { b += row[j]; }
+            for row in b_subs { b -= row[j]; }
+            current.white[j] = w;
+            current.black[j] = b;
         }
 
         current.computed = true;
