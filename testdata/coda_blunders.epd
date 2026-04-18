@@ -1,0 +1,27 @@
+# Coda blunder regression suite
+# Built from real lichess games where Coda blundered (per SF) AND
+# fresh Coda-v5 reproduces the bad move (confirmed eval-gap, not state).
+# Generated 2026-04-18. 22 positions.
+
+3Q4/1p2P1pk/2r3bp/2N5/1P1p4/3K4/7q/R1R5 w - - 4 56 bm Ne4; am Kc4; id "2.p110"; c0 "sf_before=-242 sf_after=-440 cp_loss=198"; c1 "opp=RecklessEngine";
+1r4k1/3brp2/p2q2p1/1p1pb1P1/3N3R/P1PB4/KP6/5R1Q b - - 1 37 bm Rf8; am Rb6; id "23.p73"; c0 "sf_before=-68 sf_after=-188 cp_loss=120"; c1 "opp=blackEventhorizon";
+5K2/1kp1P3/1p4p1/p2R1p1r/P4P2/1b6/8/8 w - - 0 57 bm Kg7; am Kg7; id "24.p112"; c0 "sf_before=-467 sf_after=-572 cp_loss=105"; c1 "opp=blackEventhorizon";
+k5rr/1P3R2/2pb2p1/6R1/P2p4/3P1pP1/2P1Q3/1q2B1K1 b - - 0 41 bm Ka7; am Ka7; id "63.p81"; c0 "sf_before=-121 sf_after=-379 cp_loss=258"; c1 "opp=Fischer_Bot";
+4B3/1R6/2P2k2/4bppp/1P2p3/3r2P1/4KP1P/8 w - - 0 57 bm c7; am c7; id "81.p112"; c0 "sf_before=189 sf_after=4 cp_loss=185"; c1 "opp=duchessAI";
+8/4r1k1/2pnBp1p/p3qPp1/P6P/1PPR1QP1/8/5K2 b - - 0 41 bm Qc5; am Rc7; id "126.p81"; c0 "sf_before=-157 sf_after=-275 cp_loss=118"; c1 "opp=blackEventhorizon";
+8/R6p/2k4P/8/1p5r/pP6/P1PK4/8 b - - 6 68 bm Kd5; am Rh2+; id "132.p135"; c0 "sf_before=-181 sf_after=-295 cp_loss=114"; c1 "opp=DarkOnBot";
+1q2r3/1br2k1p/5b1P/pQ1p1N2/2n5/PR6/2P5/2KR1BB1 b - - 1 31 bm Qc8; am a4; id "180.p61"; c0 "sf_before=-150 sf_after=-265 cp_loss=115"; c1 "opp=DarkOnBot";
+1q2rk2/1br4p/3N1b1P/1Q6/8/PB6/2P5/2KR2B1 b - - 0 35 bm Be4; am Bf3; id "180.p69"; c0 "sf_before=-393 sf_after=-516 cp_loss=123"; c1 "opp=DarkOnBot";
+r3r1k1/1bqn1p1p/p4npQ/1pp1p1N1/P3p3/3P2NP/BPP2PP1/R3R1K1 b - - 1 23 bm c4; am Re7; id "195.p45"; c0 "sf_before=-103 sf_after=-259 cp_loss=156"; c1 "opp=PZChessBot";
+r5k1/1bqnrp1p/p4npQ/1pp1p1N1/P3p3/3PR1NP/BPP2PP1/R5K1 b - - 3 24 bm exd3; am Nf8; id "195.p47"; c0 "sf_before=-269 sf_after=-411 cp_loss=142"; c1 "opp=PZChessBot";
+rn2k2r/pp3pp1/2pbp2p/4q3/8/3BBQ2/PPP2PPP/3RR1K1 w kq - 2 14 bm Qh3; am g3; id "196.p26"; c0 "sf_before=193 sf_after=73 cp_loss=120"; c1 "opp=simple-bot";
+r2q1rk1/pQ1n1ppp/2ppbn2/4p3/2P1P3/2PP2P1/P4PBP/R1B1K1NR w KQ - 1 10 bm Qb1; am Ba3; id "201.p18"; c0 "sf_before=-35 sf_after=-177 cp_loss=142"; c1 "opp=odonata-bot";
+5r1k/2p2r2/1pNp2n1/p2Ppqpp/P1P1R3/1P2RPPP/3Q3K/8 w - - 1 42 bm Qg2; am Rc3; id "239.p82"; c0 "sf_before=-134 sf_after=-260 cp_loss=126"; c1 "opp=bot1e";
+7k/2Pb3p/7b/3Ppp2/4Pn2/B2B4/2Q2Prq/1R1N1K2 w - - 0 37 bm c8=R+; am c8=Q+; id "260.p72"; c0 "sf_before=-211 sf_after=-532 cp_loss=321"; c1 "opp=Fischer_Bot";
+6k1/4r1p1/R1Q2p2/P2p2bp/4p3/2Bq3P/1P3PP1/6K1 w - - 4 35 bm Ra8+; am Qc8+; id "290.p68"; c0 "sf_before=-281 sf_after=-389 cp_loss=108"; c1 "opp=ArasanX";
+7k/7p/Bpb4P/n3p3/2N5/4P2p/1K3P1P/8 b - - 1 39 bm Bb7; am Nxc4+; id "296.p77"; c0 "sf_before=-176 sf_after=-365 cp_loss=189"; c1 "opp=RaspFish";
+2rb1q1k/1p3p1p/p1bp1P2/4pP1N/4P1RP/1P3B2/P1PQ4/1K6 b - - 2 27 bm a5; am b5; id "300.p53"; c0 "sf_before=-419 sf_after=-523 cp_loss=104"; c1 "opp=simbelmyne-bot";
+r1b2knr/pp2pp1p/3p2p1/1N2n1P1/1B1N4/8/qP4BP/2RQR1K1 b - - 1 23 bm Bg4; am Qxb2; id "313.p45"; c0 "sf_before=-485 sf_after=-606 cp_loss=121"; c1 "opp=Fischer_Bot";
+1r3k2/1p2pp1p/pB4p1/P3b3/1PR3P1/5n1P/4KP2/1R6 b - - 12 42 bm Nh4; am Ng5; id "340.p83"; c0 "sf_before=-386 sf_after=-493 cp_loss=107"; c1 "opp=simbelmyne-bot";
+R7/1R4pk/2n3p1/4p3/p7/r3B2P/2r2PP1/6K1 w - - 0 31 bm h4; am h4; id "359.p60"; c0 "sf_before=204 sf_after=84 cp_loss=120"; c1 "opp=Lynx_BOT";
+r2q1rk1/1p1bbp1p/p4p2/4n3/3QN2B/8/PP3PPP/2KR1B1R w - - 1 16 bm Be2; am f4; id "370.p30"; c0 "sf_before=7 sf_after=-99 cp_loss=106"; c1 "opp=jpg-bot";
