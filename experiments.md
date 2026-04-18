@@ -4799,3 +4799,190 @@ microbenchmarks for sub-1% changes invisible to whole-bench.
 
 Gap to v5 at session start: -54 Elo. Expected to close or cross by
 morning with consensus-KB and s800 nets landing.
+
+## 2026-04-18: v9 Training Investigation — Schedule, Data Volume, LR Tail
+
+Series of SPRTs investigating what matters for v9 net quality.
+Net-compare SPRTs (same branch, different `--dev-network` vs
+`--base-network`). All bounds [-3, 3] unless noted.
+
+### Training data volume: 1xT80 vs 12xT80 — H0, -53 Elo (OB #submission)
+
+**Setup:** Two v9 nets trained identically at s200, w15, Uniform KB —
+only difference: 1 T80 file (~3B positions) vs 12 T80 files (~30B
+positions).
+
+**Result:** H0 at **-53 Elo** for 1xT80.
+
+**Read:** Data volume still matters significantly at s200 even under
+the current modernized pipeline (power loss 2.5, data filtering, xray
+features). Consistent with v5's +33 Elo for 12× data. The pipeline
+hasn't saturated on 3B positions — sparse threat features especially
+benefit from more unique positions.
+
+**Prior belief this tested:** possible that the pipeline improvements
+(power loss, filtering) had made per-position signal dense enough that
+1 file's 3B positions was already sufficient. It isn't.
+
+**Implication:** Data-gen at d7/d8 is worth preserving over deeper/fewer
+positions for the v9 sparse-feature regime. Diminishing returns are
+probably kicking in around 12× but going to 1× is a real loss.
+
+### Schedule shape: e800s200 vs e800s600 vs e800s800 — low-LR tail dominates
+
+Three snapshots of the same e800 cosine schedule, tested against each
+other on Uniform KB, w15, xray-fixed nets.
+
+| Comparison | SPRT | Result |
+|---|---|---|
+| e800s800 vs e800s200 | #443 | **+9.4 H1** |
+| e800s600 vs e800s200 | #444 | **-88 H0** |
+| e400s400 vs e800s800 | #450 | **-6.27 ± 5.29 H0 (final)** |
+
+**Key finding:** The mid-cosine snapshot (s600, LR ~1.6e-4) is
+dramatically weaker than both the warmup-dominated snapshot (s200)
+and the final low-LR snapshot (s800). The final 200 SBs of the cosine
+tail add **roughly +100 Elo** of refinement.
+
+**Mechanism:** v9's 66864 sparse threat features get ~1-5% of positions.
+At high LR, each update is large and rare-feature weights get
+overwritten by subsequent batch noise. Low LR makes stable refinement
+possible.
+
+**Schedule length — log-linear in SBs:**
+
+| Snapshot | Elo vs e800s200 |
+|---|---|
+| e400s400 | ≈ +3.1 (= 9.4 - 6.27) |
+| e800s800 | +9.4 |
+
+Each **doubling** of SB length adds ~**3-6 Elo** — roughly log-linear
+but slightly right-skewed (s400→s800 gap is larger than s200→s400).
+This is consistent with the low-LR tail being where the gain concentrates:
+- s200→s400: LR mid-cosine (~5e-4), refinement still coarse
+- s400→s800: LR floor (~2e-6), fine refinement regime
+- s1600 would project to ~+14 vs s200 (another ~+5 vs s800)
+- s3200 would project to ~+19 vs s200
+
+Implication: ROI per compute-doubling is constant (~4.7 Elo for 2×
+compute) until architecture saturation hits. Diminishing absolute
+marginal returns, but constant slope in log-compute space.
+
+**Practical rule:** For architecture/hyperparam sweeps, e400 captures
+~50% of the Elo at 50% of compute. For production candidates, go long.
+At some point the log-linear relationship will break as the architecture
+saturates — that's the signal to change architectures.
+
+### Training selfplay data on v9 — H0 -46 (pre-tune)
+
+**Setup:** selfplay-trained s200 vs 1xT80-trained s200, both untuned
+(same trunk search params).
+
+**Result:** H0 at -46 Elo for selfplay.
+
+**Caveat:** Selfplay net has cooler RMS eval (568 cp vs 1xT80's 748 cp,
+23% cooler). Current search params (RFP/futility/SEE margins) are
+tuned for the hotter distribution, so selfplay under-prunes (+36% bench,
+higher EBF). The -46 includes a scale-mismatch penalty of unknown
+magnitude.
+
+**Noted for followup:** Tune #449 (1000-iter SPSA on feature/threat-inputs
+with selfplay net) is running to rebalance search params for selfplay's
+distribution. Selfplay vs 1xT80 will be re-tested post-tune to isolate
+net-quality vs param-fit.
+
+**Interesting diagnostic:** Selfplay net has **better move ordering**
+(first-move cutoff 81.2% vs 78.7%) despite being weaker end-to-end.
+Relative-ranking quality is preserved; only absolute-scale calibration
+is off.
+
+### EPD regression suite noise floor
+
+**Setup:** 22-position coda_blunders.epd (v5 failures, 3s/pos).
+
+Comparing s200, s400, s600, s800 snapshots gave:
+
+| Net | EPD pass | SPRT vs e800s200 |
+|---|---|---|
+| e200s200-xray-fixed | 12/22 (54.5%) | baseline |
+| e400s400 | 13/22 (59.1%) | — |
+| e800s600 | **14/22 (63.6%)** | **-88 H0** |
+| e800s800 | 11/22 (50.0%) | **+9.4 H1** |
+
+**EPD ranking contradicted SPRT ranking.** The strongest SPRT net
+scored worst on EPD. 22 positions is too small a suite (1σ ≈ 3 positions
+of binomial noise) to rank similarly-strong nets. Use SPRT for strength,
+reserve EPD for regression tripwires only.
+
+### Key training lessons locked in
+
+1. **Loss is not strength.** A snapshot with lower training loss can
+   be dramatically weaker (e800s600 had lower loss than e800s800 but
+   was -88 Elo weaker).
+
+2. **Low-LR tail is where Elo is purchased.** Most loss reduction
+   happens in warmup/early cosine; most Elo happens in the final
+   low-LR convergence tail. This holds for v5 (+50 Elo) and is larger
+   for v9 (+100 Elo).
+
+3. **Bigger/sparser architectures need lower final LR.** v5's optimum
+   at 5e-6 does NOT transfer to v9. Experiments queued with
+   final_lr=2.43e-7 (10× lower than current 2.43e-6).
+
+4. **Data volume still matters** even under modernized pipeline.
+   1×T80 → 12×T80 is ~+50 Elo in self-play.
+
+### Corrections to merge: HIST_BONUS_BASE removal — SPRT pending
+
+**Motivation:** Two independent SPSA tunes (#422 full trunk, #449
+selfplay in flight) consistently drove HIST_BONUS_BASE from its
+default toward 0. The parameter was dead weight:
+`bonus = (MULT*depth - BASE).clamp(0, MAX)` with BASE=2 shifts the
+bonus by 0.7% — within SPSA noise, but systematically pulled to 0.
+
+**Fix:** Remove the parameter. Simplified formula now matches
+Stockfish's `stat_bonus(d) = min(MAX, MULT*d)`.
+
+**Bench surprise:** 1498845 → 1798525 (+20% nodes). Far larger than
+the 0.7% numerical shift predicts — tree-shape chaos. SPRT submitted
+at [-5, 5] bounds as non-regression check.
+
+**Branch:** `remove/hist-bonus-base`. OB submission pending.
+
+### Skip-noisy correction-history merge
+
+**Tested:** tune/corr-history-skip-noisy-r1 vs trunk-r2 = flat at 15k
+games (SPRT #441). Stopped early at "neutral, correctness first, merge".
+
+**Merged:** Code change (skip correction-history updates when best_move
+is capture/promotion, per Stockfish/Reckless pattern) plus the 1000-iter
+tune #433 values (seeded from trunk's r2 tune #422, refined on skip-noisy
+branch). Bench 1,498,845.
+
+**Rationale:** r1 tune + skip-noisy had lowest bench of three candidate
+combinations AND was SPRT-validated equivalent to trunk+r2 tune. Skip
+updating correction history on noisy moves is a consensus pattern
+(Stockfish search.cpp:1495, Reckless search.rs:1085).
+
+### Ongoing: three Reckless-KB training experiments in flight
+
+Kicked off 2026-04-18 mid-afternoon:
+
+1. **Low final_lr**: `--kb-layout reckless --superbatches 200 --final-lr 2.43e-7`
+2. **Short warmup**: `--kb-layout reckless --superbatches 200 --warmup 5`
+3. **Reckless e400 baseline**: `--kb-layout reckless --superbatches 400`
+
+All three vs existing `net-v9-768th16x32-kb10-w15-e200s200.nnue` baseline
+(hash BE5849B6). Expected SPRTable in 4-5 hours for s200 variants, 8-10
+hours for e400.
+
+### Infrastructure added this session
+
+- **`--final-lr` CLI flag** in `bullet/examples/coda_v9_768_threats.rs`
+  for low-LR-tail experiments without code edits.
+- **`coda_blunders.epd`** regression suite (22 positions) ported from main.
+- **Memory**: `project_v9_low_lr_tail_critical.md`,
+  `feedback_loss_is_not_strength.md`,
+  `feedback_epd_not_for_model_testing.md`,
+  `feedback_piece_value_test_design.md`,
+  `feedback_never_stop_sprt_without_verify.md`.
