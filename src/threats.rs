@@ -88,6 +88,15 @@ pub mod thr_stats {
     static DELTAS_SLIDERS_2B: AtomicU64 = AtomicU64::new(0);
     static DELTAS_NONSLIDERS: AtomicU64 = AtomicU64::new(0);
 
+    // Per-section zero-emitter counters. A section "zero-emitter" is a call
+    // that ran through its scalar walks/ray tests but produced no deltas —
+    // wasted work. Heavy skew on 2b would justify a tighter early-out.
+    static ZERO_DIRECT: AtomicU64 = AtomicU64::new(0);
+    static ZERO_OWN_XRAY: AtomicU64 = AtomicU64::new(0);
+    static ZERO_SLIDERS: AtomicU64 = AtomicU64::new(0);
+    static ZERO_SLIDERS_2B: AtomicU64 = AtomicU64::new(0);
+    static ZERO_NONSLIDERS: AtomicU64 = AtomicU64::new(0);
+
     #[inline(always)]
     pub fn rdtsc() -> u64 {
         #[cfg(target_arch = "x86_64")]
@@ -101,16 +110,19 @@ pub mod thr_stats {
 
     #[inline(always)]
     pub fn record_section(idx: u8, cycles: u64, deltas: u64) {
-        let (cyc, dlt) = match idx {
-            0 => (&CYC_DIRECT, &DELTAS_DIRECT),
-            1 => (&CYC_OWN_XRAY, &DELTAS_OWN_XRAY),
-            2 => (&CYC_SLIDERS, &DELTAS_SLIDERS),
-            3 => (&CYC_SLIDERS_2B, &DELTAS_SLIDERS_2B),
-            4 => (&CYC_NONSLIDERS, &DELTAS_NONSLIDERS),
+        let (cyc, dlt, zero) = match idx {
+            0 => (&CYC_DIRECT,      &DELTAS_DIRECT,      &ZERO_DIRECT),
+            1 => (&CYC_OWN_XRAY,    &DELTAS_OWN_XRAY,    &ZERO_OWN_XRAY),
+            2 => (&CYC_SLIDERS,     &DELTAS_SLIDERS,     &ZERO_SLIDERS),
+            3 => (&CYC_SLIDERS_2B,  &DELTAS_SLIDERS_2B,  &ZERO_SLIDERS_2B),
+            4 => (&CYC_NONSLIDERS,  &DELTAS_NONSLIDERS,  &ZERO_NONSLIDERS),
             _ => return,
         };
         cyc.fetch_add(cycles, Ordering::Relaxed);
         dlt.fetch_add(deltas, Ordering::Relaxed);
+        if deltas == 0 {
+            zero.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     #[inline(always)]
@@ -123,19 +135,21 @@ pub mod thr_stats {
         if c == 0 { eprintln!("threats stats: 0 calls (feature not hit)"); return; }
         let tot = CYC_TOTAL.load(Ordering::Relaxed);
         let sections = [
-            ("direct     (step 1)  ", CYC_DIRECT.load(Ordering::Relaxed),      DELTAS_DIRECT.load(Ordering::Relaxed)),
-            ("own-xray   (step 1b) ", CYC_OWN_XRAY.load(Ordering::Relaxed),    DELTAS_OWN_XRAY.load(Ordering::Relaxed)),
-            ("sliders    (step 2)  ", CYC_SLIDERS.load(Ordering::Relaxed),     DELTAS_SLIDERS.load(Ordering::Relaxed)),
-            ("sliders-2b (step 2b) ", CYC_SLIDERS_2B.load(Ordering::Relaxed),  DELTAS_SLIDERS_2B.load(Ordering::Relaxed)),
-            ("nonsliders (step 3)  ", CYC_NONSLIDERS.load(Ordering::Relaxed),  DELTAS_NONSLIDERS.load(Ordering::Relaxed)),
+            ("direct     (step 1)  ", CYC_DIRECT.load(Ordering::Relaxed),      DELTAS_DIRECT.load(Ordering::Relaxed),      ZERO_DIRECT.load(Ordering::Relaxed)),
+            ("own-xray   (step 1b) ", CYC_OWN_XRAY.load(Ordering::Relaxed),    DELTAS_OWN_XRAY.load(Ordering::Relaxed),    ZERO_OWN_XRAY.load(Ordering::Relaxed)),
+            ("sliders    (step 2)  ", CYC_SLIDERS.load(Ordering::Relaxed),     DELTAS_SLIDERS.load(Ordering::Relaxed),     ZERO_SLIDERS.load(Ordering::Relaxed)),
+            ("sliders-2b (step 2b) ", CYC_SLIDERS_2B.load(Ordering::Relaxed),  DELTAS_SLIDERS_2B.load(Ordering::Relaxed),  ZERO_SLIDERS_2B.load(Ordering::Relaxed)),
+            ("nonsliders (step 3)  ", CYC_NONSLIDERS.load(Ordering::Relaxed),  DELTAS_NONSLIDERS.load(Ordering::Relaxed),  ZERO_NONSLIDERS.load(Ordering::Relaxed)),
         ];
         eprintln!("push_threats_for_piece: {} calls, total {} Mcy", c, tot / 1_000_000);
-        for (name, cyc, dlt) in &sections {
+        for (name, cyc, dlt, zero) in &sections {
             let pct = 100.0 * *cyc as f64 / tot.max(1) as f64;
-            eprintln!("  {}  {:>5.1}%   {:>8} Mcy   {:>5.1} cy/call   {:.2} deltas/call",
+            let zero_pct = 100.0 * *zero as f64 / c.max(1) as f64;
+            eprintln!("  {}  {:>5.1}%   {:>8} Mcy   {:>5.1} cy/call   {:.2} deltas/call   zero-emit: {:>5.1}%",
                 name, pct, cyc / 1_000_000,
                 *cyc as f64 / c as f64,
-                *dlt as f64 / c as f64);
+                *dlt as f64 / c as f64,
+                zero_pct);
         }
     }
 }
