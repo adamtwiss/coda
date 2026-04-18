@@ -75,6 +75,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("option name Ponder type check default false");
                 println!("option name SyzygyPath type string default <empty>");
                 println!("option name SparseL1 type check default true");
+                println!("option name HiddenActivation type combo default screlu var screlu var crelu");
                 // Tunable search parameters (for SPSA)
                 for (name, _, default, min, max) in crate::search::tunable_params() {
                     println!("option name {} type spin default {} min {} max {}", name, default, min, max);
@@ -574,6 +575,13 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
             if let Some(net) = &info.nnue_net {
                 net.use_sparse_l1.store(value == "true", std::sync::atomic::Ordering::Relaxed);
                 println!("info string SparseL1 = {}", value == "true");
+            }
+        }
+        "HiddenActivation" => {
+            if let Some(net) = &info.nnue_net {
+                let crelu = value.eq_ignore_ascii_case("crelu");
+                net.crelu_hidden.store(crelu, std::sync::atomic::Ordering::Relaxed);
+                println!("info string HiddenActivation = {}", if crelu { "crelu" } else { "screlu" });
             }
         }
         _ => {
