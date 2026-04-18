@@ -280,6 +280,29 @@ impl ThreatStack {
             }
         }
     }
+
+    /// Sum of absolute values of threat-accumulator entries across both
+    /// perspectives. Zero if inactive or either perspective not accurate.
+    ///
+    /// Intended as a NNUE-derived complexity signal for search: positions
+    /// where the network's threat features are strongly activated tend to
+    /// be tactically dense. Used as an LMR reduction modulator (v9 trunk).
+    ///
+    /// Cost: one pass over 2 × hidden_size i16 values (1536 elements for
+    /// the v9 net). ~300ns scalar at 3 GHz; SIMD would drop this an order
+    /// of magnitude if the signal is useful enough to keep.
+    #[inline]
+    pub fn magnitude_abs_sum(&self) -> i64 {
+        if !self.active { return 0; }
+        let idx = self.index;
+        let entry = &self.stack[idx];
+        if !entry.accurate[0] || !entry.accurate[1] { return 0; }
+        let h = self.hidden_size;
+        let mut sum: i64 = 0;
+        for &v in &entry.values[0][..h] { sum += (v as i32).abs() as i64; }
+        for &v in &entry.values[1][..h] { sum += (v as i32).abs() as i64; }
+        sum
+    }
 }
 
 #[cfg(test)]

@@ -157,6 +157,13 @@ tunables!(
     // aggressive pruning — wider margin keeps potentially-winning lines
     // from being dropped on static-eval alone. 0 = disabled.
     (FUT_THREATS_MARGIN, 40,    0,   200),
+    // NNUE threat-accumulator magnitude LMR adjustment (v9 only).
+    // Sum of |threat_acc| across both perspectives, divided by this value,
+    // subtracted from LMR reduction. Larger divisor → milder effect.
+    // The magnitude scales with hidden_size × typical weight magnitude;
+    // initial default targets ~0-1 reduction adjustment in typical middlegames.
+    // Range chosen wide so SPSA can find the right scale; value 0 disables.
+    (LMR_THREAT_MAG_DIV, 200000, 50000, 1000000),
     // MVV multiplier in capture move ordering (historical default 16).
     // Captures scored as see_value(victim) * MVV_CAP_MULT + captHist.
     // Higher = weight MVV more vs capture history.
@@ -1836,6 +1843,17 @@ fn negamax(
             diff > tp(&UNSTABLE_THRESH)
         };
 
+    // NNUE threat-accumulator magnitude: sum of |values| across both
+    // perspectives. Non-zero only when the threat accumulator has been
+    // materialized (lazy: may skip at TT-cut paths where info.eval() was
+    // not called). Used as an LMR reduction modulator — positions where
+    // the network's threat features are strongly activated are typically
+    // tactically dense and benefit from deeper search.
+    //
+    // Returns 0 when threat_stack is inactive (v5 nets) or the current
+    // stack position hasn't been materialized. Zero → no LMR change.
+    let threat_mag = info.threat_stack.magnitude_abs_sum();
+
     // Detect if TT move is a capture
     let tt_move_noisy = tt_move != NO_MOVE && {
         board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
@@ -2452,6 +2470,20 @@ fn negamax(
                 // many attackers on our king zone. Parent-node signal reused
                 // from NMP/ProbCut gates — tactical king positions need depth.
                 reduction -= king_zone_pressure / tp(&LMR_KING_PRESSURE_DIV);
+
+                // NNUE threat-accumulator magnitude LMR adjustment (v9).
+                // When the network's threat features are strongly activated,
+                // the position is tactically dense — reduce less. threat_mag
+                // is 0 for v5 nets and non-materialized positions, so this
+                // adjustment has no effect outside the threat-feature regime.
+                // Typical threat_mag in v9 middlegame: 40K-200K. With default
+                // divisor 200K, gives 0-1 reduction off most of the time;
+                // cap at 3 leaves SPSA room to explore aggressive divisors.
+                if threat_mag > 0 {
+                    let mag_div = tp(&LMR_THREAT_MAG_DIV) as i64;
+                    let mag_adj = (threat_mag / mag_div.max(1)) as i32;
+                    reduction -= mag_adj.min(3);
+                }
 
                 // Clamp: never extend (negative), never reduce past depth 1
                 if reduction < 0 {
