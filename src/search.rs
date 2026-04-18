@@ -3198,6 +3198,9 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
 
     eprintln!("Total nodes:    {:>8}", total_nodes);
 
+    #[cfg(feature = "profile-materialize")]
+    crate::nnue::mat_stats::report();
+
     total_nodes
 }
 

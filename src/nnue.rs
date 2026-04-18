@@ -7,6 +7,48 @@
 /// - SCReLU: clamp [0, QA=255] then square
 /// - 8 output buckets selected by material count
 
+#[cfg(feature = "profile-materialize")]
+pub mod mat_stats {
+    //! Per-bench materialize call-pattern counters.
+    //! Gated behind `--features profile-materialize` so release builds
+    //! pay nothing.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    static EARLY_OUT: AtomicU64 = AtomicU64::new(0);
+    static REFRESHES: AtomicU64 = AtomicU64::new(0);
+    static INCREMENTALS: AtomicU64 = AtomicU64::new(0);
+    static TOTAL_DELTA_CHANGES: AtomicU64 = AtomicU64::new(0);
+
+    #[inline(always)]
+    pub fn record_entry(early: bool) {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+        if early { EARLY_OUT.fetch_add(1, Ordering::Relaxed); }
+    }
+    #[inline(always)]
+    pub fn record_refresh() {
+        REFRESHES.fetch_add(1, Ordering::Relaxed);
+    }
+    #[inline(always)]
+    pub fn record_incremental(n_changes: u64) {
+        INCREMENTALS.fetch_add(1, Ordering::Relaxed);
+        TOTAL_DELTA_CHANGES.fetch_add(n_changes, Ordering::Relaxed);
+    }
+    pub fn report() {
+        let c = CALLS.load(Ordering::Relaxed);
+        let e = EARLY_OUT.load(Ordering::Relaxed);
+        let r = REFRESHES.load(Ordering::Relaxed);
+        let i = INCREMENTALS.load(Ordering::Relaxed);
+        let td = TOTAL_DELTA_CHANGES.load(Ordering::Relaxed);
+        eprintln!(
+            "materialize stats: calls={} early={} ({:.1}%) refresh={} ({:.1}% of non-early) incr={} ({:.1}% of non-early) avg_deltas_per_incr={:.2}",
+            c, e, 100.0 * e as f64 / c.max(1) as f64,
+            r, 100.0 * r as f64 / (c - e).max(1) as f64,
+            i, 100.0 * i as f64 / (c - e).max(1) as f64,
+            if i > 0 { td as f64 / i as f64 } else { 0.0 }
+        );
+    }
+}
+
 use std::fs::File;
 use std::io::{Read as IoRead, BufReader};
 
@@ -3347,6 +3389,8 @@ impl NNUEAccumulator {
 
     /// Materialize: ensure current accumulator is computed.
     pub fn materialize(&mut self, net: &NNUENet, board: &Board) {
+        #[cfg(feature = "profile-materialize")]
+        crate::nnue::mat_stats::record_entry(self.stack[self.top].computed);
         if self.stack[self.top].computed {
             return;
         }
@@ -3355,11 +3399,15 @@ impl NNUEAccumulator {
 
         // Full recompute needed?
         if dirty.kind == 0 || self.top == 0 || !self.stack[self.top - 1].computed {
+            #[cfg(feature = "profile-materialize")]
+            crate::nnue::mat_stats::record_refresh();
             self.refresh_accumulator(net, board, WHITE);
             self.refresh_accumulator(net, board, BLACK);
             self.stack[self.top].computed = true;
             return;
         }
+        #[cfg(feature = "profile-materialize")]
+        crate::nnue::mat_stats::record_incremental(dirty.n_changes as u64);
 
         // Incremental update: gather all deltas for this move, then apply them
         // in a SINGLE fused pass per perspective. Replaces the previous
