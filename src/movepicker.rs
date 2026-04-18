@@ -1157,4 +1157,167 @@ mod tests {
         // Restore original flag so other tests are unaffected.
         FEAT_4D_HISTORY.store(saved, Ordering::Relaxed);
     }
+
+    /// Positive fuzzer: every legal move in every position must pass
+    /// `is_pseudo_legal`. If this fails, we're rejecting legal moves
+    /// that come from TT/killer/counter slots, losing move-ordering
+    /// information and potentially missing key moves.
+    ///
+    /// Also indirectly: tests that `generate_legal_moves` and
+    /// `is_pseudo_legal` agree about what flags a move should have.
+    #[test]
+    fn fuzz_is_pseudo_legal_accepts_all_legal() {
+        use crate::board::Board;
+        use crate::movegen::generate_legal_moves;
+
+        crate::init();
+
+        const FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            // Promotion-rich
+            "4k3/PPPPPPPP/8/8/8/8/pppppppp/4K3 w - - 0 1",
+            // EP available
+            "rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3",
+            // Castling rights all sides
+            "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+            // In check, evasions only
+            "4k3/8/8/8/8/8/4r3/4K3 w - - 0 1",
+            // Double check, only king moves legal
+            "rnb1kbnr/pppp1ppp/8/4p3/1P5q/P1N5/2PPPPPP/R1BQKBNR w KQkq - 2 4",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const PLIES: usize = 40;
+        const GAMES: usize = 8;
+
+        for (fen_idx, fen) in FENS.iter().enumerate() {
+            for game in 0..GAMES {
+                let seed: u32 = 0xBADF00Du32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::from_fen(fen);
+                for ply in 0..PLIES {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    // Check every legal move is accepted.
+                    for i in 0..legal.len {
+                        let mv = legal.moves[i];
+                        if !is_pseudo_legal(&board, mv) {
+                            panic!(
+                                "is_pseudo_legal rejected legal move: fen_idx={} game={} ply={} \
+                                 move={} (raw {:#x}) from={} to={} flags={} fen={}",
+                                fen_idx, game, ply,
+                                crate::types::move_to_uci(mv), mv,
+                                crate::types::move_from(mv),
+                                crate::types::move_to(mv),
+                                crate::types::move_flags(mv),
+                                board.to_fen(),
+                            );
+                        }
+                    }
+                    // Advance the game with a random legal move.
+                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                    board.make_move(mv);
+                }
+            }
+        }
+    }
+
+    /// Negative fuzzer: random corrupted moves should rarely pass
+    /// `is_pseudo_legal`, and when they do, they must be in the
+    /// pseudo-legal generate_all_moves set. This catches cases where
+    /// a crafted (e.g. TT-collision) move with wrong flags could slip
+    /// through validation and corrupt the board.
+    ///
+    /// Strategy: take each legal move, flip various fields (flags,
+    /// to-square, from-square) to create a "corrupted" move. Any that
+    /// happen to be legitimately pseudo-legal must appear in
+    /// generate_all_moves; others must be rejected.
+    #[test]
+    fn fuzz_is_pseudo_legal_rejects_corrupted() {
+        use crate::board::Board;
+        use crate::movegen::{generate_all_moves, generate_legal_moves};
+        use crate::types::*;
+
+        crate::init();
+
+        const FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            // EP available (d6) — edge case for FLAG_EN_PASSANT validation
+            "rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3",
+            // No castling rights — must reject FLAG_CASTLE moves
+            "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        for (fen_idx, fen) in FENS.iter().enumerate() {
+            let board = Board::from_fen(fen);
+            let mut seed: u32 = 0xC0FFEEu32.wrapping_add((fen_idx as u32).wrapping_mul(7919));
+            let mut rng = if seed == 0 { seed = 1; seed } else { seed };
+
+            // Build the full pseudo-legal set so we can distinguish
+            // "wrong flag happens to match another legal move" from
+            // "genuinely illegal move incorrectly accepted".
+            let pseudo = generate_all_moves(&board);
+            let mut pseudo_set: Vec<Move> = (0..pseudo.len).map(|i| pseudo.moves[i]).collect();
+            pseudo_set.sort();
+            pseudo_set.dedup();
+
+            let legal = generate_legal_moves(&board);
+
+            for i in 0..legal.len {
+                let mv = legal.moves[i];
+                let from = move_from(mv);
+                let to = move_to(mv);
+
+                // Corruption 1: random flag bit.
+                for &new_flags in &[1u8, 2, 3, 4, 5, 6, 7] {
+                    let orig_flags = move_flags(mv);
+                    if new_flags as u16 == orig_flags { continue; }
+                    // Use the underlying encoding: preserve from, to, replace flags.
+                    let corrupted = (from as u16) | ((to as u16) << 6) | ((new_flags as u16) << 12);
+                    if is_pseudo_legal(&board, corrupted) {
+                        // Must appear in the pseudo-legal set.
+                        if !pseudo_set.contains(&corrupted) {
+                            panic!(
+                                "is_pseudo_legal accepted corrupted move: fen_idx={} \n\
+                                 orig={} (flags={}) corrupted={:#x} (flags={}) \n\
+                                 not in generate_all_moves\nfen={}",
+                                fen_idx, crate::types::move_to_uci(mv), orig_flags,
+                                corrupted, new_flags, board.to_fen(),
+                            );
+                        }
+                    }
+                }
+
+                // Corruption 2: random to-square.
+                let random_to = (next_u32(&mut rng) % 64) as u8;
+                if random_to != to {
+                    let corrupted = (from as u16) | ((random_to as u16) << 6); // FLAG_NONE
+                    if is_pseudo_legal(&board, corrupted) && !pseudo_set.contains(&corrupted) {
+                        panic!(
+                            "is_pseudo_legal accepted corrupted move (to-swap): \n\
+                             fen_idx={} orig={} new_to={} corrupted={:#x}\nfen={}",
+                            fen_idx, crate::types::move_to_uci(mv), random_to,
+                            corrupted, board.to_fen(),
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
