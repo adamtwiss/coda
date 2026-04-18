@@ -155,28 +155,70 @@ available.
 
 ### 3. Reckless-pattern vectorised threat-delta algorithm (`board_to_rays` + `closest_on_rays`)
 
-**Considered, not attempted.** Reckless's vectorised threat-delta
-code (`src/nnue/threats/vectorized/avx2.rs`) is genuinely a
-different algorithm: `VPSHUFB`-based ray-order mailbox shuffle +
-bit tricks to find closest occupant per ray, no scalar ray walks.
-Could plausibly drop `push_threats_for_piece` from 9.3% to ~1-2%
-CPU — **recovering ~7-8% of CPU = ~9-10% NPS gain**.
+**Full port shelved; hybrid path unmeasured.** Three variants:
 
-**Why not**: **feature-set incompatibility**. Reckless's
-`refresh` (canonical feature enumeration) emits **direct threats
-only**. Coda's `enumerate_threats` emits **direct + per-slider
-x-ray-through-blocker** — more features, trained into our net
-weights at +110 Elo gain from yesterday's x-ray fix.
+a) **Full port (emit direct threats only, drop x-rays)** — would
+   require retraining to recover x-ray features. Net -57 to -82
+   Elo. **Shelved.**
 
-Cost-benefit:
-- Straight port (lose x-rays): +28% NPS = +28 Elo, -85 to -110
-  Elo from feature removal. **Net: -57 to -82 Elo.**
-- Port primitives + extend with Coda x-rays: engineering-heavy,
-  correctness-critical, expected +10% NPS = +12.5 Elo for
-  multi-day effort.
-- Drop: 0 change.
+b) **Port primitives + extend with Coda x-rays end-to-end**
+   (vectorise both direct and x-ray generation) — multi-day,
+   correctness-critical. **Shelved.**
 
-Not worth the risk. **Shelved.**
+c) **Hybrid: vectorise direct-threat primitives, keep x-rays
+   scalar** — NOT yet measured, should not be shelved. The
+   `closest_on_rays` bit trick computes closest occupant per
+   ray in O(1); x-rays in our scheme are the second occupant
+   past each closest blocker, derivable with one additional
+   magic-bitboard call per affected slider. The hybrid keeps
+   our feature set exactly, uses Reckless's O(1) closest-finder
+   for the direct portion, and does existing scalar x-ray on the
+   handful of sliders per move that changed blocker state.
+
+**Data we need before deciding on (c)**: direct-vs-xray CPU split
+inside `push_threats_for_piece`. If direct is >5% and x-ray is
+<3%, hybrid reopens as a 1-2 day experiment with ~+3-4% NPS
+potential. **Measurement planned.**
+
+**Reckless's feature set vs Coda's**:
+
+Reckless's `refresh` (canonical feature enumeration) emits
+**direct threats only**. Coda's `enumerate_threats` emits
+**direct + per-slider x-ray-through-blocker** — more features,
+trained into our net weights at +110 Elo gain from yesterday's
+x-ray fix.
+
+### 4. Walk-back refresh (previously stated "expected +1-2%, fast refresh anyway")
+
+**Underexamined.** 41% of `materialize` calls fall through to
+refresh because the parent's accumulator was never computed (TT
+cut or pruned-before-eval at parent). But grandparent may still
+be computed — walking back 1-2 ancestors and applying 4-8 deltas
+forward from there is almost certainly cheaper than a full
+Finny-cached refresh.
+
+**Data we need**: distribution of "distance to nearest computed
+ancestor" at the moment refresh fires. If >60% have an accurate
+ancestor within 2-3 plies, walk-back delivers >2% NPS (not
+1-2%). Matches Reckless's `update_pst_accumulator` pattern
+`for i in accurate..self.index`. **Measurement planned.**
+
+### 5. Inline attribute audit vs Reckless — zero-risk experiment
+
+**Not yet attempted.** cargo-pgo regresses Coda -10.4% while
+Reckless gains +1.5% on the same hardware. Most-likely cause
+is that Reckless's hot functions are already `#[inline]` /
+`#[inline(always)]` or small enough for LLVM to inline without
+hint, leaving PGO little to confirm. Coda's hot path goes
+through `&self.field` loads across function boundaries where
+inline decisions depend on heuristics.
+
+**30-minute experiment**: diff inline attributes on hot functions
+(forward path, accumulator update path, threat delta path)
+between Coda and Reckless. Where Reckless marks `#[inline]` or
+`#[inline(always)]` and Coda doesn't, add the attribute. May
+recover 1-3% or may be flat. Zero semantic risk, no retraining,
+no tooling.
 
 ---
 
@@ -228,13 +270,23 @@ Ranked by realistic upside and effort:
 |---|---|---|---|
 | Wait for Reckless KB net + retune | +30-60 Elo (not NPS) | Low | None |
 | Factoriser in training | +10-20 Elo (not NPS) | Training run | None |
+| **Inline attribute audit vs Reckless** | **+1-3% NPS** | **30 min** | **None** |
+| **Walk-back refresh** (if measurement supports) | **+2-4% NPS** | **Half day** | **Low** |
+| **Hybrid threat path** (vectorise direct, scalar x-ray) | **+3-4% NPS** | **1-2 days** | **Medium** |
+| Delta-count histogram → cap/batch if long-tailed | +1-2% NPS | Half day | Low |
 | Full end-to-end const-generic NNUE | +5-10% NPS | 2-3 days | Medium |
-| Reckless-pattern threat port + extend x-rays | +10% NPS (~12 Elo) | 2-3 days | High |
 | AutoFDO (sampling PGO) | Unknown, likely +3-5% NPS | 1 day + tooling | Low |
+| Reckless-pattern full threat port (drop x-rays + retrain) | +28 Elo NPS **−110 Elo features** | 3-5 days + train | Very high |
 
 **The Elo economics favour training/tuning over NPS micro-optimisation
 at this point.** The last tune delivered +38.6 Elo in a day. Three
 NPS commits in a day delivered +3.8% NPS ≈ +4 Elo.
+
+**Revised ordering rule**: if NPS work resumes, order is
+1) inline audit (30 min, zero risk), 2) walk-back refresh
+(half day, measurement-gated), 3) hybrid threat path
+(1-2 days, measurement-gated). Full const-generic and full threat
+port remain shelved.
 
 ---
 
@@ -248,6 +300,50 @@ NPS commits in a day delivered +3.8% NPS ≈ +4 Elo.
 - Enabling the existing `sparse_l1_avx2` sparse path (with
   zero-check) at L1=16 (slower than row-major dense by 6%; slower
   than column-major dense by ~10%)
+
+## Measurements planned before the next NPS investigation
+
+Three cheap data-gathers before deciding which remaining lever to
+pursue:
+
+1. **Direct-vs-xray CPU split in `push_threats_for_piece`** — cfg
+   gate per-section counters inside the function, bench with
+   `--features profile-threats`. Decides whether the hybrid threat
+   path (vectorise direct only, keep x-ray scalar) is worth 1-2
+   days or not.
+2. **Walk-back distance histogram at `materialize` refresh
+   fallbacks** — extend the existing `profile-materialize` infra
+   to track "how many ancestors back is the nearest computed
+   frame" when refresh fires. Decides whether walk-back gives
+   >2% or <1%.
+3. **Delta-count histogram in `apply_threat_deltas`** — bucket
+   move types by n_deltas. If there's a long tail of moves
+   emitting 20-30+ deltas, capping or batching could help. If
+   uniform 8-12, no win.
+
+All three are 1-hour tasks. None require a retrain or an SPRT.
+
+## Why the 1.77× gap is structural, not micro-optimisation
+
+v5 has no threats and no hidden layers. v9 pays:
+- apply_threat_deltas: 12.7% CPU (zero on v5)
+- push_threats_for_piece: 9.3% CPU (zero on v5)
+- threat refresh work: ~2% CPU (zero on v5)
+- dense_l1_avx2 + pairwise pack + hidden SCReLU: ~10% CPU (zero on v5)
+
+That's ~34% of v9's CPU on infrastructure v5 doesn't have. Even if
+our NNUE implementation were as efficient as Reckless's, we'd still
+be ~1.5× slower than v5. Reckless is ~1.8× slower than its v5
+equivalent (bench on their repo with a v5-ish testnet), so we're
+already in a similar ballpark of "architecture tax" — the remaining
+gap to *Reckless* is the recoverable part, and that's 8-12% NPS
+per the hotspot decomposition, not 44%.
+
+The framing that survives scrutiny: **Coda v9 is structurally 1.5×
+slower than Coda v5 because of architecture, and the remaining
+~15-20% gap to Reckless is what NPS work can realistically close.**
+Matching v5 NPS requires changing architecture (fewer features,
+fewer params, or quantisation scheme), not micro-optimisation.
 
 ---
 
