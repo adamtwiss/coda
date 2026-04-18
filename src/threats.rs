@@ -7,6 +7,139 @@
 /// Reference: Reckless engine (src/nnue/threats.rs) — same encoding pattern.
 /// Total features: ~66,864 (depends on piece-pair filtering).
 
+#[cfg(feature = "profile-threats")]
+pub mod apply_stats {
+    //! apply_threat_deltas delta-count histogram.
+    //! Used to decide whether a long-tail of high-delta-count moves is
+    //! worth capping/batching, or whether delta counts are uniform.
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Buckets: 0, 1-4, 5-8, 9-12, 13-16, 17-24, 25-32, 33+
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    static TOTAL_DELTAS: AtomicU64 = AtomicU64::new(0);
+    static B0: AtomicU64 = AtomicU64::new(0);
+    static B1_4: AtomicU64 = AtomicU64::new(0);
+    static B5_8: AtomicU64 = AtomicU64::new(0);
+    static B9_12: AtomicU64 = AtomicU64::new(0);
+    static B13_16: AtomicU64 = AtomicU64::new(0);
+    static B17_24: AtomicU64 = AtomicU64::new(0);
+    static B25_32: AtomicU64 = AtomicU64::new(0);
+    static B33_PLUS: AtomicU64 = AtomicU64::new(0);
+
+    #[inline(always)]
+    pub fn record(n: usize) {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+        TOTAL_DELTAS.fetch_add(n as u64, Ordering::Relaxed);
+        let bucket = match n {
+            0 => &B0,
+            1..=4 => &B1_4,
+            5..=8 => &B5_8,
+            9..=12 => &B9_12,
+            13..=16 => &B13_16,
+            17..=24 => &B17_24,
+            25..=32 => &B25_32,
+            _ => &B33_PLUS,
+        };
+        bucket.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn report() {
+        let c = CALLS.load(Ordering::Relaxed);
+        if c == 0 { eprintln!("apply_threat_deltas stats: 0 calls"); return; }
+        let td = TOTAL_DELTAS.load(Ordering::Relaxed);
+        let pct = |n: u64| -> f64 { 100.0 * n as f64 / c.max(1) as f64 };
+        eprintln!("apply_threat_deltas: {} calls, total {} deltas, avg {:.2}",
+            c, td, td as f64 / c.max(1) as f64);
+        eprintln!("  0:       {:>10} ({:.1}%)", B0.load(Ordering::Relaxed), pct(B0.load(Ordering::Relaxed)));
+        eprintln!("  1-4:     {:>10} ({:.1}%)", B1_4.load(Ordering::Relaxed), pct(B1_4.load(Ordering::Relaxed)));
+        eprintln!("  5-8:     {:>10} ({:.1}%)", B5_8.load(Ordering::Relaxed), pct(B5_8.load(Ordering::Relaxed)));
+        eprintln!("  9-12:    {:>10} ({:.1}%)", B9_12.load(Ordering::Relaxed), pct(B9_12.load(Ordering::Relaxed)));
+        eprintln!("  13-16:   {:>10} ({:.1}%)", B13_16.load(Ordering::Relaxed), pct(B13_16.load(Ordering::Relaxed)));
+        eprintln!("  17-24:   {:>10} ({:.1}%)", B17_24.load(Ordering::Relaxed), pct(B17_24.load(Ordering::Relaxed)));
+        eprintln!("  25-32:   {:>10} ({:.1}%)", B25_32.load(Ordering::Relaxed), pct(B25_32.load(Ordering::Relaxed)));
+        eprintln!("  33+:     {:>10} ({:.1}%)", B33_PLUS.load(Ordering::Relaxed), pct(B33_PLUS.load(Ordering::Relaxed)));
+    }
+}
+
+#[cfg(feature = "profile-threats")]
+pub mod thr_stats {
+    //! Per-bench push_threats_for_piece section-level CPU counters.
+    //! Gated behind `--features profile-threats` — zero release cost.
+    //!
+    //! Tracks cycle deltas for each logical block inside the hot
+    //! function, plus delta counts. Used to decide whether a
+    //! vectorised "direct only" port (Reckless-style) is worth
+    //! pursuing as a hybrid with our existing scalar x-ray code.
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    // Cycle-timestamp-counter deltas (rdtsc) per section.
+    static CYC_DIRECT: AtomicU64 = AtomicU64::new(0);      // step 1: direct threats FROM this piece
+    static CYC_OWN_XRAY: AtomicU64 = AtomicU64::new(0);    // step 1b: x-ray FROM this piece
+    static CYC_SLIDERS: AtomicU64 = AtomicU64::new(0);     // step 2: sliders seeing this square + Z-finding
+    static CYC_SLIDERS_2B: AtomicU64 = AtomicU64::new(0);  // step 2b: sliders x-raying to this square
+    static CYC_NONSLIDERS: AtomicU64 = AtomicU64::new(0);  // step 3: pawn/knight/king attackers
+    static CYC_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+    // Delta counts emitted per section.
+    static DELTAS_DIRECT: AtomicU64 = AtomicU64::new(0);
+    static DELTAS_OWN_XRAY: AtomicU64 = AtomicU64::new(0);
+    static DELTAS_SLIDERS: AtomicU64 = AtomicU64::new(0);  // step 2 total (includes Z-level)
+    static DELTAS_SLIDERS_2B: AtomicU64 = AtomicU64::new(0);
+    static DELTAS_NONSLIDERS: AtomicU64 = AtomicU64::new(0);
+
+    #[inline(always)]
+    pub fn rdtsc() -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        unsafe { std::arch::x86_64::_rdtsc() }
+        #[cfg(not(target_arch = "x86_64"))]
+        { 0 }
+    }
+
+    #[inline(always)]
+    pub fn record_call() { CALLS.fetch_add(1, Ordering::Relaxed); }
+
+    #[inline(always)]
+    pub fn record_section(idx: u8, cycles: u64, deltas: u64) {
+        let (cyc, dlt) = match idx {
+            0 => (&CYC_DIRECT, &DELTAS_DIRECT),
+            1 => (&CYC_OWN_XRAY, &DELTAS_OWN_XRAY),
+            2 => (&CYC_SLIDERS, &DELTAS_SLIDERS),
+            3 => (&CYC_SLIDERS_2B, &DELTAS_SLIDERS_2B),
+            4 => (&CYC_NONSLIDERS, &DELTAS_NONSLIDERS),
+            _ => return,
+        };
+        cyc.fetch_add(cycles, Ordering::Relaxed);
+        dlt.fetch_add(deltas, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_total(cycles: u64) {
+        CYC_TOTAL.fetch_add(cycles, Ordering::Relaxed);
+    }
+
+    pub fn report() {
+        let c = CALLS.load(Ordering::Relaxed);
+        if c == 0 { eprintln!("threats stats: 0 calls (feature not hit)"); return; }
+        let tot = CYC_TOTAL.load(Ordering::Relaxed);
+        let sections = [
+            ("direct     (step 1)  ", CYC_DIRECT.load(Ordering::Relaxed),      DELTAS_DIRECT.load(Ordering::Relaxed)),
+            ("own-xray   (step 1b) ", CYC_OWN_XRAY.load(Ordering::Relaxed),    DELTAS_OWN_XRAY.load(Ordering::Relaxed)),
+            ("sliders    (step 2)  ", CYC_SLIDERS.load(Ordering::Relaxed),     DELTAS_SLIDERS.load(Ordering::Relaxed)),
+            ("sliders-2b (step 2b) ", CYC_SLIDERS_2B.load(Ordering::Relaxed),  DELTAS_SLIDERS_2B.load(Ordering::Relaxed)),
+            ("nonsliders (step 3)  ", CYC_NONSLIDERS.load(Ordering::Relaxed),  DELTAS_NONSLIDERS.load(Ordering::Relaxed)),
+        ];
+        eprintln!("push_threats_for_piece: {} calls, total {} Mcy", c, tot / 1_000_000);
+        for (name, cyc, dlt) in &sections {
+            let pct = 100.0 * *cyc as f64 / tot.max(1) as f64;
+            eprintln!("  {}  {:>5.1}%   {:>8} Mcy   {:>5.1} cy/call   {:.2} deltas/call",
+                name, pct, cyc / 1_000_000,
+                *cyc as f64 / c as f64,
+                *dlt as f64 / c as f64);
+        }
+    }
+}
+
 use crate::attacks::*;
 use crate::bitboard::*;
 use crate::types::*;
@@ -419,7 +552,17 @@ fn push_threats_for_piece(
     square: u32,
     add: bool,
 ) {
+    #[cfg(feature = "profile-threats")]
+    let fn_start_tsc = crate::threats::thr_stats::rdtsc();
+    #[cfg(feature = "profile-threats")]
+    crate::threats::thr_stats::record_call();
+
     // 1. Threats FROM this piece to occupied squares
+    #[cfg(feature = "profile-threats")]
+    let s1_start = crate::threats::thr_stats::rdtsc();
+    #[cfg(feature = "profile-threats")]
+    let s1_deltas_before = deltas.len() as u64;
+
     let my_attacks = piece_attacks_occ(piece_type, piece_color, square, occ);
     let mut attacked_occ = my_attacks & occ;
     while attacked_occ != 0 {
@@ -431,12 +574,23 @@ fn push_threats_for_piece(
         deltas.push(RawThreatDelta::new(cp as u8, square as u8, colored_piece(victim_color, victim_pt) as u8, target_sq as u8, add));
     }
 
+    #[cfg(feature = "profile-threats")]
+    crate::threats::thr_stats::record_section(
+        0,
+        crate::threats::thr_stats::rdtsc().wrapping_sub(s1_start),
+        deltas.len() as u64 - s1_deltas_before,
+    );
+
     // 1b. X-ray threats FROM this piece, if it's a slider. For each
     // direct target (blocker), find the next occupant on the same ray
     // STRICTLY BEYOND the blocker. Previously recomputed full attacks
     // with the blocker removed per-iteration (one magic lookup each).
     // Now uses the precomputed RAY_EXTENSION table: one array read
     // replaces the per-blocker magic lookup.
+    #[cfg(feature = "profile-threats")]
+    let s1b_start = crate::threats::thr_stats::rdtsc();
+    #[cfg(feature = "profile-threats")]
+    let s1b_deltas_before = deltas.len() as u64;
     if piece_type == BISHOP || piece_type == ROOK || piece_type == QUEEN {
         let mut direct_targets = my_attacks & occ;
         while direct_targets != 0 {
@@ -463,8 +617,19 @@ fn push_threats_for_piece(
         }
     }
 
+    #[cfg(feature = "profile-threats")]
+    crate::threats::thr_stats::record_section(
+        1,
+        crate::threats::thr_stats::rdtsc().wrapping_sub(s1b_start),
+        deltas.len() as u64 - s1b_deltas_before,
+    );
+
     // 2. Sliding pieces that see this square (Reckless pattern)
     // Compute rook/bishop attacks FROM this square to find which sliders can reach it
+    #[cfg(feature = "profile-threats")]
+    let s2_start = crate::threats::thr_stats::rdtsc();
+    #[cfg(feature = "profile-threats")]
+    let s2_deltas_before = deltas.len() as u64;
     let rook_att = rook_attacks(square, occ);
     let bishop_att = bishop_attacks(square, occ);
     let queen_att = rook_att | bishop_att;
@@ -554,10 +719,21 @@ fn push_threats_for_piece(
         deltas.push(RawThreatDelta::new(slider_cp as u8, slider_sq as u8, cp as u8, square as u8, add));
     }
 
+    #[cfg(feature = "profile-threats")]
+    crate::threats::thr_stats::record_section(
+        2,
+        crate::threats::thr_stats::rdtsc().wrapping_sub(s2_start),
+        deltas.len() as u64 - s2_deltas_before,
+    );
+
     // 2b. Sliders whose X-RAY target is `square` (through one blocker Y
     // between the slider and `square`). When the piece at `square`
     // appears/disappears, such a slider's x-ray feature changes from
     // (S, Y) direct + (S, sq) x-ray ↔ (S, Y) direct + (S, next_past_sq) x-ray.
+    #[cfg(feature = "profile-threats")]
+    let s2b_start = crate::threats::thr_stats::rdtsc();
+    #[cfg(feature = "profile-threats")]
+    let s2b_deltas_before = deltas.len() as u64;
     //
     // The (S, Y) direct feature is unchanged. The (S, cp, sq) x-ray
     // feature appears/disappears with `add`. Any piece beyond sq on the
@@ -672,6 +848,18 @@ fn push_threats_for_piece(
         }
     }
 
+    #[cfg(feature = "profile-threats")]
+    crate::threats::thr_stats::record_section(
+        3,
+        crate::threats::thr_stats::rdtsc().wrapping_sub(s2b_start),
+        deltas.len() as u64 - s2b_deltas_before,
+    );
+
+    #[cfg(feature = "profile-threats")]
+    let s3_start = crate::threats::thr_stats::rdtsc();
+    #[cfg(feature = "profile-threats")]
+    let s3_deltas_before = deltas.len() as u64;
+
     // 3. Non-sliding pieces that attack this square
     let black_pawns = pieces_bb[PAWN as usize] & colors_bb[BLACK as usize] & pawn_attacks(WHITE, square);
     let white_pawns = pieces_bb[PAWN as usize] & colors_bb[WHITE as usize] & pawn_attacks(BLACK, square);
@@ -686,6 +874,18 @@ fn push_threats_for_piece(
         if ns_pt >= 6 { continue; }
         let ns_color = if white_bb & (1u64 << ns_sq) != 0 { WHITE } else { BLACK };
         deltas.push(RawThreatDelta::new(colored_piece(ns_color, ns_pt) as u8, ns_sq as u8, cp as u8, square as u8, add));
+    }
+
+    #[cfg(feature = "profile-threats")]
+    {
+        crate::threats::thr_stats::record_section(
+            4,
+            crate::threats::thr_stats::rdtsc().wrapping_sub(s3_start),
+            deltas.len() as u64 - s3_deltas_before,
+        );
+        crate::threats::thr_stats::record_total(
+            crate::threats::thr_stats::rdtsc().wrapping_sub(fn_start_tsc)
+        );
     }
 }
 
@@ -1051,6 +1251,9 @@ pub fn apply_threat_deltas(
     pov: Color,
     mirrored: bool,
 ) {
+    #[cfg(feature = "profile-threats")]
+    crate::threats::apply_stats::record(deltas.len());
+
     // Collect valid add/sub indices (stack-allocated, no heap)
     let mut adds = [0usize; MAX_THREAT_DELTAS];
     let mut subs = [0usize; MAX_THREAT_DELTAS];

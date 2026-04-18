@@ -3201,6 +3201,12 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     #[cfg(feature = "profile-materialize")]
     crate::nnue::mat_stats::report();
 
+    #[cfg(feature = "profile-threats")]
+    {
+        crate::threats::thr_stats::report();
+        crate::threats::apply_stats::report();
+    }
+
     total_nodes
 }
 

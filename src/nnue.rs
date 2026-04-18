@@ -18,6 +18,15 @@ pub mod mat_stats {
     static REFRESHES: AtomicU64 = AtomicU64::new(0);
     static INCREMENTALS: AtomicU64 = AtomicU64::new(0);
     static TOTAL_DELTA_CHANGES: AtomicU64 = AtomicU64::new(0);
+    /// Walk-back distance buckets for refresh fallbacks:
+    /// idx 0 = no computed ancestor found (full rebuild inevitable).
+    /// idx i (1..=8) = computed ancestor at distance i.
+    /// idx 9 = distance >= 9 (deep chain).
+    static WALKBACK_BUCKETS: [AtomicU64; 10] = [
+        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+        AtomicU64::new(0), AtomicU64::new(0),
+    ];
 
     #[inline(always)]
     pub fn record_entry(early: bool) {
@@ -27,6 +36,11 @@ pub mod mat_stats {
     #[inline(always)]
     pub fn record_refresh() {
         REFRESHES.fetch_add(1, Ordering::Relaxed);
+    }
+    #[inline(always)]
+    pub fn record_walkback_distance(d: usize) {
+        let idx = d.min(9);
+        WALKBACK_BUCKETS[idx].fetch_add(1, Ordering::Relaxed);
     }
     #[inline(always)]
     pub fn record_incremental(n_changes: u64) {
@@ -46,6 +60,23 @@ pub mod mat_stats {
             i, 100.0 * i as f64 / (c - e).max(1) as f64,
             if i > 0 { td as f64 / i as f64 } else { 0.0 }
         );
+        // Walk-back distance distribution for refresh fallbacks.
+        let wb_total: u64 = (0..10).map(|i| WALKBACK_BUCKETS[i].load(Ordering::Relaxed)).sum();
+        if wb_total > 0 {
+            let mut parts: Vec<String> = Vec::new();
+            for i in 0..10 {
+                let n = WALKBACK_BUCKETS[i].load(Ordering::Relaxed);
+                let pct = 100.0 * n as f64 / wb_total as f64;
+                if n == 0 { continue; }
+                let label = match i {
+                    0 => "no-anc".to_string(),
+                    9 => ">=9".to_string(),
+                    k => format!("d{}", k),
+                };
+                parts.push(format!("{}={} ({:.1}%)", label, n, pct));
+            }
+            eprintln!("walkback distance: {}", parts.join(" "));
+        }
     }
 }
 
@@ -3400,7 +3431,23 @@ impl NNUEAccumulator {
         // Full recompute needed?
         if dirty.kind == 0 || self.top == 0 || !self.stack[self.top - 1].computed {
             #[cfg(feature = "profile-materialize")]
-            crate::nnue::mat_stats::record_refresh();
+            {
+                crate::nnue::mat_stats::record_refresh();
+                // Walk ancestors to find nearest computed frame; record
+                // distance. 0 = no ancestor / root. 1 = parent computed
+                // (wouldn't fire here by definition but reported for shape).
+                let mut d: usize = 0;
+                if self.top > 0 {
+                    let mut i = self.top;
+                    while i > 0 {
+                        i -= 1;
+                        d += 1;
+                        if self.stack[i].computed { break; }
+                    }
+                    if d > 0 && !self.stack[self.top - d].computed { d = 0; }
+                }
+                crate::nnue::mat_stats::record_walkback_distance(d);
+            }
             self.refresh_accumulator(net, board, WHITE);
             self.refresh_accumulator(net, board, BLACK);
             self.stack[self.top].computed = true;
