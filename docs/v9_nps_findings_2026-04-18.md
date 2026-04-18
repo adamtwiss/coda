@@ -301,27 +301,109 @@ port remain shelved.
   zero-check) at L1=16 (slower than row-major dense by 6%; slower
   than column-major dense by ~10%)
 
-## Measurements planned before the next NPS investigation
+## Measurements DONE (2026-04-18 evening)
 
-Three cheap data-gathers before deciding which remaining lever to
-pursue:
+Three cheap data-gathers to inform the next NPS decision. Run via
+`cargo build --release --features "profile-threats profile-materialize"`.
 
-1. **Direct-vs-xray CPU split in `push_threats_for_piece`** — cfg
-   gate per-section counters inside the function, bench with
-   `--features profile-threats`. Decides whether the hybrid threat
-   path (vectorise direct only, keep x-ray scalar) is worth 1-2
-   days or not.
-2. **Walk-back distance histogram at `materialize` refresh
-   fallbacks** — extend the existing `profile-materialize` infra
-   to track "how many ancestors back is the nearest computed
-   frame" when refresh fires. Decides whether walk-back gives
-   >2% or <1%.
-3. **Delta-count histogram in `apply_threat_deltas`** — bucket
-   move types by n_deltas. If there's a long tail of moves
-   emitting 20-30+ deltas, capping or batching could help. If
-   uniform 8-12, no win.
+### push_threats_for_piece section-level CPU split
 
-All three are 1-hour tasks. None require a retrain or an SPRT.
+Depth-13 bench (v9 e800s800, 2401107 nodes, 4.2M calls):
+
+| Section | % of push_threats cycles | cy/call | deltas/call |
+|---|---|---|---|
+| 1. direct threats FROM this piece | **6.4%** | 49.7 | 1.81 |
+| 1b. own x-ray FROM this piece | 5.1% | 39.4 | 0.56 |
+| 2. sliders seeing this square + Z-finding | 9.2% | 70.9 | 0.89 |
+| **2b. sliders x-ray TO this square** | **27.4%** | **211.3** | **0.57** |
+| 3. non-sliders (pawn/knight/king) attacking | 4.2% | 32.2 | 0.63 |
+
+**Surprise**: section 2b is 3-4× slower per call than any other
+section but emits only 0.57 deltas/call. It's the 8-direction
+scalar raycast that finds few actual x-ray paths but walks many
+empty rays. Total CPU: **push_threats_for_piece at 9.3% of engine
+CPU, of which 2b alone is ~2.5 percentage points** — that's the
+biggest single recoverable hotspot inside this function.
+
+**Reframing the hybrid-threat-path lever**: the vectorised primitive
+(`board_to_rays` + `closest_on_rays`) would replace precisely the
+scalar 8-direction walks in section 2b. Direct threats (section 1)
+are already cheap at 6.4% of push_threats = ~0.6% of engine CPU —
+not worth porting.
+
+Revised hybrid port target: **section 2b only**. Expected: ~2%
+NPS recovery (half of section 2b's cost). Risk: x-ray semantic
+correctness (section 2b handles sliders whose x-ray target changes
+because `square` is becoming/ceasing-to-be a blocker — very
+correctness-sensitive).
+
+### apply_threat_deltas delta-count histogram
+
+| Bucket | Count | % of calls |
+|---|---|---|
+| 0 | 0 | 0.0% |
+| 1-4 | 453K | 14.3% |
+| 5-8 | 825K | 26.0% |
+| 9-12 | 870K | 27.4% |
+| 13-16 | 511K | 16.1% |
+| 17-24 | 429K | 13.5% |
+| 25-32 | 75K | 2.4% |
+| 33+ | 10K | 0.3% |
+
+Avg 10.71 deltas/call. **No long tail — distribution is uniform
+around 10.** Cap/batch optimisations would not help; the ~2.7%
+of calls with 25+ deltas is too small a share to matter. **This
+lever is dead.**
+
+### materialize walk-back distance at refresh fallbacks
+
+Depth-13 bench, 1.5M materialize calls, 40.7% fall through to
+refresh (613K refresh calls). Walk-back distance of nearest
+computed ancestor at moment of refresh:
+
+| Distance | Count | % of refreshes |
+|---|---|---|
+| no-ancestor (root) | 8 | 0.0% |
+| **d1** | **114K** | **18.6%** |
+| **d2** | **179K** | **29.2%** |
+| d3 | 37K | 6.2% |
+| d4 | 20K | 3.3% |
+| d5 | 23K | 3.7% |
+| d6 | 21K | 3.5% |
+| d7 | 22K | 3.6% |
+| d8 | 27K | 4.4% |
+| >=9 | 169K | 27.6% |
+
+**47.8% of refreshes have an accurate ancestor within 2 plies.**
+Walking 1-2 plies forward from that ancestor costs 1-2
+`simd_acc_fused_avx2` calls (~1μs each); a Finny-cached refresh
+is ~5-10μs including the bitboard diff. Net savings ~3-5μs per
+replaced refresh.
+
+Realistic NPS win: 47.8% × 40.7% × (5μs / 1.8μs avg per node)
+= approximately **+2-3% NPS**. Promoted from "dismissed" to
+"concrete half-day experiment with supporting data".
+
+The tail (>=9 plies or 27.6%) is expensive even with walk-back
+(up to 9 delta applications) and may still fall through to
+refresh. That's OK — walk-back handles the easy cases; refresh
+handles the deep-chain cases.
+
+## Revised lever ranking (post-measurement)
+
+| Lever | Measured/estimated upside | Effort | Data support |
+|---|---|---|---|
+| **Walk-back refresh** (d ≤ 2 early-out) | **+2-3% NPS** | **Half day** | **Strong** |
+| Hybrid threat port, section 2b only | +2% NPS | 1-2 days | Moderate |
+| Inline-attribute audit vs Reckless | +1-3% NPS (speculative) | 30 min | None yet |
+| Full end-to-end const-generic NNUE | +5-10% NPS | 2-3 days | Negative (probe fail) |
+| AutoFDO | Unknown | 1 day + tooling | None |
+| Delta-count cap/batch | **< 0.5% NPS** | Half day | **Killed by histogram** |
+
+**Next action if NPS work resumes**: walk-back refresh first
+(best data support + lowest effort). Then section-2b hybrid port.
+Then inline audit. Full const-generic stays shelved unless those
+three exhausted.
 
 ## Why the 1.77× gap is structural, not micro-optimisation
 
