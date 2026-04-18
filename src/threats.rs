@@ -1051,9 +1051,6 @@ pub fn apply_threat_deltas(
     pov: Color,
     mirrored: bool,
 ) {
-    // Copy from previous position
-    dst[..hidden_size].copy_from_slice(&src[..hidden_size]);
-
     // Collect valid add/sub indices (stack-allocated, no heap)
     let mut adds = [0usize; MAX_THREAT_DELTAS];
     let mut subs = [0usize; MAX_THREAT_DELTAS];
@@ -1096,29 +1093,29 @@ pub fn apply_threat_deltas(
         }
     }
 
-    // Apply weight rows with SIMD when available
+    // Apply weight rows with SIMD when available. Fused pattern: load src
+    // chunk into registers, apply all adds/subs, store to dst. Avoids the
+    // separate copy_from_slice pass that used to precede apply_deltas_avx2.
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") && hidden_size % 16 == 0 {
             unsafe {
-                apply_deltas_avx2(dst, threat_weights, hidden_size, &adds, &subs);
+                apply_deltas_avx2(dst, src, threat_weights, hidden_size, &adds, &subs);
             }
             return;
         }
     }
 
-    // Scalar fallback
-    for &idx in adds {
-        let w_off = idx * hidden_size;
-        for j in 0..hidden_size {
-            dst[j] += threat_weights[w_off + j] as i16;
+    // Scalar fallback: single pass, reads src once, writes dst once.
+    for j in 0..hidden_size {
+        let mut v = src[j];
+        for &idx in adds {
+            v += threat_weights[idx * hidden_size + j] as i16;
         }
-    }
-    for &idx in subs {
-        let w_off = idx * hidden_size;
-        for j in 0..hidden_size {
-            dst[j] -= threat_weights[w_off + j] as i16;
+        for &idx in subs {
+            v -= threat_weights[idx * hidden_size + j] as i16;
         }
+        dst[j] = v;
     }
 }
 
@@ -1130,6 +1127,7 @@ pub fn apply_threat_deltas(
 #[target_feature(enable = "avx2")]
 unsafe fn apply_deltas_avx2(
     dst: &mut [i16],
+    src: &[i16],
     threat_weights: &[i8],
     hidden_size: usize,
     adds: &[usize],
@@ -1138,6 +1136,7 @@ unsafe fn apply_deltas_avx2(
     use std::arch::x86_64::*;
 
     let dst_ptr = dst.as_mut_ptr();
+    let src_ptr = src.as_ptr();
     let w_ptr = threat_weights.as_ptr();
 
     // 8 AVX2 registers × 16 i16 = 128 elements per chunk
@@ -1149,10 +1148,12 @@ unsafe fn apply_deltas_avx2(
         let chunk_size = (hidden_size - offset).min(CHUNK);
         let nregs = (chunk_size + 15) / 16;
 
-        // Load accumulator chunk into registers
+        // Load source (parent) chunk into registers — seeds the per-chunk
+        // accumulator. Previously loaded from dst after a separate
+        // copy_from_slice pass; loading src directly eliminates that pass.
         let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
         for i in 0..nregs {
-            regs[i] = _mm256_loadu_si256(dst_ptr.add(offset + i * 16) as *const __m256i);
+            regs[i] = _mm256_loadu_si256(src_ptr.add(offset + i * 16) as *const __m256i);
         }
 
         // Apply paired add+sub
