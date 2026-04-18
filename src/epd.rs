@@ -219,13 +219,24 @@ pub fn run_epd(path: &str, time_per_pos: u64, max_positions: usize, nnue_path: O
         let best_san = move_to_san(&board, best);
         let best_uci = move_to_uci(best);
 
-        // Check if the move matches any of the expected best moves
-        let is_correct = pos.best_moves.iter().any(|bm| {
-            // Compare SAN (with and without check/mate symbols)
-            let bm_clean = bm.trim_end_matches('+').trim_end_matches('#');
+        // Move match helper: compare SAN (ignoring +/#) or UCI.
+        let matches_move = |mv: &str| {
+            let mv_clean = mv.trim_end_matches('+').trim_end_matches('#');
             let san_clean = best_san.trim_end_matches('+').trim_end_matches('#');
-            bm_clean == san_clean || bm == &best_uci
-        });
+            mv_clean == san_clean || mv == &best_uci
+        };
+
+        // A position is solved when:
+        //   - bm set: the engine played one of the best moves
+        //   - am set: the engine did NOT play any of the avoid moves
+        //   - both set: must satisfy both (strictest)
+        //   - neither set: trivially passing (rare in practice)
+        let matches_bm = pos.best_moves.iter().any(|bm| matches_move(bm));
+        let matches_am = pos.avoid_moves.iter().any(|am| matches_move(am));
+
+        let bm_ok = pos.best_moves.is_empty() || matches_bm;
+        let am_ok = pos.avoid_moves.is_empty() || !matches_am;
+        let is_correct = bm_ok && am_ok;
 
         if is_correct {
             passed += 1;
@@ -233,9 +244,16 @@ pub fn run_epd(path: &str, time_per_pos: u64, max_positions: usize, nnue_path: O
         } else {
             failed += 1;
             print!("X");
-            // Print details for failures
-            eprint!("\n  {} FAIL: played {} ({}), expected {:?}",
-                pos.id, best_san, best_uci, pos.best_moves);
+            // Print details for failures — include both bm and am so the
+            // classifier is obvious (e.g., "played avoid-move" vs "missed best").
+            let mut reason = String::new();
+            if !bm_ok { reason.push_str(&format!("not in bm {:?}", pos.best_moves)); }
+            if !am_ok {
+                if !reason.is_empty() { reason.push_str(" and "); }
+                reason.push_str(&format!("matched am {:?}", pos.avoid_moves));
+            }
+            eprint!("\n  {} FAIL: played {} ({}) — {}",
+                pos.id, best_san, best_uci, reason);
         }
 
         // Flush periodically
