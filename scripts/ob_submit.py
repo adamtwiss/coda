@@ -9,6 +9,8 @@ Usage:
     python3 ob_submit.py <dev_branch> 1234567                  # Override dev bench (avoid if possible)
     python3 ob_submit.py <dev_branch> --dev-network ABCD1234   # Custom NNUE net for dev
     python3 ob_submit.py <dev_branch> --base-network ABCD1234  # Custom NNUE net for base
+    python3 ob_submit.py <dev_branch> \
+        --dev-options 'Threads=1 Hash=64 HiddenActivation=crelu' # Custom UCI for dev only
 
 Network hashes are the first 8 chars of SHA256 (uppercase). Use ob_upload_net.py to
 upload nets and get their hashes, or check https://ob.atwiss.com/networks/.
@@ -84,7 +86,7 @@ def submit_test(args):
         'dev_engine':       'Coda',
         'dev_branch':       args.dev_branch,
         'dev_bench':        str(args.dev_bench),
-        'dev_options':      args.options,
+        'dev_options':      args.dev_options or args.options,
         'dev_time_control': args.tc,
         'dev_network':      args.dev_network,
 
@@ -92,7 +94,7 @@ def submit_test(args):
         'base_engine':       'Coda',
         'base_branch':       args.base_branch,
         'base_bench':        str(args.base_bench),
-        'base_options':      args.options,
+        'base_options':      args.base_options or args.options,
         'base_time_control': args.tc,
         'base_network':      args.base_network,
 
@@ -141,7 +143,9 @@ def main():
     p.add_argument('--base-bench', type=int, default=None, help='Base bench (omit to let OB auto-detect)')
     p.add_argument('--bounds', default='[0.00, 5.00]', help='SPRT bounds (default: [0.00, 5.00])')
     p.add_argument('--tc', default='10.0+0.1', help='Time control (default: 10.0+0.1)')
-    p.add_argument('--options', default='Threads=1 Hash=64', help='UCI options')
+    p.add_argument('--options', default='Threads=1 Hash=64', help='UCI options (applied to both sides unless --dev-options/--base-options given)')
+    p.add_argument('--dev-options', default='', help='UCI options for dev side only (overrides --options for dev). Example: "Threads=1 Hash=64 HiddenActivation=crelu"')
+    p.add_argument('--base-options', default='', help='UCI options for base side only (overrides --options for base)')
     p.add_argument('--dev-network', default='', help='Dev network SHA256 hash (8 chars, from ob_upload_net.py)')
     p.add_argument('--base-network', default='', help='Base network SHA256 hash (8 chars, from ob_upload_net.py)')
     p.add_argument('--priority', type=int, default=0, help='Priority (default: 0)')
