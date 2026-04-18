@@ -582,6 +582,22 @@ mod incremental_tests {
     }
 
     #[test]
+    fn castling_queenside_phantom_xray_regression() {
+        // Regression for the 2b slider-iteration rewrite: during the rook
+        // leg of O-O-O (a1→d1) the moved rook is in pieces_bb at d1 but
+        // occ_transit has d1 cleared. Without `& occ` on section-2b
+        // candidates, d1 is iterated as a phantom x-ray candidate from
+        // sq=a1 (with king@c1 between d1 and a1 → exactly one blocker)
+        // and a spurious (rook@d1, wrook, a1) delta is emitted. Caught
+        // by fuzz_random_games seed 0xdebd0132 ply 28.
+        run_scenario(
+            "castle_qs_phantom",
+            "rQr5/p2pkp1n/1n2p1p1/7q/b1P1P3/Np2NB1P/PP3P1P/R3K2R w KQ - 3 15",
+            &["e1c1"],  // O-O-O
+        );
+    }
+
+    #[test]
     fn slider_move_reveals_x_ray_for_other_slider() {
         // WQ on d1, WR on d2 blocking. WR moves to d5 — WQ's rank/file view
         // shifts: gains direct d-file targets, loses the blocker.
@@ -1027,6 +1043,151 @@ mod incremental_tests {
         for d in board.threat_deltas.iter() {
             eprintln!("  attacker_cp={} from={} victim_cp={} to={} add={}",
                 d.attacker_cp(), d.from_sq(), d.victim_cp(), d.to_sq(), d.add());
+        }
+    }
+
+    /// Reproduce the fuzz_random_games failure seed 0xdebd0132 at ply 28 (e1c1).
+    /// Prints the pre-move FEN, raw deltas, and per-channel threat_index diff
+    /// for the BLACK pov where the failure is observed. Ignored by default —
+    /// run with `cargo test --release diag_fuzz_ply28_e1c1 -- --nocapture --ignored`.
+    #[test]
+    #[ignore]
+    fn diag_fuzz_ply28_e1c1() {
+        crate::init();
+        let nf = num_threat_features();
+
+        // Kiwipete + same xorshift32 PRNG as fuzz_random_games (fen_idx=1, game=0).
+        const KIWIPETE: &str =
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
+        let seed: u32 = 0xdebd0132;
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *state = x;
+            x
+        }
+
+        let mut rng = seed;
+        let mut board = Board::new();
+        board.set_fen(KIWIPETE);
+        board.generate_threat_deltas = true;
+
+        for ply in 0..28 {
+            let legal = generate_legal_moves(&board);
+            assert!(legal.len > 0, "no legal at ply {}", ply);
+            let idx = (next_u32(&mut rng) as usize) % legal.len;
+            let mv = legal.moves[idx];
+            assert!(board.make_move(mv), "move illegal at ply {}", ply);
+        }
+
+        // Ply 28: pick the move, expect e1c1 (white castling queenside).
+        let legal = generate_legal_moves(&board);
+        let idx = (next_u32(&mut rng) as usize) % legal.len;
+        let mv = legal.moves[idx];
+        let uci = crate::types::move_to_uci(mv);
+        let pre_fen = board.to_fen();
+        eprintln!("=== ply 28 pre-FEN: {}", pre_fen);
+        eprintln!("=== ply 28 move: {}", uci);
+        assert_eq!(uci, "e1c1", "expected e1c1, got {}", uci);
+
+        // Pre-move enumeration for BLACK pov.
+        let pov = BLACK;
+        let mirrored_pre = {
+            let occ = board.colors[0] | board.colors[1];
+            let _ = occ;
+            let k = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
+            (k % 8) >= 4
+        };
+        let mut pre_indices: Vec<usize> = Vec::new();
+        {
+            let occ = board.colors[0] | board.colors[1];
+            crate::threats::enumerate_threats(
+                &board.pieces, &board.colors, &board.mailbox,
+                occ, pov, mirrored_pre,
+                |i| if i < nf { pre_indices.push(i) },
+            );
+        }
+
+        // Make the move.
+        assert!(board.make_move(mv));
+
+        // Post-move enumeration for BLACK.
+        let mirrored_post = {
+            let k = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
+            (k % 8) >= 4
+        };
+        let mut post_indices: Vec<usize> = Vec::new();
+        {
+            let occ = board.colors[0] | board.colors[1];
+            crate::threats::enumerate_threats(
+                &board.pieces, &board.colors, &board.mailbox,
+                occ, pov, mirrored_post,
+                |i| if i < nf { post_indices.push(i) },
+            );
+        }
+
+        // If mirror flipped between pre and post, per-feature index
+        // comparison isn't meaningful. Skip directly in that case.
+        eprintln!("mirrored_pre={} mirrored_post={}", mirrored_pre, mirrored_post);
+
+        // Expected net change: (post - pre)_add, (pre - post)_sub.
+        let mut expected_adds = post_indices.clone();
+        let mut expected_subs = pre_indices.clone();
+        for i in (0..expected_adds.len()).rev() {
+            if let Some(p) = expected_subs.iter().position(|&x| x == expected_adds[i]) {
+                expected_subs.swap_remove(p);
+                expected_adds.swap_remove(i);
+            }
+        }
+        expected_adds.sort(); expected_subs.sort();
+
+        // Actual net: walk raw deltas through threat_index with the POST-move mirror.
+        let mut actual_adds: Vec<usize> = Vec::new();
+        let mut actual_subs: Vec<usize> = Vec::new();
+        for d in board.threat_deltas.iter() {
+            let idx = crate::threats::threat_index(
+                d.attacker_cp() as usize, d.from_sq() as u32,
+                d.victim_cp() as usize, d.to_sq() as u32,
+                mirrored_post, pov,
+            );
+            if idx < 0 || (idx as usize) >= nf { continue; }
+            if d.add() { actual_adds.push(idx as usize); }
+            else { actual_subs.push(idx as usize); }
+        }
+        // Net out same-feature add+sub cancellations.
+        for i in (0..actual_adds.len()).rev() {
+            if let Some(p) = actual_subs.iter().position(|&x| x == actual_adds[i]) {
+                actual_subs.swap_remove(p);
+                actual_adds.swap_remove(i);
+            }
+        }
+        actual_adds.sort(); actual_subs.sort();
+
+        let missing_adds: Vec<_> = expected_adds.iter().filter(|i| !actual_adds.contains(i)).cloned().collect();
+        let extra_adds:   Vec<_> = actual_adds.iter().filter(|i| !expected_adds.contains(i)).cloned().collect();
+        let missing_subs: Vec<_> = expected_subs.iter().filter(|i| !actual_subs.contains(i)).cloned().collect();
+        let extra_subs:   Vec<_> = actual_subs.iter().filter(|i| !expected_subs.contains(i)).cloned().collect();
+        eprintln!("pre count={} post count={}", pre_indices.len(), post_indices.len());
+        eprintln!("expected_adds: {:?}", expected_adds);
+        eprintln!("expected_subs: {:?}", expected_subs);
+        eprintln!("actual_adds:   {:?}", actual_adds);
+        eprintln!("actual_subs:   {:?}", actual_subs);
+        eprintln!("missing adds (expected but not emitted): {:?}", missing_adds);
+        eprintln!("extra   adds (emitted but not expected): {:?}", extra_adds);
+        eprintln!("missing subs (expected but not emitted): {:?}", missing_subs);
+        eprintln!("extra   subs (emitted but not expected): {:?}", extra_subs);
+
+        eprintln!("raw deltas (ply28 e1c1):");
+        for d in board.threat_deltas.iter() {
+            let idx = crate::threats::threat_index(
+                d.attacker_cp() as usize, d.from_sq() as u32,
+                d.victim_cp() as usize, d.to_sq() as u32,
+                mirrored_post, pov,
+            );
+            eprintln!("  a_cp={} from={} v_cp={} to={} add={}  idx(B)={}",
+                d.attacker_cp(), d.from_sq(), d.victim_cp(), d.to_sq(), d.add(), idx);
         }
     }
 
