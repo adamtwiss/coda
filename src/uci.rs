@@ -187,6 +187,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 // Also clear external_stop for this new search so the ponder
                 // wait loop below correctly waits for a fresh external ack.
                 external_stop.store(false, Ordering::Relaxed);
+                // Clear ponderhit_time here too (not in search()), same race reason:
+                // if ponderhit arrives in the window between `go ponder` and search()
+                // entry, search() clearing it would clobber the legitimate deadline.
+                ponderhit_flag.store(0, Ordering::Relaxed);
                 ponder_search_start = Some(std::time::Instant::now());
                 let mut search_board = board.clone();
                 let shared_tt = info.tt.clone();
@@ -235,9 +239,6 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             let ph_deadline = si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed);
                             let now_elapsed = go_received.elapsed().as_millis() as u64;
                             if ph_deadline > now_elapsed + 5 {
-                                // Budget remaining — run a fresh search on the real
-                                // position (which IS what we were pondering on, since
-                                // ponderhit means opponent played our predicted move).
                                 let remaining = ph_deadline - now_elapsed;
                                 si.stop.store(false, std::sync::atomic::Ordering::Relaxed);
                                 si.ponderhit_time.store(0, std::sync::atomic::Ordering::Relaxed);

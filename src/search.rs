@@ -991,9 +991,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     init_feature_flags();
 
     info.start_time = Instant::now();
-    // Note: stop flag is cleared by the UCI thread before spawning the search
-    // thread, not here. Clearing here races with ponderhit.
-    info.ponderhit_time.store(0, Ordering::Relaxed); // Reset from any previous ponderhit
+    // Note: stop flag AND ponderhit_time are cleared by the UCI thread before
+    // spawning the search thread, not here. Clearing here races with ponderhit:
+    // if ponderhit arrives in the ~ms between `go ponder` and this line, UCI
+    // sets ponderhit_time → search() clobbers it → ponder runs truly infinite →
+    // wait-loop → eventual time forfeit (observed at blitz TC).
     info.nodes = 0;
     // Note: global_nodes reset is done by callers (search_smp, bench) to avoid
     // clobbering helper thread contributions in SMP mode.
