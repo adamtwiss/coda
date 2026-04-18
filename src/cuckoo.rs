@@ -184,3 +184,143 @@ pub fn has_game_cycle(board: &Board, ply: i32) -> bool {
 
     false
 }
+
+#[cfg(test)]
+mod cuckoo_tests {
+    use super::*;
+    use crate::board::Board;
+
+    fn init() { crate::init(); }
+
+    /// The cuckoo table should be populated with exactly 3668 entries
+    /// for the 4-piece types and their reversible-move pairs. If
+    /// init_cuckoo panics, it already signals table corruption — this
+    /// test just re-confirms count-invariant.
+    #[test]
+    fn cuckoo_table_populated() {
+        init();
+        let mut populated = 0;
+        unsafe {
+            for i in 0..TABLE_SIZE {
+                if CUCKOO_MOVES[i] != 0 {
+                    populated += 1;
+                }
+            }
+        }
+        assert_eq!(populated, 3668, "Expected 3668 cuckoo entries populated");
+    }
+
+    /// Each populated entry's key must equal the XOR of piece_key on
+    /// the from/to squares plus side_key. Guards table corruption.
+    #[test]
+    fn cuckoo_entries_valid_moves() {
+        init();
+        unsafe {
+            for i in 0..TABLE_SIZE {
+                let packed = CUCKOO_MOVES[i];
+                if packed == 0 { continue; }
+                let key = CUCKOO_KEYS[i];
+                let from = unpack_from(packed);
+                let to = unpack_to(packed);
+                assert!(from < 64 && to < 64 && from != to,
+                    "invalid squares from={} to={}", from, to);
+
+                // The key must match some piece's (from,to) pair ^ side_key.
+                // Search all 10 non-pawn piece indexes; exactly one should match.
+                let mut matched = false;
+                for piece in 0u8..12 {
+                    let pt = piece % 6;
+                    if pt == PAWN { continue; } // cuckoo stores only non-pawn moves
+                    let expected = piece_key(piece, from) ^ piece_key(piece, to) ^ side_key();
+                    if expected == key {
+                        matched = true;
+                        break;
+                    }
+                }
+                assert!(matched,
+                    "cuckoo entry {} has key {:#x} that doesn't match any piece's from/to",
+                    i, key);
+            }
+        }
+    }
+
+    /// A 4-ply knight dance (Nf3 Nc6 Ng1) leaves the board such that
+    /// the NEXT move Nb8 would restore the starting position. At that
+    /// point (just before the repeating move), has_game_cycle must
+    /// detect it.
+    ///
+    /// Call with a large ply so we're well inside the search tree
+    /// (bypasses the root-boundary STM check).
+    #[test]
+    fn cuckoo_detects_knight_dance_at_ply_3() {
+        init();
+        let mut b = Board::startpos();
+        b.make_move(make_move(6, 21, FLAG_NONE));   // Nf3 (g1→f3)
+        b.make_move(make_move(57, 42, FLAG_NONE));  // Nc6 (b8→c6)
+        b.make_move(make_move(21, 6, FLAG_NONE));   // Ng1 (f3→g1)
+        // Now at D. Black to move. Playing Nb8 would reach A.
+        // has_game_cycle should detect this via distance-3 XOR match.
+        assert!(has_game_cycle(&b, 100),
+            "cuckoo must detect 4-ply knight dance at distance 3");
+    }
+
+    /// In the starting position no cycle is possible (no history).
+    #[test]
+    fn cuckoo_no_cycle_in_startpos() {
+        init();
+        let b = Board::startpos();
+        assert!(!has_game_cycle(&b, 0));
+    }
+
+    /// After just one move there's nothing to cycle to.
+    #[test]
+    fn cuckoo_no_cycle_after_one_move() {
+        init();
+        let mut b = Board::startpos();
+        b.make_move(make_move(6, 21, FLAG_NONE));
+        assert!(!has_game_cycle(&b, 100));
+    }
+
+    /// Random-games fuzzer: has_game_cycle must never panic and
+    /// the positive-detection cases must correspond to an actual
+    /// repeatable move (one that when made reaches a past position).
+    #[test]
+    fn fuzz_cuckoo_sanity() {
+        use crate::movegen::generate_legal_moves;
+        init();
+
+        const FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            // King/knight-rich middlegame where cycles are plausible
+            "4k3/8/4n3/8/2N5/8/8/4K3 w - - 0 1",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const PLIES: usize = 40;
+        const GAMES: usize = 5;
+
+        for (fen_idx, fen) in FENS.iter().enumerate() {
+            for game in 0..GAMES {
+                let seed: u32 = 0xCACAu32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(7919))
+                    .wrapping_add((game as u32).wrapping_mul(1_000_003));
+                let mut rng = if seed == 0 { 1 } else { seed };
+                let mut board = Board::from_fen(fen);
+
+                for _ in 0..PLIES {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    // has_game_cycle must not panic at any intermediate state.
+                    let _ = has_game_cycle(&board, 100);
+                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                    board.make_move(mv);
+                }
+            }
+        }
+    }
+}

@@ -1591,4 +1591,171 @@ mod tests {
             }
         }
     }
+
+    /// Production-equivalent repetition check (mirrors the inline logic
+    /// in search.rs:1567 at the main-search call site). Kept in test
+    /// code to pin the exact iteration behaviour; must be updated if
+    /// production logic changes.
+    fn check_repetition_main(board: &Board) -> bool {
+        let stack_len = board.undo_stack.len();
+        let limit = (board.halfmove as usize).min(stack_len);
+        let mut i = 2usize;
+        while i <= limit {
+            if board.undo_stack[stack_len - i].hash == board.hash {
+                return true;
+            }
+            i += 2;
+        }
+        false
+    }
+
+    /// QS-variant repetition check (mirrors search.rs:2769). Uses
+    /// `halfmove == 0` break instead of a limit = halfmove cap.
+    fn check_repetition_qs(board: &Board) -> bool {
+        let hash = board.hash;
+        for undo in board.undo_stack.iter().rev().skip(1).step_by(2) {
+            if undo.hash == hash { return true; }
+            if undo.halfmove == 0 { break; }
+        }
+        false
+    }
+
+    /// Basic 4-ply knight dance creates a perfect repetition of the
+    /// starting position. Both rep detectors must see it.
+    #[test]
+    fn repetition_4ply_knight_dance_detected() {
+        init();
+        let mut b = Board::startpos();
+        let hash0 = b.hash;
+        // Nf3 (white knight b1→g1? no, g1→f3). White e1-adj is g1=6, f3=21.
+        let nf3 = make_move(6, 21, FLAG_NONE);
+        let nc6 = make_move(57, 42, FLAG_NONE); // Black b8(57) → c6(42)
+        let ng1 = make_move(21, 6, FLAG_NONE);
+        let nb8 = make_move(42, 57, FLAG_NONE);
+        b.make_move(nf3);
+        b.make_move(nc6);
+        b.make_move(ng1);
+        b.make_move(nb8);
+        assert_eq!(b.hash, hash0, "knight dance must return to startpos hash");
+        assert!(check_repetition_main(&b), "main-search rep check must detect 4-ply loop");
+        assert!(check_repetition_qs(&b), "QS rep check must detect 4-ply loop");
+    }
+
+    /// After one knight dance, the current position does NOT match
+    /// any previous same-STM position. Rep must NOT trigger.
+    #[test]
+    fn no_repetition_after_single_knight_move() {
+        init();
+        let mut b = Board::startpos();
+        let nf3 = make_move(6, 21, FLAG_NONE);
+        b.make_move(nf3);
+        // Now STM is Black, stack_len=1. Limit=min(halfmove=1, 1)=1.
+        // Loop starts at i=2; 2 > 1, so loop body never runs → no rep.
+        assert!(!check_repetition_main(&b), "single move: no rep possible");
+        assert!(!check_repetition_qs(&b), "QS same");
+    }
+
+    /// Irreversible-move boundary: an intervening pawn move resets
+    /// halfmove to 0, which MUST prevent rep detection from seeing
+    /// past it. Scenario: play Nf3 Nc6 then a pawn move, then
+    /// attempt to reach the post-Nf3-Nc6 hash would only happen if
+    /// we played more knight moves — but halfmove reset means the
+    /// earlier position is no longer reachable by definition.
+    ///
+    /// Test: construct a sequence where the current hash equals a
+    /// stack entry OLDER than the most recent pawn move, and verify
+    /// the limit capping prevents the false positive.
+    #[test]
+    fn repetition_honours_halfmove_cap() {
+        init();
+        let mut b = Board::startpos();
+
+        // 1. Nf3 Nc6 — halfmove 1, 2
+        b.make_move(make_move(6, 21, FLAG_NONE)); // Nf3
+        b.make_move(make_move(57, 42, FLAG_NONE)); // Nc6
+
+        // Artificially corrupt undo_stack[0].hash to match current
+        // hash, simulating a hypothetical distant repetition across
+        // an irreversible move. This isn't reachable legally but
+        // pins the limit logic.
+        let saved = b.undo_stack[0].hash;
+        b.undo_stack[0].hash = b.hash;
+        // Current halfmove = 2, stack_len = 2, limit = 2.
+        // Loop i=2: stack[stack_len - 2] = stack[0] — would match!
+        // This is the POSITIVE case: within halfmove window → detected.
+        assert!(check_repetition_main(&b), "within-halfmove false-hash should detect");
+
+        // Now play e4, which resets halfmove to 0. Any pre-e4 match
+        // must NOT be returned.
+        b.undo_stack[0].hash = saved; // undo the corruption
+        b.make_move(make_move(12, 28, FLAG_DOUBLE_PUSH)); // e2e4
+        assert_eq!(b.halfmove, 0, "pawn move resets halfmove");
+
+        // stack now has 3 entries: startpos, post-Nf3, post-Nc6.
+        // Current position is post-Nf3-Nc6-e4 with halfmove=0.
+        // Main-search: limit = min(0, 3) = 0, loop never executes → correctly returns false.
+        // Corrupt stack[2].hash (most recent = post-Nc6 state) to match current: main-search
+        // must NOT see it because limit = 0.
+        let saved2 = b.undo_stack[2].hash;
+        b.undo_stack[2].hash = b.hash;
+        assert!(!check_repetition_main(&b),
+            "main-search: halfmove=0 limit must block detection past irreversible move");
+        b.undo_stack[2].hash = saved2;
+    }
+
+    /// Random-games fuzzer: play random legal games and verify that
+    /// both rep detectors agree on their verdict at every ply.
+    /// Differing verdicts would indicate an edge case (off-by-one,
+    /// halfmove boundary mismatch) between the two inline variants.
+    #[test]
+    fn fuzz_repetition_detectors_agree() {
+        use crate::movegen::generate_legal_moves;
+        init();
+
+        const FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "4k3/PPPPPPPP/8/8/8/8/pppppppp/4K3 w - - 0 1",
+            // Promotions + irreversible moves
+            "rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const PLIES: usize = 120; // Longer games increase rep chances
+        const GAMES: usize = 10;
+
+        for (fen_idx, fen) in FENS.iter().enumerate() {
+            for game in 0..GAMES {
+                let seed: u32 = 0xDEADF00Du32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::from_fen(fen);
+                for ply in 0..PLIES {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                    board.make_move(mv);
+
+                    let main = check_repetition_main(&board);
+                    let qs = check_repetition_qs(&board);
+                    if main != qs {
+                        panic!(
+                            "rep detector disagreement: fen_idx={} game={} ply={} seed={:#x}\n\
+                             main={} qs={}  halfmove={} stack_len={}\nfen={}",
+                            fen_idx, game, ply, seed,
+                            main, qs, board.halfmove, board.undo_stack.len(),
+                            board.to_fen(),
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

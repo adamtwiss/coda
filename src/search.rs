@@ -3241,5 +3241,107 @@ mod tests {
             );
         }
     }
+
+    /// Correction-history update primitive (`update_corr_entry`) must:
+    /// (a) move the entry in the direction of `err * weight`,
+    /// (b) respect the bound ±CORR_HIST_LIMIT,
+    /// (c) apply proportional gravity (saturates at the bound),
+    /// (d) be symmetric for positive vs negative errors (equal magnitude
+    ///     updates produce equal magnitude changes from 0).
+    #[test]
+    fn corr_entry_update_basics() {
+        // (d) Symmetry from zero.
+        let mut pos = 0i32;
+        let mut neg = 0i32;
+        update_corr_entry(&mut pos, 4, 5, 4);   // err=+4
+        update_corr_entry(&mut neg, -4, 5, 4);  // err=-4
+        assert_eq!(pos, -neg, "symmetric updates from zero: pos={}, neg={}", pos, neg);
+        assert!(pos > 0, "positive err must raise entry: got {}", pos);
+
+        // (a) Directional.
+        let mut e = 0i32;
+        update_corr_entry(&mut e, 3, 2, 4);
+        assert!(e > 0, "err > 0, weight > 0 → entry must rise, got {}", e);
+
+        // (b) Bounded at ±CORR_HIST_LIMIT.
+        let mut e = 0i32;
+        for _ in 0..10000 {
+            update_corr_entry(&mut e, 1000, 1000, 1); // saturate hard
+        }
+        assert!(e <= CORR_HIST_LIMIT, "entry must stay ≤ LIMIT, got {}", e);
+        assert!(e >= -CORR_HIST_LIMIT, "entry must stay ≥ -LIMIT, got {}", e);
+
+        // (c) Proportional gravity: repeated same-sign updates saturate,
+        //     don't grow without bound.
+        let mut e = CORR_HIST_LIMIT / 2;
+        let before = e;
+        update_corr_entry(&mut e, 1, 1, 4);
+        let delta = e - before;
+        // Small update near saturation should be small.
+        assert!(delta.abs() < 4, "near-saturation delta should be tiny, got {}", delta);
+    }
+
+    /// Zero err must leave entry unchanged (neither grows nor decays).
+    /// If this fails, we're either applying decay-in-error-free case
+    /// (bad) or have a sign bug.
+    #[test]
+    fn corr_entry_zero_err_noop() {
+        let mut e = 500i32;
+        update_corr_entry(&mut e, 0, 5, 4);
+        assert_eq!(e, 500, "zero err must not change entry");
+
+        let mut e = -500i32;
+        update_corr_entry(&mut e, 0, 5, 4);
+        assert_eq!(e, -500, "zero err must not change negative entry either");
+    }
+
+    /// Read/write index symmetry: for every correction-history table,
+    /// corrected_eval reads the slot that update_correction_history
+    /// writes for the same position. This test populates a table via
+    /// a single update, reads via corrected_eval, and verifies the
+    /// expected delta appears.
+    ///
+    /// Using a position with distinctive piece layout so hash
+    /// collisions with default zero-state are unlikely.
+    #[test]
+    fn corr_read_write_index_symmetry() {
+        use crate::board::Board;
+        crate::init();
+
+        let mut info = SearchInfo::new(16);
+        info.silent = true;
+
+        // Distinctive position
+        let board = Board::from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+
+        let raw = 100;
+        // Before any update: corrected == raw (all tables zero).
+        let corrected_before = corrected_eval(&info, &board, raw);
+        assert_eq!(corrected_before, raw, "zero tables must give corrected == raw");
+
+        // Apply a large positive update at depth=20.
+        update_correction_history(&mut info, &board, raw + 400, raw, 20);
+
+        let corrected_after = corrected_eval(&info, &board, raw);
+        assert!(
+            corrected_after > corrected_before,
+            "after positive-err update, corrected eval must rise: before={} after={}",
+            corrected_before, corrected_after
+        );
+
+        // Reading with a DIFFERENT board that hashes to the same
+        // indices is improbable; reading with a fresh board should
+        // NOT see the update (different position → different indices).
+        let other = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        let other_corrected = corrected_eval(&info, &other, raw);
+        // For startpos, pawn_hash/np/minor/major keys are entirely
+        // different from the test fen, so any match would be a random
+        // index collision at 1/16384 probability — extremely unlikely
+        // to drift more than ~0.5 cp.
+        let drift = (other_corrected - raw).abs();
+        assert!(drift < 100,
+            "unrelated position should see near-zero drift, got {} (raw {})",
+            other_corrected, raw);
+    }
 }
 

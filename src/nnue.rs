@@ -4280,4 +4280,113 @@ mod tests {
             );
         }
     }
+
+    /// King-march test: specifically exercises Finny table refresh by
+    /// marching the white king across the board through multiple king
+    /// buckets. Each king move is applied via incremental update,
+    /// and the resulting accumulator is compared against a from-scratch
+    /// recompute. If Finny refresh logic (bucket change detection,
+    /// cache invalidation, batch apply) has a bug, it shows up here
+    /// because every ply crosses a bucket boundary in at least one
+    /// of the 4 perspective×mirror combinations.
+    ///
+    /// Complements `fuzz_psq_accumulator` which does random games —
+    /// this one is deterministic and forces the cross-bucket path.
+    #[test]
+    fn finny_king_march_consistency() {
+        use crate::board::Board;
+        use crate::search::build_dirty_piece;
+        use crate::types::{flip_color, NO_PIECE_TYPE, make_move, FLAG_NONE};
+
+        crate::init();
+
+        let net_path = std::env::var("CODA_TEST_NET").ok()
+            .filter(|p| std::path::Path::new(p).exists())
+            .or_else(|| {
+                ["nets/net-v9-768th16x32-w15-e200s200-xray-fixed.nnue",
+                 "nets/net-v9-768th16x32-w0-e400s400-noxray.nnue",
+                 "net.nnue"]
+                    .iter()
+                    .find(|p| std::path::Path::new(p).exists())
+                    .map(|p| p.to_string())
+            });
+        let net_path = match net_path {
+            Some(p) => p,
+            None => { eprintln!("Skipping Finny king-march: no net"); return; }
+        };
+        let net = match NNUENet::load(&net_path) {
+            Ok(n) => n,
+            Err(e) => { eprintln!("Skipping Finny king-march: {}", e); return; }
+        };
+        let h = net.hidden_size;
+
+        // Kings-only endgame so only king moves are legal. White king
+        // at e1 (4) marches via e1→d1→c1→b1→a1→a2→a3→... across the
+        // file boundary (a1 crosses from file-4 region to file-0 region),
+        // definitely crossing bucket boundaries multiple times.
+        let board_start = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+        let mut board = board_start.clone();
+
+        let mut acc = NNUEAccumulator::new(h);
+        acc.force_recompute(&net, &board);
+
+        // Sequence of moves: white king, then black king (stays put via
+        // short distance moves so it's legal).
+        // Squares: 4=e1, 3=d1, 2=c1, 1=b1, 0=a1, 8=a2, 16=a3, 24=a4, 32=a5.
+        // Black king: 60=e8, wander locally.
+        let sequence: &[(u8, u8)] = &[
+            (4, 3),   // Ke1-d1
+            (60, 59), // Ke8-d8
+            (3, 2),   // Kd1-c1
+            (59, 58), // Kd8-c8
+            (2, 1),   // Kc1-b1
+            (58, 57), // Kc8-b8
+            (1, 0),   // Kb1-a1
+            (57, 56), // Kb8-a8
+            (0, 8),   // Ka1-a2
+            (56, 48), // Ka8-a7
+            (8, 16),  // Ka2-a3
+            (48, 40), // Ka7-a6
+            (16, 24), // Ka3-a4
+            (40, 32), // Ka6-a5
+        ];
+
+        for (i, &(from, to)) in sequence.iter().enumerate() {
+            let mv = make_move(from, to, FLAG_NONE);
+            let us = board.side_to_move;
+            let them = flip_color(us);
+            let moved_pt = board.piece_type_at(from);
+            let captured_pt = board.piece_type_at(to);
+            assert_eq!(captured_pt, NO_PIECE_TYPE, "king march: no captures expected");
+            let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt);
+
+            let ok = board.make_move(mv);
+            assert!(ok, "king march step {}: move illegal {}→{}", i, from, to);
+
+            acc.push(dirty);
+            acc.materialize(&net, &board);
+
+            let mut ref_acc = NNUEAccumulator::new(h);
+            ref_acc.force_recompute(&net, &board);
+
+            let got_w = &acc.stack[acc.top].white;
+            let got_b = &acc.stack[acc.top].black;
+            let ref_w = &ref_acc.stack[ref_acc.top].white;
+            let ref_b = &ref_acc.stack[ref_acc.top].black;
+
+            for (name, got, refv) in [
+                ("white", got_w, ref_w),
+                ("black", got_b, ref_b),
+            ] {
+                if got[..h] != refv[..h] {
+                    let j = (0..h).find(|&j| got[j] != refv[j]).unwrap();
+                    panic!(
+                        "Finny king-march divergence: step={} {}→{} pov={} channel={} \
+                         incr={} refresh={} fen={}",
+                        i, from, to, name, j, got[j], refv[j], board.to_fen(),
+                    );
+                }
+            }
+        }
+    }
 }

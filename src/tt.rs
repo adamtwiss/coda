@@ -393,11 +393,141 @@ mod tests {
         let hash2 = 0xFEDCBA9876543210u64;
         tt.store(hash2, -1, -50, TT_FLAG_UPPER, 100, -200, false);
         let entry2 = tt.probe(hash2);
-        
+
         assert!(entry2.hit, "QS entry should hit");
         assert_eq!(entry2.depth, -1, "QS depth should be -1, got {}", entry2.depth);
         assert_eq!(entry2.score, -50);
         assert_eq!(entry2.static_eval, -200);
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Bucket replacement + XOR-key verification audit tests.
+    // ──────────────────────────────────────────────────────────────────
+
+    fn mk_hash(i: u64) -> u64 { 0xDEAD_BEEF_C0DEu64.wrapping_mul(i).wrapping_add(0x12345) }
+
+    /// Basic roundtrip: store → probe returns same data.
+    #[test]
+    fn tt_store_probe_roundtrip() {
+        let tt = TT::new(4); // 4 MB
+        let h = mk_hash(1);
+        tt.store(h, 5, 42, TT_FLAG_EXACT, 0x1234, -100, true);
+        let e = tt.probe(h);
+        assert!(e.hit);
+        assert_eq!(e.depth, 5);
+        assert_eq!(e.score, 42);
+        assert_eq!(e.flag, TT_FLAG_EXACT);
+        assert_eq!(e.best_move, 0x1234);
+        assert_eq!(e.static_eval, -100);
+        assert_eq!(e.tt_pv, true);
+    }
+
+    /// Five distinct hashes mapping to the same bucket must all coexist
+    /// (the bucket has 5 slots). We force a collision by choosing
+    /// hashes whose lower bits agree (picking 5 hashes that differ only
+    /// in the upper 32 bits but share the bucket index).
+    #[test]
+    fn tt_five_distinct_hashes_all_fit() {
+        let tt = TT::new(4);
+        let base = 0x1u64;
+        // Shift upper 32 bits so lower bits (bucket index) stay identical.
+        let hashes: Vec<u64> = (0..5).map(|i| base | ((i as u64 + 1) << 32)).collect();
+
+        for (i, &h) in hashes.iter().enumerate() {
+            tt.store(h, (i + 1) as i32, 100 + i as i32,
+                TT_FLAG_EXACT, (i + 10) as u16, 0, false);
+        }
+
+        // Verify all 5 probe successfully with correct depth.
+        for (i, &h) in hashes.iter().enumerate() {
+            let e = tt.probe(h);
+            assert!(e.hit, "hash {} should hit", i);
+            assert_eq!(e.depth, (i + 1) as i32, "hash {} depth", i);
+            assert_eq!(e.score, 100 + i as i32, "hash {} score", i);
+        }
+    }
+
+    /// XOR-key verification: a probe with a DIFFERENT hash that happens
+    /// to collide with the same bucket must not return another entry's
+    /// data (stored_key ^ data != key_upper → miss).
+    #[test]
+    fn tt_xor_verification_prevents_wrong_key_hit() {
+        let tt = TT::new(4);
+        let h1: u64 = 0x1u64 | (0xAAAA_BBBBu64 << 32);
+        let h2: u64 = 0x1u64 | (0xCCCC_DDDDu64 << 32); // different upper, same lower (same bucket)
+
+        tt.store(h1, 5, 42, TT_FLAG_EXACT, 0x100, 0, false);
+
+        // Probing h2 must not return h1's entry.
+        let e = tt.probe(h2);
+        assert!(!e.hit, "different hash probing same bucket must miss");
+    }
+
+    /// Same-key re-store must UPDATE the existing slot, not allocate
+    /// a new one. Property: after 10 rewrites of the same hash, the
+    /// bucket only has 1 entry with that key.
+    #[test]
+    fn tt_same_key_updates_same_slot() {
+        let tt = TT::new(4);
+        let h = mk_hash(42);
+        for i in 0..10 {
+            tt.store(h, i + 1, i * 10, TT_FLAG_EXACT, (i + 1) as u16, 0, false);
+        }
+        let e = tt.probe(h);
+        assert!(e.hit);
+        assert_eq!(e.depth, 10, "last write should be visible");
+        assert_eq!(e.score, 90);
+    }
+
+    /// Depth-gated replacement on same-key: new store with shallower
+    /// depth (depth <= slot_depth - 3) and same generation MUST NOT
+    /// overwrite. Protects the deep result from being replaced by a
+    /// shallow one during search.
+    #[test]
+    fn tt_same_key_shallow_does_not_overwrite() {
+        let tt = TT::new(4);
+        let h = mk_hash(7);
+        // Write deep
+        tt.store(h, 20, 100, TT_FLAG_EXACT, 0x200, 0, false);
+        // Same-gen shallow attempt: depth 16 < 20-3 = 17, should NOT overwrite.
+        tt.store(h, 16, 500, TT_FLAG_LOWER, 0x300, 0, false);
+
+        let e = tt.probe(h);
+        assert!(e.hit);
+        assert_eq!(e.depth, 20, "deep write must survive shallow same-gen overwrite");
+        assert_eq!(e.score, 100);
+
+        // Same-gen near-same-depth (20 > 17): overwrites.
+        tt.store(h, 19, 999, TT_FLAG_UPPER, 0x400, 0, false);
+        let e2 = tt.probe(h);
+        // Depth 19 > 20-3 = 17, so overwrite allowed.
+        assert_eq!(e2.depth, 19);
+        assert_eq!(e2.score, 999);
+    }
+
+    /// Store returns early on empty slot; the store-loop scans all
+    /// slots and doesn't re-enter a key-matched replacement path
+    /// by mistake. Verify sequential fill of 5 slots all land on
+    /// distinct slots (property: 5 distinct keys survive, test is
+    /// essentially the same as tt_five_distinct_hashes_all_fit but
+    /// with a 6th write triggering eviction of exactly one entry).
+    #[test]
+    fn tt_sixth_key_evicts_one_not_all() {
+        let tt = TT::new(4);
+        let base = 0x5u64;
+        let hashes: Vec<u64> = (0..6).map(|i| base | ((i as u64 + 1) << 32)).collect();
+
+        for (i, &h) in hashes.iter().enumerate() {
+            // All same depth so eviction falls back on "worst slot" = first scanned.
+            tt.store(h, 10, i as i32, TT_FLAG_EXACT, (i + 1) as u16, 0, false);
+        }
+
+        let mut hits = 0;
+        for &h in &hashes {
+            if tt.probe(h).hit { hits += 1; }
+        }
+        // With 5 slots and 6 distinct keys, exactly 5 should be present.
+        assert_eq!(hits, 5, "exactly 5 of 6 keys survive in a 5-slot bucket");
     }
 }
 
