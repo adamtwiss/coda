@@ -1511,19 +1511,25 @@ fn negamax(
     // Prefetch TT bucket early to hide memory latency
     info.tt.prefetch(board.hash);
 
-    // Compute enemy pawn attacks for threat-aware history indexing (cheap: ~3 ops)
+    // Threat-aware history indexing: upgrade from pawn-only to all-enemy-pieces.
+    // `enemy_attacks` keys the 4D main history slot (from_threatened, to_threatened);
+    // broader threat coverage → finer move-ordering distinctions.
+    // Cost: 8-12 extra magic lookups per node, only at non-QS non-TT-cut nodes.
     let them_color = flip_color(board.side_to_move);
+    let enemy_attacks: u64 = board.attacks_by_color(them_color);
+
+    // Pawn-specific threat count kept separate: RFP margin adjustment and
+    // LMR_THREAT_DIV are tuned on the pawn-only scale.
     let their_pawns = board.pieces[PAWN as usize] & board.colors[them_color as usize];
-    let enemy_attacks: u64 = if them_color == WHITE {
+    let enemy_pawn_attacks: u64 = if them_color == WHITE {
         ((their_pawns & !0x0101010101010101u64) << 7) | ((their_pawns & !0x8080808080808080u64) << 9)
     } else {
         ((their_pawns & !0x8080808080808080u64) >> 7) | ((their_pawns & !0x0101010101010101u64) >> 9)
     };
-    // Opponent pawn threats on our non-pawn pieces (for RFP threat guard)
     let our_non_pawns = board.colors[board.side_to_move as usize]
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
-    let has_pawn_threats = (enemy_attacks & our_non_pawns) != 0;
-    let threat_count = popcount(enemy_attacks & our_non_pawns) as i32;
+    let has_pawn_threats = (enemy_pawn_attacks & our_non_pawns) != 0;
+    let threat_count = popcount(enemy_pawn_attacks & our_non_pawns) as i32;
 
     // Clear PV for this node
     if ply_u <= MAX_PLY {

@@ -412,6 +412,62 @@ impl Board {
         lsb(bb) as u8
     }
 
+    /// Bitboard of every square attacked by any piece of `color`.
+    /// Used by search for broader threat-aware history indexing and
+    /// LMR escape-from-threat adjustments (upgrade from pawn-only).
+    ///
+    /// Cost: ~1-2 magic lookups per slider + per-piece table reads.
+    /// Typical middlegame: 8-12 magic lookups total. Called once per
+    /// non-QS node.
+    #[inline]
+    pub fn attacks_by_color(&self, color: Color) -> Bitboard {
+        let c = color as usize;
+        let occ = self.colors[0] | self.colors[1];
+        let mut attacks: Bitboard = 0;
+
+        // Pawns (dir depends on color)
+        let their_pawns = self.pieces[PAWN as usize] & self.colors[c];
+        attacks |= if color == WHITE {
+            ((their_pawns & !FILE_A) << 7) | ((their_pawns & !FILE_H) << 9)
+        } else {
+            ((their_pawns & !FILE_H) >> 7) | ((their_pawns & !FILE_A) >> 9)
+        };
+
+        // Knights
+        let mut knights = self.pieces[KNIGHT as usize] & self.colors[c];
+        while knights != 0 {
+            let sq = knights.trailing_zeros();
+            knights &= knights - 1;
+            attacks |= knight_attacks(sq);
+        }
+
+        // Bishops & queens (diagonal)
+        let mut diag = (self.pieces[BISHOP as usize] | self.pieces[QUEEN as usize])
+            & self.colors[c];
+        while diag != 0 {
+            let sq = diag.trailing_zeros();
+            diag &= diag - 1;
+            attacks |= bishop_attacks(sq, occ);
+        }
+
+        // Rooks & queens (orthogonal)
+        let mut orth = (self.pieces[ROOK as usize] | self.pieces[QUEEN as usize])
+            & self.colors[c];
+        while orth != 0 {
+            let sq = orth.trailing_zeros();
+            orth &= orth - 1;
+            attacks |= rook_attacks(sq, occ);
+        }
+
+        // King
+        let king = self.pieces[KING as usize] & self.colors[c];
+        if king != 0 {
+            attacks |= king_attacks(king.trailing_zeros());
+        }
+
+        attacks
+    }
+
     /// Get bitboard of all pieces attacking a square.
     pub fn attackers_to(&self, sq: u32, occ: Bitboard) -> Bitboard {
         let knights = self.pieces[KNIGHT as usize];
