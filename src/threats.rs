@@ -513,49 +513,38 @@ fn push_threats_for_piece(
         // The slider's direct attack on `square` itself is emitted below.
         // This block emits only the Z-level delta.
         if do_z_finding {
-            let occ_with = occ | (1u64 << square);
-            let occ_without = occ & !(1u64 << square);
-            let slider_att_through = piece_attacks_occ(slider_pt, slider_color, slider_sq, occ_without);
-            let slider_att_blocked = piece_attacks_occ(slider_pt, slider_color, slider_sq, occ_with);
-            let revealed_y = slider_att_through & !slider_att_blocked & occ & queen_att;
-
-            if revealed_y != 0 {
+            // Y = first occupant past `square` on slider_sq's ray through square.
+            // The ray_extension table gives squares strictly beyond `square`
+            // on the slider_sq→square ray direction; mask by occ and take the
+            // first bit in the slider→square direction.
+            //
+            // Replaces two magic lookups (slider_att_through, slider_att_blocked)
+            // and their difference/filter with a single table read.
+            let y_candidates = crate::bitboard::ray_extension(slider_sq, square) & occ;
+            if y_candidates != 0 {
                 let y_sq = if slider_sq < square {
-                    let above = revealed_y & !((1u64 << (square + 1)) - 1);
-                    if above != 0 { above.trailing_zeros() } else { 64 }
+                    y_candidates.trailing_zeros()
                 } else {
-                    let below = revealed_y & ((1u64 << square) - 1);
-                    if below != 0 { 63 - below.leading_zeros() } else { 64 }
+                    63 - y_candidates.leading_zeros()
                 };
 
-                if y_sq < 64 {
-                    // Remove Y from occ too and look for Z behind it on the same ray.
-                    // The slider→square ray direction is already enforced by the
-                    // through/blocked difference — no queen_att filter here
-                    // because queen_att from `square` stops at the first blocker
-                    // (which is Y), so Z would be incorrectly excluded.
-                    let occ_without_both = occ_without & !(1u64 << y_sq);
-                    let attacks_past_y = piece_attacks_occ(slider_pt, slider_color, slider_sq, occ_without_both);
-                    let revealed_z = attacks_past_y & !slider_att_through & occ_without_both;
-                    if revealed_z != 0 {
-                        let z_sq = if slider_sq < square {
-                            let above = revealed_z & !((1u64 << (y_sq + 1)) - 1);
-                            if above != 0 { above.trailing_zeros() } else { 64 }
-                        } else {
-                            let below = revealed_z & ((1u64 << y_sq) - 1);
-                            if below != 0 { 63 - below.leading_zeros() } else { 64 }
-                        };
-                        if z_sq < 64 {
-                            let zpt = mailbox[z_sq as usize];
-                            if zpt < 6 {
-                                let zcolor = if white_bb & (1u64 << z_sq) != 0 { WHITE } else { BLACK };
-                                deltas.push(RawThreatDelta::new(
-                                    slider_cp as u8, slider_sq as u8,
-                                    colored_piece(zcolor, zpt) as u8, z_sq as u8,
-                                    !add,
-                                ));
-                            }
-                        }
+                // Z = first occupant past Y on the same ray, one hop further out.
+                // Same table-driven technique.
+                let z_candidates = crate::bitboard::ray_extension(slider_sq, y_sq) & occ;
+                if z_candidates != 0 {
+                    let z_sq = if slider_sq < square {
+                        z_candidates.trailing_zeros()
+                    } else {
+                        63 - z_candidates.leading_zeros()
+                    };
+                    let zpt = mailbox[z_sq as usize];
+                    if zpt < 6 {
+                        let zcolor = if white_bb & (1u64 << z_sq) != 0 { WHITE } else { BLACK };
+                        deltas.push(RawThreatDelta::new(
+                            slider_cp as u8, slider_sq as u8,
+                            colored_piece(zcolor, zpt) as u8, z_sq as u8,
+                            !add,
+                        ));
                     }
                 }
             }
