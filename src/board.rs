@@ -468,6 +468,77 @@ impl Board {
         attacks
     }
 
+    /// Squares of `color`'s pieces that are currently blocking one of
+    /// `color`'s own sliders' attack-through to an enemy piece.
+    ///
+    /// Moving any such piece creates a discovered attack on an enemy
+    /// piece along the slider's x-ray ray. Intended for movepicker
+    /// bonus (B1 experiment): `bonus = value_of(xray_victim)` when
+    /// move.from() ∈ xray_blockers(our_color).
+    ///
+    /// Cost: 2-6 slider iterations per call, each doing 1-2 magic
+    /// lookups + 1 ray_extension table read per direct blocker.
+    /// Typical middlegame: 10-20 magic lookups per call.
+    ///
+    /// Returns a bitboard of `color`'s blocker squares. The bitboard
+    /// value is a flag per square — the caller does not learn which
+    /// enemy piece lies behind (for that, see xray_blockers_scored).
+    ///
+    /// Note: this recomputes x-ray state fresh at the call site. The
+    /// same information is already being computed inside
+    /// `push_threats_for_piece` for NNUE input generation; if B1 lands
+    /// Elo, the emission-split refactor (Path 2) amortises this cost
+    /// to zero. Keep this function simple so the correctness surface
+    /// is minimal and the cost is predictable.
+    pub fn xray_blockers(&self, color: Color) -> Bitboard {
+        let c = color as usize;
+        let occ = self.colors[0] | self.colors[1];
+        let our = self.colors[c];
+        let their = self.colors[c ^ 1];
+        let mut result: Bitboard = 0;
+
+        // Bishops & queens — diagonal rays
+        let mut diag = (self.pieces[BISHOP as usize] | self.pieces[QUEEN as usize]) & our;
+        while diag != 0 {
+            let s_sq = diag.trailing_zeros();
+            diag &= diag - 1;
+            // Direct blockers: pieces on the slider's ray reach.
+            let mut our_blockers = bishop_attacks(s_sq, occ) & our;
+            while our_blockers != 0 {
+                let b_sq = our_blockers.trailing_zeros();
+                our_blockers &= our_blockers - 1;
+                // What's past this blocker on the same ray?
+                let past = crate::bitboard::ray_extension(s_sq, b_sq) & occ;
+                if past == 0 { continue; }
+                // First occupant past blocker: low bit if s_sq < b_sq, else high bit.
+                let past_sq = if s_sq < b_sq { past.trailing_zeros() } else { 63 - past.leading_zeros() };
+                if their & (1u64 << past_sq) != 0 {
+                    result |= 1u64 << b_sq;
+                }
+            }
+        }
+
+        // Rooks & queens — orthogonal rays
+        let mut orth = (self.pieces[ROOK as usize] | self.pieces[QUEEN as usize]) & our;
+        while orth != 0 {
+            let s_sq = orth.trailing_zeros();
+            orth &= orth - 1;
+            let mut our_blockers = rook_attacks(s_sq, occ) & our;
+            while our_blockers != 0 {
+                let b_sq = our_blockers.trailing_zeros();
+                our_blockers &= our_blockers - 1;
+                let past = crate::bitboard::ray_extension(s_sq, b_sq) & occ;
+                if past == 0 { continue; }
+                let past_sq = if s_sq < b_sq { past.trailing_zeros() } else { 63 - past.leading_zeros() };
+                if their & (1u64 << past_sq) != 0 {
+                    result |= 1u64 << b_sq;
+                }
+            }
+        }
+
+        result
+    }
+
     /// Get bitboard of all pieces attacking a square.
     pub fn attackers_to(&self, sq: u32, occ: Bitboard) -> Bitboard {
         let knights = self.pieces[KNIGHT as usize];
