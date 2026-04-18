@@ -22,9 +22,12 @@ pub type Threats = u64;
 
 /// History tables shared across the search.
 pub struct History {
-    /// Main history: [from_threatened][to_threatened][from][to]
-    /// Threat-aware 4D indexing — separate history for moves escaping/entering threats.
-    pub main: [[[[i32; 64]; 64]; 2]; 2],
+    /// Main history: [from_threat_level][to_threat_level][from][to]
+    /// Threat-aware 4D indexing with 2-bit attacker-class stratification per
+    /// square (0=safe, 1=pawn, 2=minor, 3=rook+). 16× the buckets of the
+    /// prior 2×2 boolean version — trades concentration per bucket for
+    /// finer move-ordering distinctions. Compounds on #463 (full-attacks).
+    pub main: [[[[i32; 64]; 64]; 4]; 4],
     /// Capture history: [piece 1-12][to][captured_type 0-6]
     /// piece uses 1-12 indexing (slot 0 unused).
     /// captured_type uses 0-6 scheme (0=empty, 1=pawn, ..., 6=king).
@@ -40,25 +43,37 @@ pub struct History {
     pub cont_hist: [[[[i16; 64]; 13]; 64]; 13],
 }
 
+/// 2-bit threat level at a square, keyed to the smallest attacking piece
+/// class (the most pressing threat): 0=safe, 1=pawn, 2=minor, 3=rook+.
+/// Matches A2 in docs/threat_search_plan_2026-04-19.md.
+#[inline(always)]
+fn threat_level(sq: u8, pawn: Threats, minor: Threats, rplus: Threats) -> usize {
+    let bit = 1u64 << sq;
+    if pawn & bit != 0 { 1 }
+    else if minor & bit != 0 { 2 }
+    else if rplus & bit != 0 { 3 }
+    else { 0 }
+}
+
 impl History {
-    /// Get main history score for a move given enemy threat bitboard.
+    /// Get main history score for a move given stratified enemy attacks.
     #[inline(always)]
-    pub fn main_score(&self, from: u8, to: u8, threats: Threats) -> i32 {
+    pub fn main_score(&self, from: u8, to: u8, pawn: Threats, minor: Threats, rplus: Threats) -> i32 {
         if crate::search::FEAT_4D_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
-            let ft = ((threats >> from) & 1) as usize;
-            let tt = ((threats >> to) & 1) as usize;
+            let ft = threat_level(from, pawn, minor, rplus);
+            let tt = threat_level(to, pawn, minor, rplus);
             self.main[ft][tt][from as usize][to as usize]
         } else {
             self.main[0][0][from as usize][to as usize]
         }
     }
 
-    /// Get mutable reference to main history entry for a move given enemy threats.
+    /// Get mutable reference to main history entry for a move given stratified enemy attacks.
     #[inline(always)]
-    pub fn main_entry(&mut self, from: u8, to: u8, threats: Threats) -> &mut i32 {
+    pub fn main_entry(&mut self, from: u8, to: u8, pawn: Threats, minor: Threats, rplus: Threats) -> &mut i32 {
         if crate::search::FEAT_4D_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
-            let ft = ((threats >> from) & 1) as usize;
-            let tt = ((threats >> to) & 1) as usize;
+            let ft = threat_level(from, pawn, minor, rplus);
+            let tt = threat_level(to, pawn, minor, rplus);
             &mut self.main[ft][tt][from as usize][to as usize]
         } else {
             &mut self.main[0][0][from as usize][to as usize]
@@ -67,7 +82,7 @@ impl History {
 
     pub fn new() -> Self {
         History {
-            main: [[[[0; 64]; 64]; 2]; 2],
+            main: [[[[0; 64]; 64]; 4]; 4],
             capture: [[[0i16; 7]; 64]; 13],
             killers: [[NO_MOVE; 2]; 64],
             counter: [[NO_MOVE; 64]; 13],
@@ -76,7 +91,7 @@ impl History {
     }
 
     pub fn clear(&mut self) {
-        self.main = [[[[0; 64]; 64]; 2]; 2];
+        self.main = [[[[0; 64]; 64]; 4]; 4];
         self.capture = [[[0i16; 7]; 64]; 13];
         self.killers = [[NO_MOVE; 2]; 64];
         self.counter = [[NO_MOVE; 64]; 13];
@@ -571,7 +586,7 @@ impl MovePicker {
             let to = move_to(m);
             let piece = board.piece_at(from);
 
-            let mut score = history.main_score(from, to, self.threats);
+            let mut score = history.main_score(from, to, self.their_pawn_attacks, self.their_minor_attacks, self.their_rplus_attacks);
 
             // Continuation history: plies 1,2 at CONT_HIST_MULT weight, plies 4,6 at 1x weight.
             // Matches Obsidian/Alexandria/Berserk pattern (default 3).
@@ -682,7 +697,7 @@ impl MovePicker {
                 // Quiet: history + continuation history + pawn history
                 let piece = board.piece_at(from);
 
-                let mut s = history.main_score(from, to, self.threats);
+                let mut s = history.main_score(from, to, self.their_pawn_attacks, self.their_minor_attacks, self.their_rplus_attacks);
 
                 if piece != NO_PIECE {
                     let gp = go_piece(piece);
@@ -1146,47 +1161,55 @@ mod tests {
     use crate::search::FEAT_4D_HISTORY;
     use std::sync::atomic::Ordering;
 
-    /// Regression test: FEAT_4D_HISTORY toggles which slice of main hist is read.
+    /// Regression test: FEAT_4D_HISTORY toggles which slice of main hist is read,
+    /// and the 4-level threat stratification (A2) picks the smallest-attacker
+    /// piece class for each of from/to.
     ///
-    /// When 4D is on, threats at from/to select among 4 tables:
-    /// main[from_threatened][to_threatened][from][to].
-    /// When 4D is off, main_score/main_entry must always hit [0][0][...],
-    /// regardless of the threats bitboard.
-    ///
-    /// This guards the A/B experiment branch: a future change to the
-    /// 4D indexing must not accidentally corrupt the 2D fallback path.
+    /// Levels: 0=safe, 1=pawn, 2=minor, 3=rook+.
+    /// Smallest-attacker wins when multiple classes attack the same square.
     #[test]
     fn history_4d_flag_routes_correctly() {
         let mut h = History::new();
-        // Give each table slot a distinct value so we can prove which branch ran.
-        h.main[0][0][12][28] = 1;
-        h.main[0][1][12][28] = 2;
-        h.main[1][0][12][28] = 3;
-        h.main[1][1][12][28] = 4;
-
-        // Threats bitboard with BOTH from (12) and to (28) set:
-        let threats: Threats = (1u64 << 12) | (1u64 << 28);
+        // Place distinct sentinels at the four corner combinations so we can
+        // prove which [ft][tt] pair main_score/main_entry selects.
+        h.main[0][0][12][28] = 1;  // safe -> safe
+        h.main[1][2][12][28] = 2;  // pawn -> minor
+        h.main[2][1][12][28] = 3;  // minor -> pawn
+        h.main[3][3][12][28] = 4;  // rook+ -> rook+
 
         let saved = FEAT_4D_HISTORY.load(Ordering::Relaxed);
 
-        // 4D on: lookup must see slot [1][1] = 4.
         FEAT_4D_HISTORY.store(true, Ordering::Relaxed);
-        assert_eq!(h.main_score(12, 28, threats), 4,
-            "4D on: expected main[1][1][12][28]=4");
-        *h.main_entry(12, 28, threats) = 40;
-        assert_eq!(h.main[1][1][12][28], 40, "4D on: main_entry wrote to [1][1]");
-        h.main[1][1][12][28] = 4; // restore
+        // from=12 attacked by rook+, to=28 also attacked by rook+ → [3][3] = 4.
+        let rplus = (1u64 << 12) | (1u64 << 28);
+        assert_eq!(h.main_score(12, 28, 0, 0, rplus), 4,
+            "from=rplus, to=rplus → [3][3]");
+        // from=12 attacked by pawn (smaller wins), to=28 by minor.
+        let pawn = 1u64 << 12;
+        let minor = 1u64 << 28;
+        assert_eq!(h.main_score(12, 28, pawn, minor, 0), 2,
+            "from=pawn, to=minor → [1][2]");
+        // from=minor, to=pawn.
+        assert_eq!(h.main_score(12, 28, 1u64 << 28, 1u64 << 12, 0), 3,
+            "from=minor, to=pawn → [2][1]");
+        // Pawn dominates minor at same square (smallest-attacker wins).
+        let both = (1u64 << 12) | (1u64 << 28);
+        assert_eq!(h.main_score(12, 28, both, both, 0), 0,
+            "pawn present on both squares → [1][1] which is empty (=0)");
+        *h.main_entry(12, 28, 0, 0, rplus) = 40;
+        assert_eq!(h.main[3][3][12][28], 40, "4D on: entry wrote to [3][3]");
+        h.main[3][3][12][28] = 4;
 
         // 4D off: lookup must always see slot [0][0] = 1 regardless of threats.
         FEAT_4D_HISTORY.store(false, Ordering::Relaxed);
-        assert_eq!(h.main_score(12, 28, threats), 1,
+        assert_eq!(h.main_score(12, 28, pawn, minor, rplus), 1,
             "4D off: expected main[0][0][12][28]=1");
-        assert_eq!(h.main_score(12, 28, 0), 1,
+        assert_eq!(h.main_score(12, 28, 0, 0, 0), 1,
             "4D off: expected main[0][0] with zero threats");
-        *h.main_entry(12, 28, threats) = 10;
+        *h.main_entry(12, 28, pawn, minor, 0) = 10;
         assert_eq!(h.main[0][0][12][28], 10, "4D off: main_entry wrote to [0][0]");
         // The other slots must not have been touched by the 2D write path.
-        assert_eq!(h.main[1][1][12][28], 4, "4D off: [1][1] unchanged");
+        assert_eq!(h.main[3][3][12][28], 4, "4D off: [3][3] unchanged");
 
         // Restore original flag so other tests are unaffected.
         FEAT_4D_HISTORY.store(saved, Ordering::Relaxed);

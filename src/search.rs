@@ -1731,7 +1731,7 @@ fn negamax(
                         if !tt_is_cap && tt_piece != NO_PIECE {
                             let bonus = history_bonus(depth);
                             History::update_history(
-                                info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
+                                info.history.main_entry(move_from(tt_move), move_to(tt_move), their_strat.pawn, their_strat.minor, their_strat.rook_plus),
                                 bonus,
                             );
                         } else if tt_is_cap && tt_piece != NO_PIECE {
@@ -2243,7 +2243,7 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
             && FEAT_HIST_PRUNE.load(Ordering::Relaxed)
         {
-            let mut hist_prune_score = info.history.main_score(from, to, enemy_attacks);
+            let mut hist_prune_score = info.history.main_score(from, to, their_strat.pawn, their_strat.minor, their_strat.rook_plus);
             if moved_piece != NO_PIECE {
                 let gp = go_piece(moved_piece);
                 if prev_piece_for_cont != 0 {
@@ -2267,7 +2267,7 @@ fn negamax(
             && FEAT_FUTILITY.load(Ordering::Relaxed)
             && lmr_d <= 10
         {
-            let main_hist = info.history.main_score(from, to, enemy_attacks);
+            let main_hist = info.history.main_score(from, to, their_strat.pawn, their_strat.minor, their_strat.rook_plus);
             let hist_adj = main_hist / 128;
             let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj;
             // Don't futility-prune moves with very strong history (Igel pattern)
@@ -2417,7 +2417,7 @@ fn negamax(
                 // Continuous history adjustment: good history reduces less, bad more
                 // Uses main history + ply-1 + ply-2 continuation history (consensus).
                 // Ply-2 weighted at half to avoid over-scaling the total.
-                let mut hist_score = info.history.main_score(from, to, enemy_attacks);
+                let mut hist_score = info.history.main_score(from, to, their_strat.pawn, their_strat.minor, their_strat.rook_plus);
                 if moved_piece != NO_PIECE {
                     let gp = go_piece(moved_piece);
                     if prev_piece_for_cont != 0 {
@@ -2582,7 +2582,7 @@ fn negamax(
 
                         // Update main history
                         History::update_history(
-                            info.history.main_entry(from, to, enemy_attacks),
+                            info.history.main_entry(from, to, their_strat.pawn, their_strat.minor, their_strat.rook_plus),
                             bonus,
                         );
 
@@ -2621,7 +2621,7 @@ fn negamax(
                             let qf = move_from(q);
                             let qt = move_to(q);
                             History::update_history(
-                                info.history.main_entry(qf, qt, enemy_attacks),
+                                info.history.main_entry(qf, qt, their_strat.pawn, their_strat.minor, their_strat.rook_plus),
                                 -bonus,
                             );
 
