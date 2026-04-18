@@ -138,6 +138,10 @@ tunables!(
     // 9 = never skip (gate disabled), 2 = aggressive gating. Conservative
     // initial 5 fires only in high-attack positions.
     (NMP_KING_ZONE_MAX,   5,    2,    9),
+    // A3: ProbCut king-zone-pressure gate. Skip ProbCut when enemy has
+    // this many attackers on our king zone — shallow probcut searches
+    // miss tactics in high-pressure positions. 9 = never skip, 2 = aggressive.
+    (PROBCUT_KING_ZONE_MAX, 5,   2,    9),
     // Threat-density LMR: reduce less when more pieces are threatened.
     // threat_count / LMR_THREAT_DIV subtracted from reduction.
     // Higher = less effect (2 means reduce 1 less per 2 threatened pieces).
@@ -1959,6 +1963,7 @@ fn negamax(
         && beta.abs() < MATE_SCORE - 100  // skip for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
         && !(tt_hit && tt_entry.depth >= depth - 3 && tt_entry.score < probcut_beta)  // TT says no chance
+        && king_zone_pressure < tp(&PROBCUT_KING_ZONE_MAX)  // A3: skip in high-threat positions
         && FEAT_PROBCUT.load(Ordering::Relaxed)
     {
         // SEE threshold: only consider captures that gain enough material
