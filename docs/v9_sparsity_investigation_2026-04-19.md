@@ -176,3 +176,194 @@ if we want finer-grained sparsity targeting later.
 - **Distribution on real tournament games** (not random play). Random
   play overrepresents unusual positions; tournament games would show a
   tighter but possibly different sparsity profile.
+
+---
+
+## Update: weight-norm measurement reframes the picture
+
+Added second diagnostic: `nnue::tests::measure_threat_weight_norms`
+(runs on current production v9 net, `net-v9-768th16x32-w15-e800s800-xray.nnue`).
+Computes per-row L∞ (max |weight|) and L1 (sum |weight|) for all
+66,864 weight rows.
+
+### Results
+
+```
+Net: 66,864 threat features × 768 hidden = 51.4M i8 weights (49.0 MB)
+
+--- L∞ norm (max |weight| per row) ---
+  0:        5,604 rows (8.4%)
+  1-2:         12 rows (0.0%)
+  3-7:        489 rows (0.7%)
+  8-15:     1,965 rows (2.9%)
+  16-31:    3,924 rows (5.9%)
+  32-63:   28,351 rows (42.4%)
+  64-127:  26,519 rows (39.7%)
+
+--- L1 norm (sum |weight| per row) ---
+  0:          5,604 rows (8.4%)
+  1-99:           1 row  (0.0%)
+  100-499:      666 rows (1.0%)
+  500-999:    2,067 rows (3.1%)
+  1k-3k:      1,555 rows (2.3%)
+  3k-10k:    53,876 rows (80.6%)
+  10k-30k:    3,095 rows (4.6%)
+
+--- Compaction scenarios (drop rows with L∞ ≤ threshold) ---
+  ≤ 0: keep 61,260 of 66,864 (91.6%) → 44.9 MB from 49.0 MB
+  ≤ 2: keep 61,248 of 66,864 (91.6%) → 44.9 MB
+  ≤ 5: keep 60,991 (91.2%) → 44.7 MB
+  ≤ 8: keep 60,586 (90.6%) → 44.4 MB
+  ≤ 16: keep 58,525 (87.5%) → 42.9 MB
+```
+
+### Reconciliation: activation ≠ weight sparsity
+
+The two measurements tell very different stories:
+
+| Metric | Sparsity |
+|---|---|
+| Features that NEVER activate in 12,000 random-play positions | **67.9%** |
+| Features whose weight rows are all zero | **8.4%** |
+
+Training produced **non-zero weights for ~91.6% of features**, even
+features that our random-play sample never activated. Three possible
+explanations:
+
+1. **Training saw different positions.** Bullet trains on real-game
+   data (T80, etc.); our random-play sample is a different distribution.
+   Training saw openings and endgames we under-sampled, which activate
+   the "never-fired" features.
+2. **Gradient leakage via regularization.** Even with no activation
+   signal, L2 regularization (standard in Bullet) pulls weights
+   toward small non-zero values. This can keep weights at ~0.01 scale
+   even for never-seen features.
+3. **Structural overlap.** Some feature indices near dead ones share
+   gradient updates (e.g., flipping orientation). Training updates
+   propagate to neighbors even if the primary feature never fires.
+
+### Implication
+
+**The "simple load-time compact" idea saves only ~4 MB, not ~33 MB.**
+Weight-row pruning at ε=0 drops 5,604 rows (8.4%) — the truly-zero
+rows, likely structurally-impossible features the training never
+produced gradients for. That's 44.9 MB vs 49 MB matrix.
+
+Modest gain for the code effort (~50 lines of inference code +
+SPRT). Probably not a strong "step change" at current hardware tier
+boundaries — still well above 32 MB L3 fit.
+
+**To get the 67% memory shrink I originally described, we need
+training-side changes** — specifically L1 regularization on per-row
+norms, which explicitly drives rarely-updated rows to zero. Without
+it, L2 regularization alone leaves a long tail of tiny-but-nonzero
+weights that can't be auto-pruned at load time.
+
+---
+
+## Cache-tier step-function considerations
+
+(Added 2026-04-19 after discussion: memory-access performance is
+NOT linear in matrix size — there are distinct knees at cache-tier
+boundaries.)
+
+For random-ish access patterns like threat weight lookup:
+
+- **L1d (32 KB per core)**: unreachable for threats (one weight row
+  alone is 768 B, ~42 rows max).
+- **L2 (512 KB per core)**: would need to prune to < ~600 features.
+  Only reachable via drastic compaction or hot-subset-only approaches.
+- **L3 (16-32 MB, shared)**: currently 49 MB matrix spills. Shrinking
+  below ~16 MB would cross this tier on most hardware.
+- **DRAM (catastrophic)**: anything larger than L3 slice → ~300
+  cycle penalty per miss.
+
+Expected curve shape: **step function at tier boundaries, not
+linear**. Shrinking 49 → 45 MB (8.4% row pruning) likely gives
+little perceptible NPS change because we're still in the same
+"partial L3 fit, partial DRAM spill" regime. Shrinking to 32 MB
+(fully in L3) would give a visible step. Below that, returns
+diminish until we hit L2 (another step, but requires ~100×
+compaction — probably infeasible without radical redesign).
+
+### Heavy-tailed access amplifies this
+
+Our access pattern is heavy-tailed: top 706 features (541 KB) do
+50% of activations. Those are L2-resident regardless of total
+matrix size. **The cold-tail accesses dominate miss cost.**
+Shrinking the cold tail (the 74% of features that do 1% of work)
+has disproportionate benefit relative to their contribution.
+
+## SPRT fleet-variance caveats
+
+Testing memory-footprint changes via SPRT across OB workers is
+hard because:
+
+1. **Machines have different real cache behavior** even when lscpu
+   reports identical specs (noisy-neighbor L3 contention on shared
+   hosts; actual vs advertised sustained clock varies).
+2. **OB already uses `scale_nps=250000` for v9** to normalize TC —
+   if a memory shrink bumps NPS, scale_nps should be updated too
+   so the SPRT measures Elo effect not "got more time per game".
+3. **Elo effect of memory-footprint changes is indirect**: the
+   change itself produces identical move choices; it changes speed
+   → deeper search per unit time → Elo uplift. The uplift varies
+   across machines because the speed uplift varies.
+
+### Recommended validation path
+
+Before committing to a memory-shrink experiment:
+
+1. **Single-machine measurement first.** Run `perf stat` on
+   Hercules before and after the proposed change. Measure NPS,
+   L1d miss rate, LLC miss rate. Kill OB worker first.
+2. **Single-cramped-machine measurement.** Same on a likely-constrained
+   ionos host (via OB bench log scraping if we can't SSH). Confirm the
+   improvement is bigger on the contended machine.
+3. **Only then SPRT.** Use bounds [0, 5] or tighter. Expect the
+   SPRT Elo to be the FLOOR of what individual fleet members would
+   show — constrained machines gain more than beefy ones.
+4. **Update `--scale-nps` after landing.** Post-shrink NPS goes up;
+   scale_nps should match or SPRTs measure time-management artifacts.
+
+## Revised action plan (given reconciled findings)
+
+### Tier 1 — actually worth doing (short effort, bounded upside)
+
+- **Retrain with per-row L1 regularization** on threat weights. Bullet
+  config change: `loss += λ * Σ_feature ||W_row||_1`. λ chosen so
+  training pushes cold-feature rows to exact zero rather than small
+  non-zero. **This is the path to 50%+ structured sparsity.** Requires
+  one training cycle but no inference-side changes until the new net
+  is loaded and compact-at-load is added.
+
+- **Load-time compact for zero-weight rows** (~50 LoC). Works with
+  current net or L1-trained net. Gives ~8% on current net, could
+  give 50%+ on L1-trained net. Start implementing, value depends on
+  whether L1-trained net arrives.
+
+### Tier 2 — bigger lift, longer path
+
+- **Reduce accumulator width 768 → 512 or 640.** 33% memory reduction
+  brute-force. Needs full retrain. Combined with L1 reg could shrink
+  matrix under 16 MB → crosses L3 boundary.
+
+- **Sparse L1 matmul for hidden layer activations** (Horsie NNZ pattern).
+  Measurement still needed — see "Not measured yet" above. Impact is
+  on the 16→32 hidden matmul (tiny memory) but could be a compute win.
+
+### Tier 3 — architectural
+
+- **Piece-interaction map redesign** to exclude structurally impossible
+  features. Requires new feature index space, new net format, retrain.
+  Probably drops 20-30% of features permanently. Bigger refactor.
+
+## Revised expected impact
+
+- **Load-time compact alone** on current net: ~4 MB saved, probably
+  < 2% NPS. Not worth the SPRT signal to detect.
+- **L1-regularized retrain + compact**: potentially 50%+ saved, crosses
+  L3 boundary → could be 10-30% NPS on memory-constrained machines,
+  smaller on beefy ones. Worth the training cycle.
+- **Width reduction + L1 reg + compact**: potential 70%+ saved. Biggest
+  shrink, biggest cache step if it reaches L2 fit or close.
