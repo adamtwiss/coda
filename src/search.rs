@@ -1603,9 +1603,10 @@ fn negamax(
     // consensus (SF, Reckless, Obsidian, Viridithas, Alexandria all use 0).
     // Draws scored from jitter alone to break ties between draw paths.
     if ply > 0 {
-        // Jitter draw score by ±2 to break ties between draw paths (Koivisto pattern)
-        let jitter = 2 - (info.nodes & 3) as i32; // range: -1 to +2
-        let draw_score = jitter;
+        // Jitter removed 2026-04-19 for SPRT — testing if it's another
+        // "low-impact drifted" feature like contempt was. If H0/positive,
+        // remove permanently.
+        let draw_score: i32 = 0;
         if board.halfmove >= 100 {
             return draw_score;
         }
