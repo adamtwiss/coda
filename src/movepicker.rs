@@ -616,6 +616,38 @@ impl MovePicker {
                 score += crate::search::DISCOVERED_ATTACK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
             }
 
+            // Onto-threatened filtered: penalize moves that put our non-pawn
+            // piece onto a square attacked by an enemy PAWN. Filter to pawn
+            // attackers only (not union-of-enemy-attacks) because pawn attacks
+            // are the highest-value "hanging piece" signal — anything bigger
+            // than pawn landing there loses material. Retries #537 which used
+            // union-of-attacks and over-penalized (H0 −24.8); consensus
+            // pattern from 3/3 hidden-layer engines filters by attacker-type.
+            if piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                if pt > 0 && pt < 6 {  // not a pawn, not empty/king-edge cases
+                    let them = 1 - board.side_to_move;
+                    let their_pawns = board.pieces[PAWN as usize] & board.colors[them as usize];
+                    // Enemy pawn attacks: for each pawn, where does it capture?
+                    // Use the color-aware pawn-capture offsets on the pawn bitboard.
+                    let enemy_pawn_attacks = if them == WHITE {
+                        // White pawns capture NE and NW from their square (up-left, up-right)
+                        ((their_pawns & !FILE_A) << 7) | ((their_pawns & !FILE_H) << 9)
+                    } else {
+                        // Black pawns capture SE and SW
+                        ((their_pawns & !FILE_A) >> 9) | ((their_pawns & !FILE_H) >> 7)
+                    };
+                    if enemy_pawn_attacks & (1u64 << to) != 0 {
+                        score -= match pt {
+                            4 => 8000,  // queen into pawn attack — biggest penalty
+                            3 => 5000,  // rook
+                            1 | 2 => 3000,  // minor
+                            _ => 0,
+                        };
+                    }
+                }
+            }
+
             let idx = self.moves.len;
             self.moves.push(m);
             self.scores[idx] = score;
