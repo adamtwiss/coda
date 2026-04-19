@@ -144,8 +144,27 @@ Before opening the PR:
 - [ ] `coda bench` with v5 production net also runs (verify legacy
       path works post-merge).
 - [ ] README / docs updated to describe v9 as default architecture.
-- [ ] `net.txt` resolution: keep v5 prod as embed default, document
-      v9 recommended net separately.
+- [ ] `net.txt` flipped to v9 production net at merge (decided
+      2026-04-19 — if main carries v9 tunings, the default net
+      should be v9 for consistency; v5 nets still load via
+      `-nnue` override).
+- [ ] v7 training configs (`training/configs/v7_*.rs`) marked
+      deprecated. v7 inference code in `src/nnue.rs` stays — v9's
+      hidden-layer path (L1/L2 matmul, SCReLU/CReLU pack) is
+      built on top of v7's infrastructure; removal would be
+      regression surface for no benefit.
+
+## Architectures supported post-merge
+
+- **v5** (legacy) — backward compat only. v5 nets load and work.
+  Not actively tuned against. Existing users with v5 nets get a
+  small tune-mismatch regression (bounded; v5 nets don't change).
+- **v9** (primary) — default architecture. `net.txt` points to a
+  v9 production net. Tunables are v9-calibrated. All active
+  development targets v9.
+- **v7** (deprecated) — no new training runs. Existing v7 nets
+  still load via the v7 code path in `src/nnue.rs`. Not a
+  supported end-user configuration.
 
 ## Open questions for Adam
 
@@ -154,13 +173,11 @@ Before opening the PR:
    current main)?
 2. **Release cadence** — is there a release cut point (e.g. Coda 2.0)
    that should coincide with the merge?
-3. **Deprecation of v5 production net** — should the `net.txt`
-   default flip to a v9 net at merge time, or stay v5 for backwards
-   compatibility until a later release?
-4. **Bench convention on main post-merge** — currently v9 trunk commits
-   use v9-prod-net bench (2,988,580). Main uses v5-net bench. If we
-   merge, which convention wins? (Recommendation: v9-prod-net bench,
-   aligning with option 1's "v9 as default" framing.)
+3. **Which specific v9 net becomes the `net.txt` default** at merge
+   time? Current candidates: `net-v9-768th16x32-w15-e800s800-xray.nnue`
+   (hash 6AEA210B) or a later CReLU-L1/L2-trained variant if the
+   CReLU direction (validated +4 at s200 via #497) produces a
+   stronger s800 net before merge.
 
 ## What the merge WON'T change
 
