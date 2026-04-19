@@ -60,12 +60,12 @@ tunables!(
     (FUT_PER_DEPTH, 163, 40, 250),
     // History pruning
     (HIST_PRUNE_DEPTH, 4, 1, 8),
-    (HIST_PRUNE_MULT, 5148, 500, 50000),
+    (HIST_PRUNE_MULT, 4986, 500, 50000),
     // SEE pruning
     (SEE_QUIET_MULT, 45, 5, 80),
     (SEE_CAP_MULT, 146, 30, 200),
     // LMR
-    (LMR_HIST_DIV, 7123, 2000, 100000),
+    (LMR_HIST_DIV, 6705, 2000, 100000),
     (LMR_C_QUIET, 124, 40, 300),
     (LMR_C_CAP, 101, 100, 350),
     // Singular extensions
@@ -99,13 +99,13 @@ tunables!(
     // Fail-high blend
     (FH_BLEND_DEPTH, 1, 0, 8),
     // History bonus
-    (HIST_BONUS_MULT, 300, 50, 400),
-    (HIST_BONUS_MAX, 1584, 500, 3000),
+    (HIST_BONUS_MULT, 310, 50, 400),
+    (HIST_BONUS_MAX, 1601, 500, 3000),
     // Linear-with-offset shape: bonus = (MULT*d - OFFSET).clamp(0, MAX).
     // Matches SF/Obsidian/Alexandria/cap_history shape. Default 72
     // mirrors SF. Range allows SPSA to drift to 0 (reverting to original
     // no-offset shape) or to 300+ (aggressive late-start bonus).
-    (HIST_BONUS_OFFSET, 72, 0, 400),
+    (HIST_BONUS_OFFSET, 76, 0, 400),
     // Capture history bonus
     (CAP_HIST_MULT, 263, 50, 400),
     (CAP_HIST_BASE, 15, 0, 200),
