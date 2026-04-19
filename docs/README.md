@@ -18,6 +18,7 @@ Navigation by question. Most docs are dated; check timestamps before acting on t
 ## "What do other engines do differently?"
 
 - [`tunable_anomalies_2026-04-19.md`](tunable_anomalies_2026-04-19.md) — 5-engine SPSA tunable comparison, 3 passes. Flagged anomalies (contempt, LMP), confirmed vs refuted via SPRT.
+- [`capture_ordering_crossengine_2026-04-20.md`](capture_ordering_crossengine_2026-04-20.md) — Capture-scoring deep dive across 9 engines (SF, Alexandria, Caissa, Halogen, Quanticade, Stormphrax, Reckless, RubiChess, Coda). Three SEE-threshold shapes, four captHist dimensions. Notes prior dynamic-SEE attempt and why it failed.
 - [`../engine-notes/`](../engine-notes/) — Per-engine technical reviews. Top-4 hidden-layer engines (reckless, obsidian, viridithas, plentychess) have v9-Refresh sections as of 2026-04-19.
 
 ## "How should v9 merge to main?"
