@@ -131,6 +131,12 @@ tunables!(
     (LMR_THREAT_DIV, 2, 1, 5),
     (LMR_KING_PRESSURE_DIV, 4, 2, 9),
     (FUT_THREATS_MARGIN, 34, 0, 200),
+    // Eval-difference retroactive quiet history bonus (Horsie/Clover).
+    // After each non-check node, update opponent's prior-move history
+    // based on eval swing: `bonus = -MULT * (prev_eval + static_eval) / 16`.
+    // Positive swing = opponent's eval dropped = their move was bad → penalty.
+    // 0 = disabled. Default 16 matches Horsie's formula.
+    (EVAL_DIFF_HIST_MULT, 16, 0, 100),
     // B1: Discovered-attack movepicker bonus (+52 Elo H1, #502). Flat
     // bonus added to quiet move score when `move.from()` is one of our
     // pieces currently blocking our own slider's attack on an enemy.
@@ -1843,6 +1849,39 @@ fn negamax(
     } else {
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = -INFINITY;
+        }
+    }
+
+    // Eval-diff retroactive quiet history (Horsie/Clover pattern).
+    // Update opponent's prior-move main history based on eval swing
+    // across their move. If their eval went down (our eval up across
+    // the transition), their move was bad → penalize; and vice-versa.
+    // Uses current enemy_attacks as threat-key proxy for consistency
+    // with what main_score reads in subsequent orderings.
+    if !in_check && ply >= 1 && ply_u >= 1
+        && tp(&EVAL_DIFF_HIST_MULT) > 0
+        && static_eval > -(MATE_SCORE - 100) && static_eval < MATE_SCORE - 100
+        && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
+        && info.static_evals[ply_u - 1] < MATE_SCORE - 100
+    {
+        let ul = board.undo_stack.len();
+        if ul > 0 {
+            let prev_undo = &board.undo_stack[ul - 1];
+            // Only for quiet previous moves (captures have captHist path).
+            let prev_was_quiet = prev_undo.mv != NO_MOVE
+                && prev_undo.captured == NO_PIECE_TYPE
+                && move_flags(prev_undo.mv) != FLAG_EN_PASSANT;
+            if prev_was_quiet {
+                let sum = static_eval + info.static_evals[ply_u - 1];
+                let bonus_raw = -(sum * tp(&EVAL_DIFF_HIST_MULT)) / 16;
+                // Keep magnitude bounded — this fires every node, we don't
+                // want it to dominate cutoff-driven updates (~1500 typical).
+                let bonus = bonus_raw.clamp(-512, 512);
+                let pm_from = move_from(prev_undo.mv);
+                let pm_to = move_to(prev_undo.mv);
+                let entry = info.history.main_entry(pm_from, pm_to, enemy_attacks);
+                History::update_history(entry, bonus);
+            }
         }
     }
 
