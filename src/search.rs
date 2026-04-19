@@ -157,6 +157,12 @@ tunables!(
     // aggressive pruning — wider margin keeps potentially-winning lines
     // from being dropped on static-eval alone. 0 = disabled.
     (FUT_THREATS_MARGIN, 40,    0,   200),
+    // B1: Discovered-attack movepicker bonus. Flat bonus added to quiet
+    // move score when `move.from()` is one of our pieces currently
+    // blocking our own slider's attack on an enemy piece. Moving this
+    // piece creates a discovered attack. Uses Board::xray_blockers(us).
+    // Cost: 10-20 magic lookups per non-QS node. 0 = disabled.
+    (DISCOVERED_ATTACK_BONUS, 8000, 0, 30000),
     // MVV multiplier in capture move ordering (historical default 16).
     // Captures scored as see_value(victim) * MVV_CAP_MULT + captHist.
     // Higher = weight MVV more vs capture history.
@@ -1554,6 +1560,15 @@ fn negamax(
     // pieces under any enemy attack (pawn OR piece). Widens margin in
     // tactical positions. Uses existing enemy_attacks — no new bitboard.
     let any_threat_count = popcount(enemy_attacks & our_non_pawns) as i32;
+    // B1: Discovered-attack bitboard. Our pieces that are currently
+    // blocking one of our sliders' attack on an enemy piece — moving
+    // any such piece uncovers a slider attack. Used as a quiet-move
+    // ordering bonus in MovePicker. Cost: 10-20 magic lookups.
+    let our_xray_blockers: u64 = if tp(&DISCOVERED_ATTACK_BONUS) > 0 {
+        board.xray_blockers(board.side_to_move)
+    } else {
+        0
+    };
 
     // Clear PV for this node
     if ply_u <= MAX_PLY {
@@ -2079,7 +2094,7 @@ fn negamax(
     let mut picker = if in_check {
         MovePicker::new_evasion(board, tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
 
