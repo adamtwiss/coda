@@ -490,7 +490,13 @@ OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> <bench> [--bounds 
 OPENBENCH_PASSWORD=<pw> python3 scripts/ob_stop.py <test_id>
 OPENBENCH_PASSWORD=<pw> python3 scripts/ob_status.py
 ```
-Reference NPS is 500K. Default bounds [0.00, 5.00] for novel changes. Always verify bench matches before submitting.
+Default bounds [0.00, 5.00] for novel changes. Always verify bench matches before submitting.
+
+**Reference NPS is auto-detected from branch name** (as of 2026-04-19):
+- `feature/threat-inputs`, `experiment/*`, `tune/v9-*`, `fix/threats-*` → **250K** (v9 runs slower due to threat features)
+- main / other → **500K**
+
+Both `ob_submit.py` and `ob_tune.py` print `[auto] scale_nps=...` when the auto-detect fires. Verify it matches expectation before each submission. Wrong scale_nps means games run at wrong time budgets; experiments at 500K on v9 branches run at ~2× wall-clock, halving fleet throughput. Override only for branches the patterns don't cover — and when you do, add the new pattern to `v9_patterns` in both scripts.
 
 **Current bench: 1780721** (with production net, x86-64). Update this when search changes are merged.
 **Do not pass explicit bench values** when submitting — let OB auto-detect from commit messages. Only override if OB fails to parse.

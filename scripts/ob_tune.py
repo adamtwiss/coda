@@ -131,12 +131,19 @@ def main():
     p.add_argument('--dev-network', default='', help='Dev network SHA256 hash (8 chars, from ob_upload_net.py)')
     p.add_argument('--priority', type=int, default=0, help='Priority (default: 0)')
     p.add_argument('--throughput', type=int, default=100, help='Throughput (default: 100)')
-    p.add_argument('--scale-nps', type=int, default=500000, help='Reference NPS for TC scaling (default: 500000, use ~250000 for v9)')
+    p.add_argument('--scale-nps', type=int, default=None, help='Reference NPS for TC scaling. Auto-detects from branch name: 250000 for v9 branches (feature/threat-inputs, experiment/*, tune/v9-*, fix/threats-*), 500000 for main/v5. Override to force.')
     p.add_argument('--repo', default='https://github.com/adamtwiss/coda', help='GitHub repo URL')
     p.add_argument('--server', default=SERVER, help=f'Server (default: {SERVER})')
     p.add_argument('--username', default=USERNAME, help='Username')
     p.add_argument('--password', default=PASSWORD, help='Password')
     args = p.parse_args()
+
+    # Auto-detect scale_nps from branch name (see ob_submit.py rationale).
+    if args.scale_nps is None:
+        v9_patterns = ('feature/threat-inputs', 'experiment/', 'tune/v9-', 'fix/threats-')
+        is_v9 = any(args.branch.startswith(p) for p in v9_patterns)
+        args.scale_nps = 250000 if is_v9 else 500000
+        print(f'[auto] scale_nps={args.scale_nps} ({"v9 branch" if is_v9 else "v5/main"})')
 
     if not args.password:
         print('Error: password required. Set OPENBENCH_PASSWORD or use --password')
