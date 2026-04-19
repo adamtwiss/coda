@@ -160,11 +160,23 @@ def main():
     # Auto-detect scale_nps from branch name if not explicitly set.
     # V9 branches run at ~240-280K NPS per core (threat features add ~40% work).
     # V5/main runs at ~500K+. Wrong scale_nps means games get wrong time budgets.
+    v9_patterns = ('feature/threat-inputs', 'experiment/', 'tune/v9-', 'fix/threats-', 'experiment/threat-', 'experiment/discovered-', 'experiment/history-', 'experiment/rfp-', 'experiment/lmr-', 'experiment/se-', 'experiment/asp-', 'experiment/lmp-', 'experiment/futility-', 'experiment/caphist-', 'experiment/stratified-', 'experiment/probcut-', 'experiment/king-')
+    is_v9 = any(args.dev_branch.startswith(p) or args.base_branch.startswith(p) for p in v9_patterns)
     if args.scale_nps is None:
-        v9_patterns = ('feature/threat-inputs', 'experiment/', 'tune/v9-', 'fix/threats-', 'experiment/threat-', 'experiment/discovered-', 'experiment/history-', 'experiment/rfp-', 'experiment/lmr-', 'experiment/se-', 'experiment/asp-', 'experiment/lmp-', 'experiment/futility-', 'experiment/caphist-', 'experiment/stratified-', 'experiment/probcut-', 'experiment/king-')
-        is_v9 = any(args.dev_branch.startswith(p) or args.base_branch.startswith(p) for p in v9_patterns)
         args.scale_nps = 250000 if is_v9 else 500000
         print(f'[auto] scale_nps={args.scale_nps} ({"v9 branch detected" if is_v9 else "v5/main"})')
+
+    # Warn if v9 branch without any --dev-network/--base-network: OB will
+    # build with embedded v5 net, giving DIFFERENT bench than v9-prod bench.
+    if is_v9 and not args.dev_network and not args.base_network:
+        print('[WARN] v9 branch submitted without --dev-network/--base-network.')
+        print('       OB will build with embedded v5 net — bench will NOT match')
+        print('       any v9-prod-net bench you measured locally.')
+        print('       Suggest: --dev-network 6AEA210B --base-network 6AEA210B')
+        print('       Press Ctrl-C within 5s to abort, or continue.')
+        import time
+        try: time.sleep(5)
+        except KeyboardInterrupt: return False
 
     if not args.password:
         print('Error: password required. Set OPENBENCH_PASSWORD or use --password')
