@@ -74,6 +74,8 @@ Ordered by expected ROI vs effort:
 
 ### Tier 2 — new experiments worth a branch
 
+- **Caissa 3-tier good/bad split (cheapest).** Replace the binary `SEE ≥ 0` cutoff with a tiered classifier: `attacker < victim` → always good (skip SEE), `attacker == victim` → always good (skip SEE), else → SEE test. Orthogonal to the defender bit and to dynamic SEE — works on MVV-LVA attack geometry, not history. Trivial code change. Expected mechanism: saves SEE calls on obviously-winning and trade-equal captures, classifies them as "good" even when SEE would mark them negative due to recapture sequences deep in the exchange. Worth running as a standalone SPRT on post-defender trunk before stacking dynamic SEE on top, to avoid two untested capture changes at once.
+
 - **Dynamic SEE threshold for good/bad split.** Replace `see_ge(0)` in movepicker with `see_ge(-BASE - score × K / 1024)`. Seen in 3 independent engines (Alexandria/Halogen/Quanticade). Tunable constants — small branch, easy SPRT. Orthogonal to defender bit — stack on top.
   - **Prior attempt (2026-04-03):** `fix-dynamic-capture-see-v3` and `fix-dynamic-see-threshold` both used `see_ge(m, -score/32)`. Neither merged. Two issues in that formulation that the engines surveyed here avoid:
     1. **No baseline term.** Alexandria adds `+236`; Halogen uses `-73 -`. A score-0 move should still get a slightly easier threshold than 0 (these are still captures worth trying). Our old formula collapsed to static SEE at score=0.
