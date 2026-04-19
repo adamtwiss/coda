@@ -1192,6 +1192,156 @@ mod incremental_tests {
     }
 
     /// Ensure RawThreatDelta round-trips — if this breaks the whole
+    /// Sparsity measurement: feature activation frequency across many
+    /// self-play positions. Ignored by default — run with
+    /// `cargo test --release measure_feature_sparsity -- --nocapture --ignored`.
+    ///
+    /// Purpose: inform the "drop cold features" optimization target. If
+    /// the bottom X% of features fire <0.001% of positions, dropping
+    /// them shrinks the 50 MB weight matrix proportionally with near-
+    /// zero Elo cost, improving cache residency on memory-constrained
+    /// hardware.
+    #[test]
+    #[ignore]
+    fn measure_feature_sparsity() {
+        crate::init();
+        let nf = num_threat_features();
+        eprintln!("Measuring activation frequency across {} threat features", nf);
+
+        // Deterministic self-play positions from 5 starting FENs * 30 games * 80 plies
+        // ≈ 12000 positions. Wider than fuzz_random_games, focused on distribution.
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "4k3/P6P/8/8/8/8/p6p/4K3 w - - 0 1",
+        ];
+        const GAMES_PER_FEN: usize = 30;
+        const MAX_PLIES: usize = 80;
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *state = x;
+            x
+        }
+
+        // Histograms: total activations per feature + positions observed
+        let mut feature_hits: Vec<u32> = vec![0u32; nf];
+        let mut positions = 0u64;
+        let mut total_activations = 0u64;
+
+        for (fi, fen) in START_FENS.iter().enumerate() {
+            for g in 0..GAMES_PER_FEN {
+                let seed: u32 = 0x12345u32
+                    .wrapping_add((fi as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((g as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::new();
+                board.set_fen(fen);
+
+                for _ply in 0..MAX_PLIES {
+                    // Record feature activations from both POVs at this position.
+                    for pov in [WHITE, BLACK] {
+                        let occ = board.colors[0] | board.colors[1];
+                        let k = (board.pieces[KING as usize] & board.colors[pov as usize])
+                            .trailing_zeros();
+                        let mirrored = (k % 8) >= 4;
+                        crate::threats::enumerate_threats(
+                            &board.pieces, &board.colors, &board.mailbox,
+                            occ, pov, mirrored,
+                            |idx| {
+                                if idx < nf {
+                                    feature_hits[idx] = feature_hits[idx].saturating_add(1);
+                                    total_activations += 1;
+                                }
+                            },
+                        );
+                    }
+                    positions += 1;
+
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let mv_idx = (next_u32(&mut rng) as usize) % legal.len;
+                    let mv = legal.moves[mv_idx];
+                    if !board.make_move(mv) { break; }
+                }
+            }
+        }
+
+        // Distribution buckets
+        let mut bucket_0     = 0u64; // never activated
+        let mut bucket_1_9   = 0u64;
+        let mut bucket_10_99 = 0u64;
+        let mut bucket_100_999 = 0u64;
+        let mut bucket_1k_plus = 0u64;
+        let mut max_hits = 0u32;
+        let mut max_idx  = 0usize;
+        for (i, &h) in feature_hits.iter().enumerate() {
+            if h == 0 { bucket_0 += 1; }
+            else if h < 10 { bucket_1_9 += 1; }
+            else if h < 100 { bucket_10_99 += 1; }
+            else if h < 1000 { bucket_100_999 += 1; }
+            else { bucket_1k_plus += 1; }
+            if h > max_hits { max_hits = h; max_idx = i; }
+        }
+
+        // Top-K features
+        let mut indexed: Vec<(usize, u32)> = feature_hits.iter().enumerate()
+            .map(|(i, &h)| (i, h)).collect();
+        indexed.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Coverage: cumulative % of activations captured by top-K features
+        let mut cumulative = 0u64;
+        let mut cov_10   = 0.0;
+        let mut cov_50   = 0.0;
+        let mut cov_90   = 0.0;
+        let mut cov_99   = 0.0;
+        let mut features_for_99 = 0usize;
+        let mut features_for_90 = 0usize;
+        let mut features_for_50 = 0usize;
+        for (i, (_idx, h)) in indexed.iter().enumerate() {
+            cumulative += *h as u64;
+            let pct = cumulative as f64 / total_activations as f64 * 100.0;
+            if i == 10   && cov_10   == 0.0 { cov_10   = pct; }
+            if i == 50   && cov_50   == 0.0 { cov_50   = pct; }
+            if i == 100  && cov_90   == 0.0 && pct >= 50.0 { cov_50 = pct; features_for_50 = i; }
+            if pct >= 50.0 && features_for_50 == 0 { features_for_50 = i + 1; cov_50 = pct; }
+            if pct >= 90.0 && features_for_90 == 0 { features_for_90 = i + 1; cov_90 = pct; }
+            if pct >= 99.0 && features_for_99 == 0 { features_for_99 = i + 1; cov_99 = pct; break; }
+        }
+
+        eprintln!("\n=== Threat feature sparsity measurement ===");
+        eprintln!("Total positions sampled:   {}", positions);
+        eprintln!("Total activations recorded: {}", total_activations);
+        eprintln!("Avg features active per pov-position: {:.1}", total_activations as f64 / (positions * 2) as f64);
+        eprintln!("\n--- Feature activation distribution ---");
+        eprintln!("  0 hits    (never fired):    {:>7} features ({:.1}%)", bucket_0, bucket_0 as f64 / nf as f64 * 100.0);
+        eprintln!("  1-9 hits  (very rare):      {:>7} features ({:.1}%)", bucket_1_9, bucket_1_9 as f64 / nf as f64 * 100.0);
+        eprintln!("  10-99     (uncommon):       {:>7} features ({:.1}%)", bucket_10_99, bucket_10_99 as f64 / nf as f64 * 100.0);
+        eprintln!("  100-999   (common):         {:>7} features ({:.1}%)", bucket_100_999, bucket_100_999 as f64 / nf as f64 * 100.0);
+        eprintln!("  1000+     (hot):            {:>7} features ({:.1}%)", bucket_1k_plus, bucket_1k_plus as f64 / nf as f64 * 100.0);
+        eprintln!("\n--- Coverage ---");
+        eprintln!("  Top {} features capture 50% of activations", features_for_50);
+        eprintln!("  Top {} features capture 90% of activations", features_for_90);
+        eprintln!("  Top {} features capture 99% of activations", features_for_99);
+        eprintln!("  Max activations on single feature: {} (idx={})", max_hits, max_idx);
+
+        // Memory implications
+        let row_bytes = 768;  // v9 accumulator size, i8 weights
+        let total_bytes = (nf as u64) * row_bytes;
+        let dead_bytes  = bucket_0 * row_bytes;
+        let cold_bytes  = (bucket_0 + bucket_1_9) * row_bytes;
+        eprintln!("\n--- Memory impact (768-byte rows, i8 weights) ---");
+        eprintln!("  Total weight matrix: {:.1} MB", total_bytes as f64 / 1_048_576.0);
+        eprintln!("  Dropping dead features (0 hits): save {:.1} MB ({:.1}%)", dead_bytes as f64 / 1_048_576.0, bucket_0 as f64 / nf as f64 * 100.0);
+        eprintln!("  Dropping dead+rare (<10 hits):   save {:.1} MB ({:.1}%)", cold_bytes as f64 / 1_048_576.0, (bucket_0 + bucket_1_9) as f64 / nf as f64 * 100.0);
+    }
+
     /// incremental path will silently misapply deltas.
     #[test]
     fn raw_delta_roundtrip() {

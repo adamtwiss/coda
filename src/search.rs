@@ -17,7 +17,7 @@ use crate::types::*;
 
 const MAX_PLY: usize = 64;
 const INFINITY: i32 = 30000;
-// CONTEMPT is now tunable as CONTEMPT_VAL
+// Contempt removed 2026-04-19 (SPRT #508 H1 +2.53).
 
 // Pawn history table size
 const PAWN_HIST_SIZE: usize = 512;
@@ -118,7 +118,6 @@ tunables!(
     // LMR complexity
     (LMR_COMPLEXITY_DIV, 184, 30, 500),
     // Contempt
-    (CONTEMPT_VAL, 19, 0, 50),
     // Correction history divisor
     (CORR_HIST_DIV, 1263, 256, 4096),
     // Correction history update weight cap.
@@ -307,7 +306,7 @@ pub struct SearchInfo {
     pub ponder_depth: std::sync::Arc<AtomicU64>,
     pub sel_depth: i32,
     pub last_score: i32,
-    /// Root side-to-move (for contempt: penalize draws from our perspective)
+    /// Root side-to-move (was used for contempt; retained for potential future use)
     pub root_stm: u8,
     /// Per-depth cumulative node counts (for EBF calculation in bench)
     pub depth_nodes: [u64; MAX_PLY + 1],
@@ -917,7 +916,7 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     }
     helper.time_limit = 0; // helpers don't do time management
     helper.move_overhead = main.move_overhead;
-    helper.root_stm = main.root_stm; // contempt needs to know who started the search
+    helper.root_stm = main.root_stm; // kept in sync for potential future stm-aware features
     helper.syzygy = main.syzygy.clone(); // share tablebases (read-only)
     // Helpers start with fresh history for SMP diversity (cleared in search_helper)
     helper
@@ -1604,15 +1603,15 @@ fn negamax(
     info.nodes += 1;
 
 
-    // Draw detection: repetition and 50-move rule
-    // Contempt is relative to the ROOT side (us): we get -CONTEMPT for draws
-    // (we don't want to draw), opponent gets +CONTEMPT (we're happy if they draw).
-    // This prevents us from playing INTO repetitions when we have an advantage.
+    // Draw detection: repetition and 50-move rule.
+    // Contempt removed 2026-04-19 per SPRT #508 H1 at +2.53 Elo — modern
+    // consensus (SF, Reckless, Obsidian, Viridithas, Alexandria all use 0).
+    // Draws scored from jitter alone to break ties between draw paths.
     if ply > 0 {
-        let contempt = tp(&CONTEMPT_VAL);
-        // Jitter draw score by ±2 to break ties between draw paths (Koivisto pattern)
-        let jitter = 2 - (info.nodes & 3) as i32; // range: -1 to +2
-        let draw_score = if board.side_to_move == info.root_stm { -contempt + jitter } else { contempt + jitter };
+        // Jitter removed 2026-04-19 for SPRT — testing if it's another
+        // "low-impact drifted" feature like contempt was. If H0/positive,
+        // remove permanently.
+        let draw_score: i32 = 0;
         if board.halfmove >= 100 {
             return draw_score;
         }
@@ -2831,8 +2830,8 @@ fn quiescence_with_depth(
 ) -> i32 {
     info.stats.qnodes += 1;
 
-    // Draw detection: repetition and 50-move rule
-    let draw_score = if info.root_stm == board.side_to_move { -tp(&CONTEMPT_VAL) } else { tp(&CONTEMPT_VAL) };
+    // Draw detection: repetition and 50-move rule. Contempt removed (#508).
+    let draw_score = 0;
     if board.halfmove >= 100 {
         return draw_score;
     }
