@@ -137,6 +137,11 @@ tunables!(
     // pieces currently blocking our own slider's attack on an enemy.
     // Moving it creates a discovered attack. Uses Board::xray_blockers.
     (DISCOVERED_ATTACK_BONUS, 8000, 0, 30000),
+    // S3: king-zone-pressure LMP softener. Adds king_zone_pressure /
+    // LMP_KING_PRESSURE_DIV to lmp_limit, meaning fewer late quiets
+    // pruned when our king is under attack. Higher DIV = less effect.
+    // 9 = disabled.
+    (LMP_KING_PRESSURE_DIV, 3, 1, 9),
     // MVV multiplier + cont-hist plies-1/2 weight.
     (MVV_CAP_MULT, 15, 4, 64),
     (CONT_HIST_MULT, 3, 1, 8),
@@ -2307,7 +2312,9 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
         {
-            let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
+            let mut lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
+            // S3: raise LMP threshold when king is under pressure.
+            lmp_limit += king_zone_pressure / tp(&LMP_KING_PRESSURE_DIV);
             if move_count > lmp_limit {
                 info.stats.lmp_prunes += 1;
                 continue;
