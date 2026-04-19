@@ -101,6 +101,11 @@ tunables!(
     // History bonus
     (HIST_BONUS_MULT, 300, 50, 400),
     (HIST_BONUS_MAX, 1584, 500, 3000),
+    // Linear-with-offset shape: bonus = (MULT*d - OFFSET).clamp(0, MAX).
+    // Matches SF/Obsidian/Alexandria/cap_history shape. Default 72
+    // mirrors SF. Range allows SPSA to drift to 0 (reverting to original
+    // no-offset shape) or to 300+ (aggressive late-start bonus).
+    (HIST_BONUS_OFFSET, 72, 0, 400),
     // Capture history bonus
     (CAP_HIST_MULT, 263, 50, 400),
     (CAP_HIST_BASE, 15, 0, 200),
@@ -2797,7 +2802,7 @@ fn negamax(
 /// Obsidian min(1400, 175*d-50). Our old depth² formula gave 25 at d=5
 /// vs SF's 682 — history values were 27× too small to influence ordering.
 fn history_bonus(depth: i32) -> i32 {
-    (tp(&HIST_BONUS_MULT) * depth).min(tp(&HIST_BONUS_MAX))
+    (tp(&HIST_BONUS_MULT) * depth - tp(&HIST_BONUS_OFFSET)).clamp(0, tp(&HIST_BONUS_MAX))
 }
 
 fn capture_history_bonus(depth: i32) -> i32 {
