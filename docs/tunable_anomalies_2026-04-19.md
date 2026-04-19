@@ -212,9 +212,88 @@ This is the second-pass version. The first pass (`git show HEAD~1 -- docs/tunabl
 
 **Lesson**: for cross-engine comparison, 5 engines is the minimum for a trustworthy consensus claim. 2 engines can produce an apparent outlier from which the third engine later shows the 2 were themselves at one end of a wide spread.
 
+---
+
+## Third-pass extension (LMP, aspiration, SEE quiet)
+
+Added after the contempt=0 SPRT landed +2.58 Elo (#508), validating the cross-engine anomaly → SPRT pipeline. Same method applied to 3 unexamined parameter categories from the first-pass "still unexamined" list.
+
+### LMP base — new outlier, worth SPRT
+
+| Engine | Formula | Base |
+|---|---|---|
+| Stockfish | `moveCount >= (3 + depth·depth) / (2 - improving)` | **3** |
+| Obsidian | `seenMoves >= (depth·depth + LmpBase) / (2 - improving)` | **3** |
+| Viridithas | table: `2.5 + 2·d²/4.5` (improving=false) | ≈ 2.5 |
+| **Coda** | `(LMP_BASE + d²) / (2 - improving)` | **13** |
+| Reckless | entirely different (linear with history) | N/A |
+
+Coda uses the **same formula as SF/Obsidian** but with base=13 vs their 3. Effect is strongest at low depth:
+
+| Depth (improving=0) | Coda threshold | SF/Obs threshold | Coda extra leniency |
+|---|---|---|---|
+| 2 | 8 | 3 | +167% |
+| 3 | 11 | 6 | +83% |
+| 4 | 14 | 9 | +56% |
+| 6 | 24 | 19 | +26% |
+| 10 | 56 | 51 | +10% |
+
+**At shallow depths (2-4), Coda keeps searching 1.5-2.5× more moves than SF/Obsidian.** High depths normalise because `d²` dominates. The asymmetry is because base adds a fixed amount while `d²` grows quadratically.
+
+**Hypothesis**: SPSA tuned LMP_BASE up from its original default (likely ~3-4 matching SF/Obs) to 13. Could be genuine (v9 needs more leniency at shallow depth because of noisier eval — later LMP cutoff lets deeper search find corrections) or drift (like contempt was).
+
+**Recommended action**: SPRT with `LMP_BASE=3` (SF/Obs consensus) vs current 13. Bounds `[-5, 5]` since sign unknown. LMP_BASE is a UCI tunable — no code change.
+
+### Aspiration window
+
+| Engine | Starting delta | Eval-scaled adjustment |
+|---|---|---|
+| Obsidian | `AspWindowStartDelta = 6` | none apparent |
+| Coda | `ASP_DELTA = 12` | `+ eval² / ASP_SCORE_DIV (33333)` |
+| Reckless | `delta = 13` | `+ avg² / 23660` |
+| Viridithas | `delta_initial` + `avg² / ASPIRATION_EVAL_DIVISOR` | yes |
+| Stockfish | similar eval-scaled pattern | yes |
+
+Coda's pattern (flat 12 + eval²/33333) matches Reckless (13 + eval²/23660) closely. **Not an anomaly.** Obsidian is the outlier here at 6 flat with no eval-scaling, not Coda.
+
+**No action.**
+
+### SEE quiet pruning scaling
+
+| Engine | Formula (quiet SEE threshold) |
+|---|---|
+| Coda | `-SEE_QUIET_MULT · d² = -45 · d²` (quadratic) |
+| Obsidian | `PvsQuietSeeMargin · d = -21 · d` (linear) |
+| Viridithas | `MAIN_SEE_BOUND = -93` (flat per-node) |
+| Alexandria | `-score/32 + 236` (inverted, varies by move-picker context) |
+| Stockfish | razoring uses `-502 - 306·d²` (quadratic, different magnitude/purpose) |
+
+**Coda uses `d²`**, matching SF's razoring scaling family. Obsidian uses linear, Viridithas flat.
+
+This is a **structural formula difference**, not a tuning anomaly. Engine-family design choice. Coda's current formula came from the +11.4 Elo SEE quiet fix (per experiments.md) that identified and corrected 3 structural bugs in the original implementation — it's at an informed local optimum.
+
+**No action** — different formula families, all functional.
+
+### OpenBench post-SPSA mining — attempted, deferred
+
+Attempted to fetch current SPSA values from `recklesschess.space` via WebFetch. The landing page shows recent test headers (LLR, games, branch names) but not per-tune parameter values. Per-tune pages accessed by test ID would be needed.
+
+**Conclusion**: OB post-SPSA values are accessible in principle but need per-test URL scraping, which doesn't fit WebFetch's summary mode cleanly. Could be revisited later by (a) per-test-ID navigation with targeted URLs, or (b) checking each engine's git history for "Apply tune" commits.
+
+Lower priority than the concrete LMP finding above.
+
+### Updated prioritisation
+
+| Rank | Target | Source | Expected |
+|---|---|---|---|
+| 1 | **SPRT `LMP_BASE = 3`** (UCI option flip, no code) | Third-pass extension | Neutral most likely; if H1, +1-3 Elo and one fewer drift-tuned parameter |
+| 2 | SPSA joint retune of history-shape (incl. LMR_HIST_DIV, HIST_PRUNE_MULT) | Shape-experiments doc | +2-5 Elo if shape change is meaningful |
+| 3 | RFP improving/not-improving asymmetry — SF-style unified shape | Shape-experiments doc | +0-3 Elo |
+
 ## Companion docs
 
 - `signal_context_sweep_2026-04-19.md` — signal × context experiment matrix
 - `move_ordering_ideas_2026-04-19.md` — move-ordering-specific ideas
 - `threat_ideas_plan_2026-04-19.md` — threat-signal experiment plan with results
-- *This doc* — cross-engine tunable anomaly scan
+- `shape_experiments_proposal_2026-04-19.md` — formula-shape experiments (Hercules handoff)
+- *This doc* — cross-engine tunable anomaly scan (3 passes: initial 2-engine, 5-engine expansion, LMP/aspiration/SEE extension)
