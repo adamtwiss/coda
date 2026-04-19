@@ -4,6 +4,30 @@
 **Strength**: Top-3 on most lists (~3600-3800 Elo), plays in CCC and TCEC
 **Key innovation**: Threat-input NNUE with piece-pair attack features
 
+Last v9-refreshed: 2026-04-19
+
+---
+
+## v9 Refresh (2026-04-19)
+
+PlentyChess pioneered the threat-input NNUE that Coda v9 adopts. **Architecturally the closest Coda peer** along with Reckless.
+
+### Shared pattern with Coda v9
+
+- **Threat-input NNUE** — piece-pair (attacker, attacked) features. Coda's v9 implementation is a direct follow of PlentyChess's + Reckless's approach.
+- **Attacker-type-stratified escape/penalty in scoreQuiets** — PlentyChess has Q/R/Minor threatScore with symmetric ±magnitudes (tunable). Matches Obsidian's pattern. Coda's A1a+A1c is targeting this structure.
+- **Threat bitboards maintained on Board** (`board->threats`): `pawnThreats`, `knightThreats`, `bishopThreats`, `rookThreats`. Accessible per-piece-type. Coda's equivalent is `attacks_by_color` (union) — we don't maintain per-piece-type separately. Could matter for the stratified escape logic.
+
+### PlentyChess movepicker (score_quiet) vs Coda
+
+PlentyChess's scoreQuiets (move.cpp:397-434) is even simpler than Obsidian's — just `history + threatScore`. No conthist sum visible here (likely inside `getHistory`).
+
+Coda's scoreQuiets is richer: threat-escape bonus, QUIET_CHECK_BONUS, DISCOVERED_ATTACK_BONUS, null-move threat_sq, conthist at 4 plies explicitly, pawn_hist. Coda is at the richer end.
+
+### Big picture
+
+PlentyChess demonstrates that **threat-input NNUE works** at the top level. Coda's v9 + x-ray extension + SPSA-tuned movepicker is a sibling engine in this family. Not worth porting specific PlentyChess movepicker structures — Coda's is further along. The *threat feature set* and *symmetric escape+penalty* are the main carry-overs.
+
 ---
 
 ## 1. NNUE Architecture

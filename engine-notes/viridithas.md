@@ -6,6 +6,42 @@ Language: Rust
 CCRL Ranking: ~Top 20 (superhuman, ~3400+ Elo)
 NNUE: (704x32 -> 2560)x2 -> 16 -> 32 -> 1x8 (pairwise CReLU, SCReLU hidden layers, NNZ-sparse L1)
 
+Last v9-refreshed: 2026-04-19
+
+---
+
+## v9 Refresh (2026-04-19)
+
+Viridithas is a **different architectural point**: big FT (2560 accumulator), no threats. Architecturally Coda v9 is *smaller* (768 FT, has threats).
+
+### Where Coda matches or exceeds Viridithas
+
+- **Threats** — Vir doesn't have them. Coda's 66864 threat features + x-ray enumeration is unique at Coda's FT width.
+- **Discovered-attack bonus via x-ray** — Vir can't do this (no x-ray features). #502 landed +52 Elo in Coda.
+
+### Where Viridithas differs in patterns worth noting
+
+- **`leq_pawn` / `leq_minor` / `leq_rook` stratified threat bitboards** (`chess/piecelayout.rs` `Threats` struct). These classify enemy-attack bitboards by attacker value-class. Coda has the equivalent for attacker-type identification but doesn't use the "leq" semantics (threatened-by-lesser-or-equal). Worth considering for the onto-threatened penalty variant.
+- **`can_win_material()`** function (search.rs:1764) uses `leq_rook & queens | leq_minor & (queens|rooks) | leq_pawn & (queens|rooks|bishops|knights)` — any of our higher pieces under attack by enemy lesser piece. Used in RFP margin: tightens RFP when we can win material.
+  - Coda tested this in #486 SPSA; tuned RFP_CAN_WIN_DIV barely moved (stayed at 6). #501 SPRT pending with tuned values.
+- **`improvement` signal** in LMP/pruning — Viridithas uses a detailed `improvement` value (eval vs 2-ply-ago eval), separate from the boolean `improving`. Coda uses binary `improving`. Worth considering continuous version.
+
+### Corrhist comparison
+
+Viridithas 5 sources (pawn, major, minor, nonpawn, cont). Coda 5 sources (pawn, wNP, bNP, minor, major, cont). Vir's weights are ~30× Coda's (PAWN_CORRHIST_WEIGHT=1890 vs Coda CORR_W_PAWN=301), different normalization divisor. Effective influence similar; Vir separates nonpawn into single source, Coda separates white/black.
+
+### Tunable formula differences
+
+- **RFP margin** = 73 flat + 76 improving separately. Coda uses MARGIN_IMP + MARGIN_NOIMP (separate coefficients per case).
+- **Futility** = FUTILITY_COEFF_0 + FUTILITY_COEFF_1 · d = 86 + 70·d. Coda = FUT_BASE + lmr_d · FUT_PER_DEPTH = 69 + 163·lmrDepth.
+- **ProbCut** base margin 176 — in low cluster (with Coda 193, Obsidian 190).
+
+These formula shape differences are captured in `shape_experiments_proposal_2026-04-19.md` — Hercules implementing.
+
+### Big picture
+
+Viridithas offers the cleanest comparison for "big NNUE without threats" — shows what's achievable from architecture alone. Coda's threat enumeration buys us a distinct advantage that Vir can't replicate without rearchitecting. Maintain threats as a competitive differentiator.
+
 ---
 
 ## 1. NNUE Architecture
