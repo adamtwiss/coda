@@ -2472,6 +2472,14 @@ fn negamax(
                 // from NMP/ProbCut gates — tactical king positions need depth.
                 reduction -= king_zone_pressure / tp(&LMR_KING_PRESSURE_DIV);
 
+                // Retry of #541 (H0 -12.4): gate unstable-LMR on depth.
+                // Simple "unstable → reduce -= 1" fired on ~15% of nodes and
+                // expanded tree too much. Gating to depth >= 6 restricts to
+                // deeper subtrees where over-reduction of marginal moves is
+                // most costly; shallow subtrees handle unstable positions via
+                // faster re-search at the main search level.
+                if unstable && depth >= 6 { reduction -= 1; }
+
                 // Clamp: never extend (negative), never reduce past depth 1
                 if reduction < 0 {
                     reduction = 0;
