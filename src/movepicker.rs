@@ -600,6 +600,23 @@ impl MovePicker {
                 };
             }
 
+            // Onto-threatened penalty: mirror of escape bonus. Penalise quiet
+            // moves that put our piece onto a square attacked by any enemy.
+            // Stratified by moving-piece type (Q/R/Minor). Pattern from
+            // Reckless/Obsidian/Plenty (3/3 hidden-layer engines). Coda's
+            // earlier unstratified attempt (#465) failed; this redesign
+            // uses the same magnitudes and stratification as the escape
+            // bonus (symmetric, same SPSA tunables).
+            if self.threats & (1u64 << to) != 0 && piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                score -= match pt {
+                    4 => crate::search::ESCAPE_BONUS_Q.load(std::sync::atomic::Ordering::Relaxed),
+                    3 => crate::search::ESCAPE_BONUS_R.load(std::sync::atomic::Ordering::Relaxed),
+                    1 | 2 => crate::search::ESCAPE_BONUS_MINOR.load(std::sync::atomic::Ordering::Relaxed),
+                    _ => 0,
+                };
+            }
+
             // Quiet check bonus: moves that give direct check (SF +16384, Viridithas +10000)
             if piece != NO_PIECE {
                 let pt = board.piece_type_at(from);
