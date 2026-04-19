@@ -1910,6 +1910,7 @@ fn negamax(
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && king_zone_pressure < tp(&NMP_KING_ZONE_MAX)  // New gate
+        && any_threat_count < 3  // S7-style: skip NMP when many of our pieces are under threat
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
