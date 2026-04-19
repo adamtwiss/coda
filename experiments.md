@@ -5142,6 +5142,28 @@ Any 2 of (Reckless+retune, const-generic, low-LR) landing positive
 puts us at or above v5. All-in merge decision deferred pending
 results.
 
+## 2026-04-20: Two H0s, one diagnostic sidetrip
+
+### H0'd (closed — dropped)
+
+| Test | Branch | Result | What it tested | Decision |
+|---|---|---|---|---|
+| **#528** | `experiment/history-shape-offset` | **−6.3 ± 5.0**, LLR −3.00, 4936 games | History bonus shape change: `(MULT*d − OFFSET).clamp(0, MAX)` vs linear `min(MULT*d, MAX)`. SPSA #515 converged values applied (OFFSET=76, MULT=310, MAX=1601, LMR_HIST_DIV=6705, HIST_PRUNE_MULT=4986). Shape matches SF/Obsidian/Alexandria/cap_history convention. | **Dropped.** Shape change hurts v9 by ~6 Elo; SPSA-tuned coupled params couldn't compensate. No trunk changes to revert — HIST_BONUS_OFFSET was never added to trunk's `tunables!` block. |
+| **#529** | `experiment/material-scale-tunable` | **−3.0 ± 3.8**, LLR −2.97, 8820 games | Expose material-scaling constants (hardcoded `22400 / 32768` in `eval *= (BASE + material) / DIV`) as SPSA tunables MAT_SCALE_BASE / MAT_SCALE_DIV. #516 SPSA converged to slightly looser values (22830 / 31360) after 385 iters. | **Dropped.** Hardcoded values were effectively optimal; the ~6% looser SPSA drift costs −3 Elo. No trunk changes to revert — MAT_SCALE_BASE/DIV were only ever on the experiment branch. |
+
+### Lessons
+
+- **Not every consensus-shape pattern transfers.** Linear-with-offset history bonus is standard in SF/Obsidian/Alexandria and matches how Coda's cap_history is already written. But on v9 (threat-aware main history + 4D keying), adding the offset *reduces* tree efficiency. Hypothesis: the 4D-indexed main history has finer per-bucket signal than 2D histories — Coda's current formula without offset already produces tight bonuses at low depths without over-weighting. The offset strips bonus where v9's richer signal needs it most.
+- **"Hardcoded is suspicious → make it tunable" isn't always worth it.** Material-scale had fixed 22400/32768 in code since v5 era. Exposing it to SPSA seemed low-risk (if tuning finds no gain, revert). But the act of exposing + applying post-tune values adds code complexity, and the ~6% drift the tuner found was negative in SPRT. Coda's original scaling constants were converged against the NNUE eval distribution; re-tuning them in isolation shifted away from that optimum. Cost: ~10K games of fleet + commit churn on the experiment branch. Minimal, but the pattern is "hardcoded ≠ untuned, sometimes it's locally optimal already."
+- **Both failures were clean, no ambiguity.** −6.3 and −3.0 with LLRs hitting −3.00/−2.97 cleanly. No "maybe retune more" temptation; the formulas under test aren't hiding latent gains.
+
+### Methodology win (session side-effect)
+
+- **Live Lichess watching catches what SPRT can't.** Adam watched one game on Lichess and identified castling-weight weirdness (Kf1 then Kg1 sequence — engine manually reaching castled square). Turned out to be a deployment issue (v9 binary with v5 net embedded, triggered by `net.txt` pointing at v5 URL). But the methodology win stands: in a week of fleet testing, this kind of qualitative move-choice error is invisible because (a) the position-type is rare in aggregate, (b) self-play blindspots line up, (c) ±0.5 Elo from rare weirdness is under the `[-3, 3]` noise floor. Saved to memory as `feedback_live_lichess_watch_catches_bugs_sprt_misses.md`. Operational: watch at least one Lichess game after every net change or significant search refactor. One game has high SNR when a bug exists.
+- **Framework validation (incidental).** v9 binary + v5 net = v9-calibrated tunables (loosened for flatter eval) applied to v5 peakier eval = systematically too-loose pruning. The "odd play" on Lichess was v9 search exhausting time on nodes its tunables should have pruned more aggressively given v5's clearer eval. Clean at-zero-fleet-cost validation of the ordering-coupled-pruning framework's claim that tunables are coupled to the eval they were tuned against.
+
+---
+
 ## 2026-04-19: ~+90 Elo day (v9 search-consumer stack + activation win)
 
 ### Merged to v9 trunk (H1 resolved)
