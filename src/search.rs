@@ -1982,6 +1982,9 @@ fn negamax(
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
+            // S9: widen margin when many of our pieces are under threat (crisis).
+            // Generalises has_pawn_threats to any-piece threats.
+            if any_threat_count >= 2 { margin += margin / 4; }
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
