@@ -145,6 +145,53 @@ The hypothesis was wrong in the way I framed it. The first-move-cut gap is **not
 
 **v9's eval isn't less correct — it's less efficient.** Search reaches the same answer but burns more nodes doing it. The compensation tax is paid per-node via the weaker first-move-cut rate (72% vs 82%), not via different final decisions.
 
+### Direct diagnostic (2026-04-19): WHERE the first-move-cut gap lives
+
+Added instrumentation to `search.rs` decomposing the first-move-cut rate by move type. Ran bench on v5 and v9 (same binary, same net-switching). Results:
+
+| Cutoff type | v5 | v9 | Δ |
+|---|---|---|---|
+| TT-move cut (first move is TT move, cuts) | 22.5% | 17.2% | −5.3pp |
+| **1st capture cut (no TT, MVV-best cap cuts)** | **41.7%** | **32.2%** | **−9.5pp** |
+| 1st quiet cut (no TT, no caps, 1st quiet cuts) | 15.8% | 23.0% | +7.2pp |
+| Cut at move 2 | 10.3% | 12.6% | +2.3pp |
+| Cut at 3-5 | 6.3% | 9.7% | +3.4pp |
+| Cut at 6+ | 3.4% | 5.3% | +1.9pp |
+| **TT move available at cutoff** | **29.2%** | **23.0%** | −6.2pp |
+| **TT-cut rate WHEN available** | **77.1%** | **75.0%** | −2.1pp |
+
+**Two critical findings from the diagnostic**:
+
+1. **TT move reliability is NOT the problem.** When a TT move is available, it cuts at 77% in v5 and 75% in v9 — essentially equivalent. The hypothesis that v9 stores unreliable TT moves is **false**.
+
+2. **The gap lives in capture ordering at non-TT nodes.** "1st cap cut (no TT)" dropped 9.5pp — by far the biggest component of the 10pp gap. The capture-scoring logic `16 × captured_value + captHist` is less effective at picking cutoff-causing captures in v9.
+
+Secondary: first-quiet cut rose +7.2pp. Mostly because more of v9's tree explores positions without good captures at all (tree is 48% bigger; more "quiet" internal nodes reached).
+
+### Why capture ordering specifically?
+
+- **MVV** (`captured_value * 16`) is eval-independent — same for v5 and v9.
+- **captHist** accumulates from prior search results. If v9's eval makes cutoffs less decisive, captHist learns noisier per-(piece, to, victim) statistics.
+- Result: the 2nd, 3rd captures by MVV are less reliably distinguished by captHist in v9.
+
+### Actionable implications
+
+This is the most specific diagnostic we have. It points at **capture scoring** as the primary leverage point, not TT or history generally:
+
+- **Capture history (captHist) update schedule or weight** — since this is the post-factum signal for capture ordering that's degrading.
+- **Capture pre-search signals** — MVV alone is a weak discriminator; anything that augments MVV with eval-independent info (SEE magnitude? piece activity? attacking-king-zone?) could close the gap.
+- **Capture move-ordering re-score** — consider running MVV+captHist-ordered captures through a cheaper NNUE-delta at the top to re-rank the top-K captures. Expensive but directly targets this finding.
+
+The Reckless "offense bonus" discussion is tangential to this finding — offense is a QUIET move signal, addressing the smaller +7.2pp quiet-cut shift, not the bigger −9.5pp capture-cut gap. Still worth testing, but not where the biggest gain lives.
+
+### Implication for Hercules-priority ordering
+
+Given this diagnostic:
+
+1. **Capture history mechanics** are the highest-leverage area to investigate. Any improvement here targets the 9.5pp locus.
+2. **Offense bonus / king-ring bonus** (Reckless-unique) address the smaller quiet-cut gap. Still worth testing but not the primary win.
+3. **TT move ordering** isn't the issue — don't spend cycles there.
+
 Caveat: this measurement covers 100 middlegame positions from two test suites. It's possible in **noisier positions** (near-equal endgames, wild complications) v9 and v5 diverge more. A larger-corpus measurement with more-varied positions could surface those cases. But the base-rate finding — "on defined-best-move positions, they agree" — holds solidly on this sample.
 
 ### What this doesn't rule out
