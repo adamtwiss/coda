@@ -45,112 +45,112 @@ macro_rules! tunables {
 
 tunables!(
     // v9 tune #411 (2500 iters, live defaults, post-xray-fix on w15 s200 xray-fixed net)
-    (NMP_BASE_R,         5,    2,    8),
-    (NMP_DEPTH_DIV,      3,    1,    6),
-    (NMP_EVAL_DIV,     136,  100,  400),
-    (NMP_EVAL_MAX,       5,    1,    6),
-    (NMP_VERIFY_DEPTH,  12,    8,   20),
+    (NMP_BASE_R, 5, 2, 8),
+    (NMP_DEPTH_DIV, 3, 1, 6),
+    (NMP_EVAL_DIV, 122, 100, 400),
+    (NMP_EVAL_MAX, 5, 1, 6),
+    (NMP_VERIFY_DEPTH, 12, 8, 20),
     // RFP
-    (RFP_DEPTH,          7,    2,   12),
-    (RFP_MARGIN_IMP,   83,   30,  150),
-    (RFP_MARGIN_NOIMP, 124,   50,  200),
+    (RFP_DEPTH, 7, 2, 12),
+    (RFP_MARGIN_IMP, 82, 30, 150),
+    (RFP_MARGIN_NOIMP, 128, 50, 200),
     // Futility
-    (FUT_BASE,          72,   20,  200),
-    (FUT_PER_DEPTH,    159,   40,  250),
+    (FUT_BASE, 69, 20, 200),
+    (FUT_PER_DEPTH, 163, 40, 250),
     // History pruning
-    (HIST_PRUNE_DEPTH,   4,    1,    8),
-    (HIST_PRUNE_MULT, 4943,  500, 50000),
+    (HIST_PRUNE_DEPTH, 4, 1, 8),
+    (HIST_PRUNE_MULT, 5148, 500, 50000),
     // SEE pruning
-    (SEE_QUIET_MULT,   44,    5,   80),
-    (SEE_CAP_MULT,    146,   30,  200),
+    (SEE_QUIET_MULT, 45, 5, 80),
+    (SEE_CAP_MULT, 146, 30, 200),
     // LMR
-    (LMR_HIST_DIV,  11685, 2000, 100000),
-    (LMR_C_QUIET,      123,   40,  300),
-    (LMR_C_CAP,       100,  100,  350),
+    (LMR_HIST_DIV, 7123, 2000, 100000),
+    (LMR_C_QUIET, 124, 40, 300),
+    (LMR_C_CAP, 101, 100, 350),
     // Singular extensions
-    (SE_DEPTH,          5,    4,   20),
+    (SE_DEPTH, 5, 4, 20),
     // Aspiration windows
-    (ASP_DELTA,          11,    5,   30),
-    (ASP_SCORE_DIV,  33446, 8000, 50000),
+    (ASP_DELTA, 12, 5, 30),
+    (ASP_SCORE_DIV, 33333, 8000, 50000),
     // LMP
-    (LMP_BASE,          13,    1,   15),
-    (LMP_DEPTH,         9,    4,   20),
+    (LMP_BASE, 13, 1, 15),
+    (LMP_DEPTH, 9, 4, 20),
     // Bad noisy
-    (BAD_NOISY_MARGIN, 125,   30,  150),
+    (BAD_NOISY_MARGIN, 125, 30, 150),
     // ProbCut
-    (PROBCUT_MARGIN,   194,   80,  300),
+    (PROBCUT_MARGIN, 193, 80, 300),
     // Hindsight
-    (HINDSIGHT_THRESH, 177,   50,  400),
+    (HINDSIGHT_THRESH, 181, 50, 400),
     // Unstable position detection
-    (UNSTABLE_THRESH,  162,   50,  500),
+    (UNSTABLE_THRESH, 155, 50, 500),
     // SEE piece value scaling
-    (SEE_MATERIAL_SCALE, 187, 30, 300),
+    (SEE_MATERIAL_SCALE, 191, 30, 300),
     // QS
-    (QS_DELTA_MARGIN,  355,  100,  500),
-    (QS_SEE_THRESHOLD, -39, -200,    0),
-    (QS_MAX_CAPTURES,   27,    2,   32),
+    (QS_DELTA_MARGIN, 358, 100, 500),
+    (QS_SEE_THRESHOLD, -35, -200, 0),
+    (QS_MAX_CAPTURES, 27, 2, 32),
     // Correction history weights
-    (CORR_W_PAWN,      311,  100,  600),
-    (CORR_W_NP,        121,   50,  400),
-    (CORR_W_MINOR,      48,   30,  300),
-    (CORR_W_MAJOR,      89,   30,  300),
-    (CORR_W_CONT,       40,   30,  400),
+    (CORR_W_PAWN, 301, 100, 600),
+    (CORR_W_NP, 106, 50, 400),
+    (CORR_W_MINOR, 57, 30, 300),
+    (CORR_W_MAJOR, 92, 30, 300),
+    (CORR_W_CONT, 39, 30, 400),
     // Fail-high blend
-    (FH_BLEND_DEPTH,     1,    0,    8),
+    (FH_BLEND_DEPTH, 1, 0, 8),
     // History bonus
-    (HIST_BONUS_MULT,  299,   50,  400),
-    (HIST_BONUS_MAX,  1637,  500, 3000),
+    (HIST_BONUS_MULT, 300, 50, 400),
+    (HIST_BONUS_MAX, 1584, 500, 3000),
     // Capture history bonus
-    (CAP_HIST_MULT,    262,   50,  400),
-    (CAP_HIST_BASE,     10,    0,  200),
-    (CAP_HIST_MAX,    1676,  500, 3000),
+    (CAP_HIST_MULT, 263, 50, 400),
+    (CAP_HIST_BASE, 15, 0, 200),
+    (CAP_HIST_MAX, 1635, 500, 3000),
     // Double extensions
-    (DEXT_MARGIN,        9,    2,   50),
-    (DEXT_CAP,          18,    4,   32),
+    (DEXT_MARGIN, 10, 2, 50),
+    (DEXT_CAP, 18, 4, 32),
     // Quiet check bonus
-    (QUIET_CHECK_BONUS, 7993, 2000, 30000),
+    (QUIET_CHECK_BONUS, 8270, 2000, 30000),
     // LMR complexity
-    (LMR_COMPLEXITY_DIV, 177, 30, 500),
+    (LMR_COMPLEXITY_DIV, 184, 30, 500),
     // Contempt
-    (CONTEMPT_VAL,       18,    0,   50),
+    (CONTEMPT_VAL, 19, 0, 50),
     // Correction history divisor
-    (CORR_HIST_DIV,    1222,  256, 4096),
+    (CORR_HIST_DIV, 1263, 256, 4096),
     // Correction history update weight cap: weight = min(CORR_UPDATE_WEIGHT_MAX, depth + 1).
     // SF hardcodes 16; exposing as a tunable lets SPSA compensate when other
     // logic reduces the update volume (e.g. filtering noisy best_moves).
-    (CORR_UPDATE_WEIGHT_MAX, 17,  4,   48),
+    (CORR_UPDATE_WEIGHT_MAX, 17, 4, 48),
     // Fraction of CORR_HIST_LIMIT that caps a single update's bonus magnitude.
     // Higher divisor = smaller caps, more conservative updates. SF uses 4.
-    (CORR_BONUS_CAP_DIV,  4,     1,   16),
+    (CORR_BONUS_CAP_DIV, 4, 1, 16),
     // Divisor when applying blended correction to raw eval: eval += corr / GRAIN.
     // Higher = less aggressive correction effect.
-    (CORR_HIST_GRAIN_T,   9,     1,   32),
+    (CORR_HIST_GRAIN_T, 9, 1, 32),
     // Clamps the per-update error (search_score - raw_eval) before training.
     // Scaled relative to CORR_HIST_LIMIT; SF uses 128/32000 ≈ 4/1024 equivalent.
-    (CORR_HIST_ERR_MAX,   5,     1,   64),
+    (CORR_HIST_ERR_MAX, 4, 1, 64),
     // Escape-capture bonuses (Reckless pattern): move ordering bonus for
     // moving a piece off a square attacked by enemy pawns
-    (ESCAPE_BONUS_Q,   16175, 5000, 40000),
-    (ESCAPE_BONUS_R,   14723, 3000, 30000),
-    (ESCAPE_BONUS_MINOR, 10190, 2000, 20000),
+    (ESCAPE_BONUS_Q, 15627, 5000, 40000),
+    (ESCAPE_BONUS_R, 13736, 3000, 30000),
+    (ESCAPE_BONUS_MINOR, 10172, 2000, 20000),
     // King-zone-pressure NMP gate: skip null move when enemy has this
     // many or more attackers on our king zone (king sq + 8 neighbours).
     // 9 = never skip (gate disabled), 2 = aggressive gating. Conservative
     // initial 5 fires only in high-attack positions.
-    (NMP_KING_ZONE_MAX,   5,    2,    9),
+    (NMP_KING_ZONE_MAX, 5, 2, 9),
     // A3: ProbCut king-zone-pressure gate. Skip ProbCut when enemy has
     // this many attackers on our king zone — shallow probcut searches
     // miss tactics in high-pressure positions. 9 = never skip, 2 = aggressive.
-    (PROBCUT_KING_ZONE_MAX, 5,   2,    9),
+    (PROBCUT_KING_ZONE_MAX, 5, 2, 9),
     // Threat-density LMR: reduce less when more pieces are threatened.
     // threat_count / LMR_THREAT_DIV subtracted from reduction.
     // Higher = less effect (2 means reduce 1 less per 2 threatened pieces).
-    (LMR_THREAT_DIV,      2,    1,    5),
+    (LMR_THREAT_DIV, 2, 1, 5),
     // King-zone-pressure LMR modifier: reduce less when enemy pressures
     // our king. Same signal as NMP gate (#466) and probcut gate (A3).
     // Tactical king positions need deeper search. Higher = less effect.
     // 9 = disabled (effect 0), 2 = aggressive (-4 reduction at 9-pressure).
-    (LMR_KING_PRESSURE_DIV, 4, 2,    9),
+    (LMR_KING_PRESSURE_DIV, 4, 2, 9),
     // our_defenses futility widener: widen futility margin by
     // FUT_THREATS_MARGIN per non-pawn-of-ours under any enemy attack.
     // Tactical positions (many of our pieces attacked) deserve less
@@ -160,11 +160,11 @@ tunables!(
     // MVV multiplier in capture move ordering (historical default 16).
     // Captures scored as see_value(victim) * MVV_CAP_MULT + captHist.
     // Higher = weight MVV more vs capture history.
-    (MVV_CAP_MULT,       15,    4,   64),
+    (MVV_CAP_MULT, 15, 4, 64),
     // Continuation history multiplier for plies 1,2 in quiet move ordering.
     // Plies 4,6 always weight 1; this controls the close-ply weight.
     // Historical default 3 (Obsidian/Alexandria/Berserk pattern).
-    (CONT_HIST_MULT,      3,    1,    8),
+    (CONT_HIST_MULT, 3, 1, 8),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
