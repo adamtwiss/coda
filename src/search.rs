@@ -136,6 +136,12 @@ tunables!(
     // pieces currently blocking our own slider's attack on an enemy.
     // Moving it creates a discovered attack. Uses Board::xray_blockers.
     (DISCOVERED_ATTACK_BONUS, 8000, 0, 30000),
+    // S4: king-zone-pressure SE margin widener. Adds
+    // king_zone_pressure * SE_KING_PRESSURE_MARGIN to the margin used
+    // in the singular_beta test, making it easier for TT moves to be
+    // deemed singular when king is under attack (more extensions in
+    // tactical king positions). 0 = disabled.
+    (SE_KING_PRESSURE_MARGIN, 5, 0, 30),
     // MVV multiplier + cont-hist plies-1/2 weight.
     (MVV_CAP_MULT, 15, 4, 64),
     (CONT_HIST_MULT, 3, 1, 8),
@@ -2199,7 +2205,9 @@ fn negamax(
 
             // Skip SE for mate scores (margin comparison meaningless)
             if tt_score_local > -(MATE_SCORE - 100) && tt_score_local < MATE_SCORE - 100 {
-                let singular_beta = tt_score_local - depth;
+                // S4: widen singular test margin when king under pressure.
+                let singular_beta = tt_score_local - depth
+                    - king_zone_pressure * tp(&SE_KING_PRESSURE_MARGIN);
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
