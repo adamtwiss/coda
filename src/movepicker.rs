@@ -523,8 +523,27 @@ impl MovePicker {
             // forgiving threshold. Use captHist only (not MVV) to avoid inflation.
             let capt_hist = capt_hist_score_static(board, history, m);
             let cap_score = mvv_lva(board, m) + capt_hist;
+
+            // Retry of Caissa 3-tier (#536 H0 -5.0): tighter force-good rule.
+            // Original was attacker_value <= victim_value (included equal
+            // exchanges); over-served SEE-bad captures against defended
+            // equal-value pieces. Tighter: only force-good when the material
+            // win is CLEAR (victim value at least 2× attacker value, e.g.
+            // PxN, PxB, PxR, PxQ, NxR, NxQ, BxR, BxQ, RxQ). Equal exchanges
+            // (NxN, RxR etc.) still go through SEE for proper classification.
+            let from = move_from(m);
+            let to = move_to(m);
+            let attacker_pt = board.piece_type_at(from);
+            let victim_pt = if move_flags(m) == FLAG_EN_PASSANT {
+                PAWN
+            } else {
+                board.piece_type_at(to)
+            };
+            let force_good = victim_pt != NO_PIECE_TYPE
+                && crate::eval::see_value(attacker_pt) * 2 <= crate::eval::see_value(victim_pt);
+
             let see_threshold = -capt_hist / 18;
-            if !see_ge(board, m, see_threshold) {
+            if !force_good && !see_ge(board, m, see_threshold) {
                 // Bad capture
                 if self.bad_len < 64 {
                     self.bad_moves[self.bad_len] = m;
