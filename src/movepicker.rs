@@ -190,6 +190,9 @@ pub struct MovePicker {
     ply: usize,
     skip_quiet: bool,
     threats: Threats, // enemy attack bitboard for threat-aware history
+    // B1: our own pieces blocking a slider's attack on an enemy piece.
+    // Moving one of these creates a discovered attack.
+    xray_blockers: Bitboard,
     // Evasion support
     checkers: Bitboard,
     pinned: Bitboard,
@@ -211,6 +214,7 @@ impl MovePicker {
         prev_move: Move,
         pawn_hist: Option<&[[i16; 64]; 13]>,
         threats: Threats,
+        xray_blockers: Bitboard,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
     ) -> Self {
@@ -283,6 +287,7 @@ impl MovePicker {
             ply,
             skip_quiet: false,
             threats,
+            xray_blockers,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -314,6 +319,7 @@ impl MovePicker {
             ply: 0,
             skip_quiet: true,
             threats: 0,
+            xray_blockers: 0,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -367,6 +373,7 @@ impl MovePicker {
             ply,
             skip_quiet: false,
             threats: 0, // evasions don't use threat-aware history
+            xray_blockers: 0, // evasions don't use discovered-attack bonus
             checkers,
             pinned,
             threat_sq: -1,
@@ -599,6 +606,14 @@ impl MovePicker {
                 if pt < 6 && self.checking_sqs[pt as usize] & (1u64 << to) != 0 {
                     score += crate::search::QUIET_CHECK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
                 }
+            }
+
+            // B1: Discovered-attack bonus. If `from` is one of our pieces
+            // currently blocking our slider's attack on an enemy, moving
+            // it uncovers that attack. Flat bonus — victim-value scaling
+            // is a follow-up if H1 resolves.
+            if self.xray_blockers & (1u64 << from) != 0 {
+                score += crate::search::DISCOVERED_ATTACK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
             }
 
             let idx = self.moves.len;

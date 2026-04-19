@@ -132,6 +132,11 @@ tunables!(
     (LMR_THREAT_DIV, 2, 1, 5),
     (LMR_KING_PRESSURE_DIV, 4, 2, 9),
     (FUT_THREATS_MARGIN, 40, 0, 200),
+    // B1: Discovered-attack movepicker bonus (+52 Elo H1, #502). Flat
+    // bonus added to quiet move score when `move.from()` is one of our
+    // pieces currently blocking our own slider's attack on an enemy.
+    // Moving it creates a discovered attack. Uses Board::xray_blockers.
+    (DISCOVERED_ATTACK_BONUS, 8000, 0, 30000),
     // MVV multiplier + cont-hist plies-1/2 weight.
     (MVV_CAP_MULT, 15, 4, 64),
     (CONT_HIST_MULT, 3, 1, 8),
@@ -1560,6 +1565,15 @@ fn negamax(
     // pieces under any enemy attack (pawn OR piece). Widens margin in
     // tactical positions. Uses existing enemy_attacks — no new bitboard.
     let any_threat_count = popcount(enemy_attacks & our_non_pawns) as i32;
+    // B1: Discovered-attack bitboard. Our pieces that are currently
+    // blocking one of our sliders' attack on an enemy piece — moving
+    // any such piece uncovers a slider attack. Used as a quiet-move
+    // ordering bonus in MovePicker. Cost: 10-20 magic lookups.
+    let our_xray_blockers: u64 = if tp(&DISCOVERED_ATTACK_BONUS) > 0 {
+        board.xray_blockers(board.side_to_move)
+    } else {
+        0
+    };
 
     // Clear PV for this node
     if ply_u <= MAX_PLY {
@@ -2085,7 +2099,7 @@ fn negamax(
     let mut picker = if in_check {
         MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
 
