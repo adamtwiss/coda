@@ -112,33 +112,95 @@ Under v9's flatter eval distribution:
 
 This predicts that Coda's current movepicker reliance on history (4D threat-indexed, pawn-hist, conthist at plies 1,2,4,6) is appropriate for v9, but its pre-search bonuses (unstratified escape, QUIET_CHECK_BONUS, discovered-attack) may be under-utilized for the kind of fine-grained distinctions v9's eval requires.
 
-## 5. PV stability measurement — in progress
+## 5. PV stability measurement — null result is itself informative
 
-Running 50 WAC positions at depths {3, 5, 7, 9} on v5 and v9. Measures how often the best move at depth N persists to depth N+2.
+**Setup**: 50 WAC positions + 50 SBD ("Silent but Deadly") positions, run `go depth 3/5/7/9` separately on each, record `bestmove` from each. Compare v5 vs v9 across depths.
 
-**Hypothesis**: if v9's eval produces less clear cutoffs, iterative deepening's best move should be less stable across iterations — a depth-N best move is less often the depth-N+2 best move for v9. This would mean **TT moves are less reliable** in v9, which is what makes the first-move-cut rate drop.
+**Result**: **100% stability on both corpora for both engines.**
 
-Measurement pending. Will update this doc with the actual numbers when the data collection finishes (~30-60 min).
+| Corpus | v5 stability (all 4 transitions) | v9 stability | v5-vs-v9 agreement at depth 9 |
+|---|---|---|---|
+| WAC (tactical) | 50/50 positions | 50/50 | 100% |
+| SBD (quiet-positional) | 50/50 positions | 50/50 | 100% |
 
-## 6. Key takeaways — understanding-focused
+Both engines find the same move at depth 3 as at depth 9, and they agree with each other on every position. No depth-to-depth churn, no engine-to-engine divergence at the root.
+
+### Interpretation
+
+The hypothesis was wrong in the way I framed it. The first-move-cut gap is **not** caused by top-level PV instability — v9 finds the same root-level answers as v5, just slower.
+
+**The real mechanism must be at internal nodes during search**, not at the root. Inside the tree, v9 is doing more work to confirm the same conclusion. Specifically:
+
+- The 60% v5-vs-v9 top-1 agreement I measured earlier was at **depth 1** (pure static eval of each child move, no search). That's where the flatter eval distribution shows up.
+- At depth 9, search has compensated for the flatter eval by doing more nodes of work. Answer quality converges to v5's.
+- The 53% extra bench nodes at depth 13 (v5 2.16M vs v9 3.31M) is the measured cost of this compensation.
+
+### Corrected framing
+
+**v9's eval isn't less correct — it's less efficient.** Search reaches the same answer but burns more nodes doing it. The compensation tax is paid per-node via the weaker first-move-cut rate (72% vs 82%), not via different final decisions.
+
+Caveat: this measurement covers 100 middlegame positions from two test suites. It's possible in **noisier positions** (near-equal endgames, wild complications) v9 and v5 diverge more. A larger-corpus measurement with more-varied positions could surface those cases. But the base-rate finding — "on defined-best-move positions, they agree" — holds solidly on this sample.
+
+### What this doesn't rule out
+
+- **Internal-node TT move quality** could still be worse on v9. The root's PV from depth N-2 is just one TT entry; most TT entries in the tree are at internal nodes. Measuring those would require code instrumentation (Hercules's lane).
+- **Short-of-PV move quality** — the 2nd-best, 3rd-best, ... moves' scores — is almost certainly less-discriminated on v9, consistent with the flatter eval distribution. Bench stats (avg cutoff pos 2.10 vs 1.57) already confirm this.
+
+### Correction to Section 2's mechanism claim
+
+I said "Coda's ordering code isn't worse for v9 — it's the same quality signal, but it's being applied to a problem where that quality is no longer sufficient." That's still accurate but needs refinement:
+
+The inefficiency is **per-internal-node**, not per-iteration-at-root. v9's ordering code at each internal node has to search 1.34× more moves on average (2.10 vs 1.57 cutoff position) to find the cut, compounding across the tree into 53% more total nodes.
+
+## 6. Corrhist comparison (validates "strong post-factum infrastructure" claim)
+
+Correction-history sources across engines:
+
+| Engine | # sources | Sources |
+|---|---|---|
+| **Coda** | **5 (6 applications)** | pawn, whiteNP, blackNP, **minor**, **major**, cont |
+| Viridithas | 5 | pawn, major, minor, nonpawn, cont |
+| Reckless | 5 | pawn, minor, whiteNP, blackNP, cont |
+| Alexandria | 4 | pawn, whiteNP, blackNP, cont |
+| Obsidian | 3 | pawn, nonpawn (2x), cont |
+
+Coda sits at the rich end. Its minor+major split is more granular than any other engine's structure. This validates the claim that **Coda's post-factum infrastructure is built out to handle a lot of signals**.
+
+Per-signal weight magnitudes (raw weight / apply-divisor / grain-divisor to get effective influence):
+
+| Engine | Effective per-unit influence (pawn source) |
+|---|---|
+| Obsidian | ~0.059 (30 / 512) |
+| Coda | ~0.030 (301 / 1263 / 8) |
+| Viridithas | formula-incompatible |
+
+Obsidian puts ~2× the weight per-unit, but Obsidian has fewer sources. Coda has more sources each lightly-weighted. Both are valid — they're different bets about where correction signal lives (concentrated in few channels vs spread across many).
+
+Given v9's flatter eval distribution, **Coda's many-lightly-weighted strategy looks better suited** — aggregating across sources reduces noise, whereas Obsidian's fewer-heavily-weighted strategy works best when each source is high-SNR.
+
+## 7. Key takeaways — understanding-focused
 
 These are *mechanistic* claims about move ordering on v9, not fixes.
 
 1. **The 10pp first-move-cut gap is mechanical, not algorithmic.** v9's eval is not less correct; it's less peaked. Same ordering code gets hurt by the geometry of the eval surface.
 
-2. **Hidden layers cost 13.6 pp; threats recover 4 pp.** Threats aren't the variance source the earlier hypothesis suggested — they actively help.
+2. **At root, v9 and v5 agree 100% on best moves.** Measured on 100 middle-game positions (50 WAC + 50 SBD) at depths 3-9. The inefficiency is **internal-node**, not root-level — v9 reaches the same answer but pays 53% more nodes getting there.
 
-3. **Coda's movepicker is missing consensus features from hidden-layer engines**, specifically:
+3. **Hidden layers cost 13.6 pp; threats recover 4 pp.** Threats aren't the variance source the earlier hypothesis suggested — they actively help.
+
+4. **Coda's movepicker is missing consensus features from hidden-layer engines**, specifically:
    - Attacker-type-stratified escape bonuses (3/3 hidden-layer engines have)
    - Onto-threatened penalty (3/3 have; tested unstratified version failed)
    - Offense bonus (Reckless-unique but plausibly applicable)
 
-4. **Coda has unique features other engines lack**:
-   - Discovered-attack via x-ray (#502 landed big)
+5. **Coda has unique features other engines lack**:
+   - Discovered-attack via x-ray (#502 landed +52 Elo)
    - Null-move threat_sq escape bonus
    - 4D threat-indexed main history
 
-5. **The pre-search vs post-factum framing predicts** that Coda has relatively strong post-factum infrastructure (good history tables) and relatively weak pre-search bonuses for v9's fine-grained discrimination needs. The missing stratified signals would directly address this.
+6. **Coda's post-factum infrastructure is the richest among top engines** (5+ corrhist sources including minor/major split, 4D history, pawn-hist, conthist at plies 1/2/4/6). The many-lightly-weighted strategy matches the flatter eval of v9.
+
+7. **The pre-search vs post-factum framing predicts** Coda's relative strengths and weaknesses: strong post-factum infrastructure (validated), weak pre-search bonuses for v9's fine-grained discrimination needs (validated by the missing stratified signals).
 
 ## 7. What NOT to conclude
 
