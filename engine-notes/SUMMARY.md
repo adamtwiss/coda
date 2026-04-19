@@ -1,8 +1,8 @@
 # Engine Review Summary — Ideas for Coda
 
-Cross-referencing 29 engines against Coda. Ranked by estimated impact, implementation complexity, and alignment with our proven success patterns.
+Cross-referencing 34 engines against Coda. Ranked by estimated impact, implementation complexity, and alignment with our proven success patterns.
 
-**Engines reviewed**: Ethereal, Caissa, Midnight, Winter, Texel, Wasp, Arasan, Berserk, Koivisto, Stormphrax, RubiChess, Seer, Minic, Tucano, Weiss, Obsidian, BlackMarlin, Altair, Reckless, Igel, Alexandria, Stockfish, Viridithas, Halogen, PlentyChess, Quanticade, **Clarity** (+200 above us), **Velvet** (+100 above us)
+**Engines reviewed**: Ethereal, Caissa, Midnight, Winter, Texel, Wasp, Arasan, Berserk, Koivisto, Stormphrax, RubiChess, Seer, Minic, Tucano, Weiss, Obsidian, BlackMarlin, Altair, Reckless, Igel, Alexandria, Stockfish, Viridithas, Halogen, PlentyChess, Quanticade, **Clarity** (+200 above us), **Velvet** (+100 above us), **Astra**, **Clover**, **Horsie**, **Tarnished**, **integral** (added 2026-04-19)
 
 **Removed** (too weak to be informative): Crafty, ExChess, GreKo, Rodent III, Laser
 
@@ -240,4 +240,32 @@ Enable forward pruning only after a time threshold.
 - **Alpha-raise LMR reduction**: Removed via SPSA — retune found it unhelpful. Was in "implemented" but SPSA zeroed it out.
 - **Good/bad quiet split**: SF-only feature, tested -3.6 (OB #216). May revisit with better nets.
 - **Low-ply history bonus**: Tested -2.9 (OB #209). 8× at ply 0 doesn't help.
+
+---
+
+## 2026-04-19 additions (Astra, Clover, Horsie, Tarnished, integral)
+
+Full reviews in `engine-notes/{astra,clover,horsie,tarnished,integral}.md`. Consensus patterns across the 5:
+
+### New Tier 1 candidates
+
+- **Eval-difference quiet history bonus** (Clover + Horsie): retroactively update the previous quiet move's history based on eval-change after it was played. Formula variant: `bonus = -(prev_eval + curr_eval) / 16`. Novel signal, trivial change. Est. +3-8 Elo. **Recommended next.**
+- **Material-scaled NNUE output** (Astra + Integral): `eval *= (230 + material/42) / 440` or `eval *= (27600 + mat_popcount) / 32768`. One-line weakening of eval as pieces leave the board. Est. +2-5 Elo.
+
+### New Tier 2 candidates
+
+- **Logarithmic LMR formula** (Clover): `reduction = log(d) * log(n) / C` vs our lookup table. Simpler, possibly smoother tuning surface. Medium-high effort refactor.
+- **Post-LMR depth adjustment** (Horsie + Integral): after re-search, adjust depth ±1 based on score-delta magnitude (e.g., `newer += (score > bestScore + 45 + 4*d) - (score < bestScore + d)`).
+- **History pruning at very low depth** (Tarnished): explicit `hist < -SCALE*d` gate at d≤4. We have HIST_PRUNE_MULT=5148 — worth cross-checking against Tarnished's SCALE=2820.
+
+### Architectural validation (already doing it, confirmation from new engines)
+
+- **Linear-with-offset history bonus shape** — Astra's tuned values (MULT=308, OFFSET=4) validate the direction of our in-flight Experiment 1 (`experiment/history-shape-offset`, SPSA #515). If our SPSA drifts OFFSET past 50, we're in Astra's basin.
+- **Multi-source correction history** — 4 sources (Astra), 5 sources (Clover), 6 sources (Tarnished). We have 5 (pawn/NP/minor/major/cont). Not a gap.
+- **Cumulative continuation history over {1,2,4,6} plies** — Integral uses the sum; we already use all 4 offsets. Not a gap.
+
+### Novel-to-us training ideas (not easily ported)
+
+- **Net distillation** (Tarnished): train large (4096 L1) net, distill into small (1792 L1) production net. Needs training infrastructure rewrite; speculative +20-40 Elo if it works.
+- **Sparse L1 via NNZ bitmask detection** (Horsie): if our pairwise activation also sparsifies, bitmask-skip zero lanes in L1 matmul. ~5-10% NPS. Implementation effort: medium.
 - **Killers/counters**: Removed (+3.77 Elo). History tables fully replaced them post magnitude fix.

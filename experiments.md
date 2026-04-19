@@ -5141,3 +5141,78 @@ Current gap: -19.82 Elo (SPRT #459 H0). Realistic candidate gains:
 Any 2 of (Reckless+retune, const-generic, low-LR) landing positive
 puts us at or above v5. All-in merge decision deferred pending
 results.
+
+## 2026-04-20: Two H0s, one diagnostic sidetrip
+
+### H0'd (closed — dropped)
+
+| Test | Branch | Result | What it tested | Decision |
+|---|---|---|---|---|
+| **#528** | `experiment/history-shape-offset` | **−6.3 ± 5.0**, LLR −3.00, 4936 games | History bonus shape change: `(MULT*d − OFFSET).clamp(0, MAX)` vs linear `min(MULT*d, MAX)`. SPSA #515 converged values applied (OFFSET=76, MULT=310, MAX=1601, LMR_HIST_DIV=6705, HIST_PRUNE_MULT=4986). Shape matches SF/Obsidian/Alexandria/cap_history convention. | **Dropped.** Shape change hurts v9 by ~6 Elo; SPSA-tuned coupled params couldn't compensate. No trunk changes to revert — HIST_BONUS_OFFSET was never added to trunk's `tunables!` block. |
+| **#529** | `experiment/material-scale-tunable` | **−3.0 ± 3.8**, LLR −2.97, 8820 games | Expose material-scaling constants (hardcoded `22400 / 32768` in `eval *= (BASE + material) / DIV`) as SPSA tunables MAT_SCALE_BASE / MAT_SCALE_DIV. #516 SPSA converged to slightly looser values (22830 / 31360) after 385 iters. | **Dropped.** Hardcoded values were effectively optimal; the ~6% looser SPSA drift costs −3 Elo. No trunk changes to revert — MAT_SCALE_BASE/DIV were only ever on the experiment branch. |
+
+### Lessons
+
+- **Not every consensus-shape pattern transfers.** Linear-with-offset history bonus is standard in SF/Obsidian/Alexandria and matches how Coda's cap_history is already written. But on v9 (threat-aware main history + 4D keying), adding the offset *reduces* tree efficiency. Hypothesis: the 4D-indexed main history has finer per-bucket signal than 2D histories — Coda's current formula without offset already produces tight bonuses at low depths without over-weighting. The offset strips bonus where v9's richer signal needs it most.
+- **"Hardcoded is suspicious → make it tunable" isn't always worth it.** Material-scale had fixed 22400/32768 in code since v5 era. Exposing it to SPSA seemed low-risk (if tuning finds no gain, revert). But the act of exposing + applying post-tune values adds code complexity, and the ~6% drift the tuner found was negative in SPRT. Coda's original scaling constants were converged against the NNUE eval distribution; re-tuning them in isolation shifted away from that optimum. Cost: ~10K games of fleet + commit churn on the experiment branch. Minimal, but the pattern is "hardcoded ≠ untuned, sometimes it's locally optimal already."
+- **Both failures were clean, no ambiguity.** −6.3 and −3.0 with LLRs hitting −3.00/−2.97 cleanly. No "maybe retune more" temptation; the formulas under test aren't hiding latent gains.
+
+### Methodology win (session side-effect)
+
+- **Live Lichess watching catches what SPRT can't.** Adam watched one game on Lichess and identified castling-weight weirdness (Kf1 then Kg1 sequence — engine manually reaching castled square). Turned out to be a deployment issue (v9 binary with v5 net embedded, triggered by `net.txt` pointing at v5 URL). But the methodology win stands: in a week of fleet testing, this kind of qualitative move-choice error is invisible because (a) the position-type is rare in aggregate, (b) self-play blindspots line up, (c) ±0.5 Elo from rare weirdness is under the `[-3, 3]` noise floor. Saved to memory as `feedback_live_lichess_watch_catches_bugs_sprt_misses.md`. Operational: watch at least one Lichess game after every net change or significant search refactor. One game has high SNR when a bug exists.
+- **Framework validation (incidental).** v9 binary + v5 net = v9-calibrated tunables (loosened for flatter eval) applied to v5 peakier eval = systematically too-loose pruning. The "odd play" on Lichess was v9 search exhausting time on nodes its tunables should have pruned more aggressively given v5's clearer eval. Clean at-zero-fleet-cost validation of the ordering-coupled-pruning framework's claim that tunables are coupled to the eval they were tuned against.
+
+---
+
+## 2026-04-19: ~+90 Elo day (v9 search-consumer stack + activation win)
+
+### Merged to v9 trunk (H1 resolved)
+
+| Test | Feature | Elo | Games | Notes |
+|---|---|---|---|---|
+| #478 | `fix/threats-2b-rewrite` (2b slider-iteration rewrite + & occ fix) | **+10.0** | 4674 | Profile-driven NPS refactor of section 2b in threats.rs — scalar 8-direction walks → slider-iteration on precomputed between()/ray_extension tables. Bundle also included Titan's zero-emit counters and `Board::xray_blockers` helper (unused at merge, consumed by B1 later). Bug caught: 2b rewrite emitted phantom x-ray during `push_threats_on_move` transit (pieces_bb vs occ_transit inconsistency); fixed with `& occ` filter on candidates. |
+| #481 | `experiment/probcut-threat-gate` (A3 — king-zone-pressure ProbCut gate) | **+7.03** | 4942 | Skip ProbCut when enemy has ≥ PROBCUT_KING_ZONE_MAX attackers on our king zone. Reuses `king_zone_pressure` from NMP gate (#466). Third landing for that signal. |
+| #482 | `experiment/lmr-king-pressure` (king-pressure LMR modifier) | **+6.81** | 5204 | `reduction -= king_zone_pressure / LMR_KING_PRESSURE_DIV`. Fourth consumer of the signal. I initially miscalled this H0 at 1242 games (-9.8 early); corrected after resolution via overlapping-bars feedback memory. |
+| #484 | `experiment/futility-defenses` (our_defenses futility widener) | **+7.00** | 5116 | `futility_value += any_threat_count * FUT_THREATS_MARGIN`. Sibling to the has_pawn_threats RFP widener. |
+| #490 | `tune/v9-post-merge-r1` (60-param post-merge retune) | **+7.38** | 6546 | Post-merge retune capturing the "gates let the rest of search be bolder" compound effect. Biggest param shifts: LMR_HIST_DIV 11685→7123 (-39%), CAP_HIST_BASE 10→15 (+50%), NMP_EVAL_DIV 136→122. 37 tunables moved materially. |
+| #497 | creluHL net (clipped-ReLU on L1/L2) | **+4.0** | ~8500 | Clipped-ReLU on hidden layers (Reckless pattern, one-line Bullet change). Validated via `HiddenActivation=crelu` UCI option on existing inference path. No code merge — net choice change only when we promote a CReLU-trained net. |
+| #502 | `experiment/discovered-attack-bonus` (B1 — Titan's Tier B1) | **+52.0** | 666 | **Biggest single-feature win in project history.** Flat bonus on quiet moves where `from()` is a square blocking our own slider's attack on an enemy. Uses `Board::xray_blockers`. Confirmed the "specific tactical motif" scoring pattern is distinct from generic "a piece is attacked" nudges (enter-penalty, hanging-escape both H0'd). Path 2 (bit-steal delta-tagging refactor) now firmly justified per Titan's ">6 Elo gates Path 2 work". |
+
+**Day total merged: ~+94 Elo** (2b 10 + ProbCut 7 + LMR-KP 6.8 + futility-def 7 + retune 7.4 + creluHL 4 + B1 52 = 94.2). Plus Atlas's TM-floor fix merged on main (+4.4) picked up via the main→v9 rebase on 2026-04-19.
+
+### H0'd today (closed — no retry planned)
+
+| Test | Feature | Result | Decision |
+|---|---|---|---|
+| #479, #501 | `experiment/stratified-escape-canwin` (A1a+A1c bundle) | H0'd twice: #479 drifted to flat/small negative, #501 post-SPSA retest went to -8 at 3996 games | **Dropped.** SPSA on the new tunables (#486) didn't find a positive basin either. The stratified-escape-ladder + can_win_material combination isn't adding value on this trunk. |
+| #504 | `experiment/lmp-king-pressure` (S3 — LMP threshold softener) | -10.1, H0 | **Dropped.** King-zone-pressure as an LMP softener fails cleanly. |
+| #503 | `experiment/rfp-king-zone-widener` (S1 — RFP margin widener) | -9.5, H0 | **Dropped.** Tree shape changed moderately (bench 2988580 → 2594958, -13%) but Elo was -9 not small-negative; retuning wouldn't recover that magnitude. |
+
+**Pattern from these H0s**: king-zone-pressure signal works as a **gate on pruning decisions** (NMP, ProbCut, LMR-reduction-modifier all H1) but **fails as a margin/threshold widener** (RFP +, LMP both H0). Speculation: margin wideners are already tightly calibrated against `improving` / `has_pawn_threats` / SPSA'd base margins; adding a third overlapping widener disrupts the tuning balance.
+
+### Still in flight (as of session end)
+
+- **#496 warm30 net**: +3.9 ± 4.3 at 7162 games, LLR 2.56 → close to H1 resolution
+- **#500 `experiment/threat-mag-lmr`** (Titan's): +0.8 flat at ~4800 games — trending slow-H0
+- **#508 CONTEMPT_VAL=0**: +0.2 at 1410 games, early — tests consensus of "remove contempt" per `tunable_anomalies_2026-04-19.md`
+- **#511 S4 SE king-pressure**: resubmitted at 250K scale, early
+- **#512 S5 Aspiration king-pressure**: resubmitted, early
+- **#513 scaled discovered-attack**: B1 variant with victim-value scaling; early
+- **#509 SPSA history-shape-offset**: 0/1000 iters — Experiment 1 from `shape_experiments_proposal_2026-04-19.md`
+- **#495→resubmitted reckless-kb tune**: 0/1000 — restarted at 250K after audit caught 500K misconfig
+
+### Housekeeping landed today
+
+- **v9 trunk merged main** (Atlas's TM fixes + tm_score + blunder_suite now on v9).
+- **net.txt flipped decision** for eventual v9→main merge: v9 production net will be default (captured in `docs/v9_merge_plan_2026-04-19.md`).
+- **v7 deprecated**: architecture support going forward is v5 (legacy) + v9 (primary). v7 inference code stays (shared by v9 paths).
+- **ob_submit / ob_tune auto-detect v9 branches** for `--scale-nps` (250K for v9, 500K for main). Fixed a recurring operational error where v9 SPRTs ran at 2× wall-clock time.
+- **B1 bench convention** nailed down — v9 trunk commits use `nets/net-v9-768th16x32-w15-e800s800-xray.nnue` (hash 6AEA210B) bench, **not** the embedded v5 net. CLAUDE.md and memory updated.
+- **Three companion idea docs** merged to trunk by Titan: `signal_context_sweep_2026-04-19.md`, `move_ordering_ideas_2026-04-19.md`, `threat_ideas_plan_2026-04-19.md`, `tunable_anomalies_2026-04-19.md`, `shape_experiments_proposal_2026-04-19.md`.
+
+### Calibration lessons (worth remembering)
+
+- **"Scoring nudge" pattern is not monolithic.** Generic "a piece is attacked" nudges failed (enter-penalty, hanging-escape). Specific tactical motif nudge (B1 discovered-attack) landed +52. Distinguish before pattern-matching off prior H0s.
+- **Five engines minimum for outlier claims** in cross-engine tunable comparison (Titan's methodology note in `tunable_anomalies_2026-04-19.md`). Two-engine comparison over-flagged three params in the first pass.
+- **Post-merge retune compounds with multiple merged features**, not a single one. #490 landed +7.4 after 4 features merged; single-feature retunes typically land +2-5.
+- **Overlapping error bars = "same distribution twice"**, not "earlier was noise". I miscalled LMR king-pressure H0 at 1242 games because -9.8 had ±10.4 bars. Ended +6.81. Don't narrate direction from within the noise floor.

@@ -4,9 +4,43 @@ Source: `~/chess/engines/Reckless/`
 Version: 0.10.0-dev
 Language: Rust (edition 2024)
 NNUE: Dual-accumulator (768x10 PST + 66864 threats -> 2x768 -> 16 -> 32 -> 1x8) with pairwise SCReLU
-Rating: #1 in local gauntlet
+Rating: #1 in local gauntlet (among non-SF)
 
 Last reviewed: 2026-03-29
+Last v9-refreshed: 2026-04-19
+
+---
+
+## v9 Refresh (2026-04-19)
+
+Coda has converged architecturally with Reckless since the original review:
+- **v9 architecture matches Reckless**: HalfKA PST + threats (66864) → pairwise → hidden layers → output
+- **Discovered-attack bonus** (Coda-unique, #502 landed +52 Elo) — leverages x-ray threat enumeration that Reckless doesn't compute
+- **LMP king-pressure NMP gate, ProbCut king-zone gate, LMR king-pressure, futility-defenses** — all landed as novel signal × context experiments (#466/#481/#482/#484)
+- **2b slider-iteration rewrite** (NPS, +10 Elo #478) — reduced threat-delta generation cost
+- **Target-feature AVX2 codegen win** (~+5% NPS) on same ISA as Reckless
+
+### What Coda still does worse/differently than Reckless
+
+- **First-move-cut rate**: Coda v9 72.2% vs estimate ~80-85% for Reckless. Same move-ordering code as v5 (which gets 82.3% with linear eval). Gap is the eval-surface-is-flatter tax.
+- **Attacker-type-stratified escape bonuses** — Reckless uses `[0, 8k, 8k, 14k, 20k, 0]` per moving-piece AND gates by `threatened[pt]` (the threat-class-specific bitboard: pawn/minor/rook). Coda only has pawn-attacker scaling. Tested unstratified; A1a+A1c with SPSA retune (#501) in flight.
+- **Onto-threatened penalty** — Reckless: `-8000 * threatened[pt].contains(to)`. Coda's unstratified version H0'd (#465); stratified+SEE-gated not yet tested.
+- **Offense bonus** — Reckless: `+6000 * offense[pt].contains(to)` — quiet moves that land on squares attacking enemy pieces *safely*. Uniquely Reckless; not in Obsidian, Plenty, or Coda. **Untested.**
+- **Rook into king-ring-ortho** — Reckless: `+5000 * (pt == Rook && king_ring_ortho.contains(to))`. Also Reckless-unique. Untested.
+- **NPS**: Reckless ~2× Coda on same hardware. Despite Coda's recent +5% from target_feature and +10% aggregate from 2b/target-feature/psq-fuse wins, the base const-generic/static-PARAMETERS refactor still outstanding (see `v9_nps_findings_2026-04-18.md`).
+
+### What Coda does better than Reckless
+
+- **X-ray threat enumeration** — Reckless's threat features are direct-only. Coda's include x-ray (+110 Elo gain in training). Enables discovered-attack-bonus.
+- **4D threat-indexed history** — matches Reckless's structure but more granular via from_threatened+to_threatened.
+- **Correction history**: Coda has 5 sources (pawn, wNP, bNP, minor, major, cont) vs Reckless's 5 (no minor/major split). Marginal structural advantage.
+
+### Untested Reckless ideas worth flagging
+
+1. **Offense bonus** — computation is non-trivial (needs per-piece-type "safe attacker" bitboards) but zero per-node cost once computed at node entry. Pre-search signal: pure move-ordering.
+2. **Rook king-ring-ortho** — cheap (1 magic lookup + mask). Specific enough that might be noise; could bundle with other king-ring ideas.
+
+Both untested in Coda. Could be valuable especially given Coda's flatter eval needs more pre-search discrimination (see `move_ordering_understanding_2026-04-19.md`).
 
 ---
 

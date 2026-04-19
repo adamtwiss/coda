@@ -3874,6 +3874,92 @@ mod tests {
         assert_eq!(output_bucket(32), 7);
     }
 
+    /// Measure per-row weight-norm distribution for threat features in
+    /// a loaded v9 net. Informs sparsity compaction — if many rows have
+    /// norms near zero, load-time compaction captures cache wins.
+    /// Run with:
+    ///   cargo test --release measure_threat_weight_norms -- --nocapture --ignored
+    #[test]
+    #[ignore]
+    fn measure_threat_weight_norms() {
+        let net_path = "nets/net-v9-768th16x32-w15-e800s800-xray.nnue";
+        let net = match NNUENet::load(net_path) {
+            Ok(n) => n,
+            Err(e) => { eprintln!("Skip: can't load {}: {}", net_path, e); return; }
+        };
+        let nf = net.num_threat_features;
+        let h = net.hidden_size;
+        if nf == 0 || net.threat_weights.is_empty() {
+            eprintln!("Net has no threat features"); return;
+        }
+        eprintln!("Net: {} threat features × {} hidden = {} total i8 weights ({:.1} MB)",
+            nf, h, nf * h, (nf * h) as f64 / 1_048_576.0);
+
+        // L∞ (max absolute) per row — cheapest meaningful norm
+        // L1 (sum |w|) — total "mass" of the row
+        let mut linf: Vec<u8> = Vec::with_capacity(nf);
+        let mut l1: Vec<u32> = Vec::with_capacity(nf);
+        for f in 0..nf {
+            let row = &net.threat_weights[f * h..(f + 1) * h];
+            let mut mx: u8 = 0;
+            let mut s1: u32 = 0;
+            for &w in row {
+                let aw = (w as i32).unsigned_abs() as u8;
+                if aw > mx { mx = aw; }
+                s1 += aw as u32;
+            }
+            linf.push(mx);
+            l1.push(s1);
+        }
+
+        // Bucket by L∞ norm. i8 range is [-127, 127], so L∞ is in [0, 127].
+        let mut linf_buckets = [0u64; 8];  // 0, 1-2, 3-7, 8-15, 16-31, 32-63, 64-127, 128+
+        for &m in &linf {
+            let b = match m {
+                0 => 0, 1..=2 => 1, 3..=7 => 2, 8..=15 => 3,
+                16..=31 => 4, 32..=63 => 5, 64..=127 => 6, _ => 7,
+            };
+            linf_buckets[b] += 1;
+        }
+
+        // Same for L1 (absolute sum — max is 768 × 127 ≈ 97K)
+        let mut l1_buckets = [0u64; 9];
+        for &s in &l1 {
+            let b = match s {
+                0 => 0, 1..=99 => 1, 100..=499 => 2, 500..=999 => 3,
+                1000..=2999 => 4, 3000..=9999 => 5, 10000..=29999 => 6,
+                30000..=99999 => 7, _ => 8,
+            };
+            l1_buckets[b] += 1;
+        }
+
+        eprintln!("\n--- L∞ norm (max |weight| per row) distribution ---");
+        eprintln!("  0:       {:>7} rows ({:.1}%)", linf_buckets[0], linf_buckets[0] as f64 * 100.0 / nf as f64);
+        eprintln!("  1-2:     {:>7} rows ({:.1}%)", linf_buckets[1], linf_buckets[1] as f64 * 100.0 / nf as f64);
+        eprintln!("  3-7:     {:>7} rows ({:.1}%)", linf_buckets[2], linf_buckets[2] as f64 * 100.0 / nf as f64);
+        eprintln!("  8-15:    {:>7} rows ({:.1}%)", linf_buckets[3], linf_buckets[3] as f64 * 100.0 / nf as f64);
+        eprintln!("  16-31:   {:>7} rows ({:.1}%)", linf_buckets[4], linf_buckets[4] as f64 * 100.0 / nf as f64);
+        eprintln!("  32-63:   {:>7} rows ({:.1}%)", linf_buckets[5], linf_buckets[5] as f64 * 100.0 / nf as f64);
+        eprintln!("  64-127:  {:>7} rows ({:.1}%)", linf_buckets[6], linf_buckets[6] as f64 * 100.0 / nf as f64);
+
+        eprintln!("\n--- L1 norm (sum |weight| per 768-wide row) distribution ---");
+        let names = ["0", "1-99", "100-499", "500-999", "1k-3k", "3k-10k", "10k-30k", "30k-100k", "100k+"];
+        for (i, &c) in l1_buckets.iter().enumerate() {
+            eprintln!("  {:<9} {:>7} rows ({:.1}%)", names[i], c, c as f64 * 100.0 / nf as f64);
+        }
+
+        // Compaction scenarios: if we threshold rows by L∞ < ε, how many survive?
+        eprintln!("\n--- Compaction scenarios ---");
+        for &eps in &[0u8, 1, 2, 3, 5, 8, 16] {
+            let kept = linf.iter().filter(|&&m| m > eps).count();
+            let kept_bytes = kept * h;
+            let total_bytes = nf * h;
+            eprintln!("  Drop rows with L∞ ≤ {:3}: keep {:>5} of {} ({:.1}%) → {:.1} MB (was {:.1} MB)",
+                eps, kept, nf, kept as f64 * 100.0 / nf as f64,
+                kept_bytes as f64 / 1_048_576.0, total_bytes as f64 / 1_048_576.0);
+        }
+    }
+
     /// Test SIMD vs scalar consistency for forward pass.
     /// Loads the production net (if available), evaluates test positions
     /// through both SIMD and scalar paths, asserts results match.

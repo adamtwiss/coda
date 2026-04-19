@@ -5,6 +5,38 @@ Author: gab8192
 Version: dev-16.15
 NNUE: (768x13 -> 1536)x2 -> 16 -> 32 -> 1x8 (pairwise mul, dual-activation L2, NNZ-sparse L1, Finny table)
 
+Last v9-refreshed: 2026-04-19
+
+---
+
+## v9 Refresh (2026-04-19)
+
+Obsidian is **a simpler-but-tuned-bigger comparator** to Coda v9. Key differences:
+
+### Where Coda differs from Obsidian (v9-relevant)
+
+- **Threats**: Obsidian doesn't use threat features. Their threat-related tuning is threat-class-stratified *bitboard* comparisons in scoreQuiets (see below), not NNUE features. Coda's threat-in-NNUE is unique at this accumulator width.
+- **Movepicker simplicity**: Obsidian's scoreQuiets is ~40 lines — much simpler than Coda's or Reckless's. Relies heavily on big threat bonuses (±32768 for queen escape/penalty) and main-history. No offense bonus, no check bonus, no pawn-history.
+- **Main history shape**: 2D `mainHist[side][from-to]` only 2048 buckets. Coda uses 4D `[from_thr][to_thr][from][to]` — 4096 buckets when factoring threat indexing. Coda's is richer.
+- **Pawn history**: Obsidian has it (same as Coda). Same pattern.
+- **Corrhist**: Obsidian 3 sources (pawn, nonpawn ×2, cont). Coda 5 sources (pawn, wNP, bNP, minor, major, cont). Coda has the minor/major split and treats white/black NP separately. Richer.
+
+### Where Obsidian differs from Coda (tunable-wise)
+
+From `tunable_anomalies_2026-04-19.md`:
+- Obsidian's **threat bonus magnitudes** (±32768 queen, ±16384 rook/minor) are 2-3× Coda's (escape bonuses 10-16k range).
+- Obsidian's **LMP_BASE=3** matches SF. Coda's 13 is compensated-up for weaker move ordering (see `ordering_coupled_pruning_2026-04-19.md`).
+- Obsidian's **HistPrDepthMul=-7471** prunes more aggressively than Coda's -5148.
+
+### Useful Obsidian patterns potentially relevant to Coda
+
+- **Attacker-type-stratified escape+penalty with SAME magnitudes** (bonus-for-from-threatened = penalty-for-to-threatened). Reckless uses different magnitudes for bonus vs penalty; Obsidian's symmetric approach is simpler and may be easier to tune. SPSA-wise, fewer free parameters.
+- **Large magnitude choices** for threat-related scoring. Coda's weights are perhaps too moderate; an SPSA tune with wider ranges for ESCAPE_BONUS_* might explore higher-magnitude basins.
+
+### Big picture
+
+Obsidian shows that **few signals with big weights** can work. Coda's philosophy has been **many signals with moderate weights** (richer history, more bonus types). Both work; different bets about where to allocate SPSA dimensions.
+
 ---
 
 ## 1. NNUE Architecture
