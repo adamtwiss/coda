@@ -523,8 +523,26 @@ impl MovePicker {
             // forgiving threshold. Use captHist only (not MVV) to avoid inflation.
             let capt_hist = capt_hist_score_static(board, history, m);
             let cap_score = mvv_lva(board, m) + capt_hist;
+
+            // Caissa-style 3-tier good/bad split: if the capture is clearly
+            // winning material by MVV-LVA (attacker_value <= victim_value),
+            // force-classify as good without running SEE. Winning exchanges
+            // with a clear victim-attacker value gap will rarely be bad by
+            // SEE, and for the edge cases where SEE disagrees we still want
+            // them searched early (pattern: 3/3 engines surveyed use this).
+            let from = move_from(m);
+            let to = move_to(m);
+            let attacker_pt = board.piece_type_at(from);
+            let victim_pt = if move_flags(m) == FLAG_EN_PASSANT {
+                PAWN
+            } else {
+                board.piece_type_at(to)
+            };
+            let force_good = victim_pt != NO_PIECE_TYPE
+                && crate::eval::see_value(attacker_pt) <= crate::eval::see_value(victim_pt);
+
             let see_threshold = -capt_hist / 18;
-            if !see_ge(board, m, see_threshold) {
+            if !force_good && !see_ge(board, m, see_threshold) {
                 // Bad capture
                 if self.bad_len < 64 {
                     self.bad_moves[self.bad_len] = m;
