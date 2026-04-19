@@ -137,6 +137,11 @@ tunables!(
     // pieces currently blocking our own slider's attack on an enemy.
     // Moving it creates a discovered attack. Uses Board::xray_blockers.
     (DISCOVERED_ATTACK_BONUS, 8000, 0, 30000),
+    // Victim-value-scaled discovered-attack bonus (stacks on flat base).
+    // Scales by victim piece-type tier: pawn=1, minor=3, rook=5, queen=9.
+    // At default 500: pawn-xray adds +500, queen-xray adds +4500.
+    // 0 = disabled (reverts to flat-only behavior).
+    (DISCOVERED_ATTACK_VALUE_MULT, 500, 0, 3000),
     // MVV multiplier + cont-hist plies-1/2 weight.
     (MVV_CAP_MULT, 15, 4, 64),
     (CONT_HIST_MULT, 3, 1, 8),
@@ -1574,6 +1579,15 @@ fn negamax(
     } else {
         0
     };
+    // Scaled variant: per-blocker victim-type array. 255 (NO_PIECE_TYPE)
+    // for non-blockers; otherwise highest-value enemy victim reachable
+    // past this blocker. Same iteration cost as xray_blockers — replaces
+    // rather than adds when value-mult is live.
+    let our_xray_scored: [u8; 64] = if tp(&DISCOVERED_ATTACK_VALUE_MULT) > 0 {
+        board.xray_blockers_scored(board.side_to_move)
+    } else {
+        [NO_PIECE_TYPE as u8; 64]
+    };
 
     // Clear PV for this node
     if ply_u <= MAX_PLY {
@@ -2099,7 +2113,7 @@ fn negamax(
     let mut picker = if in_check {
         MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &our_xray_scored, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
 

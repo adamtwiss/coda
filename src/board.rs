@@ -490,6 +490,68 @@ impl Board {
     /// Elo, the emission-split refactor (Path 2) amortises this cost
     /// to zero. Keep this function simple so the correctness surface
     /// is minimal and the cost is predictable.
+    /// For each of `color`'s pieces blocking one of `color`'s sliders'
+    /// attack on an enemy, return the enemy piece type at the x-ray
+    /// target. Used for victim-value-scaled discovered-attack bonus.
+    ///
+    /// Returns an array indexed by blocker-square. Non-blockers = 255
+    /// (NO_PIECE_TYPE). If a square blocks multiple sliders with
+    /// different victims, the HIGHEST-VALUE victim is kept.
+    pub fn xray_blockers_scored(&self, color: Color) -> [u8; 64] {
+        let c = color as usize;
+        let occ = self.colors[0] | self.colors[1];
+        let our = self.colors[c];
+        let their = self.colors[c ^ 1];
+        let mut result = [NO_PIECE_TYPE as u8; 64];
+
+        // Bishops & queens — diagonal rays
+        let mut diag = (self.pieces[BISHOP as usize] | self.pieces[QUEEN as usize]) & our;
+        while diag != 0 {
+            let s_sq = diag.trailing_zeros();
+            diag &= diag - 1;
+            let mut our_blockers = bishop_attacks(s_sq, occ) & our;
+            while our_blockers != 0 {
+                let b_sq = our_blockers.trailing_zeros();
+                our_blockers &= our_blockers - 1;
+                let past = crate::bitboard::ray_extension(s_sq, b_sq) & occ;
+                if past == 0 { continue; }
+                let past_sq = if s_sq < b_sq { past.trailing_zeros() } else { 63 - past.leading_zeros() };
+                if their & (1u64 << past_sq) != 0 {
+                    let victim_pt = self.mailbox[past_sq as usize];
+                    let cur = result[b_sq as usize];
+                    // Keep higher-value victim when multiple sliders converge.
+                    if cur == NO_PIECE_TYPE as u8 || victim_pt > cur {
+                        result[b_sq as usize] = victim_pt;
+                    }
+                }
+            }
+        }
+
+        // Rooks & queens — orthogonal rays
+        let mut orth = (self.pieces[ROOK as usize] | self.pieces[QUEEN as usize]) & our;
+        while orth != 0 {
+            let s_sq = orth.trailing_zeros();
+            orth &= orth - 1;
+            let mut our_blockers = rook_attacks(s_sq, occ) & our;
+            while our_blockers != 0 {
+                let b_sq = our_blockers.trailing_zeros();
+                our_blockers &= our_blockers - 1;
+                let past = crate::bitboard::ray_extension(s_sq, b_sq) & occ;
+                if past == 0 { continue; }
+                let past_sq = if s_sq < b_sq { past.trailing_zeros() } else { 63 - past.leading_zeros() };
+                if their & (1u64 << past_sq) != 0 {
+                    let victim_pt = self.mailbox[past_sq as usize];
+                    let cur = result[b_sq as usize];
+                    if cur == NO_PIECE_TYPE as u8 || victim_pt > cur {
+                        result[b_sq as usize] = victim_pt;
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
     pub fn xray_blockers(&self, color: Color) -> Bitboard {
         let c = color as usize;
         let occ = self.colors[0] | self.colors[1];

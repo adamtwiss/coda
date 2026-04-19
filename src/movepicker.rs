@@ -193,6 +193,8 @@ pub struct MovePicker {
     // B1: our own pieces blocking a slider's attack on an enemy piece.
     // Moving one of these creates a discovered attack.
     xray_blockers: Bitboard,
+    // Scaled variant: per-square victim piece-type (255 = none).
+    xray_scored: [u8; 64],
     // Evasion support
     checkers: Bitboard,
     pinned: Bitboard,
@@ -215,6 +217,7 @@ impl MovePicker {
         pawn_hist: Option<&[[i16; 64]; 13]>,
         threats: Threats,
         xray_blockers: Bitboard,
+        xray_scored: &[u8; 64],
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
     ) -> Self {
@@ -288,6 +291,7 @@ impl MovePicker {
             skip_quiet: false,
             threats,
             xray_blockers,
+            xray_scored: *xray_scored,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -320,6 +324,7 @@ impl MovePicker {
             skip_quiet: true,
             threats: 0,
             xray_blockers: 0,
+            xray_scored: [255; 64],
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -374,6 +379,7 @@ impl MovePicker {
             skip_quiet: false,
             threats: 0, // evasions don't use threat-aware history
             xray_blockers: 0, // evasions don't use discovered-attack bonus
+            xray_scored: [255; 64],
             checkers,
             pinned,
             threat_sq: -1,
@@ -610,10 +616,23 @@ impl MovePicker {
 
             // B1: Discovered-attack bonus. If `from` is one of our pieces
             // currently blocking our slider's attack on an enemy, moving
-            // it uncovers that attack. Flat bonus — victim-value scaling
-            // is a follow-up if H1 resolves.
+            // it uncovers that attack. Flat base + optional value-scaled
+            // bonus based on xray victim's piece-type tier.
             if self.xray_blockers & (1u64 << from) != 0 {
                 score += crate::search::DISCOVERED_ATTACK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+                let victim_pt = self.xray_scored[from as usize];
+                // Tier: pawn=1, N/B=3, R=5, Q=9. King skipped (rare xray target).
+                let tier = match victim_pt {
+                    0 => 1,       // pawn
+                    1 | 2 => 3,   // knight or bishop
+                    3 => 5,       // rook
+                    4 => 9,       // queen
+                    _ => 0,
+                };
+                if tier > 0 {
+                    score += tier * crate::search::DISCOVERED_ATTACK_VALUE_MULT
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                }
             }
 
             let idx = self.moves.len;
