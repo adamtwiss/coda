@@ -1998,6 +1998,13 @@ fn negamax(
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
         && !(tt_hit && tt_entry.depth >= depth - 3 && tt_entry.score < probcut_beta)  // TT says no chance
         && king_zone_pressure < tp(&PROBCUT_KING_ZONE_MAX)  // A3: skip in high-threat positions
+        && {
+            // S17: skip ProbCut when corrhist is disagreeing with raw eval.
+            // High corrhist magnitude = static_eval has been heavily corrected =
+            // can't be trusted for speculative beta cuts.
+            let corrhist_mag = if raw_eval > -INFINITY { (static_eval - raw_eval).abs() } else { 0 };
+            corrhist_mag < 25
+        }
         && FEAT_PROBCUT.load(Ordering::Relaxed)
     {
         // SEE threshold: only consider captures that gain enough material
