@@ -2472,6 +2472,12 @@ fn negamax(
                 // from NMP/ProbCut gates — tactical king positions need depth.
                 reduction -= king_zone_pressure / tp(&LMR_KING_PRESSURE_DIV);
 
+                // S16: reduce less in unstable positions (sharp eval swing
+                // from parent). Existing `unstable` signal used elsewhere
+                // as history-pruning guard; here it gates a LMR reduction
+                // decrement — unstable positions deserve more search depth.
+                if unstable { reduction -= 1; }
+
                 // Clamp: never extend (negative), never reduce past depth 1
                 if reduction < 0 {
                     reduction = 0;
