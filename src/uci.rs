@@ -1,7 +1,8 @@
 /// UCI protocol implementation.
 
 use std::io::{self, BufRead};
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::board::Board;
 use crate::search::*;
@@ -12,6 +13,11 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut info = SearchInfo::new(64);
     let mut stop_flag = info.stop.clone(); // keep a handle to signal stop from UCI loop
     let mut ponderhit_flag = info.ponderhit_time.clone(); // shared ponderhit time limit
+    // Separate flag set ONLY by external UCI "stop"/"ponderhit"/"quit" — distinct
+    // from info.stop (which search_smp also sets internally when main search
+    // returns). Used by the ponder wait loop below so it waits for an actual
+    // external ack rather than racing with search_smp's internal teardown.
+    let external_stop: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let mut ponder_limits: Option<SearchLimits> = None; // pending limits for ponderhit
     let mut ponder_stm: u8 = crate::types::WHITE; // side to move at ponder start
     let mut opening_book: Option<crate::book::OpeningBook> = None;
@@ -88,6 +94,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
             "ucinewgame" => {
                 // Wait for any active search to finish before clearing state
                 if let Some(handle) = search_handle.take() {
+                    external_stop.store(true, Ordering::Relaxed);
                     stop_flag.store(true, Ordering::Relaxed);
                     if let Ok(returned_info) = handle.join() {
                         info = returned_info;
@@ -108,6 +115,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
             "go" => {
                 // Wait for any pending search to finish first
                 if let Some(handle) = search_handle.take() {
+                    external_stop.store(true, Ordering::Relaxed);
                     stop_flag.store(true, Ordering::Relaxed);
                     if let Ok(returned_info) = handle.join() {
                         info = returned_info;
@@ -177,6 +185,13 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 // ponderhit: if ponderhit arrives between spawn and search start,
                 // the search thread must NOT overwrite it.
                 stop_flag.store(false, Ordering::Relaxed);
+                // Also clear external_stop for this new search so the ponder
+                // wait loop below correctly waits for a fresh external ack.
+                external_stop.store(false, Ordering::Relaxed);
+                // Clear ponderhit_time here too (not in search()), same race reason:
+                // if ponderhit arrives in the window between `go ponder` and search()
+                // entry, search() clearing it would clobber the legitimate deadline.
+                ponderhit_flag.store(0, Ordering::Relaxed);
                 ponder_search_start = Some(std::time::Instant::now());
                 let mut search_board = board.clone();
                 let shared_tt = info.tt.clone();
@@ -188,38 +203,105 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 ponderhit_flag = search_info.ponderhit_time.clone();
                 let threads = num_threads;
                 let is_ponder_search = is_ponder;
+                let ext_stop = external_stop.clone();
                 search_handle = Some(std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)
                     .spawn(move || {
                         let mut si = search_info;
-                        let best_move = search_smp(&mut search_board, &mut si, &limits, threads);
-                        // In ponder mode, if search completed naturally (not stopped),
-                        // wait for stop/ponderhit before outputting bestmove.
-                        // Outputting bestmove while GUI expects pondering is a protocol violation.
-                        if is_ponder_search && !si.stop.load(std::sync::atomic::Ordering::Relaxed)
+                        let go_received = std::time::Instant::now();
+                        let mut best_move = search_smp(&mut search_board, &mut si, &limits, threads);
+                        let search_elapsed = go_received.elapsed();
+                        // In ponder mode, if search completed naturally (not stopped
+                        // externally), wait for stop/ponderhit before outputting
+                        // bestmove.
+                        let wait_start = std::time::Instant::now();
+                        if is_ponder_search && !ext_stop.load(std::sync::atomic::Ordering::Relaxed)
                             && si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed) == 0 {
-                            // Search hit max depth — wait for stop signal
-                            while !si.stop.load(std::sync::atomic::Ordering::Relaxed)
+                            while !ext_stop.load(std::sync::atomic::Ordering::Relaxed)
                                 && si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed) == 0 {
                                 std::thread::sleep(std::time::Duration::from_millis(1));
                             }
                         }
-                        // Output ponder move from PV if available.
-                        // Validate PV[0] matches best_move: if the search was stopped
-                        // mid-iteration, the PV may belong to a different root move.
+                        let wait_elapsed = wait_start.elapsed();
+
+                        // If we exited the wait-loop via ponderhit (not external stop)
+                        // AND the allocated hard_limit hasn't been reached yet, run a
+                        // FRESH timed search for the remaining budget. This fixes the
+                        // case where ponder reached max_depth in a trivial position
+                        // and we'd otherwise emit bestmove instantly — ignoring the
+                        // clock budget the ponderhit handler computed for us.
+                        //
+                        // Why: the ponder's TT work is preserved (shared via Arc<TT>),
+                        // so the fresh search starts with a hot TT and goes deeper
+                        // than it would cold. The engine still gets the "ponder benefit"
+                        // — just as extra depth rather than instant emit.
+                        let mut fresh_elapsed = std::time::Duration::ZERO;
+                        if is_ponder_search && !ext_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            let ph_deadline = si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed);
+                            let now_elapsed = go_received.elapsed().as_millis() as u64;
+                            if ph_deadline > now_elapsed + 5 {
+                                let remaining = ph_deadline - now_elapsed;
+                                si.stop.store(false, std::sync::atomic::Ordering::Relaxed);
+                                si.ponderhit_time.store(0, std::sync::atomic::Ordering::Relaxed);
+                                // Movetime (not full TM): full TM's dynamic stability
+                                // cut (stability_factor → 0.5× in stable positions)
+                                // actively reduces fresh-search time in simple endgames,
+                                // producing MORE stockpile. Verified: v3 (movetime)
+                                // had 3/28 stockpile at 60+1; v6 (full TM) had 7/28.
+                                // Movetime runs the full budget — best for this case.
+                                let fresh_limits = SearchLimits {
+                                    infinite: false,
+                                    movetime: remaining,
+                                    ..SearchLimits::new()
+                                };
+                                let fresh_start = std::time::Instant::now();
+                                best_move = search_smp(&mut search_board, &mut si, &fresh_limits, threads);
+                                fresh_elapsed = fresh_start.elapsed();
+                            }
+                        }
+
                         let pv_consistent = si.pv_len[0] >= 2
                             && si.pv_table[0][1] != crate::types::NO_MOVE
                             && move_from(si.pv_table[0][0]) == move_from(best_move)
                             && move_to(si.pv_table[0][0]) == move_to(best_move);
+                        // Measure println wall-clock — if it blocks on stdout (slow
+                        // reader on the other end), this is how we catch it.
+                        let pr_start = std::time::Instant::now();
                         if pv_consistent {
                             println!("bestmove {} ponder {}", move_to_uci(best_move), move_to_uci(si.pv_table[0][1]));
                         } else {
                             println!("bestmove {}", move_to_uci(best_move));
                         }
+                        // Explicit flush: default stdout is LineWriter which *should*
+                        // flush on \n, but when piped to another process (cutechess)
+                        // there are edge cases where writes sit in a buffer. This
+                        // guarantees cutechess sees bestmove immediately.
+                        use std::io::Write;
+                        let _ = std::io::stdout().lock().flush();
+                        let pr_elapsed = pr_start.elapsed();
+                        // Log anything suspiciously long to stderr (cutechess doesn't
+                        // account stderr against the engine clock).
+                        if pr_elapsed.as_millis() > 20
+                            || wait_elapsed.as_millis() > 2000
+                            || (!is_ponder_search && search_elapsed.as_millis() > (si.time_limit + 500) as u128)
+                        {
+                            eprintln!(
+                                "TM_TRACE search={}ms fresh={}ms time_limit={}ms wait={}ms println={}ms ponder={} pv_ok={}",
+                                search_elapsed.as_millis(),
+                                fresh_elapsed.as_millis(),
+                                si.time_limit,
+                                wait_elapsed.as_millis(),
+                                pr_elapsed.as_millis(),
+                                is_ponder_search, pv_consistent,
+                            );
+                        }
                         si // return SearchInfo for reuse
                     }).expect("Failed to spawn search thread"));
             }
             "stop" => {
+                // Signal external stop FIRST so the ponder wait loop (which
+                // watches external_stop) sees it before we join the handle.
+                external_stop.store(true, Ordering::Relaxed);
                 stop_flag.store(true, Ordering::Relaxed);
                 // Wait for search thread to finish and recover SearchInfo
                 if let Some(handle) = search_handle.take() {
@@ -250,6 +332,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             }
                             if tb_valid && wdl != 0 {
                                 // Stop search and play TB move
+                                external_stop.store(true, Ordering::Relaxed);
                                 stop_flag.store(true, Ordering::Relaxed);
                                 if let Some(handle) = search_handle.take() {
                                     if let Ok(returned_info) = handle.join() {
@@ -302,6 +385,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
 
                         // Very low time (< 2s with no inc): instant stop
                         if hard <= overhead && our_inc == 0 && our_time < 2000 {
+                            external_stop.store(true, Ordering::Relaxed);
                             stop_flag.store(true, Ordering::Relaxed);
                         } else {
                             let deadline = elapsed + hard.max(10);
@@ -309,16 +393,19 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         }
                     } else {
                         // No time info: instant stop
+                        external_stop.store(true, Ordering::Relaxed);
                         stop_flag.store(true, Ordering::Relaxed);
                     }
                 } else {
                     // No ponder limits saved: instant stop
+                    external_stop.store(true, Ordering::Relaxed);
                     stop_flag.store(true, Ordering::Relaxed);
                 }
             }
             "setoption" => {
                 // Wait for any active search to finish before changing options
                 if let Some(handle) = search_handle.take() {
+                    external_stop.store(true, Ordering::Relaxed);
                     stop_flag.store(true, Ordering::Relaxed);
                     if let Ok(returned_info) = handle.join() {
                         info = returned_info;
@@ -370,6 +457,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
             }
             "quit" => {
+                external_stop.store(true, Ordering::Relaxed);
                 stop_flag.store(true, Ordering::Relaxed);
                 if let Some(handle) = search_handle.take() {
                     let _ = handle.join();

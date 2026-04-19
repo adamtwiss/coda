@@ -44,7 +44,8 @@ macro_rules! tunables {
 }
 
 tunables!(
-    // v9 tune #411 (2500 iters, live defaults, post-xray-fix on w15 s200 xray-fixed net)
+    // v9 post-#489 retune (feature/threat-inputs; post-merge of 2b rewrite,
+    // ProbCut gate, LMR king-pressure, futility-defenses; landed +7.38 H1).
     (NMP_BASE_R, 5, 2, 8),
     (NMP_DEPTH_DIV, 3, 1, 6),
     (NMP_EVAL_DIV, 122, 100, 400),
@@ -115,55 +116,24 @@ tunables!(
     (CONTEMPT_VAL, 19, 0, 50),
     // Correction history divisor
     (CORR_HIST_DIV, 1263, 256, 4096),
-    // Correction history update weight cap: weight = min(CORR_UPDATE_WEIGHT_MAX, depth + 1).
-    // SF hardcodes 16; exposing as a tunable lets SPSA compensate when other
-    // logic reduces the update volume (e.g. filtering noisy best_moves).
+    // Correction history update weight cap.
     (CORR_UPDATE_WEIGHT_MAX, 17, 4, 48),
-    // Fraction of CORR_HIST_LIMIT that caps a single update's bonus magnitude.
-    // Higher divisor = smaller caps, more conservative updates. SF uses 4.
     (CORR_BONUS_CAP_DIV, 4, 1, 16),
-    // Divisor when applying blended correction to raw eval: eval += corr / GRAIN.
-    // Higher = less aggressive correction effect.
     (CORR_HIST_GRAIN_T, 9, 1, 32),
-    // Clamps the per-update error (search_score - raw_eval) before training.
-    // Scaled relative to CORR_HIST_LIMIT; SF uses 128/32000 ≈ 4/1024 equivalent.
     (CORR_HIST_ERR_MAX, 4, 1, 64),
     // Escape-capture bonuses (Reckless pattern): move ordering bonus for
     // moving a piece off a square attacked by enemy pawns
     (ESCAPE_BONUS_Q, 15627, 5000, 40000),
     (ESCAPE_BONUS_R, 13736, 3000, 30000),
     (ESCAPE_BONUS_MINOR, 10172, 2000, 20000),
-    // King-zone-pressure NMP gate: skip null move when enemy has this
-    // many or more attackers on our king zone (king sq + 8 neighbours).
-    // 9 = never skip (gate disabled), 2 = aggressive gating. Conservative
-    // initial 5 fires only in high-attack positions.
+    // v9 threat-family gates/modifiers (v9-specific — require threat-aware net).
     (NMP_KING_ZONE_MAX, 5, 2, 9),
-    // A3: ProbCut king-zone-pressure gate. Skip ProbCut when enemy has
-    // this many attackers on our king zone — shallow probcut searches
-    // miss tactics in high-pressure positions. 9 = never skip, 2 = aggressive.
     (PROBCUT_KING_ZONE_MAX, 5, 2, 9),
-    // Threat-density LMR: reduce less when more pieces are threatened.
-    // threat_count / LMR_THREAT_DIV subtracted from reduction.
-    // Higher = less effect (2 means reduce 1 less per 2 threatened pieces).
     (LMR_THREAT_DIV, 2, 1, 5),
-    // King-zone-pressure LMR modifier: reduce less when enemy pressures
-    // our king. Same signal as NMP gate (#466) and probcut gate (A3).
-    // Tactical king positions need deeper search. Higher = less effect.
-    // 9 = disabled (effect 0), 2 = aggressive (-4 reduction at 9-pressure).
     (LMR_KING_PRESSURE_DIV, 4, 2, 9),
-    // our_defenses futility widener: widen futility margin by
-    // FUT_THREATS_MARGIN per non-pawn-of-ours under any enemy attack.
-    // Tactical positions (many of our pieces attacked) deserve less
-    // aggressive pruning — wider margin keeps potentially-winning lines
-    // from being dropped on static-eval alone. 0 = disabled.
-    (FUT_THREATS_MARGIN, 40,    0,   200),
-    // MVV multiplier in capture move ordering (historical default 16).
-    // Captures scored as see_value(victim) * MVV_CAP_MULT + captHist.
-    // Higher = weight MVV more vs capture history.
+    (FUT_THREATS_MARGIN, 40, 0, 200),
+    // MVV multiplier + cont-hist plies-1/2 weight.
     (MVV_CAP_MULT, 15, 4, 64),
-    // Continuation history multiplier for plies 1,2 in quiet move ordering.
-    // Plies 4,6 always weight 1; this controls the close-ply weight.
-    // Historical default 3 (Obsidian/Alexandria/Berserk pattern).
     (CONT_HIST_MULT, 3, 1, 8),
 );
 
@@ -310,6 +280,12 @@ pub struct SearchInfo {
     tm_has_data: bool,
     soft_limit: u64,  // ms — can be extended/shortened dynamically
     hard_limit: u64,  // ms — absolute maximum
+    /// Minimum think time per move: the increment we're about to gain, minus
+    /// move overhead. Floors the dynamically-scaled soft limit so stability
+    /// cuts in stable endgames can't push think time below the increment,
+    /// which would grow the clock instead of spending it (stockpile). 0 when
+    /// there is no increment.
+    soft_floor: u64,
     /// Per-root-move node counts for node-based time management.
     /// Indexed by from_sq * 64 + to_sq. Reset each search.
     root_move_nodes: Box<[u64; 4096]>,
@@ -381,6 +357,7 @@ impl SearchInfo {
             tm_has_data: false,
             soft_limit: 0,
             hard_limit: 0,
+            soft_floor: 0,
             root_move_nodes: alloc_zeroed_box(),
             ponderhit_time: std::sync::Arc::new(AtomicU64::new(0)),
             ponder_depth: std::sync::Arc::new(AtomicU64::new(0)),
@@ -982,6 +959,7 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
                 helper.time_limit = 0;
                 helper.soft_limit = 0;
                 helper.hard_limit = 0;
+                helper.soft_floor = 0;
                 helper.max_depth = helper_limits.depth;
 
                 // Search with depth offset for diversity (standard Lazy SMP trick)
@@ -1067,9 +1045,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     }
 
     info.start_time = Instant::now();
-    // Note: stop flag is cleared by the UCI thread before spawning the search
-    // thread, not here. Clearing here races with ponderhit.
-    info.ponderhit_time.store(0, Ordering::Relaxed); // Reset from any previous ponderhit
+    // Note: stop flag AND ponderhit_time are cleared by the UCI thread before
+    // spawning the search thread, not here. Clearing here races with ponderhit:
+    // if ponderhit arrives in the ~ms between `go ponder` and this line, UCI
+    // sets ponderhit_time → search() clobbers it → ponder runs truly infinite →
+    // wait-loop → eventual time forfeit (observed at blitz TC).
     info.nodes = 0;
     // Note: global_nodes reset is done by callers (search_smp, bench) to avoid
     // clobbering helper thread contributions in SMP mode.
@@ -1128,8 +1108,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.time_limit = 0;
         info.soft_limit = 0;
         info.hard_limit = 0;
+        info.soft_floor = 0;
     } else if limits.movetime > 0 {
         info.time_limit = limits.movetime;
+        info.soft_floor = 0;
     } else if our_time > 0 {
         // Subtract move overhead (communication latency)
         let overhead = info.move_overhead;
@@ -1196,6 +1178,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Ensure hard >= soft (but soft is also capped by max_hard for movestogo safety)
         if soft > hard { soft = hard; }
         info.hard_limit = hard;
+        // Soft floor: never spend less than the increment we gain, so the
+        // dynamic stability cut can't produce clock-growing instant emits
+        // in stable endgames (lichess PZ7pCyrx stockpile). Capped at hard
+        // to preserve the absolute maximum. Zero when inc is zero.
+        info.soft_floor = our_inc.saturating_sub(overhead).min(hard);
         info.time_limit = hard.max(soft); // search uses hard as absolute limit
         info.tm_has_data = false;
         info.tm_best_stable = 0;
@@ -1223,6 +1210,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.soft_limit = 10;
         info.hard_limit = 10;
         info.time_limit = 10;
+        info.soft_floor = 0;
     }
 
     let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
@@ -1467,9 +1455,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Combined: all three factors multiply against the soft limit
             let scale = nodes_factor * stability_factor * score_factor;
 
-            // Check if we should stop at the soft limit
+            // Check if we should stop at the soft limit.
+            // Floor at soft_floor (≈ increment) so stability cuts in stable
+            // endgames can't produce clock-growing instant emits.
             let adjusted_soft = (info.soft_limit as f64 * scale) as u64;
-            let adjusted_soft = adjusted_soft.min(info.hard_limit);
+            let adjusted_soft = adjusted_soft.max(info.soft_floor).min(info.hard_limit);
             if elapsed >= adjusted_soft {
                 break;
             }
@@ -1489,6 +1479,22 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     break;
                 }
             }
+        }
+    }
+
+    // Don't stockpile: if the ID loop finished below the soft_floor (e.g. all
+    // iterations were TT hits in a repetitive endgame), wait out the rest of
+    // the floor time before emitting. Prevents clock growth from instant emits
+    // at 1s-inc bullet on lichess (PZ7pCyrx). Polls the stop flag so the UCI
+    // thread can still interrupt. Skip when there's no time budget (depth/
+    // node-limited search) or when already stopped.
+    if info.soft_floor > 0 && !info.stop.load(Ordering::Relaxed) {
+        loop {
+            let elapsed = info.start_time.elapsed().as_millis() as u64;
+            if elapsed >= info.soft_floor { break; }
+            if info.stop.load(Ordering::Relaxed) { break; }
+            let remaining = info.soft_floor - elapsed;
+            std::thread::sleep(std::time::Duration::from_millis(remaining.min(25)));
         }
     }
 
@@ -2077,7 +2083,7 @@ fn negamax(
     };
     let pawn_hist_ref = Some(&info.pawn_hist[ph_idx] as &[[i16; 64]; 13]);
     let mut picker = if in_check {
-        MovePicker::new_evasion(board, tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
         MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
     };
@@ -2907,7 +2913,7 @@ fn quiescence_with_depth(
             None
         };
         let mut evasion_picker = MovePicker::new_evasion(
-            board, tt_move, ply as usize, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
+            tt_move, ply as usize, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
             &info.moved_piece_stack, &info.moved_to_stack,
         );
         let mut best_score = -INFINITY;

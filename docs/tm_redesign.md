@@ -304,3 +304,190 @@ Higher threshold (800 vs 300/500 before) and gentler reduction (0.75 vs
 8. **Phase-based soft allocation** — only AFTER hard limit is safe
 9. **Cross-search score trending** — low risk enhancement
 10. **Forced-move detection** — future, after everything else stable
+
+---
+
+## Outstanding bugs / issues (identified 2026-04-17)
+
+A follow-up investigation into the "1-in-4 games have clustered blunders"
+pattern on Lichess surfaced a UCI-layer bug (now fixed on branch
+`fix/ponder-wait-loop`) AND exposed several TM weaknesses that are
+invisible under self-play SPRT but bite hard in production-style play.
+
+### Issue 1: aggressive drain — no meaningful safety margin
+
+**Observed, 60+1 tournament vs Caissa** (stage 13 debug trace of one game):
+
+| Coda move | wtime remaining (s) |
+|---|---|
+| 1  | 60.0 |
+| 5  | 44.3 |
+| 10 | 21.2 |
+| 15 | 10.6 |
+| 20 | 2.4  ← danger zone |
+| 23 | 1.3 |
+
+Coda's TM steam-rollers through the opening at ~3–5s per move, running
+the clock down to ~1–3 seconds by move 20. That's with a 1s increment.
+**Any single-move variance (a long iteration, OS scheduling blip, helper-
+thread join latency) tips us over zero** and forfeits. Observed rate in
+local cutechess-cli tournaments at 60+1 with ponder on: **5-7% of games
+forfeit on time**. Zero at 3+2 (Stage 2 main) but clustered failures
+appear when production conditions (ponder, SMP, real clocks) combine.
+
+Concretely: the existing `max_hard = time_left / 20 + our_inc` caps one
+move at 5% of remaining time — reasonable by itself — but with small
+inc:time ratio (60+1 = 1.67%) Coda *consistently* spends close to that
+cap, so the clock drains at `hard − inc` per move. There is no floor
+below which TM says "stop, preserve reserve."
+
+**Fix direction**: introduce a minimum-reserve constraint that TM
+cannot violate. Something like "never allocate so much this move that
+the resulting clock drops below `max(5×inc, 3 seconds)`". If the soft
+allocation would break that floor, scale soft (and hard) down instead.
+SPSA-tunable minimum_reserve parameter.
+
+### Issue 2: `max_hard` formula misbehaves for classical TC (40/15)
+
+The current `max_hard = time_left / 20 + our_inc` assumes inc > 0 and
+plenty of moves remaining. At classical TC with movestogo, the formula
+breaks as movestogo decreases:
+
+At 40/15 with 10 moves remaining (200s clock, inc=0):
+- `soft = 200s / 10 = 20s` (correct expected allocation)
+- `max_hard = 200000/20 + 0 = 10000ms = 10s`
+- `max_hard < soft`, so the later clamp `if soft > hard { soft = hard }`
+  forces soft down to 10s — **half of what we actually need**.
+
+The `max_hard` cap was designed as a blitz safety net but it applies
+uniformly. For classical (movestogo > 0) it is *too tight*; for blitz
+it is *too loose* (see Issue 1).
+
+**Fix direction**: `max_hard` should depend on TC shape.
+- If `movestogo > 0`: let the movestogo path drive hard (it already
+  caps at `time_left × hard_pct/100`). Don't apply the additional `/20`
+  cap.
+- If `our_inc > 0` (sudden-death with inc): use a tighter fraction when
+  `inc/time_left` is small to preserve reserve (see Issue 1).
+- If `our_inc == 0 && movestogo == 0`: true sudden-death. Current `/20`
+  is OK but benefits from a minimum-reserve floor.
+
+### Issue 3: hard_limit honored but ponderhit-chained moves drain clock fast
+
+When cutechess's ponder prediction is frequently correct, Coda executes
+many short post-ponderhit searches back-to-back, each using ~hard_limit
+of Coda's clock. The drain during a ponderhit streak is `(hard - inc)
+× streak_length`. With 3s hard and 1s inc, a 10-move ponderhit streak
+burns 20 seconds of our clock in real wall-time.
+
+In the observed forfeit game, 4 consecutive ponderhit moves between two
+"normal" go commands (t=56s → t=81s real time) burned Coda's clock by
+~9.5s across those 4 moves — each using hard_limit consistently.
+
+Per-move the usage is correct (≤ hard_limit). The problem is there's
+no "this is the Nth fast move in a row, slow down" logic. TM doesn't
+see the context.
+
+**Fix direction**: this might just need the Issue 1 fix. If minimum-
+reserve floor applies per move, a streak can't drain below the floor
+because later moves get downscaled.
+
+### Issue 4: Rust stdout is BLOCK-buffered when piped to another process
+
+Not a TM bug per se but it surfaced during this investigation and affects
+TM's ability to honor time.
+
+`println!()` in Rust writes to `io::stdout()` which is a LineWriter
+**only when connected to a terminal** (per
+https://doc.rust-lang.org/std/io/fn.stdout.html). When piped (as cutechess
+/ Lichess does), stdout is **block-buffered**. `println!("bestmove ...")`
+writes into an internal buffer that doesn't flush until the buffer fills
+or explicit `flush()` is called. The GUI doesn't see bestmove until
+flush — clock keeps ticking.
+
+Fix applied in `fix/ponder-wait-loop` c37113e / 0a91e2b: explicit
+`std::io::stdout().lock().flush()` after bestmove emission.
+
+Worth also flushing after every info string at search.rs:1320 to avoid
+cutechess seeing stale PV during time-pressure. (Not yet done, low risk.)
+
+### Issue 5: ponder wait-loop raced with `info.stop`
+
+In `search_smp`, after the main search returns, `info.stop.store(true)`
+is set to tell Lazy-SMP helpers to exit. The ponder wait-loop in uci.rs
+was watching `info.stop` to decide whether to wait for GUI ack. Result:
+search_smp's internal "I'm done" signal was misread as a GUI-sent stop/
+ponderhit, and the engine emitted bestmove before the GUI acked —
+"Premature bestmove while pondering" 928× per 30 games.
+
+Fix applied in `fix/ponder-wait-loop` c37113e: introduced
+`external_stop: Arc<AtomicBool>` set ONLY by UCI handlers
+(stop/ponderhit/quit/go/ucinewgame/setoption). Wait loop watches
+`external_stop` instead of `info.stop`.
+
+### Issue 6: TM features invisible to SPRT (methodology gap)
+
+Stage 2 (main with ponder broken): 40% score vs +180 Elo opponents,
+928 protocol violations, 0 time forfeits, 3 blunders / 30 games.
+Stage 3 (F1 fix applied): 41.7% score, 0 protocol violations, **2 time
+forfeits**, 0 blunders.
+
+F1 eliminated all the catastrophic blunders (consistent with the 1-in-4
+lichess pattern) but traded them for a 5-7% time-forfeit rate that only
+appears under cutechess-with-ponder-at-60+1 / 3+2. Openbench SPRT at
+10+0.1 with `ponder=false, Threads=1` is blind to ALL of these effects.
+
+In one OpenBench test (#426, v9 psq-refresh-simplified +9 Elo aggregate),
+per-worker results ranged from +40 Elo (ionos6, cache-rich) to -9 Elo
+(ionos3, memory-constrained) on identical hardware-class VPSes, 7%
+spread. Production hardware matters.
+
+Concrete methodology additions worth considering:
+- Track time-forfeit count in automated cross-engine runs and flag rates
+  above some threshold (say 0.5%)
+- Add a lichess-mirror gauntlet at 60+1 with ponder=on as a preflight
+  before declaring a TM-touching patch "ready"
+- Capture per-worker Elo breakdown in SPRT reports; flag when spread
+  exceeds 2 SEs — indicates hardware-sensitivity
+
+### Issue 7: drift gap we could not explain
+
+Even with full instrumentation (spawn_overhead, join_us, search, wait,
+println, stdout flush), the sum of Coda's tracked thinking time for a
+forfeit game was ~93.5s against a 110s budget (50 moves at 60+1). Coda
+was ~16.5s under budget by its own accounting but cutechess's clock
+still hit zero. Only ~100ms/game of drift is visible to the in-process
+instrumentation.
+
+The other ~95% of the drift must be on cutechess's accounting side, or
+in timings we can't instrument (pipe-read latency on cutechess's end,
+etc.). Worth flagging as an open question: **if we re-deploy F1 to
+Lichess and forfeits don't appear there, the forfeit is cutechess-
+specific, not Coda's TM fault, and we can ship F1 as-is**.
+
+Relevant scripts for reproducing:
+- Tournament harness: Stage 6/9/11 under `/tmp/coda_stage*/` with
+  `-tournament gauntlet` and a mix of Caissa/Berserk/Halogen
+- Drift-trace binary: rebuild `fix/ponder-wait-loop` with the
+  TM_TRACE eprintln in uci.rs (stderr-only; cutechess ignores stderr
+  for clock).
+- Cutechess's view (`-debug` flag on cutechess-cli) — gives exact send/
+  receive timestamps per UCI line; compare to engine's reported time
+  to catch protocol-level drift.
+
+### Summary — what to prioritise
+
+**Blocker for merging TM changes**:
+1. Minimum-reserve floor (Issue 1) — simplest fix, biggest impact.
+2. `max_hard` classical-TC fix (Issue 2) — only exposed when we
+   actually run 40/15 games, but currently we'd time-underspend there.
+3. Before shipping anything TM, deploy to Lichess and measure forfeit
+   rate against cutechess's rate to disambiguate Issue 7.
+
+**Already fixed** (in `fix/ponder-wait-loop`):
+- Premature bestmove / protocol violation (Issue 5)
+- Block-buffered stdout flush (Issue 4)
+
+**Open investigations**:
+- Where does the ~95% of forfeit drift come from? (Issue 7)
+- Does F1 reproduce forfeits on Lichess? (needs production test)
