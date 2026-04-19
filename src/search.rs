@@ -1998,6 +1998,16 @@ fn negamax(
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
         && !(tt_hit && tt_entry.depth >= depth - 3 && tt_entry.score < probcut_beta)  // TT says no chance
         && king_zone_pressure < tp(&PROBCUT_KING_ZONE_MAX)  // A3: skip in high-threat positions
+        && {
+            // S6 mirror: also skip ProbCut when WE have high pressure on
+            // THEIR king (attacker-has-initiative — ProbCut may prematurely
+            // cut off a winning attack). Compute our attacks on their king zone.
+            let our_attacks = board.attacks_by_color(board.side_to_move);
+            let their_king_sq = board.king_sq(them_color);
+            let their_king_zone = crate::attacks::king_attacks(their_king_sq as u32) | (1u64 << their_king_sq);
+            let our_kz_opportunity = popcount(our_attacks & their_king_zone) as i32;
+            our_kz_opportunity < tp(&PROBCUT_KING_ZONE_MAX)
+        }
         && FEAT_PROBCUT.load(Ordering::Relaxed)
     {
         // SEE threshold: only consider captures that gain enough material
