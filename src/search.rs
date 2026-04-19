@@ -135,8 +135,8 @@ tunables!(
     // MAT_SCALE_DIV. Was hardcoded 22400 / 32768 (32 * 1024). Exposing
     // to SPSA — lets us tune how much NNUE eval gets dampened in
     // low-material endgames. BASE higher = less dampening.
-    (MAT_SCALE_BASE, 22400, 8000, 40000),
-    (MAT_SCALE_DIV,  32768, 16384, 65536),
+    (MAT_SCALE_BASE, 22830, 8000, 40000),
+    (MAT_SCALE_DIV,  31360, 16384, 65536),
     // B1: Discovered-attack movepicker bonus (+52 Elo H1, #502). Flat
     // bonus added to quiet move score when `move.from()` is one of our
     // pieces currently blocking our own slider's attack on an enemy.
