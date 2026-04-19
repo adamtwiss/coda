@@ -125,6 +125,12 @@ This predicts that Coda's current movepicker reliance on history (4D threat-inde
 
 Both engines find the same move at depth 3 as at depth 9, and they agree with each other on every position. No depth-to-depth churn, no engine-to-engine divergence at the root.
 
+### Confirmation on third corpus (Arasan)
+
+After the initial WAC+SBD null result, re-ran on **100 Arasan positions at depths 3/5/7/9/11** (1000 searches). Same result: 100% stable on both engines, 100% v5/v9 agreement at every depth.
+
+**Measurement is now solid across 200 positions from three different-character test suites.** The finding generalizes.
+
 ### Interpretation
 
 The hypothesis was wrong in the way I framed it. The first-move-cut gap is **not** caused by top-level PV instability — v9 finds the same root-level answers as v5, just slower.
