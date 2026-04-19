@@ -132,6 +132,12 @@ tunables!(
     (LMR_THREAT_DIV, 2, 1, 5),
     (LMR_KING_PRESSURE_DIV, 4, 2, 9),
     (FUT_THREATS_MARGIN, 40, 0, 200),
+    // S1 (signal-context-sweep): king-zone-pressure RFP margin widener.
+    // Widens RFP margin by RFP_KING_PRESSURE_MARGIN per unit of enemy
+    // attackers on our king zone. Parallels has_pawn_threats widener.
+    // Fires in parallel with has_pawn_threats and A1c can_win_material.
+    // 0 = disabled.
+    (RFP_KING_PRESSURE_MARGIN, 50, 0, 200),
     // MVV multiplier + cont-hist plies-1/2 weight.
     (MVV_CAP_MULT, 15, 4, 64),
     (CONT_HIST_MULT, 3, 1, 8),
@@ -1969,6 +1975,11 @@ fn negamax(
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
+            // S1: widen RFP when our king is under attack pressure.
+            // Uses king_zone_pressure already computed for NMP gate.
+            if king_zone_pressure > 0 {
+                margin += king_zone_pressure * tp(&RFP_KING_PRESSURE_MARGIN);
+            }
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
