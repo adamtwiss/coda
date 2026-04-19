@@ -148,23 +148,41 @@ These don't use `move_count` and don't depend on ordering quality:
 
 Tuning differences here (first-pass and third-pass found a few) are explained by other factors (eval variance, eval scale differences, architectural differences in how improving is detected). Not part of this analysis.
 
-## Meta-finding — the pattern isn't uniform
+## Meta-finding — pre-search vs post-factum signals
 
-Simple hypothesis: "worse ordering → prune less aggressively everywhere." **The evidence doesn't support this as a universal rule.**
+Initial hypothesis: "worse ordering → prune less aggressively everywhere." Evidence doesn't support this universally.
 
-Better hypothesis: the compensation direction depends on how the parameter uses ordering signals.
+Better hypothesis (Adam's framing, cleaner): signals the engine uses fall into two categories, and the compensation direction depends on which category the parameter relies on.
 
-| Signal type | Compensation direction under bad ordering |
+- **Pre-search (future-predicting) signals**: TT move, MVV + captHist for captures, static move-ordering heuristics. These degrade in v9 because noisier eval produces less-differentiated move ranks. Known weak.
+- **Post-factum (search-derived) signals**: main history, conthist, corrhist, pawn history. These aggregate actual search results — they degrade less because they're not predicting, they're summarising.
+
+When pre-search signals weaken, the engine's optimal strategy is to **lean harder on what's still reliable** — the post-factum signals.
+
+| Parameter class | Response under weak pre-search signals |
 |---|---|
-| **Binary cutoff on move-count** (LMP, SE gate) | Loosen threshold / fire earlier |
-| **Binary cutoff on SEE** (SEE pruning) | Loosen threshold |
-| **Binary cutoff on history** (history pruning) | Loosen threshold |
-| **Continuous scaling by history** (LMR hist adjust) | Unclear — depends on whether the history signal itself is more or less reliable for this specific engine's history-table structure |
-| **Formula structure** (LMR base table) | Influenced by what other adjustments stack on top |
+| **Binary cutoff using any signal** (LMP, SE gate, SEE prune, hist prune) | **Loosen** — all-or-nothing decisions are fragile under noise regardless of which signal |
+| **Continuous scaling by post-factum signal** (LMR hist div) | **Tighten reliance** — degrades gracefully; still extracts value from the reliable signal |
+| **Continuous scaling by pre-search signal** (e.g. MVV, eval-based) | **Loosen reliance** — scaling by noise propagates |
 
-**Concrete implication**: binary cutoffs are where compensation is cleanest. LMP, SE gate, SEE prune, hist prune are all "loosened" in Coda relative to consensus. This is the compensation tax paid for worse ordering.
+### How this resolves each observation
 
-Continuous scalings (LMR coefficients, LMR hist div) don't follow the same rule — they respond to ordering quality plus the reliability of the signal they scale on.
+- **LMP_BASE loosened** (13 vs 3): binary cutoff, fits rule 1.
+- **SE_DEPTH low-bound** (5): binary gate firing earlier, fits rule 1.
+- **SEE_QUIET_MULT loosened** (-45·d² vs -21·d²): binary cutoff using SEE (pre-search value estimate), fits rule 1.
+- **HIST_PRUNE_MULT loosened** (5148 vs 7471): binary cutoff using history. Binary wins — still loosened even though history itself is reliable.
+- **LMR_HIST_DIV tightened** (7123 vs 9621): continuous scaling by post-factum history. Fits rule 2 — lean harder on the reliable signal.
+- **LMR C coefficient** stays as ambiguous because it's a multi-layer formula; raw table lookup isn't the final reduction.
+
+The LMR_HIST_DIV case that looked counter-pattern under the simple hypothesis is actually the strongest confirmation under this framing.
+
+### Why this framing is useful
+
+It predicts the direction of future tuning as Coda's signals change. If:
+- Move ordering improves (better pre-search signals) → binary-cutoff params tighten back toward consensus; continuous post-factum scalings relax back (LMR_HIST_DIV grows).
+- History quality improves (e.g. via finer indexing, more training signal) → continuous post-factum scalings tighten further (LMR_HIST_DIV shrinks).
+
+Useful signpost for future retune interpretations.
 
 ## Strategic implications
 
