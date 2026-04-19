@@ -521,9 +521,14 @@ impl MovePicker {
             }
             // Dynamic SEE threshold: captures with strong history get a more
             // forgiving threshold. Use captHist only (not MVV) to avoid inflation.
+            // V2: add a constant BASELINE term (per Alexandria/Halogen/Quanticade
+            // cross-engine pattern); pure -captHist/18 collapses to 0 at score=0
+            // so even "neutral" captures were evaluated against a tight see_ge(0)
+            // threshold. Adding -75 baseline means a score-0 capture still gets
+            // a slightly relaxed SEE cutoff.
             let capt_hist = capt_hist_score_static(board, history, m);
             let cap_score = mvv_lva(board, m) + capt_hist;
-            let see_threshold = -capt_hist / 18;
+            let see_threshold = -75 - capt_hist / 18;
             if !see_ge(board, m, see_threshold) {
                 // Bad capture
                 if self.bad_len < 64 {
