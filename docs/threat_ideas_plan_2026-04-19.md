@@ -47,7 +47,7 @@ in where tests have resolved.
 | # | Item | Status | Result |
 |---|------|--------|--------|
 | **C1** | Trained threat-weight-magnitude oracle | Not started | Later. Novel, high variance |
-| **C2** | NNUE accumulator delta as extension signal | **Adjacent variant in flight as #500** | `experiment/threat-mag-lmr` uses position-level `sum(\|threat_acc\|)` as LMR modulator (not the extension-on-delta framing of C2). +10.3 at 740 games, LLR 0.54 trending H1. If lands, the original extension-side framing remains untested as a follow-up |
+| **C2** | NNUE accumulator delta as extension signal | **Adjacent variant #500 faded** | `experiment/threat-mag-lmr` uses position-level `sum(\|threat_acc\|)` as LMR modulator (not the extension-on-delta framing of C2). Started +24 @ 186 games, **faded to +3.1 @ 998 games**, LLR 0.15 still trending H1 but effect is marginal. Aligns with SPSA #488's near-zero movement. If H1, probably +1-3 Elo — not compelling. Extension-side framing of C2 still untested as a followup |
 
 ## X-ray data paths
 
