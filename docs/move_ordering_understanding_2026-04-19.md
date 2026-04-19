@@ -192,6 +192,59 @@ Given this diagnostic:
 2. **Offense bonus / king-ring bonus** (Reckless-unique) address the smaller quiet-cut gap. Still worth testing but not the primary win.
 3. **TT move ordering** isn't the issue — don't spend cycles there.
 
+### Deeper investigation (2026-04-19 follow-up)
+
+Adam pushed back on the "same code same SEE values" framing — so what specifically propagates from the net difference to capture ordering degradation? Followed up with several diagnostic threads:
+
+#### (a) Tunable drift from v5 (main) to v9 (trunk) — SPSA compensation
+
+Same binary contains the tunables SPSA has settled on. Compared v5-tuned main vs v9-tuned trunk capture-related parameters:
+
+| Tunable | v5 (main) | v9 (trunk) | Δ | Direction |
+|---|---|---|---|---|
+| SEE_QUIET_MULT | 18 | 45 | +150% | v9 prunes quiets much less aggressively |
+| SEE_CAP_MULT | 120 | 146 | +22% | v9 prunes captures less aggressively |
+| BAD_NOISY_MARGIN | 95 | 125 | +32% | v9 keeps more bad captures |
+| CAP_HIST_MULT | 193 | 263 | +36% | v9 boosts captHist bonuses more per depth |
+| CAP_HIST_BASE | 36 | 15 | -58% | v9 less offset |
+| CAP_HIST_MAX | 1474 | 1635 | +11% | v9 slightly higher cap |
+
+**Pattern**: v9-tuned params uniformly lean "less aggressive pruning, bigger compensatory captHist bonuses." This is SPSA compensating for v9's ordering weakness by (a) not pruning on noisier signals and (b) cranking up the post-factum captHist signal.
+
+**Implication**: when I measured "v5 first-move-cut 80%" earlier using the v9 trunk binary, I was running v5 net with v9-tuned params — not canonical v5. The canonical v5 (main binary + v5 params + v5 net) is the 82.3%. My diagnostic showed "80% with v9-tuned params on v5 net" — still valid for the decomposition, but the 82.3% vs 72.2% gap is the right apples-to-apples reference.
+
+#### (b) The `experiment/caphist-defender` H0 — retune candidate
+
+While investigating, found an already-tested attempt: [commit 8d0c1fc](../search.rs). Added a `defended` dimension to capture history: `capture[piece][to][captured][defended]` where `defended=1` iff `to` square is attacked by any enemy piece.
+
+**This is exactly Reckless's `noisy_history[piece][to][captured][to_threatened]` structure.** Reckless has it, Coda briefly had it.
+
+Result:
+- **First-move-cut rose to 82.0%** (fully closing to v5's canonical level!)
+- **Bench dropped -22%** (2.64M → 2.06M, major tree efficiency gain)
+- **SPRT #483: H0 at −1.5 Elo after 14520 games** — **no retune attempted**
+
+**This is a textbook retune-on-branch case** per CLAUDE.md's methodology:
+
+> **Retune-on-Branch Methodology**: Some features are neutral without retuning but gain significant Elo when pruning parameters are recalibrated on their branch.
+> Pattern: "big bench/node change but flat Elo → retune candidate"
+
+-22% nodes is a massive tree shape change. The v9 pruning params (SEE_QUIET_MULT=45, BAD_NOISY_MARGIN=125, etc.) were tuned against a 2.64M-node tree. With caphist-defender the tree is 2.06M and those params over-prune what's still needed.
+
+**Hypothesis (testable)**: retune-on-branch of caphist-defender would convert the −1.5 Elo result into a positive H1. SPSA has already demonstrated it can compensate for ordering quality (the v5→v9 drift); given a BETTER ordering signal (caphist-defender), the compensation unwinds back toward the cleaner v5-tuned direction.
+
+**Recommended action**: kick off a focused SPSA tune on `experiment/caphist-defender` branch for the 18 standard pruning params (NMP, RFP, futility, SEE, LMP, history pruning, LMR coefficients). If SPSA pulls params back toward v5-tuned values (lower SEE_QUIET_MULT, tighter BAD_NOISY_MARGIN, smaller CAP_HIST_MULT — less compensation needed), that validates the retune-on-branch thesis. Then SPRT tuned values.
+
+This is a **specific, concrete, immediately-actionable recommendation** that emerged from the diagnostic + historical investigation.
+
+### Additional data point: Reckless's noisy_history is exactly this structure
+
+Reckless uses `[piece][to][captured_piece_type][to_threatened]` — 4D with the to-threatened bit. Factorized with a separate global piece-to score.
+
+Same mechanism Coda tried in caphist-defender. Reckless has it landed because their pruning params were tuned WITH it. Coda's unretuned attempt failed.
+
+**Coda has the feature built; just needs retune to land.**
+
 Caveat: this measurement covers 100 middlegame positions from two test suites. It's possible in **noisier positions** (near-equal endgames, wild complications) v9 and v5 diverge more. A larger-corpus measurement with more-varied positions could surface those cases. But the base-rate finding — "on defined-best-move positions, they agree" — holds solidly on this sample.
 
 ### What this doesn't rule out
