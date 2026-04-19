@@ -53,91 +53,91 @@ tunables!(
     (NMP_VERIFY_DEPTH, 12, 8, 20),
     // RFP
     (RFP_DEPTH, 7, 2, 12),
-    (RFP_MARGIN_IMP, 82, 30, 150),
-    (RFP_MARGIN_NOIMP, 128, 50, 200),
+    (RFP_MARGIN_IMP, 81, 30, 150),
+    (RFP_MARGIN_NOIMP, 131, 50, 200),
     // Futility
-    (FUT_BASE, 69, 20, 200),
-    (FUT_PER_DEPTH, 163, 40, 250),
+    (FUT_BASE, 64, 20, 200),
+    (FUT_PER_DEPTH, 152, 40, 250),
     // History pruning
     (HIST_PRUNE_DEPTH, 4, 1, 8),
-    (HIST_PRUNE_MULT, 5148, 500, 50000),
+    (HIST_PRUNE_MULT, 3818, 500, 50000),
     // SEE pruning
-    (SEE_QUIET_MULT, 45, 5, 80),
+    (SEE_QUIET_MULT, 42, 5, 80),
     (SEE_CAP_MULT, 146, 30, 200),
     // LMR
-    (LMR_HIST_DIV, 7123, 2000, 100000),
-    (LMR_C_QUIET, 124, 40, 300),
-    (LMR_C_CAP, 101, 100, 350),
+    (LMR_HIST_DIV, 8729, 2000, 100000),
+    (LMR_C_QUIET, 128, 40, 300),
+    (LMR_C_CAP, 103, 100, 350),
     // Singular extensions
-    (SE_DEPTH, 5, 4, 20),
+    (SE_DEPTH, 4, 4, 20),
     // Aspiration windows
     (ASP_DELTA, 12, 5, 30),
-    (ASP_SCORE_DIV, 33333, 8000, 50000),
+    (ASP_SCORE_DIV, 32886, 8000, 50000),
     // LMP
     (LMP_BASE, 13, 1, 15),
     (LMP_DEPTH, 9, 4, 20),
     // Bad noisy
-    (BAD_NOISY_MARGIN, 125, 30, 150),
+    (BAD_NOISY_MARGIN, 124, 30, 150),
     // ProbCut
     (PROBCUT_MARGIN, 193, 80, 300),
     // Hindsight
-    (HINDSIGHT_THRESH, 181, 50, 400),
+    (HINDSIGHT_THRESH, 183, 50, 400),
     // Unstable position detection
-    (UNSTABLE_THRESH, 155, 50, 500),
+    (UNSTABLE_THRESH, 157, 50, 500),
     // SEE piece value scaling
-    (SEE_MATERIAL_SCALE, 191, 30, 300),
+    (SEE_MATERIAL_SCALE, 189, 30, 300),
     // QS
-    (QS_DELTA_MARGIN, 358, 100, 500),
+    (QS_DELTA_MARGIN, 360, 100, 500),
     (QS_SEE_THRESHOLD, -35, -200, 0),
     (QS_MAX_CAPTURES, 27, 2, 32),
     // Correction history weights
-    (CORR_W_PAWN, 301, 100, 600),
-    (CORR_W_NP, 106, 50, 400),
-    (CORR_W_MINOR, 57, 30, 300),
-    (CORR_W_MAJOR, 92, 30, 300),
-    (CORR_W_CONT, 39, 30, 400),
+    (CORR_W_PAWN, 310, 100, 600),
+    (CORR_W_NP, 104, 50, 400),
+    (CORR_W_MINOR, 63, 30, 300),
+    (CORR_W_MAJOR, 103, 30, 300),
+    (CORR_W_CONT, 54, 30, 400),
     // Fail-high blend
     (FH_BLEND_DEPTH, 1, 0, 8),
     // History bonus
-    (HIST_BONUS_MULT, 300, 50, 400),
-    (HIST_BONUS_MAX, 1584, 500, 3000),
+    (HIST_BONUS_MULT, 308, 50, 400),
+    (HIST_BONUS_MAX, 1603, 500, 3000),
     // Capture history bonus
-    (CAP_HIST_MULT, 263, 50, 400),
-    (CAP_HIST_BASE, 15, 0, 200),
-    (CAP_HIST_MAX, 1635, 500, 3000),
+    (CAP_HIST_MULT, 257, 50, 400),
+    (CAP_HIST_BASE, 14, 0, 200),
+    (CAP_HIST_MAX, 1689, 500, 3000),
     // Double extensions
     (DEXT_MARGIN, 10, 2, 50),
     (DEXT_CAP, 18, 4, 32),
     // Quiet check bonus
-    (QUIET_CHECK_BONUS, 8270, 2000, 30000),
+    (QUIET_CHECK_BONUS, 9340, 2000, 30000),
     // LMR complexity
-    (LMR_COMPLEXITY_DIV, 184, 30, 500),
+    (LMR_COMPLEXITY_DIV, 177, 30, 500),
     // Contempt
     // Correction history divisor
-    (CORR_HIST_DIV, 1263, 256, 4096),
+    (CORR_HIST_DIV, 1378, 256, 4096),
     // Correction history update weight cap.
     (CORR_UPDATE_WEIGHT_MAX, 17, 4, 48),
     (CORR_BONUS_CAP_DIV, 4, 1, 16),
     (CORR_HIST_GRAIN_T, 9, 1, 32),
-    (CORR_HIST_ERR_MAX, 4, 1, 64),
+    (CORR_HIST_ERR_MAX, 3, 1, 64),
     // Escape-capture bonuses (Reckless pattern): move ordering bonus for
     // moving a piece off a square attacked by enemy pawns
-    (ESCAPE_BONUS_Q, 15627, 5000, 40000),
-    (ESCAPE_BONUS_R, 13736, 3000, 30000),
-    (ESCAPE_BONUS_MINOR, 10172, 2000, 20000),
+    (ESCAPE_BONUS_Q, 15811, 5000, 40000),
+    (ESCAPE_BONUS_R, 13436, 3000, 30000),
+    (ESCAPE_BONUS_MINOR, 9790, 2000, 20000),
     // v9 threat-family gates/modifiers (v9-specific — require threat-aware net).
     (NMP_KING_ZONE_MAX, 5, 2, 9),
     (PROBCUT_KING_ZONE_MAX, 5, 2, 9),
     (LMR_THREAT_DIV, 2, 1, 5),
     (LMR_KING_PRESSURE_DIV, 4, 2, 9),
-    (FUT_THREATS_MARGIN, 40, 0, 200),
+    (FUT_THREATS_MARGIN, 34, 0, 200),
     // B1: Discovered-attack movepicker bonus (+52 Elo H1, #502). Flat
     // bonus added to quiet move score when `move.from()` is one of our
     // pieces currently blocking our own slider's attack on an enemy.
     // Moving it creates a discovered attack. Uses Board::xray_blockers.
-    (DISCOVERED_ATTACK_BONUS, 8000, 0, 30000),
+    (DISCOVERED_ATTACK_BONUS, 7193, 0, 30000),
     // MVV multiplier + cont-hist plies-1/2 weight.
-    (MVV_CAP_MULT, 15, 4, 64),
+    (MVV_CAP_MULT, 18, 4, 64),
     (CONT_HIST_MULT, 3, 1, 8),
 );
 
