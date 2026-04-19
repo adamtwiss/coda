@@ -137,6 +137,11 @@ tunables!(
     // pieces currently blocking our own slider's attack on an enemy.
     // Moving it creates a discovered attack. Uses Board::xray_blockers.
     (DISCOVERED_ATTACK_BONUS, 8000, 0, 30000),
+    // S5: king-zone-pressure aspiration widener. Adds king_zone_pressure
+    // * ASP_KING_PRESSURE_MARGIN to the aspiration delta at root,
+    // anticipating wider score swings in tactical king positions.
+    // 0 = disabled.
+    (ASP_KING_PRESSURE_MARGIN, 3, 0, 20),
     // MVV multiplier + cont-hist plies-1/2 weight.
     (MVV_CAP_MULT, 15, 4, 64),
     (CONT_HIST_MULT, 3, 1, 8),
@@ -1237,7 +1242,13 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Eval-dependent aspiration delta: wider for extreme scores (Reckless pattern)
             // Calm positions (avg~0): delta=13, winning (avg~500): delta=24, crushing (avg~1000): delta=55
             let avg = prev_score;
-            let mut delta = tp(&ASP_DELTA) + (avg as i64 * avg as i64 / tp(&ASP_SCORE_DIV) as i64) as i32;
+            // S5: widen delta when our king is under attack at root.
+            let root_king_sq = board.king_sq(board.side_to_move);
+            let root_king_zone = crate::attacks::king_attacks(root_king_sq as u32) | (1u64 << root_king_sq);
+            let root_enemy_attacks = board.attacks_by_color(flip_color(board.side_to_move));
+            let root_king_pressure = popcount(root_enemy_attacks & root_king_zone) as i32;
+            let mut delta = tp(&ASP_DELTA) + (avg as i64 * avg as i64 / tp(&ASP_SCORE_DIV) as i64) as i32
+                + root_king_pressure * tp(&ASP_KING_PRESSURE_MARGIN);
             let mut alpha = (prev_score - delta).max(-INFINITY);
             let mut beta = (prev_score + delta).min(INFINITY);
             let mut asp_depth = depth;
