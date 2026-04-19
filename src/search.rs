@@ -132,6 +132,12 @@ tunables!(
     (LMR_THREAT_DIV, 2, 1, 5),
     (LMR_KING_PRESSURE_DIV, 4, 2, 9),
     (FUT_THREATS_MARGIN, 40, 0, 200),
+    // Material scaling constants: eval *= (MAT_SCALE_BASE + material) /
+    // MAT_SCALE_DIV. Was hardcoded 22400 / 32768 (32 * 1024). Exposing
+    // to SPSA — lets us tune how much NNUE eval gets dampened in
+    // low-material endgames. BASE higher = less dampening.
+    (MAT_SCALE_BASE, 22400, 8000, 40000),
+    (MAT_SCALE_DIV,  32768, 16384, 65536),
     // B1: Discovered-attack movepicker bonus (+52 Elo H1, #502). Flat
     // bonus added to quiet move score when `move.from()` is one of our
     // pieces currently blocking our own slider's attack on an enemy.
@@ -587,7 +593,7 @@ impl SearchInfo {
             let queens = popcount(board.pieces[QUEEN as usize]) as i32 * 1015;
             pawns + knights + bishops + rooks + queens
         };
-        let score = score * (22400 + material) / 32 / 1024;
+        let score = (score as i64 * (tp(&MAT_SCALE_BASE) as i64 + material as i64) / tp(&MAT_SCALE_DIV) as i64) as i32;
 
         // 50-move eval scaling: decay eval toward zero as halfmove clock advances.
         let hm = board.halfmove.min(200) as i32;
