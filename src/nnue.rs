@@ -1756,6 +1756,7 @@ impl NNUENet {
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
                 consensus_buckets = flags & 32 != 0;
+                kb_layout = if consensus_buckets { KbLayout::Consensus } else { KbLayout::Uniform };
                 let body_size = data_len - 9;
                 let out_mul: u64 = if use_pairwise { 8 } else { 16 };
                 let h_denom = 2 * (NNUE_INPUT_SIZE as u64 + 1 + out_mul);
