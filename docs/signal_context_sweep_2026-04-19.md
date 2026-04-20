@@ -58,7 +58,7 @@ Each context is an existing decision point where a signal can gate the decision 
 | **IIR** | Gate |
 | **SEE pruning** | Threshold |
 
-## The matrix (status as of 2026-04-19)
+## The matrix (status as of 2026-04-20)
 
 Legend: ✅ landed, 🚧 in flight / queued, ❌ tested and H0, ❓ untried.
 
@@ -66,18 +66,33 @@ Legend: ✅ landed, 🚧 in flight / queued, ❌ tested and H0, ❓ untried.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | enemy-attacks bb | | | ✅history #463 | | | | | | ✅escape | | | |
 | pawn-threat-count | ✅widen | | ✅reduce | | | | | | | | | |
-| king-zone-pressure | ❌#503 | ✅#466 | ✅#482 | ❌#504 | ❓ | ✅#481 | ❌#511 | ❓ | ❓ | ❌#512 | ❓ | ❓ |
+| king-zone-pressure | ❌#503 | ✅#466 | ✅#482 | ❌#504 | ❓ | ✅#481 | ✅**#553 +9.7** | ❓ | ❓ | ❌#512 | ❓ | ❓ |
 | our-king-zone-opportunity | ❓ | ❓ | ❓ | ❓ | ❓ | ❌#538 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
 | can_win_material | ❌#479/#501 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
 | threat-mag | ❓ | ❓ | ❌#488/#500 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
 | any_threat_count | ❌#540 | ✅**#539** | ✅reduce | ❓ | ✅#484 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| eval instability (unstable) | ❓ | ❓ | ❌#541 🚧#548-gated | ❓ | ❓ | ✅**#542** | ❓ | ✅guard | ❓ | ❓ | ❓ | ❓ |
+| eval instability (unstable) | ❓ | ❓ | ❌#541/#548 | ❓ | ❓ | ✅**#542** | ❓ | ✅guard | ❓ | ❓ | ❓ | ❓ |
+| eval-diff (parent-child) | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❌#552-qhist | ❓ | ❓ | ❓ |
 | corrhist mag | ❓ | ❓ | ✅complex | ❓ | ❓ | ❌#544 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
 | our-defenses | ❓ | ❓ | ❓ | ❓ | ✅#484 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
 | xray-blockers | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ✅**#502 +52** | ❓ | ❓ | ❓ |
+| onto-pawn-threatened | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❌#547 | ❓ | ❓ | ❓ |
 | threat-feature-count | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
 
-**Landed count**: 10 (newly added **#539 any_threat_count × NMP +6.0**, **#542 unstable × ProbCut +6.7**, **#502 xray-blockers × MovePick +52**). **Failed (H0)**: 10. **In flight**: 1 depth-gated retry. **Untried**: ~90+.
+**Reckless-pattern motifs** (piece-specific, orthogonal to signal×context matrix):
+
+| Motif | Context | Status |
+|---|---|---|
+| Offense-bonus (quiet move attacks enemy non-pawn) | MovePick | ✅**#554 +5.7 / #558 LTC +6.3** |
+| Rook on king-ring-ortho (rook attacking king zone) | MovePick | ❌#555 (+0.1, H0 at 32K games) |
+| Rook-kingring retune rescue attempt | MovePick+pruning | ❌#574 (-2.2, H0) — retune doesn't rescue features that H0 at true-noise |
+| Knight-fork bonus (knight move attacks 2+ enemies) | MovePick | ❌#563 (+0.8 LLR -1.0, H0 direction) |
+| Queen-to-7th-rank | MovePick | ❌#565 (-2.0, H0 at 11K games) |
+| Rook-to-open-file | MovePick | 🚧**#566 (+2.3 LLR ~2.0, climbing H1)** |
+
+**Landed count**: 12 (newly: **#553 king-zone-pressure × SE +9.7**, **#554 offense-bonus +5.7**, **#542 unstable × ProbCut +6.7**, **#539 any_threat_count × NMP +6.0**). **Failed (H0)**: 15+ (includes #541, #548, #538, #540, #544, #547, #552, #555, #574). **In flight**: #566 rook-open-file climbing H1, #563 knight-fork fading H0. **Untried**: ~85+.
+
+**SMP fix trilogy (correctness not signal-context)**: #557 king-bucket race + v6 kb_layout; #576 helper threat-accum init (T=4 SPRT in flight, +683 self-play at 184g — deployment-unlock, not strength gain vs field).
 
 ## Key findings from 2026-04-19/20 overnight sweep
 
@@ -87,13 +102,19 @@ Legend: ✅ landed, 🚧 in flight / queued, ❌ tested and H0, ❓ untried.
 
 **Specific lessons per signal**:
 
-1. **king-zone-pressure seems to have saturated at 3 contexts** (NMP #466, LMR #482, ProbCut #481). Four subsequent attempts (RFP #503, LMP #504, SE #511, ASP #512) all H0'd. Signal generalizes to 3/7 contexts tested, not 7/7.
+1. **king-zone-pressure NOT saturated** — **#553 SE-margin-widener landed at +9.7** (retry of #511 with different margin formula). Prior thinking "signal generalizes to 3/7" was premature. Now 4/8 contexts landed: NMP #466, LMR #482, ProbCut #481, **SE #553**. The others (RFP #503, LMP #504, ASP #512) may still be salvageable with better margin formulas — worth revisiting.
 
 2. **any_threat_count is the strongest new "signal" this session**: 3 landings already (futility #484, LMR threat-density, NMP #539). RFP-widener #540 H0'd due to signal overlap with has_pawn_threats widener; not a failure of the signal itself.
 
-3. **unstable (parent-child eval gap) is underused**: landed at ProbCut #542 (+6.7) on first systematic attempt. LMR modifier #541 H0'd for magnitude reasons; depth-gated retry #548 in flight.
+3. **unstable (parent-child eval gap) is underused**: landed at ProbCut #542 (+6.7) on first systematic attempt. LMR modifier #541 H0'd for magnitude reasons; depth-gated retry #548 also resolved H0 at -3.0. unstable-LMR looks genuinely not-useful.
 
 4. **Mirror signals don't always transfer**: our-king-zone-opportunity at ProbCut (#538) H0'd despite enemy-king-zone-pressure at same context working (#481 +7.03). Attacker/defender symmetry assumption fails for this signal.
+
+5. **Reckless-pattern motif experiments mostly H0'd, one in flight**: systematic test of offense-bonus (+5.7 H1 #554), rook-king-ring (H0 #555), knight-fork (H0 #563), queen-7th (H0 #565), rook-open-file (climbing H1 #566). Hit rate 1-2/5 — motifs are harder to stack onto an already-ordered search than generic signal×context pairs.
+
+6. **Retune-on-branch methodology calibrated**: #574 rescue of #555 failed. When feature H0's at true-noise (+0.1 ±1.9), retune doesn't rescue. Retune-on-branch only works for features that H0'd with a non-zero-centered distribution (TT_PV, cont-hist-malus precedents). Future pattern: check if H0 Elo is >1σ from zero before queueing a rescue retune.
+
+7. **#562 main retune delivered ~+0 Elo** (#573 H0-trending, stopped early). Lesson: generic post-merge retunes on already-tuned trunks hit diminishing returns. Retune-on-branch is more selective now.
 
 **Priority for next sweep waves**:
 - any_threat_count × SE, SEE, LMP, IIR (all untested, strong prior given 3 landings)
