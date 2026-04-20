@@ -33,24 +33,86 @@ fn has_fast_pext() -> bool {
     family >= 0x19
 }
 
-// Precomputed leaper attacks
-static mut KNIGHT_ATTACKS: [Bitboard; 64] = [0; 64];
-static mut KING_ATTACKS: [Bitboard; 64] = [0; 64];
-static mut PAWN_ATTACKS: [[Bitboard; 64]; 2] = [[0; 64]; 2]; // [color][square]
+// Precomputed leaper attacks — computed at compile time via const fn.
+// Previously `static mut` initialized by `init_attacks()`; now `pub const`
+// so the compiler treats them as known constants (better CSE, inlining,
+// cache locality — see #557 king-bucket refactor pattern).
+pub const KNIGHT_ATTACKS: [Bitboard; 64] = build_knight_attacks();
+pub const KING_ATTACKS: [Bitboard; 64] = build_king_attacks();
+pub const PAWN_ATTACKS: [[Bitboard; 64]; 2] = build_pawn_attacks();
 
 #[inline(always)]
 pub fn knight_attacks(sq: u32) -> Bitboard {
-    unsafe { KNIGHT_ATTACKS[sq as usize] }
+    KNIGHT_ATTACKS[sq as usize]
 }
 
 #[inline(always)]
 pub fn king_attacks(sq: u32) -> Bitboard {
-    unsafe { KING_ATTACKS[sq as usize] }
+    KING_ATTACKS[sq as usize]
 }
 
 #[inline(always)]
 pub fn pawn_attacks(color: Color, sq: u32) -> Bitboard {
-    unsafe { PAWN_ATTACKS[color as usize][sq as usize] }
+    PAWN_ATTACKS[color as usize][sq as usize]
+}
+
+/// Build the knight-attacks table at compile time via const fn.
+const fn build_knight_attacks() -> [Bitboard; 64] {
+    let mut table = [0u64; 64];
+    let mut sq = 0usize;
+    while sq < 64 {
+        let bb = 1u64 << sq;
+        let mut attacks = 0u64;
+        attacks |= (bb << 17) & NOT_FILE_A;
+        attacks |= (bb << 15) & NOT_FILE_H;
+        attacks |= (bb << 10) & NOT_FILE_AB;
+        attacks |= (bb << 6)  & NOT_FILE_GH;
+        attacks |= (bb >> 6)  & NOT_FILE_AB;
+        attacks |= (bb >> 10) & NOT_FILE_GH;
+        attacks |= (bb >> 15) & NOT_FILE_A;
+        attacks |= (bb >> 17) & NOT_FILE_H;
+        table[sq] = attacks;
+        sq += 1;
+    }
+    table
+}
+
+/// Build the king-attacks table at compile time.
+const fn build_king_attacks() -> [Bitboard; 64] {
+    let mut table = [0u64; 64];
+    let mut sq = 0usize;
+    while sq < 64 {
+        let bb = 1u64 << sq;
+        // Same as bitboard::{north, south, east, west, north_east, ...}
+        // inlined so the helpers don't need to be const fn.
+        let mut attacks = 0u64;
+        attacks |= bb << 8;                  // north
+        attacks |= bb >> 8;                  // south
+        attacks |= (bb << 1) & NOT_FILE_A;   // east
+        attacks |= (bb >> 1) & NOT_FILE_H;   // west
+        attacks |= (bb << 9) & NOT_FILE_A;   // north_east
+        attacks |= (bb << 7) & NOT_FILE_H;   // north_west
+        attacks |= (bb >> 7) & NOT_FILE_A;   // south_east
+        attacks |= (bb >> 9) & NOT_FILE_H;   // south_west
+        table[sq] = attacks;
+        sq += 1;
+    }
+    table
+}
+
+/// Build the pawn-attacks table at compile time [color][sq].
+const fn build_pawn_attacks() -> [[Bitboard; 64]; 2] {
+    let mut table = [[0u64; 64]; 2];
+    let mut sq = 0usize;
+    while sq < 64 {
+        let bb = 1u64 << sq;
+        // White captures NE/NW (forward diagonals)
+        table[0][sq] = ((bb << 9) & NOT_FILE_A) | ((bb << 7) & NOT_FILE_H);
+        // Black captures SE/SW
+        table[1][sq] = ((bb >> 7) & NOT_FILE_A) | ((bb >> 9) & NOT_FILE_H);
+        sq += 1;
+    }
+    table
 }
 
 // Magic bitboard tables for sliding pieces
@@ -306,14 +368,9 @@ fn compute_pawn_attacks(color: Color, sq: u32) -> Bitboard {
 /// Initialize all attack tables. Must be called once at startup.
 pub fn init_attacks() {
     // Leaper attacks
-    for sq in 0..64 {
-        unsafe {
-            KNIGHT_ATTACKS[sq] = compute_knight_attacks(sq as u32);
-            KING_ATTACKS[sq] = compute_king_attacks(sq as u32);
-            PAWN_ATTACKS[WHITE as usize][sq] = compute_pawn_attacks(WHITE, sq as u32);
-            PAWN_ATTACKS[BLACK as usize][sq] = compute_pawn_attacks(BLACK, sq as u32);
-        }
-    }
+    // KNIGHT_ATTACKS, KING_ATTACKS, PAWN_ATTACKS are now `pub const` —
+    // computed at compile time, no runtime init needed (see tables at top
+    // of file). Only magic tables still need runtime init.
 
     // Detect PEXT support — only enable when fast (not microcoded)
     // AMD Zen 1/2 (family 0x17) has BMI2 but PEXT is ~18 cycles (microcoded).
