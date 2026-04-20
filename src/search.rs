@@ -145,6 +145,10 @@ tunables!(
     // MVV multiplier + cont-hist plies-1/2 weight.
     (MVV_CAP_MULT, 18, 4, 64),
     (CONT_HIST_MULT, 3, 1, 8),
+    // Queen-to-7th-rank movepicker bonus. Flat bonus added to quiet
+    // queen moves that land on the 7th rank (from mover's perspective),
+    // gated on safety (not attacked by enemy pawn). 0 = feature disabled.
+    (QUEEN_7TH_BONUS, 4000, 0, 20000),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
