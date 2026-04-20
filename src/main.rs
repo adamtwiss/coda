@@ -277,10 +277,18 @@ fn main() {
                 println!("\n{} nodes {} nps", nodes, nps);
             } else {
                 let nnue_owned = nnue_path.map(|s| s.to_string());
-                let handles: Vec<_> = (0..threads).map(|_| {
+                // Thread 0 runs with stats printed (info lines, per-position
+                // progress, EBF/FMC summary); other threads run silent to
+                // avoid interleaved output. Final aggregate line printed at
+                // the end.
+                let handles: Vec<_> = (0..threads).enumerate().map(|(i, _)| {
                     let np = nnue_owned.clone();
                     std::thread::spawn(move || {
-                        search::bench_silent(depth, np.as_deref())
+                        if i == 0 {
+                            search::bench(depth, np.as_deref())
+                        } else {
+                            search::bench_silent(depth, np.as_deref())
+                        }
                     })
                 }).collect();
                 let mut total_nodes = 0u64;
@@ -291,7 +299,7 @@ fn main() {
                 let nps = if elapsed.as_secs_f64() > 0.0 {
                     (total_nodes as f64 / elapsed.as_secs_f64()) as u64
                 } else { 0 };
-                println!("\n{} nodes {} nps", total_nodes, nps);
+                println!("\n{} nodes {} nps ({} threads)", total_nodes, nps, threads);
             }
         }
 
