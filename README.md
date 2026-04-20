@@ -6,9 +6,9 @@ Coda is a rewrite of [GoChess](https://github.com/adamtwiss/gochess) in Rust, bu
 
 ## Features
 
-- **NNUE evaluation** — HalfKA network with lazy accumulator and Finny table caching
+- **NNUE evaluation** — HalfKA network with lazy accumulator and Finny table caching. Supports v5 (direct FT→output), v6 (SCReLU+pairwise), v7 (hidden layers), v8 (dual L1 activation), v9 (threat features).
 - **AVX2 / AVX-512 SIMD** — runtime auto-detected for NNUE inference
-- **Full search** — alpha-beta with 20+ pruning features (NMP, LMR, RFP, singular extensions, etc.)
+- **Full search** — alpha-beta with 25+ pruning features (NMP, LMR, RFP, singular extensions, ProbCut, futility, LMP, SEE pruning, history pruning, cuckoo cycles, hindsight reduction, recapture extensions, etc.) — all SPSA-tunable via the `tunables!` macro
 - **Lazy SMP** — multi-threaded search with shared transposition table
 - **Syzygy tablebases** — endgame tablebase probing
 - **Cuckoo cycle detection** — proactive repetition avoidance
@@ -72,12 +72,20 @@ cargo install cargo-pgo
 | BookFile | string | | Path to Polyglot .bin book |
 | MoveOverhead | spin (0-5000) | 100 | Communication latency in ms |
 | Ponder | check | false | Enable pondering |
-| SparseL1 | check | true | Sparse L1 matmul for v7 hidden layers |
+| SparseL1 | check | true | Sparse L1 matmul for v7/v8/v9 hidden layers |
+| HiddenActivation | combo (screlu, crelu) | screlu | Hidden-layer activation for v7+ nets |
 | SyzygyPath | string | | Path to Syzygy tablebase files |
+
+Plus 60+ tunable search parameters exposed as spin options for SPSA.
 
 ## Strength
 
-In the Winter/Midnight/Weiss/Minic tier (~2800-2900 CCRL estimate). Uses HalfKA NNUE networks (v5/v6/v7 formats, CReLU/SCReLU activation).
+Deployed on Lichess as `codabot`, currently ~2900 Lichess rating. In
+local round-robin testing Coda matches engines rated ~3500 CCRL (Lichess
+and CCRL scales are not directly comparable — Lichess ratings are
+compressed at the top). v9 development branch (threat features + hidden
+layers) under active SPRT/retune. Uses HalfKA NNUE networks (v5-v9
+formats, CReLU or SCReLU activation).
 
 ## License
 

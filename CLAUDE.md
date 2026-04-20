@@ -55,14 +55,14 @@ src/
   search.rs        Negamax, pruning, LMR, correction history, cuckoo, pruning stats
   cuckoo.rs        Cuckoo cycle detection for proactive repetition avoidance
   tb.rs            Syzygy tablebase probing (via shakmaty-syzygy)
-  nnue.rs          NNUE v5/v6/v7 inference, accumulator stack, Finny table, AVX2/AVX-512 SIMD
+  nnue.rs          NNUE v5/v6/v7/v8/v9 inference, accumulator stack, Finny table, AVX2/AVX-512 SIMD
   uci.rs           UCI protocol (position, go, stop, ponder, setoption)
   epd.rs           EPD test suite runner with SAN formatting
   book.rs          Polyglot opening book support
   polyglot_randoms.rs  Standard Polyglot Zobrist random table (781 entries)
   datagen.rs       Multi-threaded training data generation (self-play, material removal)
   binpack.rs       SF BINP binpack format writer (chain-compressed)
-  bullet_convert.rs  Bullet quantised.bin → .nnue converter (v5/v6/v7)
+  bullet_convert.rs  Bullet quantised.bin → .nnue converter (v5/v6/v7/v8/v9)
   nnue_export.rs   .nnue → Bullet checkpoint converter (for transfer learning)
 Makefile           Build targets: make, make pgo, make openbench, make net
 scripts/
@@ -92,7 +92,7 @@ net.txt            Production NNUE net URL (used by make net / fetch-net)
 ### Search
 Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from depth 4). Lazy SMP: helper threads search at offset depths sharing the TT (atomic) and stop flag.
 
-**Pruning features** (all SPSA-tunable via `tunables!` macro, 45 parameters):
+**Pruning features** (all SPSA-tunable via `tunables!` macro, 61 parameters on trunk):
 - NMP: R=BASE_R+depth/DEPTH_DIV + (eval-beta)/EVAL_DIV, verify at depth>=VERIFY_DEPTH, post-capture R++
 - RFP: depth<=RFP_DEPTH, margin improving?RFP_MARGIN_IMP*d:RFP_MARGIN_NOIMP*d
 - Futility: FUT_BASE+lmrDepth*FUT_PER_DEPTH, history adjusts effective lmr_depth (SF pattern)
@@ -136,8 +136,12 @@ Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from dept
 - Stores raw (uncorrected) static eval to avoid double correction
 
 ### NNUE
-Supports v5 (CReLU), v6 (SCReLU, pairwise), and v7 (hidden layers) formats.
-Strongest cross-engine: 768pw w5 (`net-v5-768pw-w5-e800-s800.nnue`). Strongest self-play: 1024s w5 (`net-v5-1024s-w5-e800-s800.nnue`).
+Supports v5 (CReLU), v6 (SCReLU, pairwise), v7 (hidden layers),
+v8 (dual L1: CReLU+SCReLU concat), and v9 (threat features) formats.
+Production v5 net (main): `net-v5-768pw-consensus-w7-e800s800.nnue`.
+Active v9 development on `feature/threat-inputs` branch; strongest v9
+baseline so far: `net-v9-768th16x32-kb10-w15-e200s200.nnue` (w15 is
+the kb10 WDL optimum — w10 and w20 both tested weaker).
 
 HalfKA features: 16 king buckets × 12 piece types × 64 squares = 12288 inputs.
 Quantization: QA=255 (accumulator), QB=64 (output weights).
@@ -148,7 +152,8 @@ Quantization: QA=255 (accumulator), QB=64 (output weights).
 - **CReLU**: clamp [0, 255], VPMADDWD dot product
 - **SCReLU**: clamp [0, 255], square, int8 byte decomposition for VPMADDUBSW. Scale correction ×0.8 for search threshold compatibility.
 - **Pairwise**: split accumulator halves, CReLU-clamp, multiply pairs. SIMD byte decomposition like SCReLU.
-- **v7 hidden layers**: SCReLU pack to uint8, int8 L1 matmul via VPMADDUBSW, float L2→output. 673K NPS (12% faster than GoChess).
+- **v7/v8/v9 hidden layers**: SCReLU pack to uint8, int8 L1 matmul via VPMADDUBSW, float L2→output. v7 ~600-680K NPS; v9 ~200-250K (threat feature compute overhead).
+- **v9 threat features**: 66,864 threat features encoding per-square piece threats; 12288 HalfKA inputs + 66864 threat inputs = 79152 total input dim per perspective. HiddenActivation UCI option selects CReLU vs SCReLU for hidden layers (default SCReLU; some v9 nets trained with CReLU-HL).
 - **Fused accumulator update**: copy + delta in single pass for incremental updates
 - **TT prefetch**: prefetch TT bucket after make_move, before child node TT probe
 
@@ -163,8 +168,12 @@ Polyglot .bin format. Weighted random selection. Polyglot Zobrist hashing with s
 - `BookFile` (string) — path to Polyglot .bin book
 - `MoveOverhead` (spin, 0-5000, default 100) — communication latency in ms
 - `Ponder` (check, default false)
-- `SparseL1` (check, default true) — sparse L1 matmul for v7
+- `SparseL1` (check, default true) — sparse L1 matmul for v7/v8/v9
+- `HiddenActivation` (combo, default screlu) — hidden-layer activation (screlu|crelu).
+  Runtime override; nets trained with CReLU-HL require this set to crelu
+  until the file-format marker for HL activation lands.
 - `SyzygyPath` (string) — path to Syzygy tablebase files
+- Plus all 61 `tunables!` parameters (exposed as spin options for SPSA).
 
 ### Time Management
 - Soft allocation: timeLeft/movesLeft + 80% of increment
@@ -372,26 +381,77 @@ Examples:
 - `net-v7-768pwh16x32-w15-e100s100.nnue` — v7 (actually 1536 accum, historical name)
 - `net-v9-768th16x32-w15-e400s400.nnue` — v9 target (768 accum, threats, 16→32)
 
+### Strict naming rules (2026-04-20) — **GPU HOSTS MUST FOLLOW**
+
+The filename **MUST** reflect every binary flag that changes the eval
+path. Mismatches have caused silent correctness bugs: on 2026-04-20,
+`net-v9-768th16x32-w15-e800s800-xray.nnue` omitted the `pw` marker
+despite having the pairwise header flag set (bit 1), leading to an
+AVX-512 pairwise-pack bug that was hidden for weeks. Rule:
+
+**If bit X is set in the file header, the corresponding token MUST
+appear in the filename.** Required tokens in canonical order:
+
+1. `net-v{N}` — format version (5..9)
+2. `{accumWidth}` — accumulator per perspective (explicit, not FT size)
+3. `pw` — **if header bit 1 (pairwise) is set, MUST be present**
+4. `d` — if header bit 4 (dual_l1) is set
+5. `t` — if header bit 6 (threats) is set
+6. `h{L1}` or `h{L1}x{L2}` — hidden-layer sizes (when present)
+7. `{activation}` — `s` (SCReLU) or omitted (CReLU) for FT.
+   Once CReLU-HL file marker lands (bit 5 in extended_kb nets), use
+   `c` after `h{...}` for CReLU hidden layers.
+8. `w{wdl×100}` — e.g. w15 = 0.15
+9. `e{SB}s{snap}` — training length + snapshot
+10. Free-form tag (optional) — e.g. `-xray`, `-noplyfilter`, `-kb10`,
+    `-warm30`. Tags MUST describe training config, not architecture.
+
+**Verification**: before shipping a net, run
+`python3 -c "import struct; ..."` on the header and cross-check
+every bit against the filename. GPU hosts uploading to
+`coda/nets/` or OB MUST do this. A `coda inspect-net <file>` CLI
+is planned to automate this check.
+
+**Prohibited**: architecture tokens in the `-tag` suffix (e.g.
+`-pairwise`, `-screlu`, `-threats`). These belong in the token block.
+The suffix is for *training-config* experiments only.
+
+**Current nets that violate the rule** (rename on next regen):
+- `net-v9-768th16x32-*-xray.nnue` → should be `net-v9-768pwth16x32-*-xray.nnue`
+  (all kb10 and xray variants appear to be pairwise + threats + SCReLU + int8_l1)
+
 ## Key Search Parameters
 
-All parameters are SPSA-tunable via the `tunables!` macro in `search.rs` (45 parameters).
-Current values reflect SPSA rounds 1-10 + retune-on-branch calibration. See the macro
-for authoritative defaults — values below are approximate.
+All parameters are SPSA-tunable via the `tunables!` macro in `search.rs` (61 parameters
+on trunk). Current values reflect SPSA rounds 1-10 + retune-on-branch calibration
+(multiple rounds since). See the macro for authoritative defaults — values below are
+approximate. `chore/tunables-with-c-end` branch extends the macro with a per-param
+c_end field and adds `coda tune-spec` CLI to dump SPSA specs from the binary.
 
 - SEE values: P=100, N=320, B=330, R=500, Q=900
 - History bonus: linear formula min(MAX, MULT*depth - BASE), ~170*d-50 capped at 1505
 - Contempt: 10 (applied as -CONTEMPT)
 
-## Current Status (2026-04-08)
+## Current Status (2026-04-20)
 
-- **Strength**: Estimated ~+180 self-play Elo above initial Coda. Lichess bot deployed as `codabot`.
-- **NPS**: ~600K (production 768pw net, x86-64 AVX2)
-- **Bench**: 1,780,721 nodes (depth 13, 8 positions)
-- **EBF**: 1.87 (effective branching factor)
-- **Lazy SMP**: Implemented. Helpers share TT + history tables.
-- **SPSA**: 10 rounds completed (~+102 cumulative Elo from tuning)
-- **OpenBench**: Deployed at ob.atwiss.com, 4 machines / ~84 threads
-- **Testing methodology**: Self-play SPRT primary, retune-on-branch for tree-shape-changing features, LTC (40+0.4) for TM features
+- **Active branches**: `main` (v5-based, stable), `feature/threat-inputs` (v9
+  development, current primary). v9 has threat features + hidden layers.
+- **main bench/NPS** (v5 production net): 1,780,721 @ ~600K NPS
+- **feature/threat-inputs bench/NPS** (v9, xray w15 e800s800): 4,513,225 @ ~200-210K NPS
+  (threat-feature compute is the main NPS cost; EBF ~1.79)
+- **Recent v9 H1 merges**: #539 NMP-skip, #542 ProbCut-skip, #553 SE-king-pressure,
+  #554 offense-bonus, #557 SMP king-bucket-race + v6 kb_layout fix.
+- **Lazy SMP**: Implemented. Helpers share TT + history tables. Race bug fixed in #557.
+- **SPSA**: 10+ rounds completed. Retune-on-branch methodology active for tree-
+  shape-changing features (TT_PV, cont-hist-malus, offense-bonus precedents).
+- **OpenBench**: Deployed at ob.atwiss.com. `ob_submit.py` auto-detects
+  scale_nps=250000 for v9 branches, 500000 for main/v5.
+- **Collaboration model**: Three Claude instances — Hercules (implementation/fleet),
+  Titan (research/diagnostics), Atlas (tactical/live-play).
+- **Testing methodology**: Self-play SPRT primary. Retune-on-branch for
+  tree-shape-changing features. LTC (40+0.4) for TM features. Live Lichess
+  watching catches position-type blindspots SPRT misses (e.g. 2026-04-19
+  Kf1-over-O-O bug).
 
 ## Key Gotchas
 - Move flag equality vs bitwise: check non-promotion flags with ==, not &
