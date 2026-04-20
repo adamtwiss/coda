@@ -145,6 +145,13 @@ tunables!(
     // MVV multiplier + cont-hist plies-1/2 weight.
     (MVV_CAP_MULT, 18, 4, 64),
     (CONT_HIST_MULT, 3, 1, 8),
+    // Idea D (Titan move_ordering_ideas): extension when a move produces a
+    // big threat-feature delta. threat_deltas.len() proxies for
+    // |NNUE(child) - NNUE(parent)| — cheaper than a true NNUE re-eval (zero
+    // NPS cost, threat_deltas already populated by make_move for v9 nets).
+    // If threat_deltas.len() > THREAT_EXT_THRESHOLD → +1 ply extension.
+    // 64 (range max) effectively disables; typical deltas are 2-30.
+    (THREAT_EXT_THRESHOLD, 20, 0, 64),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -2388,6 +2395,21 @@ fn negamax(
             if prev_undo.captured != NO_PIECE_TYPE && to == move_to(prev_undo.mv) {
                 extension = if FEAT_EXTENSIONS.load(Ordering::Relaxed) { 1 } else { 0 };
                 if extension > 0 { info.stats.recapture_ext += 1; }
+            }
+        }
+
+        // Idea D (Titan move_ordering_ideas): extend when a CAPTURE produces
+        // a large threat-feature delta. Uses threat_deltas.len() as cheap
+        // proxy for |NNUE(child) - NNUE(parent)|. Restricted to captures to
+        // avoid over-extending on positions with many pieces interacting.
+        // Additional gates: non-PV and depth >= 4 to prevent compounding.
+        let is_pv_node = beta - alpha > 1;
+        if extension == 0 && is_cap && !is_pv_node && depth >= 4
+            && FEAT_EXTENSIONS.load(Ordering::Relaxed) && board.generate_threat_deltas
+        {
+            let threat_ext_thresh = tp(&THREAT_EXT_THRESHOLD) as usize;
+            if threat_ext_thresh > 0 && board.threat_deltas.len() > threat_ext_thresh {
+                extension = 1;
             }
         }
 
