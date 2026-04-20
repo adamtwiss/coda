@@ -96,6 +96,32 @@ Ordered by expected ROI vs effort:
 
 - Halogen's "no MVV" result is worth knowing but not directly actionable: our captHist is younger and less trusted. Revisit after defender + dynamic SEE ship.
 
+## Findings from 2026-04-20 overnight sweep
+
+Session tested several capture-ordering items from Tier 1/2:
+
+**Tier 1 (caphist-defender retune, #523 + #532)** — H0. First-move-cut only rose +1pp post-B1 (vs +11pp pre-B1). **Conclusion: B1 (+52 Elo) absorbed most of the defender-bit ordering signal**. Post-rebase bench only dropped 0.5pp on FMC metric, confirming the marginal mechanism is small. The retune unwind pattern we expected for #490-style gains didn't activate. **Don't iterate** — B1 dominance is now established.
+
+**Tier 2 — Caissa 3-tier (#536 H0)**: −5.0 Elo. Force-good on attacker ≤ victim over-served SEE-bad captures (defended queens etc.). First-move-cut dropped 4pp. **Retry #549 with tighter rule** (attacker*2 ≤ victim, clear material wins only) trending H0 at time of writing.
+
+**Tier 2 — Dynamic SEE v2 (#543 H0)**: −0.7 Elo. captHist-only threshold with BASELINE -75 added. **Retry #556 with more permissive -125** in flight; if also H0, direction is wrong (should try LESS permissive instead).
+
+**NEW items from Reckless patterns — just queued**:
+- **Offense bonus (#554)**: +6000 for quiet moves attacking enemy non-pawn pieces safely (not defended by enemy pawn). Bench 2.85M (−31%). Reckless-unique. Not previously in Coda.
+- **Rook king-ring-ortho (#555)**: +5000 for rook moves where `to` orthogonally attacks enemy king zone. Bench 3.35M (−20%). Reckless-unique.
+
+Both are first systematic tests of Reckless-unique signals per the cross-engine survey. Strong priors from Reckless's measured gains.
+
+**Updated recommendation priority after overnight**:
+
+1. ~~Caphist-defender~~ — Tier 1 **closed as absorbed by B1**.
+2. **Caissa 3-tier tighter (#549)** — trending H0; likely close as "pattern doesn't transfer".
+3. **Dynamic SEE v3 (#556)** — testing more permissive baseline.
+4. **Offense bonus (#554)** — first-time test of Reckless's MovePick signal. **Strong prior +3-8**.
+5. **Rook-king-ring (#555)** — Reckless-specific. Prior ~+2-5.
+6. **Full-threat captHist (Quanticade 6D)** — **Gated on #554/#555 resolution**. If neither lands, the signal space may be saturated and Tier 3 isn't worth investing in.
+7. **Halogen-style no-MVV ablation** — still diagnostic, worth running when fleet frees up.
+
 ## Companion docs
 
 - [`move_ordering_understanding_2026-04-19.md`](move_ordering_understanding_2026-04-19.md) — locus of v9 ordering loss.

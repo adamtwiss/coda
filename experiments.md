@@ -5142,6 +5142,59 @@ Any 2 of (Reckless+retune, const-generic, low-LR) landing positive
 puts us at or above v5. All-in merge decision deferred pending
 results.
 
+## 2026-04-20: Overnight sweep — 2 merges (+12.7), 9 H0s, retries in flight
+
+### Merged to trunk (H1 resolved)
+
+| Test | Feature | Elo | Games | Notes |
+|---|---|---|---|---|
+| **#542** | `experiment/unstable-probcut-skip` | **+6.7** | 7390 | Skip ProbCut when static eval differs sharply from parent (|Δ| > UNSTABLE_THRESH=157). Second consumer of `unstable` signal (HIST_PRUNE guard was first). Mirror of #481 king-zone-pressure ProbCut gate. Clean LLR 2.96. |
+| **#539** | `experiment/threats-nmp-skip` | **+6.0** | 8330 | Skip NMP when any_threat_count ≥ 3 (3+ of our non-pawns under enemy attack). Third landing for any_threat_count signal after futility-widener #484 and LMR threat-density. Crisis positions get real search, null move's extra tempo no longer costly. Clean LLR 3.01. |
+
+### H0'd (closed)
+
+| Test | Branch | Result | What it tested | Decision |
+|---|---|---|---|---|
+| **#540** | `threats-rfp-widener` | −4.8 LLR −2.96 @ 6016 | any_threat_count RFP widener — mirror of existing has_pawn_threats widener but general threats | **Dropped.** Signal overlap: pawn-threat widener already catches the high-value case. Don't re-iterate. |
+| **#541** | `unstable-lmr-reduce-less` | −10.9 LLR −2.99 @ 3146 | `reduction -= 1` when unstable (all depths) | Iterate with depth gate — **#548** in flight |
+| **#538** | `our-kz-opp-probcut` | −0.3 LLR −2.97 @ 23800 | Our-king-zone-opportunity as ProbCut skip gate (mirror of enemy-king-zone) | Dropped — symmetry assumption fails; our king attacks doesn't help ProbCut like enemy's does |
+| **#543** | `dynamic-see-v2` | −0.7 LLR −2.97 @ 19062 | Dynamic SEE threshold with −75 baseline | Iterate with different baseline — **#556** (−125) in flight |
+| **#544** | `corrhist-probcut-skip` | −2.5 LLR −3.22 @ 10684 | Skip ProbCut when corrhist-mag ≥ 25 | **Dropped.** Interaction with #542's `unstable` ProbCut skip — double-gated same "eval noisy" locus. |
+| **#533** | `discovered-attack-scaled` | +0.2 LLR −2.96 @ 34642 | Victim-value-scaled B1 bonus (stacks on +52 flat B1) | Dropped — original B1 already captures the ordering signal; victim-scaling doesn't compound on top. |
+| **#528, #529** (earlier in day) | history-shape-offset, material-scale-tunable | both H0 | see below | see below |
+
+### In flight from this batch (overnight wave)
+
+| Test | Branch | Purpose |
+|---|---|---|
+| #546→stopped | threats-nmp-skip retune | Single-feature tune, stopped to do combined retune instead |
+| **#550→#551** | `tune/v9-overnight-r1` | Combined retune post #542 + #539 merges (38 tunables moved). SPRT #551 trending +2 Elo. |
+| #547 | `onto-pawn-threatened` | Retry of #537 onto-threatened with filtered signal (enemy pawn attacks only). |
+| #548 | `unstable-lmr-depth-gated` | Retry of #541 with depth >= 6 gate. |
+| #549 | `caissa-3tier-tight` | Retry of #536 Caissa 3-tier with tighter force-good rule (attacker*2 ≤ victim). |
+| **#552** | `eval-diff-qhist-v2` | Retry of #517 (H0 at −0.7) solo on new post-#542/#539 trunk. Bench 2.72M (−35%). |
+| **#553** | `se-king-pressure-v2` | Retry of #511 (H0 at −0.6) solo on new trunk. |
+| **#554** | `offense-bonus` | Reckless pattern (+6000 for quiet attacking enemy piece). Not previously tested. Bench 2.85M (−31%). |
+| **#555** | `rook-kingring-bonus` | Reckless pattern (+5000 for rook attacks on enemy king zone). Bench 3.35M (−20%). |
+| **#556** | `dynamic-see-v3` | Retry of #543 with more-permissive −125 baseline. |
+
+### Overnight session overall
+
+- **Net Elo gain merged: +12.7 face value** (#542 + #539) — retune #551 grinding a further +2 at time of writing.
+- **Fleet efficiency**: wait-500-rule validated repeatedly; early spikes (+8 at 200 games) faded to realistic +1-5 ranges.
+- **Signal-context sweep continuing to pay**: #539 was 3rd landing for any_threat_count signal; #542 was 2nd landing for `unstable` signal. Pattern of cross-context reuse exceeds Titan's 1-in-3 prior significantly.
+- **Bench creep concern** (Adam, 2026-04-20 early AM): today's +Elo wins added 38% nodes (3.0M → 4.17M after #539, 4.51M with tune applied). Approach: prioritise bench-REDUCING retries in today's next wave. Offense bonus (−31%), eval-diff-qhist (−35%), rook-kingring (−20%) are the three bench-reducing candidates queued.
+
+### Post-mortems by H0 bucket
+
+- **Magnitude-too-large** (#537 −24.8, #541 −10.9): signal direction correct but applied too aggressively. Both iterating with gates/filters.
+- **Signal overlap** (#540, #544): redundant with existing features. Drop without iterate.
+- **Mechanism wrong** (#528, #536): structural assumption doesn't hold. #528 dropped; #536 retrying with tighter rule as check.
+
+Memory updated: `feedback_h0_post_mortem_discipline.md` — require mechanism-bucketing and iterate/drop decision for every H0 going forward.
+
+---
+
 ## 2026-04-20: Two H0s, one diagnostic sidetrip
 
 ### H0'd (closed — dropped)

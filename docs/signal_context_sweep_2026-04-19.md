@@ -66,18 +66,39 @@ Legend: ✅ landed, 🚧 in flight / queued, ❌ tested and H0, ❓ untried.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | enemy-attacks bb | | | ✅history #463 | | | | | | ✅escape | | | |
 | pawn-threat-count | ✅widen | | ✅reduce | | | | | | | | | |
-| king-zone-pressure | ❓ | ✅#466 | ✅#482 | ❓ | ❓ | ✅#481 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| our-king-zone-opportunity | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| can_win_material | 🚧#486 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| threat-mag | ❓ | ❓ | 🚧#488 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| threat-delta count | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| eval instability | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| corrhist mag | ❓ | ❓ | ✅complex | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| our-defenses | ❓ | ❓ | ❓ | ❓ | 🚧 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| xray-blockers | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
+| king-zone-pressure | ❌#503 | ✅#466 | ✅#482 | ❌#504 | ❓ | ✅#481 | ❌#511 | ❓ | ❓ | ❌#512 | ❓ | ❓ |
+| our-king-zone-opportunity | ❓ | ❓ | ❓ | ❓ | ❓ | ❌#538 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
+| can_win_material | ❌#479/#501 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
+| threat-mag | ❓ | ❓ | ❌#488/#500 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
+| any_threat_count | ❌#540 | ✅**#539** | ✅reduce | ❓ | ✅#484 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
+| eval instability (unstable) | ❓ | ❓ | ❌#541 🚧#548-gated | ❓ | ❓ | ✅**#542** | ❓ | ✅guard | ❓ | ❓ | ❓ | ❓ |
+| corrhist mag | ❓ | ❓ | ✅complex | ❓ | ❓ | ❌#544 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
+| our-defenses | ❓ | ❓ | ❓ | ❓ | ✅#484 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
+| xray-blockers | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ✅**#502 +52** | ❓ | ❓ | ❓ |
 | threat-feature-count | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
 
-**Landed count**: 7 (including pre-existing pawn-threat-count, enemy-attacks-as-escape). **In flight**: 3. **Untried**: ~100+. This is the surface area the sweep operates over.
+**Landed count**: 10 (newly added **#539 any_threat_count × NMP +6.0**, **#542 unstable × ProbCut +6.7**, **#502 xray-blockers × MovePick +52**). **Failed (H0)**: 10. **In flight**: 1 depth-gated retry. **Untried**: ~90+.
+
+## Key findings from 2026-04-19/20 overnight sweep
+
+**Pattern strongly validates (signal × context)**: of ~13 novel signal-context pairs tested:
+- 3 landed strong (+52, +7, +6) = ~23% hit rate
+- Several more landed small (#551 tune +2 grinding; #481 at +7.03; #482 at +6.81)
+
+**Specific lessons per signal**:
+
+1. **king-zone-pressure seems to have saturated at 3 contexts** (NMP #466, LMR #482, ProbCut #481). Four subsequent attempts (RFP #503, LMP #504, SE #511, ASP #512) all H0'd. Signal generalizes to 3/7 contexts tested, not 7/7.
+
+2. **any_threat_count is the strongest new "signal" this session**: 3 landings already (futility #484, LMR threat-density, NMP #539). RFP-widener #540 H0'd due to signal overlap with has_pawn_threats widener; not a failure of the signal itself.
+
+3. **unstable (parent-child eval gap) is underused**: landed at ProbCut #542 (+6.7) on first systematic attempt. LMR modifier #541 H0'd for magnitude reasons; depth-gated retry #548 in flight.
+
+4. **Mirror signals don't always transfer**: our-king-zone-opportunity at ProbCut (#538) H0'd despite enemy-king-zone-pressure at same context working (#481 +7.03). Attacker/defender symmetry assumption fails for this signal.
+
+**Priority for next sweep waves**:
+- any_threat_count × SE, SEE, LMP, IIR (all untested, strong prior given 3 landings)
+- unstable × RFP, NMP, Fut, SEE (one win at ProbCut, likely more)
+- xray-blockers × every context (B1 pattern is position-level tactical, may work as gate/modifier elsewhere)
 
 ## Prioritised next experiments
 
