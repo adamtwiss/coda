@@ -616,6 +616,47 @@ impl MovePicker {
                 score += crate::search::DISCOVERED_ATTACK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
             }
 
+            // Reckless "offense bonus": quiet move that lands on a square
+            // attacking an enemy non-pawn piece. +6000 flat. Not yet present
+            // in Coda; Reckless has it at ~+6000. Signal: does our piece on
+            // `to` attack an enemy worth threatening?
+            // Safety filter: skip if `to` is attacked by any lower-value enemy
+            // piece (the capture back would be net negative for us).
+            if piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                if pt < 6 {
+                    let us = board.side_to_move;
+                    let them = 1 - us;
+                    let occ = board.colors[us as usize] | board.colors[them as usize];
+                    // We'd be on `to` after the move; compute attacks from `to` by our piece type.
+                    let attacks_from_to = match pt {
+                        0 => pawn_attacks(us, to as u32),  // pawn
+                        1 => knight_attacks(to as u32),
+                        2 => bishop_attacks(to as u32, occ & !(1u64 << from)),  // bishop: occ minus our from-square
+                        3 => rook_attacks(to as u32, occ & !(1u64 << from)),    // rook
+                        4 => queen_attacks(to as u32, occ & !(1u64 << from)),   // queen
+                        _ => 0,  // king — no offense bonus, too risky
+                    };
+                    let enemy_non_pawns = board.colors[them as usize]
+                        & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+                    if attacks_from_to & enemy_non_pawns != 0 {
+                        // Safety check: skip if `to` is attacked by enemy pawn
+                        // (which could recapture us).
+                        let their_pawns = board.pieces[PAWN as usize] & board.colors[them as usize];
+                        let enemy_pawn_attacks = if them == WHITE {
+                            ((their_pawns & !FILE_A) << 7) | ((their_pawns & !FILE_H) << 9)
+                        } else {
+                            ((their_pawns & !FILE_A) >> 9) | ((their_pawns & !FILE_H) >> 7)
+                        };
+                        // Only skip if WE would be a bigger target than a pawn
+                        let unsafe_square = pt != 0 && (enemy_pawn_attacks & (1u64 << to)) != 0;
+                        if !unsafe_square {
+                            score += 6000;
+                        }
+                    }
+                }
+            }
+
             let idx = self.moves.len;
             self.moves.push(m);
             self.scores[idx] = score;
