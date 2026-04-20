@@ -145,6 +145,13 @@ tunables!(
     // MVV multiplier + cont-hist plies-1/2 weight.
     (MVV_CAP_MULT, 18, 4, 64),
     (CONT_HIST_MULT, 3, 1, 8),
+    // Rook-to-open-file movepicker bonus. Flat bonus added to quiet
+    // rook moves landing on a file with no friendly pawns. Fully open
+    // (no pawns either color) gets the full bonus, half-open (no
+    // friendly pawns, enemy pawns remain) gets the half bonus.
+    // 0 = feature disabled.
+    (ROOK_OPEN_FILE_BONUS, 5000, 0, 20000),
+    (ROOK_HALF_OPEN_BONUS, 2500, 0, 15000),
 );
 
 /// Get a tunable parameter value (inline for hot paths)

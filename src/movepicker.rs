@@ -657,6 +657,31 @@ impl MovePicker {
                 }
             }
 
+            // Rook-to-open-file bonus: quiet rook move landing on a file
+            // with no friendly pawns. Fully open (no pawns either color)
+            // gets ROOK_OPEN_FILE_BONUS, half-open gets ROOK_HALF_OPEN_BONUS.
+            let rof_bonus = crate::search::ROOK_OPEN_FILE_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+            let rhf_bonus = crate::search::ROOK_HALF_OPEN_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+            if (rof_bonus > 0 || rhf_bonus > 0) && piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                if pt == 3 {  // rook
+                    let to_file = (to & 7) as usize;
+                    let file_bb = FILES[to_file];
+                    let all_pawns = board.pieces[PAWN as usize];
+                    let us = board.side_to_move;
+                    let them = 1 - us;
+                    let our_pawns_on_file = all_pawns & board.colors[us as usize] & file_bb;
+                    let their_pawns_on_file = all_pawns & board.colors[them as usize] & file_bb;
+                    if our_pawns_on_file == 0 {
+                        if their_pawns_on_file == 0 {
+                            score += rof_bonus;
+                        } else {
+                            score += rhf_bonus;
+                        }
+                    }
+                }
+            }
+
             let idx = self.moves.len;
             self.moves.push(m);
             self.scores[idx] = score;
