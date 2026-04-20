@@ -201,6 +201,10 @@ pub struct MovePicker {
     // Checking squares: from which squares does each piece type give direct check?
     // Indexed by piece type (0=PAWN..5=KING). Computed once per node.
     checking_sqs: [Bitboard; 6],
+    // Idea C (Titan move_ordering_ideas): per-(cp, sq) threat-weight magnitude
+    // for capture scoring. Borrowed for the lifetime of the search from the
+    // loaded NNUENet. None when net has no threat features.
+    threat_weight_mag: Option<*const i32>,
 }
 
 impl MovePicker {
@@ -217,6 +221,7 @@ impl MovePicker {
         xray_blockers: Bitboard,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
+        threat_weight_mag: Option<&[i32]>,
     ) -> Self {
         let killers = if ply < 64 {
             history.killers[ply]
@@ -292,6 +297,7 @@ impl MovePicker {
             pinned: 0,
             threat_sq: -1,
             checking_sqs,
+            threat_weight_mag: threat_weight_mag.map(|s| s.as_ptr()),
         }
     }
 
@@ -301,6 +307,7 @@ impl MovePicker {
         _board: &Board,
         tt_move: Move,
         history: &History,
+        threat_weight_mag: Option<&[i32]>,
     ) -> Self {
         MovePicker {
             stage: Stage::TTMove,
@@ -324,6 +331,7 @@ impl MovePicker {
             pinned: 0,
             threat_sq: -1,
             checking_sqs: [0; 6], // not used in QS
+            threat_weight_mag: threat_weight_mag.map(|s| s.as_ptr()),
         }
     }
 
@@ -340,6 +348,7 @@ impl MovePicker {
         pawn_hist: Option<&[[i16; 64]; 13]>,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
+        threat_weight_mag: Option<&[i32]>,
     ) -> Self {
         // Build cont-hist pointers for evasion (same as main picker)
         let mut cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4] = [None; 4];
@@ -378,6 +387,7 @@ impl MovePicker {
             pinned,
             threat_sq: -1,
             checking_sqs: [0; 6], // not used in evasions
+            threat_weight_mag: threat_weight_mag.map(|s| s.as_ptr()),
         }
     }
 
@@ -513,16 +523,20 @@ impl MovePicker {
         self.bad_len = 0;
 
         let history = unsafe { &*self.history };
+        // Copy the raw ptr locally so we can rebuild the slice each iteration
+        // without tying a borrow to self.
+        let tmag_ptr = self.threat_weight_mag;
 
         for i in 0..caps.len {
             let m = caps.moves[i];
             if m == self.tt_move {
                 continue;
             }
+            let tmag = tmag_ptr.map(|p| unsafe { std::slice::from_raw_parts(p, 12 * 64) });
             // Dynamic SEE threshold: captures with strong history get a more
             // forgiving threshold. Use captHist only (not MVV) to avoid inflation.
             let capt_hist = capt_hist_score_static(board, history, m);
-            let cap_score = mvv_lva(board, m) + capt_hist;
+            let cap_score = mvv_lva(board, m, tmag) + capt_hist;
             let see_threshold = -capt_hist / 18;
             if !see_ge(board, m, see_threshold) {
                 // Bad capture
@@ -666,6 +680,14 @@ impl MovePicker {
 
     /// Generate evasion moves and score them.
     /// Captures scored above quiets. TT move filtered out.
+    /// Borrow the threat_weight_mag slice as Option<&[i32]> (768 entries when
+    /// present). Safe because the slice is immutable after net load and lives
+    /// for the search duration.
+    #[inline]
+    fn threat_mag_slice(&self) -> Option<&[i32]> {
+        self.threat_weight_mag.map(|p| unsafe { std::slice::from_raw_parts(p, 12 * 64) })
+    }
+
     /// Generate and score evasions.
     ///
     /// Since Coda doesn't have a dedicated generate_evasions function,
@@ -675,6 +697,7 @@ impl MovePicker {
         self.moves = MoveList::new();
 
         let history = unsafe { &*self.history };
+        let tmag_ptr = self.threat_weight_mag;
 
         for i in 0..all.len {
             let m = all.moves[i];
@@ -698,7 +721,8 @@ impl MovePicker {
                 }
             } else if board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT {
                 // Capture: MVV-LVA + capture history
-                10000 + mvv_lva(board, m) + capt_hist_score_static(board, history, m)
+                let tmag = tmag_ptr.map(|p| unsafe { std::slice::from_raw_parts(p, 12 * 64) });
+                10000 + mvv_lva(board, m, tmag) + capt_hist_score_static(board, history, m)
             } else {
                 // Quiet: history + continuation history + pawn history
                 let piece = board.piece_at(from);
@@ -796,8 +820,11 @@ pub fn capt_hist_score_static(board: &Board, history: &History, m: Move) -> i32 
     history.capture[go_piece(piece)][to as usize][ct] as i32
 }
 
-/// MVV-LVA score for a capture.
-fn mvv_lva(board: &Board, m: Move) -> i32 {
+/// MVV-LVA score for a capture, with optional threat-weight bonus (Idea C).
+/// `threat_mag` is an optional per-(cp, sq) lookup table indexed `cp * 64 + sq`,
+/// normalised 0-1000. When provided and THREAT_CAPTURE_BONUS > 0, captures of
+/// pieces with high threat-weight magnitude get an ordering bonus.
+fn mvv_lva(board: &Board, m: Move, threat_mag: Option<&[i32]>) -> i32 {
     let to = move_to(m);
     let from = move_from(m);
 
@@ -814,7 +841,20 @@ fn mvv_lva(board: &Board, m: Move) -> i32 {
     let _attacker_pt = board.piece_type_at(from);
 
     // MVV only (no LVA), multiplier SPSA-tunable (Obsidian/Alexandria/Berserk default 16)
-    see_value(target_pt) * mult
+    let mut score = see_value(target_pt) * mult;
+
+    // Idea C: add bonus scaled by captured piece's threat-weight magnitude.
+    let tc_bonus = crate::search::THREAT_CAPTURE_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+    if tc_bonus > 0 {
+        if let Some(mag) = threat_mag {
+            let captured_cp = board.piece_at(to) as usize;
+            if captured_cp < 12 {
+                let m = mag[captured_cp * 64 + to as usize];
+                score += (tc_bonus * m) / 1000;
+            }
+        }
+    }
+    score
 }
 
 /// Check if a move is a capture.
@@ -1051,7 +1091,13 @@ pub struct QMovePicker {
 impl QMovePicker {
     /// Create QS picker: TT move first, then captures scored by MVV-LVA + captHist.
     /// When in_check, generates all moves (evasions); otherwise captures only.
-    pub fn new(board: &Board, tt_move: Move, in_check: bool, history: &History) -> Self {
+    pub fn new(
+        board: &Board,
+        tt_move: Move,
+        in_check: bool,
+        history: &History,
+        threat_weight_mag: Option<&[i32]>,
+    ) -> Self {
         let pinned = board.pinned();
         let checkers = board.checkers();
 
@@ -1066,6 +1112,8 @@ impl QMovePicker {
             checkers,
             in_check,
         };
+
+        let tc_bonus = crate::search::THREAT_CAPTURE_BONUS.load(std::sync::atomic::Ordering::Relaxed);
 
         // Score moves: MVV-LVA + captHist for captures
         for i in 0..picker.moves.len {
@@ -1085,13 +1133,22 @@ impl QMovePicker {
                 // Capture: MVV-LVA + captHist/16
                 let victim = if flags == FLAG_EN_PASSANT { PAWN } else { target_pt };
                 let attacker = board.piece_type_at(from);
-                let mvv_lva = see_value(victim) * 10 - see_value(attacker);
+                let mut mvv_lva_score = see_value(victim) * 10 - see_value(attacker);
+                // Idea C: threat-weight magnitude bonus for captures
+                if tc_bonus > 0 {
+                    if let Some(mag) = threat_weight_mag {
+                        let captured_cp = board.piece_at(to) as usize;
+                        if captured_cp < 12 {
+                            mvv_lva_score += (tc_bonus * mag[captured_cp * 64 + to as usize]) / 1000;
+                        }
+                    }
+                }
                 let capt_hist = capt_hist_score_static(board, history, mv);
                 if in_check {
                     // Evasion captures scored high (10000 + mvvlva + captHist)
-                    picker.scores[i] = 10000 + mvv_lva + capt_hist;
+                    picker.scores[i] = 10000 + mvv_lva_score + capt_hist;
                 } else {
-                    picker.scores[i] = mvv_lva + capt_hist;
+                    picker.scores[i] = mvv_lva_score + capt_hist;
                 }
             } else if is_promotion(mv) {
                 if in_check {

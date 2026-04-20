@@ -145,6 +145,10 @@ tunables!(
     // MVV multiplier + cont-hist plies-1/2 weight.
     (MVV_CAP_MULT, 18, 4, 64),
     (CONT_HIST_MULT, 3, 1, 8),
+    // Idea C (Titan move_ordering_ideas): capture-scoring bonus scaled by
+    // captured piece's threat-weight magnitude at dest square (normalised
+    // 0-1000). Default 1000 mid-range; SPSA to tune.
+    (THREAT_CAPTURE_BONUS, 1000, 0, 2000),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -2034,7 +2038,10 @@ fn negamax(
         // SEE threshold: only consider captures that gain enough material
         let see_threshold = (probcut_beta - static_eval).max(0);
         let pc_depth = depth - 4;
-        let mut pc_picker = QMovePicker::new(board, NO_MOVE, false, &info.history);
+        let tmag_slice = info.nnue_net.as_ref()
+            .filter(|n| !n.threat_weight_mag.is_empty())
+            .map(|n| n.threat_weight_mag.as_slice());
+        let mut pc_picker = QMovePicker::new(board, NO_MOVE, false, &info.history, tmag_slice);
         loop {
             let mv = pc_picker.next(board);
             if mv == NO_MOVE { break; }
@@ -2128,10 +2135,13 @@ fn negamax(
         NO_MOVE
     };
     let pawn_hist_ref = Some(&info.pawn_hist[ph_idx] as &[[i16; 64]; 13]);
+    let tmag_slice = info.nnue_net.as_ref()
+        .filter(|n| !n.threat_weight_mag.is_empty())
+        .map(|n| n.threat_weight_mag.as_slice());
     let mut picker = if in_check {
-        MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack, tmag_slice)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack, tmag_slice)
     };
     picker.threat_sq = threat_sq;
 
@@ -2962,9 +2972,12 @@ fn quiescence_with_depth(
         } else {
             None
         };
+        let qs_tmag = info.nnue_net.as_ref()
+            .filter(|n| !n.threat_weight_mag.is_empty())
+            .map(|n| n.threat_weight_mag.as_slice());
         let mut evasion_picker = MovePicker::new_evasion(
             tt_move, ply as usize, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
-            &info.moved_piece_stack, &info.moved_to_stack,
+            &info.moved_piece_stack, &info.moved_to_stack, qs_tmag,
         );
         let mut best_score = -INFINITY;
         let mut best_move = NO_MOVE;
@@ -3077,7 +3090,10 @@ fn quiescence_with_depth(
 
     // Use main MovePicker in quiescence mode.
     // This partitions captures into good (SEE>=0) and bad, and uses staged ordering.
-    let mut picker = MovePicker::new_quiescence(board, tt_move, &info.history);
+    let qs2_tmag = info.nnue_net.as_ref()
+        .filter(|n| !n.threat_weight_mag.is_empty())
+        .map(|n| n.threat_weight_mag.as_slice());
+    let mut picker = MovePicker::new_quiescence(board, tt_move, &info.history, qs2_tmag);
     let mut best_move = NO_MOVE;
     let mut qs_move_count = 0i32;
     let qs_max_caps = tp(&QS_MAX_CAPTURES);
