@@ -1608,6 +1608,104 @@ unsafe fn add_weight_rows_neon(
 mod tests {
     use super::*;
 
+    /// Scalar reference for apply_deltas_{avx2,neon} — mirrors the
+    /// dispatcher's scalar fallback exactly so SIMD paths can be
+    /// validated against it.
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    fn apply_deltas_scalar_ref(
+        dst: &mut [i16],
+        src: &[i16],
+        threat_weights: &[i8],
+        hidden_size: usize,
+        adds: &[usize],
+        subs: &[usize],
+    ) {
+        for j in 0..hidden_size {
+            let mut v = src[j];
+            for &idx in adds { v += threat_weights[idx * hidden_size + j] as i16; }
+            for &idx in subs { v -= threat_weights[idx * hidden_size + j] as i16; }
+            dst[j] = v;
+        }
+    }
+
+    /// Seeded xorshift64* for deterministic test inputs.
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    fn rng(seed: u64) -> impl FnMut() -> u64 {
+        let mut s = seed;
+        move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_apply_deltas_neon_matches_scalar() {
+        let h = 768;
+        let n_threats = 64;
+        let mut r = rng(0xc0da_d317_a5_0002);
+
+        let mut weights = vec![0i8; n_threats * h];
+        for w in weights.iter_mut() { *w = (r() % 256) as i8; }
+
+        let mut src = vec![0i16; h];
+        for v in src.iter_mut() { *v = (r() as i32 as i16).rem_euclid(2001) - 1000; }
+
+        // Mixed adds+subs — covers the paired inner loop.
+        let adds = [3usize, 8, 21, 40];
+        let subs = [5usize, 12, 30, 55, 63];
+        let mut scalar_dst = vec![0i16; h];
+        apply_deltas_scalar_ref(&mut scalar_dst, &src, &weights, h, &adds, &subs);
+        let mut neon_dst = vec![0i16; h];
+        unsafe { apply_deltas_neon(&mut neon_dst, &src, &weights, h, &adds, &subs); }
+        assert_eq!(scalar_dst, neon_dst, "apply_deltas_neon mixed diverged");
+
+        // Adds-only (exercises the post-paired tail loop for adds).
+        let mut scalar_dst = vec![0i16; h];
+        apply_deltas_scalar_ref(&mut scalar_dst, &src, &weights, h, &adds, &[]);
+        let mut neon_dst = vec![0i16; h];
+        unsafe { apply_deltas_neon(&mut neon_dst, &src, &weights, h, &adds, &[]); }
+        assert_eq!(scalar_dst, neon_dst, "apply_deltas_neon adds-only diverged");
+
+        // Subs-only (exercises the post-paired tail loop for subs).
+        let mut scalar_dst = vec![0i16; h];
+        apply_deltas_scalar_ref(&mut scalar_dst, &src, &weights, h, &[], &subs);
+        let mut neon_dst = vec![0i16; h];
+        unsafe { apply_deltas_neon(&mut neon_dst, &src, &weights, h, &[], &subs); }
+        assert_eq!(scalar_dst, neon_dst, "apply_deltas_neon subs-only diverged");
+
+        // Empty deltas — identity copy.
+        let mut neon_dst = vec![0i16; h];
+        unsafe { apply_deltas_neon(&mut neon_dst, &src, &weights, h, &[], &[]); }
+        assert_eq!(src, neon_dst, "apply_deltas_neon empty-deltas should be identity");
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_add_weight_rows_neon_matches_scalar() {
+        let h = 768;
+        let n_features = 32;
+        let mut r = rng(0xc0da_add1_a5_0004);
+
+        let mut weights = vec![0i8; n_features * h];
+        for w in weights.iter_mut() { *w = (r() % 256) as i8; }
+
+        let indices = [0usize, 3, 7, 11, 15, 19, 23, 27, 31];
+
+        let mut scalar_dst = vec![0i16; h];
+        for v in scalar_dst.iter_mut() { *v = (r() as i32 as i16).rem_euclid(501) - 250; }
+        let mut neon_dst = scalar_dst.clone();
+
+        for &idx in &indices {
+            let base = idx * h;
+            for j in 0..h { scalar_dst[j] += weights[base + j] as i16; }
+        }
+        unsafe { add_weight_rows_neon(&mut neon_dst, &weights, h, &indices); }
+        assert_eq!(scalar_dst, neon_dst, "add_weight_rows_neon diverged");
+    }
+
     #[test]
     fn test_init_threats() {
         crate::init();

@@ -3912,6 +3912,133 @@ fn read_i16_slice(r: &mut impl IoRead, dst: &mut [i16]) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// Seeded PRNG for deterministic NEON-vs-scalar tests.
+    /// xorshift64*, adequate for scrambling test inputs.
+    fn rng(seed: u64) -> impl FnMut() -> u64 {
+        let mut s = seed;
+        move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+    }
+
+    /// Scalar reference for finny_batch_apply. Matches the dispatcher's
+    /// fallback path byte-for-byte so NEON/AVX2 results can be compared.
+    fn finny_batch_apply_scalar_ref(
+        acc: &mut [i16],
+        input_weights: &[i16],
+        h: usize,
+        adds: &[usize],
+        subs: &[usize],
+    ) {
+        for &idx in adds {
+            let base = idx * h;
+            for j in 0..h { acc[j] += input_weights[base + j]; }
+        }
+        for &idx in subs {
+            let base = idx * h;
+            for j in 0..h { acc[j] -= input_weights[base + j]; }
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_finny_batch_apply_neon_matches_scalar() {
+        let h = 768;
+        let n_features = 32;
+        let mut r = rng(0xc0da_f1ec_0000_0001);
+
+        let mut weights = vec![0i16; n_features * h];
+        for w in weights.iter_mut() { *w = (r() as i32 as i16).rem_euclid(511) - 255; }
+
+        let mut acc_init = vec![0i16; h];
+        for v in acc_init.iter_mut() { *v = (r() as i32 as i16).rem_euclid(2001) - 1000; }
+
+        let adds = [2usize, 5, 11, 17, 23];
+        let subs = [1usize, 7, 13, 19, 29, 31];
+
+        let mut scalar_acc = acc_init.clone();
+        finny_batch_apply_scalar_ref(&mut scalar_acc, &weights, h, &adds, &subs);
+
+        let mut neon_acc = acc_init.clone();
+        unsafe { finny_batch_apply_neon(&mut neon_acc, &weights, h, &adds, &subs); }
+
+        assert_eq!(scalar_acc, neon_acc,
+            "finny_batch_apply_neon diverged from scalar");
+
+        // Adds-only edge case (mirrors the "no-cache" refresh path).
+        let mut scalar_acc = acc_init.clone();
+        finny_batch_apply_scalar_ref(&mut scalar_acc, &weights, h, &adds, &[]);
+        let mut neon_acc = acc_init.clone();
+        unsafe { finny_batch_apply_neon(&mut neon_acc, &weights, h, &adds, &[]); }
+        assert_eq!(scalar_acc, neon_acc,
+            "finny_batch_apply_neon (adds-only) diverged from scalar");
+
+        // Empty deltas must be identity.
+        let mut neon_acc = acc_init.clone();
+        unsafe { finny_batch_apply_neon(&mut neon_acc, &weights, h, &[], &[]); }
+        assert_eq!(acc_init, neon_acc,
+            "finny_batch_apply_neon with empty deltas mutated accumulator");
+    }
+
+    /// Scalar reference for neon_pairwise_pack_fused.
+    #[cfg(target_arch = "aarch64")]
+    fn pairwise_pack_scalar_ref(acc: &[i16], threat: Option<&[i16]>, out: &mut [u8], pw: usize) {
+        for i in 0..pw {
+            let (ta, tb) = match threat {
+                Some(t) => (t[i] as i32, t[i + pw] as i32),
+                None => (0, 0),
+            };
+            let a = (acc[i] as i32 + ta).clamp(0, QA);
+            let b = (acc[i + pw] as i32 + tb).clamp(0, QA);
+            out[i] = ((a * b) >> FT_SHIFT) as u8;
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_neon_pairwise_pack_matches_scalar() {
+        let pw = 384;
+        let mut r = rng(0xc0da_fa11_0000_0003);
+
+        let mut acc = vec![0i16; pw * 2];
+        for v in acc.iter_mut() { *v = (r() as i32 as i16).rem_euclid(501) - 250; }
+
+        let mut threat = vec![0i16; pw * 2];
+        for v in threat.iter_mut() { *v = (r() as i32 as i16).rem_euclid(201) - 100; }
+
+        // No-threat path
+        let mut scalar_out = vec![0u8; pw];
+        pairwise_pack_scalar_ref(&acc, None, &mut scalar_out, pw);
+        let mut neon_out = vec![0u8; pw];
+        unsafe { neon_pairwise_pack_fused(&acc, std::ptr::null(), &mut neon_out, pw); }
+        assert_eq!(scalar_out, neon_out,
+            "neon_pairwise_pack_fused (no threat) diverged from scalar");
+
+        // With-threat path
+        let mut scalar_out = vec![0u8; pw];
+        pairwise_pack_scalar_ref(&acc, Some(&threat), &mut scalar_out, pw);
+        let mut neon_out = vec![0u8; pw];
+        unsafe { neon_pairwise_pack_fused(&acc, threat.as_ptr(), &mut neon_out, pw); }
+        assert_eq!(scalar_out, neon_out,
+            "neon_pairwise_pack_fused (with threat) diverged from scalar");
+
+        // Edge case: values at the clamp boundaries [0, QA].
+        let mut boundary_acc = vec![0i16; pw * 2];
+        for i in 0..pw {
+            boundary_acc[i] = if i % 3 == 0 { -100 } else if i % 3 == 1 { QA as i16 + 50 } else { QA as i16 / 2 };
+            boundary_acc[pw + i] = if i % 2 == 0 { 0 } else { QA as i16 };
+        }
+        let mut scalar_out = vec![0u8; pw];
+        pairwise_pack_scalar_ref(&boundary_acc, None, &mut scalar_out, pw);
+        let mut neon_out = vec![0u8; pw];
+        unsafe { neon_pairwise_pack_fused(&boundary_acc, std::ptr::null(), &mut neon_out, pw); }
+        assert_eq!(scalar_out, neon_out,
+            "neon_pairwise_pack_fused at clamp boundaries diverged from scalar");
+    }
+
     #[test]
     fn test_king_buckets() {
         // Uniform layout (default for v5/v9 16-bucket nets).
