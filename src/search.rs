@@ -145,6 +145,10 @@ tunables!(
     // MVV multiplier + cont-hist plies-1/2 weight.
     (MVV_CAP_MULT, 18, 4, 64),
     (CONT_HIST_MULT, 3, 1, 8),
+    // Knight-fork movepicker bonus. Flat bonus added to quiet knight
+    // moves where the `to` square attacks 2+ enemy non-pawn pieces
+    // (fork). Stacks on top of offense bonus. 0 = feature disabled.
+    (KNIGHT_FORK_BONUS, 8000, 0, 20000),
 );
 
 /// Get a tunable parameter value (inline for hot paths)

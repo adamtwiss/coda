@@ -653,6 +653,14 @@ impl MovePicker {
                         if !unsafe_square {
                             score += 6000;
                         }
+                        // Knight-fork bonus: knight move attacking 2+ enemy
+                        // non-pawn pieces from `to` is a fork. Tunable
+                        // (KNIGHT_FORK_BONUS), stacks on top of offense.
+                        let kf_bonus = crate::search::KNIGHT_FORK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+                        if kf_bonus > 0 && pt == 1 && !unsafe_square
+                            && popcount(attacks_from_to & enemy_non_pawns) >= 2 {
+                            score += kf_bonus;
+                        }
                     }
                 }
             }
