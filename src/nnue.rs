@@ -1183,14 +1183,17 @@ unsafe fn simd512_pairwise_dot(acc_first: &[i16], acc_second: &[i16], weights: &
     total
 }
 
-/// AVX-512 pairwise pack: acc[0..pw] and acc[pw..2*pw] → out[0..pw] u8.
+/// AVX-512 pairwise pack with optional fused threat combine.
+/// acc[0..pw] and acc[pw..2*pw] → out[0..pw] u8.
+/// If threat is non-null, adds threat[i] to acc[i] before clamp (v9 fused pack).
 /// clamp(a, 0, 255) * clamp(b, 0, 255) >> FT_SHIFT for each pair.
 /// pw must be multiple of 32.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw")]
-unsafe fn simd512_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
+unsafe fn simd512_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut [u8], pw: usize) {
     let zero = _mm512_setzero_si512();
     let qa = _mm512_set1_epi16(QA as i16);
+    let has_threat = !threat.is_null();
     // Permutation index to fix lane ordering after packus_epi16
     // _mm512_packus_epi16 interleaves 128-bit lanes: [0,4,1,5,2,6,3,7]
     // We need: [0,1,2,3,4,5,6,7] → permute qwords by [0,2,4,6,1,3,5,7]
@@ -1198,16 +1201,28 @@ unsafe fn simd512_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
     let mut i = 0;
     while i + 32 <= pw {
         // Load 32 values from each half (two ZMM registers of i16)
-        let a0 = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
-        let b0 = _mm512_loadu_si512(acc.as_ptr().add(pw + i) as *const __m512i);
+        let mut a0 = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
+        let mut b0 = _mm512_loadu_si512(acc.as_ptr().add(pw + i) as *const __m512i);
+        if has_threat {
+            let ta0 = _mm512_loadu_si512(threat.add(i) as *const __m512i);
+            let tb0 = _mm512_loadu_si512(threat.add(pw + i) as *const __m512i);
+            a0 = _mm512_add_epi16(a0, ta0);
+            b0 = _mm512_add_epi16(b0, tb0);
+        }
         let ca0 = _mm512_min_epi16(_mm512_max_epi16(a0, zero), qa);
         let cb0 = _mm512_min_epi16(_mm512_max_epi16(b0, zero), qa);
         let prod0 = _mm512_mullo_epi16(ca0, cb0);
         let d0 = _mm512_srli_epi16(prod0, FT_SHIFT as u32);
 
         if i + 64 <= pw {
-            let a1 = _mm512_loadu_si512(acc.as_ptr().add(i + 32) as *const __m512i);
-            let b1 = _mm512_loadu_si512(acc.as_ptr().add(pw + i + 32) as *const __m512i);
+            let mut a1 = _mm512_loadu_si512(acc.as_ptr().add(i + 32) as *const __m512i);
+            let mut b1 = _mm512_loadu_si512(acc.as_ptr().add(pw + i + 32) as *const __m512i);
+            if has_threat {
+                let ta1 = _mm512_loadu_si512(threat.add(i + 32) as *const __m512i);
+                let tb1 = _mm512_loadu_si512(threat.add(pw + i + 32) as *const __m512i);
+                a1 = _mm512_add_epi16(a1, ta1);
+                b1 = _mm512_add_epi16(b1, tb1);
+            }
             let ca1 = _mm512_min_epi16(_mm512_max_epi16(a1, zero), qa);
             let cb1 = _mm512_min_epi16(_mm512_max_epi16(b1, zero), qa);
             let prod1 = _mm512_mullo_epi16(ca1, cb1);
@@ -1228,9 +1243,10 @@ unsafe fn simd512_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
     }
     // Tail (< 32 elements) handled by scalar
     while i < pw {
-        let a = (acc[i] as i32).clamp(0, 255);
-        let b = (acc[pw + i] as i32).clamp(0, 255);
-        out[i] = ((a * b) >> FT_SHIFT) as u8;
+        let mut a = acc[i] as i32;
+        let mut b = acc[pw + i] as i32;
+        if has_threat { a += *threat.add(i) as i32; b += *threat.add(pw + i) as i32; }
+        out[i] = ((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8;
         i += 1;
     }
 }
@@ -2291,8 +2307,10 @@ impl NNUENet {
         #[cfg(target_arch = "x86_64")]
         if self.has_avx512 && pw % 32 == 0 {
             unsafe {
-                simd512_pairwise_pack(stm_acc, &mut stm_pw, pw);
-                simd512_pairwise_pack(ntm_acc, &mut ntm_pw, pw);
+                let stm_tp = if has_threats { stm_threat.as_ptr() } else { std::ptr::null() };
+                let ntm_tp = if has_threats { ntm_threat.as_ptr() } else { std::ptr::null() };
+                simd512_pairwise_pack_fused(stm_acc, stm_tp, &mut stm_pw, pw);
+                simd512_pairwise_pack_fused(ntm_acc, ntm_tp, &mut ntm_pw, pw);
             }
         } else if self.has_avx2 && pw % 16 == 0 {
             unsafe {
