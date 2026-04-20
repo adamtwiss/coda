@@ -110,6 +110,12 @@ enum Commands {
     },
     /// Perft benchmark suite (6 standard positions)
     PerftBench,
+    /// Dump SPSA tune spec (name,int,default,min,max,c_end,r_end) from tunables
+    TuneSpec {
+        /// SPSA r_end (default 0.002)
+        #[arg(long, default_value_t = 0.002)]
+        r_end: f32,
+    },
     /// Download NNUE net from net.txt URL
     FetchNet,
     /// NNUE network health check (uses --nnue/-n flag or auto-discovers)
@@ -415,6 +421,12 @@ fn main() {
 
         Some(Commands::PerftBench) => {
             run_perft_bench();
+        }
+
+        Some(Commands::TuneSpec { r_end }) => {
+            for (name, _, default, min, max, c_end) in search::tunable_params() {
+                println!("{}, int, {}, {}, {}, {}, {}", name, default, min, max, c_end, r_end);
+            }
         }
 
         Some(Commands::FetchNet) => {
