@@ -616,6 +616,30 @@ impl MovePicker {
                 score += crate::search::DISCOVERED_ATTACK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
             }
 
+            // Reckless "rook king-ring-ortho" bonus: +5000 for rook quiet moves
+            // where `to` orthogonally attacks the enemy king zone. Reckless-
+            // unique movepicker signal. Rooks attacking king file/rank are
+            // classic attacking-plan moves; prioritise them early.
+            if piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                if pt == 3 {  // ROOK
+                    let them = 1 - board.side_to_move;
+                    let their_ksq = board.king_sq(them);
+                    let their_king_zone = crate::attacks::king_attacks(their_ksq as u32)
+                        | (1u64 << their_ksq);
+                    let us = board.side_to_move;
+                    let occ = board.colors[us as usize] | board.colors[them as usize];
+                    // Rook attacks from `to` (simulating post-move) orthogonally only
+                    let rook_atk_from_to = crate::attacks::rook_attacks(
+                        to as u32,
+                        occ & !(1u64 << from),  // remove rook's departure square from occ
+                    );
+                    if rook_atk_from_to & their_king_zone != 0 {
+                        score += 5000;
+                    }
+                }
+            }
+
             let idx = self.moves.len;
             self.moves.push(m);
             self.scores[idx] = score;
