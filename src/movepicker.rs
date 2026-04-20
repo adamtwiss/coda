@@ -657,6 +657,30 @@ impl MovePicker {
                 }
             }
 
+            // Rook-to-open-file bonus: quiet rook move landing on a file
+            // with no pawns of either color. Classical positional gain —
+            // rook becomes active along the full file with no obstructions.
+            // Half-open (only enemy pawns remain) gets a smaller bonus.
+            if piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                if pt == 3 {  // rook
+                    let to_file = (to & 7) as usize;
+                    let file_bb = FILES[to_file];
+                    let all_pawns = board.pieces[PAWN as usize];
+                    let us = board.side_to_move;
+                    let them = 1 - us;
+                    let our_pawns_on_file = all_pawns & board.colors[us as usize] & file_bb;
+                    let their_pawns_on_file = all_pawns & board.colors[them as usize] & file_bb;
+                    if our_pawns_on_file == 0 {
+                        if their_pawns_on_file == 0 {
+                            score += 5000;  // fully open
+                        } else {
+                            score += 2500;  // half-open (our side)
+                        }
+                    }
+                }
+            }
+
             let idx = self.moves.len;
             self.moves.push(m);
             self.scores[idx] = score;
