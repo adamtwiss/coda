@@ -616,6 +616,31 @@ impl MovePicker {
                 score += crate::search::DISCOVERED_ATTACK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
             }
 
+            // Queen-to-7th-rank bonus: quiet queen move landing on the
+            // enemy's second rank (our 7th). Classical motif — queen on
+            // 7th rank attacks the king's pawn shield from an active
+            // square. +4000, gated on safety (not attacked by enemy pawn).
+            if piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                if pt == 4 {  // queen
+                    let us = board.side_to_move;
+                    let them = 1 - us;
+                    let to_rank = to >> 3;
+                    let seventh_rank = if us == WHITE { 6 } else { 1 };
+                    if to_rank == seventh_rank {
+                        let their_pawns = board.pieces[PAWN as usize] & board.colors[them as usize];
+                        let enemy_pawn_attacks = if them == WHITE {
+                            ((their_pawns & !FILE_A) << 7) | ((their_pawns & !FILE_H) << 9)
+                        } else {
+                            ((their_pawns & !FILE_A) >> 9) | ((their_pawns & !FILE_H) >> 7)
+                        };
+                        if enemy_pawn_attacks & (1u64 << to) == 0 {
+                            score += 4000;
+                        }
+                    }
+                }
+            }
+
             // Reckless "offense bonus": quiet move that lands on a square
             // attacking an enemy non-pawn piece. +6000 flat. Not yet present
             // in Coda; Reckless has it at ~+6000. Signal: does our piece on
