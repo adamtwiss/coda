@@ -653,6 +653,14 @@ impl MovePicker {
                         if !unsafe_square {
                             score += 6000;
                         }
+                        // Knight-fork bonus: if the move is a knight, and the
+                        // `to` square attacks TWO OR MORE enemy non-pawn
+                        // pieces, it's a fork. Stack on top of offense bonus
+                        // since a knight fork is one of the highest-value
+                        // tactical motifs. +8000 (more than offense alone).
+                        if pt == 1 && popcount(attacks_from_to & enemy_non_pawns) >= 2 && !unsafe_square {
+                            score += 8000;
+                        }
                     }
                 }
             }
