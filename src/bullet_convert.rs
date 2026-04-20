@@ -213,6 +213,7 @@ pub fn convert_v7(
     kb_layout: KbLayout,
     kb_count: usize,
     num_threats: usize,
+    hl_crelu: bool,
 ) -> Result<(), String> {
     let psq_input_size = kb_count * PSQ_INPUTS_PER_BUCKET;
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
@@ -435,8 +436,14 @@ pub fn convert_v7(
     if bucketed_hidden { flags |= 8; } // bit 3 = bucketed hidden layers
     // bit 4 = dual L1 activation (v8): CReLU+SCReLU on L1 output, doubles L2 input
     if dual_l1 { flags |= 16; }
-    // bit 5 = consensus king bucket layout (legacy encoding for 16-bucket consensus)
-    if kb_layout == KbLayout::Consensus && !write_extended_kb { flags |= 32; }
+    // bit 5 is context-dependent (matches load_nnue):
+    //   - extended_kb=0: consensus_buckets (legacy 16-bucket)
+    //   - extended_kb=1: hl_crelu (hidden-layer CReLU, vs default SCReLU)
+    if write_extended_kb {
+        if hl_crelu { flags |= 32; }
+    } else if kb_layout == KbLayout::Consensus {
+        flags |= 32;
+    }
     // bit 6 = threat features present (v9)
     if num_threats > 0 { flags |= 64; }
     // bit 7 = extended KB header: two extra bytes (kb_count, kb_layout_id) follow

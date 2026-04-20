@@ -110,6 +110,27 @@ enum Commands {
     },
     /// Perft benchmark suite (6 standard positions)
     PerftBench,
+    /// Patch a .nnue file's header flag bits in-place. Primary use case:
+    /// mark an already-converted net as HL-CReLU (sets bit 5 on extended_kb
+    /// nets). Refuses to operate on nets without extended_kb since bit 5
+    /// means consensus_buckets on legacy nets.
+    PatchNet {
+        /// Input .nnue file (modified in place unless --output given)
+        #[arg(long, short = 'i')]
+        input: String,
+        /// Output path (default: overwrite input)
+        #[arg(long, short = 'o')]
+        output: Option<String>,
+        /// Set the HL-CReLU bit (bit 5 when extended_kb=1)
+        #[arg(long)]
+        set_hl_crelu: bool,
+        /// Clear the HL-CReLU bit
+        #[arg(long)]
+        clear_hl_crelu: bool,
+        /// Just print current flags, make no changes
+        #[arg(long)]
+        inspect: bool,
+    },
     /// Download NNUE net from net.txt URL
     FetchNet,
     /// NNUE network health check (uses --nnue/-n flag or auto-discovers)
@@ -231,6 +252,11 @@ enum Commands {
         /// Source output bucket count (default 8, set to 2 for 2-bucket nets)
         #[arg(long, default_value_t = 8)]
         output_buckets: usize,
+        /// Hidden-layer activation is CReLU (default SCReLU). Sets header
+        /// bit 5 on extended_kb nets so the engine auto-configures
+        /// HiddenActivation=crelu at load time.
+        #[arg(long)]
+        hl_crelu: bool,
     },
     /// Convert .nnue to Bullet checkpoint (for transfer learning)
     ConvertCheckpoint {
@@ -417,6 +443,56 @@ fn main() {
             run_perft_bench();
         }
 
+        Some(Commands::PatchNet { input, output, set_hl_crelu, clear_hl_crelu, inspect }) => {
+            if set_hl_crelu && clear_hl_crelu {
+                eprintln!("Error: --set-hl-crelu and --clear-hl-crelu are mutually exclusive");
+                std::process::exit(1);
+            }
+            let mut data = match std::fs::read(&input) {
+                Ok(d) => d,
+                Err(e) => { eprintln!("Error reading {}: {}", input, e); std::process::exit(1); }
+            };
+            // Header layout: magic(4) + version(4) + flags(1) + ...
+            if data.len() < 9 {
+                eprintln!("Error: file too short to be a .nnue"); std::process::exit(1);
+            }
+            let version = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+            let flags = data[8];
+            let extended_kb = flags & 128 != 0;
+            let bit5 = flags & 32 != 0;
+            let interpreted = if extended_kb {
+                format!("hl_crelu={}", bit5)
+            } else {
+                format!("consensus_buckets={} (legacy; refuses to patch)", bit5)
+            };
+            println!("{}: version={} flags=0b{:08b} extended_kb={} bit5: {}",
+                input, version, flags, extended_kb, interpreted);
+            if inspect { return; }
+            if !extended_kb {
+                eprintln!("Error: cannot patch bit 5 on legacy net (extended_kb=0 means \
+                    bit 5 is consensus_buckets). Regenerate the net with --kb-layout or \
+                    a non-16 kb_count to enable extended_kb.");
+                std::process::exit(1);
+            }
+            if !set_hl_crelu && !clear_hl_crelu {
+                eprintln!("Nothing to change. Pass --set-hl-crelu / --clear-hl-crelu or --inspect.");
+                return;
+            }
+            let new_flags = if set_hl_crelu { flags | 32 } else { flags & !32 };
+            if new_flags == flags {
+                println!("(no change — bit 5 already in requested state)");
+                return;
+            }
+            data[8] = new_flags;
+            let dest = output.as_deref().unwrap_or(&input);
+            if let Err(e) = std::fs::write(dest, &data) {
+                eprintln!("Error writing {}: {}", dest, e); std::process::exit(1);
+            }
+            println!("Patched: {} flags 0b{:08b} → 0b{:08b} ({})",
+                dest, flags, new_flags,
+                if set_hl_crelu { "set hl_crelu" } else { "clear hl_crelu" });
+        }
+
         Some(Commands::FetchNet) => {
             run_fetch_net();
         }
@@ -521,7 +597,7 @@ fn main() {
             run_eval_dist(&input, count, &cli.nnue);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets }) => {
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu }) => {
             // Resolve king bucket layout and count. Explicit --kb-layout wins;
             // --consensus-buckets is the legacy path for 16-bucket consensus.
             let layout = if !kb_layout.is_empty() {
@@ -537,7 +613,7 @@ fn main() {
             let count = if kb_count > 0 { kb_count } else { layout.default_count() };
 
             let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats)
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu)
             } else {
                 bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, layout, count)
             };

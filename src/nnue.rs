@@ -1876,7 +1876,11 @@ impl NNUENet {
         let mut l1_scale = QA as i32; // default int16 scale
         let mut bucketed_hidden = false; // bit 3: output buckets baked into L1/L2 dims
         let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
-        let mut consensus_buckets = false; // bit 5: consensus king bucket layout
+        // bit 5 is context-dependent:
+        //   - extended_kb=0: consensus_buckets (legacy 16-bucket encoding)
+        //   - extended_kb=1: hl_crelu (hidden-layer CReLU, vs default SCReLU)
+        let mut consensus_buckets = false;
+        let mut hl_crelu = false;
         let mut has_threats = false; // bit 6: threat features (v9)
         let mut num_threat_features = 0usize;
         let mut extended_kb = false; // bit 7: extended KB header follows
@@ -1917,9 +1921,16 @@ impl NNUENet {
                 if flags & 4 != 0 { l1_scale = 64; } // int8 L1 weights
                 bucketed_hidden = flags & 8 != 0; // output buckets baked into L1/L2
                 dual_l1 = flags & 16 != 0; // dual L1 activation (CReLU+SCReLU)
-                consensus_buckets = flags & 32 != 0; // consensus king bucket layout (legacy 16-bucket)
                 has_threats = flags & 64 != 0; // v9 threat features
                 extended_kb = flags & 128 != 0; // bit 7: extended KB header
+                // Bit 5 has context-dependent meaning: consensus_buckets on
+                // legacy 16-bucket nets (extended_kb=0), hl_crelu on modern
+                // nets (extended_kb=1). Invariant enforced by bullet_convert.
+                if extended_kb {
+                    hl_crelu = flags & 32 != 0;
+                } else {
+                    consensus_buckets = flags & 32 != 0;
+                }
                 let ft_size = read_u16(reader)? as usize;
                 l1_size = read_u16(reader)? as usize;
                 l2_size = read_u16(reader)? as usize;
@@ -2178,7 +2189,9 @@ impl NNUENet {
             king_bucket: king_bucket_tbl,
             king_mirror: king_mirror_tbl,
             use_sparse_l1: std::sync::atomic::AtomicBool::new(false), // disabled: dense int8 is faster at H=1024
-            crelu_hidden: std::sync::atomic::AtomicBool::new(false),
+            // Auto-set from file header bit 5 when extended_kb=1.
+            // Overridable at runtime via UCI option HiddenActivation.
+            crelu_hidden: std::sync::atomic::AtomicBool::new(hl_crelu),
             has_avx2,
             has_avx512,
             has_neon,
