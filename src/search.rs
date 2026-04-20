@@ -602,6 +602,10 @@ impl SearchInfo {
 
 /// Build a DirtyPiece for lazy NNUE accumulator update.
 /// `us`/`them` are the sides BEFORE the move.
+/// `net`: NNUE net whose king-bucket layout determines bucket/mirror
+///   changes on king moves. Must be the same net that will later apply
+///   the DirtyPiece to the accumulator; using the wrong net here produces
+///   silently-wrong "refresh needed" decisions.
 #[inline]
 pub fn build_dirty_piece(
     mv: Move,
@@ -609,6 +613,7 @@ pub fn build_dirty_piece(
     them: u8,
     moved_pt: u8,
     captured_pt: u8,
+    net: &crate::nnue::NNUENet,
 ) -> DirtyPiece {
     let from = move_from(mv);
     let to = move_to(mv);
@@ -620,10 +625,10 @@ pub fn build_dirty_piece(
         let mut to_ks = to as usize;
         if us == BLACK { from_ks ^= 56; to_ks ^= 56; }
 
-        let from_bucket = crate::nnue::king_bucket_pub(from_ks);
-        let to_bucket = crate::nnue::king_bucket_pub(to_ks);
-        let from_mirror = crate::nnue::king_mirror_pub(from_ks);
-        let to_mirror = crate::nnue::king_mirror_pub(to_ks);
+        let from_bucket = net.king_bucket(from_ks);
+        let to_bucket = net.king_bucket(to_ks);
+        let from_mirror = net.king_mirror(from_ks);
+        let to_mirror = net.king_mirror(to_ks);
 
         if from_bucket != to_bucket || from_mirror != to_mirror {
             // Bucket or mirror changed: full recompute needed
@@ -2020,7 +2025,9 @@ fn negamax(
 
             let pc_moved_pt = board.piece_type_at(move_from(mv));
             let pc_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
-            let pc_dirty = build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), pc_moved_pt, pc_captured_pt);
+            let pc_dirty = if let Some(net) = info.nnue_net.as_deref() {
+                build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), pc_moved_pt, pc_captured_pt, net)
+            } else { DirtyPiece::recompute() };
 
             if let Some(acc) = &mut info.nnue_acc { acc.push(pc_dirty); }
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
@@ -2334,7 +2341,9 @@ fn negamax(
         }
 
         // Build NNUE dirty piece info BEFORE make_move
-        let dirty = build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt);
+        let dirty = if let Some(net) = info.nnue_net.as_deref() {
+            build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt, net)
+        } else { DirtyPiece::recompute() };
 
         // Push NNUE accumulator
         if let Some(acc) = &mut info.nnue_acc { acc.push(dirty); }
@@ -2949,7 +2958,9 @@ fn quiescence_with_depth(
 
             let qs_moved_pt = board.piece_type_at(move_from(mv));
             let qs_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
-            let qs_dirty = build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt);
+            let qs_dirty = if let Some(net) = info.nnue_net.as_deref() {
+                build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt, net)
+            } else { DirtyPiece::recompute() };
 
             if let Some(acc) = &mut info.nnue_acc { acc.push(qs_dirty); }
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
@@ -3088,7 +3099,9 @@ fn quiescence_with_depth(
         // Build lazy NNUE update
         let qs_moved_pt = board.piece_type_at(move_from(mv));
         let qs_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
-        let qs_dirty = build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt);
+        let qs_dirty = if let Some(net) = info.nnue_net.as_deref() {
+            build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt, net)
+        } else { DirtyPiece::recompute() };
 
         if let Some(acc) = &mut info.nnue_acc { acc.push(qs_dirty); }
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
