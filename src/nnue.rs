@@ -143,10 +143,14 @@ const PW_SCALE: i32 = (QA * QA) >> FT_SHIFT; // max packed value after shift (12
 // File magic
 const NNUE_MAGIC: u32 = 0x4E4E5545; // "NNUE" in LE
 
-// King bucket table: maps square (0-63) to bucket (0-15).
-// 4 mirrored files × 4 rank groups. Files e-h mirror to d-a.
-static mut KING_BUCKET: [usize; 64] = [0; 64];
-static mut KING_MIRROR: [bool; 64] = [false; 64];
+// King bucket tables: computed per-net from the layout field (see
+// compute_king_buckets below) and stored on NNUENet. Prior to 2026-04-20
+// these were `static mut KING_BUCKET: [usize; 64]` / `static mut KING_MIRROR`
+// written by `init_king_buckets_layout` on every net load. That data race
+// (helpers reading while load wrote) was the root cause of the v9 T=4 SMP
+// regression bisected to commit 1356150 — eliminated by making them
+// per-`NNUENet` fields populated at load time and never mutated after.
+// See `fix/smp-king-bucket-race`.
 
 /// Consensus king bucket layout: fine-near, coarse-far (Alexandria/Viridithas)
 /// Indexed by [mirrored_file (0-3)][rank (0-7)]
@@ -172,21 +176,15 @@ const RECKLESS_BUCKETS_FLAT: [usize; 64] = [
     9, 9, 9, 9, 9, 9, 9, 9,
 ];
 
-pub fn init_nnue() {
-    init_king_buckets_layout(KbLayout::Uniform);
-}
-
-/// Legacy bool-based initialiser kept for existing callers. Maps `false`
-/// → Uniform, `true` → Consensus.
-pub fn init_king_buckets(consensus: bool) {
-    init_king_buckets_layout(if consensus { KbLayout::Consensus } else { KbLayout::Uniform });
-}
-
-pub fn init_king_buckets_layout(layout: KbLayout) {
+/// Pure function: given a KbLayout, returns the (king_bucket, king_mirror)
+/// tables populated for every square 0-63. Called once at net load time; the
+/// results are stored on NNUENet and never mutated after that.
+pub fn compute_king_buckets(layout: KbLayout) -> ([usize; 64], [bool; 64]) {
+    let mut kb = [0usize; 64];
+    let mut km = [false; 64];
     for sq in 0..64 {
         let file = sq % 8;
         let rank = sq / 8;
-
         // File mirror applies to Uniform and Consensus; Reckless bakes the
         // mirror into its flat table already (see RECKLESS_BUCKETS_FLAT).
         let (mirrored_file, mirror) = if file >= 4 {
@@ -194,35 +192,30 @@ pub fn init_king_buckets_layout(layout: KbLayout) {
         } else {
             (file, false)
         };
-
-        let bucket = match layout {
+        kb[sq] = match layout {
             KbLayout::Uniform   => mirrored_file * 4 + rank / 2,
             KbLayout::Consensus => CONSENSUS_BUCKETS[mirrored_file][rank],
             KbLayout::Reckless  => RECKLESS_BUCKETS_FLAT[sq],
         };
-
-        unsafe {
-            KING_BUCKET[sq] = bucket;
-            KING_MIRROR[sq] = mirror;
-        }
+        km[sq] = mirror;
     }
+    (kb, km)
 }
 
-#[inline]
-fn king_bucket(sq: usize) -> usize {
-    unsafe { KING_BUCKET[sq] }
+pub fn init_nnue() {
+    // No-op retained for API compatibility. Previously populated the
+    // global static mut tables; now those are per-net fields.
 }
 
-#[inline]
-fn king_mirror(sq: usize) -> bool {
-    unsafe { KING_MIRROR[sq] }
+/// Deprecated legacy API. Returns the computed king-bucket tables for the
+/// given layout bool. Kept so older call paths that don't yet have a handle
+/// on NNUENet can at least get the correct per-layout tables. Prefer
+/// `NNUENet::king_bucket()` / `king_mirror()` methods.
+pub fn init_king_buckets(consensus: bool) {
+    // No-op: previously wrote the static globals, now a pure pre-compute.
+    // Kept as a symbol so existing code that calls this still compiles.
+    let _ = consensus;
 }
-
-/// Public accessors for same-bucket king move detection in search.
-#[inline]
-pub fn king_bucket_pub(sq: usize) -> usize { king_bucket(sq) }
-#[inline]
-pub fn king_mirror_pub(sq: usize) -> bool { king_mirror(sq) }
 
 /// Piece index for HalfKA: maps (color, piece_type) to 0-11.
 /// White pieces: 0-5, Black pieces: 6-11.
@@ -231,13 +224,23 @@ fn piece_index(color: u8, pt: u8) -> usize {
     (color as usize) * 6 + pt as usize
 }
 
-/// Compute HalfKA feature index.
+/// Compute HalfKA feature index using a specific net's king-bucket tables.
 /// perspective: WHITE or BLACK
 /// king_sq: the king square for this perspective
 /// pc_color: color of the piece
 /// pc_type: piece type (PAWN..KING)
 /// pc_sq: square of the piece
-pub fn halfka_index(perspective: u8, king_sq: u8, pc_color: u8, pc_type: u8, pc_sq: u8) -> usize {
+/// king_bucket / king_mirror: the net's per-square lookup tables
+#[inline]
+pub fn halfka_index_with(
+    king_bucket: &[usize; 64],
+    king_mirror: &[bool; 64],
+    perspective: u8,
+    king_sq: u8,
+    pc_color: u8,
+    pc_type: u8,
+    pc_sq: u8,
+) -> usize {
     let mut ks = king_sq as usize;
     let mut ps = pc_sq as usize;
     let mut pi = piece_index(pc_color, pc_type);
@@ -251,11 +254,11 @@ pub fn halfka_index(perspective: u8, king_sq: u8, pc_color: u8, pc_type: u8, pc_
     }
 
     // Check file mirroring (king on files e-h)
-    if king_mirror(ks) {
+    if king_mirror[ks] {
         ps = (ps & !7) | (7 - (ps & 7));
     }
 
-    let bucket = king_bucket(ks);
+    let bucket = king_bucket[ks];
     bucket * (NNUE_NUM_PIECE_TYPES * 64) + pi * 64 + ps
 }
 
@@ -1659,8 +1662,16 @@ pub struct NNUENet {
     /// Number of king buckets in this net (10 for Reckless, 16 for others).
     /// PSQ weight block is sized `num_king_buckets * 768 * hidden_size`.
     pub num_king_buckets: usize,
-    /// King bucket layout identifier — drives which static lookup table is used.
+    /// King bucket layout identifier — drives which lookup tables are used.
     pub kb_layout: KbLayout,
+    /// Per-net king-bucket lookup table: square (0-63) → bucket (0..num_king_buckets).
+    /// Computed once at load time from `kb_layout`, never mutated after.
+    /// Previously a `static mut` written by every net load — which caused a
+    /// data race with Lazy SMP helpers at T=4 (v9 SMP regression bisected to
+    /// commit 1356150). Making this per-net eliminates the race.
+    pub king_bucket: [usize; 64],
+    /// Per-net king-mirror table: square (0-63) → mirror flag.
+    pub king_mirror: [bool; 64],
     pub use_sparse_l1: std::sync::atomic::AtomicBool, // feature flag: sparse L1 matmul
     /// Use clipped ReLU (not SCReLU) on L1/L2 hidden layers. Set via UCI
     /// option `HiddenActivation = crelu`. Experimental — nets trained with
@@ -1673,6 +1684,24 @@ pub struct NNUENet {
 }
 
 impl NNUENet {
+    /// HalfKA feature index computed against THIS net's king-bucket layout.
+    /// Use this everywhere that computes a feature index to avoid the
+    /// race-prone global tables. See also `halfka_index_with` for the
+    /// equivalent free function.
+    #[inline]
+    pub fn halfka_index(&self, perspective: u8, king_sq: u8, pc_color: u8, pc_type: u8, pc_sq: u8) -> usize {
+        halfka_index_with(&self.king_bucket, &self.king_mirror, perspective, king_sq, pc_color, pc_type, pc_sq)
+    }
+
+    /// King-bucket lookup for this net. Use for build_dirty_piece and other
+    /// code that needs to detect bucket/mirror changes on king moves.
+    #[inline]
+    pub fn king_bucket(&self, sq: usize) -> usize { self.king_bucket[sq] }
+
+    /// King-mirror lookup for this net.
+    #[inline]
+    pub fn king_mirror(&self, sq: usize) -> bool { self.king_mirror[sq] }
+
     /// Load from a byte slice (for embedded nets). No temp files needed.
     pub fn load_from_bytes(data: &[u8]) -> Result<Self, String> {
         let mut reader = std::io::Cursor::new(data);
@@ -1845,10 +1874,10 @@ impl NNUENet {
             output_bias[i] = read_i32(reader)?;
         }
 
-        // Initialise king bucket table from this net's layout. Affects the
-        // global `KING_BUCKET[64]` lookup, which search/eval read for every
-        // king square. Multi-net loads must re-run this on each load.
-        init_king_buckets_layout(kb_layout);
+        // Compute king bucket tables for this net's layout. Stored on the
+        // returned NNUENet struct (per-net, not static) so Lazy SMP helpers
+        // can read them concurrently without racing a subsequent net load.
+        let (king_bucket_tbl, king_mirror_tbl) = compute_king_buckets(kb_layout);
 
         let activation = if use_pairwise { "pairwise" } else if use_screlu { "SCReLU" } else { "CReLU" };
         let dual_str = if dual_l1 { " dual" } else { "" };
@@ -2001,6 +2030,8 @@ impl NNUENet {
             has_threats,
             num_king_buckets,
             kb_layout,
+            king_bucket: king_bucket_tbl,
+            king_mirror: king_mirror_tbl,
             use_sparse_l1: std::sync::atomic::AtomicBool::new(false), // disabled: dense int8 is faster at H=1024
             crelu_hidden: std::sync::atomic::AtomicBool::new(false),
             has_avx2,
@@ -3219,7 +3250,7 @@ impl NNUEAccumulator {
                     let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
                     while bb != 0 {
                         let sq = pop_lsb(&mut bb) as u8;
-                        let idx = halfka_index(WHITE, board.king_sq(WHITE), color, pt, sq);
+                        let idx = net.halfka_index(WHITE, board.king_sq(WHITE), color, pt, sq);
                         let row = net.input_weight_row(idx);
                         for j in 0..h { dst[j] += row[j]; }
                     }
@@ -3235,7 +3266,7 @@ impl NNUEAccumulator {
                     let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
                     while bb != 0 {
                         let sq = pop_lsb(&mut bb) as u8;
-                        let idx = halfka_index(BLACK, board.king_sq(BLACK), color, pt, sq);
+                        let idx = net.halfka_index(BLACK, board.king_sq(BLACK), color, pt, sq);
                         let row = net.input_weight_row(idx);
                         for j in 0..h { dst[j] += row[j]; }
                     }
@@ -3535,9 +3566,9 @@ impl NNUEAccumulator {
 
         for i in 0..n {
             let (add, color, pt, sq) = dirty.changes[i];
-            let w_idx = halfka_index(WHITE, w_king_sq, color, pt, sq);
+            let w_idx = net.halfka_index(WHITE, w_king_sq, color, pt, sq);
             let w_row = net.input_weight_row(w_idx);
-            let b_idx = halfka_index(BLACK, b_king_sq, color, pt, sq);
+            let b_idx = net.halfka_index(BLACK, b_king_sq, color, pt, sq);
             let b_row = net.input_weight_row(b_idx);
             if add {
                 w_adds[nwa] = w_row; nwa += 1;
@@ -3586,8 +3617,8 @@ impl NNUEAccumulator {
         let mut ks = king_sq as usize;
         if perspective == BLACK { ks ^= 56; }
 
-        let bucket = king_bucket(ks);
-        let mirror_idx = if king_mirror(ks) { 1 } else { 0 };
+        let bucket = net.king_bucket(ks);
+        let mirror_idx = if net.king_mirror(ks) { 1 } else { 0 };
 
         let entry = &mut self.finny[perspective as usize * 32 + bucket * 2 + mirror_idx];
 
@@ -3607,7 +3638,7 @@ impl NNUEAccumulator {
                     let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
                     while bb != 0 {
                         let sq = pop_lsb(&mut bb) as u8;
-                        let idx = halfka_index(perspective, king_sq, color, pt, sq);
+                        let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
                         if n_pieces < 32 { piece_indices[n_pieces] = idx; n_pieces += 1; }
                     }
                 }
@@ -3648,14 +3679,14 @@ impl NNUEAccumulator {
                 let mut removed = prev & !curr;
                 while removed != 0 {
                     let sq = pop_lsb(&mut removed) as u8;
-                    let idx = halfka_index(perspective, king_sq, color, pt, sq);
+                    let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
                     if n_subs < 32 { sub_rows[n_subs] = idx; n_subs += 1; }
                 }
 
                 let mut added = curr & !prev;
                 while added != 0 {
                     let sq = pop_lsb(&mut added) as u8;
-                    let idx = halfka_index(perspective, king_sq, color, pt, sq);
+                    let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
                     if n_adds < 32 { add_rows[n_adds] = idx; n_adds += 1; }
                 }
             }
@@ -3789,23 +3820,24 @@ mod tests {
 
     #[test]
     fn test_king_buckets() {
-        init_nnue();
+        // Uniform layout (default for v5/v9 16-bucket nets).
+        let (kb, km) = compute_king_buckets(KbLayout::Uniform);
         // a1 (sq 0): file 0, rank 0 → mirrored_file=0, rank_group=0 → bucket 0
-        assert_eq!(king_bucket(0), 0);
+        assert_eq!(kb[0], 0);
         // e1 (sq 4): file 4, rank 0 → mirrored_file=3, rank_group=0 → bucket 12, mirror=true
-        assert_eq!(king_bucket(4), 12);
-        assert!(king_mirror(4));
+        assert_eq!(kb[4], 12);
+        assert!(km[4]);
         // a1 no mirror
-        assert!(!king_mirror(0));
+        assert!(!km[0]);
     }
 
     /// Verify the Reckless king bucket layout matches Reckless's
     /// INPUT_BUCKETS_LAYOUT from `Reckless/src/nnue.rs:71-80` exactly.
     /// Catches drift if either the flat table here or the derivation in
-    /// `init_king_buckets_layout` changes incompatibly.
+    /// `compute_king_buckets` changes incompatibly.
     #[test]
     fn test_reckless_king_buckets() {
-        init_king_buckets_layout(KbLayout::Reckless);
+        let (kb, km) = compute_king_buckets(KbLayout::Reckless);
         #[rustfmt::skip]
         const EXPECTED: [usize; 64] = [
             0, 1, 2, 3, 3, 2, 1, 0,
@@ -3819,18 +3851,56 @@ mod tests {
         ];
         for sq in 0..64 {
             assert_eq!(
-                king_bucket(sq), EXPECTED[sq],
+                kb[sq], EXPECTED[sq],
                 "reckless kb mismatch at sq={} got {} expected {}",
-                sq, king_bucket(sq), EXPECTED[sq]
+                sq, kb[sq], EXPECTED[sq]
             );
         }
         // Mirror flag still toggles on files e-h (Reckless's layout bakes
         // mirror into bucket ids but the rest of inference still needs the
         // mirror flag for feature indexing).
-        assert!(king_mirror(4));   // e1
-        assert!(!king_mirror(0));  // a1
-        // Restore default layout for subsequent tests.
-        init_king_buckets_layout(KbLayout::Uniform);
+        assert!(km[4]);   // e1
+        assert!(!km[0]);  // a1
+    }
+
+    /// Regression test for the 2026-04-20 SMP race fix. Concurrently
+    /// compute king-bucket tables on many threads for different layouts
+    /// and verify no tearing / incorrect value. If KING_BUCKET were still
+    /// a `static mut` written per layout, this would race; with per-net
+    /// fields it's trivially safe.
+    #[test]
+    fn test_king_buckets_concurrent_layouts() {
+        use std::thread;
+        let mut handles = vec![];
+        for i in 0..8 {
+            let layout = match i % 3 {
+                0 => KbLayout::Uniform,
+                1 => KbLayout::Consensus,
+                _ => KbLayout::Reckless,
+            };
+            handles.push(thread::spawn(move || {
+                for _ in 0..1000 {
+                    let (kb, km) = compute_king_buckets(layout);
+                    // Spot-check a few invariants per layout.
+                    match layout {
+                        KbLayout::Uniform => {
+                            assert_eq!(kb[0], 0);
+                            assert_eq!(kb[4], 12);
+                            assert!(km[4]);
+                        }
+                        KbLayout::Consensus => {
+                            assert_eq!(kb[0], 0);  // a1
+                        }
+                        KbLayout::Reckless => {
+                            assert_eq!(kb[0], 0);
+                            assert_eq!(kb[7], 0);  // mirror on h-file
+                            assert_eq!(kb[24], 9);  // rank 4+
+                        }
+                    }
+                }
+            }));
+        }
+        for h in handles { h.join().unwrap(); }
     }
 
     #[test]
@@ -3847,21 +3917,21 @@ mod tests {
 
     #[test]
     fn test_halfka_index() {
-        init_nnue();
+        let (kb, km) = compute_king_buckets(KbLayout::Uniform);
         // White perspective, king on e1 (sq 4), white pawn on e2 (sq 12)
-        let idx = halfka_index(WHITE, 4, WHITE, PAWN, 12);
+        let idx = halfka_index_with(&kb, &km, WHITE, 4, WHITE, PAWN, 12);
         // king sq 4, file=4 >= 4, so mirror: ks=4 stays, ps=12 → file mirror: (12 & !7) | (7 - (12&7)) = 8 | (7-4) = 8|3 = 11
-        // bucket = king_bucket(4) = 12
+        // bucket = king_bucket[4] = 12
         // pi = 0 (white pawn from white perspective)
         // index = 12 * 768 + 0 * 64 + 11 = 9216 + 11 = 9227
         assert_eq!(idx, 9227);
 
         // Black perspective, king on e8 (sq 60), white pawn on e2 (sq 12)
-        let idx = halfka_index(BLACK, 60, WHITE, PAWN, 12);
+        let idx = halfka_index_with(&kb, &km, BLACK, 60, WHITE, PAWN, 12);
         // ks = 60 ^ 56 = 4, ps = 12 ^ 56 = 52
         // pi = 0 (white pawn) → black perspective: 0 + 6 = 6
-        // king_mirror(4) = true → ps = (52 & !7) | (7 - (52 & 7)) = 48 | (7-4) = 48|3 = 51
-        // bucket = king_bucket(4) = 12
+        // king_mirror[4] = true → ps = (52 & !7) | (7 - (52 & 7)) = 48 | (7-4) = 48|3 = 51
+        // bucket = king_bucket[4] = 12
         // index = 12 * 768 + 6 * 64 + 51 = 9216 + 384 + 51 = 9651
         assert_eq!(idx, 9651);
     }
@@ -4436,7 +4506,7 @@ mod tests {
                     let them = flip_color(us);
                     let moved_pt = board.piece_type_at(move_from(mv));
                     let captured_pt = board.piece_type_at(move_to(mv));
-                    let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt);
+                    let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net);
 
                     let ok = board.make_move(mv);
                     assert!(ok, "psq fuzz {} game {} ply {}: move {} illegal?",
@@ -4612,7 +4682,7 @@ mod tests {
             let moved_pt = board.piece_type_at(from);
             let captured_pt = board.piece_type_at(to);
             assert_eq!(captured_pt, NO_PIECE_TYPE, "king march: no captures expected");
-            let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt);
+            let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net);
 
             let ok = board.make_move(mv);
             assert!(ok, "king march step {}: move illegal {}→{}", i, from, to);
