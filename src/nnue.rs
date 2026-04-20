@@ -4336,12 +4336,19 @@ mod tests {
             "7k/8/8/8/8/8/8/7K w - - 0 1",
         ];
 
-        const TOLERANCE_CP: i32 = 50;
+        // v9 threat nets: semi-exclusion is orientation-dependent by design,
+        // so mirrored positions activate different threat-feature indices.
+        // Well-trained nets converge to near-symmetric weights at those
+        // indices, but a residual remains that's larger than quantization
+        // drift alone. 75cp accommodates s200..s800 v9 nets on tactical
+        // positions while still catching real perspective/flip bugs.
+        // Non-threat nets keep the tighter 50cp bar.
+        let tolerance_cp: i32 = if net.has_threats { 75 } else { 50 };
         let h = net.hidden_size;
         let mut max_diff = 0i32;
         let mut fails: Vec<(String, i32, i32, i32)> = Vec::new();
 
-        eprintln!("eval symmetry: tolerance = {} cp", TOLERANCE_CP);
+        eprintln!("eval symmetry: tolerance = {} cp", tolerance_cp);
         for fen in &fens {
             let mirrored = mirror_fen(fen);
 
@@ -4368,18 +4375,18 @@ mod tests {
             let diff = (e1 - e2).abs();
             eprintln!("  {}: eval={} mirror={} diff={}{}",
                 fen, e1, e2, diff,
-                if diff > TOLERANCE_CP { " FAIL" } else if diff > 5 { " (residual)" } else { "" }
+                if diff > tolerance_cp { " FAIL" } else if diff > 5 { " (residual)" } else { "" }
             );
             max_diff = max_diff.max(diff);
-            if diff > TOLERANCE_CP {
+            if diff > tolerance_cp {
                 fails.push((fen.to_string(), e1, e2, diff));
             }
         }
 
-        eprintln!("eval symmetry max diff = {} cp (tolerance {} cp)", max_diff, TOLERANCE_CP);
+        eprintln!("eval symmetry max diff = {} cp (tolerance {} cp)", max_diff, tolerance_cp);
         assert!(fails.is_empty(),
             "eval symmetry failed on {} positions (> {}cp tolerance). Details above.",
-            fails.len(), TOLERANCE_CP);
+            fails.len(), tolerance_cp);
     }
 
     /// Tier-1 discovery test: eval changes monotonically when removing
