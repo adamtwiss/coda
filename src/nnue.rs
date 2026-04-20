@@ -377,6 +377,58 @@ unsafe fn simd_acc_fused_avx2(
     }
 }
 
+/// NEON mirror of simd_acc_fused_avx2. Per-chunk: load src into regs, apply
+/// all adds/subs in-register, store once. 16 regs × 8 i16 = 128 elements per
+/// chunk (same footprint as AVX2 8×16). Hot path: runs once per make_move
+/// for incremental accumulator updates; on aarch64 this was previously
+/// falling through to a scalar loop, costing a significant fraction of NPS.
+#[cfg(target_arch = "aarch64")]
+unsafe fn simd_acc_fused_neon(
+    dst: &mut [i16],
+    src: &[i16],
+    add_rows: &[&[i16]],
+    sub_rows: &[&[i16]],
+    h: usize,
+) {
+    const REGS: usize = 16;
+    const CHUNK: usize = REGS * 8;
+
+    let dst_ptr = dst.as_mut_ptr();
+    let src_ptr = src.as_ptr();
+
+    let mut offset = 0;
+    while offset < h {
+        let nregs = ((h - offset).min(CHUNK) + 7) / 8;
+
+        let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
+        for i in 0..nregs {
+            regs[i] = vld1q_s16(src_ptr.add(offset + i * 8));
+        }
+
+        for row in add_rows {
+            let row_ptr = row.as_ptr().add(offset);
+            for i in 0..nregs {
+                let w = vld1q_s16(row_ptr.add(i * 8));
+                regs[i] = vaddq_s16(regs[i], w);
+            }
+        }
+
+        for row in sub_rows {
+            let row_ptr = row.as_ptr().add(offset);
+            for i in 0..nregs {
+                let w = vld1q_s16(row_ptr.add(i * 8));
+                regs[i] = vsubq_s16(regs[i], w);
+            }
+        }
+
+        for i in 0..nregs {
+            vst1q_s16(dst_ptr.add(offset + i * 8), regs[i]);
+        }
+
+        offset += CHUNK;
+    }
+}
+
 /// Register-blocked batch apply for Finny table refresh (Reckless pattern).
 /// Loads 8 SIMD registers from acc, applies ALL adds then ALL subs, stores once.
 /// Much faster than per-piece acc_add/acc_sub which loads/stores each time.
@@ -1578,6 +1630,74 @@ unsafe fn neon_l1_int8_dot(packed: &[u8], weights: &[i8], h: usize) -> i32 {
     vaddvq_s32(vaddq_s32(sum0, sum1))
 }
 
+/// L1 int8 matmul x4 (NEON): process 4 neurons simultaneously, loading each
+/// input chunk once and feeding it into 4 independent accumulators. Mirrors
+/// the x86_64 `simd_l1_int8_dot_x4` pattern. Each 16-byte input chunk
+/// amortises 1 input widen across 4 neurons, cutting per-chunk cost from
+/// 4×(2 input widens + 2 weight widens + 4 MLALs) = 32 ops to 2 + 4×(2+4) = 26 ops.
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_l1_int8_dot_x4(
+    packed: &[u8],
+    w0: &[i8], w1: &[i8], w2: &[i8], w3: &[i8],
+    h: usize,
+) -> [i32; 4] {
+    let mut s0_lo = vdupq_n_s32(0); let mut s0_hi = vdupq_n_s32(0);
+    let mut s1_lo = vdupq_n_s32(0); let mut s1_hi = vdupq_n_s32(0);
+    let mut s2_lo = vdupq_n_s32(0); let mut s2_hi = vdupq_n_s32(0);
+    let mut s3_lo = vdupq_n_s32(0); let mut s3_hi = vdupq_n_s32(0);
+    let mut i = 0;
+    while i < h {
+        // Load + widen input once per chunk, shared across all 4 neurons.
+        let a = vld1q_u8(packed.as_ptr().add(i));
+        let a_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(a)));
+        let a_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(a)));
+
+        // Neuron 0
+        let b = vld1q_s8(w0.as_ptr().add(i));
+        let b_lo = vmovl_s8(vget_low_s8(b));
+        let b_hi = vmovl_s8(vget_high_s8(b));
+        s0_lo = vmlal_s16(s0_lo, vget_low_s16(a_lo), vget_low_s16(b_lo));
+        s0_lo = vmlal_high_s16(s0_lo, a_lo, b_lo);
+        s0_hi = vmlal_s16(s0_hi, vget_low_s16(a_hi), vget_low_s16(b_hi));
+        s0_hi = vmlal_high_s16(s0_hi, a_hi, b_hi);
+
+        // Neuron 1
+        let b = vld1q_s8(w1.as_ptr().add(i));
+        let b_lo = vmovl_s8(vget_low_s8(b));
+        let b_hi = vmovl_s8(vget_high_s8(b));
+        s1_lo = vmlal_s16(s1_lo, vget_low_s16(a_lo), vget_low_s16(b_lo));
+        s1_lo = vmlal_high_s16(s1_lo, a_lo, b_lo);
+        s1_hi = vmlal_s16(s1_hi, vget_low_s16(a_hi), vget_low_s16(b_hi));
+        s1_hi = vmlal_high_s16(s1_hi, a_hi, b_hi);
+
+        // Neuron 2
+        let b = vld1q_s8(w2.as_ptr().add(i));
+        let b_lo = vmovl_s8(vget_low_s8(b));
+        let b_hi = vmovl_s8(vget_high_s8(b));
+        s2_lo = vmlal_s16(s2_lo, vget_low_s16(a_lo), vget_low_s16(b_lo));
+        s2_lo = vmlal_high_s16(s2_lo, a_lo, b_lo);
+        s2_hi = vmlal_s16(s2_hi, vget_low_s16(a_hi), vget_low_s16(b_hi));
+        s2_hi = vmlal_high_s16(s2_hi, a_hi, b_hi);
+
+        // Neuron 3
+        let b = vld1q_s8(w3.as_ptr().add(i));
+        let b_lo = vmovl_s8(vget_low_s8(b));
+        let b_hi = vmovl_s8(vget_high_s8(b));
+        s3_lo = vmlal_s16(s3_lo, vget_low_s16(a_lo), vget_low_s16(b_lo));
+        s3_lo = vmlal_high_s16(s3_lo, a_lo, b_lo);
+        s3_hi = vmlal_s16(s3_hi, vget_low_s16(a_hi), vget_low_s16(b_hi));
+        s3_hi = vmlal_high_s16(s3_hi, a_hi, b_hi);
+
+        i += 16;
+    }
+    [
+        vaddvq_s32(vaddq_s32(s0_lo, s0_hi)),
+        vaddvq_s32(vaddq_s32(s1_lo, s1_hi)),
+        vaddvq_s32(vaddq_s32(s2_lo, s2_hi)),
+        vaddvq_s32(vaddq_s32(s3_lo, s3_hi)),
+    ]
+}
+
 /// Find non-zero 16-byte chunk indices in a packed u8 buffer (NEON).
 /// Returns the number of NNZ chunks. nnz_indices[0..count] contains byte offsets.
 #[cfg(target_arch = "aarch64")]
@@ -2348,7 +2468,36 @@ impl NNUENet {
         #[cfg(target_arch = "aarch64")]
         if self.has_neon && pw % 16 == 0 && !self.l1_weights_8t.is_empty() {
             let ntm_base = l1_total * pw;
-            for i in 0..l1 {
+            // Multi-neuron: 4 neurons at once, loading each input chunk once
+            // and feeding all 4 accumulators (mirrors x86_64 simd_l1_int8_dot_x4).
+            let mut i = 0;
+            while i + 4 <= l1 {
+                let gi = l1_off + i;
+                unsafe {
+                    let stm_results = neon_l1_int8_dot_x4(
+                        &stm_pw[..pw],
+                        &self.l1_weights_8t[gi * pw..(gi + 1) * pw],
+                        &self.l1_weights_8t[(gi + 1) * pw..(gi + 2) * pw],
+                        &self.l1_weights_8t[(gi + 2) * pw..(gi + 3) * pw],
+                        &self.l1_weights_8t[(gi + 3) * pw..(gi + 4) * pw],
+                        pw,
+                    );
+                    let ntm_results = neon_l1_int8_dot_x4(
+                        &ntm_pw[..pw],
+                        &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw],
+                        &self.l1_weights_8t[ntm_base + (gi + 1) * pw..ntm_base + (gi + 2) * pw],
+                        &self.l1_weights_8t[ntm_base + (gi + 2) * pw..ntm_base + (gi + 3) * pw],
+                        &self.l1_weights_8t[ntm_base + (gi + 3) * pw..ntm_base + (gi + 4) * pw],
+                        pw,
+                    );
+                    for k in 0..4 {
+                        hidden32[i + k] += stm_results[k] + ntm_results[k];
+                    }
+                }
+                i += 4;
+            }
+            // Tail (if l1 not divisible by 4)
+            while i < l1 {
                 let gi = l1_off + i;
                 let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
                 let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
@@ -2356,6 +2505,7 @@ impl NNUENet {
                     hidden32[i] += neon_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
                     hidden32[i] += neon_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
                 }
+                i += 1;
             }
         }
 
@@ -3619,6 +3769,16 @@ impl NNUEAccumulator {
             unsafe {
                 simd_acc_fused_avx2(&mut current.white, &parent.white, w_adds, w_subs, h);
                 simd_acc_fused_avx2(&mut current.black, &parent.black, b_adds, b_subs, h);
+            }
+            current.computed = true;
+            return;
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        if net.has_neon && h % 8 == 0 {
+            unsafe {
+                simd_acc_fused_neon(&mut current.white, &parent.white, w_adds, w_subs, h);
+                simd_acc_fused_neon(&mut current.black, &parent.black, b_adds, b_subs, h);
             }
             current.computed = true;
             return;

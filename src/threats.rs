@@ -1521,15 +1521,16 @@ unsafe fn apply_deltas_neon(
         }
 
         // Paired add+sub: one register of each per iteration, reuses chunk regs.
+        // Uses vaddw_s8/vsubw_s8 which fuse widen+add and widen+sub into a
+        // single instruction each, avoiding a separate vmovl_s8 pass.
         let mut ai = 0;
         let mut si = 0;
         while ai < adds.len() && si < subs.len() {
             let aw = w_ptr.add(adds[ai] * hidden_size + offset);
             let sw = w_ptr.add(subs[si] * hidden_size + offset);
             for i in 0..nregs {
-                let add_w = vmovl_s8(vld1_s8(aw.add(i * 8)));
-                let sub_w = vmovl_s8(vld1_s8(sw.add(i * 8)));
-                regs[i] = vsubq_s16(vaddq_s16(regs[i], add_w), sub_w);
+                regs[i] = vaddw_s8(regs[i], vld1_s8(aw.add(i * 8)));
+                regs[i] = vsubw_s8(regs[i], vld1_s8(sw.add(i * 8)));
             }
             ai += 1;
             si += 1;
@@ -1538,8 +1539,7 @@ unsafe fn apply_deltas_neon(
         while ai < adds.len() {
             let aw = w_ptr.add(adds[ai] * hidden_size + offset);
             for i in 0..nregs {
-                let add_w = vmovl_s8(vld1_s8(aw.add(i * 8)));
-                regs[i] = vaddq_s16(regs[i], add_w);
+                regs[i] = vaddw_s8(regs[i], vld1_s8(aw.add(i * 8)));
             }
             ai += 1;
         }
@@ -1547,8 +1547,7 @@ unsafe fn apply_deltas_neon(
         while si < subs.len() {
             let sw = w_ptr.add(subs[si] * hidden_size + offset);
             for i in 0..nregs {
-                let sub_w = vmovl_s8(vld1_s8(sw.add(i * 8)));
-                regs[i] = vsubq_s16(regs[i], sub_w);
+                regs[i] = vsubw_s8(regs[i], vld1_s8(sw.add(i * 8)));
             }
             si += 1;
         }
@@ -1591,8 +1590,7 @@ unsafe fn add_weight_rows_neon(
         for &idx in indices.iter() {
             let aw = w_ptr.add(idx * hidden_size + offset);
             for i in 0..nregs {
-                let add_w = vmovl_s8(vld1_s8(aw.add(i * 8)));
-                regs[i] = vaddq_s16(regs[i], add_w);
+                regs[i] = vaddw_s8(regs[i], vld1_s8(aw.add(i * 8)));
             }
         }
 
