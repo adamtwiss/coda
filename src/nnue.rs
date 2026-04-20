@@ -1876,10 +1876,10 @@ impl NNUENet {
         let mut l1_scale = QA as i32; // default int16 scale
         let mut bucketed_hidden = false; // bit 3: output buckets baked into L1/L2 dims
         let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
-        let mut consensus_buckets = false; // bit 5: consensus king bucket layout
+        // bit 5 (consensus_buckets) and bit 7 (extended_kb) are read locally
+        // inside the v6 / v7|8|9 match arms — not needed outside.
         let mut has_threats = false; // bit 6: threat features (v9)
         let mut num_threat_features = 0usize;
-        let mut extended_kb = false; // bit 7: extended KB header follows
         let mut num_king_buckets: usize = 16; // default (uniform/consensus)
         let mut kb_layout = KbLayout::Uniform;
         let hidden_size: usize;
@@ -1899,7 +1899,7 @@ impl NNUENet {
                 let flags = read_u8(reader)?;
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
-                consensus_buckets = flags & 32 != 0;
+                let consensus_buckets = flags & 32 != 0;
                 kb_layout = if consensus_buckets { KbLayout::Consensus } else { KbLayout::Uniform };
                 let body_size = data_len - 9;
                 let out_mul: u64 = if use_pairwise { 8 } else { 16 };
@@ -1917,9 +1917,9 @@ impl NNUENet {
                 if flags & 4 != 0 { l1_scale = 64; } // int8 L1 weights
                 bucketed_hidden = flags & 8 != 0; // output buckets baked into L1/L2
                 dual_l1 = flags & 16 != 0; // dual L1 activation (CReLU+SCReLU)
-                consensus_buckets = flags & 32 != 0; // consensus king bucket layout (legacy 16-bucket)
+                let consensus_buckets = flags & 32 != 0; // consensus king bucket layout (legacy 16-bucket)
                 has_threats = flags & 64 != 0; // v9 threat features
-                extended_kb = flags & 128 != 0; // bit 7: extended KB header
+                let extended_kb = flags & 128 != 0; // bit 7: extended KB header
                 let ft_size = read_u16(reader)? as usize;
                 l1_size = read_u16(reader)? as usize;
                 l2_size = read_u16(reader)? as usize;
@@ -3535,7 +3535,7 @@ impl NNUEAccumulator {
                 // during the replay chain, the mirroring might be wrong.
                 // For now this is acceptable; king moves are rare in the chain.
                 // Swap deltas out to avoid borrow conflict (no allocation)
-                let mut deltas = std::mem::take(&mut self.stack[ply].threat_deltas);
+                let deltas = std::mem::take(&mut self.stack[ply].threat_deltas);
                 let (prev_slice, curr_slice) = self.stack.split_at_mut(ply);
                 let prev = &prev_slice[src];
                 let curr = &mut curr_slice[0];
