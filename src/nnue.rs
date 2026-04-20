@@ -3673,16 +3673,8 @@ impl NNUEAccumulator {
                     }
                 }
             }
-            #[cfg(target_arch = "x86_64")]
-            if net.has_avx2 && h % 16 == 0 {
-                let empty: [usize; 0] = [];
-                unsafe { finny_batch_apply_avx2(dst, &net.input_weights, h, &piece_indices[..n_pieces], &empty); }
-            } else {
-                for &idx in &piece_indices[..n_pieces] {
-                    let row = net.input_weight_row(idx);
-                    for j in 0..h { dst[j] += row[j]; }
-                }
-            }
+            let empty: [usize; 0] = [];
+            finny_batch_apply(net, dst, &net.input_weights, h, &piece_indices[..n_pieces], &empty);
             // Save to cache
             entry.acc[..h].copy_from_slice(&dst[..h]);
             entry.piece_bbs = (board.pieces, board.colors);
@@ -3724,25 +3716,10 @@ impl NNUEAccumulator {
 
         // Batch apply with register blocking (Reckless pattern)
         if n_adds > 0 || n_subs > 0 {
-            #[cfg(target_arch = "x86_64")]
-            if net.has_avx2 && h % 16 == 0 {
-                unsafe {
-                    finny_batch_apply_avx2(
-                        cached_acc, &net.input_weights, h,
-                        &add_rows[..n_adds], &sub_rows[..n_subs],
-                    );
-                }
-            } else {
-                // Scalar fallback
-                for &idx in &add_rows[..n_adds] {
-                    let row = net.input_weight_row(idx);
-                    for j in 0..h { cached_acc[j] += row[j]; }
-                }
-                for &idx in &sub_rows[..n_subs] {
-                    let row = net.input_weight_row(idx);
-                    for j in 0..h { cached_acc[j] -= row[j]; }
-                }
-            }
+            finny_batch_apply(
+                net, cached_acc, &net.input_weights, h,
+                &add_rows[..n_adds], &sub_rows[..n_subs],
+            );
         }
 
         // Copy updated cache to accumulator
@@ -3758,6 +3735,93 @@ impl NNUEAccumulator {
         for entry in self.finny.iter_mut() {
             entry.valid = false;
         }
+    }
+}
+
+/// Batch-apply add/sub weight rows to an accumulator (SIMD-aware dispatcher).
+/// Used by Finny refresh (both full-build and cache-diff). Must compile on
+/// every supported arch — a scalar fallback is always present.
+#[inline]
+fn finny_batch_apply(
+    net: &NNUENet,
+    acc: &mut [i16],
+    input_weights: &[i16],
+    h: usize,
+    adds: &[usize],
+    subs: &[usize],
+) {
+    #[cfg(target_arch = "x86_64")]
+    if net.has_avx2 && h % 16 == 0 {
+        unsafe { finny_batch_apply_avx2(acc, input_weights, h, adds, subs); }
+        return;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if net.has_neon && h % 8 == 0 {
+        unsafe { finny_batch_apply_neon(acc, input_weights, h, adds, subs); }
+        return;
+    }
+    // Scalar fallback — always present so cfg-gated SIMD paths can never
+    // accidentally compile-out the only codepath (the cfg-swallows-else bug
+    // that previously left aarch64 Finny refresh as a no-op on king-bucket
+    // changes).
+    let _ = net;
+    for &idx in adds {
+        let base = idx * h;
+        for j in 0..h { acc[j] += input_weights[base + j]; }
+    }
+    for &idx in subs {
+        let base = idx * h;
+        for j in 0..h { acc[j] -= input_weights[base + j]; }
+    }
+}
+
+/// NEON SIMD: batch-apply add/sub weight rows to an accumulator.
+/// Mirrors finny_batch_apply_avx2 — 16 regs × 8 i16 = 128 elements per chunk.
+#[cfg(target_arch = "aarch64")]
+unsafe fn finny_batch_apply_neon(
+    acc: &mut [i16],
+    input_weights: &[i16],
+    h: usize,
+    adds: &[usize],
+    subs: &[usize],
+) {
+    use std::arch::aarch64::*;
+    const REGS: usize = 16;
+    const CHUNK: usize = REGS * 8;
+
+    let acc_ptr = acc.as_mut_ptr();
+    let w_ptr = input_weights.as_ptr();
+
+    let mut offset = 0;
+    while offset < h {
+        let nregs = ((h - offset).min(CHUNK) + 7) / 8;
+
+        let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
+        for i in 0..nregs {
+            regs[i] = vld1q_s16(acc_ptr.add(offset + i * 8));
+        }
+
+        for &idx in adds {
+            let row = w_ptr.add(idx * h + offset);
+            for i in 0..nregs {
+                let w = vld1q_s16(row.add(i * 8));
+                regs[i] = vaddq_s16(regs[i], w);
+            }
+        }
+
+        for &idx in subs {
+            let row = w_ptr.add(idx * h + offset);
+            for i in 0..nregs {
+                let w = vld1q_s16(row.add(i * 8));
+                regs[i] = vsubq_s16(regs[i], w);
+            }
+        }
+
+        for i in 0..nregs {
+            vst1q_s16(acc_ptr.add(offset + i * 8), regs[i]);
+        }
+
+        offset += CHUNK;
     }
 }
 

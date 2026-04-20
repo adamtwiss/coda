@@ -368,6 +368,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn test_sparse_avx2_matches_scalar() {
         crate::init();
 
