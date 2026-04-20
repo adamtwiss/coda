@@ -919,6 +919,13 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     // Create fresh NNUE accumulator for the helper
     if let Some(net) = &helper.nnue_net {
         helper.nnue_acc = Some(crate::nnue::NNUEAccumulator::new(net.hidden_size));
+        // Mirror main's threat_stack for v9 nets — helpers must evaluate
+        // consistently with main, otherwise shared-TT entries disagree and
+        // the search diverges badly at T>1.
+        if net.has_threats {
+            helper.threat_stack = crate::threat_accum::ThreatStack::new(net.hidden_size);
+            helper.threat_stack.active = true;
+        }
     }
     helper.time_limit = 0; // helpers don't do time management
     helper.move_overhead = main.move_overhead;
@@ -1020,6 +1027,17 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
     info.nodes = 0;
+
+    // Mirror search()'s threat setup — helpers must evaluate consistently
+    // with main or shared-TT entries disagree and search diverges at T>1.
+    board.generate_threat_deltas = info.nnue_net.as_ref().map_or(false, |n| n.has_threats);
+    if info.threat_stack.active {
+        info.threat_stack.reset();
+        if let Some(ref net) = info.nnue_net {
+            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, WHITE);
+            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, BLACK);
+        }
+    }
 
     let root_legal = generate_legal_moves(board);
     let mut best_move = if root_legal.len > 0 { root_legal.moves[0] } else { NO_MOVE };
