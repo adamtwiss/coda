@@ -1300,6 +1300,16 @@ pub unsafe fn apply_threat_deltas(
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
+    {
+        if hidden_size % 8 == 0 {
+            unsafe {
+                apply_deltas_neon(dst, src, threat_weights, hidden_size, &adds, &subs);
+            }
+            return;
+        }
+    }
+
     // Scalar fallback: single pass, reads src once, writes dst once.
     for j in 0..hidden_size {
         let mut v = src[j];
@@ -1412,6 +1422,14 @@ pub fn add_weight_rows(
         return;
     }
 
+    #[cfg(target_arch = "aarch64")]
+    if hidden_size % 8 == 0 {
+        unsafe {
+            add_weight_rows_neon(dst, threat_weights, hidden_size, indices);
+        }
+        return;
+    }
+
     // Scalar fallback
     for &idx in indices {
         let w_off = idx * hidden_size;
@@ -1464,6 +1482,122 @@ unsafe fn add_weight_rows_avx2(
         // Store registers back
         for i in 0..nregs {
             _mm256_storeu_si256(dst_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
+        }
+
+        offset += CHUNK;
+    }
+}
+
+/// NEON SIMD: apply threat weight rows to accumulator using register tiling.
+/// Mirrors apply_deltas_avx2 — fused load src / apply adds+subs / store dst.
+/// 16 regs × 8 i16 = 128 elements per chunk (same footprint as AVX2 8×16).
+#[cfg(target_arch = "aarch64")]
+unsafe fn apply_deltas_neon(
+    dst: &mut [i16],
+    src: &[i16],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    adds: &[usize],
+    subs: &[usize],
+) {
+    use std::arch::aarch64::*;
+
+    let dst_ptr = dst.as_mut_ptr();
+    let src_ptr = src.as_ptr();
+    let w_ptr = threat_weights.as_ptr();
+
+    const REGS: usize = 16;
+    const CHUNK: usize = REGS * 8; // 128 elements
+
+    let mut offset = 0;
+    while offset < hidden_size {
+        let chunk_size = (hidden_size - offset).min(CHUNK);
+        let nregs = (chunk_size + 7) / 8;
+
+        // Seed chunk accumulator from src.
+        let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
+        for i in 0..nregs {
+            regs[i] = vld1q_s16(src_ptr.add(offset + i * 8));
+        }
+
+        // Paired add+sub: one register of each per iteration, reuses chunk regs.
+        let mut ai = 0;
+        let mut si = 0;
+        while ai < adds.len() && si < subs.len() {
+            let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+            let sw = w_ptr.add(subs[si] * hidden_size + offset);
+            for i in 0..nregs {
+                let add_w = vmovl_s8(vld1_s8(aw.add(i * 8)));
+                let sub_w = vmovl_s8(vld1_s8(sw.add(i * 8)));
+                regs[i] = vsubq_s16(vaddq_s16(regs[i], add_w), sub_w);
+            }
+            ai += 1;
+            si += 1;
+        }
+
+        while ai < adds.len() {
+            let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+            for i in 0..nregs {
+                let add_w = vmovl_s8(vld1_s8(aw.add(i * 8)));
+                regs[i] = vaddq_s16(regs[i], add_w);
+            }
+            ai += 1;
+        }
+
+        while si < subs.len() {
+            let sw = w_ptr.add(subs[si] * hidden_size + offset);
+            for i in 0..nregs {
+                let sub_w = vmovl_s8(vld1_s8(sw.add(i * 8)));
+                regs[i] = vsubq_s16(regs[i], sub_w);
+            }
+            si += 1;
+        }
+
+        for i in 0..nregs {
+            vst1q_s16(dst_ptr.add(offset + i * 8), regs[i]);
+        }
+
+        offset += CHUNK;
+    }
+}
+
+/// NEON SIMD: accumulate multiple weight rows into dst (for full threat refresh).
+/// Mirrors add_weight_rows_avx2.
+#[cfg(target_arch = "aarch64")]
+unsafe fn add_weight_rows_neon(
+    dst: &mut [i16],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    indices: &[usize],
+) {
+    use std::arch::aarch64::*;
+
+    let dst_ptr = dst.as_mut_ptr();
+    let w_ptr = threat_weights.as_ptr();
+
+    const REGS: usize = 16;
+    const CHUNK: usize = REGS * 8;
+
+    let mut offset = 0;
+    while offset < hidden_size {
+        let chunk_size = (hidden_size - offset).min(CHUNK);
+        let nregs = (chunk_size + 7) / 8;
+
+        let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
+        for i in 0..nregs {
+            regs[i] = vld1q_s16(dst_ptr.add(offset + i * 8));
+        }
+
+        for &idx in indices.iter() {
+            let aw = w_ptr.add(idx * hidden_size + offset);
+            for i in 0..nregs {
+                let add_w = vmovl_s8(vld1_s8(aw.add(i * 8)));
+                regs[i] = vaddq_s16(regs[i], add_w);
+            }
+        }
+
+        for i in 0..nregs {
+            vst1q_s16(dst_ptr.add(offset + i * 8), regs[i]);
         }
 
         offset += CHUNK;

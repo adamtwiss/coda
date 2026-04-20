@@ -1488,14 +1488,30 @@ unsafe fn neon_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
 /// clamp(a, 0, 255) * clamp(b, 0, 255) >> 8 for each pair.
 #[cfg(target_arch = "aarch64")]
 unsafe fn neon_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
+    neon_pairwise_pack_fused(acc, std::ptr::null(), out, pw);
+}
+
+/// Pairwise pack with optional fused threat combine (NEON mirror of simd_pairwise_pack_fused).
+/// If threat is non-null, adds threat[i] to acc[i] (and threat[pw+i] to acc[pw+i]) before the
+/// [0, QA] clamp. Required for v9 nets with threat inputs — without it, threat contributions
+/// are silently dropped on aarch64.
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut [u8], pw: usize) {
     let zero = vdupq_n_s16(0);
     let qa = vdupq_n_s16(QA as i16);
+    let has_threat = !threat.is_null();
     let mut i = 0;
     while i + 16 <= pw {
-        let a0 = vld1q_s16(acc.as_ptr().add(i));
-        let b0 = vld1q_s16(acc.as_ptr().add(pw + i));
-        let a1 = vld1q_s16(acc.as_ptr().add(i + 8));
-        let b1 = vld1q_s16(acc.as_ptr().add(pw + i + 8));
+        let mut a0 = vld1q_s16(acc.as_ptr().add(i));
+        let mut b0 = vld1q_s16(acc.as_ptr().add(pw + i));
+        let mut a1 = vld1q_s16(acc.as_ptr().add(i + 8));
+        let mut b1 = vld1q_s16(acc.as_ptr().add(pw + i + 8));
+        if has_threat {
+            a0 = vaddq_s16(a0, vld1q_s16(threat.add(i)));
+            b0 = vaddq_s16(b0, vld1q_s16(threat.add(pw + i)));
+            a1 = vaddq_s16(a1, vld1q_s16(threat.add(i + 8)));
+            b1 = vaddq_s16(b1, vld1q_s16(threat.add(pw + i + 8)));
+        }
         let ca0 = vminq_s16(vmaxq_s16(a0, zero), qa);
         let cb0 = vminq_s16(vmaxq_s16(b0, zero), qa);
         let ca1 = vminq_s16(vmaxq_s16(a1, zero), qa);
@@ -1510,8 +1526,12 @@ unsafe fn neon_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
         i += 16;
     }
     while i + 8 <= pw {
-        let a = vld1q_s16(acc.as_ptr().add(i));
-        let b = vld1q_s16(acc.as_ptr().add(pw + i));
+        let mut a = vld1q_s16(acc.as_ptr().add(i));
+        let mut b = vld1q_s16(acc.as_ptr().add(pw + i));
+        if has_threat {
+            a = vaddq_s16(a, vld1q_s16(threat.add(i)));
+            b = vaddq_s16(b, vld1q_s16(threat.add(pw + i)));
+        }
         let ca = vminq_s16(vmaxq_s16(a, zero), qa);
         let cb = vminq_s16(vmaxq_s16(b, zero), qa);
         let prod = vmulq_s16(ca, cb);
@@ -1520,9 +1540,13 @@ unsafe fn neon_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
         i += 8;
     }
     while i < pw {
-        let a = (acc[i] as i32).clamp(0, 255);
-        let b = (acc[pw + i] as i32).clamp(0, 255);
-        out[i] = ((a * b) >> FT_SHIFT) as u8;
+        let mut a = acc[i] as i32;
+        let mut b = acc[pw + i] as i32;
+        if has_threat {
+            a += *threat.add(i) as i32;
+            b += *threat.add(pw + i) as i32;
+        }
+        out[i] = ((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8;
         i += 1;
     }
 }
@@ -2167,8 +2191,13 @@ impl NNUENet {
         #[cfg(target_arch = "aarch64")]
         {
             unsafe {
-                neon_pairwise_pack(stm_acc, &mut stm_pw, pw);
-                neon_pairwise_pack(ntm_acc, &mut ntm_pw, pw);
+                if has_threats {
+                    neon_pairwise_pack_fused(stm_acc, stm_threat.as_ptr(), &mut stm_pw, pw);
+                    neon_pairwise_pack_fused(ntm_acc, ntm_threat.as_ptr(), &mut ntm_pw, pw);
+                } else {
+                    neon_pairwise_pack_fused(stm_acc, std::ptr::null(), &mut stm_pw, pw);
+                    neon_pairwise_pack_fused(ntm_acc, std::ptr::null(), &mut ntm_pw, pw);
+                }
             }
         }
 
