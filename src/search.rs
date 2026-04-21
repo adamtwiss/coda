@@ -1914,6 +1914,7 @@ fn negamax(
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && king_zone_pressure < tp(&NMP_KING_ZONE_MAX)  // New gate
         && any_threat_count < 3  // S7-style: skip NMP when many of our pieces are under threat
+        && !unstable  // E6: skip NMP when parent-child eval gap is large (static_eval unreliable)
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
