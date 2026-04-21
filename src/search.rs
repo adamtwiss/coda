@@ -106,6 +106,11 @@ tunables!(
     (ESCAPE_BONUS_R, 12226, 3000, 30000, 1350.0),
     (ESCAPE_BONUS_MINOR, 8883, 2000, 20000, 900.0),
     (NMP_KING_ZONE_MAX, 6, 2, 9, 1.5),
+    // NMP skip when WE have significant pressure on THEIR king — mirror of
+    // NMP_KING_ZONE_MAX. Passing on a turn we're about to launch attack
+    // wastes tempo. Skip NMP when king-zone-opportunity >= this threshold.
+    // Mirror of kzp × NMP (#466 +7.94).
+    (NMP_OPPORTUNITY_MAX, 5, 2, 9, 1.5),
     (PROBCUT_KING_ZONE_MAX, 6, 2, 9, 1.5),
     (LMR_THREAT_DIV, 3, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
@@ -1906,6 +1911,15 @@ fn negamax(
     let our_king_sq = board.king_sq(board.side_to_move);
     let king_zone = crate::attacks::king_attacks(our_king_sq as u32) | (1u64 << our_king_sq);
     let king_zone_pressure = popcount(enemy_attacks & king_zone) as i32;
+    // Mirror: skip NMP when WE have significant pressure on THEIR king.
+    // Passing on our attacking turn wastes a tempo; their king is
+    // potentially minutes from falling. Mirror of kzp × NMP (#466 +7.94).
+    // Cost: one extra attacks_by_color call (~10-12 magic lookups) in the
+    // NMP-eligible path only (depth>=3, non-check, non-PV).
+    let their_king_sq = board.king_sq(them_color);
+    let their_king_zone = crate::attacks::king_attacks(their_king_sq as u32) | (1u64 << their_king_sq);
+    let our_attacks = board.attacks_by_color(board.side_to_move);
+    let king_zone_opportunity = popcount(our_attacks & their_king_zone) as i32;
 
     if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
@@ -1913,6 +1927,7 @@ fn negamax(
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && king_zone_pressure < tp(&NMP_KING_ZONE_MAX)  // New gate
+        && king_zone_opportunity < tp(&NMP_OPPORTUNITY_MAX)  // Mirror gate
         && any_threat_count < 3  // S7-style: skip NMP when many of our pieces are under threat
         && FEAT_NMP.load(Ordering::Relaxed)
     {
