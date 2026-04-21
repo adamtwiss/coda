@@ -119,6 +119,10 @@ tunables!(
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
     // LMR over-reduces king-restriction queen moves that complete mates.
     (LMR_ENDGAME_PIECES, 6, 0, 12, 1.5),
+    // E9: has_pawn_threats × SE margin widener. Add flat bonus to singular
+    // test margin when pawn attacks exist on our pieces (sharp tactical
+    // positions). Different signal than #553 (kzp × SE at +9.7).
+    (SE_PAWN_THREATS_MARGIN, 10, 0, 50, 2.0),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -2207,8 +2211,11 @@ fn negamax(
             // Skip SE for mate scores (margin comparison meaningless)
             if tt_score_local > -(MATE_SCORE - 100) && tt_score_local < MATE_SCORE - 100 {
                 // S4: widen singular test margin when king under pressure.
+                // E9: further widen when has_pawn_threats (pawn attacks exist).
+                let pawn_threat_adj = if has_pawn_threats { tp(&SE_PAWN_THREATS_MARGIN) } else { 0 };
                 let singular_beta = tt_score_local - depth
-                    - king_zone_pressure * tp(&SE_KING_PRESSURE_MARGIN);
+                    - king_zone_pressure * tp(&SE_KING_PRESSURE_MARGIN)
+                    - pawn_threat_adj;
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
