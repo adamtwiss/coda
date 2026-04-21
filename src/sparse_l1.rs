@@ -279,6 +279,236 @@ pub unsafe fn dense_l1_avx2(
     }
 }
 
+/// Dense column-major L1 matmul, AVX-512 VNNI variant.
+///
+/// Same semantics as `dense_l1_avx2` but processes 16 neurons in a single
+/// ZMM register via one `VPDPBUSD` per 4-byte input chunk. For L1=16
+/// (v9 pairwise `num_neurons=16`), all neuron outputs fit in one ZMM
+/// accumulator, so the loop body is:
+///
+///   load 64B weights → broadcast 4B input → VPDPBUSD
+///
+/// That's one load + one broadcast + one fused u8×i8 → i32 per chunk,
+/// versus `dense_l1_avx2`'s two loads, two broadcasts, and six uops
+/// (load + broadcast + maddubs + madd(ones) + add) per chunk. Net ~3×
+/// fewer uops per chunk.
+///
+/// Only implemented for `num_neurons == 16` (the v9 pairwise case). For
+/// other widths, callers should continue to use the non-VNNI paths.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+pub unsafe fn dense_l1_avx512_vnni(
+    stm_pw: &[u8],
+    ntm_pw: &[u8],
+    pw: usize,
+    sparse_weights: &[i8],  // input-chunk-major layout (same as sparse_l1_avx2)
+    num_neurons: usize,
+    bias: &[i16],
+    bias_scale: i32,
+    output: &mut [i32],
+) {
+    use std::arch::x86_64::*;
+    debug_assert_eq!(num_neurons, 16, "dense_l1_avx512_vnni currently specialised to 16 neurons");
+
+    let chunk_stride = num_neurons * 4; // = 64 bytes — exactly one ZMM
+
+    for i in 0..num_neurons { output[i] = bias[i] as i32 * bias_scale; }
+
+    // Four interleaved accumulators break the VPDPBUSD dependency chain
+    // (4-cycle latency on Zen 5 / Sapphire Rapids). A single accumulator
+    // serialises the whole loop; four keeps the dispatcher fed.
+    let mut a0 = _mm512_setzero_si512();
+    let mut a1 = _mm512_setzero_si512();
+    let mut a2 = _mm512_setzero_si512();
+    let mut a3 = _mm512_setzero_si512();
+
+    let w_ptr = sparse_weights.as_ptr();
+    let total_chunks = pw / 4;
+
+    // Helper: process one perspective's worth of chunks into the four
+    // rotating accumulators, with 4-at-a-time unrolling.
+    macro_rules! run_perspective {
+        ($chunks:expr, $chunk_offset:expr) => {{
+            let chunks: *const u32 = $chunks;
+            let chunk_offset: usize = $chunk_offset;
+            let mut c = 0usize;
+            while c + 4 <= total_chunks {
+                let v0 = *chunks.add(c);
+                let v1 = *chunks.add(c + 1);
+                let v2 = *chunks.add(c + 2);
+                let v3 = *chunks.add(c + 3);
+                let w0 = _mm512_loadu_si512(w_ptr.add((chunk_offset + c) * chunk_stride) as *const __m512i);
+                let w1 = _mm512_loadu_si512(w_ptr.add((chunk_offset + c + 1) * chunk_stride) as *const __m512i);
+                let w2 = _mm512_loadu_si512(w_ptr.add((chunk_offset + c + 2) * chunk_stride) as *const __m512i);
+                let w3 = _mm512_loadu_si512(w_ptr.add((chunk_offset + c + 3) * chunk_stride) as *const __m512i);
+                a0 = _mm512_dpbusd_epi32(a0, _mm512_set1_epi32(v0 as i32), w0);
+                a1 = _mm512_dpbusd_epi32(a1, _mm512_set1_epi32(v1 as i32), w1);
+                a2 = _mm512_dpbusd_epi32(a2, _mm512_set1_epi32(v2 as i32), w2);
+                a3 = _mm512_dpbusd_epi32(a3, _mm512_set1_epi32(v3 as i32), w3);
+                c += 4;
+            }
+            while c < total_chunks {
+                let v = *chunks.add(c);
+                let w = _mm512_loadu_si512(w_ptr.add((chunk_offset + c) * chunk_stride) as *const __m512i);
+                a0 = _mm512_dpbusd_epi32(a0, _mm512_set1_epi32(v as i32), w);
+                c += 1;
+            }
+        }};
+    }
+
+    // STM chunks live at offsets [0..pw/4); NTM chunks at [pw/4..pw/2).
+    let stm_chunks_ptr = stm_pw.as_ptr() as *const u32;
+    run_perspective!(stm_chunks_ptr, 0);
+    let ntm_chunks_ptr = ntm_pw.as_ptr() as *const u32;
+    run_perspective!(ntm_chunks_ptr, pw / 4);
+
+    let acc = _mm512_add_epi32(_mm512_add_epi32(a0, a1), _mm512_add_epi32(a2, a3));
+    let mut results = [0i32; 16];
+    _mm512_storeu_si512(results.as_mut_ptr() as *mut __m512i, acc);
+    for i in 0..num_neurons {
+        output[i] += results[i];
+    }
+}
+
+/// Sparse column-major L1 matmul, AVX-512 VNNI variant — skips 4-byte
+/// zero input chunks. Uses four interleaved accumulators to hide VPDPBUSD
+/// latency even when chunks are dense.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+pub unsafe fn sparse_l1_avx512_vnni(
+    stm_pw: &[u8],
+    ntm_pw: &[u8],
+    pw: usize,
+    sparse_weights: &[i8],
+    num_neurons: usize,
+    bias: &[i16],
+    bias_scale: i32,
+    output: &mut [i32],
+) {
+    use std::arch::x86_64::*;
+    debug_assert_eq!(num_neurons, 16, "sparse_l1_avx512_vnni currently specialised to 16 neurons");
+
+    let chunk_stride = num_neurons * 4;
+
+    for i in 0..num_neurons { output[i] = bias[i] as i32 * bias_scale; }
+
+    let mut a0 = _mm512_setzero_si512();
+    let mut a1 = _mm512_setzero_si512();
+    let mut a2 = _mm512_setzero_si512();
+    let mut a3 = _mm512_setzero_si512();
+
+    let w_ptr = sparse_weights.as_ptr();
+    let mut rot: u32 = 0;
+
+    let stm_chunks = std::slice::from_raw_parts(stm_pw.as_ptr() as *const u32, pw / 4);
+    for chunk_idx in 0..pw / 4 {
+        let val = *stm_chunks.get_unchecked(chunk_idx);
+        if val == 0 { continue; }
+        let input = _mm512_set1_epi32(val as i32);
+        let w_off = chunk_idx * chunk_stride;
+        let w = _mm512_loadu_si512(w_ptr.add(w_off) as *const __m512i);
+        match rot & 3 {
+            0 => a0 = _mm512_dpbusd_epi32(a0, input, w),
+            1 => a1 = _mm512_dpbusd_epi32(a1, input, w),
+            2 => a2 = _mm512_dpbusd_epi32(a2, input, w),
+            _ => a3 = _mm512_dpbusd_epi32(a3, input, w),
+        }
+        rot = rot.wrapping_add(1);
+    }
+
+    let ntm_chunk_offset = pw / 4;
+    let ntm_chunks = std::slice::from_raw_parts(ntm_pw.as_ptr() as *const u32, pw / 4);
+    for chunk_idx in 0..pw / 4 {
+        let val = *ntm_chunks.get_unchecked(chunk_idx);
+        if val == 0 { continue; }
+        let input = _mm512_set1_epi32(val as i32);
+        let w_off = (ntm_chunk_offset + chunk_idx) * chunk_stride;
+        let w = _mm512_loadu_si512(w_ptr.add(w_off) as *const __m512i);
+        match rot & 3 {
+            0 => a0 = _mm512_dpbusd_epi32(a0, input, w),
+            1 => a1 = _mm512_dpbusd_epi32(a1, input, w),
+            2 => a2 = _mm512_dpbusd_epi32(a2, input, w),
+            _ => a3 = _mm512_dpbusd_epi32(a3, input, w),
+        }
+        rot = rot.wrapping_add(1);
+    }
+
+    let acc = _mm512_add_epi32(_mm512_add_epi32(a0, a1), _mm512_add_epi32(a2, a3));
+    let mut results = [0i32; 16];
+    _mm512_storeu_si512(results.as_mut_ptr() as *mut __m512i, acc);
+    for i in 0..num_neurons {
+        output[i] += results[i];
+    }
+}
+
+/// Dense column-major L1 matmul, AVX-VNNI variant (AVX2-class machines
+/// with `VPDPBUSD` YMM form — Alder Lake+, Zen 4+).
+///
+/// Same as `dense_l1_avx2` but replaces the
+/// `VPMADDUBSW + VPMADDWD(ones) + VPADDD` sequence with a single
+/// `VPDPBUSD` per YMM lane.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,avxvnni")]
+pub unsafe fn dense_l1_avx_vnni(
+    stm_pw: &[u8],
+    ntm_pw: &[u8],
+    pw: usize,
+    sparse_weights: &[i8],
+    num_neurons: usize,
+    bias: &[i16],
+    bias_scale: i32,
+    output: &mut [i32],
+) {
+    use std::arch::x86_64::*;
+
+    let chunk_stride = num_neurons * 4;
+
+    for i in 0..num_neurons { output[i] = bias[i] as i32 * bias_scale; }
+
+    let mut acc0 = _mm256_setzero_si256();
+    let mut acc1 = _mm256_setzero_si256();
+
+    let w_ptr = sparse_weights.as_ptr();
+
+    let stm_chunks = std::slice::from_raw_parts(stm_pw.as_ptr() as *const u32, pw / 4);
+    for chunk_idx in 0..pw / 4 {
+        let val = *stm_chunks.get_unchecked(chunk_idx);
+        let input = _mm256_set1_epi32(val as i32);
+        let w_off = chunk_idx * chunk_stride;
+
+        let w0 = _mm256_loadu_si256(w_ptr.add(w_off) as *const __m256i);
+        acc0 = _mm256_dpbusd_avx_epi32(acc0, input, w0);
+
+        if num_neurons > 8 {
+            let w1 = _mm256_loadu_si256(w_ptr.add(w_off + 32) as *const __m256i);
+            acc1 = _mm256_dpbusd_avx_epi32(acc1, input, w1);
+        }
+    }
+
+    let ntm_chunk_offset = pw / 4;
+    let ntm_chunks = std::slice::from_raw_parts(ntm_pw.as_ptr() as *const u32, pw / 4);
+    for chunk_idx in 0..pw / 4 {
+        let val = *ntm_chunks.get_unchecked(chunk_idx);
+        let input = _mm256_set1_epi32(val as i32);
+        let w_off = (ntm_chunk_offset + chunk_idx) * chunk_stride;
+
+        let w0 = _mm256_loadu_si256(w_ptr.add(w_off) as *const __m256i);
+        acc0 = _mm256_dpbusd_avx_epi32(acc0, input, w0);
+
+        if num_neurons > 8 {
+            let w1 = _mm256_loadu_si256(w_ptr.add(w_off + 32) as *const __m256i);
+            acc1 = _mm256_dpbusd_avx_epi32(acc1, input, w1);
+        }
+    }
+
+    let mut results = [0i32; 16];
+    _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, acc0);
+    _mm256_storeu_si256(results.as_mut_ptr().add(8) as *mut __m256i, acc1);
+    for i in 0..num_neurons {
+        output[i] += results[i];
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,5 +650,150 @@ mod tests {
                 "Neuron {} mismatch: avx2={} scalar={}", i, avx2_output[i], scalar_output[i]);
         }
         eprintln!("Sparse L1 AVX2: all {} neurons match scalar!", num_neurons);
+    }
+
+    /// Build a representative L1=16 pairwise test case and return
+    /// (sparse_weights, bias, stm_pw, ntm_pw, pw, num_neurons, bias_scale).
+    /// Uses a mix of dense and zero chunks so both dense and sparse paths
+    /// are exercised meaningfully.
+    #[cfg(target_arch = "x86_64")]
+    fn build_l1_16_test_case(
+        seed: u64,
+        density_pct: u32,
+    ) -> (Vec<i8>, Vec<i16>, Vec<u8>, Vec<u8>, usize, usize, i32) {
+        let pw = 384;
+        let num_neurons = 16;
+        let total_input = pw * 2;
+
+        let mut dense_weights = vec![0i8; num_neurons * total_input];
+        let mut s = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
+        for w in dense_weights.iter_mut() {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *w = ((s >> 56) as i8).saturating_sub(0).max(-120).min(120);
+        }
+        let sparse_weights = transpose_weights_for_sparse(&dense_weights, total_input, num_neurons);
+
+        let mut stm_pw = vec![0u8; pw];
+        let mut ntm_pw = vec![0u8; pw];
+        let mut t = seed.wrapping_add(0xDEAD_BEEF);
+        for i in 0..pw {
+            t = t.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let keep_s = (t as u32 % 100) < density_pct;
+            t = t.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let keep_n = (t as u32 % 100) < density_pct;
+            if keep_s { stm_pw[i] = ((t >> 24) & 0xFF) as u8; }
+            if keep_n { ntm_pw[i] = ((t >> 32) & 0xFF) as u8; }
+        }
+        let bias: Vec<i16> = (0..num_neurons).map(|i| (i as i16) * 3 - 20).collect();
+        let bias_scale = 127; // PW_SCALE
+        (sparse_weights, bias, stm_pw, ntm_pw, pw, num_neurons, bias_scale)
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_dense_avx512_vnni_matches_scalar() {
+        crate::init();
+
+        if !is_x86_feature_detected!("avx512f")
+            || !is_x86_feature_detected!("avx512bw")
+            || !is_x86_feature_detected!("avx512vnni")
+        {
+            eprintln!("No AVX-512 VNNI on this CPU, skipping test");
+            return;
+        }
+
+        for density in [0u32, 25, 50, 75, 100] {
+            for seed in 0u64..6 {
+                let (sw, bias, s_pw, n_pw, pw, nn, scale) = build_l1_16_test_case(seed, density);
+
+                let mut scalar_out = vec![0i32; nn];
+                sparse_l1_scalar(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut scalar_out);
+
+                let mut vnni_out = vec![0i32; nn];
+                unsafe {
+                    dense_l1_avx512_vnni(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut vnni_out);
+                }
+
+                for i in 0..nn {
+                    assert_eq!(
+                        vnni_out[i], scalar_out[i],
+                        "dense_l1_avx512_vnni mismatch seed={} density={} neuron={} vnni={} scalar={}",
+                        seed, density, i, vnni_out[i], scalar_out[i]
+                    );
+                }
+            }
+        }
+        eprintln!("dense_l1_avx512_vnni: all seeds/densities match scalar");
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_sparse_avx512_vnni_matches_scalar() {
+        crate::init();
+
+        if !is_x86_feature_detected!("avx512f")
+            || !is_x86_feature_detected!("avx512bw")
+            || !is_x86_feature_detected!("avx512vnni")
+        {
+            eprintln!("No AVX-512 VNNI on this CPU, skipping test");
+            return;
+        }
+
+        for density in [0u32, 10, 50, 90, 100] {
+            for seed in 0u64..6 {
+                let (sw, bias, s_pw, n_pw, pw, nn, scale) = build_l1_16_test_case(seed, density);
+
+                let mut scalar_out = vec![0i32; nn];
+                sparse_l1_scalar(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut scalar_out);
+
+                let mut vnni_out = vec![0i32; nn];
+                unsafe {
+                    sparse_l1_avx512_vnni(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut vnni_out);
+                }
+
+                for i in 0..nn {
+                    assert_eq!(
+                        vnni_out[i], scalar_out[i],
+                        "sparse_l1_avx512_vnni mismatch seed={} density={} neuron={} vnni={} scalar={}",
+                        seed, density, i, vnni_out[i], scalar_out[i]
+                    );
+                }
+            }
+        }
+        eprintln!("sparse_l1_avx512_vnni: all seeds/densities match scalar");
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_dense_avx_vnni_matches_scalar() {
+        crate::init();
+
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("avxvnni") {
+            eprintln!("No AVX-VNNI on this CPU, skipping test");
+            return;
+        }
+
+        for density in [0u32, 50, 100] {
+            for seed in 0u64..4 {
+                let (sw, bias, s_pw, n_pw, pw, nn, scale) = build_l1_16_test_case(seed, density);
+
+                let mut scalar_out = vec![0i32; nn];
+                sparse_l1_scalar(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut scalar_out);
+
+                let mut vnni_out = vec![0i32; nn];
+                unsafe {
+                    dense_l1_avx_vnni(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut vnni_out);
+                }
+
+                for i in 0..nn {
+                    assert_eq!(
+                        vnni_out[i], scalar_out[i],
+                        "dense_l1_avx_vnni mismatch seed={} density={} neuron={} vnni={} scalar={}",
+                        seed, density, i, vnni_out[i], scalar_out[i]
+                    );
+                }
+            }
+        }
+        eprintln!("dense_l1_avx_vnni: all seeds/densities match scalar");
     }
 }
