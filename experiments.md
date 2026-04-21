@@ -5142,6 +5142,59 @@ Any 2 of (Reckless+retune, const-generic, low-LR) landing positive
 puts us at or above v5. All-in merge decision deferred pending
 results.
 
+## 2026-04-20: Overnight sweep — 2 merges (+12.7), 9 H0s, retries in flight
+
+### Merged to trunk (H1 resolved)
+
+| Test | Feature | Elo | Games | Notes |
+|---|---|---|---|---|
+| **#542** | `experiment/unstable-probcut-skip` | **+6.7** | 7390 | Skip ProbCut when static eval differs sharply from parent (|Δ| > UNSTABLE_THRESH=157). Second consumer of `unstable` signal (HIST_PRUNE guard was first). Mirror of #481 king-zone-pressure ProbCut gate. Clean LLR 2.96. |
+| **#539** | `experiment/threats-nmp-skip` | **+6.0** | 8330 | Skip NMP when any_threat_count ≥ 3 (3+ of our non-pawns under enemy attack). Third landing for any_threat_count signal after futility-widener #484 and LMR threat-density. Crisis positions get real search, null move's extra tempo no longer costly. Clean LLR 3.01. |
+
+### H0'd (closed)
+
+| Test | Branch | Result | What it tested | Decision |
+|---|---|---|---|---|
+| **#540** | `threats-rfp-widener` | −4.8 LLR −2.96 @ 6016 | any_threat_count RFP widener — mirror of existing has_pawn_threats widener but general threats | **Dropped.** Signal overlap: pawn-threat widener already catches the high-value case. Don't re-iterate. |
+| **#541** | `unstable-lmr-reduce-less` | −10.9 LLR −2.99 @ 3146 | `reduction -= 1` when unstable (all depths) | Iterate with depth gate — **#548** in flight |
+| **#538** | `our-kz-opp-probcut` | −0.3 LLR −2.97 @ 23800 | Our-king-zone-opportunity as ProbCut skip gate (mirror of enemy-king-zone) | Dropped — symmetry assumption fails; our king attacks doesn't help ProbCut like enemy's does |
+| **#543** | `dynamic-see-v2` | −0.7 LLR −2.97 @ 19062 | Dynamic SEE threshold with −75 baseline | Iterate with different baseline — **#556** (−125) in flight |
+| **#544** | `corrhist-probcut-skip` | −2.5 LLR −3.22 @ 10684 | Skip ProbCut when corrhist-mag ≥ 25 | **Dropped.** Interaction with #542's `unstable` ProbCut skip — double-gated same "eval noisy" locus. |
+| **#533** | `discovered-attack-scaled` | +0.2 LLR −2.96 @ 34642 | Victim-value-scaled B1 bonus (stacks on +52 flat B1) | Dropped — original B1 already captures the ordering signal; victim-scaling doesn't compound on top. |
+| **#528, #529** (earlier in day) | history-shape-offset, material-scale-tunable | both H0 | see below | see below |
+
+### In flight from this batch (overnight wave)
+
+| Test | Branch | Purpose |
+|---|---|---|
+| #546→stopped | threats-nmp-skip retune | Single-feature tune, stopped to do combined retune instead |
+| **#550→#551** | `tune/v9-overnight-r1` | Combined retune post #542 + #539 merges (38 tunables moved). SPRT #551 trending +2 Elo. |
+| #547 | `onto-pawn-threatened` | Retry of #537 onto-threatened with filtered signal (enemy pawn attacks only). |
+| #548 | `unstable-lmr-depth-gated` | Retry of #541 with depth >= 6 gate. |
+| #549 | `caissa-3tier-tight` | Retry of #536 Caissa 3-tier with tighter force-good rule (attacker*2 ≤ victim). |
+| **#552** | `eval-diff-qhist-v2` | Retry of #517 (H0 at −0.7) solo on new post-#542/#539 trunk. Bench 2.72M (−35%). |
+| **#553** | `se-king-pressure-v2` | Retry of #511 (H0 at −0.6) solo on new trunk. |
+| **#554** | `offense-bonus` | Reckless pattern (+6000 for quiet attacking enemy piece). Not previously tested. Bench 2.85M (−31%). |
+| **#555** | `rook-kingring-bonus` | Reckless pattern (+5000 for rook attacks on enemy king zone). Bench 3.35M (−20%). |
+| **#556** | `dynamic-see-v3` | Retry of #543 with more-permissive −125 baseline. |
+
+### Overnight session overall
+
+- **Net Elo gain merged: +12.7 face value** (#542 + #539) — retune #551 grinding a further +2 at time of writing.
+- **Fleet efficiency**: wait-500-rule validated repeatedly; early spikes (+8 at 200 games) faded to realistic +1-5 ranges.
+- **Signal-context sweep continuing to pay**: #539 was 3rd landing for any_threat_count signal; #542 was 2nd landing for `unstable` signal. Pattern of cross-context reuse exceeds Titan's 1-in-3 prior significantly.
+- **Bench creep concern** (Adam, 2026-04-20 early AM): today's +Elo wins added 38% nodes (3.0M → 4.17M after #539, 4.51M with tune applied). Approach: prioritise bench-REDUCING retries in today's next wave. Offense bonus (−31%), eval-diff-qhist (−35%), rook-kingring (−20%) are the three bench-reducing candidates queued.
+
+### Post-mortems by H0 bucket
+
+- **Magnitude-too-large** (#537 −24.8, #541 −10.9): signal direction correct but applied too aggressively. Both iterating with gates/filters.
+- **Signal overlap** (#540, #544): redundant with existing features. Drop without iterate.
+- **Mechanism wrong** (#528, #536): structural assumption doesn't hold. #528 dropped; #536 retrying with tighter rule as check.
+
+Memory updated: `feedback_h0_post_mortem_discipline.md` — require mechanism-bucketing and iterate/drop decision for every H0 going forward.
+
+---
+
 ## 2026-04-20: Two H0s, one diagnostic sidetrip
 
 ### H0'd (closed — dropped)
@@ -5216,3 +5269,103 @@ results.
 - **Five engines minimum for outlier claims** in cross-engine tunable comparison (Titan's methodology note in `tunable_anomalies_2026-04-19.md`). Two-engine comparison over-flagged three params in the first pass.
 - **Post-merge retune compounds with multiple merged features**, not a single one. #490 landed +7.4 after 4 features merged; single-feature retunes typically land +2-5.
 - **Overlapping error bars = "same distribution twice"**, not "earlier was noise". I miscalled LMR king-pressure H0 at 1242 games because -9.8 had ±10.4 bars. Ended +6.81. Don't narrate direction from within the noise floor.
+
+## 2026-04-20 → 2026-04-21 session
+
+### Major H1 wins (merged to feature/threat-inputs)
+
+- **#553 SE-king-pressure-v2** — S4 from signal_context_sweep, retry of H0'd #511. **+9.7 Elo H1** at 4462g LLR 2.97. King-zone-pressure SE margin widener; +1 context for the kzp signal (now 4/8 tested landed).
+- **#542 unstable-probcut-skip** — parent-child eval-gap → ProbCut skip. **+6.7 Elo H1** at 7390g LLR 2.96.
+- **#539 threats-nmp-skip** — `any_threat_count` gating NMP. **+6.0 Elo H1** at 8330g LLR 3.01.
+- **#554 offense-bonus** — Reckless quiet-attacks-enemy MovePick bonus. **+5.7 Elo H1** at 8854g LLR 3.02. #558 LTC validation landed +6.3.
+- **#557 fix/smp-king-bucket-race** — King-bucket static-mut to NNUENet field + v6 kb_layout fix. **+3.4 Elo H1** at 5444g LLR 3.01 (cache locality gain despite identical bench). SMP trilogy bug #1 of 3.
+- **#576 fix/smp-helper-threat-init** — Helper threads never mirrored main's threat-accumulator state. T=4 SPRT **+651 Elo (self-play "correct-T=4-vs-broken-T=4")** at 304g. **Unlocks v9 T=4 + ponder deployment.** SMP trilogy bug #3 of 3. (Bug #2 was Atlas's aarch64-Finny-cfg-eats-else fix — ARM only.)
+- **#578 tuned-knight-fork** — Knight-fork MovePick bonus + retune #569 applied. **+5.2 Elo H1** at 5734g LLR 2.94. 3rd successful retune-on-branch rescue precedent (after TT_PV and cont-hist-malus).
+- **#582 feature/threat-inputs** — **New production v9 net**: `net-v9-768th16x32-w15-e800s800-reckless-crelu.nnue` (reckless kb layout + CReLU hidden layer + warm30 warmup + s800). **+15.2 Elo H1** at 2950g LLR 3.05 vs xray (6AEA210B). Biggest single net upgrade this session.
+- **#583 fix/lmr-endgame-gate** — Skip LMR when `popcount(occupied) ≤ LMR_ENDGAME_PIECES` (default 6). **+5.0 Elo H1** at 5164g LLR 3.01. Fixed endgame-conversion blunders observed in Lichess game CG5ZXe5Z (coda at depth 22 couldn't find M7 with LMR on; finds M8 at depth 17 with gate).
+
+### H0 rejections (notable)
+
+- **#565 queen-7th-bonus** (-2.0, H0 at 11482g). Retune #568 applied → #577 also H0 (-1.7, 18290g). Retune-on-branch can't rescue features that H0 with genuine negative Elo (not just noise-near-zero).
+- **#555 rook-kingring-bonus** (+0.1 at 32196g, H0). Retune #564 applied → #574 H0 at -2.2 (made it worse). Same lesson: retune can't rescue noise-around-zero features.
+- **#563 knight-fork-bonus** (+0.2 at 32740g, H0) — but retune #569 RESCUED to +5.2 Elo (#578 H1). Distinct from #555 because the feature was borderline positive with big tree-reshape (right candidate for retune).
+- **#566 rook-open-file** (+0.8 at 72998g, H0). Large bench drop, tiny positive Elo. Could retry on tuned trunk post-#585.
+- **#573 tune/v9-post-554-r1-applied** — Main retune after #554 merged. Stopped early at 5528g, -0.7 flat. Lesson: generic retunes on already-tuned trunks diminishing returns; retune-on-branch is selective, generic is waste.
+- **#572 feature/threat-inputs** (w20 vs w15 on kb10 net) — H0 at -10.5. Confirmed w15 is WDL optimum for kb10 family (with prior w10 < w15 result).
+- **#567 feature/threat-inputs** (warm50 vs warm40 on reckless-warm series) — H0 at -9.4. Warm ladder saturates past warm30.
+
+### Infrastructure / correctness
+
+- **`chore/tunables-with-c-end`** merged — tunables! macro now carries c_end field, `coda tune-spec [--r-end 0.002]` CLI dumps fresh SPSA spec from source. Eliminates stale spec file class of errors (observed in tune #562 where LMP_BASE was stuck at integer boundary due to c_end too small).
+- **`nnue/hl-crelu-file-marker`** merged — context-dependent bit 5: on extended_kb=1 nets means hl_crelu (auto-configures NNUE at load). `coda patch-net` CLI for flipping bit 5 on existing nets.
+- **`fix/simd512-pairwise-pack-fused-threats`** — AVX-512 pairwise-pack was silently dropping threat features on v9 pairwise nets. Validated by Adam on AVX-512 host: pre-fix bench 3,317,873; post-fix bench 4,513,225 (matches AVX2 Hercules exactly). OB fleet unaffected (no AVX-512 workers). Latent landmine for future AVX-512 worker.
+- **`fix/bench-multithread-output`** — `coda bench -tN` now shows per-position info (thread 0 runs full stats, others silent). Previous behavior was entirely silent.
+- **Compiler warnings cleared to zero** — CLAUDE.md Code Hygiene section added requiring `cargo build --release` emits no warnings.
+
+### SPRTs in flight at session end
+
+- **#586 experiment/tuned-trunk-585** — applies tune #585 values (2500 iters on post-merge trunk + new production net). 15+ strong movers: LMR_HIST_DIV +25%, HIST_PRUNE_MULT +31%, CORR_HIST_DIV -22%, CORR_W_NP -23%, SE_DEPTH -19%, LMP_DEPTH -19%, QS_SEE_THRESHOLD tighter. Bench 1,959,547 vs trunk 1,766,373; EBF 1.70 vs 1.78 (-4.5%); FMC 77.3% vs 75.2% (+2.1pp). User prior +10-20 Elo given cumulative improvements.
+- **#587 experiment/tuned-force-more-pruning** — applies tune #571 values on old trunk (pre-knight-fork merge). Tests whether SPSA starting from "force more pruning" shifted defaults converges on a better-pruned equilibrium than natural retune. Bench 2,820,229 (-37.5% vs pre-tune 4,513,225), EBF 1.77 (-1.1% vs 1.79). Force-pruning nudged out of local max; Elo TBD.
+- **#584 experiment/threat-delta-capture-bonus** — idea C retest at `THREAT_CAPTURE_BONUS=500` (half the failed #579 value 1000). UCI override in SPRT. If still flat, try lower or retest on new trunk.
+- **#580 experiment/threat-delta-ext** — idea D (threat_deltas count extension on captures). -8.9 trending H0 at 3568g.
+
+### Key calibration lessons
+
+- **"Wait 500+ games" rule validated** — C bonus=1000 showed -5.6 at 996g, recovered to -0.3 at 10036g. First-thousand-games noise swing is real; resist stopping early.
+- **Retune-on-branch cliché refined**: works when feature H0'd with non-zero-centered distribution (TT_PV +4.5→+8.5, knight-fork +0.8→+5.2). Fails when feature H0'd at noise-around-zero (rook-kingring +0.1→-2.2, queen-7th -2.0→-1.7).
+- **Live Lichess watching catches bugs SPRT misses** — CG5ZXe5Z game revealed endgame-conversion LMR blunder that bench+SPRT had never flagged. Diagnostic FEN-probe → root-cause (LMR over-reducing mate-completion moves) → surgical gate → +5 Elo. Worth adding live-watch to post-net-change checklist.
+- **SMP bugs have "Swiss cheese" failure signature** — most games fine (helpers lose root cutoff race), rare games catastrophic (helper's wrong-eval TT entry poisons main). Discovered via 20-FEN eval-consistency instrumentation (Atlas's pattern), not SPRT.
+- **Bench on correct branch** — submitted #582 with wrong bench (2,862,737) because local build was on idea-C branch with THREAT_CAPTURE_BONUS=1000 active. OB rejected with Wrong Bench. Memory note `feedback_bench_depends_on_branch_state.md` exists exactly for this; should have followed it.
+
+### WDL ladder (kb10 family)
+
+Tested so far: **w15 > w10**, **w15 > w20**. Additional w0 and w05 nets trained overnight. Full RR deferred — low priority, pure research/documentation. w15 confirmed optimum for kb10.
+
+### Warmup curve (kb10 reckless family, e200) — resolved
+
+Full curve at e200 tested, closes Titan's `training_warmup_curve_2026-04-19.md`
+open question:
+
+| Warmup SBs | Result |
+|---:|---|
+| 5 | −7 Elo (earlier in thread) |
+| 20 | baseline |
+| **30** | **+4.44 Elo (#496), peak** |
+| 40 | H0 vs warm30 |
+| 50 | H0 vs warm30; #567 H0 −9.4 vs warm40 |
+
+**Shape:** positive 5→30, peak at 30, regression past 30. Rule: don't warm
+past ~15% of total training length. For e200 that's warm30; anchor at
+warm30 for e400/e800 production unless absolute-count follow-up suggests
+otherwise. `docs/training_warmup_curve_2026-04-19.md` updated with
+the resolution.
+
+## 2026-04-21 session (continued) — AVX-512 + VNNI merge
+
+**Merged `feature/nnue-avx512-vnni-v9`** (Zeus's work) at 51a71f2.
+Bench bit-exact 2,170,815 across all tested CPUs — correctness validated.
+
+### Per-uArch NPS impact
+
+| Platform | CPU | Pre NPS | Post NPS | Delta | Notes |
+|---|---|---|---|---|---|
+| Zeus server | Zen5 (AVX-512 VNNI) | 1,076K | 1,225K | **+13.8%** | VPDPBUSD 1-cycle throughput |
+| Hercules | Xeon E-2288G (AVX2) | 200K | 200K | 0% | Bit-exact — AVX2 path unchanged |
+| Adam laptop | i5-13500H Raptor Lake (AVX-VNNI) | 664K | 614K | **−7.5%** | VPDPBUSD on Intel mobile is ~2-cycle, uop-fusion win eaten by lower throughput |
+
+### Open follow-up
+
+**Raptor Lake −7.5% needs investigation.** This isn't a niche CPU — 13th gen
+Intel i5/i7 is mainstream hardware. Merge stays for now because correctness
+is validated and Zen5 gain is substantial, but AVX-VNNI dispatch needs to
+either:
+1. Tune the kernel (unrolling, accumulator count) to match AVX2-path performance
+2. Narrow the dispatch gate (avx-vnni only on Zen 4+, or only when `avx512vnni` ∧ AVX-VNNI)
+3. Add per-uArch detection
+
+Quick A/B for the local Claude investigating: patch `detect_avx_vnni()` to
+return false, rebuild, bench. If NPS recovers to 664K, VPDPBUSD-on-Raptor-Lake
+is confirmed as the culprit (vs dispatch-reorg side-effects).
+
+Relevant file: `src/sparse_l1.rs::dense_l1_avx_vnni` — the hot path for L1
+matmul on AVX-VNNI-without-AVX-512 CPUs.

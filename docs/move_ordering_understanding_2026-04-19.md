@@ -1,5 +1,30 @@
 # Understanding Coda's Move Ordering — Deep Investigation (2026-04-19)
 
+## Status as of 2026-04-21 — ABSORBED (diagnostic doc)
+
+This doc's diagnostic is complete — root cause identified as nonlinear
+eval flattening the best-move-separation distribution, not TT-move
+unreliability. The actionable follow-up is `caphist_retune_proposal_
+2026-04-19.md` (proven 72% → 82% first-move-cut in diagnostic, awaiting
+rebase + retune).
+
+Downstream wins that draw on this investigation's framing:
+- **B1 discovered-attack #502 +52 Elo** — specific-tactical-motif
+  movepicker bonus (vs generic scoring nudge). The doc's finding that
+  "best move is in top-k but not #1" maps directly to why targeted
+  ordering bonuses work: they promote specific good moves that are
+  currently mis-ranked.
+- **#554 offense-bonus +5.7, #578 tuned-knight-fork +5.2** — same
+  pattern: specific-motif ordering bonuses land.
+- **Generic scoring nudges** (enter-penalty, hanging-escape) all H0'd.
+  Reinforces the doc's conclusion that surface-level "prefer moves
+  from attacked squares" isn't the lever — specific tactical motifs are.
+
+No standalone follow-ups. Next concrete action: execute
+caphist_retune.
+
+---
+
 **Goal**: understand what move ordering is doing for Coda, why it degraded from v5 (82.3% first-move cut) to v9 (72.2%), and what hidden-layer engines do differently.
 
 **Not the goal** (yet): immediate fixes. This doc is about understanding the mechanism. Actionable recommendations flow from understanding, not guessing.

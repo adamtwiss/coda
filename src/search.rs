@@ -27,118 +27,106 @@ const PAWN_HIST_SIZE: usize = 512;
 // ============================================================================
 use std::sync::atomic::AtomicI32;
 
-/// Declare a tunable search parameter with default, min, max.
-/// Single source of truth — used for both the static AtomicI32 and the UCI/SPSA parameter list.
+/// Declare a tunable search parameter with default, min, max, c_end.
+/// Single source of truth — used for both the static AtomicI32 and the
+/// UCI/SPSA parameter list. c_end is the SPSA end-of-tune perturbation;
+/// target >= 1.5 for narrow-range int params (so int boundaries can be
+/// crossed) or ~5% of range for wider params.
 macro_rules! tunables {
-    ( $( ($name:ident, $default:expr, $min:expr, $max:expr) ),* $(,)? ) => {
+    ( $( ($name:ident, $default:expr, $min:expr, $max:expr, $c_end:expr) ),* $(,)? ) => {
         // Declare each as a pub static AtomicI32
         $( pub static $name: AtomicI32 = AtomicI32::new($default); )*
 
-        /// List of all tunable parameters for UCI/SPSA
-        pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32)> {
+        /// List of all tunable parameters for UCI/SPSA.
+        /// Tuple: (name, &atomic, default, min, max, c_end).
+        pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32, f32)> {
             vec![
-                $( (stringify!($name), &$name, $default, $min, $max), )*
+                $( (stringify!($name), &$name, $default, $min, $max, $c_end), )*
             ]
         }
     };
 }
 
 tunables!(
-    // v9 post-#489 retune (feature/threat-inputs; post-merge of 2b rewrite,
-    // ProbCut gate, LMR king-pressure, futility-defenses; landed +7.38 H1).
-    (NMP_BASE_R, 5, 2, 8),
-    (NMP_DEPTH_DIV, 3, 1, 6),
-    (NMP_EVAL_DIV, 126, 100, 400),
-    (NMP_EVAL_MAX, 5, 1, 6),
-    (NMP_VERIFY_DEPTH, 12, 8, 20),
-    // RFP
-    (RFP_DEPTH, 7, 2, 12),
-    (RFP_MARGIN_IMP, 80, 30, 150),
-    (RFP_MARGIN_NOIMP, 127, 50, 200),
-    // Futility
-    (FUT_BASE, 64, 20, 200),
-    (FUT_PER_DEPTH, 161, 40, 250),
-    // History pruning
-    (HIST_PRUNE_DEPTH, 4, 1, 8),
-    (HIST_PRUNE_MULT, 4214, 500, 50000),
-    // SEE pruning
-    (SEE_QUIET_MULT, 41, 5, 80),
-    (SEE_CAP_MULT, 144, 30, 200),
-    // LMR
-    (LMR_HIST_DIV, 8806, 2000, 100000),
-    (LMR_C_QUIET, 126, 40, 300),
-    (LMR_C_CAP, 104, 100, 350),
-    // Singular extensions
-    (SE_DEPTH, 5, 4, 20),
-    // Aspiration windows
-    (ASP_DELTA, 12, 5, 30),
-    (ASP_SCORE_DIV, 33175, 8000, 50000),
-    // LMP
-    (LMP_BASE, 13, 1, 15),
-    (LMP_DEPTH, 9, 4, 20),
-    // Bad noisy
-    (BAD_NOISY_MARGIN, 126, 30, 150),
-    // ProbCut
-    (PROBCUT_MARGIN, 194, 80, 300),
-    // Hindsight
-    (HINDSIGHT_THRESH, 184, 50, 400),
-    // Unstable position detection
-    (UNSTABLE_THRESH, 157, 50, 500),
-    // SEE piece value scaling
-    (SEE_MATERIAL_SCALE, 189, 30, 300),
-    // QS
-    (QS_DELTA_MARGIN, 363, 100, 500),
-    (QS_SEE_THRESHOLD, -31, -200, 0),
-    (QS_MAX_CAPTURES, 27, 2, 32),
-    // Correction history weights
-    (CORR_W_PAWN, 294, 100, 600),
-    (CORR_W_NP, 102, 50, 400),
-    (CORR_W_MINOR, 65, 30, 300),
-    (CORR_W_MAJOR, 98, 30, 300),
-    (CORR_W_CONT, 40, 30, 400),
-    // Fail-high blend
-    (FH_BLEND_DEPTH, 1, 0, 8),
-    // History bonus
-    (HIST_BONUS_MULT, 294, 50, 400),
-    (HIST_BONUS_MAX, 1633, 500, 3000),
-    // Capture history bonus
-    (CAP_HIST_MULT, 258, 50, 400),
-    (CAP_HIST_BASE, 16, 0, 200),
-    (CAP_HIST_MAX, 1632, 500, 3000),
-    // Double extensions
-    (DEXT_MARGIN, 9, 2, 50),
-    (DEXT_CAP, 18, 4, 32),
-    // Quiet check bonus
-    (QUIET_CHECK_BONUS, 9213, 2000, 30000),
-    // LMR complexity
-    (LMR_COMPLEXITY_DIV, 176, 30, 500),
-    // Contempt
-    // Correction history divisor
-    (CORR_HIST_DIV, 1264, 256, 4096),
-    // Correction history update weight cap.
-    (CORR_UPDATE_WEIGHT_MAX, 17, 4, 48),
-    (CORR_BONUS_CAP_DIV, 4, 1, 16),
-    (CORR_HIST_GRAIN_T, 10, 1, 32),
-    (CORR_HIST_ERR_MAX, 1, 1, 64),
-    // Escape-capture bonuses (Reckless pattern): move ordering bonus for
-    // moving a piece off a square attacked by enemy pawns
-    (ESCAPE_BONUS_Q, 16122, 5000, 40000),
-    (ESCAPE_BONUS_R, 12978, 3000, 30000),
-    (ESCAPE_BONUS_MINOR, 10045, 2000, 20000),
-    // v9 threat-family gates/modifiers (v9-specific — require threat-aware net).
-    (NMP_KING_ZONE_MAX, 5, 2, 9),
-    (PROBCUT_KING_ZONE_MAX, 5, 2, 9),
-    (LMR_THREAT_DIV, 2, 1, 5),
-    (LMR_KING_PRESSURE_DIV, 4, 2, 9),
-    (FUT_THREATS_MARGIN, 39, 0, 200),
-    // B1: Discovered-attack movepicker bonus (+52 Elo H1, #502). Flat
-    // bonus added to quiet move score when `move.from()` is one of our
-    // pieces currently blocking our own slider's attack on an enemy.
-    // Moving it creates a discovered attack. Uses Board::xray_blockers.
-    (DISCOVERED_ATTACK_BONUS, 7521, 0, 30000),
-    // MVV multiplier + cont-hist plies-1/2 weight.
-    (MVV_CAP_MULT, 16, 4, 64),
-    (CONT_HIST_MULT, 3, 1, 8),
+    // v9 post-#585 overnight tune applied (2500 iters, on reckless-crelu net).
+    // 15+ strong movers: LMR_HIST_DIV +25%, HIST_PRUNE_MULT +31%,
+    // CORR_HIST_DIV -22%, CORR_W_NP -23%, SE_DEPTH -19%, LMP_DEPTH -19%,
+    // NMP_DEPTH_DIV +19%, QS_SEE_THRESHOLD tighter by 18%.
+    //
+    // Merge note (2026-04-21): branch `experiment/caphist-defender-v2` had
+    // #523 focused retune of 4 capture-coupled tunables vs older trunk.
+    // Trunk has since moved past #523 via #585 global retune + multiple
+    // merges. Taking trunk values wholesale; post-merge plan is fresh
+    // focused SPSA on the 4 capture-coupled tunables (SEE_QUIET_MULT,
+    // SEE_CAP_MULT, BAD_NOISY_MARGIN, CAP_HIST_MULT) against the new
+    // baseline per Titan's caphist_retune_proposal.
+    (NMP_BASE_R, 5, 2, 8, 1.5),
+    (NMP_DEPTH_DIV, 4, 1, 6, 1.5),
+    (NMP_EVAL_DIV, 130, 100, 400, 15.0),
+    (NMP_EVAL_MAX, 5, 1, 6, 1.5),
+    (NMP_VERIFY_DEPTH, 12, 8, 20, 2.0),
+    (RFP_DEPTH, 7, 2, 12, 2.0),
+    (RFP_MARGIN_IMP, 70, 30, 150, 6.0),
+    (RFP_MARGIN_NOIMP, 132, 50, 200, 7.5),
+    (FUT_BASE, 69, 20, 200, 9.0),
+    (FUT_PER_DEPTH, 163, 40, 250, 10.5),
+    (HIST_PRUNE_DEPTH, 4, 1, 8, 1.5),
+    (HIST_PRUNE_MULT, 5515, 500, 50000, 2475.0),
+    (SEE_QUIET_MULT, 45, 5, 80, 3.75),
+    (SEE_CAP_MULT, 146, 30, 200, 8.5),
+    (LMR_HIST_DIV, 11604, 2000, 100000, 4900.0),
+    (LMR_C_QUIET, 117, 40, 300, 13.0),
+    (LMR_C_CAP, 106, 100, 350, 12.5),
+    (SE_DEPTH, 4, 4, 20, 2.0),
+    (ASP_DELTA, 14, 5, 30, 1.5),
+    (ASP_SCORE_DIV, 33295, 8000, 50000, 2100.0),
+    (LMP_BASE, 12, 1, 15, 2.0),
+    (LMP_DEPTH, 7, 4, 20, 2.0),
+    (BAD_NOISY_MARGIN, 125, 30, 150, 6.0),
+    (PROBCUT_MARGIN, 198, 80, 300, 11.0),
+    (HINDSIGHT_THRESH, 182, 50, 400, 17.5),
+    (UNSTABLE_THRESH, 164, 50, 500, 22.5),
+    (SEE_MATERIAL_SCALE, 198, 30, 300, 13.5),
+    (QS_DELTA_MARGIN, 373, 100, 500, 20.0),
+    (QS_SEE_THRESHOLD, -40, -200, 0, 10.0),
+    (QS_MAX_CAPTURES, 26, 2, 32, 2.0),
+    (CORR_W_PAWN, 279, 100, 600, 25.0),
+    (CORR_W_NP, 81, 50, 400, 17.5),
+    (CORR_W_MINOR, 56, 30, 300, 13.5),
+    (CORR_W_MAJOR, 91, 30, 300, 13.5),
+    (CORR_W_CONT, 44, 30, 400, 18.5),
+    (FH_BLEND_DEPTH, 1, 0, 8, 1.5),
+    (HIST_BONUS_MULT, 317, 50, 400, 17.5),
+    (HIST_BONUS_MAX, 1646, 500, 3000, 125.0),
+    (CAP_HIST_MULT, 275, 50, 400, 17.5),
+    (CAP_HIST_BASE, 16, 0, 200, 10.0),
+    (CAP_HIST_MAX, 1547, 500, 3000, 125.0),
+    (DEXT_MARGIN, 11, 2, 50, 2.4),
+    (DEXT_CAP, 16, 4, 32, 2.0),
+    (QUIET_CHECK_BONUS, 10113, 2000, 30000, 1400.0),
+    (LMR_COMPLEXITY_DIV, 171, 30, 500, 23.5),
+    (CORR_HIST_DIV, 999, 256, 4096, 192.0),
+    (CORR_UPDATE_WEIGHT_MAX, 16, 4, 48, 2.2),
+    (CORR_BONUS_CAP_DIV, 5, 1, 16, 1.5),
+    (CORR_HIST_GRAIN_T, 10, 1, 32, 1.55),
+    (CORR_HIST_ERR_MAX, 4, 1, 64, 3.15),
+    (ESCAPE_BONUS_Q, 15130, 5000, 40000, 1750.0),
+    (ESCAPE_BONUS_R, 12226, 3000, 30000, 1350.0),
+    (ESCAPE_BONUS_MINOR, 8883, 2000, 20000, 900.0),
+    (NMP_KING_ZONE_MAX, 6, 2, 9, 1.5),
+    (PROBCUT_KING_ZONE_MAX, 6, 2, 9, 1.5),
+    (LMR_THREAT_DIV, 3, 1, 5, 1.5),
+    (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
+    (FUT_THREATS_MARGIN, 38, 0, 200, 10.0),
+    (DISCOVERED_ATTACK_BONUS, 7501, 0, 30000, 1500.0),
+    (SE_KING_PRESSURE_MARGIN, 3, 0, 30, 1.5),
+    (MVV_CAP_MULT, 17, 4, 64, 3.0),
+    (CONT_HIST_MULT, 1, 1, 8, 1.5),
+    (KNIGHT_FORK_BONUS, 7516, 0, 20000, 1000.0),
+    // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
+    // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
+    // LMR over-reduces king-restriction queen moves that complete mates.
+    (LMR_ENDGAME_PIECES, 6, 0, 12, 1.5),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -216,6 +204,11 @@ pub struct SearchLimits {
     pub movestogo: u32,
     pub nodes: u64,
     pub infinite: bool,
+    /// Minimum think time to enforce on a movetime search. Normally 0 (pure
+    /// movetime). Ponderhit fresh-searches set this to `inc - overhead` so
+    /// they don't instant-emit on TT-cached positions (which would stockpile
+    /// the clock on every move). See `search()`'s movetime branch.
+    pub movetime_floor: u64,
 }
 
 impl Default for SearchLimits {
@@ -234,6 +227,7 @@ impl SearchLimits {
             movestogo: 0,
             nodes: 0,
             infinite: false,
+            movetime_floor: 0,
         }
     }
 }
@@ -596,6 +590,10 @@ impl SearchInfo {
 
 /// Build a DirtyPiece for lazy NNUE accumulator update.
 /// `us`/`them` are the sides BEFORE the move.
+/// `net`: NNUE net whose king-bucket layout determines bucket/mirror
+///   changes on king moves. Must be the same net that will later apply
+///   the DirtyPiece to the accumulator; using the wrong net here produces
+///   silently-wrong "refresh needed" decisions.
 #[inline]
 pub fn build_dirty_piece(
     mv: Move,
@@ -603,6 +601,7 @@ pub fn build_dirty_piece(
     them: u8,
     moved_pt: u8,
     captured_pt: u8,
+    net: &crate::nnue::NNUENet,
 ) -> DirtyPiece {
     let from = move_from(mv);
     let to = move_to(mv);
@@ -614,10 +613,10 @@ pub fn build_dirty_piece(
         let mut to_ks = to as usize;
         if us == BLACK { from_ks ^= 56; to_ks ^= 56; }
 
-        let from_bucket = crate::nnue::king_bucket_pub(from_ks);
-        let to_bucket = crate::nnue::king_bucket_pub(to_ks);
-        let from_mirror = crate::nnue::king_mirror_pub(from_ks);
-        let to_mirror = crate::nnue::king_mirror_pub(to_ks);
+        let from_bucket = net.king_bucket(from_ks);
+        let to_bucket = net.king_bucket(to_ks);
+        let from_mirror = net.king_mirror(from_ks);
+        let to_mirror = net.king_mirror(to_ks);
 
         if from_bucket != to_bucket || from_mirror != to_mirror {
             // Bucket or mirror changed: full recompute needed
@@ -908,6 +907,13 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     // Create fresh NNUE accumulator for the helper
     if let Some(net) = &helper.nnue_net {
         helper.nnue_acc = Some(crate::nnue::NNUEAccumulator::new(net.hidden_size));
+        // Mirror main's threat_stack for v9 nets — helpers must evaluate
+        // consistently with main, otherwise shared-TT entries disagree and
+        // the search diverges badly at T>1.
+        if net.has_threats {
+            helper.threat_stack = crate::threat_accum::ThreatStack::new(net.hidden_size);
+            helper.threat_stack.active = true;
+        }
     }
     helper.time_limit = 0; // helpers don't do time management
     helper.move_overhead = main.move_overhead;
@@ -944,6 +950,7 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
             movestogo: limits.movestogo,
             nodes: 0, // helpers don't have node limits
             infinite: limits.infinite,
+            movetime_floor: 0, // helpers don't need the floor — only main sleeps
         };
 
         handles.push(std::thread::Builder::new()
@@ -1009,6 +1016,17 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
     info.nodes = 0;
+
+    // Mirror search()'s threat setup — helpers must evaluate consistently
+    // with main or shared-TT entries disagree and search diverges at T>1.
+    board.generate_threat_deltas = info.nnue_net.as_ref().map_or(false, |n| n.has_threats);
+    if info.threat_stack.active {
+        info.threat_stack.reset();
+        if let Some(ref net) = info.nnue_net {
+            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, WHITE);
+            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, BLACK);
+        }
+    }
 
     let root_legal = generate_legal_moves(board);
     let mut best_move = if root_legal.len > 0 { root_legal.moves[0] } else { NO_MOVE };
@@ -1115,7 +1133,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.soft_floor = 0;
     } else if limits.movetime > 0 {
         info.time_limit = limits.movetime;
-        info.soft_floor = 0;
+        // Respect caller-supplied minimum think time (ponderhit fresh-search uses
+        // this to enforce the increment floor; plain `go movetime` callers leave
+        // it at 0 so they get exactly the movetime they asked for).
+        info.soft_floor = limits.movetime_floor.min(limits.movetime);
     } else if our_time > 0 {
         // Subtract move overhead (communication latency)
         let overhead = info.move_overhead;
@@ -1911,6 +1932,7 @@ fn negamax(
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && king_zone_pressure < tp(&NMP_KING_ZONE_MAX)  // New gate
+        && any_threat_count < 3  // S7-style: skip NMP when many of our pieces are under threat
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
@@ -1999,6 +2021,7 @@ fn negamax(
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
         && !(tt_hit && tt_entry.depth >= depth - 3 && tt_entry.score < probcut_beta)  // TT says no chance
         && king_zone_pressure < tp(&PROBCUT_KING_ZONE_MAX)  // A3: skip in high-threat positions
+        && !unstable  // Skip ProbCut in eval-unstable positions (eval can't be trusted)
         && FEAT_PROBCUT.load(Ordering::Relaxed)
     {
         // SEE threshold: only consider captures that gain enough material
@@ -2013,7 +2036,9 @@ fn negamax(
 
             let pc_moved_pt = board.piece_type_at(move_from(mv));
             let pc_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
-            let pc_dirty = build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), pc_moved_pt, pc_captured_pt);
+            let pc_dirty = if let Some(net) = info.nnue_net.as_deref() {
+                build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), pc_moved_pt, pc_captured_pt, net)
+            } else { DirtyPiece::recompute() };
 
             if let Some(acc) = &mut info.nnue_acc { acc.push(pc_dirty); }
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
@@ -2200,7 +2225,9 @@ fn negamax(
 
             // Skip SE for mate scores (margin comparison meaningless)
             if tt_score_local > -(MATE_SCORE - 100) && tt_score_local < MATE_SCORE - 100 {
-                let singular_beta = tt_score_local - depth;
+                // S4: widen singular test margin when king under pressure.
+                let singular_beta = tt_score_local - depth
+                    - king_zone_pressure * tp(&SE_KING_PRESSURE_MARGIN);
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
@@ -2325,7 +2352,9 @@ fn negamax(
         }
 
         // Build NNUE dirty piece info BEFORE make_move
-        let dirty = build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt);
+        let dirty = if let Some(net) = info.nnue_net.as_deref() {
+            build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt, net)
+        } else { DirtyPiece::recompute() };
 
         // Push NNUE accumulator
         if let Some(acc) = &mut info.nnue_acc { acc.push(dirty); }
@@ -2388,7 +2417,12 @@ fn negamax(
 
         // Late Move Reductions (LMR) + Principal Variation Search (PVS)
         let mut reduction = 0i32;
-        if !in_check && !is_cap && !is_promo && FEAT_LMR.load(Ordering::Relaxed) {
+        // Endgame gate: skip LMR in low-piece-count positions where
+        // mate-completing king-restriction moves would be over-reduced.
+        let endgame_threshold = tp(&LMR_ENDGAME_PIECES) as u32;
+        let is_endgame_skip = endgame_threshold > 0
+            && crate::bitboard::popcount(board.occupied()) <= endgame_threshold;
+        if !in_check && !is_cap && !is_promo && !is_endgame_skip && FEAT_LMR.load(Ordering::Relaxed) {
             let d = (depth as usize).min(63);
             let m = (move_count as usize).min(63);
             reduction = lmr_reduction(d as i32, m as i32);
@@ -2485,7 +2519,7 @@ fn negamax(
         }
 
         // LMR for captures: use separate capture LMR table with capture history adjustments
-        if !in_check && is_cap && !is_promo && move_count > 1 && mv != tt_move && FEAT_LMR.load(Ordering::Relaxed) {
+        if !in_check && is_cap && !is_promo && move_count > 1 && mv != tt_move && !is_endgame_skip && FEAT_LMR.load(Ordering::Relaxed) {
             // Only reduce at non-PV nodes (zero window search)
             if beta - alpha == 1 {
                 let d = (depth as usize).min(63);
@@ -2943,7 +2977,9 @@ fn quiescence_with_depth(
 
             let qs_moved_pt = board.piece_type_at(move_from(mv));
             let qs_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
-            let qs_dirty = build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt);
+            let qs_dirty = if let Some(net) = info.nnue_net.as_deref() {
+                build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt, net)
+            } else { DirtyPiece::recompute() };
 
             if let Some(acc) = &mut info.nnue_acc { acc.push(qs_dirty); }
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
@@ -3082,7 +3118,9 @@ fn quiescence_with_depth(
         // Build lazy NNUE update
         let qs_moved_pt = board.piece_type_at(move_from(mv));
         let qs_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
-        let qs_dirty = build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt);
+        let qs_dirty = if let Some(net) = info.nnue_net.as_deref() {
+            build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt, net)
+        } else { DirtyPiece::recompute() };
 
         if let Some(acc) = &mut info.nnue_acc { acc.push(qs_dirty); }
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
@@ -3308,6 +3346,7 @@ mod tests {
             movetime: 0,
             wtime: 0, btime: 0, winc: 0, binc: 0,
             movestogo: 0, nodes: 0, infinite: false,
+            movetime_floor: 0,
         };
 
         search(&mut board, &mut info, &limits);

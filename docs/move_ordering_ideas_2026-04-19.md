@@ -1,10 +1,34 @@
 # Move Ordering Ideas — v9 investigation catalogue (2026-04-19)
 
-Catalogue of ideas that emerged from the "v9 move ordering is worse
-than v5" investigation. Companion to `signal_context_sweep_2026-04-19.md`
-— that doc tiers (signal × context) for existing signals; this doc
-catalogues specifically *move-ordering-improving* ideas, some of which
-require new infrastructure (shallow NNUE, training-time changes, etc.).
+## Status as of 2026-04-21
+
+**Landed:**
+- **B1 (xray-blockers × MovePick) — #502 +52 Elo merged.** Biggest
+  single-feature win in project history. The doc's "specific tactical
+  motif" category validated against the "generic scoring nudge"
+  category (both hanging-escape and enter-penalty H0'd).
+- **Offense bonus (#554 +5.7, #558 LTC +6.3)** — Reckless-style
+  quiet-attacks-enemy bonus. Adjacent to this doc's Category B family.
+
+**Priority 4 in current execution plan (caphist-retune blocker doc):**
+- **C: threat-delta capture ordering** — zero NPS cost (reuses existing
+  `board.threat_deltas`). Re-rank captures by whether the move creates
+  a new threat. Specific-mechanism, builds on B1 precedent, no SPSA
+  needed. Slated for execution after caphist-retune and B2 skewer land.
+
+**Still untried (lower priority):**
+- A (shallow NNUE at ordering time) — high NPS cost, deferred
+- B (NNUE history seeding) — training-regime dependency
+- D (eval-delta extension) — compounds with threat-mag diagnostic work
+- E/F/G (training regime changes: smoothness regularizer, move-rank
+  aux loss, etc.) — require Titan-level research planning
+
+**Closed since 2026-04-19:**
+- Victim-scaled B1 variant (#533) H0'd — the flat B1 bonus fully
+  captures the signal; victim-value-scaling doesn't compound.
+
+---
+
 
 ## Background
 

@@ -1,5 +1,40 @@
 # Threat Ideas Plan — 2026-04-19, with live results
 
+## Status as of 2026-04-21 — post-B1 resolutions and unlocks
+
+Major updates since Apr 19:
+
+- **B1 (#502) landed at +52 Elo** — 8× Titan's >6 Elo gating threshold.
+  This unlocks three items previously gated on B1:
+  - **B2 skewer detector** — priority 2 in execution plan. Same
+    xray_blockers infrastructure. Flat movepicker bonus (no SPSA).
+    **Not yet started.**
+  - **Path 2 refactor** (bit-steal `is_xray` in delta encoding) —
+    amortises xray NPS cost to zero, enabling future cheap x-ray
+    extensions. **Not yet started.**
+  - **X-ray history stratification** — main history tagged with
+    "was this move an x-ray discovery?" Needs Path 2. **Not yet
+    started.**
+- **A1 bundle (#501) post-SPSA retest H0'd at -8 Elo, 3996g — dropped.**
+- **C2 LMR-modulator (#500) faded** to marginal/flat. Extension-form
+  of C2 still untested but low priority.
+- **Victim-scaled B1 (#533)** H0'd — original flat B1 fully captures
+  the signal.
+- Adjacent threat-signal wins continued landing: **#553 kzp-SE +9.7**,
+  **#554 offense-bonus +5.7** (quiet attacks on enemy pieces — same
+  specific-motif family as B1).
+
+**Priority 2 in execution plan: B2 skewer detector.** Follows the same
+pattern as B1 — specific-tactical-motif movepicker bonus. Estimated
++10-30 Elo based on B1's +52 and skewer being rarer than discovered
+attacks.
+
+**No action planned** on C1 (weight-magnitude oracle — ambitious, high
+variance, not a quick win) or the extension-form of C2 until simpler
+items resolve.
+
+---
+
 Consolidated plan from the post-Hercules-cleanup / V9 > V5 milestone
 thread. Captures the tiered experiment list with current results filled
 in where tests have resolved.

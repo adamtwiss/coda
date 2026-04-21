@@ -143,10 +143,14 @@ const PW_SCALE: i32 = (QA * QA) >> FT_SHIFT; // max packed value after shift (12
 // File magic
 const NNUE_MAGIC: u32 = 0x4E4E5545; // "NNUE" in LE
 
-// King bucket table: maps square (0-63) to bucket (0-15).
-// 4 mirrored files × 4 rank groups. Files e-h mirror to d-a.
-static mut KING_BUCKET: [usize; 64] = [0; 64];
-static mut KING_MIRROR: [bool; 64] = [false; 64];
+// King bucket tables: computed per-net from the layout field (see
+// compute_king_buckets below) and stored on NNUENet. Prior to 2026-04-20
+// these were `static mut KING_BUCKET: [usize; 64]` / `static mut KING_MIRROR`
+// written by `init_king_buckets_layout` on every net load. That data race
+// (helpers reading while load wrote) was the root cause of the v9 T=4 SMP
+// regression bisected to commit 1356150 — eliminated by making them
+// per-`NNUENet` fields populated at load time and never mutated after.
+// See `fix/smp-king-bucket-race`.
 
 /// Consensus king bucket layout: fine-near, coarse-far (Alexandria/Viridithas)
 /// Indexed by [mirrored_file (0-3)][rank (0-7)]
@@ -172,21 +176,15 @@ const RECKLESS_BUCKETS_FLAT: [usize; 64] = [
     9, 9, 9, 9, 9, 9, 9, 9,
 ];
 
-pub fn init_nnue() {
-    init_king_buckets_layout(KbLayout::Uniform);
-}
-
-/// Legacy bool-based initialiser kept for existing callers. Maps `false`
-/// → Uniform, `true` → Consensus.
-pub fn init_king_buckets(consensus: bool) {
-    init_king_buckets_layout(if consensus { KbLayout::Consensus } else { KbLayout::Uniform });
-}
-
-pub fn init_king_buckets_layout(layout: KbLayout) {
+/// Pure function: given a KbLayout, returns the (king_bucket, king_mirror)
+/// tables populated for every square 0-63. Called once at net load time; the
+/// results are stored on NNUENet and never mutated after that.
+pub fn compute_king_buckets(layout: KbLayout) -> ([usize; 64], [bool; 64]) {
+    let mut kb = [0usize; 64];
+    let mut km = [false; 64];
     for sq in 0..64 {
         let file = sq % 8;
         let rank = sq / 8;
-
         // File mirror applies to Uniform and Consensus; Reckless bakes the
         // mirror into its flat table already (see RECKLESS_BUCKETS_FLAT).
         let (mirrored_file, mirror) = if file >= 4 {
@@ -194,35 +192,30 @@ pub fn init_king_buckets_layout(layout: KbLayout) {
         } else {
             (file, false)
         };
-
-        let bucket = match layout {
+        kb[sq] = match layout {
             KbLayout::Uniform   => mirrored_file * 4 + rank / 2,
             KbLayout::Consensus => CONSENSUS_BUCKETS[mirrored_file][rank],
             KbLayout::Reckless  => RECKLESS_BUCKETS_FLAT[sq],
         };
-
-        unsafe {
-            KING_BUCKET[sq] = bucket;
-            KING_MIRROR[sq] = mirror;
-        }
+        km[sq] = mirror;
     }
+    (kb, km)
 }
 
-#[inline]
-fn king_bucket(sq: usize) -> usize {
-    unsafe { KING_BUCKET[sq] }
+pub fn init_nnue() {
+    // No-op retained for API compatibility. Previously populated the
+    // global static mut tables; now those are per-net fields.
 }
 
-#[inline]
-fn king_mirror(sq: usize) -> bool {
-    unsafe { KING_MIRROR[sq] }
+/// Deprecated legacy API. Returns the computed king-bucket tables for the
+/// given layout bool. Kept so older call paths that don't yet have a handle
+/// on NNUENet can at least get the correct per-layout tables. Prefer
+/// `NNUENet::king_bucket()` / `king_mirror()` methods.
+pub fn init_king_buckets(consensus: bool) {
+    // No-op: previously wrote the static globals, now a pure pre-compute.
+    // Kept as a symbol so existing code that calls this still compiles.
+    let _ = consensus;
 }
-
-/// Public accessors for same-bucket king move detection in search.
-#[inline]
-pub fn king_bucket_pub(sq: usize) -> usize { king_bucket(sq) }
-#[inline]
-pub fn king_mirror_pub(sq: usize) -> bool { king_mirror(sq) }
 
 /// Piece index for HalfKA: maps (color, piece_type) to 0-11.
 /// White pieces: 0-5, Black pieces: 6-11.
@@ -231,13 +224,23 @@ fn piece_index(color: u8, pt: u8) -> usize {
     (color as usize) * 6 + pt as usize
 }
 
-/// Compute HalfKA feature index.
+/// Compute HalfKA feature index using a specific net's king-bucket tables.
 /// perspective: WHITE or BLACK
 /// king_sq: the king square for this perspective
 /// pc_color: color of the piece
 /// pc_type: piece type (PAWN..KING)
 /// pc_sq: square of the piece
-pub fn halfka_index(perspective: u8, king_sq: u8, pc_color: u8, pc_type: u8, pc_sq: u8) -> usize {
+/// king_bucket / king_mirror: the net's per-square lookup tables
+#[inline]
+pub fn halfka_index_with(
+    king_bucket: &[usize; 64],
+    king_mirror: &[bool; 64],
+    perspective: u8,
+    king_sq: u8,
+    pc_color: u8,
+    pc_type: u8,
+    pc_sq: u8,
+) -> usize {
     let mut ks = king_sq as usize;
     let mut ps = pc_sq as usize;
     let mut pi = piece_index(pc_color, pc_type);
@@ -251,11 +254,11 @@ pub fn halfka_index(perspective: u8, king_sq: u8, pc_color: u8, pc_type: u8, pc_
     }
 
     // Check file mirroring (king on files e-h)
-    if king_mirror(ks) {
+    if king_mirror[ks] {
         ps = (ps & !7) | (7 - (ps & 7));
     }
 
-    let bucket = king_bucket(ks);
+    let bucket = king_bucket[ks];
     bucket * (NNUE_NUM_PIECE_TYPES * 64) + pi * 64 + ps
 }
 
@@ -368,6 +371,111 @@ unsafe fn simd_acc_fused_avx2(
         // Store once per chunk.
         for i in 0..nregs {
             _mm256_storeu_si256(dst_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
+        }
+
+        offset += CHUNK;
+    }
+}
+
+/// AVX-512 fused copy+add/sub. 32 i16 per ZMM, CHUNK=256 elements per pass —
+/// the whole 768-wide v9 accumulator clears in 3 iterations vs AVX2's 6.
+/// This is on the make_move hot path (run every incremental accumulator
+/// push), so shaving per-chunk iterations translates directly to higher NPS.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn simd_acc_fused_avx512(
+    dst: &mut [i16],
+    src: &[i16],
+    add_rows: &[&[i16]],
+    sub_rows: &[&[i16]],
+    h: usize,
+) {
+    const REGS: usize = 8;
+    const LANE: usize = 32;
+    const CHUNK: usize = REGS * LANE;
+
+    let dst_ptr = dst.as_mut_ptr();
+    let src_ptr = src.as_ptr();
+
+    let mut offset = 0;
+    while offset < h {
+        let nregs = ((h - offset).min(CHUNK) + LANE - 1) / LANE;
+
+        let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
+        for i in 0..nregs {
+            regs[i] = _mm512_loadu_si512(src_ptr.add(offset + i * LANE) as *const __m512i);
+        }
+
+        for row in add_rows {
+            let row_ptr = row.as_ptr().add(offset);
+            for i in 0..nregs {
+                let w = _mm512_loadu_si512(row_ptr.add(i * LANE) as *const __m512i);
+                regs[i] = _mm512_add_epi16(regs[i], w);
+            }
+        }
+
+        for row in sub_rows {
+            let row_ptr = row.as_ptr().add(offset);
+            for i in 0..nregs {
+                let w = _mm512_loadu_si512(row_ptr.add(i * LANE) as *const __m512i);
+                regs[i] = _mm512_sub_epi16(regs[i], w);
+            }
+        }
+
+        for i in 0..nregs {
+            _mm512_storeu_si512(dst_ptr.add(offset + i * LANE) as *mut __m512i, regs[i]);
+        }
+
+        offset += CHUNK;
+    }
+}
+
+/// NEON mirror of simd_acc_fused_avx2. Per-chunk: load src into regs, apply
+/// all adds/subs in-register, store once. 16 regs × 8 i16 = 128 elements per
+/// chunk (same footprint as AVX2 8×16). Hot path: runs once per make_move
+/// for incremental accumulator updates; on aarch64 this was previously
+/// falling through to a scalar loop, costing a significant fraction of NPS.
+#[cfg(target_arch = "aarch64")]
+unsafe fn simd_acc_fused_neon(
+    dst: &mut [i16],
+    src: &[i16],
+    add_rows: &[&[i16]],
+    sub_rows: &[&[i16]],
+    h: usize,
+) {
+    const REGS: usize = 16;
+    const CHUNK: usize = REGS * 8;
+
+    let dst_ptr = dst.as_mut_ptr();
+    let src_ptr = src.as_ptr();
+
+    let mut offset = 0;
+    while offset < h {
+        let nregs = ((h - offset).min(CHUNK) + 7) / 8;
+
+        let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
+        for i in 0..nregs {
+            regs[i] = vld1q_s16(src_ptr.add(offset + i * 8));
+        }
+
+        for row in add_rows {
+            let row_ptr = row.as_ptr().add(offset);
+            for i in 0..nregs {
+                let w = vld1q_s16(row_ptr.add(i * 8));
+                regs[i] = vaddq_s16(regs[i], w);
+            }
+        }
+
+        for row in sub_rows {
+            let row_ptr = row.as_ptr().add(offset);
+            for i in 0..nregs {
+                let w = vld1q_s16(row_ptr.add(i * 8));
+                regs[i] = vsubq_s16(regs[i], w);
+            }
+        }
+
+        for i in 0..nregs {
+            vst1q_s16(dst_ptr.add(offset + i * 8), regs[i]);
         }
 
         offset += CHUNK;
@@ -1128,14 +1236,17 @@ unsafe fn simd512_pairwise_dot(acc_first: &[i16], acc_second: &[i16], weights: &
     total
 }
 
-/// AVX-512 pairwise pack: acc[0..pw] and acc[pw..2*pw] → out[0..pw] u8.
+/// AVX-512 pairwise pack with optional fused threat combine.
+/// acc[0..pw] and acc[pw..2*pw] → out[0..pw] u8.
+/// If threat is non-null, adds threat[i] to acc[i] before clamp (v9 fused pack).
 /// clamp(a, 0, 255) * clamp(b, 0, 255) >> FT_SHIFT for each pair.
 /// pw must be multiple of 32.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw")]
-unsafe fn simd512_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
+unsafe fn simd512_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut [u8], pw: usize) {
     let zero = _mm512_setzero_si512();
     let qa = _mm512_set1_epi16(QA as i16);
+    let has_threat = !threat.is_null();
     // Permutation index to fix lane ordering after packus_epi16
     // _mm512_packus_epi16 interleaves 128-bit lanes: [0,4,1,5,2,6,3,7]
     // We need: [0,1,2,3,4,5,6,7] → permute qwords by [0,2,4,6,1,3,5,7]
@@ -1143,16 +1254,28 @@ unsafe fn simd512_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
     let mut i = 0;
     while i + 32 <= pw {
         // Load 32 values from each half (two ZMM registers of i16)
-        let a0 = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
-        let b0 = _mm512_loadu_si512(acc.as_ptr().add(pw + i) as *const __m512i);
+        let mut a0 = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
+        let mut b0 = _mm512_loadu_si512(acc.as_ptr().add(pw + i) as *const __m512i);
+        if has_threat {
+            let ta0 = _mm512_loadu_si512(threat.add(i) as *const __m512i);
+            let tb0 = _mm512_loadu_si512(threat.add(pw + i) as *const __m512i);
+            a0 = _mm512_add_epi16(a0, ta0);
+            b0 = _mm512_add_epi16(b0, tb0);
+        }
         let ca0 = _mm512_min_epi16(_mm512_max_epi16(a0, zero), qa);
         let cb0 = _mm512_min_epi16(_mm512_max_epi16(b0, zero), qa);
         let prod0 = _mm512_mullo_epi16(ca0, cb0);
         let d0 = _mm512_srli_epi16(prod0, FT_SHIFT as u32);
 
         if i + 64 <= pw {
-            let a1 = _mm512_loadu_si512(acc.as_ptr().add(i + 32) as *const __m512i);
-            let b1 = _mm512_loadu_si512(acc.as_ptr().add(pw + i + 32) as *const __m512i);
+            let mut a1 = _mm512_loadu_si512(acc.as_ptr().add(i + 32) as *const __m512i);
+            let mut b1 = _mm512_loadu_si512(acc.as_ptr().add(pw + i + 32) as *const __m512i);
+            if has_threat {
+                let ta1 = _mm512_loadu_si512(threat.add(i + 32) as *const __m512i);
+                let tb1 = _mm512_loadu_si512(threat.add(pw + i + 32) as *const __m512i);
+                a1 = _mm512_add_epi16(a1, ta1);
+                b1 = _mm512_add_epi16(b1, tb1);
+            }
             let ca1 = _mm512_min_epi16(_mm512_max_epi16(a1, zero), qa);
             let cb1 = _mm512_min_epi16(_mm512_max_epi16(b1, zero), qa);
             let prod1 = _mm512_mullo_epi16(ca1, cb1);
@@ -1173,9 +1296,10 @@ unsafe fn simd512_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
     }
     // Tail (< 32 elements) handled by scalar
     while i < pw {
-        let a = (acc[i] as i32).clamp(0, 255);
-        let b = (acc[pw + i] as i32).clamp(0, 255);
-        out[i] = ((a * b) >> FT_SHIFT) as u8;
+        let mut a = acc[i] as i32;
+        let mut b = acc[pw + i] as i32;
+        if has_threat { a += *threat.add(i) as i32; b += *threat.add(pw + i) as i32; }
+        out[i] = ((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8;
         i += 1;
     }
 }
@@ -1253,6 +1377,124 @@ unsafe fn simd512_l1_int8_dot_sparse(packed: &[u8], weights: &[i8], nnz_indices:
         sum = _mm512_add_epi32(sum, widened);
     }
     _mm512_reduce_add_epi32(sum)
+}
+
+/// AVX-512 VNNI variant of `simd512_l1_int8_dot`.
+///
+/// Fuses `VPMADDUBSW + VPMADDWD(ones) + VPADDD` into a single `VPDPBUSD`.
+/// Compared to the non-VNNI kernel this removes one dependent chain
+/// (vpmaddubsw → vpmaddwd) per 64-byte chunk, typically ~1.5× faster on
+/// Zen 5 / Sapphire Rapids for h in the 512–1024 range. Identical
+/// numerical behaviour — both accumulate into i32 with no saturation in
+/// the u8×i8 → i32 path.
+///
+/// Requires `h % 64 == 0`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+unsafe fn simd512_l1_int8_dot_vnni(packed: &[u8], weights: &[i8], h: usize) -> i32 {
+    // Split the accumulator to break the dependency chain — VPDPBUSD on
+    // Zen 5 has 4-cycle latency, so a single accumulator bottlenecks.
+    let mut s0 = _mm512_setzero_si512();
+    let mut s1 = _mm512_setzero_si512();
+    let mut i = 0;
+    while i + 128 <= h {
+        let a0 = _mm512_loadu_si512(packed.as_ptr().add(i) as *const __m512i);
+        let b0 = _mm512_loadu_si512(weights.as_ptr().add(i) as *const __m512i);
+        s0 = _mm512_dpbusd_epi32(s0, a0, b0);
+
+        let a1 = _mm512_loadu_si512(packed.as_ptr().add(i + 64) as *const __m512i);
+        let b1 = _mm512_loadu_si512(weights.as_ptr().add(i + 64) as *const __m512i);
+        s1 = _mm512_dpbusd_epi32(s1, a1, b1);
+        i += 128;
+    }
+    while i < h {
+        let a = _mm512_loadu_si512(packed.as_ptr().add(i) as *const __m512i);
+        let b = _mm512_loadu_si512(weights.as_ptr().add(i) as *const __m512i);
+        s0 = _mm512_dpbusd_epi32(s0, a, b);
+        i += 64;
+    }
+    _mm512_reduce_add_epi32(_mm512_add_epi32(s0, s1))
+}
+
+/// AVX-512 VNNI sparse variant — same as `simd512_l1_int8_dot_sparse`
+/// but with VPDPBUSD. Typically used with ~45–55% chunk density on v9
+/// pairwise outputs.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+unsafe fn simd512_l1_int8_dot_sparse_vnni(packed: &[u8], weights: &[i8], nnz_indices: &[u16], nnz_count: usize) -> i32 {
+    let mut s0 = _mm512_setzero_si512();
+    let mut s1 = _mm512_setzero_si512();
+    let mut k = 0;
+    while k + 2 <= nnz_count {
+        let off0 = *nnz_indices.get_unchecked(k) as usize;
+        let a0 = _mm512_loadu_si512(packed.as_ptr().add(off0) as *const __m512i);
+        let b0 = _mm512_loadu_si512(weights.as_ptr().add(off0) as *const __m512i);
+        s0 = _mm512_dpbusd_epi32(s0, a0, b0);
+
+        let off1 = *nnz_indices.get_unchecked(k + 1) as usize;
+        let a1 = _mm512_loadu_si512(packed.as_ptr().add(off1) as *const __m512i);
+        let b1 = _mm512_loadu_si512(weights.as_ptr().add(off1) as *const __m512i);
+        s1 = _mm512_dpbusd_epi32(s1, a1, b1);
+        k += 2;
+    }
+    while k < nnz_count {
+        let off = *nnz_indices.get_unchecked(k) as usize;
+        let a = _mm512_loadu_si512(packed.as_ptr().add(off) as *const __m512i);
+        let b = _mm512_loadu_si512(weights.as_ptr().add(off) as *const __m512i);
+        s0 = _mm512_dpbusd_epi32(s0, a, b);
+        k += 1;
+    }
+    _mm512_reduce_add_epi32(_mm512_add_epi32(s0, s1))
+}
+
+/// AVX-512 f32 L2 matmul for L2 == 32: two ZMM accumulators hold the full
+/// L2 row, one FMA pair per `l1_out[i]`. Replaces the generic loop that
+/// LLVM was vectorising with `VGATHERQPS` (13% of total cycles on v9,
+/// dominant after VNNI landed on L1).
+///
+/// Preconditions:
+/// - `l2 == 32`
+/// - `h2.len() >= 32`
+/// - `biases` contiguous at `l2_off`: `biases[l2_off..l2_off+32]`
+/// - `l2_weights_f[i * l2_total + l2_off .. + 32]` contiguous per `i`
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn l2_fmadd_avx512_x32(
+    l1_out: &[f32],
+    l1_out_count: usize,
+    l2_weights_f: &[f32],
+    l2_total: usize,
+    l2_off: usize,
+    biases: &[f32],
+    h2: &mut [f32],
+) {
+    let mut h_lo = _mm512_loadu_ps(biases.as_ptr().add(l2_off));
+    let mut h_hi = _mm512_loadu_ps(biases.as_ptr().add(l2_off + 16));
+    for i in 0..l1_out_count {
+        let v = *l1_out.get_unchecked(i);
+        if v == 0.0 { continue; }
+        let bcast = _mm512_set1_ps(v);
+        let wp = l2_weights_f.as_ptr().add(i * l2_total + l2_off);
+        let w_lo = _mm512_loadu_ps(wp);
+        let w_hi = _mm512_loadu_ps(wp.add(16));
+        h_lo = _mm512_fmadd_ps(bcast, w_lo, h_lo);
+        h_hi = _mm512_fmadd_ps(bcast, w_hi, h_hi);
+    }
+    _mm512_storeu_ps(h2.as_mut_ptr(), h_lo);
+    _mm512_storeu_ps(h2.as_mut_ptr().add(16), h_hi);
+}
+
+/// AVX-512 f32 horizontal dot product of `len` elements (len == 32).
+/// Replaces the scalar tail reduction in the output-weights dot.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn dot_fmadd_avx512_x32(a: &[f32], b: &[f32], bias: f32) -> f32 {
+    let a_lo = _mm512_loadu_ps(a.as_ptr());
+    let a_hi = _mm512_loadu_ps(a.as_ptr().add(16));
+    let b_lo = _mm512_loadu_ps(b.as_ptr());
+    let b_hi = _mm512_loadu_ps(b.as_ptr().add(16));
+    let sum = _mm512_fmadd_ps(a_lo, b_lo, _mm512_mul_ps(a_hi, b_hi));
+    bias + _mm512_reduce_add_ps(sum)
 }
 
 /// Find non-zero 64-byte chunk indices in a packed u8 buffer (AVX-512).
@@ -1485,14 +1727,30 @@ unsafe fn neon_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
 /// clamp(a, 0, 255) * clamp(b, 0, 255) >> 8 for each pair.
 #[cfg(target_arch = "aarch64")]
 unsafe fn neon_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
+    neon_pairwise_pack_fused(acc, std::ptr::null(), out, pw);
+}
+
+/// Pairwise pack with optional fused threat combine (NEON mirror of simd_pairwise_pack_fused).
+/// If threat is non-null, adds threat[i] to acc[i] (and threat[pw+i] to acc[pw+i]) before the
+/// [0, QA] clamp. Required for v9 nets with threat inputs — without it, threat contributions
+/// are silently dropped on aarch64.
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut [u8], pw: usize) {
     let zero = vdupq_n_s16(0);
     let qa = vdupq_n_s16(QA as i16);
+    let has_threat = !threat.is_null();
     let mut i = 0;
     while i + 16 <= pw {
-        let a0 = vld1q_s16(acc.as_ptr().add(i));
-        let b0 = vld1q_s16(acc.as_ptr().add(pw + i));
-        let a1 = vld1q_s16(acc.as_ptr().add(i + 8));
-        let b1 = vld1q_s16(acc.as_ptr().add(pw + i + 8));
+        let mut a0 = vld1q_s16(acc.as_ptr().add(i));
+        let mut b0 = vld1q_s16(acc.as_ptr().add(pw + i));
+        let mut a1 = vld1q_s16(acc.as_ptr().add(i + 8));
+        let mut b1 = vld1q_s16(acc.as_ptr().add(pw + i + 8));
+        if has_threat {
+            a0 = vaddq_s16(a0, vld1q_s16(threat.add(i)));
+            b0 = vaddq_s16(b0, vld1q_s16(threat.add(pw + i)));
+            a1 = vaddq_s16(a1, vld1q_s16(threat.add(i + 8)));
+            b1 = vaddq_s16(b1, vld1q_s16(threat.add(pw + i + 8)));
+        }
         let ca0 = vminq_s16(vmaxq_s16(a0, zero), qa);
         let cb0 = vminq_s16(vmaxq_s16(b0, zero), qa);
         let ca1 = vminq_s16(vmaxq_s16(a1, zero), qa);
@@ -1507,8 +1765,12 @@ unsafe fn neon_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
         i += 16;
     }
     while i + 8 <= pw {
-        let a = vld1q_s16(acc.as_ptr().add(i));
-        let b = vld1q_s16(acc.as_ptr().add(pw + i));
+        let mut a = vld1q_s16(acc.as_ptr().add(i));
+        let mut b = vld1q_s16(acc.as_ptr().add(pw + i));
+        if has_threat {
+            a = vaddq_s16(a, vld1q_s16(threat.add(i)));
+            b = vaddq_s16(b, vld1q_s16(threat.add(pw + i)));
+        }
         let ca = vminq_s16(vmaxq_s16(a, zero), qa);
         let cb = vminq_s16(vmaxq_s16(b, zero), qa);
         let prod = vmulq_s16(ca, cb);
@@ -1517,9 +1779,13 @@ unsafe fn neon_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
         i += 8;
     }
     while i < pw {
-        let a = (acc[i] as i32).clamp(0, 255);
-        let b = (acc[pw + i] as i32).clamp(0, 255);
-        out[i] = ((a * b) >> FT_SHIFT) as u8;
+        let mut a = acc[i] as i32;
+        let mut b = acc[pw + i] as i32;
+        if has_threat {
+            a += *threat.add(i) as i32;
+            b += *threat.add(pw + i) as i32;
+        }
+        out[i] = ((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8;
         i += 1;
     }
 }
@@ -1549,6 +1815,74 @@ unsafe fn neon_l1_int8_dot(packed: &[u8], weights: &[i8], h: usize) -> i32 {
         i += 16;
     }
     vaddvq_s32(vaddq_s32(sum0, sum1))
+}
+
+/// L1 int8 matmul x4 (NEON): process 4 neurons simultaneously, loading each
+/// input chunk once and feeding it into 4 independent accumulators. Mirrors
+/// the x86_64 `simd_l1_int8_dot_x4` pattern. Each 16-byte input chunk
+/// amortises 1 input widen across 4 neurons, cutting per-chunk cost from
+/// 4×(2 input widens + 2 weight widens + 4 MLALs) = 32 ops to 2 + 4×(2+4) = 26 ops.
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_l1_int8_dot_x4(
+    packed: &[u8],
+    w0: &[i8], w1: &[i8], w2: &[i8], w3: &[i8],
+    h: usize,
+) -> [i32; 4] {
+    let mut s0_lo = vdupq_n_s32(0); let mut s0_hi = vdupq_n_s32(0);
+    let mut s1_lo = vdupq_n_s32(0); let mut s1_hi = vdupq_n_s32(0);
+    let mut s2_lo = vdupq_n_s32(0); let mut s2_hi = vdupq_n_s32(0);
+    let mut s3_lo = vdupq_n_s32(0); let mut s3_hi = vdupq_n_s32(0);
+    let mut i = 0;
+    while i < h {
+        // Load + widen input once per chunk, shared across all 4 neurons.
+        let a = vld1q_u8(packed.as_ptr().add(i));
+        let a_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(a)));
+        let a_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(a)));
+
+        // Neuron 0
+        let b = vld1q_s8(w0.as_ptr().add(i));
+        let b_lo = vmovl_s8(vget_low_s8(b));
+        let b_hi = vmovl_s8(vget_high_s8(b));
+        s0_lo = vmlal_s16(s0_lo, vget_low_s16(a_lo), vget_low_s16(b_lo));
+        s0_lo = vmlal_high_s16(s0_lo, a_lo, b_lo);
+        s0_hi = vmlal_s16(s0_hi, vget_low_s16(a_hi), vget_low_s16(b_hi));
+        s0_hi = vmlal_high_s16(s0_hi, a_hi, b_hi);
+
+        // Neuron 1
+        let b = vld1q_s8(w1.as_ptr().add(i));
+        let b_lo = vmovl_s8(vget_low_s8(b));
+        let b_hi = vmovl_s8(vget_high_s8(b));
+        s1_lo = vmlal_s16(s1_lo, vget_low_s16(a_lo), vget_low_s16(b_lo));
+        s1_lo = vmlal_high_s16(s1_lo, a_lo, b_lo);
+        s1_hi = vmlal_s16(s1_hi, vget_low_s16(a_hi), vget_low_s16(b_hi));
+        s1_hi = vmlal_high_s16(s1_hi, a_hi, b_hi);
+
+        // Neuron 2
+        let b = vld1q_s8(w2.as_ptr().add(i));
+        let b_lo = vmovl_s8(vget_low_s8(b));
+        let b_hi = vmovl_s8(vget_high_s8(b));
+        s2_lo = vmlal_s16(s2_lo, vget_low_s16(a_lo), vget_low_s16(b_lo));
+        s2_lo = vmlal_high_s16(s2_lo, a_lo, b_lo);
+        s2_hi = vmlal_s16(s2_hi, vget_low_s16(a_hi), vget_low_s16(b_hi));
+        s2_hi = vmlal_high_s16(s2_hi, a_hi, b_hi);
+
+        // Neuron 3
+        let b = vld1q_s8(w3.as_ptr().add(i));
+        let b_lo = vmovl_s8(vget_low_s8(b));
+        let b_hi = vmovl_s8(vget_high_s8(b));
+        s3_lo = vmlal_s16(s3_lo, vget_low_s16(a_lo), vget_low_s16(b_lo));
+        s3_lo = vmlal_high_s16(s3_lo, a_lo, b_lo);
+        s3_hi = vmlal_s16(s3_hi, vget_low_s16(a_hi), vget_low_s16(b_hi));
+        s3_hi = vmlal_high_s16(s3_hi, a_hi, b_hi);
+
+        i += 16;
+    }
+    [
+        vaddvq_s32(vaddq_s32(s0_lo, s0_hi)),
+        vaddvq_s32(vaddq_s32(s1_lo, s1_hi)),
+        vaddvq_s32(vaddq_s32(s2_lo, s2_hi)),
+        vaddvq_s32(vaddq_s32(s3_lo, s3_hi)),
+    ]
 }
 
 /// Find non-zero 16-byte chunk indices in a packed u8 buffer (NEON).
@@ -1615,6 +1949,36 @@ fn detect_avx512() -> bool {
     }
 }
 
+/// Detect AVX-512 VNNI support. VNNI provides `VPDPBUSD`, which fuses the
+/// `VPMADDUBSW + VPMADDWD(ones)` pair used in int8 L1 matmuls into one
+/// instruction — typically ~1.3–2× speedup on the hot forward kernel.
+fn detect_avx512_vnni() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        is_x86_feature_detected!("avx512f")
+            && is_x86_feature_detected!("avx512bw")
+            && is_x86_feature_detected!("avx512vnni")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+/// Detect AVX-VNNI (VEX-encoded VPDPBUSD on YMM/XMM). Available on Intel
+/// Alder Lake+ and AMD Zen 4+ — gives fused u8×i8 dot on AVX2 machines
+/// that don't have full AVX-512.
+fn detect_avx_vnni() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        is_x86_feature_detected!("avx2") && is_x86_feature_detected!("avxvnni")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
 /// Detect NEON support (always true on aarch64).
 fn detect_neon() -> bool {
     #[cfg(target_arch = "aarch64")]
@@ -1659,8 +2023,16 @@ pub struct NNUENet {
     /// Number of king buckets in this net (10 for Reckless, 16 for others).
     /// PSQ weight block is sized `num_king_buckets * 768 * hidden_size`.
     pub num_king_buckets: usize,
-    /// King bucket layout identifier — drives which static lookup table is used.
+    /// King bucket layout identifier — drives which lookup tables are used.
     pub kb_layout: KbLayout,
+    /// Per-net king-bucket lookup table: square (0-63) → bucket (0..num_king_buckets).
+    /// Computed once at load time from `kb_layout`, never mutated after.
+    /// Previously a `static mut` written by every net load — which caused a
+    /// data race with Lazy SMP helpers at T=4 (v9 SMP regression bisected to
+    /// commit 1356150). Making this per-net eliminates the race.
+    pub king_bucket: [usize; 64],
+    /// Per-net king-mirror table: square (0-63) → mirror flag.
+    pub king_mirror: [bool; 64],
     pub use_sparse_l1: std::sync::atomic::AtomicBool, // feature flag: sparse L1 matmul
     /// Use clipped ReLU (not SCReLU) on L1/L2 hidden layers. Set via UCI
     /// option `HiddenActivation = crelu`. Experimental — nets trained with
@@ -1669,10 +2041,35 @@ pub struct NNUENet {
     pub crelu_hidden: std::sync::atomic::AtomicBool,
     pub has_avx2: bool,
     pub has_avx512: bool,
+    /// AVX-512 + VNNI (`VPDPBUSD`). When true, the int8 L1 matmul prefers
+    /// the VNNI kernel, which fuses `VPMADDUBSW + VPMADDWD(ones)` into a
+    /// single instruction. Falls back to `has_avx512` kernels when false.
+    pub has_avx512_vnni: bool,
+    /// AVX-VNNI (VEX-encoded `VPDPBUSD` on YMM). Intel Alder Lake+ / AMD
+    /// Zen 4+. Used by AVX2-only build configurations on VNNI-capable CPUs.
+    pub has_avx_vnni: bool,
     pub has_neon: bool,
 }
 
 impl NNUENet {
+    /// HalfKA feature index computed against THIS net's king-bucket layout.
+    /// Use this everywhere that computes a feature index to avoid the
+    /// race-prone global tables. See also `halfka_index_with` for the
+    /// equivalent free function.
+    #[inline]
+    pub fn halfka_index(&self, perspective: u8, king_sq: u8, pc_color: u8, pc_type: u8, pc_sq: u8) -> usize {
+        halfka_index_with(&self.king_bucket, &self.king_mirror, perspective, king_sq, pc_color, pc_type, pc_sq)
+    }
+
+    /// King-bucket lookup for this net. Use for build_dirty_piece and other
+    /// code that needs to detect bucket/mirror changes on king moves.
+    #[inline]
+    pub fn king_bucket(&self, sq: usize) -> usize { self.king_bucket[sq] }
+
+    /// King-mirror lookup for this net.
+    #[inline]
+    pub fn king_mirror(&self, sq: usize) -> bool { self.king_mirror[sq] }
+
     /// Load from a byte slice (for embedded nets). No temp files needed.
     pub fn load_from_bytes(data: &[u8]) -> Result<Self, String> {
         let mut reader = std::io::Cursor::new(data);
@@ -1703,10 +2100,14 @@ impl NNUENet {
         let mut l1_scale = QA as i32; // default int16 scale
         let mut bucketed_hidden = false; // bit 3: output buckets baked into L1/L2 dims
         let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
-        let mut consensus_buckets = false; // bit 5: consensus king bucket layout
+        // bit 5 is context-dependent:
+        //   - extended_kb=0: consensus_buckets (legacy 16-bucket encoding)
+        //   - extended_kb=1: hl_crelu (hidden-layer CReLU, vs default SCReLU)
+        let mut consensus_buckets = false;
+        let mut hl_crelu = false;
         let mut has_threats = false; // bit 6: threat features (v9)
         let mut num_threat_features = 0usize;
-        let mut extended_kb = false; // bit 7: extended KB header follows
+        // extended_kb (bit 7) is only read inside the v7|8|9 match arm; declared locally there.
         let mut num_king_buckets: usize = 16; // default (uniform/consensus)
         let mut kb_layout = KbLayout::Uniform;
         let hidden_size: usize;
@@ -1727,6 +2128,7 @@ impl NNUENet {
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
                 consensus_buckets = flags & 32 != 0;
+                kb_layout = if consensus_buckets { KbLayout::Consensus } else { KbLayout::Uniform };
                 let body_size = data_len - 9;
                 let out_mul: u64 = if use_pairwise { 8 } else { 16 };
                 let h_denom = 2 * (NNUE_INPUT_SIZE as u64 + 1 + out_mul);
@@ -1743,9 +2145,16 @@ impl NNUENet {
                 if flags & 4 != 0 { l1_scale = 64; } // int8 L1 weights
                 bucketed_hidden = flags & 8 != 0; // output buckets baked into L1/L2
                 dual_l1 = flags & 16 != 0; // dual L1 activation (CReLU+SCReLU)
-                consensus_buckets = flags & 32 != 0; // consensus king bucket layout (legacy 16-bucket)
                 has_threats = flags & 64 != 0; // v9 threat features
-                extended_kb = flags & 128 != 0; // bit 7: extended KB header
+                let extended_kb = flags & 128 != 0; // bit 7: extended KB header
+                // Bit 5 has context-dependent meaning: consensus_buckets on
+                // legacy 16-bucket nets (extended_kb=0), hl_crelu on modern
+                // nets (extended_kb=1). Invariant enforced by bullet_convert.
+                if extended_kb {
+                    hl_crelu = flags & 32 != 0;
+                } else {
+                    consensus_buckets = flags & 32 != 0;
+                }
                 let ft_size = read_u16(reader)? as usize;
                 l1_size = read_u16(reader)? as usize;
                 l2_size = read_u16(reader)? as usize;
@@ -1845,10 +2254,10 @@ impl NNUENet {
             output_bias[i] = read_i32(reader)?;
         }
 
-        // Initialise king bucket table from this net's layout. Affects the
-        // global `KING_BUCKET[64]` lookup, which search/eval read for every
-        // king square. Multi-net loads must re-run this on each load.
-        init_king_buckets_layout(kb_layout);
+        // Compute king bucket tables for this net's layout. Stored on the
+        // returned NNUENet struct (per-net, not static) so Lazy SMP helpers
+        // can read them concurrently without racing a subsequent net load.
+        let (king_bucket_tbl, king_mirror_tbl) = compute_king_buckets(kb_layout);
 
         let activation = if use_pairwise { "pairwise" } else if use_screlu { "SCReLU" } else { "CReLU" };
         let dual_str = if dual_l1 { " dual" } else { "" };
@@ -1922,9 +2331,15 @@ impl NNUENet {
 
         let has_avx2 = detect_avx2();
         let has_avx512 = detect_avx512();
+        let has_avx512_vnni = detect_avx512_vnni();
+        let has_avx_vnni = detect_avx_vnni();
         let has_neon = detect_neon();
-        if has_avx512 {
+        if has_avx512_vnni {
+            println!("info string AVX-512 + VNNI detected — using VPDPBUSD int8 matmul");
+        } else if has_avx512 {
             println!("info string AVX-512 SIMD detected — using 512-bit NNUE inference");
+        } else if has_avx2 && has_avx_vnni {
+            println!("info string AVX2 + AVX-VNNI detected — using VPDPBUSD int8 matmul");
         } else if has_avx2 {
             println!("info string AVX2 SIMD detected — using vectorised NNUE inference");
         } else if has_neon {
@@ -2001,10 +2416,16 @@ impl NNUENet {
             has_threats,
             num_king_buckets,
             kb_layout,
+            king_bucket: king_bucket_tbl,
+            king_mirror: king_mirror_tbl,
             use_sparse_l1: std::sync::atomic::AtomicBool::new(false), // disabled: dense int8 is faster at H=1024
-            crelu_hidden: std::sync::atomic::AtomicBool::new(false),
+            // Auto-set from file header bit 5 when extended_kb=1.
+            // Overridable at runtime via UCI option HiddenActivation.
+            crelu_hidden: std::sync::atomic::AtomicBool::new(hl_crelu),
             has_avx2,
             has_avx512,
+            has_avx512_vnni,
+            has_avx_vnni,
             has_neon,
         })
     }
@@ -2102,8 +2523,10 @@ impl NNUENet {
         #[cfg(target_arch = "x86_64")]
         if self.has_avx512 && pw % 32 == 0 {
             unsafe {
-                simd512_pairwise_pack(stm_acc, &mut stm_pw, pw);
-                simd512_pairwise_pack(ntm_acc, &mut ntm_pw, pw);
+                let stm_tp = if has_threats { stm_threat.as_ptr() } else { std::ptr::null() };
+                let ntm_tp = if has_threats { ntm_threat.as_ptr() } else { std::ptr::null() };
+                simd512_pairwise_pack_fused(stm_acc, stm_tp, &mut stm_pw, pw);
+                simd512_pairwise_pack_fused(ntm_acc, ntm_tp, &mut ntm_pw, pw);
             }
         } else if self.has_avx2 && pw % 16 == 0 {
             unsafe {
@@ -2135,8 +2558,13 @@ impl NNUENet {
         #[cfg(target_arch = "aarch64")]
         {
             unsafe {
-                neon_pairwise_pack(stm_acc, &mut stm_pw, pw);
-                neon_pairwise_pack(ntm_acc, &mut ntm_pw, pw);
+                if has_threats {
+                    neon_pairwise_pack_fused(stm_acc, stm_threat.as_ptr(), &mut stm_pw, pw);
+                    neon_pairwise_pack_fused(ntm_acc, ntm_threat.as_ptr(), &mut ntm_pw, pw);
+                } else {
+                    neon_pairwise_pack_fused(stm_acc, std::ptr::null(), &mut stm_pw, pw);
+                    neon_pairwise_pack_fused(ntm_acc, std::ptr::null(), &mut ntm_pw, pw);
+                }
             }
         }
 
@@ -2170,7 +2598,37 @@ impl NNUENet {
         }
         // L1 matmul: use SIMD int8 dot with transposed weights when available
         #[cfg(target_arch = "x86_64")]
-        if self.has_avx512 && pw % 64 == 0 && !self.l1_weights_8t.is_empty() {
+        if self.has_avx512_vnni && !self.l1_weights_sparse.is_empty() && l1 == 16 && pw % 4 == 0 {
+            // AVX-512 VNNI column-major: all 16 L1 neurons in one ZMM accumulator,
+            // one VPDPBUSD per 4-byte input chunk. Dramatically reduces per-chunk
+            // uop count vs the row-major per-neuron path below.
+            unsafe {
+                crate::sparse_l1::dense_l1_avx512_vnni(
+                    &stm_pw, &ntm_pw, pw, &self.l1_weights_sparse,
+                    l1, &self.l1_biases[l1_off..], pw_scale, &mut hidden32,
+                );
+            }
+        } else if self.has_avx512_vnni && pw % 64 == 0 && !self.l1_weights_8t.is_empty() {
+            // VNNI fallback for wider L1 — still VPDPBUSD, but row-major.
+            let ntm_base = l1_total * pw;
+            for i in 0..l1 {
+                let gi = l1_off + i;
+                let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
+                let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
+                unsafe {
+                    hidden32[i] += simd512_l1_int8_dot_vnni(&stm_pw[..pw], stm_w, pw);
+                    hidden32[i] += simd512_l1_int8_dot_vnni(&ntm_pw[..pw], ntm_w, pw);
+                }
+            }
+        } else if self.has_avx_vnni && !self.l1_weights_sparse.is_empty() && l1 <= 16 && pw % 4 == 0 {
+            // AVX-VNNI (YMM VPDPBUSD) — Alder Lake+, Zen 4+ without full AVX-512.
+            unsafe {
+                crate::sparse_l1::dense_l1_avx_vnni(
+                    &stm_pw, &ntm_pw, pw, &self.l1_weights_sparse,
+                    l1, &self.l1_biases[l1_off..], pw_scale, &mut hidden32,
+                );
+            }
+        } else if self.has_avx512 && pw % 64 == 0 && !self.l1_weights_8t.is_empty() {
             let ntm_base = l1_total * pw;
             for i in 0..l1 {
                 let gi = l1_off + i;
@@ -2270,7 +2728,11 @@ impl NNUENet {
         }
 
         #[cfg(target_arch = "x86_64")]
-        if !(self.has_avx512 && pw % 64 == 0 && !self.l1_weights_8t.is_empty())
+        if !(self.has_avx512_vnni && !self.l1_weights_sparse.is_empty() && l1 == 16 && pw % 4 == 0)
+            && !(self.has_avx512_vnni && pw % 64 == 0 && !self.l1_weights_8t.is_empty())
+            && !(self.has_avx_vnni && !self.l1_weights_sparse.is_empty() && l1 <= 16 && pw % 4 == 0)
+            && !(self.has_avx512 && pw % 64 == 0 && !self.l1_weights_8t.is_empty())
+            && !(self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 <= 16)
             && !(self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty()) {
             // Scalar fallback — raw weights in [input][neuron] layout
             for i in 0..l1 {
@@ -2287,7 +2749,36 @@ impl NNUENet {
         #[cfg(target_arch = "aarch64")]
         if self.has_neon && pw % 16 == 0 && !self.l1_weights_8t.is_empty() {
             let ntm_base = l1_total * pw;
-            for i in 0..l1 {
+            // Multi-neuron: 4 neurons at once, loading each input chunk once
+            // and feeding all 4 accumulators (mirrors x86_64 simd_l1_int8_dot_x4).
+            let mut i = 0;
+            while i + 4 <= l1 {
+                let gi = l1_off + i;
+                unsafe {
+                    let stm_results = neon_l1_int8_dot_x4(
+                        &stm_pw[..pw],
+                        &self.l1_weights_8t[gi * pw..(gi + 1) * pw],
+                        &self.l1_weights_8t[(gi + 1) * pw..(gi + 2) * pw],
+                        &self.l1_weights_8t[(gi + 2) * pw..(gi + 3) * pw],
+                        &self.l1_weights_8t[(gi + 3) * pw..(gi + 4) * pw],
+                        pw,
+                    );
+                    let ntm_results = neon_l1_int8_dot_x4(
+                        &ntm_pw[..pw],
+                        &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw],
+                        &self.l1_weights_8t[ntm_base + (gi + 1) * pw..ntm_base + (gi + 2) * pw],
+                        &self.l1_weights_8t[ntm_base + (gi + 2) * pw..ntm_base + (gi + 3) * pw],
+                        &self.l1_weights_8t[ntm_base + (gi + 3) * pw..ntm_base + (gi + 4) * pw],
+                        pw,
+                    );
+                    for k in 0..4 {
+                        hidden32[i + k] += stm_results[k] + ntm_results[k];
+                    }
+                }
+                i += 4;
+            }
+            // Tail (if l1 not divisible by 4)
+            while i < l1 {
                 let gi = l1_off + i;
                 let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
                 let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
@@ -2295,6 +2786,7 @@ impl NNUENet {
                     hidden32[i] += neon_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
                     hidden32[i] += neon_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
                 }
+                i += 1;
             }
         }
 
@@ -2359,11 +2851,36 @@ impl NNUENet {
             let l2_stride = if self.dual_l1 { self.l1_per_bucket * 2 } else { self.l1_per_bucket };
             let _ = l2_stride;
             let mut h2 = [0.0f32; 512];
-            for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
-            for i in 0..l1_out_count {
-                if l1_out[i] == 0.0 { continue; }
-                for k in 0..l2 {
-                    h2[k] += l1_out[i] * self.l2_weights_f[i * l2_total + l2_off + k];
+            // L2 matmul. The common v9 shape (L2=32) takes a hand-vectorised
+            // AVX-512 FMA path: LLVM's autovec turned into `VGATHERQPS` here
+            // and ate ~13% of total cycles. Explicit 2-register broadcast-FMA
+            // is branch-light, load-heavy, cache-friendly.
+            #[cfg(target_arch = "x86_64")]
+            if self.has_avx512 && l2 == 32 {
+                unsafe {
+                    l2_fmadd_avx512_x32(
+                        &l1_out[..l1_out_count], l1_out_count,
+                        &self.l2_weights_f, l2_total, l2_off,
+                        &self.l2_biases_f, &mut h2,
+                    );
+                }
+            } else {
+                for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
+                for i in 0..l1_out_count {
+                    if l1_out[i] == 0.0 { continue; }
+                    for k in 0..l2 {
+                        h2[k] += l1_out[i] * self.l2_weights_f[i * l2_total + l2_off + k];
+                    }
+                }
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
+                for i in 0..l1_out_count {
+                    if l1_out[i] == 0.0 { continue; }
+                    for k in 0..l2 {
+                        h2[k] += l1_out[i] * self.l2_weights_f[i * l2_total + l2_off + k];
+                    }
                 }
             }
             if self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed) {
@@ -2372,8 +2889,23 @@ impl NNUENet {
                 for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; } // SCReLU
             }
             let out_w = &self.out_weights_f[bucket * l2_pb..bucket * l2_pb + l2_pb];
-            let mut out_f = self.out_bias_f[bucket];
-            for k in 0..l2 { out_f += h2[k] * out_w[k]; }
+            let bias = self.out_bias_f[bucket];
+            // Output dot — AVX-512 version for the L2=32 case, matches the
+            // L2 matmul's dimensionality so it stays on the hot path.
+            #[cfg(target_arch = "x86_64")]
+            let out_f = if self.has_avx512 && l2 == 32 {
+                unsafe { dot_fmadd_avx512_x32(&h2[..32], &out_w[..32], bias) }
+            } else {
+                let mut acc = bias;
+                for k in 0..l2 { acc += h2[k] * out_w[k]; }
+                acc
+            };
+            #[cfg(not(target_arch = "x86_64"))]
+            let out_f = {
+                let mut acc = bias;
+                for k in 0..l2 { acc += h2[k] * out_w[k]; }
+                acc
+            };
             return (out_f * EVAL_SCALE as f32) as i32;
         }
 
@@ -2431,7 +2963,11 @@ impl NNUENet {
             // Weight layout: l1_weights_8t[neuron * h] for STM, [l1_total*h + neuron*h] for NTM
             // With bucket offset: STM starts at (b_off + i) * h, NTM at l1_total*h + (b_off+i)*h
             if self.has_avx512 && h % 64 == 0 {
-                if self.use_sparse_l1.load(std::sync::atomic::Ordering::Relaxed) {
+                // Dispatch dense/sparse × vnni/plain combinations. Each branch
+                // specialises on the actual kernel to keep inner loops tight.
+                let use_sparse = self.use_sparse_l1.load(std::sync::atomic::Ordering::Relaxed);
+                let use_vnni = self.has_avx512_vnni;
+                if use_sparse {
                     debug_assert!(h <= 2048, "sparse NNZ buffer too small for h={}", h);
                     let mut stm_nnz = [0u16; 32]; // safe for h <= 2048 (32 × 64-byte chunks)
                     let mut ntm_nnz = [0u16; 32];
@@ -2440,13 +2976,35 @@ impl NNUENet {
                         stm_nnz_count = find_nnz_chunks_512(&stm_packed, &mut stm_nnz, h);
                         ntm_nnz_count = find_nnz_chunks_512(&ntm_packed, &mut ntm_nnz, h);
                     }
+                    if use_vnni {
+                        for i in 0..l1 {
+                            let gi = b_off + i;
+                            let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
+                            let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
+                            unsafe {
+                                hidden[i] += simd512_l1_int8_dot_sparse_vnni(&stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
+                                hidden[i] += simd512_l1_int8_dot_sparse_vnni(&ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
+                            }
+                        }
+                    } else {
+                        for i in 0..l1 {
+                            let gi = b_off + i;
+                            let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
+                            let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
+                            unsafe {
+                                hidden[i] += simd512_l1_int8_dot_sparse(&stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
+                                hidden[i] += simd512_l1_int8_dot_sparse(&ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
+                            }
+                        }
+                    }
+                } else if use_vnni {
                     for i in 0..l1 {
                         let gi = b_off + i;
                         let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
                         let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
                         unsafe {
-                            hidden[i] += simd512_l1_int8_dot_sparse(&stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
-                            hidden[i] += simd512_l1_int8_dot_sparse(&ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
+                            hidden[i] += simd512_l1_int8_dot_vnni(&stm_packed, stm_w, h) as i64;
+                            hidden[i] += simd512_l1_int8_dot_vnni(&ntm_packed, ntm_w, h) as i64;
                         }
                     }
                 } else {
@@ -3219,7 +3777,7 @@ impl NNUEAccumulator {
                     let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
                     while bb != 0 {
                         let sq = pop_lsb(&mut bb) as u8;
-                        let idx = halfka_index(WHITE, board.king_sq(WHITE), color, pt, sq);
+                        let idx = net.halfka_index(WHITE, board.king_sq(WHITE), color, pt, sq);
                         let row = net.input_weight_row(idx);
                         for j in 0..h { dst[j] += row[j]; }
                     }
@@ -3235,7 +3793,7 @@ impl NNUEAccumulator {
                     let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
                     while bb != 0 {
                         let sq = pop_lsb(&mut bb) as u8;
-                        let idx = halfka_index(BLACK, board.king_sq(BLACK), color, pt, sq);
+                        let idx = net.halfka_index(BLACK, board.king_sq(BLACK), color, pt, sq);
                         let row = net.input_weight_row(idx);
                         for j in 0..h { dst[j] += row[j]; }
                     }
@@ -3324,7 +3882,7 @@ impl NNUEAccumulator {
                 // during the replay chain, the mirroring might be wrong.
                 // For now this is acceptable; king moves are rare in the chain.
                 // Swap deltas out to avoid borrow conflict (no allocation)
-                let mut deltas = std::mem::take(&mut self.stack[ply].threat_deltas);
+                let deltas = std::mem::take(&mut self.stack[ply].threat_deltas);
                 let (prev_slice, curr_slice) = self.stack.split_at_mut(ply);
                 let prev = &prev_slice[src];
                 let curr = &mut curr_slice[0];
@@ -3535,9 +4093,9 @@ impl NNUEAccumulator {
 
         for i in 0..n {
             let (add, color, pt, sq) = dirty.changes[i];
-            let w_idx = halfka_index(WHITE, w_king_sq, color, pt, sq);
+            let w_idx = net.halfka_index(WHITE, w_king_sq, color, pt, sq);
             let w_row = net.input_weight_row(w_idx);
-            let b_idx = halfka_index(BLACK, b_king_sq, color, pt, sq);
+            let b_idx = net.halfka_index(BLACK, b_king_sq, color, pt, sq);
             let b_row = net.input_weight_row(b_idx);
             if add {
                 w_adds[nwa] = w_row; nwa += 1;
@@ -3554,10 +4112,29 @@ impl NNUEAccumulator {
         let b_subs = &b_subs[..nbs];
 
         #[cfg(target_arch = "x86_64")]
+        if net.has_avx512 && h % 32 == 0 {
+            unsafe {
+                simd_acc_fused_avx512(&mut current.white, &parent.white, w_adds, w_subs, h);
+                simd_acc_fused_avx512(&mut current.black, &parent.black, b_adds, b_subs, h);
+            }
+            current.computed = true;
+            return;
+        }
+        #[cfg(target_arch = "x86_64")]
         if net.has_avx2 && h % 16 == 0 {
             unsafe {
                 simd_acc_fused_avx2(&mut current.white, &parent.white, w_adds, w_subs, h);
                 simd_acc_fused_avx2(&mut current.black, &parent.black, b_adds, b_subs, h);
+            }
+            current.computed = true;
+            return;
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        if net.has_neon && h % 8 == 0 {
+            unsafe {
+                simd_acc_fused_neon(&mut current.white, &parent.white, w_adds, w_subs, h);
+                simd_acc_fused_neon(&mut current.black, &parent.black, b_adds, b_subs, h);
             }
             current.computed = true;
             return;
@@ -3586,8 +4163,8 @@ impl NNUEAccumulator {
         let mut ks = king_sq as usize;
         if perspective == BLACK { ks ^= 56; }
 
-        let bucket = king_bucket(ks);
-        let mirror_idx = if king_mirror(ks) { 1 } else { 0 };
+        let bucket = net.king_bucket(ks);
+        let mirror_idx = if net.king_mirror(ks) { 1 } else { 0 };
 
         let entry = &mut self.finny[perspective as usize * 32 + bucket * 2 + mirror_idx];
 
@@ -3607,21 +4184,13 @@ impl NNUEAccumulator {
                     let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
                     while bb != 0 {
                         let sq = pop_lsb(&mut bb) as u8;
-                        let idx = halfka_index(perspective, king_sq, color, pt, sq);
+                        let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
                         if n_pieces < 32 { piece_indices[n_pieces] = idx; n_pieces += 1; }
                     }
                 }
             }
-            #[cfg(target_arch = "x86_64")]
-            if net.has_avx2 && h % 16 == 0 {
-                let empty: [usize; 0] = [];
-                unsafe { finny_batch_apply_avx2(dst, &net.input_weights, h, &piece_indices[..n_pieces], &empty); }
-            } else {
-                for &idx in &piece_indices[..n_pieces] {
-                    let row = net.input_weight_row(idx);
-                    for j in 0..h { dst[j] += row[j]; }
-                }
-            }
+            let empty: [usize; 0] = [];
+            finny_batch_apply(net, dst, &net.input_weights, h, &piece_indices[..n_pieces], &empty);
             // Save to cache
             entry.acc[..h].copy_from_slice(&dst[..h]);
             entry.piece_bbs = (board.pieces, board.colors);
@@ -3648,14 +4217,14 @@ impl NNUEAccumulator {
                 let mut removed = prev & !curr;
                 while removed != 0 {
                     let sq = pop_lsb(&mut removed) as u8;
-                    let idx = halfka_index(perspective, king_sq, color, pt, sq);
+                    let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
                     if n_subs < 32 { sub_rows[n_subs] = idx; n_subs += 1; }
                 }
 
                 let mut added = curr & !prev;
                 while added != 0 {
                     let sq = pop_lsb(&mut added) as u8;
-                    let idx = halfka_index(perspective, king_sq, color, pt, sq);
+                    let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
                     if n_adds < 32 { add_rows[n_adds] = idx; n_adds += 1; }
                 }
             }
@@ -3663,25 +4232,10 @@ impl NNUEAccumulator {
 
         // Batch apply with register blocking (Reckless pattern)
         if n_adds > 0 || n_subs > 0 {
-            #[cfg(target_arch = "x86_64")]
-            if net.has_avx2 && h % 16 == 0 {
-                unsafe {
-                    finny_batch_apply_avx2(
-                        cached_acc, &net.input_weights, h,
-                        &add_rows[..n_adds], &sub_rows[..n_subs],
-                    );
-                }
-            } else {
-                // Scalar fallback
-                for &idx in &add_rows[..n_adds] {
-                    let row = net.input_weight_row(idx);
-                    for j in 0..h { cached_acc[j] += row[j]; }
-                }
-                for &idx in &sub_rows[..n_subs] {
-                    let row = net.input_weight_row(idx);
-                    for j in 0..h { cached_acc[j] -= row[j]; }
-                }
-            }
+            finny_batch_apply(
+                net, cached_acc, &net.input_weights, h,
+                &add_rows[..n_adds], &sub_rows[..n_subs],
+            );
         }
 
         // Copy updated cache to accumulator
@@ -3697,6 +4251,151 @@ impl NNUEAccumulator {
         for entry in self.finny.iter_mut() {
             entry.valid = false;
         }
+    }
+}
+
+/// AVX-512 batch-apply add/sub weight rows. Same semantics as the AVX2
+/// variant but uses 512-bit registers — 32 i16 per register, CHUNK=256.
+/// For the common `h=768` case this processes the accumulator in 3 passes
+/// instead of AVX2's 6. Measured ~1.5% NPS on v9 after VNNI landed.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn finny_batch_apply_avx512(
+    acc: &mut [i16],
+    input_weights: &[i16],
+    h: usize,
+    adds: &[usize],
+    subs: &[usize],
+) {
+    const REGS: usize = 8;
+    const LANE: usize = 32; // 32 i16 per ZMM
+    const CHUNK: usize = REGS * LANE; // 256 elements per chunk
+
+    let acc_ptr = acc.as_mut_ptr();
+    let w_ptr = input_weights.as_ptr();
+
+    let mut offset = 0;
+    while offset < h {
+        let nregs = ((h - offset).min(CHUNK) + LANE - 1) / LANE;
+
+        let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
+        for i in 0..nregs {
+            regs[i] = _mm512_loadu_si512(acc_ptr.add(offset + i * LANE) as *const __m512i);
+        }
+
+        for &idx in adds {
+            let row = w_ptr.add(idx * h + offset);
+            for i in 0..nregs {
+                let w = _mm512_loadu_si512(row.add(i * LANE) as *const __m512i);
+                regs[i] = _mm512_add_epi16(regs[i], w);
+            }
+        }
+
+        for &idx in subs {
+            let row = w_ptr.add(idx * h + offset);
+            for i in 0..nregs {
+                let w = _mm512_loadu_si512(row.add(i * LANE) as *const __m512i);
+                regs[i] = _mm512_sub_epi16(regs[i], w);
+            }
+        }
+
+        for i in 0..nregs {
+            _mm512_storeu_si512(acc_ptr.add(offset + i * LANE) as *mut __m512i, regs[i]);
+        }
+
+        offset += CHUNK;
+    }
+}
+
+/// Batch-apply add/sub weight rows to an accumulator (SIMD-aware dispatcher).
+/// Used by Finny refresh (both full-build and cache-diff). Must compile on
+/// every supported arch — a scalar fallback is always present.
+#[inline]
+fn finny_batch_apply(
+    net: &NNUENet,
+    acc: &mut [i16],
+    input_weights: &[i16],
+    h: usize,
+    adds: &[usize],
+    subs: &[usize],
+) {
+    #[cfg(target_arch = "x86_64")]
+    if net.has_avx512 && h % 32 == 0 {
+        unsafe { finny_batch_apply_avx512(acc, input_weights, h, adds, subs); }
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if net.has_avx2 && h % 16 == 0 {
+        unsafe { finny_batch_apply_avx2(acc, input_weights, h, adds, subs); }
+        return;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if net.has_neon && h % 8 == 0 {
+        unsafe { finny_batch_apply_neon(acc, input_weights, h, adds, subs); }
+        return;
+    }
+    // Scalar fallback — always present so cfg-gated SIMD paths can never
+    // accidentally compile-out the only codepath (the cfg-swallows-else bug
+    // that previously left aarch64 Finny refresh as a no-op on king-bucket
+    // changes).
+    let _ = net;
+    for &idx in adds {
+        let base = idx * h;
+        for j in 0..h { acc[j] += input_weights[base + j]; }
+    }
+    for &idx in subs {
+        let base = idx * h;
+        for j in 0..h { acc[j] -= input_weights[base + j]; }
+    }
+}
+
+/// NEON SIMD: batch-apply add/sub weight rows to an accumulator.
+/// Mirrors finny_batch_apply_avx2 — 16 regs × 8 i16 = 128 elements per chunk.
+#[cfg(target_arch = "aarch64")]
+unsafe fn finny_batch_apply_neon(
+    acc: &mut [i16],
+    input_weights: &[i16],
+    h: usize,
+    adds: &[usize],
+    subs: &[usize],
+) {
+    use std::arch::aarch64::*;
+    const REGS: usize = 16;
+    const CHUNK: usize = REGS * 8;
+
+    let acc_ptr = acc.as_mut_ptr();
+    let w_ptr = input_weights.as_ptr();
+
+    let mut offset = 0;
+    while offset < h {
+        let nregs = ((h - offset).min(CHUNK) + 7) / 8;
+
+        let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
+        for i in 0..nregs {
+            regs[i] = vld1q_s16(acc_ptr.add(offset + i * 8));
+        }
+
+        for &idx in adds {
+            let row = w_ptr.add(idx * h + offset);
+            for i in 0..nregs {
+                let w = vld1q_s16(row.add(i * 8));
+                regs[i] = vaddq_s16(regs[i], w);
+            }
+        }
+
+        for &idx in subs {
+            let row = w_ptr.add(idx * h + offset);
+            for i in 0..nregs {
+                let w = vld1q_s16(row.add(i * 8));
+                regs[i] = vsubq_s16(regs[i], w);
+            }
+        }
+
+        for i in 0..nregs {
+            vst1q_s16(acc_ptr.add(offset + i * 8), regs[i]);
+        }
+
+        offset += CHUNK;
     }
 }
 
@@ -3787,25 +4486,551 @@ fn read_i16_slice(r: &mut impl IoRead, dst: &mut [i16]) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// Seeded PRNG for deterministic NEON-vs-scalar tests.
+    /// xorshift64*, adequate for scrambling test inputs.
+    fn rng(seed: u64) -> impl FnMut() -> u64 {
+        let mut s = seed;
+        move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+    }
+
+    /// Plain scalar u8×i8 → i32 dot. No saturation — this is what
+    /// `VPDPBUSD`-based VNNI kernels compute exactly.
+    #[cfg(target_arch = "x86_64")]
+    fn l1_int8_dot_scalar(packed: &[u8], weights: &[i8], h: usize) -> i32 {
+        let mut s: i32 = 0;
+        for i in 0..h {
+            s += packed[i] as i32 * weights[i] as i32;
+        }
+        s
+    }
+
+    /// Saturating scalar reference that matches `VPMADDUBSW + VPMADDWD(ones)`
+    /// exactly, including the i16 saturation of each pair. Use this to
+    /// compare the non-VNNI `simd512_l1_int8_dot` against stressed inputs.
+    ///
+    /// (VNNI's `VPDPBUSD` does NOT saturate intermediates — so for stressed
+    /// inputs the non-VNNI path diverges from scalar but VNNI matches it.)
+    #[cfg(target_arch = "x86_64")]
+    fn l1_int8_dot_scalar_sat_pair(packed: &[u8], weights: &[i8], h: usize) -> i32 {
+        let mut s: i32 = 0;
+        let mut i = 0;
+        while i < h {
+            let p = packed[i] as i32 * weights[i] as i32
+                + packed[i + 1] as i32 * weights[i + 1] as i32;
+            s += p.clamp(i16::MIN as i32, i16::MAX as i32);
+            i += 2;
+        }
+        s
+    }
+
+    /// AVX-512 VNNI vs scalar row-major int8 dot. Uses **two** scalar
+    /// references:
+    ///
+    /// - VPDPBUSD is non-saturating in its i16 intermediates, so the VNNI
+    ///   kernel must match the plain scalar reference byte-for-byte across
+    ///   any inputs, even ones that would saturate a `VPMADDUBSW` pair.
+    /// - The non-VNNI kernel (`VPMADDUBSW + VPMADDWD(ones)`) saturates the
+    ///   i16 pair — so it is compared against the saturating reference.
+    ///
+    /// That distinction matters: when VNNI is enabled on machines that also
+    /// have AVX-512 we will get very slightly different results vs the
+    /// non-VNNI path for saturating inputs (VNNI is actually more correct).
+    /// Within `forward_with_l1*` the packed values top out around 64 so the
+    /// divergence never materialises on real positions, but this test keeps
+    /// us honest if that changes.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_simd512_l1_int8_dot_vnni_matches_scalar() {
+        crate::init();
+
+        if !is_x86_feature_detected!("avx512f")
+            || !is_x86_feature_detected!("avx512bw")
+        {
+            eprintln!("No AVX-512, skipping VNNI int8 dot test");
+            return;
+        }
+
+        let mut r = rng(0xc0da_5123_7777_5555);
+        // Cover both the unrolled-by-128 body and the tail path.
+        for &h in &[64usize, 128, 192, 256, 320, 384, 512, 768, 1024, 1536, 2048] {
+            for _trial in 0..4 {
+                // "Realistic v9" inputs: packed ≤ 64 ensures VPMADDUBSW pair
+                // sum fits in i16 (2 × 64 × 127 = 16256 < 32767). This is
+                // the regime in which forward_with_l1 actually operates.
+                let mut packed = vec![0u8; h];
+                for b in packed.iter_mut() { *b = (r() & 0x3F) as u8; }
+                for i in 0..h { if (r() & 3) == 0 { packed[i] = 0; } }
+
+                let mut weights = vec![0i8; h];
+                for w in weights.iter_mut() {
+                    *w = ((r() & 0xFF) as i8).max(-120).min(120);
+                }
+
+                let want = l1_int8_dot_scalar(&packed, &weights, h);
+
+                let got_plain = unsafe { simd512_l1_int8_dot(&packed, &weights, h) };
+                assert_eq!(
+                    got_plain, want,
+                    "non-VNNI simd512_l1_int8_dot mismatch at h={} want={} got={} (unstressed inputs)",
+                    h, want, got_plain
+                );
+
+                if is_x86_feature_detected!("avx512vnni") {
+                    let got_vnni = unsafe { simd512_l1_int8_dot_vnni(&packed, &weights, h) };
+                    assert_eq!(
+                        got_vnni, want,
+                        "VNNI simd512_l1_int8_dot_vnni mismatch at h={} want={} got={}",
+                        h, want, got_vnni
+                    );
+                }
+            }
+        }
+
+        // Second pass: stressed inputs (full u8 range) — VNNI must track
+        // plain-scalar exactly, non-VNNI must track saturating-scalar
+        // exactly. Demonstrates VNNI is the mathematically correct one.
+        if is_x86_feature_detected!("avx512vnni") {
+            let mut r2 = rng(0x5555_aaaa_0000_cafe);
+            for &h in &[64usize, 128, 384, 768, 1024] {
+                let mut packed = vec![0u8; h];
+                for b in packed.iter_mut() { *b = (r2() & 0xFF) as u8; }
+                let mut weights = vec![0i8; h];
+                for w in weights.iter_mut() {
+                    *w = ((r2() & 0xFF) as i8).max(-120).min(120);
+                }
+
+                let want_plain = l1_int8_dot_scalar(&packed, &weights, h);
+                let want_sat   = l1_int8_dot_scalar_sat_pair(&packed, &weights, h);
+
+                let got_vnni  = unsafe { simd512_l1_int8_dot_vnni(&packed, &weights, h) };
+                let got_plain = unsafe { simd512_l1_int8_dot(&packed, &weights, h) };
+
+                assert_eq!(
+                    got_vnni, want_plain,
+                    "VNNI mismatch under stress at h={}: VNNI={} scalar={}", h, got_vnni, want_plain
+                );
+                assert_eq!(
+                    got_plain, want_sat,
+                    "non-VNNI mismatch under stress at h={}: got={} sat-scalar={}",
+                    h, got_plain, want_sat
+                );
+            }
+        }
+    }
+
+    /// AVX-512 VNNI vs scalar for the sparse-chunk dot path — same kernel
+    /// used by `forward_with_l1` when `use_sparse_l1` is enabled.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_simd512_l1_int8_dot_sparse_vnni_matches_scalar() {
+        crate::init();
+
+        if !is_x86_feature_detected!("avx512f")
+            || !is_x86_feature_detected!("avx512bw")
+            || !is_x86_feature_detected!("avx512vnni")
+        {
+            eprintln!("No AVX-512 VNNI, skipping sparse VNNI test");
+            return;
+        }
+
+        let mut r = rng(0xc0da_5123_9999_bbbb);
+        for &h in &[64usize, 128, 512, 768, 1024, 2048] {
+            for density_pct in [5u32, 25, 50, 90, 100] {
+                let mut packed = vec![0u8; h];
+                for i in 0..h {
+                    if (r() as u32 % 100) < density_pct { packed[i] = (r() & 0xFF) as u8; }
+                }
+                let mut weights = vec![0i8; h];
+                for w in weights.iter_mut() { *w = ((r() & 0xFF) as i8).max(-120).min(120); }
+
+                // Build NNZ index list — 64-byte chunks.
+                let mut nnz = vec![0u16; h / 64];
+                let nnz_count;
+                unsafe { nnz_count = find_nnz_chunks_512(&packed, &mut nnz, h); }
+
+                // Scalar reference uses same NNZ chunk list (any byte inside a chunk
+                // being non-zero means the entire chunk is accumulated).
+                let mut want: i32 = 0;
+                for k in 0..nnz_count {
+                    let off = nnz[k] as usize;
+                    for i in off..off + 64 {
+                        want += packed[i] as i32 * weights[i] as i32;
+                    }
+                }
+
+                let got = unsafe { simd512_l1_int8_dot_sparse_vnni(&packed, &weights, &nnz, nnz_count) };
+                assert_eq!(got, want, "sparse VNNI mismatch h={} density={} got={} want={}", h, density_pct, got, want);
+            }
+        }
+    }
+
+    /// AVX-512 L2 FMA kernel vs scalar reference. Covers the common v9
+    /// L2=32 path — a broadcast-FMA fan-out that replaces the gather-heavy
+    /// inner loop LLVM used to produce.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_l2_fmadd_avx512_x32_matches_scalar() {
+        crate::init();
+
+        if !is_x86_feature_detected!("avx512f") {
+            eprintln!("No AVX-512F, skipping L2 FMA test");
+            return;
+        }
+
+        let l2: usize = 32;
+        let mut r = rng(0xc0da_b00b_0000_0111);
+
+        for &l1_out_count in &[8usize, 16, 24, 32, 64] {
+            // Bucketed-like weight layout: l2_total may be > l2, weights
+            // for bucket `bucket_off` start at column offset `l2_off`.
+            for &(l2_total, l2_off, bucket_pad) in &[(32usize, 0usize, 0usize),
+                                                     (64, 16, 0usize),
+                                                     (96, 64, 0usize)] {
+                let _ = bucket_pad;
+
+                let total_w = l1_out_count * l2_total;
+                let mut weights = vec![0.0f32; total_w];
+                for w in weights.iter_mut() {
+                    *w = ((r() as i32 as f32) / 1e9).clamp(-2.0, 2.0);
+                }
+
+                let mut biases = vec![0.0f32; l2_total];
+                for b in biases.iter_mut() {
+                    *b = ((r() as i32 as f32) / 1e9).clamp(-1.0, 1.0);
+                }
+
+                let mut l1_out = vec![0.0f32; l1_out_count];
+                for v in l1_out.iter_mut() {
+                    // Mimic pairwise CReLU+SCReLU outputs: roughly half are
+                    // zero, remainder are positive-ish.
+                    let raw = ((r() as i32 as f32) / 1e9).clamp(0.0, 1.0);
+                    *v = if raw < 0.25 { 0.0 } else { raw };
+                }
+
+                // Scalar reference — identical expression to the fallback path.
+                let mut h2_scalar = vec![0.0f32; l2];
+                for k in 0..l2 { h2_scalar[k] = biases[l2_off + k]; }
+                for i in 0..l1_out_count {
+                    if l1_out[i] == 0.0 { continue; }
+                    for k in 0..l2 {
+                        h2_scalar[k] += l1_out[i] * weights[i * l2_total + l2_off + k];
+                    }
+                }
+
+                let mut h2_simd = vec![0.0f32; l2];
+                unsafe {
+                    l2_fmadd_avx512_x32(
+                        &l1_out, l1_out_count, &weights, l2_total, l2_off,
+                        &biases, &mut h2_simd,
+                    );
+                }
+
+                // FMA reorders operations, so exact equality isn't guaranteed.
+                // Tolerance 1e-4 absolute is loose enough for any legal
+                // reassoc; tighter than that caught a real bug during
+                // development.
+                for k in 0..l2 {
+                    let diff = (h2_scalar[k] - h2_simd[k]).abs();
+                    assert!(
+                        diff < 1e-4,
+                        "L2 FMA divergence at k={} l1_out_count={} l2_total={} l2_off={}: scalar={} simd={} diff={}",
+                        k, l1_out_count, l2_total, l2_off, h2_scalar[k], h2_simd[k], diff
+                    );
+                }
+            }
+        }
+    }
+
+    /// AVX-512 output-weights dot vs scalar. Small dimensionality so the
+    /// tolerance is very tight.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_dot_fmadd_avx512_x32_matches_scalar() {
+        crate::init();
+
+        if !is_x86_feature_detected!("avx512f") {
+            eprintln!("No AVX-512F, skipping output-dot FMA test");
+            return;
+        }
+
+        let mut r = rng(0xc0da_b00b_0000_0222);
+        for _trial in 0..8 {
+            let mut a = vec![0.0f32; 32];
+            let mut b = vec![0.0f32; 32];
+            for v in a.iter_mut() { *v = ((r() as i32 as f32) / 1e9).clamp(-5.0, 5.0); }
+            for v in b.iter_mut() { *v = ((r() as i32 as f32) / 1e9).clamp(-5.0, 5.0); }
+            let bias = ((r() as i32 as f32) / 1e9).clamp(-5.0, 5.0);
+
+            let mut scalar = bias;
+            for i in 0..32 { scalar += a[i] * b[i]; }
+
+            let simd = unsafe { dot_fmadd_avx512_x32(&a, &b, bias) };
+            let diff = (scalar - simd).abs();
+            assert!(
+                diff < 1e-3 || diff / scalar.abs().max(1.0) < 1e-5,
+                "dot_fmadd divergence: scalar={} simd={} diff={}", scalar, simd, diff
+            );
+        }
+    }
+
+    /// Scalar reference for finny_batch_apply. Matches the dispatcher's
+    /// fallback path byte-for-byte so NEON/AVX2 results can be compared.
+    fn finny_batch_apply_scalar_ref(
+        acc: &mut [i16],
+        input_weights: &[i16],
+        h: usize,
+        adds: &[usize],
+        subs: &[usize],
+    ) {
+        for &idx in adds {
+            let base = idx * h;
+            for j in 0..h { acc[j] += input_weights[base + j]; }
+        }
+        for &idx in subs {
+            let base = idx * h;
+            for j in 0..h { acc[j] -= input_weights[base + j]; }
+        }
+    }
+
+    /// Scalar reference for `simd_acc_fused_*` — mirrors the dispatcher's
+    /// scalar fallback path (see `refresh_accumulator` / parent+deltas).
+    #[cfg(target_arch = "x86_64")]
+    fn acc_fused_scalar_ref(
+        dst: &mut [i16],
+        src: &[i16],
+        add_rows: &[&[i16]],
+        sub_rows: &[&[i16]],
+        h: usize,
+    ) {
+        for j in 0..h {
+            let mut v = src[j];
+            for row in add_rows { v = v.wrapping_add(row[j]); }
+            for row in sub_rows { v = v.wrapping_sub(row[j]); }
+            dst[j] = v;
+        }
+    }
+
+    /// AVX-512 fused copy+adds+subs vs scalar. Exercises the same shapes
+    /// the dispatcher uses on-move for v9 (h=768, small add/sub row sets).
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_simd_acc_fused_avx512_matches_scalar() {
+        if !is_x86_feature_detected!("avx512f") || !is_x86_feature_detected!("avx512bw") {
+            eprintln!("No AVX-512, skipping test");
+            return;
+        }
+
+        for &h in &[64usize, 128, 256, 512, 768, 1024, 1536] {
+            let mut r = rng(0xc0da_ace_0011_0001 ^ h as u64);
+            let n_rows = 10usize;
+            let mut row_bufs: Vec<Vec<i16>> = (0..n_rows).map(|_| {
+                (0..h).map(|_| ((r() % 1024) as i16) - 512).collect()
+            }).collect();
+
+            // Borrow row buffers as &[i16] slices.
+            let row_refs: Vec<&[i16]> = row_bufs.iter().map(|v| v.as_slice()).collect();
+            let add_rows: &[&[i16]] = &row_refs[..4];
+            let sub_rows: &[&[i16]] = &row_refs[4..9];
+
+            let src: Vec<i16> = (0..h).map(|_| ((r() % 2000) as i16) - 1000).collect();
+
+            let mut dst_scalar = vec![0i16; h];
+            acc_fused_scalar_ref(&mut dst_scalar, &src, add_rows, sub_rows, h);
+
+            let mut dst_simd = vec![0i16; h];
+            unsafe { simd_acc_fused_avx512(&mut dst_simd, &src, add_rows, sub_rows, h); }
+
+            assert_eq!(dst_scalar, dst_simd,
+                "simd_acc_fused_avx512 diverged from scalar at h={}", h);
+
+            // Edge case: empty deltas → dst == src.
+            let mut dst_simd = vec![0i16; h];
+            unsafe { simd_acc_fused_avx512(&mut dst_simd, &src, &[], &[], h); }
+            assert_eq!(src, dst_simd,
+                "simd_acc_fused_avx512 empty-deltas altered dst at h={}", h);
+
+            // Edge case: adds only.
+            let mut dst_scalar = vec![0i16; h];
+            acc_fused_scalar_ref(&mut dst_scalar, &src, add_rows, &[], h);
+            let mut dst_simd = vec![0i16; h];
+            unsafe { simd_acc_fused_avx512(&mut dst_simd, &src, add_rows, &[], h); }
+            assert_eq!(dst_scalar, dst_simd,
+                "simd_acc_fused_avx512 adds-only diverged at h={}", h);
+
+            // Avoid unused-warn on the row buffer keepalive.
+            row_bufs.clear();
+        }
+    }
+
+    /// AVX-512 finny batch apply vs scalar. Mirrors the NEON test —
+    /// confirms add/sub semantics and accumulator coherence across
+    /// CHUNK=256 partial passes (relevant for h=768).
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_finny_batch_apply_avx512_matches_scalar() {
+        if !is_x86_feature_detected!("avx512f") || !is_x86_feature_detected!("avx512bw") {
+            eprintln!("No AVX-512, skipping test");
+            return;
+        }
+        // Cover sizes where h falls on/off the 256-CHUNK boundary.
+        for &h in &[64usize, 128, 256, 512, 768, 1024] {
+            let n_features = 40;
+            let mut r = rng(0xc0da_f1ec_aa01_0001 ^ h as u64);
+
+            let mut weights = vec![0i16; n_features * h];
+            for w in weights.iter_mut() { *w = (r() as i32 as i16).rem_euclid(511) - 255; }
+
+            let mut acc_init = vec![0i16; h];
+            for v in acc_init.iter_mut() { *v = (r() as i32 as i16).rem_euclid(2001) - 1000; }
+
+            let adds = [2usize, 5, 11, 17, 23, 35];
+            let subs = [1usize, 7, 13, 19, 29, 31, 37];
+
+            let mut scalar_acc = acc_init.clone();
+            finny_batch_apply_scalar_ref(&mut scalar_acc, &weights, h, &adds, &subs);
+
+            let mut simd_acc = acc_init.clone();
+            unsafe { finny_batch_apply_avx512(&mut simd_acc, &weights, h, &adds, &subs); }
+
+            assert_eq!(scalar_acc, simd_acc,
+                "finny_batch_apply_avx512 diverged from scalar at h={}", h);
+
+            // Adds-only and empty deltas edge cases.
+            let mut scalar_acc = acc_init.clone();
+            finny_batch_apply_scalar_ref(&mut scalar_acc, &weights, h, &adds, &[]);
+            let mut simd_acc = acc_init.clone();
+            unsafe { finny_batch_apply_avx512(&mut simd_acc, &weights, h, &adds, &[]); }
+            assert_eq!(scalar_acc, simd_acc,
+                "finny_batch_apply_avx512 adds-only diverged at h={}", h);
+
+            let mut simd_acc = acc_init.clone();
+            unsafe { finny_batch_apply_avx512(&mut simd_acc, &weights, h, &[], &[]); }
+            assert_eq!(acc_init, simd_acc,
+                "finny_batch_apply_avx512 empty deltas mutated accumulator at h={}", h);
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_finny_batch_apply_neon_matches_scalar() {
+        let h = 768;
+        let n_features = 32;
+        let mut r = rng(0xc0da_f1ec_0000_0001);
+
+        let mut weights = vec![0i16; n_features * h];
+        for w in weights.iter_mut() { *w = (r() as i32 as i16).rem_euclid(511) - 255; }
+
+        let mut acc_init = vec![0i16; h];
+        for v in acc_init.iter_mut() { *v = (r() as i32 as i16).rem_euclid(2001) - 1000; }
+
+        let adds = [2usize, 5, 11, 17, 23];
+        let subs = [1usize, 7, 13, 19, 29, 31];
+
+        let mut scalar_acc = acc_init.clone();
+        finny_batch_apply_scalar_ref(&mut scalar_acc, &weights, h, &adds, &subs);
+
+        let mut neon_acc = acc_init.clone();
+        unsafe { finny_batch_apply_neon(&mut neon_acc, &weights, h, &adds, &subs); }
+
+        assert_eq!(scalar_acc, neon_acc,
+            "finny_batch_apply_neon diverged from scalar");
+
+        // Adds-only edge case (mirrors the "no-cache" refresh path).
+        let mut scalar_acc = acc_init.clone();
+        finny_batch_apply_scalar_ref(&mut scalar_acc, &weights, h, &adds, &[]);
+        let mut neon_acc = acc_init.clone();
+        unsafe { finny_batch_apply_neon(&mut neon_acc, &weights, h, &adds, &[]); }
+        assert_eq!(scalar_acc, neon_acc,
+            "finny_batch_apply_neon (adds-only) diverged from scalar");
+
+        // Empty deltas must be identity.
+        let mut neon_acc = acc_init.clone();
+        unsafe { finny_batch_apply_neon(&mut neon_acc, &weights, h, &[], &[]); }
+        assert_eq!(acc_init, neon_acc,
+            "finny_batch_apply_neon with empty deltas mutated accumulator");
+    }
+
+    /// Scalar reference for neon_pairwise_pack_fused.
+    #[cfg(target_arch = "aarch64")]
+    fn pairwise_pack_scalar_ref(acc: &[i16], threat: Option<&[i16]>, out: &mut [u8], pw: usize) {
+        for i in 0..pw {
+            let (ta, tb) = match threat {
+                Some(t) => (t[i] as i32, t[i + pw] as i32),
+                None => (0, 0),
+            };
+            let a = (acc[i] as i32 + ta).clamp(0, QA);
+            let b = (acc[i + pw] as i32 + tb).clamp(0, QA);
+            out[i] = ((a * b) >> FT_SHIFT) as u8;
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_neon_pairwise_pack_matches_scalar() {
+        let pw = 384;
+        let mut r = rng(0xc0da_fa11_0000_0003);
+
+        let mut acc = vec![0i16; pw * 2];
+        for v in acc.iter_mut() { *v = (r() as i32 as i16).rem_euclid(501) - 250; }
+
+        let mut threat = vec![0i16; pw * 2];
+        for v in threat.iter_mut() { *v = (r() as i32 as i16).rem_euclid(201) - 100; }
+
+        // No-threat path
+        let mut scalar_out = vec![0u8; pw];
+        pairwise_pack_scalar_ref(&acc, None, &mut scalar_out, pw);
+        let mut neon_out = vec![0u8; pw];
+        unsafe { neon_pairwise_pack_fused(&acc, std::ptr::null(), &mut neon_out, pw); }
+        assert_eq!(scalar_out, neon_out,
+            "neon_pairwise_pack_fused (no threat) diverged from scalar");
+
+        // With-threat path
+        let mut scalar_out = vec![0u8; pw];
+        pairwise_pack_scalar_ref(&acc, Some(&threat), &mut scalar_out, pw);
+        let mut neon_out = vec![0u8; pw];
+        unsafe { neon_pairwise_pack_fused(&acc, threat.as_ptr(), &mut neon_out, pw); }
+        assert_eq!(scalar_out, neon_out,
+            "neon_pairwise_pack_fused (with threat) diverged from scalar");
+
+        // Edge case: values at the clamp boundaries [0, QA].
+        let mut boundary_acc = vec![0i16; pw * 2];
+        for i in 0..pw {
+            boundary_acc[i] = if i % 3 == 0 { -100 } else if i % 3 == 1 { QA as i16 + 50 } else { QA as i16 / 2 };
+            boundary_acc[pw + i] = if i % 2 == 0 { 0 } else { QA as i16 };
+        }
+        let mut scalar_out = vec![0u8; pw];
+        pairwise_pack_scalar_ref(&boundary_acc, None, &mut scalar_out, pw);
+        let mut neon_out = vec![0u8; pw];
+        unsafe { neon_pairwise_pack_fused(&boundary_acc, std::ptr::null(), &mut neon_out, pw); }
+        assert_eq!(scalar_out, neon_out,
+            "neon_pairwise_pack_fused at clamp boundaries diverged from scalar");
+    }
+
     #[test]
     fn test_king_buckets() {
-        init_nnue();
+        // Uniform layout (default for v5/v9 16-bucket nets).
+        let (kb, km) = compute_king_buckets(KbLayout::Uniform);
         // a1 (sq 0): file 0, rank 0 → mirrored_file=0, rank_group=0 → bucket 0
-        assert_eq!(king_bucket(0), 0);
+        assert_eq!(kb[0], 0);
         // e1 (sq 4): file 4, rank 0 → mirrored_file=3, rank_group=0 → bucket 12, mirror=true
-        assert_eq!(king_bucket(4), 12);
-        assert!(king_mirror(4));
+        assert_eq!(kb[4], 12);
+        assert!(km[4]);
         // a1 no mirror
-        assert!(!king_mirror(0));
+        assert!(!km[0]);
     }
 
     /// Verify the Reckless king bucket layout matches Reckless's
     /// INPUT_BUCKETS_LAYOUT from `Reckless/src/nnue.rs:71-80` exactly.
     /// Catches drift if either the flat table here or the derivation in
-    /// `init_king_buckets_layout` changes incompatibly.
+    /// `compute_king_buckets` changes incompatibly.
     #[test]
     fn test_reckless_king_buckets() {
-        init_king_buckets_layout(KbLayout::Reckless);
+        let (kb, km) = compute_king_buckets(KbLayout::Reckless);
         #[rustfmt::skip]
         const EXPECTED: [usize; 64] = [
             0, 1, 2, 3, 3, 2, 1, 0,
@@ -3819,18 +5044,56 @@ mod tests {
         ];
         for sq in 0..64 {
             assert_eq!(
-                king_bucket(sq), EXPECTED[sq],
+                kb[sq], EXPECTED[sq],
                 "reckless kb mismatch at sq={} got {} expected {}",
-                sq, king_bucket(sq), EXPECTED[sq]
+                sq, kb[sq], EXPECTED[sq]
             );
         }
         // Mirror flag still toggles on files e-h (Reckless's layout bakes
         // mirror into bucket ids but the rest of inference still needs the
         // mirror flag for feature indexing).
-        assert!(king_mirror(4));   // e1
-        assert!(!king_mirror(0));  // a1
-        // Restore default layout for subsequent tests.
-        init_king_buckets_layout(KbLayout::Uniform);
+        assert!(km[4]);   // e1
+        assert!(!km[0]);  // a1
+    }
+
+    /// Regression test for the 2026-04-20 SMP race fix. Concurrently
+    /// compute king-bucket tables on many threads for different layouts
+    /// and verify no tearing / incorrect value. If KING_BUCKET were still
+    /// a `static mut` written per layout, this would race; with per-net
+    /// fields it's trivially safe.
+    #[test]
+    fn test_king_buckets_concurrent_layouts() {
+        use std::thread;
+        let mut handles = vec![];
+        for i in 0..8 {
+            let layout = match i % 3 {
+                0 => KbLayout::Uniform,
+                1 => KbLayout::Consensus,
+                _ => KbLayout::Reckless,
+            };
+            handles.push(thread::spawn(move || {
+                for _ in 0..1000 {
+                    let (kb, km) = compute_king_buckets(layout);
+                    // Spot-check a few invariants per layout.
+                    match layout {
+                        KbLayout::Uniform => {
+                            assert_eq!(kb[0], 0);
+                            assert_eq!(kb[4], 12);
+                            assert!(km[4]);
+                        }
+                        KbLayout::Consensus => {
+                            assert_eq!(kb[0], 0);  // a1
+                        }
+                        KbLayout::Reckless => {
+                            assert_eq!(kb[0], 0);
+                            assert_eq!(kb[7], 0);  // mirror on h-file
+                            assert_eq!(kb[24], 9);  // rank 4+
+                        }
+                    }
+                }
+            }));
+        }
+        for h in handles { h.join().unwrap(); }
     }
 
     #[test]
@@ -3847,21 +5110,21 @@ mod tests {
 
     #[test]
     fn test_halfka_index() {
-        init_nnue();
+        let (kb, km) = compute_king_buckets(KbLayout::Uniform);
         // White perspective, king on e1 (sq 4), white pawn on e2 (sq 12)
-        let idx = halfka_index(WHITE, 4, WHITE, PAWN, 12);
+        let idx = halfka_index_with(&kb, &km, WHITE, 4, WHITE, PAWN, 12);
         // king sq 4, file=4 >= 4, so mirror: ks=4 stays, ps=12 → file mirror: (12 & !7) | (7 - (12&7)) = 8 | (7-4) = 8|3 = 11
-        // bucket = king_bucket(4) = 12
+        // bucket = king_bucket[4] = 12
         // pi = 0 (white pawn from white perspective)
         // index = 12 * 768 + 0 * 64 + 11 = 9216 + 11 = 9227
         assert_eq!(idx, 9227);
 
         // Black perspective, king on e8 (sq 60), white pawn on e2 (sq 12)
-        let idx = halfka_index(BLACK, 60, WHITE, PAWN, 12);
+        let idx = halfka_index_with(&kb, &km, BLACK, 60, WHITE, PAWN, 12);
         // ks = 60 ^ 56 = 4, ps = 12 ^ 56 = 52
         // pi = 0 (white pawn) → black perspective: 0 + 6 = 6
-        // king_mirror(4) = true → ps = (52 & !7) | (7 - (52 & 7)) = 48 | (7-4) = 48|3 = 51
-        // bucket = king_bucket(4) = 12
+        // king_mirror[4] = true → ps = (52 & !7) | (7 - (52 & 7)) = 48 | (7-4) = 48|3 = 51
+        // bucket = king_bucket[4] = 12
         // index = 12 * 768 + 6 * 64 + 51 = 9216 + 384 + 51 = 9651
         assert_eq!(idx, 9651);
     }
@@ -3963,12 +5226,21 @@ mod tests {
     /// Test SIMD vs scalar consistency for forward pass.
     /// Loads the production net (if available), evaluates test positions
     /// through both SIMD and scalar paths, asserts results match.
+    ///
+    /// Honours `CODA_TEST_NET=<path>` so callers can target a specific
+    /// net (e.g. the v9 net to cover the threat + pairwise VNNI path).
     #[test]
     fn test_simd_scalar_consistency() {
         use crate::board::Board;
 
         // Try to load a net — skip if none available
-        let net_path = if std::path::Path::new("net.nnue").exists() {
+        let net_path = if let Ok(override_path) = std::env::var("CODA_TEST_NET") {
+            if !std::path::Path::new(&override_path).exists() {
+                eprintln!("Skipping SIMD consistency test: CODA_TEST_NET path missing: {}", override_path);
+                return;
+            }
+            Box::leak(override_path.into_boxed_str()) as &'static str
+        } else if std::path::Path::new("net.nnue").exists() {
             "net.nnue"
         } else {
             // Try the named production net
@@ -4016,20 +5288,51 @@ mod tests {
             let mut acc = NNUEAccumulator::new(h);
             acc.force_recompute(&net, &board);
 
-            // Forward with SIMD
+            // Forward with full SIMD (whatever the runtime detected).
             let simd_result = net.forward(&acc, board.side_to_move, piece_count);
 
-            // Forward with scalar (same accumulator, just different forward path)
+            // Save current SIMD flags so we can toggle them for comparison.
             let saved_avx2 = net.has_avx2;
             let saved_neon = net.has_neon;
             let saved_avx512 = net.has_avx512;
+            let saved_avx512_vnni = net.has_avx512_vnni;
+            let saved_avx_vnni = net.has_avx_vnni;
 
-            // SAFETY: we're in a single-threaded test, no concurrent reads
+            // SAFETY: single-threaded test, no concurrent reads.
             let net_ptr = &net as *const NNUENet as *mut NNUENet;
+
+            // If VNNI is available, cross-check VNNI vs non-VNNI AVX-512
+            // as well — exposes any bug in the VPDPBUSD kernels even if
+            // the scalar fallback happens to be disabled at this tier.
+            let mut vnni_result = simd_result;
+            if saved_avx512_vnni || saved_avx_vnni {
+                unsafe {
+                    (*net_ptr).has_avx512_vnni = false;
+                    (*net_ptr).has_avx_vnni = false;
+                }
+                let non_vnni = net.forward(&acc, board.side_to_move, piece_count);
+                unsafe {
+                    (*net_ptr).has_avx512_vnni = saved_avx512_vnni;
+                    (*net_ptr).has_avx_vnni = saved_avx_vnni;
+                }
+                let vnni_diff = (simd_result - non_vnni).abs();
+                eprintln!("  {}: VNNI={} non-VNNI={} vnni_diff={}",
+                    fen, simd_result, non_vnni, vnni_diff);
+                // VNNI must match the AVX-512 int8 path exactly — no rounding.
+                assert_eq!(simd_result, non_vnni,
+                    "VNNI vs non-VNNI divergence for {} (VNNI={} nonVNNI={})",
+                    fen, simd_result, non_vnni);
+                vnni_result = non_vnni;
+            }
+            let _ = vnni_result;
+
+            // Now disable all SIMD to exercise the scalar fallback.
             unsafe {
                 (*net_ptr).has_avx2 = false;
                 (*net_ptr).has_neon = false;
                 (*net_ptr).has_avx512 = false;
+                (*net_ptr).has_avx512_vnni = false;
+                (*net_ptr).has_avx_vnni = false;
             }
 
             let scalar_result = net.forward(&acc, board.side_to_move, piece_count);
@@ -4039,6 +5342,8 @@ mod tests {
                 (*net_ptr).has_avx2 = saved_avx2;
                 (*net_ptr).has_neon = saved_neon;
                 (*net_ptr).has_avx512 = saved_avx512;
+                (*net_ptr).has_avx512_vnni = saved_avx512_vnni;
+                (*net_ptr).has_avx_vnni = saved_avx_vnni;
             }
 
             let diff = (simd_result - scalar_result).abs();
@@ -4055,6 +5360,8 @@ mod tests {
         let saved_avx2 = net.has_avx2;
         let saved_neon = net.has_neon;
         let saved_avx512 = net.has_avx512;
+        let saved_avx512_vnni = net.has_avx512_vnni;
+        let saved_avx_vnni = net.has_avx_vnni;
         let mut max_acc_diff = 0i16;
         for fen in &test_fens {
             let board = Board::from_fen(fen);
@@ -4064,6 +5371,8 @@ mod tests {
                 (*net_ptr).has_avx2 = saved_avx2;
                 (*net_ptr).has_neon = saved_neon;
                 (*net_ptr).has_avx512 = saved_avx512;
+                (*net_ptr).has_avx512_vnni = saved_avx512_vnni;
+                (*net_ptr).has_avx_vnni = saved_avx_vnni;
             }
             let mut acc_simd = NNUEAccumulator::new(h);
             acc_simd.force_recompute(&net, &board);
@@ -4073,6 +5382,8 @@ mod tests {
                 (*net_ptr).has_avx2 = false;
                 (*net_ptr).has_neon = false;
                 (*net_ptr).has_avx512 = false;
+                (*net_ptr).has_avx512_vnni = false;
+                (*net_ptr).has_avx_vnni = false;
             }
             let mut acc_scalar = NNUEAccumulator::new(h);
             acc_scalar.force_recompute(&net, &board);
@@ -4080,6 +5391,8 @@ mod tests {
                 (*net_ptr).has_avx2 = saved_avx2;
                 (*net_ptr).has_neon = saved_neon;
                 (*net_ptr).has_avx512 = saved_avx512;
+                (*net_ptr).has_avx512_vnni = saved_avx512_vnni;
+                (*net_ptr).has_avx_vnni = saved_avx_vnni;
             }
 
             // Compare all accumulator values
@@ -4236,12 +5549,19 @@ mod tests {
             "7k/8/8/8/8/8/8/7K w - - 0 1",
         ];
 
-        const TOLERANCE_CP: i32 = 50;
+        // v9 threat nets: semi-exclusion is orientation-dependent by design,
+        // so mirrored positions activate different threat-feature indices.
+        // Well-trained nets converge to near-symmetric weights at those
+        // indices, but a residual remains that's larger than quantization
+        // drift alone. 75cp accommodates s200..s800 v9 nets on tactical
+        // positions while still catching real perspective/flip bugs.
+        // Non-threat nets keep the tighter 50cp bar.
+        let tolerance_cp: i32 = if net.has_threats { 75 } else { 50 };
         let h = net.hidden_size;
         let mut max_diff = 0i32;
         let mut fails: Vec<(String, i32, i32, i32)> = Vec::new();
 
-        eprintln!("eval symmetry: tolerance = {} cp", TOLERANCE_CP);
+        eprintln!("eval symmetry: tolerance = {} cp", tolerance_cp);
         for fen in &fens {
             let mirrored = mirror_fen(fen);
 
@@ -4268,18 +5588,18 @@ mod tests {
             let diff = (e1 - e2).abs();
             eprintln!("  {}: eval={} mirror={} diff={}{}",
                 fen, e1, e2, diff,
-                if diff > TOLERANCE_CP { " FAIL" } else if diff > 5 { " (residual)" } else { "" }
+                if diff > tolerance_cp { " FAIL" } else if diff > 5 { " (residual)" } else { "" }
             );
             max_diff = max_diff.max(diff);
-            if diff > TOLERANCE_CP {
+            if diff > tolerance_cp {
                 fails.push((fen.to_string(), e1, e2, diff));
             }
         }
 
-        eprintln!("eval symmetry max diff = {} cp (tolerance {} cp)", max_diff, TOLERANCE_CP);
+        eprintln!("eval symmetry max diff = {} cp (tolerance {} cp)", max_diff, tolerance_cp);
         assert!(fails.is_empty(),
             "eval symmetry failed on {} positions (> {}cp tolerance). Details above.",
-            fails.len(), TOLERANCE_CP);
+            fails.len(), tolerance_cp);
     }
 
     /// Tier-1 discovery test: eval changes monotonically when removing
@@ -4436,7 +5756,7 @@ mod tests {
                     let them = flip_color(us);
                     let moved_pt = board.piece_type_at(move_from(mv));
                     let captured_pt = board.piece_type_at(move_to(mv));
-                    let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt);
+                    let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net);
 
                     let ok = board.make_move(mv);
                     assert!(ok, "psq fuzz {} game {} ply {}: move {} illegal?",
@@ -4612,7 +5932,7 @@ mod tests {
             let moved_pt = board.piece_type_at(from);
             let captured_pt = board.piece_type_at(to);
             assert_eq!(captured_pt, NO_PIECE_TYPE, "king march: no captures expected");
-            let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt);
+            let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net);
 
             let ok = board.make_move(mv);
             assert!(ok, "king march step {}: move illegal {}→{}", i, from, to);

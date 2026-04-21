@@ -367,3 +367,114 @@ Before committing to a memory-shrink experiment:
   smaller on beefy ones. Worth the training cycle.
 - **Width reduction + L1 reg + compact**: potential 70%+ saved. Biggest
   shrink, biggest cache step if it reaches L2 fit or close.
+
+---
+
+## 2026-04-21 Update — L1 training results
+
+Implemented both sides of the L1 plan:
+
+1. **Bullet fork**: added `--l1-decay <f32>` flag to `coda_v9_768_threats.rs`,
+   wired to `AdamWParams.l1_decay` via new `AdamConfig.l1_decay` field.
+   Proximal soft-thresholding applied after AdamW step in CPU, CUDA,
+   and HIP backends: `p = sign(p) · max(0, |p| − l1·lr)`. Default 0.0
+   (backward compat). Committed as `bullet#242ac5b`.
+
+2. **Coda inference**: added load-time zero-row compact. Scans
+   `threat_weights` rows at load, builds a remap table (raw feature_idx
+   → compact row or -1), compacts weights in place. Plumbed remap
+   through `apply_threat_deltas`, `ThreatStack::refresh/update`,
+   `recompute_threats_full`, `verify_threats`. Empty remap = identity
+   path, zero runtime cost on non-sparse nets. Branch:
+   `experiment/l1-inference-compact`, bench bit-exact 2,170,815 on
+   current prod net. Test `compact_remap_matches_identity` simulates
+   zeroing half the rows and validates accumulator parity.
+
+### Training results (reckless-w15-e200-warm30 base + L1)
+
+Two GPU runs — same recipe as current prod reckless-crelu, just
+varying `--l1-decay`:
+
+| Net | Compacted rows | % |
+|---|---:|---:|
+| Baseline warm30 (L2 only) | 5,604 | 8.4% |
+| + L1 = 1e-7 | 5,604 | 8.4% |
+| + L1 = 1e-6 | 5,604 | 8.4% |
+
+**Identical compaction — all three hit exactly the 8.4% floor.** L1 at
+these strengths did not drive ANY additional weights to exact zero
+beyond what L2 weight decay already achieves.
+
+### Why 1e-6 and 1e-7 failed to sparsify
+
+Cumulative soft-threshold over the full 200 SB run:
+`lr × l1 × SBs × batches_per_SB ≈ 1e-3 × 1e-6 × 200 × 6104 ≈ 1.2e-6`
+total threshold accumulation — negligible vs typical weight magnitudes
+(1e-2 to 1). L1 term was dominated by data gradients at every step.
+
+Need **L1 ≈ 1e-4 to 1e-3** to see meaningful additional sparsification
+beyond the structural floor. Risk: may kill useful features.
+
+### The 8.4% is structural, not ambient
+
+The identical 8.4% across L2-only AND L1 runs strongly supports the
+**structural-zero hypothesis**: those 5,604 rows correspond to threat
+features that are physically impossible — (attacker_cp, from_sq,
+victim_cp, to_sq) combinations that can't occur in legal positions
+(e.g. pawn attacks on back ranks, king/king mutual attacks, off-board
+squares in the mirroring scheme). Those features never receive
+gradient updates, so their weights stay at initialisation = zero
+regardless of L1/L2 strength.
+
+This reframes the "reduce 67.9% inactive features" goal: only 8.4% are
+always zero. The remaining 59.5% of rarely-active features *do* receive
+occasional gradient updates and settle on non-zero weights that
+contribute correctly when those rare positions occur. L1 would need to
+be strong enough to overcome those gradient signals.
+
+### Validated inference-side compact pipeline ✅
+
+Despite sparsification not exceeding baseline, the full pipeline is
+validated:
+- Both L1 nets load cleanly via `NNUENet::load`
+- Load log correctly reports `compacted 5604 zero rows (8.4%),
+  physical 61260×768 = 44MB` (saves 4 MB on the weight matrix)
+- Remap indices dispatch correctly through SIMD/scalar paths
+- Node counts differ across nets (2.17M / 2.55M / 2.99M) confirming
+  three genuinely different trained models, not degenerate copies
+- SPRT #TBD: L1=1e-6 vs warm30 baseline (net-vs-net) submitted — Elo
+  delta of the weaker sparsification
+
+### Direction forward (updated tier list)
+
+**Tier 1 — already done:**
+- Load-time compact (merged to `experiment/l1-inference-compact`) —
+  4 MB savings on non-sparse nets, bench-neutral.
+
+**Tier 2 — viable next steps:**
+- **Aggressive L1 (1e-4 to 1e-3)**: may produce 20-50% compaction;
+  risk of Elo regression from killing marginal features. One training
+  run per coefficient (~4h).
+- **Enumerate structural zeros analytically**: script walking the
+  (attacker_cp, attacker_sq, victim_cp, victim_sq) space, testing
+  which combinations are physically impossible. If all 5,604 L2-zero
+  rows are in the impossible set, we've confirmed the floor. This is
+  a one-off analysis, ~30 min to code.
+- **Compiled-out structural zeros**: if the structural set is
+  enumerable, build a lookup at Bullet level to skip those indices
+  during training. Reduces the trained matrix by 8.4% for free.
+- **Width reduction 768 → 640**: 17% compaction, needs full retrain.
+
+**Tier 3 — deferred:**
+- Piece-interaction feature redesign — the 59.5% of rarely-active
+  features are doing legitimate work per the training signal; removing
+  them requires more sophisticated data-driven culling than simple
+  "never activates".
+
+### Cost of the exploration so far
+
+- 2× 4h GPU training (1e-7 + 1e-6)
+- 1× SPRT queued to measure the weak-L1 Elo delta
+- Established: structural floor = 8.4%, current L1 strengths don't
+  reach it. Next attempt needs 100-1000× stronger L1 coefficient, or
+  architectural change.

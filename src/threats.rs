@@ -1300,6 +1300,16 @@ pub unsafe fn apply_threat_deltas(
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
+    {
+        if hidden_size % 8 == 0 {
+            unsafe {
+                apply_deltas_neon(dst, src, threat_weights, hidden_size, &adds, &subs);
+            }
+            return;
+        }
+    }
+
     // Scalar fallback: single pass, reads src once, writes dst once.
     for j in 0..hidden_size {
         let mut v = src[j];
@@ -1412,6 +1422,14 @@ pub fn add_weight_rows(
         return;
     }
 
+    #[cfg(target_arch = "aarch64")]
+    if hidden_size % 8 == 0 {
+        unsafe {
+            add_weight_rows_neon(dst, threat_weights, hidden_size, indices);
+        }
+        return;
+    }
+
     // Scalar fallback
     for &idx in indices {
         let w_off = idx * hidden_size;
@@ -1470,9 +1488,221 @@ unsafe fn add_weight_rows_avx2(
     }
 }
 
+/// NEON SIMD: apply threat weight rows to accumulator using register tiling.
+/// Mirrors apply_deltas_avx2 — fused load src / apply adds+subs / store dst.
+/// 16 regs × 8 i16 = 128 elements per chunk (same footprint as AVX2 8×16).
+#[cfg(target_arch = "aarch64")]
+unsafe fn apply_deltas_neon(
+    dst: &mut [i16],
+    src: &[i16],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    adds: &[usize],
+    subs: &[usize],
+) {
+    use std::arch::aarch64::*;
+
+    let dst_ptr = dst.as_mut_ptr();
+    let src_ptr = src.as_ptr();
+    let w_ptr = threat_weights.as_ptr();
+
+    const REGS: usize = 16;
+    const CHUNK: usize = REGS * 8; // 128 elements
+
+    let mut offset = 0;
+    while offset < hidden_size {
+        let chunk_size = (hidden_size - offset).min(CHUNK);
+        let nregs = (chunk_size + 7) / 8;
+
+        // Seed chunk accumulator from src.
+        let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
+        for i in 0..nregs {
+            regs[i] = vld1q_s16(src_ptr.add(offset + i * 8));
+        }
+
+        // Paired add+sub: one register of each per iteration, reuses chunk regs.
+        // Uses vaddw_s8/vsubw_s8 which fuse widen+add and widen+sub into a
+        // single instruction each, avoiding a separate vmovl_s8 pass.
+        let mut ai = 0;
+        let mut si = 0;
+        while ai < adds.len() && si < subs.len() {
+            let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+            let sw = w_ptr.add(subs[si] * hidden_size + offset);
+            for i in 0..nregs {
+                regs[i] = vaddw_s8(regs[i], vld1_s8(aw.add(i * 8)));
+                regs[i] = vsubw_s8(regs[i], vld1_s8(sw.add(i * 8)));
+            }
+            ai += 1;
+            si += 1;
+        }
+
+        while ai < adds.len() {
+            let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+            for i in 0..nregs {
+                regs[i] = vaddw_s8(regs[i], vld1_s8(aw.add(i * 8)));
+            }
+            ai += 1;
+        }
+
+        while si < subs.len() {
+            let sw = w_ptr.add(subs[si] * hidden_size + offset);
+            for i in 0..nregs {
+                regs[i] = vsubw_s8(regs[i], vld1_s8(sw.add(i * 8)));
+            }
+            si += 1;
+        }
+
+        for i in 0..nregs {
+            vst1q_s16(dst_ptr.add(offset + i * 8), regs[i]);
+        }
+
+        offset += CHUNK;
+    }
+}
+
+/// NEON SIMD: accumulate multiple weight rows into dst (for full threat refresh).
+/// Mirrors add_weight_rows_avx2.
+#[cfg(target_arch = "aarch64")]
+unsafe fn add_weight_rows_neon(
+    dst: &mut [i16],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    indices: &[usize],
+) {
+    use std::arch::aarch64::*;
+
+    let dst_ptr = dst.as_mut_ptr();
+    let w_ptr = threat_weights.as_ptr();
+
+    const REGS: usize = 16;
+    const CHUNK: usize = REGS * 8;
+
+    let mut offset = 0;
+    while offset < hidden_size {
+        let chunk_size = (hidden_size - offset).min(CHUNK);
+        let nregs = (chunk_size + 7) / 8;
+
+        let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
+        for i in 0..nregs {
+            regs[i] = vld1q_s16(dst_ptr.add(offset + i * 8));
+        }
+
+        for &idx in indices.iter() {
+            let aw = w_ptr.add(idx * hidden_size + offset);
+            for i in 0..nregs {
+                regs[i] = vaddw_s8(regs[i], vld1_s8(aw.add(i * 8)));
+            }
+        }
+
+        for i in 0..nregs {
+            vst1q_s16(dst_ptr.add(offset + i * 8), regs[i]);
+        }
+
+        offset += CHUNK;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scalar reference for apply_deltas_{avx2,neon} — mirrors the
+    /// dispatcher's scalar fallback exactly so SIMD paths can be
+    /// validated against it.
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    fn apply_deltas_scalar_ref(
+        dst: &mut [i16],
+        src: &[i16],
+        threat_weights: &[i8],
+        hidden_size: usize,
+        adds: &[usize],
+        subs: &[usize],
+    ) {
+        for j in 0..hidden_size {
+            let mut v = src[j];
+            for &idx in adds { v += threat_weights[idx * hidden_size + j] as i16; }
+            for &idx in subs { v -= threat_weights[idx * hidden_size + j] as i16; }
+            dst[j] = v;
+        }
+    }
+
+    /// Seeded xorshift64* for deterministic test inputs.
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    fn rng(seed: u64) -> impl FnMut() -> u64 {
+        let mut s = seed;
+        move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_apply_deltas_neon_matches_scalar() {
+        let h = 768;
+        let n_threats = 64;
+        let mut r = rng(0xc0da_d317_a5_0002);
+
+        let mut weights = vec![0i8; n_threats * h];
+        for w in weights.iter_mut() { *w = (r() % 256) as i8; }
+
+        let mut src = vec![0i16; h];
+        for v in src.iter_mut() { *v = (r() as i32 as i16).rem_euclid(2001) - 1000; }
+
+        // Mixed adds+subs — covers the paired inner loop.
+        let adds = [3usize, 8, 21, 40];
+        let subs = [5usize, 12, 30, 55, 63];
+        let mut scalar_dst = vec![0i16; h];
+        apply_deltas_scalar_ref(&mut scalar_dst, &src, &weights, h, &adds, &subs);
+        let mut neon_dst = vec![0i16; h];
+        unsafe { apply_deltas_neon(&mut neon_dst, &src, &weights, h, &adds, &subs); }
+        assert_eq!(scalar_dst, neon_dst, "apply_deltas_neon mixed diverged");
+
+        // Adds-only (exercises the post-paired tail loop for adds).
+        let mut scalar_dst = vec![0i16; h];
+        apply_deltas_scalar_ref(&mut scalar_dst, &src, &weights, h, &adds, &[]);
+        let mut neon_dst = vec![0i16; h];
+        unsafe { apply_deltas_neon(&mut neon_dst, &src, &weights, h, &adds, &[]); }
+        assert_eq!(scalar_dst, neon_dst, "apply_deltas_neon adds-only diverged");
+
+        // Subs-only (exercises the post-paired tail loop for subs).
+        let mut scalar_dst = vec![0i16; h];
+        apply_deltas_scalar_ref(&mut scalar_dst, &src, &weights, h, &[], &subs);
+        let mut neon_dst = vec![0i16; h];
+        unsafe { apply_deltas_neon(&mut neon_dst, &src, &weights, h, &[], &subs); }
+        assert_eq!(scalar_dst, neon_dst, "apply_deltas_neon subs-only diverged");
+
+        // Empty deltas — identity copy.
+        let mut neon_dst = vec![0i16; h];
+        unsafe { apply_deltas_neon(&mut neon_dst, &src, &weights, h, &[], &[]); }
+        assert_eq!(src, neon_dst, "apply_deltas_neon empty-deltas should be identity");
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_add_weight_rows_neon_matches_scalar() {
+        let h = 768;
+        let n_features = 32;
+        let mut r = rng(0xc0da_add1_a5_0004);
+
+        let mut weights = vec![0i8; n_features * h];
+        for w in weights.iter_mut() { *w = (r() % 256) as i8; }
+
+        let indices = [0usize, 3, 7, 11, 15, 19, 23, 27, 31];
+
+        let mut scalar_dst = vec![0i16; h];
+        for v in scalar_dst.iter_mut() { *v = (r() as i32 as i16).rem_euclid(501) - 250; }
+        let mut neon_dst = scalar_dst.clone();
+
+        for &idx in &indices {
+            let base = idx * h;
+            for j in 0..h { scalar_dst[j] += weights[base + j] as i16; }
+        }
+        unsafe { add_weight_rows_neon(&mut neon_dst, &weights, h, &indices); }
+        assert_eq!(scalar_dst, neon_dst, "add_weight_rows_neon diverged");
+    }
 
     #[test]
     fn test_init_threats() {

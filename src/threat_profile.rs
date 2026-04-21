@@ -2,7 +2,6 @@
 /// Measures time spent in each phase of threat processing.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 
 pub static MAKE_MOVE_DELTA_NS: AtomicU64 = AtomicU64::new(0);
 pub static MAKE_MOVE_DELTA_COUNT: AtomicU64 = AtomicU64::new(0);

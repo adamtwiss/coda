@@ -1,6 +1,39 @@
 # CapHist-Defender Rebase + Retune — Proposal
 
-**Recommendation**: rebase `experiment/caphist-defender` onto current trunk, then focused SPSA + full retune + SPRT. High-confidence ~+8-15 Elo candidate based on diagnostic evidence.
+## Status as of 2026-04-21 — PRIORITY 1 execution item, not started
+
+Branch `experiment/caphist-defender` still exists and is stale vs
+trunk. Trunk has moved significantly since this doc was written —
+confirmed-landed Elo since the Apr 19 diagnostic includes:
+
+- **#502 B1 discovered-attack +52 Elo** (biggest single-feature win ever)
+- **#553 SE-king-pressure +9.7**, **#542 unstable-ProbCut +6.7**,
+  **#539 anythreat-NMP +6.0**, **#554 offense-bonus +5.7**,
+  **#582 new v9 prod net +15.2**, **#583 LMR-endgame-gate +5.0**,
+  **#578 tuned-knight-fork +5.2**, **#586 post-merge retune +6.2**,
+  SMP trilogy bug fixes (+651 self-play at T=4)
+- Plus structural changes: AVX-512/VNNI kernels, ponder-softfloor,
+  EGTB hash.
+
+**Impact on this proposal:** rebase WILL have merge conflicts in
+movepicker.rs (knight-fork + offense bonuses merged there). But the
+mechanism — 4D defensed-capture history lifting first-move-cut from
+72% → 82% — is unchanged. Expected Elo gain is **still +8-15** per
+the diagnostic; compensation pruning has only grown tighter with
+post-merge retunes, giving more room to unwind.
+
+**Next steps** (assigned to me / Hercules):
+1. Checkout `experiment/caphist-defender`, rebase onto
+   `feature/threat-inputs` @ 45ddaae. Resolve movepicker.rs conflicts.
+2. Build + bench on reckless-crelu prod net (DAA4C54E).
+3. Focused SPSA on 4 capture-coupled tunables (SEE_QUIET_MULT,
+   SEE_CAP_MULT, BAD_NOISY_MARGIN, CAP_HIST_MULT) — 1000 iters.
+4. Apply focused tune values, SPRT vs trunk at bounds [-3, 3].
+5. If H1: merge, then full-tune the 64-param set for rebalancing.
+6. If H0: inspect first-move-cut delta to confirm diagnostic still
+   holds on current trunk (may have been absorbed by other merges).
+
+**Recommendation** (original from Apr 19): rebase `experiment/caphist-defender` onto current trunk, then focused SPSA + full retune + SPRT. High-confidence ~+8-15 Elo candidate based on diagnostic evidence.
 
 **Owner**: Hercules (implementation lane). This is a research-derived proposal with the specifics spelled out.
 

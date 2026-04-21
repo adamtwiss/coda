@@ -1,6 +1,28 @@
 # Move Ordering → Pruning Compensation — Cross-Parameter Analysis
 
-## Origin
+## Status as of 2026-04-21 — ABSORBED (diagnostic doc)
+
+This doc is reference material, not an action item. The compensation
+thesis validated (4 of 6 parameters confirmed coupled). The practical
+consequence — **retuning pruning params after ordering improves** — is
+the basis for `caphist_retune_proposal_2026-04-19.md`, which is the
+actionable follow-up.
+
+Recent post-Apr-19 wins that align with this doc's thesis:
+- **#578 tuned-knight-fork +5.2 Elo** — ordering improvement (knight-fork
+  bonus) captured 2× more Elo after retuning pruning params on the
+  branch, confirming the compensation unwinds positively when ordering
+  gets stronger.
+- **#586 post-trunk-585 retune +6.2 Elo** — generic retune banked
+  additional Elo after several feature merges shifted the ordering
+  landscape. Matches the doc's prediction.
+
+No further standalone follow-ups needed. Execution moves to caphist-
+retune (the doc's implicit recommendation).
+
+---
+
+## Origin (original research below)
 
 SPRT #519 tested `LMP_BASE=3` (SF/Obsidian consensus) vs Coda's current
 value of 13. **Crashed at −44 Elo after 206 games**, LLR −1.15 trending

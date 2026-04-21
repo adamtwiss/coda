@@ -23,6 +23,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut opening_book: Option<crate::book::OpeningBook> = None;
     let mut use_book = true;
     let mut syzygy: Option<std::sync::Arc<crate::tb::SyzygyTB>> = None;
+    let mut syzygy_path: Option<String> = None; // remembered for cache-size reloads
+    let mut tb_hash_mb: usize = crate::tb::DEFAULT_TB_HASH_MB;
     let mut num_threads: usize = 1;
 
     // Pre-load NNUE if path given via CLI, otherwise auto-discover
@@ -80,10 +82,11 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("option name MoveOverhead type spin default 100 min 0 max 5000");
                 println!("option name Ponder type check default false");
                 println!("option name SyzygyPath type string default <empty>");
+                println!("option name TBHash type spin default 16 min 0 max 1024");
                 println!("option name SparseL1 type check default true");
                 println!("option name HiddenActivation type combo default screlu var screlu var crelu");
                 // Tunable search parameters (for SPSA)
-                for (name, _, default, min, max) in crate::search::tunable_params() {
+                for (name, _, default, min, max, _c_end) in crate::search::tunable_params() {
                     println!("option name {} type spin default {} min {} max {}", name, default, min, max);
                 }
                 println!("uciok");
@@ -107,6 +110,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 info.clear_correction_history();
                 info.clear_pawn_hist(); // was missing — stale data leaked between games
                 if let Some(acc) = &mut info.nnue_acc { acc.reset(); }
+                // Clear Syzygy probe cache on new game (prevents stale entries
+                // from a prior game leaking into the new one's search).
+                if let Some(ref tb) = syzygy { tb.clear_cache(); }
                 board = Board::startpos();
             }
             "position" => {
@@ -249,9 +255,22 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 // producing MORE stockpile. Verified: v3 (movetime)
                                 // had 3/28 stockpile at 60+1; v6 (full TM) had 7/28.
                                 // Movetime runs the full budget — best for this case.
+                                //
+                                // movetime_floor = inc - overhead. This enforces the
+                                // "never think less than we gain" rule on ponderhit
+                                // fresh-searches too — without it, TT-cached positions
+                                // instant-emit and stockpile clock on ponder-heavy TCs
+                                // like lichess blitz (lichess 6CQJQNVu).
+                                let our_inc = if search_board.side_to_move == crate::types::WHITE {
+                                    limits.winc
+                                } else {
+                                    limits.binc
+                                };
+                                let floor = our_inc.saturating_sub(si.move_overhead);
                                 let fresh_limits = SearchLimits {
                                     infinite: false,
                                     movetime: remaining,
+                                    movetime_floor: floor,
                                     ..SearchLimits::new()
                                 };
                                 let fresh_start = std::time::Instant::now();
@@ -424,13 +443,32 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     match tokens[ni] {
                         "OwnBook" => { use_book = tokens[vi] == "true"; }
                         "SyzygyPath" => {
-                            match crate::tb::SyzygyTB::new(tokens[vi]) {
+                            let path = tokens[vi].to_string();
+                            match crate::tb::SyzygyTB::new_with_cache(&path, tb_hash_mb) {
                                 Ok(tb) => {
                                     let tb_arc = std::sync::Arc::new(tb);
                                     info.syzygy = Some(tb_arc.clone());
                                     syzygy = Some(tb_arc);
+                                    syzygy_path = Some(path);
                                 }
                                 Err(e) => eprintln!("info string Syzygy load failed: {}", e),
+                            }
+                        }
+                        "TBHash" => {
+                            if let Ok(mb) = tokens[vi].parse::<usize>() {
+                                tb_hash_mb = mb.min(1024);
+                                // Rebuild the tablebase wrapper with the new cache
+                                // size (so existing searches can't race on resize).
+                                if let Some(ref path) = syzygy_path {
+                                    match crate::tb::SyzygyTB::new_with_cache(path, tb_hash_mb) {
+                                        Ok(tb) => {
+                                            let tb_arc = std::sync::Arc::new(tb);
+                                            info.syzygy = Some(tb_arc.clone());
+                                            syzygy = Some(tb_arc);
+                                        }
+                                        Err(e) => eprintln!("info string TBHash resize failed: {}", e),
+                                    }
+                                }
                             }
                         }
                         "BookFile" => {
@@ -674,7 +712,7 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
         }
         _ => {
             // Check tunable search parameters
-            for (pname, param, _, min, max) in crate::search::tunable_params() {
+            for (pname, param, _, min, max, _c_end) in crate::search::tunable_params() {
                 if name == pname {
                     if let Ok(v) = value.parse::<i32>() {
                         let clamped = v.max(min).min(max);

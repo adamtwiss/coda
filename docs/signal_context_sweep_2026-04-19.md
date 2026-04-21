@@ -58,7 +58,7 @@ Each context is an existing decision point where a signal can gate the decision 
 | **IIR** | Gate |
 | **SEE pruning** | Threshold |
 
-## The matrix (status as of 2026-04-19)
+## The matrix (status as of 2026-04-21)
 
 Legend: ✅ landed, 🚧 in flight / queued, ❌ tested and H0, ❓ untried.
 
@@ -66,18 +66,61 @@ Legend: ✅ landed, 🚧 in flight / queued, ❌ tested and H0, ❓ untried.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | enemy-attacks bb | | | ✅history #463 | | | | | | ✅escape | | | |
 | pawn-threat-count | ✅widen | | ✅reduce | | | | | | | | | |
-| king-zone-pressure | ❓ | ✅#466 | ✅#482 | ❓ | ❓ | ✅#481 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| our-king-zone-opportunity | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| can_win_material | 🚧#486 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| threat-mag | ❓ | ❓ | 🚧#488 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| threat-delta count | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| eval instability | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| corrhist mag | ❓ | ❓ | ✅complex | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| our-defenses | ❓ | ❓ | ❓ | ❓ | 🚧 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| xray-blockers | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
+| king-zone-pressure | ❌#503 | ✅#466 | ✅#482 | ❌#504 | ❓ | ✅#481 | ✅**#553** | ❓ | ❓ | ❌#512 | ❓ | ❓ |
+| our-king-zone-opportunity | ❓ | ❌#605 | ❓ | ❓ | ❓ | ❌#538 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
+| can_win_material | ❌#479/#501 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
+| threat-mag | ❓ | ❓ | ❌#488/#500 | ❓ | ❓ | ❓ | ❓ | ❓ | ❌#588 | ❓ | ❓ | ❓ |
+| any_threat_count | 🚧#606+1.5 | ✅**#539** | ✅reduce | ❌#597 | ✅#484 | ❓ | ❌#590/#607 | ❓ | ❓ | ❓ | ❓ | ❓ |
+| eval instability (unstable) | 🚧#589+1.2 | ❌#594 | ❌#541 🚧#548-gated | ❌#597 | ❌#593 | ✅**#542** | ✅#598-alt | ✅guard | ❓ | ❓ | ❓ | ❓ |
+| corrhist mag | ❓ | ❓ | ✅complex | ❓ | ❓ | ❌#544 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
+| our-defenses | ❓ | ❓ | ❓ | ❓ | ✅#484 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
+| xray-blockers | ❓ | ❓ | ❓ | ❓ | ❓ | ❌#591 | 🚧#604~0 | ❓ | ✅**#502 +52** | ❓ | ❓ | ❓ |
 | threat-feature-count | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
 
-**Landed count**: 7 (including pre-existing pawn-threat-count, enemy-attacks-as-escape). **In flight**: 3. **Untried**: ~100+. This is the surface area the sweep operates over.
+**Landed count**: ~11 (added #553 kzp×SE +9.7). **Failed (H0)**: ~19
+(+9 H0s from the 2026-04-20/21 unstable-widener family + today's fresh
+cells: anythreat×SE half, xray×SE neutral, anythreat×RFP trending H1).
+**In flight**: #604 (xray×SE neutral +0.9), #606 (anythreat×RFP +1.5,
+probable H1). **Untried**: ~80.
+
+### Hit rate trend (important)
+
+Phase 1 sweep (Apr 19-20, early cells): **~23% hit rate** — the big
+wins (kzp×NMP, kzp×ProbCut, kzp×LMR, kzp×SE, xray×MovePick, anythreat×
+NMP, unstable×ProbCut). ~4 of first ~17 cells landed.
+
+Phase 2 sweep (Apr 20-21, later cells including the "unstable×{RFP/
+NMP/Fut/LMP/bundle}" family and my own fresh-ideas batch): **~1 of 10
+landing H1** (only rfp-anythreat-widen trending). The sweep is
+saturating — cells remaining are either redundant with SPSA's implicit
+exploitation of the signals, or combinations where the signal doesn't
+compose.
+
+**Conclusion:** continue to pick individual high-prior cells from this
+matrix, but STOP batch-queuing multiple marginal cells. The big wins
+are all from the first 40% of the matrix. Remaining picks should be
+those with specific mechanism hypotheses, not exhaustive sweeping.
+
+## Key findings from 2026-04-19/20 overnight sweep
+
+**Pattern strongly validates (signal × context)**: of ~13 novel signal-context pairs tested:
+- 3 landed strong (+52, +7, +6) = ~23% hit rate
+- Several more landed small (#551 tune +2 grinding; #481 at +7.03; #482 at +6.81)
+
+**Specific lessons per signal**:
+
+1. **king-zone-pressure seems to have saturated at 3 contexts** (NMP #466, LMR #482, ProbCut #481). Four subsequent attempts (RFP #503, LMP #504, SE #511, ASP #512) all H0'd. Signal generalizes to 3/7 contexts tested, not 7/7.
+
+2. **any_threat_count is the strongest new "signal" this session**: 3 landings already (futility #484, LMR threat-density, NMP #539). RFP-widener #540 H0'd due to signal overlap with has_pawn_threats widener; not a failure of the signal itself.
+
+3. **unstable (parent-child eval gap) is underused**: landed at ProbCut #542 (+6.7) on first systematic attempt. LMR modifier #541 H0'd for magnitude reasons; depth-gated retry #548 in flight.
+
+4. **Mirror signals don't always transfer**: our-king-zone-opportunity at ProbCut (#538) H0'd despite enemy-king-zone-pressure at same context working (#481 +7.03). Attacker/defender symmetry assumption fails for this signal.
+
+**Priority for next sweep waves**:
+- any_threat_count × SE, SEE, LMP, IIR (all untested, strong prior given 3 landings)
+- unstable × RFP, NMP, Fut, SEE (one win at ProbCut, likely more)
+- xray-blockers × every context (B1 pattern is position-level tactical, may work as gate/modifier elsewhere)
 
 ## Prioritised next experiments
 
