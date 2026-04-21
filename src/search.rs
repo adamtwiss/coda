@@ -114,6 +114,10 @@ tunables!(
     (MVV_CAP_MULT, 17, 4, 64, 3.0),
     (CONT_HIST_MULT, 3, 1, 8, 1.5),
     (KNIGHT_FORK_BONUS, 7816, 0, 20000, 1000.0),
+    // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
+    // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
+    // LMR over-reduces king-restriction queen moves that complete mates.
+    (LMR_ENDGAME_PIECES, 6, 0, 12, 1.5),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -2392,7 +2396,12 @@ fn negamax(
 
         // Late Move Reductions (LMR) + Principal Variation Search (PVS)
         let mut reduction = 0i32;
-        if !in_check && !is_cap && !is_promo && FEAT_LMR.load(Ordering::Relaxed) {
+        // Endgame gate: skip LMR in low-piece-count positions where
+        // mate-completing king-restriction moves would be over-reduced.
+        let endgame_threshold = tp(&LMR_ENDGAME_PIECES) as u32;
+        let is_endgame_skip = endgame_threshold > 0
+            && crate::bitboard::popcount(board.occupied()) <= endgame_threshold;
+        if !in_check && !is_cap && !is_promo && !is_endgame_skip && FEAT_LMR.load(Ordering::Relaxed) {
             let d = (depth as usize).min(63);
             let m = (move_count as usize).min(63);
             reduction = lmr_reduction(d as i32, m as i32);
@@ -2489,7 +2498,7 @@ fn negamax(
         }
 
         // LMR for captures: use separate capture LMR table with capture history adjustments
-        if !in_check && is_cap && !is_promo && move_count > 1 && mv != tt_move && FEAT_LMR.load(Ordering::Relaxed) {
+        if !in_check && is_cap && !is_promo && move_count > 1 && mv != tt_move && !is_endgame_skip && FEAT_LMR.load(Ordering::Relaxed) {
             // Only reduce at non-PV nodes (zero window search)
             if beta - alpha == 1 {
                 let d = (depth as usize).min(63);
