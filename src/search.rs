@@ -2315,7 +2315,11 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
         {
-            let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
+            let mut lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
+            // E8: soften LMP when eval is unstable — allow more quiet moves
+            // to be tried before cutoff. Matches the unstable = less-aggressive-
+            // pruning pattern from E2/E5/E6.
+            if unstable { lmp_limit += lmp_limit / 3; }
             if move_count > lmp_limit {
                 info.stats.lmp_prunes += 1;
                 continue;
