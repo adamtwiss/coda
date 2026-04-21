@@ -58,7 +58,7 @@ Each context is an existing decision point where a signal can gate the decision 
 | **IIR** | Gate |
 | **SEE pruning** | Threshold |
 
-## The matrix (status as of 2026-04-19)
+## The matrix (status as of 2026-04-21)
 
 Legend: ✅ landed, 🚧 in flight / queued, ❌ tested and H0, ❓ untried.
 
@@ -66,18 +66,40 @@ Legend: ✅ landed, 🚧 in flight / queued, ❌ tested and H0, ❓ untried.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | enemy-attacks bb | | | ✅history #463 | | | | | | ✅escape | | | |
 | pawn-threat-count | ✅widen | | ✅reduce | | | | | | | | | |
-| king-zone-pressure | ❌#503 | ✅#466 | ✅#482 | ❌#504 | ❓ | ✅#481 | ❌#511 | ❓ | ❓ | ❌#512 | ❓ | ❓ |
-| our-king-zone-opportunity | ❓ | ❓ | ❓ | ❓ | ❓ | ❌#538 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
+| king-zone-pressure | ❌#503 | ✅#466 | ✅#482 | ❌#504 | ❓ | ✅#481 | ✅**#553** | ❓ | ❓ | ❌#512 | ❓ | ❓ |
+| our-king-zone-opportunity | ❓ | ❌#605 | ❓ | ❓ | ❓ | ❌#538 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
 | can_win_material | ❌#479/#501 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| threat-mag | ❓ | ❓ | ❌#488/#500 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| any_threat_count | ❌#540 | ✅**#539** | ✅reduce | ❓ | ✅#484 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| eval instability (unstable) | ❓ | ❓ | ❌#541 🚧#548-gated | ❓ | ❓ | ✅**#542** | ❓ | ✅guard | ❓ | ❓ | ❓ | ❓ |
+| threat-mag | ❓ | ❓ | ❌#488/#500 | ❓ | ❓ | ❓ | ❓ | ❓ | ❌#588 | ❓ | ❓ | ❓ |
+| any_threat_count | 🚧#606+1.5 | ✅**#539** | ✅reduce | ❌#597 | ✅#484 | ❓ | ❌#590/#607 | ❓ | ❓ | ❓ | ❓ | ❓ |
+| eval instability (unstable) | 🚧#589+1.2 | ❌#594 | ❌#541 🚧#548-gated | ❌#597 | ❌#593 | ✅**#542** | ✅#598-alt | ✅guard | ❓ | ❓ | ❓ | ❓ |
 | corrhist mag | ❓ | ❓ | ✅complex | ❓ | ❓ | ❌#544 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
 | our-defenses | ❓ | ❓ | ❓ | ❓ | ✅#484 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
-| xray-blockers | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ✅**#502 +52** | ❓ | ❓ | ❓ |
+| xray-blockers | ❓ | ❓ | ❓ | ❓ | ❓ | ❌#591 | 🚧#604~0 | ❓ | ✅**#502 +52** | ❓ | ❓ | ❓ |
 | threat-feature-count | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ |
 
-**Landed count**: 10 (newly added **#539 any_threat_count × NMP +6.0**, **#542 unstable × ProbCut +6.7**, **#502 xray-blockers × MovePick +52**). **Failed (H0)**: 10. **In flight**: 1 depth-gated retry. **Untried**: ~90+.
+**Landed count**: ~11 (added #553 kzp×SE +9.7). **Failed (H0)**: ~19
+(+9 H0s from the 2026-04-20/21 unstable-widener family + today's fresh
+cells: anythreat×SE half, xray×SE neutral, anythreat×RFP trending H1).
+**In flight**: #604 (xray×SE neutral +0.9), #606 (anythreat×RFP +1.5,
+probable H1). **Untried**: ~80.
+
+### Hit rate trend (important)
+
+Phase 1 sweep (Apr 19-20, early cells): **~23% hit rate** — the big
+wins (kzp×NMP, kzp×ProbCut, kzp×LMR, kzp×SE, xray×MovePick, anythreat×
+NMP, unstable×ProbCut). ~4 of first ~17 cells landed.
+
+Phase 2 sweep (Apr 20-21, later cells including the "unstable×{RFP/
+NMP/Fut/LMP/bundle}" family and my own fresh-ideas batch): **~1 of 10
+landing H1** (only rfp-anythreat-widen trending). The sweep is
+saturating — cells remaining are either redundant with SPSA's implicit
+exploitation of the signals, or combinations where the signal doesn't
+compose.
+
+**Conclusion:** continue to pick individual high-prior cells from this
+matrix, but STOP batch-queuing multiple marginal cells. The big wins
+are all from the first 40% of the matrix. Remaining picks should be
+those with specific mechanism hypotheses, not exhaustive sweeping.
 
 ## Key findings from 2026-04-19/20 overnight sweep
 

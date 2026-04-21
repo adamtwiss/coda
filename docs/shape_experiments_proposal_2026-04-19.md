@@ -1,9 +1,35 @@
 # Formula-Shape Experiments — Proposal
 
+## Status as of 2026-04-21 — UNTRIED (priority 3 in execution plan)
+
+All three experiments remain untried. Priority 3 in current plan,
+queued after caphist-retune and B2 skewer detector. Full original
+design preserved below.
+
+Note: the doc references `tunable_anomalies_2026-04-19.md` as
+motivation, but that file was never created — Titan consolidated the
+cross-engine parameter analysis into `ordering_coupled_pruning_
+2026-04-19.md` instead. The shape experiments here are still
+well-motivated: they address formula structure that SPSA can't reach
+by tuning values alone.
+
+Recommended execution order:
+1. **Exp 1 (history-bonus offset)** — mirrors Stockfish shape, lowest
+   structural risk, easiest to SPSA-retune (4 params).
+2. **Exp 2 (RFP unified margin)** — flat improving discount vs Coda's
+   depth-scaled. Orthogonal to Exp 1, run in parallel if fleet has
+   capacity.
+3. **Exp 3 (futility TT-modulated)** — design-only, expand if Exp 1/2
+   land.
+
+---
+
 Motivated by the cross-engine tunable comparison in
-`tunable_anomalies_2026-04-19.md`. The anomalies there are about **formula
-shape**, not parameter values — SPSA can't escape a shape basin by
-tuning values. These experiments swap shapes.
+`tunable_anomalies_2026-04-19.md` (never authored — see
+`ordering_coupled_pruning_2026-04-19.md` for the actual cross-engine
+data). The anomalies there are about **formula shape**, not parameter
+values — SPSA can't escape a shape basin by tuning values. These
+experiments swap shapes.
 
 Sequencing per Hercules (foundational first):
 1. History bonus shape

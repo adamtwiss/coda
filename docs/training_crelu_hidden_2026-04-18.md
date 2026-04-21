@@ -1,5 +1,26 @@
 # Training instructions: clipped-ReLU L1/L2 + warm30 experiment (2026-04-18)
 
+## Status as of 2026-04-21 — RESOLVED ✓
+
+Both experiments resolved positively, landed as compounding production
+changes:
+
+1. **warm30 — H1 at +4.44 Elo (#496)**, merged. Peak of the warmup
+   curve at e200 (warm40 and warm50 both H0 vs warm30). Full curve
+   captured in `training_warmup_curve_2026-04-19.md`.
+2. **CReLU hidden — now the v9 production activation.** Training
+   supported via `--hidden-activation crelu` flag on Bullet's
+   coda_v9_768_threats example. Produced the current v9 prod net
+   `net-v9-768th16x32-kb10-w15-e800s800-crelu.nnue` (DAA4C54E) which
+   landed **#582 +15.2 Elo H1** — biggest single net upgrade this
+   cycle. Coda inference auto-configures from header bit 5 (landed
+   as `nnue/hl-crelu-file-marker` merge).
+
+Both experiments became production. No outstanding follow-ups from
+this doc.
+
+---
+
 Two training experiments for idle GPUs.
 
 ## Experiment 1: warm30 (one GPU)
