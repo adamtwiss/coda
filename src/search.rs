@@ -524,7 +524,7 @@ impl SearchInfo {
         // Ensure threat accumulator is computed before eval
         if self.threat_stack.active {
             if let Some(ref net) = self.nnue_net {
-                self.threat_stack.ensure_computed(&net.threat_weights, net.num_threat_features, board);
+                self.threat_stack.ensure_computed(&net.threat_weights, net.num_threat_features, &net.threat_feature_remap, board);
             }
         }
         let score = if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
@@ -1008,8 +1008,8 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     if info.threat_stack.active {
         info.threat_stack.reset();
         if let Some(ref net) = info.nnue_net {
-            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, WHITE);
-            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, BLACK);
+            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, &net.threat_feature_remap, board, WHITE);
+            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, &net.threat_feature_remap, board, BLACK);
         }
     }
 
@@ -1046,8 +1046,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     if info.threat_stack.active {
         info.threat_stack.reset();
         if let Some(ref net) = info.nnue_net {
-            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, WHITE);
-            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, BLACK);
+            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, &net.threat_feature_remap, board, WHITE);
+            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, &net.threat_feature_remap, board, BLACK);
         }
     }
 
