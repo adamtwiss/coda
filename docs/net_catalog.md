@@ -3,11 +3,15 @@
 Authoritative list of v9 nets, their OpenBench hashes, provenance, and status.
 Update this file when you promote a new production net or retire an old one.
 
-**Current v9 production:** `DAA4C54E` — `net-v9-768th16x32-w15-e800s800-reckless-crelu`
-(kb10 reckless layout, CReLU hidden, 800 SBs). All v9 SPRTs should pass
-`--dev-network DAA4C54E --base-network DAA4C54E`.
+**Current v9 production:** `DAA4C54E` — canonical release name
+`net-v9-768th16x32-kb10-w15-e800s800-crelu.nnue` (previously
+`net-v9-768th16x32-w15-e800s800-reckless-crelu.nnue` internally — same file,
+renamed at release to match the kb10 naming convention used elsewhere).
+Published as `v0.3.0-nets` release; referenced by `net.txt`. All v9 SPRTs
+should pass `--dev-network DAA4C54E --base-network DAA4C54E`.
 
-**Current v5 production:** `net-v5-768pw-consensus-w7-e800s800.nnue` (from net.txt).
+**Current v5 production:** `net-v5-768pw-consensus-w7-e800s800.nnue`
+(`v0.2.0-nets` release). Still the net.txt target for v5/main branch builds.
 
 ## Invariants
 
@@ -22,7 +26,7 @@ Update this file when you promote a new production net or retire an old one.
 
 | Hash | Layout | File | Status | Notes |
 |---|---|---|---|---|
-| `DAA4C54E` | kb10 | `net-v9-768th16x32-w15-e800s800-reckless-crelu.nnue` | **PROD** | Current v9 production. Tunes #585, #586, #599 all ran on this. |
+| `DAA4C54E` | kb10 | `net-v9-768th16x32-kb10-w15-e800s800-crelu.nnue` (released) / `...reckless-crelu.nnue` (legacy name) | **PROD** | Current v9 production. Tunes #585, #586, #599 all ran on this. Same content under both filenames. |
 | `BFAC07B3` | kb10 | `net-v9-768th16x32-reckless-w15-e200s200-warm30.nnue` | promising | Best-of-warmup sweep (warm30). Lichess noted. |
 | `BE5849B6` | kb10 | `net-v9-768th16x32-kb10-w15-e200s200.nnue` | superseded | Earlier kb10 w15 at 200 SBs, s200. |
 | `E06A42E8` | kb10 | `net-v9-768th16x32-kb10-lowlr-w15-e200s200.nnue` | experiment | Lower final LR variant. |
