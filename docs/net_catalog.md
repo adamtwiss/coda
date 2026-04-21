@@ -46,36 +46,17 @@ Update this file when you promote a new production net or retire an old one.
 | `737DCEA2` | `net-v9-768th16x32-reckless-w15-e200s200-warm40.nnue` | 40 |
 | `4AD468DA` | `net-v9-768th16x32-reckless-w15-e200s200-warm50.nnue` | 50 |
 
-## v9 nets (uniform / old, retirement candidates)
+## OB purge (2026-04-21)
 
-These predate the kb10 move. No active SPRTs or tunes reference them.
-Candidates for OB purge.
+Purged 45 nets from OpenBench storage: pre-kb10 v9 xray/uniform, v9 pairwise
+experiments, v7/v8 deprecated architectures, old v5 filter/selfplay research.
+~2.9 GB freed. Historical test results preserved (Test.dev_network and
+Test.base_network are CharField, not FK — no cascade delete on Network
+removal; see OpenBench/models.py:110,119).
 
-| Hash | File | Reason obsolete |
-|---|---|---|
-| `6AEA210B` | `net-v9-768th16x32-w15-e800s800-xray.nnue` | Uniform KB, pre-reckless era |
-| `D3B8F1A6` | `net-v9-768th16x32-w15-e800s600-xray.nnue` | s600 snapshot, inferior to s800 |
-| `7E75A3D1` | `net-v9-768th16x32-w15-e200s200-xray.nnue` | Early xray, superseded |
-| `57A1D192` | `net-v9-768th16x32-w15-e200s200-xray-fixed.nnue` | Intermediate fix, superseded |
-| `7A03FAC8` | `net-v9-768th16x32-w0-e200s200-xray-fixed.nnue` | w0 variant, uniform |
-| `1BBB2097` | `net-v9-768th16x32-w0-e200s200-xray.nnue` | w0 variant, uniform |
-| `4BBEF00B` | `net-v9-768th16x32-w15-e400s400.nnue` | 400 SBs, uniform, surpassed by e800 |
-| `45768E09` | `net-v9-768th16x32-w0-e400s400-noxray.nnue` | no-xray experiment |
-| `5F38DD17` | `net-v9-768th16x32-kbc-w15-e200s200.nnue` | consensus-KB layout, superseded |
-| `F38AFE6A` | `net-v9-768th16x32-noplyfilter-w15-e200s200.nnue` | data-filter experiment |
-| `CA16B950` | `net-v9-768th16x32-1xt80-w15-e200s200.nnue` | single-file data experiment |
-| `CE090534` | `net-v9-768th16x32-selfplay-w15-e200s200.nnue` | self-play data experiment |
-| `511CE6D3` | `net-v9-768th16x32-w0-e400s400-reckless-kb.nnue` | w0 reckless, early |
-
-## v9 pairwise-threats (experimental, not in production path)
-
-| Hash | File |
-|---|---|
-| `ECC87D46` | `net-v9-768pwth16x32-w0-e200s200.nnue` |
-| `07D94E20` | `net-v9-768pwth16x32-w0-e400s400.nnue` |
-| `FAE899ED` | `net-v9-768pwth16x32-w0-e800s700.nnue` |
-| `07F6258E` | `net-v9-768pwth16x32-w0-e800s800.nnue` |
-| `860E72FF` | `net-v9-768pwth16x32-w0-e800s400ss.nnue` |
+Local `.nnue` files under `nets/` were not touched. If any purged net is
+ever needed again, re-upload via `scripts/ob_upload_net.py` with the local
+file.
 
 ## Incoming (pending training)
 
