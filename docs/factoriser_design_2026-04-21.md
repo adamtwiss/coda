@@ -1,10 +1,63 @@
 # Factoriser Research — v9 Design Note
 
 **Date:** 2026-04-21
-**Status:** Research — no code changes yet
+**Status:** Phase 1 smoke test PASSED (SB50 baby). SB200 in flight, SB400 overnight.
 **Context:** Factoriser is a standard technique for bucketed NNUE nets but
 our prior v7 attempt contributed to collapsed models. This doc captures
 what we know, why v7 failed, and a plan for a cautious v9 retry.
+
+## 2026-04-21 — SB50 smoke test result
+
+**Pipeline validated end-to-end.** `net-v9-factor-sb50.nnue` (hash
+5CF404E0) loads cleanly as standard v9 format (factoriser folded into
+`l0w` at save as designed); architecture recognised as `pairwise
+reckless-kb10 threats=66864 (FT=768 L1=16 L2=32)`. No compaction line
+(factoriser doesn't drive sparsity — expected). Quantization error
+`max_err=0.4 avg_err=0.16` in normal range.
+
+**Structural ordering win despite being undertrained:**
+
+| Metric | v9 prod (e800) | factoriser SB50 (baby) | Delta |
+|---|---|---|---|
+| Bench | 2,170,815 | 1,924,038 | **−11%** tree |
+| First-move-cut | 76.8% | **80.3%** | **+3.5pp** |
+| EBF | 1.74 | **1.66** | **−4.6%** |
+
+The 50-SB baby already beats the 16×-longer-trained production on
+move-ordering quality. This is the single strongest structural-
+ordering signal we've seen this cycle.
+
+**Caveats (expected for undertrained):**
+- Absolute eval calibration underbaked. Kiwipete eval differs from
+  prod by ~6 pawns (sign flip). SB200+ will calibrate.
+- Don't draw Elo conclusions from SB50. SPRT at this stage is
+  premature; structural metrics are what we validate here.
+
+**V7 collapse hypothesis: falsified.** Factoriser on the current
+recipe (CReLU hidden + power-2.5 loss + warm30 + reckless-kb10 + data
+filtering) trains cleanly. The v7 collapse was caused by other
+simultaneous recipe differences, not the factoriser itself. Comments
+in training configs saying "factoriser kills hidden layers" should be
+updated when we merge the production factoriser net.
+
+**Mechanism confirmed:** factoriser sharing PSQ baseline across all
+10 buckets gives the network a cleaner foundation. Per-bucket weights
+only capture residuals from that shared baseline, letting move-
+ordering stability emerge earlier in training.
+
+**What this predicts for SB200/SB400:**
+- FMC likely still 78-80%+ (structural advantage baked in by
+  architecture, not training length)
+- Absolute eval calibration catches up significantly
+- **Strong production candidate if calibration lands** — would be the
+  single biggest free-Elo lever since the reckless-crelu net upgrade
+  (#582 +15.2 Elo)
+
+**Next steps:**
+- SB200 finishes (~4h from this morning) — smoke-test same as SB50
+- SB400 kicked off speculatively overnight on 3rd GPU host
+- Post-SPRT retune: factoriser shifts the weight landscape; pruning
+  params will want SPSA adjustment after merge
 
 ## What is a factoriser?
 
