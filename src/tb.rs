@@ -8,28 +8,47 @@ use shakmaty::fen::Fen;
 use shakmaty_syzygy::{Tablebase, AmbiguousWdl, Dtz, MaybeRounded};
 
 use crate::board::Board;
+use crate::tb_cache::TbCache;
+
+/// Default cache size in MB. CCRL convention allows engines one
+/// probe-result cache. Override via `setoption name TBHash value N`.
+pub const DEFAULT_TB_HASH_MB: usize = 16;
 
 /// Wrapper around shakmaty-syzygy Tablebase.
 pub struct SyzygyTB {
     tb: Tablebase<Chess>,
     max_pieces: usize,
+    cache: TbCache,
 }
 
 impl SyzygyTB {
-    /// Initialize tablebases from a directory path.
+    /// Initialize tablebases from a directory path. Uses the default
+    /// cache size; call `with_cache_mb` to customise.
     pub fn new(path: &str) -> Result<Self, String> {
+        Self::new_with_cache(path, DEFAULT_TB_HASH_MB)
+    }
+
+    /// Initialize tablebases with a specific cache size in MB (0 disables).
+    pub fn new_with_cache(path: &str, cache_mb: usize) -> Result<Self, String> {
         let mut tb = Tablebase::new();
         tb.add_directory(path).map_err(|e| format!("Syzygy init: {}", e))?;
 
         let max_pieces = tb.max_pieces();
-        eprintln!("info string Syzygy tablebases loaded: {} pieces from {}", max_pieces, path);
+        let cache = TbCache::new(cache_mb);
+        eprintln!("info string Syzygy tablebases loaded: {} pieces from {}, cache {} MB",
+                  max_pieces, path, cache.size_mb());
 
-        Ok(SyzygyTB { tb, max_pieces })
+        Ok(SyzygyTB { tb, max_pieces, cache })
     }
 
     /// Maximum number of pieces supported.
     pub fn max_pieces(&self) -> usize {
         self.max_pieces
+    }
+
+    /// Clear the probe cache (called on ucinewgame).
+    pub fn clear_cache(&self) {
+        self.cache.clear();
     }
 
     /// Probe WDL for an interior node. Returns Some(wdl_score) or None.
@@ -40,9 +59,19 @@ impl SyzygyTB {
             return None;
         }
 
+        // Native-hash cache check first — avoids the Board→Chess translation
+        // and the shakmaty decompression path when the slot is valid.
+        if let Some(wdl) = self.cache.probe(board.hash) {
+            return Some(wdl);
+        }
+
         let chess = board_to_shakmaty(board)?;
         match self.tb.probe_wdl(&chess) {
-            Ok(wdl) => Some(ambiguous_wdl_to_score(wdl)),
+            Ok(wdl) => {
+                let score = ambiguous_wdl_to_score(wdl);
+                self.cache.store(board.hash, score);
+                Some(score)
+            }
             Err(_) => None,
         }
     }

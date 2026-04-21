@@ -16,6 +16,7 @@ mod epd;
 pub mod nnue;
 pub mod book;
 pub mod tb;
+pub mod tb_cache;
 pub mod binpack;
 pub mod datagen;
 pub mod nnue_export;
