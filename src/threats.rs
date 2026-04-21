@@ -1236,9 +1236,10 @@ pub unsafe fn apply_threat_deltas(
     dst: &mut [i16],           // destination threat accumulator (one perspective)
     src: &[i16],               // source (previous position's threat accumulator)
     deltas: &[RawThreatDelta],
-    threat_weights: &[i8],     // [num_threats × hidden_size]
+    threat_weights: &[i8],     // [num_physical × hidden_size]
     hidden_size: usize,
-    num_threats: usize,
+    num_threats: usize,        // logical feature count (threat_index upper bound)
+    remap: &[i32],             // empty = identity; otherwise raw idx → compact idx or -1
     pov: Color,
     mirrored: bool,
 ) {
@@ -1250,6 +1251,7 @@ pub unsafe fn apply_threat_deltas(
     let mut subs = [0usize; MAX_THREAT_DELTAS];
     let mut n_adds = 0usize;
     let mut n_subs = 0usize;
+    let has_remap = !remap.is_empty();
     for delta in deltas {
         let idx = threat_index(
             delta.attacker_cp() as usize,
@@ -1260,8 +1262,15 @@ pub unsafe fn apply_threat_deltas(
             pov,
         );
         if idx < 0 || (idx as usize) >= num_threats { continue; }
-        if delta.add() { adds[n_adds] = idx as usize; n_adds += 1; }
-        else { subs[n_subs] = idx as usize; n_subs += 1; }
+        let row = if has_remap {
+            let r = remap[idx as usize];
+            if r < 0 { continue; }
+            r as usize
+        } else {
+            idx as usize
+        };
+        if delta.add() { adds[n_adds] = row; n_adds += 1; }
+        else { subs[n_subs] = row; n_subs += 1; }
     }
     let adds = &adds[..n_adds];
     let subs = &subs[..n_subs];
