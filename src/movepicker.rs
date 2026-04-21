@@ -193,6 +193,12 @@ pub struct MovePicker {
     // B1: our own pieces blocking a slider's attack on an enemy piece.
     // Moving one of these creates a discovered attack.
     xray_blockers: Bitboard,
+    // B2: skewer-target squares per slider type. Quiet slider moves
+    // landing on these squares create a skewer (two enemy pieces on
+    // the same ray). `skewer_diag` for bishop moves, `skewer_orth`
+    // for rook moves, union for queen moves.
+    skewer_diag: Bitboard,
+    skewer_orth: Bitboard,
     // Evasion support
     checkers: Bitboard,
     pinned: Bitboard,
@@ -215,6 +221,8 @@ impl MovePicker {
         pawn_hist: Option<&[[i16; 64]; 13]>,
         threats: Threats,
         xray_blockers: Bitboard,
+        skewer_diag: Bitboard,
+        skewer_orth: Bitboard,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
     ) -> Self {
@@ -288,6 +296,8 @@ impl MovePicker {
             skip_quiet: false,
             threats,
             xray_blockers,
+            skewer_diag,
+            skewer_orth,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -320,6 +330,8 @@ impl MovePicker {
             skip_quiet: true,
             threats: 0,
             xray_blockers: 0,
+            skewer_diag: 0,
+            skewer_orth: 0,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -374,6 +386,8 @@ impl MovePicker {
             skip_quiet: false,
             threats: 0, // evasions don't use threat-aware history
             xray_blockers: 0, // evasions don't use discovered-attack bonus
+            skewer_diag: 0, // evasions don't consider skewer bonus
+            skewer_orth: 0,
             checkers,
             pinned,
             threat_sq: -1,
@@ -614,6 +628,24 @@ impl MovePicker {
             // is a follow-up if H1 resolves.
             if self.xray_blockers & (1u64 << from) != 0 {
                 score += crate::search::DISCOVERED_ATTACK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+            }
+
+            // B2: Skewer bonus. Quiet slider move (B/R/Q) to a square that
+            // lines up two enemy pieces on the same ray. skewer_diag is
+            // checked for bishops, skewer_orth for rooks, union for queens.
+            // Bitboards already masked to empty squares in board.rs.
+            if piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                let to_bb = 1u64 << to;
+                let hit_skewer = match pt {
+                    crate::types::BISHOP => (self.skewer_diag & to_bb) != 0,
+                    crate::types::ROOK => (self.skewer_orth & to_bb) != 0,
+                    crate::types::QUEEN => ((self.skewer_diag | self.skewer_orth) & to_bb) != 0,
+                    _ => false,
+                };
+                if hit_skewer {
+                    score += crate::search::SKEWER_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+                }
             }
 
             // Reckless "offense bonus": quiet move that lands on a square

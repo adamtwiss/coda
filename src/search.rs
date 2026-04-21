@@ -111,6 +111,14 @@ tunables!(
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
     (FUT_THREATS_MARGIN, 38, 0, 200, 10.0),
     (DISCOVERED_ATTACK_BONUS, 7501, 0, 30000, 1500.0),
+    // B2 (Titan's threat_ideas_plan, unlocked by B1 +52 Elo): flat bonus
+    // for quiet slider moves (B/R/Q) landing on a square that creates a
+    // skewer — attacking an enemy with another enemy piece directly
+    // behind on the same ray. Same "specific tactical motif" category as
+    // B1; expected to land at a similar (though smaller) magnitude since
+    // skewers are rarer than discovered attacks. Starting value set at
+    // 60% of B1's tuned value to reflect that expectation.
+    (SKEWER_BONUS, 4500, 0, 20000, 1000.0),
     (SE_KING_PRESSURE_MARGIN, 3, 0, 30, 1.5),
     (MVV_CAP_MULT, 17, 4, 64, 3.0),
     (CONT_HIST_MULT, 1, 1, 8, 1.5),
@@ -1586,6 +1594,15 @@ fn negamax(
     } else {
         0
     };
+    // B2: Skewer-target bitboards. Squares where placing our bishop/rook/
+    // queen would line up two enemy pieces on the same ray (slider → A →
+    // B, no blockers between A and B). Movepicker bonus for quiet slider
+    // moves landing on these squares. Cost: ~2× per-enemy magic lookups.
+    let (skewer_diag, skewer_orth): (u64, u64) = if tp(&SKEWER_BONUS) > 0 {
+        board.skewer_targets(board.side_to_move)
+    } else {
+        (0, 0)
+    };
 
     // Clear PV for this node
     if ply_u <= MAX_PLY {
@@ -2115,7 +2132,7 @@ fn negamax(
     let mut picker = if in_check {
         MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, skewer_diag, skewer_orth, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
 

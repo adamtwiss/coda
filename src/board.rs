@@ -539,6 +539,69 @@ impl Board {
         result
     }
 
+    /// Skewer target squares for `color`'s sliders.
+    ///
+    /// Returns `(diagonal_targets, orthogonal_targets)` — bitboards of
+    /// squares where placing our bishop/rook/queen would skewer two
+    /// enemy pieces on a shared ray.
+    ///
+    /// Skewer definition: our slider (at a target square) attacks enemy A
+    /// directly, and enemy B sits on the same ray past A. If A moves,
+    /// B is exposed. Pins are the reverse (B is the pinned piece, can't
+    /// move). Both are tactically important; this function covers both
+    /// as "two enemy pieces collinear with my attack".
+    ///
+    /// The requirement is "no blocker between A and B" — so the ray
+    /// from slider → A → B is clear after A moves. Current impl uses
+    /// `bishop_attacks(A, occ) & enemies` to find direct enemy neighbours
+    /// along diagonal rays; this already excludes any blocked ray.
+    ///
+    /// Companion to `xray_blockers` (B1). Whereas B1 rewards FROM-based
+    /// discovered-attack creation, this rewards TO-based skewer creation.
+    /// Both are precomputed once per node and consumed by the movepicker
+    /// as a simple bit-test in the scoring loop.
+    ///
+    /// Cost: ~2 magic lookups per enemy piece. For a typical ~14 enemies,
+    /// roughly 28 magic lookups — similar ballpark to `xray_blockers`.
+    pub fn skewer_targets(&self, color: Color) -> (Bitboard, Bitboard) {
+        let c = color as usize;
+        let occ = self.colors[0] | self.colors[1];
+        let enemies = self.colors[c ^ 1];
+        let mut diag: Bitboard = 0;
+        let mut orth: Bitboard = 0;
+
+        let mut es = enemies;
+        while es != 0 {
+            let a_sq = es.trailing_zeros();
+            es &= es - 1;
+
+            // Diagonal: enemies A directly sees along its bishop rays.
+            // Each such B is the back piece of a potential skewer.
+            let mut d_neighbours = crate::attacks::bishop_attacks(a_sq, occ) & enemies;
+            while d_neighbours != 0 {
+                let b_sq = d_neighbours.trailing_zeros();
+                d_neighbours &= d_neighbours - 1;
+                // Target squares: past A from B's direction — i.e. sq1=B,
+                // sq2=A, `ray_extension(B, A)` gives squares past A where
+                // our slider could sit to have A closer, B behind.
+                diag |= crate::bitboard::ray_extension(b_sq, a_sq);
+            }
+
+            // Orthogonal: same idea with rook rays.
+            let mut o_neighbours = crate::attacks::rook_attacks(a_sq, occ) & enemies;
+            while o_neighbours != 0 {
+                let b_sq = o_neighbours.trailing_zeros();
+                o_neighbours &= o_neighbours - 1;
+                orth |= crate::bitboard::ray_extension(b_sq, a_sq);
+            }
+        }
+
+        // Exclude squares already occupied — moving to a friendly or
+        // enemy square isn't a quiet slider move; MovePicker scores
+        // captures separately anyway.
+        (diag & !occ, orth & !occ)
+    }
+
     /// Get bitboard of all pieces attacking a square.
     pub fn attackers_to(&self, sq: u32, occ: Bitboard) -> Bitboard {
         let knights = self.pieces[KNIGHT as usize];
