@@ -249,9 +249,22 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 // producing MORE stockpile. Verified: v3 (movetime)
                                 // had 3/28 stockpile at 60+1; v6 (full TM) had 7/28.
                                 // Movetime runs the full budget — best for this case.
+                                //
+                                // movetime_floor = inc - overhead. This enforces the
+                                // "never think less than we gain" rule on ponderhit
+                                // fresh-searches too — without it, TT-cached positions
+                                // instant-emit and stockpile clock on ponder-heavy TCs
+                                // like lichess blitz (lichess 6CQJQNVu).
+                                let our_inc = if search_board.side_to_move == crate::types::WHITE {
+                                    limits.winc
+                                } else {
+                                    limits.binc
+                                };
+                                let floor = our_inc.saturating_sub(si.move_overhead);
                                 let fresh_limits = SearchLimits {
                                     infinite: false,
                                     movetime: remaining,
+                                    movetime_floor: floor,
                                     ..SearchLimits::new()
                                 };
                                 let fresh_start = std::time::Instant::now();
