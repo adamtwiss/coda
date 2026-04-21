@@ -574,9 +574,17 @@ impl SearchInfo {
         };
         let score = score * (22400 + material) / 32 / 1024;
 
-        // 50-move eval scaling: decay eval toward zero as halfmove clock advances.
-        let hm = board.halfmove.min(200) as i32;
-        score * (200 - hm) / 200
+        // 50-move eval scaling: decay eval toward zero as the halfmove clock
+        // approaches the 100-ply draw horizon. The previous formula
+        // `score * (200 - hm) / 200` never passed 0.5× — at hm=99 (one ply
+        // before a claimable draw) it still reported half the material
+        // advantage, which on Lichess produced long technically-won games
+        // that hit the 50-move rule. `halfmove >= 100` is already treated
+        // as a draw in search (see `halfmove >= 100` checks), so the
+        // effective range is [0..100); scaling over 100 (not 200) actually
+        // reaches zero at the cliff.
+        let hm = board.halfmove.min(100) as i32;
+        score * (100 - hm) / 100
     }
 }
 
