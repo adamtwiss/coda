@@ -1914,6 +1914,7 @@ fn negamax(
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && king_zone_pressure < tp(&NMP_KING_ZONE_MAX)  // New gate
         && any_threat_count < 3  // S7-style: skip NMP when many of our pieces are under threat
+        && !unstable  // Unstable bundle (E6): skip NMP when eval is unstable
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
@@ -1986,6 +1987,8 @@ fn negamax(
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
+            // Unstable bundle: widen RFP margin when eval is unstable (E2).
+            if unstable { margin += margin / 3; }
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
@@ -2300,7 +2303,9 @@ fn negamax(
             // our_defenses widener: add margin per our-piece-under-attack so
             // tactical positions keep more lines from being pruned on eval.
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
+            // Unstable bundle (E5): widen futility margin when eval unstable.
+            let unstable_adj = if unstable { (tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH)) / 3 } else { 0 };
+            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj + unstable_adj;
             // Don't futility-prune moves with very strong history (Igel pattern)
             if futility_value <= alpha && main_hist < 12000 {
                 info.stats.futility_prunes += 1;
