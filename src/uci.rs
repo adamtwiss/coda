@@ -23,6 +23,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut opening_book: Option<crate::book::OpeningBook> = None;
     let mut use_book = true;
     let mut syzygy: Option<std::sync::Arc<crate::tb::SyzygyTB>> = None;
+    let mut syzygy_path: Option<String> = None; // remembered for cache-size reloads
+    let mut tb_hash_mb: usize = crate::tb::DEFAULT_TB_HASH_MB;
     let mut num_threads: usize = 1;
 
     // Pre-load NNUE if path given via CLI, otherwise auto-discover
@@ -80,6 +82,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("option name MoveOverhead type spin default 100 min 0 max 5000");
                 println!("option name Ponder type check default false");
                 println!("option name SyzygyPath type string default <empty>");
+                println!("option name TBHash type spin default 16 min 0 max 1024");
                 println!("option name SparseL1 type check default true");
                 println!("option name HiddenActivation type combo default screlu var screlu var crelu");
                 // Tunable search parameters (for SPSA)
@@ -107,6 +110,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 info.clear_correction_history();
                 info.clear_pawn_hist(); // was missing — stale data leaked between games
                 if let Some(acc) = &mut info.nnue_acc { acc.reset(); }
+                // Clear Syzygy probe cache on new game (prevents stale entries
+                // from a prior game leaking into the new one's search).
+                if let Some(ref tb) = syzygy { tb.clear_cache(); }
                 board = Board::startpos();
             }
             "position" => {
@@ -437,13 +443,32 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     match tokens[ni] {
                         "OwnBook" => { use_book = tokens[vi] == "true"; }
                         "SyzygyPath" => {
-                            match crate::tb::SyzygyTB::new(tokens[vi]) {
+                            let path = tokens[vi].to_string();
+                            match crate::tb::SyzygyTB::new_with_cache(&path, tb_hash_mb) {
                                 Ok(tb) => {
                                     let tb_arc = std::sync::Arc::new(tb);
                                     info.syzygy = Some(tb_arc.clone());
                                     syzygy = Some(tb_arc);
+                                    syzygy_path = Some(path);
                                 }
                                 Err(e) => eprintln!("info string Syzygy load failed: {}", e),
+                            }
+                        }
+                        "TBHash" => {
+                            if let Ok(mb) = tokens[vi].parse::<usize>() {
+                                tb_hash_mb = mb.min(1024);
+                                // Rebuild the tablebase wrapper with the new cache
+                                // size (so existing searches can't race on resize).
+                                if let Some(ref path) = syzygy_path {
+                                    match crate::tb::SyzygyTB::new_with_cache(path, tb_hash_mb) {
+                                        Ok(tb) => {
+                                            let tb_arc = std::sync::Arc::new(tb);
+                                            info.syzygy = Some(tb_arc.clone());
+                                            syzygy = Some(tb_arc);
+                                        }
+                                        Err(e) => eprintln!("info string TBHash resize failed: {}", e),
+                                    }
+                                }
                             }
                         }
                         "BookFile" => {
