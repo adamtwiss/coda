@@ -572,20 +572,43 @@ impl SearchInfo {
             let queens = popcount(board.pieces[QUEEN as usize]) as i32 * 1015;
             pawns + knights + bishops + rooks + queens
         };
-        let score = score * (22400 + material) / 32 / 1024;
-
-        // 50-move eval scaling: decay eval toward zero as the halfmove clock
-        // approaches the 100-ply draw horizon. The previous formula
-        // `score * (200 - hm) / 200` never passed 0.5× — at hm=99 (one ply
-        // before a claimable draw) it still reported half the material
-        // advantage, which on Lichess produced long technically-won games
-        // that hit the 50-move rule. `halfmove >= 100` is already treated
-        // as a draw in search (see `halfmove >= 100` checks), so the
-        // effective range is [0..100); scaling over 100 (not 200) actually
-        // reaches zero at the cliff.
-        let hm = board.halfmove.min(100) as i32;
-        score * (100 - hm) / 100
+        // `eval()` now returns the halfmove-INDEPENDENT score (material
+        // scaling only). 50-move scaling is applied at every consumption
+        // site (via `apply_halfmove_scale`) using the *current* halfmove.
+        //
+        // Rationale: TT stores the static eval and gets probed again at
+        // potentially very different halfmove values. If we scaled inside
+        // `eval()` the scaling factor would be frozen into the TT entry at
+        // write time, and re-probing the same position at a higher halfmove
+        // would use a stale scale. With aggressive scaling (our current
+        // formula) that bakes in gross errors and wipes out the
+        // correction — hence SPRT #610 showed −8 Elo at 1000 games before
+        // we caught this. The fix is structural: keep TT storage
+        // halfmove-independent, apply scale freshly on read.
+        score * (22400 + material) / 32 / 1024
     }
+}
+
+/// Scale a raw (halfmove-independent) eval toward zero as the halfmove
+/// clock approaches the 100-ply draw horizon.
+///
+/// Formula: `score * (100 - clamp(hm, 0, 100)) / 100`. At `hm=0` returns
+/// `score` unchanged; at `hm=100` returns `0`. Callers apply this at the
+/// *point of use*, never before storing to TT — see the comment in
+/// `SearchInfo::eval`.
+///
+/// Consensus-aligned with Obsidian/Reckless-style `(100 - hm) / 100`,
+/// which unlike the previous `(200 - hm) / 200` actually reaches zero
+/// at the draw cliff rather than topping out at 0.5×.
+#[inline]
+fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
+    // Leave sentinel scores untouched so downstream comparisons with
+    // `-INFINITY` / `MATE_SCORE - ply` keep their absolute magnitudes.
+    if score <= -INFINITY + 1 || score.abs() >= MATE_SCORE - 100 {
+        return score;
+    }
+    let hm = (halfmove as i32).min(100);
+    score * (100 - hm) / 100
 }
 
 /// Build a DirtyPiece for lazy NNUE accumulator update.
@@ -1541,7 +1564,7 @@ fn negamax(
 
     // Guard against stack overflow
     if ply_u >= MAX_PLY {
-        return info.eval(board);
+        return apply_halfmove_scale(info.eval(board), board.halfmove);
     }
 
     // Mate distance pruning — applies to all nodes (standard form)
@@ -1842,9 +1865,23 @@ fn negamax(
     let checkers = board.checkers();
     let in_check = checkers != 0;
 
-    // Compute static eval for pruning and LMR improving detection
+    // Compute static eval for pruning and LMR improving detection.
+    //
+    // Three variables — same value at different processing stages:
+    //   raw_eval    : halfmove-INDEPENDENT  (what goes in/out of TT, also
+    //                                        passed to corrhist *update*)
+    //   scaled_eval : halfmove-scaled, pre-correction (corrhist sees this as
+    //                                                   its input base)
+    //   static_eval : scaled + corrected (what pruning/LMR decisions use)
+    //
+    // Keeping these separate fixes the TT staleness bug where a position
+    // first seen at hm=20 stored an eval scaled against hm=20, then
+    // revisited at hm=85 used the stale-scaled value — exposed by the
+    // aggressive `(100-hm)/100` scaling (SPRT #610, flat at -8 Elo after
+    // 1000g). TT now stores raw_eval; every consumer scales fresh.
     let mut static_eval = -INFINITY;
     let mut raw_eval = -INFINITY;
+    let mut scaled_eval = -INFINITY;
     let mut improving = false;
     if !in_check {
         if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
@@ -1852,8 +1889,9 @@ fn negamax(
         } else {
             raw_eval = info.eval(board);
         }
-        // Apply correction history
-        static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, raw_eval) } else { raw_eval };
+        scaled_eval = apply_halfmove_scale(raw_eval, board.halfmove);
+        // Apply correction history to the halfmove-scaled value
+        static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, scaled_eval) } else { scaled_eval };
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = static_eval;
         }
@@ -2492,8 +2530,14 @@ fn negamax(
                 // Complexity-aware LMR: reduce less when correction history
                 // magnitude is high (uncertain eval → search deeper).
                 // Matches Obsidian: R -= complexity / 120.
-                if raw_eval > -INFINITY {
-                    let complexity = (static_eval - raw_eval).abs();
+                //
+                // Compare against `scaled_eval` (pre-correction, post-hm-scale)
+                // so "complexity" measures only the corrhist delta magnitude,
+                // not the halfmove scaling factor. Using raw_eval here would
+                // conflate corrhist drift with halfmove decay, artificially
+                // inflating complexity in long-halfmove positions.
+                if scaled_eval > -INFINITY {
+                    let complexity = (static_eval - scaled_eval).abs();
                     reduction -= complexity / tp(&LMR_COMPLEXITY_DIV);
                 }
 
@@ -2810,9 +2854,14 @@ fn negamax(
         && info.excluded_move[ply_u] == NO_MOVE
         && best_score > alpha_orig
         && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
-        && raw_eval > -(MATE_SCORE - 100)
+        && scaled_eval > -(MATE_SCORE - 100)
     {
-        update_correction_history(info, board, best_score, raw_eval, depth);
+        // Train corrhist on the halfmove-scaled pre-correction value.
+        // `best_score` is in scaled-space (propagated up from scaled leaf
+        // evals), so the err term `best_score - scaled_eval` captures the
+        // positional miscalibration we want corrhist to learn — not the
+        // halfmove decay, which is already priced into best_score.
+        update_correction_history(info, board, best_score, scaled_eval, depth);
     }
 
     // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes
@@ -2873,7 +2922,7 @@ fn quiescence_with_depth(
 
     // Limit quiescence depth to prevent stack overflow
     if qs_depth >= 32 {
-        return info.eval(board);
+        return apply_halfmove_scale(info.eval(board), board.halfmove);
     }
 
     // Prefetch TT bucket early
@@ -3026,12 +3075,15 @@ fn quiescence_with_depth(
     }
 
     // Stand pat - evaluate the current position (only when not in check)
-    // Use TT staticEval when available to avoid recomputing
-    let stand_pat = if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
+    // Use TT staticEval when available to avoid recomputing. TT stores
+    // halfmove-independent values (see SearchInfo::eval doc), so we apply
+    // the scale freshly against `board.halfmove` after reading.
+    let raw_stand_pat = if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
         tt_entry.static_eval
     } else {
         info.eval(board)
     };
+    let stand_pat = apply_halfmove_scale(raw_stand_pat, board.halfmove);
     let mut best_score = stand_pat;
 
     // TT bound refinement of stand-pat (consensus: every top engine does this)
@@ -3154,7 +3206,10 @@ fn quiescence_with_depth(
         TT_FLAG_EXACT
     };
     if FEAT_TT_STORE.load(Ordering::Relaxed) && !info.stop.load(Ordering::Relaxed) {
-        info.tt.store(board.hash, -1, store_score, flag, best_move, stand_pat, false);
+        // Store the halfmove-INDEPENDENT value so later probes at a
+        // different halfmove get a correct scale — see the doc comment
+        // in `SearchInfo::eval`.
+        info.tt.store(board.hash, -1, store_score, flag, best_move, raw_stand_pat, false);
     }
 
     // QS beta blending: dampen capture fail-high at non-PV nodes
@@ -3317,6 +3372,33 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 50-move eval scaling helper. Locks in both the formula (linear decay
+    /// over 100 plies, reaches zero at the 50-move claim cliff) and the
+    /// sentinel preservation that downstream search relies on when
+    /// comparing against `-INFINITY` and mate scores.
+    #[test]
+    fn test_apply_halfmove_scale() {
+        // Linear decay from full to zero across the draw horizon.
+        assert_eq!(apply_halfmove_scale(100, 0), 100);
+        assert_eq!(apply_halfmove_scale(100, 25), 75);
+        assert_eq!(apply_halfmove_scale(100, 50), 50);
+        assert_eq!(apply_halfmove_scale(100, 75), 25);
+        assert_eq!(apply_halfmove_scale(100, 99), 1);
+        assert_eq!(apply_halfmove_scale(100, 100), 0);
+        // Sign preserved.
+        assert_eq!(apply_halfmove_scale(-400, 50), -200);
+        // Saturation past 100 (hm > 100 is normally intercepted as a draw,
+        // but the scale function still clamps so it never flips sign).
+        assert_eq!(apply_halfmove_scale(100, 150), 0);
+        // Zero in → zero out at any hm.
+        assert_eq!(apply_halfmove_scale(0, 50), 0);
+        // Sentinel scores are not scaled — comparisons against -INFINITY /
+        // mate-adjusted scores in the search body rely on this.
+        assert_eq!(apply_halfmove_scale(-INFINITY, 50), -INFINITY);
+        assert_eq!(apply_halfmove_scale(MATE_SCORE - 5, 99), MATE_SCORE - 5);
+        assert_eq!(apply_halfmove_scale(-(MATE_SCORE - 5), 99), -(MATE_SCORE - 5));
+    }
 
     /// Singular extensions set `info.excluded_move[ply]` during verification
     /// search and MUST clear it after. A leak would silently corrupt the
