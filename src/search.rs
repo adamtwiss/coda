@@ -119,6 +119,9 @@ tunables!(
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
     // LMR over-reduces king-restriction queen moves that complete mates.
     (LMR_ENDGAME_PIECES, 6, 0, 12, 1.5),
+    // E7: king_zone_pressure × RFP margin widener. Widen RFP margin by this
+    // per unit of king_zone_pressure. Retry of #503 H0 on new trunk.
+    (RFP_KZP_MARGIN, 8, 0, 30, 1.5),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -1986,6 +1989,10 @@ fn negamax(
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
+            // E7: widen margin by king_zone_pressure × RFP_KZP_MARGIN. Retry of
+            // #503 H0 on new post-basin-shift trunk. king_zone_pressure has
+            // landed at NMP/LMR/ProbCut/SE; RFP is the remaining obvious slot.
+            margin += king_zone_pressure * tp(&RFP_KZP_MARGIN);
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
