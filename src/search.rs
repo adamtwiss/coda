@@ -2003,6 +2003,7 @@ fn negamax(
         && !(tt_hit && tt_entry.depth >= depth - 3 && tt_entry.score < probcut_beta)  // TT says no chance
         && king_zone_pressure < tp(&PROBCUT_KING_ZONE_MAX)  // A3: skip in high-threat positions
         && !unstable  // Skip ProbCut in eval-unstable positions (eval can't be trusted)
+        && our_xray_blockers == 0  // E4: skip when xray-discovery potential exists
         && FEAT_PROBCUT.load(Ordering::Relaxed)
     {
         // SEE threshold: only consider captures that gain enough material
