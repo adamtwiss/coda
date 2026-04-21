@@ -112,6 +112,12 @@ tunables!(
     (FUT_THREATS_MARGIN, 38, 0, 200, 10.0),
     (DISCOVERED_ATTACK_BONUS, 7501, 0, 30000, 1500.0),
     (SE_KING_PRESSURE_MARGIN, 3, 0, 30, 1.5),
+    // xray-SE: widen singular test margin when TT move is from an x-ray
+    // blocker square (moving it uncovers our slider's attack on an enemy).
+    // Signal already delivered +52 in movepicker (#502). Flat bonus
+    // subtracted from singular_beta → easier to judge singular → more
+    // extensions for tactically significant moves.
+    (SE_XRAY_BLOCKER_MARGIN, 8, 0, 40, 2.0),
     (MVV_CAP_MULT, 17, 4, 64, 3.0),
     (CONT_HIST_MULT, 1, 1, 8, 1.5),
     (KNIGHT_FORK_BONUS, 7516, 0, 20000, 1000.0),
@@ -2206,9 +2212,16 @@ fn negamax(
 
             // Skip SE for mate scores (margin comparison meaningless)
             if tt_score_local > -(MATE_SCORE - 100) && tt_score_local < MATE_SCORE - 100 {
+                // xray bonus: if TT move uncovers our slider's attack on enemy
+                // (from-square ∈ our_xray_blockers), widen margin → easier
+                // singular → more extensions on tactical discoveries.
+                let xray_bonus = if our_xray_blockers & (1u64 << move_from(tt_move)) != 0 {
+                    tp(&SE_XRAY_BLOCKER_MARGIN)
+                } else { 0 };
                 // S4: widen singular test margin when king under pressure.
                 let singular_beta = tt_score_local - depth
-                    - king_zone_pressure * tp(&SE_KING_PRESSURE_MARGIN);
+                    - king_zone_pressure * tp(&SE_KING_PRESSURE_MARGIN)
+                    - xray_bonus;
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
