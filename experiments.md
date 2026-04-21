@@ -5320,3 +5320,33 @@ Memory updated: `feedback_h0_post_mortem_discipline.md` — require mechanism-bu
 ### WDL ladder (kb10 family)
 
 Tested so far: **w15 > w10**, **w15 > w20**. Additional w0 and w05 nets trained overnight. Full RR deferred — low priority, pure research/documentation. w15 confirmed optimum for kb10.
+
+## 2026-04-21 session (continued) — AVX-512 + VNNI merge
+
+**Merged `feature/nnue-avx512-vnni-v9`** (Zeus's work) at 51a71f2.
+Bench bit-exact 2,170,815 across all tested CPUs — correctness validated.
+
+### Per-uArch NPS impact
+
+| Platform | CPU | Pre NPS | Post NPS | Delta | Notes |
+|---|---|---|---|---|---|
+| Zeus server | Zen5 (AVX-512 VNNI) | 1,076K | 1,225K | **+13.8%** | VPDPBUSD 1-cycle throughput |
+| Hercules | Xeon E-2288G (AVX2) | 200K | 200K | 0% | Bit-exact — AVX2 path unchanged |
+| Adam laptop | i5-13500H Raptor Lake (AVX-VNNI) | 664K | 614K | **−7.5%** | VPDPBUSD on Intel mobile is ~2-cycle, uop-fusion win eaten by lower throughput |
+
+### Open follow-up
+
+**Raptor Lake −7.5% needs investigation.** This isn't a niche CPU — 13th gen
+Intel i5/i7 is mainstream hardware. Merge stays for now because correctness
+is validated and Zen5 gain is substantial, but AVX-VNNI dispatch needs to
+either:
+1. Tune the kernel (unrolling, accumulator count) to match AVX2-path performance
+2. Narrow the dispatch gate (avx-vnni only on Zen 4+, or only when `avx512vnni` ∧ AVX-VNNI)
+3. Add per-uArch detection
+
+Quick A/B for the local Claude investigating: patch `detect_avx_vnni()` to
+return false, rebuild, bench. If NPS recovers to 664K, VPDPBUSD-on-Raptor-Lake
+is confirmed as the culprit (vs dispatch-reorg side-effects).
+
+Relevant file: `src/sparse_l1.rs::dense_l1_avx_vnni` — the hot path for L1
+matmul on AVX-VNNI-without-AVX-512 CPUs.
