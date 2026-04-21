@@ -447,6 +447,10 @@ pub unsafe fn sparse_l1_avx512_vnni(
 /// Same as `dense_l1_avx2` but replaces the
 /// `VPMADDUBSW + VPMADDWD(ones) + VPADDD` sequence with a single
 /// `VPDPBUSD` per YMM lane.
+///
+/// Uses 4 interleaved accumulator pairs to hide VPDPBUSD's ~5-cycle
+/// latency on Alder Lake / Zen 4. Without this, the loop serialises on
+/// the accumulator dependency chain and runs ~2.5× slower than AVX2.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,avxvnni")]
 pub unsafe fn dense_l1_avx_vnni(
@@ -465,45 +469,87 @@ pub unsafe fn dense_l1_avx_vnni(
 
     for i in 0..num_neurons { output[i] = bias[i] as i32 * bias_scale; }
 
-    let mut acc0 = _mm256_setzero_si256();
-    let mut acc1 = _mm256_setzero_si256();
+    // Four accumulator pairs (lo=neurons 0-7, hi=neurons 8-15) break
+    // the VPDPBUSD dependency chain. Same pattern as dense_l1_avx512_vnni
+    // but with YMM registers (8 neurons each instead of 16).
+    let mut a0_lo = _mm256_setzero_si256();
+    let mut a0_hi = _mm256_setzero_si256();
+    let mut a1_lo = _mm256_setzero_si256();
+    let mut a1_hi = _mm256_setzero_si256();
+    let mut a2_lo = _mm256_setzero_si256();
+    let mut a2_hi = _mm256_setzero_si256();
+    let mut a3_lo = _mm256_setzero_si256();
+    let mut a3_hi = _mm256_setzero_si256();
 
     let w_ptr = sparse_weights.as_ptr();
+    let total_chunks = pw / 4;
+    let wide = num_neurons > 8;
 
-    let stm_chunks = std::slice::from_raw_parts(stm_pw.as_ptr() as *const u32, pw / 4);
-    for chunk_idx in 0..pw / 4 {
-        let val = *stm_chunks.get_unchecked(chunk_idx);
-        let input = _mm256_set1_epi32(val as i32);
-        let w_off = chunk_idx * chunk_stride;
-
-        let w0 = _mm256_loadu_si256(w_ptr.add(w_off) as *const __m256i);
-        acc0 = _mm256_dpbusd_avx_epi32(acc0, input, w0);
-
-        if num_neurons > 8 {
-            let w1 = _mm256_loadu_si256(w_ptr.add(w_off + 32) as *const __m256i);
-            acc1 = _mm256_dpbusd_avx_epi32(acc1, input, w1);
-        }
+    macro_rules! run_perspective {
+        ($chunks:expr, $chunk_offset:expr) => {{
+            let chunks: *const u32 = $chunks;
+            let chunk_offset: usize = $chunk_offset;
+            let mut c = 0usize;
+            while c + 4 <= total_chunks {
+                let v0 = *chunks.add(c);
+                let v1 = *chunks.add(c + 1);
+                let v2 = *chunks.add(c + 2);
+                let v3 = *chunks.add(c + 3);
+                let i0 = _mm256_set1_epi32(v0 as i32);
+                let i1 = _mm256_set1_epi32(v1 as i32);
+                let i2 = _mm256_set1_epi32(v2 as i32);
+                let i3 = _mm256_set1_epi32(v3 as i32);
+                let base0 = (chunk_offset + c) * chunk_stride;
+                let base1 = (chunk_offset + c + 1) * chunk_stride;
+                let base2 = (chunk_offset + c + 2) * chunk_stride;
+                let base3 = (chunk_offset + c + 3) * chunk_stride;
+                let w0 = _mm256_loadu_si256(w_ptr.add(base0) as *const __m256i);
+                let w1 = _mm256_loadu_si256(w_ptr.add(base1) as *const __m256i);
+                let w2 = _mm256_loadu_si256(w_ptr.add(base2) as *const __m256i);
+                let w3 = _mm256_loadu_si256(w_ptr.add(base3) as *const __m256i);
+                a0_lo = _mm256_dpbusd_avx_epi32(a0_lo, i0, w0);
+                a1_lo = _mm256_dpbusd_avx_epi32(a1_lo, i1, w1);
+                a2_lo = _mm256_dpbusd_avx_epi32(a2_lo, i2, w2);
+                a3_lo = _mm256_dpbusd_avx_epi32(a3_lo, i3, w3);
+                if wide {
+                    let w0h = _mm256_loadu_si256(w_ptr.add(base0 + 32) as *const __m256i);
+                    let w1h = _mm256_loadu_si256(w_ptr.add(base1 + 32) as *const __m256i);
+                    let w2h = _mm256_loadu_si256(w_ptr.add(base2 + 32) as *const __m256i);
+                    let w3h = _mm256_loadu_si256(w_ptr.add(base3 + 32) as *const __m256i);
+                    a0_hi = _mm256_dpbusd_avx_epi32(a0_hi, i0, w0h);
+                    a1_hi = _mm256_dpbusd_avx_epi32(a1_hi, i1, w1h);
+                    a2_hi = _mm256_dpbusd_avx_epi32(a2_hi, i2, w2h);
+                    a3_hi = _mm256_dpbusd_avx_epi32(a3_hi, i3, w3h);
+                }
+                c += 4;
+            }
+            // Tail: remaining chunks into accumulator pair 0.
+            while c < total_chunks {
+                let v = *chunks.add(c);
+                let inp = _mm256_set1_epi32(v as i32);
+                let base = (chunk_offset + c) * chunk_stride;
+                let w = _mm256_loadu_si256(w_ptr.add(base) as *const __m256i);
+                a0_lo = _mm256_dpbusd_avx_epi32(a0_lo, inp, w);
+                if wide {
+                    let wh = _mm256_loadu_si256(w_ptr.add(base + 32) as *const __m256i);
+                    a0_hi = _mm256_dpbusd_avx_epi32(a0_hi, inp, wh);
+                }
+                c += 1;
+            }
+        }};
     }
 
-    let ntm_chunk_offset = pw / 4;
-    let ntm_chunks = std::slice::from_raw_parts(ntm_pw.as_ptr() as *const u32, pw / 4);
-    for chunk_idx in 0..pw / 4 {
-        let val = *ntm_chunks.get_unchecked(chunk_idx);
-        let input = _mm256_set1_epi32(val as i32);
-        let w_off = (ntm_chunk_offset + chunk_idx) * chunk_stride;
+    let stm_chunks_ptr = stm_pw.as_ptr() as *const u32;
+    run_perspective!(stm_chunks_ptr, 0);
+    let ntm_chunks_ptr = ntm_pw.as_ptr() as *const u32;
+    run_perspective!(ntm_chunks_ptr, pw / 4);
 
-        let w0 = _mm256_loadu_si256(w_ptr.add(w_off) as *const __m256i);
-        acc0 = _mm256_dpbusd_avx_epi32(acc0, input, w0);
-
-        if num_neurons > 8 {
-            let w1 = _mm256_loadu_si256(w_ptr.add(w_off + 32) as *const __m256i);
-            acc1 = _mm256_dpbusd_avx_epi32(acc1, input, w1);
-        }
-    }
-
+    // Merge the four accumulator pairs.
+    let lo = _mm256_add_epi32(_mm256_add_epi32(a0_lo, a1_lo), _mm256_add_epi32(a2_lo, a3_lo));
+    let hi = _mm256_add_epi32(_mm256_add_epi32(a0_hi, a1_hi), _mm256_add_epi32(a2_hi, a3_hi));
     let mut results = [0i32; 16];
-    _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, acc0);
-    _mm256_storeu_si256(results.as_mut_ptr().add(8) as *mut __m256i, acc1);
+    _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, lo);
+    _mm256_storeu_si256(results.as_mut_ptr().add(8) as *mut __m256i, hi);
     for i in 0..num_neurons {
         output[i] += results[i];
     }
