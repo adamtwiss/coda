@@ -105,8 +105,177 @@ impl TTBucket {
     }
 }
 
+/// 2 MB-aligned bucket array with explicit huge-page preference.
+///
+/// Three-tier allocation strategy, tried in order:
+///
+/// 1. **Explicit hugetlb pool** (`mmap(MAP_HUGETLB | MAP_ANONYMOUS)`) —
+///    deterministic, bypasses THP/khugepaged. Requires the admin to
+///    pre-allocate pages: `sudo sysctl -w vm.nr_hugepages=<N>` (one
+///    page per 2 MB of TT to cover). When the pool is configured and
+///    has enough free pages, the TT is guaranteed to land on 2 MB
+///    physical pages — visible as `Private_Hugetlb` in `/proc/<pid>/smaps`.
+///
+/// 2. **Aligned heap + MADV_HUGEPAGE + MADV_COLLAPSE** — relies on the
+///    kernel's transparent huge-page machinery. Works when THP is
+///    functional; opportunistic.
+///
+/// 3. **Aligned heap + madvise hint only** — last resort; lets
+///    khugepaged promote lazily over many scan intervals (or never, on
+///    kernels where THP is silently broken — observed on Ubuntu HWE
+///    6.8.0-110 with `full_scans` incrementing but `pages_collapsed=0`).
+///
+/// All three return 2 MB-aligned memory. The sanity test
+/// `test_tt_allocation_is_2mb_aligned` pins the alignment invariant so
+/// future allocator regressions break the build rather than silently
+/// undoing any huge-page win.
+///
+/// The previous implementation used `Vec::with_capacity` → glibc malloc
+/// → 16-byte-aligned pages, so `madvise(MADV_HUGEPAGE)` was a no-op and
+/// Coda fell back to 4 KB pages on every Linux host. Verified on the
+/// production lichess box: `AnonHugePages: 0` for live coda with a
+/// 1 GB TT before this fix.
+#[cfg(target_os = "linux")]
+struct AlignedBuckets {
+    ptr: std::ptr::NonNull<TTBucket>,
+    len: usize,
+    /// How the mapping was obtained — determines the Drop path.
+    backing: AllocBacking,
+}
+
+#[cfg(target_os = "linux")]
+enum AllocBacking {
+    /// mmap(MAP_HUGETLB): released via munmap.
+    Hugetlb { size: usize },
+    /// std::alloc: released via dealloc.
+    Heap { layout: std::alloc::Layout },
+}
+
+#[cfg(target_os = "linux")]
+impl AlignedBuckets {
+    const HUGE_PAGE: usize = 2 * 1024 * 1024; // 2 MB
+
+    fn new(len: usize) -> Self {
+        let bytes = len.checked_mul(std::mem::size_of::<TTBucket>()).expect("TT size overflow");
+        // Layout/Hugetlb require size to be a multiple of 2 MB.
+        let size = (bytes + Self::HUGE_PAGE - 1) & !(Self::HUGE_PAGE - 1);
+
+        // Tier 1: explicit hugetlb mapping. Guaranteed real huge pages
+        // when the pool is configured; fails cleanly otherwise.
+        if let Some(ab) = Self::try_hugetlb(len, size) {
+            return ab;
+        }
+
+        // Tier 2/3: 2 MB-aligned heap allocation + THP hints.
+        Self::from_heap_with_thp(len, size)
+    }
+
+    fn try_hugetlb(len: usize, size: usize) -> Option<Self> {
+        // SAFETY: `mmap` with these flags is well-defined; we check for
+        // MAP_FAILED. The returned mapping is owned until munmap.
+        unsafe {
+            let raw = libc::mmap(
+                std::ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_HUGETLB,
+                -1,
+                0,
+            );
+            if raw == libc::MAP_FAILED {
+                return None;
+            }
+            // MAP_ANONYMOUS pages are kernel-zeroed; no memset needed.
+            let ptr = std::ptr::NonNull::new(raw as *mut TTBucket)?;
+            Some(AlignedBuckets {
+                ptr,
+                len,
+                backing: AllocBacking::Hugetlb { size },
+            })
+        }
+    }
+
+    fn from_heap_with_thp(len: usize, size: usize) -> Self {
+        use std::alloc::{alloc_zeroed, Layout};
+
+        let layout = Layout::from_size_align(size, Self::HUGE_PAGE).expect("TT layout");
+        // SAFETY: size/align are valid (checked by Layout), allocation is
+        // zero-init, we own the returned pointer until Drop.
+        let raw = unsafe { alloc_zeroed(layout) };
+        let ptr = std::ptr::NonNull::new(raw as *mut TTBucket)
+            .unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
+
+        // MADV_HUGEPAGE sets the `hg` VmFlag; MADV_COLLAPSE (kernel 6.1+)
+        // synchronously promotes if the kernel is willing. Both return
+        // benign errors on older / misbehaving kernels and we accept the
+        // 4 KB fallback silently.
+        unsafe {
+            let raw_ptr = ptr.as_ptr() as *mut libc::c_void;
+            libc::madvise(raw_ptr, size, libc::MADV_HUGEPAGE);
+
+            // Force-populate every 4 KB page so MADV_COLLAPSE has
+            // something to collapse (alloc_zeroed is logically zero but
+            // physical pages don't fault in until written).
+            let page = 4 * 1024;
+            let mut off = 0usize;
+            while off < size {
+                std::ptr::write_volatile((raw_ptr as *mut u8).add(off), 0u8);
+                off += page;
+            }
+
+            // MADV_COLLAPSE = 25 (Linux 6.1+); not in libc we pin.
+            const MADV_COLLAPSE: libc::c_int = 25;
+            libc::madvise(raw_ptr, size, MADV_COLLAPSE);
+        }
+
+        AlignedBuckets {
+            ptr,
+            len,
+            backing: AllocBacking::Heap { layout },
+        }
+    }
+
+    /// True if this instance is backed by an explicit hugetlb mapping.
+    /// Used by the constructor to log which tier served the TT.
+    fn is_hugetlb(&self) -> bool {
+        matches!(self.backing, AllocBacking::Hugetlb { .. })
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for AlignedBuckets {
+    fn drop(&mut self) {
+        // SAFETY: `backing` records exactly how `ptr` was obtained; we
+        // match it with the correct deallocator. TTBucket is atomic-only
+        // so has no meaningful Drop.
+        unsafe {
+            match self.backing {
+                AllocBacking::Hugetlb { size } => {
+                    libc::munmap(self.ptr.as_ptr() as *mut libc::c_void, size);
+                }
+                AllocBacking::Heap { layout } => {
+                    std::alloc::dealloc(self.ptr.as_ptr() as *mut u8, layout);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl std::ops::Deref for AlignedBuckets {
+    type Target = [TTBucket];
+    fn deref(&self) -> &[TTBucket] {
+        // SAFETY: pointer is valid for `len` TTBuckets, zero-initialised
+        // which is a valid bit pattern for all AtomicU64/AtomicU32 fields.
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+}
+
 /// The transposition table. Thread-safe for Lazy SMP.
 pub struct TT {
+    #[cfg(target_os = "linux")]
+    buckets: AlignedBuckets,
+    #[cfg(not(target_os = "linux"))]
     buckets: Vec<TTBucket>,
     mask: usize,  // num_buckets - 1 (power of 2)
     generation: std::sync::atomic::AtomicU8,
@@ -152,17 +321,28 @@ impl TT {
             size *= 2;
         }
         let size = size.max(1);
-        let mut buckets = Vec::with_capacity(size);
-        for _ in 0..size {
-            buckets.push(TTBucket::new_empty());
-        }
-        // Hint to use huge pages for the TT allocation (Linux transparent huge pages)
+
         #[cfg(target_os = "linux")]
-        unsafe {
-            let ptr = buckets.as_ptr() as *mut libc::c_void;
-            let len = size * std::mem::size_of::<TTBucket>();
-            libc::madvise(ptr, len, libc::MADV_HUGEPAGE);
-        }
+        let buckets = {
+            let ab = AlignedBuckets::new(size);
+            // Announce the path we took — helps confirm huge pages are
+            // actually in play without digging through /proc/<pid>/smaps.
+            let tier = if ab.is_hugetlb() { "explicit hugetlb (MAP_HUGETLB)" } else { "aligned heap + THP" };
+            let mb_alloc = (size * std::mem::size_of::<TTBucket>()) >> 20;
+            let _ = mb_alloc; // kept for potential future reporting
+            println!("info string TT {} MB via {} ({} buckets)", mb, tier, size);
+            ab
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        let buckets = {
+            let mut v = Vec::with_capacity(size);
+            for _ in 0..size {
+                v.push(TTBucket::new_empty());
+            }
+            v
+        };
+
         TT {
             buckets,
             mask: size - 1,
@@ -339,6 +519,28 @@ pub fn is_mate_score(score: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The huge-page fix relies on the TT's base pointer being 2 MB
+    /// aligned — otherwise `madvise(MADV_HUGEPAGE)` silently falls back
+    /// to 4 KB pages (the bug this commit is addressing). Regressing
+    /// the allocator would silently undo the NPS win, so pin the
+    /// invariant in a test.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_tt_allocation_is_2mb_aligned() {
+        // Exercise sizes on both sides of the 2 MB rounding path.
+        for mb in [1usize, 4, 16, 64, 256, 1024] {
+            let tt = TT::new(mb);
+            let ptr = tt.buckets.as_ptr() as usize;
+            const HUGE: usize = 2 * 1024 * 1024;
+            assert_eq!(
+                ptr & (HUGE - 1), 0,
+                "TT base pointer {:#x} (Hash={} MB) is not 2 MB aligned — \
+                 MADV_HUGEPAGE will be a no-op on transparent_hugepage=madvise hosts",
+                ptr, mb
+            );
+        }
+    }
 
     #[test]
     fn test_pack_unpack_roundtrip() {
