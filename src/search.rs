@@ -119,6 +119,11 @@ tunables!(
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
     // LMR over-reduces king-restriction queen moves that complete mates.
     (LMR_ENDGAME_PIECES, 6, 0, 12, 1.5),
+    // E1: threat_weight_mag bonus for quiet moves landing at high-magnitude
+    // destination (from mover_piece's perspective). Zero NPS cost — uses
+    // precomputed 768-entry table from NNUENet. Reframe of idea C after
+    // capture-variant showed MVV redundancy.
+    (TMAG_QUIET_BONUS, 1000, 0, 3000, 150.0),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -2105,7 +2110,12 @@ fn negamax(
     let mut picker = if in_check {
         MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
+        {
+            let tmag = info.nnue_net.as_ref()
+                .filter(|n| !n.threat_weight_mag.is_empty())
+                .map(|n| n.threat_weight_mag.as_slice());
+            MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack, tmag)
+        }
     };
     picker.threat_sq = threat_sq;
 

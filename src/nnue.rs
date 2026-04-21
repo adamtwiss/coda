@@ -1819,6 +1819,13 @@ pub struct NNUENet {
     pub threat_weights: Vec<i8>,  // [num_threat_features × hidden_size] i8 weights
     pub num_threat_features: usize,
     pub has_threats: bool,
+    /// E1 (reframed Idea C): per-(colored_piece, sq) threat-weight magnitude,
+    /// indexed `cp * 64 + sq`, normalised 0-1000. Sum of |w| across all threat
+    /// feature weights where this (piece, sq) pair appears as attacker or
+    /// victim, summed over hidden_size and both POVs. Used as quiet-move
+    /// destination bonus: a quiet move arriving at a high-magnitude square
+    /// for that piece lands at a tactically-important location.
+    pub threat_weight_mag: Vec<i32>,
     /// Number of king buckets in this net (10 for Reckless, 16 for others).
     /// PSQ weight block is sized `num_king_buckets * 768 * hidden_size`.
     pub num_king_buckets: usize,
@@ -2171,6 +2178,49 @@ impl NNUENet {
                 max_err, sum_err / total as f64);
         }
 
+        // E1: precompute per-(cp, sq) threat-weight magnitude table.
+        // Sum |w| across all threat feature weights involving this (piece, sq)
+        // as attacker or victim, summed over hidden_size and both POVs.
+        // Normalise to 0-1000 so movepicker bonus math is stable.
+        let threat_weight_mag = if has_threats && num_threat_features > 0 {
+            let mut mag = vec![0i32; 12 * 64];
+            let mut feature_mag = vec![0i32; num_threat_features];
+            for f in 0..num_threat_features {
+                let mut sum = 0i32;
+                for j in 0..hidden_size {
+                    sum += (threat_weights[f * hidden_size + j] as i32).abs();
+                }
+                feature_mag[f] = sum;
+            }
+            for attacker_cp in 0..12 {
+                for from in 0..64u32 {
+                    for victim_cp in 0..12 {
+                        for to in 0..64u32 {
+                            if attacker_cp == victim_cp && from == to { continue; }
+                            for &pov in &[crate::types::WHITE, crate::types::BLACK] {
+                                for &mirrored in &[false, true] {
+                                    let idx = crate::threats::threat_index(
+                                        attacker_cp, from, victim_cp, to, mirrored, pov);
+                                    if idx >= 0 && (idx as usize) < num_threat_features {
+                                        let fm = feature_mag[idx as usize];
+                                        mag[attacker_cp * 64 + from as usize] += fm;
+                                        mag[victim_cp * 64 + to as usize] += fm;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let max = mag.iter().copied().max().unwrap_or(1);
+            if max > 0 {
+                for v in mag.iter_mut() { *v = (*v * 1000) / max; }
+            }
+            mag
+        } else {
+            Vec::new()
+        };
+
         Ok(NNUENet {
             hidden_size,
             input_weights,
@@ -2200,6 +2250,7 @@ impl NNUENet {
             threat_weights,
             num_threat_features,
             has_threats,
+            threat_weight_mag,
             num_king_buckets,
             kb_layout,
             king_bucket: king_bucket_tbl,

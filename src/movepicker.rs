@@ -201,6 +201,10 @@ pub struct MovePicker {
     // Checking squares: from which squares does each piece type give direct check?
     // Indexed by piece type (0=PAWN..5=KING). Computed once per node.
     checking_sqs: [Bitboard; 6],
+    // E1: per-(cp, sq) threat-weight magnitude table pointer (from NNUENet,
+    // borrowed for search duration). 768 i32 entries. Used in quiet-move
+    // destination bonus.
+    threat_weight_mag: Option<*const i32>,
 }
 
 impl MovePicker {
@@ -217,6 +221,7 @@ impl MovePicker {
         xray_blockers: Bitboard,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
+        threat_weight_mag: Option<&[i32]>,
     ) -> Self {
         let killers = if ply < 64 {
             history.killers[ply]
@@ -292,6 +297,7 @@ impl MovePicker {
             pinned: 0,
             threat_sq: -1,
             checking_sqs,
+            threat_weight_mag: threat_weight_mag.map(|s| s.as_ptr()),
         }
     }
 
@@ -324,6 +330,7 @@ impl MovePicker {
             pinned: 0,
             threat_sq: -1,
             checking_sqs: [0; 6], // not used in QS
+            threat_weight_mag: None, // QS doesn't generate quiets
         }
     }
 
@@ -378,6 +385,7 @@ impl MovePicker {
             pinned,
             threat_sq: -1,
             checking_sqs: [0; 6], // not used in evasions
+            threat_weight_mag: None, // evasions don't exercise the E1 bonus path
         }
     }
 
@@ -548,6 +556,8 @@ impl MovePicker {
         self.moves = MoveList::new();
 
         let history = unsafe { &*self.history };
+        let tmag_ptr = self.threat_weight_mag;
+        let tmag_bonus = crate::search::TMAG_QUIET_BONUS.load(std::sync::atomic::Ordering::Relaxed);
 
         for i in 0..quiets.len {
             let m = quiets.moves[i];
@@ -598,6 +608,16 @@ impl MovePicker {
                     1 | 2 => crate::search::ESCAPE_BONUS_MINOR.load(std::sync::atomic::Ordering::Relaxed),
                     _ => 0,
                 };
+            }
+
+            // E1: threat_weight_mag quiet destination bonus. Piece arriving at
+            // a tactically-important square (high threat-weight magnitude from
+            // its colored-piece index) gets an ordering bonus.
+            if tmag_bonus > 0 && piece != NO_PIECE {
+                if let Some(p) = tmag_ptr {
+                    let mag = unsafe { *p.add((piece as usize) * 64 + to as usize) };
+                    score += (tmag_bonus * mag) / 1000;
+                }
             }
 
             // Quiet check bonus: moves that give direct check (SF +16384, Viridithas +10000)
