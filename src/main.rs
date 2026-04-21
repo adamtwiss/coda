@@ -483,7 +483,7 @@ fn main() {
                     let mut board = Board::from_fen(fen);
                     acc.force_recompute(&net, &board);
                     if tstack.active {
-                        tstack.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+                        tstack.ensure_computed(&net.threat_weights, net.num_threat_features, &net.threat_feature_remap, &board);
                     }
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { continue; }
@@ -997,7 +997,7 @@ fn run_check_net(net_path: &str) {
         if net.has_threats {
             let mut ts = crate::threat_accum::ThreatStack::new(h);
             ts.active = true;
-            ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+            ts.ensure_computed(&net.threat_weights, net.num_threat_features, &net.threat_feature_remap, &board);
             net.forward_with_threats(&acc, board.side_to_move, piece_count, &ts)
         } else {
             net.forward(&acc, board.side_to_move, piece_count)
