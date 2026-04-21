@@ -105,8 +105,82 @@ impl TTBucket {
     }
 }
 
+/// 2 MB-aligned, zero-initialised bucket array.
+///
+/// `Vec::with_capacity` routes through glibc malloc, which returns 16-byte
+/// (at best 4 KB) aligned memory. `madvise(MADV_HUGEPAGE)` only collapses
+/// 4 KB pages into 2 MB huge pages when the mapping is aligned on 2 MB at
+/// both ends, so the malloc-backed TT silently fell back to 4 KB pages on
+/// hosts running with `transparent_hugepage=madvise` (the common distro
+/// default). Verified on production lichess host:
+/// `AnonHugePages: 0` for Coda with a 1 GB TT before this fix.
+///
+/// This wrapper uses `std::alloc::alloc_zeroed` with a `Layout` whose
+/// alignment is 2 MB. TT sizes are already multiples of 2 MB for any
+/// practical `Hash` setting (smallest power-of-2 bucket count that covers
+/// `mb * 1 MB` with 64-byte buckets), so no end-padding is needed at the
+/// call sites that exist today. For `mb` small enough that the resulting
+/// size is below 2 MB we round up so the Layout is valid.
+#[cfg(target_os = "linux")]
+struct AlignedBuckets {
+    ptr: std::ptr::NonNull<TTBucket>,
+    len: usize,
+    layout: std::alloc::Layout,
+}
+
+#[cfg(target_os = "linux")]
+impl AlignedBuckets {
+    const HUGE_PAGE: usize = 2 * 1024 * 1024; // 2 MB
+
+    fn new(len: usize) -> Self {
+        use std::alloc::{alloc_zeroed, Layout};
+
+        let bytes = len.checked_mul(std::mem::size_of::<TTBucket>()).expect("TT size overflow");
+        // Layout requires size to be a multiple of align, so round up.
+        let size = (bytes + Self::HUGE_PAGE - 1) & !(Self::HUGE_PAGE - 1);
+        let layout = Layout::from_size_align(size, Self::HUGE_PAGE).expect("TT layout");
+
+        // SAFETY: size and align are valid (checked by Layout), allocation is zero-init,
+        // we own the returned pointer until Drop.
+        let raw = unsafe { alloc_zeroed(layout) };
+        let ptr = std::ptr::NonNull::new(raw as *mut TTBucket)
+            .unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
+
+        // Now the mapping is 2 MB-aligned — MADV_HUGEPAGE can actually
+        // promote it. Errors are non-fatal (e.g. running under an LSM that
+        // denies madvise); we just fall back to 4 KB pages silently.
+        unsafe {
+            libc::madvise(ptr.as_ptr() as *mut libc::c_void, size, libc::MADV_HUGEPAGE);
+        }
+
+        AlignedBuckets { ptr, len, layout }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for AlignedBuckets {
+    fn drop(&mut self) {
+        // SAFETY: ptr came from alloc_zeroed with exactly this layout.
+        // TTBucket contains only atomics which are POD for Drop purposes.
+        unsafe { std::alloc::dealloc(self.ptr.as_ptr() as *mut u8, self.layout); }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl std::ops::Deref for AlignedBuckets {
+    type Target = [TTBucket];
+    fn deref(&self) -> &[TTBucket] {
+        // SAFETY: pointer is valid for `len` TTBuckets, zero-initialised
+        // which is a valid bit pattern for all AtomicU64/AtomicU32 fields.
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+}
+
 /// The transposition table. Thread-safe for Lazy SMP.
 pub struct TT {
+    #[cfg(target_os = "linux")]
+    buckets: AlignedBuckets,
+    #[cfg(not(target_os = "linux"))]
     buckets: Vec<TTBucket>,
     mask: usize,  // num_buckets - 1 (power of 2)
     generation: std::sync::atomic::AtomicU8,
@@ -152,17 +226,19 @@ impl TT {
             size *= 2;
         }
         let size = size.max(1);
-        let mut buckets = Vec::with_capacity(size);
-        for _ in 0..size {
-            buckets.push(TTBucket::new_empty());
-        }
-        // Hint to use huge pages for the TT allocation (Linux transparent huge pages)
+
         #[cfg(target_os = "linux")]
-        unsafe {
-            let ptr = buckets.as_ptr() as *mut libc::c_void;
-            let len = size * std::mem::size_of::<TTBucket>();
-            libc::madvise(ptr, len, libc::MADV_HUGEPAGE);
-        }
+        let buckets = AlignedBuckets::new(size);
+
+        #[cfg(not(target_os = "linux"))]
+        let buckets = {
+            let mut v = Vec::with_capacity(size);
+            for _ in 0..size {
+                v.push(TTBucket::new_empty());
+            }
+            v
+        };
+
         TT {
             buckets,
             mask: size - 1,
@@ -339,6 +415,28 @@ pub fn is_mate_score(score: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The huge-page fix relies on the TT's base pointer being 2 MB
+    /// aligned — otherwise `madvise(MADV_HUGEPAGE)` silently falls back
+    /// to 4 KB pages (the bug this commit is addressing). Regressing
+    /// the allocator would silently undo the NPS win, so pin the
+    /// invariant in a test.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_tt_allocation_is_2mb_aligned() {
+        // Exercise sizes on both sides of the 2 MB rounding path.
+        for mb in [1usize, 4, 16, 64, 256, 1024] {
+            let tt = TT::new(mb);
+            let ptr = tt.buckets.as_ptr() as usize;
+            const HUGE: usize = 2 * 1024 * 1024;
+            assert_eq!(
+                ptr & (HUGE - 1), 0,
+                "TT base pointer {:#x} (Hash={} MB) is not 2 MB aligned — \
+                 MADV_HUGEPAGE will be a no-op on transparent_hugepage=madvise hosts",
+                ptr, mb
+            );
+        }
+    }
 
     #[test]
     fn test_pack_unpack_roundtrip() {
