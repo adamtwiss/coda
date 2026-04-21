@@ -55,14 +55,18 @@ src/
   search.rs        Negamax, pruning, LMR, correction history, cuckoo, pruning stats
   cuckoo.rs        Cuckoo cycle detection for proactive repetition avoidance
   tb.rs            Syzygy tablebase probing (via shakmaty-syzygy)
-  nnue.rs          NNUE v5/v6/v7 inference, accumulator stack, Finny table, AVX2/AVX-512 SIMD
+  tb_cache.rs      Lockless Zobrist-keyed WDL probe cache (UCI TBHash)
+  nnue.rs          NNUE v5/v7/v9 inference, accumulator stack, Finny table, AVX2/AVX-512/VNNI SIMD
+  sparse_l1.rs     Sparse/dense int8 L1 matmul kernels (AVX2, AVX-VNNI, AVX-512 VNNI)
+  threats.rs       Threat-feature enumeration + delta generation (v9)
+  threat_accum.rs  Per-ply threat accumulator stack (v9)
   uci.rs           UCI protocol (position, go, stop, ponder, setoption)
   epd.rs           EPD test suite runner with SAN formatting
   book.rs          Polyglot opening book support
   polyglot_randoms.rs  Standard Polyglot Zobrist random table (781 entries)
   datagen.rs       Multi-threaded training data generation (self-play, material removal)
   binpack.rs       SF BINP binpack format writer (chain-compressed)
-  bullet_convert.rs  Bullet quantised.bin → .nnue converter (v5/v6/v7)
+  bullet_convert.rs  Bullet quantised.bin → .nnue converter (v5/v7/v9)
   nnue_export.rs   .nnue → Bullet checkpoint converter (for transfer learning)
 Makefile           Build targets: make, make pgo, make openbench, make net
 scripts/
@@ -92,7 +96,8 @@ net.txt            Production NNUE net URL (used by make net / fetch-net)
 ### Search
 Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from depth 4). Lazy SMP: helper threads search at offset depths sharing the TT (atomic) and stop flag.
 
-**Pruning features** (all SPSA-tunable via `tunables!` macro, 45 parameters):
+**Pruning features** (all SPSA-tunable via `tunables!` macro — see the macro in
+`search.rs` for the current parameter list and defaults; count grows over time):
 - NMP: R=BASE_R+depth/DEPTH_DIV + (eval-beta)/EVAL_DIV, verify at depth>=VERIFY_DEPTH, post-capture R++
 - RFP: depth<=RFP_DEPTH, margin improving?RFP_MARGIN_IMP*d:RFP_MARGIN_NOIMP*d
 - Futility: FUT_BASE+lmrDepth*FUT_PER_DEPTH, history adjusts effective lmr_depth (SF pattern)
@@ -382,16 +387,22 @@ for authoritative defaults — values below are approximate.
 - History bonus: linear formula min(MAX, MULT*depth - BASE), ~170*d-50 capped at 1505
 - Contempt: 10 (applied as -CONTEMPT)
 
-## Current Status (2026-04-08)
+## Current Status
 
-- **Strength**: Estimated ~+180 self-play Elo above initial Coda. Lichess bot deployed as `codabot`.
-- **NPS**: ~600K (production 768pw net, x86-64 AVX2)
-- **Bench**: 1,780,721 nodes (depth 13, 8 positions)
-- **EBF**: 1.87 (effective branching factor)
-- **Lazy SMP**: Implemented. Helpers share TT + history tables.
-- **SPSA**: 10 rounds completed (~+102 cumulative Elo from tuning)
-- **OpenBench**: Deployed at ob.atwiss.com, 4 machines / ~84 threads
-- **Testing methodology**: Self-play SPRT primary, retune-on-branch for tree-shape-changing features, LTC (40+0.4) for TM features
+Living state (strength, bench, net, SPSA progress, deployment) changes too
+quickly to keep accurate in a checked-in file. Authoritative sources:
+
+- **Current production nets:** `docs/net_catalog.md` (v5 + v9 prod hashes,
+  retired/active nets, invariants)
+- **Recent experiment history / lessons:** `experiments.md`
+- **Current bench:** the `Bench: <nodes>` line of the latest commit on the
+  branch you're submitting. Re-measure on the exact branch+net before any
+  SPRT; don't carry bench values across branches.
+- **Lichess bot:** `codabot` (deployment state and thread count varies)
+- **OpenBench fleet:** `ob.atwiss.com`, composition varies
+
+Testing methodology is durable and documented below (Self-play SPRT primary,
+retune-on-branch for tree-shape-changing features, LTC for TM features).
 
 ## Key Gotchas
 - Move flag equality vs bitwise: check non-promotion flags with ==, not &
@@ -510,12 +521,20 @@ Default bounds [0.00, 5.00] for novel changes. Always verify bench matches befor
 
 Both `ob_submit.py` and `ob_tune.py` print `[auto] scale_nps=...` when the auto-detect fires. Verify it matches expectation before each submission. Wrong scale_nps means games run at wrong time budgets; experiments at 500K on v9 branches run at ~2× wall-clock, halving fleet throughput. Override only for branches the patterns don't cover — and when you do, add the new pattern to `v9_patterns` in both scripts.
 
-**Current bench: 1780721** (with production net, x86-64). Update this when search changes are merged.
-**Do not pass explicit bench values** when submitting — let OB auto-detect from commit messages. Only override if OB fails to parse.
+**Bench lives in git commit messages, not this file.** Measure with
+`coda bench -n <current-prod-net>` on the exact branch you're submitting;
+never hardcode a bench value here or reuse one across branches
+(branch-specific tunables + net changes both move it). See `docs/net_catalog.md`
+for the current production net hash.
+
+**Do not pass explicit bench values** when submitting — let OB auto-detect from
+commit messages. Only override if OB fails to parse.
 
 ### SPSA Parameter Tuning
 
-45 search parameters are exposed as UCI options for SPSA optimization via OpenBench. The `tunables!` macro in `search.rs` is the single source of truth.
+Search parameters are exposed as UCI options for SPSA optimization via OpenBench.
+The `tunables!` macro in `search.rs` is the single source of truth for defaults,
+ranges, and c_end values.
 
 **Submitting tunes:**
 ```bash
@@ -558,7 +577,6 @@ When LMR_C_QUIET or LMR_C_CAP change, LMR tables are automatically reinitialized
 - c_end ~5-10% of parameter range, r_end 0.002 are good defaults.
 - Alpha 0.602, gamma 0.101, A_ratio 0.1 (standard SPSA constants).
 - SPRT the final values against main before merging — SPSA can overfit.
-- Cumulative SPSA Elo: ~+102 across 10 rounds.
 - Plan SPSA after merging structural fixes (eval/search changes shift optimal parameters).
 - A standard 18-param pruning tune spec is at `scripts/tune_pruning_18.txt`.
 
@@ -620,17 +638,19 @@ Systematic approach for finding and fixing search feature issues. Each cycle com
 
 **4. SPSA tune the corrected feature**
 - **Focused tune first** (2-4 params, ~1000 iterations): Just the new/changed parameters. Fast convergence, finds the right ballpark.
-- **Full tune after** (all 32 params, 5000+ iterations): Rebalances everything — other params were compensating for the broken feature and need to readjust.
+- **Full tune after** (all tunable parameters, 2500+ iterations): Rebalances everything — other params were compensating for the broken feature and need to readjust.
 - Merge the focused tune values, then run the full tune as the next round.
 
 **5. Repeat**
 The retuned baseline exposes the next weak feature. Check SPSA trends for the next parameter being aggressively detuned.
 
-**Results from this approach (through 2026-04-08):**
+**Historical examples (early 2026 — kept as illustrations of the method):**
 - SEE quiet pruning: SPSA flagged, 3 structural issues found, +11.4 Elo
 - History magnitude: consensus H0 investigated, found 27× scaling bug, +31.6 Elo
 - LMR simplify: removed unique adjustments + retune, +6.3 Elo
 - Cont-hist malus: fixed indexing bug + retune, +6.5 Elo
 - NMP capture R: consensus flip + retune, +3.5 Elo
 - Node-based TM: failed 3x at STC, retested at LTC, +11.9 Elo
+
+For the current cumulative list, see `experiments.md`.
 
