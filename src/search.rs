@@ -110,6 +110,10 @@ tunables!(
     (LMR_THREAT_DIV, 3, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
     (FUT_THREATS_MARGIN, 38, 0, 200, 10.0),
+    // RFP margin widener: widen more when any_threat_count is high.
+    // Same signal as #539 (NMP skip +6.0). Multiplicative scale with
+    // depth to stay consistent with RFP's depth*margin structure.
+    (RFP_ANYTHREAT_MARGIN, 20, 0, 100, 5.0),
     (DISCOVERED_ATTACK_BONUS, 7501, 0, 30000, 1500.0),
     (SE_KING_PRESSURE_MARGIN, 3, 0, 30, 1.5),
     (MVV_CAP_MULT, 17, 4, 64, 3.0),
@@ -1986,6 +1990,9 @@ fn negamax(
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
+            // Additional widener: scale with any_threat_count (non-pawn threats included).
+            // Same signal as #539 (NMP skip +6.0). depth × count × coefficient.
+            margin += depth * any_threat_count * tp(&RFP_ANYTHREAT_MARGIN);
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
