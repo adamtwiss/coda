@@ -539,6 +539,97 @@ impl Board {
         result
     }
 
+    /// Value-filtered skewer/pin target squares (Titan next_ideas T1.1 + T1.2).
+    ///
+    /// Returns `(pin_diag, pin_orth, skewer_diag, skewer_orth)` — separate
+    /// bitboards for value-aware pin vs skewer recognition:
+    ///
+    /// - **Pin**: front enemy piece LESS valuable than back enemy piece.
+    ///   A can't move without exposing B (or can't move at all, if B is king).
+    ///   Tactical magnitude: very high when B is king/queen.
+    /// - **Skewer**: front enemy piece MORE valuable than back. A must move
+    ///   (because our slider attacks it directly), exposing B. Magnitude
+    ///   proportional to front-piece value.
+    /// - **Equal values**: not returned in either bitboard. Two same-value
+    ///   enemies on a ray (e.g., two rooks) is ambiguous — could be battery
+    ///   defense or weak attack — doesn't fit either named motif cleanly.
+    ///
+    /// Enemy king as A (front): skipped. "Pin to king" where our slider
+    /// attacks the king is just check, handled by existing check bonus.
+    ///
+    /// Piece values via `see_value`: P=100, N=B=420, R=640, Q=1200, K=20000.
+    /// King-as-back-piece gives the strongest pin magnitude (absolute pin).
+    ///
+    /// Infrastructure companion to `xray_blockers` (B1 +52) and
+    /// `skewer_targets` (B2, experiment/skewer-bonus). This variant adds
+    /// value-filtering so the movepicker can score pins and skewers
+    /// differently (Titan's spec: pin +5-20, skewer +10-30).
+    pub fn pin_skewer_targets(
+        &self,
+        color: Color,
+    ) -> (Bitboard, Bitboard, Bitboard, Bitboard) {
+        let c = color as usize;
+        let occ = self.colors[0] | self.colors[1];
+        let enemies = self.colors[c ^ 1];
+        let mailbox = &self.mailbox;
+
+        let val = |sq: u32| -> i32 {
+            let pt = mailbox[sq as usize];
+            if pt >= 6 { 0 } else { crate::eval::see_value(pt) }
+        };
+
+        let mut pin_diag: Bitboard = 0;
+        let mut pin_orth: Bitboard = 0;
+        let mut skewer_diag: Bitboard = 0;
+        let mut skewer_orth: Bitboard = 0;
+
+        let mut es = enemies;
+        while es != 0 {
+            let a_sq = es.trailing_zeros();
+            es &= es - 1;
+
+            // Skip enemy king as front — "pin to king" via our slider
+            // attacking king is just check, handled elsewhere.
+            if mailbox[a_sq as usize] == KING {
+                continue;
+            }
+            let a_val = val(a_sq);
+
+            // Diagonal: find enemy pieces A directly sees on bishop rays.
+            let mut d_neighbours = crate::attacks::bishop_attacks(a_sq, occ) & enemies;
+            while d_neighbours != 0 {
+                let b_sq = d_neighbours.trailing_zeros();
+                d_neighbours &= d_neighbours - 1;
+                let b_val = val(b_sq);
+                let targets = crate::bitboard::ray_extension(b_sq, a_sq);
+                if b_val > a_val {
+                    pin_diag |= targets;
+                } else if b_val < a_val {
+                    skewer_diag |= targets;
+                }
+                // equal values: ambiguous, skip
+            }
+
+            // Orthogonal: same idea with rook rays.
+            let mut o_neighbours = crate::attacks::rook_attacks(a_sq, occ) & enemies;
+            while o_neighbours != 0 {
+                let b_sq = o_neighbours.trailing_zeros();
+                o_neighbours &= o_neighbours - 1;
+                let b_val = val(b_sq);
+                let targets = crate::bitboard::ray_extension(b_sq, a_sq);
+                if b_val > a_val {
+                    pin_orth |= targets;
+                } else if b_val < a_val {
+                    skewer_orth |= targets;
+                }
+            }
+        }
+
+        // Mask to empty squares — captures are scored separately.
+        let empty = !occ;
+        (pin_diag & empty, pin_orth & empty, skewer_diag & empty, skewer_orth & empty)
+    }
+
     /// Get bitboard of all pieces attacking a square.
     pub fn attackers_to(&self, sq: u32, occ: Bitboard) -> Bitboard {
         let knights = self.pieces[KNIGHT as usize];

@@ -111,6 +111,16 @@ tunables!(
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
     (FUT_THREATS_MARGIN, 38, 0, 200, 10.0),
     (DISCOVERED_ATTACK_BONUS, 7501, 0, 30000, 1500.0),
+    // T1.1 + T1.2 (Titan next_ideas 2026-04-21): value-filtered pin and
+    // skewer bonuses. Unified (unfiltered) skewer variant #612 H0'd at
+    // −5.1 Elo — over-triggering on low-value ray alignments. Split
+    // into value-aware pin and skewer per Titan's spec:
+    // - Pin: front enemy less valuable than back (incl. king). Absolute
+    //   pin on king is strongest case. Titan estimate +5-20.
+    // - Skewer: front enemy more valuable; front must move exposing
+    //   back. Titan estimate +10-30.
+    (PIN_BONUS, 4500, 0, 20000, 1000.0),
+    (SKEWER_BONUS_V, 6000, 0, 20000, 1200.0),
     (SE_KING_PRESSURE_MARGIN, 3, 0, 30, 1.5),
     (MVV_CAP_MULT, 17, 4, 64, 3.0),
     (CONT_HIST_MULT, 1, 1, 8, 1.5),
@@ -1586,6 +1596,16 @@ fn negamax(
     } else {
         0
     };
+    // T1.1 + T1.2: value-filtered pin & skewer target bitboards (per
+    // slider type). Pin = back piece more valuable; skewer = front more
+    // valuable. Computed once per node, consumed as bit-test in
+    // movepicker scoring.
+    let (pin_diag, pin_orth, skewer_v_diag, skewer_v_orth): (u64, u64, u64, u64) =
+        if tp(&PIN_BONUS) > 0 || tp(&SKEWER_BONUS_V) > 0 {
+            board.pin_skewer_targets(board.side_to_move)
+        } else {
+            (0, 0, 0, 0)
+        };
 
     // Clear PV for this node
     if ply_u <= MAX_PLY {
@@ -2119,7 +2139,7 @@ fn negamax(
     let mut picker = if in_check {
         MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, pin_diag, pin_orth, skewer_v_diag, skewer_v_orth, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
 

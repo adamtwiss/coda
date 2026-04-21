@@ -193,6 +193,16 @@ pub struct MovePicker {
     // B1: our own pieces blocking a slider's attack on an enemy piece.
     // Moving one of these creates a discovered attack.
     xray_blockers: Bitboard,
+    // T1.1 + T1.2: value-filtered pin & skewer target squares.
+    // pin_*: back enemy piece more valuable (including king). Front A
+    //   can't move without exposing B. Fire pin bonus when slider move
+    //   lands on appropriate target square.
+    // skewer_*: front enemy piece more valuable. A must move to avoid
+    //   capture, exposing B. Fire skewer bonus.
+    pin_diag: Bitboard,
+    pin_orth: Bitboard,
+    skewer_v_diag: Bitboard,
+    skewer_v_orth: Bitboard,
     // Evasion support
     checkers: Bitboard,
     pinned: Bitboard,
@@ -215,6 +225,10 @@ impl MovePicker {
         pawn_hist: Option<&[[i16; 64]; 13]>,
         threats: Threats,
         xray_blockers: Bitboard,
+        pin_diag: Bitboard,
+        pin_orth: Bitboard,
+        skewer_v_diag: Bitboard,
+        skewer_v_orth: Bitboard,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
     ) -> Self {
@@ -288,6 +302,10 @@ impl MovePicker {
             skip_quiet: false,
             threats,
             xray_blockers,
+            pin_diag,
+            pin_orth,
+            skewer_v_diag,
+            skewer_v_orth,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -320,6 +338,10 @@ impl MovePicker {
             skip_quiet: true,
             threats: 0,
             xray_blockers: 0,
+            pin_diag: 0,
+            pin_orth: 0,
+            skewer_v_diag: 0,
+            skewer_v_orth: 0,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -373,7 +395,11 @@ impl MovePicker {
             ply,
             skip_quiet: false,
             threats: 0, // evasions don't use threat-aware history
-            xray_blockers: 0, // evasions don't use discovered-attack bonus
+            xray_blockers: 0,
+            pin_diag: 0,
+            pin_orth: 0,
+            skewer_v_diag: 0,
+            skewer_v_orth: 0, // evasions don't use discovered-attack bonus
             checkers,
             pinned,
             threat_sq: -1,
@@ -614,6 +640,33 @@ impl MovePicker {
             // is a follow-up if H1 resolves.
             if self.xray_blockers & (1u64 << from) != 0 {
                 score += crate::search::DISCOVERED_ATTACK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+            }
+
+            // T1.1 + T1.2: Value-filtered pin and skewer bonuses for quiet
+            // slider moves. Piece-type dispatch: bishops check diagonal
+            // targets, rooks check orthogonal, queens check both unions.
+            // pin_*: front enemy less valuable than back (strong — back
+            //   piece threatened via unmovable front).
+            // skewer_*: front enemy more valuable than back (also strong —
+            //   front must move exposing back).
+            if piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                let to_bb = 1u64 << to;
+                let (pin_mask, skewer_mask) = match pt {
+                    crate::types::BISHOP => (self.pin_diag, self.skewer_v_diag),
+                    crate::types::ROOK => (self.pin_orth, self.skewer_v_orth),
+                    crate::types::QUEEN => (
+                        self.pin_diag | self.pin_orth,
+                        self.skewer_v_diag | self.skewer_v_orth,
+                    ),
+                    _ => (0u64, 0u64),
+                };
+                if pin_mask & to_bb != 0 {
+                    score += crate::search::PIN_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+                }
+                if skewer_mask & to_bb != 0 {
+                    score += crate::search::SKEWER_BONUS_V.load(std::sync::atomic::Ordering::Relaxed);
+                }
             }
 
             // Reckless "offense bonus": quiet move that lands on a square
