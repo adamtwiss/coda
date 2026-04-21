@@ -196,6 +196,11 @@ pub struct SearchLimits {
     pub movestogo: u32,
     pub nodes: u64,
     pub infinite: bool,
+    /// Minimum think time to enforce on a movetime search. Normally 0 (pure
+    /// movetime). Ponderhit fresh-searches set this to `inc - overhead` so
+    /// they don't instant-emit on TT-cached positions (which would stockpile
+    /// the clock on every move). See `search()`'s movetime branch.
+    pub movetime_floor: u64,
 }
 
 impl Default for SearchLimits {
@@ -214,6 +219,7 @@ impl SearchLimits {
             movestogo: 0,
             nodes: 0,
             infinite: false,
+            movetime_floor: 0,
         }
     }
 }
@@ -936,6 +942,7 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
             movestogo: limits.movestogo,
             nodes: 0, // helpers don't have node limits
             infinite: limits.infinite,
+            movetime_floor: 0, // helpers don't need the floor — only main sleeps
         };
 
         handles.push(std::thread::Builder::new()
@@ -1118,7 +1125,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.soft_floor = 0;
     } else if limits.movetime > 0 {
         info.time_limit = limits.movetime;
-        info.soft_floor = 0;
+        // Respect caller-supplied minimum think time (ponderhit fresh-search uses
+        // this to enforce the increment floor; plain `go movetime` callers leave
+        // it at 0 so they get exactly the movetime they asked for).
+        info.soft_floor = limits.movetime_floor.min(limits.movetime);
     } else if our_time > 0 {
         // Subtract move overhead (communication latency)
         let overhead = info.move_overhead;
@@ -3324,6 +3334,7 @@ mod tests {
             movetime: 0,
             wtime: 0, btime: 0, winc: 0, binc: 0,
             movestogo: 0, nodes: 0, infinite: false,
+            movetime_floor: 0,
         };
 
         search(&mut board, &mut info, &limits);
