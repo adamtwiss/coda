@@ -1986,6 +1986,10 @@ fn negamax(
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
+            // E2: widen margin when position is unstable (parent-child eval gap
+            // > UNSTABLE_THRESH). Static eval can't be trusted for RFP when
+            // eval is volatile. Mirrors unstable × ProbCut skip (#542 +6.7).
+            if unstable { margin += margin / 3; }
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
