@@ -131,6 +131,12 @@ enum Commands {
         #[arg(long)]
         inspect: bool,
     },
+    /// Dump SPSA tune spec (name,int,default,min,max,c_end,r_end) from tunables
+    TuneSpec {
+        /// SPSA r_end (default 0.002)
+        #[arg(long, default_value_t = 0.002)]
+        r_end: f32,
+    },
     /// Download NNUE net from net.txt URL
     FetchNet,
     /// NNUE network health check (uses --nnue/-n flag or auto-discovers)
@@ -499,6 +505,12 @@ fn main() {
             println!("Patched: {} flags 0b{:08b} → 0b{:08b} ({})",
                 dest, flags, new_flags,
                 if set_hl_crelu { "set hl_crelu" } else { "clear hl_crelu" });
+        }
+
+        Some(Commands::TuneSpec { r_end }) => {
+            for (name, _, default, min, max, c_end) in search::tunable_params() {
+                println!("{}, int, {}, {}, {}, {}, {}", name, default, min, max, c_end, r_end);
+            }
         }
 
         Some(Commands::FetchNet) => {

@@ -27,17 +27,21 @@ const PAWN_HIST_SIZE: usize = 512;
 // ============================================================================
 use std::sync::atomic::AtomicI32;
 
-/// Declare a tunable search parameter with default, min, max.
-/// Single source of truth — used for both the static AtomicI32 and the UCI/SPSA parameter list.
+/// Declare a tunable search parameter with default, min, max, c_end.
+/// Single source of truth — used for both the static AtomicI32 and the
+/// UCI/SPSA parameter list. c_end is the SPSA end-of-tune perturbation;
+/// target >= 1.5 for narrow-range int params (so int boundaries can be
+/// crossed) or ~5% of range for wider params.
 macro_rules! tunables {
-    ( $( ($name:ident, $default:expr, $min:expr, $max:expr) ),* $(,)? ) => {
+    ( $( ($name:ident, $default:expr, $min:expr, $max:expr, $c_end:expr) ),* $(,)? ) => {
         // Declare each as a pub static AtomicI32
         $( pub static $name: AtomicI32 = AtomicI32::new($default); )*
 
-        /// List of all tunable parameters for UCI/SPSA
-        pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32)> {
+        /// List of all tunable parameters for UCI/SPSA.
+        /// Tuple: (name, &atomic, default, min, max, c_end).
+        pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32, f32)> {
             vec![
-                $( (stringify!($name), &$name, $default, $min, $max), )*
+                $( (stringify!($name), &$name, $default, $min, $max, $c_end), )*
             ]
         }
     };
@@ -45,70 +49,71 @@ macro_rules! tunables {
 
 tunables!(
     // v9 post-#569 knight-fork retune (905 iters, stopped early, applied).
-    // Knight-fork + surrounding pruning tune.
-    (NMP_BASE_R, 5, 2, 8),
-    (NMP_DEPTH_DIV, 3, 1, 6),
-    (NMP_EVAL_DIV, 127, 100, 400),
-    (NMP_EVAL_MAX, 5, 1, 6),
-    (NMP_VERIFY_DEPTH, 12, 8, 20),
-    (RFP_DEPTH, 7, 2, 12),
-    (RFP_MARGIN_IMP, 79, 30, 150),
-    (RFP_MARGIN_NOIMP, 128, 50, 200),
-    (FUT_BASE, 63, 20, 200),
-    (FUT_PER_DEPTH, 161, 40, 250),
-    (HIST_PRUNE_DEPTH, 4, 1, 8),
-    (HIST_PRUNE_MULT, 4201, 500, 50000),
-    (SEE_QUIET_MULT, 44, 5, 80),
-    (SEE_CAP_MULT, 143, 30, 200),
-    (LMR_HIST_DIV, 9259, 2000, 100000),
-    (LMR_C_QUIET, 128, 40, 300),
-    (LMR_C_CAP, 103, 100, 350),
-    (SE_DEPTH, 5, 4, 20),
-    (ASP_DELTA, 12, 5, 30),
-    (ASP_SCORE_DIV, 33571, 8000, 50000),
-    (LMP_BASE, 13, 1, 15),
-    (LMP_DEPTH, 9, 4, 20),
-    (BAD_NOISY_MARGIN, 127, 30, 150),
-    (PROBCUT_MARGIN, 189, 80, 300),
-    (HINDSIGHT_THRESH, 180, 50, 400),
-    (UNSTABLE_THRESH, 152, 50, 500),
-    (SEE_MATERIAL_SCALE, 189, 30, 300),
-    (QS_DELTA_MARGIN, 360, 100, 500),
-    (QS_SEE_THRESHOLD, -34, -200, 0),
-    (QS_MAX_CAPTURES, 27, 2, 32),
-    (CORR_W_PAWN, 292, 100, 600),
-    (CORR_W_NP, 105, 50, 400),
-    (CORR_W_MINOR, 63, 30, 300),
-    (CORR_W_MAJOR, 95, 30, 300),
-    (CORR_W_CONT, 46, 30, 400),
-    (FH_BLEND_DEPTH, 1, 0, 8),
-    (HIST_BONUS_MULT, 305, 50, 400),
-    (HIST_BONUS_MAX, 1617, 500, 3000),
-    (CAP_HIST_MULT, 260, 50, 400),
-    (CAP_HIST_BASE, 17, 0, 200),
-    (CAP_HIST_MAX, 1583, 500, 3000),
-    (DEXT_MARGIN, 10, 2, 50),
-    (DEXT_CAP, 17, 4, 32),
-    (QUIET_CHECK_BONUS, 9143, 2000, 30000),
-    (LMR_COMPLEXITY_DIV, 175, 30, 500),
-    (CORR_HIST_DIV, 1281, 256, 4096),
-    (CORR_UPDATE_WEIGHT_MAX, 16, 4, 48),
-    (CORR_BONUS_CAP_DIV, 4, 1, 16),
-    (CORR_HIST_GRAIN_T, 10, 1, 32),
-    (CORR_HIST_ERR_MAX, 3, 1, 64),
-    (ESCAPE_BONUS_Q, 15163, 5000, 40000),
-    (ESCAPE_BONUS_R, 12922, 3000, 30000),
-    (ESCAPE_BONUS_MINOR, 9626, 2000, 20000),
-    (NMP_KING_ZONE_MAX, 5, 2, 9),
-    (PROBCUT_KING_ZONE_MAX, 5, 2, 9),
-    (LMR_THREAT_DIV, 2, 1, 5),
-    (LMR_KING_PRESSURE_DIV, 4, 2, 9),
-    (FUT_THREATS_MARGIN, 43, 0, 200),
-    (DISCOVERED_ATTACK_BONUS, 7780, 0, 30000),
-    (SE_KING_PRESSURE_MARGIN, 5, 0, 30),
-    (MVV_CAP_MULT, 17, 4, 64),
-    (CONT_HIST_MULT, 3, 1, 8),
-    (KNIGHT_FORK_BONUS, 7816, 0, 20000),
+    // c_end values from chore/tunables-with-c-end — narrow-range int params
+    // get c_end >= 1.5 to reliably cross integer boundaries in SPSA.
+    (NMP_BASE_R, 5, 2, 8, 1.5),
+    (NMP_DEPTH_DIV, 3, 1, 6, 1.5),
+    (NMP_EVAL_DIV, 127, 100, 400, 15.0),
+    (NMP_EVAL_MAX, 5, 1, 6, 1.5),
+    (NMP_VERIFY_DEPTH, 12, 8, 20, 2.0),
+    (RFP_DEPTH, 7, 2, 12, 2.0),
+    (RFP_MARGIN_IMP, 79, 30, 150, 6.0),
+    (RFP_MARGIN_NOIMP, 128, 50, 200, 7.5),
+    (FUT_BASE, 63, 20, 200, 9.0),
+    (FUT_PER_DEPTH, 161, 40, 250, 10.5),
+    (HIST_PRUNE_DEPTH, 4, 1, 8, 1.5),
+    (HIST_PRUNE_MULT, 4201, 500, 50000, 2475.0),
+    (SEE_QUIET_MULT, 44, 5, 80, 3.75),
+    (SEE_CAP_MULT, 143, 30, 200, 8.5),
+    (LMR_HIST_DIV, 9259, 2000, 100000, 4900.0),
+    (LMR_C_QUIET, 128, 40, 300, 13.0),
+    (LMR_C_CAP, 103, 100, 350, 12.5),
+    (SE_DEPTH, 5, 4, 20, 2.0),
+    (ASP_DELTA, 12, 5, 30, 1.5),
+    (ASP_SCORE_DIV, 33571, 8000, 50000, 2100.0),
+    (LMP_BASE, 13, 1, 15, 2.0),
+    (LMP_DEPTH, 9, 4, 20, 2.0),
+    (BAD_NOISY_MARGIN, 127, 30, 150, 6.0),
+    (PROBCUT_MARGIN, 189, 80, 300, 11.0),
+    (HINDSIGHT_THRESH, 180, 50, 400, 17.5),
+    (UNSTABLE_THRESH, 152, 50, 500, 22.5),
+    (SEE_MATERIAL_SCALE, 189, 30, 300, 13.5),
+    (QS_DELTA_MARGIN, 360, 100, 500, 20.0),
+    (QS_SEE_THRESHOLD, -34, -200, 0, 10.0),
+    (QS_MAX_CAPTURES, 27, 2, 32, 2.0),
+    (CORR_W_PAWN, 292, 100, 600, 25.0),
+    (CORR_W_NP, 105, 50, 400, 17.5),
+    (CORR_W_MINOR, 63, 30, 300, 13.5),
+    (CORR_W_MAJOR, 95, 30, 300, 13.5),
+    (CORR_W_CONT, 46, 30, 400, 18.5),
+    (FH_BLEND_DEPTH, 1, 0, 8, 1.5),
+    (HIST_BONUS_MULT, 305, 50, 400, 17.5),
+    (HIST_BONUS_MAX, 1617, 500, 3000, 125.0),
+    (CAP_HIST_MULT, 260, 50, 400, 17.5),
+    (CAP_HIST_BASE, 17, 0, 200, 10.0),
+    (CAP_HIST_MAX, 1583, 500, 3000, 125.0),
+    (DEXT_MARGIN, 10, 2, 50, 2.4),
+    (DEXT_CAP, 17, 4, 32, 2.0),
+    (QUIET_CHECK_BONUS, 9143, 2000, 30000, 1400.0),
+    (LMR_COMPLEXITY_DIV, 175, 30, 500, 23.5),
+    (CORR_HIST_DIV, 1281, 256, 4096, 192.0),
+    (CORR_UPDATE_WEIGHT_MAX, 16, 4, 48, 2.2),
+    (CORR_BONUS_CAP_DIV, 4, 1, 16, 1.5),
+    (CORR_HIST_GRAIN_T, 10, 1, 32, 1.55),
+    (CORR_HIST_ERR_MAX, 3, 1, 64, 3.15),
+    (ESCAPE_BONUS_Q, 15163, 5000, 40000, 1750.0),
+    (ESCAPE_BONUS_R, 12922, 3000, 30000, 1350.0),
+    (ESCAPE_BONUS_MINOR, 9626, 2000, 20000, 900.0),
+    (NMP_KING_ZONE_MAX, 5, 2, 9, 1.5),
+    (PROBCUT_KING_ZONE_MAX, 5, 2, 9, 1.5),
+    (LMR_THREAT_DIV, 2, 1, 5, 1.5),
+    (LMR_KING_PRESSURE_DIV, 4, 2, 9, 1.5),
+    (FUT_THREATS_MARGIN, 43, 0, 200, 10.0),
+    (DISCOVERED_ATTACK_BONUS, 7780, 0, 30000, 1500.0),
+    (SE_KING_PRESSURE_MARGIN, 5, 0, 30, 1.5),
+    (MVV_CAP_MULT, 17, 4, 64, 3.0),
+    (CONT_HIST_MULT, 3, 1, 8, 1.5),
+    (KNIGHT_FORK_BONUS, 7816, 0, 20000, 1000.0),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
