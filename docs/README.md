@@ -14,6 +14,7 @@ Navigation by question. Most docs are dated; check timestamps before acting on t
 - [`move_ordering_ideas_2026-04-19.md`](move_ordering_ideas_2026-04-19.md) — Move-ordering-specific idea catalogue. Categories: NNUE signals, training regime, architecture. Some superseded by completed experiments.
 - [`threat_ideas_plan_2026-04-19.md`](threat_ideas_plan_2026-04-19.md) — Threat-signal experiment plan, tiered. Live results embedded.
 - [`shape_experiments_proposal_2026-04-19.md`](shape_experiments_proposal_2026-04-19.md) — Formula-shape experiments for Hercules: history bonus shape, RFP unified shape, futility TT-hit modulated. Drop-in specs.
+- [`next_ideas_2026-04-21.md`](next_ideas_2026-04-21.md) — **Data-driven idea shortlist.** Pattern analysis (W1–W3 wins, L1–L4 losses) of 2026-04-19→21 session, novel ideas in 4 tiers, ranked queue for Hercules, explicit stop-trying list.
 
 ## "What do other engines do differently?"
 
