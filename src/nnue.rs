@@ -2031,8 +2031,17 @@ pub struct NNUENet {
     pub out_bias_f: Vec<f32>,     // [NNUE_OUTPUT_BUCKETS]
     pub dual_l1: bool,            // v8: dual L1 activation (CReLU+SCReLU on L1 output)
     // v9 threat features
-    pub threat_weights: Vec<i8>,  // [num_threat_features × hidden_size] i8 weights
+    pub threat_weights: Vec<i8>,  // [num_threat_features_physical × hidden_size] i8 weights
+    /// Logical feature count (what `threat_index()` can return). Used for bounds checks.
     pub num_threat_features: usize,
+    /// Physical row count in `threat_weights` after load-time zero-row compaction.
+    /// Equals `num_threat_features` when no rows were dropped.
+    pub num_threat_features_physical: usize,
+    /// Zero-row compact remap: raw feature_idx → compact row, or -1 if dropped.
+    /// Empty Vec means "identity" (no compaction applied).
+    /// Bit 5 of the v9 header flags compaction presence so readers can skip the
+    /// scan cost.
+    pub threat_feature_remap: Vec<i32>,
     pub has_threats: bool,
     /// Whether the net was trained WITH xray threat features. Coda inference
     /// always emits xrays, so nets with `xray_trained=false` will produce
@@ -2231,6 +2240,8 @@ impl NNUENet {
 
         // Read threat weights (v9): i8 [num_threat_features × hidden_size]
         let mut threat_weights = Vec::new();
+        let mut num_threat_features_physical = num_threat_features;
+        let mut threat_feature_remap: Vec<i32> = Vec::new();
         if has_threats && num_threat_features > 0 {
             let total = num_threat_features * hidden_size;
             threat_weights = vec![0i8; total];
@@ -2239,9 +2250,50 @@ impl NNUENet {
             for i in 0..total {
                 threat_weights[i] = bytes[i] as i8;
             }
-            println!("info string Loaded {} threat features ({}×{}, {}MB)",
-                num_threat_features, num_threat_features, hidden_size,
-                total / (1024 * 1024));
+
+            // Load-time zero-row compaction (sparsity optimisation).
+            // L1-regularised threat training drives unused feature rows to
+            // exactly zero; we drop those rows and build a raw→compact remap
+            // so delta application skips them without touching the matrix.
+            // Non-sparse nets pay one scan of the matrix at load (~50MB) and
+            // nothing at runtime since remap stays empty (identity).
+            let mut zero_count = 0usize;
+            let mut remap = vec![-1i32; num_threat_features];
+            let mut compact = 0usize;
+            for f in 0..num_threat_features {
+                let row = &threat_weights[f * hidden_size..(f + 1) * hidden_size];
+                if row.iter().all(|&w| w == 0) {
+                    zero_count += 1;
+                } else {
+                    remap[f] = compact as i32;
+                    if compact != f {
+                        // Move row f into row `compact`. Use copy_within to
+                        // handle overlap safely; f > compact always since we
+                        // scan in order.
+                        let src = f * hidden_size;
+                        let dst = compact * hidden_size;
+                        threat_weights.copy_within(src..src + hidden_size, dst);
+                    }
+                    compact += 1;
+                }
+            }
+
+            if zero_count > 0 {
+                threat_weights.truncate(compact * hidden_size);
+                threat_weights.shrink_to_fit();
+                num_threat_features_physical = compact;
+                threat_feature_remap = remap;
+                let compact_mb = (compact * hidden_size) / (1024 * 1024);
+                println!("info string Loaded {} threat features ({}×{}, {}MB) — compacted {} zero rows ({:.1}%), physical {}×{} = {}MB",
+                    num_threat_features, num_threat_features, hidden_size,
+                    total / (1024 * 1024),
+                    zero_count, zero_count as f64 / num_threat_features as f64 * 100.0,
+                    compact, hidden_size, compact_mb);
+            } else {
+                println!("info string Loaded {} threat features ({}×{}, {}MB)",
+                    num_threat_features, num_threat_features, hidden_size,
+                    total / (1024 * 1024));
+            }
         }
 
         // Read L1 hidden layer weights (v7)
@@ -2451,6 +2503,8 @@ impl NNUENet {
             dual_l1,
             threat_weights,
             num_threat_features,
+            num_threat_features_physical,
+            threat_feature_remap,
             has_threats,
             xray_trained,
             num_king_buckets,
@@ -4030,11 +4084,13 @@ impl NNUEAccumulator {
                     crate::threats::apply_threat_deltas(
                         &mut curr.threat_white, &prev.threat_white,
                         &deltas, &net.threat_weights, h, net.num_threat_features,
+                        &net.threat_feature_remap,
                         WHITE, w_mirrored,
                     );
                     crate::threats::apply_threat_deltas(
                         &mut curr.threat_black, &prev.threat_black,
                         &deltas, &net.threat_weights, h, net.num_threat_features,
+                        &net.threat_feature_remap,
                         BLACK, b_mirrored,
                     );
                 }
@@ -4056,17 +4112,27 @@ impl NNUEAccumulator {
         let wk_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
         let bk_sq = (board.pieces[KING as usize] & board.colors[BLACK as usize]).trailing_zeros();
 
+        let has_remap = !net.threat_feature_remap.is_empty();
+        let resolve = |idx: usize| -> Option<usize> {
+            if idx >= net.num_threat_features { return None; }
+            if has_remap {
+                let r = net.threat_feature_remap[idx];
+                if r < 0 { None } else { Some(r as usize) }
+            } else {
+                Some(idx)
+            }
+        };
         let mut check_w = vec![0i16; h];
         crate::threats::enumerate_threats(
             &board.pieces, &board.colors, &board.mailbox,
             occ, WHITE, (wk_sq % 8) >= 4,
-            |idx| { if idx < net.num_threat_features { let w = idx * h; for j in 0..h { check_w[j] += net.threat_weights[w + j] as i16; } } },
+            |idx| { if let Some(row) = resolve(idx) { let w = row * h; for j in 0..h { check_w[j] += net.threat_weights[w + j] as i16; } } },
         );
         let mut check_b = vec![0i16; h];
         crate::threats::enumerate_threats(
             &board.pieces, &board.colors, &board.mailbox,
             occ, BLACK, (bk_sq % 8) >= 4,
-            |idx| { if idx < net.num_threat_features { let w = idx * h; for j in 0..h { check_b[j] += net.threat_weights[w + j] as i16; } } },
+            |idx| { if let Some(row) = resolve(idx) { let w = row * h; for j in 0..h { check_b[j] += net.threat_weights[w + j] as i16; } } },
         );
 
         let curr = &self.stack[self.top];
@@ -4093,6 +4159,7 @@ impl NNUEAccumulator {
 
         let occ = board.colors[0] | board.colors[1];
 
+        let has_remap = !net.threat_feature_remap.is_empty();
         // White perspective
         entry.threat_white[..h].fill(0);
         let wk_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
@@ -4101,11 +4168,15 @@ impl NNUEAccumulator {
             &board.pieces, &board.colors, &board.mailbox,
             occ, WHITE, w_mirrored,
             |feat_idx| {
-                if feat_idx < net.num_threat_features {
-                    let w_off = feat_idx * h;
-                    for j in 0..h {
-                        entry.threat_white[j] += net.threat_weights[w_off + j] as i16;
-                    }
+                if feat_idx >= net.num_threat_features { return; }
+                let row = if has_remap {
+                    let r = net.threat_feature_remap[feat_idx];
+                    if r < 0 { return; }
+                    r as usize
+                } else { feat_idx };
+                let w_off = row * h;
+                for j in 0..h {
+                    entry.threat_white[j] += net.threat_weights[w_off + j] as i16;
                 }
             },
         );
@@ -4118,11 +4189,15 @@ impl NNUEAccumulator {
             &board.pieces, &board.colors, &board.mailbox,
             occ, BLACK, b_mirrored,
             |feat_idx| {
-                if feat_idx < net.num_threat_features {
-                    let w_off = feat_idx * h;
-                    for j in 0..h {
-                        entry.threat_black[j] += net.threat_weights[w_off + j] as i16;
-                    }
+                if feat_idx >= net.num_threat_features { return; }
+                let row = if has_remap {
+                    let r = net.threat_feature_remap[feat_idx];
+                    if r < 0 { return; }
+                    r as usize
+                } else { feat_idx };
+                let w_off = row * h;
+                for j in 0..h {
+                    entry.threat_black[j] += net.threat_weights[w_off + j] as i16;
                 }
             },
         );
@@ -5290,12 +5365,14 @@ mod tests {
             Ok(n) => n,
             Err(e) => { eprintln!("Skip: can't load {}: {}", net_path, e); return; }
         };
-        let nf = net.num_threat_features;
+        // Diagnostic iterates physical rows (the ones actually in memory);
+        // on compacted nets this is smaller than the logical feature count.
+        let nf = net.num_threat_features_physical;
         let h = net.hidden_size;
         if nf == 0 || net.threat_weights.is_empty() {
             eprintln!("Net has no threat features"); return;
         }
-        eprintln!("Net: {} threat features × {} hidden = {} total i8 weights ({:.1} MB)",
+        eprintln!("Net: {} physical threat rows × {} hidden = {} total i8 weights ({:.1} MB)",
             nf, h, nf * h, (nf * h) as f64 / 1_048_576.0);
 
         // L∞ (max absolute) per row — cheapest meaningful norm
@@ -5710,8 +5787,8 @@ mod tests {
             let mut ts1 = ThreatStack::new(h);
             ts1.active = net.has_threats;
             if ts1.active {
-                ts1.refresh(&net.threat_weights, net.num_threat_features, &b1, crate::types::WHITE);
-                ts1.refresh(&net.threat_weights, net.num_threat_features, &b1, crate::types::BLACK);
+                ts1.refresh(&net.threat_weights, net.num_threat_features, &net.threat_feature_remap, &b1, crate::types::WHITE);
+                ts1.refresh(&net.threat_weights, net.num_threat_features, &net.threat_feature_remap, &b1, crate::types::BLACK);
             }
             let e1 = crate::eval::evaluate_nnue(&b1, &net, &mut acc1, &ts1);
 
@@ -5720,8 +5797,8 @@ mod tests {
             let mut ts2 = ThreatStack::new(h);
             ts2.active = net.has_threats;
             if ts2.active {
-                ts2.refresh(&net.threat_weights, net.num_threat_features, &b2, crate::types::WHITE);
-                ts2.refresh(&net.threat_weights, net.num_threat_features, &b2, crate::types::BLACK);
+                ts2.refresh(&net.threat_weights, net.num_threat_features, &net.threat_feature_remap, &b2, crate::types::WHITE);
+                ts2.refresh(&net.threat_weights, net.num_threat_features, &net.threat_feature_remap, &b2, crate::types::BLACK);
             }
             let e2 = crate::eval::evaluate_nnue(&b2, &net, &mut acc2, &ts2);
 
@@ -5770,8 +5847,8 @@ mod tests {
             let mut ts = ThreatStack::new(h);
             ts.active = net.has_threats;
             if ts.active {
-                ts.refresh(&net.threat_weights, net.num_threat_features, &b, crate::types::WHITE);
-                ts.refresh(&net.threat_weights, net.num_threat_features, &b, crate::types::BLACK);
+                ts.refresh(&net.threat_weights, net.num_threat_features, &net.threat_feature_remap, &b, crate::types::WHITE);
+                ts.refresh(&net.threat_weights, net.num_threat_features, &net.threat_feature_remap, &b, crate::types::BLACK);
             }
             crate::eval::evaluate_nnue(&b, net, &mut acc, &ts)
         }

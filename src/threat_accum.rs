@@ -151,7 +151,10 @@ impl ThreatStack {
 
     /// Full refresh for one perspective: zero + enumerate all threats.
     /// Collects feature indices first, then applies with SIMD.
+    /// `remap` (empty = identity) drops zero-weight rows at load time; any
+    /// raw feature mapped to -1 is skipped before we hit the weight matrix.
     pub fn refresh(&mut self, net_weights: &[i8], num_features: usize,
+                   remap: &[i32],
                    board: &crate::board::Board, pov: Color) {
         let h = self.hidden_size;
         let entry = &mut self.stack[self.index];
@@ -165,27 +168,36 @@ impl ThreatStack {
         // Collect feature indices, then apply with SIMD
         let mut indices = [0usize; 256]; // max active threat features per position
         let mut n_indices = 0usize;
-        // C8 audit LIKELY #18: track whether the enumerator produced more
-        // features than the buffer can hold. Previously excess features
-        // were silently dropped and `accurate[p]` was still set to true,
-        // so subsequent incremental deltas compounded on a corrupted
-        // baseline. Mark the entry inaccurate if overflow detected; the
-        // caller's `ensure_computed` → `can_update` path will then force
-        // a full refresh next time this perspective is read (falling back
-        // to the slower path, but with correct values).
+        // Merged from HEAD + 611ba0f:
+        //  - `overflowed`: C8 audit LIKELY #18 guarantee that if the
+        //    enumerator produced more features than our 256-slot buffer
+        //    can hold, we mark the entry inaccurate so the caller forces
+        //    a full refresh (rather than silently dropping deltas and
+        //    building on a corrupted baseline).
+        //  - `has_remap` / `remap` handling: load-time zero-row compact
+        //    for sparse (L1-trained) nets. `remap[raw_idx] == -1` means
+        //    the raw feature was dropped at load (its weight row was
+        //    all-zero); skip it without touching the weight matrix.
         let mut overflowed = false;
+        let has_remap = !remap.is_empty();
 
         crate::threats::enumerate_threats(
             &board.pieces, &board.colors, &board.mailbox,
             occ, pov, mirrored,
             |feat_idx| {
-                if feat_idx < num_features {
-                    if n_indices < indices.len() {
-                        indices[n_indices] = feat_idx;
-                        n_indices += 1;
-                    } else {
-                        overflowed = true;
-                    }
+                if feat_idx >= num_features { return; }
+                let row = if has_remap {
+                    let r = remap[feat_idx];
+                    if r < 0 { return; }  // dropped at load (zero row)
+                    r as usize
+                } else {
+                    feat_idx
+                };
+                if n_indices < indices.len() {
+                    indices[n_indices] = row;
+                    n_indices += 1;
+                } else {
+                    overflowed = true;
                 }
             },
         );
@@ -239,6 +251,7 @@ impl ThreatStack {
     /// Incremental update: replay from ancestor to current index for one perspective.
     /// Uses SIMD apply_threat_deltas for the inner loop (AVX2 register tiling).
     pub fn update(&mut self, ancestor: usize, net_weights: &[i8], num_features: usize,
+                  remap: &[i32],
                   board: &crate::board::Board, pov: Color) {
         let h = self.hidden_size;
         let p = pov as usize;
@@ -264,7 +277,7 @@ impl ThreatStack {
                         &mut curr[0].values[p][..h],
                         &prev[ply - 1].values[p][..h],
                         &local_deltas[..n_deltas],
-                        net_weights, h, num_features,
+                        net_weights, h, num_features, remap,
                         pov, mirrored,
                     );
                 }
@@ -284,6 +297,7 @@ impl ThreatStack {
     /// Matches Reckless's evaluate() pattern.
     #[inline]
     pub fn ensure_computed(&mut self, net_weights: &[i8], num_features: usize,
+                          remap: &[i32],
                           board: &crate::board::Board) {
         if !self.active { return; }
 
@@ -294,8 +308,8 @@ impl ThreatStack {
             }
 
             match self.can_update(pov) {
-                Some(ancestor) => self.update(ancestor, net_weights, num_features, board, pov),
-                None => self.refresh(net_weights, num_features, board, pov),
+                Some(ancestor) => self.update(ancestor, net_weights, num_features, remap, board, pov),
+                None => self.refresh(net_weights, num_features, remap, board, pov),
             }
         }
     }
@@ -399,15 +413,16 @@ mod incremental_tests {
         board.set_fen(fen);
         board.generate_threat_deltas = true;
 
+        let remap: &[i32] = &[];
         let mut incr = ThreatStack::new(H);
         incr.active = true;
-        incr.refresh(&weights, nf, &board, WHITE);
-        incr.refresh(&weights, nf, &board, BLACK);
+        incr.refresh(&weights, nf, remap, &board, WHITE);
+        incr.refresh(&weights, nf, remap, &board, BLACK);
 
         let mut refs = ThreatStack::new(H);
         refs.active = true;
-        refs.refresh(&weights, nf, &board, WHITE);
-        refs.refresh(&weights, nf, &board, BLACK);
+        refs.refresh(&weights, nf, remap, &board, WHITE);
+        refs.refresh(&weights, nf, remap, &board, BLACK);
 
         // Sanity: both start identical.
         assert_eq!(incr.values(WHITE), refs.values(WHITE), "{}: baseline W mismatch", name);
@@ -426,10 +441,10 @@ mod incremental_tests {
             assert!(ok, "{}: move {} illegal at ply {}", name, uci, ply);
 
             absorb_deltas(&mut incr, &mut board);
-            incr.ensure_computed(&weights, nf, &board);
+            incr.ensure_computed(&weights, nf, remap, &board);
 
-            refs.refresh(&weights, nf, &board, WHITE);
-            refs.refresh(&weights, nf, &board, BLACK);
+            refs.refresh(&weights, nf, remap, &board, WHITE);
+            refs.refresh(&weights, nf, remap, &board, BLACK);
 
             // Compare element-wise and surface first divergence.
             for pov in [WHITE, BLACK] {
@@ -699,15 +714,16 @@ mod incremental_tests {
                 board.set_fen(fen);
                 board.generate_threat_deltas = true;
 
+                let remap: &[i32] = &[];
                 let mut incr = ThreatStack::new(H);
                 incr.active = true;
-                incr.refresh(&weights, nf, &board, WHITE);
-                incr.refresh(&weights, nf, &board, BLACK);
+                incr.refresh(&weights, nf, remap, &board, WHITE);
+                incr.refresh(&weights, nf, remap, &board, BLACK);
 
                 let mut refs = ThreatStack::new(H);
                 refs.active = true;
-                refs.refresh(&weights, nf, &board, WHITE);
-                refs.refresh(&weights, nf, &board, BLACK);
+                refs.refresh(&weights, nf, remap, &board, WHITE);
+                refs.refresh(&weights, nf, remap, &board, BLACK);
 
                 for ply in 0..MAX_PLIES_PER_GAME {
                     let legal = generate_legal_moves(&board);
@@ -740,9 +756,9 @@ mod incremental_tests {
                         }
                     }
 
-                    incr.ensure_computed(&weights, nf, &board);
-                    refs.refresh(&weights, nf, &board, WHITE);
-                    refs.refresh(&weights, nf, &board, BLACK);
+                    incr.ensure_computed(&weights, nf, remap, &board);
+                    refs.refresh(&weights, nf, remap, &board, WHITE);
+                    refs.refresh(&weights, nf, remap, &board, BLACK);
 
                     for pov in [WHITE, BLACK] {
                         let a = incr.values(pov);
@@ -1359,6 +1375,90 @@ mod incremental_tests {
         eprintln!("  Total weight matrix: {:.1} MB", total_bytes as f64 / 1_048_576.0);
         eprintln!("  Dropping dead features (0 hits): save {:.1} MB ({:.1}%)", dead_bytes as f64 / 1_048_576.0, bucket_0 as f64 / nf as f64 * 100.0);
         eprintln!("  Dropping dead+rare (<10 hits):   save {:.1} MB ({:.1}%)", cold_bytes as f64 / 1_048_576.0, (bucket_0 + bucket_1_9) as f64 / nf as f64 * 100.0);
+    }
+
+    /// Compact remap: a net with some zero feature rows must produce the
+    /// same accumulator as the uncompacted net. Simulates load-time
+    /// compaction by zeroing half the feature rows, then mirrors the
+    /// load_nnue compaction logic: build remap, drop zero rows. Runs the
+    /// same make-moves scenario against both and asserts identical values.
+    #[test]
+    fn compact_remap_matches_identity() {
+        crate::init();
+        let nf = num_threat_features();
+        let h = H;
+        let full_weights = make_weights(nf);
+
+        // Build a "sparsified" copy: zero every other feature row.
+        let mut sparse_weights = full_weights.clone();
+        let mut is_zero = vec![false; nf];
+        for f in 0..nf {
+            if f % 2 == 0 {
+                for j in 0..h {
+                    sparse_weights[f * h + j] = 0;
+                }
+                is_zero[f] = true;
+            }
+        }
+
+        // Compact-compact: drop zero rows, build remap.
+        let mut compact = Vec::with_capacity(sparse_weights.len());
+        let mut remap = vec![-1i32; nf];
+        let mut n_compact = 0usize;
+        for f in 0..nf {
+            if is_zero[f] { continue; }
+            compact.extend_from_slice(&sparse_weights[f * h..(f + 1) * h]);
+            remap[f] = n_compact as i32;
+            n_compact += 1;
+        }
+
+        let moves = &["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "f8c5", "d2d4", "e5d4"];
+        let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+        let mut board_a = Board::new();
+        board_a.set_fen(fen);
+        board_a.generate_threat_deltas = true;
+        let mut board_b = Board::new();
+        board_b.set_fen(fen);
+        board_b.generate_threat_deltas = true;
+
+        let identity: &[i32] = &[];
+        let mut ts_full = ThreatStack::new(h);
+        ts_full.active = true;
+        ts_full.refresh(&sparse_weights, nf, identity, &board_a, WHITE);
+        ts_full.refresh(&sparse_weights, nf, identity, &board_a, BLACK);
+
+        let mut ts_compact = ThreatStack::new(h);
+        ts_compact.active = true;
+        ts_compact.refresh(&compact, nf, &remap, &board_b, WHITE);
+        ts_compact.refresh(&compact, nf, &remap, &board_b, BLACK);
+
+        assert_eq!(ts_full.values(WHITE), ts_compact.values(WHITE),
+            "compact W baseline diverges from full");
+        assert_eq!(ts_full.values(BLACK), ts_compact.values(BLACK),
+            "compact B baseline diverges from full");
+
+        for (ply, uci) in moves.iter().enumerate() {
+            let mv_a = parse_uci(&board_a, uci);
+            let mv_b = parse_uci(&board_b, uci);
+            ts_full.push(NO_MOVE, NO_PIECE_TYPE);
+            ts_compact.push(NO_MOVE, NO_PIECE_TYPE);
+            assert!(board_a.make_move(mv_a));
+            assert!(board_b.make_move(mv_b));
+            absorb_deltas(&mut ts_full, &mut board_a);
+            absorb_deltas(&mut ts_compact, &mut board_b);
+            ts_full.ensure_computed(&sparse_weights, nf, identity, &board_a);
+            ts_compact.ensure_computed(&compact, nf, &remap, &board_b);
+            for pov in [WHITE, BLACK] {
+                let a = ts_full.values(pov);
+                let b = ts_compact.values(pov);
+                if a != b {
+                    let (j, av, bv) = (0..h).find_map(|j| if a[j] != b[j] { Some((j, a[j], b[j])) } else { None }).unwrap();
+                    panic!("compact remap diverges at ply={} move={} pov={} chan={} full={} compact={}",
+                        ply, uci, if pov == WHITE { "W" } else { "B" }, j, av, bv);
+                }
+            }
+        }
     }
 
     /// incremental path will silently misapply deltas.
