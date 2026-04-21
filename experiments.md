@@ -5269,3 +5269,54 @@ Memory updated: `feedback_h0_post_mortem_discipline.md` — require mechanism-bu
 - **Five engines minimum for outlier claims** in cross-engine tunable comparison (Titan's methodology note in `tunable_anomalies_2026-04-19.md`). Two-engine comparison over-flagged three params in the first pass.
 - **Post-merge retune compounds with multiple merged features**, not a single one. #490 landed +7.4 after 4 features merged; single-feature retunes typically land +2-5.
 - **Overlapping error bars = "same distribution twice"**, not "earlier was noise". I miscalled LMR king-pressure H0 at 1242 games because -9.8 had ±10.4 bars. Ended +6.81. Don't narrate direction from within the noise floor.
+
+## 2026-04-20 → 2026-04-21 session
+
+### Major H1 wins (merged to feature/threat-inputs)
+
+- **#553 SE-king-pressure-v2** — S4 from signal_context_sweep, retry of H0'd #511. **+9.7 Elo H1** at 4462g LLR 2.97. King-zone-pressure SE margin widener; +1 context for the kzp signal (now 4/8 tested landed).
+- **#542 unstable-probcut-skip** — parent-child eval-gap → ProbCut skip. **+6.7 Elo H1** at 7390g LLR 2.96.
+- **#539 threats-nmp-skip** — `any_threat_count` gating NMP. **+6.0 Elo H1** at 8330g LLR 3.01.
+- **#554 offense-bonus** — Reckless quiet-attacks-enemy MovePick bonus. **+5.7 Elo H1** at 8854g LLR 3.02. #558 LTC validation landed +6.3.
+- **#557 fix/smp-king-bucket-race** — King-bucket static-mut to NNUENet field + v6 kb_layout fix. **+3.4 Elo H1** at 5444g LLR 3.01 (cache locality gain despite identical bench). SMP trilogy bug #1 of 3.
+- **#576 fix/smp-helper-threat-init** — Helper threads never mirrored main's threat-accumulator state. T=4 SPRT **+651 Elo (self-play "correct-T=4-vs-broken-T=4")** at 304g. **Unlocks v9 T=4 + ponder deployment.** SMP trilogy bug #3 of 3. (Bug #2 was Atlas's aarch64-Finny-cfg-eats-else fix — ARM only.)
+- **#578 tuned-knight-fork** — Knight-fork MovePick bonus + retune #569 applied. **+5.2 Elo H1** at 5734g LLR 2.94. 3rd successful retune-on-branch rescue precedent (after TT_PV and cont-hist-malus).
+- **#582 feature/threat-inputs** — **New production v9 net**: `net-v9-768th16x32-w15-e800s800-reckless-crelu.nnue` (reckless kb layout + CReLU hidden layer + warm30 warmup + s800). **+15.2 Elo H1** at 2950g LLR 3.05 vs xray (6AEA210B). Biggest single net upgrade this session.
+- **#583 fix/lmr-endgame-gate** — Skip LMR when `popcount(occupied) ≤ LMR_ENDGAME_PIECES` (default 6). **+5.0 Elo H1** at 5164g LLR 3.01. Fixed endgame-conversion blunders observed in Lichess game CG5ZXe5Z (coda at depth 22 couldn't find M7 with LMR on; finds M8 at depth 17 with gate).
+
+### H0 rejections (notable)
+
+- **#565 queen-7th-bonus** (-2.0, H0 at 11482g). Retune #568 applied → #577 also H0 (-1.7, 18290g). Retune-on-branch can't rescue features that H0 with genuine negative Elo (not just noise-near-zero).
+- **#555 rook-kingring-bonus** (+0.1 at 32196g, H0). Retune #564 applied → #574 H0 at -2.2 (made it worse). Same lesson: retune can't rescue noise-around-zero features.
+- **#563 knight-fork-bonus** (+0.2 at 32740g, H0) — but retune #569 RESCUED to +5.2 Elo (#578 H1). Distinct from #555 because the feature was borderline positive with big tree-reshape (right candidate for retune).
+- **#566 rook-open-file** (+0.8 at 72998g, H0). Large bench drop, tiny positive Elo. Could retry on tuned trunk post-#585.
+- **#573 tune/v9-post-554-r1-applied** — Main retune after #554 merged. Stopped early at 5528g, -0.7 flat. Lesson: generic retunes on already-tuned trunks diminishing returns; retune-on-branch is selective, generic is waste.
+- **#572 feature/threat-inputs** (w20 vs w15 on kb10 net) — H0 at -10.5. Confirmed w15 is WDL optimum for kb10 family (with prior w10 < w15 result).
+- **#567 feature/threat-inputs** (warm50 vs warm40 on reckless-warm series) — H0 at -9.4. Warm ladder saturates past warm30.
+
+### Infrastructure / correctness
+
+- **`chore/tunables-with-c-end`** merged — tunables! macro now carries c_end field, `coda tune-spec [--r-end 0.002]` CLI dumps fresh SPSA spec from source. Eliminates stale spec file class of errors (observed in tune #562 where LMP_BASE was stuck at integer boundary due to c_end too small).
+- **`nnue/hl-crelu-file-marker`** merged — context-dependent bit 5: on extended_kb=1 nets means hl_crelu (auto-configures NNUE at load). `coda patch-net` CLI for flipping bit 5 on existing nets.
+- **`fix/simd512-pairwise-pack-fused-threats`** — AVX-512 pairwise-pack was silently dropping threat features on v9 pairwise nets. Validated by Adam on AVX-512 host: pre-fix bench 3,317,873; post-fix bench 4,513,225 (matches AVX2 Hercules exactly). OB fleet unaffected (no AVX-512 workers). Latent landmine for future AVX-512 worker.
+- **`fix/bench-multithread-output`** — `coda bench -tN` now shows per-position info (thread 0 runs full stats, others silent). Previous behavior was entirely silent.
+- **Compiler warnings cleared to zero** — CLAUDE.md Code Hygiene section added requiring `cargo build --release` emits no warnings.
+
+### SPRTs in flight at session end
+
+- **#586 experiment/tuned-trunk-585** — applies tune #585 values (2500 iters on post-merge trunk + new production net). 15+ strong movers: LMR_HIST_DIV +25%, HIST_PRUNE_MULT +31%, CORR_HIST_DIV -22%, CORR_W_NP -23%, SE_DEPTH -19%, LMP_DEPTH -19%, QS_SEE_THRESHOLD tighter. Bench 1,959,547 vs trunk 1,766,373; EBF 1.70 vs 1.78 (-4.5%); FMC 77.3% vs 75.2% (+2.1pp). User prior +10-20 Elo given cumulative improvements.
+- **#587 experiment/tuned-force-more-pruning** — applies tune #571 values on old trunk (pre-knight-fork merge). Tests whether SPSA starting from "force more pruning" shifted defaults converges on a better-pruned equilibrium than natural retune. Bench 2,820,229 (-37.5% vs pre-tune 4,513,225), EBF 1.77 (-1.1% vs 1.79). Force-pruning nudged out of local max; Elo TBD.
+- **#584 experiment/threat-delta-capture-bonus** — idea C retest at `THREAT_CAPTURE_BONUS=500` (half the failed #579 value 1000). UCI override in SPRT. If still flat, try lower or retest on new trunk.
+- **#580 experiment/threat-delta-ext** — idea D (threat_deltas count extension on captures). -8.9 trending H0 at 3568g.
+
+### Key calibration lessons
+
+- **"Wait 500+ games" rule validated** — C bonus=1000 showed -5.6 at 996g, recovered to -0.3 at 10036g. First-thousand-games noise swing is real; resist stopping early.
+- **Retune-on-branch cliché refined**: works when feature H0'd with non-zero-centered distribution (TT_PV +4.5→+8.5, knight-fork +0.8→+5.2). Fails when feature H0'd at noise-around-zero (rook-kingring +0.1→-2.2, queen-7th -2.0→-1.7).
+- **Live Lichess watching catches bugs SPRT misses** — CG5ZXe5Z game revealed endgame-conversion LMR blunder that bench+SPRT had never flagged. Diagnostic FEN-probe → root-cause (LMR over-reducing mate-completion moves) → surgical gate → +5 Elo. Worth adding live-watch to post-net-change checklist.
+- **SMP bugs have "Swiss cheese" failure signature** — most games fine (helpers lose root cutoff race), rare games catastrophic (helper's wrong-eval TT entry poisons main). Discovered via 20-FEN eval-consistency instrumentation (Atlas's pattern), not SPRT.
+- **Bench on correct branch** — submitted #582 with wrong bench (2,862,737) because local build was on idea-C branch with THREAT_CAPTURE_BONUS=1000 active. OB rejected with Wrong Bench. Memory note `feedback_bench_depends_on_branch_state.md` exists exactly for this; should have followed it.
+
+### WDL ladder (kb10 family)
+
+Tested so far: **w15 > w10**, **w15 > w20**. Additional w0 and w05 nets trained overnight. Full RR deferred — low priority, pure research/documentation. w15 confirmed optimum for kb10.
