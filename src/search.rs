@@ -106,6 +106,13 @@ tunables!(
     (ESCAPE_BONUS_R, 12226, 3000, 30000, 1350.0),
     (ESCAPE_BONUS_MINOR, 8883, 2000, 20000, 900.0),
     (NMP_KING_ZONE_MAX, 6, 2, 9, 1.5),
+    // T2.1 (Titan's next_ideas 2026-04-21): undefended-piece NMP skip
+    // threshold. Count our pieces with ≥1 enemy attacker AND zero of
+    // our own defenders ("hanging"). If count >= this threshold, skip
+    // NMP — opponent's free tempo is very likely to exploit the hanger.
+    // Fits Titan's W2 pattern (binary signal gating a pruning decision).
+    // Default 1 = skip NMP whenever any piece is hanging.
+    (NMP_UNDEFENDED_MAX, 1, 0, 5, 1.0),
     (PROBCUT_KING_ZONE_MAX, 6, 2, 9, 1.5),
     (LMR_THREAT_DIV, 3, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
@@ -1917,6 +1924,30 @@ fn negamax(
     let king_zone = crate::attacks::king_attacks(our_king_sq as u32) | (1u64 << our_king_sq);
     let king_zone_pressure = popcount(enemy_attacks & king_zone) as i32;
 
+    // T2.1: undefended ("hanging") piece count. Our non-pawn pieces
+    // that are attacked by enemy AND NOT defended by any of our own
+    // pieces. Zero-cost-when-skipped: computation only runs for
+    // NMP-eligible nodes (most nodes either fail the depth gate or are
+    // in_check). ~10-15 magic lookups per computed node — comparable
+    // to king-zone-pressure's cost.
+    let undefended_count: i32 = {
+        // Only bother computing when NMP might actually fire.
+        let nmp_gate_cheap = depth >= 3 && !in_check && ply > 0
+            && stm_non_pawn != 0 && beta - alpha == 1
+            && static_eval >= beta && !prev_was_null
+            && beta.abs() < MATE_SCORE - 100
+            && info.excluded_move[ply_u] == NO_MOVE;
+        if nmp_gate_cheap && tp(&NMP_UNDEFENDED_MAX) > 0 {
+            let our_non_pawn = board.colors[board.side_to_move as usize]
+                & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+            let attacked = our_non_pawn & enemy_attacks;
+            let our_attacks = board.attacks_by_color(board.side_to_move);
+            popcount(attacked & !our_attacks) as i32
+        } else {
+            0
+        }
+    };
+
     if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
         && !prev_was_null  // Prevent consecutive null moves
@@ -1924,6 +1955,7 @@ fn negamax(
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && king_zone_pressure < tp(&NMP_KING_ZONE_MAX)  // New gate
         && any_threat_count < 3  // S7-style: skip NMP when many of our pieces are under threat
+        && undefended_count < tp(&NMP_UNDEFENDED_MAX)  // T2.1: skip when hanging pieces
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
