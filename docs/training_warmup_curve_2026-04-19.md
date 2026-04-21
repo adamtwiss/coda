@@ -3,7 +3,23 @@
 Following warm5 (−7 Elo), warm20 (baseline), warm30 (+4.44 Elo @ #496)
 at e200. Two more data points needed to see shape, not chase Elo.
 
-## Why these matter
+## RESOLVED (2026-04-21)
+
+warm40 and warm50 both trained at e200 and SPRT'd. **warm30 was the
+strongest**; warm40 and warm50 each regressed vs warm30 at SB200.
+Shape: positive from 5→30, peak at 30, mild regression beyond.
+
+**Conclusion:** don't warmup past ~15% of total training length.
+For e200 that's warm30. For e400/e800 production training, anchor
+at warm30 unless absolute-count follow-up (below) says otherwise.
+The "does longer training need longer warmup" question is deferred
+to e400/e800 production runs.
+
+Original design/motivation preserved below for reference.
+
+---
+
+## Why these matter (original)
 
 - warm30 is positive. Question: does it monotonically improve with
   longer warmup, plateau, or reverse?

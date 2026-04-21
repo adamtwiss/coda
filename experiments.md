@@ -5321,6 +5321,25 @@ Memory updated: `feedback_h0_post_mortem_discipline.md` — require mechanism-bu
 
 Tested so far: **w15 > w10**, **w15 > w20**. Additional w0 and w05 nets trained overnight. Full RR deferred — low priority, pure research/documentation. w15 confirmed optimum for kb10.
 
+### Warmup curve (kb10 reckless family, e200) — resolved
+
+Full curve at e200 tested, closes Titan's `training_warmup_curve_2026-04-19.md`
+open question:
+
+| Warmup SBs | Result |
+|---:|---|
+| 5 | −7 Elo (earlier in thread) |
+| 20 | baseline |
+| **30** | **+4.44 Elo (#496), peak** |
+| 40 | H0 vs warm30 |
+| 50 | H0 vs warm30; #567 H0 −9.4 vs warm40 |
+
+**Shape:** positive 5→30, peak at 30, regression past 30. Rule: don't warm
+past ~15% of total training length. For e200 that's warm30; anchor at
+warm30 for e400/e800 production unless absolute-count follow-up suggests
+otherwise. `docs/training_warmup_curve_2026-04-19.md` updated with
+the resolution.
+
 ## 2026-04-21 session (continued) — AVX-512 + VNNI merge
 
 **Merged `feature/nnue-avx512-vnni-v9`** (Zeus's work) at 51a71f2.
