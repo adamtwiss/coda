@@ -58,6 +58,22 @@ tunables!(
     (NMP_EVAL_MAX, 5, 1, 6, 1.5),
     (NMP_VERIFY_DEPTH, 12, 8, 20, 2.0),
     (RFP_DEPTH, 7, 2, 12, 2.0),
+    // Shape experiment 2 (Titan's shape_experiments_proposal_2026-04-19):
+    // RFP margin unified. Old formula:
+    //   margin = depth * (improving ? IMP=70 : NOIMP=132)
+    // New formula:
+    //   margin = depth * RFP_MARGIN - (improving as i32) * RFP_IMPROVING_SUB
+    // SF uses this "base minus flat improving discount" shape; Coda's
+    // per-depth-scaled improving was structurally different. RFP_MARGIN=132
+    // preserves non-improving d=5 behaviour exactly; RFP_IMPROVING_SUB=310
+    // preserves improving d=5 behaviour exactly (132*5 - 310 = 350 = 70*5).
+    // High-depth improving behaviour diverges — new formula discounts less
+    // at d=10+ (old: 700 at d=10; new: 1010). SPSA needed to calibrate.
+    (RFP_MARGIN, 132, 50, 200, 7.5),
+    (RFP_IMPROVING_SUB, 310, 0, 600, 30.0),
+    // Retained for backward compat with prior SPSA specs; no longer read
+    // by the search path. Safe to remove in a follow-up cleanup commit
+    // once no in-flight tune references them.
     (RFP_MARGIN_IMP, 70, 30, 150, 6.0),
     (RFP_MARGIN_NOIMP, 132, 50, 200, 7.5),
     (FUT_BASE, 69, 20, 200, 9.0),
@@ -1993,7 +2009,12 @@ fn negamax(
             && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
             && move_flags(tt_move) != FLAG_EN_PASSANT;
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
-            let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            // Unified shape per Titan shape_experiments Exp 2. Clamp floor
+            // to 0 — at very shallow depth the improving discount can exceed
+            // depth * base, which would invert the comparison (`static_eval -
+            // negative_margin >= beta` lets RFP fire with static_eval well
+            // below beta, breaking the "clearly winning" premise).
+            let mut margin = (depth * tp(&RFP_MARGIN) - (improving as i32) * tp(&RFP_IMPROVING_SUB)).max(0);
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
             if static_eval - margin >= beta {
