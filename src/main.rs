@@ -380,7 +380,6 @@ fn main() {
                 let stm = entry.pos.side_to_move();
                 if entry.pos.is_checked(stm) { in_check += 1; }
 
-                let mt = entry.mv.mtype();
                 // Check if destination has a piece (capture)
                 let dest_piece = entry.pos.piece_at(entry.mv.to());
                 if dest_piece != sfbinpack::chess::piece::Piece::NONE {

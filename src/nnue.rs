@@ -1899,7 +1899,7 @@ impl NNUENet {
         let mut hl_crelu = false;
         let mut has_threats = false; // bit 6: threat features (v9)
         let mut num_threat_features = 0usize;
-        let mut extended_kb = false; // bit 7: extended KB header follows
+        // extended_kb (bit 7) is only read inside the v7|8|9 match arm; declared locally there.
         let mut num_king_buckets: usize = 16; // default (uniform/consensus)
         let mut kb_layout = KbLayout::Uniform;
         let hidden_size: usize;
@@ -1938,7 +1938,7 @@ impl NNUENet {
                 bucketed_hidden = flags & 8 != 0; // output buckets baked into L1/L2
                 dual_l1 = flags & 16 != 0; // dual L1 activation (CReLU+SCReLU)
                 has_threats = flags & 64 != 0; // v9 threat features
-                extended_kb = flags & 128 != 0; // bit 7: extended KB header
+                let extended_kb = flags & 128 != 0; // bit 7: extended KB header
                 // Bit 5 has context-dependent meaning: consensus_buckets on
                 // legacy 16-bucket nets (extended_kb=0), hl_crelu on modern
                 // nets (extended_kb=1). Invariant enforced by bullet_convert.
@@ -3566,7 +3566,7 @@ impl NNUEAccumulator {
                 // during the replay chain, the mirroring might be wrong.
                 // For now this is acceptable; king moves are rare in the chain.
                 // Swap deltas out to avoid borrow conflict (no allocation)
-                let mut deltas = std::mem::take(&mut self.stack[ply].threat_deltas);
+                let deltas = std::mem::take(&mut self.stack[ply].threat_deltas);
                 let (prev_slice, curr_slice) = self.stack.split_at_mut(ply);
                 let prev = &prev_slice[src];
                 let curr = &mut curr_slice[0];

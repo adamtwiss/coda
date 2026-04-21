@@ -405,6 +405,18 @@ for authoritative defaults — values below are approximate.
 - PV nodes skip all TT cutoffs and QS beta blending
 - Polyglot book encodes castling as king-to-rook (must convert to king-to-destination)
 
+## Code Hygiene
+
+- **Keep compiler warnings at zero.** `cargo build --release` should emit no
+  warnings. Warnings accumulate into noise that masks real issues — every
+  new warning is one that hid the serious one next to it. When adding
+  code, run `cargo build --release` and fix any new warnings before
+  committing. When a warning IS intentional (e.g. a placeholder), suppress
+  it explicitly (`#[allow(unused_variables)]`) so the intent is clear.
+- Common patterns: unused imports → delete; `let mut x = ...` that's
+  never mutated → drop `mut`; `let mut x = false;` then reassigned before
+  read → move declaration into the scope where it's used.
+
 ## Testing Methodology
 
 ### CRITICAL LESSON (2026-04-01)
