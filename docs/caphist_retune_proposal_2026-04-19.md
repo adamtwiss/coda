@@ -1,37 +1,52 @@
 # CapHist-Defender Rebase + Retune — Proposal
 
-## Status as of 2026-04-21 — PRIORITY 1 execution item, not started
+## Status as of 2026-04-21 — IN FLIGHT (SPRT submitted)
 
-Branch `experiment/caphist-defender` still exists and is stale vs
-trunk. Trunk has moved significantly since this doc was written —
-confirmed-landed Elo since the Apr 19 diagnostic includes:
+**Rebased + merged.** `experiment/caphist-defender-v2` brought up to
+trunk HEAD (4167bdd) via merge commit 4dea6dd. One conflict in
+src/search.rs tunables! macro (5-tuple trunk format vs 4-tuple branch
+format) — resolved to trunk values wholesale. Builds clean, 139/139
+tests pass.
 
-- **#502 B1 discovered-attack +52 Elo** (biggest single-feature win ever)
-- **#553 SE-king-pressure +9.7**, **#542 unstable-ProbCut +6.7**,
-  **#539 anythreat-NMP +6.0**, **#554 offense-bonus +5.7**,
-  **#582 new v9 prod net +15.2**, **#583 LMR-endgame-gate +5.0**,
-  **#578 tuned-knight-fork +5.2**, **#586 post-merge retune +6.2**,
-  SMP trilogy bug fixes (+651 self-play at T=4)
-- Plus structural changes: AVX-512/VNNI kernels, ponder-softfloor,
-  EGTB hash.
+**Diagnostic on merged branch** (bench 13, v9 prod net DAA4C54E):
 
-**Impact on this proposal:** rebase WILL have merge conflicts in
-movepicker.rs (knight-fork + offense bonuses merged there). But the
-mechanism — 4D defensed-capture history lifting first-move-cut from
-72% → 82% — is unchanged. Expected Elo gain is **still +8-15** per
-the diagnostic; compensation pruning has only grown tighter with
-post-merge retunes, giving more room to unwind.
+| Metric | Trunk | Caphist-v2 merged | Delta |
+|---|---|---|---|
+| Bench | 2,170,815 | 2,541,481 | +17% |
+| First-move-cut | 76.8% | 75.3% | −1.5pp |
+| EBF | 1.74 | 1.76 | slight worse |
 
-**Next steps** (assigned to me / Hercules):
-1. Checkout `experiment/caphist-defender`, rebase onto
-   `feature/threat-inputs` @ 45ddaae. Resolve movepicker.rs conflicts.
-2. Build + bench on reckless-crelu prod net (DAA4C54E).
-3. Focused SPSA on 4 capture-coupled tunables (SEE_QUIET_MULT,
-   SEE_CAP_MULT, BAD_NOISY_MARGIN, CAP_HIST_MULT) — 1000 iters.
-4. Apply focused tune values, SPRT vs trunk at bounds [-3, 3].
-5. If H1: merge, then full-tune the 64-param set for rebalancing.
-6. If H0: inspect first-move-cut delta to confirm diagnostic still
-   holds on current trunk (may have been absorbed by other merges).
+**Numbers differ from original Apr 19 diagnostic** (bench −22%, FMC
+72 → 82%). Trunk's baseline has moved: FMC rose naturally from 72% to
+76.8% via post-Apr-19 merges (B1 +52, #582 new prod net, #553/#554
+bonuses, #586 retune). The "free" ordering headroom caphist targeted
+has narrowed. BUT:
+
+- The v5 baseline FMC is ~81-82%, so a ~5pp gap remains — caphist
+  still has territory to close.
+- Bench change still huge (+17%). Classic retune-candidate signature.
+- SMP fixes (T=4-only) don't explain single-threaded FMC rise, so
+  the remaining gap is genuinely ordering-related.
+
+**SPRT-first methodology** (per Hercules + Adam 2026-04-21):
+1. ✅ **Rebase + merge** — done
+2. ✅ **SPRT untuned** vs trunk at bounds `[-5, 5]`, both sides on
+   DAA4C54E — submitted as net-vs-net style (same net both sides, only
+   code differs). Pending result.
+3. **If H1**: merge, then run global retune to capture compensation
+   unwinding (unexpected but possible free lunch).
+4. **If H0 near-zero with bench delta**: retune-candidate signature
+   confirmed — run focused SPSA on the 4 capture-coupled tunables
+   (SEE_QUIET_MULT, SEE_CAP_MULT, BAD_NOISY_MARGIN, CAP_HIST_MULT)
+   for 1000 iters, apply values, re-SPRT.
+5. **If H0 clearly negative** (≤ −5 Elo): the mechanism is broken on
+   current trunk (e.g., signal fragmentation from splitting the
+   history table more granularly across a smaller-per-bucket budget).
+   Drop cleanly and document why.
+
+**Hypothesis at start of SPRT:** likely H0 near-zero (retune needed),
+given Titan's original SPRT #483 H0'd at −1.5 untuned and the
+mechanism hasn't changed. Focused SPSA should flip it.
 
 **Recommendation** (original from Apr 19): rebase `experiment/caphist-defender` onto current trunk, then focused SPSA + full retune + SPRT. High-confidence ~+8-15 Elo candidate based on diagnostic evidence.
 
