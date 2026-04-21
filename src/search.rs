@@ -112,6 +112,10 @@ tunables!(
     (FUT_THREATS_MARGIN, 38, 0, 200, 10.0),
     (DISCOVERED_ATTACK_BONUS, 7501, 0, 30000, 1500.0),
     (SE_KING_PRESSURE_MARGIN, 3, 0, 30, 1.5),
+    // E3: any_threat_count × SE margin widener. Mirror of S4 (#553 +9.7)
+    // using any_threat_count instead of king_zone_pressure. More extensions
+    // in sharp positions where many of our pieces are under threat.
+    (SE_THREATS_MARGIN, 2, 0, 20, 1.5),
     (MVV_CAP_MULT, 17, 4, 64, 3.0),
     (CONT_HIST_MULT, 1, 1, 8, 1.5),
     (KNIGHT_FORK_BONUS, 7516, 0, 20000, 1000.0),
@@ -2207,8 +2211,10 @@ fn negamax(
             // Skip SE for mate scores (margin comparison meaningless)
             if tt_score_local > -(MATE_SCORE - 100) && tt_score_local < MATE_SCORE - 100 {
                 // S4: widen singular test margin when king under pressure.
+                // E3: further widen when any_threat_count is high (sharp position).
                 let singular_beta = tt_score_local - depth
-                    - king_zone_pressure * tp(&SE_KING_PRESSURE_MARGIN);
+                    - king_zone_pressure * tp(&SE_KING_PRESSURE_MARGIN)
+                    - any_threat_count * tp(&SE_THREATS_MARGIN);
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
