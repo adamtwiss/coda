@@ -2300,7 +2300,10 @@ fn negamax(
             // our_defenses widener: add margin per our-piece-under-attack so
             // tactical positions keep more lines from being pruned on eval.
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
+            // E5: widen futility margin when eval is unstable (parent-child gap).
+            // Mirrors E2 (RFP unstable widen) and #542 ProbCut-skip pattern.
+            let unstable_adj = if unstable { (tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH)) / 3 } else { 0 };
+            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj + unstable_adj;
             // Don't futility-prune moves with very strong history (Igel pattern)
             if futility_value <= alpha && main_hist < 12000 {
                 info.stats.futility_prunes += 1;
