@@ -148,6 +148,15 @@ tunables!(
     // it to 4 (pinned at floor); manually restored to 5 here. SPSA can
     // still explore ±2-3 from 5 within the clamped range.
     (LMR_ENDGAME_PIECES, 5, 4, 9, 1.5),
+    // P1 Optimism (SF/Reckless/Viridithas consensus): per-side eval bias
+    // driven by the root score's rolling EMA. Blended into eval at every
+    // node via (score*(MAT_BASE+mat) + opt*(OPT_BASE+mat)) / norm.
+    // OPTIMISM_K1 = 0 disables the blend. SF uses 144/91; starting
+    // smaller to stay conservative vs unretuned pruning margins.
+    (OPTIMISM_K1, 80, 0, 300, 15.0),
+    (OPTIMISM_K2, 120, 30, 300, 15.0),
+    (OPTIMISM_OPT_BASE, 8000, 2000, 30000, 1500.0),
+    (OPTIMISM_AVG_NUM, 2, 1, 4, 0.5),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -351,6 +360,15 @@ pub struct SearchInfo {
     pub nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
     pub nnue_acc: Option<crate::nnue::NNUEAccumulator>,
     pub threat_stack: crate::threat_accum::ThreatStack,
+    /// P1 Optimism: per-side bias blended into eval every node. Updated
+    /// at the end of each root ID iteration from the rolling avg of the
+    /// best root move's score. `optimism[0]` always refers to White,
+    /// `optimism[1]` to Black — stored color-indexed, applied with
+    /// stm-aware sign at the blend site.
+    pub optimism: [i32; 2],
+    /// Rolling EMA of root score used to derive `optimism`. Reset
+    /// per-search; updated at the end of each ID iteration.
+    pub root_avg: i32,
     /// Syzygy tablebases (shared, read-only). Interior WDL probes in search.
     pub syzygy: Option<std::sync::Arc<crate::tb::SyzygyTB>>,
 }
@@ -403,6 +421,8 @@ impl SearchInfo {
             nnue_acc: None,
             threat_stack: crate::threat_accum::ThreatStack::new(768), // max v9 accum size
             syzygy: None,
+            optimism: [0; 2],
+            root_avg: 0,
         }
     }
 
@@ -622,7 +642,17 @@ impl SearchInfo {
         // correction — hence SPRT #610 showed −8 Elo at 1000 games before
         // we caught this. The fix is structural: keep TT storage
         // halfmove-independent, apply scale freshly on read.
-        score * (22400 + material) / 32 / 1024
+        //
+        // P1 Optimism blend (SF pattern): when OPTIMISM_K1 > 0, the
+        // stm-keyed optimism is added weighted by (OPT_BASE + material),
+        // so it dominates more in middlegame and less in endgame.
+        let opt = self.optimism[board.side_to_move as usize];
+        if opt != 0 {
+            let opt_base = tp(&OPTIMISM_OPT_BASE);
+            (score * (22400 + material) + opt * (opt_base + material)) / 32 / 1024
+        } else {
+            score * (22400 + material) / 32 / 1024
+        }
     }
 }
 
@@ -1180,6 +1210,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.tm_prev_score = 0;
     info.tm_best_stable = 0;
     info.tm_has_data = false;
+    // P1 Optimism: reset per-search (EMA carries over across ID iters, not
+    // across whole searches).
+    info.optimism = [0; 2];
+    info.root_avg = 0;
     // Reset per-root-move node counts
     for v in info.root_move_nodes.iter_mut() { *v = 0; }
 
@@ -1423,6 +1457,23 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         prev_score = score;
         info.last_score = score;
+
+        // P1 Optimism: update root-score EMA and per-color optimism.
+        // EMA: avg = ((n-1)*avg + score) / n.
+        {
+            let k1 = tp(&OPTIMISM_K1);
+            if k1 > 0 {
+                let k2 = tp(&OPTIMISM_K2).max(1);
+                let n = tp(&OPTIMISM_AVG_NUM).max(1);
+                // Clamp to keep the EMA out of the mate range.
+                let clamped = score.clamp(-1500, 1500);
+                info.root_avg = ((n - 1) * info.root_avg + clamped) / n;
+                let avg = info.root_avg;
+                let opt_us = k1 * avg / (avg.abs() + k2);
+                info.optimism[info.root_stm as usize] = opt_us;
+                info.optimism[1 - info.root_stm as usize] = -opt_us;
+            }
+        }
         info.ponder_depth.store(depth as u64, std::sync::atomic::Ordering::Relaxed);
 
         // Record cumulative nodes at this depth (for EBF calculation)
