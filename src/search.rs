@@ -1640,6 +1640,13 @@ fn negamax(
         return apply_halfmove_scale(info.eval(board), board.halfmove);
     }
 
+    // C8 audit LIKELY #3: reset reductions slot at node entry so NMP and
+    // any other pre-move-loop child call reads "no prior reduction", not
+    // a sibling's stale LMR value from an earlier visit to this ply.
+    if ply_u <= MAX_PLY {
+        info.reductions[ply_u] = 0;
+    }
+
     // Mate distance pruning — applies to all nodes (standard form)
     let is_pv = beta - alpha > 1;
     {
