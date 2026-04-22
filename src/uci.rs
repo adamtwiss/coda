@@ -410,6 +410,15 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             let deadline = elapsed + hard.max(10);
                             ponderhit_flag.store(deadline, Ordering::Relaxed);
                         }
+                    } else if pl.movetime > 0 {
+                        // C8 audit LIKELY #33: `go ponder movetime X` (no
+                        // wtime/btime). Previously our_time==0 triggered an
+                        // instant stop, discarding all the ponder work. Use
+                        // movetime as the deadline instead — matches what the
+                        // caller asked for.
+                        let elapsed = start.elapsed().as_millis() as u64;
+                        let deadline = elapsed + pl.movetime.max(10);
+                        ponderhit_flag.store(deadline, Ordering::Relaxed);
                     } else {
                         // No time info: instant stop
                         external_stop.store(true, Ordering::Relaxed);
@@ -599,7 +608,11 @@ fn parse_go(tokens: &[&str]) -> SearchLimits {
             "depth" => {
                 idx += 1;
                 if idx < tokens.len() {
-                    limits.depth = tokens[idx].parse().unwrap_or(100);
+                    // C8 audit LIKELY #32: fail-closed on parse error (0),
+                    // matching every other integer field in this parser.
+                    // Previously malformed `depth ???` parsed as 100,
+                    // producing a near-infinite search.
+                    limits.depth = tokens[idx].parse().unwrap_or(0);
                 }
             }
             "movetime" => {
