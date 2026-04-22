@@ -76,7 +76,10 @@ impl SyzygyTB {
 
         // Native-hash cache check first — avoids the Board→Chess translation
         // and the shakmaty decompression path when the slot is valid.
-        if let Some(wdl) = self.cache.probe(board.hash) {
+        // Halfmove is part of the cache key (C2 fix): shakmaty's probe_wdl
+        // returns different results across halfmove, so we must cache per
+        // halfmove to avoid serving a stale cursed-win/blessed-loss answer.
+        if let Some(wdl) = self.cache.probe(board.hash, board.halfmove) {
             return Some(wdl);
         }
 
@@ -84,7 +87,7 @@ impl SyzygyTB {
         match self.tb.probe_wdl(&chess) {
             Ok(wdl) => {
                 let score = ambiguous_wdl_to_score(wdl);
-                self.cache.store(board.hash, score);
+                self.cache.store(board.hash, board.halfmove, score);
                 Some(score)
             }
             Err(_) => None,
