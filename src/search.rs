@@ -138,7 +138,13 @@ tunables!(
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
     // LMR over-reduces king-restriction queen moves that complete mates.
-    (LMR_ENDGAME_PIECES, 6, 0, 12, 1.5),
+    //
+    // NARROW RANGE [4, 9]: this parameter is correctness-load-bearing —
+    // too low and we regress on deep endgame conversions (Lichess-visible,
+    // STC-invisible). 2026-04-22 SPSA #660 tried to drift it toward 5;
+    // clamped to preserve the #583 fix intent. SPSA can still explore
+    // ±2-3 from the original 6.
+    (LMR_ENDGAME_PIECES, 6, 4, 9, 1.5),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
