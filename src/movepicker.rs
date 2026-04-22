@@ -193,6 +193,9 @@ pub struct MovePicker {
     // B1: our own pieces blocking a slider's attack on an enemy piece.
     // Moving one of these creates a discovered attack.
     xray_blockers: Bitboard,
+    // T1.3: enemy pieces defending 2+ of their own pieces. Quiet-move
+    // bonus for moves whose post-move attacks hit one of these.
+    overloaded_defenders: Bitboard,
     // Evasion support
     checkers: Bitboard,
     pinned: Bitboard,
@@ -215,6 +218,7 @@ impl MovePicker {
         pawn_hist: Option<&[[i16; 64]; 13]>,
         threats: Threats,
         xray_blockers: Bitboard,
+        overloaded_defenders: Bitboard,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
     ) -> Self {
@@ -288,6 +292,7 @@ impl MovePicker {
             skip_quiet: false,
             threats,
             xray_blockers,
+            overloaded_defenders,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -320,6 +325,7 @@ impl MovePicker {
             skip_quiet: true,
             threats: 0,
             xray_blockers: 0,
+            overloaded_defenders: 0,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -374,6 +380,7 @@ impl MovePicker {
             skip_quiet: false,
             threats: 0, // evasions don't use threat-aware history
             xray_blockers: 0, // evasions don't use discovered-attack bonus
+            overloaded_defenders: 0, // evasions don't use overload bonus
             checkers,
             pinned,
             threat_sq: -1,
@@ -661,6 +668,15 @@ impl MovePicker {
                             && popcount(attacks_from_to & enemy_non_pawns) >= 2 {
                             score += kf_bonus;
                         }
+                    }
+                    // T1.3 Overload: attack on enemy piece defending 2+ of
+                    // its own pieces. Forces the opponent to break the
+                    // defence — "remove the defender" tactic.
+                    let ol_bonus = crate::search::OVERLOAD_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+                    if ol_bonus > 0 && self.overloaded_defenders != 0
+                        && attacks_from_to & self.overloaded_defenders != 0
+                    {
+                        score += ol_bonus;
                     }
                 }
             }

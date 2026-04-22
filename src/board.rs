@@ -539,6 +539,40 @@ impl Board {
         result
     }
 
+    /// Enemy pieces that defend at least `min_defended` of their own pieces.
+    ///
+    /// "Overloaded defender" heuristic (T1.3): a piece defending 2+ of its own
+    /// pieces can't move without exposing a defendee. MovePick bonus for
+    /// moves that attack one of these squares forces the opponent to break
+    /// the defence — the classic "remove the defender" tactic.
+    ///
+    /// Cost: iterate up to 16 enemy pieces, one magic lookup per slider.
+    /// Called once per node entry.
+    pub fn overloaded_defenders(&self, color: Color, min_defended: u32) -> Bitboard {
+        let them = color as usize;
+        let their_pieces = self.colors[them];
+        let occ = self.colors[0] | self.colors[1];
+        let mut result: Bitboard = 0;
+        let mut pieces = their_pieces & !self.pieces[KING as usize];
+        while pieces != 0 {
+            let sq = pieces.trailing_zeros();
+            pieces &= pieces - 1;
+            let pt = self.piece_type_at(sq as u8);
+            let attacks = match pt {
+                PAWN => crate::attacks::pawn_attacks(color, sq),
+                KNIGHT => crate::attacks::knight_attacks(sq),
+                BISHOP => crate::attacks::bishop_attacks(sq, occ),
+                ROOK => crate::attacks::rook_attacks(sq, occ),
+                QUEEN => crate::attacks::queen_attacks(sq, occ),
+                _ => 0,
+            };
+            if (attacks & their_pieces).count_ones() >= min_defended {
+                result |= 1u64 << sq;
+            }
+        }
+        result
+    }
+
     /// Get bitboard of all pieces attacking a square.
     pub fn attackers_to(&self, sq: u32, occ: Bitboard) -> Bitboard {
         let knights = self.pieces[KNIGHT as usize];
