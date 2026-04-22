@@ -748,8 +748,12 @@ pub fn build_dirty_piece(
         changes[n] = (true, us, ROOK, rook_to); n += 1;
     }
 
-    let mut d = DirtyPiece::recompute();
-    d.kind = 1;
+    // Use incremental() base so needs_refresh defaults to [false; 2] —
+    // non-king moves never cross a king bucket, so both povs incremental.
+    // (Using recompute() as the base would leak needs_refresh=[true;2] and
+    // trigger a full refresh on every non-king move — real bug found in
+    // #665 H0 at −10.7 Elo.)
+    let mut d = DirtyPiece::incremental(&[]);
     d.n_changes = n as u8;
     d.changes = changes;
     d
