@@ -2065,6 +2065,15 @@ fn negamax(
         let null_key = board.hash; // save hash for threat detection after unmake
         if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::recompute()); }
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
+        // C3 (2026-04-22 audit): set null sentinel on moved_piece_stack /
+        // moved_to_stack at ply_u. Without this, child at ply+1 reads
+        // stale (piece, to) from a prior sibling move at this ply, feeding
+        // cont-hist, history pruning and LMR-history adjustment with
+        // unrelated data. Stockfish sets the null sentinel similarly.
+        if ply_u <= MAX_PLY {
+            info.moved_piece_stack[ply_u] = 0;
+            info.moved_to_stack[ply_u] = 0;
+        }
         let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
         if info.threat_stack.active { info.threat_stack.pop(); }
