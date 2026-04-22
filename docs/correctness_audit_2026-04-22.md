@@ -16,7 +16,7 @@ Audits performed:
 9. Training pipeline + net I/O (`datagen.rs`, `bullet_convert.rs`, `nnue_export.rs`)
 10. Bullet trainer additions (feature/threat-inputs branch) — *still running, separate doc*
 
-Summary: **7 CRITICAL, ~30 LIKELY, ~25 SPECULATIVE.** Many of the CRITICAL items are latent (affect edge conditions or near-50mr play) but are the kind that show up on Lichess, long TC, or when users mix UCI modes — classic "SPRT never saw it" bugs.
+Summary: **9 CRITICAL, ~35 LIKELY, ~30 SPECULATIVE.** Many of the CRITICAL items are latent (affect edge conditions or near-50mr play) but are the kind that show up on Lichess, long TC, or when users mix UCI modes — classic "SPRT never saw it" bugs. **The Bullet audit found a potentially high-impact training-inference frame mismatch (C8) affecting ~50% of training positions — flagged for immediate investigation.**
 
 ## Reading the severity
 
@@ -138,6 +138,48 @@ Triggers with any client mixing TC modes (Lichess analysis, SPRT harnesses, cute
 
 **Fix:** explicitly zero `soft_limit`, `hard_limit`, `soft_floor`, and `tm_*` at the top of every non-`our_time` branch (or unconditionally before all branches).
 
+### C8. Bullet training / Coda inference semi-exclusion frame mismatch — affects ~50% of positions
+
+**File:** `bullet/crates/bullet_lib/src/game/inputs/chess_threats.rs:435` vs `coda/src/threats.rs:200-204`
+
+```rust
+// Training (bullet):
+if att_type == vic_type && (att_color != vic_color || !is_pawn_att) && sq < to {
+    continue;
+}
+```
+
+Training semi-excludes same-type pairs using `sq < to` where both squares are in the **bulletformat-normalized frame** (rank-XOR-flipped when real STM = black). Coda inference's `PiecePair::base(from, to)` uses **physical squares** (per commit comment "Semi-exclusion uses PHYSICAL squares to match Bullet training" — but the semantics diverged).
+
+Consequence: when real STM is black, the rank-XOR reverses the ordering relation for pieces on different ranks. Concrete trace: black rooks at physical c3 and c6 with real STM = black:
+- Training emits `stm_idx = base + POL[45] + AIL[45][21]`
+- Inference emits `stm_idx = base + POL[21] + AIL[21][45]`
+- **Different feature indices.**
+
+Also: Reckless inference applies semi-exclusion in POV-relative frame (post-flip), which is yet a **third** scheme. All three engines' training/inference/reference are inconsistent.
+
+Affects: same-type pairs (doubled rooks, double bishops, opposing-colour pawn confrontations, queen-queen, knight-knight, king-king) on different ranks in positions where real STM is black. Roughly 50% of training positions × several features each — a meaningful fraction of threat emissions are **trained on features that never activate at inference, and activated at features that were never trained**.
+
+This is likely a multi-Elo bug on v9 nets. It may also explain some of the v9 NNUE "flatter eval distribution" observation we've attributed to architecture rather than a training-signal leak.
+
+**Fix path:**
+1. Build a fuzzer that round-trips random positions through both `ChessBucketsWithThreats::map_features` (bullet) and `coda::threats::enumerate_threats` for both perspectives. Diff the feature sets. Any non-empty diff is a mismatch.
+2. Use `coda dump-threats` CLI as the ground-truth source.
+3. Decide the canonical frame: (a) physical squares everywhere — change training, retrain — or (b) STM-relative squares — change inference.
+4. Coordinate with any reference engines whose training data we may share (Reckless) for consistency.
+
+**Severity:** CRITICAL. Potentially the highest-impact finding in this audit because it's been silently corrupting training signal on every v9 net.
+
+### C9. Bullet HIP-backend Adam kernel ABI mismatch — drops `l1` parameter
+
+**File:** `bullet/crates/bullet_hip_backend/kernels/base/optimiser.cu:107-140`
+
+Rust extern declares 10 scalar args (`decay, l1, min, max, ...`); C++ kernel signature reads 9 scalars (no `l1`). On HIP/AMD: undefined behaviour — `l1` float is interpreted as `min`, `min` as `max`, `max` as pointer-aligned junk. Inner kernel invocation at line 125 also drops `l1`.
+
+**Not active in Coda production** — our Bullet training uses CUDA (`bullet_cuda_backend`), not HIP. But if any GPU host ever runs the HIP path (AMD GPU training), all optimiser calls silently corrupt. Future-proofing concern only.
+
+**Fix:** align HIP `Adam` C ABI with Rust + CUDA signature, rebuild HIP kernel artifact.
+
 ### C7. `convert-checkpoint` momentum/velocity files miss the output layer when `l2_size == 0`
 
 **File:** `src/nnue_export.rs:102-113`
@@ -255,6 +297,15 @@ For a v7 no-L2 transfer-learning run, Bullet's optimiser loader will fail or lea
 | `main.rs:707-720` | `fetch-net` uses `curl -sL` without `-f`. HTTP errors (404/500) captured as file content; curl exits 0. Partial downloads become "successful" nets. No post-download NNUE magic validation. |
 | `bullet_convert.rs:292-293` | Threat weight clamp uses `[-127, 127]` instead of full `[-128, 127]` i8 range. More importantly, silent clipping below the 1% warning threshold goes unreported. |
 
+### Bullet trainer (feature/threat-inputs branch)
+
+| Location | Issue |
+|---|---|
+| `bullet/crates/bullet_lib/src/game/inputs/chess_threats.rs:455-458` | `--xray 0` training produces a net with `num_inputs() = threat_offset + NUM_THREAT_FEATURES` — x-ray rows exist in the weight matrix with **random init** (never gradient-updated), but Coda inference always emits x-ray features. Random weights activate at inference → silent eval corruption. No matching `--xray` flag on inference side. |
+| `bullet/examples/coda_v9_768_threats.rs:219-234` | `--l1-decay` + `--factoriser` interaction: L1 drives `l0w[i]` → 0, but saved value is `l0w[i] + l0f[i % l0f_len]`, which is non-zero wherever factoriser has learned shared weights. Defeats L1's stated sparsity goal. Either train with one or the other, or document incompatibility. |
+| `bullet/crates/bullet_lib/src/game/inputs/chess_threats.rs:17` | `MAX_THREAT_ACTIVE = 256` + 32 PSQ = 288 upper bound. Worst-case position with many slider/xray features could exceed. Panics the loader mid-training run. Quiet-position filter reduces probability but doesn't eliminate. Bump to 384–512 or run the data through a max-count probe. |
+| `bullet/examples/coda_v9_768_threats.rs:298-305` + `coda/src/main.rs:266` | `--hidden-activation crelu` at training and `--hl-crelu` at converter are independent flags. If they disagree, .nnue claims wrong activation; inference applies wrong activation silently. Human-process footgun. Fix: emit `training.meta` sidecar, have `convert-bullet` read it automatically. |
+
 ## SPECULATIVE (latent / dead-code / defensive)
 
 Brief list; fix when touching the area.
@@ -317,6 +368,9 @@ Brief list; fix when touching the area.
 
 Fix in batches. Each batch is independently SPRT-able and small enough for one review branch.
 
+**Batch 0 — investigate first, potentially highest-impact:**
+0. **C8 Bullet training/inference semi-exclusion frame mismatch.** Build the map_features vs enumerate_threats fuzzer BEFORE deciding fix path. If confirmed, this likely requires a one-time retrain of v9. Budget: investigation days + one retrain cycle. Do not queue anything dependent on net behaviour until this is resolved.
+
 **Batch 1 — CRITICAL, straightforward, no retune needed:**
 1. C1 `is_pseudo_legal` EP checks (+ fuzzer update) → `fix/is-pseudo-legal-ep`
 2. C2 TB cache halfmove key → `fix/tb-cache-halfmove`
@@ -324,9 +378,10 @@ Fix in batches. Each batch is independently SPRT-able and small enough for one r
 4. C6 Stale soft_limit/hard_limit across `go` → `fix/tm-stale-limits`
 5. C7 convert-checkpoint output-layer momentum → `fix/convert-checkpoint-l2`
 6. C4 NEON SCReLU `>>9` vs `>>8` (+ scalar-vs-NEON test) → `fix/nnue-neon-screlu-shift`
+7. C9 HIP Adam ABI (only if we ever run HIP training; low-priority vs the CUDA-only production path)
 
 **Batch 2 — CRITICAL, may affect Elo / tree shape:**
-7. C3 NMP `moved_piece_stack` sentinel → `fix/nmp-sentinel-moved-piece` (expect small Elo either way; retune trigger)
+8. C3 NMP `moved_piece_stack` sentinel → `fix/nmp-sentinel-moved-piece` (expect small Elo either way; retune trigger)
 
 **Batch 3 — LIKELY, clusters of low-variance fixes:**
 8. `is_pv` SE shadow, `improving` in-check fallback, stale `reductions`, QS TT halfmove, TT near-miss halfmove, TT-cutoff cont-hist malus promotion asymmetry — all narrow one-liners, bundle per subsystem.
@@ -343,9 +398,21 @@ Fix in batches. Each batch is independently SPRT-able and small enough for one r
 **Batch 5 — SPECULATIVE / hygiene:**
 16. Dead-code removal, tighter defensive guards, the long list of minor items.
 
-## Not yet included
+## Bullet audit — confirmed clean
 
-- Bullet trainer additions on `feature/threat-inputs` (chess_threats.rs, coda_v9_768_threats.rs, L1 reg, factoriser) — audit still running; will append to this doc or add a companion doc once results land.
+The Bullet audit independently verified these are consistent with Coda inference:
+- Mirror/flip math (`ntm_flip = 56 ^ optional_file_flip`) matches bulletformat's storage convention.
+- Empty-board pawn/knight attack tables (unit tests pass at expected totals: 84, 336).
+- Slider ray attacks vs naive ray-walk — match across occupancy patterns.
+- `base_pair` encoding: training's `pt*2+color` and inference's `color*6+pt` are pov-remap-equivalent (same iteration order).
+- X-ray ray-bitscan optimisation (ebdf398) matches old attack-recomputation path.
+- Threat hot-path optimisation (ceef197 +45%) is semantically equivalent.
+- CUDA AdamW + L1 argument order matches kernel declaration; CPU AdamW path uses standard proximal soft-thresholding.
+- Sign-at-zero: L1 kernel `else { p=0 }` produces exactly 0, not NaN.
+- Factoriser init: `InitSettings::Zeroed` for l0f; l0w gets normal init before rebinding.
+- Factoriser shape math and gradient flow through `.repeat(ones^T)` are correct.
+- `l0f` correctly excluded from `l1_decay` (no zero-collapse).
+- Reckless-10-bucket flat expansion has a startup assertion against the Reckless reference.
 
 ## Methodology notes
 
