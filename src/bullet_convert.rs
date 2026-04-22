@@ -289,13 +289,21 @@ pub fn convert_v7(
         for i in 0..num_threats * h {
             let val_i16 = read_i16_le(&data, offset);
             offset += 2;
-            if val_i16 < -127 || val_i16 > 127 { clipped += 1; }
-            threat_weights[i] = (val_i16 as i32).clamp(-127, 127) as i8;
+            // C8 audit LIKELY #49: use full i8 range [-128, 127] instead of
+            // symmetric [-127, 127]. The old bound wasted one negative
+            // value and slightly raised the clip rate. Also: if clip rate
+            // > 1%, warn loudly — clipping indicates training/inference
+            // scale mismatch and silent Elo loss.
+            if val_i16 < i8::MIN as i16 || val_i16 > i8::MAX as i16 { clipped += 1; }
+            threat_weights[i] = (val_i16 as i32).clamp(i8::MIN as i32, i8::MAX as i32) as i8;
         }
         let total = (num_threats * h) as u64;
         let pct = 100.0 * clipped as f64 / total as f64;
         println!("Read {} threat weights ({}×{}, i16→i8 clamp, {:.4}% clipped)",
             total, num_threats, h, pct);
+        if pct > 1.0 {
+            eprintln!("WARNING: >1% threat weight clipping — likely scale mismatch, will lose Elo");
+        }
         if pct > 1.0 {
             eprintln!("WARNING: {:.2}% of threat weights clipped to i8 — consider i16 storage", pct);
         }
