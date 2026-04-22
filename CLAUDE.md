@@ -495,12 +495,14 @@ Bench: 1780721
 
 | Bounds | When to use | Example |
 |--------|-------------|---------|
-| `[-10, 5]` | Structurally correct / consensus fix. Merge unless clear regression. | Pre-MakeMove migration, removing unique heuristic |
-| `[0, 5]` | Expect small gain, confirm not harmful. | Parameter tweaks, minor corrections |
+| `[0, 5]` | Novel feature, expect small gain, confirm not harmful. | New search heuristic, new bonus in movepick |
+| `[-3, 3]` | Small win / correctness bug fix. Tight resolution around zero. | 50mr mate downgrade, stale-bound gate, SE-margin tweak |
 | `[0, 10]` | Expect meaningful gain from structural fix. | SEE quiet fix, futility reimplementation |
 | `[-5, 5]` | Pure non-regression check. | Adding tunables at default values, NPS-only changes |
 
-This avoids endless grinding on changes we'd merge at neutral — a correctness fix doesn't need to prove +10 Elo, just prove it's not -10. Conversely, a novel feature should demonstrate clear positive signal.
+**Don't use `[-10, 5]`.** In a regime where single experiments target +1-3 Elo, a floor of -10 is too permissive — H1 can fire on data that still leaves room for a small negative true effect. Use `[-3, 3]` for correctness fixes instead.
+
+When picking, don't hedge toward wider bounds out of uncertainty. Name the class ("correctness bug", "novel feature", "NPS-only"), pick the matching row, submit.
 
 **What does NOT need SPRT:**
 - Comments, documentation, tooling changes
