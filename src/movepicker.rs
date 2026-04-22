@@ -926,9 +926,23 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
     }
 
     // En passant: validate thoroughly
+    //
+    // C1 (2026-04-22 audit): EP requires that `from` is on the EP-capture
+    // rank (rank 5 for white, rank 4 for black) AND on a file adjacent to
+    // `to`. Without these, a TT-collision move with corrupted from + to +
+    // flags (e.g. `a2→d6 FLAG_EN_PASSANT` in a position with ep_square=d6)
+    // passes all other checks: `cap_sq` contains the enemy pawn and
+    // destination is empty. make_move then teleports our pawn and removes
+    // the enemy pawn — same 320 Elo hole class as earlier pseudo-legal bugs.
     if flags == FLAG_EN_PASSANT {
         if pt != PAWN { return false; }
         if to != board.ep_square { return false; }
+        let from_rank = from >> 3;
+        let required_rank = if us == WHITE { 4 } else { 3 }; // 5th rank = index 4
+        if from_rank != required_rank { return false; }
+        let from_file = from & 7;
+        let to_file = to & 7;
+        if (from_file as i8 - to_file as i8).abs() != 1 { return false; }
         // Verify capture square has enemy pawn
         let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
         if cap_sq >= 64 || (1u64 << cap_sq) & board.pieces[PAWN as usize] & board.colors[them as usize] == 0 {
