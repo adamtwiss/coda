@@ -2364,7 +2364,16 @@ fn negamax(
 
                 if singular_score < singular_beta {
                     // TT move is singular — no competitive alternatives.
-                    let is_pv = beta - alpha > 1;
+                    //
+                    // C8 audit LIKELY #1: the previous shadow
+                    // `let is_pv = beta - alpha > 1` used the CURRENT alpha,
+                    // which moves earlier at this node may have raised. On a
+                    // real PV node, after alpha advances past the initial PV
+                    // bracket, `beta - alpha` collapses to 1 and the shadow
+                    // read `false`, letting double extensions fire on PV
+                    // nodes — violating "no DEXT at PV". The outer `is_pv`
+                    // (derived from `alpha_orig`, line 1971) stays correct
+                    // through the whole node; fall through to that.
                     if !is_pv && singular_score < singular_beta - tp(&DEXT_MARGIN)
                         && info.double_ext_count[ply_u] < tp(&DEXT_CAP)
                     {
@@ -2955,6 +2964,12 @@ fn negamax(
         && best_score > alpha_orig
         && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
         && scaled_eval > -(MATE_SCORE - 100)
+        // C8 audit LIKELY #12: TT-store has a stop guard (see tt write
+        // path); corrhist update previously didn't. On a stop, children
+        // returned 0, which can bubble up as best_score > alpha_orig
+        // from a polluted baseline. Writing that into corrhist poisons
+        // per-thread tables for every subsequent iteration.
+        && !info.stop.load(Ordering::Relaxed)
     {
         // Train corrhist on the halfmove-scaled pre-correction value.
         // `best_score` is in scaled-space (propagated up from scaled leaf
