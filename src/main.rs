@@ -128,6 +128,14 @@ enum Commands {
         /// Clear the HL-CReLU bit
         #[arg(long)]
         clear_hl_crelu: bool,
+        /// Set the FT-SCReLU bit (bit 0). Retrofit for historical nets that
+        /// were converted without `--screlu` but should have had it set for
+        /// consistency with the convert-bullet recipe.
+        #[arg(long)]
+        set_ft_screlu: bool,
+        /// Clear the FT-SCReLU bit (bit 0)
+        #[arg(long)]
+        clear_ft_screlu: bool,
         /// Just print current flags, make no changes
         #[arg(long)]
         inspect: bool,
@@ -457,9 +465,14 @@ fn main() {
             run_perft_bench();
         }
 
-        Some(Commands::PatchNet { input, output, set_hl_crelu, clear_hl_crelu, inspect }) => {
+        Some(Commands::PatchNet { input, output, set_hl_crelu, clear_hl_crelu,
+                                   set_ft_screlu, clear_ft_screlu, inspect }) => {
             if set_hl_crelu && clear_hl_crelu {
                 eprintln!("Error: --set-hl-crelu and --clear-hl-crelu are mutually exclusive");
+                std::process::exit(1);
+            }
+            if set_ft_screlu && clear_ft_screlu {
+                eprintln!("Error: --set-ft-screlu and --clear-ft-screlu are mutually exclusive");
                 std::process::exit(1);
             }
             let mut data = match std::fs::read(&input) {
@@ -474,27 +487,35 @@ fn main() {
             let flags = data[8];
             let extended_kb = flags & 128 != 0;
             let bit5 = flags & 32 != 0;
-            let interpreted = if extended_kb {
+            let bit0 = flags & 1 != 0;
+            let bit5_desc = if extended_kb {
                 format!("hl_crelu={}", bit5)
             } else {
-                format!("consensus_buckets={} (legacy; refuses to patch)", bit5)
+                format!("consensus_buckets={} (legacy)", bit5)
             };
-            println!("{}: version={} flags=0b{:08b} extended_kb={} bit5: {}",
-                input, version, flags, extended_kb, interpreted);
+            println!("{}: version={} flags=0b{:08b} extended_kb={} ft_screlu={} bit5: {}",
+                input, version, flags, extended_kb, bit0, bit5_desc);
             if inspect { return; }
-            if !extended_kb {
+            let patching_bit5 = set_hl_crelu || clear_hl_crelu;
+            let patching_bit0 = set_ft_screlu || clear_ft_screlu;
+            if !patching_bit5 && !patching_bit0 {
+                eprintln!("Nothing to change. Pass --set-hl-crelu / --clear-hl-crelu / \
+                    --set-ft-screlu / --clear-ft-screlu, or --inspect.");
+                return;
+            }
+            if patching_bit5 && !extended_kb {
                 eprintln!("Error: cannot patch bit 5 on legacy net (extended_kb=0 means \
                     bit 5 is consensus_buckets). Regenerate the net with --kb-layout or \
                     a non-16 kb_count to enable extended_kb.");
                 std::process::exit(1);
             }
-            if !set_hl_crelu && !clear_hl_crelu {
-                eprintln!("Nothing to change. Pass --set-hl-crelu / --clear-hl-crelu or --inspect.");
-                return;
-            }
-            let new_flags = if set_hl_crelu { flags | 32 } else { flags & !32 };
+            let mut new_flags = flags;
+            if set_hl_crelu { new_flags |= 32; }
+            if clear_hl_crelu { new_flags &= !32; }
+            if set_ft_screlu { new_flags |= 1; }
+            if clear_ft_screlu { new_flags &= !1; }
             if new_flags == flags {
-                println!("(no change — bit 5 already in requested state)");
+                println!("(no change — flags already in requested state)");
                 return;
             }
             data[8] = new_flags;
@@ -502,9 +523,13 @@ fn main() {
             if let Err(e) = std::fs::write(dest, &data) {
                 eprintln!("Error writing {}: {}", dest, e); std::process::exit(1);
             }
+            let mut ops = Vec::<&str>::new();
+            if set_hl_crelu { ops.push("set hl_crelu"); }
+            if clear_hl_crelu { ops.push("clear hl_crelu"); }
+            if set_ft_screlu { ops.push("set ft_screlu"); }
+            if clear_ft_screlu { ops.push("clear ft_screlu"); }
             println!("Patched: {} flags 0b{:08b} → 0b{:08b} ({})",
-                dest, flags, new_flags,
-                if set_hl_crelu { "set hl_crelu" } else { "clear hl_crelu" });
+                dest, flags, new_flags, ops.join(" + "));
         }
 
         Some(Commands::TuneSpec { r_end }) => {
