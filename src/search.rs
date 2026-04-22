@@ -1973,9 +1973,25 @@ fn negamax(
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = static_eval;
         }
-        // Improving: our eval is better than 2 plies ago
+        // Improving: our eval is better than 2 plies ago.
+        //
+        // C8 audit LIKELY #2: when ply-2 was in-check, static_evals[ply-2]
+        // was set to -INFINITY (see the else branch below). Comparing
+        // `static_eval > -INFINITY` trivialised to true, so improving fired
+        // on every post-check comeback, inflating RFP/LMP/futility/LMR.
+        // SF/Viridithas fall back to ply-4 when ply-2 is unavailable; skip
+        // entirely when neither ply is usable.
         if ply >= 2 && ply_u >= 2 {
-            improving = static_eval > info.static_evals[ply_u - 2];
+            let prev2 = info.static_evals[ply_u - 2];
+            if prev2 > -INFINITY + 1 {
+                improving = static_eval > prev2;
+            } else if ply_u >= 4 {
+                let prev4 = info.static_evals[ply_u - 4];
+                if prev4 > -INFINITY + 1 {
+                    improving = static_eval > prev4;
+                }
+                // else: leave improving=false (no usable baseline).
+            }
         }
     } else {
         if ply_u < MAX_PLY {
@@ -2133,12 +2149,29 @@ fn negamax(
     }
 
     // ProbCut: at moderate+ depths, if a shallow search of captures with
-    // raised beta confirms the position is winning, prune the node
+    // raised beta confirms the position is winning, prune the node.
+    //
+    // C8 audit LIKELY #7/#8: two fixes to this gate.
+    // - #8: add !is_pv — SF/Obsidian/Viridithas/Berserk all gate ProbCut to
+    //   non-PV. Pruning PV nodes on a raised-beta shallow search is too
+    //   aggressive for a node whose score we need exactly.
+    // - #7: the "TT says no chance" skip read `tt_entry.score` raw (no ply
+    //   adjust) and accepted ANY flag. A LOWER bound < probcut_beta means
+    //   "score is AT LEAST X" — it does not mean "no chance at probcut_beta",
+    //   the true score can be much higher. Only UPPER/EXACT bounds are
+    //   evidence of a ceiling. Switch to ply-adjusted score + bound gate.
     let probcut_beta = beta + tp(&PROBCUT_MARGIN);
-    if !in_check && ply > 0 && depth >= 5
+    let probcut_tt_noshot = if tt_hit && tt_entry.depth >= depth - 3 {
+        let adj_score = score_from_tt(tt_entry.score, ply);
+        (tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT)
+            && adj_score < probcut_beta
+    } else {
+        false
+    };
+    if !in_check && ply > 0 && !is_pv && depth >= 5
         && beta.abs() < MATE_SCORE - 100  // skip for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
-        && !(tt_hit && tt_entry.depth >= depth - 3 && tt_entry.score < probcut_beta)  // TT says no chance
+        && !probcut_tt_noshot  // TT says no chance
         && king_zone_pressure < tp(&PROBCUT_KING_ZONE_MAX)  // A3: skip in high-threat positions
         && !unstable  // Skip ProbCut in eval-unstable positions (eval can't be trusted)
         && FEAT_PROBCUT.load(Ordering::Relaxed)
@@ -2464,7 +2497,12 @@ fn negamax(
 
         // Late Move Pruning: at shallow depths, skip late quiet moves.
         // Applied before MakeMove. Formula: (LMP_BASE + depth²) / (2 - improving)
-        if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
+        //
+        // C8 audit LIKELY #9: add !is_pv guard. CLAUDE.md "Pruning features"
+        // section states LMP is non-PV only, matching
+        // SF/Obsidian/Viridithas/Berserk consensus; the code was missing
+        // the gate so LMP fired on PV nodes.
+        if ply > 0 && !is_pv && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
             && !is_cap && !is_promo
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
