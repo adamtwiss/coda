@@ -526,13 +526,16 @@ impl SearchInfo {
         if self.max_nodes > 0 && self.nodes >= self.max_nodes {
             return true;
         }
-        // Flush local node count to global counter every 4096 nodes
-        // (skip at nodes==0 to avoid phantom 4096 at search start)
-        if self.nodes & 4095 == 0 && self.nodes > 0 {
-            self.global_nodes.fetch_add(4096, Ordering::Relaxed);
+        // Flush local node count to global counter every 1024 nodes
+        // (skip at nodes==0 to avoid phantom 1024 at search start).
+        // Audit SPECULATIVE: bumped 4096→1024 — at ~200-500K NPS that's
+        // 2-5ms time-check granularity instead of 8-20ms, enough to avoid
+        // overruns on <100ms emergency budgets.
+        if self.nodes & 1023 == 0 && self.nodes > 0 {
+            self.global_nodes.fetch_add(1024, Ordering::Relaxed);
         }
-        // Check time every 4096 nodes
-        if self.nodes & 4095 == 0 {
+        // Check time every 1024 nodes
+        if self.nodes & 1023 == 0 {
             let elapsed = self.start_time.elapsed().as_millis() as u64;
             // For ponderhit: allow a grace period beyond the deadline so the
             // current iteration can finish cleanly. But hard-stop if the grace
