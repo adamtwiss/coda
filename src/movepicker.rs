@@ -31,7 +31,7 @@ pub struct History {
     /// int16 values (i32 causes different gravity behavior).
     pub capture: [[[i16; 7]; 64]; 13],
     /// Killer moves: [ply][2]
-    pub killers: [[Move; 2]; 64],
+    pub killers: [[Move; 2]; crate::search::MAX_PLY],
     /// Counter-move: [piece 1-12][to]
     /// piece uses 1-12 indexing (slot 0 unused).
     pub counter: [[Move; 64]; 13],
@@ -69,7 +69,7 @@ impl History {
         History {
             main: [[[[0; 64]; 64]; 2]; 2],
             capture: [[[0i16; 7]; 64]; 13],
-            killers: [[NO_MOVE; 2]; 64],
+            killers: [[NO_MOVE; 2]; crate::search::MAX_PLY],
             counter: [[NO_MOVE; 64]; 13],
             cont_hist: [[[[0; 64]; 13]; 64]; 13],
         }
@@ -78,7 +78,7 @@ impl History {
     pub fn clear(&mut self) {
         self.main = [[[[0; 64]; 64]; 2]; 2];
         self.capture = [[[0i16; 7]; 64]; 13];
-        self.killers = [[NO_MOVE; 2]; 64];
+        self.killers = [[NO_MOVE; 2]; crate::search::MAX_PLY];
         self.counter = [[NO_MOVE; 64]; 13];
         self.cont_hist = [[[[0; 64]; 13]; 64]; 13];
     }
@@ -106,7 +106,7 @@ impl History {
                 }
             }
         }
-        self.killers = [[NO_MOVE; 2]; 64];
+        self.killers = [[NO_MOVE; 2]; crate::search::MAX_PLY];
         self.counter = [[NO_MOVE; 64]; 13];
     }
 
@@ -238,10 +238,12 @@ impl MovePicker {
 
         // Get continuation history sub-table pointers at plies 1, 2, 4, 6 back.
         // Uses moved_piece_stack for correct piece lookup (avoids stale board.piece_at).
+        // Upper-bound guard: callers (search + qsearch) should clamp ply but
+        // we defend here too — indexing out of range panics the search thread.
         let mut cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4] = [None; 4];
         let offsets = [1usize, 2, 4, 6];
         for (i, &off) in offsets.iter().enumerate() {
-            if ply >= off {
+            if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
                 if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
@@ -342,11 +344,14 @@ impl MovePicker {
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
     ) -> Self {
-        // Build cont-hist pointers for evasion (same as main picker)
+        // Build cont-hist pointers for evasion (same as main picker).
+        // Also guard the upper bound: qsearch can deepen past MAX_PLY via
+        // evasion chains, and the caller's clamp might be missed — indexing
+        // moved_piece_stack with ply >= len panics the search thread.
         let mut cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4] = [None; 4];
         let offsets = [1usize, 2, 4, 6];
         for (i, &off) in offsets.iter().enumerate() {
-            if ply >= off {
+            if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
                 if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {

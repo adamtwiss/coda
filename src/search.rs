@@ -15,7 +15,17 @@ use crate::see::see_ge;
 use crate::tt::*;
 use crate::types::*;
 
-const MAX_PLY: usize = 64;
+/// Maximum ply depth supported by per-SearchInfo arrays.
+///
+/// Public because MovePicker and History share the cap for fixed-size
+/// ply-indexed arrays (killers, pv_table, moved_piece_stack, etc.).
+///
+/// Tried 128 to lift the iterative-deepening cap to depth 64, but the
+/// resulting pv_table grew from ~17 KB to ~67 KB per SearchInfo, spilled
+/// L1 on the hot pv-copy path, and regressed STC by ~-13 Elo (OB #664).
+/// Keeping 64 — the original crash is fixed by the ply clamp in qsearch
+/// + bounds check in MovePicker, not by raising the ceiling.
+pub const MAX_PLY: usize = 64;
 const INFINITY: i32 = 30000;
 // Contempt removed 2026-04-19 (SPRT #508 H1 +2.53).
 
@@ -2242,7 +2252,7 @@ fn negamax(
     }
 
     // Continuation history lookup from search stack (killers/counter removed — SF pattern)
-    let safe_ply = ply_u.min(MAX_PLY - 1).min(63);
+    let safe_ply = ply_u.min(MAX_PLY - 1);
     let mut prev_piece_for_cont: usize = 0; // go_piece index (1-12), 0 = none
     let mut prev_to_for_cont: u8 = 0;
     let mut prev2_piece_for_cont: usize = 0; // ply-2 (grandparent move)
@@ -3185,8 +3195,14 @@ fn quiescence_with_depth(
         let qs_enemy_attacks = board.attacks_by_color(
             crate::types::flip_color(board.side_to_move)
         );
+        // Clamp ply to the moved_piece_stack / moved_to_stack bounds.
+        // Qsearch can recurse past MAX_PLY via tactical extensions and evasion
+        // chains; without this clamp MovePicker::new_evasion indexes
+        // `moved_piece_stack[ply - off]` with ply > MAX_PLY and panics (observed
+        // on lichess ASuoXT9f — game thrown from a +21.84 winning position).
+        let qs_safe_ply = (ply as usize).min(MAX_PLY - 1);
         let mut evasion_picker = MovePicker::new_evasion(
-            tt_move, ply as usize, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
+            tt_move, qs_safe_ply, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
             qs_enemy_attacks,
             &info.moved_piece_stack, &info.moved_to_stack,
         );
