@@ -483,25 +483,33 @@ impl TT {
     }
 }
 
-/// Adjust mate scores for TT storage (add ply).
-/// Threshold: MateScore - 100 = 28900.
+/// Adjust mate and TB scores for TT storage (add ply).
+///
+/// C5 (2026-04-22 audit): interior TB probes return `TB_WIN - ply`,
+/// which is 100cp below the original `MATE_SCORE - 100` threshold. That
+/// meant TB scores passed through TT store/load unadjusted, so a TB
+/// score stored at ply=10 and retrieved at ply=20 was 10cp too
+/// optimistic. Threshold widened to `TB_WIN - 128` to cover the full
+/// `[TB_WIN - MAX_PLY, MATE_SCORE]` range (MAX_PLY=64 in search).
+/// Normal evals never reach this range.
 #[inline]
 pub fn score_to_tt(score: i32, ply: i32) -> i32 {
-    if score > MATE_SCORE - 100 {
+    if score > TB_WIN - 128 {
         score + ply
-    } else if score < -(MATE_SCORE - 100) {
+    } else if score < -(TB_WIN - 128) {
         score - ply
     } else {
         score
     }
 }
 
-/// Adjust mate scores from TT retrieval (subtract ply).
+/// Adjust mate and TB scores from TT retrieval (subtract ply). See
+/// `score_to_tt` for the threshold rationale.
 #[inline]
 pub fn score_from_tt(score: i32, ply: i32) -> i32 {
-    if score > MATE_SCORE - 100 {
+    if score > TB_WIN - 128 {
         score - ply
-    } else if score < -(MATE_SCORE - 100) {
+    } else if score < -(TB_WIN - 128) {
         score + ply
     } else {
         score
