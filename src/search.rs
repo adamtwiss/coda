@@ -415,9 +415,17 @@ impl SearchInfo {
     pub fn load_nnue(&mut self, path: &str) -> Result<(), String> {
         let net = crate::nnue::NNUENet::load(path)?;
         let acc = crate::nnue::NNUEAccumulator::new(net.hidden_size);
-        // Activate threat stack if net has threat features
+        // Activate threat stack if net has threat features.
+        //
+        // C8 audit LIKELY #36: previously only the `has_threats` branch
+        // touched threat_stack. On net swap from v9 (has_threats=true) to
+        // v5 (has_threats=false), the existing threat_stack would keep
+        // `active=true` even though the new net doesn't use threats —
+        // search would try to run threat computation against a net that
+        // doesn't consume it. Reset unconditionally first; activate only
+        // when the new net needs it.
+        self.threat_stack = crate::threat_accum::ThreatStack::new(net.hidden_size);
         if net.has_threats {
-            self.threat_stack = crate::threat_accum::ThreatStack::new(net.hidden_size);
             self.threat_stack.active = true;
         }
         self.nnue_net = Some(std::sync::Arc::new(net));
