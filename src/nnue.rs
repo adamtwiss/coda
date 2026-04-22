@@ -1707,9 +1707,15 @@ unsafe fn neon_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
         // v²: bit pattern is u16 [0, 65025]
         let sq0 = vmulq_s16(c0, c0);
         let sq1 = vmulq_s16(c1, c1);
-        // >> 8 (unsigned shift) → [0, 254]
-        let d0 = vreinterpretq_s16_u16(vshrq_n_u16::<9>(vreinterpretq_u16_s16(sq0)));
-        let d1 = vreinterpretq_s16_u16(vshrq_n_u16::<9>(vreinterpretq_u16_s16(sq1)));
+        // >> 8 (unsigned shift) → [0, 254] — must match scalar tail below
+        // and x86 `simd_screlu_pack` (SCReLU scale chain: v² / 256, not 512).
+        // C4 (2026-04-22 audit): commit 44baa95 mistakenly changed this to
+        // >>9 alongside the intentional neon_pairwise_pack change, halving
+        // SCReLU activations on aarch64 builds. Only affects v7 non-pairwise
+        // SCReLU nets on aarch64 — aarch64 has no SCReLU-vs-scalar regression
+        // test (unlike neon_pairwise_pack_fused).
+        let d0 = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(sq0)));
+        let d1 = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(sq1)));
         // Narrow i16 → u8 with unsigned saturation (values are [0, 254])
         let lo = vqmovun_s16(d0);
         let hi = vqmovun_s16(d1);
