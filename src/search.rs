@@ -1264,9 +1264,13 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             hard = max_hard;
         }
 
-        info.soft_limit = soft;
-        // Ensure hard >= soft (but soft is also capped by max_hard for movestogo safety)
+        // C8 audit LIKELY #28: clamp `soft` to `hard` BEFORE storing
+        // info.soft_limit. Previously the clamp only updated the local
+        // `soft`, leaving info.soft_limit possibly > info.hard_limit
+        // under movestogo=1. Downstream TM code then saw a soft budget
+        // larger than the hard cap.
         if soft > hard { soft = hard; }
+        info.soft_limit = soft;
         info.hard_limit = hard;
         // Soft floor: never spend less than the increment we gain, so the
         // dynamic stability cut can't produce clock-growing instant emits
