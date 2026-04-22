@@ -2,7 +2,7 @@
 
 ## Methodology
 
-Nine parallel agents (ten counting the Bullet-trainer audit, which is still running at write-time) reviewed disjoint subsystems for correctness bugs that pass SPRT but are silently wrong. Each agent was briefed with recent bug history in its area and asked to find file:line issues in three severity tiers: CRITICAL, LIKELY, SPECULATIVE.
+Ten parallel agents reviewed disjoint subsystems for correctness bugs that pass SPRT but are silently wrong. Each agent was briefed with recent bug history in its area and asked to find file:line issues in three severity tiers: CRITICAL, LIKELY, SPECULATIVE.
 
 Audits performed:
 1. Threat subsystem (`threats.rs`, `threat_accum.rs`, consumers)
@@ -14,7 +14,7 @@ Audits performed:
 7. SMP + helper threads (`search.rs` helpers, `tt.rs` atomics)
 8. SEE + Zobrist + Cuckoo + TB (`see.rs`, `zobrist.rs`, `cuckoo.rs`, `tb.rs`)
 9. Training pipeline + net I/O (`datagen.rs`, `bullet_convert.rs`, `nnue_export.rs`)
-10. Bullet trainer additions (feature/threat-inputs branch) — *still running, separate doc*
+10. Bullet trainer additions on `feature/threat-inputs` (`chess_threats.rs`, `coda_v9_768_threats.rs`, L1 regularization, factoriser, CUDA/HIP kernel tweaks)
 
 Summary: **9 CRITICAL, ~35 LIKELY, ~30 SPECULATIVE.** Many of the CRITICAL items are latent (affect edge conditions or near-50mr play) but are the kind that show up on Lichess, long TC, or when users mix UCI modes — classic "SPRT never saw it" bugs. **The Bullet audit found a potentially high-impact training-inference frame mismatch (C8) affecting ~50% of training positions — flagged for immediate investigation.**
 
