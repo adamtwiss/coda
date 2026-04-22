@@ -491,6 +491,138 @@ pub fn enumerate_threats<F: FnMut(usize)>(
     }
 }
 
+/// C8 reference: enumerate threat features using **Bullet's bf-frame**
+/// semi-exclusion rule instead of Coda's physical-frame rule.
+///
+/// Bullet stores positions in STM-relative frame (rank-flipped when real
+/// STM is black). Its same-type-pair skip (`sq < to`) evaluates in that
+/// frame. When real STM is black, physical squares vs bf squares disagree
+/// on which side of the pair to keep. This function reimplements the
+/// enumeration in bf-frame so the fuzzer can diff Coda's current output
+/// against Bullet's intended output.
+///
+/// Only direct-attack features are handled here (no x-ray) — those
+/// x-ray features aren't emitted from same-type pairs in the
+/// Coda-visible bugs, but the same semi-excl asymmetry applies.
+pub fn enumerate_threats_bullet_ref<F: FnMut(usize)>(
+    pieces_bb: &[Bitboard; 6],
+    colors_bb: &[Bitboard; 2],
+    mailbox: &[u8; 64],
+    occ: Bitboard,
+    pov: Color,
+    mirrored: bool,
+    real_stm: Color,
+    mut callback: F,
+) {
+    let white_bb = colors_bb[WHITE as usize];
+    let bf_flip: u32 = if real_stm == BLACK { 56 } else { 0 };
+
+    for color in [WHITE, BLACK] {
+        for pt in 0..6u8 {
+            let mut piece_bb = pieces_bb[pt as usize] & colors_bb[color as usize];
+            let cp = colored_piece(color, pt);
+            while piece_bb != 0 {
+                let sq = piece_bb.trailing_zeros();
+                piece_bb &= piece_bb - 1;
+                let sq_bf = sq ^ bf_flip;
+
+                let attacks = piece_attacks_occ(pt, color, sq, occ);
+                let mut hits = attacks & occ;
+                while hits != 0 {
+                    let to = hits.trailing_zeros();
+                    hits &= hits - 1;
+                    let to_bf = to ^ bf_flip;
+
+                    let victim_pt = mailbox[to as usize];
+                    if victim_pt >= 6 { continue; }
+                    let victim_color = if white_bb & (1u64 << to) != 0 { WHITE } else { BLACK };
+                    let victim_cp = colored_piece(victim_color, victim_pt);
+
+                    let idx = threat_index_bullet_ref(
+                        cp, sq, sq_bf,
+                        victim_cp, to, to_bf,
+                        mirrored, pov,
+                    );
+                    if idx >= 0 {
+                        callback(idx as usize);
+                    }
+                }
+
+                // X-ray threats — same closest-revealed-piece logic as
+                // `enumerate_threats`, but with bf-frame semi-excl.
+                if pt == BISHOP || pt == ROOK || pt == QUEEN {
+                    let mut direct_targets = attacks & occ;
+                    while direct_targets != 0 {
+                        let blocker_sq = direct_targets.trailing_zeros();
+                        direct_targets &= direct_targets - 1;
+                        let occ_without = occ & !(1u64 << blocker_sq);
+                        let attacks_through = piece_attacks_occ(pt, color, sq, occ_without);
+                        let revealed = attacks_through & !attacks & occ_without;
+                        if revealed == 0 { continue; }
+                        let xray_sq = if sq < blocker_sq {
+                            let above = revealed & !((1u64 << (blocker_sq + 1)) - 1);
+                            if above != 0 { above.trailing_zeros() } else { 64 }
+                        } else {
+                            let below = revealed & ((1u64 << blocker_sq) - 1);
+                            if below != 0 { 63 - below.leading_zeros() } else { 64 }
+                        };
+                        if xray_sq < 64 {
+                            let xpt = mailbox[xray_sq as usize];
+                            if xpt < 6 {
+                                let xcolor = if white_bb & (1u64 << xray_sq) != 0 { WHITE } else { BLACK };
+                                let xcp = colored_piece(xcolor, xpt);
+                                let xray_bf = xray_sq ^ bf_flip;
+                                let idx = threat_index_bullet_ref(
+                                    cp, sq, sq_bf,
+                                    xcp, xray_sq, xray_bf,
+                                    mirrored, pov,
+                                );
+                                if idx >= 0 {
+                                    callback(idx as usize);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Index computation with Bullet's bf-frame semi-exclusion. Reuses the
+/// existing `PIECE_PAIR_LOOKUP` / `PIECE_OFFSET_LOOKUP` /
+/// `ATTACK_INDEX_LOOKUP` tables; the only change is what squares feed
+/// `PiecePair::base`.
+#[inline]
+fn threat_index_bullet_ref(
+    attacker_cp: usize,
+    from_phys: u32,
+    from_bf: u32,
+    victim_cp: usize,
+    to_phys: u32,
+    to_bf: u32,
+    mirrored: bool,
+    pov: Color,
+) -> i32 {
+    let attacking = if pov == BLACK { (attacker_cp + 6) % 12 } else { attacker_cp };
+    let attacked = if pov == BLACK { (victim_cp + 6) % 12 } else { victim_cp };
+
+    unsafe {
+        let pair = PIECE_PAIR_LOOKUP[attacking][attacked];
+        // The semi-excl decision is the one-and-only change vs Coda's
+        // current threat_index: use bf squares, not physical.
+        let base = pair.base(from_bf, to_bf);
+        if base < 0 {
+            return base;
+        }
+        let flip = (7 * mirrored as u32) ^ (56 * pov as u32);
+        let from_f = from_phys ^ flip;
+        let to_f = to_phys ^ flip;
+        base + PIECE_OFFSET_LOOKUP[attacking][from_f as usize]
+            + ATTACK_INDEX_LOOKUP[attacking][from_f as usize][to_f as usize] as i32
+    }
+}
+
 /// Maximum threat deltas per ply.
 pub const MAX_THREAT_DELTAS: usize = 128;
 

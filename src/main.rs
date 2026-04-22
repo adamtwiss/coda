@@ -180,6 +180,24 @@ enum Commands {
     },
     /// Download NNUE net from net.txt URL
     FetchNet,
+    /// C8 audit fuzzer: diff Coda's current enumerate_threats (physical-
+    /// frame semi-exclusion) against a bf-frame reference matching Bullet
+    /// training, to surface same-type-pair mismatches introduced when real
+    /// STM is Black.
+    FuzzThreats {
+        /// Number of random positions to generate
+        #[arg(short = 'n', long, default_value_t = 10000)]
+        count: usize,
+        /// Random seed (0 = time-based)
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+        /// Max half-moves from startpos per random position
+        #[arg(long, default_value_t = 40)]
+        max_plies: usize,
+        /// Print first N mismatches in detail
+        #[arg(long, default_value_t = 5)]
+        verbose: usize,
+    },
     /// NNUE network health check (uses --nnue/-n flag or auto-discovers)
     CheckNet {},
     /// Measure threat-matrix row sparsity in a v9 .nnue file.
@@ -748,6 +766,10 @@ fn main() {
             run_fetch_net();
         }
 
+        Some(Commands::FuzzThreats { count, seed, max_plies, verbose }) => {
+            run_fuzz_threats(count, seed, max_plies, verbose);
+        }
+
         Some(Commands::CheckNet {}) => {
             match &cli.nnue {
                 Some(path) => run_check_net(path),
@@ -920,6 +942,97 @@ fn run_perft_bench() {
         println!("Some perft tests FAILED");
         std::process::exit(1);
     }
+}
+
+fn run_fuzz_threats(count: usize, seed: u64, max_plies: usize, verbose: usize) {
+    use board::Board;
+    use threats::{enumerate_threats, enumerate_threats_bullet_ref, num_threat_features};
+    use types::{WHITE, BLACK, KING};
+
+    // Threat tables are initialised by init_engine() — ensure that ran.
+    // (main.rs calls it once at startup; fuzz-threats goes through that
+    // path because the subcommand dispatch is after init.)
+    let nf = num_threat_features();
+    assert!(nf > 0, "threat tables not initialised");
+
+    // Deterministic PRNG — xorshift64.
+    let mut state: u64 = if seed == 0 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap()
+            .as_nanos() as u64
+    } else { seed };
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+
+    let mut total_positions = 0usize;
+    let mut total_mismatches = 0usize;
+    let mut mismatches_by_stm = [0usize; 2];
+    let mut printed = 0usize;
+
+    for _ in 0..count {
+        let mut board = Board::startpos();
+        let plies = (next() as usize) % max_plies.max(1);
+        for _ in 0..plies {
+            let moves = crate::movegen::generate_legal_moves(&board);
+            if moves.len == 0 { break; }
+            let pick = (next() as usize) % moves.len;
+            board.make_move(moves.moves[pick]);
+            // Skip positions where only king is left (rare terminal)
+            if (board.pieces[KING as usize]).count_ones() < 2 { break; }
+        }
+
+        total_positions += 1;
+        let real_stm = board.side_to_move;
+        let occ = board.colors[0] | board.colors[1];
+
+        for pov in [WHITE, BLACK] {
+            let our_k_sq = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
+            let mirrored = (our_k_sq & 7) >= 4;
+
+            let mut set_coda = std::collections::BTreeSet::<usize>::new();
+            enumerate_threats(
+                &board.pieces, &board.colors, &board.mailbox,
+                occ, pov, mirrored,
+                |idx| { set_coda.insert(idx); },
+            );
+
+            let mut set_ref = std::collections::BTreeSet::<usize>::new();
+            enumerate_threats_bullet_ref(
+                &board.pieces, &board.colors, &board.mailbox,
+                occ, pov, mirrored, real_stm,
+                |idx| { set_ref.insert(idx); },
+            );
+
+            if set_coda != set_ref {
+                total_mismatches += 1;
+                mismatches_by_stm[real_stm as usize] += 1;
+                if printed < verbose {
+                    let only_coda: Vec<_> = set_coda.difference(&set_ref).collect();
+                    let only_ref: Vec<_> = set_ref.difference(&set_coda).collect();
+                    println!("MISMATCH: fen={} pov={} real_stm={} coda_only={} ref_only={}",
+                        board.to_fen(),
+                        if pov == WHITE { "W" } else { "B" },
+                        if real_stm == WHITE { "W" } else { "B" },
+                        only_coda.len(), only_ref.len());
+                    for i in only_coda.iter().take(3) { println!("  only in coda: {}", i); }
+                    for i in only_ref.iter().take(3) { println!("  only in ref:  {}", i); }
+                    printed += 1;
+                }
+            }
+        }
+    }
+
+    let total_evals = total_positions * 2;
+    println!("Fuzz complete.");
+    println!("  positions fuzzed  : {}", total_positions);
+    println!("  evals compared    : {} (2 povs per position)", total_evals);
+    println!("  mismatches        : {} ({:.2}%)", total_mismatches,
+        100.0 * total_mismatches as f64 / total_evals.max(1) as f64);
+    println!("  by real STM       : W={} B={}", mismatches_by_stm[0], mismatches_by_stm[1]);
 }
 
 fn run_fetch_net() {
