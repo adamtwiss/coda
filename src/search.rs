@@ -1692,8 +1692,15 @@ fn negamax(
         if board.halfmove >= 100 {
             return draw_score;
         }
+        // C8 audit LIKELY #38: bound rep scan by min(halfmove, plies_from_null)
+        // so we don't walk back across a null move boundary. halfmove
+        // increments on null moves (board.rs:947) but plies_from_null resets
+        // (board.rs:948). Scanning past a null move looks for repetitions
+        // against positions that aren't actually "this line of play" —
+        // spurious draws. Cuckoo already does min() at cuckoo.rs:114.
         let stack_len = board.undo_stack.len();
-        let limit = (board.halfmove as usize).min(stack_len);
+        let scan_limit = (board.halfmove as usize).min(board.plies_from_null as usize);
+        let limit = scan_limit.min(stack_len);
         let mut i = 2usize;
         while i <= limit {
             if board.undo_stack[stack_len - i].hash == board.hash {
@@ -2973,11 +2980,14 @@ fn quiescence_with_depth(
     if board.halfmove >= 100 {
         return draw_score;
     }
-    // Check for repetition in game history
+    // Check for repetition in game history.
+    // C8 audit LIKELY #38: also break on null-move boundary — scanning
+    // past a null move looks for repetitions in a different search line.
     let hash = board.hash;
     for undo in board.undo_stack.iter().rev().skip(1).step_by(2) {
         if undo.hash == hash { return draw_score; }
         if undo.halfmove == 0 { break; } // irreversible move
+        if undo.mv == NO_MOVE { break; } // null-move boundary
     }
 
     // Limit quiescence depth to prevent stack overflow
