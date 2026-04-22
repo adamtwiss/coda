@@ -661,6 +661,29 @@ impl MovePicker {
                             && popcount(attacks_from_to & enemy_non_pawns) >= 2 {
                             score += kf_bonus;
                         }
+                        // T1.4 Battery bonus: quiet-slider move (B/R/Q) lands
+                        // such that a friendly slider sits between `to` and
+                        // an enemy piece on the same ray — we've stacked up
+                        // behind a friendly attacker.
+                        let bat_bonus = crate::search::BATTERY_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+                        if bat_bonus > 0 && (pt == 2 || pt == 3 || pt == 4) && !unsafe_square {
+                            let our_sliders = board.colors[us as usize]
+                                & (board.pieces[BISHOP as usize]
+                                   | board.pieces[ROOK as usize]
+                                   | board.pieces[QUEEN as usize])
+                                & !(1u64 << from);
+                            let enemies_hit = attacks_from_to & board.colors[them as usize];
+                            let mut targets = enemies_hit;
+                            while targets != 0 {
+                                let esq = targets.trailing_zeros();
+                                targets &= targets - 1;
+                                let between = crate::bitboard::between(to as u32, esq);
+                                if between & our_sliders != 0 {
+                                    score += bat_bonus;
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }
