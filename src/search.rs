@@ -48,48 +48,51 @@ macro_rules! tunables {
 }
 
 tunables!(
-    // v9 post-#585 overnight tune applied (2500 iters, on reckless-crelu net).
-    // 15+ strong movers: LMR_HIST_DIV +25%, HIST_PRUNE_MULT +31%,
-    // CORR_HIST_DIV -22%, CORR_W_NP -23%, SE_DEPTH -19%, LMP_DEPTH -19%,
-    // NMP_DEPTH_DIV +19%, QS_SEE_THRESHOLD tighter by 18%.
-    (NMP_BASE_R, 5, 2, 8, 1.5),
-    (NMP_DEPTH_DIV, 4, 1, 6, 1.5),
-    (NMP_EVAL_DIV, 130, 100, 400, 15.0),
+    // v9 #660 tune applied (2500 iters, on C8-fix S200 net).
+    // Big movers: LMR_HIST_DIV -45%, HIST_BONUS_OFFSET -26%,
+    // DISCOVERED_ATTACK_BONUS -24%, FH_BLEND_DEPTH +31%, DEXT_MARGIN +23%,
+    // PROBCUT_KING_ZONE_MAX +23%, LMR_COMPLEXITY_DIV +16%, NMP_VERIFY_DEPTH +14%.
+    // Theme: sharpened net → trust history more, tactical bonuses less.
+    // LMR_ENDGAME_PIECES manually restored to 5 (final tune was 4, pinned at
+    // floor — overrides #660 per play-quality-params-narrow-range memo).
+    (NMP_BASE_R, 6, 2, 8, 1.5),
+    (NMP_DEPTH_DIV, 5, 1, 6, 1.5),
+    (NMP_EVAL_DIV, 133, 100, 400, 15.0),
     (NMP_EVAL_MAX, 5, 1, 6, 1.5),
-    (NMP_VERIFY_DEPTH, 12, 8, 20, 2.0),
-    (RFP_DEPTH, 7, 2, 12, 2.0),
-    (RFP_MARGIN_IMP, 70, 30, 150, 6.0),
-    (RFP_MARGIN_NOIMP, 132, 50, 200, 7.5),
-    (FUT_BASE, 69, 20, 200, 9.0),
-    (FUT_PER_DEPTH, 163, 40, 250, 10.5),
-    (HIST_PRUNE_DEPTH, 4, 1, 8, 1.5),
-    (HIST_PRUNE_MULT, 5515, 500, 50000, 2475.0),
-    (SEE_QUIET_MULT, 45, 5, 80, 3.75),
-    (SEE_CAP_MULT, 146, 30, 200, 8.5),
-    (LMR_HIST_DIV, 11604, 2000, 100000, 4900.0),
-    (LMR_C_QUIET, 117, 40, 300, 13.0),
-    (LMR_C_CAP, 106, 100, 350, 12.5),
+    (NMP_VERIFY_DEPTH, 14, 8, 20, 2.0),
+    (RFP_DEPTH, 8, 2, 12, 2.0),
+    (RFP_MARGIN_IMP, 65, 30, 150, 6.0),
+    (RFP_MARGIN_NOIMP, 126, 50, 200, 7.5),
+    (FUT_BASE, 75, 20, 200, 9.0),
+    (FUT_PER_DEPTH, 155, 40, 250, 10.5),
+    (HIST_PRUNE_DEPTH, 5, 1, 8, 1.5),
+    (HIST_PRUNE_MULT, 5834, 500, 50000, 2475.0),
+    (SEE_QUIET_MULT, 44, 5, 80, 3.75),
+    (SEE_CAP_MULT, 142, 30, 200, 8.5),
+    (LMR_HIST_DIV, 6342, 2000, 100000, 4900.0),
+    (LMR_C_QUIET, 120, 40, 300, 13.0),
+    (LMR_C_CAP, 109, 100, 350, 12.5),
     (SE_DEPTH, 4, 4, 20, 2.0),
-    (ASP_DELTA, 14, 5, 30, 1.5),
-    (ASP_SCORE_DIV, 33295, 8000, 50000, 2100.0),
-    (LMP_BASE, 12, 1, 15, 2.0),
-    (LMP_DEPTH, 7, 4, 20, 2.0),
-    (BAD_NOISY_MARGIN, 125, 30, 150, 6.0),
-    (PROBCUT_MARGIN, 198, 80, 300, 11.0),
-    (HINDSIGHT_THRESH, 182, 50, 400, 17.5),
-    (UNSTABLE_THRESH, 164, 50, 500, 22.5),
-    (SEE_MATERIAL_SCALE, 198, 30, 300, 13.5),
-    (QS_DELTA_MARGIN, 373, 100, 500, 20.0),
-    (QS_SEE_THRESHOLD, -40, -200, 0, 10.0),
-    (QS_MAX_CAPTURES, 26, 2, 32, 2.0),
-    (CORR_W_PAWN, 279, 100, 600, 25.0),
-    (CORR_W_NP, 81, 50, 400, 17.5),
-    (CORR_W_MINOR, 56, 30, 300, 13.5),
-    (CORR_W_MAJOR, 91, 30, 300, 13.5),
-    (CORR_W_CONT, 44, 30, 400, 18.5),
+    (ASP_DELTA, 15, 5, 30, 1.5),
+    (ASP_SCORE_DIV, 31848, 8000, 50000, 2100.0),
+    (LMP_BASE, 11, 1, 15, 2.0),
+    (LMP_DEPTH, 8, 4, 20, 2.0),
+    (BAD_NOISY_MARGIN, 128, 30, 150, 6.0),
+    (PROBCUT_MARGIN, 189, 80, 300, 11.0),
+    (HINDSIGHT_THRESH, 187, 50, 400, 17.5),
+    (UNSTABLE_THRESH, 175, 50, 500, 22.5),
+    (SEE_MATERIAL_SCALE, 200, 30, 300, 13.5),
+    (QS_DELTA_MARGIN, 377, 100, 500, 20.0),
+    (QS_SEE_THRESHOLD, -30, -200, 0, 10.0),
+    (QS_MAX_CAPTURES, 28, 2, 32, 2.0),
+    (CORR_W_PAWN, 266, 100, 600, 25.0),
+    (CORR_W_NP, 73, 50, 400, 17.5),
+    (CORR_W_MINOR, 58, 30, 300, 13.5),
+    (CORR_W_MAJOR, 100, 30, 300, 13.5),
+    (CORR_W_CONT, 51, 30, 400, 18.5),
     (FH_BLEND_DEPTH, 1, 0, 8, 1.5),
-    (HIST_BONUS_MULT, 317, 50, 400, 17.5),
-    (HIST_BONUS_MAX, 1646, 500, 3000, 125.0),
+    (HIST_BONUS_MULT, 329, 50, 400, 17.5),
+    (HIST_BONUS_MAX, 1547, 500, 3000, 125.0),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
     // history bonus adopts Stockfish/cap-hist offset shape:
     //   old: min(MAX, MULT * d)
@@ -99,52 +102,52 @@ tunables!(
     // wider depth discrimination. cap-history already uses the offset
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 72, 0, 400, 25.0),
-    (CAP_HIST_MULT, 275, 50, 400, 17.5),
-    (CAP_HIST_BASE, 16, 0, 200, 10.0),
-    (CAP_HIST_MAX, 1547, 500, 3000, 125.0),
-    (DEXT_MARGIN, 11, 2, 50, 2.4),
-    (DEXT_CAP, 16, 4, 32, 2.0),
-    (QUIET_CHECK_BONUS, 10113, 2000, 30000, 1400.0),
-    (LMR_COMPLEXITY_DIV, 171, 30, 500, 23.5),
-    (CORR_HIST_DIV, 999, 256, 4096, 192.0),
+    (HIST_BONUS_OFFSET, 53, 0, 400, 25.0),
+    (CAP_HIST_MULT, 286, 50, 400, 17.5),
+    (CAP_HIST_BASE, 14, 0, 200, 10.0),
+    (CAP_HIST_MAX, 1511, 500, 3000, 125.0),
+    (DEXT_MARGIN, 14, 2, 50, 2.4),
+    (DEXT_CAP, 17, 4, 32, 2.0),
+    (QUIET_CHECK_BONUS, 9589, 2000, 30000, 1400.0),
+    (LMR_COMPLEXITY_DIV, 199, 30, 500, 23.5),
+    (CORR_HIST_DIV, 1002, 256, 4096, 192.0),
     (CORR_UPDATE_WEIGHT_MAX, 16, 4, 48, 2.2),
     (CORR_BONUS_CAP_DIV, 5, 1, 16, 1.5),
-    (CORR_HIST_GRAIN_T, 10, 1, 32, 1.55),
-    (CORR_HIST_ERR_MAX, 4, 1, 64, 3.15),
-    (ESCAPE_BONUS_Q, 15130, 5000, 40000, 1750.0),
-    (ESCAPE_BONUS_R, 12226, 3000, 30000, 1350.0),
-    (ESCAPE_BONUS_MINOR, 8883, 2000, 20000, 900.0),
-    (NMP_KING_ZONE_MAX, 6, 2, 9, 1.5),
-    (PROBCUT_KING_ZONE_MAX, 6, 2, 9, 1.5),
-    (LMR_THREAT_DIV, 3, 1, 5, 1.5),
+    (CORR_HIST_GRAIN_T, 9, 1, 32, 1.55),
+    (CORR_HIST_ERR_MAX, 3, 1, 64, 3.15),
+    (ESCAPE_BONUS_Q, 13614, 5000, 40000, 1750.0),
+    (ESCAPE_BONUS_R, 13061, 3000, 30000, 1350.0),
+    (ESCAPE_BONUS_MINOR, 7932, 2000, 20000, 900.0),
+    (NMP_KING_ZONE_MAX, 5, 2, 9, 1.5),
+    (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
+    (LMR_THREAT_DIV, 4, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
     (FUT_THREATS_MARGIN, 38, 0, 200, 10.0),
-    (DISCOVERED_ATTACK_BONUS, 7501, 0, 30000, 1500.0),
+    (DISCOVERED_ATTACK_BONUS, 5714, 0, 30000, 1500.0),
     // T1.4: quiet-slider move that completes a battery — lands on a square
     // where a friendly slider stands between us and an enemy piece along
     // the same ray. Flat bonus; tp==0 disables detection.
-    (BATTERY_BONUS, 5000, 0, 20000, 1000.0),
-    (SE_KING_PRESSURE_MARGIN, 3, 0, 30, 1.5),
+    (BATTERY_BONUS, 4919, 0, 20000, 1000.0),
+    (SE_KING_PRESSURE_MARGIN, 2, 0, 30, 1.5),
     // xray-SE: widen singular test margin when TT move is from an x-ray
     // blocker square (moving it uncovers our slider's attack on an enemy).
     // Signal already delivered +52 in movepicker (#502). Flat bonus
     // subtracted from singular_beta → easier to judge singular → more
     // extensions for tactically significant moves.
-    (SE_XRAY_BLOCKER_MARGIN, 8, 0, 40, 2.0),
-    (MVV_CAP_MULT, 17, 4, 64, 3.0),
+    (SE_XRAY_BLOCKER_MARGIN, 7, 0, 40, 2.0),
+    (MVV_CAP_MULT, 16, 4, 64, 3.0),
     (CONT_HIST_MULT, 1, 1, 8, 1.5),
-    (KNIGHT_FORK_BONUS, 7516, 0, 20000, 1000.0),
+    (KNIGHT_FORK_BONUS, 7106, 0, 20000, 1000.0),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
     // LMR over-reduces king-restriction queen moves that complete mates.
     //
     // NARROW RANGE [4, 9]: this parameter is correctness-load-bearing —
-    // too low and we regress on deep endgame conversions (Lichess-visible,
-    // STC-invisible). 2026-04-22 SPSA #660 tried to drift it toward 5;
-    // clamped to preserve the #583 fix intent. SPSA can still explore
-    // ±2-3 from the original 6.
-    (LMR_ENDGAME_PIECES, 6, 4, 9, 1.5),
+    // too low and we regress on deep endgame conversions (play-quality bug
+    // discovered watching Coda on Lichess). 2026-04-22 SPSA #660 drifted
+    // it to 4 (pinned at floor); manually restored to 5 here. SPSA can
+    // still explore ±2-3 from 5 within the clamped range.
+    (LMR_ENDGAME_PIECES, 5, 4, 9, 1.5),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
