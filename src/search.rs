@@ -128,6 +128,13 @@ tunables!(
     // subtracted from singular_beta → easier to judge singular → more
     // extensions for tactically significant moves.
     (SE_XRAY_BLOCKER_MARGIN, 8, 0, 40, 2.0),
+    // T2.2: widen singular margin when TT move is a king move AND our
+    // king has very few legal escape squares (<= threshold). Encodes
+    // "king safety crisis means we need deeper verification on king
+    // moves" — related in spirit to king-zone-pressure but keyed on
+    // a different signal (legal escape count, not attacker count).
+    (SE_KING_MOBILITY_MARGIN, 8, 0, 40, 2.0),
+    (SE_KING_MOBILITY_MAX, 1, 0, 4, 1.0),
     (MVV_CAP_MULT, 17, 4, 64, 3.0),
     (CONT_HIST_MULT, 1, 1, 8, 1.5),
     (KNIGHT_FORK_BONUS, 7516, 0, 20000, 1000.0),
@@ -1976,8 +1983,15 @@ fn negamax(
     // on our king zone. A null move in an attacking position gives
     // opponent an extra tempo at the worst moment.
     let our_king_sq = board.king_sq(board.side_to_move);
-    let king_zone = crate::attacks::king_attacks(our_king_sq as u32) | (1u64 << our_king_sq);
+    let king_attacks_raw = crate::attacks::king_attacks(our_king_sq as u32);
+    let king_zone = king_attacks_raw | (1u64 << our_king_sq);
     let king_zone_pressure = popcount(enemy_attacks & king_zone) as i32;
+    // T2.2: count of king-escape squares (pseudo-legal — approximation that
+    // ignores new ray attacks through the ex-king square, but good enough
+    // for an SE gating signal).
+    let king_mobility = popcount(
+        king_attacks_raw & !board.colors[us as usize] & !enemy_attacks
+    ) as i32;
 
     if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
@@ -2288,10 +2302,18 @@ fn negamax(
                 let xray_bonus = if our_xray_blockers & (1u64 << move_from(tt_move)) != 0 {
                     tp(&SE_XRAY_BLOCKER_MARGIN)
                 } else { 0 };
+                // T2.2: king-move with constrained-king — widen margin so
+                // critical king walks get deeper verification.
+                let king_mobility_bonus = if board.piece_type_at(move_from(tt_move)) == KING
+                    && king_mobility <= tp(&SE_KING_MOBILITY_MAX)
+                {
+                    tp(&SE_KING_MOBILITY_MARGIN)
+                } else { 0 };
                 // S4: widen singular test margin when king under pressure.
                 let singular_beta = tt_score_local - depth
                     - king_zone_pressure * tp(&SE_KING_PRESSURE_MARGIN)
-                    - xray_bonus;
+                    - xray_bonus
+                    - king_mobility_bonus;
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
