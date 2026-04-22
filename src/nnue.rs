@@ -3648,18 +3648,34 @@ impl NNUENet {
 /// Dirty piece info for lazy materialization.
 #[derive(Clone, Copy)]
 pub struct DirtyPiece {
-    /// 0 = needs full recompute (king bucket change), 1+ = incremental
+    /// 0 = needs full recompute both povs (legacy, rarely used now),
+    /// 1 = incremental (use `needs_refresh` to signal per-pov refresh).
     pub kind: u8,
     pub changes: [(bool, u8, u8, u8); 5], // (add, color, pt, sq)
     pub n_changes: u8,
+    /// Per-pov refresh flag. Set to true for the moving side when the king
+    /// crosses a bucket/mirror boundary — that pov's feature indices all
+    /// shift, so incremental is impossible. The non-moving side's pov
+    /// always remains incremental because its king is unchanged.
+    pub needs_refresh: [bool; 2],
 }
 
 impl DirtyPiece {
     pub fn recompute() -> Self {
-        DirtyPiece { kind: 0, changes: [(false, 0, 0, 0); 5], n_changes: 0 }
+        DirtyPiece {
+            kind: 0,
+            changes: [(false, 0, 0, 0); 5],
+            n_changes: 0,
+            needs_refresh: [true; 2],
+        }
     }
     pub fn incremental(changes: &[(bool, u8, u8, u8)]) -> Self {
-        let mut d = DirtyPiece { kind: 1, changes: [(false, 0, 0, 0); 5], n_changes: changes.len() as u8 };
+        let mut d = DirtyPiece {
+            kind: 1,
+            changes: [(false, 0, 0, 0); 5],
+            n_changes: changes.len() as u8,
+            needs_refresh: [false; 2],
+        };
         for (i, &c) in changes.iter().enumerate().take(5) {
             d.changes[i] = c;
         }
@@ -3672,7 +3688,10 @@ impl DirtyPiece {
 pub struct AccEntry {
     pub white: Vec<i16>,
     pub black: Vec<i16>,
-    computed: bool,
+    /// Per-pov computed flag. Allows per-pov materialization: a king-bucket
+    /// crossing only invalidates the moving side; the opposite side can
+    /// still apply the incremental changes.
+    computed: [bool; 2],
     dirty: DirtyPiece,
     // Threat accumulator (v9): separate i16 values summed with PSQ at activation
     pub threat_white: Vec<i16>,
@@ -3715,7 +3734,7 @@ impl NNUEAccumulator {
             stack.push(AccEntry {
                 white: vec![0; hidden_size],
                 black: vec![0; hidden_size],
-                computed: false,
+                computed: [false; 2],
                 dirty: DirtyPiece::recompute(),
                 threat_white: Vec::new(), // allocated on first use if net has threats
                 threat_black: Vec::new(),
@@ -3822,7 +3841,7 @@ impl NNUEAccumulator {
                 }
             }
         }
-        self.stack[self.top].computed = true;
+        self.stack[self.top].computed = [true; 2];
     }
 
     /// Compute threat accumulator if not already done.
@@ -4022,7 +4041,7 @@ impl NNUEAccumulator {
             self.stack.push(AccEntry {
                 white: vec![0; self.hidden_size],
                 black: vec![0; self.hidden_size],
-                computed: false,
+                computed: [false; 2],
                 dirty: DirtyPiece::recompute(),
                 threat_white: Vec::new(),
                 threat_black: Vec::new(),
@@ -4035,7 +4054,7 @@ impl NNUEAccumulator {
                 threat_features_black: Vec::new(),
             });
         }
-        self.stack[self.top].computed = false;
+        self.stack[self.top].computed = [false; 2];
         self.stack[self.top].threat_accurate = [false; 2];
         self.stack[self.top].threat_deltas.clear();
         self.stack[self.top].dirty = dirty;
@@ -4047,52 +4066,91 @@ impl NNUEAccumulator {
     }
 
     /// Materialize: ensure current accumulator is computed.
+    ///
+    /// Per-pov dispatch (from a9f6e1f re-apply on post-#661 trunk):
+    /// - Common case (both povs incremental from parent): single fused pass
+    ///   via `apply_incremental_both_povs` — preserves the ILP/SIMD shape
+    ///   of the pre-refactor code.
+    /// - Both refresh (lazy-chain break or root): two Finny-diff refreshes.
+    /// - One pov refresh + one pov incremental (king-bucket crossing): the
+    ///   whole point of the refactor. Refresh the moving side, apply the
+    ///   changes for the opposite side incrementally.
     pub fn materialize(&mut self, net: &NNUENet, board: &Board) {
         #[cfg(feature = "profile-materialize")]
-        crate::nnue::mat_stats::record_entry(self.stack[self.top].computed);
-        if self.stack[self.top].computed {
+        crate::nnue::mat_stats::record_entry(
+            self.stack[self.top].computed[0] && self.stack[self.top].computed[1],
+        );
+        if self.stack[self.top].computed[0] && self.stack[self.top].computed[1] {
             return;
         }
 
         let dirty = self.stack[self.top].dirty;
 
-        // Full recompute needed?
-        if dirty.kind == 0 || self.top == 0 || !self.stack[self.top - 1].computed {
+        // Determine refresh need per-pov. Refresh when either:
+        // (a) moving side's king crossed a bucket/mirror — indicated by the
+        //     `needs_refresh[pov]` flag set by `build_dirty_piece`.
+        // (b) legacy `kind == 0` full-recompute request (both povs).
+        // (c) root of the stack (no parent to copy from).
+        // (d) parent's pov not yet computed (lazy-chain break — matches
+        //     pre-refactor semantics; multi-ply walkback proved a net loss
+        //     in #424 at −17.86 Elo, so we preserve the refresh fallback).
+        let lazy_break = self.top == 0 || dirty.kind == 0;
+        let w_refresh = lazy_break
+            || dirty.needs_refresh[0]
+            || !self.stack[self.top - 1].computed[0];
+        let b_refresh = lazy_break
+            || dirty.needs_refresh[1]
+            || !self.stack[self.top - 1].computed[1];
+
+        if !w_refresh && !b_refresh {
+            #[cfg(feature = "profile-materialize")]
+            crate::nnue::mat_stats::record_incremental(dirty.n_changes as u64);
+            self.apply_incremental_both_povs(net, board);
+        } else if w_refresh && b_refresh {
             #[cfg(feature = "profile-materialize")]
             {
                 crate::nnue::mat_stats::record_refresh();
-                // Walk ancestors to find nearest computed frame; record
-                // distance. 0 = no ancestor / root. 1 = parent computed
-                // (wouldn't fire here by definition but reported for shape).
                 let mut d: usize = 0;
                 if self.top > 0 {
                     let mut i = self.top;
                     while i > 0 {
                         i -= 1;
                         d += 1;
-                        if self.stack[i].computed { break; }
+                        if self.stack[i].computed[0] && self.stack[i].computed[1] { break; }
                     }
-                    if d > 0 && !self.stack[self.top - d].computed { d = 0; }
                 }
                 crate::nnue::mat_stats::record_walkback_distance(d);
             }
             self.refresh_accumulator(net, board, WHITE);
             self.refresh_accumulator(net, board, BLACK);
-            self.stack[self.top].computed = true;
-            return;
+        } else if w_refresh {
+            // White refresh, black incremental — king-bucket crossing for White.
+            #[cfg(feature = "profile-materialize")]
+            crate::nnue::mat_stats::record_refresh();
+            self.refresh_accumulator(net, board, WHITE);
+            self.apply_incremental_for_pov_at(net, board, BLACK, self.top);
+        } else {
+            // Black refresh, white incremental — king-bucket crossing for Black.
+            #[cfg(feature = "profile-materialize")]
+            crate::nnue::mat_stats::record_refresh();
+            self.apply_incremental_for_pov_at(net, board, WHITE, self.top);
+            self.refresh_accumulator(net, board, BLACK);
         }
-        #[cfg(feature = "profile-materialize")]
-        crate::nnue::mat_stats::record_incremental(dirty.n_changes as u64);
 
-        // Incremental update: gather all deltas for this move, then apply them
-        // in a SINGLE fused pass per perspective. Replaces the previous
-        // copy+per-delta-pass pattern which did N passes over the full
-        // accumulator for an N-change move (capture = 3, castling = 4).
-        //
-        // Reckless pattern: for each perspective, read parent once, apply
-        // all add/sub weight rows while the chunk is in registers, write
-        // current once. Memory traffic is constant in N.
+        self.stack[self.top].computed = [true; 2];
+    }
+
+    /// Fused single-pass both-povs incremental update (extracted from the
+    /// pre-refactor materialize hot path). Parent's both povs must be
+    /// computed; caller is responsible for checking that.
+    ///
+    /// Reckless pattern: for each perspective, read parent once, apply
+    /// all add/sub weight rows while the chunk is in registers, write
+    /// current once. Memory traffic is constant in N regardless of the
+    /// number of changes.
+    fn apply_incremental_both_povs(&mut self, net: &NNUENet, board: &Board) {
         let h = self.hidden_size;
+        let dirty = self.stack[self.top].dirty;
         let (left, right) = self.stack.split_at_mut(self.top);
         let parent = &left[self.top - 1];
         let current = &mut right[0];
@@ -4103,7 +4161,7 @@ impl NNUEAccumulator {
         let n = dirty.n_changes as usize;
 
         // Collect add/sub weight rows per perspective. Max ~4 deltas per move
-        // (promotion capture = 4); using 8-slot stack arrays gives headroom.
+        // (promotion capture = 4); 8-slot stack arrays give headroom.
         let mut w_adds: [&[i16]; 8] = [&[]; 8];
         let mut w_subs: [&[i16]; 8] = [&[]; 8];
         let mut b_adds: [&[i16]; 8] = [&[]; 8];
@@ -4139,7 +4197,6 @@ impl NNUEAccumulator {
                 simd_acc_fused_avx512(&mut current.white, &parent.white, w_adds, w_subs, h);
                 simd_acc_fused_avx512(&mut current.black, &parent.black, b_adds, b_subs, h);
             }
-            current.computed = true;
             return;
         }
         #[cfg(target_arch = "x86_64")]
@@ -4148,7 +4205,6 @@ impl NNUEAccumulator {
                 simd_acc_fused_avx2(&mut current.white, &parent.white, w_adds, w_subs, h);
                 simd_acc_fused_avx2(&mut current.black, &parent.black, b_adds, b_subs, h);
             }
-            current.computed = true;
             return;
         }
 
@@ -4158,7 +4214,6 @@ impl NNUEAccumulator {
                 simd_acc_fused_neon(&mut current.white, &parent.white, w_adds, w_subs, h);
                 simd_acc_fused_neon(&mut current.black, &parent.black, b_adds, b_subs, h);
             }
-            current.computed = true;
             return;
         }
 
@@ -4173,8 +4228,72 @@ impl NNUEAccumulator {
             current.white[j] = w;
             current.black[j] = b;
         }
+    }
 
-        current.computed = true;
+    /// Single-pov fused incremental update at a specific stack level.
+    /// Used when the other pov needs refresh but this pov's king is stable.
+    /// Parent (`at - 1`) must have this pov computed; caller checks.
+    fn apply_incremental_for_pov_at(
+        &mut self,
+        net: &NNUENet,
+        board: &Board,
+        pov: u8,
+        at: usize,
+    ) {
+        let h = self.hidden_size;
+        let dirty = self.stack[at].dirty;
+        debug_assert!(at > 0, "apply_incremental_for_pov_at called at root");
+        let (left, right) = self.stack.split_at_mut(at);
+        let parent = &left[at - 1];
+        let current = &mut right[0];
+
+        let king_sq = board.king_sq(pov);
+
+        let n = dirty.n_changes as usize;
+
+        let mut adds: [&[i16]; 8] = [&[]; 8];
+        let mut subs: [&[i16]; 8] = [&[]; 8];
+        let mut na = 0usize;
+        let mut ns = 0usize;
+
+        for i in 0..n {
+            let (add, color, pt, sq) = dirty.changes[i];
+            let idx = net.halfka_index(pov, king_sq, color, pt, sq);
+            let row = net.input_weight_row(idx);
+            if add { adds[na] = row; na += 1; } else { subs[ns] = row; ns += 1; }
+        }
+
+        let adds = &adds[..na];
+        let subs = &subs[..ns];
+
+        let (dst, src) = if pov == WHITE {
+            (&mut current.white, &parent.white)
+        } else {
+            (&mut current.black, &parent.black)
+        };
+
+        #[cfg(target_arch = "x86_64")]
+        if net.has_avx512 && h % 32 == 0 {
+            unsafe { simd_acc_fused_avx512(dst, src, adds, subs, h); }
+            return;
+        }
+        #[cfg(target_arch = "x86_64")]
+        if net.has_avx2 && h % 16 == 0 {
+            unsafe { simd_acc_fused_avx2(dst, src, adds, subs, h); }
+            return;
+        }
+        #[cfg(target_arch = "aarch64")]
+        if net.has_neon && h % 8 == 0 {
+            unsafe { simd_acc_fused_neon(dst, src, adds, subs, h); }
+            return;
+        }
+
+        for j in 0..h {
+            let mut v = src[j];
+            for row in adds { v += row[j]; }
+            for row in subs { v -= row[j]; }
+            dst[j] = v;
+        }
     }
 
     /// Refresh one perspective using the Finny table.
@@ -4268,7 +4387,7 @@ impl NNUEAccumulator {
     /// Reset to bottom of stack and invalidate Finny table.
     pub fn reset(&mut self) {
         self.top = 0;
-        self.stack[0].computed = false;
+        self.stack[0].computed = [false; 2];
         self.stack[0].threat_accurate = [false; 2];
         for entry in self.finny.iter_mut() {
             entry.valid = false;

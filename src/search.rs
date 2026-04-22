@@ -678,14 +678,13 @@ pub fn build_dirty_piece(
         let from_mirror = net.king_mirror(from_ks);
         let to_mirror = net.king_mirror(to_ks);
 
-        if from_bucket != to_bucket || from_mirror != to_mirror {
-            // Bucket or mirror changed: full recompute needed
-            return DirtyPiece::recompute();
-        }
+        let king_bucket_cross = from_bucket != to_bucket || from_mirror != to_mirror;
 
-        // Same bucket+mirror: only the king feature changes for our perspective.
-        // The opponent's perspective is always incremental (their king didn't move).
-        // We can treat this as a normal incremental update.
+        // Populate changes the same way for both branches. For the moving
+        // side, those changes are ignored because `needs_refresh[us]` forces
+        // a Finny-diff refresh; for the opposite side they drive the
+        // incremental update (opponent's king didn't move, feature indices
+        // for their pov are still valid).
         let mut changes: [(bool, u8, u8, u8); 5] = [(false, 0, 0, 0); 5];
         let mut n = 0;
 
@@ -711,10 +710,12 @@ pub fn build_dirty_piece(
             changes[n] = (true, us, ROOK, rook_to); n += 1;
         }
 
-        let mut d = DirtyPiece::recompute();
-        d.kind = 1;
+        let mut d = DirtyPiece::incremental(&[]);
         d.n_changes = n as u8;
         d.changes = changes;
+        if king_bucket_cross {
+            d.needs_refresh[us as usize] = true;
+        }
         return d;
     }
 
