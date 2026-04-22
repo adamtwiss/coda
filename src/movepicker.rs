@@ -182,8 +182,8 @@ pub struct MovePicker {
     scores: [i32; 256],
     index: usize,
     // Bad captures saved from partition
-    bad_moves: [Move; 64],
-    bad_scores: [i32; 64],
+    bad_moves: [Move; 256],
+    bad_scores: [i32; 256],
     bad_len: usize,
     // Ply for killer indexing
     #[allow(dead_code)]
@@ -281,8 +281,8 @@ impl MovePicker {
             moves: MoveList::new(),
             scores: [0; 256],
             index: 0,
-            bad_moves: [NO_MOVE; 64],
-            bad_scores: [0; 64],
+            bad_moves: [NO_MOVE; 256],
+            bad_scores: [0; 256],
             bad_len: 0,
             ply,
             skip_quiet: false,
@@ -313,8 +313,8 @@ impl MovePicker {
             moves: MoveList::new(),
             scores: [0; 256],
             index: 0,
-            bad_moves: [NO_MOVE; 64],
-            bad_scores: [0; 64],
+            bad_moves: [NO_MOVE; 256],
+            bad_scores: [0; 256],
             bad_len: 0,
             ply: 0,
             skip_quiet: true,
@@ -368,8 +368,8 @@ impl MovePicker {
             moves: MoveList::new(),
             scores: [0; 256],
             index: 0,
-            bad_moves: [NO_MOVE; 64],
-            bad_scores: [0; 64],
+            bad_moves: [NO_MOVE; 256],
+            bad_scores: [0; 256],
             bad_len: 0,
             ply,
             skip_quiet: false,
@@ -532,8 +532,11 @@ impl MovePicker {
             let cap_score = mvv_lva(board, m) + capt_hist;
             let see_threshold = -capt_hist / 18;
             if !see_ge(board, m, see_threshold) {
-                // Bad capture
-                if self.bad_len < 64 {
+                // Bad capture.
+                // C8 audit LIKELY #24: limit raised to 256 (from 64). 64
+                // could silently drop moves in pathological tactical
+                // positions (multiple queens + rooks with many captures).
+                if self.bad_len < 256 {
                     self.bad_moves[self.bad_len] = m;
                     self.bad_scores[self.bad_len] = cap_score;
                     self.bad_len += 1;
@@ -728,15 +731,23 @@ impl MovePicker {
             let to = move_to(m);
             let flags = move_flags(m);
 
-            let score = if is_promotion(m) {
+            // C8 audit LIKELY #26: check capture FIRST so capture-promotions
+            // (e.g. pawn-takes-and-promotes) get the capture score path, not
+            // the flat 9000 promotion score that ranked them BELOW regular
+            // captures (10000+MVV+hist).
+            let is_cap = board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT;
+            let score = if is_cap {
+                // Capture (possibly also a promotion): MVV-LVA + capture
+                // history. mvv_lva now adds the promotion material delta
+                // internally (audit #25), so capture-promotions rank above
+                // regular captures.
+                10000 + mvv_lva(board, m) + capt_hist_score_static(board, history, m)
+            } else if is_promotion(m) {
                 if flags == FLAG_PROMOTE_Q {
                     9000
                 } else {
                     -1000 // underpromotions
                 }
-            } else if board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT {
-                // Capture: MVV-LVA + capture history
-                10000 + mvv_lva(board, m) + capt_hist_score_static(board, history, m)
             } else {
                 // Quiet: history + continuation history + pawn history
                 let piece = board.piece_at(from);
@@ -841,18 +852,32 @@ fn mvv_lva(board: &Board, m: Move) -> i32 {
 
     let mult = crate::search::MVV_CAP_MULT.load(std::sync::atomic::Ordering::Relaxed);
     let target_pt = board.piece_type_at(to);
+
+    // C8 audit LIKELY #25: non-capture promotions scored 0 in MVV and
+    // empty-slot in capt_hist, ranking BELOW any regular capture with a
+    // small history score. A queen promotion deserves a large base bonus.
+    // Add the promotion material delta (promoted piece - pawn) when the
+    // move is a promotion.
+    let promo_bonus = if is_promotion(m) {
+        let promoted = promotion_piece_type(m);
+        (see_value(promoted) - see_value(PAWN)) * mult
+    } else {
+        0
+    };
+
     if target_pt == NO_PIECE_TYPE {
         // En passant
         if move_flags(m) == FLAG_EN_PASSANT {
             return see_value(PAWN) * mult;
         }
-        return 0;
+        // Non-capture promotion: promo_bonus is the only contribution.
+        return promo_bonus;
     }
 
     let _attacker_pt = board.piece_type_at(from);
 
     // MVV only (no LVA), multiplier SPSA-tunable (Obsidian/Alexandria/Berserk default 16)
-    see_value(target_pt) * mult
+    see_value(target_pt) * mult + promo_bonus
 }
 
 /// Check if a move is a capture.
