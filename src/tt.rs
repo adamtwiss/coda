@@ -496,24 +496,41 @@ pub fn score_to_tt(score: i32, ply: i32) -> i32 {
     }
 }
 
-/// Adjust mate scores from TT retrieval (subtract ply).
-#[inline]
-pub fn score_from_tt(score: i32, ply: i32) -> i32 {
-    if score > MATE_SCORE - 100 {
-        score - ply
-    } else if score < -(MATE_SCORE - 100) {
-        score + ply
-    } else {
-        score
-    }
-}
-
 pub const MATE_SCORE: i32 = 29000; // distinct from Infinity = 30000
 pub const TB_WIN: i32 = 28800;
 
 #[inline]
 pub fn is_mate_score(score: i32) -> bool {
     score.abs() > MATE_SCORE - 100
+}
+
+/// Convert a raw TT score back into a search-relative score.
+///
+/// Combines two adjustments:
+/// 1. Ply adjustment: stored mate/mated-in-N is root-relative; the
+///    caller wants ply-relative.
+/// 2. P3 50mr-threatened mate downgrade (Reckless pattern): a stored
+///    mate-in-N is only reachable if N <= 100 - halfmove. Otherwise
+///    the 50-move rule claims the draw first, so propagate a generic
+///    TB-win signal instead of a false mate.
+#[inline]
+pub fn score_from_tt(raw_score: i32, ply: i32, halfmove: u16) -> i32 {
+    let halfmove = halfmove as i32;
+    if raw_score > MATE_SCORE - 100 {
+        let adjusted = raw_score - ply;
+        if MATE_SCORE - adjusted > 100 - halfmove {
+            return TB_WIN - ply;
+        }
+        adjusted
+    } else if raw_score < -(MATE_SCORE - 100) {
+        let adjusted = raw_score + ply;
+        if MATE_SCORE + adjusted > 100 - halfmove {
+            return -TB_WIN + ply;
+        }
+        adjusted
+    } else {
+        raw_score
+    }
 }
 
 #[cfg(test)]

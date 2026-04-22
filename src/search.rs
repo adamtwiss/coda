@@ -1734,13 +1734,9 @@ fn negamax(
 
         if info.excluded_move[ply_u] == NO_MOVE && ply > 0 {
             let tt_depth = tt_entry.depth;
-            let mut tt_score = tt_entry.score;
-            // Adjust mate scores for distance from root
-            if tt_score > MATE_SCORE - 100 {
-                tt_score -= ply;
-            } else if tt_score < -(MATE_SCORE - 100) {
-                tt_score += ply;
-            }
+            // P3: score_from_tt() also downgrades stored mates that can't be
+            // reached before 50-move rule fires.
+            let tt_score = score_from_tt(tt_entry.score, ply, board.halfmove);
 
             if tt_depth >= depth && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 // Unified TT cutoff with node-type guard (Alexandria pattern):
@@ -2273,12 +2269,8 @@ fn negamax(
             && tt_entry.depth >= depth - 3
             && FEAT_SINGULAR.load(Ordering::Relaxed)
         {
-            let tt_score_local = {
-                let mut s = tt_entry.score;
-                if s > MATE_SCORE - 100 { s -= ply; }
-                else if s < -(MATE_SCORE - 100) { s += ply; }
-                s
-            };
+            // P3: also downgrade 50mr-unreachable mates.
+            let tt_score_local = score_from_tt(tt_entry.score, ply, board.halfmove);
 
             // Skip SE for mate scores (margin comparison meaningless)
             if tt_score_local > -(MATE_SCORE - 100) && tt_score_local < MATE_SCORE - 100 {
@@ -2993,13 +2985,8 @@ fn quiescence_with_depth(
     let tt_hit = tt_entry.hit;
 
     if tt_hit && tt_entry.depth >= -1 {
-        let mut tt_score = tt_entry.score;
-        // Adjust mate scores for distance from root
-        if tt_score > MATE_SCORE - 100 {
-            tt_score -= ply;
-        } else if tt_score < -(MATE_SCORE - 100) {
-            tt_score += ply;
-        }
+        // P3: score_from_tt() does ply adjustment + 50mr mate downgrade.
+        let tt_score = score_from_tt(tt_entry.score, ply, board.halfmove);
 
         let qs_is_pv = beta - alpha > 1;
         match tt_entry.flag {
@@ -3120,12 +3107,8 @@ fn quiescence_with_depth(
     // TT bound refinement of stand-pat (consensus: every top engine does this)
     // Use TT score as a better estimate when the bound direction agrees
     if tt_hit {
-        let tt_score = {
-            let mut s = tt_entry.score;
-            if s > MATE_SCORE - 100 { s -= ply; }
-            else if s < -(MATE_SCORE - 100) { s += ply; }
-            s
-        };
+        // P3: also downgrade 50mr-unreachable mates.
+        let tt_score = score_from_tt(tt_entry.score, ply, board.halfmove);
         if tt_score.abs() < MATE_SCORE - 100 {
             if (tt_entry.flag == TT_FLAG_LOWER && tt_score > best_score)
                 || (tt_entry.flag == TT_FLAG_UPPER && tt_score < best_score)
