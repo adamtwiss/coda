@@ -269,6 +269,7 @@ fn play_one_game(info: &mut SearchInfo, rng: &mut SimpleRng, depth: i32, blunder
         if ply > 500 { result = Some(0); break; }
 
         let limits = SearchLimits { depth, ..SearchLimits::default() };
+        info.tt.new_search();
         let best_move = search::search(&mut board, info, &limits);
         let score = info.last_score;
 
@@ -392,6 +393,7 @@ fn material_worker(
             if !is_valid_position(&modified) { continue; }
 
             let limits = SearchLimits { depth, ..SearchLimits::default() };
+            info.tt.new_search();
             let best_move = search::search(&mut modified, &mut info, &limits);
             let score = info.last_score;
 

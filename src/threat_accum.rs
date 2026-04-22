@@ -159,14 +159,27 @@ impl ThreatStack {
         // Collect feature indices, then apply with SIMD
         let mut indices = [0usize; 256]; // max active threat features per position
         let mut n_indices = 0usize;
+        // C8 audit LIKELY #18: track whether the enumerator produced more
+        // features than the buffer can hold. Previously excess features
+        // were silently dropped and `accurate[p]` was still set to true,
+        // so subsequent incremental deltas compounded on a corrupted
+        // baseline. Mark the entry inaccurate if overflow detected; the
+        // caller's `ensure_computed` → `can_update` path will then force
+        // a full refresh next time this perspective is read (falling back
+        // to the slower path, but with correct values).
+        let mut overflowed = false;
 
         crate::threats::enumerate_threats(
             &board.pieces, &board.colors, &board.mailbox,
             occ, pov, mirrored,
             |feat_idx| {
-                if feat_idx < num_features && n_indices < indices.len() {
-                    indices[n_indices] = feat_idx;
-                    n_indices += 1;
+                if feat_idx < num_features {
+                    if n_indices < indices.len() {
+                        indices[n_indices] = feat_idx;
+                        n_indices += 1;
+                    } else {
+                        overflowed = true;
+                    }
                 }
             },
         );
@@ -176,7 +189,7 @@ impl ThreatStack {
             &mut entry.values[p][..h], net_weights, h, &indices[..n_indices],
         );
 
-        entry.accurate[p] = true;
+        entry.accurate[p] = !overflowed;
     }
 
     /// Check if we can incrementally update this perspective by walking back.

@@ -982,13 +982,20 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
 
 /// Run Lazy SMP search: main thread + N-1 helper threads.
 pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits, threads: usize) -> Move {
+    // C8 audit LIKELY #37: advance TT generation here (before spawning
+    // helpers) rather than inside search(). Previously helpers could
+    // start writing TT entries with the old generation in the microsecond
+    // window between spawn and main's new_search() call, leaving them
+    // looking freshest in replacement. Main's search() no longer bumps;
+    // single-thread path bumps here too for consistency.
+    info.tt.new_search();
+
     if threads <= 1 {
         info.global_nodes.store(0, Ordering::Relaxed);
         return search(board, info, limits);
     }
 
-    // Reset shared state (TT generation is advanced in search(), not here,
-    // to avoid double-increment which makes entries appear 2x staler)
+    // Reset shared state.
     // Note: stop flag is cleared by the UCI thread before spawning the search
     // thread, not here. Clearing here races with ponderhit (which sets stop
     // before the search thread starts).
@@ -1289,7 +1296,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.max_depth = if limits.depth > 0 { limits.depth } else { MAX_PLY as i32 / 2 };
     info.max_nodes = limits.nodes;
 
-    info.tt.new_search();
+    // TT generation is advanced by the entry-point caller (search_smp or
+    // datagen), not here — see C8 audit LIKELY #37 fix.
 
     let mut best_move = NO_MOVE;
     let mut prev_score = 0i32;
