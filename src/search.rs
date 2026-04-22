@@ -90,6 +90,16 @@ tunables!(
     (FH_BLEND_DEPTH, 1, 0, 8, 1.5),
     (HIST_BONUS_MULT, 317, 50, 400, 17.5),
     (HIST_BONUS_MAX, 1646, 500, 3000, 125.0),
+    // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
+    // history bonus adopts Stockfish/cap-hist offset shape:
+    //   old: min(MAX, MULT * d)
+    //   new: clamp(0, MAX, MULT * d - OFFSET)
+    // Rationale: at d=5 the old formula saturates at ~1500; d=5 and d=10
+    // get the same bonus. New shape with offset 72 (SF's value) gives
+    // wider depth discrimination. cap-history already uses the offset
+    // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
+    // only inconsistent one. Starting offset 72 mirrors SF.
+    (HIST_BONUS_OFFSET, 72, 0, 400, 25.0),
     (CAP_HIST_MULT, 275, 50, 400, 17.5),
     (CAP_HIST_BASE, 16, 0, 200, 10.0),
     (CAP_HIST_MAX, 1547, 500, 3000, 125.0),
@@ -2883,7 +2893,11 @@ fn negamax(
 /// Obsidian min(1400, 175*d-50). Our old depth² formula gave 25 at d=5
 /// vs SF's 682 — history values were 27× too small to influence ordering.
 fn history_bonus(depth: i32) -> i32 {
-    (tp(&HIST_BONUS_MULT) * depth).min(tp(&HIST_BONUS_MAX))
+    // Offset shape — mirrors Stockfish's `155*d - 93` and our own
+    // capture-history's `MULT * d - BASE`. Clamped at 0 to avoid
+    // negative bonuses at very shallow depth (which would corrupt
+    // gravity updates) and at MAX to cap the late-depth plateau.
+    (tp(&HIST_BONUS_MULT) * depth - tp(&HIST_BONUS_OFFSET)).clamp(0, tp(&HIST_BONUS_MAX))
 }
 
 fn capture_history_bonus(depth: i32) -> i32 {
