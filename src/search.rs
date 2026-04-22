@@ -2447,6 +2447,24 @@ fn negamax(
                 if extension > 0 { info.stats.recapture_ext += 1; }
             }
         }
+        // N6 Promotion-imminent extension: pawn push to 7th rank (from STM's
+        // perspective) very often decides the game. Extend by 1. Gated by
+        // FEAT_EXTENSIONS to share the ablation flag with recapture ext.
+        if extension == 0
+            && FEAT_EXTENSIONS.load(Ordering::Relaxed)
+            && !is_cap
+            && !is_promo
+            && moved_pt == PAWN
+        {
+            // STM=WHITE: 7th rank is row 6 (squares 48..56). STM=BLACK: 7th
+            // rank is row 1 (squares 8..16). `to` is the destination.
+            let to_rank = to >> 3; // to / 8
+            let on_seventh = (board.side_to_move == WHITE && to_rank == 6)
+                || (board.side_to_move == BLACK && to_rank == 1);
+            if on_seventh {
+                extension = 1;
+            }
+        }
 
         let mut new_depth = depth - 1 + extension + singular_extension;
 
