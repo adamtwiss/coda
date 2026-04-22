@@ -15,6 +15,7 @@ Navigation by question. Most docs are dated; check timestamps before acting on t
 - [`threat_ideas_plan_2026-04-19.md`](threat_ideas_plan_2026-04-19.md) — Threat-signal experiment plan, tiered. Live results embedded.
 - [`shape_experiments_proposal_2026-04-19.md`](shape_experiments_proposal_2026-04-19.md) — Formula-shape experiments for Hercules: history bonus shape, RFP unified shape, futility TT-hit modulated. Drop-in specs.
 - [`next_ideas_2026-04-21.md`](next_ideas_2026-04-21.md) — **Data-driven idea shortlist.** Pattern analysis (W1–W3 wins, L1–L4 losses) of 2026-04-19→21 session, novel ideas in 4 tiers, ranked queue for Hercules, explicit stop-trying list.
+- [`peripheral_mechanisms_2026-04-22.md`](peripheral_mechanisms_2026-04-22.md) — **Non-pure-search idea catalogue.** Optimism (SF/Reckless/Viri), halfmove-gated TT cutoff, 50mr-threatened mate downgrade, novel twofold-in-history blend, shuffle detector, fortress soft-cap. Blue-ocean class after #619 50mr blending landed +3.3.
 
 ## "What do other engines do differently?"
 
