@@ -747,7 +747,19 @@ fn run_check_net(net_path: &str) {
         // Full recompute for both perspectives
         let piece_count = board.occupied().count_ones();
         acc.force_recompute(&net, &board);
-        net.forward(&acc, board.side_to_move, piece_count)
+        // C8 audit LIKELY #20: for v9 threat nets, use forward_with_threats
+        // so the displayed eval actually consumes the threat features.
+        // `net.forward()` with a v9 net zeroes the threat half → displayed
+        // eval is arbitrarily wrong. Build a one-shot threat stack for the
+        // position.
+        if net.has_threats {
+            let mut ts = crate::threat_accum::ThreatStack::new(h);
+            ts.active = true;
+            ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+            net.forward_with_threats(&acc, board.side_to_move, piece_count, &ts)
+        } else {
+            net.forward(&acc, board.side_to_move, piece_count)
+        }
     };
 
     // === Eval positions ===
