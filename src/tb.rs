@@ -52,8 +52,16 @@ impl SyzygyTB {
     }
 
     /// Probe WDL for an interior node. Returns Some(wdl_score) or None.
-    /// wdl_score: positive = winning, 0 = draw, negative = losing.
-    /// Only valid when halfmove clock is 0 (no 50-move rule complications).
+    /// wdl_score: +20000 = definite win, +1 = cursed win, 0 = draw,
+    /// -1 = blessed loss, -20000 = definite loss.
+    ///
+    /// C8 audit LIKELY #42: the probe is valid at ANY halfmove — shakmaty
+    /// returns `CursedWin`/`BlessedLoss` (mapped to ±1) for what would be
+    /// a Win/Loss at halfmove=0 but is a draw-by-rule at high halfmove.
+    /// Cache is keyed by (hash, halfmove) after C2 so results don't
+    /// cross-contaminate. Previous comment "Only valid when halfmove == 0"
+    /// was misleading — the caller should just use the ambiguous result as
+    /// a near-draw signal.
     pub fn probe_wdl(&self, board: &Board) -> Option<i32> {
         if crate::bitboard::popcount(board.occupied()) as usize > self.max_pieces {
             return None;
@@ -126,10 +134,21 @@ fn dtz_to_wdl_score(dtz: MaybeRounded<Dtz>) -> i32 {
     // shakmaty-syzygy DTZ convention: negative = side to move wins,
     // positive = side to move loses. Invert for our score convention
     // (positive = good for side to move).
+    //
+    // C8 audit LIKELY #41: |DTZ| > 100 means the 50-move rule claims
+    // draw before conversion (cursed-win / blessed-loss). Report ±1 to
+    // match `ambiguous_wdl_to_score`'s convention — previously we
+    // collapsed these into ±20000, making the root print "mate-ish"
+    // scores for positions that are drawn by rule.
     let d = dtz.ignore_rounding();
-    if d.0 < 0 { 20000 }
-    else if d.0 > 0 { -20000 }
-    else { 0 }
+    let abs_d = d.0.abs();
+    if d.0 < 0 {
+        if abs_d > 100 { 1 } else { 20000 }
+    } else if d.0 > 0 {
+        if abs_d > 100 { -1 } else { -20000 }
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]

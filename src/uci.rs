@@ -349,7 +349,12 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                     }
                                 }
                             }
-                            if tb_valid && wdl != 0 {
+                            // C8 audit LIKELY #31: match the `go` path —
+                            // override even for drawn TB positions (wdl==0).
+                            // NNUE search can play a 50mr-losing move in
+                            // a drawn TB endgame; the TB draw move is
+                            // safer.
+                            if tb_valid {
                                 // Stop search and play TB move
                                 external_stop.store(true, Ordering::Relaxed);
                                 stop_flag.store(true, Ordering::Relaxed);
@@ -361,8 +366,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 }
                                 let score_str = if wdl > 0 {
                                     format!("score cp {}", crate::tt::TB_WIN)
-                                } else {
+                                } else if wdl < 0 {
                                     format!("score cp -{}", crate::tt::TB_WIN)
+                                } else {
+                                    "score cp 0".to_string()
                                 };
                                 println!("info depth 1 seldepth 1 {} tbhits 1 pv {}", score_str, tb_move_str);
                                 println!("bestmove {}", tb_move_str);
