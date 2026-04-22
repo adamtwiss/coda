@@ -710,6 +710,16 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
                 println!("info string HiddenActivation = {}", if crelu { "crelu" } else { "screlu" });
             }
         }
+        "Ponder" => {
+            // C8 audit LIKELY #30: `Ponder` is advertised at startup
+            // (line 83) but was falling through to the tunable loop,
+            // silently not storing anywhere. The engine actually reads
+            // ponder state from the `go ponder` command, not a stored
+            // flag, so the handler is a no-op acknowledgement — but it
+            // must explicitly match here so the protocol contract is
+            // satisfied (some GUIs fail if setoption response is empty).
+            println!("info string Ponder = {}", value);
+        }
         _ => {
             // Check tunable search parameters
             for (pname, param, _, min, max, _c_end) in crate::search::tunable_params() {

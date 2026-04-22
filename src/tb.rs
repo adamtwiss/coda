@@ -58,6 +58,13 @@ impl SyzygyTB {
         if crate::bitboard::popcount(board.occupied()) as usize > self.max_pieces {
             return None;
         }
+        // C8 audit LIKELY #43: Syzygy rejects positions with any castling
+        // right, so a positive probe is impossible here. Gate early to
+        // avoid wasted FEN formatting + Chess::from_setup work that
+        // shakmaty does before its own castling check.
+        if board.castling != 0 {
+            return None;
+        }
 
         // Native-hash cache check first — avoids the Board→Chess translation
         // and the shakmaty decompression path when the slot is valid.
