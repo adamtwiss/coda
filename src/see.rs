@@ -90,7 +90,23 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
         attackers &= occ;
 
         stm = flip_color(stm);
-        balance = -balance - 1 - see_value(att_pt);
+        // C8 audit LIKELY #40: if a pawn captures onto the promotion rank
+        // it becomes a queen — balance should reflect the promotion gain,
+        // not just PAWN value. Rare but can flip SEE decisions in deep
+        // exchanges involving promotion recaptures.
+        let to_rank = to >> 3;
+        let effective_value = if att_pt == PAWN && (to_rank == 0 || to_rank == 7) {
+            // Assume queen promotion (optimal): PAWN moves to `to`, promotes
+            // → on the board as QUEEN, so victim value on next capture is
+            // queen-shaped. For THIS balance step (the capture we just
+            // made), the attacker "paid" pawn value but will be a queen;
+            // SEE treats both this move's cost and the next recapture's
+            // victim-value the same way — use queen's value.
+            see_value(QUEEN)
+        } else {
+            see_value(att_pt)
+        };
+        balance = -balance - 1 - effective_value;
 
         if balance >= 0 {
             // If the attacker is king and opponent still has attackers, king can't capture
