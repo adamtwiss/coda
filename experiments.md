@@ -5369,3 +5369,115 @@ is confirmed as the culprit (vs dispatch-reorg side-effects).
 
 Relevant file: `src/sparse_l1.rs::dense_l1_avx_vnni` — the hot path for L1
 matmul on AVX-VNNI-without-AVX-512 CPUs.
+
+## 2026-04-22 session — overnight resolutions + morning merges
+
+### H1 landed (merged to trunk)
+
+- **#619 fix/fifty-move-scaling-v2** +3.3 Elo H1, 8708g. Zeus's two-part
+  fix: stronger `score * (100 - hm) / 100` formula that actually reaches
+  0 at the 50-move cliff, plus TT-storage invariant (50-move scaling
+  applied at use site only, never stored). The first patch alone
+  (#610) regressed -9.4 because of the TT-stale-scaling bug. Commit
+  `5086604`.
+- **#613 experiment/history-bonus-offset** +3.0 Elo H1, 5460g. Titan's
+  shape experiment 1: `min(MAX, MULT*d)` → `clamp(0, MAX, MULT*d - OFFSET)`.
+  New tunable HIST_BONUS_OFFSET=72 (SF's value). Post-merge joint SPSA
+  per Titan's spec likely banks more. Commit `ee76dcb`.
+- **#604 experiment/se-xray-blocker** +1.1 Elo H1, 25934g. Titan's
+  signal-context sweep: xray-blockers signal (B1's +52 Elo mechanism)
+  in Singular Extensions context. Small but clean positive. Commit
+  `dd4452c`.
+
+Total merged today: **+7.4 Elo raw** (post-merge retune could bank more).
+
+### H0 rejections (Titan-doc items resolved)
+
+- **#611 experiment/caphist-defender-v2** -1.4 @ 13268g. Rebased+merged
+  branch; SPRT-untuned as first step per methodology. Confirmed
+  Titan's prediction: caphist's original +10pp FMC headroom was
+  **absorbed by B1 discovered-attack merge** (+52 Elo). On current
+  trunk (FMC 76.8%), the remaining ordering gap isn't caphist-shaped.
+  Dropped permanently.
+- **#612 experiment/skewer-bonus** -8.0 @ 3848g. Unified
+  (value-unfiltered) skewer detector. Over-triggered on low-value
+  ray alignments, added noise to ordering.
+- **#618 experiment/pin-skewer-value-filtered** -6.4 @ 4728g. Value-
+  filtered split of #612 per Titan's T1.1+T1.2 spec. Didn't rescue —
+  the ray-alignment signal just isn't an H1 feature on current trunk
+  (B1 already captures it via FROM-based discovered-attack).
+- **#614 experiment/rfp-unified-margin** -2.6 @ 6820g. Shape exp 2.
+  Classic retune-candidate signature (bench +8% vs trunk, Elo
+  negative). Could land with focused SPSA on RFP_MARGIN + RFP_IMPROVING_SUB.
+- **#617 experiment/undefended-nmp-skip** +0.4 @ 44792g. T2.1 from
+  next_ideas. Hanging-piece NMP skip — signal fired too rarely to
+  move Elo. Noise-level.
+- **#606 experiment/rfp-anythreat-widen** -1.2 @ 24532g. Slow-fade to
+  H0 after trending H1 earlier.
+- **#609 L1 sparse net vs warm30 (net-vs-net)** -2.1 @ 15628g. L1
+  coefficient 1e-6 too weak to produce meaningful sparsity beyond
+  the 8.4% structural-zero floor. Confirms sparsity doc finding.
+
+### Factoriser journey (important but non-linear)
+
+Three-training-length data points on factoriser (`--factoriser` flag,
+otherwise matches `reckless-crelu` recipe):
+
+- **factor SB50 vs creluHL SB200 (broken hl_crelu bit)** = +157 Elo
+  **(measurement artifact)**. The creluHL baseline had bit 5 = False
+  (consensus_buckets interpretation) but was trained with CReLU
+  hidden → Coda loaded with SCReLU hidden → broken activation chain
+  → tanked baseline by 50-150 Elo. Not real factoriser signal.
+- **factor SB50 vs prod DAA4C54E** = -118 Elo. Clean comparison
+  (both sides have bit 5 = True). Baby can't beat 16×-longer-trained
+  giant. Training gap dominates.
+- **factor SB200 vs prod DAA4C54E** = -30.9 ± 15.3 Elo @ 700g
+  (bounds [-5, 5]). Clean magnitude. Sits in expected training-gap
+  disadvantage range (~-25 to -35 from 2 doublings + prod's retune
+  advantage). Factoriser architectural contribution is therefore
+  ~**neutral**, closing the training gap at roughly 1:1 rather than
+  being multiplier.
+- **factor SB200 vs creluHL SB200 (patched hl_crelu)** = -11.8 Elo H0
+  @ 1700g (#627, bounds [-5, 5]). Cleanest factoriser-only comparison
+  — same kb10, w15, crelu hidden, e200 snapshot; differs only in
+  factoriser yes/no and warmup (30 vs 20). Given warm30 was +4.44
+  Elo vs warm20 at e200 (per warmup-curve experiment), the factoriser
+  contribution net of warmup is **~-15 Elo at equal training + no retune**.
+
+**Calibrated expectation going forward**: factoriser at equal training
++ NO retune is slightly negative. A retune-on-branch (SPSA on
+factoriser tree shape) might flip it to neutral-positive; current
+pruning tunables are calibrated against non-factoriser trunk trees
+and may be wrong for the factoriser's sharper ordering.
+
+**Revised strategy**: wait for SB400 overnight, retune on factoriser
+branch, then SPRT vs prod. If still negative after retune, factoriser
+isn't a keeper. If +5-15 post-retune, it becomes an e800-production
+training candidate.
+
+### Methodology lessons captured (new memory notes)
+
+- `feedback_verify_net_flag_bits_before_sprt.md`: always inspect bit 5
+  (hl_crelu) on both sides before net-vs-net SPRT. Burnt on #622.
+- `feedback_sprt_bounds_interpretation.md`: SPRT H0 at bounds
+  [elo0, elo1] means "failed to prove ≥ elo1", NOT "confirmed ≤ elo0".
+  Asymmetric bounds are policy, not magnitude. Burnt on #625.
+- `feedback_correctness_audit_wins_dominate.md`: bugs in rarely-fired
+  paths consistently land +3-30 Elo. Correctness audits beat feature
+  additions for Elo-per-effort. Titan-scale investigation direction.
+- `reference_ob_debugging_endpoints.md`: self-service debug via
+  `/errors/` page + two-binary-bench rule after branch switches.
+
+### SPSA tune in flight
+
+- SPSA tune on experiment/caphist-defender-v2 (focused 4 capture-coupled
+  tunables, 500 iters). Likely not useful given caphist SPRT H0'd
+  cleanly — no point pursuing if the base feature doesn't carry
+  signal. May stop.
+
+### Key calibration takeaway
+
+Correctness-audit wins consistently outperform feature-addition wins
+for Elo-per-experiment. Our next-day queue should bias toward
+correctness audits in rarely-fired paths (repetition, cuckoo, TB sign
+conventions, null-move zugzwang edge cases, stalemate path coverage).

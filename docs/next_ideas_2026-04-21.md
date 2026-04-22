@@ -50,9 +50,11 @@ All follow the B1 recipe: add a MovePick bonus for quiet moves matching a named 
 **T1.1 — Pin bonus.**
 Move that pins an enemy piece to a more-valuable piece/king. Cheap: iterate sliders, check if an enemy piece on our attack ray is the nearest piece and there is a more-valuable piece (or king) beyond it on the same ray. Expected Elo: **+5 to +20** (pins are one of the three Big Three named tactics alongside forks and discovered attacks — both of the other two landed).
 - Variant T1.1b: penalty for moves OF our own pinned pieces (they're usually bad).
+- **Status 2026-04-22:** tested value-filtered bundle T1.1+T1.2 as `experiment/pin-skewer-value-filtered` → **#618 -6.4 @ 4728g H0**. Did not rescue the unified skewer attempt (#612 -8.0). B1's FROM-based discovered-attack appears to already cover the ray-alignment signal; pin/skewer add noise rather than missing H1 coverage on current trunk. **Dropped unless re-tested under retune-on-branch.**
 
 **T1.2 — Skewer detector (B2 from `threat_ideas_plan`).**
 Already specced, gated on B1 landing — **now unblocked**. Estimated +10–30 in that doc. Very likely to H1 given B1 landed and skewer is tactically adjacent.
+- **Status 2026-04-22:** **H0** twice. Unified variant #612 -8.0 @ 3848g; value-filtered variant (bundled with T1.1) #618 -6.4 @ 4728g. Same conclusion as T1.1 — the expected signal was absorbed by B1 (+52, merged). Dropped.
 
 **T1.3 — Overload / removing-the-defender.**
 Capture/attack on a defender that defends ≥2 of its own pieces. Cheap: count defended-squares per piece, bonus moves that hit a 2+-defender. Expected: **+3 to +10**. Named-tactic class.
@@ -69,6 +71,7 @@ Phase 2 of the signal × context matrix has saturated at 1/10 H1 rate. **Pivot f
 
 **T2.1 — Undefended-piece-count as NMP gate.**
 Count of our own pieces with ≥1 attacker and 0 defenders ("hanging"). If ≥1, skip NMP (a zugzwang proxy for the opponent exploiting the hanging piece). Expected: **+3 to +8**. Novel signal, old gate context.
+- **Status 2026-04-22:** tested as `experiment/undefended-nmp-skip` → **#617 +0.4 @ 44792g H0**. Signal fires too rarely to move Elo — hanging-piece-at-root is a low-frequency state in self-play. Dropped unless combined with a higher-firing proxy (e.g. any-piece-with-attackers ≥ defenders).
 
 **T2.2 — King-mobility as SE / extension gate.**
 Number of legal king moves. When ≤1, a quiet king move must be searched deeper. Already implicit in some check-extension logic, but not as an explicit SE trigger. Expected: **+3 to +8**.
