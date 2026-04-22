@@ -503,6 +503,14 @@ pub fn score_to_tt(score: i32, ply: i32) -> i32 {
     }
 }
 
+pub const MATE_SCORE: i32 = 29000; // distinct from Infinity = 30000
+pub const TB_WIN: i32 = 28800;
+
+#[inline]
+pub fn is_mate_score(score: i32) -> bool {
+    score.abs() > MATE_SCORE - 100
+}
+
 /// Adjust mate and TB scores from TT retrieval (subtract ply). See
 /// `score_to_tt` for the threshold rationale.
 #[inline]
@@ -516,12 +524,26 @@ pub fn score_from_tt(score: i32, ply: i32) -> i32 {
     }
 }
 
-pub const MATE_SCORE: i32 = 29000; // distinct from Infinity = 30000
-pub const TB_WIN: i32 = 28800;
-
+/// P3 50mr-threatened mate downgrade (Reckless pattern). A stored
+/// mate-in-N is only reachable if N <= 100 - halfmove; otherwise
+/// the 50-move rule claims the draw first. Return a TB-level win
+/// signal instead of a false mate.
+///
+/// **Apply only at cutoff return sites**, not at every TT-score
+/// read. Many downstream checks (`< MATE_SCORE - 100`) filter out
+/// mate scores specifically; pushing a downgraded-mate through them
+/// changes the meaning of those filters and enables unintended
+/// extensions / cutoffs / refinements.
 #[inline]
-pub fn is_mate_score(score: i32) -> bool {
-    score.abs() > MATE_SCORE - 100
+pub fn downgrade_50mr_mate(adjusted_score: i32, ply: i32, halfmove: u16) -> i32 {
+    let halfmove = halfmove as i32;
+    if adjusted_score > MATE_SCORE - 100 && MATE_SCORE - adjusted_score > 100 - halfmove {
+        return TB_WIN - ply;
+    }
+    if adjusted_score < -(MATE_SCORE - 100) && MATE_SCORE + adjusted_score > 100 - halfmove {
+        return -TB_WIN + ply;
+    }
+    adjusted_score
 }
 
 #[cfg(test)]

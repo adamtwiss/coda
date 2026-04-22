@@ -1789,13 +1789,7 @@ fn negamax(
 
         if info.excluded_move[ply_u] == NO_MOVE && ply > 0 {
             let tt_depth = tt_entry.depth;
-            let mut tt_score = tt_entry.score;
-            // Adjust mate scores for distance from root
-            if tt_score > MATE_SCORE - 100 {
-                tt_score -= ply;
-            } else if tt_score < -(MATE_SCORE - 100) {
-                tt_score += ply;
-            }
+            let tt_score = score_from_tt(tt_entry.score, ply);
 
             // P2 (halfmove-gated TT cutoff): TT scores are stored without halfmove
             // context. Near the 50-move cliff a cached mate-in-N may be unreachable,
@@ -1848,7 +1842,8 @@ fn negamax(
                             }
                         }
                     }
-                    return tt_score;
+                    // P3: downgrade stored mate if 50mr will fire before mate.
+                    return downgrade_50mr_mate(tt_score, ply, board.halfmove);
                 }
 
                 // Fall through: use TT bounds to narrow alpha/beta window at non-PV nodes
@@ -1911,7 +1906,8 @@ fn negamax(
                     {
                         return (3 * tt_score + beta) / 4;
                     }
-                    return tt_score;
+                    // P3: downgrade stored mate if 50mr will fire before mate.
+                    return downgrade_50mr_mate(tt_score, ply, board.halfmove);
                 }
             } else if tt_depth >= depth - 1
                 && beta - alpha_orig == 1
@@ -2368,12 +2364,10 @@ fn negamax(
             && tt_entry.depth >= depth - 3
             && FEAT_SINGULAR.load(Ordering::Relaxed)
         {
-            let tt_score_local = {
-                let mut s = tt_entry.score;
-                if s > MATE_SCORE - 100 { s -= ply; }
-                else if s < -(MATE_SCORE - 100) { s += ply; }
-                s
-            };
+            // Ply-only adjustment here — P3 downgrade deliberately not applied
+            // at SE: would cause over-extension on downgraded mate scores that
+            // pass the < MATE_SCORE - 100 check below.
+            let tt_score_local = score_from_tt(tt_entry.score, ply);
 
             // Skip SE for mate scores (margin comparison meaningless)
             if tt_score_local > -(MATE_SCORE - 100) && tt_score_local < MATE_SCORE - 100 {
@@ -3132,26 +3126,22 @@ fn quiescence_with_depth(
     let tt_hit = tt_entry.hit;
 
     if tt_hit && tt_entry.depth >= -1 {
-        let mut tt_score = tt_entry.score;
-        // Adjust mate scores for distance from root
-        if tt_score > MATE_SCORE - 100 {
-            tt_score -= ply;
-        } else if tt_score < -(MATE_SCORE - 100) {
-            tt_score += ply;
-        }
+        let tt_score = score_from_tt(tt_entry.score, ply);
+        // P3: downgrade stored mate if 50mr will fire before mate.
+        let tt_ret = downgrade_50mr_mate(tt_score, ply, board.halfmove);
 
         // P2: skip QS TT cutoff near 50mr — stale bound unsafe
         let halfmove_ok = board.halfmove < 90;
         let qs_is_pv = beta - alpha > 1;
         match tt_entry.flag {
             TT_FLAG_EXACT => {
-                if !qs_is_pv && halfmove_ok { return tt_score; }
+                if !qs_is_pv && halfmove_ok { return tt_ret; }
             }
             TT_FLAG_LOWER => {
-                if !qs_is_pv && halfmove_ok && tt_score >= beta { return tt_score; }
+                if !qs_is_pv && halfmove_ok && tt_score >= beta { return tt_ret; }
             }
             TT_FLAG_UPPER => {
-                if !qs_is_pv && halfmove_ok && tt_score <= alpha { return tt_score; }
+                if !qs_is_pv && halfmove_ok && tt_score <= alpha { return tt_ret; }
             }
             _ => {}
         }
@@ -3268,12 +3258,11 @@ fn quiescence_with_depth(
     // TT bound refinement of stand-pat (consensus: every top engine does this)
     // Use TT score as a better estimate when the bound direction agrees
     if tt_hit {
-        let tt_score = {
-            let mut s = tt_entry.score;
-            if s > MATE_SCORE - 100 { s -= ply; }
-            else if s < -(MATE_SCORE - 100) { s += ply; }
-            s
-        };
+        // Ply-only adjustment; refinement is explicitly for non-mate scores
+        // per the abs check below. P3 downgrade would turn a stored mate
+        // into a huge TB_WIN signal that passes the check and pollutes
+        // stand-pat.
+        let tt_score = score_from_tt(tt_entry.score, ply);
         if tt_score.abs() < MATE_SCORE - 100 {
             if (tt_entry.flag == TT_FLAG_LOWER && tt_score > best_score)
                 || (tt_entry.flag == TT_FLAG_UPPER && tt_score < best_score)
