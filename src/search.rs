@@ -952,6 +952,12 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     let mut helper = SearchInfo::new(1); // dummy TT, will be replaced
     helper.tt = main.tt.clone();             // share the same TT
     helper.stop = main.stop.clone();         // share the same stop flag
+    // C8 audit LIKELY #35: share ponderhit_time so helpers respect the
+    // ponderhit deadline set by the UCI thread. Previously helpers kept
+    // their own AtomicU64 stuck at 0, so they ignored the ponderhit
+    // deadline and only stopped when main set the shared stop flag —
+    // burning CPU for the grace window on every ponderhit.
+    helper.ponderhit_time = main.ponderhit_time.clone();
     helper.global_nodes = main.global_nodes.clone(); // share node counter
     helper.silent = true;                // helpers don't output UCI
     helper.nnue_net = main.nnue_net.clone(); // share NNUE weights (read-only)
@@ -1574,11 +1580,19 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // at 1s-inc bullet on lichess (PZ7pCyrx). Polls the stop flag so the UCI
     // thread can still interrupt. Skip when there's no time budget (depth/
     // node-limited search) or when already stopped.
+    //
+    // C8 audit LIKELY #29: set the shared stop flag BEFORE the sleep so
+    // helper threads stop searching immediately rather than burning CPU
+    // through the entire stockpile-prevention window. Previously helpers
+    // kept running until hitting their own hard_limit or main unblocked,
+    // wasting tens-hundreds of ms of CPU per ponderhit grace window at
+    // blitz+inc. Main thread already has its best move, just waiting to
+    // emit.
     if info.soft_floor > 0 && !info.stop.load(Ordering::Relaxed) {
+        info.stop.store(true, Ordering::Relaxed);
         loop {
             let elapsed = info.start_time.elapsed().as_millis() as u64;
             if elapsed >= info.soft_floor { break; }
-            if info.stop.load(Ordering::Relaxed) { break; }
             let remaining = info.soft_floor - elapsed;
             std::thread::sleep(std::time::Duration::from_millis(remaining.min(25)));
         }
