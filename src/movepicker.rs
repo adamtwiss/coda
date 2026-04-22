@@ -338,6 +338,7 @@ impl MovePicker {
         history: &History,
         _prev_move: Move,
         pawn_hist: Option<&[[i16; 64]; 13]>,
+        threats: Threats,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
     ) -> Self {
@@ -372,7 +373,13 @@ impl MovePicker {
             bad_len: 0,
             ply,
             skip_quiet: false,
-            threats: 0, // evasions don't use threat-aware history
+            // C8 audit LIKELY #19: evasion history READS must use the same
+            // enemy_attacks key as beta-cutoff WRITES. Previously hardcoded
+            // to 0, which hashed into a different 4D history slot than the
+            // writes — history written from in-check cutoffs was invisible
+            // to in-check reads. Reckless/SF keep reads and writes
+            // symmetric.
+            threats,
             xray_blockers: 0, // evasions don't use discovered-attack bonus
             checkers,
             pinned,

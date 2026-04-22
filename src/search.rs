@@ -2200,7 +2200,7 @@ fn negamax(
     };
     let pawn_hist_ref = Some(&info.pawn_hist[ph_idx] as &[[i16; 64]; 13]);
     let mut picker = if in_check {
-        MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
         MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
     };
@@ -3062,8 +3062,15 @@ fn quiescence_with_depth(
         } else {
             None
         };
+        // C8 audit LIKELY #19: evasion history reads now use enemy_attacks
+        // (symmetric with beta-cutoff writes). Compute here since QS doesn't
+        // otherwise need the bitboard.
+        let qs_enemy_attacks = board.attacks_by_color(
+            crate::types::flip_color(board.side_to_move)
+        );
         let mut evasion_picker = MovePicker::new_evasion(
             tt_move, ply as usize, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
+            qs_enemy_attacks,
             &info.moved_piece_stack, &info.moved_to_stack,
         );
         let mut best_score = -INFINITY;
