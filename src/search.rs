@@ -1831,21 +1831,31 @@ fn negamax(
                     // TT cutoff cont-hist malus: penalize opponent's last quiet move
                     // in context of our move before that (Alexandria pattern).
                     // "Your move led to a position we already know is lost for you."
+                    //
+                    // C8 audit LIKELY #6: read pieces from moved_piece_stack (set
+                    // pre-move, captures pre-promotion pawn) rather than
+                    // board.piece_at(to) (post-move, reports promoted piece for
+                    // promotions). Write-side (beta-cutoff bonuses) uses
+                    // moved_piece_stack; the old asymmetry meant malus on promotion
+                    // moves landed in the queen/rook bin where reads never look.
                     let stack_len = board.undo_stack.len();
-                    if score_above_beta && stack_len >= 2 {
+                    if score_above_beta && stack_len >= 2 && ply_u >= 2 {
                         let opp_undo = &board.undo_stack[stack_len - 1];
                         let our_undo = &board.undo_stack[stack_len - 2];
                         if opp_undo.mv != NO_MOVE && opp_undo.captured == NO_PIECE_TYPE
                             && our_undo.mv != NO_MOVE
                         {
-                            let opp_to = move_to(opp_undo.mv);
-                            let opp_piece = board.piece_at(opp_to);
-                            let our_to = move_to(our_undo.mv);
-                            let our_piece = board.piece_at(our_to);
-                            if opp_piece != NO_PIECE && our_piece != NO_PIECE {
+                            let opp_gp = info.moved_piece_stack[ply_u - 1] as usize;
+                            let our_gp = info.moved_piece_stack[ply_u - 2] as usize;
+                            let opp_to = info.moved_to_stack[ply_u - 1] as usize;
+                            let our_to = info.moved_to_stack[ply_u - 2] as usize;
+                            if opp_gp > 0 && opp_gp < 13
+                                && our_gp > 0 && our_gp < 13
+                                && opp_to < 64 && our_to < 64
+                            {
                                 let malus = -((155 * depth).min(385));
                                 History::update_cont_history(
-                                    &mut info.history.cont_hist[go_piece(our_piece)][our_to as usize][go_piece(opp_piece)][opp_to as usize],
+                                    &mut info.history.cont_hist[our_gp][our_to][opp_gp][opp_to],
                                     malus,
                                 );
                             }
