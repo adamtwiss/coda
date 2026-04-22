@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """Submit SPSA tune to OpenBench via the web form.
 
-Usage:
+Usage (preferred — canonical source is the `tunables!` macro in src/search.rs,
+read via the compiled binary's `coda tune-spec` subcommand; never hand-maintain
+a static params file):
+
+    python3 ob_tune.py <branch> \\
+        --params "$(./target/release/coda tune-spec)" --iterations 2500
+
+Alternate forms if you specifically want a subset:
+
     python3 ob_tune.py <branch> --params "PARAM1, int, 100, 50, 200, 10.0, 0.002
     PARAM2, int, 50, 10, 100, 5.0, 0.002"
 
     python3 ob_tune.py <branch> --params-file params.txt
 
-    python3 ob_tune.py <branch> --params-file params.txt --iterations 2500
-
-    # Generate params from live src/search.rs defaults (preferred — avoids
-    # starting the tune from stale hand-maintained defaults):
-    python3 ob_tune.py <branch> \\
-        --params "$(python3 scripts/gen_tune_params.py)" --iterations 2500
+Rationale: previous static specs (tune_pruning_18.txt, gen_tune_params.py) drifted
+from src/search.rs defaults after each applied tune round; SPSA restarted from
+stale start-points, wasting iterations retracing already-tuned territory.
+`coda tune-spec` emits the current live defaults every time.
 
 Environment variables:
     OPENBENCH_SERVER   (default: https://ob.atwiss.com)

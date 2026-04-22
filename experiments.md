@@ -5481,3 +5481,197 @@ Correctness-audit wins consistently outperform feature-addition wins
 for Elo-per-experiment. Our next-day queue should bias toward
 correctness audits in rarely-fired paths (repetition, cuckoo, TB sign
 conventions, null-move zugzwang edge cases, stalemate path coverage).
+
+## 2026-04-22 session — correctness audit sprint + C8 training fix
+
+### Titan correctness audit (9 CRITICAL, ~35 LIKELY, ~30 SPECULATIVE)
+Ten-parallel-agent review across threats / NNUE / search / TT+history /
+movepicker / TM+UCI+ponder / SMP / SEE+Zobrist+cuckoo+TB / training I/O /
+Bullet-trainer subsystems. Doc: `docs/correctness_audit_2026-04-22.md`.
+
+### CRITICAL fixes — H1 confirmed via SPRT
+
+- **#628 P2 halfmove-gated TT cutoff** +1.2 Elo H1, 13970g. Extended
+  existing `halfmove < 90` gate to bounds-narrow collapse + near-miss
+  + QS TT cutoff return paths. (Merged prior session.)
+
+### CRITICAL fixes — merged as bench-invariant on unreachable paths
+
+No OB SPRT coverage (fleet has no TB / aarch64 / mixed-mode UCI):
+
+- **C2 TB cache halfmove key** — probe_wdl is halfmove-aware;
+  cache was keyed on Zobrist alone → stale CursedWin served to
+  halfmove=0 queries. SplitMix scramble on halfmove mixed in.
+- **C4 NEON SCReLU shift** — commit 44baa95 mistakenly set NEON
+  screlu_pack to >>9 alongside pairwise; fix restores >>8 to
+  match scalar + x86. Only affects v7 non-pairwise SCReLU nets on
+  aarch64.
+- **C5 TT_WIN threshold widen** — `score_to_tt` / `score_from_tt`
+  threshold moved from `MATE_SCORE-100` (28900) to `TB_WIN-128`
+  (28672) so TB scores actually get ply-adjusted on TT crossings.
+- **C6 TM stale limits** — zero all TM limits up-front before
+  mode-specific branches; fixes `go movetime N` after prior
+  `go wtime/btime` leaking stale soft/hard_limit.
+- **C7 convert-checkpoint output-layer** — `l2_size == 0` path
+  silently dropped output-layer entries in both `weights.bin` AND
+  `momentum.bin`/`velocity.bin`. Centralised write list through a
+  local helper so the three buffers can't diverge.
+- **C9 HIP Adam ABI** — not active in prod (CUDA path), flagged
+  for Bullet team.
+
+### LIKELY fixes — H1 / merged (search pruning class)
+
+- **#635 T1.4 Battery bonus** +5.3 Elo H1, 8452g (merged morning).
+- **#637 N6 promotion-imminent extension** +1.6 Elo @ 25886g, merged
+  at 10K-plus per confident-correctness policy.
+- **#638 C1 is_pseudo_legal EP validation** +0.4 Elo @ 28382g,
+  correctness merge.
+- **#645 evasion history key symmetry** -0.9 Elo @ 12802g, merged
+  on "correctness fix at -1 to -2 is mergeable" policy. Fix:
+  evasion MovePicker now threads through `enemy_attacks` so
+  4D main-history reads match beta-cutoff writes.
+- **#649 rep-detection null-move boundary** -0.5 Elo @ 10906g, merged.
+  Main + QS rep scans now stop at null-move boundaries
+  (plies_from_null), matching cuckoo's existing min() pattern.
+- **#650 SE `is_pv` shadow + corrhist stop guard** +0.6 Elo @ 10236g,
+  merged. SE shadow was computing `is_pv` from current alpha; outer
+  `is_pv` (alpha_orig-based) is correct. Corrhist update now has
+  stop-flag guard matching TT store.
+
+### LIKELY fixes — direct merge (bench-bit-exact or user-facing)
+
+- **#17 legacy threat pipeline debug_assert** — fall-through to
+  empty_threat silently zeroed the eval half if v9 routed via
+  `forward()` instead of `forward_with_threats`.
+- **#20 `coda check-net` uses forward_with_threats** — for v9 nets,
+  display-eval was ignoring threat features entirely.
+- **#29 SMP stockpile early-stop** — set shared stop before the
+  stockpile-prevention sleep so helpers don't burn CPU through
+  the window.
+- **#30 Ponder UCI option handler** — was falling through
+  silently; now explicit no-op acknowledgement.
+- **#35 helper.ponderhit_time clone** — was never cloned from main,
+  helpers ignored ponderhit deadlines.
+- **#36 load_nnue threat_stack reset** — net-swap from v9→v5 left
+  threat_stack.active=true; now reset unconditionally, then
+  activated if `net.has_threats`.
+- **#37 SMP TT gen advance** — moved from `search()` to
+  `search_smp`/datagen callers so helpers can't write old-gen TT
+  entries during spawn race.
+- **#43 TB castling gate** — early-return None before FEN format
+  when `board.castling != 0` (Syzygy rejects those anyway).
+- **Movepicker hygiene bundle** — bad_moves buffer 64→256,
+  non-capture promotions get promotion material delta in
+  mvv_lva, evasion scorer checks capture before promotion (so
+  capture-promotions rank above regular captures).
+- **TM/UCI hygiene** — soft_limit clamp order, depth parse
+  fail-closed (unwrap_or(0) not 100), `go ponder movetime X` on
+  ponderhit uses movetime instead of instant-stopping.
+- **TB hygiene** — DTZ |d|>100 maps to ±1 (not ±20000),
+  ponderhit TB override now matches `go` path on draws.
+- **Offline tools** — fetch-net gains `-f`, threat weight clamp
+  uses full i8 range, material-removal datagen cleans up
+  castling/EP after piece removal.
+- **Threat refresh overflow flag** — refresh now tracks overflow;
+  accurate flag set to !overflowed so incremental deltas don't
+  compound on corrupted baseline.
+
+### LIKELY fixes — H0'd individually, retune bundle pursued
+
+- **#640 C3 NMP sentinel** (-1.3 @ 22898g), **#646 #3 NMP stale
+  reductions** (-5.1 @ 5722g): both correctness fixes (SF uses these
+  sentinels), but bench +13.4% / +7.7% suggested tree shape shift.
+  Bundled into `experiment/nmp-sentinel-reductions-retune`; SPSA
+  #654 running on standard 18 pruning params. Expected pattern:
+  retuned defaults flip the bundle to +3-7 Elo (W3 retune-on-branch
+  pattern, historical #490 +7.4 / #586 +6.2).
+
+### Still in SPRT / pending
+
+- **#648 improving+probcut+lmp** bundle — +1.0 @ 8322g LLR 0.89,
+  trending H1 near 10K threshold.
+- **#652 SEE-promo-recapture** — -0.6 @ 7196g.
+- **#653 QS cuckoo-alone** (unbundled from #647) — +0.1 @ 5300g.
+- **#651 Movepicker hygiene** — swung to -0.5 from earlier +1.7,
+  watching for resolution.
+
+### C8 Bullet training/inference frame mismatch — the big one
+
+**Audit claim**: Bullet's `sq < to` same-type semi-exclusion in
+bf (STM-relative) frame diverges from Coda inference's physical-
+frame decision on ~63% of real-STM=Black positions. Each affected
+position has 1-3 features at the wrong feature index — trained
+weights never activate at inference and vice versa.
+
+**Fuzzer confirmed**: C8 diagnostic tool (`coda fuzz-threats -n N`)
+measured 1264/2000 pov-evaluations with ≥1 mismatch, 100% on
+real-STM=Black, 0% on White. Magnitude matches audit's "50%" figure.
+
+**Attempted fix path (abandoned)**: switch Coda inference to
+bf-frame semi-exclusion. Tests revealed a deeper problem —
+bf-frame semi-excl is NOT STM-invariant, which breaks Coda's
+incremental delta mechanism (persistent same-type pairs get
+different feature indices across STM flips, requiring extra
+deltas that don't exist). 7 threat_accum tests failed.
+
+**Chosen fix path**: modify Bullet training to use physical-frame
+semi-exclusion (matches Coda inference, which is STM-invariant
+and preserves delta correctness). Patches landed on
+`adamtwiss/bullet feature/threat-inputs` commit a8e2c7d:
+- `sfbinpack`/`montybinpack` loaders stamp real STM into
+  `ChessBoard.extra[0]` (`from_raw` otherwise loses it via
+  byte-swap).
+- `chess_threats.rs` `map_features` uses `phys_flip = extra[0] ? 56 : 0`
+  to convert bf squares to physical for the semi-exclusion check
+  only. Index computation stays as before.
+
+**C8-fix S200 net (1836917B) observations**:
+- Net-vs-net SPRT #657 vs creluHL-S200 (pre-fix) trending ~0 Elo
+  so far, still early at 3868g.
+- Bench stats show clear internal improvements:
+  - First-move cut rate **77.5% vs 75.1%** (+2.4pp, big)
+  - EBF **1.71 vs 1.78** (smaller trees)
+  - NMP cutoff success rate **50% vs 36%** (+14pp)
+  - History pruning rate **73/Kn vs 44/Kn** (more discriminative hist)
+- NPS difference **+26%** (~660K vs ~520K, worker-off bench).
+  Verified on A/B patched-pre-fix: bit 0 (use_screlu) is redundant
+  for v9 pairwise-with-hidden; NPS gain is from weight-value
+  differences, likely tree-shape interaction with threat-delta
+  application patterns. May explain "v9 unexpectedly slow vs v5"
+  observation across the v9 run.
+- SPSA retune #659 firing on C8-fix net with standard 18 pruning
+  params. Hypothesis: pre-fix pruning was calibrated against
+  noisy (bug-driven) eval; C8-fix's cleaner eval should unlock
+  more aggressive margins → true Elo benefit shows up post-retune.
+
+### Factoriser SB400 (warm30, training in the morning)
+
+Two SPRTs:
+- **#656 factor-SB400 vs creluHL-SB200** +70.6 Elo H1 @ 364g.
+  Factor has 2× training advantage.
+- **#655 factor-SB400 vs prod-SB800** -22 Elo @ (resolved earlier).
+  Factor has 1/2× training disadvantage.
+
+**Back-of-envelope**: if training-length gains are ~symmetric,
+factor_arch ≈ (70 - 22)/2 = +24 Elo at equal training. If training
+gains are asymmetric (late-LR tail dominates per
+`project_v9_low_lr_tail_critical`), factor_arch could be higher.
+
+**Direction**: encouraging factoriser signal, but waiting on C8-fix
+SPRT and retune before kicking off full SB800 factor+C8 training
+runs.
+
+### Merge summary for the session
+
+| Category | Count | Notes |
+|---|---|---|
+| Correctness fixes merged (direct) | ~25 | audit bug-class, bench-bit-exact or unreachable-on-fleet |
+| Features / structural fixes merged (via SPRT) | 6 | T1.4, P2, N6, C1, #645, #649, #650 |
+| Still SPRT-running | ~5 | various |
+| Retunes firing | 2 | NMP sentinel/reductions bundle, C8-fix net |
+| Training fix | 1 | C8 in Bullet fork, S200 net trained |
+
+The session executed about 40 of the audit's 44 actionable items.
+Remaining LIKELY (pawn_hash comment, hardcoded buffer limits, TT
+aarch64 atomics, forward non-hidden NTM dead code, etc.) are
+latent / dead-code / cosmetic and deferred.
