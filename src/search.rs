@@ -121,6 +121,10 @@ tunables!(
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
     (FUT_THREATS_MARGIN, 38, 0, 200, 10.0),
     (DISCOVERED_ATTACK_BONUS, 7501, 0, 30000, 1500.0),
+    // T1.4: quiet-slider move that completes a battery — lands on a square
+    // where a friendly slider stands between us and an enemy piece along
+    // the same ray. Flat bonus; tp==0 disables detection.
+    (BATTERY_BONUS, 5000, 0, 20000, 1000.0),
     (SE_KING_PRESSURE_MARGIN, 3, 0, 30, 1.5),
     // xray-SE: widen singular test margin when TT move is from an x-ray
     // blocker square (moving it uncovers our slider's attack on an enemy).
