@@ -1734,9 +1734,7 @@ fn negamax(
 
         if info.excluded_move[ply_u] == NO_MOVE && ply > 0 {
             let tt_depth = tt_entry.depth;
-            // P3: score_from_tt() also downgrades stored mates that can't be
-            // reached before 50-move rule fires.
-            let tt_score = score_from_tt(tt_entry.score, ply, board.halfmove);
+            let tt_score = score_from_tt(tt_entry.score, ply);
 
             if tt_depth >= depth && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 // Unified TT cutoff with node-type guard (Alexandria pattern):
@@ -1783,7 +1781,8 @@ fn negamax(
                             }
                         }
                     }
-                    return tt_score;
+                    // P3: downgrade stored mate if 50mr will fire before mate.
+                    return downgrade_50mr_mate(tt_score, ply, board.halfmove);
                 }
 
                 // Fall through: use TT bounds to narrow alpha/beta window at non-PV nodes
@@ -1846,7 +1845,8 @@ fn negamax(
                     {
                         return (3 * tt_score + beta) / 4;
                     }
-                    return tt_score;
+                    // P3: downgrade stored mate if 50mr will fire before mate.
+                    return downgrade_50mr_mate(tt_score, ply, board.halfmove);
                 }
             } else if tt_depth >= depth - 1
                 && beta - alpha_orig == 1
@@ -2269,8 +2269,10 @@ fn negamax(
             && tt_entry.depth >= depth - 3
             && FEAT_SINGULAR.load(Ordering::Relaxed)
         {
-            // P3: also downgrade 50mr-unreachable mates.
-            let tt_score_local = score_from_tt(tt_entry.score, ply, board.halfmove);
+            // Ply-only adjustment here — P3 downgrade deliberately not applied
+            // at SE: would cause over-extension on downgraded mate scores that
+            // pass the < MATE_SCORE - 100 check below.
+            let tt_score_local = score_from_tt(tt_entry.score, ply);
 
             // Skip SE for mate scores (margin comparison meaningless)
             if tt_score_local > -(MATE_SCORE - 100) && tt_score_local < MATE_SCORE - 100 {
@@ -2985,19 +2987,20 @@ fn quiescence_with_depth(
     let tt_hit = tt_entry.hit;
 
     if tt_hit && tt_entry.depth >= -1 {
-        // P3: score_from_tt() does ply adjustment + 50mr mate downgrade.
-        let tt_score = score_from_tt(tt_entry.score, ply, board.halfmove);
+        let tt_score = score_from_tt(tt_entry.score, ply);
+        // P3: downgrade stored mate if 50mr will fire before mate.
+        let tt_ret = downgrade_50mr_mate(tt_score, ply, board.halfmove);
 
         let qs_is_pv = beta - alpha > 1;
         match tt_entry.flag {
             TT_FLAG_EXACT => {
-                if !qs_is_pv { return tt_score; }
+                if !qs_is_pv { return tt_ret; }
             }
             TT_FLAG_LOWER => {
-                if !qs_is_pv && tt_score >= beta { return tt_score; }
+                if !qs_is_pv && tt_score >= beta { return tt_ret; }
             }
             TT_FLAG_UPPER => {
-                if !qs_is_pv && tt_score <= alpha { return tt_score; }
+                if !qs_is_pv && tt_score <= alpha { return tt_ret; }
             }
             _ => {}
         }
@@ -3107,8 +3110,11 @@ fn quiescence_with_depth(
     // TT bound refinement of stand-pat (consensus: every top engine does this)
     // Use TT score as a better estimate when the bound direction agrees
     if tt_hit {
-        // P3: also downgrade 50mr-unreachable mates.
-        let tt_score = score_from_tt(tt_entry.score, ply, board.halfmove);
+        // Ply-only adjustment; refinement is explicitly for non-mate scores
+        // per the abs check below. P3 downgrade would turn a stored mate
+        // into a huge TB_WIN signal that passes the check and pollutes
+        // stand-pat.
+        let tt_score = score_from_tt(tt_entry.score, ply);
         if tt_score.abs() < MATE_SCORE - 100 {
             if (tt_entry.flag == TT_FLAG_LOWER && tt_score > best_score)
                 || (tt_entry.flag == TT_FLAG_UPPER && tt_score < best_score)
