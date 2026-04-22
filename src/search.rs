@@ -1742,12 +1742,18 @@ fn negamax(
                 tt_score += ply;
             }
 
+            // P2 (halfmove-gated TT cutoff): TT scores are stored without halfmove
+            // context. Near the 50-move cliff a cached mate-in-N may be unreachable,
+            // and a stored bound may be over/understated by the time we revisit.
+            // Gate ALL return-from-TT paths (direct + bounds-narrow collapse +
+            // near-miss + QS) on halfmove < 90. Window-narrowing is still applied —
+            // it only biases the search, while returning stale tt_score is unsafe.
+            let halfmove_ok = board.halfmove < 90;
             if tt_depth >= depth && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 // Unified TT cutoff with node-type guard (Alexandria pattern):
                 // At non-PV nodes, accept TT cutoff when:
                 // - cut_node matches score direction (cut expects fail-high, all expects fail-low)
                 // - TT bound type matches (LOWER for fail-high, UPPER for fail-low)
-                // - Not too close to 50-move rule (avoid drawing positions incorrectly)
                 let score_above_beta = tt_score >= beta;
                 let bound_matches = if score_above_beta {
                     tt_entry.flag == TT_FLAG_LOWER || tt_entry.flag == TT_FLAG_EXACT
@@ -1755,7 +1761,7 @@ fn negamax(
                     tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT
                 };
                 if !is_pv && cut_node == score_above_beta && bound_matches
-                    && board.halfmove < 90
+                    && halfmove_ok
                 {
                     info.stats.tt_cutoffs += 1;
                     if tt_move != NO_MOVE && ply_u <= MAX_PLY {
@@ -1805,7 +1811,7 @@ fn negamax(
                     _ => {}
                 }
 
-                if alpha >= beta {
+                if alpha >= beta && halfmove_ok {
                     if tt_move != NO_MOVE {
                         info.stats.tt_cutoffs += 1;
                         // Update PV table with TT move
@@ -1856,6 +1862,7 @@ fn negamax(
                 && beta - alpha_orig == 1
                 && tt_score > -(MATE_SCORE - 100) && tt_score < MATE_SCORE - 100
                 && FEAT_TT_NEARMISS.load(Ordering::Relaxed)
+                && halfmove_ok
             {
                 // TT near-miss cutoffs: accept entries 1 ply short with a score margin
                 let margin = 80;
@@ -3001,16 +3008,18 @@ fn quiescence_with_depth(
             tt_score += ply;
         }
 
+        // P2: skip QS TT cutoff near 50mr — stale bound unsafe
+        let halfmove_ok = board.halfmove < 90;
         let qs_is_pv = beta - alpha > 1;
         match tt_entry.flag {
             TT_FLAG_EXACT => {
-                if !qs_is_pv { return tt_score; }
+                if !qs_is_pv && halfmove_ok { return tt_score; }
             }
             TT_FLAG_LOWER => {
-                if !qs_is_pv && tt_score >= beta { return tt_score; }
+                if !qs_is_pv && halfmove_ok && tt_score >= beta { return tt_score; }
             }
             TT_FLAG_UPPER => {
-                if !qs_is_pv && tt_score <= alpha { return tt_score; }
+                if !qs_is_pv && halfmove_ok && tt_score <= alpha { return tt_score; }
             }
             _ => {}
         }
