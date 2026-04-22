@@ -705,16 +705,35 @@ fn run_fetch_net() {
         return;
     }
     println!("Downloading {} ...", url);
+    // C8 audit LIKELY #48: add `-f` (--fail) so curl exits non-zero on
+    // HTTP 4xx/5xx instead of capturing the error body as the output
+    // file. Previously a 404/500 response was silently saved as the
+    // "net" and curl returned success; the subsequent load would fail
+    // cryptically or — worse — truncate a partial download into what
+    // looked like a valid file. Also validate magic bytes after download.
     let output = std::process::Command::new("curl")
-        .args(["-sL", &url, "-o", fname])
+        .args(["-fsL", &url, "-o", fname])
         .status();
     match output {
         Ok(status) if status.success() => {
             let size = std::fs::metadata(fname).map(|m| m.len()).unwrap_or(0);
+            // Magic-byte sanity check: NNUE files should start with a
+            // small set of known magic values. If the first 4 bytes are
+            // ASCII (e.g. HTML error page that slipped past -f), refuse.
+            if let Ok(bytes) = std::fs::read(fname) {
+                if bytes.len() < 16 || bytes.iter().take(4).all(|&b| b.is_ascii_alphabetic()) {
+                    eprintln!("Error: downloaded file doesn't look like a .nnue (first bytes: {:?})",
+                        &bytes.iter().take(16).collect::<Vec<_>>());
+                    let _ = std::fs::remove_file(fname);
+                    std::process::exit(1);
+                }
+            }
             println!("Downloaded {} ({} bytes)", fname, size);
         }
         _ => {
             eprintln!("Error: failed to download {}", url);
+            // Remove any partial file to avoid confusing the next invocation.
+            let _ = std::fs::remove_file(fname);
             std::process::exit(1);
         }
     }
