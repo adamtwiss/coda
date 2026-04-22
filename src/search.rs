@@ -3033,7 +3033,10 @@ fn quiescence_with_depth(
     }
 
     // Cuckoo cycle detection in quiescence
-    if alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
+    // C8 audit LIKELY #10: gate QS cuckoo on ply > 0, mirroring the
+    // main-search check at line 1763. Cuckoo's root-boundary STM check
+    // is undefined at ply 0.
+    if ply > 0 && alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
         alpha = 0;
         if alpha >= beta {
             return alpha;
