@@ -1165,11 +1165,19 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         (limits.btime, limits.binc)
     };
 
+    // C6 (2026-04-22 audit): SearchInfo persists across `go` commands.
+    // Without explicit reset, stale soft_limit/hard_limit from a prior
+    // `go wtime/btime` leak into subsequent `go movetime`, `go depth`, or
+    // `go nodes` — the dynamic-TM gate then scales them and can break the
+    // ID loop early. Zero all four unconditionally up-front; each branch
+    // below sets only the ones it needs.
+    info.time_limit = 0;
+    info.soft_limit = 0;
+    info.hard_limit = 0;
+    info.soft_floor = 0;
+
     if limits.infinite {
-        info.time_limit = 0;
-        info.soft_limit = 0;
-        info.hard_limit = 0;
-        info.soft_floor = 0;
+        // Already zero above.
     } else if limits.movetime > 0 {
         info.time_limit = limits.movetime;
         // Respect caller-supplied minimum think time (ponderhit fresh-search uses
@@ -1251,6 +1259,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.tm_has_data = false;
         info.tm_best_stable = 0;
     } else if !limits.infinite {
+        // No clock info (e.g. `go depth N` or `go nodes N`). Already zeroed
+        // above; explicit reset kept for clarity.
         info.time_limit = 0;
     }
 
