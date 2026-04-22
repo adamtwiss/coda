@@ -3406,7 +3406,17 @@ impl NNUENet {
             (acc.black(), acc.white())
         };
 
-        // Get threat accumulators (may be empty for non-threat nets)
+        // Get threat accumulators (may be empty for non-threat nets).
+        //
+        // C8 audit LIKELY #17: this is the LEGACY threat pipeline using
+        // accumulator.threat_white/black fields. Production v9 uses
+        // `forward_with_threats` + the ThreatStack at SearchInfo::threat_stack
+        // instead, so these fields are never populated on the hot path. If
+        // `has_threats` is true here AND the fields are not accurate, it
+        // means somebody routed a v9 eval through `forward()` directly —
+        // a silent bug that used to fall through to empty_threat (= zero
+        // eval). debug_assert catches it in tests; release still falls
+        // through safely.
         let empty_threat = &[][..];
         let stm_idx = stm as usize;
         let ntm_idx = (stm ^ 1) as usize;
@@ -3417,6 +3427,12 @@ impl NNUENet {
                 (acc.current().threat_black.as_slice(), acc.current().threat_white.as_slice())
             }
         } else {
+            debug_assert!(
+                !self.has_threats,
+                "forward() called on v9 threat net without ThreatStack — \
+                 production eval must route through forward_with_threats. \
+                 See C8 audit LIKELY #17."
+            );
             (empty_threat, empty_threat)
         };
 
