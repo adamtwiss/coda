@@ -51,6 +51,11 @@ strong engines.
 ID iteration, blend in `eval_wrapper`. SPSA `K1` and `K2` (4-param branch tune —
 K1, K2, optimism_mat_base, and a gate-off-if-eval-huge threshold).
 
+**Status 2026-04-22:** **#636 -2.0 @ 10986g H0.** Dropped on first pass. Possible retry
+pattern: test again on post-#661 tuned trunk with C8-fix net, or with retune-on-branch
+(SPSA for K1/K2) before SPRT — un-tuned ports from SF/Reckless rarely work out of the box
+at Coda's eval scale.
+
 ### P2. TT-cutoff gate on high halfmove (SF: `<96`, Reckless: `<90`)
 
 **Mechanism.** Skip TT cutoff when `halfmove_clock >= 90` (or 96).
@@ -71,6 +76,9 @@ the *static* eval but not the *bound-from-search*.
 
 **Expected Elo.** +1 to +3. Cheap, correctness-adjacent, low variance.
 
+**Status 2026-04-22:** **#628 +1.2 @ 13970g H1 ✓**, merged at `8277799`. Landed inside
+the expected band.
+
 ### P3. TT-score adjustment when 50mr threatens stored mate/TB (Reckless)
 
 **Mechanism.** `score_from_tt(score, ply, halfmove)`:
@@ -90,6 +98,11 @@ bug SF fixed years ago and Reckless still guards against. Rare but real — affe
 Lichess endgame play (which Adam has been watching).
 
 **Expected Elo.** +1 to +3 (small but real). Bug-fix class; Lichess-visible class.
+
+**Status 2026-04-22:** **#633 -1.4 @ 19668g H0**, merged as confident-correctness at
+`19da0e8` (Reckless-style bug-fix class, `[-3, 3]` bounds, −4 tripwire not hit). Didn't
+pass positive SPRT but kept as a correctness measure; the score-path is lichess-visible
+even if hard to expose under self-play.
 
 ### P4. NNUE complexity blending (SF only)
 
@@ -232,6 +245,10 @@ perspective AND the pawn is currently unblocked.
 
 **Expected Elo.** +0 to +3. Low confidence — strong NNUE already overweights
 promotion-threat squares; may be redundant.
+
+**Status 2026-04-22:** **#637 +1.6 @ 25886g trending H1**, merged at `742e119`.
+Above the zero floor; gained where the existing LMR exemption was not enough for
+these critical pushes.
 
 ## Ranked shortlist
 

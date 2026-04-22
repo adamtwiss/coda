@@ -420,3 +420,52 @@ The Bullet audit independently verified these are consistent with Coda inference
 - "Hasn't been caught by SPRT" is not evidence of correctness. SPRT's signal-to-noise floor around ±2 Elo is fine for structural features but low for rare-case bugs that trigger in <5% of games.
 - The Lichess watch methodology (CG5ZXe5Z endgame gate fix) and bench-reveal methodology are qualitatively better at finding this class of bug. The #619 Zobrist EP fix was similarly surfaced by "weird score on what should be a forced draw".
 - Fuzzers caught the existing `is_pseudo_legal` holes but miss the multi-field-corruption class (C1). Worth extending fuzzers to mutate pairs/triples of fields when EP is active.
+
+## Resolution log (2026-04-22)
+
+Outcome for every audit item actioned in the same-day session. Merge commits are on `feature/threat-inputs`.
+
+### CRITICAL
+
+| ID | Summary | SPRT | Result | Merge | Status |
+|----|---------|------|--------|-------|--------|
+| C1 | `is_pseudo_legal` EP validation | #638 fix/is-pseudo-legal-ep | +0.4 @ 28382g →H1 | `da02ba0` | ✅ merged |
+| C2 | TB cache halfmove key | local cutechess (fleet no-TB) | −0.6 @ 7800g, Elo-neutral | `0c7f316` | ✅ merged as correctness |
+| C3 | NMP null sentinel on move stacks | #640 fix/nmp-sentinel-moved-piece | −1.3 @ 22898g H0 | — | ❌ dropped (bundled then abandoned; re-test candidate on post-#661 tuned trunk) |
+| C4 | NEON SCReLU `>>9`/`>>8` mismatch | — (aarch64, fleet x86) | bench-invariant | (direct merge, see entry in LIKELY-bench-bit-exact below) | ✅ merged |
+| C5 | TT score threshold vs TB_WIN band | local cutechess (fleet no-TB) | bundled with C2 | `349cfd8` | ✅ merged as correctness |
+| C6 | TM stale limits on mode switch | — (direct) | bench-invariant | `6478d71` | ✅ merged |
+| C7 | `convert-checkpoint` output-layer drop | — (offline tool) | N/A | `b7c0312` | ✅ merged |
+| C8 | Bullet training/inference frame mismatch | fuzzer + net-vs-net SPRTs | see below | Bullet fork + #660 retune + #661 +8.25 | ✅ fixed via training-side patch + C8-fix S200 net + retune |
+| C9 | HIP Adam ABI | — (flagged for Bullet team; not Coda) | N/A | — | ⏭ deferred to upstream |
+
+### LIKELY — via SPRT (search-pruning class)
+
+| ID | Branch / Bundle | Result | Merge | Status |
+|----|-----------------|--------|-------|--------|
+| LIKELY #40 | fix/see-promo-recapture (#652) | **+1.8 @ 16404g H1 ✓** | `b25366d` | ✅ merged |
+| LIKELY improving+probcut+lmp | fix/improving-probcut-lmp (#648) | +1.2 @ 9972g →H1 | `1b70fd8` | ✅ merged |
+| LIKELY SE is_pv + corrhist stop | fix/se-shadow-corrhist-stop (#650) | +0.4 @ 10320g →H1 | `75ac622` | ✅ merged |
+| LIKELY in-check hist key symmetry | fix/evasion-history-key-symmetry (#645) | −0.9 @ 13004g →H0 | `4637299` | ✅ merged as confident-correctness; revert considered and rejected (bench inverted hypothesis, see experiments.md) |
+| LIKELY rep-detection null boundary | fix/rep-detection-null (#649) | −0.3 @ 11002g →H0 | `402e366` | ✅ merged as confident-correctness |
+| LIKELY movepicker hygiene | fix/movepicker-hygiene (#651) | −0.5 @ 10870g →H0 | `6f4d681` | ✅ merged as confident-correctness |
+| LIKELY QS cuckoo ply>0 guard | fix/qs-cuckoo-ply-alone (#653, unbundled from #647) | **+5.0 @ 5942g H1 ✓** | `334e80c` | ✅ merged — #647 bundled variant H0'd −2.8 |
+| LIKELY NMP stale reductions | fix/nmp-stale-reductions (#646) | −5.1 @ 5722g H0 | — | ❌ dropped |
+
+### LIKELY — direct merge (bench-bit-exact / user-facing / fleet-untestable)
+
+Covered in experiments.md §"LIKELY fixes — direct merge" (session log 2026-04-22). Representative items: #17 legacy threat pipeline debug_assert, #20 `check-net` forward-with-threats, #29 SMP stockpile early-stop, #30 Ponder UCI no-op, #35 helper.ponderhit_time clone, #36 load_nnue threat_stack reset, #37 SMP TT gen advance, #43 TB castling gate, TM/UCI hygiene, TB hygiene, offline-tools hygiene, threat refresh overflow flag, NEON SCReLU shift.
+
+### Post-fix retune + SPRT
+
+| Event | Result | Commit |
+|-------|--------|--------|
+| SPSA #660 (67-param, 2500 iters, C8-fix S200 net) | converged; big movers: `LMR_HIST_DIV` −45%, `HIST_BONUS_OFFSET` −26%, `DISCOVERED_ATTACK_BONUS` −24% | `d2cfb8a` applied, `LMR_ENDGAME_PIECES` manually restored to 5 |
+| SPRT #661 (tuned bundle vs trunk, C8-fix on both sides) | **+8.25 @ 5264g H1 ✓** | `d806b84` merged — new v9 trunk baseline, bench 2,575,054 (−27% vs pre-tune) |
+
+### Dropped / deferred
+
+- Titan tactical ideas that H0'd on pre-C8-fix trunk and are not yet re-tested on post-#661: T1.3 (#634), T2.2 (#632), P1 (#636).
+- Audit items deferred (latent, cosmetic, or not-yet-reachable): pawn_hash comment, hardcoded buffer limits, TT aarch64 atomics, forward non-hidden NTM dead code, HIP Adam ABI (Bullet upstream).
+
+**Session throughput:** ~40 of 44 actionable audit items resolved in-session.

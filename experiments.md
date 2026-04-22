@@ -5586,14 +5586,19 @@ No OB SPRT coverage (fleet has no TB / aarch64 / mixed-mode UCI):
   retuned defaults flip the bundle to +3-7 Elo (W3 retune-on-branch
   pattern, historical #490 +7.4 / #586 +6.2).
 
-### Still in SPRT / pending
+### Resolved since (all merged to feature/threat-inputs)
 
-- **#648 improving+probcut+lmp** bundle — +1.0 @ 8322g LLR 0.89,
-  trending H1 near 10K threshold.
-- **#652 SEE-promo-recapture** — -0.6 @ 7196g.
-- **#653 QS cuckoo-alone** (unbundled from #647) — +0.1 @ 5300g.
-- **#651 Movepicker hygiene** — swung to -0.5 from earlier +1.7,
-  watching for resolution.
+- **#648 improving+probcut+lmp** bundle — **+1.2 @ 9972g trending H1**,
+  merged at `1b70fd8` (confident correctness / small-win bundle).
+- **#652 SEE-promo-recapture** — **+1.8 @ 16404g H1 ✓**,
+  merged at `b25366d`. (Note: this fix compounded with the #660 tune
+  bundle on the C8-fix net to drop trunk bench by an additional ~20%
+  beyond the tune alone — SEE sharpening × tuned SEE/history margins.)
+- **#653 QS cuckoo-alone** (unbundled from #647) — **+5.0 @ 5942g H1 ✓**,
+  merged at `334e80c`. The unbundled `ply > 0` guard was the working
+  half of #647's bundled fix.
+- **#651 Movepicker hygiene** — **-0.5 @ 10870g trending H0**,
+  merged at `6f4d681` as confident-correctness (−4 tripwire not hit).
 
 ### C8 Bullet training/inference frame mismatch — the big one
 
@@ -5643,6 +5648,29 @@ and preserves delta correctness). Patches landed on
   params. Hypothesis: pre-fix pruning was calibrated against
   noisy (bug-driven) eval; C8-fix's cleaner eval should unlock
   more aggressive margins → true Elo benefit shows up post-retune.
+
+**Retune + SPRT outcome (late 2026-04-22):**
+- **SPSA #659 stopped** (18-param) in favour of **#660 (full 67-param)**
+  on the C8-fix S200 net. Completed 2502/2500 iterations.
+- Big movers: `LMR_HIST_DIV` -45%, `HIST_BONUS_OFFSET` -26%,
+  `DISCOVERED_ATTACK_BONUS` -24%, `FH_BLEND_DEPTH` +31%,
+  `DEXT_MARGIN` +23%, `LMR_COMPLEXITY_DIV` +16%, `NMP_VERIFY_DEPTH` +14%.
+  Theme: sharpened eval → trust history more, hand-crafted tactical
+  bonuses less. `LMR_ENDGAME_PIECES` pinned at floor (4) in SPSA;
+  manually restored to 5 (range clamped to [4, 9] in source to
+  prevent future drift — play-quality-load-bearing from #583).
+- Applied as branch `tune/v9-660-c8fix` (commit `d2cfb8a`).
+- **SPRT #661 (tune/v9-660-c8fix vs feature/threat-inputs, both
+  on C8-fix net): +8.25 ±4.8 @ 5264g LLR 2.95 H1 ✓.** Merged
+  at `d806b84` — this is the new v9 trunk baseline.
+- Bench on trunk: **2,575,054** on C8-fix (vs 3,541,301 pre-tune,
+  -27%). Effective depth rose several plies; trunk is leaner than
+  pre-#645 on the same net.
+
+**C2 TB cache halfmove fix** — merged at `0c7f316` after local
+cutechess SPRT (with-tb vs pre-tb, both C8-fix net, concurrency 16)
+showed Elo-neutral (-0.6 point estimate at 7800g, 74% draws).
+No OB SPRT (fleet has no Syzygy); local-validated correctness.
 
 ### Factoriser SB400 (warm30, training in the morning)
 

@@ -58,9 +58,11 @@ Already specced, gated on B1 landing — **now unblocked**. Estimated +10–30 i
 
 **T1.3 — Overload / removing-the-defender.**
 Capture/attack on a defender that defends ≥2 of its own pieces. Cheap: count defended-squares per piece, bonus moves that hit a 2+-defender. Expected: **+3 to +10**. Named-tactic class.
+- **Status 2026-04-22:** **#634 -1.4 @ 13624g H0.** Quiet-scoring bonus at OVERLOAD_BONUS=4000 did not pass SPRT on the pre-C8-fix trunk. Candidate to re-test on post-#661 tuned trunk with C8-fix net (different search landscape may surface latent signal). Not dropped outright.
 
 **T1.4 — Battery bonus.**
 Quiet move that places a Q/R/B behind another Q/R/B aligned on the same file/rank/diagonal toward an enemy piece or the enemy king zone. Cheap via occupancy + between(). Expected: **+3 to +10**. Adjacent to king-zone-pressure gate pattern.
+- **Status 2026-04-22:** **#635 +5.3 @ 8452g H1 ✓**, merged at `2caa96a`. Landed near the top of the expected band.
 
 **T1.5 — Trapped-piece escape.**
 Quiet move that moves a piece whose ALL non-loss legal moves are limited to ≤1 square (mobility count trap). This is essentially the dual of "attack a trapped piece" and captures "evacuate before fork". Expected: **+3 to +8**.
@@ -75,6 +77,7 @@ Count of our own pieces with ≥1 attacker and 0 defenders ("hanging"). If ≥1,
 
 **T2.2 — King-mobility as SE / extension gate.**
 Number of legal king moves. When ≤1, a quiet king move must be searched deeper. Already implicit in some check-extension logic, but not as an explicit SE trigger. Expected: **+3 to +8**.
+- **Status 2026-04-22:** **#632 -1.4 @ 13288g H0.** Dropped — SE-margin widening for constrained-king positions did not convert to Elo.
 
 **T2.3 — Mobility-delta-of-moved-piece as quiet-ordering score.**
 Cheap: `popcount(attacks_to(from)) - popcount(attacks_to(to))`. Add as small-weight bonus in quiet-ordering alongside history. Centralization heuristic without writing an eval term. **Ordering, not pruning** — different mechanism class. Expected: **+2 to +5**. Low confidence but cheap.
