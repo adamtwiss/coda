@@ -72,45 +72,63 @@ pub fn nnue_to_bullet_checkpoint(
     std::fs::create_dir_all(output_dir)
         .map_err(|e| format!("Failed to create directory {}: {}", output_dir, e))?;
 
-    // Write weights.bin
-    let mut weights_buf = Vec::new();
-    write_weight_entry(&mut weights_buf, "l0w", &l0w);
-    write_weight_entry(&mut weights_buf, "l0b", &l0b);
-    write_weight_entry(&mut weights_buf, "l1w", &l1w);
-    write_weight_entry(&mut weights_buf, "l1b", &l1b);
-    if l2_size > 0 {
-        write_weight_entry(&mut weights_buf, "l2w", &l2w);
-        write_weight_entry(&mut weights_buf, "l2b", &l2b);
-    }
-    // Output layer — name depends on architecture
+    // Output layer name: `l2w/l2b` when there's no L2 hidden, `l3w/l3b`
+    // when there is. Must be consistent between weights.bin and
+    // momentum.bin / velocity.bin — Bullet's optimiser loader walks all
+    // three files with the same entry order.
     let out_name_w = if l2_size > 0 { "l3w" } else { "l2w" };
     let out_name_b = if l2_size > 0 { "l3b" } else { "l2b" };
-    // Only write output if not already written as l2
-    if l2_size > 0 {
-        write_weight_entry(&mut weights_buf, out_name_w, &out_w);
-        write_weight_entry(&mut weights_buf, out_name_b, &out_b);
-    } else {
-        // l2w/l2b is the output layer when no L2 hidden
-        // Already written above as l2w/l2b with zero init
+
+    // Helper: write the full weight-list, either real values (weights.bin)
+    // or zeros (momentum.bin / velocity.bin). C7 (2026-04-22 audit) fix:
+    // previously the output layer was silently dropped when l2_size == 0
+    // in BOTH weights.bin AND momentum/velocity.bin, and momentum/velocity
+    // dropped it even when l2_size > 0 asymmetrically vs weights.bin.
+    // Centralise the list so the two buffers can never diverge.
+    fn write_all_entries(
+        buf: &mut Vec<u8>,
+        l0w: &[f32], l0b: &[f32],
+        l1w: &[f32], l1b: &[f32],
+        l2w: &[f32], l2b: &[f32],
+        out_w: &[f32], out_b: &[f32],
+        l2_size: usize,
+        out_name_w: &str, out_name_b: &str,
+    ) {
+        write_weight_entry(buf, "l0w", l0w);
+        write_weight_entry(buf, "l0b", l0b);
+        write_weight_entry(buf, "l1w", l1w);
+        write_weight_entry(buf, "l1b", l1b);
+        if l2_size > 0 {
+            write_weight_entry(buf, "l2w", l2w);
+            write_weight_entry(buf, "l2b", l2b);
+        }
+        write_weight_entry(buf, out_name_w, out_w);
+        write_weight_entry(buf, out_name_b, out_b);
     }
+
+    // Write weights.bin (real values for l0, zeros for the rest)
+    let mut weights_buf = Vec::new();
+    write_all_entries(&mut weights_buf, &l0w, &l0b, &l1w, &l1b, &l2w, &l2b,
+                      &out_w, &out_b, l2_size, out_name_w, out_name_b);
 
     let weights_path = format!("{}/weights.bin", output_dir);
     std::fs::File::create(&weights_path)
         .and_then(|mut f| f.write_all(&weights_buf))
         .map_err(|e| format!("Failed to write {}: {}", weights_path, e))?;
 
-    // Write momentum.bin and velocity.bin (all zeros, same structure)
+    // Write momentum.bin and velocity.bin (all zeros, same entry list)
+    let zero_l0w = vec![0.0f32; l0w.len()];
+    let zero_l0b = vec![0.0f32; l0b.len()];
+    let zero_l1w = vec![0.0f32; l1w.len()];
+    let zero_l1b = vec![0.0f32; l1b.len()];
+    let zero_l2w = vec![0.0f32; l2w.len()];
+    let zero_l2b = vec![0.0f32; l2b.len()];
+    let zero_out_w = vec![0.0f32; out_w.len()];
+    let zero_out_b = vec![0.0f32; out_b.len()];
     let mut zero_buf = Vec::new();
-    write_weight_entry(&mut zero_buf, "l0w", &vec![0.0f32; l0w.len()]);
-    write_weight_entry(&mut zero_buf, "l0b", &vec![0.0f32; l0b.len()]);
-    write_weight_entry(&mut zero_buf, "l1w", &vec![0.0f32; l1w.len()]);
-    write_weight_entry(&mut zero_buf, "l1b", &vec![0.0f32; l1b.len()]);
-    if l2_size > 0 {
-        write_weight_entry(&mut zero_buf, "l2w", &vec![0.0f32; l2w.len()]);
-        write_weight_entry(&mut zero_buf, "l2b", &vec![0.0f32; l2b.len()]);
-        write_weight_entry(&mut zero_buf, out_name_w, &vec![0.0f32; out_w.len()]);
-        write_weight_entry(&mut zero_buf, out_name_b, &vec![0.0f32; out_b.len()]);
-    }
+    write_all_entries(&mut zero_buf, &zero_l0w, &zero_l0b, &zero_l1w, &zero_l1b,
+                      &zero_l2w, &zero_l2b, &zero_out_w, &zero_out_b,
+                      l2_size, out_name_w, out_name_b);
 
     for name in &["momentum.bin", "velocity.bin"] {
         let path = format!("{}/{}", output_dir, name);
