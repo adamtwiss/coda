@@ -2780,11 +2780,19 @@ fn negamax(
             let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
 
             if lmr_score > alpha && !info.stop.load(Ordering::Relaxed) {
-                // LMR failed high: doDeeper/doShallower before re-search
+                // LMR failed high: doDeeper/doShallower before re-search.
+                //
+                // Audit SPECULATIVE fix: the do_shallower threshold previously
+                // used `new_depth` (an integer depth value, ~5-20) as a cp
+                // margin — almost certainly a typo. Real cp margin mirrors
+                // the do_deeper shape (starts at a positive cp threshold).
+                // SF/Obsidian use a single-digit-to-low-double-digit cp
+                // margin for the shallower side (much smaller than deeper's
+                // 60+10*r). 30cp as a starting value — SPSA-tunable later.
                 let mut do_deeper_adj = 0;
                 if lmr_score > best_score + 60 + 10 * reduction {
                     do_deeper_adj = 1;
-                } else if lmr_score < best_score + new_depth {
+                } else if lmr_score < best_score + 30 {
                     do_deeper_adj = -1;
                 }
 
