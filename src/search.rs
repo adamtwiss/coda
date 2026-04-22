@@ -128,6 +128,11 @@ tunables!(
     // where a friendly slider stands between us and an enemy piece along
     // the same ray. Flat bonus; tp==0 disables detection.
     (BATTERY_BONUS, 4919, 0, 20000, 1000.0),
+    // T1.3: quiet-move bonus when the move attacks an enemy piece that
+    // defends 2+ other enemy pieces ("remove the defender" tactic).
+    // Flat bonus; gated by tp>0 so setting to 0 disables the
+    // overloaded_defenders bitboard computation too.
+    (OVERLOAD_BONUS, 4000, 0, 20000, 1000.0),
     (SE_KING_PRESSURE_MARGIN, 2, 0, 30, 1.5),
     // xray-SE: widen singular test margin when TT move is from an x-ray
     // blocker square (moving it uncovers our slider's attack on an enemy).
@@ -1691,6 +1696,16 @@ fn negamax(
         0
     };
 
+    // T1.3: enemy pieces defending 2+ of their own pieces. Moves that
+    // attack an overloaded defender force the opponent to break the
+    // defence — "remove the defender" tactic. MovePick bonus when
+    // `to`-square's post-move attacks hit an overloaded defender.
+    let overloaded_defenders: u64 = if tp(&OVERLOAD_BONUS) > 0 {
+        board.overloaded_defenders(them_color, 2)
+    } else {
+        0
+    };
+
     // Clear PV for this node
     if ply_u <= MAX_PLY {
         info.pv_len[ply_u] = 0;
@@ -2281,7 +2296,7 @@ fn negamax(
     let mut picker = if in_check {
         MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, overloaded_defenders, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
 
