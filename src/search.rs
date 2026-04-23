@@ -3148,6 +3148,31 @@ fn quiescence_with_depth(
     if board.halfmove >= 100 {
         return draw_score;
     }
+
+    // N5 (peripheral_mechanisms_2026-04-22): insufficient-material short-circuit.
+    // KvK, KNvK / KvKN, KBvK / KvKB are drawn by rule — no sequence of captures
+    // in QS can produce a win. Main search's halfmove=100 check catches 50-move
+    // draws but not these zero-pawn minor-piece drawn endings. Check here so QS
+    // doesn't waste nodes exploring captures in positions that are definitionally
+    // drawn, and returns a clean draw_score before any tactical exploration.
+    if board.pieces[PAWN as usize] == 0 {
+        let non_king = (board.colors[WHITE as usize] | board.colors[BLACK as usize])
+            & !board.pieces[KING as usize];
+        let nk_count = non_king.count_ones();
+        if nk_count <= 1 {
+            // KvK (0 minors) or K+minor vs K (1 minor, any color) — drawn.
+            // Quick test: non-king mask has at most 1 set bit AND all pieces
+            // are minor (knight or bishop). The single-piece case at most
+            // gives a minor, already covered.
+            if nk_count == 0 {
+                return draw_score;
+            }
+            let minors = board.pieces[KNIGHT as usize] | board.pieces[BISHOP as usize];
+            if (non_king & !minors) == 0 {
+                return draw_score;
+            }
+        }
+    }
     // Check for repetition in game history.
     // C8 audit LIKELY #38: also break on null-move boundary — scanning
     // past a null move looks for repetitions in a different search line.
