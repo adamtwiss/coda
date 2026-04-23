@@ -631,6 +631,40 @@ impl MovePicker {
                 score += crate::search::DISCOVERED_ATTACK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
             }
 
+            // T1.5 (next_ideas_2026-04-21): trapped-piece-escape bonus.
+            // For knight/bishop/rook/queen: count pseudo-legal destinations
+            // NOT attacked by enemy pawns. If ≤1, piece is effectively trapped
+            // (pawn-fork proxy for "non-loss" mobility). Bonus for moving it.
+            // Fires per quiet move scored; cost is 1 attacks table lookup +
+            // ~4 bitboard ops. Knight/bishop is the common case (pawn-caged
+            // piece is a classic tactical motif).
+            if piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                if pt > 0 && pt < 5 { // knight(1)/bishop(2)/rook(3)/queen(4)
+                    let us = ((piece >> 3) & 1) as Color;
+                    let enemy = 1 - us;
+                    let occ = board.colors[0] | board.colors[1];
+                    let enemy_pawns = board.pieces[PAWN as usize] & board.colors[enemy as usize];
+                    // Enemy pawn attack bitboard via bulk shift — avoids per-pawn iteration.
+                    // Black pawns attack SE/SW (shift down), white pawns attack NE/NW (shift up).
+                    let enemy_pawn_attacks = if enemy == 1 {
+                        // enemy is black — attacks go south (>>7 SE, >>9 SW)
+                        ((enemy_pawns & crate::bitboard::NOT_FILE_H) >> 7)
+                            | ((enemy_pawns & crate::bitboard::NOT_FILE_A) >> 9)
+                    } else {
+                        // enemy is white — attacks go north (<<9 NE, <<7 NW)
+                        ((enemy_pawns & crate::bitboard::NOT_FILE_H) << 9)
+                            | ((enemy_pawns & crate::bitboard::NOT_FILE_A) << 7)
+                    };
+                    let destinations = crate::threats::piece_attacks_occ(pt, us, from as u32, occ);
+                    let own_pieces = board.colors[us as usize];
+                    let safe_dests = destinations & !own_pieces & !enemy_pawn_attacks;
+                    if safe_dests.count_ones() <= 1 {
+                        score += crate::search::TRAPPED_PIECE_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+
             // Reckless "offense bonus": quiet move that lands on a square
             // attacking an enemy non-pawn piece. +6000 flat. Not yet present
             // in Coda; Reckless has it at ~+6000. Signal: does our piece on

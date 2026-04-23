@@ -136,6 +136,13 @@ tunables!(
     // Fits Titan's W2 pattern (binary signal gating a pruning decision).
     // Default 1 = skip NMP whenever any piece is hanging.
     (NMP_UNDEFENDED_MAX, 1, 0, 5, 1.0),
+    // T1.5 (next_ideas_2026-04-21): trapped-piece-escape quiet-ordering bonus.
+    // When the moving piece (knight/bishop/rook/queen) has ≤1 destination
+    // not attacked by an enemy pawn, moving it is an escape from an
+    // effective trap (classic "evacuate before fork" / knight stuck in
+    // pawn cage). Flat bonus on the escape move. W1 pattern (named-tactic
+    // MovePick bonus). Expected +3 to +8 per Titan's doc.
+    (TRAPPED_PIECE_BONUS, 4000, 0, 20000, 1000.0),
     (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
     (LMR_THREAT_DIV, 4, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
