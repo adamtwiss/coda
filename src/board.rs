@@ -468,6 +468,49 @@ impl Board {
         attacks
     }
 
+    /// Approximate pre-move direct-check detection for pruning carve-outs.
+    /// Returns true if `mv`'s moved piece would directly attack the enemy
+    /// king from its destination square, using the post-move occupancy.
+    ///
+    /// Does NOT cover discovered checks, castling rook-checks, EP discovered
+    /// checks, or promotion-to-checker. Intended as a cheap "don't prune
+    /// obviously aggressive moves" filter, not a ground-truth check detector.
+    /// Reckless pattern (commits #410, #630): `might_give_check_if_you_squint`.
+    #[inline]
+    pub fn gives_direct_check(&self, mv: Move) -> bool {
+        let from = move_from(mv);
+        let to = move_to(mv);
+        let pt = self.piece_type_at(from);
+        if pt == NO_PIECE_TYPE {
+            return false;
+        }
+        let us = self.side_to_move;
+        let them = flip_color(us);
+        let their_king = self.king_sq(them);
+        let their_king_bb = 1u64 << their_king;
+
+        // Post-move occupancy: lift from-square, place on to-square.
+        let occ = (self.occupied() ^ (1u64 << from)) | (1u64 << to);
+
+        // For promotions, attack pattern comes from the promoted piece type.
+        let effective_pt = if is_promotion(mv) {
+            promotion_piece_type(mv)
+        } else {
+            pt
+        };
+
+        let attacks: Bitboard = match effective_pt {
+            PAWN => pawn_attacks(us, to as u32),
+            KNIGHT => knight_attacks(to as u32),
+            BISHOP => bishop_attacks(to as u32, occ),
+            ROOK => rook_attacks(to as u32, occ),
+            QUEEN => queen_attacks(to as u32, occ),
+            _ => 0, // King moves can't give direct check.
+        };
+
+        attacks & their_king_bb != 0
+    }
+
     /// Squares of `color`'s pieces that are currently blocking one of
     /// `color`'s own sliders' attack-through to an enemy piece.
     ///
