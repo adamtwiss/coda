@@ -1,0 +1,9 @@
+host,cpu,arch,engine,isa,mode,evals_per_sec
+titan,"AMD EPYC 7351P 16-Core Processor",x86_64,coda,native,fresh,27938
+titan,"AMD EPYC 7351P 16-Core Processor",x86_64,coda,native,refresh,272626
+titan,"AMD EPYC 7351P 16-Core Processor",x86_64,coda,native,incremental,552429
+titan,"AMD EPYC 7351P 16-Core Processor",x86_64,coda,native,make-unmake,6538794
+titan,"AMD EPYC 7351P 16-Core Processor",x86_64,reckless,native,fresh,242538
+titan,"AMD EPYC 7351P 16-Core Processor",x86_64,reckless,native,incremental,999573
+titan,"AMD EPYC 7351P 16-Core Processor",x86_64,reckless,native,make-unmake,3133312
+titan,"AMD EPYC 7351P 16-Core Processor",x86_64,reckless,native,make-unmake-null,3926200

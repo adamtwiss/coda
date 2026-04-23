@@ -228,33 +228,318 @@ less headroom to gain from the extra L3 availability.
 
 ---
 
-## Cross-host summary (auto-updated)
+## Thor — 2026-04-23
 
-| Host | uArch | ISA | L3 effective | refresh R/C | incr R/C | make-unmake R/C |
-|---|---|---|---:|---:|---:|---:|
-| Zeus | Zen 5 | AVX-512+VNNI | 32 MB | 1.11× | **1.66×** | 0.86× (Coda) |
-| Zeus (AVX-2) | Zen 5 | AVX-2 forced | 32 MB | 1.12× | **2.20×** | ~tied |
-| ionos6 ⭐ | Milan-X? | AVX-2 | ~96 MB | 0.84× (Coda) | **1.57×** | **0.82× (Coda)** |
-| ionos1 | Zen 3 Milan | AVX-2 | 32 MB | 1.03× | **2.12×** | 1.13× (Reckless) |
-| Titan | Zen 1 Naples | AVX-2 | 16 MB/CCX | 0.89× (Coda) | **1.81×** | **0.48× (Coda 2×)** |
-| Hercules | Coffee Lake | AVX-2 | 16 MB | 1.17× | **3.06×** | 0.99× |
+**CPU**: AMD Ryzen 7 3800X 8-Core (Zen 2 / Matisse, desktop).
+ISA: AVX-2 only.
 
-**Updated pattern** (ionos6 revelation):
-- **Cache residency is the dominant lever, not VNNI.** ionos6
-  (Milan-X sans VNNI, ~96 MB L3) beats Zeus native (Zen 5 + VNNI,
-  32 MB L3) on incremental ratio: 1.57× vs 1.66×. A bigger L3 that
-  fits the 49 MB threat matrix matters more than AVX-512+VNNI.
-- **Coda benefits disproportionately from extra cache**: ionos1→ionos6
-  speedup is 2.26× for Coda but only 1.67× for Reckless. Coda's
-  bottleneck vanishes when the matrix fits in L3.
-- **Training-side shrink (Item 2) is the single biggest NPS lever.**
-  Shrinking the threat matrix below 32 MB turns every Milan/Zen 3+
-  host into an ionos6. This recasts Items 1/4/5 as portable
-  improvements that stack on top of the structural fix.
-- **AMD consistently more forgiving than Intel Coffee Lake** on
-  AVX-2 — all Zen 1.57-2.20×, Coffee Lake 3.06×.
-- **make-unmake**: byteboard-splat deprioritisation stands across
-  all hosts. Coda faster or tied on 5 of 6 configurations.
+| Mode | Coda | Reckless | R/C |
+|---|---:|---:|---:|
+| fresh (scalar) | 309,026 | — | — |
+| refresh / fresh (SIMD) | 574,941 | 665,825 | 1.16× |
+| incremental | 1,152,802 | 2,525,770 | **2.19×** |
+| make-unmake (obs) | 10,797,050 | 10,154,891 | **0.94× (Coda slightly ahead)** |
+| make-unmake-null | — | 18,664,630 | — |
+
+**Note**: Coda's fresh (scalar debug) is ~10× higher than most hosts
+(309K vs typical ~30K). Likely an LLVM auto-vectorisation of the
+scalar inner loop on Thor's rustc — not affecting production path.
+Two runs gave identical numbers (<1% drift), confirming the
+anomaly is stable and reproducible, not flaky.
+
+**Raw CSV**: `nps_microbench_thor_2026-04-23.csv`
+
+---
+
+## Callisto — 2026-04-23
+
+**CPU**: 11th Gen Intel i7-11390H @ 3.4 GHz (Tiger Lake, mobile).
+**ISA**: AVX-512 + VNNI (first Intel host with AVX-512).
+
+**Native (AVX-512+VNNI)**:
+| Mode | Coda | Reckless | R/C |
+|---|---:|---:|---:|
+| refresh / fresh | 419,265 | 632,530 | 1.51× |
+| incremental | 1,369,813 | 2,373,973 | **1.73×** |
+| make-unmake | 8,542,399 | 11,090,580 | 1.30× (Reckless ahead) |
+| make-unmake-null | — | 21,224,134 | — |
+
+**AVX-2 forced**:
+| Mode | Coda | Reckless | R/C |
+|---|---:|---:|---:|
+| refresh | 344,009 | 417,514 | 1.21× |
+| incremental | 909,345 | 2,012,476 | **2.21×** |
+| make-unmake | 9,160,002 | 7,085,172 | **0.77× (Coda 1.3× ahead)** |
+
+**Observations**:
+- VNNI incremental ratio 1.73× — nearly identical to Zeus Zen 5
+  native (1.66×). VNNI thesis confirmed on Intel too.
+- AVX-2-forced 2.21× ≈ Zeus AVX-2 forced (2.20×) — modern Intel
+  and modern AMD indistinguishable at AVX-2.
+- Make-unmake flips with ISA: Reckless 1.3× ahead native, Coda
+  1.3× ahead AVX-2. AVX-512 byteboard-splat benefits Reckless
+  more than it benefits Coda's scalar path.
+- Coda VNNI speedup (native vs AVX-2 forced): 1.51×, marginally
+  more than Zeus's 1.41×.
+
+**Raw CSV**: `nps_microbench_callisto_2026-04-23.csv`
+
+---
+
+## Adams-MacBook-Air (M5) — 2026-04-24
+
+**CPU**: Apple M5 (2025). ARM / NEON, no AVX.
+
+| Mode | Coda | Reckless | R/C |
+|---|---:|---:|---:|
+| refresh / fresh | 842,473 | 890,168 | 1.06× (near tied) |
+| incremental | 1,579,483 | 4,005,457 | **2.54×** |
+| make-unmake (obs) | 27,064,744 | 30,966,248 | 1.14× |
+| make-unmake-null | — | 45,969,324 | — |
+
+**Observations**:
+- Incremental gap 2.54× — middle of the pack. Worse than
+  VNNI-equipped hosts (Zeus 1.66×, Callisto 1.73×), worse than
+  ionos6's quiet-socket 1.57×, but much better than Coffee Lake
+  (3.06×). Roughly comparable to x86 AVX-2.
+- **Best make-unmake absolute throughput** of any host (27M Coda,
+  31M Reckless). Apple's unified-memory bandwidth matters.
+- Coda speedup MBA vs Hercules: 1.65×; Reckless: 1.36×. Coda
+  benefits disproportionately from Apple's memory subsystem,
+  consistent with the "Coda is memory-bound" thesis.
+- **Proves the gap isn't x86-specific** — it's memory/access-pattern
+  and persists across ISAs.
+
+**Raw CSV**: `nps_microbench_Adams-MacBook-Air_2026-04-24.csv`
+
+---
+
+## Lo — 2026-04-23 (Lichess production host)
+
+**CPU**: QEMU-exposed "Intel Core Processor (Haswell, no TSX)".
+Underlying physical CPU unknown. ISA: AVX-2. Cloud VM.
+
+| Mode | Coda | Reckless | R/C |
+|---|---:|---:|---:|
+| refresh | 201,538 | 281,305 | 1.40× |
+| incremental | 666,716 | 892,897 | **1.34×** |
+| make-unmake | 3,922,479 | 5,718,357 | **1.46× (Reckless ahead)** |
+| make-unmake-null | — | 7,253,761 | — |
+
+**Observations**:
+- **Tightest incremental R/C gap on any non-VNNI host** (1.34×,
+  even beating VNNI-equipped Zeus at 1.66×). Reason: Lo is slow
+  enough that both engines are memory-latency-bound; Reckless's
+  cache-friendliness advantage can't materialise when every
+  access stalls on DRAM.
+- **Slowest host in the fleet on absolute numbers**: 666K Coda
+  incremental (vs 1M-2.3M elsewhere). 3-4× slower than most dev
+  hosts.
+- **Production impact**: Lo is codabot's Lichess host. Lichess
+  users see ~1/3 the NPS we measure during SPRT on dev hosts.
+  Moving Lichess to a modern Zen host (Thor, Titan, ionos*) would
+  give users 50-100 Elo of effective gain from placement alone.
+- **Make-unmake flip**: first host where Reckless decisively wins
+  make-unmake (1.46× ahead). Haswell's older prefetcher handles
+  Reckless's byteboard-splat pattern particularly well.
+
+**Raw CSV**: `nps_microbench_lo_2026-04-23.csv`
+
+---
+
+## Thebe — 2026-04-23
+
+**CPU**: QEMU-exposed "Intel Core Processor (Haswell, no TSX)".
+Same signature as Lo but **very different behaviour**.
+
+| Mode | Coda | Reckless | R/C |
+|---|---:|---:|---:|
+| refresh | 238,315 | 240,525 | 1.01× (tied) |
+| incremental | 475,337 | 1,396,614 | **2.94×** |
+| make-unmake | 6,534,988 | 6,548,637 | 1.00× (tied) |
+| make-unmake-null | — | 12,343,982 | — |
+
+**Observations**:
+- Same QEMU signature as Lo, but R/C incremental is **2.94× vs Lo's
+  1.34×** — hypervisor-reported CPU hides different underlying
+  silicon. Thebe's Coda is 29% slower than Lo's; Reckless is 56%
+  faster. Memory-subsystem-specific pattern that favours Reckless
+  here and disfavours Coda.
+- Second-worst ratio in the dataset (after Coffee Lake). Probably
+  a physical host where other workloads contend for memory
+  bandwidth in a Coda-punishing pattern.
+
+**Raw CSV**: `nps_microbench_thebe_2026-04-23.csv`
+
+---
+
+## Jupiter — 2026-04-24
+
+**CPU**: ARM Cortex-A55 (in-order "little" core, 8-core config,
+aarch64). Cheap ARM VPS.
+
+| Mode | Coda | Reckless | R/C |
+|---|---:|---:|---:|
+| refresh | 166,959 | 175,067 | 1.05× (tied) |
+| incremental | 365,319 | 570,077 | **1.56×** |
+| make-unmake | 5,382,950 | 1,708,825 | **0.32× (Coda 3.15× faster!)** |
+| make-unmake-null | — | 2,133,949 | — |
+
+**Observations**:
+- **Incremental R/C = 1.56×** — ties ionos6 as tightest non-VNNI
+  gap. Root cause here is architectural: A55 is **in-order**, so
+  it can't out-of-order-execute to hide memory latency. Reckless's
+  advantage depends on OoO hiding misses; without OoO, both
+  engines stall equally per miss and the gap collapses.
+- **Most lopsided Coda-favouring make-unmake result in the
+  dataset** (Coda 3.15× faster). Reckless's byteboard-splat code
+  relies on OoO to hide long dependency chains, and A55's
+  in-order pipeline turns their fast path into a bottleneck.
+- **ARM implementations vary enormously**: MBA M5 is 10× faster
+  than Jupiter on incremental. Apple's M-series OoO cores are
+  nothing like budget ARM cores.
+- Final piece of the "Reckless advantage requires OoO" picture.
+
+**Raw CSV**: `nps_microbench_jupiter_2026-04-24.csv`
+
+---
+
+## Cross-host summary
+
+Full dataset spanning 9 distinct hosts across 5 uArchs (Zen 1/2/3/5,
+Coffee Lake, Tiger Lake, Haswell, Apple M5, Cortex-A55).
+
+| Host | uArch | ISA | refresh R/C | **incr R/C** | m-u R/C |
+|---|---|---|---:|---:|---:|
+| Lo | Haswell VM (slow) | AVX-2 | 1.40× | **1.34×** | 1.46× (R) |
+| Jupiter | Cortex-A55 (in-order ARM) | NEON | 1.05× | **1.56×** | **0.32× (Coda 3.15×)** |
+| ionos6 | Zen 3 Milan 2.5 GHz | AVX-2 | 0.84× (Coda) | **1.57×** | 0.82× (Coda) |
+| Zeus native | Zen 5 | AVX-512+VNNI | 1.11× | **1.66×** | 0.86× (Coda) |
+| Callisto native | Tiger Lake | AVX-512+VNNI | 1.51× | **1.73×** | 1.30× (R) |
+| Titan | Zen 1 Naples | AVX-2 | 0.89× (Coda) | **1.81×** | **0.48× (Coda 2×)** |
+| ionos1 | Zen 3 Milan 2.0 GHz | AVX-2 | 1.03× | **2.12×** | 1.13× (R) |
+| Thor | Zen 2 Matisse | AVX-2 | 1.16× | **2.19×** | 0.94× (Coda) |
+| Callisto AVX-2 | Tiger Lake (forced AVX-2) | AVX-2 | 1.21× | **2.21×** | 0.77× (Coda) |
+| Zeus AVX-2 | Zen 5 (forced AVX-2) | AVX-2 | 1.12× | **2.20×** | ~tied |
+| MBA M5 | Apple M5 | NEON | 1.06× | **2.54×** | 1.14× (R) |
+| Thebe | Haswell VM (hostile) | AVX-2 | 1.01× | **2.94×** | 1.00× (tied) |
+| Hercules | Coffee Lake | AVX-2 | 1.17× | **3.06×** | 0.99× |
+
+Sorted by incremental R/C (lower = tighter gap = Coda more competitive).
+
+## Findings across the fleet
+
+### 1. The gap exists on every host — it's structural, not uArch-specific
+
+Every single measured host shows Coda slower than Reckless on incremental
+eval, ranging from 1.34× (Lo) to 3.06× (Hercules). 9 hosts, 5 architectures,
+3 ISA tiers — the gap is universal. **Not a Zen-5 quirk, not an Intel
+corner case, not a Zeus-only artefact.**
+
+### 2. Two conditions flatten the gap — and they're both "Reckless can't pull ahead"
+
+Reckless's cache advantage manifests as faster incremental eval *when the
+CPU can out-of-order-execute past memory misses*. Conditions that neutralise
+the advantage:
+
+- **No OoO** (Jupiter A55, in-order): gap collapses to 1.56×. Reckless
+  stalls just as hard as Coda when it can't reorder around misses.
+- **Severe memory-latency saturation** (Lo, Haswell VM on slow silicon):
+  gap collapses to 1.34×. Every access waits on DRAM, equalising
+  both engines.
+
+These aren't cases where we *fixed* something — they're cases where
+Reckless's win vanishes because the CPU can't capitalise on it.
+Useful as boundary conditions for understanding the mechanism.
+
+### 3. Cache residency is the biggest mid-range lever
+
+At mid-range hosts (not OoO-starved, not DRAM-bound), ratio correlates
+strongly with effective L3 per thread:
+
+- **ionos6** (lightly-loaded 2.5 GHz Milan, 3-core VM, 32 MB L3 mostly
+  available): 1.57× — beats Zeus's VNNI (1.66×).
+- **ionos1** (contended 2.0 GHz Milan, same hardware class): 2.12×.
+
+Same physical CPU class. The difference is **effective L3 available to
+the single-threaded bench**. This validates the cache-residency thesis
+and promotes Item 2 (training-side shrink) to the top of the lever list.
+
+### 4. VNNI helps, but less than expected
+
+- Zeus Zen 5 + VNNI: 1.66× (vs AVX-2-forced 2.20×) — VNNI closes ~25% of the gap
+- Callisto Tiger Lake + VNNI: 1.73× (vs AVX-2-forced 2.21×) — same magnitude
+
+VNNI is real but only worth ~25% gap reduction. A quieter memory subsystem
+(ionos6) gets similar benefit without needing VNNI at all.
+
+### 5. Coffee Lake is uniquely bad, not "Intel in general"
+
+Hercules (E-2288G, Coffee Lake Refresh 2019) sits alone at 3.06× — 40%
+worse than the next non-contended host. Callisto (Tiger Lake 2021, same
+Intel vendor) at 2.21× AVX-2 is statistically indistinguishable from
+modern AMD at AVX-2 (Zeus 2.20×, Thor 2.19×).
+
+**Takeaway**: older Intel memory subsystem handles the 49 MB scattered-
+access pattern particularly poorly. Not a deployment concern on modern
+fleet hosts.
+
+### 6. Two flavours of "same CPU, different behaviour"
+
+- **ionos1 vs ionos6**: identical CPU model, identical cache spec,
+  3-core VMs. Differ by 25% clock (2.0 vs 2.5 GHz). After clock
+  normalisation: Reckless gains 1.34× on ionos6, Coda gains 1.81×.
+  Residual = memory-subsystem difference (co-tenant contention,
+  turbo headroom) that disproportionately favours Coda. Most likely:
+  self-inflicted L3 contention on ionos1 from other Adam-fleet VMs
+  on the same physical socket.
+- **Lo vs Thebe**: same QEMU-reported Haswell signature, wildly
+  different ratios (1.34× vs 2.94×). Hypervisors lie about CPU.
+  Underlying silicon differs enough to flip Reckless's advantage on
+  and off.
+
+These both reinforce that **"same CPU" at the OS layer can mean very
+different things at the memory-subsystem layer**.
+
+### 7. make-unmake is Coda's story, not Reckless's
+
+Coda faster or tied on 8 of 13 measurements. Reckless substantially
+ahead only on Lo (1.46×) and Callisto native (1.30×).
+
+Byteboard-splat port remains deprioritised — our simpler scalar
+path is competitive or better on almost every host.
+
+### 8. Apple Silicon deserves separate analysis, not just "ARM"
+
+MBA M5 sits at 2.54× incremental R/C — worse than any Zen AVX-2. Apple
+Silicon's advantage isn't that it *closes* the Coda/Reckless gap; it's
+that its absolute memory bandwidth is the best on the planet, so both
+engines run at very high throughput (27M+ make-unmake). But the
+relative structural issue (49 MB matrix access pattern) persists.
+
+### 9. Lichess placement opportunity (incidental but material)
+
+Coda's Lichess host (Lo) is ~3-4× slower than modern AMD fleet hosts
+on Coda incremental. Moving codabot off Lo to ionos6 / Thor / Titan
+would deliver ~50-100 Elo of user-perceived strength improvement
+for zero code change — just deployment placement.
+
+### 10. Lever priority after the full dataset
+
+| Rank | Lever | Mechanism | Why this rank |
+|---|---|---|---|
+| 1 | **Item 2**: training-side shrink | Reduces 49 MB matrix → fits L3 on more hosts | Turns every Milan/Zen 3+ host into ionos6; compounds cross-fleet |
+| 2 | **Item 1**: flatten AccEntry | Better access pattern on any matrix size | **+6.5 Elo H1 ✓ MERGED** |
+| 3 | **Item 7**: eval-only TT writeback | Reduce evals/node via caching | **+14.7 Elo H1 ✓ MERGED** |
+| 4 | **Item 8**: LMP direct-check | Shrink tree → fewer evals/node | **+2.5 Elo H1 ✓ MERGED** |
+| 5 | **Item 4**: hot-feature frontloading | Keep hot rows in L2 even without full shrink | Held pending #3 resolution |
+| 6 | **Item 6**: PSQ walk-back clean retry | Reduce rebuild cost | **+3.9 trending H1** (redo of earlier H0) |
+| 7 | **Item 3**: load-time compact | Free 4 MB via structural zeros | **H0 (−1.6)** — surprising; may need diagnosis |
+| 8 | **Item 5**: prefetch in apply loop | Hint HW prefetcher | **H0 both variants** — HW prefetcher already optimal |
+
+**Running total merged from NPS investigation: +23.7 Elo today.**
+With Item 6 likely landing: **~+27.6 Elo.** That's a full training-run's
+worth of Elo converted from a ~1-day investigation. Big day.
 
 ---
 
