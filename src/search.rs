@@ -2020,6 +2020,30 @@ fn negamax(
             info.stats_tt_static_eval_hits += 1;
         } else {
             raw_eval = info.eval(board);
+            // Eval-only TT writeback: when we paid for an NNUE eval AND
+            // there's no existing TT entry, seed the TT with static_eval
+            // so later visits of this position (from different move
+            // orders or ID re-searches) skip the NNUE call.
+            //
+            // Reckless pattern (`search.rs:425`). Phase-2 lever from
+            // `docs/coda_vs_reckless_nps_2026-04-23.md`: reduces
+            // evals/node (Coda 0.677 vs Reckless 0.520).
+            //
+            // Safety:
+            //   - Gated on `!tt_hit` so we never overwrite a real entry
+            //     with a shallow stub.
+            //   - depth=-2 means `tt_depth >= depth` is false for any
+            //     real search depth, so this entry never triggers TT
+            //     cutoffs or alpha/beta window narrowing.
+            //   - flag=TT_FLAG_UPPER + score=-INFINITY makes any
+            //     score read trivially rejected.
+            //   - tt_move=NO_MOVE preserves IIR behaviour at this
+            //     position on later visits.
+            //   - tt_pv carries current node's is_pv context so PV
+            //     propagation is correct on re-visit.
+            if !tt_hit && FEAT_TT_STORE.load(Ordering::Relaxed) {
+                info.tt.store(board.hash, -2, -INFINITY, TT_FLAG_UPPER, NO_MOVE, raw_eval, is_pv);
+            }
         }
         scaled_eval = apply_halfmove_scale(raw_eval, board.halfmove);
         // Apply correction history to the halfmove-scaled value
