@@ -142,7 +142,13 @@ tunables!(
     // effective trap (classic "evacuate before fork" / knight stuck in
     // pawn cage). Flat bonus on the escape move. W1 pattern (named-tactic
     // MovePick bonus). Expected +3 to +8 per Titan's doc.
-    (TRAPPED_PIECE_BONUS, 4000, 0, 20000, 1000.0),
+    // v2 (2026-04-23): bonus halved from 4000 → 2000 after #685 H0'd at
+    // −2.7 on the initial value. Single-point sampling on a tunable bonus
+    // isn't sufficient to conclude the feature can't work; testing a
+    // materially different value before dropping. Sibling precedent:
+    // #673→#679 showed a single constant change (LMR do_shallower margin
+    // 30→20) swung SPRT by +3 Elo on the same feature.
+    (TRAPPED_PIECE_BONUS, 2000, 0, 20000, 1000.0),
     (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
     (LMR_THREAT_DIV, 4, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
