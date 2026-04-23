@@ -151,9 +151,22 @@ ISA: AVX-2 only)
 
 ## ionos6 — 2026-04-23 ⭐ (cache-residency validation)
 
-**CPU**: AMD EPYC-Milan Processor (reported as "Milan" in /proc/cpuinfo,
-but behaves like Milan-X — 3D V-Cache giving ~96 MB L3/CCD vs
-standard Milan's 32 MB)
+**CPU**: AMD EPYC-Milan Processor, **2.5 GHz** (vs ionos1 at 2.0 GHz).
+**Instance**: 3-core VM. **Cache**: L1d=96 KiB (3×32), L2=1.5 MiB,
+L3=32 MiB — identical spec to ionos1.
+
+**The 25% clock advantage explains part of it**, but not all:
+
+| Factor | ionos1 → ionos6 |
+|---|---:|
+| Clock ratio | 1.25× |
+| Reckless incremental speedup | 1.67× (1.34× after clock) |
+| Coda incremental speedup | 2.26× (**1.81× after clock**) |
+
+After normalising for clock, Coda still gains 1.81× vs Reckless's
+1.34×. The residual delta is a memory-subsystem improvement (turbo
+headroom, DRAM channel config, co-tenant contention) that Coda's
+memory-bound code disproportionately benefits from.
 
 | Mode | Coda native | Reckless native | Ratio (R/C) |
 |---|---:|---:|---:|
@@ -173,12 +186,16 @@ mechanism:
 - Coda incremental speedup (ionos1 → ionos6): **2.26×** (1.04M → 2.35M)
 - Reckless incremental speedup (ionos1 → ionos6): **1.67×**
 
-Same reported CPU model, but Coda benefits substantially more from
-ionos6's hardware than Reckless does. Only explanation fitting the
-data: ionos6 has 3D V-Cache (Milan-X). Coda's 49 MB threat matrix
-fits in Milan-X's 96 MB L3 but spills on plain Milan's 32 MB.
-Reckless's ~400 KB footprint was already L2-resident on both, so
-it had less headroom to gain.
+Same CPU and L3 size. The 2.26× comes from **effective L3 per
+thread**: ionos6 is a 3-core VM, likely on a less-contended host,
+so the single-threaded bench has close to the full 32 MB L3
+available. On ionos1's larger instance, L3 is being evicted by
+co-running threads / co-tenant VMs. Coda's 49 MB threat matrix is
+therefore the whole L3 + DRAM on ionos1, but a higher-residency
+DRAM-backed-L3 pattern on ionos6.
+
+Reckless's ~400 KB footprint was L2-resident on both, so it had
+less headroom to gain from the extra L3 availability.
 
 **Lever implications**:
 - **Item 2 (training-side shrink) is the single biggest lever**:
