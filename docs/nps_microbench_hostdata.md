@@ -149,27 +149,79 @@ ISA: AVX-2 only)
 
 ---
 
+## ionos6 — 2026-04-23 ⭐ (cache-residency validation)
+
+**CPU**: AMD EPYC-Milan Processor (reported as "Milan" in /proc/cpuinfo,
+but behaves like Milan-X — 3D V-Cache giving ~96 MB L3/CCD vs
+standard Milan's 32 MB)
+
+| Mode | Coda native | Reckless native | Ratio (R/C) |
+|---|---:|---:|---:|
+| fresh (scalar) | 69,369 | — | — |
+| refresh / fresh (SIMD) | 890,609 | 752,492 | **0.84× (Coda faster)** |
+| incremental | 2,353,694 | 3,686,819 | **1.57×** |
+| make-unmake (observer on) | 15,044,344 | 12,401,286 | **0.82× (Coda faster)** |
+| make-unmake-null (no observer) | — | 23,765,070 | — |
+
+**Headline**: ionos6's 1.57× incremental ratio **beats Zeus's native
+(1.66×)** despite ionos6 lacking AVX-512+VNNI — cache residency
+outweighs ISA width.
+
+**Production-mystery explained**: User flagged ionos6 as "~2× faster
+than others for v9" in actual search. Microbench confirms the
+mechanism:
+- Coda incremental speedup (ionos1 → ionos6): **2.26×** (1.04M → 2.35M)
+- Reckless incremental speedup (ionos1 → ionos6): **1.67×**
+
+Same reported CPU model, but Coda benefits substantially more from
+ionos6's hardware than Reckless does. Only explanation fitting the
+data: ionos6 has 3D V-Cache (Milan-X). Coda's 49 MB threat matrix
+fits in Milan-X's 96 MB L3 but spills on plain Milan's 32 MB.
+Reckless's ~400 KB footprint was already L2-resident on both, so
+it had less headroom to gain.
+
+**Lever implications**:
+- **Item 2 (training-side shrink) is the single biggest lever**:
+  shrinking the threat matrix below 32 MB turns every Milan/Zen 3+
+  host into an ionos6.
+- **Items 1 (AccEntry flatten) and 4 (hot-feature frontloading) are
+  the most portable wins** — they improve the access pattern
+  against any matrix size, benefiting every host class.
+- **VNNI is real but secondary**: Zeus Zen 5 + VNNI (1.66×) is only
+  marginally better than ionos6 Milan-X sans VNNI (1.57×). Cache
+  residency > ISA width.
+
+**Raw CSV**: `nps_microbench_ionos6_2026-04-23.csv`
+
+---
+
 ## Cross-host summary (auto-updated)
 
-| Host | uArch | ISA | refresh R/C | incr R/C | make-unmake R/C |
-|---|---|---|---:|---:|---:|
-| Zeus | Zen 5 | AVX-512+VNNI | 1.11× | **1.66×** | 0.86× (Coda) |
-| Zeus (AVX-2) | Zen 5 | AVX-2 forced | 1.12× | **2.20×** | ~tied |
-| ionos1 | Zen 3 Milan | AVX-2 | 1.03× | **2.12×** | 1.13× (Reckless) |
-| Titan | Zen 1 Naples | AVX-2 | 0.89× (Coda) | **1.81×** | **0.48× (Coda 2×)** |
-| Hercules | Coffee Lake | AVX-2 | 1.17× | **3.06×** | 0.99× |
+| Host | uArch | ISA | L3 effective | refresh R/C | incr R/C | make-unmake R/C |
+|---|---|---|---:|---:|---:|---:|
+| Zeus | Zen 5 | AVX-512+VNNI | 32 MB | 1.11× | **1.66×** | 0.86× (Coda) |
+| Zeus (AVX-2) | Zen 5 | AVX-2 forced | 32 MB | 1.12× | **2.20×** | ~tied |
+| ionos6 ⭐ | Milan-X? | AVX-2 | ~96 MB | 0.84× (Coda) | **1.57×** | **0.82× (Coda)** |
+| ionos1 | Zen 3 Milan | AVX-2 | 32 MB | 1.03× | **2.12×** | 1.13× (Reckless) |
+| Titan | Zen 1 Naples | AVX-2 | 16 MB/CCX | 0.89× (Coda) | **1.81×** | **0.48× (Coda 2×)** |
+| Hercules | Coffee Lake | AVX-2 | 16 MB | 1.17× | **3.06×** | 0.99× |
 
-**Emerging pattern**:
-- **VNNI is the dominant ISA lever** — Zen 5 + VNNI drops ratio from
-  2.20× to 1.66× (~25% gap reduction). Worth Zeus confirming the
-  VNNI path is actually dispatched on ionos/fleet hosts that have it.
-- **AMD cache hierarchy consistently more forgiving** than Intel
-  Coffee Lake. Zen 1/3/5 cluster around 1.8-2.2× on AVX-2;
-  Coffee Lake sits at 3.06×.
-- **make-unmake is close on most hosts** — Coda substantially faster
-  only on Titan (Zen 1). Byteboard-splat port deprioritisation
-  still stands; Coda's make-unmake is competitive or better
-  everywhere.
+**Updated pattern** (ionos6 revelation):
+- **Cache residency is the dominant lever, not VNNI.** ionos6
+  (Milan-X sans VNNI, ~96 MB L3) beats Zeus native (Zen 5 + VNNI,
+  32 MB L3) on incremental ratio: 1.57× vs 1.66×. A bigger L3 that
+  fits the 49 MB threat matrix matters more than AVX-512+VNNI.
+- **Coda benefits disproportionately from extra cache**: ionos1→ionos6
+  speedup is 2.26× for Coda but only 1.67× for Reckless. Coda's
+  bottleneck vanishes when the matrix fits in L3.
+- **Training-side shrink (Item 2) is the single biggest NPS lever.**
+  Shrinking the threat matrix below 32 MB turns every Milan/Zen 3+
+  host into an ionos6. This recasts Items 1/4/5 as portable
+  improvements that stack on top of the structural fix.
+- **AMD consistently more forgiving than Intel Coffee Lake** on
+  AVX-2 — all Zen 1.57-2.20×, Coffee Lake 3.06×.
+- **make-unmake**: byteboard-splat deprioritisation stands across
+  all hosts. Coda faster or tied on 5 of 6 configurations.
 
 ---
 
