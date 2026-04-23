@@ -667,12 +667,121 @@ Real NPS wins from memory footprint require **training-side changes**:
    not per-eval cost. Orthogonal to the cache issue.
 
 Dropping from the old priority list:
-- **"Investigate L1 cache miss rate"** — partially investigated:
-  the cause is known (49 MB matrix + heavy-tailed access), but the
-  fix is training-side, not inference-side.
-- **Walk-back PSQ** — tried and rejected (−17.86 Elo).
 - **Byteboard splat** — Coda's make+unmake is already faster than
   Reckless's with threats active. Not the bottleneck.
+
+### Inference-side cache-friendliness — NOT just a training-side problem
+
+Revising my earlier "can't fix L1 misses on the inference side"
+claim. Even when the threat matrix fits in L3 (big-cache hosts like
+Threadripper, M3 Pro/Max, server EPYC), **how** the data is accessed
+still determines cache hit rate. Reckless's 0.55% miss rate reflects
+both (a) smaller footprint AND (b) deliberate layout choices.
+
+Concrete inference-side levers we haven't tried:
+
+**(a) Flatten `AccEntry` to inline arrays** — biggest structural
+cache-friendliness lever on the accumulator stack.
+
+Current Coda layout (`src/nnue.rs:3729`):
+```rust
+pub struct AccEntry {
+    pub white: Vec<i16>,                 // heap block
+    pub black: Vec<i16>,                 // heap block
+    pub threat_white: Vec<i16>,          // heap block
+    pub threat_black: Vec<i16>,          // heap block
+    pub threat_deltas: Vec<RawThreatDelta>,     // heap block
+    pub threat_features_white: Vec<usize>,      // heap block
+    pub threat_features_black: Vec<usize>,      // heap block
+    ...
+}
+```
+That's **7 heap allocations per AccEntry × 256 entries ≈ 1,800
+scattered heap blocks**. When `materialize` walks the stack looking
+for an ancestor (or `recompute_threats_if_needed` replays forward),
+each pointer dereference is potentially a different cache line.
+
+Reckless's layout (`Reckless/src/nnue/accumulator/psq.rs`,
+`threats.rs`):
+```rust
+pub struct PstEntry {
+    pub values: [[i16; L1_SIZE]; 2],  // inline, no heap
+    ...
+}
+pub struct PstStack {
+    stack: [PstEntry; MAX_PLY],  // inline, no heap
+}
+```
+Entire stack is one contiguous ~2 MB buffer. HW prefetcher can
+predict the access pattern. No pointer-chasing.
+
+**Expected impact**: visible on the incremental-eval L1 miss rate
+(15.72%). Half-day refactor, zero retrain, zero algorithm change.
+No Elo risk beyond microbench-verifiable correctness. This is
+arguably the single biggest "pure inference cache hygiene" lever
+on the table, and it was missed in the 2026-04-18 investigation.
+
+**(b) Hot-feature frontloading** — reorder the 49 MB threat weight
+matrix so the top 706 features (540 KB, 50% of activations) sit at
+the front of the allocation.
+
+2026-04-19 measured the activation distribution: heavy-tailed, with
+the top 1% of features doing 50% of the work. Current layout indexes
+features by "natural" (piece_pair, square) order — no correlation
+with activation frequency. Reordering so hot rows come first means:
+
+- Top 706 rows = 540 KB = fits in L2 on every modern CPU
+- Next ~7k rows (90% coverage) = ~5.5 MB = L3 on all, L2 on big caches
+- Cold tail stays wherever, rarely touched
+
+Implementation: rank features by activation count (already
+instrumented via `measure_feature_sparsity` test), permute the weight
+matrix at load time, adjust the feature-index mapping in
+`enumerate_threats` / threat-delta code. Zero retrain, ~100 LoC, +
+an SPRT to confirm bench unchanged.
+
+This is "free" memory-footprint reduction *of the hot working set*
+even when total matrix size stays 49 MB. On big-cache machines
+it's plausibly bigger than the raw-compact option because it
+targets the hot path specifically. On small-cache machines it
+compounds with the compact-at-load work.
+
+**(c) Prefetch next threat-delta's weight row** inside the
+apply loop. 2026-04-19 listed this as tier 3 ("smaller win given
+L3 is the real frontier"). But with 10 deltas per move × 768-byte
+rows = 12 cache lines each, the 120-cache-line scattered pattern is
+exactly the case where prefetch helps: kick off the next load before
+the current one finishes. Half-day.
+
+**(d) Cache-line alignment on weight rows**: 768 bytes / 64 = 12
+cache lines. If weights start on a 64-byte boundary, each row
+touches exactly 12 lines. If misaligned, some rows touch 13. Current
+allocator may or may not produce 64-byte-aligned starts. Easy check;
+easy fix via `#[repr(C, align(64))]` wrappers or explicit alloc.
+
+### Revised lever ranking (final)
+
+All three docs merged:
+
+1. **Flatten AccEntry to inline arrays** — pure cache-friendliness,
+   half-day, bench-verifiable. New, not previously investigated.
+2. **Training-side memory shrink** (aggressive L1 reg, width 768→640)
+   — step-function gain on small-cache hosts. Training run + SPRT.
+3. **Load-time compact merge** (`experiment/l1-inference-compact`)
+   — 4 MB free today. Low effort.
+4. **Hot-feature frontloading** — reorder matrix by activation
+   frequency. Half day, bench-verifiable.
+5. **Prefetch in threat-delta apply** — half day, measurable on
+   per-eval latency even on big caches.
+6. **Clean-retry PSQ walk-back** with minimal hot-path overhead.
+7. **Eval-only TT writeback** (Hercules) — reduce evals/node.
+8. **LMP direct-check** (Hercules, separate) — +9.46 LTC Elo.
+
+Items 1, 4, 5 are **pure inference-side cache hygiene** — the
+category I had dismissed too quickly. They don't need training
+cycles, they don't need waiting for sparser nets. They specifically
+address the "how data is accessed" dimension, which stays relevant
+even on machines where total footprint isn't the bottleneck.
 
 ### Revised takeaway
 
