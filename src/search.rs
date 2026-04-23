@@ -2575,7 +2575,9 @@ fn negamax(
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
             let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
             // Don't futility-prune moves with very strong history (Igel pattern)
-            if futility_value <= alpha && main_hist < 12000 {
+            // Direct-check carve-out: don't prune moves that give direct check
+            // (Reckless #410 +1.62 STC).
+            if futility_value <= alpha && main_hist < 12000 && !board.gives_direct_check(mv) {
                 info.stats.futility_prunes += 1;
                 continue;
             }
@@ -2601,11 +2603,13 @@ fn negamax(
         }
 
         // Bad noisy pruning: skip losing captures when eval is far below alpha.
-        // Applied before MakeMove — no gives_check exemption (matches pre-move pattern).
+        // Applied before MakeMove. Direct-check carve-out: don't prune moves
+        // that give direct check (Reckless #630 +1.85 STC).
         if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= 4 && mv != tt_move
             && !is_promo && best_score > -(MATE_SCORE - 100)
             && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
             && !see_ge(board, mv, 0)
+            && !board.gives_direct_check(mv)
         {
             continue;
         }
