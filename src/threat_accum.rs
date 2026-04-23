@@ -1473,4 +1473,101 @@ mod incremental_tests {
         let d2 = RawThreatDelta::new(0, 0, 0, 0, false);
         assert!(!d2.add());
     }
+
+    /// Generate the empirical-rank binary data used by hot-feature
+    /// frontloading (NPS investigation item #4). Run once to produce
+    /// `src/threat_activation_ranks.bin`; check the file in; loading
+    /// code reads it via `include_bytes!`.
+    ///
+    /// Output format: a `[u32; num_threat_features]` little-endian array
+    /// giving the rank-order index of each raw feature. `rank[raw_idx] = 0`
+    /// means hottest (most activations), `rank[raw_idx] = N-1` means
+    /// coldest. Ties (including the many 0-hit features) sorted by
+    /// raw_idx ascending so output is deterministic across runs.
+    /// (u32 because 66,864 exceeds u16 range; costs ~267 KB of repo.)
+    ///
+    /// Same 11,940-position self-play sample as `measure_feature_sparsity`.
+    /// Run: `cargo test --release --ignored gen_activation_ranks_bin -- --nocapture`
+    #[test]
+    #[ignore]
+    fn gen_activation_ranks_bin() {
+        crate::init();
+        let nf = num_threat_features();
+        eprintln!("Generating activation-rank table over {} threat features", nf);
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "4k3/P6P/8/8/8/8/p6p/4K3 w - - 0 1",
+        ];
+        const GAMES_PER_FEN: usize = 30;
+        const MAX_PLIES: usize = 80;
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        let mut feature_hits: Vec<u32> = vec![0u32; nf];
+        for (fi, fen) in START_FENS.iter().enumerate() {
+            for g in 0..GAMES_PER_FEN {
+                let seed: u32 = 0x12345u32
+                    .wrapping_add((fi as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((g as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+                let mut board = Board::new();
+                board.set_fen(fen);
+                for _ply in 0..MAX_PLIES {
+                    for pov in [WHITE, BLACK] {
+                        let occ = board.colors[0] | board.colors[1];
+                        let k = (board.pieces[KING as usize] & board.colors[pov as usize])
+                            .trailing_zeros();
+                        let mirrored = (k % 8) >= 4;
+                        crate::threats::enumerate_threats(
+                            &board.pieces, &board.colors, &board.mailbox,
+                            occ, pov, mirrored,
+                            |idx| {
+                                if idx < nf {
+                                    feature_hits[idx] = feature_hits[idx].saturating_add(1);
+                                }
+                            },
+                        );
+                    }
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let mv_idx = (next_u32(&mut rng) as usize) % legal.len;
+                    let mv = legal.moves[mv_idx];
+                    if !board.make_move(mv) { break; }
+                }
+            }
+        }
+
+        // Sort: descending by hits, ties broken by raw index ascending
+        // (deterministic + stable output across runs).
+        let mut sorted: Vec<(u32, u32)> = feature_hits.iter().enumerate()
+            .map(|(i, &h)| (h, i as u32)).collect();
+        sorted.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+
+        let mut rank = vec![0u32; nf];
+        for (pri, (_h, raw)) in sorted.iter().enumerate() {
+            rank[*raw as usize] = pri as u32;
+        }
+
+        let mut bytes = Vec::with_capacity(nf * 4);
+        for r in &rank { bytes.extend_from_slice(&r.to_le_bytes()); }
+        let path = "src/threat_activation_ranks.bin";
+        std::fs::write(path, &bytes).expect("write ranks bin");
+        eprintln!("Wrote {} u32 ranks ({} bytes) to {}", nf, bytes.len(), path);
+
+        eprintln!("Top 10 hottest features (raw_idx / hits):");
+        for (p, (h, raw)) in sorted.iter().take(10).enumerate() {
+            eprintln!("  rank {:>4}: raw {:>5}  hits {}", p, raw, h);
+        }
+        let zero = sorted.iter().filter(|(h, _)| *h == 0).count();
+        eprintln!("{} features with 0 hits ({:.1}%); sorted to tail deterministically",
+            zero, zero as f64 / nf as f64 * 100.0);
+    }
 }

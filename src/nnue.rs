@@ -2278,6 +2278,8 @@ impl NNUENet {
                 }
             }
 
+            // Materialise the compacted matrix + remap regardless of
+            // zero_count — the hot-feature frontload below needs them.
             if zero_count > 0 {
                 threat_weights.truncate(compact * hidden_size);
                 threat_weights.shrink_to_fit();
@@ -2290,9 +2292,111 @@ impl NNUENet {
                     zero_count, zero_count as f64 / num_threat_features as f64 * 100.0,
                     compact, hidden_size, compact_mb);
             } else {
+                // No zero rows to drop; build identity remap so the
+                // frontload pass below can permute.
+                threat_feature_remap = (0..num_threat_features as i32).collect();
                 println!("info string Loaded {} threat features ({}×{}, {}MB)",
                     num_threat_features, num_threat_features, hidden_size,
                     total / (1024 * 1024));
+            }
+
+            // Hot-feature frontloading (NPS item #4). Reorder the physical
+            // weight matrix so features that activate most often in real
+            // positions sit at the front — their rows then fit in L2 on
+            // every modern CPU, dramatically reducing DRAM spills on the
+            // hot path.
+            //
+            // Uses the empirical rank table generated offline by
+            // `threat_accum::incremental_tests::gen_activation_ranks_bin`
+            // (11,940 self-play positions, per-feature activation count,
+            // sorted desc, ties broken by raw-idx). Included as a binary
+            // blob via `include_bytes!`, parsed as `[u32; num_threat_features]`.
+            //
+            // Why empirical-rank over the L1-norm proxy: per the 2026-04-19
+            // sparsity investigation, top 706 features (1.1%) do 50% of
+            // activations — a VERY tight hot region. L1-norm is a much
+            // weaker proxy (needed ~23K features, 38%, for 50% of mass).
+            // Directly targeting activation frequency gives the tightest
+            // possible hot-working-set.
+            if num_threat_features_physical > 1 {
+                static RANK_BYTES: &[u8] = include_bytes!("threat_activation_ranks.bin");
+                const RAW_FEATURES: usize = 66864;  // matches threat generator
+                if num_threat_features == RAW_FEATURES
+                    && RANK_BYTES.len() == RAW_FEATURES * 4 {
+                    let phys = num_threat_features_physical;
+
+                    // Parse rank table (rank[raw_idx] = priority, 0 = hottest).
+                    let mut raw_rank = [0u32; RAW_FEATURES];
+                    for i in 0..RAW_FEATURES {
+                        raw_rank[i] = u32::from_le_bytes([
+                            RANK_BYTES[i * 4], RANK_BYTES[i * 4 + 1],
+                            RANK_BYTES[i * 4 + 2], RANK_BYTES[i * 4 + 3],
+                        ]);
+                    }
+
+                    // For each CURRENT physical row (post-zero-compact), find
+                    // the activation rank of its original raw feature. That
+                    // gives us (current_row, raw_rank) pairs to sort.
+                    //
+                    // threat_feature_remap currently maps raw_idx → current_row
+                    // (or -1 for dropped). Invert to get current_row → raw_idx,
+                    // then look up the rank.
+                    let mut cur_to_raw = vec![u32::MAX; phys];
+                    for (raw, &cur) in threat_feature_remap.iter().enumerate() {
+                        if cur >= 0 {
+                            cur_to_raw[cur as usize] = raw as u32;
+                        }
+                    }
+
+                    // Sort physical rows by empirical rank (lower = hotter).
+                    // Ties broken by current row index for stability.
+                    let mut row_order: Vec<(u32, u32)> = (0..phys as u32)
+                        .map(|cur| {
+                            let raw = cur_to_raw[cur as usize];
+                            let pri = if raw != u32::MAX {
+                                raw_rank[raw as usize]
+                            } else {
+                                u32::MAX  // should not happen — belt and braces
+                            };
+                            (pri, cur)
+                        })
+                        .collect();
+                    row_order.sort();
+
+                    // Build old_to_new permutation.
+                    let mut old_to_new = vec![0u32; phys];
+                    for (new_idx, (_pri, old_idx)) in row_order.iter().enumerate() {
+                        old_to_new[*old_idx as usize] = new_idx as u32;
+                    }
+
+                    // Rewrite remap: raw_idx → new_row.
+                    for slot in threat_feature_remap.iter_mut() {
+                        if *slot >= 0 {
+                            *slot = old_to_new[*slot as usize] as i32;
+                        }
+                    }
+
+                    // Permute weight matrix into new order.
+                    let mut new_weights = vec![0i8; phys * hidden_size];
+                    for (new_idx, (_pri, old_idx)) in row_order.iter().enumerate() {
+                        let src = *old_idx as usize * hidden_size;
+                        let dst = new_idx * hidden_size;
+                        new_weights[dst..dst + hidden_size]
+                            .copy_from_slice(&threat_weights[src..src + hidden_size]);
+                    }
+                    threat_weights = new_weights;
+
+                    // Diagnostic: hot-region cache footprint.
+                    let hot_rows_l1 = (32 * 1024) / hidden_size;   // ~42 rows for v9
+                    let hot_rows_l2 = (512 * 1024) / hidden_size;  // ~682 rows
+                    let hot_rows_l3 = (16 * 1024 * 1024) / hidden_size;
+                    println!("info string Threat features frontloaded by empirical activation rank — top {} rows fit L1, top {} fit L2 (per core), top {} fit L3",
+                        hot_rows_l1, hot_rows_l2, hot_rows_l3.min(phys));
+                } else {
+                    println!("info string Hot-feature frontload SKIPPED — feature count mismatch (net has {}, rank table expects {}) or rank file size mismatch ({}B, need {}B)",
+                        num_threat_features, RAW_FEATURES,
+                        RANK_BYTES.len(), RAW_FEATURES * 4);
+                }
             }
         }
 
