@@ -145,6 +145,13 @@ tunables!(
     // Default 32 = ±256 typical range, additive to history (~1000s scale).
     (MOBILITY_DELTA_WEIGHT, 32, 0, 256, 8.0),
     (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
+    // S17 (signal_context_sweep_2026-04-19): corrhist-magnitude ProbCut
+    // skip gate. When |static_eval - scaled_eval| exceeds this threshold,
+    // corrhist has applied a large correction to the raw NNUE output,
+    // meaning eval confidence is low. Skip ProbCut so speculative
+    // capture-based pruning doesn't fire on an unreliable eval.
+    // Mirrors #542 unstable × ProbCut gate (+6.7 Elo) in pattern.
+    (PROBCUT_CORRHIST_MAX, 80, 0, 500, 15.0),
     (LMR_THREAT_DIV, 4, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 5, 2, 9, 1.5),
     (FUT_THREATS_MARGIN, 44, 0, 200, 10.0),
@@ -2249,12 +2256,21 @@ fn negamax(
     } else {
         false
     };
+    // S17: corrhist-magnitude gate. When corrhist has corrected static_eval
+    // by more than this threshold from the raw scaled eval, eval confidence
+    // is low → skip ProbCut on that node. Mirrors !unstable gate in pattern.
+    let corrhist_magnitude = if static_eval > -INFINITY && scaled_eval > -INFINITY {
+        (static_eval - scaled_eval).abs()
+    } else {
+        0
+    };
     if !in_check && ply > 0 && !is_pv && depth >= 5
         && beta.abs() < MATE_SCORE - 100  // skip for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
         && !probcut_tt_noshot  // TT says no chance
         && king_zone_pressure < tp(&PROBCUT_KING_ZONE_MAX)  // A3: skip in high-threat positions
         && !unstable  // Skip ProbCut in eval-unstable positions (eval can't be trusted)
+        && corrhist_magnitude < tp(&PROBCUT_CORRHIST_MAX)  // S17: skip when corrhist correction is large
         && FEAT_PROBCUT.load(Ordering::Relaxed)
     {
         // SEE threshold: only consider captures that gain enough material
