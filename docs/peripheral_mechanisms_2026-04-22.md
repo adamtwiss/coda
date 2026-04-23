@@ -226,6 +226,20 @@ of experiment.
 
 ### N5. QS insufficient-material short-circuit
 
+**Status 2026-04-23:** tested as `experiment/n5-qs-insufficient-material`
+→ **#683 stopped flat at −0.2 @ 50K games** (LLR −0.69, treading in
+noise band; would have H0'd on [0, 5] bounds). Dropped.
+
+Reasoning: NNUE already scores KvK/KNvK/KBvK near 0 through training,
+so force-returning draw_score=0 is redundant. Not bench-invariant
+(+6.4%) — tree shape shifts, but no Elo. The idea is correctness-sound
+but produces no measurable benefit on a well-trained net.
+
+---
+
+*Original proposal preserved below.*
+
+
 **Rationale.** KvK / KNvK / KBvK / K+same-colour-Bs-only are drawn by rule.
 Currently we detect these in main-search rep checks but *not in QS*. QS does
 stand-pat + captures + possibly mates — can misread insufficient-material
