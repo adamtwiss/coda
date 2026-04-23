@@ -3799,6 +3799,20 @@ impl NNUEAccumulator {
 
     pub fn top(&self) -> usize { self.top }
 
+    /// Force the next `materialize` call to rebuild the accumulator from
+    /// scratch through the production SIMD refresh path (not the debug
+    /// `force_recompute`). Used by the `eval-bench --mode refresh`
+    /// microbench to isolate the cost of a Finny-miss full rebuild — the
+    /// real cost paid on king-bucket crossings and first-touch nodes in
+    /// search.
+    pub fn invalidate_for_bench(&mut self) {
+        self.stack[self.top].computed = false;
+        self.stack[self.top].threat_accurate = [false; 2];
+        for entry in self.finny.iter_mut() {
+            entry.valid = false;
+        }
+    }
+
     pub fn prev_threat_computed(&self) -> bool {
         self.top > 0 && self.stack[self.top - 1].threat_accurate[0] && self.stack[self.top - 1].threat_accurate[1]
     }

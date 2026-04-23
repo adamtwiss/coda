@@ -143,6 +143,12 @@ impl ThreatStack {
         self.stack[0].accurate = [false; 2];
     }
 
+    /// Force a refresh on the next `ensure_computed` — used by the
+    /// eval-bench microbench to isolate threat-refresh cost.
+    pub fn reset_for_bench(&mut self) {
+        self.stack[self.index].accurate = [false; 2];
+    }
+
     /// Full refresh for one perspective: zero + enumerate all threats.
     /// Collects feature indices first, then applies with SIMD.
     pub fn refresh(&mut self, net_weights: &[i8], num_features: usize,

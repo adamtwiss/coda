@@ -87,6 +87,30 @@ enum Commands {
         #[arg(long = "threads", short = 't', default_value_t = 1)]
         threads: usize,
     },
+    /// NNUE micro-benchmark: pure inference throughput (no search).
+    /// `--mode fresh` uses the debug scalar `force_recompute` path.
+    /// `--mode refresh` uses the production SIMD `materialize` path
+    /// with an invalidated Finny cache (mirrors a king-bucket-cross
+    /// first-touch in search).
+    /// `--mode incremental` makes one legal move per iter and pops,
+    /// measuring realistic incremental cost.
+    EvalBench {
+        /// Search-bench positions are used if no EPD is supplied.
+        #[arg(long, default_value = "")]
+        epd: String,
+        /// Number of positions to load (0 = all)
+        #[arg(long, default_value_t = 8)]
+        positions: usize,
+        /// Repetitions per position
+        #[arg(long, default_value_t = 100_000)]
+        reps: u64,
+        /// `fresh` | `refresh` | `incremental`
+        #[arg(long, default_value = "fresh")]
+        mode: String,
+        /// Disable AVX-512 & VNNI for this run (forces AVX-2 SIMD path)
+        #[arg(long, default_value_t = false)]
+        no_avx512: bool,
+    },
     /// Run EPD test suite
     Epd {
         /// EPD file path
@@ -363,6 +387,134 @@ fn main() {
                 } else { 0 };
                 println!("\n{} nodes {} nps ({} threads)", total_nodes, nps, threads);
             }
+        }
+
+        Some(Commands::EvalBench { epd, positions, reps, mode, no_avx512 }) => {
+            use crate::{board::Board, nnue::{NNUENet, NNUEAccumulator}, eval::evaluate_nnue, threat_accum::ThreatStack};
+            let nnue_path = cli.nnue.as_deref().expect("EvalBench requires --nnue/-n");
+            let mut net = NNUENet::load(nnue_path).expect("failed to load NNUE");
+            if no_avx512 {
+                // Force-disable AVX-512 dispatch so kernels fall through to
+                // AVX-2 paths. Matches the SIMD-consistency test pattern.
+                net.has_avx512 = false;
+                net.has_avx512_vnni = false;
+                println!("info string eval-bench: AVX-512 & VNNI disabled (AVX-2 path only)");
+            }
+            let mut acc = NNUEAccumulator::new(net.hidden_size);
+            let mut tstack = ThreatStack::new(net.hidden_size);
+            tstack.active = net.has_threats;
+
+            let bench_positions: Vec<String> = if epd.is_empty() {
+                // Same 8 positions as `coda bench`.
+                vec![
+                    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".into(),
+                    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1".into(),
+                    "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1".into(),
+                    "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1".into(),
+                    "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8".into(),
+                    "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10".into(),
+                    "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4".into(),
+                    "2r3k1/pp3ppp/2n1b3/3pP3/3P4/2NB4/PP3PPP/R4RK1 w - - 0 1".into(),
+                ]
+            } else {
+                let text = std::fs::read_to_string(&epd).expect("failed to read EPD");
+                let iter = text.lines().filter(|l| !l.trim().is_empty());
+                let mut out: Vec<String> = Vec::new();
+                for line in iter {
+                    let parts: Vec<&str> = line.split_whitespace().take(4).collect();
+                    if parts.len() < 4 { continue; }
+                    out.push(format!("{} 0 1", parts.join(" ")));
+                    if positions > 0 && out.len() >= positions { break; }
+                }
+                out
+            };
+            let n_positions = if positions > 0 { positions.min(bench_positions.len()) } else { bench_positions.len() };
+            let positions_slice = &bench_positions[..n_positions];
+
+            // Warm-up: ensure AVX/VNNI-aware code paths are jitted / caches populated.
+            for fen in positions_slice {
+                let board = Board::from_fen(fen);
+                acc.force_recompute(&net, &board);
+                let _ = evaluate_nnue(&board, &net, &mut acc, &mut tstack);
+            }
+
+            let start = std::time::Instant::now();
+            let mut sum: i64 = 0;
+            let mut count: u64 = 0;
+            if mode == "fresh" {
+                for fen in positions_slice {
+                    let board = Board::from_fen(fen);
+                    for _ in 0..reps {
+                        // Force-recompute both perspectives from scratch: no Finny
+                        // benefit, no incremental shortcuts. Pure forward-pass cost.
+                        // NB: this currently uses the DEBUG scalar path in
+                        // `force_recompute`. Real production first-touch cost is
+                        // measured by `--mode refresh` below.
+                        acc.force_recompute(&net, &board);
+                        let s = evaluate_nnue(&board, &net, &mut acc, &tstack);
+                        sum = sum.wrapping_add(s as i64);
+                        count += 1;
+                    }
+                }
+            } else if mode == "refresh" {
+                for fen in positions_slice {
+                    let board = Board::from_fen(fen);
+                    for _ in 0..reps {
+                        // Production "fresh" path: invalidate Finny + current
+                        // accumulator, then call `materialize` which routes
+                        // through `refresh_accumulator` + `finny_batch_apply`
+                        // (SIMD). Mirrors what happens on a king-bucket cross
+                        // in real search when Finny has no cached state.
+                        acc.invalidate_for_bench();
+                        if tstack.active {
+                            tstack.reset_for_bench();
+                        }
+                        acc.materialize(&net, &board);
+                        let s = evaluate_nnue(&board, &net, &mut acc, &tstack);
+                        sum = sum.wrapping_add(s as i64);
+                        count += 1;
+                    }
+                }
+            } else if mode == "incremental" {
+                use crate::movegen::generate_legal_moves;
+                use crate::search::build_dirty_piece;
+                use crate::types::{flip_color, move_from, move_to, NO_PIECE_TYPE};
+                for fen in positions_slice {
+                    let mut board = Board::from_fen(fen);
+                    acc.force_recompute(&net, &board);
+                    if tstack.active {
+                        tstack.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+                    }
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { continue; }
+                    // Pick the first legal quiet we can make/unmake cleanly.
+                    let mv = legal.moves[0];
+                    for _ in 0..reps {
+                        let us = board.side_to_move;
+                        let them = flip_color(us);
+                        let moved_pt = board.piece_type_at(move_from(mv));
+                        let captured_pt = board.piece_type_at(move_to(mv));
+                        let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net);
+                        if !board.make_move(mv) { break; }
+                        acc.push(dirty);
+                        let s = evaluate_nnue(&board, &net, &mut acc, &tstack);
+                        sum = sum.wrapping_add(s as i64);
+                        board.unmake_move();
+                        acc.pop();
+                        count += 1;
+                    }
+                }
+            } else {
+                eprintln!("Unknown --mode: {} (expected 'fresh' or 'incremental')", mode);
+                return;
+            }
+            let secs = start.elapsed().as_secs_f64();
+            let evs = count as f64 / secs;
+            println!(
+                "evalbench mode={} positions={} reps/pos={} total_evals={} elapsed={:.3}s  evals/sec={:.0}  mean_eval={}",
+                mode, n_positions, reps, count, secs, evs,
+                sum / count.max(1) as i64,
+            );
         }
 
         Some(Commands::Epd { path, time, max }) => {
