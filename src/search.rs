@@ -2842,11 +2842,18 @@ fn negamax(
             let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
 
             if lmr_score > alpha && !info.stop.load(Ordering::Relaxed) {
-                // LMR failed high: doDeeper/doShallower before re-search
+                // LMR failed high: doDeeper/doShallower before re-search.
+                //
+                // Audit SPECULATIVE fix (v2 retry): `new_depth` (integer depth
+                // 5-20) was used as a cp margin — near-certain typo. #673 at
+                // 30cp H0'd −1.7 @ 17286g; retrying with 20cp, closer to the
+                // old "new_depth ≈ 10-15" effective threshold but with proper
+                // cp semantics. If this also H0s, the true value is smaller
+                // still (try 10cp) or the feature wants a depth-scaled margin.
                 let mut do_deeper_adj = 0;
                 if lmr_score > best_score + 60 + 10 * reduction {
                     do_deeper_adj = 1;
-                } else if lmr_score < best_score + new_depth {
+                } else if lmr_score < best_score + 20 {
                     do_deeper_adj = -1;
                 }
 
