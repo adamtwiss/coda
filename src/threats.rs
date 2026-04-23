@@ -1360,13 +1360,23 @@ unsafe fn apply_deltas_avx2(
             regs[i] = _mm256_loadu_si256(src_ptr.add(offset + i * 16) as *const __m256i);
         }
 
-        // In-loop prefetch distance. Each weight row is `hidden_size` bytes
-        // (768 for v9 = 12 cache lines), and when we switch deltas the HW
-        // prefetcher loses the pattern — every delta's row is at a random
-        // offset in the 49 MB weight matrix. Prefetching `PREFETCH_AHEAD`
-        // deltas forward at the current chunk offset hides most of the
-        // L2→L1 or DRAM→L2 latency.
-        const PREFETCH_AHEAD: usize = 2;
+        // In-loop prefetch — GENTLER variant (T1 hint, 1-delta lookahead).
+        //
+        // The initial PREFETCH_AHEAD=2 + _MM_HINT_T0 variant tested at
+        // SPRT #719 showed large per-uarch variance (Zeus +1.4%, ionos
+        // workers −6% to −11%). Root cause: T0 hints fetch into L1, and
+        // on CPUs with more aggressive HW prefetchers the software
+        // prefetch was pure overhead + L1 pollution. This variant backs
+        // off:
+        //   - T1 hint: prefetch into L2, don't evict L1 cache lines.
+        //   - lookahead=1 (was 2): shorter speculation distance, less
+        //     likely to mispredict into a branch we skip.
+        // Rationale: HW prefetchers are good at detecting long linear
+        // streams; they're bad at random-access weight-row lookups.
+        // T1 fills L2 so the real load still hits L2 (~10 cycle) rather
+        // than DRAM (~100+), but avoids the L1-eviction cost that T0
+        // carries.
+        const PREFETCH_AHEAD: usize = 1;
 
         // Apply paired add+sub
         let mut ai = 0;
@@ -1376,13 +1386,13 @@ unsafe fn apply_deltas_avx2(
             if ai + PREFETCH_AHEAD < adds.len() {
                 _mm_prefetch(
                     w_ptr.add(adds[ai + PREFETCH_AHEAD] * hidden_size + offset) as *const i8,
-                    _MM_HINT_T0,
+                    _MM_HINT_T1,
                 );
             }
             if si + PREFETCH_AHEAD < subs.len() {
                 _mm_prefetch(
                     w_ptr.add(subs[si + PREFETCH_AHEAD] * hidden_size + offset) as *const i8,
-                    _MM_HINT_T0,
+                    _MM_HINT_T1,
                 );
             }
             let aw = w_ptr.add(adds[ai] * hidden_size + offset);
@@ -1401,7 +1411,7 @@ unsafe fn apply_deltas_avx2(
             if ai + PREFETCH_AHEAD < adds.len() {
                 _mm_prefetch(
                     w_ptr.add(adds[ai + PREFETCH_AHEAD] * hidden_size + offset) as *const i8,
-                    _MM_HINT_T0,
+                    _MM_HINT_T1,
                 );
             }
             let aw = w_ptr.add(adds[ai] * hidden_size + offset);
@@ -1417,7 +1427,7 @@ unsafe fn apply_deltas_avx2(
             if si + PREFETCH_AHEAD < subs.len() {
                 _mm_prefetch(
                     w_ptr.add(subs[si + PREFETCH_AHEAD] * hidden_size + offset) as *const i8,
-                    _MM_HINT_T0,
+                    _MM_HINT_T1,
                 );
             }
             let sw = w_ptr.add(subs[si] * hidden_size + offset);
