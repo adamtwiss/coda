@@ -124,5 +124,54 @@ ISA: AVX-2 only)
 
 ---
 
+## ionos1 — 2026-04-23
+
+**CPU**: AMD EPYC Milan (Zen 3, ISA: AVX-2 only — no AVX-512/VNNI)
+
+| Mode | Coda native | Reckless native | Ratio (R/C) |
+|---|---:|---:|---:|
+| fresh (scalar) | 30,968 | — | — |
+| refresh / fresh (SIMD) | 475,034 | 487,872 | 1.03× |
+| incremental | 1,043,100 | 2,212,261 | **2.12×** |
+| make-unmake (observer on) | 7,847,737 | 8,868,432 | **1.13× (Reckless ahead)** |
+| make-unmake-null (no observer) | — | 18,012,578 | — |
+
+**Observations**:
+- Incremental ratio **2.12×**, sits close to Zen 5 AVX-2 forced (2.20×).
+  Milan's cache hierarchy behaves like Zen 5's when AVX-512 is taken off.
+- First host (alongside ionos1) where **Reckless wins make-unmake**
+  by a small margin (R/C=1.13 vs Coda advantage on Zeus/Hercules/Titan).
+  Zen 3 Milan may handle Reckless's byteboard-splat pattern
+  particularly well, or our make-unmake hit a uArch-specific quirk here.
+- refresh/fresh essentially tied on all non-Titan hosts.
+
+**Raw CSV**: `nps_microbench_ionos1_2026-04-23.csv`
+
+---
+
+## Cross-host summary (auto-updated)
+
+| Host | uArch | ISA | refresh R/C | incr R/C | make-unmake R/C |
+|---|---|---|---:|---:|---:|
+| Zeus | Zen 5 | AVX-512+VNNI | 1.11× | **1.66×** | 0.86× (Coda) |
+| Zeus (AVX-2) | Zen 5 | AVX-2 forced | 1.12× | **2.20×** | ~tied |
+| ionos1 | Zen 3 Milan | AVX-2 | 1.03× | **2.12×** | 1.13× (Reckless) |
+| Titan | Zen 1 Naples | AVX-2 | 0.89× (Coda) | **1.81×** | **0.48× (Coda 2×)** |
+| Hercules | Coffee Lake | AVX-2 | 1.17× | **3.06×** | 0.99× |
+
+**Emerging pattern**:
+- **VNNI is the dominant ISA lever** — Zen 5 + VNNI drops ratio from
+  2.20× to 1.66× (~25% gap reduction). Worth Zeus confirming the
+  VNNI path is actually dispatched on ionos/fleet hosts that have it.
+- **AMD cache hierarchy consistently more forgiving** than Intel
+  Coffee Lake. Zen 1/3/5 cluster around 1.8-2.2× on AVX-2;
+  Coffee Lake sits at 3.06×.
+- **make-unmake is close on most hosts** — Coda substantially faster
+  only on Titan (Zen 1). Byteboard-splat port deprioritisation
+  still stands; Coda's make-unmake is competitive or better
+  everywhere.
+
+---
+
 <!-- Append new host blocks above this line. Keep the format consistent
      so a cross-host summary table can be regenerated mechanically. -->
