@@ -27,23 +27,37 @@ Clean idle-CPU measurements, OB worker stopped. Coda counter
 overhead (~2%) is included in Coda's numbers — they're what real
 search pays.
 
-| Engine | ISA | **fresh** (debug scalar) | **refresh** (prod SIMD) | **incremental** | **make+unmake** (threats on) |
-|---|---|---:|---:|---:|---:|
-| Coda | AVX-512+VNNI | 92,040 | 1,328,863 | 3,687,924 | **22,912,303** |
-| Coda | AVX-2 only | 91,530 | 1,112,387 | 2,669,350 | 22,840,541 |
-| Reckless | AVX-512+VNNI | 1,478,598 | — | **6,112,511** | 19,623,393 |
-| Reckless | AVX-2 only | 1,268,017 | — | 5,882,765 | 21,818,698 |
-| Reckless | AVX-512, no observer | — | — | — | 52,312,610 (upper bound) |
+| Engine | ISA | **full-rebuild** (prod SIMD) | **incremental** | **make+unmake** (threats on) |
+|---|---|---:|---:|---:|
+| Coda | AVX-512+VNNI | 1,328,863 | 3,687,924 | **22,912,303** |
+| Coda | AVX-2 only | 1,112,387 | 2,669,350 | 22,840,541 |
+| Reckless | AVX-512+VNNI | **1,478,598** | **6,112,511** | 19,623,393 |
+| Reckless | AVX-2 only | 1,268,017 | 5,882,765 | 21,818,698 |
+| Reckless | AVX-512, no observer | — | — | 52,312,610 (upper bound) |
 
 Reckless / Coda ratio (>1 means Reckless faster):
 
-| ISA | refresh | incremental | make+unmake |
+| ISA | full-rebuild | incremental | make+unmake |
 |---|---:|---:|---:|
 | AVX-512+VNNI | **1.11×** | **1.66×** | **0.86× (Coda faster)** |
 | AVX-2 only | **1.14×** | **2.20×** | **0.96× (tied)** |
 
-(The `make+unmake` values include threat-delta generation on both sides;
-see the make-unmake section below for full decomposition.)
+Notes on the columns:
+- **full-rebuild** is the production fresh-eval path — Coda's
+  `eval-bench --mode refresh` (via `materialize` with Finny
+  invalidated) and Reckless's `evalbench fresh` (their `full_refresh`).
+  Both exercise the SIMD rebuild-from-scratch code.
+- **incremental** is the production hot path — push one dirty piece,
+  run the forward pass, pop. Almost every real-search node hits this.
+- **make+unmake** is board-side `make_move + unmake_move` with
+  threat-delta generation active on both engines. No NNUE forward
+  pass. Isolates the make-move cost.
+- Coda has a third mode, `eval-bench --mode fresh`, that exercises
+  the scalar `force_recompute` debug path used by `CODA_VERIFY_NNUE`
+  and the PSQ fuzzer. It runs at ~92k evals/sec on both ISAs — 14×
+  slower than the production rebuild. Not in any real search path,
+  so omitted from the headline table (see §"`force_recompute` is a
+  debug-scalar trap" below).
 
 ## Key findings (updated 2026-04-23 PM after evals/node + make-unmake)
 
