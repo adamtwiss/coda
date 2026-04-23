@@ -2278,6 +2278,8 @@ impl NNUENet {
                 }
             }
 
+            // Materialise the compacted matrix + remap regardless of zero
+            // count — the hot-feature frontload below needs them.
             if zero_count > 0 {
                 threat_weights.truncate(compact * hidden_size);
                 threat_weights.shrink_to_fit();
@@ -2290,9 +2292,83 @@ impl NNUENet {
                     zero_count, zero_count as f64 / num_threat_features as f64 * 100.0,
                     compact, hidden_size, compact_mb);
             } else {
+                // Even with no zero rows, build an identity remap so the
+                // frontload pass below has a remap to permute.
+                threat_feature_remap = (0..num_threat_features as i32).collect();
                 println!("info string Loaded {} threat features ({}×{}, {}MB)",
                     num_threat_features, num_threat_features, hidden_size,
                     total / (1024 * 1024));
+            }
+
+            // Hot-feature frontloading (NPS item #4). Reorder the physical
+            // weight matrix so features with the largest L1 weight-norm
+            // sit at the front — the first ~706 physical rows (=540 KB)
+            // then fit in L2 on every modern CPU, dramatically reducing
+            // L3 / DRAM spills on the hot-tail of the access pattern.
+            //
+            // Why L1-norm as proxy for activation frequency? Weights
+            // trained to near-zero mean the feature's contribution is
+            // negligible whether it fires or not — those rows belong in
+            // the cold tail. Rows with large |weight| matter every time
+            // they fire and are more likely to be ones the net learned
+            // well (which correlates with firing in typical positions).
+            // Not perfect; empirical activation-frequency ranking from a
+            // sampled position set is a later refinement (requires an
+            // offline data file checked into the repo).
+            //
+            // Cost: one scan of the compacted matrix (~45 MB on v9) plus
+            // a sort of `physical` u32 indices. Well under 1s at load.
+            // Zero runtime cost after load.
+            if num_threat_features_physical > 1 {
+                let phys = num_threat_features_physical;
+                // Compute L1 norm per physical row.
+                let mut row_scores: Vec<(u32, u64)> = (0..phys as u32)
+                    .map(|i| {
+                        let r = &threat_weights[i as usize * hidden_size
+                            ..(i as usize + 1) * hidden_size];
+                        let score: u64 = r.iter().map(|&w| (w as i32).unsigned_abs() as u64).sum();
+                        (i, score)
+                    })
+                    .collect();
+                // Sort descending by L1 norm — hot rows first.
+                row_scores.sort_by(|a, b| b.1.cmp(&a.1));
+
+                // Build the permutation: old_row -> new_row.
+                let mut old_to_new = vec![0u32; phys];
+                for (new_idx, (old_idx, _)) in row_scores.iter().enumerate() {
+                    old_to_new[*old_idx as usize] = new_idx as u32;
+                }
+
+                // Rewrite the remap (raw_feature -> new_row).
+                for slot in threat_feature_remap.iter_mut() {
+                    if *slot >= 0 {
+                        *slot = old_to_new[*slot as usize] as i32;
+                    }
+                }
+
+                // Permute the matrix into the new order. Build a fresh
+                // buffer to avoid in-place permute complexity.
+                let mut new_weights = vec![0i8; phys * hidden_size];
+                for (new_idx, (old_idx, _)) in row_scores.iter().enumerate() {
+                    let src = *old_idx as usize * hidden_size;
+                    let dst = new_idx * hidden_size;
+                    new_weights[dst..dst + hidden_size]
+                        .copy_from_slice(&threat_weights[src..src + hidden_size]);
+                }
+                threat_weights = new_weights;
+
+                // Diagnostic: how tight is the hot region?
+                let total_l1: u64 = row_scores.iter().map(|(_, s)| *s).sum();
+                let mut cum: u64 = 0;
+                let mut rows_50 = 0usize;
+                let mut rows_90 = 0usize;
+                for (rank, (_, s)) in row_scores.iter().enumerate() {
+                    cum += *s;
+                    if rows_50 == 0 && cum * 2 >= total_l1 { rows_50 = rank + 1; }
+                    if rows_90 == 0 && cum * 10 >= total_l1 * 9 { rows_90 = rank + 1; break; }
+                }
+                println!("info string Threat features frontloaded by |weight|: top {} rows = 50% L1, top {} rows = 90% L1 (of {} physical)",
+                    rows_50, rows_90, phys);
             }
         }
 
