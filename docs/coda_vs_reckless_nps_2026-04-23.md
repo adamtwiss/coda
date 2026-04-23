@@ -231,6 +231,44 @@ Not eval-cost, but evals-per-node lever. Top items from the comparison:
 Cumulative unclaimed Elo from these changes (with diminishing returns
 accounted): ~25-35 LTC Elo. All are incremental and independently SPRT-able.
 
+## Running on other hosts
+
+Script: `scripts/nps_microbench.sh` (on `feature/threat-inputs`).
+
+```bash
+# 1. Check out Coda
+git clone git@github.com:adamtwiss/coda.git ~/code/coda
+cd ~/code/coda && git checkout feature/threat-inputs
+make net                   # fetches the v9 production net
+
+# 2. Check out Reckless
+git clone https://github.com/codedeliveryservice/Reckless.git ~/chess/engines/Reckless
+cd ~/chess/engines/Reckless
+
+# 3. Apply the Coda-comparison evalbench patch to Reckless (one command):
+git apply ~/code/coda/scripts/reckless_evalbench.patch
+# Tagged 'Coda-comparison hack'; revert with `git checkout -- .` when
+# the investigation is done.
+
+# 4. Stop any OB worker on the host for clean numbers
+~/code/OpenBench/ob-worker.sh stop   # if one is running
+
+# 5. Run the script
+cd ~/code/coda
+./scripts/nps_microbench.sh
+
+# 6. Ship back nps_microbench_<host>_<date>.csv
+```
+
+The script handles AVX-512 / AVX-2 / ARM dispatch automatically based on
+`/proc/cpuinfo`. On ARM hosts it runs native-only (no AVX-2 forcing).
+
+**CPU diversity we want to cover**: Zen 5 (zeus ✓), Zen 4, Zen 2/3,
+Intel Alder/Raptor Lake (P-core), Intel Ice/Sapphire Lake (server
+AVX-512), Apple Silicon M1/M2/M3, any ARM server (Graviton / Ampere).
+Each adds a data point for whether the 2× gap is uArch-specific or
+structural.
+
 ## Methodology — how to reproduce
 
 ### Coda microbench

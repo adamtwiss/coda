@@ -1,0 +1,184 @@
+diff --git a/src/tools/mod.rs b/src/tools/mod.rs
+index bb2dbba0..84ccac91 100644
+--- a/src/tools/mod.rs
++++ b/src/tools/mod.rs
+@@ -1,7 +1,9 @@
+ mod bench;
++mod eval_bench;
+ mod perft;
+ 
+ pub use bench::bench;
++pub use eval_bench::eval_bench;
+ pub use perft::is_legal_perft;
+ pub use perft::perft;
+ pub use perft::simple_perft;
+diff --git a/src/uci.rs b/src/uci.rs
+index 86851d48..8f9aa08f 100644
+--- a/src/uci.rs
++++ b/src/uci.rs
+@@ -86,6 +86,10 @@ pub fn message_loop(mut buffer: VecDeque<String>) {
+                 Mode::Uci => tools::bench::<true>(args),
+                 Mode::Cli => tools::bench::<false>(args),
+             },
++            // Coda-comparison hack: microbench for pure NNUE inference cost.
++            // Usage: `evalbench <mode:fresh|incremental> [reps_per_position]`
++            // Kept isolated in tools::eval_bench so it's easy to revert.
++            ["evalbench", args @ ..] => tools::eval_bench(args, threads.main_thread()),
+             ["perft", depth] => tools::perft(depth.parse().unwrap(), &mut threads.main_thread().board),
+             ["perft"] => eprintln!("Usage: perft <depth>"),
+             ["simpleperft", depth] => tools::simple_perft(depth.parse().unwrap(), &mut threads.main_thread().board),
+--- a/src/tools/eval_bench.rs
++++ b/src/tools/eval_bench.rs
+@@ -0,0 +1,152 @@
++//! Pure-NNUE-inference microbench. Coda-comparison hack — kept isolated so
++//! it can be removed cleanly when the investigation is finished.
++//!
++//! Usage (from UCI/CLI): `evalbench <mode:fresh|incremental> [reps]`
++//!
++//! `fresh` mode: `full_refresh` + `evaluate` in a tight loop per position.
++//!   Measures the cost of a complete NNUE forward pass with no incremental
++//!   shortcuts (both PST and threat accumulators are rebuilt from scratch
++//!   every iteration).
++//! `incremental` mode: push one legal move, evaluate, undo+pop, repeat.
++//!   Measures the steady-state cost when the accumulator stack is hot.
++//!
++//! Intended to be compared against Coda's `eval-bench` subcommand. Use the
++//! same eight bench positions as Coda for a fair head-to-head.
++
++use std::time::Instant;
++
++use crate::{
++    board::{Board, NullBoardObserver},
++    thread::ThreadData,
++};
++
++// Same 8 bench positions used by Coda's `bench` (src/search.rs:3236-3243).
++// Matching position set → matching mean eval sanity check.
++const CODA_BENCH_POSITIONS: &[&str] = &[
++    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
++    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
++    "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
++    "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
++    "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
++    "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
++    "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
++    "2r3k1/pp3ppp/2n1b3/3pP3/3P4/2NB4/PP3PPP/R4RK1 w - - 0 1",
++];
++
++pub fn eval_bench(args: &[&str], td: &mut ThreadData) {
++    let mode = args.first().copied().unwrap_or("fresh");
++    let reps: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(10_000);
++
++    // Warm-up: prime caches and force any one-shot init (threat tables).
++    for &fen in CODA_BENCH_POSITIONS {
++        td.board = Board::from_fen(fen).unwrap();
++        td.nnue.full_refresh(&td.board);
++        let _ = td.nnue.evaluate(&td.board);
++    }
++
++    let start = Instant::now();
++    let mut sum: i64 = 0;
++    let mut count: u64 = 0;
++
++    match mode {
++        "fresh" => {
++            for &fen in CODA_BENCH_POSITIONS {
++                td.board = Board::from_fen(fen).unwrap();
++                for _ in 0..reps {
++                    // Force a full rebuild of both perspectives each time.
++                    // Matches Coda's `acc.force_recompute` behaviour.
++                    td.nnue.full_refresh(&td.board);
++                    let s = td.nnue.evaluate(&td.board);
++                    sum = sum.wrapping_add(s as i64);
++                    count += 1;
++                }
++            }
++        }
++        "incremental" => {
++            for &fen in CODA_BENCH_POSITIONS {
++                td.board = Board::from_fen(fen).unwrap();
++                td.nnue.full_refresh(&td.board);
++                // Pick the first legal move; if there isn't one (mate/stalemate)
++                // skip this position.
++                let moves = td.board.generate_all_moves();
++                let mut mv = None;
++                for entry in moves.iter() {
++                    if td.board.is_legal(entry.mv) { mv = Some(entry.mv); break; }
++                }
++                let Some(mv) = mv else { continue; };
++                for _ in 0..reps {
++                    td.nnue.push(mv, &td.board);
++                    td.board.make_move(mv, &mut NullBoardObserver);
++                    let s = td.nnue.evaluate(&td.board);
++                    sum = sum.wrapping_add(s as i64);
++                    td.board.undo_move(mv);
++                    td.nnue.pop();
++                    count += 1;
++                }
++            }
++        }
++        "make-unmake" => {
++            // Times make_move + undo_move, threat-delta generation ACTIVE.
++            // Passes `&mut td.nnue` as the BoardObserver so the NNUE
++            // observer callbacks (on_piece_move / on_piece_change /
++            // on_piece_mutate) fire during make_move — matching Reckless's
++            // production-search costs. Compare to Coda's make-unmake
++            // with `generate_threat_deltas = true` for an apples-to-apples
++            // threat-delta-generation measurement.
++            for &fen in CODA_BENCH_POSITIONS {
++                td.board = Board::from_fen(fen).unwrap();
++                td.nnue.full_refresh(&td.board);
++                let moves = td.board.generate_all_moves();
++                let mut mv = None;
++                for entry in moves.iter() {
++                    if td.board.is_legal(entry.mv) { mv = Some(entry.mv); break; }
++                }
++                let Some(mv) = mv else { continue; };
++                for _ in 0..reps {
++                    td.nnue.push(mv, &td.board);
++                    td.board.make_move(mv, &mut td.nnue);
++                    td.board.undo_move(mv);
++                    td.nnue.pop();
++                    count += 1;
++                }
++            }
++        }
++        "make-unmake-null" => {
++            // Same as make-unmake but with NullBoardObserver — isolates
++            // the BOARD-only make/unmake cost (no NNUE observer work).
++            // Coda has no equivalent "skip threats" mode, so this gives
++            // us an upper bound on what Coda could reach.
++            for &fen in CODA_BENCH_POSITIONS {
++                td.board = Board::from_fen(fen).unwrap();
++                let moves = td.board.generate_all_moves();
++                let mut mv = None;
++                for entry in moves.iter() {
++                    if td.board.is_legal(entry.mv) { mv = Some(entry.mv); break; }
++                }
++                let Some(mv) = mv else { continue; };
++                for _ in 0..reps {
++                    td.board.make_move(mv, &mut NullBoardObserver);
++                    td.board.undo_move(mv);
++                    count += 1;
++                }
++            }
++        }
++        _ => {
++            eprintln!("Unknown mode: '{}' (expected 'fresh' | 'incremental' | 'make-unmake')", mode);
++            return;
++        }
++    }
++
++    let secs = start.elapsed().as_secs_f64();
++    let evs = count as f64 / secs;
++    println!(
++        "evalbench mode={} positions={} reps/pos={} total_evals={} elapsed={:.3}s evals/sec={:.0} mean_eval={}",
++        mode,
++        CODA_BENCH_POSITIONS.len(),
++        reps,
++        count,
++        secs,
++        evs,
++        sum / count.max(1) as i64,
++    );
++}
