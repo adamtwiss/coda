@@ -145,6 +145,14 @@ tunables!(
     // Default 32 = ±256 typical range, additive to history (~1000s scale).
     (MOBILITY_DELTA_WEIGHT, 32, 0, 256, 8.0),
     (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
+    // N1 (peripheral_mechanisms_2026-04-22): twofold-in-history eval blend.
+    // When current position has occurred at least once BEFORE in the game
+    // history (outside the rep-scan window), blend static_eval toward 0 by
+    // this percentage. Signals structural drawishness — the players have
+    // chosen to revisit a position across an irreversible boundary, which
+    // is weak evidence of unable-to-progress. Default 35 (within Titan's
+    // 25-50 suggested range).
+    (TWOFOLD_BLEND, 35, 0, 100, 5.0),
     (LMR_THREAT_DIV, 4, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 5, 2, 9, 1.5),
     (FUT_THREATS_MARGIN, 44, 0, 200, 10.0),
@@ -2017,6 +2025,34 @@ fn negamax(
         scaled_eval = apply_halfmove_scale(raw_eval, board.halfmove);
         // Apply correction history to the halfmove-scaled value
         static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, scaled_eval) } else { scaled_eval };
+        // N1: twofold-in-history eval blend. If the current position has
+        // appeared at least once in the game history BEYOND the rep-scan
+        // window (i.e. beyond min(halfmove, plies_from_null)), blend eval
+        // toward 0 by TWOFOLD_BLEND percent. Weak evidence of unable-to-
+        // progress — the players have chosen to revisit this position
+        // across a pawn-move or null-move boundary. Cheap scan (step 2
+        // for same-side positions, bounded by TWOFOLD_SCAN_MAX).
+        if ply > 0 {
+            const TWOFOLD_SCAN_MAX: usize = 200;
+            let stack_len = board.undo_stack.len();
+            let already_scanned = (board.halfmove as usize)
+                .min(board.plies_from_null as usize)
+                .min(stack_len);
+            let mut i = already_scanned + 2;
+            let scan_end = (already_scanned + TWOFOLD_SCAN_MAX).min(stack_len);
+            let mut twofold_in_hist = false;
+            while i <= scan_end {
+                if board.undo_stack[stack_len - i].hash == board.hash {
+                    twofold_in_hist = true;
+                    break;
+                }
+                i += 2;
+            }
+            if twofold_in_hist {
+                let blend = tp(&TWOFOLD_BLEND);
+                static_eval = static_eval * (100 - blend) / 100;
+            }
+        }
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = static_eval;
         }
