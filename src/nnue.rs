@@ -4162,6 +4162,161 @@ impl NNUEAccumulator {
     }
 
     /// Materialize: ensure current accumulator is computed.
+    /// Multi-ply walk-back replay for PSQ accumulator. Called only when
+    /// direct parent is NOT computed. Scans back up to `WALKBACK_LIMIT`
+    /// plies looking for a computed ancestor, checks that no king moves
+    /// occurred in the replay range (else `halfka_index` lookups with
+    /// the current board's king square would be wrong for intermediate
+    /// plies), then replays each ply's `dirty` forward using the same
+    /// SIMD helpers as the fast incremental path.
+    ///
+    /// Returns true on successful replay (current ply is now computed),
+    /// false if the walk-back conditions don't hold (caller falls through
+    /// to a full refresh).
+    ///
+    /// Per-pov king-move constraint is strict (any king move in range
+    /// aborts). A finer per-perspective version could accept a white-king
+    /// move while still walking back for the black perspective. Keeping
+    /// it simple here; the 2026-04-18 measurement showed 47.8% of
+    /// parent-not-computed cases resolve within 2 plies, which is the
+    /// bulk of the opportunity.
+    fn try_walkback_psq(&mut self, net: &NNUENet, board: &Board) -> bool {
+        const WALKBACK_LIMIT: usize = 3;
+
+        // Scan back for nearest computed ancestor.
+        let mut k = self.top;
+        let mut steps = 0usize;
+        loop {
+            if k == 0 {
+                // Hit root without finding a computed ancestor.
+                return false;
+            }
+            k -= 1;
+            steps += 1;
+            if self.stack[k].computed {
+                break;
+            }
+            if steps > WALKBACK_LIMIT {
+                return false;
+            }
+            // Broken chain: no dirty info at this intermediate ply → can't
+            // derive the preceding position from it.
+            if self.stack[k].dirty.kind == 0 {
+                return false;
+            }
+        }
+
+        // `k` is the ancestor frame; replay range is (k+1)..=self.top.
+        // Re-check limit (loop exit at `steps > WALKBACK_LIMIT` returned
+        // false, so we're within limit — but also reject if we walked
+        // past the limit on the final step).
+        let replay_span = self.top - k;
+        if replay_span == 0 || replay_span > WALKBACK_LIMIT {
+            return false;
+        }
+
+        // Constraint: no king moves in [k+1..=self.top]. `halfka_index`
+        // depends on each perspective's king square; with a king move
+        // mid-chain, the stored dirty entries for surrounding plies
+        // would have been recorded against a different king position.
+        for ply in (k + 1)..=self.top {
+            let d = &self.stack[ply].dirty;
+            let n = d.n_changes as usize;
+            for i in 0..n {
+                let (_add, _color, pt, _sq) = d.changes[i];
+                if pt == KING {
+                    return false;
+                }
+            }
+        }
+
+        // Replay. Using current board's king squares is safe because no
+        // kings moved in the replay range.
+        let h = self.hidden_size;
+        let w_king_sq = board.king_sq(WHITE);
+        let b_king_sq = board.king_sq(BLACK);
+
+        for ply in (k + 1)..=self.top {
+            let dirty = self.stack[ply].dirty;
+            let n = dirty.n_changes as usize;
+
+            let mut w_adds: [&[i16]; 8] = [&[]; 8];
+            let mut w_subs: [&[i16]; 8] = [&[]; 8];
+            let mut b_adds: [&[i16]; 8] = [&[]; 8];
+            let mut b_subs: [&[i16]; 8] = [&[]; 8];
+            let mut nwa = 0usize;
+            let mut nws = 0usize;
+            let mut nba = 0usize;
+            let mut nbs = 0usize;
+
+            for i in 0..n {
+                let (add, color, pt, sq) = dirty.changes[i];
+                let w_idx = net.halfka_index(WHITE, w_king_sq, color, pt, sq);
+                let w_row = net.input_weight_row(w_idx);
+                let b_idx = net.halfka_index(BLACK, b_king_sq, color, pt, sq);
+                let b_row = net.input_weight_row(b_idx);
+                if add {
+                    w_adds[nwa] = w_row; nwa += 1;
+                    b_adds[nba] = b_row; nba += 1;
+                } else {
+                    w_subs[nws] = w_row; nws += 1;
+                    b_subs[nbs] = b_row; nbs += 1;
+                }
+            }
+
+            let w_adds = &w_adds[..nwa];
+            let w_subs = &w_subs[..nws];
+            let b_adds = &b_adds[..nba];
+            let b_subs = &b_subs[..nbs];
+
+            let (left, right) = self.stack.split_at_mut(ply);
+            let parent = &left[ply - 1];
+            let current = &mut right[0];
+
+            #[cfg(target_arch = "x86_64")]
+            if net.has_avx512 && h % 32 == 0 {
+                unsafe {
+                    simd_acc_fused_avx512(&mut current.white, &parent.white, w_adds, w_subs, h);
+                    simd_acc_fused_avx512(&mut current.black, &parent.black, b_adds, b_subs, h);
+                }
+                current.computed = true;
+                continue;
+            }
+            #[cfg(target_arch = "x86_64")]
+            if net.has_avx2 && h % 16 == 0 {
+                unsafe {
+                    simd_acc_fused_avx2(&mut current.white, &parent.white, w_adds, w_subs, h);
+                    simd_acc_fused_avx2(&mut current.black, &parent.black, b_adds, b_subs, h);
+                }
+                current.computed = true;
+                continue;
+            }
+            #[cfg(target_arch = "aarch64")]
+            if net.has_neon && h % 8 == 0 {
+                unsafe {
+                    simd_acc_fused_neon(&mut current.white, &parent.white, w_adds, w_subs, h);
+                    simd_acc_fused_neon(&mut current.black, &parent.black, b_adds, b_subs, h);
+                }
+                current.computed = true;
+                continue;
+            }
+            // Scalar fallback
+            for j in 0..h {
+                let mut w = parent.white[j];
+                let mut b = parent.black[j];
+                for row in w_adds { w += row[j]; }
+                for row in w_subs { w -= row[j]; }
+                for row in b_adds { b += row[j]; }
+                for row in b_subs { b -= row[j]; }
+                current.white[j] = w;
+                current.black[j] = b;
+            }
+            current.computed = true;
+        }
+
+        true
+    }
+
     pub fn materialize(&mut self, net: &NNUENet, board: &Board) {
         #[cfg(feature = "profile-materialize")]
         crate::nnue::mat_stats::record_entry(self.stack[self.top].computed);
@@ -4172,25 +4327,52 @@ impl NNUEAccumulator {
 
         let dirty = self.stack[self.top].dirty;
 
-        // Full recompute needed?
-        if dirty.kind == 0 || self.top == 0 || !self.stack[self.top - 1].computed {
+        // Full recompute needed? Root / no-dirty / parent-not-computed.
+        //
+        // The earlier (2026-04-17) SPRT #424 tried multi-ply walk-back here
+        // and H0'd at -17.86 Elo — but that attempt also bloated the fast
+        // path (+3 bytes on AccEntry, extra entry-guard branches) and
+        // regressed bench 4% BEFORE any walkback logic ran. This retry
+        // keeps the fast path (common case: direct parent computed)
+        // byte-identical to the pre-walkback trunk, and adds walkback ONLY
+        // in the cold "parent not computed" path — where we'd have paid a
+        // full refresh anyway. So there's no hot-path cost to isolate,
+        // and whatever SPRT signal we see is purely walkback-vs-refresh.
+        if dirty.kind == 0 || self.top == 0 {
+            // Root or no-dirty — can't walkback, go straight to refresh.
             self.stats_full_rebuilds += 1;
             #[cfg(feature = "profile-materialize")]
             {
                 crate::nnue::mat_stats::record_refresh();
-                // Walk ancestors to find nearest computed frame; record
-                // distance. 0 = no ancestor / root. 1 = parent computed
-                // (wouldn't fire here by definition but reported for shape).
+                crate::nnue::mat_stats::record_walkback_distance(0);
+            }
+            self.refresh_accumulator(net, board, WHITE);
+            self.refresh_accumulator(net, board, BLACK);
+            self.stack[self.top].computed = true;
+            return;
+        }
+        if !self.stack[self.top - 1].computed {
+            // Parent-not-computed cold path. Try multi-ply walkback first;
+            // fall through to full refresh if the walkback constraints don't
+            // hold (chain too long, king moved, broken dirty chain).
+            if self.try_walkback_psq(net, board) {
+                self.stats_incremental_updates += 1;
+                #[cfg(feature = "profile-materialize")]
+                crate::nnue::mat_stats::record_incremental(dirty.n_changes as u64);
+                return;
+            }
+            self.stats_full_rebuilds += 1;
+            #[cfg(feature = "profile-materialize")]
+            {
+                crate::nnue::mat_stats::record_refresh();
                 let mut d: usize = 0;
-                if self.top > 0 {
-                    let mut i = self.top;
-                    while i > 0 {
-                        i -= 1;
-                        d += 1;
-                        if self.stack[i].computed { break; }
-                    }
-                    if d > 0 && !self.stack[self.top - d].computed { d = 0; }
+                let mut i = self.top;
+                while i > 0 {
+                    i -= 1;
+                    d += 1;
+                    if self.stack[i].computed { break; }
                 }
+                if !self.stack[self.top - d].computed { d = 0; }
                 crate::nnue::mat_stats::record_walkback_distance(d);
             }
             self.refresh_accumulator(net, board, WHITE);
