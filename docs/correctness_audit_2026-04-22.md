@@ -465,7 +465,37 @@ Covered in experiments.md §"LIKELY fixes — direct merge" (session log 2026-04
 
 ### Dropped / deferred
 
-- Titan tactical ideas that H0'd on pre-C8-fix trunk and are not yet re-tested on post-#661: T1.3 (#634), T2.2 (#632), P1 (#636).
+- Titan tactical ideas that H0'd on pre-C8-fix trunk: T1.3 (#634), T2.2 (#632), P1 (#636). T1.3 retry on tuned trunk (#669 −4.9) and P1 retry (#671 −7.1) both H0 again. T1.3 dropped, P1 parked pending K1/K2 SPSA.
 - Audit items deferred (latent, cosmetic, or not-yet-reachable): pawn_hash comment, hardcoded buffer limits, TT aarch64 atomics, forward non-hidden NTM dead code, HIP Adam ABI (Bullet upstream).
 
 **Session throughput:** ~40 of 44 actionable audit items resolved in-session.
+
+## Resolution log — 2026-04-23 overnight batch
+
+Additional audit items SPRT'd on tuned C8-fix trunk (post-#661).
+
+### CRITICAL retries
+
+| ID | Summary | SPRT | Result | Merge | Status |
+|----|---------|------|--------|-------|--------|
+| C3 (NMP sentinel) | Set null sentinel on `moved_piece_stack` before null recursion | #668 fix/nmp-sentinel-c8-retry | −1.6 @ 19874g H0 | merged | ✅ confident-correctness (original #640 H0'd on pre-C8 trunk, retried on tuned trunk, still H0 but within −2 threshold — load-bearing correctness) |
+| C3 sibling (stale reductions) | Reset `info.reductions[ply_u]` at node entry | #670 fix/nmp-stale-reductions-c8-retry | **+2.8 @ 10540g H1 ✓** | merged | ✅ H1 after retune-on-branch (#646 H0'd −5.1 pre-C8) |
+
+### LIKELY retries / new
+
+| ID | Summary | SPRT | Result | Merge | Status |
+|----|---------|------|--------|-------|--------|
+| LIKELY #6 (TT-malus promo key) | Read from `moved_piece_stack` for symmetry | #672 fix/tt-cutoff-malus-symmetry | −1.7 @ 10556g H0 | merged | ✅ confident-correctness (was silently disabled on promotions; enabling it shifts calibration, retune will absorb) |
+| SPECULATIVE #321 (LMR do_shallower) | Replace `new_depth` integer-as-cp with proper cp margin | #673 fix/lmr-shallower-margin (30cp) | −1.7 @ 17286g H0 | — | 🔁 v2 at 20cp in flight |
+| SPECULATIVE #326 (should_stop) | 4096 → 1024 time-check granularity | #674 fix/should-stop-granularity | −1.1 @ 16332g H0 | — | ❌ dropped — no correctness claim, benefit was theoretical for <100ms budgets we don't hit at STC |
+| (not audit) PSQ refresh per-pov | Re-apply a9f6e1f on tuned trunk | #667 tune/psq-refresh-perpov-c8fix | −2.2 @ 10366g H0 | — | ❌ dropped — NPS optimisation, not correctness |
+
+### Feature retries (from next_ideas_2026-04-21.md)
+
+| Idea | SPRT | Result | Status |
+|------|------|--------|--------|
+| T1.3 overload bonus | #669 experiment/t1-3-overload-c8-retry | −4.9 @ 6056g H0 | ❌ dropped (2× H0 across trunks) |
+| T2.1 undefended-NMP-skip | #676 experiment/undefended-nmp-skip-c8-retry | **+2.9 @ 10122g H1 ✓** | ✅ merged |
+| P1 optimism (peripheral) | #671 experiment/p1-optimism-c8-retry | −7.1 @ 4268g H0 | ❌ dropped — needs K1/K2 SPSA; not worth pursuing without |
+
+**Net batch delta:** 4 merges (2 H1 + 2 confident-correctness), 4 drops, 1 iterating. Trunk bench rose to 3,370,847 (from 2,575,054 pre-batch) due to stacked tree-shape effects; next retune will re-calibrate.

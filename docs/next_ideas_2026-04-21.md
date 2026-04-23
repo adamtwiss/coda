@@ -58,7 +58,8 @@ Already specced, gated on B1 landing — **now unblocked**. Estimated +10–30 i
 
 **T1.3 — Overload / removing-the-defender.**
 Capture/attack on a defender that defends ≥2 of its own pieces. Cheap: count defended-squares per piece, bonus moves that hit a 2+-defender. Expected: **+3 to +10**. Named-tactic class.
-- **Status 2026-04-22:** **#634 -1.4 @ 13624g H0.** Quiet-scoring bonus at OVERLOAD_BONUS=4000 did not pass SPRT on the pre-C8-fix trunk. Candidate to re-test on post-#661 tuned trunk with C8-fix net (different search landscape may surface latent signal). Not dropped outright.
+- **Status 2026-04-22:** **#634 -1.4 @ 13624g H0.** Quiet-scoring bonus at OVERLOAD_BONUS=4000 did not pass SPRT on the pre-C8-fix trunk.
+- **Status 2026-04-23:** retried on tuned C8-fix trunk (#669 experiment/t1-3-overload-c8-retry) → **−4.9 @ 6056g H0 ✗**, past −4 tripwire. Signal genuinely absent across trunks; absorbed by B1 discovered-attack. **Dropped.**
 
 **T1.4 — Battery bonus.**
 Quiet move that places a Q/R/B behind another Q/R/B aligned on the same file/rank/diagonal toward an enemy piece or the enemy king zone. Cheap via occupancy + between(). Expected: **+3 to +10**. Adjacent to king-zone-pressure gate pattern.
@@ -73,7 +74,8 @@ Phase 2 of the signal × context matrix has saturated at 1/10 H1 rate. **Pivot f
 
 **T2.1 — Undefended-piece-count as NMP gate.**
 Count of our own pieces with ≥1 attacker and 0 defenders ("hanging"). If ≥1, skip NMP (a zugzwang proxy for the opponent exploiting the hanging piece). Expected: **+3 to +8**. Novel signal, old gate context.
-- **Status 2026-04-22:** tested as `experiment/undefended-nmp-skip` → **#617 +0.4 @ 44792g H0**. Signal fires too rarely to move Elo — hanging-piece-at-root is a low-frequency state in self-play. Dropped unless combined with a higher-firing proxy (e.g. any-piece-with-attackers ≥ defenders).
+- **Status 2026-04-22:** tested as `experiment/undefended-nmp-skip` → **#617 +0.4 @ 44792g H0** on pre-C8 trunk.
+- **Status 2026-04-23:** retested on tuned C8-fix trunk (#676 experiment/undefended-nmp-skip-c8-retry) → **+2.9 @ 10122g H1 ✓, merged.** Tuned trunk + cleaner eval signal turned the marginal result positive — same feature, different calibration regime. Lands in the expected band.
 
 **T2.2 — King-mobility as SE / extension gate.**
 Number of legal king moves. When ≤1, a quiet king move must be searched deeper. Already implicit in some check-extension logic, but not as an explicit SE trigger. Expected: **+3 to +8**.

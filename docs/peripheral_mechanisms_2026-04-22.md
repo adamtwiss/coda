@@ -51,10 +51,11 @@ strong engines.
 ID iteration, blend in `eval_wrapper`. SPSA `K1` and `K2` (4-param branch tune —
 K1, K2, optimism_mat_base, and a gate-off-if-eval-huge threshold).
 
-**Status 2026-04-22:** **#636 -2.0 @ 10986g H0.** Dropped on first pass. Possible retry
-pattern: test again on post-#661 tuned trunk with C8-fix net, or with retune-on-branch
-(SPSA for K1/K2) before SPRT — un-tuned ports from SF/Reckless rarely work out of the box
-at Coda's eval scale.
+**Status 2026-04-22:** **#636 -2.0 @ 10986g H0.** Dropped on first pass.
+
+**Status 2026-04-23:** retried on tuned C8-fix trunk (#671 experiment/p1-optimism-c8-retry) →
+**−7.1 @ 4268g H0 ✗**, worse on tuned trunk. Untuned port H0s regardless of baseline.
+Parked — retry only with K1/K2 focused SPSA on-branch (4-param tune, ~1000 iters).
 
 ### P2. TT-cutoff gate on high halfmove (SF: `<96`, Reckless: `<90`)
 
