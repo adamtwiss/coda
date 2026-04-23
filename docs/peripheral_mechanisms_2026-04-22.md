@@ -162,6 +162,18 @@ node-based TM was); **LTC testing required**. Could be +2–5 at LTC. Deferred.
 
 ### N1. Twofold-in-game-history eval blend
 
+**Status 2026-04-23:** tested as `experiment/n1-twofold-eval-blend`
+→ **#691 +0.01 Elo ±1.7 @ 28,792 games H0** (bounds [0, 5]).
+Extraordinarily flat — effectively a statistical zero. The feature
+fires rarely enough that even a correct eval blend doesn't move the
+needle at STC. Halfmove scaling already catches most of the
+structurally-drawish signal twofolds would amplify. Dropped.
+
+---
+
+*Original proposal preserved below.*
+
+
 **Rationale.** A position that occurred once in the actual game history, but hasn't
 tripled yet, is *empirically more drawish* — one side has already chosen to revisit it,
 which is weak evidence of being unable to make progress. Currently we score it as
