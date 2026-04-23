@@ -631,6 +631,23 @@ impl MovePicker {
                 score += crate::search::DISCOVERED_ATTACK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
             }
 
+            // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering bonus.
+            // popcount(attacks_from(piece, to)) - popcount(attacks_from(piece, from))
+            // Positive = piece attacks more squares after the move (centralization
+            // heuristic, implicit without writing an eval term). Small weight —
+            // additive to history. King mobility delta excluded (king activity
+            // is eval-handled, not ordering-relevant in pre-endgame).
+            if piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                if pt < 5 { // skip king (pt==5)
+                    let us = (piece >> 3) & 1;
+                    let occ = board.colors[0] | board.colors[1];
+                    let from_mob = crate::threats::piece_attacks_occ(pt, us, from as u32, occ).count_ones();
+                    let to_mob = crate::threats::piece_attacks_occ(pt, us, to as u32, occ).count_ones();
+                    score += (to_mob as i32 - from_mob as i32) * crate::search::MOBILITY_DELTA_WEIGHT.load(std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+
             // Reckless "offense bonus": quiet move that lands on a square
             // attacking an enemy non-pawn piece. +6000 flat. Not yet present
             // in Coda; Reckless has it at ~+6000. Signal: does our piece on
