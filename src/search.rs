@@ -136,6 +136,10 @@ tunables!(
     // Fits Titan's W2 pattern (binary signal gating a pruning decision).
     // Default 1 = skip NMP whenever any piece is hanging.
     (NMP_UNDEFENDED_MAX, 1, 0, 5, 1.0),
+    // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering weight.
+    // Bonus applied in movepicker quiets = (to_mobility - from_mobility) × this.
+    // Default 32 = ±256 typical range, additive to history (~1000s scale).
+    (MOBILITY_DELTA_WEIGHT, 32, 0, 256, 8.0),
     (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
     (LMR_THREAT_DIV, 4, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
