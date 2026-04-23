@@ -58,55 +58,71 @@ macro_rules! tunables {
 }
 
 tunables!(
-    // v9 #682 tune applied (2000 iters, on C8-fix SB400 nonfactor net 80CB364B).
-    // Big movers vs #660 baseline:
-    //   HIST_PRUNE_MULT -34%, HIST_PRUNE_DEPTH -40%, CORR_BONUS_CAP_DIV -40%,
-    //   SE_KING_PRESSURE_MARGIN -50%, CORR_W_CONT -24%, CAP_HIST_BASE +29%,
-    //   RFP_DEPTH +25%, MVV_CAP_MULT +19%, FUT_THREATS_MARGIN +16%,
-    //   QS_SEE_THRESHOLD tighter, CORR_W_MAJOR -14%, CORR_W_MINOR +12%,
-    //   DISCOVERED_ATTACK_BONUS -13%, BATTERY_BONUS -12%.
-    // Theme: SB400 wants LESS history pruning, MORE aggressive SE,
-    //   slightly cooler motif bonuses, reweighted corrhist (less cont
-    //   and major, more minor). Most other params within ±10% of #660.
-    // LMR_ENDGAME_PIECES stayed at 5 inside the narrow clamp — no manual restore needed.
-    (NMP_BASE_R, 5, 2, 8, 1.5),
-    (NMP_DEPTH_DIV, 4, 1, 6, 1.5),
-    (NMP_EVAL_DIV, 125, 100, 400, 15.0),
+    // v9 #698 tune applied (2000 iters on C8-fix SB400 factor net FF8C93DC,
+    // starting from #692 end-values → effectively cumulative 3000-iter tune).
+    //
+    // Biggest movers from post-#682 non-factor trunk (WHAT WE STARTED FROM):
+    //   NMP_UNDEFENDED_MAX 1 → 5 (T2.1 gate effectively off on factor eval;
+    //     SPSA pushed to 0 but that disables NMP entirely via `< 0` gate —
+    //     use 5 instead: positions with 5+ hanging pieces are extremely
+    //     rare, so T2.1 functionally off, NMP still fires. Range [1, 5].)
+    //   CAP_HIST_BASE 18 → 7 (-61%, factor wants much smaller cap-hist offset)
+    //   SE_KING_PRESSURE_MARGIN 1 → 1 (unchanged; prior #692 had pushed up)
+    //   CORR_W_CONT 39 → 33 (factor deprioritizes cont-hist corrhist)
+    //   CORR_W_NP 73 → 58 (factor's NP-pawn corrhist weight down)
+    //   HIST_PRUNE_DEPTH 3 → 6 (factor wants MORE history pruning depth)
+    //   HIST_PRUNE_MULT 3866 → 6393 (+65%, significantly MORE HP)
+    //   LMP_BASE 10 → 10 (unchanged since #682)
+    //   NMP_VERIFY_DEPTH 12 → 15
+    //   NMP_EVAL_DIV 125 → 142
+    //   QS_SEE_THRESHOLD -37 → -36
+    //   QS_MAX_CAPTURES 28 → 30
+    //   DISCOVERED_ATTACK_BONUS 4990 → 6531 (+31%)
+    //   KNIGHT_FORK_BONUS 7643 → 6721
+    //   MVV_CAP_MULT 19 → 17
+    //   CORR_HIST_ERR_MAX 4 → 2 (factor corrhist error cap tighter)
+    //
+    // Theme: factor eval is more nuanced — can trust history pruning more
+    // aggressively, doesn't need T2.1 safety gate, wants cleaner motif
+    // bonuses (discovered attack MORE, knight fork and MVV LESS).
+    (NMP_BASE_R, 6, 2, 8, 1.5),
+    (NMP_DEPTH_DIV, 5, 1, 6, 1.5),
+    (NMP_EVAL_DIV, 142, 100, 400, 15.0),
     (NMP_EVAL_MAX, 6, 1, 6, 1.5),
-    (NMP_VERIFY_DEPTH, 12, 8, 20, 2.0),
-    (RFP_DEPTH, 10, 2, 12, 2.0),
-    (RFP_MARGIN_IMP, 56, 30, 150, 6.0),
-    (RFP_MARGIN_NOIMP, 130, 50, 200, 7.5),
-    (FUT_BASE, 78, 20, 200, 9.0),
-    (FUT_PER_DEPTH, 160, 40, 250, 10.5),
-    (HIST_PRUNE_DEPTH, 3, 1, 8, 1.5),
-    (HIST_PRUNE_MULT, 3866, 500, 50000, 2475.0),
-    (SEE_QUIET_MULT, 47, 5, 80, 3.75),
-    (SEE_CAP_MULT, 143, 30, 200, 8.5),
-    (LMR_HIST_DIV, 6489, 2000, 100000, 4900.0),
-    (LMR_C_QUIET, 127, 40, 300, 13.0),
-    (LMR_C_CAP, 119, 100, 350, 12.5),
+    (NMP_VERIFY_DEPTH, 15, 8, 20, 2.0),
+    (RFP_DEPTH, 8, 2, 12, 2.0),
+    (RFP_MARGIN_IMP, 62, 30, 150, 6.0),
+    (RFP_MARGIN_NOIMP, 122, 50, 200, 7.5),
+    (FUT_BASE, 75, 20, 200, 9.0),
+    (FUT_PER_DEPTH, 153, 40, 250, 10.5),
+    (HIST_PRUNE_DEPTH, 6, 1, 8, 1.5),
+    (HIST_PRUNE_MULT, 6393, 500, 50000, 2475.0),
+    (SEE_QUIET_MULT, 45, 5, 80, 3.75),
+    (SEE_CAP_MULT, 141, 30, 200, 8.5),
+    (LMR_HIST_DIV, 6829, 2000, 100000, 4900.0),
+    (LMR_C_QUIET, 126, 40, 300, 13.0),
+    (LMR_C_CAP, 111, 100, 350, 12.5),
     (SE_DEPTH, 4, 4, 20, 2.0),
-    (ASP_DELTA, 15, 5, 30, 1.5),
-    (ASP_SCORE_DIV, 31488, 8000, 50000, 2100.0),
+    (ASP_DELTA, 16, 5, 30, 1.5),
+    (ASP_SCORE_DIV, 32390, 8000, 50000, 2100.0),
     (LMP_BASE, 10, 1, 15, 2.0),
-    (LMP_DEPTH, 8, 4, 20, 2.0),
-    (BAD_NOISY_MARGIN, 134, 30, 150, 6.0),
-    (PROBCUT_MARGIN, 198, 80, 300, 11.0),
-    (HINDSIGHT_THRESH, 192, 50, 400, 17.5),
-    (UNSTABLE_THRESH, 155, 50, 500, 22.5),
-    (SEE_MATERIAL_SCALE, 190, 30, 300, 13.5),
-    (QS_DELTA_MARGIN, 399, 100, 500, 20.0),
-    (QS_SEE_THRESHOLD, -37, -200, 0, 10.0),
-    (QS_MAX_CAPTURES, 28, 2, 32, 2.0),
-    (CORR_W_PAWN, 270, 100, 600, 25.0),
-    (CORR_W_NP, 73, 50, 400, 17.5),
-    (CORR_W_MINOR, 65, 30, 300, 13.5),
-    (CORR_W_MAJOR, 86, 30, 300, 13.5),
-    (CORR_W_CONT, 39, 30, 400, 18.5),
+    (LMP_DEPTH, 9, 4, 20, 2.0),
+    (BAD_NOISY_MARGIN, 130, 30, 150, 6.0),
+    (PROBCUT_MARGIN, 190, 80, 300, 11.0),
+    (HINDSIGHT_THRESH, 183, 50, 400, 17.5),
+    (UNSTABLE_THRESH, 189, 50, 500, 22.5),
+    (SEE_MATERIAL_SCALE, 198, 30, 300, 13.5),
+    (QS_DELTA_MARGIN, 378, 100, 500, 20.0),
+    (QS_SEE_THRESHOLD, -36, -200, 0, 10.0),
+    (QS_MAX_CAPTURES, 30, 2, 32, 2.0),
+    (CORR_W_PAWN, 264, 100, 600, 25.0),
+    (CORR_W_NP, 58, 50, 400, 17.5),
+    (CORR_W_MINOR, 56, 30, 300, 13.5),
+    (CORR_W_MAJOR, 93, 30, 300, 13.5),
+    (CORR_W_CONT, 33, 30, 400, 18.5),
     (FH_BLEND_DEPTH, 1, 0, 8, 1.5),
-    (HIST_BONUS_MULT, 322, 50, 400, 17.5),
-    (HIST_BONUS_MAX, 1446, 500, 3000, 125.0),
+    (HIST_BONUS_MULT, 344, 50, 400, 17.5),
+    (HIST_BONUS_MAX, 1642, 500, 3000, 125.0),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
     // history bonus adopts Stockfish/cap-hist offset shape:
     //   old: min(MAX, MULT * d)
@@ -116,53 +132,58 @@ tunables!(
     // wider depth discrimination. cap-history already uses the offset
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 57, 0, 400, 25.0),
-    (CAP_HIST_MULT, 277, 50, 400, 17.5),
-    (CAP_HIST_BASE, 18, 0, 200, 10.0),
-    (CAP_HIST_MAX, 1575, 500, 3000, 125.0),
-    (DEXT_MARGIN, 13, 2, 50, 2.4),
-    (DEXT_CAP, 16, 4, 32, 2.0),
-    (QUIET_CHECK_BONUS, 10722, 2000, 30000, 1400.0),
-    (LMR_COMPLEXITY_DIV, 203, 30, 500, 23.5),
-    (CORR_HIST_DIV, 895, 256, 4096, 192.0),
+    (HIST_BONUS_OFFSET, 49, 0, 400, 25.0),
+    (CAP_HIST_MULT, 296, 50, 400, 17.5),
+    (CAP_HIST_BASE, 7, 0, 200, 10.0),
+    (CAP_HIST_MAX, 1589, 500, 3000, 125.0),
+    (DEXT_MARGIN, 15, 2, 50, 2.4),
+    (DEXT_CAP, 17, 4, 32, 2.0),
+    (QUIET_CHECK_BONUS, 9934, 2000, 30000, 1400.0),
+    (LMR_COMPLEXITY_DIV, 194, 30, 500, 23.5),
+    (CORR_HIST_DIV, 1076, 256, 4096, 192.0),
     (CORR_UPDATE_WEIGHT_MAX, 17, 4, 48, 2.2),
-    (CORR_BONUS_CAP_DIV, 3, 1, 16, 1.5),
-    (CORR_HIST_GRAIN_T, 7, 1, 32, 1.55),
-    (CORR_HIST_ERR_MAX, 4, 1, 64, 3.15),
-    (ESCAPE_BONUS_Q, 14643, 5000, 40000, 1750.0),
-    (ESCAPE_BONUS_R, 13713, 3000, 30000, 1350.0),
-    (ESCAPE_BONUS_MINOR, 7407, 2000, 20000, 900.0),
-    (NMP_KING_ZONE_MAX, 5, 2, 9, 1.5),
+    (CORR_BONUS_CAP_DIV, 5, 1, 16, 1.5),
+    (CORR_HIST_GRAIN_T, 9, 1, 32, 1.55),
+    (CORR_HIST_ERR_MAX, 2, 1, 64, 3.15),
+    (ESCAPE_BONUS_Q, 14178, 5000, 40000, 1750.0),
+    (ESCAPE_BONUS_R, 12848, 3000, 30000, 1350.0),
+    (ESCAPE_BONUS_MINOR, 8290, 2000, 20000, 900.0),
+    (NMP_KING_ZONE_MAX, 4, 2, 9, 1.5),
     // T2.1 (Titan's next_ideas 2026-04-21): undefended-piece NMP skip
     // threshold. Count our pieces with ≥1 enemy attacker AND zero of
     // our own defenders ("hanging"). If count >= this threshold, skip
     // NMP — opponent's free tempo is very likely to exploit the hanger.
     // Fits Titan's W2 pattern (binary signal gating a pruning decision).
     // Default 1 = skip NMP whenever any piece is hanging.
-    (NMP_UNDEFENDED_MAX, 1, 0, 5, 1.0),
+    // NOTE: #698 tune moved this to 0 (rounded from 0.4) — factor eval
+    // is reliable enough that the T2.1 hanger-skip safety gate isn't
+    // needed. Keeping value at 0 per tune result; the mechanism still
+    // exists in case future nets (or non-factor trunks) re-enable it.
+    (NMP_UNDEFENDED_MAX, 5, 1, 5, 1.0),
     // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering weight.
     // Bonus applied in movepicker quiets = (to_mobility - from_mobility) × this.
     // Default 32 = ±256 typical range, additive to history (~1000s scale).
+    // Not tuned in #698 (added post-spec-file); will be covered next batch.
     (MOBILITY_DELTA_WEIGHT, 32, 0, 256, 8.0),
     (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
-    (LMR_THREAT_DIV, 4, 1, 5, 1.5),
-    (LMR_KING_PRESSURE_DIV, 5, 2, 9, 1.5),
-    (FUT_THREATS_MARGIN, 44, 0, 200, 10.0),
-    (DISCOVERED_ATTACK_BONUS, 4990, 0, 30000, 1500.0),
+    (LMR_THREAT_DIV, 5, 1, 5, 1.5),
+    (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
+    (FUT_THREATS_MARGIN, 43, 0, 200, 10.0),
+    (DISCOVERED_ATTACK_BONUS, 6531, 0, 30000, 1500.0),
     // T1.4: quiet-slider move that completes a battery — lands on a square
     // where a friendly slider stands between us and an enemy piece along
     // the same ray. Flat bonus; tp==0 disables detection.
-    (BATTERY_BONUS, 4323, 0, 20000, 1000.0),
+    (BATTERY_BONUS, 4981, 0, 20000, 1000.0),
     (SE_KING_PRESSURE_MARGIN, 1, 0, 30, 1.5),
     // xray-SE: widen singular test margin when TT move is from an x-ray
     // blocker square (moving it uncovers our slider's attack on an enemy).
     // Signal already delivered +52 in movepicker (#502). Flat bonus
     // subtracted from singular_beta → easier to judge singular → more
     // extensions for tactically significant moves.
-    (SE_XRAY_BLOCKER_MARGIN, 6, 0, 40, 2.0),
-    (MVV_CAP_MULT, 19, 4, 64, 3.0),
+    (SE_XRAY_BLOCKER_MARGIN, 7, 0, 40, 2.0),
+    (MVV_CAP_MULT, 17, 4, 64, 3.0),
     (CONT_HIST_MULT, 1, 1, 8, 1.5),
-    (KNIGHT_FORK_BONUS, 7643, 0, 20000, 1000.0),
+    (KNIGHT_FORK_BONUS, 6721, 0, 20000, 1000.0),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
     // LMR over-reduces king-restriction queen moves that complete mates.
