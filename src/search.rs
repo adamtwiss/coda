@@ -2128,6 +2128,19 @@ fn negamax(
         }
     };
 
+    // Skip NMP when TT signals a valuable-piece capture is available at this
+    // position (TT_LOWER bound with TT move capturing >= knight value).
+    // Reckless pattern: TT-Lower with valuable TT-capture suggests tactical
+    // pressure where NMP's "opponent passes" assumption is unreliable.
+    // Reckless #688 / related: +3.43 STC / +3.67 LTC.
+    let nmp_skip_tt_capture = tt_hit
+        && tt_entry.flag == TT_FLAG_LOWER
+        && tt_move != NO_MOVE
+        && {
+            let victim_pt = board.piece_type_at(move_to(tt_move));
+            victim_pt != NO_PIECE_TYPE && see_value(victim_pt) >= see_value(KNIGHT)
+        };
+
     if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
         && !prev_was_null  // Prevent consecutive null moves
@@ -2136,6 +2149,7 @@ fn negamax(
         && king_zone_pressure < tp(&NMP_KING_ZONE_MAX)  // New gate
         && any_threat_count < 3  // S7-style: skip NMP when many of our pieces are under threat
         && undefended_count < tp(&NMP_UNDEFENDED_MAX)  // T2.1: skip when hanging pieces
+        && !nmp_skip_tt_capture  // Skip when TT has valuable capture (Reckless)
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
