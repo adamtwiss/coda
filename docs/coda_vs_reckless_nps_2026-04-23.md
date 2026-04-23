@@ -412,8 +412,13 @@ Candidate causes:
   ancestors and replays from the nearest accurate one. When Coda's
   lazy-accumulator pattern leaves an intermediate parent unmaterialised,
   we pay a full rebuild that Reckless would avoid.
-- This is a **structural fix opportunity** — adding ancestor-walkback
-  should measurably reduce the rebuild rate.
+- **Note: multi-ply PSQ walk-back was tried 2026-04-17 (SPRT #424) and
+  H0'd at −17.86 Elo.** Replay cost at h=768 exceeded Finny-diff-refresh.
+  What did land: per-pov `AccEntry.computed` (a9f6e1f). So the
+  rebuild-rate gap vs Reckless is mostly a counting artefact (our
+  counter sees "at least one perspective rebuilds" = 45.65%; per-pov
+  it's ~22% each side, similar to Reckless's 19.5% PST). The headline
+  stat oversold the recoverable delta here.
 
 ### Make + unmake with threat-delta generation ACTIVE
 
@@ -467,7 +472,7 @@ movegen likely too) partly offsetting.
 1. **Investigate the 28× L1 cache miss rate on incremental eval**
    (15.72% in Coda vs 0.55% in Reckless). Every fix here is multiplied
    by 0.677 evals/node — high leverage.
-2. **Reduce rebuild rate via ancestor-walkback** in `materialize`.
+2. **Reduce evals/node via eval-only TT writeback** (see §3).
    Moving from 45.65% → ~20% rebuilds would close roughly half the
    per-eval-cost gap, since rebuilds are 2.8× slower than incrementals.
 3. **Eval-only TT writeback** to directly reduce evals/node.
@@ -475,6 +480,222 @@ movegen likely too) partly offsetting.
    reduces evals/node by reducing node count.
 
 Pushing the byteboard splat to the bottom of the priority stack.
+
+## Cross-reference with 2026-04-18 findings
+
+`docs/v9_nps_findings_2026-04-18.md` covered earlier NPS work and
+measured several things that are still valid here. Re-checking what
+has/hasn't changed, and what 2026-04-18 got right/wrong:
+
+### Still-valid prior findings
+
+- **Walk-back refresh distance distribution** (2026-04-18):
+  47.8% of refreshes have accurate ancestor within 2 plies
+  (d1=18.6%, d2=29.2%). Estimated +2-3% NPS. Today's measurement
+  shows the full-rebuild rate is 45.65% — in the same ballpark as
+  2026-04-18's 40.7%, so the walk-back opportunity is unchanged.
+- **apply_threat_deltas histogram** (2026-04-18): avg 10.71 deltas/call,
+  uniform distribution. Cap/batch optimisation dead.
+- **push_threats section breakdown** (2026-04-18):
+  - Section 2b (sliders x-ray TO this square): **27.4% of push_threats,
+    2.5% of engine CPU, 0.57 deltas per call at 211 cycles/call.**
+    Single biggest hotspot inside the threat pipeline.
+  - Section 1 (direct threats FROM piece): 6.4% of push_threats.
+- **Const-generic caller doesn't propagate through SIMD helpers**:
+  full end-to-end const refactor needed to see gain (2-3 days). Shelved.
+- **PGO regresses -10% on v9**: kept shelved. The 2026-04-18 fix
+  (fixing threat-gen inliner confusion) wasn't attempted; same
+  symptom remains.
+
+### Changed / contradicted
+
+- 2026-04-18 claimed "Coda's NNUE alone consumes ~3.4 μs/node,
+  Reckless's entire per-node time is ~3.3 μs". Today's per-call
+  microbench numbers don't support that framing — at 548K NPS = 1.82
+  μs/node, 61% NNUE = 1.1 μs/node NNUE, not 3.4 μs. The 2026-04-18
+  figure looks like a unit mix-up. **The 2× NPS gap persists; it's
+  not quite right that "Coda's NNUE alone equals Reckless's entire
+  per-node time".**
+- 2026-04-18 concluded "remaining gap to Reckless is 15-20% NPS,
+  recoverable via 3 small wins". Today's measurement shows the gap
+  is still ~2× on Zen 5 (AVX-512+VNNI), with per-eval cost 1.86×
+  and evals/node 1.30× — combined 2.42× eval-side cost. **The 2×
+  gap is the reality even after VNNI landed; 15-20% understated it.**
+- 2026-04-18 said "the last tune delivered +38.6 Elo in a day. Three
+  NPS commits in a day delivered +3.8% NPS ≈ +4 Elo." — the
+  Elo-economics framing there was right **at that time**. Post-tune
+  the easy tuning Elo is harder to find, and the 2× NPS gap remaining
+  is structural — at some point NPS IS the dominant Elo lever.
+
+### Walk-back refresh: previous attempt confounded — worth retry
+
+2026-04-18 proposed PSQ walk-back as the top lever (+2-3% NPS). It was
+attempted 2026-04-17 (commit 21f02ff) and SPRT #424 H0'd at **−17.86
+Elo**. Reading the commit message carefully, the regression was a mix
+of walk-back effects **and** unrelated structural changes:
+
+- `AccEntry.computed: bool` → `[bool; 2]` (per-pov) — this DID land.
+- Added `DirtyPiece.needs_refresh: [bool; 2]` — 3 extra bytes per
+  stack entry.
+- Added entry-guard branches in `materialize`'s fast path.
+- Added a `#[cold]` outlined slow path doing per-pov walkback +
+  chain replay.
+
+Critical note from the commit: **"Common-case fast-path is
+byte-identical to old code, so the overhead is elsewhere — struct
+size (+3 bytes AccEntry), extra branches in materialize's entry
+guard, or code-layout effects."** Bench regressed 4% before SPRT even
+started. So the -17.86 Elo reflects *structural overhead on the hot
+path* plus whatever walk-back itself contributed — we never
+disentangled the two.
+
+The replacement (a9f6e1f) kept per-pov but dropped walk-back, citing
+"materialize microbench showed lazy-chain case was 3.5× slower".
+That's a real measurement, BUT:
+
+- **Reckless uses exactly this pattern successfully** — their
+  `update_pst_accumulator` does `for i in accurate..self.index { ... }`
+  to replay from the nearest accurate ancestor.
+- Reckless's per-feature weight footprint is **much smaller** than
+  Coda's (the 49 MB threat matrix — see sparsity §§). Their replay is
+  cache-hot; ours likely spills to DRAM per replayed delta.
+- So "walk-back is 3.5× slower" may be specific to Coda's current
+  memory layout, not inherent to the approach.
+
+**Retry candidate**: walk-back PSQ is worth re-attempting if one of
+the following holds:
+
+1. **Minimal-overhead re-implementation**: keep the current hot-path
+   byte-for-byte, add walk-back as a separate entry point called only
+   when `!stack[top-1].computed`. No extra AccEntry bytes, no extra
+   fast-path branches. If bench stays flat, the 2026-04-17 bench
+   regression was the struct/layout overhead, not walk-back itself.
+2. **Post-sparsity retry**: once the threat weight matrix shrinks
+   enough to fit in L3 (via aggressive L1 reg or width reduction —
+   see §§ sparsity), the replay is no longer DRAM-bound. Walk-back's
+   cost drops below Finny-refresh's, matching Reckless's regime.
+
+Both are reasonable follow-ups. Option 1 is cheap (half-day) and
+isolates the question of "is walk-back itself slow or was the
+refactor packaging slow". If option 1 stays flat in bench, run SPRT
+carefully (tight bounds, not #424's structural muddle). If option 1
+*also* regresses on bench, then the 3.5×-slower-replay claim is
+validated and we wait for option 2.
+
+### Rebuild-rate interpretation (narrower)
+
+Coda's "full rebuild" counter reports 45.65%. Per-pov, that's
+approximately 22% per side — similar to Reckless's 19.5% PST rebuild.
+**The headline "Coda rebuilds 2× more often" in my earlier doc was a
+counting artefact** (Coda's counter fires when either perspective
+rebuilds; Reckless's is per-perspective). So the recoverable delta
+from reducing rebuild rate is smaller than the headline suggested;
+the question is whether walk-back is faster than Finny-refresh for
+Coda's memory layout — which is what option 1 above would test.
+
+### Structural wins that DID land since 2026-04-18
+
+Not NPS, but worth noting so the NPS lever-list isn't re-proposed as
+Elo levers:
+
+- **Reckless-style king-bucket layout (kb10)** — shipped; materially
+  affected net file, not per-eval speed.
+- **Factoriser in Bullet training** — shipped; Elo gain from better
+  net quality, not from faster inference.
+
+### Cross-reference: sparsity investigation (2026-04-19)
+
+`docs/v9_sparsity_investigation_2026-04-19.md` is directly relevant to
+today's L1-miss-rate finding. Summary of its key measurements:
+
+- **v9 L1d miss rate (on Hercules via `perf stat`): 26.0%**, vs v5's
+  16.5%. v9 is memory-bound, not compute-bound. Matches my Zen-5
+  measurement of 15.72% L1 miss on the incremental eval microbench.
+- **Threat weight matrix: 66,864 × 768 bytes = 49 MB.** On machines
+  with 16-32 MB L3, that matrix spills into DRAM on the cold tail
+  of accesses.
+- **Activation distribution is heavy-tailed**: top 706 features do
+  50% of activations; 74% of features contribute <1% of work.
+- **8.4% of weight rows are structural zeros** (impossible
+  piece-interaction combinations). Load-time compact captures this
+  as a strict win (no Elo risk, bench-identical).
+- **L1 regularisation at 1e-6/1e-7 did NOT add more sparsity** —
+  cumulative soft-threshold over a training run is negligible vs
+  typical weight magnitudes. Need L1 at 1e-4 to 1e-3 to shrink
+  beyond the structural floor, with Elo risk from killing marginal
+  features.
+- **Load-time compact is implemented** on branch
+  `experiment/l1-inference-compact`. Bench-neutral. Ready to merge;
+  waiting on a sparser net to justify.
+
+**This explains the 15.72% L1 miss rate finding directly.** The gap
+to Reckless's 0.55% isn't magical cache-friendliness in their inference
+code — it's the **weight matrix being the wrong size**:
+- Reckless: ~800 features × ~1 KB row × 50% density ≈ 400 KB
+  (fits entirely in L2)
+- Coda v9: 49 MB (spills out of L3 on most machines)
+
+The threat weight matrix is the single largest NNUE allocation, and
+it's accessed with a heavy-tailed pattern that exercises the cold
+parts. Reckless's NNUE footprint is ~100× smaller; every probe stays
+in L2.
+
+### Implication for NPS priorities (major revision)
+
+This recasts priorities substantially. The cache-miss finding is NOT
+fixable on the inference side alone — the matrix is simply too big.
+Real NPS wins from memory footprint require **training-side changes**:
+
+**Training-side levers** (bigger expected NPS impact):
+1. **Aggressive L1 regularisation (λ = 1e-4 to 1e-3) retrain** —
+   aim to drive 40-60% of feature rows to zero. At 15-20 MB matrix
+   we cross the L3 boundary on most machines → **step-function NPS
+   gain of 10-30% on memory-constrained hosts** (smaller on beefy
+   ones like Zen 5). Requires one training cycle (~4h GPU). Elo
+   risk from killed marginal features; tune λ conservatively.
+2. **Accumulator width 768 → 640** — 17% memory reduction brute-force.
+   Full retrain, uncertain Elo cost, combines with (1).
+3. **Piece-interaction feature redesign** — eliminate structurally
+   impossible features upfront in the feature space. ~20-30%
+   reduction, bigger refactor.
+
+**Inference-side levers** (smaller NPS impact, lower risk):
+4. **Ship the load-time compact** (`experiment/l1-inference-compact`)
+   — ~4 MB on the current net, bench-neutral. Essentially free.
+   Doesn't need waiting for sparser nets.
+5. **Eval-only TT writeback** (Hercules's idea) — reduces evals/node,
+   not per-eval cost. Orthogonal to the cache issue.
+
+Dropping from the old priority list:
+- **"Investigate L1 cache miss rate"** — partially investigated:
+  the cause is known (49 MB matrix + heavy-tailed access), but the
+  fix is training-side, not inference-side.
+- **Walk-back PSQ** — tried and rejected (−17.86 Elo).
+- **Byteboard splat** — Coda's make+unmake is already faster than
+  Reckless's with threats active. Not the bottleneck.
+
+### Revised takeaway
+
+- Walk-back PSQ: **previous attempt confounded**; clean re-implementation
+  (minimal overhead, isolate walk-back from struct/layout churn) is
+  worth half a day. Post-sparsity retry also makes sense.
+- Per-pov `computed` tracking: **already done** (a9f6e1f).
+- Rebuild-rate gap: smaller than headline once counted per-pov.
+- **Current ranked NPS levers** (combining all three docs):
+  1. **Training-side memory shrink**: aggressive L1 reg (1e-4 to 1e-3),
+     or width reduction 768→640, to cross the 32 MB L3 boundary.
+     **Step-function NPS gain on cache-constrained hosts.**
+  2. **Load-time compact merge** (`experiment/l1-inference-compact` →
+     trunk): ~4 MB free today, more with sparser nets later.
+  3. **Clean-re-try PSQ walk-back** with no hot-path overhead —
+     isolate whether the 3.5×-slower claim survives when you remove
+     the struct/layout confound. Half day.
+  4. **Eval-only TT writeback** (Hercules): reduce evals/node.
+  5. **LMP direct-check** (Hercules, separate): +9.46 LTC Elo,
+     shrinks tree → fewer eval calls.
+
+#1 has the biggest potential NPS step but needs a training run. #2-5
+are all incremental wins and independently testable.
 
 ## What we didn't measure
 
