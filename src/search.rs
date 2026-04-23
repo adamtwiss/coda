@@ -2008,6 +2008,9 @@ fn negamax(
     let mut raw_eval = -INFINITY;
     let mut scaled_eval = -INFINITY;
     let mut improving = false;
+    // Continuous improvement signal in centipawns: static_eval - prev2_eval,
+    // with prev4 fallback. Used by adaptive LMP (Reckless #723).
+    let mut improvement: i32 = 0;
     if !in_check {
         if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
             raw_eval = tt_entry.static_eval;
@@ -2032,12 +2035,14 @@ fn negamax(
             let prev2 = info.static_evals[ply_u - 2];
             if prev2 > -INFINITY + 1 {
                 improving = static_eval > prev2;
+                improvement = static_eval - prev2;
             } else if ply_u >= 4 {
                 let prev4 = info.static_evals[ply_u - 4];
                 if prev4 > -INFINITY + 1 {
                     improving = static_eval > prev4;
+                    improvement = static_eval - prev4;
                 }
-                // else: leave improving=false (no usable baseline).
+                // else: leave improving=false, improvement=0.
             }
         }
     } else {
@@ -2575,19 +2580,30 @@ fn negamax(
         }
 
         // Late Move Pruning: at shallow depths, skip late quiet moves.
-        // Applied before MakeMove. Formula: (LMP_BASE + depth²) / (2 - improving)
+        // Applied before MakeMove. Adaptive formula scales the limit by
+        // continuous improvement signal: strongly-improving positions see
+        // more moves before LMP fires; worsening positions see fewer.
+        // Reckless #723: +3.92 STC / +5.19 LTC.
         //
-        // C8 audit LIKELY #9: add !is_pv guard. CLAUDE.md "Pruning features"
-        // section states LMP is non-PV only, matching
-        // SF/Obsidian/Viridithas/Berserk consensus; the code was missing
-        // the gate so LMP fired on PV nodes.
+        // Formula: let adjust = improvement.clamp(-100, 218)
+        //   factor0 = 2515 + 130*adjust/16
+        //   factor1 = 946 + 79*adjust/16
+        //   limit = (factor0 + factor1 * depth²) / 1024
+        //
+        // Constants are Reckless's Optuna-tuned values; held fixed for
+        // the initial SPRT, SPSA candidates if H1 lands.
+        //
+        // C8 audit LIKELY #9: !is_pv guard preserved from previous formula.
         if ply > 0 && !is_pv && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
             && !is_cap && !is_promo
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
         {
-            let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
-            if move_count > lmp_limit {
+            let adjust = improvement.clamp(-100, 218);
+            let factor0 = 2515 + 130 * adjust / 16;
+            let factor1 = 946 + 79 * adjust / 16;
+            let lmp_limit = (factor0 + factor1 * depth * depth) / 1024;
+            if move_count as i32 > lmp_limit {
                 info.stats.lmp_prunes += 1;
                 continue;
             }
