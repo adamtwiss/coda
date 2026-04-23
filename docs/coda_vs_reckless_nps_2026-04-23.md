@@ -761,21 +761,27 @@ easy fix via `#[repr(C, align(64))]` wrappers or explicit alloc.
 
 ### Revised lever ranking (final)
 
-All three docs merged:
+All three docs merged. Items 1, 4, 5 specifically target cache hygiene
+independent of total footprint — they keep paying off on machines
+where 49 MB fits.
 
-1. **Flatten AccEntry to inline arrays** — pure cache-friendliness,
-   half-day, bench-verifiable. New, not previously investigated.
-2. **Training-side memory shrink** (aggressive L1 reg, width 768→640)
-   — step-function gain on small-cache hosts. Training run + SPRT.
-3. **Load-time compact merge** (`experiment/l1-inference-compact`)
-   — 4 MB free today. Low effort.
-4. **Hot-feature frontloading** — reorder matrix by activation
-   frequency. Half day, bench-verifiable.
-5. **Prefetch in threat-delta apply** — half day, measurable on
-   per-eval latency even on big caches.
-6. **Clean-retry PSQ walk-back** with minimal hot-path overhead.
-7. **Eval-only TT writeback** (Hercules) — reduce evals/node.
-8. **LMP direct-check** (Hercules, separate) — +9.46 LTC Elo.
+| # | Lever | Effort | Where the win lives |
+|---|---|---|---|
+| 1 | Flatten `AccEntry` → inline arrays | Half day | L1/L2 cache behaviour (all hosts) |
+| 2 | Training-side memory shrink (L1 reg / width) | Training cycle | Small-cache L3 fit |
+| 3 | Ship load-time compact merge (`experiment/l1-inference-compact`) | Low | 4 MB free today |
+| 4 | Hot-feature frontloading | Half day | Hot working set L2 residency |
+| 5 | Prefetch in `apply_threat_deltas` | Half day | Per-eval latency (all hosts) |
+| 6 | Clean-retry PSQ walk-back (minimal hot-path overhead) | Half day | Rebuild cost |
+| 7 | Eval-only TT writeback (Hercules) | Low | Evals/node |
+| 8 | LMP direct-check exemption (Hercules, separate) | Low | Tree size, +9.46 LTC Elo |
+
+Items 1, 4, 5 are pure inference-side cache hygiene — the category
+I had initially dismissed too quickly. They don't need training
+cycles or waiting for sparser nets. Items 7-8 are Hercules territory
+(pruning), but reduce evals per node so they land NPS wins too.
+Item 2 is the big step-function for small-cache hosts but needs a
+training cycle.
 
 Items 1, 4, 5 are **pure inference-side cache hygiene** — the
 category I had dismissed too quickly. They don't need training
