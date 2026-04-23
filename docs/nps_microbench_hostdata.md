@@ -94,5 +94,35 @@ ISA: AVX-2 only)
 
 ---
 
+## Titan — 2026-04-23
+
+**CPU**: AMD EPYC 7351P 16-Core (Zen 1 / Naples, ISA: AVX-2 only)
+**L3**: 64 MB total (16 MB per CCX, single-thread sees ~16 MB close)
+
+| Mode | Coda native | Reckless native | Ratio (R/C) |
+|---|---:|---:|---:|
+| fresh (scalar) | 27,938 | — | — |
+| refresh / fresh (SIMD) | 272,626 | 242,538 | **0.89× (Coda faster)** |
+| incremental | 552,429 | 999,573 | **1.81×** |
+| make-unmake (observer on) | 6,538,794 | 3,133,312 | **0.48× (Coda 2× faster)** |
+| make-unmake-null (no observer) | — | 3,926,200 | — |
+
+**Observations**:
+- Incremental ratio **1.81×** — between Zeus native (1.66×) and Zeus
+  AVX-2 forced (2.20×), better than Hercules Coffee Lake (3.06×).
+  The "smaller cache = worse ratio" thesis doesn't track linearly
+  across uArchs — Zen's CCX-local memory hierarchy helps here vs
+  Intel's monolithic L3.
+- First host where **Coda's SIMD refresh beats Reckless's fresh**
+  (272K vs 243K, R/C=0.89). Not sure why yet — possibly Reckless's
+  refresh path has worse codegen on Zen 1's older decoder.
+- **Coda make-unmake 2× faster** than Reckless here (6.5M vs 3.1M).
+  Byteboard-splat deprioritisation strengthens across hosts: Coda
+  1.17× faster on Zeus, tied on Hercules, 2× faster on Titan.
+
+**Submitted by**: Titan (separate Claude instance).
+
+---
+
 <!-- Append new host blocks above this line. Keep the format consistent
      so a cross-host summary table can be regenerated mechanically. -->
