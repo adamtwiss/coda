@@ -1993,6 +1993,14 @@ fn detect_neon() -> bool {
     { false }
 }
 
+/// Global "load any net even on training/inference config mismatch" override.
+/// Set via the `--load-anyway` CLI flag or UCI option `LoadAnyway`. Refuses
+/// mismatches by default (noisy — crashes the engine startup) so mismatches
+/// can't silently degrade SPRT/OB/Lichess games. Diagnostic-only escape
+/// hatch for intentionally loading a mismatched net.
+pub static LOAD_ANYWAY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// NNUE network weights (shared, read-only after loading).
 pub struct NNUENet {
     pub hidden_size: usize,
@@ -2026,6 +2034,13 @@ pub struct NNUENet {
     pub threat_weights: Vec<i8>,  // [num_threat_features × hidden_size] i8 weights
     pub num_threat_features: usize,
     pub has_threats: bool,
+    /// Whether the net was trained WITH xray threat features. Coda inference
+    /// always emits xrays, so nets with `xray_trained=false` will produce
+    /// garbage eval (weights were learned against direct-attack signal only,
+    /// but inference multiplies them in xray contexts too). v10+ nets record
+    /// this in the header; v9 and earlier default to true (legacy assumption
+    /// since all pre-v10 threat nets were trained with --xray 1 / default).
+    pub xray_trained: bool,
     /// Number of king buckets in this net (10 for Reckless, 16 for others).
     /// PSQ weight block is sized `num_king_buckets * 768 * hidden_size`.
     pub num_king_buckets: usize,
@@ -2079,7 +2094,9 @@ impl NNUENet {
     /// Load from a byte slice (for embedded nets). No temp files needed.
     pub fn load_from_bytes(data: &[u8]) -> Result<Self, String> {
         let mut reader = std::io::Cursor::new(data);
-        Self::load_from_reader(&mut reader, data.len() as u64, "<embedded>")
+        let net = Self::load_from_reader(&mut reader, data.len() as u64, "<embedded>")?;
+        net.validate_compat()?;
+        Ok(net)
     }
 
     /// Load a v5/v6/v7 .nnue file.
@@ -2087,7 +2104,9 @@ impl NNUENet {
         let file_len = std::fs::metadata(path).map_err(|e| format!("stat {}: {}", path, e))?.len();
         let file = File::open(path).map_err(|e| format!("open {}: {}", path, e))?;
         let mut reader = BufReader::new(file);
-        Self::load_from_reader(&mut reader, file_len, path)
+        let net = Self::load_from_reader(&mut reader, file_len, path)?;
+        net.validate_compat()?;
+        Ok(net)
     }
 
     fn load_from_reader(reader: &mut impl IoRead, data_len: u64, source_name: &str) -> Result<Self, String> {
@@ -2111,11 +2130,14 @@ impl NNUENet {
         //   - extended_kb=1: hl_crelu (hidden-layer CReLU, vs default SCReLU)
         let mut consensus_buckets = false;
         let mut hl_crelu = false;
-        let mut has_threats = false; // bit 6: threat features (v9)
+        let mut has_threats = false; // bit 6: threat features (v9+)
         let mut num_threat_features = 0usize;
-        // extended_kb (bit 7) is only read inside the v7|8|9 match arm; declared locally there.
+        // extended_kb (bit 7) is only read inside the v7+ match arm; declared locally there.
         let mut num_king_buckets: usize = 16; // default (uniform/consensus)
         let mut kb_layout = KbLayout::Uniform;
+        // v10+: xray_trained from training_flags byte. v9 legacy default = true
+        // (all pre-v10 threat nets were --xray 1 / default at training time).
+        let mut xray_trained: bool = true;
         let hidden_size: usize;
 
         match version {
@@ -2144,14 +2166,14 @@ impl NNUENet {
                 }
                 hidden_size = (h_numer / h_denom) as usize;
             }
-            7 | 8 | 9 => {
+            7 | 8 | 9 | 10 => {
                 let flags = read_u8(reader)?;
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
                 if flags & 4 != 0 { l1_scale = 64; } // int8 L1 weights
                 bucketed_hidden = flags & 8 != 0; // output buckets baked into L1/L2
                 dual_l1 = flags & 16 != 0; // dual L1 activation (CReLU+SCReLU)
-                has_threats = flags & 64 != 0; // v9 threat features
+                has_threats = flags & 64 != 0; // v9+ threat features
                 let extended_kb = flags & 128 != 0; // bit 7: extended KB header
                 // Bit 5 has context-dependent meaning: consensus_buckets on
                 // legacy 16-bucket nets (extended_kb=0), hl_crelu on modern
@@ -2182,6 +2204,16 @@ impl NNUENet {
                     // Legacy 16-bucket path: consensus bit 5 picks layout.
                     kb_layout = if consensus_buckets { KbLayout::Consensus } else { KbLayout::Uniform };
                     num_king_buckets = 16;
+                }
+                // v10 training_flags byte (only for threat nets).
+                //   bit 0: xray_trained (1 = trained with xray threat features)
+                // v9 nets have no such byte — legacy default is xray_trained=true
+                // (all pre-v10 production nets were --xray 1 / default).
+                if version >= 10 {
+                    let training_flags = read_u8(reader)?;
+                    xray_trained = training_flags & 1 != 0;
+                } else {
+                    xray_trained = true;
                 }
                 hidden_size = ft_size;
             }
@@ -2420,6 +2452,7 @@ impl NNUENet {
             threat_weights,
             num_threat_features,
             has_threats,
+            xray_trained,
             num_king_buckets,
             kb_layout,
             king_bucket: king_bucket_tbl,
@@ -2434,6 +2467,30 @@ impl NNUENet {
             has_avx_vnni,
             has_neon,
         })
+    }
+
+    /// Load a net from file, enforcing inference-compatibility checks.
+    /// Wraps `load_from_bytes_raw` with `validate_compat`. All normal code
+    /// paths should use this; bypass is only via `--load-anyway` / UCI
+    /// option `LoadAnyway` for diagnostics on deliberately-mismatched nets.
+    fn validate_compat(&self) -> Result<(), String> {
+        if !self.has_threats {
+            return Ok(());
+        }
+        // Coda inference always emits xray threat features. A net trained
+        // with --xray 0 has weight rows for the same indices trained only
+        // on direct-attack signal; at inference, xray emissions would
+        // multiply through those (mis-calibrated-distribution) weights
+        // and degrade eval. Refuse to load by default.
+        if !self.xray_trained && !LOAD_ANYWAY.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(format!(
+                "net was trained without xray features (--xray 0), but Coda \
+                 inference always emits them — inference/training mismatch \
+                 would corrupt eval. Pass --load-anyway (CLI) or set UCI option \
+                 LoadAnyway=true to load for diagnostic purposes only."
+            ));
+        }
+        Ok(())
     }
 
     /// Get input weight row for a feature index.

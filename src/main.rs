@@ -66,6 +66,14 @@ struct Cli {
     /// Use classical (PeSTO) eval instead of NNUE
     #[arg(long = "classical")]
     classical: bool,
+
+    /// DIAGNOSTIC ONLY — load nets even when they mismatch Coda's inference
+    /// configuration (e.g. net trained with --xray 0 while Coda always emits
+    /// xrays). Default is refuse-to-load so mismatches can't silently degrade
+    /// SPRT / OB / Lichess games. Use only when deliberately probing a
+    /// mismatched net. Also available as UCI option `LoadAnyway`.
+    #[arg(long = "load-anyway", global = true)]
+    load_anyway: bool,
 }
 
 #[derive(Subcommand)]
@@ -272,6 +280,14 @@ enum Commands {
         /// HiddenActivation=crelu at load time.
         #[arg(long)]
         hl_crelu: bool,
+        /// Whether the net was trained WITH xray threat features (Bullet
+        /// --xray 1, the default). Coda inference always emits xrays, so
+        /// xray-disabled-trained nets mismatch at inference and are
+        /// refused at load time unless --load-anyway is set. Default true;
+        /// pass --no-xray-trained when converting a Bullet net trained
+        /// with --xray 0.
+        #[arg(long, default_value_t = true)]
+        xray_trained: bool,
     },
     /// Convert .nnue to Bullet checkpoint (for transfer learning)
     ConvertCheckpoint {
@@ -297,6 +313,11 @@ fn main() {
     init();
 
     let cli = Cli::parse();
+
+    if cli.load_anyway {
+        crate::nnue::LOAD_ANYWAY.store(true, std::sync::atomic::Ordering::Relaxed);
+        eprintln!("WARNING: --load-anyway set; training/inference mismatches will NOT refuse load");
+    }
 
     match cli.command {
         None => {
@@ -642,7 +663,7 @@ fn main() {
             run_eval_dist(&input, count, &cli.nnue);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu }) => {
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, xray_trained }) => {
             // Resolve king bucket layout and count. Explicit --kb-layout wins;
             // --consensus-buckets is the legacy path for 16-bucket consensus.
             let layout = if !kb_layout.is_empty() {
@@ -658,7 +679,7 @@ fn main() {
             let count = if kb_count > 0 { kb_count } else { layout.default_count() };
 
             let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu)
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, xray_trained)
             } else {
                 bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, layout, count)
             };

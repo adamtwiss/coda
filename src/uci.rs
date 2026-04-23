@@ -85,6 +85,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("option name TBHash type spin default 16 min 0 max 1024");
                 println!("option name SparseL1 type check default true");
                 println!("option name HiddenActivation type combo default screlu var screlu var crelu");
+                println!("option name LoadAnyway type check default false");
                 // Tunable search parameters (for SPSA)
                 for (name, _, default, min, max, _c_end) in crate::search::tunable_params() {
                     println!("option name {} type spin default {} min {} max {}", name, default, min, max);
@@ -739,6 +740,17 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
             // must explicitly match here so the protocol contract is
             // satisfied (some GUIs fail if setoption response is empty).
             println!("info string Ponder = {}", value);
+        }
+        "LoadAnyway" => {
+            // Diagnostic override — load nets even on training/inference
+            // mismatch (e.g. xray-disabled-trained net). MUST be set
+            // BEFORE the NNUEFile setoption that triggers load. Default
+            // false (refuse to load on mismatch — protects against silent
+            // corruption in SPRT / OB / Lichess where log noise is
+            // invisible).
+            let on = value.eq_ignore_ascii_case("true");
+            crate::nnue::LOAD_ANYWAY.store(on, std::sync::atomic::Ordering::Relaxed);
+            println!("info string LoadAnyway = {}", on);
         }
         _ => {
             // Check tunable search parameters
