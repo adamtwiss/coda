@@ -164,9 +164,25 @@ L3=32 MiB — identical spec to ionos1.
 | Coda incremental speedup | 2.26× (**1.81× after clock**) |
 
 After normalising for clock, Coda still gains 1.81× vs Reckless's
-1.34×. The residual delta is a memory-subsystem improvement (turbo
-headroom, DRAM channel config, co-tenant contention) that Coda's
-memory-bound code disproportionately benefits from.
+1.34×. The residual delta is almost certainly **self-inflicted L3
+contention** — IONOS VMs have dedicated cores but share physical
+sockets, so the 32 MB L3 is shared across all Adam-fleet VMs on a
+given CCD. When multiple VMs run OB workers simultaneously:
+- Each VM's threads evict the others' cache lines
+- Coda's 49 MB threat matrix can't even stay partially resident
+- Reckless's ~400 KB sits comfortably in L2 regardless
+
+ionos6 likely sits on a CCD where fewer (or zero) other Adam-fleet
+VMs are active, getting closer to "full 32 MB L3 to this VM". To
+validate: pause all Adam IONOS OB workers for ~2 min and re-run
+ionos1 microbench. If ionos1 jumps toward ionos6's numbers,
+confirmed self-contention.
+
+**Implication for lever priority**: Item 2 (training-side matrix
+shrink) gains additional weight — shrinking the matrix doesn't
+just fix Coda's residency, it reduces the memory-bandwidth
+footprint we impose on our fleet neighbours, so their Coda speeds
+up too. Compounding across the fleet.
 
 | Mode | Coda native | Reckless native | Ratio (R/C) |
 |---|---:|---:|---:|
