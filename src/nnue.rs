@@ -3724,16 +3724,46 @@ impl DirtyPiece {
     }
 }
 
-/// Single accumulator entry (two perspectives).
-#[derive(Clone)]
+/// Maximum NNUE hidden-size we support. Sizes the inline accumulator
+/// arrays inside `AccEntry` so the full stack is one contiguous buffer
+/// (HW-prefetcher-friendly, no scattered heap allocations). Current
+/// production v9 uses 768; v5-family nets top out at ~1024. 2048 leaves
+/// headroom and matches the existing `[0u8; 2048]` packing buffers
+/// elsewhere in this file.
+pub const MAX_HIDDEN_SIZE: usize = 2048;
+
+/// Per-ply accumulator entry. All four i16 buffers are inline arrays
+/// (not heap-allocated `Vec`s) so that the whole 256-ply accumulator
+/// stack lives in a single contiguous allocation — matching Reckless's
+/// `[PstEntry; MAX_PLY]` layout. Key effects:
+///
+/// - `materialize` walking back through the stack looking for a
+///   computed ancestor touches consecutive memory rather than chasing
+///   scattered heap blocks. HW prefetcher handles it.
+/// - Each entry is a fixed ~17 KB; the accumulator effectively always
+///   runs at its max width (`MAX_HIDDEN_SIZE`) but only `hidden_size`
+///   elements are read/written, so the extra tail costs only memory,
+///   not bandwidth.
+/// - No allocator calls on push / pop. Incremental updates copy slices
+///   between adjacent stack entries that are already hot in cache.
+///
+/// Previous layout used `Vec<i16>` × 4 per entry — 4 separate heap
+/// allocations per ply × 256 plies = ~1,000 scattered heap blocks. The
+/// v9 inference microbench saw 15.7% L1-dcache miss rate on incremental
+/// eval vs Reckless's 0.55%; this flatten targets that gap.
+///
+/// `#[repr(C, align(64))]`: align to a cache-line boundary so the
+/// four inline arrays start on clean cache-line boundaries, avoiding
+/// straddling reads.
+#[repr(C, align(64))]
 pub struct AccEntry {
-    pub white: Vec<i16>,
-    pub black: Vec<i16>,
+    pub white: [i16; MAX_HIDDEN_SIZE],
+    pub black: [i16; MAX_HIDDEN_SIZE],
+    // Threat accumulator (v9): separate i16 values summed with PSQ at activation
+    pub threat_white: [i16; MAX_HIDDEN_SIZE],
+    pub threat_black: [i16; MAX_HIDDEN_SIZE],
     computed: bool,
     dirty: DirtyPiece,
-    // Threat accumulator (v9): separate i16 values summed with PSQ at activation
-    pub threat_white: Vec<i16>,
-    pub threat_black: Vec<i16>,
     pub threat_accurate: [bool; 2], // per-perspective [WHITE, BLACK]
     pub threat_deltas: Vec<crate::threats::RawThreatDelta>,
     pub threat_move: Move, // the move that produced this ply (for king mirror check)
@@ -3777,12 +3807,12 @@ impl NNUEAccumulator {
         let mut stack = Vec::with_capacity(256);
         for _ in 0..256 {
             stack.push(AccEntry {
-                white: vec![0; hidden_size],
-                black: vec![0; hidden_size],
+                white: [0; MAX_HIDDEN_SIZE],
+                black: [0; MAX_HIDDEN_SIZE],
+                threat_white: [0; MAX_HIDDEN_SIZE],
+                threat_black: [0; MAX_HIDDEN_SIZE],
                 computed: false,
                 dirty: DirtyPiece::recompute(),
-                threat_white: Vec::new(), // allocated on first use if net has threats
-                threat_black: Vec::new(),
                 threat_accurate: [false; 2],
                 threat_deltas: Vec::new(),
                 threat_move: NO_MOVE,
@@ -3972,11 +4002,9 @@ impl NNUEAccumulator {
         let b_mirrored = (bk_sq % 8) >= 4;
 
         for ply in (ancestor_idx + 1)..=self.top {
-            // Allocate if needed
-            if self.stack[ply].threat_white.len() < h {
-                self.stack[ply].threat_white.resize(h, 0);
-                self.stack[ply].threat_black.resize(h, 0);
-            }
+            // Inline arrays are always `MAX_HIDDEN_SIZE`-wide; previous
+            // version's lazy `resize(h, 0)` is now a no-op (all entries
+            // pre-sized). Left blank to preserve the surrounding flow.
 
             let src = ply - 1; // source is always the previous ply (which we just computed)
 
@@ -4045,7 +4073,7 @@ impl NNUEAccumulator {
         let w_diff: i32 = (0..h).map(|j| (curr.threat_white[j] as i32 - check_w[j] as i32).abs()).sum();
         let b_diff: i32 = (0..h).map(|j| (curr.threat_black[j] as i32 - check_b[j] as i32).abs()).sum();
         if w_diff > 0 || b_diff > 0 {
-            eprintln!("  h={} tw_len={} got_w0={} exp_w0={}", h, curr.threat_white.len(), curr.threat_white[0], check_w[0]);
+            eprintln!("  h={} tw_max={} got_w0={} exp_w0={}", h, MAX_HIDDEN_SIZE, curr.threat_white[0], check_w[0]);
             // Was this from incremental or full recompute?
             let last_mv = if !board.undo_stack.is_empty() {
                 let u = &board.undo_stack[board.undo_stack.len() - 1];
@@ -4061,10 +4089,7 @@ impl NNUEAccumulator {
         let h = self.hidden_size;
         let entry = &mut self.stack[self.top];
 
-        if entry.threat_white.len() < h {
-            entry.threat_white.resize(h, 0);
-            entry.threat_black.resize(h, 0);
-        }
+        // Inline arrays are MAX_HIDDEN_SIZE-wide; no lazy `resize` needed.
 
         let occ = board.colors[0] | board.colors[1];
 
@@ -4110,12 +4135,12 @@ impl NNUEAccumulator {
         self.top += 1;
         if self.top >= self.stack.len() {
             self.stack.push(AccEntry {
-                white: vec![0; self.hidden_size],
-                black: vec![0; self.hidden_size],
+                white: [0; MAX_HIDDEN_SIZE],
+                black: [0; MAX_HIDDEN_SIZE],
+                threat_white: [0; MAX_HIDDEN_SIZE],
+                threat_black: [0; MAX_HIDDEN_SIZE],
                 computed: false,
                 dirty: DirtyPiece::recompute(),
-                threat_white: Vec::new(),
-                threat_black: Vec::new(),
                 threat_accurate: [false; 2],
                 threat_deltas: Vec::new(),
                 threat_move: NO_MOVE,
