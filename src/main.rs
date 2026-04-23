@@ -104,7 +104,7 @@ enum Commands {
         /// Repetitions per position
         #[arg(long, default_value_t = 100_000)]
         reps: u64,
-        /// `fresh` | `refresh` | `incremental`
+        /// `fresh` | `refresh` | `incremental` | `make-unmake`
         #[arg(long, default_value = "fresh")]
         mode: String,
         /// Disable AVX-512 & VNNI for this run (forces AVX-2 SIMD path)
@@ -504,12 +504,37 @@ fn main() {
                         count += 1;
                     }
                 }
+            } else if mode == "make-unmake" {
+                // Times make_move + unmake_move. No NNUE evaluation happens.
+                // With threat-delta generation enabled (as in v9 production
+                // search), the dominant cost inside make_move is
+                // `push_threats_for_piece` + deltas fanout. Disabling
+                // threat deltas (measured separately) shows the base
+                // move-make cost alone.
+                //
+                // The user controls which via `--no-threat-deltas`.
+                use crate::movegen::generate_legal_moves;
+                for fen in positions_slice {
+                    let mut board = Board::from_fen(fen);
+                    // v9 production path: threat deltas always on.
+                    board.generate_threat_deltas = net.has_threats;
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { continue; }
+                    let mv = legal.moves[0];
+                    for _ in 0..reps {
+                        if !board.make_move(mv) { break; }
+                        board.unmake_move();
+                        count += 1;
+                    }
+                }
             } else {
-                eprintln!("Unknown --mode: {} (expected 'fresh' or 'incremental')", mode);
+                eprintln!("Unknown --mode: {} (expected 'fresh' | 'refresh' | 'incremental' | 'make-unmake')", mode);
                 return;
             }
             let secs = start.elapsed().as_secs_f64();
             let evs = count as f64 / secs;
+            // In make-unmake mode the "mean_eval" field is meaningless
+            // (no eval was called). Report 0 so the CSV is consistent.
             println!(
                 "evalbench mode={} positions={} reps/pos={} total_evals={} elapsed={:.3}s  evals/sec={:.0}  mean_eval={}",
                 mode, n_positions, reps, count, secs, evs,

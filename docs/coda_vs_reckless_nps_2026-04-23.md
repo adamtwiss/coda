@@ -23,21 +23,56 @@ to solve the whole gap in one pass.
 
 ## Headline numbers (evals/sec, 80k evals per run)
 
-| Engine | ISA | **fresh** (debug scalar) | **refresh** (production SIMD) | **incremental** |
-|---|---|---:|---:|---:|
-| Coda | AVX-512+VNNI | 92,227 | **1,330,926** | 3,759,675 |
-| Coda | AVX-2 only | 90,940 | 1,129,948 | 2,854,728 |
-| Reckless | AVX-512+VNNI | — | **1,458,484** | 5,815,343 |
-| Reckless | AVX-2 only | — | 1,258,078 | 5,710,523 |
+Clean idle-CPU measurements, OB worker stopped. Coda counter
+overhead (~2%) is included in Coda's numbers — they're what real
+search pays.
+
+| Engine | ISA | **fresh** (debug scalar) | **refresh** (prod SIMD) | **incremental** | **make+unmake** (threats on) |
+|---|---|---:|---:|---:|---:|
+| Coda | AVX-512+VNNI | 92,040 | 1,328,863 | 3,687,924 | **22,912,303** |
+| Coda | AVX-2 only | 91,530 | 1,112,387 | 2,669,350 | 22,840,541 |
+| Reckless | AVX-512+VNNI | 1,478,598 | — | **6,112,511** | 19,623,393 |
+| Reckless | AVX-2 only | 1,268,017 | — | 5,882,765 | 21,818,698 |
+| Reckless | AVX-512, no observer | — | — | — | 52,312,610 (upper bound) |
 
 Reckless / Coda ratio (>1 means Reckless faster):
 
-| ISA | refresh | incremental |
-|---|---:|---:|
-| AVX-512+VNNI | **1.10×** | **1.55×** |
-| AVX-2 only | **1.11×** | **2.00×** |
+| ISA | refresh | incremental | make+unmake |
+|---|---:|---:|---:|
+| AVX-512+VNNI | **1.11×** | **1.66×** | **0.86× (Coda faster)** |
+| AVX-2 only | **1.14×** | **2.20×** | **0.96× (tied)** |
 
-## Key findings
+(The `make+unmake` values include threat-delta generation on both sides;
+see the make-unmake section below for full decomposition.)
+
+## Key findings (updated 2026-04-23 PM after evals/node + make-unmake)
+
+**The 2× NPS gap decomposes into:**
+- 1.86× slower per NNUE eval on Coda (weighted average of rebuild + incremental)
+- 1.30× more NNUE evals per node in Coda (0.677 vs 0.520)
+- Combined: **2.42× worse eval cost per node**, which exceeds the
+  observed 2× NPS gap (Coda's faster base make+unmake + movegen
+  partially offsets).
+
+**What is NOT the gap**:
+- Base make+unmake (Coda is slightly slower, 12%)
+- Threat-delta generation (Coda is actually 30% faster here than
+  Reckless's NNUE observer, surprisingly)
+- L1 cache miss rate on the *full-rebuild* path (both tight)
+
+**Where the real gap lives (ranked):**
+
+1. **Incremental eval L1 dcache miss rate**: Coda 15.72% vs Reckless 0.55%.
+   Memory layout problem, not SIMD. See §3.
+2. **Full-rebuild rate**: Coda 45.65% vs Reckless ~22% per node.
+   Coda's `materialize` doesn't walk back multiple ancestors for
+   incremental replay — it forces a rebuild when direct parent is
+   unmaterialised.
+3. **Evals per node**: Coda 0.677 vs Reckless 0.520. Missing
+   eval-only TT writeback + fewer pruning cut-offs = more eval calls.
+4. **Per-instruction work**: Coda does 1.86× more instructions per
+   incremental eval (at equal IPC). Branching overhead and data
+   traversal excess, not cycles-wasted.
 
 ### 1. Fresh (rebuild-from-scratch) eval is nearly tied
 
@@ -291,6 +326,117 @@ landscape and don't touch NNUE.
     biggest structural win. Requires adding `RAY_PERMUTATIONS`,
     `RAY_ATTACKERS_MASK`, etc. tables and a `push_threats_on_mutate`
     observer method. 100-200 LoC, mostly mechanical port.
+
+## Update 2026-04-23 PM: evals/node + make-unmake decomposition
+
+Extended the microbench and ran both engines' production search with
+eval-path counters. New data reshapes several assumptions from earlier
+in the doc.
+
+### Evals per node
+
+Added `NNUEAccumulator::stats_full_rebuilds` / `stats_incremental_updates`
+/ `stats_cached_skips` counters on Coda and a `stats_tt_static_eval_hits`
+counter on `SearchInfo`, printed after `coda bench 13`. Reckless
+instrumented via their existing `dbg_hit` infrastructure at
+`evaluate` (slots 0-6 for PST/threat × accurate/refresh/incremental).
+
+Depth 13 bench on the 8 Coda positions (single thread, Hash=16 MB):
+
+| Metric | Coda | Reckless |
+|---|---:|---:|
+| Total nodes | 2,258,905 | 3,425,249 (their own 50-position set, depth 12) |
+| NNUE full rebuilds | 697,761 (45.65% of evals) | 694,562 (19.5% of PST-perspective decisions) |
+| NNUE incremental | 830,656 (54.35%) | 2,849,960 (79.9%) |
+| TT static-eval hit (avoids NNUE) | 108,442 (6.62% of eval call-sites) | not measured |
+| **Evals / node** | **0.677** | **0.520** |
+
+**Coda calls NNUE 30% more often per node** (0.677 vs 0.520). Candidate
+causes:
+- Missing TT eval-only writeback on NNUE-hit + TT-miss (noted earlier in
+  this doc). Reckless seeds the TT with eval; Coda doesn't.
+- Different pruning landscape. With a wider pruning net (Reckless has
+  razoring, direct-check LMP exemption, wider SEE, no RFP depth cap),
+  Reckless's tree is shallower at the leaves → fewer eval calls per
+  node.
+
+### Rebuild rate
+
+Coda's rebuild rate is 45.65%. Reckless's is 19.5% (PST) and 3.3%
+(threat), per perspective. Not directly comparable (Coda rebuilds both
+perspectives together; Reckless separates them), but the upper bound
+is "at least one perspective needs refresh": Coda 45.65%, Reckless
+~22% → **Coda rebuilds ~2× more often per node than Reckless**.
+
+Candidate causes:
+- Coda's `materialize` only checks the *direct parent* (`top - 1`) for
+  `computed`. Reckless's `can_update_pst` walks back through multiple
+  ancestors and replays from the nearest accurate one. When Coda's
+  lazy-accumulator pattern leaves an intermediate parent unmaterialised,
+  we pay a full rebuild that Reckless would avoid.
+- This is a **structural fix opportunity** — adding ancestor-walkback
+  should measurably reduce the rebuild rate.
+
+### Make + unmake with threat-delta generation ACTIVE
+
+Clean results on idle Zen 5 CPU (OB worker stopped, Coda counter
+overhead ~2%):
+
+| Mode | Coda | Reckless |
+|---|---:|---:|
+| make-unmake (threats OFF / no observer) | 46.7M/s | **52.3M/s** (NullBoardObserver) |
+| make-unmake (threats ON / NNUE observer) | **22.9M/s** | 19.6M/s |
+| Threat-delta marginal cost | **22.3 ns/move** | 31.9 ns/move |
+| Base make+unmake cost | 21.4 ns/move | 19.1 ns/move |
+
+**Surprise finding**: with threat deltas active on both sides, **Coda's
+make+unmake is 17% FASTER than Reckless's** (22.9M vs 19.6M). The
+Reckless "byteboard splat" advantage is real *compared to a naive
+scalar impl* (5-6 Elo in their commits), but Coda's current
+implementation is already competitive. Base make+unmake is ~12%
+slower in Coda, but threat-delta generation is actually *faster* in
+Coda — probably because the threat-delta pipeline is smaller-surface
+(no x-ray propagation machinery).
+
+→ **Porting the byteboard splat is NOT a priority.** The threat-delta
+path is not where the time is going.
+
+### Where the 2× NPS gap actually lives
+
+Decomposition with clean numbers:
+
+**Per-eval cost** (from microbench):
+- Coda incremental: 3.69M/s (weighted-average rate)
+- Reckless incremental: 6.11M/s
+- Coda refresh: 1.33M/s
+- Reckless refresh: 1.48M/s
+- Effective weighted (at each engine's own full/incremental split):
+  - Coda: 1 / (0.4565/1.33M + 0.5435/3.69M) = 1 / (343ns + 147ns) = **2.04M/s**
+  - Reckless: 1 / (0.195/1.48M + 0.805/6.11M) = 1 / (132ns + 132ns) = **3.79M/s**
+  - Per-eval ratio: **1.86× slower in Coda**
+
+**Evals per node**: 0.677 / 0.520 = **1.30× more calls per node**
+
+**Combined eval impact**: 1.86 × 1.30 = **2.42× worse on eval alone**
+
+Observed NPS gap: ~2.0×. So **per-eval cost + evals-per-node together
+more than account for the observed gap**; the difference (~0.4×) is
+Coda's faster non-eval overhead (base make+unmake is slightly faster,
+movegen likely too) partly offsetting.
+
+**This recasts the priority list:**
+
+1. **Investigate the 28× L1 cache miss rate on incremental eval**
+   (15.72% in Coda vs 0.55% in Reckless). Every fix here is multiplied
+   by 0.677 evals/node — high leverage.
+2. **Reduce rebuild rate via ancestor-walkback** in `materialize`.
+   Moving from 45.65% → ~20% rebuilds would close roughly half the
+   per-eval-cost gap, since rebuilds are 2.8× slower than incrementals.
+3. **Eval-only TT writeback** to directly reduce evals/node.
+4. **LMP direct-check exemption** (+9.46 LTC Elo, Reckless #818) — also
+   reduces evals/node by reducing node count.
+
+Pushing the byteboard splat to the bottom of the priority stack.
 
 ## What we didn't measure
 

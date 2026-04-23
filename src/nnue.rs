@@ -3763,6 +3763,13 @@ pub struct NNUEAccumulator {
     hidden_size: usize,
     /// Finny table: flat [perspective * 32 + bucket * 2 + mirror]
     finny: Vec<FinnyEntry>, // length = FINNY_SIZE (64)
+    // --- eval-path instrumentation counters (reset by `reset_stats`) ---
+    // `materialize` increments one of these every call, based on which
+    // branch it takes. Read via the `stats_*` accessors for the bench
+    // "evals/node" summary. Zero overhead outside the increment itself.
+    pub stats_full_rebuilds: u64,
+    pub stats_incremental_updates: u64,
+    pub stats_cached_skips: u64,
 }
 
 impl NNUEAccumulator {
@@ -3794,7 +3801,19 @@ impl NNUEAccumulator {
                 valid: false,
             });
         }
-        NNUEAccumulator { stack, top: 0, hidden_size, finny }
+        NNUEAccumulator {
+            stack, top: 0, hidden_size, finny,
+            stats_full_rebuilds: 0,
+            stats_incremental_updates: 0,
+            stats_cached_skips: 0,
+        }
+    }
+
+    /// Reset eval-path counters. Call before a measurement window.
+    pub fn reset_stats(&mut self) {
+        self.stats_full_rebuilds = 0;
+        self.stats_incremental_updates = 0;
+        self.stats_cached_skips = 0;
     }
 
     pub fn top(&self) -> usize { self.top }
@@ -4122,6 +4141,7 @@ impl NNUEAccumulator {
         #[cfg(feature = "profile-materialize")]
         crate::nnue::mat_stats::record_entry(self.stack[self.top].computed);
         if self.stack[self.top].computed {
+            self.stats_cached_skips += 1;
             return;
         }
 
@@ -4129,6 +4149,7 @@ impl NNUEAccumulator {
 
         // Full recompute needed?
         if dirty.kind == 0 || self.top == 0 || !self.stack[self.top - 1].computed {
+            self.stats_full_rebuilds += 1;
             #[cfg(feature = "profile-materialize")]
             {
                 crate::nnue::mat_stats::record_refresh();
@@ -4154,6 +4175,7 @@ impl NNUEAccumulator {
         }
         #[cfg(feature = "profile-materialize")]
         crate::nnue::mat_stats::record_incremental(dirty.n_changes as u64);
+        self.stats_incremental_updates += 1;
 
         // Incremental update: gather all deltas for this move, then apply them
         // in a SINGLE fused pass per perspective. Replaces the previous

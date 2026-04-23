@@ -309,6 +309,11 @@ pub struct SearchInfo {
     pub global_nodes: std::sync::Arc<AtomicU64>,  // aggregate nodes across SMP threads
     pub silent: bool,  // suppress UCI output (for datagen)
     pub stats: PruneStats,
+    // Eval-path decomposition counters (see docs/coda_vs_reckless_nps_*.md).
+    // `stats_tt_static_eval_hits` counts nodes where we used the TT's
+    // cached static_eval and did NOT call NNUE. The NNUE counters live on
+    // `nnue_acc` (full rebuilds vs incremental updates vs computed skips).
+    pub stats_tt_static_eval_hits: u64,
     pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
     pub history: Box<History>,
     pub stop: std::sync::Arc<AtomicBool>,  // shared stop flag
@@ -387,6 +392,7 @@ impl SearchInfo {
             global_nodes: std::sync::Arc::new(AtomicU64::new(0)),
             silent: false,
             stats: PruneStats::default(),
+            stats_tt_static_eval_hits: 0,
             tt: std::sync::Arc::new(TT::new(tt_mb)),
             history: alloc_zeroed_box(),
             stop: std::sync::Arc::new(AtomicBool::new(false)),
@@ -2011,6 +2017,7 @@ fn negamax(
     if !in_check {
         if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
             raw_eval = tt_entry.static_eval;
+            info.stats_tt_static_eval_hits += 1;
         } else {
             raw_eval = info.eval(board);
         }
@@ -3346,6 +3353,7 @@ fn quiescence_with_depth(
     // halfmove-independent values (see SearchInfo::eval doc), so we apply
     // the scale freshly against `board.halfmove` after reading.
     let raw_stand_pat = if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
+        info.stats_tt_static_eval_hits += 1;
         tt_entry.static_eval
     } else {
         info.eval(board)
@@ -3622,6 +3630,29 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     eprintln!("First-move cut: {:>5.1}%", if s.beta_cutoffs > 0 { s.first_move_cutoffs as f64 / s.beta_cutoffs as f64 * 100.0 } else { 0.0 });
 
     eprintln!("Total nodes:    {:>8}", total_nodes);
+
+    // Eval-path decomposition — supports the "evals/node" investigation
+    // (see docs/coda_vs_reckless_nps_2026-04-23.md). Reports how search
+    // splits its static-eval calls between full rebuilds, incremental
+    // updates, already-computed skips, and TT-cached bypasses.
+    if let Some(acc) = info.nnue_acc.as_ref() {
+        let full = acc.stats_full_rebuilds;
+        let incr = acc.stats_incremental_updates;
+        let skip = acc.stats_cached_skips;
+        let tt   = info.stats_tt_static_eval_hits;
+        let total_evals = full + incr;
+        let eval_call_attempts = total_evals + skip + tt;
+        eprintln!("--- NNUE Eval Decomposition ---");
+        eprintln!("NNUE full rebuilds: {:>10} ({:>5.2}% of evals)", full,
+                  if total_evals > 0 { full as f64 * 100.0 / total_evals as f64 } else { 0.0 });
+        eprintln!("NNUE incremental:   {:>10} ({:>5.2}% of evals)", incr,
+                  if total_evals > 0 { incr as f64 * 100.0 / total_evals as f64 } else { 0.0 });
+        eprintln!("TT static-eval hit: {:>10} ({:>5.2}% of call sites)", tt,
+                  if eval_call_attempts > 0 { tt as f64 * 100.0 / eval_call_attempts as f64 } else { 0.0 });
+        eprintln!("Already-computed:   {:>10}", skip);
+        eprintln!("Evals / node:       {:>10.3}", total_evals as f64 / total_nodes as f64);
+        eprintln!("Call-sites / node:  {:>10.3}", eval_call_attempts as f64 / total_nodes as f64);
+    }
 
     #[cfg(feature = "profile-materialize")]
     crate::nnue::mat_stats::report();
