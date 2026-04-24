@@ -2101,7 +2101,12 @@ fn negamax(
     // Restricted to PV/cut nodes (Obsidian/Berserk/Stormphrax pattern).
     // All-nodes have tight bounds already, IIR there wastes depth.
     let is_pv = beta - alpha_orig > 1;
-    if depth >= 4 && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
+    // ABLATION: IIR disabled via depth >= 999 (never fires). Tests
+    // whether IIR is load-bearing at all on current Coda v9 regime.
+    // Per "cargo-cult audit" (CLAUDE.md): any guard costing ≥3 Elo
+    // when removed is load-bearing; anything flatter is candidate
+    // for simplification.
+    if depth >= 999 && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
         depth -= 1;
     }
 
