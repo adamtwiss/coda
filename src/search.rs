@@ -2159,6 +2159,27 @@ fn negamax(
         }
     };
 
+    // Skip NMP when TT signals a strong capture refutation available.
+    // Reckless pattern (+3.43 STC / +3.67 LTC): TT-LOWER with a valuable
+    // capture as best-move suggests tactical pressure where null-move's
+    // "opponent passes" assumption is unreliable.
+    //
+    // V2 refinements over #709 (which H0'd at −7.8 with 48% bench growth):
+    //  - Depth gate: only trust TT entries searched to near-current depth.
+    //    Low-depth LOWER entries fire too often and unreliably.
+    //  - SEE filter: require TT capture itself to be SEE-positive. If the
+    //    "refutation" is actually a bad sac, the TT entry is noise.
+    let nmp_skip_tt_capture = tt_hit
+        && tt_entry.flag == TT_FLAG_LOWER
+        && tt_move != NO_MOVE
+        && tt_entry.depth >= depth - 4
+        && {
+            let victim_pt = board.piece_type_at(move_to(tt_move));
+            victim_pt != NO_PIECE_TYPE
+                && see_value(victim_pt) >= see_value(KNIGHT)
+                && see_ge(board, tt_move, 0)
+        };
+
     if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
         && !prev_was_null  // Prevent consecutive null moves
@@ -2167,6 +2188,7 @@ fn negamax(
         && king_zone_pressure < tp(&NMP_KING_ZONE_MAX)  // New gate
         && any_threat_count < 3  // S7-style: skip NMP when many of our pieces are under threat
         && undefended_count < tp(&NMP_UNDEFENDED_MAX)  // T2.1: skip when hanging pieces
+        && !nmp_skip_tt_capture  // V2: narrower gate than #709
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
