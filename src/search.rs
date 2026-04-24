@@ -81,7 +81,18 @@ tunables!(
     (FUT_PER_DEPTH, 160, 40, 250, 10.5),
     (HIST_PRUNE_DEPTH, 3, 1, 8, 1.5),
     (HIST_PRUNE_MULT, 3866, 500, 50000, 2475.0),
+    // SEE quiet formula reshape v2: keep Coda's magnitude at high d
+    // but adopt Reckless's clamp-at-zero behaviour at low d via a
+    // linear positive offset.
+    //   threshold = (-MULT·lmr_d² + LINEAR·lmr_d + 20).min(0)
+    // v1 (#738) H0'd at −45 Elo because it dropped MULT to Reckless's
+    // 17 — too aggressive at mid-high d when Coda uses lmr_d (smaller
+    // than depth) but constants were designed for real depth. v2
+    // restores MULT=47 (Coda's tuned value) and adds LINEAR=144 (3×
+    // MULT, matching Reckless's linear/quadratic ratio) so the formula
+    // only adds clamp-at-zero behaviour at lmr_d ≤ 3.
     (SEE_QUIET_MULT, 47, 5, 80, 3.75),
+    (SEE_QUIET_LINEAR, 144, 0, 250, 8.0),
     (SEE_CAP_MULT, 143, 30, 200, 8.5),
     (LMR_HIST_DIV, 6489, 2000, 100000, 4900.0),
     (LMR_C_QUIET, 127, 40, 300, 13.0),
@@ -2457,7 +2468,11 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
-            let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
+            // Reckless-shape SEE quiet (v2): (−MULT·d² + LINEAR·d + 20).min(0).
+            // Matches Coda's tuned MULT=47 at high d, adds clamp-at-zero at
+            // low d via the positive linear offset. Offset (20) hardcoded.
+            let see_quiet_threshold = (-tp(&SEE_QUIET_MULT) * lmr_d * lmr_d
+                + tp(&SEE_QUIET_LINEAR) * lmr_d + 20).min(0);
             if !see_ge(board, mv, see_quiet_threshold) {
                 info.stats.see_prunes += 1;
                 continue;
