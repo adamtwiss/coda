@@ -74,7 +74,11 @@ tunables!(
     (NMP_EVAL_DIV, 125, 100, 400, 15.0),
     (NMP_EVAL_MAX, 6, 1, 6, 1.5),
     (NMP_VERIFY_DEPTH, 12, 8, 20, 2.0),
-    (RFP_DEPTH, 10, 2, 12, 2.0),
+    // RFP depth cap. Reckless has no cap (search.rs:522). Raising default
+    // 10 → 16 with range widened to [2, 20] so SPSA can find Coda's
+    // optimum. At depths 11-16 RFP was silently disabled on Coda despite
+    // the margin formula naturally saturating usefulness at deep plies.
+    (RFP_DEPTH, 16, 2, 20, 2.0),
     (RFP_MARGIN_IMP, 56, 30, 150, 6.0),
     (RFP_MARGIN_NOIMP, 130, 50, 200, 7.5),
     (FUT_BASE, 78, 20, 200, 9.0),
