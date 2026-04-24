@@ -3759,19 +3759,19 @@ pub const MAX_HIDDEN_SIZE: usize = 2048;
 pub struct AccEntry {
     pub white: [i16; MAX_HIDDEN_SIZE],
     pub black: [i16; MAX_HIDDEN_SIZE],
-    // Threat accumulator (v9): separate i16 values summed with PSQ at activation
+    // Legacy v9 threat accumulator — kept for the `forward()` fallback
+    // path (it reads these when `threat_accurate` is true). Production
+    // routes through `ThreatStack` + `forward_with_threats`, so the flag
+    // never flips true and this branch is effectively dead. Left in place
+    // to avoid a simultaneous surgery on the forward fallback.
     pub threat_white: [i16; MAX_HIDDEN_SIZE],
     pub threat_black: [i16; MAX_HIDDEN_SIZE],
     computed: bool,
     dirty: DirtyPiece,
     pub threat_accurate: [bool; 2], // per-perspective [WHITE, BLACK]
-    pub threat_deltas: Vec<crate::threats::RawThreatDelta>,
     pub threat_move: Move, // the move that produced this ply (for king mirror check)
     pub threat_moved_pt: u8, // piece type that moved
     pub threat_moved_color: Color, // color that moved
-    // Stored threat feature indices for diff-based incremental (per perspective)
-    pub threat_features_white: Vec<usize>,
-    pub threat_features_black: Vec<usize>,
 }
 
 /// Finny table entry: cached accumulator for a specific king bucket.
@@ -3814,12 +3814,9 @@ impl NNUEAccumulator {
                 computed: false,
                 dirty: DirtyPiece::recompute(),
                 threat_accurate: [false; 2],
-                threat_deltas: Vec::new(),
                 threat_move: NO_MOVE,
                 threat_moved_pt: NO_PIECE_TYPE,
                 threat_moved_color: WHITE,
-                threat_features_white: Vec::new(),
-                threat_features_black: Vec::new(),
             });
         }
         // Build finny table (flat array)
@@ -3864,34 +3861,6 @@ impl NNUEAccumulator {
 
     pub fn prev_threat_computed(&self) -> bool {
         self.top > 0 && self.stack[self.top - 1].threat_accurate[0] && self.stack[self.top - 1].threat_accurate[1]
-    }
-
-    pub fn set_threat_deltas(&mut self, deltas: Vec<crate::threats::RawThreatDelta>) {
-        self.stack[self.top].threat_deltas = deltas;
-    }
-
-    /// Copy threat deltas from board into current stack entry.
-    /// Must be called after push() and after board.make_move().
-    pub fn store_threat_deltas(&mut self, board: &mut crate::board::Board) {
-        if board.generate_threat_deltas {
-            let entry = &mut self.stack[self.top];
-            // Swap deltas from board into stack entry (avoids copy, board gets the old buffer)
-            std::mem::swap(&mut entry.threat_deltas, &mut board.threat_deltas);
-            // Store move info for king mirror check (Reckless pattern)
-            let undo_len = board.undo_stack.len();
-            if undo_len > 0 {
-                let undo = &board.undo_stack[undo_len - 1];
-                entry.threat_move = undo.mv;
-                if undo.mv != NO_MOVE {
-                    let to = move_to(undo.mv);
-                    entry.threat_moved_pt = board.mailbox[to as usize];
-                    entry.threat_moved_color = flip_color(board.side_to_move); // side that moved
-                } else {
-                    entry.threat_moved_pt = NO_PIECE_TYPE;
-                    entry.threat_moved_color = WHITE;
-                }
-            }
-        }
     }
 
     pub fn white(&self) -> &[i16] {
@@ -3945,191 +3914,6 @@ impl NNUEAccumulator {
         self.stack[self.top].computed = true;
     }
 
-    /// Compute threat accumulator if not already done.
-    /// Walks back to find nearest ancestor with computed threats, then replays
-    /// forward applying per-ply deltas. Each ply's deltas were stored by
-    /// store_threat_deltas() after make_move. Matches Reckless's pattern.
-    pub fn recompute_threats_if_needed(&mut self, net: &NNUENet, board: &crate::board::Board) {
-        if !net.has_threats { return; }
-        if self.stack[self.top].threat_accurate[0] && self.stack[self.top].threat_accurate[1] { return; }
-        let h = self.hidden_size;
-
-        // Profile: 90.5% incremental (chain=1.1), 9.5% full recompute.
-        // Per-eval cost ~5µs weighted average (Reckless: ~2.5µs).
-
-        // Walk back to find nearest ancestor with computed threats (Reckless pattern).
-        // Then verify the entire chain from ancestor to top has no king e-file crossings.
-        let mut ancestor: Option<usize> = None;
-        'walk: for i in (0..self.top).rev() {
-            if self.stack[i].threat_accurate[0] && self.stack[i].threat_accurate[1] {
-                // Found ancestor. Now check the chain i+1..=self.top for king crossings.
-                for j in (i + 1)..=self.top {
-                    let entry = &self.stack[j];
-                    if entry.threat_move == NO_MOVE { continue; } // null move, safe
-                    if entry.threat_deltas.is_empty() && entry.threat_move != NO_MOVE {
-                        // Real move but no deltas — can't replay
-                        break 'walk;
-                    }
-                    if entry.threat_moved_pt == KING {
-                        let from = move_from(entry.threat_move);
-                        let to = move_to(entry.threat_move);
-                        if (from % 8 >= 4) != (to % 8 >= 4) {
-                            break 'walk; // king mirror changed — full recompute
-                        }
-                    }
-                }
-                ancestor = Some(i);
-                break;
-            }
-            // Check if we can continue walking back through this ply
-            let entry = &self.stack[i + 1];
-            if entry.threat_move != NO_MOVE && entry.threat_deltas.is_empty() {
-                break; // no deltas for this real move — can't go further back
-            }
-        }
-
-        if ancestor.is_none() {
-            self.recompute_threats_full(net, board);
-            return;
-        }
-
-        let ancestor_idx = ancestor.unwrap();
-
-        // Replay forward from ancestor to self.top
-        let wk_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
-        let bk_sq = (board.pieces[KING as usize] & board.colors[BLACK as usize]).trailing_zeros();
-        let w_mirrored = (wk_sq % 8) >= 4;
-        let b_mirrored = (bk_sq % 8) >= 4;
-
-        for ply in (ancestor_idx + 1)..=self.top {
-            // Inline arrays are always `MAX_HIDDEN_SIZE`-wide; previous
-            // version's lazy `resize(h, 0)` is now a no-op (all entries
-            // pre-sized). Left blank to preserve the surrounding flow.
-
-            let src = ply - 1; // source is always the previous ply (which we just computed)
-
-            if self.stack[ply].threat_deltas.is_empty() {
-                // Null move or no deltas: copy from previous
-                let (prev_slice, curr_slice) = self.stack.split_at_mut(ply);
-                let prev = &prev_slice[src];
-                let curr = &mut curr_slice[0];
-                curr.threat_white[..h].copy_from_slice(&prev.threat_white[..h]);
-                curr.threat_black[..h].copy_from_slice(&prev.threat_black[..h]);
-            } else {
-                // Apply deltas from this ply
-                // Note: we use the current board's king positions for mirroring.
-                // This is approximate for intermediate plies — if the king moved
-                // during the replay chain, the mirroring might be wrong.
-                // For now this is acceptable; king moves are rare in the chain.
-                // Swap deltas out to avoid borrow conflict (no allocation)
-                let deltas = std::mem::take(&mut self.stack[ply].threat_deltas);
-                let (prev_slice, curr_slice) = self.stack.split_at_mut(ply);
-                let prev = &prev_slice[src];
-                let curr = &mut curr_slice[0];
-                unsafe {
-                    crate::threats::apply_threat_deltas(
-                        &mut curr.threat_white, &prev.threat_white,
-                        &deltas, &net.threat_weights, h, net.num_threat_features,
-                        WHITE, w_mirrored,
-                    );
-                    crate::threats::apply_threat_deltas(
-                        &mut curr.threat_black, &prev.threat_black,
-                        &deltas, &net.threat_weights, h, net.num_threat_features,
-                        BLACK, b_mirrored,
-                    );
-                }
-                // Swap back
-                self.stack[ply].threat_deltas = deltas;
-            }
-
-            self.stack[ply].threat_accurate = [true; 2];
-        }
-
-    }
-
-    /// DEBUG: verify threat accumulator matches full recompute for any position.
-    #[cfg(debug_assertions)]
-    pub fn verify_threats(&self, net: &NNUENet, board: &crate::board::Board) {
-        if !net.has_threats || !self.stack[self.top].threat_accurate[0] || !self.stack[self.top].threat_accurate[1] { return; }
-        let h = self.hidden_size;
-        let occ = board.colors[0] | board.colors[1];
-        let wk_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
-        let bk_sq = (board.pieces[KING as usize] & board.colors[BLACK as usize]).trailing_zeros();
-
-        let mut check_w = vec![0i16; h];
-        crate::threats::enumerate_threats(
-            &board.pieces, &board.colors, &board.mailbox,
-            occ, WHITE, (wk_sq % 8) >= 4,
-            |idx| { if idx < net.num_threat_features { let w = idx * h; for j in 0..h { check_w[j] += net.threat_weights[w + j] as i16; } } },
-        );
-        let mut check_b = vec![0i16; h];
-        crate::threats::enumerate_threats(
-            &board.pieces, &board.colors, &board.mailbox,
-            occ, BLACK, (bk_sq % 8) >= 4,
-            |idx| { if idx < net.num_threat_features { let w = idx * h; for j in 0..h { check_b[j] += net.threat_weights[w + j] as i16; } } },
-        );
-
-        let curr = &self.stack[self.top];
-        let w_diff: i32 = (0..h).map(|j| (curr.threat_white[j] as i32 - check_w[j] as i32).abs()).sum();
-        let b_diff: i32 = (0..h).map(|j| (curr.threat_black[j] as i32 - check_b[j] as i32).abs()).sum();
-        if w_diff > 0 || b_diff > 0 {
-            eprintln!("  h={} tw_max={} got_w0={} exp_w0={}", h, MAX_HIDDEN_SIZE, curr.threat_white[0], check_w[0]);
-            // Was this from incremental or full recompute?
-            let last_mv = if !board.undo_stack.is_empty() {
-                let u = &board.undo_stack[board.undo_stack.len() - 1];
-                if u.mv == NO_MOVE { "null".to_string() }
-                else { format!("{}{}", crate::types::square_name(move_from(u.mv)), crate::types::square_name(move_to(u.mv))) }
-            } else { "root".to_string() };
-            eprintln!("VERIFY FAIL mv={} wdiff={} bdiff={} top={}", last_mv, w_diff, b_diff, self.top);
-        }
-    }
-
-    /// Full recompute: iterates all pieces, computes attacks, adds i8 weight rows.
-    fn recompute_threats_full(&mut self, net: &NNUENet, board: &crate::board::Board) {
-        let h = self.hidden_size;
-        let entry = &mut self.stack[self.top];
-
-        // Inline arrays are MAX_HIDDEN_SIZE-wide; no lazy `resize` needed.
-
-        let occ = board.colors[0] | board.colors[1];
-
-        // White perspective
-        entry.threat_white[..h].fill(0);
-        let wk_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
-        let w_mirrored = (wk_sq % 8) >= 4;
-        crate::threats::enumerate_threats(
-            &board.pieces, &board.colors, &board.mailbox,
-            occ, WHITE, w_mirrored,
-            |feat_idx| {
-                if feat_idx < net.num_threat_features {
-                    let w_off = feat_idx * h;
-                    for j in 0..h {
-                        entry.threat_white[j] += net.threat_weights[w_off + j] as i16;
-                    }
-                }
-            },
-        );
-
-        // Black perspective
-        entry.threat_black[..h].fill(0);
-        let bk_sq = (board.pieces[KING as usize] & board.colors[BLACK as usize]).trailing_zeros();
-        let b_mirrored = (bk_sq % 8) >= 4;
-        crate::threats::enumerate_threats(
-            &board.pieces, &board.colors, &board.mailbox,
-            occ, BLACK, b_mirrored,
-            |feat_idx| {
-                if feat_idx < net.num_threat_features {
-                    let w_off = feat_idx * h;
-                    for j in 0..h {
-                        entry.threat_black[j] += net.threat_weights[w_off + j] as i16;
-                    }
-                }
-            },
-        );
-
-        entry.threat_accurate = [true; 2];
-    }
-
     /// Push: store dirty info, don't compute yet.
     pub fn push(&mut self, dirty: DirtyPiece) {
         self.top += 1;
@@ -4142,17 +3926,13 @@ impl NNUEAccumulator {
                 computed: false,
                 dirty: DirtyPiece::recompute(),
                 threat_accurate: [false; 2],
-                threat_deltas: Vec::new(),
                 threat_move: NO_MOVE,
                 threat_moved_pt: NO_PIECE_TYPE,
                 threat_moved_color: WHITE,
-                threat_features_white: Vec::new(),
-                threat_features_black: Vec::new(),
             });
         }
         self.stack[self.top].computed = false;
         self.stack[self.top].threat_accurate = [false; 2];
-        self.stack[self.top].threat_deltas.clear();
         self.stack[self.top].dirty = dirty;
     }
 
