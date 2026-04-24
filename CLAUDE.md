@@ -379,12 +379,14 @@ Examples:
 
 ## Key Search Parameters
 
-All parameters are SPSA-tunable via the `tunables!` macro in `search.rs` (45 parameters).
-Current values reflect SPSA rounds 1-10 + retune-on-branch calibration. See the macro
-for authoritative defaults — values below are approximate.
+All parameters are SPSA-tunable via the `tunables!` macro in `search.rs`
+(~77 parameters as of 2026-04-24, count grows over time). Current values
+reflect multiple SPSA rounds + retune-on-branch calibration, most
+recently the full-sweep #743 retune merged as #747. See the macro in
+`search.rs` for authoritative defaults.
 
 - SEE values: P=100, N=320, B=330, R=500, Q=900
-- History bonus: linear formula min(MAX, MULT*depth - BASE), ~170*d-50 capped at 1505
+- History bonus: linear formula min(MAX, MULT*depth - BASE)
 - Contempt: 10 (applied as -CONTEMPT)
 
 ## Current Status
@@ -412,13 +414,30 @@ update as more data accumulates.
 
 ### Calibration
 
-- 60+1 bullet H2H vs SF 18: **Coda −159.8 ±41.6 Elo** (100 games,
-  57% draws, 43 SF wins, 0 Coda wins).
-- CCRL 40/15 top 10 sits at **3633–3652** (SF 18 #1 at 3652,
-  Reckless 0.9.0 #2 at 3647). Rivals pool spans 3434–3585;
-  Coda is below the CCRL top-100 cutoff (3390) in the posted
-  snapshot but effectively ~3480–3500 on current trunk +
-  SB800 prod net.
+Three anchor points:
+
+- **60+1 bullet H2H vs SF 18**: Coda −159.8 ±41.6 Elo (100 games).
+- **10+0.1 ultra-bullet 45-engine RR** (Adam's local RR, every
+  top-10 CCRL engine present): Coda gap to SF settling in the
+  **~270-302 Elo** range across snapshots (±55 error bars at
+  ~88 games). Rank drifting 21-23/45, cluster with
+  Clarity/Velvet/PZChessBot at latest snapshot, above
+  Igel/Arasan/Altair cluster.
+- **CCRL 40/15 + 4CPU**: SF 3652, top 45 bunched within 100 Elo
+  (Reckless 3647 only 5 behind SF). Coda not yet listed; our
+  ultra-bullet → CCRL inference (see
+  `memory/project_ultra_bullet_vs_ccrl_calibration.md`) puts us in
+  the **3520-3620 band** — top-30 territory on CCRL. Caveat:
+  pool composition matters — Coda is tactical-archetype so likely
+  at the lower end of that band in a broad pool, higher in a
+  close-rivals pool.
+
+SF gap as a function of TC (see TC-handicap sigmoid below for the
+full curve):
+- 10+0.1 (ultra bullet): ~302 Elo
+- 60+1 (bullet): ~160 Elo
+- 8× (480+8, past the knee): ~35 Elo
+- 16× (960+16): ~0 Elo (parity)
 
 ### The TC-handicap sigmoid (2026-04-24 calibration)
 
@@ -448,16 +467,12 @@ at that TC — we've reached "solid drawing depth" but still can't
 out-play SF from equal position. At 16× Coda finally wins enough
 games to match SF's wins (15W-16L-69D, essentially symmetric).
 
-**Caveat on absolute numbers**: this calibration was run on
-prod-SB800 net with trunk params that were tuned on factor-SB400
-(C8-fix retune #682/#686). That's a mild mismatch — true gap at
-1× could be ~5-15 Elo better than shown once trunk is retuned for
-the actual deployed net (see tune #743 on
-`fix/expose-hardcoded-pruning-tunables`, which begins that
-recalibration). The **sigmoid shape is preserved** across net/tune
-configurations; treat the absolute Elo values as anchors with a
-~±10 Elo uncertainty rather than exact points. Post-#743 we should
-re-run the curve to get properly-calibrated absolute numbers.
+**Caveat on absolute numbers**: the sigmoid shape is preserved across
+net/tune configurations — treat absolute Elo values as anchors with
+~±10 Elo uncertainty rather than exact points. Updated anchors would
+be useful post- any major retune + merge cluster (most recently
+#747 retune + v9-into-main merge, ~+7 Elo on trunk, not yet
+re-calibrated on the sigmoid).
 
 **What this tells us:**
 
@@ -469,6 +484,18 @@ re-run the curve to get properly-calibrated absolute numbers.
   Elo. This is because specific tactical refutations live at
   specific depths — seeing them at all vs not matters far more than
   seeing them half-a-ply earlier.
+- **EBF-ratio intuition pump**: with EBF≈2, a 4-ply depth advantage
+  is a 2⁴ = 16× search-effort ratio *both* at d=6-vs-10 and at
+  d=26-vs-30. Geometrically identical. But at d=6 vs d=10 the
+  stronger engine sees whole classes of 8-ply combinations the
+  weaker engine literally cannot — knight forks in 3, quiet moves
+  winning material in 5, etc. At d=26 vs d=30, both engines already
+  catch every standard tactical motif; the extra 4 plies refine
+  positional eval and resolve obscure endgame nuances. Same ratio,
+  very different Elo value. This is why SF's ~4-ply NPS+pruning
+  advantage is worth ~100 Elo over Reckless at 10+0.1 but only 5
+  Elo at CCRL 40/15: both engines have crossed the "sees the
+  tactic" threshold at the longer TC.
 - **The sigmoid applies specifically to wide-Elo-gap opposition.**
   Vs same-tier opponents (e.g. our Rivals pool at 3430-3585 CCRL),
   the tactical-cliff dynamic isn't present — both engines have
@@ -489,15 +516,20 @@ across all levers. Realistic per-lever contribution budget:
 
 | Lever | Plausible gain | Path |
 |---|---:|---|
-| Cache residency + SIMD dispatch | ~1.5× | L1 permutation, VNNI dispatch, sparse-L1 |
-| Sparse-L1 matrix shrink + EBF effect | ~1.5× | L1-decouple Bullet fix + λ=1e-3 training |
-| Factor SB800 eval quality | ~1.3× | Architecture + longer training |
-| Move-ordering + pruning retune on improved eval | ~1.1-1.2× | Iterate post-eval-upgrade |
-| **Stacked total** | **~3-3.5×** | Sits between 4× and 8× on the sigmoid |
+| **Shelved net upgrade** (already validated, not yet deployed) | **~30 Elo** | Reckless-KB (+15, SPRT'd) + factor arch (+15, SPRT'd) — need clean SB800 training as full prod replacement. Current prod is still consensus-buckets SB800. |
+| Cache residency + SIMD dispatch | +10-25 Elo | L1 permutation, VNNI dispatch, group-lasso-driven matrix shrink (in progress 2026-04-24) |
+| Force-more-pruning retune | +5-10 Elo | `experiment/force-more-pruning` #750 running 2026-04-24 |
+| Further eval refinement | +10-20 Elo | Post-shelved-net training-recipe iteration |
+| Move-ordering improvements | +5-15 Elo | EBF-reducing work; compounds with above |
+| **Stacked total** | **~60-100 Elo** | Meaningful jump — top-20 CCRL range |
 
-That's **~80 Elo closed** (Coda 3480 → ~3560 CCRL). Meaningful jump
-— moves us from sub-top-100 into top-30 range — but does NOT reach
-parity with SF.
+**The shelved net is the cheapest lever** — the Elo is already
+earned in SPRT, just needs one SB800 training run to deploy. Don't
+chase NPS or search wins that individually outweigh 30 Elo without
+this deployment in flight.
+
+That total moves us from rank ~42 CCRL → top-20 range — but does
+NOT reach parity with SF.
 
 **Parity (16×-equivalent)** requires dramatic EBF reduction (log(EBF)
 halved, 1.8 → 1.35) which in turn requires multi-year investment:
@@ -555,19 +587,41 @@ Both NPS (via sparsity/cache work) and pruning (via retune branches
 targeting the Reckless outliers) attack the SAME target — depth —
 and compound.
 
-**Concrete Reckless vs Coda pruning outliers (measured 2026-04-24):**
+**Concrete Reckless vs Coda pruning outliers (measured 2026-04-24,
+status updated post-experiment batch):**
 
-- Futility margin at lmr_d=5: Coda 878 vs Reckless 364 (Coda 2.4×
-  less aggressive — keeps ~2.4× more mid-depth moves in the tree).
-- SEE quiet prune at d=5: Coda threshold −1175 vs Reckless −145
-  (Coda 8× more lenient — only prunes queen-sac class).
-- RFP depth cap: Coda d≤10, Reckless uncapped. No RFP at deep plies.
-- LMP depth cap: Coda d≤8, Reckless uncapped.
-- BNFP depth cap: Coda d≤4, Reckless d<11.
+- **Futility margin**: Coda pre-#736 had 78+160·d; Reckless uses
+  ~35+65·d (Coda ~2.4× less aggressive). #736 tightened to
+  Reckless-scale (40/65), H1 +4.4 on detuned trunk. Post-retune #747
+  reverted to tune's landing point (80/156) per Adam's override call,
+  because tune-landscape preferred the wider values once other
+  pruning recalibrated. Net effect in trunk: the margin matters
+  less than the surrounding pruning cluster calibration.
+- **SEE quiet prune magnitude**: Coda threshold −1175 at d=5 vs
+  Reckless −145 (8× more lenient). Direct Reckless-shape port
+  H0'd twice (#738 catastrophic at −167; #740 calibrated at −13.3).
+  SPSA converges at SEE_QUIET_MULT≈46, not near Reckless's value —
+  seemingly our lmr_d-based formula and Reckless's raw-depth
+  formula aren't directly portable. Mechanism-level work remains.
+- **RFP depth cap**: Coda d≤10 (now 11 post-retune #747); Reckless
+  uncapped. #737 raised cap 10→16 on detuned trunk, H1 +2.2; retested
+  on retuned trunk as `experiment/rfp-depth-uncap-v2` (bench-neutral
+  with retuned tight margin, SPRT running at [0, 3]).
+- **LMP depth cap**: Coda d≤8; Reckless uncapped. #735 uncap tested
+  H0 at −1.1.
+- **BNFP depth cap**: Coda d≤4; Reckless d<11. #734 uncap tested
+  H0 at −1.2.
 
-These five represent candidates for "force more pruning + retune"
-branches. Each is a structural change (uncap a depth gate / widen a
-threshold) followed by SPSA retune on branch.
+Of the five outliers, direct-port experiments landed 1 clear H1 (RFP
+depth, +2.2 detuned; retune pending), 3 H0, and 1 mixed-result
+(futility). Pattern: the raw-Reckless values aren't directly portable
+— our different search context (lmr_d vs raw-depth formulas, different
+history scaling) means the OUTLIERS identify real miscalibration but
+the FIX requires SPSA-retune-on-branch, not direct value import.
+
+`experiment/force-more-pruning` tune #750 (2026-04-24, 2000 iters,
+77 params) tests this holistically — aggressive starting point,
+SPSA finds new equilibrium.
 
 ### Priors this updates
 
@@ -818,12 +872,16 @@ right net first.
 
 **Submitting tunes:**
 ```bash
-# Submit via script (preferred):
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune.py <branch> [bench] --params-file scripts/tune_pruning_18.txt --iterations 2500
+# Submit via script (preferred) — params file covers the tunables you want to sweep:
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune.py <branch> [bench] --params-file scripts/tune_nmp_cluster.txt --iterations 1000
 
 # Or with inline params:
 OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune.py <branch> [bench] --params "LMR_C_QUIET, int, 132, 80, 300, 10.0, 0.002
 LMR_C_CAP, int, 164, 100, 350, 10.0, 0.002"
+
+# For full-sweep tunes, generate the spec from the tunables! macro:
+#   python3 -c 'import re; [print(f"{m[1]}, int, {m[2]}, {m[3]}, {m[4]}, {m[5]}, 0.002") for m in (re.match(r"    \\((\\w+), (-?\\d+), (-?\\d+), (-?\\d+), ([\\d.]+)\\),", l) for l in open("src/search.rs")) if m and m[1] != "name"]' > scripts/tune_all.txt
+# (skips the macro-definition line). See scripts/tune_force_more_pruning.txt for an example of the full sweep.
 
 # Bench is auto-detected from commit message. Pass explicitly only if OB can't parse it.
 ```
@@ -854,11 +912,14 @@ When LMR_C_QUIET or LMR_C_CAP change, LMR tables are automatically reinitialized
 
 **Practical guidance:**
 - 2500 iterations (×8 pairs = 40000 games) is standard. Values stabilise by ~800 iterations.
+- Focused tunes (4-8 params) need only ~1000 iters; full-sweep (60+ params) benefits from 2000-2500.
 - c_end ~5-10% of parameter range, r_end 0.002 are good defaults.
 - Alpha 0.602, gamma 0.101, A_ratio 0.1 (standard SPSA constants).
 - SPRT the final values against main before merging — SPSA can overfit.
 - Plan SPSA after merging structural fixes (eval/search changes shift optimal parameters).
-- A standard 18-param pruning tune spec is at `scripts/tune_pruning_18.txt`.
+- Focused tune specs for common clusters: `scripts/tune_nmp_cluster.txt`
+  (NMP), `scripts/tune_history_shape.txt` (history-bonus shape),
+  `scripts/tune_caphist_focused.txt` (capture history).
 
 ### Retune-on-Branch Methodology (discovered 2026-04-07)
 
