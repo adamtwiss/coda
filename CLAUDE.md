@@ -873,6 +873,39 @@ Some features are neutral without retuning but gain significant Elo when pruning
 - Cont-hist malus: flat (-0.15 at 16K games) → +6.5 with retune
 - Pattern: big bench/node change but flat Elo → retune candidate
 
+#### Guard / Safety-Gate Sub-Pattern (2026-04-24)
+
+A special case of retune-on-branch: experiments that ADD a guard
+around an existing pruning feature (e.g. "skip NMP when TT move is a
+capture", "don't LMR when X", "require Y before probcut").
+
+A vanilla SPRT of the guard at default tunables measures only the
+DIRECT safety gain — "these specific unsafe prunes no longer happen."
+It does NOT measure the REBALANCING gain: adjacent pruning tunables
+were globally calibrated to avoid the unsafe case the guard now
+handles. With the guard in place, those tunables have latent headroom
+they're no longer using — the rest of the pruning can become more
+aggressive because the worst case is defended.
+
+**Right workflow for guard experiments:**
+
+1. SPRT the guard at default tunables (confirms direction isn't
+   negative and captures the direct gain)
+2. SPSA retune the ADJACENT cluster on branch (e.g. for an NMP
+   guard: NMP_BASE_R, NMP_DEPTH_DIV, NMP_EVAL_DIV, NMP_EVAL_MAX,
+   NMP_VERIFY_DEPTH — 5-6 params, 1200-1500 iters is usually
+   enough for a focused cluster)
+3. SPRT guard + retuned-cluster vs trunk
+
+A guard that SPRTs at +1 without retune is often +3-5 with retune —
+same multiplier as TT PV flag and cont-hist malus. Don't drop a guard
+at +1 Elo without completing step 2.
+
+**Test #732 (NMP TT-noisy R++) 2026-04-24** is a concrete example:
+the guard added `r += tt_move.is_capture()`, SPRT'd at +1.1 ±1.9 /
+30K games trending H0 on [0,3] bounds. Retune-on-branch of the NMP
+cluster is the missing step, not a new feature.
+
 ### Cross-Engine and Model Testing
 
 Self-play SPRT is the primary acceptance criterion for search changes.
