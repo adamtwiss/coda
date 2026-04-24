@@ -160,7 +160,10 @@ def main():
     # Auto-detect scale_nps from branch name if not explicitly set.
     # V9 branches run at ~240-280K NPS per core (threat features add ~40% work).
     # V5/main runs at ~500K+. Wrong scale_nps means games get wrong time budgets.
-    v9_patterns = ('feature/threat-inputs', 'experiment/', 'tune/v9-', 'fix/threats-', 'experiment/threat-', 'experiment/discovered-', 'experiment/history-', 'experiment/rfp-', 'experiment/lmr-', 'experiment/se-', 'experiment/asp-', 'experiment/lmp-', 'experiment/futility-', 'experiment/caphist-', 'experiment/stratified-', 'experiment/probcut-', 'experiment/king-')
+    # `fix/` matches broadly — all current fix branches are off
+    # feature/threat-inputs. Backports to v5 must pass --scale-nps 500000
+    # explicitly.
+    v9_patterns = ('feature/threat-inputs', 'experiment/', 'tune/v9-', 'fix/')
     is_v9 = any(args.dev_branch.startswith(p) or args.base_branch.startswith(p) for p in v9_patterns)
     if args.scale_nps is None:
         args.scale_nps = 250000 if is_v9 else 500000

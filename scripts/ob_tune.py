@@ -145,7 +145,10 @@ def main():
     args = p.parse_args()
 
     # Auto-detect scale_nps from branch name (see ob_submit.py rationale).
-    v9_patterns = ('feature/threat-inputs', 'experiment/', 'tune/v9-', 'fix/threats-')
+    # `fix/` is inclusive because virtually all fix branches are off
+    # feature/threat-inputs now (v9 is production). If anyone ever backports
+    # a v5 fix, they must pass --scale-nps 500000 explicitly.
+    v9_patterns = ('feature/threat-inputs', 'experiment/', 'tune/v9-', 'fix/')
     is_v9 = any(args.branch.startswith(p) for p in v9_patterns)
     if args.scale_nps is None:
         args.scale_nps = 250000 if is_v9 else 500000
