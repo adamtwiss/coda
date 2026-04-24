@@ -422,36 +422,54 @@ update as more data accumulates.
 
 ### The TC-handicap sigmoid (2026-04-24 calibration)
 
-Bullet H2H vs SF with asymmetric TC (Coda gets N× more time than
-SF), 60+ games per data point:
+Bullet H2H vs SF 18 with asymmetric TC (Coda at 60+1 vs SF at
+reduced TC). 100 games per data point:
 
-| HC | Gap Elo | Δ per doubling |
-|---:|---:|---:|
-| 1× | −160 | — |
-| 2× | −160 | 0 |
-| 4× | −127 | 33 |
-| 8× | −35  | **92** |
-| 16× | +30 | 65 |
+| HC | Score (W-L-D) | Coda % | Gap Elo (±) | Draw % | Δ vs prev |
+|---:|:---|---:|---:|---:|---:|
+| 1× (baseline) | 0-43-57 | 28.5% | **−159.8** ±41.6 | 57% | — |
+| 2× | 0-47-53 | 26.5% | **−177.2** ±43.9 | 53% | 0 (within noise) |
+| 4× | 0-35-65 | 32.5% | **−127.0** ±37.2 | 65% | +50 |
+| 8× | 3-13-84 | 45.0% | **−34.9** ±26.7 | 84% | **+92 (knee)** |
+| 16× | 15-16-69 | 49.5% | **−3.5** ±38.0 | 69% | +31 |
 
-**Classic sigmoid.** Flat zone below 2×, knee around 4×→8× where
-each doubling of effective NPS delivers ~90 Elo, then taper toward
-parity at 16×. First TC-doubling barely moves the needle; the
-fourth doubling crosses the gap.
+**Classic sigmoid** with an ultra-flat (possibly slightly negative)
+first doubling. 2× TC doesn't help at all — SF's time-management is
+so efficient at short TC that Coda's extra time doesn't translate
+to useful extra depth. Knee at 4×→8× (+92 Elo). Taper into parity
+at 16× (LOS 43%).
+
+**The 1×→2× flat zone is important**: a 2× NPS gain from our
+inference work alone is worth ~0 Elo vs SF. NPS work only pays once
+we're near the 4× knee threshold.
+
+**Draw-rate peak at 8×** (84%!): both engines draw nearly everything
+at that TC — we've reached "solid drawing depth" but still can't
+out-play SF from equal position. At 16× Coda finally wins enough
+games to match SF's wins (15W-16L-69D, essentially symmetric).
 
 **What this tells us:**
 
 - Our **eval is at SF parity** — at equal depth, we play as well.
   The full 160 Elo gap at normal TC is *horizon*, not quality.
-- Horizon is **nonlinear in depth**. Partial depth gains below the
-  knee (1-4×) return near-zero Elo. Above the knee (4-8×), each
-  incremental depth-ply delivers 20-30+ Elo. This is because
-  specific tactical refutations live at specific depths — seeing
-  them at all vs not matters far more than seeing them half-a-ply
-  earlier.
-- **Compound to cross the knee or plateau below it.** Individual
-  experiments at +3% NPS / +3 Elo pre-knee may feel thankless; they
-  deliver Elo only insofar as they stack with other gains toward
-  the knee threshold.
+- Horizon is **nonlinear in depth against SF-class opponents**.
+  Partial depth gains below the knee (1-4×) return near-zero Elo.
+  Above the knee (4-8×), each incremental depth-ply delivers 20-30+
+  Elo. This is because specific tactical refutations live at
+  specific depths — seeing them at all vs not matters far more than
+  seeing them half-a-ply earlier.
+- **The sigmoid applies specifically to wide-Elo-gap opposition.**
+  Vs same-tier opponents (e.g. our Rivals pool at 3430-3585 CCRL),
+  the tactical-cliff dynamic isn't present — both engines have
+  similar horizon, so NPS wins convert more linearly to Elo. NPS
+  work still pays for closing small gaps and holding ground in
+  close matchups; it just plateaus against engines far above us.
+- **Compound to cross the knee or plateau below it (vs SF).**
+  Individual experiments at +3% NPS / +3 Elo pre-knee feel
+  thankless against SF; they deliver Elo only insofar as they stack
+  with other gains toward the knee threshold. BUT those same +3 Elo
+  wins are cleanly valuable in Rivals-tier competition (Lichess bot
+  ranking, CCRL position).
 
 ### Path to closing the gap (pragmatic, 2026 horizon)
 
