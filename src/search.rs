@@ -90,7 +90,11 @@ tunables!(
     (ASP_DELTA, 15, 5, 30, 1.5),
     (ASP_SCORE_DIV, 31488, 8000, 50000, 2100.0),
     (LMP_BASE, 10, 1, 15, 2.0),
-    (LMP_DEPTH, 8, 4, 20, 2.0),
+    // LMP depth cap. Reckless has no cap (search.rs:737). Raising default
+    // 8 → 16 to let LMP fire at mid-to-deep depths where Coda was previously
+    // missing prune opportunities. SPSA range [4, 20] lets retune find
+    // the Coda optimum.
+    (LMP_DEPTH, 16, 4, 20, 2.0),
     (BAD_NOISY_MARGIN, 134, 30, 150, 6.0),
     (PROBCUT_MARGIN, 198, 80, 300, 11.0),
     (HINDSIGHT_THRESH, 192, 50, 400, 17.5),
