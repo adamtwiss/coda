@@ -499,3 +499,69 @@ Additional audit items SPRT'd on tuned C8-fix trunk (post-#661).
 | P1 optimism (peripheral) | #671 experiment/p1-optimism-c8-retry | −7.1 @ 4268g H0 | ❌ dropped — needs K1/K2 SPSA; not worth pursuing without |
 
 **Net batch delta:** 4 merges (2 H1 + 2 confident-correctness), 4 drops, 1 iterating. Trunk bench rose to 3,370,847 (from 2,575,054 pre-batch) due to stacked tree-shape effects; next retune will re-calibrate.
+
+## Resolution log — 2026-04-23/24 NPS investigation wave
+
+### Context
+
+The 2026-04-23/24 session was primarily NPS-investigation-driven, not
+audit-driven. Covered in `docs/coda_vs_reckless_nps_2026-04-23.md`
+(Zeus) and `docs/nps_microbench_hostdata.md` (cross-fleet). Merged
+~+25 Elo from non-audit items. Pure audit work was paused during
+this wave; items that intersected the NPS work:
+
+### Audit items that landed via NPS SPRTs
+
+- **(unrelated-to-audit) eval-only TT writeback (#713, +14.7 Elo):**
+  Introduces a new TT-write path with shallow stub entries
+  (`depth=-2`, `flag=TT_FLAG_UPPER`, `score=-INFINITY`, `move=NO_MOVE`).
+  Warrants a targeted mini-audit: does any downstream consumer read
+  `tt_score` without checking `tt_depth >= depth` first? Does IIR
+  correctly treat the stub's `NO_MOVE` as "no TT move"? Queued for
+  next audit cycle.
+
+- **(unrelated-to-audit) flatten AccEntry (#711, +6.5 Elo):**
+  Converts 4 heap-backed `Vec` fields to fixed-size inline arrays.
+  Edge cases around `MAX_THREAT_ACTIVE = 256` bound warrant a
+  small fuzz extension — pathological positions approaching the
+  upper bound could now overflow silently rather than reallocate.
+
+- **(unrelated-to-audit) PSQ walk-back clean retry (#720, +1.1 Elo):**
+  The same 2026-04-17 mechanism that H0'd at −17.86 Elo landed
+  positive on a cleaner branch. Confirms prior H0 was confounded
+  by struct-layout churn, not walk-back itself being slow.
+  **Lesson for audit methodology**: "H0 on tuned trunk" is not
+  proof a mechanism is bad if the failing branch was packaged
+  with unrelated structural changes. Re-audit candidate items
+  via isolated-mechanism branches where possible.
+
+### Audit items attempted but buggy (retry pending)
+
+- **Zeus Item #9 TT static_eval widen** (#725, −167.5 @ 442g):
+  Intended as correctness refactor of pack_data's 13-bit clamp
+  (±4095 cp) → 16-bit full i16. v9 routinely exceeds ±4095 cp
+  at EVAL_SCALE=400, silently corrupting cached eval. Initial
+  SPRT regressed catastrophically — bug in bit-layout shuffle.
+  **Core observation still valid; retry pending correct
+  implementation.**
+
+- **Zeus Item #10 complete AccEntry flatten** (#726, −7.1 @ 1218g):
+  Remaining Vec fields (`threat_deltas`, `threat_features_*`) ported
+  to inline arrays. Hit a bug in the new containers. Retry pending.
+
+### Still-open SPECULATIVE items worth Titan research
+
+Most SPECULATIVE items remain untouched post the 2026-04-22 sprint.
+Ranked by expected triggerability (Lichess-reachable > dev-only):
+
+| Item | Location | Trigger condition | Priority |
+|------|----------|-------------------|----------|
+| SEE pawn-promotion recapture | `see.rs:76-93` | Deep endgame w/ promotion exchange | **Lichess-visible** |
+| `do_shallower` cp margin | `search.rs:2647` | Any search (already partially addressed via #679 +1.4 at 20cp) | Minor, could SPSA further |
+| Evasion capture-promotion ranking | `movepicker.rs:700-710` | In check + promotion avail | Rare but Lichess-reachable |
+| Repetition plies_from_null | `search.rs:1670-1682` | Across null-move subtrees | Rare; latent |
+| `should_stop` granularity | `search.rs:500-527` | <100ms budget | Lichess bullet/hyperbullet |
+| Duplicate SEE implementations | CLAUDE.md says "risks correctness" | Any SEE call | Audit-question, not a fix |
+
+See `next_ideas_2026-04-21.md` §R5 "Widening tests for audit
+SPECULATIVE items" for Titan's queued research thread on this.

@@ -277,26 +277,31 @@ promotion-threat squares; may be redundant.
 Above the zero floor; gained where the existing LMR exemption was not enough for
 these critical pushes.
 
-## Ranked shortlist
+## Ranked shortlist (updated 2026-04-24)
 
 **Tier 1 (high confidence, direct port from multiple strong engines):**
 
-1. **P1 Optimism** — expected +2–6, SPSA branch tune needed.
-2. **P2 Halfmove-gated TT cutoff** — expected +1–3, one-line change, correctness adjacent.
-3. **P3 50mr-threatened mate downgrade in TT** — expected +1–3, ~10 lines, bug-fix class.
+1. ~~**P1 Optimism**~~ — H0 twice (#636, #671). Parked pending K1/K2 SPSA branch tune.
+2. ~~**P2 Halfmove-gated TT cutoff**~~ — **+1.2 Elo H1 ✓ merged (#628).**
+3. ~~**P3 50mr-threatened mate downgrade in TT**~~ — H0 but merged as confident-correctness (#633).
 
 **Tier 2 (novel but chess-sound):**
 
-4. **N4 Halfmove-scaled pruning margins** — expected +1–4, requires retune.
-5. **N1 Twofold-in-history eval blend** — expected +1–4, cheap.
-6. **P4 NNUE complexity blending** (with alternative proxy) — expected +1–5, moderate.
+4. **N4 Halfmove-scaled pruning margins** — expected +1–4, requires retune. **STILL UNTESTED.**
+5. ~~**N1 Twofold-in-history eval blend**~~ — H0 dropped (#691 +0.0 @ 28792g).
+6. **P4 NNUE complexity blending** (with alternative proxy) — expected +1–5, moderate. **STILL UNTESTED.**
 
 **Tier 3 (smaller / riskier / more speculative):**
 
-7. **N5 QS insufficient-material short-circuit** — expected +0.5–2, correctness.
-8. **N2 Shuffling detector** — expected +1–3, novel.
-9. **N6 Promotion-imminent extension** — expected +0–3, low confidence.
-10. **N3 Fortress soft-cap** — expected +0–4, high variance.
+7. ~~**N5 QS insufficient-material short-circuit**~~ — H0 dropped (#683 +0.3 @ 50894g).
+8. **N2 Shuffling detector** — expected +1–3, novel. **STILL UNTESTED.**
+9. ~~**N6 Promotion-imminent extension**~~ — **+1.6 Elo H1 ✓ merged (#637).**
+10. **N3 Fortress soft-cap** — expected +0–4, high variance. **STILL UNTESTED.**
+
+**Still-untested summary**: N4, P4, N2, N3 remain open. P6 SMP thread
+voting is also untested (listed above in P6 section). P1 parked pending
+focused SPSA. See `next_ideas_2026-04-21.md` §"Research threads for
+Titan (2026-04-24)" for the current full research queue.
 
 ## Stop-trying list
 
