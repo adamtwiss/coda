@@ -2177,6 +2177,21 @@ fn negamax(
         if !board.undo_stack.is_empty() && board.undo_stack[board.undo_stack.len() - 1].captured != NO_PIECE_TYPE {
             r += 1;
         }
+        // NMP R+=1 when TT best move is a capture. Obsidian (search.cpp:882
+        // `R += ttMoveNoisy`) and Viridithas (search.rs:1098-1108
+        // `r += tt_capture.is_some() as i32`) consensus. Rationale: if the
+        // TT-flagged best move is a capture, the position is tactical
+        // enough that opponent probably has a forcing reply — NMP's
+        // "opponent passes" model is weakened. Reduce more heavily to
+        // preserve correctness without skipping NMP entirely.
+        // Safer than #709's full-skip pattern (−7.8 Elo) per
+        // docs/research_threads_2026-04-24.md R2 proposal C.
+        if tt_move != NO_MOVE
+            && (board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
+                || move_flags(tt_move) == FLAG_EN_PASSANT)
+        {
+            r += 1;
+        }
         if static_eval > beta {
             let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp(&NMP_EVAL_MAX));
             r += eval_r;
