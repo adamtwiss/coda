@@ -48,6 +48,11 @@ pub struct Board {
     pub minor_key: [u64; 2],   // per-color knight+bishop Zobrist keys
     pub major_key: [u64; 2],   // per-color rook+queen Zobrist keys
     pub undo_stack: Vec<UndoInfo>,
+    /// Threat deltas accumulated during make_move (cleared on each make_move).
+    /// Used by the NNUE threat accumulator for incremental updates.
+    pub threat_deltas: Vec<crate::threats::RawThreatDelta>,
+    /// Whether to generate threat deltas during make_move (set when threat net is loaded).
+    pub generate_threat_deltas: bool,
 }
 
 /// Castling rook positions (from, to) indexed by castling flag bit.
@@ -76,6 +81,42 @@ fn castle_mask(sq: u8) -> u8 {
     unsafe { CASTLE_MASK[sq as usize] }
 }
 
+/// Returns true if `ep_sq` is an EP target that `capturing_side` can actually
+/// reach with a pawn — i.e., `capturing_side` has a pawn on a file-adjacent
+/// square on the same rank as the just-double-pushed pawn.
+///
+/// The double-pushed pawn's square is implied by `ep_sq`:
+///   - if capturing_side == BLACK, white just pushed; pushed pawn = ep_sq + 8
+///   - if capturing_side == WHITE, black just pushed; pushed pawn = ep_sq - 8
+///
+/// The Zobrist hash must XOR `ep_key(file_of(ep_sq))` iff this returns true.
+/// Otherwise two physically identical positions — one reached via a double
+/// push with no adjacent enemy pawn, one reached any other way — would hash
+/// differently, silently breaking threefold-repetition detection.
+pub fn ep_capture_available(
+    pieces: &[Bitboard; 6],
+    colors: &[Bitboard; 2],
+    capturing_side: Color,
+    ep_sq: u8,
+) -> bool {
+    if ep_sq >= 64 { return false; }
+    // Pushed pawn square (on capturing_side's 4th rank from its own POV).
+    let pushed_sq = if capturing_side == BLACK {
+        // White pushed: pawn on rank 4 == ep_sq (rank 3) + 8.
+        ep_sq.wrapping_add(8)
+    } else {
+        // Black pushed: pawn on rank 5 == ep_sq (rank 6) - 8.
+        ep_sq.wrapping_sub(8)
+    };
+    if pushed_sq >= 64 { return false; }
+    let pushed_bb = 1u64 << pushed_sq;
+    // Enemy (capturing_side) pawns that could EP-capture sit on files adjacent
+    // to pushed_sq on the same rank.
+    let adj = ((pushed_bb << 1) & NOT_FILE_A) | ((pushed_bb >> 1) & NOT_FILE_H);
+    let capturing_pawns = pieces[PAWN as usize] & colors[capturing_side as usize];
+    adj & capturing_pawns != 0
+}
+
 impl Board {
     pub fn new() -> Self {
         Board {
@@ -94,6 +135,8 @@ impl Board {
             minor_key: [0; 2],
             major_key: [0; 2],
             undo_stack: Vec::with_capacity(512),
+            threat_deltas: Vec::with_capacity(128),
+            generate_threat_deltas: false,
         }
     }
 
@@ -210,7 +253,13 @@ impl Board {
             }
         }
 
-        if self.ep_square != NO_SQUARE {
+        // Only hash ep_square if an enemy pawn can actually make the EP capture.
+        // Without this guard, the same physical position reached with or without
+        // a recent double-push would hash differently, breaking rep detection
+        // (Stockfish/Viridithas pattern).
+        if self.ep_square != NO_SQUARE
+            && ep_capture_available(&self.pieces, &self.colors, self.side_to_move, self.ep_square)
+        {
             h ^= ep_key(file_of(self.ep_square));
         }
 
@@ -361,6 +410,176 @@ impl Board {
         debug_assert!(bb != 0, "No king found for color {}", color);
         if bb == 0 { return 0; } // safety fallback
         lsb(bb) as u8
+    }
+
+    /// Bitboard of every square attacked by any piece of `color`.
+    /// Used by search for broader threat-aware history indexing and
+    /// LMR escape-from-threat adjustments (upgrade from pawn-only).
+    ///
+    /// Cost: ~1-2 magic lookups per slider + per-piece table reads.
+    /// Typical middlegame: 8-12 magic lookups total. Called once per
+    /// non-QS node.
+    #[inline]
+    pub fn attacks_by_color(&self, color: Color) -> Bitboard {
+        let c = color as usize;
+        let occ = self.colors[0] | self.colors[1];
+        let mut attacks: Bitboard = 0;
+
+        // Pawns (dir depends on color)
+        let their_pawns = self.pieces[PAWN as usize] & self.colors[c];
+        attacks |= if color == WHITE {
+            ((their_pawns & !FILE_A) << 7) | ((their_pawns & !FILE_H) << 9)
+        } else {
+            ((their_pawns & !FILE_H) >> 7) | ((their_pawns & !FILE_A) >> 9)
+        };
+
+        // Knights
+        let mut knights = self.pieces[KNIGHT as usize] & self.colors[c];
+        while knights != 0 {
+            let sq = knights.trailing_zeros();
+            knights &= knights - 1;
+            attacks |= knight_attacks(sq);
+        }
+
+        // Bishops & queens (diagonal)
+        let mut diag = (self.pieces[BISHOP as usize] | self.pieces[QUEEN as usize])
+            & self.colors[c];
+        while diag != 0 {
+            let sq = diag.trailing_zeros();
+            diag &= diag - 1;
+            attacks |= bishop_attacks(sq, occ);
+        }
+
+        // Rooks & queens (orthogonal)
+        let mut orth = (self.pieces[ROOK as usize] | self.pieces[QUEEN as usize])
+            & self.colors[c];
+        while orth != 0 {
+            let sq = orth.trailing_zeros();
+            orth &= orth - 1;
+            attacks |= rook_attacks(sq, occ);
+        }
+
+        // King
+        let king = self.pieces[KING as usize] & self.colors[c];
+        if king != 0 {
+            attacks |= king_attacks(king.trailing_zeros());
+        }
+
+        attacks
+    }
+
+    /// Approximate pre-move direct-check detection for pruning carve-outs.
+    /// Returns true if `mv`'s moved piece would directly attack the enemy
+    /// king from its destination square, using the post-move occupancy.
+    ///
+    /// Does NOT cover discovered checks, castling rook-checks, EP discovered
+    /// checks, or promotion-to-checker. Intended as a cheap "don't prune
+    /// obviously aggressive moves" filter, not a ground-truth check detector.
+    /// Reckless pattern (commits #410, #630): `might_give_check_if_you_squint`.
+    #[inline]
+    pub fn gives_direct_check(&self, mv: Move) -> bool {
+        let from = move_from(mv);
+        let to = move_to(mv);
+        let pt = self.piece_type_at(from);
+        if pt == NO_PIECE_TYPE {
+            return false;
+        }
+        let us = self.side_to_move;
+        let them = flip_color(us);
+        let their_king = self.king_sq(them);
+        let their_king_bb = 1u64 << their_king;
+
+        // Post-move occupancy: lift from-square, place on to-square.
+        let occ = (self.occupied() ^ (1u64 << from)) | (1u64 << to);
+
+        // For promotions, attack pattern comes from the promoted piece type.
+        let effective_pt = if is_promotion(mv) {
+            promotion_piece_type(mv)
+        } else {
+            pt
+        };
+
+        let attacks: Bitboard = match effective_pt {
+            PAWN => pawn_attacks(us, to as u32),
+            KNIGHT => knight_attacks(to as u32),
+            BISHOP => bishop_attacks(to as u32, occ),
+            ROOK => rook_attacks(to as u32, occ),
+            QUEEN => queen_attacks(to as u32, occ),
+            _ => 0, // King moves can't give direct check.
+        };
+
+        attacks & their_king_bb != 0
+    }
+
+    /// Squares of `color`'s pieces that are currently blocking one of
+    /// `color`'s own sliders' attack-through to an enemy piece.
+    ///
+    /// Moving any such piece creates a discovered attack on an enemy
+    /// piece along the slider's x-ray ray. Intended for movepicker
+    /// bonus (B1 experiment): `bonus = value_of(xray_victim)` when
+    /// move.from() ∈ xray_blockers(our_color).
+    ///
+    /// Cost: 2-6 slider iterations per call, each doing 1-2 magic
+    /// lookups + 1 ray_extension table read per direct blocker.
+    /// Typical middlegame: 10-20 magic lookups per call.
+    ///
+    /// Returns a bitboard of `color`'s blocker squares. The bitboard
+    /// value is a flag per square — the caller does not learn which
+    /// enemy piece lies behind (for that, see xray_blockers_scored).
+    ///
+    /// Note: this recomputes x-ray state fresh at the call site. The
+    /// same information is already being computed inside
+    /// `push_threats_for_piece` for NNUE input generation; if B1 lands
+    /// Elo, the emission-split refactor (Path 2) amortises this cost
+    /// to zero. Keep this function simple so the correctness surface
+    /// is minimal and the cost is predictable.
+    pub fn xray_blockers(&self, color: Color) -> Bitboard {
+        let c = color as usize;
+        let occ = self.colors[0] | self.colors[1];
+        let our = self.colors[c];
+        let their = self.colors[c ^ 1];
+        let mut result: Bitboard = 0;
+
+        // Bishops & queens — diagonal rays
+        let mut diag = (self.pieces[BISHOP as usize] | self.pieces[QUEEN as usize]) & our;
+        while diag != 0 {
+            let s_sq = diag.trailing_zeros();
+            diag &= diag - 1;
+            // Direct blockers: pieces on the slider's ray reach.
+            let mut our_blockers = bishop_attacks(s_sq, occ) & our;
+            while our_blockers != 0 {
+                let b_sq = our_blockers.trailing_zeros();
+                our_blockers &= our_blockers - 1;
+                // What's past this blocker on the same ray?
+                let past = crate::bitboard::ray_extension(s_sq, b_sq) & occ;
+                if past == 0 { continue; }
+                // First occupant past blocker: low bit if s_sq < b_sq, else high bit.
+                let past_sq = if s_sq < b_sq { past.trailing_zeros() } else { 63 - past.leading_zeros() };
+                if their & (1u64 << past_sq) != 0 {
+                    result |= 1u64 << b_sq;
+                }
+            }
+        }
+
+        // Rooks & queens — orthogonal rays
+        let mut orth = (self.pieces[ROOK as usize] | self.pieces[QUEEN as usize]) & our;
+        while orth != 0 {
+            let s_sq = orth.trailing_zeros();
+            orth &= orth - 1;
+            let mut our_blockers = rook_attacks(s_sq, occ) & our;
+            while our_blockers != 0 {
+                let b_sq = our_blockers.trailing_zeros();
+                our_blockers &= our_blockers - 1;
+                let past = crate::bitboard::ray_extension(s_sq, b_sq) & occ;
+                if past == 0 { continue; }
+                let past_sq = if s_sq < b_sq { past.trailing_zeros() } else { 63 - past.leading_zeros() };
+                if their & (1u64 << past_sq) != 0 {
+                    result |= 1u64 << b_sq;
+                }
+            }
+        }
+
+        result
     }
 
     /// Get bitboard of all pieces attacking a square.
@@ -547,54 +766,87 @@ impl Board {
             checkers: 0, // populated on demand
         });
 
-        // Remove EP hash
-        if self.ep_square != NO_SQUARE {
+        // Remove EP hash — only if the old EP was "legal" (we, side_to_move,
+        // have a pawn that could actually make the EP capture). Must mirror
+        // the condition used when the key was XOR'd in, or the hash breaks.
+        if self.ep_square != NO_SQUARE
+            && ep_capture_available(&self.pieces, &self.colors, self.side_to_move, self.ep_square)
+        {
             self.hash ^= ep_key(file_of(self.ep_square));
         }
 
         // Remove old castling hash
         self.hash ^= castle_key(self.castling);
 
+        // Clear threat deltas for this move
+        let gen_threats = self.generate_threat_deltas;
+        if gen_threats { self.threat_deltas.clear(); }
+
         // Handle captures
         if flags == FLAG_EN_PASSANT {
             let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
             debug_assert!(cap_sq < 64, "EP cap_sq out of bounds: {}", cap_sq);
             self.remove_piece(them, PAWN, cap_sq);
+            if gen_threats { crate::threats::push_threats_on_change(
+                &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
+                self.colors[0] | self.colors[1], them, PAWN, cap_sq as u32, false); }
         } else if captured != NO_PIECE_TYPE {
             self.remove_piece(them, captured, to);
+            if gen_threats { crate::threats::push_threats_on_change(
+                &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
+                self.colors[0] | self.colors[1], them, captured, to as u32, false); }
         }
 
         // Move the piece
         self.move_piece(us, pt, from, to);
+        if gen_threats { crate::threats::push_threats_on_move(
+            &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
+            self.colors[0] | self.colors[1], us, pt, from as u32, to as u32); }
 
         // Handle promotion
         if is_promotion(mv) {
             let promo_pt = promotion_piece_type(mv);
             self.remove_piece(us, pt, to);   // remove pawn
             self.put_piece(us, promo_pt, to); // put promoted piece
+            if gen_threats {
+                crate::threats::push_threats_on_change(
+                    &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
+                    self.colors[0] | self.colors[1], us, pt, to as u32, false);
+                crate::threats::push_threats_on_change(
+                    &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
+                    self.colors[0] | self.colors[1], us, promo_pt, to as u32, true);
+            }
         }
 
         // Handle castling
         if flags == FLAG_CASTLE {
-            // Determine which rook to move
             let (rook_from, rook_to) = if to > from {
-                // Kingside
                 if us == WHITE { (7u8, 5u8) } else { (63u8, 61u8) }
             } else {
-                // Queenside
                 if us == WHITE { (0u8, 3u8) } else { (56u8, 59u8) }
             };
             self.move_piece(us, ROOK, rook_from, rook_to);
+            if gen_threats { crate::threats::push_threats_on_move(
+                &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
+                self.colors[0] | self.colors[1], us, ROOK, rook_from as u32, rook_to as u32); }
         }
 
         // Update castling rights (for any move from/to relevant squares)
         self.castling &= castle_mask(from) & castle_mask(to);
 
-        // Update en passant — detect double push by distance
+        // Update en passant — detect double push by distance.
+        // Only XOR ep_key into the hash if the OTHER side (them = the next
+        // mover) actually has a pawn that could EP-capture. Otherwise the
+        // ep_square is physically recorded but invisible to the hash, so
+        // positions reachable with-or-without this double-push still
+        // collide correctly for rep detection.
         self.ep_square = NO_SQUARE;
         if pt == PAWN && ((to as i32) - (from as i32)).unsigned_abs() == 16 {
-            self.ep_square = if us == WHITE { from.wrapping_add(8) } else { from.wrapping_sub(8) };
-            self.hash ^= ep_key(file_of(self.ep_square));
+            let new_ep = if us == WHITE { from.wrapping_add(8) } else { from.wrapping_sub(8) };
+            self.ep_square = new_ep;
+            if ep_capture_available(&self.pieces, &self.colors, them, new_ep) {
+                self.hash ^= ep_key(file_of(new_ep));
+            }
         }
 
         // Update castling hash
@@ -619,6 +871,8 @@ impl Board {
 
         true
     }
+
+    // Threat delta methods use free functions to avoid borrow issues with &mut self
 
     /// Unmake the last move.
     pub fn unmake_move(&mut self) {
@@ -707,6 +961,7 @@ impl Board {
 
     /// Make a null move (just flip side, update EP).
     pub fn make_null_move(&mut self) {
+        self.threat_deltas.clear(); // null move = no piece changes = no threat deltas
         self.undo_stack.push(UndoInfo {
             mv: NO_MOVE,
             captured: NO_PIECE_TYPE,
@@ -723,7 +978,10 @@ impl Board {
         });
 
         if self.ep_square != NO_SQUARE {
-            self.hash ^= ep_key(file_of(self.ep_square));
+            // Mirror the conditional XOR used when the key was added.
+            if ep_capture_available(&self.pieces, &self.colors, self.side_to_move, self.ep_square) {
+                self.hash ^= ep_key(file_of(self.ep_square));
+            }
             self.ep_square = NO_SQUARE;
         }
 
@@ -1002,5 +1260,672 @@ mod tests {
         b.unmake_move();
         assert_eq!(b.to_fen(), fen_before);
         assert_eq!(b.hash, hash_before);
+    }
+
+    /// Deterministic fuzzer: plays random legal games from several start
+    /// positions and verifies that the incremental hash (maintained by
+    /// make_move/unmake_move) exactly equals compute_hash() at every ply.
+    ///
+    /// This catches any drift in the conditional ep_key XOR — if the
+    /// condition used at "remove old ep_key" disagrees with the condition
+    /// used at "add new ep_key" for any move sequence, the incremental
+    /// hash diverges from compute_hash and TT lookup breaks.
+    ///
+    /// Not a behavioural test — purely a hash-invariant guard for the
+    /// 2026-04-17 Zobrist EP fix. Analogous to threat_accum::fuzz_random_games.
+    #[test]
+    fn fuzz_hash_incremental_matches_compute() {
+        use crate::movegen::generate_legal_moves;
+        init();
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            // EP-rich positions: lots of pawns near rank 5 / rank 4
+            "rnbqkbnr/1ppp1ppp/p7/3Pp3/8/8/PPP1PPPP/RNBQKBNR w KQkq e6 0 3",
+            "rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2",
+            // Dead-EP position: double push available with no adjacent enemy pawn
+            "4k3/p7/8/8/8/8/1P6/4K3 w - - 0 1",
+            "4k3/8/8/8/8/8/PPPPPPPP/4K3 w - - 0 1",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const PLIES: usize = 80;
+        const GAMES: usize = 30;
+
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for game in 0..GAMES {
+                let seed: u32 = 0x1EE7D00Du32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::from_fen(fen);
+                // Baseline invariant on starting position.
+                assert_eq!(
+                    board.hash, board.compute_hash(),
+                    "start hash mismatch at fen_idx={} fen={}", fen_idx, fen
+                );
+
+                for ply in 0..PLIES {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+
+                    board.make_move(mv);
+
+                    let incr = board.hash;
+                    let fresh = board.compute_hash();
+                    if incr != fresh {
+                        panic!(
+                            "hash drift: fen_idx={} game={} ply={} move={} \
+                             incremental={:#x} compute_hash={:#x} diff={:#x} seed={:#x}\n\
+                             fen={} ep={}",
+                            fen_idx, game, ply,
+                            crate::types::move_to_uci(mv),
+                            incr, fresh, incr ^ fresh, seed,
+                            board.to_fen(), board.ep_square,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Regression: the Zobrist hash must include ep_key iff an enemy pawn
+    /// can actually make the EP capture. Without this guard, the same
+    /// physical position reached via a double-push with no adjacent enemy
+    /// pawn would hash differently from the same position reached by a
+    /// single-push path, silently breaking threefold-repetition detection.
+    ///
+    /// Caught by an `info depth ... pv` warning from fastchess on a v9
+    /// game where a forced-rep endgame was scored as -80cp instead of the
+    /// draw contempt value (~-19cp).
+    #[test]
+    fn zobrist_ep_only_when_capturable() {
+        init();
+
+        // Case A: double push where NO enemy pawn can capture.
+        // White pushes d2-d4. Black has no pawn on c4 or e4. EP is illegal.
+        // The same physical position is reachable via two d-pawn single-pushes
+        // (d2-d3, then d3-d4). Both hashes must be equal.
+        let mut b_double = Board::from_fen("4k3/8/8/8/8/8/3P4/4K3 w - - 0 1");
+        let d2d4 = make_move(11, 27, FLAG_NONE); // d2 -> d4 (distance 16 triggers EP)
+        b_double.make_move(d2d4);
+        // After d2-d4 with no enemy pawn to capture, ep_square may be set to
+        // d3 (internal state) but the hash must NOT include ep_key(d).
+        // Give black a no-op and white another no-op to reach a comparable state.
+        let ke8f8 = make_move(60, 61, FLAG_NONE); // e8 -> f8 (just to flip sides)
+        // Actually simpler: compare the single-push-path hash directly.
+        let b_single = {
+            let mut b = Board::from_fen("4k3/8/8/8/8/8/3P4/4K3 w - - 0 1");
+            let d2d3 = make_move(11, 19, FLAG_NONE);
+            b.make_move(d2d3);       // d2-d3 (pawn to d3; black to move)
+            let ke8f8 = make_move(60, 61, FLAG_NONE);
+            b.make_move(ke8f8);      // black king idle
+            let d3d4 = make_move(19, 27, FLAG_NONE);
+            b.make_move(d3d4);       // d3-d4 (no EP here either)
+            b
+        };
+        // Reach the same physical position from the double-push path:
+        // after d2-d4, play Ke8-f8, then a null move slot... we need white to move
+        // for the physical state to match b_single. Instead, just arrange
+        // b_double to end with black to move and compare to a b_single with black
+        // to move after d2-d4.
+        //
+        // Easier form: compare *after the double push*, black-to-move, against
+        // *after single-push + black no-op + single-push*, black-to-move.
+        let _ = ke8f8; // silence unused
+        drop(b_double);
+
+        // Simpler head-to-head: two black-to-move positions that should be identical.
+        let fen_after_double = {
+            let mut b = Board::from_fen("4k3/8/8/8/8/8/3P4/4K3 w - - 0 1");
+            let d2d4 = make_move(11, 27, FLAG_NONE);
+            b.make_move(d2d4);
+            b
+        };
+        let fen_after_two_single = {
+            let mut b = Board::from_fen("4k3/8/8/8/8/3P4/8/4K3 w - - 0 1");
+            let d3d4 = make_move(19, 27, FLAG_NONE);
+            b.make_move(d3d4);
+            b
+        };
+        // Physical state must match (piece bitboards, side, castling, no EP effect).
+        assert_eq!(fen_after_double.pieces, fen_after_two_single.pieces);
+        assert_eq!(fen_after_double.colors, fen_after_two_single.colors);
+        assert_eq!(fen_after_double.side_to_move, fen_after_two_single.side_to_move);
+        assert_eq!(fen_after_double.castling, fen_after_two_single.castling);
+        // Hashes must be equal — EP is not legal in either (no black pawn on c4/e4).
+        assert_eq!(
+            fen_after_double.hash, fen_after_two_single.hash,
+            "Zobrist hashes must match when EP is physically unreachable.\n\
+             double-push hash = {:#x}, single-push hash = {:#x}",
+            fen_after_double.hash, fen_after_two_single.hash
+        );
+
+        // Case B: double push where EP IS legal (black pawn on e4).
+        // In that case, the hash should include ep_key(d) AND not match the
+        // no-EP version.
+        let ep_legal_pos = {
+            let mut b = Board::from_fen("4k3/8/8/8/4p3/8/3P4/4K3 w - - 0 1");
+            let d2d4 = make_move(11, 27, FLAG_NONE); // d2-d4, ep_sq=d3, black pawn on e4 can capture
+            b.make_move(d2d4);
+            b
+        };
+        let no_ep_version = {
+            let mut b = Board::from_fen("4k3/8/8/8/4p3/3P4/8/4K3 w - - 0 1");
+            let d3d4 = make_move(19, 27, FLAG_NONE);
+            b.make_move(d3d4);
+            b
+        };
+        // Physical bitboards should match, but the EP-legal version must have
+        // ep_key XOR'd in.
+        assert_eq!(ep_legal_pos.pieces, no_ep_version.pieces);
+        assert_eq!(ep_legal_pos.colors, no_ep_version.colors);
+        assert_ne!(
+            ep_legal_pos.hash, no_ep_version.hash,
+            "Zobrist hashes MUST differ when EP is legal — ep_key(d) should \
+             distinguish them. double-push hash = {:#x}, no-EP hash = {:#x}",
+            ep_legal_pos.hash, no_ep_version.hash
+        );
+        // The XOR of the two must equal ep_key(d-file = 3).
+        assert_eq!(
+            ep_legal_pos.hash ^ no_ep_version.hash,
+            crate::zobrist::ep_key(3),
+            "hash difference should be exactly ep_key(d)"
+        );
+
+        // Case C: incremental hash vs. from-scratch compute_hash must agree
+        // in both cases (hash invariant).
+        assert_eq!(fen_after_double.hash, fen_after_double.compute_hash());
+        assert_eq!(ep_legal_pos.hash, ep_legal_pos.compute_hash());
+    }
+
+    /// Recompute the four auxiliary Zobrist keys (pawn_hash, non_pawn_key,
+    /// minor_key, major_key) from the current piece/color bitboards. Mirrors
+    /// the logic in `set_fen` at the "Compute per-color" block. Used by
+    /// fuzzers to verify incremental updates in put_piece / remove_piece /
+    /// move_piece stay coherent.
+    fn recompute_aux_keys(b: &Board) -> (u64, [u64; 2], [u64; 2], [u64; 2]) {
+        let mut pawn = 0u64;
+        let mut np = [0u64; 2];
+        let mut minor = [0u64; 2];
+        let mut major = [0u64; 2];
+        for color in 0..2u8 {
+            let mut pbb = b.pieces[PAWN as usize] & b.colors[color as usize];
+            while pbb != 0 {
+                let sq = pop_lsb(&mut pbb) as u8;
+                pawn ^= piece_key(make_piece(color, PAWN), sq);
+            }
+            for pt in [KNIGHT, BISHOP, ROOK, QUEEN] {
+                let mut bb = b.pieces[pt as usize] & b.colors[color as usize];
+                while bb != 0 {
+                    let sq = pop_lsb(&mut bb) as u8;
+                    let k = piece_key(make_piece(color, pt), sq);
+                    np[color as usize] ^= k;
+                    if pt == KNIGHT || pt == BISHOP { minor[color as usize] ^= k; }
+                    else { major[color as usize] ^= k; }
+                }
+            }
+        }
+        (pawn, np, minor, major)
+    }
+
+    /// Property-based fuzzer for the four auxiliary Zobrist keys
+    /// (pawn_hash, non_pawn_key, minor_key, major_key) used by correction
+    /// history. After every move, incremental values must equal from-scratch
+    /// recomputation. These hashes drive correction-history indexing — a
+    /// silent divergence would poison per-bucket corrections and show up as
+    /// degraded search quality with no other symptom.
+    ///
+    /// Analogous to `fuzz_hash_incremental_matches_compute` for the main
+    /// Zobrist key, but for the four auxiliary keys which have no standalone
+    /// from-scratch computation in production code.
+    #[test]
+    fn fuzz_aux_keys_match_incremental() {
+        use crate::movegen::generate_legal_moves;
+        init();
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2",
+            // Rich in promotions / captures
+            "4k3/PPPPPPPP/8/8/8/8/pppppppp/4K3 w - - 0 1",
+            // Mostly minors to exercise minor_key
+            "4k3/pp6/2nb4/8/8/2NB4/PP6/4K3 w - - 0 1",
+            // Mostly majors to exercise major_key
+            "r2qk2r/8/8/8/8/8/8/R2QK2R w KQkq - 0 1",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const PLIES: usize = 80;
+        const GAMES: usize = 20;
+
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for game in 0..GAMES {
+                let seed: u32 = 0xA11CEFu32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::from_fen(fen);
+                // Baseline invariant on starting position.
+                let (p, np, mi, ma) = recompute_aux_keys(&board);
+                assert_eq!(board.pawn_hash, p, "start pawn_hash mismatch fen={}", fen);
+                assert_eq!(board.non_pawn_key, np, "start np mismatch fen={}", fen);
+                assert_eq!(board.minor_key, mi, "start minor mismatch fen={}", fen);
+                assert_eq!(board.major_key, ma, "start major mismatch fen={}", fen);
+
+                for ply in 0..PLIES {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+
+                    board.make_move(mv);
+
+                    let (p, np, mi, ma) = recompute_aux_keys(&board);
+                    if board.pawn_hash != p || board.non_pawn_key != np
+                        || board.minor_key != mi || board.major_key != ma
+                    {
+                        panic!(
+                            "aux key drift: fen_idx={} game={} ply={} move={} seed={:#x}\n\
+                             pawn  incr={:#x} fresh={:#x}\n\
+                             np    incr=[{:#x},{:#x}] fresh=[{:#x},{:#x}]\n\
+                             minor incr=[{:#x},{:#x}] fresh=[{:#x},{:#x}]\n\
+                             major incr=[{:#x},{:#x}] fresh=[{:#x},{:#x}]\n\
+                             fen={}",
+                            fen_idx, game, ply,
+                            crate::types::move_to_uci(mv), seed,
+                            board.pawn_hash, p,
+                            board.non_pawn_key[0], board.non_pawn_key[1], np[0], np[1],
+                            board.minor_key[0], board.minor_key[1], mi[0], mi[1],
+                            board.major_key[0], board.major_key[1], ma[0], ma[1],
+                            board.to_fen(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Null-move round-trip fuzzer. Interleaves null moves with regular
+    /// moves and verifies full state is restored after unmake.
+    /// Null moves never happen while in check (gated in search), which
+    /// mirrors real usage.
+    #[test]
+    fn fuzz_null_move_round_trip() {
+        use crate::movegen::generate_legal_moves;
+        init();
+
+        const FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            // EP-triggering
+            "rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2",
+            "4k3/p7/8/1P6/8/8/8/4K3 b - - 0 1",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const PLIES: usize = 40;
+        const GAMES: usize = 15;
+
+        for (fen_idx, fen) in FENS.iter().enumerate() {
+            for game in 0..GAMES {
+                let seed: u32 = 0xDEADBEEFu32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::from_fen(fen);
+                let orig_hash = board.hash;
+                let orig_fen = board.to_fen();
+                let orig_pawn = board.pawn_hash;
+                let orig_np = board.non_pawn_key;
+                let orig_minor = board.minor_key;
+                let orig_major = board.major_key;
+
+                // Track whether each op was null (true) or regular (false)
+                // so we unmake with the right function.
+                let mut ops: Vec<bool> = Vec::new();
+                for _ in 0..PLIES {
+                    // 1 in 3 chance of null, but only if not in check.
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let want_null = (next_u32(&mut rng) % 3) == 0;
+                    let in_check = board.checkers() != 0;
+                    if want_null && !in_check {
+                        board.make_null_move();
+                        ops.push(true);
+                    } else {
+                        let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                        board.make_move(mv);
+                        ops.push(false);
+                    }
+
+                    // After every op, incremental hash must match compute_hash.
+                    assert_eq!(
+                        board.hash, board.compute_hash(),
+                        "hash drift during null/regular mix: fen_idx={} game={} op_count={}",
+                        fen_idx, game, ops.len()
+                    );
+                }
+
+                for is_null in ops.iter().rev() {
+                    if *is_null { board.unmake_null_move(); }
+                    else { board.unmake_move(); }
+                }
+
+                assert_eq!(board.to_fen(), orig_fen,
+                    "fen drift after null/regular roundtrip fen_idx={} game={}", fen_idx, game);
+                assert_eq!(board.hash, orig_hash);
+                assert_eq!(board.pawn_hash, orig_pawn);
+                assert_eq!(board.non_pawn_key, orig_np);
+                assert_eq!(board.minor_key, orig_minor);
+                assert_eq!(board.major_key, orig_major);
+            }
+        }
+    }
+
+    /// Full make/unmake round-trip fuzzer. Plays a random sequence of
+    /// moves, then unmakes them all one at a time and asserts full state
+    /// equality with the starting position. Covers every field modified
+    /// by make_move/unmake_move: mailbox, bitboards, castling, ep_square,
+    /// halfmove, fullmove, all 4+1 hashes. If unmake silently
+    /// omits restoring any field, this detects it.
+    ///
+    /// Complements `fuzz_hash_incremental_matches_compute` (make-only)
+    /// and `fuzz_aux_keys_match_incremental` (make-only, aux keys).
+    #[test]
+    fn fuzz_make_unmake_round_trip() {
+        use crate::movegen::generate_legal_moves;
+        init();
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            // Promotion-rich: many different unmake scenarios
+            "4k3/PPPPPPPP/8/8/8/8/pppppppp/4K3 w - - 0 1",
+            // EP-triggerable
+            "rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2",
+            "4k3/p7/8/1P6/8/8/8/4K3 b - - 0 1",
+            // Endgame with castling rights intact
+            "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const PLIES: usize = 40;
+        const GAMES: usize = 15;
+
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for game in 0..GAMES {
+                let seed: u32 = 0xB00B1E5u32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::from_fen(fen);
+                // Save full baseline state.
+                let orig_fen = board.to_fen();
+                let orig_hash = board.hash;
+                let orig_pawn = board.pawn_hash;
+                let orig_np = board.non_pawn_key;
+                let orig_minor = board.minor_key;
+                let orig_major = board.major_key;
+                let orig_mailbox = board.mailbox;
+                let orig_pieces = board.pieces;
+                let orig_colors = board.colors;
+                let orig_castling = board.castling;
+                let orig_ep = board.ep_square;
+                let orig_halfmove = board.halfmove;
+                let orig_fullmove = board.fullmove;
+                let orig_stm = board.side_to_move;
+
+                // Random sequence of legal moves.
+                let mut move_count = 0;
+                for _ in 0..PLIES {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                    board.make_move(mv);
+                    move_count += 1;
+                }
+
+                // Unmake everything.
+                for _ in 0..move_count {
+                    board.unmake_move();
+                }
+
+                // Full state equality check.
+                let mismatch =
+                    board.hash != orig_hash
+                    || board.pawn_hash != orig_pawn
+                    || board.non_pawn_key != orig_np
+                    || board.minor_key != orig_minor
+                    || board.major_key != orig_major
+                    || board.mailbox != orig_mailbox
+                    || board.pieces != orig_pieces
+                    || board.colors != orig_colors
+                    || board.castling != orig_castling
+                    || board.ep_square != orig_ep
+                    || board.halfmove != orig_halfmove
+                    || board.fullmove != orig_fullmove
+                    || board.side_to_move != orig_stm;
+                if mismatch {
+                    panic!(
+                        "round-trip mismatch: fen_idx={} game={} plies={} seed={:#x}\n\
+                         orig fen   = {}\n\
+                         post-unmake= {}\n\
+                         hash   orig={:#x} now={:#x}\n\
+                         pawn   orig={:#x} now={:#x}\n\
+                         np     orig={:?} now={:?}\n\
+                         minor  orig={:?} now={:?}\n\
+                         major  orig={:?} now={:?}\n\
+                         castle orig={} now={}  ep orig={} now={}\n\
+                         stm    orig={} now={}  hm orig={} now={} fm orig={} now={}",
+                        fen_idx, game, move_count, seed,
+                        orig_fen, board.to_fen(),
+                        orig_hash, board.hash,
+                        orig_pawn, board.pawn_hash,
+                        orig_np, board.non_pawn_key,
+                        orig_minor, board.minor_key,
+                        orig_major, board.major_key,
+                        orig_castling, board.castling,
+                        orig_ep, board.ep_square,
+                        orig_stm, board.side_to_move,
+                        orig_halfmove, board.halfmove,
+                        orig_fullmove, board.fullmove,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Production-equivalent repetition check (mirrors the inline logic
+    /// in search.rs:1567 at the main-search call site). Kept in test
+    /// code to pin the exact iteration behaviour; must be updated if
+    /// production logic changes.
+    fn check_repetition_main(board: &Board) -> bool {
+        let stack_len = board.undo_stack.len();
+        let limit = (board.halfmove as usize).min(stack_len);
+        let mut i = 2usize;
+        while i <= limit {
+            if board.undo_stack[stack_len - i].hash == board.hash {
+                return true;
+            }
+            i += 2;
+        }
+        false
+    }
+
+    /// QS-variant repetition check (mirrors search.rs:2769). Uses
+    /// `halfmove == 0` break instead of a limit = halfmove cap.
+    fn check_repetition_qs(board: &Board) -> bool {
+        let hash = board.hash;
+        for undo in board.undo_stack.iter().rev().skip(1).step_by(2) {
+            if undo.hash == hash { return true; }
+            if undo.halfmove == 0 { break; }
+        }
+        false
+    }
+
+    /// Basic 4-ply knight dance creates a perfect repetition of the
+    /// starting position. Both rep detectors must see it.
+    #[test]
+    fn repetition_4ply_knight_dance_detected() {
+        init();
+        let mut b = Board::startpos();
+        let hash0 = b.hash;
+        // Nf3 (white knight b1→g1? no, g1→f3). White e1-adj is g1=6, f3=21.
+        let nf3 = make_move(6, 21, FLAG_NONE);
+        let nc6 = make_move(57, 42, FLAG_NONE); // Black b8(57) → c6(42)
+        let ng1 = make_move(21, 6, FLAG_NONE);
+        let nb8 = make_move(42, 57, FLAG_NONE);
+        b.make_move(nf3);
+        b.make_move(nc6);
+        b.make_move(ng1);
+        b.make_move(nb8);
+        assert_eq!(b.hash, hash0, "knight dance must return to startpos hash");
+        assert!(check_repetition_main(&b), "main-search rep check must detect 4-ply loop");
+        assert!(check_repetition_qs(&b), "QS rep check must detect 4-ply loop");
+    }
+
+    /// After one knight dance, the current position does NOT match
+    /// any previous same-STM position. Rep must NOT trigger.
+    #[test]
+    fn no_repetition_after_single_knight_move() {
+        init();
+        let mut b = Board::startpos();
+        let nf3 = make_move(6, 21, FLAG_NONE);
+        b.make_move(nf3);
+        // Now STM is Black, stack_len=1. Limit=min(halfmove=1, 1)=1.
+        // Loop starts at i=2; 2 > 1, so loop body never runs → no rep.
+        assert!(!check_repetition_main(&b), "single move: no rep possible");
+        assert!(!check_repetition_qs(&b), "QS same");
+    }
+
+    /// Irreversible-move boundary: an intervening pawn move resets
+    /// halfmove to 0, which MUST prevent rep detection from seeing
+    /// past it. Scenario: play Nf3 Nc6 then a pawn move, then
+    /// attempt to reach the post-Nf3-Nc6 hash would only happen if
+    /// we played more knight moves — but halfmove reset means the
+    /// earlier position is no longer reachable by definition.
+    ///
+    /// Test: construct a sequence where the current hash equals a
+    /// stack entry OLDER than the most recent pawn move, and verify
+    /// the limit capping prevents the false positive.
+    #[test]
+    fn repetition_honours_halfmove_cap() {
+        init();
+        let mut b = Board::startpos();
+
+        // 1. Nf3 Nc6 — halfmove 1, 2
+        b.make_move(make_move(6, 21, FLAG_NONE)); // Nf3
+        b.make_move(make_move(57, 42, FLAG_NONE)); // Nc6
+
+        // Artificially corrupt undo_stack[0].hash to match current
+        // hash, simulating a hypothetical distant repetition across
+        // an irreversible move. This isn't reachable legally but
+        // pins the limit logic.
+        let saved = b.undo_stack[0].hash;
+        b.undo_stack[0].hash = b.hash;
+        // Current halfmove = 2, stack_len = 2, limit = 2.
+        // Loop i=2: stack[stack_len - 2] = stack[0] — would match!
+        // This is the POSITIVE case: within halfmove window → detected.
+        assert!(check_repetition_main(&b), "within-halfmove false-hash should detect");
+
+        // Now play e4, which resets halfmove to 0. Any pre-e4 match
+        // must NOT be returned.
+        b.undo_stack[0].hash = saved; // undo the corruption
+        b.make_move(make_move(12, 28, FLAG_DOUBLE_PUSH)); // e2e4
+        assert_eq!(b.halfmove, 0, "pawn move resets halfmove");
+
+        // stack now has 3 entries: startpos, post-Nf3, post-Nc6.
+        // Current position is post-Nf3-Nc6-e4 with halfmove=0.
+        // Main-search: limit = min(0, 3) = 0, loop never executes → correctly returns false.
+        // Corrupt stack[2].hash (most recent = post-Nc6 state) to match current: main-search
+        // must NOT see it because limit = 0.
+        let saved2 = b.undo_stack[2].hash;
+        b.undo_stack[2].hash = b.hash;
+        assert!(!check_repetition_main(&b),
+            "main-search: halfmove=0 limit must block detection past irreversible move");
+        b.undo_stack[2].hash = saved2;
+    }
+
+    /// Random-games fuzzer: play random legal games and verify that
+    /// both rep detectors agree on their verdict at every ply.
+    /// Differing verdicts would indicate an edge case (off-by-one,
+    /// halfmove boundary mismatch) between the two inline variants.
+    #[test]
+    fn fuzz_repetition_detectors_agree() {
+        use crate::movegen::generate_legal_moves;
+        init();
+
+        const FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "4k3/PPPPPPPP/8/8/8/8/pppppppp/4K3 w - - 0 1",
+            // Promotions + irreversible moves
+            "rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const PLIES: usize = 120; // Longer games increase rep chances
+        const GAMES: usize = 10;
+
+        for (fen_idx, fen) in FENS.iter().enumerate() {
+            for game in 0..GAMES {
+                let seed: u32 = 0xDEADF00Du32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::from_fen(fen);
+                for ply in 0..PLIES {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                    board.make_move(mv);
+
+                    let main = check_repetition_main(&board);
+                    let qs = check_repetition_qs(&board);
+                    if main != qs {
+                        panic!(
+                            "rep detector disagreement: fen_idx={} game={} ply={} seed={:#x}\n\
+                             main={} qs={}  halfmove={} stack_len={}\nfen={}",
+                            fen_idx, game, ply, seed,
+                            main, qs, board.halfmove, board.undo_stack.len(),
+                            board.to_fen(),
+                        );
+                    }
+                }
+            }
+        }
     }
 }

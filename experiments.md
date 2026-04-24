@@ -4521,3 +4521,1353 @@ New production net: `net-v5-768pw-w7-e800s800-pow25-12f.nnue`. Node count +44% v
 - **Change**: `.max(-200)` floor on dynamic capture SEE threshold (`-captHist/18`)
 - **Result**: **H0, -2.42 Elo, 10,336 games.**
 - **Notes**: The dynamic threshold works fine without a floor. Extreme negative captHist values creating high positive thresholds is a theoretical concern but doesn't hurt in practice. Feature confirmed working as-is.
+
+## 2026-04-16: v9 Threat Feature Experiments
+
+### Escape-Capture Bonuses + Pawn History in LMR — H1 (OB #390)
+- **Change**: Two features combined on feature/threat-inputs:
+  1. Escape-capture bonuses (Reckless pattern): move ordering bonus for moving pieces off
+     enemy-pawn-attacked squares. Q=20000, R=14000, N/B=8000. Tunable via SPSA.
+  2. Pawn history in LMR: added pawn_hist[pawn_hash][piece][to] to LMR history adjustment
+     and history pruning decision (was only used in move scoring, not LMR).
+- **Result**: **H1, +3.6 Elo ±5.6, 6800 games.** LLR 3.03.
+- **Notes**: Escape bonuses halve the search tree (bench 2.07M → 1.09M) with first-move cut
+  rate 70% → 75%. Massive tree shape change. Tested at untuned defaults; SPSA retune expected
+  to find more Elo. Pawn history in LMR was separately trending +4.1 at 14K games (#384).
+  Both are v9-specific: escape bonuses leverage threat-aware move ordering, pawn history
+  leverages the richer eval for pawn-structure-dependent decisions.
+
+### v9 Tune Round 1 — H1 (OB #376)
+- **Change**: 48-param SPSA tune (#373, 1000 iterations) on v9 s400 threat net.
+  Started from v5-calibrated defaults.
+- **Result**: **H1, +104.3 Elo ±22.7, 614 games.** Massive eval scale recalibration.
+- **Notes**: v9 eval is ~3× scale of v5. Key shifts: SE_DEPTH +103%, HIST_PRUNE_MULT -43%,
+  LMR_HIST_DIV +65%, NMP_EVAL_MAX +44%, RFP_MARGIN_IMP +27%.
+
+### v9 Tune Round 2 — H1 (OB #382)
+- **Change**: 48-param SPSA tune (#380, 2500 iterations) seeded from round 1 values.
+- **Result**: **H1, +30.6 Elo ±11.0, 1638 games.**
+- **Notes**: Continued large shifts: FUT_BASE -22%, LMR_C_QUIET -14%, ASP_DELTA -20%,
+  CONTEMPT_VAL +38%, SE_DEPTH +18%. Confirms round 1 hadn't converged.
+
+### Bullet Compatibility Fix: Semi-Exclusion — FLAT (OB #392)
+- **Change**: Align semi-exclusion convention with Bullet training. Training uses physical
+  square ordering for same-piece-type pairs; inference was using perspective-flipped squares.
+  ~3-5% NTM feature mismatch.
+- **Result**: Flat/slightly negative at ~200 games (still running).
+- **Notes**: Fix is correct (training/inference should match) but the affected features are too
+  few (~2-4 per position) and too low-weight to matter with current s400 net. May become
+  relevant with longer training. Keep fix for correctness.
+
+### Threat-Density LMR — TRENDING H0 (OB #387)
+- **Change**: Reduce LMR less when multiple pieces under pawn attack (threat_count / LMR_THREAT_DIV).
+- **Result**: -1.9 Elo at 3460 games, trending H0.
+- **Notes**: Novel idea, not from Reckless. Too blunt — blanket LMR reduction for all quiet moves
+  in tactical positions doesn't help. Reckless relies on threat-aware history for this signal.
+
+### Threat-Aware Singular Extension — TRENDING H0 (OB #388)
+- **Change**: Widen singular beta by SE_THREAT_MARGIN when pieces under pawn attack.
+- **Result**: -1.8 Elo at 3980 games, trending H0.
+- **Notes**: Novel idea, not from Reckless. Explicit threat logic in singular extensions doesn't
+  help. The NNUE eval and threat-aware history already capture this signal implicitly.
+
+### Threat-Aware Futility — STILL RUNNING (OB #386)
+- **Change**: Widen futility margin by FUT_THREAT_MARGIN when pieces under pawn attack.
+- **Result**: +4.4 Elo at 1036 games (early, still running).
+
+### Razoring on v9 — STILL RUNNING (OB #389)
+- **Change**: Re-add razoring (removed from v5) with tunable margins scaled for v9 eval.
+  RAZOR_BASE=900, RAZOR_MULT=756 (3× Reckless defaults for v9 scale).
+- **Result**: +1.1 Elo at 5122 games (still running, slightly positive).
+
+## 2026-04-17: v9 Correctness Hunt + NPS Optimisation Sweep
+
+Biggest gains day on the project. ~+296 Elo on `feature/threat-inputs` from a
+combination of correctness-bug fixes, NPS tuning, and retune-on-branch. Discovery
+methodology: TDD-style fuzzers + "diff against Stockfish/Reckless" audits +
+microbenchmarks for sub-1% changes invisible to whole-bench.
+
+### can_update ordering bug — H1, +142.9 Elo (OB #417)
+- **Change**: Fix ordering bug in `ThreatStack::can_update` (src/threat_accum.rs).
+  The function was accepting an ancestor ply as "accurate" BEFORE checking whether
+  the ply immediately above had overflowed delta buffer or crossed the king-file
+  mirror boundary. Correct order: validate entry[i+1] invariants FIRST, then
+  accept entry[i] as ancestor.
+- **Result**: **H1, +142.9 Elo ±31.9, 308 games.** LLR 3.00.
+- **Found via**: Threat-accumulator fuzzer added during the same session — played
+  random legal games from multiple FENs and asserted incremental vs from-scratch
+  threat refresh. Fuzzer diverged at a king-file crossing move; inspection of
+  the can_update function revealed the ordering error.
+- **Notes**: Bug had been present since threat accumulator was added (~2 days
+  earlier). Self-play SPRT on the buggy implementation couldn't detect it —
+  both sides had the same broken code. The fuzzer's cross-implementation
+  comparison was the key signal.
+
+### X-ray threat delta generation — H1, +110 Elo (OB #407)
+- **Change**: Earlier in day, fix `enumerate_threats` to properly account for
+  x-ray threat re-indexing through the just-moved piece. Section 2 Z-finding
+  block + section 2b blocker-past-subject block.
+- **Result**: **H1, +110 Elo ±33.8, 310 games.** LLR 2.99.
+- **Notes**: Companion to can_update bug. The threat accumulator was
+  structurally wrong in two ways at once. Both fixes were needed for full
+  gain; they're measured separately because each SPRT ran against a
+  progressively better baseline.
+
+### Zobrist EP fix — H1 (OB #421, measurement: neutral-positive)
+- **Change**: The Zobrist hash was unconditionally XOR-ing `ep_key` into `hash`
+  whenever a double-pawn push occurred, regardless of whether any enemy pawn
+  could actually make the EP capture. This silently broke threefold-repetition
+  detection whenever a rep cycle crossed a "dead" double-push (no enemy pawn
+  adjacent). Positions that should have hashed equal hashed differently,
+  rep detection missed, engine scored forced draws as -80cp instead of -19cp.
+- **Found via**: Investigating a fastchess `PV continues after threefold
+  repetition` warning that prior Claudes had written off as cosmetic.
+  Adam's insistence on digging deeper revealed the real hash bug.
+- **Result**: **H1, +3.3 Elo ±4.5, stopped early at ~1500 games for merge.**
+- **Bench impact**: 1,318,356 → 1,050,912 (-20% nodes — rep-cycle subtrees
+  now correctly pruned as draws).
+- **Implementation**: `ep_capture_available(pieces, colors, capturing_side,
+  ep_sq)` helper; XOR `ep_key` only when this returns true. Applied at
+  compute_hash, make_move (remove + add), make_null_move. Hash-invariant
+  fuzzer added (incremental vs compute_hash on 180 random games × 80 plies)
+  — catches future drift in the conditional XOR.
+- **Meta-lesson**: "It's just a display warning" was wrong. Paranoid
+  investigation of the -80cp score on what looked like a forced draw
+  revealed the Zobrist bug. Saved to memory as
+  `feedback_correctness_over_features.md`.
+
+### Section 2 Z-finding cull — H1, +23.4 Elo (OB #423)
+- **Change**: Skip the Z-level x-ray delta block inside the slider-loop when
+  no ray from `square` has 2+ occupants. Pre-check `(occ & past_first_region) != 0`
+  before the loop; if false, no slider can have a Z chain (`S → square → Y → Z`),
+  so only the direct threat needs emitting. Shared `rays_from_sq_empty`
+  precomputation with the existing 2b cull (net zero on pre-check cost).
+- **Result**: **H1, +23.4 Elo ±9.3, 1234 games.** LLR 2.95.
+- **Bench**: +1.5% NPS only. The Elo gain came from frequency of firing in real
+  middlegame/tactical positions not represented in bench's 8 canned FENs.
+- **Meta-lesson**: Bench NPS is a narrow signal. Real-game benefit can be
+  10× the bench delta.
+
+### Simplified PSQ refresh (per-pov on king-bucket crossing) — H1, +21 Elo (OB #426)
+- **Change**: When a king moves and crosses a bucket/mirror boundary, the moving
+  side's perspective needs a Finny refresh (all features re-index), but the
+  non-moving side's perspective is unchanged and can apply the dirty changes
+  incrementally. Previous code refreshed BOTH perspectives in lockstep. Reckless
+  pattern.
+- **Implementation**: `AccEntry.computed: [bool; 2]` (per-pov), `DirtyPiece.
+  needs_refresh: [bool; 2]` set by `build_dirty_piece` when king crosses bucket,
+  `materialize` dispatches four cases (both-refresh, both-incremental,
+  W-refresh+B-incr, B-refresh+W-incr) to minimal work.
+- **Result**: **H1 trending, +21 Elo ±11 at 1044+ games, LLR 1.97.**
+- **Bench**: ~parity (-1.5% to +1.5% run-to-run).
+- **History**: Initial attempt (#424, with a multi-ply chain walkback on top)
+  H0'd at **-17.86 Elo**. `bench_materialize` microbench diagnosed the
+  walkback as the pessimization (lazy-chain 3.5× slower than old
+  Finny-diff refresh). Simplified version removes the walkback, keeps only
+  the per-pov-on-bucket-cross insight, recovers the gain.
+- **Meta-lesson**: Microbench-guided debugging can rescue an abandoned feature
+  by isolating WHICH part of a refactor is costing. Lesson saved to memory.
+
+### ProbCut TT-store bugs — H1 pending (OB #428)
+- **Change**: Two bugs in ProbCut's successful-cutoff TT store vs Stockfish:
+  1. Stored `dampened = score - (probcut_beta - beta)` instead of raw `score`.
+     `score >= probcut_beta` is a tighter lower bound than dampened; storing
+     dampened loses pruning on future probes with beta between the two.
+  2. Hardcoded `tt_pv: false` — should use local `tt_pv` variable (sticky PV
+     flag). Positions pruned by ProbCut were losing PV status in TT,
+     affecting LMR reduction on revisits.
+- **Result**: SPRT in flight. Bench 1,126,147 → 1,209,491 (+7% nodes —
+  preserving tt_pv reduces LMR on those lines, expanding PV subtrees).
+- **Notes**: ProbCut has now had 5 distinct bug fixes total (missing qsearch
+  filter, SEE threshold, excluded_move guard, stored-dampened, tt_pv flag).
+  Worth continued auditing.
+
+### Correction history skip-noisy — H0, -17 Elo (OB #427)
+- **Change**: Skip correction-history update when `best_move` is a
+  capture/promotion. Matches Stockfish (search.cpp:1495) and Reckless
+  (search.rs:1085).
+- **Result**: **H0 trending, -17.32 Elo ±16.75, 522 games.** LLR -0.81.
+- **Meta-lesson**: Consensus pattern didn't transplant. SF's gate works
+  alongside compensating calibrations (bonusScale bumps, aggressive gravity)
+  that we don't have. Our simpler update formula `weight = (depth+1).min(16)`
+  depends on the larger volume from ALL beat-alpha positions. Removing ~30%
+  of updates starved correction history of signal.
+- **Saved to memory**: `feedback_consensus_patterns_dont_always_transfer.md`.
+
+### Forward-pass MaybeUninit — H0 trending, -4 Elo (OB #425)
+- **Change**: Replace `[0u8; 2048]` scratch stack buffers in forward-pass
+  SIMD paths with `[MaybeUninit<u8>; 2048]`. Skipped ~4 KB of zero-stores
+  per forward call (SIMD packers write exactly `pw` bytes; downstream
+  reads only `[..pw]`).
+- **Microbench**: **+7% forward speed** (787 → 733 ns/call). Found using
+  a new `bench_forward_pass` microbench added the same session.
+- **Full bench**: +5% NPS (490K → 514K).
+- **Result**: **H0 trending, -4.4 Elo ±5.4, 3858 games.** LLR -1.83.
+- **Meta-lesson**: Microbench is a necessary tool for forward-pass
+  optimisation but not sufficient to predict real-game Elo. The 1-second
+  games probably interact with the memory layout / cache / branch-predictor
+  in ways the tight microbench loop doesn't capture. LLVM may have been
+  eliminating the zero-stores already when it could prove them dead;
+  the measured gain might be code-layout noise. Lesson saved.
+
+### Tune #411 retune-on-branch — H1 accepted, +1.37 Elo (OB #412)
+- **Change**: 52-param SPSA tune (2500 iterations, scale-nps 250000) on
+  `feature/threat-inputs` seeded from live src/search.rs defaults. Post
+  x-ray fix + can_update fix recalibration.
+- **Result**: +1.37 Elo at 37K games, stopped early and accepted. Classic
+  retune-on-branch modest gain after the big structural fixes land.
+- **Key shifts**: HIST_BONUS_BASE 12→8 (-33%), LMR_C_QUIET 99→89 (-10%),
+  LMR_C_CAP 115→107 (-7%), SEE_CAP_MULT 136→144 (+6%). Most parameters
+  near starting values; the shifted ones reflect the cleaner search tree
+  after can_update/x-ray/Zobrist fixes.
+
+### Mini tune: MVV_CAP_MULT + CONT_HIST_MULT — confirmed defaults (OB #420)
+- **Change**: Promoted two hardcoded move-ordering constants (`see_value(victim) * 16`
+  in good-capture scoring, `[3i32, 3, 1, 1]` cont-hist weights) to SPSA tunables
+  `MVV_CAP_MULT` (default 16) and `CONT_HIST_MULT` (default 3). 2-param SPSA with
+  1000 iterations at scale-nps 250000.
+- **Result**: MVV_CAP_MULT 16.02 (-0.0%), CONT_HIST_MULT 2.8 (-6.7%) after 68%
+  iterations; stopped early. Defaults confirmed near-optimal.
+- **Notes**: Full 54-param tune #422 (in flight at time of writing) later showed
+  MVV_CAP_MULT drifting to 15.2 and CONT_HIST_MULT confirmed at 3.0 — the
+  2-param mini-tune masks parameter interactions that the full tune reveals.
+
+### Full 54-param SPSA tune — IN FLIGHT (OB #422)
+- **Change**: Full tune on `feature/threat-inputs` after merging Zobrist +
+  tune #411 + MVV/CONT_HIST tunables. 2500 iterations, scale-nps 250000.
+- **Result at 26% (649/2500)**: Biggest movers —
+  HIST_BONUS_BASE 12→7 (-42%), DEXT_MARGIN 9→8 (-11%), FH_BLEND_DEPTH 1→0.9
+  (-13%, previously pinned at min), LMR_C_QUIET 89→97 (+9%, range-expanded
+  reveals wants higher). SE_DEPTH 12→11.4 (-5%, previously pinned at max,
+  now in range-expanded [4,20] wants slightly lower).
+- **Notes**: The 42% drop in HIST_BONUS_BASE is the strongest signal —
+  previous value was compensating for broken history signal from the
+  can_update bug. Clean baseline reveals smaller offset is optimal.
+  Expected to resolve overnight.
+
+### v9 vs v5 production gap — measurement (OB #418)
+- **Purpose**: After all correctness fixes + tune, measure remaining gap.
+- **Result**: **-54.1 Elo ±27.7, 272 games.** (vs -175 at session start,
+  -66 after can_update fix alone).
+- **Notes**: Remaining gap attributable to training maturity (v9 s200
+  snapshots vs v5 s800 production) and king-bucket layout (v9 uses
+  Uniform 16, v5 now uses Consensus 16 after earlier promotion +15 Elo).
+  Both being addressed by in-flight training: consensus KB, s800 xray,
+  Reckless 10-KB.
+
+### Infrastructure added this session
+
+- **`bench_forward_pass`** (nnue.rs, `#[ignore]` test): tight-loop
+  forward-pass microbench with v9 net. Baseline 787 ns/call. Enables
+  sub-1% detection for forward-path optimisations.
+- **`bench_materialize`** (nnue.rs, `#[ignore]` test): materialize
+  microbench across three scenarios (single-ply, king within-bucket,
+  lazy chain). Used to diagnose the PSQ walkback pessimisation.
+- **`fuzz_psq_accumulator`** (nnue.rs): random games × multiple FENs,
+  asserts incremental PSQ vs force_recompute parity after every ply.
+- **`fuzz_psq_lazy_eval_chain`** (nnue.rs): same but with batched push
+  (lazy-eval chain testing).
+- **`fuzz_hash_incremental_matches_compute`** (board.rs): hash-invariant
+  fuzzer specific to the Zobrist EP fix.
+- **`threat_accum::fuzz_random_games`** (threat_accum.rs): caught the
+  can_update ordering bug.
+- **`test_excluded_move_cleared_after_search`** (search.rs): SE
+  invariant guard.
+- **`history_4d_flag_routes_correctly`** (movepicker.rs): A/B guard
+  for the 2D vs 4D main history paths.
+- **`test_z_finding_cull_endgame_no_z`** + **`test_z_finding_cull_has_z_chain`**
+  (threats.rs): pin the cull's semantic boundary.
+- **`zobrist_ep_only_when_capturable`** (board.rs): pin the new Zobrist
+  EP invariant.
+
+### Session tally
+
+| Merged/pending | Elo | SPRT | Mechanism |
+|---|---|---|---|
+| can_update fix | +142.9 | #417 H1 | Ordering bug |
+| x-ray delta fix | +110.0 | #407 H1 | Correctness |
+| Z-cull | +23.4 | #423 H1 | NPS optimisation |
+| Simplified PSQ | +21 (pending H1) | #426 | NPS optimisation |
+| Tune #411 retune | +1.4 | #412 accepted | Retune-on-branch |
+| Zobrist EP fix | ~0 | #421 | Correctness |
+| ProbCut TT fixes | TBD | #428 in flight | Correctness |
+| Tune #422 full | TBD | SPSA in flight | Retune-on-branch |
+| **MaybeUninit** | **-4** | **#425 H0** | Reverted |
+| **PSQ walkback** | **-18** | **#424 H0** | Reverted, rescued as #426 |
+| **Corr-hist skip-noisy** | **-17** | **#427 H0** | Reverted, ecosystem mismatch |
+| **Total (confirmed + pending)** | **~+296 Elo** | | |
+
+Gap to v5 at session start: -54 Elo. Expected to close or cross by
+morning with consensus-KB and s800 nets landing.
+
+## 2026-04-18: v9 Training Investigation — Schedule, Data Volume, LR Tail
+
+Series of SPRTs investigating what matters for v9 net quality.
+Net-compare SPRTs (same branch, different `--dev-network` vs
+`--base-network`). All bounds [-3, 3] unless noted.
+
+### Training data volume: 1xT80 vs 12xT80 — H0, -53 Elo (OB #submission)
+
+**Setup:** Two v9 nets trained identically at s200, w15, Uniform KB —
+only difference: 1 T80 file (~3B positions) vs 12 T80 files (~30B
+positions).
+
+**Result:** H0 at **-53 Elo** for 1xT80.
+
+**Read:** Data volume still matters significantly at s200 even under
+the current modernized pipeline (power loss 2.5, data filtering, xray
+features). Consistent with v5's +33 Elo for 12× data. The pipeline
+hasn't saturated on 3B positions — sparse threat features especially
+benefit from more unique positions.
+
+**Prior belief this tested:** possible that the pipeline improvements
+(power loss, filtering) had made per-position signal dense enough that
+1 file's 3B positions was already sufficient. It isn't.
+
+**Implication:** Data-gen at d7/d8 is worth preserving over deeper/fewer
+positions for the v9 sparse-feature regime. Diminishing returns are
+probably kicking in around 12× but going to 1× is a real loss.
+
+### Schedule shape: e800s200 vs e800s600 vs e800s800 — low-LR tail dominates
+
+Three snapshots of the same e800 cosine schedule, tested against each
+other on Uniform KB, w15, xray-fixed nets.
+
+| Comparison | SPRT | Result |
+|---|---|---|
+| e800s800 vs e800s200 | #443 | **+9.4 H1** |
+| e800s600 vs e800s200 | #444 | **-88 H0** |
+| e400s400 vs e800s800 | #450 | **-6.27 ± 5.29 H0 (final)** |
+
+**Key finding:** The mid-cosine snapshot (s600, LR ~1.6e-4) is
+dramatically weaker than both the warmup-dominated snapshot (s200)
+and the final low-LR snapshot (s800). The final 200 SBs of the cosine
+tail add **roughly +100 Elo** of refinement.
+
+**Mechanism:** v9's 66864 sparse threat features get ~1-5% of positions.
+At high LR, each update is large and rare-feature weights get
+overwritten by subsequent batch noise. Low LR makes stable refinement
+possible.
+
+**Schedule length — log-linear in SBs:**
+
+| Snapshot | Elo vs e800s200 |
+|---|---|
+| e400s400 | ≈ +3.1 (= 9.4 - 6.27) |
+| e800s800 | +9.4 |
+
+Each **doubling** of SB length adds ~**3-6 Elo** — roughly log-linear
+but slightly right-skewed (s400→s800 gap is larger than s200→s400).
+This is consistent with the low-LR tail being where the gain concentrates:
+- s200→s400: LR mid-cosine (~5e-4), refinement still coarse
+- s400→s800: LR floor (~2e-6), fine refinement regime
+- s1600 would project to ~+14 vs s200 (another ~+5 vs s800)
+- s3200 would project to ~+19 vs s200
+
+Implication: ROI per compute-doubling is constant (~4.7 Elo for 2×
+compute) until architecture saturation hits. Diminishing absolute
+marginal returns, but constant slope in log-compute space.
+
+**Practical rule:** For architecture/hyperparam sweeps, e400 captures
+~50% of the Elo at 50% of compute. For production candidates, go long.
+At some point the log-linear relationship will break as the architecture
+saturates — that's the signal to change architectures.
+
+### Training selfplay data on v9 — H0 -46 (pre-tune)
+
+**Setup:** selfplay-trained s200 vs 1xT80-trained s200, both untuned
+(same trunk search params).
+
+**Result:** H0 at -46 Elo for selfplay.
+
+**Caveat:** Selfplay net has cooler RMS eval (568 cp vs 1xT80's 748 cp,
+23% cooler). Current search params (RFP/futility/SEE margins) are
+tuned for the hotter distribution, so selfplay under-prunes (+36% bench,
+higher EBF). The -46 includes a scale-mismatch penalty of unknown
+magnitude.
+
+**Noted for followup:** Tune #449 (1000-iter SPSA on feature/threat-inputs
+with selfplay net) is running to rebalance search params for selfplay's
+distribution. Selfplay vs 1xT80 will be re-tested post-tune to isolate
+net-quality vs param-fit.
+
+**Interesting diagnostic:** Selfplay net has **better move ordering**
+(first-move cutoff 81.2% vs 78.7%) despite being weaker end-to-end.
+Relative-ranking quality is preserved; only absolute-scale calibration
+is off.
+
+### EPD regression suite noise floor
+
+**Setup:** 22-position coda_blunders.epd (v5 failures, 3s/pos).
+
+Comparing s200, s400, s600, s800 snapshots gave:
+
+| Net | EPD pass | SPRT vs e800s200 |
+|---|---|---|
+| e200s200-xray-fixed | 12/22 (54.5%) | baseline |
+| e400s400 | 13/22 (59.1%) | — |
+| e800s600 | **14/22 (63.6%)** | **-88 H0** |
+| e800s800 | 11/22 (50.0%) | **+9.4 H1** |
+
+**EPD ranking contradicted SPRT ranking.** The strongest SPRT net
+scored worst on EPD. 22 positions is too small a suite (1σ ≈ 3 positions
+of binomial noise) to rank similarly-strong nets. Use SPRT for strength,
+reserve EPD for regression tripwires only.
+
+### Key training lessons locked in
+
+1. **Loss is not strength.** A snapshot with lower training loss can
+   be dramatically weaker (e800s600 had lower loss than e800s800 but
+   was -88 Elo weaker).
+
+2. **Low-LR tail is where Elo is purchased.** Most loss reduction
+   happens in warmup/early cosine; most Elo happens in the final
+   low-LR convergence tail. This holds for v5 (+50 Elo) and is larger
+   for v9 (+100 Elo).
+
+3. **Bigger/sparser architectures need lower final LR.** v5's optimum
+   at 5e-6 does NOT transfer to v9. Experiments queued with
+   final_lr=2.43e-7 (10× lower than current 2.43e-6).
+
+4. **Data volume still matters** even under modernized pipeline.
+   1×T80 → 12×T80 is ~+50 Elo in self-play.
+
+### Corrections to merge: HIST_BONUS_BASE removal — SPRT pending
+
+**Motivation:** Two independent SPSA tunes (#422 full trunk, #449
+selfplay in flight) consistently drove HIST_BONUS_BASE from its
+default toward 0. The parameter was dead weight:
+`bonus = (MULT*depth - BASE).clamp(0, MAX)` with BASE=2 shifts the
+bonus by 0.7% — within SPSA noise, but systematically pulled to 0.
+
+**Fix:** Remove the parameter. Simplified formula now matches
+Stockfish's `stat_bonus(d) = min(MAX, MULT*d)`.
+
+**Bench surprise:** 1498845 → 1798525 (+20% nodes). Far larger than
+the 0.7% numerical shift predicts — tree-shape chaos. SPRT submitted
+at [-5, 5] bounds as non-regression check.
+
+**Branch:** `remove/hist-bonus-base`. OB submission pending.
+
+### Skip-noisy correction-history merge
+
+**Tested:** tune/corr-history-skip-noisy-r1 vs trunk-r2 = flat at 15k
+games (SPRT #441). Stopped early at "neutral, correctness first, merge".
+
+**Merged:** Code change (skip correction-history updates when best_move
+is capture/promotion, per Stockfish/Reckless pattern) plus the 1000-iter
+tune #433 values (seeded from trunk's r2 tune #422, refined on skip-noisy
+branch). Bench 1,498,845.
+
+**Rationale:** r1 tune + skip-noisy had lowest bench of three candidate
+combinations AND was SPRT-validated equivalent to trunk+r2 tune. Skip
+updating correction history on noisy moves is a consensus pattern
+(Stockfish search.cpp:1495, Reckless search.rs:1085).
+
+### Ongoing: three Reckless-KB training experiments in flight
+
+Kicked off 2026-04-18 mid-afternoon:
+
+1. **Low final_lr**: `--kb-layout reckless --superbatches 200 --final-lr 2.43e-7`
+2. **Short warmup**: `--kb-layout reckless --superbatches 200 --warmup 5`
+3. **Reckless e400 baseline**: `--kb-layout reckless --superbatches 400`
+
+All three vs existing `net-v9-768th16x32-kb10-w15-e200s200.nnue` baseline
+(hash BE5849B6). Expected SPRTable in 4-5 hours for s200 variants, 8-10
+hours for e400.
+
+### Infrastructure added this session
+
+- **`--final-lr` CLI flag** in `bullet/examples/coda_v9_768_threats.rs`
+  for low-LR-tail experiments without code edits.
+- **`coda_blunders.epd`** regression suite (22 positions) ported from main.
+- **Memory**: `project_v9_low_lr_tail_critical.md`,
+  `feedback_loss_is_not_strength.md`,
+  `feedback_epd_not_for_model_testing.md`,
+  `feedback_piece_value_test_design.md`,
+  `feedback_never_stop_sprt_without_verify.md`.
+
+## 2026-04-18 (afternoon/evening): Major tune + NPS wins + v5 gap closure
+
+### HIST_BONUS_BASE removal — H1 +3.7 Elo (OB #452)
+
+- Tunable repeatedly pulled to 0 across independent SPSA runs
+  (#422 trunk, #449 selfplay). Dead weight at MULT=293, BASE=2 —
+  shifts bonus by 0.7%. Removed parameter and simplified formula
+  to match Stockfish's `min(MAX, MULT*d)`.
+- SPRT [-5, 5]: +3.7 Elo H1 at 5300+ games.
+- Freed one SPSA dimension (58 → 57 params).
+
+### Skip-noisy correction history merge — Neutral +tune values
+
+- After #441 flat at 15k games, merged tune/corr-history-skip-noisy-r1
+  (SF/Reckless pattern: skip correction-history updates when best_move
+  is a capture/promotion). Took tune #433's 1000-iter values.
+- Correctness-first: zero ELO regression with a consensus correctness
+  improvement.
+
+### Trunk retune on e800s800 net (tune #454) — H1 +38.6 Elo (OB #456)
+
+**Biggest single tune in v9's history.**
+
+- SPSA 2500 iterations, `feature/threat-inputs` with e800s800 net
+  (hash 6AEA210B), `--scale-nps 250000`.
+- Biggest parameter shifts — direction: trust the (better) s800 eval more:
+  - NMP_DEPTH_DIV    2 → 3     +50% (lighter NMP reduction)
+  - SE_DEPTH         10 → 6    -40% (SE kicks in earlier)
+  - HIST_PRUNE_MULT  5861 → 3981 -32% (lighter history pruning)
+  - LMR_HIST_DIV     11392 → 13958 +22%
+  - LMR_C_QUIET      107 → 121  +13%
+  - NMP_EVAL_DIV     169 → 149  -12%
+  - RFP_MARGIN_IMP   101 → 87   -14%
+  - ASP_DELTA        8 → 10     +25%
+  - SEE_QUIET_MULT   37 → 44    +19%
+
+- Bench: 1,798,525 → 2,401,107 (+33% nodes, tree-shape shift)
+- **Principle confirmed: "tune on your best net."** This third-round
+  tune on the s800 net delivered ~2× the +16.5 Elo of the prior
+  s200-based tune.
+
+### v5 gap measurement — before/after the major tune
+
+- **Pre-tune gap** (SPRT #453, v9 e800s800 vs v5 prod, both on
+  feature/threat-inputs): **-74 Elo H0** (370 games)
+- **Post-tune gap** (SPRT #459, tuned v9 e800s800 vs main + v5 prod):
+  **-19.82 Elo H0** (1386 games, [-5, 5] bounds rejected)
+- **~54 Elo of gap closed in one day** via the single tune + TM
+  fixes (on main, not yet in feature/threat-inputs).
+
+Gap moved into the "all-in on v9" threshold zone (-20 to -30 Elo).
+Decision to merge v9 trunk to main now depends on whether pending
+experiments (Reckless KB at s400, low-final-lr, const-generic NPS
+refactor) can close the remaining ~20 Elo.
+
+### NPS structural wins (cumulative)
+
+Three structural fixes to the NNUE/threat incremental-update path,
+all test-only infrastructure validated against existing fuzzers:
+
+| Commit | Change | NPS gain |
+|---|---|---|
+| 317deab | Fuse PSQ incremental update — all deltas in single pass | +0.4% |
+| 2218233 | Fuse threat-accum copy+apply — no separate memcpy pass | +2.6% |
+| afd2fcd | Enable column-major L1 matmul via dense_l1_avx2 | +1.2% |
+| **Total** | | **+3.8%** |
+
+Baseline 548K → 569K NPS (10-run mean). Bench 1,798,525 unchanged
+(correctness preserved). All fuzzers (`fuzz_psq_accumulator`,
+`threat_accum::fuzz_random_games`, `finny_king_march_consistency`)
+pass.
+
+### Audit suite (25 new property-based tests)
+
+Permanent regression coverage, all pass on current HEAD:
+
+- **Zobrist aux keys** fuzzer (pawn_hash, non_pawn_key, minor_key,
+  major_key) — matches from-scratch recomputation after every move.
+- **Make/unmake round-trip** + **null-move round-trip** — full state
+  restore after random game sequences.
+- **is_pseudo_legal** positive/negative fuzzers — every legal move
+  accepted; every corrupted move rejected or matches generate_all.
+- **Repetition detection** (main-search + QS variants) — 4-ply knight
+  dance detected, halfmove cap honoured, random-games agreement.
+- **SEE correctness** (9 assertive tests) — hand-computed values
+  match, monotonicity of `see_ge` across thresholds.
+- **Cuckoo cycle detection** (6 tests) — table populated (3668
+  entries), every entry valid, knight-dance cycle detected.
+- **Correction history** — update formula directionality, bounds,
+  gravity saturation, zero-err no-op, read/write index symmetry.
+- **Finny king-march** — 14-step king walk forces cross-bucket
+  refresh on every ply, asserts against force_recompute.
+- **TT bucket replacement** (6 tests) — roundtrip, 5-slot
+  coexistence, XOR-key verification, same-key update, depth-gated
+  replacement, eviction arithmetic.
+
+Session bug count: 0. Infrastructure locked in for future NPS work.
+
+### PGO re-investigation — still regresses
+
+Tested vanilla `cargo pgo` today on v9 trunk:
+- Non-PGO: ~549K NPS
+- PGO: ~491K NPS (**-10.4% regression**)
+
+Tried panic="abort", removed embedded-net feature — neither recovered
+the regression. Reckless on same hardware gains +1.5% from PGO
+(974K → 989K). Structural difference in Coda's hot path that PGO
+inlining misjudges; unclear without deep LLVM investigation.
+Shelved for now.
+
+### Training experiments dispatched (pending results)
+
+Kicked off this morning, ~2 hours to land:
+
+1. **Low final_lr** Reckless s200: `--final-lr 2.43e-7` (10× lower
+   than default 2.43e-6). Tests whether v9 sparse threat features
+   benefit from even lower LR tail.
+2. **Short warmup** Reckless s200: `--warmup 5` (vs 20 default).
+   Ablation of warmup length.
+3. **Reckless e400 baseline**: full 400-SB schedule with Reckless
+   KB. Measures KB × schedule-length economics jointly.
+
+### Pending SPRT queue
+
+- **#455** — selfplay-tuned (tune #449 applied) vs 1xT80 (trunk tune).
+  Post-tune re-test of the earlier H0 -46 pre-tune result.
+
+### v9 schedule-length curve (as measured pre-tune #454)
+
+| Snapshot | Elo vs e800s200 |
+|---|---|
+| e400s400 | +3.1 |
+| e800s800 | +9.4 |
+
+Log-linear ~3-6 Elo per SB doubling, front-loaded onto the
+low-LR tail (not evenly spread per SB). The +38.6 tune may shift
+this curve; re-measurement under the new tune is worth doing once
+SPRT fleet has capacity.
+
+### Lever stack toward v5 parity (2026-04-18 evening)
+
+Current gap: -19.82 Elo (SPRT #459 H0). Realistic candidate gains:
+
+| Lever | Projected | Status |
+|---|---|---|
+| Reckless KB net at s400 | +15-25 | In-flight training |
+| Retune on Reckless KB | +15-40 (compounds with above) | Queued |
+| Low-final-LR variant | +5-15? speculative | In-flight training |
+| Const-generic PARAMETERS refactor | +10-15 | Not started (scoped) |
+| s1600 full schedule | +5-10 | Deferred (48h train) |
+
+Any 2 of (Reckless+retune, const-generic, low-LR) landing positive
+puts us at or above v5. All-in merge decision deferred pending
+results.
+
+## 2026-04-20: Overnight sweep — 2 merges (+12.7), 9 H0s, retries in flight
+
+### Merged to trunk (H1 resolved)
+
+| Test | Feature | Elo | Games | Notes |
+|---|---|---|---|---|
+| **#542** | `experiment/unstable-probcut-skip` | **+6.7** | 7390 | Skip ProbCut when static eval differs sharply from parent (|Δ| > UNSTABLE_THRESH=157). Second consumer of `unstable` signal (HIST_PRUNE guard was first). Mirror of #481 king-zone-pressure ProbCut gate. Clean LLR 2.96. |
+| **#539** | `experiment/threats-nmp-skip` | **+6.0** | 8330 | Skip NMP when any_threat_count ≥ 3 (3+ of our non-pawns under enemy attack). Third landing for any_threat_count signal after futility-widener #484 and LMR threat-density. Crisis positions get real search, null move's extra tempo no longer costly. Clean LLR 3.01. |
+
+### H0'd (closed)
+
+| Test | Branch | Result | What it tested | Decision |
+|---|---|---|---|---|
+| **#540** | `threats-rfp-widener` | −4.8 LLR −2.96 @ 6016 | any_threat_count RFP widener — mirror of existing has_pawn_threats widener but general threats | **Dropped.** Signal overlap: pawn-threat widener already catches the high-value case. Don't re-iterate. |
+| **#541** | `unstable-lmr-reduce-less` | −10.9 LLR −2.99 @ 3146 | `reduction -= 1` when unstable (all depths) | Iterate with depth gate — **#548** in flight |
+| **#538** | `our-kz-opp-probcut` | −0.3 LLR −2.97 @ 23800 | Our-king-zone-opportunity as ProbCut skip gate (mirror of enemy-king-zone) | Dropped — symmetry assumption fails; our king attacks doesn't help ProbCut like enemy's does |
+| **#543** | `dynamic-see-v2` | −0.7 LLR −2.97 @ 19062 | Dynamic SEE threshold with −75 baseline | Iterate with different baseline — **#556** (−125) in flight |
+| **#544** | `corrhist-probcut-skip` | −2.5 LLR −3.22 @ 10684 | Skip ProbCut when corrhist-mag ≥ 25 | **Dropped.** Interaction with #542's `unstable` ProbCut skip — double-gated same "eval noisy" locus. |
+| **#533** | `discovered-attack-scaled` | +0.2 LLR −2.96 @ 34642 | Victim-value-scaled B1 bonus (stacks on +52 flat B1) | Dropped — original B1 already captures the ordering signal; victim-scaling doesn't compound on top. |
+| **#528, #529** (earlier in day) | history-shape-offset, material-scale-tunable | both H0 | see below | see below |
+
+### In flight from this batch (overnight wave)
+
+| Test | Branch | Purpose |
+|---|---|---|
+| #546→stopped | threats-nmp-skip retune | Single-feature tune, stopped to do combined retune instead |
+| **#550→#551** | `tune/v9-overnight-r1` | Combined retune post #542 + #539 merges (38 tunables moved). SPRT #551 trending +2 Elo. |
+| #547 | `onto-pawn-threatened` | Retry of #537 onto-threatened with filtered signal (enemy pawn attacks only). |
+| #548 | `unstable-lmr-depth-gated` | Retry of #541 with depth >= 6 gate. |
+| #549 | `caissa-3tier-tight` | Retry of #536 Caissa 3-tier with tighter force-good rule (attacker*2 ≤ victim). |
+| **#552** | `eval-diff-qhist-v2` | Retry of #517 (H0 at −0.7) solo on new post-#542/#539 trunk. Bench 2.72M (−35%). |
+| **#553** | `se-king-pressure-v2` | Retry of #511 (H0 at −0.6) solo on new trunk. |
+| **#554** | `offense-bonus` | Reckless pattern (+6000 for quiet attacking enemy piece). Not previously tested. Bench 2.85M (−31%). |
+| **#555** | `rook-kingring-bonus` | Reckless pattern (+5000 for rook attacks on enemy king zone). Bench 3.35M (−20%). |
+| **#556** | `dynamic-see-v3` | Retry of #543 with more-permissive −125 baseline. |
+
+### Overnight session overall
+
+- **Net Elo gain merged: +12.7 face value** (#542 + #539) — retune #551 grinding a further +2 at time of writing.
+- **Fleet efficiency**: wait-500-rule validated repeatedly; early spikes (+8 at 200 games) faded to realistic +1-5 ranges.
+- **Signal-context sweep continuing to pay**: #539 was 3rd landing for any_threat_count signal; #542 was 2nd landing for `unstable` signal. Pattern of cross-context reuse exceeds Titan's 1-in-3 prior significantly.
+- **Bench creep concern** (Adam, 2026-04-20 early AM): today's +Elo wins added 38% nodes (3.0M → 4.17M after #539, 4.51M with tune applied). Approach: prioritise bench-REDUCING retries in today's next wave. Offense bonus (−31%), eval-diff-qhist (−35%), rook-kingring (−20%) are the three bench-reducing candidates queued.
+
+### Post-mortems by H0 bucket
+
+- **Magnitude-too-large** (#537 −24.8, #541 −10.9): signal direction correct but applied too aggressively. Both iterating with gates/filters.
+- **Signal overlap** (#540, #544): redundant with existing features. Drop without iterate.
+- **Mechanism wrong** (#528, #536): structural assumption doesn't hold. #528 dropped; #536 retrying with tighter rule as check.
+
+Memory updated: `feedback_h0_post_mortem_discipline.md` — require mechanism-bucketing and iterate/drop decision for every H0 going forward.
+
+---
+
+## 2026-04-20: Two H0s, one diagnostic sidetrip
+
+### H0'd (closed — dropped)
+
+| Test | Branch | Result | What it tested | Decision |
+|---|---|---|---|---|
+| **#528** | `experiment/history-shape-offset` | **−6.3 ± 5.0**, LLR −3.00, 4936 games | History bonus shape change: `(MULT*d − OFFSET).clamp(0, MAX)` vs linear `min(MULT*d, MAX)`. SPSA #515 converged values applied (OFFSET=76, MULT=310, MAX=1601, LMR_HIST_DIV=6705, HIST_PRUNE_MULT=4986). Shape matches SF/Obsidian/Alexandria/cap_history convention. | **Dropped.** Shape change hurts v9 by ~6 Elo; SPSA-tuned coupled params couldn't compensate. No trunk changes to revert — HIST_BONUS_OFFSET was never added to trunk's `tunables!` block. |
+| **#529** | `experiment/material-scale-tunable` | **−3.0 ± 3.8**, LLR −2.97, 8820 games | Expose material-scaling constants (hardcoded `22400 / 32768` in `eval *= (BASE + material) / DIV`) as SPSA tunables MAT_SCALE_BASE / MAT_SCALE_DIV. #516 SPSA converged to slightly looser values (22830 / 31360) after 385 iters. | **Dropped.** Hardcoded values were effectively optimal; the ~6% looser SPSA drift costs −3 Elo. No trunk changes to revert — MAT_SCALE_BASE/DIV were only ever on the experiment branch. |
+
+### Lessons
+
+- **Not every consensus-shape pattern transfers.** Linear-with-offset history bonus is standard in SF/Obsidian/Alexandria and matches how Coda's cap_history is already written. But on v9 (threat-aware main history + 4D keying), adding the offset *reduces* tree efficiency. Hypothesis: the 4D-indexed main history has finer per-bucket signal than 2D histories — Coda's current formula without offset already produces tight bonuses at low depths without over-weighting. The offset strips bonus where v9's richer signal needs it most.
+- **"Hardcoded is suspicious → make it tunable" isn't always worth it.** Material-scale had fixed 22400/32768 in code since v5 era. Exposing it to SPSA seemed low-risk (if tuning finds no gain, revert). But the act of exposing + applying post-tune values adds code complexity, and the ~6% drift the tuner found was negative in SPRT. Coda's original scaling constants were converged against the NNUE eval distribution; re-tuning them in isolation shifted away from that optimum. Cost: ~10K games of fleet + commit churn on the experiment branch. Minimal, but the pattern is "hardcoded ≠ untuned, sometimes it's locally optimal already."
+- **Both failures were clean, no ambiguity.** −6.3 and −3.0 with LLRs hitting −3.00/−2.97 cleanly. No "maybe retune more" temptation; the formulas under test aren't hiding latent gains.
+
+### Methodology win (session side-effect)
+
+- **Live Lichess watching catches what SPRT can't.** Adam watched one game on Lichess and identified castling-weight weirdness (Kf1 then Kg1 sequence — engine manually reaching castled square). Turned out to be a deployment issue (v9 binary with v5 net embedded, triggered by `net.txt` pointing at v5 URL). But the methodology win stands: in a week of fleet testing, this kind of qualitative move-choice error is invisible because (a) the position-type is rare in aggregate, (b) self-play blindspots line up, (c) ±0.5 Elo from rare weirdness is under the `[-3, 3]` noise floor. Saved to memory as `feedback_live_lichess_watch_catches_bugs_sprt_misses.md`. Operational: watch at least one Lichess game after every net change or significant search refactor. One game has high SNR when a bug exists.
+- **Framework validation (incidental).** v9 binary + v5 net = v9-calibrated tunables (loosened for flatter eval) applied to v5 peakier eval = systematically too-loose pruning. The "odd play" on Lichess was v9 search exhausting time on nodes its tunables should have pruned more aggressively given v5's clearer eval. Clean at-zero-fleet-cost validation of the ordering-coupled-pruning framework's claim that tunables are coupled to the eval they were tuned against.
+
+---
+
+## 2026-04-19: ~+90 Elo day (v9 search-consumer stack + activation win)
+
+### Merged to v9 trunk (H1 resolved)
+
+| Test | Feature | Elo | Games | Notes |
+|---|---|---|---|---|
+| #478 | `fix/threats-2b-rewrite` (2b slider-iteration rewrite + & occ fix) | **+10.0** | 4674 | Profile-driven NPS refactor of section 2b in threats.rs — scalar 8-direction walks → slider-iteration on precomputed between()/ray_extension tables. Bundle also included Titan's zero-emit counters and `Board::xray_blockers` helper (unused at merge, consumed by B1 later). Bug caught: 2b rewrite emitted phantom x-ray during `push_threats_on_move` transit (pieces_bb vs occ_transit inconsistency); fixed with `& occ` filter on candidates. |
+| #481 | `experiment/probcut-threat-gate` (A3 — king-zone-pressure ProbCut gate) | **+7.03** | 4942 | Skip ProbCut when enemy has ≥ PROBCUT_KING_ZONE_MAX attackers on our king zone. Reuses `king_zone_pressure` from NMP gate (#466). Third landing for that signal. |
+| #482 | `experiment/lmr-king-pressure` (king-pressure LMR modifier) | **+6.81** | 5204 | `reduction -= king_zone_pressure / LMR_KING_PRESSURE_DIV`. Fourth consumer of the signal. I initially miscalled this H0 at 1242 games (-9.8 early); corrected after resolution via overlapping-bars feedback memory. |
+| #484 | `experiment/futility-defenses` (our_defenses futility widener) | **+7.00** | 5116 | `futility_value += any_threat_count * FUT_THREATS_MARGIN`. Sibling to the has_pawn_threats RFP widener. |
+| #490 | `tune/v9-post-merge-r1` (60-param post-merge retune) | **+7.38** | 6546 | Post-merge retune capturing the "gates let the rest of search be bolder" compound effect. Biggest param shifts: LMR_HIST_DIV 11685→7123 (-39%), CAP_HIST_BASE 10→15 (+50%), NMP_EVAL_DIV 136→122. 37 tunables moved materially. |
+| #497 | creluHL net (clipped-ReLU on L1/L2) | **+4.0** | ~8500 | Clipped-ReLU on hidden layers (Reckless pattern, one-line Bullet change). Validated via `HiddenActivation=crelu` UCI option on existing inference path. No code merge — net choice change only when we promote a CReLU-trained net. |
+| #502 | `experiment/discovered-attack-bonus` (B1 — Titan's Tier B1) | **+52.0** | 666 | **Biggest single-feature win in project history.** Flat bonus on quiet moves where `from()` is a square blocking our own slider's attack on an enemy. Uses `Board::xray_blockers`. Confirmed the "specific tactical motif" scoring pattern is distinct from generic "a piece is attacked" nudges (enter-penalty, hanging-escape both H0'd). Path 2 (bit-steal delta-tagging refactor) now firmly justified per Titan's ">6 Elo gates Path 2 work". |
+
+**Day total merged: ~+94 Elo** (2b 10 + ProbCut 7 + LMR-KP 6.8 + futility-def 7 + retune 7.4 + creluHL 4 + B1 52 = 94.2). Plus Atlas's TM-floor fix merged on main (+4.4) picked up via the main→v9 rebase on 2026-04-19.
+
+### H0'd today (closed — no retry planned)
+
+| Test | Feature | Result | Decision |
+|---|---|---|---|
+| #479, #501 | `experiment/stratified-escape-canwin` (A1a+A1c bundle) | H0'd twice: #479 drifted to flat/small negative, #501 post-SPSA retest went to -8 at 3996 games | **Dropped.** SPSA on the new tunables (#486) didn't find a positive basin either. The stratified-escape-ladder + can_win_material combination isn't adding value on this trunk. |
+| #504 | `experiment/lmp-king-pressure` (S3 — LMP threshold softener) | -10.1, H0 | **Dropped.** King-zone-pressure as an LMP softener fails cleanly. |
+| #503 | `experiment/rfp-king-zone-widener` (S1 — RFP margin widener) | -9.5, H0 | **Dropped.** Tree shape changed moderately (bench 2988580 → 2594958, -13%) but Elo was -9 not small-negative; retuning wouldn't recover that magnitude. |
+
+**Pattern from these H0s**: king-zone-pressure signal works as a **gate on pruning decisions** (NMP, ProbCut, LMR-reduction-modifier all H1) but **fails as a margin/threshold widener** (RFP +, LMP both H0). Speculation: margin wideners are already tightly calibrated against `improving` / `has_pawn_threats` / SPSA'd base margins; adding a third overlapping widener disrupts the tuning balance.
+
+### Still in flight (as of session end)
+
+- **#496 warm30 net**: +3.9 ± 4.3 at 7162 games, LLR 2.56 → close to H1 resolution
+- **#500 `experiment/threat-mag-lmr`** (Titan's): +0.8 flat at ~4800 games — trending slow-H0
+- **#508 CONTEMPT_VAL=0**: +0.2 at 1410 games, early — tests consensus of "remove contempt" per `tunable_anomalies_2026-04-19.md`
+- **#511 S4 SE king-pressure**: resubmitted at 250K scale, early
+- **#512 S5 Aspiration king-pressure**: resubmitted, early
+- **#513 scaled discovered-attack**: B1 variant with victim-value scaling; early
+- **#509 SPSA history-shape-offset**: 0/1000 iters — Experiment 1 from `shape_experiments_proposal_2026-04-19.md`
+- **#495→resubmitted reckless-kb tune**: 0/1000 — restarted at 250K after audit caught 500K misconfig
+
+### Housekeeping landed today
+
+- **v9 trunk merged main** (Atlas's TM fixes + tm_score + blunder_suite now on v9).
+- **net.txt flipped decision** for eventual v9→main merge: v9 production net will be default (captured in `docs/v9_merge_plan_2026-04-19.md`).
+- **v7 deprecated**: architecture support going forward is v5 (legacy) + v9 (primary). v7 inference code stays (shared by v9 paths).
+- **ob_submit / ob_tune auto-detect v9 branches** for `--scale-nps` (250K for v9, 500K for main). Fixed a recurring operational error where v9 SPRTs ran at 2× wall-clock time.
+- **B1 bench convention** nailed down — v9 trunk commits use `nets/net-v9-768th16x32-w15-e800s800-xray.nnue` (hash 6AEA210B) bench, **not** the embedded v5 net. CLAUDE.md and memory updated.
+- **Three companion idea docs** merged to trunk by Titan: `signal_context_sweep_2026-04-19.md`, `move_ordering_ideas_2026-04-19.md`, `threat_ideas_plan_2026-04-19.md`, `tunable_anomalies_2026-04-19.md`, `shape_experiments_proposal_2026-04-19.md`.
+
+### Calibration lessons (worth remembering)
+
+- **"Scoring nudge" pattern is not monolithic.** Generic "a piece is attacked" nudges failed (enter-penalty, hanging-escape). Specific tactical motif nudge (B1 discovered-attack) landed +52. Distinguish before pattern-matching off prior H0s.
+- **Five engines minimum for outlier claims** in cross-engine tunable comparison (Titan's methodology note in `tunable_anomalies_2026-04-19.md`). Two-engine comparison over-flagged three params in the first pass.
+- **Post-merge retune compounds with multiple merged features**, not a single one. #490 landed +7.4 after 4 features merged; single-feature retunes typically land +2-5.
+- **Overlapping error bars = "same distribution twice"**, not "earlier was noise". I miscalled LMR king-pressure H0 at 1242 games because -9.8 had ±10.4 bars. Ended +6.81. Don't narrate direction from within the noise floor.
+
+## 2026-04-20 → 2026-04-21 session
+
+### Major H1 wins (merged to feature/threat-inputs)
+
+- **#553 SE-king-pressure-v2** — S4 from signal_context_sweep, retry of H0'd #511. **+9.7 Elo H1** at 4462g LLR 2.97. King-zone-pressure SE margin widener; +1 context for the kzp signal (now 4/8 tested landed).
+- **#542 unstable-probcut-skip** — parent-child eval-gap → ProbCut skip. **+6.7 Elo H1** at 7390g LLR 2.96.
+- **#539 threats-nmp-skip** — `any_threat_count` gating NMP. **+6.0 Elo H1** at 8330g LLR 3.01.
+- **#554 offense-bonus** — Reckless quiet-attacks-enemy MovePick bonus. **+5.7 Elo H1** at 8854g LLR 3.02. #558 LTC validation landed +6.3.
+- **#557 fix/smp-king-bucket-race** — King-bucket static-mut to NNUENet field + v6 kb_layout fix. **+3.4 Elo H1** at 5444g LLR 3.01 (cache locality gain despite identical bench). SMP trilogy bug #1 of 3.
+- **#576 fix/smp-helper-threat-init** — Helper threads never mirrored main's threat-accumulator state. T=4 SPRT **+651 Elo (self-play "correct-T=4-vs-broken-T=4")** at 304g. **Unlocks v9 T=4 + ponder deployment.** SMP trilogy bug #3 of 3. (Bug #2 was Atlas's aarch64-Finny-cfg-eats-else fix — ARM only.)
+- **#578 tuned-knight-fork** — Knight-fork MovePick bonus + retune #569 applied. **+5.2 Elo H1** at 5734g LLR 2.94. 3rd successful retune-on-branch rescue precedent (after TT_PV and cont-hist-malus).
+- **#582 feature/threat-inputs** — **New production v9 net**: `net-v9-768th16x32-w15-e800s800-reckless-crelu.nnue` (reckless kb layout + CReLU hidden layer + warm30 warmup + s800). **+15.2 Elo H1** at 2950g LLR 3.05 vs xray (6AEA210B). Biggest single net upgrade this session.
+- **#583 fix/lmr-endgame-gate** — Skip LMR when `popcount(occupied) ≤ LMR_ENDGAME_PIECES` (default 6). **+5.0 Elo H1** at 5164g LLR 3.01. Fixed endgame-conversion blunders observed in Lichess game CG5ZXe5Z (coda at depth 22 couldn't find M7 with LMR on; finds M8 at depth 17 with gate).
+
+### H0 rejections (notable)
+
+- **#565 queen-7th-bonus** (-2.0, H0 at 11482g). Retune #568 applied → #577 also H0 (-1.7, 18290g). Retune-on-branch can't rescue features that H0 with genuine negative Elo (not just noise-near-zero).
+- **#555 rook-kingring-bonus** (+0.1 at 32196g, H0). Retune #564 applied → #574 H0 at -2.2 (made it worse). Same lesson: retune can't rescue noise-around-zero features.
+- **#563 knight-fork-bonus** (+0.2 at 32740g, H0) — but retune #569 RESCUED to +5.2 Elo (#578 H1). Distinct from #555 because the feature was borderline positive with big tree-reshape (right candidate for retune).
+- **#566 rook-open-file** (+0.8 at 72998g, H0). Large bench drop, tiny positive Elo. Could retry on tuned trunk post-#585.
+- **#573 tune/v9-post-554-r1-applied** — Main retune after #554 merged. Stopped early at 5528g, -0.7 flat. Lesson: generic retunes on already-tuned trunks diminishing returns; retune-on-branch is selective, generic is waste.
+- **#572 feature/threat-inputs** (w20 vs w15 on kb10 net) — H0 at -10.5. Confirmed w15 is WDL optimum for kb10 family (with prior w10 < w15 result).
+- **#567 feature/threat-inputs** (warm50 vs warm40 on reckless-warm series) — H0 at -9.4. Warm ladder saturates past warm30.
+
+### Infrastructure / correctness
+
+- **`chore/tunables-with-c-end`** merged — tunables! macro now carries c_end field, `coda tune-spec [--r-end 0.002]` CLI dumps fresh SPSA spec from source. Eliminates stale spec file class of errors (observed in tune #562 where LMP_BASE was stuck at integer boundary due to c_end too small).
+- **`nnue/hl-crelu-file-marker`** merged — context-dependent bit 5: on extended_kb=1 nets means hl_crelu (auto-configures NNUE at load). `coda patch-net` CLI for flipping bit 5 on existing nets.
+- **`fix/simd512-pairwise-pack-fused-threats`** — AVX-512 pairwise-pack was silently dropping threat features on v9 pairwise nets. Validated by Adam on AVX-512 host: pre-fix bench 3,317,873; post-fix bench 4,513,225 (matches AVX2 Hercules exactly). OB fleet unaffected (no AVX-512 workers). Latent landmine for future AVX-512 worker.
+- **`fix/bench-multithread-output`** — `coda bench -tN` now shows per-position info (thread 0 runs full stats, others silent). Previous behavior was entirely silent.
+- **Compiler warnings cleared to zero** — CLAUDE.md Code Hygiene section added requiring `cargo build --release` emits no warnings.
+
+### SPRTs in flight at session end
+
+- **#586 experiment/tuned-trunk-585** — applies tune #585 values (2500 iters on post-merge trunk + new production net). 15+ strong movers: LMR_HIST_DIV +25%, HIST_PRUNE_MULT +31%, CORR_HIST_DIV -22%, CORR_W_NP -23%, SE_DEPTH -19%, LMP_DEPTH -19%, QS_SEE_THRESHOLD tighter. Bench 1,959,547 vs trunk 1,766,373; EBF 1.70 vs 1.78 (-4.5%); FMC 77.3% vs 75.2% (+2.1pp). User prior +10-20 Elo given cumulative improvements.
+- **#587 experiment/tuned-force-more-pruning** — applies tune #571 values on old trunk (pre-knight-fork merge). Tests whether SPSA starting from "force more pruning" shifted defaults converges on a better-pruned equilibrium than natural retune. Bench 2,820,229 (-37.5% vs pre-tune 4,513,225), EBF 1.77 (-1.1% vs 1.79). Force-pruning nudged out of local max; Elo TBD.
+- **#584 experiment/threat-delta-capture-bonus** — idea C retest at `THREAT_CAPTURE_BONUS=500` (half the failed #579 value 1000). UCI override in SPRT. If still flat, try lower or retest on new trunk.
+- **#580 experiment/threat-delta-ext** — idea D (threat_deltas count extension on captures). -8.9 trending H0 at 3568g.
+
+### Key calibration lessons
+
+- **"Wait 500+ games" rule validated** — C bonus=1000 showed -5.6 at 996g, recovered to -0.3 at 10036g. First-thousand-games noise swing is real; resist stopping early.
+- **Retune-on-branch cliché refined**: works when feature H0'd with non-zero-centered distribution (TT_PV +4.5→+8.5, knight-fork +0.8→+5.2). Fails when feature H0'd at noise-around-zero (rook-kingring +0.1→-2.2, queen-7th -2.0→-1.7).
+- **Live Lichess watching catches bugs SPRT misses** — CG5ZXe5Z game revealed endgame-conversion LMR blunder that bench+SPRT had never flagged. Diagnostic FEN-probe → root-cause (LMR over-reducing mate-completion moves) → surgical gate → +5 Elo. Worth adding live-watch to post-net-change checklist.
+- **SMP bugs have "Swiss cheese" failure signature** — most games fine (helpers lose root cutoff race), rare games catastrophic (helper's wrong-eval TT entry poisons main). Discovered via 20-FEN eval-consistency instrumentation (Atlas's pattern), not SPRT.
+- **Bench on correct branch** — submitted #582 with wrong bench (2,862,737) because local build was on idea-C branch with THREAT_CAPTURE_BONUS=1000 active. OB rejected with Wrong Bench. Memory note `feedback_bench_depends_on_branch_state.md` exists exactly for this; should have followed it.
+
+### WDL ladder (kb10 family)
+
+Tested so far: **w15 > w10**, **w15 > w20**. Additional w0 and w05 nets trained overnight. Full RR deferred — low priority, pure research/documentation. w15 confirmed optimum for kb10.
+
+### Warmup curve (kb10 reckless family, e200) — resolved
+
+Full curve at e200 tested, closes Titan's `training_warmup_curve_2026-04-19.md`
+open question:
+
+| Warmup SBs | Result |
+|---:|---|
+| 5 | −7 Elo (earlier in thread) |
+| 20 | baseline |
+| **30** | **+4.44 Elo (#496), peak** |
+| 40 | H0 vs warm30 |
+| 50 | H0 vs warm30; #567 H0 −9.4 vs warm40 |
+
+**Shape:** positive 5→30, peak at 30, regression past 30. Rule: don't warm
+past ~15% of total training length. For e200 that's warm30; anchor at
+warm30 for e400/e800 production unless absolute-count follow-up suggests
+otherwise. `docs/training_warmup_curve_2026-04-19.md` updated with
+the resolution.
+
+## 2026-04-21 session (continued) — AVX-512 + VNNI merge
+
+**Merged `feature/nnue-avx512-vnni-v9`** (Zeus's work) at 51a71f2.
+Bench bit-exact 2,170,815 across all tested CPUs — correctness validated.
+
+### Per-uArch NPS impact
+
+| Platform | CPU | Pre NPS | Post NPS | Delta | Notes |
+|---|---|---|---|---|---|
+| Zeus server | Zen5 (AVX-512 VNNI) | 1,076K | 1,225K | **+13.8%** | VPDPBUSD 1-cycle throughput |
+| Hercules | Xeon E-2288G (AVX2) | 200K | 200K | 0% | Bit-exact — AVX2 path unchanged |
+| Adam laptop | i5-13500H Raptor Lake (AVX-VNNI) | 664K | 614K | **−7.5%** | VPDPBUSD on Intel mobile is ~2-cycle, uop-fusion win eaten by lower throughput |
+
+### Open follow-up
+
+**Raptor Lake −7.5% needs investigation.** This isn't a niche CPU — 13th gen
+Intel i5/i7 is mainstream hardware. Merge stays for now because correctness
+is validated and Zen5 gain is substantial, but AVX-VNNI dispatch needs to
+either:
+1. Tune the kernel (unrolling, accumulator count) to match AVX2-path performance
+2. Narrow the dispatch gate (avx-vnni only on Zen 4+, or only when `avx512vnni` ∧ AVX-VNNI)
+3. Add per-uArch detection
+
+Quick A/B for the local Claude investigating: patch `detect_avx_vnni()` to
+return false, rebuild, bench. If NPS recovers to 664K, VPDPBUSD-on-Raptor-Lake
+is confirmed as the culprit (vs dispatch-reorg side-effects).
+
+Relevant file: `src/sparse_l1.rs::dense_l1_avx_vnni` — the hot path for L1
+matmul on AVX-VNNI-without-AVX-512 CPUs.
+
+## 2026-04-22 session — overnight resolutions + morning merges
+
+### H1 landed (merged to trunk)
+
+- **#619 fix/fifty-move-scaling-v2** +3.3 Elo H1, 8708g. Zeus's two-part
+  fix: stronger `score * (100 - hm) / 100` formula that actually reaches
+  0 at the 50-move cliff, plus TT-storage invariant (50-move scaling
+  applied at use site only, never stored). The first patch alone
+  (#610) regressed -9.4 because of the TT-stale-scaling bug. Commit
+  `5086604`.
+- **#613 experiment/history-bonus-offset** +3.0 Elo H1, 5460g. Titan's
+  shape experiment 1: `min(MAX, MULT*d)` → `clamp(0, MAX, MULT*d - OFFSET)`.
+  New tunable HIST_BONUS_OFFSET=72 (SF's value). Post-merge joint SPSA
+  per Titan's spec likely banks more. Commit `ee76dcb`.
+- **#604 experiment/se-xray-blocker** +1.1 Elo H1, 25934g. Titan's
+  signal-context sweep: xray-blockers signal (B1's +52 Elo mechanism)
+  in Singular Extensions context. Small but clean positive. Commit
+  `dd4452c`.
+
+Total merged today: **+7.4 Elo raw** (post-merge retune could bank more).
+
+### H0 rejections (Titan-doc items resolved)
+
+- **#611 experiment/caphist-defender-v2** -1.4 @ 13268g. Rebased+merged
+  branch; SPRT-untuned as first step per methodology. Confirmed
+  Titan's prediction: caphist's original +10pp FMC headroom was
+  **absorbed by B1 discovered-attack merge** (+52 Elo). On current
+  trunk (FMC 76.8%), the remaining ordering gap isn't caphist-shaped.
+  Dropped permanently.
+- **#612 experiment/skewer-bonus** -8.0 @ 3848g. Unified
+  (value-unfiltered) skewer detector. Over-triggered on low-value
+  ray alignments, added noise to ordering.
+- **#618 experiment/pin-skewer-value-filtered** -6.4 @ 4728g. Value-
+  filtered split of #612 per Titan's T1.1+T1.2 spec. Didn't rescue —
+  the ray-alignment signal just isn't an H1 feature on current trunk
+  (B1 already captures it via FROM-based discovered-attack).
+- **#614 experiment/rfp-unified-margin** -2.6 @ 6820g. Shape exp 2.
+  Classic retune-candidate signature (bench +8% vs trunk, Elo
+  negative). Could land with focused SPSA on RFP_MARGIN + RFP_IMPROVING_SUB.
+- **#617 experiment/undefended-nmp-skip** +0.4 @ 44792g. T2.1 from
+  next_ideas. Hanging-piece NMP skip — signal fired too rarely to
+  move Elo. Noise-level.
+- **#606 experiment/rfp-anythreat-widen** -1.2 @ 24532g. Slow-fade to
+  H0 after trending H1 earlier.
+- **#609 L1 sparse net vs warm30 (net-vs-net)** -2.1 @ 15628g. L1
+  coefficient 1e-6 too weak to produce meaningful sparsity beyond
+  the 8.4% structural-zero floor. Confirms sparsity doc finding.
+
+### Factoriser journey (important but non-linear)
+
+Three-training-length data points on factoriser (`--factoriser` flag,
+otherwise matches `reckless-crelu` recipe):
+
+- **factor SB50 vs creluHL SB200 (broken hl_crelu bit)** = +157 Elo
+  **(measurement artifact)**. The creluHL baseline had bit 5 = False
+  (consensus_buckets interpretation) but was trained with CReLU
+  hidden → Coda loaded with SCReLU hidden → broken activation chain
+  → tanked baseline by 50-150 Elo. Not real factoriser signal.
+- **factor SB50 vs prod DAA4C54E** = -118 Elo. Clean comparison
+  (both sides have bit 5 = True). Baby can't beat 16×-longer-trained
+  giant. Training gap dominates.
+- **factor SB200 vs prod DAA4C54E** = -30.9 ± 15.3 Elo @ 700g
+  (bounds [-5, 5]). Clean magnitude. Sits in expected training-gap
+  disadvantage range (~-25 to -35 from 2 doublings + prod's retune
+  advantage). Factoriser architectural contribution is therefore
+  ~**neutral**, closing the training gap at roughly 1:1 rather than
+  being multiplier.
+- **factor SB200 vs creluHL SB200 (patched hl_crelu)** = -11.8 Elo H0
+  @ 1700g (#627, bounds [-5, 5]). Cleanest factoriser-only comparison
+  — same kb10, w15, crelu hidden, e200 snapshot; differs only in
+  factoriser yes/no and warmup (30 vs 20). Given warm30 was +4.44
+  Elo vs warm20 at e200 (per warmup-curve experiment), the factoriser
+  contribution net of warmup is **~-15 Elo at equal training + no retune**.
+
+**Calibrated expectation going forward**: factoriser at equal training
++ NO retune is slightly negative. A retune-on-branch (SPSA on
+factoriser tree shape) might flip it to neutral-positive; current
+pruning tunables are calibrated against non-factoriser trunk trees
+and may be wrong for the factoriser's sharper ordering.
+
+**Revised strategy**: wait for SB400 overnight, retune on factoriser
+branch, then SPRT vs prod. If still negative after retune, factoriser
+isn't a keeper. If +5-15 post-retune, it becomes an e800-production
+training candidate.
+
+### Methodology lessons captured (new memory notes)
+
+- `feedback_verify_net_flag_bits_before_sprt.md`: always inspect bit 5
+  (hl_crelu) on both sides before net-vs-net SPRT. Burnt on #622.
+- `feedback_sprt_bounds_interpretation.md`: SPRT H0 at bounds
+  [elo0, elo1] means "failed to prove ≥ elo1", NOT "confirmed ≤ elo0".
+  Asymmetric bounds are policy, not magnitude. Burnt on #625.
+- `feedback_correctness_audit_wins_dominate.md`: bugs in rarely-fired
+  paths consistently land +3-30 Elo. Correctness audits beat feature
+  additions for Elo-per-effort. Titan-scale investigation direction.
+- `reference_ob_debugging_endpoints.md`: self-service debug via
+  `/errors/` page + two-binary-bench rule after branch switches.
+
+### SPSA tune in flight
+
+- SPSA tune on experiment/caphist-defender-v2 (focused 4 capture-coupled
+  tunables, 500 iters). Likely not useful given caphist SPRT H0'd
+  cleanly — no point pursuing if the base feature doesn't carry
+  signal. May stop.
+
+### Key calibration takeaway
+
+Correctness-audit wins consistently outperform feature-addition wins
+for Elo-per-experiment. Our next-day queue should bias toward
+correctness audits in rarely-fired paths (repetition, cuckoo, TB sign
+conventions, null-move zugzwang edge cases, stalemate path coverage).
+
+## 2026-04-22 session — correctness audit sprint + C8 training fix
+
+### Titan correctness audit (9 CRITICAL, ~35 LIKELY, ~30 SPECULATIVE)
+Ten-parallel-agent review across threats / NNUE / search / TT+history /
+movepicker / TM+UCI+ponder / SMP / SEE+Zobrist+cuckoo+TB / training I/O /
+Bullet-trainer subsystems. Doc: `docs/correctness_audit_2026-04-22.md`.
+
+### CRITICAL fixes — H1 confirmed via SPRT
+
+- **#628 P2 halfmove-gated TT cutoff** +1.2 Elo H1, 13970g. Extended
+  existing `halfmove < 90` gate to bounds-narrow collapse + near-miss
+  + QS TT cutoff return paths. (Merged prior session.)
+
+### CRITICAL fixes — merged as bench-invariant on unreachable paths
+
+No OB SPRT coverage (fleet has no TB / aarch64 / mixed-mode UCI):
+
+- **C2 TB cache halfmove key** — probe_wdl is halfmove-aware;
+  cache was keyed on Zobrist alone → stale CursedWin served to
+  halfmove=0 queries. SplitMix scramble on halfmove mixed in.
+- **C4 NEON SCReLU shift** — commit 44baa95 mistakenly set NEON
+  screlu_pack to >>9 alongside pairwise; fix restores >>8 to
+  match scalar + x86. Only affects v7 non-pairwise SCReLU nets on
+  aarch64.
+- **C5 TT_WIN threshold widen** — `score_to_tt` / `score_from_tt`
+  threshold moved from `MATE_SCORE-100` (28900) to `TB_WIN-128`
+  (28672) so TB scores actually get ply-adjusted on TT crossings.
+- **C6 TM stale limits** — zero all TM limits up-front before
+  mode-specific branches; fixes `go movetime N` after prior
+  `go wtime/btime` leaking stale soft/hard_limit.
+- **C7 convert-checkpoint output-layer** — `l2_size == 0` path
+  silently dropped output-layer entries in both `weights.bin` AND
+  `momentum.bin`/`velocity.bin`. Centralised write list through a
+  local helper so the three buffers can't diverge.
+- **C9 HIP Adam ABI** — not active in prod (CUDA path), flagged
+  for Bullet team.
+
+### LIKELY fixes — H1 / merged (search pruning class)
+
+- **#635 T1.4 Battery bonus** +5.3 Elo H1, 8452g (merged morning).
+- **#637 N6 promotion-imminent extension** +1.6 Elo @ 25886g, merged
+  at 10K-plus per confident-correctness policy.
+- **#638 C1 is_pseudo_legal EP validation** +0.4 Elo @ 28382g,
+  correctness merge.
+- **#645 evasion history key symmetry** -0.9 Elo @ 12802g, merged
+  on "correctness fix at -1 to -2 is mergeable" policy. Fix:
+  evasion MovePicker now threads through `enemy_attacks` so
+  4D main-history reads match beta-cutoff writes.
+- **#649 rep-detection null-move boundary** -0.5 Elo @ 10906g, merged.
+  Main + QS rep scans now stop at null-move boundaries
+  (plies_from_null), matching cuckoo's existing min() pattern.
+- **#650 SE `is_pv` shadow + corrhist stop guard** +0.6 Elo @ 10236g,
+  merged. SE shadow was computing `is_pv` from current alpha; outer
+  `is_pv` (alpha_orig-based) is correct. Corrhist update now has
+  stop-flag guard matching TT store.
+
+### LIKELY fixes — direct merge (bench-bit-exact or user-facing)
+
+- **#17 legacy threat pipeline debug_assert** — fall-through to
+  empty_threat silently zeroed the eval half if v9 routed via
+  `forward()` instead of `forward_with_threats`.
+- **#20 `coda check-net` uses forward_with_threats** — for v9 nets,
+  display-eval was ignoring threat features entirely.
+- **#29 SMP stockpile early-stop** — set shared stop before the
+  stockpile-prevention sleep so helpers don't burn CPU through
+  the window.
+- **#30 Ponder UCI option handler** — was falling through
+  silently; now explicit no-op acknowledgement.
+- **#35 helper.ponderhit_time clone** — was never cloned from main,
+  helpers ignored ponderhit deadlines.
+- **#36 load_nnue threat_stack reset** — net-swap from v9→v5 left
+  threat_stack.active=true; now reset unconditionally, then
+  activated if `net.has_threats`.
+- **#37 SMP TT gen advance** — moved from `search()` to
+  `search_smp`/datagen callers so helpers can't write old-gen TT
+  entries during spawn race.
+- **#43 TB castling gate** — early-return None before FEN format
+  when `board.castling != 0` (Syzygy rejects those anyway).
+- **Movepicker hygiene bundle** — bad_moves buffer 64→256,
+  non-capture promotions get promotion material delta in
+  mvv_lva, evasion scorer checks capture before promotion (so
+  capture-promotions rank above regular captures).
+- **TM/UCI hygiene** — soft_limit clamp order, depth parse
+  fail-closed (unwrap_or(0) not 100), `go ponder movetime X` on
+  ponderhit uses movetime instead of instant-stopping.
+- **TB hygiene** — DTZ |d|>100 maps to ±1 (not ±20000),
+  ponderhit TB override now matches `go` path on draws.
+- **Offline tools** — fetch-net gains `-f`, threat weight clamp
+  uses full i8 range, material-removal datagen cleans up
+  castling/EP after piece removal.
+- **Threat refresh overflow flag** — refresh now tracks overflow;
+  accurate flag set to !overflowed so incremental deltas don't
+  compound on corrupted baseline.
+
+### LIKELY fixes — H0'd individually, retune bundle pursued
+
+- **#640 C3 NMP sentinel** (-1.3 @ 22898g), **#646 #3 NMP stale
+  reductions** (-5.1 @ 5722g): both correctness fixes (SF uses these
+  sentinels), but bench +13.4% / +7.7% suggested tree shape shift.
+  Bundled into `experiment/nmp-sentinel-reductions-retune`; SPSA
+  #654 running on standard 18 pruning params. Expected pattern:
+  retuned defaults flip the bundle to +3-7 Elo (W3 retune-on-branch
+  pattern, historical #490 +7.4 / #586 +6.2).
+
+### Resolved since (all merged to feature/threat-inputs)
+
+- **#648 improving+probcut+lmp** bundle — **+1.2 @ 9972g trending H1**,
+  merged at `1b70fd8` (confident correctness / small-win bundle).
+- **#652 SEE-promo-recapture** — **+1.8 @ 16404g H1 ✓**,
+  merged at `b25366d`. (Note: this fix compounded with the #660 tune
+  bundle on the C8-fix net to drop trunk bench by an additional ~20%
+  beyond the tune alone — SEE sharpening × tuned SEE/history margins.)
+- **#653 QS cuckoo-alone** (unbundled from #647) — **+5.0 @ 5942g H1 ✓**,
+  merged at `334e80c`. The unbundled `ply > 0` guard was the working
+  half of #647's bundled fix.
+- **#651 Movepicker hygiene** — **-0.5 @ 10870g trending H0**,
+  merged at `6f4d681` as confident-correctness (−4 tripwire not hit).
+
+### C8 Bullet training/inference frame mismatch — the big one
+
+**Audit claim**: Bullet's `sq < to` same-type semi-exclusion in
+bf (STM-relative) frame diverges from Coda inference's physical-
+frame decision on ~63% of real-STM=Black positions. Each affected
+position has 1-3 features at the wrong feature index — trained
+weights never activate at inference and vice versa.
+
+**Fuzzer confirmed**: C8 diagnostic tool (`coda fuzz-threats -n N`)
+measured 1264/2000 pov-evaluations with ≥1 mismatch, 100% on
+real-STM=Black, 0% on White. Magnitude matches audit's "50%" figure.
+
+**Attempted fix path (abandoned)**: switch Coda inference to
+bf-frame semi-exclusion. Tests revealed a deeper problem —
+bf-frame semi-excl is NOT STM-invariant, which breaks Coda's
+incremental delta mechanism (persistent same-type pairs get
+different feature indices across STM flips, requiring extra
+deltas that don't exist). 7 threat_accum tests failed.
+
+**Chosen fix path**: modify Bullet training to use physical-frame
+semi-exclusion (matches Coda inference, which is STM-invariant
+and preserves delta correctness). Patches landed on
+`adamtwiss/bullet feature/threat-inputs` commit a8e2c7d:
+- `sfbinpack`/`montybinpack` loaders stamp real STM into
+  `ChessBoard.extra[0]` (`from_raw` otherwise loses it via
+  byte-swap).
+- `chess_threats.rs` `map_features` uses `phys_flip = extra[0] ? 56 : 0`
+  to convert bf squares to physical for the semi-exclusion check
+  only. Index computation stays as before.
+
+**C8-fix S200 net (1836917B) observations**:
+- Net-vs-net SPRT #657 vs creluHL-S200 (pre-fix) trending ~0 Elo
+  so far, still early at 3868g.
+- Bench stats show clear internal improvements:
+  - First-move cut rate **77.5% vs 75.1%** (+2.4pp, big)
+  - EBF **1.71 vs 1.78** (smaller trees)
+  - NMP cutoff success rate **50% vs 36%** (+14pp)
+  - History pruning rate **73/Kn vs 44/Kn** (more discriminative hist)
+- NPS difference **+26%** (~660K vs ~520K, worker-off bench).
+  Verified on A/B patched-pre-fix: bit 0 (use_screlu) is redundant
+  for v9 pairwise-with-hidden; NPS gain is from weight-value
+  differences, likely tree-shape interaction with threat-delta
+  application patterns. May explain "v9 unexpectedly slow vs v5"
+  observation across the v9 run.
+- SPSA retune #659 firing on C8-fix net with standard 18 pruning
+  params. Hypothesis: pre-fix pruning was calibrated against
+  noisy (bug-driven) eval; C8-fix's cleaner eval should unlock
+  more aggressive margins → true Elo benefit shows up post-retune.
+
+**Retune + SPRT outcome (late 2026-04-22):**
+- **SPSA #659 stopped** (18-param) in favour of **#660 (full 67-param)**
+  on the C8-fix S200 net. Completed 2502/2500 iterations.
+- Big movers: `LMR_HIST_DIV` -45%, `HIST_BONUS_OFFSET` -26%,
+  `DISCOVERED_ATTACK_BONUS` -24%, `FH_BLEND_DEPTH` +31%,
+  `DEXT_MARGIN` +23%, `LMR_COMPLEXITY_DIV` +16%, `NMP_VERIFY_DEPTH` +14%.
+  Theme: sharpened eval → trust history more, hand-crafted tactical
+  bonuses less. `LMR_ENDGAME_PIECES` pinned at floor (4) in SPSA;
+  manually restored to 5 (range clamped to [4, 9] in source to
+  prevent future drift — play-quality-load-bearing from #583).
+- Applied as branch `tune/v9-660-c8fix` (commit `d2cfb8a`).
+- **SPRT #661 (tune/v9-660-c8fix vs feature/threat-inputs, both
+  on C8-fix net): +8.25 ±4.8 @ 5264g LLR 2.95 H1 ✓.** Merged
+  at `d806b84` — this is the new v9 trunk baseline.
+- Bench on trunk: **2,575,054** on C8-fix (vs 3,541,301 pre-tune,
+  -27%). Effective depth rose several plies; trunk is leaner than
+  pre-#645 on the same net.
+
+**C2 TB cache halfmove fix** — merged at `0c7f316` after local
+cutechess SPRT (with-tb vs pre-tb, both C8-fix net, concurrency 16)
+showed Elo-neutral (-0.6 point estimate at 7800g, 74% draws).
+No OB SPRT (fleet has no Syzygy); local-validated correctness.
+
+### Factoriser SB400 (warm30, training in the morning)
+
+Two SPRTs:
+- **#656 factor-SB400 vs creluHL-SB200** +70.6 Elo H1 @ 364g.
+  Factor has 2× training advantage.
+- **#655 factor-SB400 vs prod-SB800** -22 Elo @ (resolved earlier).
+  Factor has 1/2× training disadvantage.
+
+**Back-of-envelope**: if training-length gains are ~symmetric,
+factor_arch ≈ (70 - 22)/2 = +24 Elo at equal training. If training
+gains are asymmetric (late-LR tail dominates per
+`project_v9_low_lr_tail_critical`), factor_arch could be higher.
+
+**Direction**: encouraging factoriser signal, but waiting on C8-fix
+SPRT and retune before kicking off full SB800 factor+C8 training
+runs.
+
+### Merge summary for the session
+
+| Category | Count | Notes |
+|---|---|---|
+| Correctness fixes merged (direct) | ~25 | audit bug-class, bench-bit-exact or unreachable-on-fleet |
+| Features / structural fixes merged (via SPRT) | 6 | T1.4, P2, N6, C1, #645, #649, #650 |
+| Still SPRT-running | ~5 | various |
+| Retunes firing | 2 | NMP sentinel/reductions bundle, C8-fix net |
+| Training fix | 1 | C8 in Bullet fork, S200 net trained |
+
+The session executed about 40 of the audit's 44 actionable items.
+Remaining LIKELY (pawn_hash comment, hardcoded buffer limits, TT
+aarch64 atomics, forward non-hidden NTM dead code, etc.) are
+latent / dead-code / cosmetic and deferred.
+
+## 2026-04-23 overnight batch (post-#661 tuned C8-fix trunk)
+
+Ten overnight SPRTs on tuned C8-fix trunk covering retries of pre-tune
+H0s and new correctness items.
+
+### H1 — merged
+
+- **#670 fix/nmp-stale-reductions-c8-retry** — +2.8 Elo H1 ✓ @ 10540g.
+  C3 audit follow-up (reset `info.reductions[ply_u]` at node entry).
+  Originally H0'd −5.1 on pre-C8 trunk (#646); retune-on-branch
+  pattern validated on tuned C8-fix trunk. Confirms that some
+  correctness fixes that H0 on miscalibrated trunk emerge positive
+  after retune.
+- **#676 experiment/undefended-nmp-skip-c8-retry** — +2.9 Elo H1 ✓
+  @ 10122g. T2.1 (undefended-piece NMP skip, next_ideas_2026-04-21).
+  Was marginal +0.4 @ 44Kg H0 on old trunk (#617). Tuned trunk +
+  C8-fix eval made the W2 gate pattern fire productively.
+
+### H0 but merged (confident-correctness)
+
+- **#668 fix/nmp-sentinel-c8-retry** — −1.6 Elo H0 @ 19874g.
+  C3 audit: NMP was leaving `moved_piece_stack[ply_u]` stale;
+  children read polluted cont-hist keys. Direct SF sentinel
+  translation. Within −2 threshold; load-bearing for downstream
+  cont-hist-sensitive experiments.
+- **#672 fix/tt-cutoff-malus-symmetry** — −1.7 Elo H0 @ 10556g.
+  C8 LIKELY #6: malus read-side used `board.piece_at(to)`
+  (post-move, queen on promotions) while write-side used
+  `moved_piece_stack` (pre-move, pawn). Old code silently disabled
+  malus on promotions. "Fix" enables it — which is why old bundle
+  #647 regressed: old trunk was implicitly calibrated around
+  suppression. Merging now lets future retune absorb the shift.
+
+### H0 — dropped
+
+- **#667 tune/psq-refresh-perpov-c8fix** — −2.2 Elo H0 @ 10366g.
+  Per-pov PSQ materialize on king-bucket crossing. Original a9f6e1f
+  trended +21 on old trunk (#426) but never merged. Bug-fixed
+  re-apply (my `needs_refresh` leak) still regressed on tuned
+  C8-fix trunk. Not a correctness fix (NPS optimisation); no
+  confident-correctness argument. Dropped. Revisit if profiling
+  flags materialize as a hotspot.
+- **#669 experiment/t1-3-overload-c8-retry** — −4.9 Elo H0 @ 6056g.
+  T1.3 overload bonus. H0'd on both pre-C8 (#634 −1.4) and tuned
+  C8-fix trunks. Past −4 tripwire this round. Dropped.
+- **#671 experiment/p1-optimism-c8-retry** — −7.1 Elo H0 @ 4268g.
+  P1 optimism port (SF/Reckless/Viridithas consensus), untuned.
+  Dropped for now; could iterate via K1/K2 focused SPSA on-branch
+  if we want to revisit.
+- **#674 fix/should-stop-granularity** — −1.1 Elo H0 @ 16332g.
+  Audit SPECULATIVE #326 (4096 → 1024 node time-check bucket).
+  Benefit claim was theoretical (emergency budget overruns); at
+  STC we never hit that regime. Cost is 4× more atomic
+  fetch_adds. Dropped; revisit only if LTC shows real overruns.
+
+### Iterating
+
+- **#673 fix/lmr-shallower-margin** — −1.7 Elo H0 @ 17286g at 30cp.
+  Audit SPECULATIVE #321 fix: `new_depth` used as cp margin
+  (near-certain typo). Direction correct; magnitude wrong.
+  **v2 submitted at 20cp** (closer to old effective threshold).
+  Next fallback if v2 H0s: 10cp, or Alexandria's alpha-relative
+  `alpha + 7`.
+
+### Net result
+
+4 merged (2 H1 + 2 confident-correctness), 4 dropped, 1 iterating.
+Trunk bench after the 4 merges: **3,370,847** (up from 2,575,054
+pre-batch). NMP sentinel + T2.1 + undefended-NMP-skip + malus
+symmetry stack to a much bigger tree — next retune will absorb.
+
+## 2026-04-23 → 2026-04-24 session — factor architecture + NPS investigation wave
+
+### Factor architecture validation
+
+| SPRT | Branch | Result | Status |
+|------|--------|--------|--------|
+| #679 | fix/lmr-shallower-margin-v2 (20cp) | +1.4 Elo H1 @ 20926g | ✅ merged (audit SPECULATIVE #321 fix; iteration from #673 H0) |
+| #682 | tune/v9-682-sb400 (C8-fix retune) | (64-param tune) | applied |
+| #686 | Merge tune/v9-682-sb400 | +3.0 Elo H1 @ 22118g | ✅ merged |
+| #683 | experiment/n5-qs-insufficient-material | +0.3 Elo @ 50894g | ❌ dropped (N5 from peripheral_mechanisms) |
+| #684 | experiment/t2-3-mobility-delta | **+1.4 Elo H1 @ 22200g** | ✅ merged (T2.3 from next_ideas_2026-04-21) |
+| #685 | experiment/t1-5-trapped-piece-escape | −2.7 Elo H0 @ ~904g | ❌ dropped |
+| #687 | experiment/t1-5-trapped-piece-v2-bonus20 | −3.7 Elo H0 @ 8174g | ❌ dropped (T1.5 two-point sampled; genuinely negative) |
+| #688 | feature/threat-inputs (factor net SPRT) | **+13.6 Elo H1 @ 944g** | ✅ validated factor architecture |
+| #689 | experiment/s17-probcut-corrhist-gate | −0.4 Elo H0 @ 21618g | ❌ dropped |
+| #691 | experiment/n1-twofold-eval-blend | +0.0 Elo @ 28792g | ❌ dropped (N1 from peripheral_mechanisms) |
+| #694 | tune/v9-692-factor | +31.1 Elo H1 @ 750g | ✅ validated (factor retune #692 end-values) |
+
+### Factor tune cycle (cumulative on factor net)
+
+| SPRT | Comparison | Result | Status |
+|------|------------|--------|--------|
+| #698 | (2000-iter factor tune continuation) | SPSA completed | applied on branch; NMP_UNDEFENDED_MAX bug fixed to 5 |
+| #700 | tune/v9-698-factor vs non-factor | +22.9 Elo H1 @ 1064g | factor arch effect |
+| #703 | tune/v9-698-factor vs pre-tune (both factor) | −2.6 Elo H0 @ 9226g | ❌ tune neutral on factor |
+| #704 | tune/v9-698-factor + factor vs trunk + non-factor | +20.8 Elo H1 @ 1190g | factor arch effect (confirmed) |
+| #705 | tune/v9-698-factor vs prod SB800 | −15.6 Elo H0 @ 2254g | SB training length gap |
+| #706 | (continuation, 2000 iters more, cumulative 5000) | SPSA completed | factor cumulative |
+| #710 | tune/v9-706-factor vs pre-tune | −3.4 Elo H0 @ 7618g | ❌ tune dropped (confirmed factor's pruning optimum near pre-tune) |
+
+**Factor lesson**: factor architecture is worth +20-23 Elo vs non-factor at
+same training length. SPSA retune on factor adds nothing — factor's pruning
+optimum sits close to pre-tune values. Do not apply #698/#706 tune wholesale;
+use factor net with pre-tune params once SB800 factor net lands.
+
+### NPS investigation — Phase 3 pruning (Hercules lane)
+
+SPRTs driven by `docs/coda_vs_reckless_nps_2026-04-23.md` pruning scan.
+
+| SPRT | Branch | Result | Status |
+|------|--------|--------|--------|
+| #707 | experiment/direct-check-carveout | **+2.5 Elo H1 ✓ @ 26186g** | ✅ merged (FP + BNFP direct-check carve-out; Reckless #410 + #630 pattern) |
+| #708 | experiment/lmp-adaptive-improvement | −6.7 Elo H0 @ 4644g | ❌ raw port of Reckless constants; 20% bench drop — formula needs SPSA on Coda's eval scale |
+| #709 | experiment/nmp-skip-tt-capture | −7.8 Elo H0 @ 3794g | ❌ raw port; 48% bench growth — gate fires too broadly on Coda's TT distribution |
+
+**Lesson**: Reckless's tuned pruning constants don't transfer directly to
+Coda's eval scale. Both formulas need SPSA-tunable variants rather than
+direct ports.
+
+### NPS investigation — cache hygiene (Zeus lane + mine)
+
+SPRTs driven by Zeus's flatten/prefetch/walk-back work + eval-TT writeback.
+
+| SPRT | Branch | Result | Status |
+|------|--------|--------|--------|
+| #711 | experiment/flatten-acc-entry | **+6.5 Elo H1 ✓ @ 3608g** | ✅ merged (Zeus Item 1: 4 big AccEntry Vec fields → inline arrays) |
+| #713 | experiment/eval-only-tt-writeback | **+14.7 Elo H1 ✓ @ 2462g** | ✅ merged (Hercules Item 7: seed TT static_eval on NNUE-hit + TT-miss; evals/node 0.677 → 0.581) |
+| #714 | experiment/l1-inference-compact-rebased | −2.5 Elo H0 @ 7184g | ❌ dropped (Zeus Item 3: load-time compact 4 MB — saves no Elo on current non-sparse net) |
+| #719 | experiment/prefetch-threat-deltas | −4.4 Elo H0 @ 4382g | ❌ dropped (Zeus Item 5: manual prefetch on modern HW) |
+| #720 | experiment/psq-walkback-v2 | **+1.1 Elo H1 ✓ @ 35666g** | ✅ merged (Zeus Item 6: clean-retry of walk-back; prior #424 −17.86 Elo was confounded by struct/layout churn) |
+| #721 | experiment/prefetch-threat-deltas-t1 | −8.1 Elo H0 @ 2570g | ❌ dropped (tier-1 retry of Item 5) |
+| #722 | experiment/compact-plus-frontload | −3.7 Elo H0 @ 6900g | ❌ dropped (Zeus bundled Item 3 + Item 4 hot-feature frontload; no Elo on current net) |
+| #723 | experiment/sibling-se-propagation | −3.5 Elo H0 @ 7250g | ❌ dropped (Hercules Item 11: raw Reckless port flipped −2/−3 SE → +2/+3 sibling; too aggressive) |
+| #724 | experiment/nmp-skip-tt-capture-v2 | +0.1 Elo H0 @ 32986g | ❌ dropped (refined retry with depth + SEE gates; settled neutral, no signal) |
+| #725 | experiment/tt-static-eval-wider | −167.5 @ 442g (bug) | ❌ bug in bit-layout refactor (Zeus Item 9; retry pending) |
+| #726 | experiment/flatten-acc-entry-phase2 | −7.1 @ 1218g (bug) | ❌ bug (Zeus Item 10 complete-flatten; retry pending) |
+| #727 | experiment/sibling-se-propagation-v2 | (in flight) | clamped-to-+1 retry of #723 |
+
+### Session cumulative result
+
+Merged during the 2026-04-23/24 wave (non-factor trunk only, prod net
+SB800 DAA4C54E):
+- direct-check carve-out: +2.5
+- flatten AccEntry: +6.5
+- eval-only TT writeback: +14.7
+- PSQ walk-back clean retry: +1.1
+- direct-check + mobility-delta + lmr-shallower-v2 + T2.1 + sentinel reductions + tune #686: from prior lines, summed ~+8
+
+Roughly **+24.8 Elo merged from NPS-investigation-derived work** in
+24 hours (not counting correctness fixes already in the prior batch
+or the factor-architecture work which is waiting on SB800 factor net).
+
+### Cross-engine validation (Rivals RR)
+
+4-day Rivals RR delta on V9 binary (all merges above against static
+v5 reference + rival set):
+
+| Date | V9 Elo | V9 rank |
+|------|-------:|:-------:|
+| 2026-04-20 | 53 | 6 |
+| 2026-04-24 | **109** | **1** |
+
+**+56 Rivals-internal**. Per `feedback_rivals_rr_stretches_elo.md` (~2×
+stretch), broader-pool estimate is ~+28 Elo. Consistent with the
+SPRT-merged total within noise. Confirms the NPS-investigation wins
+convert to actual cross-engine strength, not self-play artefact.

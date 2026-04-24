@@ -23,6 +23,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut opening_book: Option<crate::book::OpeningBook> = None;
     let mut use_book = true;
     let mut syzygy: Option<std::sync::Arc<crate::tb::SyzygyTB>> = None;
+    let mut syzygy_path: Option<String> = None; // remembered for cache-size reloads
+    let mut tb_hash_mb: usize = crate::tb::DEFAULT_TB_HASH_MB;
     let mut num_threads: usize = 1;
 
     // Pre-load NNUE if path given via CLI, otherwise auto-discover
@@ -80,9 +82,12 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("option name MoveOverhead type spin default 100 min 0 max 5000");
                 println!("option name Ponder type check default false");
                 println!("option name SyzygyPath type string default <empty>");
+                println!("option name TBHash type spin default 16 min 0 max 1024");
                 println!("option name SparseL1 type check default true");
+                println!("option name HiddenActivation type combo default screlu var screlu var crelu");
+                println!("option name LoadAnyway type check default false");
                 // Tunable search parameters (for SPSA)
-                for (name, _, default, min, max) in crate::search::tunable_params() {
+                for (name, _, default, min, max, _c_end) in crate::search::tunable_params() {
                     println!("option name {} type spin default {} min {} max {}", name, default, min, max);
                 }
                 println!("uciok");
@@ -106,6 +111,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 info.clear_correction_history();
                 info.clear_pawn_hist(); // was missing — stale data leaked between games
                 if let Some(acc) = &mut info.nnue_acc { acc.reset(); }
+                // Clear Syzygy probe cache on new game (prevents stale entries
+                // from a prior game leaking into the new one's search).
+                if let Some(ref tb) = syzygy { tb.clear_cache(); }
                 board = Board::startpos();
             }
             "position" => {
@@ -121,16 +129,27 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         stop_flag = info.stop.clone();
                     }
                 }
-                // Try Syzygy tablebase at root
+                let is_ponder = tokens.iter().any(|&t| t == "ponder");
+
+                // Try Syzygy tablebase at root. Behaviour splits on is_ponder:
+                //   - Non-ponder: walk DTZ to build a multi-ply PV, emit a
+                //     single info line with the walked line + bestmove, done.
+                //   - Ponder: emit the walked PV as a seed info line (so the
+                //     GUI has a real ponder_move to think about) and fall
+                //     through to search. Search still runs for ponder-cache
+                //     TT stockpile, UCI protocol compliance (no premature
+                //     bestmove), and depth-counter updates. Ponderhit handler
+                //     below will override with TB-optimal move when the time
+                //     comes to play.
                 if let Some(ref tb) = syzygy {
                     if crate::bitboard::popcount(board.occupied()) as usize <= tb.max_pieces() {
-                        if let Some((tb_move_str, wdl)) = tb.probe_root(&board) {
-                            // Validate TB move against legal move list.
-                            // TB can return "king capture" moves in checkmate positions
-                            // which are illegal in UCI. Only play if it's a real legal move.
+                        if let Some((tb_pv, wdl)) = tb.probe_root_pv(&board, 32) {
+                            // Validate the FIRST move of the walked PV — if
+                            // TB returns an illegal "king capture" in a mate
+                            // position we want to fall through to search.
                             let legal = crate::movegen::generate_legal_moves(&board);
                             let mut tb_valid = false;
-                            if let Some(parsed) = parse_uci_move(&board, &tb_move_str) {
+                            if let Some(parsed) = parse_uci_move(&board, &tb_pv[0]) {
                                 for i in 0..legal.len {
                                     if move_from(legal.moves[i]) == move_from(parsed)
                                         && move_to(legal.moves[i]) == move_to(parsed) {
@@ -147,9 +166,18 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 } else {
                                     "score cp 0".to_string()
                                 };
-                                println!("info depth 1 seldepth 1 {} tbhits 1 pv {}", score_str, tb_move_str);
-                                println!("bestmove {}", tb_move_str);
-                                continue;
+                                let pv_str = tb_pv.join(" ");
+                                let depth = tb_pv.len().max(1);
+                                println!("info depth {} seldepth {} {} tbhits 1 pv {}",
+                                         depth, depth, score_str, pv_str);
+                                if !is_ponder {
+                                    println!("bestmove {}", tb_pv[0]);
+                                    continue;
+                                }
+                                // During ponder: info line emitted as a seed
+                                // so GUI has ponder_move = tb_pv[1]. Fall
+                                // through to search for stockpile + UCI
+                                // compliance.
                             }
                             // TB move invalid — fall through to search (which has interior TB probes)
                         }
@@ -157,11 +185,16 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
 
                 // Try opening book first (not in ponder mode)
-                let is_ponder = tokens.iter().any(|&t| t == "ponder");
                 if use_book && !is_ponder {
                     if let Some(ref book) = opening_book {
                         if let Some(book_move) = book.pick_move(&board) {
-                            println!("bestmove {}", move_to_uci(book_move));
+                            let uci = move_to_uci(book_move);
+                            // Emit a nominal info line so GUIs don't show an empty PV
+                            // for book moves. Score cp 0 reflects "we didn't evaluate";
+                            // this matches the convention used by most engines with a
+                            // built-in book.
+                            println!("info depth 1 seldepth 1 score cp 0 nodes 0 nps 0 time 0 pv {}", uci);
+                            println!("bestmove {}", uci);
                             continue;
                         }
                     }
@@ -248,9 +281,22 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 // producing MORE stockpile. Verified: v3 (movetime)
                                 // had 3/28 stockpile at 60+1; v6 (full TM) had 7/28.
                                 // Movetime runs the full budget — best for this case.
+                                //
+                                // movetime_floor = inc - overhead. This enforces the
+                                // "never think less than we gain" rule on ponderhit
+                                // fresh-searches too — without it, TT-cached positions
+                                // instant-emit and stockpile clock on ponder-heavy TCs
+                                // like lichess blitz (lichess 6CQJQNVu).
+                                let our_inc = if search_board.side_to_move == crate::types::WHITE {
+                                    limits.winc
+                                } else {
+                                    limits.binc
+                                };
+                                let floor = our_inc.saturating_sub(si.move_overhead);
                                 let fresh_limits = SearchLimits {
                                     infinite: false,
                                     movetime: remaining,
+                                    movetime_floor: floor,
                                     ..SearchLimits::new()
                                 };
                                 let fresh_start = std::time::Instant::now();
@@ -329,7 +375,12 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                     }
                                 }
                             }
-                            if tb_valid && wdl != 0 {
+                            // C8 audit LIKELY #31: match the `go` path —
+                            // override even for drawn TB positions (wdl==0).
+                            // NNUE search can play a 50mr-losing move in
+                            // a drawn TB endgame; the TB draw move is
+                            // safer.
+                            if tb_valid {
                                 // Stop search and play TB move
                                 external_stop.store(true, Ordering::Relaxed);
                                 stop_flag.store(true, Ordering::Relaxed);
@@ -341,8 +392,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 }
                                 let score_str = if wdl > 0 {
                                     format!("score cp {}", crate::tt::TB_WIN)
-                                } else {
+                                } else if wdl < 0 {
                                     format!("score cp -{}", crate::tt::TB_WIN)
+                                } else {
+                                    "score cp 0".to_string()
                                 };
                                 println!("info depth 1 seldepth 1 {} tbhits 1 pv {}", score_str, tb_move_str);
                                 println!("bestmove {}", tb_move_str);
@@ -390,6 +443,15 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             let deadline = elapsed + hard.max(10);
                             ponderhit_flag.store(deadline, Ordering::Relaxed);
                         }
+                    } else if pl.movetime > 0 {
+                        // C8 audit LIKELY #33: `go ponder movetime X` (no
+                        // wtime/btime). Previously our_time==0 triggered an
+                        // instant stop, discarding all the ponder work. Use
+                        // movetime as the deadline instead — matches what the
+                        // caller asked for.
+                        let elapsed = start.elapsed().as_millis() as u64;
+                        let deadline = elapsed + pl.movetime.max(10);
+                        ponderhit_flag.store(deadline, Ordering::Relaxed);
                     } else {
                         // No time info: instant stop
                         external_stop.store(true, Ordering::Relaxed);
@@ -423,13 +485,32 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     match tokens[ni] {
                         "OwnBook" => { use_book = tokens[vi] == "true"; }
                         "SyzygyPath" => {
-                            match crate::tb::SyzygyTB::new(tokens[vi]) {
+                            let path = tokens[vi].to_string();
+                            match crate::tb::SyzygyTB::new_with_cache(&path, tb_hash_mb) {
                                 Ok(tb) => {
                                     let tb_arc = std::sync::Arc::new(tb);
                                     info.syzygy = Some(tb_arc.clone());
                                     syzygy = Some(tb_arc);
+                                    syzygy_path = Some(path);
                                 }
                                 Err(e) => eprintln!("info string Syzygy load failed: {}", e),
+                            }
+                        }
+                        "TBHash" => {
+                            if let Ok(mb) = tokens[vi].parse::<usize>() {
+                                tb_hash_mb = mb.min(1024);
+                                // Rebuild the tablebase wrapper with the new cache
+                                // size (so existing searches can't race on resize).
+                                if let Some(ref path) = syzygy_path {
+                                    match crate::tb::SyzygyTB::new_with_cache(path, tb_hash_mb) {
+                                        Ok(tb) => {
+                                            let tb_arc = std::sync::Arc::new(tb);
+                                            info.syzygy = Some(tb_arc.clone());
+                                            syzygy = Some(tb_arc);
+                                        }
+                                        Err(e) => eprintln!("info string TBHash resize failed: {}", e),
+                                    }
+                                }
                             }
                         }
                         "BookFile" => {
@@ -470,7 +551,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
             }
             "eval" => {
                 let score = if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
-                    crate::eval::evaluate_nnue(&board, net, acc)
+                    { let ts = crate::threat_accum::ThreatStack::new(0); crate::eval::evaluate_nnue(&board, net, acc, &ts) }
                 } else {
                     crate::eval::evaluate(&board)
                 };
@@ -560,7 +641,11 @@ fn parse_go(tokens: &[&str]) -> SearchLimits {
             "depth" => {
                 idx += 1;
                 if idx < tokens.len() {
-                    limits.depth = tokens[idx].parse().unwrap_or(100);
+                    // C8 audit LIKELY #32: fail-closed on parse error (0),
+                    // matching every other integer field in this parser.
+                    // Previously malformed `depth ???` parsed as 100,
+                    // producing a near-infinite search.
+                    limits.depth = tokens[idx].parse().unwrap_or(0);
                 }
             }
             "movetime" => {
@@ -664,9 +749,37 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
                 println!("info string SparseL1 = {}", value == "true");
             }
         }
+        "HiddenActivation" => {
+            if let Some(net) = &info.nnue_net {
+                let crelu = value.eq_ignore_ascii_case("crelu");
+                net.crelu_hidden.store(crelu, std::sync::atomic::Ordering::Relaxed);
+                println!("info string HiddenActivation = {}", if crelu { "crelu" } else { "screlu" });
+            }
+        }
+        "Ponder" => {
+            // C8 audit LIKELY #30: `Ponder` is advertised at startup
+            // (line 83) but was falling through to the tunable loop,
+            // silently not storing anywhere. The engine actually reads
+            // ponder state from the `go ponder` command, not a stored
+            // flag, so the handler is a no-op acknowledgement — but it
+            // must explicitly match here so the protocol contract is
+            // satisfied (some GUIs fail if setoption response is empty).
+            println!("info string Ponder = {}", value);
+        }
+        "LoadAnyway" => {
+            // Diagnostic override — load nets even on training/inference
+            // mismatch (e.g. xray-disabled-trained net). MUST be set
+            // BEFORE the NNUEFile setoption that triggers load. Default
+            // false (refuse to load on mismatch — protects against silent
+            // corruption in SPRT / OB / Lichess where log noise is
+            // invisible).
+            let on = value.eq_ignore_ascii_case("true");
+            crate::nnue::LOAD_ANYWAY.store(on, std::sync::atomic::Ordering::Relaxed);
+            println!("info string LoadAnyway = {}", on);
+        }
         _ => {
             // Check tunable search parameters
-            for (pname, param, _, min, max) in crate::search::tunable_params() {
+            for (pname, param, _, min, max, _c_end) in crate::search::tunable_params() {
                 if name == pname {
                     if let Ok(v) = value.parse::<i32>() {
                         let clamped = v.max(min).min(max);

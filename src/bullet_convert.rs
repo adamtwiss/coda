@@ -3,12 +3,48 @@
 /// Supports:
 ///   v5/v6: (InputSize × H)×2 → output (direct, pairwise, SCReLU)
 ///   v7: (InputSize × H)×2 → L1 → [L2 →] output (hidden layers)
+///
+/// King bucket count and layout are encoded into the .nnue header. Default
+/// 16 buckets is backwards compatible (no extended header needed). Non-16
+/// counts (e.g. Reckless 10) set flag bit 7 and emit two extra header bytes.
 
 use std::io::Write;
 
-const NNUE_INPUT_SIZE: usize = 12288;
+/// PSQ inputs per king bucket: 12 pieces × 64 squares.
+const PSQ_INPUTS_PER_BUCKET: usize = 768;
 const NNUE_OUTPUT_BUCKETS: usize = 8;
 const NNUE_MAGIC: u32 = 0x4E4E5545; // "NNUE" LE
+
+/// King bucket layout identifier stored in the .nnue header.
+///
+/// - `Uniform` (0): `mirrored_file × 4 + rank_pair`, 16 buckets. Default.
+/// - `Consensus` (1): Alexandria/Viridithas fine-near / coarse-far, 16 buckets.
+/// - `Reckless` (2): per-file ranks 1-2, one bucket rank 3, one bucket
+///   ranks 4-8. 10 buckets. See Reckless/src/nnue.rs:71-80.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum KbLayout {
+    Uniform = 0,
+    Consensus = 1,
+    Reckless = 2,
+}
+
+impl KbLayout {
+    pub fn from_name(name: &str) -> Result<Self, String> {
+        match name {
+            "uniform" => Ok(KbLayout::Uniform),
+            "consensus" => Ok(KbLayout::Consensus),
+            "reckless" => Ok(KbLayout::Reckless),
+            other => Err(format!("unknown --kb-layout {other:?}; expected uniform | consensus | reckless")),
+        }
+    }
+
+    pub fn default_count(self) -> usize {
+        match self {
+            KbLayout::Uniform | KbLayout::Consensus => 16,
+            KbLayout::Reckless => 10,
+        }
+    }
+}
 
 fn read_i16_le(data: &[u8], offset: usize) -> i16 {
     i16::from_le_bytes([data[offset], data[offset + 1]])
@@ -55,21 +91,25 @@ pub fn convert_v5(
     use_screlu: bool,
     use_pairwise: bool,
     src_output_buckets: usize,
-    consensus_buckets: bool,
+    kb_layout: KbLayout,
+    kb_count: usize,
 ) -> Result<(), String> {
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
     let data_len = strip_footer(&data);
 
+    let psq_input_size = kb_count * PSQ_INPUTS_PER_BUCKET;
+
     // Infer hidden size using source bucket count (may differ from NNUE_OUTPUT_BUCKETS=8)
     let ob = src_output_buckets;
     let out_mul = if use_pairwise { ob } else { ob * 2 };
-    let bytes_per_neuron = NNUE_INPUT_SIZE * 2 + 2 + out_mul * 2;
+    let bytes_per_neuron = psq_input_size * 2 + 2 + out_mul * 2;
     let bias_bytes = ob * 4;
     let h = (data_len - bias_bytes) / bytes_per_neuron;
     let output_width = if use_pairwise { h } else { 2 * h };
 
-    let expected = NNUE_INPUT_SIZE * h * 2 + h * 2 + output_width * ob * 2 + ob * 4;
-    println!("Input: {} bytes, hidden size: {}, src buckets: {}, expected: {} bytes", data.len(), h, ob, expected);
+    let expected = psq_input_size * h * 2 + h * 2 + output_width * ob * 2 + ob * 4;
+    println!("Input: {} bytes, hidden size: {}, src buckets: {}, kb: {} ({:?}), expected: {} bytes",
+        data.len(), h, ob, kb_count, kb_layout, expected);
     if data_len < expected {
         return Err(format!("file too small: got {}, need {}", data_len, expected));
     }
@@ -77,8 +117,8 @@ pub fn convert_v5(
     let mut offset = 0;
 
     // Read l0w: [InputSize][H] i16
-    let mut input_weights = vec![0i16; NNUE_INPUT_SIZE * h];
-    for i in 0..NNUE_INPUT_SIZE * h {
+    let mut input_weights = vec![0i16; psq_input_size * h];
+    for i in 0..psq_input_size * h {
         input_weights[i] = read_i16_le(&data, offset);
         offset += 2;
     }
@@ -127,12 +167,19 @@ pub fn convert_v5(
     let version: u32 = if use_screlu || use_pairwise { 6 } else { 5 };
     write_u32_le(&mut buf, version);
 
+    let write_extended_kb = kb_count != 16 || kb_layout == KbLayout::Reckless;
+
     if version == 6 {
         let mut flags = 0u8;
         if use_screlu { flags |= 1; }
         if use_pairwise { flags |= 2; }
-        if consensus_buckets { flags |= 32; } // bit 5: consensus king bucket layout
+        if kb_layout == KbLayout::Consensus { flags |= 32; } // bit 5
+        if write_extended_kb { flags |= 128; } // bit 7: extended KB header follows
         buf.push(flags);
+        if write_extended_kb {
+            buf.push(kb_count as u8);
+            buf.push(kb_layout as u8);
+        }
     }
 
     for &w in &input_weights { write_i16_le(&mut buf, w); }
@@ -145,7 +192,8 @@ pub fn convert_v5(
         .map_err(|e| format!("write {}: {}", output_path, e))?;
 
     let activation = if use_pairwise { "pairwise" } else if use_screlu { "SCReLU" } else { "CReLU" };
-    println!("Saved {} ({} bytes, v{} {} {})", output_path, buf.len(), version, activation, h);
+    println!("Saved {} ({} bytes, v{} {} FT={} kb={}/{:?})",
+        output_path, buf.len(), version, activation, h, kb_count, kb_layout);
     Ok(())
 }
 
@@ -162,8 +210,13 @@ pub fn convert_v7(
     ft_size_override: usize,
     int16_hidden: bool,
     dual_l1: bool,
-    consensus_buckets: bool,
+    kb_layout: KbLayout,
+    kb_count: usize,
+    num_threats: usize,
+    hl_crelu: bool,
+    xray_trained: bool,
 ) -> Result<(), String> {
+    let psq_input_size = kb_count * PSQ_INPUTS_PER_BUCKET;
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
     let data_len = strip_footer(&data);
 
@@ -189,7 +242,9 @@ pub fn convert_v7(
     // Pairwise: L1 input is H (after CReLU+pairwise+concat = ft_size)
     // Direct: L1 input is 2*H
     let l1_mul = if use_pairwise { 1 } else { 2 };
-    let bytes_per_neuron = NNUE_INPUT_SIZE * 2 + 2 + l1_mul * bl1 * l1w_bytes_per;
+    // Combined FT: (PSQ_inputs + threat_inputs) share one weight matrix, all i16
+    let total_ft_inputs = psq_input_size + num_threats;
+    let bytes_per_neuron = total_ft_inputs * 2 + 2 + l1_mul * bl1 * l1w_bytes_per;
     let h = if ft_size_override > 0 {
         ft_size_override
     } else if data_len < fixed_bytes {
@@ -198,25 +253,61 @@ pub fn convert_v7(
         (data_len - fixed_bytes) / bytes_per_neuron
     };
 
-    println!("Input: {} bytes, FT={} L1={}{} L2={} (bucketed: {}x{}, {}x{})",
-        data.len(), h, l1_size, if int8_l1 { "(i8)" } else { "" }, l2_size, bl1, bl2,
-        NNUE_OUTPUT_BUCKETS, l1_size);
+    println!("Input: {} bytes, FT={} L1={}{} L2={} threats={} kb={}/{:?} (bucketed: {}x{}, {}x{})",
+        data.len(), h, l1_size, if int8_l1 { "(i8)" } else { "" }, l2_size, num_threats,
+        kb_count, kb_layout, bl1, bl2, NNUE_OUTPUT_BUCKETS, l1_size);
 
     // Verify size
     let l1_input = l1_mul * h;
-    let expected = NNUE_INPUT_SIZE * h * 2 + h * 2 + l1_input * bl1 * l1w_bytes_per
+    let expected = total_ft_inputs * h * 2 + h * 2 + l1_input * bl1 * l1w_bytes_per
         + l1b_bytes + l2_bytes + out_bytes;
     if expected != data_len {
-        return Err(format!("Size mismatch: expected {} bytes for FT={}, got {}", expected, h, data_len));
+        return Err(format!("Size mismatch: expected {} bytes for FT={}, got {} (total_ft_inputs={})", expected, h, data_len, total_ft_inputs));
     }
 
     let mut offset = 0;
 
-    // l0w: [InputSize][H] i16
-    let mut input_weights = vec![0i16; NNUE_INPUT_SIZE * h];
-    for i in 0..NNUE_INPUT_SIZE * h {
+    // l0w: [InputSize][H] i16 — PSQ features (sized by kb_count × 768)
+    let mut input_weights = vec![0i16; psq_input_size * h];
+    for i in 0..psq_input_size * h {
         input_weights[i] = read_i16_le(&data, offset);
         offset += 2;
+    }
+
+    // Threat weights: read from combined FT block (i16 at QA=255), clamp to i8
+    // In Atlas's Bullet approach, the FT has (PSQ_inputs + threat_inputs) combined.
+    // PSQ weights are the first psq_input_size rows (already read above).
+    // Threat weights are the next num_threats rows, stored as i16 at QA=255.
+    // We clamp directly to i8 [-128, 127] preserving QA=255 scale.
+    // This is correct because threat values are added to the PSQ accumulator
+    // (also at QA=255) before the pairwise activation clamp at QA=255.
+    // TODO: monitor overflow rate after training changes — if >1% of weights
+    // exceed [-127, 127], consider storing threats as i16 in the .nnue format.
+    let mut threat_weights = Vec::new();
+    if num_threats > 0 {
+        threat_weights = vec![0i8; num_threats * h];
+        let mut clipped = 0u64;
+        for i in 0..num_threats * h {
+            let val_i16 = read_i16_le(&data, offset);
+            offset += 2;
+            // C8 audit LIKELY #49: use full i8 range [-128, 127] instead of
+            // symmetric [-127, 127]. The old bound wasted one negative
+            // value and slightly raised the clip rate. Also: if clip rate
+            // > 1%, warn loudly — clipping indicates training/inference
+            // scale mismatch and silent Elo loss.
+            if val_i16 < i8::MIN as i16 || val_i16 > i8::MAX as i16 { clipped += 1; }
+            threat_weights[i] = (val_i16 as i32).clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+        }
+        let total = (num_threats * h) as u64;
+        let pct = 100.0 * clipped as f64 / total as f64;
+        println!("Read {} threat weights ({}×{}, i16→i8 clamp, {:.4}% clipped)",
+            total, num_threats, h, pct);
+        if pct > 1.0 {
+            eprintln!("WARNING: >1% threat weight clipping — likely scale mismatch, will lose Elo");
+        }
+        if pct > 1.0 {
+            eprintln!("WARNING: {:.2}% of threat weights clipped to i8 — consider i16 storage", pct);
+        }
     }
 
     // l0b: [H] i16
@@ -339,11 +430,17 @@ pub fn convert_v7(
 
     println!("Parsed {} bytes of {} (FT={})", offset, data.len(), h);
 
-    // Write .nnue — v8 for dual L1, v7 otherwise
-    let version = if dual_l1 { 8u32 } else { 7u32 };
+    // Write .nnue — v10 for threats (adds training_flags byte), v8 for dual L1, v7 otherwise.
+    // v10 vs v9: v10 adds a training_flags byte after the kb_layout byte, recording
+    // metadata like xray_trained. v9 nets are still loadable (legacy xray_trained=true
+    // assumed). Old Coda binaries that don't understand v10 will error on load, which
+    // is the intended fail-loud behavior for format mismatch.
+    let version = if num_threats > 0 { 10u32 } else if dual_l1 { 8u32 } else { 7u32 };
     let mut buf = Vec::new();
     write_u32_le(&mut buf, NNUE_MAGIC);
     write_u32_le(&mut buf, version);
+
+    let write_extended_kb = kb_count != 16 || kb_layout == KbLayout::Reckless;
 
     let mut flags = 0u8;
     if use_screlu { flags |= 1; }
@@ -352,16 +449,50 @@ pub fn convert_v7(
     if bucketed_hidden { flags |= 8; } // bit 3 = bucketed hidden layers
     // bit 4 = dual L1 activation (v8): CReLU+SCReLU on L1 output, doubles L2 input
     if dual_l1 { flags |= 16; }
-    // bit 5 = consensus king bucket layout (fine-near, coarse-far)
-    if consensus_buckets { flags |= 32; }
+    // bit 5 is context-dependent (matches load_nnue):
+    //   - extended_kb=0: consensus_buckets (legacy 16-bucket)
+    //   - extended_kb=1: hl_crelu (hidden-layer CReLU, vs default SCReLU)
+    if write_extended_kb {
+        if hl_crelu { flags |= 32; }
+    } else if kb_layout == KbLayout::Consensus {
+        flags |= 32;
+    }
+    // bit 6 = threat features present (v9)
+    if num_threats > 0 { flags |= 64; }
+    // bit 7 = extended KB header: two extra bytes (kb_count, kb_layout_id) follow
+    if write_extended_kb { flags |= 128; }
     buf.push(flags);
     write_u16_le(&mut buf, h as u16);       // FT size
     write_u16_le(&mut buf, l1_size as u16); // per-bucket L1 size
     write_u16_le(&mut buf, l2_size as u16); // per-bucket L2 size
+    if num_threats > 0 {
+        write_u32_le(&mut buf, num_threats as u32); // threat feature count
+    }
+    if write_extended_kb {
+        buf.push(kb_count as u8);
+        buf.push(kb_layout as u8);
+    }
+
+    // v10 training_flags byte (only for threat nets). Records training-side
+    // configuration that inference must match to produce valid results.
+    //   bit 0: xray_trained (1 = trained with xray threat features, 0 = --xray 0)
+    //   bits 1-7: reserved (must be 0)
+    // Coda inference always emits xray features, so nets with xray_trained=0
+    // will mismatch at inference and must be rejected at load time unless
+    // --load-anyway is explicitly passed (diagnostic-only escape hatch).
+    if version >= 10 {
+        let mut training_flags: u8 = 0;
+        if xray_trained { training_flags |= 1; }
+        buf.push(training_flags);
+    }
 
     // Write weights — hidden layers have bucketed dimensions
     for &w in &input_weights { write_i16_le(&mut buf, w); }
     for &b in &input_biases { write_i16_le(&mut buf, b); }
+    // Threat weights: i8 (written as raw bytes)
+    if num_threats > 0 {
+        for &w in &threat_weights { buf.push(w as u8); }
+    }
     for &w in &l1_weights { write_i16_le(&mut buf, w); } // [L1_input][BUCKETS*L1]
     for &b in &l1_biases { write_i16_le(&mut buf, b); }   // [BUCKETS*L1]
     if l2_size > 0 {
@@ -376,6 +507,7 @@ pub fn convert_v7(
         .map_err(|e| format!("write {}: {}", output_path, e))?;
 
     let dual_str = if dual_l1 { " dual" } else { "" };
-    println!("Saved {} ({} bytes, v{}{} FT={} L1={} L2={})", output_path, buf.len(), version, dual_str, h, l1_size, l2_size);
+    let threat_str = if num_threats > 0 { format!(" threats={}", num_threats) } else { String::new() };
+    println!("Saved {} ({} bytes, v{}{}{} FT={} L1={} L2={})", output_path, buf.len(), version, dual_str, threat_str, h, l1_size, l2_size);
     Ok(())
 }

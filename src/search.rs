@@ -15,9 +15,19 @@ use crate::see::see_ge;
 use crate::tt::*;
 use crate::types::*;
 
-const MAX_PLY: usize = 64;
+/// Maximum ply depth supported by per-SearchInfo arrays.
+///
+/// Public because MovePicker and History share the cap for fixed-size
+/// ply-indexed arrays (killers, pv_table, moved_piece_stack, etc.).
+///
+/// Tried 128 to lift the iterative-deepening cap to depth 64, but the
+/// resulting pv_table grew from ~17 KB to ~67 KB per SearchInfo, spilled
+/// L1 on the hot pv-copy path, and regressed STC by ~-13 Elo (OB #664).
+/// Keeping 64 — the original crash is fixed by the ply clamp in qsearch
+/// + bounds check in MovePicker, not by raising the ceiling.
+pub const MAX_PLY: usize = 64;
 const INFINITY: i32 = 30000;
-// CONTEMPT is now tunable as CONTEMPT_VAL
+// Contempt removed 2026-04-19 (SPRT #508 H1 +2.53).
 
 // Pawn history table size
 const PAWN_HIST_SIZE: usize = 512;
@@ -27,95 +37,168 @@ const PAWN_HIST_SIZE: usize = 512;
 // ============================================================================
 use std::sync::atomic::AtomicI32;
 
-/// Declare a tunable search parameter with default, min, max.
-/// Single source of truth — used for both the static AtomicI32 and the UCI/SPSA parameter list.
+/// Declare a tunable search parameter with default, min, max, c_end.
+/// Single source of truth — used for both the static AtomicI32 and the
+/// UCI/SPSA parameter list. c_end is the SPSA end-of-tune perturbation;
+/// target >= 1.5 for narrow-range int params (so int boundaries can be
+/// crossed) or ~5% of range for wider params.
 macro_rules! tunables {
-    ( $( ($name:ident, $default:expr, $min:expr, $max:expr) ),* $(,)? ) => {
+    ( $( ($name:ident, $default:expr, $min:expr, $max:expr, $c_end:expr) ),* $(,)? ) => {
         // Declare each as a pub static AtomicI32
         $( pub static $name: AtomicI32 = AtomicI32::new($default); )*
 
-        /// List of all tunable parameters for UCI/SPSA
-        pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32)> {
+        /// List of all tunable parameters for UCI/SPSA.
+        /// Tuple: (name, &atomic, default, min, max, c_end).
+        pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32, f32)> {
             vec![
-                $( (stringify!($name), &$name, $default, $min, $max), )*
+                $( (stringify!($name), &$name, $default, $min, $max, $c_end), )*
             ]
         }
     };
 }
 
 tunables!(
-    // Full 48-param retune #355 (5000 iters, 20+0.2 TC)
-    (NMP_BASE_R,         4,    2,    8),
-    (NMP_DEPTH_DIV,      3,    1,    6),
-    (NMP_EVAL_DIV,     154,  100,  400),
-    (NMP_EVAL_MAX,       3,    1,    6),
-    (NMP_VERIFY_DEPTH,  11,    8,   20),
-    // RFP
-    (RFP_DEPTH,          7,    2,   12),
-    (RFP_MARGIN_IMP,    81,   30,  150),
-    (RFP_MARGIN_NOIMP, 137,   50,  200),
-    // Futility
-    (FUT_BASE,         122,   20,  200),
-    (FUT_PER_DEPTH,    160,   40,  250),
-    // History pruning
-    (HIST_PRUNE_DEPTH,   3,    1,    8),
-    (HIST_PRUNE_MULT, 7600,  500, 50000),
-    // SEE pruning
-    (SEE_QUIET_MULT,   26,    5,   80),
-    (SEE_CAP_MULT,    134,   30,  200),
-    // LMR
-    (LMR_HIST_DIV,   6283, 2000, 100000),
-    (LMR_C_QUIET,     137,   80,  300),
-    (LMR_C_CAP,       139,  100,  350),
-    // Singular extensions
-    (SE_DEPTH,           6,    4,   12),
-    // Aspiration windows
-    (ASP_DELTA,         15,    5,   30),
-    (ASP_SCORE_DIV,  30486, 8000, 50000),
-    // LMP
-    (LMP_BASE,           9,    1,   15),
-    (LMP_DEPTH,         13,    4,   20),
-    // Bad noisy
-    (BAD_NOISY_MARGIN,  85,   30,  150),
-    // ProbCut
-    (PROBCUT_MARGIN,   198,   80,  300),
-    // Hindsight
-    (HINDSIGHT_THRESH, 143,   50,  400),
-    // Unstable position detection
-    (UNSTABLE_THRESH,  162,   50,  500),
-    // SEE piece value scaling
-    (SEE_MATERIAL_SCALE, 192, 30, 300),
-    // QS
-    (QS_DELTA_MARGIN,  341,  100,  500),
-    (QS_SEE_THRESHOLD, -34, -200,    0),
-    (QS_MAX_CAPTURES,   29,    2,   32),
-    // Correction history weights
-    (CORR_W_PAWN,      357,  100,  600),
-    (CORR_W_NP,        105,   50,  400),
-    (CORR_W_MINOR,      36,   30,  300),
-    (CORR_W_MAJOR,      77,   30,  300),
-    (CORR_W_CONT,       35,   30,  400),
-    // Fail-high blend
-    (FH_BLEND_DEPTH,     1,    1,    8),
-    // History bonus
-    (HIST_BONUS_MULT,  248,   50,  400),
-    (HIST_BONUS_BASE,   29,    0,  200),
-    (HIST_BONUS_MAX,  1820,  500, 3000),
-    // Capture history bonus
-    (CAP_HIST_MULT,    212,   50,  400),
-    (CAP_HIST_BASE,     22,    0,  200),
-    (CAP_HIST_MAX,    1380,  500, 3000),
-    // Double extensions
-    (DEXT_MARGIN,       15,    2,   50),
-    (DEXT_CAP,          10,    4,   32),
-    // Quiet check bonus
-    (QUIET_CHECK_BONUS, 11625, 2000, 30000),
-    // LMR complexity
-    (LMR_COMPLEXITY_DIV, 138, 30, 500),
-    // Contempt
-    (CONTEMPT_VAL,        8,    0,   50),
-    // Correction history divisor
-    (CORR_HIST_DIV,     846,  256, 4096),
+    // v9 #682 tune applied (2000 iters, on C8-fix SB400 nonfactor net 80CB364B).
+    // Big movers vs #660 baseline:
+    //   HIST_PRUNE_MULT -34%, HIST_PRUNE_DEPTH -40%, CORR_BONUS_CAP_DIV -40%,
+    //   SE_KING_PRESSURE_MARGIN -50%, CORR_W_CONT -24%, CAP_HIST_BASE +29%,
+    //   RFP_DEPTH +25%, MVV_CAP_MULT +19%, FUT_THREATS_MARGIN +16%,
+    //   QS_SEE_THRESHOLD tighter, CORR_W_MAJOR -14%, CORR_W_MINOR +12%,
+    //   DISCOVERED_ATTACK_BONUS -13%, BATTERY_BONUS -12%.
+    // Theme: SB400 wants LESS history pruning, MORE aggressive SE,
+    //   slightly cooler motif bonuses, reweighted corrhist (less cont
+    //   and major, more minor). Most other params within ±10% of #660.
+    // LMR_ENDGAME_PIECES stayed at 5 inside the narrow clamp — no manual restore needed.
+    (NMP_BASE_R, 5, 2, 8, 1.5),
+    (NMP_DEPTH_DIV, 3, 1, 6, 1.5),
+    (NMP_EVAL_DIV, 122, 100, 400, 15.0),
+    (NMP_EVAL_MAX, 6, 1, 6, 1.5),
+    (NMP_VERIFY_DEPTH, 13, 8, 20, 2.0),
+    (RFP_DEPTH, 11, 2, 12, 2.0),
+    (RFP_MARGIN_IMP, 50, 30, 150, 6.0),
+    (RFP_MARGIN_NOIMP, 129, 50, 200, 7.5),
+    // Futility margin reduced to Reckless scale. At lmr_d=5:
+    //   Old: 78 + 160*5 = 878 (Coda 2.4× wider than Reckless 364)
+    //   New: 40 + 65*5 = 365 (matches Reckless)
+    // Force-more-pruning experiment: Coda was under-pruning at mid-depth
+    // where Reckless prunes confidently. SPSA retune-on-branch expected.
+    (FUT_BASE, 80, 20, 200, 9.0),
+    (FUT_PER_DEPTH, 156, 40, 250, 10.5),
+    (HIST_PRUNE_DEPTH, 3, 1, 8, 1.5),
+    (HIST_PRUNE_MULT, 5894, 500, 50000, 2475.0),
+    (SEE_QUIET_MULT, 46, 5, 80, 3.75),
+    (SEE_CAP_MULT, 152, 30, 200, 8.5),
+    (LMR_HIST_DIV, 8302, 2000, 100000, 4900.0),
+    (LMR_C_QUIET, 121, 40, 300, 13.0),
+    (LMR_C_CAP, 123, 100, 350, 12.5),
+    (SE_DEPTH, 4, 4, 20, 2.0),
+    (ASP_DELTA, 15, 5, 30, 1.5),
+    (ASP_SCORE_DIV, 32592, 8000, 50000, 2100.0),
+    (LMP_BASE, 11, 1, 15, 2.0),
+    (LMP_DEPTH, 8, 4, 20, 2.0),
+    (BAD_NOISY_MARGIN, 138, 30, 150, 6.0),
+    (PROBCUT_MARGIN, 197, 80, 300, 11.0),
+    (HINDSIGHT_THRESH, 191, 50, 400, 17.5),
+    (UNSTABLE_THRESH, 164, 50, 500, 22.5),
+    (SEE_MATERIAL_SCALE, 203, 30, 300, 13.5),
+    (QS_DELTA_MARGIN, 389, 100, 500, 20.0),
+    (QS_SEE_THRESHOLD, -36, -200, 0, 10.0),
+    (QS_MAX_CAPTURES, 28, 2, 32, 2.0),
+    (CORR_W_PAWN, 283, 100, 600, 25.0),
+    (CORR_W_NP, 57, 50, 400, 17.5),
+    (CORR_W_MINOR, 59, 30, 300, 13.5),
+    (CORR_W_MAJOR, 85, 30, 300, 13.5),
+    (CORR_W_CONT, 45, 30, 400, 18.5),
+    (FH_BLEND_DEPTH, 0, 0, 8, 1.5),
+    (HIST_BONUS_MULT, 333, 50, 400, 17.5),
+    (HIST_BONUS_MAX, 1453, 500, 3000, 125.0),
+    // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
+    // history bonus adopts Stockfish/cap-hist offset shape:
+    //   old: min(MAX, MULT * d)
+    //   new: clamp(0, MAX, MULT * d - OFFSET)
+    // Rationale: at d=5 the old formula saturates at ~1500; d=5 and d=10
+    // get the same bonus. New shape with offset 72 (SF's value) gives
+    // wider depth discrimination. cap-history already uses the offset
+    // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
+    // only inconsistent one. Starting offset 72 mirrors SF.
+    (HIST_BONUS_OFFSET, 56, 0, 400, 25.0),
+    (CAP_HIST_MULT, 290, 50, 400, 17.5),
+    (CAP_HIST_BASE, 15, 0, 200, 10.0),
+    (CAP_HIST_MAX, 1566, 500, 3000, 125.0),
+    (DEXT_MARGIN, 11, 2, 50, 2.4),
+    (DEXT_CAP, 18, 4, 32, 2.0),
+    (QUIET_CHECK_BONUS, 11172, 2000, 30000, 1400.0),
+    (LMR_COMPLEXITY_DIV, 186, 30, 500, 23.5),
+    (CORR_HIST_DIV, 905, 256, 4096, 192.0),
+    (CORR_UPDATE_WEIGHT_MAX, 16, 4, 48, 2.2),
+    (CORR_BONUS_CAP_DIV, 3, 1, 16, 1.5),
+    (CORR_HIST_GRAIN_T, 8, 1, 32, 1.55),
+    (CORR_HIST_ERR_MAX, 1, 1, 64, 3.15),
+    (ESCAPE_BONUS_Q, 13963, 5000, 40000, 1750.0),
+    (ESCAPE_BONUS_R, 13418, 3000, 30000, 1350.0),
+    (ESCAPE_BONUS_MINOR, 7055, 2000, 20000, 900.0),
+    (NMP_KING_ZONE_MAX, 6, 2, 9, 1.5),
+    // T2.1 (Titan's next_ideas 2026-04-21): undefended-piece NMP skip
+    // threshold. Count our pieces with ≥1 enemy attacker AND zero of
+    // our own defenders ("hanging"). If count >= this threshold, skip
+    // NMP — opponent's free tempo is very likely to exploit the hanger.
+    // Fits Titan's W2 pattern (binary signal gating a pruning decision).
+    // Default 1 = skip NMP whenever any piece is hanging.
+    (NMP_UNDEFENDED_MAX, 1, 0, 5, 1.0),
+    // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering weight.
+    // Bonus applied in movepicker quiets = (to_mobility - from_mobility) × this.
+    // Default 32 = ±256 typical range, additive to history (~1000s scale).
+    (MOBILITY_DELTA_WEIGHT, 29, 0, 256, 8.0),
+    (PROBCUT_KING_ZONE_MAX, 6, 2, 9, 1.5),
+    (LMR_THREAT_DIV, 4, 1, 5, 1.5),
+    (LMR_KING_PRESSURE_DIV, 5, 2, 9, 1.5),
+    (FUT_THREATS_MARGIN, 48, 0, 200, 10.0),
+    (DISCOVERED_ATTACK_BONUS, 4687, 0, 30000, 1500.0),
+    // T1.4: quiet-slider move that completes a battery — lands on a square
+    // where a friendly slider stands between us and an enemy piece along
+    // the same ray. Flat bonus; tp==0 disables detection.
+    (BATTERY_BONUS, 5026, 0, 20000, 1000.0),
+    (SE_KING_PRESSURE_MARGIN, 1, 0, 30, 1.5),
+    // xray-SE: widen singular test margin when TT move is from an x-ray
+    // blocker square (moving it uncovers our slider's attack on an enemy).
+    // Signal already delivered +52 in movepicker (#502). Flat bonus
+    // subtracted from singular_beta → easier to judge singular → more
+    // extensions for tactically significant moves.
+    (SE_XRAY_BLOCKER_MARGIN, 5, 0, 40, 2.0),
+    (MVV_CAP_MULT, 23, 4, 64, 3.0),
+    (CONT_HIST_MULT, 1, 1, 8, 1.5),
+    (KNIGHT_FORK_BONUS, 8275, 0, 20000, 1000.0),
+    // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
+    // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
+    // LMR over-reduces king-restriction queen moves that complete mates.
+    //
+    // NARROW RANGE [4, 9]: this parameter is correctness-load-bearing —
+    // too low and we regress on deep endgame conversions (play-quality bug
+    // discovered watching Coda on Lichess). 2026-04-22 SPSA #660 drifted
+    // it to 4 (pinned at floor); manually restored to 5 here. SPSA can
+    // still explore ±2-3 from 5 within the clamped range.
+    (LMR_ENDGAME_PIECES, 5, 4, 9, 1.5),
+    // --- Previously-hardcoded pruning depth gates, now tunable ---
+    // Per 2026-04-24 strategy: at our strength/eval regime, optimal
+    // depth caps/gates are sensitive to eval quality and will need
+    // re-tuning after each net change. Exposing them as SPSA-tunables
+    // lets retunes re-calibrate without code changes. Defaults match
+    // the previously-hardcoded values so this commit is bench-neutral.
+    //
+    // Future retune-on-branch cycles will sweep these with the
+    // eval+pruning co-tune; expect meaningful movement as net quality
+    // changes.
+    (IIR_MIN_DEPTH, 2, 2, 10, 1.5),         // was hardcoded 4; tune #743 converged to 2 (strong signal)
+    (PROBCUT_MIN_DEPTH, 5, 3, 12, 1.5),     // was hardcoded 5 (ProbCut activation gate)
+    (SEE_CAP_DEPTH, 6, 3, 15, 1.5),         // was hardcoded 6 (SEE capture prune depth cap)
+    (FUT_LMR_DEPTH, 9, 5, 20, 1.5),         // was hardcoded 10; tune #743 → 9
+    (BAD_NOISY_DEPTH, 4, 4, 15, 1.5),       // was hardcoded 4 (BNFP depth cap)
+    // Second pass — additional gates exposed for the feature-utility
+    // audit tune. Widened ranges allow SPSA to reach disable-endpoint
+    // values where appropriate (per feedback_spsa_as_feature_utility_diagnostic).
+    (NMP_MIN_DEPTH, 3, 2, 20, 1.5),              // was hardcoded 3 (NMP activation gate, 2 sites)
+    (HINDSIGHT_MIN_DEPTH, 2, 1, 20, 1.5),        // was hardcoded 2 (hindsight reduction gate)
+    (TT_CUTOFF_HALFMOVE_MAX, 90, 50, 100, 3.0),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -193,6 +276,11 @@ pub struct SearchLimits {
     pub movestogo: u32,
     pub nodes: u64,
     pub infinite: bool,
+    /// Minimum think time to enforce on a movetime search. Normally 0 (pure
+    /// movetime). Ponderhit fresh-searches set this to `inc - overhead` so
+    /// they don't instant-emit on TT-cached positions (which would stockpile
+    /// the clock on every move). See `search()`'s movetime branch.
+    pub movetime_floor: u64,
 }
 
 impl Default for SearchLimits {
@@ -211,6 +299,7 @@ impl SearchLimits {
             movestogo: 0,
             nodes: 0,
             infinite: false,
+            movetime_floor: 0,
         }
     }
 }
@@ -246,6 +335,11 @@ pub struct SearchInfo {
     pub global_nodes: std::sync::Arc<AtomicU64>,  // aggregate nodes across SMP threads
     pub silent: bool,  // suppress UCI output (for datagen)
     pub stats: PruneStats,
+    // Eval-path decomposition counters (see docs/coda_vs_reckless_nps_*.md).
+    // `stats_tt_static_eval_hits` counts nodes where we used the TT's
+    // cached static_eval and did NOT call NNUE. The NNUE counters live on
+    // `nnue_acc` (full rebuilds vs incremental updates vs computed skips).
+    pub stats_tt_static_eval_hits: u64,
     pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
     pub history: Box<History>,
     pub stop: std::sync::Arc<AtomicBool>,  // shared stop flag
@@ -278,7 +372,7 @@ pub struct SearchInfo {
     pub ponder_depth: std::sync::Arc<AtomicU64>,
     pub sel_depth: i32,
     pub last_score: i32,
-    /// Root side-to-move (for contempt: penalize draws from our perspective)
+    /// Root side-to-move (was used for contempt; retained for potential future use)
     pub root_stm: u8,
     /// Per-depth cumulative node counts (for EBF calculation in bench)
     pub depth_nodes: [u64; MAX_PLY + 1],
@@ -290,7 +384,7 @@ pub struct SearchInfo {
     /// LMR reduction applied at each ply (for hindsight reduction gating)
     reductions: [i32; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
-    excluded_move: [Move; MAX_PLY + 1],
+    pub excluded_move: [Move; MAX_PLY + 1],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
     double_ext_count: [i32; MAX_PLY + 1],
     /// Per-ply moved piece (go_piece index 1-12, 0=none). Set before make_move.
@@ -312,6 +406,7 @@ pub struct SearchInfo {
     cont_corr: Box<[[i32; 64]; 12]>,
     pub nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
     pub nnue_acc: Option<crate::nnue::NNUEAccumulator>,
+    pub threat_stack: crate::threat_accum::ThreatStack,
     /// Syzygy tablebases (shared, read-only). Interior WDL probes in search.
     pub syzygy: Option<std::sync::Arc<crate::tb::SyzygyTB>>,
 }
@@ -323,6 +418,7 @@ impl SearchInfo {
             global_nodes: std::sync::Arc::new(AtomicU64::new(0)),
             silent: false,
             stats: PruneStats::default(),
+            stats_tt_static_eval_hits: 0,
             tt: std::sync::Arc::new(TT::new(tt_mb)),
             history: alloc_zeroed_box(),
             stop: std::sync::Arc::new(AtomicBool::new(false)),
@@ -362,6 +458,7 @@ impl SearchInfo {
             cont_corr: alloc_zeroed_box(),
             nnue_net: None,
             nnue_acc: None,
+            threat_stack: crate::threat_accum::ThreatStack::new(768), // max v9 accum size
             syzygy: None,
         }
     }
@@ -384,6 +481,19 @@ impl SearchInfo {
     pub fn load_nnue(&mut self, path: &str) -> Result<(), String> {
         let net = crate::nnue::NNUENet::load(path)?;
         let acc = crate::nnue::NNUEAccumulator::new(net.hidden_size);
+        // Activate threat stack if net has threat features.
+        //
+        // C8 audit LIKELY #36: previously only the `has_threats` branch
+        // touched threat_stack. On net swap from v9 (has_threats=true) to
+        // v5 (has_threats=false), the existing threat_stack would keep
+        // `active=true` even though the new net doesn't use threats —
+        // search would try to run threat computation against a net that
+        // doesn't consume it. Reset unconditionally first; activate only
+        // when the new net needs it.
+        self.threat_stack = crate::threat_accum::ThreatStack::new(net.hidden_size);
+        if net.has_threats {
+            self.threat_stack.active = true;
+        }
         self.nnue_net = Some(std::sync::Arc::new(net));
         self.nnue_acc = Some(acc);
         Ok(())
@@ -400,6 +510,10 @@ impl SearchInfo {
             match crate::nnue::NNUENet::load_from_bytes(EMBEDDED_NET) {
                 Ok(net) => {
                     let acc = crate::nnue::NNUEAccumulator::new(net.hidden_size);
+                    if net.has_threats {
+                        self.threat_stack = crate::threat_accum::ThreatStack::new(net.hidden_size);
+                        self.threat_stack.active = true;
+                    }
                     self.nnue_net = Some(std::sync::Arc::new(net));
                     self.nnue_acc = Some(acc);
                     return true;
@@ -507,8 +621,14 @@ impl SearchInfo {
 
     /// Evaluate using NNUE if loaded, otherwise classical PeSTO.
     fn eval(&mut self, board: &Board) -> i32 {
+        // Ensure threat accumulator is computed before eval
+        if self.threat_stack.active {
+            if let Some(ref net) = self.nnue_net {
+                self.threat_stack.ensure_computed(&net.threat_weights, net.num_threat_features, board);
+            }
+        }
         let score = if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
-            let s = evaluate_nnue(board, net, acc);
+            let s = evaluate_nnue(board, net, acc, &self.threat_stack);
             // NNUE verification: recompute from scratch and compare
             static VERIFY_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             static VERIFY_MISMATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -516,7 +636,7 @@ impl SearchInfo {
             if *VERIFY_ENABLED.get_or_init(|| std::env::var("CODA_VERIFY_NNUE").is_ok()) {
                 let n = VERIFY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 acc.force_recompute(net, board);
-                let s2 = evaluate_nnue(board, net, acc);
+                let s2 = evaluate_nnue(board, net, acc, &self.threat_stack);
                 if s != s2 {
                     let m = VERIFY_MISMATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if m < 20 {
@@ -546,23 +666,59 @@ impl SearchInfo {
             let queens = popcount(board.pieces[QUEEN as usize]) as i32 * 1015;
             pawns + knights + bishops + rooks + queens
         };
-        let score = score * (22400 + material) / 32 / 1024;
-
-        // 50-move eval scaling: decay eval toward zero as halfmove clock advances.
-        let hm = board.halfmove.min(200) as i32;
-        score * (200 - hm) / 200
+        // `eval()` now returns the halfmove-INDEPENDENT score (material
+        // scaling only). 50-move scaling is applied at every consumption
+        // site (via `apply_halfmove_scale`) using the *current* halfmove.
+        //
+        // Rationale: TT stores the static eval and gets probed again at
+        // potentially very different halfmove values. If we scaled inside
+        // `eval()` the scaling factor would be frozen into the TT entry at
+        // write time, and re-probing the same position at a higher halfmove
+        // would use a stale scale. With aggressive scaling (our current
+        // formula) that bakes in gross errors and wipes out the
+        // correction — hence SPRT #610 showed −8 Elo at 1000 games before
+        // we caught this. The fix is structural: keep TT storage
+        // halfmove-independent, apply scale freshly on read.
+        score * (22400 + material) / 32 / 1024
     }
+}
+
+/// Scale a raw (halfmove-independent) eval toward zero as the halfmove
+/// clock approaches the 100-ply draw horizon.
+///
+/// Formula: `score * (100 - clamp(hm, 0, 100)) / 100`. At `hm=0` returns
+/// `score` unchanged; at `hm=100` returns `0`. Callers apply this at the
+/// *point of use*, never before storing to TT — see the comment in
+/// `SearchInfo::eval`.
+///
+/// Consensus-aligned with Obsidian/Reckless-style `(100 - hm) / 100`,
+/// which unlike the previous `(200 - hm) / 200` actually reaches zero
+/// at the draw cliff rather than topping out at 0.5×.
+#[inline]
+fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
+    // Leave sentinel scores untouched so downstream comparisons with
+    // `-INFINITY` / `MATE_SCORE - ply` keep their absolute magnitudes.
+    if score <= -INFINITY + 1 || score.abs() >= MATE_SCORE - 100 {
+        return score;
+    }
+    let hm = (halfmove as i32).min(100);
+    score * (100 - hm) / 100
 }
 
 /// Build a DirtyPiece for lazy NNUE accumulator update.
 /// `us`/`them` are the sides BEFORE the move.
+/// `net`: NNUE net whose king-bucket layout determines bucket/mirror
+///   changes on king moves. Must be the same net that will later apply
+///   the DirtyPiece to the accumulator; using the wrong net here produces
+///   silently-wrong "refresh needed" decisions.
 #[inline]
-fn build_dirty_piece(
+pub fn build_dirty_piece(
     mv: Move,
     us: u8,
     them: u8,
     moved_pt: u8,
     captured_pt: u8,
+    net: &crate::nnue::NNUENet,
 ) -> DirtyPiece {
     let from = move_from(mv);
     let to = move_to(mv);
@@ -574,10 +730,10 @@ fn build_dirty_piece(
         let mut to_ks = to as usize;
         if us == BLACK { from_ks ^= 56; to_ks ^= 56; }
 
-        let from_bucket = crate::nnue::king_bucket_pub(from_ks);
-        let to_bucket = crate::nnue::king_bucket_pub(to_ks);
-        let from_mirror = crate::nnue::king_mirror_pub(from_ks);
-        let to_mirror = crate::nnue::king_mirror_pub(to_ks);
+        let from_bucket = net.king_bucket(from_ks);
+        let to_bucket = net.king_bucket(to_ks);
+        let from_mirror = net.king_mirror(from_ks);
+        let to_mirror = net.king_mirror(to_ks);
 
         if from_bucket != to_bucket || from_mirror != to_mirror {
             // Bucket or mirror changed: full recompute needed
@@ -696,42 +852,45 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
     // Weighted blend: pawn 384, whiteNP 154, blackNP 154, minor 102, major 102, cont 128 = 1024
     let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
         + minor_corr * tp(&CORR_W_MINOR) as i64 + major_corr * tp(&CORR_W_MAJOR) as i64 + cont_corr * tp(&CORR_W_CONT) as i64) / tp(&CORR_HIST_DIV) as i64;
-    let adjusted = raw_eval + (total_corr as i32) / CORR_HIST_GRAIN;
+    let adjusted = raw_eval + (total_corr as i32) / tp(&CORR_HIST_GRAIN_T);
     adjusted.clamp(-MATE_SCORE + 100, MATE_SCORE - 100)
 }
 
 /// Update correction history entry with gravity.
-fn update_corr_entry(entry: &mut i32, err: i32, weight: i32) {
+fn update_corr_entry(entry: &mut i32, err: i32, weight: i32, cap_div: i32) {
     // Proportional gravity (consensus: every top engine uses this)
     // Self-limiting: values near the limit get pulled back harder
-    let bonus = (err * weight).clamp(-CORR_HIST_LIMIT / 4, CORR_HIST_LIMIT / 4);
+    let cap = CORR_HIST_LIMIT / cap_div.max(1);
+    let bonus = (err * weight).clamp(-cap, cap);
     *entry += bonus - *entry * bonus.abs() / CORR_HIST_LIMIT;
     *entry = (*entry).clamp(-CORR_HIST_LIMIT, CORR_HIST_LIMIT);
 }
 
 /// Update all correction history tables.
 fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, raw_eval: i32, depth: i32) {
-    let err = (search_score - raw_eval).clamp(-CORR_HIST_MAX, CORR_HIST_MAX);
-    let weight = (depth + 1).min(16);
+    let err_max = tp(&CORR_HIST_ERR_MAX);
+    let err = (search_score - raw_eval).clamp(-err_max, err_max);
+    let weight = (depth + 1).min(tp(&CORR_UPDATE_WEIGHT_MAX));
+    let cap_div = tp(&CORR_BONUS_CAP_DIV);
     let stm = board.side_to_move as usize;
 
     // Pawn correction
     let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&mut info.pawn_corr[stm][pawn_idx], err, weight);
+    update_corr_entry(&mut info.pawn_corr[stm][pawn_idx], err, weight, cap_div);
 
     // Non-pawn corrections (per color)
     let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&mut info.np_corr[stm][WHITE as usize][white_np_idx], err, weight);
+    update_corr_entry(&mut info.np_corr[stm][WHITE as usize][white_np_idx], err, weight, cap_div);
     let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&mut info.np_corr[stm][BLACK as usize][black_np_idx], err, weight);
+    update_corr_entry(&mut info.np_corr[stm][BLACK as usize][black_np_idx], err, weight, cap_div);
 
     // Minor piece correction
     let minor_idx = (board.minor_key[WHITE as usize] ^ board.minor_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&mut info.minor_corr[stm][minor_idx], err, weight);
+    update_corr_entry(&mut info.minor_corr[stm][minor_idx], err, weight, cap_div);
 
     // Major piece correction
     let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&mut info.major_corr[stm][major_idx], err, weight);
+    update_corr_entry(&mut info.major_corr[stm][major_idx], err, weight, cap_div);
 
     // Continuation correction
     if !board.undo_stack.is_empty() {
@@ -742,7 +901,7 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
             if pt < 6 {
                 let piece = make_piece(flip_color(board.side_to_move), pt);
                 if (piece as usize) < 12 {
-                    update_corr_entry(&mut info.cont_corr[piece as usize][to as usize], err, weight);
+                    update_corr_entry(&mut info.cont_corr[piece as usize][to as usize], err, weight, cap_div);
                 }
             }
         }
@@ -859,16 +1018,29 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     let mut helper = SearchInfo::new(1); // dummy TT, will be replaced
     helper.tt = main.tt.clone();             // share the same TT
     helper.stop = main.stop.clone();         // share the same stop flag
+    // C8 audit LIKELY #35: share ponderhit_time so helpers respect the
+    // ponderhit deadline set by the UCI thread. Previously helpers kept
+    // their own AtomicU64 stuck at 0, so they ignored the ponderhit
+    // deadline and only stopped when main set the shared stop flag —
+    // burning CPU for the grace window on every ponderhit.
+    helper.ponderhit_time = main.ponderhit_time.clone();
     helper.global_nodes = main.global_nodes.clone(); // share node counter
     helper.silent = true;                // helpers don't output UCI
     helper.nnue_net = main.nnue_net.clone(); // share NNUE weights (read-only)
     // Create fresh NNUE accumulator for the helper
     if let Some(net) = &helper.nnue_net {
         helper.nnue_acc = Some(crate::nnue::NNUEAccumulator::new(net.hidden_size));
+        // Mirror main's threat_stack for v9 nets — helpers must evaluate
+        // consistently with main, otherwise shared-TT entries disagree and
+        // the search diverges badly at T>1.
+        if net.has_threats {
+            helper.threat_stack = crate::threat_accum::ThreatStack::new(net.hidden_size);
+            helper.threat_stack.active = true;
+        }
     }
     helper.time_limit = 0; // helpers don't do time management
     helper.move_overhead = main.move_overhead;
-    helper.root_stm = main.root_stm; // contempt needs to know who started the search
+    helper.root_stm = main.root_stm; // kept in sync for potential future stm-aware features
     helper.syzygy = main.syzygy.clone(); // share tablebases (read-only)
     // Helpers start with fresh history for SMP diversity (cleared in search_helper)
     helper
@@ -876,13 +1048,20 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
 
 /// Run Lazy SMP search: main thread + N-1 helper threads.
 pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits, threads: usize) -> Move {
+    // C8 audit LIKELY #37: advance TT generation here (before spawning
+    // helpers) rather than inside search(). Previously helpers could
+    // start writing TT entries with the old generation in the microsecond
+    // window between spawn and main's new_search() call, leaving them
+    // looking freshest in replacement. Main's search() no longer bumps;
+    // single-thread path bumps here too for consistency.
+    info.tt.new_search();
+
     if threads <= 1 {
         info.global_nodes.store(0, Ordering::Relaxed);
         return search(board, info, limits);
     }
 
-    // Reset shared state (TT generation is advanced in search(), not here,
-    // to avoid double-increment which makes entries appear 2x staler)
+    // Reset shared state.
     // Note: stop flag is cleared by the UCI thread before spawning the search
     // thread, not here. Clearing here races with ponderhit (which sets stop
     // before the search thread starts).
@@ -901,6 +1080,7 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
             movestogo: limits.movestogo,
             nodes: 0, // helpers don't have node limits
             infinite: limits.infinite,
+            movetime_floor: 0, // helpers don't need the floor — only main sleeps
         };
 
         handles.push(std::thread::Builder::new()
@@ -967,6 +1147,17 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.pv_len = [0; MAX_PLY + 1];
     info.nodes = 0;
 
+    // Mirror search()'s threat setup — helpers must evaluate consistently
+    // with main or shared-TT entries disagree and search diverges at T>1.
+    board.generate_threat_deltas = info.nnue_net.as_ref().map_or(false, |n| n.has_threats);
+    if info.threat_stack.active {
+        info.threat_stack.reset();
+        if let Some(ref net) = info.nnue_net {
+            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, WHITE);
+            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, BLACK);
+        }
+    }
+
     let root_legal = generate_legal_moves(board);
     let mut best_move = if root_legal.len > 0 { root_legal.moves[0] } else { NO_MOVE };
 
@@ -992,6 +1183,18 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
 /// Run iterative deepening search.
 pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -> Move {
     init_feature_flags();
+
+    // Enable threat delta generation if we have a threat net
+    board.generate_threat_deltas = info.nnue_net.as_ref().map_or(false, |n| n.has_threats);
+
+    // Initialize root position threat accumulator
+    if info.threat_stack.active {
+        info.threat_stack.reset();
+        if let Some(ref net) = info.nnue_net {
+            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, WHITE);
+            info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, BLACK);
+        }
+    }
 
     info.start_time = Instant::now();
     // Note: stop flag AND ponderhit_time are cleared by the UCI thread before
@@ -1053,14 +1256,25 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         (limits.btime, limits.binc)
     };
 
+    // C6 (2026-04-22 audit): SearchInfo persists across `go` commands.
+    // Without explicit reset, stale soft_limit/hard_limit from a prior
+    // `go wtime/btime` leak into subsequent `go movetime`, `go depth`, or
+    // `go nodes` — the dynamic-TM gate then scales them and can break the
+    // ID loop early. Zero all four unconditionally up-front; each branch
+    // below sets only the ones it needs.
+    info.time_limit = 0;
+    info.soft_limit = 0;
+    info.hard_limit = 0;
+    info.soft_floor = 0;
+
     if limits.infinite {
-        info.time_limit = 0;
-        info.soft_limit = 0;
-        info.hard_limit = 0;
-        info.soft_floor = 0;
+        // Already zero above.
     } else if limits.movetime > 0 {
         info.time_limit = limits.movetime;
-        info.soft_floor = 0;
+        // Respect caller-supplied minimum think time (ponderhit fresh-search uses
+        // this to enforce the increment floor; plain `go movetime` callers leave
+        // it at 0 so they get exactly the movetime they asked for).
+        info.soft_floor = limits.movetime_floor.min(limits.movetime);
     } else if our_time > 0 {
         // Subtract move overhead (communication latency)
         let overhead = info.move_overhead;
@@ -1123,9 +1337,13 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             hard = max_hard;
         }
 
-        info.soft_limit = soft;
-        // Ensure hard >= soft (but soft is also capped by max_hard for movestogo safety)
+        // C8 audit LIKELY #28: clamp `soft` to `hard` BEFORE storing
+        // info.soft_limit. Previously the clamp only updated the local
+        // `soft`, leaving info.soft_limit possibly > info.hard_limit
+        // under movestogo=1. Downstream TM code then saw a soft budget
+        // larger than the hard cap.
         if soft > hard { soft = hard; }
+        info.soft_limit = soft;
         info.hard_limit = hard;
         // Soft floor: never spend less than the increment we gain, so the
         // dynamic stability cut can't produce clock-growing instant emits
@@ -1136,13 +1354,16 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.tm_has_data = false;
         info.tm_best_stable = 0;
     } else if !limits.infinite {
+        // No clock info (e.g. `go depth N` or `go nodes N`). Already zeroed
+        // above; explicit reset kept for clarity.
         info.time_limit = 0;
     }
 
     info.max_depth = if limits.depth > 0 { limits.depth } else { MAX_PLY as i32 / 2 };
     info.max_nodes = limits.nodes;
 
-    info.tt.new_search();
+    // TT generation is advanced by the entry-point caller (search_smp or
+    // datagen), not here — see C8 audit LIKELY #37 fix.
 
     let mut best_move = NO_MOVE;
     let mut prev_score = 0i32;
@@ -1437,11 +1658,19 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // at 1s-inc bullet on lichess (PZ7pCyrx). Polls the stop flag so the UCI
     // thread can still interrupt. Skip when there's no time budget (depth/
     // node-limited search) or when already stopped.
+    //
+    // C8 audit LIKELY #29: set the shared stop flag BEFORE the sleep so
+    // helper threads stop searching immediately rather than burning CPU
+    // through the entire stockpile-prevention window. Previously helpers
+    // kept running until hitting their own hard_limit or main unblocked,
+    // wasting tens-hundreds of ms of CPU per ponderhit grace window at
+    // blitz+inc. Main thread already has its best move, just waiting to
+    // emit.
     if info.soft_floor > 0 && !info.stop.load(Ordering::Relaxed) {
+        info.stop.store(true, Ordering::Relaxed);
         loop {
             let elapsed = info.start_time.elapsed().as_millis() as u64;
             if elapsed >= info.soft_floor { break; }
-            if info.stop.load(Ordering::Relaxed) { break; }
             let remaining = info.soft_floor - elapsed;
             std::thread::sleep(std::time::Duration::from_millis(remaining.min(25)));
         }
@@ -1465,7 +1694,14 @@ fn negamax(
 
     // Guard against stack overflow
     if ply_u >= MAX_PLY {
-        return info.eval(board);
+        return apply_halfmove_scale(info.eval(board), board.halfmove);
+    }
+
+    // C8 audit LIKELY #3: reset reductions slot at node entry so NMP and
+    // any other pre-move-loop child call reads "no prior reduction", not
+    // a sibling's stale LMR value from an earlier visit to this ply.
+    if ply_u <= MAX_PLY {
+        info.reductions[ply_u] = 0;
     }
 
     // Mate distance pruning — applies to all nodes (standard form)
@@ -1486,18 +1722,38 @@ fn negamax(
     // Prefetch TT bucket early to hide memory latency
     info.tt.prefetch(board.hash);
 
-    // Compute enemy pawn attacks for threat-aware history indexing (cheap: ~3 ops)
+    // Threat-aware history indexing: upgrade from pawn-only to all-enemy-pieces.
+    // `enemy_attacks` keys the 4D main history slot (from_threatened, to_threatened);
+    // broader threat coverage → finer move-ordering distinctions.
+    // Cost: 8-12 extra magic lookups per node, only at non-QS non-TT-cut nodes.
     let them_color = flip_color(board.side_to_move);
+    let enemy_attacks: u64 = board.attacks_by_color(them_color);
+
+    // Pawn-specific threat count kept separate: RFP margin adjustment and
+    // LMR_THREAT_DIV are tuned on the pawn-only scale.
     let their_pawns = board.pieces[PAWN as usize] & board.colors[them_color as usize];
-    let enemy_attacks: u64 = if them_color == WHITE {
+    let enemy_pawn_attacks: u64 = if them_color == WHITE {
         ((their_pawns & !0x0101010101010101u64) << 7) | ((their_pawns & !0x8080808080808080u64) << 9)
     } else {
         ((their_pawns & !0x8080808080808080u64) >> 7) | ((their_pawns & !0x0101010101010101u64) >> 9)
     };
-    // Opponent pawn threats on our non-pawn pieces (for RFP threat guard)
     let our_non_pawns = board.colors[board.side_to_move as usize]
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
-    let has_pawn_threats = (enemy_attacks & our_non_pawns) != 0;
+    let has_pawn_threats = (enemy_pawn_attacks & our_non_pawns) != 0;
+    let threat_count = popcount(enemy_pawn_attacks & our_non_pawns) as i32;
+    // our_defenses signal for futility widener: count of our non-pawn
+    // pieces under any enemy attack (pawn OR piece). Widens margin in
+    // tactical positions. Uses existing enemy_attacks — no new bitboard.
+    let any_threat_count = popcount(enemy_attacks & our_non_pawns) as i32;
+    // B1: Discovered-attack bitboard. Our pieces that are currently
+    // blocking one of our sliders' attack on an enemy piece — moving
+    // any such piece uncovers a slider attack. Used as a quiet-move
+    // ordering bonus in MovePicker. Cost: 10-20 magic lookups.
+    let our_xray_blockers: u64 = if tp(&DISCOVERED_ATTACK_BONUS) > 0 {
+        board.xray_blockers(board.side_to_move)
+    } else {
+        0
+    };
 
     // Clear PV for this node
     if ply_u <= MAX_PLY {
@@ -1523,20 +1779,27 @@ fn negamax(
     info.nodes += 1;
 
 
-    // Draw detection: repetition and 50-move rule
-    // Contempt is relative to the ROOT side (us): we get -CONTEMPT for draws
-    // (we don't want to draw), opponent gets +CONTEMPT (we're happy if they draw).
-    // This prevents us from playing INTO repetitions when we have an advantage.
+    // Draw detection: repetition and 50-move rule.
+    // Contempt removed 2026-04-19 per SPRT #508 H1 at +2.53 Elo — modern
+    // consensus (SF, Reckless, Obsidian, Viridithas, Alexandria all use 0).
+    // Draws scored from jitter alone to break ties between draw paths.
     if ply > 0 {
-        let contempt = tp(&CONTEMPT_VAL);
-        // Jitter draw score by ±2 to break ties between draw paths (Koivisto pattern)
-        let jitter = 2 - (info.nodes & 3) as i32; // range: -1 to +2
-        let draw_score = if board.side_to_move == info.root_stm { -contempt + jitter } else { contempt + jitter };
+        // Jitter removed 2026-04-19 for SPRT — testing if it's another
+        // "low-impact drifted" feature like contempt was. If H0/positive,
+        // remove permanently.
+        let draw_score: i32 = 0;
         if board.halfmove >= 100 {
             return draw_score;
         }
+        // C8 audit LIKELY #38: bound rep scan by min(halfmove, plies_from_null)
+        // so we don't walk back across a null move boundary. halfmove
+        // increments on null moves (board.rs:947) but plies_from_null resets
+        // (board.rs:948). Scanning past a null move looks for repetitions
+        // against positions that aren't actually "this line of play" —
+        // spurious draws. Cuckoo already does min() at cuckoo.rs:114.
         let stack_len = board.undo_stack.len();
-        let limit = (board.halfmove as usize).min(stack_len);
+        let scan_limit = (board.halfmove as usize).min(board.plies_from_null as usize);
+        let limit = scan_limit.min(stack_len);
         let mut i = 2usize;
         while i <= limit {
             if board.undo_stack[stack_len - i].hash == board.hash {
@@ -1599,20 +1862,20 @@ fn negamax(
 
         if info.excluded_move[ply_u] == NO_MOVE && ply > 0 {
             let tt_depth = tt_entry.depth;
-            let mut tt_score = tt_entry.score;
-            // Adjust mate scores for distance from root
-            if tt_score > MATE_SCORE - 100 {
-                tt_score -= ply;
-            } else if tt_score < -(MATE_SCORE - 100) {
-                tt_score += ply;
-            }
+            let tt_score = score_from_tt(tt_entry.score, ply);
 
+            // P2 (halfmove-gated TT cutoff): TT scores are stored without halfmove
+            // context. Near the 50-move cliff a cached mate-in-N may be unreachable,
+            // and a stored bound may be over/understated by the time we revisit.
+            // Gate ALL return-from-TT paths (direct + bounds-narrow collapse +
+            // near-miss + QS) on halfmove < 90. Window-narrowing is still applied —
+            // it only biases the search, while returning stale tt_score is unsafe.
+            let halfmove_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
             if tt_depth >= depth && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 // Unified TT cutoff with node-type guard (Alexandria pattern):
                 // At non-PV nodes, accept TT cutoff when:
                 // - cut_node matches score direction (cut expects fail-high, all expects fail-low)
                 // - TT bound type matches (LOWER for fail-high, UPPER for fail-low)
-                // - Not too close to 50-move rule (avoid drawing positions incorrectly)
                 let score_above_beta = tt_score >= beta;
                 let bound_matches = if score_above_beta {
                     tt_entry.flag == TT_FLAG_LOWER || tt_entry.flag == TT_FLAG_EXACT
@@ -1620,7 +1883,7 @@ fn negamax(
                     tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT
                 };
                 if !is_pv && cut_node == score_above_beta && bound_matches
-                    && board.halfmove < 90
+                    && halfmove_ok
                 {
                     info.stats.tt_cutoffs += 1;
                     if tt_move != NO_MOVE && ply_u <= MAX_PLY {
@@ -1632,27 +1895,38 @@ fn negamax(
                     // TT cutoff cont-hist malus: penalize opponent's last quiet move
                     // in context of our move before that (Alexandria pattern).
                     // "Your move led to a position we already know is lost for you."
+                    //
+                    // C8 audit LIKELY #6: read pieces from moved_piece_stack (set
+                    // pre-move, captures pre-promotion pawn) rather than
+                    // board.piece_at(to) (post-move, reports promoted piece for
+                    // promotions). Write-side (beta-cutoff bonuses) uses
+                    // moved_piece_stack; the old asymmetry meant malus on promotion
+                    // moves landed in the queen/rook bin where reads never look.
                     let stack_len = board.undo_stack.len();
-                    if score_above_beta && stack_len >= 2 {
+                    if score_above_beta && stack_len >= 2 && ply_u >= 2 {
                         let opp_undo = &board.undo_stack[stack_len - 1];
                         let our_undo = &board.undo_stack[stack_len - 2];
                         if opp_undo.mv != NO_MOVE && opp_undo.captured == NO_PIECE_TYPE
                             && our_undo.mv != NO_MOVE
                         {
-                            let opp_to = move_to(opp_undo.mv);
-                            let opp_piece = board.piece_at(opp_to);
-                            let our_to = move_to(our_undo.mv);
-                            let our_piece = board.piece_at(our_to);
-                            if opp_piece != NO_PIECE && our_piece != NO_PIECE {
+                            let opp_gp = info.moved_piece_stack[ply_u - 1] as usize;
+                            let our_gp = info.moved_piece_stack[ply_u - 2] as usize;
+                            let opp_to = info.moved_to_stack[ply_u - 1] as usize;
+                            let our_to = info.moved_to_stack[ply_u - 2] as usize;
+                            if opp_gp > 0 && opp_gp < 13
+                                && our_gp > 0 && our_gp < 13
+                                && opp_to < 64 && our_to < 64
+                            {
                                 let malus = -((155 * depth).min(385));
                                 History::update_cont_history(
-                                    &mut info.history.cont_hist[go_piece(our_piece)][our_to as usize][go_piece(opp_piece)][opp_to as usize],
+                                    &mut info.history.cont_hist[our_gp][our_to][opp_gp][opp_to],
                                     malus,
                                 );
                             }
                         }
                     }
-                    return tt_score;
+                    // P3: downgrade stored mate if 50mr will fire before mate.
+                    return downgrade_50mr_mate(tt_score, ply, board.halfmove);
                 }
 
                 // Fall through: use TT bounds to narrow alpha/beta window at non-PV nodes
@@ -1670,7 +1944,7 @@ fn negamax(
                     _ => {}
                 }
 
-                if alpha >= beta {
+                if alpha >= beta && halfmove_ok {
                     if tt_move != NO_MOVE {
                         info.stats.tt_cutoffs += 1;
                         // Update PV table with TT move
@@ -1715,12 +1989,14 @@ fn negamax(
                     {
                         return (3 * tt_score + beta) / 4;
                     }
-                    return tt_score;
+                    // P3: downgrade stored mate if 50mr will fire before mate.
+                    return downgrade_50mr_mate(tt_score, ply, board.halfmove);
                 }
             } else if tt_depth >= depth - 1
                 && beta - alpha_orig == 1
                 && tt_score > -(MATE_SCORE - 100) && tt_score < MATE_SCORE - 100
                 && FEAT_TT_NEARMISS.load(Ordering::Relaxed)
+                && halfmove_ok
             {
                 // TT near-miss cutoffs: accept entries 1 ply short with a score margin
                 let margin = 80;
@@ -1746,24 +2022,80 @@ fn negamax(
     let checkers = board.checkers();
     let in_check = checkers != 0;
 
-    // Compute static eval for pruning and LMR improving detection
+    // Compute static eval for pruning and LMR improving detection.
+    //
+    // Three variables — same value at different processing stages:
+    //   raw_eval    : halfmove-INDEPENDENT  (what goes in/out of TT, also
+    //                                        passed to corrhist *update*)
+    //   scaled_eval : halfmove-scaled, pre-correction (corrhist sees this as
+    //                                                   its input base)
+    //   static_eval : scaled + corrected (what pruning/LMR decisions use)
+    //
+    // Keeping these separate fixes the TT staleness bug where a position
+    // first seen at hm=20 stored an eval scaled against hm=20, then
+    // revisited at hm=85 used the stale-scaled value — exposed by the
+    // aggressive `(100-hm)/100` scaling (SPRT #610, flat at -8 Elo after
+    // 1000g). TT now stores raw_eval; every consumer scales fresh.
     let mut static_eval = -INFINITY;
     let mut raw_eval = -INFINITY;
+    let mut scaled_eval = -INFINITY;
     let mut improving = false;
     if !in_check {
         if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
             raw_eval = tt_entry.static_eval;
+            info.stats_tt_static_eval_hits += 1;
         } else {
             raw_eval = info.eval(board);
+            // Eval-only TT writeback: when we paid for an NNUE eval AND
+            // there's no existing TT entry, seed the TT with static_eval
+            // so later visits of this position (from different move
+            // orders or ID re-searches) skip the NNUE call.
+            //
+            // Reckless pattern (`search.rs:425`). Phase-2 lever from
+            // `docs/coda_vs_reckless_nps_2026-04-23.md`: reduces
+            // evals/node (Coda 0.677 vs Reckless 0.520).
+            //
+            // Safety:
+            //   - Gated on `!tt_hit` so we never overwrite a real entry
+            //     with a shallow stub.
+            //   - depth=-2 means `tt_depth >= depth` is false for any
+            //     real search depth, so this entry never triggers TT
+            //     cutoffs or alpha/beta window narrowing.
+            //   - flag=TT_FLAG_UPPER + score=-INFINITY makes any
+            //     score read trivially rejected.
+            //   - tt_move=NO_MOVE preserves IIR behaviour at this
+            //     position on later visits.
+            //   - tt_pv carries current node's is_pv context so PV
+            //     propagation is correct on re-visit.
+            if !tt_hit && FEAT_TT_STORE.load(Ordering::Relaxed) {
+                info.tt.store(board.hash, -2, -INFINITY, TT_FLAG_UPPER, NO_MOVE, raw_eval, is_pv);
+            }
         }
-        // Apply correction history
-        static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, raw_eval) } else { raw_eval };
+        scaled_eval = apply_halfmove_scale(raw_eval, board.halfmove);
+        // Apply correction history to the halfmove-scaled value
+        static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, scaled_eval) } else { scaled_eval };
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = static_eval;
         }
-        // Improving: our eval is better than 2 plies ago
+        // Improving: our eval is better than 2 plies ago.
+        //
+        // C8 audit LIKELY #2: when ply-2 was in-check, static_evals[ply-2]
+        // was set to -INFINITY (see the else branch below). Comparing
+        // `static_eval > -INFINITY` trivialised to true, so improving fired
+        // on every post-check comeback, inflating RFP/LMP/futility/LMR.
+        // SF/Viridithas fall back to ply-4 when ply-2 is unavailable; skip
+        // entirely when neither ply is usable.
         if ply >= 2 && ply_u >= 2 {
-            improving = static_eval > info.static_evals[ply_u - 2];
+            let prev2 = info.static_evals[ply_u - 2];
+            if prev2 > -INFINITY + 1 {
+                improving = static_eval > prev2;
+            } else if ply_u >= 4 {
+                let prev4 = info.static_evals[ply_u - 4];
+                if prev4 > -INFINITY + 1 {
+                    improving = static_eval > prev4;
+                }
+                // else: leave improving=false (no usable baseline).
+            }
         }
     } else {
         if ply_u < MAX_PLY {
@@ -1790,7 +2122,7 @@ fn negamax(
     // Restricted to PV/cut nodes (Obsidian/Berserk/Stormphrax pattern).
     // All-nodes have tight bounds already, IIR there wastes depth.
     let is_pv = beta - alpha_orig > 1;
-    if depth >= 4 && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
+    if depth >= tp(&IIR_MIN_DEPTH) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
         depth -= 1;
     }
 
@@ -1801,7 +2133,7 @@ fn negamax(
     // think the position is quiet, reduce depth further.
     // Gate on prior_reduction (Stockfish >= 2, Alexandria >= 1).
     let prior_reduction = if ply_u >= 1 { info.reductions[ply_u - 1] } else { 0 };
-    if !in_check && ply >= 1 && depth >= 2 && ply_u >= 1
+    if !in_check && ply >= 1 && depth >= tp(&HINDSIGHT_MIN_DEPTH) && ply_u >= 1
         && prior_reduction >= 2
         && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
         && static_eval > -INFINITY
@@ -1822,11 +2154,45 @@ fn negamax(
     // Guard against consecutive null moves
     let prev_was_null = !board.undo_stack.is_empty()
         && board.undo_stack[board.undo_stack.len() - 1].mv == NO_MOVE;
-    if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
+    // King-zone-pressure gate: skip NMP when enemy has many attackers
+    // on our king zone. A null move in an attacking position gives
+    // opponent an extra tempo at the worst moment.
+    let our_king_sq = board.king_sq(board.side_to_move);
+    let king_zone = crate::attacks::king_attacks(our_king_sq as u32) | (1u64 << our_king_sq);
+    let king_zone_pressure = popcount(enemy_attacks & king_zone) as i32;
+
+    // T2.1: undefended ("hanging") piece count. Our non-pawn pieces
+    // that are attacked by enemy AND NOT defended by any of our own
+    // pieces. Zero-cost-when-skipped: computation only runs for
+    // NMP-eligible nodes (most nodes either fail the depth gate or are
+    // in_check). ~10-15 magic lookups per computed node — comparable
+    // to king-zone-pressure's cost.
+    let undefended_count: i32 = {
+        // Only bother computing when NMP might actually fire.
+        let nmp_gate_cheap = depth >= tp(&NMP_MIN_DEPTH) && !in_check && ply > 0
+            && stm_non_pawn != 0 && beta - alpha == 1
+            && static_eval >= beta && !prev_was_null
+            && beta.abs() < MATE_SCORE - 100
+            && info.excluded_move[ply_u] == NO_MOVE;
+        if nmp_gate_cheap && tp(&NMP_UNDEFENDED_MAX) > 0 {
+            let our_non_pawn = board.colors[board.side_to_move as usize]
+                & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+            let attacked = our_non_pawn & enemy_attacks;
+            let our_attacks = board.attacks_by_color(board.side_to_move);
+            popcount(attacked & !our_attacks) as i32
+        } else {
+            0
+        }
+    };
+
+    if depth >= tp(&NMP_MIN_DEPTH) && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
         && !prev_was_null  // Prevent consecutive null moves
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
+        && king_zone_pressure < tp(&NMP_KING_ZONE_MAX)  // New gate
+        && any_threat_count < 3  // S7-style: skip NMP when many of our pieces are under threat
+        && undefended_count < tp(&NMP_UNDEFENDED_MAX)  // T2.1: skip when hanging pieces
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
@@ -1850,8 +2216,19 @@ fn negamax(
         info.tt.prefetch(board.hash);
         let null_key = board.hash; // save hash for threat detection after unmake
         if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::recompute()); }
+        if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
+        // C3 (2026-04-22 audit): set null sentinel on moved_piece_stack /
+        // moved_to_stack at ply_u. Without this, child at ply+1 reads
+        // stale (piece, to) from a prior sibling move at this ply, feeding
+        // cont-hist, history pruning and LMR-history adjustment with
+        // unrelated data. Stockfish sets the null sentinel similarly.
+        if ply_u <= MAX_PLY {
+            info.moved_piece_stack[ply_u] = 0;
+            info.moved_to_stack[ply_u] = 0;
+        }
         let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
         board.unmake_null_move();
 
         if info.stop.load(Ordering::Relaxed) {
@@ -1897,6 +2274,10 @@ fn negamax(
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
+            // E2: widen margin when position is unstable (parent-child eval gap
+            // > UNSTABLE_THRESH). Static eval can't be trusted for RFP when
+            // eval is volatile. Mirrors unstable × ProbCut skip (#542 +6.7).
+            if unstable { margin += margin / 3; }
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
@@ -1906,12 +2287,31 @@ fn negamax(
     }
 
     // ProbCut: at moderate+ depths, if a shallow search of captures with
-    // raised beta confirms the position is winning, prune the node
+    // raised beta confirms the position is winning, prune the node.
+    //
+    // C8 audit LIKELY #7/#8: two fixes to this gate.
+    // - #8: add !is_pv — SF/Obsidian/Viridithas/Berserk all gate ProbCut to
+    //   non-PV. Pruning PV nodes on a raised-beta shallow search is too
+    //   aggressive for a node whose score we need exactly.
+    // - #7: the "TT says no chance" skip read `tt_entry.score` raw (no ply
+    //   adjust) and accepted ANY flag. A LOWER bound < probcut_beta means
+    //   "score is AT LEAST X" — it does not mean "no chance at probcut_beta",
+    //   the true score can be much higher. Only UPPER/EXACT bounds are
+    //   evidence of a ceiling. Switch to ply-adjusted score + bound gate.
     let probcut_beta = beta + tp(&PROBCUT_MARGIN);
-    if !in_check && ply > 0 && depth >= 5
+    let probcut_tt_noshot = if tt_hit && tt_entry.depth >= depth - 3 {
+        let adj_score = score_from_tt(tt_entry.score, ply);
+        (tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT)
+            && adj_score < probcut_beta
+    } else {
+        false
+    };
+    if !in_check && ply > 0 && !is_pv && depth >= tp(&PROBCUT_MIN_DEPTH)
         && beta.abs() < MATE_SCORE - 100  // skip for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
-        && !(tt_hit && tt_entry.depth >= depth - 3 && tt_entry.score < probcut_beta)  // TT says no chance
+        && !probcut_tt_noshot  // TT says no chance
+        && king_zone_pressure < tp(&PROBCUT_KING_ZONE_MAX)  // A3: skip in high-threat positions
+        && !unstable  // Skip ProbCut in eval-unstable positions (eval can't be trusted)
         && FEAT_PROBCUT.load(Ordering::Relaxed)
     {
         // SEE threshold: only consider captures that gain enough material
@@ -1926,13 +2326,18 @@ fn negamax(
 
             let pc_moved_pt = board.piece_type_at(move_from(mv));
             let pc_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
-            let pc_dirty = build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), pc_moved_pt, pc_captured_pt);
+            let pc_dirty = if let Some(net) = info.nnue_net.as_deref() {
+                build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), pc_moved_pt, pc_captured_pt, net)
+            } else { DirtyPiece::recompute() };
 
             if let Some(acc) = &mut info.nnue_acc { acc.push(pc_dirty); }
+        if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
             if !board.make_move(mv) {
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
                 continue;
             }
+                    if info.threat_stack.active { let entry = info.threat_stack.current_mut(); entry.delta.clear(); for d in board.threat_deltas.iter() { entry.delta.push(*d); } let ul = board.undo_stack.len(); if ul > 0 { let u = &board.undo_stack[ul-1]; entry.mv = u.mv; if u.mv != crate::types::NO_MOVE { entry.moved_pt = board.mailbox[crate::types::move_to(u.mv) as usize]; entry.moved_color = crate::types::flip_color(board.side_to_move); } } }
             info.tt.prefetch(board.hash);
 
             // Cheap qsearch verification before expensive negamax (Stockfish pattern)
@@ -1945,6 +2350,7 @@ fn negamax(
 
             board.unmake_move();
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
 
             if info.stop.load(Ordering::Relaxed) {
                 return 0;
@@ -1952,18 +2358,24 @@ fn negamax(
 
             if score >= probcut_beta {
                 info.stats.probcut_cutoffs += 1;
-                // Dampen toward beta — score was verified at probcut_beta, not beta
-                // (Stockfish: value - (probCutBeta - beta), Reckless: (3*score+beta)/4)
-                let dampened = score - (probcut_beta - beta);
-                // Store dampened score in TT
-                info.tt.store(board.hash, depth - 3, score_to_tt(dampened, ply), TT_FLAG_LOWER, mv, raw_eval, false);
-                return dampened;
+                // TT stores the RAW verified score (a tighter lower bound than
+                // the dampened value) and preserves the sticky PV flag — matches
+                // Stockfish search.cpp:994-995. Prior code stored `dampened` and
+                // hardcoded tt_pv=false, losing both pruning information on
+                // future probes and the PV stickiness used by LMR reduction
+                // decisions. Return value is still dampened — score was
+                // verified at probcut_beta = beta+margin, not beta.
+                info.tt.store(
+                    board.hash, depth - 3, score_to_tt(score, ply),
+                    TT_FLAG_LOWER, mv, raw_eval, tt_pv,
+                );
+                return score - (probcut_beta - beta);
             }
         }
     }
 
     // Continuation history lookup from search stack (killers/counter removed — SF pattern)
-    let safe_ply = ply_u.min(MAX_PLY - 1).min(63);
+    let safe_ply = ply_u.min(MAX_PLY - 1);
     let mut prev_piece_for_cont: usize = 0; // go_piece index (1-12), 0 = none
     let mut prev_to_for_cont: u8 = 0;
     let mut prev2_piece_for_cont: usize = 0; // ply-2 (grandparent move)
@@ -2000,9 +2412,9 @@ fn negamax(
     };
     let pawn_hist_ref = Some(&info.pawn_hist[ph_idx] as &[[i16; 64]; 13]);
     let mut picker = if in_check {
-        MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
 
@@ -2045,7 +2457,7 @@ fn negamax(
         let is_promo = is_promotion(mv);
 
         // SEE capture pruning: at shallow depths, prune captures that lose material
-        if is_cap && ply > 0 && !in_check && depth <= 6
+        if is_cap && ply > 0 && !in_check && depth <= tp(&SEE_CAP_DEPTH)
             && mv != tt_move && best_score > -(MATE_SCORE - 100)
             && !see_ge(board, mv, -(depth * tp(&SEE_MATERIAL_SCALE)))
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
@@ -2094,16 +2506,23 @@ fn negamax(
             && tt_entry.depth >= depth - 3
             && FEAT_SINGULAR.load(Ordering::Relaxed)
         {
-            let tt_score_local = {
-                let mut s = tt_entry.score;
-                if s > MATE_SCORE - 100 { s -= ply; }
-                else if s < -(MATE_SCORE - 100) { s += ply; }
-                s
-            };
+            // Ply-only adjustment here — P3 downgrade deliberately not applied
+            // at SE: would cause over-extension on downgraded mate scores that
+            // pass the < MATE_SCORE - 100 check below.
+            let tt_score_local = score_from_tt(tt_entry.score, ply);
 
             // Skip SE for mate scores (margin comparison meaningless)
             if tt_score_local > -(MATE_SCORE - 100) && tt_score_local < MATE_SCORE - 100 {
-                let singular_beta = tt_score_local - depth;
+                // xray bonus: if TT move uncovers our slider's attack on enemy
+                // (from-square ∈ our_xray_blockers), widen margin → easier
+                // singular → more extensions on tactical discoveries.
+                let xray_bonus = if our_xray_blockers & (1u64 << move_from(tt_move)) != 0 {
+                    tp(&SE_XRAY_BLOCKER_MARGIN)
+                } else { 0 };
+                // S4: widen singular test margin when king under pressure.
+                let singular_beta = tt_score_local - depth
+                    - king_zone_pressure * tp(&SE_KING_PRESSURE_MARGIN)
+                    - xray_bonus;
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
@@ -2121,7 +2540,16 @@ fn negamax(
 
                 if singular_score < singular_beta {
                     // TT move is singular — no competitive alternatives.
-                    let is_pv = beta - alpha > 1;
+                    //
+                    // C8 audit LIKELY #1: the previous shadow
+                    // `let is_pv = beta - alpha > 1` used the CURRENT alpha,
+                    // which moves earlier at this node may have raised. On a
+                    // real PV node, after alpha advances past the initial PV
+                    // bracket, `beta - alpha` collapses to 1 and the shadow
+                    // read `false`, letting double extensions fire on PV
+                    // nodes — violating "no DEXT at PV". The outer `is_pv`
+                    // (derived from `alpha_orig`, line 1971) stays correct
+                    // through the whole node; fall through to that.
                     if !is_pv && singular_score < singular_beta - tp(&DEXT_MARGIN)
                         && info.double_ext_count[ply_u] < tp(&DEXT_CAP)
                     {
@@ -2167,10 +2595,14 @@ fn negamax(
             && FEAT_HIST_PRUNE.load(Ordering::Relaxed)
         {
             let mut hist_prune_score = info.history.main_score(from, to, enemy_attacks);
-            if prev_piece_for_cont != 0
-                && moved_piece != NO_PIECE
-            {
-                hist_prune_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
+            if moved_piece != NO_PIECE {
+                let gp = go_piece(moved_piece);
+                if prev_piece_for_cont != 0 {
+                    hist_prune_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize] as i32;
+                }
+                // Pawn history in pruning decision
+                let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
+                hist_prune_score += info.pawn_hist[ph_idx][gp][to as usize] as i32;
             }
             if hist_prune_score < -tp(&HIST_PRUNE_MULT) * depth as i32 {
                 info.stats.history_prunes += 1;
@@ -2184,13 +2616,18 @@ fn negamax(
             && !is_cap && !is_promo
             && best_score > -(MATE_SCORE - 100)
             && FEAT_FUTILITY.load(Ordering::Relaxed)
-            && lmr_d <= 10
+            && lmr_d <= tp(&FUT_LMR_DEPTH)
         {
             let main_hist = info.history.main_score(from, to, enemy_attacks);
             let hist_adj = main_hist / 128;
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj;
+            // our_defenses widener: add margin per our-piece-under-attack so
+            // tactical positions keep more lines from being pruned on eval.
+            let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
+            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
             // Don't futility-prune moves with very strong history (Igel pattern)
-            if futility_value <= alpha && main_hist < 12000 {
+            // Direct-check carve-out: don't prune moves that give direct check
+            // (Reckless #410 +1.62 STC).
+            if futility_value <= alpha && main_hist < 12000 && !board.gives_direct_check(mv) {
                 info.stats.futility_prunes += 1;
                 continue;
             }
@@ -2198,7 +2635,12 @@ fn negamax(
 
         // Late Move Pruning: at shallow depths, skip late quiet moves.
         // Applied before MakeMove. Formula: (LMP_BASE + depth²) / (2 - improving)
-        if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
+        //
+        // C8 audit LIKELY #9: add !is_pv guard. CLAUDE.md "Pruning features"
+        // section states LMP is non-PV only, matching
+        // SF/Obsidian/Viridithas/Berserk consensus; the code was missing
+        // the gate so LMP fired on PV nodes.
+        if ply > 0 && !is_pv && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
             && !is_cap && !is_promo
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
@@ -2211,25 +2653,33 @@ fn negamax(
         }
 
         // Bad noisy pruning: skip losing captures when eval is far below alpha.
-        // Applied before MakeMove — no gives_check exemption (matches pre-move pattern).
-        if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= 4 && mv != tt_move
+        // Applied before MakeMove. Direct-check carve-out: don't prune moves
+        // that give direct check (Reckless #630 +1.85 STC).
+        if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= tp(&BAD_NOISY_DEPTH) && mv != tt_move
             && !is_promo && best_score > -(MATE_SCORE - 100)
             && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
             && !see_ge(board, mv, 0)
+            && !board.gives_direct_check(mv)
         {
             continue;
         }
 
         // Build NNUE dirty piece info BEFORE make_move
-        let dirty = build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt);
+        let dirty = if let Some(net) = info.nnue_net.as_deref() {
+            build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt, net)
+        } else { DirtyPiece::recompute() };
 
         // Push NNUE accumulator
         if let Some(acc) = &mut info.nnue_acc { acc.push(dirty); }
+        if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
 
         if !board.make_move(mv) {
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
             continue;
         }
+        // Store threat deltas from make_move into accumulator stack
+                if info.threat_stack.active { let entry = info.threat_stack.current_mut(); entry.delta.clear(); for d in board.threat_deltas.iter() { entry.delta.push(*d); } let ul = board.undo_stack.len(); if ul > 0 { let u = &board.undo_stack[ul-1]; entry.mv = u.mv; if u.mv != crate::types::NO_MOVE { entry.moved_pt = board.mailbox[crate::types::move_to(u.mv) as usize]; entry.moved_color = crate::types::flip_color(board.side_to_move); } } }
 
         // Prefetch TT bucket for the new position
         info.tt.prefetch(board.hash);
@@ -2244,6 +2694,24 @@ fn negamax(
             if prev_undo.captured != NO_PIECE_TYPE && to == move_to(prev_undo.mv) {
                 extension = if FEAT_EXTENSIONS.load(Ordering::Relaxed) { 1 } else { 0 };
                 if extension > 0 { info.stats.recapture_ext += 1; }
+            }
+        }
+        // N6 Promotion-imminent extension: pawn push to 7th rank (from STM's
+        // perspective) very often decides the game. Extend by 1. Gated by
+        // FEAT_EXTENSIONS to share the ablation flag with recapture ext.
+        if extension == 0
+            && FEAT_EXTENSIONS.load(Ordering::Relaxed)
+            && !is_cap
+            && !is_promo
+            && moved_pt == PAWN
+        {
+            // STM=WHITE: 7th rank is row 6 (squares 48..56). STM=BLACK: 7th
+            // rank is row 1 (squares 8..16). `to` is the destination.
+            let to_rank = to >> 3; // to / 8
+            let on_seventh = (board.side_to_move == WHITE && to_rank == 6)
+                || (board.side_to_move == BLACK && to_rank == 1);
+            if on_seventh {
+                extension = 1;
             }
         }
 
@@ -2279,7 +2747,12 @@ fn negamax(
 
         // Late Move Reductions (LMR) + Principal Variation Search (PVS)
         let mut reduction = 0i32;
-        if !in_check && !is_cap && !is_promo && FEAT_LMR.load(Ordering::Relaxed) {
+        // Endgame gate: skip LMR in low-piece-count positions where
+        // mate-completing king-restriction moves would be over-reduced.
+        let endgame_threshold = tp(&LMR_ENDGAME_PIECES) as u32;
+        let is_endgame_skip = endgame_threshold > 0
+            && crate::bitboard::popcount(board.occupied()) <= endgame_threshold;
+        if !in_check && !is_cap && !is_promo && !is_endgame_skip && FEAT_LMR.load(Ordering::Relaxed) {
             let d = (depth as usize).min(63);
             let m = (move_count as usize).min(63);
             reduction = lmr_reduction(d as i32, m as i32);
@@ -2334,12 +2807,16 @@ fn negamax(
                 // Ply-2 weighted at half to avoid over-scaling the total.
                 let mut hist_score = info.history.main_score(from, to, enemy_attacks);
                 if moved_piece != NO_PIECE {
+                    let gp = go_piece(moved_piece);
                     if prev_piece_for_cont != 0 {
-                        hist_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32;
+                        hist_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize] as i32;
                     }
                     if prev2_piece_for_cont != 0 {
-                        hist_score += info.history.cont_hist[prev2_piece_for_cont][prev2_to_for_cont as usize][go_piece(moved_piece)][to as usize] as i32 / 2;
+                        hist_score += info.history.cont_hist[prev2_piece_for_cont][prev2_to_for_cont as usize][gp][to as usize] as i32 / 2;
                     }
+                    // Pawn history: pawn-structure-aware move quality (SF/Alexandria pattern)
+                    let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
+                    hist_score += info.pawn_hist[ph_idx][gp][to as usize] as i32;
                 }
                 let hist_adj = hist_score / tp(&LMR_HIST_DIV);
                 reduction -= hist_adj;
@@ -2347,10 +2824,25 @@ fn negamax(
                 // Complexity-aware LMR: reduce less when correction history
                 // magnitude is high (uncertain eval → search deeper).
                 // Matches Obsidian: R -= complexity / 120.
-                if raw_eval > -INFINITY {
-                    let complexity = (static_eval - raw_eval).abs();
+                //
+                // Compare against `scaled_eval` (pre-correction, post-hm-scale)
+                // so "complexity" measures only the corrhist delta magnitude,
+                // not the halfmove scaling factor. Using raw_eval here would
+                // conflate corrhist drift with halfmove decay, artificially
+                // inflating complexity in long-halfmove positions.
+                if scaled_eval > -INFINITY {
+                    let complexity = (static_eval - scaled_eval).abs();
                     reduction -= complexity / tp(&LMR_COMPLEXITY_DIV);
                 }
+
+                // Threat-density LMR: reduce less when multiple pieces are
+                // under pawn attack. Tactical positions need deeper search.
+                reduction -= threat_count / tp(&LMR_THREAT_DIV);
+
+                // King-pressure LMR modifier: reduce less when enemy has
+                // many attackers on our king zone. Parent-node signal reused
+                // from NMP/ProbCut gates — tactical king positions need depth.
+                reduction -= king_zone_pressure / tp(&LMR_KING_PRESSURE_DIV);
 
                 // Clamp: never extend (negative), never reduce past depth 1
                 if reduction < 0 {
@@ -2363,7 +2855,7 @@ fn negamax(
         }
 
         // LMR for captures: use separate capture LMR table with capture history adjustments
-        if !in_check && is_cap && !is_promo && move_count > 1 && mv != tt_move && FEAT_LMR.load(Ordering::Relaxed) {
+        if !in_check && is_cap && !is_promo && move_count > 1 && mv != tt_move && !is_endgame_skip && FEAT_LMR.load(Ordering::Relaxed) {
             // Only reduce at non-PV nodes (zero window search)
             if beta - alpha == 1 {
                 let d = (depth as usize).min(63);
@@ -2415,11 +2907,18 @@ fn negamax(
             let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
 
             if lmr_score > alpha && !info.stop.load(Ordering::Relaxed) {
-                // LMR failed high: doDeeper/doShallower before re-search
+                // LMR failed high: doDeeper/doShallower before re-search.
+                //
+                // Audit SPECULATIVE fix (v2 retry): `new_depth` (integer depth
+                // 5-20) was used as a cp margin — near-certain typo. #673 at
+                // 30cp H0'd −1.7 @ 17286g; retrying with 20cp, closer to the
+                // old "new_depth ≈ 10-15" effective threshold but with proper
+                // cp semantics. If this also H0s, the true value is smaller
+                // still (try 10cp) or the feature wants a depth-scaled margin.
                 let mut do_deeper_adj = 0;
                 if lmr_score > best_score + 60 + 10 * reduction {
                     do_deeper_adj = 1;
-                } else if lmr_score < best_score + new_depth {
+                } else if lmr_score < best_score + 20 {
                     do_deeper_adj = -1;
                 }
 
@@ -2447,6 +2946,7 @@ fn negamax(
 
         board.unmake_move();
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
 
         // Accumulate nodes for this root move
         if ply == 0 {
@@ -2637,14 +3137,38 @@ fn negamax(
         }
     }
 
-    // Update pawn-hash correction history when we have a reliable score
+    // Update pawn-hash correction history when we have a reliable score.
+    //
+    // Skip when best_move is a capture/promotion: the score delta
+    // (best_score - raw_eval) is then dominated by material change, not the
+    // positional-eval miscalibration correction history is trying to learn.
+    // Training on noisy bestmoves pollutes the tables. Matches Stockfish
+    // (search.cpp:1495: `!(bestMove && pos.capture(bestMove))`) and Reckless
+    // (search.rs:1085: `|| best_move.is_noisy()`).
+    let best_move_noisy = best_move != NO_MOVE && {
+        board.piece_type_at(move_to(best_move)) != NO_PIECE_TYPE
+            || move_flags(best_move) == FLAG_EN_PASSANT
+            || is_promotion(best_move)
+    };
     if !in_check && best_move != NO_MOVE
+        && !best_move_noisy
         && info.excluded_move[ply_u] == NO_MOVE
         && best_score > alpha_orig
         && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
-        && raw_eval > -(MATE_SCORE - 100)
+        && scaled_eval > -(MATE_SCORE - 100)
+        // C8 audit LIKELY #12: TT-store has a stop guard (see tt write
+        // path); corrhist update previously didn't. On a stop, children
+        // returned 0, which can bubble up as best_score > alpha_orig
+        // from a polluted baseline. Writing that into corrhist poisons
+        // per-thread tables for every subsequent iteration.
+        && !info.stop.load(Ordering::Relaxed)
     {
-        update_correction_history(info, board, best_score, raw_eval, depth);
+        // Train corrhist on the halfmove-scaled pre-correction value.
+        // `best_score` is in scaled-space (propagated up from scaled leaf
+        // evals), so the err term `best_score - scaled_eval` captures the
+        // positional miscalibration we want corrhist to learn — not the
+        // halfmove decay, which is already priced into best_score.
+        update_correction_history(info, board, best_score, scaled_eval, depth);
     }
 
     // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes
@@ -2662,7 +3186,11 @@ fn negamax(
 /// Obsidian min(1400, 175*d-50). Our old depth² formula gave 25 at d=5
 /// vs SF's 682 — history values were 27× too small to influence ordering.
 fn history_bonus(depth: i32) -> i32 {
-    (tp(&HIST_BONUS_MULT) * depth - tp(&HIST_BONUS_BASE)).clamp(0, tp(&HIST_BONUS_MAX))
+    // Offset shape — mirrors Stockfish's `155*d - 93` and our own
+    // capture-history's `MULT * d - BASE`. Clamped at 0 to avoid
+    // negative bonuses at very shallow depth (which would corrupt
+    // gravity updates) and at MAX to cap the late-depth plateau.
+    (tp(&HIST_BONUS_MULT) * depth - tp(&HIST_BONUS_OFFSET)).clamp(0, tp(&HIST_BONUS_MAX))
 }
 
 fn capture_history_bonus(depth: i32) -> i32 {
@@ -2691,21 +3219,24 @@ fn quiescence_with_depth(
 ) -> i32 {
     info.stats.qnodes += 1;
 
-    // Draw detection: repetition and 50-move rule
-    let draw_score = if info.root_stm == board.side_to_move { -tp(&CONTEMPT_VAL) } else { tp(&CONTEMPT_VAL) };
+    // Draw detection: repetition and 50-move rule. Contempt removed (#508).
+    let draw_score = 0;
     if board.halfmove >= 100 {
         return draw_score;
     }
-    // Check for repetition in game history
+    // Check for repetition in game history.
+    // C8 audit LIKELY #38: also break on null-move boundary — scanning
+    // past a null move looks for repetitions in a different search line.
     let hash = board.hash;
     for undo in board.undo_stack.iter().rev().skip(1).step_by(2) {
         if undo.hash == hash { return draw_score; }
         if undo.halfmove == 0 { break; } // irreversible move
+        if undo.mv == NO_MOVE { break; } // null-move boundary
     }
 
     // Limit quiescence depth to prevent stack overflow
     if qs_depth >= 32 {
-        return info.eval(board);
+        return apply_halfmove_scale(info.eval(board), board.halfmove);
     }
 
     // Prefetch TT bucket early
@@ -2730,7 +3261,10 @@ fn quiescence_with_depth(
     }
 
     // Cuckoo cycle detection in quiescence
-    if alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
+    // C8 audit LIKELY #10: gate QS cuckoo on ply > 0, mirroring the
+    // main-search check at line 1763. Cuckoo's root-boundary STM check
+    // is undefined at ply 0.
+    if ply > 0 && alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
         alpha = 0;
         if alpha >= beta {
             return alpha;
@@ -2745,24 +3279,22 @@ fn quiescence_with_depth(
     let tt_hit = tt_entry.hit;
 
     if tt_hit && tt_entry.depth >= -1 {
-        let mut tt_score = tt_entry.score;
-        // Adjust mate scores for distance from root
-        if tt_score > MATE_SCORE - 100 {
-            tt_score -= ply;
-        } else if tt_score < -(MATE_SCORE - 100) {
-            tt_score += ply;
-        }
+        let tt_score = score_from_tt(tt_entry.score, ply);
+        // P3: downgrade stored mate if 50mr will fire before mate.
+        let tt_ret = downgrade_50mr_mate(tt_score, ply, board.halfmove);
 
+        // P2: skip QS TT cutoff near 50mr — stale bound unsafe
+        let halfmove_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
         let qs_is_pv = beta - alpha > 1;
         match tt_entry.flag {
             TT_FLAG_EXACT => {
-                if !qs_is_pv { return tt_score; }
+                if !qs_is_pv && halfmove_ok { return tt_ret; }
             }
             TT_FLAG_LOWER => {
-                if !qs_is_pv && tt_score >= beta { return tt_score; }
+                if !qs_is_pv && halfmove_ok && tt_score >= beta { return tt_ret; }
             }
             TT_FLAG_UPPER => {
-                if !qs_is_pv && tt_score <= alpha { return tt_score; }
+                if !qs_is_pv && halfmove_ok && tt_score <= alpha { return tt_ret; }
             }
             _ => {}
         }
@@ -2791,8 +3323,21 @@ fn quiescence_with_depth(
         } else {
             None
         };
+        // C8 audit LIKELY #19: evasion history reads now use enemy_attacks
+        // (symmetric with beta-cutoff writes). Compute here since QS doesn't
+        // otherwise need the bitboard.
+        let qs_enemy_attacks = board.attacks_by_color(
+            crate::types::flip_color(board.side_to_move)
+        );
+        // Clamp ply to the moved_piece_stack / moved_to_stack bounds.
+        // Qsearch can recurse past MAX_PLY via tactical extensions and evasion
+        // chains; without this clamp MovePicker::new_evasion indexes
+        // `moved_piece_stack[ply - off]` with ply > MAX_PLY and panics (observed
+        // on lichess ASuoXT9f — game thrown from a +21.84 winning position).
+        let qs_safe_ply = (ply as usize).min(MAX_PLY - 1);
         let mut evasion_picker = MovePicker::new_evasion(
-            tt_move, ply as usize, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
+            tt_move, qs_safe_ply, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
+            qs_enemy_attacks,
             &info.moved_piece_stack, &info.moved_to_stack,
         );
         let mut best_score = -INFINITY;
@@ -2805,19 +3350,25 @@ fn quiescence_with_depth(
 
             let qs_moved_pt = board.piece_type_at(move_from(mv));
             let qs_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
-            let qs_dirty = build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt);
+            let qs_dirty = if let Some(net) = info.nnue_net.as_deref() {
+                build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt, net)
+            } else { DirtyPiece::recompute() };
 
             if let Some(acc) = &mut info.nnue_acc { acc.push(qs_dirty); }
+        if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
             if !board.make_move(mv) {
                 if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
                 continue;
             }
+                    if info.threat_stack.active { let entry = info.threat_stack.current_mut(); entry.delta.clear(); for d in board.threat_deltas.iter() { entry.delta.push(*d); } let ul = board.undo_stack.len(); if ul > 0 { let u = &board.undo_stack[ul-1]; entry.mv = u.mv; if u.mv != crate::types::NO_MOVE { entry.moved_pt = board.mailbox[crate::types::move_to(u.mv) as usize]; entry.moved_color = crate::types::flip_color(board.side_to_move); } } }
             info.tt.prefetch(board.hash);
             move_count += 1;
 
             let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
             board.unmake_move();
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
 
             if score > best_score {
                 best_score = score;
@@ -2852,23 +3403,26 @@ fn quiescence_with_depth(
     }
 
     // Stand pat - evaluate the current position (only when not in check)
-    // Use TT staticEval when available to avoid recomputing
-    let stand_pat = if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
+    // Use TT staticEval when available to avoid recomputing. TT stores
+    // halfmove-independent values (see SearchInfo::eval doc), so we apply
+    // the scale freshly against `board.halfmove` after reading.
+    let raw_stand_pat = if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
+        info.stats_tt_static_eval_hits += 1;
         tt_entry.static_eval
     } else {
         info.eval(board)
     };
+    let stand_pat = apply_halfmove_scale(raw_stand_pat, board.halfmove);
     let mut best_score = stand_pat;
 
     // TT bound refinement of stand-pat (consensus: every top engine does this)
     // Use TT score as a better estimate when the bound direction agrees
     if tt_hit {
-        let tt_score = {
-            let mut s = tt_entry.score;
-            if s > MATE_SCORE - 100 { s -= ply; }
-            else if s < -(MATE_SCORE - 100) { s += ply; }
-            s
-        };
+        // Ply-only adjustment; refinement is explicitly for non-mate scores
+        // per the abs check below. P3 downgrade would turn a stored mate
+        // into a huge TB_WIN signal that passes the check and pollutes
+        // stand-pat.
+        let tt_score = score_from_tt(tt_entry.score, ply);
         if tt_score.abs() < MATE_SCORE - 100 {
             if (tt_entry.flag == TT_FLAG_LOWER && tt_score > best_score)
                 || (tt_entry.flag == TT_FLAG_UPPER && tt_score < best_score)
@@ -2940,17 +3494,23 @@ fn quiescence_with_depth(
         // Build lazy NNUE update
         let qs_moved_pt = board.piece_type_at(move_from(mv));
         let qs_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
-        let qs_dirty = build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt);
+        let qs_dirty = if let Some(net) = info.nnue_net.as_deref() {
+            build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt, net)
+        } else { DirtyPiece::recompute() };
 
         if let Some(acc) = &mut info.nnue_acc { acc.push(qs_dirty); }
+        if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
         if !board.make_move(mv) {
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
             continue;
         }
+                if info.threat_stack.active { let entry = info.threat_stack.current_mut(); entry.delta.clear(); for d in board.threat_deltas.iter() { entry.delta.push(*d); } let ul = board.undo_stack.len(); if ul > 0 { let u = &board.undo_stack[ul-1]; entry.mv = u.mv; if u.mv != crate::types::NO_MOVE { entry.moved_pt = board.mailbox[crate::types::move_to(u.mv) as usize]; entry.moved_color = crate::types::flip_color(board.side_to_move); } } }
         info.tt.prefetch(board.hash);
         let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
         board.unmake_move();
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        if info.threat_stack.active { info.threat_stack.pop(); }
 
         if score > best_score {
             best_score = score;
@@ -2974,7 +3534,10 @@ fn quiescence_with_depth(
         TT_FLAG_EXACT
     };
     if FEAT_TT_STORE.load(Ordering::Relaxed) && !info.stop.load(Ordering::Relaxed) {
-        info.tt.store(board.hash, -1, store_score, flag, best_move, stand_pat, false);
+        // Store the halfmove-INDEPENDENT value so later probes at a
+        // different halfmove get a correct scale — see the doc comment
+        // in `SearchInfo::eval`.
+        info.tt.store(board.hash, -1, store_score, flag, best_move, raw_stand_pat, false);
     }
 
     // QS beta blending: dampen capture fail-high at non-PV nodes
@@ -3122,5 +3685,210 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
 
     eprintln!("Total nodes:    {:>8}", total_nodes);
 
+    // Eval-path decomposition — supports the "evals/node" investigation
+    // (see docs/coda_vs_reckless_nps_2026-04-23.md). Reports how search
+    // splits its static-eval calls between full rebuilds, incremental
+    // updates, already-computed skips, and TT-cached bypasses.
+    if let Some(acc) = info.nnue_acc.as_ref() {
+        let full = acc.stats_full_rebuilds;
+        let incr = acc.stats_incremental_updates;
+        let skip = acc.stats_cached_skips;
+        let tt   = info.stats_tt_static_eval_hits;
+        let total_evals = full + incr;
+        let eval_call_attempts = total_evals + skip + tt;
+        eprintln!("--- NNUE Eval Decomposition ---");
+        eprintln!("NNUE full rebuilds: {:>10} ({:>5.2}% of evals)", full,
+                  if total_evals > 0 { full as f64 * 100.0 / total_evals as f64 } else { 0.0 });
+        eprintln!("NNUE incremental:   {:>10} ({:>5.2}% of evals)", incr,
+                  if total_evals > 0 { incr as f64 * 100.0 / total_evals as f64 } else { 0.0 });
+        eprintln!("TT static-eval hit: {:>10} ({:>5.2}% of call sites)", tt,
+                  if eval_call_attempts > 0 { tt as f64 * 100.0 / eval_call_attempts as f64 } else { 0.0 });
+        eprintln!("Already-computed:   {:>10}", skip);
+        eprintln!("Evals / node:       {:>10.3}", total_evals as f64 / total_nodes as f64);
+        eprintln!("Call-sites / node:  {:>10.3}", eval_call_attempts as f64 / total_nodes as f64);
+    }
+
+    #[cfg(feature = "profile-materialize")]
+    crate::nnue::mat_stats::report();
+
+    #[cfg(feature = "profile-threats")]
+    {
+        crate::threats::thr_stats::report();
+        crate::threats::apply_stats::report();
+    }
+
     total_nodes
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 50-move eval scaling helper. Locks in both the formula (linear decay
+    /// over 100 plies, reaches zero at the 50-move claim cliff) and the
+    /// sentinel preservation that downstream search relies on when
+    /// comparing against `-INFINITY` and mate scores.
+    #[test]
+    fn test_apply_halfmove_scale() {
+        // Linear decay from full to zero across the draw horizon.
+        assert_eq!(apply_halfmove_scale(100, 0), 100);
+        assert_eq!(apply_halfmove_scale(100, 25), 75);
+        assert_eq!(apply_halfmove_scale(100, 50), 50);
+        assert_eq!(apply_halfmove_scale(100, 75), 25);
+        assert_eq!(apply_halfmove_scale(100, 99), 1);
+        assert_eq!(apply_halfmove_scale(100, 100), 0);
+        // Sign preserved.
+        assert_eq!(apply_halfmove_scale(-400, 50), -200);
+        // Saturation past 100 (hm > 100 is normally intercepted as a draw,
+        // but the scale function still clamps so it never flips sign).
+        assert_eq!(apply_halfmove_scale(100, 150), 0);
+        // Zero in → zero out at any hm.
+        assert_eq!(apply_halfmove_scale(0, 50), 0);
+        // Sentinel scores are not scaled — comparisons against -INFINITY /
+        // mate-adjusted scores in the search body rely on this.
+        assert_eq!(apply_halfmove_scale(-INFINITY, 50), -INFINITY);
+        assert_eq!(apply_halfmove_scale(MATE_SCORE - 5, 99), MATE_SCORE - 5);
+        assert_eq!(apply_halfmove_scale(-(MATE_SCORE - 5), 99), -(MATE_SCORE - 5));
+    }
+
+    /// Singular extensions set `info.excluded_move[ply]` during verification
+    /// search and MUST clear it after. A leak would silently corrupt the
+    /// next search iteration (subsequent SE would skip, or move loops would
+    /// skip a random move).
+    ///
+    /// Audit 2026-04-17: confirmed the set/clear pair at search.rs:2103-2105
+    /// has no early-return path between them. This test guards the invariant
+    /// against future regressions.
+    #[test]
+    fn test_excluded_move_cleared_after_search() {
+        use crate::board::Board;
+
+        crate::init();
+        let mut info = SearchInfo::new(16);
+        info.silent = true;
+
+        let mut board = Board::from_fen(
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+
+        let limits = SearchLimits {
+            depth: 8, // enough to hit SE at SE_DEPTH threshold
+            movetime: 0,
+            wtime: 0, btime: 0, winc: 0, binc: 0,
+            movestogo: 0, nodes: 0, infinite: false,
+            movetime_floor: 0,
+        };
+
+        search(&mut board, &mut info, &limits);
+
+        for (i, &mv) in info.excluded_move.iter().enumerate() {
+            assert_eq!(
+                mv, NO_MOVE,
+                "excluded_move[{}] = {} after search — SE verification leaked",
+                i, crate::types::move_to_uci(mv)
+            );
+        }
+    }
+
+    /// Correction-history update primitive (`update_corr_entry`) must:
+    /// (a) move the entry in the direction of `err * weight`,
+    /// (b) respect the bound ±CORR_HIST_LIMIT,
+    /// (c) apply proportional gravity (saturates at the bound),
+    /// (d) be symmetric for positive vs negative errors (equal magnitude
+    ///     updates produce equal magnitude changes from 0).
+    #[test]
+    fn corr_entry_update_basics() {
+        // (d) Symmetry from zero.
+        let mut pos = 0i32;
+        let mut neg = 0i32;
+        update_corr_entry(&mut pos, 4, 5, 4);   // err=+4
+        update_corr_entry(&mut neg, -4, 5, 4);  // err=-4
+        assert_eq!(pos, -neg, "symmetric updates from zero: pos={}, neg={}", pos, neg);
+        assert!(pos > 0, "positive err must raise entry: got {}", pos);
+
+        // (a) Directional.
+        let mut e = 0i32;
+        update_corr_entry(&mut e, 3, 2, 4);
+        assert!(e > 0, "err > 0, weight > 0 → entry must rise, got {}", e);
+
+        // (b) Bounded at ±CORR_HIST_LIMIT.
+        let mut e = 0i32;
+        for _ in 0..10000 {
+            update_corr_entry(&mut e, 1000, 1000, 1); // saturate hard
+        }
+        assert!(e <= CORR_HIST_LIMIT, "entry must stay ≤ LIMIT, got {}", e);
+        assert!(e >= -CORR_HIST_LIMIT, "entry must stay ≥ -LIMIT, got {}", e);
+
+        // (c) Proportional gravity: repeated same-sign updates saturate,
+        //     don't grow without bound.
+        let mut e = CORR_HIST_LIMIT / 2;
+        let before = e;
+        update_corr_entry(&mut e, 1, 1, 4);
+        let delta = e - before;
+        // Small update near saturation should be small.
+        assert!(delta.abs() < 4, "near-saturation delta should be tiny, got {}", delta);
+    }
+
+    /// Zero err must leave entry unchanged (neither grows nor decays).
+    /// If this fails, we're either applying decay-in-error-free case
+    /// (bad) or have a sign bug.
+    #[test]
+    fn corr_entry_zero_err_noop() {
+        let mut e = 500i32;
+        update_corr_entry(&mut e, 0, 5, 4);
+        assert_eq!(e, 500, "zero err must not change entry");
+
+        let mut e = -500i32;
+        update_corr_entry(&mut e, 0, 5, 4);
+        assert_eq!(e, -500, "zero err must not change negative entry either");
+    }
+
+    /// Read/write index symmetry: for every correction-history table,
+    /// corrected_eval reads the slot that update_correction_history
+    /// writes for the same position. This test populates a table via
+    /// a single update, reads via corrected_eval, and verifies the
+    /// expected delta appears.
+    ///
+    /// Using a position with distinctive piece layout so hash
+    /// collisions with default zero-state are unlikely.
+    #[test]
+    fn corr_read_write_index_symmetry() {
+        use crate::board::Board;
+        crate::init();
+
+        let mut info = SearchInfo::new(16);
+        info.silent = true;
+
+        // Distinctive position
+        let board = Board::from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+
+        let raw = 100;
+        // Before any update: corrected == raw (all tables zero).
+        let corrected_before = corrected_eval(&info, &board, raw);
+        assert_eq!(corrected_before, raw, "zero tables must give corrected == raw");
+
+        // Apply a large positive update at depth=20.
+        update_correction_history(&mut info, &board, raw + 400, raw, 20);
+
+        let corrected_after = corrected_eval(&info, &board, raw);
+        assert!(
+            corrected_after > corrected_before,
+            "after positive-err update, corrected eval must rise: before={} after={}",
+            corrected_before, corrected_after
+        );
+
+        // Reading with a DIFFERENT board that hashes to the same
+        // indices is improbable; reading with a fresh board should
+        // NOT see the update (different position → different indices).
+        let other = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        let other_corrected = corrected_eval(&info, &other, raw);
+        // For startpos, pawn_hash/np/minor/major keys are entirely
+        // different from the test fen, so any match would be a random
+        // index collision at 1/16384 probability — extremely unlikely
+        // to drift more than ~0.5 cp.
+        let drift = (other_corrected - raw).abs();
+        assert!(drift < 100,
+            "unrelated position should see near-zero drift, got {} (raw {})",
+            other_corrected, raw);
+    }
+}
+

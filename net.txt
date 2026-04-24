@@ -1,1 +1,1 @@
-https://github.com/adamtwiss/coda/releases/download/v0.2.0-nets/net-v5-768pw-consensus-w7-e800s800.nnue
+https://github.com/adamtwiss/coda/releases/download/v0.3.0-nets/net-v9-768th16x32-kb10-w15-e800s800-crelu.nnue

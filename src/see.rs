@@ -90,7 +90,23 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
         attackers &= occ;
 
         stm = flip_color(stm);
-        balance = -balance - 1 - see_value(att_pt);
+        // C8 audit LIKELY #40: if a pawn captures onto the promotion rank
+        // it becomes a queen — balance should reflect the promotion gain,
+        // not just PAWN value. Rare but can flip SEE decisions in deep
+        // exchanges involving promotion recaptures.
+        let to_rank = to >> 3;
+        let effective_value = if att_pt == PAWN && (to_rank == 0 || to_rank == 7) {
+            // Assume queen promotion (optimal): PAWN moves to `to`, promotes
+            // → on the board as QUEEN, so victim value on next capture is
+            // queen-shaped. For THIS balance step (the capture we just
+            // made), the attacker "paid" pawn value but will be a queen;
+            // SEE treats both this move's cost and the next recapture's
+            // victim-value the same way — use queen's value.
+            see_value(QUEEN)
+        } else {
+            see_value(att_pt)
+        };
+        balance = -balance - 1 - effective_value;
 
         if balance >= 0 {
             // If the attacker is king and opponent still has attackers, king can't capture
@@ -234,11 +250,220 @@ mod see_xray_tests {
                 if b.piece_type_at(to) != NO_PIECE_TYPE || move_flags(mv) == FLAG_EN_PASSANT {
                     let val = see_value_of(&b, mv);
                     let from = move_from(mv);
-                    println!("  {}{}→{}{}: SEE={}", 
+                    println!("  {}{}→{}{}: SEE={}",
                         (b'a' + (from % 8)) as char, (b'1' + (from / 8)) as char,
                         (b'a' + (to % 8)) as char, (b'1' + (to / 8)) as char,
                         val);
                 }
+            }
+        }
+    }
+}
+
+/// Assertive SEE correctness tests. Hand-computed expected values for
+/// specific capture scenarios. Guards the SEE implementation against
+/// regressions — particularly the classic failure modes: wrong
+/// exchange ordering, missing x-ray attackers, incorrect EP victim
+/// location, incorrect promotion gain calculation.
+///
+/// Piece values (from eval::see_value): P=100, N=320, B=330, R=500,
+/// Q=900, K=huge.
+#[cfg(test)]
+mod see_assertive_tests {
+    use super::*;
+    use crate::board::Board;
+    use crate::movegen::generate_legal_moves;
+
+    fn init() { crate::init(); }
+
+    /// Find a move by from/to squares. Panics if not legal.
+    fn find_move(b: &Board, from: u8, to: u8) -> Move {
+        let moves = generate_legal_moves(b);
+        for i in 0..moves.len {
+            let mv = moves.moves[i];
+            if move_from(mv) == from && move_to(mv) == to {
+                return mv;
+            }
+        }
+        panic!("no legal move {} → {} in {}", from, to, b.to_fen());
+    }
+
+    #[test]
+    fn see_hanging_pawn_returns_pawn_value() {
+        init();
+        // White N on c4 captures hanging Black P on e5 (only W has attackers).
+        let b = Board::from_fen("4k3/8/8/4p3/2N5/8/8/4K3 w - - 0 1");
+        let mv = find_move(&b, 26, 36); // c4 → e5
+        assert_eq!(see_value_of(&b, mv), 100);
+        assert!(see_ge(&b, mv, 100), "ge(100) true");
+        assert!(!see_ge(&b, mv, 101), "ge(101) false");
+    }
+
+    #[test]
+    fn see_pawn_defended_by_pawn_zero() {
+        init();
+        // White P on d5 captures Black P on e6, recaptured by Black P on d7.
+        let b = Board::from_fen("4k3/3p4/4p3/3P4/8/8/8/4K3 w - - 0 1");
+        let mv = find_move(&b, 35, 44); // d5 → e6
+        // PxP, then PxP = +100 - 100 = 0.
+        assert_eq!(see_value_of(&b, mv), 0);
+        assert!(see_ge(&b, mv, 0));
+        assert!(!see_ge(&b, mv, 1));
+    }
+
+    #[test]
+    fn see_queen_takes_defended_pawn_negative() {
+        init();
+        // White Q on d1 captures Black P on d5 (defended by Black pawns
+        // on c6 and e6 — both attack d5 diagonally).
+        // After QxP, BP×Q: +100 - 1200 = -1100.
+        // (SEE piece values are consensus: Q=1200, P=100.)
+        let b = Board::from_fen("4k3/8/2p1p3/3p4/8/8/8/3QK3 w - - 0 1");
+        let mv = find_move(&b, 3, 35); // d1 → d5
+        assert_eq!(see_value_of(&b, mv), -1100);
+        assert!(see_ge(&b, mv, -1100));
+        assert!(!see_ge(&b, mv, -1099));
+    }
+
+    #[test]
+    fn see_xray_rook_behind_rook() {
+        init();
+        // White R on d1, White R on d2, Black R on d8, Black P on d5.
+        // WR d2 captures d5. Sequence:
+        //  +P (100)  -R (500)   +R (500)  -R (500)
+        //   d2×d5    d8×d5      d1×d5     black has no more attackers (stops).
+        // Wait: after d1×d5, Black would lose their last R to nothing, so they stop earlier.
+        //
+        // Optimal play: +100 -500 = -400 (W loses too much, so W wouldn't start)
+        //   BUT see computes the perfect-exchange value assuming both sides play
+        //   optimally. Let's trace:
+        //   0. W move: d2×d5 → balance = +100
+        //   1. B stands or recaptures? B knows if they do Rxd5, W can continue with
+        //      d1×d5 winning B's rook: +100-500+500 = +100. B choice: recapture
+        //      (lose -100 relative to standing pat at +100). No, that's losing for B.
+        //      Actually from B's perspective, they want to minimize W's gain.
+        //      If B stands: W gains +100.
+        //      If B recaptures (Rxd5): W loses R (-500 from +100 = -400), then W can
+        //        continue (Rxd5): +100-500+500 = +100 again. Then B no more attackers,
+        //        final value = +100. So B capturing gives +100 too.
+        //      Either way, W nets +100.
+        //   Expected SEE = +100.
+        let b = Board::from_fen("3r3k/8/8/3p4/8/8/3R4/3RK3 w - - 0 1");
+        let mv = find_move(&b, 11, 35); // d2 → d5
+        assert_eq!(see_value_of(&b, mv), 100);
+    }
+
+    #[test]
+    fn see_en_passant_captures_pawn() {
+        init();
+        // Black just played e7-e5 (double push). White P on d5 can EP-capture e6.
+        // Captured pawn is the e5 pawn (not e6).
+        let b = Board::from_fen("4k3/8/8/3Pp3/8/8/8/4K3 w - e6 0 1");
+        let moves = generate_legal_moves(&b);
+        // Find the EP capture
+        let mut ep_move = NO_MOVE;
+        for i in 0..moves.len {
+            let mv = moves.moves[i];
+            if move_flags(mv) == FLAG_EN_PASSANT {
+                ep_move = mv;
+                break;
+            }
+        }
+        assert_ne!(ep_move, NO_MOVE, "EP move must be legal");
+        // EP: no defenders on e6, so pure pawn gain.
+        assert_eq!(see_value_of(&b, ep_move), 100);
+    }
+
+    #[test]
+    fn see_promotion_on_empty_square() {
+        init();
+        // White P on a7 promotes to a8 (empty). Gain: Q - P = 1200 - 100 = 1100.
+        let b = Board::from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1");
+        let moves = generate_legal_moves(&b);
+        let mut promo_move = NO_MOVE;
+        for i in 0..moves.len {
+            let mv = moves.moves[i];
+            if is_promotion(mv) && promotion_piece_type(mv) == QUEEN && move_to(mv) == 56 {
+                promo_move = mv;
+                break;
+            }
+        }
+        assert_ne!(promo_move, NO_MOVE);
+        assert_eq!(see_value_of(&b, promo_move), 1100);
+    }
+
+    #[test]
+    fn see_promotion_capture_of_rook() {
+        init();
+        // White P on g7 captures h8 (Black R). Black K on e8 is too far.
+        // Gain: R + (Q - P) = 640 + 1100 = 1740.
+        let b = Board::from_fen("4k2r/6P1/8/8/8/8/8/4K3 w - - 0 1");
+        let moves = generate_legal_moves(&b);
+        let mut promo_cap = NO_MOVE;
+        for i in 0..moves.len {
+            let mv = moves.moves[i];
+            if is_promotion(mv) && promotion_piece_type(mv) == QUEEN
+                && move_from(mv) == 54 && move_to(mv) == 63
+            {
+                promo_cap = mv;
+                break;
+            }
+        }
+        assert_ne!(promo_cap, NO_MOVE);
+        assert_eq!(see_value_of(&b, promo_cap), 1740);
+    }
+
+    #[test]
+    fn see_castling_is_zero() {
+        init();
+        // Castling is not a capture — SEE should be 0.
+        let b = Board::from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+        let moves = generate_legal_moves(&b);
+        let mut castle_move = NO_MOVE;
+        for i in 0..moves.len {
+            let mv = moves.moves[i];
+            if move_flags(mv) == FLAG_CASTLE {
+                castle_move = mv;
+                break;
+            }
+        }
+        assert_ne!(castle_move, NO_MOVE);
+        assert_eq!(see_value_of(&b, castle_move), 0);
+        assert!(see_ge(&b, castle_move, 0));
+        assert!(!see_ge(&b, castle_move, 1));
+    }
+
+    /// Regression test for see_value_of's binary search: every
+    /// possible SEE value in [-2000, 2000] must satisfy:
+    /// see_ge(mv, threshold) == (see_value_of(mv) >= threshold)
+    /// This tests the monotonicity invariant of see_ge.
+    #[test]
+    fn see_ge_monotonicity() {
+        init();
+        let positions = &[
+            "4k3/8/8/4p3/2N5/8/8/4K3 w - - 0 1",     // hanging P
+            "4k3/3p4/4p3/3P4/8/8/8/4K3 w - - 0 1",   // defended P
+            "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",  // castle
+        ];
+        for fen in positions {
+            let b = Board::from_fen(fen);
+            let moves = generate_legal_moves(&b);
+            for i in 0..moves.len {
+                let mv = moves.moves[i];
+                let actual = see_value_of(&b, mv);
+                // Check monotonicity at several thresholds.
+                for &t in &[-2000, -1000, -500, -100, 0, 100, 500, 1000, 2000] {
+                    let expected = actual >= t;
+                    let got = see_ge(&b, mv, t);
+                    assert_eq!(
+                        got, expected,
+                        "see_ge({}, {}) = {}; expected {} (actual SEE = {})",
+                        crate::types::move_to_uci(mv), t, got, expected, actual
+                    );
+                }
+                // Check adjacency: see_ge(actual+1) must be false, see_ge(actual) must be true.
+                assert!(see_ge(&b, mv, actual), "see_ge(SEE) must be true");
+                assert!(!see_ge(&b, mv, actual + 1), "see_ge(SEE+1) must be false");
             }
         }
     }

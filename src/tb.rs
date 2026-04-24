@@ -3,28 +3,42 @@
 /// WDL probes at interior nodes (requires halfmove == 0).
 /// DTZ probes at root for best tablebase move.
 
-use shakmaty::{Chess, FromSetup, CastlingMode};
+use shakmaty::{Chess, FromSetup, CastlingMode, Position};
 use shakmaty::fen::Fen;
 use shakmaty_syzygy::{Tablebase, AmbiguousWdl, Dtz, MaybeRounded};
 
 use crate::board::Board;
+use crate::tb_cache::TbCache;
+
+/// Default cache size in MB. CCRL convention allows engines one
+/// probe-result cache. Override via `setoption name TBHash value N`.
+pub const DEFAULT_TB_HASH_MB: usize = 16;
 
 /// Wrapper around shakmaty-syzygy Tablebase.
 pub struct SyzygyTB {
     tb: Tablebase<Chess>,
     max_pieces: usize,
+    cache: TbCache,
 }
 
 impl SyzygyTB {
-    /// Initialize tablebases from a directory path.
+    /// Initialize tablebases from a directory path. Uses the default
+    /// cache size; call `with_cache_mb` to customise.
     pub fn new(path: &str) -> Result<Self, String> {
+        Self::new_with_cache(path, DEFAULT_TB_HASH_MB)
+    }
+
+    /// Initialize tablebases with a specific cache size in MB (0 disables).
+    pub fn new_with_cache(path: &str, cache_mb: usize) -> Result<Self, String> {
         let mut tb = Tablebase::new();
         tb.add_directory(path).map_err(|e| format!("Syzygy init: {}", e))?;
 
         let max_pieces = tb.max_pieces();
-        eprintln!("info string Syzygy tablebases loaded: {} pieces from {}", max_pieces, path);
+        let cache = TbCache::new(cache_mb);
+        eprintln!("info string Syzygy tablebases loaded: {} pieces from {}, cache {} MB",
+                  max_pieces, path, cache.size_mb());
 
-        Ok(SyzygyTB { tb, max_pieces })
+        Ok(SyzygyTB { tb, max_pieces, cache })
     }
 
     /// Maximum number of pieces supported.
@@ -32,17 +46,50 @@ impl SyzygyTB {
         self.max_pieces
     }
 
+    /// Clear the probe cache (called on ucinewgame).
+    pub fn clear_cache(&self) {
+        self.cache.clear();
+    }
+
     /// Probe WDL for an interior node. Returns Some(wdl_score) or None.
-    /// wdl_score: positive = winning, 0 = draw, negative = losing.
-    /// Only valid when halfmove clock is 0 (no 50-move rule complications).
+    /// wdl_score: +20000 = definite win, +1 = cursed win, 0 = draw,
+    /// -1 = blessed loss, -20000 = definite loss.
+    ///
+    /// C8 audit LIKELY #42: the probe is valid at ANY halfmove — shakmaty
+    /// returns `CursedWin`/`BlessedLoss` (mapped to ±1) for what would be
+    /// a Win/Loss at halfmove=0 but is a draw-by-rule at high halfmove.
+    /// Cache is keyed by (hash, halfmove) after C2 so results don't
+    /// cross-contaminate. Previous comment "Only valid when halfmove == 0"
+    /// was misleading — the caller should just use the ambiguous result as
+    /// a near-draw signal.
     pub fn probe_wdl(&self, board: &Board) -> Option<i32> {
         if crate::bitboard::popcount(board.occupied()) as usize > self.max_pieces {
             return None;
         }
+        // C8 audit LIKELY #43: Syzygy rejects positions with any castling
+        // right, so a positive probe is impossible here. Gate early to
+        // avoid wasted FEN formatting + Chess::from_setup work that
+        // shakmaty does before its own castling check.
+        if board.castling != 0 {
+            return None;
+        }
+
+        // Native-hash cache check first — avoids the Board→Chess translation
+        // and the shakmaty decompression path when the slot is valid.
+        // Halfmove is part of the cache key (C2 fix): shakmaty's probe_wdl
+        // returns different results across halfmove, so we must cache per
+        // halfmove to avoid serving a stale cursed-win/blessed-loss answer.
+        if let Some(wdl) = self.cache.probe(board.hash, board.halfmove) {
+            return Some(wdl);
+        }
 
         let chess = board_to_shakmaty(board)?;
         match self.tb.probe_wdl(&chess) {
-            Ok(wdl) => Some(ambiguous_wdl_to_score(wdl)),
+            Ok(wdl) => {
+                let score = ambiguous_wdl_to_score(wdl);
+                self.cache.store(board.hash, board.halfmove, score);
+                Some(score)
+            }
             Err(_) => None,
         }
     }
@@ -64,6 +111,65 @@ impl SyzygyTB {
                 Some((uci.to_string(), wdl))
             }
             _ => None,
+        }
+    }
+
+    /// Walk the TB-optimal line from the root, building a multi-move PV.
+    /// Returns Some((moves_uci, root_wdl)) with moves_uci containing up to
+    /// `max_plies` UCI move strings and root_wdl the WDL from the root
+    /// position's perspective.
+    ///
+    /// Used for UCI display so the GUI sees a mate line rather than a
+    /// single TB-hit move, and so ponder has a real ponder_move (PV[1])
+    /// to think about.
+    ///
+    /// Terminates early on:
+    ///   - drawn / cursed-win / blessed-loss initial position (walk would
+    ///     stall against 50mr — we emit only the first move)
+    ///   - checkmate / stalemate reached (best_move returns None)
+    ///   - shakmaty rejects the played move (shouldn't happen for TB moves
+    ///     but defensive)
+    pub fn probe_root_pv(&self, board: &Board, max_plies: usize) -> Option<(Vec<String>, i32)> {
+        if crate::bitboard::popcount(board.occupied()) as usize > self.max_pieces {
+            return None;
+        }
+
+        let mut chess = board_to_shakmaty(board)?;
+        let mut moves: Vec<String> = Vec::new();
+        let mut root_wdl: Option<i32> = None;
+
+        for _ in 0..max_plies {
+            let (m, dtz) = match self.tb.best_move(&chess) {
+                Ok(Some(x)) => x,
+                _ => break,
+            };
+
+            let wdl = dtz_to_wdl_score(dtz);
+            if root_wdl.is_none() {
+                root_wdl = Some(wdl);
+                // If the root position is drawn / cursed / blessed, the
+                // TB walk would try to stall forever — emit only the
+                // first move and stop.
+                if wdl.abs() < 20000 {
+                    let uci = shakmaty::uci::UciMove::from_standard(m).to_string();
+                    moves.push(uci);
+                    break;
+                }
+            }
+
+            let uci = shakmaty::uci::UciMove::from_standard(m.clone()).to_string();
+            moves.push(uci);
+
+            chess = match chess.play(m) {
+                Ok(c) => c,
+                Err(_) => break,
+            };
+        }
+
+        if moves.is_empty() {
+            None
+        } else {
+            Some((moves, root_wdl.unwrap_or(0)))
         }
     }
 }
@@ -90,10 +196,21 @@ fn dtz_to_wdl_score(dtz: MaybeRounded<Dtz>) -> i32 {
     // shakmaty-syzygy DTZ convention: negative = side to move wins,
     // positive = side to move loses. Invert for our score convention
     // (positive = good for side to move).
+    //
+    // C8 audit LIKELY #41: |DTZ| > 100 means the 50-move rule claims
+    // draw before conversion (cursed-win / blessed-loss). Report ±1 to
+    // match `ambiguous_wdl_to_score`'s convention — previously we
+    // collapsed these into ±20000, making the root print "mate-ish"
+    // scores for positions that are drawn by rule.
     let d = dtz.ignore_rounding();
-    if d.0 < 0 { 20000 }
-    else if d.0 > 0 { -20000 }
-    else { 0 }
+    let abs_d = d.0.abs();
+    if d.0 < 0 {
+        if abs_d > 100 { 1 } else { 20000 }
+    } else if d.0 > 0 {
+        if abs_d > 100 { -1 } else { -20000 }
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]

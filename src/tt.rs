@@ -105,8 +105,177 @@ impl TTBucket {
     }
 }
 
+/// 2 MB-aligned bucket array with explicit huge-page preference.
+///
+/// Three-tier allocation strategy, tried in order:
+///
+/// 1. **Explicit hugetlb pool** (`mmap(MAP_HUGETLB | MAP_ANONYMOUS)`) —
+///    deterministic, bypasses THP/khugepaged. Requires the admin to
+///    pre-allocate pages: `sudo sysctl -w vm.nr_hugepages=<N>` (one
+///    page per 2 MB of TT to cover). When the pool is configured and
+///    has enough free pages, the TT is guaranteed to land on 2 MB
+///    physical pages — visible as `Private_Hugetlb` in `/proc/<pid>/smaps`.
+///
+/// 2. **Aligned heap + MADV_HUGEPAGE + MADV_COLLAPSE** — relies on the
+///    kernel's transparent huge-page machinery. Works when THP is
+///    functional; opportunistic.
+///
+/// 3. **Aligned heap + madvise hint only** — last resort; lets
+///    khugepaged promote lazily over many scan intervals (or never, on
+///    kernels where THP is silently broken — observed on Ubuntu HWE
+///    6.8.0-110 with `full_scans` incrementing but `pages_collapsed=0`).
+///
+/// All three return 2 MB-aligned memory. The sanity test
+/// `test_tt_allocation_is_2mb_aligned` pins the alignment invariant so
+/// future allocator regressions break the build rather than silently
+/// undoing any huge-page win.
+///
+/// The previous implementation used `Vec::with_capacity` → glibc malloc
+/// → 16-byte-aligned pages, so `madvise(MADV_HUGEPAGE)` was a no-op and
+/// Coda fell back to 4 KB pages on every Linux host. Verified on the
+/// production lichess box: `AnonHugePages: 0` for live coda with a
+/// 1 GB TT before this fix.
+#[cfg(target_os = "linux")]
+struct AlignedBuckets {
+    ptr: std::ptr::NonNull<TTBucket>,
+    len: usize,
+    /// How the mapping was obtained — determines the Drop path.
+    backing: AllocBacking,
+}
+
+#[cfg(target_os = "linux")]
+enum AllocBacking {
+    /// mmap(MAP_HUGETLB): released via munmap.
+    Hugetlb { size: usize },
+    /// std::alloc: released via dealloc.
+    Heap { layout: std::alloc::Layout },
+}
+
+#[cfg(target_os = "linux")]
+impl AlignedBuckets {
+    const HUGE_PAGE: usize = 2 * 1024 * 1024; // 2 MB
+
+    fn new(len: usize) -> Self {
+        let bytes = len.checked_mul(std::mem::size_of::<TTBucket>()).expect("TT size overflow");
+        // Layout/Hugetlb require size to be a multiple of 2 MB.
+        let size = (bytes + Self::HUGE_PAGE - 1) & !(Self::HUGE_PAGE - 1);
+
+        // Tier 1: explicit hugetlb mapping. Guaranteed real huge pages
+        // when the pool is configured; fails cleanly otherwise.
+        if let Some(ab) = Self::try_hugetlb(len, size) {
+            return ab;
+        }
+
+        // Tier 2/3: 2 MB-aligned heap allocation + THP hints.
+        Self::from_heap_with_thp(len, size)
+    }
+
+    fn try_hugetlb(len: usize, size: usize) -> Option<Self> {
+        // SAFETY: `mmap` with these flags is well-defined; we check for
+        // MAP_FAILED. The returned mapping is owned until munmap.
+        unsafe {
+            let raw = libc::mmap(
+                std::ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_HUGETLB,
+                -1,
+                0,
+            );
+            if raw == libc::MAP_FAILED {
+                return None;
+            }
+            // MAP_ANONYMOUS pages are kernel-zeroed; no memset needed.
+            let ptr = std::ptr::NonNull::new(raw as *mut TTBucket)?;
+            Some(AlignedBuckets {
+                ptr,
+                len,
+                backing: AllocBacking::Hugetlb { size },
+            })
+        }
+    }
+
+    fn from_heap_with_thp(len: usize, size: usize) -> Self {
+        use std::alloc::{alloc_zeroed, Layout};
+
+        let layout = Layout::from_size_align(size, Self::HUGE_PAGE).expect("TT layout");
+        // SAFETY: size/align are valid (checked by Layout), allocation is
+        // zero-init, we own the returned pointer until Drop.
+        let raw = unsafe { alloc_zeroed(layout) };
+        let ptr = std::ptr::NonNull::new(raw as *mut TTBucket)
+            .unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
+
+        // MADV_HUGEPAGE sets the `hg` VmFlag; MADV_COLLAPSE (kernel 6.1+)
+        // synchronously promotes if the kernel is willing. Both return
+        // benign errors on older / misbehaving kernels and we accept the
+        // 4 KB fallback silently.
+        unsafe {
+            let raw_ptr = ptr.as_ptr() as *mut libc::c_void;
+            libc::madvise(raw_ptr, size, libc::MADV_HUGEPAGE);
+
+            // Force-populate every 4 KB page so MADV_COLLAPSE has
+            // something to collapse (alloc_zeroed is logically zero but
+            // physical pages don't fault in until written).
+            let page = 4 * 1024;
+            let mut off = 0usize;
+            while off < size {
+                std::ptr::write_volatile((raw_ptr as *mut u8).add(off), 0u8);
+                off += page;
+            }
+
+            // MADV_COLLAPSE = 25 (Linux 6.1+); not in libc we pin.
+            const MADV_COLLAPSE: libc::c_int = 25;
+            libc::madvise(raw_ptr, size, MADV_COLLAPSE);
+        }
+
+        AlignedBuckets {
+            ptr,
+            len,
+            backing: AllocBacking::Heap { layout },
+        }
+    }
+
+    /// True if this instance is backed by an explicit hugetlb mapping.
+    /// Used by the constructor to log which tier served the TT.
+    fn is_hugetlb(&self) -> bool {
+        matches!(self.backing, AllocBacking::Hugetlb { .. })
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for AlignedBuckets {
+    fn drop(&mut self) {
+        // SAFETY: `backing` records exactly how `ptr` was obtained; we
+        // match it with the correct deallocator. TTBucket is atomic-only
+        // so has no meaningful Drop.
+        unsafe {
+            match self.backing {
+                AllocBacking::Hugetlb { size } => {
+                    libc::munmap(self.ptr.as_ptr() as *mut libc::c_void, size);
+                }
+                AllocBacking::Heap { layout } => {
+                    std::alloc::dealloc(self.ptr.as_ptr() as *mut u8, layout);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl std::ops::Deref for AlignedBuckets {
+    type Target = [TTBucket];
+    fn deref(&self) -> &[TTBucket] {
+        // SAFETY: pointer is valid for `len` TTBuckets, zero-initialised
+        // which is a valid bit pattern for all AtomicU64/AtomicU32 fields.
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+}
+
 /// The transposition table. Thread-safe for Lazy SMP.
 pub struct TT {
+    #[cfg(target_os = "linux")]
+    buckets: AlignedBuckets,
+    #[cfg(not(target_os = "linux"))]
     buckets: Vec<TTBucket>,
     mask: usize,  // num_buckets - 1 (power of 2)
     generation: std::sync::atomic::AtomicU8,
@@ -152,17 +321,28 @@ impl TT {
             size *= 2;
         }
         let size = size.max(1);
-        let mut buckets = Vec::with_capacity(size);
-        for _ in 0..size {
-            buckets.push(TTBucket::new_empty());
-        }
-        // Hint to use huge pages for the TT allocation (Linux transparent huge pages)
+
         #[cfg(target_os = "linux")]
-        unsafe {
-            let ptr = buckets.as_ptr() as *mut libc::c_void;
-            let len = size * std::mem::size_of::<TTBucket>();
-            libc::madvise(ptr, len, libc::MADV_HUGEPAGE);
-        }
+        let buckets = {
+            let ab = AlignedBuckets::new(size);
+            // Announce the path we took — helps confirm huge pages are
+            // actually in play without digging through /proc/<pid>/smaps.
+            let tier = if ab.is_hugetlb() { "explicit hugetlb (MAP_HUGETLB)" } else { "aligned heap + THP" };
+            let mb_alloc = (size * std::mem::size_of::<TTBucket>()) >> 20;
+            let _ = mb_alloc; // kept for potential future reporting
+            println!("info string TT {} MB via {} ({} buckets)", mb, tier, size);
+            ab
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        let buckets = {
+            let mut v = Vec::with_capacity(size);
+            for _ in 0..size {
+                v.push(TTBucket::new_empty());
+            }
+            v
+        };
+
         TT {
             buckets,
             mask: size - 1,
@@ -303,26 +483,21 @@ impl TT {
     }
 }
 
-/// Adjust mate scores for TT storage (add ply).
-/// Threshold: MateScore - 100 = 28900.
+/// Adjust mate and TB scores for TT storage (add ply).
+///
+/// C5 (2026-04-22 audit): interior TB probes return `TB_WIN - ply`,
+/// which is 100cp below the original `MATE_SCORE - 100` threshold. That
+/// meant TB scores passed through TT store/load unadjusted, so a TB
+/// score stored at ply=10 and retrieved at ply=20 was 10cp too
+/// optimistic. Threshold widened to `TB_WIN - 128` to cover the full
+/// `[TB_WIN - MAX_PLY, MATE_SCORE]` range (MAX_PLY=64 in search).
+/// Normal evals never reach this range.
 #[inline]
 pub fn score_to_tt(score: i32, ply: i32) -> i32 {
-    if score > MATE_SCORE - 100 {
+    if score > TB_WIN - 128 {
         score + ply
-    } else if score < -(MATE_SCORE - 100) {
+    } else if score < -(TB_WIN - 128) {
         score - ply
-    } else {
-        score
-    }
-}
-
-/// Adjust mate scores from TT retrieval (subtract ply).
-#[inline]
-pub fn score_from_tt(score: i32, ply: i32) -> i32 {
-    if score > MATE_SCORE - 100 {
-        score - ply
-    } else if score < -(MATE_SCORE - 100) {
-        score + ply
     } else {
         score
     }
@@ -336,9 +511,66 @@ pub fn is_mate_score(score: i32) -> bool {
     score.abs() > MATE_SCORE - 100
 }
 
+/// Adjust mate and TB scores from TT retrieval (subtract ply). See
+/// `score_to_tt` for the threshold rationale.
+#[inline]
+pub fn score_from_tt(score: i32, ply: i32) -> i32 {
+    if score > TB_WIN - 128 {
+        score - ply
+    } else if score < -(TB_WIN - 128) {
+        score + ply
+    } else {
+        score
+    }
+}
+
+/// P3 50mr-threatened mate downgrade (Reckless pattern). A stored
+/// mate-in-N is only reachable if N <= 100 - halfmove; otherwise
+/// the 50-move rule claims the draw first. Return a TB-level win
+/// signal instead of a false mate.
+///
+/// **Apply only at cutoff return sites**, not at every TT-score
+/// read. Many downstream checks (`< MATE_SCORE - 100`) filter out
+/// mate scores specifically; pushing a downgraded-mate through them
+/// changes the meaning of those filters and enables unintended
+/// extensions / cutoffs / refinements.
+#[inline]
+pub fn downgrade_50mr_mate(adjusted_score: i32, ply: i32, halfmove: u16) -> i32 {
+    let halfmove = halfmove as i32;
+    if adjusted_score > MATE_SCORE - 100 && MATE_SCORE - adjusted_score > 100 - halfmove {
+        return TB_WIN - ply;
+    }
+    if adjusted_score < -(MATE_SCORE - 100) && MATE_SCORE + adjusted_score > 100 - halfmove {
+        return -TB_WIN + ply;
+    }
+    adjusted_score
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The huge-page fix relies on the TT's base pointer being 2 MB
+    /// aligned — otherwise `madvise(MADV_HUGEPAGE)` silently falls back
+    /// to 4 KB pages (the bug this commit is addressing). Regressing
+    /// the allocator would silently undo the NPS win, so pin the
+    /// invariant in a test.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_tt_allocation_is_2mb_aligned() {
+        // Exercise sizes on both sides of the 2 MB rounding path.
+        for mb in [1usize, 4, 16, 64, 256, 1024] {
+            let tt = TT::new(mb);
+            let ptr = tt.buckets.as_ptr() as usize;
+            const HUGE: usize = 2 * 1024 * 1024;
+            assert_eq!(
+                ptr & (HUGE - 1), 0,
+                "TT base pointer {:#x} (Hash={} MB) is not 2 MB aligned — \
+                 MADV_HUGEPAGE will be a no-op on transparent_hugepage=madvise hosts",
+                ptr, mb
+            );
+        }
+    }
 
     #[test]
     fn test_pack_unpack_roundtrip() {
@@ -393,11 +625,141 @@ mod tests {
         let hash2 = 0xFEDCBA9876543210u64;
         tt.store(hash2, -1, -50, TT_FLAG_UPPER, 100, -200, false);
         let entry2 = tt.probe(hash2);
-        
+
         assert!(entry2.hit, "QS entry should hit");
         assert_eq!(entry2.depth, -1, "QS depth should be -1, got {}", entry2.depth);
         assert_eq!(entry2.score, -50);
         assert_eq!(entry2.static_eval, -200);
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Bucket replacement + XOR-key verification audit tests.
+    // ──────────────────────────────────────────────────────────────────
+
+    fn mk_hash(i: u64) -> u64 { 0xDEAD_BEEF_C0DEu64.wrapping_mul(i).wrapping_add(0x12345) }
+
+    /// Basic roundtrip: store → probe returns same data.
+    #[test]
+    fn tt_store_probe_roundtrip() {
+        let tt = TT::new(4); // 4 MB
+        let h = mk_hash(1);
+        tt.store(h, 5, 42, TT_FLAG_EXACT, 0x1234, -100, true);
+        let e = tt.probe(h);
+        assert!(e.hit);
+        assert_eq!(e.depth, 5);
+        assert_eq!(e.score, 42);
+        assert_eq!(e.flag, TT_FLAG_EXACT);
+        assert_eq!(e.best_move, 0x1234);
+        assert_eq!(e.static_eval, -100);
+        assert_eq!(e.tt_pv, true);
+    }
+
+    /// Five distinct hashes mapping to the same bucket must all coexist
+    /// (the bucket has 5 slots). We force a collision by choosing
+    /// hashes whose lower bits agree (picking 5 hashes that differ only
+    /// in the upper 32 bits but share the bucket index).
+    #[test]
+    fn tt_five_distinct_hashes_all_fit() {
+        let tt = TT::new(4);
+        let base = 0x1u64;
+        // Shift upper 32 bits so lower bits (bucket index) stay identical.
+        let hashes: Vec<u64> = (0..5).map(|i| base | ((i as u64 + 1) << 32)).collect();
+
+        for (i, &h) in hashes.iter().enumerate() {
+            tt.store(h, (i + 1) as i32, 100 + i as i32,
+                TT_FLAG_EXACT, (i + 10) as u16, 0, false);
+        }
+
+        // Verify all 5 probe successfully with correct depth.
+        for (i, &h) in hashes.iter().enumerate() {
+            let e = tt.probe(h);
+            assert!(e.hit, "hash {} should hit", i);
+            assert_eq!(e.depth, (i + 1) as i32, "hash {} depth", i);
+            assert_eq!(e.score, 100 + i as i32, "hash {} score", i);
+        }
+    }
+
+    /// XOR-key verification: a probe with a DIFFERENT hash that happens
+    /// to collide with the same bucket must not return another entry's
+    /// data (stored_key ^ data != key_upper → miss).
+    #[test]
+    fn tt_xor_verification_prevents_wrong_key_hit() {
+        let tt = TT::new(4);
+        let h1: u64 = 0x1u64 | (0xAAAA_BBBBu64 << 32);
+        let h2: u64 = 0x1u64 | (0xCCCC_DDDDu64 << 32); // different upper, same lower (same bucket)
+
+        tt.store(h1, 5, 42, TT_FLAG_EXACT, 0x100, 0, false);
+
+        // Probing h2 must not return h1's entry.
+        let e = tt.probe(h2);
+        assert!(!e.hit, "different hash probing same bucket must miss");
+    }
+
+    /// Same-key re-store must UPDATE the existing slot, not allocate
+    /// a new one. Property: after 10 rewrites of the same hash, the
+    /// bucket only has 1 entry with that key.
+    #[test]
+    fn tt_same_key_updates_same_slot() {
+        let tt = TT::new(4);
+        let h = mk_hash(42);
+        for i in 0..10 {
+            tt.store(h, i + 1, i * 10, TT_FLAG_EXACT, (i + 1) as u16, 0, false);
+        }
+        let e = tt.probe(h);
+        assert!(e.hit);
+        assert_eq!(e.depth, 10, "last write should be visible");
+        assert_eq!(e.score, 90);
+    }
+
+    /// Depth-gated replacement on same-key: new store with shallower
+    /// depth (depth <= slot_depth - 3) and same generation MUST NOT
+    /// overwrite. Protects the deep result from being replaced by a
+    /// shallow one during search.
+    #[test]
+    fn tt_same_key_shallow_does_not_overwrite() {
+        let tt = TT::new(4);
+        let h = mk_hash(7);
+        // Write deep
+        tt.store(h, 20, 100, TT_FLAG_EXACT, 0x200, 0, false);
+        // Same-gen shallow attempt: depth 16 < 20-3 = 17, should NOT overwrite.
+        tt.store(h, 16, 500, TT_FLAG_LOWER, 0x300, 0, false);
+
+        let e = tt.probe(h);
+        assert!(e.hit);
+        assert_eq!(e.depth, 20, "deep write must survive shallow same-gen overwrite");
+        assert_eq!(e.score, 100);
+
+        // Same-gen near-same-depth (20 > 17): overwrites.
+        tt.store(h, 19, 999, TT_FLAG_UPPER, 0x400, 0, false);
+        let e2 = tt.probe(h);
+        // Depth 19 > 20-3 = 17, so overwrite allowed.
+        assert_eq!(e2.depth, 19);
+        assert_eq!(e2.score, 999);
+    }
+
+    /// Store returns early on empty slot; the store-loop scans all
+    /// slots and doesn't re-enter a key-matched replacement path
+    /// by mistake. Verify sequential fill of 5 slots all land on
+    /// distinct slots (property: 5 distinct keys survive, test is
+    /// essentially the same as tt_five_distinct_hashes_all_fit but
+    /// with a 6th write triggering eviction of exactly one entry).
+    #[test]
+    fn tt_sixth_key_evicts_one_not_all() {
+        let tt = TT::new(4);
+        let base = 0x5u64;
+        let hashes: Vec<u64> = (0..6).map(|i| base | ((i as u64 + 1) << 32)).collect();
+
+        for (i, &h) in hashes.iter().enumerate() {
+            // All same depth so eviction falls back on "worst slot" = first scanned.
+            tt.store(h, 10, i as i32, TT_FLAG_EXACT, (i + 1) as u16, 0, false);
+        }
+
+        let mut hits = 0;
+        for &h in &hashes {
+            if tt.probe(h).hit { hits += 1; }
+        }
+        // With 5 slots and 6 distinct keys, exactly 5 should be present.
+        assert_eq!(hits, 5, "exactly 5 of 6 keys survive in a 5-slot bucket");
     }
 }
 

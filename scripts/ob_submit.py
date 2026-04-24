@@ -9,6 +9,8 @@ Usage:
     python3 ob_submit.py <dev_branch> 1234567                  # Override dev bench (avoid if possible)
     python3 ob_submit.py <dev_branch> --dev-network ABCD1234   # Custom NNUE net for dev
     python3 ob_submit.py <dev_branch> --base-network ABCD1234  # Custom NNUE net for base
+    python3 ob_submit.py <dev_branch> \
+        --dev-options 'Threads=1 Hash=64 HiddenActivation=crelu' # Custom UCI for dev only
 
 Network hashes are the first 8 chars of SHA256 (uppercase). Use ob_upload_net.py to
 upload nets and get their hashes, or check https://ob.atwiss.com/networks/.
@@ -84,7 +86,7 @@ def submit_test(args):
         'dev_engine':       'Coda',
         'dev_branch':       args.dev_branch,
         'dev_bench':        str(args.dev_bench),
-        'dev_options':      args.options,
+        'dev_options':      args.dev_options or args.options,
         'dev_time_control': args.tc,
         'dev_network':      args.dev_network,
 
@@ -92,7 +94,7 @@ def submit_test(args):
         'base_engine':       'Coda',
         'base_branch':       args.base_branch,
         'base_bench':        str(args.base_bench),
-        'base_options':      args.options,
+        'base_options':      args.base_options or args.options,
         'base_time_control': args.tc,
         'base_network':      args.base_network,
 
@@ -104,7 +106,7 @@ def submit_test(args):
         'throughput':       str(args.throughput),
         'workload_size':   '32',
         'scale_method':    'BASE',
-        'scale_nps':       '500000',
+        'scale_nps':       str(args.scale_nps),
         'win_adj':         'movecount=3 score=500',
         'draw_adj':        'movenumber=20 movecount=10 score=10',
         'upload_pgns':     'FALSE',
@@ -141,16 +143,43 @@ def main():
     p.add_argument('--base-bench', type=int, default=None, help='Base bench (omit to let OB auto-detect)')
     p.add_argument('--bounds', default='[0.00, 5.00]', help='SPRT bounds (default: [0.00, 5.00])')
     p.add_argument('--tc', default='10.0+0.1', help='Time control (default: 10.0+0.1)')
-    p.add_argument('--options', default='Threads=1 Hash=64', help='UCI options')
+    p.add_argument('--options', default='Threads=1 Hash=64', help='UCI options (applied to both sides unless --dev-options/--base-options given)')
+    p.add_argument('--dev-options', default='', help='UCI options for dev side only (overrides --options for dev). Example: "Threads=1 Hash=64 HiddenActivation=crelu"')
+    p.add_argument('--base-options', default='', help='UCI options for base side only (overrides --options for base)')
     p.add_argument('--dev-network', default='', help='Dev network SHA256 hash (8 chars, from ob_upload_net.py)')
     p.add_argument('--base-network', default='', help='Base network SHA256 hash (8 chars, from ob_upload_net.py)')
     p.add_argument('--priority', type=int, default=0, help='Priority (default: 0)')
     p.add_argument('--throughput', type=int, default=100, help='Throughput (default: 100)')
+    p.add_argument('--scale-nps', type=int, default=None, help='Reference NPS for TC scaling. Auto-detects from branch name: 250000 for v9 branches (feature/threat-inputs, experiment/*, tune/v9-*, fix/threats-*), 500000 for main/v5 branches. Override to force.')
     p.add_argument('--repo', default='https://github.com/adamtwiss/coda', help='GitHub repo URL')
     p.add_argument('--server', default=SERVER, help=f'Server (default: {SERVER})')
     p.add_argument('--username', default=USERNAME, help='Username')
     p.add_argument('--password', default=PASSWORD, help='Password')
     args = p.parse_args()
+
+    # Auto-detect scale_nps from branch name if not explicitly set.
+    # V9 branches run at ~240-280K NPS per core (threat features add ~40% work).
+    # V5/main runs at ~500K+. Wrong scale_nps means games get wrong time budgets.
+    # `fix/` matches broadly — all current fix branches are off
+    # feature/threat-inputs. Backports to v5 must pass --scale-nps 500000
+    # explicitly.
+    v9_patterns = ('feature/threat-inputs', 'experiment/', 'tune/v9-', 'fix/')
+    is_v9 = any(args.dev_branch.startswith(p) or args.base_branch.startswith(p) for p in v9_patterns)
+    if args.scale_nps is None:
+        args.scale_nps = 250000 if is_v9 else 500000
+        print(f'[auto] scale_nps={args.scale_nps} ({"v9 branch detected" if is_v9 else "v5/main"})')
+
+    # Warn if v9 branch without any --dev-network/--base-network: OB will
+    # build with embedded v5 net, giving DIFFERENT bench than v9-prod bench.
+    if is_v9 and not args.dev_network and not args.base_network:
+        print('[WARN] v9 branch submitted without --dev-network/--base-network.')
+        print('       OB will build with embedded v5 net — bench will NOT match')
+        print('       any v9-prod-net bench you measured locally.')
+        print('       Suggest: --dev-network 6AEA210B --base-network 6AEA210B')
+        print('       Press Ctrl-C within 5s to abort, or continue.')
+        import time
+        try: time.sleep(5)
+        except KeyboardInterrupt: return False
 
     if not args.password:
         print('Error: password required. Set OPENBENCH_PASSWORD or use --password')

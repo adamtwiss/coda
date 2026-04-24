@@ -31,7 +31,7 @@ pub struct History {
     /// int16 values (i32 causes different gravity behavior).
     pub capture: [[[i16; 7]; 64]; 13],
     /// Killer moves: [ply][2]
-    pub killers: [[Move; 2]; 64],
+    pub killers: [[Move; 2]; crate::search::MAX_PLY],
     /// Counter-move: [piece 1-12][to]
     /// piece uses 1-12 indexing (slot 0 unused).
     pub counter: [[Move; 64]; 13],
@@ -69,7 +69,7 @@ impl History {
         History {
             main: [[[[0; 64]; 64]; 2]; 2],
             capture: [[[0i16; 7]; 64]; 13],
-            killers: [[NO_MOVE; 2]; 64],
+            killers: [[NO_MOVE; 2]; crate::search::MAX_PLY],
             counter: [[NO_MOVE; 64]; 13],
             cont_hist: [[[[0; 64]; 13]; 64]; 13],
         }
@@ -78,7 +78,7 @@ impl History {
     pub fn clear(&mut self) {
         self.main = [[[[0; 64]; 64]; 2]; 2];
         self.capture = [[[0i16; 7]; 64]; 13];
-        self.killers = [[NO_MOVE; 2]; 64];
+        self.killers = [[NO_MOVE; 2]; crate::search::MAX_PLY];
         self.counter = [[NO_MOVE; 64]; 13];
         self.cont_hist = [[[[0; 64]; 13]; 64]; 13];
     }
@@ -106,7 +106,7 @@ impl History {
                 }
             }
         }
-        self.killers = [[NO_MOVE; 2]; 64];
+        self.killers = [[NO_MOVE; 2]; crate::search::MAX_PLY];
         self.counter = [[NO_MOVE; 64]; 13];
     }
 
@@ -182,14 +182,17 @@ pub struct MovePicker {
     scores: [i32; 256],
     index: usize,
     // Bad captures saved from partition
-    bad_moves: [Move; 64],
-    bad_scores: [i32; 64],
+    bad_moves: [Move; 256],
+    bad_scores: [i32; 256],
     bad_len: usize,
     // Ply for killer indexing
     #[allow(dead_code)]
     ply: usize,
     skip_quiet: bool,
     threats: Threats, // enemy attack bitboard for threat-aware history
+    // B1: our own pieces blocking a slider's attack on an enemy piece.
+    // Moving one of these creates a discovered attack.
+    xray_blockers: Bitboard,
     // Evasion support
     checkers: Bitboard,
     pinned: Bitboard,
@@ -211,6 +214,7 @@ impl MovePicker {
         prev_move: Move,
         pawn_hist: Option<&[[i16; 64]; 13]>,
         threats: Threats,
+        xray_blockers: Bitboard,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
     ) -> Self {
@@ -234,10 +238,12 @@ impl MovePicker {
 
         // Get continuation history sub-table pointers at plies 1, 2, 4, 6 back.
         // Uses moved_piece_stack for correct piece lookup (avoids stale board.piece_at).
+        // Upper-bound guard: callers (search + qsearch) should clamp ply but
+        // we defend here too — indexing out of range panics the search thread.
         let mut cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4] = [None; 4];
         let offsets = [1usize, 2, 4, 6];
         for (i, &off) in offsets.iter().enumerate() {
-            if ply >= off {
+            if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
                 if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
@@ -277,12 +283,13 @@ impl MovePicker {
             moves: MoveList::new(),
             scores: [0; 256],
             index: 0,
-            bad_moves: [NO_MOVE; 64],
-            bad_scores: [0; 64],
+            bad_moves: [NO_MOVE; 256],
+            bad_scores: [0; 256],
             bad_len: 0,
             ply,
             skip_quiet: false,
             threats,
+            xray_blockers,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -308,12 +315,13 @@ impl MovePicker {
             moves: MoveList::new(),
             scores: [0; 256],
             index: 0,
-            bad_moves: [NO_MOVE; 64],
-            bad_scores: [0; 64],
+            bad_moves: [NO_MOVE; 256],
+            bad_scores: [0; 256],
             bad_len: 0,
             ply: 0,
             skip_quiet: true,
             threats: 0,
+            xray_blockers: 0,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -332,14 +340,18 @@ impl MovePicker {
         history: &History,
         _prev_move: Move,
         pawn_hist: Option<&[[i16; 64]; 13]>,
+        threats: Threats,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
     ) -> Self {
-        // Build cont-hist pointers for evasion (same as main picker)
+        // Build cont-hist pointers for evasion (same as main picker).
+        // Also guard the upper bound: qsearch can deepen past MAX_PLY via
+        // evasion chains, and the caller's clamp might be missed — indexing
+        // moved_piece_stack with ply >= len panics the search thread.
         let mut cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4] = [None; 4];
         let offsets = [1usize, 2, 4, 6];
         for (i, &off) in offsets.iter().enumerate() {
-            if ply >= off {
+            if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
                 if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
@@ -361,12 +373,19 @@ impl MovePicker {
             moves: MoveList::new(),
             scores: [0; 256],
             index: 0,
-            bad_moves: [NO_MOVE; 64],
-            bad_scores: [0; 64],
+            bad_moves: [NO_MOVE; 256],
+            bad_scores: [0; 256],
             bad_len: 0,
             ply,
             skip_quiet: false,
-            threats: 0, // evasions don't use threat-aware history
+            // C8 audit LIKELY #19: evasion history READS must use the same
+            // enemy_attacks key as beta-cutoff WRITES. Previously hardcoded
+            // to 0, which hashed into a different 4D history slot than the
+            // writes — history written from in-check cutoffs was invisible
+            // to in-check reads. Reckless/SF keep reads and writes
+            // symmetric.
+            threats,
+            xray_blockers: 0, // evasions don't use discovered-attack bonus
             checkers,
             pinned,
             threat_sq: -1,
@@ -518,8 +537,11 @@ impl MovePicker {
             let cap_score = mvv_lva(board, m) + capt_hist;
             let see_threshold = -capt_hist / 18;
             if !see_ge(board, m, see_threshold) {
-                // Bad capture
-                if self.bad_len < 64 {
+                // Bad capture.
+                // C8 audit LIKELY #24: limit raised to 256 (from 64). 64
+                // could silently drop moves in pathological tactical
+                // positions (multiple queens + rooks with many captures).
+                if self.bad_len < 256 {
                     self.bad_moves[self.bad_len] = m;
                     self.bad_scores[self.bad_len] = cap_score;
                     self.bad_len += 1;
@@ -554,11 +576,12 @@ impl MovePicker {
 
             let mut score = history.main_score(from, to, self.threats);
 
-            // Continuation history: plies 1,2 at 3x weight, plies 4,6 at 1x weight.
-            // Matches Obsidian/Alexandria/Berserk pattern.
+            // Continuation history: plies 1,2 at CONT_HIST_MULT weight, plies 4,6 at 1x weight.
+            // Matches Obsidian/Alexandria/Berserk pattern (default 3).
             if piece != NO_PIECE {
                 let gp = go_piece(piece);
-                let weights = [3i32, 3, 1, 1]; // ply-1, ply-2, ply-4, ply-6
+                let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
+                let weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
                 for (i, &w) in weights.iter().enumerate() {
                     if let Some(sub_ptr) = self.cont_hist_subs[i] {
                         let sub = unsafe { &*sub_ptr };
@@ -580,11 +603,120 @@ impl MovePicker {
                 score += 8000;
             }
 
+            // Escape-capture bonus: bonus for moving a piece off a threatened square
+            // (Reckless pattern). Values are tunable via SPSA.
+            if self.threats & (1u64 << from) != 0 && piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                score += match pt {
+                    4 => crate::search::ESCAPE_BONUS_Q.load(std::sync::atomic::Ordering::Relaxed),
+                    3 => crate::search::ESCAPE_BONUS_R.load(std::sync::atomic::Ordering::Relaxed),
+                    1 | 2 => crate::search::ESCAPE_BONUS_MINOR.load(std::sync::atomic::Ordering::Relaxed),
+                    _ => 0,
+                };
+            }
+
             // Quiet check bonus: moves that give direct check (SF +16384, Viridithas +10000)
             if piece != NO_PIECE {
                 let pt = board.piece_type_at(from);
                 if pt < 6 && self.checking_sqs[pt as usize] & (1u64 << to) != 0 {
                     score += crate::search::QUIET_CHECK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+
+            // B1: Discovered-attack bonus. If `from` is one of our pieces
+            // currently blocking our slider's attack on an enemy, moving
+            // it uncovers that attack. Flat bonus — victim-value scaling
+            // is a follow-up if H1 resolves.
+            if self.xray_blockers & (1u64 << from) != 0 {
+                score += crate::search::DISCOVERED_ATTACK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+            }
+
+            // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering bonus.
+            // popcount(attacks_from(piece, to)) - popcount(attacks_from(piece, from))
+            // Positive = piece attacks more squares after the move (centralization
+            // heuristic, implicit without writing an eval term). Small weight —
+            // additive to history. King mobility delta excluded (king activity
+            // is eval-handled, not ordering-relevant in pre-endgame).
+            if piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                if pt < 5 { // skip king (pt==5)
+                    let us = (piece >> 3) & 1;
+                    let occ = board.colors[0] | board.colors[1];
+                    let from_mob = crate::threats::piece_attacks_occ(pt, us, from as u32, occ).count_ones();
+                    let to_mob = crate::threats::piece_attacks_occ(pt, us, to as u32, occ).count_ones();
+                    score += (to_mob as i32 - from_mob as i32) * crate::search::MOBILITY_DELTA_WEIGHT.load(std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+
+            // Reckless "offense bonus": quiet move that lands on a square
+            // attacking an enemy non-pawn piece. +6000 flat. Not yet present
+            // in Coda; Reckless has it at ~+6000. Signal: does our piece on
+            // `to` attack an enemy worth threatening?
+            // Safety filter: skip if `to` is attacked by any lower-value enemy
+            // piece (the capture back would be net negative for us).
+            if piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                if pt < 6 {
+                    let us = board.side_to_move;
+                    let them = 1 - us;
+                    let occ = board.colors[us as usize] | board.colors[them as usize];
+                    // We'd be on `to` after the move; compute attacks from `to` by our piece type.
+                    let attacks_from_to = match pt {
+                        0 => pawn_attacks(us, to as u32),  // pawn
+                        1 => knight_attacks(to as u32),
+                        2 => bishop_attacks(to as u32, occ & !(1u64 << from)),  // bishop: occ minus our from-square
+                        3 => rook_attacks(to as u32, occ & !(1u64 << from)),    // rook
+                        4 => queen_attacks(to as u32, occ & !(1u64 << from)),   // queen
+                        _ => 0,  // king — no offense bonus, too risky
+                    };
+                    let enemy_non_pawns = board.colors[them as usize]
+                        & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+                    if attacks_from_to & enemy_non_pawns != 0 {
+                        // Safety check: skip if `to` is attacked by enemy pawn
+                        // (which could recapture us).
+                        let their_pawns = board.pieces[PAWN as usize] & board.colors[them as usize];
+                        let enemy_pawn_attacks = if them == WHITE {
+                            ((their_pawns & !FILE_A) << 7) | ((their_pawns & !FILE_H) << 9)
+                        } else {
+                            ((their_pawns & !FILE_A) >> 9) | ((their_pawns & !FILE_H) >> 7)
+                        };
+                        // Only skip if WE would be a bigger target than a pawn
+                        let unsafe_square = pt != 0 && (enemy_pawn_attacks & (1u64 << to)) != 0;
+                        if !unsafe_square {
+                            score += 6000;
+                        }
+                        // Knight-fork bonus: knight move attacking 2+ enemy
+                        // non-pawn pieces from `to` is a fork. Tunable
+                        // (KNIGHT_FORK_BONUS), stacks on top of offense.
+                        let kf_bonus = crate::search::KNIGHT_FORK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+                        if kf_bonus > 0 && pt == 1 && !unsafe_square
+                            && popcount(attacks_from_to & enemy_non_pawns) >= 2 {
+                            score += kf_bonus;
+                        }
+                        // T1.4 Battery bonus: quiet-slider move (B/R/Q) lands
+                        // such that a friendly slider sits between `to` and
+                        // an enemy piece on the same ray — we've stacked up
+                        // behind a friendly attacker.
+                        let bat_bonus = crate::search::BATTERY_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+                        if bat_bonus > 0 && (pt == 2 || pt == 3 || pt == 4) && !unsafe_square {
+                            let our_sliders = board.colors[us as usize]
+                                & (board.pieces[BISHOP as usize]
+                                   | board.pieces[ROOK as usize]
+                                   | board.pieces[QUEEN as usize])
+                                & !(1u64 << from);
+                            let enemies_hit = attacks_from_to & board.colors[them as usize];
+                            let mut targets = enemies_hit;
+                            while targets != 0 {
+                                let esq = targets.trailing_zeros();
+                                targets &= targets - 1;
+                                let between = crate::bitboard::between(to as u32, esq);
+                                if between & our_sliders != 0 {
+                                    score += bat_bonus;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -621,15 +753,23 @@ impl MovePicker {
             let to = move_to(m);
             let flags = move_flags(m);
 
-            let score = if is_promotion(m) {
+            // C8 audit LIKELY #26: check capture FIRST so capture-promotions
+            // (e.g. pawn-takes-and-promotes) get the capture score path, not
+            // the flat 9000 promotion score that ranked them BELOW regular
+            // captures (10000+MVV+hist).
+            let is_cap = board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT;
+            let score = if is_cap {
+                // Capture (possibly also a promotion): MVV-LVA + capture
+                // history. mvv_lva now adds the promotion material delta
+                // internally (audit #25), so capture-promotions rank above
+                // regular captures.
+                10000 + mvv_lva(board, m) + capt_hist_score_static(board, history, m)
+            } else if is_promotion(m) {
                 if flags == FLAG_PROMOTE_Q {
                     9000
                 } else {
                     -1000 // underpromotions
                 }
-            } else if board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT {
-                // Capture: MVV-LVA + capture history
-                10000 + mvv_lva(board, m) + capt_hist_score_static(board, history, m)
             } else {
                 // Quiet: history + continuation history + pawn history
                 let piece = board.piece_at(from);
@@ -638,7 +778,8 @@ impl MovePicker {
 
                 if piece != NO_PIECE {
                     let gp = go_piece(piece);
-                    let weights = [3i32, 3, 1, 1];
+                    let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
+                    let weights = [cm, cm, 1i32, 1];
                     for (i, &w) in weights.iter().enumerate() {
                         if let Some(sub_ptr) = self.cont_hist_subs[i] {
                             let sub = unsafe { &*sub_ptr };
@@ -731,19 +872,34 @@ fn mvv_lva(board: &Board, m: Move) -> i32 {
     let to = move_to(m);
     let from = move_from(m);
 
+    let mult = crate::search::MVV_CAP_MULT.load(std::sync::atomic::Ordering::Relaxed);
     let target_pt = board.piece_type_at(to);
+
+    // C8 audit LIKELY #25: non-capture promotions scored 0 in MVV and
+    // empty-slot in capt_hist, ranking BELOW any regular capture with a
+    // small history score. A queen promotion deserves a large base bonus.
+    // Add the promotion material delta (promoted piece - pawn) when the
+    // move is a promotion.
+    let promo_bonus = if is_promotion(m) {
+        let promoted = promotion_piece_type(m);
+        (see_value(promoted) - see_value(PAWN)) * mult
+    } else {
+        0
+    };
+
     if target_pt == NO_PIECE_TYPE {
         // En passant
         if move_flags(m) == FLAG_EN_PASSANT {
-            return see_value(PAWN) * 16;
+            return see_value(PAWN) * mult;
         }
-        return 0;
+        // Non-capture promotion: promo_bonus is the only contribution.
+        return promo_bonus;
     }
 
     let _attacker_pt = board.piece_type_at(from);
 
-    // MVV only (no LVA), x16 — matches Obsidian/Alexandria/Berserk
-    see_value(target_pt) * 16
+    // MVV only (no LVA), multiplier SPSA-tunable (Obsidian/Alexandria/Berserk default 16)
+    see_value(target_pt) * mult + promo_bonus
 }
 
 /// Check if a move is a capture.
@@ -817,9 +973,23 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
     }
 
     // En passant: validate thoroughly
+    //
+    // C1 (2026-04-22 audit): EP requires that `from` is on the EP-capture
+    // rank (rank 5 for white, rank 4 for black) AND on a file adjacent to
+    // `to`. Without these, a TT-collision move with corrupted from + to +
+    // flags (e.g. `a2→d6 FLAG_EN_PASSANT` in a position with ep_square=d6)
+    // passes all other checks: `cap_sq` contains the enemy pawn and
+    // destination is empty. make_move then teleports our pawn and removes
+    // the enemy pawn — same 320 Elo hole class as earlier pseudo-legal bugs.
     if flags == FLAG_EN_PASSANT {
         if pt != PAWN { return false; }
         if to != board.ep_square { return false; }
+        let from_rank = from >> 3;
+        let required_rank = if us == WHITE { 4 } else { 3 }; // 5th rank = index 4
+        if from_rank != required_rank { return false; }
+        let from_file = from & 7;
+        let to_file = to & 7;
+        if (from_file as i8 - to_file as i8).abs() != 1 { return false; }
         // Verify capture square has enemy pawn
         let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
         if cap_sq >= 64 || (1u64 << cap_sq) & board.pieces[PAWN as usize] & board.colors[them as usize] == 0 {
@@ -1087,5 +1257,221 @@ impl QMovePicker {
         }
 
         NO_MOVE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::FEAT_4D_HISTORY;
+    use std::sync::atomic::Ordering;
+
+    /// Regression test: FEAT_4D_HISTORY toggles which slice of main hist is read.
+    ///
+    /// When 4D is on, threats at from/to select among 4 tables:
+    /// main[from_threatened][to_threatened][from][to].
+    /// When 4D is off, main_score/main_entry must always hit [0][0][...],
+    /// regardless of the threats bitboard.
+    ///
+    /// This guards the A/B experiment branch: a future change to the
+    /// 4D indexing must not accidentally corrupt the 2D fallback path.
+    #[test]
+    fn history_4d_flag_routes_correctly() {
+        let mut h = History::new();
+        // Give each table slot a distinct value so we can prove which branch ran.
+        h.main[0][0][12][28] = 1;
+        h.main[0][1][12][28] = 2;
+        h.main[1][0][12][28] = 3;
+        h.main[1][1][12][28] = 4;
+
+        // Threats bitboard with BOTH from (12) and to (28) set:
+        let threats: Threats = (1u64 << 12) | (1u64 << 28);
+
+        let saved = FEAT_4D_HISTORY.load(Ordering::Relaxed);
+
+        // 4D on: lookup must see slot [1][1] = 4.
+        FEAT_4D_HISTORY.store(true, Ordering::Relaxed);
+        assert_eq!(h.main_score(12, 28, threats), 4,
+            "4D on: expected main[1][1][12][28]=4");
+        *h.main_entry(12, 28, threats) = 40;
+        assert_eq!(h.main[1][1][12][28], 40, "4D on: main_entry wrote to [1][1]");
+        h.main[1][1][12][28] = 4; // restore
+
+        // 4D off: lookup must always see slot [0][0] = 1 regardless of threats.
+        FEAT_4D_HISTORY.store(false, Ordering::Relaxed);
+        assert_eq!(h.main_score(12, 28, threats), 1,
+            "4D off: expected main[0][0][12][28]=1");
+        assert_eq!(h.main_score(12, 28, 0), 1,
+            "4D off: expected main[0][0] with zero threats");
+        *h.main_entry(12, 28, threats) = 10;
+        assert_eq!(h.main[0][0][12][28], 10, "4D off: main_entry wrote to [0][0]");
+        // The other slots must not have been touched by the 2D write path.
+        assert_eq!(h.main[1][1][12][28], 4, "4D off: [1][1] unchanged");
+
+        // Restore original flag so other tests are unaffected.
+        FEAT_4D_HISTORY.store(saved, Ordering::Relaxed);
+    }
+
+    /// Positive fuzzer: every legal move in every position must pass
+    /// `is_pseudo_legal`. If this fails, we're rejecting legal moves
+    /// that come from TT/killer/counter slots, losing move-ordering
+    /// information and potentially missing key moves.
+    ///
+    /// Also indirectly: tests that `generate_legal_moves` and
+    /// `is_pseudo_legal` agree about what flags a move should have.
+    #[test]
+    fn fuzz_is_pseudo_legal_accepts_all_legal() {
+        use crate::board::Board;
+        use crate::movegen::generate_legal_moves;
+
+        crate::init();
+
+        const FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            // Promotion-rich
+            "4k3/PPPPPPPP/8/8/8/8/pppppppp/4K3 w - - 0 1",
+            // EP available
+            "rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3",
+            // Castling rights all sides
+            "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+            // In check, evasions only
+            "4k3/8/8/8/8/8/4r3/4K3 w - - 0 1",
+            // Double check, only king moves legal
+            "rnb1kbnr/pppp1ppp/8/4p3/1P5q/P1N5/2PPPPPP/R1BQKBNR w KQkq - 2 4",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const PLIES: usize = 40;
+        const GAMES: usize = 8;
+
+        for (fen_idx, fen) in FENS.iter().enumerate() {
+            for game in 0..GAMES {
+                let seed: u32 = 0xBADF00Du32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::from_fen(fen);
+                for ply in 0..PLIES {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    // Check every legal move is accepted.
+                    for i in 0..legal.len {
+                        let mv = legal.moves[i];
+                        if !is_pseudo_legal(&board, mv) {
+                            panic!(
+                                "is_pseudo_legal rejected legal move: fen_idx={} game={} ply={} \
+                                 move={} (raw {:#x}) from={} to={} flags={} fen={}",
+                                fen_idx, game, ply,
+                                crate::types::move_to_uci(mv), mv,
+                                crate::types::move_from(mv),
+                                crate::types::move_to(mv),
+                                crate::types::move_flags(mv),
+                                board.to_fen(),
+                            );
+                        }
+                    }
+                    // Advance the game with a random legal move.
+                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                    board.make_move(mv);
+                }
+            }
+        }
+    }
+
+    /// Negative fuzzer: random corrupted moves should rarely pass
+    /// `is_pseudo_legal`, and when they do, they must be in the
+    /// pseudo-legal generate_all_moves set. This catches cases where
+    /// a crafted (e.g. TT-collision) move with wrong flags could slip
+    /// through validation and corrupt the board.
+    ///
+    /// Strategy: take each legal move, flip various fields (flags,
+    /// to-square, from-square) to create a "corrupted" move. Any that
+    /// happen to be legitimately pseudo-legal must appear in
+    /// generate_all_moves; others must be rejected.
+    #[test]
+    fn fuzz_is_pseudo_legal_rejects_corrupted() {
+        use crate::board::Board;
+        use crate::movegen::{generate_all_moves, generate_legal_moves};
+        use crate::types::*;
+
+        crate::init();
+
+        const FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            // EP available (d6) — edge case for FLAG_EN_PASSANT validation
+            "rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3",
+            // No castling rights — must reject FLAG_CASTLE moves
+            "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        for (fen_idx, fen) in FENS.iter().enumerate() {
+            let board = Board::from_fen(fen);
+            let mut seed: u32 = 0xC0FFEEu32.wrapping_add((fen_idx as u32).wrapping_mul(7919));
+            let mut rng = if seed == 0 { seed = 1; seed } else { seed };
+
+            // Build the full pseudo-legal set so we can distinguish
+            // "wrong flag happens to match another legal move" from
+            // "genuinely illegal move incorrectly accepted".
+            let pseudo = generate_all_moves(&board);
+            let mut pseudo_set: Vec<Move> = (0..pseudo.len).map(|i| pseudo.moves[i]).collect();
+            pseudo_set.sort();
+            pseudo_set.dedup();
+
+            let legal = generate_legal_moves(&board);
+
+            for i in 0..legal.len {
+                let mv = legal.moves[i];
+                let from = move_from(mv);
+                let to = move_to(mv);
+
+                // Corruption 1: random flag bit.
+                for &new_flags in &[1u8, 2, 3, 4, 5, 6, 7] {
+                    let orig_flags = move_flags(mv);
+                    if new_flags as u16 == orig_flags { continue; }
+                    // Use the underlying encoding: preserve from, to, replace flags.
+                    let corrupted = (from as u16) | ((to as u16) << 6) | ((new_flags as u16) << 12);
+                    if is_pseudo_legal(&board, corrupted) {
+                        // Must appear in the pseudo-legal set.
+                        if !pseudo_set.contains(&corrupted) {
+                            panic!(
+                                "is_pseudo_legal accepted corrupted move: fen_idx={} \n\
+                                 orig={} (flags={}) corrupted={:#x} (flags={}) \n\
+                                 not in generate_all_moves\nfen={}",
+                                fen_idx, crate::types::move_to_uci(mv), orig_flags,
+                                corrupted, new_flags, board.to_fen(),
+                            );
+                        }
+                    }
+                }
+
+                // Corruption 2: random to-square.
+                let random_to = (next_u32(&mut rng) % 64) as u8;
+                if random_to != to {
+                    let corrupted = (from as u16) | ((random_to as u16) << 6); // FLAG_NONE
+                    if is_pseudo_legal(&board, corrupted) && !pseudo_set.contains(&corrupted) {
+                        panic!(
+                            "is_pseudo_legal accepted corrupted move (to-swap): \n\
+                             fen_idx={} orig={} new_to={} corrupted={:#x}\nfen={}",
+                            fen_idx, crate::types::move_to_uci(mv), random_to,
+                            corrupted, board.to_fen(),
+                        );
+                    }
+                }
+            }
+        }
     }
 }

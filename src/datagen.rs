@@ -269,6 +269,7 @@ fn play_one_game(info: &mut SearchInfo, rng: &mut SimpleRng, depth: i32, blunder
         if ply > 500 { result = Some(0); break; }
 
         let limits = SearchLimits { depth, ..SearchLimits::default() };
+        info.tt.new_search();
         let best_move = search::search(&mut board, info, &limits);
         let score = info.last_score;
 
@@ -389,9 +390,32 @@ fn material_worker(
             let color = if modified.colors[WHITE as usize] & (1u64 << sq) != 0 { WHITE } else { BLACK };
             modified.remove_piece(color, pt, sq);
 
+            // C8 audit LIKELY #47: `remove_piece` doesn't touch castling or
+            // ep_square. Removing a corner rook (A1/H1/A8/H8) leaves the
+            // castling bit set with no rook; removing a pawn that had just
+            // double-pushed leaves the EP square valid but pointing at
+            // empty. Clean these up so the produced position is legal.
+            // Removing a rook from a corner: clear that castling right.
+            if pt == ROOK {
+                match (color, sq) {
+                    (WHITE, 0) => modified.castling &= !0b0010,  // white queenside (A1)
+                    (WHITE, 7) => modified.castling &= !0b0001,  // white kingside (H1)
+                    (BLACK, 56) => modified.castling &= !0b1000, // black queenside (A8)
+                    (BLACK, 63) => modified.castling &= !0b0100, // black kingside (H8)
+                    _ => {}
+                }
+            }
+            // Removing a pawn invalidates any EP square that's the
+            // double-push destination of that pawn. Safest to clear on
+            // any pawn removal.
+            if pt == PAWN {
+                modified.ep_square = crate::types::NO_SQUARE;
+            }
+
             if !is_valid_position(&modified) { continue; }
 
             let limits = SearchLimits { depth, ..SearchLimits::default() };
+            info.tt.new_search();
             let best_move = search::search(&mut modified, &mut info, &limits);
             let score = info.last_score;
 

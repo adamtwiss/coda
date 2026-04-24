@@ -14,6 +14,8 @@ clap = { version = "4.6.0", features = ["derive"] }
 
 [features]
 embedded-net = []
+profile-materialize = []
+profile-threats = []
 
 [profile.release]
 opt-level = 3

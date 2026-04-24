@@ -14,7 +14,7 @@ rustup component add llvm-tools-preview
 
 ```bash
 make                                             # Build with native CPU optimizations
-make pgo                                         # PGO-optimized build (~3-5% faster NPS)
+make pgo                                         # PGO-optimized build (~3-5% faster v5 on main; regresses v9 — see Makefile)
 make net                                         # Download production NNUE net
 make openbench                                   # OpenBench-compatible build
 cargo build --release                            # Plain release build (no embedded net)
@@ -55,14 +55,18 @@ src/
   search.rs        Negamax, pruning, LMR, correction history, cuckoo, pruning stats
   cuckoo.rs        Cuckoo cycle detection for proactive repetition avoidance
   tb.rs            Syzygy tablebase probing (via shakmaty-syzygy)
-  nnue.rs          NNUE v5/v6/v7 inference, accumulator stack, Finny table, AVX2/AVX-512 SIMD
+  tb_cache.rs      Lockless Zobrist-keyed WDL probe cache (UCI TBHash)
+  nnue.rs          NNUE v5/v7/v9 inference, accumulator stack, Finny table, AVX2/AVX-512/VNNI SIMD
+  sparse_l1.rs     Sparse/dense int8 L1 matmul kernels (AVX2, AVX-VNNI, AVX-512 VNNI)
+  threats.rs       Threat-feature enumeration + delta generation (v9)
+  threat_accum.rs  Per-ply threat accumulator stack (v9)
   uci.rs           UCI protocol (position, go, stop, ponder, setoption)
   epd.rs           EPD test suite runner with SAN formatting
   book.rs          Polyglot opening book support
   polyglot_randoms.rs  Standard Polyglot Zobrist random table (781 entries)
   datagen.rs       Multi-threaded training data generation (self-play, material removal)
   binpack.rs       SF BINP binpack format writer (chain-compressed)
-  bullet_convert.rs  Bullet quantised.bin → .nnue converter (v5/v6/v7)
+  bullet_convert.rs  Bullet quantised.bin → .nnue converter (v5/v7/v9)
   nnue_export.rs   .nnue → Bullet checkpoint converter (for transfer learning)
 Makefile           Build targets: make, make pgo, make openbench, make net
 scripts/
@@ -92,7 +96,8 @@ net.txt            Production NNUE net URL (used by make net / fetch-net)
 ### Search
 Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from depth 4). Lazy SMP: helper threads search at offset depths sharing the TT (atomic) and stop flag.
 
-**Pruning features** (all SPSA-tunable via `tunables!` macro, 45 parameters):
+**Pruning features** (all SPSA-tunable via `tunables!` macro — see the macro in
+`search.rs` for the current parameter list and defaults; count grows over time):
 - NMP: R=BASE_R+depth/DEPTH_DIV + (eval-beta)/EVAL_DIV, verify at depth>=VERIFY_DEPTH, post-capture R++
 - RFP: depth<=RFP_DEPTH, margin improving?RFP_MARGIN_IMP*d:RFP_MARGIN_NOIMP*d
 - Futility: FUT_BASE+lmrDepth*FUT_PER_DEPTH, history adjusts effective lmr_depth (SF pattern)
@@ -382,16 +387,247 @@ for authoritative defaults — values below are approximate.
 - History bonus: linear formula min(MAX, MULT*depth - BASE), ~170*d-50 capped at 1505
 - Contempt: 10 (applied as -CONTEMPT)
 
-## Current Status (2026-04-08)
+## Current Status
 
-- **Strength**: Estimated ~+180 self-play Elo above initial Coda. Lichess bot deployed as `codabot`.
-- **NPS**: ~600K (production 768pw net, x86-64 AVX2)
-- **Bench**: 1,780,721 nodes (depth 13, 8 positions)
-- **EBF**: 1.87 (effective branching factor)
-- **Lazy SMP**: Implemented. Helpers share TT + history tables.
-- **SPSA**: 10 rounds completed (~+102 cumulative Elo from tuning)
-- **OpenBench**: Deployed at ob.atwiss.com, 4 machines / ~84 threads
-- **Testing methodology**: Self-play SPRT primary, retune-on-branch for tree-shape-changing features, LTC (40+0.4) for TM features
+Living state (strength, bench, net, SPSA progress, deployment) changes too
+quickly to keep accurate in a checked-in file. Authoritative sources:
+
+- **Current production nets:** `docs/net_catalog.md` (v5 + v9 prod hashes,
+  retired/active nets, invariants)
+- **Recent experiment history / lessons:** `experiments.md`
+- **Current bench:** the `Bench: <nodes>` line of the latest commit on the
+  branch you're submitting. Re-measure on the exact branch+net before any
+  SPRT; don't carry bench values across branches.
+- **Lichess bot:** `codabot` (deployment state and thread count varies)
+- **OpenBench fleet:** `ob.atwiss.com`, composition varies
+
+Testing methodology is durable and documented below (Self-play SPRT primary,
+retune-on-branch for tree-shape-changing features, LTC for TM features).
+
+## Strength Frontier — Where the Elo Gap Lives (2026-04-24)
+
+Findings from a 100-game bullet H2H vs Stockfish 18 and Atlas's
+loss-pattern analysis. This is a working hypothesis, not dogma —
+update as more data accumulates.
+
+### Calibration
+
+- 60+1 bullet H2H vs SF 18: **Coda −159.8 ±41.6 Elo** (100 games,
+  57% draws, 43 SF wins, 0 Coda wins).
+- CCRL 40/15 top 10 sits at **3633–3652** (SF 18 #1 at 3652,
+  Reckless 0.9.0 #2 at 3647). Rivals pool spans 3434–3585;
+  Coda is below the CCRL top-100 cutoff (3390) in the posted
+  snapshot but effectively ~3480–3500 on current trunk +
+  SB800 prod net.
+
+### The TC-handicap sigmoid (2026-04-24 calibration)
+
+Bullet H2H vs SF 18 with asymmetric TC (Coda at 60+1 vs SF at
+reduced TC). 100 games per data point:
+
+| HC | Score (W-L-D) | Coda % | Gap Elo (±) | Draw % | Δ vs prev |
+|---:|:---|---:|---:|---:|---:|
+| 1× (baseline) | 0-43-57 | 28.5% | **−159.8** ±41.6 | 57% | — |
+| 2× | 0-47-53 | 26.5% | **−177.2** ±43.9 | 53% | 0 (within noise) |
+| 4× | 0-35-65 | 32.5% | **−127.0** ±37.2 | 65% | +50 |
+| 8× | 3-13-84 | 45.0% | **−34.9** ±26.7 | 84% | **+92 (knee)** |
+| 16× | 15-16-69 | 49.5% | **−3.5** ±38.0 | 69% | +31 |
+
+**Classic sigmoid** with an ultra-flat (possibly slightly negative)
+first doubling. 2× TC doesn't help at all — SF's time-management is
+so efficient at short TC that Coda's extra time doesn't translate
+to useful extra depth. Knee at 4×→8× (+92 Elo). Taper into parity
+at 16× (LOS 43%).
+
+**The 1×→2× flat zone is important**: a 2× NPS gain from our
+inference work alone is worth ~0 Elo vs SF. NPS work only pays once
+we're near the 4× knee threshold.
+
+**Draw-rate peak at 8×** (84%!): both engines draw nearly everything
+at that TC — we've reached "solid drawing depth" but still can't
+out-play SF from equal position. At 16× Coda finally wins enough
+games to match SF's wins (15W-16L-69D, essentially symmetric).
+
+**Caveat on absolute numbers**: this calibration was run on
+prod-SB800 net with trunk params that were tuned on factor-SB400
+(C8-fix retune #682/#686). That's a mild mismatch — true gap at
+1× could be ~5-15 Elo better than shown once trunk is retuned for
+the actual deployed net (see tune #743 on
+`fix/expose-hardcoded-pruning-tunables`, which begins that
+recalibration). The **sigmoid shape is preserved** across net/tune
+configurations; treat the absolute Elo values as anchors with a
+~±10 Elo uncertainty rather than exact points. Post-#743 we should
+re-run the curve to get properly-calibrated absolute numbers.
+
+**What this tells us:**
+
+- Our **eval is at SF parity** — at equal depth, we play as well.
+  The full 160 Elo gap at normal TC is *horizon*, not quality.
+- Horizon is **nonlinear in depth against SF-class opponents**.
+  Partial depth gains below the knee (1-4×) return near-zero Elo.
+  Above the knee (4-8×), each incremental depth-ply delivers 20-30+
+  Elo. This is because specific tactical refutations live at
+  specific depths — seeing them at all vs not matters far more than
+  seeing them half-a-ply earlier.
+- **The sigmoid applies specifically to wide-Elo-gap opposition.**
+  Vs same-tier opponents (e.g. our Rivals pool at 3430-3585 CCRL),
+  the tactical-cliff dynamic isn't present — both engines have
+  similar horizon, so NPS wins convert more linearly to Elo. NPS
+  work still pays for closing small gaps and holding ground in
+  close matchups; it just plateaus against engines far above us.
+- **Compound to cross the knee or plateau below it (vs SF).**
+  Individual experiments at +3% NPS / +3 Elo pre-knee feel
+  thankless against SF; they deliver Elo only insofar as they stack
+  with other gains toward the knee threshold. BUT those same +3 Elo
+  wins are cleanly valuable in Rivals-tier competition (Lichess bot
+  ranking, CCRL position).
+
+### Path to closing the gap (pragmatic, 2026 horizon)
+
+To reach the knee (~8× effective depth-gain) we need compounding
+across all levers. Realistic per-lever contribution budget:
+
+| Lever | Plausible gain | Path |
+|---|---:|---|
+| Cache residency + SIMD dispatch | ~1.5× | L1 permutation, VNNI dispatch, sparse-L1 |
+| Sparse-L1 matrix shrink + EBF effect | ~1.5× | L1-decouple Bullet fix + λ=1e-3 training |
+| Factor SB800 eval quality | ~1.3× | Architecture + longer training |
+| Move-ordering + pruning retune on improved eval | ~1.1-1.2× | Iterate post-eval-upgrade |
+| **Stacked total** | **~3-3.5×** | Sits between 4× and 8× on the sigmoid |
+
+That's **~80 Elo closed** (Coda 3480 → ~3560 CCRL). Meaningful jump
+— moves us from sub-top-100 into top-30 range — but does NOT reach
+parity with SF.
+
+**Parity (16×-equivalent)** requires dramatic EBF reduction (log(EBF)
+halved, 1.8 → 1.35) which in turn requires multi-year investment:
+richer training pipeline, more net iteration, possibly novel search
+innovations. Don't expect parity in 2026.
+
+### What the losses look like
+
+Atlas's analysis of 27 SF losses (2026-04-24):
+
+- Median max single-ply eval drop: **4.53 cp**. Mean 5.56 cp.
+  18/27 losses have a >3 cp cliff, 7/27 have >8 cp.
+- Cliffs happen mid-game → endgame transition (median ply 83,
+  range 42–123). Openings survive fine.
+- Coda median depth in losing games: **15**, max 21.
+  SF at 60+1 typically reaches 25–35.
+- Coda's eval says "fine"; one ply later the eval collapses
+  4–14 pawns.
+
+**This is tactical blindness from search-depth deficit, not
+positional mis-eval.** Coda's eval is accurate at the depth it
+reaches; the refuting combination lives at plies SF sees and we
+don't.
+
+### What closes the gap
+
+**Effective depth** is the target. Effective depth ≈ log(NPS × time)
+/ log(EBF), so depth = f(raw NPS, pruning efficiency, eval quality).
+
+Decomposition of the ~160 Elo SF gap, rough budget:
+
+| Lever | Approx share of gap | Status |
+|---|---:|---|
+| Raw NPS deficit (Coda is ~2× slower than Reckless) | **~100 Elo** (~65%) | Some portion is deliberately bought — x-ray threat features cost ~20% NPS but paid +110 Elo (good trade). We won't fully close this; target is partial recovery. |
+| Pruning efficiency (Coda under-prunes vs Reckless on several params) | **~30–50 Elo** | Under-exploited; "force more pruning + retune" branches are the lever |
+| Eval quality / tactical sharpness | **~20–30 Elo** | Factor-net-quality, training recipe improvements |
+
+**Key NPS framing**: we don't expect to match Reckless's raw NPS.
+Some of our deficit is a deliberate eval-architecture trade
+(x-ray threats, wider FT chunks). The recoverable NPS ceiling is
+bounded by what doesn't regress eval quality.
+
+**Where the recoverable NPS lives**: almost entirely in
+**cache-residency improvements tied to sparsity**. The current
+49 MB threat weight matrix spills L3 on most fleet hosts (measured
+on 9-host microbench; see `docs/nps_microbench_hostdata.md`). If
+we can shrink it below ~32 MB via training-side L1 regularisation
+(Item 2 in the NPS investigation) and Viridithas-style input-chunk
+L1 permutation (R3 in research_threads_2026-04-24.md), we get
+a step-function NPS gain across the entire fleet. That's the
+biggest remaining NPS lever by far — cache-residency wins
+compound across every node of every search.
+
+Both NPS (via sparsity/cache work) and pruning (via retune branches
+targeting the Reckless outliers) attack the SAME target — depth —
+and compound.
+
+**Concrete Reckless vs Coda pruning outliers (measured 2026-04-24):**
+
+- Futility margin at lmr_d=5: Coda 878 vs Reckless 364 (Coda 2.4×
+  less aggressive — keeps ~2.4× more mid-depth moves in the tree).
+- SEE quiet prune at d=5: Coda threshold −1175 vs Reckless −145
+  (Coda 8× more lenient — only prunes queen-sac class).
+- RFP depth cap: Coda d≤10, Reckless uncapped. No RFP at deep plies.
+- LMP depth cap: Coda d≤8, Reckless uncapped.
+- BNFP depth cap: Coda d≤4, Reckless d<11.
+
+These five represent candidates for "force more pruning + retune"
+branches. Each is a structural change (uncap a depth gate / widen a
+threshold) followed by SPSA retune on branch.
+
+### Priors this updates
+
+- **NPS is a dominant lever (~2/3 of the gap), not secondary.**
+  Cache-residency wins (flatten AccEntry, eval-TT writeback, L1
+  permutation, training-side matrix shrink) and SIMD dispatch each
+  translate directly to depth. A 10% NPS gain ≈ ~5–8 Elo at this
+  regime.
+- **Pruning values matter just as much per-param.** We have at
+  least five clear outliers where Coda prunes less than Reckless.
+  Each retune-on-branch around a tightened threshold is probably
+  +2–5 Elo. Collectively they're in the same ballpark as NPS wins.
+- **Coda deliberately traded NPS for eval quality** via v9
+  threat-inputs (Reckless architecture). That trade only pays off
+  if the better eval feeds better pruning decisions. Net Elo >
+  net NPS. The eval-quality lever is smallest in this decomposition
+  but orthogonal — it compounds with both others.
+- **"Force more pruning"-style branches** (intentionally widen
+  an under-pruning threshold, let SPSA find new equilibrium)
+  have worked before and are under-built-on. The Reckless
+  comparison gives specific targets.
+- **Experiments that buy depth at hot plies** (extension on
+  tactical-density signals, cliff-risk heuristics) are a new
+  candidate class Atlas's analysis surfaced. W2-pattern work
+  (signal × pruning/extension decision) already has high hit
+  rate in Coda's history.
+
+### De-prioritised by this finding
+
+- **Eval post-processing tweaks** (contempt, optimism
+  calibration, fortress caps, shuffle detectors) are low leverage
+  for the SF-gap. Keep doing them when they're cheap, but don't
+  let them displace pruning/NPS work on the queue.
+- **Factor net (architecture work) alone** doesn't close the SF
+  gap — it improves eval quality, which has indirect leverage
+  (see above) but doesn't address depth deficit directly. Still
+  worth doing because it helps Rivals-tier strength and makes
+  pruning calibration cleaner; just don't expect it to crack the
+  cliff-miss class.
+
+### Workflow implication for future Claudes
+
+When sizing up a new experiment, ask three questions in order:
+
+1. Does it increase effective depth? (Via pruning efficiency,
+   NPS, or cliff-avoiding extensions.)
+2. Is Coda's pruning value in this area an outlier vs top-engine
+   consensus? (SF/Reckless/Obsidian/Viridithas — check actual
+   values, not just presence/absence of a feature.)
+3. Would it show up in a 100-game SF bullet H2H? (±~40 Elo
+   bars at that sample.)
+
+If all three are "no", the expected Elo-per-effort is probably low
+compared to items that say yes to at least (1) and (2).
+
+### Recalibration cadence
+
+Re-run the 100-game SF H2H every ~2 weeks or after any merge
+cluster worth ~+20 Elo. The gap should narrow visibly; if it
+doesn't, our on-paper Elo is overstated.
 
 ## Key Gotchas
 - Move flag equality vs bitwise: check non-promotion flags with ==, not &
@@ -404,6 +640,18 @@ for authoritative defaults — values below are approximate.
 - LMR contHist weight: 3x in move ordering, ply-1+ply-2 in reduction adjustment
 - PV nodes skip all TT cutoffs and QS beta blending
 - Polyglot book encodes castling as king-to-rook (must convert to king-to-destination)
+
+## Code Hygiene
+
+- **Keep compiler warnings at zero.** `cargo build --release` should emit no
+  warnings. Warnings accumulate into noise that masks real issues — every
+  new warning is one that hid the serious one next to it. When adding
+  code, run `cargo build --release` and fix any new warnings before
+  committing. When a warning IS intentional (e.g. a placeholder), suppress
+  it explicitly (`#[allow(unused_variables)]`) so the intent is clear.
+- Common patterns: unused imports → delete; `let mut x = ...` that's
+  never mutated → drop `mut`; `let mut x = false;` then reassigned before
+  read → move declaration into the scope where it's used.
 
 ## Testing Methodology
 
@@ -472,12 +720,28 @@ Bench: 1780721
 
 | Bounds | When to use | Example |
 |--------|-------------|---------|
-| `[-10, 5]` | Structurally correct / consensus fix. Merge unless clear regression. | Pre-MakeMove migration, removing unique heuristic |
-| `[0, 5]` | Expect small gain, confirm not harmful. | Parameter tweaks, minor corrections |
-| `[0, 10]` | Expect meaningful gain from structural fix. | SEE quiet fix, futility reimplementation |
-| `[-5, 5]` | Pure non-regression check. | Adding tunables at default values, NPS-only changes |
+| **`[0, 3]`** | **Default for "does this feature help?"** at Coda's current strength. Small-gain regime: most new ideas target +1-3 Elo. | Small pruning tweak, small bonus adjustment, incremental feature |
+| `[0, 5]` | Expect clearly positive gain +3-5 Elo or structural change with measurable impact. | Multi-param port, force-more-pruning w/ retune, new tactical motif |
+| `[-3, 3]` | Small-win correctness fix where regression ≤ -3 would be a block. | 50mr mate downgrade, stale-bound gate, SE-margin tweak |
+| `[0, 10]` | Expect big gain from a named structural change. | SEE magnitude fix, EBF-massive rewrite, major algorithm port |
+| `[-5, 5]` | Pure non-regression / infrastructure check. | Adding tunables at default values, NPS-only bench-neutral change |
 
-This avoids endless grinding on changes we'd merge at neutral — a correctness fix doesn't need to prove +10 Elo, just prove it's not -10. Conversely, a novel feature should demonstrate clear positive signal.
+**`[0, 3]` is the new default** for most experiments in 2026. At our
+current rating (~3480 CCRL) the easy Elo is gone and most ideas that
+land deliver +1-3 Elo. `[0, 5]` accumulates negative LLR on a true
++1.5 ±1.5 effect because H1 target 5 is out of reach — we'd waste
+fleet cycles proving something we could have accepted with `[0, 3]`.
+**Reckless uses [0, 3] as their default** (see
+recklesschess.space/index); adopting the same discipline means we
+don't throw away genuinely-positive small wins.
+
+Use `[0, 5]` or `[0, 10]` only when the change class has a
+well-grounded prior for a larger magnitude (structural port,
+retune-on-branch of multi-merge cluster, algorithmic rewrite).
+
+**Don't use `[-10, 5]`.** In a regime where single experiments target +1-3 Elo, a floor of -10 is too permissive — H1 can fire on data that still leaves room for a small negative true effect. Use `[-3, 3]` for correctness fixes instead.
+
+When picking, don't hedge toward wider bounds out of uncertainty. Name the class ("small feature", "correctness bug", "structural port", "NPS-only"), pick the matching row, submit.
 
 **What does NOT need SPRT:**
 - Comments, documentation, tooling changes
@@ -490,14 +754,65 @@ OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> <bench> [--bounds 
 OPENBENCH_PASSWORD=<pw> python3 scripts/ob_stop.py <test_id>
 OPENBENCH_PASSWORD=<pw> python3 scripts/ob_status.py
 ```
-Reference NPS is 500K. Default bounds [0.00, 5.00] for novel changes. Always verify bench matches before submitting.
+Default bounds [0.00, 5.00] for novel changes. Always verify bench matches before submitting.
 
-**Current bench: 1780721** (with production net, x86-64). Update this when search changes are merged.
-**Do not pass explicit bench values** when submitting — let OB auto-detect from commit messages. Only override if OB fails to parse.
+**Reference NPS is auto-detected from branch name** (as of 2026-04-19):
+- `feature/threat-inputs`, `experiment/*`, `tune/v9-*`, `fix/threats-*` → **250K** (v9 runs slower due to threat features)
+- main / other → **500K**
+
+Both `ob_submit.py` and `ob_tune.py` print `[auto] scale_nps=...` when the auto-detect fires. Verify it matches expectation before each submission. Wrong scale_nps means games run at wrong time budgets; experiments at 500K on v9 branches run at ~2× wall-clock, halving fleet throughput. Override only for branches the patterns don't cover — and when you do, add the new pattern to `v9_patterns` in both scripts.
+
+**Bench lives in git commit messages, not this file.** Measure with
+`coda bench -n <current-prod-net>` on the exact branch you're submitting;
+never hardcode a bench value here or reuse one across branches
+(branch-specific tunables + net changes both move it). See `docs/net_catalog.md`
+for the current production net hash.
+
+**Do not pass explicit bench values** when submitting — let OB auto-detect from
+commit messages. Only override if OB fails to parse.
 
 ### SPSA Parameter Tuning
 
-45 search parameters are exposed as UCI options for SPSA optimization via OpenBench. The `tunables!` macro in `search.rs` is the single source of truth.
+Search parameters are exposed as UCI options for SPSA optimization via OpenBench.
+The `tunables!` macro in `search.rs` is the single source of truth for defaults,
+ranges, and c_end values.
+
+**CRITICAL RULE — always tune against the net in `net.txt`:**
+
+Trunk's param defaults and the currently-deployed production net
+must stay calibrated together. If trunk is tuned for Net-A but
+we deploy Net-B and run SPRTs against Net-B, every result is on
+a **detuned baseline** — usually costing 5-15 Elo of baseline
+strength and producing confusing SPSA movements on top.
+
+Before firing any trunk retune:
+
+1. `cat net.txt` on the trunk branch (feature/threat-inputs)
+2. The filename in net.txt IS the production net for that trunk
+3. Pass the matching `--dev-network <SHA8>` to `ob_tune.py`
+4. If the SHA doesn't match, DO NOT SUBMIT — fix the mismatch
+   (either update net.txt for a new prod, or use the correct net)
+
+**This is not optional.** We burnt on this 2026-04-24: #682/#686
+retune was on factor-SB400, deployed net stayed prod-SB800, and
+subsequent SPRTs ran on a silently-detuned trunk. Only noticed
+via confusing movements in tune #733.
+
+**Pre-merge check for any experiment:**
+
+Any branch proposed for merge to trunk must have been SPRT'd
+against the current net in net.txt. If the dev-network used in
+the submission doesn't match, don't merge — re-SPRT with the
+right net first.
+
+**Post-tune / net-deploy discipline:**
+
+- When a net changes (new prod in net.txt), plan an immediate
+  trunk retune against the new net before landing large clusters
+  of eval-dependent experiments on top.
+- Don't ship "new net with old trunk" as a hidden detune.
+- Periodic SF H2H (100 games, 60+1) every ~5-10 merges to
+  confirm trunk still holds; re-tune if the baseline has drifted.
 
 **Submitting tunes:**
 ```bash
@@ -540,7 +855,6 @@ When LMR_C_QUIET or LMR_C_CAP change, LMR tables are automatically reinitialized
 - c_end ~5-10% of parameter range, r_end 0.002 are good defaults.
 - Alpha 0.602, gamma 0.101, A_ratio 0.1 (standard SPSA constants).
 - SPRT the final values against main before merging — SPSA can overfit.
-- Cumulative SPSA Elo: ~+102 across 10 rounds.
 - Plan SPSA after merging structural fixes (eval/search changes shift optimal parameters).
 - A standard 18-param pruning tune spec is at `scripts/tune_pruning_18.txt`.
 
@@ -558,6 +872,39 @@ Some features are neutral without retuning but gain significant Elo when pruning
 - TT PV flag: +4.5 raw → retune added +4.0 more (nearly doubled)
 - Cont-hist malus: flat (-0.15 at 16K games) → +6.5 with retune
 - Pattern: big bench/node change but flat Elo → retune candidate
+
+#### Guard / Safety-Gate Sub-Pattern (2026-04-24)
+
+A special case of retune-on-branch: experiments that ADD a guard
+around an existing pruning feature (e.g. "skip NMP when TT move is a
+capture", "don't LMR when X", "require Y before probcut").
+
+A vanilla SPRT of the guard at default tunables measures only the
+DIRECT safety gain — "these specific unsafe prunes no longer happen."
+It does NOT measure the REBALANCING gain: adjacent pruning tunables
+were globally calibrated to avoid the unsafe case the guard now
+handles. With the guard in place, those tunables have latent headroom
+they're no longer using — the rest of the pruning can become more
+aggressive because the worst case is defended.
+
+**Right workflow for guard experiments:**
+
+1. SPRT the guard at default tunables (confirms direction isn't
+   negative and captures the direct gain)
+2. SPSA retune the ADJACENT cluster on branch (e.g. for an NMP
+   guard: NMP_BASE_R, NMP_DEPTH_DIV, NMP_EVAL_DIV, NMP_EVAL_MAX,
+   NMP_VERIFY_DEPTH — 5-6 params, 1200-1500 iters is usually
+   enough for a focused cluster)
+3. SPRT guard + retuned-cluster vs trunk
+
+A guard that SPRTs at +1 without retune is often +3-5 with retune —
+same multiplier as TT PV flag and cont-hist malus. Don't drop a guard
+at +1 Elo without completing step 2.
+
+**Test #732 (NMP TT-noisy R++) 2026-04-24** is a concrete example:
+the guard added `r += tt_move.is_capture()`, SPRT'd at +1.1 ±1.9 /
+30K games trending H0 on [0,3] bounds. Retune-on-branch of the NMP
+cluster is the missing step, not a new feature.
 
 ### Cross-Engine and Model Testing
 
@@ -602,17 +949,19 @@ Systematic approach for finding and fixing search feature issues. Each cycle com
 
 **4. SPSA tune the corrected feature**
 - **Focused tune first** (2-4 params, ~1000 iterations): Just the new/changed parameters. Fast convergence, finds the right ballpark.
-- **Full tune after** (all 32 params, 5000+ iterations): Rebalances everything — other params were compensating for the broken feature and need to readjust.
+- **Full tune after** (all tunable parameters, 2500+ iterations): Rebalances everything — other params were compensating for the broken feature and need to readjust.
 - Merge the focused tune values, then run the full tune as the next round.
 
 **5. Repeat**
 The retuned baseline exposes the next weak feature. Check SPSA trends for the next parameter being aggressively detuned.
 
-**Results from this approach (through 2026-04-08):**
+**Historical examples (early 2026 — kept as illustrations of the method):**
 - SEE quiet pruning: SPSA flagged, 3 structural issues found, +11.4 Elo
 - History magnitude: consensus H0 investigated, found 27× scaling bug, +31.6 Elo
 - LMR simplify: removed unique adjustments + retune, +6.3 Elo
 - Cont-hist malus: fixed indexing bug + retune, +6.5 Elo
 - NMP capture R: consensus flip + retune, +3.5 Elo
 - Node-based TM: failed 3x at STC, retested at LTC, +11.9 Elo
+
+For the current cumulative list, see `experiments.md`.
 

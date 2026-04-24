@@ -16,11 +16,16 @@ mod epd;
 pub mod nnue;
 pub mod book;
 pub mod tb;
+pub mod tb_cache;
 pub mod binpack;
 pub mod datagen;
 pub mod nnue_export;
 pub mod bullet_convert;
 mod cuckoo;
+pub mod threats;
+pub mod threat_profile;
+pub mod threat_accum;
+pub mod sparse_l1;
 
 use board::Board;
 use movegen::{perft, perft_divide};
@@ -39,6 +44,7 @@ pub fn init() {
         search::init_lmr();
         cuckoo::init_cuckoo();
         nnue::init_nnue();
+        threats::init_threats();
     });
 }
 
@@ -60,6 +66,14 @@ struct Cli {
     /// Use classical (PeSTO) eval instead of NNUE
     #[arg(long = "classical")]
     classical: bool,
+
+    /// DIAGNOSTIC ONLY — load nets even when they mismatch Coda's inference
+    /// configuration (e.g. net trained with --xray 0 while Coda always emits
+    /// xrays). Default is refuse-to-load so mismatches can't silently degrade
+    /// SPRT / OB / Lichess games. Use only when deliberately probing a
+    /// mismatched net. Also available as UCI option `LoadAnyway`.
+    #[arg(long = "load-anyway", global = true)]
+    load_anyway: bool,
 }
 
 #[derive(Subcommand)]
@@ -73,6 +87,30 @@ enum Commands {
         #[arg(long = "threads", short = 't', default_value_t = 1)]
         threads: usize,
     },
+    /// NNUE micro-benchmark: pure inference throughput (no search).
+    /// `--mode fresh` uses the debug scalar `force_recompute` path.
+    /// `--mode refresh` uses the production SIMD `materialize` path
+    /// with an invalidated Finny cache (mirrors a king-bucket-cross
+    /// first-touch in search).
+    /// `--mode incremental` makes one legal move per iter and pops,
+    /// measuring realistic incremental cost.
+    EvalBench {
+        /// Search-bench positions are used if no EPD is supplied.
+        #[arg(long, default_value = "")]
+        epd: String,
+        /// Number of positions to load (0 = all)
+        #[arg(long, default_value_t = 8)]
+        positions: usize,
+        /// Repetitions per position
+        #[arg(long, default_value_t = 100_000)]
+        reps: u64,
+        /// `fresh` | `refresh` | `incremental` | `make-unmake`
+        #[arg(long, default_value = "fresh")]
+        mode: String,
+        /// Disable AVX-512 & VNNI for this run (forces AVX-2 SIMD path)
+        #[arg(long, default_value_t = false)]
+        no_avx512: bool,
+    },
     /// Run EPD test suite
     Epd {
         /// EPD file path
@@ -85,6 +123,15 @@ enum Commands {
         #[arg(short = 'm', long = "max", default_value_t = 0)]
         max: usize,
     },
+    /// Inspect binpack training data (ply distribution, score stats)
+    InspectBinpack {
+        /// Input binpack file
+        #[arg(short = 'i', long = "input")]
+        input: String,
+        /// Max positions to read (0 = all)
+        #[arg(short = 'n', long = "count", default_value_t = 1000000)]
+        count: u64,
+    },
     /// Perft with divide
     Perft {
         /// Search depth
@@ -96,10 +143,53 @@ enum Commands {
     },
     /// Perft benchmark suite (6 standard positions)
     PerftBench,
+    /// Patch a .nnue file's header flag bits in-place. Primary use case:
+    /// mark an already-converted net as HL-CReLU (sets bit 5 on extended_kb
+    /// nets). Refuses to operate on nets without extended_kb since bit 5
+    /// means consensus_buckets on legacy nets.
+    PatchNet {
+        /// Input .nnue file (modified in place unless --output given)
+        #[arg(long, short = 'i')]
+        input: String,
+        /// Output path (default: overwrite input)
+        #[arg(long, short = 'o')]
+        output: Option<String>,
+        /// Set the HL-CReLU bit (bit 5 when extended_kb=1)
+        #[arg(long)]
+        set_hl_crelu: bool,
+        /// Clear the HL-CReLU bit
+        #[arg(long)]
+        clear_hl_crelu: bool,
+        /// Set the FT-SCReLU bit (bit 0). Retrofit for historical nets that
+        /// were converted without `--screlu` but should have had it set for
+        /// consistency with the convert-bullet recipe.
+        #[arg(long)]
+        set_ft_screlu: bool,
+        /// Clear the FT-SCReLU bit (bit 0)
+        #[arg(long)]
+        clear_ft_screlu: bool,
+        /// Just print current flags, make no changes
+        #[arg(long)]
+        inspect: bool,
+    },
+    /// Dump SPSA tune spec (name,int,default,min,max,c_end,r_end) from tunables
+    TuneSpec {
+        /// SPSA r_end (default 0.002)
+        #[arg(long, default_value_t = 0.002)]
+        r_end: f32,
+    },
     /// Download NNUE net from net.txt URL
     FetchNet,
     /// NNUE network health check (uses --nnue/-n flag or auto-discovers)
     CheckNet {},
+    /// Measure threat-matrix row sparsity in a v9 .nnue file.
+    /// Reports zero-row count, near-zero rows, and distribution of row
+    /// max-abs weights. Used for sparsity-probe diagnosis.
+    MeasureNetSparsity {
+        /// Input .nnue file
+        #[arg(long, short = 'i')]
+        input: String,
+    },
     /// Generate training data (SF binpack format)
     Datagen {
         /// Output binpack file
@@ -152,6 +242,12 @@ enum Commands {
         #[arg(long, short = 'c', default_value_t = 1_000_000)]
         count: usize,
     },
+    /// Dump threat features for a FEN position (for cross-checking with Bullet)
+    DumpThreats {
+        /// FEN string
+        #[arg(default_value = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")]
+        fen: String,
+    },
     /// Show statistics for a binpack file
     BinpackStats {
         /// Input binpack file
@@ -193,12 +289,37 @@ enum Commands {
         /// Dual L1 activation (CReLU+SCReLU concat, v8 format)
         #[arg(long)]
         dual: bool,
-        /// Use consensus king bucket layout (fine-near, coarse-far)
+        /// [LEGACY] Use consensus king bucket layout (fine-near, coarse-far).
+        /// Equivalent to --kb-layout consensus. Ignored if --kb-layout is set explicitly.
         #[arg(long)]
         consensus_buckets: bool,
+        /// King bucket layout: uniform | consensus | reckless.
+        /// Reckless implies kb-count 10; uniform/consensus default to 16.
+        #[arg(long, default_value = "")]
+        kb_layout: String,
+        /// King bucket count. Overrides the default for the chosen kb-layout
+        /// (only useful for experimental configs — normally derived from layout).
+        #[arg(long, default_value_t = 0)]
+        kb_count: usize,
+        /// Number of threat features (0 = no threats, v9 format)
+        #[arg(long, default_value_t = 0)]
+        threats: usize,
         /// Source output bucket count (default 8, set to 2 for 2-bucket nets)
         #[arg(long, default_value_t = 8)]
         output_buckets: usize,
+        /// Hidden-layer activation is CReLU (default SCReLU). Sets header
+        /// bit 5 on extended_kb nets so the engine auto-configures
+        /// HiddenActivation=crelu at load time.
+        #[arg(long)]
+        hl_crelu: bool,
+        /// Whether the net was trained WITH xray threat features (Bullet
+        /// --xray 1, the default). Coda inference always emits xrays, so
+        /// xray-disabled-trained nets mismatch at inference and are
+        /// refused at load time unless --load-anyway is set. Default true;
+        /// pass --no-xray-trained when converting a Bullet net trained
+        /// with --xray 0.
+        #[arg(long, default_value_t = true)]
+        xray_trained: bool,
     },
     /// Convert .nnue to Bullet checkpoint (for transfer learning)
     ConvertCheckpoint {
@@ -225,6 +346,11 @@ fn main() {
 
     let cli = Cli::parse();
 
+    if cli.load_anyway {
+        crate::nnue::LOAD_ANYWAY.store(true, std::sync::atomic::Ordering::Relaxed);
+        eprintln!("WARNING: --load-anyway set; training/inference mismatches will NOT refuse load");
+    }
+
     match cli.command {
         None => {
             // UCI mode (default)
@@ -245,10 +371,18 @@ fn main() {
                 println!("\n{} nodes {} nps", nodes, nps);
             } else {
                 let nnue_owned = nnue_path.map(|s| s.to_string());
-                let handles: Vec<_> = (0..threads).map(|_| {
+                // Thread 0 runs with stats printed (info lines, per-position
+                // progress, EBF/FMC summary); other threads run silent to
+                // avoid interleaved output. Final aggregate line printed at
+                // the end.
+                let handles: Vec<_> = (0..threads).enumerate().map(|(i, _)| {
                     let np = nnue_owned.clone();
                     std::thread::spawn(move || {
-                        search::bench_silent(depth, np.as_deref())
+                        if i == 0 {
+                            search::bench(depth, np.as_deref())
+                        } else {
+                            search::bench_silent(depth, np.as_deref())
+                        }
                     })
                 }).collect();
                 let mut total_nodes = 0u64;
@@ -259,12 +393,257 @@ fn main() {
                 let nps = if elapsed.as_secs_f64() > 0.0 {
                     (total_nodes as f64 / elapsed.as_secs_f64()) as u64
                 } else { 0 };
-                println!("\n{} nodes {} nps", total_nodes, nps);
+                println!("\n{} nodes {} nps ({} threads)", total_nodes, nps, threads);
             }
+        }
+
+        Some(Commands::EvalBench { epd, positions, reps, mode, no_avx512 }) => {
+            use crate::{board::Board, nnue::{NNUENet, NNUEAccumulator}, eval::evaluate_nnue, threat_accum::ThreatStack};
+            let nnue_path = cli.nnue.as_deref().expect("EvalBench requires --nnue/-n");
+            let mut net = NNUENet::load(nnue_path).expect("failed to load NNUE");
+            if no_avx512 {
+                // Force-disable AVX-512 dispatch so kernels fall through to
+                // AVX-2 paths. Matches the SIMD-consistency test pattern.
+                net.has_avx512 = false;
+                net.has_avx512_vnni = false;
+                println!("info string eval-bench: AVX-512 & VNNI disabled (AVX-2 path only)");
+            }
+            let mut acc = NNUEAccumulator::new(net.hidden_size);
+            let mut tstack = ThreatStack::new(net.hidden_size);
+            tstack.active = net.has_threats;
+
+            let bench_positions: Vec<String> = if epd.is_empty() {
+                // Same 8 positions as `coda bench`.
+                vec![
+                    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".into(),
+                    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1".into(),
+                    "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1".into(),
+                    "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1".into(),
+                    "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8".into(),
+                    "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10".into(),
+                    "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4".into(),
+                    "2r3k1/pp3ppp/2n1b3/3pP3/3P4/2NB4/PP3PPP/R4RK1 w - - 0 1".into(),
+                ]
+            } else {
+                let text = std::fs::read_to_string(&epd).expect("failed to read EPD");
+                let iter = text.lines().filter(|l| !l.trim().is_empty());
+                let mut out: Vec<String> = Vec::new();
+                for line in iter {
+                    let parts: Vec<&str> = line.split_whitespace().take(4).collect();
+                    if parts.len() < 4 { continue; }
+                    out.push(format!("{} 0 1", parts.join(" ")));
+                    if positions > 0 && out.len() >= positions { break; }
+                }
+                out
+            };
+            let n_positions = if positions > 0 { positions.min(bench_positions.len()) } else { bench_positions.len() };
+            let positions_slice = &bench_positions[..n_positions];
+
+            // Warm-up: ensure AVX/VNNI-aware code paths are jitted / caches populated.
+            for fen in positions_slice {
+                let board = Board::from_fen(fen);
+                acc.force_recompute(&net, &board);
+                let _ = evaluate_nnue(&board, &net, &mut acc, &mut tstack);
+            }
+
+            let start = std::time::Instant::now();
+            let mut sum: i64 = 0;
+            let mut count: u64 = 0;
+            if mode == "fresh" {
+                for fen in positions_slice {
+                    let board = Board::from_fen(fen);
+                    for _ in 0..reps {
+                        // Force-recompute both perspectives from scratch: no Finny
+                        // benefit, no incremental shortcuts. Pure forward-pass cost.
+                        // NB: this currently uses the DEBUG scalar path in
+                        // `force_recompute`. Real production first-touch cost is
+                        // measured by `--mode refresh` below.
+                        acc.force_recompute(&net, &board);
+                        let s = evaluate_nnue(&board, &net, &mut acc, &tstack);
+                        sum = sum.wrapping_add(s as i64);
+                        count += 1;
+                    }
+                }
+            } else if mode == "refresh" {
+                for fen in positions_slice {
+                    let board = Board::from_fen(fen);
+                    for _ in 0..reps {
+                        // Production "fresh" path: invalidate Finny + current
+                        // accumulator, then call `materialize` which routes
+                        // through `refresh_accumulator` + `finny_batch_apply`
+                        // (SIMD). Mirrors what happens on a king-bucket cross
+                        // in real search when Finny has no cached state.
+                        acc.invalidate_for_bench();
+                        if tstack.active {
+                            tstack.reset_for_bench();
+                        }
+                        acc.materialize(&net, &board);
+                        let s = evaluate_nnue(&board, &net, &mut acc, &tstack);
+                        sum = sum.wrapping_add(s as i64);
+                        count += 1;
+                    }
+                }
+            } else if mode == "incremental" {
+                use crate::movegen::generate_legal_moves;
+                use crate::search::build_dirty_piece;
+                use crate::types::{flip_color, move_from, move_to, NO_PIECE_TYPE};
+                for fen in positions_slice {
+                    let mut board = Board::from_fen(fen);
+                    acc.force_recompute(&net, &board);
+                    if tstack.active {
+                        tstack.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+                    }
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { continue; }
+                    // Pick the first legal quiet we can make/unmake cleanly.
+                    let mv = legal.moves[0];
+                    for _ in 0..reps {
+                        let us = board.side_to_move;
+                        let them = flip_color(us);
+                        let moved_pt = board.piece_type_at(move_from(mv));
+                        let captured_pt = board.piece_type_at(move_to(mv));
+                        let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net);
+                        if !board.make_move(mv) { break; }
+                        acc.push(dirty);
+                        let s = evaluate_nnue(&board, &net, &mut acc, &tstack);
+                        sum = sum.wrapping_add(s as i64);
+                        board.unmake_move();
+                        acc.pop();
+                        count += 1;
+                    }
+                }
+            } else if mode == "make-unmake" {
+                // Times make_move + unmake_move. No NNUE evaluation happens.
+                // With threat-delta generation enabled (as in v9 production
+                // search), the dominant cost inside make_move is
+                // `push_threats_for_piece` + deltas fanout. Disabling
+                // threat deltas (measured separately) shows the base
+                // move-make cost alone.
+                //
+                // The user controls which via `--no-threat-deltas`.
+                use crate::movegen::generate_legal_moves;
+                for fen in positions_slice {
+                    let mut board = Board::from_fen(fen);
+                    // v9 production path: threat deltas always on.
+                    board.generate_threat_deltas = net.has_threats;
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { continue; }
+                    let mv = legal.moves[0];
+                    for _ in 0..reps {
+                        if !board.make_move(mv) { break; }
+                        board.unmake_move();
+                        count += 1;
+                    }
+                }
+            } else {
+                eprintln!("Unknown --mode: {} (expected 'fresh' | 'refresh' | 'incremental' | 'make-unmake')", mode);
+                return;
+            }
+            let secs = start.elapsed().as_secs_f64();
+            let evs = count as f64 / secs;
+            // In make-unmake mode the "mean_eval" field is meaningless
+            // (no eval was called). Report 0 so the CSV is consistent.
+            println!(
+                "evalbench mode={} positions={} reps/pos={} total_evals={} elapsed={:.3}s  evals/sec={:.0}  mean_eval={}",
+                mode, n_positions, reps, count, secs, evs,
+                sum / count.max(1) as i64,
+            );
         }
 
         Some(Commands::Epd { path, time, max }) => {
             epd::run_epd(&path, time, max, cli.nnue.as_deref());
+        }
+
+        Some(Commands::InspectBinpack { input, count }) => {
+            use sfbinpack::CompressedTrainingDataEntryReader;
+            let file = std::fs::File::open(&input).expect("Failed to open binpack");
+            let mut reader = CompressedTrainingDataEntryReader::new(file).expect("Failed to read binpack");
+
+            let mut ply_hist = vec![0u64; 500];
+            let mut total = 0u64;
+            let mut score_zero = 0u64;
+            let mut in_check = 0u64;
+            let mut is_capture = 0u64;
+            let mut is_promo = 0u64;
+            let mut score_sum = 0i64;
+            let mut piece_count_hist = vec![0u64; 33];
+            // Score range histogram
+            let mut score_ranges = [0u64; 10]; // <100, <500, <1000, <2000, <5000, <10000, <20000, <30000, >=30000, =32001
+            let limit = if count == 0 { u64::MAX } else { count };
+
+            while reader.has_next() && total < limit {
+                let entry = reader.next();
+                total += 1;
+                let ply = entry.ply as usize;
+                if ply < 500 { ply_hist[ply] += 1; }
+                if entry.score == 0 { score_zero += 1; }
+                let abs_score = entry.score.unsigned_abs() as u32;
+                score_sum += abs_score as i64;
+                match abs_score {
+                    0..=99 => score_ranges[0] += 1,
+                    100..=499 => score_ranges[1] += 1,
+                    500..=999 => score_ranges[2] += 1,
+                    1000..=1999 => score_ranges[3] += 1,
+                    2000..=4999 => score_ranges[4] += 1,
+                    5000..=9999 => score_ranges[5] += 1,
+                    10000..=19999 => score_ranges[6] += 1,
+                    20000..=29999 => score_ranges[7] += 1,
+                    30000..=32000 => score_ranges[8] += 1,
+                    _ => score_ranges[9] += 1, // 32001+ (mate scores?)
+                }
+
+                let stm = entry.pos.side_to_move();
+                if entry.pos.is_checked(stm) { in_check += 1; }
+
+                // Check if destination has a piece (capture)
+                let dest_piece = entry.pos.piece_at(entry.mv.to());
+                if dest_piece != sfbinpack::chess::piece::Piece::NONE {
+                    is_capture += 1;
+                }
+                if entry.mv.mtype() == sfbinpack::chess::r#move::MoveType::Promotion {
+                    is_promo += 1;
+                }
+
+                // Count pieces for output bucket analysis
+                let pc = entry.pos.occupied().count() as usize;
+                if pc < 33 { piece_count_hist[pc] += 1; }
+            }
+
+            println!("Inspected {} positions from {}", total, input);
+            println!("\n=== Ply Distribution ===");
+            for ply in 0..60 {
+                if ply_hist[ply] > 0 {
+                    println!("  ply {:3}: {:8} ({:.2}%)", ply, ply_hist[ply],
+                        100.0 * ply_hist[ply] as f64 / total as f64);
+                }
+            }
+            let below_16: u64 = ply_hist[..16].iter().sum();
+            let above_16: u64 = ply_hist[16..].iter().sum();
+            println!("\n  ply < 16:  {:8} ({:.1}%)", below_16, 100.0 * below_16 as f64 / total as f64);
+            println!("  ply >= 16: {:8} ({:.1}%)", above_16, 100.0 * above_16 as f64 / total as f64);
+
+            println!("\n=== Position Stats ===");
+            println!("  Score = 0: {:8} ({:.1}%)", score_zero, 100.0 * score_zero as f64 / total as f64);
+            println!("  In check:  {:8} ({:.1}%)", in_check, 100.0 * in_check as f64 / total as f64);
+            println!("  Captures:  {:8} ({:.1}%)", is_capture, 100.0 * is_capture as f64 / total as f64);
+            println!("  Promos:    {:8} ({:.1}%)", is_promo, 100.0 * is_promo as f64 / total as f64);
+            println!("  Avg |score|: {:.1}", score_sum as f64 / total as f64);
+            println!("\n=== Score Distribution ===");
+            let labels = ["    0-99", "  100-499", "  500-999", "1000-1999", "2000-4999",
+                         "5000-9999", "10K-19999", "20K-29999", "30K-32000", "  >=32001"];
+            for (i, label) in labels.iter().enumerate() {
+                println!("  |score| {}: {:8} ({:.1}%)", label, score_ranges[i],
+                    100.0 * score_ranges[i] as f64 / total as f64);
+            }
+
+            println!("\n=== Piece Count (Output Bucket proxy) ===");
+            for pc in (2..33).rev() {
+                if piece_count_hist[pc] > 0 {
+                    let bucket = std::cmp::min(7, (32 - pc) / 4); // approximate MaterialCount bucketing
+                    println!("  {} pieces (bucket ~{}): {:8} ({:.2}%)", pc, bucket,
+                        piece_count_hist[pc], 100.0 * piece_count_hist[pc] as f64 / total as f64);
+                }
+            }
         }
 
         Some(Commands::Perft { depth, fen }) => {
@@ -292,6 +671,79 @@ fn main() {
             run_perft_bench();
         }
 
+        Some(Commands::PatchNet { input, output, set_hl_crelu, clear_hl_crelu,
+                                   set_ft_screlu, clear_ft_screlu, inspect }) => {
+            if set_hl_crelu && clear_hl_crelu {
+                eprintln!("Error: --set-hl-crelu and --clear-hl-crelu are mutually exclusive");
+                std::process::exit(1);
+            }
+            if set_ft_screlu && clear_ft_screlu {
+                eprintln!("Error: --set-ft-screlu and --clear-ft-screlu are mutually exclusive");
+                std::process::exit(1);
+            }
+            let mut data = match std::fs::read(&input) {
+                Ok(d) => d,
+                Err(e) => { eprintln!("Error reading {}: {}", input, e); std::process::exit(1); }
+            };
+            // Header layout: magic(4) + version(4) + flags(1) + ...
+            if data.len() < 9 {
+                eprintln!("Error: file too short to be a .nnue"); std::process::exit(1);
+            }
+            let version = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+            let flags = data[8];
+            let extended_kb = flags & 128 != 0;
+            let bit5 = flags & 32 != 0;
+            let bit0 = flags & 1 != 0;
+            let bit5_desc = if extended_kb {
+                format!("hl_crelu={}", bit5)
+            } else {
+                format!("consensus_buckets={} (legacy)", bit5)
+            };
+            println!("{}: version={} flags=0b{:08b} extended_kb={} ft_screlu={} bit5: {}",
+                input, version, flags, extended_kb, bit0, bit5_desc);
+            if inspect { return; }
+            let patching_bit5 = set_hl_crelu || clear_hl_crelu;
+            let patching_bit0 = set_ft_screlu || clear_ft_screlu;
+            if !patching_bit5 && !patching_bit0 {
+                eprintln!("Nothing to change. Pass --set-hl-crelu / --clear-hl-crelu / \
+                    --set-ft-screlu / --clear-ft-screlu, or --inspect.");
+                return;
+            }
+            if patching_bit5 && !extended_kb {
+                eprintln!("Error: cannot patch bit 5 on legacy net (extended_kb=0 means \
+                    bit 5 is consensus_buckets). Regenerate the net with --kb-layout or \
+                    a non-16 kb_count to enable extended_kb.");
+                std::process::exit(1);
+            }
+            let mut new_flags = flags;
+            if set_hl_crelu { new_flags |= 32; }
+            if clear_hl_crelu { new_flags &= !32; }
+            if set_ft_screlu { new_flags |= 1; }
+            if clear_ft_screlu { new_flags &= !1; }
+            if new_flags == flags {
+                println!("(no change — flags already in requested state)");
+                return;
+            }
+            data[8] = new_flags;
+            let dest = output.as_deref().unwrap_or(&input);
+            if let Err(e) = std::fs::write(dest, &data) {
+                eprintln!("Error writing {}: {}", dest, e); std::process::exit(1);
+            }
+            let mut ops = Vec::<&str>::new();
+            if set_hl_crelu { ops.push("set hl_crelu"); }
+            if clear_hl_crelu { ops.push("clear hl_crelu"); }
+            if set_ft_screlu { ops.push("set ft_screlu"); }
+            if clear_ft_screlu { ops.push("clear ft_screlu"); }
+            println!("Patched: {} flags 0b{:08b} → 0b{:08b} ({})",
+                dest, flags, new_flags, ops.join(" + "));
+        }
+
+        Some(Commands::TuneSpec { r_end }) => {
+            for (name, _, default, min, max, c_end) in search::tunable_params() {
+                println!("{}, int, {}, {}, {}, {}, {}", name, default, min, max, c_end, r_end);
+            }
+        }
+
         Some(Commands::FetchNet) => {
             run_fetch_net();
         }
@@ -304,6 +756,10 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+
+        Some(Commands::MeasureNetSparsity { input }) => {
+            run_measure_net_sparsity(&input);
         }
 
         Some(Commands::Datagen { output, depth, games, threads, hash, blunder, force_captures, epd }) => {
@@ -325,6 +781,65 @@ fn main() {
             datagen::run_datagen(&config);
         }
 
+        Some(Commands::DumpThreats { fen }) => {
+            let mut board = board::Board::new();
+            board.set_fen(&fen);
+            let occ = board.colors[0] | board.colors[1];
+            let piece_names = ["P", "N", "B", "R", "Q", "K"];
+            let color_names = ["w", "b"];
+            let sq_name = |sq: u32| -> String {
+                let file = (b'a' + (sq % 8) as u8) as char;
+                let rank = (b'1' + (sq / 8) as u8) as char;
+                format!("{}{}", file, rank)
+            };
+
+            for pov in [types::WHITE, types::BLACK] {
+                let king_sq = (board.pieces[types::KING as usize] & board.colors[pov as usize]).trailing_zeros();
+                let mirrored = (king_sq % 8) >= 4;
+                println!("# POV={} king={} mirrored={}", color_names[pov as usize], sq_name(king_sq), mirrored);
+
+                let mut features: Vec<(usize, String)> = Vec::new();
+                threats::enumerate_threats(
+                    &board.pieces, &board.colors, &board.mailbox,
+                    occ, pov, mirrored,
+                    |feat_idx| {
+                        features.push((feat_idx, String::new()));
+                    },
+                );
+
+                // Re-enumerate with detail for printing
+                let white_bb = board.colors[types::WHITE as usize];
+                for color in [types::WHITE, types::BLACK] {
+                    for pt in 0..6u8 {
+                        let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
+                        while bb != 0 {
+                            let sq = bb.trailing_zeros();
+                            bb &= bb - 1;
+                            let attacks = threats::piece_attacks_occ(pt, color, sq, occ);
+                            let mut attacked_occ = attacks & occ;
+                            while attacked_occ != 0 {
+                                let target_sq = attacked_occ.trailing_zeros();
+                                attacked_occ &= attacked_occ - 1;
+                                let victim_pt = board.mailbox[target_sq as usize];
+                                if victim_pt >= 6 { continue; }
+                                let victim_color = if white_bb & (1u64 << target_sq) != 0 { types::WHITE } else { types::BLACK };
+                                let cp = threats::colored_piece(color, pt);
+                                let vcp = threats::colored_piece(victim_color, victim_pt);
+                                let idx = threats::threat_index(cp, sq, vcp, target_sq, mirrored, pov);
+                                if idx >= 0 {
+                                    println!("{} {}{}({}) {} {}{}({}) → index {}",
+                                        color_names[color as usize], piece_names[pt as usize], sq_name(sq), cp,
+                                        color_names[victim_color as usize], piece_names[victim_pt as usize], sq_name(target_sq), vcp,
+                                        idx);
+                                }
+                            }
+                        }
+                    }
+                }
+                println!();
+            }
+        }
+
         Some(Commands::BinpackStats { input }) => {
             run_binpack_stats(&input);
         }
@@ -337,11 +852,25 @@ fn main() {
             run_eval_dist(&input, count, &cli.nnue);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, output_buckets }) => {
-            let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets)
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, xray_trained }) => {
+            // Resolve king bucket layout and count. Explicit --kb-layout wins;
+            // --consensus-buckets is the legacy path for 16-bucket consensus.
+            let layout = if !kb_layout.is_empty() {
+                match bullet_convert::KbLayout::from_name(&kb_layout) {
+                    Ok(l) => l,
+                    Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+                }
+            } else if consensus_buckets {
+                bullet_convert::KbLayout::Consensus
             } else {
-                bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, consensus_buckets)
+                bullet_convert::KbLayout::Uniform
+            };
+            let count = if kb_count > 0 { kb_count } else { layout.default_count() };
+
+            let result = if hidden > 0 {
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, xray_trained)
+            } else {
+                bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, layout, count)
             };
             if let Err(e) = result {
                 eprintln!("Error: {}", e);
@@ -411,16 +940,35 @@ fn run_fetch_net() {
         return;
     }
     println!("Downloading {} ...", url);
+    // C8 audit LIKELY #48: add `-f` (--fail) so curl exits non-zero on
+    // HTTP 4xx/5xx instead of capturing the error body as the output
+    // file. Previously a 404/500 response was silently saved as the
+    // "net" and curl returned success; the subsequent load would fail
+    // cryptically or — worse — truncate a partial download into what
+    // looked like a valid file. Also validate magic bytes after download.
     let output = std::process::Command::new("curl")
-        .args(["-sL", &url, "-o", fname])
+        .args(["-fsL", &url, "-o", fname])
         .status();
     match output {
         Ok(status) if status.success() => {
             let size = std::fs::metadata(fname).map(|m| m.len()).unwrap_or(0);
+            // Magic-byte sanity check: NNUE files should start with a
+            // small set of known magic values. If the first 4 bytes are
+            // ASCII (e.g. HTML error page that slipped past -f), refuse.
+            if let Ok(bytes) = std::fs::read(fname) {
+                if bytes.len() < 16 || bytes.iter().take(4).all(|&b| b.is_ascii_alphabetic()) {
+                    eprintln!("Error: downloaded file doesn't look like a .nnue (first bytes: {:?})",
+                        &bytes.iter().take(16).collect::<Vec<_>>());
+                    let _ = std::fs::remove_file(fname);
+                    std::process::exit(1);
+                }
+            }
             println!("Downloaded {} ({} bytes)", fname, size);
         }
         _ => {
             eprintln!("Error: failed to download {}", url);
+            // Remove any partial file to avoid confusing the next invocation.
+            let _ = std::fs::remove_file(fname);
             std::process::exit(1);
         }
     }
@@ -453,7 +1001,19 @@ fn run_check_net(net_path: &str) {
         // Full recompute for both perspectives
         let piece_count = board.occupied().count_ones();
         acc.force_recompute(&net, &board);
-        net.forward(&acc, board.side_to_move, piece_count)
+        // C8 audit LIKELY #20: for v9 threat nets, use forward_with_threats
+        // so the displayed eval actually consumes the threat features.
+        // `net.forward()` with a v9 net zeroes the threat half → displayed
+        // eval is arbitrarily wrong. Build a one-shot threat stack for the
+        // position.
+        if net.has_threats {
+            let mut ts = crate::threat_accum::ThreatStack::new(h);
+            ts.active = true;
+            ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+            net.forward_with_threats(&acc, board.side_to_move, piece_count, &ts)
+        } else {
+            net.forward(&acc, board.side_to_move, piece_count)
+        }
     };
 
     // === Eval positions ===
@@ -512,6 +1072,66 @@ fn run_check_net(net_path: &str) {
     } else {
         println!("{} passed, {} FAILED.", pass, fail);
     }
+}
+
+/// Measure threat-matrix row sparsity in a v9+ .nnue file.
+/// Used for L1-regularisation probe diagnosis. Prints zero-row count,
+/// near-zero rows (|max_abs| ≤ 1), and histogram of row max-abs weights.
+fn run_measure_net_sparsity(net_path: &str) {
+    use crate::nnue::NNUENet;
+    let net = match NNUENet::load(net_path) {
+        Ok(n) => n,
+        Err(e) => { eprintln!("load error: {}", e); std::process::exit(1); }
+    };
+    let num_features = net.num_threat_features;
+    if num_features == 0 {
+        println!("Net has no threat features (not a v9+ net).");
+        return;
+    }
+    let h = net.hidden_size;
+    let mut zero_rows = 0usize;
+    let mut near_zero_rows = 0usize;  // |max| <= 1
+    let mut hist: [usize; 6] = [0; 6];  // 0, 1, 2-3, 4-7, 8-31, 32+
+    let mut nonzero_weights = 0u64;
+    let mut total_abs_sum = 0u64;
+    for r in 0..num_features {
+        let row = &net.threat_weights[r * h..(r + 1) * h];
+        let max_abs = row.iter().map(|&w| (w as i32).abs()).max().unwrap_or(0);
+        if max_abs == 0 { zero_rows += 1; }
+        if max_abs <= 1 { near_zero_rows += 1; }
+        let bucket = match max_abs {
+            0 => 0, 1 => 1, 2..=3 => 2, 4..=7 => 3, 8..=31 => 4, _ => 5,
+        };
+        hist[bucket] += 1;
+        for &w in row {
+            if w != 0 { nonzero_weights += 1; }
+            total_abs_sum += (w as i32).abs() as u64;
+        }
+    }
+    let total_rows = num_features;
+    let total_weights = (num_features * h) as u64;
+    println!("=== Threat matrix sparsity: {} ===", net_path);
+    println!("Rows:  {} total, hidden_size={}", total_rows, h);
+    println!("Zero rows:      {} ({:.2}%)", zero_rows,
+        100.0 * zero_rows as f64 / total_rows as f64);
+    println!("Near-zero rows: {} ({:.2}%)  [|max| <= 1]", near_zero_rows,
+        100.0 * near_zero_rows as f64 / total_rows as f64);
+    println!("Row-max-abs histogram:");
+    println!("  0       : {}", hist[0]);
+    println!("  1       : {}", hist[1]);
+    println!("  2-3     : {}", hist[2]);
+    println!("  4-7     : {}", hist[3]);
+    println!("  8-31    : {}", hist[4]);
+    println!("  32+     : {}", hist[5]);
+    println!("Weight-level sparsity:");
+    println!("  Zero weights:    {} / {} ({:.2}%)",
+        total_weights - nonzero_weights, total_weights,
+        100.0 * (total_weights - nonzero_weights) as f64 / total_weights as f64);
+    println!("  Mean |weight|:   {:.3}", total_abs_sum as f64 / total_weights as f64);
+    let matrix_bytes = (num_features * h) as u64;  // i8 = 1 byte per weight
+    let compact_bytes = ((total_rows - zero_rows) * h) as u64;
+    println!("Matrix size: {} MB raw, {} MB compact (post zero-row compaction)",
+        matrix_bytes / (1024 * 1024), compact_bytes / (1024 * 1024));
 }
 
 fn run_binpack_stats(input: &str) {
@@ -690,7 +1310,7 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>) {
         let board = board::Board::from_fen(&fen);
 
         let score = if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
-            eval::evaluate_nnue(&board, net, acc)
+            { let ts = crate::threat_accum::ThreatStack::new(0); eval::evaluate_nnue(&board, net, acc, &ts) }
         } else {
             continue;
         };

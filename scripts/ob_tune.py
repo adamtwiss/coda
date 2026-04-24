@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
 """Submit SPSA tune to OpenBench via the web form.
 
-Usage:
+Usage (preferred — canonical source is the `tunables!` macro in src/search.rs,
+read via the compiled binary's `coda tune-spec` subcommand; never hand-maintain
+a static params file):
+
+    python3 ob_tune.py <branch> \\
+        --params "$(./target/release/coda tune-spec)" --iterations 2500
+
+Alternate forms if you specifically want a subset:
+
     python3 ob_tune.py <branch> --params "PARAM1, int, 100, 50, 200, 10.0, 0.002
     PARAM2, int, 50, 10, 100, 5.0, 0.002"
 
     python3 ob_tune.py <branch> --params-file params.txt
 
-    python3 ob_tune.py <branch> --params-file params.txt --iterations 2500
+Rationale: previous static specs (tune_pruning_18.txt, gen_tune_params.py) drifted
+from src/search.rs defaults after each applied tune round; SPSA restarted from
+stale start-points, wasting iterations retracing already-tuned territory.
+`coda tune-spec` emits the current live defaults every time.
 
 Environment variables:
     OPENBENCH_SERVER   (default: https://ob.atwiss.com)
@@ -82,7 +93,7 @@ def submit_tune(args):
         'throughput':   str(args.throughput),
         'win_adj':      'movecount=3 score=500',
         'draw_adj':     'movenumber=20 movecount=10 score=10',
-        'scale_nps':    '500000',
+        'scale_nps':    str(args.scale_nps),
         'scale_method': 'DEV',
         'syzygy_wdl':   'OPTIONAL',
         'syzygy_adj':   'OPTIONAL',
@@ -126,11 +137,35 @@ def main():
     p.add_argument('--dev-network', default='', help='Dev network SHA256 hash (8 chars, from ob_upload_net.py)')
     p.add_argument('--priority', type=int, default=0, help='Priority (default: 0)')
     p.add_argument('--throughput', type=int, default=100, help='Throughput (default: 100)')
+    p.add_argument('--scale-nps', type=int, default=None, help='Reference NPS for TC scaling. Auto-detects from branch name: 250000 for v9 branches (feature/threat-inputs, experiment/*, tune/v9-*, fix/threats-*), 500000 for main/v5. Override to force.')
     p.add_argument('--repo', default='https://github.com/adamtwiss/coda', help='GitHub repo URL')
     p.add_argument('--server', default=SERVER, help=f'Server (default: {SERVER})')
     p.add_argument('--username', default=USERNAME, help='Username')
     p.add_argument('--password', default=PASSWORD, help='Password')
     args = p.parse_args()
+
+    # Auto-detect scale_nps from branch name (see ob_submit.py rationale).
+    # `fix/` is inclusive because virtually all fix branches are off
+    # feature/threat-inputs now (v9 is production). If anyone ever backports
+    # a v5 fix, they must pass --scale-nps 500000 explicitly.
+    v9_patterns = ('feature/threat-inputs', 'experiment/', 'tune/v9-', 'fix/')
+    is_v9 = any(args.branch.startswith(p) for p in v9_patterns)
+    if args.scale_nps is None:
+        args.scale_nps = 250000 if is_v9 else 500000
+        print(f'[auto] scale_nps={args.scale_nps} ({"v9 branch" if is_v9 else "v5/main"})')
+
+    # Warn if v9 branch without --dev-network: OB will build with embedded
+    # v5 net, which produces a different bench than v9-prod-net bench that
+    # the commit message and local bench verification are based on.
+    if is_v9 and not args.dev_network:
+        print('[WARN] v9 branch submitted without --dev-network. OB will')
+        print('       build with embedded v5 net and get a DIFFERENT bench')
+        print('       than your v9-prod-net bench. Suggest:')
+        print('       --dev-network 6AEA210B  (v9 prod net, net-v9-768th16x32-w15-e800s800-xray)')
+        print('       Press Ctrl-C within 5s to abort, or continue.')
+        import time
+        try: time.sleep(5)
+        except KeyboardInterrupt: return
 
     if not args.password:
         print('Error: password required. Set OPENBENCH_PASSWORD or use --password')
