@@ -16,23 +16,34 @@ const BUCKET_SIZE: usize = 5;
 ///   bits  0-15:  best move (16 bits)
 ///   bits 16-17:  flag (2 bits)
 ///   bit  18:     tt_pv (1 bit) — was this position a PV node?
-///   bits 19-31:  staticEval (13 bits, signed, biased ±4095)
-///   bits 32-47:  score (16 bits, signed)
-///   bits 48-55:  depth (8 bits, unsigned)
-///   bits 56-63:  generation (8 bits)
+///   bits 19-34:  staticEval (16 bits, signed — full ±32767 range)
+///   bits 35-50:  score (16 bits, signed)
+///   bits 51-57:  depth+1 (7 bits, unsigned offset; covers -1..=126)
+///   bits 58-63:  generation (6 bits, cycles 0..63)
+///
+/// Widened staticEval from 13 bits (silent clamp to ±4095) to full i16.
+/// Before: 4000+cp NNUE evals were silently clipped; the -INFINITY
+/// (=−30000) QS-shelved sentinel clamped to −4095 and then passed the
+/// `static_eval > -(MATE_SCORE - 100)` validity check, admitting a
+/// garbage eval at the probe site. Full-range encoding fixes both.
+
+/// Depth offset: stored depth = depth + 1. Covers search depth −1..=126.
+const TT_DEPTH_BIAS: i32 = 1;
+const TT_DEPTH_MASK: u64 = 0x7F; // 7 bits
+const TT_GEN_MASK: u8 = 0x3F;    // 6 bits
 
 #[inline(always)]
 fn pack_data(best_move: Move, flag: u8, static_eval: i32, score: i32, depth: i32, generation: u8, tt_pv: bool) -> u64 {
     let mv = best_move as u64;
     let f = (flag as u64 & 3) << 16;
     let pv = (tt_pv as u64) << 18;
-    // Bias static_eval to unsigned 13-bit: clamp ±4095, add 4096, mask
-    let se_clamped = static_eval.clamp(-4095, 4095) as i16;
-    let se13 = ((se_clamped as u16).wrapping_add(4096)) & 0x1FFF;
-    let se = (se13 as u64) << 19;
-    let sc = ((score as i16 as u16) as u64) << 32;
-    let d = ((depth as i8 as u8) as u64) << 48;
-    let g = (generation as u64) << 56;
+    // Full-range static_eval: saturate to i16 range then store as 16 bits.
+    let se = ((static_eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16 as u16) as u64) << 19;
+    let sc = ((score as i16 as u16) as u64) << 35;
+    // depth+1 clamped into 7-bit unsigned. Search never uses depth > 126.
+    let d_biased = (depth + TT_DEPTH_BIAS).clamp(0, TT_DEPTH_MASK as i32) as u64;
+    let d = d_biased << 51;
+    let g = ((generation & TT_GEN_MASK) as u64) << 58;
     mv | f | pv | se | sc | d | g
 }
 
@@ -53,23 +64,22 @@ fn unpack_tt_pv(data: u64) -> bool {
 
 #[inline(always)]
 fn unpack_static_eval(data: u64) -> i32 {
-    let se13 = ((data >> 19) & 0x1FFF) as u16;
-    (se13 as i16 - 4096) as i32
+    (((data >> 19) & 0xFFFF) as u16 as i16) as i32
 }
 
 #[inline(always)]
 fn unpack_score(data: u64) -> i32 {
-    ((data >> 32) as i16) as i32
+    (((data >> 35) & 0xFFFF) as u16 as i16) as i32
 }
 
 #[inline(always)]
 fn unpack_depth(data: u64) -> i32 {
-    (((data >> 48) & 0xFF) as u8 as i8) as i32
+    (((data >> 51) & TT_DEPTH_MASK) as i32) - TT_DEPTH_BIAS
 }
 
 #[inline(always)]
 fn unpack_generation(data: u64) -> u8 {
-    (data >> 56) as u8
+    ((data >> 58) as u8) & TT_GEN_MASK
 }
 
 /// A bucket of 5 slots using parallel arrays.
@@ -407,7 +417,10 @@ impl TT {
     pub fn store(&self, hash: u64, depth: i32, score: i32, flag: u8, best_move: Move, static_eval: i32, is_pv: bool) {
         let idx = self.bucket_index(hash);
         let bucket = &self.buckets[idx];
-        let gen = self.generation.load(Ordering::Relaxed);
+        // 6-bit generation wraps every 64 new_search() calls. Mask the
+        // internal u8 counter at load so match/age math lives in the same
+        // truncated domain as the stored value.
+        let gen = self.generation.load(Ordering::Relaxed) & TT_GEN_MASK;
         let key_upper = (hash >> 32) as u32;
 
         let new_data = pack_data(best_move, flag, static_eval, score, depth, gen, is_pv);
@@ -442,8 +455,10 @@ impl TT {
                 return;
             }
 
-            // Track worst slot for replacement: depth - 4*age
-            let age = gen.wrapping_sub(slot_gen) as i32;
+            // Track worst slot for replacement: depth - 4*age.
+            // Age math lives in 6-bit gen space; `& TT_GEN_MASK` keeps the
+            // wrap-around correct now that gen cycles every 64 searches.
+            let age = (gen.wrapping_sub(slot_gen) & TT_GEN_MASK) as i32;
             let slot_score = slot_depth - age * 4;
             if slot_score < replace_score {
                 replace_score = slot_score;
@@ -578,9 +593,17 @@ mod tests {
             //  (move, flag, staticEval, score, depth, gen, tt_pv)
             (1234u16, 3u8, 150i32, 300i32, 12i32, 5u8, true),     // normal PV
             (0u16, 1u8, -500i32, -200i32, 0i32, 0u8, false),       // negative eval/score
-            (5000u16, 2u8, 4095i32, 30000i32, 30i32, 255u8, true), // max values
-            (100u16, 3u8, -4095i32, -30000i32, -1i32, 128u8, false), // min values
+            // Max values: depth capped at 126 (7-bit offset), gen masked to 63 (6-bit).
+            (5000u16, 2u8, 20000i32, 30000i32, 126i32, 63u8, true),
+            // Min values: depth -1 (QS), static_eval at full i16 negative range.
+            (100u16, 3u8, -30000i32, -30000i32, -1i32, 0u8, false),
             (0u16, 0u8, 0i32, 0i32, -1i32, 0u8, false),             // QS depth -1
+            // -INFINITY sentinel (-30000) must round-trip untruncated so the
+            // `static_eval > -(MATE_SCORE - 100)` probe check correctly fails.
+            (0u16, 1u8, -30000i32, 0i32, 5i32, 1u8, false),
+            // Beyond ±4095 — the old 13-bit encoding silently clamped these.
+            (0u16, 2u8, 5000i32, 0i32, 5i32, 1u8, false),
+            (0u16, 2u8, -5000i32, 0i32, 5i32, 1u8, false),
         ];
 
         for (mv, flag, se, score, depth, gen, pv) in &test_cases {
@@ -596,10 +619,11 @@ mod tests {
             assert_eq!(got_mv, *mv as Move, "move mismatch for {:?}", (mv, flag, se, score, depth, gen));
             assert_eq!(got_flag, *flag, "flag mismatch");
             assert_eq!(got_pv, *pv, "tt_pv mismatch");
-            assert_eq!(got_se, (*se).clamp(-4095, 4095), "static_eval mismatch: packed {} got {}", se, got_se);
+            assert_eq!(got_se, (*se).clamp(i16::MIN as i32, i16::MAX as i32),
+                "static_eval mismatch: packed {} got {}", se, got_se);
             assert_eq!(got_score, *score as i16 as i32, "score mismatch: packed {} got {}", score, got_score);
             assert_eq!(got_depth, *depth, "depth mismatch: packed {} got {}", depth, got_depth);
-            assert_eq!(got_gen, *gen, "gen mismatch");
+            assert_eq!(got_gen, *gen & TT_GEN_MASK, "gen mismatch");
         }
     }
     
