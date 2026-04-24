@@ -3772,6 +3772,19 @@ pub struct AccEntry {
     pub threat_move: Move, // the move that produced this ply (for king mirror check)
     pub threat_moved_pt: u8, // piece type that moved
     pub threat_moved_color: Color, // color that moved
+    // Load-bearing cache-stride padding. Total struct size is 16512
+    // bytes without this (258 × 64B cache lines). Stride 258 shares a
+    // factor of 2 with the 64-set L1, so consecutive entries'
+    // `computed` cache line maps to only 32 of the 64 sets, and with
+    // 8-way associativity the 256-ply stack exactly saturates L1
+    // (32 × 8 = 256) — conflict misses start on any walkback that
+    // touches ≥32 entries. Padding to 16576 (stride 259, coprime with
+    // 64) restores full-set coverage and was the original cost when
+    // the three now-removed Vec fields occupied this tail region.
+    // Phase 1 of the flatten (inlining the i16 arrays) accidentally
+    // relied on this coincidence. Deleting it cost −5.6 Elo (#726);
+    // explicit pad makes the dependency visible.
+    _cache_stride_pad: [u8; 64],
 }
 
 /// Finny table entry: cached accumulator for a specific king bucket.
@@ -3817,6 +3830,7 @@ impl NNUEAccumulator {
                 threat_move: NO_MOVE,
                 threat_moved_pt: NO_PIECE_TYPE,
                 threat_moved_color: WHITE,
+                _cache_stride_pad: [0; 64],
             });
         }
         // Build finny table (flat array)
@@ -3929,6 +3943,7 @@ impl NNUEAccumulator {
                 threat_move: NO_MOVE,
                 threat_moved_pt: NO_PIECE_TYPE,
                 threat_moved_color: WHITE,
+                _cache_stride_pad: [0; 64],
             });
         }
         self.stack[self.top].computed = false;
