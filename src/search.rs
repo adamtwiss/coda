@@ -77,8 +77,13 @@ tunables!(
     (RFP_DEPTH, 10, 2, 12, 2.0),
     (RFP_MARGIN_IMP, 56, 30, 150, 6.0),
     (RFP_MARGIN_NOIMP, 130, 50, 200, 7.5),
-    (FUT_BASE, 78, 20, 200, 9.0),
-    (FUT_PER_DEPTH, 160, 40, 250, 10.5),
+    // Futility margin reduced to Reckless scale. At lmr_d=5:
+    //   Old: 78 + 160*5 = 878 (Coda 2.4× wider than Reckless 364)
+    //   New: 40 + 65*5 = 365 (matches Reckless)
+    // Force-more-pruning experiment: Coda was under-pruning at mid-depth
+    // where Reckless prunes confidently. SPSA retune-on-branch expected.
+    (FUT_BASE, 40, 20, 200, 9.0),
+    (FUT_PER_DEPTH, 65, 40, 250, 10.5),
     (HIST_PRUNE_DEPTH, 3, 1, 8, 1.5),
     (HIST_PRUNE_MULT, 3866, 500, 50000, 2475.0),
     (SEE_QUIET_MULT, 47, 5, 80, 3.75),
