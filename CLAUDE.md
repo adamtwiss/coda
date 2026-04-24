@@ -404,6 +404,115 @@ quickly to keep accurate in a checked-in file. Authoritative sources:
 Testing methodology is durable and documented below (Self-play SPRT primary,
 retune-on-branch for tree-shape-changing features, LTC for TM features).
 
+## Strength Frontier — Where the Elo Gap Lives (2026-04-24)
+
+Findings from a 100-game bullet H2H vs Stockfish 18 and Atlas's
+loss-pattern analysis. This is a working hypothesis, not dogma —
+update as more data accumulates.
+
+### Calibration
+
+- 60+1 bullet H2H vs SF 18: **Coda −159.8 ±41.6 Elo** (100 games,
+  57% draws, 43 SF wins, 0 Coda wins).
+- CCRL 40/15 top 10 sits at **3633–3652** (SF 18 #1 at 3652,
+  Reckless 0.9.0 #2 at 3647). Rivals pool spans 3434–3585;
+  Coda is below the CCRL top-100 cutoff (3390) in the posted
+  snapshot but effectively ~3480–3500 on current trunk +
+  SB800 prod net.
+
+### What the losses look like
+
+Atlas's analysis of 27 SF losses (2026-04-24):
+
+- Median max single-ply eval drop: **4.53 cp**. Mean 5.56 cp.
+  18/27 losses have a >3 cp cliff, 7/27 have >8 cp.
+- Cliffs happen mid-game → endgame transition (median ply 83,
+  range 42–123). Openings survive fine.
+- Coda median depth in losing games: **15**, max 21.
+  SF at 60+1 typically reaches 25–35.
+- Coda's eval says "fine"; one ply later the eval collapses
+  4–14 pawns.
+
+**This is tactical blindness from search-depth deficit, not
+positional mis-eval.** Coda's eval is accurate at the depth it
+reaches; the refuting combination lives at plies SF sees and we
+don't.
+
+### What closes the gap
+
+**Effective depth** is the target. Effective depth = f(pruning
+efficiency, raw NPS, eval quality). Ranked by leverage for the
+SF-gap class of loss:
+
+1. **Pruning efficiency** (biggest lever). Same NPS, more
+   effective depth. Two-row LMP, NMP refinements, LMR
+   recalibration, direct-check exemptions. This is Reckless's
+   playbook — they're slower than SF in raw NPS but #2 on CCRL
+   via better pruning + eval.
+2. **Raw NPS** (secondary). Cache residency (flatten AccEntry,
+   eval-TT writeback, L1 permutation, training-side matrix
+   shrink), compile-time SIMD dispatch, prefetch hygiene.
+3. **Eval quality** (contributes indirectly). A cleaner eval
+   lets pruning/ordering decisions be sharper, which amplifies
+   lever 1. But better eval alone doesn't stop tactical cliffs
+   — SF's cliffs happen at deeper plies and are out of Coda's
+   search reach regardless of eval signal.
+
+### Priors this updates
+
+- **Coda deliberately traded NPS for eval quality** via v9
+  threat-inputs (Reckless architecture). The ROI on that trade
+  only realises if the better eval translates to better pruning
+  decisions → greater effective depth. Net Elo > net NPS.
+- **Raw NPS gains are only as valuable as their depth conversion
+  ratio.** A 5% NPS win that doesn't translate to measurable
+  depth (because pruning is the bottleneck) is worth less than
+  a 2% NPS win in a depth-limited regime.
+- **Reckless at #2 CCRL (3647) despite being slower than SF**
+  demonstrates the limit isn't NPS. Before proposing "just more
+  NPS" to close the gap, compare Coda's pruning parameters
+  against Reckless/Obsidian/Viridithas and look for systematic
+  under-pruning.
+- **Experiments that buy depth at hot plies** (extension on
+  tactical-density signals, cliff-risk heuristics) are a new
+  candidate class Atlas's analysis surfaced. W2-pattern work
+  (signal × pruning/extension decision) already has high hit
+  rate in Coda's history.
+
+### De-prioritised by this finding
+
+- **Eval post-processing tweaks** (contempt, optimism
+  calibration, fortress caps, shuffle detectors) are low leverage
+  for the SF-gap. Keep doing them when they're cheap, but don't
+  let them displace pruning/NPS work on the queue.
+- **Factor net (architecture work) alone** doesn't close the SF
+  gap — it improves eval quality, which has indirect leverage
+  (see above) but doesn't address depth deficit directly. Still
+  worth doing because it helps Rivals-tier strength and makes
+  pruning calibration cleaner; just don't expect it to crack the
+  cliff-miss class.
+
+### Workflow implication for future Claudes
+
+When sizing up a new experiment, ask three questions in order:
+
+1. Does it increase effective depth? (Via pruning efficiency,
+   NPS, or cliff-avoiding extensions.)
+2. Is Coda's pruning value in this area an outlier vs top-engine
+   consensus? (SF/Reckless/Obsidian/Viridithas — check actual
+   values, not just presence/absence of a feature.)
+3. Would it show up in a 100-game SF bullet H2H? (±~40 Elo
+   bars at that sample.)
+
+If all three are "no", the expected Elo-per-effort is probably low
+compared to items that say yes to at least (1) and (2).
+
+### Recalibration cadence
+
+Re-run the 100-game SF H2H every ~2 weeks or after any merge
+cluster worth ~+20 Elo. The gap should narrow visibly; if it
+doesn't, our on-paper Elo is overstated.
+
 ## Key Gotchas
 - Move flag equality vs bitwise: check non-promotion flags with ==, not &
 - EP moves only valid when EP square is empty (occupied square = corruption)
