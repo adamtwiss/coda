@@ -440,39 +440,56 @@ don't.
 
 ### What closes the gap
 
-**Effective depth** is the target. Effective depth = f(pruning
-efficiency, raw NPS, eval quality). Ranked by leverage for the
-SF-gap class of loss:
+**Effective depth** is the target. Effective depth ≈ log(NPS × time)
+/ log(EBF), so depth = f(raw NPS, pruning efficiency, eval quality).
 
-1. **Pruning efficiency** (biggest lever). Same NPS, more
-   effective depth. Two-row LMP, NMP refinements, LMR
-   recalibration, direct-check exemptions. This is Reckless's
-   playbook — they're slower than SF in raw NPS but #2 on CCRL
-   via better pruning + eval.
-2. **Raw NPS** (secondary). Cache residency (flatten AccEntry,
-   eval-TT writeback, L1 permutation, training-side matrix
-   shrink), compile-time SIMD dispatch, prefetch hygiene.
-3. **Eval quality** (contributes indirectly). A cleaner eval
-   lets pruning/ordering decisions be sharper, which amplifies
-   lever 1. But better eval alone doesn't stop tactical cliffs
-   — SF's cliffs happen at deeper plies and are out of Coda's
-   search reach regardless of eval signal.
+Decomposition of the ~160 Elo SF gap, rough budget:
+
+| Lever | Approx share of gap | Why |
+|---|---:|---|
+| Raw NPS deficit (Coda is ~2× slower than Reckless) | **~100 Elo** (~65%) | Direct depth loss per move |
+| Pruning efficiency (Coda under-prunes vs Reckless on several params) | **~30–50 Elo** | Wastes branches Reckless discards → worse EBF → less effective depth |
+| Eval quality / tactical sharpness | **~20–30 Elo** | Factor-net-quality and training gains |
+
+Both NPS and pruning attack the SAME target (depth) from different
+angles and compound. A 2× NPS gain is ~100 Elo only in a regime
+where EBF is already good; if EBF is bad, pruning wins add more
+per-percent than NPS does.
+
+**Concrete Reckless vs Coda pruning outliers (measured 2026-04-24):**
+
+- Futility margin at lmr_d=5: Coda 878 vs Reckless 364 (Coda 2.4×
+  less aggressive — keeps ~2.4× more mid-depth moves in the tree).
+- SEE quiet prune at d=5: Coda threshold −1175 vs Reckless −145
+  (Coda 8× more lenient — only prunes queen-sac class).
+- RFP depth cap: Coda d≤10, Reckless uncapped. No RFP at deep plies.
+- LMP depth cap: Coda d≤8, Reckless uncapped.
+- BNFP depth cap: Coda d≤4, Reckless d<11.
+
+These five represent candidates for "force more pruning + retune"
+branches. Each is a structural change (uncap a depth gate / widen a
+threshold) followed by SPSA retune on branch.
 
 ### Priors this updates
 
+- **NPS is a dominant lever (~2/3 of the gap), not secondary.**
+  Cache-residency wins (flatten AccEntry, eval-TT writeback, L1
+  permutation, training-side matrix shrink) and SIMD dispatch each
+  translate directly to depth. A 10% NPS gain ≈ ~5–8 Elo at this
+  regime.
+- **Pruning values matter just as much per-param.** We have at
+  least five clear outliers where Coda prunes less than Reckless.
+  Each retune-on-branch around a tightened threshold is probably
+  +2–5 Elo. Collectively they're in the same ballpark as NPS wins.
 - **Coda deliberately traded NPS for eval quality** via v9
-  threat-inputs (Reckless architecture). The ROI on that trade
-  only realises if the better eval translates to better pruning
-  decisions → greater effective depth. Net Elo > net NPS.
-- **Raw NPS gains are only as valuable as their depth conversion
-  ratio.** A 5% NPS win that doesn't translate to measurable
-  depth (because pruning is the bottleneck) is worth less than
-  a 2% NPS win in a depth-limited regime.
-- **Reckless at #2 CCRL (3647) despite being slower than SF**
-  demonstrates the limit isn't NPS. Before proposing "just more
-  NPS" to close the gap, compare Coda's pruning parameters
-  against Reckless/Obsidian/Viridithas and look for systematic
-  under-pruning.
+  threat-inputs (Reckless architecture). That trade only pays off
+  if the better eval feeds better pruning decisions. Net Elo >
+  net NPS. The eval-quality lever is smallest in this decomposition
+  but orthogonal — it compounds with both others.
+- **"Force more pruning"-style branches** (intentionally widen
+  an under-pruning threshold, let SPSA find new equilibrium)
+  have worked before and are under-built-on. The Reckless
+  comparison gives specific targets.
 - **Experiments that buy depth at hot plies** (extension on
   tactical-density signals, cliff-risk heuristics) are a new
   candidate class Atlas's analysis surfaced. W2-pattern work
