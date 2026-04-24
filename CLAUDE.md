@@ -420,6 +420,61 @@ update as more data accumulates.
   snapshot but effectively ~3480–3500 on current trunk +
   SB800 prod net.
 
+### The TC-handicap sigmoid (2026-04-24 calibration)
+
+Bullet H2H vs SF with asymmetric TC (Coda gets N× more time than
+SF), 60+ games per data point:
+
+| HC | Gap Elo | Δ per doubling |
+|---:|---:|---:|
+| 1× | −160 | — |
+| 2× | −160 | 0 |
+| 4× | −127 | 33 |
+| 8× | −35  | **92** |
+| 16× | +30 | 65 |
+
+**Classic sigmoid.** Flat zone below 2×, knee around 4×→8× where
+each doubling of effective NPS delivers ~90 Elo, then taper toward
+parity at 16×. First TC-doubling barely moves the needle; the
+fourth doubling crosses the gap.
+
+**What this tells us:**
+
+- Our **eval is at SF parity** — at equal depth, we play as well.
+  The full 160 Elo gap at normal TC is *horizon*, not quality.
+- Horizon is **nonlinear in depth**. Partial depth gains below the
+  knee (1-4×) return near-zero Elo. Above the knee (4-8×), each
+  incremental depth-ply delivers 20-30+ Elo. This is because
+  specific tactical refutations live at specific depths — seeing
+  them at all vs not matters far more than seeing them half-a-ply
+  earlier.
+- **Compound to cross the knee or plateau below it.** Individual
+  experiments at +3% NPS / +3 Elo pre-knee may feel thankless; they
+  deliver Elo only insofar as they stack with other gains toward
+  the knee threshold.
+
+### Path to closing the gap (pragmatic, 2026 horizon)
+
+To reach the knee (~8× effective depth-gain) we need compounding
+across all levers. Realistic per-lever contribution budget:
+
+| Lever | Plausible gain | Path |
+|---|---:|---|
+| Cache residency + SIMD dispatch | ~1.5× | L1 permutation, VNNI dispatch, sparse-L1 |
+| Sparse-L1 matrix shrink + EBF effect | ~1.5× | L1-decouple Bullet fix + λ=1e-3 training |
+| Factor SB800 eval quality | ~1.3× | Architecture + longer training |
+| Move-ordering + pruning retune on improved eval | ~1.1-1.2× | Iterate post-eval-upgrade |
+| **Stacked total** | **~3-3.5×** | Sits between 4× and 8× on the sigmoid |
+
+That's **~80 Elo closed** (Coda 3480 → ~3560 CCRL). Meaningful jump
+— moves us from sub-top-100 into top-30 range — but does NOT reach
+parity with SF.
+
+**Parity (16×-equivalent)** requires dramatic EBF reduction (log(EBF)
+halved, 1.8 → 1.35) which in turn requires multi-year investment:
+richer training pipeline, more net iteration, possibly novel search
+innovations. Don't expect parity in 2026.
+
 ### What the losses look like
 
 Atlas's analysis of 27 SF losses (2026-04-24):
