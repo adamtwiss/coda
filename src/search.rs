@@ -2395,6 +2395,13 @@ fn negamax(
     let mut best_move = NO_MOVE;
     let mut best_score = -INFINITY;
     let mut move_count = 0i32;
+    // Sibling singular extension state: tracks the singular_extension
+    // value of the previous iteration. When TT move's SE check returned
+    // negative (alternatives were competitive), the next move gets a
+    // positive extension equal to the flipped magnitude — we believe
+    // some specific alternative is strong, so investigate it deeper.
+    // Reckless pattern (commit adea8bff, +2.79 STC).
+    let mut prev_move_singular_ext: i32 = 0;
     // Track quiet moves searched before beta cutoff for history penalty
     let mut quiets_tried = [NO_MOVE; 64];
     let mut quiets_count = 0usize;
@@ -2689,13 +2696,32 @@ fn negamax(
             }
         }
 
-        let mut new_depth = depth - 1 + extension + singular_extension;
+        // Sibling singular extension: if the previous move (typically
+        // TT move at move_count 1) returned a negative SE, the second
+        // move gets an equivalent positive extension. We treat the
+        // previous "not singular" verdict as evidence that some specific
+        // alternative is strong; boost the very next one checked.
+        // Only fires at move_count == 2 (one-shot right after TT move).
+        // Magnitude mirrors Reckless's flip (depth - extension - 1).
+        let sibling_extension = if move_count == 2 && prev_move_singular_ext < 0 {
+            -prev_move_singular_ext
+        } else {
+            0
+        };
+
+        let mut new_depth = depth - 1 + extension + singular_extension + sibling_extension;
 
         // Propagate double extension counter to child
         if ply_u + 1 <= MAX_PLY {
             info.double_ext_count[ply_u + 1] = info.double_ext_count[ply_u]
                 + if singular_extension >= 2 { 1 } else { 0 };
         }
+
+        // Save this move's singular_extension for the next iteration's
+        // sibling check. Only singular_extension itself; extension and
+        // sibling_extension are per-move, not relevant to the sibling
+        // signal (which is purely about TT move's singularity verdict).
+        prev_move_singular_ext = singular_extension;
 
         if new_depth < 0 {
             new_depth = 0;
