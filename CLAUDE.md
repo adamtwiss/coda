@@ -683,6 +683,103 @@ Re-run the 100-game SF H2H every ~2 weeks or after any merge
 cluster worth ~+20 Elo. The gap should narrow visibly; if it
 doesn't, our on-paper Elo is overstated.
 
+## Improvement Portfolio — Diversified Threads (2026-04-24)
+
+Beyond the flywheel (eval → ordering → pruning → depth → eval), the
+gap-closing strategy runs multiple ORTHOGONAL threads in parallel.
+Correlated work can plateau together; diversified threads hedge.
+When picking the next experiment, explicitly name which thread it
+sits in — it helps avoid the trap of chasing one axis while others
+decay.
+
+**Eval-search flywheel** — compounding feedback loop:
+- Better eval → better ordering → safer pruning → more depth → better
+  eval (via stronger self-play training data)
+- Non-linear: a +2% eval improvement often delivers +8-15 Elo AFTER
+  retune-on-branch, versus +3-5 Elo raw. Flywheel-captured gain
+  doubles or more.
+- Retune-on-branch (§SPSA) is the mechanism by which we capture
+  flywheel gain after each feature. Don't drop a +1-2 Elo raw feature
+  without running the retune — that's usually where the real Elo is.
+- Reckless-value imports fail directly because Reckless's values are
+  calibrated against Reckless's own flywheel state. Our optimum is
+  different. Outliers are directional signals; retune-on-branch is
+  the portable-translation mechanism.
+
+**Correctness audits** — bugs in rarely-fired paths:
+- Historically our highest Elo-per-hour lane. Bugs in 50-move rule,
+  LMR endgame gate, SMP race conditions, TB integration, and a
+  critical `is_pseudo_legal` EP hole have each delivered +3-30 Elo.
+- `correctness_audit_2026-04-22.md` SPECULATIVE list has queued
+  candidates. R5 in `research_threads_2026-04-24.md` ranks the top 5
+  by Lichess reachability.
+- Under-invested relative to payoff. If in doubt between a feature
+  experiment at expected +2 Elo and a correctness audit branch,
+  audit first.
+
+**Comparative engine review with instrumentation** — leverage
+multiplier we're under-using:
+- Reading top-engine source tells you *what* — instrumentation tells
+  you *when and how often*. Different information class.
+- Practical recipe: patch Reckless (or SF, Obsidian) to log pruning
+  rates / first-move-cut / R-value distributions per depth. Run the
+  same bench or `coda_blunders.epd`. Compare tree shape directly.
+- `scripts/reckless_evalbench.patch` is the entry point we've used
+  for this so far. A half-day of instrumented comparison often
+  surfaces gaps that a full day of source-reading misses.
+- Specific under-studied axes: NMP R-value distribution, LMR
+  reduction amounts by history bucket, pruning fire rate by depth,
+  TT hit rate breakdowns.
+
+**Training hyperparameters + data** — upstream from the eval:
+- Biggest historical wins: low-final-LR (+47), data filtering ply≥16
+  (+22, +80 with retune), WDL calibration. Each was 1-line schedule
+  change.
+- Still-unexplored: output bucket count (we use 8, untested on v9),
+  batch size (16384 default, not defended empirically), WDL schedule
+  shape (constant vs linear vs late-ramp), data composition additions
+  (Lichess-blunder positions into training set).
+- Lichess-watch provides a feedback loop for "what positions does
+  Coda actually blunder" → those positions become training-data
+  candidates.
+
+**Long tunes / long training — "free" Elo at cost of patience**:
+- 25K-iter SPSA (~200K games). Top engines use this routinely; our
+  2-2.5K standard almost certainly leaves small-gradient parameter
+  gains on the table. Worth running once every 5-10 merges as a
+  "settle calibration" pass — not routine.
+- SB1600+ training. V9 pattern is specifically different from v5/v7:
+  sparse threat features continue converging deep into the low-LR
+  tail. SB400 → SB800 delivered +88 Elo on v9 (vs flat on v7). Each
+  additional 400 SB plausibly +10-20 Elo with tapering returns.
+  Roughly 40h GPU per SB800.
+- Priority: shelved-net (Reckless-KB + factor, +30 proven) at SB800
+  FIRST, then SB1600 on top of that recipe if the SB800 lands clean.
+
+**Infrastructure — Lichess-visible, SPRT-invisible**:
+- Opening book: current Titans.bin is randomly grabbed from the
+  internet, untested vs alternatives. Book A/B + book-move-sanity-
+  checking are 1-5 Elo each, only measurable on Lichess.
+- TB entry timing + DTZ walkback quality: just added DTZ walkback
+  2026-04-24; remaining questions include whether entering TB the
+  moment popcount drops is optimal at all strength levels.
+- Time management edge cases: stockpile bugs, forced-move
+  soft_floor, increment flooring — visible on Lichess bot as time
+  forfeits or poor practical play. Hard to SPRT.
+- Parallel search (Lazy SMP): v9 T=4 blunder bug known, Coda deploys
+  at T=1 on Lichess as result. Fixing this unlocks more effective
+  strength at the deployment without code changes.
+
+**Thread-selection heuristic** — when picking the next experiment:
+
+1. What thread is this in? (Forces explicit framing vs reactive
+   picking.)
+2. What's the last win in this thread, and how recent? If a thread
+   hasn't delivered in 4+ weeks, pick it — diversity of attempts.
+3. For flywheel/correctness/comparative/training: run SPRT at [0, 3]
+   (default) or [-3, 3] (correctness fix). For infrastructure:
+   Lichess-watch + manual inspection.
+
 ## Key Gotchas
 - Move flag equality vs bitwise: check non-promotion flags with ==, not &
 - EP moves only valid when EP square is empty (occupied square = corruption)
