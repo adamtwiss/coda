@@ -27,8 +27,16 @@ const BUCKET_SIZE: usize = 5;
 /// `static_eval > -(MATE_SCORE - 100)` validity check, admitting a
 /// garbage eval at the probe site. Full-range encoding fixes both.
 
-/// Depth offset: stored depth = depth + 1. Covers search depth −1..=126.
-const TT_DEPTH_BIAS: i32 = 1;
+/// Depth offset: stored depth = depth + 2. Covers search depth −2..=125.
+///
+/// The `-2` end is load-bearing: `search.rs` stores an eval-only shelf
+/// entry with `depth = -2` (see comment at that store site). It must
+/// round-trip unchanged so that later `tt_depth >= depth` checks reject
+/// it for every real search depth. A smaller bias (e.g. +1) clamped `-2`
+/// up to `-1`, colliding with real QS entries and letting an UPPER
+/// bound of `-INFINITY` leak into the search — −167 Elo on the first
+/// attempt.
+const TT_DEPTH_BIAS: i32 = 2;
 const TT_DEPTH_MASK: u64 = 0x7F; // 7 bits
 const TT_GEN_MASK: u8 = 0x3F;    // 6 bits
 
@@ -40,7 +48,8 @@ fn pack_data(best_move: Move, flag: u8, static_eval: i32, score: i32, depth: i32
     // Full-range static_eval: saturate to i16 range then store as 16 bits.
     let se = ((static_eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16 as u16) as u64) << 19;
     let sc = ((score as i16 as u16) as u64) << 35;
-    // depth+1 clamped into 7-bit unsigned. Search never uses depth > 126.
+    // depth+TT_DEPTH_BIAS clamped into 7-bit unsigned. Search never uses
+    // depth > 125 (MAX_PLY=64), so the upper bound is abundant headroom.
     let d_biased = (depth + TT_DEPTH_BIAS).clamp(0, TT_DEPTH_MASK as i32) as u64;
     let d = d_biased << 51;
     let g = ((generation & TT_GEN_MASK) as u64) << 58;
@@ -593,11 +602,14 @@ mod tests {
             //  (move, flag, staticEval, score, depth, gen, tt_pv)
             (1234u16, 3u8, 150i32, 300i32, 12i32, 5u8, true),     // normal PV
             (0u16, 1u8, -500i32, -200i32, 0i32, 0u8, false),       // negative eval/score
-            // Max values: depth capped at 126 (7-bit offset), gen masked to 63 (6-bit).
-            (5000u16, 2u8, 20000i32, 30000i32, 126i32, 63u8, true),
-            // Min values: depth -1 (QS), static_eval at full i16 negative range.
-            (100u16, 3u8, -30000i32, -30000i32, -1i32, 0u8, false),
+            // Max values: depth capped at 125 (7-bit offset, bias +2), gen masked to 63 (6-bit).
+            (5000u16, 2u8, 20000i32, 30000i32, 125i32, 63u8, true),
+            // Min values: depth -2 (eval-only shelf), static_eval at full i16 negative range.
+            (100u16, 3u8, -30000i32, -30000i32, -2i32, 0u8, false),
             (0u16, 0u8, 0i32, 0i32, -1i32, 0u8, false),             // QS depth -1
+            // The -2 sentinel must round-trip distinct from -1 — that was the
+            // bug that tanked the first attempt at this encoding (-167 Elo).
+            (0u16, 3u8, 0i32, -30000i32, -2i32, 0u8, false),
             // -INFINITY sentinel (-30000) must round-trip untruncated so the
             // `static_eval > -(MATE_SCORE - 100)` probe check correctly fails.
             (0u16, 1u8, -30000i32, 0i32, 5i32, 1u8, false),
