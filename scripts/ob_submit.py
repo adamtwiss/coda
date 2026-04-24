@@ -165,19 +165,10 @@ def main():
     if args.scale_nps is None:
         args.scale_nps = 250000
     # Keep is_v9 True for the net-bench warning below — main is v9 now.
-    is_v9 = True
-
-    # Warn if v9 branch without any --dev-network/--base-network: OB will
-    # build with embedded v5 net, giving DIFFERENT bench than v9-prod bench.
-    if is_v9 and not args.dev_network and not args.base_network:
-        print('[WARN] v9 branch submitted without --dev-network/--base-network.')
-        print('       OB will build with embedded v5 net — bench will NOT match')
-        print('       any v9-prod-net bench you measured locally.')
-        print('       Suggest: --dev-network 6AEA210B --base-network 6AEA210B')
-        print('       Press Ctrl-C within 5s to abort, or continue.')
-        import time
-        try: time.sleep(5)
-        except KeyboardInterrupt: return False
+    # Net override warning (stale pre-merge check removed 2026-04-24).
+    # OB builds with whatever net.txt points to, same as local make.
+    # Pass --dev-network / --base-network only for explicit net-vs-net
+    # comparisons or when testing a non-prod net.
 
     if not args.password:
         print('Error: password required. Set OPENBENCH_PASSWORD or use --password')
