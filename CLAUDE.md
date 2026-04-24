@@ -445,16 +445,31 @@ don't.
 
 Decomposition of the ~160 Elo SF gap, rough budget:
 
-| Lever | Approx share of gap | Why |
+| Lever | Approx share of gap | Status |
 |---|---:|---|
-| Raw NPS deficit (Coda is ~2× slower than Reckless) | **~100 Elo** (~65%) | Direct depth loss per move |
-| Pruning efficiency (Coda under-prunes vs Reckless on several params) | **~30–50 Elo** | Wastes branches Reckless discards → worse EBF → less effective depth |
-| Eval quality / tactical sharpness | **~20–30 Elo** | Factor-net-quality and training gains |
+| Raw NPS deficit (Coda is ~2× slower than Reckless) | **~100 Elo** (~65%) | Some portion is deliberately bought — x-ray threat features cost ~20% NPS but paid +110 Elo (good trade). We won't fully close this; target is partial recovery. |
+| Pruning efficiency (Coda under-prunes vs Reckless on several params) | **~30–50 Elo** | Under-exploited; "force more pruning + retune" branches are the lever |
+| Eval quality / tactical sharpness | **~20–30 Elo** | Factor-net-quality, training recipe improvements |
 
-Both NPS and pruning attack the SAME target (depth) from different
-angles and compound. A 2× NPS gain is ~100 Elo only in a regime
-where EBF is already good; if EBF is bad, pruning wins add more
-per-percent than NPS does.
+**Key NPS framing**: we don't expect to match Reckless's raw NPS.
+Some of our deficit is a deliberate eval-architecture trade
+(x-ray threats, wider FT chunks). The recoverable NPS ceiling is
+bounded by what doesn't regress eval quality.
+
+**Where the recoverable NPS lives**: almost entirely in
+**cache-residency improvements tied to sparsity**. The current
+49 MB threat weight matrix spills L3 on most fleet hosts (measured
+on 9-host microbench; see `docs/nps_microbench_hostdata.md`). If
+we can shrink it below ~32 MB via training-side L1 regularisation
+(Item 2 in the NPS investigation) and Viridithas-style input-chunk
+L1 permutation (R3 in research_threads_2026-04-24.md), we get
+a step-function NPS gain across the entire fleet. That's the
+biggest remaining NPS lever by far — cache-residency wins
+compound across every node of every search.
+
+Both NPS (via sparsity/cache work) and pruning (via retune branches
+targeting the Reckless outliers) attack the SAME target — depth —
+and compound.
 
 **Concrete Reckless vs Coda pruning outliers (measured 2026-04-24):**
 
