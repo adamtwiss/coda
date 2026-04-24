@@ -4163,75 +4163,68 @@ impl NNUEAccumulator {
 
     /// Materialize: ensure current accumulator is computed.
     /// Multi-ply walk-back replay for PSQ accumulator. Called only when
-    /// direct parent is NOT computed. Scans back up to `WALKBACK_LIMIT`
-    /// plies looking for a computed ancestor, checks that no king moves
-    /// occurred in the replay range (else `halfka_index` lookups with
-    /// the current board's king square would be wrong for intermediate
-    /// plies), then replays each ply's `dirty` forward using the same
-    /// SIMD helpers as the fast incremental path.
+    /// direct parent is NOT computed. Scans back unboundedly looking
+    /// for a computed ancestor; aborts only if an intermediate ply has
+    /// `dirty.kind == 0` (broken chain — no delta info, so can't replay
+    /// across it). Otherwise replays each ply's `dirty` forward using
+    /// the same SIMD helpers as the fast incremental path.
     ///
     /// Returns true on successful replay (current ply is now computed),
-    /// false if the walk-back conditions don't hold (caller falls through
-    /// to a full refresh).
+    /// false if we hit a broken-chain ply or walked back to the root.
     ///
-    /// Per-pov king-move constraint is strict (any king move in range
-    /// aborts). A finer per-perspective version could accept a white-king
-    /// move while still walking back for the black perspective. Keeping
-    /// it simple here; the 2026-04-18 measurement showed 47.8% of
-    /// parent-not-computed cases resolve within 2 plies, which is the
-    /// bulk of the opportunity.
+    /// Why no explicit king-move or limit check (vs v2):
+    ///
+    /// `build_dirty_piece` (search.rs:701) already returns
+    /// `DirtyPiece::recompute()` (kind = 0) *exactly when* the moving
+    /// side's king crosses a bucket/mirror boundary. So a `kind == 1`
+    /// dirty is guaranteed to be same-bucket for its mover. Within the
+    /// same bucket, `halfka_index` depends on the piece square only —
+    /// not on the king's exact position. That means:
+    ///
+    ///   - Replaying an intermediate kind=1 king move for the mover's
+    ///     own pov produces correct (sub old-king-sq feature, add
+    ///     new-king-sq feature) — same bucket → same formula.
+    ///   - Replaying it for the opposite pov is trivially correct —
+    ///     that pov's king didn't move, so all its feature indices use
+    ///     the unchanged opposite-pov king square.
+    ///
+    /// The v2 `pt == KING` short-circuit was over-conservative: it
+    /// rejected walkback whenever *either* king appeared in any
+    /// intermediate ply, even when those moves stayed in-bucket and
+    /// were perfectly safe. Reckless's `can_update_pst` (`nnue.rs:177`)
+    /// only aborts on pov-colored king moves that cross buckets — which
+    /// in our representation *is* `dirty.kind == 0`. Dropping the KING
+    /// check and the WALKBACK_LIMIT aligns us with that pattern.
     fn try_walkback_psq(&mut self, net: &NNUENet, board: &Board) -> bool {
-        const WALKBACK_LIMIT: usize = 3;
-
-        // Scan back for nearest computed ancestor.
+        // Scan back for nearest computed ancestor. Abort only on a
+        // broken-chain intermediate (kind=0) or hitting the root.
         let mut k = self.top;
-        let mut steps = 0usize;
         loop {
             if k == 0 {
                 // Hit root without finding a computed ancestor.
                 return false;
             }
             k -= 1;
-            steps += 1;
             if self.stack[k].computed {
                 break;
             }
-            if steps > WALKBACK_LIMIT {
-                return false;
-            }
             // Broken chain: no dirty info at this intermediate ply → can't
-            // derive the preceding position from it.
+            // derive ply k+1 from ply k. `build_dirty_piece` only returns
+            // kind=0 when a king bucket-crossing forced the refresh, so
+            // reaching here implies a real recomputation is required.
             if self.stack[k].dirty.kind == 0 {
                 return false;
             }
         }
 
         // `k` is the ancestor frame; replay range is (k+1)..=self.top.
-        // Re-check limit (loop exit at `steps > WALKBACK_LIMIT` returned
-        // false, so we're within limit — but also reject if we walked
-        // past the limit on the final step).
-        let replay_span = self.top - k;
-        if replay_span == 0 || replay_span > WALKBACK_LIMIT {
-            return false;
-        }
+        debug_assert!(self.top > k);
 
-        // Constraint: no king moves in [k+1..=self.top]. `halfka_index`
-        // depends on each perspective's king square; with a king move
-        // mid-chain, the stored dirty entries for surrounding plies
-        // would have been recorded against a different king position.
-        for ply in (k + 1)..=self.top {
-            let d = &self.stack[ply].dirty;
-            let n = d.n_changes as usize;
-            for i in 0..n {
-                let (_add, _color, pt, _sq) = d.changes[i];
-                if pt == KING {
-                    return false;
-                }
-            }
-        }
-
-        // Replay. Using current board's king squares is safe because no
-        // kings moved in the replay range.
+        // Replay. Using current board's king squares is safe because
+        // every intermediate ply has `dirty.kind == 1`, which means its
+        // king moves (if any) stayed within the same bucket — so the
+        // current king square yields the same bucket as the stale one
+        // and halfka_index is invariant.
         let h = self.hidden_size;
         let w_king_sq = board.king_sq(WHITE);
         let b_king_sq = board.king_sq(BLACK);
