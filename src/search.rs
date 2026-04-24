@@ -193,6 +193,12 @@ tunables!(
     (SEE_CAP_DEPTH, 6, 3, 15, 1.5),         // was hardcoded 6 (SEE capture prune depth cap)
     (FUT_LMR_DEPTH, 10, 5, 20, 1.5),        // was hardcoded 10 (futility lmr_d cap)
     (BAD_NOISY_DEPTH, 4, 4, 15, 1.5),       // was hardcoded 4 (BNFP depth cap)
+    // Second pass — additional gates exposed for the feature-utility
+    // audit tune. Widened ranges allow SPSA to reach disable-endpoint
+    // values where appropriate (per feedback_spsa_as_feature_utility_diagnostic).
+    (NMP_MIN_DEPTH, 3, 2, 20, 1.5),              // was hardcoded 3 (NMP activation gate, 2 sites)
+    (HINDSIGHT_MIN_DEPTH, 2, 1, 20, 1.5),        // was hardcoded 2 (hindsight reduction gate)
+    (TT_CUTOFF_HALFMOVE_MAX, 90, 50, 100, 3.0),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -1864,7 +1870,7 @@ fn negamax(
             // Gate ALL return-from-TT paths (direct + bounds-narrow collapse +
             // near-miss + QS) on halfmove < 90. Window-narrowing is still applied —
             // it only biases the search, while returning stale tt_score is unsafe.
-            let halfmove_ok = board.halfmove < 90;
+            let halfmove_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
             if tt_depth >= depth && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 // Unified TT cutoff with node-type guard (Alexandria pattern):
                 // At non-PV nodes, accept TT cutoff when:
@@ -2127,7 +2133,7 @@ fn negamax(
     // think the position is quiet, reduce depth further.
     // Gate on prior_reduction (Stockfish >= 2, Alexandria >= 1).
     let prior_reduction = if ply_u >= 1 { info.reductions[ply_u - 1] } else { 0 };
-    if !in_check && ply >= 1 && depth >= 2 && ply_u >= 1
+    if !in_check && ply >= 1 && depth >= tp(&HINDSIGHT_MIN_DEPTH) && ply_u >= 1
         && prior_reduction >= 2
         && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
         && static_eval > -INFINITY
@@ -2163,7 +2169,7 @@ fn negamax(
     // to king-zone-pressure's cost.
     let undefended_count: i32 = {
         // Only bother computing when NMP might actually fire.
-        let nmp_gate_cheap = depth >= 3 && !in_check && ply > 0
+        let nmp_gate_cheap = depth >= tp(&NMP_MIN_DEPTH) && !in_check && ply > 0
             && stm_non_pawn != 0 && beta - alpha == 1
             && static_eval >= beta && !prev_was_null
             && beta.abs() < MATE_SCORE - 100
@@ -2179,7 +2185,7 @@ fn negamax(
         }
     };
 
-    if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
+    if depth >= tp(&NMP_MIN_DEPTH) && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
         && !prev_was_null  // Prevent consecutive null moves
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
@@ -3278,7 +3284,7 @@ fn quiescence_with_depth(
         let tt_ret = downgrade_50mr_mate(tt_score, ply, board.halfmove);
 
         // P2: skip QS TT cutoff near 50mr — stale bound unsafe
-        let halfmove_ok = board.halfmove < 90;
+        let halfmove_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
         let qs_is_pv = beta - alpha > 1;
         match tt_entry.flag {
             TT_FLAG_EXACT => {
