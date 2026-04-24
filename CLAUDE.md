@@ -756,11 +756,13 @@ OPENBENCH_PASSWORD=<pw> python3 scripts/ob_status.py
 ```
 Default bounds [0.00, 5.00] for novel changes. Always verify bench matches before submitting.
 
-**Reference NPS is auto-detected from branch name** (as of 2026-04-19):
-- `feature/threat-inputs`, `experiment/*`, `tune/v9-*`, `fix/threats-*` → **250K** (v9 runs slower due to threat features)
-- main / other → **500K**
-
-Both `ob_submit.py` and `ob_tune.py` print `[auto] scale_nps=...` when the auto-detect fires. Verify it matches expectation before each submission. Wrong scale_nps means games run at wrong time budgets; experiments at 500K on v9 branches run at ~2× wall-clock, halving fleet throughput. Override only for branches the patterns don't cover — and when you do, add the new pattern to `v9_patterns` in both scripts.
+**Reference NPS defaults to 250000** (v9 is main since 2026-04-24 merge).
+V9 runs at ~240-280K NPS per core; the default fits everything on main
+and all standard feature branches. Explicit v5-only work (legacy
+bullet_convert experiments, v5 net comparisons) must pass `--scale-nps
+500000`. Wrong scale_nps means games run at wrong time budgets —
+experiments at 500K on v9 code run at ~2× wall-clock, halving fleet
+throughput.
 
 **Bench lives in git commit messages, not this file.** Measure with
 `coda bench -n <current-prod-net>` on the exact branch you're submitting;
@@ -787,7 +789,7 @@ strength and producing confusing SPSA movements on top.
 
 Before firing any trunk retune:
 
-1. `cat net.txt` on the trunk branch (feature/threat-inputs)
+1. `cat net.txt` on trunk (main; v9 merged 2026-04-24)
 2. The filename in net.txt IS the production net for that trunk
 3. Pass the matching `--dev-network <SHA8>` to `ob_tune.py`
 4. If the SHA doesn't match, DO NOT SUBMIT — fix the mismatch

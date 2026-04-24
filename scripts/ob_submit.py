@@ -150,24 +150,22 @@ def main():
     p.add_argument('--base-network', default='', help='Base network SHA256 hash (8 chars, from ob_upload_net.py)')
     p.add_argument('--priority', type=int, default=0, help='Priority (default: 0)')
     p.add_argument('--throughput', type=int, default=100, help='Throughput (default: 100)')
-    p.add_argument('--scale-nps', type=int, default=None, help='Reference NPS for TC scaling. Auto-detects from branch name: 250000 for v9 branches (feature/threat-inputs, experiment/*, tune/v9-*, fix/threats-*), 500000 for main/v5 branches. Override to force.')
+    p.add_argument('--scale-nps', type=int, default=None, help='Reference NPS for TC scaling. Defaults to 250000 (v9, current main). Use --scale-nps 500000 for v5-only branches.')
     p.add_argument('--repo', default='https://github.com/adamtwiss/coda', help='GitHub repo URL')
     p.add_argument('--server', default=SERVER, help=f'Server (default: {SERVER})')
     p.add_argument('--username', default=USERNAME, help='Username')
     p.add_argument('--password', default=PASSWORD, help='Password')
     args = p.parse_args()
 
-    # Auto-detect scale_nps from branch name if not explicitly set.
-    # V9 branches run at ~240-280K NPS per core (threat features add ~40% work).
-    # V5/main runs at ~500K+. Wrong scale_nps means games get wrong time budgets.
-    # `fix/` matches broadly — all current fix branches are off
-    # feature/threat-inputs. Backports to v5 must pass --scale-nps 500000
-    # explicitly.
-    v9_patterns = ('feature/threat-inputs', 'experiment/', 'tune/v9-', 'fix/')
-    is_v9 = any(args.dev_branch.startswith(p) or args.base_branch.startswith(p) for p in v9_patterns)
+    # scale_nps default: 250000 (v9 is main since 2026-04-24 merge).
+    # V9 runs at ~240-280K NPS per core (threat features add ~40% work).
+    # V5 runs at ~500K+. Wrong scale_nps means games get wrong time budgets.
+    # Explicit v5 branch work must pass --scale-nps 500000 (e.g. legacy
+    # bullet_convert experiments, v5-only net comparisons).
     if args.scale_nps is None:
-        args.scale_nps = 250000 if is_v9 else 500000
-        print(f'[auto] scale_nps={args.scale_nps} ({"v9 branch detected" if is_v9 else "v5/main"})')
+        args.scale_nps = 250000
+    # Keep is_v9 True for the net-bench warning below — main is v9 now.
+    is_v9 = True
 
     # Warn if v9 branch without any --dev-network/--base-network: OB will
     # build with embedded v5 net, giving DIFFERENT bench than v9-prod bench.
