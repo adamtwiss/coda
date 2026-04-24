@@ -4196,22 +4196,31 @@ impl NNUEAccumulator {
     /// in our representation *is* `dirty.kind == 0`. Dropping the KING
     /// check and the WALKBACK_LIMIT aligns us with that pattern.
     fn try_walkback_psq(&mut self, net: &NNUENet, board: &Board) -> bool {
-        // Scan back for nearest computed ancestor. Abort only on a
-        // broken-chain intermediate (kind=0) or hitting the root.
+        // Span cap: walkback replay cost scales linearly in span, while
+        // Finny refresh cost is ~constant (diff vs cached bitboards).
+        // Crossover lives somewhere between 3 (v2) and 256 (v3 unbounded);
+        // SPSA-tunable to find the Zeus-optimal value.
+        let walkback_limit = crate::search::WALKBACK_LIMIT
+            .load(std::sync::atomic::Ordering::Relaxed) as usize;
+
+        // Scan back for nearest computed ancestor. Abort on:
+        //   - root reached
+        //   - span > walkback_limit (refresh will be faster)
+        //   - intermediate kind=0 (broken chain — no dirty info to replay)
         let mut k = self.top;
+        let mut steps = 0usize;
         loop {
             if k == 0 {
-                // Hit root without finding a computed ancestor.
                 return false;
             }
             k -= 1;
+            steps += 1;
             if self.stack[k].computed {
                 break;
             }
-            // Broken chain: no dirty info at this intermediate ply → can't
-            // derive ply k+1 from ply k. `build_dirty_piece` only returns
-            // kind=0 when a king bucket-crossing forced the refresh, so
-            // reaching here implies a real recomputation is required.
+            if steps > walkback_limit {
+                return false;
+            }
             if self.stack[k].dirty.kind == 0 {
                 return false;
             }

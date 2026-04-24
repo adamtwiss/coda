@@ -173,6 +173,13 @@ tunables!(
     // it to 4 (pinned at floor); manually restored to 5 here. SPSA can
     // still explore ±2-3 from 5 within the clamped range.
     (LMR_ENDGAME_PIECES, 5, 4, 9, 1.5),
+    // PSQ walk-back span limit (max intermediate plies between current
+    // frame and a computed ancestor before we give up and do a full
+    // refresh). v2 shipped with a hardcoded 3; v3 dropped the limit
+    // entirely and regressed to ~+0 vs trunk at 6K games (H0) — the
+    // deep walkbacks cost more than the refreshes they replaced. This
+    // tunable finds the Zeus-optimal crossover.
+    (WALKBACK_LIMIT, 8, 1, 32, 2.0),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
