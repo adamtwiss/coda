@@ -878,13 +878,24 @@ Bench: 1780721
 | `[-5, 5]` | Pure non-regression / infrastructure check. | Adding tunables at default values, NPS-only bench-neutral change |
 
 **`[0, 3]` is the new default** for most experiments in 2026. At our
-current rating (~3480 CCRL) the easy Elo is gone and most ideas that
+current rating (~CCRL 3570) the easy Elo is gone and most ideas that
 land deliver +1-3 Elo. `[0, 5]` accumulates negative LLR on a true
 +1.5 ±1.5 effect because H1 target 5 is out of reach — we'd waste
 fleet cycles proving something we could have accepted with `[0, 3]`.
 **Reckless uses [0, 3] as their default** (see
 recklesschess.space/index); adopting the same discipline means we
 don't throw away genuinely-positive small wins.
+
+**Why tight bounds matter strategically**: the gap from current Coda
+to 2nd-best-engine-in-the-world is genuinely countable. At CCRL
+scale it's ~77 Elo (~16 × +5 Elo wins); at ultra-bullet scale it's
+~200 Elo (~40 × +5 wins). Either way the remaining work is a
+**finite, enumerable list of small wins** — not "insurmountable
+years of catching up." This reframes how to value a +5 Elo change:
+it's **1/16th to 1/40th** of the path to the #2 position in the
+world. Not marginal. Stack them, don't dismiss them. The wide-bounds
+SPRT that misses a real +3-5 win is throwing away 2-6% of the total
+path to #2.
 
 Use `[0, 5]` or `[0, 10]` only when the change class has a
 well-grounded prior for a larger magnitude (structural port,
