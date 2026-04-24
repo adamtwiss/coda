@@ -81,7 +81,15 @@ tunables!(
     (FUT_PER_DEPTH, 160, 40, 250, 10.5),
     (HIST_PRUNE_DEPTH, 3, 1, 8, 1.5),
     (HIST_PRUNE_MULT, 3866, 500, 50000, 2475.0),
-    (SEE_QUIET_MULT, 47, 5, 80, 3.75),
+    // SEE quiet formula reshape: Reckless uses
+    //   threshold = (-17*d² + 52*d + 20).min(0)
+    // with positive linear offset that keeps threshold at 0 for low d
+    // (no SEE-prune) and grows quadratically at mid/high d. Coda
+    // previously had pure `-47*d²` → 8× more lenient at mid-depth
+    // (d=5: Coda −1175 vs Reckless −145). Bringing both coefficients
+    // to Reckless scale as tunables. Offset (20) hardcoded.
+    (SEE_QUIET_MULT, 17, 5, 80, 3.75),
+    (SEE_QUIET_LINEAR, 52, 0, 150, 5.0),
     (SEE_CAP_MULT, 143, 30, 200, 8.5),
     (LMR_HIST_DIV, 6489, 2000, 100000, 4900.0),
     (LMR_C_QUIET, 127, 40, 300, 13.0),
@@ -2457,7 +2465,12 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
-            let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
+            // Reckless-shape SEE quiet threshold:
+            //   (−MULT·d² + LINEAR·d + 20).min(0)
+            // At low d the linear+offset dominate → threshold 0 (no prune);
+            // at mid/high d the quadratic wins → threshold grows negative.
+            let see_quiet_threshold = (-tp(&SEE_QUIET_MULT) * lmr_d * lmr_d
+                + tp(&SEE_QUIET_LINEAR) * lmr_d + 20).min(0);
             if !see_ge(board, mv, see_quiet_threshold) {
                 info.stats.see_prunes += 1;
                 continue;
