@@ -2395,6 +2395,12 @@ fn negamax(
     let mut best_move = NO_MOVE;
     let mut best_score = -INFINITY;
     let mut move_count = 0i32;
+    // Sibling singular extension state (v2): tracks the previous move's
+    // singular_extension. When TT move's SE check returned negative
+    // (alternatives competitive), the next move gets a +1 extension.
+    // V1 (#723 H0 −3.5) used the unclamped magnitude (up to +3); retry
+    // with min(1, ...) clamp.
+    let mut prev_move_singular_ext: i32 = 0;
     // Track quiet moves searched before beta cutoff for history penalty
     let mut quiets_tried = [NO_MOVE; 64];
     let mut quiets_count = 0usize;
@@ -2689,13 +2695,28 @@ fn negamax(
             }
         }
 
-        let mut new_depth = depth - 1 + extension + singular_extension;
+        // Sibling singular extension (v2 clamped): if previous move's SE
+        // was negative, give this move +1. Fires only at move_count == 2
+        // (immediately after TT move). V1 (#723 H0 −3.5) used the flipped
+        // magnitude (up to +3); this retry clamps to +1 since Coda's
+        // stronger negative SE values (−2, −3) mean "alternatives good in
+        // aggregate", not "this one specific sibling is best".
+        let sibling_extension = if move_count == 2 && prev_move_singular_ext < 0 {
+            1
+        } else {
+            0
+        };
+
+        let mut new_depth = depth - 1 + extension + singular_extension + sibling_extension;
 
         // Propagate double extension counter to child
         if ply_u + 1 <= MAX_PLY {
             info.double_ext_count[ply_u + 1] = info.double_ext_count[ply_u]
                 + if singular_extension >= 2 { 1 } else { 0 };
         }
+
+        // Save for next iteration's sibling check.
+        prev_move_singular_ext = singular_extension;
 
         if new_depth < 0 {
             new_depth = 0;
