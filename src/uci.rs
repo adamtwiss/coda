@@ -131,43 +131,55 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
                 let is_ponder = tokens.iter().any(|&t| t == "ponder");
 
-                // Try Syzygy tablebase at root, but NOT during ponder. During
-                // ponder we must let the search run so the GUI sees a multi-ply
-                // PV and so we don't violate UCI protocol by emitting bestmove
-                // before ponderhit/stop. When ponderhit arrives the dedicated
-                // handler below will override with the TB-optimal move.
-                if !is_ponder {
-                    if let Some(ref tb) = syzygy {
-                        if crate::bitboard::popcount(board.occupied()) as usize <= tb.max_pieces() {
-                            if let Some((tb_move_str, wdl)) = tb.probe_root(&board) {
-                                // Validate TB move against legal move list.
-                                // TB can return "king capture" moves in checkmate positions
-                                // which are illegal in UCI. Only play if it's a real legal move.
-                                let legal = crate::movegen::generate_legal_moves(&board);
-                                let mut tb_valid = false;
-                                if let Some(parsed) = parse_uci_move(&board, &tb_move_str) {
-                                    for i in 0..legal.len {
-                                        if move_from(legal.moves[i]) == move_from(parsed)
-                                            && move_to(legal.moves[i]) == move_to(parsed) {
-                                            tb_valid = true;
-                                            break;
-                                        }
+                // Try Syzygy tablebase at root. Behaviour splits on is_ponder:
+                //   - Non-ponder: walk DTZ to build a multi-ply PV, emit a
+                //     single info line with the walked line + bestmove, done.
+                //   - Ponder: emit the walked PV as a seed info line (so the
+                //     GUI has a real ponder_move to think about) and fall
+                //     through to search. Search still runs for ponder-cache
+                //     TT stockpile, UCI protocol compliance (no premature
+                //     bestmove), and depth-counter updates. Ponderhit handler
+                //     below will override with TB-optimal move when the time
+                //     comes to play.
+                if let Some(ref tb) = syzygy {
+                    if crate::bitboard::popcount(board.occupied()) as usize <= tb.max_pieces() {
+                        if let Some((tb_pv, wdl)) = tb.probe_root_pv(&board, 32) {
+                            // Validate the FIRST move of the walked PV — if
+                            // TB returns an illegal "king capture" in a mate
+                            // position we want to fall through to search.
+                            let legal = crate::movegen::generate_legal_moves(&board);
+                            let mut tb_valid = false;
+                            if let Some(parsed) = parse_uci_move(&board, &tb_pv[0]) {
+                                for i in 0..legal.len {
+                                    if move_from(legal.moves[i]) == move_from(parsed)
+                                        && move_to(legal.moves[i]) == move_to(parsed) {
+                                        tb_valid = true;
+                                        break;
                                     }
                                 }
-                                if tb_valid {
-                                    let score_str = if wdl > 0 {
-                                        format!("score cp {}", crate::tt::TB_WIN)
-                                    } else if wdl < 0 {
-                                        format!("score cp -{}", crate::tt::TB_WIN)
-                                    } else {
-                                        "score cp 0".to_string()
-                                    };
-                                    println!("info depth 1 seldepth 1 {} tbhits 1 pv {}", score_str, tb_move_str);
-                                    println!("bestmove {}", tb_move_str);
+                            }
+                            if tb_valid {
+                                let score_str = if wdl > 0 {
+                                    format!("score cp {}", crate::tt::TB_WIN)
+                                } else if wdl < 0 {
+                                    format!("score cp -{}", crate::tt::TB_WIN)
+                                } else {
+                                    "score cp 0".to_string()
+                                };
+                                let pv_str = tb_pv.join(" ");
+                                let depth = tb_pv.len().max(1);
+                                println!("info depth {} seldepth {} {} tbhits 1 pv {}",
+                                         depth, depth, score_str, pv_str);
+                                if !is_ponder {
+                                    println!("bestmove {}", tb_pv[0]);
                                     continue;
                                 }
-                                // TB move invalid — fall through to search (which has interior TB probes)
+                                // During ponder: info line emitted as a seed
+                                // so GUI has ponder_move = tb_pv[1]. Fall
+                                // through to search for stockpile + UCI
+                                // compliance.
                             }
+                            // TB move invalid — fall through to search (which has interior TB probes)
                         }
                     }
                 }
