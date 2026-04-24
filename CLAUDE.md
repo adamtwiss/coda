@@ -448,6 +448,17 @@ at that TC — we've reached "solid drawing depth" but still can't
 out-play SF from equal position. At 16× Coda finally wins enough
 games to match SF's wins (15W-16L-69D, essentially symmetric).
 
+**Caveat on absolute numbers**: this calibration was run on
+prod-SB800 net with trunk params that were tuned on factor-SB400
+(C8-fix retune #682/#686). That's a mild mismatch — true gap at
+1× could be ~5-15 Elo better than shown once trunk is retuned for
+the actual deployed net (see tune #743 on
+`fix/expose-hardcoded-pruning-tunables`, which begins that
+recalibration). The **sigmoid shape is preserved** across net/tune
+configurations; treat the absolute Elo values as anchors with a
+~±10 Elo uncertainty rather than exact points. Post-#743 we should
+re-run the curve to get properly-calibrated absolute numbers.
+
 **What this tells us:**
 
 - Our **eval is at SF parity** — at equal depth, we play as well.
