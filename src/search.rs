@@ -92,6 +92,10 @@ tunables!(
     (LMP_BASE, 10, 1, 15, 2.0),
     (LMP_DEPTH, 8, 4, 20, 2.0),
     (BAD_NOISY_MARGIN, 134, 30, 150, 6.0),
+    // BNFP depth cap. Prior value was hardcoded 4, much shallower than
+    // Reckless's depth<11 (search.rs:758). Raised default to 11 matching
+    // Reckless; SPSA range [4, 15] lets retune find the Coda optimum.
+    (BAD_NOISY_DEPTH, 11, 4, 15, 1.5),
     (PROBCUT_MARGIN, 198, 80, 300, 11.0),
     (HINDSIGHT_THRESH, 192, 50, 400, 17.5),
     (UNSTABLE_THRESH, 155, 50, 500, 22.5),
@@ -2629,7 +2633,14 @@ fn negamax(
         // Bad noisy pruning: skip losing captures when eval is far below alpha.
         // Applied before MakeMove. Direct-check carve-out: don't prune moves
         // that give direct check (Reckless #630 +1.85 STC).
-        if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= 4 && mv != tt_move
+        //
+        // Depth cap raised 4 → 11 to match Reckless (search.rs:758, `depth < 11`).
+        // Coda under-pruned bad captures at mid-depth (5-10) where Reckless
+        // prunes them confidently. "Force more pruning" experiment per
+        // CLAUDE.md strength-frontier section + Atlas cliff analysis:
+        // pruning-efficiency wins at mid-depth translate directly to
+        // effective depth.
+        if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= tp(&BAD_NOISY_DEPTH) && mv != tt_move
             && !is_promo && best_score > -(MATE_SCORE - 100)
             && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
             && !see_ge(board, mv, 0)
