@@ -74,14 +74,15 @@ tunables!(
     (NMP_EVAL_DIV, 122, 100, 400, 15.0),
     (NMP_EVAL_MAX, 6, 1, 6, 1.5),
     (NMP_VERIFY_DEPTH, 13, 8, 20, 2.0),
-    (RFP_DEPTH, 11, 2, 12, 2.0),
+    // RFP depth cap. Reckless has no cap (search.rs:522). Raising default
+    // 11 → 16 with range widened to [2, 20] so SPSA can find Coda's
+    // optimum. At depths 12-16 RFP was silently disabled on Coda despite
+    // the margin formula naturally saturating usefulness at deep plies.
+    // (Retuned trunk landed at 11 within old [2, 12]; this experiment
+    // tests whether the range cap was the real constraint.)
+    (RFP_DEPTH, 16, 2, 20, 2.0),
     (RFP_MARGIN_IMP, 50, 30, 150, 6.0),
     (RFP_MARGIN_NOIMP, 129, 50, 200, 7.5),
-    // Futility margin reduced to Reckless scale. At lmr_d=5:
-    //   Old: 78 + 160*5 = 878 (Coda 2.4× wider than Reckless 364)
-    //   New: 40 + 65*5 = 365 (matches Reckless)
-    // Force-more-pruning experiment: Coda was under-pruning at mid-depth
-    // where Reckless prunes confidently. SPSA retune-on-branch expected.
     (FUT_BASE, 80, 20, 200, 9.0),
     (FUT_PER_DEPTH, 156, 40, 250, 10.5),
     (HIST_PRUNE_DEPTH, 3, 1, 8, 1.5),
