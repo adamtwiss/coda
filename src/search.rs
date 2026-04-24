@@ -173,6 +173,21 @@ tunables!(
     // it to 4 (pinned at floor); manually restored to 5 here. SPSA can
     // still explore ±2-3 from 5 within the clamped range.
     (LMR_ENDGAME_PIECES, 5, 4, 9, 1.5),
+    // --- Previously-hardcoded pruning depth gates, now tunable ---
+    // Per 2026-04-24 strategy: at our strength/eval regime, optimal
+    // depth caps/gates are sensitive to eval quality and will need
+    // re-tuning after each net change. Exposing them as SPSA-tunables
+    // lets retunes re-calibrate without code changes. Defaults match
+    // the previously-hardcoded values so this commit is bench-neutral.
+    //
+    // Future retune-on-branch cycles will sweep these with the
+    // eval+pruning co-tune; expect meaningful movement as net quality
+    // changes.
+    (IIR_MIN_DEPTH, 4, 2, 10, 1.5),         // was hardcoded 4 (IIR activation gate)
+    (PROBCUT_MIN_DEPTH, 5, 3, 12, 1.5),     // was hardcoded 5 (ProbCut activation gate)
+    (SEE_CAP_DEPTH, 6, 3, 15, 1.5),         // was hardcoded 6 (SEE capture prune depth cap)
+    (FUT_LMR_DEPTH, 10, 5, 20, 1.5),        // was hardcoded 10 (futility lmr_d cap)
+    (BAD_NOISY_DEPTH, 4, 4, 15, 1.5),       // was hardcoded 4 (BNFP depth cap)
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -2096,7 +2111,7 @@ fn negamax(
     // Restricted to PV/cut nodes (Obsidian/Berserk/Stormphrax pattern).
     // All-nodes have tight bounds already, IIR there wastes depth.
     let is_pv = beta - alpha_orig > 1;
-    if depth >= 4 && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
+    if depth >= tp(&IIR_MIN_DEPTH) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
         depth -= 1;
     }
 
@@ -2280,7 +2295,7 @@ fn negamax(
     } else {
         false
     };
-    if !in_check && ply > 0 && !is_pv && depth >= 5
+    if !in_check && ply > 0 && !is_pv && depth >= tp(&PROBCUT_MIN_DEPTH)
         && beta.abs() < MATE_SCORE - 100  // skip for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
         && !probcut_tt_noshot  // TT says no chance
@@ -2431,7 +2446,7 @@ fn negamax(
         let is_promo = is_promotion(mv);
 
         // SEE capture pruning: at shallow depths, prune captures that lose material
-        if is_cap && ply > 0 && !in_check && depth <= 6
+        if is_cap && ply > 0 && !in_check && depth <= tp(&SEE_CAP_DEPTH)
             && mv != tt_move && best_score > -(MATE_SCORE - 100)
             && !see_ge(board, mv, -(depth * tp(&SEE_MATERIAL_SCALE)))
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
@@ -2590,7 +2605,7 @@ fn negamax(
             && !is_cap && !is_promo
             && best_score > -(MATE_SCORE - 100)
             && FEAT_FUTILITY.load(Ordering::Relaxed)
-            && lmr_d <= 10
+            && lmr_d <= tp(&FUT_LMR_DEPTH)
         {
             let main_hist = info.history.main_score(from, to, enemy_attacks);
             let hist_adj = main_hist / 128;
@@ -2629,7 +2644,7 @@ fn negamax(
         // Bad noisy pruning: skip losing captures when eval is far below alpha.
         // Applied before MakeMove. Direct-check carve-out: don't prune moves
         // that give direct check (Reckless #630 +1.85 STC).
-        if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= 4 && mv != tt_move
+        if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= tp(&BAD_NOISY_DEPTH) && mv != tt_move
             && !is_promo && best_score > -(MATE_SCORE - 100)
             && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
             && !see_ge(board, mv, 0)
