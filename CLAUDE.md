@@ -636,14 +636,28 @@ Bench: 1780721
 
 | Bounds | When to use | Example |
 |--------|-------------|---------|
-| `[0, 5]` | Novel feature, expect small gain, confirm not harmful. | New search heuristic, new bonus in movepick |
-| `[-3, 3]` | Small win / correctness bug fix. Tight resolution around zero. | 50mr mate downgrade, stale-bound gate, SE-margin tweak |
-| `[0, 10]` | Expect meaningful gain from structural fix. | SEE quiet fix, futility reimplementation |
-| `[-5, 5]` | Pure non-regression check. | Adding tunables at default values, NPS-only changes |
+| **`[0, 3]`** | **Default for "does this feature help?"** at Coda's current strength. Small-gain regime: most new ideas target +1-3 Elo. | Small pruning tweak, small bonus adjustment, incremental feature |
+| `[0, 5]` | Expect clearly positive gain +3-5 Elo or structural change with measurable impact. | Multi-param port, force-more-pruning w/ retune, new tactical motif |
+| `[-3, 3]` | Small-win correctness fix where regression ≤ -3 would be a block. | 50mr mate downgrade, stale-bound gate, SE-margin tweak |
+| `[0, 10]` | Expect big gain from a named structural change. | SEE magnitude fix, EBF-massive rewrite, major algorithm port |
+| `[-5, 5]` | Pure non-regression / infrastructure check. | Adding tunables at default values, NPS-only bench-neutral change |
+
+**`[0, 3]` is the new default** for most experiments in 2026. At our
+current rating (~3480 CCRL) the easy Elo is gone and most ideas that
+land deliver +1-3 Elo. `[0, 5]` accumulates negative LLR on a true
++1.5 ±1.5 effect because H1 target 5 is out of reach — we'd waste
+fleet cycles proving something we could have accepted with `[0, 3]`.
+**Reckless uses [0, 3] as their default** (see
+recklesschess.space/index); adopting the same discipline means we
+don't throw away genuinely-positive small wins.
+
+Use `[0, 5]` or `[0, 10]` only when the change class has a
+well-grounded prior for a larger magnitude (structural port,
+retune-on-branch of multi-merge cluster, algorithmic rewrite).
 
 **Don't use `[-10, 5]`.** In a regime where single experiments target +1-3 Elo, a floor of -10 is too permissive — H1 can fire on data that still leaves room for a small negative true effect. Use `[-3, 3]` for correctness fixes instead.
 
-When picking, don't hedge toward wider bounds out of uncertainty. Name the class ("correctness bug", "novel feature", "NPS-only"), pick the matching row, submit.
+When picking, don't hedge toward wider bounds out of uncertainty. Name the class ("small feature", "correctness bug", "structural port", "NPS-only"), pick the matching row, submit.
 
 **What does NOT need SPRT:**
 - Comments, documentation, tooling changes
