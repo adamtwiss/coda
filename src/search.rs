@@ -70,33 +70,33 @@ tunables!(
     //   and major, more minor). Most other params within ±10% of #660.
     // LMR_ENDGAME_PIECES stayed at 5 inside the narrow clamp — no manual restore needed.
     (NMP_BASE_R, 5, 2, 8, 1.5),
-    (NMP_DEPTH_DIV, 3, 1, 6, 1.5),
+    (NMP_DEPTH_DIV, 2, 1, 6, 1.5),
     (NMP_EVAL_DIV, 122, 100, 400, 15.0),
     (NMP_EVAL_MAX, 6, 1, 6, 1.5),
-    (NMP_VERIFY_DEPTH, 13, 8, 20, 2.0),
-    (RFP_DEPTH, 11, 2, 12, 2.0),
-    (RFP_MARGIN_IMP, 50, 30, 150, 6.0),
-    (RFP_MARGIN_NOIMP, 129, 50, 200, 7.5),
+    (NMP_VERIFY_DEPTH, 11, 8, 20, 2.0),
+    (RFP_DEPTH, 16, 2, 20, 2.0),
+    (RFP_MARGIN_IMP, 35, 30, 150, 6.0),
+    (RFP_MARGIN_NOIMP, 80, 50, 200, 7.5),
     // Futility margin reduced to Reckless scale. At lmr_d=5:
     //   Old: 78 + 160*5 = 878 (Coda 2.4× wider than Reckless 364)
     //   New: 40 + 65*5 = 365 (matches Reckless)
     // Force-more-pruning experiment: Coda was under-pruning at mid-depth
     // where Reckless prunes confidently. SPSA retune-on-branch expected.
-    (FUT_BASE, 80, 20, 200, 9.0),
-    (FUT_PER_DEPTH, 156, 40, 250, 10.5),
-    (HIST_PRUNE_DEPTH, 3, 1, 8, 1.5),
-    (HIST_PRUNE_MULT, 5894, 500, 50000, 2475.0),
-    (SEE_QUIET_MULT, 46, 5, 80, 3.75),
+    (FUT_BASE, 40, 20, 200, 9.0),
+    (FUT_PER_DEPTH, 65, 40, 250, 10.5),
+    (HIST_PRUNE_DEPTH, 5, 1, 8, 1.5),
+    (HIST_PRUNE_MULT, 8000, 500, 50000, 2475.0),
+    (SEE_QUIET_MULT, 18, 5, 80, 3.75),
     (SEE_CAP_MULT, 152, 30, 200, 8.5),
     (LMR_HIST_DIV, 8302, 2000, 100000, 4900.0),
-    (LMR_C_QUIET, 121, 40, 300, 13.0),
-    (LMR_C_CAP, 123, 100, 350, 12.5),
+    (LMR_C_QUIET, 85, 40, 300, 13.0),
+    (LMR_C_CAP, 90, 80, 350, 12.5),
     (SE_DEPTH, 4, 4, 20, 2.0),
     (ASP_DELTA, 15, 5, 30, 1.5),
     (ASP_SCORE_DIV, 32592, 8000, 50000, 2100.0),
-    (LMP_BASE, 11, 1, 15, 2.0),
-    (LMP_DEPTH, 8, 4, 20, 2.0),
-    (BAD_NOISY_MARGIN, 138, 30, 150, 6.0),
+    (LMP_BASE, 4, 1, 15, 2.0),
+    (LMP_DEPTH, 15, 4, 20, 2.0),
+    (BAD_NOISY_MARGIN, 80, 30, 150, 6.0),
     (PROBCUT_MARGIN, 197, 80, 300, 11.0),
     (HINDSIGHT_THRESH, 191, 50, 400, 17.5),
     (UNSTABLE_THRESH, 164, 50, 500, 22.5),
@@ -191,8 +191,8 @@ tunables!(
     (IIR_MIN_DEPTH, 2, 2, 10, 1.5),         // was hardcoded 4; tune #743 converged to 2 (strong signal)
     (PROBCUT_MIN_DEPTH, 5, 3, 12, 1.5),     // was hardcoded 5 (ProbCut activation gate)
     (SEE_CAP_DEPTH, 6, 3, 15, 1.5),         // was hardcoded 6 (SEE capture prune depth cap)
-    (FUT_LMR_DEPTH, 9, 5, 20, 1.5),         // was hardcoded 10; tune #743 → 9
-    (BAD_NOISY_DEPTH, 4, 4, 15, 1.5),       // was hardcoded 4 (BNFP depth cap)
+    (FUT_LMR_DEPTH, 15, 5, 20, 1.5),         // was hardcoded 10; tune #743 → 9
+    (BAD_NOISY_DEPTH, 11, 4, 15, 1.5),       // was hardcoded 4 (BNFP depth cap)
     // Second pass — additional gates exposed for the feature-utility
     // audit tune. Widened ranges allow SPSA to reach disable-endpoint
     // values where appropriate (per feedback_spsa_as_feature_utility_diagnostic).
