@@ -2252,6 +2252,13 @@ fn negamax(
             // > UNSTABLE_THRESH). Static eval can't be trusted for RFP when
             // eval is volatile. Mirrors unstable × ProbCut skip (#542 +6.7).
             if unstable { margin += margin / 3; }
+            // N4 halfmove-scaled pruning margin: static_eval is dampened by
+            // apply_halfmove_scale ((100-hm)/100), but pruning margins
+            // weren't — so pruning becomes relatively stricter near the
+            // 50mr clock. Scale the margin by the same factor to keep
+            // pruning behaviour calibrated (peripheral_mechanisms N4).
+            let hm_num = 100 - (board.halfmove as i32).min(100);
+            margin = margin * hm_num / 100;
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
@@ -2597,7 +2604,14 @@ fn negamax(
             // our_defenses widener: add margin per our-piece-under-attack so
             // tactical positions keep more lines from being pruned on eval.
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
+            // N4 halfmove-scaled margin: FUT_BASE + lmr_d*FUT_PER_DEPTH
+            // is the "eval threshold" component; scale it like static_eval
+            // is scaled by apply_halfmove_scale (consistent calibration
+            // across the 50mr clock). hist_adj/threats_adj are
+            // per-move corrections, not threshold margin, leave unscaled.
+            let hm_num = 100 - (board.halfmove as i32).min(100);
+            let eval_margin = (tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH)) * hm_num / 100;
+            let futility_value = static_eval + eval_margin + hist_adj + threats_adj;
             // Don't futility-prune moves with very strong history (Igel pattern)
             // Direct-check carve-out: don't prune moves that give direct check
             // (Reckless #410 +1.62 STC).
