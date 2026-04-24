@@ -777,6 +777,43 @@ Search parameters are exposed as UCI options for SPSA optimization via OpenBench
 The `tunables!` macro in `search.rs` is the single source of truth for defaults,
 ranges, and c_end values.
 
+**CRITICAL RULE — always tune against the net in `net.txt`:**
+
+Trunk's param defaults and the currently-deployed production net
+must stay calibrated together. If trunk is tuned for Net-A but
+we deploy Net-B and run SPRTs against Net-B, every result is on
+a **detuned baseline** — usually costing 5-15 Elo of baseline
+strength and producing confusing SPSA movements on top.
+
+Before firing any trunk retune:
+
+1. `cat net.txt` on the trunk branch (feature/threat-inputs)
+2. The filename in net.txt IS the production net for that trunk
+3. Pass the matching `--dev-network <SHA8>` to `ob_tune.py`
+4. If the SHA doesn't match, DO NOT SUBMIT — fix the mismatch
+   (either update net.txt for a new prod, or use the correct net)
+
+**This is not optional.** We burnt on this 2026-04-24: #682/#686
+retune was on factor-SB400, deployed net stayed prod-SB800, and
+subsequent SPRTs ran on a silently-detuned trunk. Only noticed
+via confusing movements in tune #733.
+
+**Pre-merge check for any experiment:**
+
+Any branch proposed for merge to trunk must have been SPRT'd
+against the current net in net.txt. If the dev-network used in
+the submission doesn't match, don't merge — re-SPRT with the
+right net first.
+
+**Post-tune / net-deploy discipline:**
+
+- When a net changes (new prod in net.txt), plan an immediate
+  trunk retune against the new net before landing large clusters
+  of eval-dependent experiments on top.
+- Don't ship "new net with old trunk" as a hidden detune.
+- Periodic SF H2H (100 games, 60+1) every ~5-10 merges to
+  confirm trunk still holds; re-tune if the baseline has drifted.
+
 **Submitting tunes:**
 ```bash
 # Submit via script (preferred):
