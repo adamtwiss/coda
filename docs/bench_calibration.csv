@@ -1,0 +1,4 @@
+sha,date,subject,nodes,nps,ebf,first_move_cut_pct,evals_per_node,call_sites_per_node
+ea07d93,2026-04-24T20:48:00+00:00,Merge feature/threat-inputs: v9 architecture into main,2429018,565000,N/A,N/A,0.577,0.732
+e1b9a5e,2026-04-24T23:34:56+00:00,Apply tune #750 final values to trunk,788473,509000,N/A,N/A,0.551,0.776
+518d134,2026-04-25T12:28:43+00:00,experiments: log H0 of #754 + #755 with post-mortems,788473,193470,1.74,80.5,0.551,0.776

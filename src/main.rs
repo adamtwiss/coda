@@ -486,7 +486,7 @@ fn main() {
             } else if mode == "incremental" {
                 use crate::movegen::generate_legal_moves;
                 use crate::search::build_dirty_piece;
-                use crate::types::{flip_color, move_from, move_to, NO_PIECE_TYPE};
+                use crate::types::{flip_color, move_from, move_to};
                 for fen in positions_slice {
                     let mut board = Board::from_fen(fen);
                     acc.force_recompute(&net, &board);

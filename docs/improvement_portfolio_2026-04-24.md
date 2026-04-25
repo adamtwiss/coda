@@ -50,33 +50,32 @@ Historically our highest Elo-per-hour lane. Bugs in 50-move rule, LMR
 endgame gate, SMP races, TB handling, and `is_pseudo_legal` EP hole
 have each delivered +3-30 Elo.
 
-**Queued (R5 top-5 from research_threads_2026-04-24.md):**
+**R5 top-5 (status updated 2026-04-25):** 3 of 5 merged in the 2026-04-22
+batch, 1 in flight, 1 closed-on-re-analysis. See
+`research_threads_2026-04-24.md` §Top-5 for per-item resolution log.
 
-- **SEE pawn-promotion recapture** (src/see.rs:76-93) — pawn valued
-  100cp not 900cp in endgame promo exchanges. Lichess-visible as
-  declined winning promo-captures.
-- **Evasion capture-promotion scoring** (src/movepicker.rs:700-710) —
-  queen-promo-capture under check ranks below plain capture.
-- **`should_stop` 4096-node granularity** (src/search.rs:500-527) —
-  previous SPRT H0 at STC, bullet TC is the real test.
-- **Forced-move path zeros soft_floor** (src/search.rs:1273-1278) —
-  ponderhit + 1-legal-move discards TM stockpile.
-- **Repetition scan missing plies_from_null cap** (src/search.rs:1670
-  and 2944) — false draws across null-move subtrees.
+- ✅ SEE pawn-promotion recapture — merged `b25366d` (#652 +1.8 Elo H1)
+- ✅ Evasion capture-promotion ordering — fixed via C8 audit #25/#26
+- 🔄 should_stop 4096-node granularity — SPRT #757 in flight
+- ⏭ Forced-move soft_floor — verified intended (10ms saves stockpile)
+- ✅ Repetition scan plies_from_null — merged `402e366`
 
-**Next 10** (tournament-reachable):
-- Duplicate SEE source-of-truth check
-- SE `singular_beta` mate-bypass range
-- Recapture extension `ply>0` guard
-- FH blending inside SE
-- LMR `do_shallower` cp margin
-- `patch-net` NNUE magic
-- TT/tb_cache aarch64 memory ordering
-- `src/threats.rs:456` sq=63 edge case
-- SCReLU `>>8` vs `÷255` drift
-- `sample-positions` filter alignment
+**Next 10 — status updated 2026-04-25 sprint:** 6 actioned, 4 skipped
+with rationale. See `research_threads_2026-04-24.md` §Next-10 for the
+per-item resolution log. Headline: SE singular_beta clamp, recapture
+ext ply>0 guard, FH-blend skip in SE, threats sq=63 bounds, LMR
+do_shallower 10cp probe — all in flight as SPRTs #757-#762.
 
-Each ~1 day to audit + fix, each SPRT at [-3, 3] or [0, 3].
+**Remaining audit backlog after this sprint:** mostly defensive /
+fix-when-touched / aarch64-only items per
+`correctness_audit_2026-04-22.md` §SPECULATIVE. No further high-leverage
+queueable SPRTs in this category for now. Future audits should explore
+new ground rather than re-walking the resolved 2026-04-22 → 2026-04-25
+list.
+
+Each ~1 day to audit + fix historically, but the 2026-04-25 empty-fleet
+sprint demonstrated 30-60min per item is more typical when the fix is
+well-isolated and the audit doc has the location pinned.
 
 ### 3. Comparative Engine Review with Instrumentation
 

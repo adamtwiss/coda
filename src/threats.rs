@@ -451,11 +451,24 @@ pub fn enumerate_threats<F: FnMut(usize)>(
                         if revealed == 0 { continue; }
 
                         // Take the closest revealed piece on the ray
-                        // Direction: if slider < blocker, xray is above blocker
+                        // Direction: if slider < blocker, xray is above blocker.
+                        //
+                        // Bounds note: at blocker_sq == 63, the original
+                        // `1u64 << (blocker_sq + 1)` was `1u64 << 64` —
+                        // undefined-behaviour in Rust (panics in debug, x86
+                        // shift wraps to `<< 0` in release giving wrong mask).
+                        // The upstream `revealed == 0` check happens to filter
+                        // this case (no squares > 63), but it's fragile —
+                        // any change to that filter surfaces silent corruption.
                         let xray_sq = if sq < blocker_sq {
-                            let above = revealed & !((1u64 << (blocker_sq + 1)) - 1);
+                            let above_mask = if blocker_sq + 1 < 64 {
+                                !((1u64 << (blocker_sq + 1)) - 1)
+                            } else { 0 };
+                            let above = revealed & above_mask;
                             if above != 0 { above.trailing_zeros() } else { 64 }
                         } else {
+                            // blocker_sq >= sq here, so blocker_sq >= 0; shift
+                            // by 0..63 is always defined.
                             let below = revealed & ((1u64 << blocker_sq) - 1);
                             if below != 0 { 63 - below.leading_zeros() } else { 64 }
                         };

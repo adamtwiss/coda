@@ -134,15 +134,62 @@ Viridithas has a baked `REPERMUTE_INDICES: [usize; L1_SIZE / 2]` (`nnue/network.
 
 ### Top 5 Lichess-reachable (fix now)
 
-1. **SEE pawn-promotion recapture** (`see.rs:76-93`) — endgame promo exchanges valued pawn=100cp not 900cp. Lichess-visible: engine declines winning tactical capture, plays passive move; `info score cp` slightly-negative on a position where promo-capture wins material.
-2. **`should_stop` 4096-node granularity** (`search.rs:500-527`) — prior #674 H0'd at STC, but hyperbullet is the real trigger. Re-test at bullet TC. Lichess-visible: time forfeits on emergency budgets.
-3. **Evasion capture-promotion scoring** (`movepicker.rs:700-710`) — queen-promo-capture ranks below plain capture while in check. Lichess-visible: high seldepth before PV includes the refutation.
-4. **Forced-move path zeros `soft_floor`** (`search.rs:1273-1278`) — ponderhit + 1-legal-move discards stockpile.
-5. **Repetition scan missing `plies_from_null` cap** (`search.rs:1670-1682, 2944-2952`) — false draws across null-move subtrees. Lichess-visible: `score cp 0` on non-3-fold; draws offered/declined anomalously.
+**Status updated 2026-04-25** — 3 of 5 already merged in the 2026-04-22
+audit batch, 1 in flight, 1 closed-on-re-analysis. Don't re-queue these.
+
+1. ✅ **SEE pawn-promotion recapture** (`see.rs:76-93`) — merged
+   `b25366d` 2026-04-22 (#652 +1.8 Elo H1).
+2. ❌ **`should_stop` 4096-node granularity** — re-tested on
+   post-tune-750 trunk: `fix/should-stop-granularity` SPRT #757
+   **H0 −2.4 / 6516g 2026-04-25**. Re-test didn't flip the original
+   #674 H0; 4096 is correct at STC. Drop.
+3. ✅ **Evasion capture-promotion scoring** — fixed via C8 audit #25 +
+   #26 in 2026-04-22 batch (mvv_lva path adds promotion delta;
+   `is_cap` checked before `is_promotion` so capture-promotions take the
+   capture-MVV-LVA score path).
+4. ⏭ **Forced-move path zeros `soft_floor`** — re-analysed 2026-04-25:
+   for genuine 1-legal moves, 10ms is the intended TM behaviour
+   (preserves stockpile time on the clock for next non-forced move). Not
+   a bug. Closed.
+5. ✅ **Repetition scan missing `plies_from_null` cap** — merged
+   `402e366` 2026-04-22 (`fix/rep-detection-null`, H0 −0.3 but kept as
+   confident-correctness).
 
 ### Next 10 for fuzzer sweep (tournament-reachable)
 
-Duplicate SEE source-of-truth check, SE `singular_beta` mate-bypass range, recapture ext `ply>0` guard, FH blending inside SE, LMR `do_shallower` cp margin, `patch-net` NNUE magic, TT/tb_cache aarch64 Release/Acquire, `threats.rs:456` sq=63, SCReLU `>>8` vs `÷255` drift, `sample-positions` filter alignment.
+**Status updated 2026-04-25** during the empty-fleet correctness sprint:
+
+- ✅ **Duplicate SEE source-of-truth** — verified clean; movepicker.rs
+  uses MVV-LVA scoring (different function class), `see.rs::see_ge` is
+  the single SEE truth source. Closed.
+- ❌ **SE `singular_beta` mate-bypass range** — `fix/se-singular-beta-mate-clamp`,
+  SPRT #761 [-3, 3] **H0 −1.8 / 14412g 2026-04-25**. Mate-distance
+  clamp removed legitimate SE in mate-shaped positions. Drop.
+- ✅ **Recapture extension `ply>0` guard** — **merged 2026-04-25**.
+  `fix/recapture-ext-ply-guard`, SPRT #758 [-3, 3] **H1 +1.5 / 16606g**.
+- ✅ **FH blending inside SE** — **merged 2026-04-25**.
+  `fix/fh-blend-skip-in-se`, SPRT #759 [-3, 3] **H1 +1.7 / 14764g**.
+- ❌ **LMR `do_shallower` cp margin** — actioned across three cycles.
+  #673 at 30cp H0'd, #679 at 20cp H1'd +1.4 (merged), #762 at 10cp
+  **H0 −2.5 / 10482g 2026-04-25**. 20cp is the optimum.
+- ⏭ **`patch-net` NNUE magic** — defensive only, offline tool.
+  Skipped (no Elo path).
+- ✅ **TT/tb_cache aarch64 Release/Acquire** — **merged 2026-04-25**
+  as part of ARM-as-first-class commitment. Branch
+  `fix/aarch64-tt-tbcache-ordering`, SPRT #764 [-5, 5] non-regression
+  **−0.1 ±1.9 / 24886g** confirming x86 cost ≈ 0. ARM correctness
+  benefit fleet-untestable but required.
+- ✅ **`threats.rs:456` sq=63** — **merged 2026-04-25**.
+  `fix/threats-blocker-bounds`, SPRT #760 [-5, 5] **H1 +0.9 / 17094g**.
+- ⏭ **SCReLU `>>8` vs `÷255` drift** — 0.8% drift, absorbed into SPSA tune.
+  Cosmetic; would require recalibrating eval-aware tunables. Skipped.
+- ⏭ **`sample-positions` filter alignment** — offline tool, not search-
+  affecting. Skipped.
+
+**Net for next-10 (final 2026-04-25):** 5 merged (recapture-ply, FH-skip-in-SE,
+threats-bounds, aarch64-ordering, plus se-promo from earlier batch), 2 H0
+(SE-mate-clamp, lmr-shallower-10), 3 skipped with rationale, 1 verified-clean.
+Of the merged: +5.4 Elo total banked from this audit slice.
 
 ### Fuzzer expansion programme (5 categories)
 

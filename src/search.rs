@@ -2702,9 +2702,13 @@ fn negamax(
         // Check if move gives check (opponent is now in check after make_move)
         let gives_check = board.in_check();
 
-        // Recapture extension: extend when recapturing on the same square
+        // Recapture extension: extend when recapturing on the same square.
+        // ply > 0 guard: at root, undo_stack contains game-history moves;
+        // without the guard, the last played game move (if a capture) would
+        // count as a "previous capture" against the first root-move capture
+        // even though it's not an in-search recapture pattern.
         let mut extension = 0;
-        if is_cap && board.undo_stack.len() >= 2 {
+        if ply > 0 && is_cap && board.undo_stack.len() >= 2 {
             let prev_undo = &board.undo_stack[board.undo_stack.len() - 2];
             if prev_undo.captured != NO_PIECE_TYPE && to == move_to(prev_undo.mv) {
                 extension = if FEAT_EXTENSIONS.load(Ordering::Relaxed) { 1 } else { 0 };
@@ -3186,9 +3190,17 @@ fn negamax(
         update_correction_history(info, board, best_score, scaled_eval, depth);
     }
 
-    // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes
+    // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes.
+    //
+    // Skip blending when we're inside an SE verification search (excluded_move
+    // is set on this ply). The dampened return value would feed into the
+    // singular_score → DEXT-margin comparison upstream, biasing DEXT toward
+    // single extensions on otherwise-double-extension-eligible TT moves.
+    // SE verification needs the raw cutoff score to make the right extension
+    // call.
     if best_score >= beta && beta - alpha_orig == 1 && depth >= tp(&FH_BLEND_DEPTH)
         && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
+        && info.excluded_move[ply_u] == NO_MOVE
     {
         return (best_score * depth + beta) / (depth + 1);
     }
