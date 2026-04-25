@@ -87,7 +87,6 @@ tunables!(
     (HIST_PRUNE_DEPTH, 4, 1, 8, 1.5),
     (HIST_PRUNE_MULT, 11753, 500, 50000, 2475.0),
     (SEE_QUIET_MULT, 24, 5, 80, 3.75),
-    (SEE_CAP_MULT, 171, 30, 200, 8.5),
     (LMR_HIST_DIV, 7977, 2000, 100000, 4900.0),
     (LMR_C_QUIET, 120, 40, 300, 13.0),
     (LMR_C_CAP, 93, 80, 350, 12.5),
