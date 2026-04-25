@@ -126,6 +126,11 @@ tunables!(
     (CAP_HIST_MAX, 1681, 500, 3000, 125.0),
     (DEXT_MARGIN, 10, 2, 50, 2.4),
     (DEXT_CAP, 16, 4, 32, 2.0),
+    // Triple extension margin (Alexandria pattern, 13/14 surveyed engines).
+    // Quiet TT move that fails singular by AT LEAST TRIPLE_MARGIN (well below
+    // single/double thresholds) → extend by 3. Existing DEXT_CAP propagation
+    // counter already provides the safety bound.
+    (TRIPLE_MARGIN, 75, 20, 200, 9.0),
     (QUIET_CHECK_BONUS, 13219, 2000, 30000, 1400.0),
     (LMR_COMPLEXITY_DIV, 200, 30, 500, 23.5),
     (CORR_HIST_DIV, 969, 256, 4096, 192.0),
@@ -2558,7 +2563,15 @@ fn negamax(
                     // nodes — violating "no DEXT at PV". The outer `is_pv`
                     // (derived from `alpha_orig`, line 1971) stays correct
                     // through the whole node; fall through to that.
-                    if !is_pv && singular_score < singular_beta - tp(&DEXT_MARGIN)
+                    if !is_pv && !is_cap && !is_promo
+                        && singular_score < singular_beta - tp(&TRIPLE_MARGIN)
+                        && info.double_ext_count[ply_u] < tp(&DEXT_CAP)
+                    {
+                        // Triple extension (+3): quiet TT move fails singular by a
+                        // wide margin (≥ TRIPLE_MARGIN). Alexandria pattern, 13/14
+                        // surveyed engines have it. DEXT_CAP propagates as safety.
+                        singular_extension = 3;
+                    } else if !is_pv && singular_score < singular_beta - tp(&DEXT_MARGIN)
                         && info.double_ext_count[ply_u] < tp(&DEXT_CAP)
                     {
                         // Double extension (+2): well below singular beta (margin=10, Velvet uses 4)
