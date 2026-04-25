@@ -5761,8 +5761,6 @@ mod tests {
             None => { eprintln!("Skipping monotonicity test: no v9 net available"); return; }
         };
 
-        let h = net.hidden_size;
-
         fn eval_fen(net: &NNUENet, fen: &str) -> i32 {
             let b = Board::from_fen(fen);
             let h = net.hidden_size;
@@ -5834,7 +5832,7 @@ mod tests {
         use crate::board::Board;
         use crate::movegen::generate_legal_moves;
         use crate::search::build_dirty_piece;
-        use crate::types::{flip_color, move_from, move_to, NO_PIECE_TYPE};
+        use crate::types::{flip_color, move_from, move_to};
 
         crate::init();
 

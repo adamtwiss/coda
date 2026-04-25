@@ -1316,22 +1316,15 @@ mod incremental_tests {
 
         // Coverage: cumulative % of activations captured by top-K features
         let mut cumulative = 0u64;
-        let mut cov_10   = 0.0;
-        let mut cov_50   = 0.0;
-        let mut cov_90   = 0.0;
-        let mut cov_99   = 0.0;
         let mut features_for_99 = 0usize;
         let mut features_for_90 = 0usize;
         let mut features_for_50 = 0usize;
         for (i, (_idx, h)) in indexed.iter().enumerate() {
             cumulative += *h as u64;
             let pct = cumulative as f64 / total_activations as f64 * 100.0;
-            if i == 10   && cov_10   == 0.0 { cov_10   = pct; }
-            if i == 50   && cov_50   == 0.0 { cov_50   = pct; }
-            if i == 100  && cov_90   == 0.0 && pct >= 50.0 { cov_50 = pct; features_for_50 = i; }
-            if pct >= 50.0 && features_for_50 == 0 { features_for_50 = i + 1; cov_50 = pct; }
-            if pct >= 90.0 && features_for_90 == 0 { features_for_90 = i + 1; cov_90 = pct; }
-            if pct >= 99.0 && features_for_99 == 0 { features_for_99 = i + 1; cov_99 = pct; break; }
+            if pct >= 50.0 && features_for_50 == 0 { features_for_50 = i + 1; }
+            if pct >= 90.0 && features_for_90 == 0 { features_for_90 = i + 1; }
+            if pct >= 99.0 && features_for_99 == 0 { features_for_99 = i + 1; break; }
         }
 
         eprintln!("\n=== Threat feature sparsity measurement ===");

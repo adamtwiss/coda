@@ -1362,7 +1362,7 @@ mod tests {
         // Give black a no-op and white another no-op to reach a comparable state.
         let ke8f8 = make_move(60, 61, FLAG_NONE); // e8 -> f8 (just to flip sides)
         // Actually simpler: compare the single-push-path hash directly.
-        let b_single = {
+        let _b_single = {
             let mut b = Board::from_fen("4k3/8/8/8/8/8/3P4/4K3 w - - 0 1");
             let d2d3 = make_move(11, 19, FLAG_NONE);
             b.make_move(d2d3);       // d2-d3 (pawn to d3; black to move)
