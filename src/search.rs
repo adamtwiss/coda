@@ -136,6 +136,14 @@ tunables!(
     (ESCAPE_BONUS_Q, 12758, 5000, 40000, 1750.0),
     (ESCAPE_BONUS_R, 12358, 3000, 30000, 1350.0),
     (ESCAPE_BONUS_MINOR, 5385, 2000, 20000, 900.0),
+    // Enter-threat penalty (symmetric to escape bonus, but independently tuned).
+    // Defaulted at ~half of escape — tuning prior #773 (full-magnitude symmetric)
+    // hovered around 0; cross-engine SF formula uses threatByLesser, so
+    // queen-onto-queen-attacked-square needn't pay full ESCAPE_BONUS_Q.
+    // SPSA finds the right asymmetric magnitudes from these starting points.
+    (ENTER_PENALTY_Q, 6000, 1000, 20000, 950.0),
+    (ENTER_PENALTY_R, 6000, 1000, 15000, 700.0),
+    (ENTER_PENALTY_MINOR, 2500, 500, 10000, 475.0),
     (NMP_KING_ZONE_MAX, 6, 2, 9, 1.5),
     // T2.1 (Titan's next_ideas 2026-04-21): undefended-piece NMP skip
     // threshold. Count our pieces with ≥1 enemy attacker AND zero of

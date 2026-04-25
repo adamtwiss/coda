@@ -615,6 +615,23 @@ impl MovePicker {
                 };
             }
 
+            // Symmetric enter-threat penalty: pair to the escape bonus above.
+            // SF/Reckless/Plenty/Obsidian/Viri/Clover all apply both halves
+            // (threat_in − threat_out). Independently tuned via ENTER_PENALTY_*
+            // — prior shared-with-escape variant (#773) hovered around 0,
+            // confirming the symmetric pair wants asymmetric magnitudes
+            // (entering a Q-attacked square is often less bad than escape,
+            // especially when the piece itself is a Q facing Q).
+            if self.threats & (1u64 << to) != 0 && piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                score -= match pt {
+                    4 => crate::search::ENTER_PENALTY_Q.load(std::sync::atomic::Ordering::Relaxed),
+                    3 => crate::search::ENTER_PENALTY_R.load(std::sync::atomic::Ordering::Relaxed),
+                    1 | 2 => crate::search::ENTER_PENALTY_MINOR.load(std::sync::atomic::Ordering::Relaxed),
+                    _ => 0,
+                };
+            }
+
             // Quiet check bonus: moves that give direct check (SF +16384, Viridithas +10000)
             if piece != NO_PIECE {
                 let pt = board.piece_type_at(from);
