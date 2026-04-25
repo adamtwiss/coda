@@ -5949,15 +5949,33 @@ Submitted on post-tune-750 trunk while GPU training runs:
 
 | SPRT | Branch | Class | Bounds | Status |
 |------|--------|-------|--------|--------|
-| #754 | experiment/nmp-ttnoisy-rplus (re-SPRT) | guard retune-on-branch | [-3, 3] | -0.0 ±2.3 / 16K g — settled near zero, may H0 — but original was −0.4, post-tune-750 didn't flip it |
-| #755 | experiment/n4-halfmove-scaled-margins (re-SPRT) | pruning | [-3, 3] | −10.1 ±7.6 / 1440 g (early) — likely H0 again |
-| #756 | experiment/sibling-se-propagation-v2 (re-SPRT) | extension | [-3, 3] | +2.4 ±6.0 / 2610 g — trending H1 on new trunk! |
-| #757 | fix/should-stop-granularity (R5 #3) | TM 4096→1024 nodes | [-5, 5] | −0.8 ±5.5 / 2692 g (early) |
-| #758 | fix/recapture-ext-ply-guard (audit) | extension correctness | [-3, 3] | +1.0 ±4.5 / 3940 g (early) |
-| #759 | fix/fh-blend-skip-in-se (audit) | extension correctness | [-3, 3] | −0.5 ±5.6 / 2732 g (early) |
-| #760 | fix/threats-blocker-bounds (audit) | bounds-safety (sq=63) | [-5, 5] | +1.0 ±3.8 / 5820 g (early) |
-| #761 | fix/se-singular-beta-mate-clamp (audit) | extension correctness | [-3, 3] | −1.3 ±5.8 / 2652 g (early) |
-| #762 | experiment/lmr-shallower-margin-10 (parameter probe) | LMR cp margin 20→10 | [-3, 3] | −4.5 ±6.8 / 1786 g (early) |
+| #754 | experiment/nmp-ttnoisy-rplus (re-SPRT) | guard retune-on-branch | [-3, 3] | **H0 (manually stopped 2026-04-25)** — −0.8 ±1.9 / 24460 g, LLR −2.20. Post-tune-750 didn't flip it; H0 a second time. |
+| #755 | experiment/n4-halfmove-scaled-margins (re-SPRT) | pruning | [-3, 3] | **stopped (no signal, 2026-04-25)** — +0.2 ±3.7 / 6606 g, LLR +0.12. Halfmove-scaling provides no marginal info on top of existing margins. |
+| #756 | experiment/sibling-se-propagation-v2 (re-SPRT) | extension | [-3, 3] | +0.9 ±3.6 / 6622 g — slowly trending H1 |
+| #757 | fix/should-stop-granularity (R5 #3) | TM 4096→1024 nodes | [-5, 5] | H0 −2.4 ±3.6 / 6516 g |
+| #758 | fix/recapture-ext-ply-guard (audit) | extension correctness | [-3, 3] | +0.3 ±2.8 / 10160 g — trending H1 |
+| #759 | fix/fh-blend-skip-in-se (audit) | extension correctness | [-3, 3] | +0.6 ±2.8 / 10744 g — trending H1 |
+| #760 | fix/threats-blocker-bounds (audit) | bounds-safety (sq=63) | [-5, 5] | +0.6 ±2.2 / 16716 g — trending H1 (LLR 1.88) |
+| #761 | fix/se-singular-beta-mate-clamp (audit) | extension correctness | [-3, 3] | −1.4 ±2.9 / 9658 g — trending H0 |
+| #762 | experiment/lmr-shallower-margin-10 (parameter probe) | LMR cp margin 20→10 | [-3, 3] | −3.1 ±3.7 / 6504 g — trending H0 |
+| #764 | fix/aarch64-tt-tbcache-ordering | ARM SMP correctness | [-5, 5] | early, low games |
+
+**H0 post-mortems (2026-04-25)**:
+
+- **#754 nmp-ttnoisy-rplus** (second H0). Mechanism: guard adds `r++`
+  when TT move is a capture. Per CLAUDE.md guard sub-pattern, the
+  vanilla SPRT only captures direct safety gain — not the cluster
+  rebalancing gain. We never did the NMP-cluster retune-on-branch.
+  **Bucket: mechanism-wrong (missing retune step)**. Iterate:
+  retune NMP_BASE_R / NMP_DEPTH_DIV / NMP_EVAL_DIV / NMP_EVAL_MAX
+  / NMP_VERIFY_DEPTH (5-6 params, ~1500 iters) on this branch, then
+  SPRT guard+retune vs trunk. Worth a refined retry.
+- **#755 n4-halfmove-scaled-margins** (second H0). Mechanism: scale
+  RFP/futility margins by halfmove-clock proximity to draw, on the
+  hypothesis that near-50mr positions should prune less aggressively.
+  **Bucket: signal overlap** — existing eval already encodes 50mr
+  proximity through correction history; margin scaling adds no
+  marginal info. Drop, do not iterate.
 
 ### Session cumulative
 
