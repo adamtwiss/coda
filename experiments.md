@@ -6017,3 +6017,37 @@ Plus three audit H0s with clear post-mortems (#761 SE-mate-clamp,
 **Total banked from correctness audit batch: ~+4.1 Elo** on top of
 the +40 from search/tune cluster. Brings 2026-04-24 → 2026-04-25
 session total to **~+44 Elo merged**.
+
+### NPS investigation (2026-04-25 afternoon)
+
+Following Adam's anecdata "NPS down ~10% post-tune-750" we instrumented
+counter atomics in HEAD and ea07d93 to localize the +28% cache-miss-
+per-node bump from earlier perf data. Result: **the +28% per-node bump
+is mostly a tree-shape denominator artifact, not a regression**.
+
+| Counter | ea07d93 | HEAD | per-node Δ | absolute Δ |
+|---|---|---|---|---|
+| ContHist lookups | 10.15/n | 11.73/n | +15.6% | **−62.5%** |
+| HistScore calls | 1.96/n | 2.47/n | +26.0% | **−59.2%** |
+| Total nodes | 2.43M | 0.79M | — | **−67.5%** |
+| Bench wall-clock | 11.7s | 4.2s | — | **2.78× faster** |
+
+Better pruning shrinks leaf nodes faster than interior nodes →
+per-node averages weight more toward heavy interior nodes → ratios
+inflate even when total memory traffic fell sharply.
+
+**ContHist AoS-pack (originally framed as "NPS recovery") reframed
+as absolute-NPS gain** (~2-5 Elo class), not regression-recovery.
+Queued behind feature work. Findings saved to memory:
+- `feedback_per_node_metrics_misleading_with_pruning_changes.md`
+- `feedback_local_ob_worker_kill_freely.md` (Adam permission)
+- Reframed `feedback_lmp_reorder_nps_neutral.md`
+
+### Active batch (2026-04-25 evening)
+
+| SPRT | Branch | Class | Bounds | Status |
+|------|--------|-------|--------|--------|
+| #767 | experiment/good-bad-quiet-split-v3 | move ordering | [0, 3] | **trending H0** −1.1 ±1.8 / 26K g, LLR −2.66 |
+| #768 | experiment/nmp-ttnoisy-rplus-v3 | NMP guard + retune | [0, 3] | early/flat +0.5 / 8.4K g, LLR −0.05 |
+| #769 | experiment/pin-bonus-solo (T1.1) | move ordering bonus | [0, 3] | **submitted** — value-filtered pin without skewer noise. Bench 804743 vs main 788473 (+2.1%). |
+| #770 | experiment/quiet-see-attacking (T3.2) | move ordering bonus | [0, 3] | **submitted** — "good quiet" cheap-SEE proxy: bonus when offense target value > attacker value. Bench 734357 vs main 788473 (-6.9%, tree shrinks from earlier cutoffs). |
