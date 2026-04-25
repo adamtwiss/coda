@@ -684,6 +684,27 @@ impl MovePicker {
                         let unsafe_square = pt != 0 && (enemy_pawn_attacks & (1u64 << to)) != 0;
                         if !unsafe_square {
                             score += 6000;
+                            // T3.2: "good quiet" — the offense move's
+                            // strongest target is more valuable than us.
+                            // Cheap proxy for positive quiet-SEE.
+                            let qsee_b = crate::search::QSEE_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+                            if qsee_b > 0 {
+                                let our_val = see_value(pt);
+                                let mut hits = attacks_from_to & enemy_non_pawns;
+                                let mut max_t_val = 0;
+                                while hits != 0 {
+                                    let t_sq = hits.trailing_zeros() as u8;
+                                    hits &= hits - 1;
+                                    let t_pt = board.piece_type_at(t_sq);
+                                    if t_pt < 6 {
+                                        let v = see_value(t_pt);
+                                        if v > max_t_val { max_t_val = v; }
+                                    }
+                                }
+                                if max_t_val > our_val {
+                                    score += qsee_b;
+                                }
+                            }
                         }
                         // Knight-fork bonus: knight move attacking 2+ enemy
                         // non-pawn pieces from `to` is a fork. Tunable

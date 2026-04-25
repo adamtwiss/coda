@@ -158,6 +158,15 @@ tunables!(
     // where a friendly slider stands between us and an enemy piece along
     // the same ray. Flat bonus; tp==0 disables detection.
     (BATTERY_BONUS, 7031, 0, 20000, 1000.0),
+    // T3.2 (next_ideas_2026-04-21): "good quiet" — bonus when a quiet
+    // move's destination attacks an enemy piece MORE valuable than the
+    // moving piece. Stacks on top of existing offense bonus (+6000 flat)
+    // which fires regardless of value. Cheap approximation of "quiet-SEE":
+    // skips full exchange evaluation and gates on victim_value > attacker_value,
+    // which is the dominant positive-SEE case (~70% of positive SEEs).
+    // Reuses offense's `attacks_from_to` computation — zero extra
+    // attacks_from() calls. tp==0 disables.
+    (QSEE_BONUS, 5000, 0, 20000, 1000.0),
     (SE_KING_PRESSURE_MARGIN, 3, 0, 30, 1.5),
     // xray-SE: widen singular test margin when TT move is from an x-ray
     // blocker square (moving it uncovers our slider's attack on an enemy).
