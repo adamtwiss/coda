@@ -1,0 +1,5 @@
+NMP_BASE_R, int, 5, 2, 8, 1.5, 0.002
+NMP_DEPTH_DIV, int, 4, 1, 6, 1.5, 0.002
+NMP_EVAL_DIV, int, 104, 100, 400, 15.0, 0.002
+NMP_EVAL_MAX, int, 3, 1, 6, 1.5, 0.002
+NMP_VERIFY_DEPTH, int, 8, 8, 20, 2.0, 0.002
