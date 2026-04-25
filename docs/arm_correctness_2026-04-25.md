@@ -39,38 +39,59 @@ key.load(Acquire) → data.load.
 
 x86 cost: ~zero. aarch64 cost: small per-load `dmb` barrier.
 
-## What's queued
+## Other shared atomics — audit done 2026-04-25
 
-### Other shared atomics — needs audit
+Audited all `Atomic*` uses outside `tt.rs` / `tb_cache.rs`. **All
+remaining atomics are correct with `Relaxed`.** The TT/tb_cache
+XOR-validated reader-publish pattern was the only one needing
+`Acquire/Release`.
 
-**`info.stop`** (AtomicBool, Relaxed). Writers: UCI thread on `stop`,
-search worker on time-out. Readers: all search threads. Currently
-Relaxed which is *probably* correct (no associated data dependency),
-but worth verifying any "publish best_move then stop" patterns are
-ordered correctly. Audit candidate.
+| Atomic | Site | Pattern | Verdict |
+|---|---|---|---|
+| `tt.data[i]`, `tt.keys[i]` | tt.rs | XOR-validated reader-publish | ✅ Acquire/Release on branch (SPRT #764) |
+| `tb_cache` slot fields | tb_cache.rs | XOR-validated reader-publish | ✅ Acquire/Release on branch (SPRT #764) |
+| `tt.generation` | tt.rs:362 | Replacement-policy hint | ✅ Relaxed — stale reads only degrade replacement quality, never corrupt |
+| `info.stop` | search.rs, uci.rs | Termination flag, no data publish | ✅ Relaxed — best-move is conveyed via `thread::join`, not via shared memory ordered against `stop` |
+| `info.global_nodes` | search.rs:579 | `fetch_add` counter | ✅ Relaxed — RMW atomicity is what matters, display tolerates stale |
+| `info.ponderhit_time` | uci.rs:444, search.rs:589/1392/1643 | UCI publishes deadline, search reads | ✅ Relaxed — self-contained `u64`, no other data published with it |
+| `info.ponder_depth` | search.rs:1483 | Search publishes depth scalar | ✅ Relaxed — self-contained, no companion data |
+| `FEAT_*` AtomicBools | search.rs:211-232 | Init from env, read in search | ✅ Relaxed — init runs before `thread::spawn`, which carries happens-before |
+| Tunable `AtomicI32`s | search.rs `tunables!` macro | UCI `setoption` publishes value, search reads | ✅ Relaxed — scalar reads, no associated state |
+| `LMR_TABLE` / `LMR_TABLE_CAP` | search.rs:916-917 | `static mut` array rebuilt by `init_lmr` on `setoption LMR_C*` | ✅ Safe — `setoption` is single-threaded between games (UCI never overlaps a live search), and `thread::spawn` to start the next search establishes happens-before |
+| `threat_profile.rs` static counters | threat_profile.rs:6-18 | Pure stats | ✅ Relaxed — sums tolerate any order |
+| `datagen` counters + `line_idx` | datagen.rs | Counters and `fetch_add` work-claim | ✅ Relaxed — atomicity is the only requirement |
+| `eval.rs DBG`, `search.rs VERIFY_*` | eval.rs:192, search.rs:634-635 | Debug counters | ✅ Relaxed |
 
-**`info.global_nodes`** (AtomicU64, Relaxed). Writers: all search
-threads via `fetch_add`. Readers: UCI for output. `fetch_add` provides
-read-modify-write atomicity but no ordering. For node-count display,
-Relaxed is fine. Confirmed clean.
+**Methodology**: for each atomic, identified writers / readers / what
+data (if any) the atomic gates. The only correctness-relevant case is
+"writer publishes flag, reader observes flag then loads associated
+data" — that pattern requires `Release/Acquire` on aarch64. Counters,
+self-contained values, and one-shot init are all `Relaxed`-safe.
 
-**`info.ponderhit_time`** (AtomicU64, Relaxed). Writer: UCI on
-ponderhit. Readers: search threads checking the budget. Read once per
-~4096 nodes. The published value should propagate eventually; Relaxed
-is correct because there's no associated data needing happens-before.
-
-**`tt.generation`** (AtomicU8 or U16, Relaxed). Writer: main on
-advance_generation. Readers: all storage paths. Stale reads cause
-slightly suboptimal replacement but never corruption. Relaxed is
-correct.
-
-**Per-thread `SearchInfo.stats`** (atomic counters). Single-threaded
-per `SearchInfo`, so ordering doesn't matter.
+**Note on `LMR_TABLE` `static mut`**: technically a Rust data race
+(non-atomic shared write), but practically safe because `setoption`
+arrives between games during SPSA and tournaments — never concurrent
+with a running search. If we ever change UCI to apply `setoption`
+mid-search, this becomes a real race. Tracked as a watch item but not
+fixed today.
 
 ### NEON SIMD path for NNUE
 
 The NEON SCReLU `>>9` vs `>>8` mismatch was already fixed (audit C4,
-2026-04-22). Need to verify:
+2026-04-22). Background: SCReLU outputs `clamp(v, 0, 255)²` which
+lives in `[0, 65025]`. To pack back into `u8` for the int8 L1 matmul,
+we divide by ~255. The exact divide-by-255 is expensive in SIMD, so
+we use `>> 8` (divide by 256) — error is ~0.4%, absorbed by training.
+Commit `44baa95` accidentally bumped the NEON path to `>> 9` (divide
+by 512) alongside an intentional `neon_pairwise_pack` change, halving
+SCReLU activations on aarch64. Affected v7 non-pairwise SCReLU nets
+only; no aarch64 SCReLU-vs-scalar regression test caught it. Now
+fixed at `nnue.rs:1717`/`1727` with a comment cross-referencing the
+x86 path. **Lesson queued**: add a `neon_screlu_pack` parity test
+against the scalar tail at all production widths so a future shift
+mismatch is caught at `cargo test`.
+
+Need to verify:
 
 - [ ] NEON path is exercised by `cargo test` (CI catches AVX2-vs-NEON
       drift)
