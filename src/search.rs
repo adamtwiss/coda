@@ -2687,9 +2687,13 @@ fn negamax(
         // Check if move gives check (opponent is now in check after make_move)
         let gives_check = board.in_check();
 
-        // Recapture extension: extend when recapturing on the same square
+        // Recapture extension: extend when recapturing on the same square.
+        // ply > 0 guard: at root, undo_stack contains game-history moves;
+        // without the guard, the last played game move (if a capture) would
+        // count as a "previous capture" against the first root-move capture
+        // even though it's not an in-search recapture pattern.
         let mut extension = 0;
-        if is_cap && board.undo_stack.len() >= 2 {
+        if ply > 0 && is_cap && board.undo_stack.len() >= 2 {
             let prev_undo = &board.undo_stack[board.undo_stack.len() - 2];
             if prev_undo.captured != NO_PIECE_TYPE && to == move_to(prev_undo.mv) {
                 extension = if FEAT_EXTENSIONS.load(Ordering::Relaxed) { 1 } else { 0 };
