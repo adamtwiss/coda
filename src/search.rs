@@ -3171,9 +3171,17 @@ fn negamax(
         update_correction_history(info, board, best_score, scaled_eval, depth);
     }
 
-    // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes
+    // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes.
+    //
+    // Skip blending when we're inside an SE verification search (excluded_move
+    // is set on this ply). The dampened return value would feed into the
+    // singular_score → DEXT-margin comparison upstream, biasing DEXT toward
+    // single extensions on otherwise-double-extension-eligible TT moves.
+    // SE verification needs the raw cutoff score to make the right extension
+    // call.
     if best_score >= beta && beta - alpha_orig == 1 && depth >= tp(&FH_BLEND_DEPTH)
         && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
+        && info.excluded_move[ply_u] == NO_MOVE
     {
         return (best_score * depth + beta) / (depth + 1);
     }
