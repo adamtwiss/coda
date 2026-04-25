@@ -3,7 +3,7 @@
 /// WDL probes at interior nodes (requires halfmove == 0).
 /// DTZ probes at root for best tablebase move.
 
-use shakmaty::{Chess, FromSetup, CastlingMode};
+use shakmaty::{Chess, FromSetup, CastlingMode, Position};
 use shakmaty::fen::Fen;
 use shakmaty_syzygy::{Tablebase, AmbiguousWdl, Dtz, MaybeRounded};
 
@@ -111,6 +111,65 @@ impl SyzygyTB {
                 Some((uci.to_string(), wdl))
             }
             _ => None,
+        }
+    }
+
+    /// Walk the TB-optimal line from the root, building a multi-move PV.
+    /// Returns Some((moves_uci, root_wdl)) with moves_uci containing up to
+    /// `max_plies` UCI move strings and root_wdl the WDL from the root
+    /// position's perspective.
+    ///
+    /// Used for UCI display so the GUI sees a mate line rather than a
+    /// single TB-hit move, and so ponder has a real ponder_move (PV[1])
+    /// to think about.
+    ///
+    /// Terminates early on:
+    ///   - drawn / cursed-win / blessed-loss initial position (walk would
+    ///     stall against 50mr — we emit only the first move)
+    ///   - checkmate / stalemate reached (best_move returns None)
+    ///   - shakmaty rejects the played move (shouldn't happen for TB moves
+    ///     but defensive)
+    pub fn probe_root_pv(&self, board: &Board, max_plies: usize) -> Option<(Vec<String>, i32)> {
+        if crate::bitboard::popcount(board.occupied()) as usize > self.max_pieces {
+            return None;
+        }
+
+        let mut chess = board_to_shakmaty(board)?;
+        let mut moves: Vec<String> = Vec::new();
+        let mut root_wdl: Option<i32> = None;
+
+        for _ in 0..max_plies {
+            let (m, dtz) = match self.tb.best_move(&chess) {
+                Ok(Some(x)) => x,
+                _ => break,
+            };
+
+            let wdl = dtz_to_wdl_score(dtz);
+            if root_wdl.is_none() {
+                root_wdl = Some(wdl);
+                // If the root position is drawn / cursed / blessed, the
+                // TB walk would try to stall forever — emit only the
+                // first move and stop.
+                if wdl.abs() < 20000 {
+                    let uci = shakmaty::uci::UciMove::from_standard(m).to_string();
+                    moves.push(uci);
+                    break;
+                }
+            }
+
+            let uci = shakmaty::uci::UciMove::from_standard(m.clone()).to_string();
+            moves.push(uci);
+
+            chess = match chess.play(m) {
+                Ok(c) => c,
+                Err(_) => break,
+            };
+        }
+
+        if moves.is_empty() {
+            None
+        } else {
+            Some((moves, root_wdl.unwrap_or(0)))
         }
     }
 }

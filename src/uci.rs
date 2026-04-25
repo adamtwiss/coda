@@ -129,16 +129,27 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         stop_flag = info.stop.clone();
                     }
                 }
-                // Try Syzygy tablebase at root
+                let is_ponder = tokens.iter().any(|&t| t == "ponder");
+
+                // Try Syzygy tablebase at root. Behaviour splits on is_ponder:
+                //   - Non-ponder: walk DTZ to build a multi-ply PV, emit a
+                //     single info line with the walked line + bestmove, done.
+                //   - Ponder: emit the walked PV as a seed info line (so the
+                //     GUI has a real ponder_move to think about) and fall
+                //     through to search. Search still runs for ponder-cache
+                //     TT stockpile, UCI protocol compliance (no premature
+                //     bestmove), and depth-counter updates. Ponderhit handler
+                //     below will override with TB-optimal move when the time
+                //     comes to play.
                 if let Some(ref tb) = syzygy {
                     if crate::bitboard::popcount(board.occupied()) as usize <= tb.max_pieces() {
-                        if let Some((tb_move_str, wdl)) = tb.probe_root(&board) {
-                            // Validate TB move against legal move list.
-                            // TB can return "king capture" moves in checkmate positions
-                            // which are illegal in UCI. Only play if it's a real legal move.
+                        if let Some((tb_pv, wdl)) = tb.probe_root_pv(&board, 32) {
+                            // Validate the FIRST move of the walked PV — if
+                            // TB returns an illegal "king capture" in a mate
+                            // position we want to fall through to search.
                             let legal = crate::movegen::generate_legal_moves(&board);
                             let mut tb_valid = false;
-                            if let Some(parsed) = parse_uci_move(&board, &tb_move_str) {
+                            if let Some(parsed) = parse_uci_move(&board, &tb_pv[0]) {
                                 for i in 0..legal.len {
                                     if move_from(legal.moves[i]) == move_from(parsed)
                                         && move_to(legal.moves[i]) == move_to(parsed) {
@@ -155,9 +166,18 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 } else {
                                     "score cp 0".to_string()
                                 };
-                                println!("info depth 1 seldepth 1 {} tbhits 1 pv {}", score_str, tb_move_str);
-                                println!("bestmove {}", tb_move_str);
-                                continue;
+                                let pv_str = tb_pv.join(" ");
+                                let depth = tb_pv.len().max(1);
+                                println!("info depth {} seldepth {} {} tbhits 1 pv {}",
+                                         depth, depth, score_str, pv_str);
+                                if !is_ponder {
+                                    println!("bestmove {}", tb_pv[0]);
+                                    continue;
+                                }
+                                // During ponder: info line emitted as a seed
+                                // so GUI has ponder_move = tb_pv[1]. Fall
+                                // through to search for stockpile + UCI
+                                // compliance.
                             }
                             // TB move invalid — fall through to search (which has interior TB probes)
                         }
@@ -165,11 +185,16 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
 
                 // Try opening book first (not in ponder mode)
-                let is_ponder = tokens.iter().any(|&t| t == "ponder");
                 if use_book && !is_ponder {
                     if let Some(ref book) = opening_book {
                         if let Some(book_move) = book.pick_move(&board) {
-                            println!("bestmove {}", move_to_uci(book_move));
+                            let uci = move_to_uci(book_move);
+                            // Emit a nominal info line so GUIs don't show an empty PV
+                            // for book moves. Score cp 0 reflects "we didn't evaluate";
+                            // this matches the convention used by most engines with a
+                            // built-in book.
+                            println!("info depth 1 seldepth 1 score cp 0 nodes 0 nps 0 time 0 pv {}", uci);
+                            println!("bestmove {}", uci);
                             continue;
                         }
                     }
