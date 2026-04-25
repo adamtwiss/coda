@@ -882,24 +882,29 @@ Bench: 1780721
 6. If H1: merge to main, update bench in main's commit message
 7. If H0: do not merge, log result in experiments.md
 
-**Choosing SPRT bounds** — encode your prior belief about the change:
+**Choosing SPRT bounds.**
+
+> **Standing policy: `[0, 3]` is the default for ALL "does this feature help?"
+> SPRTs.** Reckless uses the same default. Adam reaffirmed 2026-04-25 after
+> a `[0, 5]` submission slipped through. Use a wider bound only when the
+> prior magnitude is genuinely larger; otherwise tighten to `[0, 3]`.
 
 | Bounds | When to use | Example |
 |--------|-------------|---------|
-| **`[0, 3]`** | **Default for "does this feature help?"** at Coda's current strength. Small-gain regime: most new ideas target +1-3 Elo. | Small pruning tweak, small bonus adjustment, incremental feature |
-| `[0, 5]` | Expect clearly positive gain +3-5 Elo or structural change with measurable impact. | Multi-param port, force-more-pruning w/ retune, new tactical motif |
-| `[-3, 3]` | Small-win correctness fix where regression ≤ -3 would be a block. | 50mr mate downgrade, stale-bound gate, SE-margin tweak |
-| `[0, 10]` | Expect big gain from a named structural change. | SEE magnitude fix, EBF-massive rewrite, major algorithm port |
-| `[-5, 5]` | Pure non-regression / infrastructure check. | Adding tunables at default values, NPS-only bench-neutral change |
+| **`[0, 3]` (DEFAULT)** | "Does this feature help?" at Coda's current strength. Most new ideas target +1-3 Elo. **Pick this unless you have a specific reason for one of the rows below.** | Pruning/ordering tweak, parameter probe, small bonus adjustment, incremental feature, audit correctness fix |
+| `[0, 5]` | Prior is for clearly positive **+3-5 Elo or larger** structural change with measurable impact. Reserve for changes whose magnitude has a load-bearing prior, not "could be larger." | Multi-param port with retune, force-more-pruning cluster, new tactical motif |
+| `[-3, 3]` | Small-win correctness fix where a regression ≤ -3 would be a block. Use for fixes whose direction is uncertain but where the correctness side of the trade matters. | SE margin tweak, 50mr mate downgrade, stale-bound gate |
+| `[0, 10]` | Big gain from a named structural change. Use sparingly — wrong-bound risk in either direction is real. | SEE magnitude fix, EBF-massive rewrite, major algorithm port |
+| `[-5, 5]` | Pure non-regression / infrastructure check. | NPS-only bench-neutral change, adding tunables at default values, ARM ordering change |
 
-**`[0, 3]` is the new default** for most experiments in 2026. At our
-current rating (~CCRL 3570) the easy Elo is gone and most ideas that
-land deliver +1-3 Elo. `[0, 5]` accumulates negative LLR on a true
-+1.5 ±1.5 effect because H1 target 5 is out of reach — we'd waste
-fleet cycles proving something we could have accepted with `[0, 3]`.
-**Reckless uses [0, 3] as their default** (see
-recklesschess.space/index); adopting the same discipline means we
-don't throw away genuinely-positive small wins.
+**Why `[0, 3]` is the standing default.** At our current rating
+(~CCRL 3570) the easy Elo is gone and most ideas that land deliver
++1-3 Elo. `[0, 5]` accumulates negative LLR on a true +1.5 ±1.5
+effect because H1 target 5 is out of reach — we'd waste fleet
+cycles proving something we could have accepted with `[0, 3]` and
+banked. The 2026-04-25 correctness-audit batch demonstrates this:
+#758 (+1.5), #759 (+1.7), #760 (+0.9) all H1'd at `[-3, 3]` /
+`[-5, 5]` — every one of those would have stalled at `[0, 5]`.
 
 **Why tight bounds matter strategically**: the gap from current Coda
 to 2nd-best-engine-in-the-world is genuinely countable. At CCRL
