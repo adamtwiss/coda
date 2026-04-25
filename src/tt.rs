@@ -369,14 +369,27 @@ impl TT {
     }
 
     /// Probe the TT for a position. Lock-free via atomic loads.
+    ///
+    /// Memory ordering on aarch64: load `keys` first with Acquire, then `data`
+    /// with Acquire. Pairs with the Release stores in `store()` so any reader
+    /// observing a new key is guaranteed to see the matching new data.
+    /// On x86 this is essentially free (Acquire/Release degenerate to Relaxed
+    /// in the hardware ordering); on aarch64 it adds a `dmb ishld` barrier
+    /// per load — necessary because aarch64's weaker model would otherwise
+    /// allow the writer's two stores to be observed out of order, which
+    /// could let the XOR check accept old data under a new key by
+    /// coincidental 32-bit collision.
     pub fn probe(&self, hash: u64) -> TTEntry {
         let idx = self.bucket_index(hash);
         let bucket = &self.buckets[idx];
         let key_upper = (hash >> 32) as u32;
 
         for i in 0..BUCKET_SIZE {
-            let data = bucket.data[i].load(Ordering::Relaxed);
-            let stored_key = bucket.keys[i].load(Ordering::Relaxed);
+            // Order matters: load key (Acquire) BEFORE data so the
+            // Acquire-Release synchronization on the key store carries the
+            // happens-before edge to the data load below.
+            let stored_key = bucket.keys[i].load(Ordering::Acquire);
+            let data = bucket.data[i].load(Ordering::Acquire);
 
             // 32-bit XOR verification: detects torn reads from concurrent writes
             if stored_key ^ (data as u32) != key_upper {
@@ -418,26 +431,31 @@ impl TT {
         let mut replace_score = i32::MAX;
 
         for i in 0..BUCKET_SIZE {
-            let slot_data = bucket.data[i].load(Ordering::Relaxed);
-            let slot_key = bucket.keys[i].load(Ordering::Relaxed);
+            // Probe-equivalent loads: key first (Acquire) so we see the
+            // matching data write on aarch64.
+            let slot_key = bucket.keys[i].load(Ordering::Acquire);
+            let slot_data = bucket.data[i].load(Ordering::Acquire);
             let recovered_upper = slot_key ^ (slot_data as u32);
 
             let slot_flag = unpack_flag(slot_data);
             let slot_depth = unpack_depth(slot_data);
             let slot_gen = unpack_generation(slot_data);
 
-            // Empty slot: use immediately
+            // Empty slot: use immediately. Store data first (Release) then
+            // key (Release). The key Release publishes the data write so any
+            // probe seeing the new key on another core is guaranteed to see
+            // the matching new data.
             if slot_flag == TT_FLAG_NONE {
-                bucket.data[i].store(new_data, Ordering::Relaxed);
-                bucket.keys[i].store(new_key, Ordering::Relaxed);
+                bucket.data[i].store(new_data, Ordering::Release);
+                bucket.keys[i].store(new_key, Ordering::Release);
                 return;
             }
 
             // Key match: update if newer generation or sufficiently deep
             if recovered_upper == key_upper {
                 if depth > slot_depth - 3 || gen != slot_gen {
-                    bucket.data[i].store(new_data, Ordering::Relaxed);
-                    bucket.keys[i].store(new_key, Ordering::Relaxed);
+                    bucket.data[i].store(new_data, Ordering::Release);
+                    bucket.keys[i].store(new_key, Ordering::Release);
                 }
                 return;
             }
@@ -452,8 +470,8 @@ impl TT {
         }
 
         // No key match and no empty slot: replace worst-scoring slot
-        bucket.data[replace_idx].store(new_data, Ordering::Relaxed);
-        bucket.keys[replace_idx].store(new_key, Ordering::Relaxed);
+        bucket.data[replace_idx].store(new_data, Ordering::Release);
+        bucket.keys[replace_idx].store(new_key, Ordering::Release);
     }
 
     /// Prefetch the bucket for a hash (hint to CPU cache).
