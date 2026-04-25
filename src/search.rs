@@ -1918,8 +1918,11 @@ fn negamax(
                                 && opp_to < 64 && our_to < 64
                             {
                                 let malus = -((155 * depth).min(385));
+                                // AoS-pack: cont_hist[cur][prior] — opp's
+                                // move is the move being penalised (current),
+                                // our move 1 ply earlier is the prior context.
                                 History::update_cont_history(
-                                    &mut info.history.cont_hist[our_gp][our_to][opp_gp][opp_to],
+                                    &mut info.history.cont_hist[opp_gp][opp_to][our_gp][our_to],
                                     malus,
                                 );
                             }
@@ -2598,7 +2601,7 @@ fn negamax(
             if moved_piece != NO_PIECE {
                 let gp = go_piece(moved_piece);
                 if prev_piece_for_cont != 0 {
-                    hist_prune_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize] as i32;
+                    hist_prune_score += info.history.cont_hist[gp][to as usize][prev_piece_for_cont][prev_to_for_cont as usize] as i32;
                 }
                 // Pawn history in pruning decision
                 let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
@@ -2813,10 +2816,10 @@ fn negamax(
                 if moved_piece != NO_PIECE {
                     let gp = go_piece(moved_piece);
                     if prev_piece_for_cont != 0 {
-                        hist_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize] as i32;
+                        hist_score += info.history.cont_hist[gp][to as usize][prev_piece_for_cont][prev_to_for_cont as usize] as i32;
                     }
                     if prev2_piece_for_cont != 0 {
-                        hist_score += info.history.cont_hist[prev2_piece_for_cont][prev2_to_for_cont as usize][gp][to as usize] as i32 / 2;
+                        hist_score += info.history.cont_hist[gp][to as usize][prev2_piece_for_cont][prev2_to_for_cont as usize] as i32 / 2;
                     }
                     // Pawn history: pawn-structure-aware move quality (SF/Alexandria pattern)
                     let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
@@ -3008,7 +3011,7 @@ fn negamax(
                                     if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
                                         let ch_bonus = if off <= 1 { bonus } else { bonus / 2 };
                                         History::update_cont_history(
-                                            &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
+                                            &mut info.history.cont_hist[gp_mv][to as usize][prior_piece][prior_to],
                                             ch_bonus,
                                         );
                                     }
@@ -3048,7 +3051,7 @@ fn negamax(
                                             if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
                                                 let ch_pen = if off <= 1 { -bonus } else { -bonus / 2 };
                                                 History::update_cont_history(
-                                                    &mut info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize],
+                                                    &mut info.history.cont_hist[gp_q][qt as usize][prior_piece][prior_to],
                                                     ch_pen,
                                                 );
                                             }

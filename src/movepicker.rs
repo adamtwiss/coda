@@ -35,7 +35,15 @@ pub struct History {
     /// Counter-move: [piece 1-12][to]
     /// piece uses 1-12 indexing (slot 0 unused).
     pub counter: [[Move; 64]; 13],
-    /// Continuation history: [piece 1-12][to][piece 1-12][to]
+    /// Continuation history: [cur_piece][cur_to][prior_piece][prior_to]
+    ///
+    /// **AoS-pack layout (2026-04-25)**: outer two dims are the move
+    /// being scored/updated; inner two dims are the prior move at one
+    /// of plies 1/2/4/6. This packs all 4 cont-hist plies for one move
+    /// scored into the same 1664-byte (gp, to) block — cache-resident
+    /// after the first access. Old layout was [prior][cur] which
+    /// scattered the 4 plies across 1.32MB.
+    ///
     /// piece uses 1-12 indexing (slot 0 unused).
     pub cont_hist: [[[[i16; 64]; 13]; 64]; 13],
 }
@@ -173,9 +181,15 @@ pub struct MovePicker {
     counter_move: Move,
     // Pointer to the History struct (lives for the duration of search)
     history: *const History,
-    // Continuation history sub-table pointers at plies 1, 2, 4, 6 back.
-    // cont_hist_subs[0] = ply-1 (3x weight), [1] = ply-2 (3x), [2] = ply-4 (1x), [3] = ply-6 (1x)
-    cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4],
+    // Continuation history prior-move keys at plies 1, 2, 4, 6 back.
+    // cont_hist_keys[0] = ply-1 (3x weight), [1] = ply-2 (3x),
+    // [2] = ply-4 (1x), [3] = ply-6 (1x).
+    //
+    // AoS-pack layout (2026-04-25): we no longer cache pointers to
+    // sub-tables. Instead, store (prior_pc, prior_to) keys per ply;
+    // per-move scoring indexes cont_hist[gp][to] then reads the 4
+    // (prior_pc, prior_to) entries within the same 1664-byte slab.
+    cont_hist_keys: [Option<(usize, usize)>; 4],
     pawn_hist_ptr: Option<*const [[i16; 64]; 13]>,
     // Main moves list and scores
     moves: MoveList,
@@ -236,18 +250,18 @@ impl MovePicker {
             NO_MOVE
         };
 
-        // Get continuation history sub-table pointers at plies 1, 2, 4, 6 back.
-        // Uses moved_piece_stack for correct piece lookup (avoids stale board.piece_at).
-        // Upper-bound guard: callers (search + qsearch) should clamp ply but
-        // we defend here too — indexing out of range panics the search thread.
-        let mut cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4] = [None; 4];
+        // Get continuation history prior-move keys at plies 1, 2, 4, 6 back.
+        // Uses moved_piece_stack for correct piece lookup (avoids stale
+        // board.piece_at). AoS-pack: the (prior_pc, prior_to) key is the inner
+        // index now; we read cont_hist[gp][to][p_pc][p_to] per move scored.
+        let mut cont_hist_keys: [Option<(usize, usize)>; 4] = [None; 4];
         let offsets = [1usize, 2, 4, 6];
         for (i, &off) in offsets.iter().enumerate() {
             if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
                 if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
-                    cont_hist_subs[i] = Some(&history.cont_hist[prior_piece][prior_to] as *const [[i16; 64]; 13]);
+                    cont_hist_keys[i] = Some((prior_piece, prior_to));
                 }
             }
         }
@@ -278,7 +292,7 @@ impl MovePicker {
             killers,
             counter_move,
             history: history as *const History,
-            cont_hist_subs,
+            cont_hist_keys,
             pawn_hist_ptr,
             moves: MoveList::new(),
             scores: [0; 256],
@@ -310,7 +324,7 @@ impl MovePicker {
             killers: [NO_MOVE; 2],
             counter_move: NO_MOVE,
             history: history as *const History,
-            cont_hist_subs: [None; 4],
+            cont_hist_keys: [None; 4],
             pawn_hist_ptr: None,
             moves: MoveList::new(),
             scores: [0; 256],
@@ -344,18 +358,18 @@ impl MovePicker {
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
     ) -> Self {
-        // Build cont-hist pointers for evasion (same as main picker).
+        // Build cont-hist prior-move keys for evasion (same as main picker).
         // Also guard the upper bound: qsearch can deepen past MAX_PLY via
         // evasion chains, and the caller's clamp might be missed — indexing
         // moved_piece_stack with ply >= len panics the search thread.
-        let mut cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4] = [None; 4];
+        let mut cont_hist_keys: [Option<(usize, usize)>; 4] = [None; 4];
         let offsets = [1usize, 2, 4, 6];
         for (i, &off) in offsets.iter().enumerate() {
             if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
                 if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
-                    cont_hist_subs[i] = Some(&history.cont_hist[prior_piece][prior_to] as *const [[i16; 64]; 13]);
+                    cont_hist_keys[i] = Some((prior_piece, prior_to));
                 }
             }
         }
@@ -368,7 +382,7 @@ impl MovePicker {
             killers: [NO_MOVE; 2],
             counter_move: NO_MOVE,
             history: history as *const History,
-            cont_hist_subs,
+            cont_hist_keys,
             pawn_hist_ptr,
             moves: MoveList::new(),
             scores: [0; 256],
@@ -582,10 +596,12 @@ impl MovePicker {
                 let gp = go_piece(piece);
                 let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
                 let weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
+                // AoS-pack: index once into the (gp, to) move-block; all 4
+                // ply reads land in the same 1664-byte slab.
+                let move_block = &history.cont_hist[gp][to as usize];
                 for (i, &w) in weights.iter().enumerate() {
-                    if let Some(sub_ptr) = self.cont_hist_subs[i] {
-                        let sub = unsafe { &*sub_ptr };
-                        score += w * sub[gp][to as usize] as i32;
+                    if let Some((p_pc, p_to)) = self.cont_hist_keys[i] {
+                        score += w * move_block[p_pc][p_to] as i32;
                     }
                 }
             }
@@ -780,10 +796,10 @@ impl MovePicker {
                     let gp = go_piece(piece);
                     let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
                     let weights = [cm, cm, 1i32, 1];
+                    let move_block = &history.cont_hist[gp][to as usize];
                     for (i, &w) in weights.iter().enumerate() {
-                        if let Some(sub_ptr) = self.cont_hist_subs[i] {
-                            let sub = unsafe { &*sub_ptr };
-                            s += w * sub[gp][to as usize] as i32;
+                        if let Some((p_pc, p_to)) = self.cont_hist_keys[i] {
+                            s += w * move_block[p_pc][p_to] as i32;
                         }
                     }
                 }
