@@ -551,7 +551,17 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
             }
             "eval" => {
                 let score = if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
-                    { let ts = crate::threat_accum::ThreatStack::new(0); crate::eval::evaluate_nnue(&board, net, acc, &ts) }
+                    // Build a real ThreatStack for v9 nets — without this,
+                    // forward_with_threats falls through and the threat
+                    // half of the eval is silently zeroed (audit
+                    // C2026-04-25-3). Refresh against the current board
+                    // before evaluating.
+                    let mut ts = crate::threat_accum::ThreatStack::new(net.hidden_size);
+                    ts.active = net.has_threats;
+                    if ts.active {
+                        ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+                    }
+                    crate::eval::evaluate_nnue(&board, net, acc, &ts)
                 } else {
                     crate::eval::evaluate(&board)
                 };
