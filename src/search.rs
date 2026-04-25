@@ -2918,7 +2918,7 @@ fn negamax(
                 let mut do_deeper_adj = 0;
                 if lmr_score > best_score + 60 + 10 * reduction {
                     do_deeper_adj = 1;
-                } else if lmr_score < best_score + 20 {
+                } else if lmr_score < best_score + 10 {
                     do_deeper_adj = -1;
                 }
 
