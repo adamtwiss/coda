@@ -952,12 +952,16 @@ fn run_fetch_net() {
     match output {
         Ok(status) if status.success() => {
             let size = std::fs::metadata(fname).map(|m| m.len()).unwrap_or(0);
-            // Magic-byte sanity check: NNUE files should start with a
-            // small set of known magic values. If the first 4 bytes are
-            // ASCII (e.g. HTML error page that slipped past -f), refuse.
+            // Magic-byte positive check: Coda .nnue files start with the
+            // 4-byte magic 'EUNN' (= 0x4E4E5545 little-endian). Reject
+            // anything that doesn't match — covers HTML error pages and
+            // partial / wrong downloads. Original audit fix used a
+            // negative ASCII-alpha check, but the magic is itself ASCII
+            // alpha so it falsely rejected every valid NNUE.
+            const NNUE_MAGIC: &[u8; 4] = b"EUNN";
             if let Ok(bytes) = std::fs::read(fname) {
-                if bytes.len() < 16 || bytes.iter().take(4).all(|&b| b.is_ascii_alphabetic()) {
-                    eprintln!("Error: downloaded file doesn't look like a .nnue (first bytes: {:?})",
+                if bytes.len() < 16 || &bytes[0..4] != NNUE_MAGIC {
+                    eprintln!("Error: downloaded file doesn't look like a .nnue (first bytes: {:?}; expected magic 'EUNN')",
                         &bytes.iter().take(16).collect::<Vec<_>>());
                     let _ = std::fs::remove_file(fname);
                     std::process::exit(1);
@@ -1310,7 +1314,15 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>) {
         let board = board::Board::from_fen(&fen);
 
         let score = if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
-            { let ts = crate::threat_accum::ThreatStack::new(0); eval::evaluate_nnue(&board, net, acc, &ts) }
+            // Build a real ThreatStack for v9 nets — without this,
+            // the threat half of the eval is silently zeroed
+            // (audit C2026-04-25-3).
+            let mut ts = crate::threat_accum::ThreatStack::new(net.hidden_size);
+            ts.active = net.has_threats;
+            if ts.active {
+                ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+            }
+            eval::evaluate_nnue(&board, net, acc, &ts)
         } else {
             continue;
         };
