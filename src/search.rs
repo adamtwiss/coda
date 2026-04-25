@@ -58,51 +58,60 @@ macro_rules! tunables {
 }
 
 tunables!(
-    // v9 #660 tune applied (2500 iters, on C8-fix S200 net).
-    // Big movers: LMR_HIST_DIV -45%, HIST_BONUS_OFFSET -26%,
-    // DISCOVERED_ATTACK_BONUS -24%, FH_BLEND_DEPTH +31%, DEXT_MARGIN +23%,
-    // PROBCUT_KING_ZONE_MAX +23%, LMR_COMPLEXITY_DIV +16%, NMP_VERIFY_DEPTH +14%.
-    // Theme: sharpened net → trust history more, tactical bonuses less.
-    // LMR_ENDGAME_PIECES manually restored to 5 (final tune was 4, pinned at
-    // floor — overrides #660 per play-quality-params-narrow-range memo).
-    (NMP_BASE_R, 6, 2, 8, 1.5),
-    (NMP_DEPTH_DIV, 5, 1, 6, 1.5),
-    (NMP_EVAL_DIV, 133, 100, 400, 15.0),
-    (NMP_EVAL_MAX, 5, 1, 6, 1.5),
-    (NMP_VERIFY_DEPTH, 14, 8, 20, 2.0),
-    (RFP_DEPTH, 8, 2, 12, 2.0),
-    (RFP_MARGIN_IMP, 65, 30, 150, 6.0),
-    (RFP_MARGIN_NOIMP, 126, 50, 200, 7.5),
-    (FUT_BASE, 75, 20, 200, 9.0),
-    (FUT_PER_DEPTH, 155, 40, 250, 10.5),
-    (HIST_PRUNE_DEPTH, 5, 1, 8, 1.5),
-    (HIST_PRUNE_MULT, 5834, 500, 50000, 2475.0),
-    (SEE_QUIET_MULT, 44, 5, 80, 3.75),
-    (SEE_CAP_MULT, 142, 30, 200, 8.5),
-    (LMR_HIST_DIV, 6342, 2000, 100000, 4900.0),
+    // v9 #682 tune applied (2000 iters, on C8-fix SB400 nonfactor net 80CB364B).
+    // Big movers vs #660 baseline:
+    //   HIST_PRUNE_MULT -34%, HIST_PRUNE_DEPTH -40%, CORR_BONUS_CAP_DIV -40%,
+    //   SE_KING_PRESSURE_MARGIN -50%, CORR_W_CONT -24%, CAP_HIST_BASE +29%,
+    //   RFP_DEPTH +25%, MVV_CAP_MULT +19%, FUT_THREATS_MARGIN +16%,
+    //   QS_SEE_THRESHOLD tighter, CORR_W_MAJOR -14%, CORR_W_MINOR +12%,
+    //   DISCOVERED_ATTACK_BONUS -13%, BATTERY_BONUS -12%.
+    // Theme: SB400 wants LESS history pruning, MORE aggressive SE,
+    //   slightly cooler motif bonuses, reweighted corrhist (less cont
+    //   and major, more minor). Most other params within ±10% of #660.
+    // LMR_ENDGAME_PIECES stayed at 5 inside the narrow clamp — no manual restore needed.
+    (NMP_BASE_R, 5, 2, 8, 1.5),
+    (NMP_DEPTH_DIV, 4, 1, 6, 1.5),
+    (NMP_EVAL_DIV, 104, 100, 400, 15.0),
+    (NMP_EVAL_MAX, 3, 1, 6, 1.5),
+    (NMP_VERIFY_DEPTH, 8, 8, 20, 2.0),
+    (RFP_DEPTH, 17, 2, 20, 2.0),
+    (RFP_MARGIN_IMP, 32, 30, 150, 6.0),
+    (RFP_MARGIN_NOIMP, 87, 50, 200, 7.5),
+    // Futility margin reduced to Reckless scale. At lmr_d=5:
+    //   Old: 78 + 160*5 = 878 (Coda 2.4× wider than Reckless 364)
+    //   New: 40 + 65*5 = 365 (matches Reckless)
+    // Force-more-pruning experiment: Coda was under-pruning at mid-depth
+    // where Reckless prunes confidently. SPSA retune-on-branch expected.
+    (FUT_BASE, 44, 20, 200, 9.0),
+    (FUT_PER_DEPTH, 59, 40, 250, 10.5),
+    (HIST_PRUNE_DEPTH, 4, 1, 8, 1.5),
+    (HIST_PRUNE_MULT, 11753, 500, 50000, 2475.0),
+    (SEE_QUIET_MULT, 24, 5, 80, 3.75),
+    (SEE_CAP_MULT, 171, 30, 200, 8.5),
+    (LMR_HIST_DIV, 7977, 2000, 100000, 4900.0),
     (LMR_C_QUIET, 120, 40, 300, 13.0),
-    (LMR_C_CAP, 109, 100, 350, 12.5),
-    (SE_DEPTH, 4, 4, 20, 2.0),
+    (LMR_C_CAP, 93, 80, 350, 12.5),
+    (SE_DEPTH, 5, 4, 20, 2.0),
     (ASP_DELTA, 15, 5, 30, 1.5),
-    (ASP_SCORE_DIV, 31848, 8000, 50000, 2100.0),
-    (LMP_BASE, 11, 1, 15, 2.0),
-    (LMP_DEPTH, 8, 4, 20, 2.0),
-    (BAD_NOISY_MARGIN, 128, 30, 150, 6.0),
-    (PROBCUT_MARGIN, 189, 80, 300, 11.0),
-    (HINDSIGHT_THRESH, 187, 50, 400, 17.5),
-    (UNSTABLE_THRESH, 175, 50, 500, 22.5),
-    (SEE_MATERIAL_SCALE, 200, 30, 300, 13.5),
-    (QS_DELTA_MARGIN, 377, 100, 500, 20.0),
-    (QS_SEE_THRESHOLD, -30, -200, 0, 10.0),
-    (QS_MAX_CAPTURES, 28, 2, 32, 2.0),
-    (CORR_W_PAWN, 266, 100, 600, 25.0),
-    (CORR_W_NP, 73, 50, 400, 17.5),
-    (CORR_W_MINOR, 58, 30, 300, 13.5),
-    (CORR_W_MAJOR, 100, 30, 300, 13.5),
-    (CORR_W_CONT, 51, 30, 400, 18.5),
+    (ASP_SCORE_DIV, 33510, 8000, 50000, 2100.0),
+    (LMP_BASE, 8, 1, 15, 2.0),
+    (LMP_DEPTH, 14, 4, 20, 2.0),
+    (BAD_NOISY_MARGIN, 81, 30, 150, 6.0),
+    (PROBCUT_MARGIN, 199, 80, 300, 11.0),
+    (HINDSIGHT_THRESH, 168, 50, 400, 17.5),
+    (UNSTABLE_THRESH, 159, 50, 500, 22.5),
+    (SEE_MATERIAL_SCALE, 220, 30, 300, 13.5),
+    (QS_DELTA_MARGIN, 369, 100, 500, 20.0),
+    (QS_SEE_THRESHOLD, -36, -200, 0, 10.0),
+    (QS_MAX_CAPTURES, 25, 2, 32, 2.0),
+    (CORR_W_PAWN, 275, 100, 600, 25.0),
+    (CORR_W_NP, 74, 50, 400, 17.5),
+    (CORR_W_MINOR, 57, 30, 300, 13.5),
+    (CORR_W_MAJOR, 89, 30, 300, 13.5),
+    (CORR_W_CONT, 42, 30, 400, 18.5),
     (FH_BLEND_DEPTH, 1, 0, 8, 1.5),
-    (HIST_BONUS_MULT, 329, 50, 400, 17.5),
-    (HIST_BONUS_MAX, 1547, 500, 3000, 125.0),
+    (HIST_BONUS_MULT, 320, 50, 400, 17.5),
+    (HIST_BONUS_MAX, 1664, 500, 3000, 125.0),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
     // history bonus adopts Stockfish/cap-hist offset shape:
     //   old: min(MAX, MULT * d)
@@ -112,42 +121,53 @@ tunables!(
     // wider depth discrimination. cap-history already uses the offset
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 53, 0, 400, 25.0),
-    (CAP_HIST_MULT, 286, 50, 400, 17.5),
-    (CAP_HIST_BASE, 14, 0, 200, 10.0),
-    (CAP_HIST_MAX, 1511, 500, 3000, 125.0),
-    (DEXT_MARGIN, 14, 2, 50, 2.4),
-    (DEXT_CAP, 17, 4, 32, 2.0),
-    (QUIET_CHECK_BONUS, 9589, 2000, 30000, 1400.0),
-    (LMR_COMPLEXITY_DIV, 199, 30, 500, 23.5),
-    (CORR_HIST_DIV, 1002, 256, 4096, 192.0),
-    (CORR_UPDATE_WEIGHT_MAX, 16, 4, 48, 2.2),
-    (CORR_BONUS_CAP_DIV, 5, 1, 16, 1.5),
+    (HIST_BONUS_OFFSET, 80, 0, 400, 25.0),
+    (CAP_HIST_MULT, 306, 50, 400, 17.5),
+    (CAP_HIST_BASE, 18, 0, 200, 10.0),
+    (CAP_HIST_MAX, 1681, 500, 3000, 125.0),
+    (DEXT_MARGIN, 10, 2, 50, 2.4),
+    (DEXT_CAP, 16, 4, 32, 2.0),
+    (QUIET_CHECK_BONUS, 13219, 2000, 30000, 1400.0),
+    (LMR_COMPLEXITY_DIV, 200, 30, 500, 23.5),
+    (CORR_HIST_DIV, 969, 256, 4096, 192.0),
+    (CORR_UPDATE_WEIGHT_MAX, 14, 4, 48, 2.2),
+    (CORR_BONUS_CAP_DIV, 2, 1, 16, 1.5),
     (CORR_HIST_GRAIN_T, 9, 1, 32, 1.55),
-    (CORR_HIST_ERR_MAX, 3, 1, 64, 3.15),
-    (ESCAPE_BONUS_Q, 13614, 5000, 40000, 1750.0),
-    (ESCAPE_BONUS_R, 13061, 3000, 30000, 1350.0),
-    (ESCAPE_BONUS_MINOR, 7932, 2000, 20000, 900.0),
-    (NMP_KING_ZONE_MAX, 5, 2, 9, 1.5),
-    (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
+    (CORR_HIST_ERR_MAX, 2, 1, 64, 3.15),
+    (ESCAPE_BONUS_Q, 12758, 5000, 40000, 1750.0),
+    (ESCAPE_BONUS_R, 12358, 3000, 30000, 1350.0),
+    (ESCAPE_BONUS_MINOR, 5385, 2000, 20000, 900.0),
+    (NMP_KING_ZONE_MAX, 6, 2, 9, 1.5),
+    // T2.1 (Titan's next_ideas 2026-04-21): undefended-piece NMP skip
+    // threshold. Count our pieces with ≥1 enemy attacker AND zero of
+    // our own defenders ("hanging"). If count >= this threshold, skip
+    // NMP — opponent's free tempo is very likely to exploit the hanger.
+    // Fits Titan's W2 pattern (binary signal gating a pruning decision).
+    // Default 1 = skip NMP whenever any piece is hanging.
+    (NMP_UNDEFENDED_MAX, 1, 0, 5, 1.0),
+    // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering weight.
+    // Bonus applied in movepicker quiets = (to_mobility - from_mobility) × this.
+    // Default 32 = ±256 typical range, additive to history (~1000s scale).
+    (MOBILITY_DELTA_WEIGHT, 30, 0, 256, 8.0),
+    (PROBCUT_KING_ZONE_MAX, 6, 2, 9, 1.5),
     (LMR_THREAT_DIV, 4, 1, 5, 1.5),
-    (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
+    (LMR_KING_PRESSURE_DIV, 4, 2, 9, 1.5),
     (FUT_THREATS_MARGIN, 38, 0, 200, 10.0),
-    (DISCOVERED_ATTACK_BONUS, 5714, 0, 30000, 1500.0),
+    (DISCOVERED_ATTACK_BONUS, 5808, 0, 30000, 1500.0),
     // T1.4: quiet-slider move that completes a battery — lands on a square
     // where a friendly slider stands between us and an enemy piece along
     // the same ray. Flat bonus; tp==0 disables detection.
-    (BATTERY_BONUS, 4919, 0, 20000, 1000.0),
-    (SE_KING_PRESSURE_MARGIN, 2, 0, 30, 1.5),
+    (BATTERY_BONUS, 7031, 0, 20000, 1000.0),
+    (SE_KING_PRESSURE_MARGIN, 3, 0, 30, 1.5),
     // xray-SE: widen singular test margin when TT move is from an x-ray
     // blocker square (moving it uncovers our slider's attack on an enemy).
     // Signal already delivered +52 in movepicker (#502). Flat bonus
     // subtracted from singular_beta → easier to judge singular → more
     // extensions for tactically significant moves.
-    (SE_XRAY_BLOCKER_MARGIN, 7, 0, 40, 2.0),
-    (MVV_CAP_MULT, 16, 4, 64, 3.0),
+    (SE_XRAY_BLOCKER_MARGIN, 6, 0, 40, 2.0),
+    (MVV_CAP_MULT, 27, 4, 64, 3.0),
     (CONT_HIST_MULT, 1, 1, 8, 1.5),
-    (KNIGHT_FORK_BONUS, 7106, 0, 20000, 1000.0),
+    (KNIGHT_FORK_BONUS, 8782, 0, 20000, 1000.0),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
     // LMR over-reduces king-restriction queen moves that complete mates.
@@ -158,6 +178,27 @@ tunables!(
     // it to 4 (pinned at floor); manually restored to 5 here. SPSA can
     // still explore ±2-3 from 5 within the clamped range.
     (LMR_ENDGAME_PIECES, 5, 4, 9, 1.5),
+    // --- Previously-hardcoded pruning depth gates, now tunable ---
+    // Per 2026-04-24 strategy: at our strength/eval regime, optimal
+    // depth caps/gates are sensitive to eval quality and will need
+    // re-tuning after each net change. Exposing them as SPSA-tunables
+    // lets retunes re-calibrate without code changes. Defaults match
+    // the previously-hardcoded values so this commit is bench-neutral.
+    //
+    // Future retune-on-branch cycles will sweep these with the
+    // eval+pruning co-tune; expect meaningful movement as net quality
+    // changes.
+    (IIR_MIN_DEPTH, 2, 2, 10, 1.5),         // was hardcoded 4; tune #743 converged to 2 (strong signal)
+    (PROBCUT_MIN_DEPTH, 6, 3, 12, 1.5),     // was hardcoded 5 (ProbCut activation gate)
+    (SEE_CAP_DEPTH, 5, 3, 15, 1.5),         // was hardcoded 6 (SEE capture prune depth cap)
+    (FUT_LMR_DEPTH, 16, 5, 20, 1.5),         // was hardcoded 10; tune #743 → 9
+    (BAD_NOISY_DEPTH, 13, 4, 15, 1.5),       // was hardcoded 4 (BNFP depth cap)
+    // Second pass — additional gates exposed for the feature-utility
+    // audit tune. Widened ranges allow SPSA to reach disable-endpoint
+    // values where appropriate (per feedback_spsa_as_feature_utility_diagnostic).
+    (NMP_MIN_DEPTH, 5, 2, 20, 1.5),              // was hardcoded 3 (NMP activation gate, 2 sites)
+    (HINDSIGHT_MIN_DEPTH, 2, 1, 20, 1.5),        // was hardcoded 2 (hindsight reduction gate)
+    (TT_CUTOFF_HALFMOVE_MAX, 88, 50, 100, 3.0),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -294,6 +335,11 @@ pub struct SearchInfo {
     pub global_nodes: std::sync::Arc<AtomicU64>,  // aggregate nodes across SMP threads
     pub silent: bool,  // suppress UCI output (for datagen)
     pub stats: PruneStats,
+    // Eval-path decomposition counters (see docs/coda_vs_reckless_nps_*.md).
+    // `stats_tt_static_eval_hits` counts nodes where we used the TT's
+    // cached static_eval and did NOT call NNUE. The NNUE counters live on
+    // `nnue_acc` (full rebuilds vs incremental updates vs computed skips).
+    pub stats_tt_static_eval_hits: u64,
     pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
     pub history: Box<History>,
     pub stop: std::sync::Arc<AtomicBool>,  // shared stop flag
@@ -372,6 +418,7 @@ impl SearchInfo {
             global_nodes: std::sync::Arc::new(AtomicU64::new(0)),
             silent: false,
             stats: PruneStats::default(),
+            stats_tt_static_eval_hits: 0,
             tt: std::sync::Arc::new(TT::new(tt_mb)),
             history: alloc_zeroed_box(),
             stop: std::sync::Arc::new(AtomicBool::new(false)),
@@ -1653,6 +1700,13 @@ fn negamax(
         return apply_halfmove_scale(info.eval(board), board.halfmove);
     }
 
+    // C8 audit LIKELY #3: reset reductions slot at node entry so NMP and
+    // any other pre-move-loop child call reads "no prior reduction", not
+    // a sibling's stale LMR value from an earlier visit to this ply.
+    if ply_u <= MAX_PLY {
+        info.reductions[ply_u] = 0;
+    }
+
     // Mate distance pruning — applies to all nodes (standard form)
     let is_pv = beta - alpha > 1;
     {
@@ -1819,7 +1873,7 @@ fn negamax(
             // Gate ALL return-from-TT paths (direct + bounds-narrow collapse +
             // near-miss + QS) on halfmove < 90. Window-narrowing is still applied —
             // it only biases the search, while returning stale tt_score is unsafe.
-            let halfmove_ok = board.halfmove < 90;
+            let halfmove_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
             if tt_depth >= depth && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 // Unified TT cutoff with node-type guard (Alexandria pattern):
                 // At non-PV nodes, accept TT cutoff when:
@@ -1844,21 +1898,31 @@ fn negamax(
                     // TT cutoff cont-hist malus: penalize opponent's last quiet move
                     // in context of our move before that (Alexandria pattern).
                     // "Your move led to a position we already know is lost for you."
+                    //
+                    // C8 audit LIKELY #6: read pieces from moved_piece_stack (set
+                    // pre-move, captures pre-promotion pawn) rather than
+                    // board.piece_at(to) (post-move, reports promoted piece for
+                    // promotions). Write-side (beta-cutoff bonuses) uses
+                    // moved_piece_stack; the old asymmetry meant malus on promotion
+                    // moves landed in the queen/rook bin where reads never look.
                     let stack_len = board.undo_stack.len();
-                    if score_above_beta && stack_len >= 2 {
+                    if score_above_beta && stack_len >= 2 && ply_u >= 2 {
                         let opp_undo = &board.undo_stack[stack_len - 1];
                         let our_undo = &board.undo_stack[stack_len - 2];
                         if opp_undo.mv != NO_MOVE && opp_undo.captured == NO_PIECE_TYPE
                             && our_undo.mv != NO_MOVE
                         {
-                            let opp_to = move_to(opp_undo.mv);
-                            let opp_piece = board.piece_at(opp_to);
-                            let our_to = move_to(our_undo.mv);
-                            let our_piece = board.piece_at(our_to);
-                            if opp_piece != NO_PIECE && our_piece != NO_PIECE {
+                            let opp_gp = info.moved_piece_stack[ply_u - 1] as usize;
+                            let our_gp = info.moved_piece_stack[ply_u - 2] as usize;
+                            let opp_to = info.moved_to_stack[ply_u - 1] as usize;
+                            let our_to = info.moved_to_stack[ply_u - 2] as usize;
+                            if opp_gp > 0 && opp_gp < 13
+                                && our_gp > 0 && our_gp < 13
+                                && opp_to < 64 && our_to < 64
+                            {
                                 let malus = -((155 * depth).min(385));
                                 History::update_cont_history(
-                                    &mut info.history.cont_hist[go_piece(our_piece)][our_to as usize][go_piece(opp_piece)][opp_to as usize],
+                                    &mut info.history.cont_hist[our_gp][our_to][opp_gp][opp_to],
                                     malus,
                                 );
                             }
@@ -1982,8 +2046,33 @@ fn negamax(
     if !in_check {
         if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
             raw_eval = tt_entry.static_eval;
+            info.stats_tt_static_eval_hits += 1;
         } else {
             raw_eval = info.eval(board);
+            // Eval-only TT writeback: when we paid for an NNUE eval AND
+            // there's no existing TT entry, seed the TT with static_eval
+            // so later visits of this position (from different move
+            // orders or ID re-searches) skip the NNUE call.
+            //
+            // Reckless pattern (`search.rs:425`). Phase-2 lever from
+            // `docs/coda_vs_reckless_nps_2026-04-23.md`: reduces
+            // evals/node (Coda 0.677 vs Reckless 0.520).
+            //
+            // Safety:
+            //   - Gated on `!tt_hit` so we never overwrite a real entry
+            //     with a shallow stub.
+            //   - depth=-2 means `tt_depth >= depth` is false for any
+            //     real search depth, so this entry never triggers TT
+            //     cutoffs or alpha/beta window narrowing.
+            //   - flag=TT_FLAG_UPPER + score=-INFINITY makes any
+            //     score read trivially rejected.
+            //   - tt_move=NO_MOVE preserves IIR behaviour at this
+            //     position on later visits.
+            //   - tt_pv carries current node's is_pv context so PV
+            //     propagation is correct on re-visit.
+            if !tt_hit && FEAT_TT_STORE.load(Ordering::Relaxed) {
+                info.tt.store(board.hash, -2, -INFINITY, TT_FLAG_UPPER, NO_MOVE, raw_eval, is_pv);
+            }
         }
         scaled_eval = apply_halfmove_scale(raw_eval, board.halfmove);
         // Apply correction history to the halfmove-scaled value
@@ -2036,7 +2125,7 @@ fn negamax(
     // Restricted to PV/cut nodes (Obsidian/Berserk/Stormphrax pattern).
     // All-nodes have tight bounds already, IIR there wastes depth.
     let is_pv = beta - alpha_orig > 1;
-    if depth >= 4 && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
+    if depth >= tp(&IIR_MIN_DEPTH) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
         depth -= 1;
     }
 
@@ -2047,7 +2136,7 @@ fn negamax(
     // think the position is quiet, reduce depth further.
     // Gate on prior_reduction (Stockfish >= 2, Alexandria >= 1).
     let prior_reduction = if ply_u >= 1 { info.reductions[ply_u - 1] } else { 0 };
-    if !in_check && ply >= 1 && depth >= 2 && ply_u >= 1
+    if !in_check && ply >= 1 && depth >= tp(&HINDSIGHT_MIN_DEPTH) && ply_u >= 1
         && prior_reduction >= 2
         && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
         && static_eval > -INFINITY
@@ -2075,13 +2164,38 @@ fn negamax(
     let king_zone = crate::attacks::king_attacks(our_king_sq as u32) | (1u64 << our_king_sq);
     let king_zone_pressure = popcount(enemy_attacks & king_zone) as i32;
 
-    if depth >= 3 && !in_check && ply > 0 && stm_non_pawn != 0
+    // T2.1: undefended ("hanging") piece count. Our non-pawn pieces
+    // that are attacked by enemy AND NOT defended by any of our own
+    // pieces. Zero-cost-when-skipped: computation only runs for
+    // NMP-eligible nodes (most nodes either fail the depth gate or are
+    // in_check). ~10-15 magic lookups per computed node — comparable
+    // to king-zone-pressure's cost.
+    let undefended_count: i32 = {
+        // Only bother computing when NMP might actually fire.
+        let nmp_gate_cheap = depth >= tp(&NMP_MIN_DEPTH) && !in_check && ply > 0
+            && stm_non_pawn != 0 && beta - alpha == 1
+            && static_eval >= beta && !prev_was_null
+            && beta.abs() < MATE_SCORE - 100
+            && info.excluded_move[ply_u] == NO_MOVE;
+        if nmp_gate_cheap && tp(&NMP_UNDEFENDED_MAX) > 0 {
+            let our_non_pawn = board.colors[board.side_to_move as usize]
+                & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+            let attacked = our_non_pawn & enemy_attacks;
+            let our_attacks = board.attacks_by_color(board.side_to_move);
+            popcount(attacked & !our_attacks) as i32
+        } else {
+            0
+        }
+    };
+
+    if depth >= tp(&NMP_MIN_DEPTH) && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
         && !prev_was_null  // Prevent consecutive null moves
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && king_zone_pressure < tp(&NMP_KING_ZONE_MAX)  // New gate
         && any_threat_count < 3  // S7-style: skip NMP when many of our pieces are under threat
+        && undefended_count < tp(&NMP_UNDEFENDED_MAX)  // T2.1: skip when hanging pieces
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
@@ -2106,6 +2220,15 @@ fn negamax(
         let null_key = board.hash; // save hash for threat detection after unmake
         if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::recompute()); }
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
+        // C3 (2026-04-22 audit): set null sentinel on moved_piece_stack /
+        // moved_to_stack at ply_u. Without this, child at ply+1 reads
+        // stale (piece, to) from a prior sibling move at this ply, feeding
+        // cont-hist, history pruning and LMR-history adjustment with
+        // unrelated data. Stockfish sets the null sentinel similarly.
+        if ply_u <= MAX_PLY {
+            info.moved_piece_stack[ply_u] = 0;
+            info.moved_to_stack[ply_u] = 0;
+        }
         let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
         if info.threat_stack.active { info.threat_stack.pop(); }
@@ -2186,7 +2309,7 @@ fn negamax(
     } else {
         false
     };
-    if !in_check && ply > 0 && !is_pv && depth >= 5
+    if !in_check && ply > 0 && !is_pv && depth >= tp(&PROBCUT_MIN_DEPTH)
         && beta.abs() < MATE_SCORE - 100  // skip for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
         && !probcut_tt_noshot  // TT says no chance
@@ -2337,7 +2460,7 @@ fn negamax(
         let is_promo = is_promotion(mv);
 
         // SEE capture pruning: at shallow depths, prune captures that lose material
-        if is_cap && ply > 0 && !in_check && depth <= 6
+        if is_cap && ply > 0 && !in_check && depth <= tp(&SEE_CAP_DEPTH)
             && mv != tt_move && best_score > -(MATE_SCORE - 100)
             && !see_ge(board, mv, -(depth * tp(&SEE_MATERIAL_SCALE)))
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
@@ -2496,7 +2619,7 @@ fn negamax(
             && !is_cap && !is_promo
             && best_score > -(MATE_SCORE - 100)
             && FEAT_FUTILITY.load(Ordering::Relaxed)
-            && lmr_d <= 10
+            && lmr_d <= tp(&FUT_LMR_DEPTH)
         {
             let main_hist = info.history.main_score(from, to, enemy_attacks);
             let hist_adj = main_hist / 128;
@@ -2505,7 +2628,9 @@ fn negamax(
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
             let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
             // Don't futility-prune moves with very strong history (Igel pattern)
-            if futility_value <= alpha && main_hist < 12000 {
+            // Direct-check carve-out: don't prune moves that give direct check
+            // (Reckless #410 +1.62 STC).
+            if futility_value <= alpha && main_hist < 12000 && !board.gives_direct_check(mv) {
                 info.stats.futility_prunes += 1;
                 continue;
             }
@@ -2531,11 +2656,13 @@ fn negamax(
         }
 
         // Bad noisy pruning: skip losing captures when eval is far below alpha.
-        // Applied before MakeMove — no gives_check exemption (matches pre-move pattern).
-        if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= 4 && mv != tt_move
+        // Applied before MakeMove. Direct-check carve-out: don't prune moves
+        // that give direct check (Reckless #630 +1.85 STC).
+        if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= tp(&BAD_NOISY_DEPTH) && mv != tt_move
             && !is_promo && best_score > -(MATE_SCORE - 100)
             && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
             && !see_ge(board, mv, 0)
+            && !board.gives_direct_check(mv)
         {
             continue;
         }
@@ -2783,11 +2910,18 @@ fn negamax(
             let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
 
             if lmr_score > alpha && !info.stop.load(Ordering::Relaxed) {
-                // LMR failed high: doDeeper/doShallower before re-search
+                // LMR failed high: doDeeper/doShallower before re-search.
+                //
+                // Audit SPECULATIVE fix (v2 retry): `new_depth` (integer depth
+                // 5-20) was used as a cp margin — near-certain typo. #673 at
+                // 30cp H0'd −1.7 @ 17286g; retrying with 20cp, closer to the
+                // old "new_depth ≈ 10-15" effective threshold but with proper
+                // cp semantics. If this also H0s, the true value is smaller
+                // still (try 10cp) or the feature wants a depth-scaled margin.
                 let mut do_deeper_adj = 0;
                 if lmr_score > best_score + 60 + 10 * reduction {
                     do_deeper_adj = 1;
-                } else if lmr_score < best_score + new_depth {
+                } else if lmr_score < best_score + 20 {
                     do_deeper_adj = -1;
                 }
 
@@ -3153,7 +3287,7 @@ fn quiescence_with_depth(
         let tt_ret = downgrade_50mr_mate(tt_score, ply, board.halfmove);
 
         // P2: skip QS TT cutoff near 50mr — stale bound unsafe
-        let halfmove_ok = board.halfmove < 90;
+        let halfmove_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
         let qs_is_pv = beta - alpha > 1;
         match tt_entry.flag {
             TT_FLAG_EXACT => {
@@ -3276,6 +3410,7 @@ fn quiescence_with_depth(
     // halfmove-independent values (see SearchInfo::eval doc), so we apply
     // the scale freshly against `board.halfmove` after reading.
     let raw_stand_pat = if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
+        info.stats_tt_static_eval_hits += 1;
         tt_entry.static_eval
     } else {
         info.eval(board)
@@ -3552,6 +3687,29 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     eprintln!("First-move cut: {:>5.1}%", if s.beta_cutoffs > 0 { s.first_move_cutoffs as f64 / s.beta_cutoffs as f64 * 100.0 } else { 0.0 });
 
     eprintln!("Total nodes:    {:>8}", total_nodes);
+
+    // Eval-path decomposition — supports the "evals/node" investigation
+    // (see docs/coda_vs_reckless_nps_2026-04-23.md). Reports how search
+    // splits its static-eval calls between full rebuilds, incremental
+    // updates, already-computed skips, and TT-cached bypasses.
+    if let Some(acc) = info.nnue_acc.as_ref() {
+        let full = acc.stats_full_rebuilds;
+        let incr = acc.stats_incremental_updates;
+        let skip = acc.stats_cached_skips;
+        let tt   = info.stats_tt_static_eval_hits;
+        let total_evals = full + incr;
+        let eval_call_attempts = total_evals + skip + tt;
+        eprintln!("--- NNUE Eval Decomposition ---");
+        eprintln!("NNUE full rebuilds: {:>10} ({:>5.2}% of evals)", full,
+                  if total_evals > 0 { full as f64 * 100.0 / total_evals as f64 } else { 0.0 });
+        eprintln!("NNUE incremental:   {:>10} ({:>5.2}% of evals)", incr,
+                  if total_evals > 0 { incr as f64 * 100.0 / total_evals as f64 } else { 0.0 });
+        eprintln!("TT static-eval hit: {:>10} ({:>5.2}% of call sites)", tt,
+                  if eval_call_attempts > 0 { tt as f64 * 100.0 / eval_call_attempts as f64 } else { 0.0 });
+        eprintln!("Already-computed:   {:>10}", skip);
+        eprintln!("Evals / node:       {:>10.3}", total_evals as f64 / total_nodes as f64);
+        eprintln!("Call-sites / node:  {:>10.3}", eval_call_attempts as f64 / total_nodes as f64);
+    }
 
     #[cfg(feature = "profile-materialize")]
     crate::nnue::mat_stats::report();

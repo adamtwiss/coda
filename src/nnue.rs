@@ -1993,6 +1993,14 @@ fn detect_neon() -> bool {
     { false }
 }
 
+/// Global "load any net even on training/inference config mismatch" override.
+/// Set via the `--load-anyway` CLI flag or UCI option `LoadAnyway`. Refuses
+/// mismatches by default (noisy — crashes the engine startup) so mismatches
+/// can't silently degrade SPRT/OB/Lichess games. Diagnostic-only escape
+/// hatch for intentionally loading a mismatched net.
+pub static LOAD_ANYWAY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// NNUE network weights (shared, read-only after loading).
 pub struct NNUENet {
     pub hidden_size: usize,
@@ -2026,6 +2034,13 @@ pub struct NNUENet {
     pub threat_weights: Vec<i8>,  // [num_threat_features × hidden_size] i8 weights
     pub num_threat_features: usize,
     pub has_threats: bool,
+    /// Whether the net was trained WITH xray threat features. Coda inference
+    /// always emits xrays, so nets with `xray_trained=false` will produce
+    /// garbage eval (weights were learned against direct-attack signal only,
+    /// but inference multiplies them in xray contexts too). v10+ nets record
+    /// this in the header; v9 and earlier default to true (legacy assumption
+    /// since all pre-v10 threat nets were trained with --xray 1 / default).
+    pub xray_trained: bool,
     /// Number of king buckets in this net (10 for Reckless, 16 for others).
     /// PSQ weight block is sized `num_king_buckets * 768 * hidden_size`.
     pub num_king_buckets: usize,
@@ -2079,7 +2094,9 @@ impl NNUENet {
     /// Load from a byte slice (for embedded nets). No temp files needed.
     pub fn load_from_bytes(data: &[u8]) -> Result<Self, String> {
         let mut reader = std::io::Cursor::new(data);
-        Self::load_from_reader(&mut reader, data.len() as u64, "<embedded>")
+        let net = Self::load_from_reader(&mut reader, data.len() as u64, "<embedded>")?;
+        net.validate_compat()?;
+        Ok(net)
     }
 
     /// Load a v5/v6/v7 .nnue file.
@@ -2087,7 +2104,9 @@ impl NNUENet {
         let file_len = std::fs::metadata(path).map_err(|e| format!("stat {}: {}", path, e))?.len();
         let file = File::open(path).map_err(|e| format!("open {}: {}", path, e))?;
         let mut reader = BufReader::new(file);
-        Self::load_from_reader(&mut reader, file_len, path)
+        let net = Self::load_from_reader(&mut reader, file_len, path)?;
+        net.validate_compat()?;
+        Ok(net)
     }
 
     fn load_from_reader(reader: &mut impl IoRead, data_len: u64, source_name: &str) -> Result<Self, String> {
@@ -2111,11 +2130,14 @@ impl NNUENet {
         //   - extended_kb=1: hl_crelu (hidden-layer CReLU, vs default SCReLU)
         let mut consensus_buckets = false;
         let mut hl_crelu = false;
-        let mut has_threats = false; // bit 6: threat features (v9)
+        let mut has_threats = false; // bit 6: threat features (v9+)
         let mut num_threat_features = 0usize;
-        // extended_kb (bit 7) is only read inside the v7|8|9 match arm; declared locally there.
+        // extended_kb (bit 7) is only read inside the v7+ match arm; declared locally there.
         let mut num_king_buckets: usize = 16; // default (uniform/consensus)
         let mut kb_layout = KbLayout::Uniform;
+        // v10+: xray_trained from training_flags byte. v9 legacy default = true
+        // (all pre-v10 threat nets were --xray 1 / default at training time).
+        let mut xray_trained: bool = true;
         let hidden_size: usize;
 
         match version {
@@ -2144,14 +2166,14 @@ impl NNUENet {
                 }
                 hidden_size = (h_numer / h_denom) as usize;
             }
-            7 | 8 | 9 => {
+            7 | 8 | 9 | 10 => {
                 let flags = read_u8(reader)?;
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
                 if flags & 4 != 0 { l1_scale = 64; } // int8 L1 weights
                 bucketed_hidden = flags & 8 != 0; // output buckets baked into L1/L2
                 dual_l1 = flags & 16 != 0; // dual L1 activation (CReLU+SCReLU)
-                has_threats = flags & 64 != 0; // v9 threat features
+                has_threats = flags & 64 != 0; // v9+ threat features
                 let extended_kb = flags & 128 != 0; // bit 7: extended KB header
                 // Bit 5 has context-dependent meaning: consensus_buckets on
                 // legacy 16-bucket nets (extended_kb=0), hl_crelu on modern
@@ -2182,6 +2204,16 @@ impl NNUENet {
                     // Legacy 16-bucket path: consensus bit 5 picks layout.
                     kb_layout = if consensus_buckets { KbLayout::Consensus } else { KbLayout::Uniform };
                     num_king_buckets = 16;
+                }
+                // v10 training_flags byte (only for threat nets).
+                //   bit 0: xray_trained (1 = trained with xray threat features)
+                // v9 nets have no such byte — legacy default is xray_trained=true
+                // (all pre-v10 production nets were --xray 1 / default).
+                if version >= 10 {
+                    let training_flags = read_u8(reader)?;
+                    xray_trained = training_flags & 1 != 0;
+                } else {
+                    xray_trained = true;
                 }
                 hidden_size = ft_size;
             }
@@ -2420,6 +2452,7 @@ impl NNUENet {
             threat_weights,
             num_threat_features,
             has_threats,
+            xray_trained,
             num_king_buckets,
             kb_layout,
             king_bucket: king_bucket_tbl,
@@ -2434,6 +2467,30 @@ impl NNUENet {
             has_avx_vnni,
             has_neon,
         })
+    }
+
+    /// Load a net from file, enforcing inference-compatibility checks.
+    /// Wraps `load_from_bytes_raw` with `validate_compat`. All normal code
+    /// paths should use this; bypass is only via `--load-anyway` / UCI
+    /// option `LoadAnyway` for diagnostics on deliberately-mismatched nets.
+    fn validate_compat(&self) -> Result<(), String> {
+        if !self.has_threats {
+            return Ok(());
+        }
+        // Coda inference always emits xray threat features. A net trained
+        // with --xray 0 has weight rows for the same indices trained only
+        // on direct-attack signal; at inference, xray emissions would
+        // multiply through those (mis-calibrated-distribution) weights
+        // and degrade eval. Refuse to load by default.
+        if !self.xray_trained && !LOAD_ANYWAY.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(format!(
+                "net was trained without xray features (--xray 0), but Coda \
+                 inference always emits them — inference/training mismatch \
+                 would corrupt eval. Pass --load-anyway (CLI) or set UCI option \
+                 LoadAnyway=true to load for diagnostic purposes only."
+            ));
+        }
+        Ok(())
     }
 
     /// Get input weight row for a feature index.
@@ -3667,16 +3724,46 @@ impl DirtyPiece {
     }
 }
 
-/// Single accumulator entry (two perspectives).
-#[derive(Clone)]
+/// Maximum NNUE hidden-size we support. Sizes the inline accumulator
+/// arrays inside `AccEntry` so the full stack is one contiguous buffer
+/// (HW-prefetcher-friendly, no scattered heap allocations). Current
+/// production v9 uses 768; v5-family nets top out at ~1024. 2048 leaves
+/// headroom and matches the existing `[0u8; 2048]` packing buffers
+/// elsewhere in this file.
+pub const MAX_HIDDEN_SIZE: usize = 2048;
+
+/// Per-ply accumulator entry. All four i16 buffers are inline arrays
+/// (not heap-allocated `Vec`s) so that the whole 256-ply accumulator
+/// stack lives in a single contiguous allocation — matching Reckless's
+/// `[PstEntry; MAX_PLY]` layout. Key effects:
+///
+/// - `materialize` walking back through the stack looking for a
+///   computed ancestor touches consecutive memory rather than chasing
+///   scattered heap blocks. HW prefetcher handles it.
+/// - Each entry is a fixed ~17 KB; the accumulator effectively always
+///   runs at its max width (`MAX_HIDDEN_SIZE`) but only `hidden_size`
+///   elements are read/written, so the extra tail costs only memory,
+///   not bandwidth.
+/// - No allocator calls on push / pop. Incremental updates copy slices
+///   between adjacent stack entries that are already hot in cache.
+///
+/// Previous layout used `Vec<i16>` × 4 per entry — 4 separate heap
+/// allocations per ply × 256 plies = ~1,000 scattered heap blocks. The
+/// v9 inference microbench saw 15.7% L1-dcache miss rate on incremental
+/// eval vs Reckless's 0.55%; this flatten targets that gap.
+///
+/// `#[repr(C, align(64))]`: align to a cache-line boundary so the
+/// four inline arrays start on clean cache-line boundaries, avoiding
+/// straddling reads.
+#[repr(C, align(64))]
 pub struct AccEntry {
-    pub white: Vec<i16>,
-    pub black: Vec<i16>,
+    pub white: [i16; MAX_HIDDEN_SIZE],
+    pub black: [i16; MAX_HIDDEN_SIZE],
+    // Threat accumulator (v9): separate i16 values summed with PSQ at activation
+    pub threat_white: [i16; MAX_HIDDEN_SIZE],
+    pub threat_black: [i16; MAX_HIDDEN_SIZE],
     computed: bool,
     dirty: DirtyPiece,
-    // Threat accumulator (v9): separate i16 values summed with PSQ at activation
-    pub threat_white: Vec<i16>,
-    pub threat_black: Vec<i16>,
     pub threat_accurate: [bool; 2], // per-perspective [WHITE, BLACK]
     pub threat_deltas: Vec<crate::threats::RawThreatDelta>,
     pub threat_move: Move, // the move that produced this ply (for king mirror check)
@@ -3706,6 +3793,13 @@ pub struct NNUEAccumulator {
     hidden_size: usize,
     /// Finny table: flat [perspective * 32 + bucket * 2 + mirror]
     finny: Vec<FinnyEntry>, // length = FINNY_SIZE (64)
+    // --- eval-path instrumentation counters (reset by `reset_stats`) ---
+    // `materialize` increments one of these every call, based on which
+    // branch it takes. Read via the `stats_*` accessors for the bench
+    // "evals/node" summary. Zero overhead outside the increment itself.
+    pub stats_full_rebuilds: u64,
+    pub stats_incremental_updates: u64,
+    pub stats_cached_skips: u64,
 }
 
 impl NNUEAccumulator {
@@ -3713,12 +3807,12 @@ impl NNUEAccumulator {
         let mut stack = Vec::with_capacity(256);
         for _ in 0..256 {
             stack.push(AccEntry {
-                white: vec![0; hidden_size],
-                black: vec![0; hidden_size],
+                white: [0; MAX_HIDDEN_SIZE],
+                black: [0; MAX_HIDDEN_SIZE],
+                threat_white: [0; MAX_HIDDEN_SIZE],
+                threat_black: [0; MAX_HIDDEN_SIZE],
                 computed: false,
                 dirty: DirtyPiece::recompute(),
-                threat_white: Vec::new(), // allocated on first use if net has threats
-                threat_black: Vec::new(),
                 threat_accurate: [false; 2],
                 threat_deltas: Vec::new(),
                 threat_move: NO_MOVE,
@@ -3737,10 +3831,36 @@ impl NNUEAccumulator {
                 valid: false,
             });
         }
-        NNUEAccumulator { stack, top: 0, hidden_size, finny }
+        NNUEAccumulator {
+            stack, top: 0, hidden_size, finny,
+            stats_full_rebuilds: 0,
+            stats_incremental_updates: 0,
+            stats_cached_skips: 0,
+        }
+    }
+
+    /// Reset eval-path counters. Call before a measurement window.
+    pub fn reset_stats(&mut self) {
+        self.stats_full_rebuilds = 0;
+        self.stats_incremental_updates = 0;
+        self.stats_cached_skips = 0;
     }
 
     pub fn top(&self) -> usize { self.top }
+
+    /// Force the next `materialize` call to rebuild the accumulator from
+    /// scratch through the production SIMD refresh path (not the debug
+    /// `force_recompute`). Used by the `eval-bench --mode refresh`
+    /// microbench to isolate the cost of a Finny-miss full rebuild — the
+    /// real cost paid on king-bucket crossings and first-touch nodes in
+    /// search.
+    pub fn invalidate_for_bench(&mut self) {
+        self.stack[self.top].computed = false;
+        self.stack[self.top].threat_accurate = [false; 2];
+        for entry in self.finny.iter_mut() {
+            entry.valid = false;
+        }
+    }
 
     pub fn prev_threat_computed(&self) -> bool {
         self.top > 0 && self.stack[self.top - 1].threat_accurate[0] && self.stack[self.top - 1].threat_accurate[1]
@@ -3882,11 +4002,9 @@ impl NNUEAccumulator {
         let b_mirrored = (bk_sq % 8) >= 4;
 
         for ply in (ancestor_idx + 1)..=self.top {
-            // Allocate if needed
-            if self.stack[ply].threat_white.len() < h {
-                self.stack[ply].threat_white.resize(h, 0);
-                self.stack[ply].threat_black.resize(h, 0);
-            }
+            // Inline arrays are always `MAX_HIDDEN_SIZE`-wide; previous
+            // version's lazy `resize(h, 0)` is now a no-op (all entries
+            // pre-sized). Left blank to preserve the surrounding flow.
 
             let src = ply - 1; // source is always the previous ply (which we just computed)
 
@@ -3955,7 +4073,7 @@ impl NNUEAccumulator {
         let w_diff: i32 = (0..h).map(|j| (curr.threat_white[j] as i32 - check_w[j] as i32).abs()).sum();
         let b_diff: i32 = (0..h).map(|j| (curr.threat_black[j] as i32 - check_b[j] as i32).abs()).sum();
         if w_diff > 0 || b_diff > 0 {
-            eprintln!("  h={} tw_len={} got_w0={} exp_w0={}", h, curr.threat_white.len(), curr.threat_white[0], check_w[0]);
+            eprintln!("  h={} tw_max={} got_w0={} exp_w0={}", h, MAX_HIDDEN_SIZE, curr.threat_white[0], check_w[0]);
             // Was this from incremental or full recompute?
             let last_mv = if !board.undo_stack.is_empty() {
                 let u = &board.undo_stack[board.undo_stack.len() - 1];
@@ -3971,10 +4089,7 @@ impl NNUEAccumulator {
         let h = self.hidden_size;
         let entry = &mut self.stack[self.top];
 
-        if entry.threat_white.len() < h {
-            entry.threat_white.resize(h, 0);
-            entry.threat_black.resize(h, 0);
-        }
+        // Inline arrays are MAX_HIDDEN_SIZE-wide; no lazy `resize` needed.
 
         let occ = board.colors[0] | board.colors[1];
 
@@ -4020,12 +4135,12 @@ impl NNUEAccumulator {
         self.top += 1;
         if self.top >= self.stack.len() {
             self.stack.push(AccEntry {
-                white: vec![0; self.hidden_size],
-                black: vec![0; self.hidden_size],
+                white: [0; MAX_HIDDEN_SIZE],
+                black: [0; MAX_HIDDEN_SIZE],
+                threat_white: [0; MAX_HIDDEN_SIZE],
+                threat_black: [0; MAX_HIDDEN_SIZE],
                 computed: false,
                 dirty: DirtyPiece::recompute(),
-                threat_white: Vec::new(),
-                threat_black: Vec::new(),
                 threat_accurate: [false; 2],
                 threat_deltas: Vec::new(),
                 threat_move: NO_MOVE,
@@ -4051,6 +4166,7 @@ impl NNUEAccumulator {
         #[cfg(feature = "profile-materialize")]
         crate::nnue::mat_stats::record_entry(self.stack[self.top].computed);
         if self.stack[self.top].computed {
+            self.stats_cached_skips += 1;
             return;
         }
 
@@ -4058,6 +4174,7 @@ impl NNUEAccumulator {
 
         // Full recompute needed?
         if dirty.kind == 0 || self.top == 0 || !self.stack[self.top - 1].computed {
+            self.stats_full_rebuilds += 1;
             #[cfg(feature = "profile-materialize")]
             {
                 crate::nnue::mat_stats::record_refresh();
@@ -4083,6 +4200,7 @@ impl NNUEAccumulator {
         }
         #[cfg(feature = "profile-materialize")]
         crate::nnue::mat_stats::record_incremental(dirty.n_changes as u64);
+        self.stats_incremental_updates += 1;
 
         // Incremental update: gather all deltas for this move, then apply them
         // in a SINGLE fused pass per perspective. Replaces the previous

@@ -1,0 +1,9 @@
+host,cpu,arch,engine,isa,mode,evals_per_sec
+ionos6,"AMD EPYC-Milan Processor (2.5 GHz)",x86_64,coda,native,fresh,69369
+ionos6,"AMD EPYC-Milan Processor (2.5 GHz)",x86_64,coda,native,refresh,890609
+ionos6,"AMD EPYC-Milan Processor (2.5 GHz)",x86_64,coda,native,incremental,2353694
+ionos6,"AMD EPYC-Milan Processor (2.5 GHz)",x86_64,coda,native,make-unmake,15044344
+ionos6,"AMD EPYC-Milan Processor (2.5 GHz)",x86_64,reckless,native,fresh,752492
+ionos6,"AMD EPYC-Milan Processor (2.5 GHz)",x86_64,reckless,native,incremental,3686819
+ionos6,"AMD EPYC-Milan Processor (2.5 GHz)",x86_64,reckless,native,make-unmake,12401286
+ionos6,"AMD EPYC-Milan Processor (2.5 GHz)",x86_64,reckless,native,make-unmake-null,23765070

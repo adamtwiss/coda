@@ -58,7 +58,8 @@ Already specced, gated on B1 landing — **now unblocked**. Estimated +10–30 i
 
 **T1.3 — Overload / removing-the-defender.**
 Capture/attack on a defender that defends ≥2 of its own pieces. Cheap: count defended-squares per piece, bonus moves that hit a 2+-defender. Expected: **+3 to +10**. Named-tactic class.
-- **Status 2026-04-22:** **#634 -1.4 @ 13624g H0.** Quiet-scoring bonus at OVERLOAD_BONUS=4000 did not pass SPRT on the pre-C8-fix trunk. Candidate to re-test on post-#661 tuned trunk with C8-fix net (different search landscape may surface latent signal). Not dropped outright.
+- **Status 2026-04-22:** **#634 -1.4 @ 13624g H0.** Quiet-scoring bonus at OVERLOAD_BONUS=4000 did not pass SPRT on the pre-C8-fix trunk.
+- **Status 2026-04-23:** retried on tuned C8-fix trunk (#669 experiment/t1-3-overload-c8-retry) → **−4.9 @ 6056g H0 ✗**, past −4 tripwire. Signal genuinely absent across trunks; absorbed by B1 discovered-attack. **Dropped.**
 
 **T1.4 — Battery bonus.**
 Quiet move that places a Q/R/B behind another Q/R/B aligned on the same file/rank/diagonal toward an enemy piece or the enemy king zone. Cheap via occupancy + between(). Expected: **+3 to +10**. Adjacent to king-zone-pressure gate pattern.
@@ -66,6 +67,11 @@ Quiet move that places a Q/R/B behind another Q/R/B aligned on the same file/ran
 
 **T1.5 — Trapped-piece escape.**
 Quiet move that moves a piece whose ALL non-loss legal moves are limited to ≤1 square (mobility count trap). This is essentially the dual of "attack a trapped piece" and captures "evacuate before fork". Expected: **+3 to +8**.
+- **Status 2026-04-23:** **H0 both variants.** #685 bonus=4000 −2.7 Elo H0 (904g early-stop);
+  #687 bonus=2000 H0 −3.7 Elo @ 8174g (re-sampled to rule out single-point bad-value).
+  Mobility-proxy signal doesn't surface here — probably absorbed by T2.3 mobility-delta
+  (landed +1.4) which captures the "piece wants out of cramped square" directional move.
+  **Dropped.**
 
 ### Tier 2 — fits W2 (gates) with a NEW signal, moderate confidence
 
@@ -73,7 +79,8 @@ Phase 2 of the signal × context matrix has saturated at 1/10 H1 rate. **Pivot f
 
 **T2.1 — Undefended-piece-count as NMP gate.**
 Count of our own pieces with ≥1 attacker and 0 defenders ("hanging"). If ≥1, skip NMP (a zugzwang proxy for the opponent exploiting the hanging piece). Expected: **+3 to +8**. Novel signal, old gate context.
-- **Status 2026-04-22:** tested as `experiment/undefended-nmp-skip` → **#617 +0.4 @ 44792g H0**. Signal fires too rarely to move Elo — hanging-piece-at-root is a low-frequency state in self-play. Dropped unless combined with a higher-firing proxy (e.g. any-piece-with-attackers ≥ defenders).
+- **Status 2026-04-22:** tested as `experiment/undefended-nmp-skip` → **#617 +0.4 @ 44792g H0** on pre-C8 trunk.
+- **Status 2026-04-23:** retested on tuned C8-fix trunk (#676 experiment/undefended-nmp-skip-c8-retry) → **+2.9 @ 10122g H1 ✓, merged.** Tuned trunk + cleaner eval signal turned the marginal result positive — same feature, different calibration regime. Lands in the expected band.
 
 **T2.2 — King-mobility as SE / extension gate.**
 Number of legal king moves. When ≤1, a quiet king move must be searched deeper. Already implicit in some check-extension logic, but not as an explicit SE trigger. Expected: **+3 to +8**.
@@ -81,6 +88,10 @@ Number of legal king moves. When ≤1, a quiet king move must be searched deeper
 
 **T2.3 — Mobility-delta-of-moved-piece as quiet-ordering score.**
 Cheap: `popcount(attacks_to(from)) - popcount(attacks_to(to))`. Add as small-weight bonus in quiet-ordering alongside history. Centralization heuristic without writing an eval term. **Ordering, not pruning** — different mechanism class. Expected: **+2 to +5**. Low confidence but cheap.
+- **Status 2026-04-23:** **#684 +1.4 Elo H1 ✓** @ 22200g, merged at
+  `576d91c` as `MOBILITY_DELTA_WEIGHT=32` tunable. Landed at the
+  lower end of expected. Also likely absorbed the signal T1.5 was
+  looking for.
 
 ### Tier 3 — novel mechanism, higher variance
 
@@ -96,9 +107,30 @@ Infrastructure work: store per-move threat-delta at make-move time. Unblocks che
 ### Tier 4 — training-side, orthogonal, high variance
 
 **T4.1 — Factoriser** (already in `factoriser_design_2026-04-21.md`). Estimated +5–20. Independent of search work.
+- **Status 2026-04-23:** **factor arch validated via #688 +13.6 Elo H1**
+  and subsequent #700/#704 (+20-23 Elo factor vs non-factor at same SB400
+  training length). SB800 factor net pending (~day 0 overnight train).
+  Factor tune cycle (#698, #706) found no additional Elo — factor's
+  pruning optimum sits close to non-factor pre-tune values. Apply
+  factor net with pre-tune params on deploy, do not bundle tune.
 
 **T4.2 — Prune dead FT features.**
 L1 sparsity work measured 8.4% structural-zero rows. Next question: **features rarely active AND rarely load-bearing** — can we drop them entirely to shrink FT? Needs a feature-importance measurement (e.g. train with per-feature L0 and see which rows still fire). **+0 Elo but -FT-size →** potential NPS and training-speed gains.
+- **Status 2026-04-24:** first sparse L1-reg probe at λ=1e-4 (200 SBs,
+  `net-v9-768th16x32-kb10-w15-e200s200-crelu-l1e4.nnue`) produced
+  **zero additional sparsity** — 8.4% zero rows, same as the
+  structural floor on the unregularised prod net. Mechanism: L1
+  shrinkage per step (~1e-7 at `l1_decay=1e-4 × lr=0.001`) is
+  swamped by Adam's adaptive updates. **λ=1e-4 is too weak.**
+  Next retry: λ=1e-3 (10× stronger) or accumulator width reduction
+  768 → 640 as an orthogonal path.
+  Also relevant: Zeus's NPS investigation (`docs/coda_vs_reckless_nps_2026-04-23.md`)
+  confirmed the 49 MB threat matrix is Coda's single biggest memory-bandwidth
+  bottleneck, and `docs/nps_microbench_hostdata.md` shows that cache
+  contention (via neighbour VMs sharing L3) hurts Coda disproportionately.
+  **Shrinking the threat matrix has cross-fleet compound value** —
+  it's not just per-host NPS, it also reduces our own fleet's memory-bandwidth
+  footprint.
 
 **T4.3 — Two-layer hidden (32→16).**
 Current is 16→32. Try flipping: 32 L1 → 16 L2. Or add a layer: 16→16→32. Tiny retrain cost, could easily H0. Data point worth having before v9 merge.
@@ -125,6 +157,85 @@ Based on Pattern L1–L4:
 - Don't try another margin widener for a signal that already has a gate landed (RFP/LMP king-pressure proved this).
 - Don't add "generic piece-attacked" nudges. Named-tactic or nothing.
 
+## Research threads for Titan (2026-04-24)
+
+After the 2026-04-23/24 wave (+25 Elo merged from NPS investigation
++ factor architecture validated at +20-23 Elo), the following
+research threads remain genuinely untested and worth deep Titan
+analysis. Ordered by expected ROI:
+
+### Untested items from existing Tier lists
+
+Still-untested from `next_ideas_2026-04-21.md` + `peripheral_mechanisms_2026-04-22.md`:
+
+| Item | Source | Why Titan | Status |
+|------|--------|-----------|--------|
+| T3.1 Second TT-move slot | next_ideas T3 | Novel mechanism, no prior SPRT, needs careful TT-layout design | Untested |
+| T3.2 Quiet-SEE for attack-creating moves | next_ideas T3 | "Good noisy quiet" concept; needs SEE-of-quiet + gate design | Untested |
+| T3.3 Threat-delta tagging (Path 2 infra) | next_ideas T3 | Infrastructure for future T1/T2 experiments | Untested (infrastructure, no direct SPRT) |
+| T4.3 Two-layer hidden 32→16 | next_ideas T4 | Novel architecture probe | Untested |
+| P4 NNUE complexity blending | peripheral | Needs proxy-selection research (any_threat_count? corrhist? instability?) | Untested |
+| P6 Thread voting for SMP | peripheral | LTC-only win candidate; needs LTC harness | Untested |
+| N2 Shuffling detector | peripheral | Novel; shuffle_streak counter + halfmove-conditional blend | Untested |
+| N3 Fortress soft-cap | peripheral | High-variance, needs Lichess-visible calibration data first | Untested, low priority |
+| N4 Halfmove-scaled pruning margins | peripheral | Novel: scale RFP/futility/NMP margins by (200-hm)/200 | Untested |
+
+### New threads surfaced by 2026-04-23/24 work
+
+**R1. L1 regularisation escalation + accumulator-width path.**
+First sparse probe at λ=1e-4 failed to shrink anything beyond the
+8.4% structural floor. Next probes: (a) λ=1e-3, (b) accumulator
+width 768 → 640 (non-factorised net, 17% memory reduction
+brute-force, uncertain Elo cost), (c) combined
+`--factoriser` with L1 applied to `l0w - l0f` differential only
+(Bullet change required). Titan question: which path is most
+likely to deliver 30-60% sparsity without blowing Elo?
+Analysis should produce specific λ recommendation + measurement
+protocol for each probe.
+
+**R2. Targeted LMP adaptive / NMP TT-capture SPSA.**
+Direct ports (#708 LMP adaptive −6.7 H0, #709 NMP TT-capture
+−7.8 H0) failed. My #724 (narrower NMP gate) settled at exactly
++0.1 — mechanism is right but Coda has no headroom for the win
+Reckless shows. Titan question: is there a different reformulation
+of these patterns where Coda *would* win? Specifically:
+- **LMP adaptive**: if we expose factor0/factor1 constants as
+  tunables and SPSA-refine on Coda's eval distribution, is that
+  likely to H1? Worth the tune cycle cost?
+- **NMP TT-capture**: is there a "tt_score margin" version
+  (only skip when tt_score >= beta + margin) that could land?
+
+**R3. Reckless-derived NPS levers beyond cache layout.**
+The 2026-04-23/24 wave exhausted the obvious cache-layout wins
+(AccEntry flatten, eval-TT writeback, PSQ walk-back). Next layer:
+- **VNNI compile-time dispatch** (vs runtime `has_avx512_vnni`)
+  — Zeus flagged; modest expected (~+2-4% NPS).
+- **AVX-512 setwise movegen** (Reckless has, Coda doesn't) —
+  untouched, benefits bucket 3 (per-node overhead).
+- **Input-chunk sparse L1 reordering** — if the loaded net has
+  a hot-col structure, permute at load time.
+Titan question: scope each, map to expected Elo magnitude and
+implementation effort, with priority order for Hercules's queue.
+
+**R4. Post-Item-7 retune opportunity.**
+Items 1 (flatten) and 7 (eval-TT writeback) merged in this wave.
+Eval-TT writeback changes evals-per-node from 0.677 → 0.581
+without tree-shape change, but downstream pruning thresholds
+(RFP, futility, SEE) are implicitly calibrated against the old
+eval density. A focused post-merge retune of those thresholds
+may bank +3-6 Elo per the retune-on-branch methodology. Titan
+question: is a retune warranted NOW or after the factor SB800 +
+sparse net land?
+
+**R5. Widening tests for audit SPECULATIVE items.**
+`correctness_audit_2026-04-22.md` has ~30 SPECULATIVE items, many
+untouched. Several are low-risk bench-bit-exact hygiene; others
+may expose real bugs under specific conditions (e.g. SEE pawn-
+promotion in inner loop, duplicate SEE function in movepicker,
+sample-positions filter mismatch). Titan question: rank the
+SPECULATIVE items by expected-bug-triggerability (Lichess-reachable
+> dev-only) and propose a fuzzer expansion programme.
+
 ## Companion docs
 
 - `move_ordering_understanding_2026-04-19.md` — mechanism context.
@@ -132,4 +243,6 @@ Based on Pattern L1–L4:
 - `signal_context_sweep_2026-04-19.md` — matrix; T2.x extends it on the signal axis.
 - `capture_ordering_crossengine_2026-04-20.md` — context for T3.1, T3.2.
 - `factoriser_design_2026-04-21.md` — T4.1 detail.
+- `coda_vs_reckless_nps_2026-04-23.md` — NPS investigation (Zeus).
+- `nps_microbench_hostdata.md` — cross-fleet cache-residency data (Hercules).
 - `experiments.md` — source of truth for resolved SPRTs.

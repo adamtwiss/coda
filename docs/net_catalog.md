@@ -26,8 +26,10 @@ should pass `--dev-network DAA4C54E --base-network DAA4C54E`.
 
 | Hash | Layout | File | Status | Notes |
 |---|---|---|---|---|
-| `DAA4C54E` | kb10 | `net-v9-768th16x32-kb10-w15-e800s800-crelu.nnue` (released) / `...reckless-crelu.nnue` (legacy name) | **PROD** | Current v9 production. Tunes #585, #586, #599 all ran on this. Same content under both filenames. |
-| `BFAC07B3` | kb10 | `net-v9-768th16x32-reckless-w15-e200s200-warm30.nnue` | promising | Best-of-warmup sweep (warm30). Lichess noted. |
+| `80CB364B` | kb10 | `net-v9-nonfactor-sb400-warm30.nnue` | **candidate** | Non-factoriser SB400 warm30 on post-C8-fix Bullet. Bench 3058198 on tuned trunk. First-move cut 76.9%, NMP cutoff rate 49%, EBF 1.74. Under SPRT vs prod and vs C8-fix S200 (2026-04-23). |
+| `1836917B` | kb10 | `net-v9-768th16x32-kb10-w15-e200s200-crelu-C8fix.nnue` | tune baseline | C8-fix S200. The net #660 tune + #661 +8.25 H1 were validated against. Bench 2575054 on tuned trunk. |
+| `DAA4C54E` | kb10 | `net-v9-768th16x32-kb10-w15-e800s800-crelu.nnue` (released) / `...reckless-crelu.nnue` (legacy name) | **PROD** (pre-C8) | Current v9 production (pre-C8 Bullet). Tunes #585, #586, #599 all ran on this. Same content under both filenames. |
+| `BFAC07B3` | kb10 | `net-v9-768th16x32-reckless-w15-e200s200-warm30.nnue` | promising | Best-of-warmup sweep (warm30, pre-C8). Lichess noted. |
 | `BE5849B6` | kb10 | `net-v9-768th16x32-kb10-w15-e200s200.nnue` | superseded | Earlier kb10 w15 at 200 SBs, s200. |
 | `E06A42E8` | kb10 | `net-v9-768th16x32-kb10-lowlr-w15-e200s200.nnue` | experiment | Lower final LR variant. |
 | `2B42E458` | kb10 | `net-v9-768th16x32-kb10-w15-e200s200-creluHL.nnue` | experiment | CReLU on hidden layers. |

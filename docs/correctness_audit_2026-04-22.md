@@ -465,7 +465,103 @@ Covered in experiments.md §"LIKELY fixes — direct merge" (session log 2026-04
 
 ### Dropped / deferred
 
-- Titan tactical ideas that H0'd on pre-C8-fix trunk and are not yet re-tested on post-#661: T1.3 (#634), T2.2 (#632), P1 (#636).
+- Titan tactical ideas that H0'd on pre-C8-fix trunk: T1.3 (#634), T2.2 (#632), P1 (#636). T1.3 retry on tuned trunk (#669 −4.9) and P1 retry (#671 −7.1) both H0 again. T1.3 dropped, P1 parked pending K1/K2 SPSA.
 - Audit items deferred (latent, cosmetic, or not-yet-reachable): pawn_hash comment, hardcoded buffer limits, TT aarch64 atomics, forward non-hidden NTM dead code, HIP Adam ABI (Bullet upstream).
 
 **Session throughput:** ~40 of 44 actionable audit items resolved in-session.
+
+## Resolution log — 2026-04-23 overnight batch
+
+Additional audit items SPRT'd on tuned C8-fix trunk (post-#661).
+
+### CRITICAL retries
+
+| ID | Summary | SPRT | Result | Merge | Status |
+|----|---------|------|--------|-------|--------|
+| C3 (NMP sentinel) | Set null sentinel on `moved_piece_stack` before null recursion | #668 fix/nmp-sentinel-c8-retry | −1.6 @ 19874g H0 | merged | ✅ confident-correctness (original #640 H0'd on pre-C8 trunk, retried on tuned trunk, still H0 but within −2 threshold — load-bearing correctness) |
+| C3 sibling (stale reductions) | Reset `info.reductions[ply_u]` at node entry | #670 fix/nmp-stale-reductions-c8-retry | **+2.8 @ 10540g H1 ✓** | merged | ✅ H1 after retune-on-branch (#646 H0'd −5.1 pre-C8) |
+
+### LIKELY retries / new
+
+| ID | Summary | SPRT | Result | Merge | Status |
+|----|---------|------|--------|-------|--------|
+| LIKELY #6 (TT-malus promo key) | Read from `moved_piece_stack` for symmetry | #672 fix/tt-cutoff-malus-symmetry | −1.7 @ 10556g H0 | merged | ✅ confident-correctness (was silently disabled on promotions; enabling it shifts calibration, retune will absorb) |
+| SPECULATIVE #321 (LMR do_shallower) | Replace `new_depth` integer-as-cp with proper cp margin | #673 fix/lmr-shallower-margin (30cp) | −1.7 @ 17286g H0 | — | 🔁 v2 at 20cp in flight |
+| SPECULATIVE #326 (should_stop) | 4096 → 1024 time-check granularity | #674 fix/should-stop-granularity | −1.1 @ 16332g H0 | — | ❌ dropped — no correctness claim, benefit was theoretical for <100ms budgets we don't hit at STC |
+| (not audit) PSQ refresh per-pov | Re-apply a9f6e1f on tuned trunk | #667 tune/psq-refresh-perpov-c8fix | −2.2 @ 10366g H0 | — | ❌ dropped — NPS optimisation, not correctness |
+
+### Feature retries (from next_ideas_2026-04-21.md)
+
+| Idea | SPRT | Result | Status |
+|------|------|--------|--------|
+| T1.3 overload bonus | #669 experiment/t1-3-overload-c8-retry | −4.9 @ 6056g H0 | ❌ dropped (2× H0 across trunks) |
+| T2.1 undefended-NMP-skip | #676 experiment/undefended-nmp-skip-c8-retry | **+2.9 @ 10122g H1 ✓** | ✅ merged |
+| P1 optimism (peripheral) | #671 experiment/p1-optimism-c8-retry | −7.1 @ 4268g H0 | ❌ dropped — needs K1/K2 SPSA; not worth pursuing without |
+
+**Net batch delta:** 4 merges (2 H1 + 2 confident-correctness), 4 drops, 1 iterating. Trunk bench rose to 3,370,847 (from 2,575,054 pre-batch) due to stacked tree-shape effects; next retune will re-calibrate.
+
+## Resolution log — 2026-04-23/24 NPS investigation wave
+
+### Context
+
+The 2026-04-23/24 session was primarily NPS-investigation-driven, not
+audit-driven. Covered in `docs/coda_vs_reckless_nps_2026-04-23.md`
+(Zeus) and `docs/nps_microbench_hostdata.md` (cross-fleet). Merged
+~+25 Elo from non-audit items. Pure audit work was paused during
+this wave; items that intersected the NPS work:
+
+### Audit items that landed via NPS SPRTs
+
+- **(unrelated-to-audit) eval-only TT writeback (#713, +14.7 Elo):**
+  Introduces a new TT-write path with shallow stub entries
+  (`depth=-2`, `flag=TT_FLAG_UPPER`, `score=-INFINITY`, `move=NO_MOVE`).
+  Warrants a targeted mini-audit: does any downstream consumer read
+  `tt_score` without checking `tt_depth >= depth` first? Does IIR
+  correctly treat the stub's `NO_MOVE` as "no TT move"? Queued for
+  next audit cycle.
+
+- **(unrelated-to-audit) flatten AccEntry (#711, +6.5 Elo):**
+  Converts 4 heap-backed `Vec` fields to fixed-size inline arrays.
+  Edge cases around `MAX_THREAT_ACTIVE = 256` bound warrant a
+  small fuzz extension — pathological positions approaching the
+  upper bound could now overflow silently rather than reallocate.
+
+- **(unrelated-to-audit) PSQ walk-back clean retry (#720, +1.1 Elo):**
+  The same 2026-04-17 mechanism that H0'd at −17.86 Elo landed
+  positive on a cleaner branch. Confirms prior H0 was confounded
+  by struct-layout churn, not walk-back itself being slow.
+  **Lesson for audit methodology**: "H0 on tuned trunk" is not
+  proof a mechanism is bad if the failing branch was packaged
+  with unrelated structural changes. Re-audit candidate items
+  via isolated-mechanism branches where possible.
+
+### Audit items attempted but buggy (retry pending)
+
+- **Zeus Item #9 TT static_eval widen** (#725, −167.5 @ 442g):
+  Intended as correctness refactor of pack_data's 13-bit clamp
+  (±4095 cp) → 16-bit full i16. v9 routinely exceeds ±4095 cp
+  at EVAL_SCALE=400, silently corrupting cached eval. Initial
+  SPRT regressed catastrophically — bug in bit-layout shuffle.
+  **Core observation still valid; retry pending correct
+  implementation.**
+
+- **Zeus Item #10 complete AccEntry flatten** (#726, −7.1 @ 1218g):
+  Remaining Vec fields (`threat_deltas`, `threat_features_*`) ported
+  to inline arrays. Hit a bug in the new containers. Retry pending.
+
+### Still-open SPECULATIVE items worth Titan research
+
+Most SPECULATIVE items remain untouched post the 2026-04-22 sprint.
+Ranked by expected triggerability (Lichess-reachable > dev-only):
+
+| Item | Location | Trigger condition | Priority |
+|------|----------|-------------------|----------|
+| SEE pawn-promotion recapture | `see.rs:76-93` | Deep endgame w/ promotion exchange | **Lichess-visible** |
+| `do_shallower` cp margin | `search.rs:2647` | Any search (already partially addressed via #679 +1.4 at 20cp) | Minor, could SPSA further |
+| Evasion capture-promotion ranking | `movepicker.rs:700-710` | In check + promotion avail | Rare but Lichess-reachable |
+| Repetition plies_from_null | `search.rs:1670-1682` | Across null-move subtrees | Rare; latent |
+| `should_stop` granularity | `search.rs:500-527` | <100ms budget | Lichess bullet/hyperbullet |
+| Duplicate SEE implementations | CLAUDE.md says "risks correctness" | Any SEE call | Audit-question, not a fix |
+
+See `next_ideas_2026-04-21.md` §R5 "Widening tests for audit
+SPECULATIVE items" for Titan's queued research thread on this.

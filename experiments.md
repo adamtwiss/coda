@@ -5703,3 +5703,171 @@ The session executed about 40 of the audit's 44 actionable items.
 Remaining LIKELY (pawn_hash comment, hardcoded buffer limits, TT
 aarch64 atomics, forward non-hidden NTM dead code, etc.) are
 latent / dead-code / cosmetic and deferred.
+
+## 2026-04-23 overnight batch (post-#661 tuned C8-fix trunk)
+
+Ten overnight SPRTs on tuned C8-fix trunk covering retries of pre-tune
+H0s and new correctness items.
+
+### H1 — merged
+
+- **#670 fix/nmp-stale-reductions-c8-retry** — +2.8 Elo H1 ✓ @ 10540g.
+  C3 audit follow-up (reset `info.reductions[ply_u]` at node entry).
+  Originally H0'd −5.1 on pre-C8 trunk (#646); retune-on-branch
+  pattern validated on tuned C8-fix trunk. Confirms that some
+  correctness fixes that H0 on miscalibrated trunk emerge positive
+  after retune.
+- **#676 experiment/undefended-nmp-skip-c8-retry** — +2.9 Elo H1 ✓
+  @ 10122g. T2.1 (undefended-piece NMP skip, next_ideas_2026-04-21).
+  Was marginal +0.4 @ 44Kg H0 on old trunk (#617). Tuned trunk +
+  C8-fix eval made the W2 gate pattern fire productively.
+
+### H0 but merged (confident-correctness)
+
+- **#668 fix/nmp-sentinel-c8-retry** — −1.6 Elo H0 @ 19874g.
+  C3 audit: NMP was leaving `moved_piece_stack[ply_u]` stale;
+  children read polluted cont-hist keys. Direct SF sentinel
+  translation. Within −2 threshold; load-bearing for downstream
+  cont-hist-sensitive experiments.
+- **#672 fix/tt-cutoff-malus-symmetry** — −1.7 Elo H0 @ 10556g.
+  C8 LIKELY #6: malus read-side used `board.piece_at(to)`
+  (post-move, queen on promotions) while write-side used
+  `moved_piece_stack` (pre-move, pawn). Old code silently disabled
+  malus on promotions. "Fix" enables it — which is why old bundle
+  #647 regressed: old trunk was implicitly calibrated around
+  suppression. Merging now lets future retune absorb the shift.
+
+### H0 — dropped
+
+- **#667 tune/psq-refresh-perpov-c8fix** — −2.2 Elo H0 @ 10366g.
+  Per-pov PSQ materialize on king-bucket crossing. Original a9f6e1f
+  trended +21 on old trunk (#426) but never merged. Bug-fixed
+  re-apply (my `needs_refresh` leak) still regressed on tuned
+  C8-fix trunk. Not a correctness fix (NPS optimisation); no
+  confident-correctness argument. Dropped. Revisit if profiling
+  flags materialize as a hotspot.
+- **#669 experiment/t1-3-overload-c8-retry** — −4.9 Elo H0 @ 6056g.
+  T1.3 overload bonus. H0'd on both pre-C8 (#634 −1.4) and tuned
+  C8-fix trunks. Past −4 tripwire this round. Dropped.
+- **#671 experiment/p1-optimism-c8-retry** — −7.1 Elo H0 @ 4268g.
+  P1 optimism port (SF/Reckless/Viridithas consensus), untuned.
+  Dropped for now; could iterate via K1/K2 focused SPSA on-branch
+  if we want to revisit.
+- **#674 fix/should-stop-granularity** — −1.1 Elo H0 @ 16332g.
+  Audit SPECULATIVE #326 (4096 → 1024 node time-check bucket).
+  Benefit claim was theoretical (emergency budget overruns); at
+  STC we never hit that regime. Cost is 4× more atomic
+  fetch_adds. Dropped; revisit only if LTC shows real overruns.
+
+### Iterating
+
+- **#673 fix/lmr-shallower-margin** — −1.7 Elo H0 @ 17286g at 30cp.
+  Audit SPECULATIVE #321 fix: `new_depth` used as cp margin
+  (near-certain typo). Direction correct; magnitude wrong.
+  **v2 submitted at 20cp** (closer to old effective threshold).
+  Next fallback if v2 H0s: 10cp, or Alexandria's alpha-relative
+  `alpha + 7`.
+
+### Net result
+
+4 merged (2 H1 + 2 confident-correctness), 4 dropped, 1 iterating.
+Trunk bench after the 4 merges: **3,370,847** (up from 2,575,054
+pre-batch). NMP sentinel + T2.1 + undefended-NMP-skip + malus
+symmetry stack to a much bigger tree — next retune will absorb.
+
+## 2026-04-23 → 2026-04-24 session — factor architecture + NPS investigation wave
+
+### Factor architecture validation
+
+| SPRT | Branch | Result | Status |
+|------|--------|--------|--------|
+| #679 | fix/lmr-shallower-margin-v2 (20cp) | +1.4 Elo H1 @ 20926g | ✅ merged (audit SPECULATIVE #321 fix; iteration from #673 H0) |
+| #682 | tune/v9-682-sb400 (C8-fix retune) | (64-param tune) | applied |
+| #686 | Merge tune/v9-682-sb400 | +3.0 Elo H1 @ 22118g | ✅ merged |
+| #683 | experiment/n5-qs-insufficient-material | +0.3 Elo @ 50894g | ❌ dropped (N5 from peripheral_mechanisms) |
+| #684 | experiment/t2-3-mobility-delta | **+1.4 Elo H1 @ 22200g** | ✅ merged (T2.3 from next_ideas_2026-04-21) |
+| #685 | experiment/t1-5-trapped-piece-escape | −2.7 Elo H0 @ ~904g | ❌ dropped |
+| #687 | experiment/t1-5-trapped-piece-v2-bonus20 | −3.7 Elo H0 @ 8174g | ❌ dropped (T1.5 two-point sampled; genuinely negative) |
+| #688 | feature/threat-inputs (factor net SPRT) | **+13.6 Elo H1 @ 944g** | ✅ validated factor architecture |
+| #689 | experiment/s17-probcut-corrhist-gate | −0.4 Elo H0 @ 21618g | ❌ dropped |
+| #691 | experiment/n1-twofold-eval-blend | +0.0 Elo @ 28792g | ❌ dropped (N1 from peripheral_mechanisms) |
+| #694 | tune/v9-692-factor | +31.1 Elo H1 @ 750g | ✅ validated (factor retune #692 end-values) |
+
+### Factor tune cycle (cumulative on factor net)
+
+| SPRT | Comparison | Result | Status |
+|------|------------|--------|--------|
+| #698 | (2000-iter factor tune continuation) | SPSA completed | applied on branch; NMP_UNDEFENDED_MAX bug fixed to 5 |
+| #700 | tune/v9-698-factor vs non-factor | +22.9 Elo H1 @ 1064g | factor arch effect |
+| #703 | tune/v9-698-factor vs pre-tune (both factor) | −2.6 Elo H0 @ 9226g | ❌ tune neutral on factor |
+| #704 | tune/v9-698-factor + factor vs trunk + non-factor | +20.8 Elo H1 @ 1190g | factor arch effect (confirmed) |
+| #705 | tune/v9-698-factor vs prod SB800 | −15.6 Elo H0 @ 2254g | SB training length gap |
+| #706 | (continuation, 2000 iters more, cumulative 5000) | SPSA completed | factor cumulative |
+| #710 | tune/v9-706-factor vs pre-tune | −3.4 Elo H0 @ 7618g | ❌ tune dropped (confirmed factor's pruning optimum near pre-tune) |
+
+**Factor lesson**: factor architecture is worth +20-23 Elo vs non-factor at
+same training length. SPSA retune on factor adds nothing — factor's pruning
+optimum sits close to pre-tune values. Do not apply #698/#706 tune wholesale;
+use factor net with pre-tune params once SB800 factor net lands.
+
+### NPS investigation — Phase 3 pruning (Hercules lane)
+
+SPRTs driven by `docs/coda_vs_reckless_nps_2026-04-23.md` pruning scan.
+
+| SPRT | Branch | Result | Status |
+|------|--------|--------|--------|
+| #707 | experiment/direct-check-carveout | **+2.5 Elo H1 ✓ @ 26186g** | ✅ merged (FP + BNFP direct-check carve-out; Reckless #410 + #630 pattern) |
+| #708 | experiment/lmp-adaptive-improvement | −6.7 Elo H0 @ 4644g | ❌ raw port of Reckless constants; 20% bench drop — formula needs SPSA on Coda's eval scale |
+| #709 | experiment/nmp-skip-tt-capture | −7.8 Elo H0 @ 3794g | ❌ raw port; 48% bench growth — gate fires too broadly on Coda's TT distribution |
+
+**Lesson**: Reckless's tuned pruning constants don't transfer directly to
+Coda's eval scale. Both formulas need SPSA-tunable variants rather than
+direct ports.
+
+### NPS investigation — cache hygiene (Zeus lane + mine)
+
+SPRTs driven by Zeus's flatten/prefetch/walk-back work + eval-TT writeback.
+
+| SPRT | Branch | Result | Status |
+|------|--------|--------|--------|
+| #711 | experiment/flatten-acc-entry | **+6.5 Elo H1 ✓ @ 3608g** | ✅ merged (Zeus Item 1: 4 big AccEntry Vec fields → inline arrays) |
+| #713 | experiment/eval-only-tt-writeback | **+14.7 Elo H1 ✓ @ 2462g** | ✅ merged (Hercules Item 7: seed TT static_eval on NNUE-hit + TT-miss; evals/node 0.677 → 0.581) |
+| #714 | experiment/l1-inference-compact-rebased | −2.5 Elo H0 @ 7184g | ❌ dropped (Zeus Item 3: load-time compact 4 MB — saves no Elo on current non-sparse net) |
+| #719 | experiment/prefetch-threat-deltas | −4.4 Elo H0 @ 4382g | ❌ dropped (Zeus Item 5: manual prefetch on modern HW) |
+| #720 | experiment/psq-walkback-v2 | **+1.1 Elo H1 ✓ @ 35666g** | ✅ merged (Zeus Item 6: clean-retry of walk-back; prior #424 −17.86 Elo was confounded by struct/layout churn) |
+| #721 | experiment/prefetch-threat-deltas-t1 | −8.1 Elo H0 @ 2570g | ❌ dropped (tier-1 retry of Item 5) |
+| #722 | experiment/compact-plus-frontload | −3.7 Elo H0 @ 6900g | ❌ dropped (Zeus bundled Item 3 + Item 4 hot-feature frontload; no Elo on current net) |
+| #723 | experiment/sibling-se-propagation | −3.5 Elo H0 @ 7250g | ❌ dropped (Hercules Item 11: raw Reckless port flipped −2/−3 SE → +2/+3 sibling; too aggressive) |
+| #724 | experiment/nmp-skip-tt-capture-v2 | +0.1 Elo H0 @ 32986g | ❌ dropped (refined retry with depth + SEE gates; settled neutral, no signal) |
+| #725 | experiment/tt-static-eval-wider | −167.5 @ 442g (bug) | ❌ bug in bit-layout refactor (Zeus Item 9; retry pending) |
+| #726 | experiment/flatten-acc-entry-phase2 | −7.1 @ 1218g (bug) | ❌ bug (Zeus Item 10 complete-flatten; retry pending) |
+| #727 | experiment/sibling-se-propagation-v2 | (in flight) | clamped-to-+1 retry of #723 |
+
+### Session cumulative result
+
+Merged during the 2026-04-23/24 wave (non-factor trunk only, prod net
+SB800 DAA4C54E):
+- direct-check carve-out: +2.5
+- flatten AccEntry: +6.5
+- eval-only TT writeback: +14.7
+- PSQ walk-back clean retry: +1.1
+- direct-check + mobility-delta + lmr-shallower-v2 + T2.1 + sentinel reductions + tune #686: from prior lines, summed ~+8
+
+Roughly **+24.8 Elo merged from NPS-investigation-derived work** in
+24 hours (not counting correctness fixes already in the prior batch
+or the factor-architecture work which is waiting on SB800 factor net).
+
+### Cross-engine validation (Rivals RR)
+
+4-day Rivals RR delta on V9 binary (all merges above against static
+v5 reference + rival set):
+
+| Date | V9 Elo | V9 rank |
+|------|-------:|:-------:|
+| 2026-04-20 | 53 | 6 |
+| 2026-04-24 | **109** | **1** |
+
+**+56 Rivals-internal**. Per `feedback_rivals_rr_stretches_elo.md` (~2×
+stretch), broader-pool estimate is ~+28 Elo. Consistent with the
+SPRT-merged total within noise. Confirms the NPS-investigation wins
+convert to actual cross-engine strength, not self-play artefact.

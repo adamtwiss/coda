@@ -1,0 +1,9 @@
+host,cpu,arch,engine,isa,mode,evals_per_sec
+lo,"Intel Core Processor (Haswell, no TSX)",x86_64,coda,native,fresh,163838
+lo,"Intel Core Processor (Haswell, no TSX)",x86_64,coda,native,refresh,201538
+lo,"Intel Core Processor (Haswell, no TSX)",x86_64,coda,native,incremental,666716
+lo,"Intel Core Processor (Haswell, no TSX)",x86_64,coda,native,make-unmake,3922479
+lo,"Intel Core Processor (Haswell, no TSX)",x86_64,reckless,native,fresh,281305
+lo,"Intel Core Processor (Haswell, no TSX)",x86_64,reckless,native,incremental,892897
+lo,"Intel Core Processor (Haswell, no TSX)",x86_64,reckless,native,make-unmake,5718357
+lo,"Intel Core Processor (Haswell, no TSX)",x86_64,reckless,native,make-unmake-null,7253761

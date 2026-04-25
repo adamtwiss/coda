@@ -214,6 +214,7 @@ pub fn convert_v7(
     kb_count: usize,
     num_threats: usize,
     hl_crelu: bool,
+    xray_trained: bool,
 ) -> Result<(), String> {
     let psq_input_size = kb_count * PSQ_INPUTS_PER_BUCKET;
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
@@ -429,8 +430,12 @@ pub fn convert_v7(
 
     println!("Parsed {} bytes of {} (FT={})", offset, data.len(), h);
 
-    // Write .nnue — v9 for threats, v8 for dual L1, v7 otherwise
-    let version = if num_threats > 0 { 9u32 } else if dual_l1 { 8u32 } else { 7u32 };
+    // Write .nnue — v10 for threats (adds training_flags byte), v8 for dual L1, v7 otherwise.
+    // v10 vs v9: v10 adds a training_flags byte after the kb_layout byte, recording
+    // metadata like xray_trained. v9 nets are still loadable (legacy xray_trained=true
+    // assumed). Old Coda binaries that don't understand v10 will error on load, which
+    // is the intended fail-loud behavior for format mismatch.
+    let version = if num_threats > 0 { 10u32 } else if dual_l1 { 8u32 } else { 7u32 };
     let mut buf = Vec::new();
     write_u32_le(&mut buf, NNUE_MAGIC);
     write_u32_le(&mut buf, version);
@@ -466,6 +471,19 @@ pub fn convert_v7(
     if write_extended_kb {
         buf.push(kb_count as u8);
         buf.push(kb_layout as u8);
+    }
+
+    // v10 training_flags byte (only for threat nets). Records training-side
+    // configuration that inference must match to produce valid results.
+    //   bit 0: xray_trained (1 = trained with xray threat features, 0 = --xray 0)
+    //   bits 1-7: reserved (must be 0)
+    // Coda inference always emits xray features, so nets with xray_trained=0
+    // will mismatch at inference and must be rejected at load time unless
+    // --load-anyway is explicitly passed (diagnostic-only escape hatch).
+    if version >= 10 {
+        let mut training_flags: u8 = 0;
+        if xray_trained { training_flags |= 1; }
+        buf.push(training_flags);
     }
 
     // Write weights — hidden layers have bucketed dimensions

@@ -66,6 +66,14 @@ struct Cli {
     /// Use classical (PeSTO) eval instead of NNUE
     #[arg(long = "classical")]
     classical: bool,
+
+    /// DIAGNOSTIC ONLY — load nets even when they mismatch Coda's inference
+    /// configuration (e.g. net trained with --xray 0 while Coda always emits
+    /// xrays). Default is refuse-to-load so mismatches can't silently degrade
+    /// SPRT / OB / Lichess games. Use only when deliberately probing a
+    /// mismatched net. Also available as UCI option `LoadAnyway`.
+    #[arg(long = "load-anyway", global = true)]
+    load_anyway: bool,
 }
 
 #[derive(Subcommand)]
@@ -78,6 +86,30 @@ enum Commands {
         /// Number of threads
         #[arg(long = "threads", short = 't', default_value_t = 1)]
         threads: usize,
+    },
+    /// NNUE micro-benchmark: pure inference throughput (no search).
+    /// `--mode fresh` uses the debug scalar `force_recompute` path.
+    /// `--mode refresh` uses the production SIMD `materialize` path
+    /// with an invalidated Finny cache (mirrors a king-bucket-cross
+    /// first-touch in search).
+    /// `--mode incremental` makes one legal move per iter and pops,
+    /// measuring realistic incremental cost.
+    EvalBench {
+        /// Search-bench positions are used if no EPD is supplied.
+        #[arg(long, default_value = "")]
+        epd: String,
+        /// Number of positions to load (0 = all)
+        #[arg(long, default_value_t = 8)]
+        positions: usize,
+        /// Repetitions per position
+        #[arg(long, default_value_t = 100_000)]
+        reps: u64,
+        /// `fresh` | `refresh` | `incremental` | `make-unmake`
+        #[arg(long, default_value = "fresh")]
+        mode: String,
+        /// Disable AVX-512 & VNNI for this run (forces AVX-2 SIMD path)
+        #[arg(long, default_value_t = false)]
+        no_avx512: bool,
     },
     /// Run EPD test suite
     Epd {
@@ -150,6 +182,14 @@ enum Commands {
     FetchNet,
     /// NNUE network health check (uses --nnue/-n flag or auto-discovers)
     CheckNet {},
+    /// Measure threat-matrix row sparsity in a v9 .nnue file.
+    /// Reports zero-row count, near-zero rows, and distribution of row
+    /// max-abs weights. Used for sparsity-probe diagnosis.
+    MeasureNetSparsity {
+        /// Input .nnue file
+        #[arg(long, short = 'i')]
+        input: String,
+    },
     /// Generate training data (SF binpack format)
     Datagen {
         /// Output binpack file
@@ -272,6 +312,14 @@ enum Commands {
         /// HiddenActivation=crelu at load time.
         #[arg(long)]
         hl_crelu: bool,
+        /// Whether the net was trained WITH xray threat features (Bullet
+        /// --xray 1, the default). Coda inference always emits xrays, so
+        /// xray-disabled-trained nets mismatch at inference and are
+        /// refused at load time unless --load-anyway is set. Default true;
+        /// pass --no-xray-trained when converting a Bullet net trained
+        /// with --xray 0.
+        #[arg(long, default_value_t = true)]
+        xray_trained: bool,
     },
     /// Convert .nnue to Bullet checkpoint (for transfer learning)
     ConvertCheckpoint {
@@ -297,6 +345,11 @@ fn main() {
     init();
 
     let cli = Cli::parse();
+
+    if cli.load_anyway {
+        crate::nnue::LOAD_ANYWAY.store(true, std::sync::atomic::Ordering::Relaxed);
+        eprintln!("WARNING: --load-anyway set; training/inference mismatches will NOT refuse load");
+    }
 
     match cli.command {
         None => {
@@ -342,6 +395,159 @@ fn main() {
                 } else { 0 };
                 println!("\n{} nodes {} nps ({} threads)", total_nodes, nps, threads);
             }
+        }
+
+        Some(Commands::EvalBench { epd, positions, reps, mode, no_avx512 }) => {
+            use crate::{board::Board, nnue::{NNUENet, NNUEAccumulator}, eval::evaluate_nnue, threat_accum::ThreatStack};
+            let nnue_path = cli.nnue.as_deref().expect("EvalBench requires --nnue/-n");
+            let mut net = NNUENet::load(nnue_path).expect("failed to load NNUE");
+            if no_avx512 {
+                // Force-disable AVX-512 dispatch so kernels fall through to
+                // AVX-2 paths. Matches the SIMD-consistency test pattern.
+                net.has_avx512 = false;
+                net.has_avx512_vnni = false;
+                println!("info string eval-bench: AVX-512 & VNNI disabled (AVX-2 path only)");
+            }
+            let mut acc = NNUEAccumulator::new(net.hidden_size);
+            let mut tstack = ThreatStack::new(net.hidden_size);
+            tstack.active = net.has_threats;
+
+            let bench_positions: Vec<String> = if epd.is_empty() {
+                // Same 8 positions as `coda bench`.
+                vec![
+                    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".into(),
+                    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1".into(),
+                    "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1".into(),
+                    "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1".into(),
+                    "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8".into(),
+                    "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10".into(),
+                    "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4".into(),
+                    "2r3k1/pp3ppp/2n1b3/3pP3/3P4/2NB4/PP3PPP/R4RK1 w - - 0 1".into(),
+                ]
+            } else {
+                let text = std::fs::read_to_string(&epd).expect("failed to read EPD");
+                let iter = text.lines().filter(|l| !l.trim().is_empty());
+                let mut out: Vec<String> = Vec::new();
+                for line in iter {
+                    let parts: Vec<&str> = line.split_whitespace().take(4).collect();
+                    if parts.len() < 4 { continue; }
+                    out.push(format!("{} 0 1", parts.join(" ")));
+                    if positions > 0 && out.len() >= positions { break; }
+                }
+                out
+            };
+            let n_positions = if positions > 0 { positions.min(bench_positions.len()) } else { bench_positions.len() };
+            let positions_slice = &bench_positions[..n_positions];
+
+            // Warm-up: ensure AVX/VNNI-aware code paths are jitted / caches populated.
+            for fen in positions_slice {
+                let board = Board::from_fen(fen);
+                acc.force_recompute(&net, &board);
+                let _ = evaluate_nnue(&board, &net, &mut acc, &mut tstack);
+            }
+
+            let start = std::time::Instant::now();
+            let mut sum: i64 = 0;
+            let mut count: u64 = 0;
+            if mode == "fresh" {
+                for fen in positions_slice {
+                    let board = Board::from_fen(fen);
+                    for _ in 0..reps {
+                        // Force-recompute both perspectives from scratch: no Finny
+                        // benefit, no incremental shortcuts. Pure forward-pass cost.
+                        // NB: this currently uses the DEBUG scalar path in
+                        // `force_recompute`. Real production first-touch cost is
+                        // measured by `--mode refresh` below.
+                        acc.force_recompute(&net, &board);
+                        let s = evaluate_nnue(&board, &net, &mut acc, &tstack);
+                        sum = sum.wrapping_add(s as i64);
+                        count += 1;
+                    }
+                }
+            } else if mode == "refresh" {
+                for fen in positions_slice {
+                    let board = Board::from_fen(fen);
+                    for _ in 0..reps {
+                        // Production "fresh" path: invalidate Finny + current
+                        // accumulator, then call `materialize` which routes
+                        // through `refresh_accumulator` + `finny_batch_apply`
+                        // (SIMD). Mirrors what happens on a king-bucket cross
+                        // in real search when Finny has no cached state.
+                        acc.invalidate_for_bench();
+                        if tstack.active {
+                            tstack.reset_for_bench();
+                        }
+                        acc.materialize(&net, &board);
+                        let s = evaluate_nnue(&board, &net, &mut acc, &tstack);
+                        sum = sum.wrapping_add(s as i64);
+                        count += 1;
+                    }
+                }
+            } else if mode == "incremental" {
+                use crate::movegen::generate_legal_moves;
+                use crate::search::build_dirty_piece;
+                use crate::types::{flip_color, move_from, move_to, NO_PIECE_TYPE};
+                for fen in positions_slice {
+                    let mut board = Board::from_fen(fen);
+                    acc.force_recompute(&net, &board);
+                    if tstack.active {
+                        tstack.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+                    }
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { continue; }
+                    // Pick the first legal quiet we can make/unmake cleanly.
+                    let mv = legal.moves[0];
+                    for _ in 0..reps {
+                        let us = board.side_to_move;
+                        let them = flip_color(us);
+                        let moved_pt = board.piece_type_at(move_from(mv));
+                        let captured_pt = board.piece_type_at(move_to(mv));
+                        let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net);
+                        if !board.make_move(mv) { break; }
+                        acc.push(dirty);
+                        let s = evaluate_nnue(&board, &net, &mut acc, &tstack);
+                        sum = sum.wrapping_add(s as i64);
+                        board.unmake_move();
+                        acc.pop();
+                        count += 1;
+                    }
+                }
+            } else if mode == "make-unmake" {
+                // Times make_move + unmake_move. No NNUE evaluation happens.
+                // With threat-delta generation enabled (as in v9 production
+                // search), the dominant cost inside make_move is
+                // `push_threats_for_piece` + deltas fanout. Disabling
+                // threat deltas (measured separately) shows the base
+                // move-make cost alone.
+                //
+                // The user controls which via `--no-threat-deltas`.
+                use crate::movegen::generate_legal_moves;
+                for fen in positions_slice {
+                    let mut board = Board::from_fen(fen);
+                    // v9 production path: threat deltas always on.
+                    board.generate_threat_deltas = net.has_threats;
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { continue; }
+                    let mv = legal.moves[0];
+                    for _ in 0..reps {
+                        if !board.make_move(mv) { break; }
+                        board.unmake_move();
+                        count += 1;
+                    }
+                }
+            } else {
+                eprintln!("Unknown --mode: {} (expected 'fresh' | 'refresh' | 'incremental' | 'make-unmake')", mode);
+                return;
+            }
+            let secs = start.elapsed().as_secs_f64();
+            let evs = count as f64 / secs;
+            // In make-unmake mode the "mean_eval" field is meaningless
+            // (no eval was called). Report 0 so the CSV is consistent.
+            println!(
+                "evalbench mode={} positions={} reps/pos={} total_evals={} elapsed={:.3}s  evals/sec={:.0}  mean_eval={}",
+                mode, n_positions, reps, count, secs, evs,
+                sum / count.max(1) as i64,
+            );
         }
 
         Some(Commands::Epd { path, time, max }) => {
@@ -552,6 +758,10 @@ fn main() {
             }
         }
 
+        Some(Commands::MeasureNetSparsity { input }) => {
+            run_measure_net_sparsity(&input);
+        }
+
         Some(Commands::Datagen { output, depth, games, threads, hash, blunder, force_captures, epd }) => {
             let nnue_path = cli.nnue.unwrap_or_default();
             let mode = if let Some(epd_path) = epd {
@@ -642,7 +852,7 @@ fn main() {
             run_eval_dist(&input, count, &cli.nnue);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu }) => {
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, xray_trained }) => {
             // Resolve king bucket layout and count. Explicit --kb-layout wins;
             // --consensus-buckets is the legacy path for 16-bucket consensus.
             let layout = if !kb_layout.is_empty() {
@@ -658,7 +868,7 @@ fn main() {
             let count = if kb_count > 0 { kb_count } else { layout.default_count() };
 
             let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu)
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, xray_trained)
             } else {
                 bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, layout, count)
             };
@@ -862,6 +1072,66 @@ fn run_check_net(net_path: &str) {
     } else {
         println!("{} passed, {} FAILED.", pass, fail);
     }
+}
+
+/// Measure threat-matrix row sparsity in a v9+ .nnue file.
+/// Used for L1-regularisation probe diagnosis. Prints zero-row count,
+/// near-zero rows (|max_abs| ≤ 1), and histogram of row max-abs weights.
+fn run_measure_net_sparsity(net_path: &str) {
+    use crate::nnue::NNUENet;
+    let net = match NNUENet::load(net_path) {
+        Ok(n) => n,
+        Err(e) => { eprintln!("load error: {}", e); std::process::exit(1); }
+    };
+    let num_features = net.num_threat_features;
+    if num_features == 0 {
+        println!("Net has no threat features (not a v9+ net).");
+        return;
+    }
+    let h = net.hidden_size;
+    let mut zero_rows = 0usize;
+    let mut near_zero_rows = 0usize;  // |max| <= 1
+    let mut hist: [usize; 6] = [0; 6];  // 0, 1, 2-3, 4-7, 8-31, 32+
+    let mut nonzero_weights = 0u64;
+    let mut total_abs_sum = 0u64;
+    for r in 0..num_features {
+        let row = &net.threat_weights[r * h..(r + 1) * h];
+        let max_abs = row.iter().map(|&w| (w as i32).abs()).max().unwrap_or(0);
+        if max_abs == 0 { zero_rows += 1; }
+        if max_abs <= 1 { near_zero_rows += 1; }
+        let bucket = match max_abs {
+            0 => 0, 1 => 1, 2..=3 => 2, 4..=7 => 3, 8..=31 => 4, _ => 5,
+        };
+        hist[bucket] += 1;
+        for &w in row {
+            if w != 0 { nonzero_weights += 1; }
+            total_abs_sum += (w as i32).abs() as u64;
+        }
+    }
+    let total_rows = num_features;
+    let total_weights = (num_features * h) as u64;
+    println!("=== Threat matrix sparsity: {} ===", net_path);
+    println!("Rows:  {} total, hidden_size={}", total_rows, h);
+    println!("Zero rows:      {} ({:.2}%)", zero_rows,
+        100.0 * zero_rows as f64 / total_rows as f64);
+    println!("Near-zero rows: {} ({:.2}%)  [|max| <= 1]", near_zero_rows,
+        100.0 * near_zero_rows as f64 / total_rows as f64);
+    println!("Row-max-abs histogram:");
+    println!("  0       : {}", hist[0]);
+    println!("  1       : {}", hist[1]);
+    println!("  2-3     : {}", hist[2]);
+    println!("  4-7     : {}", hist[3]);
+    println!("  8-31    : {}", hist[4]);
+    println!("  32+     : {}", hist[5]);
+    println!("Weight-level sparsity:");
+    println!("  Zero weights:    {} / {} ({:.2}%)",
+        total_weights - nonzero_weights, total_weights,
+        100.0 * (total_weights - nonzero_weights) as f64 / total_weights as f64);
+    println!("  Mean |weight|:   {:.3}", total_abs_sum as f64 / total_weights as f64);
+    let matrix_bytes = (num_features * h) as u64;  // i8 = 1 byte per weight
+    let compact_bytes = ((total_rows - zero_rows) * h) as u64;
+    println!("Matrix size: {} MB raw, {} MB compact (post zero-row compaction)",
+        matrix_bytes / (1024 * 1024), compact_bytes / (1024 * 1024));
 }
 
 fn run_binpack_stats(input: &str) {
