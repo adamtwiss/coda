@@ -2595,8 +2595,12 @@ fn negamax(
             NO_PIECE_TYPE
         };
 
-        // History-based pruning: prune quiet moves with deeply negative history at shallow depths
-        if ply > 0 && !in_check && !improving && !unstable && depth <= tp(&HIST_PRUNE_DEPTH)
+        // History-based pruning: prune quiet moves with deeply negative history at shallow depths.
+        // Removed `!improving && !unstable` gate clauses per
+        // cross_engine_comparison_2026-04-25.md item #10 — SF/Obsidian/
+        // Halogen/Reckless gate hist-prune on neither. Coda's prior gate
+        // suppressed firing in ~50% of nodes hist-prune was meant for.
+        if ply > 0 && !in_check && depth <= tp(&HIST_PRUNE_DEPTH)
             && !is_cap && !is_promo
             && mv != tt_move
             && best_score > -(MATE_SCORE - 100)
