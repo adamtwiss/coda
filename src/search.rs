@@ -29,8 +29,10 @@ pub const MAX_PLY: usize = 64;
 const INFINITY: i32 = 30000;
 // Contempt removed 2026-04-19 (SPRT #508 H1 +2.53).
 
-// Pawn history table size
-const PAWN_HIST_SIZE: usize = 512;
+// Pawn history table size — Coda was the smallest in the field at 512;
+// consensus is 1024 (Obsidian/Viri), 8192 (SF/Plenty), 16384 (Clover).
+// Bumping to 8192 matches SF/Plenty. Memory cost: 832 KB → 13.3 MB.
+const PAWN_HIST_SIZE: usize = 8192;
 
 // ============================================================================
 // Tunable search parameters (exposed as UCI options for SPSA tuning)
