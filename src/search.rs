@@ -137,6 +137,17 @@ tunables!(
     (ESCAPE_BONUS_Q, 12758, 5000, 40000, 1750.0),
     (ESCAPE_BONUS_R, 12358, 3000, 30000, 1350.0),
     (ESCAPE_BONUS_MINOR, 5385, 2000, 20000, 900.0),
+    // NMP-threat escape bonus: hardcoded 8000 in movepicker.rs:603
+    // (when NMP found a threat-square, reward moving piece off it).
+    // Exposed for SPSA — sits next to the ESCAPE_BONUS family
+    // structurally (both reward leaving threatened squares).
+    (NMP_THREAT_ESCAPE_BONUS, 8000, 1000, 30000, 1500.0),
+    // Offense bonus: hardcoded 6000 in movepicker.rs:686 (Reckless
+    // pattern, quiet move whose destination attacks an enemy non-pawn,
+    // gated by safety filter against enemy pawn recapture). Stacks with
+    // QSEE_BONUS, KNIGHT_FORK_BONUS, BATTERY_BONUS for value-aware
+    // refinements. Exposed so SPSA can reweight against newer signals.
+    (OFFENSE_BONUS, 6000, 1000, 20000, 1000.0),
     (NMP_KING_ZONE_MAX, 6, 2, 9, 1.5),
     // T2.1 (Titan's next_ideas 2026-04-21): undefended-piece NMP skip
     // threshold. Count our pieces with ≥1 enemy attacker AND zero of

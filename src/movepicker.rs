@@ -600,7 +600,7 @@ impl MovePicker {
 
             // Null-move threat: bonus for escaping the threatened square
             if self.threat_sq >= 0 && from as i32 == self.threat_sq {
-                score += 8000;
+                score += crate::search::NMP_THREAT_ESCAPE_BONUS.load(std::sync::atomic::Ordering::Relaxed);
             }
 
             // Escape-capture bonus: bonus for moving a piece off a threatened square
@@ -683,7 +683,7 @@ impl MovePicker {
                         // Only skip if WE would be a bigger target than a pawn
                         let unsafe_square = pt != 0 && (enemy_pawn_attacks & (1u64 << to)) != 0;
                         if !unsafe_square {
-                            score += 6000;
+                            score += crate::search::OFFENSE_BONUS.load(std::sync::atomic::Ordering::Relaxed);
                         }
                         // Knight-fork bonus: knight move attacking 2+ enemy
                         // non-pawn pieces from `to` is a fork. Tunable
