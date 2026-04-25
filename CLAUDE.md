@@ -4,6 +4,21 @@ Coda is a UCI chess engine written in Rust. Rewritten from GoChess with all accu
 
 **Chess Optimised, Developed Agentically** — built through human-AI collaboration.
 
+## Supported CPU families
+
+**x86_64 (primary):** OpenBench fleet, Lichess deployment, CCRL, all SPRT
+gating. Default target.
+
+**aarch64 (first-class, since 2026-04-25):** Apple M-series and ARM
+servers (e.g. Graviton). New code must use correct memory ordering for
+SMP — `Acquire/Release` on shared atomics with reader-publish patterns,
+not `Relaxed`. x86's strong memory model masks ordering bugs that fire
+on aarch64. See `docs/arm_correctness_2026-04-25.md` for the
+ARM-correctness sweep status, the coding standard for new atomics, and
+remaining audit items. When adding shared atomics or SIMD paths,
+default to `Acquire/Release` and explicit NEON tests; `Relaxed` is
+only correct when there's no data-dependency on the synchronization.
+
 ## Build and Test
 
 **Prerequisites:** Rust 1.70+. For PGO builds:
