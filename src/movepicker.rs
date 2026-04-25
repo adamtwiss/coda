@@ -193,6 +193,11 @@ pub struct MovePicker {
     // B1: our own pieces blocking a slider's attack on an enemy piece.
     // Moving one of these creates a discovered attack.
     xray_blockers: Bitboard,
+    // T1.1: target squares where a slider move creates a value-filtered
+    // pin (front enemy < back enemy, both on same ray, no pieces between).
+    // Bishops use pin_diag, rooks use pin_orth, queens use union.
+    pin_diag: Bitboard,
+    pin_orth: Bitboard,
     // Evasion support
     checkers: Bitboard,
     pinned: Bitboard,
@@ -215,6 +220,8 @@ impl MovePicker {
         pawn_hist: Option<&[[i16; 64]; 13]>,
         threats: Threats,
         xray_blockers: Bitboard,
+        pin_diag: Bitboard,
+        pin_orth: Bitboard,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
     ) -> Self {
@@ -290,6 +297,8 @@ impl MovePicker {
             skip_quiet: false,
             threats,
             xray_blockers,
+            pin_diag,
+            pin_orth,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -322,6 +331,8 @@ impl MovePicker {
             skip_quiet: true,
             threats: 0,
             xray_blockers: 0,
+            pin_diag: 0,
+            pin_orth: 0,
             checkers: 0,
             pinned: 0,
             threat_sq: -1,
@@ -386,6 +397,8 @@ impl MovePicker {
             // symmetric.
             threats,
             xray_blockers: 0, // evasions don't use discovered-attack bonus
+            pin_diag: 0,      // evasions don't score pins (in check)
+            pin_orth: 0,
             checkers,
             pinned,
             threat_sq: -1,
@@ -629,6 +642,24 @@ impl MovePicker {
             // is a follow-up if H1 resolves.
             if self.xray_blockers & (1u64 << from) != 0 {
                 score += crate::search::DISCOVERED_ATTACK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+            }
+
+            // T1.1 SOLO: value-filtered pin bonus for quiet slider moves.
+            // Bishops check pin_diag, rooks check pin_orth, queens check
+            // both. Mechanism distinct from B1 (B1 = move OFF blocker
+            // uncovering slider; pin = slider moves TO pinning square).
+            if piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                let to_bb = 1u64 << to;
+                let pin_mask: Bitboard = match pt {
+                    crate::types::BISHOP => self.pin_diag,
+                    crate::types::ROOK => self.pin_orth,
+                    crate::types::QUEEN => self.pin_diag | self.pin_orth,
+                    _ => 0,
+                };
+                if pin_mask & to_bb != 0 {
+                    score += crate::search::PIN_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+                }
             }
 
             // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering bonus.

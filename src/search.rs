@@ -158,6 +158,13 @@ tunables!(
     // where a friendly slider stands between us and an enemy piece along
     // the same ray. Flat bonus; tp==0 disables detection.
     (BATTERY_BONUS, 7031, 0, 20000, 1000.0),
+    // T1.1 SOLO retry (2026-04-25): value-filtered pin bonus for quiet
+    // slider moves. Fires when slider moves TO a square that puts an
+    // enemy piece A in front of a more-valuable enemy piece B (pin: A
+    // can't move without exposing B). Distinct from DISCOVERED_ATTACK
+    // (B1) which fires on moves OFF a blocker. Range matches
+    // DISCOVERED_ATTACK_BONUS for SPSA symmetry. tp==0 disables.
+    (PIN_BONUS, 4500, 0, 20000, 1000.0),
     (SE_KING_PRESSURE_MARGIN, 3, 0, 30, 1.5),
     // xray-SE: widen singular test margin when TT move is from an x-ray
     // blocker square (moving it uncovers our slider's attack on an enemy).
@@ -1755,6 +1762,17 @@ fn negamax(
         0
     };
 
+    // T1.1 SOLO: pin target squares — squares where placing one of our
+    // sliders pins an enemy piece against a more valuable enemy piece.
+    // Computed once per node; movepicker dispatches by slider type.
+    // tp==0 disables; cost is similar to xray_blockers (one diag + one
+    // orth ray sweep per enemy piece).
+    let (pin_diag, pin_orth): (u64, u64) = if tp(&PIN_BONUS) > 0 {
+        board.pin_targets(board.side_to_move)
+    } else {
+        (0, 0)
+    };
+
     // Clear PV for this node
     if ply_u <= MAX_PLY {
         info.pv_len[ply_u] = 0;
@@ -2414,7 +2432,7 @@ fn negamax(
     let mut picker = if in_check {
         MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, pin_diag, pin_orth, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
 

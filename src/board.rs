@@ -582,6 +582,72 @@ impl Board {
         result
     }
 
+    /// Value-filtered pin target squares (T1.1 SOLO retry, 2026-04-25).
+    ///
+    /// Returns `(pin_diag, pin_orth)` — squares where placing a friendly
+    /// slider creates a pin: enemy piece A directly attacked by the
+    /// slider, with a more valuable enemy piece B further along the
+    /// same ray. A can't move without exposing B (absolute pin if B is
+    /// king).
+    ///
+    /// Distinct from `xray_blockers` (B1 / DISCOVERED_ATTACK_BONUS):
+    /// - B1 fires on moves OFF a friendly blocker that uncover our
+    ///   slider's attack on an enemy.
+    /// - Pin fires on moves OF our slider TO a square that creates a
+    ///   pin against an enemy piece pair.
+    ///
+    /// Bishops use `pin_diag`, rooks use `pin_orth`, queens use the
+    /// union.
+    ///
+    /// Equal values are skipped (ambiguous battery vs pin); enemy king
+    /// as front (A) is skipped (already handled by check bonus).
+    /// Result masked to empty squares — captures scored separately.
+    pub fn pin_targets(&self, color: Color) -> (Bitboard, Bitboard) {
+        let c = color as usize;
+        let occ = self.colors[0] | self.colors[1];
+        let enemies = self.colors[c ^ 1];
+        let mailbox = &self.mailbox;
+
+        let val = |sq: u32| -> i32 {
+            let pt = mailbox[sq as usize];
+            if pt >= 6 { 0 } else { crate::eval::see_value(pt) }
+        };
+
+        let mut pin_diag: Bitboard = 0;
+        let mut pin_orth: Bitboard = 0;
+
+        let mut es = enemies;
+        while es != 0 {
+            let a_sq = es.trailing_zeros();
+            es &= es - 1;
+            if mailbox[a_sq as usize] == KING {
+                continue;
+            }
+            let a_val = val(a_sq);
+
+            let mut d_neighbours = bishop_attacks(a_sq, occ) & enemies;
+            while d_neighbours != 0 {
+                let b_sq = d_neighbours.trailing_zeros();
+                d_neighbours &= d_neighbours - 1;
+                if val(b_sq) > a_val {
+                    pin_diag |= crate::bitboard::ray_extension(b_sq, a_sq);
+                }
+            }
+
+            let mut o_neighbours = rook_attacks(a_sq, occ) & enemies;
+            while o_neighbours != 0 {
+                let b_sq = o_neighbours.trailing_zeros();
+                o_neighbours &= o_neighbours - 1;
+                if val(b_sq) > a_val {
+                    pin_orth |= crate::bitboard::ray_extension(b_sq, a_sq);
+                }
+            }
+        }
+
+        let empty = !occ;
+        (pin_diag & empty, pin_orth & empty)
+    }
+
     /// Get bitboard of all pieces attacking a square.
     pub fn attackers_to(&self, sq: u32, occ: Bitboard) -> Bitboard {
         let knights = self.pieces[KNIGHT as usize];
