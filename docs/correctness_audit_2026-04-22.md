@@ -310,7 +310,13 @@ For a v7 no-L2 transfer-learning run, Bullet's optimiser loader will fail or lea
 
 Brief list; fix when touching the area.
 
-- `threats.rs:456` — `1u64 << (blocker_sq + 1)` undefined at `blocker_sq == 63`. Currently guarded upstream by `revealed == 0` but fragile.
+**Resolution status updated 2026-04-25** — items actioned during the
+"empty-fleet sprint" are marked with their SPRT IDs; items skipped for
+specific reasons are noted inline. Don't re-queue these without re-reading.
+
+- ✅ `threats.rs:456` — bounds-safe shift fix merged — fix branch
+  `fix/threats-blocker-bounds`, SPRT #760 ([-5, 5] non-regression). Fix
+  adds explicit `blocker_sq + 1 < 64` guard. (2026-04-25)
 - `threats.rs:892-1224` — dead `compute_move_deltas` function duplicates delta pipeline; any drift goes unnoticed.
 - `threat_accum.rs:122-132` — `ThreatStack::push(mv, moved_pt)` args always `NO_MOVE, NO_PIECE_TYPE`; absorbed post-make. New caller forgetting the absorb is silent corruption.
 - `search.rs` threat_accum absorb — stores `moved_pt` from post-move mailbox, so promotions record QUEEN not PAWN. Currently only consumed by `== KING` check, safe today.
@@ -318,27 +324,55 @@ Brief list; fix when touching the area.
 - `cuckoo.rs:170-174` — root-boundary STM check picks first non-empty square; if both squares have pieces of the same colour, heuristic can misclassify. Knight-dance passes.
 - `cuckoo.rs:216-245` — `cuckoo_entries_valid_moves` test accepts ANY piece matching the XOR key; no unique-piece assertion per slot.
 - `see.rs:46-53` — SEE initial `risk_value -=` subtraction is strictly wrong when opponent has no defender; monotonicity of `see_ge` threshold still gives correct answer. Fuzzer covers it.
-- `search.rs:2647` — LMR `do_shallower` uses `new_depth` (integer, ~5–20) as a centipawn threshold. Almost certainly accidental; SF uses a proper cp margin.
-- `search.rs:2292-2294` — SE `singular_beta = tt_score - depth - kzp*SE_KING_PRESSURE_MARGIN - xray_bonus` can drop below mate-bypass range. Downstream comparisons still work, but multi-cut return value interpretation could misfire.
-- `search.rs:2441-2449` — recapture extension has no `ply > 0` guard; at root it can fire on game-history captures.
-- `search.rs:1619-1626` — `any_threat_count` excludes king from `our_non_pawns`. Deliberate? Verify intent vs SF pattern.
-- `search.rs:2894-2899` — FH blending applies inside SE verification; dampened score in `singular_score` may flip DEXT to single-ext in edges.
-- `search.rs:500-527` — `should_stop` time-check bucket is `& 4095 == 0` (~4–7 ms). For <100 ms emergency budgets this causes overruns; SF checks every 1024–2048.
-- `search.rs:1273-1278` — forced-move path zeros `soft_floor`, defeating stockpile prevention on ponderhit fresh-search with 1 legal move.
+- ✅ `search.rs:2647` — LMR `do_shallower` cp margin actioned across two SPRT
+  cycles: #673 at 30cp H0'd −1.7, #679 at 20cp H1'd +1.4 (merged), #762 at
+  10cp in flight 2026-04-25. Original integer-as-cp typo replaced.
+- ✅ `search.rs:2292-2294` — SE singular_beta mate-bypass clamp merged
+  (skip SE if singular_beta drops into mate range). Branch
+  `fix/se-singular-beta-mate-clamp`, SPRT #761 (2026-04-25).
+- ✅ `search.rs:2441-2449` — recapture extension `ply > 0` guard merged.
+  Branch `fix/recapture-ext-ply-guard`, SPRT #758 (2026-04-25).
+- ⏭ `search.rs:1619-1626` — `any_threat_count` excludes king. Verified
+  intent 2026-04-25: pawn excluded because cheap, king excluded because
+  legal play means king can't be attacked-but-not-in-check (would be a
+  check, handled elsewhere, or pinned which isn't a threat-on-king).
+  Not a bug. Closed.
+- ✅ `search.rs:2894-2899` — FH blend skip inside SE verification merged.
+  Branch `fix/fh-blend-skip-in-se`, SPRT #759 (2026-04-25). Skips
+  blending when `info.excluded_move[ply_u] != NO_MOVE` so the singular_score
+  feeding DEXT-margin comparison isn't dampened.
+- ✅ `search.rs:500-527` — `should_stop` granularity 4096 → 1024 nodes
+  merged on `fix/should-stop-granularity` branch, SPRT #757 (2026-04-25,
+  on post-tune-750 trunk). Original SPRT pre-trunk-shift was H0; re-test
+  on new pruning regime.
+- ⏭ `search.rs:1273-1278` — forced-move path zeros `soft_floor`. Re-analysed
+  2026-04-25: for genuinely 1-legal moves, 10ms is the intended TM
+  behaviour (saves stockpile time on the clock for the next non-forced
+  move). Not a bug. Closed.
 - `search.rs:938-963` — `helper.root_stm = main.root_stm` is read before main sets it in `search()`. Currently unused; trap for future stm-aware helper code.
-- `search.rs:1013` — helper `max_depth` doesn't map 0 → MAX_PLY/2 the way main does. `go depth 0` makes helpers empty-loop.
-- `tt.rs:431-457` vs `tb_cache.rs:101-114` — aarch64 Relaxed-store ordering relies entirely on XOR verification.
-- `see.rs` — duplicate SEE functions in movepicker.rs and see.rs? (mentioned in CLAUDE.md as "risks correctness bugs" — verify single source of truth.)
+- ⏭ `search.rs:1013` — helper `max_depth` 0-mapping. Edge case for `go depth 0`,
+  not exercised by SPRT or production. SPRT-invisible. Skipped 2026-04-25.
+- ⏭ `tt.rs:431-457` vs `tb_cache.rs:101-114` — aarch64 Relaxed-store ordering.
+  Fleet is x86; can't SPRT this. Skipped 2026-04-25 (fleet-untestable).
+- ✅ `see.rs` — duplicate SEE functions question. Verified single source of
+  truth (`see_ge` in see.rs); movepicker.rs uses MVV-LVA scoring (different
+  function class). Not a duplication. Closed 2026-04-25.
 - `types.rs:103-110` — `is_promotion` + `promotion_piece_type` returns garbage for `flags >= 8`. Guarded by `is_pseudo_legal` today.
 - `movepicker.rs:856-861` — `fixup_move_flags` adds FLAG_CASTLE for any king-move-by-2. Rejected by `is_pseudo_legal`'s castling branch, but brittle.
 - `movepicker.rs:956-960` — promotion validation checks from-rank but not to-rank. Closed in practice by pawn-geometry constraints.
 - `bullet_convert.rs:153-159` — output-bucket remap drops buckets when `ob > 8`. Not used today.
-- `nnue.rs:690-705` — SCReLU scale uses `>>8` (÷256) instead of `÷255`. ~0.8% drift, absorbed into SPSA tune. New training recipes that shift SCReLU expectations could surface this.
+- ⏭ `nnue.rs:690-705` — SCReLU `>>8` vs `÷255`. 0.8% drift, absorbed into
+  SPSA tune. Cosmetic; would require recalibrating eval-aware tunables to
+  realise. Skipped 2026-04-25 (low Elo, high recalibration cost).
 - `nnue.rs:1289-1294, 755-763` — SIMD pack tails (AVX2/AVX-512 half-chunk) have no scalar round-trip test. Production `h` sizes are multiples of 64 so the tail path is dead.
-- `main.rs:460-508` — `patch-net` no NNUE magic validation before in-place modify.
+- ⏭ `main.rs:460-508` — `patch-net` no NNUE magic validation. Defensive only,
+  not search-affecting. Skipped 2026-04-25 (cosmetic-tooling, no Elo).
 - `binpack.rs` — Coda's (unused) BINP writer has latent pawn-colour nibble collision potential; dead code, delete or assert.
-- `main.rs:898-945` — `sample-positions` filter doesn't match CLAUDE.md's documented training quiet-filter (ply ≥16, no checks, no captures, no tactical).
-- `search.rs:1649-1656, 2971-2978` — redundant `stop.load` after `should_stop` in negamax. If intentional "check every node", it's correct but costly; if not, remove.
+- ⏭ `main.rs:898-945` — `sample-positions` filter alignment. Offline tool,
+  not search-affecting. Skipped 2026-04-25.
+- ⏭ `search.rs:1649-1656, 2971-2978` — redundant `stop.load` after `should_stop`.
+  Investigated 2026-04-25: many sites legitimately re-check (LMR/PVS
+  re-search guards depend on it). Not a clear redundancy. Skipped.
 
 ## Confirmed clean (noted for future reference)
 

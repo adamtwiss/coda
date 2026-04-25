@@ -5871,3 +5871,107 @@ v5 reference + rival set):
 stretch), broader-pool estimate is ~+28 Elo. Consistent with the
 SPRT-merged total within noise. Confirms the NPS-investigation wins
 convert to actual cross-engine strength, not self-play artefact.
+
+## 2026-04-24 → 2026-04-25 session — v9-into-main merge + force-more-pruning cluster
+
+### v9 architecture into main (2026-04-24)
+
+`feature/threat-inputs` merged into `main` at commit `ea07d93`. Main is now v9
+trunk: 768 accumulator + 66,864 threat features + 16/32 hidden layers,
+kb10 layout, prod net `net-v9-768th16x32-kb10-w15-e800s800-crelu`.
+
+### Force-more-pruning cluster (intentional Reckless-style port wave)
+
+Reckless's pruning archetype (uncapped depth gates, smaller futility margins,
+higher LMP base) was ported piecewise to test which outliers carried Elo on
+Coda's eval scale. Pattern: most direct-port values H0 because Coda's lmr_d
+formula vs Reckless's raw-depth formula doesn't translate 1:1.
+
+| SPRT | Branch | Result | Status |
+|------|--------|--------|--------|
+| #730 | experiment/n4-halfmove-scaled-margins | −1.0 Elo H0 @ 15946g | ❌ on detuned trunk; re-SPRT in flight (#755) |
+| #732 | experiment/nmp-ttnoisy-rplus | −0.4 Elo H0 @ 41080g | ❌ on detuned trunk; re-SPRT trending H1 on post-tune-750 trunk (#754) — guard pattern wants retune-on-branch |
+| #734 | experiment/bnfp-depth-uncap | −1.2 Elo H0 @ 14454g | ❌ direct uncap (d≤4 → unbounded); tune #750 found 13 instead |
+| #735 | experiment/lmp-depth-uncap | −1.1 Elo H0 @ 14452g | ❌ direct uncap (d≤8 → unbounded); tune #750 found 14 instead |
+| #736 | experiment/futility-tighten | **+4.4 Elo H1 ✓ @ 3888g** | ✅ merged (FUT_BASE 78→40, FUT_PER_DEPTH 160→65 — Reckless-scale margins) |
+| #737 | experiment/rfp-depth-uncap | **+2.2 Elo H1 ✓ @ 34380g** | ✅ merged (RFP depth cap 10→16) |
+| #738 | experiment/see-quiet-reckless-shape | −45.0 @ 264g (catastrophic) | ❌ aborted — formula incompatibility |
+| #740 | experiment/see-quiet-reckless-shape-v2 | −13.3 Elo H0 @ 4272g | ❌ recalibrated retry still H0; SEE_QUIET_MULT=46 (lmr_d formula) doesn't directly port to Reckless's raw-depth shape |
+| #741 | fix/expose-hardcoded-pruning-tunables | **+3.7 Elo H1 ✓ @ 4670g** | ✅ merged (5 hardcoded gates exposed as SPSA tunables; tune #743 immediately moved IIR_MIN_DEPTH 4→2) |
+| #744 | experiment/iir-ablate | −6.3 Elo H0 @ 4398g | ❌ dropped (IIR is contributing; tune-driven 4→2 captured optimal value) |
+| #745 | fix/expose-more-pruning-tunables | **+10.4 Elo H1 ✓ @ 2662g** | ✅ merged (3 more hardcoded gates exposed as tunables; SPSA found NMP_MIN_DEPTH 5, PROBCUT_MIN_DEPTH 6) |
+| #749 | experiment/rfp-depth-uncap-v2 | +0.2 ±1.5 / 43846g (stopped flat) | ❌ dropped — change already absorbed by tune #747's RFP_DEPTH 11 |
+
+**Force-more-pruning lesson** (durable): direct-port of Reckless's pruning
+constants H0s on Coda's eval scale, but **biased-aggressive starting values for
+SPSA find a different basin** (see #750 below). The cluster of merges (#736
++4.4, #737 +2.2, #741 +3.7, #745 +10.4) demonstrates that exposing previously-
+hardcoded gates as tunables banks Elo on its own — SPSA finds non-default
+optima the moment they're exposed.
+
+### Tune cycle on post-v9-merge trunk
+
+| SPRT | Branch | Result | Status |
+|------|--------|--------|--------|
+| #743 | tune/v9-merged (full-sweep, 2500 iters) | SPSA completed | applied to trunk via #747 |
+| #747 | experiment/retune-post-743 | **+7.2 Elo H1 ✓ @ 3920g** | ✅ merged (default-rooted SPSA captured flywheel from v9 merge) |
+| #750 | experiment/force-more-pruning (2000 iters, biased-aggressive start) | SPSA completed | applied to trunk via #752 |
+| #752 | experiment/apply-tune-750 | **+12.3 Elo H1 ✓ @ 3132g** | ✅ merged (biased-start SPSA basin found a fundamentally different convergence point — bench dropped 67% from 2.43M → 788K) |
+
+**Methodology validation (durable)**: Biased-starting-point SPSA can find
+basins default-rooted SPSAs cannot reach. #743 (default-rooted) banked +7.2;
+#750 (biased-aggressive start, all pruning thresholds wider) banked +12.3 ON
+TOP. Same 77-param sweep, same trunk, different convergence basin. See
+`memory/feedback_spsa_biased_starting_point.md`.
+
+### Group-lasso training probe (2026-04-25)
+
+First group-lasso (per-row L1) net trained on Bullet fork
+`feature/decouple-l1-lr` at `--group-l1-decay 1e-2`, SB200, kb-reckless layout.
+
+| SPRT | Comparison | Result | Status |
+|------|------------|--------|--------|
+| #753 | grouplasso-1e2 net (SB200) vs C8fix dense (SB200) | **+13.3 Elo H1 ✓ @ 1468g** | ✅ validated methodology (NOT a ship candidate — SB200 vs SB200) |
+
+**Group-lasso lesson (durable)**: at SB200, group-lasso acts as
+*regularization*, not just a sparsifier — sparse net is +13 Elo stronger
+than matched dense baseline at 13.48% threat-row sparsity. Cache-residency
+target was 35% sparsity; we hit 13.5%, but the L1 effect itself helps Elo
+at SB200. See `memory/project_group_lasso_acts_as_regularizer.md`.
+
+**Caveat**: SB200 SPRT magnitudes don't translate to SB800 ship-readiness.
+Probe #1 vs prod SB800 would lose 50-100 Elo (missing low-LR convergence
+tail). Probes #2 (3e-2) and #3 (5e-2) running in parallel on GPU hosts.
+
+### Active batch (2026-04-25 morning) — re-SPRTs + correctness audits
+
+Submitted on post-tune-750 trunk while GPU training runs:
+
+| SPRT | Branch | Class | Bounds | Status |
+|------|--------|-------|--------|--------|
+| #754 | experiment/nmp-ttnoisy-rplus (re-SPRT) | guard retune-on-branch | [-3, 3] | -0.0 ±2.3 / 16K g — settled near zero, may H0 — but original was −0.4, post-tune-750 didn't flip it |
+| #755 | experiment/n4-halfmove-scaled-margins (re-SPRT) | pruning | [-3, 3] | −10.1 ±7.6 / 1440 g (early) — likely H0 again |
+| #756 | experiment/sibling-se-propagation-v2 (re-SPRT) | extension | [-3, 3] | +2.4 ±6.0 / 2610 g — trending H1 on new trunk! |
+| #757 | fix/should-stop-granularity (R5 #3) | TM 4096→1024 nodes | [-5, 5] | −0.8 ±5.5 / 2692 g (early) |
+| #758 | fix/recapture-ext-ply-guard (audit) | extension correctness | [-3, 3] | +1.0 ±4.5 / 3940 g (early) |
+| #759 | fix/fh-blend-skip-in-se (audit) | extension correctness | [-3, 3] | −0.5 ±5.6 / 2732 g (early) |
+| #760 | fix/threats-blocker-bounds (audit) | bounds-safety (sq=63) | [-5, 5] | +1.0 ±3.8 / 5820 g (early) |
+| #761 | fix/se-singular-beta-mate-clamp (audit) | extension correctness | [-3, 3] | −1.3 ±5.8 / 2652 g (early) |
+| #762 | experiment/lmr-shallower-margin-10 (parameter probe) | LMR cp margin 20→10 | [-3, 3] | −4.5 ±6.8 / 1786 g (early) |
+
+### Session cumulative
+
+Merged during 2026-04-24 → 2026-04-25 wave:
+- v9 architecture into main (ea07d93, prior gain absorbed)
+- futility-tighten: +4.4
+- rfp-depth-uncap: +2.2
+- expose-hardcoded-pruning-tunables: +3.7
+- expose-more-pruning-tunables: +10.4
+- retune-post-743 (#747): +7.2
+- apply-tune-750 (#752): +12.3
+
+**~+40.2 Elo merged** from search/tune levers on top of v9 architecture in
+~36 hours. Plus probe #753 (+13.3) validated group-lasso methodology
+(non-ship). Cumulative for the 2026-04 sprint, this brings trunk from
+roughly +0 (just v9 merged) to +40 self-play Elo, with cross-engine
+transfer ~50-80% of that = +20 to +32 cross-engine.

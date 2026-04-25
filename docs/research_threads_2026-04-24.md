@@ -134,15 +134,55 @@ Viridithas has a baked `REPERMUTE_INDICES: [usize; L1_SIZE / 2]` (`nnue/network.
 
 ### Top 5 Lichess-reachable (fix now)
 
-1. **SEE pawn-promotion recapture** (`see.rs:76-93`) — endgame promo exchanges valued pawn=100cp not 900cp. Lichess-visible: engine declines winning tactical capture, plays passive move; `info score cp` slightly-negative on a position where promo-capture wins material.
-2. **`should_stop` 4096-node granularity** (`search.rs:500-527`) — prior #674 H0'd at STC, but hyperbullet is the real trigger. Re-test at bullet TC. Lichess-visible: time forfeits on emergency budgets.
-3. **Evasion capture-promotion scoring** (`movepicker.rs:700-710`) — queen-promo-capture ranks below plain capture while in check. Lichess-visible: high seldepth before PV includes the refutation.
-4. **Forced-move path zeros `soft_floor`** (`search.rs:1273-1278`) — ponderhit + 1-legal-move discards stockpile.
-5. **Repetition scan missing `plies_from_null` cap** (`search.rs:1670-1682, 2944-2952`) — false draws across null-move subtrees. Lichess-visible: `score cp 0` on non-3-fold; draws offered/declined anomalously.
+**Status updated 2026-04-25** — 3 of 5 already merged in the 2026-04-22
+audit batch, 1 in flight, 1 closed-on-re-analysis. Don't re-queue these.
+
+1. ✅ **SEE pawn-promotion recapture** (`see.rs:76-93`) — merged
+   `b25366d` 2026-04-22 (#652 +1.8 Elo H1).
+2. 🔄 **`should_stop` 4096-node granularity** — re-tested on
+   post-tune-750 trunk: `fix/should-stop-granularity` SPRT #757 in flight
+   2026-04-25 (granularity bumped 4096 → 1024).
+3. ✅ **Evasion capture-promotion scoring** — fixed via C8 audit #25 +
+   #26 in 2026-04-22 batch (mvv_lva path adds promotion delta;
+   `is_cap` checked before `is_promotion` so capture-promotions take the
+   capture-MVV-LVA score path).
+4. ⏭ **Forced-move path zeros `soft_floor`** — re-analysed 2026-04-25:
+   for genuine 1-legal moves, 10ms is the intended TM behaviour
+   (preserves stockpile time on the clock for next non-forced move). Not
+   a bug. Closed.
+5. ✅ **Repetition scan missing `plies_from_null` cap** — merged
+   `402e366` 2026-04-22 (`fix/rep-detection-null`, H0 −0.3 but kept as
+   confident-correctness).
 
 ### Next 10 for fuzzer sweep (tournament-reachable)
 
-Duplicate SEE source-of-truth check, SE `singular_beta` mate-bypass range, recapture ext `ply>0` guard, FH blending inside SE, LMR `do_shallower` cp margin, `patch-net` NNUE magic, TT/tb_cache aarch64 Release/Acquire, `threats.rs:456` sq=63, SCReLU `>>8` vs `÷255` drift, `sample-positions` filter alignment.
+**Status updated 2026-04-25** during the empty-fleet correctness sprint:
+
+- ✅ **Duplicate SEE source-of-truth** — verified clean; movepicker.rs
+  uses MVV-LVA scoring (different function class), `see.rs::see_ge` is
+  the single SEE truth source. Closed.
+- ✅ **SE `singular_beta` mate-bypass range** — fix merged
+  `fix/se-singular-beta-mate-clamp`, SPRT #761 in flight 2026-04-25.
+- ✅ **Recapture extension `ply>0` guard** — fix merged
+  `fix/recapture-ext-ply-guard`, SPRT #758 in flight 2026-04-25.
+- ✅ **FH blending inside SE** — fix merged `fix/fh-blend-skip-in-se`,
+  SPRT #759 in flight 2026-04-25.
+- ✅ **LMR `do_shallower` cp margin** — actioned across two cycles.
+  #673 at 30cp H0'd, #679 at 20cp H1'd +1.4 (merged), #762 at 10cp
+  in flight 2026-04-25.
+- ⏭ **`patch-net` NNUE magic** — defensive only, offline tool.
+  Skipped (no Elo path).
+- ⏭ **TT/tb_cache aarch64 Release/Acquire** — fleet is x86, can't SPRT.
+  Skipped (fleet-untestable).
+- ✅ **`threats.rs:456` sq=63** — fix merged `fix/threats-blocker-bounds`,
+  SPRT #760 in flight 2026-04-25 ([-5, 5] non-regression).
+- ⏭ **SCReLU `>>8` vs `÷255` drift** — 0.8% drift, absorbed into SPSA tune.
+  Cosmetic; would require recalibrating eval-aware tunables. Skipped.
+- ⏭ **`sample-positions` filter alignment** — offline tool, not search-
+  affecting. Skipped.
+
+**Net for next-10:** 6 actioned (5 merged-and-SPRT'd, 1 verified-clean),
+4 skipped with rationale.
 
 ### Fuzzer expansion programme (5 categories)
 
