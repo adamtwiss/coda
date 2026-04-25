@@ -13,6 +13,31 @@ Sources cite `~/chess/engines/<Engine>/src/<file>:<line>` throughout.
 
 `experiments.md` is the source of truth for resolved SPRTs.
 
+## Empirical cross-validation — `reckless_vs_coda_pruning_diff_2026-04-25.md`
+
+The instrumented Reckless-vs-Coda diff (`docs/reckless_vs_coda_pruning_diff_2026-04-25.md`, run 2026-04-25) measured pruning fire rates and NMP cutoff rate at depth 12 on matched per-position node counts. **It inverts a prior CLAUDE.md framing** ("Coda under-prunes vs Reckless") and validates several of the cross-engine findings in this doc:
+
+| Metric | Coda | Reckless | Ratio |
+|---|---:|---:|---:|
+| First-move-cut rate | 81.7% | 82.85% | -1.15pp Coda |
+| **NMP cutoff rate** | **30%** | **57%** | **0.53× — Reckless 1.9× more efficient** |
+| **LMP fires / Kn** | 573.9 | 20.4 | **28× more in Coda** |
+| Futility (incl BNFP) / Kn | 707.0 | 138.2 | **5.1× more in Coda** |
+| SEE prunes / Kn | 573.8 | 189.5 | **3.0× more in Coda** |
+
+**Key reframing.** Coda doesn't *under*-prune; it fires shallow-pruning gates 3-28× more often per Kn than Reckless. Two compounding causes:
+
+1. Worse move ordering (1.15pp FMC gap) → more moves reach the pruning gates, so each gate fires more often.
+2. Some Coda gates are configured to fire deeper / on more conditions — directly explaining the 28× LMP gap (consensus-vs-Coda findings #9, #10 below).
+
+**The empirical NMP cutoff-rate gap (30% → 57%) is the single highest-leverage open lever** at ~2× efficiency delta. The cleanest mechanism for closing it is Reckless's `cut_node` gate on NMP — promoted from "noted divergence" to **Tier-1 top item** in the queue below.
+
+**Implications for the queue ordering:**
+- **Move-ordering items lead** — they fix the cause, not the symptom (every FMC point compounds across the tree).
+- **Pruning-gate-rate fixes** (LMP two-row, hist-prune gate, depth caps) keep their position in the queue and their +Elo magnitude — they treat measurable over-firing — but are framed as symptom fixes.
+- **`cutoff_count` propagation** (was a Tier-3 novel mechanism) promotes to Tier 2 — Reckless uses it in both NMP and LMR; load-bearing for the empirical efficiency gap.
+- **Methodological caveat:** Reckless bench is 51 positions vs Coda's 8. Per-position node counts (~63K-67K) are matched, but the Coda 8 may not exercise the same regime mix. Magnitudes (28×, 5×, 3×) too large to invalidate; porting the same `dbg_hit` instrumentation to Coda + running matched bench locks in exact magnitudes.
+
 ## Headline findings — Coda outliers vs 5+ engine consensus
 
 These are where Coda is structurally **different** from a clear consensus across 5+ top engines. Each has high confidence + concrete file:line + a precedented Elo magnitude. Listed in approximate ROI order.
@@ -232,53 +257,61 @@ Initial delta `= base + avg² / divisor` (SF: `5 + threadIdx%8 + abs(meanSqScore
 
 Suggested order; each line is "branch name → expected Elo → key change":
 
-**Tier 1 — high confidence consensus fixes (likely +20-40 Elo aggregated):**
+**Re-prioritised after empirical diff doc** (`reckless_vs_coda_pruning_diff_2026-04-25.md`). Ordering principle: **fix causes (move ordering) before symptoms (over-firing pruning gates)**, but bank both since the symptom-fixes have +Elo magnitude on their own.
 
-1. `experiment/lmr-c-swap` → +6 to +10 → swap `LMR_C_QUIET=93, LMR_C_CAP=120`
-2. `experiment/triple-extension` → +3 to +8 → Alexandria pattern with `TRIPLE_MARGIN=75`
-3. `experiment/main-history-stm-dim` → +3 to +8 → add stm to main quiet history 4D→5D
-4. `experiment/enter-threat-penalty` → +3 to +6 → symmetric to escape bonus
-5. `experiment/lmp-two-row` → +5 to +8 → halved d² + improving multiplier separated
-6. `experiment/pawn-history-8192` → +3 to +7 → 512→8192, optionally with `-919` init
-7. `experiment/multicut-fix` → +1 to +4 → drop `singular_beta >= beta` clause
-8. `experiment/halfmove-200-revert` → +1 to +4 → `(200-hm)/200` with bench A/B
-9. `experiment/material-np-only` → +2 to +5 → `(BASE + npMaterial) / 32768`
-10. `experiment/hist-prune-gate-drop` → +3 to +6 → drop `!improving && !unstable` + tighten depth caps
+**Tier 1 — highest leverage (likely +25-50 Elo aggregated):**
 
-**Tier 2 — novel single-source mechanisms (likely +10-25 Elo aggregated):**
+1. `experiment/nmp-cut-node-gate-only` → **+5 to +12** → add `cut_node` to NMP gate. **Targets the empirical 30%→57% NMP cutoff-rate gap (1.9× efficiency).** Pure plumbing — `cut_node` already passed through search. Spec at end of `reckless_vs_coda_pruning_diff_2026-04-25.md`.
+2. `experiment/main-history-stm-dim` → +3 to +8 → add stm to main quiet history 4D→5D. **Move-ordering cause-fix; FMC compounds.**
+3. `experiment/enter-threat-penalty` → +3 to +6 → symmetric to escape bonus. **All 6 threat-aware engines have it; ordering cause-fix.**
+4. `experiment/pawn-history-8192` → +3 to +7 → 512→8192, optionally with `-919` init. **Smallest in field (2-32× peers); ordering cause-fix.**
+5. `experiment/triple-extension` → +3 to +8 → Alexandria pattern with `TRIPLE_MARGIN=75`. 13/14 engines have it.
+6. `experiment/lmr-c-swap` → +6 to +10 → swap `LMR_C_QUIET=93, LMR_C_CAP=120`. SPSA detuning artifact.
+7. `experiment/lmp-two-row` → +5 to +8 → halved d² + improving multiplier separated. **Empirical: 28× LMP fire rate gap.**
+8. `experiment/hist-prune-gate-drop` → +3 to +6 → drop `!improving && !unstable` + tighten FUT_LMR_DEPTH 16→13, BAD_NOISY_DEPTH 13→8. **Empirical: 5× FP, 3× SEE fire rate gap.**
 
-11. `experiment/factorized-main-hist` → +5 to +10 → Reckless/Viri pattern, baseline + bucket
-12. `experiment/pawn-push-attacker-graduated` → +2 to +5 → Viridithas tactical motif
-13. `experiment/threat-bucketed-cont-corr` → +2 to +4 → Plenty pattern
-14. `experiment/sf-small-probcut` → +2 to +5 → SF TT-trust shortcut
-15. `experiment/optimism-full-p1` → +3 to +7 → K1+K2+optBase+divisor SPSA on Stormphrax-shape
+**Tier 2 — high-confidence novel mechanisms (likely +12-30 Elo aggregated):**
 
-**Tier 3 — small wins, low risk (each +1-3, but cheap):**
+9. `experiment/parent-cutoff-count` → **+2 to +5** → SF/Clover/Quanticade pattern. **Promoted from Tier 3 — Reckless uses this for the 30→57% NMP gap.**
+10. `experiment/factorized-main-hist` → +5 to +10 → Reckless/Viri/Stormphrax three-engine consensus, baseline + bucket. Move-ordering cause-fix at scale.
+11. `experiment/pawn-push-attacker-graduated` → +2 to +5 → Viridithas tactical motif (same family as B1 +52, knight-fork +5.2, offense +5.7).
+12. `experiment/threat-bucketed-cont-corr` → +2 to +4 → Plenty pattern; intersects Coda's threat agenda.
+13. `experiment/sf-small-probcut` → +2 to +5 → SF TT-trust shortcut. ~Zero NPS cost.
+14. `experiment/optimism-full-p1` → +3 to +7 → K1+K2+optBase+divisor SPSA on Stormphrax-shape (5 engines).
+15. `experiment/multicut-fix` → +1 to +4 → drop `singular_beta >= beta` clause; return Reckless `(2·s + beta)/3`.
 
-16. `experiment/ttmove-history` → +1 to +3 → SF global stat
-17. `experiment/lowply-history` → +1 to +3 → SF early-ply table
-18. `experiment/parent-cutoff-count` → +1 to +3 → SF/Clover/Quanticade
-19. `experiment/variance-aspiration` → +1 to +3 → SF/Reckless/Viri
-20. `experiment/conthist-combined-modulator` → +1 to +3 → Stormphrax/Viri
-21. `experiment/fh-blend-depth-cap` → +1 to +3 → `min(d, 8)` weight
-22. `experiment/eval-quantisation-16cp` → 0 to +2 → Plenty pattern
-23. `experiment/clover-combined-mat-hm` → +1 to +3 → single-multiply
-24. `experiment/sf-source-bonus-boost` → +1 to +2 → SF write-time scaling
+**Tier 3 — small wins, low risk:**
+
+16. `experiment/halfmove-200-revert` → +1 to +4 → `(200-hm)/200` with bench A/B. Eval scale.
+17. `experiment/material-np-only` → +2 to +5 → non-pawn material in scaling. Eval scale.
+18. `experiment/ttmove-history` → +1 to +3 → SF global stat.
+19. `experiment/lowply-history` → +1 to +3 → SF early-ply table.
+20. `experiment/variance-aspiration` → +1 to +3 → SF/Reckless/Viri.
+21. `experiment/conthist-combined-modulator` → +1 to +3 → Stormphrax/Viri.
+22. `experiment/fh-blend-depth-cap` → +1 to +3 → `min(d, 8)` weight.
+23. `experiment/eval-quantisation-16cp` → 0 to +2 → Plenty pattern.
+24. `experiment/clover-combined-mat-hm` → +1 to +3 → single-multiply.
+25. `experiment/sf-source-bonus-boost` → +1 to +2 → SF write-time scaling.
+
+**Cross-cutting:** port the `dbg_hit` instrumentation pattern from Reckless into Coda's `src/search.rs` to enable matched 51-position-bench measurements after each Tier-1 merge. Validates that fire-rate gaps are closing.
 
 ## Cross-cutting observations
 
-- **Coda's tunable space has SPSA-detuning artifacts** — `LMR_C_QUIET > LMR_C_CAP` (item 1) is structurally inverted vs every consensus engine and almost certainly an artifact of partial-feature tuning. The fix-then-retune cycle should expose more such inversions.
+- **Framing inversion** (per `reckless_vs_coda_pruning_diff_2026-04-25.md`). Coda doesn't under-prune; we fire shallow gates 3-28× more often than Reckless. CLAUDE.md's prior framing of "Coda needs to prune harder" is wrong for LMP/FP/SEE and probably ProbCut. The actual gap is **NMP cutoff rate (30 vs 57%)** and **move ordering quality (1.15pp FMC)**. Treat ordering improvements as cause-fixes and threshold tightenings as symptom-fixes.
+- **Coda's tunable space has SPSA-detuning artifacts** — `LMR_C_QUIET > LMR_C_CAP` (item 6) is structurally inverted vs every consensus engine and almost certainly an artifact of partial-feature tuning. The fix-then-retune cycle should expose more such inversions.
 - **The "consensus H0 = dig deeper" lesson applies broadly.** From CLAUDE.md: capture history magnitude was +31.6 Elo when fixed despite 3 prior H0s. Several items here (single-row LMP, no triple extension, pawn-history 512) are the same shape — Coda has tried adjacent variants and H0'd, but the consensus-form has not been tried.
 - **Tactical-motif scoring** keeps paying off. Items N-2 (pawn-push attacker), N-13 (king-wall-pawn malus) extend the W1 family of wins (B1 +52, knight-fork +5.2, offense +5.7).
-- **Threat-aware mechanisms have headroom.** Item 4 (enter-threat penalty) and N-3 (threat-bucketed cont-corr) are direct extensions of work that already paid Elo. Plenty has the most threat-bucketed mechanisms and is at rank 4 on the RR.
-- **Cumulative envelope across Tier 1 alone is +20-40 Elo before retune** per CLAUDE.md's +6-8 retune-per-3-merges pattern. Realistically: 8 merges × landed-conditional-on-Elo + 3 retunes ≈ +30-50 Elo.
+- **Threat-aware mechanisms have headroom.** Item 3 (enter-threat penalty) and N-3 (threat-bucketed cont-corr) are direct extensions of work that already paid Elo. Plenty has the most threat-bucketed mechanisms and is at rank 4 on the RR.
+- **Empirical NMP gap (30%→57%) is the single highest-leverage measured lever.** `cut_node` gate alone may close half of it; combine with `cutoff_count` propagation (item 9), TT-noisy guard (#768 in flight), and the verify-depth widening to close the rest.
+- **Cumulative envelope across Tier 1 alone is +25-50 Elo before retune** per CLAUDE.md's +6-8 retune-per-3-merges pattern. Realistically: 8 merges × landed-conditional-on-Elo + 3 retunes ≈ +35-60 Elo. That'd close ~40-65% of Coda's 90-Elo gap to top-10.
 
 ## Companion docs
 
+- `reckless_vs_coda_pruning_diff_2026-04-25.md` — **empirical instrumented diff**; cross-validates this doc's findings on LMP/FP/SEE over-firing and surfaces the NMP cutoff-rate gap as the single highest-leverage open lever.
 - `next_ideas_2026-04-21.md` — prior round of ideas; intersect on T1.x tactical motifs, T2.x threat signals.
-- `peripheral_mechanisms_2026-04-22.md` — non-pure-search mechanisms (P1 optimism is item N-15-ish here).
+- `peripheral_mechanisms_2026-04-22.md` — non-pure-search mechanisms (P1 optimism is item 14 here).
 - `correctness_audit_2026-04-25.md` — fresh audit findings; some interact (Coda's `SEE_CAP_MULT` dead tunable was found there).
-- `research_threads_2026-04-24.md` — R2 LMP/NMP threads pre-figured items 1, 5.
+- `research_threads_2026-04-24.md` — R2 LMP/NMP threads pre-figured items 7, 8.
 - `experiments.md` — source of truth for resolved SPRTs.
 
 ## Stop-trying list (verbatim — mostly carried forward)
