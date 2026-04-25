@@ -318,7 +318,7 @@ enum Commands {
         /// refused at load time unless --load-anyway is set. Default true;
         /// pass --no-xray-trained when converting a Bullet net trained
         /// with --xray 0.
-        #[arg(long, default_value_t = true)]
+        #[arg(long = "no-xray-trained", action = clap::ArgAction::SetFalse)]
         xray_trained: bool,
     },
     /// Convert .nnue to Bullet checkpoint (for transfer learning)
