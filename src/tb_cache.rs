@@ -111,8 +111,13 @@ impl TbCache {
         if !self.enabled { return None; }
         let ekey = effective_key(key, halfmove);
         let slot = &self.slots[(ekey & self.mask) as usize];
-        let kxv = slot.key_xor_value.load(Ordering::Relaxed);
-        let val = slot.value.load(Ordering::Relaxed);
+        // Acquire on key_xor_value + value pairs with Release on the matching
+        // stores below — necessary on aarch64 to prevent observing new
+        // key_xor_value with stale value (or vice versa) under the weaker
+        // ARM memory model. On x86 this degenerates to plain Relaxed in
+        // hardware (no extra cost).
+        let kxv = slot.key_xor_value.load(Ordering::Acquire);
+        let val = slot.value.load(Ordering::Acquire);
         if val != 0 && kxv ^ val == ekey {
             Some(decode(val))
         } else {
@@ -127,13 +132,14 @@ impl TbCache {
         let ekey = effective_key(key, halfmove);
         let slot = &self.slots[(ekey & self.mask) as usize];
         let val = encode(wdl);
-        // Write value first, then the XOR key. A concurrent reader that
-        // observes an intermediate state (old key_xor_value, new value, or
-        // vice-versa) fails the XOR check and falls through to shakmaty —
-        // which is always safe because shakmaty probes are pure functions
-        // of position.
-        slot.value.store(val, Ordering::Relaxed);
-        slot.key_xor_value.store(ekey ^ val, Ordering::Relaxed);
+        // Write value first, then the XOR key. Release on both stores: the
+        // value write must be visible to any reader that observes the new
+        // key_xor_value. Without Release on aarch64, a concurrent reader can
+        // see new key_xor_value with old value, fail the XOR check, and miss
+        // — which is benign (falls through to shakmaty) but wastes work.
+        // On x86 Release is essentially free.
+        slot.value.store(val, Ordering::Release);
+        slot.key_xor_value.store(ekey ^ val, Ordering::Release);
     }
 
     /// Clear all slots. Called on `ucinewgame` and when resized.
