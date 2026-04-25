@@ -63,58 +63,45 @@ mod tests` block. Branch name suggestion: `arm/neon-parity-tests`.
 **Report back**: do the tests pass at all widths? If they fail
 anywhere, that's a real bug — describe it before fixing.
 
-## Priority 3 — does the v9 T=4 blunder bug exist on aarch64?
+## Priority 3 — WAC EPD comparison vs x86
 
-Background (memory: `project_v9_t4_threading_bug.md`): on x86, v9
-T=4 produces ~14× more blunders than T=1. We don't know if this is
-SMP race (would also fire on aarch64) or x86-specific. Atlas is
-investigating on x86; we don't have ARM data.
-
-```bash
-# Get the prod v9 net
-./target/release/coda fetch-net  # downloads to net.nnue per net.txt
-
-# Quick sanity: run a self-bench at T=1 vs T=4
-./target/release/coda bench 13 -nnue net.nnue  # T=1
-# (no built-in T=4 bench — instead run a small self-play match)
-
-# Use cutechess-cli or similar at 60+0.6, T=1 vs T=4, 50 games each
-# side, see if blunder rate differs visibly
-```
-
-If you don't have cutechess set up on the M5, skip this — it's a
-nice-to-have. The data point we'd want is "does T=4 lose to T=1
-qualitatively on aarch64 the same way it does on x86?" Even 50
-games eyeballed for blunders is informative.
-
-Optionally, also try the same test on branch
-`fix/aarch64-tt-tbcache-ordering` (the Acquire/Release fix, SPRT
-#764 in flight on x86):
+WAC (Win At Chess) is 201 tactical positions. Same net + same
+search depth = same set of positions solved on x86 vs aarch64
+**unless** there's a NEON eval bug or other aarch64-specific
+divergence. This is the cheapest cross-arch correctness check we
+have.
 
 ```bash
-git checkout fix/aarch64-tt-tbcache-ordering
-cargo build --release
-# rerun the T=4 test — does it look better with Acquire/Release?
+git checkout main && cargo build --release
+./target/release/coda fetch-net  # downloads prod net to net.nnue
+./target/release/coda epd testdata/wac.epd 1000 0 -nnue net.nnue
 ```
 
-**Report back**: any qualitative difference? T=4 vs T=1 blunder
-rate? Any difference between main and the ordering-fix branch?
+I'll run the same command on x86 and we compare. The output is
+"solved N / 201" plus per-position move + time. Diff the
+"solved-vs-not" set — any position solved on one arch but not the
+other is a divergence worth investigating (likely NEON bug, but
+could also just be NPS-driven horizon difference).
 
-## Priority 4 (only if you have time) — `make pgo` and `make openbench`
+**Report back**: how many of 201 solved? Save the full output to
+`docs/arm_wac_run_<date>.txt` and push the file so I can diff.
+
+## Priority 4 — `make openbench`
 
 ```bash
 git checkout main
-make pgo            # cargo-pgo flow
 make openbench      # OB-compatible build
 ```
 
-`make pgo` may not work on aarch64 — that's fine, the answer is
-"does it work y/n" plus the error output if not.
+We want to know whether an ARM OpenBench worker is feasible. If
+`make openbench` produces a binary that can respond to `uci` /
+`bench` correctly, we're good for the eventual ARM-OB-worker.
 
-`make openbench` should work — if it produces a binary that can
-respond to `uci` then we're good for the eventual ARM-OB-worker.
+**Skip `make pgo`** — it doesn't work for v9 even on amd64, so
+ARM is not the place to debug it.
 
-**Report back**: did either fail, and what was the error?
+**Report back**: did `make openbench` succeed, and does the
+resulting binary pass `bench`?
 
 ## What to do with findings
 
