@@ -158,6 +158,7 @@ enum Stage {
     GenerateQuiets,
     Quiets,
     BadCaptures,
+    BadQuiets,
     Done,
 
     // Evasion stages (used when in check)
@@ -185,6 +186,12 @@ pub struct MovePicker {
     bad_moves: [Move; 256],
     bad_scores: [i32; 256],
     bad_len: usize,
+    // Bad quiets: scores below QUIET_SPLIT_THRESH, deferred to fire after
+    // bad captures (SF/Reckless/Obsidian pattern). Sized for the worst-case
+    // burst of low-history quiets at a node.
+    bad_quiet_moves: [Move; 128],
+    bad_quiet_scores: [i32; 128],
+    bad_quiet_len: usize,
     // Ply for killer indexing
     #[allow(dead_code)]
     ply: usize,
@@ -286,6 +293,9 @@ impl MovePicker {
             bad_moves: [NO_MOVE; 256],
             bad_scores: [0; 256],
             bad_len: 0,
+            bad_quiet_moves: [NO_MOVE; 128],
+            bad_quiet_scores: [0; 128],
+            bad_quiet_len: 0,
             ply,
             skip_quiet: false,
             threats,
@@ -318,6 +328,9 @@ impl MovePicker {
             bad_moves: [NO_MOVE; 256],
             bad_scores: [0; 256],
             bad_len: 0,
+            bad_quiet_moves: [NO_MOVE; 128],
+            bad_quiet_scores: [0; 128],
+            bad_quiet_len: 0,
             ply: 0,
             skip_quiet: true,
             threats: 0,
@@ -376,6 +389,9 @@ impl MovePicker {
             bad_moves: [NO_MOVE; 256],
             bad_scores: [0; 256],
             bad_len: 0,
+            bad_quiet_moves: [NO_MOVE; 128],
+            bad_quiet_scores: [0; 128],
+            bad_quiet_len: 0,
             ply,
             skip_quiet: false,
             // C8 audit LIKELY #19: evasion history READS must use the same
@@ -481,6 +497,22 @@ impl MovePicker {
 
                 Stage::BadCaptures => {
                     // TT move already filtered during capture scoring
+                    if self.index < self.moves.len {
+                        return self.pick_best();
+                    }
+                    self.stage = Stage::BadQuiets;
+                    self.restore_bad_quiets();
+                }
+
+                Stage::BadQuiets => {
+                    // Deferred low-history quiets — SF/Reckless/Obsidian
+                    // pattern: by the time we get here we've already tried
+                    // good quiets, killers, counter, and bad captures. The
+                    // remaining quiets had history scores below
+                    // QUIET_SPLIT_THRESH, suggesting they're unlikely to be
+                    // the move we want; trying them last lets aggressive
+                    // pruning (LMP/futility/SEE) take them out at lower
+                    // residual cost.
                     if self.index < self.moves.len {
                         return self.pick_best();
                     }
@@ -723,6 +755,39 @@ impl MovePicker {
             let idx = self.moves.len;
             self.moves.push(m);
             self.scores[idx] = score;
+        }
+
+        // Good/bad quiet split (SF/Reckless/Obsidian pattern). Quiets with
+        // scores below QUIET_SPLIT_THRESH get deferred to fire after bad
+        // captures — see Stage::BadQuiets. Walk backwards so swap-remove
+        // doesn't skip elements; cap bad_quiet bucket capacity to avoid
+        // overflowing the fixed-size array.
+        let thresh = crate::search::QUIET_SPLIT_THRESH.load(std::sync::atomic::Ordering::Relaxed);
+        let cap = self.bad_quiet_moves.len();
+        let mut i = self.moves.len;
+        while i > 0 {
+            i -= 1;
+            if self.scores[i] < thresh && self.bad_quiet_len < cap {
+                self.bad_quiet_moves[self.bad_quiet_len] = self.moves.moves[i];
+                self.bad_quiet_scores[self.bad_quiet_len] = self.scores[i];
+                self.bad_quiet_len += 1;
+                let last = self.moves.len - 1;
+                self.moves.moves[i] = self.moves.moves[last];
+                self.scores[i] = self.scores[last];
+                self.moves.len -= 1;
+            }
+        }
+
+        self.index = 0;
+    }
+
+    /// Swap in the saved bad quiets — the deferred low-history quiets that
+    /// fall after bad captures in the staged ordering.
+    fn restore_bad_quiets(&mut self) {
+        self.moves = MoveList::new();
+        for i in 0..self.bad_quiet_len {
+            self.moves.push(self.bad_quiet_moves[i]);
+            self.scores[i] = self.bad_quiet_scores[i];
         }
         self.index = 0;
     }

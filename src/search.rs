@@ -199,6 +199,7 @@ tunables!(
     (NMP_MIN_DEPTH, 5, 2, 20, 1.5),              // was hardcoded 3 (NMP activation gate, 2 sites)
     (HINDSIGHT_MIN_DEPTH, 2, 1, 20, 1.5),        // was hardcoded 2 (hindsight reduction gate)
     (TT_CUTOFF_HALFMOVE_MAX, 88, 50, 100, 3.0),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
+    (QUIET_SPLIT_THRESH, -14499, -25000, -2000, 1000.0), // good/bad quiet split: history threshold below which a quiet is deferred to fire after bad captures (SF/Reckless/Obsidian pattern)
 );
 
 /// Get a tunable parameter value (inline for hot paths)
