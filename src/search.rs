@@ -2525,6 +2525,14 @@ fn negamax(
                     - xray_bonus;
                 let singular_depth = (depth - 1) / 2;
 
+                // Audit SPECULATIVE: skip SE if singular_beta has dropped into
+                // mate-score range. tt_score_local was guarded above, but
+                // subtracting depth + king-pressure + xray margin can push
+                // singular_beta below -(MATE_SCORE - 100). Multi-cut at the
+                // 'return singular_beta' below would then return that
+                // mate-shaped value upstream, where it would be interpreted
+                // as a mate score where there's no mate.
+                if singular_beta > -(MATE_SCORE - 100) && singular_beta < MATE_SCORE - 100 {
                 info.excluded_move[ply_u] = tt_move;
                 let singular_score = negamax(board, info, singular_beta - 1, singular_beta, singular_depth, ply, false);
                 info.excluded_move[ply_u] = NO_MOVE;
@@ -2569,6 +2577,7 @@ fn negamax(
                     // All-node with competitive alternatives — mild reduce
                     singular_extension = -1;
                 }
+                } // end singular_beta-mate-range guard
             }
         }
 
