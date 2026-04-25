@@ -615,6 +615,23 @@ impl MovePicker {
                 };
             }
 
+            // Symmetric enter-threat penalty: pair to the escape bonus above.
+            // SF/Reckless/Plenty/Obsidian/Viri/Clover all apply both halves
+            // (threat_in − threat_out). Same magnitude as escape so the pair
+            // is truly symmetric — the existing SPSA-tuned ESCAPE_BONUS_*
+            // values express the marginal value of "is this square enemy-
+            // attacked"; that delta should be the same whether the piece is
+            // moving on or off it.
+            if self.threats & (1u64 << to) != 0 && piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                score -= match pt {
+                    4 => crate::search::ESCAPE_BONUS_Q.load(std::sync::atomic::Ordering::Relaxed),
+                    3 => crate::search::ESCAPE_BONUS_R.load(std::sync::atomic::Ordering::Relaxed),
+                    1 | 2 => crate::search::ESCAPE_BONUS_MINOR.load(std::sync::atomic::Ordering::Relaxed),
+                    _ => 0,
+                };
+            }
+
             // Quiet check bonus: moves that give direct check (SF +16384, Viridithas +10000)
             if piece != NO_PIECE {
                 let pt = board.piece_type_at(from);
