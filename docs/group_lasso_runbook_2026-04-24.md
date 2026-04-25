@@ -182,6 +182,15 @@ the 32 MB L3 target — no cache step-function yet. NPS bench showed
 -3 to -9 % vs dense, so sparse-matmul overhead currently dominates
 savings at 13.5 %. Need ~35 % threat sparsity for cache benefit.
 
+**Important reading discipline (added 2026-04-25):** the +13 Elo
+result is **probe-vs-probe at SB200**, NOT probe-vs-prod. Production
+is the SB800 dense net, which has the entire low-LR convergence tail
+(~+88 Elo SB400→SB800 on v9 sparse-threats). Probe #1 vs prod SB800
+would almost certainly regress 50-100 Elo because it's missing
+500+ superbatches of training. Probe #1 is **methodology validation
++ decision-tree input for the next SB800 production candidate**, not
+a Lichess deploy.
+
 ## Probes #2 and #3 — parallel SB200 at 3e-2 and 5e-2
 
 GPU-host workflow: two GPU machines available, run in parallel.
