@@ -314,9 +314,9 @@ Brief list; fix when touching the area.
 "empty-fleet sprint" are marked with their SPRT IDs; items skipped for
 specific reasons are noted inline. Don't re-queue these without re-reading.
 
-- ✅ `threats.rs:456` — bounds-safe shift fix merged — fix branch
-  `fix/threats-blocker-bounds`, SPRT #760 ([-5, 5] non-regression). Fix
-  adds explicit `blocker_sq + 1 < 64` guard. (2026-04-25)
+- ✅ `threats.rs:456` — bounds-safe shift fix **merged 2026-04-25**.
+  SPRT #760 [-5, 5] **H1 +0.9 ±2.2 / 17094g** (LLR 3.09). Fix branch
+  `fix/threats-blocker-bounds` adds explicit `blocker_sq + 1 < 64` guard.
 - `threats.rs:892-1224` — dead `compute_move_deltas` function duplicates delta pipeline; any drift goes unnoticed.
 - `threat_accum.rs:122-132` — `ThreatStack::push(mv, moved_pt)` args always `NO_MOVE, NO_PIECE_TYPE`; absorbed post-make. New caller forgetting the absorb is silent corruption.
 - `search.rs` threat_accum absorb — stores `moved_pt` from post-move mailbox, so promotions record QUEEN not PAWN. Currently only consumed by `== KING` check, safe today.
@@ -324,27 +324,37 @@ specific reasons are noted inline. Don't re-queue these without re-reading.
 - `cuckoo.rs:170-174` — root-boundary STM check picks first non-empty square; if both squares have pieces of the same colour, heuristic can misclassify. Knight-dance passes.
 - `cuckoo.rs:216-245` — `cuckoo_entries_valid_moves` test accepts ANY piece matching the XOR key; no unique-piece assertion per slot.
 - `see.rs:46-53` — SEE initial `risk_value -=` subtraction is strictly wrong when opponent has no defender; monotonicity of `see_ge` threshold still gives correct answer. Fuzzer covers it.
-- ✅ `search.rs:2647` — LMR `do_shallower` cp margin actioned across two SPRT
-  cycles: #673 at 30cp H0'd −1.7, #679 at 20cp H1'd +1.4 (merged), #762 at
-  10cp in flight 2026-04-25. Original integer-as-cp typo replaced.
-- ✅ `search.rs:2292-2294` — SE singular_beta mate-bypass clamp merged
-  (skip SE if singular_beta drops into mate range). Branch
-  `fix/se-singular-beta-mate-clamp`, SPRT #761 (2026-04-25).
-- ✅ `search.rs:2441-2449` — recapture extension `ply > 0` guard merged.
-  Branch `fix/recapture-ext-ply-guard`, SPRT #758 (2026-04-25).
+- ✅ `search.rs:2647` — LMR `do_shallower` cp margin actioned across three
+  SPRT cycles: #673 at 30cp H0'd −1.7, #679 at 20cp H1'd +1.4 (merged),
+  #762 at 10cp **H0 −2.5 / 10482g 2026-04-25** — 20cp is the optimum,
+  10cp is too aggressive. Don't queue further reductions without a
+  mechanism reason. Original integer-as-cp typo replaced.
+- ❌ `search.rs:2292-2294` — SE singular_beta mate-bypass clamp **H0**.
+  Branch `fix/se-singular-beta-mate-clamp`, SPRT #761 [-3, 3]
+  **H0 −1.8 ±2.4 / 14412g** (2026-04-25). The mate-distance clamp
+  on `singular_beta` removed legitimate SE searches in mate-shaped
+  positions where the multi-cut return was actually the right answer.
+  Bucket: mechanism-wrong. Drop unless an audit finding gives a
+  specific reason the clamp behaves correctly here.
+- ✅ `search.rs:2441-2449` — recapture extension `ply > 0` guard
+  **merged 2026-04-25**. Branch `fix/recapture-ext-ply-guard`,
+  SPRT #758 [-3, 3] **H1 +1.5 ±2.2 / 16606g** (LLR 2.97).
 - ⏭ `search.rs:1619-1626` — `any_threat_count` excludes king. Verified
   intent 2026-04-25: pawn excluded because cheap, king excluded because
   legal play means king can't be attacked-but-not-in-check (would be a
   check, handled elsewhere, or pinned which isn't a threat-on-king).
   Not a bug. Closed.
-- ✅ `search.rs:2894-2899` — FH blend skip inside SE verification merged.
-  Branch `fix/fh-blend-skip-in-se`, SPRT #759 (2026-04-25). Skips
-  blending when `info.excluded_move[ply_u] != NO_MOVE` so the singular_score
-  feeding DEXT-margin comparison isn't dampened.
-- ✅ `search.rs:500-527` — `should_stop` granularity 4096 → 1024 nodes
-  merged on `fix/should-stop-granularity` branch, SPRT #757 (2026-04-25,
-  on post-tune-750 trunk). Original SPRT pre-trunk-shift was H0; re-test
-  on new pruning regime.
+- ✅ `search.rs:2894-2899` — FH blend skip inside SE verification
+  **merged 2026-04-25**. Branch `fix/fh-blend-skip-in-se`, SPRT #759
+  [-3, 3] **H1 +1.7 ±2.4 / 14764g** (LLR 2.99). Skips blending when
+  `info.excluded_move[ply_u] != NO_MOVE` so the singular_score feeding
+  DEXT-margin comparison isn't dampened.
+- ❌ `search.rs:500-527` — `should_stop` granularity 4096 → 1024 nodes
+  **H0** on post-tune-750 trunk. Branch `fix/should-stop-granularity`,
+  SPRT #757 [-5, 5] **H0 −2.4 ±3.6 / 6516g** (2026-04-25). Re-test
+  on new pruning regime didn't flip the original H0 from #674. Drop —
+  4096-node granularity is fine at STC, the theoretical benefit for
+  <100ms time budgets isn't material at our SPRT cadence.
 - ⏭ `search.rs:1273-1278` — forced-move path zeros `soft_floor`. Re-analysed
   2026-04-25: for genuinely 1-legal moves, 10ms is the intended TM
   behaviour (saves stockpile time on the clock for the next non-forced
@@ -352,8 +362,13 @@ specific reasons are noted inline. Don't re-queue these without re-reading.
 - `search.rs:938-963` — `helper.root_stm = main.root_stm` is read before main sets it in `search()`. Currently unused; trap for future stm-aware helper code.
 - ⏭ `search.rs:1013` — helper `max_depth` 0-mapping. Edge case for `go depth 0`,
   not exercised by SPRT or production. SPRT-invisible. Skipped 2026-04-25.
-- ⏭ `tt.rs:431-457` vs `tb_cache.rs:101-114` — aarch64 Relaxed-store ordering.
-  Fleet is x86; can't SPRT this. Skipped 2026-04-25 (fleet-untestable).
+- ✅ `tt.rs:431-457` vs `tb_cache.rs:101-114` — aarch64 Acquire/Release
+  **merged 2026-04-25** as part of ARM-as-first-class commitment.
+  Branch `fix/aarch64-tt-tbcache-ordering`, SPRT #764 [-5, 5]
+  non-regression: **−0.1 ±1.9 / 24886g** (LLR −0.40, stopped at fade)
+  confirming x86 cost is essentially zero. ARM-side correctness can't
+  be SPRT-validated on x86 fleet but is required by the project_arm
+  commitment. See `docs/arm_correctness_2026-04-25.md`.
 - ✅ `see.rs` — duplicate SEE functions question. Verified single source of
   truth (`see_ge` in see.rs); movepicker.rs uses MVV-LVA scoring (different
   function class). Not a duplication. Closed 2026-04-25.

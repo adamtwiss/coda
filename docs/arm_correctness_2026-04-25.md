@@ -21,10 +21,11 @@ This doc tracks the ARM-correctness sweep and remaining follow-up.
 
 ## What's done
 
-### TT + tb_cache memory ordering (2026-04-25)
+### TT + tb_cache memory ordering (2026-04-25) — MERGED
 
 Branch: `fix/aarch64-tt-tbcache-ordering` (commit `54586b5`)
-SPRT: #764 [-5, 5] non-regression
+SPRT #764 [-5, 5] non-regression: **−0.1 ±1.9 / 24886g** (LLR −0.40,
+stopped at fade). x86 cost confirmed ≈ 0; merged to main 2026-04-25.
 
 Fixed: both TT and tb_cache used `Ordering::Relaxed` for the data+key
 XOR-validated lock-free pattern. On x86 this works because of strong

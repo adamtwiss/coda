@@ -5951,14 +5951,14 @@ Submitted on post-tune-750 trunk while GPU training runs:
 |------|--------|-------|--------|--------|
 | #754 | experiment/nmp-ttnoisy-rplus (re-SPRT) | guard retune-on-branch | [-3, 3] | **H0 (manually stopped 2026-04-25)** — −0.8 ±1.9 / 24460 g, LLR −2.20. Post-tune-750 didn't flip it; H0 a second time. |
 | #755 | experiment/n4-halfmove-scaled-margins (re-SPRT) | pruning | [-3, 3] | **stopped (no signal, 2026-04-25)** — +0.2 ±3.7 / 6606 g, LLR +0.12. Halfmove-scaling provides no marginal info on top of existing margins. |
-| #756 | experiment/sibling-se-propagation-v2 (re-SPRT) | extension | [-3, 3] | +0.9 ±3.6 / 6622 g — slowly trending H1 |
-| #757 | fix/should-stop-granularity (R5 #3) | TM 4096→1024 nodes | [-5, 5] | H0 −2.4 ±3.6 / 6516 g |
-| #758 | fix/recapture-ext-ply-guard (audit) | extension correctness | [-3, 3] | +0.3 ±2.8 / 10160 g — trending H1 |
-| #759 | fix/fh-blend-skip-in-se (audit) | extension correctness | [-3, 3] | +0.6 ±2.8 / 10744 g — trending H1 |
-| #760 | fix/threats-blocker-bounds (audit) | bounds-safety (sq=63) | [-5, 5] | +0.6 ±2.2 / 16716 g — trending H1 (LLR 1.88) |
-| #761 | fix/se-singular-beta-mate-clamp (audit) | extension correctness | [-3, 3] | −1.4 ±2.9 / 9658 g — trending H0 |
-| #762 | experiment/lmr-shallower-margin-10 (parameter probe) | LMR cp margin 20→10 | [-3, 3] | −3.1 ±3.7 / 6504 g — trending H0 |
-| #764 | fix/aarch64-tt-tbcache-ordering | ARM SMP correctness | [-5, 5] | early, low games |
+| #756 | experiment/sibling-se-propagation-v2 (re-SPRT) | extension | [-3, 3] | **stopped at fade 2026-04-25** — −0.2 ±1.9 / 25832g, LLR −0.59. Slow drift toward H0 with tight bars; no clean resolution coming. |
+| #757 | fix/should-stop-granularity (R5 #3) | TM 4096→1024 nodes | [-5, 5] | **H0 −2.4 ±3.6 / 6516g** — re-test on post-tune-750 trunk didn't flip original #674 H0. 4096-node granularity is correct at STC. Drop. |
+| #758 | fix/recapture-ext-ply-guard (audit) | extension correctness | [-3, 3] | **H1 +1.5 ±2.2 / 16606g** (LLR 2.97) — **MERGED** 2026-04-25 |
+| #759 | fix/fh-blend-skip-in-se (audit) | extension correctness | [-3, 3] | **H1 +1.7 ±2.4 / 14764g** (LLR 2.99) — **MERGED** 2026-04-25 |
+| #760 | fix/threats-blocker-bounds (audit) | bounds-safety (sq=63) | [-5, 5] | **H1 +0.9 ±2.2 / 17094g** (LLR 3.09) — **MERGED** 2026-04-25 |
+| #761 | fix/se-singular-beta-mate-clamp (audit) | extension correctness | [-3, 3] | **H0 −1.8 ±2.4 / 14412g** (LLR −2.95) — mate-distance clamp removed legitimate SE in mate-shaped positions where multi-cut return was correct. Bucket: mechanism-wrong. Drop. |
+| #762 | experiment/lmr-shallower-margin-10 (parameter probe) | LMR cp margin 20→10 | [-3, 3] | **H0 −2.5 ±2.9 / 10482g** (LLR −2.97) — 20cp is the optimum (per #679 H1 +1.4); 10cp too aggressive. Drop. |
+| #764 | fix/aarch64-tt-tbcache-ordering | ARM SMP correctness, [-5, 5] non-regression | [-5, 5] | **−0.1 ±1.9 / 24886g** (LLR −0.40, stopped at fade) — x86 cost ≈ 0, **MERGED** 2026-04-25 (ARM-as-first-class commitment). |
 
 **H0 post-mortems (2026-04-25)**:
 
@@ -5993,3 +5993,27 @@ Merged during 2026-04-24 → 2026-04-25 wave:
 (non-ship). Cumulative for the 2026-04 sprint, this brings trunk from
 roughly +0 (just v9 merged) to +40 self-play Elo, with cross-engine
 transfer ~50-80% of that = +20 to +32 cross-engine.
+
+### Correctness audit batch — final close 2026-04-25
+
+After the active batch resolved, the following correctness fixes
+merged in a second wave:
+
+- **#758 fix/recapture-ext-ply-guard**: +1.5 (recapture extension was
+  firing at root on game-history captures, leaking +1 ply into wrong
+  subtree)
+- **#759 fix/fh-blend-skip-in-se**: +1.7 (FH blending dampened
+  singular_score during SE verification, biasing DEXT decisions)
+- **#760 fix/threats-blocker-bounds**: +0.9 (1u64 << 64 UB in xray
+  blocker shift at sq=63; defence-in-depth, masked today by upstream
+  `revealed == 0` filter but fragile)
+- **#764 fix/aarch64-tt-tbcache-ordering**: non-regression (Acquire/
+  Release on x86 cost ≈ 0, ARM SMP correctness benefit
+  fleet-untestable but required per project_arm commitment)
+
+Plus three audit H0s with clear post-mortems (#761 SE-mate-clamp,
+#757 should-stop-granularity, #762 LMR-shallower-10).
+
+**Total banked from correctness audit batch: ~+4.1 Elo** on top of
+the +40 from search/tune cluster. Brings 2026-04-24 → 2026-04-25
+session total to **~+44 Elo merged**.

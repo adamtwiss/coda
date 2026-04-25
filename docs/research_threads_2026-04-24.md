@@ -139,9 +139,10 @@ audit batch, 1 in flight, 1 closed-on-re-analysis. Don't re-queue these.
 
 1. ✅ **SEE pawn-promotion recapture** (`see.rs:76-93`) — merged
    `b25366d` 2026-04-22 (#652 +1.8 Elo H1).
-2. 🔄 **`should_stop` 4096-node granularity** — re-tested on
-   post-tune-750 trunk: `fix/should-stop-granularity` SPRT #757 in flight
-   2026-04-25 (granularity bumped 4096 → 1024).
+2. ❌ **`should_stop` 4096-node granularity** — re-tested on
+   post-tune-750 trunk: `fix/should-stop-granularity` SPRT #757
+   **H0 −2.4 / 6516g 2026-04-25**. Re-test didn't flip the original
+   #674 H0; 4096 is correct at STC. Drop.
 3. ✅ **Evasion capture-promotion scoring** — fixed via C8 audit #25 +
    #26 in 2026-04-22 batch (mvv_lva path adds promotion delta;
    `is_cap` checked before `is_promotion` so capture-promotions take the
@@ -161,28 +162,34 @@ audit batch, 1 in flight, 1 closed-on-re-analysis. Don't re-queue these.
 - ✅ **Duplicate SEE source-of-truth** — verified clean; movepicker.rs
   uses MVV-LVA scoring (different function class), `see.rs::see_ge` is
   the single SEE truth source. Closed.
-- ✅ **SE `singular_beta` mate-bypass range** — fix merged
-  `fix/se-singular-beta-mate-clamp`, SPRT #761 in flight 2026-04-25.
-- ✅ **Recapture extension `ply>0` guard** — fix merged
-  `fix/recapture-ext-ply-guard`, SPRT #758 in flight 2026-04-25.
-- ✅ **FH blending inside SE** — fix merged `fix/fh-blend-skip-in-se`,
-  SPRT #759 in flight 2026-04-25.
-- ✅ **LMR `do_shallower` cp margin** — actioned across two cycles.
+- ❌ **SE `singular_beta` mate-bypass range** — `fix/se-singular-beta-mate-clamp`,
+  SPRT #761 [-3, 3] **H0 −1.8 / 14412g 2026-04-25**. Mate-distance
+  clamp removed legitimate SE in mate-shaped positions. Drop.
+- ✅ **Recapture extension `ply>0` guard** — **merged 2026-04-25**.
+  `fix/recapture-ext-ply-guard`, SPRT #758 [-3, 3] **H1 +1.5 / 16606g**.
+- ✅ **FH blending inside SE** — **merged 2026-04-25**.
+  `fix/fh-blend-skip-in-se`, SPRT #759 [-3, 3] **H1 +1.7 / 14764g**.
+- ❌ **LMR `do_shallower` cp margin** — actioned across three cycles.
   #673 at 30cp H0'd, #679 at 20cp H1'd +1.4 (merged), #762 at 10cp
-  in flight 2026-04-25.
+  **H0 −2.5 / 10482g 2026-04-25**. 20cp is the optimum.
 - ⏭ **`patch-net` NNUE magic** — defensive only, offline tool.
   Skipped (no Elo path).
-- ⏭ **TT/tb_cache aarch64 Release/Acquire** — fleet is x86, can't SPRT.
-  Skipped (fleet-untestable).
-- ✅ **`threats.rs:456` sq=63** — fix merged `fix/threats-blocker-bounds`,
-  SPRT #760 in flight 2026-04-25 ([-5, 5] non-regression).
+- ✅ **TT/tb_cache aarch64 Release/Acquire** — **merged 2026-04-25**
+  as part of ARM-as-first-class commitment. Branch
+  `fix/aarch64-tt-tbcache-ordering`, SPRT #764 [-5, 5] non-regression
+  **−0.1 ±1.9 / 24886g** confirming x86 cost ≈ 0. ARM correctness
+  benefit fleet-untestable but required.
+- ✅ **`threats.rs:456` sq=63** — **merged 2026-04-25**.
+  `fix/threats-blocker-bounds`, SPRT #760 [-5, 5] **H1 +0.9 / 17094g**.
 - ⏭ **SCReLU `>>8` vs `÷255` drift** — 0.8% drift, absorbed into SPSA tune.
   Cosmetic; would require recalibrating eval-aware tunables. Skipped.
 - ⏭ **`sample-positions` filter alignment** — offline tool, not search-
   affecting. Skipped.
 
-**Net for next-10:** 6 actioned (5 merged-and-SPRT'd, 1 verified-clean),
-4 skipped with rationale.
+**Net for next-10 (final 2026-04-25):** 5 merged (recapture-ply, FH-skip-in-SE,
+threats-bounds, aarch64-ordering, plus se-promo from earlier batch), 2 H0
+(SE-mate-clamp, lmr-shallower-10), 3 skipped with rationale, 1 verified-clean.
+Of the merged: +5.4 Elo total banked from this audit slice.
 
 ### Fuzzer expansion programme (5 categories)
 
