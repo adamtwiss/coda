@@ -69,9 +69,9 @@ tunables!(
     //   slightly cooler motif bonuses, reweighted corrhist (less cont
     //   and major, more minor). Most other params within ±10% of #660.
     // LMR_ENDGAME_PIECES stayed at 5 inside the narrow clamp — no manual restore needed.
-    (NMP_BASE_R, 5, 2, 8, 1.5),
+    (NMP_BASE_R, 6, 2, 8, 1.5),
     (NMP_DEPTH_DIV, 4, 1, 6, 1.5),
-    (NMP_EVAL_DIV, 104, 100, 400, 15.0),
+    (NMP_EVAL_DIV, 100, 100, 400, 15.0),
     (NMP_EVAL_MAX, 3, 1, 6, 1.5),
     (NMP_VERIFY_DEPTH, 8, 8, 20, 2.0),
     (RFP_DEPTH, 17, 2, 20, 2.0),
