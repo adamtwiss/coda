@@ -198,7 +198,7 @@ cargo build --release --example coda_v9_768_threats
 # GPU A
 ./target/release/examples/coda_v9_768_threats \
     --dataset-dir /workspace/data \
-    --kb-layout kb10 \
+    --kb-layout reckless \
     --hidden-activation crelu \
     --warmup 30 \
     --wdl 0.15 \
@@ -208,7 +208,7 @@ cargo build --release --example coda_v9_768_threats
 # GPU B
 ./target/release/examples/coda_v9_768_threats \
     --dataset-dir /workspace/data \
-    --kb-layout kb10 \
+    --kb-layout reckless \
     --hidden-activation crelu \
     --warmup 30 \
     --wdl 0.15 \
@@ -216,9 +216,12 @@ cargo build --release --example coda_v9_768_threats
     --group-l1-decay 5e-2
 ```
 
-(NOTE: probe #1 ran with `--kb-layout kb10`, NOT `--kb-layout reckless`
-as the original runbook stated. The actual produced net was kb10 — match
-that here so SPRT comparisons stay clean against the kb10 family.)
+**Flag-value note:** valid `--kb-layout` values per
+`bullet/examples/coda_v9_768_threats.rs:217` are `uniform | consensus |
+reckless` — there is no `kb10` flag value. The "kb10" naming in net
+filenames refers to the produced bucket count or post-hoc convention,
+not the training-flag value. Always pass `reckless` to match the
+original probe #1 recipe and the warm30 reference family.
 
 ## Decision tree after probes #2 and #3
 
