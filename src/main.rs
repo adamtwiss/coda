@@ -182,6 +182,14 @@ enum Commands {
     FetchNet,
     /// NNUE network health check (uses --nnue/-n flag or auto-discovers)
     CheckNet {},
+    /// Measure threat-matrix row sparsity in a v9 .nnue file.
+    /// Reports zero-row count, near-zero rows, and distribution of row
+    /// max-abs weights. Used for sparsity-probe diagnosis.
+    MeasureNetSparsity {
+        /// Input .nnue file
+        #[arg(long, short = 'i')]
+        input: String,
+    },
     /// Generate training data (SF binpack format)
     Datagen {
         /// Output binpack file
@@ -750,6 +758,10 @@ fn main() {
             }
         }
 
+        Some(Commands::MeasureNetSparsity { input }) => {
+            run_measure_net_sparsity(&input);
+        }
+
         Some(Commands::Datagen { output, depth, games, threads, hash, blunder, force_captures, epd }) => {
             let nnue_path = cli.nnue.unwrap_or_default();
             let mode = if let Some(epd_path) = epd {
@@ -1060,6 +1072,66 @@ fn run_check_net(net_path: &str) {
     } else {
         println!("{} passed, {} FAILED.", pass, fail);
     }
+}
+
+/// Measure threat-matrix row sparsity in a v9+ .nnue file.
+/// Used for L1-regularisation probe diagnosis. Prints zero-row count,
+/// near-zero rows (|max_abs| ≤ 1), and histogram of row max-abs weights.
+fn run_measure_net_sparsity(net_path: &str) {
+    use crate::nnue::NNUENet;
+    let net = match NNUENet::load(net_path) {
+        Ok(n) => n,
+        Err(e) => { eprintln!("load error: {}", e); std::process::exit(1); }
+    };
+    let num_features = net.num_threat_features;
+    if num_features == 0 {
+        println!("Net has no threat features (not a v9+ net).");
+        return;
+    }
+    let h = net.hidden_size;
+    let mut zero_rows = 0usize;
+    let mut near_zero_rows = 0usize;  // |max| <= 1
+    let mut hist: [usize; 6] = [0; 6];  // 0, 1, 2-3, 4-7, 8-31, 32+
+    let mut nonzero_weights = 0u64;
+    let mut total_abs_sum = 0u64;
+    for r in 0..num_features {
+        let row = &net.threat_weights[r * h..(r + 1) * h];
+        let max_abs = row.iter().map(|&w| (w as i32).abs()).max().unwrap_or(0);
+        if max_abs == 0 { zero_rows += 1; }
+        if max_abs <= 1 { near_zero_rows += 1; }
+        let bucket = match max_abs {
+            0 => 0, 1 => 1, 2..=3 => 2, 4..=7 => 3, 8..=31 => 4, _ => 5,
+        };
+        hist[bucket] += 1;
+        for &w in row {
+            if w != 0 { nonzero_weights += 1; }
+            total_abs_sum += (w as i32).abs() as u64;
+        }
+    }
+    let total_rows = num_features;
+    let total_weights = (num_features * h) as u64;
+    println!("=== Threat matrix sparsity: {} ===", net_path);
+    println!("Rows:  {} total, hidden_size={}", total_rows, h);
+    println!("Zero rows:      {} ({:.2}%)", zero_rows,
+        100.0 * zero_rows as f64 / total_rows as f64);
+    println!("Near-zero rows: {} ({:.2}%)  [|max| <= 1]", near_zero_rows,
+        100.0 * near_zero_rows as f64 / total_rows as f64);
+    println!("Row-max-abs histogram:");
+    println!("  0       : {}", hist[0]);
+    println!("  1       : {}", hist[1]);
+    println!("  2-3     : {}", hist[2]);
+    println!("  4-7     : {}", hist[3]);
+    println!("  8-31    : {}", hist[4]);
+    println!("  32+     : {}", hist[5]);
+    println!("Weight-level sparsity:");
+    println!("  Zero weights:    {} / {} ({:.2}%)",
+        total_weights - nonzero_weights, total_weights,
+        100.0 * (total_weights - nonzero_weights) as f64 / total_weights as f64);
+    println!("  Mean |weight|:   {:.3}", total_abs_sum as f64 / total_weights as f64);
+    let matrix_bytes = (num_features * h) as u64;  // i8 = 1 byte per weight
+    let compact_bytes = ((total_rows - zero_rows) * h) as u64;
+    println!("Matrix size: {} MB raw, {} MB compact (post zero-row compaction)",
+        matrix_bytes / (1024 * 1024), compact_bytes / (1024 * 1024));
 }
 
 fn run_binpack_stats(input: &str) {
