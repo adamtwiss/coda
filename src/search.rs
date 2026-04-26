@@ -1391,6 +1391,16 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     let mut best_move = NO_MOVE;
     let mut prev_score = 0i32;
 
+    // Stable PV snapshot. Updated only at the end of a *completed* iteration.
+    // On a mid-iteration interrupt (should_stop fires inside negamax) we
+    // restore from this so `best_move` and `pv_table[0]` stay consistent —
+    // otherwise the bestmove emit can pair the prior iteration's best_move
+    // with the current iteration's *partial* pv_table[0][1], producing a
+    // ponder move that doesn't apply to the actual position-after-best
+    // (lichess oeZ7KRUt forfeit, 2026-04-26).
+    let mut stable_pv_len: usize = 0;
+    let mut stable_pv: [Move; MAX_PLY + 1] = [NO_MOVE; MAX_PLY + 1];
+
     // Get a fallback move and keep the legal list for final validation
     let root_legal = generate_legal_moves(board);
     if root_legal.len > 0 {
@@ -1459,10 +1469,24 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
 
             score = asp_result;
-            if info.should_stop() { break; }
+            if info.should_stop() {
+                // Mid-iteration interrupt — restore the last completed iteration's
+                // PV so pv_table[0] stays in sync with `best_move`.
+                if stable_pv_len > 0 {
+                    info.pv_len[0] = stable_pv_len;
+                    for i in 0..stable_pv_len { info.pv_table[0][i] = stable_pv[i]; }
+                }
+                break;
+            }
         } else {
             score = negamax(board, info, -INFINITY, INFINITY, depth, 0, false);
-            if info.should_stop() { break; }
+            if info.should_stop() {
+                if stable_pv_len > 0 {
+                    info.pv_len[0] = stable_pv_len;
+                    for i in 0..stable_pv_len { info.pv_table[0][i] = stable_pv[i]; }
+                }
+                break;
+            }
         }
 
         // Get best move from PV table
@@ -1504,6 +1528,14 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         prev_score = score;
         info.last_score = score;
         info.ponder_depth.store(depth as u64, std::sync::atomic::Ordering::Relaxed);
+
+        // Snapshot the completed iteration's pv_table[0] so a future
+        // mid-iteration interrupt can restore consistency between best_move
+        // and pv_table[0]. See comment at stable_pv declaration.
+        stable_pv_len = info.pv_len[0].min(stable_pv.len());
+        for i in 0..stable_pv_len {
+            stable_pv[i] = info.pv_table[0][i];
+        }
 
         // Record cumulative nodes at this depth (for EBF calculation)
         if (depth as usize) < MAX_PLY {
@@ -1909,7 +1941,16 @@ fn negamax(
                     && halfmove_ok
                 {
                     info.stats.tt_cutoffs += 1;
-                    if tt_move != NO_MOVE && ply_u <= MAX_PLY {
+                    // Defence-in-depth: validate tt_move is fully legal before
+                    // stuffing it into pv_table. Diagnosed during PV_PONDER_BUG
+                    // chase as a path that *could* plant an illegal move (hash
+                    // collision, torn-write surviving XOR) — empirically never
+                    // fires, but the cost is O(1) and the failure mode is a
+                    // forfeited game on lichess (oeZ7KRUt 2026-04-26).
+                    if tt_move != NO_MOVE && ply_u <= MAX_PLY
+                        && crate::movepicker::is_pseudo_legal(board, tt_move)
+                        && board.is_legal(tt_move, board.pinned(), board.checkers())
+                    {
                         info.pv_table[ply_u][0] = tt_move;
                         info.pv_len[ply_u] = 1;
                     } else if ply_u <= MAX_PLY {
@@ -1970,10 +2011,15 @@ fn negamax(
                 if alpha >= beta && halfmove_ok {
                     if tt_move != NO_MOVE {
                         info.stats.tt_cutoffs += 1;
-                        // Update PV table with TT move
-                        if ply_u <= MAX_PLY {
+                        // Defence-in-depth: validate tt_move (see note at first cutoff site).
+                        if ply_u <= MAX_PLY
+                            && crate::movepicker::is_pseudo_legal(board, tt_move)
+                            && board.is_legal(tt_move, board.pinned(), board.checkers())
+                        {
                             info.pv_table[ply_u][0] = tt_move;
                             info.pv_len[ply_u] = 1;
+                        } else if ply_u <= MAX_PLY {
+                            info.pv_len[ply_u] = 0;
                         }
 
                         // History bonus for TT cutoff: reinforce move ordering

@@ -301,4 +301,150 @@ mod tests {
         let wdl = tb.probe_wdl(&board).expect("WDL probe should succeed");
         assert!(wdl == 0, "WDL KR vs KR (drawn): expected 0, got {}", wdl);
     }
+
+    /// Each move emitted by `probe_root_pv` must be legal in the position it
+    /// claims to apply to — walked from the root, applying each PV[i] in turn.
+    /// Lichess game oeZ7KRUt forfeit (move 79 / move 80, 2026-04-26): the PV
+    /// emitted as `e4f4 h3g2 d3g3 ...` had the move just played by the opponent
+    /// (h3g2) as the predicted ponder move. lichess-bot rejected it and ended
+    /// the game by resignation.
+    fn assert_pv_legal(tb: &SyzygyTB, fen: &str, label: &str) {
+        let board = Board::from_fen(fen);
+        let (pv, _wdl) = tb.probe_root_pv(&board, 32)
+            .unwrap_or_else(|| panic!("{}: probe_root_pv returned None", label));
+        assert!(!pv.is_empty(), "{}: PV is empty", label);
+
+        // Walk the PV: each move must be legal in the position before it,
+        // and applying it produces the position before the next move.
+        let mut walk = board.clone();
+        for (i, uci) in pv.iter().enumerate() {
+            let mv = crate::uci::parse_uci_move(&walk, uci)
+                .unwrap_or_else(|| panic!(
+                    "{}: PV[{}] = {:?} failed to parse on board {} — full PV: {:?}",
+                    label, i, uci, walk.to_fen(), pv));
+            // generate_legal_moves and check that mv's from/to match a legal move.
+            let legal = crate::movegen::generate_legal_moves(&walk);
+            let mut found = false;
+            for j in 0..legal.len {
+                if crate::types::move_from(legal.moves[j]) == crate::types::move_from(mv)
+                    && crate::types::move_to(legal.moves[j]) == crate::types::move_to(mv) {
+                    found = true;
+                    break;
+                }
+            }
+            assert!(found,
+                "{}: PV[{}] = {:?} is ILLEGAL on board {} — full PV: {:?}",
+                label, i, uci, walk.to_fen(), pv);
+            assert!(walk.make_move(mv),
+                "{}: PV[{}] = {:?} make_move failed on board {} — full PV: {:?}",
+                label, i, uci, walk.to_fen(), pv);
+        }
+    }
+
+    #[test]
+    fn probe_root_pv_only_legal_moves() {
+        crate::init();
+        let tb = match make_tb() {
+            Some(tb) => tb,
+            None => { eprintln!("Skipping TB test: no tablebases found"); return; }
+        };
+
+        // Lichess oeZ7KRUt move 79 — exact bug position (white to move,
+        // KR vs KP, halfmove=4 from 50mr cliff).
+        assert_pv_legal(&tb,
+            "8/8/8/8/4K1p1/3R4/6k1/8 w - - 4 79",
+            "lichess oeZ7KRUt move 79 (white to move)");
+
+        // Same position one ply later (after white's e4f4 — what ponder
+        // would actually be reasoning about).
+        assert_pv_legal(&tb,
+            "8/8/8/8/5Kp1/3R4/6k1/8 b - - 5 79",
+            "lichess oeZ7KRUt move 79 (black to move, after Kf4)");
+
+        // Variety of TB-reachable endgames to keep the walker honest.
+        assert_pv_legal(&tb,
+            "4k3/8/8/8/8/4P3/8/3QK3 w - - 0 1",
+            "KQP vs K, white to move");
+        assert_pv_legal(&tb,
+            "4k3/8/8/8/8/8/8/2BNK3 w - - 0 1",
+            "KBN vs K, white to move");
+        assert_pv_legal(&tb,
+            "5R2/8/8/8/4r3/4p3/4k3/2K5 b - - 0 71",
+            "KRP vs KR, black to move (winning)");
+
+    }
+
+    /// End-to-end search PV legality check for the lichess oeZ7KRUt bug.
+    ///
+    /// Runs a real search on the bug position, then validates that
+    /// `info.pv_table[0][0..pv_len[0]]` walks legally — same check the UCI
+    /// emit path implicitly relies on when it produces `bestmove ... ponder ...`.
+    ///
+    /// To trigger the original failure mode the test "warms up" the search by
+    /// running through positions from earlier in the game first, so any
+    /// ponder/TT carry-over that contributed to the bug has had a chance to
+    /// poison `info`. The bug emitted `bestmove e4f4 ponder h3g2` where
+    /// h3g2 was the move just played — making `pv_table[0][1]` a stale
+    /// move that doesn't apply to the position after `e4f4`.
+    #[test]
+    fn search_pv_legal_oezkrut_move79() {
+        crate::init();
+        let tb = match make_tb() {
+            Some(tb) => tb,
+            None => { eprintln!("Skipping TB test: no tablebases found"); return; }
+        };
+
+        let mut info = crate::search::SearchInfo::new(16);
+        info.syzygy = Some(std::sync::Arc::new(tb));
+        info.silent = true;
+
+        // Walk through the last several positions of the game so that TT,
+        // history, and pv_table all accumulate state from "real" earlier
+        // searches before we hit the bug position. Each search runs at a
+        // tight movetime so the test stays fast.
+        let warmup_fens = [
+            // After move 76... g4 (white K e4, R d5, K g3, P g4) — white to move.
+            "8/8/8/3R4/4K1p1/6k1/8/8 w - - 0 77",
+            // After move 77. Rd2 (rook to d2, then black king plays).
+            "8/8/8/8/4K1p1/6k1/3R4/8 b - - 1 77",
+            // After move 77... Kh3.
+            "8/8/8/8/4K1p1/7k/3R4/8 w - - 2 78",
+            // After move 78. Rd3+
+            "8/8/8/8/4K1p1/3R3k/8/8 b - - 3 78",
+            // After move 78... Kg2 — exact root for the bug ponder.
+            "8/8/8/8/4K1p1/3R4/6k1/8 w - - 4 79",
+        ];
+        let limits = crate::search::SearchLimits {
+            movetime: 80,
+            ..crate::search::SearchLimits::new()
+        };
+        for (i, fen) in warmup_fens.iter().enumerate() {
+            let mut board = crate::board::Board::from_fen(fen);
+            let _ = crate::search::search(&mut board, &mut info, &limits);
+
+            // Validate pv_table is internally consistent — every move walks
+            // legally from the search root onward.
+            let pv_len = info.pv_len[0];
+            let mut walk = board.clone();
+            for j in 0..pv_len {
+                let mv = info.pv_table[0][j];
+                if mv == crate::types::NO_MOVE {
+                    panic!("FEN[{}] {}: pv_table[0][{}] = NO_MOVE despite pv_len={}", i, fen, j, pv_len);
+                }
+                let legal = crate::movegen::generate_legal_moves(&walk);
+                let mut found = false;
+                for k in 0..legal.len {
+                    if crate::types::move_from(legal.moves[k]) == crate::types::move_from(mv)
+                        && crate::types::move_to(legal.moves[k]) == crate::types::move_to(mv) {
+                        found = true;
+                        break;
+                    }
+                }
+                assert!(found,
+                    "FEN[{}] {}: pv_table[0][{}] = {} is ILLEGAL on board {} (pv_len={})",
+                    i, fen, j, crate::types::move_to_uci(mv), walk.to_fen(), pv_len);
+                walk.make_move(mv);
+            }
+        }
+    }
 }
