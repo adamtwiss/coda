@@ -1941,16 +1941,7 @@ fn negamax(
                     && halfmove_ok
                 {
                     info.stats.tt_cutoffs += 1;
-                    // Defence-in-depth: validate tt_move is fully legal before
-                    // stuffing it into pv_table. Diagnosed during PV_PONDER_BUG
-                    // chase as a path that *could* plant an illegal move (hash
-                    // collision, torn-write surviving XOR) — empirically never
-                    // fires, but the cost is O(1) and the failure mode is a
-                    // forfeited game on lichess (oeZ7KRUt 2026-04-26).
-                    if tt_move != NO_MOVE && ply_u <= MAX_PLY
-                        && crate::movepicker::is_pseudo_legal(board, tt_move)
-                        && board.is_legal(tt_move, board.pinned(), board.checkers())
-                    {
+                    if tt_move != NO_MOVE && ply_u <= MAX_PLY {
                         info.pv_table[ply_u][0] = tt_move;
                         info.pv_len[ply_u] = 1;
                     } else if ply_u <= MAX_PLY {
@@ -2011,15 +2002,9 @@ fn negamax(
                 if alpha >= beta && halfmove_ok {
                     if tt_move != NO_MOVE {
                         info.stats.tt_cutoffs += 1;
-                        // Defence-in-depth: validate tt_move (see note at first cutoff site).
-                        if ply_u <= MAX_PLY
-                            && crate::movepicker::is_pseudo_legal(board, tt_move)
-                            && board.is_legal(tt_move, board.pinned(), board.checkers())
-                        {
+                        if ply_u <= MAX_PLY {
                             info.pv_table[ply_u][0] = tt_move;
                             info.pv_len[ply_u] = 1;
-                        } else if ply_u <= MAX_PLY {
-                            info.pv_len[ply_u] = 0;
                         }
 
                         // History bonus for TT cutoff: reinforce move ordering
