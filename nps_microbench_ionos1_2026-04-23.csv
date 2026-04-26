@@ -1,9 +1,0 @@
-host,cpu,arch,engine,isa,mode,evals_per_sec
-ionos1,"AMD EPYC-Milan Processor",x86_64,coda,native,fresh,30968
-ionos1,"AMD EPYC-Milan Processor",x86_64,coda,native,refresh,475034
-ionos1,"AMD EPYC-Milan Processor",x86_64,coda,native,incremental,1043100
-ionos1,"AMD EPYC-Milan Processor",x86_64,coda,native,make-unmake,7847737
-ionos1,"AMD EPYC-Milan Processor",x86_64,reckless,native,fresh,487872
-ionos1,"AMD EPYC-Milan Processor",x86_64,reckless,native,incremental,2212261
-ionos1,"AMD EPYC-Milan Processor",x86_64,reckless,native,make-unmake,8868432
-ionos1,"AMD EPYC-Milan Processor",x86_64,reckless,native,make-unmake-null,18012578

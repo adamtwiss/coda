@@ -1,9 +1,0 @@
-host,cpu,arch,engine,isa,mode,evals_per_sec
-Adams-MacBook-Air,"Apple M5",arm64,coda,native,fresh,484158
-Adams-MacBook-Air,"Apple M5",arm64,coda,native,refresh,842473
-Adams-MacBook-Air,"Apple M5",arm64,coda,native,incremental,1579483
-Adams-MacBook-Air,"Apple M5",arm64,coda,native,make-unmake,27064744
-Adams-MacBook-Air,"Apple M5",arm64,reckless,native,fresh,890168
-Adams-MacBook-Air,"Apple M5",arm64,reckless,native,incremental,4005457
-Adams-MacBook-Air,"Apple M5",arm64,reckless,native,make-unmake,30966248
-Adams-MacBook-Air,"Apple M5",arm64,reckless,native,make-unmake-null,45969324

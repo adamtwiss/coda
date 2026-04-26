@@ -1,9 +1,0 @@
-host,cpu,arch,engine,isa,mode,evals_per_sec
-thor,"AMD Ryzen 7 3800X 8-Core Processor",x86_64,coda,native,fresh,309026
-thor,"AMD Ryzen 7 3800X 8-Core Processor",x86_64,coda,native,refresh,574941
-thor,"AMD Ryzen 7 3800X 8-Core Processor",x86_64,coda,native,incremental,1152802
-thor,"AMD Ryzen 7 3800X 8-Core Processor",x86_64,coda,native,make-unmake,10797050
-thor,"AMD Ryzen 7 3800X 8-Core Processor",x86_64,reckless,native,fresh,665825
-thor,"AMD Ryzen 7 3800X 8-Core Processor",x86_64,reckless,native,incremental,2525770
-thor,"AMD Ryzen 7 3800X 8-Core Processor",x86_64,reckless,native,make-unmake,10154891
-thor,"AMD Ryzen 7 3800X 8-Core Processor",x86_64,reckless,native,make-unmake-null,18664630

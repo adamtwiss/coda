@@ -1,9 +1,0 @@
-host,cpu,arch,engine,isa,mode,evals_per_sec
-hercules,"Intel(R) Xeon(R) E-2288G CPU @ 3.70GHz",x86_64,coda,native,fresh,27862
-hercules,"Intel(R) Xeon(R) E-2288G CPU @ 3.70GHz",x86_64,coda,native,refresh,499218
-hercules,"Intel(R) Xeon(R) E-2288G CPU @ 3.70GHz",x86_64,coda,native,incremental,958680
-hercules,"Intel(R) Xeon(R) E-2288G CPU @ 3.70GHz",x86_64,coda,native,make-unmake,11924398
-hercules,"Intel(R) Xeon(R) E-2288G CPU @ 3.70GHz",x86_64,reckless,native,fresh,585901
-hercules,"Intel(R) Xeon(R) E-2288G CPU @ 3.70GHz",x86_64,reckless,native,incremental,2935135
-hercules,"Intel(R) Xeon(R) E-2288G CPU @ 3.70GHz",x86_64,reckless,native,make-unmake,11820114
-hercules,"Intel(R) Xeon(R) E-2288G CPU @ 3.70GHz",x86_64,reckless,native,make-unmake-null,20879518
