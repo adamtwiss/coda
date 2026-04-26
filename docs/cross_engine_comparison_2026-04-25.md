@@ -166,6 +166,17 @@ limit = if improving { LMP_BASE_IMP + d²/2 } else { LMP_BASE_NOIMP + d²/2 }
 
 **Expected +5 to +8 Elo** (already on next_ideas as T-something, was previously researched).
 
+> **Phased Reckless alignment in flight 2026-04-26** — see
+> `docs/lmp_reckless_alignment_plan_2026-04-26.md`. Empirical 28× LMP
+> firing gap motivated a 7-difference enumeration + phased plan.
+> **Phase A merged**: #808 lmp-direct-check-carveout (+2.54),
+> #810 lmp-skip-quiets (+1.86). Combined +4.4 Elo banked.
+> **Phase B running**: #811 SPSA on `experiment/lmp-reckless-shape`
+> (formula change to Reckless history-aware continuous-improvement
+> form, 4 new tunables: LMP_K_BASE/IMP/DEPTH/HIST, 80-param full
+> sweep). Phase C (drop !is_pv gate, drop depth cap) deferred until
+> Phase B retune lands.
+
 ### 10. **History pruning gate inverts intent**
 
 `src/search.rs:2591`. `!improving && !unstable` gate. **SF/Obsidian/Halogen/Reckless gate hist-prune on none of these conditions** — only `score > worst` and shallow depth. Coda's gates suppress firing in ~50% of nodes hist-prune was meant for. Drop the `!improving && !unstable` clause.

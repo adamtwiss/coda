@@ -6157,3 +6157,27 @@ predates 62931d1).
 **~+11.6 Elo merged this session.** Plus the C8fix-2 isolation pair
 (#793/#794) and 9 cross-engine port SPRTs (mostly H0 with retune
 follow-ups in flight) and 6 SPSA tunes (1 applied, 4 running, 1 stopped).
+
+### LMP-vs-Reckless alignment, Phase A (2026-04-26)
+
+Driven by `docs/reckless_vs_coda_pruning_diff_2026-04-25.md` finding:
+Coda fires LMP **28× more often per Kn** than Reckless. Plan
+documented in `docs/lmp_reckless_alignment_plan_2026-04-26.md`. 7
+differences enumerated; phased A (independent surgical) → B
+(structural threshold) → C (gate removals).
+
+| SPRT | Branch | Result | Outcome |
+|------|--------|--------|---------|
+| #808 | experiment/lmp-direct-check-carveout (Phase A #1) | **H1 +2.54** | **MERGED** (3252a3a). Single-line `&& !board.gives_direct_check(mv)` inside LMP gate. Bench 736194 → 796065 (+8%, fewer LMP fires let checking late moves through). |
+| #810 | experiment/lmp-skip-quiets (Phase A #2) | **H1 +1.86** | **MERGED** (6f54162). Reckless pattern (search.rs:752): set `skip_quiets` flag once LMP fires; bypass remaining quiets in move loop. Bench 736194 → 1000987 (+36%). Submitted as data point per Adam — bisection confirmed setter-without-check is bench-neutral while check-enabled is +22% on its own; logical equivalence to per-move re-fire didn't hold empirically. Per-move-trace instrumentation queued if interpretation needs refinement. |
+
+**Phase A banked: +4.4 Elo merged.** Both wins compound on top of
+trunk's tune-784 retune; bench shifted ~+36% reflects materially
+shallower trees (more LMP fires reach late quiets).
+
+### Active SPSA tunes (Phase B, in flight)
+
+| Tune | Branch / target | Iters / params | Status |
+|------|-----------------|---------------|--------|
+| #806 | experiment/se-margins-reckless (v2 with corr modulator + DEXT_MARGIN_BASE) | 2500 / 84 | running |
+| #811 | experiment/lmp-reckless-shape (Phase B #3+#4+#5) | 2500 / 80 | running. Replaces threshold formula with Reckless history-aware continuous-improvement form: `(LMP_K_BASE + LMP_K_IMP*imp/16 + LMP_K_DEPTH*d² + LMP_K_HIST*main_hist/1024) / 1024`. Re-SPRT post-tune vs main is the real test. |
