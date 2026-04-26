@@ -6079,14 +6079,18 @@ or bisecting toward.
 | #780 | experiment/capture-lmr-hist-adjustment | [0, 3] | **H0 −0.5 ±2.1 / 21.2K** (LLR −1.38) | retune-needed-prior at default tunable; SPSA #791 in flight to find LMR_CAP_HIST_DIV's converged value |
 | #781 | experiment/enter-threat-split-tunables | [0, 3] | **H0 +0.1 ±1.0 / 94.7K** (LLR −2.96) — burned excess fleet capacity per `feedback_stop_sprt_when_upper_ci_below_elo1` | mechanism-wrong / signal-overlap; threat-aware history already captures most of this signal |
 | #785 | experiment/pawn-history-8192 | [0, 3] | **H0 −1.2 ±1.8 / 27.7K** (LLR −3.00) | initial bucket value-too-extreme; bisected to 2048 (#797) but **bisection landed even worse: −3.3 ±3.3 / 8.3K (LLR −3.05)**. 512 → 2048 → 8192 = -3.3 → -1.2 non-monotonic. Pawn-history size isn't a free Elo lever for Coda in this range. **Drop**; possible refined retry is `pawnHistFill = -919` SPSA-tuned init (Integral pattern) at default 512 size, but priority low. Lesson: bisection isn't always rescue — sometimes the consensus value carries a different mechanism Coda lacks. |
-| #786 | experiment/hist-prune-gate-drop | [0, 3] | **trending H0** −0.2 ±1.3 / 49.5K (LLR −2.50) | mechanism-wrong / signal-overlap; dropping `!improving && !unstable` gates didn't compound with FUT_LMR_DEPTH/BAD_NOISY_DEPTH the way the doc predicted |
-| #787 | experiment/triple-extension | [0, 3] | **H0 −1.0 ±1.7 / 30.7K** (LLR −2.95) | retune-needed-prior; SPSA #792 (triple-ext cluster, 1000 iters) on branch in flight to find right TRIPLE_MARGIN/DEXT_MARGIN/DEXT_CAP for Coda's tree |
+| #786 | experiment/hist-prune-gate-drop | [0, 3] | **H0 stopped −0.2 ±1.2 / 56.5K** (LLR −2.88) — **MERGED** as ebe9ad6 for code hygiene + consensus alignment | bench 947494 → 736194 (-22%): consensus-gate change shifts search shape substantially. Elo-neutral but flywheel-eligible — surrounding pruning cluster has shifted equilibrium. **Queue retune-on-branch follow-up** per `feedback_bench_delta_signals_retune_need` |
+| #787 | experiment/triple-extension | [0, 3] | **H0 −1.0 ±1.7 / 30.7K** (LLR −2.95) | retune-needed-prior at flat-constant defaults → #792 SPSA found no basin → reclassified **mechanism-wrong**; refined retry as #804 with Reckless-pattern structural fix (PV/quiet-aware additive margins) |
+| #804 | experiment/se-margins-reckless | [0, 5] | **H0 −12.5 ±6.4 / 2.5K** (LLR −2.96) | structural port at Reckless-derived defaults; +62% bench delta = search-shape change. **Retune-needed-prior** — Reckless's margins (DEXT_MARGIN_PV=204, QUIET=16, TRIPLE_MARGIN_PV=257, QUIET=16, BASE=75) are calibrated against Reckless's pruning context, not Coda's. Follow-up: SPSA on branch (5 new tunables + adjacent SE/extension cluster) |
 
-**Calibration**: 7/8 H0 on consensus ports with retune-needed or
-structural-finding follow-ups. Three of the H0s queue refined retries
-(#772→#790, #780→#791, #787→#792). Two queue bisections (#785→#797).
-Three drop (#771, #773→#781, #786). The doc's "all-Tier-1 +25-50 Elo"
-expectation collapses to maybe +5-15 once the retunes resolve.
+**Calibration**: 8/9 H0 on consensus ports with retune-needed or
+structural-finding follow-ups. Refined retries: #772→#790, #780→#791,
+#787→#792→#804 (chained mechanism-wrong → structural fix → retune
+pending). Bisections: #785→#797 (drop). Drops: #771, #773→#781.
+**Merged for consensus alignment despite H0**: #786 (gate-drop, code
+hygiene + bench-delta retune queued). The doc's "all-Tier-1 +25-50 Elo"
+expectation collapses to maybe +5-15 once the SE-margins retune and
+bench-delta retunes resolve.
 
 ### Factor SB800 net swap + tune wave (PROD-AFFECTING)
 
@@ -6120,7 +6124,7 @@ predates 62931d1).
 |------|-----------------|---------------|--------|
 | #790 | experiment/nmp-cut-node-gate | 1500 / 8 | running, big movers settling (NMP_BASE_R +9%, NMP_UNDEFENDED_MAX -26%) |
 | #791 | experiment/capture-lmr-hist-adjustment | 1500 / 5 | running, LMR_CAP_HIST_DIV 1024→1117 (+9%), CAP_HIST_BASE 18→20 (+12%) |
-| #792 | experiment/triple-extension | 1000 / 3 | **finished** — no basin found (TRIPLE_MARGIN 75→78 +3.5% *, DEXT_MARGIN flat, DEXT_CAP 16→15 −3.9% *). All single-star, noise drift. Reclassifies #787 from retune-needed-prior → signal-not-there. Drop. |
+| #792 | experiment/triple-extension | 1000 / 3 | **finished** — no basin found at flat-constant defaults; reclassified by #804 investigation as **mechanism-wrong** (Coda's flat 75/16 missed Reckless/SF's `204*PvNode - 16*is_quiet` per-node-type margin scaling). Refined retry: #804 with structural fix |
 | #795 | main focused (CC483681) | 1500 / 15 | **STOPPED** at iter 55 — wrong scope (focused-cluster playbook applies to feature retunes, NOT net swaps). Replaced by #796 |
 | #796 | main full-sweep (CC483681) | 2500 / 77 | running, ~893/2500. Many movers >10% (NMP_EVAL_MAX -57%, LMR_THREAT_DIV -23%, LMP_BASE +16%, CORR_W_NP/MINOR/MAJOR/CONT all 9-12%) — strongly supports trunk-mismatch confound on #794 |
 
