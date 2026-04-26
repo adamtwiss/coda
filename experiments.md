@@ -6181,7 +6181,7 @@ shallower trees (more LMP fires reach late quiets).
 
 | Tune | Branch / target | Iters / params | Status |
 |------|-----------------|---------------|--------|
-| #806 | experiment/se-margins-reckless (v2 with corr modulator + DEXT_MARGIN_BASE) | 2500 / 84 | **finished**. Big movers: DEXT_MARGIN_PV 204→216, DEXT_MARGIN_QUIET 16→11 (-29%), DEXT_MARGIN_BASE 30→24 (-19%), TRIPLE_MARGIN_QUIET 16→18, TRIPLE_MARGIN_BASE 75→86, DEXT_CAP 15→13, SE_DEPTH 4→5, CORR_BONUS_CAP_DIV 2→3, NMP_UNDEFENDED_MAX 1→2, LMP_BASE 8→10 (+25%), LMP_DEPTH 13→11. Applied as 8736d30; post-tune SPRT **#815** [0, 5] vs main running. |
+| #806 | experiment/se-margins-reckless (v2 with corr modulator + DEXT_MARGIN_BASE) | 2500 / 84 | **finished**. Big movers: DEXT_MARGIN_PV 204→216, DEXT_MARGIN_QUIET 16→11 (-29%), DEXT_MARGIN_BASE 30→24 (-19%), TRIPLE_MARGIN_QUIET 16→18, TRIPLE_MARGIN_BASE 75→86, DEXT_CAP 15→13, SE_DEPTH 4→5, CORR_BONUS_CAP_DIV 2→3, NMP_UNDEFENDED_MAX 1→2, LMP_BASE 8→10 (+25%), LMP_DEPTH 13→11. Applied as 8736d30; post-tune SPRT **#815 trended H0 (-4.84 ±10.5 / 790g, stopped)**. Hypothesis: TRIPLE bundling diluted the DEXT signal — TRIPLE was independently H0 at #787 with no SPSA basin (#792). Split branch as `experiment/se-margins-reckless-no-triple` (commit ecf3532, bench 686441, -31% vs main) — DEXT decomposition + corr modulator + BASE only, TRIPLE removed. SPSA **#816** running. |
 | #811 | experiment/lmp-reckless-shape (Phase B #3+#4+#5) | 2500 / 80 | running. Replaces threshold formula with Reckless history-aware continuous-improvement form: `(LMP_K_BASE + LMP_K_IMP*imp/16 + LMP_K_DEPTH*d² + LMP_K_HIST*main_hist/1024) / 1024`. Re-SPRT post-tune vs main is the real test. |
 
 ### Tier 3 quick-win SPRTs (2026-04-26)
