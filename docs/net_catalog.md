@@ -8,7 +8,13 @@ Update this file when you promote a new production net or retire an old one.
 Published as `v0.4.0-nets` release; referenced by `net.txt`. Promoted
 2026-04-26 after deployment-package SPRT #789 H1'd at +4.9 Elo
 (net swap alone +3.3 in #782, plus tune-784 retune for the rest).
-All v9 SPRTs against trunk should pass
+**Caveat:** filename "C8fix" labels the FIRST C8 fix only (a8e2c7d).
+The "Complete C8 fix" (62931d1) was committed Apr 25 20:15, only
+~1h before the SB800 file's mtime (21:52) — SB800 train (~30-40h)
+was already done. So 1EF1C3E5 contains C8fix-1 only ("noisy threats").
+A future SB800 retrain on `bullet/feature/no-blocking-sync` (post-
+62931d1) would actually include C8fix-2 — that's the next prod
+candidate. All v9 SPRTs against trunk should pass
 `--dev-network 1EF1C3E5 --base-network 1EF1C3E5`.
 
 **Previous v9 production:** `DAA4C54E` —
@@ -31,10 +37,10 @@ v0.3.0-nets release until 2026-04-26.
 
 | Hash | Layout | File | Status | Notes |
 |---|---|---|---|---|
-| `1EF1C3E5` | kb10 | `net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor.nnue` | **PROD** (v0.4.0-nets) | SB800 + factor + complete C8-fix (both halves: a8e2c7d Apr 22 + 62931d1 Apr 25). Trained from `bullet/fix/c8-xray-semi-exclusion`. Promoted 2026-04-26 after #789 H1 +4.9. Net swap alone +3.3 (#782); tune-784 retune-on-this +3.0 (#788); deployment package together +4.9 (#789). Local: `nets/net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor.nnue` (Apr 25 21:52). |
-| `CC483681` | kb10 | `net-v9-768th16x32-kb10-w15-e200s200-crelu-C8fix-factor.nnue` | **C8fix-2 isolation test** | NEW SB200 + factor + complete C8-fix (both halves). Companion to 1EF1C3E5 at SB200 to validate the 2nd C8 fix in isolation. Net-vs-net SPRT vs C0A97CF4 (factor + C8fix-1) submitted 2026-04-26 — measures C8fix-2 contribution at SB200. Local: `nets/net-v9-768th16x32-kb10-w15-e200s200-crelu-C8fix-factor.nnue` (Apr 26 08:31). Bench main 1599785. |
-| `FF8C93DC` | kb10 | `net-v9-768th16x32-kb10-w15-e400s400-crelu-C8fix-factor.nnue` | intermediate | SB400 + factor + complete C8-fix. Used during the C8-fix-factor training trajectory. |
-| `C0A97CF4` | kb10 | `net-v9-768th16x32-kb10-w15-e200s200-factor.nnue` | C8fix-2 isolation base | SB200 + factor (trained Apr 22 06:37, before 62931d1 commit Apr 25 — has only C8fix-1). Used as base for the CC483681 vs C0A97CF4 comparison (isolates C8fix-2 contribution at SB200). Hidden activation: per training script default at the time (screlu-hidden — name lacks `-crelu` suffix). Bench main 1202123. |
+| `1EF1C3E5` | kb10 | `net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor.nnue` | **PROD** (v0.4.0-nets) | SB800 + factor. Filename "C8fix" labels the **first** C8 fix only (a8e2c7d Apr 22). The "Complete C8 fix" (62931d1, Apr 25 20:15) was committed only 1h37m before file mtime (Apr 25 21:52); SB800 train (~30-40h) was already done — file mtime is the conversion timestamp. So this net has **C8fix-1 only ("noisy threats")**, NOT C8fix-2. Promoted 2026-04-26 after #789 H1 +4.9. Net swap alone +3.3 (#782); tune-784 retune-on-this +3.0 (#788); deployment package together +4.9 (#789). Local: `nets/net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor.nnue` (Apr 25 21:52). |
+| `CC483681` | kb10 | `net-v9-768th16x32-kb10-w15-e200s200-crelu-C8fix-factor.nnue` | C8fix-2 isolation test | **First net to actually contain C8fix-2.** SB200 + factor + complete C8-fix (both halves a8e2c7d + 62931d1). Trained Apr 26 ~01:15 (start) → Apr 26 08:31 (file mtime), well after the 62931d1 commit. Net-vs-net SPRT vs C0A97CF4 (#794, on tune-784 trunk) measures C8fix-2 contribution at SB200. Caveat: trunk tunables are calibrated against 1EF1C3E5 (noisy threats), so tunables fit the BASE here, not the DEV — SPRT result is a lower bound on C8fix-2 contribution. Local: `nets/net-v9-768th16x32-kb10-w15-e200s200-crelu-C8fix-factor.nnue` (Apr 26 08:31). Bench (post tune-784 main) 1502300. |
+| `FF8C93DC` | kb10 | `net-v9-768th16x32-kb10-w15-e400s400-crelu-C8fix-factor.nnue` | intermediate | SB400 + factor. Apr 23 12:59 — predates 62931d1 (Apr 25), so C8fix-1 only. Filename label is C8fix-1. |
+| `C0A97CF4` | kb10 | `net-v9-768th16x32-kb10-w15-e200s200-factor.nnue` | C8fix-2 isolation base | SB200 + factor (trained Apr 22 06:37, before 62931d1 commit Apr 25 — has only C8fix-1). Used as base for #794. Same threat semantics as 1EF1C3E5, so tunables fit. Hidden activation: per training script default at the time (screlu-hidden — name lacks `-crelu` suffix). Bench (post tune-784 main) 1454351. |
 | `80CB364B` | kb10 | `net-v9-nonfactor-sb400-warm30.nnue` | candidate | Non-factoriser SB400 warm30 on post-C8-fix-1 Bullet. Bench 3058198 on tuned trunk. First-move cut 76.9%, NMP cutoff rate 49%, EBF 1.74. Was under SPRT vs prod and vs C8-fix S200 (2026-04-23). |
 | `1836917B` | kb10 | `net-v9-768th16x32-kb10-w15-e200s200-crelu-C8fix.nnue` | tune baseline (no factor) | C8-fix S200 + crelu-hidden, **no factor**. The net #660 tune + #661 +8.25 H1 were validated against. Bench 2575054 on tuned trunk. |
 | `DAA4C54E` | kb10 | `net-v9-768th16x32-kb10-w15-e800s800-crelu.nnue` (released) / `...reckless-crelu.nnue` (legacy name) | retired prod | v9 production from v0.3.0-nets through 2026-04-26. Trained from Bullet WITHOUT C8-fix-2 (a8e2c7d C8-fix-1 only). Tunes #585, #586, #599, #743/#747 all ran on this. Same content under both filenames. Replaced by 1EF1C3E5 (v0.4.0-nets). |
