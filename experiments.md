@@ -6181,5 +6181,20 @@ shallower trees (more LMP fires reach late quiets).
 
 | Tune | Branch / target | Iters / params | Status |
 |------|-----------------|---------------|--------|
-| #806 | experiment/se-margins-reckless (v2 with corr modulator + DEXT_MARGIN_BASE) | 2500 / 84 | running |
+| #806 | experiment/se-margins-reckless (v2 with corr modulator + DEXT_MARGIN_BASE) | 2500 / 84 | **finished**. Big movers: DEXT_MARGIN_PV 204→216, DEXT_MARGIN_QUIET 16→11 (-29%), DEXT_MARGIN_BASE 30→24 (-19%), TRIPLE_MARGIN_QUIET 16→18, TRIPLE_MARGIN_BASE 75→86, DEXT_CAP 15→13, SE_DEPTH 4→5, CORR_BONUS_CAP_DIV 2→3, NMP_UNDEFENDED_MAX 1→2, LMP_BASE 8→10 (+25%), LMP_DEPTH 13→11. Applied as 8736d30; post-tune SPRT **#815** [0, 5] vs main running. |
 | #811 | experiment/lmp-reckless-shape (Phase B #3+#4+#5) | 2500 / 80 | running. Replaces threshold formula with Reckless history-aware continuous-improvement form: `(LMP_K_BASE + LMP_K_IMP*imp/16 + LMP_K_DEPTH*d² + LMP_K_HIST*main_hist/1024) / 1024`. Re-SPRT post-tune vs main is the real test. |
+
+### Tier 3 quick-win SPRTs (2026-04-26)
+
+Cross-engine doc Tier 3 small-win batch — independent 1-2 line
+changes, [0, 3] bounds.
+
+| SPRT | Branch | Status |
+|------|--------|--------|
+| #813 | experiment/material-np-only | **submitted** [0, 3]. Drop pawn term from material scaling (SF/Stormphrax/Halogen/Integral pattern). Bench 809369 (-19% vs main 1000987) — meaningful tree-shape change because eval is less aggressively dampened in pawn-up endgames. One-line eval-side change. |
+| #814 | experiment/fh-blend-depth-cap | **submitted** [0, 3]. Add `min(d, 8)` cap to FH-blend weight (Reckless pattern). Without cap, d=25+ fail-highs got weight 25/26 ≈ no dampening. New tunable FH_BLEND_WEIGHT_CAP=8 [4, 16]. Bench 877096. |
+
+**Lesson learned:** initial #812 submission failed OB bench check
+because `cargo build --release` produces a different bench than
+`make` (--features embedded-net). OB workers always use make. New
+memory: `feedback_bench_via_make_not_cargo.md`.
