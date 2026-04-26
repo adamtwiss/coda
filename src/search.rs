@@ -139,7 +139,37 @@ tunables!(
     (CAP_HIST_MULT, 298, 50, 400, 17.5),
     (CAP_HIST_BASE, 18, 0, 200, 10.0),
     (CAP_HIST_MAX, 1732, 500, 3000, 125.0),
-    (DEXT_MARGIN, 11, 2, 50, 2.4),
+    // Reckless-pattern PV/quiet/correction-aware extension margins.
+    // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
+    //
+    // dext_margin   = DEXT_MARGIN_PV   * is_pv
+    //               - DEXT_MARGIN_QUIET   * is_tt_quiet
+    //               - DEXT_MARGIN_CORR  * |corr| / 128
+    //               + DEXT_MARGIN_BASE
+    // triple_margin = TRIPLE_MARGIN_PV * is_pv
+    //               - TRIPLE_MARGIN_QUIET * is_tt_quiet
+    //               - TRIPLE_MARGIN_CORR * |corr| / 128
+    //               + TRIPLE_MARGIN_BASE
+    //
+    // BASE term is Coda-specific: pure Reckless has dext_margin=-16 at
+    // non-PV quiet (always fires on singular), which exploded our bench
+    // +67% at #804. BASE shifts the non-PV baseline to a positive
+    // threshold so default is sane; SPSA explores the basin where
+    // pruning compensates (Yin/Yang frame). DEXT_MARGIN_BASE=30 puts
+    // non-PV non-quiet at 30cp threshold (close to old Coda's 11cp
+    // for double).
+    //
+    // CORR modulator (Reckless's 16/15 over 128) reduces threshold
+    // when correction history has been correcting — extend less on
+    // uncertain evals.
+    (DEXT_MARGIN_PV, 204, 50, 400, 15.0),
+    (DEXT_MARGIN_QUIET, 16, 0, 100, 4.0),
+    (DEXT_MARGIN_CORR, 16, 0, 64, 3.0),
+    (DEXT_MARGIN_BASE, 30, -50, 150, 6.0),
+    (TRIPLE_MARGIN_PV, 257, 50, 500, 20.0),
+    (TRIPLE_MARGIN_QUIET, 16, 0, 100, 4.0),
+    (TRIPLE_MARGIN_CORR, 15, 0, 64, 3.0),
+    (TRIPLE_MARGIN_BASE, 75, -100, 250, 15.0),
     (DEXT_CAP, 15, 4, 32, 2.0),
     (QUIET_CHECK_BONUS, 13073, 2000, 30000, 1400.0),
     (LMR_COMPLEXITY_DIV, 194, 30, 500, 23.5),
@@ -832,6 +862,42 @@ pub fn build_dirty_piece(
     d.n_changes = n as u8;
     d.changes = changes;
     d
+}
+
+/// Compute the correction value alone (the centipawn delta corrhist would
+/// apply to raw eval). Used by SE-margin formulas that want to gate
+/// extension confidence on |correction| — when the eval has been
+/// drifting (large |corr|), reduce extension thresholds so we
+/// extend less on uncertain evals (Reckless pattern).
+#[inline]
+fn correction_value(info: &SearchInfo, board: &Board) -> i32 {
+    let stm = board.side_to_move as usize;
+    let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
+    let pawn_corr = info.pawn_corr[stm][pawn_idx] as i64;
+    let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
+    let white_np_corr = info.np_corr[stm][WHITE as usize][white_np_idx] as i64;
+    let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
+    let black_np_corr = info.np_corr[stm][BLACK as usize][black_np_idx] as i64;
+    let minor_idx = (board.minor_key[WHITE as usize] ^ board.minor_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
+    let minor_corr = info.minor_corr[stm][minor_idx] as i64;
+    let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
+    let major_corr = info.major_corr[stm][major_idx] as i64;
+    let cont_corr = if !board.undo_stack.is_empty() {
+        let last = &board.undo_stack[board.undo_stack.len() - 1];
+        if last.mv != NO_MOVE {
+            let to = move_to(last.mv);
+            let pt = board.piece_type_at(to);
+            if pt < 6 {
+                let piece = make_piece(flip_color(board.side_to_move), pt);
+                if (piece as usize) < 12 {
+                    info.cont_corr[piece as usize][to as usize] as i64
+                } else { 0 }
+            } else { 0 }
+        } else { 0 }
+    } else { 0 };
+    let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
+        + minor_corr * tp(&CORR_W_MINOR) as i64 + major_corr * tp(&CORR_W_MAJOR) as i64 + cont_corr * tp(&CORR_W_CONT) as i64) / tp(&CORR_HIST_DIV) as i64;
+    (total_corr as i32) / tp(&CORR_HIST_GRAIN_T)
 }
 
 /// Apply correction history to raw static eval.
@@ -2610,22 +2676,32 @@ fn negamax(
                 if singular_score < singular_beta {
                     // TT move is singular — no competitive alternatives.
                     //
-                    // C8 audit LIKELY #1: the previous shadow
-                    // `let is_pv = beta - alpha > 1` used the CURRENT alpha,
-                    // which moves earlier at this node may have raised. On a
-                    // real PV node, after alpha advances past the initial PV
-                    // bracket, `beta - alpha` collapses to 1 and the shadow
-                    // read `false`, letting double extensions fire on PV
-                    // nodes — violating "no DEXT at PV". The outer `is_pv`
-                    // (derived from `alpha_orig`, line 1971) stays correct
-                    // through the whole node; fall through to that.
-                    if !is_pv && singular_score < singular_beta - tp(&DEXT_MARGIN)
-                        && info.double_ext_count[ply_u] < tp(&DEXT_CAP)
-                    {
-                        // Double extension (+2): well below singular beta (margin=10, Velvet uses 4)
-                        singular_extension = 2;
-                    } else {
-                        singular_extension = 1;
+                    // Reckless/SF-pattern additive extensions with PV/quiet/
+                    // correction-aware margins. PV nodes get LARGER margin
+                    // (suppressed); quiet TT moves get SMALLER margin (easier);
+                    // large |corrhist| REDUCES threshold (eval is uncertain →
+                    // extend less). DEXT_CAP propagation gates the additive
+                    // count so cumulative extensions stay safe.
+                    //
+                    // Yin/Yang frame: aggressive extensions on tactical hits
+                    // ENABLE more aggressive pruning of the rest. Default
+                    // BASE term puts us in a sensible starting basin; SPSA
+                    // explores the equilibrium where pruning compensates.
+                    let is_tt_quiet = !is_cap && !is_promo;
+                    let corr_abs = correction_value(info, board).abs();
+                    let dext_margin = tp(&DEXT_MARGIN_PV) * is_pv as i32
+                                    - tp(&DEXT_MARGIN_QUIET) * is_tt_quiet as i32
+                                    - tp(&DEXT_MARGIN_CORR) * corr_abs / 128
+                                    + tp(&DEXT_MARGIN_BASE);
+                    let triple_margin = tp(&TRIPLE_MARGIN_PV) * is_pv as i32
+                                      - tp(&TRIPLE_MARGIN_QUIET) * is_tt_quiet as i32
+                                      - tp(&TRIPLE_MARGIN_CORR) * corr_abs / 128
+                                      + tp(&TRIPLE_MARGIN_BASE);
+
+                    singular_extension = 1;
+                    if info.double_ext_count[ply_u] < tp(&DEXT_CAP) {
+                        singular_extension += (singular_score < singular_beta - dext_margin) as i32;
+                        singular_extension += (singular_score < singular_beta - triple_margin) as i32;
                     }
                 } else if tt_score_local >= beta {
                     // TT move fails high and alternatives competitive — strong reduce
