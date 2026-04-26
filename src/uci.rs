@@ -305,8 +305,45 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             }
                         }
 
-                        let pv_consistent = si.pv_len[0] >= 2
+                        // Belt-and-braces: validate pv_table[0][1] is legal in the
+                        // position after best_move. The upstream cause (stable-PV
+                        // snapshot in search.rs) prevents the partial-iteration
+                        // inconsistency that lichess oeZ7KRUt (2026-04-26) hit, but
+                        // any future regression that desyncs pv_table from
+                        // best_move would still be caught here — losing the
+                        // ponder hint instead of forfeiting the game.
+                        let ponder_legal = si.pv_len[0] >= 2
                             && si.pv_table[0][1] != crate::types::NO_MOVE
+                            && {
+                                let mut after_best = search_board.clone();
+                                if after_best.make_move(best_move) {
+                                    let legal = crate::movegen::generate_legal_moves(&after_best);
+                                    let p_from = move_from(si.pv_table[0][1]);
+                                    let p_to = move_to(si.pv_table[0][1]);
+                                    let mut ok = false;
+                                    for i in 0..legal.len {
+                                        if move_from(legal.moves[i]) == p_from
+                                            && move_to(legal.moves[i]) == p_to {
+                                            ok = true;
+                                            break;
+                                        }
+                                    }
+                                    if !ok {
+                                        // Emit on stdout (UCI `info string` reaches
+                                        // GUI/bot logs) AND stderr (caught by
+                                        // cutechess -debug). Unique tag for grep.
+                                        let msg = format!(
+                                            "PV_PONDER_BUG dropped illegal ponder={} after best={} root={}",
+                                            move_to_uci(si.pv_table[0][1]),
+                                            move_to_uci(best_move),
+                                            search_board.to_fen());
+                                        println!("info string WARNING: {}", msg);
+                                        eprintln!("{}", msg);
+                                    }
+                                    ok
+                                } else { false }
+                            };
+                        let pv_consistent = ponder_legal
                             && move_from(si.pv_table[0][0]) == move_from(best_move)
                             && move_to(si.pv_table[0][0]) == move_to(best_move);
                         // Measure println wall-clock — if it blocks on stdout (slow
@@ -809,7 +846,7 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
 
 /// Parse a UCI move string (e.g. "e2e4", "e7e8q") in the context of the current board.
 /// Matches against the generated legal move list to get correct flags.
-fn parse_uci_move(board: &Board, s: &str) -> Option<Move> {
+pub fn parse_uci_move(board: &Board, s: &str) -> Option<Move> {
     let bytes = s.as_bytes();
     if bytes.len() < 4 { return None; }
 
