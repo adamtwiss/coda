@@ -139,37 +139,31 @@ tunables!(
     (CAP_HIST_MULT, 297, 50, 400, 17.5),
     (CAP_HIST_BASE, 21, 0, 200, 10.0),
     (CAP_HIST_MAX, 1782, 500, 3000, 125.0),
-    // Reckless-pattern PV/quiet/correction-aware extension margins.
+    // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
-    // dext_margin   = DEXT_MARGIN_PV   * is_pv
-    //               - DEXT_MARGIN_QUIET   * is_tt_quiet
-    //               - DEXT_MARGIN_CORR  * |corr| / 128
-    //               + DEXT_MARGIN_BASE
-    // triple_margin = TRIPLE_MARGIN_PV * is_pv
-    //               - TRIPLE_MARGIN_QUIET * is_tt_quiet
-    //               - TRIPLE_MARGIN_CORR * |corr| / 128
-    //               + TRIPLE_MARGIN_BASE
+    // dext_margin = DEXT_MARGIN_PV   * is_pv
+    //             - DEXT_MARGIN_QUIET * is_tt_quiet
+    //             - DEXT_MARGIN_CORR * |corr| / 128
+    //             + DEXT_MARGIN_BASE
     //
     // BASE term is Coda-specific: pure Reckless has dext_margin=-16 at
     // non-PV quiet (always fires on singular), which exploded our bench
     // +67% at #804. BASE shifts the non-PV baseline to a positive
     // threshold so default is sane; SPSA explores the basin where
-    // pruning compensates (Yin/Yang frame). DEXT_MARGIN_BASE=30 puts
-    // non-PV non-quiet at 30cp threshold (close to old Coda's 11cp
-    // for double).
+    // pruning compensates (Yin/Yang frame).
     //
-    // CORR modulator (Reckless's 16/15 over 128) reduces threshold
-    // when correction history has been correcting — extend less on
-    // uncertain evals.
+    // CORR modulator reduces threshold when correction history has been
+    // correcting — extend less on uncertain evals.
+    //
+    // TRIPLE extension intentionally not included here. Original test
+    // (#787 H0, SPSA #792 no basin) showed signal-not-there for Coda's
+    // regime; bundling it into #815 dragged the result negative. Tested
+    // alone in this branch.
     (DEXT_MARGIN_PV, 216, 50, 400, 15.0),
     (DEXT_MARGIN_QUIET, 11, 0, 100, 4.0),
     (DEXT_MARGIN_CORR, 15, 0, 64, 3.0),
     (DEXT_MARGIN_BASE, 24, -50, 150, 6.0),
-    (TRIPLE_MARGIN_PV, 260, 50, 500, 20.0),
-    (TRIPLE_MARGIN_QUIET, 18, 0, 100, 4.0),
-    (TRIPLE_MARGIN_CORR, 14, 0, 64, 3.0),
-    (TRIPLE_MARGIN_BASE, 86, -100, 250, 15.0),
     (DEXT_CAP, 13, 4, 32, 2.0),
     (QUIET_CHECK_BONUS, 12420, 2000, 30000, 1400.0),
     (LMR_COMPLEXITY_DIV, 181, 30, 500, 23.5),
@@ -2693,15 +2687,10 @@ fn negamax(
                                     - tp(&DEXT_MARGIN_QUIET) * is_tt_quiet as i32
                                     - tp(&DEXT_MARGIN_CORR) * corr_abs / 128
                                     + tp(&DEXT_MARGIN_BASE);
-                    let triple_margin = tp(&TRIPLE_MARGIN_PV) * is_pv as i32
-                                      - tp(&TRIPLE_MARGIN_QUIET) * is_tt_quiet as i32
-                                      - tp(&TRIPLE_MARGIN_CORR) * corr_abs / 128
-                                      + tp(&TRIPLE_MARGIN_BASE);
 
                     singular_extension = 1;
                     if info.double_ext_count[ply_u] < tp(&DEXT_CAP) {
                         singular_extension += (singular_score < singular_beta - dext_margin) as i32;
-                        singular_extension += (singular_score < singular_beta - triple_margin) as i32;
                     }
                 } else if tt_score_local >= beta {
                     // TT move fails high and alternatives competitive — strong reduce
