@@ -103,6 +103,7 @@ tunables!(
     (HIST_PRUNE_MULT, 13272, 500, 50000, 2475.0),
     (SEE_QUIET_MULT, 24, 5, 80, 3.75),
     (LMR_HIST_DIV, 8078, 2000, 100000, 4900.0),
+    (LMR_CAP_HIST_DIV, 1287, 256, 8192, 200.0),
     (LMR_C_QUIET, 130, 40, 300, 13.0),
     (LMR_C_CAP, 101, 80, 350, 12.5),
     (SE_DEPTH, 4, 4, 20, 2.0),
@@ -2940,18 +2941,19 @@ fn negamax(
                 reduction = lmr_cap_reduction(d as i32, m as i32);
 
                 if reduction > 0 {
-                    // Continuous capture history adjustment
+                    // Continuous capture-history adjustment (consensus pattern,
+                    // mirrors quiet LMR's hist_score / LMR_HIST_DIV). Replaces
+                    // the prior binary +-1 thresholds at +-2000 — those
+                    // saturated for typical captHist values (+-1000-3000) and
+                    // gave captures a much weaker LMR shaping than quiets,
+                    // forcing SPSA to compensate by aggressively over-tuning
+                    // the BASE C_CAP. With continuous adjustment, SPSA can
+                    // pull C_CAP up toward consensus. Obsidian, Reckless, SF
+                    // all use a continuous history-tilt for cap LMR.
                     if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                         let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
-                        let capt_hist_val = info.history.capture[go_piece(moved_piece)][to as usize][ct];
-                        // Positive capture history: reduce less
-                        if capt_hist_val > 2000 {
-                            reduction -= 1;
-                        }
-                        // Negative capture history: reduce more
-                        if capt_hist_val < -2000 {
-                            reduction += 1;
-                        }
+                        let capt_hist_val = info.history.capture[go_piece(moved_piece)][to as usize][ct] as i32;
+                        reduction -= capt_hist_val / tp(&LMR_CAP_HIST_DIV);
                     }
 
                     // Reduce less for captures that give check
