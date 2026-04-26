@@ -48,6 +48,21 @@ These are where Coda is structurally **different** from a clear consensus across
 
 Recommended swap: `LMR_C_QUIET=93, LMR_C_CAP=120`, then SPSA. **Expected +6 to +10 Elo.**
 
+> **Tested 2026-04-26 (#774): H0 −9.3 ±7.2 / 1.6K** — but the H0 surfaced
+> the actual finding. **Structural diagnosis**: cap LMR had a binary ±1
+> captHist threshold at ±2000 while quiet LMR uses continuous
+> `reduction -= hist_score / LMR_HIST_DIV`. The asymmetry was why SPSA
+> had detuned C_CAP downward — captures got effectively no history-
+> driven LMR shaping, forcing C_CAP to compensate. Obsidian's "histDiv
+> tilt softens captures" notes the same primitive.
+>
+> **Follow-up (the actual lever):** added `LMR_CAP_HIST_DIV` (default
+> 1024) so captures get continuous shaping like quiets — branch
+> `experiment/capture-lmr-hist-adjustment` (#780 H0 −0.5 at default
+> tunable, retune-needed-prior). SPSA **#791** (5 params, 1500 iters)
+> in flight — early movers LMR_CAP_HIST_DIV +9%, CAP_HIST_BASE +12%.
+> Re-SPRT post-tune is the real test.
+
 ### 2. **No triple extension**
 
 `src/search.rs:2553-2560`. **13/14 surveyed engines have it.** Coda jumps from +1 to +2 only. Alexandria's clean formula:
@@ -57,6 +72,13 @@ if quiet && singular_score < singular_beta - TRIPLE_MARGIN { singular_extension 
 ```
 
 `TRIPLE_MARGIN ≈ 75` (Alexandria) is the consensus starting point. Existing `DEXT_CAP` already provides safety. **Expected +3 to +8 Elo.**
+
+> **Tested 2026-04-26 (#787): H0 −1.0 ±1.7 / 30.7K**. Bucket: retune-
+> needed-prior. `TRIPLE_MARGIN=75` is Alexandria's optimum, not Coda's;
+> our `DEXT_MARGIN`/`DEXT_CAP` shape is different. SPSA **#792**
+> (3 params, 1000 iters) in flight to find Coda-specific values —
+> early moves modest (TRIPLE_MARGIN +2%, DEXT_MARGIN +6%). Re-SPRT
+> post-tune.
 
 ### 3. **No stm dimension on main quiet history**
 
@@ -73,6 +95,14 @@ Memory cost: 8 MB → 16 MB main hist.
 SF formula: `int v = 20 * (bool(threatByLesser[pt] & from) - bool(threatByLesser[pt] & to)); m.value += PieceValue[pt] * v;` — symmetric pair. Coda has only the `from` half.
 
 **Expected +3 to +6 Elo. Single most universal missing pattern across the survey.**
+
+> **Tested 2026-04-26**: vanilla form #773 H0 −0.4 ±4.1 / 5.2K (stopped
+> early). Refined v2 with split tunables for from/to magnitudes #781
+> H0 +0.1 ±1.0 / 94.7K. Bucket: signal-overlap — Coda's threat-aware
+> main history (4D `[ft][tt][from][to]`) already captures most of the
+> "moving onto attacked square is bad" signal we expected the explicit
+> penalty to add. Drop unless threat-history dimensionality changes
+> (e.g. if main-history-stm-dim or factorized-main-hist lands).
 
 ### 5. **Multi-cut is dead code in Coda**
 
@@ -91,6 +121,13 @@ Cheap fix; uses existing code path. **Expected +1 to +4 Elo standalone, more aft
 `src/movepicker.rs:594`. **Consensus: 1024 (Obsidian/Viri) → 8192 (SF/Plenty) → 16384 (Clover).** Coda is 2-32× smaller than peers. With 64-bit `pawn_hash % 512`, severe overwriting (~10⁶ pawn structures visited per game, 512 buckets). Raise to 8192. Optionally negative-init like Integral (`pawnHistFill = -919` SPSA-tuned).
 
 **Expected +3 to +7 Elo.**
+
+> **Tested 2026-04-26 (#785): H0 −1.2 ±1.8 / 27.7K** at 8192. Bucket:
+> value-too-extreme. 13 MB pawn-hist table at 8192 plausibly pressures
+> L3 — cache-pressure NPS regression cancels collision-reduction win.
+> Bisection follow-up: **#797** experiment/pawn-history-2048 (~3.3 MB,
+> fits L3, 4× collision reduction vs 512). Submitted [-3, 3]. If H1,
+> 1024 vs 4096 may be worth a third probe.
 
 ### 7. **Halfmove eval scale `(100-hm)/100` is too aggressive**
 
@@ -122,6 +159,14 @@ limit = if improving { LMP_BASE_IMP + d²/2 } else { LMP_BASE_NOIMP + d²/2 }
 `src/search.rs:2591`. `!improving && !unstable` gate. **SF/Obsidian/Halogen/Reckless gate hist-prune on none of these conditions** — only `score > worst` and shallow depth. Coda's gates suppress firing in ~50% of nodes hist-prune was meant for. Drop the `!improving && !unstable` clause.
 
 **Expected +3 to +6 Elo.** Combine with FUT_LMR_DEPTH 16→13 and BAD_NOISY_DEPTH 13→8 (both currently 3+ plies past consensus).
+
+> **Tested 2026-04-26 (#786): trending H0 −0.2 ±1.3 / 49.5K (LLR −2.50)**.
+> Drop-both-clauses form. Bucket: signal-overlap — the existing gates
+> co-fire with futility/LMP catches in Coda's tree, so dropping them
+> doesn't expose new prunable nodes. Possible bisection: drop ONE
+> clause at a time (`!improving` only, `!unstable` only) to find which
+> gate is actually load-bearing. Not queued; lower priority than the
+> retune-needed batch.
 
 ## Tier-2 outliers (5+ engine consensus, lower expected Elo)
 
@@ -252,6 +297,31 @@ Initial delta `= base + avg² / divisor` (SF: `5 + threadIdx%8 + abs(meanSqScore
 `Stockfish/src/position.cpp:390-403`. Treat 2-fold rep as instant draw if the repetition occurred within `ply` plies of root. Coda requires 3-fold. Some engines (Stormphrax-leaning) cite this as load-bearing.
 
 **Mixed signal across engines (only SF clearly has it). +1 to +3 Elo, but disrupts repetition semantics — needs careful gating.**
+
+## Status overview (2026-04-26 update)
+
+**Tier-1 batch resolution: 7/8 H0, 1 pending (LMP two-row not tried).**
+
+| # | Item | OB | Result | Follow-up |
+|---|------|-----|--------|-----------|
+| 1 | lmr-c-swap | #774 | H0 −9.3 | **structural finding (gate asymmetry); #780 + #791 retune are real lever** |
+| 2 | triple-extension | #787 | H0 −1.0 | retune SPSA #792 in flight |
+| 3 | main-history-stm-dim | — | not tried | high priority, untouched |
+| 4 | enter-threat-penalty | #773, #781 | H0 / H0 | drop (signal-overlap with threat-history) |
+| 5 | multicut-fix | — | not tried | |
+| 6 | pawn-history-8192 | #785 | H0 −1.2 | bisect to 2048 (#797 in flight) |
+| 7 | halfmove-200-revert | — | not tried | |
+| 8 | material-np-only | — | not tried | |
+| 9 | LMP single-row B=8 | — | not tried | high priority, untouched |
+| 10 | hist-prune-gate-drop | #786 | trending H0 | drop |
+
+**Calibration**: doc's "Tier-1 +25-50 Elo" expectation collapses to
+maybe +5-15 once retunes resolve. Consensus-port priors should be
+discounted ~50-70% for Coda's current strength regime.
+
+Two items (#3, #9) are still untried — those are the freshest
+candidates. Three items (#1, #2, retune-needed for SPSA cluster)
+have refined retries in flight (#791, #790, #792).
 
 ## Ranked queue for Hercules
 
