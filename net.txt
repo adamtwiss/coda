@@ -1,1 +1,1 @@
-https://github.com/adamtwiss/coda/releases/download/v0.3.0-nets/net-v9-768th16x32-kb10-w15-e800s800-crelu.nnue
+https://github.com/adamtwiss/coda/releases/download/v0.4.0-nets/net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor.nnue
