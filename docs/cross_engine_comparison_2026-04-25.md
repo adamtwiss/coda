@@ -59,9 +59,14 @@ Recommended swap: `LMR_C_QUIET=93, LMR_C_CAP=120`, then SPSA. **Expected +6 to +
 > **Follow-up (the actual lever):** added `LMR_CAP_HIST_DIV` (default
 > 1024) so captures get continuous shaping like quiets — branch
 > `experiment/capture-lmr-hist-adjustment` (#780 H0 −0.5 at default
-> tunable, retune-needed-prior). SPSA **#791** (5 params, 1500 iters)
-> in flight — early movers LMR_CAP_HIST_DIV +9%, CAP_HIST_BASE +12%.
-> Re-SPRT post-tune is the real test.
+> tunable, retune-needed-prior). SPSA **#791** finished
+> (LMR_CAP_HIST_DIV 1024→1287 +25.7%, CAP_HIST_BASE +7%). Post-tune
+> SPRT **#809: H0 −1.2 / 28.5K**. Bucket: signal-not-there — the
+> structural diagnosis was correct (asymmetry exists) but continuous
+> shaping for captures alone doesn't carry Elo even with retune.
+> Drop. Possible refined retry: histDiv-tilt form (Obsidian) where
+> the same table feeds quiet AND capture LMR with a tilt term, not
+> separate divisors.
 
 ### 2. **No triple extension**
 
@@ -354,7 +359,7 @@ Suggested order; each line is "branch name → expected Elo → key change":
 
 **Tier 1 — highest leverage (likely +25-50 Elo aggregated):**
 
-1. `experiment/nmp-cut-node-gate-only` → **+5 to +12** → add `cut_node` to NMP gate. **Targets the empirical 30%→57% NMP cutoff-rate gap (1.9× efficiency).** Pure plumbing — `cut_node` already passed through search. Spec at end of `reckless_vs_coda_pruning_diff_2026-04-25.md`.
+1. ~~`experiment/nmp-cut-node-gate-only` → **+5 to +12**~~ — **TESTED H0**. Default-tunable SPRT trended low; SPSA #790 found big movements (NMP_BASE_R +14%, NMP_UNDEFENDED_MAX −37%, NMP_MIN_DEPTH +15%) but post-tune SPRT **#807 H0 −0.4 / 49.6K**. Bucket: signal-not-there at our trunk's NMP balance. Drop. The 30%→57% gap is real but `cut_node` gating alone, even with retune, doesn't close it for us.
 2. `experiment/main-history-stm-dim` → +3 to +8 → add stm to main quiet history 4D→5D. **Move-ordering cause-fix; FMC compounds.**
 3. `experiment/enter-threat-penalty` → +3 to +6 → symmetric to escape bonus. **All 6 threat-aware engines have it; ordering cause-fix.**
 4. `experiment/pawn-history-8192` → +3 to +7 → 512→8192, optionally with `-919` init. **Smallest in field (2-32× peers); ordering cause-fix.**

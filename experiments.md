@@ -6123,11 +6123,13 @@ predates 62931d1).
 
 | Tune | Branch / target | Iters / params | Status |
 |------|-----------------|---------------|--------|
-| #790 | experiment/nmp-cut-node-gate | 1500 / 8 | running, big movers settling (NMP_BASE_R +9%, NMP_UNDEFENDED_MAX -26%) |
-| #791 | experiment/capture-lmr-hist-adjustment | 1500 / 5 | running, LMR_CAP_HIST_DIV 1024→1117 (+9%), CAP_HIST_BASE 18→20 (+12%) |
+| #790 | experiment/nmp-cut-node-gate | 1500 / 8 | **finished** — NMP_BASE_R +14%, NMP_UNDEFENDED_MAX −37%, NMP_MIN_DEPTH +15%. Post-tune SPRT #807: **H0 −0.4 / 49.6K**. Bucket: signal-not-there (cut-node gate's gain at default tunables collapsed under retune; SPSA absorbed it elsewhere). Drop. |
+| #791 | experiment/capture-lmr-hist-adjustment | 1500 / 5 | **finished** — LMR_CAP_HIST_DIV 1024→1287 (+25.7%), CAP_HIST_BASE 18→19 (+7%). Post-tune SPRT #809: **H0 −1.2 / 28.5K**. Bucket: signal-not-there. The LMR_C_QUIET/CAP asymmetry (#774 finding) survives — continuous shaping for captures alone wasn't the lever. Drop. |
 | #792 | experiment/triple-extension | 1000 / 3 | **finished** — no basin found at flat-constant defaults; reclassified by #804 investigation as **mechanism-wrong** (Coda's flat 75/16 missed Reckless/SF's `204*PvNode - 16*is_quiet` per-node-type margin scaling). Refined retry: #804 with structural fix |
 | #795 | main focused (CC483681) | 1500 / 15 | **STOPPED** at iter 55 — wrong scope (focused-cluster playbook applies to feature retunes, NOT net swaps). Replaced by #796 |
-| #796 | main full-sweep (CC483681) | 2500 / 77 | running, ~893/2500. Many movers >10% (NMP_EVAL_MAX -57%, LMR_THREAT_DIV -23%, LMP_BASE +16%, CORR_W_NP/MINOR/MAJOR/CONT all 9-12%) — strongly supports trunk-mismatch confound on #794 |
+| #796 | main full-sweep (CC483681) | 2500 / 77 | **finished** — large movers: NMP_EVAL_MAX −57%, LMR_THREAT_DIV −23%, LMP_BASE +16%, CORR_W_NP/MINOR/MAJOR/CONT all 9-12%. Post-tune SPRTs: **#802 H1 +8.4 / 7.4K** (tune-796 vs trunk, both on CC483681 SB200) — retune carries Elo on top of net swap. **#803 H1 +4.8 / 6.4K** (CC483681 + tune-796 vs C0A97CF4 + pre-tune trunk, both SB200) — package beats C8fix-1 SB200. Deployment package against current prod (1EF1C3E5 SB800) blocked on **C8fix-2 SB800 training** (task #117 in flight). Don't apply tune-796 to current trunk yet — it's calibrated to CC483681's bench landscape, not 1EF1C3E5's. |
+| #806 | experiment/se-margins-reckless v2 | 2500 / 84 | running, ~2168/2500 |
+| #811 | experiment/lmp-reckless-shape (Phase B #3+#4+#5) | 2500 / 80 | running, ~567/2500. Phase B core SPSA on the new history-aware continuous-improvement formula. |
 
 ### Anomalies / setup errors
 
