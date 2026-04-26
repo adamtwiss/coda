@@ -129,12 +129,17 @@ Cheap fix; uses existing code path. **Expected +1 to +4 Elo standalone, more aft
 
 **Expected +3 to +7 Elo.**
 
-> **Tested 2026-04-26 (#785): H0 −1.2 ±1.8 / 27.7K** at 8192. Bucket:
-> value-too-extreme. 13 MB pawn-hist table at 8192 plausibly pressures
-> L3 — cache-pressure NPS regression cancels collision-reduction win.
-> Bisection follow-up: **#797** experiment/pawn-history-2048 (~3.3 MB,
-> fits L3, 4× collision reduction vs 512). Submitted [-3, 3]. If H1,
-> 1024 vs 4096 may be worth a third probe.
+> **Tested 2026-04-26 (#785): H0 −1.2 ±1.8 / 27.7K** at 8192. Bisection
+> follow-up #797 at 2048 also H0'd, **worse**: −3.3 ±3.3 / 8.3K (LLR
+> −3.05). 512 → 2048 → 8192 = -3.3 → -1.2 — non-monotonic, no smooth
+> Elo gradient in the 512-8192 range. Bucket: signal-not-there for
+> Coda's regime. Possible refined retry: `pawnHistFill = -919` SPSA-
+> tuned negative init (Integral pattern) at default 512 size — that
+> changes the table's prior, not its size. Low priority.
+>
+> **Lesson noted**: bisection isn't always a rescue. Sometimes the
+> consensus value's Elo comes from an adjacent mechanism we lack
+> (e.g., negative-init), not the size itself.
 
 ### 7. **Halfmove eval scale `(100-hm)/100` is too aggressive**
 
@@ -316,7 +321,7 @@ Initial delta `= base + avg² / divisor` (SF: `5 + threadIdx%8 + abs(meanSqScore
 | 3 | main-history-stm-dim | — | not tried | high priority, untouched |
 | 4 | enter-threat-penalty | #773, #781 | H0 / H0 | drop (signal-overlap with threat-history) |
 | 5 | multicut-fix | — | not tried | |
-| 6 | pawn-history-8192 | #785 | H0 −1.2 | bisect to 2048 (#797 in flight) |
+| 6 | pawn-history-8192 | #785, #797 | H0 −1.2 / H0 −3.3 | **bisection went worse — drop; possible -919 init refinement** |
 | 7 | halfmove-200-revert | — | not tried | |
 | 8 | material-np-only | — | not tried | |
 | 9 | LMP single-row B=8 | — | not tried | high priority, untouched |
