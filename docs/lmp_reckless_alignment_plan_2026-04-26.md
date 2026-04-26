@@ -42,7 +42,7 @@ Each gate is finding a depth niche.
 
 ### Phase A — independent surgical changes (in flight or imminent)
 
-- **#1 — `experiment/lmp-direct-check-carveout`** — single-line add `&& !board.gives_direct_check(mv)` inside LMP gate. **Submitted as SPRT [-3, 3]** 2026-04-26. Bench 736194 → 796065 (+8% — fewer LMP fires let checking late moves through).
+- **#1 — `experiment/lmp-direct-check-carveout`** — single-line add `&& !board.gives_direct_check(mv)` inside LMP gate. **MERGED 2026-04-26** (SPRT #808 H1 +2.54). Bench 736194 → 796065 (+8% — fewer LMP fires let checking late moves through).
 
 - **#2 — `experiment/lmp-skip-quiets`** — Reckless pattern (search.rs:752) — set flag when LMP fires; bypass remaining quiets in loop. **Submitted as SPRT [-3, 3]** 2026-04-26. Bench 736194 → 899738 (+22%). Bisection: variable declaration alone is bench-neutral; check-disabled-but-setter-on is bench-neutral; check enabled is +22%. By logic this should be equivalent to letting LMP re-fire on each late quiet (move_count past lmp_limit on all subsequent quiets), but empirically it isn't. SPRT'd as a data point per Adam — outcome interpretation needs care since the "perf-only" framing didn't hold. Possible explanations: (1) compiler/optimisation quirk, (2) gate-equivalence assumption is wrong somewhere, (3) move-ordering interaction. Per-move trace instrumentation is the follow-up if SPRT result demands explanation.
 
