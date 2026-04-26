@@ -197,6 +197,11 @@ enum Commands {
         /// Print first N mismatches in detail
         #[arg(long, default_value_t = 5)]
         verbose: usize,
+        /// Use the post-C8fix-2 Bullet reference (`map_features` 62931d1)
+        /// instead of the pre-fix bf-frame reference. Expected mismatch
+        /// count: 0.
+        #[arg(long, default_value_t = false)]
+        postfix: bool,
     },
     /// NNUE network health check (uses --nnue/-n flag or auto-discovers)
     CheckNet {},
@@ -766,8 +771,8 @@ fn main() {
             run_fetch_net();
         }
 
-        Some(Commands::FuzzThreats { count, seed, max_plies, verbose }) => {
-            run_fuzz_threats(count, seed, max_plies, verbose);
+        Some(Commands::FuzzThreats { count, seed, max_plies, verbose, postfix }) => {
+            run_fuzz_threats(count, seed, max_plies, verbose, postfix);
         }
 
         Some(Commands::CheckNet {}) => {
@@ -944,9 +949,12 @@ fn run_perft_bench() {
     }
 }
 
-fn run_fuzz_threats(count: usize, seed: u64, max_plies: usize, verbose: usize) {
+fn run_fuzz_threats(count: usize, seed: u64, max_plies: usize, verbose: usize, postfix: bool) {
     use board::Board;
-    use threats::{enumerate_threats, enumerate_threats_bullet_ref, num_threat_features};
+    use threats::{
+        enumerate_threats, enumerate_threats_bullet_postfix_ref,
+        enumerate_threats_bullet_ref, num_threat_features,
+    };
     use types::{WHITE, BLACK, KING};
 
     // Threat tables are initialised by init_engine() — ensure that ran.
@@ -1001,11 +1009,19 @@ fn run_fuzz_threats(count: usize, seed: u64, max_plies: usize, verbose: usize) {
             );
 
             let mut set_ref = std::collections::BTreeSet::<usize>::new();
-            enumerate_threats_bullet_ref(
-                &board.pieces, &board.colors, &board.mailbox,
-                occ, pov, mirrored, real_stm,
-                |idx| { set_ref.insert(idx); },
-            );
+            if postfix {
+                enumerate_threats_bullet_postfix_ref(
+                    &board.pieces, &board.colors, &board.mailbox,
+                    occ, pov, mirrored, real_stm,
+                    |idx| { set_ref.insert(idx); },
+                );
+            } else {
+                enumerate_threats_bullet_ref(
+                    &board.pieces, &board.colors, &board.mailbox,
+                    occ, pov, mirrored, real_stm,
+                    |idx| { set_ref.insert(idx); },
+                );
+            }
 
             if set_coda != set_ref {
                 total_mismatches += 1;
@@ -1027,7 +1043,8 @@ fn run_fuzz_threats(count: usize, seed: u64, max_plies: usize, verbose: usize) {
     }
 
     let total_evals = total_positions * 2;
-    println!("Fuzz complete.");
+    let ref_label = if postfix { "post-C8fix-2 Bullet (62931d1)" } else { "pre-C8fix-2 Bullet (bf-frame)" };
+    println!("Fuzz complete (reference: {}).", ref_label);
     println!("  positions fuzzed  : {}", total_positions);
     println!("  evals compared    : {} (2 povs per position)", total_evals);
     println!("  mismatches        : {} ({:.2}%)", total_mismatches,

@@ -623,6 +623,145 @@ fn threat_index_bullet_ref(
     }
 }
 
+/// Faithful port of post-C8fix-2 Bullet `map_features`
+/// (`bullet/crates/bullet_lib/src/game/inputs/chess_threats.rs` lines 374-578,
+/// commit 62931d1 + a8e2c7d).
+///
+/// Bullet operates in **bf-frame** internally (bulletformat rank-flips
+/// bitboards and color-swaps when real STM = Black). It compensates for
+/// the resulting non-STM-invariance of the bf-frame `sq < to` semi-excl by
+/// using `phys_flip = 56 if real_stm = Black else 0` to convert bf squares
+/// back to physical for the comparison. We replicate that walk here so the
+/// fuzzer can verify Coda inference (physical-frame) and post-fix Bullet
+/// training agree on every position.
+///
+/// Expected fuzzer result vs `enumerate_threats`: **0 mismatches**. Any
+/// nonzero result indicates a residual training/inference divergence.
+pub fn enumerate_threats_bullet_postfix_ref<F: FnMut(usize)>(
+    pieces_bb: &[Bitboard; 6],
+    colors_bb: &[Bitboard; 2],
+    mailbox: &[u8; 64],
+    occ: Bitboard,
+    pov: Color,
+    mirrored: bool,
+    real_stm: Color,
+    mut callback: F,
+) {
+    let _ = occ;
+    let phys_flip: u32 = if real_stm == BLACK { 56 } else { 0 };
+    let bf_flip = phys_flip;
+
+    // Build bf-frame view: rank-flip + color-swap if real_stm = Black, so
+    // bf_colors[0] = real-STM pieces (matching bulletformat's convention).
+    let mut bf_pieces = [0u64; 6];
+    let mut bf_colors = [0u64; 2];
+    let mut bf_mailbox = [0xFFu8; 64];
+    if bf_flip == 0 {
+        bf_pieces.copy_from_slice(pieces_bb);
+        bf_colors.copy_from_slice(colors_bb);
+        bf_mailbox.copy_from_slice(mailbox);
+    } else {
+        for pt in 0..6 {
+            bf_pieces[pt] = pieces_bb[pt].swap_bytes();
+        }
+        bf_colors[0] = colors_bb[real_stm as usize].swap_bytes();
+        bf_colors[1] = colors_bb[(1 - real_stm) as usize].swap_bytes();
+        for sq in 0..64 {
+            bf_mailbox[sq] = mailbox[sq ^ 56];
+        }
+    }
+    let bf_occ = bf_colors[0] | bf_colors[1];
+
+    for bf_color in [0u8, 1u8] {
+        let real_color: Color = if bf_color == 0 { real_stm } else { 1 - real_stm };
+        let pov_for_attack: Color = bf_color;
+
+        for pt in 0..6u8 {
+            let mut piece_bb = bf_pieces[pt as usize] & bf_colors[bf_color as usize];
+            let cp = colored_piece(real_color, pt);
+
+            while piece_bb != 0 {
+                let sq_bf = piece_bb.trailing_zeros();
+                piece_bb &= piece_bb - 1;
+                let sq_phys = sq_bf ^ bf_flip;
+
+                let attacks = piece_attacks_occ(pt, pov_for_attack, sq_bf, bf_occ);
+
+                let mut hits = attacks & bf_occ;
+                while hits != 0 {
+                    let to_bf = hits.trailing_zeros();
+                    hits &= hits - 1;
+                    let to_phys = to_bf ^ bf_flip;
+
+                    let victim_pt = bf_mailbox[to_bf as usize];
+                    if victim_pt >= 6 { continue; }
+                    let victim_bf_color: u8 =
+                        if (bf_colors[0] >> to_bf) & 1 != 0 { 0 } else { 1 };
+                    let victim_real_color: Color =
+                        if victim_bf_color == 0 { real_stm } else { 1 - real_stm };
+                    let victim_cp = colored_piece(victim_real_color, victim_pt);
+
+                    // Post-fix semi-excl: physical-frame, via phys_flip.
+                    let is_pawn = pt == PAWN;
+                    let same_type = pt == victim_pt;
+                    let semi_excl_pair =
+                        same_type && (bf_color != victim_bf_color || !is_pawn);
+                    if semi_excl_pair && (sq_bf ^ phys_flip) < (to_bf ^ phys_flip) {
+                        continue;
+                    }
+
+                    let idx = threat_index(cp, sq_phys, victim_cp, to_phys, mirrored, pov);
+                    if idx >= 0 {
+                        callback(idx as usize);
+                    }
+                }
+
+                if pt == BISHOP || pt == ROOK || pt == QUEEN {
+                    let mut direct_targets = attacks & bf_occ;
+                    while direct_targets != 0 {
+                        let blocker_sq = direct_targets.trailing_zeros();
+                        direct_targets &= direct_targets - 1;
+                        let occ_without = bf_occ & !(1u64 << blocker_sq);
+                        let attacks_through =
+                            piece_attacks_occ(pt, pov_for_attack, sq_bf, occ_without);
+                        let revealed = attacks_through & !attacks & occ_without;
+                        if revealed == 0 { continue; }
+                        let xray_sq = if sq_bf < blocker_sq {
+                            let above = revealed & !((1u64 << (blocker_sq + 1)) - 1);
+                            if above != 0 { above.trailing_zeros() } else { 64 }
+                        } else {
+                            let below = revealed & ((1u64 << blocker_sq) - 1);
+                            if below != 0 { 63 - below.leading_zeros() } else { 64 }
+                        };
+                        if xray_sq >= 64 { continue; }
+                        let xpt = bf_mailbox[xray_sq as usize];
+                        if xpt >= 6 { continue; }
+                        let xbf_color: u8 =
+                            if (bf_colors[0] >> xray_sq) & 1 != 0 { 0 } else { 1 };
+                        let xreal_color: Color =
+                            if xbf_color == 0 { real_stm } else { 1 - real_stm };
+                        let xcp = colored_piece(xreal_color, xpt);
+                        let xray_phys = xray_sq ^ bf_flip;
+
+                        let is_pawn = pt == PAWN;
+                        let same_type = pt == xpt;
+                        let semi_excl_pair =
+                            same_type && (bf_color != xbf_color || !is_pawn);
+                        if semi_excl_pair && (sq_bf ^ phys_flip) < (xray_sq ^ phys_flip) {
+                            continue;
+                        }
+
+                        let idx = threat_index(cp, sq_phys, xcp, xray_phys, mirrored, pov);
+                        if idx >= 0 {
+                            callback(idx as usize);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Maximum threat deltas per ply.
 pub const MAX_THREAT_DELTAS: usize = 128;
 
