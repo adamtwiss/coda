@@ -108,8 +108,18 @@ tunables!(
     (SE_DEPTH, 4, 4, 20, 2.0),
     (ASP_DELTA, 13, 5, 30, 1.5),
     (ASP_SCORE_DIV, 33308, 8000, 50000, 2100.0),
-    (LMP_BASE, 8, 1, 15, 2.0),
     (LMP_DEPTH, 13, 4, 20, 2.0),
+    // Reckless-shape LMP threshold: history-aware, continuous improvement.
+    // Replaces (LMP_BASE + d²) / (2 - improving) with:
+    //   lmp_limit = (LMP_K_BASE + LMP_K_IMP*improvement/16
+    //              + LMP_K_DEPTH*d² + LMP_K_HIST*main_hist/1024) / 1024
+    // Defaults from Reckless (search.rs:747). High-history quiets get
+    // threshold bumped UP — they escape LMP and get searched. Low-history
+    // late quiets hit LMP earlier. Sorting-aware pruning.
+    (LMP_K_BASE, 3006, 1000, 6000, 250.0),
+    (LMP_K_IMP, 70, 0, 200, 10.0),
+    (LMP_K_DEPTH, 1455, 500, 3000, 125.0),
+    (LMP_K_HIST, 68, 0, 200, 10.0),
     (BAD_NOISY_MARGIN, 75, 30, 150, 6.0),
     (PROBCUT_MARGIN, 200, 80, 300, 11.0),
     (HINDSIGHT_THRESH, 170, 50, 400, 17.5),
@@ -2109,6 +2119,7 @@ fn negamax(
     let mut raw_eval = -INFINITY;
     let mut scaled_eval = -INFINITY;
     let mut improving = false;
+    let mut improvement: i32 = 0;
     if !in_check {
         if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
             raw_eval = tt_entry.static_eval;
@@ -2164,6 +2175,20 @@ fn negamax(
                     improving = static_eval > prev4;
                 }
                 // else: leave improving=false (no usable baseline).
+            }
+        }
+        // Continuous improvement value (in cp). Used by Reckless-pattern LMP
+        // for finer-grained threshold scaling than the discrete `improving`
+        // bool. Falls back to ply-4 baseline if ply-2 is unavailable.
+        if ply >= 2 && ply_u >= 2 {
+            let prev2 = info.static_evals[ply_u - 2];
+            if prev2 > -INFINITY + 1 && static_eval > -INFINITY + 1 {
+                improvement = (static_eval - prev2).clamp(-1024, 1024);
+            } else if ply_u >= 4 {
+                let prev4 = info.static_evals[ply_u - 4];
+                if prev4 > -INFINITY + 1 && static_eval > -INFINITY + 1 {
+                    improvement = (static_eval - prev4).clamp(-1024, 1024);
+                }
             }
         }
     } else {
@@ -2706,21 +2731,28 @@ fn negamax(
             }
         }
 
-        // Late Move Pruning: at shallow depths, skip late quiet moves.
-        // Applied before MakeMove. Formula: (LMP_BASE + depth²) / (2 - improving)
+        // Late Move Pruning: skip late quiet moves at shallow depths.
+        // Applied before MakeMove. Reckless-shape formula (search.rs:747)
+        // replaces the prior `(LMP_BASE + d²) / (2 - improving)` with:
+        //   lmp_limit = (K_BASE + K_IMP*improvement/16
+        //              + K_DEPTH*d² + K_HIST*main_hist/1024) / 1024
         //
-        // C8 audit LIKELY #9: add !is_pv guard. CLAUDE.md "Pruning features"
-        // section states LMP is non-PV only, matching
-        // SF/Obsidian/Viridithas/Berserk consensus; the code was missing
-        // the gate so LMP fired on PV nodes.
+        // Sorting-aware: high-history quiets get threshold bumped UP so they
+        // escape LMP. Continuous improvement scaling replaces the binary
+        // /(2-improving). The depth cap (LMP_DEPTH) is retained for now;
+        // dropping it is queued as Phase C.
         if ply > 0 && !is_pv && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
             && !is_cap && !is_promo
             && !board.gives_direct_check(mv)
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
         {
-            let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
-            if move_count > lmp_limit {
+            let lmp_main_hist = info.history.main_score(from, to, enemy_attacks);
+            let lmp_limit = (tp(&LMP_K_BASE)
+                + tp(&LMP_K_IMP) * improvement / 16
+                + tp(&LMP_K_DEPTH) * depth * depth
+                + tp(&LMP_K_HIST) * lmp_main_hist / 1024) / 1024;
+            if (move_count as i32) > lmp_limit {
                 info.stats.lmp_prunes += 1;
                 continue;
             }
