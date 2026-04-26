@@ -73,12 +73,19 @@ if quiet && singular_score < singular_beta - TRIPLE_MARGIN { singular_extension 
 
 `TRIPLE_MARGIN ≈ 75` (Alexandria) is the consensus starting point. Existing `DEXT_CAP` already provides safety. **Expected +3 to +8 Elo.**
 
-> **Tested 2026-04-26 (#787): H0 −1.0 ±1.7 / 30.7K**. Bucket: retune-
-> needed-prior. `TRIPLE_MARGIN=75` is Alexandria's optimum, not Coda's;
-> our `DEXT_MARGIN`/`DEXT_CAP` shape is different. SPSA **#792**
-> (3 params, 1000 iters) in flight to find Coda-specific values —
-> early moves modest (TRIPLE_MARGIN +2%, DEXT_MARGIN +6%). Re-SPRT
-> post-tune.
+> **Tested 2026-04-26 (#787): H0 −1.0 ±1.7 / 30.7K**. Initial bucket:
+> retune-needed-prior. SPSA **#792** (3 params, 1000 iters) on branch
+> finished with tiny movements only — TRIPLE_MARGIN 75→78 (+3.5% *),
+> DEXT_MARGIN 10→10 (flat), DEXT_CAP 16→15 (−3.9% *). All single-star,
+> no basin found. Compare #790 (NMP_UNDEFENDED_MAX −26%) or #796
+> (NMP_EVAL_MAX −57%) for what a retune-needed cluster looks like.
+>
+> **Reclassified bucket: signal-not-there.** Triple extension's
+> incremental gain over Coda's existing DEXT (margin 10, cap 16)
+> appears to be ~zero — DEXT already fires on the same cases. **Drop
+> branch**, do not re-SPRT post-tune. Possible refined retry: change
+> the trigger condition (gate on `tt_pv`, `cut_node`, or depth) rather
+> than re-tuning the 3 magnitudes.
 
 ### 3. **No stm dimension on main quiet history**
 
@@ -305,7 +312,7 @@ Initial delta `= base + avg² / divisor` (SF: `5 + threadIdx%8 + abs(meanSqScore
 | # | Item | OB | Result | Follow-up |
 |---|------|-----|--------|-----------|
 | 1 | lmr-c-swap | #774 | H0 −9.3 | **structural finding (gate asymmetry); #780 + #791 retune are real lever** |
-| 2 | triple-extension | #787 | H0 −1.0 | retune SPSA #792 in flight |
+| 2 | triple-extension | #787 | H0 −1.0 | **#792 retune found no basin (3-4% noise drift); drop — signal-not-there** |
 | 3 | main-history-stm-dim | — | not tried | high priority, untouched |
 | 4 | enter-threat-penalty | #773, #781 | H0 / H0 | drop (signal-overlap with threat-history) |
 | 5 | multicut-fix | — | not tried | |

@@ -6120,7 +6120,7 @@ predates 62931d1).
 |------|-----------------|---------------|--------|
 | #790 | experiment/nmp-cut-node-gate | 1500 / 8 | running, big movers settling (NMP_BASE_R +9%, NMP_UNDEFENDED_MAX -26%) |
 | #791 | experiment/capture-lmr-hist-adjustment | 1500 / 5 | running, LMR_CAP_HIST_DIV 1024→1117 (+9%), CAP_HIST_BASE 18→20 (+12%) |
-| #792 | experiment/triple-extension | 1000 / 3 | running, modest moves (TRIPLE_MARGIN +2%, DEXT_MARGIN +6%) |
+| #792 | experiment/triple-extension | 1000 / 3 | **finished** — no basin found (TRIPLE_MARGIN 75→78 +3.5% *, DEXT_MARGIN flat, DEXT_CAP 16→15 −3.9% *). All single-star, noise drift. Reclassifies #787 from retune-needed-prior → signal-not-there. Drop. |
 | #795 | main focused (CC483681) | 1500 / 15 | **STOPPED** at iter 55 — wrong scope (focused-cluster playbook applies to feature retunes, NOT net swaps). Replaced by #796 |
 | #796 | main full-sweep (CC483681) | 2500 / 77 | running, ~893/2500. Many movers >10% (NMP_EVAL_MAX -57%, LMR_THREAT_DIV -23%, LMP_BASE +16%, CORR_W_NP/MINOR/MAJOR/CONT all 9-12%) — strongly supports trunk-mismatch confound on #794 |
 
