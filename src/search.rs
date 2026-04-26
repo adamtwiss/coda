@@ -85,10 +85,10 @@ tunables!(
     //     change); two consecutive tunes have drifted this toward feature-
     //     disable. Candidate for ablation SPRT (set to 0).
     (NMP_BASE_R, 6, 2, 8, 1.5),
-    (NMP_DEPTH_DIV, 3, 1, 6, 1.5),
-    (NMP_EVAL_DIV, 97, 50, 400, 17.5),
+    (NMP_DEPTH_DIV, 4, 1, 6, 1.5),
+    (NMP_EVAL_DIV, 102, 50, 400, 17.5),
     (NMP_EVAL_MAX, 3, 1, 6, 1.5),
-    (NMP_VERIFY_DEPTH, 9, 4, 20, 2.0),
+    (NMP_VERIFY_DEPTH, 8, 4, 20, 2.0),
     (RFP_DEPTH, 19, 2, 20, 2.0),
     (RFP_MARGIN_IMP, 30, 30, 150, 6.0),
     (RFP_MARGIN_NOIMP, 89, 50, 200, 7.5),
