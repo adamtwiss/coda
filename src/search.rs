@@ -108,7 +108,8 @@ tunables!(
     (SE_DEPTH, 4, 4, 20, 2.0),
     (ASP_DELTA, 13, 5, 30, 1.5),
     (ASP_SCORE_DIV, 33308, 8000, 50000, 2100.0),
-    (LMP_BASE, 8, 1, 15, 2.0),
+    (LMP_BASE_NOIMP, 3, 1, 20, 1.5),
+    (LMP_BASE_IMP, 8, 4, 50, 2.0),
     (LMP_DEPTH, 13, 4, 20, 2.0),
     (BAD_NOISY_MARGIN, 75, 30, 150, 6.0),
     (PROBCUT_MARGIN, 200, 80, 300, 11.0),
@@ -2657,18 +2658,22 @@ fn negamax(
         }
 
         // Late Move Pruning: at shallow depths, skip late quiet moves.
-        // Applied before MakeMove. Formula: (LMP_BASE + depth²) / (2 - improving)
-        //
-        // C8 audit LIKELY #9: add !is_pv guard. CLAUDE.md "Pruning features"
-        // section states LMP is non-PV only, matching
-        // SF/Obsidian/Viridithas/Berserk consensus; the code was missing
-        // the gate so LMP fired on PV nodes.
+        // Applied before MakeMove. Two-row halved-d² formula (consensus shape:
+        // Halogen, Reckless, Alexandria, Ethereal). Separate base constants
+        // per improving state, d²/2 growth.
+        //   improving:    LMP_BASE_IMP + d²/2
+        //   !improving:   LMP_BASE_NOIMP + d²/2
         if ply > 0 && !is_pv && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
             && !is_cap && !is_promo
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
         {
-            let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
+            let d2_half = depth * depth / 2;
+            let lmp_limit = if improving {
+                tp(&LMP_BASE_IMP) + d2_half
+            } else {
+                tp(&LMP_BASE_NOIMP) + d2_half
+            };
             if move_count > lmp_limit {
                 info.stats.lmp_prunes += 1;
                 continue;
