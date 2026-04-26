@@ -6051,3 +6051,104 @@ Queued behind feature work. Findings saved to memory:
 | #768 | experiment/nmp-ttnoisy-rplus-v3 | NMP guard + retune | [0, 3] | early/flat +0.5 / 8.4K g, LLR −0.05 |
 | #769 | experiment/pin-bonus-solo (T1.1) | move ordering bonus | [0, 3] | **submitted** — value-filtered pin without skewer noise. Bench 804743 vs main 788473 (+2.1%). |
 | #770 | experiment/quiet-see-attacking (T3.2) | move ordering bonus | [0, 3] | **submitted** — "good quiet" cheap-SEE proxy: bonus when offense target value > attacker value. Bench 734357 vs main 788473 (-6.9%, tree shrinks from earlier cutoffs). |
+
+### Resolution of 2026-04-25 evening batch
+
+| SPRT | Branch | Result | Bucket |
+|------|--------|--------|--------|
+| #767 | good-bad-quiet-split-v3 | **H0** −1.2 ±1.8 / 27.3K (LLR −2.97) | mechanism overlap; drop |
+| #768 | nmp-ttnoisy-rplus-v3 | **H0** −0.5 ±1.4 / 44.4K (LLR −2.97) | guard captured direct gain only — needed NMP cluster retune-on-branch (per CLAUDE.md guard sub-pattern); refined retry queued as #790 SPSA |
+| #769 | pin-bonus-solo (T1.1) | **H0** −13.2 ±4.9 / 4.0K (LLR −3.01) | mechanism-wrong; pin bonus magnitude or eligibility too broad |
+| #770 | quiet-see-attacking (T3.2) | **H1 +2.6** ±1.8 / 26.7K (LLR 2.96) | **MERGED** (a89c014) — small-quiet attack-creating SEE proxy carried Elo |
+
+## 2026-04-25 → 2026-04-26 session — Tier-1 cross-engine port wave + factor SB800 deployment
+
+### Cross-engine queue Tier-1 batch (per docs/cross_engine_comparison_2026-04-25.md)
+
+8 of 10 Tier-1 items submitted; 7 H0, 1 still pending. Pattern strongly
+calibrates the doc's expected-Elo column DOWN by 50-70% on raw consensus
+ports — but the H0s surface real structural diagnostics worth retuning
+or bisecting toward.
+
+| SPRT | Branch | Bounds | Result | Bucket / follow-up |
+|------|--------|--------|--------|--------|
+| #771 | fix/n6-promotion-imminent-stm (audit) | [-3, 3] | **H0 −3.3 ±3.3 / 7.7K** (LLR −2.98) | mechanism-wrong; pre-move STM fix didn't deliver direction predicted by audit |
+| #772 | experiment/nmp-cut-node-gate | [0, 3] | **H0 −2.3 ±2.2 / 17.9K** (LLR −2.97) | retune-needed-prior; SPSA #790 (NMP cluster, 1500 iters) on branch in flight |
+| #773 | experiment/enter-threat-penalty | [0, 3] | **H0 −0.4 ±4.1 / 5.2K** (LLR −0.31, stopped) | refined as #781 with split tunables (also H0); mechanism overlap with escape-bonus likely |
+| #774 | experiment/lmr-c-swap | [0, 3] | **H0 −9.3 ±7.2 / 1.6K** (LLR −0.94, stopped early) | **structural finding (load-bearing)**: cap LMR had binary ±1 captHist threshold at ±2000 while quiet LMR uses continuous `hist/LMR_HIST_DIV`. The asymmetry was why SPSA had detuned C_CAP. Follow-up: #780 (capture-lmr-hist-adjustment) added LMR_CAP_HIST_DIV at default 1024; SPSA #791 retunes the new cluster. THIS, not the swap, is the actual lever |
+| #780 | experiment/capture-lmr-hist-adjustment | [0, 3] | **H0 −0.5 ±2.1 / 21.2K** (LLR −1.38) | retune-needed-prior at default tunable; SPSA #791 in flight to find LMR_CAP_HIST_DIV's converged value |
+| #781 | experiment/enter-threat-split-tunables | [0, 3] | **H0 +0.1 ±1.0 / 94.7K** (LLR −2.96) — burned excess fleet capacity per `feedback_stop_sprt_when_upper_ci_below_elo1` | mechanism-wrong / signal-overlap; threat-aware history already captures most of this signal |
+| #785 | experiment/pawn-history-8192 | [0, 3] | **H0 −1.2 ±1.8 / 27.7K** (LLR −3.00) | **value-too-extreme; bisect**. 16× jump from 512 likely overshot — 13 MB pawn-hist table pressures L3. Follow-up: #797 experiment/pawn-history-2048 (~3.3 MB, fits L3, 4× collision reduction) submitted with [-3, 3] bounds |
+| #786 | experiment/hist-prune-gate-drop | [0, 3] | **trending H0** −0.2 ±1.3 / 49.5K (LLR −2.50) | mechanism-wrong / signal-overlap; dropping `!improving && !unstable` gates didn't compound with FUT_LMR_DEPTH/BAD_NOISY_DEPTH the way the doc predicted |
+| #787 | experiment/triple-extension | [0, 3] | **H0 −1.0 ±1.7 / 30.7K** (LLR −2.95) | retune-needed-prior; SPSA #792 (triple-ext cluster, 1000 iters) on branch in flight to find right TRIPLE_MARGIN/DEXT_MARGIN/DEXT_CAP for Coda's tree |
+
+**Calibration**: 7/8 H0 on consensus ports with retune-needed or
+structural-finding follow-ups. Three of the H0s queue refined retries
+(#772→#790, #780→#791, #787→#792). Two queue bisections (#785→#797).
+Three drop (#771, #773→#781, #786). The doc's "all-Tier-1 +25-50 Elo"
+expectation collapses to maybe +5-15 once the retunes resolve.
+
+### Factor SB800 net swap + tune wave (PROD-AFFECTING)
+
+| SPRT | Net | Result | Outcome |
+|------|------|--------|---------|
+| #782 | 1EF1C3E5 (factor SB800 + C8fix-1) vs prod DAA4C54E (SB800 reckless-crelu) | **H1 +3.3 ±2.2 / 23.8K** (LLR 2.95) | net carries Elo at default tunables |
+| #784 | full-sweep SPSA (77 params, 2500 iters) on factor SB800 | applied as defaults | tune-784 commit (697a703) |
+| #788 | tune-784 vs trunk (both on 1EF1C3E5) | **H1 +3.2 ±2.5 / 14.9K** | tunables earn separate Elo on top of net swap |
+| #789 | tune-784 + 1EF1C3E5 (deployment package) vs prod (DAA4C54E + pre-tune) | **H1 +4.9 ±3.5 / 9.7K** (LLR 2.94) | **MERGED** as v0.4.0-nets prod (commits 1a5399b, 56a37f0). 1EF1C3E5 is current PROD net |
+
+### C8fix-2 SB200 isolation pair
+
+CC483681 = SB200 factor + C8fix-2 (first net to actually contain
+both halves of the C8 fix; trained on `feature/no-blocking-sync`
+post-62931d1). C0A97CF4 = SB200 factor + C8fix-1 only (Apr 22 train,
+predates 62931d1).
+
+| SPRT | Comparison | Result | Bucket |
+|------|-----------|--------|--------|
+| #793 | C0A97CF4 (SB200 factor C8fix-1) vs 1EF1C3E5 (SB800 prod) | **H0 +0.1 ±4.6 / 6.1K** (LLR −0.58, stopped at fade) | net-vs-net check; SB200 vs SB800 expected ~0 magnitude given training-depth difference |
+| #794 | CC483681 (SB200 factor + C8fix-2) vs C0A97CF4 (SB200 factor + C8fix-1) | **H0 −9.0 ±5.9 / 3.7K** (LLR −2.96) | **trunk-mismatch confound**: trunk tunables calibrated for noisy-threat semantics (1EF1C3E5 = C8fix-1) — fits BASE not DEV. Bench delta 33% triggers retune-needed-prior. Follow-up: SPSA #796 (full-sweep retune on CC483681, 77 params, 2500 iters) running. Re-SPRT post-tune to isolate C8fix-2's true contribution |
+
+**End-to-end C8fix-2 validation** (`coda fuzz-threats --postfix`):
+- pre-C8fix-2 Bullet ref: 33.42% feature mismatch vs Coda inference (all real_stm=Black)
+- post-C8fix-2 Bullet ref: 0.00% mismatch across 200K evals × 2 seeds
+- Confirms training/inference fully agree post-62931d1
+
+### Active SPSA tunes (2026-04-26)
+
+| Tune | Branch / target | Iters / params | Status |
+|------|-----------------|---------------|--------|
+| #790 | experiment/nmp-cut-node-gate | 1500 / 8 | running, big movers settling (NMP_BASE_R +9%, NMP_UNDEFENDED_MAX -26%) |
+| #791 | experiment/capture-lmr-hist-adjustment | 1500 / 5 | running, LMR_CAP_HIST_DIV 1024→1117 (+9%), CAP_HIST_BASE 18→20 (+12%) |
+| #792 | experiment/triple-extension | 1000 / 3 | running, modest moves (TRIPLE_MARGIN +2%, DEXT_MARGIN +6%) |
+| #795 | main focused (CC483681) | 1500 / 15 | **STOPPED** at iter 55 — wrong scope (focused-cluster playbook applies to feature retunes, NOT net swaps). Replaced by #796 |
+| #796 | main full-sweep (CC483681) | 2500 / 77 | running, ~893/2500. Many movers >10% (NMP_EVAL_MAX -57%, LMR_THREAT_DIV -23%, LMP_BASE +16%, CORR_W_NP/MINOR/MAJOR/CONT all 9-12%) — strongly supports trunk-mismatch confound on #794 |
+
+### Anomalies / setup errors
+
+| SPRT | Branch | Result | Note |
+|------|--------|--------|------|
+| #777 | main | -38.2 ±8.9 / 1.8K (LLR −3.01) | suspicious; likely net mismatch or branch issue (no commit notes) |
+| #778 | main | -146.4 ±17.1 / 0.8K (LLR −3.02) | clearly broken setup; investigate before next "main" SPRT |
+
+### Method updates banked this session
+
+- `feedback_h0_isnt_terminal_bisect_and_diagnose.md` — H0 on parameter probe = bisect; H0 on structural port = find asymmetry. Burnt: pawn-history-8192 → no 1024/2048 follow-up; lmr-c-swap reported without surfacing gate-asymmetry diagnostic
+- `feedback_log_to_experiments_md_immediately.md` — log SPRTs to experiments.md as they resolve; update referenced docs inline. Burnt: this batch (~25 SPRTs) was unlogged for 24h
+- `feedback_net_swap_needs_full_sweep_retune.md` — net swap retune is full-sweep, not focused-cluster
+- `feedback_bench_delta_signals_retune_need.md` — >15% bench delta signals retune. #794's 33% delta was the canonical case
+- `feedback_stop_sprt_when_upper_ci_below_elo1.md` — exception to don't-stop-on-fade; #781 burned 94K games
+
+### Session cumulative (2026-04-25 → 2026-04-26)
+
+**Merged with confirmed Elo:**
+- #770 (T3.2 quiet-see-attacking): **+2.6**
+- #782/#788/#789 (factor SB800 + tune-784 deployment package): **+4.9** (vs prior prod, 1EF1C3E5 + tune-784 now prod)
+- #758 (recapture-ext-ply-guard, late close): +1.5
+- #759 (fh-blend-skip-in-se, late close): +1.7
+- #760 (threats-blocker-bounds, late close): +0.9
+- #764 (aarch64-tt-tbcache-ordering): non-regression, ARM correctness
+
+**~+11.6 Elo merged this session.** Plus the C8fix-2 isolation pair
+(#793/#794) and 9 cross-engine port SPRTs (mostly H0 with retune
+follow-ups in flight) and 6 SPSA tunes (1 applied, 4 running, 1 stopped).
