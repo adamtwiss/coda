@@ -30,7 +30,7 @@ const INFINITY: i32 = 30000;
 // Contempt removed 2026-04-19 (SPRT #508 H1 +2.53).
 
 // Pawn history table size
-const PAWN_HIST_SIZE: usize = 512;
+const PAWN_HIST_SIZE: usize = 2048;
 
 // ============================================================================
 // Tunable search parameters (exposed as UCI options for SPSA tuning)
