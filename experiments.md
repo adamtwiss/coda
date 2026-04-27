@@ -6231,3 +6231,14 @@ that early-mover heuristics would have called "trending up". The
 2500-iter snapshot should be saved for compare against the final
 5000 to quantify what we miss at the standard length. Likely informs
 the §Long tunes / long training thread in CLAUDE.md.
+
+## 2026-04-27 — Tune cluster wrap-up
+
+| SPRT | Branch | Status |
+|------|--------|--------|
+| #831 | experiment/tune-820-applied (calibration retune vs main) | **H0 -0.0 ±1.7 / 32672g**. Resolved as expected — pre/post-tune SPRT on a 5K-iter retune that converged near current trunk values; calibration merge per "basin gravity" (snap trunk to fresh SPSA optimum even when delta is zero) shipped to main. Future SPRTs run against post-tune trunk; eliminates SPSA-drift confound for downstream experiments. |
+| #832 | experiment/lmp-reckless-shape-no-hist | **H0 -3.3 ±2.6 / 13564g**. Reckless-shape LMP without history-bonus adjustment. Drop. |
+| #833 | experiment/cont-hist-tunable-weights (focused tune) | **Stopped at 1326/2000**: SPSA at integer weights with small ranges hit zero-gradient. CONT_HIST_W1/W2/W4/W6 stayed at 1.0 (max ±8% drift, all well within noise). Lesson: SPSA-on-integer-tunable-with-tiny-range needs c_end large enough that perturbations land on different ints. |
+| #834 | experiment/tt-replacement-pv-bonus | submitted [0, 3]. SF-style TT replacement: EXACT-always-wins + `+2*is_pv` depth bonus + threshold loosened from -3 to -4. Mirrors SF/Reckless/Obsidian (SF tt.cpp:101). Coda's same-key replacement gate was missing both EXACT priority and PV bonus. Bench 1048892. |
+| #835 | experiment/tune-830-applied vs e68dcc9 (both with xray net 6C154331) | submitted [0, 3]. Pre-vs-post tune-830 (5K-iter full-sweep on factor + C8fix + x-ray SB800 net). 64 of 80 tunables changed. Validates whether the retune itself carries Elo on the new net. |
+| #836 | experiment/tune-830-applied (xray net) vs main (prod net 1EF1C3E5) | submitted [0, 5]. Net-vs-net with retune-on-branch applied. Tests whether new factor-C8fix-xray net (with its own SPSA optimum) ships net Elo over current trunk. |
