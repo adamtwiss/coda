@@ -17,7 +17,15 @@ diagnostics.
 
 ---
 
-## 1. QS in-check stores `-INFINITY` for static_eval `[SPRT]`
+## 1. QS in-check stores `-INFINITY` for static_eval `[REJECTED 2026-04-27]`
+
+**Status:** dead hypothesis after cross-engine read. SF stores `VALUE_NONE`
+for in-check static_eval (`Stockfish/src/search.cpp:1747-1749`, the QS
+end-of-search write) and gates the read-side identically (`is_valid`
+check). Reckless follows the same pattern. Coda's `-INFINITY` sentinel
++ `> -(MATE_SCORE - 100)` read gate is consensus, not a bug.
+
+Original hypothesis preserved below for context.
 
 **Files:** `src/search.rs:3563`, plus the corresponding read-side at
 `src/search.rs:3572`.
@@ -142,15 +150,16 @@ SPRT both at once until #834 lands.
 
 ## Suggested SPRT order
 
-1. **#834 (already in flight):** EXACT-always-wins + 2×pv depth bonus
-   on same-key gate. Wait for resolution.
-2. **#1 above** (QS in-check static_eval): single-line change once
-   we confirm SF/Reckless behaviour. Highest expected gain at 64MB.
-3. **#3 above** (age weight 4→8): single-line, after #834 lands so
-   the interaction is clean.
+1. **#834 (resolved 2026-04-27):** EXACT-always-wins + 2×pv depth bonus
+   on same-key gate. **H0 -0.9 at 33K games.** Bisected into 3 single-
+   change SPRTs (#839/#840/#841), all tracking H0 in early data.
+2. ~~**#1 above** (QS in-check static_eval)~~: rejected — SF/Reckless
+   follow the exact same pattern.
+3. **#3 above** (age weight 4→8): SPRT'ing as #842 (submitted
+   2026-04-27 after #834 landed).
 4. **#2 above** (bucket size 5→3): structural refactor. Largest
-   uncertainty, biggest potential win. Last because it's the most
-   work and carries retune-on-branch overhead.
+   uncertainty, biggest potential win. Pending; carries retune-on-
+   branch overhead.
 
 ## Cross-engine source references
 
