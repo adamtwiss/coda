@@ -727,7 +727,11 @@ impl SearchInfo {
         // correction — hence SPRT #610 showed −8 Elo at 1000 games before
         // we caught this. The fix is structural: keep TT storage
         // halfmove-independent, apply scale freshly on read.
-        score * (22400 + material) / 32 / 1024
+        // PlentyChess-style 16-cp quantisation: `(e / 16) * 16` increases
+        // eval-ties → more TT hits across slightly-different paths. Applied
+        // after material scaling, before halfmove scaling (which is per-use).
+        let scaled = score * (22400 + material) / 32 / 1024;
+        (scaled / 16) * 16
     }
 }
 
