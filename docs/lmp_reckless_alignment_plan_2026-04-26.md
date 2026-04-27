@@ -53,14 +53,20 @@ Build on whichever of #1/#2 land H1.
 - **#3 + #4 + #5 — `experiment/lmp-reckless-shape`** — replace threshold formula with Reckless's history-aware continuous-improvement form:
   ```rust
   let lmp_limit = (
-      tp(&LMP_BASE_NEW) * 1024
-      + tp(&LMP_IMPROVEMENT_K) * improvement / 16
-      + tp(&LMP_DEPTH_K) * depth * depth
-      + tp(&LMP_HIST_K) * main_hist / 1024
+      tp(&LMP_K_BASE)
+      + tp(&LMP_K_IMP) * improvement / 16
+      + tp(&LMP_K_DEPTH) * depth * depth
+      + tp(&LMP_K_HIST) * main_hist / 1024
   ) / 1024;
   ```
-  New tunables (5): `LMP_BASE_NEW`, `LMP_IMPROVEMENT_K`, `LMP_DEPTH_K`, `LMP_HIST_K`, plus possibly retain `LMP_DEPTH` as upper-cap for now.
-  SPRT `[0, 5]`. Likely H0 at default tunables; **full-sweep retune on branch is mandatory**, then SPRT post-tune package vs main.
+  New tunables (4): `LMP_K_BASE`, `LMP_K_IMP`, `LMP_K_DEPTH`, `LMP_K_HIST`. `LMP_DEPTH` cap retained.
+  SPRT [0, 5]. Full-sweep retune on branch. SPSA **#811** finished; LMP_K_HIST stayed flat at 67-68 through 2500 iters (no SPSA gradient). Post-tune SPRT **#818 H0 -2.4 ±3.2 / 9134g** 2026-04-27.
+
+  **Phase B Option B follow-up (2026-04-27):** mirroring the #816/#817 SE diagnostic that paid +2.5 Elo, strip the history term (#3) and retune the simpler #4+#5 formula. Branch `experiment/lmp-reckless-shape-no-hist` (commit c23e4cc, bench 1148288) — drops `LMP_K_HIST` tunable + `lmp_main_hist` lookup, keeps continuous-improvement scaling and magnitude rebase. SPSA **#819** running (79 params, 2500 iters from tune-811 starting values). Post-tune SPRT vs main is the test.
+
+  **If Option B H1:** the formula reshape carries Elo, the history term was the noise feature. Ship it, queue Phase C.
+
+  **If Option B H0:** Phase B as a whole doesn't pay. Phase A (+4.4 banked) was the bulk of the LMP-alignment Elo. Skip Phase C (gate removals would re-introduce 28× firing problem from a worse starting point).
 
 ### Phase C — gate removals (later, only if Phase B lands)
 
