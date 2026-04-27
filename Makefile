@@ -15,7 +15,7 @@ NET_URL := $(shell cat net.txt 2>/dev/null)
 # EVALFILE: defaults to the filename from net.txt (e.g. net-v5-768pw-w7-e800s800-filtered-lowestlr.nnue)
 # OB overrides this with an absolute path to the network file.
 EVALFILE := $(if $(NET_URL),$(notdir $(NET_URL)),net.nnue)
-MIN_RUST_VERSION := 1.70.0
+MIN_RUST_VERSION := 1.89.0
 
 # Platform detection
 ifeq ($(OS),Windows_NT)

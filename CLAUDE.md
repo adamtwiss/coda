@@ -21,7 +21,9 @@ only correct when there's no data-dependency on the synchronization.
 
 ## Build and Test
 
-**Prerequisites:** Rust 1.70+. For PGO builds:
+**Prerequisites:** Rust 1.89+ (we use stabilised AVX-512 / AVX-VNNI /
+`x86_amx_intrinsics` — earlier toolchains hit `E0658` unstable-feature
+errors). For PGO builds:
 ```bash
 cargo install cargo-pgo
 rustup component add llvm-tools-preview

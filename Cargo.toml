@@ -2,6 +2,7 @@
 name = "coda"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.89"
 description = "Chess Optimised, Developed Agentically — a UCI chess engine"
 authors = ["Adam Twiss"]
 
