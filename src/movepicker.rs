@@ -576,16 +576,21 @@ impl MovePicker {
 
             let mut score = history.main_score(from, to, self.threats);
 
-            // Continuation history: plies 1,2 at CONT_HIST_MULT weight, plies 4,6 at 1x weight.
-            // Matches Obsidian/Alexandria/Berserk pattern (default 3).
+            // Continuation history: per-ply weights at plies 1, 2, 4, 6.
+            // Weights are ×16 fixed-point (default 16 = 1.0).
             if piece != NO_PIECE {
                 let gp = go_piece(piece);
-                let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
-                let weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
+                use std::sync::atomic::Ordering::Relaxed;
+                let weights = [
+                    crate::search::CONT_HIST_W1.load(Relaxed),
+                    crate::search::CONT_HIST_W2.load(Relaxed),
+                    crate::search::CONT_HIST_W4.load(Relaxed),
+                    crate::search::CONT_HIST_W6.load(Relaxed),
+                ];
                 for (i, &w) in weights.iter().enumerate() {
                     if let Some(sub_ptr) = self.cont_hist_subs[i] {
                         let sub = unsafe { &*sub_ptr };
-                        score += w * sub[gp][to as usize] as i32;
+                        score += (w * sub[gp][to as usize] as i32) >> 4;
                     }
                 }
             }
@@ -799,12 +804,18 @@ impl MovePicker {
 
                 if piece != NO_PIECE {
                     let gp = go_piece(piece);
-                    let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
-                    let weights = [cm, cm, 1i32, 1];
+                    use std::sync::atomic::Ordering::Relaxed;
+                    let weights = [
+                        crate::search::CONT_HIST_W1.load(Relaxed),
+                        crate::search::CONT_HIST_W2.load(Relaxed),
+                        crate::search::CONT_HIST_W4.load(Relaxed),
+                        crate::search::CONT_HIST_W6.load(Relaxed),
+                    ];
                     for (i, &w) in weights.iter().enumerate() {
                         if let Some(sub_ptr) = self.cont_hist_subs[i] {
                             let sub = unsafe { &*sub_ptr };
-                            s += w * sub[gp][to as usize] as i32;
+                            // ×16 fixed-point (default 16 = 1.0).
+                            s += (w * sub[gp][to as usize] as i32) >> 4;
                         }
                     }
                 }

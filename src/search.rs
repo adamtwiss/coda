@@ -213,7 +213,22 @@ tunables!(
     // extensions for tactically significant moves.
     (SE_XRAY_BLOCKER_MARGIN, 2, 0, 40, 2.0),
     (MVV_CAP_MULT, 32, 4, 64, 3.0),
-    (CONT_HIST_MULT, 1, 1, 8, 1.5),
+    // Per-ply continuation-history scoring weights (movepicker quiet sort).
+    // Plies walked: [1, 2, 4, 6]. Top engines diverge: Plenty 2:1:1:½,
+    // Stormphrax 1,1,½ (3 plies), Integral 1,2,4 (3 plies), Obsidian/
+    // Alexandria/Berserk 3,3,1,1. SPSA discovers the right shape.
+    //
+    // Stored as ×16 fixed-point: 16 = 1.0, 24 = 1.5, 32 = 2.0, 8 = 0.5.
+    // movepicker.rs divides by 16 after multiply. Earlier int [0, 4]
+    // attempt (#833) was structurally blind: c_end 0.4 on int domain
+    // rounds back to start, so SPSA gradient was zero. The ×16 storage
+    // gives SPSA a quasi-continuous knob (c_end 6.4 ≈ ±0.4 in the
+    // natural scale) that crosses fractional boundaries.
+    // Defaults [16,16,16,16] match prior CONT_HIST_MULT=1 behaviour.
+    (CONT_HIST_W1, 16, 0, 64, 6.4),
+    (CONT_HIST_W2, 16, 0, 64, 6.4),
+    (CONT_HIST_W4, 16, 0, 64, 6.4),
+    (CONT_HIST_W6, 16, 0, 64, 6.4),
     (KNIGHT_FORK_BONUS, 8987, 0, 20000, 1000.0),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where

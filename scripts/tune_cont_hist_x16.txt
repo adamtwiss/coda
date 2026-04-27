@@ -1,0 +1,4 @@
+CONT_HIST_W1, int, 16, 0, 64, 6.4, 0.002
+CONT_HIST_W2, int, 16, 0, 64, 6.4, 0.002
+CONT_HIST_W4, int, 16, 0, 64, 6.4, 0.002
+CONT_HIST_W6, int, 16, 0, 64, 6.4, 0.002
