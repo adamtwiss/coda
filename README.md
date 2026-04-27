@@ -19,7 +19,7 @@ Coda is a rewrite of [GoChess](https://github.com/adamtwiss/gochess) in Rust, 10
 
 ```bash
 make                # Build with native CPU optimizations
-make pgo            # PGO-optimized build (~3-5% faster)
+make pgo            # PGO-optimized build (~3-5% faster) - (NOTE: currently broken on main, don't use).
 make net            # Download production NNUE net
 ```
 All the above will build a 'coda' binary in the current directory.
@@ -29,7 +29,7 @@ Alternatively, you can build using cargo:
 cargo build --release  # Plain release build into target/releases
 ```
 
-Requires Rust 1.70+ (uses `std::arch` intrinsics).
+Requires Rust 1.95+
 
 For PGO builds, install prerequisites:
 ```bash
@@ -52,7 +52,7 @@ cargo install cargo-pgo
 
 ## Strength
 
-Plays around ~2900 on lichess, competes with most engines ranked around ~3500 on CCRL
+Plays around 2900-3000 on lichess, competes with most engines ranked around 3500-3600 on CCRL
 
 ## License
 
