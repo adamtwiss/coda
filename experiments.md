@@ -6197,7 +6197,7 @@ changes, [0, 3] bounds.
 | #813 | experiment/material-np-only | **MERGED 2026-04-27** (commit d2aca36). +0.6 ±0.9 / 117K (LLR -0.77 stopped, can't reach H1=3 at this magnitude). Genuine small positive with -20% bench reduction (tree-shape change). Drop pawn term from material scaling (SF/Stormphrax/Halogen/Integral pattern). Eval no longer dampened toward zero in pawn-up endgames. Retune-on-branch candidate: eval-scale change shifts SEE/futility/RFP calibration. New main bench: 809369. |
 | #814 | experiment/fh-blend-depth-cap | **H0 -0.3 ±1.3 / 55302g**. Reckless's `min(d, 8)` cap on FH-blend weight didn't carry Elo for Coda. Bench-flat. Drop. |
 | #821 | experiment/se-ttpv-margin (cross-engine item 14) | **submitted** [0, 3]. Adds DEXT_MARGIN_TT_PV=16 to the SE margin formula — when tt_pv flag is set, dext_margin shrinks → DEXT fires more eagerly. SF/Reckless/Obsidian/Viri all add a ttPv signal. Bench 1045910. |
-| #822 | experiment/cont-hist-drop-ply6 (cross-engine item 16) | **submitted** [0, 3]. Drops ply-6 from cont-hist quiet-scoring weights (Plenty/Stormphrax/Integral don't include ply-6). Bench 926582. |
+| #822 | experiment/cont-hist-drop-ply6 (cross-engine item 16) | **H0 -0.6 ±1.5 / 42K**. Unilaterally zeroing ply-6 from cont-hist quiet scoring rejected. Follow-up: per-ply tunable approach `experiment/cont-hist-tunable-weights` exposes CONT_HIST_W1/W2/W4/W6 (defaults [1,1,1,1]); focused tune **#833** (4 params, 2000 iters) lets SPSA find the shape directly, including potentially zeroing W6 only as part of a compensating redistribution. |
 
 **Lesson learned:** initial #812 submission failed OB bench check
 because `cargo build --release` produces a different bench than
