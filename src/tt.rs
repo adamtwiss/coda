@@ -451,9 +451,16 @@ impl TT {
                 return;
             }
 
-            // Key match: update if newer generation or sufficiently deep
+            // Key match: update if EXACT, newer generation, or sufficiently
+            // deep with a +2*is_pv depth bonus (SF/Reckless/Obsidian pattern —
+            // EXACT entries always win because they're rare and most valuable;
+            // PV nodes overweight to retain the principal variation longer).
             if recovered_upper == key_upper {
-                if depth > slot_depth - 3 || gen != slot_gen {
+                let pv_bonus = 2 * (is_pv as i32);
+                if flag == TT_FLAG_EXACT
+                    || gen != slot_gen
+                    || depth + pv_bonus > slot_depth - 4
+                {
                     bucket.data[i].store(new_data, Ordering::Release);
                     bucket.keys[i].store(new_key, Ordering::Release);
                 }
