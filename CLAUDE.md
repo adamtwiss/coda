@@ -369,7 +369,17 @@ update as more data accumulates.
 
 Three anchor points:
 
-- **60+1 bullet H2H vs SF 18**: Coda −159.8 ±41.6 Elo (100 games).
+- **60+1 bullet H2H vs SF 18 + Reckless** (2026-04-27, Atlas, 100 games per pairing):
+  - vs SF: **−210 ±48** Elo (0 wins / 46 draws / 54 losses)
+  - vs Reckless: **−151 ±40** Elo (0 wins / 59 draws / 41 losses)
+  - Combined: −179 ±31, 26.3% score, 52.5% draw rate, **0 wins in 200 games**
+  - Loss-mechanism analysis (`scripts/classify_losses.py` on the gauntlet PGN):
+    - 78.9% HORIZON-class (Coda eval cliffs late while opp eval was steady-correct earlier)
+    - 7% POSITIONAL drift, 10.5% SELF_BLUNDER, 3.5% UNCLASSIFIED
+    - **Median cliff-ratio 0.89** — eval drop happens at 89% through the game
+    - 31 of 45 HORIZON losses (69%) cliff in the endgame or final 5%
+    - Implication: the gap is concentrated in **endgame depth/eval**, not middlegame
+  - Earlier baseline (recorded here for trajectory): −159.8 ±41.6 vs SF (CI overlaps the new −210, so the gap may not have widened — but it also hasn't tightened despite recent merge cluster)
 - **10+0.1 ultra-bullet 45-engine RR** (Adam's local RR, every
   top-10 CCRL engine present): Coda gap to SF settling in the
   **~270-302 Elo** range across snapshots (±55 error bars at
