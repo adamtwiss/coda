@@ -84,31 +84,31 @@ tunables!(
     //   NMP_UNDEFENDED_MAX float-converged at 0.6 (int rounds to 1, no
     //     change); two consecutive tunes have drifted this toward feature-
     //     disable. Candidate for ablation SPRT (set to 0).
-    (NMP_BASE_R, 6, 2, 8, 1.5),
+    (NMP_BASE_R, 5, 2, 8, 1.5),
     (NMP_DEPTH_DIV, 4, 1, 6, 1.5),
-    (NMP_EVAL_DIV, 106, 50, 400, 17.5),
+    (NMP_EVAL_DIV, 124, 50, 400, 17.5),
     (NMP_EVAL_MAX, 2, 1, 6, 1.5),
-    (NMP_VERIFY_DEPTH, 10, 4, 20, 2.0),
-    (RFP_DEPTH, 19, 2, 20, 2.0),
-    (RFP_MARGIN_IMP, 31, 30, 150, 6.0),
-    (RFP_MARGIN_NOIMP, 90, 50, 200, 7.5),
+    (NMP_VERIFY_DEPTH, 11, 4, 20, 2.0),
+    (RFP_DEPTH, 20, 2, 20, 2.0),
+    (RFP_MARGIN_IMP, 30, 30, 150, 6.0),
+    (RFP_MARGIN_NOIMP, 75, 50, 200, 7.5),
     // Futility margin reduced to Reckless scale. At lmr_d=5:
     //   Old: 78 + 160*5 = 878 (Coda 2.4× wider than Reckless 364)
     //   New: 40 + 65*5 = 365 (matches Reckless)
     // Force-more-pruning experiment: Coda was under-pruning at mid-depth
     // where Reckless prunes confidently. SPSA retune-on-branch expected.
-    (FUT_BASE, 49, 20, 200, 9.0),
+    (FUT_BASE, 57, 20, 200, 9.0),
     (FUT_PER_DEPTH, 68, 40, 250, 10.5),
-    (HIST_PRUNE_DEPTH, 6, 1, 8, 1.5),
-    (HIST_PRUNE_MULT, 13810, 500, 50000, 2475.0),
-    (SEE_QUIET_MULT, 24, 5, 80, 3.75),
-    (LMR_HIST_DIV, 6998, 2000, 100000, 4900.0),
-    (LMR_C_QUIET, 139, 40, 300, 13.0),
-    (LMR_C_CAP, 108, 80, 350, 12.5),
+    (HIST_PRUNE_DEPTH, 7, 1, 8, 1.5),
+    (HIST_PRUNE_MULT, 16579, 500, 50000, 2475.0),
+    (SEE_QUIET_MULT, 27, 5, 80, 3.75),
+    (LMR_HIST_DIV, 7147, 2000, 100000, 4900.0),
+    (LMR_C_QUIET, 135, 40, 300, 13.0),
+    (LMR_C_CAP, 105, 80, 350, 12.5),
     (SE_DEPTH, 4, 4, 20, 2.0),
-    (ASP_DELTA, 13, 5, 30, 1.5),
-    (ASP_SCORE_DIV, 33647, 8000, 50000, 2100.0),
-    (LMP_DEPTH, 13, 4, 20, 2.0),
+    (ASP_DELTA, 11, 5, 30, 1.5),
+    (ASP_SCORE_DIV, 32133, 8000, 50000, 2100.0),
+    (LMP_DEPTH, 10, 4, 20, 2.0),
     // Reckless-shape LMP threshold (no-history-term variant):
     //   lmp_limit = (LMP_K_BASE + LMP_K_IMP*improvement/16
     //              + LMP_K_DEPTH*d²) / 1024
@@ -119,25 +119,25 @@ tunables!(
     // tune (no SPSA gradient) and #818 H0'd, suggesting the history term
     // is signal-not-there in Coda's regime — same TRIPLE-analog we caught
     // for SE extensions in #816/#817 (+2.5 H1 after strip).
-    (LMP_K_BASE, 3168, 1000, 6000, 250.0),
-    (LMP_K_IMP, 63, 0, 200, 10.0),
-    (LMP_K_DEPTH, 1495, 500, 3000, 125.0),
-    (BAD_NOISY_MARGIN, 74, 30, 150, 6.0),
+    (LMP_K_BASE, 3111, 1000, 6000, 250.0),
+    (LMP_K_IMP, 54, 0, 200, 10.0),
+    (LMP_K_DEPTH, 1597, 500, 3000, 125.0),
+    (BAD_NOISY_MARGIN, 81, 30, 150, 6.0),
     (PROBCUT_MARGIN, 205, 80, 300, 11.0),
-    (HINDSIGHT_THRESH, 168, 50, 400, 17.5),
-    (UNSTABLE_THRESH, 160, 50, 500, 22.5),
-    (SEE_MATERIAL_SCALE, 220, 30, 300, 13.5),
-    (QS_DELTA_MARGIN, 374, 100, 500, 20.0),
-    (QS_SEE_THRESHOLD, -43, -200, 0, 10.0),
+    (HINDSIGHT_THRESH, 171, 50, 400, 17.5),
+    (UNSTABLE_THRESH, 174, 50, 500, 22.5),
+    (SEE_MATERIAL_SCALE, 204, 30, 300, 13.5),
+    (QS_DELTA_MARGIN, 357, 100, 500, 20.0),
+    (QS_SEE_THRESHOLD, -32, -200, 0, 10.0),
     (QS_MAX_CAPTURES, 27, 2, 32, 2.0),
-    (CORR_W_PAWN, 240, 100, 600, 25.0),
-    (CORR_W_NP, 73, 50, 400, 17.5),
-    (CORR_W_MINOR, 65, 30, 300, 13.5),
-    (CORR_W_MAJOR, 96, 30, 300, 13.5),
-    (CORR_W_CONT, 51, 30, 400, 18.5),
-    (FH_BLEND_DEPTH, 0, 0, 8, 1.5),
-    (HIST_BONUS_MULT, 342, 50, 400, 17.5),
-    (HIST_BONUS_MAX, 1679, 500, 3000, 125.0),
+    (CORR_W_PAWN, 264, 100, 600, 25.0),
+    (CORR_W_NP, 60, 50, 400, 17.5),
+    (CORR_W_MINOR, 54, 30, 300, 13.5),
+    (CORR_W_MAJOR, 89, 30, 300, 13.5),
+    (CORR_W_CONT, 47, 30, 400, 18.5),
+    (FH_BLEND_DEPTH, 1, 0, 8, 1.5),
+    (HIST_BONUS_MULT, 362, 50, 400, 17.5),
+    (HIST_BONUS_MAX, 1566, 500, 3000, 125.0),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
     // history bonus adopts Stockfish/cap-hist offset shape:
     //   old: min(MAX, MULT * d)
@@ -147,22 +147,22 @@ tunables!(
     // wider depth discrimination. cap-history already uses the offset
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 89, 0, 400, 25.0),
-    (CAP_HIST_MULT, 293, 50, 400, 17.5),
-    (CAP_HIST_BASE, 21, 0, 200, 10.0),
-    (CAP_HIST_MAX, 1663, 500, 3000, 125.0),
-    (DEXT_MARGIN, 13, 2, 50, 2.4),
+    (HIST_BONUS_OFFSET, 107, 0, 400, 25.0),
+    (CAP_HIST_MULT, 286, 50, 400, 17.5),
+    (CAP_HIST_BASE, 14, 0, 200, 10.0),
+    (CAP_HIST_MAX, 1719, 500, 3000, 125.0),
+    (DEXT_MARGIN, 12, 2, 50, 2.4),
     (DEXT_CAP, 16, 4, 32, 2.0),
-    (QUIET_CHECK_BONUS, 11918, 2000, 30000, 1400.0),
-    (LMR_COMPLEXITY_DIV, 180, 30, 500, 23.5),
-    (CORR_HIST_DIV, 1022, 256, 4096, 192.0),
-    (CORR_UPDATE_WEIGHT_MAX, 13, 4, 48, 2.2),
-    (CORR_BONUS_CAP_DIV, 3, 1, 16, 1.5),
-    (CORR_HIST_GRAIN_T, 10, 1, 32, 1.55),
-    (CORR_HIST_ERR_MAX, 2, 1, 64, 3.15),
-    (ESCAPE_BONUS_Q, 15070, 5000, 40000, 1750.0),
-    (ESCAPE_BONUS_R, 12350, 3000, 30000, 1350.0),
-    (ESCAPE_BONUS_MINOR, 5575, 2000, 20000, 900.0),
+    (QUIET_CHECK_BONUS, 11115, 2000, 30000, 1400.0),
+    (LMR_COMPLEXITY_DIV, 179, 30, 500, 23.5),
+    (CORR_HIST_DIV, 1175, 256, 4096, 192.0),
+    (CORR_UPDATE_WEIGHT_MAX, 11, 4, 48, 2.2),
+    (CORR_BONUS_CAP_DIV, 4, 1, 16, 1.5),
+    (CORR_HIST_GRAIN_T, 9, 1, 32, 1.55),
+    (CORR_HIST_ERR_MAX, 1, 1, 64, 3.15),
+    (ESCAPE_BONUS_Q, 14610, 5000, 40000, 1750.0),
+    (ESCAPE_BONUS_R, 13252, 3000, 30000, 1350.0),
+    (ESCAPE_BONUS_MINOR, 5813, 2000, 20000, 900.0),
     (NMP_KING_ZONE_MAX, 6, 2, 9, 1.5),
     // T2.1 (Titan's next_ideas 2026-04-21): undefended-piece NMP skip
     // threshold. Count our pieces with ≥1 enemy attacker AND zero of
@@ -170,20 +170,20 @@ tunables!(
     // NMP — opponent's free tempo is very likely to exploit the hanger.
     // Fits Titan's W2 pattern (binary signal gating a pruning decision).
     // Default 1 = skip NMP whenever any piece is hanging.
-    (NMP_UNDEFENDED_MAX, 2, 0, 5, 1.0),
+    (NMP_UNDEFENDED_MAX, 3, 0, 5, 1.0),
     // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering weight.
     // Bonus applied in movepicker quiets = (to_mobility - from_mobility) × this.
     // Default 32 = ±256 typical range, additive to history (~1000s scale).
-    (MOBILITY_DELTA_WEIGHT, 38, 0, 256, 8.0),
-    (PROBCUT_KING_ZONE_MAX, 6, 2, 9, 1.5),
-    (LMR_THREAT_DIV, 3, 1, 5, 1.5),
-    (LMR_KING_PRESSURE_DIV, 5, 2, 9, 1.5),
-    (FUT_THREATS_MARGIN, 29, 0, 200, 10.0),
-    (DISCOVERED_ATTACK_BONUS, 6275, 0, 30000, 1500.0),
+    (MOBILITY_DELTA_WEIGHT, 37, 0, 256, 8.0),
+    (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
+    (LMR_THREAT_DIV, 2, 1, 5, 1.5),
+    (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
+    (FUT_THREATS_MARGIN, 35, 0, 200, 10.0),
+    (DISCOVERED_ATTACK_BONUS, 7828, 0, 30000, 1500.0),
     // T1.4: quiet-slider move that completes a battery — lands on a square
     // where a friendly slider stands between us and an enemy piece along
     // the same ray. Flat bonus; tp==0 disables detection.
-    (BATTERY_BONUS, 7277, 0, 20000, 1000.0),
+    (BATTERY_BONUS, 6744, 0, 20000, 1000.0),
     // T3.2 (next_ideas_2026-04-21): "good quiet" — bonus when a quiet
     // move's destination attacks an enemy piece MORE valuable than the
     // moving piece. Stacks on top of existing offense bonus (+6000 flat)
@@ -192,17 +192,17 @@ tunables!(
     // which is the dominant positive-SEE case (~70% of positive SEEs).
     // Reuses offense's `attacks_from_to` computation — zero extra
     // attacks_from() calls. tp==0 disables.
-    (QSEE_BONUS, 4748, 0, 20000, 1000.0),
-    (SE_KING_PRESSURE_MARGIN, 3, 0, 30, 1.5),
+    (QSEE_BONUS, 5484, 0, 20000, 1000.0),
+    (SE_KING_PRESSURE_MARGIN, 1, 0, 30, 1.5),
     // xray-SE: widen singular test margin when TT move is from an x-ray
     // blocker square (moving it uncovers our slider's attack on an enemy).
     // Signal already delivered +52 in movepicker (#502). Flat bonus
     // subtracted from singular_beta → easier to judge singular → more
     // extensions for tactically significant moves.
     (SE_XRAY_BLOCKER_MARGIN, 7, 0, 40, 2.0),
-    (MVV_CAP_MULT, 27, 4, 64, 3.0),
+    (MVV_CAP_MULT, 32, 4, 64, 3.0),
     (CONT_HIST_MULT, 1, 1, 8, 1.5),
-    (KNIGHT_FORK_BONUS, 9984, 0, 20000, 1000.0),
+    (KNIGHT_FORK_BONUS, 10614, 0, 20000, 1000.0),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
     // LMR over-reduces king-restriction queen moves that complete mates.
@@ -224,16 +224,16 @@ tunables!(
     // eval+pruning co-tune; expect meaningful movement as net quality
     // changes.
     (IIR_MIN_DEPTH, 2, 2, 10, 1.5),         // was hardcoded 4; tune #743 converged to 2 (strong signal)
-    (PROBCUT_MIN_DEPTH, 5, 3, 12, 1.5),     // was hardcoded 5 (ProbCut activation gate)
-    (SEE_CAP_DEPTH, 5, 3, 15, 1.5),         // was hardcoded 6 (SEE capture prune depth cap)
-    (FUT_LMR_DEPTH, 16, 5, 20, 1.5),         // was hardcoded 10; tune #743 → 9
-    (BAD_NOISY_DEPTH, 14, 4, 15, 1.5),       // was hardcoded 4 (BNFP depth cap)
+    (PROBCUT_MIN_DEPTH, 4, 3, 12, 1.5),     // was hardcoded 5 (ProbCut activation gate)
+    (SEE_CAP_DEPTH, 4, 3, 15, 1.5),         // was hardcoded 6 (SEE capture prune depth cap)
+    (FUT_LMR_DEPTH, 13, 5, 20, 1.5),         // was hardcoded 10; tune #743 → 9
+    (BAD_NOISY_DEPTH, 13, 4, 15, 1.5),       // was hardcoded 4 (BNFP depth cap)
     // Second pass — additional gates exposed for the feature-utility
     // audit tune. Widened ranges allow SPSA to reach disable-endpoint
     // values where appropriate (per feedback_spsa_as_feature_utility_diagnostic).
     (NMP_MIN_DEPTH, 7, 2, 20, 1.5),              // was hardcoded 3 (NMP activation gate, 2 sites)
     (HINDSIGHT_MIN_DEPTH, 4, 1, 20, 1.5),        // was hardcoded 2 (hindsight reduction gate)
-    (TT_CUTOFF_HALFMOVE_MAX, 89, 50, 100, 3.0),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
+    (TT_CUTOFF_HALFMOVE_MAX, 88, 50, 100, 3.0),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
 );
 
 /// Get a tunable parameter value (inline for hot paths)
