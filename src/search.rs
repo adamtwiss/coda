@@ -2673,9 +2673,13 @@ fn negamax(
                     return 0;
                 }
 
-                if singular_score >= singular_beta && singular_beta >= beta {
-                    // Multi-cut: alternatives are also good enough — prune the whole node
-                    return singular_beta;
+                if singular_score >= beta && singular_score.abs() < TB_WIN {
+                    // Multi-cut: alternatives reached beta — prune the whole node.
+                    // Reckless/SF/Stormphrax/Plenty pattern: gate on singular_score
+                    // vs beta (not vs singular_beta — which made the old form
+                    // almost-never-fire), guard against decisive scores, and
+                    // return a blended score to give the parent useful info.
+                    return (2 * singular_score + beta) / 3;
                 }
 
                 if singular_score < singular_beta {
