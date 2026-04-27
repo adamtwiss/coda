@@ -379,7 +379,36 @@ Three anchor points:
     - **Median cliff-ratio 0.89** — eval drop happens at 89% through the game
     - 31 of 45 HORIZON losses (69%) cliff in the endgame or final 5%
     - Implication: the gap is concentrated in **endgame depth/eval**, not middlegame
-  - Earlier baseline (recorded here for trajectory): −159.8 ±41.6 vs SF (CI overlaps the new −210, so the gap may not have widened — but it also hasn't tightened despite recent merge cluster)
+  - **Lag-near-zero finding**: when both sides "commit" to the bad evaluation
+    (5-ply consistency at threshold), median lag is −3 plies vs SF, −1 vs Reckless.
+    Both engines see the loss at roughly the same time. This rebuts the
+    naive "SF outsearches us 10 plies deep" reading of HORIZON. The mechanism
+    is more **eval-refinement** than search-depth: Coda's eval underestimates
+    badness by 1-3 pawns persistently (mean late-game eval gap 354cp vs SF),
+    until the position becomes concrete enough that even our less-refined
+    eval catches up.
+
+- **EGTB-on follow-up** (2026-04-27, 200 games, hash 512MB on this run vs 64MB baseline — small confound, Adam notes hash size showed minor effect in earlier testing):
+  - vs SF: **−139 ±40** (was −210 → +71 Elo closure)
+  - vs Reckless: **−164 ±42** (was −151 → −13 within noise; flat)
+  - Combined: −151 ±29, 29.5% score, **58.0% draw rate**, **1 win in 200 games**
+  - **Asymmetric closure validates the mechanism decomposition.** SF gap was
+    primarily search/depth-deficit at low piece count → TB compensates →
+    closes 71 Elo. Reckless gap was eval-refinement → TB doesn't fix eval
+    → gap stays flat. Diagnostic for any future merge: changes addressing
+    eval should NOT close the SF gap with TB-already-on; changes addressing
+    search depth SHOULD.
+  - **Reckless > SF inversion** in the EGTB run (Reckless +164 vs SF +139
+    against Coda, vs baseline where SF was 59 Elo stronger H2H). Coherent
+    reading: SF was beating us specifically by entering favorable TB
+    endgames more skillfully. With both engines using TBs, Coda now defends
+    those endgames perfectly, eliminating SF's relative edge. Reckless's
+    edge wasn't TB-leveraged → it persists.
+  - **First wins ever** against SF/Reckless (1 win in 200 games). Qualitative
+    crossing of zero: with TB, Coda is *capable* of converting winning
+    positions, not just defending.
+
+- Earlier baseline (recorded here for trajectory): −159.8 ±41.6 vs SF (CI overlaps the new −210, so the gap may not have widened — but it also hasn't tightened despite recent merge cluster)
 - **10+0.1 ultra-bullet 45-engine RR** (Adam's local RR, every
   top-10 CCRL engine present): Coda gap to SF settling in the
   **~270-302 Elo** range across snapshots (±55 error bars at
