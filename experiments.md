@@ -6181,8 +6181,9 @@ shallower trees (more LMP fires reach late quiets).
 
 | Tune | Branch / target | Iters / params | Status |
 |------|-----------------|---------------|--------|
-| #806 | experiment/se-margins-reckless (v2 with corr modulator + DEXT_MARGIN_BASE) | 2500 / 84 | **finished**. Big movers: DEXT_MARGIN_PV 204→216, DEXT_MARGIN_QUIET 16→11 (-29%), DEXT_MARGIN_BASE 30→24 (-19%), TRIPLE_MARGIN_QUIET 16→18, TRIPLE_MARGIN_BASE 75→86, DEXT_CAP 15→13, SE_DEPTH 4→5, CORR_BONUS_CAP_DIV 2→3, NMP_UNDEFENDED_MAX 1→2, LMP_BASE 8→10 (+25%), LMP_DEPTH 13→11. Applied as 8736d30; post-tune SPRT **#815 trended H0 (-4.84 ±10.5 / 790g, stopped)**. Hypothesis: TRIPLE bundling diluted the DEXT signal — TRIPLE was independently H0 at #787 with no SPSA basin (#792). Split branch as `experiment/se-margins-reckless-no-triple` (commit ecf3532, bench 686441, -31% vs main) — DEXT decomposition + corr modulator + BASE only, TRIPLE removed. SPSA **#816** running. |
-| #811 | experiment/lmp-reckless-shape (Phase B #3+#4+#5) | 2500 / 80 | running. Replaces threshold formula with Reckless history-aware continuous-improvement form: `(LMP_K_BASE + LMP_K_IMP*imp/16 + LMP_K_DEPTH*d² + LMP_K_HIST*main_hist/1024) / 1024`. Re-SPRT post-tune vs main is the real test. |
+| #806 | experiment/se-margins-reckless (v2 with corr modulator + DEXT_MARGIN_BASE) | 2500 / 84 | **finished**. Applied as 8736d30; post-tune SPRT #815 H0 (-4.84 ±10.5 / 790g, stopped). Hypothesis: TRIPLE bundling diluted DEXT signal — TRIPLE was independently H0 at #787 with no SPSA basin (#792). Split branch as `experiment/se-margins-reckless-no-triple`. |
+| #811 | experiment/lmp-reckless-shape (Phase B #3+#4+#5) | 2500 / 80 | **finished**. Big movers: FUT_BASE +20%, HIST_PRUNE_DEPTH +20%, LMR_HIST_DIV -13%, CORR_W_CONT +34%, NMP_UNDEFENDED_MAX 1→2 (+100%). LMP_K_HIST stayed flat at 67-68 through full tune — possible "history-aware threshold is signal-not-there for Coda" warning sign (TRIPLE-analog). Applied as e09c5cb (bench 1067778, +33% vs new main 809K). Post-tune SPRT **#818 [0, 5] vs main running**. |
+| #816 | experiment/se-margins-reckless-no-triple | 2500 / 80 | **finished**. Different basin from #806: NMP_BASE_R 6→8 (+33% vs #806 stayed at 6), NMP_VERIFY_DEPTH 10→8 (-20%), SEE_QUIET_MULT 24→29 (+21%), DEXT_MARGIN_BASE 24→33 (counter to #806's direction), CAP_HIST_BASE 21→28, FUT_THREATS_MARGIN 26→15, SE_KING_PRESSURE 3→2, SE_XRAY_BLOCKER 4→3. Without TRIPLE bundled, optimum SHIFTED meaningfully — confirms TRIPLE was distorting #806's basin. Applied as fafd694 (bench 1177195, +45% vs new main 809K). Post-tune SPRT **#817 [0, 5] vs main running**. |
 
 ### Tier 3 quick-win SPRTs (2026-04-26)
 
@@ -6191,7 +6192,7 @@ changes, [0, 3] bounds.
 
 | SPRT | Branch | Status |
 |------|--------|--------|
-| #813 | experiment/material-np-only | **submitted** [0, 3]. Drop pawn term from material scaling (SF/Stormphrax/Halogen/Integral pattern). Bench 809369 (-19% vs main 1000987) — meaningful tree-shape change because eval is less aggressively dampened in pawn-up endgames. One-line eval-side change. |
+| #813 | experiment/material-np-only | **MERGED 2026-04-27** (commit d2aca36). +0.6 ±0.9 / 117K (LLR -0.77 stopped, can't reach H1=3 at this magnitude). Genuine small positive with -20% bench reduction (tree-shape change). Drop pawn term from material scaling (SF/Stormphrax/Halogen/Integral pattern). Eval no longer dampened toward zero in pawn-up endgames. Retune-on-branch candidate: eval-scale change shifts SEE/futility/RFP calibration. New main bench: 809369. |
 | #814 | experiment/fh-blend-depth-cap | **submitted** [0, 3]. Add `min(d, 8)` cap to FH-blend weight (Reckless pattern). Without cap, d=25+ fail-highs got weight 25/26 ≈ no dampening. New tunable FH_BLEND_WEIGHT_CAP=8 [4, 16]. Bench 877096. |
 
 **Lesson learned:** initial #812 submission failed OB bench check
