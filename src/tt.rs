@@ -451,9 +451,10 @@ impl TT {
                 return;
             }
 
-            // Key match: update if newer generation or sufficiently deep
+            // Key match: update if newer generation or sufficiently deep.
+            // Threshold loosened from -3 to -4 (bisect of #834).
             if recovered_upper == key_upper {
-                if depth > slot_depth - 3 || gen != slot_gen {
+                if depth > slot_depth - 4 || gen != slot_gen {
                     bucket.data[i].store(new_data, Ordering::Release);
                     bucket.keys[i].store(new_key, Ordering::Release);
                 }
