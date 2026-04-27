@@ -6203,3 +6203,31 @@ changes, [0, 3] bounds.
 because `cargo build --release` produces a different bench than
 `make` (--features embedded-net). OB workers always use make. New
 memory: `feedback_bench_via_make_not_cargo.md`.
+
+### Cross-engine Tier 2/3 batch continued (2026-04-27)
+
+Three more small-win candidates from `docs/cross_engine_comparison_2026-04-25.md`,
+all [0, 3] bounds.
+
+| SPRT | Branch | Item | Status |
+|------|--------|------|--------|
+| #827 | experiment/multicut-fix | Item 5 | **H0 -10.9 ±4.4 / 4486g** (LLR -2.95). Reckless-pattern `singular_score >= beta` gate + `(2*s + beta)/3` return. Bench dropped 1237371 → 995284 (-19.6%) — fired far more often than the dead-code old gate. **Bucket: signal-overlap with post-#817 SE/DEXT cluster** (the new fire-on-beta + the recently-merged DEXT decomposition double-prune). Refined retry would gate on `cut_node && !is_pv` like Reckless does. Drop. |
+| #828 | experiment/eval-quant-16cp | Item N-14 | running. PlentyChess-style `(eval/16)*16` after material scaling for TT-stability. Bench 1397631. Trending H0 -3.3 ±4.9 / 3.8K early. |
+
+**Bench cascade lesson** (2026-04-27): five OB "Wrong Bench" errors
+across multicut-fix + eval-quant before realising the cause. `make`
+emits `./coda` at repo root via `--emit link=coda`. I had been
+benching `./target/release/coda` (stale binary from cargo build)
+which gave 818364 — but `make && ./coda bench` gives the correct
+995284 / 1397631 numbers OB workers measure. Always `./coda`, not
+`./target/release/coda`. The bench-recipe + check-/errors/-after-submit
+rules are now in CLAUDE.md (§Build and Test → Bench-for-OB ritual).
+
+**Tune-820 mid-tune snapshot** (2026-04-27, 2106/5000 iters): clear
+evidence the standard 2.5K-iter tune length is undertuning at our
+current trunk. `NMP_DEPTH_DIV` was at +29.9% at 275 iters, then
+**flipped to -3.2% at 2106 iters** — a sign-flip across a swing
+that early-mover heuristics would have called "trending up". The
+2500-iter snapshot should be saved for compare against the final
+5000 to quantify what we miss at the standard length. Likely informs
+the §Long tunes / long training thread in CLAUDE.md.
