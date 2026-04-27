@@ -174,7 +174,7 @@ pub struct MovePicker {
     // Pointer to the History struct (lives for the duration of search)
     history: *const History,
     // Continuation history sub-table pointers at plies 1, 2, 4, 6 back.
-    // cont_hist_subs[0] = ply-1 (3x weight), [1] = ply-2 (3x), [2] = ply-4 (1x), [3] = ply-6 (1x)
+    // cont_hist_subs[i] paired with CONT_HIST_W{1,2,4,6} at scoring time.
     cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4],
     pawn_hist_ptr: Option<*const [[i16; 64]; 13]>,
     // Main moves list and scores
