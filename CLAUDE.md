@@ -388,43 +388,58 @@ Three anchor points:
     until the position becomes concrete enough that even our less-refined
     eval catches up.
 
-- **EGTB + Hash size 2×2 follow-up** (2026-04-27, 200 games per cell):
+- **EGTB + Hash + TC sweep** (2026-04-27, 200 games per cell, all on prod 1EF1C3E5):
 
 | Configuration | Overall | vs SF | vs Reckless | Draw % |
 |---|---:|---:|---:|---:|
-| hash=64, no EGTB (baseline) | −179 ±31 | −210 ±48 | −151 ±40 | 52.5% |
-| hash=64, EGTB on | −186 ±32 | −182 ±45 | −191 ±46 | 51.0% |
-| hash=512, EGTB on | −151 ±29 | −139 ±40 | −164 ±42 | 58.0% |
+| 60+1, hash=64, no EGTB (baseline) | −179 ±31 | −210 ±48 | −151 ±40 | 52.5% |
+| 60+1, hash=64, EGTB on | −186 ±32 | −182 ±45 | −191 ±46 | 51.0% |
+| 60+1, hash=512, EGTB on | −151 ±29 | −139 ±40 | −164 ±42 | 58.0% |
+| **180+2, hash=512, EGTB on (deployment-config)** | **−119 ±25** | **−139 ±39** | **−100 ±33** | **67.0%** |
 
-  - **EGTB alone (hash controlled): essentially flat overall (-7 within noise)**.
+  - **EGTB alone (hash controlled, 60+1): essentially flat overall (-7 within noise)**.
     Mixed by opponent: maybe small help vs SF (+28), maybe small hurt vs Reckless
-    (-40), both within ±60 combined error bars at this N.
-  - **Hash 64→512 with EGTB on: +35 Elo overall, +43 vs SF, +27 vs Reckless,
-    +7% draw rate.** This is the actual dominant lever, not EGTB.
+    (-40), both within ±60 combined error bars.
+  - **Hash 64→512 (60+1, EGTB on): +35 Elo overall, +43 vs SF, +27 vs Reckless,
+    +7% draw rate.** Dominant lever vs SF.
+  - **TC 60+1 → 180+2 (with hash=512+EGTB): +32 Elo overall, +0 vs SF, +64 vs Reckless,
+    +9% draw rate.** Dominant lever vs Reckless. SF-side gap is TC-saturated by 60+1.
+  - **Mechanism split made cleanly visible by this 4-config sweep:**
+    - vs SF: gap is **hash/depth-bound**. Closes -71 Elo (210→139) with hash bump.
+      Doesn't close further with TC. SF outsearches us in tactical density that
+      hash size partly compensates for; once we have the hash, SF's edge is
+      fully manifest.
+    - vs Reckless: gap is **TC/eval-refinement-bound**. Hash bump barely moves
+      it (-13, possibly null at this N). Long TC closes it -64 (164→100).
+      Tracks the eval-refinement frame: at long TC both engines see more,
+      and Coda's eval has more headroom to converge on positions Reckless
+      already evaluated correctly.
+    - These are complementary mechanisms, both load-bearing for different
+      opponents. Combined, the deployment-config 180+2+512+EGTB number is
+      the relevant strength anchor.
+  - **First wins ever against SF/Reckless** (1 win at hash=512+EGTB 60+1, more
+    at 180+2). Qualitative crossing of zero — but 200 games per cell is still
+    a small sample.
   - The earlier "EGTB closes the SF gap by 86 Elo" reading was largely a
-    TT-size artifact, not an EGTB effect. The asymmetric SF-vs-Reckless
-    response under EGTB-alone is directionally suggestive but not strong
-    evidence at this N — the SF=search / Reckless=eval mechanism story
-    needs more data before treating it as a validated diagnostic.
-  - Mechanism re-read: the gap is partly a **TT pressure problem in long
-    endgames**. 64MB TT (5-slot buckets, 1M buckets) thrashes at endgame
-    piece counts where transposition density is high. SF/Reckless likely
-    handle this via different replacement policies or less-complex eval
-    that reduces TT pressure.
-  - **First wins ever** against SF/Reckless (1 win in 200 games at
-    hash=512+EGTB; 0 in other configs). Qualitative crossing of zero, but
-    it's 1 game — don't over-interpret.
+    TT-size artifact, not an EGTB effect.
 
   **Action items from this finding:**
-  - Verify what hash OB workers / Lichess deployment use. If OB defaults to
-    64 and Lichess uses 512+, every SPRT measurement systematically
-    penalizes endgame-affecting changes.
+  - **Strength claims should cite the 180+2 deployment-config anchor** (-119 ±25),
+    not the 60+1 H2H number. The 60+1 numbers are diagnostic instruments
+    for mechanism decomposition, not strength reads.
+  - SF gap is hash-bound; further tightening requires search-side work
+    (EBF, NPS, tactical density). Pure eval improvements won't close it
+    much further.
+  - Reckless gap is TC-bound; eval-refinement work (training, factor net,
+    longer SBs) closes it. The path to peer-tier strength runs through
+    the Reckless gap first per `feedback_sf_vs_reckless_gaps_are_different.md`.
   - Investigate Coda TT efficiency in long endgames: hit rate at
     piece-count buckets, replacement effectiveness at low piece count.
-    Reckless's Rust code is the closest reference architecture to compare
-    against.
-  - Consider raising the default Hash UCI option / OB SPRT hash to
-    align with deployment reality.
+    See `docs/tt_hash_sensitivity_2026-04-27.md` for the structural
+    candidates (bucket density, age weight, QS in-check static_eval).
+  - OB SPRT can't be hash-bumped (workers run N games × hash MB in RAM),
+    so 60+1+64 SPRT systematically underweights endgame-affecting changes.
+    Validate hash-/TT-sensitive merges via 180+2 H2H gauntlet, not SPRT.
 
 - Earlier baseline (recorded here for trajectory): −159.8 ±41.6 vs SF (CI overlaps the new −210, so the gap may not have widened — but it also hasn't tightened despite recent merge cluster)
 - **10+0.1 ultra-bullet 45-engine RR** (Adam's local RR, every
