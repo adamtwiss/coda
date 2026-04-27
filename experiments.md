@@ -6184,7 +6184,8 @@ shallower trees (more LMP fires reach late quiets).
 | #806 | experiment/se-margins-reckless (v2 with corr modulator + DEXT_MARGIN_BASE) | 2500 / 84 | **finished**. Applied as 8736d30; post-tune SPRT #815 H0 (-4.84 ±10.5 / 790g, stopped). Hypothesis: TRIPLE bundling diluted DEXT signal — TRIPLE was independently H0 at #787 with no SPSA basin (#792). Split branch as `experiment/se-margins-reckless-no-triple`. |
 | #811 | experiment/lmp-reckless-shape (Phase B #3+#4+#5) | 2500 / 80 | **finished**. LMP_K_HIST stayed flat at 67-68 through full tune (signal-not-there warning). Applied as e09c5cb. Post-tune SPRT **#818 H0 -2.4 ±3.2 / 9134g**. Confirmed the LMP_K_HIST flat-line was directionally right. Decomposition follow-up: `experiment/lmp-reckless-shape-no-hist` (Option B per 2026-04-27 discussion), strip history term keep #4+#5 — SPSA **#819** running. |
 | #816 | experiment/se-margins-reckless-no-triple | 2500 / 80 | **finished**. Different basin from #806: NMP_BASE_R 6→8, NMP_VERIFY_DEPTH 10→8, DEXT_MARGIN_BASE 24→33 (opposite #806), SEE_QUIET_MULT 24→29, FUT_THREATS_MARGIN 26→15, SE_KING_PRESSURE 3→2, SE_XRAY_BLOCKER 4→3. TRIPLE was distorting #806's basin. Applied as fafd694. Post-tune SPRT **#817 H1 +2.5 ±2.0 / 22040g — MERGED 2026-04-27** (commit 2a93ae9). Trunk bench 809369 → 1237371. |
-| #819 | experiment/lmp-reckless-shape-no-hist (Phase B Option B) | 2500 / 79 | **running, 0/2500**. LMP_K_HIST term stripped; LMP_K_BASE/IMP/DEPTH preserved. Tunable defaults from tune-811. Mirrors the #816/#817 SE diagnostic that paid +2.5 Elo. |
+| #819 | experiment/lmp-reckless-shape-no-hist (Phase B Option B) | 2500 / 79 | running. LMP_K_HIST term stripped; LMP_K_BASE/IMP/DEPTH preserved. Tunable defaults from tune-811. Mirrors the #816/#817 SE diagnostic that paid +2.5 Elo. |
+| **#820** | **main full-sweep** (post-#817 trunk) | **5000 / 80** | running. Long-tune experiment (5K iters vs usual 2.5K) since trunk just absorbed two big merges (#813 -20% bench, #817 +53%) and tunable mismatch is at maximum. Adam asked for mid-tune snapshot @ ~2500 iters to compare against final 5000 — direct test of whether 2500 was undertuning. |
 
 ### Tier 3 quick-win SPRTs (2026-04-26)
 
@@ -6195,6 +6196,8 @@ changes, [0, 3] bounds.
 |------|--------|--------|
 | #813 | experiment/material-np-only | **MERGED 2026-04-27** (commit d2aca36). +0.6 ±0.9 / 117K (LLR -0.77 stopped, can't reach H1=3 at this magnitude). Genuine small positive with -20% bench reduction (tree-shape change). Drop pawn term from material scaling (SF/Stormphrax/Halogen/Integral pattern). Eval no longer dampened toward zero in pawn-up endgames. Retune-on-branch candidate: eval-scale change shifts SEE/futility/RFP calibration. New main bench: 809369. |
 | #814 | experiment/fh-blend-depth-cap | **H0 -0.3 ±1.3 / 55302g**. Reckless's `min(d, 8)` cap on FH-blend weight didn't carry Elo for Coda. Bench-flat. Drop. |
+| #821 | experiment/se-ttpv-margin (cross-engine item 14) | **submitted** [0, 3]. Adds DEXT_MARGIN_TT_PV=16 to the SE margin formula — when tt_pv flag is set, dext_margin shrinks → DEXT fires more eagerly. SF/Reckless/Obsidian/Viri all add a ttPv signal. Bench 1045910. |
+| #822 | experiment/cont-hist-drop-ply6 (cross-engine item 16) | **submitted** [0, 3]. Drops ply-6 from cont-hist quiet-scoring weights (Plenty/Stormphrax/Integral don't include ply-6). Bench 926582. |
 
 **Lesson learned:** initial #812 submission failed OB bench check
 because `cargo build --release` produces a different bench than
