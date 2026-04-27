@@ -164,6 +164,7 @@ tunables!(
     (DEXT_MARGIN_QUIET, 12, 0, 100, 4.0),
     (DEXT_MARGIN_CORR, 13, 0, 64, 3.0),
     (DEXT_MARGIN_BASE, 33, -50, 150, 6.0),
+    (DEXT_MARGIN_TT_PV, 16, 0, 80, 4.0),
     (DEXT_CAP, 13, 4, 32, 2.0),
     (QUIET_CHECK_BONUS, 11965, 2000, 30000, 1400.0),
     (LMR_COMPLEXITY_DIV, 181, 30, 500, 23.5),
@@ -2697,6 +2698,7 @@ fn negamax(
                     let dext_margin = tp(&DEXT_MARGIN_PV) * is_pv as i32
                                     - tp(&DEXT_MARGIN_QUIET) * is_tt_quiet as i32
                                     - tp(&DEXT_MARGIN_CORR) * corr_abs / 128
+                                    - tp(&DEXT_MARGIN_TT_PV) * tt_pv as i32
                                     + tp(&DEXT_MARGIN_BASE);
 
                     singular_extension = 1;
