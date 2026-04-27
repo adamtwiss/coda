@@ -451,9 +451,13 @@ impl TT {
                 return;
             }
 
-            // Key match: update if newer generation or sufficiently deep
+            // Key match: update if newer generation, sufficiently deep,
+            // or PV-favoured. The +2*is_pv depth bonus mirrors SF
+            // tt.cpp:101's PV-retention behaviour without changing the
+            // base threshold (-3) or adding EXACT-always-wins. Tested
+            // separately from sibling tt-exact-only / tt-threshold-loose-only.
             if recovered_upper == key_upper {
-                if depth > slot_depth - 3 || gen != slot_gen {
+                if depth + 2 * (is_pv as i32) > slot_depth - 3 || gen != slot_gen {
                     bucket.data[i].store(new_data, Ordering::Release);
                     bucket.keys[i].store(new_key, Ordering::Release);
                 }
