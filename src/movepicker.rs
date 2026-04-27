@@ -581,7 +581,7 @@ impl MovePicker {
             if piece != NO_PIECE {
                 let gp = go_piece(piece);
                 let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
-                let weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
+                let weights = [cm, cm, 1i32, 0]; // ply-1, ply-2, ply-4 (ply-6 dropped — Plenty/Stormphrax/Integral pattern)
                 for (i, &w) in weights.iter().enumerate() {
                     if let Some(sub_ptr) = self.cont_hist_subs[i] {
                         let sub = unsafe { &*sub_ptr };
@@ -800,7 +800,7 @@ impl MovePicker {
                 if piece != NO_PIECE {
                     let gp = go_piece(piece);
                     let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
-                    let weights = [cm, cm, 1i32, 1];
+                    let weights = [cm, cm, 1i32, 0];
                     for (i, &w) in weights.iter().enumerate() {
                         if let Some(sub_ptr) = self.cont_hist_subs[i] {
                             let sub = unsafe { &*sub_ptr };
