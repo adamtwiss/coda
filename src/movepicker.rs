@@ -576,12 +576,18 @@ impl MovePicker {
 
             let mut score = history.main_score(from, to, self.threats);
 
-            // Continuation history: plies 1,2 at CONT_HIST_MULT weight, plies 4,6 at 1x weight.
-            // Matches Obsidian/Alexandria/Berserk pattern (default 3).
+            // Continuation history: per-ply weights via SPSA tunables.
+            // Plies walked: ply-1, ply-2, ply-4, ply-6. Defaults all 1 match
+            // prior behaviour (CONT_HIST_MULT=1 collapsed [cm,cm,1,1] → [1,1,1,1]).
             if piece != NO_PIECE {
                 let gp = go_piece(piece);
-                let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
-                let weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
+                use std::sync::atomic::Ordering::Relaxed;
+                let weights = [
+                    crate::search::CONT_HIST_W1.load(Relaxed),
+                    crate::search::CONT_HIST_W2.load(Relaxed),
+                    crate::search::CONT_HIST_W4.load(Relaxed),
+                    crate::search::CONT_HIST_W6.load(Relaxed),
+                ];
                 for (i, &w) in weights.iter().enumerate() {
                     if let Some(sub_ptr) = self.cont_hist_subs[i] {
                         let sub = unsafe { &*sub_ptr };
@@ -799,8 +805,13 @@ impl MovePicker {
 
                 if piece != NO_PIECE {
                     let gp = go_piece(piece);
-                    let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
-                    let weights = [cm, cm, 1i32, 1];
+                    use std::sync::atomic::Ordering::Relaxed;
+                    let weights = [
+                        crate::search::CONT_HIST_W1.load(Relaxed),
+                        crate::search::CONT_HIST_W2.load(Relaxed),
+                        crate::search::CONT_HIST_W4.load(Relaxed),
+                        crate::search::CONT_HIST_W6.load(Relaxed),
+                    ];
                     for (i, &w) in weights.iter().enumerate() {
                         if let Some(sub_ptr) = self.cont_hist_subs[i] {
                             let sub = unsafe { &*sub_ptr };

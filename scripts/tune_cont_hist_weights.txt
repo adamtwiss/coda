@@ -1,0 +1,4 @@
+CONT_HIST_W1, int, 1, 0, 4, 0.4, 0.002
+CONT_HIST_W2, int, 1, 0, 4, 0.4, 0.002
+CONT_HIST_W4, int, 1, 0, 4, 0.4, 0.002
+CONT_HIST_W6, int, 1, 0, 4, 0.4, 0.002

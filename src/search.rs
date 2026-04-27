@@ -213,7 +213,17 @@ tunables!(
     // extensions for tactically significant moves.
     (SE_XRAY_BLOCKER_MARGIN, 3, 0, 40, 2.0),
     (MVV_CAP_MULT, 31, 4, 64, 3.0),
-    (CONT_HIST_MULT, 1, 1, 8, 1.5),
+    // Per-ply continuation-history scoring weights (movepicker quiet sort).
+    // Plies walked: [1, 2, 4, 6]. Previously [CONT_HIST_MULT, CONT_HIST_MULT,
+    // 1, 1] with CONT_HIST_MULT=1, so all four at 1. Splitting into per-ply
+    // tunables lets SPSA discover the right shape — top engines diverge here:
+    // Plenty 2:1:1:½, Stormphrax 1,1,½ (3 plies, no ply-6), Integral 1,2,4
+    // (no ply-6), Obsidian/Alexandria/Berserk 3,3,1,1.
+    // Defaults [1,1,1,1] match prior behaviour exactly (bench-preserving).
+    (CONT_HIST_W1, 1, 0, 4, 0.4),
+    (CONT_HIST_W2, 1, 0, 4, 0.4),
+    (CONT_HIST_W4, 1, 0, 4, 0.4),
+    (CONT_HIST_W6, 1, 0, 4, 0.4),
     (KNIGHT_FORK_BONUS, 8981, 0, 20000, 1000.0),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
