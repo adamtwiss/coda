@@ -451,9 +451,14 @@ impl TT {
                 return;
             }
 
-            // Key match: update if newer generation or sufficiently deep
+            // Key match: update if EXACT bound, newer generation, or
+            // sufficiently deep. EXACT-always-wins isolates the rare-fire
+            // half of the SF replacement gate (SF tt.cpp:101 first clause)
+            // while keeping Coda's existing depth threshold and ignoring
+            // the +2*pv depth bonus and `-3 → -4` threshold change tested
+            // separately in sibling branches.
             if recovered_upper == key_upper {
-                if depth > slot_depth - 3 || gen != slot_gen {
+                if flag == TT_FLAG_EXACT || depth > slot_depth - 3 || gen != slot_gen {
                     bucket.data[i].store(new_data, Ordering::Release);
                     bucket.keys[i].store(new_key, Ordering::Release);
                 }
