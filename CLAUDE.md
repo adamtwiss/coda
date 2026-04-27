@@ -437,9 +437,12 @@ Three anchor points:
     piece-count buckets, replacement effectiveness at low piece count.
     See `docs/tt_hash_sensitivity_2026-04-27.md` for the structural
     candidates (bucket density, age weight, QS in-check static_eval).
-  - OB SPRT can't be hash-bumped (workers run N games × hash MB in RAM),
-    so 10+0.1+64 SPRT systematically underweights endgame-affecting changes.
-    Validate hash-/TT-sensitive merges via 180+2 H2H gauntlet, not SPRT.
+  - SPRT at 10+0.1 measures search/eval changes well, but is structurally
+    blind to a specific class: changes whose Elo only manifests at long-TC
+    mechanisms (deep-search TT pressure, ponder, TM nuance, >25-ply tactics).
+    OB hash CAN be bumped if we audit RAM headroom (workers run N concurrent
+    games × hash MB); we just don't currently. For hash/TT-sensitive merges,
+    validate via 180+2 H2H gauntlet alongside SPRT.
 
 - Earlier baseline (recorded here for trajectory): −159.8 ±41.6 vs SF (CI overlaps the new −210, so the gap may not have widened — but it also hasn't tightened despite recent merge cluster)
 - **10+0.1 ultra-bullet 45-engine RR** (Adam's local RR, every
