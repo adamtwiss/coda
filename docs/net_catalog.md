@@ -38,6 +38,7 @@ v0.3.0-nets release until 2026-04-26.
 | Hash | Layout | File | Status | Notes |
 |---|---|---|---|---|
 | `1EF1C3E5` | kb10 | `net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor.nnue` | **PROD** (v0.4.0-nets) | SB800 + factor. Filename "C8fix" labels the **first** C8 fix only (a8e2c7d Apr 22). The "Complete C8 fix" (62931d1, Apr 25 20:15) was committed only 1h37m before file mtime (Apr 25 21:52); SB800 train (~30-40h) was already done — file mtime is the conversion timestamp. So this net has **C8fix-1 only ("noisy threats")**, NOT C8fix-2. Promoted 2026-04-26 after #789 H1 +4.9. Net swap alone +3.3 (#782); tune-784 retune-on-this +3.0 (#788); deployment package together +4.9 (#789). Local: `nets/net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor.nnue` (Apr 25 21:52). |
+| `6C154331` | kb10 | `net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-xray-factor.nnue` | rejected | SB800 + factor + **x-ray training**. Trained 2026-04-26 (GPU 2 promised batch). Tune #830 retune-on-net (5K iters, 80 params, 64 changed). Net-vs-net SPRT #836 vs PROD 1EF1C3E5: **H0 -10.7 ±6.3 / 3100g** at retuned state. Combined with #835 +5.2 (pre-vs-post tune-830) implies the underlying net is ~15 Elo behind 1EF1C3E5 at equal-tune state. **Conclusion:** x-ray training does not currently translate to net Elo gain at SB800 / current recipe. Net-training thread should iterate (different recipe / longer SBs / alternative architecture). Local: `nets/net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-xray-factor.nnue` (Apr 27 13:31). Bench (with tune-830 outputs) 1505199. |
 | `CC483681` | kb10 | `net-v9-768th16x32-kb10-w15-e200s200-crelu-C8fix-factor.nnue` | C8fix-2 isolation test | **First net to actually contain C8fix-2.** SB200 + factor + complete C8-fix (both halves a8e2c7d + 62931d1). Trained Apr 26 ~01:15 (start) → Apr 26 08:31 (file mtime), well after the 62931d1 commit. Net-vs-net SPRT vs C0A97CF4 (#794, on tune-784 trunk) measures C8fix-2 contribution at SB200. Caveat: trunk tunables are calibrated against 1EF1C3E5 (noisy threats), so tunables fit the BASE here, not the DEV — SPRT result is a lower bound on C8fix-2 contribution. Local: `nets/net-v9-768th16x32-kb10-w15-e200s200-crelu-C8fix-factor.nnue` (Apr 26 08:31). Bench (post tune-784 main) 1502300. |
 | `FF8C93DC` | kb10 | `net-v9-768th16x32-kb10-w15-e400s400-crelu-C8fix-factor.nnue` | intermediate | SB400 + factor. Apr 23 12:59 — predates 62931d1 (Apr 25), so C8fix-1 only. Filename label is C8fix-1. |
 | `C0A97CF4` | kb10 | `net-v9-768th16x32-kb10-w15-e200s200-factor.nnue` | C8fix-2 isolation base | SB200 + factor (trained Apr 22 06:37, before 62931d1 commit Apr 25 — has only C8fix-1). Used as base for #794. Same threat semantics as 1EF1C3E5, so tunables fit. Hidden activation: per training script default at the time (screlu-hidden — name lacks `-crelu` suffix). Bench (post tune-784 main) 1454351. |
@@ -91,9 +92,13 @@ file.
 
 ## Incoming (pending training)
 
-- **SB800 factor + x-ray** (2026-04-26): GPU 2 currently training. ~30-40h
-  wall-clock. Will produce a third SB800 factor net for cross-checking
-  C8fix-2 + factor stability at full training depth.
+- (none currently)
+
+## Recently completed / rejected
+
+- **SB800 factor + x-ray** (`6C154331`, 2026-04-27): trained, retuned
+  (#830), SPRT'd as -10.7 vs PROD 1EF1C3E5 (#836). x-ray training
+  doesn't carry net Elo at this SB / recipe. See main entry above.
 
 ## Catalog hygiene rules
 
