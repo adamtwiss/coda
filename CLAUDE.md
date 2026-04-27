@@ -28,28 +28,39 @@ rustup component add llvm-tools-preview
 ```
 
 ```bash
-make                                             # Build with native CPU optimizations
-make pgo                                         # PGO-optimized build (~3-5% faster v5 on main; regresses v9 — see Makefile)
-make net                                         # Download production NNUE net
-make openbench                                   # OpenBench-compatible build
-cargo build --release                            # Plain release build (no embedded net)
-cargo test                                       # Run all tests including perft
+make                  # Build with embedded NNUE net + native CPU (produces ./coda)
+make pgo              # PGO build — helps v5 on main; regresses v9. See Makefile.
+make net              # Download production NNUE net (from net.txt)
+make openbench        # OpenBench-compatible build (alias for `make`)
+cargo build --release # Plain release (no embedded net) — NOT what OB workers use
+cargo test            # Run all tests including perft
 
-./target/release/coda                            # UCI mode (default)
-./target/release/coda -nnue net.nnue             # UCI with NNUE evaluation
-./target/release/coda -nnue net.nnue -book book.bin  # UCI with NNUE + opening book
-./target/release/coda bench [depth]              # Search benchmark (default depth 13)
-./target/release/coda bench 13 -nnue net.nnue    # Bench with NNUE
-./target/release/coda epd wac.epd 1000 0 -nnue net.nnue  # EPD test suite
-./target/release/coda perft [depth] [fen...]     # Perft with divide
-./target/release/coda perft-bench                # Perft benchmark (6 positions)
-./target/release/coda datagen [options]          # Generate training data (SF binpack)
-./target/release/coda convert-bullet [options]   # Bullet quantised.bin → .nnue
-./target/release/coda convert-checkpoint [opts]  # .nnue → Bullet checkpoint (transfer learning)
-./target/release/coda fetch-net                  # Download NNUE net from net.txt URL
-./target/release/coda sample-positions [options]  # Sample positions from binpack to EPD
-./target/release/coda help                       # Show all options
+./coda bench [depth]                  # Search benchmark, default depth 13 — use THIS for OB
+./coda                                # UCI mode
+./coda -nnue net.nnue                 # UCI with explicit NNUE
+./coda -nnue net.nnue -book book.bin  # ... + opening book
+./coda epd wac.epd 1000 0 -nnue net.nnue
+./coda perft [depth] [fen...]
+./coda perft-bench                    # 6-position perft suite
+./coda datagen [options]              # Self-play / material-removal data
+./coda convert-bullet [options]       # quantised.bin → .nnue
+./coda convert-checkpoint [opts]      # .nnue → Bullet checkpoint
+./coda fetch-net                      # Pull net from net.txt URL
+./coda sample-positions [options]     # binpack → EPD samples
+./coda help
 ```
+
+**Bench-for-OB ritual.** OB workers use `make` (which emits `./coda` at the
+repo root via `--emit link=coda`). To get a bench number that matches what
+OB will measure, **always** `make && ./coda bench`. `cargo build --release`
++ `./target/release/coda bench` produces a DIFFERENT number (no embedded
+net, different code paths) — submitting that bench triggers OB "Wrong
+Bench" rejections.
+
+After every SPRT submission, check https://ob.atwiss.com/errors/ 5-10 min
+later before assuming success — workers report build/bench errors async,
+not in the test page or `ob_status.py`. Don't resubmit on stall without
+checking errors first.
 
 ## Project Structure
 
@@ -156,8 +167,10 @@ Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from dept
 - Stores raw (uncorrected) static eval to avoid double correction
 
 ### NNUE
-Supports v5 (CReLU), v6 (SCReLU, pairwise), and v7 (hidden layers) formats.
-Strongest cross-engine: 768pw w5 (`net-v5-768pw-w5-e800-s800.nnue`). Strongest self-play: 1024s w5 (`net-v5-1024s-w5-e800-s800.nnue`).
+Production architecture is **v9** (FT + threats → hidden layers). The inference path
+also supports legacy v5 (CReLU/SCReLU/pairwise direct FT→output) and v7 (FT→hidden→output)
+formats for compatibility with retired nets. Current prod hash and active nets live in
+`docs/net_catalog.md`.
 
 HalfKA features: 16 king buckets × 12 piece types × 64 squares = 12288 inputs.
 Quantization: QA=255 (accumulator), QB=64 (output weights).
@@ -199,18 +212,9 @@ We train on **Bullet** (Rust, CUDA, fork: `adamtwiss/bullet`) using T80 binpack 
 
 ### GPU Host Setup
 
-All GPU hosts should use the forked Bullet trainer at `~/code/bullet`:
-```bash
-# Should already be cloned; if not:
-git clone https://github.com/adamtwiss/bullet ~/code/bullet
-cd ~/code/bullet && cargo build --release
-```
-
-The Coda repo should also be cloned for the converter:
-```bash
-git clone https://github.com/adamtwiss/coda ~/code/coda
-cd ~/code/coda && cargo build --release
-```
+GPU hosts use the forked Bullet trainer at `~/code/bullet` (clone
+`adamtwiss/bullet`) plus a Coda checkout at `~/code/coda` for the converter.
+Both `cargo build --release` once after cloning.
 
 ### Training Data Locations
 
@@ -259,21 +263,13 @@ coda convert-bullet -input quantised.bin -output net.nnue -pairwise
 coda convert-bullet -input quantised.bin -output net.nnue -screlu -hidden 16 -hidden2 32 -int8l1
 ```
 
-### v7 Transfer Learning (Frozen FT)
+### Transfer Learning (Frozen FT)
 
-To train v7 hidden layers using pre-trained v5 FT weights:
-```bash
-# 1. Convert best v5 .nnue to Bullet checkpoint
-coda convert-checkpoint -nnue net-v5-1024s-w5-e800s800.nnue -output v7_checkpoint -l1 16 -l2 32
-
-# 2. In Bullet training config, load checkpoint and freeze FT:
-#    trainer.load_from_checkpoint("v7_checkpoint");
-#    trainer.optimiser.freeze("l0w");
-#    trainer.optimiser.freeze("l0b");
-#    // After 50 SBs, unfreeze in superbatch_callback
-```
-
-The `adamtwiss/bullet` fork adds `freeze()`/`unfreeze()` support for per-weight training control.
+The `adamtwiss/bullet` fork adds `freeze()`/`unfreeze()` support for per-weight
+training control. Used historically for v5 → v7 transfer; same machinery is
+available for v9 hidden-layer experiments. Use
+`coda convert-checkpoint -nnue <src.nnue> -output <ckpt> -l1 16 -l2 32` to
+seed a Bullet checkpoint from an existing .nnue.
 
 ### Training Data Generation
 
@@ -294,103 +290,45 @@ Output is SF BINP binpack format, directly usable by Bullet.
 - **LR warmup is critical for hidden layers**: 5-10 SB linear warmup 0.0001→0.001, then cosine 0.001→0.0001.
 - **SCReLU scale chain**: keep v² at QA² through matmul, bias×QA² to match, /QA² after.
 - **Hidden→output activation is linear** in Bullet (no SCReLU before output buckets).
-- **v5 architecture is saturated**: 1024 CReLU/SCReLU/768pw all within ~20 Elo cross-engine. Hidden layers (v7) needed to break through.
-- **WDL blend**: w0 is better than w5 for v7 hidden layer nets (+30 Elo). w3-w5 are equivalent for v5.
+- **WDL blend**: w0 better than w5 for v7-style hidden-layer nets (+30 Elo); w3-w5 equivalent for v5.
 - **12-file training data** gives +33 Elo over 6-file for 768pw (data diversity matters).
-- **v7 hidden layers need better training**: current v7 nets are ~40-80 Elo weaker than v5 due to hidden layer quality. Transfer learning (frozen FT) and supplementary material-imbalance data are being investigated.
-- **Low final LR is critical**: Our cosine 0.001→0.0001 final LR was 20× too high. Bullet examples use `0.001 * 0.3^5 = 2.4e-6`. Reducing to ~5e-6 gave **+47 Elo**. The net was oscillating in late training instead of converging.
-- **Data filtering**: Training on quiet positions only (ply≥16, no checks, no captures, no tactical moves) gave **+22 Elo untuned, +48 tuned**. Aligns with how NNUE eval is used (only at quiet nodes after QS).
-- **Combined (filter + low LR)**: +32 untuned, +80 with retune at s120. The gains are partially additive.
-- **WDL 0.25**: -24 Elo due to eval scale mismatch. Needs retune to show benefit. Our w7 (0.07) is an outlier vs consensus (0.3-0.4).
+- **Low final LR is critical**: cosine `final_lr 0.0001` was 20× too high. Reducing to ~5e-6 (Bullet examples use `0.001 * 0.3^5 = 2.4e-6`) gave **+47 Elo** — net was oscillating, not converging.
+- **Data filtering**: quiet positions only (ply≥16, no checks/captures/tactical moves) gave **+22 untuned, +48 tuned**. Aligns with how NNUE is consumed (quiet nodes after QS).
+- **v9 low-LR tail is load-bearing**: sparse threat features keep converging deep into the tail; SB400 → SB800 delivered +88 Elo on v9 (vs flat on v7). v9 wants LOWER final LR than v5's 5e-6. See `memory/project_v9_low_lr_tail_critical.md`.
 
 ### EVAL_SCALE Calibration
 
-`EVAL_SCALE` (nnue.rs:33, default 400) converts raw network output to centipawns. Different training configs (filtering, WDL, LR) produce different eval scales. When the scale changes, all search thresholds (RFP, futility, SEE, LMR) become miscalibrated.
+`EVAL_SCALE` (nnue.rs, default 400) converts raw network output to centipawns.
+Different training configs (filtering, WDL, LR) produce different eval scales.
+When the scale changes, all search thresholds (RFP, futility, SEE, LMR) become
+miscalibrated. **Preferred fix is SPSA retune** — recalibrates all thresholds
+to the net's natural scale. EVAL_SCALE adjustment is a quick hack.
 
-**Measuring scale**: Evaluate 500 positions from selfplay data and compute RMS:
-```bash
-# Sample positions
-./coda sample-positions -i /training/coda/selfplay.binpack -o /tmp/sample.epd -n 500 --rate 0.001
+To measure the scale of a candidate net: bench `coda eval` over 500 sampled
+positions and compute RMS; baseline is ~580 for prod-tuned nets. **Pairwise
+nets do NOT scale linearly with EVAL_SCALE** — large values overflow int8
+quantization. Always verify RMS empirically; never compute it as
+`400 * baseline / candidate`.
 
-# Evaluate with the net and compute RMS
-python3 -c "
-import subprocess, re, math
-positions = [l.strip() for l in open('/tmp/sample.epd').readlines()[:500]]
-cmds = 'uci\nisready\n'
-for fen in positions:
-    cmds += f'position fen {fen}\neval\n'
-cmds += 'quit\n'
-result = subprocess.run(['./target/release/coda', '-n', 'path/to/net.nnue'],
-    input=cmds, capture_output=True, text=True, timeout=30)
-scores = [int(m.group(1)) for m in re.finditer(r'raw_nnue\s+([-\d]+)', result.stdout)]
-rms = math.sqrt(sum(s*s for s in scores) / len(scores))
-print(f'RMS={rms:.0f}, ratio to baseline(580)={rms/580:.2f}x')
-"
-```
-
-**Baseline RMS**: 580 (production net with EVAL_SCALE=400). Target: RMS ≈ 580 after adjustment.
-
-**WARNING**: EVAL_SCALE does NOT scale linearly for pairwise nets. The pairwise architecture squares values, so large EVAL_SCALE causes integer overflow in quantized inference. Always verify RMS after changing — don't just compute `400 * baseline_rms / net_rms`.
-
-**Alternatives to EVAL_SCALE adjustment**: SPSA retune (preferred). The tune recalibrates all thresholds to the net's natural scale. EVAL_SCALE adjustment is a quick hack; retune is the proper fix.
-
-Bullet LR schedule for hidden layer nets:
-```rust
-lr_scheduler: Sequence {
-    first: LinearDecayLR { initial_lr: 0.0001, final_lr: 0.001, final_superbatch: 5 },
-    second: CosineDecayLR { initial_lr: 0.001, final_lr: 0.0001, final_superbatch: N-5 },
-    first_scheduler_final_superbatch: 5,
-}
-```
+Standard Bullet LR schedule for hidden-layer nets: linear warmup
+0.0001→0.001 over 5 SBs, then cosine 0.001→`final_lr` over N-5 SBs.
+For v9, target final_lr ~2.4e-6 (Bullet examples) — Coda's earlier 1e-4
+was 20× too high (cost +47 Elo when fixed).
 
 ## NNUE Model Naming Convention
 
-### Accumulator width clarification (2026-04-14)
+Format: `net-v{N}-{accumWidth}[t][d]h{layers}[s]-w{wdl}-e{epochs}s{snap}.nnue`
 
-**IMPORTANT**: The "width" in net names refers to different things historically:
-- `768pw` in **v5** names: 768 accumulator per perspective (768 FT outputs, pairwise → 384)
-- `768pw` in **v7** names: **actually 1536 accumulator** (1536 FT outputs, pairwise → 768).
-  The "768" refers to the 768 input features (12×64), not the accumulator width.
-- `1024` / `1024s`: 1024 accumulator, no pairwise (direct concat → 2048 L1 input)
+- **`v{N}`**: architecture generation. v5 (direct FT→output), v7 (FT→hidden→output), v9 (FT + threats → hidden → output, current production).
+- **`accumWidth`**: accumulator width per perspective. For v9+ this is literal (`768t` = 768 accum + threats). Legacy v5/v7 names confusingly use the input feature count `768pw` to mean 1536 accum on v7 — see git history if decoding old names.
+- **`t`**: threat features present (v9). **`d`**: dual L1 activation (CReLU+SCReLU).
+- **`h{layers}`**: hidden sizes — `h16` (L1=16), `h16x32` (L1=16, L2=32).
+- **`s`**: SCReLU activation (else CReLU).
+- **`w{n}`**: WDL blend ×100 — `w0`, `w5`, `w15`, etc.
+- **`e{N}s{M}`**: total superbatches / snapshot checkpoint.
 
-This naming inconsistency is historical. Going forward, new architectures use
-accumulator width explicitly.
-
-Cross-engine comparison:
-- Coda v7 "768pw": accum=1536, same as Alexandria/Obsidian
-- Reckless: accum=768, pairwise → 384, plus 67K threat features
-- Our threat target (v9): accum=768, matching Reckless
-
-**v5 (direct FT→output):**
-```
-net-v5-{width}{activation}-w{wdl}-e{epochs}s{snap}.nnue
-```
-
-**v7/v8 (FT→hidden→output):**
-```
-net-v7-{ftWidth}h{layers}{activation}-w{wdl}-e{epochs}s{snap}.nnue
-```
-
-**v9 (FT + threats → hidden → output, target architecture):**
-```
-net-v9-{accumWidth}t{activation}h{layers}-w{wdl}-e{epochs}s{snap}.nnue
-```
-
-Where:
-- **width/ftWidth**: historical — 768pw, 1024, 1536 (see clarification above)
-- **accumWidth**: actual accumulator width per perspective (v9+)
-- **t**: threat features present
-- **d**: dual L1 activation (CReLU+SCReLU)
-- **h{layers}**: h16 (L1=16), h16x32 (L1=16, L2=32)
-- **activation**: omit for CReLU, `s` for SCReLU
-- **w{wdl}**: w0 (0.0), w5 (0.05), w10 (0.1), w15 (0.15)
-- **e{epochs}**: total superbatches in cosine schedule
-- **s{snap}**: snapshot checkpoint
-
-Examples:
-- `net-v5-768pw-w7-e800s800.nnue` — v5 production (768 accum, pairwise)
-- `net-v7-768pwh16x32-w15-e100s100.nnue` — v7 (actually 1536 accum, historical name)
-- `net-v9-768th16x32-w15-e400s400.nnue` — v9 target (768 accum, threats, 16→32)
+Example: `net-v9-768th16x32-w15-e800s800.nnue` — v9 prod-shape (768 accum,
+threats, 16→32 hidden, w=0.15, full 800-SB run).
 
 ## Key Search Parameters
 
@@ -421,7 +359,7 @@ quickly to keep accurate in a checked-in file. Authoritative sources:
 Testing methodology is durable and documented below (Self-play SPRT primary,
 retune-on-branch for tree-shape-changing features, LTC for TM features).
 
-## Strength Frontier — Where the Elo Gap Lives (2026-04-24)
+## Strength Frontier — Where the Elo Gap Lives
 
 Findings from a 100-game bullet H2H vs Stockfish 18 and Atlas's
 loss-pattern analysis. This is a working hypothesis, not dogma —
@@ -454,7 +392,7 @@ full curve):
 - 8× (480+8, past the knee): ~35 Elo
 - 16× (960+16): ~0 Elo (parity)
 
-### The TC-handicap sigmoid (2026-04-24 calibration)
+### The TC-handicap sigmoid (last calibrated 2026-04-24)
 
 Bullet H2H vs SF 18 with asymmetric TC (Coda at 60+1 vs SF at
 reduced TC). 100 games per data point:
@@ -484,90 +422,44 @@ games to match SF's wins (15W-16L-69D, essentially symmetric).
 
 **Caveat on absolute numbers**: the sigmoid shape is preserved across
 net/tune configurations — treat absolute Elo values as anchors with
-~±10 Elo uncertainty rather than exact points. Updated anchors would
-be useful post- any major retune + merge cluster (most recently
-#747 retune + v9-into-main merge, ~+7 Elo on trunk, not yet
-re-calibrated on the sigmoid).
+~±10 Elo uncertainty rather than exact points. Sigmoid was calibrated
+2026-04-24; recalibration is queued every ~2 weeks or after any merge
+cluster worth ~+20 Elo (see §Recalibration cadence below).
 
 **What this tells us:**
 
-- Our **eval is at SF parity** — at equal depth, we play as well.
-  The full 160 Elo gap at normal TC is *horizon*, not quality.
-- Horizon is **nonlinear in depth against SF-class opponents**.
-  Partial depth gains below the knee (1-4×) return near-zero Elo.
-  Above the knee (4-8×), each incremental depth-ply delivers 20-30+
-  Elo. This is because specific tactical refutations live at
-  specific depths — seeing them at all vs not matters far more than
-  seeing them half-a-ply earlier.
-- **EBF-ratio intuition pump**: with EBF≈2, a 4-ply depth advantage
-  is a 2⁴ = 16× search-effort ratio *both* at d=6-vs-10 and at
-  d=26-vs-30. Geometrically identical. But at d=6 vs d=10 the
-  stronger engine sees whole classes of 8-ply combinations the
-  weaker engine literally cannot — knight forks in 3, quiet moves
-  winning material in 5, etc. At d=26 vs d=30, both engines already
-  catch every standard tactical motif; the extra 4 plies refine
-  positional eval and resolve obscure endgame nuances. Same ratio,
-  very different Elo value. This is why SF's ~4-ply NPS+pruning
-  advantage is worth ~100 Elo over Reckless at 10+0.1 but only 5
-  Elo at CCRL 40/15: both engines have crossed the "sees the
-  tactic" threshold at the longer TC.
-- **The sigmoid applies specifically to wide-Elo-gap opposition.**
-  Vs same-tier opponents (e.g. our Rivals pool at 3430-3585 CCRL),
-  the tactical-cliff dynamic isn't present — both engines have
-  similar horizon, so NPS wins convert more linearly to Elo. NPS
-  work still pays for closing small gaps and holding ground in
-  close matchups; it just plateaus against engines far above us.
-- **Compound to cross the knee or plateau below it (vs SF).**
-  Individual experiments at +3% NPS / +3 Elo pre-knee feel
-  thankless against SF; they deliver Elo only insofar as they stack
-  with other gains toward the knee threshold. BUT those same +3 Elo
-  wins are cleanly valuable in Rivals-tier competition (Lichess bot
-  ranking, CCRL position).
+- **Our eval is at SF parity** — at equal depth we play as well. The full 160 Elo gap at normal TC is *horizon*, not quality.
+- **Horizon is nonlinear in depth vs SF-class opponents.** Partial depth gains below the knee (1-4×) return near-zero Elo; above the knee, each incremental ply delivers 20-30+ Elo. Tactical refutations live at specific depths — seeing them at all matters far more than seeing them half-a-ply earlier.
+- **The sigmoid is specific to wide-Elo-gap opposition.** Vs same-tier opponents (Rivals pool, 3430-3585 CCRL), there's no tactical-cliff dynamic — NPS wins convert more linearly to Elo.
+- **Compound to cross the knee, or plateau below it (vs SF).** A +3 Elo win pre-knee feels thankless vs SF but is cleanly valuable in Rivals-tier competition (Lichess bot ranking, CCRL position). Stack them.
 
 ### Path to closing the gap (pragmatic, 2026 horizon)
 
-To reach the knee (~8× effective depth-gain) we need compounding
-across all levers. Realistic per-lever contribution budget:
+To reach the knee (~8× effective depth-gain) we need compounding across all
+levers. Realistic per-lever contribution budget:
 
 | Lever | Plausible gain | Path |
 |---|---:|---|
-| **Shelved net upgrade** (already validated, not yet deployed) | **~30 Elo** | Reckless-KB (+15, SPRT'd) + factor arch (+15, SPRT'd) — need clean SB800 training as full prod replacement. Current prod is still consensus-buckets SB800. |
-| Cache residency + SIMD dispatch | +10-25 Elo | L1 permutation, VNNI dispatch, group-lasso-driven matrix shrink (in progress 2026-04-24) |
-| Force-more-pruning retune | +5-10 Elo | `experiment/force-more-pruning` #750 running 2026-04-24 |
+| Net architecture / training upgrades | ~30 Elo | Reckless-KB + factor arch each SPRT'd at +15; deploy as SB800 retrain |
+| Cache residency + SIMD dispatch | +10-25 Elo | L1 permutation, VNNI dispatch, group-lasso-driven matrix shrink |
+| Pruning equilibrium retunes | +5-15 Elo | Force-more-pruning style branches with full-sweep retune |
 | Further eval refinement | +10-20 Elo | Post-shelved-net training-recipe iteration |
 | Move-ordering improvements | +5-15 Elo | EBF-reducing work; compounds with above |
 | **Stacked total** | **~60-100 Elo** | Meaningful jump — top-20 CCRL range |
 
-**The shelved net is the cheapest lever** — the Elo is already
-earned in SPRT, just needs one SB800 training run to deploy. Don't
-chase NPS or search wins that individually outweigh 30 Elo without
-this deployment in flight.
-
-That total moves us from rank ~42 CCRL → top-20 range — but does
-NOT reach parity with SF.
-
-**Parity (16×-equivalent)** requires dramatic EBF reduction (log(EBF)
-halved, 1.8 → 1.35) which in turn requires multi-year investment:
-richer training pipeline, more net iteration, possibly novel search
-innovations. Don't expect parity in 2026.
+**Parity (16×-equivalent)** requires dramatic EBF reduction (log(EBF) halved,
+1.8 → 1.35) which in turn requires multi-year investment: richer training
+pipeline, more net iteration, possibly novel search innovations. Don't expect
+parity in 2026.
 
 ### What the losses look like
 
-Atlas's analysis of 27 SF losses (2026-04-24):
-
-- Median max single-ply eval drop: **4.53 cp**. Mean 5.56 cp.
-  18/27 losses have a >3 cp cliff, 7/27 have >8 cp.
-- Cliffs happen mid-game → endgame transition (median ply 83,
-  range 42–123). Openings survive fine.
-- Coda median depth in losing games: **15**, max 21.
-  SF at 60+1 typically reaches 25–35.
-- Coda's eval says "fine"; one ply later the eval collapses
-  4–14 pawns.
-
-**This is tactical blindness from search-depth deficit, not
-positional mis-eval.** Coda's eval is accurate at the depth it
-reaches; the refuting combination lives at plies SF sees and we
-don't.
+Loss-pattern analysis (Atlas, 27 SF losses): median max single-ply eval drop
+4.53 cp; cliffs happen at mid-game → endgame transitions (median ply 83);
+Coda reaches median depth 15 in losing games vs SF's 25-35. Coda's eval is
+accurate at the depth it reaches — the refuting combination lives at plies
+SF sees and we don't. **Tactical blindness from search-depth deficit, not
+positional mis-eval.**
 
 ### What closes the gap
 
@@ -582,123 +474,51 @@ Decomposition of the ~160 Elo SF gap, rough budget:
 | Pruning efficiency (Coda under-prunes vs Reckless on several params) | **~30–50 Elo** | Under-exploited; "force more pruning + retune" branches are the lever |
 | Eval quality / tactical sharpness | **~20–30 Elo** | Factor-net-quality, training recipe improvements |
 
-**Key NPS framing**: we don't expect to match Reckless's raw NPS.
-Some of our deficit is a deliberate eval-architecture trade
-(x-ray threats, wider FT chunks). The recoverable NPS ceiling is
-bounded by what doesn't regress eval quality.
+**Recoverable NPS** lives almost entirely in **cache-residency improvements
+tied to sparsity**. The 49 MB threat weight matrix spills L3 on most fleet
+hosts (measured on 9-host microbench; see `docs/nps_microbench_hostdata.md`).
+Shrinking it below ~32 MB via training-side L1 regularisation +
+Viridithas-style input-chunk L1 permutation gives a step-function NPS gain
+across the entire fleet. We don't expect to match Reckless's raw NPS — some
+deficit is a deliberate eval-architecture trade. Both NPS (sparsity/cache)
+and pruning (Reckless-outlier retunes) attack the SAME target (depth) and
+compound.
 
-**Where the recoverable NPS lives**: almost entirely in
-**cache-residency improvements tied to sparsity**. The current
-49 MB threat weight matrix spills L3 on most fleet hosts (measured
-on 9-host microbench; see `docs/nps_microbench_hostdata.md`). If
-we can shrink it below ~32 MB via training-side L1 regularisation
-(Item 2 in the NPS investigation) and Viridithas-style input-chunk
-L1 permutation (R3 in research_threads_2026-04-24.md), we get
-a step-function NPS gain across the entire fleet. That's the
-biggest remaining NPS lever by far — cache-residency wins
-compound across every node of every search.
-
-Both NPS (via sparsity/cache work) and pruning (via retune branches
-targeting the Reckless outliers) attack the SAME target — depth —
-and compound.
-
-**Concrete Reckless vs Coda pruning outliers (measured 2026-04-24,
-status updated post-experiment batch):**
-
-- **Futility margin**: Coda pre-#736 had 78+160·d; Reckless uses
-  ~35+65·d (Coda ~2.4× less aggressive). #736 tightened to
-  Reckless-scale (40/65), H1 +4.4 on detuned trunk. Post-retune #747
-  reverted to tune's landing point (80/156) per Adam's override call,
-  because tune-landscape preferred the wider values once other
-  pruning recalibrated. Net effect in trunk: the margin matters
-  less than the surrounding pruning cluster calibration.
-- **SEE quiet prune magnitude**: Coda threshold −1175 at d=5 vs
-  Reckless −145 (8× more lenient). Direct Reckless-shape port
-  H0'd twice (#738 catastrophic at −167; #740 calibrated at −13.3).
-  SPSA converges at SEE_QUIET_MULT≈46, not near Reckless's value —
-  seemingly our lmr_d-based formula and Reckless's raw-depth
-  formula aren't directly portable. Mechanism-level work remains.
-- **RFP depth cap**: Coda d≤10 (now 11 post-retune #747); Reckless
-  uncapped. #737 raised cap 10→16 on detuned trunk, H1 +2.2; retested
-  on retuned trunk as `experiment/rfp-depth-uncap-v2` (bench-neutral
-  with retuned tight margin, SPRT running at [0, 3]).
-- **LMP depth cap**: Coda d≤8; Reckless uncapped. #735 uncap tested
-  H0 at −1.1.
-- **BNFP depth cap**: Coda d≤4; Reckless d<11. #734 uncap tested
-  H0 at −1.2.
-
-Of the five outliers, direct-port experiments landed 1 clear H1 (RFP
-depth, +2.2 detuned; retune pending), 3 H0, and 1 mixed-result
-(futility). Pattern: the raw-Reckless values aren't directly portable
-— our different search context (lmr_d vs raw-depth formulas, different
-history scaling) means the OUTLIERS identify real miscalibration but
-the FIX requires SPSA-retune-on-branch, not direct value import.
-
-`experiment/force-more-pruning` tune #750 (2026-04-24, 2000 iters,
-77 params) tests this holistically — aggressive starting point,
-SPSA finds new equilibrium.
+**Reckless vs Coda pruning outliers — durable pattern.** Coda has
+historically diverged from Reckless on at least five thresholds (futility
+margin, SEE quiet prune magnitude, RFP/LMP/BNFP depth caps). Each direct-port
+attempt has surfaced the same lesson: **raw-Reckless values aren't portable
+because our search context differs** (lmr_d vs raw-depth formulas, different
+history scaling). The outliers identify real miscalibration; the fix is
+SPSA-retune-on-branch, not value import. Holistic "force-more-pruning"
+biased-start full-sweeps have repeatedly found new equilibria worth
++5-15 Elo where direct ports H0'd. See `experiments.md` for resolved
+specifics; `docs/cross_engine_comparison_2026-04-25.md` for the live queue.
 
 ### Priors this updates
 
-- **NPS is a dominant lever (~2/3 of the gap), not secondary.**
-  Cache-residency wins (flatten AccEntry, eval-TT writeback, L1
-  permutation, training-side matrix shrink) and SIMD dispatch each
-  translate directly to depth. A 10% NPS gain ≈ ~5–8 Elo at this
-  regime.
-- **Pruning values matter just as much per-param.** We have at
-  least five clear outliers where Coda prunes less than Reckless.
-  Each retune-on-branch around a tightened threshold is probably
-  +2–5 Elo. Collectively they're in the same ballpark as NPS wins.
-- **Coda deliberately traded NPS for eval quality** via v9
-  threat-inputs (Reckless architecture). That trade only pays off
-  if the better eval feeds better pruning decisions. Net Elo >
-  net NPS. The eval-quality lever is smallest in this decomposition
-  but orthogonal — it compounds with both others.
-- **"Force more pruning"-style branches** (intentionally widen
-  an under-pruning threshold, let SPSA find new equilibrium)
-  have worked before and are under-built-on. The Reckless
-  comparison gives specific targets.
-- **Experiments that buy depth at hot plies** (extension on
-  tactical-density signals, cliff-risk heuristics) are a new
-  candidate class Atlas's analysis surfaced. W2-pattern work
-  (signal × pruning/extension decision) already has high hit
-  rate in Coda's history.
+- **NPS is a dominant lever (~2/3 of the gap)**, not secondary. 10% NPS ≈ +5-8 Elo at this regime. Cache-residency wins (flatten AccEntry, eval-TT writeback, L1 permutation, training-side matrix shrink) and SIMD dispatch translate directly to depth.
+- **Pruning values matter just as much per-param.** Five clear outliers where Coda prunes less than Reckless; each retune-on-branch around a tightened threshold ≈ +2-5 Elo, collectively the same ballpark as NPS wins.
+- **Coda deliberately traded NPS for eval quality** via v9 threat-inputs. That trade only pays off if better eval feeds better pruning decisions. Net Elo > net NPS.
+- **"Force more pruning"-style branches** (widen an under-pruning threshold, let SPSA find new equilibrium) have worked before and are under-built-on.
+- **Experiments that buy depth at hot plies** (extensions on tactical-density signals, cliff-risk heuristics) are a candidate class loss-pattern analysis surfaced. W2-pattern work (signal × pruning/extension) already has high hit rate.
 
-### De-prioritised by this finding
+### De-prioritised
 
-- **Eval post-processing tweaks** (contempt, optimism
-  calibration, fortress caps, shuffle detectors) are low leverage
-  for the SF-gap. Keep doing them when they're cheap, but don't
-  let them displace pruning/NPS work on the queue.
-- **Factor net (architecture work) alone** doesn't close the SF
-  gap — it improves eval quality, which has indirect leverage
-  (see above) but doesn't address depth deficit directly. Still
-  worth doing because it helps Rivals-tier strength and makes
-  pruning calibration cleaner; just don't expect it to crack the
-  cliff-miss class.
+- **Eval post-processing tweaks** (contempt, optimism calibration, fortress caps, shuffle detectors) are low SF-gap leverage. Cheap is fine; don't let them displace pruning/NPS.
+- **Factor net alone** doesn't close the SF gap — improves eval quality with indirect leverage but doesn't address depth deficit. Still worth doing for Rivals-tier strength + cleaner pruning calibration; don't expect it to crack the cliff-miss class.
 
-### Workflow implication for future Claudes
+### Workflow + recalibration
 
-When sizing up a new experiment, ask three questions in order:
+When sizing up a new experiment, ask: (1) does it increase effective depth?
+(2) is Coda's pruning value here an outlier vs top-engine consensus? (3)
+would it show up in a 100-game SF bullet H2H? If all three are "no",
+expected Elo-per-effort is probably low.
 
-1. Does it increase effective depth? (Via pruning efficiency,
-   NPS, or cliff-avoiding extensions.)
-2. Is Coda's pruning value in this area an outlier vs top-engine
-   consensus? (SF/Reckless/Obsidian/Viridithas — check actual
-   values, not just presence/absence of a feature.)
-3. Would it show up in a 100-game SF bullet H2H? (±~40 Elo
-   bars at that sample.)
+Re-run the 100-game SF H2H every ~2 weeks or after any merge cluster worth
+~+20 Elo. Gap should narrow visibly; if it doesn't, on-paper Elo is overstated.
 
-If all three are "no", the expected Elo-per-effort is probably low
-compared to items that say yes to at least (1) and (2).
-
-### Recalibration cadence
-
-Re-run the 100-game SF H2H every ~2 weeks or after any merge
-cluster worth ~+20 Elo. The gap should narrow visibly; if it
-doesn't, our on-paper Elo is overstated.
-
-## Improvement Portfolio — Diversified Threads (2026-04-24)
+## Improvement Portfolio — Diversified Threads
 
 Beyond the flywheel (eval → ordering → pruning → depth → eval), the
 gap-closing strategy runs multiple ORTHOGONAL threads in parallel.
@@ -707,93 +527,44 @@ When picking the next experiment, explicitly name which thread it
 sits in — it helps avoid the trap of chasing one axis while others
 decay.
 
-**Eval-search flywheel** — compounding feedback loop:
-- Better eval → better ordering → safer pruning → more depth → better
-  eval (via stronger self-play training data)
-- Non-linear: a +2% eval improvement often delivers +8-15 Elo AFTER
-  retune-on-branch, versus +3-5 Elo raw. Flywheel-captured gain
-  doubles or more.
-- Retune-on-branch (§SPSA) is the mechanism by which we capture
-  flywheel gain after each feature. Don't drop a +1-2 Elo raw feature
-  without running the retune — that's usually where the real Elo is.
-- Reckless-value imports fail directly because Reckless's values are
-  calibrated against Reckless's own flywheel state. Our optimum is
-  different. Outliers are directional signals; retune-on-branch is
-  the portable-translation mechanism.
+**Eval-search flywheel** — compounding loop: better eval → better ordering →
+safer pruning → more depth → better self-play training data → better eval.
+Captured via **retune-on-branch** after each feature: a +1-2 Elo raw feature
+is often +5-10 Elo post-retune. Reckless-value imports fail because their
+values are calibrated against their flywheel; ours is different. Outliers are
+directional signals; SPSA-retune-on-branch is the portable-translation
+mechanism.
 
-**Correctness audits** — bugs in rarely-fired paths:
-- Historically our highest Elo-per-hour lane. Bugs in 50-move rule,
-  LMR endgame gate, SMP race conditions, TB integration, and a
-  critical `is_pseudo_legal` EP hole have each delivered +3-30 Elo.
-- `correctness_audit_2026-04-22.md` SPECULATIVE list has queued
-  candidates. R5 in `research_threads_2026-04-24.md` ranks the top 5
-  by Lichess reachability.
-- Under-invested relative to payoff. If in doubt between a feature
-  experiment at expected +2 Elo and a correctness audit branch,
-  audit first.
+**Correctness audits** — bugs in rarely-fired paths historically deliver
++3-30 Elo (50-move rule, LMR endgame gate, SMP races, TB integration,
+`is_pseudo_legal` EP hole). Highest Elo-per-hour lane, under-invested. If
+torn between a +2 Elo feature and a correctness audit branch, audit first.
 
-**Comparative engine review with instrumentation** — leverage
-multiplier we're under-using:
-- Reading top-engine source tells you *what* — instrumentation tells
-  you *when and how often*. Different information class.
-- Practical recipe: patch Reckless (or SF, Obsidian) to log pruning
-  rates / first-move-cut / R-value distributions per depth. Run the
-  same bench or `coda_blunders.epd`. Compare tree shape directly.
-- `scripts/reckless_evalbench.patch` is the entry point we've used
-  for this so far. A half-day of instrumented comparison often
-  surfaces gaps that a full day of source-reading misses.
-- Specific under-studied axes: NMP R-value distribution, LMR
-  reduction amounts by history bucket, pruning fire rate by depth,
-  TT hit rate breakdowns.
+**Comparative engine review with instrumentation** — reading top-engine
+source tells you *what*; patching them with `dbg_hit`-style counters tells
+you *when and how often*. Different information class. A half-day of
+instrumented comparison often surfaces gaps a full day of source-reading
+misses. `scripts/reckless_evalbench.patch` is the entry point.
 
-**Training hyperparameters + data** — upstream from the eval:
-- Biggest historical wins: low-final-LR (+47), data filtering ply≥16
-  (+22, +80 with retune), WDL calibration. Each was 1-line schedule
-  change.
-- Still-unexplored: output bucket count (we use 8, untested on v9),
-  batch size (16384 default, not defended empirically), WDL schedule
-  shape (constant vs linear vs late-ramp), data composition additions
-  (Lichess-blunder positions into training set).
-- Lichess-watch provides a feedback loop for "what positions does
-  Coda actually blunder" → those positions become training-data
-  candidates.
+**Training hyperparameters + data** — biggest historical wins are 1-line
+schedule changes (low-final-LR +47, ply≥16 filter +22→+80 with retune).
+Still-unexplored: output bucket count, batch size, WDL schedule shape,
+data composition additions (Lichess-blunder positions into training set).
 
-**Long tunes / long training — "free" Elo at cost of patience**:
-- 25K-iter SPSA (~200K games). Top engines use this routinely; our
-  2-2.5K standard almost certainly leaves small-gradient parameter
-  gains on the table. Worth running once every 5-10 merges as a
-  "settle calibration" pass — not routine.
-- SB1600+ training. V9 pattern is specifically different from v5/v7:
-  sparse threat features continue converging deep into the low-LR
-  tail. SB400 → SB800 delivered +88 Elo on v9 (vs flat on v7). Each
-  additional 400 SB plausibly +10-20 Elo with tapering returns.
-  Roughly 40h GPU per SB800.
-- Priority: shelved-net (Reckless-KB + factor, +30 proven) at SB800
-  FIRST, then SB1600 on top of that recipe if the SB800 lands clean.
+**Long tunes / long training** — top engines run 25K-iter SPSA routinely;
+our 2-2.5K default leaves small-gradient gains on the table. v9 sparse
+threat features converge deep into the low-LR tail (SB400 → SB800 = +88
+Elo on v9 vs flat on v7). SB1600+ likely worth +10-20 with tapering.
 
-**Infrastructure — Lichess-visible, SPRT-invisible**:
-- Opening book: current Titans.bin is randomly grabbed from the
-  internet, untested vs alternatives. Book A/B + book-move-sanity-
-  checking are 1-5 Elo each, only measurable on Lichess.
-- TB entry timing + DTZ walkback quality: just added DTZ walkback
-  2026-04-24; remaining questions include whether entering TB the
-  moment popcount drops is optimal at all strength levels.
-- Time management edge cases: stockpile bugs, forced-move
-  soft_floor, increment flooring — visible on Lichess bot as time
-  forfeits or poor practical play. Hard to SPRT.
-- Parallel search (Lazy SMP): v9 T=4 blunder bug known, Coda deploys
-  at T=1 on Lichess as result. Fixing this unlocks more effective
-  strength at the deployment without code changes.
+**Infrastructure (Lichess-visible, SPRT-invisible)** — opening book A/B,
+TB entry timing / DTZ walkback quality, TM edge cases (stockpile, forced-move
+soft_floor, increment flooring), Lazy SMP correctness (v9 T=4 blunder bug
+known; deploys at T=1 until fixed).
 
-**Thread-selection heuristic** — when picking the next experiment:
-
-1. What thread is this in? (Forces explicit framing vs reactive
-   picking.)
-2. What's the last win in this thread, and how recent? If a thread
-   hasn't delivered in 4+ weeks, pick it — diversity of attempts.
-3. For flywheel/correctness/comparative/training: run SPRT at [0, 3]
-   (default) or [-3, 3] (correctness fix). For infrastructure:
-   Lichess-watch + manual inspection.
+**Thread-selection heuristic.** Name the thread first ("flywheel",
+"correctness", "comparative", "training", "long-tune", "infrastructure")
+before picking the next experiment — prevents accidental concentration on
+one axis. If a thread hasn't delivered in 4+ weeks, prefer it.
 
 ## Key Gotchas
 - Move flag equality vs bitwise: check non-promotion flags with ==, not &
@@ -809,39 +580,35 @@ multiplier we're under-using:
 
 ## Code Hygiene
 
-- **Keep compiler warnings at zero.** `cargo build --release` should emit no
-  warnings. Warnings accumulate into noise that masks real issues — every
-  new warning is one that hid the serious one next to it. When adding
-  code, run `cargo build --release` and fix any new warnings before
-  committing. When a warning IS intentional (e.g. a placeholder), suppress
-  it explicitly (`#[allow(unused_variables)]`) so the intent is clear.
-- Common patterns: unused imports → delete; `let mut x = ...` that's
-  never mutated → drop `mut`; `let mut x = false;` then reassigned before
-  read → move declaration into the scope where it's used.
+**Keep compiler warnings at zero.** `cargo build --release` should emit none.
+Warnings accumulate into noise that masks real issues. Fix or
+`#[allow(...)]`-suppress with intent before committing.
 
 ## Testing Methodology
 
-### CRITICAL LESSON (2026-04-01)
-
-Narrow cross-engine gauntlets (3 engines, 200 games) gave us inflated Elo estimates (+20 to +67) for changes that self-play SPRT later proved were 0 to -17. The narrow gauntlet overfits to specific opponents just like self-play overfits to shared eval blindspots. **Never merge based on narrow gauntlet results alone.**
-
-Self-play SPRT with tight bounds is the primary acceptance criterion. It is disciplined (runs until statistically significant), reproducible, and — while it has known limitations — the direction of its results consistently matched broader cross-engine testing in our validation experiments.
-
 ### Self-Play SPRT (primary acceptance test)
+
+Narrow cross-engine gauntlets (3 engines, 200 games) overfit to specific
+opponents just like self-play overfits to shared eval blindspots. Self-play
+SPRT with tight bounds is disciplined, reproducible, and matches the direction
+of broader cross-engine testing — primary acceptance criterion. **Never merge
+based on a narrow gauntlet alone.**
 
 All search/eval changes must pass self-play SPRT before merging.
 
-**Default bounds: `[0.00, 5.00]`** — standard for all changes. Resolves in 2-20K games depending on effect size. For small gains (+2-3 Elo), consider `[-3.00, 3.00]` which resolves genuine +3 in ~15K games.
+**Default bounds: `[0, 3]`** — see the bounds table in §SPRT Testing Policy
+below for when to deviate.
 
 **LTC testing (40+0.4)** for time management changes — TM features are invisible at STC (10+0.1) where each move gets ~200ms. Node-based TM failed 3x at STC but passed at +11.9 LTC.
 
 **SPRT via OpenBench** (preferred):
 ```bash
-# Let OB auto-detect bench from commit messages:
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch>
+# Standard submission — pass dev bench explicitly when commit at HEAD lacks
+# a Bench: line (e.g. doc-only commits don't have one):
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> <bench> --base-bench <main_bench>
 
-# With explicit base commit (if main ref is stale):
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> --base-branch <commit>
+# Or let OB auto-detect when both HEADs have Bench: lines:
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch>
 
 # Custom TC or bounds:
 OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> --tc '40.0+0.4' --bounds '[-3, 3]'
@@ -852,7 +619,7 @@ OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> --tc '40.0+0.4' --
 - Wait for H0 or H1. Do not stop early based on "looks good".
 - H0 = reject. H1 = accept. Log result to experiments.md.
 - For tree-shape-changing features: retune-on-branch before deciding (see methodology below).
-- Do not pass explicit bench values unless OB fails to auto-detect.
+- Pass explicit `dev_bench` + `--base-bench` whenever there's any chance of staleness, branch-switch confusion, or commit-without-Bench at HEAD.
 
 ### Commit Messages
 
@@ -897,33 +664,19 @@ Bench: 1780721
 | `[0, 10]` | Big gain from a named structural change. Use sparingly — wrong-bound risk in either direction is real. | SEE magnitude fix, EBF-massive rewrite, major algorithm port |
 | `[-5, 5]` | Pure non-regression / infrastructure check. | NPS-only bench-neutral change, adding tunables at default values, ARM ordering change |
 
-**Why `[0, 3]` is the standing default.** At our current rating
-(~CCRL 3570) the easy Elo is gone and most ideas that land deliver
-+1-3 Elo. `[0, 5]` accumulates negative LLR on a true +1.5 ±1.5
-effect because H1 target 5 is out of reach — we'd waste fleet
-cycles proving something we could have accepted with `[0, 3]` and
-banked. The 2026-04-25 correctness-audit batch demonstrates this:
-#758 (+1.5), #759 (+1.7), #760 (+0.9) all H1'd at `[-3, 3]` /
-`[-5, 5]` — every one of those would have stalled at `[0, 5]`.
+**Why `[0, 3]`.** Most ideas at our current rating (~CCRL 3570) land in the
++1-3 Elo range. `[0, 5]` accumulates negative LLR on a true +1.5 effect
+because H1=5 is out of reach — wasting fleet cycles on something `[0, 3]`
+would bank. Reframe: closing the gap to top-engine #2 is a **finite,
+enumerable list of small wins** (~16 × +5 Elo at CCRL, ~40 × +5 at
+ultra-bullet). A +3-5 win missed by wide bounds is throwing away 2-6% of
+the path. Stack them, don't dismiss them.
 
-**Why tight bounds matter strategically**: the gap from current Coda
-to 2nd-best-engine-in-the-world is genuinely countable. At CCRL
-scale it's ~77 Elo (~16 × +5 Elo wins); at ultra-bullet scale it's
-~200 Elo (~40 × +5 wins). Either way the remaining work is a
-**finite, enumerable list of small wins** — not "insurmountable
-years of catching up." This reframes how to value a +5 Elo change:
-it's **1/16th to 1/40th** of the path to the #2 position in the
-world. Not marginal. Stack them, don't dismiss them. The wide-bounds
-SPRT that misses a real +3-5 win is throwing away 2-6% of the total
-path to #2.
-
-Use `[0, 5]` or `[0, 10]` only when the change class has a
-well-grounded prior for a larger magnitude (structural port,
-retune-on-branch of multi-merge cluster, algorithmic rewrite).
-
-**Don't use `[-10, 5]`.** In a regime where single experiments target +1-3 Elo, a floor of -10 is too permissive — H1 can fire on data that still leaves room for a small negative true effect. Use `[-3, 3]` for correctness fixes instead.
-
-When picking, don't hedge toward wider bounds out of uncertainty. Name the class ("small feature", "correctness bug", "structural port", "NPS-only"), pick the matching row, submit.
+Use `[0, 5]` or `[0, 10]` only when the change class has a well-grounded
+prior for larger magnitude (structural port, multi-merge retune, algorithmic
+rewrite). **Don't use `[-10, 5]`** — too permissive at +1-3 Elo target. Use
+`[-3, 3]` for correctness fixes. Name the class first, pick the matching
+row, submit — don't hedge toward wider bounds out of uncertainty.
 
 **What does NOT need SPRT:**
 - Comments, documentation, tooling changes
@@ -932,28 +685,23 @@ When picking, don't hedge toward wider bounds out of uncertainty. Name the class
 
 **OpenBench scripts** (all require `OPENBENCH_PASSWORD` env var, username defaults to `claude`):
 ```bash
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> <bench> [--bounds '[0,10]'] [--priority 1]
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> <bench> [--bounds '[0, 3]'] [--priority 1]
 OPENBENCH_PASSWORD=<pw> python3 scripts/ob_stop.py <test_id>
 OPENBENCH_PASSWORD=<pw> python3 scripts/ob_status.py
 ```
-Default bounds [0.00, 5.00] for novel changes. Always verify bench matches before submitting.
 
-**Reference NPS defaults to 250000** (v9 is main since 2026-04-24 merge).
-V9 runs at ~240-280K NPS per core; the default fits everything on main
-and all standard feature branches. Explicit v5-only work (legacy
-bullet_convert experiments, v5 net comparisons) must pass `--scale-nps
-500000`. Wrong scale_nps means games run at wrong time budgets —
-experiments at 500K on v9 code run at ~2× wall-clock, halving fleet
-throughput.
+**Reference NPS** for OB scaling defaults to 250000 (v9 prod). Explicit v5-only
+work (legacy bullet_convert experiments, v5 net comparisons) must pass
+`--scale-nps 500000`. Wrong scale_nps means wrong time budgets — v9 code at
+500K runs ~2× wall-clock, halving fleet throughput.
 
-**Bench lives in git commit messages, not this file.** Measure with
-`coda bench -n <current-prod-net>` on the exact branch you're submitting;
-never hardcode a bench value here or reuse one across branches
-(branch-specific tunables + net changes both move it). See `docs/net_catalog.md`
-for the current production net hash.
-
-**Do not pass explicit bench values** when submitting — let OB auto-detect from
-commit messages. Only override if OB fails to parse.
+**Bench measurement.** Always `make && ./coda bench` on the exact branch you're
+submitting (see Build and Test §Bench-for-OB ritual). Never reuse bench values
+across branches — branch-specific tunables AND the production net both move
+the number. Pass the result as `dev_bench` (positional arg to `ob_submit.py`)
+and the corresponding main bench as `--base-bench`. The Bench: line in commit
+messages is also useful for OB auto-detection but isn't a substitute for
+re-measuring before submission.
 
 ### SPSA Parameter Tuning
 
@@ -1092,11 +840,6 @@ A guard that SPRTs at +1 without retune is often +3-5 with retune —
 same multiplier as TT PV flag and cont-hist malus. Don't drop a guard
 at +1 Elo without completing step 2.
 
-**Test #732 (NMP TT-noisy R++) 2026-04-24** is a concrete example:
-the guard added `r += tt_move.is_capture()`, SPRT'd at +1.1 ±1.9 /
-30K games trending H0 on [0,3] bounds. Retune-on-branch of the NMP
-cluster is the missing step, not a new feature.
-
 ### Cross-Engine and Model Testing
 
 Self-play SPRT is the primary acceptance criterion for search changes.
@@ -1105,14 +848,12 @@ Self-play SPRT is the primary acceptance criterion for search changes.
 
 ### Known Testing Pitfalls
 
-- **CPU contention**: Ensure CPU cores are fairly idle before starting SPRT tests. Background load (other tests, RRs, compilation) halves effective TC and distorts marginal results. In our ablation sweep, CPU contention flipped history pruning from +3 (false H1) to -17 (real H0) and correction history from -3 to -10. Always check `htop` or equivalent before launching tests.
-- **Narrow gauntlet inflation**: 3 engines × 200 games gave +67 for a change that was actually 0. Use SPRT instead.
-- **Coda-on-Coda contamination**: Multiple Coda variants in a RR amplify shared eval biases. Keep to max 2 Coda variants.
-- **Optimism bias**: Stopping a test early because "it looks positive" leads to false positives. Let SPRT decide.
-- **False negatives**: A change rejected at -5 with wide error bars might be +5. Retest when conditions change.
-- **WDL blindspot**: WDL blending improvements are invisible in self-play. Must use cross-engine RR.
-- **Self-play discount**: Self-play Elo ≠ cross-engine Elo. Direction is usually reliable, magnitude varies.
-- **Dig deeper on consensus H0s**: When a feature that every top engine uses fails (H0), the feature isn't wrong — your implementation or its dependencies are broken. Don't accept "doesn't work for our engine." Ask **why** it doesn't work, compare actual numeric values with reference engines, and look for magnitude/scaling bugs. Example: dynamic capture SEE H0'd three times because capture history values were 27× too small. Fixing the magnitude (+31.6 Elo) was the biggest single gain in Coda's history, discovered by refusing to give up on a consensus feature.
+- **CPU contention**: idle cores before launching SPRT. Background load halves effective TC and distorts marginal results — flipped history pruning from "false H1 +3" to "real H0 −17" in our ablation sweep.
+- **Coda-on-Coda contamination**: max 2 Coda variants in a RR; more amplifies shared eval biases.
+- **Optimism bias**: don't stop on "looks positive" — let SPRT decide.
+- **WDL blindspot**: WDL blending improvements are invisible in self-play; needs cross-engine RR.
+- **Self-play discount**: direction usually reliable, magnitude varies.
+- **Dig deeper on consensus H0s**: when a feature every top engine uses H0s, your implementation or its dependencies are broken. Don't accept "doesn't work for our engine" — ask why, compare numeric values, look for magnitude/scaling bugs. Capture history was 27× too small (3 prior H0s), fixing it was +31.6 Elo — biggest single gain in Coda's history, found by refusing to give up.
 
 ### Feature Improvement Cycle (Detect → Diagnose → Fix → Tune)
 
@@ -1146,13 +887,8 @@ Systematic approach for finding and fixing search feature issues. Each cycle com
 **5. Repeat**
 The retuned baseline exposes the next weak feature. Check SPSA trends for the next parameter being aggressively detuned.
 
-**Historical examples (early 2026 — kept as illustrations of the method):**
-- SEE quiet pruning: SPSA flagged, 3 structural issues found, +11.4 Elo
-- History magnitude: consensus H0 investigated, found 27× scaling bug, +31.6 Elo
-- LMR simplify: removed unique adjustments + retune, +6.3 Elo
-- Cont-hist malus: fixed indexing bug + retune, +6.5 Elo
-- NMP capture R: consensus flip + retune, +3.5 Elo
-- Node-based TM: failed 3x at STC, retested at LTC, +11.9 Elo
-
-For the current cumulative list, see `experiments.md`.
+For historical examples (SEE quiet pruning +11.4, history magnitude +31.6,
+LMR simplify +6.3, cont-hist malus +6.5, NMP capture R +3.5, node-based TM
++11.9, etc.) and the cumulative list of resolved experiments, see
+`experiments.md`.
 
