@@ -388,25 +388,43 @@ Three anchor points:
     until the position becomes concrete enough that even our less-refined
     eval catches up.
 
-- **EGTB-on follow-up** (2026-04-27, 200 games, hash 512MB on this run vs 64MB baseline — small confound, Adam notes hash size showed minor effect in earlier testing):
-  - vs SF: **−139 ±40** (was −210 → +71 Elo closure)
-  - vs Reckless: **−164 ±42** (was −151 → −13 within noise; flat)
-  - Combined: −151 ±29, 29.5% score, **58.0% draw rate**, **1 win in 200 games**
-  - **Asymmetric closure validates the mechanism decomposition.** SF gap was
-    primarily search/depth-deficit at low piece count → TB compensates →
-    closes 71 Elo. Reckless gap was eval-refinement → TB doesn't fix eval
-    → gap stays flat. Diagnostic for any future merge: changes addressing
-    eval should NOT close the SF gap with TB-already-on; changes addressing
-    search depth SHOULD.
-  - **Reckless > SF inversion** in the EGTB run (Reckless +164 vs SF +139
-    against Coda, vs baseline where SF was 59 Elo stronger H2H). Coherent
-    reading: SF was beating us specifically by entering favorable TB
-    endgames more skillfully. With both engines using TBs, Coda now defends
-    those endgames perfectly, eliminating SF's relative edge. Reckless's
-    edge wasn't TB-leveraged → it persists.
-  - **First wins ever** against SF/Reckless (1 win in 200 games). Qualitative
-    crossing of zero: with TB, Coda is *capable* of converting winning
-    positions, not just defending.
+- **EGTB + Hash size 2×2 follow-up** (2026-04-27, 200 games per cell):
+
+| Configuration | Overall | vs SF | vs Reckless | Draw % |
+|---|---:|---:|---:|---:|
+| hash=64, no EGTB (baseline) | −179 ±31 | −210 ±48 | −151 ±40 | 52.5% |
+| hash=64, EGTB on | −186 ±32 | −182 ±45 | −191 ±46 | 51.0% |
+| hash=512, EGTB on | −151 ±29 | −139 ±40 | −164 ±42 | 58.0% |
+
+  - **EGTB alone (hash controlled): essentially flat overall (-7 within noise)**.
+    Mixed by opponent: maybe small help vs SF (+28), maybe small hurt vs Reckless
+    (-40), both within ±60 combined error bars at this N.
+  - **Hash 64→512 with EGTB on: +35 Elo overall, +43 vs SF, +27 vs Reckless,
+    +7% draw rate.** This is the actual dominant lever, not EGTB.
+  - The earlier "EGTB closes the SF gap by 86 Elo" reading was largely a
+    TT-size artifact, not an EGTB effect. The asymmetric SF-vs-Reckless
+    response under EGTB-alone is directionally suggestive but not strong
+    evidence at this N — the SF=search / Reckless=eval mechanism story
+    needs more data before treating it as a validated diagnostic.
+  - Mechanism re-read: the gap is partly a **TT pressure problem in long
+    endgames**. 64MB TT (5-slot buckets, 1M buckets) thrashes at endgame
+    piece counts where transposition density is high. SF/Reckless likely
+    handle this via different replacement policies or less-complex eval
+    that reduces TT pressure.
+  - **First wins ever** against SF/Reckless (1 win in 200 games at
+    hash=512+EGTB; 0 in other configs). Qualitative crossing of zero, but
+    it's 1 game — don't over-interpret.
+
+  **Action items from this finding:**
+  - Verify what hash OB workers / Lichess deployment use. If OB defaults to
+    64 and Lichess uses 512+, every SPRT measurement systematically
+    penalizes endgame-affecting changes.
+  - Investigate Coda TT efficiency in long endgames: hit rate at
+    piece-count buckets, replacement effectiveness at low piece count.
+    Reckless's Rust code is the closest reference architecture to compare
+    against.
+  - Consider raising the default Hash UCI option / OB SPRT hash to
+    align with deployment reality.
 
 - Earlier baseline (recorded here for trajectory): −159.8 ±41.6 vs SF (CI overlaps the new −210, so the gap may not have widened — but it also hasn't tightened despite recent merge cluster)
 - **10+0.1 ultra-bullet 45-engine RR** (Adam's local RR, every
