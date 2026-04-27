@@ -109,17 +109,19 @@ tunables!(
     (ASP_DELTA, 13, 5, 30, 1.5),
     (ASP_SCORE_DIV, 33647, 8000, 50000, 2100.0),
     (LMP_DEPTH, 13, 4, 20, 2.0),
-    // Reckless-shape LMP threshold: history-aware, continuous improvement.
-    // Replaces (LMP_BASE + d²) / (2 - improving) with:
+    // Reckless-shape LMP threshold (no-history-term variant):
     //   lmp_limit = (LMP_K_BASE + LMP_K_IMP*improvement/16
-    //              + LMP_K_DEPTH*d² + LMP_K_HIST*main_hist/1024) / 1024
-    // Defaults from Reckless (search.rs:747). High-history quiets get
-    // threshold bumped UP — they escape LMP and get searched. Low-history
-    // late quiets hit LMP earlier. Sorting-aware pruning.
+    //              + LMP_K_DEPTH*d²) / 1024
+    //
+    // Replaces (LMP_BASE + d²) / (2 - improving). Continuous improvement
+    // scaling + magnitude rebase preserved; history-aware threshold term
+    // dropped. LMP_K_HIST stayed flat at 68 through #811's full 2500-iter
+    // tune (no SPSA gradient) and #818 H0'd, suggesting the history term
+    // is signal-not-there in Coda's regime — same TRIPLE-analog we caught
+    // for SE extensions in #816/#817 (+2.5 H1 after strip).
     (LMP_K_BASE, 3168, 1000, 6000, 250.0),
     (LMP_K_IMP, 63, 0, 200, 10.0),
     (LMP_K_DEPTH, 1495, 500, 3000, 125.0),
-    (LMP_K_HIST, 67, 0, 200, 10.0),
     (BAD_NOISY_MARGIN, 74, 30, 150, 6.0),
     (PROBCUT_MARGIN, 205, 80, 300, 11.0),
     (HINDSIGHT_THRESH, 168, 50, 400, 17.5),
@@ -2747,11 +2749,9 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
         {
-            let lmp_main_hist = info.history.main_score(from, to, enemy_attacks);
             let lmp_limit = (tp(&LMP_K_BASE)
                 + tp(&LMP_K_IMP) * improvement / 16
-                + tp(&LMP_K_DEPTH) * depth * depth
-                + tp(&LMP_K_HIST) * lmp_main_hist / 1024) / 1024;
+                + tp(&LMP_K_DEPTH) * depth * depth) / 1024;
             if (move_count as i32) > lmp_limit {
                 info.stats.lmp_prunes += 1;
                 continue;
