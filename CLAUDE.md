@@ -438,7 +438,7 @@ Three anchor points:
     See `docs/tt_hash_sensitivity_2026-04-27.md` for the structural
     candidates (bucket density, age weight, QS in-check static_eval).
   - OB SPRT can't be hash-bumped (workers run N games × hash MB in RAM),
-    so 60+1+64 SPRT systematically underweights endgame-affecting changes.
+    so 10+0.1+64 SPRT systematically underweights endgame-affecting changes.
     Validate hash-/TT-sensitive merges via 180+2 H2H gauntlet, not SPRT.
 
 - Earlier baseline (recorded here for trajectory): −159.8 ±41.6 vs SF (CI overlaps the new −210, so the gap may not have widened — but it also hasn't tightened despite recent merge cluster)
