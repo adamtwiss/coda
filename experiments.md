@@ -6362,7 +6362,7 @@ to test his hypothesis that TT-pressure mechanisms scale with TC.
 |------|--------|---:|--------|
 | #841 | tt-threshold-loose-only (-3 → -4) | 10+0.1 | running, +0.7 trending H1 / 113K |
 | #856 | tt-threshold-loose-only | 40+0.4 | **H0 -1.0 ±2.0 / 11.6K** ✗ |
-| #842 | tt-age-weight-8 (×4 → ×8) | 10+0.1 | running, +0.9 trending H1 / 108K |
+| #842 | tt-age-weight-8 (×4 → ×8) | 10+0.1 | **H0 +0.5 ±0.6 / 273K** (LLR -2.95) ✗ |
 | #857 | tt-age-weight-8 | 40+0.4 | **H1 +1.6 ±2.5 / 7.3K** ✓ |
 
 **The two TT changes have different TC profiles:**
@@ -6376,12 +6376,18 @@ to test his hypothesis that TT-pressure mechanisms scale with TC.
   useful entries).
 
 **Merge decisions:**
-- **tt-age-weight-8 → MERGE** when #842 STC formally H1's. Both TCs
-  agree; LTC the larger effect; deployment-relevant.
-- **tt-threshold-loose-only → DROP** regardless of #841's eventual
-  STC verdict. LTC alt evidence shows it's a deployment regression.
-  Adam's policy: long-running #841 left running at throughput 25,
-  but result will be ignored for merge decision.
+- **tt-age-weight-8 → DROP** (revised 2026-04-28 after #842 formal
+  resolution). STC #842 H0'd at +0.5 ±0.6 / 273K (LLR -2.95).
+  Original +0.9 STC trending was small-N noise. The +1.6 LTC at
+  7K games is statistically consistent with the +0.5 STC at 273K
+  (LTC's ±2.5 envelope easily contains the STC point estimate).
+  Verdict: change is essentially neutral, not deployment-positive.
+- **tt-threshold-loose-only → DROP** confirmed by both #841 STC
+  H0 (+0.4 ±0.7 / 189K, LLR -2.95) and #856 LTC H0 (-1.0 ±2.0 /
+  11.6K, LLR -2.98). LTC inversion finding (in
+  `feedback_stc_can_invert_ltc_direction.md`) holds via combined
+  evidence; the early "STC trending +0.7" was noise that resolved
+  to H0 at large N.
 
 **General lesson:** STC SPRT can both UNDER-measure and INVERT the
 sign of LTC effects. The previous `feedback_sprt_blind_to_long_game_effects.md`
@@ -6392,6 +6398,18 @@ before merge — not because LTC is "more accurate" universally,
 but because TT-pressure-bound effects can REVERSE direction. To be
 captured in a memory entry as an extension to the existing
 sprt-blind-to-long-game-effects feedback.
+
+**Update post-#842 formal resolution:** the STC inversion claim
+weakens for tt-age-weight-8 specifically. At large N (273K), STC
+H0'd at +0.5 ±0.6. LTC's +1.6 ±2.5 at 7K games is consistent with
+the STC large-N result. So tt-age-weight-8 isn't a true STC-
+positive-LTC-positive change; both TCs are essentially zero, and
+the LTC small-N reading was sampling noise. The cleanly-inverted
+case is tt-threshold-loose-only (STC +0.7 small-N → STC H0 +0.4
+large-N → LTC H0 -1.0): that one's ALSO consistent with "small
+effect, both TCs near zero" rather than direction inversion.
+Tightening the LTC-inversion claim in the memory entry to
+require LARGE-N STC + LARGE-N LTC with opposing signs.
 
 Combined effect (+13.9) is less than the arithmetic sum of individual
 reverts (+25 + +18 = +43), confirming **signal overlap**: tune-820
