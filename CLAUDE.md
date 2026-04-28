@@ -547,6 +547,30 @@ Three anchor points:
     after any cluster of merges worth ~+10 Elo. The Tarnished/Horsie
     gap should compress visibly as we improve; if it doesn't, the
     work isn't moving the right buckets.
+  - **TC sigmoid applies vs rivals too** (Adam, 2026-04-28). The
+    SF-gap-shrinks-with-TC pattern documented in §The TC-handicap
+    sigmoid below also holds for rivals: gap at 10+0.1 is meaningfully
+    larger than at 40+0.4. At 10+0.1 ultra-bullet (the 45-engine RR
+    snapshot), Coda rank 21-23/45 cluster with Clarity/Velvet/
+    PZChessBot, with gaps to nearby rivals in the 50-150 Elo range
+    and gap to top of pool 270-302 Elo. At 40+0.4 (this gauntlet),
+    the same engines collapse to within ±20 Elo of Coda — Velvet
+    actually ends up below us. Two implications:
+    1. **STC SPRT (10+0.1) over-measures our deficit vs rivals** —
+       same blindspot as vs SF per `feedback_sprt_blind_to_long_game_effects.md`.
+       A change that delivers +5 Elo at STC SPRT may convert to
+       less at 40+0.4 deployment TC; conversely, changes whose
+       mechanism only fires at LTC (TT pressure, deep tactics, TM)
+       may be invisible in SPRT yet pay vs rivals at deployment.
+    2. **The rivals gap is more closable than the STC view suggests.**
+       Closing 50 Elo at 40+0.4 is moving from -22 to +28 — past
+       Tarnished (+81 → ≈+30 post-improvement). At 10+0.1 the same
+       improvement might be 100-150 Elo of apparent shift, but the
+       deployment-relevant number is the LTC one.
+    3. **Rivals-tier validation should be 40+0.4 or 60+1**, not
+       SPRT. Reuse the `tough_rivals.pgn` gauntlet pattern after
+       any cluster of search/eval merges — it's the deployment-
+       relevant strength read for the next 50 Elo target.
 
 SF gap as a function of TC (see TC-handicap sigmoid below for the
 full curve):
