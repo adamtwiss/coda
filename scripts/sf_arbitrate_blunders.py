@@ -156,6 +156,14 @@ def coda_lost(game: chess.pgn.Game) -> bool:
     return (c == chess.WHITE and r == "0-1") or (c == chess.BLACK and r == "1-0")
 
 
+def coda_won(game: chess.pgn.Game) -> bool:
+    c = coda_color(game)
+    if c is None:
+        return False
+    r = game.headers.get("Result", "*")
+    return (c == chess.WHITE and r == "1-0") or (c == chess.BLACK and r == "0-1")
+
+
 @dataclass
 class CodaMoveTask:
     game_idx: int
@@ -169,7 +177,7 @@ class CodaMoveTask:
     coda_san: str
 
 
-def extract_tasks(pgn: Path, losses_only: bool) -> list[CodaMoveTask]:
+def extract_tasks(pgn: Path, losses_only: bool, wins_only: bool = False) -> list[CodaMoveTask]:
     """Walk all Coda moves in PGN; emit (FEN-before, FEN-after, move) tasks."""
     tasks: list[CodaMoveTask] = []
     with pgn.open() as f:
@@ -182,6 +190,9 @@ def extract_tasks(pgn: Path, losses_only: bool) -> list[CodaMoveTask]:
             if color is None:
                 continue
             if losses_only and not coda_lost(game):
+                gi += 1
+                continue
+            if wins_only and not coda_won(game):
                 gi += 1
                 continue
             opponent = game.headers.get("White") if color == chess.BLACK else game.headers.get("Black")
@@ -278,12 +289,14 @@ def main():
     ap.add_argument("--workers", type=int, default=max(1, mp.cpu_count() - 2))
     ap.add_argument("--losses-only", action="store_true",
                     help="Only analyse games where Coda lost")
+    ap.add_argument("--wins-only", action="store_true",
+                    help="Only analyse games where Coda won")
     ap.add_argument("--limit-games", type=int, default=0,
                     help="Cap to first N matching games (for quick pilot)")
     args = ap.parse_args()
 
     print(f"Extracting tasks from {args.pgn}...")
-    tasks = extract_tasks(args.pgn, args.losses_only)
+    tasks = extract_tasks(args.pgn, args.losses_only, args.wins_only)
     if args.limit_games:
         # Filter to first N unique game_idxs
         keep_games = set()
