@@ -6309,7 +6309,23 @@ artifact, not a real net regression.
 | SPRT | Branch | Status |
 |------|--------|--------|
 | #858 | tune-855-applied (80% / 4033 iters) + C8FIXED vs main + PROD | **H0 -8.1 ±5.5 / 3808g** ✗ |
-| #859 | tune-855-final-applied (100% / 5000 iters) + C8FIXED vs main + PROD | running, [-5, 5] bounds |
+| #859 | tune-855-final-applied (100% / 5000 iters) + C8FIXED vs main + PROD | **stalled "Wrong Bench"** — submitted with PROD-net build's bench instead of C8FIXED-net build's bench. Resubmitted as #860. |
+| #860 | tune-855-final-applied (resubmit, correct bench) + C8FIXED vs main + PROD | **H0 -7.5 ±7.0 / 2416g** (LLR -2.97) ✗ |
+
+**Hypothesis 1 (80%-snapshot artifact) is dead.** Final 5K-iter SPSA
+outputs deliver essentially the same -8 result as the 80% snapshot.
+Tune-855's full convergence didn't escape the tune-820 basin gravity
+for C8FIXED.
+
+**Three deployment paths now:**
+
+| Path | Action | Expected Elo | Cost |
+|---|---|---:|---|
+| A | Deploy `#854 recipe`: revert LMP + revert tune-820 + C8FIXED | **+12-14 (measured)** | Loses LMP wins (~+1.86) and tune-820 calibration |
+| B | Tune from default tunables on main + C8FIXED (no tune-820 gravity) | unknown | Another 5-10K iters; retains LMP wins if SPSA finds basin |
+| C | Tune on `revert-lmp-and-tune820` branch + C8FIXED, then re-apply LMP changes | likely best | Two-stage: tune + cherry-pick + re-SPRT |
+
+Path A is simplest and known-good. Awaiting Adam's direction.
 
 **Gap between expectation (+14 from #854) and result (-8.1 from #858)
 is 22 Elo.** Multiple working hypotheses:
