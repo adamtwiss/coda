@@ -6261,15 +6261,43 @@ arms run the SAME revert code so only the net changes — clean isolation.
 
 | SPRT | Branch | Reverts | Status |
 |------|--------|---------|--------|
-| #850 | experiment/revert-material-np-only | 1b0ddc4 (material scaling: non-pawn-only) | running, early |
-| #851 | experiment/revert-hist-prune-gate-drop | 988ca5c (drop !improving && !unstable from hist-prune) | running, early |
-| #852 | experiment/revert-lmp-changes | 8199f17 + 74a9f2a (LMP direct-check carve-out + skip-quiets flag) | running, early |
-| #853 | experiment/revert-tune-820 | 45481f9 (Apply tune #820 — 5K-iter retune values) | running, early |
+| #850 | experiment/revert-material-np-only | 1b0ddc4 (material scaling: non-pawn-only) | **H0 -5.5 ±6.1 / 3570g** ✗ — not the culprit |
+| #851 | experiment/revert-hist-prune-gate-drop | 988ca5c (drop !improving && !unstable from hist-prune) | **H0 -4.3 ±5.5 / 4562g** ✗ — not the culprit |
+| #852 | experiment/revert-lmp-changes | 8199f17 + 74a9f2a (LMP direct-check carve-out + skip-quiets flag) | **H1 +25.2 ±12.8 / 732g** ✓ (LLR 2.95) — **CULPRIT** |
+| #853 | experiment/revert-tune-820 | 45481f9 (Apply tune #820 — 5K-iter retune values) | **H1 +18.2 ±10.9 / 994g** ✓ (LLR 2.97) — **CULPRIT** |
 
-**Remaining bisect candidates** (not yet reverted; harder due to chained tunes):
-- 9e1b878 (SE Reckless rewrite) — tunes #806 + #816 applied on top
-- ecf3532 (SE TRIPLE strip)
+**Bisect verdict.** Two of four reverts H1'd cleanly. The trunk-drift since
+#803 has two roots:
 
-If all four current bisects land H0 / near-zero, next move is the SE chain
-or a snapshot diff at c38623c vs current main with C8FIXED net to
-re-confirm the trunk-drift gap.
+1. **LMP changes** (#852, +25.2): the direct-check carve-out and skip-quiets
+   flag changed LMP shape in ways that interact badly with C8fix-2's smoother
+   eval distribution. Both LMP merges land in this single revert branch.
+2. **tune-820** (#853, +18.2): the 5K-iter SPSA retune on main converged to
+   parameter values that fit PROD's eval distribution but mis-fit C8fix-2's.
+   Pre-tune-820 SPSA values (from tune-816 on SE-no-triple branch) are
+   better-aligned to C8fix-2's landscape.
+
+Magnitudes (+25 / +18) are noisy at 700-1000 games but the LLR resolution
+is robust. **Combined gap exceeds the 15 Elo measured drift** — likely
+indicates partial signal overlap (LMP changes affect what tune-820
+calibrated for); follow-up combined-revert SPRT measures the joint effect.
+
+| #854 | experiment/revert-lmp-and-tune820 | 8199f17 + 74a9f2a + 45481f9 (all three trunk-drift commits) | running — measures joint effect |
+
+**Action plan post-#854 resolution:**
+
+- If #854 lands ≥ +15 Elo H1: confirms the trunk-drift gap is fully
+  attributable to these two clusters. Next: rather than reverting on main
+  (which would lose Phase A LMP wins #810 measured at +1.86 against
+  PROD-trunk), the right deployment path is to **fresh-SPSA-retune the
+  C8FIXED net at current trunk** — tune-830 already did this but at the
+  pre-LMP-merge baseline (e68dcc9). A new full-sweep retune at current
+  main with the C8FIXED net should bridge the gap.
+- If #854 lands < +15 Elo H1: at least one of the two reverts is
+  measurement-noise-inflated; isolate by extending #852 / #853 N to ~5K.
+
+**Methodology note.** This bisect demonstrates the value of single-commit
+net-vs-net SPRTs on revert branches. Both arms share identical code so
+only the net differs — clean isolation of which trunk merge interacts
+poorly with the candidate net. Pattern reusable for any future
+"net-vs-net regression" investigations.
