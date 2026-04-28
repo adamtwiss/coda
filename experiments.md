@@ -6298,7 +6298,8 @@ artifact, not a real net regression.
    from current tunables, SPSA explores until it finds the C8FIXED
    equilibrium that retains the LMP wins. This is the same pattern
    as tune-830 (which retuned for C8FIXED at e68dcc9 baseline) but
-   forward-rolled to current main.
+   forward-rolled to current main. **Submitted as tune-855**: 80
+   params, 5000 iters, dev_network=6C154331 (C8FIXED).
 3. Re-SPRT C8FIXED + fresh-tune vs PROD-trunk after SPSA converges.
    Expected outcome: H1 with sizable margin since #854 already
    confirmed +14 on the simpler trunk.
