@@ -460,6 +460,94 @@ Three anchor points:
   at the lower end of that band in a broad pool, higher in a
   close-rivals pool.
 
+- **Rivals gauntlet — 40+0.4, hash=512MB, EGTB-on, 8 engines, 240 games**
+  (Adam, 2026-04-28, in flight, the "near-peers" pool):
+
+  | Rank | Engine | Elo | Score | Δ-to-Coda |
+  |---:|---|---:|---:|---:|
+  |  1 | Tarnished | +81 ±51 | 61.4% | +103 |
+  |  2 | Horsie | +51 ±59 | 57.4% | +73 |
+  |  3 | PZChessBot | +20 ±74 | 52.9% | +42 |
+  |  4 | Arasan | +11 ±69 | 51.5% | +33 |
+  |  5 | Clarity | 0 ±64 | 50.0% | +22 |
+  |  5 | Seer | 0 ±64 | 50.0% | +22 |
+  |  7 | **Coda** | **−22 ±24** | 46.9% | 0 |
+  |  8 | Velvet | −10 ±59 | 48.6% | +12 |
+
+  - **Coda is mid-pack** in this pool, gap-to-centroid ~22 Elo.
+    Velvet sits below us; Clarity/Seer are at our level; Arasan,
+    PZChessBot, Horsie, Tarnished are above (the +33 → +103 band).
+  - **Loss-class profile** (29 losses analysed via `classify_losses.py`):
+    75.9% HORIZON, 20.7% SELF_BLUNDER, 3.4% MUTUAL_TACTIC, 0% POSITIONAL.
+    HORIZON-dominance is **mechanism-invariant** across the rivals tier
+    — same proportion as the 78.9% HORIZON vs SF/Reckless (210/151 Elo
+    gaps). Tactical density / search-depth mismatches drive losses
+    across the entire opposition spectrum we've measured.
+  - **SELF_BLUNDER doubled vs the SF/Reckless 10.5%** — vs same-tier
+    opponents we get to make second-best moves that aren't tactically
+    forced. This is the bucket move-ordering / quiet-eval improvements
+    target directly.
+  - **POSITIONAL is essentially zero** vs rivals — at peer-tier eval
+    depth, drift losses don't manifest.
+  - **The next 50 Elo target is closing the rivals gap, not chasing
+    SF.** Adam's framing 2026-04-28: this pool spans the entire near-
+    peer band, and a +50 Elo improvement moves us from −22 to roughly
+    parity with Tarnished (+81). Pure SF-gap-closing work has lower
+    leverage — vs SF the gap is hash-bound and saturates at ~120-140
+    Elo regardless of further search work, but vs rivals every
+    EBF/ordering/eval improvement compounds linearly across 6+ peer
+    opponents.
+  - **HORIZON is an outcome class, not a single mechanism.** When we
+    say "75.9% of losses are HORIZON" we mean "the eval cliff signature
+    matches search-depth-mismatch." Multiple distinct mechanisms can
+    produce that signature:
+    1. **Faster NPS** (raw search throughput → more nodes in the
+       same wall-clock → more effective depth).
+    2. **More pruning** (tighter RFP/FUT/SEE/LMP margins → smaller
+       sub-tree per node → deeper effective depth, but at the cost
+       of occasionally cutting moves that mattered).
+    3. **Less BAD pruning** (carve-outs / better gates that prevent
+       pruning the specific moves that were tactically critical —
+       e.g. LMP direct-check carve-out, recapture extensions,
+       singular extensions, threat-feature-aware gates).
+    4. **Better move ordering** (first-move-cutoff rate ↑ → more
+       beta cutoffs → less wasted search → deeper effective depth).
+
+    These mechanisms have OPPOSITE risk profiles. (2) gains depth
+    by accepting more mistakes; (3) accepts less depth in exchange
+    for fewer mistakes. (4) is a free lunch in principle but
+    bounded by ordering quality.
+  - **Adam's reading of our specific HORIZON-mechanism distribution**
+    (2026-04-28): the Reckless outlier-pruning comparison
+    (`docs/cross_engine_comparison_2026-04-25.md`) shows we both
+    over-prune AND under-prune relative to Reckless on different
+    thresholds — five outliers in different directions. This pattern
+    suggests our HORIZON losses are more about **(3) less bad
+    pruning** than **(2) more pruning**. The wins from "force more
+    pruning + retune" cluster were real but bounded; the bigger
+    wins (LMP direct-check, recapture extensions, threat-aware
+    gates) come from specific carve-outs that prevent mis-pruning
+    critical moves.
+  - **Implication for experiment selection**: prioritise work that
+    targets HORIZON via mechanisms (3) and (4) for our archetype —
+    specific pruning carve-outs (Reckless-pattern direct-check gates,
+    threat-aware exemptions, recapture/SE extensions) and ordering
+    improvements (4D history shape, capture-history sufficiency,
+    quiet-check bonus calibration). Mechanism (1) NPS still pays
+    but has discount factor at long TC per
+    `feedback_nps_elo_conversion_drops_with_tc.md`. Mechanism (2)
+    "more pruning" should now be the smaller part of our experiment
+    portfolio — most of the easy "tighten the margin" wins are
+    captured. De-prioritise SF-specific anchor optimisation
+    (deep-endgame TT bucket density was a candidate; lower priority
+    now that rivals data exists). The SELF_BLUNDER 20.7% bucket is
+    primarily mechanism (4) (better ordering) — second-best moves
+    are an ordering/eval-quality artifact, not a depth deficit.
+  - **Refresh cadence**: rerun the gauntlet + classifier monthly or
+    after any cluster of merges worth ~+10 Elo. The Tarnished/Horsie
+    gap should compress visibly as we improve; if it doesn't, the
+    work isn't moving the right buckets.
+
 SF gap as a function of TC (see TC-handicap sigmoid below for the
 full curve):
 - 10+0.1 (ultra bullet): ~302 Elo
