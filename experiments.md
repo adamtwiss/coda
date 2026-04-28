@@ -6304,6 +6304,39 @@ artifact, not a real net regression.
    Expected outcome: H1 with sizable margin since #854 already
    confirmed +14 on the simpler trunk.
 
+**Update 2026-04-28 — deployment SPRT didn't go as expected.**
+
+| SPRT | Branch | Status |
+|------|--------|--------|
+| #858 | tune-855-applied (80% / 4033 iters) + C8FIXED vs main + PROD | **H0 -8.1 ±5.5 / 3808g** ✗ |
+| #859 | tune-855-final-applied (100% / 5000 iters) + C8FIXED vs main + PROD | running, [-5, 5] bounds |
+
+**Gap between expectation (+14 from #854) and result (-8.1 from #858)
+is 22 Elo.** Multiple working hypotheses:
+
+1. **80%-snapshot artifact**: late iters shifted some big movers
+   (NMP_VERIFY_DEPTH 8→7, HIST_PRUNE_MULT +4.7%, LMR_HIST_DIV -8%,
+   LMP_DEPTH 11→10, HIST_BONUS_OFFSET 9→6). #859 with the 100%
+   snapshot will close this hypothesis.
+2. **SPSA basin gravity**: starting from tune-820 PROD-fitted values,
+   5K iters didn't fully escape to the C8FIXED-fit basin. The
+   "fresh full-sweep on main" approach may need to start from
+   default values or from `experiment/revert-lmp-and-tune820`'s
+   parameter set (proven good with C8FIXED at +14).
+3. **LMP-changes inherently disadvantage C8FIXED**: even with
+   optimal tunables, the LMP shape favors PROD's eval distribution.
+   If true, "retain LMP wins" doctrine doesn't survive the C8FIXED
+   deployment.
+
+**Backup deployment paths if #859 H0s:**
+- Tune from default values on current main (clean SPSA start, no
+  basin gravity from tune-820)
+- Tune on `experiment/revert-lmp-and-tune820` branch with C8FIXED,
+  then merge LMP changes back on top (using the tune-on-good-baseline
+  + reapply pattern)
+- Accept revert of LMP changes for C8FIXED deploy (loses #810's
+  +1.86 but gains #854's +14 — net positive)
+
 Combined effect (+13.9) is less than the arithmetic sum of individual
 reverts (+25 + +18 = +43), confirming **signal overlap**: tune-820
 calibrated against the LMP-merged trunk shape; reverting only one
