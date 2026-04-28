@@ -6491,28 +6491,54 @@ through positional/eval-quality not late tactics.
 
 **Implications for the 50-Elo target:**
 
-1. **The biggest leverage subset is the 25% balanced-position cliffs**
-   (56 games where Coda was within ±100cp before the worst move).
-   These are the clearest "could have drawn" moments. Mechanism (3)
-   "less bad pruning" carve-outs (Reckless-pattern threat-aware gates,
-   recapture/SE extensions) target these directly.
+Adam's reframing (2026-04-28): "Eval though is all NNUE black box.
+What we are actually looking at here is dynamic eval (eg including
+search) that comes down to search, move ordering, pruning, TT
+behaviour etc." SF's per-move ΔSF IS itself a depth-N search result.
+"Eval drift" therefore means dynamic-eval drift — Coda's search
+resolves to a worse value than SF's search resolves the same
+position to. The mechanism is search-side, NOT static NNUE.
 
-2. **Slow erosion (60% of losses) is harder to attack** — it implies
-   eval-refinement work (better training, factor net, longer SBs)
-   rather than search carve-outs. Aligns with the rivals-gap-is-
-   eval-bound finding for Reckless.
+1. **The 25% balanced-position cliffs** (56 games where Coda was
+   within ±100cp before the worst move) are the clearest "could
+   have drawn" moments. Mechanism (3) "less bad pruning" carve-outs
+   (Reckless-pattern threat-aware gates, recapture/SE extensions,
+   threat-feature-aware gates) target these directly.
 
-3. **The "already-losing" 74% subset is mostly unrecoverable** by
-   search alone — we're playing on the wrong side of the position.
-   Better defence (TM in losing positions, fortress detection) is
-   a longer-tail lever.
+2. **Slow erosion (60% of losses)** is the same mechanism family
+   spread across many moves: search misses the refinement at
+   each ply, drift compounds. Levers: better move ordering
+   (first-cutoff rate ↑, deep refinement promoted), pruning
+   carve-outs that don't mis-prune the right move, TT
+   improvements (replacement, age weight, near-miss handling),
+   LMR/extension calibration (don't reduce the move that would
+   have refined). NOT a training problem.
 
-4. **Per-opponent: Clarity is pure depth-bound** (huge late cliffs);
-   **Tarnished is eval-bound** (small early cliffs, they outplay us
-   structurally); **Seer's stylistic luring** registers as small
-   cliffs (138cp median), not big drops, so it's an "ordering
-   skips the right move" pattern rather than "SF would say it's a
-   blunder."
+3. **The "already-losing" 74% subset** is partly unrecoverable —
+   we're on the wrong side of the position. Better defence (TM
+   in losing positions, fortress detection, holding for 50mr) is
+   a longer-tail lever, smaller bucket.
+
+4. **Per-opponent mechanism splits:**
+   - **Clarity** — pure depth-bound (huge late cliffs at 95%
+     through game). Their search resolves what ours doesn't,
+     they're 2.86× faster NPS. Lever: ordering/EBF reduction
+     (compounds at depth) + selective NPS recovery via cache work.
+   - **Tarnished** — small early cliffs (128cp at ply 68/92).
+     They outplay us mid-game, smallest cliff magnitude in the
+     pool. Lever: move ordering and pruning quality, not raw depth.
+   - **Seer** — small cliffs (138cp median) but high SELF_BLUNDER
+     classifier reading (42%). Stylistic luring registers as
+     ordering-misses-right-move, not single tactical drops.
+     Lever: ordering improvements that promote the deep-correct-
+     but-quiet line over the surface-good-but-shallower one.
+
+5. **Training/NNUE work is supplementary**, not primary, for the
+   rivals gap. It improves the static eval Coda's search starts
+   from but doesn't directly attack dynamic-eval drift. Group-lasso,
+   factor net, low-LR tail still pay off — but for static-eval-
+   miscalibration class (fortresses, deep endgame, KP races), not
+   the dominant slow-erosion mechanism.
 
 CSV at `/tmp/sf_arbitrated_losses.csv`. To extend to wins/draws
 (Adam's "why we win" angle), drop `--losses-only` from the
