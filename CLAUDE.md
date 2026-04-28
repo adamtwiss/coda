@@ -460,48 +460,80 @@ Three anchor points:
   at the lower end of that band in a broad pool, higher in a
   close-rivals pool.
 
-- **Rivals gauntlet — 40+0.4, hash=512MB, EGTB-on, 8 engines, 240 games**
-  (Adam, 2026-04-28, in flight, the "near-peers" pool):
+- **Rivals gauntlet — 40+0.4, hash=512MB, EGTB-on, 8 engines, 1400 games**
+  (Adam, 2026-04-28, FINAL: 200 games per opponent, the "near-peers" pool):
 
   | Rank | Engine | Elo | Score | Δ-to-Coda |
   |---:|---|---:|---:|---:|
-  |  1 | Tarnished | +81 ±51 | 61.4% | +103 |
-  |  2 | Horsie | +51 ±59 | 57.4% | +73 |
-  |  3 | PZChessBot | +20 ±74 | 52.9% | +42 |
-  |  4 | Arasan | +11 ±69 | 51.5% | +33 |
-  |  5 | Clarity | 0 ±64 | 50.0% | +22 |
-  |  5 | Seer | 0 ±64 | 50.0% | +22 |
-  |  7 | **Coda** | **−22 ±24** | 46.9% | 0 |
-  |  8 | Velvet | −10 ±59 | 48.6% | +12 |
+  |  1 | Horsie | +58 ±23 | 58.3% | +74 |
+  |  2 | Tarnished | +56 ±24 | 58.0% | +72 |
+  |  3 | PZChessBot | +17 ±26 | 52.5% | +33 |
+  |  4 | Seer | +14 ±25 | 52.0% | +30 |
+  |  5 | Velvet | −7 ±24 | 49.0% | +9 |
+  |  6 | Clarity | −12 ±26 | 48.3% | +4 |
+  |  7 | Arasan | −14 ±26 | 48.0% | +2 |
+  |  8 | **Coda** | **−16 ±9** | 47.7% | 0 |
+
+  Trajectory across sample sizes (showing how early reads misled):
+  180g →  Coda −31 (sampling)
+  240g →  Coda −22
+  1400g → **Coda −16 ±9** (final, ±9 tighter than initial ±24)
 
   - **Coda is mid-pack** in this pool, gap-to-centroid ~22 Elo.
     Velvet sits below us; Clarity/Seer are at our level; Arasan,
     PZChessBot, Horsie, Tarnished are above (the +33 → +103 band).
-  - **Loss-class profile** (315 games / 53 losses analysed via
-    `classify_losses.py`): **83.0% HORIZON, 11.3% SELF_BLUNDER,
-    5.7% MUTUAL/UNCLASSIFIED, 0% POSITIONAL**. HORIZON-dominance is
-    **mechanism-invariant** across the rivals tier — same proportion
-    as the 78.9% HORIZON vs SF/Reckless (210/151 Elo gaps). Tactical
-    density / search-depth mismatches drive losses across the entire
-    opposition spectrum we've measured.
-  - **An earlier 139-game / 29-loss snapshot showed 75.9% HORIZON +
-    20.7% SELF_BLUNDER** which was reframed once N grew. SELF_BLUNDER
-    isn't actually higher vs rivals — it's ~10-12% across all
-    opposition tiers including SF (10.5%). The early "doubling" was
-    small-N regression-to-mean. **Move-ordering work is still valuable
-    but as mechanism (4) HORIZON-reduction**, not because peer-tier
-    games have an oversized SELF_BLUNDER bucket.
-  - **POSITIONAL is genuinely zero** vs rivals (was 7% vs SF). At
-    peer-tier eval depth, drift losses don't manifest. Holds across
-    both sample sizes.
-  - **Seer-specific outlier**: 50% SELF_BLUNDER (3 of 6 losses), only
-    17% HORIZON. Seer alone accounts for half of all SELF_BLUNDERs
-    in the pool (3 of 6 across all 7 opponents). The pattern is
-    durable across two samples — worth qualitative investigation
-    of what about Seer's style induces our second-best moves.
-    Possible: Seer's known-positional emphasis lures us into
-    quiet-but-mis-evaluated lines that other tactical engines
-    don't construct.
+  - **Loss-class profile** (1400 games / 222 losses analysed via
+    `classify_losses.py`): **77.9% HORIZON, 15.8% SELF_BLUNDER,
+    1.8% POSITIONAL, 4.1% UNCLASSIFIED, 0.5% MUTUAL_TACTIC**.
+    HORIZON-dominance is **mechanism-invariant** across the rivals
+    tier — same ballpark as the 78.9% HORIZON vs SF/Reckless
+    (210/151 Elo gaps). Tactical density / search-depth mismatches
+    drive losses across the entire opposition spectrum we've
+    measured.
+
+  **Per-opponent breakdown** (now reliable at 23-43 losses each):
+
+  | Opponent | N | HORIZON | SELF_BLUNDER | Read |
+  |---|---:|---:|---:|---|
+  | Clarity | 25 | **96.0%** | 0% | Pure horizon |
+  | PZChessBot | 34 | 91.2% | 8.8% | Mostly horizon |
+  | Tarnished | 43 | 86.0% | 9.3% | Mostly horizon |
+  | Velvet | 23 | 82.6% | 13.0% | Standard mix |
+  | Arasan | 25 | 76.0% | 16.0% | Mild SELF_BLUNDER bias |
+  | Horsie | 41 | 70.7% | **19.5%** | High SELF_BLUNDER + strong |
+  | **Seer** | 31 | **45.2%** | **41.9%** | THE outlier |
+
+  - **Seer is the durable per-opponent outlier**. 13 of 35 total
+    pool SELF_BLUNDERs (37%) are vs Seer alone. Seer's style induces
+    our second-best moves at ~4× the rate of any other opponent.
+    Hypothesis: Seer's positional/quiet emphasis lures us into
+    mis-evaluated lines that the more-tactical engines don't
+    construct. Concrete investigation: pull a sample of Seer-loss
+    PGNs, look qualitatively at the move class (which piece type,
+    which phase, which tactical motif) where our eval mis-rates.
+  - **Horsie is a secondary SELF_BLUNDER source** (19.5%) AND
+    top-of-pool (+58 Elo vs Coda). Likely a different mechanism
+    from Seer's: Horsie's strength forces difficult positions where
+    we pick second-best, vs Seer's *style* luring eval errors. Both
+    worth qualitative investigation.
+  - **Clarity is striking — 96% HORIZON, 0% SELF_BLUNDER.** Every
+    loss to Clarity is a pure search-depth mismatch. This is the
+    cleanest "purely depth-bound" opponent in the pool. Search-side
+    work targets the Clarity-class loss directly.
+  - **SELF_BLUNDER bimodal distribution**: pool aggregate is 15.8%
+    but it's bimodal — Seer 42%, Horsie 20%, everyone else 0-16%.
+    The "average" hides two distinct subpopulations. When SELF_BLUNDER
+    bucket grows in future gauntlets, check whether it's Seer-driven
+    style noise or a broader move-ordering issue.
+  - **POSITIONAL is essentially zero** (1.8%) vs rivals (was 7% vs
+    SF). At peer-tier eval depth, drift losses don't manifest.
+  - **An earlier 139-game / 29-loss snapshot showed 20.7%
+    SELF_BLUNDER** — reframed once N grew. The "doubling vs SF"
+    framing was small-N noise; the 1400-game value (15.8%) is in
+    the same band as the 10.5% vs SF/Reckless. **Move-ordering work
+    is still valuable** but as mechanism (4) HORIZON-reduction,
+    not because peer-tier games have a fundamentally different
+    loss profile.
   - **The next 50 Elo target is closing the rivals gap, not chasing
     SF.** Adam's framing 2026-04-28: this pool spans the entire near-
     peer band, and a +50 Elo improvement moves us from −22 to roughly
