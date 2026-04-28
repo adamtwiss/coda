@@ -118,12 +118,14 @@ def main():
 
     rows = []
     for bi, blunder in enumerate(blunders):
+        sf_best = blunder.get("sf_best_uci")  # may be None for old JSONLs
         for abl_name, env_extra in ablations:
             bestmove, score = run_coda(
                 args.coda, blunder["fen_before"],
                 args.depth, args.movetime, env_extra, args.hash,
             )
-            recovered = (bestmove is not None and bestmove != blunder["blunder_uci"])
+            differs = (bestmove is not None and bestmove != blunder["blunder_uci"])
+            matches_sf = (sf_best is not None and bestmove == sf_best)
             rows.append({
                 "blunder_idx": bi,
                 "opponent": blunder["opponent"],
@@ -131,26 +133,39 @@ def main():
                 "fen": blunder["fen_before"],
                 "blunder_uci": blunder["blunder_uci"],
                 "blunder_san": blunder["blunder_san"],
+                "sf_best_uci": sf_best,
                 "ablation": abl_name,
                 "bestmove": bestmove,
                 "score_cp": score,
-                "recovered": int(recovered),
+                "differs_from_played": int(differs),
+                "matches_sf_best": int(matches_sf),
             })
+            tag = ""
+            if matches_sf:
+                tag = "MATCHES_SF"
+            elif differs:
+                tag = "DIFFERS"
             print(f"  [{bi+1}/{len(blunders)}] {abl_name:20s} bestmove={bestmove} "
-                  f"(blunder={blunder['blunder_uci']}) {'RECOVERED' if recovered else ''}")
+                  f"(played={blunder['blunder_uci']} sf={sf_best}) {tag}")
 
     with args.out.open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader()
         w.writerows(rows)
 
-    # Summary
-    print(f"\n=== Recovery rates ({len(blunders)} blunders) ===")
+    # Summary — split clean-hash test (baseline) from feature ablations
+    print(f"\n=== Per-ablation rates ({len(blunders)} candidates) ===")
+    print(f"  {'ablation':<20} {'differs':>10} {'matches_sf':>12}")
     for abl_name, _ in ablations:
         relevant = [r for r in rows if r["ablation"] == abl_name]
-        recovered = sum(r["recovered"] for r in relevant)
-        rate = 100.0 * recovered / len(relevant) if relevant else 0
-        print(f"  {abl_name:20s} {recovered:3d}/{len(relevant):3d}  ({rate:5.1f}%)")
+        differs = sum(r["differs_from_played"] for r in relevant)
+        matches = sum(r["matches_sf_best"] for r in relevant)
+        n = len(relevant) or 1
+        prefix = "**" if abl_name == "baseline" else "  "
+        print(f"  {prefix}{abl_name:<18} {differs:3d}/{n:<3d} ({100*differs/n:5.1f}%) "
+              f"{matches:3d}/{n:<3d} ({100*matches/n:5.1f}%)")
+    print(f"\n  ** baseline = clean-hash test: if differs > 0, those are state-pollution candidates")
+    print(f"  per-feature ablations: candidates where ablation X recovers are pruning-blind-spot signal for that feature")
 
     print(f"\nWrote {len(rows)} rows to {args.out}")
 
