@@ -463,16 +463,38 @@ Three anchor points:
 - **Rivals gauntlet — 40+0.4, hash=512MB, EGTB-on, 8 engines, 1400 games**
   (Adam, 2026-04-28, FINAL: 200 games per opponent, the "near-peers" pool):
 
-  | Rank | Engine | Elo | Score | Δ-to-Coda |
-  |---:|---|---:|---:|---:|
-  |  1 | Horsie | +58 ±23 | 58.3% | +74 |
-  |  2 | Tarnished | +56 ±24 | 58.0% | +72 |
-  |  3 | PZChessBot | +17 ±26 | 52.5% | +33 |
-  |  4 | Seer | +14 ±25 | 52.0% | +30 |
-  |  5 | Velvet | −7 ±24 | 49.0% | +9 |
-  |  6 | Clarity | −12 ±26 | 48.3% | +4 |
-  |  7 | Arasan | −14 ±26 | 48.0% | +2 |
-  |  8 | **Coda** | **−16 ±9** | 47.7% | 0 |
+  | Rank | Engine | Elo | Score | Bench NPS | Speed×Coda | Δ-to-Coda |
+  |---:|---|---:|---:|---:|---:|---:|
+  |  1 | Horsie | +58 ±23 | 58.3% | 1,052,223 | 1.78× | +74 |
+  |  2 | Tarnished | +56 ±24 | 58.0% | 1,019,000 | 1.72× | +72 |
+  |  3 | PZChessBot | +17 ±26 | 52.5% | (n/a) | (n/a) | +33 |
+  |  4 | Seer | +14 ±25 | 52.0% | 1,500,726 | **2.54×** | +30 |
+  |  5 | Velvet | −7 ±24 | 49.0% | **1,780,148** | **3.01×** | +9 |
+  |  6 | Clarity | −12 ±26 | 48.3% | 1,690,952 | **2.86×** | +4 |
+  |  7 | Arasan | −14 ±26 | 48.0% | 838,335 | 1.42× | +2 |
+  |  8 | **Coda** | **−16 ±9** | 47.7% | **591,523** | 1.0× | 0 |
+
+  Bench NPS measured 2026-04-28 on Hercules with OB worker stopped
+  (clean CPU). PZChessBot's bench wouldn't terminate cleanly under
+  any invocation tried; revisit. Reference values: Reckless 942K,
+  Stockfish 1.12M.
+
+  **Coda is the slowest in the rivals pool by 1.4-3× margin** — but
+  the data argues this is a *deliberate and approximately neutral*
+  trade-off, not a problem. Look at the rank correlation:
+  - Top 2 strongest engines (Horsie +58, Tarnished +56) = 1.72-1.78× NPS
+  - Strongest fast engine (Seer +14) = 2.54× NPS
+  - Top-3 fastest engines (Velvet, Clarity, Seer at 2.54-3.01×) = -12 to +14 Elo
+  - Coda at 1.0× = -16 Elo
+
+  **NPS doesn't determine rank in this pool**. Tarnished/Horsie are
+  the strongest at moderate NPS; the fastest engines (Velvet, Clarity)
+  sit mid-pack. Reckless is also a slower-but-strong design pattern
+  (942K NPS vs Coda's 591K, only 1.6× faster). v9's threat-input
+  architecture cost ~20% NPS for +110 Elo (good trade); we approximately
+  match the field's strength despite being slowest. The lever for
+  closing the next 50 Elo isn't *only* NPS — it's improvements that
+  produce eval/ordering wins per node, of which NPS is one ingredient.
 
   Trajectory across sample sizes (showing how early reads misled):
   180g →  Coda −31 (sampling)
@@ -519,7 +541,18 @@ Three anchor points:
   - **Clarity is striking — 96% HORIZON, 0% SELF_BLUNDER.** Every
     loss to Clarity is a pure search-depth mismatch. This is the
     cleanest "purely depth-bound" opponent in the pool. Search-side
-    work targets the Clarity-class loss directly.
+    work targets the Clarity-class loss directly. Clarity is also
+    2.86× faster (NPS), which compounds the depth deficit.
+  - **NPS-vs-HORIZON correlation (Adam's hypothesis 2026-04-28)**:
+    mostly confirmed. Top 2 fastest engines (Velvet 3.01×, Clarity
+    2.86×) → high HORIZON (82-96%). Slowest non-Coda Arasan 1.42×
+    → still 76% HORIZON but smallest Elo gap (+2). Seer 2.54×
+    breaks the pattern at 45% HORIZON / 42% SELF_BLUNDER — speed
+    alone doesn't explain HORIZON when opponent's *style* doesn't
+    expose tactical mismatches. **Clean reading**: speed × style →
+    HORIZON share. Pure tactical engines (Clarity, PZChess) at any
+    NPS dominate via HORIZON; positional engines (Seer) produce
+    SELF_BLUNDER-heavy losses regardless of NPS.
   - **SELF_BLUNDER bimodal distribution**: pool aggregate is 15.8%
     but it's bimodal — Seer 42%, Horsie 20%, everyone else 0-16%.
     The "average" hides two distinct subpopulations. When SELF_BLUNDER
