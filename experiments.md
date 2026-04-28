@@ -6417,3 +6417,104 @@ net-vs-net SPRTs on revert branches. Both arms share identical code so
 only the net differs — clean isolation of which trunk merge interacts
 poorly with the candidate net. Pattern reusable for any future
 "net-vs-net regression" investigations.
+
+## 2026-04-28 — SF-arbitrated loss analysis on 1400-game rivals gauntlet
+
+Adam: "use SF as an arbitrator" to measure objective ΔSF per move,
+beyond the heuristic loss-classifier. Ran `scripts/sf_arbitrate_blunders.py`
+on `tough_rivals.pgn` at depth 18 with 12 workers; 11725 Coda moves
+across 222 Coda-loss games arbitrated in 39 minutes.
+
+**Move-quality tier breakdown (across 11725 Coda moves in losing games):**
+
+| Tier | ΔSF range | N | % |
+|---|---|---:|---:|
+| ACCURATE | ≥ -50cp | 10834 | 92.4% |
+| INACCURACY | -50 to -100cp | 516 | 4.4% |
+| MISTAKE | -100 to -200cp | 247 | 2.1% |
+| BLUNDER | < -200cp | 128 | 1.1% |
+
+Even in losing games, **92% of Coda's moves are SF-accurate**. The
+loss isn't from many bad moves; it's from a small number of cliffs
+or sustained slow drift.
+
+**Per-game cliff distribution (worst single move per game, 222 games):**
+
+| Cliff size | Games | % |
+|---|---:|---:|
+| < 50cp (no real mistake) | 2 | 0.9% |
+| 50-100cp (inaccuracy) | 31 | 14.0% |
+| 100-200cp (mistake) | 101 | 45.5% |
+| 200-400cp (blunder) | 62 | 27.9% |
+| 400-800cp (big blunder) | 13 | 5.9% |
+| 800+cp (catastrophic) | 13 | 5.9% |
+
+**Median worst-move-per-game: 160cp. 60.4% of losing games have NO
+single move worse than -200cp.** Most losses are not single-shot
+blunders; they're slow erosion. Median total CP lost across all
+moves in a losing game is 731 (~7 pawns of cumulative slippage).
+
+**Position context at the cliff (eval BEFORE the worst move, per SF):**
+
+| Pre-cliff eval | Games | % |
+|---|---:|---:|
+| Already losing (<-300cp) | 76 | 34.2% |
+| Tough (-300 to -100cp) | 89 | 40.1% |
+| Balanced (-100 to +100cp) | 56 | 25.2% |
+| Advantage (+100 to +300cp) | 1 | 0.5% |
+| Winning (>+300cp) | 0 | 0.0% |
+
+**74% of cliff moves happen when Coda is already losing per SF.**
+Only 25% of cliffs come from balanced positions. We rarely get into
+trouble from a winning or even significant-advantage position; the
+cliff is usually a refinement-of-already-bad rather than a
+from-equality fall.
+
+**Per-opponent cliff timing:**
+
+| Opponent | Med cliff | ≥-200 share | Med cliff ply | Med game ply | Cliff/game ratio |
+|---|---:|---:|---:|---:|---:|
+| Clarity | 288 | 56% | 114 | 120 | **95%** (very late) |
+| Arasan | 219 | 56% | 69 | 71 | 97% (final move) |
+| Velvet | 202 | 52% | 64 | 81 | 79% |
+| PZChessBot | 176 | 44% | 86 | 107 | 80% |
+| Horsie | 151 | 37% | 81 | 105 | 77% |
+| Seer | 138 | 32% | 84 | 93 | 90% |
+| Tarnished | 128 | 19% | 68 | 92 | 74% |
+
+**All opponents see Coda's worst move in the back half of the game.**
+Clarity is the most extreme — biggest cliff (288cp) at the absolute
+end (95% through). This matches Clarity's 96% HORIZON / 0% SELF_BLUNDER
+classifier reading: pure depth-bound late-game eval cliff. Tarnished
+has the smallest cliffs and earliest timing — they outplay us mid-game
+through positional/eval-quality not late tactics.
+
+**Implications for the 50-Elo target:**
+
+1. **The biggest leverage subset is the 25% balanced-position cliffs**
+   (56 games where Coda was within ±100cp before the worst move).
+   These are the clearest "could have drawn" moments. Mechanism (3)
+   "less bad pruning" carve-outs (Reckless-pattern threat-aware gates,
+   recapture/SE extensions) target these directly.
+
+2. **Slow erosion (60% of losses) is harder to attack** — it implies
+   eval-refinement work (better training, factor net, longer SBs)
+   rather than search carve-outs. Aligns with the rivals-gap-is-
+   eval-bound finding for Reckless.
+
+3. **The "already-losing" 74% subset is mostly unrecoverable** by
+   search alone — we're playing on the wrong side of the position.
+   Better defence (TM in losing positions, fortress detection) is
+   a longer-tail lever.
+
+4. **Per-opponent: Clarity is pure depth-bound** (huge late cliffs);
+   **Tarnished is eval-bound** (small early cliffs, they outplay us
+   structurally); **Seer's stylistic luring** registers as small
+   cliffs (138cp median), not big drops, so it's an "ordering
+   skips the right move" pattern rather than "SF would say it's a
+   blunder."
+
+CSV at `/tmp/sf_arbitrated_losses.csv`. To extend to wins/draws
+(Adam's "why we win" angle), drop `--losses-only` from the
+invocation and add a `mover` column to extract opponent moves too
+(small script change).
