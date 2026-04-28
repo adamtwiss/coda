@@ -477,18 +477,31 @@ Three anchor points:
   - **Coda is mid-pack** in this pool, gap-to-centroid ~22 Elo.
     Velvet sits below us; Clarity/Seer are at our level; Arasan,
     PZChessBot, Horsie, Tarnished are above (the +33 → +103 band).
-  - **Loss-class profile** (29 losses analysed via `classify_losses.py`):
-    75.9% HORIZON, 20.7% SELF_BLUNDER, 3.4% MUTUAL_TACTIC, 0% POSITIONAL.
-    HORIZON-dominance is **mechanism-invariant** across the rivals tier
-    — same proportion as the 78.9% HORIZON vs SF/Reckless (210/151 Elo
-    gaps). Tactical density / search-depth mismatches drive losses
-    across the entire opposition spectrum we've measured.
-  - **SELF_BLUNDER doubled vs the SF/Reckless 10.5%** — vs same-tier
-    opponents we get to make second-best moves that aren't tactically
-    forced. This is the bucket move-ordering / quiet-eval improvements
-    target directly.
-  - **POSITIONAL is essentially zero** vs rivals — at peer-tier eval
-    depth, drift losses don't manifest.
+  - **Loss-class profile** (315 games / 53 losses analysed via
+    `classify_losses.py`): **83.0% HORIZON, 11.3% SELF_BLUNDER,
+    5.7% MUTUAL/UNCLASSIFIED, 0% POSITIONAL**. HORIZON-dominance is
+    **mechanism-invariant** across the rivals tier — same proportion
+    as the 78.9% HORIZON vs SF/Reckless (210/151 Elo gaps). Tactical
+    density / search-depth mismatches drive losses across the entire
+    opposition spectrum we've measured.
+  - **An earlier 139-game / 29-loss snapshot showed 75.9% HORIZON +
+    20.7% SELF_BLUNDER** which was reframed once N grew. SELF_BLUNDER
+    isn't actually higher vs rivals — it's ~10-12% across all
+    opposition tiers including SF (10.5%). The early "doubling" was
+    small-N regression-to-mean. **Move-ordering work is still valuable
+    but as mechanism (4) HORIZON-reduction**, not because peer-tier
+    games have an oversized SELF_BLUNDER bucket.
+  - **POSITIONAL is genuinely zero** vs rivals (was 7% vs SF). At
+    peer-tier eval depth, drift losses don't manifest. Holds across
+    both sample sizes.
+  - **Seer-specific outlier**: 50% SELF_BLUNDER (3 of 6 losses), only
+    17% HORIZON. Seer alone accounts for half of all SELF_BLUNDERs
+    in the pool (3 of 6 across all 7 opponents). The pattern is
+    durable across two samples — worth qualitative investigation
+    of what about Seer's style induces our second-best moves.
+    Possible: Seer's known-positional emphasis lures us into
+    quiet-but-mis-evaluated lines that other tactical engines
+    don't construct.
   - **The next 50 Elo target is closing the rivals gap, not chasing
     SF.** Adam's framing 2026-04-28: this pool spans the entire near-
     peer band, and a +50 Elo improvement moves us from −22 to roughly
