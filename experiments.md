@@ -6707,28 +6707,84 @@ not via depth-mismatches our clean search reproduces.
    it didn't find at game time." That's the floor for "fixable
    via reducing TT pollution / ordering noise."
 
-**Follow-up probes needed before drawing strong conclusions:**
+**Follow-up #1 (done): SF-eval Coda's clean-hash choices.**
 
-1. **SF-eval the clean-hash choices.** Run SF on the position AFTER
-   Coda's clean-hash bestmove. If SF says Coda's clean choice is
-   ≥ -50cp better than the played move, that's a real recovery;
-   otherwise the alternative is just "different but also bad."
+Ran `scripts/eval_clean_hash_recovery.py /tmp/pruning_candidates_moderate.jsonl
+/tmp/abl_moderate_baseline.csv --depth 18`. For each candidate, ran SF at
+depth 18 on the position AFTER Coda's clean-hash bestmove, computed Coda-POV
+delta, and compared to the played-move delta:
 
-2. **Probe at higher depth (16, 18, 20).** If Coda still picks the
-   same clean-hash bestmove at higher depth, the choice is robust
-   (not just a depth-14 artifact). If Coda converges to SF-best
-   at higher depth, the gap is depth-bound — i.e. "depth deficit
-   at game-time" rather than state-pollution.
+| Recovery verdict | N | % |
+|---|---:|---:|
+| matches_sf (Coda picks SF-best) | 7 | 15.6% |
+| recovers ≥50cp (different from SF-best but still better) | 1 | 2.2% |
+| partial <50cp recovery | 3 | 6.7% |
+| same_or_worse than played | 34 | 75.6% |
 
-3. **Run D2 (Coda's score for SF-best vs played).** If Coda scores
-   SF-best higher than the played move at clean hash, ordering bug.
-   If Coda scores SF-best lower, eval-or-depth bug. This is the
-   `probe_candidate_depth.py` D2 diagnostic.
+**Real recoveries: 8/45 (18%).** The earlier "97.8% differ from played"
+finding was MISLEADING — most of those "differs" are Coda's clean
+choice being WORSE per SF than the played move. **30/45 (67%) are
+≥50cp worse than the played move per SF.** Median worse-recovery
+is -245cp (worst -694cp).
 
-Tarnished's 0/9 result strongly suggests his exploits aren't
-depth-deficits — likely an eval-quality differential we can't
-recover via search-only changes. Lever for Tarnished is training-
-side. Other opponents' candidates (Arasan, Horsie, Clarity, Velvet)
-have non-zero recovery — investigation worth running for those.
+**Methodological lesson — clean-hash test is confounded by depth.**
 
-Output CSV: `/tmp/abl_moderate_baseline.csv`.
+The played move was made at TC-allocated depth (typically 16-25 plies
+per PGN annotations). Probing at fixed depth 14 with clean TT means
+Coda is searching at a SHALLOWER depth than at game-time, AND with
+no TT context. When the clean-hash probe picks something different,
+two confounding causes can't be separated:
+
+1. State pollution at game-time made Coda pick worse (real bug)
+2. Depth-14-clean is just a strictly weaker search than
+   depth-game-time-with-warm-TT, so it picks worse on average
+
+**The 67% "clean choice is worse" subset suggests cause 2 is
+dominant** for moderate-stepped candidates. TT carry-over from prior
+moves was generally HELPING Coda, not polluting it. Adam's prior
+about "ponder/TC partial-search state reuse" bugs may exist in
+specific rare paths but doesn't show up here as a systematic
+moderate-cliff cause.
+
+**The 8 real recoveries (18%) are concrete actionable candidates:**
+
+| Opponent | ply | played | sf | clean | recovery (cp) | category |
+|---|---:|---|---|---|---:|---|
+| Clarity | 36 | e7c5 | e6f5 | e6f5 | +85 | matches_sf |
+| Velvet | 35 | g5g6 | g5h6 | g5h6 | +48 | matches_sf |
+| Horsie | 45 | c7b6 | f3g4 | f3g4 | +46 | matches_sf |
+| Horsie | 45 | b5b8 | e1e4 | e1e4 | +77 | matches_sf |
+| Tarnished | 31 | d3c2 | f5g7 | d4e5 | +145 | recovers (different best) |
+| Arasan | 50 | b7a8 | d6c5 | d6c5 | +86 | matches_sf |
+| Arasan | 35 | b5a7 | h3g4 | h3g4 | +64 | matches_sf |
+| Arasan | 12 | b8d7 | e5d4 | e5d4 | +79 | matches_sf |
+
+Per-opponent recovery rate (matches_sf + ≥50cp recovers):
+
+| Opponent | Real recoveries / candidates | % |
+|---|---:|---:|
+| Arasan | 3/8 | 38% |
+| Horsie | 2/7 | 29% |
+| Clarity | 1/6 | 17% |
+| Velvet | 1/6 | 17% |
+| Tarnished | 1/9 | 11% |
+| PZChessBot | 0/5 | 0% |
+| Seer | 0/4 | 0% |
+
+**These 8 positions are the actionable bug-discovery surface for
+moderate-stepped candidates** in the rivals losses subset. Per-feature
+ablation on these 8 (NO_NMP, NO_LMP, etc.) localizes which gate
+prevented the right move at game-time, since clean depth 14 already
+finds it.
+
+**Methodological revision for future candidate triage:**
+
+The clean-hash test should use **depth ≥ Coda's game-time depth at
+that ply** to fairly distinguish state-pollution from depth-deficit.
+PGN comments record `{eval/depth time}` so the per-position depth
+is recoverable. Probing at fixed shallow depth conflates the two
+confounds. For follow-up runs, parse depth from PGN and probe at
+that-depth + a few plies more to be safe.
+
+Output CSVs: `/tmp/abl_moderate_baseline.csv` (clean-hash bestmoves),
+`/tmp/recovery_moderate.csv` (SF-eval'd recovery verdict).
