@@ -84,48 +84,48 @@ tunables!(
     //   NMP_UNDEFENDED_MAX float-converged at 0.6 (int rounds to 1, no
     //     change); two consecutive tunes have drifted this toward feature-
     //     disable. Candidate for ablation SPRT (set to 0).
-    (NMP_BASE_R, 7, 2, 8, 1.5),
+    (NMP_BASE_R, 6, 2, 8, 1.5),
     (NMP_DEPTH_DIV, 5, 1, 6, 1.5),
-    (NMP_EVAL_DIV, 108, 50, 400, 17.5),
-    (NMP_EVAL_MAX, 1, 1, 6, 1.5),
-    (NMP_VERIFY_DEPTH, 9, 4, 20, 2.0),
+    (NMP_EVAL_DIV, 111, 50, 400, 17.5),
+    (NMP_EVAL_MAX, 2, 1, 6, 1.5),
+    (NMP_VERIFY_DEPTH, 7, 4, 20, 2.0),
     (RFP_DEPTH, 18, 2, 20, 2.0),
-    (RFP_MARGIN_IMP, 30, 30, 150, 6.0),
+    (RFP_MARGIN_IMP, 43, 30, 150, 6.0),
     (RFP_MARGIN_NOIMP, 84, 50, 200, 7.5),
     // Futility margin reduced to Reckless scale. At lmr_d=5:
     //   Old: 78 + 160*5 = 878 (Coda 2.4× wider than Reckless 364)
     //   New: 40 + 65*5 = 365 (matches Reckless)
     // Force-more-pruning experiment: Coda was under-pruning at mid-depth
     // where Reckless prunes confidently. SPSA retune-on-branch expected.
-    (FUT_BASE, 36, 20, 200, 9.0),
-    (FUT_PER_DEPTH, 70, 40, 250, 10.5),
+    (FUT_BASE, 35, 20, 200, 9.0),
+    (FUT_PER_DEPTH, 67, 40, 250, 10.5),
     (HIST_PRUNE_DEPTH, 3, 1, 8, 1.5),
-    (HIST_PRUNE_MULT, 12825, 500, 50000, 2475.0),
+    (HIST_PRUNE_MULT, 14306, 500, 50000, 2475.0),
     (SEE_QUIET_MULT, 32, 5, 80, 3.75),
-    (LMR_HIST_DIV, 6744, 2000, 100000, 4900.0),
-    (LMR_C_QUIET, 133, 40, 300, 13.0),
-    (LMR_C_CAP, 103, 80, 350, 12.5),
+    (LMR_HIST_DIV, 8007, 2000, 100000, 4900.0),
+    (LMR_C_QUIET, 132, 40, 300, 13.0),
+    (LMR_C_CAP, 110, 80, 350, 12.5),
     (SE_DEPTH, 4, 4, 20, 2.0),
     (ASP_DELTA, 11, 5, 30, 1.5),
-    (ASP_SCORE_DIV, 29581, 8000, 50000, 2100.0),
-    (LMP_BASE, 9, 1, 15, 2.0),
-    (LMP_DEPTH, 11, 4, 20, 2.0),
-    (BAD_NOISY_MARGIN, 71, 30, 150, 6.0),
-    (PROBCUT_MARGIN, 199, 80, 300, 11.0),
-    (HINDSIGHT_THRESH, 148, 50, 400, 17.5),
-    (UNSTABLE_THRESH, 206, 50, 500, 22.5),
-    (SEE_MATERIAL_SCALE, 237, 30, 300, 13.5),
-    (QS_DELTA_MARGIN, 357, 100, 500, 20.0),
-    (QS_SEE_THRESHOLD, -36, -200, 0, 10.0),
+    (ASP_SCORE_DIV, 28715, 8000, 50000, 2100.0),
+    (LMP_BASE, 7, 1, 15, 2.0),
+    (LMP_DEPTH, 10, 4, 20, 2.0),
+    (BAD_NOISY_MARGIN, 70, 30, 150, 6.0),
+    (PROBCUT_MARGIN, 201, 80, 300, 11.0),
+    (HINDSIGHT_THRESH, 160, 50, 400, 17.5),
+    (UNSTABLE_THRESH, 218, 50, 500, 22.5),
+    (SEE_MATERIAL_SCALE, 236, 30, 300, 13.5),
+    (QS_DELTA_MARGIN, 360, 100, 500, 20.0),
+    (QS_SEE_THRESHOLD, -42, -200, 0, 10.0),
     (QS_MAX_CAPTURES, 28, 2, 32, 2.0),
-    (CORR_W_PAWN, 276, 100, 600, 25.0),
-    (CORR_W_NP, 75, 50, 400, 17.5),
-    (CORR_W_MINOR, 62, 30, 300, 13.5),
-    (CORR_W_MAJOR, 99, 30, 300, 13.5),
-    (CORR_W_CONT, 41, 30, 400, 18.5),
+    (CORR_W_PAWN, 278, 100, 600, 25.0),
+    (CORR_W_NP, 74, 50, 400, 17.5),
+    (CORR_W_MINOR, 53, 30, 300, 13.5),
+    (CORR_W_MAJOR, 105, 30, 300, 13.5),
+    (CORR_W_CONT, 49, 30, 400, 18.5),
     (FH_BLEND_DEPTH, 3, 0, 8, 1.5),
-    (HIST_BONUS_MULT, 325, 50, 400, 17.5),
-    (HIST_BONUS_MAX, 1752, 500, 3000, 125.0),
+    (HIST_BONUS_MULT, 338, 50, 400, 17.5),
+    (HIST_BONUS_MAX, 1849, 500, 3000, 125.0),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
     // history bonus adopts Stockfish/cap-hist offset shape:
     //   old: min(MAX, MULT * d)
@@ -135,10 +135,10 @@ tunables!(
     // wider depth discrimination. cap-history already uses the offset
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 22, 0, 400, 25.0),
-    (CAP_HIST_MULT, 279, 50, 400, 17.5),
+    (HIST_BONUS_OFFSET, 6, 0, 400, 25.0),
+    (CAP_HIST_MULT, 291, 50, 400, 17.5),
     (CAP_HIST_BASE, 35, 0, 200, 10.0),
-    (CAP_HIST_MAX, 1663, 500, 3000, 125.0),
+    (CAP_HIST_MAX, 1672, 500, 3000, 125.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -161,21 +161,21 @@ tunables!(
     // regime; bundling it into #815 dragged the result negative. Tested
     // alone in this branch.
     (DEXT_MARGIN_PV, 204, 50, 400, 15.0),
-    (DEXT_MARGIN_QUIET, 8, 0, 100, 4.0),
-    (DEXT_MARGIN_CORR, 13, 0, 64, 3.0),
-    (DEXT_MARGIN_BASE, 41, -50, 150, 6.0),
+    (DEXT_MARGIN_QUIET, 6, 0, 100, 4.0),
+    (DEXT_MARGIN_CORR, 14, 0, 64, 3.0),
+    (DEXT_MARGIN_BASE, 38, -50, 150, 6.0),
     (DEXT_CAP, 12, 4, 32, 2.0),
-    (QUIET_CHECK_BONUS, 11549, 2000, 30000, 1400.0),
-    (LMR_COMPLEXITY_DIV, 184, 30, 500, 23.5),
-    (CORR_HIST_DIV, 1248, 256, 4096, 192.0),
-    (CORR_UPDATE_WEIGHT_MAX, 9, 4, 48, 2.2),
-    (CORR_BONUS_CAP_DIV, 2, 1, 16, 1.5),
+    (QUIET_CHECK_BONUS, 12338, 2000, 30000, 1400.0),
+    (LMR_COMPLEXITY_DIV, 172, 30, 500, 23.5),
+    (CORR_HIST_DIV, 1144, 256, 4096, 192.0),
+    (CORR_UPDATE_WEIGHT_MAX, 11, 4, 48, 2.2),
+    (CORR_BONUS_CAP_DIV, 3, 1, 16, 1.5),
     (CORR_HIST_GRAIN_T, 11, 1, 32, 1.55),
-    (CORR_HIST_ERR_MAX, 1, 1, 64, 3.15),
-    (ESCAPE_BONUS_Q, 15838, 5000, 40000, 1750.0),
-    (ESCAPE_BONUS_R, 10688, 3000, 30000, 1350.0),
-    (ESCAPE_BONUS_MINOR, 5727, 2000, 20000, 900.0),
-    (NMP_KING_ZONE_MAX, 5, 2, 9, 1.5),
+    (CORR_HIST_ERR_MAX, 2, 1, 64, 3.15),
+    (ESCAPE_BONUS_Q, 16693, 5000, 40000, 1750.0),
+    (ESCAPE_BONUS_R, 11197, 3000, 30000, 1350.0),
+    (ESCAPE_BONUS_MINOR, 5788, 2000, 20000, 900.0),
+    (NMP_KING_ZONE_MAX, 6, 2, 9, 1.5),
     // T2.1 (Titan's next_ideas 2026-04-21): undefended-piece NMP skip
     // threshold. Count our pieces with ≥1 enemy attacker AND zero of
     // our own defenders ("hanging"). If count >= this threshold, skip
@@ -186,16 +186,16 @@ tunables!(
     // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering weight.
     // Bonus applied in movepicker quiets = (to_mobility - from_mobility) × this.
     // Default 32 = ±256 typical range, additive to history (~1000s scale).
-    (MOBILITY_DELTA_WEIGHT, 36, 0, 256, 8.0),
-    (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
+    (MOBILITY_DELTA_WEIGHT, 35, 0, 256, 8.0),
+    (PROBCUT_KING_ZONE_MAX, 8, 2, 9, 1.5),
     (LMR_THREAT_DIV, 4, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
-    (FUT_THREATS_MARGIN, 21, 0, 200, 10.0),
-    (DISCOVERED_ATTACK_BONUS, 6105, 0, 30000, 1500.0),
+    (FUT_THREATS_MARGIN, 25, 0, 200, 10.0),
+    (DISCOVERED_ATTACK_BONUS, 5786, 0, 30000, 1500.0),
     // T1.4: quiet-slider move that completes a battery — lands on a square
     // where a friendly slider stands between us and an enemy piece along
     // the same ray. Flat bonus; tp==0 disables detection.
-    (BATTERY_BONUS, 7670, 0, 20000, 1000.0),
+    (BATTERY_BONUS, 7414, 0, 20000, 1000.0),
     // T3.2 (next_ideas_2026-04-21): "good quiet" — bonus when a quiet
     // move's destination attacks an enemy piece MORE valuable than the
     // moving piece. Stacks on top of existing offense bonus (+6000 flat)
@@ -204,17 +204,17 @@ tunables!(
     // which is the dominant positive-SEE case (~70% of positive SEEs).
     // Reuses offense's `attacks_from_to` computation — zero extra
     // attacks_from() calls. tp==0 disables.
-    (QSEE_BONUS, 6435, 0, 20000, 1000.0),
-    (SE_KING_PRESSURE_MARGIN, 2, 0, 30, 1.5),
+    (QSEE_BONUS, 7184, 0, 20000, 1000.0),
+    (SE_KING_PRESSURE_MARGIN, 1, 0, 30, 1.5),
     // xray-SE: widen singular test margin when TT move is from an x-ray
     // blocker square (moving it uncovers our slider's attack on an enemy).
     // Signal already delivered +52 in movepicker (#502). Flat bonus
     // subtracted from singular_beta → easier to judge singular → more
     // extensions for tactically significant moves.
     (SE_XRAY_BLOCKER_MARGIN, 2, 0, 40, 2.0),
-    (MVV_CAP_MULT, 32, 4, 64, 3.0),
+    (MVV_CAP_MULT, 34, 4, 64, 3.0),
     (CONT_HIST_MULT, 1, 1, 8, 1.5),
-    (KNIGHT_FORK_BONUS, 8987, 0, 20000, 1000.0),
+    (KNIGHT_FORK_BONUS, 9328, 0, 20000, 1000.0),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
     // LMR over-reduces king-restriction queen moves that complete mates.
