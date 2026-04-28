@@ -2781,7 +2781,6 @@ fn negamax(
         // the gate so LMP fired on PV nodes.
         if ply > 0 && !is_pv && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
             && !is_cap && !is_promo
-            && !board.gives_direct_check(mv)
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
         {
