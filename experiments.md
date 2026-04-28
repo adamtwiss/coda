@@ -6243,3 +6243,33 @@ the §Long tunes / long training thread in CLAUDE.md.
 | #835 | experiment/tune-830-applied vs e68dcc9 (both with xray net 6C154331) | **H1 +6.0 ±3.0 / 9646g** (LLR 2.97) ✓. Pre-vs-post tune-830 retune. Confirms the 5K-iter SPSA on the new net converged usefully — 64 changed tunables collectively buy +6 Elo over default tunables on the new net. **Methodology validation:** retune-on-branch is the right pattern for net-vs-net SPRTs. The new net (6C154331) is rejected by #836 (-10.7 vs prod), but for any future net that's a deployment candidate, this confirms the retune machinery delivers meaningful Elo. |
 | #836 | experiment/tune-830-applied (xray net) vs main (prod net 1EF1C3E5) | **H0 -10.7 ±6.3 / 3100g** (LLR -2.97). Net-vs-net at retuned state. **Reframed by Adam 2026-04-27**: the C8fix-xray training change is a *committed correctness fix* to the training pipeline — not an optional adoption. PROD 1EF1C3E5 is on borrowed time as the last net trained with the bug present. The -10.7 is a diagnostic alarm: why does the corrected pipeline produce a worse net? Open investigation: (a) bisect C8fix-2 alone vs adding x-ray training data; (b) recipe re-search at SB200 (LR tail, WDL, save-rate); (c) widened-range SPSA on params tune-830 pinned at boundaries. Don't ship 6C154331 in current form, but don't drop the work either — the underlying pipeline change is permanent. |
 | #821 | experiment/se-ttpv-margin | **H0 -0.1 ±1.2 / 68274g** (LLR -3.03). Final result on the long-running drift. SE TT-PV margin port (DEXT_MARGIN_TT_PV=16 — when tt_pv flag set, dext_margin shrinks). Drop. Mechanism: signal already overlapping with merged DEXT decomposition. |
+
+## 2026-04-28 — Trunk-drift bisect for C8fix-2 SB800 regression
+
+**Setup.** #803 (CC483681 SB200 + tune-796 vs C0A97CF4 SB200 + pre-tune trunk)
+landed **+4.8 H1 / 6.4K** on trunk c38623c. The same C8fix-2 vs C8fix-1
+SB200 pair re-run on current trunk (#847 main) landed **-10.5 H0**. That's
+a 15-Elo direction reversal across the trunk-drift between c38623c and main.
+Diagnostic confirmed the regression is in source-code drift, not training.
+
+**Hypothesis.** One (or more) of the search-side merges between c38623c and
+main interacts badly with C8fix-2's smoother eval distribution. Bisect by
+reverting candidate commits one at a time, then SPRTing **PROD vs C8FIXED
+net** (1EF1C3E5 SB800 vs 6C154331 SB800) on the revert branch. If the
+revert closes the gap (Elo > -5), the reverted change is implicated. Both
+arms run the SAME revert code so only the net changes — clean isolation.
+
+| SPRT | Branch | Reverts | Status |
+|------|--------|---------|--------|
+| #850 | experiment/revert-material-np-only | 1b0ddc4 (material scaling: non-pawn-only) | running, early |
+| #851 | experiment/revert-hist-prune-gate-drop | 988ca5c (drop !improving && !unstable from hist-prune) | running, early |
+| #852 | experiment/revert-lmp-changes | 8199f17 + 74a9f2a (LMP direct-check carve-out + skip-quiets flag) | running, early |
+| #853 | experiment/revert-tune-820 | 45481f9 (Apply tune #820 — 5K-iter retune values) | running, early |
+
+**Remaining bisect candidates** (not yet reverted; harder due to chained tunes):
+- 9e1b878 (SE Reckless rewrite) — tunes #806 + #816 applied on top
+- ecf3532 (SE TRIPLE strip)
+
+If all four current bisects land H0 / near-zero, next move is the SE chain
+or a snapshot diff at c38623c vs current main with C8FIXED net to
+re-confirm the trunk-drift gap.
