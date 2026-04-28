@@ -6544,3 +6544,88 @@ CSV at `/tmp/sf_arbitrated_losses.csv`. To extend to wins/draws
 (Adam's "why we win" angle), drop `--losses-only` from the
 invocation and add a `mover` column to extract opponent moves too
 (small script change).
+
+## 2026-04-28 — SF-arbitrated WINS analysis: the asymmetry is striking
+
+Re-ran SF arbitrator with `--wins-only` on the same 1400-game
+gauntlet PGN (158 Coda wins, 9767 moves analysed at depth 18 in
+30.5 min). The asymmetry vs the losses-side analysis is the most
+actionable finding so far.
+
+**Per-move accuracy (wins vs losses):**
+
+| Tier | Wins | Losses | Δ |
+|---|---:|---:|---:|
+| ACCURATE (≥-50cp) | 96.4% | 92.4% | +4.0pp |
+| INACCURACY (-50 to -100) | 2.2% | 4.4% | -2.2pp |
+| MISTAKE (-100 to -200) | 0.9% | 2.1% | -1.2pp |
+| BLUNDER (<-200) | 0.5% | 1.1% | -0.6pp |
+
+We are 4pp more accurate per-move in our wins. Same engine, same
+TC, same hardware — the per-move accuracy distribution is meaningfully
+better in games we won. This is consistent with "opening luck +
+slightly favourable position lets every search path resolve cleanly"
+or "Coda eval is more reliable in positions where it has slight
+material/positional anchor."
+
+**The mechanism asymmetry is the headline finding:**
+
+| Class of crossing | Wins (cross +100cp) | Losses (cross -100cp) |
+|---|---:|---:|
+| **Gradual** (no single move ≥50cp swing) | **92.4%** | 50.9% |
+| **Moderate** (single 50-100cp swing) | 4.4% | **20.3%** |
+| **Sudden** (single ≥100cp swing) | 3.2% | **28.4%** |
+
+**In our wins, 92% of advantage-building is gradual — slow drift in
+our favour over many moves. In our losses, only 51% is gradual.
+Moderate-stepped and sudden crossings happen ~6× more frequently
+in losses than in wins.**
+
+Reading the asymmetry directly: when Coda is on the winning side,
+we accumulate small advantages at a rate similar to or better than
+opponents accumulate against us in losses (med ply for +100 in wins
+is 48; med ply for -100 in losses is 49 — virtually identical
+timing). But when WE are on the wrong side, opponents exploit us
+through moderate-step (pruning blind spots) and sudden (tactical
+horizon) holes at MUCH higher rates than we exploit them.
+
+**Win-mechanism breakdown:**
+
+- 158/158 (100%) of our wins reach +100cp at some point — i.e., we
+  always at least briefly held a meaningful advantage. None of our
+  wins are pure "opponent blundered from equal."
+- 114/158 (72%) of wins reach +400cp — we're routinely converting
+  significant advantages.
+
+**Implications:**
+
+1. **The moderate-stepped + sudden bucket (48.7% of -100 crossings
+   in losses, only 7.6% in wins) is the actionable subset** for the
+   rivals 50-Elo target. This is exactly the pruning-blind-spot +
+   tactical-horizon work surface.
+
+2. **The 92% gradual subset on the wins side** confirms our slow-
+   accumulation strength is competitive with the field — when we
+   start ahead, we don't lose ground gradually faster than they do.
+   The deficit is on the "they exploit us via stepped/sudden
+   moments" axis.
+
+3. **`scripts/find_pruning_candidates.py --mode moderate_step`
+   surfaces the 45 candidates** that map directly to mechanism (3)
+   "less bad pruning" carve-outs and mechanism (4) ordering. **65
+   sudden candidates** map to mechanism (1) NPS / (3) carve-outs /
+   tactical extensions. **Together: ~108 concrete bug-discovery
+   targets** in the rivals losses subset alone.
+
+4. **The 113 gradual candidates** are what `feedback_three_class_loss_diagnostic.md`
+   classifies as eval/NNUE-bound. Lower priority for ablation;
+   higher priority for training-recipe work. They explain why
+   per-move accuracy in losses (92.4%) is lower than in wins (96.4%)
+   — many small drops accumulating reflect static eval being
+   slightly less reliable when Coda is on the wrong side of a
+   position.
+
+CSVs at `/tmp/sf_arbitrated_losses.csv` and `/tmp/sf_arbitrated_wins.csv`.
+Tooling for next phase: `scripts/blunder_ablation.py` (clean-hash +
+feature ablations) and `scripts/probe_candidate_depth.py` (D1/D2/D3
+triage) ready to run on the candidates JSONLs.
