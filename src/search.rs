@@ -225,8 +225,8 @@ tunables!(
     // gives SPSA a quasi-continuous knob (c_end 6.4 ≈ ±0.4 in the
     // natural scale) that crosses fractional boundaries.
     // Defaults [16,16,16,16] match prior CONT_HIST_MULT=1 behaviour.
-    (CONT_HIST_W1, 16, 0, 64, 6.4),
-    (CONT_HIST_W2, 16, 0, 64, 6.4),
+    (CONT_HIST_W1, 15, 0, 64, 6.4),
+    (CONT_HIST_W2, 17, 0, 64, 6.4),
     (CONT_HIST_W4, 16, 0, 64, 6.4),
     (CONT_HIST_W6, 16, 0, 64, 6.4),
     (KNIGHT_FORK_BONUS, 8987, 0, 20000, 1000.0),
