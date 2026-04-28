@@ -6282,7 +6282,33 @@ is robust. **Combined gap exceeds the 15 Elo measured drift** — likely
 indicates partial signal overlap (LMP changes affect what tune-820
 calibrated for); follow-up combined-revert SPRT measures the joint effect.
 
-| #854 | experiment/revert-lmp-and-tune820 | 8199f17 + 74a9f2a + 45481f9 (all three trunk-drift commits) | running — measures joint effect |
+| #854 | experiment/revert-lmp-and-tune820 | 8199f17 + 74a9f2a + 45481f9 (all three trunk-drift commits) | **H1 +13.9 ±9.6 / 1322g** ✓ (LLR 2.96) — joint effect confirmed |
+
+**Verdict — C8FIXED is genuinely the better net.** On a trunk without
+LMP changes and without tune-820, **C8FIXED beats PROD by +14 Elo**.
+The previous -10.7 result (#836) was entirely trunk-over-fit-to-PROD
+artifact, not a real net regression.
+
+**Deployment path** (post-#854 confirmation):
+
+1. **Don't revert LMP changes on main** — Phase A LMP wins (#810
+   +1.86 vs PROD-trunk) are real Elo against PROD-fitted trunk.
+   Reverting loses that.
+2. **Fresh full-sweep SPSA on current main + C8FIXED net** — starts
+   from current tunables, SPSA explores until it finds the C8FIXED
+   equilibrium that retains the LMP wins. This is the same pattern
+   as tune-830 (which retuned for C8FIXED at e68dcc9 baseline) but
+   forward-rolled to current main.
+3. Re-SPRT C8FIXED + fresh-tune vs PROD-trunk after SPSA converges.
+   Expected outcome: H1 with sizable margin since #854 already
+   confirmed +14 on the simpler trunk.
+
+Combined effect (+13.9) is less than the arithmetic sum of individual
+reverts (+25 + +18 = +43), confirming **signal overlap**: tune-820
+calibrated against the LMP-merged trunk shape; reverting only one
+under-estimates because the other still over-fits in the SPSA basin.
+This is expected SPSA behaviour: tunes are calibrated for the search
+shape they were submitted against.
 
 **Action plan post-#854 resolution:**
 
