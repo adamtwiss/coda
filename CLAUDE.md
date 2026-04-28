@@ -480,8 +480,7 @@ Three anchor points:
   Stockfish 1.12M.
 
   **Coda is the slowest in the rivals pool by 1.4-3× margin** — but
-  the data argues this is a *deliberate and approximately neutral*
-  trade-off, not a problem. Look at the rank correlation:
+  the rank ordering shows NPS isn't determinative:
   - Top 2 strongest engines (Horsie +58, Tarnished +56) = 1.72-1.78× NPS
   - Strongest fast engine (Seer +14) = 2.54× NPS
   - Top-3 fastest engines (Velvet, Clarity, Seer at 2.54-3.01×) = -12 to +14 Elo
@@ -490,11 +489,26 @@ Three anchor points:
   **NPS doesn't determine rank in this pool**. Tarnished/Horsie are
   the strongest at moderate NPS; the fastest engines (Velvet, Clarity)
   sit mid-pack. Reckless is also a slower-but-strong design pattern
-  (942K NPS vs Coda's 591K, only 1.6× faster). v9's threat-input
-  architecture cost ~20% NPS for +110 Elo (good trade); we approximately
-  match the field's strength despite being slowest. The lever for
-  closing the next 50 Elo isn't *only* NPS — it's improvements that
-  produce eval/ordering wins per node, of which NPS is one ingredient.
+  (942K NPS, 1.6× Coda). v9's threat-input architecture cost ~20% NPS
+  for +110 Elo (good trade); we approximately match the field's
+  strength despite being slowest.
+
+  **However** (Adam 2026-04-28): the cache-residency / sparsity work
+  surfaced about ~50% of latent NPS recovery available — Coda is
+  measurably slower than its inference shape *should* afford. So
+  there IS real NPS recovery on the table, distinct from the "trade
+  was correct" reading above. **The reason NPS work is currently
+  de-prioritised is the §TC-handicap-sigmoid finding** — 1×→2× TC
+  handicap vs SF gives ~0 Elo (flat zone before the knee). Even
+  recovering the 50% wouldn't close the SF gap meaningfully. **At
+  peer tier the dynamic is different** — rivals don't sit on a
+  saturation cliff, so NPS gains here probably convert more linearly
+  (untested but worth measuring after the next big NPS merge).
+  Net: NPS work is on the back-burner not because it's worthless
+  but because model/search improvements were higher-leverage in the
+  TC range we currently care about. If the rivals 50-Elo target is
+  partially closed via search/eval and the remaining gap looks
+  NPS-bound, the cache/sparsity work returns to the front burner.
 
   Trajectory across sample sizes (showing how early reads misled):
   180g →  Coda −31 (sampling)
