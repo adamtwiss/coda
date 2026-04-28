@@ -2559,12 +2559,6 @@ fn negamax(
     let mut captures_tried: [(u8, u8, u8); 32] = [(0, 0, 0); 32]; // (piece, to, victim)
     let mut n_captures_tried = 0usize;
 
-    // Skip-quiets flag: once LMP fires, skip remaining quiets without
-    // re-running gates (Reckless pattern). Bisection found this produces
-    // +22% bench (vs expected bench-neutral perf-only) — mechanism not
-    // localised; SPRT'd anyway as a data point per Adam.
-    let mut skip_quiets = false;
-
     loop {
         let mv = picker.next(board);
         if mv == NO_MOVE { break; }
@@ -2591,10 +2585,6 @@ fn negamax(
         // Check if capture BEFORE making the move
         let is_cap = board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT;
         let is_promo = is_promotion(mv);
-
-        if skip_quiets && !is_cap && !is_promo {
-            continue;
-        }
 
         // SEE capture pruning: at shallow depths, prune captures that lose material
         if is_cap && ply > 0 && !in_check && depth <= tp(&SEE_CAP_DEPTH)
@@ -2798,7 +2788,6 @@ fn negamax(
             let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
             if move_count > lmp_limit {
                 info.stats.lmp_prunes += 1;
-                skip_quiets = true;
                 continue;
             }
         }
