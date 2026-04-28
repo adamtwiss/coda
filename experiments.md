@@ -6647,3 +6647,88 @@ CSVs at `/tmp/sf_arbitrated_losses.csv` and `/tmp/sf_arbitrated_wins.csv`.
 Tooling for next phase: `scripts/blunder_ablation.py` (clean-hash +
 feature ablations) and `scripts/probe_candidate_depth.py` (D1/D2/D3
 triage) ready to run on the candidates JSONLs.
+
+## 2026-04-28 — Clean-hash triage on 45 moderate-stepped candidates
+
+Ran `blunder_ablation.py --abl baseline --depth 14` on the 45
+moderate-stepped candidates from the rivals losses subset.
+"Baseline" = fresh ./coda subprocess, `ucinewgame` to clear TT/
+history, fixed depth 14 — i.e. clean-hash test.
+
+**Result distribution:**
+
+| Coda's clean-hash bestmove vs game move | N | % |
+|---|---:|---:|
+| Matches SF's bestmove | 7 | 15.6% |
+| Matches the move played in-game | 1 | 2.2% |
+| Picks something else | 37 | 82.2% |
+
+**Headline:** **44/45 (97.8%)** of moderate-stepped pruning
+candidates produce a different bestmove on a clean hash. Only 1
+candidate reproduces the played move under clean conditions.
+
+**Per-opponent recovery (matches_sf / candidates):**
+
+| Opponent | matches_sf / N |
+|---|---:|
+| Arasan | 3/8 (38%) |
+| Horsie | 2/7 (29%) |
+| Clarity | 1/6 (17%) |
+| Velvet | 1/6 (17%) |
+| PZChessBot | 0/5 (0%) |
+| Seer | 0/4 (0%) |
+| Tarnished | 0/9 (0%) |
+
+**Tarnished is the most striking outlier** — 0/9 candidates recover
+to SF-best on a clean hash at depth 14. Consistent with the per-
+opponent loss-class reading: Tarnished outplays us positionally,
+not via depth-mismatches our clean search reproduces.
+
+**Important caveats — DO NOT over-read this finding.**
+
+1. **Depth-14 vs in-game depth.** The played move was made at
+   TC-allocated time, possibly reaching different depth than 14.
+   Coda's depth-14 clean-hash bestmove differing from the played
+   move could be:
+   - State-pollution at game-time (real bug, the right diagnosis),
+     OR
+   - Just "depth 14 sees less than the depth Coda played at, so
+     the choice differs." Neither Coda choice may be SF-best;
+     they're both finite-depth artifacts.
+
+2. **TT carry-over isn't always pollution.** The TT warm from
+   prior moves may have contained useful eval/move-ordering info
+   — clean hash loses that info. Differing from played isn't
+   automatically "the played move was a bug."
+
+3. **15.6% match SF best at clean hash + depth 14** is the
+   conservative reading: "without any cumulative TT, Coda finds
+   the SF-best move on at least 16% of these positions, which
+   it didn't find at game time." That's the floor for "fixable
+   via reducing TT pollution / ordering noise."
+
+**Follow-up probes needed before drawing strong conclusions:**
+
+1. **SF-eval the clean-hash choices.** Run SF on the position AFTER
+   Coda's clean-hash bestmove. If SF says Coda's clean choice is
+   ≥ -50cp better than the played move, that's a real recovery;
+   otherwise the alternative is just "different but also bad."
+
+2. **Probe at higher depth (16, 18, 20).** If Coda still picks the
+   same clean-hash bestmove at higher depth, the choice is robust
+   (not just a depth-14 artifact). If Coda converges to SF-best
+   at higher depth, the gap is depth-bound — i.e. "depth deficit
+   at game-time" rather than state-pollution.
+
+3. **Run D2 (Coda's score for SF-best vs played).** If Coda scores
+   SF-best higher than the played move at clean hash, ordering bug.
+   If Coda scores SF-best lower, eval-or-depth bug. This is the
+   `probe_candidate_depth.py` D2 diagnostic.
+
+Tarnished's 0/9 result strongly suggests his exploits aren't
+depth-deficits — likely an eval-quality differential we can't
+recover via search-only changes. Lever for Tarnished is training-
+side. Other opponents' candidates (Arasan, Horsie, Clarity, Velvet)
+have non-zero recovery — investigation worth running for those.
+
+Output CSV: `/tmp/abl_moderate_baseline.csv`.
