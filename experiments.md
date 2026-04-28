@@ -6337,6 +6337,46 @@ is 22 Elo.** Multiple working hypotheses:
 - Accept revert of LMP changes for C8FIXED deploy (loses #810's
   +1.86 but gains #854's +14 — net positive)
 
+## 2026-04-28 — TT changes LTC scaling pair (#856/#857)
+
+Adam suggested re-running the slow-grind STC TT SPRTs at 40+0.4 LTC
+to test his hypothesis that TT-pressure mechanisms scale with TC.
+
+| SPRT | Branch | TC | Status |
+|------|--------|---:|--------|
+| #841 | tt-threshold-loose-only (-3 → -4) | 10+0.1 | running, +0.7 trending H1 / 113K |
+| #856 | tt-threshold-loose-only | 40+0.4 | **H0 -1.0 ±2.0 / 11.6K** ✗ |
+| #842 | tt-age-weight-8 (×4 → ×8) | 10+0.1 | running, +0.9 trending H1 / 108K |
+| #857 | tt-age-weight-8 | 40+0.4 | **H1 +1.6 ±2.5 / 7.3K** ✓ |
+
+**The two TT changes have different TC profiles:**
+
+- **tt-age-weight-8** scales positively at LTC: STC ~+0.9, LTC +1.6
+  (~2× scaling factor). Confirms Adam's hypothesis for this change.
+- **tt-threshold-loose-only** has INVERTED direction at LTC: STC
+  +0.7 trending H1, LTC -1.0 H0. The looser threshold helps when
+  TT working set is small (more recent-info-wins decisions matter)
+  but hurts when working set grows at long TC (excess churn evicts
+  useful entries).
+
+**Merge decisions:**
+- **tt-age-weight-8 → MERGE** when #842 STC formally H1's. Both TCs
+  agree; LTC the larger effect; deployment-relevant.
+- **tt-threshold-loose-only → DROP** regardless of #841's eventual
+  STC verdict. LTC alt evidence shows it's a deployment regression.
+  Adam's policy: long-running #841 left running at throughput 25,
+  but result will be ignored for merge decision.
+
+**General lesson:** STC SPRT can both UNDER-measure and INVERT the
+sign of LTC effects. The previous `feedback_sprt_blind_to_long_game_effects.md`
+captured the under-measurement case (effects only manifest at LTC).
+This case is the inversion variant: STC POSITIVE → LTC NEGATIVE.
+TT-pressure mechanisms specifically should be validated at LTC
+before merge — not because LTC is "more accurate" universally,
+but because TT-pressure-bound effects can REVERSE direction. To be
+captured in a memory entry as an extension to the existing
+sprt-blind-to-long-game-effects feedback.
+
 Combined effect (+13.9) is less than the arithmetic sum of individual
 reverts (+25 + +18 = +43), confirming **signal overlap**: tune-820
 calibrated against the LMP-merged trunk shape; reverting only one
