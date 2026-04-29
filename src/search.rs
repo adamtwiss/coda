@@ -190,6 +190,11 @@ tunables!(
     (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
     (LMR_THREAT_DIV, 4, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
+    // Reckless anti-cascade LMR (lmr_crossengine §3.5): when parent's reduction
+    // exceeds this child's by MARGIN plies at non-PV, add BONUS plies. Reckless
+    // uses 485/128 ≈ 4 ply margin, 129/128 ≈ 1 ply bonus.
+    (LMR_ANTI_CASCADE_MARGIN, 4, 1, 8, 1.0),
+    (LMR_ANTI_CASCADE_BONUS, 1, 0, 3, 0.5),
     (FUT_THREATS_MARGIN, 21, 0, 200, 10.0),
     (DISCOVERED_ATTACK_BONUS, 6105, 0, 30000, 1500.0),
     // T1.4: quiet-slider move that completes a battery — lands on a square
@@ -2999,6 +3004,18 @@ fn negamax(
                 // many attackers on our king zone. Parent-node signal reused
                 // from NMP/ProbCut gates — tactical king positions need depth.
                 reduction -= king_zone_pressure / tp(&LMR_KING_PRESSURE_DIV);
+
+                // Reckless anti-cascade reduction guard: when parent was
+                // reduced significantly more than this child's computed
+                // reduction, propagate the parent's "this branch is
+                // unimportant" signal — bump reduction so cascade is
+                // consistent down ZW lines (lmr_crossengine §3.5).
+                if !is_pv && ply_u >= 1 {
+                    let parent_red = info.reductions[ply_u - 1];
+                    if parent_red > reduction + tp(&LMR_ANTI_CASCADE_MARGIN) {
+                        reduction += tp(&LMR_ANTI_CASCADE_BONUS);
+                    }
+                }
 
                 // Clamp: never extend (negative), never reduce past depth 1
                 if reduction < 0 {
