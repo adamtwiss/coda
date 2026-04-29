@@ -6789,120 +6789,78 @@ that-depth + a few plies more to be safe.
 Output CSVs: `/tmp/abl_moderate_baseline.csv` (clean-hash bestmoves),
 `/tmp/recovery_moderate.csv` (SF-eval'd recovery verdict).
 
-## 2026-04-29 — Per-feature ablation on 45 moderate candidates
+## 2026-04-29 — RETRACTED: per-feature ablation + depth-matched probe (UCI bug)
 
-Adam: "try per feature ablation and look coarsely at what may be
-causing blindspots." Ran `scripts/blunder_ablation.py --depth 14`
-on all 45 moderate-stepped candidates against 12 ablations:
-baseline, NO_NMP, NO_LMP, NO_RFP, NO_FUTILITY, NO_SEE_PRUNE,
-NO_HIST_PRUNE, NO_BAD_NOISY, NO_LMR, NO_PROBCUT, NO_NMP_LMP,
-NO_ALL_PRUNE.
+The per-feature ablation ("45/45 identical bestmoves across all 12
+ablations") and the depth-matched probe ("0/45 differ between
+depth-14 and game-time depth") were BOTH produced with a UCI quit
+bug: scripts sent `uci\n...\ngo depth N\nquit\n` via
+`subprocess.communicate()`, so Coda processed `quit` before the
+search converged and emitted a partial-search bestmove. The
+"identical across all configurations" pattern was the bug
+signature, not a real finding.
 
-**Result: 45/45 candidates produce IDENTICAL bestmoves across all
-12 ablations.** Disabling features does change tree shape (sanity
-check: NO_LMR bench 4.5M vs baseline 875K nodes, +5×; NO_NMP +29%),
-but doesn't change which move Coda picks at root for any of these
-45 positions.
+Fix committed in `0fff4f6` — all three Coda probe scripts
+(`blunder_ablation.py`, `probe_at_game_depth.py`,
+`probe_convergence_depth.py`) rewritten with persistent process +
+`bufsize=1` readline, sending `quit` only after `bestmove` is
+received.
 
-Per-ablation rate (each row identical to baseline):
+Memory entry: `feedback_uci_quit_must_wait_for_bestmove.md`.
 
-| ablation | differs from played | matches SF best |
-|---|---:|---:|
-| baseline | 44/45 (97.8%) | 7/45 (15.6%) |
-| NO_NMP | 44/45 (97.8%) | 7/45 (15.6%) |
-| NO_LMP | 44/45 (97.8%) | 7/45 (15.6%) |
-| ... (all ablations identical) | | |
+## 2026-04-29 — Convergence-depth probe (post-fix): mixed mechanism
 
-**Verdict: the moderate-stepped class is NOT a pruning-blind-spot
-story** — at least not at depth 14. Pruning gates aren't what's
-hiding SF-best on these positions. Even with everything off, Coda
-picks the same moves.
+`scripts/probe_convergence_depth.py` (post-fix) over all 45
+moderate-stepped candidates, depths [14,16,18,20,22,24], cross-
+referenced with each candidate's PGN-parsed played depth.
 
-This refutes the working hypothesis "guards on prunes will close
-this gap" for the moderate-stepped subset. The 8 clean recoveries
-recover because depth 14 already suffices; the 37 non-recoveries
-fail because depth 14 isn't enough — adding more search width
-doesn't help if the depth horizon is the limit.
+**Headline:** 41/45 (91%) converge to SF-best within d24. Only
+4/45 are durable eval-blind spots within depth 24.
 
-**Two follow-up probes needed:**
+**Depth-deficit histogram (probe_d − played_d):**
 
-1. **Depth-matched probing** (Adam's other suggestion): run each
-   candidate at the depth Coda reached at game-time (parseable from
-   PGN `{eval/depth time}` annotations). If Coda still picks the
-   played move at game-time depth, depth wasn't the limit either —
-   the issue is eval/move-ordering at fixed depth. If Coda picks
-   SF-best at game-time depth, depth alone explains the gap (state
-   pollution / TT-warm-trick was needed, not extra plies).
+| Deficit | N | Mechanism |
+|---:|---:|---|
+| ≤ 0 | 9 | TT-state-bound — clean hash at played depth recovers SF-best |
+| +1..+2 | 10 | NPS-bound — small +1-2 ply finds SF-best |
+| +3..+6 | 18 | Ordering / pruning blind spots — needs +3-6 ply |
+| +7..+9 | 4 | Big depth deficit — ordering / search / eval bound |
+| NEVER | 4 | Eval-bound — depth 24 doesn't help |
 
-2. **Higher-depth probe** (e.g. 18, 20): does Coda converge to
-   SF-best given enough depth? If yes, the gap is depth-bound (and
-   recoverable via NPS/EBF improvements). If no, it's eval-bound
-   (training/NNUE direction).
+**Mechanism split:**
 
-Output CSV: `/tmp/abl_moderate_full.csv` (540 rows, all uniform).
-
-## 2026-04-29 — Depth-matched probe: depth isn't the limit either
-
-Ran `scripts/probe_at_game_depth.py` on the 45 moderate-stepped
-candidates, parsing each candidate's played-at depth from the PGN
-`{eval/depth time}` annotation and probing Coda at THAT depth.
-
-Played-depth distribution: median 15, range 9-25.
-- 23 candidates: played at depth > 14 (depth-14 fixed underprobed)
-- 1 candidate: played at depth = 14
-- 21 candidates: played at depth < 14 (depth-14 fixed overprobed)
-
-**Result: 0/45 candidates have a different bestmove at depth-matched
-vs fixed depth-14 probe.** The 8 SF-matches and 1 played-match are
-identical sets across both probes. Coda's clean-hash choice is
-**robust across depth 9-25**.
-
-Combined with the per-feature ablation finding (45/45 same bestmove
-across all 12 ablations), this strongly suggests:
-
-**For the moderate-stepped class, neither pruning nor depth (9-25)
-is the bottleneck.** The 37 non-recoveries fail at any reasonable
-depth, with any pruning configuration. The 8 recoveries succeed at
-any depth ≥ 9.
-
-**Updated mechanism reading:**
-
-- The 30/45 cases where clean choice is WORSE than played per SF
-  (-50cp or worse) are NOT search/pruning failures — they're TT
-  warming working as designed (prior-game search loaded useful
-  info that improved choice quality at the candidate position).
-- The 8 cases where clean choice matches SF-best are positions
-  where game-time TT was actively HARMFUL — pollution made Coda
-  pick worse than a cold start would have. These are the
-  bug-discovery candidates.
-- The played move's badness (the original -50 to -100cp drop) is
-  a static property of the position-with-warm-TT. Without warm-TT,
-  Coda picks something else (often worse), but the SF-correct move
-  is rarely accessible from depth 9-25 alone.
+- **20% (9/45) TT-state-bound.** Clean hash at the played depth
+  alone recovers SF-best. The game-time TT-warm state was actively
+  harmful at the candidate position. TT replacement / aging /
+  collision-tagging work has direct signal on this bucket.
+- **22% (10/45) NPS-bound.** +1-2 ply closes it. Pure NPS gains
+  (cache-residency, SIMD dispatch, training-side matrix shrink)
+  pay here.
+- **40% (18/45) ordering / pruning blind spots.** +3-6 ply. This
+  is the dominant bucket and the highest-leverage frontier:
+  ordering improvements, pruning carve-outs, EBF reduction.
+  Refutes the earlier "pruning isn't the lever" reading from the
+  buggy per-feature ablation.
+- **9% (4/45) big depth deficit.** +7-9 ply. Ordering or search
+  rather than eval per se.
+- **9% (4/45) durable eval-blind spots.** Never converge within
+  d24. 3 of 4 are Seer/Arasan/Tarnished — consistent with Seer
+  being the SELF_BLUNDER outlier (41.9%) in the rivals gauntlet.
 
 **Implication for the rivals 50-Elo target:**
 
-Pruning carve-outs aren't the lever for moderate-stepped exploits.
-The actionable mechanisms for this class are:
+The combined "needs +1 to +6 ply" buckets (62% of moderate-stepped
+candidates) are the addressable frontier. NPS, ordering, and
+pruning improvements all compound on this class. Pure-eval
+improvements address only the 9% durable-blindspot bucket plus
+some unknown share of the +7-9 deficit cases.
 
-1. **TT pollution / replacement bugs** — for the 8 cases where warm
-   TT made Coda pick worse, instrumented investigation of what TT
-   entries were live at the game-time position is the next step.
-   Could surface specific TT bugs.
+**Re-runs to do** with the bug-fixed scripts:
 
-2. **Eval refinement / training** — for the 37 cases where Coda
-   picks something different (often worse) at clean hash, the
-   bottleneck is fundamentally what the static eval / shallow
-   search resolves to at the position. Improving eval quality
-   would shift the resolved value. Search-side carve-outs do not
-   help.
+1. Per-feature ablation on the 22 candidates with deficit ≥ +3
+   (ordering/pruning bucket) — to localize which specific feature
+   is hiding SF-best in that bucket.
+2. Played-depth probe to confirm the 9 deficit-≤-0 cases really
+   are TT-state-bound rather than artifact.
 
-3. **TC / NPS improvements at long TC** — at the depth Coda
-   actually played in-game (median 15), Coda doesn't see SF's
-   refutation. SF needs depth 18 to see it. Closing that 3-ply
-   gap is genuinely an NPS/EBF problem — but pruning gate changes
-   already proven not to help.
-
-The pruning-blind-spot hypothesis is REFUTED for this class.
-Path forward for closing the rivals gap is training (factor net,
-group-lasso, low-LR tail) and TC (deployment-config validation).
+Outputs: `/tmp/convergence_moderate.csv` (45 rows, post-fix).
