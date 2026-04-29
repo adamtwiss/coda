@@ -6994,3 +6994,140 @@ some unknown share of the +7-9 deficit cases.
    are TT-state-bound rather than artifact.
 
 Outputs: `/tmp/convergence_moderate.csv` (45 rows, post-fix).
+
+## 2026-04-29 — Played-depth probe on deficit-≤-0 candidates: TT bucket overstated
+
+Re-ran the deficit-≤-0 probe (item 2 above) with
+`scripts/ablation_at_played_depth.py --ablations baseline`
+(fresh process per candidate, played_depth, clean hash). 7
+deficit-≤-0 candidates (not 9 — earlier headline rounded; data
+audit gives 7 deficit ≤ 0 in the 45-candidate set).
+
+Results (excluding 2 sf=blunder arbitration anomalies — idx 19, 28):
+
+| idx | conv_d | played_d | def | clean@pd | verdict |
+|---:|---:|---:|---:|---|---|
+| 24 | 14 | 25 | -11 | SF-best ✓ | TT-state-bound |
+| 43 | 14 | 15 | -1 | SF-best ✓ | TT-state-bound |
+| 44 | 14 | 14 | 0 | SF-best ✓ | TT-state-bound |
+| 10 | 14 | 15 | -1 | blunder ✗ | non-monotonic depth artifact |
+| 16 | 18 | 21 | -3 | blunder ✗ | non-monotonic depth artifact |
+
+**Confirmed TT-state-bound: 3 of 5 distinct cases (~7% of 45),
+not 20%.** The other 2 are non-monotonic depth artifacts —
+probe stops at first SF-best match assuming monotonic recovery,
+but at played_depth (1-3 plies deeper) Coda picks the blunder.
+
+**Refined bucket (overrides convergence-probe headline):**
+
+| Bucket | N | % | Mechanism |
+|---:|---:|---:|---|
+| TT-state-bound | 3 | 7% | Clean hash at played_depth recovers |
+| Non-monotonic artifact | 2 | 4% | Probe over-counted by stopping early |
+| NPS-bound (+1..+2) | 10 | 22% | Small extra search |
+| Ordering/pruning (+3..+6) | 18 | 40% | DOMINANT bucket |
+| Big depth deficit (+7..+9) | 4 | 9% | Search-bound |
+| Eval-bound (NEVER) | 4 | 9% | Depth 24 doesn't help |
+| Other / arbitration | 4 | 9% | Mixed |
+
+TT replacement work has lower leverage than first reported.
+Methodology fix: future convergence probes should run all
+depths (not stop at first match).
+
+Outputs: `/tmp/deficit_le_zero_baseline.csv`.
+
+## 2026-04-29 — Set arithmetic on +3-6 deficit recovery: zero LMR-exclusive
+
+Set arithmetic on `/tmp/abl_ordering_pd0.csv` (18 candidates ×
+12 ablations + baseline). Question: which class of pruning
+each candidate is over-pruned by, and how much overlap.
+
+**Class-exclusive recovery sets — all empty:**
+
+- LMR-only: ∅
+- FUT/RFP-only: ∅
+- SEE/BAD_NOISY-only: ∅
+- NMP/PROBCUT-only: ∅
+- LMP/HIST_PRUNE-only: ∅
+
+Every candidate that NO_LMR recovers is ALSO recovered by at
+least one OTHER class. The over-pruning is distributed.
+
+**Recovery breadth distribution:**
+
+| Breadth | N | Reading |
+|---:|---:|---|
+| 5-7 ablations recover | 7 | Heavily over-pruned (multiple classes) |
+| 2-4 ablations recover | 6 | Moderately over-pruned |
+| 0 ablations recover | 5 | NOT pruning-bound (ordering/NPS/eval) |
+
+The 5 zero-breadth cases (idx 2, 8, 12, 15, 17) are mis-filed
+as "ordering/pruning" — they're ordering or NPS-bound at played
+depth. No single pruning carve-out helps them.
+
+**Strategic implications:**
+
+1. **Single-feature carve-outs structurally cap at ~50%
+   coverage** of the +3-6 bucket. Explains why the 4 LMR
+   carve-outs (#865 H0 -8, #866-868 marginal/H0) aren't
+   producing strong H1 signals.
+2. **Multi-feature carve-outs on a shared trigger** are the
+   higher-leverage design. Threat-aware approach should loosen
+   NMP, RFP, FUT, LMR simultaneously when major-threat creation
+   fires, not just LMR.
+3. **NMP cut-node gate (#864) trending H1 +1-2** is consistent
+   with NULL-class recovering 44%. NMP and LMR carve-outs are
+   roughly half the leverage of each other on this set.
+4. **5 of 18 cases (28%) need ordering or NPS, not pruning.**
+   Pos² history, threat-aware ordering, or move-count tightening
+   address these.
+5. **NO_ALL_PRUNE recovers 11/18 (61%) vs NO_LMR's 50%.** Upper
+   bound on additional carve-outs beyond LMR is just +2 cases.
+   Reinforces multi-feature design over single-feature stacking.
+
+## 2026-04-29 — #864 NMP cut_node gate merged as directional positive
+
+Stopped via upper-CI-below-elo1 rule at 59214g: +0.5 ±1.2,
+LLR -0.67. Upper bound 2.85 < elo1=3 — H1 statistically dead at
+default tunables. **Merged as directional positive**, third
+attempt across trunk states (#772 H0 -2.3, #807 H0 -0.4, #864
+±0).
+
+Per CLAUDE.md §Guard/Safety-Gate Sub-Pattern, ~+1 raw without
+retune is often +3-5 with retune. Queued tune #870 (focused
+yin-yang retune on adjacent NMP/RFP/FUT/LMP cluster, 11 params,
+2500 iters) on the post-merge trunk.
+
+Diagnostic question for #870: when NMP gates more strictly
+(`cut_node` gate), does NMP itself loosen to recover (lower R,
+lower verify, wider eval band) OR does adjacent shallow-depth
+pruning compensate (RFP/LMP get more aggressive)? Per
+`feedback_spsa_as_feature_utility_diagnostic.md`, the direction
+of motion is the answer.
+
+Merge commit: f58a690. Bench: 966720.
+
+## 2026-04-29 — LMR carve-out cluster (5 SPRTs): single-feature cap confirmed empirically
+
+Five SPRTs targeting the moderate-stepped LMR-blindspot class:
+
+| ID | Branch | Result |
+|---:|---|---|
+| #862 | experiment/lmr-ablation | H0 **-71.6** ✗ (LMR is load-bearing +72 Elo) |
+| #865 | experiment/lmr-pv-neg-reduction | H0 **-8.0** ✗ |
+| #868 | experiment/lmr-threat-aware-major | H0 **-0.8** ✗ at 36818g |
+| #866 | experiment/lmr-hindsight-extend | running, marginal (~+0.3 LLR -0.44) |
+| #867 | experiment/lmr-refutation-bonus | running, marginal (~+0.4 LLR -0.22) |
+
+**Reading:** #862 confirms LMR is load-bearing. #865 was a clear
+blunder. The interesting result is #868: a v9-leveraged Coda-
+original threat-aware design — directly motivated by the per-
+feature ablation showing NO_LMR recovers 50% of the +3-6 bucket.
+H0'd at -0.8.
+
+**Cross-validates the set-arithmetic finding:** zero LMR-
+exclusive cases means single-feature LMR carve-outs cap at 50%
+coverage and can't produce strong SPRT signals at 10+0.1.
+4 attempts all bracketed in the [-1, +1] band. Multi-feature
+carve-out (LMR + NMP + RFP + FUT on shared trigger) is the
+next design.
