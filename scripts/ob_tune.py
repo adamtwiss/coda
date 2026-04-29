@@ -81,9 +81,9 @@ def submit_tune(args):
         'spsa_reporting_type':    'BATCHED',
         'spsa_distribution_type': 'SINGLE',
         'spsa_inputs':      spsa_inputs,
-        'spsa_alpha':       '0.602',
-        'spsa_gamma':       '0.101',
-        'spsa_A_ratio':     '0.1',
+        'spsa_alpha':       str(args.alpha),
+        'spsa_gamma':       str(args.gamma),
+        'spsa_A_ratio':     str(args.a_ratio),
         'spsa_iterations':  str(args.iterations),
         'spsa_pairs_per':   str(args.pairs_per),
 
@@ -138,6 +138,9 @@ def main():
     p.add_argument('--priority', type=int, default=0, help='Priority (default: 0)')
     p.add_argument('--throughput', type=int, default=100, help='Throughput (default: 100)')
     p.add_argument('--scale-nps', type=int, default=None, help='Reference NPS for TC scaling. Defaults to 250000 (v9, current main). Use --scale-nps 500000 for v5-only branches.')
+    p.add_argument('--alpha', type=float, default=0.602, help='SPSA alpha (step-size decay exponent, default 0.602)')
+    p.add_argument('--gamma', type=float, default=0.101, help='SPSA gamma (perturbation decay exponent, default 0.101). Reckless uses 0.05.')
+    p.add_argument('--a-ratio', type=float, default=0.1, help='SPSA A ratio (default 0.1)')
     p.add_argument('--repo', default='https://github.com/adamtwiss/coda', help='GitHub repo URL')
     p.add_argument('--server', default=SERVER, help=f'Server (default: {SERVER})')
     p.add_argument('--username', default=USERNAME, help='Username')
