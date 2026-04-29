@@ -2027,8 +2027,13 @@ fn negamax(
                     // promotions). Write-side (beta-cutoff bonuses) uses
                     // moved_piece_stack; the old asymmetry meant malus on promotion
                     // moves landed in the queen/rook bin where reads never look.
+                    // Strict no-write-after-stop contract (timeout audit 2026-04-29):
+                    // history table writes after info.stop fires leak partial-iteration
+                    // signal into next-iteration ordering.
                     let stack_len = board.undo_stack.len();
-                    if score_above_beta && stack_len >= 2 && ply_u >= 2 {
+                    if score_above_beta && stack_len >= 2 && ply_u >= 2
+                        && !info.stop.load(Ordering::Relaxed)
+                    {
                         let opp_undo = &board.undo_stack[stack_len - 1];
                         let our_undo = &board.undo_stack[stack_len - 2];
                         if opp_undo.mv != NO_MOVE && opp_undo.captured == NO_PIECE_TYPE
@@ -2072,7 +2077,9 @@ fn negamax(
                 if alpha >= beta && halfmove_ok {
                     if tt_move != NO_MOVE {
                         info.stats.tt_cutoffs += 1;
-                        // Defence-in-depth: validate tt_move (see note at first cutoff site).
+                        // Full validation for PV install: lichess-bot RESIGNS a winning
+                        // game if the engine ever sends an illegal PV. Costlier than the
+                        // history gate but load-bearing for deployment correctness.
                         if ply_u <= MAX_PLY
                             && crate::movepicker::is_pseudo_legal(board, tt_move)
                             && board.is_legal(tt_move, board.pinned(), board.checkers())
@@ -2083,30 +2090,46 @@ fn negamax(
                             info.pv_len[ply_u] = 0;
                         }
 
-                        // History bonus for TT cutoff: reinforce move ordering
-                        let tt_piece = board.piece_at(move_from(tt_move));
-                        let tt_is_cap = board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
-                            || move_flags(tt_move) == FLAG_EN_PASSANT;
-                        if !tt_is_cap && tt_piece != NO_PIECE {
-                            let bonus = history_bonus(depth);
-                            History::update_history(
-                                info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
-                                bonus,
-                            );
-                        } else if tt_is_cap && tt_piece != NO_PIECE {
-                            let bonus = capture_history_bonus(depth);
-                            let cpt_pt = board.piece_type_at(move_to(tt_move));
-                            let ct = if move_flags(tt_move) == FLAG_EN_PASSANT {
-                                captured_type(PAWN)
-                            } else if cpt_pt != NO_PIECE_TYPE {
-                                captured_type(cpt_pt)
+                        // History bonus for TT cutoff: reinforce move ordering. Two
+                        // correctness gates added by audit punch #3 (2026-04-29):
+                        //   (a) cheap from-square ours check — catches the
+                        //       jumping-pawns hash-collision class (from-square empty
+                        //       or has opponent's piece) without the cost of full
+                        //       legality. History tables are gravity-decay-robust so
+                        //       full validation is unnecessary here.
+                        //   (b) stop guard — strict no-write-after-stop contract from
+                        //       the timeout audit.
+                        let tt_from = move_from(tt_move);
+                        let tt_piece = board.piece_at(tt_from);
+                        let tt_from_ours =
+                            (board.colors[board.side_to_move as usize] >> tt_from) & 1 == 1;
+                        if tt_piece != NO_PIECE
+                            && tt_from_ours
+                            && !info.stop.load(Ordering::Relaxed)
+                        {
+                            let tt_is_cap = board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
+                                || move_flags(tt_move) == FLAG_EN_PASSANT;
+                            if !tt_is_cap {
+                                let bonus = history_bonus(depth);
+                                History::update_history(
+                                    info.history.main_entry(tt_from, move_to(tt_move), enemy_attacks),
+                                    bonus,
+                                );
                             } else {
-                                0 // empty
-                            };
-                            History::update_cont_history(
-                                &mut info.history.capture[go_piece(tt_piece)][move_to(tt_move) as usize][ct],
-                                bonus,
-                            );
+                                let bonus = capture_history_bonus(depth);
+                                let cpt_pt = board.piece_type_at(move_to(tt_move));
+                                let ct = if move_flags(tt_move) == FLAG_EN_PASSANT {
+                                    captured_type(PAWN)
+                                } else if cpt_pt != NO_PIECE_TYPE {
+                                    captured_type(cpt_pt)
+                                } else {
+                                    0 // empty
+                                };
+                                History::update_cont_history(
+                                    &mut info.history.capture[go_piece(tt_piece)][move_to(tt_move) as usize][ct],
+                                    bonus,
+                                );
+                            }
                         }
                     } else if ply_u <= MAX_PLY {
                         info.pv_len[ply_u] = 0;
