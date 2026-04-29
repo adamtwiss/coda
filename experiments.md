@@ -6811,6 +6811,72 @@ received.
 
 Memory entry: `feedback_uci_quit_must_wait_for_bestmove.md`.
 
+## 2026-04-29 — Per-feature ablation at played-depth on the +3-+6 ply bucket
+
+`scripts/ablation_at_played_depth.py` over the 19 candidates with
+deficit ≥ +3 (the dominant ordering/pruning blind-spot bucket from
+the convergence-depth probe). Each ablation runs at the candidate's
+played_depth — no extra depth, just feature toggles.
+
+| ablation | matches_sf | matches_played | other |
+|---|---:|---:|---:|
+| **baseline** | **1/19 (5%)** | 10/19 | 8 |
+| NO_NMP | 6/19 (32%) | 7/19 | 6 |
+| NO_LMP | 4/19 (21%) | 10/19 | 5 |
+| NO_RFP | 8/19 (42%) | 5/19 | 6 |
+| NO_FUTILITY | 7/19 (37%) | 6/19 | 6 |
+| NO_SEE_PRUNE | 7/19 (37%) | 10/19 | 2 |
+| NO_HIST_PRUNE | 5/19 (26%) | 9/19 | 5 |
+| NO_BAD_NOISY | 7/19 (37%) | 8/19 | 4 |
+| **NO_LMR** | **10/19 (53%)** | 3/19 | 6 |
+| NO_PROBCUT | 6/19 (32%) | 8/19 | 5 |
+| NO_NMP_LMP | 6/19 (32%) | 8/19 | 5 |
+| NO_ALL_PRUNE | 11/19 (58%) | 4/19 | 4 |
+
+**Headline: LMR is the dominant choke point.** Disabling LMR alone
+recovers 10/19 candidates at played depth — almost as much as
+disabling ALL pruning (11/19). NO_LMR contributes ~all of the
+NO_ALL_PRUNE recovery; the other 11 features stack to only +1.
+
+**Mechanism reading.** For these candidates SF-best is a quiet
+move that's late in the move list (poor ordering rank). LMR
+reduces its effective depth, so vanilla search doesn't see it
+until +3-+6 plies above played-depth. Disabling LMR gives that
+move full depth at played-depth and Coda finds it.
+
+**Secondary signals.** RFP / FUTILITY / SEE_PRUNE / BAD_NOISY at
+~37-42% recovery each — non-trivial but each is a fraction of
+LMR's contribution. Probably a partial overlap with LMR (when
+the late move escapes LMR-reduction it gets pruned by another
+gate; turning off either lets it through).
+
+**LMP is curiously weak** at 21% and KEEPS the played move at
+10/19 (same as baseline). LMP isn't hiding SF-best in this
+bucket — it's the ordering-rank-late mechanism that LMR amplifies.
+
+**Direct implications:**
+
+1. **LMR carve-outs are high-leverage** for the moderate-stepped
+   class. Any signal that flags "this move is tactically critical
+   even if late in the list" should reduce or skip LMR. Threat-
+   feature-aware LMR gates (v9 has the inputs natively) are the
+   leveraged frontier per
+   `project_v9_threat_advantage_pattern.md`.
+2. **Move-ordering improvements compound with LMR fixes.** If
+   SF-best moves up the order, LMR bites less. Cont-hist /
+   capture-history / 4D main hist refinements all pay.
+3. **Re-search aggressiveness on LMR fail-high** is worth
+   retesting — maybe widen the re-search depth more.
+4. **LMP isn't the lever** for this class. De-prioritise LMP
+   carve-outs as a moderate-stepped fix.
+
+Caveat: ablation reveals the proximate gate, but a cleaner
+follow-up would be **LMR-specific reduction-amount probes** —
+disable LMR's reduction by 1, 2, 3 plies and see at what point
+the recovery saturates. Locates the magnitude of overreduction.
+
+Outputs: `/tmp/abl_ordering_pd0.csv` (228 rows: 19 × 12).
+
 ## 2026-04-29 — Convergence-depth probe (post-fix): mixed mechanism
 
 `scripts/probe_convergence_depth.py` (post-fix) over all 45
