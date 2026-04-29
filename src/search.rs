@@ -190,7 +190,7 @@ tunables!(
     (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
     (LMR_THREAT_DIV, 4, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
-    (FUT_THREATS_MARGIN, 21, 0, 200, 10.0),
+    (FUT_THREATS_MARGIN, 0, 0, 200, 10.0),
     (DISCOVERED_ATTACK_BONUS, 6105, 0, 30000, 1500.0),
     // T1.4: quiet-slider move that completes a battery — lands on a square
     // where a friendly slider stands between us and an enemy piece along
