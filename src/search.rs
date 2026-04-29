@@ -258,7 +258,9 @@ fn tp(param: &AtomicI32) -> i32 {
 pub static FEAT_NMP: AtomicBool = AtomicBool::new(true);
 pub static FEAT_RFP: AtomicBool = AtomicBool::new(true);
 pub static FEAT_PROBCUT: AtomicBool = AtomicBool::new(true); // re-enabled after fixing missing qsearch filter, SEE threshold, and excluded_move guard
-pub static FEAT_LMR: AtomicBool = AtomicBool::new(true);
+// LMR ablation experiment — default to false to measure full LMR cost.
+// NOT FOR MERGE — data point only. See experiments.md 2026-04-29.
+pub static FEAT_LMR: AtomicBool = AtomicBool::new(false);
 pub static FEAT_LMP: AtomicBool = AtomicBool::new(true);
 pub static FEAT_FUTILITY: AtomicBool = AtomicBool::new(true);
 pub static FEAT_SEE_PRUNE: AtomicBool = AtomicBool::new(true); // confirmed: -17 Elo without (clean CPU retest)
