@@ -88,39 +88,63 @@ def walk_game_depths(game) -> dict[int, int]:
 
 
 def run_coda(coda_bin: Path, fen: str, depth: int) -> tuple[str | None, int | None]:
-    """Run ./coda with ucinewgame at fixed depth. Returns (bestmove, score_cp)."""
-    cmds = [
-        "uci",
-        "setoption name Hash value 64",
-        "ucinewgame",
-        f"position fen {fen}",
-        f"go depth {depth}",
-        "quit",
-    ]
+    """Run ./coda with ucinewgame at fixed depth. Returns (bestmove, score_cp).
+
+    CRITICAL: read 'bestmove' before sending 'quit'. Otherwise Coda exits
+    before search completes. Burnt 2026-04-29.
+    """
     proc = subprocess.Popen(
         [str(coda_bin.resolve())], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL, text=True,
+        stderr=subprocess.DEVNULL, text=True, bufsize=1,
     )
+    def send(c):
+        proc.stdin.write(c + "\n")
+        proc.stdin.flush()
+    def read_until(token, max_lines=200000):
+        for _ in range(max_lines):
+            line = proc.stdout.readline()
+            if not line:
+                return None
+            if token in line:
+                return line
+        return None
     try:
-        out, _ = proc.communicate(input="\n".join(cmds) + "\n", timeout=300)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+        send("uci")
+        read_until("uciok")
+        send("setoption name Hash value 64")
+        send("isready")
+        read_until("readyok")
+        send("ucinewgame")
+        send(f"position fen {fen}")
+        send(f"go depth {depth}")
+        bestmove = None
+        last_score = None
+        for _ in range(200000):
+            line = proc.stdout.readline()
+            if not line:
+                break
+            line = line.strip()
+            if line.startswith("info ") and "score" in line:
+                m = re.search(r"score cp (-?\d+)", line)
+                if m:
+                    last_score = int(m.group(1))
+                m = re.search(r"score mate (-?\d+)", line)
+                if m:
+                    mn = int(m.group(1))
+                    last_score = (30000 - abs(mn)) * (1 if mn > 0 else -1)
+            elif line.startswith("bestmove "):
+                bestmove = line.split()[1]
+                break
+        send("quit")
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        return bestmove, last_score
+    except Exception:
+        try: proc.kill()
+        except Exception: pass
         return None, None
-    bestmove = None
-    last_score = None
-    for line in out.splitlines():
-        m = re.match(r"^bestmove (\S+)", line)
-        if m:
-            bestmove = m.group(1)
-            break
-        m = re.match(r"^info .* score cp (-?\d+)", line)
-        if m:
-            last_score = int(m.group(1))
-        m = re.match(r"^info .* score mate (-?\d+)", line)
-        if m:
-            mn = int(m.group(1))
-            last_score = (30000 - abs(mn)) * (1 if mn > 0 else -1)
-    return bestmove, last_score
 
 
 def main():
