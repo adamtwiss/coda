@@ -113,6 +113,11 @@ tunables!(
     (BAD_NOISY_MARGIN, 71, 30, 150, 6.0),
     (PROBCUT_MARGIN, 199, 80, 300, 11.0),
     (HINDSIGHT_THRESH, 148, 50, 400, 17.5),
+    // Killer/refutation LMR exemption — when main history alone is high
+    // enough to mark a move as a refutation, reduce one extra ply.
+    // See docs/lmr_crossengine_2026-04-29.md §4.3.
+    (LMR_REFUTATION_THRESH, 6000, 3000, 12000, 500.0),
+    (LMR_REFUTATION_BONUS, 1, 0, 2, 0.5),
     (UNSTABLE_THRESH, 206, 50, 500, 22.5),
     (SEE_MATERIAL_SCALE, 237, 30, 300, 13.5),
     (QS_DELTA_MARGIN, 357, 100, 500, 20.0),
@@ -2975,6 +2980,17 @@ fn negamax(
                 }
                 let hist_adj = hist_score / tp(&LMR_HIST_DIV);
                 reduction -= hist_adj;
+
+                // Killer/refutation exemption (Berserk / Viridithas / Caissa / Horsie pattern).
+                // When main history alone (no cont/pawn weighting) is high enough to mark this
+                // move as a "refutation" — a high-signal move that's beaten alternatives in
+                // similar contexts — reduce one extra ply. Threshold-on-main captures the
+                // "high-signal-but-not-TT-move" class without a separate killer table.
+                // See docs/lmr_crossengine_2026-04-29.md §4.3.
+                let main_only = info.history.main_score(from, to, enemy_attacks);
+                if main_only >= tp(&LMR_REFUTATION_THRESH) {
+                    reduction -= tp(&LMR_REFUTATION_BONUS);
+                }
 
                 // Complexity-aware LMR: reduce less when correction history
                 // magnitude is high (uncertain eval → search deeper).
