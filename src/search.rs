@@ -190,6 +190,12 @@ tunables!(
     (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
     (LMR_THREAT_DIV, 4, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
+    // Threat-aware LMR (v9 only): reduce less when this move creates ≥ MIN
+    // new threats against opp K/Q/R (queries threat_stack delta — catches
+    // direct attacks, x-rays, and discovered attacks). Coda-original
+    // mechanism leveraging v9's attacker→victim threat encoding.
+    (LMR_THREAT_MAJOR_MIN, 1, 1, 3, 0.5),
+    (LMR_THREAT_MAJOR_BONUS, 1, 0, 2, 0.5),
     (FUT_THREATS_MARGIN, 21, 0, 200, 10.0),
     (DISCOVERED_ATTACK_BONUS, 6105, 0, 30000, 1500.0),
     // T1.4: quiet-slider move that completes a battery — lands on a square
@@ -2998,6 +3004,37 @@ fn negamax(
                 // many attackers on our king zone. Parent-node signal reused
                 // from NMP/ProbCut gates — tactical king positions need depth.
                 reduction -= king_zone_pressure / tp(&LMR_KING_PRESSURE_DIV);
+
+                // Threat-aware LMR (v9 only): reduce less when this move CREATES
+                // a new threat against opponent's K/Q/R. Uses the threat_stack's
+                // post-make_move delta — already computed, so this is a few cheap
+                // u32 reads per delta entry. Catches direct attacks AND x-rays AND
+                // discovered attacks, all encoded in threat_deltas.
+                //
+                // This is a Coda-original mechanism — no other engine has the
+                // attacker→victim delta encoding to do this cheaply. Targets the
+                // moderate-stepped LMR-blindspot class identified in the
+                // 2026-04-29 ablation work (53% of +3-+6 ply deficit candidates).
+                if info.threat_stack.active {
+                    let opp = board.side_to_move;
+                    let us_color = crate::types::flip_color(opp);
+                    let opp_k = crate::threats::colored_piece(opp, KING) as u8;
+                    let opp_q = crate::threats::colored_piece(opp, QUEEN) as u8;
+                    let opp_r = crate::threats::colored_piece(opp, ROOK) as u8;
+                    let mut new_major_threats: i32 = 0;
+                    for d in info.threat_stack.current().delta.as_slice() {
+                        if !d.add() { continue; }
+                        let att_color = d.attacker_cp() / 6;
+                        if att_color != us_color as u8 { continue; }
+                        let v = d.victim_cp();
+                        if v == opp_k || v == opp_q || v == opp_r {
+                            new_major_threats += 1;
+                        }
+                    }
+                    if new_major_threats >= tp(&LMR_THREAT_MAJOR_MIN) {
+                        reduction -= tp(&LMR_THREAT_MAJOR_BONUS);
+                    }
+                }
 
                 // Clamp: never extend (negative), never reduce past depth 1
                 if reduction < 0 {
