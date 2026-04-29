@@ -190,6 +190,13 @@ tunables!(
     (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
     (LMR_THREAT_DIV, 4, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
+    // TT-bound informs LMR (lmr_crossengine §3.6): when TT bound is UPPER and
+    // tt_score ≤ alpha, the position's likely below alpha — bump reduction
+    // by FAIL_LOW_BONUS plies. When TT depth is much shallower than current
+    // depth (gap > SHALLOW_GAP), the entry is less reliable — bump by SHALLOW_BONUS.
+    (LMR_TT_FAIL_LOW_BONUS, 1, 0, 3, 0.5),
+    (LMR_TT_SHALLOW_GAP, 4, 1, 12, 1.5),
+    (LMR_TT_SHALLOW_BONUS, 1, 0, 3, 0.5),
     (FUT_THREATS_MARGIN, 21, 0, 200, 10.0),
     (DISCOVERED_ATTACK_BONUS, 6105, 0, 30000, 1500.0),
     // T1.4: quiet-slider move that completes a battery — lands on a square
@@ -2999,6 +3006,22 @@ fn negamax(
                 // many attackers on our king zone. Parent-node signal reused
                 // from NMP/ProbCut gates — tactical king positions need depth.
                 reduction -= king_zone_pressure / tp(&LMR_KING_PRESSURE_DIV);
+
+                // TT-bound informs LMR (lmr_crossengine §3.6): TT entries
+                // already encode "this position scored X with bound Y at
+                // depth Z." If the TT thinks this branch is below alpha,
+                // it likely is — reduce more. If TT depth is much shallower
+                // than current depth, the entry is less reliable — also
+                // reduce more (PlentyChess + Reckless pattern).
+                if tt_hit {
+                    let tt_score_lmr = score_from_tt(tt_entry.score, ply);
+                    if tt_entry.flag == TT_FLAG_UPPER && tt_score_lmr <= alpha {
+                        reduction += tp(&LMR_TT_FAIL_LOW_BONUS);
+                    }
+                    if (tt_entry.depth as i32) < depth - tp(&LMR_TT_SHALLOW_GAP) {
+                        reduction += tp(&LMR_TT_SHALLOW_BONUS);
+                    }
+                }
 
                 // Clamp: never extend (negative), never reduce past depth 1
                 if reduction < 0 {
