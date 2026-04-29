@@ -6309,7 +6309,23 @@ artifact, not a real net regression.
 | SPRT | Branch | Status |
 |------|--------|--------|
 | #858 | tune-855-applied (80% / 4033 iters) + C8FIXED vs main + PROD | **H0 -8.1 ±5.5 / 3808g** ✗ |
-| #859 | tune-855-final-applied (100% / 5000 iters) + C8FIXED vs main + PROD | running, [-5, 5] bounds |
+| #859 | tune-855-final-applied (100% / 5000 iters) + C8FIXED vs main + PROD | **stalled "Wrong Bench"** — submitted with PROD-net build's bench instead of C8FIXED-net build's bench. Resubmitted as #860. |
+| #860 | tune-855-final-applied (resubmit, correct bench) + C8FIXED vs main + PROD | **H0 -7.5 ±7.0 / 2416g** (LLR -2.97) ✗ |
+
+**Hypothesis 1 (80%-snapshot artifact) is dead.** Final 5K-iter SPSA
+outputs deliver essentially the same -8 result as the 80% snapshot.
+Tune-855's full convergence didn't escape the tune-820 basin gravity
+for C8FIXED.
+
+**Three deployment paths now:**
+
+| Path | Action | Expected Elo | Cost |
+|---|---|---:|---|
+| A | Deploy `#854 recipe`: revert LMP + revert tune-820 + C8FIXED | **+12-14 (measured)** | Loses LMP wins (~+1.86) and tune-820 calibration |
+| B | Tune from default tunables on main + C8FIXED (no tune-820 gravity) | unknown | Another 5-10K iters; retains LMP wins if SPSA finds basin |
+| C | Tune on `revert-lmp-and-tune820` branch + C8FIXED, then re-apply LMP changes | likely best | Two-stage: tune + cherry-pick + re-SPRT |
+
+Path A is simplest and known-good. Awaiting Adam's direction.
 
 **Gap between expectation (+14 from #854) and result (-8.1 from #858)
 is 22 Elo.** Multiple working hypotheses:
@@ -6346,7 +6362,7 @@ to test his hypothesis that TT-pressure mechanisms scale with TC.
 |------|--------|---:|--------|
 | #841 | tt-threshold-loose-only (-3 → -4) | 10+0.1 | running, +0.7 trending H1 / 113K |
 | #856 | tt-threshold-loose-only | 40+0.4 | **H0 -1.0 ±2.0 / 11.6K** ✗ |
-| #842 | tt-age-weight-8 (×4 → ×8) | 10+0.1 | running, +0.9 trending H1 / 108K |
+| #842 | tt-age-weight-8 (×4 → ×8) | 10+0.1 | **H0 +0.5 ±0.6 / 273K** (LLR -2.95) ✗ |
 | #857 | tt-age-weight-8 | 40+0.4 | **H1 +1.6 ±2.5 / 7.3K** ✓ |
 
 **The two TT changes have different TC profiles:**
@@ -6360,12 +6376,18 @@ to test his hypothesis that TT-pressure mechanisms scale with TC.
   useful entries).
 
 **Merge decisions:**
-- **tt-age-weight-8 → MERGE** when #842 STC formally H1's. Both TCs
-  agree; LTC the larger effect; deployment-relevant.
-- **tt-threshold-loose-only → DROP** regardless of #841's eventual
-  STC verdict. LTC alt evidence shows it's a deployment regression.
-  Adam's policy: long-running #841 left running at throughput 25,
-  but result will be ignored for merge decision.
+- **tt-age-weight-8 → DROP** (revised 2026-04-28 after #842 formal
+  resolution). STC #842 H0'd at +0.5 ±0.6 / 273K (LLR -2.95).
+  Original +0.9 STC trending was small-N noise. The +1.6 LTC at
+  7K games is statistically consistent with the +0.5 STC at 273K
+  (LTC's ±2.5 envelope easily contains the STC point estimate).
+  Verdict: change is essentially neutral, not deployment-positive.
+- **tt-threshold-loose-only → DROP** confirmed by both #841 STC
+  H0 (+0.4 ±0.7 / 189K, LLR -2.95) and #856 LTC H0 (-1.0 ±2.0 /
+  11.6K, LLR -2.98). LTC inversion finding (in
+  `feedback_stc_can_invert_ltc_direction.md`) holds via combined
+  evidence; the early "STC trending +0.7" was noise that resolved
+  to H0 at large N.
 
 **General lesson:** STC SPRT can both UNDER-measure and INVERT the
 sign of LTC effects. The previous `feedback_sprt_blind_to_long_game_effects.md`
@@ -6376,6 +6398,18 @@ before merge — not because LTC is "more accurate" universally,
 but because TT-pressure-bound effects can REVERSE direction. To be
 captured in a memory entry as an extension to the existing
 sprt-blind-to-long-game-effects feedback.
+
+**Update post-#842 formal resolution:** the STC inversion claim
+weakens for tt-age-weight-8 specifically. At large N (273K), STC
+H0'd at +0.5 ±0.6. LTC's +1.6 ±2.5 at 7K games is consistent with
+the STC large-N result. So tt-age-weight-8 isn't a true STC-
+positive-LTC-positive change; both TCs are essentially zero, and
+the LTC small-N reading was sampling noise. The cleanly-inverted
+case is tt-threshold-loose-only (STC +0.7 small-N → STC H0 +0.4
+large-N → LTC H0 -1.0): that one's ALSO consistent with "small
+effect, both TCs near zero" rather than direction inversion.
+Tightening the LTC-inversion claim in the memory entry to
+require LARGE-N STC + LARGE-N LTC with opposing signs.
 
 Combined effect (+13.9) is less than the arithmetic sum of individual
 reverts (+25 + +18 = +43), confirming **signal overlap**: tune-820
@@ -6401,3 +6435,432 @@ net-vs-net SPRTs on revert branches. Both arms share identical code so
 only the net differs — clean isolation of which trunk merge interacts
 poorly with the candidate net. Pattern reusable for any future
 "net-vs-net regression" investigations.
+
+## 2026-04-28 — SF-arbitrated loss analysis on 1400-game rivals gauntlet
+
+Adam: "use SF as an arbitrator" to measure objective ΔSF per move,
+beyond the heuristic loss-classifier. Ran `scripts/sf_arbitrate_blunders.py`
+on `tough_rivals.pgn` at depth 18 with 12 workers; 11725 Coda moves
+across 222 Coda-loss games arbitrated in 39 minutes.
+
+**Move-quality tier breakdown (across 11725 Coda moves in losing games):**
+
+| Tier | ΔSF range | N | % |
+|---|---|---:|---:|
+| ACCURATE | ≥ -50cp | 10834 | 92.4% |
+| INACCURACY | -50 to -100cp | 516 | 4.4% |
+| MISTAKE | -100 to -200cp | 247 | 2.1% |
+| BLUNDER | < -200cp | 128 | 1.1% |
+
+Even in losing games, **92% of Coda's moves are SF-accurate**. The
+loss isn't from many bad moves; it's from a small number of cliffs
+or sustained slow drift.
+
+**Per-game cliff distribution (worst single move per game, 222 games):**
+
+| Cliff size | Games | % |
+|---|---:|---:|
+| < 50cp (no real mistake) | 2 | 0.9% |
+| 50-100cp (inaccuracy) | 31 | 14.0% |
+| 100-200cp (mistake) | 101 | 45.5% |
+| 200-400cp (blunder) | 62 | 27.9% |
+| 400-800cp (big blunder) | 13 | 5.9% |
+| 800+cp (catastrophic) | 13 | 5.9% |
+
+**Median worst-move-per-game: 160cp. 60.4% of losing games have NO
+single move worse than -200cp.** Most losses are not single-shot
+blunders; they're slow erosion. Median total CP lost across all
+moves in a losing game is 731 (~7 pawns of cumulative slippage).
+
+**Position context at the cliff (eval BEFORE the worst move, per SF):**
+
+| Pre-cliff eval | Games | % |
+|---|---:|---:|
+| Already losing (<-300cp) | 76 | 34.2% |
+| Tough (-300 to -100cp) | 89 | 40.1% |
+| Balanced (-100 to +100cp) | 56 | 25.2% |
+| Advantage (+100 to +300cp) | 1 | 0.5% |
+| Winning (>+300cp) | 0 | 0.0% |
+
+**74% of cliff moves happen when Coda is already losing per SF.**
+Only 25% of cliffs come from balanced positions. We rarely get into
+trouble from a winning or even significant-advantage position; the
+cliff is usually a refinement-of-already-bad rather than a
+from-equality fall.
+
+**Per-opponent cliff timing:**
+
+| Opponent | Med cliff | ≥-200 share | Med cliff ply | Med game ply | Cliff/game ratio |
+|---|---:|---:|---:|---:|---:|
+| Clarity | 288 | 56% | 114 | 120 | **95%** (very late) |
+| Arasan | 219 | 56% | 69 | 71 | 97% (final move) |
+| Velvet | 202 | 52% | 64 | 81 | 79% |
+| PZChessBot | 176 | 44% | 86 | 107 | 80% |
+| Horsie | 151 | 37% | 81 | 105 | 77% |
+| Seer | 138 | 32% | 84 | 93 | 90% |
+| Tarnished | 128 | 19% | 68 | 92 | 74% |
+
+**All opponents see Coda's worst move in the back half of the game.**
+Clarity is the most extreme — biggest cliff (288cp) at the absolute
+end (95% through). This matches Clarity's 96% HORIZON / 0% SELF_BLUNDER
+classifier reading: pure depth-bound late-game eval cliff. Tarnished
+has the smallest cliffs and earliest timing — they outplay us mid-game
+through positional/eval-quality not late tactics.
+
+**Implications for the 50-Elo target:**
+
+Adam's reframing (2026-04-28): "Eval though is all NNUE black box.
+What we are actually looking at here is dynamic eval (eg including
+search) that comes down to search, move ordering, pruning, TT
+behaviour etc." SF's per-move ΔSF IS itself a depth-N search result.
+"Eval drift" therefore means dynamic-eval drift — Coda's search
+resolves to a worse value than SF's search resolves the same
+position to. The mechanism is search-side, NOT static NNUE.
+
+1. **The 25% balanced-position cliffs** (56 games where Coda was
+   within ±100cp before the worst move) are the clearest "could
+   have drawn" moments. Mechanism (3) "less bad pruning" carve-outs
+   (Reckless-pattern threat-aware gates, recapture/SE extensions,
+   threat-feature-aware gates) target these directly.
+
+2. **Slow erosion (60% of losses)** is the same mechanism family
+   spread across many moves: search misses the refinement at
+   each ply, drift compounds. Levers: better move ordering
+   (first-cutoff rate ↑, deep refinement promoted), pruning
+   carve-outs that don't mis-prune the right move, TT
+   improvements (replacement, age weight, near-miss handling),
+   LMR/extension calibration (don't reduce the move that would
+   have refined). NOT a training problem.
+
+3. **The "already-losing" 74% subset** is partly unrecoverable —
+   we're on the wrong side of the position. Better defence (TM
+   in losing positions, fortress detection, holding for 50mr) is
+   a longer-tail lever, smaller bucket.
+
+4. **Per-opponent mechanism splits:**
+   - **Clarity** — pure depth-bound (huge late cliffs at 95%
+     through game). Their search resolves what ours doesn't,
+     they're 2.86× faster NPS. Lever: ordering/EBF reduction
+     (compounds at depth) + selective NPS recovery via cache work.
+   - **Tarnished** — small early cliffs (128cp at ply 68/92).
+     They outplay us mid-game, smallest cliff magnitude in the
+     pool. Lever: move ordering and pruning quality, not raw depth.
+   - **Seer** — small cliffs (138cp median) but high SELF_BLUNDER
+     classifier reading (42%). Stylistic luring registers as
+     ordering-misses-right-move, not single tactical drops.
+     Lever: ordering improvements that promote the deep-correct-
+     but-quiet line over the surface-good-but-shallower one.
+
+5. **Training/NNUE work is supplementary**, not primary, for the
+   rivals gap. It improves the static eval Coda's search starts
+   from but doesn't directly attack dynamic-eval drift. Group-lasso,
+   factor net, low-LR tail still pay off — but for static-eval-
+   miscalibration class (fortresses, deep endgame, KP races), not
+   the dominant slow-erosion mechanism.
+
+CSV at `/tmp/sf_arbitrated_losses.csv`. To extend to wins/draws
+(Adam's "why we win" angle), drop `--losses-only` from the
+invocation and add a `mover` column to extract opponent moves too
+(small script change).
+
+## 2026-04-28 — SF-arbitrated WINS analysis: the asymmetry is striking
+
+Re-ran SF arbitrator with `--wins-only` on the same 1400-game
+gauntlet PGN (158 Coda wins, 9767 moves analysed at depth 18 in
+30.5 min). The asymmetry vs the losses-side analysis is the most
+actionable finding so far.
+
+**Per-move accuracy (wins vs losses):**
+
+| Tier | Wins | Losses | Δ |
+|---|---:|---:|---:|
+| ACCURATE (≥-50cp) | 96.4% | 92.4% | +4.0pp |
+| INACCURACY (-50 to -100) | 2.2% | 4.4% | -2.2pp |
+| MISTAKE (-100 to -200) | 0.9% | 2.1% | -1.2pp |
+| BLUNDER (<-200) | 0.5% | 1.1% | -0.6pp |
+
+We are 4pp more accurate per-move in our wins. Same engine, same
+TC, same hardware — the per-move accuracy distribution is meaningfully
+better in games we won. This is consistent with "opening luck +
+slightly favourable position lets every search path resolve cleanly"
+or "Coda eval is more reliable in positions where it has slight
+material/positional anchor."
+
+**The mechanism asymmetry is the headline finding:**
+
+| Class of crossing | Wins (cross +100cp) | Losses (cross -100cp) |
+|---|---:|---:|
+| **Gradual** (no single move ≥50cp swing) | **92.4%** | 50.9% |
+| **Moderate** (single 50-100cp swing) | 4.4% | **20.3%** |
+| **Sudden** (single ≥100cp swing) | 3.2% | **28.4%** |
+
+**In our wins, 92% of advantage-building is gradual — slow drift in
+our favour over many moves. In our losses, only 51% is gradual.
+Moderate-stepped and sudden crossings happen ~6× more frequently
+in losses than in wins.**
+
+Reading the asymmetry directly: when Coda is on the winning side,
+we accumulate small advantages at a rate similar to or better than
+opponents accumulate against us in losses (med ply for +100 in wins
+is 48; med ply for -100 in losses is 49 — virtually identical
+timing). But when WE are on the wrong side, opponents exploit us
+through moderate-step (pruning blind spots) and sudden (tactical
+horizon) holes at MUCH higher rates than we exploit them.
+
+**Win-mechanism breakdown:**
+
+- 158/158 (100%) of our wins reach +100cp at some point — i.e., we
+  always at least briefly held a meaningful advantage. None of our
+  wins are pure "opponent blundered from equal."
+- 114/158 (72%) of wins reach +400cp — we're routinely converting
+  significant advantages.
+
+**Implications:**
+
+1. **The moderate-stepped + sudden bucket (48.7% of -100 crossings
+   in losses, only 7.6% in wins) is the actionable subset** for the
+   rivals 50-Elo target. This is exactly the pruning-blind-spot +
+   tactical-horizon work surface.
+
+2. **The 92% gradual subset on the wins side** confirms our slow-
+   accumulation strength is competitive with the field — when we
+   start ahead, we don't lose ground gradually faster than they do.
+   The deficit is on the "they exploit us via stepped/sudden
+   moments" axis.
+
+3. **`scripts/find_pruning_candidates.py --mode moderate_step`
+   surfaces the 45 candidates** that map directly to mechanism (3)
+   "less bad pruning" carve-outs and mechanism (4) ordering. **65
+   sudden candidates** map to mechanism (1) NPS / (3) carve-outs /
+   tactical extensions. **Together: ~108 concrete bug-discovery
+   targets** in the rivals losses subset alone.
+
+4. **The 113 gradual candidates** are what `feedback_three_class_loss_diagnostic.md`
+   classifies as eval/NNUE-bound. Lower priority for ablation;
+   higher priority for training-recipe work. They explain why
+   per-move accuracy in losses (92.4%) is lower than in wins (96.4%)
+   — many small drops accumulating reflect static eval being
+   slightly less reliable when Coda is on the wrong side of a
+   position.
+
+CSVs at `/tmp/sf_arbitrated_losses.csv` and `/tmp/sf_arbitrated_wins.csv`.
+Tooling for next phase: `scripts/blunder_ablation.py` (clean-hash +
+feature ablations) and `scripts/probe_candidate_depth.py` (D1/D2/D3
+triage) ready to run on the candidates JSONLs.
+
+## 2026-04-28 — Clean-hash triage on 45 moderate-stepped candidates
+
+Ran `blunder_ablation.py --abl baseline --depth 14` on the 45
+moderate-stepped candidates from the rivals losses subset.
+"Baseline" = fresh ./coda subprocess, `ucinewgame` to clear TT/
+history, fixed depth 14 — i.e. clean-hash test.
+
+**Result distribution:**
+
+| Coda's clean-hash bestmove vs game move | N | % |
+|---|---:|---:|
+| Matches SF's bestmove | 7 | 15.6% |
+| Matches the move played in-game | 1 | 2.2% |
+| Picks something else | 37 | 82.2% |
+
+**Headline:** **44/45 (97.8%)** of moderate-stepped pruning
+candidates produce a different bestmove on a clean hash. Only 1
+candidate reproduces the played move under clean conditions.
+
+**Per-opponent recovery (matches_sf / candidates):**
+
+| Opponent | matches_sf / N |
+|---|---:|
+| Arasan | 3/8 (38%) |
+| Horsie | 2/7 (29%) |
+| Clarity | 1/6 (17%) |
+| Velvet | 1/6 (17%) |
+| PZChessBot | 0/5 (0%) |
+| Seer | 0/4 (0%) |
+| Tarnished | 0/9 (0%) |
+
+**Tarnished is the most striking outlier** — 0/9 candidates recover
+to SF-best on a clean hash at depth 14. Consistent with the per-
+opponent loss-class reading: Tarnished outplays us positionally,
+not via depth-mismatches our clean search reproduces.
+
+**Important caveats — DO NOT over-read this finding.**
+
+1. **Depth-14 vs in-game depth.** The played move was made at
+   TC-allocated time, possibly reaching different depth than 14.
+   Coda's depth-14 clean-hash bestmove differing from the played
+   move could be:
+   - State-pollution at game-time (real bug, the right diagnosis),
+     OR
+   - Just "depth 14 sees less than the depth Coda played at, so
+     the choice differs." Neither Coda choice may be SF-best;
+     they're both finite-depth artifacts.
+
+2. **TT carry-over isn't always pollution.** The TT warm from
+   prior moves may have contained useful eval/move-ordering info
+   — clean hash loses that info. Differing from played isn't
+   automatically "the played move was a bug."
+
+3. **15.6% match SF best at clean hash + depth 14** is the
+   conservative reading: "without any cumulative TT, Coda finds
+   the SF-best move on at least 16% of these positions, which
+   it didn't find at game time." That's the floor for "fixable
+   via reducing TT pollution / ordering noise."
+
+**Follow-up #1 (done): SF-eval Coda's clean-hash choices.**
+
+Ran `scripts/eval_clean_hash_recovery.py /tmp/pruning_candidates_moderate.jsonl
+/tmp/abl_moderate_baseline.csv --depth 18`. For each candidate, ran SF at
+depth 18 on the position AFTER Coda's clean-hash bestmove, computed Coda-POV
+delta, and compared to the played-move delta:
+
+| Recovery verdict | N | % |
+|---|---:|---:|
+| matches_sf (Coda picks SF-best) | 7 | 15.6% |
+| recovers ≥50cp (different from SF-best but still better) | 1 | 2.2% |
+| partial <50cp recovery | 3 | 6.7% |
+| same_or_worse than played | 34 | 75.6% |
+
+**Real recoveries: 8/45 (18%).** The earlier "97.8% differ from played"
+finding was MISLEADING — most of those "differs" are Coda's clean
+choice being WORSE per SF than the played move. **30/45 (67%) are
+≥50cp worse than the played move per SF.** Median worse-recovery
+is -245cp (worst -694cp).
+
+**Methodological lesson — clean-hash test is confounded by depth.**
+
+The played move was made at TC-allocated depth (typically 16-25 plies
+per PGN annotations). Probing at fixed depth 14 with clean TT means
+Coda is searching at a SHALLOWER depth than at game-time, AND with
+no TT context. When the clean-hash probe picks something different,
+two confounding causes can't be separated:
+
+1. State pollution at game-time made Coda pick worse (real bug)
+2. Depth-14-clean is just a strictly weaker search than
+   depth-game-time-with-warm-TT, so it picks worse on average
+
+**The 67% "clean choice is worse" subset suggests cause 2 is
+dominant** for moderate-stepped candidates. TT carry-over from prior
+moves was generally HELPING Coda, not polluting it. Adam's prior
+about "ponder/TC partial-search state reuse" bugs may exist in
+specific rare paths but doesn't show up here as a systematic
+moderate-cliff cause.
+
+**The 8 real recoveries (18%) are concrete actionable candidates:**
+
+| Opponent | ply | played | sf | clean | recovery (cp) | category |
+|---|---:|---|---|---|---:|---|
+| Clarity | 36 | e7c5 | e6f5 | e6f5 | +85 | matches_sf |
+| Velvet | 35 | g5g6 | g5h6 | g5h6 | +48 | matches_sf |
+| Horsie | 45 | c7b6 | f3g4 | f3g4 | +46 | matches_sf |
+| Horsie | 45 | b5b8 | e1e4 | e1e4 | +77 | matches_sf |
+| Tarnished | 31 | d3c2 | f5g7 | d4e5 | +145 | recovers (different best) |
+| Arasan | 50 | b7a8 | d6c5 | d6c5 | +86 | matches_sf |
+| Arasan | 35 | b5a7 | h3g4 | h3g4 | +64 | matches_sf |
+| Arasan | 12 | b8d7 | e5d4 | e5d4 | +79 | matches_sf |
+
+Per-opponent recovery rate (matches_sf + ≥50cp recovers):
+
+| Opponent | Real recoveries / candidates | % |
+|---|---:|---:|
+| Arasan | 3/8 | 38% |
+| Horsie | 2/7 | 29% |
+| Clarity | 1/6 | 17% |
+| Velvet | 1/6 | 17% |
+| Tarnished | 1/9 | 11% |
+| PZChessBot | 0/5 | 0% |
+| Seer | 0/4 | 0% |
+
+**These 8 positions are the actionable bug-discovery surface for
+moderate-stepped candidates** in the rivals losses subset. Per-feature
+ablation on these 8 (NO_NMP, NO_LMP, etc.) localizes which gate
+prevented the right move at game-time, since clean depth 14 already
+finds it.
+
+**Methodological revision for future candidate triage:**
+
+The clean-hash test should use **depth ≥ Coda's game-time depth at
+that ply** to fairly distinguish state-pollution from depth-deficit.
+PGN comments record `{eval/depth time}` so the per-position depth
+is recoverable. Probing at fixed shallow depth conflates the two
+confounds. For follow-up runs, parse depth from PGN and probe at
+that-depth + a few plies more to be safe.
+
+Output CSVs: `/tmp/abl_moderate_baseline.csv` (clean-hash bestmoves),
+`/tmp/recovery_moderate.csv` (SF-eval'd recovery verdict).
+
+## 2026-04-29 — RETRACTED: per-feature ablation + depth-matched probe (UCI bug)
+
+The per-feature ablation ("45/45 identical bestmoves across all 12
+ablations") and the depth-matched probe ("0/45 differ between
+depth-14 and game-time depth") were BOTH produced with a UCI quit
+bug: scripts sent `uci\n...\ngo depth N\nquit\n` via
+`subprocess.communicate()`, so Coda processed `quit` before the
+search converged and emitted a partial-search bestmove. The
+"identical across all configurations" pattern was the bug
+signature, not a real finding.
+
+Fix committed in `0fff4f6` — all three Coda probe scripts
+(`blunder_ablation.py`, `probe_at_game_depth.py`,
+`probe_convergence_depth.py`) rewritten with persistent process +
+`bufsize=1` readline, sending `quit` only after `bestmove` is
+received.
+
+Memory entry: `feedback_uci_quit_must_wait_for_bestmove.md`.
+
+## 2026-04-29 — Convergence-depth probe (post-fix): mixed mechanism
+
+`scripts/probe_convergence_depth.py` (post-fix) over all 45
+moderate-stepped candidates, depths [14,16,18,20,22,24], cross-
+referenced with each candidate's PGN-parsed played depth.
+
+**Headline:** 41/45 (91%) converge to SF-best within d24. Only
+4/45 are durable eval-blind spots within depth 24.
+
+**Depth-deficit histogram (probe_d − played_d):**
+
+| Deficit | N | Mechanism |
+|---:|---:|---|
+| ≤ 0 | 9 | TT-state-bound — clean hash at played depth recovers SF-best |
+| +1..+2 | 10 | NPS-bound — small +1-2 ply finds SF-best |
+| +3..+6 | 18 | Ordering / pruning blind spots — needs +3-6 ply |
+| +7..+9 | 4 | Big depth deficit — ordering / search / eval bound |
+| NEVER | 4 | Eval-bound — depth 24 doesn't help |
+
+**Mechanism split:**
+
+- **20% (9/45) TT-state-bound.** Clean hash at the played depth
+  alone recovers SF-best. The game-time TT-warm state was actively
+  harmful at the candidate position. TT replacement / aging /
+  collision-tagging work has direct signal on this bucket.
+- **22% (10/45) NPS-bound.** +1-2 ply closes it. Pure NPS gains
+  (cache-residency, SIMD dispatch, training-side matrix shrink)
+  pay here.
+- **40% (18/45) ordering / pruning blind spots.** +3-6 ply. This
+  is the dominant bucket and the highest-leverage frontier:
+  ordering improvements, pruning carve-outs, EBF reduction.
+  Refutes the earlier "pruning isn't the lever" reading from the
+  buggy per-feature ablation.
+- **9% (4/45) big depth deficit.** +7-9 ply. Ordering or search
+  rather than eval per se.
+- **9% (4/45) durable eval-blind spots.** Never converge within
+  d24. 3 of 4 are Seer/Arasan/Tarnished — consistent with Seer
+  being the SELF_BLUNDER outlier (41.9%) in the rivals gauntlet.
+
+**Implication for the rivals 50-Elo target:**
+
+The combined "needs +1 to +6 ply" buckets (62% of moderate-stepped
+candidates) are the addressable frontier. NPS, ordering, and
+pruning improvements all compound on this class. Pure-eval
+improvements address only the 9% durable-blindspot bucket plus
+some unknown share of the +7-9 deficit cases.
+
+**Re-runs to do** with the bug-fixed scripts:
+
+1. Per-feature ablation on the 22 candidates with deficit ≥ +3
+   (ordering/pruning bucket) — to localize which specific feature
+   is hiding SF-best in that bucket.
+2. Played-depth probe to confirm the 9 deficit-≤-0 cases really
+   are TT-state-bound rather than artifact.
+
+Outputs: `/tmp/convergence_moderate.csv` (45 rows, post-fix).
