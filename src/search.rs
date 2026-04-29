@@ -190,6 +190,12 @@ tunables!(
     (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
     (LMR_THREAT_DIV, 4, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
+    // PV-node negative-reduction (LMR extension) — allow reduction to go
+    // negative (= extend depth) at PV nodes / very-early moves where LMR's
+    // normal calculation underweights the position. Universal pattern in
+    // top engines (SF/Reckless/Viridithas/Obsidian/Plenty/Halogen/Horsie).
+    // See docs/lmr_crossengine_2026-04-29.md §3.3, §4.2.
+    (LMR_EARLY_EXT_MC, 3, 2, 5, 0.5),
     (FUT_THREATS_MARGIN, 21, 0, 200, 10.0),
     (DISCOVERED_ATTACK_BONUS, 6105, 0, 30000, 1500.0),
     // T1.4: quiet-slider move that completes a battery — lands on a square
@@ -2999,12 +3005,19 @@ fn negamax(
                 // from NMP/ProbCut gates — tactical king positions need depth.
                 reduction -= king_zone_pressure / tp(&LMR_KING_PRESSURE_DIV);
 
-                // Clamp: never extend (negative), never reduce past depth 1
-                if reduction < 0 {
-                    reduction = 0;
+                // Clamp: allow negative reduction (= depth extension) at PV
+                // nodes / very-early moves. Universal pattern in top engines.
+                // See docs/lmr_crossengine_2026-04-29.md §4.2.
+                let pv_bonus = if beta - alpha > 1 { 1 } else { 0 };
+                let early_bonus = if move_count <= tp(&LMR_EARLY_EXT_MC) { 1 } else { 0 };
+                let max_ext = pv_bonus + early_bonus; // up to +2 plies extension
+                let min_r = -max_ext;
+                let max_r = new_depth - 1;
+                if reduction < min_r {
+                    reduction = min_r;
                 }
-                if reduction > new_depth - 1 {
-                    reduction = new_depth - 1;
+                if reduction > max_r {
+                    reduction = max_r;
                 }
             }
         }
@@ -3087,16 +3100,21 @@ fn negamax(
                 score = lmr_score;
             }
         } else if move_count > 1 && FEAT_PVS.load(Ordering::Relaxed) {
-            // PVS: zero-window for non-first moves
-            let mut pvs_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
+            // PVS: zero-window for non-first moves. search_depth = new_depth
+            // for reduction == 0, > new_depth for negative reduction (PV-node
+            // depth extension — see clamp at top of LMR block).
+            let search_depth = new_depth - reduction;
+            let mut pvs_score = -negamax(board, info, -alpha - 1, -alpha, search_depth, ply + 1, !cut_node);
             if pvs_score > alpha && pvs_score < beta && !info.stop.load(Ordering::Relaxed) {
                 // Failed high: full window re-search
-                pvs_score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
+                pvs_score = -negamax(board, info, -beta, -alpha, search_depth, ply + 1, false);
             }
             score = pvs_score;
         } else {
-            // First move: always full window
-            score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
+            // First move: always full window. search_depth handles negative
+            // reduction (extension) the same way as the PVS branch.
+            let search_depth = new_depth - reduction;
+            score = -negamax(board, info, -beta, -alpha, search_depth, ply + 1, false);
         }
 
         board.unmake_move();
