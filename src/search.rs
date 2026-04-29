@@ -113,6 +113,12 @@ tunables!(
     (BAD_NOISY_MARGIN, 71, 30, 150, 6.0),
     (PROBCUT_MARGIN, 199, 80, 300, 11.0),
     (HINDSIGHT_THRESH, 148, 50, 400, 17.5),
+    // Symmetric hindsight extension — when parent over-reduced and current
+    // node reveals tactical density (both sides pessimistic, eval_sum < THRESH),
+    // restore +1 depth. Direct response to moderate-stepped LMR exploits.
+    // See docs/lmr_crossengine_2026-04-29.md §4.1.
+    (HINDSIGHT_EXT_MIN_RED, 3, 2, 5, 0.5),
+    (HINDSIGHT_EXT_THRESH, 0, -200, 200, 20.0),
     (UNSTABLE_THRESH, 206, 50, 500, 22.5),
     (SEE_MATERIAL_SCALE, 237, 30, 300, 13.5),
     (QS_DELTA_MARGIN, 357, 100, 500, 20.0),
@@ -2259,21 +2265,37 @@ fn negamax(
     // Threat square from null-move failure
     let mut threat_sq: i32 = -1;
 
-    // Hindsight reduction: when parent was LMR-reduced and both sides
-    // think the position is quiet, reduce depth further.
-    // Gate on prior_reduction (Stockfish >= 2, Alexandria >= 1).
+    // Hindsight reduction + symmetric extension: when parent was LMR-reduced
+    // (depth shrunk) we look at the eval signal post-make_move to decide
+    // whether the parent's reduction was correct. Two branches:
+    //
+    //   shrink: both sides optimistic (eval_sum > THRESH) → quiet position,
+    //           parent's reduction was correct, reduce here too
+    //   extend: both sides pessimistic (eval_sum < EXT_THRESH) → tactical
+    //           density, parent OVER-reduced and we should restore depth
+    //
+    // The extend branch is universal in top engines (SF, Halogen, Reckless,
+    // Viridithas, Tarnished) and the direct response to "moderate-stepped
+    // exploits" — when opponent's threat develops across plies our LMR
+    // suppressed. Coda only had the shrink half before today.
+    // See docs/lmr_crossengine_2026-04-29.md §3.1, §4.1.
     let prior_reduction = if ply_u >= 1 { info.reductions[ply_u - 1] } else { 0 };
     if !in_check && ply >= 1 && depth >= tp(&HINDSIGHT_MIN_DEPTH) && ply_u >= 1
-        && prior_reduction >= 2
         && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
         && static_eval > -INFINITY
         && FEAT_HINDSIGHT.load(Ordering::Relaxed)
     {
-        // Both sides optimistic about their position (eval_sum > threshold)
-        // correlates with quiet positions where reduction is safe.
         let eval_sum = info.static_evals[ply_u - 1] + static_eval;
-        if eval_sum > tp(&HINDSIGHT_THRESH) {
+        // Shrink (existing): parent reduced, both sides optimistic, quiet.
+        if prior_reduction >= 2 && eval_sum > tp(&HINDSIGHT_THRESH) {
             depth -= 1;
+        }
+        // Extend (NEW): parent reduced enough, both sides pessimistic,
+        // tactical density. Mirrors SF/Reckless/Halogen.
+        if prior_reduction >= tp(&HINDSIGHT_EXT_MIN_RED)
+            && eval_sum < tp(&HINDSIGHT_EXT_THRESH)
+        {
+            depth += 1;
         }
     }
 
