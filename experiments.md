@@ -6811,6 +6811,67 @@ received.
 
 Memory entry: `feedback_uci_quit_must_wait_for_bestmove.md`.
 
+## 2026-04-29 — Game-stage analysis on 19 LMR-bound candidates
+
+For each candidate in the +3-+6 ply deficit bucket (LMR-overreduction
+class from the per-feature ablation), extracted piece count, ply,
+phase, opponent, and SF-best move type.
+
+**Piece-count distribution:**
+- 32-28: 1
+- 27-24: 7
+- 23-20: 4
+- 19-16: 3
+- 15-12: 4
+- <12: 0
+- Min 13, max 29, median 22 (middlegame)
+
+**Phase**: 14 middlegame, 4 endgame, 1 opening. Existing gate
+`LMR_ENDGAME_PIECES = 4` fires only at ≤4 pieces (KvKx) — our
+candidates are well above that.
+
+**Ply distribution**: 1 < 20, 2 in 20-39, 9 in 40-59, 4 in 60-79,
+3 ≥ 80. Median 54.
+
+**Opponent**: Tarnished 5, Velvet 4, Clarity 3, others 2 each. No
+opponent cluster — HORIZON pattern is opponent-invariant (matches
+the 1400-game gauntlet finding).
+
+**Already-gated**: 0/19 in check, 2/19 captures (different LMR table).
+
+**Move-class clusters in the SF-best column:**
+- **King-walk in late game** (4: Kc7, Kc2, Kg7, Kg8) — strongest
+  carve-out candidate. Matches the historical "mate-completing
+  king-restriction" pattern that motivated the existing endgame
+  gate. Piece counts 13-22.
+- **Queen retreats / repositions** (4: Qc2, Qc3, Qg2, Qa8) —
+  tactical repositioning, no SEE signal.
+- **Rook lifts / coordination** (4: Raf1, Rb7, Rc6, Rd5) — quiet
+  structural moves.
+- **Quiet pawn pushes** (4: b3, f4, f5, h6) — positional.
+
+**Mechanism reading.** The cluster is "quiet positional moves
+ordered late in the move list because ordering doesn't favor them
+— captures, killers, counter-moves rank high; quiet repositioning
+ranks low; LMR bites." Two compounding leverage points:
+
+1. **Better move ordering** — get these moves higher in the list
+   so LMR doesn't reduce them. Reckless's offense bonus on quiet
+   moves landing on attacked squares (~6000 score) is one pattern;
+   pos²-style amplification of ordering differences is another.
+2. **Threat-aware LMR carve-out** — when a move maintains/creates
+   a defensive threat (cheap to detect via v9's threat features),
+   reduce LMR less. Compounds with (1) and matches the
+   `project_v9_threat_advantage_pattern.md` direction.
+
+**Not the lever for this class:**
+- Raising LMR_ENDGAME_PIECES (would touch KvKx behavior, SPSA-validated)
+- Stage-specific gates (no clear stage cluster)
+- Opponent-targeted heuristics (no opponent cluster)
+
+Outputs: see analysis script in chat history; no CSV produced
+(small enough to inspect inline).
+
 ## 2026-04-29 — Per-feature ablation at played-depth on the +3-+6 ply bucket
 
 `scripts/ablation_at_played_depth.py` over the 19 candidates with
