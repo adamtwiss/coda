@@ -205,7 +205,7 @@ tunables!(
     // Reuses offense's `attacks_from_to` computation — zero extra
     // attacks_from() calls. tp==0 disables.
     (QSEE_BONUS, 6435, 0, 20000, 1000.0),
-    (SE_KING_PRESSURE_MARGIN, 2, 0, 30, 1.5),
+    (SE_KING_PRESSURE_MARGIN, 0, 0, 30, 1.5),
     // xray-SE: widen singular test margin when TT move is from an x-ray
     // blocker square (moving it uncovers our slider's attack on an enemy).
     // Signal already delivered +52 in movepicker (#502). Flat bonus
