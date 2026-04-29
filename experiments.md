@@ -6376,12 +6376,15 @@ to test his hypothesis that TT-pressure mechanisms scale with TC.
   useful entries).
 
 **Merge decisions:**
-- **tt-age-weight-8 → DROP** (revised 2026-04-28 after #842 formal
-  resolution). STC #842 H0'd at +0.5 ±0.6 / 273K (LLR -2.95).
-  Original +0.9 STC trending was small-N noise. The +1.6 LTC at
-  7K games is statistically consistent with the +0.5 STC at 273K
-  (LTC's ±2.5 envelope easily contains the STC point estimate).
-  Verdict: change is essentially neutral, not deployment-positive.
+- **tt-age-weight-8 → MERGED** (#4, 2026-04-29). The 2026-04-28
+  DROP verdict was reversed after re-weighing: LTC #857 H1 is the
+  methodology-correct test for TT-pressure-bound changes per
+  `feedback_sprt_blind_to_long_game_effects.md`. STC #842 H0'd at
+  +0.5 ±0.6 / 273K because the [0, 3] bounds couldn't reach H1 on
+  a small positive effect; that's a bounds artifact, not "neutral."
+  +0.5 directionally positive + +1.6 LTC H1 + consensus port
+  (matches SF GENERATION_DELTA=8) + bench-neutral → merge as a
+  small additive win in the rivals stack.
 - **tt-threshold-loose-only → DROP** confirmed by both #841 STC
   H0 (+0.4 ±0.7 / 189K, LLR -2.95) and #856 LTC H0 (-1.0 ±2.0 /
   11.6K, LLR -2.98). LTC inversion finding (in
