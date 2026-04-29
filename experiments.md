@@ -7131,3 +7131,51 @@ coverage and can't produce strong SPRT signals at 10+0.1.
 4 attempts all bracketed in the [-1, +1] band. Multi-feature
 carve-out (LMR + NMP + RFP + FUT on shared trigger) is the
 next design.
+
+
+## 2026-04-29 — Tune-861-applied H0 at -2.2 Elo: long full-sweep SPSA can regress
+
+Tune-861 ran 10K iter on ~80 params at default gamma=0.101 from
+trunk state pre-#864 merge. Convergence looked clean. Applied
+outputs (64 of 80 params changed, mostly small movements) on
+`experiment/tune-861-applied`. SPRT'd against same baseline:
+
+**Result: H0 at -2.2 Elo / LLR ~-2.94 / ~12K games (#157).**
+
+Five-engine cross-check rules out gamma as cause:
+- Coda, Alexandria, Caissa, Quanticade, PlentyChess use 0.101
+- Reckless uses 0.05 (lone outlier; not consensus)
+
+Likely mechanism: with ~80 params, only ~16 have meaningful
+gradient. The other ~64 hover near optima with flat gradient
+signal; aggregate noise drift from those produces ~2 Elo
+regression even when high-gradient params moved correctly.
+Same drift mechanism observed earlier on CONTEMPT (10→19
+SPSA-drifted; SPRT-at-default showed +2.5 Elo for moving back).
+
+**Bisect via ablation SPRTs (in flight 2026-04-29):**
+
+Tune-861 drove two params toward feature-disable:
+- FUT_THREATS_MARGIN: 21 → 2 (drift toward 0)
+- SE_KING_PRESSURE_MARGIN: 2 → 0 (already at boundary)
+
+Ablation SPRTs against main with default-zero:
+- experiment/ablate-fut-threats-margin (bench 1001923, [-3, 3])
+- experiment/ablate-se-king-pressure-margin (bench 992819, [-3, 3])
+
+If these H0 (or H1 in either direction with small magnitude),
+they're noise-drift candidates; tune-861's movement was wrong
+direction. If they H1 positive, the features carry no Elo and
+SPSA was correctly pushing them toward 0 — the regression lives
+elsewhere in the 64 changed params.
+
+**Lessons (saved to feedback_long_full_sweep_spsa_can_regress.md):**
+
+1. Long full-sweep tunes are NOT free; iter count alone doesn't
+   guarantee improvement.
+2. Always SPRT applied outputs — convergence ≠ Elo improvement.
+3. Tune in focused clusters (4-12 high-gradient params) for
+   structural-fix retunes; reserve full-sweep for net changes.
+4. Drift-toward-disable signals identify feature-utility
+   candidates (silver lining).
+
