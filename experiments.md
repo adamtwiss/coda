@@ -6840,3 +6840,69 @@ doesn't help if the depth horizon is the limit.
    (training/NNUE direction).
 
 Output CSV: `/tmp/abl_moderate_full.csv` (540 rows, all uniform).
+
+## 2026-04-29 — Depth-matched probe: depth isn't the limit either
+
+Ran `scripts/probe_at_game_depth.py` on the 45 moderate-stepped
+candidates, parsing each candidate's played-at depth from the PGN
+`{eval/depth time}` annotation and probing Coda at THAT depth.
+
+Played-depth distribution: median 15, range 9-25.
+- 23 candidates: played at depth > 14 (depth-14 fixed underprobed)
+- 1 candidate: played at depth = 14
+- 21 candidates: played at depth < 14 (depth-14 fixed overprobed)
+
+**Result: 0/45 candidates have a different bestmove at depth-matched
+vs fixed depth-14 probe.** The 8 SF-matches and 1 played-match are
+identical sets across both probes. Coda's clean-hash choice is
+**robust across depth 9-25**.
+
+Combined with the per-feature ablation finding (45/45 same bestmove
+across all 12 ablations), this strongly suggests:
+
+**For the moderate-stepped class, neither pruning nor depth (9-25)
+is the bottleneck.** The 37 non-recoveries fail at any reasonable
+depth, with any pruning configuration. The 8 recoveries succeed at
+any depth ≥ 9.
+
+**Updated mechanism reading:**
+
+- The 30/45 cases where clean choice is WORSE than played per SF
+  (-50cp or worse) are NOT search/pruning failures — they're TT
+  warming working as designed (prior-game search loaded useful
+  info that improved choice quality at the candidate position).
+- The 8 cases where clean choice matches SF-best are positions
+  where game-time TT was actively HARMFUL — pollution made Coda
+  pick worse than a cold start would have. These are the
+  bug-discovery candidates.
+- The played move's badness (the original -50 to -100cp drop) is
+  a static property of the position-with-warm-TT. Without warm-TT,
+  Coda picks something else (often worse), but the SF-correct move
+  is rarely accessible from depth 9-25 alone.
+
+**Implication for the rivals 50-Elo target:**
+
+Pruning carve-outs aren't the lever for moderate-stepped exploits.
+The actionable mechanisms for this class are:
+
+1. **TT pollution / replacement bugs** — for the 8 cases where warm
+   TT made Coda pick worse, instrumented investigation of what TT
+   entries were live at the game-time position is the next step.
+   Could surface specific TT bugs.
+
+2. **Eval refinement / training** — for the 37 cases where Coda
+   picks something different (often worse) at clean hash, the
+   bottleneck is fundamentally what the static eval / shallow
+   search resolves to at the position. Improving eval quality
+   would shift the resolved value. Search-side carve-outs do not
+   help.
+
+3. **TC / NPS improvements at long TC** — at the depth Coda
+   actually played in-game (median 15), Coda doesn't see SF's
+   refutation. SF needs depth 18 to see it. Closing that 3-ply
+   gap is genuinely an NPS/EBF problem — but pruning gate changes
+   already proven not to help.
+
+The pruning-blind-spot hypothesis is REFUTED for this class.
+Path forward for closing the rivals gap is training (factor net,
+group-lasso, low-LR tail) and TC (deployment-config validation).
