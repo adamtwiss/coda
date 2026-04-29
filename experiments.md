@@ -6788,3 +6788,55 @@ that-depth + a few plies more to be safe.
 
 Output CSVs: `/tmp/abl_moderate_baseline.csv` (clean-hash bestmoves),
 `/tmp/recovery_moderate.csv` (SF-eval'd recovery verdict).
+
+## 2026-04-29 — Per-feature ablation on 45 moderate candidates
+
+Adam: "try per feature ablation and look coarsely at what may be
+causing blindspots." Ran `scripts/blunder_ablation.py --depth 14`
+on all 45 moderate-stepped candidates against 12 ablations:
+baseline, NO_NMP, NO_LMP, NO_RFP, NO_FUTILITY, NO_SEE_PRUNE,
+NO_HIST_PRUNE, NO_BAD_NOISY, NO_LMR, NO_PROBCUT, NO_NMP_LMP,
+NO_ALL_PRUNE.
+
+**Result: 45/45 candidates produce IDENTICAL bestmoves across all
+12 ablations.** Disabling features does change tree shape (sanity
+check: NO_LMR bench 4.5M vs baseline 875K nodes, +5×; NO_NMP +29%),
+but doesn't change which move Coda picks at root for any of these
+45 positions.
+
+Per-ablation rate (each row identical to baseline):
+
+| ablation | differs from played | matches SF best |
+|---|---:|---:|
+| baseline | 44/45 (97.8%) | 7/45 (15.6%) |
+| NO_NMP | 44/45 (97.8%) | 7/45 (15.6%) |
+| NO_LMP | 44/45 (97.8%) | 7/45 (15.6%) |
+| ... (all ablations identical) | | |
+
+**Verdict: the moderate-stepped class is NOT a pruning-blind-spot
+story** — at least not at depth 14. Pruning gates aren't what's
+hiding SF-best on these positions. Even with everything off, Coda
+picks the same moves.
+
+This refutes the working hypothesis "guards on prunes will close
+this gap" for the moderate-stepped subset. The 8 clean recoveries
+recover because depth 14 already suffices; the 37 non-recoveries
+fail because depth 14 isn't enough — adding more search width
+doesn't help if the depth horizon is the limit.
+
+**Two follow-up probes needed:**
+
+1. **Depth-matched probing** (Adam's other suggestion): run each
+   candidate at the depth Coda reached at game-time (parseable from
+   PGN `{eval/depth time}` annotations). If Coda still picks the
+   played move at game-time depth, depth wasn't the limit either —
+   the issue is eval/move-ordering at fixed depth. If Coda picks
+   SF-best at game-time depth, depth alone explains the gap (state
+   pollution / TT-warm-trick was needed, not extra plies).
+
+2. **Higher-depth probe** (e.g. 18, 20): does Coda converge to
+   SF-best given enough depth? If yes, the gap is depth-bound (and
+   recoverable via NPS/EBF improvements). If no, it's eval-bound
+   (training/NNUE direction).
+
+Output CSV: `/tmp/abl_moderate_full.csv` (540 rows, all uniform).
