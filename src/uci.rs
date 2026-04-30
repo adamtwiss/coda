@@ -18,6 +18,16 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     // returns). Used by the ponder wait loop below so it waits for an actual
     // external ack rather than racing with search_smp's internal teardown.
     let external_stop: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    // Set when the running ponder is being abandoned because a NEW position+go
+    // arrived (opponent didn't play the predicted ponder move). The search
+    // thread checks this on its way out and skips emitting bestmove — its
+    // pv_table is from the predicted-but-not-real position, so the move
+    // doesn't apply to whatever the new go is for. Without this suppress,
+    // the stale ponder bestmove gets read by the GUI as the response to the
+    // new go and forfeits on lichess (game 2agDftuq, 2026-04-29: predicted
+    // e3d3, opp played e3e4, ponder PV `g3f3 d3c4` was legal at the d3
+    // position but illegal at e4 → king-into-check → resign).
+    let suppress_bestmove: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let mut ponder_limits: Option<SearchLimits> = None; // pending limits for ponderhit
     let mut ponder_stm: u8 = crate::types::WHITE; // side to move at ponder start
     let mut opening_book: Option<crate::book::OpeningBook> = None;
@@ -98,6 +108,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
             "ucinewgame" => {
                 // Wait for any active search to finish before clearing state
                 if let Some(handle) = search_handle.take() {
+                    suppress_bestmove.store(true, Ordering::Relaxed);
                     external_stop.store(true, Ordering::Relaxed);
                     stop_flag.store(true, Ordering::Relaxed);
                     if let Ok(returned_info) = handle.join() {
@@ -120,8 +131,12 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 parse_position(&tokens, &mut board);
             }
             "go" => {
-                // Wait for any pending search to finish first
+                // Wait for any pending search to finish first. If we're abandoning
+                // a ponder (predicted opp move didn't happen), suppress its
+                // bestmove emit — it's for the predicted position, not whatever
+                // this new go is for.
                 if let Some(handle) = search_handle.take() {
+                    suppress_bestmove.store(true, Ordering::Relaxed);
                     external_stop.store(true, Ordering::Relaxed);
                     stop_flag.store(true, Ordering::Relaxed);
                     if let Ok(returned_info) = handle.join() {
@@ -224,6 +239,11 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 // if ponderhit arrives in the window between `go ponder` and search()
                 // entry, search() clearing it would clobber the legitimate deadline.
                 ponderhit_flag.store(0, Ordering::Relaxed);
+                // Clear the abandon-ponder suppress flag — this new search
+                // owns its bestmove emit. Set right before spawn so any value
+                // left from the prior go-handler abandonment can't leak into
+                // this thread's emit path.
+                suppress_bestmove.store(false, Ordering::Relaxed);
                 ponder_search_start = Some(std::time::Instant::now());
                 let mut search_board = board.clone();
                 let shared_tt = info.tt.clone();
@@ -236,6 +256,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 let threads = num_threads;
                 let is_ponder_search = is_ponder;
                 let ext_stop = external_stop.clone();
+                let suppress = suppress_bestmove.clone();
                 search_handle = Some(std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)
                     .spawn(move || {
@@ -349,7 +370,14 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         // Measure println wall-clock — if it blocks on stdout (slow
                         // reader on the other end), this is how we catch it.
                         let pr_start = std::time::Instant::now();
-                        if pv_consistent {
+                        // Suppress emit if the ponder is being abandoned because
+                        // a new go arrived (predicted opp move didn't happen).
+                        // The new go-handler set this flag before joining us; its
+                        // own search will emit the correct bestmove for the
+                        // actual position.
+                        if suppress.load(std::sync::atomic::Ordering::Relaxed) {
+                            // Skip emit. Caller's new go owns the next bestmove.
+                        } else if pv_consistent {
                             println!("bestmove {} ponder {}", move_to_uci(best_move), move_to_uci(si.pv_table[0][1]));
                         } else {
                             println!("bestmove {}", move_to_uci(best_move));
