@@ -96,17 +96,31 @@ Worth one focused experiment: Coda's `wdl = 0.15` final → ramp `0.05 → 0.15`
 
 Bullet cosine decay: `lr_initial → lr_final` over N superbatches. The endpoint value matters far more than the initial value.
 
-Cross-engine endpoints:
+Cross-engine endpoints, **ordered by magnitude** (Coda V9 is the lowest by ~10×):
 
-| Engine | Final LR | Notes |
-|---|---|---|
-| Bullet examples (jw1912's reference) | `0.001 × 0.3⁵ = 2.4e-6` | the "20× too high" threshold per CLAUDE.md |
-| Coda V5 | ~5e-6 | empirically validated; +47 Elo when reduced from 1e-4 |
-| Coda V9 | **lower than V5's 5e-6** | "v9 wants LOWER final LR than v5" per CLAUDE.md |
-| Hobbes h-1 to h-7 | 2.7e-6 | initial schedule |
-| Hobbes h-8 onward | **8.1e-6** | switched and reported +9.6 Elo over h-7 |
-| Hobbes stage-2 (h-29+) | **0.81e-6** | constant at this for the 200sb finetune phase |
-| Viridithas typical | 0.3 LR-drop-gamma applied 5x | various across nets |
+| Engine / config | Final LR | × Coda V9 (2.43e-7) |
+|---|---:|---:|
+| **Coda V9 (current)** | **2.43e-7** | 1.0 |
+| Hobbes stage-2 constant (h-29+) | 8.1e-7 | **3.3×** |
+| Hobbes h-1 to h-7 cosine endpoint | 2.7e-6 | 11× |
+| Bullet examples (jw1912's reference) | 2.4e-6 | 10× |
+| Coda V5 | 5e-6 | 21× |
+| **Hobbes h-8+ cosine endpoint** | **8.1e-6** | 33× |
+
+**Per CLAUDE.md, Coda V5→V9 was a 20× drop in final LR (5e-6 → 2.43e-7), and the SB400→SB800 +88 Elo win is the load-bearing evidence** that V9's sparse threat features keep converging deep into the tail. So 2.43e-7 isn't arbitrary — it's measured to deliver real gain over higher endpoints.
+
+But the optimum has not been bracketed. Coda has only the comparison `5e-6 → 2.43e-7` (positive). Intermediate points (1e-6, 5e-7, 1e-7) and below (5e-8) haven't been tested. Hobbes's measurement at h-8 (where they raised their endpoint *up* by 3× and gained +9.6 Elo) is at a much smaller architecture (768→256, no hidden chain) so doesn't directly transfer, but is a reminder that the optimum can sit higher than a "lower is always better" heuristic implies.
+
+### Warmup duration
+
+| Engine / config | Linear warmup duration |
+|---|---|
+| Bullet examples | ~5 SB |
+| CLAUDE.md historical note | 5-10 SB |
+| **Coda V9 measured optimum** | **30 SB** |
+| Hobbes | not documented; likely Bullet default ~5 |
+
+Coda's warm30 finding (warm40, warm50 H0'd; warm5 lost ~7 Elo per `project_v9_warmup`) is **3-6× longer than the cross-engine consensus**. Combined with the very-low endpoint, Coda V9 has unusually high sensitivity to both ends of the LR schedule — likely tied to the threat-feature head needing both a long ramp-up to converge cleanly AND a very low tail to refine on rare-feature gradients.
 
 **Coda's V9 belief: low-LR tail is load-bearing** — `project_v9_low_lr_tail_critical.md`. SB400 → SB800 delivered +88 Elo on V9 (vs flat on V7). The threat features keep converging deep into the tail.
 
