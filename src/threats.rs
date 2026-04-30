@@ -1574,8 +1574,22 @@ pub unsafe fn apply_threat_deltas(
     // Apply weight rows with SIMD when available. Fused pattern: load src
     // chunk into registers, apply all adds/subs, store to dst. Avoids the
     // separate copy_from_slice pass that used to precede apply_deltas_avx2.
+    //
+    // Dispatch order: AVX-512 (zmm, 32 i16 per reg) > AVX-2 (ymm, 16 i16
+    // per reg) > scalar. The AVX-512 path was added 2026-04-30 after the
+    // perf decomposition (`docs/coda_vs_reckless_nps_2026-04-23.md`)
+    // showed this function at 17.98% of cycles with no AVX-512 path.
     #[cfg(target_arch = "x86_64")]
     {
+        if is_x86_feature_detected!("avx512f")
+            && is_x86_feature_detected!("avx512bw")
+            && hidden_size % 32 == 0
+        {
+            unsafe {
+                apply_deltas_avx512(dst, src, threat_weights, hidden_size, &adds, &subs);
+            }
+            return;
+        }
         if is_x86_feature_detected!("avx2") && hidden_size % 16 == 0 {
             unsafe {
                 apply_deltas_avx2(dst, src, threat_weights, hidden_size, &adds, &subs);
@@ -1688,6 +1702,95 @@ unsafe fn apply_deltas_avx2(
     }
 }
 
+/// AVX-512 SIMD: apply threat weight rows to accumulator using register tiling.
+/// Mirrors `apply_deltas_avx2` exactly — same pattern, twice-wide registers
+/// (zmm = 32 i16 per reg vs ymm = 16). 8 zmm regs × 32 i16 = 256 elements
+/// per chunk vs AVX2's 128. For hidden_size=768 that's 3 chunks instead of
+/// 6 — half the outer-loop iterations.
+///
+/// Why this exists (2026-04-30): perf decomposition flagged
+/// `apply_threat_deltas` at 17.98% of cycles with no AVX-512 path.
+/// Reckless has dedicated AVX-512 threat code (`vectorized/avx512.rs`)
+/// and spends only 1.82% of cycles on the analogous `update_threats`.
+/// See `docs/coda_vs_reckless_nps_2026-04-23.md` Phase 2 result.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f", enable = "avx512bw")]
+unsafe fn apply_deltas_avx512(
+    dst: &mut [i16],
+    src: &[i16],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    adds: &[usize],
+    subs: &[usize],
+) {
+    use std::arch::x86_64::*;
+
+    let dst_ptr = dst.as_mut_ptr();
+    let src_ptr = src.as_ptr();
+    let w_ptr = threat_weights.as_ptr();
+
+    // 8 AVX-512 registers × 32 i16 = 256 elements per chunk
+    const REGS: usize = 8;
+    const CHUNK: usize = REGS * 32; // 256 elements
+
+    let mut offset = 0;
+    while offset < hidden_size {
+        let chunk_size = (hidden_size - offset).min(CHUNK);
+        let nregs = (chunk_size + 31) / 32;
+
+        // Seed chunk accumulator from src (parent).
+        let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
+        for i in 0..nregs {
+            regs[i] = _mm512_loadu_si512(src_ptr.add(offset + i * 32) as *const _);
+        }
+
+        // Paired add+sub. _mm512_cvtepi8_epi16 widens 32 i8 (loaded as a
+        // 256-bit ymm) into 32 i16 in a 512-bit zmm — sign-extending in a
+        // single VPMOVSXBW instruction. Same pattern as the AVX2 helper
+        // but at twice the width.
+        let mut ai = 0;
+        let mut si = 0;
+        while ai < adds.len() && si < subs.len() {
+            let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+            let sw = w_ptr.add(subs[si] * hidden_size + offset);
+            for i in 0..nregs {
+                let add_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(aw.add(i * 32) as *const __m256i));
+                let sub_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(sw.add(i * 32) as *const __m256i));
+                regs[i] = _mm512_sub_epi16(_mm512_add_epi16(regs[i], add_w), sub_w);
+            }
+            ai += 1;
+            si += 1;
+        }
+
+        // Remaining adds.
+        while ai < adds.len() {
+            let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+            for i in 0..nregs {
+                let add_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(aw.add(i * 32) as *const __m256i));
+                regs[i] = _mm512_add_epi16(regs[i], add_w);
+            }
+            ai += 1;
+        }
+
+        // Remaining subs.
+        while si < subs.len() {
+            let sw = w_ptr.add(subs[si] * hidden_size + offset);
+            for i in 0..nregs {
+                let sub_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(sw.add(i * 32) as *const __m256i));
+                regs[i] = _mm512_sub_epi16(regs[i], sub_w);
+            }
+            si += 1;
+        }
+
+        // Store registers back.
+        for i in 0..nregs {
+            _mm512_storeu_si512(dst_ptr.add(offset + i * 32) as *mut _, regs[i]);
+        }
+
+        offset += CHUNK;
+    }
+}
+
 /// Add multiple weight rows to an accumulator (SIMD for refresh).
 /// dst is already zeroed. Adds weight rows for each feature index.
 pub fn add_weight_rows(
@@ -1698,6 +1801,20 @@ pub fn add_weight_rows(
 ) {
     if indices.is_empty() { return; }
 
+    // Dispatch order: AVX-512 (zmm, 32 i16/reg) > AVX-2 > scalar.
+    // Sibling change to apply_threat_deltas's AVX-512 dispatch landed
+    // 2026-04-30 — same perf rationale (zmm register width on
+    // AVX-512+VNNI hosts).
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx512f")
+        && is_x86_feature_detected!("avx512bw")
+        && hidden_size % 32 == 0
+    {
+        unsafe {
+            add_weight_rows_avx512(dst, threat_weights, hidden_size, indices);
+        }
+        return;
+    }
     #[cfg(target_arch = "x86_64")]
     if is_x86_feature_detected!("avx2") {
         unsafe {
@@ -1766,6 +1883,60 @@ unsafe fn add_weight_rows_avx2(
         // Store registers back
         for i in 0..nregs {
             _mm256_storeu_si256(dst_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
+        }
+
+        offset += CHUNK;
+    }
+}
+
+/// AVX-512 SIMD: accumulate multiple weight rows into dst (full threat refresh).
+/// Mirrors `add_weight_rows_avx2` — 8 zmm regs × 32 i16 = 256 elements per
+/// chunk vs AVX2's 128. Half the outer-loop iterations on hidden_size=768.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f", enable = "avx512bw")]
+unsafe fn add_weight_rows_avx512(
+    dst: &mut [i16],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    indices: &[usize],
+) {
+    use std::arch::x86_64::*;
+
+    let dst_ptr = dst.as_mut_ptr();
+    let w_ptr = threat_weights.as_ptr();
+
+    const REGS: usize = 8;
+    const CHUNK: usize = REGS * 32; // 256 elements
+
+    let mut offset = 0;
+    while offset < hidden_size {
+        let chunk_size = (hidden_size - offset).min(CHUNK);
+        let nregs = (chunk_size + 31) / 32;
+
+        // Load existing dst chunk (the function adds to it, doesn't replace).
+        let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
+        for i in 0..nregs {
+            regs[i] = _mm512_loadu_si512(dst_ptr.add(offset + i * 32) as *const _);
+        }
+
+        // Add all weight rows; prefetch the next row to hide L3 latency.
+        for (fi, &idx) in indices.iter().enumerate() {
+            let aw = w_ptr.add(idx * hidden_size + offset);
+            if fi + 1 < indices.len() {
+                _mm_prefetch(
+                    w_ptr.add(indices[fi + 1] * hidden_size + offset) as *const i8,
+                    _MM_HINT_T0,
+                );
+            }
+            for i in 0..nregs {
+                let add_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(aw.add(i * 32) as *const __m256i));
+                regs[i] = _mm512_add_epi16(regs[i], add_w);
+            }
+        }
+
+        // Store back.
+        for i in 0..nregs {
+            _mm512_storeu_si512(dst_ptr.add(offset + i * 32) as *mut _, regs[i]);
         }
 
         offset += CHUNK;
@@ -1920,6 +2091,84 @@ mod tests {
             s ^= s << 17;
             s.wrapping_mul(0x2545_F491_4F6C_DD1D)
         }
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_apply_deltas_avx512_matches_scalar() {
+        // Skip when AVX-512 BW isn't available on the host — test
+        // becomes a no-op rather than a false failure.
+        if !is_x86_feature_detected!("avx512f") || !is_x86_feature_detected!("avx512bw") {
+            eprintln!("apply_deltas_avx512 test: AVX-512 unavailable on this host, skipping");
+            return;
+        }
+
+        let h = 768;
+        let n_threats = 64;
+        let mut r = rng(0xc0da_d317_a5_0512);
+
+        let mut weights = vec![0i8; n_threats * h];
+        for w in weights.iter_mut() { *w = (r() % 256) as i8; }
+
+        let mut src = vec![0i16; h];
+        for v in src.iter_mut() { *v = (r() as i32 as i16).rem_euclid(2001) - 1000; }
+
+        // Mixed adds+subs — exercises the paired inner loop.
+        let adds = [3usize, 8, 21, 40];
+        let subs = [5usize, 12, 30, 55, 63];
+        let mut scalar_dst = vec![0i16; h];
+        apply_deltas_scalar_ref(&mut scalar_dst, &src, &weights, h, &adds, &subs);
+        let mut avx512_dst = vec![0i16; h];
+        unsafe { apply_deltas_avx512(&mut avx512_dst, &src, &weights, h, &adds, &subs); }
+        assert_eq!(scalar_dst, avx512_dst, "apply_deltas_avx512 mixed diverged");
+
+        // Adds-only — tail loop for adds.
+        let mut scalar_dst = vec![0i16; h];
+        apply_deltas_scalar_ref(&mut scalar_dst, &src, &weights, h, &adds, &[]);
+        let mut avx512_dst = vec![0i16; h];
+        unsafe { apply_deltas_avx512(&mut avx512_dst, &src, &weights, h, &adds, &[]); }
+        assert_eq!(scalar_dst, avx512_dst, "apply_deltas_avx512 adds-only diverged");
+
+        // Subs-only — tail loop for subs.
+        let mut scalar_dst = vec![0i16; h];
+        apply_deltas_scalar_ref(&mut scalar_dst, &src, &weights, h, &[], &subs);
+        let mut avx512_dst = vec![0i16; h];
+        unsafe { apply_deltas_avx512(&mut avx512_dst, &src, &weights, h, &[], &subs); }
+        assert_eq!(scalar_dst, avx512_dst, "apply_deltas_avx512 subs-only diverged");
+
+        // Empty — identity copy of src.
+        let mut avx512_dst = vec![0i16; h];
+        unsafe { apply_deltas_avx512(&mut avx512_dst, &src, &weights, h, &[], &[]); }
+        assert_eq!(src, avx512_dst, "apply_deltas_avx512 empty-deltas should be identity");
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_add_weight_rows_avx512_matches_scalar() {
+        if !is_x86_feature_detected!("avx512f") || !is_x86_feature_detected!("avx512bw") {
+            eprintln!("add_weight_rows_avx512 test: AVX-512 unavailable, skipping");
+            return;
+        }
+
+        let h = 768;
+        let n_features = 32;
+        let mut r = rng(0xc0da_add1_a5_0512);
+
+        let mut weights = vec![0i8; n_features * h];
+        for w in weights.iter_mut() { *w = (r() % 256) as i8; }
+
+        let indices = [0usize, 3, 7, 11, 15, 19, 23, 27, 31];
+
+        let mut scalar_dst = vec![0i16; h];
+        for v in scalar_dst.iter_mut() { *v = (r() as i32 as i16).rem_euclid(501) - 250; }
+        let mut avx512_dst = scalar_dst.clone();
+
+        for &idx in &indices {
+            let base = idx * h;
+            for j in 0..h { scalar_dst[j] += weights[base + j] as i16; }
+        }
+        unsafe { add_weight_rows_avx512(&mut avx512_dst, &weights, h, &indices); }
+        assert_eq!(scalar_dst, avx512_dst, "add_weight_rows_avx512 diverged");
     }
 
     #[test]
