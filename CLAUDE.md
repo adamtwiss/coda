@@ -196,7 +196,7 @@ Polyglot .bin format. Weighted random selection. Polyglot Zobrist hashing with s
 - `BookFile` (string) — path to Polyglot .bin book
 - `MoveOverhead` (spin, 0-5000, default 100) — communication latency in ms
 - `Ponder` (check, default false)
-- `SparseL1` (check, default true) — sparse L1 matmul for v7
+- `SparseL1` (check, default false) — sparse L1 matmul kernel (Reckless dpbusd pattern). Disabled by default: dense int8 wins by ~6% NPS at L1=16 on production v9. Kept for future L1≥32 nets.
 - `SyzygyPath` (string) — path to Syzygy tablebase files
 
 ### Time Management
