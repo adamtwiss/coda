@@ -435,3 +435,45 @@ After every search-side merge cluster of ~+10 Elo:
   Reckless that motivate carve-out experiments
 - `docs/tt_hash_sensitivity_2026-04-27.md` — TT-pressure analysis behind
   the hash 64→512 finding
+
+## 2026-04-30 follow-up — sudden-bucket convergence probe refines the prescription
+
+`scripts/probe_convergence_depth.py` over the 63 sudden candidates,
+depths [14, 16, 18, 20, 22, 24], on snapshot main binary. Different
+mechanism profile from the moderate-stepped bucket:
+
+| Bucket | N | % | Reading |
+|---|---:|---:|---|
+| d14 (lowest probe) | 26 | 41% | TT-state-bound OR played < d14 OR ordering-at-game-time |
+| d16-d24 | 22 | 35% | Depth-recoverable (extension-class addressable) |
+| NEVER in d24 | 15 | 24% | Eval-bound (training-side lever) |
+
+Per-opponent NEVER rate: Velvet 62% (NPS-driven, sudden cliffs past
+d24), Seer 50% (style/eval), Arasan 0% (every cliff depth-recoverable).
+
+**Refines the prescription:**
+
+- The **"extensions on tactical signals" lever is smaller than the
+  doc's original prior** for the sudden bucket. Only ~22 candidates
+  (35% of 63 sudden, ~10% of all losses) sit in the d16-d24 range
+  where extensions could pay. Smaller addressable share than the
+  moderate-stepped +3-6 ply bucket (40% of 45).
+- **Training-side bumps up.** 24% of sudden = 7% of all losses are
+  eval-bound at d24. Group-lasso, Recipe C re-evaluation, factor
+  net all attack this subset directly.
+- The **41% d14-converging subset is suspicious** — Coda picks
+  SF-best at the lowest probe depth from clean state but blundered
+  in the actual game. Same shape as the moderate-stepped TT-state
+  bucket. Need to parse played_depth from PGN to split TT-state vs
+  played-low-depth vs game-time ordering.
+
+**Concrete next steps queued:**
+- Parse played_depth from PGN for the 63 sudden candidates
+- SF-arbitrate the 15 NEVER cases at d28-32 to confirm eval-blind
+  vs ambiguous-tactical-flip
+- Don't fire generic extension experiments yet — per-class
+  analysis of the 22 d16-d24 cases (recap ext, SE, check ext,
+  threat ext) before designing a feature
+
+Saved: `memory/project_sudden_bucket_is_bimodal.md`.
+Output: `/tmp/convergence_sudden.csv` (63 rows).
