@@ -258,11 +258,30 @@ Coda's existing datagen at `src/datagen.rs:248-257` uses 4-9 random plies but **
 
 Coda V9 uses `SCReLU` at FT, then `CReLU` through hiddens (per CLAUDE.md hidden-layer activation findings). **Same as Hobbes h-39, not h-40.** The dual-activation FT (Hobbes h-40 pattern) isn't currently in Coda.
 
+### Important distinction: Coda V8 "dual L1" was a *different* mechanism
+
+`docs/v7_training_guide.md:522` describes a **Coda V8** experiment with config `v8_768pw_h16x32_dual.rs`:
+- Architecture: `768pw → 16 → dual(32) → 32 → output`
+- Mechanism: **two parallel hidden paths inside L1** (the "dual L1")
+- Activation chain: `CReLU → pairwise + dual L1`
+- Status: "v8 dual L1 — superseded by v9 threat architecture" (`:364`) — **abandoned for the V9 pivot, not because of thorough SPRT-driven rejection**
+
+**Hobbes h-40 is structurally different.** Hobbes puts the parallelism at the **FT output**, not inside L1. Specifically: take the 1280pw FT output, apply **two different activations to it in parallel** (CReLU and "csrelu" — custom-scaled-ReLU), and **concatenate** the two activated outputs to feed L1. So L1's input is double-width (effectively 2× the same activation output viewed through complementary nonlinearities). Hobbes's `16x2` in `(16x2 → 32 → 1)` is 16 L1 inputs from each of the two activation branches.
+
+| Mechanism | Where | What is parallelised |
+|---|---|---|
+| Coda V8 | inside L1 | parallel hidden paths in the hidden chain |
+| Hobbes h-40 | at FT output | parallel activations on the same accumulator |
+
+The two are **independent experiments**. V8's incomplete result doesn't predict h-40-shape's result on Coda.
+
 ### Coda recommendation — activation
 
-Worth a focused architecture experiment: **dual-activation FT** (`crelu + csrelu` concatenated, doubling FT output dim) on Coda V9. Bullet supports custom activation chains. Test budget: one full SB800 train + SPRT vs current V9.
+Worth a focused architecture experiment: **dual-activation FT** (`crelu + csrelu` concatenated, doubling L1 input dim) on Coda V9. Distinct from V8's "dual L1" parallel-path-inside-L1 work — that's a separate untested-then-abandoned branch and is not the proxy for this. Bullet supports custom activation chains via the trainer config. Test budget: one full SB800 train + SPRT vs current V9 (single-SCReLU FT).
 
 This is a training-architecture experiment so blocked by the variance issue until factor reverts and we know our floor.
+
+**"Consensus H0 = dig deeper" caveat applies softly here.** Coda's institutional memory of "we tried dual and it didn't work" risks deterring the h-40 experiment, but the abandoned V8 work tested a different mechanism. The h-40 pattern has +9.5 Elo precedent on the same architecture endpoint Coda v9 sits on.
 
 ## Architecture co-evolution
 
