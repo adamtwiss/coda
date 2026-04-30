@@ -44,7 +44,7 @@ ordering and NMP.
 Coda's higher LMP/FP/SEE rates are a SYMPTOM of weaker ordering,
 not a sign that we need to prune harder.
 
-### 3. The NMP cutoff-rate gap (30% vs 57%) is the highest-leverage finding
+### 3. (PARTIAL — cut_node gate MERGED #864 as directional positive +0.5 / 59K, third attempt; #772/#807 prior H0s. Gap not closed structurally.) The NMP cutoff-rate gap (30% vs 57%) is the highest-leverage finding
 
 Same formula structure (Coda: `r = NMP_BASE_R + depth/NMP_DEPTH_DIV
 + capture_bonus + eval_margin/NMP_EVAL_DIV`; Reckless: `r = (5335 +
@@ -128,6 +128,8 @@ Coda bench: `./target/release/coda bench 12` (8 positions, depth 12).
 Same node-count regime per position; ratios meaningful.
 
 ## Next concrete experiment
+
+> **Status (2026-04-30): MERGED on third attempt as #864 directional positive (commit f58a690).** Trail: #772 H0 -2.3 / 17.9K (default tunables) → SPSA #790 NMP cluster retune → #807 H0 -0.4 / 49.6K (post-tune, signal-not-there at that trunk state) → #864 +0.5 ±1.2 / 59.2K LLR -0.67, stopped at upper-CI-below-elo1 and merged as directional positive. Yin-yang retune #870 applied (NMP_EVAL_MAX big mover) but didn't extend the direct gain. The 30%→57% NMP cutoff gap is real but `cut_node` gating alone closes only a fraction.
 
 `experiment/nmp-cut-node-gate-only`:
 

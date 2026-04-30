@@ -16,7 +16,7 @@ Summary: **4 CRITICAL, ~14 HIGH/LIKELY, ~20 SPECULATIVE.** Nothing in the search
 
 ## CRITICAL findings
 
-### C2026-04-25-1. Bullet C8 fix is INCOMPLETE — x-ray same-type-pair semi-exclusion still buggy
+### C2026-04-25-1. (RESOLVED — Bullet C8 x-ray fix landed; net-vs-net via #829/#836; full C8FIXED retune trail #836→#847→#854 settled, see experiments.md 2026-04-27/28) Bullet C8 fix is INCOMPLETE — x-ray same-type-pair semi-exclusion still buggy
 
 **File:** `bullet/crates/bullet_lib/src/game/inputs/chess_threats.rs:516, 548` (positive and negative x-ray rays)
 
@@ -31,7 +31,7 @@ Affects same-type-pair x-rays — rook-behind-rook on files (very common in midd
 
 **Fix:** replace both `sq < xray_sq` with `(sq ^ phys_flip) < (xray_sq ^ phys_flip)` at lines 516 and 548. Verify with extended fuzzer covering same-type x-ray cases.
 
-### C2026-04-25-2. `coda fetch-net` rejects every valid NNUE since 2026-04-22
+### C2026-04-25-2. (RESOLVED — fetch-net magic check inverted to positive validation, commit ff6b130) `coda fetch-net` rejects every valid NNUE since 2026-04-22
 
 **File:** `src/main.rs:958-964` (commit `b7c0312` from the 2026-04-22 audit fix)
 
@@ -47,7 +47,7 @@ The NNUE magic is `0x4E4E5545 LE` → bytes `[0x45, 0x55, 0x4E, 0x4E]` = `"EUNN"
 
 **Fix:** invert to positive validation: `bytes[0..4] != [0x45, 0x55, 0x4E, 0x4E]` rejects.
 
-### C2026-04-25-3. UCI `eval` and CLI `eval-dist` silently drop v9 threat features
+### C2026-04-25-3. (RESOLVED — UCI eval + eval-dist now build real ThreatStack with active=net.has_threats, commit ff6b130) UCI `eval` and CLI `eval-dist` silently drop v9 threat features
 
 **Files:** `src/uci.rs:552-554` (UCI `eval`), `src/main.rs:1313` (`run_eval_dist`)
 
@@ -61,7 +61,7 @@ The 2026-04-22 audit's C8 LIKELY #17/#20 patched this for `forward()` and `check
 
 **Cross-cutting recommendation:** sweep all `evaluate_nnue` call sites — there may be a third site with this same pattern.
 
-### C2026-04-25-4. `--no-xray-trained` flag documented but doesn't exist
+### C2026-04-25-4. (RESOLVED — flag made parseable, commit 26d5ac4) `--no-xray-trained` flag documented but doesn't exist
 
 **File:** `src/main.rs:321-322` (commit `d290831`)
 
@@ -80,11 +80,13 @@ The intended escape hatch for converting `--xray 0` Bullet nets is unusable. Tod
 
 ### Search / new code
 
+(Status note 2026-04-30: N6 STM fix landed b85e08f; SEE_CAP_MULT deleted 73ed6da; NMP_VERIFY_DEPTH/NMP_EVAL_DIV ranges widened fbe4a2f. C8 fuzzer cherry-picked 02df2ff + post-fix Bullet ref 076b32f. UCI `eval` row resolved with C2026-04-25-3.)
+
 | Location | Issue |
 |---|---|
-| `src/search.rs:2715-2716` | **N6 promotion-imminent extension (#637, +1.6 H1) is dead code.** Reads `board.side_to_move` AFTER `make_move`, so STM is the OPPONENT. Both branches unreachable: white-to-rank-7 sees `side_to_move==BLACK`, black-to-rank-2 sees `side_to_move==WHITE`. Use pre-move `us` from line 2151. **Re-test could land bigger.** |
-| `src/search.rs:90` | **`SEE_CAP_MULT` is a dead tunable.** Declared in `tunables!` macro and exposed via UCI/SPSA but never read anywhere in `src/`. Tune #750 perturbed it 152→171 — wasted SPSA budget. The capture-SEE-prune formula uses `SEE_MATERIAL_SCALE`. CLAUDE.md docs the formula incorrectly. Either delete or wire it in. |
-| `src/search.rs:76` | **`NMP_VERIFY_DEPTH` SPSA-pinned to floor.** Range `[8, 20]`; tune #750 drove it 13→8 (exact floor). Strong directional signal that the optimum is below 8. Widen min to 4-6 next tune. |
+| `src/search.rs:2715-2716` | **(RESOLVED — commit b85e08f) N6 promotion-imminent extension (#637, +1.6 H1) is dead code.** Reads `board.side_to_move` AFTER `make_move`, so STM is the OPPONENT. Both branches unreachable: white-to-rank-7 sees `side_to_move==BLACK`, black-to-rank-2 sees `side_to_move==WHITE`. Use pre-move `us` from line 2151. **Re-test could land bigger.** |
+| `src/search.rs:90` | **(RESOLVED — deleted, commit 73ed6da) `SEE_CAP_MULT` is a dead tunable.** Declared in `tunables!` macro and exposed via UCI/SPSA but never read anywhere in `src/`. Tune #750 perturbed it 152→171 — wasted SPSA budget. The capture-SEE-prune formula uses `SEE_MATERIAL_SCALE`. CLAUDE.md docs the formula incorrectly. Either delete or wire it in. |
+| `src/search.rs:76` | **(RESOLVED — ranges widened, commit fbe4a2f) `NMP_VERIFY_DEPTH` SPSA-pinned to floor.** Range `[8, 20]`; tune #750 drove it 13→8 (exact floor). Strong directional signal that the optimum is below 8. Widen min to 4-6 next tune. |
 | `src/search.rs:2136-2147` | **Hindsight reduction not gated on `excluded_move`.** Other modifiers touching SE re-search (NMP, RFP, ProbCut, FH-blend, TT-store, corrhist) are all gated. Consistency gap. May weaken singular detection at the SE re-search ply. |
 | `src/uci.rs:552-554` | UCI `eval` silently zeros v9 threat features (Critical C2026-04-25-3, listed here for cross-reference). |
 | `src/movepicker.rs:644-647` | **Mobility-delta uses pre-move occupancy for `to_mob` on sliders.** Own piece at `from` blocks the back-ray. Under-counts slider mobility. SPSA partially compensated by tuning `MOBILITY_DELTA_WEIGHT` 32→30 but signal is noisier than intended. |
@@ -96,7 +98,7 @@ The intended escape hatch for converting `--xray 0` Bullet nets is unusable. Tod
 |---|---|
 | `bullet/crates/bullet_lib/src/value/loader/viribinpack.rs:178-211`, `text.rs` | **C8 fix doesn't cover viribinpack or text loaders.** They produce `bulletformat::ChessBoard` without setting `extra[0]`, so `phys_flip` reads 0 even for real-STM=Black — silently re-introduces C8. Production T80 binpack goes through `sfbinpack` (covered), so production safe today; gap is latent. |
 | `bullet/` (local working tree) | **Local checkout 2 commits behind origin** (`a1530a9` vs `281efb3`). Missing the C8 direct-path fix and the `MAX_THREAT_ACTIVE 256→512` + `--factoriser`/`--l1-decay` mutex. Anyone training from this tree pre-pull regenerates the C8 bug. One `git pull --ff-only` plus rebuild. |
-| Coda main branch | **C8 threat-frame fuzzer never landed.** Lives only on `origin/fix/c8-threat-fuzzer` (`9571622`). Both `enumerate_threats_bullet_ref` and `coda fuzz-threats` subcommand absent from main. Could have caught the x-ray frame hole (CRITICAL #1). Cherry-pick recommended; expand to cover real-STM=White same-type-pair x-rays too. |
+| Coda main branch | **(RESOLVED — fuzzer cherry-picked, commits 02df2ff + 076b32f post-C8fix-2 reference) C8 threat-frame fuzzer never landed.** Lives only on `origin/fix/c8-threat-fuzzer` (`9571622`). Both `enumerate_threats_bullet_ref` and `coda fuzz-threats` subcommand absent from main. Could have caught the x-ray frame hole (CRITICAL #1). Cherry-pick recommended; expand to cover real-STM=White same-type-pair x-rays too. |
 | `bullet/crates/bullet_hip_backend/kernels/base/optimiser.cu:107-140` | **C9 HIP Adam ABI still broken** on both `feature/threat-inputs` and `feature/decouple-l1-lr` branches. C++ kernel ignores the `l1` param, every subsequent param shifts by one slot, `gradients` becomes a wild pointer. Production unaffected (CUDA path), but flagged as deferred. |
 | `bullet/crates/bullet_lib/src/game/inputs/chess_threats.rs:482-484` | **`--xray 0` training still produces an under-trained net.** Random-init x-ray rows that activate at inference. Coda v10 file format + `refuse-to-load` mitigates if user honors `--xray-trained`/`--no-xray-trained`. Gap: `--no-xray-trained` flag doesn't exist (CRITICAL C2026-04-25-4). |
 

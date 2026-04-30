@@ -198,6 +198,10 @@ limit = if improving { LMP_BASE_IMP + d²/2 } else { LMP_BASE_NOIMP + d²/2 }
 
 ## Tier-2 outliers (5+ engine consensus, lower expected Elo)
 
+> **Status (2026-04-30):**
+> - **Item 11 (FH-blend depth cap):** H0 #814 -0.3 ±1.3 / 55.3K. Drop.
+> - **Item 14 (`ttPv` in SE):** H0 #821 -0.1 ±1.2 / 68.3K — signal-overlap with merged DEXT decomposition (#817). Drop.
+
 | # | Item | Coda location | Consensus | Expected |
 |---|------|--------------|-----------|----------|
 | 11 | No FH-blend depth cap | `search.rs:3190` | Reckless `weight = min(d, 8)`; current Coda formula approaches `score` at depth 25+ | +1 to +3 |
@@ -326,22 +330,23 @@ Initial delta `= base + avg² / divisor` (SF: `5 + threadIdx%8 + abs(meanSqScore
 
 **Mixed signal across engines (only SF clearly has it). +1 to +3 Elo, but disrupts repetition semantics — needs careful gating.**
 
-## Status overview (2026-04-26 update)
+## Status overview (2026-04-30 update)
 
-**Tier-1 batch resolution: 7/8 H0, 1 pending (LMP two-row not tried).**
+**Tier-1 batch resolution: most resolved.** Of the 10 rows below: 7 H0, 1 merged (material-np-only), 1 LMP-shape split (Phase A merged, Phase B H0), 1 NMP-cut-node-gate ultimately merged on third attempt. Two truly untouched: main-history-stm-dim (#3) and halfmove-200-revert (#7).
 
 | # | Item | OB | Result | Follow-up |
 |---|------|-----|--------|-----------|
-| 1 | lmr-c-swap | #774 | H0 −9.3 | **structural finding (gate asymmetry); #780 + #791 retune are real lever** |
+| 1 | lmr-c-swap | #774 | H0 −9.3 | **structural finding (gate asymmetry); #780 + #791 retune confirmed signal-not-there post-#809 H0 -1.2** |
 | 2 | triple-extension | #787 | H0 −1.0 | **#792 retune found no basin (3-4% noise drift); drop — signal-not-there** |
 | 3 | main-history-stm-dim | — | not tried | high priority, untouched |
 | 4 | enter-threat-penalty | #773, #781 | H0 / H0 | drop (signal-overlap with threat-history) |
-| 5 | multicut-fix | — | not tried | |
+| 5 | multicut-fix | #827 | **H0 -10.9** | drop; signal-overlap with post-#817 SE/DEXT cluster |
 | 6 | pawn-history-8192 | #785, #797 | H0 −1.2 / H0 −3.3 | **bisection went worse — drop; possible -919 init refinement** |
 | 7 | halfmove-200-revert | — | not tried | |
-| 8 | material-np-only | — | not tried | |
-| 9 | LMP single-row B=8 | — | not tried | high priority, untouched |
-| 10 | hist-prune-gate-drop | #786 | trending H0 | drop |
+| 8 | material-np-only | #813 | **MERGED +0.6 / 117K** | -20% bench reduction (commit d2aca36); retune-on-branch candidate |
+| 9 | LMP single-row B=8 | #808/#810 (Phase A) / #818/#832 (Phase B) | **Phase A MERGED +4.4 banked; Phase B H0** | Phase A: direct-check carve-out (+2.54) + skip-quiets (+1.86); Phase B Reckless-shape full retune comprehensively rejected |
+| 10 | hist-prune-gate-drop | #786 | H0 stopped -0.2 / 56.5K, **MERGED for consensus alignment** (ebe9ad6) | |
+| (extra) | nmp-cut-node-gate | #772, #807, #864 | H0 / H0 / **MERGED** +0.5 / 59.2K (3rd attempt, directional positive, commit f58a690) | yin-yang retune #870 didn't extend gain |
 
 **Calibration**: doc's "Tier-1 +25-50 Elo" expectation collapses to
 maybe +5-15 once retunes resolve. Consensus-port priors should be
@@ -359,14 +364,20 @@ Suggested order; each line is "branch name → expected Elo → key change":
 
 **Tier 1 — highest leverage (likely +25-50 Elo aggregated):**
 
-1. ~~`experiment/nmp-cut-node-gate-only` → **+5 to +12**~~ — **TESTED H0**. Default-tunable SPRT trended low; SPSA #790 found big movements (NMP_BASE_R +14%, NMP_UNDEFENDED_MAX −37%, NMP_MIN_DEPTH +15%) but post-tune SPRT **#807 H0 −0.4 / 49.6K**. Bucket: signal-not-there at our trunk's NMP balance. Drop. The 30%→57% gap is real but `cut_node` gating alone, even with retune, doesn't close it for us.
+> **Status update (2026-04-30):** Items 1, 3, 4, 5, 6, 7 (Phase B), 8 — RESOLVED
+> (most H0, item 1 ultimately merged as directional positive on third
+> attempt, item 7 split into Phase A merged + Phase B rejected, item 8
+> merged for consensus alignment). Items 2 (main-history-stm-dim) and the
+> Tier-1 pruning-shape work remain untested.
+
+1. ~~`experiment/nmp-cut-node-gate-only` → **+5 to +12**~~ — **TESTED H0**. Default-tunable SPRT trended low; SPSA #790 found big movements (NMP_BASE_R +14%, NMP_UNDEFENDED_MAX −37%, NMP_MIN_DEPTH +15%) but post-tune SPRT **#807 H0 −0.4 / 49.6K**. Bucket: signal-not-there at our trunk's NMP balance. Drop. The 30%→57% gap is real but `cut_node` gating alone, even with retune, doesn't close it for us. **UPDATE 2026-04-29: third attempt #864 merged as directional positive +0.5 / 59.2K (commit f58a690).** Yin-yang retune #870 didn't extend the gain.
 2. `experiment/main-history-stm-dim` → +3 to +8 → add stm to main quiet history 4D→5D. **Move-ordering cause-fix; FMC compounds.**
-3. `experiment/enter-threat-penalty` → +3 to +6 → symmetric to escape bonus. **All 6 threat-aware engines have it; ordering cause-fix.**
-4. `experiment/pawn-history-8192` → +3 to +7 → 512→8192, optionally with `-919` init. **Smallest in field (2-32× peers); ordering cause-fix.**
-5. `experiment/triple-extension` → +3 to +8 → Alexandria pattern with `TRIPLE_MARGIN=75`. 13/14 engines have it.
-6. `experiment/lmr-c-swap` → +6 to +10 → swap `LMR_C_QUIET=93, LMR_C_CAP=120`. SPSA detuning artifact.
-7. `experiment/lmp-two-row` → +5 to +8 → halved d² + improving multiplier separated. **Empirical: 28× LMP fire rate gap.**
-8. `experiment/hist-prune-gate-drop` → +3 to +6 → drop `!improving && !unstable` + tighten FUT_LMR_DEPTH 16→13, BAD_NOISY_DEPTH 13→8. **Empirical: 5× FP, 3× SEE fire rate gap.**
+3. ~~`experiment/enter-threat-penalty` → +3 to +6~~ — **H0** vanilla #773 -0.4 / 5.2K, refined-with-split-tunables #781 H0 +0.1 / 94.7K. Drop (signal-overlap with threat-aware history).
+4. ~~`experiment/pawn-history-8192` → +3 to +7~~ — **H0** #785 -1.2 / 27.7K at 8192; #797 bisection at 2048 worse (-3.3 / 8.3K). Drop.
+5. ~~`experiment/triple-extension` → +3 to +8~~ — **H0** #787 -1.0 / 30.7K + SPSA #792 found no basin. Drop (signal-not-there; DEXT already covers same cases).
+6. ~~`experiment/lmr-c-swap` → +6 to +10~~ — **H0** #774 -9.3 / 1.6K (stopped). Surfaced gate-asymmetry diagnostic; follow-up `experiment/capture-lmr-hist-adjustment` #780 H0 + retune #791 + post-tune #809 H0 -1.2 / 28.5K. Drop.
+7. `experiment/lmp-two-row` → +5 to +8 → halved d² + improving multiplier separated. **Empirical: 28× LMP fire rate gap.** — **PARTIALLY RESOLVED**: Phase A `lmp-direct-check-carveout` (#808 +2.54) and `lmp-skip-quiets` (#810 +1.86) MERGED. Phase B Reckless-shape full retunes #818 H0 -2.4 + #832 H0 -3.3 — drop the formula change. +4.4 Elo banked from Phase A.
+8. ~~`experiment/hist-prune-gate-drop` → +3 to +6~~ — **H0 stopped -0.2 / 56.5K** (#786) but **MERGED** for consensus alignment / code hygiene (commit ebe9ad6). Drop FUT_LMR_DEPTH/BAD_NOISY_DEPTH tightening sub-items unless retune-on-branch turns up signal.
 
 **Tier 2 — high-confidence novel mechanisms (likely +12-30 Elo aggregated):**
 
@@ -376,18 +387,18 @@ Suggested order; each line is "branch name → expected Elo → key change":
 12. `experiment/threat-bucketed-cont-corr` → +2 to +4 → Plenty pattern; intersects Coda's threat agenda.
 13. `experiment/sf-small-probcut` → +2 to +5 → SF TT-trust shortcut. ~Zero NPS cost.
 14. `experiment/optimism-full-p1` → +3 to +7 → K1+K2+optBase+divisor SPSA on Stormphrax-shape (5 engines).
-15. `experiment/multicut-fix` → +1 to +4 → drop `singular_beta >= beta` clause; return Reckless `(2·s + beta)/3`.
+15. ~~`experiment/multicut-fix` → +1 to +4~~ — **H0 #827 -10.9 ±4.4 / 4.5K**. Bench dropped 19.6%; signal-overlap with post-#817 SE/DEXT cluster. Drop (possible refined retry: gate on `cut_node && !is_pv` like Reckless).
 
 **Tier 3 — small wins, low risk:**
 
 16. `experiment/halfmove-200-revert` → +1 to +4 → `(200-hm)/200` with bench A/B. Eval scale.
-17. `experiment/material-np-only` → +2 to +5 → non-pawn material in scaling. Eval scale.
+17. ~~`experiment/material-np-only` → +2 to +5~~ — **MERGED** #813 +0.6 ±0.9 / 117K (LLR -0.77 stopped, can't reach H1=3 at this magnitude). Genuine small positive with -20% bench reduction (commit d2aca36).
 18. `experiment/ttmove-history` → +1 to +3 → SF global stat.
 19. `experiment/lowply-history` → +1 to +3 → SF early-ply table.
 20. `experiment/variance-aspiration` → +1 to +3 → SF/Reckless/Viri.
 21. `experiment/conthist-combined-modulator` → +1 to +3 → Stormphrax/Viri.
-22. `experiment/fh-blend-depth-cap` → +1 to +3 → `min(d, 8)` weight.
-23. `experiment/eval-quantisation-16cp` → 0 to +2 → Plenty pattern.
+22. ~~`experiment/fh-blend-depth-cap` → +1 to +3~~ — **H0 #814 -0.3 ±1.3 / 55.3K**. Bench-flat, didn't carry Elo. Drop.
+23. ~~`experiment/eval-quantisation-16cp` → 0 to +2~~ — **H0 #828** (Plenty pattern, trended H0 early). Drop.
 24. `experiment/clover-combined-mat-hm` → +1 to +3 → single-multiply.
 25. `experiment/sf-source-bonus-boost` → +1 to +2 → SF write-time scaling.
 
