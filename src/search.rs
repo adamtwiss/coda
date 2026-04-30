@@ -2267,6 +2267,7 @@ fn negamax(
         && prior_reduction >= 2
         && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
         && static_eval > -INFINITY
+        && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification (consistency with NMP/RFP/ProbCut/FH-blend/corrhist)
         && FEAT_HINDSIGHT.load(Ordering::Relaxed)
     {
         // Both sides optimistic about their position (eval_sum > threshold)
