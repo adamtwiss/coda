@@ -2330,8 +2330,12 @@ fn negamax(
         }
     };
 
+    // Reckless port: when child subtree was quiet (few cutoffs), lower NMP
+    // threshold by 20cp — null move is safer in positionally-stable
+    // subtrees. Mirrors Reckless search.rs:552.
+    let nmp_quiet_child_bonus: i32 = if ply_u + 1 <= MAX_PLY + 1 && info.cutoff_count[ply_u + 1] < 2 { 20 } else { 0 };
     if depth >= tp(&NMP_MIN_DEPTH) && !in_check && ply > 0 && stm_non_pawn != 0
-        && beta - alpha == 1 && static_eval >= beta
+        && beta - alpha == 1 && static_eval >= beta - nmp_quiet_child_bonus
         && !prev_was_null  // Prevent consecutive null moves
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
