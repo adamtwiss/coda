@@ -102,7 +102,7 @@ tunables!(
     (HIST_PRUNE_DEPTH, 3, 1, 8, 1.5),
     (HIST_PRUNE_MULT, 12825, 500, 50000, 2475.0),
     (SEE_QUIET_MULT, 32, 5, 80, 3.75),
-    (LMR_HIST_DIV, 6744, 2000, 100000, 4900.0),
+    (LMR_HIST_DIV, 7814, 2000, 100000, 4900.0),
     (LMR_C_QUIET, 133, 40, 300, 13.0),
     (LMR_C_CAP, 103, 80, 350, 12.5),
     (SE_DEPTH, 4, 4, 20, 2.0),
@@ -194,7 +194,7 @@ tunables!(
     // Default 32 = ±256 typical range, additive to history (~1000s scale).
     (MOBILITY_DELTA_WEIGHT, 36, 0, 256, 8.0),
     (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
-    (LMR_THREAT_DIV, 4, 1, 5, 1.5),
+    (LMR_THREAT_DIV, 5, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
     // Threat-aware LMR (v9 only): reduce less when this move creates ≥ MIN
     // new threats against opp K/Q/R (queries threat_stack delta — catches
@@ -256,7 +256,7 @@ tunables!(
     // audit tune. Widened ranges allow SPSA to reach disable-endpoint
     // values where appropriate (per feedback_spsa_as_feature_utility_diagnostic).
     (NMP_MIN_DEPTH, 7, 2, 20, 1.5),              // was hardcoded 3 (NMP activation gate, 2 sites)
-    (HINDSIGHT_MIN_DEPTH, 4, 1, 20, 1.5),        // was hardcoded 2 (hindsight reduction gate)
+    (HINDSIGHT_MIN_DEPTH, 3, 1, 20, 1.5),        // was hardcoded 2 (hindsight reduction gate)
     (TT_CUTOFF_HALFMOVE_MAX, 87, 50, 100, 3.0),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
 );
 
