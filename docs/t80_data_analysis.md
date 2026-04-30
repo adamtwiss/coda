@@ -33,8 +33,8 @@ games end. Data quality is consistent across all plies.
 
 ## Score Distribution
 
-| |Score| range | Count | % | Notes |
-|---------------|-------|---|-------|
+| \|Score\| range | Count | % | Notes |
+|---|---|---|---|
 | 0-99 | 2,179,814 | **43.6%** | Roughly equal positions |
 | 100-499 | 1,115,446 | **22.3%** | Slight advantage |
 | 500-999 | 239,941 | 4.8% | Clear advantage (~1 pawn) |
