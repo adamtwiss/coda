@@ -190,6 +190,14 @@ tunables!(
     (PROBCUT_KING_ZONE_MAX, 7, 2, 9, 1.5),
     (LMR_THREAT_DIV, 4, 1, 5, 1.5),
     (LMR_KING_PRESSURE_DIV, 6, 2, 9, 1.5),
+    // Threat-bundle (v9 only): when a move creates ≥ MIN new threats against
+    // opponent's K/Q/R, apply two coupled LMR effects on the same trigger:
+    //   1) reduction -= LMR_THREAT_MAJOR_BONUS (carve-out, mirrors #868)
+    //   2) on LMR fail-high, force doDeeper = 1 (concentrate extra search
+    //      effort on tactical re-searches)
+    // Coda-original mechanism leveraging v9's attacker→victim threat encoding.
+    (LMR_THREAT_MAJOR_MIN, 1, 1, 3, 0.5),
+    (LMR_THREAT_MAJOR_BONUS, 1, 0, 2, 0.5),
     (FUT_THREATS_MARGIN, 21, 0, 200, 10.0),
     (DISCOVERED_ATTACK_BONUS, 6105, 0, 30000, 1500.0),
     // T1.4: quiet-slider move that completes a battery — lands on a square
@@ -2873,6 +2881,33 @@ fn negamax(
 
         let mut new_depth = depth - 1 + extension + singular_extension;
 
+        // Threat-bundle trigger (v9 only): compute once whether this just-made
+        // move creates ≥ MIN new threats against opponent's K/Q/R. Used by:
+        //   1) LMR reduction carve-out (reduce less)
+        //   2) LMR fail-high doDeeper override (force +1 ply on re-search)
+        // Both effects share this single trigger to concentrate extra search
+        // effort on tactical moves identified by v9's threat-delta encoding.
+        let creates_major_threat: bool = if info.threat_stack.active {
+            let opp = board.side_to_move;
+            let us_color = crate::types::flip_color(opp);
+            let opp_k = crate::threats::colored_piece(opp, KING) as u8;
+            let opp_q = crate::threats::colored_piece(opp, QUEEN) as u8;
+            let opp_r = crate::threats::colored_piece(opp, ROOK) as u8;
+            let mut new_major: i32 = 0;
+            for d in info.threat_stack.current().delta.as_slice() {
+                if !d.add() { continue; }
+                if d.attacker_cp() / 6 != us_color as u8 { continue; }
+                let v = d.victim_cp();
+                if v == opp_k || v == opp_q || v == opp_r {
+                    new_major += 1;
+                    if new_major >= tp(&LMR_THREAT_MAJOR_MIN) { break; }
+                }
+            }
+            new_major >= tp(&LMR_THREAT_MAJOR_MIN)
+        } else {
+            false
+        };
+
         // Propagate double extension counter to child
         if ply_u + 1 <= MAX_PLY {
             info.double_ext_count[ply_u + 1] = info.double_ext_count[ply_u]
@@ -3000,6 +3035,13 @@ fn negamax(
                 // from NMP/ProbCut gates — tactical king positions need depth.
                 reduction -= king_zone_pressure / tp(&LMR_KING_PRESSURE_DIV);
 
+                // Threat-bundle effect 1 (v9 only): reduce less when this move
+                // creates a major threat (K/Q/R). Trigger computed pre-LMR
+                // (creates_major_threat) and shared with the doDeeper override.
+                if creates_major_threat {
+                    reduction -= tp(&LMR_THREAT_MAJOR_BONUS);
+                }
+
                 // Clamp: never extend (negative), never reduce past depth 1
                 if reduction < 0 {
                     reduction = 0;
@@ -3076,6 +3118,16 @@ fn negamax(
                     do_deeper_adj = 1;
                 } else if lmr_score < best_score + 20 {
                     do_deeper_adj = -1;
+                }
+
+                // Threat-bundle effect 2 (v9 only): when the move creates a
+                // major threat AND survived LMR-reduced search, force +1 ply
+                // re-search. Concentrates extra effort on tactical lines that
+                // already passed the reduced-depth filter — overrides any
+                // doShallower verdict (the standard logic would shallow-search
+                // tactical moves that score barely above alpha).
+                if creates_major_threat {
+                    do_deeper_adj = 1;
                 }
 
                 lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth + do_deeper_adj, ply + 1, !cut_node);
