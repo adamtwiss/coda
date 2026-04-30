@@ -3148,6 +3148,15 @@ fn negamax(
                             bonus,
                         );
 
+                        // SF lowply history: scaled bonus, active near root only.
+                        if ply_u < crate::movepicker::LOW_PLY_HIST_SIZE {
+                            let v = info.history.low_ply[ply_u][from as usize][to as usize] as i32;
+                            let lp_bonus = bonus * 682 / 1024;
+                            let clamped = lp_bonus.clamp(-16384, 16384);
+                            let new_v = v + clamped - v * clamped.abs() / 16384;
+                            info.history.low_ply[ply_u][from as usize][to as usize] = new_v.clamp(-32000, 32000) as i16;
+                        }
+
                         // Update continuation history at plies 1, 2, 4, 6
                         // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
                         if moved_piece != NO_PIECE {
@@ -3186,6 +3195,15 @@ fn negamax(
                                 info.history.main_entry(qf, qt, enemy_attacks),
                                 -bonus,
                             );
+
+                            // SF lowply history: malus for non-best quiets searched.
+                            if ply_u < crate::movepicker::LOW_PLY_HIST_SIZE {
+                                let v = info.history.low_ply[ply_u][qf as usize][qt as usize] as i32;
+                                let lp_pen = -bonus * 682 / 1024;
+                                let clamped = lp_pen.clamp(-16384, 16384);
+                                let new_v = v + clamped - v * clamped.abs() / 16384;
+                                info.history.low_ply[ply_u][qf as usize][qt as usize] = new_v.clamp(-32000, 32000) as i16;
+                            }
 
                             // Penalize continuation history at plies 1, 2, 4, 6
                             {

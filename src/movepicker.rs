@@ -20,6 +20,11 @@ const MAX_HISTORY: i32 = 16384;
 /// Bitboard type alias for threat computation.
 pub type Threats = u64;
 
+/// SF early-ply history: short window of plies near root, indexed by
+/// [ply][from][to]. Mirrors Stockfish LowPlyHistory (see history.h).
+/// 5 plies × 64 × 64 × i16 = 40KB.
+pub const LOW_PLY_HIST_SIZE: usize = 5;
+
 /// History tables shared across the search.
 pub struct History {
     /// Main history: [from_threatened][to_threatened][from][to]
@@ -38,6 +43,8 @@ pub struct History {
     /// Continuation history: [piece 1-12][to][piece 1-12][to]
     /// piece uses 1-12 indexing (slot 0 unused).
     pub cont_hist: [[[[i16; 64]; 13]; 64]; 13],
+    /// SF lowply history: [ply][from][to]. Active for ply < LOW_PLY_HIST_SIZE only.
+    pub low_ply: [[[i16; 64]; 64]; LOW_PLY_HIST_SIZE],
 }
 
 impl History {
@@ -72,6 +79,7 @@ impl History {
             killers: [[NO_MOVE; 2]; crate::search::MAX_PLY],
             counter: [[NO_MOVE; 64]; 13],
             cont_hist: [[[[0; 64]; 13]; 64]; 13],
+            low_ply: [[[0i16; 64]; 64]; LOW_PLY_HIST_SIZE],
         }
     }
 
@@ -81,6 +89,7 @@ impl History {
         self.killers = [[NO_MOVE; 2]; crate::search::MAX_PLY];
         self.counter = [[NO_MOVE; 64]; 13];
         self.cont_hist = [[[[0; 64]; 13]; 64]; 13];
+        self.low_ply = [[[0i16; 64]; 64]; LOW_PLY_HIST_SIZE];
     }
 
     /// Age all history tables by multiplying by factor/divisor (e.g. 4/5 = 0.80).
@@ -598,6 +607,11 @@ impl MovePicker {
                 }
             }
 
+            // SF lowply history (active near root only). +8 * val / (1+ply).
+            if self.ply < LOW_PLY_HIST_SIZE {
+                score += 8 * history.low_ply[self.ply][from as usize][to as usize] as i32 / (1 + self.ply as i32);
+            }
+
             // Null-move threat: bonus for escaping the threatened square
             if self.threat_sq >= 0 && from as i32 == self.threat_sq {
                 score += 8000;
@@ -814,6 +828,10 @@ impl MovePicker {
                         let ph = unsafe { &*ph_ptr };
                         s += ph[go_piece(piece)][to as usize] as i32;
                     }
+                }
+
+                if self.ply < LOW_PLY_HIST_SIZE {
+                    s += 8 * history.low_ply[self.ply][from as usize][to as usize] as i32 / (1 + self.ply as i32);
                 }
 
                 s
