@@ -7364,3 +7364,61 @@ distinct cross-engine ports / safety gates queued in the
 - **Status:** in flight.
 - **Source ref:** `docs/cross_engine_comparison_2026-04-25.md`
   Tier 2 #13 (sf-small-probcut, expected +2 to +5; "~zero NPS cost").
+
+## 2026-04-30 — fix/abandon-ponder-suppress-bestmove +3.4 Elo H1 (#890, lichess 2agDftuq)
+
+Forfeit-class correctness fix that also gained Elo. Lichess game 2agDftuq
+(2026-04-29): codabot was in a clearly winning K+2P-vs-K endgame, emitted
+`bestmove g3f3 ponder d3c4` where g3f3 is a king-into-check (white K on
+e4 attacks f3). lichess-bot raised IllegalMoveError and resigned. User
+report: ~2/50 games hitting this class.
+
+### Root cause (UCI flow)
+At move 90 the bot pondered move 91 assuming opponent would play `e3d3`
+(the predicted ponder move). The ponder reached depth 32 with PV
+`g3f3 d3c4 a5a4` — legal at the predicted position (white K on d3, f3
+not attacked). Opponent actually played `e3e4`. Bot sent
+`position ... e3e4` + `go` *without an explicit `stop`*. The engine's
+`go` handler stopped the abandoned ponder thread via
+`search_handle.take()+join()`. On its way out, the thread emitted its
+`bestmove` from the predicted-position pv_table. Bot read it as the
+response to its new `go` and applied it to the actual position
+(white K on e4) → king-into-check → resign.
+
+The internal `pv_consistent` / `ponder_legal` checks both pass because
+they validate against the thread's `search_board`, which IS the ponder
+position. The bug is one level up: GUI's position ≠ engine's position.
+
+### Fix
+- `suppress_bestmove` AtomicBool. Set in the `go` and `ucinewgame`
+  handlers right before joining a pre-existing search thread. Search
+  thread checks it before its bestmove emit and skips. Reset before
+  spawning the new search so this run owns its emit.
+- Defence-in-depth: MovePicker non-evasion picker now computes real
+  `pinned` (was hard-coded 0) and validates TT/killer/counter moves
+  with `is_legal` in addition to `is_pseudo_legal`. Catches a TT-move
+  poisoning class even if some future flow re-introduces a stale-move
+  emit.
+
+### Validation
+- 0 PV_PONDER_BUG warnings + 0 illegal-move errors in 808 cutechess
+  self-play games at 10+0.1 with `Ponder=true` and TBs (p ≈ 10⁻¹⁴ vs
+  the prior ~4% baseline rate).
+- SPRT #890: **+3.43 Elo H1 at 7912 games**, bounds [-3, 3]. The
+  forfeit class is structurally invisible to cutechess (no ponder in
+  SPRT games), so the gain comes from the defence-in-depth
+  MovePicker change — most likely saving a redundant
+  `picker.next() + search.rs:2511 is_legal + continue` cycle when an
+  illegal TT move would otherwise be returned, i.e. a small NPS
+  shift on the hot path.
+
+### Same forfeit class as oeZ7KRUt (2026-04-26)
+Distinct UCI-flow path — that fix (60a6fc2 stable-PV snapshot) covered
+mid-iteration `should_stop()` interrupts within iterative_deepening.
+This one covers the orthogonal case where the bot abandons a ponder
+via `position`+`go` (no `stop`). Both manifest as illegal/wrong
+bestmove emit; both forfeit on lichess-bot specifically because of its
+strict ponder-move validation.
+
+Branch: `fix/abandon-ponder-suppress-bestmove`. Merged in this commit
+(2b686df → ca3ff2a after rebase). Bench unchanged (966720).
