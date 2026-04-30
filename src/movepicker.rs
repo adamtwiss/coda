@@ -23,8 +23,13 @@ pub type Threats = u64;
 /// History tables shared across the search.
 pub struct History {
     /// Main history: [from_threatened][to_threatened][from][to]
-    /// Threat-aware 4D indexing — separate history for moves escaping/entering threats.
+    /// Threat-aware 4D bucket — residual history per threat configuration.
     pub main: [[[[i32; 64]; 64]; 2]; 2],
+    /// Main history factor: [from][to]. Reckless/Viri/Stormphrax-pattern
+    /// shared baseline — accumulates across all threat buckets so common
+    /// good/bad moves don't have to be re-learned per bucket. Read-time
+    /// is summed with `main`; update-time both tables receive bonus.
+    pub main_factor: [[i32; 64]; 64],
     /// Capture history: [piece 1-12][to][captured_type 0-6]
     /// piece uses 1-12 indexing (slot 0 unused).
     /// captured_type uses 0-6 scheme (0=empty, 1=pawn, ..., 6=king).
@@ -41,33 +46,40 @@ pub struct History {
 }
 
 impl History {
-    /// Get main history score for a move given enemy threat bitboard.
+    /// Get main history score: sum of factor (shared baseline) + bucket residual.
     #[inline(always)]
     pub fn main_score(&self, from: u8, to: u8, threats: Threats) -> i32 {
-        if crate::search::FEAT_4D_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
+        let bucket = if crate::search::FEAT_4D_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
             let ft = ((threats >> from) & 1) as usize;
             let tt = ((threats >> to) & 1) as usize;
             self.main[ft][tt][from as usize][to as usize]
         } else {
             self.main[0][0][from as usize][to as usize]
-        }
+        };
+        bucket + self.main_factor[from as usize][to as usize]
     }
 
-    /// Get mutable reference to main history entry for a move given enemy threats.
+    /// Update main history: dual update of factor + bucket. Replaces the
+    /// `main_entry` + `update_history` pair; both tables receive bonus.
     #[inline(always)]
-    pub fn main_entry(&mut self, from: u8, to: u8, threats: Threats) -> &mut i32 {
-        if crate::search::FEAT_4D_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
+    pub fn update_main(&mut self, from: u8, to: u8, threats: Threats, bonus: i32) {
+        // Update bucket (the existing 4D table; same gravity as before).
+        let bucket_entry = if crate::search::FEAT_4D_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
             let ft = ((threats >> from) & 1) as usize;
             let tt = ((threats >> to) & 1) as usize;
             &mut self.main[ft][tt][from as usize][to as usize]
         } else {
             &mut self.main[0][0][from as usize][to as usize]
-        }
+        };
+        Self::update_history(bucket_entry, bonus);
+        // Update factor (shared baseline across all buckets).
+        Self::update_history(&mut self.main_factor[from as usize][to as usize], bonus);
     }
 
     pub fn new() -> Self {
         History {
             main: [[[[0; 64]; 64]; 2]; 2],
+            main_factor: [[0; 64]; 64],
             capture: [[[0i16; 7]; 64]; 13],
             killers: [[NO_MOVE; 2]; crate::search::MAX_PLY],
             counter: [[NO_MOVE; 64]; 13],
@@ -77,6 +89,7 @@ impl History {
 
     pub fn clear(&mut self) {
         self.main = [[[[0; 64]; 64]; 2]; 2];
+        self.main_factor = [[0; 64]; 64];
         self.capture = [[[0i16; 7]; 64]; 13];
         self.killers = [[NO_MOVE; 2]; crate::search::MAX_PLY];
         self.counter = [[NO_MOVE; 64]; 13];
@@ -93,6 +106,9 @@ impl History {
                     for v in row.iter_mut() { *v = *v * factor / divisor; }
                 }
             }
+        }
+        for row in self.main_factor.iter_mut() {
+            for v in row.iter_mut() { *v = *v * factor / divisor; }
         }
         for plane in self.capture.iter_mut() {
             for row in plane.iter_mut() {
@@ -1299,37 +1315,30 @@ mod tests {
     #[test]
     fn history_4d_flag_routes_correctly() {
         let mut h = History::new();
-        // Give each table slot a distinct value so we can prove which branch ran.
+        // Bucket gets distinct values; factor stays 0 so we read the bucket only.
         h.main[0][0][12][28] = 1;
         h.main[0][1][12][28] = 2;
         h.main[1][0][12][28] = 3;
         h.main[1][1][12][28] = 4;
 
-        // Threats bitboard with BOTH from (12) and to (28) set:
         let threats: Threats = (1u64 << 12) | (1u64 << 28);
-
         let saved = FEAT_4D_HISTORY.load(Ordering::Relaxed);
 
-        // 4D on: lookup must see slot [1][1] = 4.
         FEAT_4D_HISTORY.store(true, Ordering::Relaxed);
         assert_eq!(h.main_score(12, 28, threats), 4,
-            "4D on: expected main[1][1][12][28]=4");
-        *h.main_entry(12, 28, threats) = 40;
-        assert_eq!(h.main[1][1][12][28], 40, "4D on: main_entry wrote to [1][1]");
-        h.main[1][1][12][28] = 4; // restore
+            "4D on: expected bucket[1][1]+factor=4+0");
 
-        // 4D off: lookup must always see slot [0][0] = 1 regardless of threats.
         FEAT_4D_HISTORY.store(false, Ordering::Relaxed);
         assert_eq!(h.main_score(12, 28, threats), 1,
-            "4D off: expected main[0][0][12][28]=1");
+            "4D off: expected bucket[0][0]+factor=1+0");
         assert_eq!(h.main_score(12, 28, 0), 1,
-            "4D off: expected main[0][0] with zero threats");
-        *h.main_entry(12, 28, threats) = 10;
-        assert_eq!(h.main[0][0][12][28], 10, "4D off: main_entry wrote to [0][0]");
-        // The other slots must not have been touched by the 2D write path.
-        assert_eq!(h.main[1][1][12][28], 4, "4D off: [1][1] unchanged");
+            "4D off: expected bucket[0][0] with zero threats");
 
-        // Restore original flag so other tests are unaffected.
+        // Factor adds to bucket regardless of 4D flag.
+        h.main_factor[12][28] = 50;
+        FEAT_4D_HISTORY.store(true, Ordering::Relaxed);
+        assert_eq!(h.main_score(12, 28, threats), 54, "factor adds to bucket");
+
         FEAT_4D_HISTORY.store(saved, Ordering::Relaxed);
     }
 
