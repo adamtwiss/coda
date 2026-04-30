@@ -112,6 +112,7 @@ tunables!(
     (LMP_DEPTH, 11, 4, 20, 2.0),
     (BAD_NOISY_MARGIN, 71, 30, 150, 6.0),
     (PROBCUT_MARGIN, 199, 80, 300, 11.0),
+    (SMALL_PROBCUT_MARGIN, 416, 200, 700, 25.0),
     (HINDSIGHT_THRESH, 148, 50, 400, 17.5),
     (UNSTABLE_THRESH, 206, 50, 500, 22.5),
     (SEE_MATERIAL_SCALE, 237, 30, 300, 13.5),
@@ -2501,6 +2502,25 @@ fn negamax(
                     TT_FLAG_LOWER, mv, raw_eval, tt_pv,
                 );
                 return score - (probcut_beta - beta);
+            }
+        }
+    }
+
+    // SF small ProbCut (Step 12): if TT has a deep, high lower-bound score
+    // already exceeding a wider probcut margin, return small_pc_beta directly
+    // without searching. Zero NPS cost — just a TT-already-probed gate.
+    // Mirrors Stockfish search.cpp:1005-1009.
+    {
+        let small_pc_beta = beta + tp(&SMALL_PROBCUT_MARGIN);
+        if tt_hit
+            && (tt_entry.flag == TT_FLAG_LOWER || tt_entry.flag == TT_FLAG_EXACT)
+            && tt_entry.depth >= depth - 4
+            && beta.abs() < MATE_SCORE - 100
+            && info.excluded_move[ply_u] == NO_MOVE
+        {
+            let adj = score_from_tt(tt_entry.score, ply);
+            if adj >= small_pc_beta && adj.abs() < MATE_SCORE - 100 {
+                return small_pc_beta;
             }
         }
     }
