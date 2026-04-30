@@ -2090,7 +2090,7 @@ fn negamax(
                         if !tt_is_cap && tt_piece != NO_PIECE {
                             let bonus = history_bonus(depth);
                             History::update_history(
-                                info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
+                                info.history.main_entry(board.side_to_move, move_from(tt_move), move_to(tt_move), enemy_attacks),
                                 bonus,
                             );
                         } else if tt_is_cap && tt_piece != NO_PIECE {
@@ -2543,7 +2543,7 @@ fn negamax(
     };
     let pawn_hist_ref = Some(&info.pawn_hist[ph_idx] as &[[i16; 64]; 13]);
     let mut picker = if in_check {
-        MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, enemy_attacks, board.side_to_move, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
         MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
     };
@@ -2744,7 +2744,7 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
             && FEAT_HIST_PRUNE.load(Ordering::Relaxed)
         {
-            let mut hist_prune_score = info.history.main_score(from, to, enemy_attacks);
+            let mut hist_prune_score = info.history.main_score(board.side_to_move, from, to, enemy_attacks);
             if moved_piece != NO_PIECE {
                 let gp = go_piece(moved_piece);
                 if prev_piece_for_cont != 0 {
@@ -2768,7 +2768,7 @@ fn negamax(
             && FEAT_FUTILITY.load(Ordering::Relaxed)
             && lmr_d <= tp(&FUT_LMR_DEPTH)
         {
-            let main_hist = info.history.main_score(from, to, enemy_attacks);
+            let main_hist = info.history.main_score(board.side_to_move, from, to, enemy_attacks);
             let hist_adj = main_hist / 128;
             // our_defenses widener: add margin per our-piece-under-attack so
             // tactical positions keep more lines from being pruned on eval.
@@ -2961,7 +2961,7 @@ fn negamax(
                 // Continuous history adjustment: good history reduces less, bad more
                 // Uses main history + ply-1 + ply-2 continuation history (consensus).
                 // Ply-2 weighted at half to avoid over-scaling the total.
-                let mut hist_score = info.history.main_score(from, to, enemy_attacks);
+                let mut hist_score = info.history.main_score(board.side_to_move, from, to, enemy_attacks);
                 if moved_piece != NO_PIECE {
                     let gp = go_piece(moved_piece);
                     if prev_piece_for_cont != 0 {
@@ -3144,7 +3144,7 @@ fn negamax(
 
                         // Update main history
                         History::update_history(
-                            info.history.main_entry(from, to, enemy_attacks),
+                            info.history.main_entry(board.side_to_move, from, to, enemy_attacks),
                             bonus,
                         );
 
@@ -3183,7 +3183,7 @@ fn negamax(
                             let qf = move_from(q);
                             let qt = move_to(q);
                             History::update_history(
-                                info.history.main_entry(qf, qt, enemy_attacks),
+                                info.history.main_entry(board.side_to_move, qf, qt, enemy_attacks),
                                 -bonus,
                             );
 
@@ -3501,7 +3501,7 @@ fn quiescence_with_depth(
         let qs_safe_ply = (ply as usize).min(MAX_PLY - 1);
         let mut evasion_picker = MovePicker::new_evasion(
             tt_move, qs_safe_ply, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
-            qs_enemy_attacks,
+            qs_enemy_attacks, board.side_to_move,
             &info.moved_piece_stack, &info.moved_to_stack,
         );
         let mut best_score = -INFINITY;
