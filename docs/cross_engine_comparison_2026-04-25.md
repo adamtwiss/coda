@@ -332,7 +332,21 @@ Initial delta `= base + avg² / divisor` (SF: `5 + threadIdx%8 + abs(meanSqScore
 
 ## Status overview (2026-04-30 update)
 
-**Tier-1 batch resolution: most resolved.** Of the 10 rows below: 7 H0, 1 merged (material-np-only), 1 LMP-shape split (Phase A merged, Phase B H0), 1 NMP-cut-node-gate ultimately merged on third attempt. Two truly untouched: main-history-stm-dim (#3) and halfmove-200-revert (#7).
+**Tier-1 batch resolution: most resolved.** Of the 10 rows below: 7 H0, 1 merged (material-np-only), 1 LMP-shape split (Phase A merged, Phase B H0), 1 NMP-cut-node-gate ultimately merged on third attempt.
+
+**2026-04-30 evening update** — items #3 and #7 finally tested, both H0:
+- #3 main-history-stm-dim → **H0 #888 −2.8 ±2.4 / 15K**
+- #7 halfmove-200-revert → **H0 #886 −1.2 ±1.8 / 28K**
+
+Plus two more 2026-04-30 closures from Tier-2/3:
+- #10 factorized-main-hist (Tier 2) → **H0 #889 −2.6 ±2.4 / 16K**
+- #19 lowply-history (Tier 3) → **H0 #887 −3.5 ±2.7 / 12.4K**
+
+**Cluster lesson**: #887/#888/#889 H0'd cleanly negative on the same fleet pass — three top-engine-consensus history-shape ports failing at −2.6 to −3.5 Elo. Coda's 4D threat-aware main history already encodes the gradient these features surrogate. Saved as `memory/feedback_naive_ordering_ports_dont_transfer.md`. Implication: **stop firing history-shape ports off simpler-history engines** (lowply, STM-dim, factorisation, per-piece × main-history dual-update). Future ordering ideas should add a dimension Coda doesn't already have, not surrogate the threat-aware key.
+
+Plus two cross-engine *port* closures from the same fleet pass — different mechanism but same "signal-overlap with our existing landscape" pattern:
+- #883 cutoff-count-propagation (Tier 2 #9, LMR-only port) → **H0 −0.0 ±1.0 / 76K**
+- #884 sf-small-probcut (Tier 2 #13) → **H0 −0.9 ±1.6 / 33.5K**
 
 | # | Item | OB | Result | Follow-up |
 |---|------|-----|--------|-----------|
@@ -381,20 +395,20 @@ Suggested order; each line is "branch name → expected Elo → key change":
 
 **Tier 2 — high-confidence novel mechanisms (likely +12-30 Elo aggregated):**
 
-9. `experiment/parent-cutoff-count` → **+2 to +5** → SF/Clover/Quanticade pattern. **Promoted from Tier 3 — Reckless uses this for the 30→57% NMP gap.**
-10. `experiment/factorized-main-hist` → +5 to +10 → Reckless/Viri/Stormphrax three-engine consensus, baseline + bucket. Move-ordering cause-fix at scale.
+9. ~~`experiment/parent-cutoff-count` → +2 to +5~~ — **H0 #883 −0.0 ±1.0 / 76K** (LMR-only port). Signal-overlap with our existing pruning landscape. Reckless's cutoff_count closes a hole their main-history can't see; on Coda's 4D-threat-aware history that hole is already covered. Same shape as `feedback_naive_ordering_ports_dont_transfer.md`. **Status: closed (LMR-only port).** NMP-side variant tested as #885 (still in flight, trending H0).
+10. ~~`experiment/factorized-main-hist` → +5 to +10~~ — **H0 #889 −2.6 ±2.4 / 16K**. 3-engine consensus failed cleanly. Coda's 4D threat-aware key already encodes the factorisation gradient; adding a `[from][to]` factor on top splits gradient between two partially-overlapping cells. See `feedback_naive_ordering_ports_dont_transfer.md`. **Status: closed.**
 11. `experiment/pawn-push-attacker-graduated` → +2 to +5 → Viridithas tactical motif (same family as B1 +52, knight-fork +5.2, offense +5.7).
 12. `experiment/threat-bucketed-cont-corr` → +2 to +4 → Plenty pattern; intersects Coda's threat agenda.
-13. `experiment/sf-small-probcut` → +2 to +5 → SF TT-trust shortcut. ~Zero NPS cost.
+13. ~~`experiment/sf-small-probcut` → +2 to +5~~ — **H0 #884 −0.9 ±1.6 / 33.5K**. Signal-overlap with our existing ProbCut. SF Step 12 pre-ProbCut shortcut pays in engines whose full ProbCut runs less aggressively; on Coda's tunables the full ProbCut already catches these cases. **Status: closed.**
 14. `experiment/optimism-full-p1` → +3 to +7 → K1+K2+optBase+divisor SPSA on Stormphrax-shape (5 engines).
 15. ~~`experiment/multicut-fix` → +1 to +4~~ — **H0 #827 -10.9 ±4.4 / 4.5K**. Bench dropped 19.6%; signal-overlap with post-#817 SE/DEXT cluster. Drop (possible refined retry: gate on `cut_node && !is_pv` like Reckless).
 
 **Tier 3 — small wins, low risk:**
 
-16. `experiment/halfmove-200-revert` → +1 to +4 → `(200-hm)/200` with bench A/B. Eval scale.
+16. ~~`experiment/halfmove-200-revert` → +1 to +4~~ — **H0 #886 −1.2 ±1.8 / 28K**. The (100-hm)/100 form is correctly more aggressive at the 50-move cliff; (200-hm)/200 retains 50% at hm=100 which hurts end-of-rule positions. Obsidian/Reckless consensus is right for our search. **Status: closed.**
 17. ~~`experiment/material-np-only` → +2 to +5~~ — **MERGED** #813 +0.6 ±0.9 / 117K (LLR -0.77 stopped, can't reach H1=3 at this magnitude). Genuine small positive with -20% bench reduction (commit d2aca36).
 18. `experiment/ttmove-history` → +1 to +3 → SF global stat.
-19. `experiment/lowply-history` → +1 to +3 → SF early-ply table.
+19. ~~`experiment/lowply-history` → +1 to +3~~ — **H0 #887 −3.5 ±2.7 / 12.4K**. SF early-ply table; surrogates the threat-aware gradient Coda's 4D main hist already has. See `feedback_naive_ordering_ports_dont_transfer.md`. **Status: closed.**
 20. `experiment/variance-aspiration` → +1 to +3 → SF/Reckless/Viri.
 21. `experiment/conthist-combined-modulator` → +1 to +3 → Stormphrax/Viri.
 22. ~~`experiment/fh-blend-depth-cap` → +1 to +3~~ — **H0 #814 -0.3 ±1.3 / 55.3K**. Bench-flat, didn't carry Elo. Drop.
@@ -432,3 +446,6 @@ Suggested order; each line is "branch name → expected Elo → key change":
 - Don't add "generic piece-attacked" nudges (use specific tactical motifs).
 - **NEW:** don't expand `SEE_CAP_MULT`'s use without first confirming it's wired in (it's currently dead code per the 2026-04-25 audit).
 - **NEW:** don't re-port Reckless's NMP TT-capture skip as binary; use the dynamic R++ form instead (item 12).
+- **NEW (2026-04-30):** **don't fire history-shape ports off simpler-history engines.** Coda's 4D `[from_threatened][to_threatened][from][to]` already encodes the gradient lowply (#887), STM-dim (#888), and factorisation (#889) surrogate. All three H0'd −2.6 to −3.5 Elo on the same fleet pass. Future ordering ideas should add a dimension Coda doesn't already have, not surrogate the threat-aware key. See `feedback_naive_ordering_ports_dont_transfer.md`.
+- **NEW (2026-04-30):** don't port pre-ProbCut TT-trust shortcuts (sf-small-probcut #884 H0). Our existing ProbCut already catches these cases; the shortcut adds noise.
+- **NEW (2026-04-30):** don't port LMR-only `cutoff_count` (Reckless port #883 H0). Signal-overlap with our 4D-threat-aware history. NMP-side variant (#885) trending H0 in flight; if confirmed, full mechanism class closes.

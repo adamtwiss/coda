@@ -7369,7 +7369,13 @@ distinct cross-engine ports / safety gates queued in the
   experiment/hindsight-excluded-move-gate (commit 37f29b1).
 - **Bench:** 1038165 vs main 966720 (+7.4%).
 - **Bounds:** [-3, 3] (correctness fix; direction uncertain).
-- **Status:** in flight, early read +0.5 ±3.4 / 7.9K (LLR 0.47 →H1).
+- **Result:** **H0 −0.4 ±1.2 / 62K games** (LLR −2.98).
+- **Read:** SE-consistency gate is correct in shape but doesn't move
+  the needle here. The SE-skip pattern is load-bearing for NMP/RFP/
+  ProbCut/FH-blend/corrhist (already gated) but hindsight-reduction
+  doesn't hit the same correctness class — excluded_move at
+  hindsight time is a sufficiently different code path that the
+  gate fires too rarely to matter.
 
 ### #883 experiment/cutoff-count-propagation — Reckless port (LMR-only)
 - **Setup:** per-ply `cutoff_count` array on SearchInfo. Reset
@@ -7380,9 +7386,17 @@ distinct cross-engine ports / safety gates queued in the
   experiment/cutoff-count-propagation (commit 6f8e71f).
 - **Bench:** 845292 vs main 966720 (-12.5%).
 - **Bounds:** [0, 3].
-- **Status:** in flight.
+- **Result:** **H0 −0.0 ±1.0 / 76K games** (LLR −3.00).
+- **Read:** signal-overlap with our existing pruning landscape.
+  Reckless's cutoff_count adds a "busy subtree" depth-bump signal
+  that closes a hole their main-history can't see; on Coda's
+  4D-threat-aware history that hole is already covered, so the
+  added LMR reduction either targets nothing new or displaces
+  signal we already had. Same shape as the
+  `feedback_naive_ordering_ports_dont_transfer.md` pattern.
 - **Source ref:** `docs/cross_engine_comparison_2026-04-25.md`
-  Tier 2 #9 (parent-cutoff-count, expected +2 to +5).
+  Tier 2 #9 (parent-cutoff-count, expected +2 to +5). Tier-2 entry
+  marked H0; LMR-only port is closed.
 
 ### #884 experiment/sf-small-probcut — SF Step 12 TT-trust shortcut
 - **Setup:** before the move loop, if TT has a deep
@@ -7393,9 +7407,118 @@ distinct cross-engine ports / safety gates queued in the
 - **Bench:** 1155077 vs main 966720 (+19.5%) — re-shaped trees
   via parent-side fail-high cascades, not a node-count bug.
 - **Bounds:** [0, 3].
-- **Status:** in flight.
+- **Result:** **H0 −0.9 ±1.6 / 33.5K games** (LLR −2.95).
+- **Read:** signal-overlap with our existing ProbCut. SF Step 12 is
+  a pre-ProbCut TT-trust shortcut that pays in engines whose
+  full ProbCut runs less aggressively; on Coda's tunables the
+  full ProbCut already catches these cases. The −0.9 Elo is
+  consistent with the new shortcut returning slightly less
+  refined scores than the full ProbCut probe at marginal cost.
 - **Source ref:** `docs/cross_engine_comparison_2026-04-25.md`
-  Tier 2 #13 (sf-small-probcut, expected +2 to +5; "~zero NPS cost").
+  Tier 2 #13 (sf-small-probcut, expected +2 to +5; "~zero NPS
+  cost"). Tier-2 entry marked H0.
+
+### #886 experiment/halfmove-200-revert — eval-scaling form A/B
+- **Setup:** revert `apply_halfmove_scale` from `score * (100 - hm) / 100`
+  to `score * (200 - hm) / 200`. At hm=100 retains 50% of score
+  rather than collapsing to 0. The (100-hm)/100 form was adopted
+  on theoretical grounds (Obsidian/Reckless consensus) without
+  ever benching the alternative. Branch experiment/halfmove-200-revert
+  (commit 79d37eb).
+- **Bench:** 1192093 vs main 966720 (+23.3%).
+- **Bounds:** [0, 3].
+- **Result:** **H0 −1.2 ±1.8 / 28K games** (LLR −2.98).
+- **Read:** the (100-hm)/100 form is correctly more aggressive at
+  the 50-move cliff. Retaining 50% of score at hm=100 hurts
+  end-of-rule positions where the engine should be planning the
+  reset. The Obsidian/Reckless consensus is right for our search;
+  not a portable theoretical-only call.
+
+### #887 experiment/lowply-history — SF Step 4 lowply table port
+- **Setup:** add a 5-ply early-game ordering table
+  `low_ply: [[[i16; 64]; 64]; 5]`. Quiet move scoring at
+  `ply < 5` adds `8 * lowply[ply][from][to] / (1 + ply)`.
+  Bonus/malus updates with gravity at fail-high/cutoff. Branch
+  experiment/lowply-history (commit 118f63b).
+- **Bench:** ~main (small delta).
+- **Bounds:** [0, 3].
+- **Result:** **H0 −3.5 ±2.7 / 12.4K games** (LLR −2.95).
+- **Read:** see `feedback_naive_ordering_ports_dont_transfer.md`.
+  Coda's 4D threat-aware main history already captures the
+  early-ply gradient SF's lowply surrogates; layering it adds
+  noise without new signal.
+
+### #888 experiment/main-history-stm-dim — 4D → 5D main history (STM dim)
+- **Setup:** add side-to-move dimension to main quiet history,
+  growing the table from `[from_threatened][to_threatened][from][to]`
+  to a 5D shape with stm prefix. Used by various peer engines.
+  Branch experiment/main-history-stm-dim (commit f9eca65).
+- **Bench:** ~main.
+- **Bounds:** [0, 3].
+- **Result:** **H0 −2.8 ±2.4 / 15K games** (LLR −2.96).
+- **Read:** see `feedback_naive_ordering_ports_dont_transfer.md`.
+  STM is correlated with the threat-aware key Coda already has;
+  splitting the gradient across stm cells doubles the table size
+  without sharpening signal.
+
+### #889 experiment/factorized-main-hist — Reckless/Viri/Stormphrax factorisation
+- **Setup:** add `main_factor: [[i32; 64]; 64]` table updated in
+  parallel to the bucketed main history. Score lookups blend
+  factor + bucket. Pattern in Reckless, Viridithas, and Stormphrax
+  (3-engine consensus). Branch experiment/factorized-main-hist
+  (commit 7b969bf).
+- **Bench:** ~main.
+- **Bounds:** [0, 3].
+- **Result:** **H0 −2.6 ±2.4 / 16K games** (LLR −2.97).
+- **Read:** see `feedback_naive_ordering_ports_dont_transfer.md`.
+  Factorisation helps engines whose base main hist is simpler
+  ([piece][to] or [from][to]) by adding a coarse generaliser. On
+  Coda's 4D, the threat-aware key IS the factorisation; adding
+  a `[from][to]` factor on top splits gradient between two
+  partially-overlapping cells.
+
+### Cluster reading — three top-engine-consensus ordering ports H0'd
+
+#887/#888/#889 H0'd cleanly negative (−2.6 to −3.5 Elo) on the same
+2026-04-30 fleet pass. All three target a richer signal on
+`(from, to)` ordering — the same mechanism the doc attributed to
+the 28% zero-breadth ordering bucket in
+`docs/loss_analysis_2026-04-28.md`.
+
+The cluster confirms an empirical pattern: **history-shape ports
+off simpler-history engines fail on Coda.** Our 4D threat-aware
+key already encodes the gradient these features surrogate for in
+peer engines. Saved as
+`memory/feedback_naive_ordering_ports_dont_transfer.md`.
+
+The 28% zero-breadth bucket in the doc may not be ordering-bound
+in the way naive ports address. Either it needs threat-aware
+quiet ordering (consume v9 signals natively) or it's actually
+depth-bound, not ordering-bound. The original ablation was at
+played_depth only.
+
+### #891 experiment/threat-bundle-major — multi-effect carve-out (in flight)
+- **Setup:** two coupled effects on a single shared post-make-move
+  trigger (≥ LMR_THREAT_MAJOR_MIN new threats against opp K/Q/R,
+  via threat_stack delta — a Coda-original signal class):
+  1) `reduction -= LMR_THREAT_MAJOR_BONUS` (mirrors #868 LMR carve-out)
+  2) On LMR fail-high, force `do_deeper_adj = 1` (concentrates extra
+     search effort on tactical re-searches; overrides standard
+     60+10*reduction / -1-doShallower decision).
+  Both gated on info.threat_stack.active. Branch
+  experiment/threat-bundle-major (commit acc6ba0).
+- **Bench:** 1143765 vs main 966720 (+18.3%) — denser tree on
+  tactical moves; two effects compound for ~+2 ply on triggered moves.
+- **Bounds:** [0, 3].
+- **Status:** in flight.
+- **Rationale:** primary search-side experiment from
+  `docs/loss_analysis_2026-04-28.md` after single-feature LMR
+  carve-out class closed (17 H0s on 2026-04-30) and naive ordering
+  ports closed (#887/#888/#889 cluster H0). The doc's headline
+  recommendation is "multi-feature carve-outs on shared triggers
+  go higher" — tested here in 2-effect simpler shape. If H1,
+  expand to 3-4 effects on the same trigger; if H0, the trigger
+  itself is the wrong signal.
 
 ## 2026-04-30 — fix/abandon-ponder-suppress-bestmove +3.4 Elo H1 (#890, lichess 2agDftuq)
 
