@@ -732,25 +732,16 @@ impl SearchInfo {
 }
 
 /// Scale a raw (halfmove-independent) eval toward zero as the halfmove
-/// clock approaches the 100-ply draw horizon.
-///
-/// Formula: `score * (100 - clamp(hm, 0, 100)) / 100`. At `hm=0` returns
-/// `score` unchanged; at `hm=100` returns `0`. Callers apply this at the
-/// *point of use*, never before storing to TT — see the comment in
-/// `SearchInfo::eval`.
-///
-/// Consensus-aligned with Obsidian/Reckless-style `(100 - hm) / 100`,
-/// which unlike the previous `(200 - hm) / 200` actually reaches zero
-/// at the draw cliff rather than topping out at 0.5×.
+/// clock approaches the 100-ply draw horizon. Reverted to `(200 - hm) / 200`
+/// form (A/B vs `(100-hm)/100`). At `hm=100` retains 50% of score rather
+/// than collapsing to 0.
 #[inline]
 fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
-    // Leave sentinel scores untouched so downstream comparisons with
-    // `-INFINITY` / `MATE_SCORE - ply` keep their absolute magnitudes.
     if score <= -INFINITY + 1 || score.abs() >= MATE_SCORE - 100 {
         return score;
     }
     let hm = (halfmove as i32).min(100);
-    score * (100 - hm) / 100
+    score * (200 - hm) / 200
 }
 
 /// Build a DirtyPiece for lazy NNUE accumulator update.
