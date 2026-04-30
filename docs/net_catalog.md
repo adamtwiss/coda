@@ -53,12 +53,17 @@ v0.3.0-nets release until 2026-04-26.
 
 ## v9 group-lasso probes (kb10, structural-sparsity experiments)
 
-| Hash | File | Decay | Notes |
-|---|---|---|---|
-| `573854EF` | `net-v9-768th16x32-kb10-w15-e200s200-crelu-grouplasso-1e2.nnue` | 1e-2 | SB200 probe, 13.48% threat row sparsity, +11.22 Elo SPRT vs dense C8fix at 1100g (#1 probe — see project_group_lasso_acts_as_regularizer). |
-| `7E9AEDD2` | `net-v9-768th16x32-kb10-w15-e200s200-crelu-grouplasso-3e2.nnue` | 3e-2 | SB200 probe, more sparsity, lost SPRT vs 1e-2 (-36 Elo). |
-| `3D371C10` | `net-v9-768th16x32-kb10-w15-e200s200-crelu-grouplasso-5e2.nnue` | 5e-2 | SB200 probe, ~11 MB compact, dead at -156 Elo vs 1e-2. Decay too aggressive. |
-| `12232F49` | `net-v9-768th16x32-reckless-w15-e200s200-warm30-l1e-6.nnue` | element-wise 1e-6 | Earlier element-wise L1 sparsity probe (not group-lasso). |
+Sweep results / decision-tree closure: see
+`docs/group_lasso_runbook_2026-04-24.md` (Pareto frontier confirmed
+at 1e-2; harder decay regresses) and `experiments.md` § "Group-lasso
+decay sweep — Probes #2 and #3".
+
+| Hash | File | Decay |
+|---|---|---|
+| `573854EF` | `net-v9-768th16x32-kb10-w15-e200s200-crelu-grouplasso-1e2.nnue` | 1e-2 (probe #1) |
+| `7E9AEDD2` | `net-v9-768th16x32-kb10-w15-e200s200-crelu-grouplasso-3e2.nnue` | 3e-2 (probe #2) |
+| `3D371C10` | `net-v9-768th16x32-kb10-w15-e200s200-crelu-grouplasso-5e2.nnue` | 5e-2 (probe #3) |
+| `12232F49` | `net-v9-768th16x32-reckless-w15-e200s200-warm30-l1e-6.nnue` | element-wise 1e-6 (pre-group-lasso) |
 
 ## v9 nets (ladder / WDL sweep, kb10)
 

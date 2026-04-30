@@ -256,3 +256,45 @@ For each new sparse net, repeat the same comparison:
 If +11 result from probe #1 holds across higher decays, the
 "L1-as-regularizer" reading is validated. If higher decays start
 losing Elo, we've found the Elo-vs-sparsity Pareto frontier.
+
+## 2026-04-25/26 update — Probes #2 and #3 results
+
+Both probes ran in parallel on GPU hosts, SB200 each. Results:
+
+| Probe | Decay | Net hash | Result vs probe #1 (1e-2) |
+|---|---|---|---|
+| #1 | 1e-2 | `573854EF` | (baseline, +11.22 vs dense C8fix) |
+| #2 | 3e-2 | `7E9AEDD2` | **−36 Elo** (more sparsity but lost) |
+| #3 | 5e-2 | `3D371C10` | **−156 Elo** (~11 MB compact; decay too aggressive) |
+
+**Reading: Elo-vs-sparsity Pareto frontier confirmed.** Probe #1's
++11 was the regularization sweet-spot; pushing harder kills useful
+features faster than added sparsity / regularization helps. The
+decision tree above never fired (no probe hit ≥35% sparsity
+without simultaneously losing significant Elo).
+
+**Implication for SB800 production candidate:** the path is
+implicitly closed. `--group-l1-decay 1e-2` is the only viable
+training point and we already know that's primarily a regularizer
+at SB200, not a cache-residency lever. Carrying the regularization
+gain to SB800 is plausible but the +11 SB200 magnitude doesn't
+translate (per `feedback_sb_lengths_dont_cross_compare`).
+
+**What's still open:** at SB200, group-lasso 1e-2 acts as a
+regularizer. Whether that benefit survives SB800's low-LR
+convergence tail (which is where the v9 sparse-threat
+architecture earns most of its Elo per
+`project_v9_low_lr_tail_critical`) is untested. A clean SB800
+group-lasso run vs SB800 dense baseline would settle it but
+costs ~52h of GPU time per
+`feedback_v9_training_durations`.
+
+**Closed:** decay-sweep is done. Don't probe 1e-1 — at 5e-2 we
+already lost 156 Elo; 1e-1 will be worse.
+
+**Stop-trying list:**
+- Don't run more SB200 group-lasso decay probes.
+- Don't claim cache-residency benefit from 13.48% sparsity —
+  44.4 MB still spills 32 MB L3 on most fleet hosts.
+- Don't carry the +11 Elo SB200-vs-SB200 figure as a "win"
+  that translates to deployment.

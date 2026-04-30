@@ -5941,7 +5941,39 @@ at SB200. See `memory/project_group_lasso_acts_as_regularizer.md`.
 
 **Caveat**: SB200 SPRT magnitudes don't translate to SB800 ship-readiness.
 Probe #1 vs prod SB800 would lose 50-100 Elo (missing low-LR convergence
-tail). Probes #2 (3e-2) and #3 (5e-2) running in parallel on GPU hosts.
+tail).
+
+### Group-lasso decay sweep — Probes #2 and #3 (2026-04-25/26)
+
+Both probes ran in parallel on GPU hosts, SB200 each. Net-vs-net SPRTs
+vs probe #1 (`573854EF`, the +11 Elo regularization sweet-spot):
+
+| Probe | Decay | Net hash | Result vs probe #1 |
+|---|---|---|---|
+| #2 | 3e-2 | `7E9AEDD2` | **−36 Elo** — more sparsity but lost |
+| #3 | 5e-2 | `3D371C10` | **−156 Elo** — ~11 MB compact, decay too aggressive |
+
+**Pareto frontier confirmed.** The +11 at 1e-2 was the regularization
+sweet-spot; pushing harder kills useful features faster than the added
+sparsity / regularization helps. The runbook decision tree (≥35%
+sparsity → SB800 candidate) never fired — no probe reached the
+sparsity threshold without simultaneously losing significant Elo.
+
+**Implication: SB800 group-lasso production candidate path implicitly
+closed.** `--group-l1-decay 1e-2` is the only viable training point
+and we know that's primarily a regularizer, not a cache-residency
+lever (44.4 MB still spills 32 MB L3 on most fleet hosts). Whether
+the +11 SB200 regularization benefit survives the SB800 low-LR
+convergence tail is untested but costs ~52h GPU per attempt to settle
+(`feedback_v9_training_durations`).
+
+**Stop-trying list:** no more SB200 group-lasso decay probes; don't
+probe 1e-1 (5e-2 already lost 156 Elo, 1e-1 will be worse); don't
+claim cache-residency benefit from 13.48% sparsity; don't carry the
++11 SB200-vs-SB200 figure as a deployment-relevant win.
+
+See `docs/group_lasso_runbook_2026-04-24.md` for the full sweep
+write-up and decision-tree closure note.
 
 ### Active batch (2026-04-25 morning) — re-SPRTs + correctness audits
 
