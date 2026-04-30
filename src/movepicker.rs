@@ -272,6 +272,16 @@ impl MovePicker {
             [0; 6]
         };
 
+        // Compute pinned for non-evasion picker too. Non-evasion implies
+        // checkers == 0 by definition (caller picks evasion when in check),
+        // but pinned must be real to validate TT/killer/counter moves
+        // against pin-line legality. Without this, an illegal pinned-move
+        // or king-move-into-check from the TT/killer/counter pool can
+        // survive is_pseudo_legal, get returned to the search, and reach
+        // pv_table[0][0] as the engine's bestmove — a forfeit on lichess
+        // (game 2agDftuq, 2026-04-29).
+        let pinned = board.pinned();
+
         MovePicker {
             stage: Stage::TTMove,
             tt_move,
@@ -291,7 +301,7 @@ impl MovePicker {
             threats,
             xray_blockers,
             checkers: 0,
-            pinned: 0,
+            pinned,
             threat_sq: -1,
             checking_sqs,
         }
@@ -401,7 +411,15 @@ impl MovePicker {
             match self.stage {
                 Stage::TTMove => {
                     self.stage = Stage::GenerateCaptures;
-                    if self.tt_move != NO_MOVE && is_pseudo_legal(board, self.tt_move) {
+                    // Validate is_legal in addition to is_pseudo_legal: pseudo-legal
+                    // accepts king-into-attacked-square + pinned-piece-off-line,
+                    // and Coda's make_move doesn't verify king safety. Without
+                    // is_legal, an illegal TT move can reach pv_table[0][0] and
+                    // be emitted as bestmove (lichess 2agDftuq 2026-04-29 forfeit).
+                    if self.tt_move != NO_MOVE
+                        && is_pseudo_legal(board, self.tt_move)
+                        && board.is_legal(self.tt_move, self.pinned, self.checkers)
+                    {
                         return self.tt_move;
                     }
                 }
@@ -430,7 +448,9 @@ impl MovePicker {
                     if self.killers[0] != NO_MOVE && self.killers[0] != self.tt_move {
                         let k = fixup_move_flags(board, self.killers[0]);
                         self.killers[0] = k;
-                        if is_pseudo_legal(board, k) && !is_capture(board, k) {
+                        if is_pseudo_legal(board, k) && !is_capture(board, k)
+                            && board.is_legal(k, self.pinned, self.checkers)
+                        {
                             return k;
                         }
                     }
@@ -444,7 +464,9 @@ impl MovePicker {
                     {
                         let k = fixup_move_flags(board, self.killers[1]);
                         self.killers[1] = k;
-                        if is_pseudo_legal(board, k) && !is_capture(board, k) {
+                        if is_pseudo_legal(board, k) && !is_capture(board, k)
+                            && board.is_legal(k, self.pinned, self.checkers)
+                        {
                             return k;
                         }
                     }
@@ -459,7 +481,9 @@ impl MovePicker {
                     {
                         let cm = fixup_move_flags(board, self.counter_move);
                         self.counter_move = cm;
-                        if is_pseudo_legal(board, cm) && !is_capture(board, cm) {
+                        if is_pseudo_legal(board, cm) && !is_capture(board, cm)
+                            && board.is_legal(cm, self.pinned, self.checkers)
+                        {
                             return cm;
                         }
                     }
