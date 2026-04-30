@@ -109,7 +109,13 @@ Cross-engine endpoints, **ordered by magnitude** (Coda V9 is the lowest by ~10×
 
 **Per CLAUDE.md, Coda V5→V9 was a 20× drop in final LR (5e-6 → 2.43e-7), and the SB400→SB800 +88 Elo win is the load-bearing evidence** that V9's sparse threat features keep converging deep into the tail. So 2.43e-7 isn't arbitrary — it's measured to deliver real gain over higher endpoints.
 
-But the optimum has not been bracketed. Coda has only the comparison `5e-6 → 2.43e-7` (positive). Intermediate points (1e-6, 5e-7, 1e-7) and below (5e-8) haven't been tested. Hobbes's measurement at h-8 (where they raised their endpoint *up* by 3× and gained +9.6 Elo) is at a much smaller architecture (768→256, no hidden chain) so doesn't directly transfer, but is a reminder that the optimum can sit higher than a "lower is always better" heuristic implies.
+**Coda has tested lower than 2.43e-7 and it regressed.** This sets `2.43e-7` as the empirical floor on the *downward* direction. The optimum is at-or-above current.
+
+The optimum has **not been bracketed upward**. Tested points: `5e-6` (V5 baseline) and `2.43e-7` (V9 current). Untested: every point in between, and any point above `5e-6`. The Hobbes finding (h-8 measured +9.6 Elo from raising endpoint 2.7e-6 → 8.1e-6) is at a much smaller architecture (768→256, no hidden chain) so doesn't transfer directly, but it is a clean datapoint that **the optimum can sit substantially higher than a "lower is always better" heuristic suggests**.
+
+Combined: Coda V9's optimum is somewhere in `[2.43e-7, 5e-6]` — a 20× range — and we've only tested the endpoints. The `5e-6` was empirically worse than `2.43e-7`, but neither bound is provably near the optimum. Could be `5e-7`, could be `2e-6`, could be anywhere between.
+
+**Test plan when variance lifts:** 4-point upward bracket `2.43e-7 (control), 7.5e-7, 2.4e-6, 7.5e-6`. Three extra full-length training runs. The Hobbes signal makes this one of the highest-leverage cheap experiments in the queue — if the optimum is at e.g. 1e-6, we've been over-converging on the threat-feature gradients and leaving Elo on the table.
 
 ### Warmup duration
 
