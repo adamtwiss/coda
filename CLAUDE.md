@@ -367,304 +367,48 @@ update as more data accumulates.
 
 ### Calibration
 
-Three anchor points:
+Anchor numbers below; full tables, per-opponent rivals breakdown, loss-class
+taxonomy, win/loss asymmetry, and the 45-moderate-stepped × 12-ablation deep
+dive live in **`docs/loss_analysis_2026-04-28.md`**. Cite that doc as the
+primary source.
 
-- **60+1 bullet H2H vs SF 18 + Reckless** (2026-04-27, Atlas, 100 games per pairing):
-  - vs SF: **−210 ±48** Elo (0 wins / 46 draws / 54 losses)
-  - vs Reckless: **−151 ±40** Elo (0 wins / 59 draws / 41 losses)
-  - Combined: −179 ±31, 26.3% score, 52.5% draw rate, **0 wins in 200 games**
-  - Loss-mechanism analysis (`scripts/classify_losses.py` on the gauntlet PGN):
-    - 78.9% HORIZON-class (Coda eval cliffs late while opp eval was steady-correct earlier)
-    - 7% POSITIONAL drift, 10.5% SELF_BLUNDER, 3.5% UNCLASSIFIED
-    - **Median cliff-ratio 0.89** — eval drop happens at 89% through the game
-    - 31 of 45 HORIZON losses (69%) cliff in the endgame or final 5%
-    - Implication: the gap is concentrated in **endgame depth/eval**, not middlegame
-  - **Lag-near-zero finding**: when both sides "commit" to the bad evaluation
-    (5-ply consistency at threshold), median lag is −3 plies vs SF, −1 vs Reckless.
-    Both engines see the loss at roughly the same time. This rebuts the
-    naive "SF outsearches us 10 plies deep" reading of HORIZON. The mechanism
-    is more **eval-refinement** than search-depth: Coda's eval underestimates
-    badness by 1-3 pawns persistently (mean late-game eval gap 354cp vs SF),
-    until the position becomes concrete enough that even our less-refined
-    eval catches up.
+- **Deployment anchor (180+2, hash=512, EGTB-on)**: **−119 ±25** Elo combined
+  vs SF + Reckless. Cite this for strength claims. The 60+1 numbers below
+  are diagnostic instruments for mechanism decomposition, not strength reads.
+- **60+1 H2H vs SF**: −210 ±48. Gap is hash/depth-bound — closes −71 Elo with
+  hash 64→512, doesn't close further with TC. 93.5% HORIZON.
+- **60+1 H2H vs Reckless**: −151 ±40. Gap is TC/eval-refinement-bound — hash
+  bump barely moves it, long TC closes −64 Elo. 61.5% HORIZON.
+- **Rivals gauntlet (40+0.4, hash=512, EGTB-on, 1400 games, 8 engines)**:
+  Coda **−16 ±9** Elo, mid-pack. Top of pool Horsie/Tarnished +56-58; bottom
+  Velvet/Clarity/Arasan −7 to −14. **The next 50 Elo target = closing this
+  gap**, not the SF gap. Rivals gap closes linearly with merge work; SF gap
+  saturates at ~120-140 Elo regardless of further search work.
+- **10+0.1 ultra-bullet 45-engine RR**: Coda gap to SF ~270-302 Elo, rank
+  21-23/45. STC SPRT over-measures our deficit vs both SF and rivals; the
+  TC sigmoid (below) applies to both. Validate rivals-tier strength via
+  40+0.4 H2H, not SPRT.
+- **CCRL inference**: ~3520-3620 band (top-30 territory). See
+  `memory/project_ultra_bullet_vs_ccrl_calibration.md`.
 
-- **EGTB + Hash + TC sweep** (2026-04-27, 200 games per cell, all on prod 1EF1C3E5):
+**SF-vs-Reckless gap mechanism asymmetry** (full prediction table in the
+loss-analysis doc): vs SF closes via search/depth; vs Reckless closes via
+eval refinement. Path to peer-tier runs through Reckless gap first.
 
-| Configuration | Overall | vs SF | vs Reckless | Draw % |
-|---|---:|---:|---:|---:|
-| 60+1, hash=64, no EGTB (baseline) | −179 ±31 | −210 ±48 | −151 ±40 | 52.5% |
-| 60+1, hash=64, EGTB on | −186 ±32 | −182 ±45 | −191 ±46 | 51.0% |
-| 60+1, hash=512, EGTB on | −151 ±29 | −139 ±40 | −164 ±42 | 58.0% |
-| **180+2, hash=512, EGTB on (deployment-config)** | **−119 ±25** | **−139 ±39** | **−100 ±33** | **67.0%** |
+**HORIZON is an outcome class with 4 mechanisms** ((1) faster NPS, (2) more
+pruning, (3) less bad pruning, (4) better ordering). Coda's specific
+distribution favours (3) and (4) — Reckless outlier-pruning pattern shows
+we both over- and under-prune on different thresholds; the leverage is in
+specific carve-outs that prevent mis-pruning critical moves, plus ordering
+improvements. Mechanism (1) is NPS-discounted at long TC; mechanism (2)
+"tighten the margin" wins are mostly already banked.
 
-  - **EGTB alone (hash controlled, 60+1): essentially flat overall (-7 within noise)**.
-    Mixed by opponent: maybe small help vs SF (+28), maybe small hurt vs Reckless
-    (-40), both within ±60 combined error bars.
-  - **Hash 64→512 (60+1, EGTB on): +35 Elo overall, +43 vs SF, +27 vs Reckless,
-    +7% draw rate.** Dominant lever vs SF.
-  - **TC 60+1 → 180+2 (with hash=512+EGTB): +32 Elo overall, +0 vs SF, +64 vs Reckless,
-    +9% draw rate.** Dominant lever vs Reckless. SF-side gap is TC-saturated by 60+1.
-  - **Mechanism split made cleanly visible by this 4-config sweep:**
-    - vs SF: gap is **hash/depth-bound**. Closes -71 Elo (210→139) with hash bump.
-      Doesn't close further with TC. SF outsearches us in tactical density that
-      hash size partly compensates for; once we have the hash, SF's edge is
-      fully manifest.
-    - vs Reckless: gap is **TC/eval-refinement-bound**. Hash bump barely moves
-      it (-13, possibly null at this N). Long TC closes it -64 (164→100).
-      Tracks the eval-refinement frame: at long TC both engines see more,
-      and Coda's eval has more headroom to converge on positions Reckless
-      already evaluated correctly.
-    - These are complementary mechanisms, both load-bearing for different
-      opponents. Combined, the deployment-config 180+2+512+EGTB number is
-      the relevant strength anchor.
-  - **First wins ever against SF/Reckless** (1 win at hash=512+EGTB 60+1, more
-    at 180+2). Qualitative crossing of zero — but 200 games per cell is still
-    a small sample.
-  - The earlier "EGTB closes the SF gap by 86 Elo" reading was largely a
-    TT-size artifact, not an EGTB effect.
+**+3-6 ply ordering/pruning bucket = highest-leverage frontier** (40% of
+moderate-stepped candidates). Single-feature LMR carve-outs cap at ~50%
+bucket coverage; multi-feature carve-outs on shared triggers (e.g.
+threat-aware loosening of NMP+RFP+FUT+LMR together) go higher.
 
-  **Action items from this finding:**
-  - **Strength claims should cite the 180+2 deployment-config anchor** (-119 ±25),
-    not the 60+1 H2H number. The 60+1 numbers are diagnostic instruments
-    for mechanism decomposition, not strength reads.
-  - SF gap is hash-bound; further tightening requires search-side work
-    (EBF, NPS, tactical density). Pure eval improvements won't close it
-    much further.
-  - Reckless gap is TC-bound; eval-refinement work (training, factor net,
-    longer SBs) closes it. The path to peer-tier strength runs through
-    the Reckless gap first per `feedback_sf_vs_reckless_gaps_are_different.md`.
-  - Investigate Coda TT efficiency in long endgames: hit rate at
-    piece-count buckets, replacement effectiveness at low piece count.
-    See `docs/tt_hash_sensitivity_2026-04-27.md` for the structural
-    candidates (bucket density, age weight, QS in-check static_eval).
-  - SPRT at 10+0.1 measures search/eval changes well, but is structurally
-    blind to a specific class: changes whose Elo only manifests at long-TC
-    mechanisms (deep-search TT pressure, ponder, TM nuance, >25-ply tactics).
-    OB hash CAN be bumped if we audit RAM headroom (workers run N concurrent
-    games × hash MB); we just don't currently. For hash/TT-sensitive merges,
-    validate via 180+2 H2H gauntlet alongside SPRT.
-
-- Earlier baseline (recorded here for trajectory): −159.8 ±41.6 vs SF (CI overlaps the new −210, so the gap may not have widened — but it also hasn't tightened despite recent merge cluster)
-- **10+0.1 ultra-bullet 45-engine RR** (Adam's local RR, every
-  top-10 CCRL engine present): Coda gap to SF settling in the
-  **~270-302 Elo** range across snapshots (±55 error bars at
-  ~88 games). Rank drifting 21-23/45, cluster with
-  Clarity/Velvet/PZChessBot at latest snapshot, above
-  Igel/Arasan/Altair cluster.
-- **CCRL 40/15 + 4CPU**: SF 3652, top 45 bunched within 100 Elo
-  (Reckless 3647 only 5 behind SF). Coda not yet listed; our
-  ultra-bullet → CCRL inference (see
-  `memory/project_ultra_bullet_vs_ccrl_calibration.md`) puts us in
-  the **3520-3620 band** — top-30 territory on CCRL. Caveat:
-  pool composition matters — Coda is tactical-archetype so likely
-  at the lower end of that band in a broad pool, higher in a
-  close-rivals pool.
-
-- **Rivals gauntlet — 40+0.4, hash=512MB, EGTB-on, 8 engines, 1400 games**
-  (Adam, 2026-04-28, FINAL: 200 games per opponent, the "near-peers" pool):
-
-  | Rank | Engine | Elo | Score | Bench NPS | Speed×Coda | Δ-to-Coda |
-  |---:|---|---:|---:|---:|---:|---:|
-  |  1 | Horsie | +58 ±23 | 58.3% | 1,052,223 | 1.78× | +74 |
-  |  2 | Tarnished | +56 ±24 | 58.0% | 1,019,000 | 1.72× | +72 |
-  |  3 | PZChessBot | +17 ±26 | 52.5% | (n/a) | (n/a) | +33 |
-  |  4 | Seer | +14 ±25 | 52.0% | 1,500,726 | **2.54×** | +30 |
-  |  5 | Velvet | −7 ±24 | 49.0% | **1,780,148** | **3.01×** | +9 |
-  |  6 | Clarity | −12 ±26 | 48.3% | 1,690,952 | **2.86×** | +4 |
-  |  7 | Arasan | −14 ±26 | 48.0% | 838,335 | 1.42× | +2 |
-  |  8 | **Coda** | **−16 ±9** | 47.7% | **591,523** | 1.0× | 0 |
-
-  Bench NPS measured 2026-04-28 on Hercules with OB worker stopped
-  (clean CPU). PZChessBot's bench wouldn't terminate cleanly under
-  any invocation tried; revisit. Reference values: Reckless 942K,
-  Stockfish 1.12M.
-
-  **Coda is the slowest in the rivals pool by 1.4-3× margin** — but
-  the rank ordering shows NPS isn't determinative:
-  - Top 2 strongest engines (Horsie +58, Tarnished +56) = 1.72-1.78× NPS
-  - Strongest fast engine (Seer +14) = 2.54× NPS
-  - Top-3 fastest engines (Velvet, Clarity, Seer at 2.54-3.01×) = -12 to +14 Elo
-  - Coda at 1.0× = -16 Elo
-
-  **NPS doesn't determine rank in this pool**. Tarnished/Horsie are
-  the strongest at moderate NPS; the fastest engines (Velvet, Clarity)
-  sit mid-pack. Reckless is also a slower-but-strong design pattern
-  (942K NPS, 1.6× Coda). v9's threat-input architecture cost ~20% NPS
-  for +110 Elo (good trade); we approximately match the field's
-  strength despite being slowest.
-
-  **However** (Adam 2026-04-28): the cache-residency / sparsity work
-  surfaced about ~50% of latent NPS recovery available — Coda is
-  measurably slower than its inference shape *should* afford. So
-  there IS real NPS recovery on the table, distinct from the "trade
-  was correct" reading above. **The reason NPS work is currently
-  de-prioritised is the §TC-handicap-sigmoid finding** — 1×→2× TC
-  handicap vs SF gives ~0 Elo (flat zone before the knee). Even
-  recovering the 50% wouldn't close the SF gap meaningfully. **At
-  peer tier the dynamic is different** — rivals don't sit on a
-  saturation cliff, so NPS gains here probably convert more linearly
-  (untested but worth measuring after the next big NPS merge).
-  Net: NPS work is on the back-burner not because it's worthless
-  but because model/search improvements were higher-leverage in the
-  TC range we currently care about. If the rivals 50-Elo target is
-  partially closed via search/eval and the remaining gap looks
-  NPS-bound, the cache/sparsity work returns to the front burner.
-
-  Trajectory across sample sizes (showing how early reads misled):
-  180g →  Coda −31 (sampling)
-  240g →  Coda −22
-  1400g → **Coda −16 ±9** (final, ±9 tighter than initial ±24)
-
-  - **Coda is mid-pack** in this pool, gap-to-centroid ~22 Elo.
-    Velvet sits below us; Clarity/Seer are at our level; Arasan,
-    PZChessBot, Horsie, Tarnished are above (the +33 → +103 band).
-  - **Loss-class profile** (1400 games / 222 losses analysed via
-    `classify_losses.py`): **77.9% HORIZON, 15.8% SELF_BLUNDER,
-    1.8% POSITIONAL, 4.1% UNCLASSIFIED, 0.5% MUTUAL_TACTIC**.
-    HORIZON-dominance is **mechanism-invariant** across the rivals
-    tier — same ballpark as the 78.9% HORIZON vs SF/Reckless
-    (210/151 Elo gaps). Tactical density / search-depth mismatches
-    drive losses across the entire opposition spectrum we've
-    measured.
-
-  **Per-opponent breakdown** (now reliable at 23-43 losses each):
-
-  | Opponent | N | HORIZON | SELF_BLUNDER | Read |
-  |---|---:|---:|---:|---|
-  | Clarity | 25 | **96.0%** | 0% | Pure horizon |
-  | PZChessBot | 34 | 91.2% | 8.8% | Mostly horizon |
-  | Tarnished | 43 | 86.0% | 9.3% | Mostly horizon |
-  | Velvet | 23 | 82.6% | 13.0% | Standard mix |
-  | Arasan | 25 | 76.0% | 16.0% | Mild SELF_BLUNDER bias |
-  | Horsie | 41 | 70.7% | **19.5%** | High SELF_BLUNDER + strong |
-  | **Seer** | 31 | **45.2%** | **41.9%** | THE outlier |
-
-  - **Seer is the durable per-opponent outlier**. 13 of 35 total
-    pool SELF_BLUNDERs (37%) are vs Seer alone. Seer's style induces
-    our second-best moves at ~4× the rate of any other opponent.
-    Hypothesis: Seer's positional/quiet emphasis lures us into
-    mis-evaluated lines that the more-tactical engines don't
-    construct. Concrete investigation: pull a sample of Seer-loss
-    PGNs, look qualitatively at the move class (which piece type,
-    which phase, which tactical motif) where our eval mis-rates.
-  - **Horsie is a secondary SELF_BLUNDER source** (19.5%) AND
-    top-of-pool (+58 Elo vs Coda). Likely a different mechanism
-    from Seer's: Horsie's strength forces difficult positions where
-    we pick second-best, vs Seer's *style* luring eval errors. Both
-    worth qualitative investigation.
-  - **Clarity is striking — 96% HORIZON, 0% SELF_BLUNDER.** Every
-    loss to Clarity is a pure search-depth mismatch. This is the
-    cleanest "purely depth-bound" opponent in the pool. Search-side
-    work targets the Clarity-class loss directly. Clarity is also
-    2.86× faster (NPS), which compounds the depth deficit.
-  - **NPS-vs-HORIZON correlation (Adam's hypothesis 2026-04-28)**:
-    mostly confirmed. Top 2 fastest engines (Velvet 3.01×, Clarity
-    2.86×) → high HORIZON (82-96%). Slowest non-Coda Arasan 1.42×
-    → still 76% HORIZON but smallest Elo gap (+2). Seer 2.54×
-    breaks the pattern at 45% HORIZON / 42% SELF_BLUNDER — speed
-    alone doesn't explain HORIZON when opponent's *style* doesn't
-    expose tactical mismatches. **Clean reading**: speed × style →
-    HORIZON share. Pure tactical engines (Clarity, PZChess) at any
-    NPS dominate via HORIZON; positional engines (Seer) produce
-    SELF_BLUNDER-heavy losses regardless of NPS.
-  - **SELF_BLUNDER bimodal distribution**: pool aggregate is 15.8%
-    but it's bimodal — Seer 42%, Horsie 20%, everyone else 0-16%.
-    The "average" hides two distinct subpopulations. When SELF_BLUNDER
-    bucket grows in future gauntlets, check whether it's Seer-driven
-    style noise or a broader move-ordering issue.
-  - **POSITIONAL is essentially zero** (1.8%) vs rivals (was 7% vs
-    SF). At peer-tier eval depth, drift losses don't manifest.
-  - **An earlier 139-game / 29-loss snapshot showed 20.7%
-    SELF_BLUNDER** — reframed once N grew. The "doubling vs SF"
-    framing was small-N noise; the 1400-game value (15.8%) is in
-    the same band as the 10.5% vs SF/Reckless. **Move-ordering work
-    is still valuable** but as mechanism (4) HORIZON-reduction,
-    not because peer-tier games have a fundamentally different
-    loss profile.
-  - **The next 50 Elo target is closing the rivals gap, not chasing
-    SF.** Adam's framing 2026-04-28: this pool spans the entire near-
-    peer band, and a +50 Elo improvement moves us from −22 to roughly
-    parity with Tarnished (+81). Pure SF-gap-closing work has lower
-    leverage — vs SF the gap is hash-bound and saturates at ~120-140
-    Elo regardless of further search work, but vs rivals every
-    EBF/ordering/eval improvement compounds linearly across 6+ peer
-    opponents.
-  - **HORIZON is an outcome class, not a single mechanism.** When we
-    say "75.9% of losses are HORIZON" we mean "the eval cliff signature
-    matches search-depth-mismatch." Multiple distinct mechanisms can
-    produce that signature:
-    1. **Faster NPS** (raw search throughput → more nodes in the
-       same wall-clock → more effective depth).
-    2. **More pruning** (tighter RFP/FUT/SEE/LMP margins → smaller
-       sub-tree per node → deeper effective depth, but at the cost
-       of occasionally cutting moves that mattered).
-    3. **Less BAD pruning** (carve-outs / better gates that prevent
-       pruning the specific moves that were tactically critical —
-       e.g. LMP direct-check carve-out, recapture extensions,
-       singular extensions, threat-feature-aware gates).
-    4. **Better move ordering** (first-move-cutoff rate ↑ → more
-       beta cutoffs → less wasted search → deeper effective depth).
-
-    These mechanisms have OPPOSITE risk profiles. (2) gains depth
-    by accepting more mistakes; (3) accepts less depth in exchange
-    for fewer mistakes. (4) is a free lunch in principle but
-    bounded by ordering quality.
-  - **Adam's reading of our specific HORIZON-mechanism distribution**
-    (2026-04-28): the Reckless outlier-pruning comparison
-    (`docs/cross_engine_comparison_2026-04-25.md`) shows we both
-    over-prune AND under-prune relative to Reckless on different
-    thresholds — five outliers in different directions. This pattern
-    suggests our HORIZON losses are more about **(3) less bad
-    pruning** than **(2) more pruning**. The wins from "force more
-    pruning + retune" cluster were real but bounded; the bigger
-    wins (LMP direct-check, recapture extensions, threat-aware
-    gates) come from specific carve-outs that prevent mis-pruning
-    critical moves.
-  - **Implication for experiment selection**: prioritise work that
-    targets HORIZON via mechanisms (3) and (4) for our archetype —
-    specific pruning carve-outs (Reckless-pattern direct-check gates,
-    threat-aware exemptions, recapture/SE extensions) and ordering
-    improvements (4D history shape, capture-history sufficiency,
-    quiet-check bonus calibration). Mechanism (1) NPS still pays
-    but has discount factor at long TC per
-    `feedback_nps_elo_conversion_drops_with_tc.md`. Mechanism (2)
-    "more pruning" should now be the smaller part of our experiment
-    portfolio — most of the easy "tighten the margin" wins are
-    captured. De-prioritise SF-specific anchor optimisation
-    (deep-endgame TT bucket density was a candidate; lower priority
-    now that rivals data exists). The SELF_BLUNDER 20.7% bucket is
-    primarily mechanism (4) (better ordering) — second-best moves
-    are an ordering/eval-quality artifact, not a depth deficit.
-  - **Refresh cadence**: rerun the gauntlet + classifier monthly or
-    after any cluster of merges worth ~+10 Elo. The Tarnished/Horsie
-    gap should compress visibly as we improve; if it doesn't, the
-    work isn't moving the right buckets.
-  - **TC sigmoid applies vs rivals too** (Adam, 2026-04-28). The
-    SF-gap-shrinks-with-TC pattern documented in §The TC-handicap
-    sigmoid below also holds for rivals: gap at 10+0.1 is meaningfully
-    larger than at 40+0.4. At 10+0.1 ultra-bullet (the 45-engine RR
-    snapshot), Coda rank 21-23/45 cluster with Clarity/Velvet/
-    PZChessBot, with gaps to nearby rivals in the 50-150 Elo range
-    and gap to top of pool 270-302 Elo. At 40+0.4 (this gauntlet),
-    the same engines collapse to within ±20 Elo of Coda — Velvet
-    actually ends up below us. Two implications:
-    1. **STC SPRT (10+0.1) over-measures our deficit vs rivals** —
-       same blindspot as vs SF per `feedback_sprt_blind_to_long_game_effects.md`.
-       A change that delivers +5 Elo at STC SPRT may convert to
-       less at 40+0.4 deployment TC; conversely, changes whose
-       mechanism only fires at LTC (TT pressure, deep tactics, TM)
-       may be invisible in SPRT yet pay vs rivals at deployment.
-    2. **The rivals gap is more closable than the STC view suggests.**
-       Closing 50 Elo at 40+0.4 is moving from -22 to +28 — past
-       Tarnished (+81 → ≈+30 post-improvement). At 10+0.1 the same
-       improvement might be 100-150 Elo of apparent shift, but the
-       deployment-relevant number is the LTC one.
-    3. **Rivals-tier validation should be 40+0.4 or 60+1**, not
-       SPRT. Reuse the `tough_rivals.pgn` gauntlet pattern after
-       any cluster of search/eval merges — it's the deployment-
-       relevant strength read for the next 50 Elo target.
-
-SF gap as a function of TC (see TC-handicap sigmoid below for the
+**SF gap as a function of TC** (see TC-handicap sigmoid below for the
 full curve):
 - 10+0.1 (ultra bullet): ~302 Elo
 - 60+1 (bullet): ~160 Elo
