@@ -7323,3 +7323,44 @@ Seventeen H0 results, zero H1. Of these:
   experiment/tune-870-applied (eebff9b), experiment/lmr-carveout-bundle
 - Cancelled: tune #877, tune #878 (Wrong Bench, no longer relevant)
 - Pending decisions: tune-878 priority bump or cancel
+
+## 2026-04-30 — Idle-fleet batch: hindsight SE-guard, cutoff_count, small-ProbCut
+
+Three SPRTs fired against main while the fleet was idle. All target
+distinct cross-engine ports / safety gates queued in the
+2026-04-25 idea docs.
+
+### #882 experiment/hindsight-excluded-move-gate — SE-consistency safety gate
+- **Setup:** add `info.excluded_move[ply_u] == NO_MOVE` to the
+  hindsight reduction condition. Mirrors the SE-skip pattern used
+  by NMP/RFP/ProbCut/FH-blend/corrhist. Branch
+  experiment/hindsight-excluded-move-gate (commit 37f29b1).
+- **Bench:** 1038165 vs main 966720 (+7.4%).
+- **Bounds:** [-3, 3] (correctness fix; direction uncertain).
+- **Status:** in flight, early read +0.5 ±3.4 / 7.9K (LLR 0.47 →H1).
+
+### #883 experiment/cutoff-count-propagation — Reckless port (LMR-only)
+- **Setup:** per-ply `cutoff_count` array on SearchInfo. Reset
+  grandchild slot (ply+2) at negamax entry; increment on beta
+  cutoff. LMR reads child cutoff_count[ply+1]: when busy subtree
+  (>2 cutoffs) → +1 reduction. Skipped Reckless's NMP-side
+  20cp-barrier change as a safer first port. Branch
+  experiment/cutoff-count-propagation (commit 6f8e71f).
+- **Bench:** 845292 vs main 966720 (-12.5%).
+- **Bounds:** [0, 3].
+- **Status:** in flight.
+- **Source ref:** `docs/cross_engine_comparison_2026-04-25.md`
+  Tier 2 #9 (parent-cutoff-count, expected +2 to +5).
+
+### #884 experiment/sf-small-probcut — SF Step 12 TT-trust shortcut
+- **Setup:** before the move loop, if TT has a deep
+  (≥ depth-4), high-LOWER-bound score ≥ beta + SMALL_PROBCUT_MARGIN
+  (default 416cp), return small_pc_beta directly. Zero-NPS gate
+  using already-probed TT data. SE-excluded guard included.
+  Branch experiment/sf-small-probcut (commit b105512).
+- **Bench:** 1155077 vs main 966720 (+19.5%) — re-shaped trees
+  via parent-side fail-high cascades, not a node-count bug.
+- **Bounds:** [0, 3].
+- **Status:** in flight.
+- **Source ref:** `docs/cross_engine_comparison_2026-04-25.md`
+  Tier 2 #13 (sf-small-probcut, expected +2 to +5; "~zero NPS cost").
