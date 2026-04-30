@@ -1,5 +1,22 @@
 # LMR Cross-Engine Survey, 2026-04-29
 
+> **2026-04-30 update — single-feature LMR carve-out class CLOSED.**
+> All five carve-outs derived from this doc were SPRT'd (some with
+> retunes); all H0'd. See `experiments.md` 2026-04-30 entry for the
+> full closure summary. Per-section status:
+> - §3.5 anti-cascade — H0 #875 -1.4 Elo
+> - §3.6 TT-bound informs LMR — H0 #876 -2.7 Elo
+> - LMR threat-aware (Coda-original) — H0 #868 -0.8 Elo
+> - LMR symmetric hindsight extension — H0 #866 +0.3 / H0 #881 bundle -3.7
+> - LMR refutation bonus — H0 #867 -0.5 Elo
+>
+> The 2026-04-29 set-arithmetic finding (zero LMR-exclusive recovery
+> cases) explained this in advance: single-feature LMR carve-outs cap
+> at ~50% coverage and won't produce H1 at 10+0.1. **Path forward:
+> multi-feature carve-out on a shared trigger** (NMP + LMR + RFP + FUT
+> loosen simultaneously when major-threat creation fires). Distinct
+> mechanism from the 5 single-feature attempts.
+
 Per-feature ablation today showed disabling LMR alone recovers 53% of the
 +3-+6 ply deficit candidates from our rivals-gauntlet loss subset — LMR is
 the dominant choke point in moderate-stepped exploits. This is a survey of
@@ -654,7 +671,7 @@ Each entry: idea / engines using it / mechanism / effort / Coda fit / Elo prior.
 - **Status.** ✓ Already in place. Move comparison table to mark `~`
   rather than ✗ for Coda on this row.
 
-### 3.5 (MEDIUM) Reckless-style anti-cascade reduction guard
+### 3.5 (CLOSED — H0 #875 -1.4 Elo / 25K games)
 
 - **Engines using:** Reckless (search.rs:866-868). `if !PV && parent_red > my_red + 485 { my_red += 129; }`
 - **Mechanism.** When the parent was reduced much more than this node's
@@ -668,8 +685,10 @@ Each entry: idea / engines using it / mechanism / effort / Coda fit / Elo prior.
 - **Coda fit.** Direct. Can use existing reduction stack.
 - **Expected Elo.** **Low-Medium** (1-3 Elo prior). Reckless-only mechanism;
   no cross-engine consensus. Tune-on-branch likely required.
+- **2026-04-30 outcome:** SPRT #875 H0 **-1.4 ±1.9 / 24878g** ✗.
+  Reckless-only mechanism didn't transfer. Closed.
 
-### 3.6 (MEDIUM) TT bound informs LMR (PlentyChess, Reckless)
+### 3.6 (CLOSED — H0 #876 -2.7 Elo / 15K games)
 
 - **Engines using:** Reckless (`tt_score <= alpha → r += 546`,
   `tt_depth < depth → r += 322`), Plenty (`ttPv && tt_value <= alpha → r +=`),
@@ -681,6 +700,10 @@ Each entry: idea / engines using it / mechanism / effort / Coda fit / Elo prior.
 - **Effort.** Small (~10 LOC). Already have TT data at the call site.
 - **Coda fit.** Clean.
 - **Expected Elo.** **Medium** (1-3 Elo prior). Multi-engine consensus.
+- **2026-04-30 outcome:** SPRT #876 H0 **-2.7 ±2.4 / 15014g** ✗.
+  Multi-engine consensus didn't transfer — likely the existing
+  `tt_pv` flag captures most of the signal and adding tt_bound ×
+  tt_depth overlaps without adding new information. Closed.
 
 ### 3.7 (MEDIUM) Important-capture tier (PlentyChess)
 

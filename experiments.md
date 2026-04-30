@@ -7115,9 +7115,9 @@ Five SPRTs targeting the moderate-stepped LMR-blindspot class:
 |---:|---|---|
 | #862 | experiment/lmr-ablation | H0 **-71.6** ✗ (LMR is load-bearing +72 Elo) |
 | #865 | experiment/lmr-pv-neg-reduction | H0 **-8.0** ✗ |
-| #868 | experiment/lmr-threat-aware-major | H0 **-0.8** ✗ at 36818g |
-| #866 | experiment/lmr-hindsight-extend | running, marginal (~+0.3 LLR -0.44) |
-| #867 | experiment/lmr-refutation-bonus | running, marginal (~+0.4 LLR -0.22) |
+| #868 | experiment/lmr-threat-aware-major | H0 **-0.8 ±1.6 / 36818g** ✗ |
+| #866 | experiment/lmr-hindsight-extend | H0 **+0.3 ±1.2 / 64358g** (LLR -1.15, →H0) ✗ |
+| #867 | experiment/lmr-refutation-bonus | H0 **-0.5 ±1.4 / 46918g** ✗ |
 
 **Reading:** #862 confirms LMR is load-bearing. #865 was a clear
 blunder. The interesting result is #868: a v9-leveraged Coda-
@@ -7132,50 +7132,194 @@ coverage and can't produce strong SPRT signals at 10+0.1.
 carve-out (LMR + NMP + RFP + FUT on shared trigger) is the
 next design.
 
+## 2026-04-30 — Overnight H0 sweep + tune-870 SPRT + tune-871 follow-up submitted
 
-## 2026-04-29 — Tune-861-applied H0 at -2.2 Elo: long full-sweep SPSA can regress
+Seven SPRTs resolved overnight. None merged. Pattern is consistent with
+the noise-floor / variance discussion in
+`feedback_sb800_seed_variance_is_meaningful.md` — small-Elo wins are
+sitting inside the SPRT noise floor and not landing as H1.
 
-Tune-861 ran 10K iter on ~80 params at default gamma=0.101 from
-trunk state pre-#864 merge. Convergence looked clean. Applied
-outputs (64 of 80 params changed, mostly small movements) on
-`experiment/tune-861-applied`. SPRT'd against same baseline:
+### #880 experiment/tune-870-applied — NMP yin-yang retune H0
+- **Result:** H0 **-0.4 ±1.3 / 48218g** (LLR -2.97) ✗
+- **Setup:** 11-param focused retune (NMP/RFP/FUT/LMP cluster) following
+  #864 NMP cut_node gate merge. Two big movers applied: NMP_EVAL_MAX
+  1→2 (+58.5%), NMP_VERIFY_DEPTH 9→8 (-7.0%).
+- **Reading:** the guard's direct gain (#864 +0.5) wasn't extended by the
+  retune. Per CLAUDE.md §Guard/Safety-Gate Sub-Pattern, retunes typically
+  add +3-5 Elo on top of guards — this one didn't. Either the cluster
+  wasn't the right yin-yang partner for `cut_node` gating, or the gate's
+  direct gain was the entire effect.
+- **Action:** none. Tune-870 outputs **NOT** merged.
+- **Branch:** experiment/tune-870-applied (commit eebff9b, kept for
+  reference).
 
-**Result: H0 at -2.2 Elo / LLR ~-2.94 / ~12K games (#157).**
+### #872 experiment/tune-861-applied — full-sweep retune H0
+- **Result:** H0 **-2.1 ±3.0 / 9830g** (LLR -2.97) ✗
+- **Setup:** 80-param full-sweep, 10K iter (125 iter/param). Multiple
+  big movers; see `feedback_long_full_sweep_spsa_can_regress.md` and
+  `feedback_spsa_snr_scales_inverse_sqrt_n.md` for the diagnosis.
+- **Reading:** at 80 params × 10K iter the per-param SNR was below the
+  threshold needed to extract small gradients; many low-impact params
+  drifted toward feature-disable. Not a real-gradient result.
+- **Mechanism caveat:** at very low N (~400-500g) ablations of two of
+  the drifted params (FUT_THREATS_MARGIN, SE_KING_PRESSURE_MARGIN) read
+  deeply negative. At 2K+ games they settle near zero (see #873/#874).
+  Wait ≥1500-2000g before drawing conclusions on tune-direction wrongness.
 
-Five-engine cross-check rules out gamma as cause:
-- Coda, Alexandria, Caissa, Quanticade, PlentyChess use 0.101
-- Reckless uses 0.05 (lone outlier; not consensus)
+### #873 experiment/ablate-fut-threats-margin — feature mildly contributes
+- **Result:** H0 **-2.5 ±2.8 / 10580g** (LLR -3.10) ✗
+- **Setup:** disable FUT_THREATS_MARGIN (set to 0). Tests whether the
+  feature's small per-position effect is real, given tune-861 drove it
+  from 15 → ~2.
+- **Reading:** disabling hurts by ~2.5 Elo (within noise but directionally
+  consistent). Feature stays at its current default. Tune-861's drift was
+  wrong-direction (small but real value to keep).
+- **Action:** keep at default. **Don't apply tune-861's value for this
+  parameter.**
 
-Likely mechanism: with ~80 params, only ~16 have meaningful
-gradient. The other ~64 hover near optima with flat gradient
-signal; aggregate noise drift from those produces ~2 Elo
-regression even when high-gradient params moved correctly.
-Same drift mechanism observed earlier on CONTEMPT (10→19
-SPSA-drifted; SPRT-at-default showed +2.5 Elo for moving back).
+### #874 experiment/ablate-se-king-pressure-margin — feature mildly contributes
+- **Result:** H0 **-2.6 ±3.0 / 9794g** (LLR -2.97) ✗
+- **Setup:** disable SE_KING_PRESSURE_MARGIN (set to 0). Same
+  rationale as #873 (tune-861 drove 2 → ~0).
+- **Reading:** disabling hurts by ~2.6 Elo. Feature stays. Same caveat
+  as #873 — direction is small-but-real.
 
-**Bisect via ablation SPRTs (in flight 2026-04-29):**
+### #875 experiment/lmr-anti-cascade — Reckless-style guard H0
+- **Result:** H0 **-1.4 ±1.9 / 24878g** (LLR -2.98) ✗
+- **Setup:** Reckless-style anti-cascade reduction guard
+  (`docs/lmr_crossengine_2026-04-29.md` §3.5). When parent reduction
+  was much larger than this node's, propagate the "unimportant-position"
+  signal via `r += K`.
+- **Reading:** Reckless-only mechanism with no cross-engine consensus;
+  H0 at -1.4 confirms it doesn't transfer to Coda's search shape.
+  Closes idea §3.5.
 
-Tune-861 drove two params toward feature-disable:
-- FUT_THREATS_MARGIN: 21 → 2 (drift toward 0)
-- SE_KING_PRESSURE_MARGIN: 2 → 0 (already at boundary)
+### #876 experiment/lmr-tt-bound-informs — TT-bound informs LMR H0
+- **Result:** H0 **-2.7 ±2.4 / 15014g** (LLR -2.95) ✗
+- **Setup:** add TT-bound and TT-depth to LMR adjustment (Reckless +
+  PlentyChess pattern, `docs/lmr_crossengine_2026-04-29.md` §3.6).
+- **Reading:** mild negative. Multi-engine consensus didn't transfer.
+  Likely the TT-PV flag we already incorporate captures most of the
+  signal, and adding tt_bound × tt_depth overlaps without adding new
+  information.
+- **Action:** closes idea §3.6 at default tunables. Could revisit with
+  retune-on-branch if motivated, but prior is now weakened.
 
-Ablation SPRTs against main with default-zero:
-- experiment/ablate-fut-threats-margin (bench 1001923, [-3, 3])
-- experiment/ablate-se-king-pressure-margin (bench 992819, [-3, 3])
+### #869 experiment/tt-cutoff-history-collision-f — H0
+- **Result:** H0 **-1.0 ±1.9 / 24618g** (LLR -2.98) ✗
+- **Earlier rerun #863:** H0 **-2.6 ±2.9 / 10230g** ✗
+- **Reading:** TT history-collision filter doesn't help at default
+  parameters. Closed across two attempts.
 
-If these H0 (or H1 in either direction with small magnitude),
-they're noise-drift candidates; tune-861's movement was wrong
-direction. If they H1 positive, the features carry no Elo and
-SPSA was correctly pushing them toward 0 — the regression lives
-elsewhere in the 64 changed params.
+### #879 main vs prod (seed-variance diagnostic) — replica gap −22
+- **Result:** H0 **-21.6 ±9.0 / 1370g** ✗
+- **Setup:** main (with C8FIXED rerun replica net) vs prod (PROD net,
+  same hyperparameters, different seed only). Both factor-arch SB800.
+- **Reading:** **22 Elo gap between two seed-only-different SB800
+  trains** with identical config. Confirms the variance phenomenon
+  documented in `feedback_sb800_seed_variance_is_meaningful.md` —
+  loss gap was 0.5%, but per-position eval differences reach 60% on
+  basic Q-vs-R discrimination.
+- **Implication:** factor arch's parameterisation redundancy creates
+  flat directions in the loss landscape; seed picks different basins
+  at training time. Single-seed net comparisons under-resolve recipe
+  effects.
+- **Plan:** non-factor SB200 replica pair to characterise noise floor
+  on a non-factor architecture (Task #168). Decision rule: if replica
+  gap < 5 Elo at 1500g cross-engine SPRT, factor was the noise source
+  and we drop it.
 
-**Lessons (saved to feedback_long_full_sweep_spsa_can_regress.md):**
+### Decisive STC nulls (file-and-forget, large N)
+- **#842 tt-age-weight-8** STC: **+0.5 ±0.6 / 273642g** H0 (LLR -2.95).
+  STC null. **LTC variant #857 H1 +1.6 ±2.5 / 7.3K — already merged
+  via the LTC branch (PR #4, 2026-04-29).** Documents the
+  STC-LTC inversion class for TT-pressure-bound changes; see
+  `feedback_stc_can_invert_ltc_direction.md`.
+- **#841 tt-threshold-loose-only** STC: **+0.4 ±0.7 / 189228g** H0.
+  Confirmed dropped at both STC and LTC (#856 H0 too). Closed.
 
-1. Long full-sweep tunes are NOT free; iter count alone doesn't
-   guarantee improvement.
-2. Always SPRT applied outputs — convergence ≠ Elo improvement.
-3. Tune in focused clusters (4-12 high-gradient params) for
-   structural-fix retunes; reserve full-sweep for net changes.
-4. Drift-toward-disable signals identify feature-utility
-   candidates (silver lining).
+### #859 / #860 tune-855-final-applied — superseded
+- **#859** stalled at 0/0 (Wrong Bench, replaced by #860).
+- **#860 H0 -7.5 ±7.0 / 2416g** ✗. Already filed in the
+  2026-04-29 §"Path C tune-855 cluster" entry.
 
+### #881 experiment/tune-871-applied — bundled LMR carve-out retune H0
+- **Result:** H0 **-3.7 ±2.7 / 12126g** (LLR -2.96) ✗
+- **Setup:** experiment/lmr-carveout-bundle (5c36fdd hindsight extension +
+  b5b1065 threat-aware carve-out) with tune-871 outputs applied. 8
+  pairs × 2500 iter focused tune, 11 params, 227 iter/param. Big
+  movers (per `feedback_spsa_snr_scales_inverse_sqrt_n.md`):
+  LMR_HIST_DIV 6744→7814 (+15.9%), LMR_THREAT_DIV 4→5 (+12.1%),
+  HINDSIGHT_MIN_DEPTH 4→3 (-24.7%). 8 other params <5%, kept default.
+- **Mechanism intent:** yin-yang retune on top of two H0'd LMR
+  features. Both add depth-recovery extensions; retune was meant to
+  let in-line LMR reductions back off because depth is recovered
+  elsewhere. Per `feedback_extensions_yin_yang_pruning.md`.
+- **Reading:** retune did **not** rescue the bundle. Slightly negative
+  direction. Pairs A/B counterpart tunes #877/#878 (4 pairs × 5000
+  iter alternative) cancelled — both stalled on `Wrong Bench 1018912`
+  (lmr-carveout-bundle bench mismatch) and even if rerun would target
+  a class now confirmed empty.
+- **Branch kept** for reference (commit 04949c1), tune outputs **NOT**
+  merged.
+
+### Closure: LMR carve-out class exhausted at current trunk state
+**5 individual H0s + 1 bundled retune H0 = entire single-feature
+LMR carve-out class closed.**
+
+| ID | Branch | Result |
+|---:|---|---|
+| #862 | lmr-ablation | H0 -71.6 ✗ (LMR is +72 Elo, load-bearing) |
+| #865 | lmr-pv-neg-reduction | H0 -8.0 ✗ |
+| #866 | lmr-hindsight-extend | H0 +0.3 ±1.2 / 64K ✗ |
+| #867 | lmr-refutation-bonus | H0 -0.5 ±1.4 / 47K ✗ |
+| #868 | lmr-threat-aware-major | H0 -0.8 ±1.6 / 37K ✗ |
+| #875 | lmr-anti-cascade | H0 -1.4 ±1.9 / 25K ✗ |
+| #876 | lmr-tt-bound-informs | H0 -2.7 ±2.4 / 15K ✗ |
+| #881 | tune-871-applied (bundle + retune) | H0 -3.7 ±2.7 / 12K ✗ |
+
+Confirms the 2026-04-29 set-arithmetic finding empirically: zero
+LMR-exclusive recovery cases across 18 +3-6 deficit candidates →
+single-feature LMR carve-outs cap at ~50% coverage and won't produce
+H1 at 10+0.1.
+
+**Closes idea doc references:**
+- `docs/lmr_crossengine_2026-04-29.md` §3.5 (anti-cascade) — H0 #875
+- `docs/lmr_crossengine_2026-04-29.md` §3.6 (TT-bound informs LMR) — H0 #876
+- LMR threat-aware design (same doc) — H0 #868
+- LMR symmetric hindsight extension — H0 #866 individual + H0 #881 bundled
+- LMR refutation bonus — H0 #867
+
+**Path forward (search-side):**
+1. **Multi-feature carve-out on shared trigger.** NMP + LMR + RFP +
+   FUT loosen simultaneously when major-threat creation fires.
+   Targets the "distributed over-pruning" pattern surfaced by
+   set-arithmetic. Distinct mechanism from the 5 single-feature
+   attempts.
+2. **Pause search-side** until the model-stability thread resolves
+   (non-factor SB200 replica pair, factor-noise hypothesis,
+   Task #168). With a low-noise baseline established, residual
+   small-Elo signals from search-side experiments become resolvable
+   again. Currently they sit inside the SB800 replica-variance
+   noise floor (~22 Elo per #879).
+
+### Pattern read across the night
+Seventeen H0 results, zero H1. Of these:
+- 2 large-N decisive nulls (#842, #841) — methodology-level confirms.
+- 5 tighter-N negatives (#875, #876, #867, #869, #863 rerun) —
+  mechanism-wrong or noise-floor-bound.
+- 4 tune-related H0s (#880, #872, #859, #860) — closed two failed
+  tune attempts.
+- 2 ablation entries (#873, #874) — confirmed disabled features
+  mildly contribute.
+- 4 LMR carve-out cluster (#866, #867, #868, #881 bundle) — closed
+  the cluster.
+
+### Status summary
+- Merged: 0
+- H0 closed: 17 (overnight + #881)
+- In flight: 0 (fleet idle)
+- Active branches preserved: experiment/tune-871-applied (04949c1),
+  experiment/tune-870-applied (eebff9b), experiment/lmr-carveout-bundle
+- Cancelled: tune #877, tune #878 (Wrong Bench, no longer relevant)
+- Pending decisions: tune-878 priority bump or cancel
