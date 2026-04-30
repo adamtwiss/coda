@@ -477,3 +477,75 @@ d24), Seer 50% (style/eval), Arasan 0% (every cliff depth-recoverable).
 
 Saved: `memory/project_sudden_bucket_is_bimodal.md`.
 Output: `/tmp/convergence_sudden.csv` (63 rows).
+
+### 2026-04-30 evening — both follow-ups done; reading refined again
+
+**Played-depth (cutechess PGN comments) recovered for 63/63 sudden + 45/45
+moderate. SF d28+d32 run on the 15 sudden NEVER cases.** Refined
+classification:
+
+| Bucket | Sudden (63) | Moderate (45) |
+|---|---:|---:|
+| Negative deficit (TT/game-time-context-bound) | 22% | 13% |
+| Zero deficit (TT-state at played_depth) | 6% | 2% |
+| +1..+2 (NPS-bound) | 21% | 27% |
+| +3..+6 (ordering/pruning) | 21% | **40%** |
+| +7+ (extension class) | 6% | 9% |
+| **Eval-blind durable** | **11%** | 9% |
+| **Ambiguous (SF d32 flips, not actionable)** | **13%** | (unmeasured) |
+
+**Critical refinement on the 24% NEVER subset:** SF d28+d32 arbitration
+splits it cleanly:
+- 7/15 (47%) **eval_blind_durable** — SF d32 still picks the same move
+  as d18 best, Coda's net misses it. SF d28 scores are *small* (-29,
+  -38, 0, -36, 0, -2, 0) — Coda's misjudgment is ~30cp consistent on
+  the same move SF picks, not the 100-265cp the d18 arbitration
+  suggested.
+- 8/15 (53%) **ambiguous_sf_flipped** — SF d32 picks a different move
+  than d18 best. SF d28 scores ~0 for most. Original d18 arbitration
+  was a false-positive; even SF can't decide at d32. Not actionable.
+
+**This drops the true eval-bound subset of sudden from 24% to 11%** —
+much closer to moderate's 9%. The "training-side has bigger leverage on
+sudden" reading from the earlier paragraph above is overstated; the
+real eval-bound share is ~10% across both buckets.
+
+**Updated prescription for the sudden bucket:**
+
+The two buckets are MORE similar than the doc originally framed.
+Differences that hold up:
+- Sudden has more search-context-bound cases (28% vs 15%) — TT
+  pressure / game-time ordering improvements pay more here
+- Moderate is more concentrated in +3-6 ordering/pruning (40% vs
+  21%) — the carve-out sweet spot
+
+Differences that DON'T hold up:
+- "Sudden is dominantly extension-bound" — false. Extension class
+  (+7+) is 6% vs moderate's 9%. Extension-class experiments
+  shouldn't be designed for sudden specifically.
+- "Sudden is dominantly eval-bound, training is the lever" — over-
+  stated. True eval-bound is 11% (vs the 24% raw NEVER).
+
+**Final prioritisation (all losses, refined shares):**
+
+| Lever | Share of all 222 losses | Status |
+|---|---:|---|
+| Training (eval-blind durable) | ~10% | Group-lasso pipeline + Recipe C re-evaluation |
+| TT replacement / game-time ordering | ~25% | Underexplored; #834/#842 retried, future #834 v3? |
+| NPS / EBF / cache | ~25% | Sparsity work, factor net, cache residency |
+| Ordering/pruning carve-outs (+3-6) | ~30% | #891 threat-bundle-major in flight |
+| Extensions (+7+) | ~10% | Not the silver bullet doc framed; small standalone leverage |
+| Ambiguous (noise) | ~5-10% | Not actionable |
+
+The biggest single under-explored lever is **TT replacement /
+game-time ordering** — 25% of losses, attacks the search-context-bound
+subset. After threat-bundle-major resolves (or H0s), that's a
+candidate frontier for the next round of experiments.
+
+Outputs:
+- `/tmp/sudden_with_depth.jsonl` — sudden candidates enriched with
+  played_depth from PGN
+- `/tmp/moderate_with_depth.jsonl` — same for moderate-stepped
+- `/tmp/sf_arbitrate_never.csv` — SF d28+d32 results on the 15 NEVER
+  cases with eval_blind_durable / ambiguous_sf_flipped classification
+- `scripts/extract_played_depth.py`, `scripts/sf_arbitrate_never.py`
