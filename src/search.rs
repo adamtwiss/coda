@@ -434,6 +434,10 @@ pub struct SearchInfo {
     pub excluded_move: [Move; MAX_PLY + 1],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
     double_ext_count: [i32; MAX_PLY + 1],
+    /// Per-ply count of beta cutoffs that fired in this subtree. Reset at child entry
+    /// (ply+2) when negamax begins at `ply`. Reckless port: parent reads `cutoff_count[ply+1]`
+    /// to inform NMP/LMR — high child cutoffs = subtree busy with cutoffs = expect cutoffs here.
+    cutoff_count: [i32; MAX_PLY + 2],
     /// Per-ply moved piece (go_piece index 1-12, 0=none). Set before make_move.
     /// Used for correct cont hist lookups at ply-2+ (avoids stale board.piece_at).
     moved_piece_stack: [u8; MAX_PLY + 1],
@@ -493,6 +497,7 @@ impl SearchInfo {
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
             double_ext_count: [0; MAX_PLY + 1],
+            cutoff_count: [0; MAX_PLY + 2],
             moved_piece_stack: [0; MAX_PLY + 1],
             moved_to_stack: [0; MAX_PLY + 1],
             pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
@@ -1226,6 +1231,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
+    info.cutoff_count = [0; MAX_PLY + 2];
     info.moved_to_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
@@ -1313,6 +1319,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
+    info.cutoff_count = [0; MAX_PLY + 2];
     info.moved_to_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
@@ -1818,6 +1825,14 @@ fn negamax(
     // a sibling's stale LMR value from an earlier visit to this ply.
     if ply_u <= MAX_PLY {
         info.reductions[ply_u] = 0;
+    }
+
+    // Reckless port: clear grandchild cutoff slot. We accumulate cutoffs at
+    // child ply (ply+1) across the move loop and read it back at the parent's
+    // NMP/LMR sites. Resetting ply+2 here ensures a fresh count for the
+    // sub-subtrees this node will spawn.
+    if ply_u + 2 <= MAX_PLY + 1 {
+        info.cutoff_count[ply_u + 2] = 0;
     }
 
     // Mate distance pruning — applies to all nodes (standard form)
@@ -3000,6 +3015,13 @@ fn negamax(
                 // from NMP/ProbCut gates — tactical king positions need depth.
                 reduction -= king_zone_pressure / tp(&LMR_KING_PRESSURE_DIV);
 
+                // Reckless port: reduce more when the child subtree (ply+1)
+                // produced many beta cutoffs. High child cutoff density →
+                // "hot" subtree → LMR is safe to apply more aggressively.
+                if ply_u + 1 <= MAX_PLY + 1 && info.cutoff_count[ply_u + 1] > 2 {
+                    reduction += 1;
+                }
+
                 // Clamp: never extend (negative), never reduce past depth 1
                 if reduction < 0 {
                     reduction = 0;
@@ -3137,6 +3159,10 @@ fn negamax(
                     if move_count == 1 { info.stats.first_move_cutoffs += 1; }
                     info.stats.cutoff_movecount_sum += move_count as u64;
                     info.stats.cutoff_movecount_sq_sum += (move_count as u64) * (move_count as u64);
+                    // Reckless port: track cutoffs per ply for parent's NMP/LMR signals.
+                    if ply_u <= MAX_PLY {
+                        info.cutoff_count[ply_u] += 1;
+                    }
 
                     // Beta cutoff - update history for quiet moves (killers/counter removed — SF pattern)
                     if !is_cap {
