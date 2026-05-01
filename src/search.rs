@@ -3715,6 +3715,16 @@ fn quiescence_with_depth(
         }
     }
 
+    // Hobbes #2: QS move-cutoff blending. Coda already blends stand-pat
+    // fail-high (line 3631+) but not move-cutoff fail-high. Mirror that
+    // pattern: at zero-window nodes, dampen the returned cutoff score
+    // halfway toward beta to reduce QS-tactical-noise propagation.
+    if best_score >= beta && beta - alpha_orig == 1
+        && best_score < MATE_SCORE - 100 && best_score > -(MATE_SCORE - 100)
+    {
+        best_score = (best_score + beta) / 2;
+    }
+
     // Store in TT (skip if stopped — partial QS results corrupt TT)
     let store_score = score_to_tt(best_score, ply);
     let flag = if best_score >= beta {
