@@ -1389,11 +1389,49 @@ unsafe fn simd512_l1_int8_dot_sparse(packed: &[u8], weights: &[i8], nnz_indices:
 /// the u8×i8 → i32 path.
 ///
 /// Requires `h % 64 == 0`.
-#[cfg(target_arch = "x86_64")]
+///
+/// Step A bench-neutral verification target: routed through
+/// `nnue_simd::*` primitives. The compiled instruction sequence is
+/// expected to be byte-identical to the previous `_mm512_*` direct
+/// calls — the abstraction is just `#[inline(always)]` wrappers that
+/// LLVM folds within this `#[target_feature]` scope.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw"))]
 #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
 unsafe fn simd512_l1_int8_dot_vnni(packed: &[u8], weights: &[i8], h: usize) -> i32 {
+    use crate::nnue_simd::{add_i32, dpbusd, load_i8, load_u8, reduce_add_i32, zeroed_i32};
+
     // Split the accumulator to break the dependency chain — VPDPBUSD on
     // Zen 5 has 4-cycle latency, so a single accumulator bottlenecks.
+    let mut s0 = zeroed_i32();
+    let mut s1 = zeroed_i32();
+    let mut i = 0;
+    while i + 128 <= h {
+        let a0 = load_u8(packed.as_ptr().add(i));
+        let b0 = load_i8(weights.as_ptr().add(i) as *const i8);
+        s0 = dpbusd(s0, a0, b0);
+
+        let a1 = load_u8(packed.as_ptr().add(i + 64));
+        let b1 = load_i8(weights.as_ptr().add(i + 64) as *const i8);
+        s1 = dpbusd(s1, a1, b1);
+        i += 128;
+    }
+    while i < h {
+        let a = load_u8(packed.as_ptr().add(i));
+        let b = load_i8(weights.as_ptr().add(i) as *const i8);
+        s0 = dpbusd(s0, a, b);
+        i += 64;
+    }
+    reduce_add_i32(add_i32(s0, s1))
+}
+
+/// Pre-Step-A fallback: kept for non-AVX-512 builds where the
+/// `nnue_simd::avx512` module is cfg-gated out. Identical semantics
+/// to the cfg-gated variant above; the runtime dispatch in
+/// `forward_with_l1_pairwise_inner` only reaches `_dot_vnni` when
+/// `has_avx512_vnni` is true, so this branch is dead on AVX-512 hosts.
+#[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx512f", target_feature = "avx512bw"))))]
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+unsafe fn simd512_l1_int8_dot_vnni(packed: &[u8], weights: &[i8], h: usize) -> i32 {
     let mut s0 = _mm512_setzero_si512();
     let mut s1 = _mm512_setzero_si512();
     let mut i = 0;
