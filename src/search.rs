@@ -3074,6 +3074,14 @@ fn negamax(
         // Track nodes per root move for node-based time management
         let nodes_before = if ply == 0 { info.nodes } else { 0 };
 
+        // Starzix T1.1: count fail-highs through the PVS escalation chain
+        // (LMR ZW → ZW full-depth → full-window). On a beta cutoff the bonus
+        // for THIS move is multiplied by num_fail_highs (1-3×). A move that
+        // "kept earning re-searches" gets stronger reinforcement than one
+        // that only fail-highs once. Final cutoff increment happens at the
+        // alpha>=beta site below.
+        let mut num_fail_highs = 0i32;
+
         if reduction > 0 {
             info.stats.lmr_searches += 1;
 
@@ -3082,6 +3090,8 @@ fn negamax(
             let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
 
             if lmr_score > alpha && !info.stop.load(Ordering::Relaxed) {
+                num_fail_highs += 1;  // LMR ZW fail-high
+
                 // LMR failed high: doDeeper/doShallower before re-search.
                 //
                 // Audit SPECULATIVE fix (v2 retry): `new_depth` (integer depth
@@ -3098,6 +3108,9 @@ fn negamax(
                 }
 
                 lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth + do_deeper_adj, ply + 1, !cut_node);
+                if lmr_score > alpha {
+                    num_fail_highs += 1;  // ZW full-depth fail-high
+                }
             }
 
             if lmr_score > alpha && lmr_score < beta && !info.stop.load(Ordering::Relaxed) {
@@ -3109,6 +3122,9 @@ fn negamax(
         } else if move_count > 1 && FEAT_PVS.load(Ordering::Relaxed) {
             // PVS: zero-window for non-first moves
             let mut pvs_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
+            if pvs_score > alpha {
+                num_fail_highs += 1;  // ZW full-depth fail-high
+            }
             if pvs_score > alpha && pvs_score < beta && !info.stop.load(Ordering::Relaxed) {
                 // Failed high: full window re-search
                 pvs_score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
@@ -3157,9 +3173,13 @@ fn negamax(
                     info.stats.cutoff_movecount_sum += move_count as u64;
                     info.stats.cutoff_movecount_sq_sum += (move_count as u64) * (move_count as u64);
 
+                    // Starzix T1.1: final increment for the cutoff itself.
+                    // Capped at 3 to match Starzix's max amplifier.
+                    num_fail_highs = (num_fail_highs + 1).min(3);
+
                     // Beta cutoff - update history for quiet moves (killers/counter removed — SF pattern)
                     if !is_cap {
-                        let bonus = history_bonus(depth);
+                        let bonus = history_bonus(depth) * num_fail_highs;
 
                         // Update main history
                         History::update_history(
@@ -3243,7 +3263,7 @@ fn negamax(
 
                     } else {
                         // Capture caused beta cutoff: bonus the cutoff capture
-                        let cap_bonus = capture_history_bonus(depth);
+                        let cap_bonus = capture_history_bonus(depth) * num_fail_highs;
                         if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                             let cpt = if flags == FLAG_EN_PASSANT {
                                 captured_type(PAWN)
@@ -3261,7 +3281,7 @@ fn negamax(
                     // (matching Stockfish/Obsidian/Viridithas — captures that fail should be
                     // penalized regardless of whether the best move was quiet or tactical)
                     {
-                        let cap_malus = capture_history_bonus(depth);
+                        let cap_malus = capture_history_bonus(depth) * num_fail_highs;
                         let cap_count = if is_cap { n_captures_tried.saturating_sub(1) } else { n_captures_tried };
                         for i in 0..cap_count {
                             let (cp, ct, cv) = captures_tried[i];
