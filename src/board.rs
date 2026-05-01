@@ -421,50 +421,29 @@ impl Board {
     /// non-QS node.
     #[inline]
     pub fn attacks_by_color(&self, color: Color) -> Bitboard {
+        // Setwise attack aggregation. Replaces the per-square magic-lookup
+        // loop that used to live here. See `src/setwise.rs` and the Reckless
+        // PR #909/#914 catalog entry. Verified bit-equivalent to the per-
+        // square version via `setwise::tests::*_matches_per_square` and via
+        // perft regression on standard positions.
         let c = color as usize;
         let occ = self.colors[0] | self.colors[1];
+        let pieces = |pt: u8| self.pieces[pt as usize] & self.colors[c];
+
+        let pawns = pieces(PAWN);
+        let knights = pieces(KNIGHT);
+        let diag = pieces(BISHOP) | pieces(QUEEN);
+        let orth = pieces(ROOK) | pieces(QUEEN);
+        let king = pieces(KING);
+
         let mut attacks: Bitboard = 0;
-
-        // Pawns (dir depends on color)
-        let their_pawns = self.pieces[PAWN as usize] & self.colors[c];
-        attacks |= if color == WHITE {
-            ((their_pawns & !FILE_A) << 7) | ((their_pawns & !FILE_H) << 9)
-        } else {
-            ((their_pawns & !FILE_H) >> 7) | ((their_pawns & !FILE_A) >> 9)
-        };
-
-        // Knights
-        let mut knights = self.pieces[KNIGHT as usize] & self.colors[c];
-        while knights != 0 {
-            let sq = knights.trailing_zeros();
-            knights &= knights - 1;
-            attacks |= knight_attacks(sq);
-        }
-
-        // Bishops & queens (diagonal)
-        let mut diag = (self.pieces[BISHOP as usize] | self.pieces[QUEEN as usize])
-            & self.colors[c];
-        while diag != 0 {
-            let sq = diag.trailing_zeros();
-            diag &= diag - 1;
-            attacks |= bishop_attacks(sq, occ);
-        }
-
-        // Rooks & queens (orthogonal)
-        let mut orth = (self.pieces[ROOK as usize] | self.pieces[QUEEN as usize])
-            & self.colors[c];
-        while orth != 0 {
-            let sq = orth.trailing_zeros();
-            orth &= orth - 1;
-            attacks |= rook_attacks(sq, occ);
-        }
-
-        // King
-        let king = self.pieces[KING as usize] & self.colors[c];
+        attacks |= crate::setwise::pawn_attacks_setwise(pawns, color);
+        attacks |= crate::setwise::knight_attacks_setwise(knights);
+        attacks |= crate::setwise::bishop_attacks_setwise(diag, occ);
+        attacks |= crate::setwise::rook_attacks_setwise(orth, occ);
         if king != 0 {
             attacks |= king_attacks(king.trailing_zeros());
         }
-
         attacks
     }
 
