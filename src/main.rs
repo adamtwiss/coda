@@ -4,6 +4,7 @@ mod types;
 mod bitboard;
 mod zobrist;
 mod attacks;
+mod setwise;
 mod board;
 mod movegen;
 mod eval;
