@@ -17,25 +17,37 @@ target shape), recipe magnitudes are partly seed luck.
 - [ ] **T4 final-LR bump** only if T1-T3 inconclusive (H3 hypothesis: low
   final LR exposes late-stage seed variance).
 
+## Training cadence — SB50 triage tier
+
+8h × 3-seed SB200s rate-limit innovation to ~1 idea/day per GPU. Default
+recipe-space probes to SB50 ×3 seeds first (~2h/replica, ~6h wall on a
+single GPU, ~2-3h across 3) for direction-only screening. Promote to
+SB200 only on positive signal. SB200 still mandatory for: deploy-decision
+candidates, pipeline-stability T1/T2/T3 (basin clustering IS the signal),
+and final pre-SB800 validation. Noise floor at SB50 ×3 ≈ ±20-25 Elo —
+enough to kill bad ideas, too coarse to rank close ones.
+
 ## Post-T1 training queue (cross-engine survey, ordered by ROI)
 
 Source: `docs/training_methodology_cross_engine_2026-05-01.md`.
-**Fire only after pipeline-stability gate clears.**
+**Fire only after pipeline-stability gate clears.** Default tier in
+parens; promote on positive signal.
 
-- [ ] **N3 Arasan recipe stack** — WDL=0.0, factoriser, FT clip ±0.99,
-  100× LR decay. 4-line Bullet config edit. Highest-precedent, most
-  directly portable. SB200 + 1 replica.
+- [ ] **N3 Arasan recipe stack** (SB50 ×3 → SB200) — WDL=0.0, factoriser,
+  FT clip ±0.99, 100× LR decay. 4-line Bullet config edit. Highest-precedent,
+  most directly portable.
 - [ ] **N4 QA=181 re-quantisation** — no-retrain inference test on existing
   prod net. +16.76 Elo fixed-nodes precedent. Today-task; doesn't need GPU.
-- [ ] **N5 sibilant L1-on-activations** — orthogonal to our group-lasso
-  (which is L1-on-weights). +5.9 Elo LTC viri precedent. SB200 probe.
-- [ ] **N1 eleison WDL ramp + EVAL_SCALE recalc** — replaces our planned
-  Hobbes-style probe. Bare WDL ramp regressed in 3 viri experiments
-  (-3 to -57); only the rescale-paired version delivered (+9.27 VLTC).
-- [ ] **WDL pole probe** — once basin-A clean, A/B WDL=0 (Arasan-like) and
-  WDL=0.4 (viri) at SB200, 1 replica each, vs current 0.15.
-- [ ] **N9 dual-activation FT** — Hobbes h-40 pattern, now confirmed by
-  Alexandria production. SB200 probe.
+- [ ] **N5 sibilant L1-on-activations** (SB50 ×3 → SB200) — orthogonal to
+  our group-lasso (which is L1-on-weights). +5.9 Elo LTC viri precedent.
+- [ ] **N1 eleison WDL ramp + EVAL_SCALE recalc** (SB50 ×3 → SB200) —
+  replaces our planned Hobbes-style probe. Bare WDL ramp regressed in 3 viri
+  experiments (-3 to -57); only the rescale-paired version delivered
+  (+9.27 VLTC).
+- [ ] **WDL pole probe** (SB50 ×3 each pole → SB200) — once basin-A clean,
+  A/B WDL=0 (Arasan-like) and WDL=0.4 (viri) vs current 0.15.
+- [ ] **N9 dual-activation FT** (SB50 ×3 → SB200) — Hobbes h-40 pattern,
+  now confirmed by Alexandria production.
 - [ ] **N8 Halogen int8 threat weights** — 49 MB threat matrix → ~25 MB,
   L3-residency win on most fleet hosts. NPS gain via depth lever. Stack
   with group-lasso shrinkage (orthogonal mechanism).
