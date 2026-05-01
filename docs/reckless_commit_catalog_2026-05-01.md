@@ -34,12 +34,12 @@ already ported, then dropped/incompatible.
 
 | Reckless | PR | Title | Their Elo | Mechanism | Coda status | Effort | Priority |
 |---|---|---|---|---|---|---|---|
-| `b974fbe8` | #909 | Set-wise knight/bishop/rook attack generation | +1.64 STC (AVX-512); locally 1.03× faster | New `src/setwise.rs`. Generates attacks for *multiple pieces of one type* in a single SIMD operation, replacing per-square magic lookups. Used in board.rs threat enumeration and movepick. | **Untried — pending ablate-before-port.** Coda has no `setwise.rs`; per-piece magic lookup throughout `attacks.rs`/`movegen.rs`/`threats.rs`. | 2-3 days port + verify perft | **HIGH** |
-| `146cfe47` | #914 | Set-wise attacks (AVX2) | +3.01 STC | AVX2 port of #909. Larger STC margin than the AVX-512 case. | **Untried — pairs with #909 above.** | 1 day after #909 lands | **HIGH** |
+| `b974fbe8` | #909 | Set-wise knight/bishop/rook attack generation | +1.64 STC (AVX-512); locally 1.03× faster | New `src/setwise.rs`. Generates attacks for *multiple pieces of one type* in a single SIMD operation, replacing per-square magic lookups. Used in board.rs threat enumeration and movepick. | **Implemented** (independent reimpl, Coda merge `d865591` 2026-05-01). New `src/setwise.rs` with scalar + AVX2 paths; integrated in `attacks_by_color`. SPRT #900 aggregate +0.4 ±1.6 / 33K games (won't H1); Zeus AVX-512 alone +2.1 / 4096g. Merged as forward-looking infra. | — | done |
+| `146cfe47` | #914 | Set-wise attacks (AVX2) | +3.01 STC | AVX2 port of #909. Larger STC margin than the AVX-512 case. | **Implemented** with #909 above (single Coda merge covers both — runtime dispatch, single binary). | — | done |
 | `66cd450f` | #793 | Speed up threat accumulator refresh | +1.55 STC | Register-tile the threat-refresh path; 2-feature unroll. `src/nnue/accumulator.rs` 64 lines. | **Untried — pending verification.** Our `recompute_threats_full` path (`nnue.rs:3969`) is scalar; `add_weight_rows_avx512`/`avx2` exist for the apply path but not for the refresh-from-scratch loop. | Half day | **HIGH** |
 | `04c88767` | #792 | Vectorize PST feature index generation on accum refresh (AVX-512 VBMI2) | +2.70 STC | Generate the 64 feature indices for the king-bucket+piece-type fan in one VBMI2 shuffle pass instead of per-square scalar. | **Untried — pending verification.** Coda's `enumerate_features_for_perspective` (PSQ Finny refresh) is scalar. AVX-512 VBMI2 (`_mm512_permutexvar_epi8`) needed. | Half day, AVX-512 VBMI2 only | **MED-HIGH** |
-| `319dd161` | #753 | Prefetch the TT entry before NMP search | +3.33 VSTC | One added prefetch line in `search.rs` before the NMP recursive call. Trivial 1-LoC. | **Untried.** Coda already prefetches at `search.rs:1838,2347,2472,2836,3406,3529,3673` for normal recursion entries, but inspection shows we don't prefetch specifically before NMP descent. Cheap to verify. | 30 min | **MED-HIGH** |
-| `fa8f25a5` | #800 | Prefetch TT entries into all levels of cache | +1.09 STC (173k games) | Change prefetch hint from T0 to "all levels" (`_MM_HINT_T0` → multi-level / NTA combo). 2-line diff in `transposition.rs`. | **Untried.** Coda uses `_MM_HINT_T0` exclusively in `tt.rs:487`. Worth checking what hint Reckless settled on — may be T2 / NTA on the prefetch-after-store paths. | 30 min | **MED** |
+| `319dd161` | #753 | Prefetch the TT entry before NMP search | +3.33 VSTC | One added prefetch line in `search.rs` before the NMP recursive call. Trivial 1-LoC. | **Already ported** (verified 2026-05-01). `search.rs:2346-2347`: `board.make_null_move(); info.tt.prefetch(board.hash);` — identical to Reckless's diff. | — | done |
+| `fa8f25a5` | #800 | Prefetch TT entries into all levels of cache | +1.09 STC (173k games) | Reckless went `_MM_HINT_T1` → `_MM_HINT_T0`. Catalog initially read this as Coda needing change; misread. | **Already at parity** (verified 2026-05-01). Coda already uses `_MM_HINT_T0` in `tt.rs:487`. The change brought Reckless TO our state, not vice versa. | — | done |
 | `2889b28f` | #927 | Overhaul NUMA + NNUE weight replication | +1.59 STC 1th non-reg (real win is at SMP) | Per-NUMA-domain replication of NNUE weights, libnuma replacement. Stockfish-style NUMA. | **Untried — major work.** Coda has zero NUMA awareness (only 2 grep hits in `threats.rs`/`threat_accum.rs` and they're not NUMA-related). Only matters at multi-socket SMP — irrelevant for single-thread bench, relevant for OB SMP and bot deployment on multi-socket hosts. | 4-7 days, Stockfish reference port | **LOW** (no current multi-socket) |
 | `11c2edcd` | #859 | Improve ARM NEON, add DOTPROD, harmonize | "12% speedup" overall on ARM | NEON `vqdmulhq_s16` swap, asm-block DOTPROD path, horizontal-reduction NNZ bitmask. ARM-only. | **Untried.** Coda has NEON `add_weight_rows_neon` but no DOTPROD asm path and no NEON-side NNZ horizontal-reduction. Only matters on ARM hosts (lichess bot if redeployed, Apple Silicon dev). | 1 day, ARM only | **LOW** |
 | `45d9cc5a` | #728 | Threat Input Incremental Update for AVX2 | +2.27 VSTC AVX2 | Restructured threat-feature enumeration into `nnue/threats/{scalar,vectorized/{avx2,avx512}}.rs`. Compile-time SIMD dispatch via cfg modules. | **Already ported (architecturally).** Coda v9 has the threat-input architecture (`src/threats.rs`) and incremental updates (`src/threat_accum.rs`). Coda dispatch is **runtime-flag-based**, not cfg-module-based — see `coda_vs_reckless_nps_2026-04-23.md` §"runtime SIMD dispatch branches". | — | (informational) |
@@ -67,9 +67,20 @@ already ported, then dropped/incompatible.
 
 EV ranking = (their Elo signal) × (Coda applicability) ÷ (effort). Top candidates we should ablate before porting:
 
-1. **Setwise movegen (`b974fbe8` + `146cfe47`, #909+#914)** — combined +4.65 STC across AVX-512 + AVX2. Touches movegen, movepicker, and threat-enumeration: any of those calling per-square magic lookups in a tight loop benefits. Coda's `threats.rs` direct-threat enumeration (Section 1, ~6.4% of push_threats) is precisely this pattern — multiple knights/bishops/rooks per call. **Highest-EV candidate**; 2-3 days. Validate: ablate via a `cfg(feature="setwise")` flag, confirm bench unchanged + perft passes, then SPRT.
+1. ~~**Setwise movegen (`b974fbe8` + `146cfe47`, #909+#914)**~~ — **DONE
+   2026-05-01.** Independent reimplementation in `src/setwise.rs`,
+   merged at `d865591` after SPRT #900 stopped at +0.4 ±1.6 Elo /
+   33K games (Zeus AVX-512 alone +2.1 Elo / 4096g). Merged as
+   forward-looking infrastructure for AVX-512-ubiquity future. See
+   `experiments.md` 2026-05-01 entry for full write-up.
 
-2. **Threat accumulator refresh tiling (`66cd450f`, #793)** — +1.55 STC for a 64-line change to a single function. Targets the exact code path that Coda calls "Section 2b" (sliders x-ray TO this square, **27.4% of push_threats / 2.5% of engine CPU** per `v9_nps_findings_2026-04-18.md`). Reckless does 2-feature unroll across the L1; we currently do 1-feature. Half-day port. **Best Elo/effort ratio** in this catalog.
+2. **Threat accumulator refresh pair-unroll (`66cd450f`, #793)** —
+   **In flight (SPRT #903).** Implemented as
+   `experiment/threat-refresh-pair-unroll`: 2-feature unroll on
+   `add_weight_rows_avx2` + `add_weight_rows_avx512`. Trending H0
+   (-0.3 ±2.0 / 22K games) at time of writing. Same low-signal regime
+   as setwise; merge decision will follow same pattern (forward-
+   looking AVX-512 infra if Hercules agrees, drop otherwise).
 
 3. **PST feature-index vectorisation (`04c88767`, #792)** — +2.70 STC, AVX-512 VBMI2. Drops a scalar enum-features loop that runs once per Finny refresh fallback. Coda hits this on king-bucket transitions (45.65% of evals are full rebuilds, per microbench). Half day, gated on AVX-512 VBMI2 detection (already detected by `cpufeatures` crate; we'd add the gate).
 

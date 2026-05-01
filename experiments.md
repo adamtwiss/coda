@@ -7730,3 +7730,68 @@ mean their true Elo is 0 by construction.
 
 Branch: `experiment/avx512-apply-threat-deltas`. Merged at `dbb4ab7`.
 Bench: 966720.
+
+## 2026-05-01 — experiment/setwise-movegen merged (forward-looking AVX-512 infra)
+
+Phase 4 #2 of NPS leg plan. New `src/setwise.rs` (~150 lines) with
+scalar + AVX2 helpers for pawn / knight / bishop / rook attack-
+bitboard aggregation. Used in `attacks_by_color`. Approach inspired
+by Reckless PRs #909 + #914 (catalogued in
+`docs/reckless_commit_catalog_2026-05-01.md`); independent
+reimplementation against Coda's bitboard / attacks modules.
+
+### Mechanism
+
+- Pawn: pure scalar bitboard shifts (no SIMD needed).
+- Knight: scalar 8-direction shift fallback + AVX2 path packing
+  4 directions per ymm register.
+- Bishop / Rook: scalar magic-lookup-loop fallback + AVX2 Kogge-
+  Stone fill (3 doubling-distance steps, 4-direction-parallel via
+  ymm).
+- 4-lane variable-shift helper, fold-to-bitboard reduction.
+
+### SPRT #900 (bounds [0, 3])
+
+Stopped at 33,130 games, LLR −0.51 trending H0:
+
+- **Aggregate: +0.4 ±1.6 Elo.** Won't reach H1 at STC ultra-bullet
+  noise floor.
+- **Zeus (only AVX-512 host): ~+2.1 Elo / 4096g.** Modest positive
+  on hosts with fast `vpsllvq` (Zen 4/5).
+- Per-host variance was small-N noise: identical-hardware ionos
+  hosts (workers 98 and 192) showed +4.1 vs −6.8 at 768g each — pure
+  RNG at SE ±10-12 Elo per worker. **Aggregate is the truth.**
+
+### Decision
+
+Merged as forward-looking infrastructure rather than dropped:
+
+- AVX-512 ubiquity is rising (Zen 4/5, Sapphire Rapids+, Granite
+  Rapids upcoming). CCRL-tier opponents will increasingly run on
+  hosts that benefit from setwise.
+- Bench-isolated +1% NPS on Zeus is real. Aggregate fleet Elo at
+  this signal level is at the STC measurement noise floor — same
+  pattern as the AVX-512 apply_threat_deltas merge before Zeus's
+  large-N contribution carried it to H1.
+- Code is bench bit-exact (966720), 5 parity tests verify scalar +
+  AVX2 against per-square magic aggregation, perft clean on all 6
+  standard positions.
+
+### Methodology lessons
+
+- **Per-machine SPRT variance at <1500g is noise-dominated, not
+  uArch-signal.** Two same-arch ionos hosts diverged by ±10 Elo
+  purely by chance. Don't infer architectural effects from
+  per-host slices below ~5K games.
+- **OB STC ultra-bullet has a floor for NPS gains around +1-2 Elo.**
+  Bench-isolated +1% NPS doesn't reliably translate to detectable
+  fleet-aggregate Elo. The AVX-512 apply_threat_deltas success
+  (#899 H1) was driven by Zeus's 4× larger sample — without that
+  contribution the signal would have looked similar to setwise.
+- **Forward-looking-infra merge criterion**: bench-positive +
+  bench-bit-exact + scalar parity verified + no regression risk +
+  uArch trend favours future hosts → merge even if SPRT can't
+  resolve H1 at current fleet composition.
+
+Branch: `experiment/setwise-movegen`. Merged at `d865591`.
+Bench: 966720.
