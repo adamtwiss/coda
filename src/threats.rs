@@ -1867,17 +1867,37 @@ unsafe fn add_weight_rows_avx2(
             regs[i] = _mm256_loadu_si256(dst_ptr.add(offset + i * 16) as *const __m256i);
         }
 
-        // Add all weight rows with prefetch for next row
-        for (fi, &idx) in indices.iter().enumerate() {
-            let aw = w_ptr.add(idx * hidden_size + offset);
-            // Prefetch next feature's weight row
-            if fi + 1 < indices.len() {
-                _mm_prefetch(w_ptr.add(indices[fi + 1] * hidden_size + offset) as *const i8, _MM_HINT_T0);
+        // Pair-unrolled add: process 2 features per outer iteration to
+        // expose ILP. The two loads and two widenings can run on
+        // different ports; the second add chains on the first. Inspired
+        // by Reckless's #793 pattern (their "2-feature unroll" speedup
+        // on the threat refresh path, +1.55 STC for them).
+        let mut fi = 0;
+        while fi + 1 < indices.len() {
+            let aw1 = w_ptr.add(indices[fi] * hidden_size + offset);
+            let aw2 = w_ptr.add(indices[fi + 1] * hidden_size + offset);
+            // Prefetch the row beyond the pair.
+            if fi + 2 < indices.len() {
+                _mm_prefetch(
+                    w_ptr.add(indices[fi + 2] * hidden_size + offset) as *const i8,
+                    _MM_HINT_T0,
+                );
             }
+            for i in 0..nregs {
+                let w1 = _mm256_cvtepi8_epi16(_mm_loadu_si128(aw1.add(i * 16) as *const __m128i));
+                let w2 = _mm256_cvtepi8_epi16(_mm_loadu_si128(aw2.add(i * 16) as *const __m128i));
+                regs[i] = _mm256_add_epi16(_mm256_add_epi16(regs[i], w1), w2);
+            }
+            fi += 2;
+        }
+        // Tail: one stray feature.
+        while fi < indices.len() {
+            let aw = w_ptr.add(indices[fi] * hidden_size + offset);
             for i in 0..nregs {
                 let add_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(aw.add(i * 16) as *const __m128i));
                 regs[i] = _mm256_add_epi16(regs[i], add_w);
             }
+            fi += 1;
         }
 
         // Store registers back
@@ -1919,19 +1939,32 @@ unsafe fn add_weight_rows_avx512(
             regs[i] = _mm512_loadu_si512(dst_ptr.add(offset + i * 32) as *const _);
         }
 
-        // Add all weight rows; prefetch the next row to hide L3 latency.
-        for (fi, &idx) in indices.iter().enumerate() {
-            let aw = w_ptr.add(idx * hidden_size + offset);
-            if fi + 1 < indices.len() {
+        // Pair-unrolled add: 2 features per outer iter — see the AVX2
+        // sibling for rationale (Reckless #793 pattern).
+        let mut fi = 0;
+        while fi + 1 < indices.len() {
+            let aw1 = w_ptr.add(indices[fi] * hidden_size + offset);
+            let aw2 = w_ptr.add(indices[fi + 1] * hidden_size + offset);
+            if fi + 2 < indices.len() {
                 _mm_prefetch(
-                    w_ptr.add(indices[fi + 1] * hidden_size + offset) as *const i8,
+                    w_ptr.add(indices[fi + 2] * hidden_size + offset) as *const i8,
                     _MM_HINT_T0,
                 );
             }
             for i in 0..nregs {
+                let w1 = _mm512_cvtepi8_epi16(_mm256_loadu_si256(aw1.add(i * 32) as *const __m256i));
+                let w2 = _mm512_cvtepi8_epi16(_mm256_loadu_si256(aw2.add(i * 32) as *const __m256i));
+                regs[i] = _mm512_add_epi16(_mm512_add_epi16(regs[i], w1), w2);
+            }
+            fi += 2;
+        }
+        while fi < indices.len() {
+            let aw = w_ptr.add(indices[fi] * hidden_size + offset);
+            for i in 0..nregs {
                 let add_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(aw.add(i * 32) as *const __m256i));
                 regs[i] = _mm512_add_epi16(regs[i], add_w);
             }
+            fi += 1;
         }
 
         // Store back.
