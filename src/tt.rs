@@ -294,6 +294,7 @@ pub struct TTEntry {
     pub depth: i32,
     pub tt_pv: bool,
     pub hit: bool,
+    pub generation: u8,
 }
 
 impl TTEntry {
@@ -306,6 +307,7 @@ impl TTEntry {
             depth: -1,
             tt_pv: false,
             hit: false,
+            generation: 0,
         }
     }
 }
@@ -409,10 +411,18 @@ impl TT {
                 depth: unpack_depth(data),
                 tt_pv: unpack_tt_pv(data),
                 hit: true,
+                generation: unpack_generation(data),
             };
         }
 
         TTEntry::miss()
+    }
+
+    /// Current TT generation. Bumped each `new_search`. Used by the search
+    /// for cross-gen detection (probe-side TT-pollution diagnostics).
+    #[inline]
+    pub fn current_generation(&self) -> u8 {
+        self.generation.load(Ordering::Relaxed)
     }
 
     /// Store an entry in the TT. Lock-free via atomic stores.

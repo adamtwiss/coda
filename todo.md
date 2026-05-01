@@ -51,9 +51,10 @@ Source: `docs/training_methodology_cross_engine_2026-05-01.md`.
   attack pollution from probe side: expose `generation` in TtEntry,
   gate TT_LOWER cutoffs on cross-gen entries with stricter depth.
   Direct attack on the disentangled 79% TT-pollution finding.
-- [ ] **Per-search TT probe/hit/cutoff counters** (task #141) — instrumentation
-  to measure cross-gen hit ratio, cutoff source breakdown. Should land
-  before any further TT-policy experiments.
+- [x] **Per-search TT probe/hit/cutoff counters** (task #141) — added
+  `tt_probes`, `tt_hits`, `tt_cross_gen_hits`, `tt_cross_gen_cutoffs` to
+  PruneStats; `generation` exposed on TTEntry; `current_generation()` on TT.
+  Bench-neutral. Foundation for cross-gen TT-policy experiments.
 
 ### Standing search ideas
 

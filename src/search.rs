@@ -354,6 +354,10 @@ impl SearchLimits {
 /// Pruning counters for diagnostics.
 #[derive(Default)]
 pub struct PruneStats {
+    pub tt_probes: u64,
+    pub tt_hits: u64,
+    pub tt_cross_gen_hits: u64,
+    pub tt_cross_gen_cutoffs: u64,
     pub tt_cutoffs: u64,
     pub tt_near_miss: u64,
     pub nmp_attempts: u64,
@@ -1968,6 +1972,15 @@ fn negamax(
     let alpha_orig = alpha;
     let tt_entry = info.tt.probe(board.hash);
     let tt_hit = tt_entry.hit;
+    let tt_cur_gen = info.tt.current_generation();
+    let tt_cross_gen = tt_hit && tt_entry.generation != tt_cur_gen;
+    info.stats.tt_probes += 1;
+    if tt_hit {
+        info.stats.tt_hits += 1;
+        if tt_cross_gen {
+            info.stats.tt_cross_gen_hits += 1;
+        }
+    }
 
     // Sticky PV flag: once a position is searched as PV, it stays PV in the TT.
     // Used to reduce LMR for moves that lead to historically important positions.
@@ -2002,6 +2015,9 @@ fn negamax(
                     && halfmove_ok
                 {
                     info.stats.tt_cutoffs += 1;
+                    if tt_cross_gen {
+                        info.stats.tt_cross_gen_cutoffs += 1;
+                    }
                     // Defence-in-depth: validate tt_move is fully legal before
                     // stuffing it into pv_table. Diagnosed during PV_PONDER_BUG
                     // chase as a path that *could* plant an illegal move (hash
@@ -2072,6 +2088,9 @@ fn negamax(
                 if alpha >= beta && halfmove_ok {
                     if tt_move != NO_MOVE {
                         info.stats.tt_cutoffs += 1;
+                        if tt_cross_gen {
+                            info.stats.tt_cross_gen_cutoffs += 1;
+                        }
                         // Defence-in-depth: validate tt_move (see note at first cutoff site).
                         if ply_u <= MAX_PLY
                             && crate::movepicker::is_pseudo_legal(board, tt_move)
@@ -3441,6 +3460,14 @@ fn quiescence_with_depth(
     let alpha_orig = alpha;
 
     let tt_hit = tt_entry.hit;
+    let tt_cur_gen = info.tt.current_generation();
+    info.stats.tt_probes += 1;
+    if tt_hit {
+        info.stats.tt_hits += 1;
+        if tt_entry.generation != tt_cur_gen {
+            info.stats.tt_cross_gen_hits += 1;
+        }
+    }
 
     if tt_hit && tt_entry.depth >= -1 {
         let tt_score = score_from_tt(tt_entry.score, ply);
@@ -3766,6 +3793,10 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         total_nodes += info.nodes;
 
         // Accumulate stats across all positions
+        total_stats.tt_probes += info.stats.tt_probes;
+        total_stats.tt_hits += info.stats.tt_hits;
+        total_stats.tt_cross_gen_hits += info.stats.tt_cross_gen_hits;
+        total_stats.tt_cross_gen_cutoffs += info.stats.tt_cross_gen_cutoffs;
         total_stats.tt_cutoffs += info.stats.tt_cutoffs;
         total_stats.tt_near_miss += info.stats.tt_near_miss;
         total_stats.nmp_attempts += info.stats.nmp_attempts;
@@ -3801,7 +3832,17 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     // Print pruning stats (accumulated across all positions)
     let s = &total_stats;
     eprintln!("=== Pruning Stats (cumulative across all bench positions) ===");
-    eprintln!("TT cutoffs:     {:>8}  ({:.1}% of nodes)", s.tt_cutoffs, s.tt_cutoffs as f64 / total_nodes as f64 * 100.0);
+    eprintln!("TT probes:      {:>8}  hits: {} ({:.1}%)  cross-gen hits: {} ({:.1}% of hits)",
+        s.tt_probes,
+        s.tt_hits,
+        if s.tt_probes > 0 { s.tt_hits as f64 / s.tt_probes as f64 * 100.0 } else { 0.0 },
+        s.tt_cross_gen_hits,
+        if s.tt_hits > 0 { s.tt_cross_gen_hits as f64 / s.tt_hits as f64 * 100.0 } else { 0.0 });
+    eprintln!("TT cutoffs:     {:>8}  ({:.1}% of nodes)  cross-gen: {} ({:.1}% of cutoffs)",
+        s.tt_cutoffs,
+        s.tt_cutoffs as f64 / total_nodes as f64 * 100.0,
+        s.tt_cross_gen_cutoffs,
+        if s.tt_cutoffs > 0 { s.tt_cross_gen_cutoffs as f64 / s.tt_cutoffs as f64 * 100.0 } else { 0.0 });
     eprintln!("TT near-miss:   {:>8}", s.tt_near_miss);
     eprintln!("NMP attempts:   {:>8}  cutoffs: {} ({:.0}%)", s.nmp_attempts, s.nmp_cutoffs,
         if s.nmp_attempts > 0 { s.nmp_cutoffs as f64 / s.nmp_attempts as f64 * 100.0 } else { 0.0 });
@@ -3835,7 +3876,11 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     // (multiple prunes per node in the move loop), so per-1K is clearer.
     let kn = total_nodes as f64 / 1000.0;
     eprintln!("--- Tree Shape (per 1K nodes) ---");
-    eprintln!("TT cutoffs:     {:>6.1}/Kn", s.tt_cutoffs as f64 / kn);
+    eprintln!("TT probes:      {:>6.1}/Kn  hits: {:.1}/Kn  cross-gen hits: {:.1}/Kn",
+        s.tt_probes as f64 / kn,
+        s.tt_hits as f64 / kn,
+        s.tt_cross_gen_hits as f64 / kn);
+    eprintln!("TT cutoffs:     {:>6.1}/Kn  cross-gen: {:.1}/Kn", s.tt_cutoffs as f64 / kn, s.tt_cross_gen_cutoffs as f64 / kn);
     eprintln!("NMP cutoffs:    {:>6.1}/Kn  ({:.0}% of attempts)", s.nmp_cutoffs as f64 / kn,
         if s.nmp_attempts > 0 { s.nmp_cutoffs as f64 / s.nmp_attempts as f64 * 100.0 } else { 0.0 });
     eprintln!("RFP cutoffs:    {:>6.1}/Kn", s.rfp_cutoffs as f64 / kn);
