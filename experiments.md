@@ -7909,3 +7909,31 @@ flatten AccEntry, hot-feature frontload, prefetch) move up the
 ranking correspondingly.
 
 Bench: 966720.
+
+## 2026-05-01 — prev-move corrhist H0 batch (#905 + #911 stopped)
+
+Hobbes T1.1 prev-move corrhist (countermove + follow-up dimension on
+existing corrhist tables) tested twice:
+
+- **#905 prev-move-corrhist** (no retune): -0.6 ±2.0 / 20,844 games / LLR -1.47
+- **#911 tune-906-applied** (focused retune of corrhist weights): -2.0 ±3.6 / 7,250 games / LLR -1.07
+
+Both stopped early per `feedback_stop_sprt_when_upper_ci_below_elo1`:
+upper CIs (+1.4 and +1.6) well below elo1=3, no path to H1.
+
+**Retune did not rescue.** Same direction with and without focused
+SPSA on the corrhist-weight cluster (tune #906, 1000 iter on
+CORR_W_PAWN/NP/MINOR/MAJOR/CONT/COUNTER/FOLLOW_UP). Mechanism isn't
+calibration-shift; the prev-move corrhist signal isn't there for
+Coda. Slots into the same finding pattern as #887 (lowply-history),
+#888 (main-history STM dim), #889 (factorised main hist) — naive
+history-shape ports off simpler-history engines don't transfer to
+Coda's 4D threat-aware history + 5-source corrhist (which already
+encode the gradient these features surrogate).
+
+**Memory updated**: `feedback_naive_ordering_ports_dont_transfer.md`
+remains the authoritative summary; this batch is consistent with
+the existing pattern (no new memory needed).
+
+Branches retired: experiment/prev-move-corrhist, experiment/tune-906-applied.
+
