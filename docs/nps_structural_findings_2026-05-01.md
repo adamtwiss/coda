@@ -484,7 +484,93 @@ each bounded by what the dense-first matmul leaves on the table. Lever
 - Coda hot-path source at `src/nnue.rs:2565` (`forward_with_l1_pairwise_inner`)
   + `src/sparse_l1.rs` (sparse and dense kernels, both available).
 
+## Update 2026-05-01 PM — Step C-cheap attempted, model corrected
+
+Step A (extract SIMD primitives to `src/nnue_simd.rs`) and Step B
+(Reckless-shape `propagate_l1_avx512_vnni_v2` standalone microbench)
+landed bench-neutral as planned. The microbench gave a **soft pass**
+on the gate (matmul-only ceiling 5.65× vs dense, end-to-end 2.41×
+with VBMI2 SIMD scan + combined-buffer signature). Step C-cheap
+plugged v2 into `forward_with_l1_pairwise_inner` and produced a
+**−4% bench regression** (1273 k → 1219 k NPS) — opposite direction
+from the microbench prediction.
+
+**Root cause: the doc's "89% sparse" framing referred to feature-row
+activation, not post-pairwise-CReLU 4-byte chunk density.** Adding a
+diagnostic counter at the call site showed real production density
+is ~73% non-zero per chunk (140/192 NNZ chunks per call), not 11%
+(27/192) as the standalone microbench synthesised. After the pairwise
+multiplication `stm_pw[i] = ((a * b) >> FT_SHIFT) as u8`, a chunk is
+non-zero whenever ANY pair of accumulator values has both halves
+non-zero — much denser than raw feature activation.
+
+At 73% chunk-density, sparse iteration only saves ~1.4× theoretical
+work (192 → 140 chunks). Combined with NNZ-scan overhead and the
+larger function body (icache pressure), v2 was bench-negative in
+production traffic.
+
+### Reckless's `propagate_l1` re-examined
+
+Reading Reckless's `propagate_l1` more carefully against this finding:
+their kernel uses **a single 1-ZMM accumulator** at L2_SIZE=16, with
+4-cycle VPDPBUSD latency unhidden across the inner `nnz.chunks_exact(2)`
+loop. At 140 NNZ chunks × 4 cycles serial latency ≈ 560 cycles ≈ 150 ns
+per call. Coda's `dense_l1_avx512_vnni` uses **4-way interleaved
+accumulators** to hide that latency, achieving ~50 ns at 192 chunks.
+
+So: **Reckless's L1 matmul is probably slower per-call than Coda's
+dense kernel** at this op-point. Their forward pass nevertheless
+runs faster overall, but **not because of sparse iteration** — the
+sparsity-iteration framing was wrong for both engines. The real lever
+seems to be the inlined single-SIMD-path structure (no `#[target_feature]`
+inline barriers, no dispatch overhead, no per-perspective demux), not
+the dense-vs-sparse iteration choice.
+
+### Implications for the lever ranking
+
+Lever #1 ("Restructure forward_with_l1_pairwise_inner along Reckless's
+pattern, sparse-first") was based on a flawed sparsity model and
+needs reframing. The correct framing is closer to Step C-FULL:
+**eliminate `#[target_feature]` inline barriers and consolidate
+dispatch paths**, not "switch to sparse iteration."
+
+Two follow-ups:
+
+1. **Step C-cheap is dead at this op-point.** v2 + VBMI2 SIMD scan
+   are kept in `src/nnue_simd.rs` as infrastructure for future
+   investigations (lower-density nets, wider L1, off-architecture
+   ports). Production hot path reverts to `dense_l1_avx512_vnni`.
+2. **Step C-full — drop `#[target_feature]` from `forward_with_l1_pairwise_inner`**
+   becomes the real structural lever. This requires verifying the
+   inline barrier is actually the cost (per Phase 1, simple cfg
+   swap was a no-op; the real test is removing the attribute and
+   ensuring all callees inline). Multi-binary build per ISA may be
+   the path of least resistance.
+3. **Lever ranking #6-8 (cache hygiene: flatten AccEntry, frontload,
+   prefetch)** are still valid and now move UP, since the sparse-first
+   matmul lever didn't pan out.
+
+The original "+15-25% NPS" estimate for Lever #1 should be discounted
+substantially. Step C-cheap result places the realistic upper bound
+on the L1-matmul-restructure family at probably **~3-8% NPS** (from
+inline-barrier removal + dispatch consolidation, not work reduction).
+
+### What landed
+
+- `src/nnue_simd.rs`: cfg-gated SIMD primitives, `find_nnz_chunks_avx512`
+  + `find_nnz_chunks_avx512_combined` VBMI2 scanners,
+  `propagate_l1_avx512_vnni_v2` Reckless-shape kernel,
+  `propagate_l1_matmul_only` diagnostic, parity test, perf microbench.
+- `src/nnue.rs::simd512_l1_int8_dot_vnni`: refactored through the
+  new primitives (Step A bench-neutral verification target).
+- `has_avx512_vbmi2` runtime detection on `NNUENet`.
+
+All bench-neutral relative to trunk (966720 nodes, 1.27M NPS on
+Zen 5). Ready as infra for future op-points or for feeding into a
+Step C-full restructure.
+
 ---
 
-*Investigation 2026-05-01. Next action: prototype Proposal 1 on a
-feature branch, microbench, then SPRT.*
+*Investigation 2026-05-01. Step C-cheap reverted; Step C-full
+remains the real candidate but needs validation that inline-barrier
+removal alone delivers the predicted NPS.*

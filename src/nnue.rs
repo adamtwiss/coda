@@ -2009,6 +2009,22 @@ fn detect_avx512_vnni() -> bool {
     }
 }
 
+/// Detect AVX-512 VBMI2. Provides `_mm512_maskz_compress_epi16` used by the
+/// SIMD NNZ scan. Sapphire Rapids+, Zen 4+ (most modern AVX-512 hosts).
+/// Cascade Lake-X has AVX-512 but no VBMI2.
+fn detect_avx512_vbmi2() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        is_x86_feature_detected!("avx512f")
+            && is_x86_feature_detected!("avx512bw")
+            && is_x86_feature_detected!("avx512vbmi2")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
 /// Detect AVX-VNNI (VEX-encoded VPDPBUSD on YMM/XMM). Available on Intel
 /// Alder Lake+ and AMD Zen 4+ — gives fused u8×i8 dot on AVX2 machines
 /// that don't have full AVX-512.
@@ -2107,6 +2123,10 @@ pub struct NNUENet {
     /// AVX-VNNI (VEX-encoded `VPDPBUSD` on YMM). Intel Alder Lake+ / AMD
     /// Zen 4+. Used by AVX2-only build configurations on VNNI-capable CPUs.
     pub has_avx_vnni: bool,
+    /// AVX-512 VBMI2. Provides `_mm512_maskz_compress_epi16` used by the
+    /// SIMD NNZ scan in `nnue_simd::find_nnz_chunks_avx512` (Step C-cheap
+    /// of the L1-matmul restructure). Sapphire Rapids+, Zen 4+.
+    pub has_avx512_vbmi2: bool,
     pub has_neon: bool,
 }
 
@@ -2408,6 +2428,7 @@ impl NNUENet {
         let has_avx2 = detect_avx2();
         let has_avx512 = detect_avx512();
         let has_avx512_vnni = detect_avx512_vnni();
+        let has_avx512_vbmi2 = detect_avx512_vbmi2();
         let has_avx_vnni = detect_avx_vnni();
         let has_neon = detect_neon();
         if has_avx512_vnni {
@@ -2503,6 +2524,7 @@ impl NNUENet {
             has_avx512,
             has_avx512_vnni,
             has_avx_vnni,
+            has_avx512_vbmi2,
             has_neon,
         })
     }
@@ -2703,6 +2725,17 @@ impl NNUENet {
             // AVX-512 VNNI column-major: all 16 L1 neurons in one ZMM accumulator,
             // one VPDPBUSD per 4-byte input chunk. Dramatically reduces per-chunk
             // uop count vs the row-major per-neuron path below.
+            //
+            // Step C-cheap (sparse-first via nnue_simd::propagate_l1_avx512_vnni_v2)
+            // was tried 2026-05-01 and reverted. Production chunk-level density
+            // (~73% non-zero) is much higher than the 89% sparsity assumed in
+            // the standalone microbench, which only assumed raw-feature
+            // sparsity. Sparse iteration savings (~1.4× theoretical) didn't
+            // exceed the NNZ-scan overhead in production traffic. The v2
+            // kernel + VBMI2 SIMD scan are kept in src/nnue_simd.rs as
+            // infrastructure for future op-points (lower-density nets,
+            // wider L1, etc.). See docs/nps_structural_findings_2026-05-01.md
+            // for the full investigation.
             unsafe {
                 crate::sparse_l1::dense_l1_avx512_vnni(
                     &stm_pw, &ntm_pw, pw, &self.l1_weights_sparse,

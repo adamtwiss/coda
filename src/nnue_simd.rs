@@ -131,16 +131,15 @@ pub use avx512::*;
 // so the inner primitive calls inline (Step A established this works).
 // ---------------------------------------------------------------------------
 
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx512f",
-    target_feature = "avx512bw",
-    target_feature = "avx512vnni",
-))]
-#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+/// Sparse-first L1 matmul, AVX-512 VNNI. Takes a single combined buffer
+/// with STM at `[0..pw)` and NTM at `[pw..2*pw)`. Caller must concatenate
+/// the two perspectives. The single-buffer signature avoids the per-NNZ-
+/// entry STM-vs-NTM demux branch that data-dependent-branch-mispredicts
+/// in production traffic and cost ~10% NPS in an early Step C-cheap test.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni,avx512vbmi2")]
 pub unsafe fn propagate_l1_avx512_vnni_v2(
-    stm_pw: &[u8],
-    ntm_pw: &[u8],
+    combined_pw: &[u8],
     pw: usize,
     sparse_weights: &[i8], // input-chunk-major layout, same as dense_l1_*
     num_neurons: usize,
@@ -152,6 +151,7 @@ pub unsafe fn propagate_l1_avx512_vnni_v2(
     use std::arch::x86_64::*;
     debug_assert_eq!(num_neurons, 16, "v2 specialised to 16 neurons (v9 pairwise)");
     debug_assert!(nnz_buf.len() >= pw / 2, "nnz_buf too small");
+    debug_assert!(combined_pw.len() >= 2 * pw, "combined_pw too small");
 
     let chunk_stride = num_neurons * 4; // 64 bytes — exactly one ZMM register
 
@@ -160,47 +160,32 @@ pub unsafe fn propagate_l1_avx512_vnni_v2(
         output[i] = bias[i] as i32 * bias_scale;
     }
 
-    // ---- NNZ scan: produce a list of non-zero 4-byte chunk indices.
-    // STM chunks live at logical chunk-indices [0..pw/4); NTM at [pw/4..pw/2).
-    // Vectorised path uses AVX-512 VBMI2 mask-compress; scalar fallback
-    // for non-VBMI2 hosts (rare on Zen 5 / Sapphire Rapids).
+    // ---- NNZ scan: produce a list of non-zero 4-byte chunk indices over
+    // the entire combined buffer (STM chunks at [0..pw/4), NTM at [pw/4..pw/2)).
     #[cfg(target_feature = "avx512vbmi2")]
-    let nnz_count = find_nnz_chunks_avx512(stm_pw, ntm_pw, pw, nnz_buf);
+    let nnz_count = find_nnz_chunks_avx512_combined(combined_pw, pw, nnz_buf);
 
     #[cfg(not(target_feature = "avx512vbmi2"))]
     let nnz_count = {
-        let stm_chunks = std::slice::from_raw_parts(stm_pw.as_ptr() as *const u32, pw / 4);
-        let ntm_chunks = std::slice::from_raw_parts(ntm_pw.as_ptr() as *const u32, pw / 4);
+        let chunks = std::slice::from_raw_parts(combined_pw.as_ptr() as *const u32, pw / 2);
         let mut n = 0;
-        for c in 0..pw / 4 {
-            if *stm_chunks.get_unchecked(c) != 0 {
+        for c in 0..pw / 2 {
+            if *chunks.get_unchecked(c) != 0 {
                 *nnz_buf.get_unchecked_mut(n) = c as u16;
-                n += 1;
-            }
-        }
-        let ntm_offset = pw / 4;
-        for c in 0..pw / 4 {
-            if *ntm_chunks.get_unchecked(c) != 0 {
-                *nnz_buf.get_unchecked_mut(n) = (ntm_offset + c) as u16;
                 n += 1;
             }
         }
         n
     };
 
-    // ---- Sparse L1 matmul, pair-unrolled.
-    // 16 neurons fit in one ZMM accumulator. Four interleaved accumulators
-    // hide the 4-cycle VPDPBUSD latency on Zen 5 / Sapphire Rapids.
+    // ---- Sparse L1 matmul, pair-unrolled, four interleaved accumulators.
     let mut a0 = _mm512_setzero_si512();
     let mut a1 = _mm512_setzero_si512();
     let mut a2 = _mm512_setzero_si512();
     let mut a3 = _mm512_setzero_si512();
 
     let w_ptr = sparse_weights.as_ptr();
-    // Combined STM+NTM input pointer — the chunk index lookup remaps both
-    // perspectives into one contiguous chunk-id space already.
-    let stm_u32 = stm_pw.as_ptr() as *const u32;
-    let ntm_u32 = ntm_pw.as_ptr() as *const u32;
+    let combined_u32 = combined_pw.as_ptr() as *const u32;
 
     let mut k = 0usize;
     while k + 4 <= nnz_count {
@@ -208,11 +193,10 @@ pub unsafe fn propagate_l1_avx512_vnni_v2(
         let i1 = *nnz_buf.get_unchecked(k + 1) as usize;
         let i2 = *nnz_buf.get_unchecked(k + 2) as usize;
         let i3 = *nnz_buf.get_unchecked(k + 3) as usize;
-        // Lookup raw 4-byte input value: STM chunk-ids are < pw/4, NTM are ≥ pw/4.
-        let v0 = if i0 < pw / 4 { *stm_u32.add(i0) } else { *ntm_u32.add(i0 - pw / 4) };
-        let v1 = if i1 < pw / 4 { *stm_u32.add(i1) } else { *ntm_u32.add(i1 - pw / 4) };
-        let v2 = if i2 < pw / 4 { *stm_u32.add(i2) } else { *ntm_u32.add(i2 - pw / 4) };
-        let v3 = if i3 < pw / 4 { *stm_u32.add(i3) } else { *ntm_u32.add(i3 - pw / 4) };
+        let v0 = *combined_u32.add(i0);
+        let v1 = *combined_u32.add(i1);
+        let v2 = *combined_u32.add(i2);
+        let v3 = *combined_u32.add(i3);
         let w0 = _mm512_loadu_si512(w_ptr.add(i0 * chunk_stride) as *const __m512i);
         let w1 = _mm512_loadu_si512(w_ptr.add(i1 * chunk_stride) as *const __m512i);
         let w2 = _mm512_loadu_si512(w_ptr.add(i2 * chunk_stride) as *const __m512i);
@@ -225,7 +209,7 @@ pub unsafe fn propagate_l1_avx512_vnni_v2(
     }
     while k < nnz_count {
         let i = *nnz_buf.get_unchecked(k) as usize;
-        let v = if i < pw / 4 { *stm_u32.add(i) } else { *ntm_u32.add(i - pw / 4) };
+        let v = *combined_u32.add(i);
         let w = _mm512_loadu_si512(w_ptr.add(i * chunk_stride) as *const __m512i);
         a0 = _mm512_dpbusd_epi32(a0, _mm512_set1_epi32(v as i32), w);
         k += 1;
@@ -354,22 +338,99 @@ pub unsafe fn find_nnz_chunks_avx512(
     count
 }
 
+/// Combined-buffer variant of `find_nnz_chunks_avx512`. Caller passes a
+/// single contiguous buffer with both perspectives concatenated; the
+/// scan emits chunk-ids in `[0..2*pw/4)` directly, no per-perspective
+/// remap. Faster than the two-slice variant because the matmul loop
+/// reads via one base pointer with no demux branch.
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx512f",
+    target_feature = "avx512bw",
+    target_feature = "avx512vbmi2",
+))]
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi2")]
+pub unsafe fn find_nnz_chunks_avx512_combined(
+    combined_pw: &[u8],
+    pw: usize,
+    nnz_buf: &mut [u16],
+) -> usize {
+    use std::arch::x86_64::*;
+    debug_assert!(nnz_buf.len() >= pw / 2);
+    debug_assert!(combined_pw.len() >= 2 * pw);
+
+    let total_bytes = 2 * pw; // both perspectives concatenated
+    let mut count = 0usize;
+    let mut i = 0usize;
+
+    let increment = _mm512_set1_epi16(64);
+    let mut base01 = _mm512_set_epi16(
+        31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16,
+        15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+    );
+    let mut base23 = _mm512_add_epi16(base01, _mm512_set1_epi16(32));
+
+    while i + 256 <= total_bytes {
+        let m0 = _mm512_cmpneq_epi32_mask(
+            _mm512_loadu_si512(combined_pw.as_ptr().add(i) as *const __m512i),
+            _mm512_setzero_si512(),
+        );
+        let m1 = _mm512_cmpneq_epi32_mask(
+            _mm512_loadu_si512(combined_pw.as_ptr().add(i + 64) as *const __m512i),
+            _mm512_setzero_si512(),
+        );
+        let m2 = _mm512_cmpneq_epi32_mask(
+            _mm512_loadu_si512(combined_pw.as_ptr().add(i + 128) as *const __m512i),
+            _mm512_setzero_si512(),
+        );
+        let m3 = _mm512_cmpneq_epi32_mask(
+            _mm512_loadu_si512(combined_pw.as_ptr().add(i + 192) as *const __m512i),
+            _mm512_setzero_si512(),
+        );
+        let mask01 = _mm512_kunpackw(m1 as u32, m0 as u32);
+        let mask23 = _mm512_kunpackw(m3 as u32, m2 as u32);
+        let compressed01 = _mm512_maskz_compress_epi16(mask01, base01);
+        let compressed23 = _mm512_maskz_compress_epi16(mask23, base23);
+
+        _mm512_storeu_si512(nnz_buf.as_mut_ptr().add(count) as *mut __m512i, compressed01);
+        count += (mask01 as u32).count_ones() as usize;
+        _mm512_storeu_si512(nnz_buf.as_mut_ptr().add(count) as *mut __m512i, compressed23);
+        count += (mask23 as u32).count_ones() as usize;
+
+        base01 = _mm512_add_epi16(base01, increment);
+        base23 = _mm512_add_epi16(base23, increment);
+        i += 256;
+    }
+
+    // Scalar tail.
+    let chunks_so_far = i / 4;
+    let remaining_chunks = total_bytes / 4 - chunks_so_far;
+    let scalar_chunks = std::slice::from_raw_parts(
+        combined_pw.as_ptr().add(i) as *const u32,
+        remaining_chunks,
+    );
+    for c in 0..remaining_chunks {
+        if *scalar_chunks.get_unchecked(c) != 0 {
+            *nnz_buf.get_unchecked_mut(count) = (chunks_so_far + c) as u16;
+            count += 1;
+        }
+    }
+
+    count
+}
+
 /// Step B diagnostic — pure matmul on a pre-computed NNZ list. Same body
 /// as `propagate_l1_avx512_vnni_v2` but with the NNZ scan hoisted out, so
 /// the microbench can decompose "sparse iteration win" from "scan
 /// overhead". Not for production use — production callers must produce
 /// the NNZ list themselves.
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx512f",
-    target_feature = "avx512bw",
-    target_feature = "avx512vnni",
-))]
+/// Step B diagnostic — pure matmul on a pre-computed NNZ list, combined-
+/// buffer signature matching `propagate_l1_avx512_vnni_v2`.
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
 pub unsafe fn propagate_l1_matmul_only(
-    stm_pw: &[u8],
-    ntm_pw: &[u8],
-    pw: usize,
+    combined_pw: &[u8],
+    _pw: usize,
     sparse_weights: &[i8],
     num_neurons: usize,
     bias: &[i16],
@@ -390,8 +451,7 @@ pub unsafe fn propagate_l1_matmul_only(
     let mut a2 = _mm512_setzero_si512();
     let mut a3 = _mm512_setzero_si512();
     let w_ptr = sparse_weights.as_ptr();
-    let stm_u32 = stm_pw.as_ptr() as *const u32;
-    let ntm_u32 = ntm_pw.as_ptr() as *const u32;
+    let combined_u32 = combined_pw.as_ptr() as *const u32;
 
     let mut k = 0;
     while k + 4 <= nnz.len() {
@@ -399,10 +459,10 @@ pub unsafe fn propagate_l1_matmul_only(
         let i1 = *nnz.get_unchecked(k + 1) as usize;
         let i2 = *nnz.get_unchecked(k + 2) as usize;
         let i3 = *nnz.get_unchecked(k + 3) as usize;
-        let v0 = if i0 < pw / 4 { *stm_u32.add(i0) } else { *ntm_u32.add(i0 - pw / 4) };
-        let v1 = if i1 < pw / 4 { *stm_u32.add(i1) } else { *ntm_u32.add(i1 - pw / 4) };
-        let v2 = if i2 < pw / 4 { *stm_u32.add(i2) } else { *ntm_u32.add(i2 - pw / 4) };
-        let v3 = if i3 < pw / 4 { *stm_u32.add(i3) } else { *ntm_u32.add(i3 - pw / 4) };
+        let v0 = *combined_u32.add(i0);
+        let v1 = *combined_u32.add(i1);
+        let v2 = *combined_u32.add(i2);
+        let v3 = *combined_u32.add(i3);
         let w0 = _mm512_loadu_si512(w_ptr.add(i0 * chunk_stride) as *const __m512i);
         let w1 = _mm512_loadu_si512(w_ptr.add(i1 * chunk_stride) as *const __m512i);
         let w2 = _mm512_loadu_si512(w_ptr.add(i2 * chunk_stride) as *const __m512i);
@@ -415,7 +475,7 @@ pub unsafe fn propagate_l1_matmul_only(
     }
     while k < nnz.len() {
         let i = *nnz.get_unchecked(k) as usize;
-        let v = if i < pw / 4 { *stm_u32.add(i) } else { *ntm_u32.add(i - pw / 4) };
+        let v = *combined_u32.add(i);
         let w = _mm512_loadu_si512(w_ptr.add(i * chunk_stride) as *const __m512i);
         a0 = _mm512_dpbusd_epi32(a0, _mm512_set1_epi32(v as i32), w);
         k += 1;
@@ -511,11 +571,16 @@ mod tests {
             let mut out_v2 = vec![0i32; NEURONS];
             let mut nnz_buf = vec![0u16; total_chunks];
 
+            // Build combined buffer for v2 (STM at [0..PW), NTM at [PW..2*PW)).
+            let mut combined_pw = vec![0u8; 2 * PW];
+            combined_pw[..PW].copy_from_slice(&stm_pw);
+            combined_pw[PW..].copy_from_slice(&ntm_pw);
+
             crate::sparse_l1::dense_l1_avx512_vnni(
                 &stm_pw, &ntm_pw, PW, &weights, NEURONS, &bias, bias_scale, &mut out_dense,
             );
             super::propagate_l1_avx512_vnni_v2(
-                &stm_pw, &ntm_pw, PW, &weights, NEURONS, &bias, bias_scale, &mut nnz_buf, &mut out_v2,
+                &combined_pw, PW, &weights, NEURONS, &bias, bias_scale, &mut nnz_buf, &mut out_v2,
             );
 
             for i in 0..NEURONS {
@@ -587,27 +652,31 @@ mod tests {
             let mut out_v2 = vec![0i32; NEURONS];
             let mut nnz_buf = vec![0u16; total_chunks];
 
+            // Combined buffer for v2.
+            let mut combined_pw = vec![0u8; 2 * PW];
+            combined_pw[..PW].copy_from_slice(&stm_pw);
+            combined_pw[PW..].copy_from_slice(&ntm_pw);
+
             // Warm caches with one call each.
             crate::sparse_l1::dense_l1_avx512_vnni(
                 &stm_pw, &ntm_pw, PW, &weights, NEURONS, &bias, bias_scale, &mut out_dense,
             );
             super::propagate_l1_avx512_vnni_v2(
-                &stm_pw, &ntm_pw, PW, &weights, NEURONS, &bias, bias_scale, &mut nnz_buf, &mut out_v2,
+                &combined_pw, PW, &weights, NEURONS, &bias, bias_scale, &mut nnz_buf, &mut out_v2,
             );
 
             // Pre-compute NNZ buf once for the matmul-only timing path.
-            // (Mirrors Reckless's flow where find_nnz runs before propagate_l1.)
             let mut nnz_count_pre = 0;
-            for c in 0..PW / 4 {
-                let stm_chunks = std::slice::from_raw_parts(stm_pw.as_ptr() as *const u32, PW / 4);
-                let ntm_chunks = std::slice::from_raw_parts(ntm_pw.as_ptr() as *const u32, PW / 4);
-                if *stm_chunks.get_unchecked(c) != 0 {
-                    nnz_buf[nnz_count_pre] = c as u16;
-                    nnz_count_pre += 1;
-                }
-                if *ntm_chunks.get_unchecked(c) != 0 {
-                    nnz_buf[nnz_count_pre] = (PW / 4 + c) as u16;
-                    nnz_count_pre += 1;
+            {
+                let combined_u32 = std::slice::from_raw_parts(
+                    combined_pw.as_ptr() as *const u32,
+                    PW / 2,
+                );
+                for c in 0..PW / 2 {
+                    if *combined_u32.get_unchecked(c) != 0 {
+                        nnz_buf[nnz_count_pre] = c as u16;
+                        nnz_count_pre += 1;
+                    }
                 }
             }
 
@@ -626,7 +695,7 @@ mod tests {
             let t1 = Instant::now();
             for _ in 0..ITERS {
                 super::propagate_l1_avx512_vnni_v2(
-                    &stm_pw, &ntm_pw, PW, &weights, NEURONS, &bias, bias_scale, &mut nnz_buf, &mut out_v2,
+                    &combined_pw, PW, &weights, NEURONS, &bias, bias_scale, &mut nnz_buf, &mut out_v2,
                 );
                 std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
             }
@@ -637,7 +706,7 @@ mod tests {
             let t2 = Instant::now();
             for _ in 0..ITERS {
                 super::propagate_l1_matmul_only(
-                    &stm_pw, &ntm_pw, PW, &weights, NEURONS, &bias, bias_scale,
+                    &combined_pw, PW, &weights, NEURONS, &bias, bias_scale,
                     &nnz_buf[..nnz_count_pre], &mut out_v2,
                 );
                 std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
