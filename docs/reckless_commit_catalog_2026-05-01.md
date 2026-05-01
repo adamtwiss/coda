@@ -74,13 +74,16 @@ EV ranking = (their Elo signal) × (Coda applicability) ÷ (effort). Top candida
    forward-looking infrastructure for AVX-512-ubiquity future. See
    `experiments.md` 2026-05-01 entry for full write-up.
 
-2. **Threat accumulator refresh pair-unroll (`66cd450f`, #793)** —
-   **In flight (SPRT #903).** Implemented as
+2. ~~**Threat accumulator refresh pair-unroll (`66cd450f`, #793)**~~ —
+   **DROPPED 2026-05-01.** Implemented as
    `experiment/threat-refresh-pair-unroll`: 2-feature unroll on
-   `add_weight_rows_avx2` + `add_weight_rows_avx512`. Trending H0
-   (-0.3 ±2.0 / 22K games) at time of writing. Same low-signal regime
-   as setwise; merge decision will follow same pattern (forward-
-   looking AVX-512 infra if Hercules agrees, drop otherwise).
+   `add_weight_rows_avx2` + `add_weight_rows_avx512`. SPRT #903
+   stopped at 30,308 games, **−0.4 ±1.7 Elo, LLR −1.79** trending
+   H0. Mildly negative aggregate vs setwise's mildly positive; no
+   merge case. Branch retained for future reference but not landed.
+   Hypothesised cause: ILP win on fast-vpsllvq Zen 4/5 offset by
+   longer dependency chain `(reg + w1) + w2` vs simpler `reg + w`
+   per iteration on other uArchs.
 
 3. **PST feature-index vectorisation (`04c88767`, #792)** — +2.70 STC, AVX-512 VBMI2. Drops a scalar enum-features loop that runs once per Finny refresh fallback. Coda hits this on king-bucket transitions (45.65% of evals are full rebuilds, per microbench). Half day, gated on AVX-512 VBMI2 detection (already detected by `cpufeatures` crate; we'd add the gate).
 

@@ -7795,3 +7795,43 @@ Merged as forward-looking infrastructure rather than dropped:
 
 Branch: `experiment/setwise-movegen`. Merged at `d865591`.
 Bench: 966720.
+
+## 2026-05-01 — experiment/threat-refresh-pair-unroll dropped (SPRT #903 H0)
+
+Inspired by Reckless #793 (their +1.55 STC). Modified
+`add_weight_rows_avx2` and `add_weight_rows_avx512` to process 2
+weight-row features per outer-loop iteration:
+
+  while fi + 1 < indices.len() {
+      regs[i] = (regs[i] + w_load(indices[fi])) + w_load(indices[fi+1]);
+      fi += 2;
+  }
+  // single-feature tail
+
+44 lines modified, no new module. Bench bit-exact 966720, all 146
+tests pass.
+
+### SPRT #903 (bounds [0, 3])
+
+Stopped at 30,308 games:
+- **−0.4 ±1.7 Elo, LLR −1.79** trending H0.
+- Bench (5-run mean, OB worker active): main 546,882 → pair-unroll
+  554,772 = +1.4% NPS. Real bench-isolated win, but doesn't survive
+  to fleet-aggregate Elo.
+
+### Decision: drop
+
+Different outcome from setwise (#900): setwise was mildly positive
+aggregate (+0.4) and merged as forward-looking infra; pair-unroll is
+mildly negative aggregate (−0.4) so no merge case.
+
+Hypothesised mechanism: the 2-feature unroll's ILP advantage on
+fast-`vpsllvq` Zen 4/5 may be offset by the longer dependency chain
+`(reg + w1) + w2` vs the simpler `reg + w` per iteration on
+narrower-port uArchs. Reckless's +1.55 STC was on their fleet
+composition; ours is different.
+
+Branch `experiment/threat-refresh-pair-unroll` retained in git
+history for future reference but not merged. Catalog entry updated.
+
+Bench: 966720.
