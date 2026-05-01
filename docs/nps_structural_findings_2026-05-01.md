@@ -33,52 +33,128 @@ in the hot path and remeasure.
 **Result: −1% NPS on Zen 5, not the predicted +5-9%.**
 
 The compile-time/runtime distinction at the dispatch *check* is not the
-real lever. The real barrier is the `#[target_feature(enable = "avx2")]`
-attribute on the SIMD bodies themselves (e.g. `forward_with_l1_pairwise_inner`
-at `nnue.rs:2564`). That attribute marks the function as having a
-different ABI/feature set than its caller, which **prevents LLVM from
-inlining**. Once the SIMD body is non-inlined, no amount of changing the
-dispatch check shape recovers the cost.
+real lever. With `target-cpu=native` and `lto=true`, LLVM already folds
+those `if self.has_avx512` branches at compile time — they cost almost
+nothing to keep. The real barrier is the
+`#[target_feature(enable = "avx512f", enable = "avx512bw")]` attribute on
+the SIMD function *bodies* (e.g. `forward_with_l1_pairwise_inner` at
+`nnue.rs:2564`). That attribute marks the function as having a different
+ABI/feature set than its caller, which **prevents LLVM from inlining the
+function into any caller without those exact target features set**. Once
+the SIMD body is non-inlined, no amount of changing the dispatch check
+shape recovers the cost.
+
+To remove the barrier requires either:
+- Specialise the entire `apply_threat_deltas` / `forward_with_l1_pairwise_inner`
+  body for each ISA with a wrapper-dispatch (multi-level) so the wrapper
+  pays one branch and each specialised body inlines its primitives, or
+- Multi-binary build with explicit per-ISA target features (Reckless's
+  approach — `cfg(target_feature)` cfg-gated SIMD modules + separate
+  binaries per ISA).
+
+Both are real-port-effort, not quick validation.
 
 **Lesson:** the dispatch overhead is not 10 branch predictions per eval.
-It's that the entire SIMD body is opaque to the surrounding optimizer,
-including const propagation, register allocation, and tail-call
-specialisation. A real "compile-time dispatch" port would mean removing
-`#[target_feature]` and building separate binaries per ISA the way
-Reckless does — much bigger structural change than the original sketch.
+It's that the SIMD body is opaque to the surrounding optimizer —
+including const propagation, register allocation, and cross-function
+inlining. The compile-time-dispatch hypothesis as I'd framed it
+(simple cfg swap = +5-9%) was wrong. The real lever exists but is
+hidden behind a non-trivial restructure.
 
 ## Phase 2 — Fresh perf decomposition on current trunk
 
-After all the recent ports landed, we re-ran `perf record` against
-`coda eval-bench --mode incremental` on the production v9 net and
-`coda bench 13`.
+After all the recent ports landed (AVX-512 `apply_threat_deltas`,
+setwise movegen, eval-only TT writeback), we re-ran the full perf-stat
++ `perf record` battery on Zen 5 (idle, OB worker stopped) on the
+current trunk.
 
-| Function | % of cycles | Change vs 2026-04-23 |
+### `coda bench 16` — search-bench cycle decomposition
+
+`perf record --call-graph=fp -F 4000` against `coda bench 16`,
+production v9 net, 14 256 samples, 14.3 G cycles total:
+
+| Symbol | % cycles | Change vs 2026-04-23 |
 |---|---:|---|
-| `forward_with_l1_pairwise_inner` | **36.13%** | was 3.27% |
-| `simd_acc_fused_avx512` | 15.44% | unchanged |
-| `materialize` | 6.95% | down (lazy push wins) |
-| `simd512_pairwise_pack_fused` | 4.80% | unchanged |
-| `make_move` | 4.20% | unchanged |
-| (other) | 32.48% | — |
+| `ThreatStack::ensure_computed` | 21.49% | apply_threat_deltas inlined here now |
+| `forward_with_l1_pairwise_inner` | **10.96%** | was 3.27% — **3.4× share** |
+| `push_threats_for_piece` | 5.45% | flat |
+| `finny_batch_apply` | 4.04% | flat |
+| `simd_acc_fused_avx512` | 2.25% | flat |
+| `attackers_to` | 1.80% | flat |
+| `ThreatStack::refresh` | 1.74% | flat |
+| `forward_with_threats` | 0.57% | flat |
 
-Two readings of the same data:
+Two reads of the search-bench profile:
 
-1. **The L1 matmul is now the dominant single hotspot.** Earlier
-   measurement at 3.27% was misleading — that was before the threat
-   path got SIMD-fast and before lazy-push reduced `materialize` churn.
-   With the threat-side and accumulator-fused-update paths optimised,
-   the L1 matmul stands out: > 1/3 of every eval cycle.
-2. **The 1.79× instruction-count gap from `coda_vs_reckless_nps_2026-04-23.md`
-   §3 is unchanged.** All the SIMD ports landed since 2026-04-23 reduced
-   *cycles* (each port made some piece faster) without reducing
-   *instructions executed* (the work shape stayed the same). When the
-   instruction-count gap doesn't move, you can't be on the right axis.
+1. **AVX-512 `apply_threat_deltas` no longer the top symbol.** Today's
+   merge cut its standalone share — it's been folded into
+   `ensure_computed` (21.49%, including wrapper machinery). Total
+   absolute cycles in the threat-update path dropped meaningfully.
+2. **`forward_with_l1_pairwise_inner` jumped 3.27% → 10.96%.** That's
+   the L1 matmul forward path — now the second-biggest hotspot.
 
-Coda still does 1.79× more instructions per incremental eval than
-Reckless, with cache-references at 19× and L1-dcache-load-misses at
-~28× the rate. The eval-side cache gap from the previous doc is fully
-present on current trunk.
+### `coda eval-bench --mode incremental` — pure forward-pass decomposition
+
+Same `perf record`, isolated to the incremental forward pass (no
+movegen, no TT, no search). 1.27 G cycles total:
+
+| Symbol | % cycles | What it does |
+|---|---:|---|
+| `forward_with_l1_pairwise_inner` | **36.13%** | FT→L1→L2→output matmul pipeline |
+| `simd_acc_fused_avx512` | 15.44% | Accumulator update SIMD |
+| `materialize` | 6.95% | Lazy accumulator computation |
+| `make_move` / `unmake_move` | 5.91% | Board mechanics |
+| `simd512_pairwise_pack_fused` | 4.80% | Pairwise activation pack |
+| `forward_with_threats` | 1.45% | Threat fold-in |
+
+That's ~70% of the eval cost. The L1 matmul forward dominates pure
+incremental eval at 36% of cycles, more than 2× the next symbol.
+
+### `perf stat` — instruction-count + cache gap to Reckless
+
+Same workload (`eval-bench --mode incremental --reps 100000` on Coda;
+`evalbench incremental 100000` on Reckless). Both engines on AVX-512+VNNI
+Zen 5, idle CPU.
+
+| Metric | Coda | Reckless | Ratio | Δ from 2026-04-23 |
+|---|---:|---:|---:|---|
+| Instructions per 800k evals | 3.71 B | 2.08 B | **1.79× more** | flat (was 1.86×) |
+| Cycles | 1.32 B | 0.77 B | 1.71× | flat |
+| Cache-references | 648 M | 34.5 M | **18.8× more** | improved from 31.6× |
+| L1-miss rate | 16.88% | 1.07% | 16× worse | flat |
+| Branches | 634 M | 137 M | 4.6× more | flat |
+
+**The two structural gaps that have NOT closed:**
+
+1. **1.79× more instructions per eval** — Coda runs nearly twice as
+   much code per evaluation. Was 1.86× nine days ago; the AVX-512
+   merge improved cycles-per-instruction but didn't reduce instruction
+   count (3.71 B now vs 3.75 B then). All the SIMD ports landed since
+   2026-04-23 reduced cycles per piece of work without reducing how
+   much work each eval does.
+2. **18.8× more cache references** — touching way more memory lines.
+   The headline ratio dropped from 31.6× to 18.8×, but **that's
+   because Reckless's number went UP (19 M → 34.5 M, their recent
+   commits added some memory traffic), not because Coda's improved**.
+   Coda's cache-references *jumped* 596 M → 648 M (+9%) over the same
+   period.
+
+Bench-NPS gap closed from 1.66× to ~1.5× over our recent merges, but
+the structural instruction-count gap (1.79×) is essentially unchanged.
+We've made the same code faster per cycle without reducing how much
+code we run per eval.
+
+| Gap | Was (2026-04-23) | Now (2026-05-01) | Closed? |
+|---|---:|---:|---|
+| Instruction count | 1.86× | 1.79× | barely |
+| Cache references | 31.6× | 18.8× | partly (Reckless got worse too) |
+| L1-miss rate | 15.72% | 16.88% | got slightly worse |
+| Cycles | 1.83× | 1.71× | a bit |
+
+That's the real "fundamental" answer: we're doing nearly twice as many
+instructions per eval as Reckless, and most of those extra instructions
+live in `forward_with_l1_pairwise_inner` (36% of eval cycles). Until we
+shrink that, the gap is structural.
 
 ## Structural diff: how the L1 matmul actually differs
 
@@ -180,6 +256,23 @@ Properties:
   ~24 KB both sides. Dense iteration touches all of it. Reckless's
   sparse iteration touches ~5 KB on the same op-point.
 
+### Quantifying the per-call gap
+
+Per L1 matmul call on v9 production (h16x32 net, 89% input sparsity per
+`v9_sparsity_investigation_2026-04-19.md`):
+
+| Per L1 matmul call | Reckless | Coda dense | Ratio |
+|---|---:|---:|---:|
+| Inputs iterated | ~85 (89% sparse skip) | 768 (all) | 9× more in Coda |
+| Weight memory touched | ~5 KB | ~24 KB | 4.8× more |
+| Inner-loop iterations | ~43 (pair-unrolled) | 768 | 18× more |
+
+That ~9× per-call work ratio in the matmul is the dominant contributor
+to the observed 1.79× total instruction-count gap. Combined with smaller
+factors (dispatch overhead, more accumulator fields, branch overhead from
+the 10-arm dispatch tree), the structural gap accounts for essentially
+all of the 1.79×.
+
 ### Why this produces both gaps simultaneously
 
 The 1.79× instruction count gap and the ~19× cache-references gap are
@@ -188,12 +281,16 @@ not two separate problems. They're two symptoms of dense-first iteration:
 | Symptom | Mechanism |
 |---|---|
 | **1.79× instructions** | Dense matmul does ~9× more multiply-accumulate work (768 inputs vs ~85 NNZ). Even highly vectorised, the work is ~9× larger; SIMD width and pair-unrolling close some of that, leaving the observed 1.8×. |
-| **19× cache-references / 28× L1 miss rate** | Dense access pattern reads the entire weight matrix per call, exhausting L1 working set. Sparse access pattern touches only the rows of NNZ inputs — a working set ~5× smaller fits in L1. |
+| **19× cache-references / 16× L1-miss-rate** | Dense access pattern reads the entire weight matrix per call, exhausting L1 working set. Sparse access pattern touches only the rows of NNZ inputs — a working set ~5× smaller fits in L1. Reckless's `34.5 M cache-refs / 800 k evals = 43 refs/eval`; Coda's `648 M / 800 k = 810 refs/eval`. |
 
 This is also why "fix the cache layout" alone wouldn't fully close the
 gap. You can flatten `AccEntry`, frontload hot features, prefetch the
 next weight row — and you'd still execute 1.79× more instructions on the
-dense matmul because the work axis is wrong.
+dense matmul because the work axis is wrong. Cache effects pile on the
+same axis: less work in matmul = less memory traffic = better cache
+behaviour. Restructuring the matmul to sparse-first roughly 5× the
+working set naturally — without any other change — would restore L1
+residency on the hot path *and* close most of the instruction-count gap.
 
 ### Why the previous sparse experiment underperformed
 
@@ -213,25 +310,13 @@ the surrounding code, not as an alternative branch inside it.**
 ## Cache as the same axis, not a separate one
 
 `coda_vs_reckless_nps_2026-04-23.md` §3 framed cache behaviour as a
-distinct lever (flatten AccEntry, hot-feature frontload, prefetch). Those
-levers are still real, but the dominant cache cost is in the L1 matmul
-itself, and the right way to fix it is to **read less**, not to
-**arrange the read better**.
-
-Per-call working set on v9 production net (Zen 5, AVX-512+VNNI):
-
-| Operation | Reckless | Coda | Gap |
-|---|---:|---:|---:|
-| L1 matmul weight bytes touched | ~5 KB | ~24 KB | 4.8× |
-| L1 matmul input bytes touched | ~340 B | ~3 KB | 8.8× |
-| L1-dcache-load-misses (microbench) | 5.6 M / 800k evals | 304 M / 800k evals | 54× |
-| L1 hit rate | 99.45% | 84.28% | — |
-
-The miss-rate gap (54× on the matmul-dominant microbench, 28× on the
-broader incremental eval) is tightly coupled to the working-set ratio.
-Restructuring the matmul to sparse-first roughly 5× the working set
-naturally — without any other change — would restore L1 residency on
-the hot path.
+distinct lever (flatten `AccEntry`, hot-feature frontload, prefetch).
+Those levers are still real, but as the per-call quantification above
+shows, the dominant cache cost is in the L1 matmul itself, and the
+right way to fix it is to **read less**, not to **arrange the read
+better**. Coda's L1-dcache-load-misses on the eval-bench microbench
+sit at ~16.88% (vs Reckless's 1.07%); the working-set ratio (24 KB vs
+~5 KB per matmul call) accounts for most of the gap directly.
 
 ## Halogen mixed-precision context
 
