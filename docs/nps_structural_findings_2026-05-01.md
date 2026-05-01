@@ -484,7 +484,95 @@ each bounded by what the dense-first matmul leaves on the table. Lever
 - Coda hot-path source at `src/nnue.rs:2565` (`forward_with_l1_pairwise_inner`)
   + `src/sparse_l1.rs` (sparse and dense kernels, both available).
 
+## Update 2026-05-01 PM — Step C-cheap attempted, model corrected
+
+Step A (extract SIMD primitives to `src/nnue_simd.rs`) landed bench-
+neutral as planned (merged to main). Step B added a Reckless-shape
+sparse-first kernel `propagate_l1_avx512_vnni_v2` + VBMI2 SIMD NNZ
+scanner and a standalone microbench — soft pass on the gate:
+matmul-only ceiling **5.65× vs dense** with combined-buffer signature,
+end-to-end **2.41×** with VBMI2 SIMD scan. Step C-cheap plugged v2
+into `forward_with_l1_pairwise_inner` and produced a **−4% bench
+regression** (1273 k → 1219 k NPS), opposite the +18-22% the
+microbench predicted.
+
+**Root cause: the doc's "89% sparse" framing referred to feature-row
+activation, not post-pairwise-CReLU 4-byte chunk density.** Adding a
+diagnostic counter at the call site showed real production density
+is ~73% non-zero per chunk (140/192 NNZ chunks per call), not 11%
+(27/192) as the microbench synthesised. After the pairwise
+multiplication `stm_pw[i] = ((a * b) >> FT_SHIFT) as u8`, a chunk is
+non-zero whenever ANY pair of accumulator values has both halves
+non-zero — much denser than raw feature activation.
+
+At 73% chunk-density, sparse iteration saves only ~1.4× theoretical
+work (192 → 140 chunks). Combined with NNZ-scan overhead and the
+larger function body (icache pressure), v2 is bench-negative in
+production traffic.
+
+### Reckless's `propagate_l1` re-examined
+
+Reading Reckless's `propagate_l1` more carefully against this finding:
+their kernel uses **a single 1-ZMM accumulator** at `L2_SIZE=16`, with
+4-cycle VPDPBUSD latency unhidden across the inner `nnz.chunks_exact(2)`
+loop. At ~140 NNZ chunks × 4 cycles serial latency ≈ 560 cycles
+≈ ~150 ns per call. Coda's `dense_l1_avx512_vnni` uses **4-way
+interleaved accumulators** to hide that latency, achieving ~50 ns at
+192 chunks.
+
+So: **Reckless's L1 matmul is probably slower per-call than Coda's
+dense kernel** at this op-point. Their forward pass nevertheless runs
+faster overall, but **not because of sparse iteration** — the
+sparsity-iteration framing was wrong for both engines. The real lever
+seems to be the inlined single-SIMD-path structure (no
+`#[target_feature]` inline barriers, no dispatch overhead, no
+per-perspective demux), not the dense-vs-sparse iteration choice.
+
+### Implications for the lever ranking
+
+Lever #1 ("Restructure forward_with_l1_pairwise_inner along Reckless's
+pattern, sparse-first") was based on a flawed sparsity model and
+needs reframing. The correct framing is closer to Step C-FULL:
+**eliminate `#[target_feature]` inline barriers and consolidate
+dispatch paths**, not "switch to sparse iteration."
+
+Three follow-ups:
+
+1. **Step C-cheap is dead at this op-point.** v2 + VBMI2 SIMD scan
+   are kept on `feature/nnue-simd-restructure` (NOT merged to main)
+   as infrastructure for future investigations (lower-density nets,
+   wider L1, off-architecture ports). **Cleanup tripwire**: if Step
+   C-full hasn't validated by 2026-05-15, delete the v2/microbench
+   code from that branch and retain only the experiments.md log.
+2. **Step C-full — drop `#[target_feature]` from
+   `forward_with_l1_pairwise_inner`** becomes the real structural
+   lever. Phase 1 found that simple cfg swaps don't unlock anything;
+   the real test is removing the attribute and ensuring all callees
+   inline. Multi-binary build per ISA may be the path of least
+   resistance.
+3. **Lever ranking #6-8 (cache hygiene: flatten `AccEntry`,
+   frontload, prefetch)** are still valid and now move UP, since the
+   sparse-first matmul lever didn't pan out.
+
+The original "+15-25% NPS" estimate for Lever #1 should be discounted
+substantially. Step C-cheap result places the realistic upper bound
+on the L1-matmul-restructure family at probably **~3-8% NPS** (from
+inline-barrier removal + dispatch consolidation, not work reduction).
+
+### Methodology lesson banked
+
+The 2.41× microbench gate was a SOFT pass (target was 6×) and we
+proceeded. The right intermediate step would have been **probing
+real production NNZ density before integration**. The microbench
+synthesised 89% sparsity from the doc's framing without verifying
+the framing matched the actual data shape. Adding "probe production
+data distribution at the integration point before microbenching" to
+the metrics-discipline memory.
+
 ---
 
-*Investigation 2026-05-01. Next action: prototype Proposal 1 on a
-feature branch, microbench, then SPRT.*
+*Investigation 2026-05-01. Step A merged to main; Step B/C-cheap
+explored on `feature/nnue-simd-restructure` (kept for Step C-full
+follow-up). Step C-full remains the real candidate but needs
+validation that inline-barrier removal alone delivers the predicted
+NPS.*

@@ -7835,3 +7835,77 @@ Branch `experiment/threat-refresh-pair-unroll` retained in git
 history for future reference but not merged. Catalog entry updated.
 
 Bench: 966720.
+
+## 2026-05-01 — Step A merged: SIMD primitive abstraction (bench-neutral)
+
+First step of the L1-matmul restructure laid out in
+`docs/nps_structural_findings_2026-05-01.md`. New `src/nnue_simd.rs`
+holds SIMD primitives at the granularity of single ops (`splat_i32`,
+`dpbusd`, `double_dpbusd`, `load_u8`/`load_i8`, `reduce_add_i32`)
+gated by `cfg(target_feature)` — same pattern as Reckless's
+`nnue/simd/avx512.rs`. Coda's `make` already builds with
+`-Ctarget-cpu=native`, so cfg gates resolve at compile time per
+host. Existing `has_avx512` / `has_avx2` runtime flags remain as
+belt-and-suspenders fall-through guards.
+
+Bench-neutral verification: refactored `simd512_l1_int8_dot_vnni`
+through the new primitives. Node count identical (966720) at
+~1.27 M NPS. perf stat: instructions/eval flat at 3.71 B per 800 k
+evals.
+
+### Step B + Step C-cheap explored on `feature/nnue-simd-restructure`
+
+Step B added a Reckless-shape sparse-first kernel
+(`propagate_l1_avx512_vnni_v2`) plus a VBMI2 SIMD NNZ scanner and a
+standalone microbench. The microbench gave a soft pass on Hercules's
+6× hard gate: matmul-only ceiling **5.65× vs dense** with combined-
+buffer signature; end-to-end **2.41×** with VBMI2 SIMD scan.
+
+Step C-cheap plugged v2 into `forward_with_l1_pairwise_inner` and
+**regressed bench by 4%** (1273 k → 1219 k NPS). A diagnostic NNZ
+counter at the call site found the model error: production chunk-
+level density is **140/192 = ~73% non-zero**, not 27/192 (89% sparse)
+as the microbench synthesised. The original doc's "89% sparse"
+framing referred to feature-row activation, not post-pairwise-CReLU
+4-byte chunk density. After the pairwise pack
+`stm_pw[i] = ((a*b) >> FT_SHIFT) as u8`, a chunk is non-zero whenever
+ANY pair of accumulator values has both halves non-zero — much
+denser than raw feature activation. Sparse iteration only saves
+~1.4× theoretical work at this density; NNZ scan + larger function
+body's icache pressure exceed the savings.
+
+Re-examining Reckless against the chunk-density correction: their
+`propagate_l1` uses a **single 1-ZMM accumulator** at L2_SIZE=16
+with unhidden 4-cycle VPDPBUSD latency — at ~140 NNZ chunks ≈ 150 ns
+per call, **likely SLOWER than Coda's 4-way-interleaved
+`dense_l1_avx512_vnni`** (~50 ns at 192 chunks). So Reckless's
+forward-pass advantage isn't sparse iteration; it's the inlined
+single-SIMD-path structure (no `#[target_feature]` inline barriers,
+no dispatch overhead, no per-perspective demux). That's Step C-FULL
+territory.
+
+### What landed on main
+
+- Step A only: SIMD primitive abstraction in `src/nnue_simd.rs` +
+  `simd512_l1_int8_dot_vnni` refactor in `nnue.rs`. Bench-neutral.
+
+### What stayed on `feature/nnue-simd-restructure`
+
+- Step B kernel + VBMI2 NNZ scanner + microbench infrastructure
+  (~600 lines speculative). Retained for Step C-full follow-up
+  experiments (lower-density nets, wider L1, off-arch ports).
+- **Cleanup tripwire**: if Step C-full hasn't landed by 2026-05-15,
+  delete the v2 + microbench code on this branch and keep only the
+  experiments.md log as a lessons-learned record.
+
+### Implications for the lever ranking
+
+`docs/nps_structural_findings_2026-05-01.md` Lever #1 ("+15-25% NPS
+from sparse-first L1 matmul") is downgraded — sparsity-iteration
+isn't the lever. The realistic upper bound for the L1-matmul
+restructure family is now **~3-8% NPS** from inline-barrier removal
++ dispatch consolidation (Step C-full). Cache-hygiene levers (#6-8:
+flatten AccEntry, hot-feature frontload, prefetch) move up the
+ranking correspondingly.
+
+Bench: 966720.
