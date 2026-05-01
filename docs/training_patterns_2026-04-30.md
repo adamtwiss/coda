@@ -235,11 +235,39 @@ After random opening plies, **regenerate the opening if eval > 1000cp**. Throws 
 
 Random plies frequently produce blunder positions where one side has already lost. Self-play games from those positions train the net on "mate-in-X conversion" patterns, not on "decision-making at near-equal evals". The latter is what makes a strong engine.
 
-Coda's existing datagen at `src/datagen.rs:248-257` uses 4-9 random plies but **has no eval filter**. Adopting Hobbes's filter is one extra eval call per opening attempt — trivially cheap.
+### Critical: scoring-system calibration
+
+The number `1000cp` is **not portable** across engines. The threshold has to be interpreted in the scoring system the data was generated under:
+
+- **Hobbes' "1000cp"** is in their own NNUE's output scale.
+- **T80 / Lc0 self-play data** uses **win-rate-based scoring**, not material-equivalent. In T80 calibration, **100cp ≈ 50% win chance**, **1000cp ≈ "clearly won"**. Many strategically-rich positions (advanced passers, dynamic compensation, opposite-side castling races) sit at **600cp+ with even material**.
+- **SF / Coda UCI output** uses material-anchored scaling (Coda's `EVAL_SCALE = 400` rescales to roughly material-cp). Here 1000cp means "+10 pawns equivalent" — a much higher bar.
+
+So a naive port of "1000cp" to T80 data would discard ~29% of training positions and remove most of the strategic-pattern content. Wrong move.
+
+### What Coda already does
+
+Coda's V9 training filter at `~/code/bullet/examples/coda_v9_768_threats.rs:415-422`:
+```rust
+entry.ply >= 16
+    && !entry.pos.is_checked(stm)
+    && entry.score.unsigned_abs() <= 10000   // ← this IS the Hobbes-equivalent for T80
+    && entry.mv.mtype() == MoveType::Normal
+    && entry.pos.piece_at(entry.mv.to()).piece_type() == PieceType::None
+```
+
+Per `docs/t80_data_analysis.md` (5M-position sample of T80):
+- Score distribution is bimodal — 43.6% at \|score\| < 100, 18.3% at \|score\| ≥ 32001 (mate).
+- The `≤ 10000` cut already discards the 25.7% mate/near-mate band.
+- Tightening to `≤ 1000` would discard an additional 3.6% non-tactical positions in the 1000-9999 band — strategically-rich content we want to keep.
+
+So Coda's existing filter **already implements Hobbes' intent** ("skip essentially-decided positions") at the calibration-appropriate threshold for T80. The earlier `t80_data_analysis.md` recommendation actually pointed the *other* direction (loosen to `≤ 20000` to retain the 0.8% in 10000-19999); whichever direction we go, the 10000 baseline is already in the right neighbourhood.
 
 ### Coda recommendation — eval-bound filter
 
-**Adopt unconditionally** if/when Coda runs more self-play. Threshold: `1000cp` matches Hobbes; could be tightened to `800cp` for Coda's more decisive eval scale. Implementation: 5 lines in `src/datagen.rs`.
+- **For T80 training:** ✅ already in place at `≤ 10000`. No action needed.
+- **For future self-play (`coda datagen`):** if/when adopted, the analogue is in `src/datagen.rs` — but threshold has to be set in *Coda's UCI output scale*, not naively ported as "1000". Reasonable starting point: `|eval| > 1000cp` in Coda's own scale (where 1000cp ≈ "+10 pawns equivalent"), matching Hobbes' "skip pre-decided openings" intent on a similarly-calibrated NNUE. Implementation: 5 lines.
+- **At Bullet load time vs at datagen time:** prefer load-time filtering (Coda already does for T80) — keeps the underlying data, threshold is changeable without re-running datagen. Datagen-time filtering is destructive.
 
 ## Activation chain evolution (Hobbes h-39 → h-41)
 
@@ -317,14 +345,15 @@ Compact view:
 | Two-stage LR + data + WDL (Hobbes pattern) | ❌ not implemented |
 | fen-skipping | N/A at current scale; defer |
 | DFRC blend in datagen | ❌ not generated |
-| Opening eval-bound filter | ❌ Coda has random-ply but no eval filter |
+| Opening eval-bound filter (T80, load-time) | ✅ at `≤ 10000` (Hobbes-equivalent for Lc0 WR-cal scale) |
+| Opening eval-bound filter (`coda datagen` self-play) | ❌ no filter; only relevant if/when self-play adopted |
 | Dual-activation FT | ❌ Coda is single-SCReLU FT (Hobbes h-39 shape) |
 | Hidden activation = CReLU through chain | ✅ matches consensus |
 | Cumulative-data principle for any future self-play | acknowledged in Hobbes doc |
 | Quiet-position filter (ply ≥ 16, no checks/captures/tactical) | ✅ in place |
 | Architecture co-evolution | N/A (Coda already at endpoint shape) |
 
-Eight items in the "missing or untested" column. None are individually high-Elo (most are +1-6 each), but they cluster naturally — a single training-time-experiment branch could combine WDL ramp + 2-stage + opening-filter + dual-activation FT and SPRT once.
+Seven items in the "missing or untested" column (after recognising Coda's existing T80 eval-bound filter as Hobbes-equivalent). None are individually high-Elo (most are +1-6 each), but they cluster naturally — a single training-time-experiment branch could combine WDL ramp + 2-stage + dual-activation FT and SPRT once.
 
 ## Test plan (parked, blocked on factor variance)
 
@@ -334,7 +363,7 @@ When stable training A/B is restored, test in this order:
 2. **Two-stage training on V9** (split last 200sb as constant-low-LR finetune). Bullet-config change. Expected +2 to +6 Elo. Standalone.
 3. **LR endpoint at 8.1e-6** (Hobbes-style). Compare with current V9 endpoint. Expected ±2 Elo, mostly informational about whether Hobbes's "higher endpoint" finding generalises.
 4. **Dual-activation FT** (Hobbes h-40 pattern). Architecture change. Expected +3 to +10. Standalone, requires re-train on retrained data.
-5. **Opening eval-bound filter in datagen** (5-line addition). Required for any future self-play; expected neutral on T80-only training.
+5. **Opening eval-bound filter in `coda datagen`** (5-line addition). Only relevant if/when self-play data path is adopted (Recipe E/F from `selfplay_data_strategy_2026-04-30.md`). T80 training is already covered by the existing `≤ 10000` load-time filter (see §Opening eval-bound filter above). Threshold for self-play has to be set in Coda's UCI scale, not naively ported as "1000".
 
 Most of (1)-(3) can be done together on a single training run as a "Hobbes-style schedule" SPRT. The test budget would be 1-2 SB800 runs + SPRTs.
 
@@ -344,7 +373,8 @@ Most of (1)-(3) can be done together on a single training run as a "Hobbes-style
 - **WDL ramp to higher in late training is engine-dependent.** Hobbes positive across 30+ generations; Viri negative across 5 finetune nets. Don't import the result blindly; test on Coda specifically.
 - **Hobbes's measured +9.6 Elo from raising LR endpoint 2.7e-6 → 8.1e-6 contradicts CLAUDE.md's "lower is better" guidance.** Worth retesting on Coda V9.
 - **Coda's V9 architecture endpoint matches Hobbes h-41.** Architecture isn't the bottleneck; the training-time hyperparameter schedule is the residual lever.
-- **Eight training-pattern items in the "missing or untested" column.** Cumulative envelope ~+10-30 Elo if half land. None individually large; together meaningful.
+- **Seven training-pattern items in the "missing or untested" column** (after recognising Coda's existing `≤ 10000` T80 filter as Hobbes-equivalent). Cumulative envelope ~+10-30 Elo if half land. None individually large; together meaningful.
+- **Number-portability across engines requires scale verification.** Hobbes's `1000cp` filter threshold is in their NNUE's output scale; T80 / Lc0 data is win-rate-calibrated where 1000cp ≈ "clearly won"; Coda's UCI output is material-anchored. A naive "1000" import to T80 data would discard ~29% of positions, removing strategically-rich content. Same lesson as the WDL-convention check at the top of this doc — verify the scale before importing the number.
 
 ## Sources
 
@@ -353,6 +383,8 @@ Most of (1)-(3) can be done together on a single training run as a "Hobbes-style
 - `~/chess/engines/Hobbes/src/tools/datagen.rs:51-53` — opening eval-bound filter.
 - `~/chess/engines/viridithas/notes/networkhistory.txt` — `viri19`, `viri47`, `everedge`, `basilisk.4-.8`, `godsword`, `fixpoint`, `inflection` for WDL evidence.
 - `~/code/coda/CLAUDE.md` — Coda's measured V5 0.07 / V9 0.15 WDL optima, low-LR-tail observation.
+- `~/code/bullet/examples/coda_v9_768_threats.rs:415-422` — Coda's V9 T80 load-time filter, `≤ 10000` Lc0 score = Hobbes-pattern-equivalent.
+- `~/code/coda/docs/t80_data_analysis.md` — score distribution for T80 data, anchors the Lc0 WR-cal calibration claim.
 
 ## Companion docs
 
@@ -360,4 +392,5 @@ Most of (1)-(3) can be done together on a single training run as a "Hobbes-style
 - `hobbes_selfplay_case_study_2026-04-30.md` — Hobbes's full bootstrap case.
 - `factoriser_design_2026-04-21.md` — orthogonal architectural tweak.
 - `cross_engine_comparison_2026-04-25.md` — search-side comparisons (no overlap with this doc's training scope).
+- `t80_data_analysis.md` — empirical T80 score / ply / position-type distribution; cited in §Opening eval-bound filter for the Lc0-calibration argument.
 - `experiments.md` — source of truth for resolved Coda training/SPRT results.
