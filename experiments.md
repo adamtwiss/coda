@@ -7261,6 +7261,67 @@ sitting inside the SPRT noise floor and not landing as H1.
   gap < 5 Elo at 1500g cross-engine SPRT, factor was the noise source
   and we drop it.
 
+## 2026-05-01 — non-factor SB200 4-replica seed-variance diagnostic (#896 / #897 / #898)
+
+Four SB200 trains, identical config (hlcrelu, w15, --xray 1, kb10,
+non-factor), independent seeds. gpu1 on different GPU/CUDA; gpu3/4/5
+on shared infra. Bench spread 134%: gpu1 3.20M / gpu3 1.37M / gpu4
+2.30M / gpu5 2.28M nodes.
+
+**SPRT pair tests (bounds [-5, 5], main-vs-main with --dev/base-network):**
+
+| Test | Pair | Elo | ± | Games | Result |
+|---|---|---:|---:|---:|---|
+| #897 | gpu4 vs gpu5 | +0.2 | 6.2 | 3248 | →H1 (basin A ↔ basin A; trending equivalent) |
+| #896 | gpu3 vs gpu4 | −14.7 | 10.1 | H0 ✗ | gpu3 (intermediate) vs basin A |
+| #898 | gpu1 vs gpu4 | −13.0 | 9.6 | H0 ✗ | basin B vs basin A |
+
+**Bimodality reading via move-ordering stats:**
+
+| Cluster | Nets | First-move | Total nodes | EBF |
+|---|---|---:|---:|---:|
+| Basin A ("well-ordered") | w0/05/10/15, gpu4, gpu5 | 75.7-77.5% | 1.04-2.30M | 1.73-1.80 |
+| Basin B ("wide & less-ordered") | w20, gpu1 | 70.9-73.1% | 3.20-3.88M | 1.82 |
+| Intermediate | gpu3 | 73.6% | 1.37M | 1.72 |
+
+**Header decode:** wdl-sweep nets (w0-w20) were v9 magic, hl_crelu=0
+(HL-SCReLU); current replicas + prod are v10 magic, hl_crelu=1 (HL-CReLU).
+Bit 1 was repurposed in v10 (no real FT-activation difference). The
+**only true activation change** between the two sets is HL: SCReLU →
+CReLU via Bullet `--hidden-activation crelu` (commit b5590de, 2026-04-19).
+
+**Reading:**
+
+1. **Factor was NOT the unique seed-noise source.** Non-factor SB200
+   shows ~13-17 Elo seed variance, comparable to factor SB800's −22
+   Elo (#879). The factor hypothesis is retracted.
+2. **Older wdl-sweep (5 independent seeds, HL-SCReLU era) clustered
+   tightly** — implies seed variance was lower in the older pipeline.
+   Some recent change has either created or amplified the bimodality.
+3. **Most likely culprit: hlcrelu** (CReLU dead-zones at both ends
+   could split training into different basins by which neurons die
+   first). Other suspects: warmup duration (warm30), MAX_THREAT_ACTIVE
+   256→512, group-lasso scaffolding inclusion.
+
+**Diagnostic queued (Task #171):** train 2 SB200 replicas with
+`--hidden-activation screlu` (default, reverting hlcrelu only),
+else identical pipeline. If both land in basin A → hlcrelu is the
+cause; revert prod and re-validate. If still bimodal → revert next
+suspect.
+
+**Methodology implications:**
+- ±5/±10 Elo SPRT signals are partly seed luck on net experiments.
+  Single-replica deployment-candidate decisions need ≥2 replicas.
+- Bench/move-ordering stats (first-move-cut %, EBF, total nodes,
+  QS %) reveal which basin a net landed in BEFORE running games —
+  fast pre-screen for bimodality.
+- Training-side experiments running while bimodality is present
+  produce noisy magnitude estimates; direction more reliable than
+  magnitude.
+
+**Outputs:** /tmp/bench_compare/*.txt (full bench output per net).
+SHA8s on OB: gpu1=A6F8418A, gpu3=F5834226, gpu4=551F8480, gpu5=6208612C.
+
 ### Decisive STC nulls (file-and-forget, large N)
 - **#842 tt-age-weight-8** STC: **+0.5 ±0.6 / 273642g** H0 (LLR -2.95).
   STC null. **LTC variant #857 H1 +1.6 ±2.5 / 7.3K — already merged
@@ -7497,7 +7558,7 @@ quiet ordering (consume v9 signals natively) or it's actually
 depth-bound, not ordering-bound. The original ablation was at
 played_depth only.
 
-### #891 experiment/threat-bundle-major — multi-effect carve-out (in flight)
+### #891 experiment/threat-bundle-major — multi-effect carve-out — H0 ✗ (−1.4 ±1.9, 25030 games, LLR −2.95)
 - **Setup:** two coupled effects on a single shared post-make-move
   trigger (≥ LMR_THREAT_MAJOR_MIN new threats against opp K/Q/R,
   via threat_stack delta — a Coda-original signal class):
@@ -7510,15 +7571,24 @@ played_depth only.
 - **Bench:** 1143765 vs main 966720 (+18.3%) — denser tree on
   tactical moves; two effects compound for ~+2 ply on triggered moves.
 - **Bounds:** [0, 3].
-- **Status:** in flight.
-- **Rationale:** primary search-side experiment from
-  `docs/loss_analysis_2026-04-28.md` after single-feature LMR
-  carve-out class closed (17 H0s on 2026-04-30) and naive ordering
-  ports closed (#887/#888/#889 cluster H0). The doc's headline
-  recommendation is "multi-feature carve-outs on shared triggers
-  go higher" — tested here in 2-effect simpler shape. If H1,
-  expand to 3-4 effects on the same trigger; if H0, the trigger
-  itself is the wrong signal.
+- **Result:** H0 at −1.4 ±1.9 / 25K games. Multi-feature shared-trigger
+  bundle on the major-threat signal didn't deliver. Possible reads:
+  (a) the trigger is too coarse — "any new threat against K/Q/R" fires
+  too broadly, mixing high-leverage and low-leverage cases together;
+  (b) the +18% bench cost (extra search on triggered moves) wasn't
+  recovered by the depth gain at STC; (c) yin-yang interaction —
+  doDeeper override + LMR carve-out compound such that triggered
+  moves get over-extended without compensating retune of other tunables;
+  (d) the doc's "multi-feature carve-outs go higher" framing assumed
+  the trigger had been validated in single-feature SPRTs first
+  (single-feature LMR carve-out on this trigger H0'd in earlier
+  cluster — we should not have stacked on top of an H0'd primitive).
+- **Reading:** rules out the simple "stack effects on major-threat
+  trigger" play. The +3-6 ply ordering/pruning bucket (40% of moderate
+  cases per loss-analysis) needs a different approach — either a
+  better trigger (signal validated standalone first) or attack the
+  same bucket from a different angle (TT-state / game-time-ordering
+  per the refined sudden-bucket analysis).
 
 ## 2026-04-30 — fix/abandon-ponder-suppress-bestmove +3.4 Elo H1 (#890, lichess 2agDftuq)
 
