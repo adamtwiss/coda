@@ -451,9 +451,17 @@ impl TT {
                 return;
             }
 
-            // Key match: update if newer generation or sufficiently deep
+            // Key match: update if sufficiently deep. Cross-gen entries
+            // get a relaxed margin (slot_depth - 8) so stale bound info
+            // can still be refreshed, but deep cross-gen entries from a
+            // prior root search are protected from being clobbered by
+            // shallow current-gen probes (the in-game TT-pollution
+            // mechanism identified by the 2026-05-01 negative-deficit
+            // disentanglement: 11/14 of those cases recover SF-best with
+            // a fresh hash at the same depth).
             if recovered_upper == key_upper {
-                if depth > slot_depth - 3 || gen != slot_gen {
+                let margin = if gen != slot_gen { 8 } else { 3 };
+                if depth > slot_depth - margin {
                     bucket.data[i].store(new_data, Ordering::Release);
                     bucket.keys[i].store(new_key, Ordering::Release);
                 }
