@@ -460,12 +460,14 @@ impl TT {
                 return;
             }
 
-            // Track worst slot for replacement: depth - 8*age (matches SF's
-            // GENERATION_DELTA=8). Stale entries depreciate twice as fast as
-            // the previous `*4`, freeing slots for fresh shallow entries
-            // when TT pressure is high.
+            // Track worst slot for replacement: depth + pv_bonus - 8*age.
+            // Age weight matches SF's GENERATION_DELTA=8. tt_pv slots get
+            // a +4 depth-equivalent bonus so PV positions are harder to
+            // evict — they were searched as PV nodes and likely have the
+            // highest-quality data in the bucket.
             let age = gen.wrapping_sub(slot_gen) as i32;
-            let slot_score = slot_depth - age * 8;
+            let pv_bonus = if unpack_tt_pv(slot_data) { 4 } else { 0 };
+            let slot_score = slot_depth + pv_bonus - age * 8;
             if slot_score < replace_score {
                 replace_score = slot_score;
                 replace_idx = i;
