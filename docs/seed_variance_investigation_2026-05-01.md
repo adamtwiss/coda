@@ -78,6 +78,36 @@ Basin A: tight, fast-converging, low EBF. Basin B: wider QS, higher
 node count. The single Basin-B point in the old wdl-sweep (w20) is a
 hint that bimodality existed pre-C8 but was **less prevalent**.
 
+#### Old-pipeline corroboration: warm-sweep matches wdl-sweep baseline
+
+A second batch of old-pipeline nets — the **warm-sweep** (warm5/30/40/50,
+HL-SCReLU + pre-C8, run independently of the wdl-sweep but in the same
+era) — provides additional support for the "amplified, not created"
+reading. Adam initially flagged it as a possible HL-CReLU set;
+clarification: warm-sweep was HL-SCReLU. We were independently testing
+HL-CReLU experimentally at the same time.
+
+Bench/move-ordering across warm-sweep:
+
+| Net | First-move-cut % | Bench | Basin |
+|---|---:|---:|---|
+| warm5 | tight, ~75-77% | low | A |
+| warm30 | tight, ~75-77% | low | A |
+| warm40 | wider, ~71-73% | high | **B** |
+| warm50 | tight, ~75-77% | low | A |
+
+1/4 in Basin B, matching the wdl-sweep's 1/5 (w20) — both old-pipeline
+sets give a **~20-25% Basin-B outlier rate**. The current post-C8
+hlcrelu era (3/4 = ~75% drift toward Basin B at SB200) is roughly
+**2-3× wider** than this baseline. Bimodality did not appear from
+nothing; it was amplified.
+
+This also retires my earlier framing that the wdl-sweep WDL=0.15 result
+was "measurement-noisy" — Adam's pushback ("the bench values bar w20
+were all pretty similar") is correct on the data: 4/5 wdl-sweep nets
+clustered in Basin A, w20 was a single outlier. WDL=0.15 was a real
+read in the *old* pipeline. What's noisy is the *current* pipeline.
+
 ### H3 (Adam, 2026-05-01): Final LR is too low, exposing late-stage seed variance — STANDING
 
 Adam's framing: v9 final LR (~2.4e-6) is much lower than v5's (~5e-6).
