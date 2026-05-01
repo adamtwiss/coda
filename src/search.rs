@@ -246,6 +246,10 @@ tunables!(
     (NMP_MIN_DEPTH, 7, 2, 20, 1.5),              // was hardcoded 3 (NMP activation gate, 2 sites)
     (HINDSIGHT_MIN_DEPTH, 4, 1, 20, 1.5),        // was hardcoded 2 (hindsight reduction gate)
     (TT_CUTOFF_HALFMOVE_MAX, 87, 50, 100, 3.0),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
+    // Hobbes #19 LMR axis: quiet move whose destination is enemy-threatened
+    // AND SEE<0. Hobbes weights this at +1.28 plies (1313/1024); we apply
+    // an integer ply count, default 1, range 0..2 for SPSA wiggle/disable.
+    (LMR_THREAT_BLUNDER, 1, 0, 2, 0.5),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -2835,6 +2839,22 @@ fn negamax(
             continue;
         }
 
+        // Hobbes #19: pre-make_move flag for the LMR threat-blunder axis.
+        // Quiet move whose destination is enemy-threatened AND SEE<0 → embedded
+        // blunder detector; computed pre-move so SEE evaluates the correct
+        // exchange. Cheap gate: SEE call only when (quiet && to_threatened).
+        let lmr_threat_blunder_extra = {
+            let to_threatened = enemy_attacks & (1u64 << to) != 0;
+            let extra = tp(&LMR_THREAT_BLUNDER);
+            if !is_cap && !is_promo && extra > 0 && to_threatened
+                && !crate::see::see_ge(board, mv, 0)
+            {
+                extra
+            } else {
+                0
+            }
+        };
+
         // Build NNUE dirty piece info BEFORE make_move
         let dirty = if let Some(net) = info.nnue_net.as_deref() {
             build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt, net)
@@ -2965,6 +2985,10 @@ fn negamax(
                 if enemy_attacks & (1u64 << from) != 0 {
                     reduction -= 1;
                 }
+
+                // Hobbes #19: extra LMR for quiet-into-threatened-square +
+                // SEE<0 (computed pre-make_move above).
+                reduction += lmr_threat_blunder_extra;
 
                 // Reduce less when move gives check (Obsidian/Alexandria/Berserk pattern)
                 if gives_check {
