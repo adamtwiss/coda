@@ -355,17 +355,102 @@ Compact view:
 
 Seven items in the "missing or untested" column (after recognising Coda's existing T80 eval-bound filter as Hobbes-equivalent). None are individually high-Elo (most are +1-6 each), but they cluster naturally — a single training-time-experiment branch could combine WDL ramp + 2-stage + dual-activation FT and SPRT once.
 
-## Test plan (parked, blocked on factor variance)
+## Test plan — SB200 screening protocol (parked, blocked on factor variance)
 
-When stable training A/B is restored, test in this order:
+### Gating: non-factor variance must be bounded first
 
-1. **WDL Hobbes-ramp on V9** (`0.05 → 0.15` cosine + `0.20-0.30` tail). Bullet-config change. Expected 0 to +5 Elo. Standalone test.
-2. **Two-stage training on V9** (split last 200sb as constant-low-LR finetune). Bullet-config change. Expected +2 to +6 Elo. Standalone.
-3. **LR endpoint at 8.1e-6** (Hobbes-style). Compare with current V9 endpoint. Expected ±2 Elo, mostly informational about whether Hobbes's "higher endpoint" finding generalises.
-4. **Dual-activation FT** (Hobbes h-40 pattern). Architecture change. Expected +3 to +10. Standalone, requires re-train on retrained data.
-5. **Opening eval-bound filter in `coda datagen`** (5-line addition). Only relevant if/when self-play data path is adopted (Recipe E/F from `selfplay_data_strategy_2026-04-30.md`). T80 training is already covered by the existing `≤ 10000` load-time filter (see §Opening eval-bound filter above). Threshold for self-play has to be set in Coda's UCI scale, not naively ported as "1000".
+Factor SB800 instances measured ±22 Elo apart for identical configs. **No screening protocol works at this variance floor** — every probe-vs-control delta below ±15 Elo would be indistinguishable from seed noise. The first prerequisite is bounding non-factor variance via 4-seed control runs at SB200.
 
-Most of (1)-(3) can be done together on a single training run as a "Hobbes-style schedule" SPRT. The test budget would be 1-2 SB800 runs + SPRTs.
+Decision rule from non-factor variance result:
+- **σ ≤ 5 Elo**: 2-seed probes detect +5-10 Elo effects. Screening protocol below works as drafted.
+- **σ ≈ 10 Elo**: 3-4 seeds per probe needed; screening cost roughly doubles.
+- **σ ≥ 15 Elo**: SB200 screening impractical; step up to SB400 (relative variance halves) or accept only large-magnitude effects detectable.
+
+### Screening matrix (assumes σ ≤ 5 from variance investigation)
+
+SB200 ≈ ~11 GPU-hours per run; SB1000 production train is ~50-60h. Probes are pure config changes vs current Coda V9 recipe except where noted.
+
+| # | Probe | Change | Seeds | Status |
+|---|---|---|---|---|
+| **0** | Variance control | Current Coda V9 recipe at SB200 | **4** | **In flight (2026-05-01)** |
+| 1 | WDL ramp `0.05 → 0.30` | Linear ramp endpoint *higher* than fixed optimum 0.15 | 2 | Awaiting #0 |
+| 2 | Higher final LR | Cosine endpoint `8.1e-7` (vs current `2.43e-7`) | 2 | Awaiting #0 |
+| 3 | Dual-activation FT | Phased — see below | varies | Phase 1 awaiting #0 |
+| 4 | 2-stage Hobbes-shape | Three-WDL recipe — see below | 2 | Awaiting #0 |
+| 5 | LR endpoint bracket | 4-point upward sweep — see below | 1 each | After #2 if positive |
+
+### Probe 1 — WDL ramp `0.05 → 0.30` rationale
+
+**Why not `0 → 0.15`?** Coda's measured fixed optimum is `wdl=0.15`. A linear ramp `0 → 0.15` has time-averaged ~0.075 — *less* total WDL signal than current production. The Hobbes hypothesis is "low early, high late": late-stage WDL should exceed the fixed-blend optimum because residual capacity benefits from outcome-pattern learning once eval has converged.
+
+Ramp `0.05 → 0.30` gives:
+- Time-averaged WDL ≈ 0.175 (slightly above current w15 average)
+- Late-stage WDL = 0.30 (between Coda's fixed-optimum 0.15 and Hobbes stage-1 endpoint 0.4)
+- Brackets the optimum without entering Viridithas-basilisk-failure territory (regressions at WDL ≥ 0.4 in finetune)
+
+If single probe lands ambiguous: bracket sweep `0 → 0.15`, `0.05 → 0.30`, `0.10 → 0.40` (3 × 2 seeds = 6 runs) to localise the endpoint optimum.
+
+### Probe 3 — Dual-activation FT phased approach
+
+Dual-activation FT (Hobbes h-40 pattern: `crelu + csrelu` concatenated at FT output, double L1 input) requires both training and inference changes — significantly more work than other probes:
+
+- **Training**: Bullet config change to apply two activations and concatenate.
+- **Inference**: SIMD forward pass in `src/nnue.rs` needs both activations + concat before L1. Real engineering (~2-3 days).
+- **Net format**: header bit for "dual-activation FT" so loader picks correct path.
+- **Converter**: `coda convert-bullet --dual-activation` flag.
+
+**Phased screen:**
+1. **Phase 1 — training loss only.** Train one SB200 net with dual-activation FT, compare training-loss curve vs control's. Don't build inference. If end-of-cosine training loss is 5-10% lower than control: promote. If similar: drop without paying inference cost.
+2. **Phase 2 — full inference + SB800.** Only if Phase 1 promotes. Build inference path, train SB800, SPRT.
+
+Caveat: training loss is an imperfect proxy for Elo across activation changes (different loss surface shapes), but a much-better-than-nothing screen.
+
+### Probe 4 — Two-stage Hobbes recipe (corrected)
+
+Hobbes uses **three** WDL values across the training run, not two. Corrected spec for Coda:
+
+- **Stage 1 (SB150):** cosine LR `0.001 → 8.1e-6`, WDL linear ramp `0.05 → 0.20`
+- **Stage 2 (SB50):** constant LR `8.1e-7`, WDL constant `0.30`
+
+Stage 2 has WDL *higher* than stage-1 endpoint (matches Hobbes "stage 2 above stage 1 endpoint" pattern, scaled to Coda's lower fixed optimum).
+
+Optional simplification: keep same data corpus across both stages (vs Hobbes's recent-only stage-2 data slice). The LR + WDL changes are independently testable; data-slice change adds variance that should be bracketed separately.
+
+### Probe 5 — LR endpoint upward bracket
+
+Only run after #2 resolves with positive signal. 4-point upward sweep:
+`2.43e-7 (control), 7.5e-7, 2.4e-6, 7.5e-6`
+
+Single seed each (4 runs); compare against #0's 4-seed control mean. Goal: bracket the upward direction empirically since lowering past `2.43e-7` is known to regress.
+
+### Total cost estimate
+
+Probes 0+1+2+4 in parallel: 4 + 2 + 2 + 2 = 10 SB200 runs × ~11h = ~110 GPU-hours. On 4 GPUs in parallel ≈ 28h wall-clock.
+Probe 3 Phase 1 staged separately: 1 SB200 = ~11h.
+Probe 5 (if triggered): 4 SB200 runs = ~44h.
+
+Compared to running each as full SB1000 production runs (8 × 50-60h = ~440h), the screening protocol is ~3× cheaper at single-GPU and order-of-magnitude faster wall-clock with parallelism.
+
+### Decision rules per probe
+
+After multi-seed-averaged result vs multi-seed-averaged control:
+
+- **Δ ≥ +5 Elo, ≥1.5σ pooled:** strong signal. Promote to full SB800/SB1000 production candidate. SPRT vs current trunk.
+- **Δ in +2 to +5, ≥1σ:** weak positive. Re-probe at SB400 (relative variance halves) before committing to full-length.
+- **Δ in -2 to +2, low σ:** signal-not-there at this length. Could still be tail-only effect; flag for SB1000 confirmation only if mechanism is theoretically tail-sensitive (low-LR-tail effects, 2-stage finetune).
+- **Δ ≤ -2 Elo:** drop.
+
+### What's NOT screenable at SB200
+
+- **Length itself (SB800 vs SB1000)** can't be screened by anything shorter than SB800. Only test once a recipe is otherwise locked.
+- **Pure low-LR-tail effects** that depend on the late convergence phase. The +88 Elo SB400→SB800 V9 finding is exactly this class. Hobbes's stage-2 200sb finetune may be tail-only positive too. SB200 results for stage-2-bearing probes (#4) are advisory only — H1 means "promising at short", H0 means "drop or test at full length anyway".
+
+### Items NOT in the screening matrix
+
+- **Opening eval-bound filter for `coda datagen`**: T80 training is already covered by Coda's existing `≤ 10000` load-time filter (per the calibration discussion above). Self-play datagen filter is deferred until Recipe E/F is adopted, with threshold set in Coda's UCI scale not naively ported.
+- **Length 800 → 1000**: SB200 has nothing to say about it; needs full SB800-vs-SB1000 comparison.
+- **DFRC blend**: not strategic for Coda; Hobbes's +159 was DFRC-specific, +6 on standard isn't worth the data-pipeline change.
+- **fen-skipping**: defer until self-play scales corpus past 5-10B positions.
 
 ## Cross-cutting observations
 
