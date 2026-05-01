@@ -4008,12 +4008,20 @@ mod tests {
 
     /// Read/write index symmetry: for every correction-history table,
     /// corrected_eval reads the slot that update_correction_history
-    /// writes for the same position. This test populates a table via
-    /// a single update, reads via corrected_eval, and verifies the
-    /// expected delta appears.
+    /// writes for the same position.
+    ///
+    /// Tested two ways:
+    /// 1. Direct entry check — after one update, the per-table slots
+    ///    indexed by the test position must be non-zero, while a
+    ///    reference position's slots remain zero. Independent of
+    ///    `CORR_HIST_ERR_MAX` / `CORR_HIST_GRAIN_T` defaults.
+    /// 2. corrected_eval drift — after enough updates to escape
+    ///    integer-division flooring, corrected_eval(test_pos) must
+    ///    rise above raw, while corrected_eval(reference_pos) must
+    ///    stay near raw.
     ///
     /// Using a position with distinctive piece layout so hash
-    /// collisions with default zero-state are unlikely.
+    /// collisions with the all-zero-state are unlikely.
     #[test]
     fn corr_read_write_index_symmetry() {
         use crate::board::Board;
@@ -4022,33 +4030,62 @@ mod tests {
         let mut info = SearchInfo::new(16);
         info.silent = true;
 
-        // Distinctive position
+        // Distinctive position vs fresh startpos — different
+        // pawn_hash, non_pawn_key, minor_key, major_key.
         let board = Board::from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        let other = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
 
         let raw = 100;
         // Before any update: corrected == raw (all tables zero).
-        let corrected_before = corrected_eval(&info, &board, raw);
-        assert_eq!(corrected_before, raw, "zero tables must give corrected == raw");
+        assert_eq!(corrected_eval(&info, &board, raw), raw,
+            "zero tables must give corrected == raw");
 
-        // Apply a large positive update at depth=20.
+        // === Part 1: direct entry check after one update ===
         update_correction_history(&mut info, &board, raw + 400, raw, 20);
 
+        let stm = board.side_to_move as usize;
+        let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
+        let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
+        let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
+        let minor_idx = (board.minor_key[WHITE as usize] ^ board.minor_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
+        let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
+
+        // The slot indexed by the test position's hash must be non-zero
+        // in every per-position table. cont_corr is excluded — needs a
+        // last-move undo entry, which the test position doesn't have.
+        assert!(info.pawn_corr[stm][pawn_idx] != 0,
+            "pawn_corr slot must be written");
+        assert!(info.np_corr[stm][WHITE as usize][white_np_idx] != 0,
+            "white np_corr slot must be written");
+        assert!(info.np_corr[stm][BLACK as usize][black_np_idx] != 0,
+            "black np_corr slot must be written");
+        assert!(info.minor_corr[stm][minor_idx] != 0,
+            "minor_corr slot must be written");
+        assert!(info.major_corr[stm][major_idx] != 0,
+            "major_corr slot must be written");
+
+        // Apply repeatedly to escape integer-division flooring at
+        // current default grain (CORR_HIST_GRAIN_T=11). Each call
+        // bumps each slot by the gravity-clamped bonus; ~30 iterations
+        // is enough to push entries near steady-state given the small
+        // err clamp (CORR_HIST_ERR_MAX=1).
+        for _ in 0..50 {
+            update_correction_history(&mut info, &board, raw + 400, raw, 20);
+        }
+
+        // === Part 2: corrected_eval drift ===
         let corrected_after = corrected_eval(&info, &board, raw);
         assert!(
-            corrected_after > corrected_before,
-            "after positive-err update, corrected eval must rise: before={} after={}",
-            corrected_before, corrected_after
+            corrected_after > raw,
+            "after sustained positive-err updates, corrected eval must rise: \
+             raw={} corrected={}",
+            raw, corrected_after
         );
 
-        // Reading with a DIFFERENT board that hashes to the same
-        // indices is improbable; reading with a fresh board should
-        // NOT see the update (different position → different indices).
-        let other = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        // Reference position: pawn_hash / non_pawn_key / minor / major
+        // are entirely different from the test fen, so any match would
+        // be a 1/16384 random collision — extremely unlikely.
         let other_corrected = corrected_eval(&info, &other, raw);
-        // For startpos, pawn_hash/np/minor/major keys are entirely
-        // different from the test fen, so any match would be a random
-        // index collision at 1/16384 probability — extremely unlikely
-        // to drift more than ~0.5 cp.
         let drift = (other_corrected - raw).abs();
         assert!(drift < 100,
             "unrelated position should see near-zero drift, got {} (raw {})",
