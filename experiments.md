@@ -7577,3 +7577,86 @@ strict ponder-move validation.
 
 Branch: `fix/abandon-ponder-suppress-bestmove`. Merged in this commit
 (2b686df → ca3ff2a after rebase). Bench unchanged (966720).
+
+## 2026-05-01 — experiment/avx512-apply-threat-deltas +4.4 Elo H1 (#899)
+
+First Phase 4 win from the NPS leg plan
+(`docs/coda_vs_reckless_nps_2026-04-23.md`). Mechanical AVX-512 port
+of `apply_deltas_avx2` and `add_weight_rows_avx2` in
+`src/threats.rs` — the 17.98%-of-cycles hotspot identified by the
+2026-04-30 perf decomposition.
+
+### Mechanism
+
+- Pattern: 8 zmm registers × 32 i16 = 256 elements per chunk
+  (vs AVX2's 8 ymm × 16 i16 = 128). Half the outer-loop iterations
+  on hidden_size=768.
+- `_mm512_cvtepi8_epi16` for i8 → i16 widening (single VPMOVSXBW).
+- VPADDW / VPSUBW chunk add/sub on zmm.
+- Dispatch: AVX-512+BW > AVX-2 > scalar. AVX-2 path unchanged on
+  non-AVX-512 hosts → bit-exact bench on AVX-2 fleet.
+
+### Bench (5-run mean, prod net 1EF1C3E5, OB worker stopped)
+
+| T | avx2 path | avx512 path | Δ |
+|---|---:|---:|---:|
+| 1  | 1,236,651 | 1,284,209 | +3.85% |
+| 8  | 7,544,279 | 7,847,623 | +4.0%  |
+| 16 | 8,583,843 | 9,079,600 | +5.8%  |
+
+Single-engine multi-threaded bench (the deployment regime — single
+coda process with N threads) shows the win growing with thread count.
+Process-level parallelism in fastchess SPRT (separate processes per
+game pair) doesn't see this because each process has its own NNUE
+weight allocation.
+
+### SPRT (#899, OB, bounds [-3, 3])
+
+**+4.4 ±3.8 Elo H1 @ 5730 games, LLR 2.96.**
+
+Per-worker breakdown:
+- Worker 329 (Zeus, only AVX-512 host): 1716 games → **+6.66 Elo**
+- Other workers (AVX-2 only, 7 workers): 2920 games → ~+2.7 Elo
+  aggregate noise (true value 0 since AVX-2 path is unchanged)
+
+The aggregate +4.4 Elo H1 was carried entirely by Zeus. AVX-2-only
+workers contributed small-sample noise — bit-exact code paths
+mean their true Elo is 0 by construction.
+
+### Investigation lessons
+
+1. **Ablate-before-port** discipline (per
+   `feedback_cross_engine_feature_ports`): not directly applicable
+   here since the AVX-512 path was *missing* in Coda but present in
+   Reckless's `vectorized/avx512.rs`. Reckless ablation confirmed
+   the direction: their analogous `update_threats` runs at 1.82%
+   of cycles vs our 17.98%.
+
+2. **Bench-net mismatch trap.** First commit had `Bench: 1265486`
+   from local symlink pointing at older prod net (DAA4C54E). OB
+   built against the current prod net (1EF1C3E5, via `make net` ⇒
+   `net.txt`) and got 966720. Caught by OB worker bench
+   verification. Force-pushed amended commit. Discipline reminder:
+   verify `readlink net.nnue` matches `net.txt` before benching.
+
+3. **Local fastchess SPRT noise floor at STC ultra-bullet.** A
+   single 400-game read showed −10 Elo at concurrency=8 which I
+   over-interpreted as "process contention masks the win." Larger
+   samples (2000 games) at the same configuration converged to
+   0±5 Elo. The +6.66 Elo on Zeus from OB (1716 games at higher
+   concurrency throughput) was the cleaner read.
+
+4. **OB SPRT can't directly measure AVX-512 ports** on this fleet
+   without Zeus's contribution. Future AVX-512-only ports may need
+   bench-data-driven decisions or a dedicated AVX-512 host pool.
+
+### Follow-ons
+
+- **NEON variant** of the new register-tiling pattern. User to
+  mirror on MacBook for ARM hosts.
+- **`push_threats_for_piece`** (5.42% of cycles, next biggest
+  threat-family hotspot) via Reckless's setwise threat enumeration
+  (RAY_PERMUTATIONS / RAY_ATTACKERS_MASK tables). Multi-week port.
+
+Branch: `experiment/avx512-apply-threat-deltas`. Merged at `dbb4ab7`.
+Bench: 966720.
