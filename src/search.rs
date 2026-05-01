@@ -123,6 +123,8 @@ tunables!(
     (CORR_W_MINOR, 62, 30, 300, 13.5),
     (CORR_W_MAJOR, 99, 30, 300, 13.5),
     (CORR_W_CONT, 41, 30, 400, 18.5),
+    (CORR_W_COUNTER, 70, 30, 400, 18.0),
+    (CORR_W_FOLLOW_UP, 70, 30, 400, 18.0),
     (FH_BLEND_DEPTH, 3, 0, 8, 1.5),
     (HIST_BONUS_MULT, 325, 50, 400, 17.5),
     (HIST_BONUS_MAX, 1752, 500, 3000, 125.0),
@@ -311,6 +313,13 @@ const CORR_HIST_GRAIN: i32 = 8;       // Scaled with LIMIT: 256/32000 ≈ 8/1024
 const CORR_HIST_MAX: i32 = 4;         // Scaled: 128/32000 ≈ 4/1024
 const CORR_HIST_LIMIT: i32 = 1024;    // Consensus (SF, Viridithas, Obsidian)
 
+/// Prev-move correction-history table size (per stm). Indexed by the
+/// 16-bit encoded prev (countermove) or prev-prev (follow-up) move, masked
+/// to 12 bits. Hobbes pattern (`docs/hobbes_review_2026-05-01.md` T1.1):
+/// 4096 entries × 4 bytes × 2 stm × 2 tables = 64 KB total.
+const PREV_MOVE_CORR_SIZE: usize = 4096;
+const PREV_MOVE_CORR_MASK: usize = PREV_MOVE_CORR_SIZE - 1;
+
 /// Search limits.
 #[derive(Clone)]
 pub struct SearchLimits {
@@ -455,6 +464,14 @@ pub struct SearchInfo {
     major_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
     /// Continuation correction history: [piece][to_square]
     cont_corr: Box<[[i32; 64]; 12]>,
+    /// Countermove correction history (Hobbes T1.1):
+    /// [stm][encoded(prev_move) & 4095]. Captures eval-bias correlated
+    /// with the opponent's last move regardless of position context.
+    counter_corr: Box<[[i32; PREV_MOVE_CORR_SIZE]; 2]>,
+    /// Follow-up correction history (Hobbes T1.1):
+    /// [stm][encoded(prev_prev_move) & 4095]. Captures eval-bias
+    /// correlated with our previous-but-one move.
+    follow_up_corr: Box<[[i32; PREV_MOVE_CORR_SIZE]; 2]>,
     pub nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
     pub nnue_acc: Option<crate::nnue::NNUEAccumulator>,
     pub threat_stack: crate::threat_accum::ThreatStack,
@@ -507,6 +524,8 @@ impl SearchInfo {
             minor_corr: alloc_zeroed_box(),
             major_corr: alloc_zeroed_box(),
             cont_corr: alloc_zeroed_box(),
+            counter_corr: alloc_zeroed_box(),
+            follow_up_corr: alloc_zeroed_box(),
             nnue_net: None,
             nnue_acc: None,
             threat_stack: crate::threat_accum::ThreatStack::new(768), // max v9 accum size
@@ -662,6 +681,8 @@ impl SearchInfo {
         for row in self.minor_corr.iter_mut() { row.fill(0); }
         for row in self.major_corr.iter_mut() { row.fill(0); }
         for row in self.cont_corr.iter_mut() { row.fill(0); }
+        for row in self.counter_corr.iter_mut() { row.fill(0); }
+        for row in self.follow_up_corr.iter_mut() { row.fill(0); }
     }
 
     pub fn clear_pawn_hist(&mut self) {
@@ -863,6 +884,26 @@ pub fn build_dirty_piece(
     d
 }
 
+/// Indices into the prev-move correction-history tables.
+/// Returns `(counter_idx, follow_up_idx)`:
+///   counter_idx   = encoded(undo_stack[-1].mv) & 4095   (None at root)
+///   follow_up_idx = encoded(undo_stack[-2].mv) & 4095   (None at root or ply-1)
+/// Either is None if the corresponding move is NO_MOVE (null-move history slots).
+#[inline]
+fn prev_move_corr_indices(board: &Board) -> (Option<usize>, Option<usize>) {
+    let stk = &board.undo_stack;
+    let n = stk.len();
+    let counter = if n >= 1 {
+        let mv = stk[n - 1].mv;
+        if mv != NO_MOVE { Some((mv as usize) & PREV_MOVE_CORR_MASK) } else { None }
+    } else { None };
+    let follow_up = if n >= 2 {
+        let mv = stk[n - 2].mv;
+        if mv != NO_MOVE { Some((mv as usize) & PREV_MOVE_CORR_MASK) } else { None }
+    } else { None };
+    (counter, follow_up)
+}
+
 /// Compute the correction value alone (the centipawn delta corrhist would
 /// apply to raw eval). Used by SE-margin formulas that want to gate
 /// extension confidence on |correction| — when the eval has been
@@ -894,8 +935,17 @@ fn correction_value(info: &SearchInfo, board: &Board) -> i32 {
             } else { 0 }
         } else { 0 }
     } else { 0 };
+    let (counter_idx, follow_up_idx) = prev_move_corr_indices(board);
+    let counter_corr = counter_idx
+        .map(|idx| info.counter_corr[stm][idx] as i64)
+        .unwrap_or(0);
+    let follow_up_corr = follow_up_idx
+        .map(|idx| info.follow_up_corr[stm][idx] as i64)
+        .unwrap_or(0);
     let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
-        + minor_corr * tp(&CORR_W_MINOR) as i64 + major_corr * tp(&CORR_W_MAJOR) as i64 + cont_corr * tp(&CORR_W_CONT) as i64) / tp(&CORR_HIST_DIV) as i64;
+        + minor_corr * tp(&CORR_W_MINOR) as i64 + major_corr * tp(&CORR_W_MAJOR) as i64 + cont_corr * tp(&CORR_W_CONT) as i64
+        + counter_corr * tp(&CORR_W_COUNTER) as i64 + follow_up_corr * tp(&CORR_W_FOLLOW_UP) as i64
+        ) / tp(&CORR_HIST_DIV) as i64;
     (total_corr as i32) / tp(&CORR_HIST_GRAIN_T)
 }
 
@@ -937,9 +987,20 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
         } else { 0 }
     } else { 0 };
 
-    // Weighted blend: pawn 384, whiteNP 154, blackNP 154, minor 102, major 102, cont 128 = 1024
+    // Prev-move corrhist (Hobbes T1.1): countermove (ply-1) + follow-up (ply-2),
+    // both keyed by encoded prev-move masked to 12 bits.
+    let (counter_idx, follow_up_idx) = prev_move_corr_indices(board);
+    let counter_corr = counter_idx
+        .map(|idx| info.counter_corr[stm][idx] as i64)
+        .unwrap_or(0);
+    let follow_up_corr = follow_up_idx
+        .map(|idx| info.follow_up_corr[stm][idx] as i64)
+        .unwrap_or(0);
+
     let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
-        + minor_corr * tp(&CORR_W_MINOR) as i64 + major_corr * tp(&CORR_W_MAJOR) as i64 + cont_corr * tp(&CORR_W_CONT) as i64) / tp(&CORR_HIST_DIV) as i64;
+        + minor_corr * tp(&CORR_W_MINOR) as i64 + major_corr * tp(&CORR_W_MAJOR) as i64 + cont_corr * tp(&CORR_W_CONT) as i64
+        + counter_corr * tp(&CORR_W_COUNTER) as i64 + follow_up_corr * tp(&CORR_W_FOLLOW_UP) as i64
+        ) / tp(&CORR_HIST_DIV) as i64;
     let adjusted = raw_eval + (total_corr as i32) / tp(&CORR_HIST_GRAIN_T);
     adjusted.clamp(-MATE_SCORE + 100, MATE_SCORE - 100)
 }
@@ -993,6 +1054,15 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
                 }
             }
         }
+    }
+
+    // Prev-move correction (Hobbes T1.1)
+    let (counter_idx, follow_up_idx) = prev_move_corr_indices(board);
+    if let Some(idx) = counter_idx {
+        update_corr_entry(&mut info.counter_corr[stm][idx], err, weight, cap_div);
+    }
+    if let Some(idx) = follow_up_idx {
+        update_corr_entry(&mut info.follow_up_corr[stm][idx], err, weight, cap_div);
     }
 }
 
