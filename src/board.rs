@@ -421,8 +421,27 @@ impl Board {
     /// non-QS node.
     #[inline]
     pub fn attacks_by_color(&self, color: Color) -> Bitboard {
-        let c = color as usize;
         let occ = self.colors[0] | self.colors[1];
+        self.attacks_by_color_with_occ(color, occ)
+    }
+
+    /// Same as `attacks_by_color` but with the OPPONENT'S king transparent
+    /// to sliders (Starzix pattern). Used to build `enemy_attacks` for
+    /// threat-aware history / LMR / NMP gates: squares behind our king on
+    /// a slider's line should be marked as attacked, since the king might
+    /// flee there. Pure precision upgrade; pawn/knight/king behaviour
+    /// unchanged.
+    #[inline]
+    pub fn attacks_by_color_xray_opp_king(&self, color: Color) -> Bitboard {
+        let c = color as usize;
+        let opp_king_bb = self.pieces[KING as usize] & self.colors[c ^ 1];
+        let occ = (self.colors[0] | self.colors[1]) ^ opp_king_bb;
+        self.attacks_by_color_with_occ(color, occ)
+    }
+
+    #[inline]
+    fn attacks_by_color_with_occ(&self, color: Color, occ: Bitboard) -> Bitboard {
+        let c = color as usize;
         let mut attacks: Bitboard = 0;
 
         // Pawns (dir depends on color)
@@ -1099,6 +1118,41 @@ impl Board {
         fen.push_str(&format!(" {} {}", self.halfmove, self.fullmove));
 
         fen
+    }
+}
+
+#[cfg(test)]
+mod xray_tests {
+    use super::*;
+    fn init() { crate::init(); }
+
+    #[test]
+    fn xray_extends_slider_attacks_through_opp_king() {
+        init();
+        // White rook on h1, black king on h4. Without x-ray, white rook
+        // attacks h2/h3/h4 (blocked by black king). With x-ray (king
+        // transparent), it also attacks h5/h6/h7/h8.
+        let b = Board::from_fen("8/8/8/8/7k/8/8/K6R w - - 0 1");
+        let normal = b.attacks_by_color(WHITE);
+        let xray   = b.attacks_by_color_xray_opp_king(WHITE);
+        let extra  = xray & !normal;
+        // Squares h5..h8 expected as new x-ray attacks.
+        let expected: Bitboard = (1u64 << 39) | (1u64 << 47)
+                               | (1u64 << 55) | (1u64 << 63);
+        assert_eq!(extra, expected,
+            "x-ray should add h5/h6/h7/h8 (expected {:016x}, got {:016x})",
+            expected, extra);
+    }
+
+    #[test]
+    fn xray_no_change_when_no_slider_on_king_line() {
+        init();
+        // No slider lined up through enemy king → result identical.
+        let b = Board::from_fen("8/8/8/8/4k3/8/8/4K2N w - - 0 1");
+        assert_eq!(
+            b.attacks_by_color(WHITE),
+            b.attacks_by_color_xray_opp_king(WHITE)
+        );
     }
 }
 

@@ -1843,7 +1843,7 @@ fn negamax(
     // broader threat coverage → finer move-ordering distinctions.
     // Cost: 8-12 extra magic lookups per node, only at non-QS non-TT-cut nodes.
     let them_color = flip_color(board.side_to_move);
-    let enemy_attacks: u64 = board.attacks_by_color(them_color);
+    let enemy_attacks: u64 = board.attacks_by_color_xray_opp_king(them_color);
 
     // Pawn-specific threat count kept separate: RFP margin adjustment and
     // LMR_THREAT_DIV are tuned on the pawn-only scale.
@@ -3490,7 +3490,7 @@ fn quiescence_with_depth(
         // C8 audit LIKELY #19: evasion history reads now use enemy_attacks
         // (symmetric with beta-cutoff writes). Compute here since QS doesn't
         // otherwise need the bitboard.
-        let qs_enemy_attacks = board.attacks_by_color(
+        let qs_enemy_attacks = board.attacks_by_color_xray_opp_king(
             crate::types::flip_color(board.side_to_move)
         );
         // Clamp ply to the moved_piece_stack / moved_to_stack bounds.
