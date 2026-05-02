@@ -96,26 +96,26 @@ Worth one focused experiment: Coda's `wdl = 0.15` final → ramp `0.05 → 0.15`
 
 Bullet cosine decay: `lr_initial → lr_final` over N superbatches. The endpoint value matters far more than the initial value.
 
-Cross-engine endpoints, **ordered by magnitude** (Coda V9 is the lowest by ~10×):
+Cross-engine endpoints:
 
-| Engine / config | Final LR | × Coda V9 (2.43e-7) |
+| Engine / config | Final LR | × Coda V9 (2.43e-6) |
 |---|---:|---:|
-| **Coda V9 (current)** | **2.43e-7** | 1.0 |
-| Hobbes stage-2 constant (h-29+) | 8.1e-7 | **3.3×** |
-| Hobbes h-1 to h-7 cosine endpoint | 2.7e-6 | 11× |
-| Bullet examples (jw1912's reference) | 2.4e-6 | 10× |
-| Coda V5 | 5e-6 | 21× |
-| **Hobbes h-8+ cosine endpoint** | **8.1e-6** | 33× |
+| Hobbes stage-2 constant (h-29+) | 8.1e-7 | 0.33× |
+| **Coda V9 (current, Bullet default)** | **2.43e-6** | 1.0 |
+| Bullet examples (jw1912's reference) | 2.4e-6 | ≈ 1.0 |
+| Hobbes h-1 to h-7 cosine endpoint | 2.7e-6 | 1.1× |
+| Coda V5 | 5e-6 | 2.1× |
+| **Hobbes h-8+ cosine endpoint** | **8.1e-6** | 3.3× |
 
-**Per CLAUDE.md, Coda V5→V9 was a 20× drop in final LR (5e-6 → 2.43e-7), and the SB400→SB800 +88 Elo win is the load-bearing evidence** that V9's sparse threat features keep converging deep into the tail. So 2.43e-7 isn't arbitrary — it's measured to deliver real gain over higher endpoints.
+**Correction (2026-05-02):** earlier revisions of this doc claimed Coda V9 current was 2.43e-7 and that V5→V9 was a 20× drop. Both wrong. Recent V9 trains (including the T1 hl-screlu replicas) do **not** pass `--final-lr` and use Bullet's default `initial_lr * 0.3^5 = 2.43e-6`. V5→V9 was therefore a ~2× drop (5e-6 → 2.43e-6), not 20×.
 
-**Coda has tested lower than 2.43e-7 and it regressed.** This sets `2.43e-7` as the empirical floor on the *downward* direction. The optimum is at-or-above current.
+**Coda has tested lower than 2.43e-7 and it regressed.** That is the *empirical floor* on the downward direction — not the current operating point. Production runs at 2.43e-6, 10× above this floor.
 
-The optimum has **not been bracketed upward**. Tested points: `5e-6` (V5 baseline) and `2.43e-7` (V9 current). Untested: every point in between, and any point above `5e-6`. The Hobbes finding (h-8 measured +9.6 Elo from raising endpoint 2.7e-6 → 8.1e-6) is at a much smaller architecture (768→256, no hidden chain) so doesn't transfer directly, but it is a clean datapoint that **the optimum can sit substantially higher than a "lower is always better" heuristic suggests**.
+**Coda has *not* tested above 2.43e-6** at this architecture. The Hobbes finding (h-8 measured +9.6 Elo from raising endpoint 2.7e-6 → 8.1e-6) is at a much smaller architecture (768→256, no hidden chain) so doesn't transfer directly, but it's a clean datapoint that **the optimum can sit substantially higher than a "lower is always better" heuristic suggests**.
 
-Combined: Coda V9's optimum is somewhere in `[2.43e-7, 5e-6]` — a 20× range — and we've only tested the endpoints. The `5e-6` was empirically worse than `2.43e-7`, but neither bound is provably near the optimum. Could be `5e-7`, could be `2e-6`, could be anywhere between.
+V9's optimum is somewhere in `[2.43e-7, 8.1e-6]` and we've only tested endpoints adjacent to current (2.43e-6) plus the 2.43e-7 floor. The Hobbes h-8+ scale (8.1e-6 ≈ 3.3× current) is a particularly worth-testing point.
 
-**Test plan when variance lifts:** 4-point upward bracket `2.43e-7 (control), 7.5e-7, 2.4e-6, 7.5e-6`. Three extra full-length training runs. The Hobbes signal makes this one of the highest-leverage cheap experiments in the queue — if the optimum is at e.g. 1e-6, we've been over-converging on the threat-feature gradients and leaving Elo on the table.
+**Test plan when variance lifts:** 4-point upward bracket `2.43e-6 (control), 4.86e-6 (2× ≈ V5), 7.3e-6 (3× ≈ Hobbes h-8+), 1.2e-5 (5×)`. Three extra full-length training runs at multi-seed once variance is bounded. **Independent prior step:** the variance-probe runbook (`t4_lr_variance_runbook_2026-05-02.md`) tests whether a higher LR (3× ≈ 7.3e-6) reduces single-replica variance — this is upstream of the optimum search.
 
 ### Warmup duration
 
@@ -374,7 +374,7 @@ SB200 ≈ ~11 GPU-hours per run; SB1000 production train is ~50-60h. Probes are 
 |---|---|---|---|---|
 | **0** | Variance control | Current Coda V9 recipe at SB200 | **4** | **In flight (2026-05-01)** |
 | 1 | WDL ramp `0.05 → 0.30` | Linear ramp endpoint *higher* than fixed optimum 0.15 | 2 | Awaiting #0 |
-| 2 | Higher final LR | Cosine endpoint `8.1e-7` (vs current `2.43e-7`) | 2 | Awaiting #0 |
+| 2 | Higher final LR | Cosine endpoint `7.3e-6` (3× current `2.43e-6`, ≈ Hobbes h-8+ scale 8.1e-6) | 2 | Awaiting #0 |
 | 3 | Dual-activation FT | Phased — see below | varies | Phase 1 awaiting #0 |
 | 4 | 2-stage Hobbes-shape | Three-WDL recipe — see below | 2 | Awaiting #0 |
 | 5 | LR endpoint bracket | 4-point upward sweep — see below | 1 each | After #2 if positive |
@@ -418,10 +418,10 @@ Optional simplification: keep same data corpus across both stages (vs Hobbes's r
 
 ### Probe 5 — LR endpoint upward bracket
 
-Only run after #2 resolves with positive signal. 4-point upward sweep:
-`2.43e-7 (control), 7.5e-7, 2.4e-6, 7.5e-6`
+Only run after #2 resolves with positive signal. 4-point upward sweep from current:
+`2.43e-6 (control, current default), 4.86e-6 (2× ≈ V5), 7.3e-6 (3× ≈ Hobbes h-8+), 1.2e-5 (5×)`
 
-Single seed each (4 runs); compare against #0's 4-seed control mean. Goal: bracket the upward direction empirically since lowering past `2.43e-7` is known to regress.
+Single seed each (4 runs); compare against #0's 4-seed control mean. Goal: bracket the upward direction empirically. Lowering past `2.43e-7` (10× below current) is a known regression; this sweep tests *upward* only.
 
 ### Total cost estimate
 
