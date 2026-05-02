@@ -101,21 +101,22 @@ Cross-engine endpoints:
 | Engine / config | Final LR | × Coda V9 (2.43e-6) |
 |---|---:|---:|
 | Hobbes stage-2 constant (h-29+) | 8.1e-7 | 0.33× |
-| **Coda V9 (current, Bullet default)** | **2.43e-6** | 1.0 |
+| **Coda V5/V7/V8/V9 (all configs, Bullet default)** | **2.43e-6** | 1.0 |
 | Bullet examples (jw1912's reference) | 2.4e-6 | ≈ 1.0 |
 | Hobbes h-1 to h-7 cosine endpoint | 2.7e-6 | 1.1× |
-| Coda V5 | 5e-6 | 2.1× |
 | **Hobbes h-8+ cosine endpoint** | **8.1e-6** | 3.3× |
 
-**Correction (2026-05-02):** earlier revisions of this doc claimed Coda V9 current was 2.43e-7 and that V5→V9 was a 20× drop. Both wrong. Recent V9 trains (including the T1 hl-screlu replicas) do **not** pass `--final-lr` and use Bullet's default `initial_lr * 0.3^5 = 2.43e-6`. V5→V9 was therefore a ~2× drop (5e-6 → 2.43e-6), not 20×.
+**Correction (2026-05-02):** earlier revisions of this doc claimed Coda V5 used 5e-6 and V9 used 2.43e-7, with a 20× drop V5→V9. **All wrong.** Direct evidence from `training/configs/v5_768pw.rs:12`: "Low final LR (0.001 * 0.3^5 = 2.43e-6): +47 Elo vs old 0.0001". Every Coda training config (v5, v7, v8, v9) defaults to `initial_lr * 0.3^5 = 2.43e-6` — same Bullet-default endpoint across all architectures. There has been **no V5→V9 LR drop**.
 
-**Coda has tested lower than 2.43e-7 and it regressed.** That is the *empirical floor* on the downward direction — not the current operating point. Production runs at 2.43e-6, 10× above this floor.
+**The +47 Elo win** (CLAUDE.md "low final LR is critical") was migrating from `0.0001` (a too-high old tail) to `2.43e-6`. It established the operating floor, not a V5-specific value.
 
-**Coda has *not* tested above 2.43e-6** at this architecture. The Hobbes finding (h-8 measured +9.6 Elo from raising endpoint 2.7e-6 → 8.1e-6) is at a much smaller architecture (768→256, no hidden chain) so doesn't transfer directly, but it's a clean datapoint that **the optimum can sit substantially higher than a "lower is always better" heuristic suggests**.
+**Coda has tested lower than 2.43e-7 and it regressed** — empirical floor on the downward direction, ~10× below current.
 
-V9's optimum is somewhere in `[2.43e-7, 8.1e-6]` and we've only tested endpoints adjacent to current (2.43e-6) plus the 2.43e-7 floor. The Hobbes h-8+ scale (8.1e-6 ≈ 3.3× current) is a particularly worth-testing point.
+**Coda has *not* tested above 2.43e-6 at any architecture.** The Hobbes h-8+ datapoint (8.1e-6 = 3.3× current) is the only cross-engine evidence that higher works *somewhere*; that was at a smaller architecture (768→256, no hidden chain) so doesn't transfer cleanly, but it argues **the optimum can sit substantially higher than a "lower is always better" heuristic suggests**.
 
-**Test plan when variance lifts:** 4-point upward bracket `2.43e-6 (control), 4.86e-6 (2× ≈ V5), 7.3e-6 (3× ≈ Hobbes h-8+), 1.2e-5 (5×)`. Three extra full-length training runs at multi-seed once variance is bounded. **Independent prior step:** the variance-probe runbook (`t4_lr_variance_runbook_2026-05-02.md`) tests whether a higher LR (3× ≈ 7.3e-6) reduces single-replica variance — this is upstream of the optimum search.
+V9's optimum is somewhere in `[2.43e-7, 8.1e-6+]` and we've only tested at the 2.43e-6 default plus the 2.43e-7 floor. The Hobbes h-8+ scale (8.1e-6 ≈ 3.3× current) is a particularly worth-testing point.
+
+**Test plan when variance lifts:** 4-point upward bracket `2.43e-6 (control), 4.86e-6 (2×), 7.3e-6 (3× ≈ Hobbes h-8+), 1.2e-5 (5×)`. Three extra full-length training runs at multi-seed once variance is bounded. **Independent prior step:** the variance-probe runbook (`t4_lr_variance_runbook_2026-05-02.md`) tests whether a higher LR (3× ≈ 7.3e-6) reduces single-replica variance — this is upstream of the optimum search.
 
 ### Warmup duration
 
