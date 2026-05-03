@@ -1529,9 +1529,20 @@ pub unsafe fn apply_threat_deltas(
     #[cfg(feature = "profile-threats")]
     crate::threats::apply_stats::record(deltas.len());
 
-    // Collect valid add/sub indices (stack-allocated, no heap)
-    let mut adds = [0usize; MAX_THREAT_DELTAS];
-    let mut subs = [0usize; MAX_THREAT_DELTAS];
+    // Collect valid add/sub indices (stack-allocated, no heap). Use
+    // MaybeUninit to skip the 2 KB zero-init per array — only [..n_adds]
+    // and [..n_subs] are written/read. Fired twice per push (one per
+    // perspective) at ~600k pushes per bench = ~2.4 GB of avoided
+    // memset traffic. Same pattern that gave +3% bench in
+    // forward_with_l1_pairwise_inner.
+    let mut adds_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS]>::uninit();
+    let mut subs_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS]>::uninit();
+    let adds_full: &mut [usize] = unsafe {
+        std::slice::from_raw_parts_mut(adds_storage.as_mut_ptr() as *mut usize, MAX_THREAT_DELTAS)
+    };
+    let subs_full: &mut [usize] = unsafe {
+        std::slice::from_raw_parts_mut(subs_storage.as_mut_ptr() as *mut usize, MAX_THREAT_DELTAS)
+    };
     let mut n_adds = 0usize;
     let mut n_subs = 0usize;
     for delta in deltas {
@@ -1544,11 +1555,11 @@ pub unsafe fn apply_threat_deltas(
             pov,
         );
         if idx < 0 || (idx as usize) >= num_threats { continue; }
-        if delta.add() { adds[n_adds] = idx as usize; n_adds += 1; }
-        else { subs[n_subs] = idx as usize; n_subs += 1; }
+        if delta.add() { adds_full[n_adds] = idx as usize; n_adds += 1; }
+        else { subs_full[n_subs] = idx as usize; n_subs += 1; }
     }
-    let adds = &adds[..n_adds];
-    let subs = &subs[..n_subs];
+    let adds = &adds_full[..n_adds];
+    let subs = &subs_full[..n_subs];
 
     // Prefetch weight rows for upcoming deltas (hide L3 latency)
     #[cfg(target_arch = "x86_64")]
