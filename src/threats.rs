@@ -2809,4 +2809,100 @@ mod tests {
         eprintln!("compact encoder: {} live indices / {} total ({} phantom slots)",
             live, total, total - live);
     }
+
+    /// Fuzzer cross-check on real positions: `enumerate_threats` invoked
+    /// once with the classic flag and once with the compact flag must
+    /// produce the SAME number of features per position, and the
+    /// classic→compact mapping observed across all real positions must
+    /// be consistent (same classic idx always maps to the same compact
+    /// idx) and injective (no two distinct classic indices ever map to
+    /// the same compact idx).
+    ///
+    /// This exercises the runtime dispatch path end-to-end: the atomic
+    /// flag, `threat_index`'s branch, and the COMPACT_* tables, on the
+    /// kind of inputs that happen during real search.
+    #[test]
+    fn dispatch_classic_vs_compact_real_positions() {
+        crate::init();
+        let saved = is_compact_encoding();
+
+        let fens = [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            "2r3k1/pp3ppp/2n1b3/3pP3/3P4/2NB4/PP3PPP/R4RK1 w - - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "r1bqkb1r/pp1n1ppp/2p1pn2/3p4/2PP4/2N1PN2/PP3PPP/R1BQKB1R b KQkq - 0 6",
+        ];
+
+        let total = num_threat_features_classic();
+        let mut classic_to_compact: Vec<i32> = vec![-1; total];
+        let mut total_features = 0usize;
+
+        for fen in &fens {
+            let mut board = crate::board::Board::new();
+            board.set_fen(fen);
+            let occ = board.colors[0] | board.colors[1];
+            for &pov in &[WHITE, BLACK] {
+                let king_sq = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
+                let mirrored = (king_sq % 8) >= 4;
+
+                // Drive both encoders in lockstep: enumerate once via
+                // classic flag, once via compact flag. Same call order in
+                // both runs (enumerate_threats is deterministic), so we
+                // can pair classic_set[i] with compact_set[i] to recover
+                // the per-call mapping.
+                set_compact_encoding(false);
+                let mut classic_set: Vec<usize> = Vec::new();
+                enumerate_threats(
+                    &board.pieces, &board.colors, &board.mailbox,
+                    occ, pov, mirrored,
+                    |idx| classic_set.push(idx),
+                );
+
+                set_compact_encoding(true);
+                let mut compact_set: Vec<usize> = Vec::new();
+                enumerate_threats(
+                    &board.pieces, &board.colors, &board.mailbox,
+                    occ, pov, mirrored,
+                    |idx| compact_set.push(idx),
+                );
+
+                assert_eq!(classic_set.len(), compact_set.len(),
+                    "feature count diverges at fen={} pov={:?} mir={}: classic={} compact={}",
+                    fen, pov, mirrored, classic_set.len(), compact_set.len());
+
+                for (c, &m) in classic_set.iter().zip(compact_set.iter()) {
+                    let mi = m as i32;
+                    if classic_to_compact[*c] < 0 {
+                        classic_to_compact[*c] = mi;
+                    } else {
+                        assert_eq!(classic_to_compact[*c], mi,
+                            "non-deterministic classic→compact mapping at classic={} fen={} pov={:?}: prior={} now={}",
+                            c, fen, pov, classic_to_compact[*c], mi);
+                    }
+                }
+
+                total_features += classic_set.len();
+            }
+        }
+
+        // Injectivity check: no two distinct classic indices map to the
+        // same compact idx. A collision would mean compact aliases real
+        // (position-emitted) features, which silently corrupts inference.
+        let mut compact_to_classic: std::collections::HashMap<i32, i32> = std::collections::HashMap::new();
+        for (c, &m) in classic_to_compact.iter().enumerate() {
+            if m < 0 { continue; }
+            if let Some(&prev) = compact_to_classic.get(&m) {
+                panic!("compact idx {} aliased by two distinct real-position classic indices: {} and {}",
+                    m, prev, c);
+            }
+            compact_to_classic.insert(m, c as i32);
+        }
+
+        eprintln!("real-position fuzzer: {} feature emissions, {} unique classic indices observed",
+            total_features, compact_to_classic.len());
+
+        set_compact_encoding(saved);
+    }
 }
