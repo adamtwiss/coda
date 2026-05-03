@@ -1,5 +1,34 @@
 # Coda vs Reckless NPS Investigation — 2026-04-23
 
+> **CORRECTION 2026-05-03 — load-bearing claim retracted.** Multiple
+> sections of this doc claimed Reckless's NNUE memory footprint is
+> "~100× smaller" than Coda's, attributed to Reckless not having a
+> 49 MB threat matrix. **This is false.** Reckless's
+> `Parameters::ft_threat_weights` is `Aligned<[[i8; L1_SIZE]; 66864]>`
+> = **49.0 MB, byte-identical to Coda's**. The original comparison
+> erroneously contrasted Reckless's *PSQ feature matrix* (~11 MB) with
+> Coda's *threat matrix* (49 MB). Total NNUE footprint is similar
+> (Reckless ~60 MB, Coda ~67 MB; Coda's bucket count of 16 vs
+> Reckless's 10 accounts for the +7 MB).
+>
+> **Surviving claims after the correction:**
+>
+> - The 18.8× cache-references gap and 54× L1-dcache-miss-rate gap are
+>   real and measured. They are NOT caused by total NNUE size.
+> - The most likely cause is `AccEntry` layout (Coda: 7 heap-allocated
+>   `Vec<i16>` per ply, ~1800 scattered allocations; Reckless: inline
+>   `[[i16; L1_SIZE]; 2]` arrays in a single `Box<[PstAccumulator]>`
+>   slice — one contiguous buffer). Layout difference is verified;
+>   per-callsite L1-miss decomposition still pending.
+> - Lever #1 ("training-side memory shrink to fit L3") is downgraded:
+>   it would still help Coda (smaller working set is generally better)
+>   but **not because Reckless avoids the same problem** — they live
+>   with the same matrix.
+>
+> Affected sections marked inline below with `[CORRECTION 2026-05-03]`.
+> See also `docs/nps_structural_findings_2026-05-01.md` "Update
+> 2026-05-01 PM" for the related sparse-first-iteration retraction.
+
 ## Purpose
 
 We are ~2× slower than Reckless at v9 NPS (about 75 Elo after accounting for
@@ -570,9 +599,14 @@ That's a real measurement, BUT:
 - **Reckless uses exactly this pattern successfully** — their
   `update_pst_accumulator` does `for i in accurate..self.index { ... }`
   to replay from the nearest accurate ancestor.
-- Reckless's per-feature weight footprint is **much smaller** than
-  Coda's (the 49 MB threat matrix — see sparsity §§). Their replay is
-  cache-hot; ours likely spills to DRAM per replayed delta.
+- ~~Reckless's per-feature weight footprint is much smaller than Coda's
+  (the 49 MB threat matrix). Their replay is cache-hot; ours likely
+  spills to DRAM per replayed delta.~~ **[CORRECTION 2026-05-03]:
+  Reckless has the SAME 49 MB threat matrix
+  (`ft_threat_weights: Aligned<[[i8; L1_SIZE]; 66864]>`). Their replay
+  may still be cache-hot relative to ours, but the cause would be the
+  contiguous `[[i16; L1_SIZE]; 2]` accumulator layout (vs Coda's
+  scattered Vec<i16>), not a smaller weight matrix.**
 - So "walk-back is 3.5× slower" may be specific to Coda's current
   memory layout, not inherent to the approach.
 
@@ -587,7 +621,10 @@ the following holds:
 2. **Post-sparsity retry**: once the threat weight matrix shrinks
    enough to fit in L3 (via aggressive L1 reg or width reduction —
    see §§ sparsity), the replay is no longer DRAM-bound. Walk-back's
-   cost drops below Finny-refresh's, matching Reckless's regime.
+   cost drops below Finny-refresh's. **[CORRECTION 2026-05-03]:
+   removed "matching Reckless's regime" — Reckless lives with the
+   same 49 MB matrix, so this isn't about catching up to them. It's
+   about reducing Coda's absolute cache pressure on small-L3 hosts.**
 
 Both are reasonable follow-ups. Option 1 is cheap (half-day) and
 isolates the question of "is walk-back itself slow or was the
@@ -642,43 +679,79 @@ today's L1-miss-rate finding. Summary of its key measurements:
   `experiment/l1-inference-compact`. Bench-neutral. Ready to merge;
   waiting on a sparser net to justify.
 
-**This explains the 15.72% L1 miss rate finding directly.** The gap
-to Reckless's 0.55% isn't magical cache-friendliness in their inference
-code — it's the **weight matrix being the wrong size**:
-- Reckless: ~800 features × ~1 KB row × 50% density ≈ 400 KB
-  (fits entirely in L2)
-- Coda v9: 49 MB (spills out of L3 on most machines)
+> **[CORRECTION 2026-05-03] — this section's central claim is FALSE.**
+>
+> The original text below claimed Reckless's NNUE weight footprint is
+> ~100× smaller than Coda's (~400 KB vs 49 MB), framed as Reckless not
+> having a 49 MB threat matrix at all. This is wrong: Reckless's
+> `Parameters` struct contains `ft_threat_weights: Aligned<[[i8;
+> L1_SIZE]; 66864]>` = **49.0 MB, identical to Coda's**. The original
+> comparison contrasted Reckless's *PSQ feature matrix* with Coda's
+> *threat matrix* — different components.
+>
+> **What still survives:**
+>
+> - L1 miss rate gap is real and large (Coda 15.7% vs Reckless 0.55%)
+>   — that measurement stands.
+> - The cause cannot be total NNUE size (similar). The remaining
+>   structural difference is Coda's heap-Vec `AccEntry` layout vs
+>   Reckless's inline-array contiguous accumulator stack. See
+>   "Inference-side cache-friendliness" below — that section's
+>   AccEntry-flatten lever survives unchanged.
+> - Per-callsite L1-miss decomposition has not yet been done; this is
+>   the next experiment to confirm where the misses actually live.
+>
+> **What is dropped from the priority list:** the framing that Coda's
+> 49 MB matrix is the bottleneck-vs-Reckless. Training-side memory
+> shrinking might still help Coda's absolute cache pressure on
+> small-L3 hosts, but **the gap to Reckless cannot be explained or
+> closed by it**.
 
-The threat weight matrix is the single largest NNUE allocation, and
+~~**This explains the 15.72% L1 miss rate finding directly.** The gap
+to Reckless's 0.55% isn't magical cache-friendliness in their inference
+code — it's the weight matrix being the wrong size:~~
+
+~~- Reckless: ~800 features × ~1 KB row × 50% density ≈ 400 KB
+  (fits entirely in L2)~~
+~~- Coda v9: 49 MB (spills out of L3 on most machines)~~
+
+~~The threat weight matrix is the single largest NNUE allocation, and
 it's accessed with a heavy-tailed pattern that exercises the cold
 parts. Reckless's NNUE footprint is ~100× smaller; every probe stays
-in L2.
+in L2.~~
 
-### Implication for NPS priorities (major revision)
+### Implication for NPS priorities — revised again 2026-05-03
 
-This recasts priorities substantially. The cache-miss finding is NOT
-fixable on the inference side alone — the matrix is simply too big.
-Real NPS wins from memory footprint require **training-side changes**:
+The original "major revision" below assumed Reckless's smaller
+footprint as the explanation for the 0.55% miss rate. With that
+premise refuted, the priorities are themselves revised:
 
-**Training-side levers** (bigger expected NPS impact):
+**Training-side levers** (still potentially valuable for absolute
+cache pressure on Coda, but NOT framed as catching up to Reckless):
 1. **Aggressive L1 regularisation (λ = 1e-4 to 1e-3) retrain** —
-   aim to drive 40-60% of feature rows to zero. At 15-20 MB matrix
-   we cross the L3 boundary on most machines → **step-function NPS
-   gain of 10-30% on memory-constrained hosts** (smaller on beefy
-   ones like Zen 5). Requires one training cycle (~4h GPU). Elo
-   risk from killed marginal features; tune λ conservatively.
-2. **Accumulator width 768 → 640** — 17% memory reduction brute-force.
-   Full retrain, uncertain Elo cost, combines with (1).
-3. **Piece-interaction feature redesign** — eliminate structurally
-   impossible features upfront in the feature space. ~20-30%
-   reduction, bigger refactor.
+   could shrink Coda's 49 MB toward 15-20 MB and cross L3 boundaries
+   on small-cache hosts. **NPS gain unknown** (the original 10-30%
+   estimate assumed this was the primary lever vs Reckless; with that
+   premise wrong, the realistic gain is uncertain). Still worth
+   trying as a generic memory-pressure lever, but expectation reset.
+2. **Accumulator width 768 → 640** — 17% memory reduction. Same
+   uncertainty.
+3. **Piece-interaction feature redesign** — same.
 
-**Inference-side levers** (smaller NPS impact, lower risk):
+**Inference-side levers** (these survive intact and gain priority):
 4. **Ship the load-time compact** (`experiment/l1-inference-compact`)
    — ~4 MB on the current net, bench-neutral. Essentially free.
-   Doesn't need waiting for sparser nets.
 5. **Eval-only TT writeback** (Hercules's idea) — reduces evals/node,
-   not per-eval cost. Orthogonal to the cache issue.
+   not per-eval cost. Orthogonal to the cache issue. (Already landed
+   as Coda #713, +14.7 Elo.)
+
+**The actual structural lever vs Reckless** (per `docs/nps_structural_findings_2026-05-01.md`
+and the AccEntry-flatten section below):
+- **Flatten `AccEntry`** to inline arrays, mirroring Reckless's
+  `Box<[PstAccumulator]>` of `Aligned<[[i16; L1_SIZE]; 2]>`. This is
+  the only verified structural difference in memory layout that
+  survives the threat-matrix-size correction. **Best single candidate
+  for closing the L1-miss-rate gap.**
 
 Dropping from the old priority list:
 - **Byteboard splat** — Coda's make+unmake is already faster than
@@ -690,7 +763,11 @@ Revising my earlier "can't fix L1 misses on the inference side"
 claim. Even when the threat matrix fits in L3 (big-cache hosts like
 Threadripper, M3 Pro/Max, server EPYC), **how** the data is accessed
 still determines cache hit rate. Reckless's 0.55% miss rate reflects
-both (a) smaller footprint AND (b) deliberate layout choices.
+~~both (a) smaller footprint AND (b) deliberate layout choices.~~
+**[CORRECTION 2026-05-03]: (a) is wrong — Reckless has the same 49 MB
+matrix. The 0.55% miss rate is purely (b), deliberate layout choices
+in the accumulator stack.** That makes the cache-hygiene levers below
+the *primary* — not the secondary — explanation.
 
 Concrete inference-side levers we haven't tried:
 
@@ -803,28 +880,38 @@ cycles, they don't need waiting for sparser nets. They specifically
 address the "how data is accessed" dimension, which stays relevant
 even on machines where total footprint isn't the bottleneck.
 
-### Revised takeaway
+### Revised takeaway — re-revised 2026-05-03
 
 - Walk-back PSQ: **previous attempt confounded**; clean re-implementation
   (minimal overhead, isolate walk-back from struct/layout churn) is
-  worth half a day. Post-sparsity retry also makes sense.
+  worth half a day.
 - Per-pov `computed` tracking: **already done** (a9f6e1f).
 - Rebuild-rate gap: smaller than headline once counted per-pov.
-- **Current ranked NPS levers** (combining all three docs):
-  1. **Training-side memory shrink**: aggressive L1 reg (1e-4 to 1e-3),
-     or width reduction 768→640, to cross the 32 MB L3 boundary.
-     **Step-function NPS gain on cache-constrained hosts.**
-  2. **Load-time compact merge** (`experiment/l1-inference-compact` →
-     trunk): ~4 MB free today, more with sparser nets later.
-  3. **Clean-re-try PSQ walk-back** with no hot-path overhead —
+- **Current ranked NPS levers** (after the 2026-05-03 threat-matrix-
+  size correction; Lever #1 promoted, old #1 demoted):
+  1. **Flatten `AccEntry` to inline arrays** (mirroring Reckless's
+     `Box<[PstAccumulator]>` of `Aligned<[[i16; L1_SIZE]; 2]>`). Only
+     verified structural memory-layout difference vs Reckless. Best
+     candidate for closing the 54× L1-dcache-miss-rate gap. Half day.
+  2. **Eval-only TT writeback** (Hercules): reduce evals/node.
+     **Already landed (Coda #713, +14.7 Elo).** Kept in list for
+     historical reference.
+  3. **LMP direct-check exemption** (Hercules, separate): +9.46 LTC
+     Elo, shrinks tree → fewer eval calls.
+  4. **Load-time compact merge** (`experiment/l1-inference-compact`
+     → trunk): ~4 MB free today, more with sparser nets later.
+  5. **Clean-re-try PSQ walk-back** with no hot-path overhead —
      isolate whether the 3.5×-slower claim survives when you remove
      the struct/layout confound. Half day.
-  4. **Eval-only TT writeback** (Hercules): reduce evals/node.
-  5. **LMP direct-check** (Hercules, separate): +9.46 LTC Elo,
-     shrinks tree → fewer eval calls.
+  6. **Training-side memory shrink** (was #1): aggressive L1 reg or
+     width reduction. **Demoted** because the original "step-function
+     NPS gain" was framed as catching up to Reckless's smaller matrix
+     — Reckless has the same matrix. Could still help Coda's
+     absolute cache pressure on small-L3 hosts; magnitude uncertain.
 
-#1 has the biggest potential NPS step but needs a training run. #2-5
-are all incremental wins and independently testable.
+#1 is now the highest-leverage lever and has bounded risk (no retrain,
+no algorithm change, half-day refactor). #6 retains optionality but
+shouldn't be sequenced ahead of #1.
 
 ## What we didn't measure
 

@@ -1,5 +1,35 @@
 # NPS Structural Findings — 2026-05-01
 
+> **CORRECTIONS 2026-05-03 — two load-bearing claims retracted.**
+> The body of this doc presents two hypotheses as the structural
+> answer; both have been refuted by subsequent measurement. Read the
+> "Update 2026-05-01 PM" section at the bottom and the additional
+> "Update 2026-05-03" notes inline before acting on the lever
+> ranking. The headline measurements (1.79× more instructions per
+> eval, 18.8× more cache-references, 54× worse L1 miss rate) are
+> still correct and load-bearing — only the *causes* attributed
+> below are wrong.
+>
+> 1. **Sparse-first vs dense-first L1 matmul** is NOT the structural
+>    lever. Production chunk-level density is ~73% non-zero, not 11%
+>    as my microbench synthesised. Sparse iteration only saves ~1.4×
+>    theoretical work, not 9×. Reckless's `propagate_l1` may itself
+>    be slower per-call than Coda's `dense_l1_avx512_vnni`. See
+>    "Update 2026-05-01 PM" below.
+> 2. **Reckless's "compact memory footprint" claim** (line 210, "96 KB
+>    L1 weights … 5 KB working set") was framed as a structural
+>    advantage Coda lacked. **It's the same on both engines** at the
+>    matmul step. Reckless's full NNUE has the same 49 MB threat
+>    matrix as Coda — the cross-engine memory-size advantage cited
+>    in `coda_vs_reckless_nps_2026-04-23.md` was wrong (corrected
+>    there 2026-05-03).
+>
+> **What survives:** the AccEntry layout difference (Coda's 7
+> heap-Vec scatter vs Reckless's `Box<[PstAccumulator]>` of inline
+> `[[i16; L1_SIZE]; 2]` arrays) — verified, plausibly the dominant
+> cause of the 54× L1-miss-rate gap, but **per-callsite L1-miss
+> decomposition still pending**.
+
 Companion to `docs/coda_vs_reckless_nps_2026-04-23.md` (decomposition + lever
 ranking) and `docs/reckless_commit_catalog_2026-05-01.md` (199-commit walk).
 This doc is the answer to the question we kept circling: **after porting
@@ -158,6 +188,15 @@ shrink that, the gap is structural.
 
 ## Structural diff: how the L1 matmul actually differs
 
+> **[CORRECTION 2026-05-03]** — this section frames sparse-first vs
+> dense-first as THE structural lever. Subsequent measurement
+> (Step C-cheap, see the "Update 2026-05-01 PM" section at the
+> bottom) refuted that framing: production chunk density is ~73%
+> non-zero, the per-call ratio at that density is ~1.4× not ~9×, and
+> in production the integration was bench-NEGATIVE −4%. Read this
+> section as historical context for the framing we tried, not as
+> active recommendation.
+
 This is the structural finding. Both engines do "pairwise-CReLU pack →
 int8 L1 matmul → activation → L2 → output". The diff is in the **shape
 of the int8 L1 matmul** in the middle.
@@ -258,39 +297,64 @@ Properties:
 
 ### Quantifying the per-call gap
 
-Per L1 matmul call on v9 production (h16x32 net, 89% input sparsity per
-`v9_sparsity_investigation_2026-04-19.md`):
+> **[CORRECTION 2026-05-03] — sparsity premise is wrong.** The "89%
+> input sparsity" in this table is feature-row activation sparsity
+> from `v9_sparsity_investigation_2026-04-19.md`. The L1 matmul
+> input (post-pairwise-CReLU 4-byte chunks) is **only ~27% sparse**
+> in production (140/192 non-zero). Numbers below assume the wrong
+> sparsity figure; treat as superseded.
 
-| Per L1 matmul call | Reckless | Coda dense | Ratio |
+Per L1 matmul call on v9 production (h16x32 net, ~~89% input sparsity per
+`v9_sparsity_investigation_2026-04-19.md`~~ ← actual production density
+73% non-zero, see "Update 2026-05-01 PM" below):
+
+| Per L1 matmul call | Reckless (assumed at synthetic 89% sparse) | Coda dense | Ratio (assumed) |
 |---|---:|---:|---:|
 | Inputs iterated | ~85 (89% sparse skip) | 768 (all) | 9× more in Coda |
 | Weight memory touched | ~5 KB | ~24 KB | 4.8× more |
 | Inner-loop iterations | ~43 (pair-unrolled) | 768 | 18× more |
 
-That ~9× per-call work ratio in the matmul is the dominant contributor
-to the observed 1.79× total instruction-count gap. Combined with smaller
-factors (dispatch overhead, more accumulator fields, branch overhead from
-the 10-arm dispatch tree), the structural gap accounts for essentially
-all of the 1.79×.
+~~That ~9× per-call work ratio in the matmul is the dominant contributor
+to the observed 1.79× total instruction-count gap.~~ **[CORRECTION
+2026-05-03]: at production's 73% non-zero density the per-call ratio
+is ~1.4×, not 9×. Sparse iteration is not the dominant contributor;
+the 1.79× instruction-count gap must come from elsewhere — most
+likely AccEntry layout + dispatch-tree code shape.**
 
 ### Why this produces both gaps simultaneously
 
-The 1.79× instruction count gap and the ~19× cache-references gap are
-not two separate problems. They're two symptoms of dense-first iteration:
+> **[CORRECTION 2026-05-03] — this section's framing is REFUTED.** The
+> table below claims dense-first iteration is the unifying mechanism
+> for both the 1.79× instruction gap and the 19× cache-refs gap. The
+> Step C-cheap experiment showed it's not — in production at ~73%
+> chunk density, sparse-first iteration is bench-NEGATIVE −4%.
+>
+> **Best current understanding** (still requires per-callsite L1-miss
+> decomposition to confirm):
+>
+> | Symptom | Most-likely mechanism |
+> |---|---|
+> | 1.79× instructions | `#[target_feature]` inline barriers preventing whole-pipeline optimisation + 10-arm dispatch tree in `forward_with_l1_pairwise_inner` body; runtime dispatch overhead. NOT sparse-vs-dense matmul work. |
+> | 19× cache-refs / 16× L1-miss-rate | Coda's `AccEntry` layout (7 heap-allocated `Vec<i16>` per ply, ~1800 scattered allocations) vs Reckless's `Box<[PstAccumulator]>` of inline `[[i16; L1_SIZE]; 2]` arrays (one contiguous slice). NOT total NNUE size — both engines have the same 49 MB threat matrix. |
+>
+> The table immediately below is the original (refuted) framing,
+> retained for context.
 
-| Symptom | Mechanism |
+~~The 1.79× instruction count gap and the ~19× cache-references gap are
+not two separate problems. They're two symptoms of dense-first iteration:~~
+
+| Symptom | ~~Mechanism (refuted 2026-05-03)~~ |
 |---|---|
-| **1.79× instructions** | Dense matmul does ~9× more multiply-accumulate work (768 inputs vs ~85 NNZ). Even highly vectorised, the work is ~9× larger; SIMD width and pair-unrolling close some of that, leaving the observed 1.8×. |
-| **19× cache-references / 16× L1-miss-rate** | Dense access pattern reads the entire weight matrix per call, exhausting L1 working set. Sparse access pattern touches only the rows of NNZ inputs — a working set ~5× smaller fits in L1. Reckless's `34.5 M cache-refs / 800 k evals = 43 refs/eval`; Coda's `648 M / 800 k = 810 refs/eval`. |
+| **1.79× instructions** | ~~Dense matmul does ~9× more multiply-accumulate work (768 inputs vs ~85 NNZ). Even highly vectorised, the work is ~9× larger; SIMD width and pair-unrolling close some of that, leaving the observed 1.8×.~~ |
+| **19× cache-references / 16× L1-miss-rate** | ~~Dense access pattern reads the entire weight matrix per call, exhausting L1 working set. Sparse access pattern touches only the rows of NNZ inputs — a working set ~5× smaller fits in L1.~~ Raw measurements still valid: Reckless's `34.5 M cache-refs / 800 k evals = 43 refs/eval`; Coda's `648 M / 800 k = 810 refs/eval`. |
 
-This is also why "fix the cache layout" alone wouldn't fully close the
+~~This is also why "fix the cache layout" alone wouldn't fully close the
 gap. You can flatten `AccEntry`, frontload hot features, prefetch the
 next weight row — and you'd still execute 1.79× more instructions on the
-dense matmul because the work axis is wrong. Cache effects pile on the
-same axis: less work in matmul = less memory traffic = better cache
-behaviour. Restructuring the matmul to sparse-first roughly 5× the
-working set naturally — without any other change — would restore L1
-residency on the hot path *and* close most of the instruction-count gap.
+dense matmul because the work axis is wrong.~~ **[CORRECTION 2026-05-03]:
+the inverse looks more likely. Cache hygiene (flatten AccEntry, etc.)
+appears to BE the load-bearing lever, since the matmul-restructure
+turned out NPS-negative in production.**
 
 ### Why the previous sparse experiment underperformed
 
@@ -309,14 +373,26 @@ the surrounding code, not as an alternative branch inside it.**
 
 ## Cache as the same axis, not a separate one
 
-`coda_vs_reckless_nps_2026-04-23.md` §3 framed cache behaviour as a
+> **[CORRECTION 2026-05-03]** — this section's "read less, not arrange
+> the read better" framing INVERTS the right answer. With the L1
+> matmul restructure refuted, **arranging the read better (cache
+> hygiene, especially flatten `AccEntry`) is now the primary lever**,
+> not the secondary. The 16.88% vs 1.07% L1-miss-rate gap is real,
+> but the cause is layout (Coda's heap-Vec scatter vs Reckless's
+> contiguous slice), not matmul work amount.
+
+~~`coda_vs_reckless_nps_2026-04-23.md` §3 framed cache behaviour as a
 distinct lever (flatten `AccEntry`, hot-feature frontload, prefetch).
 Those levers are still real, but as the per-call quantification above
 shows, the dominant cache cost is in the L1 matmul itself, and the
 right way to fix it is to **read less**, not to **arrange the read
-better**. Coda's L1-dcache-load-misses on the eval-bench microbench
-sit at ~16.88% (vs Reckless's 1.07%); the working-set ratio (24 KB vs
-~5 KB per matmul call) accounts for most of the gap directly.
+better**.~~ Coda's L1-dcache-load-misses on the eval-bench microbench
+sit at ~16.88% (vs Reckless's 1.07%); the working-set ratio
+~~(24 KB vs ~5 KB per matmul call)~~ does NOT account for most of the
+gap (per `coda_vs_reckless_nps_2026-04-23.md` correction 2026-05-03,
+both engines have the same 49 MB threat matrix and similar total
+NNUE footprint). The cause is most likely the AccEntry layout
+difference; per-callsite L1-miss decomposition is the next experiment.
 
 ## Halogen mixed-precision context
 
@@ -349,11 +425,29 @@ again in 2026-Q3.
 
 ## Proposals
 
+> **[CORRECTION 2026-05-03] — Proposal 1 has been TRIED AND REVERTED.**
+> The "biggest single NPS lever identified" claim is wrong. Step
+> C-cheap (the integration of Proposal 1's restructure) regressed
+> bench by 4% in production. See "Update 2026-05-01 PM" at the
+> bottom and the revised lever ranking. Proposal 1 below is retained
+> as the path that was attempted; the realistic upper bound is now
+> ~3-8% NPS from inline-barrier removal alone (Proposal 2 / Step
+> C-full), and the cache-hygiene levers (flatten AccEntry etc.) move
+> to the top of the ranking.
+
 ### Proposal 1 — Restructure `forward_with_l1_pairwise_inner` along Reckless's pattern
 
-**Effort: 1-2 days. Expected impact: closes most of the 1.79× instruction
-gap and the L1-matmul cache miss share — biggest single NPS lever
-identified.**
+> **[CORRECTION 2026-05-03] — TRIED AND REVERTED.** Step C-cheap
+> integrated this on `feature/nnue-simd-restructure` and produced
+> −4% bench regression in production despite a +2.4× microbench win.
+> Root cause: chunk-density assumption (89% sparse) was wrong —
+> production is 73% non-zero. See "Update 2026-05-01 PM" below.
+> Code retained on the branch as infra; not currently a path to
+> pursue.
+
+**Original framing (refuted): Effort: 1-2 days. Expected impact:
+closes most of the 1.79× instruction gap and the L1-matmul cache
+miss share — biggest single NPS lever identified.**
 
 What this means concretely:
 
@@ -426,28 +520,56 @@ Park for 2026-Q3 unless Proposal 1 surfaces a cheaper path.
 
 ## Lever ranking — updated
 
-Replacing the lever ranking table from `coda_vs_reckless_nps_2026-04-23.md`
+> **[CORRECTION 2026-05-03]** — the table below was built around L1
+> matmul restructure as Lever #1. With that refuted (Step C-cheap
+> regressed −4% in production), the ranking is wrong. **Use the
+> revised ranking immediately below; the original is retained
+> beneath for diff context.**
+
+### Revised lever ranking (2026-05-03)
+
+| # | Lever | Effort | Expected NPS | Notes |
+|---|---|---|---:|---|
+| 1 | **Flatten `AccEntry` to inline arrays** (mirror Reckless's `Box<[PstAccumulator]>` of `Aligned<[[i16; L1_SIZE]; 2]>`) | Half day | unknown — best candidate for closing the 54× L1-miss gap | Only verified structural memory-layout difference vs Reckless. Per-callsite L1-miss decomposition pending. |
+| 2 | **Per-callsite L1-miss decomposition** (`perf record -e L1-dcache-load-misses` with call-graph) | Half day | diagnostic | Confirms where the misses live before committing to #1's blast radius. Should run BEFORE #1. |
+| 3 | Step C-full (drop `#[target_feature]` from `forward_with_l1_pairwise_inner`, multi-binary build) | 1-2 days | **+3-8%** (revised down from +15-25%) | Inline-barrier removal alone, validated by removing the attribute and measuring whether callees inline. |
+| 4 | Hot-feature frontloading | Half day | +1-3% | Generic cache-hygiene; valid regardless of Reckless. |
+| 5 | Prefetch in `apply_threat_deltas` | Half day | +0.5-1% | Same. |
+| 6 | Cache checking squares + retry LMP direct-check | 1-2 days | +5 LTC Elo (search-side) | `reckless_commit_catalog_2026-05-01.md` #4 |
+| 7 | PST feature-index vectorisation (#792) | Half day | +2.7 STC | `reckless_commit_catalog_2026-05-01.md` #3 |
+| 8 | Accumulator update reorder (#826) | Half day | +1.8 STC | `reckless_commit_catalog_2026-05-01.md` #6 |
+| 9 | Mixed-precision threat accumulator (Proposal 3) | Training cycle + restructure | +2-5% | Standalone (no longer "gated on #1") |
+| 10 | PGO revalidation (Proposal 2) | Half day after #3 | +3-5% | Likely unblocked by #3, not by old-Proposal-1. |
+| 11 | Training-side memory shrink (was old-#1 in 2026-04-23) | Training cycle | uncertain | Both engines have same 49 MB matrix; not a Reckless-gap closer. |
+
+### Original ranking (refuted, retained for context)
+
+~~Replacing the lever ranking table from `coda_vs_reckless_nps_2026-04-23.md`
 §"Revised lever ranking (final)". The cache hygiene levers there
 (flatten AccEntry, hot-feature frontload, prefetch) remain valid but
 move down — the L1 matmul restructure is the upstream lever that
 either subsumes them or makes them independently testable on a
-healthier base.
+healthier base.~~
 
 | # | Lever | Effort | Expected NPS | Notes |
 |---|---|---|---:|---|
-| 1 | **L1 matmul restructure (Proposal 1)** | 1-2 days | **+15-25%** | The structural lever |
-| 2 | PGO regression (Proposal 2) | Half day after #1 | +3-5% | Likely unblocked by #1 |
-| 3 | Cache checking squares + retry LMP direct-check | 1-2 days | +5 LTC Elo (search-side) | `reckless_commit_catalog_2026-05-01.md` #4 |
-| 4 | PST feature-index vectorisation (#792) | Half day | +2.7 STC | `reckless_commit_catalog_2026-05-01.md` #3 |
-| 5 | Accumulator update reorder (#826) | Half day | +1.8 STC | `reckless_commit_catalog_2026-05-01.md` #6 |
-| 6 | Flatten `AccEntry` to inline arrays | Half day | +2-4% | Was lever #1 in 2026-04-23 — now depends on #1 |
-| 7 | Hot-feature frontloading | Half day | +1-3% | Same — depends on #1 |
-| 8 | Prefetch in `apply_threat_deltas` | Half day | +0.5-1% | Marginal after #1 |
-| 9 | Mixed-precision threat accumulator (Proposal 3) | Training cycle + restructure | +2-5% | Gated on #1 |
+| ~~1~~ | ~~**L1 matmul restructure (Proposal 1)**~~ | ~~1-2 days~~ | ~~**+15-25%**~~ | ~~The structural lever~~ — refuted, regressed −4% in production |
+| ~~2~~ | ~~PGO regression (Proposal 2)~~ | ~~Half day after #1~~ | ~~+3-5%~~ | ~~Likely unblocked by #1~~ — moved to revised #10 |
+| ~~3~~ | ~~Cache checking squares + retry LMP direct-check~~ | (moved to revised #6) | | |
+| ~~4~~ | ~~PST feature-index vectorisation (#792)~~ | (moved to revised #7) | | |
+| ~~5~~ | ~~Accumulator update reorder (#826)~~ | (moved to revised #8) | | |
+| ~~6~~ | ~~Flatten `AccEntry` to inline arrays~~ | ~~Half day~~ | ~~+2-4%~~ | ~~Was lever #1 in 2026-04-23 — now depends on #1~~ — promoted to revised #1 |
+| ~~7~~ | ~~Hot-feature frontloading~~ | (moved to revised #4) | | |
+| ~~8~~ | ~~Prefetch in `apply_threat_deltas`~~ | (moved to revised #5) | | |
+| ~~9~~ | ~~Mixed-precision threat accumulator (Proposal 3)~~ | (moved to revised #9, no longer gated) | | |
 
-The big shift: levers 6-8 from the previous doc, while still real, are
+~~The big shift: levers 6-8 from the previous doc, while still real, are
 each bounded by what the dense-first matmul leaves on the table. Lever
-#1 is upstream of all of them.
+#1 is upstream of all of them.~~ **[CORRECTION 2026-05-03]: the inverse
+is correct — Lever #1 (matmul) was refuted, so the cache-hygiene
+levers (old #6-8) become the leading candidates. They are NOT bounded
+by the matmul restructure since the matmul work amount is closer to
+optimal than initially modelled.**
 
 ## Cross-references
 
