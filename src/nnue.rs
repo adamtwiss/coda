@@ -2640,15 +2640,25 @@ impl NNUENet {
             std::slice::from_raw_parts_mut(ntm_pw_storage.as_mut_ptr() as *mut u8, 2048)
         };
 
+        // Compile-time ISA dispatch via cfg!. With -Ctarget-cpu=native (.cargo/config.toml),
+        // each binary targets exactly its build host's feature set, so the runtime
+        // `self.has_avx512` / `self.has_avx2` checks are fixed for the binary's lifetime.
+        // Replacing them with cfg! lets LLVM dead-code-eliminate the unselected arms,
+        // shrinks function body size (icache pressure), and removes branches that
+        // dilute the predictor.
+        //
+        // Step C-full implementation: the compiled function body keeps only the path
+        // matching the build target. On AVX-512 builds, AVX-2 fallback is removed;
+        // on AVX-2 builds, the AVX-512 path is removed.
         #[cfg(target_arch = "x86_64")]
-        if self.has_avx512 && pw % 32 == 0 {
+        if cfg!(target_feature = "avx512f") && pw % 32 == 0 {
             unsafe {
                 let stm_tp = if has_threats { stm_threat.as_ptr() } else { std::ptr::null() };
                 let ntm_tp = if has_threats { ntm_threat.as_ptr() } else { std::ptr::null() };
                 simd512_pairwise_pack_fused(stm_acc, stm_tp, stm_pw, pw);
                 simd512_pairwise_pack_fused(ntm_acc, ntm_tp, ntm_pw, pw);
             }
-        } else if self.has_avx2 && pw % 16 == 0 {
+        } else if cfg!(target_feature = "avx2") && pw % 16 == 0 {
             unsafe {
                 if has_threats {
                     simd_pairwise_pack_fused(stm_acc, stm_threat.as_ptr(), stm_pw, pw);
@@ -2725,7 +2735,7 @@ impl NNUENet {
         }
         // L1 matmul: use SIMD int8 dot with transposed weights when available
         #[cfg(target_arch = "x86_64")]
-        if self.has_avx512_vnni && !self.l1_weights_sparse.is_empty() && l1 == 16 && pw % 4 == 0 {
+        if cfg!(target_feature = "avx512vnni") && !self.l1_weights_sparse.is_empty() && l1 == 16 && pw % 4 == 0 {
             // AVX-512 VNNI column-major: all 16 L1 neurons in one ZMM accumulator,
             // one VPDPBUSD per 4-byte input chunk. Dramatically reduces per-chunk
             // uop count vs the row-major per-neuron path below.
@@ -2735,7 +2745,7 @@ impl NNUENet {
                     l1, &self.l1_biases[l1_off..], pw_scale, &mut hidden32,
                 );
             }
-        } else if self.has_avx512_vnni && pw % 64 == 0 && !self.l1_weights_8t.is_empty() {
+        } else if cfg!(target_feature = "avx512vnni") && pw % 64 == 0 && !self.l1_weights_8t.is_empty() {
             // VNNI fallback for wider L1 — still VPDPBUSD, but row-major.
             let ntm_base = l1_total * pw;
             for i in 0..l1 {
@@ -2747,7 +2757,7 @@ impl NNUENet {
                     hidden32[i] += simd512_l1_int8_dot_vnni(&ntm_pw[..pw], ntm_w, pw);
                 }
             }
-        } else if self.has_avx_vnni && !self.l1_weights_sparse.is_empty() && l1 <= 16 && pw % 4 == 0 {
+        } else if cfg!(target_feature = "avxvnni") && !self.l1_weights_sparse.is_empty() && l1 <= 16 && pw % 4 == 0 {
             // AVX-VNNI (YMM VPDPBUSD) — Alder Lake+, Zen 4+ without full AVX-512.
             unsafe {
                 crate::sparse_l1::dense_l1_avx_vnni(
@@ -2755,7 +2765,7 @@ impl NNUENet {
                     l1, &self.l1_biases[l1_off..], pw_scale, &mut hidden32,
                 );
             }
-        } else if self.has_avx512 && pw % 64 == 0 && !self.l1_weights_8t.is_empty() {
+        } else if cfg!(target_feature = "avx512f") && pw % 64 == 0 && !self.l1_weights_8t.is_empty() {
             let ntm_base = l1_total * pw;
             for i in 0..l1 {
                 let gi = l1_off + i;
@@ -2766,7 +2776,7 @@ impl NNUENet {
                     hidden32[i] += simd512_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
                 }
             }
-        } else if self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 <= 16 {
+        } else if cfg!(target_feature = "avx2") && !self.l1_weights_sparse.is_empty() && l1 <= 16 {
             // Column-major (input-chunk-major) L1 matmul — Reckless's pattern.
             // For each 4-byte input chunk, splat_i32 broadcast + maddubs/madd
             // contributes to all L1 outputs simultaneously via 2 AVX2 registers.
@@ -2812,7 +2822,7 @@ impl NNUENet {
                     if !mismatch { eprintln!("SPARSE L1 MATCH (all {} neurons)", l1); }
                 }
             }
-        } else if self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty() {
+        } else if cfg!(target_feature = "avx2") && pw % 32 == 0 && !self.l1_weights_8t.is_empty() {
             let ntm_base = l1_total * pw;
             // Multi-neuron: process 4 neurons at once, loading input once per chunk
             let mut i = 0;
@@ -2855,12 +2865,12 @@ impl NNUENet {
         }
 
         #[cfg(target_arch = "x86_64")]
-        if !(self.has_avx512_vnni && !self.l1_weights_sparse.is_empty() && l1 == 16 && pw % 4 == 0)
-            && !(self.has_avx512_vnni && pw % 64 == 0 && !self.l1_weights_8t.is_empty())
-            && !(self.has_avx_vnni && !self.l1_weights_sparse.is_empty() && l1 <= 16 && pw % 4 == 0)
-            && !(self.has_avx512 && pw % 64 == 0 && !self.l1_weights_8t.is_empty())
-            && !(self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 <= 16)
-            && !(self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty()) {
+        if !(cfg!(target_feature = "avx512vnni") && !self.l1_weights_sparse.is_empty() && l1 == 16 && pw % 4 == 0)
+            && !(cfg!(target_feature = "avx512vnni") && pw % 64 == 0 && !self.l1_weights_8t.is_empty())
+            && !(cfg!(target_feature = "avxvnni") && !self.l1_weights_sparse.is_empty() && l1 <= 16 && pw % 4 == 0)
+            && !(cfg!(target_feature = "avx512f") && pw % 64 == 0 && !self.l1_weights_8t.is_empty())
+            && !(cfg!(target_feature = "avx2") && !self.l1_weights_sparse.is_empty() && l1 <= 16)
+            && !(cfg!(target_feature = "avx2") && pw % 32 == 0 && !self.l1_weights_8t.is_empty()) {
             // Scalar fallback — raw weights in [input][neuron] layout
             for i in 0..l1 {
                 let gi = l1_off + i;
@@ -2991,7 +3001,7 @@ impl NNUENet {
             // and ate ~13% of total cycles. Explicit 2-register broadcast-FMA
             // is branch-light, load-heavy, cache-friendly.
             #[cfg(target_arch = "x86_64")]
-            if self.has_avx512 && l2 == 32 {
+            if cfg!(target_feature = "avx512f") && l2 == 32 {
                 unsafe {
                     l2_fmadd_avx512_x32(
                         &l1_out[..l1_out_count], l1_out_count,
@@ -3028,7 +3038,7 @@ impl NNUENet {
             // Output dot — AVX-512 version for the L2=32 case, matches the
             // L2 matmul's dimensionality so it stays on the hot path.
             #[cfg(target_arch = "x86_64")]
-            let out_f = if self.has_avx512 && l2 == 32 {
+            let out_f = if cfg!(target_feature = "avx512f") && l2 == 32 {
                 unsafe { dot_fmadd_avx512_x32(&h2[..32], &out_w[..32], bias) }
             } else {
                 let mut acc = bias;
