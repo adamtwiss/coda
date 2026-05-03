@@ -358,28 +358,125 @@ pub fn init_threats() {
 
     eprintln!("Threat features initialised: {} total", offset);
 
-    // Build the compact encoder's tables. Skeleton pass: bit-identical
-    // to classic. Encoder semantic changes (phantom cleanup, channel
-    // reorder) layer on top in subsequent commits.
-    init_threats_compact_skeleton();
+    // Build the compact encoder's tables. Same total feature count as
+    // classic for now (no phantom cleanup yet) — channel ordering is
+    // permuted by importance so hot channels land at low addresses.
+    init_threats_compact();
 }
+
+/// Channel ordering by T80 hit count (descending). 100 entries, one per
+/// non-excluded (attacker_cp, victim_cp) pair. Hot channels at low rank
+/// → low base addresses → cache-resident.
+///
+/// Snapshot from docs/threat_channels_t80_2026-05-04.csv. Bullet must
+/// reference the IDENTICAL ordering — any drift silently corrupts
+/// inference.
+const CHANNEL_ORDER: [(u8, u8); 100] = [
+    (0, 0),  (6, 6),  (5, 0),  (11, 6), (4, 0),  (10, 6), (3, 0),  (9, 6),
+    (8, 6),  (2, 0),  (3, 6),  (9, 0),  (7, 6),  (1, 0),  (4, 6),  (10, 0),
+    (3, 2),  (9, 8),  (4, 2),  (10, 8), (2, 6),  (8, 0),  (4, 1),  (10, 7),
+    (4, 3),  (10, 9), (0, 1),  (6, 7),  (3, 1),  (9, 7),  (5, 2),  (11, 8),
+    (1, 6),  (7, 0),  (2, 3),  (8, 9),  (3, 3),  (9, 9),  (5, 3),  (11, 9),
+    (2, 1),  (8, 7),  (2, 7),  (8, 1),  (1, 2),  (7, 8),  (1, 3),  (7, 9),
+    (1, 4),  (7, 10), (4, 7),  (10, 1), (3, 7),  (9, 1),  (5, 1),  (11, 7),
+    (6, 0),  (3, 8),  (9, 2),  (4, 9),  (10, 3), (4, 8),  (10, 2), (9, 3),
+    (6, 9),  (0, 3),  (0, 6),  (1, 1),  (10, 4), (5, 6),  (11, 0), (8, 2),
+    (2, 9),  (8, 3),  (7, 7),  (1, 8),  (7, 2),  (7, 1),  (0, 7),  (6, 1),
+    (3, 9),  (5, 9),  (11, 3), (5, 7),  (11, 1), (1, 9),  (7, 3),  (4, 10),
+    (5, 8),  (11, 2), (1, 10), (7, 4),  (1, 7),  (2, 8),  (0, 9),  (6, 3),
+    (4, 4),  (10, 10),(8, 8),  (2, 2),
+];
 
 /// Initialise compact-encoder lookup tables.
 ///
-/// Skeleton pass (no semantic change): COMPACT_* tables are populated as
-/// exact copies of classic tables. This validates the dispatch
-/// infrastructure (parallel tables + sibling functions) before encoder
-/// semantic changes layer in:
-///   1. Drop semi-excluded over-allocation (half-count for same-piece pairs)
-///   2. Drop pawn-victim-on-rank-1/8 slots
-///   3. Channel-level importance reorder (T80 hit ranking,
-///      docs/threat_channels_t80_2026-05-04.csv)
-fn init_threats_compact_skeleton() {
-    unsafe {
-        COMPACT_PIECE_PAIR_LOOKUP = PIECE_PAIR_LOOKUP;
-        COMPACT_PIECE_OFFSET_LOOKUP = PIECE_OFFSET_LOOKUP;
-        COMPACT_ATTACK_INDEX_LOOKUP = ATTACK_INDEX_LOOKUP;
-        COMPACT_TOTAL_THREAT_FEATURES = TOTAL_THREAT_FEATURES;
+/// First semantic change: channel-level importance reorder. Hot channels
+/// (per CHANNEL_ORDER, derived from T80 1M sample) get low base
+/// addresses so the working set is cache-resident.
+///
+/// Same total feature count as classic — no phantom cleanup in this
+/// commit. Within each channel, the slot formula is identical to classic
+/// (PIECE_OFFSET_LOOKUP[a_cp][a_sq] + ATTACK_INDEX_LOOKUP[a_cp][a_sq][v_sq]).
+///
+/// Phantom cleanup (semi-excluded half-count, pawn-victim-on-rank-1/8 drop)
+/// is deferred to a later commit — it requires per-channel slot counts
+/// rather than the per-attacker count classic uses.
+fn init_threats_compact() {
+    // Phase 1: per-attacker piece_offset count (same shape as classic).
+    let mut piece_count = [0i32; NUM_COLORED_PIECES];
+    for color in 0..2usize {
+        for pt in 0..6usize {
+            let cp = color * 6 + pt;
+            let mut count: i32 = 0;
+            for sq in 0..64u32 {
+                if pt == 0 && (sq < 8 || sq >= 56) { continue; }
+                let attacks = piece_attacks_empty(cp, sq);
+                count += popcount(attacks) as i32;
+            }
+            piece_count[cp] = count;
+        }
+    }
+
+    // Phase 2: COMPACT_PIECE_OFFSET_LOOKUP — per-(a_cp, a_sq), cumulative
+    // attack-count below a_sq. Same shape as classic; channel-independent.
+    for color in 0..2usize {
+        for pt in 0..6usize {
+            let cp = color * 6 + pt;
+            let mut count: i32 = 0;
+            for sq in 0..64u32 {
+                unsafe { COMPACT_PIECE_OFFSET_LOOKUP[cp][sq as usize] = count; }
+                if pt == 0 && (sq < 8 || sq >= 56) { continue; }
+                let attacks = piece_attacks_empty(cp, sq);
+                count += popcount(attacks) as i32;
+            }
+        }
+    }
+
+    // Phase 3: COMPACT_ATTACK_INDEX_LOOKUP — same as classic
+    // (channel-independent: ray index of v_sq within attacks(a_cp, a_sq)).
+    for cp in 0..NUM_COLORED_PIECES {
+        for from in 0..64u32 {
+            let attacks = piece_attacks_empty(cp, from);
+            for to in 0..64u32 {
+                let below_mask = if to > 0 { (1u64 << to) - 1 } else { 0 };
+                unsafe {
+                    COMPACT_ATTACK_INDEX_LOOKUP[cp][from as usize][to as usize] =
+                        popcount(below_mask & attacks) as u8;
+                }
+            }
+        }
+    }
+
+    // Phase 4: assign per-channel base addresses in importance order.
+    // First mark every cell as excluded (default), then walk CHANNEL_ORDER
+    // setting bases for live channels.
+    for a_cp in 0..NUM_COLORED_PIECES {
+        for v_cp in 0..NUM_COLORED_PIECES {
+            unsafe { COMPACT_PIECE_PAIR_LOOKUP[a_cp][v_cp] = PiecePair::new(true, false, 0); }
+        }
+    }
+
+    let mut offset: i32 = 0;
+    for &(a_cp_u8, v_cp_u8) in &CHANNEL_ORDER {
+        let a_cp = a_cp_u8 as usize;
+        let v_cp = v_cp_u8 as usize;
+        let a_pt = a_cp % 6;
+        let v_pt = v_cp % 6;
+        let a_color = a_cp / 6;
+        let v_color = v_cp / 6;
+
+        // Defensive: catch any drift between CHANNEL_ORDER and PIECE_INTERACTION_MAP
+        // (e.g. CHANNEL_ORDER referencing a piece-pair PIECE_INTERACTION_MAP excludes).
+        debug_assert!(PIECE_INTERACTION_MAP[a_pt][v_pt] >= 0,
+            "CHANNEL_ORDER references excluded pair: a_cp={} v_cp={}", a_cp, v_cp);
+
+        let enemy = a_color != v_color;
+        let semi_excluded = a_pt == v_pt && (enemy || a_pt != 0);
+
+        unsafe {
+            COMPACT_PIECE_PAIR_LOOKUP[a_cp][v_cp] = PiecePair::new(false, semi_excluded, offset);
+            COMPACT_TOTAL_THREAT_FEATURES = (offset + piece_count[a_cp]) as usize;
+        }
+        offset += piece_count[a_cp];
     }
 }
 
@@ -2584,40 +2681,76 @@ mod tests {
         );
     }
 
-    /// Skeleton-pass invariant for the compact encoder: it produces
-    /// bit-identical output to `threat_index` for every (a_cp, a_sq,
-    /// v_cp, v_sq, mir, pov) tuple.
+    /// Compact encoder invariants vs classic, for the importance-reorder
+    /// pass (no phantom cleanup yet — total feature count still matches):
     ///
-    /// Once encoder semantic changes layer in (phantom cleanup, channel
-    /// reorder), this invariant breaks by design — the test will be
-    /// upgraded to assert the compact encoder still produces a non-
-    /// negative idx whenever classic does, and that the live-index set
-    /// is dense in 0..num_threat_features_compact().
+    ///  1. num_threat_features_compact == num_threat_features (no shrink)
+    ///  2. For canonical states (where the canonical attacker IS on a
+    ///     legal square attacking the canonical victim), classic and
+    ///     compact agree on validity.
+    ///  3. Every non-negative compact idx is in [0, num_threat_features_compact).
+    ///  4. Compact→classic mapping is 1:1 on canonical states (no live
+    ///     index aliases across distinct canonical positions).
+    ///
+    /// The encoder accepts non-canonical inputs (e.g., wP@a1 with pov=BLACK
+    /// canonicalizes to bP@a8 — impossible) and produces phantom indices
+    /// that alias arbitrarily. We test only canonical states, matching
+    /// how `enumerate_threats` calls the encoder from real positions.
     #[test]
-    fn compact_encoder_skeleton_matches_classic() {
+    fn compact_encoder_permutes_classic() {
         crate::attacks::init_attacks();
         init_threats();
         assert_eq!(num_threat_features(), num_threat_features_compact(),
-            "skeleton: feature counts must match");
+            "no-shrink invariant: feature counts must match");
 
-        // Sweep every reachable input tuple. ~589K iterations, runs in <1s.
-        for a_cp in 0..NUM_COLORED_PIECES {
-            for a_sq in 0..64u32 {
-                for v_cp in 0..NUM_COLORED_PIECES {
-                    for v_sq in 0..64u32 {
-                        if v_sq == a_sq { continue; }
-                        for &mirrored in &[false, true] {
-                            for &pov in &[WHITE, BLACK] {
-                                let classic = threat_index(a_cp, a_sq, v_cp, v_sq, mirrored, pov);
-                                let compact = threat_index_compact(a_cp, a_sq, v_cp, v_sq, mirrored, pov);
-                                assert_eq!(classic, compact,
-                                    "divergence at (a_cp={}, a_sq={}, v_cp={}, v_sq={}, mir={}, pov={:?}): classic={} compact={}",
-                                    a_cp, a_sq, v_cp, v_sq, mirrored, pov, classic, compact);
+        let total = num_threat_features();
+        let mut compact_to_classic: Vec<i32> = vec![-1; total];
+
+        // Enumerate canonical states with pov=WHITE, mirrored=false. Each
+        // canonical state is uniquely encoded; pov+mirror just remap inputs
+        // to the same canonical state, which we cover via the WHITE+nomir
+        // invocation directly.
+        for &mirrored in &[false, true] {
+            for a_cp in 0..NUM_COLORED_PIECES {
+                let a_pt = a_cp % 6;
+                for a_sq in 0..64u32 {
+                    if a_pt == 0 && (a_sq < 8 || a_sq >= 56) { continue; }
+                    let attacks = piece_attacks_empty(a_cp, a_sq);
+                    if attacks == 0 { continue; }
+                    for v_cp in 0..NUM_COLORED_PIECES {
+                        let v_pt = v_cp % 6;
+                        let mut bb = attacks;
+                        while bb != 0 {
+                            let v_sq = bb.trailing_zeros();
+                            bb &= bb - 1;
+                            if v_sq == a_sq { continue; }
+                            if v_pt == 0 && (v_sq < 8 || v_sq >= 56) { continue; }
+
+                            let classic = threat_index(a_cp, a_sq, v_cp, v_sq, mirrored, WHITE);
+                            let compact = threat_index_compact(a_cp, a_sq, v_cp, v_sq, mirrored, WHITE);
+                            assert_eq!(classic.is_negative(), compact.is_negative(),
+                                "validity divergence at canonical (a_cp={}, a_sq={}, v_cp={}, v_sq={}, mir={}): classic={} compact={}",
+                                a_cp, a_sq, v_cp, v_sq, mirrored, classic, compact);
+
+                            if classic >= 0 {
+                                let mu = compact as usize;
+                                assert!(mu < total, "compact idx out of range: {} >= {}", compact, total);
+                                if compact_to_classic[mu] < 0 {
+                                    compact_to_classic[mu] = classic;
+                                } else {
+                                    assert_eq!(compact_to_classic[mu], classic,
+                                        "compact idx {} reached by two distinct classic indices: {} and {} (input: a_cp={} a_sq={} v_cp={} v_sq={} mir={})",
+                                        mu, compact_to_classic[mu], classic, a_cp, a_sq, v_cp, v_sq, mirrored);
+                                }
                             }
                         }
                     }
                 }
             }
         }
+
+        let live: usize = compact_to_classic.iter().filter(|&&x| x >= 0).count();
+        eprintln!("compact encoder: {} live indices / {} total ({} phantom slots)",
+            live, total, total - live);
     }
 }
