@@ -8134,6 +8134,121 @@ NPS leg overall.
 
 Bench: 966720.
 
+## 2026-05-03 — hot-feature frontload dropped (bench-negative on Zen 5)
+
+Followup to the cache-hygiene leg + byteboard-splat scoping doc.
+Implemented hot-feature frontloading on the v9 49 MB threat-weight
+matrix — permute weight rows at NNUE load so high-activation
+features land at low offsets, remap `threat_index()` output so the
+hot working set lands in L2.
+
+Permutation generated via `threat_accum::tests::measure_feature_sparsity`
+across 12000 deterministic positions. Ranking:
+- Top 706 features capture **50% of activations** (540 KB, fits L2)
+- Top 7665 capture **90%** (5.7 MB, fits L3 even on small-cache hosts)
+- 67.9% of features (45430) NEVER fired in the sample
+
+### Cache impact (eval-bench --mode incremental, Zen 5)
+
+| Metric | Baseline | Frontloaded | Δ |
+|---|---:|---:|---|
+| L1-dcache-load-misses | 113 M | 108 M | −4% |
+| cache-references | 251 M | 229 M | −9% |
+| instructions | 3.49 B | 3.57 B | +2.3% |
+| cycles | 1.16 B | 1.20 B | +3.4% |
+| IPC | 3.01 | 2.90 | down |
+
+### Bench NPS impact (10-run avg, Zen 5)
+
+| | NPS |
+|---|---:|
+| Baseline | 1322 k |
+| Frontloaded | 1289 k |
+| **Δ** | **−2.5%** |
+
+### Why bench-negative
+
+- Per-`threat_index` perm-lookup adds ~5 instructions per call.
+- 12.96 M calls per bench → +70 M instructions (+2.3%).
+- Cycles up +3.4%, more than the ~0% the L1-miss savings can deliver.
+- Zen 5's wide OoO already hides most of these specific L1 misses
+  (IPC dropped 3.01 → 2.90 — the misses weren't on the critical
+  path at the baseline).
+
+This is the SAME OoO-saturation pattern AccDataStack hit, but
+**inverted**: AccDataStack added ZERO instruction cost so cache-
+side savings paid for the older-uArch fleet (+6.77 Elo H1).
+Frontload adds per-call instruction work, breaking the "hidden
+cycle savings without added cost" pattern.
+
+### Optimisations tried
+
+1. **Direct unaligned read** on the byte blob — no improvement;
+   compiler was already generating efficient code.
+2. **OnceLock-cached `Box<[u32]>`** — atomic load on hot path
+   actually hurt IPC slightly.
+3. **Non-atomic `static mut` pointer + load-time init** — fastest
+   variant but still bench-negative (~−2.5%).
+
+The fundamental issue: per-call indirection is unavoidable in this
+design without folding the perm into existing lookup tables. Folding
+into ATTACK_INDEX_LOOKUP requires widening it from u8 to i32 (the
+permuted index range is large) and is non-trivial because
+`pair.base` depends on `victim` which the existing tables don't
+key on.
+
+### Decision: not shipping
+
+Code archived on `feature/threat-feature-frontload` (commit 1e8c3ee).
+Scaffolding includes:
+- `src/threats_frontload.rs` — perm-table + apply-at-load module.
+- `data/threat_feature_perm.bin` — 260 KB embedded permutation blob.
+- `threat_accum::tests::measure_feature_sparsity` — extended with
+  `CODA_DUMP_FEATURE_PERM=path` to dump the permutation on demand.
+
+Future revival paths:
+- **Bake perm into widened lookup tables at init.** Requires
+  changing `pair.base` to be (a, v)-only (not (a, v, f, t)) and
+  absorbing (f, t) variation into a widened `ATTACK_INDEX_LOOKUP`
+  with i32 entries (1.5 MB for 12 × 64 × 64 × 4). Eliminates the
+  per-call lookup. Bigger refactor.
+- **Run on small-cache hosts** to see if the trade-off flips. The
+  byteboard-splat scoping doc estimated frontload would help most
+  on small-cache hosts (Coffee Lake, older Zen, ARM). But the
+  Zen 5 baseline regression is large enough that fleet-aggregate
+  impact is uncertain.
+
+### What survives
+
+- Activation-frequency measurement infrastructure (in
+  `threat_accum::tests::measure_feature_sparsity`).
+- Coverage stats: top 706 features cover 50%, top 7665 cover 90%,
+  67.9% never fire. Useful for future training-side experiments
+  (drop-cold-features, weight quantisation by importance).
+- Documented finding that **NPS levers adding per-call work + cache
+  savings tend to lose on wide-OoO uArchs**. Future cache-hygiene
+  proposals should be designed to add *zero* hot-path instructions.
+
+### Implication for the lever ranking
+
+Hot-feature frontloading was the next concrete cache-side lever
+after the byteboard splat scoping. With both retired (splat
+incompatible with Coda's threat space; frontload bench-negative on
+Zen 5), the threat-side cache-hygiene queue is mostly exhausted at
+the inference layer.
+
+Remaining levers worth trying:
+- **Step C-full** (drop `#[target_feature]` outer-fn barriers) —
+  targets the **instruction-count** axis, which the cache work
+  doesn't touch. Different mechanism, separate bet.
+- **Training-side L1 regularisation** to actually shrink the 49 MB
+  threat matrix toward L3-fit. Bigger investment, gated on a
+  Bullet retrain cycle. Would change the FEATURE COUNT (not the
+  per-feature width), so doesn't conflict with future revival of
+  hot-feature frontload.
+- **Mixed-precision threat accumulator** (i8 instead of i16
+  per-ply state — Halogen pattern, deferred).
+
 ## 2026-05-03 — fixed-seed cross-host SB50 variance (#922/#923/#924) — host-persistent ranking confirmed
 
 Three pair-SPRTs, SB50 hl-screlu non-factor, all three trained with
