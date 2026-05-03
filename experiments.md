@@ -8190,3 +8190,80 @@ divergence.
 "hardware A vs hardware B" net-vs-net comparison conflates training-
 trajectory variance with the actual question being asked. K=3+
 multi-host trains + median/anchor protocol remains the right read.
+
+## 2026-05-03 — compact threat encoder (channel reorder) — flat NPS H0 (negative result)
+
+**Hypothesis tested**: 100-channel importance reorder of the 51 MB threat
+weight matrix would reduce L3 spill on fleet hosts and lift NPS at bench.
+Channel ranking was derived from a T80 1M-sample hit histogram (`docs/
+threat_encoder_compact_2026-05-04.md`).
+
+**What we built**:
+
+- Coda decoder: parallel `COMPACT_*` lookup tables, runtime dispatch on
+  `training_flags` bit 1, validate_compat size check, real-position
+  fuzzer, NNUE field plumbing. Branch `experiment/threat-encoder-compact`,
+  commits `06ba067` → `cd9ca02` → `471a019`.
+- Bullet encoder mirror: `ChessBucketsWithThreats::new_with_xray_compact`,
+  dual `OnceLock` singletons, `CHANNEL_ORDER` translated from Coda's
+  table to Bullet's pidx form, `--compact-encoding` flag on the
+  training example. Branch `feature/threat-encoder-compact`.
+- `coda convert-bullet --compact-encoding` propagates the flag at
+  conversion (commit `874c7c7`).
+- `coda permute-net-compact` diagnostic: row-permutes a classic .nnue
+  into the compact layout, producing bit-identical accumulator outputs
+  (commit `31ec0e8`).
+
+**Results** (Hercules x86, prod-trained net):
+
+|  | Nodes | NPS (3-run median) |
+|---|---:|---:|
+| prod-classic                 | 966,720 | 587K |
+| prod-classic permuted to compact | 966,720 | 578K |
+| SB10 compact (under-trained) | 4,911,195 | 812K |
+
+The permuted net produces a bit-identical search tree (966720 == 966720),
+so its NPS isolates encoder-call cost from training-stage effects. **The
+~38% lift seen on SB10 vs prod was tree-shape artefact**: under-trained
+eval → 5× wider tree → more QS / shallow nodes / cheaper per-node NNUE
+work. Reorder alone delivers ~0% NPS within run-to-run noise.
+
+**Why this should have been predictable**:
+
+- Threat-feature access is pseudo-random per position. CPU prefetchers
+  don't help random-access matrices; address ordering doesn't change
+  hit rate after warm-up.
+- LRU caching keeps frequently-accessed rows resident regardless of
+  where their addresses land. Cold rows go to RAM either way.
+- Channel reorder doesn't change the matrix size. The 51 MB working
+  set still spills L3 on most fleet hosts; only the order in which
+  rows fit/spill changes.
+
+**Lessons banked** (durable):
+
+- **Never read NPS across nets at different training stages.** Under-
+  trained nets produce wider trees with cheaper per-node NNUE work,
+  which inflates NPS regardless of inference-side changes. Same-stage
+  comparison or row-permutation is required.
+- **Row-permute is a generalisable diagnostic.** Any "permutation
+  only" architectural change can be A/B-benched without retraining
+  by row-swapping a trained net into the new layout — confirmed
+  via bit-identical bench node count. Tool kept for future use.
+- **Cache residency requires shrink, not rearrangement.** Fewer rows
+  or smaller rows changes the spill envelope; reordering doesn't.
+
+**Where the cache lever actually lives** (queued):
+
+1. Group-lasso L1 sparsity (already in flight, task #122) — targets
+   ~30% row reduction (51 → 36 MB), crosses 32 MB L3 boundary.
+2. Hidden 768 → 512 (Zeus's idea 3, deferred) — 33% shrink
+   (51 → 34 MB), also crosses.
+3. Phantom cleanup (deferred half of this thread) — 5% shrink
+   (51 → 48 MB), unlikely to cross any cache boundary; skip unless
+   a dependent feature requires the index-space reduction.
+
+**Closing**: thread closed as H0. The compact-encoder branches and
+flag plumbing remain in place — the encoder dispatch, `training_flags`
+bit 1, fuzzer, and permute-net tool are useful infrastructure for
+any future "permutation-only" architectural experiment. No
+production net change. No retrain queued.

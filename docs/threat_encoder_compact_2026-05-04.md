@@ -130,14 +130,66 @@ Each step verifiable before proceeding.
 7. ✅ **Smoke test (Hercules-side)**: prod net loads + benches at
    966720 identically with new dispatcher (compact_encoding=false
    path).
-8. ⏳ **SB10 smoke train on GPU host** with `--compact-encoding` —
-   smaller than the planned SB50 to first verify the Bullet encoder
-   compiles and produces well-formed output. Convert with matching
-   `--compact-encoding` flag, load + bench in Coda. NPS comparison
-   only meaningful at SB50+.
-9. ⏳ **SB50 train + NPS comparison** vs current prod (K=1 sufficient
-   for NPS — deterministic measurement). Elo measurement (K=3 SB200)
-   only proceeds if NPS gains materialise.
+8. ✅ **SB10 smoke train on GPU host** — compact-encoded SB10 loaded
+   and benched cleanly (encoder roundtrip works end-to-end). Bench
+   showed 4.9M nodes / 812K nps vs prod-classic's 966K nodes / 588K
+   nps. **NPS difference (+38%) was training-stage artefact, not
+   encoder.** Confirmed by the permute-net diagnostic below.
+9. ✅ **`coda permute-net-compact`** (commit `31ec0e8`) — diagnostic
+   tool: row-permutes classic prod's threat weights into compact
+   layout, producing a compact-flagged net with bit-identical
+   accumulator outputs. Bench node count exactly matches classic
+   (966720 == 966720), proving the permutation preserves inference
+   semantics. **NPS: classic 587K vs permuted 578K (3-run medians) —
+   encoder reorder alone is ~0% within run-to-run noise.**
+10. ❌ **SB50 train + NPS comparison cancelled.** Permute-net result
+    rules out an encoder-cost win at this hardware/workload. The
+    cache-residency hypothesis was that hot channels at low addresses
+    would reduce L3 spill, but: (a) channel reorder doesn't change
+    matrix size (51 MB → 51 MB) so the spill envelope is unchanged;
+    (b) threat lookups are pseudo-random per position, so CPU
+    prefetchers don't benefit from contiguous hot blocks; (c) LRU
+    keeps frequently-accessed rows resident regardless of address.
+
+## Result — channel reorder alone delivers ~0% NPS
+
+Negative result on the channel-reorder portion of the compact encoder.
+The encoder permutation is correct (bit-identical search trees confirm
+this), but the cache-residency lever lives in matrix shrink, not
+address reordering.
+
+Lessons:
+
+- **The 38% lift in the SB10 vs prod bench was tree-shape artefact.**
+  Under-trained eval → 5× wider trees → more QS / shallow nodes / more
+  incremental updates → cheaper per-node NNUE work → higher NPS.
+  Generalises: **never read NPS across nets at different training
+  stages**; matched-stage comparison or row-permutation is required.
+- **Channel reorder doesn't help random-access matrices.** Threat
+  lookups are pseudo-random by position; address ordering doesn't
+  change cache hit rate after warm-up. Prefetcher-friendly contiguous
+  layouts only help linear scans.
+- **Cache residency requires shrink, not rearrangement.** The 51 MB
+  threat matrix exceeds L3 on most fleet hosts; that's the spill
+  problem. Reorder doesn't change the working-set size; only fewer
+  rows or smaller rows do.
+- **Row-permute trick is a generalisable diagnostic.** Any
+  "permutation only" encoder change (channel order, feature reorder,
+  bucket reorder) can be A/B'd without retraining via this technique.
+  Tool kept for future use.
+
+## Where the cache lever actually lives
+
+Three threads with real shrink leverage, ranked by leverage:
+
+1. **Group-lasso L1 sparsity** — already in flight. Targets ~30% row
+   reduction (51 MB → ~36 MB). Crosses 32 MB L3 boundary on most
+   fleet hosts. Real cache-residency effect plausible.
+2. **Hidden size 768 → 512** (Zeus's idea 3) — 33% cut by hidden
+   shrink (51 MB → 34 MB). Tabled until group-lasso resolves.
+3. **Phantom cleanup** (the deferred half of this thread) — 5%
+   matrix shrink (51 → ~48 MB), unlikely to cross any cache boundary.
+   Skip unless a dependent feature requires the index-space reduction.
 
 ## Known risks
 
