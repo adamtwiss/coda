@@ -1740,9 +1740,15 @@ unsafe fn apply_deltas_avx512(
     let src_ptr = src.as_ptr();
     let w_ptr = threat_weights.as_ptr();
 
-    // 8 AVX-512 registers × 32 i16 = 256 elements per chunk
-    const REGS: usize = 8;
-    const CHUNK: usize = REGS * 32; // 256 elements
+    // 16 AVX-512 registers × 32 i16 = 512 elements per chunk. Each weight row
+    // is read 2× across the v9 hidden_size=768 instead of 3× under REGS=8 — a
+    // partial step toward Reckless's REGISTERS=full L1 tile (commit 381ac2f3
+    // +4.90 STC). REGS=24 here regressed −4.4% on Zen 5 because the
+    // i8→i16 expansion (`_mm512_cvtepi8_epi16`) needs temporary registers,
+    // and 24 + temps spilled past the 32 ZMM file. PSQ-side `simd_acc_fused_avx512`
+    // uses REGS=24 because direct i16 add has no expansion.
+    const REGS: usize = 16;
+    const CHUNK: usize = REGS * 32; // 512 elements
 
     let mut offset = 0;
     while offset < hidden_size {

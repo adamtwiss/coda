@@ -390,7 +390,14 @@ unsafe fn simd_acc_fused_avx512(
     sub_rows: &[&[i16]],
     h: usize,
 ) {
-    const REGS: usize = 8;
+    // 24 AVX-512 registers × 32 i16 = 768 elements per chunk — the v9 hidden_size.
+    // Single outer iteration, each weight row read once. Mirrors Reckless's
+    // REGISTERS=L1_SIZE/I16_LANES register-tiling pattern (commit 381ac2f3
+    // +4.90 STC). Direct `add_i16` operations have low register pressure
+    // (no temp i8→i16 conversion like the threat-side apply needs), so 24 ZMM
+    // accumulators + a few for src/dst pointers + add_w/sub_w loads fit
+    // comfortably in AVX-512's 32-ZMM file.
+    const REGS: usize = 24;
     const LANE: usize = 32;
     const CHUNK: usize = REGS * LANE;
 
