@@ -273,6 +273,24 @@ enum Commands {
         #[arg(default_value = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")]
         fen: String,
     },
+    /// Build a per-feature hit histogram across an EPD corpus.
+    /// Enumerates threats from both POVs at each position and counts firings
+    /// per feature index. Used to identify dead/cold/hot features for
+    /// encoding cleanup and importance-ordered FT row layout.
+    ProfileThreats {
+        /// Input EPD file (one FEN per line)
+        #[arg(long, short = 'i')]
+        input: String,
+        /// Output CSV (idx,hits) sorted by hits desc
+        #[arg(long, short = 'o', default_value = "threat_hits.csv")]
+        output: String,
+        /// Limit to first N positions (0 = all)
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+        /// Optional NNUE net — correlate hit counts with per-row weight magnitudes
+        #[arg(long)]
+        net: Option<String>,
+    },
     /// Show statistics for a binpack file
     BinpackStats {
         /// Input binpack file
@@ -869,6 +887,10 @@ fn main() {
             }
         }
 
+        Some(Commands::ProfileThreats { input, output, limit, net }) => {
+            run_profile_threats(&input, &output, limit, net.as_deref());
+        }
+
         Some(Commands::BinpackStats { input }) => {
             run_binpack_stats(&input);
         }
@@ -1268,6 +1290,361 @@ fn run_measure_net_sparsity(net_path: &str) {
     let compact_bytes = ((total_rows - zero_rows) * h) as u64;
     println!("Matrix size: {} MB raw, {} MB compact (post zero-row compaction)",
         matrix_bytes / (1024 * 1024), compact_bytes / (1024 * 1024));
+}
+
+fn run_profile_threats(input: &str, output: &str, limit: usize, net_path: Option<&str>) {
+    use std::io::{BufRead, Write};
+
+    let total_features = threats::num_threat_features();
+    println!("Threat features: {}", total_features);
+    println!("Reading positions from {}", input);
+
+    let file = std::fs::File::open(input)
+        .unwrap_or_else(|_| panic!("Failed to open {}", input));
+    let reader = std::io::BufReader::new(file);
+
+    let mut hits: Vec<u64> = vec![0; total_features];
+    let mut positions = 0usize;
+    let mut total_firings: u64 = 0;
+    let mut max_per_pos: u32 = 0;
+
+    for line in reader.lines() {
+        let line = match line { Ok(l) => l, Err(_) => continue };
+        let line = line.trim();
+        if line.is_empty() { continue; }
+
+        let mut board = board::Board::new();
+        board.set_fen(line);
+
+        let occ = board.colors[0] | board.colors[1];
+        let mut pos_firings: u32 = 0;
+
+        for pov in [types::WHITE, types::BLACK] {
+            let king_bb = board.pieces[types::KING as usize] & board.colors[pov as usize];
+            if king_bb == 0 { continue; }
+            let king_sq = king_bb.trailing_zeros();
+            let mirrored = (king_sq % 8) >= 4;
+
+            threats::enumerate_threats(
+                &board.pieces, &board.colors, &board.mailbox,
+                occ, pov, mirrored,
+                |feat_idx| {
+                    if feat_idx < total_features {
+                        hits[feat_idx] += 1;
+                        pos_firings += 1;
+                    }
+                },
+            );
+        }
+
+        total_firings += pos_firings as u64;
+        if pos_firings > max_per_pos { max_per_pos = pos_firings; }
+
+        positions += 1;
+        if positions % 100_000 == 0 {
+            eprint!("\r  processed {} positions, {} firings", positions, total_firings);
+        }
+        if limit > 0 && positions >= limit { break; }
+    }
+    eprintln!();
+
+    if positions == 0 {
+        println!("No positions processed");
+        return;
+    }
+
+    let dead = hits.iter().filter(|&&h| h == 0).count();
+    let cold = hits.iter().filter(|&&h| h > 0 && h < 10).count();
+    let avg_per_pos = total_firings as f64 / positions as f64;
+    let avg_per_feature = total_firings as f64 / total_features as f64;
+
+    println!();
+    println!("=== Position summary ===");
+    println!("Positions processed:   {}", positions);
+    println!("Total threat firings:  {}", total_firings);
+    println!("Avg firings/position:  {:.2}  (max {})", avg_per_pos, max_per_pos);
+    println!();
+    println!("=== Feature usage ===");
+    println!("Total feature indices: {}", total_features);
+    println!("Dead (0 hits):         {} ({:.1}%)", dead, 100.0 * dead as f64 / total_features as f64);
+    println!("Cold (1-9 hits):       {} ({:.1}%)", cold, 100.0 * cold as f64 / total_features as f64);
+    println!("Avg firings/feature:   {:.1}", avg_per_feature);
+
+    let mut idx_by_hits: Vec<(usize, u64)> = hits.iter().enumerate().map(|(i, &h)| (i, h)).collect();
+    idx_by_hits.sort_by(|a, b| b.1.cmp(&a.1));
+
+    println!();
+    println!("=== Concentration ===");
+    for &pct in &[1.0_f64, 5.0, 10.0, 20.0, 50.0] {
+        let k = ((total_features as f64) * pct / 100.0) as usize;
+        let sum: u64 = idx_by_hits.iter().take(k).map(|(_, h)| *h).sum();
+        let share = 100.0 * sum as f64 / total_firings.max(1) as f64;
+        println!("Top {:>4.1}% ({:>5} features): {:>6.2}% of all firings",
+            pct, k, share);
+    }
+
+    println!();
+    println!("=== Top 20 hottest features ===");
+    println!("{:>6}  {:>12}  {:>8}", "idx", "hits", "share%");
+    for &(idx, h) in idx_by_hits.iter().take(20) {
+        let share = 100.0 * h as f64 / total_firings.max(1) as f64;
+        println!("{:>6}  {:>12}  {:>7.3}%", idx, h, share);
+    }
+
+    // Build reverse map: feature idx → (attacker_cp, victim_cp).
+    // Enumerate (attacker_cp, attacker_sq, victim_cp, victim_sq, mirrored)
+    // with pov=WHITE (the encoding's canonical perspective).
+    println!();
+    println!("=== Building reverse map (idx → piece-pair) ===");
+    let mut idx_to_pair: Vec<Option<(u8, u8)>> = vec![None; total_features];
+    let mut indices_per_pair: [[u32; 12]; 12] = [[0; 12]; 12];
+
+    // Brute-force enumeration over all (a_cp, a_sq, v_cp, v_sq, mir) to map every
+    // reachable idx to its owning (a_cp, v_cp) pair. We don't restrict to attack patterns
+    // because the encoder's ATTACK_INDEX_LOOKUP produces non-negative idx even for
+    // (from, to) outside the empty-board attack set; some indices in the allocated
+    // address space are only reachable via tuples that don't correspond to legal attacks
+    // (encoder allocates per-piece × per-channel slots regardless of attack-pattern fit).
+    for attacker_cp in 0..12u8 {
+        let attacker_pt = attacker_cp % 6;
+        for attacker_sq in 0..64u32 {
+            if attacker_pt == 0 && (attacker_sq < 8 || attacker_sq >= 56) { continue; }
+            for victim_cp in 0..12u8 {
+                let victim_pt = victim_cp % 6;
+                for victim_sq in 0..64u32 {
+                    if victim_sq == attacker_sq { continue; }
+                    if victim_pt == 0 && (victim_sq < 8 || victim_sq >= 56) { continue; }
+                    for mirrored in [false, true] {
+                        let idx = threats::threat_index(
+                            attacker_cp as usize, attacker_sq,
+                            victim_cp as usize, victim_sq,
+                            mirrored, types::WHITE,
+                        );
+                        if idx >= 0 && (idx as usize) < total_features {
+                            let u = idx as usize;
+                            if idx_to_pair[u].is_none() {
+                                idx_to_pair[u] = Some((attacker_cp, victim_cp));
+                                indices_per_pair[attacker_cp as usize][victim_cp as usize] += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mapped = idx_to_pair.iter().filter(|x| x.is_some()).count();
+    println!("Reverse-mapped: {}/{} indices ({} unmapped)",
+        mapped, total_features, total_features - mapped);
+
+    // Aggregate dead/cold/hits per (attacker_cp, victim_cp) pair
+    let mut pair_dead: [[u32; 12]; 12] = [[0; 12]; 12];
+    let mut pair_cold: [[u32; 12]; 12] = [[0; 12]; 12];
+    let mut pair_hits: [[u64; 12]; 12] = [[0; 12]; 12];
+    let mut unmapped_dead = 0u32;
+    let mut unmapped_total = 0u32;
+    for idx in 0..total_features {
+        let h = hits[idx];
+        match idx_to_pair[idx] {
+            Some((a, v)) => {
+                pair_hits[a as usize][v as usize] += h;
+                if h == 0 {
+                    pair_dead[a as usize][v as usize] += 1;
+                } else if h < 10 {
+                    pair_cold[a as usize][v as usize] += 1;
+                }
+            }
+            None => {
+                unmapped_total += 1;
+                if h == 0 { unmapped_dead += 1; }
+            }
+        }
+    }
+
+    let pn = ["wP","wN","wB","wR","wQ","wK","bP","bN","bB","bR","bQ","bK"];
+
+    println!();
+    println!("=== Dead-feature breakdown by piece-pair ===");
+    println!("(rows: attacker, cols: victim. Each cell = dead/total | cell%dead)");
+    println!("(white-perspective canonical encoding; black-perspective tuples remap to same indices)");
+    print!("{:>4}", "");
+    for v in 0..12 { print!("  {:>10}", pn[v]); }
+    println!();
+    for a in 0..12 {
+        print!("{:>4}", pn[a]);
+        for v in 0..12 {
+            let total = indices_per_pair[a][v];
+            let dead = pair_dead[a][v];
+            if total == 0 {
+                print!("  {:>10}", "—");
+            } else {
+                print!("  {:>4}/{:<5}", dead, total);
+            }
+        }
+        println!();
+    }
+
+    // Top-K dead pairs by absolute count
+    let mut pair_summary: Vec<(u8, u8, u32, u32, u64)> = Vec::new();
+    for a in 0..12 {
+        for v in 0..12 {
+            let total = indices_per_pair[a][v];
+            if total > 0 {
+                pair_summary.push((a as u8, v as u8, indices_per_pair[a][v], pair_dead[a][v], pair_hits[a][v]));
+            }
+        }
+    }
+    pair_summary.sort_by(|p, q| q.3.cmp(&p.3));
+
+    println!();
+    println!("=== Top 20 piece-pairs by absolute dead-feature count ===");
+    println!("{:>4} → {:>4}   {:>8} {:>8} {:>8}   {:>14}",
+        "attk", "vctm", "total", "dead", "%dead", "total_hits");
+    for &(a, v, total, dead, h) in pair_summary.iter().take(20) {
+        let pct = 100.0 * dead as f64 / total as f64;
+        println!("{:>4} → {:>4}   {:>8} {:>8} {:>7.1}%   {:>14}",
+            pn[a as usize], pn[v as usize], total, dead, pct, h);
+    }
+
+    // Fully-dead pairs (100% dead)
+    println!();
+    println!("=== Fully-dead piece-pairs (100% of features for this pair never fire) ===");
+    let mut full_dead_count = 0u32;
+    for &(a, v, total, dead, _h) in &pair_summary {
+        if total > 0 && dead == total {
+            println!("  {} → {}: {} dead features", pn[a as usize], pn[v as usize], total);
+            full_dead_count += total;
+        }
+    }
+    println!("Total features in fully-dead pairs: {} ({:.1}% of all features)",
+        full_dead_count, 100.0 * full_dead_count as f64 / total_features as f64);
+
+    if unmapped_total > 0 {
+        println!();
+        println!("Note: {} unmapped indices ({} dead) — phantom address-space slots", unmapped_total, unmapped_dead);
+        println!("  the encoder allocates per piece × channel but no game state can produce.");
+        println!("  These are CLEANLY DROPPABLE — no Elo risk. ({:.1}% of all features)",
+            100.0 * unmapped_total as f64 / total_features as f64);
+    }
+
+    // Optional: correlate hits with NNUE row weight magnitudes
+    if let Some(path) = net_path {
+        use crate::nnue::NNUENet;
+        match NNUENet::load(path) {
+            Err(e) => {
+                println!();
+                println!("Failed to load net {} for magnitude correlation: {}", path, e);
+            }
+            Ok(net) => {
+                if net.num_threat_features != total_features {
+                    println!();
+                    println!("Net threat-feature count {} != current encoding {}; skipping correlation",
+                        net.num_threat_features, total_features);
+                } else {
+                    let h = net.hidden_size;
+                    let mut row_l1: Vec<u32> = vec![0; total_features];
+                    let mut row_max: Vec<u32> = vec![0; total_features];
+                    for r in 0..total_features {
+                        let row = &net.threat_weights[r * h..(r + 1) * h];
+                        let mut l1 = 0u32;
+                        let mut mx = 0u32;
+                        for &w in row {
+                            let a = (w as i32).unsigned_abs();
+                            l1 += a;
+                            if a > mx { mx = a; }
+                        }
+                        row_l1[r] = l1;
+                        row_max[r] = mx;
+                    }
+
+                    println!();
+                    println!("=== Hits × weight-magnitude correlation: {} ===", path);
+
+                    // Confusion matrix: alive-by-hits × alive-by-magnitude
+                    // alive-by-hits: hits >= 10
+                    // alive-by-magnitude: max_abs >= 4
+                    let mut hh_mh = 0u32; // high-hits, high-mag
+                    let mut hh_lm = 0u32; // high-hits, low-mag
+                    let mut lh_mh = 0u32; // low-hits, high-mag
+                    let mut lh_lm = 0u32; // low-hits, low-mag
+                    let mut zero_hits_zero_mag = 0u32;
+                    let mut zero_hits_nonzero_mag = 0u32;
+                    let mut nonzero_hits_zero_mag = 0u32;
+                    for r in 0..total_features {
+                        let h = hits[r];
+                        let m = row_max[r];
+                        if h == 0 {
+                            if m == 0 { zero_hits_zero_mag += 1; }
+                            else { zero_hits_nonzero_mag += 1; }
+                        } else if m == 0 {
+                            nonzero_hits_zero_mag += 1;
+                        }
+                        let alive_h = h >= 10;
+                        let alive_m = m >= 4;
+                        match (alive_h, alive_m) {
+                            (true, true)   => hh_mh += 1,
+                            (true, false)  => hh_lm += 1,
+                            (false, true)  => lh_mh += 1,
+                            (false, false) => lh_lm += 1,
+                        }
+                    }
+
+                    println!("Pure agreement:");
+                    println!("  zero hits AND zero |max|:                {} ({:.1}% of features)",
+                        zero_hits_zero_mag, 100.0 * zero_hits_zero_mag as f64 / total_features as f64);
+                    println!("  zero hits but NONZERO |max|:             {} (rows trained but never fire)",
+                        zero_hits_nonzero_mag);
+                    println!("  NONZERO hits but zero |max|:             {} (rows fire but lasso killed weights)",
+                        nonzero_hits_zero_mag);
+                    println!();
+                    println!("Alive thresholds: hits>=10, |max|>=4");
+                    println!("                       |max|>=4   |max|<4");
+                    println!("  hits>=10        :    {:>8}   {:>8}", hh_mh, hh_lm);
+                    println!("  hits<10         :    {:>8}   {:>8}", lh_mh, lh_lm);
+                    let agreement = hh_mh + lh_lm;
+                    let disagree  = hh_lm + lh_mh;
+                    println!("  Agreement: {} ({:.1}%)  Disagree: {} ({:.1}%)",
+                        agreement, 100.0 * agreement as f64 / total_features as f64,
+                        disagree,  100.0 * disagree  as f64 / total_features as f64);
+
+                    // Importance score: hits × L1
+                    let mut score: Vec<(usize, u128, u64, u32)> = (0..total_features).map(|r| {
+                        let s = hits[r] as u128 * row_l1[r] as u128;
+                        (r, s, hits[r], row_l1[r])
+                    }).collect();
+                    score.sort_by(|a, b| b.1.cmp(&a.1));
+
+                    println!();
+                    println!("=== Concentration by importance (hits × |row|_1) ===");
+                    let total_score: u128 = score.iter().map(|(_, s, _, _)| s).sum();
+                    for &pct in &[1.0_f64, 5.0, 10.0, 20.0] {
+                        let k = ((total_features as f64) * pct / 100.0) as usize;
+                        let sum: u128 = score.iter().take(k).map(|(_, s, _, _)| *s).sum();
+                        let share = 100.0 * sum as f64 / total_score.max(1) as f64;
+                        println!("Top {:>4.1}% ({:>5} features): {:>6.2}% of importance",
+                            pct, k, share);
+                    }
+
+                    println!();
+                    println!("=== Top 20 by importance score ===");
+                    println!("{:>6}  {:>12}  {:>10}  {:>14}", "idx", "hits", "row_L1", "score(hits×L1)");
+                    for &(idx, s, h, l1) in score.iter().take(20) {
+                        println!("{:>6}  {:>12}  {:>10}  {:>14}", idx, h, l1, s);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut out = std::io::BufWriter::new(
+        std::fs::File::create(output).unwrap_or_else(|_| panic!("Failed to create {}", output))
+    );
+    writeln!(out, "idx,hits").expect("write");
+    for (idx, h) in &idx_by_hits {
+        writeln!(out, "{},{}", idx, h).expect("write");
+    }
+    println!();
+    println!("CSV written to {}", output);
 }
 
 fn run_binpack_stats(input: &str) {
