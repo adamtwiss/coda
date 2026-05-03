@@ -521,7 +521,7 @@ fn main() {
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { continue; }
                     // Pick the first legal quiet we can make/unmake cleanly.
-                    let mv = legal.moves[0];
+                    let mv = legal.get(0);
                     for _ in 0..reps {
                         let us = board.side_to_move;
                         let them = flip_color(us);
@@ -553,7 +553,7 @@ fn main() {
                     board.generate_threat_deltas = net.has_threats;
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { continue; }
-                    let mv = legal.moves[0];
+                    let mv = legal.get(0);
                     for _ in 0..reps {
                         if !board.make_move(mv) { break; }
                         board.unmake_move();
@@ -990,7 +990,7 @@ fn run_fuzz_threats(count: usize, seed: u64, max_plies: usize, verbose: usize, p
             let moves = crate::movegen::generate_legal_moves(&board);
             if moves.len == 0 { break; }
             let pick = (next() as usize) % moves.len;
-            board.make_move(moves.moves[pick]);
+            board.make_move(moves.get(pick));
             // Skip positions where only king is left (rare terminal)
             if (board.pieces[KING as usize]).count_ones() < 2 { break; }
         }

@@ -6082,7 +6082,7 @@ mod tests {
                 for ply in 0..MAX_PLIES {
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { break; }
-                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                    let mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
 
                     let us = board.side_to_move;
                     let them = flip_color(us);

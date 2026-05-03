@@ -117,7 +117,7 @@ pub fn move_to_san(board: &Board, mv: Move) -> String {
         let mut same_rank = false;
 
         for i in 0..legal.len {
-            let other = legal.moves[i];
+            let other = legal.get(i);
             if other == mv { continue; }
             let other_from = move_from(other);
             let other_to = move_to(other);

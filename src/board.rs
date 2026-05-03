@@ -1294,7 +1294,7 @@ mod tests {
                 for ply in 0..PLIES {
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { break; }
-                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                    let mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
 
                     board.make_move(mv);
 
@@ -1510,7 +1510,7 @@ mod tests {
                 for ply in 0..PLIES {
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { break; }
-                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                    let mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
 
                     board.make_move(mv);
 
@@ -1593,7 +1593,7 @@ mod tests {
                         board.make_null_move();
                         ops.push(true);
                     } else {
-                        let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                        let mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
                         board.make_move(mv);
                         ops.push(false);
                     }
@@ -1686,7 +1686,7 @@ mod tests {
                 for _ in 0..PLIES {
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { break; }
-                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                    let mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
                     board.make_move(mv);
                     move_count += 1;
                 }
@@ -1889,7 +1889,7 @@ mod tests {
                 for ply in 0..PLIES {
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { break; }
-                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                    let mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
                     board.make_move(mv);
 
                     let main = check_repetition_main(&board);

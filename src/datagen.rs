@@ -252,7 +252,7 @@ fn play_one_game(info: &mut SearchInfo, rng: &mut SimpleRng, depth: i32, blunder
         let legal = generate_legal_moves(&board);
         if legal.len == 0 { return Vec::new(); }
         let idx = rng.next_u64() as usize % legal.len;
-        board.make_move(legal.moves[idx]);
+        board.make_move(legal.get(idx));
         ply += 1;
     }
 
@@ -285,7 +285,7 @@ fn play_one_game(info: &mut SearchInfo, rng: &mut SimpleRng, depth: i32, blunder
         let mv = if force_capture_rate > 0.0 && rng.next_f64() < force_capture_rate && ply >= 4 {
             // Force a random capture if any are available
             let captures: Vec<Move> = (0..legal.len)
-                .map(|i| legal.moves[i])
+                .map(|i| legal.get(i))
                 .filter(|&m| {
                     board.piece_type_at(move_to(m)) != NO_PIECE_TYPE
                     || move_flags(m) == FLAG_EN_PASSANT
@@ -298,7 +298,7 @@ fn play_one_game(info: &mut SearchInfo, rng: &mut SimpleRng, depth: i32, blunder
             }
         } else if blunder_rate > 0.0 && rng.next_f64() < blunder_rate && ply >= 4 {
             let idx = rng.next_u64() as usize % legal.len;
-            legal.moves[idx]
+            legal.get(idx)
         } else {
             best_move
         };

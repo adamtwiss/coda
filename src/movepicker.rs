@@ -551,7 +551,7 @@ impl MovePicker {
         let history = unsafe { &*self.history };
 
         for i in 0..caps.len {
-            let m = caps.moves[i];
+            let m = caps.get(i);
             if m == self.tt_move {
                 continue;
             }
@@ -589,7 +589,7 @@ impl MovePicker {
         let history = unsafe { &*self.history };
 
         for i in 0..quiets.len {
-            let m = quiets.moves[i];
+            let m = quiets.get(i);
             if m == self.tt_move {
                 continue;
             }
@@ -785,7 +785,7 @@ impl MovePicker {
         let history = unsafe { &*self.history };
 
         for i in 0..all.len {
-            let m = all.moves[i];
+            let m = all.get(i);
             if m == self.tt_move {
                 continue;
             }
@@ -878,11 +878,11 @@ impl MovePicker {
         }
 
         if best_idx != self.index {
-            self.moves.moves.swap(self.index, best_idx);
+            self.moves.swap(self.index, best_idx);
             self.scores.swap(self.index, best_idx);
         }
 
-        let mv = self.moves.moves[self.index];
+        let mv = self.moves.get(self.index);
         self.index += 1;
         mv
     }
@@ -1213,7 +1213,7 @@ impl QMovePicker {
 
         // Score moves: MVV-LVA + captHist for captures
         for i in 0..picker.moves.len {
-            let mv = picker.moves.moves[i];
+            let mv = picker.moves.get(i);
             // Skip TT move in scoring (will be tried first)
             if mv == picker.tt_move {
                 picker.scores[i] = i32::MIN;
@@ -1275,10 +1275,10 @@ impl QMovePicker {
                     best_idx = j;
                 }
             }
-            self.moves.moves.swap(self.idx, best_idx);
+            self.moves.swap(self.idx, best_idx);
             self.scores.swap(self.idx, best_idx);
 
-            let mv = self.moves.moves[self.idx];
+            let mv = self.moves.get(self.idx);
             self.idx += 1;
 
             // Skip TT move (already tried)
@@ -1408,7 +1408,7 @@ mod tests {
                     if legal.len == 0 { break; }
                     // Check every legal move is accepted.
                     for i in 0..legal.len {
-                        let mv = legal.moves[i];
+                        let mv = legal.get(i);
                         if !is_pseudo_legal(&board, mv) {
                             panic!(
                                 "is_pseudo_legal rejected legal move: fen_idx={} game={} ply={} \
@@ -1423,7 +1423,7 @@ mod tests {
                         }
                     }
                     // Advance the game with a random legal move.
-                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                    let mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
                     board.make_move(mv);
                 }
             }
@@ -1472,14 +1472,14 @@ mod tests {
             // "wrong flag happens to match another legal move" from
             // "genuinely illegal move incorrectly accepted".
             let pseudo = generate_all_moves(&board);
-            let mut pseudo_set: Vec<Move> = (0..pseudo.len).map(|i| pseudo.moves[i]).collect();
+            let mut pseudo_set: Vec<Move> = (0..pseudo.len).map(|i| pseudo.get(i)).collect();
             pseudo_set.sort();
             pseudo_set.dedup();
 
             let legal = generate_legal_moves(&board);
 
             for i in 0..legal.len {
-                let mv = legal.moves[i];
+                let mv = legal.get(i);
                 let from = move_from(mv);
                 let to = move_to(mv);
 

@@ -11,16 +11,29 @@ use crate::board::Board;
 pub const MAX_MOVES: usize = 256;
 
 /// Move list with stack-allocated storage.
+///
+/// `moves` is `[MaybeUninit<Move>; MAX_MOVES]` rather than `[Move; MAX_MOVES]`
+/// so the constructor can skip the 512-byte zero-init that the compiler
+/// otherwise emits. With ~600k MoveList constructions per bench (movegen
+/// callsites + every MovePicker), the eliminated store traffic is ~300 MB.
+/// Same memset-skip pattern as `forward_with_l1_pairwise_inner` (#927) and
+/// `apply_threat_deltas` (#921); push() writes slot N before incrementing
+/// len, so as_slice() only ever exposes initialized slots.
 pub struct MoveList {
-    pub moves: [Move; MAX_MOVES],
+    moves: [std::mem::MaybeUninit<Move>; MAX_MOVES],
     pub len: usize,
 }
 
 impl MoveList {
     #[inline]
     pub fn new() -> Self {
+        // SAFETY: `[MaybeUninit<Move>; N]::uninit().assume_init()` is sound —
+        // each slot is itself a `MaybeUninit<Move>`, which has no validity
+        // invariants. Reading these slots (e.g. via `assume_init_ref`)
+        // requires writing them first; that invariant is enforced by `push`
+        // and `as_slice` only exposes [..len].
         MoveList {
-            moves: [0; MAX_MOVES],
+            moves: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             len: 0,
         }
     }
@@ -28,13 +41,40 @@ impl MoveList {
     #[inline(always)]
     pub fn push(&mut self, mv: Move) {
         debug_assert!(self.len < MAX_MOVES);
-        self.moves[self.len] = mv;
+        self.moves[self.len].write(mv);
         self.len += 1;
     }
 
     #[inline(always)]
     pub fn as_slice(&self) -> &[Move] {
-        &self.moves[..self.len]
+        // SAFETY: push() writes slot `len` before incrementing, so [..len]
+        // is fully initialized. MaybeUninit<T> has the same layout as T.
+        unsafe { std::slice::from_raw_parts(self.moves.as_ptr() as *const Move, self.len) }
+    }
+
+    /// Index access — equivalent to `as_slice()[i]` but slightly more concise
+    /// for callers that already index by integer.
+    #[inline(always)]
+    pub fn get(&self, i: usize) -> Move {
+        debug_assert!(i < self.len, "MoveList::get out of bounds: {} >= len {}", i, self.len);
+        // SAFETY: caller invariant `i < len` → slot is initialized by push.
+        unsafe { self.moves[i].assume_init() }
+    }
+
+    /// Mutable index access — used by sort/swap helpers in MovePicker.
+    /// Caller must ensure `i < len` (debug-asserted).
+    #[inline(always)]
+    pub fn set(&mut self, i: usize, mv: Move) {
+        debug_assert!(i < self.len, "MoveList::set out of bounds: {} >= len {}", i, self.len);
+        self.moves[i].write(mv);
+    }
+
+    /// Swap two slots — used by MovePicker's selection-sort partial pass.
+    /// Both indices must be `< len` (debug-asserted).
+    #[inline(always)]
+    pub fn swap(&mut self, i: usize, j: usize) {
+        debug_assert!(i < self.len && j < self.len);
+        self.moves.swap(i, j);
     }
 }
 
@@ -415,13 +455,13 @@ pub fn generate_all_moves(board: &Board) -> MoveList {
     // Captures
     let caps = generate_captures(board);
     for i in 0..caps.len {
-        list.push(caps.moves[i]);
+        list.push(caps.get(i));
     }
 
     // Quiets
     let quiets = generate_quiets(board);
     for i in 0..quiets.len {
-        list.push(quiets.moves[i]);
+        list.push(quiets.get(i));
     }
 
     list
@@ -679,7 +719,7 @@ pub fn generate_legal_moves(board: &Board) -> MoveList {
     let mut legal = MoveList::new();
 
     for i in 0..pseudo.len {
-        let mv = pseudo.moves[i];
+        let mv = pseudo.get(i);
         if board.is_legal(mv, pinned, checkers) {
             legal.push(mv);
         }
@@ -706,7 +746,7 @@ pub fn perft(board: &mut Board, depth: u32) -> u64 {
 
     let mut nodes = 0u64;
     for i in 0..moves.len {
-        let mv = moves.moves[i];
+        let mv = moves.get(i);
         board.make_move(mv);
         nodes += perft(board, depth - 1);
         board.unmake_move();
@@ -721,7 +761,7 @@ pub fn perft_divide(board: &mut Board, depth: u32) -> u64 {
     let mut total = 0u64;
 
     for i in 0..moves.len {
-        let mv = moves.moves[i];
+        let mv = moves.get(i);
         board.make_move(mv);
         let count = if depth <= 1 { 1 } else { perft(board, depth - 1) };
         board.unmake_move();
@@ -818,7 +858,7 @@ mod tests {
         let moves = generate_legal_moves(&b);
         // EP capture e4xd3 should be illegal because it discovers check from Qh4
         for i in 0..moves.len {
-            let mv = moves.moves[i];
+            let mv = moves.get(i);
             if move_flags(mv) == FLAG_EN_PASSANT {
                 panic!("EP move should be illegal in this position");
             }
@@ -843,7 +883,7 @@ mod tests {
         // Get all moves, filter to quiets
         let all = generate_all_moves(&b);
         let mut expected: Vec<Move> = (0..all.len)
-            .map(|i| all.moves[i])
+            .map(|i| all.get(i))
             .filter(|&mv| is_quiet(&b, mv))
             .collect();
         expected.sort();
@@ -851,7 +891,7 @@ mod tests {
         // Get quiet moves directly
         let quiets = generate_quiets(&b);
         let mut actual: Vec<Move> = (0..quiets.len)
-            .map(|i| quiets.moves[i])
+            .map(|i| quiets.get(i))
             .collect();
         actual.sort();
 
@@ -899,13 +939,13 @@ mod tests {
         let b = Board::from_fen(fen);
 
         let all = generate_all_moves(&b);
-        let mut all_set: Vec<Move> = (0..all.len).map(|i| all.moves[i]).collect();
+        let mut all_set: Vec<Move> = (0..all.len).map(|i| all.get(i)).collect();
         all_set.sort();
 
         let caps = generate_captures(&b);
         let quiets = generate_quiets(&b);
-        let mut union: Vec<Move> = (0..caps.len).map(|i| caps.moves[i])
-            .chain((0..quiets.len).map(|i| quiets.moves[i]))
+        let mut union: Vec<Move> = (0..caps.len).map(|i| caps.get(i))
+            .chain((0..quiets.len).map(|i| quiets.get(i)))
             .collect();
         union.sort();
 
@@ -941,7 +981,7 @@ mod tests {
         let moves = generate_legal_moves(&b);
         // b7b8 promotions (4) + b7xa8 capture promotions (4) = 8 pawn moves minimum
         let promo_moves: Vec<_> = (0..moves.len)
-            .filter(|&i| is_promotion(moves.moves[i]))
+            .filter(|&i| is_promotion(moves.get(i)))
             .collect();
         assert!(promo_moves.len() >= 4, "Should have at least 4 promotion moves, got {}", promo_moves.len());
     }
@@ -963,7 +1003,7 @@ mod tests {
         // Legal moves via standard path
         let all = generate_all_moves(&b);
         let mut expected: Vec<Move> = (0..all.len)
-            .map(|i| all.moves[i])
+            .map(|i| all.get(i))
             .filter(|&mv| b.is_legal(mv, pinned, checkers))
             .collect();
         expected.sort();
@@ -971,7 +1011,7 @@ mod tests {
         // Legal moves via evasion generator
         let evasions = generate_evasions(&mut b, checkers, pinned);
         let mut actual: Vec<Move> = (0..evasions.len)
-            .map(|i| evasions.moves[i])
+            .map(|i| evasions.get(i))
             .collect();
         actual.sort();
 
