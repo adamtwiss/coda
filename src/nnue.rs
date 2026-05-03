@@ -4601,9 +4601,25 @@ unsafe fn finny_batch_apply_avx512(
     adds: &[usize],
     subs: &[usize],
 ) {
-    const REGS: usize = 8;
+    // 24 AVX-512 registers × 32 i16 = 768 elements per chunk — covers the
+    // v9 hidden_size=768 in a SINGLE outer iteration. Each weight row is
+    // read once per refresh instead of 3× under the previous REGS=8 /
+    // CHUNK=256 tile. Same register-tiling pattern as `simd_acc_fused_avx512`
+    // (PSQ apply, REGS=8→24 +1.5 Elo H1 SPRT #926) and Reckless commit
+    // 381ac2f3 ("AVX-512 threat-update register tiling REGISTERS=full L1"
+    // +4.90 STC).
+    //
+    // Direct i16 add (no i8→i16 expansion temps) keeps register pressure
+    // contained: even though the inner delta loop persists the 24 ZMM
+    // accumulators across many add/sub iterations during a king-bucket-cross
+    // refresh, the load-add-store pattern only needs the 24 accumulators +
+    // 1 weight register + a few address registers, which fits AVX-512's
+    // 32-ZMM file. The threat-side `apply_deltas_avx512` couldn't go past
+    // REGS=16 because of `_mm512_cvtepi8_epi16` temps; this path doesn't
+    // have that constraint.
+    const REGS: usize = 24;
     const LANE: usize = 32; // 32 i16 per ZMM
-    const CHUNK: usize = REGS * LANE; // 256 elements per chunk
+    const CHUNK: usize = REGS * LANE; // 768 elements per chunk
 
     let acc_ptr = acc.as_mut_ptr();
     let w_ptr = input_weights.as_ptr();
