@@ -2623,6 +2623,31 @@ impl NNUENet {
 
         let has_threats = !stm_threat.is_empty();
 
+        // Prefetch L1 weights into L1 cache before pairwise pack runs. The
+        // sparse-VNNI kernel reads ~12 KB of weights sequentially; the
+        // preceding `apply_threat_deltas` evicted them by streaming through
+        // scattered rows of the 49 MB threat matrix. Issuing 8 prefetches
+        // here jump-starts the HW prefetcher so that by the time the
+        // ~160-cycle pairwise pack finishes, weights are warm.
+        //
+        // 8 cache lines = 512 bytes covers the first chunk's worth of weights;
+        // HW prefetcher streams the remainder. Negligible cost on cache miss
+        // (already going to load these), zero cost on cache hit (T0 is a hint).
+        #[cfg(target_arch = "x86_64")]
+        if !self.l1_weights_sparse.is_empty() {
+            unsafe {
+                let w_ptr = self.l1_weights_sparse.as_ptr();
+                std::arch::x86_64::_mm_prefetch(w_ptr.add(0)    as *const i8, std::arch::x86_64::_MM_HINT_T0);
+                std::arch::x86_64::_mm_prefetch(w_ptr.add(64)   as *const i8, std::arch::x86_64::_MM_HINT_T0);
+                std::arch::x86_64::_mm_prefetch(w_ptr.add(128)  as *const i8, std::arch::x86_64::_MM_HINT_T0);
+                std::arch::x86_64::_mm_prefetch(w_ptr.add(192)  as *const i8, std::arch::x86_64::_MM_HINT_T0);
+                std::arch::x86_64::_mm_prefetch(w_ptr.add(256)  as *const i8, std::arch::x86_64::_MM_HINT_T0);
+                std::arch::x86_64::_mm_prefetch(w_ptr.add(320)  as *const i8, std::arch::x86_64::_MM_HINT_T0);
+                std::arch::x86_64::_mm_prefetch(w_ptr.add(384)  as *const i8, std::arch::x86_64::_MM_HINT_T0);
+                std::arch::x86_64::_mm_prefetch(w_ptr.add(448)  as *const i8, std::arch::x86_64::_MM_HINT_T0);
+            }
+        }
+
         // CReLU + pairwise for each perspective → pw values each
         // When threats are present, fuses PSQ+threat combine into the SIMD pack.
         //
