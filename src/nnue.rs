@@ -4510,7 +4510,13 @@ impl NNUEAccumulator {
             // No cache — full recompute with register blocking. Build into the
             // Finny entry directly to avoid a borrow conflict, then copy out.
             entry.acc[..h].copy_from_slice(&net.input_biases[..h]);
-            let mut piece_indices: [usize; 32] = [0; 32];
+            // MaybeUninit skips the 256-byte zero-init memset. piece_indices[..n_pieces]
+            // is fully written below; consumers only read that prefix. Same pattern as
+            // forward_with_l1 and apply_threat_deltas (#921, #927, #931).
+            let mut piece_indices_storage = std::mem::MaybeUninit::<[usize; 32]>::uninit();
+            let piece_indices: &mut [usize] = unsafe {
+                std::slice::from_raw_parts_mut(piece_indices_storage.as_mut_ptr() as *mut usize, 32)
+            };
             let mut n_pieces = 0usize;
             for color in 0..2u8 {
                 for pt in 0..6u8 {
@@ -4535,9 +4541,17 @@ impl NNUEAccumulator {
         // Diff cached vs current — collect all changes, then batch apply
         // Register-blocking: load 8 regs once, apply ALL adds/subs, store once
 
-        // Collect feature indices for adds and subs
-        let mut add_rows: [usize; 32] = [0; 32];
-        let mut sub_rows: [usize; 32] = [0; 32];
+        // Collect feature indices for adds and subs.
+        // MaybeUninit skips the 512-byte zero-init memset (2 × 256). [..n_*] is
+        // fully written below.
+        let mut add_rows_storage = std::mem::MaybeUninit::<[usize; 32]>::uninit();
+        let add_rows: &mut [usize] = unsafe {
+            std::slice::from_raw_parts_mut(add_rows_storage.as_mut_ptr() as *mut usize, 32)
+        };
+        let mut sub_rows_storage = std::mem::MaybeUninit::<[usize; 32]>::uninit();
+        let sub_rows: &mut [usize] = unsafe {
+            std::slice::from_raw_parts_mut(sub_rows_storage.as_mut_ptr() as *mut usize, 32)
+        };
         let mut n_adds = 0usize;
         let mut n_subs = 0usize;
 
