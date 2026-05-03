@@ -7939,10 +7939,13 @@ Branches retired: experiment/prev-move-corrhist, experiment/tune-906-applied.
 
 ## 2026-05-03 — hl-crelu vs hl-screlu activation re-litigation (#919/#920 fired)
 
-Original "hl-screlu wins" finding (commit b5590de, 2026-04-19) was K=1
-vs K=1 — single-replica SPRT, made before we understood that v9
-single-replica seed variance is ±20 Elo. Possibly attributable to a
-lucky training run rather than architectural superiority.
+Original direction (b5590de, 2026-04-19): we switched HL activation
+from SCReLU → CReLU after a single SPRT showed hl-crelu winning,
+adopting Reckless's pattern. That decision was K=1 vs K=1 — made
+before we understood v9 single-replica seed variance is ±20 Elo.
+Possible the original SPRT was seed-luck rather than architectural
+truth. Re-litigating with K=3 within-group rankings now available
+from #896-898 (hl-crelu) and #915-917 (hl-screlu).
 
 Existing data: 3 hl-crelu SB200 replicas (#896/#897/#898 + a 4th gpu1
 from basin B); 3 hl-screlu SB200 replicas (#915/#916/#917). Within-group
@@ -7969,11 +7972,35 @@ Two SPRTs fired at bounds [-3, 3], 10+0.1, dev=hl-crelu / base=hl-screlu
 
 Cost: ~6-10K fleet games combined, ~1-2 days fleet.
 
-**If both SPRTs say hl-crelu wins** → the original hl-screlu finding
-was lucky-seed-driven; we've been deploying the wrong activation.
-Switch trunk to hl-crelu prod, retune. **If only #919 (best) wins
-but #920 (median) is flat or hl-screlu** → gpu3-hlscrelu was the
-lucky pull; architectural difference is small or zero. **If both
-SPRTs say hl-screlu wins** → original finding stands at architectural
-level despite K=3 noise concerns.
+**Decision matrix** (positive = hl-crelu wins):
+
+| #919 (best) | #920 (median) | Reading |
+|---|---|---|
+| hl-crelu wins | hl-crelu wins | Original direction reconfirmed at all comparisons; clean architectural advantage. |
+| hl-screlu wins | hl-screlu wins | Original was wrong; switch back. |
+| flat | hl-crelu wins | Original direction is right architecturally; gpu3-hlscrelu is a lucky outlier closing the gap at best-of-each. **Most likely outcome based on within-group rankings.** |
+| hl-crelu wins | flat | Best hl-crelu got lucky; architecture is close to neutral. |
+
+### Result: median wins clearly, best is flat — original direction confirmed
+
+- **#920 median-vs-median: +6.6 ±5.3 / 4874 games, H1 ✓** — hl-crelu
+  is +6.6 Elo over hl-screlu at the architectural (median replica)
+  level. Decisive at small game count.
+- **#919 best-vs-best: -0.2 ±2.9 / 16K+ games, →H0** — flat.
+  gpu3-hlscrelu's lucky-seed magnitude (~+20 above its arch mean,
+  more than the +17 expected E[max-of-3]) approximately cancels the
+  +6.6 architectural advantage when both candidates are best-of-3.
+
+**Reading:** the original SCReLU → CReLU switch (b5590de) was the
+right architectural call. K=3 evidence now backs what was
+previously a K=1 SPRT. No deployment change needed (prod is already
+hl-crelu). Future training experiments default to hl-crelu;
+variance probes should switch substrate to hl-crelu (closer to prod,
++6.6 Elo stronger baseline).
+
+**Methodology lesson:** with current ±20 single-replica seed noise,
+K=1 vs K=1 SPRTs cannot distinguish a +5-10 Elo architectural
+effect from seed luck. Median-vs-median (or full anchor) is the
+correct protocol for net-vs-net architectural comparisons. Memory
+entry: see `feedback_net_vs_net_needs_median_or_anchor.md` (TODO).
 
