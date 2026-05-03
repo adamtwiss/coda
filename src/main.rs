@@ -1494,6 +1494,25 @@ fn run_profile_threats(input: &str, output: &str, limit: usize, net_path: Option
             }
         }
     }
+
+    // Channel-level CSV: (attacker_cp, victim_cp, total_features, total_hits) sorted by hits desc.
+    // Used as input to the compact encoder's channel reorder (docs/threat_encoder_compact_2026-05-04.md).
+    let mut channels: Vec<(u8, u8, u32, u64)> = pair_summary.iter()
+        .map(|&(a, v, total, _dead, h)| (a, v, total, h))
+        .collect();
+    channels.sort_by(|p, q| q.3.cmp(&p.3));
+    let channel_csv = "threat_channels.csv";
+    let mut ch_out = std::io::BufWriter::new(
+        std::fs::File::create(channel_csv).unwrap_or_else(|_| panic!("Failed to create {}", channel_csv))
+    );
+    writeln!(ch_out, "rank,attacker_cp,victim_cp,attacker_name,victim_name,total_features,total_hits").expect("write");
+    for (rank, &(a, v, total, h)) in channels.iter().enumerate() {
+        writeln!(ch_out, "{},{},{},{},{},{},{}",
+            rank, a, v, pn[a as usize], pn[v as usize], total, h).expect("write");
+    }
+    println!();
+    println!("Per-channel CSV written to {} ({} live channels)", channel_csv, channels.len());
+
     pair_summary.sort_by(|p, q| q.3.cmp(&p.3));
 
     println!();
