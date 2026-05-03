@@ -103,24 +103,41 @@ allow CLI override, refuse on mismatch unless `--load-anyway`).
 
 Each step verifiable before proceeding.
 
-1. **Coda: `init_threats_compact` + `threat_index_compact`** with the new
-   layout. Built at startup. `num_threat_features_compact()` reports the
-   size.
-2. **Coda: `enumerate_threats_compact`** — same loop, calls compact
-   `threat_index`. `dump-threats` extended with `--compact` flag for visual
-   inspection.
-3. **Coda: fuzzer extension** — fuzz both encoders, no panics on either,
-   neither produces out-of-range or duplicate indices.
-4. **Coda: NNUE load reads `training_flags` bit 1**, dispatches all threat
-   operations on the flag.
-5. **Bullet: mirror the encoder** in the example + threats module. Add
-   `--compact-encoding` CLI flag. Save flag in quantised.bin.
-6. **convert-bullet: read flag, set `training_flags` bit 1.** Add CLI
-   override.
-7. **Smoke test**: existing v10 prod net still loads + benches identically
-   (proves classic path untouched).
-8. **SB50 train** with `--compact-encoding`, convert, bench → compare NPS
-   to current prod.
+1. ✅ **Coda: `init_threats_compact` + `threat_index_compact`** —
+   committed `06ba067` (skeleton) + `af39e7b` (channel reorder).
+   Bench unchanged at 966720; phantom cleanup deferred.
+2. ✅ **Coda: `enumerate_threats` dispatches** — both encoders use the
+   shared loop. Runtime dispatch via `is_compact_encoding()` flag. No
+   separate `enumerate_threats_compact` needed.
+3. ✅ **Coda: fuzzer extension** — `dispatch_classic_vs_compact_real_positions`
+   in `src/threats.rs` (commit `471a019`) covers six varied
+   positions × both POVs, asserts same feature counts and consistent
+   classic→compact mapping with injectivity. Plus
+   `compact_encoder_permutes_classic` for canonical-state encoder coverage.
+4. ✅ **Coda: NNUE load reads `training_flags` bit 1** — `NNUENet`
+   gains `compact_encoding`, validate_compat() refuses size-mismatched
+   nets, search.rs::load_nnue activates compact dispatch (commit
+   `cd9ca02`).
+5. ✅ **Bullet: mirror the encoder** — Bullet branch
+   `feature/threat-encoder-compact`, commit `756137f`.
+   `ChessBucketsWithThreats::new_with_xray_compact()`, dual OnceLock
+   singletons, CHANNEL_ORDER pidx-form translated from Coda's table.
+   Cannot build/test on Hercules (CUDA absent); GPU-host smoke test
+   queued.
+6. ✅ **convert-bullet: read flag, set `training_flags` bit 1.**
+   `--compact-encoding` CLI flag, propagated through `convert_v7`
+   (commit `874c7c7`). Default false; existing nets convert unchanged.
+7. ✅ **Smoke test (Hercules-side)**: prod net loads + benches at
+   966720 identically with new dispatcher (compact_encoding=false
+   path).
+8. ⏳ **SB10 smoke train on GPU host** with `--compact-encoding` —
+   smaller than the planned SB50 to first verify the Bullet encoder
+   compiles and produces well-formed output. Convert with matching
+   `--compact-encoding` flag, load + bench in Coda. NPS comparison
+   only meaningful at SB50+.
+9. ⏳ **SB50 train + NPS comparison** vs current prod (K=1 sufficient
+   for NPS — deterministic measurement). Elo measurement (K=3 SB200)
+   only proceeds if NPS gains materialise.
 
 ## Known risks
 
