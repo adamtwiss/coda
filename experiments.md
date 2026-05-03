@@ -8134,3 +8134,59 @@ NPS leg overall.
 
 Bench: 966720.
 
+## 2026-05-03 — fixed-seed cross-host SB50 variance (#922/#923/#924) — host-persistent ranking confirmed
+
+Three pair-SPRTs, SB50 hl-screlu non-factor, all three trained with
+identical config + `--seed 42` on identical-hardware hosts gpu3/4/5
+(shared volume, same CUDA libs):
+
+| Test | Pair | Elo | ± | Games | Result |
+|---|---|---:|---:|---:|---|
+| #922 | gpu3 vs gpu4 | +29.2 | 15.3 | 776 | H1 ✓ |
+| #923 | gpu3 vs gpu5 | +6.8 | 7.3 | 3336 | H1 ✓ |
+| #924 | gpu4 vs gpu5 | −12.2 | 9.8 | 1802 | H0 ✗ |
+
+**Ranking: gpu3 > gpu5 > gpu4, ~30 Elo span.**
+
+Compare to unseeded T1 SB200 cohort (#915-917): also **gpu3 > gpu5 >
+gpu4, ~16 Elo span**. Same direction across seed configurations.
+Span larger at SB50 (less-converged training amplifies noise per
+training run).
+
+**Key finding: the variance is HOST-PERSISTENT, not RNG-driven.**
+Whatever causes "gpu3 trains a stronger net than gpu4" is a property
+of the host environment that survives both unseeded and seeded
+training. Even on shared-volume / identical-GPU / same-CUDA-version
+hosts, there is residual variance.
+
+**Leading hypothesis: multi-threaded data loader pipeline.** `sfbinpack.rs`
+spawns N=8 worker threads per batch that each independently send their
+converted ChessBoard buffer to the shuffle stage. Arrival order is
+non-deterministic (depends on thread completion timing — affected by
+CPU scheduling, RAM access, NUMA topology, NFS read jitter). Different
+arrival orders → different starting positions for Fisher-Yates → different
+shuffled batches even with seeded RNG.
+
+Different host environments produce systematically different thread-
+completion orders → systematically different data sequences → different
+training trajectories. gpu3's environment apparently produces orderings
+that train better; gpu4's worse. **This is consistent with the
+same-direction ranking across seed configurations.**
+
+**Diagnostic in flight:** Adam running `--threads 1 --seed 42` SB50
+twice on gpu3 (sequential, same host). With single-threaded
+conversion, completion ordering is deterministic. If two runs
+produce SHA-identical `quantised.bin` files → multi-threaded loader
+is confirmed proximal cause. Pre-staged Bullet patch (working tree,
+not yet committed) makes parallel conversion order-preserving while
+keeping full parallelism.
+
+**If patch lands and works: cross-host variance should drop substantially.**
+What remains would be pure CUDA-on-identical-hardware noise (atomicAdd
+ordering, cuDNN autotune timing) which is much smaller than data-order
+divergence.
+
+**Methodology implication:** until determinism is fixed, any
+"hardware A vs hardware B" net-vs-net comparison conflates training-
+trajectory variance with the actual question being asked. K=3+
+multi-host trains + median/anchor protocol remains the right read.
