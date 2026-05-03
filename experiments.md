@@ -8305,3 +8305,55 @@ divergence.
 "hardware A vs hardware B" net-vs-net comparison conflates training-
 trajectory variance with the actual question being asked. K=3+
 multi-host trains + median/anchor protocol remains the right read.
+
+## 2026-05-03 — feature/regs24-threat-apply: AVX-512 register tiling (+1.5 Elo H1, SPRT #926, MERGED)
+
+Mirrors Reckless commit 381ac2f3 ("AVX-512 threat-update register
+tiling REGISTERS=full L1" +4.90 STC). REGS×LANE=CHUNK; outer loop
+iterates `while offset < hidden_size`, reading each weight row once
+per chunk.
+
+| Path | Old | New | Effect on hidden_size=768 |
+|---|---:|---:|---|
+| `simd_acc_fused_avx512` (PSQ) | REGS=8 / CHUNK=256 | REGS=24 / CHUNK=768 | Each weight row read 1× (was 3×) |
+| `apply_deltas_avx512` (threat) | REGS=8 / CHUNK=256 | REGS=16 / CHUNK=512 | Each weight row read 2× (was 3×) |
+
+**Why threat-side capped at 16, not 24.** First attempt at REGS=24
+on the threat-apply path regressed −4.4% on Zen 5. Hypothesis
+confirmed by inspection: `_mm512_cvtepi8_epi16` (i8→i16 expansion)
+needs temporary registers, and 24 accumulators + temps spilled past
+AVX-512's 32 ZMM register file. PSQ-side has no such expansion
+(direct i16 add) so it tolerates REGS=24 cleanly.
+
+**Zen 5 measurements (5-run median + 3-run perf):**
+- Bench: 1317K → 1334K NPS (+1.3%, within noise)
+- cache-references: 1.135B → 1.093B (−3.7% per node — real
+  architectural improvement, less memory traffic per chunk)
+- L1-misses, cache-misses tick up slightly (Zen 5 OoO hides the
+  per-miss latency; same pattern as AccDataStack #921)
+
+**SPRT #926: +1.5 ±1.2 Elo H1 ✓** at 58202 games, [0, 3] bounds.
+Confirms that even when bench-neutral on Zen 5, the architectural
+improvement converts to Elo on the broader OB fleet (older hosts
+with weaker out-of-order execution can't hide the per-miss latency
+as effectively, so the chunk-traffic reduction shows up directly).
+
+**Same-pattern as #921 AccDataStack flatten** — bench-neutral on
+Zen 5, +Elo on the fleet. Two consecutive fleet-wins of this shape
+suggest **uArch-aware NPS testing** matters: Zen 5 dev benches
+under-state changes that improve cache traffic / TLB without
+reducing latency. Watch for "bench-neutral + cache-traffic
+reduction" as a leading indicator of fleet-positive changes.
+
+**Cumulative cache leg result** (4ad7ae0 trunk pre-leg → post-#926):
+- Coda NPS: 1249K → 1319K (+5.6%)
+- L1-misses/node: 828 → 758 (−8.4%)
+- dTLB-misses/node: 1.73 → 1.20 (−30.5%)
+- Banked Elo: +6.77 (#921) + +1.5 (#926) = **+8.27 Elo**
+- Reckless gap on L1-miss/1k-insns: 2.03× (was wider; not closed but narrowed)
+
+Search-side cache wins from this 49 MB matrix appear largely
+exhausted. Remaining Reckless gap (1.83× insns/node, 2.03×
+L1-miss/1k-insns) is structural — needs training-side levers
+(encoding redesign to drop the 47% dead-feature tail, hot-feature
+permutation at training time, possibly hidden-size shrink).
