@@ -9,9 +9,11 @@
 
 #[cfg(feature = "profile-threats")]
 pub mod apply_stats {
-    //! apply_threat_deltas delta-count histogram.
-    //! Used to decide whether a long-tail of high-delta-count moves is
-    //! worth capping/batching, or whether delta counts are uniform.
+    //! apply_threat_deltas delta-count histogram + per-feature-index histogram.
+    //! - Delta-count buckets: whether a long-tail of high-delta-count moves
+    //!   is worth capping/batching, or whether delta counts are uniform.
+    //! - Per-feature-index hits: identifies dead/cold-tail features eligible
+    //!   for cache-shrink ("drop dead features") work.
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // Buckets: 0, 1-4, 5-8, 9-12, 13-16, 17-24, 25-32, 33+
@@ -25,6 +27,14 @@ pub mod apply_stats {
     static B17_24: AtomicU64 = AtomicU64::new(0);
     static B25_32: AtomicU64 = AtomicU64::new(0);
     static B33_PLUS: AtomicU64 = AtomicU64::new(0);
+
+    // Per-feature-index hit count. Sized for the v9 threat space (~67k).
+    // 64K * 8 = 512 KB static, fine for diagnostic builds.
+    pub const FEATURE_HITS_LEN: usize = 70000;
+    pub static FEATURE_HITS: [AtomicU64; FEATURE_HITS_LEN] = {
+        const ZERO: AtomicU64 = AtomicU64::new(0);
+        [ZERO; FEATURE_HITS_LEN]
+    };
 
     #[inline(always)]
     pub fn record(n: usize) {
@@ -43,6 +53,13 @@ pub mod apply_stats {
         bucket.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
+    pub fn record_idx(idx: usize) {
+        if idx < FEATURE_HITS_LEN {
+            FEATURE_HITS[idx].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     pub fn report() {
         let c = CALLS.load(Ordering::Relaxed);
         if c == 0 { eprintln!("apply_threat_deltas stats: 0 calls"); return; }
@@ -58,6 +75,33 @@ pub mod apply_stats {
         eprintln!("  17-24:   {:>10} ({:.1}%)", B17_24.load(Ordering::Relaxed), pct(B17_24.load(Ordering::Relaxed)));
         eprintln!("  25-32:   {:>10} ({:.1}%)", B25_32.load(Ordering::Relaxed), pct(B25_32.load(Ordering::Relaxed)));
         eprintln!("  33+:     {:>10} ({:.1}%)", B33_PLUS.load(Ordering::Relaxed), pct(B33_PLUS.load(Ordering::Relaxed)));
+    }
+
+    /// Dump per-feature hit counts to a CSV file: `idx,hits` for every index.
+    /// Path defined by env var CODA_FEATURE_HISTOGRAM, defaults to /tmp/threat_feature_hits.csv.
+    pub fn dump_feature_histogram() {
+        let path = std::env::var("CODA_FEATURE_HISTOGRAM")
+            .unwrap_or_else(|_| "/tmp/threat_feature_hits.csv".to_string());
+        let mut total_hits: u64 = 0;
+        let mut active: u64 = 0;
+        let mut out = String::with_capacity(FEATURE_HITS_LEN * 16);
+        out.push_str("idx,hits\n");
+        for i in 0..FEATURE_HITS_LEN {
+            let h = FEATURE_HITS[i].load(Ordering::Relaxed);
+            total_hits += h;
+            if h > 0 { active += 1; }
+            out.push_str(&format!("{},{}\n", i, h));
+        }
+        if let Err(e) = std::fs::write(&path, out) {
+            eprintln!("failed to write {}: {}", path, e);
+            return;
+        }
+        eprintln!(
+            "feature histogram: {} active / {} indices ({:.1}%), {} total hits, dumped to {}",
+            active, FEATURE_HITS_LEN,
+            100.0 * active as f64 / FEATURE_HITS_LEN as f64,
+            total_hits, path
+        );
     }
 }
 
@@ -1555,6 +1599,8 @@ pub unsafe fn apply_threat_deltas(
             pov,
         );
         if idx < 0 || (idx as usize) >= num_threats { continue; }
+        #[cfg(feature = "profile-threats")]
+        crate::threats::apply_stats::record_idx(idx as usize);
         if delta.add() { adds_full[n_adds] = idx as usize; n_adds += 1; }
         else { subs_full[n_subs] = idx as usize; n_subs += 1; }
     }
