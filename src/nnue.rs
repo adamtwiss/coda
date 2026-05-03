@@ -3517,9 +3517,9 @@ impl NNUENet {
         let ntm_idx = (stm ^ 1) as usize;
         let (t_stm, t_ntm) = if self.has_threats && acc.current().threat_accurate[stm_idx] && acc.current().threat_accurate[ntm_idx] {
             if stm == WHITE {
-                (acc.current().threat_white.as_slice(), acc.current().threat_black.as_slice())
+                (acc.threat_white(), acc.threat_black())
             } else {
-                (acc.current().threat_black.as_slice(), acc.current().threat_white.as_slice())
+                (acc.threat_black(), acc.threat_white())
             }
         } else {
             debug_assert!(
@@ -3795,11 +3795,6 @@ pub const MAX_HIDDEN_SIZE: usize = 2048;
 /// straddling reads.
 #[repr(C, align(64))]
 pub struct AccEntry {
-    pub white: [i16; MAX_HIDDEN_SIZE],
-    pub black: [i16; MAX_HIDDEN_SIZE],
-    // Threat accumulator (v9): separate i16 values summed with PSQ at activation
-    pub threat_white: [i16; MAX_HIDDEN_SIZE],
-    pub threat_black: [i16; MAX_HIDDEN_SIZE],
     computed: bool,
     dirty: DirtyPiece,
     pub threat_accurate: [bool; 2], // per-perspective [WHITE, BLACK]
@@ -3810,6 +3805,101 @@ pub struct AccEntry {
     // Stored threat feature indices for diff-based incremental (per perspective)
     pub threat_features_white: Vec<usize>,
     pub threat_features_black: Vec<usize>,
+}
+
+const ACC_STACK_PLIES: usize = 256;
+
+/// Contiguous per-perspective accumulator data, sized to runtime
+/// `hidden_size`. One Box<[i16]> backs all plies × both perspectives.
+/// Layout (row-major): `data[ply * 2 * hidden_size + persp * hidden_size + j]`.
+///
+/// This mirrors Reckless's `Box<[PstAccumulator]>` of inline
+/// `Aligned<[[i16; L1_SIZE]; 2]>` — one contiguous allocation, sequential
+/// plies adjacent in memory, HW prefetcher predicts the access pattern.
+///
+/// Coda's previous layout used `[i16; MAX_HIDDEN_SIZE = 2048]` inline in
+/// every AccEntry — 2.67× over-provisioned per array vs production
+/// `hidden_size = 768`, bloating each AccEntry to ~16 KB and making the
+/// per-ply walk drag in unused tail cache lines. Per-callsite L1-miss
+/// decomposition (2026-05-03) showed Coda's accumulator-update path had
+/// 95× more L1 misses than Reckless's; this restructure targets that
+/// directly. Each perspective's data lives in its own slot of one
+/// contiguous Box, sized exactly to `hidden_size` — reading `white`
+/// no longer drags `black`, `threat_white`, `threat_black` cache lines
+/// into L1.
+pub struct AccDataStack {
+    data: Box<[i16]>,
+    hidden_size: usize,
+}
+
+impl AccDataStack {
+    pub fn new(hidden_size: usize) -> Self {
+        let len = ACC_STACK_PLIES * 2 * hidden_size;
+        Self {
+            data: vec![0i16; len].into_boxed_slice(),
+            hidden_size,
+        }
+    }
+
+    #[inline(always)]
+    fn offset(&self, ply: usize, persp: usize) -> usize {
+        debug_assert!(ply < ACC_STACK_PLIES, "ply out of range");
+        debug_assert!(persp < 2, "persp must be 0 or 1");
+        ply * 2 * self.hidden_size + persp * self.hidden_size
+    }
+
+    #[inline(always)]
+    pub fn view(&self, ply: usize, persp: usize) -> &[i16] {
+        let off = self.offset(ply, persp);
+        let h = self.hidden_size;
+        &self.data[off..off + h]
+    }
+
+    #[inline(always)]
+    pub fn view_mut(&mut self, ply: usize, persp: usize) -> &mut [i16] {
+        let off = self.offset(ply, persp);
+        let h = self.hidden_size;
+        &mut self.data[off..off + h]
+    }
+
+    /// Disjoint borrows: parent (read-only) and current (mutable) slices for
+    /// the same perspective. Required for accumulator update where current is
+    /// computed from parent. Caller must ensure `parent_ply < current_ply`.
+    #[inline(always)]
+    pub fn parent_and_current(
+        &mut self,
+        parent_ply: usize,
+        current_ply: usize,
+        persp: usize,
+    ) -> (&[i16], &mut [i16]) {
+        debug_assert!(parent_ply < current_ply, "parent_ply must be < current_ply");
+        let h = self.hidden_size;
+        let parent_off = self.offset(parent_ply, persp);
+        let current_off = self.offset(current_ply, persp);
+        let (left, right) = self.data.split_at_mut(current_off);
+        let parent = &left[parent_off..parent_off + h];
+        let current = &mut right[..h];
+        (parent, current)
+    }
+
+    /// Copy one perspective slice from src_ply to dst_ply. Used by the
+    /// threat fast-path when a delta-set is empty (no-op move).
+    #[inline(always)]
+    pub fn copy_perspective(&mut self, src_ply: usize, dst_ply: usize, persp: usize) {
+        if src_ply == dst_ply {
+            return;
+        }
+        let h = self.hidden_size;
+        let src_off = self.offset(src_ply, persp);
+        let dst_off = self.offset(dst_ply, persp);
+        if src_ply < dst_ply {
+            let (left, right) = self.data.split_at_mut(dst_off);
+            right[..h].copy_from_slice(&left[src_off..src_off + h]);
+        } else {
+            let (left, right) = self.data.split_at_mut(src_off);
+            left[dst_off..dst_off + h].copy_from_slice(&right[..h]);
+        }
+    }
 }
 
 /// Finny table entry: cached accumulator for a specific king bucket.
@@ -3827,6 +3917,11 @@ const FINNY_SIZE: usize = 2 * NNUE_MAX_KING_BUCKETS * 2; // [perspective][bucket
 /// Accumulator stack with lazy materialization and Finny table.
 pub struct NNUEAccumulator {
     stack: Vec<AccEntry>,
+    /// PSQ accumulator data — one contiguous Box per stack. Layout:
+    /// `psq.data[ply * 2 * h + persp * h + j]`. See AccDataStack.
+    pub psq: AccDataStack,
+    /// Threat accumulator data — same shape as psq.
+    pub threat: AccDataStack,
     top: usize,
     hidden_size: usize,
     /// Finny table: flat [perspective * 32 + bucket * 2 + mirror]
@@ -3842,13 +3937,9 @@ pub struct NNUEAccumulator {
 
 impl NNUEAccumulator {
     pub fn new(hidden_size: usize) -> Self {
-        let mut stack = Vec::with_capacity(256);
-        for _ in 0..256 {
+        let mut stack = Vec::with_capacity(ACC_STACK_PLIES);
+        for _ in 0..ACC_STACK_PLIES {
             stack.push(AccEntry {
-                white: [0; MAX_HIDDEN_SIZE],
-                black: [0; MAX_HIDDEN_SIZE],
-                threat_white: [0; MAX_HIDDEN_SIZE],
-                threat_black: [0; MAX_HIDDEN_SIZE],
                 computed: false,
                 dirty: DirtyPiece::recompute(),
                 threat_accurate: [false; 2],
@@ -3870,7 +3961,12 @@ impl NNUEAccumulator {
             });
         }
         NNUEAccumulator {
-            stack, top: 0, hidden_size, finny,
+            stack,
+            psq: AccDataStack::new(hidden_size),
+            threat: AccDataStack::new(hidden_size),
+            top: 0,
+            hidden_size,
+            finny,
             stats_full_rebuilds: 0,
             stats_incremental_updates: 0,
             stats_cached_skips: 0,
@@ -3933,11 +4029,22 @@ impl NNUEAccumulator {
     }
 
     pub fn white(&self) -> &[i16] {
-        &self.stack[self.top].white[..self.hidden_size]
+        self.psq.view(self.top, WHITE as usize)
     }
 
     pub fn black(&self) -> &[i16] {
-        &self.stack[self.top].black[..self.hidden_size]
+        self.psq.view(self.top, BLACK as usize)
+    }
+
+    /// Threat accumulator slice for current ply. Use sparingly — most call
+    /// sites should go through `forward_with_threats` which handles the
+    /// dispatch.
+    pub fn threat_white(&self) -> &[i16] {
+        self.threat.view(self.top, WHITE as usize)
+    }
+
+    pub fn threat_black(&self) -> &[i16] {
+        self.threat.view(self.top, BLACK as usize)
     }
 
     /// Get the current accumulator entry for reading.
@@ -3950,8 +4057,8 @@ impl NNUEAccumulator {
         let h = self.hidden_size;
         // White perspective
         {
-            let dst = &mut self.stack[self.top].white;
-            dst[..h].copy_from_slice(&net.input_biases[..h]);
+            let dst = self.psq.view_mut(self.top, WHITE as usize);
+            dst.copy_from_slice(&net.input_biases[..h]);
             for color in 0..2u8 {
                 for pt in 0..6u8 {
                     let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
@@ -3966,8 +4073,8 @@ impl NNUEAccumulator {
         }
         // Black perspective
         {
-            let dst = &mut self.stack[self.top].black;
-            dst[..h].copy_from_slice(&net.input_biases[..h]);
+            let dst = self.psq.view_mut(self.top, BLACK as usize);
+            dst.copy_from_slice(&net.input_biases[..h]);
             for color in 0..2u8 {
                 for pt in 0..6u8 {
                     let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
@@ -4040,19 +4147,12 @@ impl NNUEAccumulator {
         let b_mirrored = (bk_sq % 8) >= 4;
 
         for ply in (ancestor_idx + 1)..=self.top {
-            // Inline arrays are always `MAX_HIDDEN_SIZE`-wide; previous
-            // version's lazy `resize(h, 0)` is now a no-op (all entries
-            // pre-sized). Left blank to preserve the surrounding flow.
-
             let src = ply - 1; // source is always the previous ply (which we just computed)
 
             if self.stack[ply].threat_deltas.is_empty() {
                 // Null move or no deltas: copy from previous
-                let (prev_slice, curr_slice) = self.stack.split_at_mut(ply);
-                let prev = &prev_slice[src];
-                let curr = &mut curr_slice[0];
-                curr.threat_white[..h].copy_from_slice(&prev.threat_white[..h]);
-                curr.threat_black[..h].copy_from_slice(&prev.threat_black[..h]);
+                self.threat.copy_perspective(src, ply, WHITE as usize);
+                self.threat.copy_perspective(src, ply, BLACK as usize);
             } else {
                 // Apply deltas from this ply
                 // Note: we use the current board's king positions for mirroring.
@@ -4061,17 +4161,18 @@ impl NNUEAccumulator {
                 // For now this is acceptable; king moves are rare in the chain.
                 // Swap deltas out to avoid borrow conflict (no allocation)
                 let deltas = std::mem::take(&mut self.stack[ply].threat_deltas);
-                let (prev_slice, curr_slice) = self.stack.split_at_mut(ply);
-                let prev = &prev_slice[src];
-                let curr = &mut curr_slice[0];
+                let (prev_w, curr_w) = self.threat.parent_and_current(src, ply, WHITE as usize);
                 unsafe {
                     crate::threats::apply_threat_deltas(
-                        &mut curr.threat_white, &prev.threat_white,
+                        curr_w, prev_w,
                         &deltas, &net.threat_weights, h, net.num_threat_features,
                         WHITE, w_mirrored,
                     );
+                }
+                let (prev_b, curr_b) = self.threat.parent_and_current(src, ply, BLACK as usize);
+                unsafe {
                     crate::threats::apply_threat_deltas(
-                        &mut curr.threat_black, &prev.threat_black,
+                        curr_b, prev_b,
                         &deltas, &net.threat_weights, h, net.num_threat_features,
                         BLACK, b_mirrored,
                     );
@@ -4107,11 +4208,12 @@ impl NNUEAccumulator {
             |idx| { if idx < net.num_threat_features { let w = idx * h; for j in 0..h { check_b[j] += net.threat_weights[w + j] as i16; } } },
         );
 
-        let curr = &self.stack[self.top];
-        let w_diff: i32 = (0..h).map(|j| (curr.threat_white[j] as i32 - check_w[j] as i32).abs()).sum();
-        let b_diff: i32 = (0..h).map(|j| (curr.threat_black[j] as i32 - check_b[j] as i32).abs()).sum();
+        let curr_tw = self.threat.view(self.top, WHITE as usize);
+        let curr_tb = self.threat.view(self.top, BLACK as usize);
+        let w_diff: i32 = (0..h).map(|j| (curr_tw[j] as i32 - check_w[j] as i32).abs()).sum();
+        let b_diff: i32 = (0..h).map(|j| (curr_tb[j] as i32 - check_b[j] as i32).abs()).sum();
         if w_diff > 0 || b_diff > 0 {
-            eprintln!("  h={} tw_max={} got_w0={} exp_w0={}", h, MAX_HIDDEN_SIZE, curr.threat_white[0], check_w[0]);
+            eprintln!("  h={} got_w0={} exp_w0={}", h, curr_tw[0], check_w[0]);
             // Was this from incremental or full recompute?
             let last_mv = if !board.undo_stack.is_empty() {
                 let u = &board.undo_stack[board.undo_stack.len() - 1];
@@ -4125,69 +4227,63 @@ impl NNUEAccumulator {
     /// Full recompute: iterates all pieces, computes attacks, adds i8 weight rows.
     fn recompute_threats_full(&mut self, net: &NNUENet, board: &crate::board::Board) {
         let h = self.hidden_size;
-        let entry = &mut self.stack[self.top];
-
-        // Inline arrays are MAX_HIDDEN_SIZE-wide; no lazy `resize` needed.
-
         let occ = board.colors[0] | board.colors[1];
+        let top = self.top;
 
         // White perspective
-        entry.threat_white[..h].fill(0);
-        let wk_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
-        let w_mirrored = (wk_sq % 8) >= 4;
-        crate::threats::enumerate_threats(
-            &board.pieces, &board.colors, &board.mailbox,
-            occ, WHITE, w_mirrored,
-            |feat_idx| {
-                if feat_idx < net.num_threat_features {
-                    let w_off = feat_idx * h;
-                    for j in 0..h {
-                        entry.threat_white[j] += net.threat_weights[w_off + j] as i16;
+        {
+            let dst = self.threat.view_mut(top, WHITE as usize);
+            dst.fill(0);
+            let wk_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
+            let w_mirrored = (wk_sq % 8) >= 4;
+            crate::threats::enumerate_threats(
+                &board.pieces, &board.colors, &board.mailbox,
+                occ, WHITE, w_mirrored,
+                |feat_idx| {
+                    if feat_idx < net.num_threat_features {
+                        let w_off = feat_idx * h;
+                        for j in 0..h {
+                            dst[j] += net.threat_weights[w_off + j] as i16;
+                        }
                     }
-                }
-            },
-        );
+                },
+            );
+        }
 
         // Black perspective
-        entry.threat_black[..h].fill(0);
-        let bk_sq = (board.pieces[KING as usize] & board.colors[BLACK as usize]).trailing_zeros();
-        let b_mirrored = (bk_sq % 8) >= 4;
-        crate::threats::enumerate_threats(
-            &board.pieces, &board.colors, &board.mailbox,
-            occ, BLACK, b_mirrored,
-            |feat_idx| {
-                if feat_idx < net.num_threat_features {
-                    let w_off = feat_idx * h;
-                    for j in 0..h {
-                        entry.threat_black[j] += net.threat_weights[w_off + j] as i16;
+        {
+            let dst = self.threat.view_mut(top, BLACK as usize);
+            dst.fill(0);
+            let bk_sq = (board.pieces[KING as usize] & board.colors[BLACK as usize]).trailing_zeros();
+            let b_mirrored = (bk_sq % 8) >= 4;
+            crate::threats::enumerate_threats(
+                &board.pieces, &board.colors, &board.mailbox,
+                occ, BLACK, b_mirrored,
+                |feat_idx| {
+                    if feat_idx < net.num_threat_features {
+                        let w_off = feat_idx * h;
+                        for j in 0..h {
+                            dst[j] += net.threat_weights[w_off + j] as i16;
+                        }
                     }
-                }
-            },
-        );
+                },
+            );
+        }
 
-        entry.threat_accurate = [true; 2];
+        self.stack[top].threat_accurate = [true; 2];
     }
 
     /// Push: store dirty info, don't compute yet.
     pub fn push(&mut self, dirty: DirtyPiece) {
         self.top += 1;
-        if self.top >= self.stack.len() {
-            self.stack.push(AccEntry {
-                white: [0; MAX_HIDDEN_SIZE],
-                black: [0; MAX_HIDDEN_SIZE],
-                threat_white: [0; MAX_HIDDEN_SIZE],
-                threat_black: [0; MAX_HIDDEN_SIZE],
-                computed: false,
-                dirty: DirtyPiece::recompute(),
-                threat_accurate: [false; 2],
-                threat_deltas: Vec::new(),
-                threat_move: NO_MOVE,
-                threat_moved_pt: NO_PIECE_TYPE,
-                threat_moved_color: WHITE,
-                threat_features_white: Vec::new(),
-                threat_features_black: Vec::new(),
-            });
-        }
+        debug_assert!(
+            self.top < ACC_STACK_PLIES,
+            "ply stack overflow: top={} >= {}", self.top, ACC_STACK_PLIES
+        );
+        // AccEntry stack is pre-allocated to ACC_STACK_PLIES in new(); the
+        // psq/threat AccDataStacks are also fixed-size so no heap growth on
+        // push. The pre-allocation removes the realloc-on-push pattern that
+        // existed before the AccDataStack restructure.
         self.stack[self.top].computed = false;
         self.stack[self.top].threat_accurate = [false; 2];
         self.stack[self.top].threat_deltas.clear();
@@ -4249,9 +4345,8 @@ impl NNUEAccumulator {
         // all add/sub weight rows while the chunk is in registers, write
         // current once. Memory traffic is constant in N.
         let h = self.hidden_size;
-        let (left, right) = self.stack.split_at_mut(self.top);
-        let parent = &left[self.top - 1];
-        let current = &mut right[0];
+        let top = self.top;
+        let parent_ply = top - 1;
 
         let w_king_sq = board.king_sq(WHITE);
         let b_king_sq = board.king_sq(BLACK);
@@ -4291,46 +4386,53 @@ impl NNUEAccumulator {
 
         #[cfg(target_arch = "x86_64")]
         if net.has_avx512 && h % 32 == 0 {
-            unsafe {
-                simd_acc_fused_avx512(&mut current.white, &parent.white, w_adds, w_subs, h);
-                simd_acc_fused_avx512(&mut current.black, &parent.black, b_adds, b_subs, h);
-            }
-            current.computed = true;
+            let (parent_w, current_w) = self.psq.parent_and_current(parent_ply, top, WHITE as usize);
+            unsafe { simd_acc_fused_avx512(current_w, parent_w, w_adds, w_subs, h); }
+            let (parent_b, current_b) = self.psq.parent_and_current(parent_ply, top, BLACK as usize);
+            unsafe { simd_acc_fused_avx512(current_b, parent_b, b_adds, b_subs, h); }
+            self.stack[top].computed = true;
             return;
         }
         #[cfg(target_arch = "x86_64")]
         if net.has_avx2 && h % 16 == 0 {
-            unsafe {
-                simd_acc_fused_avx2(&mut current.white, &parent.white, w_adds, w_subs, h);
-                simd_acc_fused_avx2(&mut current.black, &parent.black, b_adds, b_subs, h);
-            }
-            current.computed = true;
+            let (parent_w, current_w) = self.psq.parent_and_current(parent_ply, top, WHITE as usize);
+            unsafe { simd_acc_fused_avx2(current_w, parent_w, w_adds, w_subs, h); }
+            let (parent_b, current_b) = self.psq.parent_and_current(parent_ply, top, BLACK as usize);
+            unsafe { simd_acc_fused_avx2(current_b, parent_b, b_adds, b_subs, h); }
+            self.stack[top].computed = true;
             return;
         }
 
         #[cfg(target_arch = "aarch64")]
         if net.has_neon && h % 8 == 0 {
-            unsafe {
-                simd_acc_fused_neon(&mut current.white, &parent.white, w_adds, w_subs, h);
-                simd_acc_fused_neon(&mut current.black, &parent.black, b_adds, b_subs, h);
-            }
-            current.computed = true;
+            let (parent_w, current_w) = self.psq.parent_and_current(parent_ply, top, WHITE as usize);
+            unsafe { simd_acc_fused_neon(current_w, parent_w, w_adds, w_subs, h); }
+            let (parent_b, current_b) = self.psq.parent_and_current(parent_ply, top, BLACK as usize);
+            unsafe { simd_acc_fused_neon(current_b, parent_b, b_adds, b_subs, h); }
+            self.stack[top].computed = true;
             return;
         }
 
         // Scalar fallback: single-pass apply, analogous to SIMD path.
+        // Pre-snapshot parent to drop the immutable borrow before mutating.
+        let parent_w_owned: Vec<i16> = self.psq.view(parent_ply, WHITE as usize).to_vec();
+        let parent_b_owned: Vec<i16> = self.psq.view(parent_ply, BLACK as usize).to_vec();
+        let current_w = self.psq.view_mut(top, WHITE as usize);
         for j in 0..h {
-            let mut w = parent.white[j];
-            let mut b = parent.black[j];
+            let mut w = parent_w_owned[j];
             for row in w_adds { w += row[j]; }
             for row in w_subs { w -= row[j]; }
+            current_w[j] = w;
+        }
+        let current_b = self.psq.view_mut(top, BLACK as usize);
+        for j in 0..h {
+            let mut b = parent_b_owned[j];
             for row in b_adds { b += row[j]; }
             for row in b_subs { b -= row[j]; }
-            current.white[j] = w;
-            current.black[j] = b;
+            current_b[j] = b;
         }
 
-        current.computed = true;
+        self.stack[top].computed = true;
     }
 
     /// Refresh one perspective using the Finny table.
@@ -4346,15 +4448,10 @@ impl NNUEAccumulator {
 
         let entry = &mut self.finny[perspective as usize * 32 + bucket * 2 + mirror_idx];
 
-        let dst = if perspective == WHITE {
-            &mut self.stack[self.top].white
-        } else {
-            &mut self.stack[self.top].black
-        };
-
         if !entry.valid {
-            // No cache — full recompute with register blocking
-            dst[..h].copy_from_slice(&net.input_biases[..h]);
+            // No cache — full recompute with register blocking. Build into the
+            // Finny entry directly to avoid a borrow conflict, then copy out.
+            entry.acc[..h].copy_from_slice(&net.input_biases[..h]);
             let mut piece_indices: [usize; 32] = [0; 32];
             let mut n_pieces = 0usize;
             for color in 0..2u8 {
@@ -4368,17 +4465,17 @@ impl NNUEAccumulator {
                 }
             }
             let empty: [usize; 0] = [];
-            finny_batch_apply(net, dst, &net.input_weights, h, &piece_indices[..n_pieces], &empty);
-            // Save to cache
-            entry.acc[..h].copy_from_slice(&dst[..h]);
+            finny_batch_apply(net, &mut entry.acc[..h], &net.input_weights, h, &piece_indices[..n_pieces], &empty);
             entry.piece_bbs = (board.pieces, board.colors);
             entry.valid = true;
+            // Mirror cache → live psq slot.
+            let dst = self.psq.view_mut(self.top, perspective as usize);
+            dst.copy_from_slice(&self.finny[perspective as usize * 32 + bucket * 2 + mirror_idx].acc[..h]);
             return;
         }
 
         // Diff cached vs current — collect all changes, then batch apply
         // Register-blocking: load 8 regs once, apply ALL adds/subs, store once
-        let cached_acc = &mut entry.acc;
 
         // Collect feature indices for adds and subs
         let mut add_rows: [usize; 32] = [0; 32];
@@ -4411,14 +4508,15 @@ impl NNUEAccumulator {
         // Batch apply with register blocking (Reckless pattern)
         if n_adds > 0 || n_subs > 0 {
             finny_batch_apply(
-                net, cached_acc, &net.input_weights, h,
+                net, &mut entry.acc[..h], &net.input_weights, h,
                 &add_rows[..n_adds], &sub_rows[..n_subs],
             );
         }
-
-        // Copy updated cache to accumulator
-        dst[..h].copy_from_slice(&cached_acc[..h]);
         entry.piece_bbs = (board.pieces, board.colors);
+
+        // Copy updated cache to accumulator (drop entry borrow first).
+        let dst = self.psq.view_mut(self.top, perspective as usize);
+        dst.copy_from_slice(&self.finny[perspective as usize * 32 + bucket * 2 + mirror_idx].acc[..h]);
     }
 
     /// Reset to bottom of stack and invalidate Finny table.
@@ -5945,16 +6043,16 @@ mod tests {
                     let mut ref_acc = NNUEAccumulator::new(h);
                     ref_acc.force_recompute(&net, &board);
 
-                    let got_w = &acc.stack[acc.top].white;
-                    let got_b = &acc.stack[acc.top].black;
-                    let ref_w = &ref_acc.stack[ref_acc.top].white;
-                    let ref_b = &ref_acc.stack[ref_acc.top].black;
+                    let got_w = acc.psq.view(acc.top, WHITE as usize);
+                    let got_b = acc.psq.view(acc.top, BLACK as usize);
+                    let ref_w = ref_acc.psq.view(ref_acc.top, WHITE as usize);
+                    let ref_b = ref_acc.psq.view(ref_acc.top, BLACK as usize);
 
                     for (name, got, refv) in [
                         ("white", got_w, ref_w),
                         ("black", got_b, ref_b),
                     ] {
-                        if got[..h] != refv[..h] {
+                        if got != refv {
                             let j = (0..h).find(|&j| got[j] != refv[j]).unwrap();
                             panic!(
                                 "psq fuzz divergence: fen_idx={} game={} ply={} move={} \
@@ -6119,16 +6217,16 @@ mod tests {
             let mut ref_acc = NNUEAccumulator::new(h);
             ref_acc.force_recompute(&net, &board);
 
-            let got_w = &acc.stack[acc.top].white;
-            let got_b = &acc.stack[acc.top].black;
-            let ref_w = &ref_acc.stack[ref_acc.top].white;
-            let ref_b = &ref_acc.stack[ref_acc.top].black;
+            let got_w = acc.psq.view(acc.top, WHITE as usize);
+            let got_b = acc.psq.view(acc.top, BLACK as usize);
+            let ref_w = ref_acc.psq.view(ref_acc.top, WHITE as usize);
+            let ref_b = ref_acc.psq.view(ref_acc.top, BLACK as usize);
 
             for (name, got, refv) in [
                 ("white", got_w, ref_w),
                 ("black", got_b, ref_b),
             ] {
-                if got[..h] != refv[..h] {
+                if got != refv {
                     let j = (0..h).find(|&j| got[j] != refv[j]).unwrap();
                     panic!(
                         "Finny king-march divergence: step={} {}→{} pov={} channel={} \
