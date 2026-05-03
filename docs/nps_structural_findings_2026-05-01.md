@@ -381,6 +381,68 @@ the surrounding code, not as an alternative branch inside it.**
 > but the cause is layout (Coda's heap-Vec scatter vs Reckless's
 > contiguous slice), not matmul work amount.
 
+### Per-callsite L1-miss decomposition (2026-05-03 measurement)
+
+`perf record -e L1-dcache-load-misses --call-graph=fp -F 4000` against
+`coda eval-bench --mode incremental --reps 100000` and Reckless's
+equivalent `evalbench incremental 100000`. Both built with frame
+pointers, OB worker stopped, Zen 5 idle.
+
+**Total event count, 800 k evals:**
+- Coda: **322 M L1-dcache-load-misses**
+- Reckless: **10.8 M L1-dcache-load-misses**
+- **Aggregate ratio: ~30× more in Coda** (matches 28× headline from
+  `coda_vs_reckless_nps_2026-04-23.md`)
+
+**Top callsites with absolute miss counts and per-callsite ratios:**
+
+| Callsite (Coda → Reckless equivalent) | Coda % | Coda absolute | Reckless % | Reckless absolute | Ratio |
+|---|---:|---:|---:|---:|---:|
+| L1 matmul / forward inner | 32.17% | 103.6 M | 28.88% (`activate_ft`) | 3.1 M | **33×** |
+| **Accumulator push (`simd_acc_fused_avx512` ← `materialize`) vs Reckless `PstAccumulator::add1_sub2`** | **27.13%** | **87.4 M** | **8.52%** | **0.92 M** | **95×** |
+| Inlined threat helpers (0x1a1xxx, ← `forward_with_threats`) | ~27.5% | ~88 M | (proportional in `Network::evaluate` 30.2%) | ~3.3 M | ~27× |
+| `build_dirty_piece` | 3.66% | 11.8 M | (n/a — Reckless does inline) | — | — |
+| `materialize` (own self-cycles) | 3.47% | 11.2 M | — | — | — |
+| `simd512_pairwise_pack_fused` (Coda) | 1.82% | 5.9 M | (folded into `activate_ft`) | — | — |
+
+### What the data confirms
+
+**The AccEntry layout hypothesis is confirmed.** Coda's accumulator-
+push path has **95× more L1 misses** than Reckless's equivalent — 3×
+worse than the average 30× ratio. That makes it the single most
+cache-unfriendly part of Coda's hot path.
+
+The mechanism, at `src/nnue.rs:4295`:
+```rust
+simd_acc_fused_avx512(&mut current.white, &parent.white, w_adds, w_subs, h);
+simd_acc_fused_avx512(&mut current.black, &parent.black, b_adds, b_subs, h);
+```
+`current.{white,black}` and `parent.{white,black}` are 4 separate
+`Vec<i16>` heap dereferences per push. Each dereference reaches a
+heap allocation potentially-cold in L1, made worse by the fact that
+neighbouring stack plies' Vecs are at unrelated heap addresses (no
+spatial locality, no HW prefetcher win). Reckless reads
+`pst_stack[i].values[pov]` — slice indexing into one contiguous
+`Box<[PstAccumulator]>` where neighbouring plies are adjacent in
+memory.
+
+**The L1 matmul path's 33× is high but PROPORTIONAL to the aggregate
+30× ratio** — so the dispatch-tree / `#[target_feature]` story still
+applies (Step C-full could close it), but it's not the disproportionate
+outlier the push path is.
+
+### Implication for the lever ranking
+
+Lever #1 (flatten `AccEntry`) was promoted to top of ranking on
+2026-05-03 based on a *hypothesis*. After this measurement it's also
+the **measured** highest-leverage lever. **Expected gain isn't tiny:**
+even closing the push path's 95× → 30× (matching aggregate ratio)
+removes ~57 M L1 misses per 800 k evals. At ~12 cycles per L1 miss
+on Zen 5, that's ~684 M cycles saved per 800 k evals — roughly **half
+of the total cycle budget for the eval-bench microbench** (1.32 B
+cycles measured). Realistic NPS gain estimate: **+10-25%** if the
+fix lands cleanly.
+
 ~~`coda_vs_reckless_nps_2026-04-23.md` §3 framed cache behaviour as a
 distinct lever (flatten `AccEntry`, hot-feature frontload, prefetch).
 Those levers are still real, but as the per-call quantification above
