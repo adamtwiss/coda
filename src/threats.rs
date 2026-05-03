@@ -384,8 +384,19 @@ pub fn threat_index(
         let from_f = from ^ flip;
         let to_f = to ^ flip;
 
-        base + PIECE_OFFSET_LOOKUP[attacking][from_f as usize]
-            + ATTACK_INDEX_LOOKUP[attacking][from_f as usize][to_f as usize] as i32
+        let orig_idx = base + PIECE_OFFSET_LOOKUP[attacking][from_f as usize]
+            + ATTACK_INDEX_LOOKUP[attacking][from_f as usize][to_f as usize] as i32;
+
+        // Hot-feature frontload: remap the index so high-activation features
+        // land at low offsets in the (permuted-at-load) threat-weight matrix.
+        // See src/threats_frontload.rs. The Bullet-reference variant
+        // (threat_index_bullet_ref) skips this remap so fuzz comparisons
+        // against trained-order indices remain valid.
+        if orig_idx < 0 {
+            orig_idx
+        } else {
+            crate::threats_frontload::perm_feature_index(orig_idx as usize) as i32
+        }
     }
 }
 

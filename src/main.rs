@@ -28,6 +28,7 @@ pub mod threat_profile;
 pub mod threat_accum;
 pub mod sparse_l1;
 pub mod nnue_simd;
+pub mod threats_frontload;
 
 use board::Board;
 use movegen::{perft, perft_divide};

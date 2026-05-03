@@ -1352,6 +1352,25 @@ mod incremental_tests {
         eprintln!("  Total weight matrix: {:.1} MB", total_bytes as f64 / 1_048_576.0);
         eprintln!("  Dropping dead features (0 hits): save {:.1} MB ({:.1}%)", dead_bytes as f64 / 1_048_576.0, bucket_0 as f64 / nf as f64 * 100.0);
         eprintln!("  Dropping dead+rare (<10 hits):   save {:.1} MB ({:.1}%)", cold_bytes as f64 / 1_048_576.0, (bucket_0 + bucket_1_9) as f64 / nf as f64 * 100.0);
+
+        // Hot-feature frontloading data: write the feature ranking to a binary
+        // blob so the production threat-weight loader can permute rows at load
+        // time. Run with CODA_DUMP_FEATURE_PERM=path to enable.
+        if let Ok(out_path) = std::env::var("CODA_DUMP_FEATURE_PERM") {
+            // perm[orig_idx] = new_position. Rank 0 = hottest feature.
+            // indexed[new_position] = (orig_idx, hits).
+            let mut perm: Vec<u32> = vec![0; nf];
+            for (new_pos, &(orig_idx, _)) in indexed.iter().enumerate() {
+                perm[orig_idx] = new_pos as u32;
+            }
+            let mut bytes = Vec::with_capacity(nf * 4);
+            for &p in &perm {
+                bytes.extend_from_slice(&p.to_le_bytes());
+            }
+            std::fs::write(&out_path, &bytes).expect("write permutation file");
+            eprintln!("\nWrote {} permutation entries ({} bytes) to {}",
+                nf, bytes.len(), out_path);
+        }
     }
 
     /// incremental path will silently misapply deltas.

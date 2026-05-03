@@ -2280,6 +2280,15 @@ impl NNUENet {
             println!("info string Loaded {} threat features ({}×{}, {}MB)",
                 num_threat_features, num_threat_features, hidden_size,
                 total / (1024 * 1024));
+
+            // Hot-feature frontload: permute weight rows so high-activation
+            // features land at low offsets — keeps the hot working set
+            // L2-resident across pushes. No-op when feature count doesn't
+            // match the production v9 baked permutation. See
+            // src/threats_frontload.rs.
+            crate::threats_frontload::permute_threat_weights(
+                &mut threat_weights, num_threat_features, hidden_size,
+            );
         }
 
         // Read L1 hidden layer weights (v7)
