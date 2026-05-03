@@ -545,6 +545,11 @@ impl SearchInfo {
         if net.has_threats {
             self.threat_stack.active = true;
         }
+        // Activate compact threat encoder if the loaded net was trained
+        // with the importance-reordered channel layout. Affects every
+        // subsequent threat_index / enumerate_threats call until the next
+        // net swap. Pre-bit-1 nets default to false (classic).
+        crate::threats::set_compact_encoding(net.compact_encoding);
         self.nnue_net = Some(std::sync::Arc::new(net));
         self.nnue_acc = Some(acc);
         Ok(())
@@ -565,6 +570,7 @@ impl SearchInfo {
                         self.threat_stack = crate::threat_accum::ThreatStack::new(net.hidden_size);
                         self.threat_stack.active = true;
                     }
+                    crate::threats::set_compact_encoding(net.compact_encoding);
                     self.nnue_net = Some(std::sync::Arc::new(net));
                     self.nnue_acc = Some(acc);
                     return true;

@@ -224,13 +224,25 @@ static mut COMPACT_PIECE_OFFSET_LOOKUP: [[i32; 64]; NUM_COLORED_PIECES] = [[0; 6
 static mut COMPACT_ATTACK_INDEX_LOOKUP: [[[u8; 64]; 64]; NUM_COLORED_PIECES] = [[[0; 64]; 64]; NUM_COLORED_PIECES];
 static mut COMPACT_TOTAL_THREAT_FEATURES: usize = 0;
 
-/// Get the total threat feature count (call after init_threats).
+/// Get the total threat feature count for the active encoder. Dispatches
+/// based on `is_compact_encoding()`. Callers sizing buffers should use
+/// this; callers that need a specific encoder's count use the
+/// `_classic` / `_compact` variants below.
 pub fn num_threat_features() -> usize {
+    if is_compact_encoding() {
+        num_threat_features_compact()
+    } else {
+        num_threat_features_classic()
+    }
+}
+
+/// Classic encoder feature count — explicit, no dispatch.
+pub fn num_threat_features_classic() -> usize {
     unsafe { TOTAL_THREAT_FEATURES }
 }
 
-/// Get the total threat feature count for the compact encoder.
-/// Will diverge from `num_threat_features()` once phantom cleanup lands.
+/// Compact encoder feature count — explicit, no dispatch. Will diverge
+/// from `num_threat_features_classic()` once phantom cleanup lands.
 pub fn num_threat_features_compact() -> usize {
     unsafe { COMPACT_TOTAL_THREAT_FEATURES }
 }
@@ -480,17 +492,61 @@ fn init_threats_compact() {
     }
 }
 
-/// Compute a single threat feature index.
+/// Runtime selection between classic and compact encoders.
 ///
-/// Returns negative if this pair is excluded (should be skipped).
-/// `pov` is the perspective (WHITE or BLACK).
-/// `mirrored` is true when the perspective king is on files e-h.
+/// Set once at NNUE load time based on `training_flags` bit 1. Read by
+/// every `threat_index` call — Relaxed load is essentially free (single
+/// L1-resident byte) and the branch predictor pins the direction after
+/// the first call within a search.
+///
+/// Default = false (classic). NNUE load with compact-encoding bit set
+/// flips this to true via `set_compact_encoding(true)`.
+static COMPACT_ENCODING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Activate the compact encoder. Call once at NNUE load with
+/// `training_flags & 2 != 0`. Subsequent `threat_index` / `enumerate_threats`
+/// calls use the compact tables.
+pub fn set_compact_encoding(compact: bool) {
+    COMPACT_ENCODING.store(compact, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Read the active encoder flag. Reflects the most-recently-loaded NNUE.
+#[inline]
+pub fn is_compact_encoding() -> bool {
+    COMPACT_ENCODING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Compute a single threat feature index using the active encoder.
+///
+/// Dispatches to classic or compact based on `is_compact_encoding()`.
+/// Returns negative if this pair is excluded (caller skips it).
+/// `pov` is the perspective (WHITE or BLACK). `mirrored` is true when
+/// the perspective king is on files e-h.
 #[inline]
 pub fn threat_index(
-    attacker_cp: usize, // colored piece index of attacker
-    from: u32,          // attacker square (physical, pre-flip)
-    victim_cp: usize,   // colored piece index of victim
-    to: u32,            // victim square (physical, pre-flip)
+    attacker_cp: usize,
+    from: u32,
+    victim_cp: usize,
+    to: u32,
+    mirrored: bool,
+    pov: Color,
+) -> i32 {
+    if is_compact_encoding() {
+        threat_index_compact(attacker_cp, from, victim_cp, to, mirrored, pov)
+    } else {
+        threat_index_classic(attacker_cp, from, victim_cp, to, mirrored, pov)
+    }
+}
+
+/// Classic encoder — explicit (non-dispatching) entry point. Callers that
+/// need the classic encoding regardless of the active flag (test sweeps,
+/// fuzzer cross-check) call this directly.
+#[inline]
+pub fn threat_index_classic(
+    attacker_cp: usize,
+    from: u32,
+    victim_cp: usize,
+    to: u32,
     mirrored: bool,
     pov: Color,
 ) -> i32 {
@@ -528,10 +584,10 @@ pub fn threat_index(
     }
 }
 
-/// Compact-encoder sibling of `threat_index`. Same algorithmic shape; uses
-/// the COMPACT_* tables. Skeleton pass: bit-identical output to
-/// `threat_index`. Encoder semantic changes layer in via the COMPACT_*
-/// tables, not the function body.
+/// Compact encoder — explicit (non-dispatching) entry point. Same
+/// algorithmic shape as classic; uses the COMPACT_* tables. Channel
+/// ordering is permuted by importance (CHANNEL_ORDER constant) so hot
+/// channels land at low addresses for L2/L1 residency.
 #[inline]
 pub fn threat_index_compact(
     attacker_cp: usize,
@@ -2700,10 +2756,10 @@ mod tests {
     fn compact_encoder_permutes_classic() {
         crate::attacks::init_attacks();
         init_threats();
-        assert_eq!(num_threat_features(), num_threat_features_compact(),
+        assert_eq!(num_threat_features_classic(), num_threat_features_compact(),
             "no-shrink invariant: feature counts must match");
 
-        let total = num_threat_features();
+        let total = num_threat_features_classic();
         let mut compact_to_classic: Vec<i32> = vec![-1; total];
 
         // Enumerate canonical states with pov=WHITE, mirrored=false. Each
@@ -2726,7 +2782,7 @@ mod tests {
                             if v_sq == a_sq { continue; }
                             if v_pt == 0 && (v_sq < 8 || v_sq >= 56) { continue; }
 
-                            let classic = threat_index(a_cp, a_sq, v_cp, v_sq, mirrored, WHITE);
+                            let classic = threat_index_classic(a_cp, a_sq, v_cp, v_sq, mirrored, WHITE);
                             let compact = threat_index_compact(a_cp, a_sq, v_cp, v_sq, mirrored, WHITE);
                             assert_eq!(classic.is_negative(), compact.is_negative(),
                                 "validity divergence at canonical (a_cp={}, a_sq={}, v_cp={}, v_sq={}, mir={}): classic={} compact={}",

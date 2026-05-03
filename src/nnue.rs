@@ -2079,6 +2079,14 @@ pub struct NNUENet {
     /// this in the header; v9 and earlier default to true (legacy assumption
     /// since all pre-v10 threat nets were trained with --xray 1 / default).
     pub xray_trained: bool,
+    /// Whether the net was trained with the compact threat encoder
+    /// (channel-level importance reorder + phantom cleanup, per
+    /// docs/threat_encoder_compact_2026-05-04.md). v10 nets record this
+    /// in `training_flags` bit 1; pre-bit-1 nets default to false (classic
+    /// encoding). When true, Coda's load path calls
+    /// `threats::set_compact_encoding(true)` so all subsequent threat
+    /// indexing uses the compact tables.
+    pub compact_encoding: bool,
     /// Number of king buckets in this net (10 for Reckless, 16 for others).
     /// PSQ weight block is sized `num_king_buckets * 768 * hidden_size`.
     pub num_king_buckets: usize,
@@ -2176,6 +2184,9 @@ impl NNUENet {
         // v10+: xray_trained from training_flags byte. v9 legacy default = true
         // (all pre-v10 threat nets were --xray 1 / default at training time).
         let mut xray_trained: bool = true;
+        // v10+ training_flags bit 1 = compact_encoding. Default false
+        // (classic encoder; all pre-bit-1 nets used classic).
+        let mut compact_encoding: bool = false;
         let hidden_size: usize;
 
         match version {
@@ -2245,13 +2256,18 @@ impl NNUENet {
                 }
                 // v10 training_flags byte (only for threat nets).
                 //   bit 0: xray_trained (1 = trained with xray threat features)
-                // v9 nets have no such byte — legacy default is xray_trained=true
-                // (all pre-v10 production nets were --xray 1 / default).
+                //   bit 1: compact_encoding (1 = compact channel-reordered
+                //          threat index space, see threats::CHANNEL_ORDER)
+                // v9 nets have no such byte — legacy defaults are
+                // xray_trained=true, compact_encoding=false (all pre-v10
+                // production nets were --xray 1 / default + classic encoder).
                 if version >= 10 {
                     let training_flags = read_u8(reader)?;
                     xray_trained = training_flags & 1 != 0;
+                    compact_encoding = training_flags & 2 != 0;
                 } else {
                     xray_trained = true;
+                    compact_encoding = false;
                 }
                 hidden_size = ft_size;
             }
@@ -2491,6 +2507,7 @@ impl NNUENet {
             num_threat_features,
             has_threats,
             xray_trained,
+            compact_encoding,
             num_king_buckets,
             kb_layout,
             king_bucket: king_bucket_tbl,
@@ -2526,6 +2543,29 @@ impl NNUENet {
                  inference always emits them — inference/training mismatch \
                  would corrupt eval. Pass --load-anyway (CLI) or set UCI option \
                  LoadAnyway=true to load for diagnostic purposes only."
+            ));
+        }
+        // Encoder size check: file's num_threat_features must match what
+        // the active encoder produces. This catches the silent-corruption
+        // class where Bullet's encoder has drifted from Coda's (different
+        // CHANNEL_ORDER, different phantom-cleanup logic, etc.) — the file
+        // is sized for one encoder but inference uses another.
+        let expected = if self.compact_encoding {
+            crate::threats::num_threat_features_compact()
+        } else {
+            crate::threats::num_threat_features_classic()
+        };
+        if self.num_threat_features != expected
+            && !LOAD_ANYWAY.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(format!(
+                "threat-feature count mismatch: file has {} but {} encoder \
+                 expects {} — Bullet/Coda encoder drift would silently \
+                 corrupt inference. Pass --load-anyway (CLI) or set UCI \
+                 option LoadAnyway=true for diagnostic loads only.",
+                self.num_threat_features,
+                if self.compact_encoding { "compact" } else { "classic" },
+                expected,
             ));
         }
         Ok(())
