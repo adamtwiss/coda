@@ -7937,3 +7937,43 @@ the existing pattern (no new memory needed).
 
 Branches retired: experiment/prev-move-corrhist, experiment/tune-906-applied.
 
+## 2026-05-03 — hl-crelu vs hl-screlu activation re-litigation (#919/#920 fired)
+
+Original "hl-screlu wins" finding (commit b5590de, 2026-04-19) was K=1
+vs K=1 — single-replica SPRT, made before we understood that v9
+single-replica seed variance is ±20 Elo. Possibly attributable to a
+lucky training run rather than architectural superiority.
+
+Existing data: 3 hl-crelu SB200 replicas (#896/#897/#898 + a 4th gpu1
+from basin B); 3 hl-screlu SB200 replicas (#915/#916/#917). Within-group
+rankings:
+
+- **hl-crelu:** gpu4 ≈ gpu5 (basin A pair, +1.2 in #897) > gpu3
+  (intermediate) > gpu1 (basin B). Best=gpu4, median=gpu5.
+- **hl-screlu:** gpu3 (best, won by +13-16 vs gpu5/gpu4 in #916/#917)
+  > gpu5 (median) > gpu4 (worst, lost both pair-tests). Best=gpu3,
+  median=gpu5.
+
+Two SPRTs fired at bounds [-3, 3], 10+0.1, dev=hl-crelu / base=hl-screlu
+(positive Elo = hl-crelu wins):
+
+- **#919 best-vs-best:** gpu4-hlcrelu (551F8480, bench 2304976) vs
+  gpu3-hlscrelu (D1786B15, bench 1384496). Bias-symmetric — both are
+  best-of-3 within their group, so the ~+17 Elo "lucky pick" bias
+  cancels.
+- **#920 median-vs-median:** gpu5-hlcrelu (6208612C, bench 2283845)
+  vs gpu5-hlscrelu (92393F1C, bench 1480094). Same hardware host
+  both sides → controls for any host-specific effects. Most diagnostic
+  shot for "is hl-crelu architecturally better, putting outliers
+  aside?"
+
+Cost: ~6-10K fleet games combined, ~1-2 days fleet.
+
+**If both SPRTs say hl-crelu wins** → the original hl-screlu finding
+was lucky-seed-driven; we've been deploying the wrong activation.
+Switch trunk to hl-crelu prod, retune. **If only #919 (best) wins
+but #920 (median) is flat or hl-screlu** → gpu3-hlscrelu was the
+lucky pull; architectural difference is small or zero. **If both
+SPRTs say hl-screlu wins** → original finding stands at architectural
+level despite K=3 noise concerns.
+
