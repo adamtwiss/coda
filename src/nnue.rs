@@ -2970,7 +2970,15 @@ impl NNUENet {
             let l2 = if self.bucketed_hidden { l2_pb } else { l2_total };
             let l2_stride = if self.dual_l1 { self.l1_per_bucket * 2 } else { self.l1_per_bucket };
             let _ = l2_stride;
-            let mut h2 = [0.0f32; 512];
+            // MaybeUninit: same memset-skip pattern as stm_pw / ntm_pw above.
+            // h2 is fully initialised by either l2_fmadd_avx512_x32 (writes all
+            // 32 lanes from biases+fmadd) or the manual `for k in 0..l2 { h2[k] = bias }`
+            // loop. Tail [l2..512] never read.
+            let mut h2_storage = std::mem::MaybeUninit::<[f32; 512]>::uninit();
+            let mut h2: &mut [f32] = unsafe {
+                std::slice::from_raw_parts_mut(h2_storage.as_mut_ptr() as *mut f32, 512)
+            };
+            let _ = &mut h2;
             // L2 matmul. The common v9 shape (L2=32) takes a hand-vectorised
             // AVX-512 FMA path: LLVM's autovec turned into `VGATHERQPS` here
             // and ate ~13% of total cycles. Explicit 2-register broadcast-FMA
@@ -3053,7 +3061,13 @@ impl NNUENet {
         // L1 weights at scale QA_L1, bias at scale QA_L1
         // Result at scale QA² × QA_L1, bias scaled up by QA² to match
         let bias_scale = qa2;
-        let mut hidden = [0i64; 256]; // max L1 per-bucket size
+        // MaybeUninit: writers below initialise [0..l1]; readers only read [0..l1].
+        // Same memset-skip pattern as forward_with_l1_pairwise_inner.
+        let mut hidden_storage = std::mem::MaybeUninit::<[i64; 256]>::uninit();
+        let mut hidden: &mut [i64] = unsafe {
+            std::slice::from_raw_parts_mut(hidden_storage.as_mut_ptr() as *mut i64, 256)
+        };
+        let _ = &mut hidden;
         for i in 0..l1 {
             hidden[i] = self.l1_biases[b_off + i] as i64 * bias_scale;
         }
@@ -3061,17 +3075,23 @@ impl NNUENet {
         // SIMD int8 path: pack SCReLU to u8, then VPMADDUBSW L1 matmul
         #[cfg(target_arch = "x86_64")]
         if (self.has_avx512 || self.has_avx2) && h % 32 == 0 && !self.l1_weights_8t.is_empty() {
-            let mut stm_packed = [0u8; 2048]; // max accumulator size
-            let mut ntm_packed = [0u8; 2048];
+            let mut stm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
+            let mut ntm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
+            let stm_packed: &mut [u8] = unsafe {
+                std::slice::from_raw_parts_mut(stm_packed_storage.as_mut_ptr() as *mut u8, 2048)
+            };
+            let ntm_packed: &mut [u8] = unsafe {
+                std::slice::from_raw_parts_mut(ntm_packed_storage.as_mut_ptr() as *mut u8, 2048)
+            };
             if self.has_avx512 && h % 64 == 0 {
                 unsafe {
-                    simd512_screlu_pack(stm_acc, &mut stm_packed, h);
-                    simd512_screlu_pack(ntm_acc, &mut ntm_packed, h);
+                    simd512_screlu_pack(stm_acc, stm_packed, h);
+                    simd512_screlu_pack(ntm_acc, ntm_packed, h);
                 }
             } else {
                 unsafe {
-                    simd_screlu_pack(stm_acc, &mut stm_packed, h);
-                    simd_screlu_pack(ntm_acc, &mut ntm_packed, h);
+                    simd_screlu_pack(stm_acc, stm_packed, h);
+                    simd_screlu_pack(ntm_acc, ntm_packed, h);
                 }
             }
             // Int8 matmul: input at scale QA (v²/255), weights at scale QA_L1
@@ -3202,7 +3222,9 @@ impl NNUENet {
                 let l2_stride = if self.dual_l1 { self.l1_per_bucket * 2 } else { self.l1_per_bucket };
                 let l2_total_stride = if self.bucketed_hidden { l2_stride * NNUE_OUTPUT_BUCKETS } else { l2_stride };
                 let _ = l2_total_stride; // used below
-                let mut h2 = [0.0f32; 256];
+                let mut h2_storage = std::mem::MaybeUninit::<[f32; 256]>::uninit();
+                let mut h2: &mut [f32] = unsafe { std::slice::from_raw_parts_mut(h2_storage.as_mut_ptr() as *mut f32, 256) };
+                let _ = &mut h2;
                 for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
                 for i in 0..l1_out_count {
                     if l1_out[i] == 0.0 { continue; }
@@ -3232,11 +3254,17 @@ impl NNUENet {
         // NEON int8 path: pack SCReLU to u8, then NEON L1 matmul
         #[cfg(target_arch = "aarch64")]
         if self.has_neon && h % 16 == 0 && !self.l1_weights_8t.is_empty() {
-            let mut stm_packed = [0u8; 2048];
-            let mut ntm_packed = [0u8; 2048];
+            let mut stm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
+            let mut ntm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
+            let stm_packed: &mut [u8] = unsafe {
+                std::slice::from_raw_parts_mut(stm_packed_storage.as_mut_ptr() as *mut u8, 2048)
+            };
+            let ntm_packed: &mut [u8] = unsafe {
+                std::slice::from_raw_parts_mut(ntm_packed_storage.as_mut_ptr() as *mut u8, 2048)
+            };
             unsafe {
-                neon_screlu_pack(stm_acc, &mut stm_packed, h);
-                neon_screlu_pack(ntm_acc, &mut ntm_packed, h);
+                neon_screlu_pack(stm_acc, stm_packed, h);
+                neon_screlu_pack(ntm_acc, ntm_packed, h);
             }
             // Int8 matmul: input at scale QA (v²/255), weights at scale QA_L1
             // Result at scale QA × QA_L1. Bias at scale QA_L1, scaled by QA to match.
@@ -3294,7 +3322,9 @@ impl NNUENet {
             if self.l2_size > 0 {
                 let l2 = if self.bucketed_hidden { self.l2_per_bucket } else { self.l2_size };
                 let l2_off = if self.bucketed_hidden { bucket * l2 } else { 0 };
-                let mut h2 = [0.0f32; 256];
+                let mut h2_storage = std::mem::MaybeUninit::<[f32; 256]>::uninit();
+                let mut h2: &mut [f32] = unsafe { std::slice::from_raw_parts_mut(h2_storage.as_mut_ptr() as *mut f32, 256) };
+                let _ = &mut h2;
                 for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
                 for i in 0..l1_out_count {
                     if l1_out[i] == 0.0 { continue; }
@@ -3416,7 +3446,9 @@ impl NNUENet {
         if self.l2_size > 0 {
             let l2 = if self.bucketed_hidden { self.l2_per_bucket } else { self.l2_size };
             let l2_off = if self.bucketed_hidden { bucket * l2 } else { 0 };
-            let mut h2 = [0.0f32; 256];
+            let mut h2_storage = std::mem::MaybeUninit::<[f32; 256]>::uninit();
+                let mut h2: &mut [f32] = unsafe { std::slice::from_raw_parts_mut(h2_storage.as_mut_ptr() as *mut f32, 256) };
+                let _ = &mut h2;
             for k in 0..l2 {
                 h2[k] = self.l2_biases_f[l2_off + k];
             }
