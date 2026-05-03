@@ -883,3 +883,110 @@ $ echo "evalbench incremental 10000" | reckless-avx2    # AVX-2 only
 action: run instrumented counter build to measure evals/node gap
 (Recommendation #5). That's the single missing piece needed to complete
 the decomposition.*
+
+## Update 2026-05-03 — Lever #1 result: +6.77 Elo H1, MERGED
+
+The "Flatten `AccEntry` → inline arrays" lever (Revised lever
+ranking #1 above) landed as `feature/acc-data-stack`, but the
+mechanism was different from what this doc predicted. SPRT #921
+H1'd at **+6.77 Elo** in the structural-NPS class. Full writeup in
+`docs/nps_structural_findings_2026-05-01.md` "Update 2026-05-03"
+section; summary here.
+
+### What actually drove the win
+
+The flatten itself was bench-neutral. The real lever was discovered
+via **per-callsite L1-miss decomposition** (`perf record -e
+L1-dcache-load-misses --call-graph=fp`, the diagnostic this doc
+should have prescribed but didn't). After AccDataStack landed,
+re-running perf annotate on `forward_with_l1_pairwise_inner` showed
+two `memset@GLIBC` calls at function entry zeroing
+`[0u8; 2048] × 2 + [0i32; 512]` stack arrays — ~3.6 GB of memset
+traffic per bench, generating ~120 M of the function's L1 misses.
+Replaced with `MaybeUninit`. The bytes 0..pw are written by the
+SIMD pack; the unwritten tail was never read.
+
+### Eval-bench result trajectory (Zen 5)
+
+| Stage | L1 misses | Bench NPS |
+|---|---:|---:|
+| Trunk baseline | 304 M | 1273k |
+| + AccDataStack (Reckless-shape contiguous stack) | 273 M | 1268k (neutral) |
+| + MaybeUninit on `forward_with_l1_pairwise_inner` | 157 M | **1306k (+3%)** |
+| + MaybeUninit on `apply_threat_deltas` | 145 M | 1313k |
+
+**Closed ~half the L1-miss gap to Reckless** (38× → 18×).
+
+### Fleet measurement
+
+| Host | uArch | Δ NPS |
+|---|---|---:|
+| Hercules | Coffee Lake (AVX-2 only) | **+6.7%** |
+| Atlas | Zen 1 (EPYC 7351P) | **+6.6%** |
+| MacBook M5 | Apple Silicon (NEON) | +3.5% |
+| Zeus | Zen 5 (AVX-512+VNNI) | +3.1% |
+| ionos1 | Zen 3 (Milan, VM) | +2.4% (noisy) |
+
+Pattern matched prediction: weaker-OoO uArchs gained ~2× as much
+because cycle savings aren't already hidden by OoO. SPRT #921
+likely benefited from worker mix biased toward older uArchs
+(+6.77 > fleet-weighted bench gain of ~+4-5%).
+
+### What this doc got right and wrong
+
+**Right:**
+- Lever #1 (flatten AccEntry) was the correct first move. The
+  AccDataStack landed as predicted (Reckless-shape `Box<[T]>` of
+  inline arrays). It was the structural enabler that made the
+  per-callsite L1-miss decomposition's findings actionable.
+- Cache hygiene IS a real Elo lever once the right symptoms are
+  measured.
+
+**Wrong:**
+- Attribution: this doc framed the win as coming from layout
+  contiguity. The actual win came from eliminated memset traffic
+  on over-provisioned stack arrays — invisible without `perf
+  annotate` per-symbol.
+- Magnitude: estimated "+10-25% NPS" for the lever (in the
+  `nps_structural_findings_2026-05-01.md` 2026-05-03 update).
+  Actual fleet-aggregate bench gain is +3-7% per host. SPRT
+  delivered +6.77 Elo, larger than bench predicted but inside the
+  band.
+
+### Updated lever list (post-merge 2026-05-03)
+
+Items that survive after the cache-hygiene leg landed:
+
+1. ~~Flatten `AccEntry`~~ — **MERGED** (`6d8168b`).
+2. **Find more memset/init waste** in less-hot forward paths
+   (e.g., `forward_with_l1` v7 path has same pattern). Trivial fix
+   per-instance.
+3. **L1 weight matrix layout** — Reckless's ~5 KB working set per
+   matmul vs Coda's ~24 KB. Sparse-first failed in production
+   (Step C-cheap revert); hot-feature frontload may be the
+   alternative.
+4. **Step C-full** (`#[target_feature]` removal + dispatch
+   consolidation) — addresses the 1.79× instruction-count gap,
+   which the cache work doesn't touch.
+5. **Cache checking squares + retry LMP direct-check** (`reckless_commit_catalog_2026-05-01.md` #4) — search-side, +5 LTC Elo expected.
+6. **Eval-only TT writeback** — already landed (Coda #713,
+   +14.7 Elo).
+7. **Hot-feature frontloading** — generic cache-hygiene, valid
+   regardless of Reckless.
+8. **Training-side memory shrink** — both engines have the same
+   49 MB matrix; demoted from earlier "step-function NPS gain"
+   framing.
+
+### Methodology durables
+
+- Per-callsite L1-miss decomposition + `perf annotate -e
+  L1-dcache-load-misses` is the diagnostic that should run BEFORE
+  declaring a cache investigation done.
+- Probe production data distribution before microbenching
+  (companion rule from the Step C-cheap revert).
+- Track instructions/eval + cache-refs/eval as primary metrics
+  alongside bench NPS.
+
+See `docs/nps_structural_findings_2026-05-01.md` "Update
+2026-05-03" for full investigation arc, per-callsite breakdown,
+and methodology lessons.

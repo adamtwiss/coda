@@ -8004,3 +8004,133 @@ effect from seed luck. Median-vs-median (or full anchor) is the
 correct protocol for net-vs-net architectural comparisons. Memory
 entry: see `feedback_net_vs_net_needs_median_or_anchor.md` (TODO).
 
+## 2026-05-03 — feature/acc-data-stack: AccEntry restructure + skip stack-array memsets (+6.77 Elo H1, SPRT #921, MERGED)
+
+Three-commit bundle on `feature/acc-data-stack` driven by the
+per-callsite L1-miss decomposition added the same day. Background
+in `docs/nps_structural_findings_2026-05-01.md` (full investigation)
+and `docs/coda_vs_reckless_nps_2026-04-23.md` (lever ranking).
+
+### Investigation arc
+
+Per-callsite L1-miss decomposition (perf record -e
+L1-dcache-load-misses --call-graph=fp on both engines'
+`eval-bench --mode incremental`) showed Coda at 322 M total L1
+misses for 800k evals vs Reckless's 10.8 M (~30× aggregate). Worst
+single callsite was the accumulator-push path:
+`simd_acc_fused_avx512` at 87.4 M misses vs Reckless's
+`PstAccumulator::add1_sub2` at 0.92 M = **95× per-callsite ratio**,
+3× worse than aggregate.
+
+Initial hypothesis: Coda's `AccEntry` was 7 heap-Vec scattered
+allocations per ply vs Reckless's contiguous
+`Box<[PstAccumulator]>` of inline `[[i16; L1_SIZE]; 2]`. Wrong —
+the inline arrays already landed (commit `8981975`); the actual
+issue was that AccEntry's inline `[i16; MAX_HIDDEN_SIZE = 2048]`
+arrays were 2.67× over-provisioned vs production hidden_size = 768,
+bloating each AccEntry to 16.5 KB and the stack to 4.3 MB.
+
+### What landed (3 commits)
+
+1. **`AccDataStack`** — new type holding one contiguous `Box<[i16]>`
+   per stream (psq + threat), sized exactly to runtime hidden_size.
+   Layout `data[ply * 2 * h + persp * h + j]`. Mirrors Reckless's
+   `Box<[PstAccumulator]>` pattern. Stack memory: 4.3 MB → 1.65 MB.
+   AccEntry shrinks to metadata-only.
+
+2. **MaybeUninit on `forward_with_l1_pairwise_inner` stack arrays.**
+   `perf annotate -e L1-dcache-load-misses` revealed two
+   `memset@GLIBC` calls at function entry zeroing the
+   `[0u8; 2048]` / `[0i32; 512]` stack arrays. Bytes 0..pw are
+   written by SIMD pack; the unwritten tail was never read.
+   Replaced with `MaybeUninit::<[u8; 2048]>::uninit()`. ~3.6 GB of
+   memset traffic eliminated per bench.
+
+3. **MaybeUninit on `apply_threat_deltas` index buffers.** Same
+   pattern on `[0usize; MAX_THREAT_DELTAS]` adds/subs. Smaller win
+   absolute but kept for hygiene.
+
+### Per-stage measurement on Zen 5 (eval-bench --mode incremental, 800k evals)
+
+| Stage | L1 misses | vs Reckless | Bench NPS |
+|---|---:|---:|---:|
+| Trunk baseline | 304 M | 38× | 1273k |
+| + AccDataStack | 273 M | 34× | 1268k |
+| + memset fix #1 (forward) | 157 M | 20× | 1306k |
+| + memset fix #2 (threats) | **145 M** | **18×** | **1313k** |
+| Reckless reference | 8 M | — | — |
+
+**Closed ~half the L1-miss gap to Reckless.** IPC went 2.82 → 2.99
+(now exceeds Reckless's 2.78 — Zen 5 OoO is no longer wait-stalling
+on memory).
+
+### Fleet bench measurement (5 hosts spanning OoO strength)
+
+| Host | uArch | OoO/cache | main | feature | Δ NPS |
+|---|---|---|---:|---:|---:|
+| Hercules | Coffee Lake (Intel Xeon E-2288G, AVX-2) | small OoO | 580k | 619k | **+6.7%** |
+| Atlas | Zen 1 (EPYC 7351P, 2017) | moderate | 294k | 313k | **+6.6%** |
+| MacBook M5 | Apple Silicon (NEON) | very large | 1040k | 1076k | +3.5% |
+| Zeus | Zen 5 (AVX-512+VNNI) | very large | 1273k | 1313k | +3.1% |
+| ionos1 | Zen 3 (Milan, VM) | large | 432k | 442k | +2.4% (noisy VM) |
+
+**Pattern: weaker-OoO uArchs gain ~2× as much** as wide-OoO ones.
+On wide-OoO hosts the cycles saved are real CPU-work savings (memset
+elimination, less cache pressure) since misses were already
+OoO-hidden. On weak-OoO hosts the cache hygiene also unlocks
+miss-stall latency. Five hosts, all non-negative; predictable
+scaling with hardware properties.
+
+### SPRT #921 result
+
+[0, 5] bounds, TC 10.0+0.1, against trunk on the rebased branch.
+**+6.77 ±3.9 Elo, H1 ✓ at 5234 games, LLR 2.97**.
+
+Significantly bigger than the bench-NPS gain alone would predict
+(fleet-weighted avg ~+4-5%). Likely contributors:
+- Worker mix biased toward older uArchs (more workers running
+  Hercules/Atlas-class hardware than Zen 5)
+- Reduced run-to-run timing variance feeds into more deterministic
+  search behavior (Hercules feature variance was tighter than main)
+- Some upper-end of the SPRT distribution
+
+Either way: clean H1, biggest single NPS-class win since the AVX-512
+`apply_threat_deltas` port (#899, +4.4 Elo) and the largest in the
+NPS leg overall.
+
+### Diagnostic methodology lessons
+
+1. **Probe production data BEFORE microbenching** (this is the
+   companion rule to "track insns/eval + cache-refs/eval as primary
+   metrics" — see `feedback_nps_metrics_insns_per_eval.md`). The
+   Step C-cheap revert two days earlier built a sparse-first kernel
+   against synthetic 89%-sparse data; production was 73% non-zero.
+   Adding a one-shot diagnostic counter at the call site would have
+   caught it before the 4% bench regression.
+
+2. **`perf annotate -e L1-dcache-load-misses` per-symbol** is the
+   right tool for identifying memset/init waste. The
+   `forward_with_l1_pairwise_inner` annotation showed two
+   `memset@GLIBC` calls at function entry as the top miss sources
+   in 5 minutes of work — vs days of model-building before.
+
+3. **Per-callsite L1-miss decomposition** (not just aggregate L1
+   miss rate) is what surfaces disproportionate hotspots. The 95×
+   per-callsite ratio at the push path (vs 30× aggregate) was
+   only visible in the per-symbol breakdown.
+
+### What's left (followup queue)
+
+- `forward_with_l1` (v7 path) has the same `[0u8; 2048] × 2` pattern
+  but is dead code on v9 prod. Worth fixing for hygiene + future v7
+  experiments. Trivial.
+- L1 weight matrix layout — Coda still touches 24 KB of weight data
+  per matmul vs Reckless's ~5 KB (NNZ-sparse iteration). Sparse-first
+  was bench-negative in the Step C-cheap revert; the right path may
+  be hot-feature reorder or cold-row skipping.
+- Push-path delta-row count — instrument to confirm Coda applies the
+  same number of weight rows per push as Reckless. If we apply more
+  consistently, that's a separate fix (efficient diff calculation).
+
+Bench: 966720.
+

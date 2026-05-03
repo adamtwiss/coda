@@ -576,3 +576,139 @@ explored on `feature/nnue-simd-restructure` (kept for Step C-full
 follow-up). Step C-full remains the real candidate but needs
 validation that inline-barrier removal alone delivers the predicted
 NPS.*
+
+## Update 2026-05-03 — Cache hygiene leg landed: +6.77 Elo H1 (SPRT #921, MERGED)
+
+The Step C-cheap recheck spawned a **per-callsite L1-miss
+decomposition** that turned out to be the highest-leverage
+diagnostic in the whole leg. The findings + fixes from that
+decomposition landed as `feature/acc-data-stack` and SPRT'd at
++6.77 Elo H1 — biggest NPS-class win since AVX-512
+`apply_threat_deltas` (+4.4 Elo).
+
+### What the decomposition found
+
+`perf record -e L1-dcache-load-misses --call-graph=fp` against
+`coda eval-bench --mode incremental --reps 100000` and Reckless's
+equivalent. **Total event counts: Coda 322 M vs Reckless 10.8 M
+(~30× aggregate).** Per-callsite breakdown:
+
+| Callsite | Coda absolute | Reckless equivalent | Ratio |
+|---|---:|---:|---:|
+| L1 matmul / forward inner | 103.6 M | 3.1 M (`activate_ft`) | 33× |
+| **Push (`simd_acc_fused_avx512`)** | **87.4 M** | **0.92 M** (`add1_sub2`) | **95×** |
+| Inlined threat helpers | ~88 M | ~3.3 M | ~27× |
+
+The push-path 95× vs aggregate 30× was the disproportionate outlier
+that motivated the AccEntry layout investigation. Reading the
+actual code revealed `AccEntry`'s inline `[i16; MAX_HIDDEN_SIZE =
+2048]` arrays were 2.67× over-provisioned vs production
+hidden_size = 768 (16.5 KB AccEntry, 4.3 MB stack — vs Reckless's
+~3 KB per ply, 1.5 MB stack).
+
+### Three commits that landed
+
+1. **`AccDataStack`** — one contiguous `Box<[i16]>` per stream (psq
+   + threat), sized to runtime hidden_size. Mirrors Reckless's
+   `Box<[PstAccumulator]>` of inline `[[i16; L1_SIZE]; 2]`. Stack
+   memory: 4.3 MB → 1.65 MB.
+2. **`MaybeUninit` on `forward_with_l1_pairwise_inner` stack arrays.**
+   `perf annotate` showed two `memset@GLIBC` calls at function
+   entry as the top L1-miss source — `[0u8; 2048] × 2 + [0i32;
+   512]` zeroing ~3.6 GB of memset traffic per bench. Replaced
+   with `MaybeUninit::<[u8; 2048]>::uninit()`. **The biggest
+   single win in the leg.**
+3. **`MaybeUninit` on `apply_threat_deltas` index buffers.** Same
+   pattern, smaller absolute win.
+
+### Result trajectory (eval-bench --mode incremental, Zen 5)
+
+| Stage | L1 misses | vs Reckless | Bench NPS |
+|---|---:|---:|---:|
+| Trunk baseline | 304 M | 38× | 1273k |
+| + AccDataStack | 273 M | 34× | 1268k |
+| + memset fix #1 (forward) | 157 M | 20× | 1306k |
+| + memset fix #2 (threats) | **145 M** | **18×** | **1313k** |
+
+**~Half the L1-miss gap to Reckless closed.** IPC went 2.82 →
+2.99 (now exceeds Reckless's 2.78 — Zen 5 OoO is no longer
+wait-stalling on memory).
+
+### Fleet-wide validation (5 hosts, OoO-strength gradient)
+
+| Host | uArch | Δ NPS |
+|---|---|---:|
+| Hercules | Coffee Lake (Intel Xeon, AVX-2) | **+6.7%** |
+| Atlas | Zen 1 (EPYC 7351P) | **+6.6%** |
+| MacBook M5 | Apple Silicon (NEON) | +3.5% |
+| Zeus | Zen 5 (AVX-512+VNNI) | +3.1% |
+| ionos1 | Zen 3 (Milan, VM) | +2.4% (noisy) |
+
+Pattern matched the prediction: **weaker-OoO uArchs gained ~2× as
+much** (cache misses no longer hidden by OoO get materialised as
+cycle savings; on wide-OoO hosts only the eliminated memset
+traffic is real CPU-work savings).
+
+### SPRT #921: +6.77 ±3.9 Elo, H1 ✓ at 5234 games
+
+Bigger than fleet-weighted bench gain (~+4-5%) would predict.
+Likely from worker mix biased toward older uArchs (where bench
+gain was 2× larger) plus reduced run-to-run variance feeding more
+deterministic search.
+
+### Lever ranking — re-revised 2026-05-03 PM (after merge)
+
+The "promoted Lever #1" framing was directionally right but the
+attribution was wrong:
+
+- The flatten-AccEntry framing assumed accumulator data layout was
+  the issue. AccDataStack alone was bench-neutral. The actual
+  bottleneck was **memset traffic** from over-provisioned stack
+  arrays — invisible without `perf annotate` per-symbol.
+- The diagnostic chain that found it: per-callsite L1-miss decomp
+  → AccEntry restructure (neutral but informative) →
+  re-decompose → annotate `forward_with_l1_pairwise_inner` →
+  spot the memsets.
+
+**Updated priorities for further cache work:**
+
+1. **Find more memset/init waste** in less-hot paths.
+   `forward_with_l1` (v7 forward) has the same `[0u8; 2048] × 2`
+   pattern. Dead code on v9 prod but trivial fix.
+2. **L1 weight matrix layout / hot-feature reorder.** Reckless's
+   ~5 KB working set per matmul vs Coda's ~24 KB is the dominant
+   remaining cache delta. Sparse-first was bench-negative; the
+   right approach may be hot-feature frontloading (rank features
+   by activation count, permute matrix at load).
+3. **Push-path delta-row count.** Instrument to confirm Coda
+   applies the same number of weight rows per push as Reckless.
+   If we apply more consistently, that's a different fix (better
+   diff calculation).
+4. **Step C-full** (drop `#[target_feature]` from outer SIMD
+   functions, consolidate dispatch tree) remains valid for the
+   instruction-count gap (1.79× more in Coda) — the structural
+   axis the cache work doesn't touch.
+
+### Methodology durables banked
+
+- **`perf annotate -e L1-dcache-load-misses` per-symbol** is the
+  right tool for finding memset/init waste. 5-minute exercise that
+  surfaced the +3% bench commit. Should be standard before any
+  cache-hygiene investigation declares "fundamental work, hard to
+  reduce."
+- **Per-callsite L1-miss decomposition** (not aggregate miss
+  rate) is what reveals disproportionate hotspots. The push
+  path's 95× ratio vs aggregate 30× motivated the right next
+  experiment.
+- **Probe production data distribution before microbenching** —
+  banked from the Step C-cheap revert two days earlier;
+  reaffirmed here as the right pre-refactor diagnostic discipline.
+
+---
+
+*Investigation closed 2026-05-03 with #921 H1 merged. AccDataStack
++ memset fixes shipped to main (commit `6d8168b`). The original
+"L1 matmul restructure as Lever #1" framing was retired — cache
+hygiene matters but the actual mechanism was memset waste, not
+matmul shape. Future cache work should follow the per-callsite
+L1-miss decomposition methodology that found it.*
