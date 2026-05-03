@@ -2631,13 +2631,18 @@ impl NNUENet {
         // forward pass entry. At ~600k forward passes per bench, the
         // eliminated memset traffic is 2.4 GB. The SIMD pack fully writes
         // bytes 0..pw of each storage; consumers only read &stm_pw[..pw].
-        let mut stm_pw_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
-        let mut ntm_pw_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
+        // Storage sized to fit any plausibly-loaded Coda net while keeping the
+        // function's total stack frame inside L1's working budget. Caller-side
+        // assert guards against a future net exceeding bounds.
+        const PW_BUF: usize = 1024;  // pw ≤ 1024 (hidden_size ≤ 2048)
+        debug_assert!(pw <= PW_BUF, "pw {} exceeds PW_BUF {}", pw, PW_BUF);
+        let mut stm_pw_storage = std::mem::MaybeUninit::<[u8; PW_BUF]>::uninit();
+        let mut ntm_pw_storage = std::mem::MaybeUninit::<[u8; PW_BUF]>::uninit();
         let stm_pw: &mut [u8] = unsafe {
-            std::slice::from_raw_parts_mut(stm_pw_storage.as_mut_ptr() as *mut u8, 2048)
+            std::slice::from_raw_parts_mut(stm_pw_storage.as_mut_ptr() as *mut u8, PW_BUF)
         };
         let ntm_pw: &mut [u8] = unsafe {
-            std::slice::from_raw_parts_mut(ntm_pw_storage.as_mut_ptr() as *mut u8, 2048)
+            std::slice::from_raw_parts_mut(ntm_pw_storage.as_mut_ptr() as *mut u8, PW_BUF)
         };
 
         #[cfg(target_arch = "x86_64")]
@@ -2715,9 +2720,11 @@ impl NNUENet {
         // Skip the 2 KB zero-init memset (perf annotate showed it as a top
         // L1-miss source). Bias seed below initialises [..l1]; consumers only
         // read [..l1].
-        let mut hidden32_storage = std::mem::MaybeUninit::<[i32; 512]>::uninit();
+        const HIDDEN32_BUF: usize = 64;  // l1 ≤ 64
+        debug_assert!(l1 <= HIDDEN32_BUF, "l1 {} exceeds HIDDEN32_BUF {}", l1, HIDDEN32_BUF);
+        let mut hidden32_storage = std::mem::MaybeUninit::<[i32; HIDDEN32_BUF]>::uninit();
         let mut hidden32: &mut [i32] = unsafe {
-            std::slice::from_raw_parts_mut(hidden32_storage.as_mut_ptr() as *mut i32, 512)
+            std::slice::from_raw_parts_mut(hidden32_storage.as_mut_ptr() as *mut i32, HIDDEN32_BUF)
         };
         let _ = &mut hidden32; // silence unused-mut on the binding itself; slice refs are mutated
         for i in 0..l1 {
@@ -2948,7 +2955,9 @@ impl NNUENet {
         let qa_l1_f = qa_l1 as f32;
         let qa_l1_sq = qa_l1_f * qa_l1_f;
         let l1_out_count = if self.dual_l1 { l1 * 2 } else { l1 };
-        let mut l1_out = [0.0f32; 1024]; // max: 512 neurons × 2 for dual
+        const L1_OUT_BUF: usize = 128;  // l1*2 ≤ 128 (dual_l1 with l1 ≤ 64)
+        debug_assert!(l1_out_count <= L1_OUT_BUF, "l1_out_count {} exceeds L1_OUT_BUF {}", l1_out_count, L1_OUT_BUF);
+        let mut l1_out = [0.0f32; L1_OUT_BUF];
         if self.dual_l1 {
             // Dual L1 activation: CReLU(L1) concat SCReLU(L1)
             for i in 0..l1 {
@@ -2980,10 +2989,12 @@ impl NNUENet {
             // MaybeUninit: same memset-skip pattern as stm_pw / ntm_pw above.
             // h2 is fully initialised by either l2_fmadd_avx512_x32 (writes all
             // 32 lanes from biases+fmadd) or the manual `for k in 0..l2 { h2[k] = bias }`
-            // loop. Tail [l2..512] never read.
-            let mut h2_storage = std::mem::MaybeUninit::<[f32; 512]>::uninit();
+            // loop. Tail [l2..H2_BUF] never read.
+            const H2_BUF: usize = 128;  // l2 ≤ 128
+            debug_assert!(l2 <= H2_BUF, "l2 {} exceeds H2_BUF {}", l2, H2_BUF);
+            let mut h2_storage = std::mem::MaybeUninit::<[f32; H2_BUF]>::uninit();
             let mut h2: &mut [f32] = unsafe {
-                std::slice::from_raw_parts_mut(h2_storage.as_mut_ptr() as *mut f32, 512)
+                std::slice::from_raw_parts_mut(h2_storage.as_mut_ptr() as *mut f32, H2_BUF)
             };
             let _ = &mut h2;
             // L2 matmul. The common v9 shape (L2=32) takes a hand-vectorised
