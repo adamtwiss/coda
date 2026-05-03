@@ -212,9 +212,27 @@ static mut ATTACK_INDEX_LOOKUP: [[[u8; 64]; 64]; NUM_COLORED_PIECES] = [[[0; 64]
 /// Total number of threat features. Set during init_threats().
 static mut TOTAL_THREAT_FEATURES: usize = 0;
 
+// Compact encoder tables — parallel to the classic ones, populated by
+// init_threats_compact() at startup. Skeleton pass: these are bit-identical
+// copies of the classic tables; subsequent commits will layer in phantom
+// cleanup (semi-excluded half-count, pawn-victim-on-rank-1/8 drop) and
+// channel-level importance reorder per
+// docs/threat_encoder_compact_2026-05-04.md.
+static mut COMPACT_PIECE_PAIR_LOOKUP: [[PiecePair; NUM_COLORED_PIECES]; NUM_COLORED_PIECES] =
+    [[PiecePair { inner: 0 }; NUM_COLORED_PIECES]; NUM_COLORED_PIECES];
+static mut COMPACT_PIECE_OFFSET_LOOKUP: [[i32; 64]; NUM_COLORED_PIECES] = [[0; 64]; NUM_COLORED_PIECES];
+static mut COMPACT_ATTACK_INDEX_LOOKUP: [[[u8; 64]; 64]; NUM_COLORED_PIECES] = [[[0; 64]; 64]; NUM_COLORED_PIECES];
+static mut COMPACT_TOTAL_THREAT_FEATURES: usize = 0;
+
 /// Get the total threat feature count (call after init_threats).
 pub fn num_threat_features() -> usize {
     unsafe { TOTAL_THREAT_FEATURES }
+}
+
+/// Get the total threat feature count for the compact encoder.
+/// Will diverge from `num_threat_features()` once phantom cleanup lands.
+pub fn num_threat_features_compact() -> usize {
+    unsafe { COMPACT_TOTAL_THREAT_FEATURES }
 }
 
 /// Colored piece index: 0=WP, 1=WN, 2=WB, 3=WR, 4=WQ, 5=WK, 6=BP, ..., 11=BK
@@ -339,6 +357,30 @@ pub fn init_threats() {
     }
 
     eprintln!("Threat features initialised: {} total", offset);
+
+    // Build the compact encoder's tables. Skeleton pass: bit-identical
+    // to classic. Encoder semantic changes (phantom cleanup, channel
+    // reorder) layer on top in subsequent commits.
+    init_threats_compact_skeleton();
+}
+
+/// Initialise compact-encoder lookup tables.
+///
+/// Skeleton pass (no semantic change): COMPACT_* tables are populated as
+/// exact copies of classic tables. This validates the dispatch
+/// infrastructure (parallel tables + sibling functions) before encoder
+/// semantic changes layer in:
+///   1. Drop semi-excluded over-allocation (half-count for same-piece pairs)
+///   2. Drop pawn-victim-on-rank-1/8 slots
+///   3. Channel-level importance reorder (T80 hit ranking,
+///      docs/threat_channels_t80_2026-05-04.csv)
+fn init_threats_compact_skeleton() {
+    unsafe {
+        COMPACT_PIECE_PAIR_LOOKUP = PIECE_PAIR_LOOKUP;
+        COMPACT_PIECE_OFFSET_LOOKUP = PIECE_OFFSET_LOOKUP;
+        COMPACT_ATTACK_INDEX_LOOKUP = ATTACK_INDEX_LOOKUP;
+        COMPACT_TOTAL_THREAT_FEATURES = TOTAL_THREAT_FEATURES;
+    }
 }
 
 /// Compute a single threat feature index.
@@ -386,6 +428,36 @@ pub fn threat_index(
 
         base + PIECE_OFFSET_LOOKUP[attacking][from_f as usize]
             + ATTACK_INDEX_LOOKUP[attacking][from_f as usize][to_f as usize] as i32
+    }
+}
+
+/// Compact-encoder sibling of `threat_index`. Same algorithmic shape; uses
+/// the COMPACT_* tables. Skeleton pass: bit-identical output to
+/// `threat_index`. Encoder semantic changes layer in via the COMPACT_*
+/// tables, not the function body.
+#[inline]
+pub fn threat_index_compact(
+    attacker_cp: usize,
+    from: u32,
+    victim_cp: usize,
+    to: u32,
+    mirrored: bool,
+    pov: Color,
+) -> i32 {
+    let attacking = if pov == BLACK { (attacker_cp + 6) % 12 } else { attacker_cp };
+    let attacked  = if pov == BLACK { (victim_cp + 6) % 12 } else { victim_cp };
+
+    unsafe {
+        let pair = COMPACT_PIECE_PAIR_LOOKUP[attacking][attacked];
+        let base = pair.base(from, to);
+        if base < 0 { return base; }
+
+        let flip = (7 * mirrored as u32) ^ (56 * pov as u32);
+        let from_f = from ^ flip;
+        let to_f = to ^ flip;
+
+        base + COMPACT_PIECE_OFFSET_LOOKUP[attacking][from_f as usize]
+            + COMPACT_ATTACK_INDEX_LOOKUP[attacking][from_f as usize][to_f as usize] as i32
     }
 }
 
@@ -2510,5 +2582,42 @@ mod tests {
              deltas: {:?}",
             deltas.iter().map(|d| (d.attacker_cp(), d.from_sq(), d.victim_cp(), d.to_sq(), d.add())).collect::<Vec<_>>()
         );
+    }
+
+    /// Skeleton-pass invariant for the compact encoder: it produces
+    /// bit-identical output to `threat_index` for every (a_cp, a_sq,
+    /// v_cp, v_sq, mir, pov) tuple.
+    ///
+    /// Once encoder semantic changes layer in (phantom cleanup, channel
+    /// reorder), this invariant breaks by design — the test will be
+    /// upgraded to assert the compact encoder still produces a non-
+    /// negative idx whenever classic does, and that the live-index set
+    /// is dense in 0..num_threat_features_compact().
+    #[test]
+    fn compact_encoder_skeleton_matches_classic() {
+        crate::attacks::init_attacks();
+        init_threats();
+        assert_eq!(num_threat_features(), num_threat_features_compact(),
+            "skeleton: feature counts must match");
+
+        // Sweep every reachable input tuple. ~589K iterations, runs in <1s.
+        for a_cp in 0..NUM_COLORED_PIECES {
+            for a_sq in 0..64u32 {
+                for v_cp in 0..NUM_COLORED_PIECES {
+                    for v_sq in 0..64u32 {
+                        if v_sq == a_sq { continue; }
+                        for &mirrored in &[false, true] {
+                            for &pov in &[WHITE, BLACK] {
+                                let classic = threat_index(a_cp, a_sq, v_cp, v_sq, mirrored, pov);
+                                let compact = threat_index_compact(a_cp, a_sq, v_cp, v_sq, mirrored, pov);
+                                assert_eq!(classic, compact,
+                                    "divergence at (a_cp={}, a_sq={}, v_cp={}, v_sq={}, mir={}, pov={:?}): classic={} compact={}",
+                                    a_cp, a_sq, v_cp, v_sq, mirrored, pov, classic, compact);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
