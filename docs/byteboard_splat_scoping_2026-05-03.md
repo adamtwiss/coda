@@ -171,3 +171,108 @@ Other levers in the queue (rough ROI ordering):
 Lowest-hanging fruit ordering: hot-feature frontloading first
 (half day), then byteboard splat (4-5 days), then Step C-full
 when ready for the bigger investment.
+
+## Update 2026-05-03 PM — Phase A discovered an architectural mismatch
+
+Started Phase A (AVX-512 splat + tables) on `feature/byteboard-splat-threats`.
+Wrote ~600 LoC of Coda-encoded tables, SIMD primitives,
+`splat_threats` / `splat_xray_threats` / `push_threats_on_change_avx512`,
+plus a parity test against scalar `push_threats_on_change`.
+
+Three iterations of debugging surfaced the issue:
+
+1. **Mailbox encoding** — Coda's mailbox stores `piece_type` (0..5,
+   6=empty), Reckless's stores `colored_piece` (0..11, 12=empty).
+   Fixed by `mailbox_vector_avx512` that converts mailbox + white_bb
+   into a colored_piece SIMD vector at entry. ~5 SIMD ops overhead.
+
+2. **Test setup needed `init_bitboards()`** — RAY_EXTENSION wasn't
+   populated, breaking scalar's section 1b/2 z-finding. Fixed.
+
+3. **Threat space mismatch — BLOCKER.** Coda's `enumerate_threats`
+   emits x-ray features for sliders (e.g. `(WR-a1, WB-c1)` is an
+   active feature in the start position via x-ray through `WN-b1`).
+   Reckless's enumeration emits direct-only attacks (`(WR, a1, WB,
+   c1)` is NOT in Reckless's feature space when blocked).
+
+   Both engines use the same `(piece, from, attacked, to)` →
+   `feature_index` mapping with no x-ray flag. So the SAME index
+   represents:
+   - In Coda: "WR threatens WB" (direct OR x-ray, same feature).
+   - In Reckless: "WR directly attacks WB" only.
+
+   When `WN-b1` is removed:
+   - Coda's view: `(WR, a1, WB, c1)` was active (x-ray), still active
+     (direct). NO delta needed.
+   - Reckless's view: `(WR, a1, WB, c1)` was inactive, now active.
+     splat_xray_threats emits ADD with `!add=true`. Correct in
+     Reckless's model.
+   - **Reckless's algorithm DOUBLE-COUNTS in Coda's model.**
+
+   Confirmed via the parity test: Reckless-style splat emits an
+   extra `(WR, a1, WB, c1, add=true)` that Coda's scalar doesn't
+   (because the feature is unchanged).
+
+### Implication
+
+Reckless's byteboard splat is incompatible with Coda's threat
+encoding. Direct port produces incorrect deltas — would corrupt
+the threat accumulator and silently degrade NNUE eval quality.
+Three options:
+
+**Option A — Accept the divergence.** Use byteboard splat as-is,
+silently degrade eval quality. **Bad** — equivalent to a buggy
+NNUE, would regress Elo.
+
+**Option B — Custom SIMD enumerator matching Coda's semantics.**
+Significant work — multiple SIMD passes (first-hit, second-hit,
+beyond) for sliders, plus separate logic for sections 1b/2/2b
+that Reckless doesn't have. Estimate **5-7 days** plus the threat
+space's sensitivity to subtle bugs.
+
+**Option C — Retrain with "direct only" threat space.** Match
+Reckless's model. Invalidates all existing nets; Bullet retrain
+required (~4h GPU plus net re-validation). After landing, byteboard
+splat works directly. Estimate **1 day eng + 1 net cycle**.
+
+**Option D — Drop byteboard splat plan.** The investigation
+established that:
+1. The cache-hygiene leg (already merged) banked the cheap wins
+   on this axis.
+2. The instruction-count gap (1.79× more in Coda) is the real
+   structural bottleneck, addressable via Step C-full.
+3. Byteboard splat would require either a non-trivial custom port
+   (Option B) or a training change (Option C) — both bigger than
+   originally scoped.
+
+**Recommended: D + look elsewhere.**
+
+### What survives this investigation
+
+- The diagnostic that confirmed threat-delta-row count is similar
+  between engines (~10 per push) — already in
+  `experiments.md`. Rules out "Coda enumerates more threats" as a
+  cause of the cache gap.
+- Confirmation that the cache gap from threat-apply isn't because
+  of threat ENUMERATION speed but because of WEIGHT-ACCESS PATTERN
+  (which the byteboard splat doesn't directly improve since the
+  apply pipeline is structurally similar in both engines).
+- New understanding that **Coda's threat space includes x-ray
+  features that Reckless's doesn't.** Encoding decision worth
+  documenting separately as part of the v9 architecture context.
+- ~600 LoC of Coda-encoded tables and AVX-512 SIMD primitives in
+  `src/threats_splat.rs` (uncommitted) — could be revived if we
+  pick Option B or C.
+
+### Next levers (revised)
+
+The cache-hygiene leg already closed the cheap wins. Remaining
+candidates by approximate effort/Elo:
+
+1. **Hot-feature frontloading** (still half-day) — rank threat
+   features by activation count, permute the 49 MB matrix at load.
+   Generic L2-residency improvement. **Tentative pick for next.**
+2. **Step C-full** — drop `#[target_feature]` outer-fn barriers,
+   multi-binary build. Targets the 1.79× instruction-count gap.
+   Much bigger investment.
+3. **Mixed-precision threat accumulator** (training-side, deferred).
