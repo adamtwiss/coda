@@ -2617,26 +2617,38 @@ impl NNUENet {
         let has_threats = !stm_threat.is_empty();
 
         // CReLU + pairwise for each perspective → pw values each
-        // When threats are present, fuses PSQ+threat combine into the SIMD pack
-        let mut stm_pw = [0u8; 2048];
-        let mut ntm_pw = [0u8; 2048];
+        // When threats are present, fuses PSQ+threat combine into the SIMD pack.
+        //
+        // Storage uses `MaybeUninit` (not `[0u8; 2048]`) to skip the 4 KB
+        // zero-init that perf annotate showed as TWO `memset` calls per
+        // forward pass entry. At ~600k forward passes per bench, the
+        // eliminated memset traffic is 2.4 GB. The SIMD pack fully writes
+        // bytes 0..pw of each storage; consumers only read &stm_pw[..pw].
+        let mut stm_pw_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
+        let mut ntm_pw_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
+        let stm_pw: &mut [u8] = unsafe {
+            std::slice::from_raw_parts_mut(stm_pw_storage.as_mut_ptr() as *mut u8, 2048)
+        };
+        let ntm_pw: &mut [u8] = unsafe {
+            std::slice::from_raw_parts_mut(ntm_pw_storage.as_mut_ptr() as *mut u8, 2048)
+        };
 
         #[cfg(target_arch = "x86_64")]
         if self.has_avx512 && pw % 32 == 0 {
             unsafe {
                 let stm_tp = if has_threats { stm_threat.as_ptr() } else { std::ptr::null() };
                 let ntm_tp = if has_threats { ntm_threat.as_ptr() } else { std::ptr::null() };
-                simd512_pairwise_pack_fused(stm_acc, stm_tp, &mut stm_pw, pw);
-                simd512_pairwise_pack_fused(ntm_acc, ntm_tp, &mut ntm_pw, pw);
+                simd512_pairwise_pack_fused(stm_acc, stm_tp, stm_pw, pw);
+                simd512_pairwise_pack_fused(ntm_acc, ntm_tp, ntm_pw, pw);
             }
         } else if self.has_avx2 && pw % 16 == 0 {
             unsafe {
                 if has_threats {
-                    simd_pairwise_pack_fused(stm_acc, stm_threat.as_ptr(), &mut stm_pw, pw);
-                    simd_pairwise_pack_fused(ntm_acc, ntm_threat.as_ptr(), &mut ntm_pw, pw);
+                    simd_pairwise_pack_fused(stm_acc, stm_threat.as_ptr(), stm_pw, pw);
+                    simd_pairwise_pack_fused(ntm_acc, ntm_threat.as_ptr(), ntm_pw, pw);
                 } else {
-                    simd_pairwise_pack_fused(stm_acc, std::ptr::null(), &mut stm_pw, pw);
-                    simd_pairwise_pack_fused(ntm_acc, std::ptr::null(), &mut ntm_pw, pw);
+                    simd_pairwise_pack_fused(stm_acc, std::ptr::null(), stm_pw, pw);
+                    simd_pairwise_pack_fused(ntm_acc, std::ptr::null(), ntm_pw, pw);
                 }
             }
         } else {
@@ -2660,11 +2672,11 @@ impl NNUENet {
         {
             unsafe {
                 if has_threats {
-                    neon_pairwise_pack_fused(stm_acc, stm_threat.as_ptr(), &mut stm_pw, pw);
-                    neon_pairwise_pack_fused(ntm_acc, ntm_threat.as_ptr(), &mut ntm_pw, pw);
+                    neon_pairwise_pack_fused(stm_acc, stm_threat.as_ptr(), stm_pw, pw);
+                    neon_pairwise_pack_fused(ntm_acc, ntm_threat.as_ptr(), ntm_pw, pw);
                 } else {
-                    neon_pairwise_pack_fused(stm_acc, std::ptr::null(), &mut stm_pw, pw);
-                    neon_pairwise_pack_fused(ntm_acc, std::ptr::null(), &mut ntm_pw, pw);
+                    neon_pairwise_pack_fused(stm_acc, std::ptr::null(), stm_pw, pw);
+                    neon_pairwise_pack_fused(ntm_acc, std::ptr::null(), ntm_pw, pw);
                 }
             }
         }
@@ -2693,7 +2705,14 @@ impl NNUENet {
         // Bias at scale QA_L1(64), scaled by PW_SCALE to match matmul.
         // After matmul: divide by PW_SCALE → scale QA_L1.
         let pw_scale = PW_SCALE; // (QA*QA) >> FT_SHIFT = 127
-        let mut hidden32 = [0i32; 512];
+        // Skip the 2 KB zero-init memset (perf annotate showed it as a top
+        // L1-miss source). Bias seed below initialises [..l1]; consumers only
+        // read [..l1].
+        let mut hidden32_storage = std::mem::MaybeUninit::<[i32; 512]>::uninit();
+        let mut hidden32: &mut [i32] = unsafe {
+            std::slice::from_raw_parts_mut(hidden32_storage.as_mut_ptr() as *mut i32, 512)
+        };
+        let _ = &mut hidden32; // silence unused-mut on the binding itself; slice refs are mutated
         for i in 0..l1 {
             hidden32[i] = self.l1_biases[l1_off + i] as i32 * pw_scale;
         }
