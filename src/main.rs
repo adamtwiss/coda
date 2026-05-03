@@ -373,6 +373,25 @@ enum Commands {
         #[arg(long)]
         compact_encoding: bool,
     },
+    /// Permute a classic-encoder .nnue into a compact-encoder .nnue.
+    ///
+    /// Compact encoder is a pure permutation of the classic threat-feature
+    /// index space (channel-importance reorder, no shrink). The trained
+    /// weights for feature K under classic correspond to the same physical
+    /// chess feature as feature M = classic_to_compact[K] under compact —
+    /// permuting the rows of the threat weight matrix produces a
+    /// compact-flagged net that yields *bit-identical accumulator outputs*
+    /// to the classic input. The bench search tree is therefore identical;
+    /// the NPS difference is purely encoder-call cost. Useful for clean
+    /// NPS-only A/B without retraining.
+    PermuteNetCompact {
+        /// Input .nnue path (must be classic-encoded, training_flags bit 1 = 0)
+        #[arg(long, short = 'i')]
+        input: String,
+        /// Output .nnue path (compact-encoded)
+        #[arg(long, short = 'o')]
+        output: String,
+    },
     /// Convert .nnue to Bullet checkpoint (for transfer learning)
     ConvertCheckpoint {
         /// Input .nnue path
@@ -938,6 +957,10 @@ fn main() {
             }
         }
 
+        Some(Commands::PermuteNetCompact { input, output }) => {
+            run_permute_net_compact(&input, &output);
+        }
+
         Some(Commands::ConvertCheckpoint { nnue, output, ft, l1, l2 }) => {
             if let Err(e) = nnue_export::nnue_to_bullet_checkpoint(&nnue, &output, ft, l1, l2) {
                 eprintln!("Error: {}", e);
@@ -1083,6 +1106,190 @@ fn run_fuzz_threats(count: usize, seed: u64, max_plies: usize, verbose: usize, p
     println!("  mismatches        : {} ({:.2}%)", total_mismatches,
         100.0 * total_mismatches as f64 / total_evals.max(1) as f64);
     println!("  by real STM       : W={} B={}", mismatches_by_stm[0], mismatches_by_stm[1]);
+}
+
+/// Permute a classic-encoded .nnue into a compact-encoded .nnue by reordering
+/// threat weight rows. Compact encoder is a pure permutation of the classic
+/// index space, so swapping rows produces bit-identical accumulator outputs.
+fn run_permute_net_compact(input_path: &str, output_path: &str) {
+    crate::attacks::init_attacks();
+    crate::threats::init_threats();
+
+    use crate::types::{WHITE, BLACK};
+    const NUM_COLORED_PIECES: usize = 12;
+
+    // Build classic_to_compact map over canonical states across all four
+    // (pov, mirror) configurations. The encoder uses pov in `flip` (not
+    // just for color-swap), so the same physical input produces different
+    // classic indices for pov=WHITE vs pov=BLACK; both must be enumerated
+    // to cover all real-position emissions.
+    let total = crate::threats::num_threat_features_classic();
+    let mut classic_to_compact: Vec<i32> = vec![-1; total];
+
+    for &pov in &[WHITE, BLACK] {
+        for &mirrored in &[false, true] {
+            for a_cp in 0..NUM_COLORED_PIECES {
+                let a_pt = a_cp % 6;
+                for a_sq in 0..64u32 {
+                    if a_pt == 0 && (a_sq < 8 || a_sq >= 56) { continue; }
+                    let attacks = crate::threats::piece_attacks_empty(a_cp, a_sq);
+                    if attacks == 0 { continue; }
+                    for v_cp in 0..NUM_COLORED_PIECES {
+                        let v_pt = v_cp % 6;
+                        let mut bb = attacks;
+                        while bb != 0 {
+                            let v_sq = bb.trailing_zeros();
+                            bb &= bb - 1;
+                            if v_sq == a_sq { continue; }
+                            if v_pt == 0 && (v_sq < 8 || v_sq >= 56) { continue; }
+
+                            let classic = crate::threats::threat_index_classic(
+                                a_cp, a_sq, v_cp, v_sq, mirrored, pov);
+                            if classic < 0 { continue; }
+                            let compact = crate::threats::threat_index_compact(
+                                a_cp, a_sq, v_cp, v_sq, mirrored, pov);
+                            if compact < 0 {
+                                eprintln!("Error: canonical classic-valid input has compact-invalid output: a_cp={} a_sq={} v_cp={} v_sq={} mir={} pov={:?} classic={} compact={}",
+                                    a_cp, a_sq, v_cp, v_sq, mirrored, pov, classic, compact);
+                                std::process::exit(1);
+                            }
+                            let prev = classic_to_compact[classic as usize];
+                            if prev < 0 {
+                                classic_to_compact[classic as usize] = compact;
+                            } else if prev != compact {
+                                eprintln!("Error: encoder is not a permutation on canonical states — classic={} maps to compact={} and {} (pov={:?} mir={} a_cp={} a_sq={} v_cp={} v_sq={})",
+                                    classic, prev, compact, pov, mirrored, a_cp, a_sq, v_cp, v_sq);
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mapped: usize = classic_to_compact.iter().filter(|&&m| m >= 0).count();
+    eprintln!("classic→compact permutation built: {} live indices / {} total", mapped, total);
+
+    // Read whole file
+    let bytes = match std::fs::read(input_path) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("Error: read {}: {}", input_path, e); std::process::exit(1); }
+    };
+
+    // Parse minimum header to locate training_flags byte and threat block.
+    // Mirror the byte order in NNUENet::load_from_reader for v10.
+    let mut p = 0usize;
+    let read_u32 = |b: &[u8], p: &mut usize| -> u32 {
+        let v = u32::from_le_bytes([b[*p], b[*p+1], b[*p+2], b[*p+3]]);
+        *p += 4;
+        v
+    };
+    let read_u16 = |b: &[u8], p: &mut usize| -> u16 {
+        let v = u16::from_le_bytes([b[*p], b[*p+1]]);
+        *p += 2;
+        v
+    };
+
+    let _magic = read_u32(&bytes, &mut p);
+    let version = read_u32(&bytes, &mut p);
+    if version < 10 {
+        eprintln!("Error: PermuteNetCompact requires v10+ (with training_flags byte). Got v{}", version);
+        std::process::exit(1);
+    }
+    let flags = bytes[p]; p += 1;
+    let has_threats = flags & 64 != 0;
+    let extended_kb = flags & 128 != 0;
+    if !has_threats {
+        eprintln!("Error: input net has no threat features (flags bit 64 unset)");
+        std::process::exit(1);
+    }
+    if !extended_kb {
+        eprintln!("Error: input net is not extended-kb (flags bit 128 unset). Compact encoder is only meaningful on threat nets with extended_kb headers.");
+        std::process::exit(1);
+    }
+    let ft_size = read_u16(&bytes, &mut p) as usize;
+    let _l1_size = read_u16(&bytes, &mut p);
+    let _l2_size = read_u16(&bytes, &mut p);
+    let num_threat_features = read_u32(&bytes, &mut p) as usize;
+    if num_threat_features != total {
+        eprintln!("Error: file has {} threat features but classic encoder expects {}",
+            num_threat_features, total);
+        std::process::exit(1);
+    }
+    let kb_count = bytes[p] as usize; p += 1;
+    let _kb_layout = bytes[p]; p += 1;
+    let training_flags_offset = p;
+    let training_flags = bytes[p]; p += 1;
+    if training_flags & 2 != 0 {
+        eprintln!("Error: input net is already compact-encoded (training_flags bit 1 set)");
+        std::process::exit(1);
+    }
+
+    // After training_flags: input_weights (i16), input_biases (i16), then threat_weights (i8).
+    let psq_input_size = kb_count * 768;
+    let input_weights_bytes = psq_input_size * ft_size * 2;
+    let input_biases_bytes = ft_size * 2;
+    let threat_offset = p + input_weights_bytes + input_biases_bytes;
+    let threat_bytes_total = num_threat_features * ft_size;
+    if threat_offset + threat_bytes_total > bytes.len() {
+        eprintln!("Error: file too small for declared header; would need {} bytes through threat block, have {}",
+            threat_offset + threat_bytes_total, bytes.len());
+        std::process::exit(1);
+    }
+
+    eprintln!("net layout: ft={} kb={} num_threats={} threat_offset={} threat_bytes={}",
+        ft_size, kb_count, num_threat_features, threat_offset, threat_bytes_total);
+
+    // Build new buffer: copy header, set training_flags bit 1, copy
+    // input_weights+biases, write permuted threat weights, copy rest.
+    let mut out = bytes.clone();
+    out[training_flags_offset] = training_flags | 2;
+
+    // Permute threat weights. Layout: [feature_idx][hidden_unit] row-major,
+    // each row is ft_size bytes. For compact_idx M, find classic_idx K =
+    // compact_to_classic[M] and copy that row. For phantom compact slots
+    // (no input maps to them), zero-fill — the inference path never reads
+    // them.
+    let mut compact_to_classic: Vec<i32> = vec![-1; num_threat_features];
+    for (k, &m) in classic_to_compact.iter().enumerate() {
+        if m < 0 { continue; }
+        let mu = m as usize;
+        if compact_to_classic[mu] >= 0 && compact_to_classic[mu] != k as i32 {
+            eprintln!("Error: encoder is not a permutation — compact={} reached by classic={} and {}",
+                mu, compact_to_classic[mu], k);
+            std::process::exit(1);
+        }
+        compact_to_classic[mu] = k as i32;
+    }
+
+    let mut phantom_count = 0usize;
+    for compact_idx in 0..num_threat_features {
+        let dst = threat_offset + compact_idx * ft_size;
+        match compact_to_classic[compact_idx] {
+            k if k >= 0 => {
+                let src = threat_offset + (k as usize) * ft_size;
+                // bytes[] is the original buffer; out[] is the destination
+                // buffer derived from a clone. Copy from `bytes` to avoid
+                // partial-permutation read-after-write hazards.
+                out[dst..dst + ft_size].copy_from_slice(&bytes[src..src + ft_size]);
+            }
+            _ => {
+                // Phantom compact slot — zero-fill (never read at inference).
+                for j in 0..ft_size { out[dst + j] = 0; }
+                phantom_count += 1;
+            }
+        }
+    }
+    eprintln!("permuted: {} live rows copied, {} phantom rows zeroed",
+        num_threat_features - phantom_count, phantom_count);
+
+    if let Err(e) = std::fs::write(output_path, &out) {
+        eprintln!("Error: write {}: {}", output_path, e);
+        std::process::exit(1);
+    }
+    println!("Wrote {} ({} bytes, training_flags=0x{:02x})",
+        output_path, out.len(), training_flags | 2);
 }
 
 fn run_fetch_net() {

@@ -266,7 +266,7 @@ fn color_of(cp: usize) -> usize {
 }
 
 /// Compute attack bitboard for a colored piece on a square (empty board for init).
-fn piece_attacks_empty(cp: usize, sq: u32) -> Bitboard {
+pub(crate) fn piece_attacks_empty(cp: usize, sq: u32) -> Bitboard {
     let pt = piece_type_of(cp);
     match pt {
         0 => pawn_attacks(if color_of(cp) == 0 { WHITE } else { BLACK }, sq),
