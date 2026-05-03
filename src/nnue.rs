@@ -334,7 +334,14 @@ unsafe fn simd_acc_fused_avx2(
     sub_rows: &[&[i16]],
     h: usize,
 ) {
-    const REGS: usize = 8;
+    // 12 AVX-2 registers × 16 i16 = 192 elements per chunk — for v9
+    // hidden_size=768 each weight row is read 4× instead of 6× under the
+    // previous REGS=8 / CHUNK=128 tile. Direct i16 add has no i8→i16
+    // expansion temps, so 12 YMM accumulators + ~3 for address/loop temps
+    // sit comfortably in AVX-2's 16-YMM register file. Same architectural
+    // pattern as the AVX-512 REGS=24 (#926 +1.5 Elo H1) but scaled to AVX-2's
+    // smaller register file.
+    const REGS: usize = 12;
     const CHUNK: usize = REGS * 16;
 
     let dst_ptr = dst.as_mut_ptr();
@@ -501,8 +508,15 @@ unsafe fn finny_batch_apply_avx2(
     adds: &[usize],
     subs: &[usize],
 ) {
-    const REGS: usize = 8;
-    const CHUNK: usize = REGS * 16; // 128 i16 elements per chunk
+    // 12 AVX-2 registers × 16 i16 = 192 elements per chunk. v9 hidden_size=768
+    // weight rows are read 4× per refresh instead of 6× under the previous
+    // REGS=8 / CHUNK=128 tile. Most of the OB fleet is AVX-2-only (no AVX-512),
+    // so this path covers the bulk of fleet workers — the AVX-512 sibling
+    // change covers Zeus only. Direct i16 add (no expansion temps) keeps 12
+    // YMM accumulators + ~3 temps within AVX-2's 16-YMM register file even
+    // when the delta loop persists them across many add/sub iterations.
+    const REGS: usize = 12;
+    const CHUNK: usize = REGS * 16; // 192 i16 elements per chunk
 
     let acc_ptr = acc.as_mut_ptr();
     let w_ptr = input_weights.as_ptr();
@@ -5217,9 +5231,86 @@ mod tests {
         }
     }
 
+    /// AVX-2 simd_acc_fused vs scalar. Confirms the REGS=12 / CHUNK=192
+    /// tile preserves correctness for h that is and isn't a CHUNK multiple.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_simd_acc_fused_avx2_matches_scalar() {
+        if !is_x86_feature_detected!("avx2") {
+            eprintln!("No AVX2, skipping test");
+            return;
+        }
+
+        for &h in &[64usize, 128, 192, 256, 384, 512, 768, 1024] {
+            let mut r = rng(0xc0da_ace_22aa_0001 ^ h as u64);
+            let n_rows = 10usize;
+            let mut row_bufs: Vec<Vec<i16>> = (0..n_rows).map(|_| {
+                (0..h).map(|_| ((r() % 1024) as i16) - 512).collect()
+            }).collect();
+            let row_refs: Vec<&[i16]> = row_bufs.iter().map(|v| v.as_slice()).collect();
+            let add_rows: &[&[i16]] = &row_refs[..4];
+            let sub_rows: &[&[i16]] = &row_refs[4..9];
+            let src: Vec<i16> = (0..h).map(|_| ((r() % 2000) as i16) - 1000).collect();
+
+            let mut dst_scalar = vec![0i16; h];
+            acc_fused_scalar_ref(&mut dst_scalar, &src, add_rows, sub_rows, h);
+            let mut dst_simd = vec![0i16; h];
+            unsafe { simd_acc_fused_avx2(&mut dst_simd, &src, add_rows, sub_rows, h); }
+            assert_eq!(dst_scalar, dst_simd,
+                "simd_acc_fused_avx2 diverged from scalar at h={}", h);
+
+            let mut dst_simd = vec![0i16; h];
+            unsafe { simd_acc_fused_avx2(&mut dst_simd, &src, &[], &[], h); }
+            assert_eq!(src, dst_simd, "simd_acc_fused_avx2 empty-deltas altered dst at h={}", h);
+
+            row_bufs.clear();
+        }
+    }
+
+    /// AVX-2 finny batch apply vs scalar. Confirms the REGS=12 / CHUNK=192
+    /// tile preserves correctness across boundaries (h=768 splits into 4
+    /// chunks instead of 6 under the prior REGS=8 tile).
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_finny_batch_apply_avx2_matches_scalar() {
+        if !is_x86_feature_detected!("avx2") {
+            eprintln!("No AVX2, skipping test");
+            return;
+        }
+        for &h in &[64usize, 128, 192, 256, 384, 512, 768, 1024] {
+            let n_features = 40;
+            let mut r = rng(0xc0da_f1ec_22aa_0001 ^ h as u64);
+            let mut weights = vec![0i16; n_features * h];
+            for w in weights.iter_mut() { *w = (r() as i32 as i16).rem_euclid(511) - 255; }
+            let mut acc_init = vec![0i16; h];
+            for v in acc_init.iter_mut() { *v = (r() as i32 as i16).rem_euclid(2001) - 1000; }
+            let adds = [2usize, 5, 11, 17, 23, 35];
+            let subs = [1usize, 7, 13, 19, 29, 31, 37];
+
+            let mut scalar_acc = acc_init.clone();
+            finny_batch_apply_scalar_ref(&mut scalar_acc, &weights, h, &adds, &subs);
+            let mut simd_acc = acc_init.clone();
+            unsafe { finny_batch_apply_avx2(&mut simd_acc, &weights, h, &adds, &subs); }
+            assert_eq!(scalar_acc, simd_acc,
+                "finny_batch_apply_avx2 diverged from scalar at h={}", h);
+
+            let mut scalar_acc = acc_init.clone();
+            finny_batch_apply_scalar_ref(&mut scalar_acc, &weights, h, &adds, &[]);
+            let mut simd_acc = acc_init.clone();
+            unsafe { finny_batch_apply_avx2(&mut simd_acc, &weights, h, &adds, &[]); }
+            assert_eq!(scalar_acc, simd_acc,
+                "finny_batch_apply_avx2 adds-only diverged at h={}", h);
+
+            let mut simd_acc = acc_init.clone();
+            unsafe { finny_batch_apply_avx2(&mut simd_acc, &weights, h, &[], &[]); }
+            assert_eq!(acc_init, simd_acc,
+                "finny_batch_apply_avx2 empty deltas mutated accumulator at h={}", h);
+        }
+    }
+
     /// AVX-512 finny batch apply vs scalar. Mirrors the NEON test —
     /// confirms add/sub semantics and accumulator coherence across
-    /// CHUNK=256 partial passes (relevant for h=768).
+    /// CHUNK=768 single-pass refresh (REGS=24 register tile, h=768).
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn test_finny_batch_apply_avx512_matches_scalar() {
