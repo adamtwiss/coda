@@ -8420,3 +8420,61 @@ simd512_pairwise_pack_fused etc.) into hot callers, producing +12.4%
 executed instructions despite better icache/iTLB layout. None of the
 LLVM inline-threshold knobs recover it. `make pgo` rule disabled in
 Makefile.
+
+## 2026-05-04 — cfg(target_feature) dispatch class verified not to deliver Elo (Step C-full closed)
+
+Two SPRTs explored the cfg-dispatch refactor (replacing runtime
+`if self.has_avx512 { ... } else if self.has_avx2 { ... }` trees with
+compile-time `cfg!(target_feature = "...")` checks):
+
+| SPRT | Branch | Settled |
+|---|---|---:|
+| #935 | feature/cfg-dispatch-forward (forward_with_l1_pairwise_inner only) | +0.3 ±0.9 LLR **-2.27** → H0 |
+| #936 | feature/cfg-dispatch-bundle (apply_threat_deltas, materialize, finny, acc_add/sub) | -0.6 ±2.0 LLR -1.52 → H0 |
+
+The function body shrank 5% (5826 → 5534 instructions on Zen 5 build)
+as predicted, but **the Elo gain was zero or slightly negative**. Both
+stopped without merging.
+
+**Mechanism (why the theory was wrong):**
+
+1. Branch predictor was already correct after the first call. The
+   `if has_avx512` arms are 100%-skewed-one-way per binary lifetime —
+   predictor pins immediately. Removing them gains nothing.
+2. icache wasn't the bottleneck. The DEAD arms in the runtime-dispatch
+   version were never executed → never loaded into icache. So
+   eliminating them at compile-time freed no icache.
+3. The runtime checks compile to a branch + memory load. With
+   target-cpu=native, `self.has_avx512` is a struct field — one load,
+   not a function call. The cost is ~1 cycle, well within issue-width
+   slack on Zen 5.
+
+**Lesson banked**: when the runtime dispatch is on a value fixed at
+program-startup and the binary is compiled with `target-cpu=native`,
+the dispatch overhead is essentially zero. cfg!() simplification is
+cosmetic / code-style, not perf. Don't pursue cfg-dispatch refactors
+for Elo unless there's a specific instruction-cache or
+branch-predictor bottleneck identified by perf data.
+
+**Step C-full closed**: this was the final piece of the originally-scoped
+"drop #[target_feature] / multi-binary dispatch" thread. Result: the
+gates aren't the lever, never were. The Reckless 1.83× insns-per-node
+gap remains structural (per `docs/coda_vs_reckless_nps_2026-04-23.md`)
+and will need training-side work or significant refactors (negamax
+MovePicker hoist) to address. Cleanup tripwire 2026-05-15 now applies
+to `feature/nnue-simd-restructure` only — the cfg-dispatch branches
+should be deleted from origin alongside it.
+
+**Cache-hygiene leg fully closed.** Final accounting:
+
+- H1 ✓ merged: #921 +6.77, #926 +1.5, #927 +2.3, #930 +3.8 = **+14.4 Elo**
+- Direction-merged: #933 +0.9, #934 +1.0, #931 +0.0 = **+1.9 Elo**
+- Verified-not-Elo (closed without merge): #932 prefetch (-2 ±5),
+  #935 cfg-dispatch-forward (+0.3 H0), #936 cfg-dispatch-bundle (-0.6 H0)
+- **Total banked: +16.3 Elo** from search-side cache hygiene
+- Bench: 1249K → 1305K NPS (+4.5%) on Zen 5
+
+Search-side cache work is now exhausted at this code shape. Higher-Elo
+levers from here: training-side (hidden_size 768→512 retrain, threat
+encoding redesign, sparsity-promoting training) or significant search
+refactors (negamax MovePicker hoist out of recursive stack).
