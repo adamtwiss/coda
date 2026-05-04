@@ -8476,5 +8476,68 @@ should be deleted from origin alongside it.
 
 Search-side cache work is now exhausted at this code shape. Higher-Elo
 levers from here: training-side (hidden_size 768→512 retrain, threat
-encoding redesign, sparsity-promoting training) or significant search
-refactors (negamax MovePicker hoist out of recursive stack).
+encoding redesign, sparsity-promoting training).
+
+## 2026-05-04 — MovePicker hoist out of recursive stack — H0'd (-2.2 Elo)
+
+Refactored negamax/qsearch to pre-allocate per-ply MovePicker storage
+in SearchInfo (3 stacks: main move_pickers, q_move_pickers for
+probcut, se_move_pickers for singular extension verification). Each
+recursive negamax frame accesses its slot via raw pointer rather than
+constructing a fresh MovePicker on the local stack.
+
+**Stack frame measurements (Zen 5 release, confirmed via objdump):**
+- `negamax`: 4712 B → 1416 B (−70%)
+- `quiescence_with_depth`: 4024 B → 712 B (−82%)
+- Cumulative recursive stack at depth 13: ~60 KB → ~18 KB (fits L1)
+
+**SPRT #937: -2.2 ±3.0 LLR -2.94 H0 ✗** — clean rejection, point estimate
+*negative*. Branch deleted (was `feature/movepicker-hoist`).
+
+**Mechanism that explains the H0**:
+
+1. **NRVO was already handling the textbook optimization.** The
+   compiler was constructing each `MovePicker::new(...)` directly into
+   negamax's local stack slot without an intermediate copy. The
+   "stack-frame size includes picker storage" measurement was
+   misleading — the data was logically transient and the compiler knew
+   it. My refactor moved storage location without reducing actual work.
+
+2. **Heap indirection cost > stack-frame win.** Every picker access
+   became `(*picker_ptr).method()`. LLVM lost some alias-analysis,
+   inlining, and register-allocation freedom across the picker
+   boundary that it had with the local-on-stack pattern.
+
+3. **TLB / cache locality cost.** The 300 KB-per-thread heap region
+   for pickers is on different pages from negamax's stack. Each picker
+   access may incur a TLB miss that the stack-local pattern avoided
+   (stack pages already in TLB by virtue of being on the call path).
+
+4. **Per-thread heap allocation overhead** (4.8 MB at T=16) creates
+   cache-line contention at L3 / memory-bandwidth tiers that pure
+   thread-local stack didn't.
+
+**Subtle bug found during implementation (worth banking):** singular
+extension verification recursively calls `negamax(info, ply, ...)` at
+the SAME ply with `excluded_move[ply]` set. With a single per-ply
+picker slot, SE's negamax recursion overwrote the outer negamax's
+picker state mid-iteration. Detected by bench bisect: dropped 966720
+→ 690866 nodes, scores diverged from main at depth ≥ 6 (different
+search tree, not just different pruning). Fix required a third
+parallel stack (`se_move_pickers`) selected when `excluded_move[ply]
+!= NO_MOVE`. Even with the fix, the optimization didn't deliver Elo —
+but if anyone tries this pattern again, **the SE same-ply recursion
+is the gotcha**.
+
+**Lesson banked**: textbook optimizations that "should obviously help"
+have repeatedly H0'd in this leg (#932 prefetch, #935/#936 cfg-dispatch,
+this MovePicker hoist). Pattern: **the compiler was already getting
+them**. The wins that DID land touch the *amount* of work per node
+(#921 AccDataStack flatten, #930 register tiling, #927 stack-shrink)
+or fix actual bugs (memset-skips when compiler couldn't prove the
+zero-init was wasted).
+
+Search-side structural levers now appear materially exhausted at the
+v9 trunk shape. Net Elo from this whole audit (cache leg + plumbing +
+hoist attempt): **+16.3 Elo banked, ~-3 Elo of dead-end SPRT cycles**.
+Real ceiling is now training-side.
