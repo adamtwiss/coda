@@ -8249,9 +8249,9 @@ Remaining levers worth trying:
 - **Mixed-precision threat accumulator** (i8 instead of i16
   per-ply state — Halogen pattern, deferred).
 
-## 2026-05-03 — fixed-seed cross-host SB50 variance (#922/#923/#924) — host-persistent ranking confirmed
+## 2026-05-03 — fixed-seed cross-host SB50 variance (#922/#923/#924)
 
-Three pair-SPRTs, SB50 hl-screlu non-factor, all three trained with
+Three pair-SPRTs, SB50 hl-screlu non-factor, all trained with
 identical config + `--seed 42` on identical-hardware hosts gpu3/4/5
 (shared volume, same CUDA libs):
 
@@ -8261,50 +8261,55 @@ identical config + `--seed 42` on identical-hardware hosts gpu3/4/5
 | #923 | gpu3 vs gpu5 | +6.8 | 7.3 | 3336 | H1 ✓ |
 | #924 | gpu4 vs gpu5 | −12.2 | 9.8 | 1802 | H0 ✗ |
 
-**Ranking: gpu3 > gpu5 > gpu4, ~30 Elo span.**
+Pair span ~30 Elo at SB50. Earlier unseeded T1 SB200 cohort
+(#915-917) showed similar magnitude span. **One-time per-cohort
+ordering** is what we observe; the earlier "gpu3 > gpu5 > gpu4 is
+host-persistent" reading was over-stated — two cohorts is too few
+to call any host "systematically better" (random ordering of three
+hosts hits the same triple ~17% of the time). The robust observation
+is **the magnitude of cross-host variance**, not a host ranking.
 
-Compare to unseeded T1 SB200 cohort (#915-917): also **gpu3 > gpu5 >
-gpu4, ~16 Elo span**. Same direction across seed configurations.
-Span larger at SB50 (less-converged training amplifies noise per
-training run).
+What this DOES establish: same hardware, same data dir, same seed,
+same code → 30 Elo span. So the seed alone is not enough; something
+upstream of the seeded RNGs is diverging across runs.
 
-**Key finding: the variance is HOST-PERSISTENT, not RNG-driven.**
-Whatever causes "gpu3 trains a stronger net than gpu4" is a property
-of the host environment that survives both unseeded and seeded
-training. Even on shared-volume / identical-GPU / same-CUDA-version
-hosts, there is residual variance.
+### Same-host two-run determinism check (2026-05-03/04)
 
-**Leading hypothesis: multi-threaded data loader pipeline.** `sfbinpack.rs`
-spawns N=8 worker threads per batch that each independently send their
-converted ChessBoard buffer to the shuffle stage. Arrival order is
-non-deterministic (depends on thread completion timing — affected by
-CPU scheduling, RAM access, NUMA topology, NFS read jitter). Different
-arrival orders → different starting positions for Fisher-Yates → different
-shuffled batches even with seeded RNG.
+Sequential two-run test on the same host with `--threads 1 --seed 42`,
+intended to remove multi-threaded loader non-determinism and check if
+single-threaded matches bit-for-bit. The runs diverged in the SB1
+running-loss number — about **1.8% different** by mid-SB1 — so even
+with `--threads 1` two back-to-back runs are not bit-identical.
 
-Different host environments produce systematically different thread-
-completion orders → systematically different data sequences → different
-training trajectories. gpu3's environment apparently produces orderings
-that train better; gpu4's worse. **This is consistent with the
-same-direction ranking across seed configurations.**
+`--threads 1` removes one source (worker arrival ordering in the
+loader); divergence at SB1 means at least one other source remains.
+Likely candidates inside the GPU stack: float-add ordering in the
+sparse-input gradient path (`atomicAdd` reductions in
+`crates/kernel/src/cuda/ops/sparse/bwd.cu` and related backward
+kernels), and any kernel-selection autotune that ties on first-use
+timing. We didn't isolate which one — divergence at SB1 is enough
+to confirm "more than just the loader" and the marginal value of
+chasing the exact GPU source isn't worth the time.
 
-**Diagnostic in flight:** Adam running `--threads 1 --seed 42` SB50
-twice on gpu3 (sequential, same host). With single-threaded
-conversion, completion ordering is deterministic. If two runs
-produce SHA-identical `quantised.bin` files → multi-threaded loader
-is confirmed proximal cause. Pre-staged Bullet patch (working tree,
-not yet committed) makes parallel conversion order-preserving while
-keeping full parallelism.
+### Decisions (the practical outcome)
 
-**If patch lands and works: cross-host variance should drop substantially.**
-What remains would be pure CUDA-on-identical-hardware noise (atomicAdd
-ordering, cuDNN autotune timing) which is much smaller than data-order
-divergence.
+1. **Loader-determinism patch merged into Bullet `main`** (commit
+   `e80eab8`). New training runs use `main` directly, not a branch.
+   Removes the multi-threaded-loader source of variance with full
+   parallel throughput preserved.
+2. **Stop pursuing full bit-determinism** for now. Residual variance
+   from CUDA atomicAdd ordering on sparse-gradient backward is real
+   but smaller than the data-order component the loader patch closes,
+   and getting to bit-zero would require either rewriting kernels
+   for deterministic reduction (slow) or accepting a different
+   training-recipe trade.
+3. **Methodology going forward:** K=3 replicas + median/anchor for
+   any net-vs-net comparison at SB200+. The K=3 protocol absorbs the
+   residual GPU-ordering variance; the loader patch shrinks the
+   per-replica variance the protocol has to absorb.
 
-**Methodology implication:** until determinism is fixed, any
-"hardware A vs hardware B" net-vs-net comparison conflates training-
-trajectory variance with the actual question being asked. K=3+
-multi-host trains + median/anchor protocol remains the right read.
+This unblocks the broader Elo-improvement pipeline that was waiting
+on a clean determinism story.
 
 ## 2026-05-03 — feature/regs24-threat-apply: AVX-512 register tiling (+1.5 Elo H1, SPRT #926, MERGED)
 
