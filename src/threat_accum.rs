@@ -162,8 +162,13 @@ impl ThreatStack {
         let king_sq = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
         let mirrored = (king_sq % 8) >= 4;
 
-        // Collect feature indices, then apply with SIMD
-        let mut indices = [0usize; 256]; // max active threat features per position
+        // Collect feature indices, then apply with SIMD. MaybeUninit skips the
+        // 2 KB zero-init per refresh — `indices[..n_indices]` is fully written
+        // by enumerate_threats below; consumers only read that prefix.
+        let mut indices_storage = std::mem::MaybeUninit::<[usize; 256]>::uninit();
+        let indices: &mut [usize] = unsafe {
+            std::slice::from_raw_parts_mut(indices_storage.as_mut_ptr() as *mut usize, 256)
+        };
         let mut n_indices = 0usize;
         // C8 audit LIKELY #18: track whether the enumerator produced more
         // features than the buffer can hold. Previously excess features
@@ -253,9 +258,21 @@ impl ThreatStack {
                 let (prev, curr) = self.stack.split_at_mut(ply);
                 curr[0].values[p][..h].copy_from_slice(&prev[ply - 1].values[p][..h]);
             } else {
-                // Copy deltas to local buffer to avoid borrow conflict with split_at_mut
+                // Copy deltas to local buffer to avoid borrow conflict with split_at_mut.
+                // MaybeUninit skips the per-iteration 512-byte zero-init memset that
+                // perf annotate showed on the inlined `[ZERO; 128]` initialiser. The
+                // copy_from_slice below fully writes [..n_deltas]; consumers only
+                // read &local_deltas[..n_deltas]. Same pattern as forward_with_l1
+                // pairwise inner (#927) and apply_threat_deltas (#921).
                 let n_deltas = self.stack[ply].delta.len;
-                let mut local_deltas = [crate::threats::RawThreatDelta::ZERO; 128];
+                let mut local_deltas_storage =
+                    std::mem::MaybeUninit::<[crate::threats::RawThreatDelta; 128]>::uninit();
+                let local_deltas: &mut [crate::threats::RawThreatDelta] = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        local_deltas_storage.as_mut_ptr() as *mut crate::threats::RawThreatDelta,
+                        128,
+                    )
+                };
                 local_deltas[..n_deltas].copy_from_slice(&self.stack[ply].delta.data[..n_deltas]);
                 // Use SIMD apply_threat_deltas (copies src + applies adds/subs)
                 let (prev, curr) = self.stack.split_at_mut(ply);
