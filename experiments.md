@@ -8540,4 +8540,69 @@ zero-init was wasted).
 Search-side structural levers now appear materially exhausted at the
 v9 trunk shape. Net Elo from this whole audit (cache leg + plumbing +
 hoist attempt): **+16.3 Elo banked, ~-3 Elo of dead-end SPRT cycles**.
+
+## 2026-05-04 — threat cap shrink H0'd (#940 → #941, dropped)
+
+**Change:** mirror GPU-Claude's training-side `MAX_THREAT_ACTIVE 512→128`
+shrink on the inference side:
+- `MAX_THREAT_DELTAS: 128 → 64` (per-move delta cap)
+- Full-refresh index buffer `[usize; 256] → [usize; 128]`
+
+Both shrinks histogram-justified: training-side 56M positions max=85,
+p99.99=72; pre-flight inference-side `profile-threats` at depth 18
+showed **0 cap-hits, 0 overflows** at the new caps.
+
+**Bench unchanged**: 966720 = main (identical tree).
+
+**SPRT outcome:**
+- #940 at `[-5, 5]` (wrong bounds — see
+  `feedback_avoid_wide_sprt_bounds.md`): H0'd at -2.94 ±3.99 / 1100g
+- #941 at `[-3, 3]`: **H0 at -5.40 Elo / ~3000g** (consistent across
+  all worker host families per Adam — not a single-host artifact)
+
+**Diagnosis (perf stat -d -d -d on bench 13, both binaries, ob-worker
+killed):**
+
+| Metric | main | shrink | Δ |
+|---|---:|---:|---:|
+| NPS | 215270 | 207239 | **−3.7%** |
+| cycles | 17.75B | 18.44B | +3.9% |
+| instructions | 13.08B | 13.24B | +1.2% |
+| IPC | 0.74 | 0.72 | −2.7% |
+| **L1d misses** | 776.3M (23.78%) | 810.2M (24.61%) | **+33.9M / +0.83 pp** |
+| LLC loads | 180.3M | 166.1M | −7.9% |
+| branches / branch-miss% | flat | flat | flat |
+| dTLB / iTLB | flat | flat | flat |
+
+3-iter NPS averages confirmed: main 217278, shrink 211931, **−2.46%**.
+
+**Mechanism:** the shrunk stack-frame for `apply_threat_deltas` and the
+full-refresh path lands on different L1d cache sets, colliding with
+adjacent hot data (accumulator stacks, history tables). 33.9M extra
+L1d misses, mostly hitting in L2 (LLC traffic decreased) — ~12 cyc
+each ≈ 407M cycles, accounting for most of the 690M extra cycles.
+Branches, mispredictions, and TLB rates unchanged → **not a code-shape
+regression, a cache-layout regression**.
+
+**The 2.46% NPS drop ≈ -3.5 Elo at 100 Elo / NPS-doubling**, accounting
+for the bulk of the SPRT result.
+
+**Decision: revert/drop.** Cap-shrink delivers no inference-side benefit
+(arrays were already <1KB) and incurs a real cache-layout cost that's
+consistent across hosts. Branch `experiment/threat-cap-shrink` preserved
+on origin as artifact; not merged.
+
+**Lessons banked:**
+- Memory feedback `feedback_bench_identical_can_regress_elo.md` updated
+  with full perf-stat protocol — first move on a bench-neutral SPRT
+  regression should be 3× perf stat on each binary, not theorising.
+- Memory feedback `feedback_avoid_wide_sprt_bounds.md` saved (#940 at
+  `[-5, 5]` was the wrong bound for a sub-±3 effect).
+- Histogram-justified cap shrinks are correctness-safe (they were here)
+  but cache-layout-fragile. Don't expect Elo upside as the default
+  outcome on inference-hot code.
+
+The training-side `MAX_THREAT_ACTIVE 512→128` (2.4× host throughput)
+remains intact — it's a different code path on a different host with
+no inference-side equivalent symmetry.
 Real ceiling is now training-side.
