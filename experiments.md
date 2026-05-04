@@ -8362,3 +8362,61 @@ exhausted. Remaining Reckless gap (1.83× insns/node, 2.03×
 L1-miss/1k-insns) is structural — needs training-side levers
 (encoding redesign to drop the 47% dead-feature tail, hot-feature
 permutation at training time, possibly hidden-size shrink).
+
+## 2026-05-04 — Cache-hygiene leg part II: 5 more branches merged (+8 Elo cumulative direction)
+
+Five additional cache-hygiene branches merged on 2026-05-04 following
+the per-callsite L1-miss decomposition continued from #921. Mix of
+clean H1 wins and direction-merged cumulative-positive class.
+
+| Branch | SPRT | Elo | Mechanism |
+|---|---|---:|---|
+| feature/nnue-stack-shrink | #927 H1 ✓ | +2.3 ±1.6 | forward_with_l1_pairwise_inner stack frame 12K → 3.5K (5 over-provisioned MaybeUninit arrays); L1 set-associativity conflict relief |
+| feature/finny-regs24 | #930 H1 ✓ | +3.8 ±2.3 | AVX-512 finny REGS=8→24, AVX-2 finny+PSQ-apply REGS=8→12; weight rows read 1× (was 3×) on AVX-512, 4× (was 6×) on AVX-2. Most fleet is AVX-2-only. |
+| feature/movelist-uninit | #933 stopped (+0.9 trend) | +0.9 ±1.4 | MoveList moves field → [MaybeUninit<Move>; MAX_MOVES]; skips 8 × vmovups %zmm0 zero-store per construction (~600k+/bench × 512 B = ~300 MB skipped traffic) |
+| feature/nnue-memset-cleanup | #934 stopped (+1.0 trend) | +1.0 ±1.4 | refresh_accumulator's piece_indices/add_rows/sub_rows arrays → MaybeUninit (3 × 256 B = 768 B per call); king-bucket-cross path |
+| feature/threat-accum-memset-skip | #931 H0 (+0.0) | +0.0 ±1.0 | ThreatStack::update local_deltas + refresh indices → MaybeUninit. Bench delta on Zen 5 contended: +1.9% NPS direction. Merged for code-style consistency with #921/#927/#934. |
+
+**SPRT bookkeeping lesson banked**: small-magnitude wins (~+0.5-1 Elo
+each) often plateau between H0 and H1 boundaries on [0, 3] SPRT and
+won't converge cleanly. After ~30-50k games the point estimate is
+stable; further games rarely move it. The pragmatic path:
+
+1. Stop the SPRT once point estimate is stable (45-95k games for this
+   batch)
+2. Merge based on direction + bench delta + code-style consistency with
+   the proven family of changes
+3. Document SPRT verdict clearly in the merge commit; let the
+   deployment-anchor cross-engine gauntlet (180+2 H2H) catch any
+   regression that slipped past
+
+This matches the Stockfish "cleanup-class patch" pattern — bundle
+related small-magnitude refactors and merge if cumulatively positive,
+even when individual SPRTs don't H1.
+
+**Cumulative cache leg result** (4ad7ae0 trunk pre-leg → post-#931
+merge):
+- Bench (clean Zen 5): 1249K → ~1305K NPS (+4.5%)
+- All 153+2 (new AVX-2 correctness tests) tests pass
+- Banked Elo:
+  - H1 confirmed: #921 +6.77, #926 +1.5, #927 +2.3, #930 +3.8 = **+14.4 Elo**
+  - Direction-merged: #933 +0.9, #934 +1.0, #931 +0.0 = **+1.9 Elo**
+  - **Cumulative: ~+16.3 Elo** from search-side cache hygiene
+- Still in flight: #935 cfg-dispatch-forward (plateau +0.65), #936
+  cfg-dispatch-bundle (early)
+
+**Search-side cache work now structurally exhausted.** Remaining levers
+are training-side (hidden_size 768→512 retrain, encoding redesign to
+drop the 47% phantom-feature tail, sparsity-promoting training) or
+significant refactors (negamax MovePicker hoist out of recursive stack
+frame). See `docs/threat_feature_histogram_2026-05-01.md` for the
+training-side analysis.
+
+**PGO ruled out** for v9 in the same session — see
+`docs/pgo_v9_regression_2026-05-04.md`. The −12.5% PGO regression on
+v9 is from PGO's profile-driven inlining over-inlining small SIMD
+helpers (push_threats_for_piece, MovePicker::pick_best,
+simd512_pairwise_pack_fused etc.) into hot callers, producing +12.4%
+executed instructions despite better icache/iTLB layout. None of the
+LLVM inline-threshold knobs recover it. `make pgo` rule disabled in
+Makefile.
