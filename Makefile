@@ -1,13 +1,15 @@
 # Coda Chess Engine — Makefile
-# Supports: manual builds, OpenBench integration, PGO builds
+# Supports: manual builds, OpenBench integration
 #
 # Usage:
 #   make                  Build with native CPU optimizations
 #   make EXE=coda-v2      Build with custom output name
-#   make pgo              PGO-optimized build (only helps v5 on main branch — see note below)
 #   make openbench        OpenBench-compatible build target
 #   make net              Download the production NNUE net
 #   make clean            Remove build artifacts
+#
+# `make pgo` was disabled 2026-05-04 — see commented-out rule below and
+# docs/pgo_v9_regression_2026-05-04.md. PGO regresses v9 by 12-13% NPS.
 
 # Configuration
 EXE := coda
@@ -37,34 +39,45 @@ rule: check-rust net
 # Alias for OpenBench compatibility
 openbench: rule
 
-# PGO build (profile-guided optimization).
+# PGO build — DISABLED 2026-05-04.
 #
-# Status (2026-04-17):
-#   v5 on main:          +3-5% NPS. Use this.
+# Status:
+#   v5 on main:          +3-5% NPS. Worked.
 #   v5 on threat branch: -5% NPS regression.
-#   v9 on threat branch: -10 to -12% NPS regression. DO NOT USE.
+#   v9 on main (current): -12.5% NPS regression. DO NOT USE.
 #
-# Why it regresses on the threat branch: the PGO *instrument* build inserts
-# entry/branch counters that slow the bench profile run by ~20%. That profile
-# captures a counter-burdened hot path (small SIMD functions dominate), and
-# PGO's inlining/layout decisions are made against that degraded view. The
-# final optimised binary over-inlines small functions into the delta-generation
-# hot path (push_threats_for_piece and friends), bloating those functions and
-# hurting icache behaviour. The regression is independent of binary size —
-# confirmed by testing without the embedded net (2.5MB binary regresses the
-# same amount as the 72MB one) and independent of which NNUE net is profiled
-# (v5 profile + v9 runtime regresses the same as v9 profile + v9 runtime).
+# 2026-05-04 investigation: docs/pgo_v9_regression_2026-05-04.md
+# Headline: the regression is +12.4% executed instructions. PGO's icache
+# and iTLB are actually *better* than no-PGO; IPC is unchanged. The
+# slowdown is from PGO's profile-driven inlining decisions — small SIMD
+# helpers (simd512_pairwise_pack_fused, finny_batch_apply,
+# push_threats_for_piece, MovePicker::pick_best, etc.) get aggressively
+# inlined into hot callers, and the inlined versions execute more total
+# instructions than the standalone-call versions did. None of the LLVM
+# inline-threshold knobs recover more than ~0.5%.
 #
-# If we want profile-guided optimisation for v9 later, try AutoFDO (sampling
-# via perf record) instead — its profile reflects actual uncounted execution.
+# Cargo-pgo bug also discovered: `cargo pgo instrument` doesn't inherit
+# `rustflags = ["-C", "target-cpu=native"]` from .cargo/config.toml, so
+# the instrumented binary lacks AVX-512 functions on AVX-512 hosts. Setting
+# RUSTFLAGS explicitly in the pgo target below fixes that part. Doesn't
+# help the inlining-driven regression but is correct defensive practice
+# if/when the rule is re-enabled.
 #
-# Requires: rustup component add llvm-tools-preview
-TARGET_TUPLE := $(shell rustc --print host-tuple 2>/dev/null)
-pgo: check-rust net
-	CODA_EVALFILE=$(abspath $(EVALFILE)) cargo pgo instrument build -- --features embedded-net
-	LLVM_PROFILE_FILE=target/pgo-profiles/coda_%m_%p.profraw ./target/$(TARGET_TUPLE)/release/coda bench 13
-	CODA_EVALFILE=$(abspath $(EVALFILE)) cargo pgo optimize build -- --features embedded-net
-	cp target/$(TARGET_TUPLE)/release/coda $(NAME)
+# To re-enable: uncomment the rule + .PHONY entry below. Validate with a
+# bench delta + SPRT before merging.
+#
+# If we want profile-guided optimisation later, try AutoFDO (sampling via
+# perf record) instead — sampling-based profile reflects actual uncounted
+# execution and may not trigger the same over-inlining behaviour.
+#
+# Requires: rustup component add llvm-tools-preview && cargo install cargo-pgo
+#
+# TARGET_TUPLE := $(shell rustc --print host-tuple 2>/dev/null)
+# pgo: check-rust net
+# 	RUSTFLAGS="-Ctarget-cpu=native" CODA_EVALFILE=$(abspath $(EVALFILE)) cargo pgo instrument build -- --features embedded-net
+# 	LLVM_PROFILE_FILE=target/pgo-profiles/coda_%m_%p.profraw ./target/$(TARGET_TUPLE)/release/coda bench 13
+# 	RUSTFLAGS="-Ctarget-cpu=native" CODA_EVALFILE=$(abspath $(EVALFILE)) cargo pgo optimize build -- --features embedded-net
+# 	cp target/$(TARGET_TUPLE)/release/coda $(NAME)
 
 # Download production NNUE net (uses actual filename from net.txt, not generic net.nnue)
 net:
@@ -92,4 +105,4 @@ clean:
 	cargo clean
 	$(RM) $(NAME)
 
-.PHONY: rule openbench pgo net check-rust clean
+.PHONY: rule openbench net check-rust clean
