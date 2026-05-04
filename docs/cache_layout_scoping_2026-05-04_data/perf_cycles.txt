@@ -1,0 +1,122 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 20K of event 'cycles:P'
+# Event count (approx.): 24054677749
+#
+# Overhead  Command  Shared Object         Symbol                                                                               
+# ........  .......  ....................  .....................................................................................
+#
+    30.17%  coda     coda                  [.] coda::search::SearchInfo::eval
+            |          
+             --30.13%--coda::search::SearchInfo::eval
+
+    24.15%  coda     coda                  [.] coda::nnue::NNUENet::forward_with_l1_pairwise_inner
+            |          
+             --24.14%--coda::nnue::NNUENet::forward_with_l1_pairwise_inner
+
+     7.73%  coda     coda                  [.] coda::nnue::NNUEAccumulator::refresh_accumulator
+            |          
+             --7.72%--coda::nnue::NNUEAccumulator::refresh_accumulator
+
+     4.78%  coda     coda                  [.] coda::search::negamax
+            |          
+             --4.70%--coda::search::negamax
+
+     4.07%  coda     coda                  [.] coda::nnue::NNUEAccumulator::materialize
+            |          
+             --4.06%--coda::nnue::NNUEAccumulator::materialize
+
+     2.68%  coda     coda                  [.] coda::movepicker::MovePicker::next
+            |          
+             --2.62%--coda::movepicker::MovePicker::next
+
+     2.11%  coda     coda                  [.] coda::threats::push_threats_for_piece
+            |          
+             --2.08%--coda::threats::push_threats_for_piece
+
+     1.84%  coda     coda                  [.] coda::board::Board::attackers_to
+            |          
+             --1.81%--coda::board::Board::attackers_to
+
+     1.84%  coda     coda                  [.] coda::movepicker::MovePicker::pick_best
+            |          
+             --1.83%--coda::movepicker::MovePicker::pick_best
+
+     1.78%  coda     coda                  [.] coda::tt::TT::probe
+            |
+            ---coda::tt::TT::probe
+
+     1.68%  coda     coda                  [.] coda::see::see_ge
+            |          
+             --1.63%--coda::see::see_ge
+
+     1.56%  coda     libc.so.6             [.] 0x000000000018954a
+            |          
+             --1.56%--0x7a7c12d8954c
+
+     1.33%  coda     coda                  [.] coda::threat_accum::ThreatStack::refresh
+            |
+            ---coda::threat_accum::ThreatStack::refresh
+
+     1.25%  coda     coda                  [.] coda::board::Board::make_move
+            |          
+             --1.24%--coda::board::Board::make_move
+
+     1.00%  coda     coda                  [.] coda::threats::piece_attacks_occ
+            |          
+             --1.00%--coda::threats::piece_attacks_occ
+
+     0.87%  coda     coda                  [.] coda::search::quiescence_with_depth
+            |          
+             --0.85%--coda::search::quiescence_with_depth
+
+     0.75%  coda     coda                  [.] coda::search::corrected_eval
+            |
+            ---coda::search::corrected_eval
+
+     0.70%  coda     libc.so.6             [.] 0x0000000000189500
+            |
+            ---0x7a7c12d89504
+
+     0.57%  coda     coda                  [.] coda::movegen::generate_captures
+            |          
+             --0.56%--coda::movegen::generate_captures
+
+     0.52%  coda     coda                  [.] coda::movegen::generate_quiets
+            |          
+             --0.51%--coda::movegen::generate_quiets
+                       |          
+                        --0.38%--0
+
+     0.51%  coda     libc.so.6             [.] 0x0000000000189504
+            |
+            ---0x7a7c12d89509
+
+     0.47%  coda     coda                  [.] coda::board::Board::is_legal
+            |          
+             --0.44%--coda::board::Board::is_legal
+
+     0.39%  coda     libc.so.6             [.] 0x000000000018950e
+            |
+            ---0x7a7c12d89513
+
+     0.39%  coda     libc.so.6             [.] 0x0000000000189509
+            |
+            ---0x7a7c12d8950e
+
+     0.36%  coda     coda                  [.] coda::movepicker::MovePicker::new
+            |          
+             --0.36%--coda::movepicker::MovePicker::new
+
+     0.33%  coda     libc.so.6             [.] 0x0000000000188c24
+            |
+            ---0x7a7c12d88c29
+
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

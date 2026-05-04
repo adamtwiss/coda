@@ -1,0 +1,13 @@
+Current ThreatEntry: size=3648 align=64
+Proposed ThreatMeta:  size=12 align=4
+Proposed ThreatValues: size=3584 align=64
+
+--- 256-ply stack totals ---
+Today:  933888 bytes (912.0 KB)
+Split:  920576 bytes (899.0 KB)  metas:3072  values:917504
+
+--- can_update walk per ensure_computed (5-14 plies typical) ---
+Today metadata access stride: 3648 bytes (full ThreatEntry)
+  → 14 plies = 14 cache lines minimum (if not already resident)
+Split metadata access stride: 12 bytes per entry
+  → 14 plies = 2.6 cache lines (likely 1 prefetched line)
