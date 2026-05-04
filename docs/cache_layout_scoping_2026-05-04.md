@@ -447,24 +447,72 @@ high confidence." Real but modest. Worth doing — same effort class as #927
 
 ### Implementation note for Candidate 2
 
-Two distinct fixes:
+**Yet another correction (post-source-read):** I claimed earlier that "refresh
+has zero prefetches today." That's wrong. `add_weight_rows_avx2` (line 1976)
+and `add_weight_rows_avx512` (line 2027) — both used by refresh — already
+have **per-row 1-step lookahead prefetch** baked into the inner loop. The
+refresh path is *better* prefetched per-row than the apply path.
 
-A. **Remove `take(4)` cap in apply_threat_deltas** — covers up to ~52 deltas
-   at the expense of LFB pressure. Single-line change. Probably the right
-   default.
+But `apply_deltas_avx2` (line 1725) and `apply_deltas_avx512` (line 1813) —
+used by the dominant apply path (8.6M calls/bench) — have **NO inline
+prefetch**. They rely entirely on the dispatcher's 4-add + 4-sub upfront
+prefetch.
 
-B. **Add prefetch loop to `ThreatStack::refresh`** before `add_weight_rows`
-   — covers the 7.2M currently un-prefetched rows. Few-line change.
+**This is a glaring asymmetry** between two structurally-similar functions
+in the same file:
 
-C. **Consider risk:** prefetch-all spam can fill the LFB, dropping prefetches
-   that hardware doesn't have slots for. Modern Intel cores have ~10-12 LFB
-   entries; AMD ~22. With apply_threat_deltas typical 9.4 deltas, prefetch-
-   all-9.4 vs prefetch-8 isn't a big LFB shift. Refresh at avg-24 is more
-   aggressive — chunk into prefetch-8 blocks if LFB pressure shows up in
-   perf stat.
+| Path | Calls/bench | Avg rows | Inline prefetch? |
+|---|---:|---:|---|
+| add_weight_rows (refresh) | 301K | 24 | YES — per-row lookahead |
+| apply_deltas (apply) | 8.6M | 9.4 (×2 for adds+subs) | **NO** — 4+4 upfront only |
 
-D. **Validation protocol** (per probe): perf stat 3-iter NPS + L1d miss
-   rate. Reject if L1d misses go UP (LFB-saturation regression sign).
+**Apply path has 28× more calls and weaker prefetching.** Direct lever.
+
+### Single-target fix
+
+Transplant the per-row lookahead prefetch from `add_weight_rows_avx2/avx512`
+into `apply_deltas_avx2/avx512`. Five-line change in each. Concretely, in
+the paired-walk loop (line 1759-1769 of avx2):
+
+```rust
+while ai < adds.len() && si < subs.len() {
+    let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+    let sw = w_ptr.add(subs[si] * hidden_size + offset);
+    // NEW: prefetch next pair while processing current
+    if ai + 1 < adds.len() {
+        _mm_prefetch(w_ptr.add(adds[ai+1] * hidden_size + offset) as *const i8, _MM_HINT_T0);
+    }
+    if si + 1 < subs.len() {
+        _mm_prefetch(w_ptr.add(subs[si+1] * hidden_size + offset) as *const i8, _MM_HINT_T0);
+    }
+    for i in 0..nregs { /* unchanged */ }
+    ai += 1;
+    si += 1;
+}
+```
+
+Same pattern in the leftover-adds and leftover-subs loops.
+
+**Then drop the dispatcher's 4+4 upfront prefetch** (line 1648-1667) — it
+becomes redundant once the inline lookahead covers all rows. Simplifies the
+dispatcher.
+
+### Risk: LFB saturation
+
+Modern Intel cores have ~10-12 LFB entries; AMD ~22. With per-row lookahead,
+we have ~2 prefetches in flight at any moment per inner-loop iteration — well
+under the LFB budget. The refresh path already does this and works fine.
+Should be a clean win.
+
+### Validation protocol
+
+Per probe: perf stat 3-iter NPS + L1d miss rate on bench 13. Reject if L1d
+misses go UP (LFB-saturation regression sign). Accept if NPS improves >0.5%
+with corresponding L1d miss reduction.
+
+**This now looks like the highest-leverage near-term inference cache fix.**
+Single-target, parallels existing-known-good code, ~10 lines total. Probably
++0.5-1 Elo.
 
 ## Validation protocol (per probe)
 
