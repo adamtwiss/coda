@@ -4442,8 +4442,11 @@ impl NNUEAccumulator {
         let b_adds = &b_adds[..nba];
         let b_subs = &b_subs[..nbs];
 
+        // Compile-time ISA dispatch: cfg!() resolves to const at compile
+        // time, LLVM dead-code-eliminates the unselected arm. Same pattern
+        // as #935 cfg-dispatch-forward.
         #[cfg(target_arch = "x86_64")]
-        if net.has_avx512 && h % 32 == 0 {
+        if cfg!(target_feature = "avx512f") && h % 32 == 0 {
             let (parent_w, current_w) = self.psq.parent_and_current(parent_ply, top, WHITE as usize);
             unsafe { simd_acc_fused_avx512(current_w, parent_w, w_adds, w_subs, h); }
             let (parent_b, current_b) = self.psq.parent_and_current(parent_ply, top, BLACK as usize);
@@ -4452,7 +4455,7 @@ impl NNUEAccumulator {
             return;
         }
         #[cfg(target_arch = "x86_64")]
-        if net.has_avx2 && h % 16 == 0 {
+        if cfg!(target_feature = "avx2") && h % 16 == 0 {
             let (parent_w, current_w) = self.psq.parent_and_current(parent_ply, top, WHITE as usize);
             unsafe { simd_acc_fused_avx2(current_w, parent_w, w_adds, w_subs, h); }
             let (parent_b, current_b) = self.psq.parent_and_current(parent_ply, top, BLACK as usize);
@@ -4462,7 +4465,7 @@ impl NNUEAccumulator {
         }
 
         #[cfg(target_arch = "aarch64")]
-        if net.has_neon && h % 8 == 0 {
+        if cfg!(target_feature = "neon") && h % 8 == 0 {
             let (parent_w, current_w) = self.psq.parent_and_current(parent_ply, top, WHITE as usize);
             unsafe { simd_acc_fused_neon(current_w, parent_w, w_adds, w_subs, h); }
             let (parent_b, current_b) = self.psq.parent_and_current(parent_ply, top, BLACK as usize);
@@ -4654,17 +4657,17 @@ fn finny_batch_apply(
     subs: &[usize],
 ) {
     #[cfg(target_arch = "x86_64")]
-    if net.has_avx512 && h % 32 == 0 {
+    if cfg!(target_feature = "avx512f") && h % 32 == 0 {
         unsafe { finny_batch_apply_avx512(acc, input_weights, h, adds, subs); }
         return;
     }
     #[cfg(target_arch = "x86_64")]
-    if net.has_avx2 && h % 16 == 0 {
+    if cfg!(target_feature = "avx2") && h % 16 == 0 {
         unsafe { finny_batch_apply_avx2(acc, input_weights, h, adds, subs); }
         return;
     }
     #[cfg(target_arch = "aarch64")]
-    if net.has_neon && h % 8 == 0 {
+    if cfg!(target_feature = "neon") && h % 8 == 0 {
         unsafe { finny_batch_apply_neon(acc, input_weights, h, adds, subs); }
         return;
     }
@@ -4736,18 +4739,19 @@ unsafe fn finny_batch_apply_neon(
 /// Add a weight row to an accumulator (SIMD-aware).
 #[inline]
 fn acc_add(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
+    let _ = net;
     #[cfg(target_arch = "x86_64")]
-    if net.has_avx512 && h % 32 == 0 {
+    if cfg!(target_feature = "avx512f") && h % 32 == 0 {
         unsafe { simd512_acc_add(acc, row, h); }
         return;
     }
     #[cfg(target_arch = "x86_64")]
-    if net.has_avx2 && h % 16 == 0 {
+    if cfg!(target_feature = "avx2") && h % 16 == 0 {
         unsafe { simd_acc_add(acc, row, h); }
         return;
     }
     #[cfg(target_arch = "aarch64")]
-    if net.has_neon && h % 8 == 0 {
+    if cfg!(target_feature = "neon") && h % 8 == 0 {
         unsafe { neon_acc_add(acc, row, h); }
         return;
     }
@@ -4757,18 +4761,19 @@ fn acc_add(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
 /// Subtract a weight row from an accumulator (SIMD-aware).
 #[inline]
 fn acc_sub(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
+    let _ = net;
     #[cfg(target_arch = "x86_64")]
-    if net.has_avx512 && h % 32 == 0 {
+    if cfg!(target_feature = "avx512f") && h % 32 == 0 {
         unsafe { simd512_acc_sub(acc, row, h); }
         return;
     }
     #[cfg(target_arch = "x86_64")]
-    if net.has_avx2 && h % 16 == 0 {
+    if cfg!(target_feature = "avx2") && h % 16 == 0 {
         unsafe { simd_acc_sub(acc, row, h); }
         return;
     }
     #[cfg(target_arch = "aarch64")]
-    if net.has_neon && h % 8 == 0 {
+    if cfg!(target_feature = "neon") && h % 8 == 0 {
         unsafe { neon_acc_sub(acc, row, h); }
         return;
     }

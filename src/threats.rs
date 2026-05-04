@@ -1590,10 +1590,17 @@ pub unsafe fn apply_threat_deltas(
     // per reg) > scalar. The AVX-512 path was added 2026-04-30 after the
     // perf decomposition (`docs/coda_vs_reckless_nps_2026-04-23.md`)
     // showed this function at 17.98% of cycles with no AVX-512 path.
+    // Compile-time ISA dispatch via cfg!. With -Ctarget-cpu=native each binary
+    // is compiled for exactly its build host's feature set, so the
+    // `is_x86_feature_detected!` calls (which do an atomic load + cached
+    // dispatch even after the first call) are wasted work — the answer is
+    // fixed at compile time. cfg! resolves to a const bool, LLVM
+    // dead-code-eliminates the unselected arms. Same pattern as #935 on
+    // forward_with_l1_pairwise_inner.
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512f")
-            && is_x86_feature_detected!("avx512bw")
+        if cfg!(target_feature = "avx512f")
+            && cfg!(target_feature = "avx512bw")
             && hidden_size % 32 == 0
         {
             unsafe {
@@ -1601,7 +1608,7 @@ pub unsafe fn apply_threat_deltas(
             }
             return;
         }
-        if is_x86_feature_detected!("avx2") && hidden_size % 16 == 0 {
+        if cfg!(target_feature = "avx2") && hidden_size % 16 == 0 {
             unsafe {
                 apply_deltas_avx2(dst, src, threat_weights, hidden_size, &adds, &subs);
             }
@@ -1823,8 +1830,8 @@ pub fn add_weight_rows(
     // 2026-04-30 — same perf rationale (zmm register width on
     // AVX-512+VNNI hosts).
     #[cfg(target_arch = "x86_64")]
-    if is_x86_feature_detected!("avx512f")
-        && is_x86_feature_detected!("avx512bw")
+    if cfg!(target_feature = "avx512f")
+        && cfg!(target_feature = "avx512bw")
         && hidden_size % 32 == 0
     {
         unsafe {
@@ -1833,7 +1840,7 @@ pub fn add_weight_rows(
         return;
     }
     #[cfg(target_arch = "x86_64")]
-    if is_x86_feature_detected!("avx2") {
+    if cfg!(target_feature = "avx2") {
         unsafe {
             add_weight_rows_avx2(dst, threat_weights, hidden_size, indices);
         }
