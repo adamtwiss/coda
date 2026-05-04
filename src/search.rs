@@ -1247,7 +1247,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     }
 
     let root_legal = generate_legal_moves(board);
-    let mut best_move = if root_legal.len > 0 { root_legal.moves[0] } else { NO_MOVE };
+    let mut best_move = if root_legal.len > 0 { root_legal.get(0) } else { NO_MOVE };
 
     let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
     for depth in 1..=effective_max {
@@ -1469,7 +1469,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // Get a fallback move and keep the legal list for final validation
     let root_legal = generate_legal_moves(board);
     if root_legal.len > 0 {
-        best_move = root_legal.moves[0];
+        best_move = root_legal.get(0);
     }
 
     // Forced move: only one legal move, skip full search (just return it quickly).
@@ -1563,7 +1563,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             let pv_to = move_to(pv_move);
             let pv_flags = move_flags(pv_move);
             for i in 0..root_legal.len {
-                let m = root_legal.moves[i];
+                let m = root_legal.get(i);
                 if move_from(m) == pv_from && move_to(m) == pv_to
                     && (!is_promotion(pv_move) || move_flags(m) == pv_flags)
                 {
@@ -1579,7 +1579,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 let tt_to = move_to(tt_entry.best_move);
                 let tt_flags = move_flags(tt_entry.best_move);
                 for i in 0..root_legal.len {
-                    let m = root_legal.moves[i];
+                    let m = root_legal.get(i);
                     if move_from(m) == tt_from && move_to(m) == tt_to
                         && (!is_promotion(tt_entry.best_move) || move_flags(m) == tt_flags)
                     {
@@ -1658,7 +1658,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     let pv_legal = generate_legal_moves(&pv_board);
                     let mut found = NO_MOVE;
                     for i in 0..pv_legal.len {
-                        let m = pv_legal.moves[i];
+                        let m = pv_legal.get(i);
                         if move_from(m) == pv_from && move_to(m) == pv_to
                             && (!is_promotion(pv_tt.best_move) || move_flags(m) == pv_flags)
                         {

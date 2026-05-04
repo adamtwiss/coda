@@ -126,7 +126,7 @@ fn match_polyglot_move(pm: u16, legal: &crate::movegen::MoveList, _board: &Board
     };
 
     for i in 0..legal.len {
-        let m = legal.moves[i];
+        let m = legal.get(i);
         if move_from(m) == from && move_to(m) == to {
             if let Some(pf) = promo_flag {
                 if move_flags(m) == pf { return Some(m); }

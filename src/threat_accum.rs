@@ -359,7 +359,7 @@ mod incremental_tests {
         } else { None };
         let legal = generate_legal_moves(board);
         for i in 0..legal.len {
-            let mv = legal.moves[i];
+            let mv = legal.get(i);
             if move_from(mv) == from && move_to(mv) == to {
                 if let Some(pf) = promo_flag {
                     if move_flags(mv) == pf { return mv; }
@@ -715,7 +715,7 @@ mod incremental_tests {
                         break; // stalemate or checkmate
                     }
                     let idx = (next_u32(&mut rng) as usize) % legal.len;
-                    let mv = legal.moves[idx];
+                    let mv = legal.get(idx);
 
                     incr.push(NO_MOVE, NO_PIECE_TYPE);
                     refs.push(NO_MOVE, NO_PIECE_TYPE);
@@ -1097,14 +1097,14 @@ mod incremental_tests {
             let legal = generate_legal_moves(&board);
             assert!(legal.len > 0, "no legal at ply {}", ply);
             let idx = (next_u32(&mut rng) as usize) % legal.len;
-            let mv = legal.moves[idx];
+            let mv = legal.get(idx);
             assert!(board.make_move(mv), "move illegal at ply {}", ply);
         }
 
         // Ply 28: pick the move, expect e1c1 (white castling queenside).
         let legal = generate_legal_moves(&board);
         let idx = (next_u32(&mut rng) as usize) % legal.len;
-        let mv = legal.moves[idx];
+        let mv = legal.get(idx);
         let uci = crate::types::move_to_uci(mv);
         let pre_fen = board.to_fen();
         eprintln!("=== ply 28 pre-FEN: {}", pre_fen);
@@ -1286,7 +1286,7 @@ mod incremental_tests {
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { break; }
                     let mv_idx = (next_u32(&mut rng) as usize) % legal.len;
-                    let mv = legal.moves[mv_idx];
+                    let mv = legal.get(mv_idx);
                     if !board.make_move(mv) { break; }
                 }
             }

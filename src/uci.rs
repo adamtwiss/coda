@@ -166,8 +166,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             let mut tb_valid = false;
                             if let Some(parsed) = parse_uci_move(&board, &tb_pv[0]) {
                                 for i in 0..legal.len {
-                                    if move_from(legal.moves[i]) == move_from(parsed)
-                                        && move_to(legal.moves[i]) == move_to(parsed) {
+                                    if move_from(legal.get(i)) == move_from(parsed)
+                                        && move_to(legal.get(i)) == move_to(parsed) {
                                         tb_valid = true;
                                         break;
                                     }
@@ -343,8 +343,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                     let p_to = move_to(si.pv_table[0][1]);
                                     let mut ok = false;
                                     for i in 0..legal.len {
-                                        if move_from(legal.moves[i]) == p_from
-                                            && move_to(legal.moves[i]) == p_to {
+                                        if move_from(legal.get(i)) == p_from
+                                            && move_to(legal.get(i)) == p_to {
                                             ok = true;
                                             break;
                                         }
@@ -433,8 +433,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             let mut tb_valid = false;
                             if let Some(parsed) = parse_uci_move(&board, &tb_move_str) {
                                 for i in 0..legal.len {
-                                    if move_from(legal.moves[i]) == move_from(parsed)
-                                        && move_to(legal.moves[i]) == move_to(parsed) {
+                                    if move_from(legal.get(i)) == move_from(parsed)
+                                        && move_to(legal.get(i)) == move_to(parsed) {
                                         tb_valid = true;
                                         break;
                                     }
@@ -657,7 +657,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 // Dump SEE values for all captures from current position
                 let caps = crate::movegen::generate_captures(&board);
                 for i in 0..caps.len {
-                    let mv = caps.moves[i];
+                    let mv = caps.get(i);
                     let val = crate::see::see_value_of(&board, mv);
                     let from = crate::types::move_from(mv);
                     let to = crate::types::move_to(mv);
@@ -905,7 +905,7 @@ pub fn parse_uci_move(board: &Board, s: &str) -> Option<Move> {
     // Find the matching move in the legal move list
     let legal = crate::movegen::generate_legal_moves(board);
     for i in 0..legal.len {
-        let mv = legal.moves[i];
+        let mv = legal.get(i);
         if move_from(mv) == from && move_to(mv) == to {
             // For promotions, match the promotion type
             if let Some(pf) = promo_pt {
@@ -921,7 +921,7 @@ pub fn parse_uci_move(board: &Board, s: &str) -> Option<Move> {
     // Fallback: if no promotion specified but there are promotion moves, pick queen
     if promo_pt.is_none() {
         for i in 0..legal.len {
-            let mv = legal.moves[i];
+            let mv = legal.get(i);
             if move_from(mv) == from && move_to(mv) == to && move_flags(mv) == FLAG_PROMOTE_Q {
                 return Some(mv);
             }

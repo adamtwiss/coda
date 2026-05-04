@@ -317,7 +317,7 @@ mod cuckoo_tests {
                     if legal.len == 0 { break; }
                     // has_game_cycle must not panic at any intermediate state.
                     let _ = has_game_cycle(&board, 100);
-                    let mv = legal.moves[(next_u32(&mut rng) as usize) % legal.len];
+                    let mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
                     board.make_move(mv);
                 }
             }

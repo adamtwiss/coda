@@ -169,7 +169,7 @@ mod see_tests {
         let moves = generate_legal_moves(&b);
         
         for i in 0..moves.len {
-            let mv = moves.moves[i];
+            let mv = moves.get(i);
             let to = move_to(mv);
             let target = b.piece_type_at(to);
             if target != NO_PIECE_TYPE || move_flags(mv) == FLAG_EN_PASSANT {
@@ -187,7 +187,7 @@ mod see_tests {
         let b2 = Board::from_fen("1k1r3r/pp6/8/3p4/8/8/PP3R2/1K3R2 w - - 0 1");
         let moves2 = generate_legal_moves(&b2);
         for i in 0..moves2.len {
-            let mv = moves2.moves[i];
+            let mv = moves2.get(i);
             let to = move_to(mv);
             let target = b2.piece_type_at(to);
             if target != NO_PIECE_TYPE {
@@ -205,7 +205,7 @@ mod see_tests {
         let b3 = Board::from_fen("r1bqkbnr/ppp2ppp/2n5/3pp3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq d6 0 3");
         let moves3 = generate_legal_moves(&b3);
         for i in 0..moves3.len {
-            let mv = moves3.moves[i];
+            let mv = moves3.get(i);
             let to = move_to(mv);
             let target = b3.piece_type_at(to);
             if target != NO_PIECE_TYPE || move_flags(mv) == FLAG_EN_PASSANT {
@@ -245,7 +245,7 @@ mod see_xray_tests {
             println!("{}:", name);
             let moves = generate_legal_moves(&b);
             for i in 0..moves.len {
-                let mv = moves.moves[i];
+                let mv = moves.get(i);
                 let to = move_to(mv);
                 if b.piece_type_at(to) != NO_PIECE_TYPE || move_flags(mv) == FLAG_EN_PASSANT {
                     let val = see_value_of(&b, mv);
@@ -280,7 +280,7 @@ mod see_assertive_tests {
     fn find_move(b: &Board, from: u8, to: u8) -> Move {
         let moves = generate_legal_moves(b);
         for i in 0..moves.len {
-            let mv = moves.moves[i];
+            let mv = moves.get(i);
             if move_from(mv) == from && move_to(mv) == to {
                 return mv;
             }
@@ -363,7 +363,7 @@ mod see_assertive_tests {
         // Find the EP capture
         let mut ep_move = NO_MOVE;
         for i in 0..moves.len {
-            let mv = moves.moves[i];
+            let mv = moves.get(i);
             if move_flags(mv) == FLAG_EN_PASSANT {
                 ep_move = mv;
                 break;
@@ -382,7 +382,7 @@ mod see_assertive_tests {
         let moves = generate_legal_moves(&b);
         let mut promo_move = NO_MOVE;
         for i in 0..moves.len {
-            let mv = moves.moves[i];
+            let mv = moves.get(i);
             if is_promotion(mv) && promotion_piece_type(mv) == QUEEN && move_to(mv) == 56 {
                 promo_move = mv;
                 break;
@@ -401,7 +401,7 @@ mod see_assertive_tests {
         let moves = generate_legal_moves(&b);
         let mut promo_cap = NO_MOVE;
         for i in 0..moves.len {
-            let mv = moves.moves[i];
+            let mv = moves.get(i);
             if is_promotion(mv) && promotion_piece_type(mv) == QUEEN
                 && move_from(mv) == 54 && move_to(mv) == 63
             {
@@ -421,7 +421,7 @@ mod see_assertive_tests {
         let moves = generate_legal_moves(&b);
         let mut castle_move = NO_MOVE;
         for i in 0..moves.len {
-            let mv = moves.moves[i];
+            let mv = moves.get(i);
             if move_flags(mv) == FLAG_CASTLE {
                 castle_move = mv;
                 break;
@@ -449,7 +449,7 @@ mod see_assertive_tests {
             let b = Board::from_fen(fen);
             let moves = generate_legal_moves(&b);
             for i in 0..moves.len {
-                let mv = moves.moves[i];
+                let mv = moves.get(i);
                 let actual = see_value_of(&b, mv);
                 // Check monotonicity at several thresholds.
                 for &t in &[-2000, -1000, -500, -100, 0, 100, 500, 1000, 2000] {

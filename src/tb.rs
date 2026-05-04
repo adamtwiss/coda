@@ -326,8 +326,8 @@ mod tests {
             let legal = crate::movegen::generate_legal_moves(&walk);
             let mut found = false;
             for j in 0..legal.len {
-                if crate::types::move_from(legal.moves[j]) == crate::types::move_from(mv)
-                    && crate::types::move_to(legal.moves[j]) == crate::types::move_to(mv) {
+                if crate::types::move_from(legal.get(j)) == crate::types::move_from(mv)
+                    && crate::types::move_to(legal.get(j)) == crate::types::move_to(mv) {
                     found = true;
                     break;
                 }
@@ -434,8 +434,8 @@ mod tests {
                 let legal = crate::movegen::generate_legal_moves(&walk);
                 let mut found = false;
                 for k in 0..legal.len {
-                    if crate::types::move_from(legal.moves[k]) == crate::types::move_from(mv)
-                        && crate::types::move_to(legal.moves[k]) == crate::types::move_to(mv) {
+                    if crate::types::move_from(legal.get(k)) == crate::types::move_from(mv)
+                        && crate::types::move_to(legal.get(k)) == crate::types::move_to(mv) {
                         found = true;
                         break;
                     }
