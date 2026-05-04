@@ -382,6 +382,90 @@ unchanged. Worth scoping after Candidates 1+2.
    reorder via convert-bullet. Predicted leverage TBD; needs a data
    gathering pass first (which features are hottest in real games?).
 
+## Late-night addition: prefetch coverage from profile-threats data
+
+Collected via `cargo build --release --features profile-threats && coda bench 18`.
+
+### apply_threat_deltas distribution (8.6M calls)
+
+| Delta count bucket | Calls | % | Cumulative |
+|---|---:|---:|---:|
+| 1-4    | 1.80M | 21.0% | 21.0% |
+| 5-8    | 2.48M | 28.9% | 49.9% |
+| 9-12   | 2.19M | 25.4% | 75.3% |
+| 13-16  | 1.12M | 13.0% | 88.3% |
+| 17-24  | 0.84M |  9.8% | 98.1% |
+| 25-32  | 0.15M |  1.7% | 99.8% |
+| 33-48  | 0.01M |  0.2% | 100.0% |
+| 49+    | 4     | 0.0%  | 100.0% |
+
+**Avg 9.42 deltas/call, max 52.** Current code prefetches 4 of adds + 4 of
+subs = 8 total. Coverage:
+- Below 8 deltas (49.9%): typically all rows prefetched
+- 8-16 deltas (38.4%): partial coverage (50-100%)
+- 17-32 deltas (11.5%): low coverage (25-47%)
+- 32+ deltas (0.2%): rounding error
+
+**Total prefetch under-coverage** ≈ apply_threat_deltas un-prefetched rows:
+~13M un-prefetched rows out of 81M total = **16% gap**. Each gap row is a
+likely L1d miss to L2 (~12 cyc) or L3 (~40 cyc).
+
+### threat refresh distribution (301K calls)
+
+| Active features | Calls | % | Cumulative |
+|---|---:|---:|---:|
+| 0-15  | 64K  | 21.45% | 21.45% |
+| 16-31 | 170K | 56.58% | 78.03% |
+| 32-47 | 61K  | 20.32% | 98.35% |
+| 48-63 | 5K   |  1.64% | 99.99% |
+| 64-79 | 26   |  0.01% | 100.00% |
+
+**Avg 24 active features, max 71.** Refresh has **zero prefetches today** —
+the `refresh` function in `threat_accum.rs:154-207` enumerates indices and
+calls `add_weight_rows` directly without prefetch hint instructions.
+
+**Total un-prefetched in refresh** = 7.2M weight rows (100% un-prefetched).
+
+### Combined leverage estimate
+
+| Path | Total weight-row reads | Currently un-prefetched |
+|---|---:|---:|
+| apply_threat_deltas | 81M | ~13M (16%) |
+| threat refresh | 7.2M | 7.2M (100%) |
+| **Total un-prefetched** | — | **~20M** |
+
+20M un-prefetched rows × ~12 cyc avg L1d→L2 latency (LLC miss share ~14%
+adds higher latency) = **~240M cycles savings ceiling** if we could prefetch
+everything perfectly.
+
+Bench currently 17.75B cycles → **ceiling ~1.4% NPS, ~1.4 Elo at 100 Elo/
+NPS-doubling**. Realistic delivery probably 60-80% of that = **+0.8-1.1 Elo**.
+
+This refines Candidate 2's prediction from "+0.5-2 Elo" to "+0.5-1 Elo with
+high confidence." Real but modest. Worth doing — same effort class as #927
+(stack-shrink, +2.3 Elo) — but not a homerun.
+
+### Implementation note for Candidate 2
+
+Two distinct fixes:
+
+A. **Remove `take(4)` cap in apply_threat_deltas** — covers up to ~52 deltas
+   at the expense of LFB pressure. Single-line change. Probably the right
+   default.
+
+B. **Add prefetch loop to `ThreatStack::refresh`** before `add_weight_rows`
+   — covers the 7.2M currently un-prefetched rows. Few-line change.
+
+C. **Consider risk:** prefetch-all spam can fill the LFB, dropping prefetches
+   that hardware doesn't have slots for. Modern Intel cores have ~10-12 LFB
+   entries; AMD ~22. With apply_threat_deltas typical 9.4 deltas, prefetch-
+   all-9.4 vs prefetch-8 isn't a big LFB shift. Refresh at avg-24 is more
+   aggressive — chunk into prefetch-8 blocks if LFB pressure shows up in
+   perf stat.
+
+D. **Validation protocol** (per probe): perf stat 3-iter NPS + L1d miss
+   rate. Reject if L1d misses go UP (LFB-saturation regression sign).
+
 ## Validation protocol (per probe)
 
 For each branch, before SPRT:
