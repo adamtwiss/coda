@@ -314,6 +314,74 @@ mechanism is real and locally measurable. Combined with Zeus's recent +17 from
 the broader cache-hygiene leg, the "cache layout still has runway" hypothesis
 gets concrete validation.
 
+## Late-night correction: perf annotate refines the picture
+
+After writing the above, ran `perf annotate -i perf-l1d.data --symbol
+ensure_computed`. Top miss-attributed instructions inside the function:
+
+| Sample % | Instruction | Read source |
+|---:|---|---|
+| 11.03% | `vpsubw %ymm9, %ymm0, %ymm0` | reg-only (waiting on prior load) |
+| 8.11%  | `vpsubw %ymm9, %ymm5, %ymm5` | reg-only |
+| 5.59%  | `vpmovsxbw 0x70(%rdi,%rcx,1), %ymm10` | **threat_weights[idx*h+offset+0x70]** |
+| 4.93%  | `vpmovsxbw 0x30(%rdi,%rcx,1), %ymm10` | **threat_weights[idx*h+offset+0x30]** |
+| 2.77%  | `vpmovsxbw (%rdi,%rcx,1), %ymm9` | **threat_weights[idx*h+offset]** |
+
+These are inside the inlined `apply_deltas_avx2` body. The `vpmovsxbw` loads
+are reading scattered i8 weight rows from `threat_weights` (the 102 MB
+threat-feature weight matrix). The vpsubw stalls are waiting on those loads.
+
+**Revised mechanism breakdown for `ensure_computed`'s 28.18% L1d miss share:**
+- ~22-25 percentage points: scattered weight-row reads from the 102 MB
+  threat_weights matrix, inside the AVX-2 delta-apply inner loop
+- ~2-4 percentage points: the can_update backwards metadata walk (Candidate 1
+  target)
+- ~1-2 percentage points: misc (the null-move copy_from_slice, perspective
+  setup)
+
+### What this means for Candidate 1
+
+The original prediction of "+1-3 Elo from ThreatStack split" was based on
+modeling 14 metadata cache misses per call. The annotate data shows
+metadata-walk misses are a small fraction of ensure_computed's stalls.
+
+**Revised Candidate 1 prediction: +0.3-1 Elo, not +1-3.** Still worth doing
+(it's a clean refactor with measurable mechanism), but it's not the homerun
+I'd assumed when I wrote the candidate above.
+
+### What this elevates
+
+**Candidate 2 (deeper prefetch in apply_threat_deltas) is now the top
+inference-side leverage.** The dominant cache-miss source in the engine is
+scattered-weight-row reads. Currently we prefetch 4 adds + 4 subs out of
+typical 20-60 total. Increasing prefetch coverage (variants A/B/C) directly
+attacks the dominant miss class.
+
+**Even bigger lever: shrinking the 102 MB threat_weights matrix itself.**
+This is the training-side path already in flight as task #184 (compact
+threat encoder + importance reorder + group lasso). At the inference layer
+we can't make the matrix smaller, but training-side reduction would
+proportionally reduce all miss rates here.
+
+A speculative inference-side angle: **reorder weight rows by activation
+frequency** so hot rows cluster in the same L3 region. Top-K most-active
+features account for X% of all accesses. If we sort weights by frequency
+post-training (in `convert-bullet`), hot rows land contiguously and L3
+warm-set locality improves. This is a one-shot permutation; net behavior
+unchanged. Worth scoping after Candidates 1+2.
+
+### Revised probe order
+
+1. **Candidate 2 first** (deeper prefetch in apply_threat_deltas) — A/B/C
+   1-hour microbench, biggest single-source-of-misses target. Expected
+   +0.5-2 Elo.
+2. **Candidate 1** (ThreatStack split) — refactor for clarity + small win.
+   Expected +0.3-1 Elo.
+3. **Candidate 4** (alignment fences) — defensive, ship alongside.
+4. **New candidate (post-discussion):** weight-row activation-frequency
+   reorder via convert-bullet. Predicted leverage TBD; needs a data
+   gathering pass first (which features are hottest in real games?).
+
 ## Validation protocol (per probe)
 
 For each branch, before SPRT:
