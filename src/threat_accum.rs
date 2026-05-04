@@ -195,6 +195,9 @@ impl ThreatStack {
             },
         );
 
+        #[cfg(feature = "profile-threats")]
+        crate::threats::refresh_stats::record(n_indices, overflowed);
+
         // Apply all weight rows with SIMD
         crate::threats::add_weight_rows(
             &mut entry.values[p][..h], net_weights, h, &indices[..n_indices],

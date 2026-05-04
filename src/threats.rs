@@ -12,11 +12,13 @@ pub mod apply_stats {
     //! apply_threat_deltas delta-count histogram.
     //! Used to decide whether a long-tail of high-delta-count moves is
     //! worth capping/batching, or whether delta counts are uniform.
+    //! High-end buckets are tightened to surface behavior near the
+    //! MAX_THREAT_DELTAS=128 cap (cap-hits land in CAP_HIT).
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    // Buckets: 0, 1-4, 5-8, 9-12, 13-16, 17-24, 25-32, 33+
     static CALLS: AtomicU64 = AtomicU64::new(0);
     static TOTAL_DELTAS: AtomicU64 = AtomicU64::new(0);
+    static MAX_OBSERVED: AtomicU64 = AtomicU64::new(0);
     static B0: AtomicU64 = AtomicU64::new(0);
     static B1_4: AtomicU64 = AtomicU64::new(0);
     static B5_8: AtomicU64 = AtomicU64::new(0);
@@ -24,12 +26,24 @@ pub mod apply_stats {
     static B13_16: AtomicU64 = AtomicU64::new(0);
     static B17_24: AtomicU64 = AtomicU64::new(0);
     static B25_32: AtomicU64 = AtomicU64::new(0);
-    static B33_PLUS: AtomicU64 = AtomicU64::new(0);
+    static B33_48: AtomicU64 = AtomicU64::new(0);
+    static B49_64: AtomicU64 = AtomicU64::new(0);
+    static B65_96: AtomicU64 = AtomicU64::new(0);
+    static B97_127: AtomicU64 = AtomicU64::new(0);
+    static CAP_HIT: AtomicU64 = AtomicU64::new(0); // n == MAX_THREAT_DELTAS (128)
 
     #[inline(always)]
     pub fn record(n: usize) {
         CALLS.fetch_add(1, Ordering::Relaxed);
         TOTAL_DELTAS.fetch_add(n as u64, Ordering::Relaxed);
+        // Update max with CAS loop.
+        let mut cur = MAX_OBSERVED.load(Ordering::Relaxed);
+        while (n as u64) > cur {
+            match MAX_OBSERVED.compare_exchange_weak(cur, n as u64, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(v) => cur = v,
+            }
+        }
         let bucket = match n {
             0 => &B0,
             1..=4 => &B1_4,
@@ -38,7 +52,11 @@ pub mod apply_stats {
             13..=16 => &B13_16,
             17..=24 => &B17_24,
             25..=32 => &B25_32,
-            _ => &B33_PLUS,
+            33..=48 => &B33_48,
+            49..=64 => &B49_64,
+            65..=96 => &B65_96,
+            97..=127 => &B97_127,
+            _ => &CAP_HIT,
         };
         bucket.fetch_add(1, Ordering::Relaxed);
     }
@@ -47,9 +65,11 @@ pub mod apply_stats {
         let c = CALLS.load(Ordering::Relaxed);
         if c == 0 { eprintln!("apply_threat_deltas stats: 0 calls"); return; }
         let td = TOTAL_DELTAS.load(Ordering::Relaxed);
+        let max = MAX_OBSERVED.load(Ordering::Relaxed);
+        let cap = CAP_HIT.load(Ordering::Relaxed);
         let pct = |n: u64| -> f64 { 100.0 * n as f64 / c.max(1) as f64 };
-        eprintln!("apply_threat_deltas: {} calls, total {} deltas, avg {:.2}",
-            c, td, td as f64 / c.max(1) as f64);
+        eprintln!("apply_threat_deltas: {} calls, total {} deltas, avg {:.2}, max {}, cap-hits {} ({:.4}%)",
+            c, td, td as f64 / c.max(1) as f64, max, cap, pct(cap));
         eprintln!("  0:       {:>10} ({:.1}%)", B0.load(Ordering::Relaxed), pct(B0.load(Ordering::Relaxed)));
         eprintln!("  1-4:     {:>10} ({:.1}%)", B1_4.load(Ordering::Relaxed), pct(B1_4.load(Ordering::Relaxed)));
         eprintln!("  5-8:     {:>10} ({:.1}%)", B5_8.load(Ordering::Relaxed), pct(B5_8.load(Ordering::Relaxed)));
@@ -57,7 +77,71 @@ pub mod apply_stats {
         eprintln!("  13-16:   {:>10} ({:.1}%)", B13_16.load(Ordering::Relaxed), pct(B13_16.load(Ordering::Relaxed)));
         eprintln!("  17-24:   {:>10} ({:.1}%)", B17_24.load(Ordering::Relaxed), pct(B17_24.load(Ordering::Relaxed)));
         eprintln!("  25-32:   {:>10} ({:.1}%)", B25_32.load(Ordering::Relaxed), pct(B25_32.load(Ordering::Relaxed)));
-        eprintln!("  33+:     {:>10} ({:.1}%)", B33_PLUS.load(Ordering::Relaxed), pct(B33_PLUS.load(Ordering::Relaxed)));
+        eprintln!("  33-48:   {:>10} ({:.1}%)", B33_48.load(Ordering::Relaxed), pct(B33_48.load(Ordering::Relaxed)));
+        eprintln!("  49-64:   {:>10} ({:.1}%)", B49_64.load(Ordering::Relaxed), pct(B49_64.load(Ordering::Relaxed)));
+        eprintln!("  65-96:   {:>10} ({:.1}%)", B65_96.load(Ordering::Relaxed), pct(B65_96.load(Ordering::Relaxed)));
+        eprintln!("  97-127:  {:>10} ({:.1}%)", B97_127.load(Ordering::Relaxed), pct(B97_127.load(Ordering::Relaxed)));
+        eprintln!("  128(cap):{:>10} ({:.4}%)  [forced fallback]", cap, pct(cap));
+    }
+}
+
+/// Per-position active-feature histogram from threat_accum::refresh.
+/// Used to right-size the inference [usize; 256] full-refresh buffer
+/// and to compare against training-side MAX_THREAT_ACTIVE distribution.
+/// Buckets every 16 from 0..255 plus a 256+ overflow row.
+#[cfg(feature = "profile-threats")]
+pub mod refresh_stats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const NUM_BUCKETS: usize = 17; // 16 sized buckets + overflow
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    static TOTAL_INDICES: AtomicU64 = AtomicU64::new(0);
+    static MAX_OBSERVED: AtomicU64 = AtomicU64::new(0);
+    static OVERFLOWS: AtomicU64 = AtomicU64::new(0);
+    static BUCKETS: [AtomicU64; NUM_BUCKETS] = [
+        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+        AtomicU64::new(0),
+    ];
+
+    #[inline(always)]
+    pub fn record(n: usize, overflowed: bool) {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+        TOTAL_INDICES.fetch_add(n as u64, Ordering::Relaxed);
+        if overflowed { OVERFLOWS.fetch_add(1, Ordering::Relaxed); }
+        let mut cur = MAX_OBSERVED.load(Ordering::Relaxed);
+        while (n as u64) > cur {
+            match MAX_OBSERVED.compare_exchange_weak(cur, n as u64, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(v) => cur = v,
+            }
+        }
+        let idx = if n >= 256 { 16 } else { n / 16 };
+        BUCKETS[idx].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn report() {
+        let c = CALLS.load(Ordering::Relaxed);
+        if c == 0 { eprintln!("threat refresh stats: 0 calls"); return; }
+        let total = TOTAL_INDICES.load(Ordering::Relaxed);
+        let max = MAX_OBSERVED.load(Ordering::Relaxed);
+        let ovf = OVERFLOWS.load(Ordering::Relaxed);
+        let pct = |n: u64| -> f64 { 100.0 * n as f64 / c.max(1) as f64 };
+        eprintln!("threat refresh: {} calls, total {} active, avg {:.2}, max {}, overflow {} ({:.4}%)",
+            c, total, total as f64 / c.max(1) as f64, max, ovf, pct(ovf));
+        // Cumulative percentile column makes "what cap covers X% of calls" obvious.
+        let mut cum = 0u64;
+        for i in 0..16 {
+            let lo = i * 16;
+            let hi = lo + 15;
+            let n = BUCKETS[i].load(Ordering::Relaxed);
+            cum += n;
+            eprintln!("  {:>3}-{:<3}: {:>10} ({:>5.2}%)  cum {:>5.2}%", lo, hi, n, pct(n), pct(cum));
+        }
+        let n = BUCKETS[16].load(Ordering::Relaxed);
+        eprintln!("  256+   : {:>10} ({:>5.4}%)  [forced fallback]", n, pct(n));
     }
 }
 

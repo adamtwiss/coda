@@ -3924,6 +3924,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     {
         crate::threats::thr_stats::report();
         crate::threats::apply_stats::report();
+        crate::threats::refresh_stats::report();
     }
 
     total_nodes
