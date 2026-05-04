@@ -163,7 +163,11 @@ impl ThreatStack {
         let mirrored = (king_sq % 8) >= 4;
 
         // Collect feature indices, then apply with SIMD
-        let mut indices = [0usize; 256]; // max active threat features per position
+        // Per-position active threat features. Cap=128 with overflow-safe
+        // fallback: if exceeded, accurate[p]=false forces full refresh next
+        // read. Was 256 prior to 2026-05-04. Sized from training-side
+        // histogram (56M positions, max=85) + inference (28K calls, max=68).
+        let mut indices = [0usize; 128];
         let mut n_indices = 0usize;
         // C8 audit LIKELY #18: track whether the enumerator produced more
         // features than the buffer can hold. Previously excess features
@@ -258,7 +262,8 @@ impl ThreatStack {
             } else {
                 // Copy deltas to local buffer to avoid borrow conflict with split_at_mut
                 let n_deltas = self.stack[ply].delta.len;
-                let mut local_deltas = [crate::threats::RawThreatDelta::ZERO; 128];
+                let mut local_deltas =
+                    [crate::threats::RawThreatDelta::ZERO; crate::threats::MAX_THREAT_DELTAS];
                 local_deltas[..n_deltas].copy_from_slice(&self.stack[ply].delta.data[..n_deltas]);
                 // Use SIMD apply_threat_deltas (copies src + applies adds/subs)
                 let (prev, curr) = self.stack.split_at_mut(ply);

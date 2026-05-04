@@ -13,7 +13,8 @@ pub mod apply_stats {
     //! Used to decide whether a long-tail of high-delta-count moves is
     //! worth capping/batching, or whether delta counts are uniform.
     //! High-end buckets are tightened to surface behavior near the
-    //! MAX_THREAT_DELTAS=128 cap (cap-hits land in CAP_HIT).
+    //! MAX_THREAT_DELTAS cap (cap-hits land in CAP_HIT). Cap is 64
+    //! post-2026-05-04 shrink — cap-hits trigger full-refresh fallback.
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static CALLS: AtomicU64 = AtomicU64::new(0);
@@ -30,7 +31,7 @@ pub mod apply_stats {
     static B49_64: AtomicU64 = AtomicU64::new(0);
     static B65_96: AtomicU64 = AtomicU64::new(0);
     static B97_127: AtomicU64 = AtomicU64::new(0);
-    static CAP_HIT: AtomicU64 = AtomicU64::new(0); // n == MAX_THREAT_DELTAS (128)
+    static CAP_HIT: AtomicU64 = AtomicU64::new(0); // n == MAX_THREAT_DELTAS (64 post 2026-05-04)
 
     #[inline(always)]
     pub fn record(n: usize) {
@@ -53,10 +54,10 @@ pub mod apply_stats {
             17..=24 => &B17_24,
             25..=32 => &B25_32,
             33..=48 => &B33_48,
-            49..=64 => &B49_64,
-            65..=96 => &B65_96,
-            97..=127 => &B97_127,
-            _ => &CAP_HIT,
+            49..=63 => &B49_64,
+            65..=96 => &B65_96,    // unreachable when cap=64 (kept for cap-bump)
+            97..=127 => &B97_127,  // unreachable when cap=64 (kept for cap-bump)
+            _ => &CAP_HIT,         // n >= MAX_THREAT_DELTAS (64) = cap-hit
         };
         bucket.fetch_add(1, Ordering::Relaxed);
     }
@@ -78,10 +79,10 @@ pub mod apply_stats {
         eprintln!("  17-24:   {:>10} ({:.1}%)", B17_24.load(Ordering::Relaxed), pct(B17_24.load(Ordering::Relaxed)));
         eprintln!("  25-32:   {:>10} ({:.1}%)", B25_32.load(Ordering::Relaxed), pct(B25_32.load(Ordering::Relaxed)));
         eprintln!("  33-48:   {:>10} ({:.1}%)", B33_48.load(Ordering::Relaxed), pct(B33_48.load(Ordering::Relaxed)));
-        eprintln!("  49-64:   {:>10} ({:.1}%)", B49_64.load(Ordering::Relaxed), pct(B49_64.load(Ordering::Relaxed)));
+        eprintln!("  49-63:   {:>10} ({:.1}%)", B49_64.load(Ordering::Relaxed), pct(B49_64.load(Ordering::Relaxed)));
         eprintln!("  65-96:   {:>10} ({:.1}%)", B65_96.load(Ordering::Relaxed), pct(B65_96.load(Ordering::Relaxed)));
         eprintln!("  97-127:  {:>10} ({:.1}%)", B97_127.load(Ordering::Relaxed), pct(B97_127.load(Ordering::Relaxed)));
-        eprintln!("  128(cap):{:>10} ({:.4}%)  [forced fallback]", cap, pct(cap));
+        eprintln!("  64(cap): {:>10} ({:.4}%)  [forced fallback]", cap, pct(cap));
     }
 }
 
@@ -847,7 +848,19 @@ pub fn enumerate_threats_bullet_postfix_ref<F: FnMut(usize)>(
 }
 
 /// Maximum threat deltas per ply.
-pub const MAX_THREAT_DELTAS: usize = 128;
+/// Per-move threat-delta cap for incremental updates. Mirror-crossing king
+/// moves are routed to full-refresh by `can_update` (threat_accum.rs:228);
+/// the delta path only sees moves whose perspective king didn't cross the
+/// e-file boundary. Empirical maxima for that population:
+///   - Inference (28K calls, depth-13 bench): max=47
+///   - Training (5M sampled binpacks, non-king-moves cohort): max=42
+///   - Training (incl. non-mirror-crossing kingside castle): see GPU-side
+///     histogram tool in bullet examples/threat_delta_histogram.rs
+/// Cap=64 gives ~1.36× headroom over observed inference max. Cap-hits
+/// trigger DeltaVec.overflowed=true → forces full-refresh on next read,
+/// which is correct (just slower for that move). Was 128 prior to
+/// 2026-05-04 cap-shrink.
+pub const MAX_THREAT_DELTAS: usize = 64;
 
 /// Packed threat delta (4 bytes, matching Reckless's ThreatDelta).
 /// Layout: [attacker_cp:8][from_sq:8][victim_cp:8][to_sq:7][add:1]
