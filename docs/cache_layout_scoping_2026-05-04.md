@@ -514,6 +514,104 @@ with corresponding L1d miss reduction.
 Single-target, parallels existing-known-good code, ~10 lines total. Probably
 +0.5-1 Elo.
 
+## Update: Candidate 2 prototyped — NEGATIVE result
+
+Tried both variants of the prefetch fix on `experiment/apply-deltas-prefetch`
+(branch deleted; binary artifacts at `/tmp/coda-prefetch{,_v2}`).
+
+**Setup:** Hercules, ob-worker stopped, `make`-built per OB ritual. Bench
+count identical (966720 = main). 18/18 threat-accumulator tests pass
+(including the fuzzer) — correctness preserved.
+
+**3-iter NPS averages on Hercules:**
+
+| Build | Run 1 | Run 2 | Run 3 | Avg | Δ vs main |
+|---|---:|---:|---:|---:|---:|
+| main (fresh) | 215499 | 215154 | 214920 | **215191** | — |
+| V1 (per-row inline) | 213373 | 209561 | 207905 | 210280 | **−2.3%** |
+| V2 (dispatcher all-rows) | 213198 | 209969 | 209767 | 210978 | **−2.0%** |
+
+Both variants regress NPS by ~2%. V1 fires the prefetch 6× per row across the
+6 outer offset chunks (per-call ~110 prefetches at avg 9.4 deltas). V2 fires
+once per row at the dispatcher (~9 per call). Both worse than main's `take(4)`.
+
+**perf stat on V1:**
+
+| Metric | main | V1 | Δ |
+|---|---:|---:|---:|
+| cycles | 17.75B | 18.31B | +3.2% |
+| instructions | 13.08B | 13.41B | +2.5% |
+| branches | 2.216B | 2.290B | +3.4% |
+| L1d miss rate | 23.78% | **23.08%** | **−0.7 pp** |
+| L1d misses (abs) | 776.3M | 775.7M | flat |
+| LLC loads | 180.3M | 177.4M | −1.6% |
+| LLC misses | 26.5M | 25.4M | −4.2% |
+
+The prefetch IS working at the cache level — L1d miss *rate* dropped 0.7 pp,
+LLC loads/misses both decreased. The cache savings exist but are smaller than
+the cost of issuing the prefetch instructions themselves: +2.5% instructions
+and +3.4% branches → +3.2% cycles → -2% NPS.
+
+**Mechanism:** at avg 9.4 deltas per apply call, the demand-load latency was
+already mostly hidden by:
+- 4+4 upfront prefetch (covers first ~85% of typical-call deltas)
+- OOO execution overlap with the AVX-2 vpaddw/vpsubw arithmetic
+- Hardware prefetchers picking up the in-row sequential access pattern
+
+Adding more software prefetch instructions saturates the issue port without
+proportional latency reduction. The current `take(4)` cap is at or near
+optimal for the apply path's small-per-call workload.
+
+The asymmetry vs `add_weight_rows` (refresh path, where per-row inline
+prefetch IS profitable) makes sense: refresh has avg 24 active features per
+call, so the 24-prefetch overhead amortizes over 24 demand fetches. Apply at
+avg 9.4 has no such amortization headroom.
+
+**Outcome:** Candidate 2 dropped. Branch deleted, binaries kept at
+`/tmp/coda-prefetch*` until next reboot.
+
+**Lesson banked:** "transplant prefetch pattern from sibling function" is a
+plausibility heuristic, not a guarantee. The sibling's parameters (call
+count, work-per-call) shape whether software prefetch amortizes. Validate
+with perf stat NPS before SPRT — saved ~3000 fleet games here.
+
+## Final probe ranking (post-Candidate-2 negative result)
+
+1. **Candidate 1: ThreatStack hot/cold split** — refactor for clarity +
+   small win. Predicted +0.3-1 Elo per perf annotate's mechanism breakdown
+   (the metadata walk is ~2-4 of ensure_computed's 28 pp L1d miss share,
+   not the dominant share).
+2. **Candidate 4: alignment fences on hot scratch** — defensive, prevents
+   future cap-shrink-style accidents. Negligible mean Elo, real variance
+   reduction.
+3. **New top candidate: investigate hardware-prefetch-friendly weight row
+   layout.** If the demand-loaded rows are SCATTERED across the 102 MB
+   matrix, we can't hardware-prefetch them. Sorting weight rows by
+   activation frequency (post-training, in `convert-bullet`) would cluster
+   hot rows in adjacent feature indices, which translates to adjacent
+   memory addresses, which the hardware prefetcher CAN catch. Deserves a
+   data-gathering pass: which feature indices fire most often in real games?
+   Activation-frequency histogram from `measure_feature_sparsity` test
+   (line 1245 in threat_accum.rs) provides exactly this data.
+
+## Updated morning-discussion summary
+
+- **Big picture:** cache layout still has runway, but mechanical pattern
+  ports don't always work. Need measurement-driven targeting, not
+  guess-and-SPRT.
+- **Negative result tonight:** Candidate 2 (deeper prefetch) regressed
+  NPS 2%. Shipped fast learning ($0 fleet cycles, ~30 min compute time).
+- **Top remaining candidate:** Candidate 1 (ThreatStack hot/cold split),
+  predicted +0.3-1 Elo. Worth implementing if the predicted leverage is
+  acceptable; can be SPRT'd at `[-3, 3]` as a non-regression check given
+  small expected magnitude.
+- **Higher-leverage exploration to scope next:** weight-row activation-
+  frequency reorder — needs a data-gathering pass first (which features
+  hot in real games), then a one-shot permutation in convert-bullet.
+- **Mechanism diagnostic that just paid off:** the L1d-miss-rate-vs-cycle
+  comparison is now in our toolkit. Add to standard branch-validation
+  protocol for any inference-touching change.
+
 ## Validation protocol (per probe)
 
 For each branch, before SPRT:
