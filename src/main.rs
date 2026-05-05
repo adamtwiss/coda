@@ -215,6 +215,23 @@ enum Commands {
         #[arg(long, short = 'i')]
         input: String,
     },
+    /// Dump per-layer weight statistics for a .nnue file. Diagnostic for
+    /// comparing trained nets — surfaces collapsed/stuck layers and dead
+    /// neurons. Per-king-bucket and per-output-bucket breakdowns optional.
+    DumpNetStats {
+        /// Input .nnue file
+        #[arg(long, short = 'i')]
+        input: String,
+        /// Print per-output-bucket stats for L1/L2/output
+        #[arg(long)]
+        per_bucket: bool,
+        /// Print per-king-bucket stats for PSQ
+        #[arg(long)]
+        per_kb: bool,
+        /// Print histogram bins for each layer
+        #[arg(long)]
+        histogram: bool,
+    },
     /// Generate training data (SF binpack format)
     Datagen {
         /// Output binpack file
@@ -809,6 +826,10 @@ fn main() {
             run_measure_net_sparsity(&input);
         }
 
+        Some(Commands::DumpNetStats { input, per_bucket, per_kb, histogram }) => {
+            run_dump_net_stats(&input, per_bucket, per_kb, histogram);
+        }
+
         Some(Commands::Datagen { output, depth, games, threads, hash, blunder, force_captures, epd }) => {
             let nnue_path = cli.nnue.unwrap_or_default();
             let mode = if let Some(epd_path) = epd {
@@ -1290,6 +1311,261 @@ fn run_measure_net_sparsity(net_path: &str) {
     let compact_bytes = ((total_rows - zero_rows) * h) as u64;
     println!("Matrix size: {} MB raw, {} MB compact (post zero-row compaction)",
         matrix_bytes / (1024 * 1024), compact_bytes / (1024 * 1024));
+}
+
+/// Per-layer weight statistics. All inputs treated as i64 internally for
+/// safety when summing over millions of weights.
+struct LayerStats {
+    n: u64,
+    mean: f64,
+    abs_mean: f64,
+    stdev: f64,
+    min: i64,
+    max: i64,
+    p50_abs: i64,
+    p99_abs: i64,
+    pct_zero: f64,
+    dead_rows: usize,    // rows where all weights are zero (only if rows > 1)
+    near_dead_rows: usize, // rows where max|w| <= 1
+    total_rows: usize,
+}
+
+fn compute_stats(weights: &[i64], row_size: usize) -> LayerStats {
+    let n = weights.len() as u64;
+    if n == 0 {
+        return LayerStats {
+            n: 0, mean: 0.0, abs_mean: 0.0, stdev: 0.0, min: 0, max: 0,
+            p50_abs: 0, p99_abs: 0, pct_zero: 0.0,
+            dead_rows: 0, near_dead_rows: 0, total_rows: 0,
+        };
+    }
+    let mut sum: i128 = 0;
+    let mut abs_sum: i128 = 0;
+    let mut min: i64 = i64::MAX;
+    let mut max: i64 = i64::MIN;
+    let mut zero_count: u64 = 0;
+    for &w in weights {
+        sum += w as i128;
+        abs_sum += w.unsigned_abs() as i128;
+        if w < min { min = w; }
+        if w > max { max = w; }
+        if w == 0 { zero_count += 1; }
+    }
+    let mean = sum as f64 / n as f64;
+    let abs_mean = abs_sum as f64 / n as f64;
+    // stdev: second pass for accuracy
+    let mut sq_sum: f64 = 0.0;
+    for &w in weights {
+        let d = w as f64 - mean;
+        sq_sum += d * d;
+    }
+    let stdev = (sq_sum / n as f64).sqrt();
+    // percentiles of |w|
+    let mut abs_vals: Vec<i64> = weights.iter().map(|&w| w.abs()).collect();
+    abs_vals.sort_unstable();
+    let p50_abs = abs_vals[abs_vals.len() / 2];
+    let p99_idx = ((abs_vals.len() as f64 * 0.99) as usize).min(abs_vals.len() - 1);
+    let p99_abs = abs_vals[p99_idx];
+    let pct_zero = 100.0 * zero_count as f64 / n as f64;
+    let total_rows = if row_size > 0 { weights.len() / row_size } else { 0 };
+    let mut dead_rows = 0usize;
+    let mut near_dead_rows = 0usize;
+    if row_size > 0 {
+        for r in 0..total_rows {
+            let row = &weights[r * row_size..(r + 1) * row_size];
+            let mx = row.iter().map(|w| w.abs()).max().unwrap_or(0);
+            if mx == 0 { dead_rows += 1; }
+            if mx <= 1 { near_dead_rows += 1; }
+        }
+    }
+    LayerStats {
+        n, mean, abs_mean, stdev, min, max, p50_abs, p99_abs, pct_zero,
+        dead_rows, near_dead_rows, total_rows,
+    }
+}
+
+fn print_stats_line(label: &str, s: &LayerStats, dtype: &str) {
+    let row_info = if s.total_rows > 0 {
+        format!(" rows={} dead={} near_dead={}",
+            s.total_rows, s.dead_rows, s.near_dead_rows)
+    } else { String::new() };
+    println!("  {:<32} n={:>9} {:<4} mean={:+8.3} |mean|={:7.3} stdev={:8.3} min={:>6} max={:>6} |p50|={:>4} |p99|={:>5} zero={:5.2}%{}",
+        label, s.n, dtype,
+        s.mean, s.abs_mean, s.stdev, s.min, s.max,
+        s.p50_abs, s.p99_abs, s.pct_zero, row_info);
+}
+
+fn print_histogram(label: &str, weights: &[i64]) {
+    if weights.is_empty() { return; }
+    let max_abs = weights.iter().map(|w| w.abs()).max().unwrap_or(0);
+    if max_abs == 0 {
+        println!("  {} histogram: ALL ZERO", label);
+        return;
+    }
+    // Log-spaced bins by |w|: 0, 1, 2-3, 4-7, 8-15, 16-31, 32-63, 64-127, 128-255, 256+
+    let mut bins = [0u64; 10];
+    for &w in weights {
+        let a = w.unsigned_abs();
+        let bin = if a == 0 { 0 }
+                  else if a == 1 { 1 }
+                  else if a <= 3 { 2 }
+                  else if a <= 7 { 3 }
+                  else if a <= 15 { 4 }
+                  else if a <= 31 { 5 }
+                  else if a <= 63 { 6 }
+                  else if a <= 127 { 7 }
+                  else if a <= 255 { 8 }
+                  else { 9 };
+        bins[bin] += 1;
+    }
+    let n = weights.len() as f64;
+    let labels = ["0", "1", "2-3", "4-7", "8-15", "16-31", "32-63", "64-127", "128-255", "256+"];
+    let bin_str: Vec<String> = (0..10).map(|i| {
+        format!("{}:{:.1}%", labels[i], 100.0 * bins[i] as f64 / n)
+    }).collect();
+    println!("  {} histogram: {}", label, bin_str.join("  "));
+}
+
+fn run_dump_net_stats(net_path: &str, per_bucket: bool, per_kb: bool, histogram: bool) {
+    use crate::nnue::NNUENet;
+    let net = match NNUENet::load(net_path) {
+        Ok(n) => n,
+        Err(e) => { eprintln!("load error: {}", e); std::process::exit(1); }
+    };
+    println!("=== {} ===", net_path);
+    println!("hidden_size={} num_king_buckets={} num_threat_features={} has_threats={}",
+        net.hidden_size, net.num_king_buckets, net.num_threat_features, net.has_threats);
+    println!("l1_per_bucket={} l2_per_bucket={} bucketed_hidden={} l1_scale={} screlu={} pairwise={} dual_l1={}",
+        net.l1_per_bucket, net.l2_per_bucket, net.bucketed_hidden, net.l1_scale,
+        net.use_screlu, net.use_pairwise, net.dual_l1);
+
+    let h = net.hidden_size;
+    let kb = net.num_king_buckets;
+    let psq_per_bucket = 768 * h;
+
+    // l0w PSQ — overall
+    let psq_w: Vec<i64> = net.input_weights.iter().map(|&w| w as i64).collect();
+    let s = compute_stats(&psq_w, h); // row = (kb, piece, sq) → h weights
+    println!("\n[l0w PSQ — i16 @ QA={}]", 255i32);
+    print_stats_line("all", &s, "i16");
+    if histogram { print_histogram("l0w_psq", &psq_w); }
+    if per_kb {
+        for k in 0..kb {
+            let block = &psq_w[k * psq_per_bucket..(k + 1) * psq_per_bucket];
+            let s = compute_stats(block, h);
+            print_stats_line(&format!("kb {}", k), &s, "i16");
+        }
+    }
+
+    // l0b
+    let l0b: Vec<i64> = net.input_biases.iter().map(|&w| w as i64).collect();
+    let s = compute_stats(&l0b, 0);
+    println!("\n[l0b — i16]");
+    print_stats_line("all", &s, "i16");
+
+    // threats
+    if net.has_threats && net.num_threat_features > 0 {
+        let tw: Vec<i64> = net.threat_weights.iter().map(|&w| w as i64).collect();
+        let s = compute_stats(&tw, h);
+        println!("\n[l0w THREATS — i8 @ QA={}, post-clamp]", 255i32);
+        print_stats_line("all", &s, "i8");
+        if histogram { print_histogram("threats", &tw); }
+    }
+
+    // L1 weights — bucketed_hidden means [l1_input × (BUCKETS × l1_per_bucket)]
+    if net.l1_per_bucket > 0 {
+        let l1_input = if net.use_pairwise { h } else { 2 * h };
+        let bl1 = net.l1_size; // already includes BUCKETS factor
+        let l1w: Vec<i64> = net.l1_weights.iter().map(|&w| w as i64).collect();
+        let s = compute_stats(&l1w, bl1); // row = one input, bl1 cols
+        println!("\n[l1w — i16 (i8 quantised), input={} × bl1={}]", l1_input, bl1);
+        print_stats_line("all", &s, "i16");
+        if histogram { print_histogram("l1w", &l1w); }
+        if per_bucket && net.bucketed_hidden {
+            let buckets = bl1 / net.l1_per_bucket;
+            for b in 0..buckets {
+                // Per-bucket slice: every row, columns [b*L1 .. (b+1)*L1]
+                let mut col: Vec<i64> = Vec::with_capacity(l1_input * net.l1_per_bucket);
+                for r in 0..l1_input {
+                    let row_off = r * bl1;
+                    col.extend_from_slice(&l1w[row_off + b * net.l1_per_bucket .. row_off + (b + 1) * net.l1_per_bucket]);
+                }
+                let s = compute_stats(&col, net.l1_per_bucket);
+                print_stats_line(&format!("bucket {}", b), &s, "i16");
+            }
+        }
+        let l1b: Vec<i64> = net.l1_biases.iter().map(|&w| w as i64).collect();
+        let s = compute_stats(&l1b, net.l1_per_bucket);
+        println!("\n[l1b — i16, total={}]", bl1);
+        print_stats_line("all", &s, "i16");
+        if per_bucket && net.bucketed_hidden {
+            let buckets = bl1 / net.l1_per_bucket;
+            for b in 0..buckets {
+                let s = compute_stats(&l1b[b * net.l1_per_bucket .. (b + 1) * net.l1_per_bucket], 0);
+                print_stats_line(&format!("bucket {}", b), &s, "i16");
+            }
+        }
+    }
+
+    // L2 weights — float
+    if net.l2_per_bucket > 0 {
+        let bl2 = net.l2_size;
+        let l2_input = if net.dual_l1 { net.l1_per_bucket * 2 } else { net.l1_per_bucket };
+        // l2_weights_f scale: divided by qa_l1 already
+        let l2w_scaled: Vec<i64> = net.l2_weights_f.iter().map(|&w| (w * 1000.0).round() as i64).collect();
+        let s = compute_stats(&l2w_scaled, bl2);
+        println!("\n[l2w — f32 (×1000 for stat display), input={} × bl2={}]", l2_input, bl2);
+        print_stats_line("all", &s, "milli");
+        if histogram { print_histogram("l2w_milli", &l2w_scaled); }
+        if per_bucket && net.bucketed_hidden {
+            let buckets = bl2 / net.l2_per_bucket;
+            for b in 0..buckets {
+                let mut col: Vec<i64> = Vec::with_capacity(l2_input * net.l2_per_bucket);
+                for r in 0..l2_input {
+                    let row_off = r * bl2;
+                    col.extend_from_slice(&l2w_scaled[row_off + b * net.l2_per_bucket .. row_off + (b + 1) * net.l2_per_bucket]);
+                }
+                let s = compute_stats(&col, net.l2_per_bucket);
+                print_stats_line(&format!("bucket {}", b), &s, "milli");
+            }
+        }
+        let l2b_scaled: Vec<i64> = net.l2_biases_f.iter().map(|&w| (w * 1000.0).round() as i64).collect();
+        let s = compute_stats(&l2b_scaled, net.l2_per_bucket);
+        println!("\n[l2b — f32 (×1000), total={}]", bl2);
+        print_stats_line("all", &s, "milli");
+        if per_bucket && net.bucketed_hidden {
+            let buckets = bl2 / net.l2_per_bucket;
+            for b in 0..buckets {
+                let s = compute_stats(&l2b_scaled[b * net.l2_per_bucket .. (b + 1) * net.l2_per_bucket], 0);
+                print_stats_line(&format!("bucket {}", b), &s, "milli");
+            }
+        }
+    }
+
+    // Output weights — per output bucket (8)
+    let out_width = if net.l2_per_bucket > 0 { net.l2_per_bucket }
+                    else if net.l1_per_bucket > 0 { net.l1_per_bucket }
+                    else if net.use_pairwise { h } else { 2 * h };
+    let outw: Vec<i64> = net.output_weights.iter().map(|&w| w as i64).collect();
+    let s = compute_stats(&outw, out_width);
+    println!("\n[output_weights — i16 @ QB=64, BUCKETS={} × out_width={}]",
+        crate::nnue::NNUE_OUTPUT_BUCKETS, out_width);
+    print_stats_line("all", &s, "i16");
+    if histogram { print_histogram("output_w", &outw); }
+    if per_bucket {
+        for b in 0..crate::nnue::NNUE_OUTPUT_BUCKETS {
+            let s = compute_stats(&outw[b * out_width .. (b + 1) * out_width], 0);
+            print_stats_line(&format!("bucket {}", b), &s, "i16");
+        }
+    }
+
+    // Output bias
+    println!("\n[output_bias — i32 @ QA*QB]");
+    for b in 0..crate::nnue::NNUE_OUTPUT_BUCKETS {
+        println!("  bucket {} = {:>10} ({:+.4} cp scaled)",
+            b, net.output_bias[b],
+            net.output_bias[b] as f64 / (255.0 * 64.0));
+    }
 }
 
 fn run_profile_threats(input: &str, output: &str, limit: usize, net_path: Option<&str>) {
