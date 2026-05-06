@@ -1543,6 +1543,46 @@ unsafe fn l2_fmadd_avx512_x32(
     _mm512_storeu_ps(h2.as_mut_ptr().add(16), h_hi);
 }
 
+/// AVX-2 sibling of `l2_fmadd_avx512_x32` for the AVX-2 fleet (Atlas + most
+/// OB workers + lichess host). Same semantics, 8 f32 lanes per YMM →
+/// 4 accumulators for l2 == 32. Atlas perf annotate (2026-05-06) showed
+/// the L2 stage at ~7% of incremental eval cycles in the scalar fallback;
+/// this hoists it to SIMD on the AVX-2 path.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn l2_fmadd_avx2_x32(
+    l1_out: &[f32],
+    l1_out_count: usize,
+    l2_weights_f: &[f32],
+    l2_total: usize,
+    l2_off: usize,
+    biases: &[f32],
+    h2: &mut [f32],
+) {
+    let mut h0 = _mm256_loadu_ps(biases.as_ptr().add(l2_off));
+    let mut h1 = _mm256_loadu_ps(biases.as_ptr().add(l2_off + 8));
+    let mut h2v = _mm256_loadu_ps(biases.as_ptr().add(l2_off + 16));
+    let mut h3 = _mm256_loadu_ps(biases.as_ptr().add(l2_off + 24));
+    for i in 0..l1_out_count {
+        let v = *l1_out.get_unchecked(i);
+        if v == 0.0 { continue; }
+        let bcast = _mm256_set1_ps(v);
+        let wp = l2_weights_f.as_ptr().add(i * l2_total + l2_off);
+        let w0 = _mm256_loadu_ps(wp);
+        let w1 = _mm256_loadu_ps(wp.add(8));
+        let w2 = _mm256_loadu_ps(wp.add(16));
+        let w3 = _mm256_loadu_ps(wp.add(24));
+        h0 = _mm256_fmadd_ps(bcast, w0, h0);
+        h1 = _mm256_fmadd_ps(bcast, w1, h1);
+        h2v = _mm256_fmadd_ps(bcast, w2, h2v);
+        h3 = _mm256_fmadd_ps(bcast, w3, h3);
+    }
+    _mm256_storeu_ps(h2.as_mut_ptr(), h0);
+    _mm256_storeu_ps(h2.as_mut_ptr().add(8), h1);
+    _mm256_storeu_ps(h2.as_mut_ptr().add(16), h2v);
+    _mm256_storeu_ps(h2.as_mut_ptr().add(24), h3);
+}
+
 /// AVX-512 f32 horizontal dot product of `len` elements (len == 32).
 /// Replaces the scalar tail reduction in the output-weights dot.
 #[cfg(target_arch = "x86_64")]
@@ -3019,6 +3059,14 @@ impl NNUENet {
             if self.has_avx512 && l2 == 32 {
                 unsafe {
                     l2_fmadd_avx512_x32(
+                        &l1_out[..l1_out_count], l1_out_count,
+                        &self.l2_weights_f, l2_total, l2_off,
+                        &self.l2_biases_f, &mut h2,
+                    );
+                }
+            } else if self.has_avx2 && l2 == 32 {
+                unsafe {
+                    l2_fmadd_avx2_x32(
                         &l1_out[..l1_out_count], l1_out_count,
                         &self.l2_weights_f, l2_total, l2_off,
                         &self.l2_biases_f, &mut h2,
