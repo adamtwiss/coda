@@ -3958,6 +3958,13 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         eprintln!("--- NNUE Eval Decomposition ---");
         eprintln!("NNUE full rebuilds: {:>10} ({:>5.2}% of evals)", full,
                   if total_evals > 0 { full as f64 * 100.0 / total_evals as f64 } else { 0.0 });
+        eprintln!("  by cause:  king-bucket={} ({:>5.2}%)  root={} ({:>5.2}%)  chain-break={} ({:>5.2}%)",
+                  acc.stats_rebuild_kind0,
+                  if full > 0 { acc.stats_rebuild_kind0 as f64 * 100.0 / full as f64 } else { 0.0 },
+                  acc.stats_rebuild_root,
+                  if full > 0 { acc.stats_rebuild_root as f64 * 100.0 / full as f64 } else { 0.0 },
+                  acc.stats_rebuild_chain,
+                  if full > 0 { acc.stats_rebuild_chain as f64 * 100.0 / full as f64 } else { 0.0 });
         eprintln!("NNUE incremental:   {:>10} ({:>5.2}% of evals)", incr,
                   if total_evals > 0 { incr as f64 * 100.0 / total_evals as f64 } else { 0.0 });
         eprintln!("TT static-eval hit: {:>10} ({:>5.2}% of call sites)", tt,

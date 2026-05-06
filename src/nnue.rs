@@ -4014,6 +4014,13 @@ pub struct NNUEAccumulator {
     // branch it takes. Read via the `stats_*` accessors for the bench
     // "evals/node" summary. Zero overhead outside the increment itself.
     pub stats_full_rebuilds: u64,
+    /// Rebuild cause splits (added 2026-05-06 for Atlas perf investigation).
+    /// kind=0  → king bucket / mirror crossing on the moving side (forced).
+    /// root    → top==0 (only fires once per search tree).
+    /// chain   → parent ply not computed (lazy-accumulator chain break).
+    pub stats_rebuild_kind0: u64,
+    pub stats_rebuild_root: u64,
+    pub stats_rebuild_chain: u64,
     pub stats_incremental_updates: u64,
     pub stats_cached_skips: u64,
 }
@@ -4051,6 +4058,9 @@ impl NNUEAccumulator {
             hidden_size,
             finny,
             stats_full_rebuilds: 0,
+            stats_rebuild_kind0: 0,
+            stats_rebuild_root: 0,
+            stats_rebuild_chain: 0,
             stats_incremental_updates: 0,
             stats_cached_skips: 0,
         }
@@ -4059,6 +4069,9 @@ impl NNUEAccumulator {
     /// Reset eval-path counters. Call before a measurement window.
     pub fn reset_stats(&mut self) {
         self.stats_full_rebuilds = 0;
+        self.stats_rebuild_kind0 = 0;
+        self.stats_rebuild_root = 0;
+        self.stats_rebuild_chain = 0;
         self.stats_incremental_updates = 0;
         self.stats_cached_skips = 0;
     }
@@ -4392,6 +4405,14 @@ impl NNUEAccumulator {
         // Full recompute needed?
         if dirty.kind == 0 || self.top == 0 || !self.stack[self.top - 1].computed {
             self.stats_full_rebuilds += 1;
+            // Cause split — first matching condition wins (priority order).
+            if dirty.kind == 0 {
+                self.stats_rebuild_kind0 += 1;
+            } else if self.top == 0 {
+                self.stats_rebuild_root += 1;
+            } else {
+                self.stats_rebuild_chain += 1;
+            }
             #[cfg(feature = "profile-materialize")]
             {
                 crate::nnue::mat_stats::record_refresh();
