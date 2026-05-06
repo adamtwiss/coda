@@ -547,16 +547,43 @@ unsafe fn finny_batch_apply_avx2(
     let w_ptr = input_weights.as_ptr();
 
     let mut offset = 0;
-    while offset < h {
-        let nregs = ((h - offset).min(CHUNK) + 15) / 16;
 
-        // Load accumulator chunk into registers
+    // Full-chunk fast path with REGS as a compile-time constant — same
+    // dispatch-elimination pattern as simd_acc_fused_avx2. Without this
+    // split LLVM emits a switch on nregs covering values 2..=REGS even
+    // though for v9 (h=768, CHUNK=192) nregs is always REGS.
+    while offset + CHUNK <= h {
+        let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
+        for i in 0..REGS {
+            regs[i] = _mm256_loadu_si256(acc_ptr.add(offset + i * 16) as *const __m256i);
+        }
+        for &idx in adds {
+            let row = w_ptr.add(idx * h + offset);
+            for i in 0..REGS {
+                let w = _mm256_loadu_si256(row.add(i * 16) as *const __m256i);
+                regs[i] = _mm256_add_epi16(regs[i], w);
+            }
+        }
+        for &idx in subs {
+            let row = w_ptr.add(idx * h + offset);
+            for i in 0..REGS {
+                let w = _mm256_loadu_si256(row.add(i * 16) as *const __m256i);
+                regs[i] = _mm256_sub_epi16(regs[i], w);
+            }
+        }
+        for i in 0..REGS {
+            _mm256_storeu_si256(acc_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
+        }
+        offset += CHUNK;
+    }
+
+    // Tail: any leftover < CHUNK i16. Never fires on v9 production net.
+    if offset < h {
+        let nregs = ((h - offset) + 15) / 16;
         let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
         for i in 0..nregs {
             regs[i] = _mm256_loadu_si256(acc_ptr.add(offset + i * 16) as *const __m256i);
         }
-
-        // Apply ALL adds (weight rows are i16, no widening needed)
         for &idx in adds {
             let row = w_ptr.add(idx * h + offset);
             for i in 0..nregs {
@@ -564,8 +591,6 @@ unsafe fn finny_batch_apply_avx2(
                 regs[i] = _mm256_add_epi16(regs[i], w);
             }
         }
-
-        // Apply ALL subs
         for &idx in subs {
             let row = w_ptr.add(idx * h + offset);
             for i in 0..nregs {
@@ -573,13 +598,9 @@ unsafe fn finny_batch_apply_avx2(
                 regs[i] = _mm256_sub_epi16(regs[i], w);
             }
         }
-
-        // Store registers back
         for i in 0..nregs {
             _mm256_storeu_si256(acc_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
         }
-
-        offset += CHUNK;
     }
 }
 

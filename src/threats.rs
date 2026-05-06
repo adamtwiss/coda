@@ -1741,59 +1741,65 @@ unsafe fn apply_deltas_avx2(
     const CHUNK: usize = REGS * 16; // 128 elements
 
     let mut offset = 0;
-    while offset < hidden_size {
-        let chunk_size = (hidden_size - offset).min(CHUNK);
-        let nregs = (chunk_size + 15) / 16;
 
-        // Load source (parent) chunk into registers — seeds the per-chunk
-        // accumulator. Previously loaded from dst after a separate
-        // copy_from_slice pass; loading src directly eliminates that pass.
-        let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
-        for i in 0..nregs {
-            regs[i] = _mm256_loadu_si256(src_ptr.add(offset + i * 16) as *const __m256i);
-        }
-
-        // Apply paired add+sub
-        let mut ai = 0;
-        let mut si = 0;
-        while ai < adds.len() && si < subs.len() {
-            let aw = w_ptr.add(adds[ai] * hidden_size + offset);
-            let sw = w_ptr.add(subs[si] * hidden_size + offset);
+    // Inner-loop body, parameterised on the iteration count so the
+    // full-chunk fast path uses REGS as a const and the tail uses runtime
+    // nregs. Both call sites share the same logic. `offset` must be
+    // declared before this macro_rules! definition for macro hygiene.
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
             for i in 0..nregs {
-                let add_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(aw.add(i * 16) as *const __m128i));
-                let sub_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(sw.add(i * 16) as *const __m128i));
-                regs[i] = _mm256_sub_epi16(_mm256_add_epi16(regs[i], add_w), sub_w);
+                regs[i] = _mm256_loadu_si256(src_ptr.add(offset + i * 16) as *const __m256i);
             }
-            ai += 1;
-            si += 1;
-        }
-
-        // Remaining adds
-        while ai < adds.len() {
-            let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+            let mut ai = 0;
+            let mut si = 0;
+            while ai < adds.len() && si < subs.len() {
+                let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+                let sw = w_ptr.add(subs[si] * hidden_size + offset);
+                for i in 0..nregs {
+                    let add_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(aw.add(i * 16) as *const __m128i));
+                    let sub_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(sw.add(i * 16) as *const __m128i));
+                    regs[i] = _mm256_sub_epi16(_mm256_add_epi16(regs[i], add_w), sub_w);
+                }
+                ai += 1;
+                si += 1;
+            }
+            while ai < adds.len() {
+                let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+                for i in 0..nregs {
+                    let add_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(aw.add(i * 16) as *const __m128i));
+                    regs[i] = _mm256_add_epi16(regs[i], add_w);
+                }
+                ai += 1;
+            }
+            while si < subs.len() {
+                let sw = w_ptr.add(subs[si] * hidden_size + offset);
+                for i in 0..nregs {
+                    let sub_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(sw.add(i * 16) as *const __m128i));
+                    regs[i] = _mm256_sub_epi16(regs[i], sub_w);
+                }
+                si += 1;
+            }
             for i in 0..nregs {
-                let add_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(aw.add(i * 16) as *const __m128i));
-                regs[i] = _mm256_add_epi16(regs[i], add_w);
+                _mm256_storeu_si256(dst_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
             }
-            ai += 1;
-        }
+        }};
+    }
 
-        // Remaining subs
-        while si < subs.len() {
-            let sw = w_ptr.add(subs[si] * hidden_size + offset);
-            for i in 0..nregs {
-                let sub_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(sw.add(i * 16) as *const __m128i));
-                regs[i] = _mm256_sub_epi16(regs[i], sub_w);
-            }
-            si += 1;
-        }
-
-        // Store registers back
-        for i in 0..nregs {
-            _mm256_storeu_si256(dst_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
-        }
-
+    // Full-chunk fast path: REGS is a compile-time constant, inner loops
+    // unroll without dispatch. For v9 (h=768, CHUNK=128) all 6 iterations
+    // hit this branch.
+    while offset + CHUNK <= hidden_size {
+        apply_chunk!(REGS);
         offset += CHUNK;
+    }
+
+    // Tail: never fires on v9, but covers other hidden_size values.
+    if offset < hidden_size {
+        let nregs = ((hidden_size - offset) + 15) / 16;
+        apply_chunk!(nregs);
     }
 }
 
