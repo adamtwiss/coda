@@ -348,16 +348,47 @@ unsafe fn simd_acc_fused_avx2(
     let src_ptr = src.as_ptr();
 
     let mut offset = 0;
-    while offset < h {
-        let nregs = ((h - offset).min(CHUNK) + 15) / 16;
 
-        // Load src chunk into registers (seeds the per-chunk accumulator).
+    // Full-chunk fast path. nregs == REGS == 12 statically, so the inner
+    // loops fully unroll without runtime dispatch. For h % CHUNK == 0
+    // (v9 hidden_size 768 is 4× CHUNK) the entire body is this loop and
+    // the tail below never runs. Atlas perf annotate (2026-05-06) showed
+    // the previous unified loop emitting a switch on nregs covering
+    // values 2-12 even though only nregs=12 is ever taken on v9 — that
+    // dispatch was ~9% of total eval cycles.
+    while offset + CHUNK <= h {
+        let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
+        for i in 0..REGS {
+            regs[i] = _mm256_loadu_si256(src_ptr.add(offset + i * 16) as *const __m256i);
+        }
+        for row in add_rows {
+            let row_ptr = row.as_ptr().add(offset);
+            for i in 0..REGS {
+                let w = _mm256_loadu_si256(row_ptr.add(i * 16) as *const __m256i);
+                regs[i] = _mm256_add_epi16(regs[i], w);
+            }
+        }
+        for row in sub_rows {
+            let row_ptr = row.as_ptr().add(offset);
+            for i in 0..REGS {
+                let w = _mm256_loadu_si256(row_ptr.add(i * 16) as *const __m256i);
+                regs[i] = _mm256_sub_epi16(regs[i], w);
+            }
+        }
+        for i in 0..REGS {
+            _mm256_storeu_si256(dst_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
+        }
+        offset += CHUNK;
+    }
+
+    // Tail: any leftover < CHUNK elements. Runtime nregs dispatch only
+    // here, never on the v9 hot path.
+    if offset < h {
+        let nregs = ((h - offset) + 15) / 16;
         let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
         for i in 0..nregs {
             regs[i] = _mm256_loadu_si256(src_ptr.add(offset + i * 16) as *const __m256i);
         }
-
-        // Apply all adds in-register.
         for row in add_rows {
             let row_ptr = row.as_ptr().add(offset);
             for i in 0..nregs {
@@ -365,8 +396,6 @@ unsafe fn simd_acc_fused_avx2(
                 regs[i] = _mm256_add_epi16(regs[i], w);
             }
         }
-
-        // Apply all subs in-register.
         for row in sub_rows {
             let row_ptr = row.as_ptr().add(offset);
             for i in 0..nregs {
@@ -374,13 +403,9 @@ unsafe fn simd_acc_fused_avx2(
                 regs[i] = _mm256_sub_epi16(regs[i], w);
             }
         }
-
-        // Store once per chunk.
         for i in 0..nregs {
             _mm256_storeu_si256(dst_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
         }
-
-        offset += CHUNK;
     }
 }
 
