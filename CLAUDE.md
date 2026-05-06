@@ -35,7 +35,7 @@ make openbench        # OpenBench-compatible build (alias for `make`)
 cargo build --release # Plain release (no embedded net) — NOT what OB workers use
 cargo test            # Run all tests including perft
 
-./coda bench [depth]                  # Search benchmark, default depth 13 — use THIS for OB
+./coda bench [depth]                  # Search benchmark, 49 positions @ default depth 12 — use THIS for OB
 ./coda                                # UCI mode
 ./coda -nnue net.nnue                 # UCI with explicit NNUE
 ./coda -nnue net.nnue -book book.bin  # ... + opening book

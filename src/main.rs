@@ -80,10 +80,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Search benchmark (default depth 13)
+    /// Search benchmark (default depth 12, 49 positions)
     Bench {
         /// Search depth
-        #[arg(default_value_t = 13)]
+        #[arg(default_value_t = 12)]
         depth: i32,
         /// Number of threads
         #[arg(long = "threads", short = 't', default_value_t = 1)]
@@ -473,17 +473,8 @@ fn main() {
             tstack.active = net.has_threats;
 
             let bench_positions: Vec<String> = if epd.is_empty() {
-                // Same 8 positions as `coda bench`.
-                vec![
-                    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".into(),
-                    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1".into(),
-                    "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1".into(),
-                    "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1".into(),
-                    "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8".into(),
-                    "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10".into(),
-                    "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4".into(),
-                    "2r3k1/pp3ppp/2n1b3/3pP3/3P4/2NB4/PP3PPP/R4RK1 w - - 0 1".into(),
-                ]
+                // Same positions as `coda bench` (49-position list, see search::BENCH_POSITIONS).
+                crate::search::BENCH_POSITIONS.iter().map(|s| s.to_string()).collect()
             } else {
                 let text = std::fs::read_to_string(&epd).expect("failed to read EPD");
                 let iter = text.lines().filter(|l| !l.trim().is_empty());
