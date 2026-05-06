@@ -141,7 +141,7 @@ def main():
     p.add_argument('dev_bench', nargs='?', type=int, default=None, help='Dev bench (omit to let OB auto-detect)')
     p.add_argument('--base-branch', default='main', help='Base branch (default: main)')
     p.add_argument('--base-bench', type=int, default=None, help='Base bench (omit to let OB auto-detect)')
-    p.add_argument('--bounds', default='[0.00, 5.00]', help='SPRT bounds (default: [0.00, 5.00])')
+    p.add_argument('--bounds', default='[0, 3]', help='SPRT bounds (default: [0, 3] — feature must show positive Elo to be worth merging). Use [-3, 3] for net-vs-net or non-regression checks where direction is uncertain. Never [0, 5] / [-5, 5] — wide bounds finish early without resolving the question.')
     p.add_argument('--tc', default='10.0+0.1', help='Time control (default: 10.0+0.1)')
     p.add_argument('--options', default='Threads=1 Hash=64', help='UCI options (applied to both sides unless --dev-options/--base-options given)')
     p.add_argument('--dev-options', default='', help='UCI options for dev side only (overrides --options for dev). Example: "Threads=1 Hash=64 HiddenActivation=crelu"')
