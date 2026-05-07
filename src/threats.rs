@@ -334,6 +334,12 @@ fn piece_attacks_empty(cp: usize, sq: u32) -> Bitboard {
 }
 
 /// Compute attack bitboard for a piece type on a square with given occupancy.
+///
+/// `#[inline]` so call sites with constrained piece_type (e.g. slider-only
+/// loops) can specialize away the 6-way switch dispatch under LTO. The
+/// dispatch (jump-table address calc) was 10.69% inside this function on
+/// Atlas search-bench, ~0.3% of total NPS.
+#[inline]
 pub fn piece_attacks_occ(piece_type: u8, color: Color, sq: u32, occ: Bitboard) -> Bitboard {
     match piece_type {
         PAWN => pawn_attacks(color, sq),

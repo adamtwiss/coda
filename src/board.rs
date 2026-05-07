@@ -562,6 +562,7 @@ impl Board {
     }
 
     /// Get bitboard of all pieces attacking a square.
+    #[inline]
     pub fn attackers_to(&self, sq: u32, occ: Bitboard) -> Bitboard {
         let knights = self.pieces[KNIGHT as usize];
         let bishops = self.pieces[BISHOP as usize];
