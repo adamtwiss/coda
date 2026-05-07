@@ -1,8 +1,8 @@
 # Engine Review Summary — Ideas for Coda
 
-Cross-referencing 34 engines against Coda. Ranked by estimated impact, implementation complexity, and alignment with our proven success patterns.
+Cross-referencing 37 engines against Coda. Ranked by estimated impact, implementation complexity, and alignment with our proven success patterns.
 
-**Engines reviewed**: Ethereal, Caissa, Midnight, Winter, Texel, Wasp, Arasan, Berserk, Koivisto, Stormphrax, RubiChess, Seer, Minic, Tucano, Weiss, Obsidian, BlackMarlin, Altair, Reckless, Igel, Alexandria, Stockfish, Viridithas, Halogen, PlentyChess, Quanticade, **Clarity** (+200 above us), **Velvet** (+100 above us), **Astra**, **Clover**, **Horsie**, **Tarnished**, **integral** (added 2026-04-19)
+**Engines reviewed**: Ethereal, Caissa, Midnight, Winter, Texel, Wasp, Arasan, Berserk, Koivisto, Stormphrax, RubiChess, Seer, Minic, Tucano, Weiss, Obsidian, BlackMarlin, Altair, Reckless, Igel, Alexandria, Stockfish, Viridithas, Halogen, PlentyChess, Quanticade, **Clarity** (+200 above us), **Velvet** (+100 above us), **Astra**, **Clover**, **Horsie**, **Tarnished**, **integral** (added 2026-04-19), **Hobbes**, **Motor**, **Starzix** (added 2026-05-01)
 
 **Removed** (too weak to be informative): Crafty, ExChess, GreKo, Rodent III, Laser
 
@@ -269,3 +269,100 @@ Full reviews in `engine-notes/{astra,clover,horsie,tarnished,integral}.md`. Cons
 - **Net distillation** (Tarnished): train large (4096 L1) net, distill into small (1792 L1) production net. Needs training infrastructure rewrite; speculative +20-40 Elo if it works.
 - **Sparse L1 via NNZ bitmask detection** (Horsie): if our pairwise activation also sparsifies, bitmask-skip zero lanes in L1 matmul. ~5-10% NPS. Implementation effort: medium.
 - **Killers/counters**: Removed (+3.77 Elo). History tables fully replaced them post magnitude fix.
+
+---
+
+## 2026-05-01 additions (Hobbes, Motor, Starzix)
+
+Full reviews in `engine-notes/{hobbes,motor,starzix}.md`. The three are different
+shapes — Hobbes is heavily SPSA-tuned (~270 tunables, no threats), Motor is a
+small C++ engine top-20 CCRL, Starzix is a disciplined ~6 KLOC engine. Consensus
+patterns and novel candidates below.
+
+### New Tier 1 candidates
+
+- **`cut_node` propagation through negamax + cut-node-driven LMR/IIR**
+  (Hobbes T1 #4): explicit `cut_node` boolean threaded through the recursion;
+  drives extra LMR reduction at expected cut nodes and IIR. Already on the
+  cross-engine queue (see `docs/cross_engine_comparison_2026-04-25.md`) but
+  Hobbes confirms it's near-universal among strong engines. Est. +3-8 Elo.
+  Coda has piecemeal cut-node logic; full propagation is the missing piece.
+- **PV-extra TT-cutoff depth gate** (Motor T1.1): require `tt_entry.depth
+  >= depth + 2 * is_pv` for PV-node TT cutoffs. Trivial 1-line change.
+  Est. +2-5 Elo. Universal in Stockfish-lineage engines.
+- **PV "would-have-pruned" depth shortening** (Motor T1.2): when RFP/futility
+  *would* have pruned at this PV node but for the PV gate, decrement depth
+  by 1 to cap node growth without losing the safety. Novel pattern. Est. +2-5.
+- **TT-blended eval for pruning** (Motor T1.3): for pruning thresholds (RFP,
+  NMP eval gates), blend static eval with TT score: `pruning_eval = ttScore
+  >= eval ? ttScore : eval` (or symmetric). Trivial. Est. +2-5 Elo.
+- **Threat-bucketed correction history** (Motor T1.4): 5th correction-history
+  source indexed by enemy-threat hash. Coda has 5 sources already; this would
+  be a 6th. Est. +2-4 if it composes cleanly with existing five.
+- **Multiplicative history bonus on PVS fail-high cascades** (Starzix T1 #1):
+  scale history bonus by a `numFailHighs` counter accumulated across PVS
+  re-searches at the same node. Novel signal. Est. +2-5 Elo. Tiny code.
+- **Slider x-ray through STM king for `enemy_attacks`** (Starzix T1 #3):
+  treat the STM king as transparent when computing the threat bitboard
+  (the king will move, so attacks behind it should still be considered
+  "threatening" for the move ordering). Sharpens threat-aware history
+  routing. Est. +1-3.
+- **Promotion axis on noisy/capture history** (Starzix T1 #4): index
+  capture-history by `(piece, to, victim, promotion-flag)` instead of the
+  current `(piece, to, victim)`. Same pattern as the open STM-on-main-history
+  Tier 1 candidate. Est. +1-3 Elo per axis added; small, isolated.
+
+### New Tier 2 candidates
+
+- **Move-encoded prev-move correction-history** (Hobbes T1 #1): correction
+  history slot keyed on the encoded previous move (countermove + follow-up).
+  Distinct from our existing piece-based correction sources. Est. +1-3.
+- **Stand-pat / fail-high lerp blending in QS** (Hobbes T1 #2): linear
+  interpolation between QS stand-pat and bestScore based on a tunable α
+  rather than a hard `max(stand_pat, bestScore)`. Small refinement.
+- **History pruning bonus on `best_score > beta + 80`** (Motor T2.1):
+  Coda already gates LMR/futility on history; this is the symmetric
+  "stronger fail-high → bigger history bump" pattern.
+- **Razoring with `depth² × margin` (no depth gate)** (Starzix T1 #2):
+  Coda has linear razoring; the d² form is more aggressive at low depth.
+  Coupled to v9 retune (#389 dependency).
+- **Hindsight extension** (Hobbes T2 #7): symmetric counterpart to our
+  hindsight reduction. Est. +1-3.
+- **`oppWorsening` signal for RFP** (Starzix T2 #5): allow more aggressive
+  RFP when the opponent's eval is worsening (mirror of our existing
+  `improving`). One-line.
+
+### Architectural validation (already doing it)
+
+- **Continuation history weights** — All three confirm our 4-ply offsets
+  with our weights are within consensus.
+- **TT score dampening / fail-high blending** — Motor uses similar formulas;
+  no change.
+- **SPSA-heavy parameterisation** — Hobbes runs with ~270 tunables; we have
+  ~77. Direction validates more, not less, parameter exposure when an
+  experiment lands and want broader retuning surface.
+
+### Already-rejected patterns confirmed
+
+- **Logarithmic LMR formula** (Hobbes uses lookup table, not log) — our
+  table-based LMR remains consensus-aligned.
+- **TT cluster size** — Motor uses 3 slots (we have 5). Already tested
+  smaller cluster (#226-class), neutral; no action.
+- **Razoring depth caps** — Motor's `depth >= 1 && depth <= 4` matches
+  what we tried; no change.
+
+### Things explicitly NOT to revisit
+
+- **Aspiration window growth `window += window/3`** (Motor T3.1): we tested
+  geometric growth, current 1.4× multiplier is SPSA-tuned. Skip.
+- **Logarithmic LMR refactor** — already H0'd in earlier attempts.
+
+### Suggested next SPRT order from these reviews
+
+1. PV-extra TT-cutoff depth gate (Motor T1.1) — trivial, near-universal
+2. `cut_node` full propagation + LMR/IIR adjustment (Hobbes T1 #4) — biggest
+   structural lever, already queued from earlier reviews
+3. Multiplicative history bonus on numFailHighs (Starzix T1 #1) — novel signal
+4. TT-blended eval for pruning (Motor T1.3) — trivial, small bundle candidate
+5. PV "would-have-pruned" depth shortening (Motor T1.2) — novel pattern, may
+   compose well with #1
