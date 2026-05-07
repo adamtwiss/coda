@@ -179,3 +179,149 @@ Hercules — the numbers will shift but the hot functions match):
   but secondary to instruction-count work which applies fleet-wide.
 - Walkback (PSQ) — upper-bound 3.5% even in Reckless's measured ablation,
   not worth a third attempt given existing Finny table coverage.
+
+---
+
+## Hercules follow-up — findings 2026-05-07 (later session)
+
+Hercules-Claude picked up the handoff and went deeper into the
+ensure_computed lever. **Headline: instruction-count gap has narrowed
+to 1.33× since Atlas's 1.68× measurement; remaining cost is mostly
+architectural, not addressable by code-level micro-optimisation.**
+
+### Re-anchored measurements (Hercules E-2288G, performance governor, no-taskset, single-thread)
+
+Both engines built from latest upstream main on the same box:
+
+| Metric | Coda (`22be737`) | Reckless (`36de3ee6`) | Ratio |
+|---|---:|---:|---:|
+| NPS | ~700K | ~995K | 0.70× |
+| Bench nodes | 4,815,017 | 2,310,239 | — |
+| ns/node (insn surrogate) | ~1,413 | ~1,000 | **1.41×** |
+| Insns/node | ~10,633 | ~8,005 | **1.33×** (was 1.68× per anchor table) |
+| IPC | 1.55 | 1.55 | 1.00× (was 1.10×) |
+| Cache miss rate | 2.15% | 3.06% | 0.70× |
+
+The IPC gap closed entirely; the cache-miss rate is still better on
+Coda. The remaining 1.33× insns/node is the entire gap. Atlas's
+priors hold — instruction count, not memory, is the binding lever.
+
+### Methodology gotcha (saved to memory: `feedback_taskset_pinning_hyperthread_contention.md`)
+
+`taskset -c 0` on this box halved Reckless NPS via hyperthread
+contention with the Claude Code process on the sibling logical core
+(0/8 share a physical core). **Default to no-taskset for NPS bench;
+if pinning is needed, claim the whole physical core.** Hours can be
+lost going down build-flag rabbit holes when the real cause is HT
+contention — symptom is "NPS exactly half expected, deterministic
+across reruns".
+
+### `ensure_computed` deep dive
+
+Per-call breakdown via new `ensure_stats` instrumentation
+(in `threats.rs` under `profile-threats`):
+
+- **2.6M calls/bench** = 0.541/node (matches `Evals/node`)
+- **Both perspectives accurate (free): 0.0%** (the lazy `accurate`
+  flag's short-circuit fires almost never — `push()` resets it to
+  false at every new ply, so by the time `ensure_computed` runs the
+  flag is always false)
+- **Update path (replay deltas): 97.5%**, refresh 2.5%
+- **Walkback: 87.3% are 1-ply** (= equivalent to Reckless's eager
+  observer-pattern), 9.3% 2-ply, rare deeper
+
+So lazy savings come from *not invoking* `ensure_computed` on pruned
+nodes (45.9% of nodes never eval), not from the flag short-circuit.
+Once invoked, it always does both-perspective work. This is fine —
+it matches Reckless's eager design in the steady-state case.
+
+`perf annotate ensure_computed` shows the inlined work splits ~25%
+threat_index lookup loop, ~75% AVX2 SIMD weight-row apply.
+
+### Strategy A — precompute threat_index per delta (DEAD)
+
+**Hypothesis:** Eliminate the 25% threat_index loop inside apply by
+precomputing both perspectives' indices at delta-absorb time, store
+in `DeltaVec` as pre-split `adds_*`/`subs_*` arrays per perspective.
+Estimated 5-7 Elo upside.
+
+**Result:** Bench-flat to slight regression (-0.4%).
+
+**Why it fails:**
+- Absorbs (~3.3M, one per make_move) outnumber per-delta-vec replays
+  (~1.8 reads/delta-vec across both perspectives summed).
+- Eagerly computing for both perspectives at every absorb pays the
+  full cost on absorbs that are never replayed (move pruned out
+  before any descendant evaluates).
+- Storing precomputed adds/subs grew `DeltaVec` by ~2 KB/ply
+  (~600 KB total): cache-pressure cost ~1.3% measured.
+- Saved 0.9% by skipping in-apply threat_index, but cache-pressure
+  ate it. Net flat.
+- The lazy in-apply path is actually *near-optimal* for this access
+  pattern (replays << absorbs).
+
+Branch deleted. Don't re-attempt with this storage shape; if revisited,
+would need to find a way to precompute *without* growing `DeltaVec`.
+
+### Strategy E — zero-emit early-out in push_threats_for_piece 1b/2b (DEAD)
+
+**Hypothesis:** Sections 1b (own-xray) and 2b (sliders-2b) had 71-72%
+zero-emit rates. Pre-filter the inner loop with `(open_attacks &
+!my_attacks) & occ` (1b) and `& !queen_att` (2b) to skip when no
+delta is possible. Estimated 1-2 Elo upside.
+
+**Result:** Bench slightly negative (+0.8% cycles, IPC unchanged).
+
+**Why it fails:**
+- The existing inner-loop `if xray_candidates == 0 { continue; }` and
+  `if blockers_between.count_ones() != 1 { continue; }` were already
+  cheap, predictable-branch fast-paths.
+- Adding a bulk pre-filter at the call site (open_attacks magic
+  lookup, AND-NOT op) added ~10 cy/slider-call to skip ~30 cy of
+  inner work in the 72% case — but most of those "30 cy" are
+  branch-predicted skips, not real work.
+- Diagnostic rule: when an existing in-loop fast-path is a single
+  predictable conditional, adding a bulk pre-filter rarely helps.
+  You're moving the cheap branch outward and adding a different
+  cost.
+
+Branch deleted.
+
+### Updated lever ranking after these probes
+
+| Lever | Status | Notes |
+|---|---|---|
+| ~~A: precompute threat_index~~ | **H0** | Cache pressure > savings |
+| ~~E: zero-emit shortcut 1b/2b~~ | **H0** | Existing fast-path was already cheap |
+| Group-lasso row sparsity (training-side) | In flight | `project_group_lasso_implemented.md` — reduces avg deltas/move; addresses the SIMD inner loop's actual workload. The right lever for residual threat-side NPS. |
+| MovePicker `generate_and_score_quiets` (Tier 1 #1) | Untested | Distinct from #937 storage refactor; work-reduction within scoring. Still a reasonable target. |
+| Search-side gate folding (Tier 1 #2) | Untested | Independent of threat work. |
+| `is_pseudo_legal` (Tier 1 #3) | Untested | Hot for TT-move validation. |
+| `finny_batch_apply` (PSQ Finny) | Diagnostic only | 5.3% Self, ~399K calls (king-bucket-driven). Modest if any. Not annotated in detail. |
+
+### Bottom line
+
+**The threat-accumulator hot-path code is already near-optimal at
+the code level.** The 27% in `ensure_computed` is genuinely necessary
+SIMD work for the v9 architecture and was bought deliberately for
++110 Elo. Two natural micro-optimization probes (A, E) both H0'd.
+
+**Further NPS gains in this region need training-side architectural
+changes**, not code tweaks:
+- Row sparsity (group-lasso) shrinks avg deltas/replay
+- Smaller hidden_size or threat-feature count shrinks per-replay work
+- L1 regularisation on threat weights helps cache residency
+
+Code-level NPS work should now shift to the **non-threat hot
+functions** in Tier 1 (movepicker scoring, search gate folding,
+is_pseudo_legal) — these have no architectural floor and are
+genuinely independent of the threat trade-off.
+
+### Working state at end of session
+
+- `main` at `22be7378` (Atlas's handoff commit)
+- All Hercules experiment branches deleted (no useful diff worth
+  preserving)
+- Memory entries written:
+  `feedback_threat_accumulator_already_well_optimized.md`,
+  `feedback_taskset_pinning_hyperthread_contention.md`
