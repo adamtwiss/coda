@@ -3813,9 +3813,75 @@ pub const BENCH_POSITIONS: &[&str] = &[
     "7k/7P/6K1/8/3B4/8/8/8 b - - 0 1",
 ];
 
+/// Pathological positions used to flush out tree-shape blow-ups —
+/// positions where a misbehaving net or a broken pruning/extension
+/// interaction produces a tree that is orders of magnitude bigger than
+/// expected. Run via `coda bench-pathology`. The default node-budget
+/// threshold below (5M @ depth 8) flags clear pathology; well-trained
+/// prod nets land ~1M.
+///
+/// Add new positions whenever an investigation surfaces a class of
+/// position that drives non-linear search-time blow-up. Prefer
+/// well-known stress positions (SF defaults, Pohl, ECM hardest)
+/// over engine-specific corner cases.
+pub const BENCH_PATHOLOGY_POSITIONS: &[&str] = &[
+    // SF Pohl knight-saturation test. 14 minor pieces, 2 kings, no
+    // pawns. Eval-driven non-convergence: 50% of fresh SB200 random
+    // seeds and 1-of-5 SB800 nets had elevated tree size; some
+    // exceeded 100M nodes at depth 8. Removed from main bench list
+    // 2026-05-07; kept here as a tripwire.
+    "k7/2n1n3/1nbNbn2/2NbRBn1/1nbRQR2/2NBRBN1/3N1N2/7K w - - 0 1",
+];
+
 /// Run bench: fixed-depth search on standard positions, return total nodes.
 pub fn bench(depth: i32, nnue_path: Option<&str>) -> u64 {
     bench_inner(depth, nnue_path, true)
+}
+
+/// Run pathology bench: per-position node + wall-clock report. Returns
+/// the count of positions exceeding `node_threshold` so callers can
+/// fail-fast on regressions.
+pub fn bench_pathology(depth: i32, node_threshold: u64, nnue_path: Option<&str>) -> u32 {
+    let mut info = SearchInfo::new(16);
+    info.silent = true;  // suppress UCI info lines, want only the per-position report
+    if let Some(path) = nnue_path {
+        if let Err(e) = info.load_nnue(path) {
+            eprintln!("Warning: failed to load NNUE: {}", e);
+        }
+    } else {
+        info.auto_discover_nnue();
+    }
+    let limits = SearchLimits {
+        depth,
+        infinite: true,
+        ..SearchLimits::new()
+    };
+    let mut over = 0u32;
+    let mut total_nodes = 0u64;
+    let total_start = std::time::Instant::now();
+    println!("idx |  nodes        | nps      | time(s) | flag | fen");
+    println!("----+---------------+----------+---------+------+----");
+    for (i, fen) in BENCH_PATHOLOGY_POSITIONS.iter().enumerate() {
+        let mut board = Board::from_fen(fen);
+        info.nodes = 0;
+        info.history.clear();
+        info.tt.new_search();
+        let start = std::time::Instant::now();
+        let _mv = search(&mut board, &mut info, &limits);
+        let elapsed = start.elapsed();
+        let nodes = info.nodes;
+        let nps = if elapsed.as_secs_f64() > 0.0 {
+            (nodes as f64 / elapsed.as_secs_f64()) as u64
+        } else { 0 };
+        let flag = if nodes > node_threshold { "WARN" } else { "ok  " };
+        if nodes > node_threshold { over += 1; }
+        total_nodes += nodes;
+        println!("{:>3} | {:>13} | {:>8} | {:>7.2} | {} | {}", i, nodes, nps, elapsed.as_secs_f64(), flag, fen);
+    }
+    println!("\nTotal: {} positions, {} nodes, {:.2}s wall-clock, {} over threshold ({}M nodes @ depth {})",
+        BENCH_PATHOLOGY_POSITIONS.len(), total_nodes, total_start.elapsed().as_secs_f64(),
+        over, node_threshold / 1_000_000, depth);
+    over
 }
 
 /// Run bench without printing stats (for multi-threaded bench).

@@ -80,7 +80,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Search benchmark (default depth 12, 49 positions)
+    /// Search benchmark (default depth 12, 48 positions)
     Bench {
         /// Search depth
         #[arg(default_value_t = 12)]
@@ -88,6 +88,19 @@ enum Commands {
         /// Number of threads
         #[arg(long = "threads", short = 't', default_value_t = 1)]
         threads: usize,
+    },
+    /// Pathology bench: run known-pathological positions, flag any
+    /// whose tree exceeds `--threshold` nodes. Slow / optional —
+    /// surfaces tail-distribution blow-ups (eval-driven search
+    /// non-convergence, extension cascades) that SPRT cannot detect.
+    /// Exit code = number of positions over threshold.
+    BenchPathology {
+        /// Search depth
+        #[arg(default_value_t = 8)]
+        depth: i32,
+        /// Node threshold per position; flag if exceeded
+        #[arg(long = "threshold", default_value_t = 5_000_000)]
+        threshold: u64,
     },
     /// NNUE micro-benchmark: pure inference throughput (no search).
     /// `--mode fresh` uses the debug scalar `force_recompute` path.
@@ -455,6 +468,12 @@ fn main() {
                 } else { 0 };
                 println!("\n{} nodes {} nps ({} threads)", total_nodes, nps, threads);
             }
+        }
+
+        Some(Commands::BenchPathology { depth, threshold }) => {
+            let nnue_path = cli.nnue.as_deref();
+            let over = search::bench_pathology(depth, threshold, nnue_path);
+            std::process::exit(over.min(127) as i32);
         }
 
         Some(Commands::EvalBench { epd, positions, reps, mode, no_avx512 }) => {
