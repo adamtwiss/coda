@@ -1629,6 +1629,67 @@ unsafe fn l2_fmadd_avx2_x32(
     _mm256_storeu_ps(h2.as_mut_ptr().add(24), h3);
 }
 
+/// AVX-2 f32 SCReLU activation for l2==32 (clamp [0,1] then square).
+/// Replaces the scalar `for k { h2[k].clamp(); h2[k] *= h2[k] }` loop —
+/// Atlas perf annotate (2026-05-06) showed scalar vminss + vmulss for
+/// this loop at ~2% of incremental eval cycles on AVX-2.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn screlu_f32_avx2_x32(h2: &mut [f32]) {
+    let zeros = _mm256_setzero_ps();
+    let ones = _mm256_set1_ps(1.0);
+    let p = h2.as_mut_ptr();
+    for chunk in 0..4 {
+        let off = chunk * 8;
+        let v = _mm256_loadu_ps(p.add(off));
+        let clamped = _mm256_max_ps(zeros, _mm256_min_ps(ones, v));
+        let squared = _mm256_mul_ps(clamped, clamped);
+        _mm256_storeu_ps(p.add(off), squared);
+    }
+}
+
+/// AVX-2 f32 CReLU activation for l2==32 (clamp [0,1]).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn crelu_f32_avx2_x32(h2: &mut [f32]) {
+    let zeros = _mm256_setzero_ps();
+    let ones = _mm256_set1_ps(1.0);
+    let p = h2.as_mut_ptr();
+    for chunk in 0..4 {
+        let off = chunk * 8;
+        let v = _mm256_loadu_ps(p.add(off));
+        let clamped = _mm256_max_ps(zeros, _mm256_min_ps(ones, v));
+        _mm256_storeu_ps(p.add(off), clamped);
+    }
+}
+
+/// AVX-2 f32 dot product of 32 elements with bias. Replaces the scalar
+/// `for k { acc += h2[k] * out_w[k] }` fallback used on AVX-2 hosts —
+/// matches l2_fmadd_avx2_x32's lane structure (4 YMM = 32 floats).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn dot_fmadd_avx2_x32(a: &[f32], b: &[f32], bias: f32) -> f32 {
+    let a0 = _mm256_loadu_ps(a.as_ptr());
+    let a1 = _mm256_loadu_ps(a.as_ptr().add(8));
+    let a2 = _mm256_loadu_ps(a.as_ptr().add(16));
+    let a3 = _mm256_loadu_ps(a.as_ptr().add(24));
+    let b0 = _mm256_loadu_ps(b.as_ptr());
+    let b1 = _mm256_loadu_ps(b.as_ptr().add(8));
+    let b2 = _mm256_loadu_ps(b.as_ptr().add(16));
+    let b3 = _mm256_loadu_ps(b.as_ptr().add(24));
+    let p0 = _mm256_mul_ps(a0, b0);
+    let p1 = _mm256_fmadd_ps(a1, b1, p0);
+    let p2 = _mm256_fmadd_ps(a2, b2, p1);
+    let p3 = _mm256_fmadd_ps(a3, b3, p2);
+    // Horizontal reduce: split into 128-bit halves, add, reduce.
+    let lo = _mm256_castps256_ps128(p3);
+    let hi = _mm256_extractf128_ps(p3, 1);
+    let s = _mm_add_ps(lo, hi);
+    let s = _mm_hadd_ps(s, s);
+    let s = _mm_hadd_ps(s, s);
+    bias + _mm_cvtss_f32(s)
+}
+
 /// AVX-512 f32 horizontal dot product of `len` elements (len == 32).
 /// Replaces the scalar tail reduction in the output-weights dot.
 #[cfg(target_arch = "x86_64")]
@@ -3137,10 +3198,23 @@ impl NNUENet {
                     }
                 }
             }
-            if self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed) {
+            let crelu = self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed);
+            #[cfg(target_arch = "x86_64")]
+            if self.has_avx2 && l2 == 32 {
+                unsafe {
+                    if crelu { crelu_f32_avx2_x32(&mut h2[..32]); }
+                    else { screlu_f32_avx2_x32(&mut h2[..32]); }
+                }
+            } else if crelu {
                 for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); } // CReLU
             } else {
                 for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; } // SCReLU
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            if crelu {
+                for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); }
+            } else {
+                for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; }
             }
             let out_w = &self.out_weights_f[bucket * l2_pb..bucket * l2_pb + l2_pb];
             let bias = self.out_bias_f[bucket];
@@ -3149,6 +3223,8 @@ impl NNUENet {
             #[cfg(target_arch = "x86_64")]
             let out_f = if self.has_avx512 && l2 == 32 {
                 unsafe { dot_fmadd_avx512_x32(&h2[..32], &out_w[..32], bias) }
+            } else if self.has_avx2 && l2 == 32 {
+                unsafe { dot_fmadd_avx2_x32(&h2[..32], &out_w[..32], bias) }
             } else {
                 let mut acc = bias;
                 for k in 0..l2 { acc += h2[k] * out_w[k]; }
