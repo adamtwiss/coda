@@ -372,6 +372,10 @@ pub struct PruneStats {
     pub probcut_cutoffs: u64,
     pub lmr_searches: u64,
     pub recapture_ext: u64,
+    pub singular_ext: u64,
+    pub double_ext: u64,
+    pub negative_ext: u64,
+    pub multicut: u64,
     pub qnodes: u64,
     pub beta_cutoffs: u64,
     pub first_move_cutoffs: u64,
@@ -2695,6 +2699,7 @@ fn negamax(
 
                 if singular_score >= singular_beta && singular_beta >= beta {
                     // Multi-cut: alternatives are also good enough — prune the whole node
+                    info.stats.multicut += 1;
                     return singular_beta;
                 }
 
@@ -2720,19 +2725,25 @@ fn negamax(
                                     + tp(&DEXT_MARGIN_BASE);
 
                     singular_extension = 1;
+                    info.stats.singular_ext += 1;
                     if info.double_ext_count[ply_u] < tp(&DEXT_CAP) {
-                        singular_extension += (singular_score < singular_beta - dext_margin) as i32;
+                        let de = (singular_score < singular_beta - dext_margin) as i32;
+                        singular_extension += de;
+                        if de > 0 { info.stats.double_ext += 1; }
                     }
                 } else if tt_score_local >= beta {
                     // TT move fails high and alternatives competitive — strong reduce
                     // Consensus: -3 non-PV (SF/Viridithas/Obsidian)
                     singular_extension = -3;
+                    info.stats.negative_ext += 1;
                 } else if cut_node {
                     // Cut node with competitive alternatives — moderate reduce
                     singular_extension = -2;
+                    info.stats.negative_ext += 1;
                 } else {
                     // All-node with competitive alternatives — mild reduce
                     singular_extension = -1;
+                    info.stats.negative_ext += 1;
                 }
             }
         }
@@ -3741,13 +3752,16 @@ fn quiescence_with_depth(
     best_score
 }
 
-/// Standard bench position list — 49 positions, imported from Stockfish's
+/// Standard bench position list — 48 positions, imported from Stockfish's
 /// `Defaults` array (chess960 + setoption control lines dropped, two endgame
-/// FENs padded to 6 fields). Used by `coda bench` and `coda eval-bench` so
-/// the prune-stats / move-ordering / NPS aggregates have N=49 sample size,
-/// matching the field convention (Reckless 46, Halogen 49, Stormphrax 50,
-/// Viridithas 50, Alexandria 51, Stockfish 51) rather than the historical
-/// 8 we used to ship with.
+/// FENs padded to 6 fields, SF Pohl knight-saturation test dropped — see
+/// 2026-05-07: 50% of fresh SB200 random seeds and 1-of-5 SB800 nets had
+/// elevated tree size on it, distorting bench aggregates and OB scale_nps).
+/// Used by `coda bench` and `coda eval-bench` so the prune-stats /
+/// move-ordering / NPS aggregates have N=48 sample size, matching the field
+/// convention (Reckless 46, Halogen 49, Stormphrax 50, Viridithas 50,
+/// Alexandria 51, Stockfish 51) rather than the historical 8 we used to
+/// ship with.
 pub const BENCH_POSITIONS: &[&str] = &[
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
     "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 10",
@@ -3785,7 +3799,6 @@ pub const BENCH_POSITIONS: &[&str] = &[
     "3Qb1k1/1r2ppb1/pN1n2q1/Pp1Pp1Pr/4P2p/4BP2/4B1R1/1R5K b - - 11 40",
     "4k3/3q1r2/1N2r1b1/3ppN2/2nPP3/1B1R2n1/2R1Q3/3K4 w - - 5 1",
     "1r6/1P4bk/3qr1p1/N6p/3pp2P/6R1/3Q1PP1/1R4K1 w - - 1 42",
-    "k7/2n1n3/1nbNbn2/2NbRBn1/1nbRQR2/2NBRBN1/3N1N2/7K w - - 0 1",
     "K7/8/8/BNQNQNB1/N5N1/R1Q1q2r/n5n1/bnqnqnbk w - - 0 1",
     "8/8/8/8/5kp1/P7/8/1K1N4 w - - 0 1",
     "8/8/8/5N2/8/p7/8/2NK3k w - - 0 1",
@@ -3859,6 +3872,10 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         total_stats.probcut_cutoffs += info.stats.probcut_cutoffs;
         total_stats.lmr_searches += info.stats.lmr_searches;
         total_stats.recapture_ext += info.stats.recapture_ext;
+        total_stats.singular_ext += info.stats.singular_ext;
+        total_stats.double_ext += info.stats.double_ext;
+        total_stats.negative_ext += info.stats.negative_ext;
+        total_stats.multicut += info.stats.multicut;
         total_stats.qnodes += info.stats.qnodes;
         total_stats.beta_cutoffs += info.stats.beta_cutoffs;
         total_stats.first_move_cutoffs += info.stats.first_move_cutoffs;
@@ -3904,6 +3921,10 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     eprintln!("ProbCut cutoffs:{:>8}", s.probcut_cutoffs);
     eprintln!("LMR searches:   {:>8}  ({:.1}% of nodes)", s.lmr_searches, s.lmr_searches as f64 / total_nodes as f64 * 100.0);
     eprintln!("Recapture ext:  {:>8}", s.recapture_ext);
+    eprintln!("Singular ext:   {:>8}  (single +1 ply)", s.singular_ext);
+    eprintln!("Double ext:     {:>8}  (additional +1 on top of singular)", s.double_ext);
+    eprintln!("Negative ext:   {:>8}  (-1/-2/-3 fail-high reduce)", s.negative_ext);
+    eprintln!("Multi-cut:      {:>8}  (return singular_beta)", s.multicut);
     eprintln!("QS nodes:       {:>8}  ({:.1}% of total)", s.qnodes, s.qnodes as f64 / total_nodes as f64 * 100.0);
     if s.beta_cutoffs > 0 {
         let avg_pos = s.cutoff_movecount_sum as f64 / s.beta_cutoffs as f64;
