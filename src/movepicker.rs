@@ -147,24 +147,34 @@ pub fn captured_type(pt: PieceType) -> usize {
 }
 
 /// MovePicker stages.
+///
+/// Discriminants are explicit so that the four "picking" stages
+/// (GoodCaptures, Quiets, BadCaptures, Evasions) form a single contiguous
+/// range starting at PICK_BASE. The hot-path check in `next()` becomes
+/// `(stage as u8).wrapping_sub(PICK_BASE) < 4` — a single subtract+compare
+/// instead of an OR of four equalities.
 #[derive(PartialEq, Eq, Clone, Copy)]
+#[repr(u8)]
 enum Stage {
-    TTMove,
-    GenerateCaptures,
-    GoodCaptures,
-    Killer1,
-    Killer2,
-    CounterMove,
-    GenerateQuiets,
-    Quiets,
-    BadCaptures,
-    Done,
+    // Non-picking transitions
+    TTMove = 0,
+    GenerateCaptures = 1,
+    Killer1 = 2,
+    Killer2 = 3,
+    CounterMove = 4,
+    GenerateQuiets = 5,
+    Done = 6,
+    EvasionTTMove = 7,
+    GenerateEvasions = 8,
 
-    // Evasion stages (used when in check)
-    EvasionTTMove,
-    GenerateEvasions,
-    Evasions,
+    // Picking stages — contiguous range [PICK_BASE..PICK_BASE+4)
+    GoodCaptures = 16,
+    Quiets = 17,
+    BadCaptures = 18,
+    Evasions = 19,
 }
+
+const PICK_BASE: u8 = Stage::GoodCaptures as u8;
 
 pub struct MovePicker {
     stage: Stage,
@@ -406,7 +416,25 @@ impl MovePicker {
     /// Get the next move to try. Returns NO_MOVE when exhausted.
     /// No legality checks — caller must check legality.
     /// Get next move in staged order.
+    ///
+    /// Fast path: when we're in one of the four picking stages
+    /// (GoodCaptures/Quiets/BadCaptures/Evasions) AND there are moves left,
+    /// return pick_best directly. Steady-state move iteration sits here for
+    /// most calls; bypassing the 13-arm Stage match saves the bounds-check +
+    /// indirect-jump pair on every call.
+    #[inline(always)]
     pub fn next(&mut self, board: &Board) -> Move {
+        // Picking stages have contiguous discriminants — see Stage definition.
+        if self.index < self.moves.len
+            && (self.stage as u8).wrapping_sub(PICK_BASE) < 4
+        {
+            return self.pick_best();
+        }
+        self.next_slow(board)
+    }
+
+    #[inline(never)]
+    fn next_slow(&mut self, board: &Board) -> Move {
         loop {
             match self.stage {
                 Stage::TTMove => {
