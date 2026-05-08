@@ -9195,16 +9195,35 @@ with widened ranges. **80 params, 56 default changes.**
 `experiment/warm0-retune-applied` (renaming intent: this branch
 now carries tune-983 outputs, replacing tune-976).
 
-**Cross-net SPRT #1003** — warm0-retune-applied (tune-983) +
-warm0 net vs main + warm30-baseline (`61115E7F`). SB200-vs-SB200
-maturity-fair pairing. In progress.
+**Cross-recipe SPRT #1003** — warm0-retune-applied (tune-983) +
+warm0 net vs main + warm30-baseline (`61115E7F`). Both SB200,
+recipe+retune combined effect. In flight at **+5.12**. #980 with
+the equivalent tune-976 setup was +12.40 ±7.15 (95% CI roughly
++5.25 to +19.55) — H1'd early but on noisy data. #1003's +5.12
+sits inside that CI, so the two tunes are statistically
+indistinguishable so far; tune-983 hasn't beaten tune-976 but
+also hasn't regressed against it. Wait for resolution.
 
-**Initial wrong-comparison submission #1000.** First attempt
-compared dev (warm0 SB200 + retune2) against base (main + prod
-SB800), which is unfair on training-maturity grounds — even a
-retuned SB200 candidate is going to be 50+ Elo behind a fully
-trained SB800. Stopped after Adam flagged. Replacement #1003
-uses warm30-baseline (also SB200) as base. Lesson logged below.
+**Correction to #980 framing.** OB metadata confirms both #980
+sides used SB200 nets (`4D7E6229` warm0 vs `61115E7F`
+warm30-baseline) — maturity-fair, not the cross-net SB200-vs-SB800
+case I described in earlier prose. The +12.40 result is a real
+measurement of (warm0 recipe + tune-976 tunables) vs (warm30
+recipe + main tunables). Decomposition:
+
+  - #972 recipe-only: -1.84 (warm0 vs warm30, both main tunables)
+  - #979 retune-only: +6.88 (warm0+tune-976 vs warm0+main, both warm0 net)
+  - #980 combined: +12.40
+
+  -1.84 + 6.88 = +5.04 — undershoots combined +12.40 by ~+7
+  Elo. The retune isn't only fixing calibration mismatch, it's
+  also amplifying the recipe benefit when the comparison is
+  against warm30 trunk-tuned defaults.
+
+**Initial wrong-comparison submission #1000.** That attempt
+DID make the maturity-mismatch error: dev was warm0 SB200,
+base was main+prod SB800 default. Stopped. Replacement #1003
+uses warm30-baseline as base.
 
 ## 2026-05-08 (evening) — Hobbes A3 retune-on-branch validates +28.79 Elo recovery
 
