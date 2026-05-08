@@ -391,6 +391,19 @@ pub struct PruneStats {
     /// Read counts of main-history per (ft, tt) bucket, sampled at
     /// hist-prune gate. Same indexing as main_hist_density.
     pub main_hist_bucket_reads: [u64; 4],
+    /// Hypothetical hist-prune fire rates with different cont-hist offset
+    /// combinations in the score:
+    ///   [0] = main + cont[1] + pawn (CURRENT gate sources)
+    ///   [1] = main + cont[1,2] + pawn
+    ///   [2] = main + cont[1,2,4] + pawn
+    ///   [3] = main + cont[1,2,4,6] + pawn
+    /// Marginal fire-rate gain of adding each deeper offset.
+    pub hist_prune_what_if_fires: [u64; 4],
+    /// Sign-agreement between main_hist and sum-of-cont-hist at gate:
+    /// [0]=both-positive, [1]=both-negative, [2]=disagree, [3]=one-zero.
+    pub cont_hist_sign_buckets: [u64; 4],
+    /// Per-offset dominance at gate (which |contribution| is largest).
+    pub cont_hist_dominant_offset: [u64; 4],
     pub see_prunes: u64,
     pub probcut_cutoffs: u64,
     pub lmr_searches: u64,
@@ -2856,6 +2869,56 @@ fn negamax(
                 info.stats.main_hist_bucket_reads[0] += 1;
             }
 
+            // What-if fire rates for hypothetical hist-prune scores with
+            // varying cont-hist offset combinations. Tells us the marginal
+            // fire-rate gain of including each deeper offset in the score.
+            if moved_piece != NO_PIECE && threshold > 0 {
+                let gp = go_piece(moved_piece);
+                let main_score_only = info.history.main_score(from, to, enemy_attacks);
+                let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
+                let pawn_score = info.pawn_hist[ph_idx][gp][to as usize] as i32;
+                // Read all 4 cont-hist offsets (regardless of ply_u sufficiency:
+                // 0 if not enough plies, treated as no contribution).
+                let mut conts = [0i32; 4];
+                let offsets = [1usize, 2, 4, 6];
+                for (i, &off) in offsets.iter().enumerate() {
+                    if ply_u >= off {
+                        let p = info.moved_piece_stack[ply_u - off] as usize;
+                        let pt = info.moved_to_stack[ply_u - off] as usize;
+                        if p > 0 && p < 13 && pt < 64 {
+                            conts[i] = info.history.cont_hist[p][pt][gp][to as usize] as i32;
+                        }
+                    }
+                }
+                // V0 = main + cont1 + pawn (CURRENT)
+                let s_v0 = main_score_only + conts[0] + pawn_score;
+                let s_v1 = s_v0 + conts[1];
+                let s_v2 = s_v1 + conts[2];
+                let s_v3 = s_v2 + conts[3];
+                if s_v0 < -threshold { info.stats.hist_prune_what_if_fires[0] += 1; }
+                if s_v1 < -threshold { info.stats.hist_prune_what_if_fires[1] += 1; }
+                if s_v2 < -threshold { info.stats.hist_prune_what_if_fires[2] += 1; }
+                if s_v3 < -threshold { info.stats.hist_prune_what_if_fires[3] += 1; }
+
+                // Sign agreement: main_hist vs sum-of-cont-hist
+                let cont_sum = conts[0] + conts[1] + conts[2] + conts[3];
+                let agree_bucket = if main_score_only > 0 && cont_sum > 0 { 0 }
+                    else if main_score_only < 0 && cont_sum < 0 { 1 }
+                    else if main_score_only != 0 && cont_sum != 0 { 2 }
+                    else { 3 };
+                info.stats.cont_hist_sign_buckets[agree_bucket] += 1;
+
+                // Per-offset dominance: which |cont_hist[i]| is largest?
+                let mags = [conts[0].unsigned_abs(), conts[1].unsigned_abs(),
+                            conts[2].unsigned_abs(), conts[3].unsigned_abs()];
+                let total: u32 = mags.iter().sum();
+                if total > 0 {
+                    let mut best = 0;
+                    for i in 1..4 { if mags[i] > mags[best] { best = i; } }
+                    info.stats.cont_hist_dominant_offset[best] += 1;
+                }
+            }
+
             if hist_prune_score < -tp(&HIST_PRUNE_MULT) * depth as i32 {
                 info.stats.history_prunes += 1;
                 continue;
@@ -4019,6 +4082,9 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
             total_stats.cont_hist_writes[off] += info.stats.cont_hist_writes[off];
             total_stats.cont_hist_write_mag_sum[off] += info.stats.cont_hist_write_mag_sum[off];
             total_stats.main_hist_bucket_reads[off] += info.stats.main_hist_bucket_reads[off];
+            total_stats.hist_prune_what_if_fires[off] += info.stats.hist_prune_what_if_fires[off];
+            total_stats.cont_hist_sign_buckets[off] += info.stats.cont_hist_sign_buckets[off];
+            total_stats.cont_hist_dominant_offset[off] += info.stats.cont_hist_dominant_offset[off];
         }
         // Sample 4D main-history density: count cells with |val|>1000 per bucket.
         // Sampled once per bench position; final sum is approximate density.
@@ -4131,6 +4197,37 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
             let n = s.cont_hist_writes[off];
             let avg_mag = if n > 0 { s.cont_hist_write_mag_sum[off] as f64 / n as f64 } else { 0.0 };
             eprintln!("    {}  count {:>9}  avg |bonus| {:>7.1}", labels[off], n, avg_mag);
+        }
+    }
+    // What-if hist-prune fire rates with varying cont-hist offset combos.
+    // Tells us the marginal benefit of adding each deeper offset to the
+    // gate score. Same threshold (HIST_PRUNE_MULT * depth) for each variant.
+    let v0 = s.hist_prune_what_if_fires[0];
+    if v0 > 0 || s.hist_prune_eligible > 0 {
+        eprintln!("Hist-prune what-if fire counts (same threshold, varying score sources):");
+        eprintln!("    main + cont[1] + pawn (CURRENT):       {:>8} fires", s.hist_prune_what_if_fires[0]);
+        eprintln!("    + cont[2]:                              {:>8} fires", s.hist_prune_what_if_fires[1]);
+        eprintln!("    + cont[2,4]:                            {:>8} fires", s.hist_prune_what_if_fires[2]);
+        eprintln!("    + cont[2,4,6] (all offsets):            {:>8} fires", s.hist_prune_what_if_fires[3]);
+    }
+    // Sign agreement between main_hist and sum of cont-hist
+    let sign_total: u64 = s.cont_hist_sign_buckets.iter().sum();
+    if sign_total > 0 {
+        let pct = |n: u64| n as f64 / sign_total as f64 * 100.0;
+        eprintln!("Cont-hist vs main_hist sign agreement (at hist-prune gate):");
+        eprintln!("    both positive (reinforce good move):   {:>8} ({:>5.1}%)", s.cont_hist_sign_buckets[0], pct(s.cont_hist_sign_buckets[0]));
+        eprintln!("    both negative (reinforce bad move):    {:>8} ({:>5.1}%)", s.cont_hist_sign_buckets[1], pct(s.cont_hist_sign_buckets[1]));
+        eprintln!("    DISAGREE (cont fights main):           {:>8} ({:>5.1}%)", s.cont_hist_sign_buckets[2], pct(s.cont_hist_sign_buckets[2]));
+        eprintln!("    one or both zero:                      {:>8} ({:>5.1}%)", s.cont_hist_sign_buckets[3], pct(s.cont_hist_sign_buckets[3]));
+    }
+    // Per-offset dominance: which offset has the largest |contribution|
+    let dom_total: u64 = s.cont_hist_dominant_offset.iter().sum();
+    if dom_total > 0 {
+        let pct = |n: u64| n as f64 / dom_total as f64 * 100.0;
+        eprintln!("Cont-hist dominant offset (largest |value| at gate):");
+        let labels = ["ply-1", "ply-2", "ply-4", "ply-6"];
+        for i in 0..4 {
+            eprintln!("    {} dominant:                          {:>8} ({:>5.1}%)", labels[i], s.cont_hist_dominant_offset[i], pct(s.cont_hist_dominant_offset[i]));
         }
     }
     // 4D main-history bucket distribution (read counts at hist-prune gate).

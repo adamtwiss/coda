@@ -259,6 +259,104 @@ This is testable as an isolated experiment but tightly coupled to
 HIST_PRUNE_MULT — we shouldn't bundle them. Let HIST_PRUNE_MULT=8000
 SPRT resolve first.
 
+## Update 2 — what-if fire rates + sign agreement + dominance
+
+Diagnostic #1 from the cont-hist plan: at hist-prune gate, compute what
+the fire count WOULD have been if the gate score included more cont-hist
+offsets, holding threshold fixed.
+
+### What-if fire counts (same threshold, varying cont-hist offsets in score)
+
+```
+main + cont[1] + pawn (CURRENT):       3,251 fires (0.13% of eligible)
++ cont[2]:                              3,257 fires (+0.2%)
++ cont[2,4]:                            4,660 fires (+43%)
++ cont[2,4,6] (all offsets):            7,585 fires (+133% vs current)
+```
+
+**Including all 4 cont-hist offsets in the hist-prune score MORE THAN
+DOUBLES fire rate at the SAME threshold.** The marginal contribution
+of each:
+- cont[2]: +6 fires (negligible)
+- cont[4]: +1,403 fires (+43%)
+- cont[6]: +2,925 fires (+89% on top of cont[1,2,4])
+
+ply-6 alone contributes more than ply-1+2+4 combined to the negative
+signal at the gate.
+
+### Sign agreement between main_hist and cont-hist sum
+
+```
+both positive (reinforce good move):    290,468 (11.3%)
+both negative (reinforce bad move):     754,778 (29.4%)  ← key
+DISAGREE (cont fights main):            385,733 (15.0%)
+one or both zero:                     1,135,420 (44.2%)
+```
+
+29.4% of gate-eligible moves have BOTH main_hist and cont-hist negative —
+both signals agree the move is bad. These are exactly the cases hist-prune
+should fire on. Currently we include only cont[1] in the score; adding
+cont[2,4,6] strengthens the agreed-negative signal that pushes scores
+past the threshold.
+
+### Per-offset dominance (which `|contribution|` is largest at gate)
+
+```
+ply-1 dominant:    290,947 (16.6%)
+ply-2 dominant:    343,532 (19.6%)
+ply-4 dominant:    509,629 (29.1%)
+ply-6 dominant:    606,111 (34.6%)  ← most often dominant
+```
+
+ply-6 is the dominant cont-hist offset twice as often as ply-1. Combined
+with the read-magnitude distribution (ply-6 has 45% non-zero vs ply-1's
+21%), this confirms: **the deeper offsets carry more signal.**
+
+### Cross-engine alignment
+
+Most peer engines use 2-3 cont-hist offsets in their hist-prune score:
+- Stockfish: `cont[0] + cont[1] + pawn` (2 offsets)
+- Reckless: `quiet + cont[1] + cont[2]` (2 offsets)
+- Obsidian: `main + pawn + cont[1] + cont[2] + cont[4]` (3 offsets)
+- Alexandria, Berserk, Caissa: `HH + cont[1] + cont[2] + cont[4]` (3 offsets)
+- Halogen: `pawn + threat + cont[1] + cont[2]` (2 offsets)
+- Viridithas: `main + cont[1]*37 + cont[2]*33 + cont[4]*13` (3 offsets, weighted)
+
+**Coda uses 1 cont-hist offset.** This is the clearest, most-supported,
+peer-consensus gap. The data shows the marginal fire-rate gain from
+adding more offsets is large.
+
+### Implications for experiment plan
+
+This adds a NEW experiment candidate, distinct from the threshold-lowering
+(MULT=8000) and the cont-hist write-symmetry experiments:
+
+**Experiment Y**: Add cont[2,4,6] to the hist-prune score. Currently
+`main + cont[1] + pawn`. Try variants:
+- Y1: `main + cont[1] + cont[2] + pawn` (Stockfish/Reckless shape, 2 offsets)
+- Y2: `main + cont[1] + cont[2] + cont[4] + pawn` (Obsidian/Alexandria/Berserk shape, 3 offsets)
+- Y3: `main + cont[1] + cont[2] + cont[4] + cont[6] + pawn` (full)
+
+Y2 is the peer-modal choice. Y3 is data-supported (ply-6 dominates).
+Y1 is the smallest delta from current.
+
+The interaction with HIST_PRUNE_MULT matters: more offsets in the score
+means the negative signal is larger, so the same threshold catches MORE
+moves. Either:
+- Run Y2/Y3 at current MULT=12825 (uses the existing threshold; relies on
+  the structural change to push more moves past it)
+- Or Y2/Y3 at lowered MULT=8000 (combined effect)
+
+The cleanest experiment is **Y2 alone, MULT unchanged** — peer-consensus
+shape, single change. SPRT [0, 3] tells us whether the structural fix
+without threshold change is enough.
+
+If tune #978 (biased-start) shows HIST_PRUNE_MULT settling near 8000 with
+HIST_PRUNE_DEPTH widening, the read is "loosen the threshold". If it
+walks back near 12825, the read is "structure is wrong, MULT just
+compensates". Either way, Y2 is a separate axis worth testing AFTER the
+tune resolves.
+
 ## Open questions for next session
 
 1. **Sampling bias check.** Is the cont-hist read distribution at hist-prune
