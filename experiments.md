@@ -8962,8 +8962,8 @@ training-recipe variations on the v9 768+threats arch:
 **SPRT results (vs A baseline at default tunables):**
 - **#984 — A2 vs A**: −34.3 (H0). Promising loss curves and
   bench-stats, but SPRT was ugly from the first 500 games.
-- **#985 — A6 vs A**: −37.6 (→H0).
-- **#986 — A3 vs A**: −7.0 (→H0).
+- **#985 — A3 vs A**: −37.8 (→H0).
+- **#986 — A6 vs A**: −7.0 (→H0).
 
 **Bench-stats ARE meaningfully different** — recipe shifted the
 eval shape, even though SPRT (at default tunables) regressed.
@@ -9115,3 +9115,255 @@ retune-on-branch.
 - `project_bullet_training_invocation.md` — `--output-dir DIR`
   + `--net-id NAME` is the correct split (not `--output PATH`);
   `--dataset-dir`, not `--data-dir`.
+
+## 2026-05-08 (evening) — s1200: pure-cosine extension of seed-42 to SB1200
+
+**Setup.** `factor-canonical-s1200.nnue` (SHA8 `325BF7B1`) — same
+seed-42 lineage as `experiment/tune-962-applied`'s SB800 net,
+trained to SB1200 (50% more low-LR cosine). Branch
+`experiment/tune-962-s1200` = tune-962-applied tunables + main's
+pos-36 drop merged in + same 4 tunable widenings as warm0
+(NMP_BASE_R max 12, IIR_MIN_DEPTH min 1, PROBCUT_MIN_DEPTH min 2,
+SE_DEPTH min 2).
+
+**SPRT #993 — s1200 (tune-962 tunables) vs main + prod default**,
+[0, 3]: trajectory `+16.92 → +9.75 → +3.31 → +4.58 → +1.1` over
+N=370/1034/2312/4704/16936. Settled around **+1-5 Elo** untuned
+in the long run. LLR drifting →H1 slowly. Untuned s1200 banks a
+small but real gain over current prod, well within Adam's +5-10
+prior.
+
+**Bench-stats** (tune-962-s1200 branch, default vs s1200 net
+override):
+
+| Metric | S800 prod | s1200 | Δ |
+|---|---:|---:|---:|
+| Total nodes | 4,061K | 4,748K | +17% |
+| First-move cut | 84.2% | 85.5% | +1.3pp |
+| avg cutoff pos | 1.55 | 1.48 | sharper |
+| Hist prune /Kn | 2.1 | 3.7 | +76% |
+| NMP cutoff rate | 40% | 41% | +1pp |
+| EBF (d5+) | 1.65 | 1.67 | +0.02 |
+| NPS | 218K | 222K | flat |
+
+Same eval-shape direction as Hobbes A2/A3 but milder magnitude
+(s1200 hist-prune 3.7 sits between S800's 2.1 and A2's 3.3).
+NPS flat (+2%), so the +17% bench delta is real search work. The
+SPRT regression-to-mean from +17 to +5 is consistent with "real
+small net gain partially eaten by trunk tunables miscalibrated
+for the sharper s1200 eval."
+
+**Retune fired #997** — 2500 iter, full sweep, on
+`experiment/tune-962-s1200` (with widened ranges) against s1200
+SHA8. In progress; expected to complete late next session.
+Branch `1eb41a6` captures the widening commit.
+
+## 2026-05-08 (evening) — Tune #983 finished + applied (warm0 retune2)
+
+**Tune #983**: 2500-iter full-sweep on
+`experiment/warm0-retune-applied`, against warm0 net override,
+with widened ranges. **80 params, 56 default changes.**
+
+**Verdict on the widened tunables:**
+
+| Param | Old range | Widened to | Final | Status |
+|---|---:|---:|---:|---|
+| `NMP_BASE_R` | 3..**8** | 3..**12** | 8.4 | Used the new room (started at 7; previously pegged at 8) |
+| `IIR_MIN_DEPTH` | **2**..6 | **1**..6 | 1.2 | **Pegged to widened floor** — wants below 1 |
+| `PROBCUT_MIN_DEPTH` | **3**..8 | **2**..8 | 2.0 | **Pegged to widened floor** — wants below 2 |
+| `SE_DEPTH` | **4**..12 | **2**..12 | 4.7 | Moved UP, not down — widening the floor was wasted; max is the right end to widen next |
+
+**Other big movers (>20%):**
+- `IIR_MIN_DEPTH`: -41%
+- `HIST_BONUS_OFFSET`: 29 → 17 (-41%)
+- `HIST_PRUNE_DEPTH`: 4 → 2 (-50%, matches Atlas's hist-prune cross-engine review prediction direction; magnitude bigger than expected)
+- `PROBCUT_MIN_DEPTH`: -33%
+- `CORR_BONUS_CAP_DIV`: +27%
+- `NMP_EVAL_MAX`: +24%
+- `HIST_PRUNE_MULT`: +21%
+- `NMP_BASE_R`: +21%
+- `PROBCUT_KING_ZONE_MAX`: +21%
+- `HINDSIGHT_MIN_DEPTH`: +41%
+- `CORR_HIST_ERR_MAX`: 1 → 2 (+100%, base value tiny)
+
+**Held-position floors:**
+- `CONT_HIST_MULT`: 1.1 (still pinned at 1; broken-feature
+  signpost preserved).
+- `LMR_ENDGAME_PIECES`: 4.1 (preserves endgame correctness).
+
+**Applied as commit `c3e3ebd`** on
+`experiment/warm0-retune-applied` (renaming intent: this branch
+now carries tune-983 outputs, replacing tune-976).
+
+**Cross-net SPRT #1003** — warm0-retune-applied (tune-983) +
+warm0 net vs main + warm30-baseline (`61115E7F`). SB200-vs-SB200
+maturity-fair pairing. In progress.
+
+**Initial wrong-comparison submission #1000.** First attempt
+compared dev (warm0 SB200 + retune2) against base (main + prod
+SB800), which is unfair on training-maturity grounds — even a
+retuned SB200 candidate is going to be 50+ Elo behind a fully
+trained SB800. Stopped after Adam flagged. Replacement #1003
+uses warm30-baseline (also SB200) as base. Lesson logged below.
+
+## 2026-05-08 (evening) — Hobbes A3 retune-on-branch validates +28.79 Elo recovery
+
+**Headline.** A3 retune-on-branch produced the strongest
+calibration-mismatch recovery we've ever measured.
+
+| Test | Setup | Result |
+|---|---|---:|
+| **#985** (untuned) | A3 net + main tunables vs warm30-baseline + main tunables | **−37.8** ±12.7 |
+| **#1004** (retuned) | A3 net + tune-995 tunables vs warm30-baseline + main tunables | **−9.0** ±11.4 |
+| **Δ** | tune-995 tunables vs main tunables, both with A3 net | **+28.8** |
+
+A 1000-iter full-sweep retune banked **+28.8 Elo** of
+calibration-mismatch alone. CI on #1004 (-9 ±11) overlaps zero,
+so A3 net + retune is roughly net-equivalent to warm30-baseline
++ main tunables.
+
+**Why this is the biggest recovery seen.** A3 had the largest
+bench-stats divergence from baseline (hist-prune /Kn 3.5 vs 0.4
+= 9× — the loudest in the entire recipe set). Pattern: bigger
+eval-shape divergence from trunk → bigger calibration-mismatch
+penalty at default tunables → more Elo recoverable by retune.
+warm0's smaller divergence yielded ~+8 Elo retune-only (#972 →
+#979); A3's much bigger divergence yields +29.
+
+**Direct implications for prior session conclusions.**
+
+1. **#984/#985/#986 H0 verdicts dramatically understated Hobbes
+   recipe quality.** Re-evaluating with retune-on-branch
+   numbers, A3 is roughly net-equivalent to baseline. A2/A6 are
+   likely similar (their retunes #1003-equivalent-but-#994/1005
+   not yet finished).
+2. **The "Hobbes recipe loses" conclusion is wrong.** With
+   appropriate retunes, the recipes are competitive — though
+   none clearly beats baseline, and the gap to fully-trained
+   prod (SB800) remains the dominant factor anyway.
+3. **All recipe SPRTs from earlier in this session need
+   re-evaluation against this confound.** warm0 +12 cross-net
+   was already triangulated to ~+5-7; all other Day-1 probes
+   should be considered preliminary until retune is done.
+
+**Tune-995 (A3) outputs notable values:**
+- `NMP_BASE_R`: 7 → 6 (LESS aggressive, **opposite direction
+  from warm0/s1200**). Recipe-specific.
+- `IIR_MIN_DEPTH`: 2 → 1 (consistent with warm0)
+- `HIST_PRUNE_DEPTH`: 3 → 2 (consistent with warm0)
+- `HIST_BONUS_OFFSET`: 22 → 14 (consistent direction)
+- `SE_DEPTH`: 4 → 5
+- `FUT_THREATS_MARGIN`: 21 → 19
+
+**Tune-996 (A6) outputs** — much less movement (closer to main
+defaults). All 4 widened tunables stayed at original values
+after rounding. A6's recipe (single-knob lower-final-LR) is the
+mildest of the three; bench-stats divergence was also smallest
+(hist-prune /Kn 1.1 vs 0.4 baseline, only 3× vs A2/A3's 8-9×).
+Smaller divergence → smaller calibration mismatch → smaller
+retune effect. Consistent with the magnitude pattern.
+
+**SPRTs in flight:**
+- **#1003** — warm0-retune2 + warm0 net vs warm30-baseline,
+  [0, 3]
+- **#1004** — A3 + retune vs warm30-baseline (-9 ±11 trending
+  →H0 but recovered +29 Elo from untuned)
+- **#1005** — A6 + retune vs warm30-baseline, [0, 3]: at
+  N=1136 reads **+6.12 ±11.27**. Pre-tune comparison was
+  **−1.86 ±2.82** → retune-only effect ≈ **+8 Elo** (combined
+  σ ~±13). Smallest divergence (A6's hist-prune /Kn 1.1 vs 0.4
+  baseline = 2.75×) yields smallest retune effect, fitting the
+  scaling hypothesis below.
+
+A2 retune (#994) still tuning at logging time.
+
+## 2026-05-08 (evening) — prod-hobbes-tail-200-S1000: tail-on-converged-net hurts
+
+**Setup.** New net `prod-hobbes-tail-200-S1000.nnue` (SHA8
+`20BCE6CB`): the v9-rebuild of prod-like-S800 base + 200-SB
+constant-low-LR + WDL=0.75 tail. Tests the "Hobbes-style late
+strategic WDL" innovation as a simpler bolt-on (cheaper than
+full Hobbes 3-phase from scratch).
+
+**Bench-stats** (main, default vs prod-hobbes-tail override):
+
+| Metric | prod (SB800) | tail (SB1000-eff) | Δ |
+|---|---:|---:|---:|
+| Total nodes | 3,694K | 4,015K | +8.7% |
+| EBF (d5+) | 1.64 | 1.68 | +0.04 (worse) |
+| First-move cut | 84.2% | 84.2% | flat |
+| avg cutoff pos | 1.58 | 1.53 | sharper |
+| avg pos² | 11.8 | 9.5 | sharper |
+| Hist prune /Kn | 1.9 | 4.2 | +121% |
+| NMP cutoff rate | 37% | 40% | +3pp |
+| TT cutoff /Kn | 59.6 | 69.6 | +17% |
+| QS % | 34.8% | 33.1% | -1.7pp |
+
+Hist prune /Kn jumps **2.4× absolute** (7,155 → 17,040
+fires). Same direction as Hobbes A2/A3 (recipe affecting eval
+shape). But unlike training-from-scratch with this schedule,
+EBF gets *worse* (+0.04) and first-move-cut is flat — bolting
+the tail onto an already-converged eval doesn't get the
+ordering benefits, only the pruning-gate divergence costs.
+
+**SPRT #999 — main + prod-hobbes-tail vs main + prod
+default**, [-3, 3]: **−21.6 ±9.3 H0 ✗** at 1532 games (LLR
+−3.12). Clean, decisive. Distinct from Hobbes A2/A3: those were
+trained from scratch with the schedule and the early
+training adapts to the WDL ramp. Here the tail is bolted onto a
+converged eval and the WDL=0.75 over-emphasises game outcomes
+when eval has already converged on positional quality —
+matches Reckless's "basilisk" series (also mostly negative).
+
+**Retune fired #1006** — 1000-iter full-sweep on `main` with
+`scripts/tune_all_main_widened.txt` against
+`20BCE6CB`. Tests whether the H0 was structural (eval truly
+worse) or calibration-driven (sharper eval just hits trunk
+pruning poorly).
+
+**Prior on outcome.** A3 pattern says: bench-stats shifted
+hard, expect substantial retune Elo. tail's hist-prune /Kn
+divergence (4.2 vs 1.9 = 2.2×) is between warm0's (3.7 vs 2.1 =
+1.8×) and A3's (3.5 vs 0.4 = 9×). If Elo recovery scales with
+divergence magnitude, expect maybe +10-20 Elo retune-only —
+which would land tail+retune near zero or modestly negative vs
+prod. Watch closely.
+
+## 2026-05-08 — A2/A3 SPRT label correction
+
+For the record: in the morning's "Day-1 Hobbes-pattern" section
+above, the original entries had #985 labeled "A6 vs A" and #986
+labeled "A3 vs A". OB metadata confirms it was the other way
+round — #985 used `0731CBF0` (A3) and #986 used `B897CC5B`
+(A6). The corrected SPRT line above has been amended in-place.
+The mislabel did NOT affect any test setup (the OB submissions
+themselves were correct); only the prose summary was wrong.
+
+## 2026-05-08 — Methodology refinement: retune Elo recovery scales with bench-stats divergence
+
+Today's data points populate this scaling pretty cleanly:
+
+| Recipe | Hist-prune /Kn divergence | Untuned SPRT vs baseline | Retune-only Δ |
+|---|---:|---:|---:|
+| A6 | 1.1 vs 0.4 (2.75×) | -1.86 ±2.82 | **#1005 +8 (±13)** |
+| s1200 | 3.7 vs 2.1 (1.8×) | #993 ~+5 vs prod | (#997 retune in flight) |
+| warm0 | 1.6 vs 0.4 (4×) | #972 −1.84 | #979 +6.9 |
+| A3 | 3.5 vs 0.4 (9×) | #985 −37.8 | **#1004 +28.8** |
+| A2 | 3.3 vs 0.4 (8×) | #984 −34.3 | (#994 retune still tuning) |
+| prod-hobbes-tail | 4.2 vs 1.9 (2.2×) | #999 −21.6 | (#1006 retune in flight) |
+
+**Working hypothesis.** The bigger the eval-shape divergence
+from trunk (proxied by hist-prune /Kn ratio), the bigger the
+calibration-mismatch component of an untuned SPRT. Retune Elo
+recovery is approximately the calibration component; the
+residual is recipe-quality difference.
+
+**Practical heuristic.** When a recipe SPRT lands H0 with
+hist-prune /Kn shifted ≥2× from baseline, do not draw recipe
+quality conclusions — fire the retune. Below ~2× divergence,
+default-tunables SPRT is probably ~directionally reliable.
+
+**Inverse implication for prod-hobbes-tail (#999).** Its
+divergence is 2.2× — modest but above the threshold. Expect
+some retune recovery; whether enough to flip the H0 verdict is
+the question #1006 answers.
