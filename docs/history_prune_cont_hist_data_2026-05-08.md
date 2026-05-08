@@ -357,6 +357,57 @@ walks back near 12825, the read is "structure is wrong, MULT just
 compensates". Either way, Y2 is a separate axis worth testing AFTER the
 tune resolves.
 
+## Update 3 — write-symmetry hypothesis tested locally (negative)
+
+The "uniform `bonus/2` writes" experiment was supposed to reduce ply-1
+noise by reducing gravity damping. **Local diagnostic falsified the
+hypothesis** — change made, bench captured, branch reverted (no SPRT
+submitted, no fleet cost):
+
+| Metric | Baseline | Uniform `bonus/2` |
+|---|---:|---:|
+| ply-1 avg |bonus| | 780.3 | 396.3 (halved as expected) |
+| ply-1 reads `[0,200)` (noise) | 79.3% | **80.7%** (slightly worse) |
+| ply-1 dominant | 16.6% | 14.5% |
+| ply-6 avg |bonus| | 382.5 | 394.2 (unchanged) |
+| ply-6 reads `[0,200)` | 55.2% | 55.1% |
+| ply-6 dominant | 34.6% | 35.2% |
+
+Halving ply-1 writes did NOT reduce ply-1 noise — it slightly increased
+it. The cross-engine review's earlier reasoning was wrong direction: the
+issue is **NOT gravity damping**.
+
+The actual mechanism appears to be **traffic vs cell coverage**: ply-1
+gets touched by every cutoff (high traffic) but the
+`(prev_piece, prev_to)` index spreads across all parent-move contexts.
+A cell receives diverse signals that average toward zero. Halving the
+write magnitude doesn't fix this; per-cell signal density is the real
+issue.
+
+This redirects the next cont-hist experiment thread to the
+**(in_check, is_capture) parent-move bucketing** of the cont-hist
+table — Reckless/Obsidian/Berserk/PlentyChess all do this. Splits each
+cell's signal pool by parent-move context, so each cell sees a more
+homogeneous traffic stream. 4× table size (~5MB instead of ~1.3MB) but
+addresses the actual problem the diagnostic surfaced.
+
+Filed as a queued experiment, not yet started. Larger refactor than the
+write-symmetry test would have been; worth attempting after current
+fleet experiments resolve.
+
+## Y2 / Y3 SPRT status (stopped early — signal extracted)
+
+- **#982 (Y3, cont[1,2,4,6])**: trended H0 at 17,408 games / +0.40 ±2.27
+  / LLR -0.26. Direction is positive (consistent with diagnostic
+  prediction) but bounded by rare firing at unchanged threshold. The
+  composition with tune #978's lowered MULT is where the signal would
+  amplify. Stopped early.
+
+- **#981 (Y2, cont[1,2,4])**: trended slightly negative. Stopped early.
+  Read: dropping ply-6 from the score loses the dominance signal.
+  ply-6 carries real information; the peer-modal 3-offset shape doesn't
+  transfer cleanly to Coda's signal distribution.
+
 ## Open questions for next session
 
 1. **Sampling bias check.** Is the cont-hist read distribution at hist-prune
