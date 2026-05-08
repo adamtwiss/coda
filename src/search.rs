@@ -3361,12 +3361,16 @@ fn negamax(
 
                     // Beta cutoff - update history for quiet moves (killers/counter removed — SF pattern)
                     if !is_cap {
-                        // EXPERIMENT (Starzix T1 #1): scale bonus by num_fail_highs.
-                        // More fail-high cascades at this node means stronger signal
-                        // that the cutoff move is genuinely good (many alternatives
-                        // also cut). Capped to avoid overflow + saturation issues.
-                        let raw_bonus = history_bonus(depth);
-                        let scale_factor = num_fail_highs.min(3);  // 0..3
+                        // Depth-boost on big fail-high (SF search.cpp:1182-1183,
+                        // Obsidian StatBonusBoostAt=95) — when cutoff exceeds beta
+                        // by 80cp, use depth+1 for stronger reinforcement of
+                        // clear-win moves.
+                        let bonus_depth = depth + if best_score > beta + 80 { 1 } else { 0 };
+                        // numFailHighs multiplicative scaling (Starzix T1 #1) —
+                        // more fail-high cascades = stronger signal the cutoff
+                        // move is genuinely good. 0..3 cascades → 1.0×..1.75× bonus.
+                        let raw_bonus = history_bonus(bonus_depth);
+                        let scale_factor = num_fail_highs.min(3);
                         let bonus = raw_bonus + raw_bonus * scale_factor / 4;
 
                         // Update main history
