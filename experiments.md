@@ -8606,3 +8606,512 @@ The training-side `MAX_THREAT_ACTIVE 512→128` (2.4× host throughput)
 remains intact — it's a different code path on a different host with
 no inference-side equivalent symmetry.
 Real ceiling is now training-side.
+
+
+## 2026-05-05 — Bullet rebase port DROPPED `init_with_effective_input_size(32)` — ~400 Elo regression on all post-rebase v9 SB200 nets
+
+**Discovery via 8-net cutechess RR (Hercules local, 10+0.1, concurrency
+16):** the Apr 26 anchor net (`net-v9-768th16x32-kb10-w15-e200s200-
+crelu-C8fix-factor.nnue`, last SB200 trained pre-rebase) scored **93.3%
+in 15 games** vs 7 day-0 calibration nets trained post-rebase across
+GPU0/0b/1/3/3b/4/5. Even at very early N, p ≈ 0.001 under H0.
+
+**Stack-rank at 15 games per engine** (early data, ±150-220 Elo bars):
+
+| Rank | Net | Elo | Score% |
+|---:|:---|---:|---:|
+| 1 | Coda-anchor | +458 | 93.3% |
+| 2 | Coda-gpu0b | +191 | 75.0% |
+| 3 | Coda-gpu5 | +76 | 60.7% |
+| 4 | Coda-gpu0 | -47 | 43.3% |
+| 5 | Coda-gpu3b | -50 | 42.9% |
+| 6 | Coda-gpu3 | -112 | 34.4% |
+| 7 | Coda-gpu4 | -147 | 30.0% |
+| 8 | Coda-gpu1 | -177 | 26.5% |
+
+The 7 day-0 nets cluster ~200-650 Elo behind anchor. They had been the
+basis for diagnosing "fixed-seed at SB200 has ~170 Elo intra-replica
+variance" (#942/#943/#944 had also resolved with H1s of +40 to +177 Elo
+between supposedly-identical-seed pairs before being stopped to switch
+to the RR).
+
+**Root cause: Bullet rebase commit `2ff6d54` (rebase/upstream-rewrite,
+2026-05-04) silently dropped one line during the trainer-config port:**
+
+```rust
+l0.init_with_effective_input_size(32);
+```
+
+This sets the FT-layer weight-init stdev for sparse inputs:
+- WITH the line: stdev = sqrt(2 / 32) ≈ 0.25 (correct for ~32 active features/position)
+- WITHOUT: default He init uses fan_in = 768·NKB + 66864 ≈ 67 632 → stdev ≈ 0.0054
+- **46× too small.** Network spends most of the SB200 training budget
+  remediating bad init scale, never converging.
+
+The rebase commit `2ff6d54` reduced the example file from 574 → 241 LOC
+and enumerated *intentional* drops (L1/group-lasso, HIP backend, perf
+branch); the `init_with_effective_input_size(32)` line was dropped
+*unintentionally* alongside them. The chess_threats encoder API was
+described as "drop-in" — true at signature level, but the example file
+*using* the encoder lost a load-bearing init call.
+
+**Fit to data:**
+- Universal regression across 7 nets (every host, every replica, every
+  GPU model) → systematic upstream cause, not seed/host noise.
+- gpu4 (no `--seed=42` due to silent flag-drop on stale binary; clean
+  control vs seed-flag hypothesis) is **rank 7**, near the bottom of the
+  pack — confirms the regression is upstream of `--seed`, not caused by it.
+- The 170-300 Elo intra-day0 spread that drove the "seed flag broken"
+  hypothesis is now better explained as broken-init-induced training-
+  trajectory chaos: when starting weights are 46× too small, which
+  features happen to recover first becomes essentially random. The
+  seed flag may actually be working fine; we've never measured it on a
+  correct pipeline.
+
+**Fix:** restored the line on `rebase/upstream-rewrite`
+(commit `26144e1`), pushed to origin so any GPU host can `git pull`.
+Diff is +9 lines: 1 code line + 8-line load-bearing comment so the
+line doesn't get silently dropped again on future ports.
+
+**Validation plan:**
+1. **Single SB200 retrain** with the fix on fastest GPU host (5070,
+   ~2h40m ETA) and a 4090 control (~4h30m ETA), both `--seed=42`,
+   identical config to anchor. Convert + bench + SPRT vs anchor.
+   Expected outcome: parity (within ±5 Elo) with anchor → fix validated.
+2. If validated: revisit seed-variance investigation on a clean pipeline.
+   The previous "seed flag broken at SB200" hypothesis lacks evidence
+   and should be re-tested post-fix.
+3. Add regression guard: a Bullet smoke test asserting `l0w` post-init
+   stdev > 0.1 (any value < 0.05 implies the line was dropped). One-
+   liner test, prevents recurrence.
+
+**Audit:** verified by careful diff that `init_with_effective_input_size`
+is the **only** load-bearing call dropped during the rebase port.
+AdamWParams (max_weight=0.99 stricter clipping for l0w/l0f),
+TrainingSchedule, LR scheduler shape, batch_size=16384,
+batches_per_superbatch=6104, filter (ply>=16, no checks/captures/non-
+normal), data_files filter, batch_queue_size=32 — all preserved.
+chess_threats encoder is functionally identical with stricter
+MAX_THREAT_ACTIVE cap (512→128) and added overflow guard (improvement,
+not regression).
+
+**Lessons banked:**
+- New memory `feedback_rebase_port_audit_for_dropped_lines.md`: when
+  a port reduces LOC, audit each *deleted* line for load-bearing
+  semantics. "Drop-in" claims cover signatures, not full semantics.
+- The "validate N=1 before scaling to N=K" discipline is now also
+  banked — a single SB200 vs anchor would have caught this in 2.5h
+  instead of multiple days × multiple GPU hosts.
+- High-leverage single lines cluster around init, optimizer params,
+  schedule shape. Grep targets for future rebase audits: `init_with`,
+  `set_params_for_weight`, `effective_input_size`, `clip_*`,
+  gradient `accumul`, `LrScheduler`, `WdlScheduler`.
+
+**Production v9 is unaffected** — current `net.txt` v9 net was trained
+April pre-rebase. Only post-May-4 v9 SB-* trainings are suspect.
+
+## 2026-05-05 — Init fix recovered ~204 Elo of ~732; second bug confirmed; 3rd unresolved (~500 Elo)
+
+**SB200 retrains post-init-fix** (gpu1-v2, gpu3 = 5070+4090, both
+`--seed=42` / canonical recipe / `--features cuda` mandatory on
+post-rebase Bullet) landed and were converted + RR'd vs anchor.
+
+**4-engine RR (600 games, anchor + v2-init + v1-broken + v3-sqerr):**
+
+| Engine | Elo | ± | Gap to anchor |
+|:---|---:|---:|---:|
+| anchor             | +531 | 54 | — |
+| v2-init (post-fix) | +8   | 24 | −523 |
+| v1-broken (pre-fix)| −101 | 26 | −632 |
+| v3-sqerr           | −268 | 31 | −799 |
+
+Init-fix recovered ~109 Elo of the ~632 Elo gap. ~523 Elo remains
+unexplained. Init was load-bearing but is the SMALLER of the bugs.
+
+**Probe 2 — `power_error(target, 2.5)` swap to `squared_error`:**
+the post-rebase `Power` op autograd uses
+`base_grad = y·x^(y-1)` + `powf_grad = log(x)·x^y` decomposition;
+when `|output−target| ≈ 0`, `log(x)` hits −∞ → NaN/Inf gradient.
+Swapped to `squared_error(target)` (pointwise `diff²`, no log-of-zero
+hazard). Branch `experiment/squared-error-diagnostic`, commit `c07f5f3`.
+
+SB100 retrain on gpu1 (`cal-day0-gpu1-v3.nnue`):
+- `coda check-net`: 8/8 pass — endgame buckets recover.
+- 4-engine RR final (600 games, above): v3-sqerr at **−799 Elo behind
+  anchor**, ~167 Elo WORSE than v1-broken. **`power_error` is HELPING**
+  the post-rebase pipeline by ~170 Elo — removing it regresses, not
+  recovers. Definitively rules out the "log(0) hazard in Power autograd"
+  hypothesis as a contributor to the regression.
+- `coda dump-net-stats` (new diagnostic, this commit): all layers
+  show similar magnitudes to anchor (PSQ |mean|≈40, threats |mean|≈13,
+  L1w |mean|≈1.7, ~5200/66864 dead threat rows ≈ structural). No
+  collapsed/stuck layer. **L2 weights bloated** +47% (gpu1-v2) and
+  +80% (gpu1-v3) vs anchor. **gpu1-v3 output_bias bucket signs
+  inverted** vs anchor.
+
+Read: histogram says the network is LEARNING (not stuck) but converging
+to a worse solution — fits loss-function / gradient-path / numerical-
+precision divergence, not a "feature blocked from gradient" bug.
+
+**Probe 3 — factoriser fold-in audit (parallel agent, 2026-05-05):**
+Agent compared post-rebase factoriser path (graph build +
+`SavedFormat::id("l0w").transform(...)` save-time fold) against
+pre-rebase reference (commit `281efb3`). Verdict: **byte-identical
+algorithm**. Closure structure preserved, QA=255 fold scale, per-bucket
+cyclic fold over `0..psq_rows`, argument order correct. Ruled out as
+the bug.
+
+**Probe 4 — `BroadcastAcrossDimension` autograd audit (parallel agent,
+2026-05-05):** Agent verified the `repeat`-op gradient path is clean.
+Forward replicates correctly. Backward uses
+`Reduce::Sum + atomic_add` — true SUM, not MEAN, not single-position.
+Round-trip test in `index/broadcast.rs:138-220` asserts
+`inverse(broadcast(x)) == 2x` for broadcast-factor-2, proving SUM
+semantics. Pre-rebase `matmul(ones)` path produces equivalent gradient
+mathematically. Ruled out as the bug.
+
+**Remaining suspect ranking (post-audits):**
+1. **Init RNG sequence drift** — `init_with_effective_input_size(32)`
+   restored, but the underlying RNG stream may differ post-rewrite,
+   putting first batch in a different basin. Combined with sparse
+   threat features that sensitise to init basin, could be 100s of Elo.
+2. **AdamW step semantics** — clipping point, weight-decay-before-vs-
+   after, bias correction differences. Affects whole-loss convergence
+   trajectory.
+3. **Encoder semantic drift** — sparse-input handling at the kernel
+   level (forward pass values), feature index encoding subtle
+   differences.
+4. **Numerical precision regression** — TF32-vs-FP32 default in matmul,
+   mixed-precision, accumulation order. A precision regression would
+   manifest as "trains fine, just to a worse optimum," which fits the
+   histogram signature.
+5. Factoriser add-op gradient fan-out — does gradient go to BOTH `l0w`
+   AND `l0f`, or only one branch? Histogram can't distinguish (we only
+   see the folded `l0w`). Worth ~10 Elo if buggy, not 500.
+
+**Definitively ruled out:**
+- Factoriser save-time fold-in (probe 3, byte-identical to pre-rebase).
+- `BroadcastAcrossDimension` autograd (probe 4, SUM verified).
+- `power_error(target, 2.5)` Power-op autograd log(0) hazard (probe 2,
+  removing it regresses, so it's helping not hurting).
+
+**Probe 4 (queued) — simplified SB50:** strip everything that costs
+5-15 Elo (no `--factoriser`, `--warmup 0`, `--wdl 0`, default screlu
+hidden activation). If lands ~70-120 Elo behind anchor (rough sum of
+penalties), pipeline is healthy at bare-bones level → bug is in
+layered features (broadcast autograd is implicated by removal of the
+factoriser path). If still ~400+ behind, bug is in core training
+common to both runs (encoder, FT init, optimizer math).
+
+Runbook: `docs/simplified_sb50_runbook_2026-05-05.md`.
+
+**Diagnostic tools added this session:**
+- `coda dump-net-stats` (this commit) — per-layer weight magnitude /
+  dead-row stats; compares trained nets vs reference. Surfaced the L2
+  bloat + bucket sign inversion findings.
+- `coda check-net` (existing) — 8 sanity checks including endgame
+  bucket symmetry. Confirmed v3-sqerr's endgame buckets recovered.
+
+**Production v9 still unaffected.** Only post-May-4 v9 trainings on
+`rebase/upstream-rewrite` are at risk; current `net.txt` v9 net is
+April pre-rebase.
+
+## 2026-05-08 — SF Pohl bench position dropped, bench-pathology tripwire added
+
+**Trigger.** A fresh SB200 net (factor-canonical-gpu5-seed45-s200,
+`E`) hung the bench for tens of minutes on `BENCH_POSITIONS[36]`
+— the SF "Pohl knight saturation" pathological position. Initial
+suspicion was an extension explosion; instrumented counters
+(singular_ext / double_ext / negative_ext / multicut, added to
+`PruneStats` this session) showed extension counts on the same
+position were within normal bands. Mechanism is **eval-driven
+PVS/negamax non-convergence** on a deliberately adversarial
+position, not a search bug — ~50% of fresh SB200 seeds and 1/5
+SB800 nets show elevated tree size on this single position.
+
+**Why drop, not fix.** SF includes the position in their bench
+deliberately *because* it stresses search non-convergence. We
+included it for diversity. But for an SPRT acceptance test the
+risk is asymmetric: a 1-in-500-game tail blow-up would not move
+SPRT measurably, yet would lose those individual games on
+Lichess. Better to:
+
+1. Remove from `BENCH_POSITIONS` (safer for OB Wrong-Bench
+   gating) — committed as `7b633e3`.
+2. Add a separate `coda bench-pathology` subcommand
+   (`BENCH_PATHOLOGY_POSITIONS` const + node-count threshold,
+   exits non-zero on overrun) as a slow, optional tripwire that
+   can run on demand when investigating tail-distribution bugs
+   SPRT cannot detect — committed as `0327306`.
+
+**Counters retained.** Singular / double / negative / multicut
+counters added during diagnosis are kept in `PruneStats` and
+printed in bench summaries; useful for any future
+"extension-explosion?" question.
+
+**Bench delta on main.** 49 → 48 positions changed bench number;
+both commits include updated `Bench:` lines. CLAUDE.md updated
+("48 positions @ default depth 12").
+
+## 2026-05-08 — Day-0 K=7 variance calibration (cross-host + cross-seed)
+
+**Setup.** Two SPRTs at symmetric `[-3, 3]` to measure intrinsic
+variance for net-vs-net experiments going forward. Both sides on
+the same branch (the pos-36-drop branch, after a sequence of
+"Wrong Bench" rejects when sides differed in code).
+
+- **#969 AvB** — same recipe (cal-day0-factor-w15-warm30-hlcrelu-s200),
+  same seed=42, **different GPU host**. Result: ≈ 0 Elo, H0
+  cleanly. Cross-host CUDA non-determinism contributes
+  effectively zero variance at SB200.
+- **#970 AvE** — same recipe, **different seed** (42 vs 45),
+  same host. Result: −8.72 Elo (H0). With K=7 order-statistic
+  framing, 1 SD across SB200 seeds ≈ **4 Elo**.
+
+**Implication for net-arch experiments.** A K=1-vs-K=1 SB200
+SPRT has ±~8 Elo seed noise floor; +5-10 Elo arch effects need
+median-of-3 or anchor design (already memo'd in
+`feedback_net_vs_net_needs_median_or_anchor.md`). Cross-host
+mixing is fine.
+
+## 2026-05-08 — Day-1 calibration probes (warmup / WDL landscape)
+
+**Setup.** Calibrate the v9 training recipe knobs we inherited
+from v7 (warm30, w15) against a fresh post-rebase Bullet trunk.
+All probes are SB200, A baseline = `cal-day0-factor-w15-warm30-
+hlcrelu-s200` (61115E7F).
+
+- **#972 — A vs warm0** (`B = warm0`): −1.84 ±2.84. Within
+  noise; warmup contributes ~0 Elo at default tunables.
+- **#973 — A vs warm15** (`C = warm15`): −9.87 ±5.92. H0; warm15
+  is *worse* than warm30 on the SPRT bound at default tunables.
+- **#974 — A vs wdl25**: −9.14 ±5.97. Higher WDL alone (no other
+  recipe change) regresses against w15.
+- **#975 — warm0 vs warm15** (head-to-head, no baseline):
+  **+14.6 H1**. Warm0 strictly beats warm15. Ordering is
+  warm0 ≈ warm30 >> warm15 — non-monotonic in warmup duration.
+
+**Local 3-way RR sanity.** 100-game RR on Hercules
+(--concurrency 16) confirmed warm0 / warm15 / warm30 ranking
+matches OB. Bench-stats showed all three nets are in
+near-identical pruning regimes at default tunables (NPS within
+2.5%, EBF within 0.03, first-move 82.8-84.1%).
+
+## 2026-05-08 — Warm0 retune-on-branch flips the warmup story
+
+**Hypothesis.** The "warmup helps" prior was inherited from v7
+and last validated on warm-tuned trunk. Trunk tunables are
+calibrated against warm30. A net with a different eval shape
+(warm0) gets penalised by mis-calibrated pruning thresholds —
+SPRT measures (recipe + miscalibration), not (recipe alone).
+
+**Test.** Quick 1000-iter SPSA tune on warm0 (tune #976) — full
+80-param sweep, against the warm0 net specifically. 53/80
+defaults moved; biggest movers were several pruning thresholds
+(NMP_BASE_R 7→8, history pruning shape, RFP margins).
+
+- **#979 — warm0+retune vs warm0** (retune-on-branch only,
+  isolates the tune effect): **+6.88 ±3.88 H1**. Retune banks
+  ~+7 Elo on the warm0 net.
+- **#980 — warm0+retune vs warm30+main** (cross-net, recipe +
+  retune combined): **+12.40 ±7.15 H1**. Wide CI.
+
+**Triangulation, not double-digits.** Naive read: "drop warmup =
++12 Elo." Reality: #972 (warm0 vs warm30 untuned) was −1.84,
+#979 (retune-on-branch) is +6.88, #980 (cross-net combined) is
++12.40 with wide bars. Weighted mean of the consistent signal
+puts the **true effect probably 5-7 Elo, not double-digit**.
+Still meaningful — we don't get many SB200 wins this big — but
+not "drop warmup" alone; it's "drop warmup + retune."
+
+**Method takeaway.** Logged to memory: any net-recipe change
+needs retune-on-branch before drawing conclusions. Previous
+"warmup helps" tests were confounded by warm-tuned trunk. Same
+pattern almost certainly applies to several other v7-inherited
+training-recipe priors; queued for audit.
+
+**Follow-up tune (#983).** 2500-iter on warm0+retune branch with
+widened tunable ranges per Adam:
+- `NMP_BASE_R` max 8 → 12 (last tune wanted to go beyond 8)
+- `SE_DEPTH` min 4 → 2
+- `IIR_MIN_DEPTH` min 2 → 1
+- `PROBCUT_MIN_DEPTH` min 3 → 2
+- `LMR_ENDGAME_PIECES` floor preserved (not relaxed — protects
+  endgame correctness).
+
+In progress at logging time.
+
+**Tune #971 (tune-962-applied 2500-iter follow-up).** Earlier
+tune-962 was 1000 iters on a major model change; user judged it
+short. 2500-iter follow-up resolved cleanly; outputs queued to
+apply once warm0 retune cluster lands.
+
+## 2026-05-08 — Day-1 Hobbes-pattern nets (A2 / A3 / A6) — H0'd, but bench-stats moved
+
+**Setup.** Three Day-1 candidates testing different
+training-recipe variations on the v9 768+threats arch:
+
+- **A2 (`hobbes_faithful`)** — Hobbes-style 3-phase schedule:
+  cosine LR + linear WDL ramp, then constant low-LR + constant
+  high-WDL tail.
+- **A3 (`hobbes_bracket_down`)** — A2 with the LR bracket
+  shifted down.
+- **A6 (`finallr_486e6`)** — single-knob change (lower final
+  LR), keeps single-phase cosine.
+
+**SPRT results (vs A baseline at default tunables):**
+- **#984 — A2 vs A**: −34.3 (H0). Promising loss curves and
+  bench-stats, but SPRT was ugly from the first 500 games.
+- **#985 — A6 vs A**: −37.6 (→H0).
+- **#986 — A3 vs A**: −7.0 (→H0).
+
+**Bench-stats ARE meaningfully different** — recipe shifted the
+eval shape, even though SPRT (at default tunables) regressed.
+Selected deltas vs A baseline (per-1K-nodes):
+
+| Metric | A | A2 | A3 | A6 |
+|---|---:|---:|---:|---:|
+| Hist prune /Kn | 0.4 | **3.3 (8×)** | 3.5 (9×) | 1.1 (3×) |
+| NMP cutoff rate | 38% | 41% | 41% | 40% |
+| RFP /Kn | 231 | 224 | 211 | 204 |
+| First-move cut | 84.1% | 85.2% | 85.2% | 84.4% |
+| Multi-cut total | 13923 | **22661** | 19128 | 16649 |
+| Double-ext total | 14301 | 12820 | 14488 | 13657 |
+| EBF (depth 5+) | 1.67 | 1.66 | 1.68 | 1.70 |
+
+The **8-9× hist-prune rate jump** on A2/A3 is the loudest
+signal: the Hobbes-style late-WDL/low-LR tail is producing a net
+where the eval shape disagrees with our hist-prune calibration
+in a way warm0 didn't. First-move-cut also rises a clean 1.1
+points on A2/A3 — the eval is sharper at root, but the trunk's
+pruning thresholds are tuned around warm30's softer eval.
+
+**Retunes fired (in progress at logging time):** #987 / #988 /
+#989, parallel 2500-iter full-sweep against A2 / A3 / A6
+respectively. Same widened ranges as #983 (NMP_BASE_R 12,
+SE_DEPTH 2, IIR_MIN_DEPTH 1, PROBCUT_MIN_DEPTH 2). Pattern is
+the same as warm0: a recipe whose eval shape lies outside trunk
+tunable calibration regresses at default but may recover with
+retune-on-branch. Retune signal will be more interesting on the
+Hobbes models than warm0 — eval-shape divergence is bigger.
+
+**Bullet patches enabling this work** (committed to fork):
+- `f72f67f` — `--lr-tail` / `--lr-tail-from` for 3-phase LR
+  schedule (constant-low-LR tail), nested
+  `LinearDecayLR → CosineDecayLR → ConstantLR` Sequence. Enables
+  the constant-LR tail without restarting training.
+- `2790d94` — re-add `--resume-from` / `--start-sb` (dropped in
+  the May rebase). Enables extending an existing checkpoint with
+  a tail phase.
+
+**Adam's plan (next).** Skip a full Hobbes 3-phase from scratch;
+instead extend an existing SB800 production-clone with **just
+the constant-low-LR + high-WDL tail** as a simpler way to test
+the Hobbes "late-strategic-WDL" theory. Cleaner attribution: one
+knob change against a known-good base, no compounded
+training-recipe variance. The Hobbes retunes (#988/#989) will
+inform whether the tail-only extension needs its own retune.
+
+**Open methodological question.** If the Hobbes retunes recover
+significant ground (warm0 pattern: -2 → +7 with retune), it
+means Day-1 recipe SPRTs at default tunables are
+**directionally unreliable** for any recipe whose eval shape
+deviates ≥ a few percent from trunk calibration. Need to decide
+whether to require retune-on-branch as part of every Day-1+
+recipe SPRT, or build a quicker proxy.
+
+## 2026-05-08 — Atlas history-pruning + cont-hist cross-engine review
+
+**Doc reviewed.** `docs/history_prune_cont_hist_review_2026-05-08.md`
+(Atlas, 224 lines). Cross-engine table for history-prune and
+cont-hist parameters across 8+ top engines.
+
+**Hist-prune findings (Coda outliers):**
+- `HIST_PRUNE_DEPTH = 3` — peer median uses lmrDepth ≤ 5-7
+  (Coda compares against raw depth, so the depths aren't
+  directly comparable; raw-depth=3 is roughly equivalent to
+  lmrDepth≤2 — under-triggering by ~3 plies).
+- `HIST_PRUNE_MULT = 12825` — peer median 4000-7500
+  (Coda's threshold is ~2× too tight; consistent with the
+  "feature triggers rarely" observation from prior SPSA runs).
+- `mv != tt_move` gate is redundant — TT move already exempt
+  from pruning earlier in the move loop.
+
+**Cont-hist findings (structural):**
+- Read pattern `[cm, cm, 1, 1]` × write pattern `[bonus, b/2,
+  b/2, b/2]` at offsets {1, 2, 4, 6} is a structural mismatch —
+  the offsets-2-and-6 reads use weight 1 against half-bonus
+  writes, while offsets 1 and 4 use weight `cm` against
+  full/half writes. Asymmetry plausibly explains why
+  `CONT_HIST_MULT` keeps SPSA-drifting toward its floor (signal
+  is being averaged against a noisier component).
+
+**Phase 1 SPRTs (Atlas-led):**
+- **#977 — `hist-prune-mult-8000`** (lower MULT to peer median):
+  −4.83 (H0). Move alone regresses; consistent with retune
+  needed.
+- **#981 — cont-hist offsets {2, 4}** (drop {1, 6}, equal
+  weight): −0.07 (→H0 within noise).
+- **#982 — cont-hist offsets {2, 4, 6}** (drop {1}): +0.16
+  (→H0 within noise).
+
+**Read.** Hist-prune-mult by itself is wrong direction without
+retune (H0 like warm0/A2 — calibration-shifted feature). Cont-
+hist offset experiments don't show a clear winner at default
+tunables; structural change too small to register without
+retune. Same retune-on-branch pattern as warmup work.
+
+**Next phase candidates** (queued, not yet fired):
+- A1 — relax `HIST_PRUNE_DEPTH` 3 → 5 with retune-on-branch.
+- A2 — drop redundant `mv != tt_move` gate (clean code, ~0 Elo
+  expected; bench-neutral check).
+- B-cluster — cont-hist read-pattern symmetry fixes with
+  retune. Depends on whether A-cluster lands.
+
+Atlas's 4-change bundle was ambitious; splitting into 3 phases
+of independent SPRTs is the right move (multi-change SPRTs
+without retune compound the calibration-shift confound).
+
+## 2026-05-08 — Methodology: retune-on-branch is mandatory for any net-recipe change
+
+**Pattern across today's work.** Three independent recipe
+variants (warm0, A2, A3, A6) all showed the same shape:
+
+1. SPRT at default tunables → H0 / negative.
+2. Bench-stats show meaningfully different eval shape vs
+   baseline (more hist-prunes, higher first-move-cut, different
+   NMP/RFP rate).
+3. With retune-on-branch, the warm0 case recovered ~+7 Elo
+   (#979) and lifted the cross-net comparison to ~+12 (#980).
+4. A2/A3/A6 retunes in progress; expected to follow the same
+   pattern.
+
+**Implication for prior "training recipe" findings.** Any
+recipe knob test (warmup duration, WDL weight, final LR,
+filtering threshold) that was SPRT'd against the trunk it was
+tuned with may be unreliable. The flat/negative results we
+recorded in 2026-04 for warm0, several WDL probes, and final-LR
+sweeps are now suspect — they conflated "recipe regressed" with
+"trunk tunables are wrong for this recipe."
+
+**Action queued.** Audit prior recipe SPRTs against this
+confound; pick top 3-5 candidates worth re-running with
+retune-on-branch.
+
+**Memory updates.**
+- `feedback_cutechess_concurrency_on_hercules.md` — use
+  `--concurrency 16` not 8 on Hercules (PVS sequential = 1
+  active engine per game).
+- `feedback_variance_test_same_branch_both_sides.md` —
+  variance/determinism SPRTs need same branch on both sides;
+  different branches => testing two changes at once.
+- `reference_cuda_12_vs_13_for_gpu_hosts.md` — CUDA 13 is
+  Blackwell+ focused; toolkit > host driver max yields
+  `UNSUPPORTED_PTX_VERSION`. Don't reimage to CUDA 13 unless
+  host driver supports it.
+- `feedback_spsa_boundary_disables_feature.md` (refined) —
+  production tune protects feature; diagnostic tune lets SPSA
+  drift toward zero as a broken-feature signal.
+- `project_bullet_training_invocation.md` — `--output-dir DIR`
+  + `--net-id NAME` is the correct split (not `--output PATH`);
+  `--dataset-dir`, not `--data-dir`.
