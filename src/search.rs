@@ -2611,6 +2611,13 @@ fn negamax(
     let mut best_move = NO_MOVE;
     let mut best_score = -INFINITY;
     let mut move_count = 0i32;
+    // EXPERIMENT (Starzix T1 #1): track PVS fail-high cascades at this node.
+    // Each child that triggers a re-search (LMR failed high → re-search at
+    // full depth, or zero-window PVS failed high → full-window re-search)
+    // increments. On the eventual beta cutoff, scale the history bonus by
+    // this count — more fail-highs at this node = stronger signal that the
+    // cutoff move is genuinely good.
+    let mut num_fail_highs: i32 = 0;
     // Track quiet moves searched before beta cutoff for history penalty
     let mut quiets_tried = [NO_MOVE; 64];
     let mut quiets_count = 0usize;
@@ -3248,6 +3255,7 @@ fn negamax(
                 // old "new_depth ≈ 10-15" effective threshold but with proper
                 // cp semantics. If this also H0s, the true value is smaller
                 // still (try 10cp) or the feature wants a depth-scaled margin.
+                num_fail_highs += 1; // Starzix T1 #1: LMR fail-high cascade.
                 let mut do_deeper_adj = 0;
                 if lmr_score > best_score + 60 + 10 * reduction {
                     do_deeper_adj = 1;
@@ -3268,6 +3276,7 @@ fn negamax(
             // PVS: zero-window for non-first moves
             let mut pvs_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
             if pvs_score > alpha && pvs_score < beta && !info.stop.load(Ordering::Relaxed) {
+                num_fail_highs += 1; // Starzix T1 #1: PVS fail-high cascade.
                 // Failed high: full window re-search
                 pvs_score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
             }
@@ -3317,7 +3326,13 @@ fn negamax(
 
                     // Beta cutoff - update history for quiet moves (killers/counter removed — SF pattern)
                     if !is_cap {
-                        let bonus = history_bonus(depth);
+                        // EXPERIMENT (Starzix T1 #1): scale bonus by num_fail_highs.
+                        // More fail-high cascades at this node means stronger signal
+                        // that the cutoff move is genuinely good (many alternatives
+                        // also cut). Capped to avoid overflow + saturation issues.
+                        let raw_bonus = history_bonus(depth);
+                        let scale_factor = num_fail_highs.min(3);  // 0..3
+                        let bonus = raw_bonus + raw_bonus * scale_factor / 4;
 
                         // Update main history
                         History::update_history(
