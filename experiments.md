@@ -9197,12 +9197,25 @@ now carries tune-983 outputs, replacing tune-976).
 
 **Cross-recipe SPRT #1003** — warm0-retune-applied (tune-983) +
 warm0 net vs main + warm30-baseline (`61115E7F`). Both SB200,
-recipe+retune combined effect. In flight at **+5.12**. #980 with
-the equivalent tune-976 setup was +12.40 ±7.15 (95% CI roughly
-+5.25 to +19.55) — H1'd early but on noisy data. #1003's +5.12
-sits inside that CI, so the two tunes are statistically
-indistinguishable so far; tune-983 hasn't beaten tune-976 but
-also hasn't regressed against it. Wait for resolution.
+recipe+retune combined effect. **Resolved H1 ✓ at +9.25 ±4.31.**
+Sits inside #980's earlier wide CI (+12.40 ±7.15) — confirms
+the +12.40 was real, just noisy. Combined point estimate now
+~+9 Elo with tight bars.
+
+**This is the first big post-new-bullet-model-focus deployable
+win.** The warm0 recipe + 2500-iter widened retune banks ~+9
+Elo over warm30-baseline at SB200 maturity. Pathway to deploy:
+
+1. Train warm0 SB800 (no patches needed; canonical recipe with
+   `--warmup 0`).
+2. 1000-iter retune-on-branch against the new SB800 net (use
+   widened ranges per `experiment/warm0-retune-applied`).
+3. SPRT vs current SB800 prod, [0, 3].
+4. If H1, deploy net + tunables together (per net.txt + tunable
+   defaults discipline; see `feedback_net_swap_needs_full_sweep_retune.md`).
+
+Total runway: ~10h train + ~24h retune + ~12h SPRT ≈ 2 days end
+to end on a 4090S.
 
 **Correction to #980 framing.** OB metadata confirms both #980
 sides used SB200 nets (`4D7E6229` warm0 vs `61115E7F`
