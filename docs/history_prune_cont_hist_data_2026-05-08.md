@@ -179,6 +179,86 @@ Replace the original Phase 1 plan. New ranking:
   it's not worth the monotonicity-check work. Becomes interesting only
   after E1+E2 raise the fire rate to a few percent.
 
+## Update — value sweep + ordering-time sampling
+
+### HIST_PRUNE_MULT sweep (local bench, no fleet cost)
+
+Built 5 binaries at MULT ∈ {3000, 4500, 6500, 8000, 12825} and ran bench:
+
+| MULT  | Nodes     | Fires   | Eligible   | Fire rate |
+|------:|----------:|--------:|-----------:|----------:|
+| 3000  | 3,204,668 | 266,346 | 2,215,949  |  12.0%    |
+| 4500  | 4,279,499 | 199,161 | 2,752,784  |   7.2%    |
+| 6500  | 3,711,696 |  63,955 | 2,521,194  |   2.5%    |
+| 8000  | 3,957,914 |  43,693 | 2,502,627  |   1.7%    |
+| 12825 | 3,796,568 |   3,251 | 2,566,399  |   0.1%    |
+
+**Fire rate is geometric in MULT**, as expected. **Node count is NOT
+monotonic** with MULT — moderate pruning at MULT=4500 actually causes
+*more* total nodes than at MULT=3000 or 8000. SPSA likely landed at
+12825 because it found a search-shape local optimum where hist-prune
+is essentially off, not because all tighter values regress.
+
+8000 is the chosen test point — 17× current fire rate, modest enough
+that pruning shouldn't tank tactical positions.
+**SPRT submitted (`experiment/hist-prune-mult-8000`).**
+
+### Ordering-time vs gate-time cont-hist sampling
+
+Added a second sampling site at the LMR-history adjust point
+(different population: any-depth LMR-eligible quiets, not depth ≤ 3
+late move-loop quiets). Bench, compare distributions, then revert
+(local-only diag).
+
+`[0, 200)` (noise band) by offset:
+
+| Offset | Gate-time | LMR-time |
+|--------|----------:|---------:|
+| ply-1  | 79.3%     | 61.9%    |
+| ply-2  | 74.9%     | 58.5%    |
+| ply-4  | 63.6%     | 51.5%    |
+| ply-6  | 55.2%     | 46.4%    |
+
+LMR-time samples have ~17 percentage points less noise per offset
+(deeper search context = more developed tables). But the **relative
+ordering is preserved**: ply-1 is the noisiest offset at both sample
+sites. **The ply-1-is-noise finding is not sampling bias.**
+
+This reinforces the earlier conclusion: the cross-engine review's
+recommendation to weight ply-1 highest (Berserk `[2,2,1,1]`, B1
+symmetric writes) is structurally wrong for Coda's current write
+shape. SPSA→1 on `CONT_HIST_MULT` is the correct response.
+
+### Why is ply-1 the noisiest? Hypothesis
+
+Cont-hist write magnitudes:
+- ply-1: avg `|bonus|` = 780.3
+- ply-{2,4,6}: avg `|bonus|` ≈ 395 (the `bonus/2` halving)
+
+Gravity formula: `entry += bonus - val * |bonus| / MAX_HIST`.
+
+When |bonus| is large, the gravity damping is also large → entries
+get pushed back toward zero more aggressively. ply-1 gets the
+biggest writes AND the biggest dampening, so entries oscillate around
+zero. ply-{4,6} get smaller writes with weaker damping, so entries
+settle at non-zero equilibrium points.
+
+**This means the asymmetric writes are CAUSING the ply-1 noisiness,
+which CAUSES the SPSA→1 floor on CONT_HIST_MULT.**
+
+Counter-intuitive corollary: making writes SYMMETRIC at full `bonus`
+(B1 from the cross-engine review) would amplify ply-{2,4,6} damping,
+collapsing them toward zero too. We'd lose the only signal we have.
+
+The right fix shape is the OPPOSITE direction: make writes uniform
+at `bonus/2` (i.e., halve ply-1 writes too). Then all offsets have
+similar damping and similar signal-to-noise. SPSA can then probably
+lift CONT_HIST_MULT above 1.
+
+This is testable as an isolated experiment but tightly coupled to
+HIST_PRUNE_MULT — we shouldn't bundle them. Let HIST_PRUNE_MULT=8000
+SPRT resolve first.
+
 ## Open questions for next session
 
 1. **Sampling bias check.** Is the cont-hist read distribution at hist-prune
