@@ -3264,6 +3264,41 @@ fn negamax(
                 }
 
                 lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth + do_deeper_adj, ply + 1, !cut_node);
+
+                // EXPERIMENT: post-LMR-research cont-hist nudge (Berserk pattern,
+                // search.c:747-748). After the zero-window re-search, nudge cont-hist
+                // based on whether re-search confirmed or refuted the LMR prediction:
+                //   score >= beta:  re-search confirmed move good → +bonus
+                //   score <= alpha: re-search confirmed move bad  → -malus
+                //   else (alpha < score < beta): PVS decides; no nudge here.
+                // Adds signal density beyond beta-cutoff updates. Quiet moves only.
+                if !is_cap && moved_piece != NO_PIECE {
+                    let nudge_depth = (new_depth - 1).max(1);
+                    let nudge_bonus = if lmr_score >= beta {
+                        history_bonus(nudge_depth)
+                    } else if lmr_score <= alpha {
+                        -history_bonus(nudge_depth)
+                    } else {
+                        0
+                    };
+                    if nudge_bonus != 0 {
+                        let gp_mv = go_piece(moved_piece);
+                        let ch_offsets = [1usize, 2, 4, 6];
+                        for &off in &ch_offsets {
+                            if ply_u >= off {
+                                let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
+                                let prior_to = info.moved_to_stack[ply_u - off] as usize;
+                                if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
+                                    let ch_b = if off <= 1 { nudge_bonus } else { nudge_bonus / 2 };
+                                    History::update_cont_history(
+                                        &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
+                                        ch_b,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             if lmr_score > alpha && lmr_score < beta && !info.stop.load(Ordering::Relaxed) {
