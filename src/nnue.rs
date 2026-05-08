@@ -262,10 +262,31 @@ pub fn halfka_index_with(
     bucket * (NNUE_NUM_PIECE_TYPES * 64) + pi * 64 + ps
 }
 
-/// Output bucket from piece count.
+/// Output bucket from piece count (uniform layout: `(popcount-2)/4`).
 pub fn output_bucket(piece_count: u32) -> usize {
     let bucket = (piece_count as i32 - 2) / 4;
     bucket.clamp(0, NNUE_OUTPUT_BUCKETS as i32 - 1) as usize
+}
+
+/// Reckless's non-uniform output bucket layout, indexed by piece count 0..=32.
+/// Endgame counts 0-8 collapse into bucket 0 (LESS resolution per piece count
+/// for deep endgame, MORE for opening/middlegame), per Reckless's
+/// `OUTPUT_BUCKETS_LAYOUT` in `~/chess/engines/Reckless/src/nnue.rs:83-92`.
+pub const RECKLESS_OUTPUT_BUCKETS_LAYOUT: [usize; 33] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 1, 1, 1,
+    2, 2, 2, 2,
+    3, 3, 3,
+    4, 4, 4,
+    5, 5, 5,
+    6, 6, 6,
+    7, 7, 7, 7,
+];
+
+/// Output bucket using Reckless's non-linear layout.
+pub fn output_bucket_reckless(piece_count: u32) -> usize {
+    let pc = (piece_count as usize).min(32);
+    RECKLESS_OUTPUT_BUCKETS_LAYOUT[pc]
 }
 
 // ---- AVX2 SIMD helper functions ----
@@ -2247,6 +2268,12 @@ pub struct NNUENet {
     /// this in the header; v9 and earlier default to true (legacy assumption
     /// since all pre-v10 threat nets were trained with --xray 1 / default).
     pub xray_trained: bool,
+    /// Whether the net was trained with Reckless's non-uniform output bucket
+    /// layout. Inference must use `RECKLESS_OUTPUT_BUCKETS_LAYOUT` instead of
+    /// the uniform `(piece_count-2)/4` formula when this is true. Recorded
+    /// in v10 training_flags bit 1; v9 and earlier default to false (uniform
+    /// layout was the only option pre-A5).
+    pub reckless_buckets: bool,
     /// Number of king buckets in this net (10 for Reckless, 16 for others).
     /// PSQ weight block is sized `num_king_buckets * 768 * hidden_size`.
     pub num_king_buckets: usize,
@@ -2286,6 +2313,18 @@ impl NNUENet {
     #[inline]
     pub fn halfka_index(&self, perspective: u8, king_sq: u8, pc_color: u8, pc_type: u8, pc_sq: u8) -> usize {
         halfka_index_with(&self.king_bucket, &self.king_mirror, perspective, king_sq, pc_color, pc_type, pc_sq)
+    }
+
+    /// Output bucket dispatched against this net's training layout.
+    /// Reckless layout uses a 33-entry lookup table; default is uniform
+    /// `(piece_count-2)/4`. Hot path — kept inline.
+    #[inline]
+    pub fn output_bucket(&self, piece_count: u32) -> usize {
+        if self.reckless_buckets {
+            output_bucket_reckless(piece_count)
+        } else {
+            output_bucket(piece_count)
+        }
     }
 
     /// King-bucket lookup for this net. Use for build_dirty_piece and other
@@ -2344,6 +2383,9 @@ impl NNUENet {
         // v10+: xray_trained from training_flags byte. v9 legacy default = true
         // (all pre-v10 threat nets were --xray 1 / default at training time).
         let mut xray_trained: bool = true;
+        // v10+: reckless_buckets from training_flags bit 1. Default false
+        // (uniform `(popcount-2)/4` layout was the only option pre-A5).
+        let mut reckless_buckets: bool = false;
         let hidden_size: usize;
 
         match version {
@@ -2413,13 +2455,17 @@ impl NNUENet {
                 }
                 // v10 training_flags byte (only for threat nets).
                 //   bit 0: xray_trained (1 = trained with xray threat features)
+                //   bit 1: reckless_buckets (1 = Reckless non-uniform output buckets)
                 // v9 nets have no such byte — legacy default is xray_trained=true
-                // (all pre-v10 production nets were --xray 1 / default).
+                // (all pre-v10 production nets were --xray 1 / default), and
+                // reckless_buckets=false (uniform layout pre-A5).
                 if version >= 10 {
                     let training_flags = read_u8(reader)?;
                     xray_trained = training_flags & 1 != 0;
+                    reckless_buckets = training_flags & 2 != 0;
                 } else {
                     xray_trained = true;
+                    reckless_buckets = false;
                 }
                 hidden_size = ft_size;
             }
@@ -2659,6 +2705,7 @@ impl NNUENet {
             num_threat_features,
             has_threats,
             xray_trained,
+            reckless_buckets,
             num_king_buckets,
             kb_layout,
             king_bucket: king_bucket_tbl,
@@ -3696,7 +3743,7 @@ impl NNUENet {
     pub fn forward_with_threats(&self, acc: &NNUEAccumulator, stm: u8, piece_count: u32,
                                 threat_stack: &crate::threat_accum::ThreatStack) -> i32 {
         if threat_stack.active && self.has_threats {
-            let bucket = output_bucket(piece_count);
+            let bucket = self.output_bucket(piece_count);
             let h = self.hidden_size;
 
             let (stm_acc, ntm_acc) = if stm == WHITE {
@@ -3744,7 +3791,7 @@ impl NNUENet {
     /// Forward pass: CReLU or SCReLU activation → dot product with output weights.
     /// Returns centipawns from side-to-move perspective.
     pub fn forward(&self, acc: &NNUEAccumulator, stm: u8, piece_count: u32) -> i32 {
-        let bucket = output_bucket(piece_count);
+        let bucket = self.output_bucket(piece_count);
         let h = self.hidden_size;
         let out_w = self.output_weight_row(bucket);
 

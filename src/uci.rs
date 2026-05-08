@@ -649,7 +649,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     println!("info string white_acc [{}]", w_vals.join(","));
                     println!("info string black_acc [{}]", b_vals.join(","));
                     let pc = crate::nnue::piece_count(&board);
-                    let bucket = crate::nnue::output_bucket(pc);
+                    let bucket = net.output_bucket(pc);
                     println!("info string piece_count {} bucket {}", pc, bucket);
                 }
             }

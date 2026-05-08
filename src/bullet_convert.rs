@@ -215,6 +215,7 @@ pub fn convert_v7(
     num_threats: usize,
     hl_crelu: bool,
     xray_trained: bool,
+    reckless_buckets: bool,
 ) -> Result<(), String> {
     let psq_input_size = kb_count * PSQ_INPUTS_PER_BUCKET;
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
@@ -476,13 +477,15 @@ pub fn convert_v7(
     // v10 training_flags byte (only for threat nets). Records training-side
     // configuration that inference must match to produce valid results.
     //   bit 0: xray_trained (1 = trained with xray threat features, 0 = --xray 0)
-    //   bits 1-7: reserved (must be 0)
+    //   bit 1: reckless_buckets (1 = Reckless non-uniform output bucket layout)
+    //   bits 2-7: reserved (must be 0)
     // Coda inference always emits xray features, so nets with xray_trained=0
     // will mismatch at inference and must be rejected at load time unless
     // --load-anyway is explicitly passed (diagnostic-only escape hatch).
     if version >= 10 {
         let mut training_flags: u8 = 0;
         if xray_trained { training_flags |= 1; }
+        if reckless_buckets { training_flags |= 2; }
         buf.push(training_flags);
     }
 
