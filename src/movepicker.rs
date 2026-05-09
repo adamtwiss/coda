@@ -256,7 +256,7 @@ impl MovePicker {
             if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
-                if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
+                if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                     cont_hist_subs[i] = Some(&history.cont_hist[prior_piece][prior_to] as *const [[i16; 64]; 13]);
                 }
             }
@@ -374,7 +374,7 @@ impl MovePicker {
             if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
-                if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
+                if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                     cont_hist_subs[i] = Some(&history.cont_hist[prior_piece][prior_to] as *const [[i16; 64]; 13]);
                 }
             }

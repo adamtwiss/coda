@@ -3296,7 +3296,7 @@ fn negamax(
                             if ply_u >= off {
                                 let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                 let prior_to = info.moved_to_stack[ply_u - off] as usize;
-                                if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
+                                if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                                     let ch_b = if off <= 1 { nudge_bonus } else { nudge_bonus / 2 };
                                     History::update_cont_history(
                                         &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
@@ -3393,7 +3393,7 @@ fn negamax(
                                 if ply_u >= off {
                                     let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                     let prior_to = info.moved_to_stack[ply_u - off] as usize;
-                                    if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
+                                    if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                                         let ch_bonus = if off <= 1 { bonus } else { bonus / 2 };
                                         History::update_cont_history(
                                             &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
@@ -3435,7 +3435,7 @@ fn negamax(
                                         if ply_u >= off {
                                             let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                             let prior_to = info.moved_to_stack[ply_u - off] as usize;
-                                            if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
+                                            if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                                                 let ch_pen = if off <= 1 { -bonus } else { -bonus / 2 };
                                                 History::update_cont_history(
                                                     &mut info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize],
