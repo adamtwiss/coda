@@ -3390,7 +3390,12 @@ fn negamax(
                     if !is_cap {
                         // Depth-boost on big fail-high (#1008, SF/Obsidian) —
                         // use depth+1 when cutoff exceeds beta by BONUS_BOOST_AT.
-                        let bonus_depth = depth + if best_score > beta + tp(&BONUS_BOOST_AT) { 1 } else { 0 };
+                        // Additionally (Stormphrax search.cpp:1185): boost depth
+                        // when cutoff move beat our static eval (unexpected-strong
+                        // cutoff signal). Both can stack for +2 depth.
+                        let bonus_depth = depth
+                            + if best_score > beta + tp(&BONUS_BOOST_AT) { 1 } else { 0 }
+                            + if !in_check && static_eval <= best_score { 1 } else { 0 };
                         // numFailHighs multiplicative scaling (#1020, Starzix T1 #1) —
                         // more cascades = stronger cutoff confidence.
                         let raw_bonus = history_bonus(bonus_depth);
