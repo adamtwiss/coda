@@ -105,7 +105,11 @@ tunables!(
     (LMR_HIST_DIV, 6744, 2000, 100000, 4900.0),
     (LMR_C_QUIET, 133, 40, 300, 13.0),
     (LMR_C_CAP, 103, 80, 350, 12.5),
-    (SE_DEPTH, 4, 4, 20, 2.0),
+    // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv,
+    // Reckless at >=5+ttPv. Coda's 4 fires SE at shallower depth where
+    // singular_depth is too low to judge singularity reliably. Bumping
+    // 4 → 6 first; ttPv add deferred to a follow-up if H1.
+    (SE_DEPTH, 6, 4, 20, 2.0),
     (ASP_DELTA, 11, 5, 30, 1.5),
     (ASP_SCORE_DIV, 29581, 8000, 50000, 2100.0),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
