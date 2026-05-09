@@ -14,7 +14,13 @@ adding novelty.
 
 ## Tier 1 — high-confidence, high-leverage
 
-### 1. Multiplicative history bonus on PVS fail-high cascades
+### 1. Multiplicative history bonus on PVS fail-high cascades — ✅ MERGED 2026-05-09
+
+**SPRT #1020: +2.8 ±1.9 H1** (24,402 games, LLR 2.95). Implemented as
+`bonus = raw + raw * min(num_fail_highs, 3) / 4` (0..3 cascades →
+1.0×..1.75×, capped to avoid gravity saturation). Committed in main as
+`search: numFailHighs multiplicative history bonus (Starzix T1 #1)`.
+Hit the predicted "+2 to +6" magnitude.
 
 `src/search.hpp:690, 738, 749, 756, 812` + `src/thread_data.hpp:227`.
 

@@ -4,6 +4,15 @@ Reviewed: Stockfish, Reckless, Obsidian, Viridithas, Alexandria, PlentyChess,
 Berserk, Caissa, Stormphrax, Halogen — top 11 of the 38-engine RR plus
 Reckless (top 2) and Halogen (top 10). Source paths in `~/chess/engines/`.
 
+**Outcome (2026-05-09):** Two of this doc's recommendations have shipped:
+- **Post-LMR-research cont-hist nudge (Berserk/Obsidian)** — SPRT #1007
+  +1.2 ±1.0 H1 ✓, MERGED.
+- **Bonus depth-boost on big fail-high (SF/Obsidian)** — SPRT #1008
+  +1.1 ±0.9 H1 ✓, MERGED.
+
+Other recommendations from this review (cont-hist bucketing #1009, hist-prune
+threshold widening) failed SPRT — see `experiments.md` 2026-05-09 entry.
+
 ## Summary findings
 
 **Coda is a structural outlier on both features.** Each anomaly is concrete
@@ -102,12 +111,13 @@ Read weights are at move ordering / pruning unless noted.
   - Berserk + Obsidian: post-LMR-research nudge — successful re-search
     fail-high adds `+statBonus`, fail-low adds `-statMalus`, all to
     cont-hist. **Coda only updates on beta cutoff**, missing this signal.
+    **✅ Shipped 2026-05-09 — SPRT #1007: +1.2 H1.**
 - **Bonus formula shape**: linear (Coda, SF, Obsidian, Reckless, Alexandria,
   Berserk, Stormphrax, Halogen) — universal. Caissa is `linear+quadratic`.
   Berserk has both: `min(1729, 4·d² + 164·d - 113)`.
 - **Bonus depth boost**: SF and Obsidian boost `depth+1` when fail-high
   exceeds beta by margin (`bestScore > beta + StatBonusBoostAt`). Coda
-  doesn't.
+  doesn't. **✅ Shipped 2026-05-09 — SPRT #1008: +1.1 H1** (margin 80cp).
 
 ## Instrumentation across engines
 

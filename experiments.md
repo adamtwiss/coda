@@ -9399,3 +9399,112 @@ default-tunables SPRT is probably ~directionally reliable.
 divergence is 2.2× — modest but above the threshold. Expect
 some retune recovery; whether enough to flip the H0 verdict is
 the question #1006 answers.
+
+## 2026-05-09 — Peer-pattern signal-enrichment batch: +5.1 Elo banked across three merges
+
+Cross-engine review surfaced three signal-enrichment patterns Coda was
+missing. All three SPRT'd H1 individually. Three-way bundle was H1 but
+diluted by a fourth weak constituent — banked the individuals separately
+to maximise gain.
+
+### H1 ✓ — MERGED (cumulative ~+5.1 Elo)
+
+**#1020 numFailHighs multiplicative history bonus (Starzix T1 #1)** —
+**+2.8 ±1.9 H1** (24,402 games, LLR 2.95). Branch:
+`experiment/numfailhighs-bonus`. Source: cross-engine review identified
+Starzix's `num_fail_highs` counter — tracks how many zero-window children
+at this node triggered re-search (LMR fail-high → full-depth, or PVS
+fail-high → full-window). On the eventual beta cutoff, scale the history
+bonus multiplicatively: `bonus = raw + raw * min(num_fail_highs, 3) / 4`
+(0..3 cascades → 1.0×..1.75×). Mechanism: more cascades = stronger signal
+the cutoff move is genuinely good (many alternatives also looked like they
+could cut). Bench drift +0% — only changes bonus magnitudes, not pruning
+decisions. Independent of all hist-prune work.
+
+**#1007 post-LMR-research cont-hist nudge (Berserk pattern)** —
+**+1.2 ±1.0 H1** (95,656 games, LLR 2.95). Branch:
+`experiment/post-lmr-research-nudge`. After LMR re-search at zero-window
+confirms or refutes the LMR prediction, nudge cont-hist on the moved quiet:
+`score >= beta → +bonus`, `score <= alpha → -bonus`, else 0. Source:
+Berserk (search.c:747-748) and Obsidian (search.cpp:1102-1105) — Coda
+lacked it. Adds signal density beyond beta-cutoff updates. Cont-hist write
+shape matches existing Coda pattern (full bonus at ply-1, half at ply-{2,4,6}).
+Bench drift +13.4% (3.69M → 4.19M) — nudge cascades into ordering /
+pruning decisions, reshapes the tree.
+
+**#1008 bonus depth-boost on big fail-high (SF/Obsidian pattern)** —
+**+1.1 ±0.9 H1** (112,670 games, LLR 2.97). Branch:
+`experiment/bonus-depth-boost`. When cutoff exceeds beta by 80cp (clean
+fail-high), use `depth+1` in the history bonus formula. Source: SF
+(search.cpp:1182-1183) `statBonus(depth + (bestScore > beta + StatBonusBoostAt))`,
+Obsidian uses StatBonusBoostAt=95. Single-line conditional, cascades through
+main_history, cont_hist, pawn_hist via shared `bonus`. Symmetric malus path
+for non-cutoff quiets gets the same boost via `-bonus`. Stacks
+multiplicatively with #1020 numFailHighs scaling: depth-boost lifts the
+base, numFailHighs scales by cascade count.
+
+### H1 but DILUTED — not merged, individuals banked instead
+
+**#1021 peer-pattern bundle (1007 + 1008 + 1018)** — +1.6 ±1.2 H1
+(59,498 games, LLR 2.95). Bundle of three mildly-positive constituents.
+H1 confirmed but **less than sum of independent merges** (+1.2+1.1=2.3),
+because **#1018** was dilutive (+0.3 H0 individually). Banked #1007 and
+#1008 separately on top of #1020 to maximise gain. Lesson: when bundling
+mildly-positive constituents, the bundle's H1 lock is faster but the gain
+gets averaged-with weak members. If one constituent has weaker signal than
+the others, exclude it from the bundle.
+
+### H0 ✗ — DROPPED
+
+**#1018 cutnode-no-ttmove-lmr** — +0.3 ±1.5 H0 (40,524 games, LLR -0.73).
+Extra +1 LMR reduction on cut_node when no TT move exists. Drag on
+the bundle.
+
+**#1017 cutnode-lmr-extra** — +0.1 ±1.0 H0 (93,046 games, LLR -2.95).
+Extra +1 LMR reduction on cut_node generally. Restarted after early
+"trending negative" stop; restart confirmed H0 cleanly. Lesson on
+not-stopping-early validated: had we left the original run going we'd have
+reached H0 sooner.
+
+**#1019 TT-blended RFP eval (Motor T1.3)** — -13.4 ±5.0 H0 (3,996 games,
+LLR -3.00). Use `(staticEval + tt_score) / 2` for RFP gate when TT entry
+present. Failed dramatically. Mechanism conflict suspected with our
+existing eval-correction stack.
+
+**#1016 PV TT cutoff depth penalty (Motor T1.1)** — -7.6 ±3.8 H0 (6,586
+games, LLR -2.96). Allow PV-node TT cutoffs but penalise depth. Sharp
+regression — PV nodes need full search, not penalised TT shortcuts.
+
+**#1009 cont-hist bucketing** — -2.3 ±6.8 H0 (early exit, 2,128 games).
+Split cont-hist 4 ways by parent move context (in_check, is_capture).
+Bucketing fragments the per-cell signal volume — at our scale, the
+homogeneity benefit doesn't outweigh the volume cost.
+
+**#1023 bucketing-tune1010-applied** — -0.7 ±1.6 H0 (38,328 games, LLR
+-2.96). 12-param focused retune on the bucketing branch. Notable
+movements: HIST_PRUNE_DEPTH 3→2, HIST_BONUS_OFFSET 22→6, LMR_HIST_DIV
+6744→7248. Retune did NOT recover bucketing's structural cost. Confirms
+the bucketing direction is wrong, not just miscalibrated. Drop branch.
+
+**#1011 eval-clip-thresholds** — -2.3 ±2.2 H0 (18,148 games).
+**#1012 eval-mag-history** — -0.6 ±1.4 H0 (44,644 games).
+
+### Meta-pattern observations
+
+Pattern across this batch:
+- **Signal-enrichment wins** (#1007, #1008, #1020): add new write-paths or
+  scale existing ones based on confidence signals. All H1.
+- **Aggressive-pruning loses** (#1009, #1016, #1017, #1018, #1019): take
+  shortcuts (skip search, prune more, blend in TT info). All H0.
+- The eval-search flywheel rewards giving the eval more *confidence-weighted
+  signal*; punishes attempts to extract more pruning leverage from existing
+  signal at cost of node-level information.
+
+Methodology validated:
+- **Don't stop SPRTs on "trending negative"** — restart of #1017 after
+  early-stop showed it would have H0'd cleanly anyway. Saved feedback memory.
+- **Bundle for measurability is good IF constituents are equally strong** —
+  bundle dilutes when one member is weak.
+- **Retune-on-branch doesn't save direction-wrong features** — #1023 H0
+  even after focused retune; bucketing's structural change was net-negative,
+  not miscalibrated.
