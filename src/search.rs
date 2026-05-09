@@ -108,7 +108,11 @@ tunables!(
     (SE_DEPTH, 4, 4, 20, 2.0),
     (ASP_DELTA, 11, 5, 30, 1.5),
     (ASP_SCORE_DIV, 29581, 8000, 50000, 2100.0),
-    (LMP_BASE, 9, 1, 15, 2.0),
+    // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
+    // use LMP_BASE=3 with the same `(BASE + d²)/(2 - improving)` formula.
+    // Coda's 9 is 3× consensus at d=1: allows 5-10 quiets vs SF's 2-4.
+    // Bisecting 9 → 5 first.
+    (LMP_BASE, 5, 1, 15, 2.0),
     (LMP_DEPTH, 11, 4, 20, 2.0),
     (BAD_NOISY_MARGIN, 71, 30, 150, 6.0),
     (PROBCUT_MARGIN, 199, 80, 300, 11.0),
