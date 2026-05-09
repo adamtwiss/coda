@@ -42,7 +42,7 @@ Probes only differ from control by the single knob being tested.
 | **Probe** | Same recipe + `--wdl 0.05 --wdl-end 0.20 --wdl-tail 0.30 --wdl-tail-from 150`. Stage 1 = SB150 linear 0.05→0.20, stage 2 = SB50 constant 0.30. Conservative: bracketed below Viri's `basilisk` regression zone (≥ 0.4 finetune lost 5-19 Elo). |
 | **Read** | SPRT control.nnue vs probe.nnue, ~10K games. Elo only. |
 | **Failure mode** | Mid-training trajectory divergence between control and probe (different RNG draws hit different positions). Mitigated by same-host sequential + fixed seed + Bullet loader patch. |
-| **Cost** | 2× SB200 ≈ 24h paired on one host. Bullet patch already pushed (`3aa0022`). |
+| **Cost** | 2× SB200 ≈ 6-10h paired on one host (post-speedup; was 24h on old code). Bullet patch already pushed (`3aa0022`). |
 
 ## A3 — Hobbes-shape WDL v2 (aggressive ramp + tail) — brackets A2
 
@@ -53,7 +53,7 @@ Probes only differ from control by the single knob being tested.
 | **Probe** | `--wdl 0.05 --wdl-end 0.30 --wdl-tail 0.50 --wdl-tail-from 150` |
 | **Read** | SPRT vs A2 control (same host) or vs fresh control (different host). |
 | **Failure mode** | Cross-host control reuse contaminates Δ if Day-0 says variance > 5 Elo. If unsure, re-train control on probe host. |
-| **Cost** | 1× SB200 ≈ 12h (re-uses A2 control if cross-host OK), or 2× SB200 ≈ 24h (paired). |
+| **Cost** | 1× SB200 ≈ 3-5h (re-uses A2 control if cross-host OK), or 2× SB200 ≈ 6-10h (paired). Post-speedup. |
 
 ## A4 — FT=512 vs FT=768 (cache/NPS lever) — phased
 
@@ -71,7 +71,7 @@ the training-loss curve.**
 | **Probe** | SB200 with `--ft-size 512` (Bullet patch needed; currently hardcoded `let ft_size = 768;` at line 61), all other knobs identical. |
 | **Read** | Final-SB training loss + plot of loss curve vs control. NO bench, NO SPRT — Coda inference doesn't load FT=512 yet. |
 | **Failure mode** | Tree-shape NPS artefact — irrelevant for Phase 1 (no NPS read). |
-| **Cost** | 1× SB200 ≈ 12h + Bullet `--ft-size` patch (~30 min, but needs to propagate `ft_size` through all `Shape` constructions in the example). |
+| **Cost** | 1× SB200 ≈ 3-5h (post-speedup) + Bullet `--ft-size` patch (~30 min — wire CLI flag; `ft_size` is already threaded through all `Shape` constructions in the example, just needs the hardcoded `let ft_size = 768;` at line 123 replaced with parsed arg). |
 
 ### A4 Phase 2 — full inference + SPRT (only if Phase 1 promotes)
 
@@ -93,7 +93,7 @@ the training-loss curve.**
 | **Probe** | SB200 with new `RecklessBuckets` output struct (per agent spec from `~/chess/engines/Reckless/src/nnue.rs:83-92`). Bullet patch + Coda inference patch (`src/nnue.rs:266-269` table-lookup). |
 | **Read** | SPRT, ~10K games. |
 | **Failure mode** | Search thresholds (RFP/futility/SEE) calibrated to current eval scale — bucketing change can shift EVAL_SCALE. Per `feedback_net_swap_needs_full_sweep_retune.md`, plan a 77-param full-sweep retune before deploy if probe lands positive. |
-| **Cost** | Bullet patch + Coda nnue.rs patch (~1h total, both small) + 2× SB200 paired (24h). |
+| **Cost** | Bullet patch + Coda nnue.rs patch (~1h total, both small) + 2× SB200 paired (6-10h post-speedup). |
 
 ## A6 — Final LR up: 4.86e-6 (2× current)
 
@@ -104,7 +104,7 @@ the training-loss curve.**
 | **Probe** | SB200 with `--final-lr 4.86e-6` (existing flag, no patch needed). |
 | **Read** | SPRT, ~10K games. |
 | **Failure mode** | If positive, immediately try 7.3e-6 (3×) before declaring 4.86e-6 the optimum — could be on the slope, not at peak. |
-| **Cost** | 2× SB200 paired (24h). No patch. |
+| **Cost** | 2× SB200 paired (6-10h post-speedup). No patch. |
 
 ## A8 — Sibilant: L1 norm of L0 OUTPUT activations
 
@@ -115,7 +115,7 @@ the training-loss curve.**
 | **Probe** | SB200 with `--sibilant <α>` (Bullet patch needed: add a loss-graph term computing L1 of L0_out and add it to the objective). |
 | **Read** | SPRT, ~10K games. |
 | **Failure mode** | (a) α too large → L0_out collapses to zero, kills signal. Bracket α at 1e-5/1e-4/1e-3 if first run is flat or H0. (b) Tree-shape NPS artefact NOT applicable since arch is unchanged — bench-NPS read directly comparable. |
-| **Cost** | Bullet patch (moderate — needs loss-graph addition mirroring how `l1_decay` is wired) + 2× SB200 paired (24h). |
+| **Cost** | Bullet patch (moderate — needs loss-graph addition mirroring how `l1_decay` is wired) + 2× SB200 paired (6-10h post-speedup). |
 
 ## A9 — Dual-activation FT (Hobbes h-40 / Alexandria DUAL_ACTIVATION) — phased
 
@@ -128,7 +128,7 @@ the training-loss curve.**
 | **Probe** | SB200 with dual-activation FT (Bullet patch: apply both activations and concatenate at FT output, so L1 input dim doubles: 384 → 768 per perspective). NO inference work. |
 | **Read** | Training-loss curve. If end-of-cosine loss < control by ≥ 5%: promote to Phase 2. |
 | **Failure mode** | Dual-act FT is a different mechanism from V8 "dual L1" (which was parallel hidden paths inside L1). V8 was abandoned, not rejected — don't treat as a prior. Hobbes h-40 + Alexandria are independent confirmations. |
-| **Cost** | Bullet patch (substantial — concat two activated tensors into doubled-width L1 input) + 1× SB200 ≈ 12h. |
+| **Cost** | Bullet patch (substantial — concat two activated tensors into doubled-width L1 input) + 1× SB200 ≈ 3-5h (post-speedup). |
 
 ### A9 Phase 2 — full inference + SPRT (only if Phase 1 promotes)
 
@@ -160,7 +160,7 @@ covered by A6/A11). The Arasan stack is mostly already digested.
 | **Probe** | SB200 with `--final-lr 1e-5`. No patch needed. |
 | **Read** | SPRT, ~10K games. |
 | **Failure mode** | A11 is essentially a more aggressive A6. Run A6 first; only run A11 if A6 (`final_lr = 4.86e-6`) is positive — A11 brackets up further. If A6 is flat/negative, A11 likely also is. |
-| **Cost** | 2× SB200 paired (24h). No patch. Conditional on A6 being positive. |
+| **Cost** | 2× SB200 paired (6-10h post-speedup). No patch. Conditional on A6 being positive. |
 
 ---
 
@@ -170,11 +170,11 @@ covered by A6/A11). The Arasan stack is mostly already digested.
 
 ```
 Hour 0:   Day-0 control net is the shared baseline for all probes
-Hour 0:   gpu3 → A2 probe SB200 (12h)
-          gpu4 → A6 probe SB200 (12h)  — no patch needed
-          gpu5 → A8 probe SB200 (12h)  — needs sibilant Bullet patch first
+Hour 0:   gpu3 → A2 probe SB200 (3-5h)
+          gpu4 → A6 probe SB200 (3-5h)  — no patch needed
+          gpu5 → A8 probe SB200 (3-5h)  — needs sibilant Bullet patch first
 Hour 12:  SPRT all three vs Day-0 control
-          gpu3 → A3 probe SB200 (12h)
+          gpu3 → A3 probe SB200 (3-5h)
           gpu4 → A4 Phase 1 probe SB200 FT=512 (12h)  — needs FT-size patch
           gpu5 → A11 if A6 positive (12h), else A5 Reckless buckets (12h, needs patch)
 ```
