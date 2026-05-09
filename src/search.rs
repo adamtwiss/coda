@@ -139,6 +139,14 @@ tunables!(
     (CAP_HIST_MULT, 279, 50, 400, 17.5),
     (CAP_HIST_BASE, 35, 0, 200, 10.0),
     (CAP_HIST_MAX, 1663, 500, 3000, 125.0),
+    // Bonus depth-boost margin (#1008): use depth+1 in history_bonus when
+    // cutoff exceeds beta by this margin (SF StatBonusBoostAt, Obsidian=95).
+    (BONUS_BOOST_AT, 80, 0, 300, 15.0),
+    // numFailHighs multiplicative scaling (#1020 / Starzix T1 #1):
+    // bonus = raw + raw * min(num_fail_highs, NFH_CAP) / NFH_DIV.
+    // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
+    (NFH_CAP, 3, 1, 6, 1.0),
+    (NFH_DIV, 4, 2, 12, 1.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -3361,17 +3369,14 @@ fn negamax(
 
                     // Beta cutoff - update history for quiet moves (killers/counter removed — SF pattern)
                     if !is_cap {
-                        // Depth-boost on big fail-high (SF search.cpp:1182-1183,
-                        // Obsidian StatBonusBoostAt=95) — when cutoff exceeds beta
-                        // by 80cp, use depth+1 for stronger reinforcement of
-                        // clear-win moves.
-                        let bonus_depth = depth + if best_score > beta + 80 { 1 } else { 0 };
-                        // numFailHighs multiplicative scaling (Starzix T1 #1) —
-                        // more fail-high cascades = stronger signal the cutoff
-                        // move is genuinely good. 0..3 cascades → 1.0×..1.75× bonus.
+                        // Depth-boost on big fail-high (#1008, SF/Obsidian) —
+                        // use depth+1 when cutoff exceeds beta by BONUS_BOOST_AT.
+                        let bonus_depth = depth + if best_score > beta + tp(&BONUS_BOOST_AT) { 1 } else { 0 };
+                        // numFailHighs multiplicative scaling (#1020, Starzix T1 #1) —
+                        // more cascades = stronger cutoff confidence.
                         let raw_bonus = history_bonus(bonus_depth);
-                        let scale_factor = num_fail_highs.min(3);
-                        let bonus = raw_bonus + raw_bonus * scale_factor / 4;
+                        let scale_factor = num_fail_highs.min(tp(&NFH_CAP));
+                        let bonus = raw_bonus + raw_bonus * scale_factor / tp(&NFH_DIV);
 
                         // Update main history
                         History::update_history(
