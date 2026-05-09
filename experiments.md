@@ -9508,3 +9508,260 @@ Methodology validated:
 - **Retune-on-branch doesn't save direction-wrong features** — #1023 H0
   even after focused retune; bucketing's structural change was net-negative,
   not miscalibrated.
+
+## 2026-05-09 — Reckless output buckets (A5): bucket-layout bug, fix, +4.30 H1 untuned at SB200
+
+The A5 Reckless non-uniform output bucket layout probe (per
+`docs/training_probe_specs_2026-05-04.md` §A5) hit a silent-corruption
+bug on first try, then validated cleanly post-fix.
+
+### Bug discovery (#1031, H0 -38.5)
+
+First A5 SB200 net (`cal-day1-A5-reckless-buckets-s200`) ran SPRT
+#1031 vs SB200 control (`61115E7F`) and H0'd at **-38.5 Elo / 1812
+games**. Net loaded fine, benched fine, header-decoded with all the
+right bits (`reckless_buckets=True`, FT=768, kb=10, threats=66864).
+Magnitude of regression was inconsistent with "endgame-buckets just
+don't help"; investigated impl.
+
+**Root cause** (Bullet `outputs.rs:52`): the training-side
+`RECKLESS_LAYOUT[33]` table was shifted +2 piece counts from the
+Reckless reference and Coda's inference-side
+`RECKLESS_OUTPUT_BUCKETS_LAYOUT`. 14 of 33 piece-count values
+disagreed. Positions in popcount {9, 10, 13, 14, 17, 18, 20, 21,
+23, 24, 26, 27, 29, 30} trained against bucket *k* but read bucket
+*k+1* at inference — ~40% of typical-game positions read weights
+trained on a different piece-count band.
+
+Fixed in bullet `6810ea3` (training-side aligned to the Reckless
+reference / Coda inference). Added warning in source: training-side
+and inference-side lookup tables MUST byte-match.
+
+Memory: `feedback_training_inference_layout_byte_match.md`.
+
+### Post-fix validation (#1045, H1 +4.30)
+
+Rebuilt A5 SB200 net (same recipe + fixed Bullet); net SHA8
+`EC907A15`. SPRT #1045 vs SB200 control resolved **H1 +4.30 ±X /
+18,976 games (LLR 2.96)**.
+
+Bench-stats comparison vs control showed mostly favourable shape:
+fewer total nodes (-9%), lower QS share (-2pp), more RFP/hist-prune
+firing (eval more confident at margin scale). Slight ordering
+degradation (first-move-cut -0.7pp).
+
+Validates: Reckless's endgame-weighted bucket layout (9/4/4/3/3/3/3/4
+piece-count widths) gives a small but real Elo improvement over
+uniform `(popcount-2)/4` at SB200 — on *both* the architectural
+direction *and* magnitude consistent with the original Reckless
+finding for their architecture.
+
+### Retune doesn't help (tune-1046 1000-iter, #1049 -0.4, #1050 +1.6)
+
+Full-sweep retune on A5 (#1046, 1000 iter) produced coherent-looking
+movements: SE_DEPTH 4→2, IIR_MIN_DEPTH 2→1 (more shallow extensions),
+NMP cluster more conservative (BASE_R +14%, DEPTH_DIV +20%), pruning
+margin gates uniformly tightened. Direction story: "eval is sharper
+in endgame regions, search re-balances around that."
+
+Outputs applied → SPRTs:
+- **#1049** A5 pre-vs-post tune (same net, applied vs main): -0.4 ±3.6
+  / 8,548 games, LLR -0.50. Tune is **slightly negative vs untuned**.
+- **#1050** A5 post-tune vs SB200 control: +1.6 ±3.2 / 14,438 games,
+  LLR 0.51. Tuned variant is +1.6 vs control, less than untuned's
+  +4.30.
+
+**Decision**: deploy A5 net **WITHOUT tune-1046**. The tune costs
+~2.7 Elo. Drop the tune outputs, keep the architecture.
+
+### Cannot merge yet — needs SB800
+
+A5 is at SB200 maturity; trunk-prod is SB800. SB200-vs-SB800 isn't
+apples-to-apples for trunk merge. Path forward: **train SB800
+reckless-OB net** (canonical SB800 + `--ob-layout reckless`),
+SPRT vs trunk-prod at matched maturity. Training queued on a slow
+GPU, ~24h+ to land.
+
+## 2026-05-09 — FT=512 SB200 probe (A4 Phase 1+2 condensed)
+
+Cache-residency probe per A4 in `docs/training_probe_specs_2026-05-04.md`.
+Trained FT=512 SB200 from canonical recipe + `--ft-size 512` (Bullet
+flag added in `a699e1b`).
+
+### Final training-loss read
+
+Same-SB comparison FT=512 vs FT=768 (matched seed, recipe, length):
+
+| SB | FT=768 | FT=512 | Δ |
+|---|---:|---:|---|
+| 80 | — | — | +5.32% |
+| 182-186 | 0.003556-3562 | 0.003729-3734 | +4.86-4.92% |
+| 200 final | 0.003584 | 0.003754 | **+4.74%** |
+
+Stable ~5% loss handicap right through the cosine tail. Earlier
+"identical-loss" reading at SB120 was a misread (LR vs loss confusion).
+
+### Validation gates (1-5, all green-to-positive on the mechanism)
+
+| Gate | Result |
+|---|---|
+| 1: Convert + load | ✓ Header decode clean (v10, FT=512, all bits correct) |
+| 2: File size | ✓ -33% (42 MB vs 63 MB control) |
+| 3: Tree shape | RFP firing +18.7%, hist-prune +40%, QS share -6.2pp, first-move-cut -0.7pp |
+| 4: NPS (Hercules) | **+12.7%** (799K vs 709K) |
+| 5: Cache (perf-stat, taskset -c 0) | **L1d miss -3.28pp** (18.50% vs 21.78%), cycles/node -10.4%, LLC miss flat |
+
+Cache thesis validated — but in **L1d efficiency**, not L3 fit. Per-call
+working set (32 active threats × 512 = 16 KB) fits L1d cleanly at FT=512;
+at FT=768 (24 KB) it pressures L1d harder.
+
+### SPRT outcomes
+
+- **#1043** FT=512 vs trunk-prod: H0 **-71.1** ✗ (1100 games, **wrong
+  baseline** — SB200 dev vs SB800 trunk-prod; maturity mismatch).
+- **#1044** FT=512 vs SB200 control (correct baseline): H0 **-26.3** ✗
+  (resolved at LLR -2.94).
+- **#1048** 1000-iter full-sweep tune on FT=512.
+- **#1051** FT=512 pre-vs-post tune (same net, applied vs main): -1.9
+  ±3.3 / 10,308 games, LLR -1.34. Tune is **mildly negative vs untuned**.
+- **#1052** FT=512 post-tune vs SB200 control: H0 **-19.0** ✗.
+
+### Decomposition of -26 Elo
+
+Recovery path budget (rough estimates):
+- SIMD under-tiling at FT=512: ~3-5 Elo (kernels are constant-tiled
+  for 768; FT=512 underutilizes AVX-512 register file). Recoverable
+  with ~half-day kernel re-tile.
+- Tunable miscalibration (margin gates fire too often): ~5-15 Elo.
+  Tune-1048 went the wrong direction — net-negative aggregate drift.
+- Real eval-quality cost (5% loss handicap): ~10-15 Elo, only
+  recoverable via SB800 retrain (longer training narrows loss gap).
+
+### Decision
+
+**Closed at SB200**. Cache mechanism real but eval handicap dominates
+at this length. Path forward (if pursuing): SB800 retrain. The +12.7%
+NPS lift on cache-pressured fleet hosts (cloud Xeons) makes the trade
+worth re-visiting at a length where loss converges further.
+
+## 2026-05-09 — SB800 candidate sweep: warm0+finallr486, A6 alone, warm0 alone
+
+Three SB800 candidate nets evaluated against trunk-prod at matched
+SB800 maturity. Each tested untuned + 2500-iter tuned + tune-applied
+SPRT. Pattern across all three: untuned negative, retune recovers
+some but not all.
+
+### #1033 / #1034 / #1039 — warm0 + finallr486 SB800 (combo)
+
+- **#1033** untuned vs trunk-prod: H0 **-20.1 ±6.6** / 3,114 games.
+- **#1034** 2500-iter full-sweep retune on the combo net. Big movers:
+  RFP_MARGIN_IMP 30→40 (+33%), HIST_BONUS_OFFSET 22→9 (-59%),
+  NMP_UNDEFENDED_MAX 2→1, CORR_W_NP 75→88, MOBILITY_DELTA_WEIGHT +13%,
+  DISCOVERED_ATTACK_BONUS -15%.
+- **#1039** combo + tune-1034 applied vs trunk-prod: H0 **-11.6 ±5.0**
+  / 4,966 games. Retune recovered ~9 Elo (-20.1 → -11.6) but combo
+  remains structurally weaker than trunk-prod even with full sweep.
+
+**Decision**: combo closed. Warm0+finallr486 stacking at SB800 over-
+stretches. Warm0 alone SB200 banked +9.25 (#1003); finallr486 alone
+SB200 was tepid (+1.80 #1005). Combining them at SB800 didn't survive
+even with retune.
+
+### #1037 / #1042 — A6 (finallr486 alone) SB800
+
+- **#1037** untuned vs trunk-prod: H0 **-17.5 ±6.2** / 3,592 games.
+- **#1038** 2500-iter full-sweep retune.
+- **#1042** A6 + tune-1038 applied vs trunk-prod: in flight.
+
+Tune-1038 outputs differ meaningfully from tune-1034 (warm0+A6 combo)
+on 14+ params with significant directional disagreement
+(SE_KING_PRESSURE_MARGIN 2 vs 1, CAP_HIST_BASE 25 vs 35, RFP_MARGIN_IMP
+40 vs 31, HIST_PRUNE_DEPTH 1 vs 2, IIR_MIN_DEPTH 2 vs 1, etc.). **Tunes
+are net-specific, not net-family-generic**.
+
+### Warm0 alone SB800 — training in flight
+
+Strongest SB200 prior (warm0+tune-983 H1 +9.25 at SB200, #1003).
+Training queued on two GPU hosts in parallel for cross-host determinism
+check (same seed=42, different hosts). When both land, will diff
+headers + bench to verify pipeline determinism, then standard
+SPRT+tune treatment.
+
+## 2026-05-09 — SPSA meta-pattern: small architectural changes don't benefit from full-sweep retune
+
+Across two completely different architectural changes — reckless OB
+(A5, +4.3 H1 untuned, -0.4 retune) and FT=512 (-26 untuned, -19
+retune) — the 1000-iter full-sweep retune was **slightly negative
+aggregate drift** vs the untuned version of the same net.
+
+This is a meaningful refinement to the standard "+5-15 Elo
+retune-on-branch lift" rule:
+
+- **Big architectural changes** (factor introduction, C8fix-xray,
+  warmup-on-rebase): retune-on-branch banks +5-15 Elo because the
+  eval distribution shifts substantially, and trunk's tunables are
+  meaningfully miscalibrated for the new shape.
+- **Small architectural changes** (reckless OB, FT shrink, individual
+  net candidates): retune-on-branch may give ~0 Elo or slightly
+  negative. Trunk's tunables are already near-optimal for v9 broadly,
+  and the small architectural change doesn't shift the optimum
+  enough for SPSA to find a clear improvement at 1000 iter / 80
+  params (~12.5 iter/param — well below the 150-200 target per
+  `feedback_spsa_snr_scales_inverse_sqrt_n`).
+
+The existing `feedback_long_full_sweep_spsa_can_regress` memory
+already captured this for the long-tune case (tune-861's 10K-iter
+SPRT'd at -2.2). Today's data confirms the pattern at 1000 iter
+density too — aggregate noise drift across many low-gradient params
+overwhelms the few real signals.
+
+**Implications:**
+- For small-arch changes, deploy untuned. Don't burn fleet capacity
+  on retunes that costs Elo on average.
+- The "retune-on-branch" playbook needs splitting: structural
+  feature changes (force-more-pruning, new gate/feature) get
+  retune; net-only changes get directly-deployed-untuned.
+- SPSA at 1000-iter / 80 params is undersized for productive use.
+  Either go wider iter density (focused-cluster tunes) or go much
+  longer (basin-escape ensemble).
+
+## 2026-05-09 — Basin-escape ensemble (#1057/1058/1059)
+
+Recent retunes consistently producing small-negative aggregate drift
+suggests SPSA may be stuck in a local-optimum basin. Submitted a
+3-start ensemble:
+
+- **#1057 (A_current)**: 2500-iter full sweep starting from current
+  main defaults (control / exploit-current-basin)
+- **#1058 (B_midspec)**: same spec, 18 suspect tunables started at
+  numerical mid-spec (geometric escape)
+- **#1059 (C_crossengine)**: same spec, 18 suspect tunables started
+  at cross-engine consensus / opposite-direction-from-recent-drift
+  (push out of basin)
+
+Suspect tunables identified by recent volatility / boundary-pinning:
+HIST_BONUS_OFFSET, HIST_PRUNE_DEPTH, IIR_MIN_DEPTH, SE_DEPTH,
+NMP_DEPTH_DIV, NMP_BASE_R, LMR_HIST_DIV, CORR_W_NP, CORR_HIST_ERR_MAX,
+CAP_HIST_BASE, CAP_HIST_MAX, PROBCUT_MIN_DEPTH, CORR_W_CONT,
+RFP_DEPTH, FUT_BASE, FUT_PER_DEPTH, NMP_EVAL_DIV, HIST_PRUNE_MULT.
+
+Specs in `scripts/tune_basin_{A,B,C}_*.txt`.
+
+### Diagnostic framing
+
+Outputs serve double duty:
+
+- **Convergent params across A/B/C** → real optimum, well-calibrated
+  feature.
+- **Divergent params** → sensitive to start point; broad basin or
+  multi-plateau landscape; iter density too low at 2500.
+- **All 3 start points driving to the same boundary** → strong signal
+  the FEATURE is structurally at-or-near-disable. Worth code-level
+  audit, not just tunable adjustment.
+
+The third pattern is the one that turns SPSA from optimizer into
+diagnostic: SPSA-driven-to-disable-regardless-of-start = "this gate
+is off in disguise; investigate the implementation."
+
+7,500 iterations total fleet cost. Resolves over ~1-2 days at standard
+OB throughput.
