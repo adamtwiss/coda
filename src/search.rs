@@ -3488,9 +3488,12 @@ fn negamax(
 
                     } else {
                         // Capture caused beta cutoff: bonus the cutoff capture.
-                        // Apply numFailHighs multiplicative scaling (#1020 ext) —
-                        // same mechanism that earned +2.8 on quiet bonus.
-                        let raw_cap_bonus = capture_history_bonus(depth);
+                        // Depth-boost on big fail-high (#1069 ext of #1008): use
+                        // depth+1 when cutoff exceeds beta by BONUS_BOOST_AT.
+                        let cap_bonus_depth = depth + if best_score > beta + tp(&BONUS_BOOST_AT) { 1 } else { 0 };
+                        // numFailHighs multiplicative scaling (#1054 ext of #1020):
+                        // more cascades = stronger cutoff confidence.
+                        let raw_cap_bonus = capture_history_bonus(cap_bonus_depth);
                         let scale_factor = num_fail_highs.min(tp(&NFH_CAP));
                         let cap_bonus = raw_cap_bonus + raw_cap_bonus * scale_factor / tp(&NFH_DIV);
                         if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
@@ -3505,6 +3508,7 @@ fn negamax(
                             );
                         }
                     }
+
 
                     // Unconditionally penalize all tried captures that didn't cause cutoff
                     // (matching Stockfish/Obsidian/Viridithas — captures that fail should be
