@@ -3487,8 +3487,12 @@ fn negamax(
                         }
 
                     } else {
-                        // Capture caused beta cutoff: bonus the cutoff capture
-                        let cap_bonus = capture_history_bonus(depth);
+                        // Capture caused beta cutoff: bonus the cutoff capture.
+                        // Apply numFailHighs multiplicative scaling (#1020 ext) —
+                        // same mechanism that earned +2.8 on quiet bonus.
+                        let raw_cap_bonus = capture_history_bonus(depth);
+                        let scale_factor = num_fail_highs.min(tp(&NFH_CAP));
+                        let cap_bonus = raw_cap_bonus + raw_cap_bonus * scale_factor / tp(&NFH_DIV);
                         if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                             let cpt = if flags == FLAG_EN_PASSANT {
                                 captured_type(PAWN)
