@@ -181,7 +181,7 @@ Quantization: QA=255 (accumulator), QB=64 (output weights).
 - **CReLU**: clamp [0, 255], VPMADDWD dot product
 - **SCReLU**: clamp [0, 255], square, int8 byte decomposition for VPMADDUBSW. Scale correction ×0.8 for search threshold compatibility.
 - **Pairwise**: split accumulator halves, CReLU-clamp, multiply pairs. SIMD byte decomposition like SCReLU.
-- **v7 hidden layers**: SCReLU pack to uint8, int8 L1 matmul via VPMADDUBSW, float L2→output. 673K NPS (12% faster than GoChess).
+- **v7/v9 hidden layers**: SCReLU pack to uint8, int8 L1 matmul via VPMADDUBSW, float L2→output.
 - **Fused accumulator update**: copy + delta in single pass for incremental updates
 - **TT prefetch**: prefetch TT bucket after make_move, before child node TT probe
 
@@ -295,7 +295,7 @@ Output is SF BINP binpack format, directly usable by Bullet.
 - **12-file training data** gives +33 Elo over 6-file for 768pw (data diversity matters).
 - **Low final LR is critical**: cosine `final_lr 0.0001` was 20× too high. Reducing to **2.43e-6** (Bullet default `0.001 * 0.3^5`) gave **+47 Elo** — net was oscillating, not converging. Every Coda training config (v5/v7/v8/v9) uses this same default endpoint; there is no V5→V9 LR drop.
 - **Data filtering**: quiet positions only (ply≥16, no checks/captures/tactical moves) gave **+22 untuned, +48 tuned**. Aligns with how NNUE is consumed (quiet nodes after QS).
-- **v9 low-LR tail is load-bearing**: sparse threat features keep converging deep into the tail; SB400 → SB800 delivered +88 Elo on v9 (vs flat on v7). v9 has *not* been tested below the 2.43e-6 default; floor is ~2.43e-7 (regressed). See `memory/project_v9_low_lr_tail_critical.md`.
+- **v9 schedule completion is load-bearing, not "more SBs"**: the +88 Elo we used to attribute to "SB400 → SB800 tail" was actually *schedule mismatch*: an `e800` net stopped mid-cosine at SB600 is −88 vs the same `e800` run completed to SB800. A *fully-baked* `e400s400` (own cosine ending at SB400) is only ~5–6 Elo behind `e800s800`. Schedule doubling is roughly +4.7 Elo per doubling. Lesson: complete the schedule you started; don't half-bake. v9 has *not* been tested below the 2.43e-6 final-LR default; floor is ~2.43e-7 (regressed). See `memory/project_v9_low_lr_tail_critical.md`.
 
 ### EVAL_SCALE Calibration
 
@@ -334,10 +334,10 @@ threats, 16→32 hidden, w=0.15, full 800-SB run).
 ## Key Search Parameters
 
 All parameters are SPSA-tunable via the `tunables!` macro in `search.rs`
-(~77 parameters as of 2026-04-24, count grows over time). Current values
-reflect multiple SPSA rounds + retune-on-branch calibration, most
-recently the full-sweep #743 retune merged as #747. See the macro in
-`search.rs` for authoritative defaults.
+(count grows over time — see the macro for the live list). Current values
+reflect multiple SPSA rounds + retune-on-branch calibration. See the macro
+in `search.rs` for authoritative defaults and `experiments.md` for which
+tunes shaped them.
 
 - SEE values: P=100, N=320, B=330, R=500, Q=900
 - History bonus: linear formula min(MAX, MULT*depth - BASE)
@@ -416,46 +416,54 @@ full curve):
 - 8× (480+8, past the knee): ~35 Elo
 - 16× (960+16): ~0 Elo (parity)
 
-### The TC-handicap sigmoid (last calibrated 2026-04-24)
+### Self-play NPS-Elo conversion (TC and threading sweeps)
 
-Bullet H2H vs SF 18 with asymmetric TC (Coda at 60+1 vs SF at
-reduced TC). 100 games per data point:
+Self-play sweeps measure how much our own NPS/depth buys us in our
+own regime — directly relevant for sizing up NPS work, threading work,
+and SPRT-result-extrapolation. Far more actionable than the SF-handicap
+sigmoid (which mostly told us SF is too strong to measure directly at
+short TC). Both sweeps run on Hercules-class hardware, hash 1024,
+EGTB on, base TC 10+0.1.
 
-| HC | Score (W-L-D) | Coda % | Gap Elo (±) | Draw % | Δ vs prev |
-|---:|:---|---:|---:|---:|---:|
-| 1× (baseline) | 0-43-57 | 28.5% | **−159.8** ±41.6 | 57% | — |
-| 2× | 0-47-53 | 26.5% | **−177.2** ±43.9 | 53% | 0 (within noise) |
-| 4× | 0-35-65 | 32.5% | **−127.0** ±37.2 | 65% | +50 |
-| 8× | 3-13-84 | 45.0% | **−34.9** ±26.7 | 84% | **+92 (knee)** |
-| 16× | 15-16-69 | 49.5% | **−3.5** ±38.0 | 69% | +31 |
+**TC sweep (single thread, ~480 games per point):**
 
-**Classic sigmoid** with an ultra-flat (possibly slightly negative)
-first doubling. 2× TC doesn't help at all — SF's time-management is
-so efficient at short TC that Coda's extra time doesn't translate
-to useful extra depth. Knee at 4×→8× (+92 Elo). Taper into parity
-at 16× (LOS 43%).
+| TC factor | TC | Self-play Elo | Δ vs 1× | Δ vs prev |
+|---|---|---:|---:|---:|
+| 0.5× | 5+0.05  | **−167** | −194 | — |
+| 1× | 10+0.1 | +27 | (anchor) | +194 |
+| 2× | 20+0.2 | **+137** | +110 | +110 |
 
-**The 1×→2× flat zone is important**: a 2× NPS gain from our
-inference work alone is worth ~0 Elo vs SF. NPS work only pays once
-we're near the 4× knee threshold.
+Asymmetric / concave shape — *halving TC hurts more than doubling helps*
+(−194 vs +110). Diminishing returns set in fast: each subsequent doubling
+buys less. Implication for NPS work: a 2× NPS win is worth ~+110 Elo in
+our own regime, but stacking 2× NPS wins isn't a linear path to +220.
 
-**Draw-rate peak at 8×** (84%!): both engines draw nearly everything
-at that TC — we've reached "solid drawing depth" but still can't
-out-play SF from equal position. At 16× Coda finally wins enough
-games to match SF's wins (15W-16L-69D, essentially symmetric).
+**Threading sweep (single TC 10+0.1, 200 games per point):**
 
-**Caveat on absolute numbers**: the sigmoid shape is preserved across
-net/tune configurations — treat absolute Elo values as anchors with
-~±10 Elo uncertainty rather than exact points. Sigmoid was calibrated
-2026-04-24; recalibration is queued every ~2 weeks or after any merge
-cluster worth ~+20 Elo (see §Recalibration cadence below).
+| Threads | Self-play Elo (vs 1T) | Δ vs prev doubling |
+|---|---:|---:|
+| 1 | (anchor) | — |
+| 2 | **+37** | +37 |
+| 4 | **+68** | +31 |
 
-**What this tells us:**
+Lazy SMP scales 2T = +37, 4T = +68 (~85% linear-doubling efficiency
+on the second step). Useful for sizing thread-count deployments and
+peer-engine comparisons.
 
-- **Our eval is at SF parity** — at equal depth we play as well. The full 160 Elo gap at normal TC is *horizon*, not quality.
-- **Horizon is nonlinear in depth vs SF-class opponents.** Partial depth gains below the knee (1-4×) return near-zero Elo; above the knee, each incremental ply delivers 20-30+ Elo. Tactical refutations live at specific depths — seeing them at all matters far more than seeing them half-a-ply earlier.
-- **The sigmoid is specific to wide-Elo-gap opposition.** Vs same-tier opponents (Rivals pool, 3430-3585 CCRL), there's no tactical-cliff dynamic — NPS wins convert more linearly to Elo.
-- **Compound to cross the knee, or plateau below it (vs SF).** A +3 Elo win pre-knee feels thankless vs SF but is cleanly valuable in Rivals-tier competition (Lichess bot ranking, CCRL position). Stack them.
+**How to read self-play numbers vs SPRT bounds.** Self-play sweeps
+above are absolute Elo at the displayed TC; an SPRT gain *at SPRT TC*
+will convert at roughly the same rate as the relevant lever shows
+above. A 5% NPS win at 10+0.1 ≈ +5 Elo by linear-interpolating the
+2× doubling; halve that for "NPS-only with no behaviour change"
+because SPSA values weren't retuned. Don't double-count — the SF/Rivals
+strength gap is measured separately.
+
+**Self-play vs vs-SF dynamics differ.** The previous SF-handicap sigmoid
+showed an ultra-flat 1×→2× zone (SF's TM kept the gap stable until 4×).
+That dynamic is specific to fighting much stronger opposition and is not
+how our own NPS gains compound for SPRT. Use the self-play tables above
+when sizing NPS/threading work; consult the SF-gap framing in the loss-
+analysis doc when reasoning about path-to-parity.
 
 ### Path to closing the gap (pragmatic, 2026 horizon)
 
@@ -464,12 +472,16 @@ levers. Realistic per-lever contribution budget:
 
 | Lever | Plausible gain | Path |
 |---|---:|---|
-| Net architecture / training upgrades | ~30 Elo | Reckless-KB + factor arch each SPRT'd at +15; deploy as SB800 retrain |
-| Cache residency + SIMD dispatch | +10-25 Elo | L1 permutation, VNNI dispatch, group-lasso-driven matrix shrink |
+| Net architecture / training upgrades | ~20-30 Elo | Output-bucket layouts, FT-shrink, factor-arch refinements, training-recipe sweeps |
+| Cache residency + SIMD dispatch | +10-25 Elo | L1 permutation, VNNI dispatch, FT-shrink for L3 fit, weight-matrix shrink |
 | Pruning equilibrium retunes | +5-15 Elo | Force-more-pruning style branches with full-sweep retune |
-| Further eval refinement | +10-20 Elo | Post-shelved-net training-recipe iteration |
+| Further eval refinement | +10-20 Elo | Training-recipe iteration on top of new arch |
 | Move-ordering improvements | +5-15 Elo | EBF-reducing work; compounds with above |
-| **Stacked total** | **~60-100 Elo** | Meaningful jump — top-20 CCRL range |
+| **Stacked total** | **~50-100 Elo** | Meaningful jump — top-20 CCRL range |
+
+Per-row gains are rough envelopes, not banked. In-flight experiment
+status lives in `experiments.md`, not here — keeping it in sync would
+churn this file.
 
 **Parity (16×-equivalent)** requires dramatic EBF reduction (log(EBF) halved,
 1.8 → 1.35) which in turn requires multi-year investment: richer training
@@ -576,14 +588,17 @@ Still-unexplored: output bucket count, batch size, WDL schedule shape,
 data composition additions (Lichess-blunder positions into training set).
 
 **Long tunes / long training** — top engines run 25K-iter SPSA routinely;
-our 2-2.5K default leaves small-gradient gains on the table. v9 sparse
-threat features converge deep into the low-LR tail (SB400 → SB800 = +88
-Elo on v9 vs flat on v7). SB1600+ likely worth +10-20 with tapering.
+our 2-2.5K default leaves small-gradient gains on the table for full-sweep
+80-param tunes (SNR scales as √N — see `feedback_spsa_snr_scales_inverse_sqrt_n`).
+v9 schedule completion matters: a fully-baked `e400s400` is only ~5-6 Elo
+behind `e800s800`; the +88 Elo we used to attribute to "the tail" was actually
+schedule-mismatch (mid-cosine snapshot vs completed). SB1600+ likely worth
++5-10 with tapering, not +20.
 
 **Infrastructure (Lichess-visible, SPRT-invisible)** — opening book A/B,
 TB entry timing / DTZ walkback quality, TM edge cases (stockpile, forced-move
-soft_floor, increment flooring), Lazy SMP correctness (v9 T=4 blunder bug
-known; deploys at T=1 until fixed).
+soft_floor, increment flooring). Multi-thread Lazy SMP is now correct; the
+2026-04-25 T=4 blunder bug is resolved.
 
 **Thread-selection heuristic.** Name the thread first ("flywheel",
 "correctness", "comparative", "training", "long-tune", "infrastructure")
@@ -811,8 +826,10 @@ OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune_status.py --compare 175 176
 When LMR_C_QUIET or LMR_C_CAP change, LMR tables are automatically reinitialized.
 
 **Practical guidance:**
-- 2500 iterations (×8 pairs = 40000 games) is standard. Values stabilise by ~800 iterations.
-- Focused tunes (4-8 params) need only ~1000 iters; full-sweep (60+ params) benefits from 2000-2500.
+- SPSA SNR scales as √N — target ~150-200 iter/param for full-sweep tunes.
+  Focused tunes (4-8 params) need only ~1000 iters; full-sweep (~80 params)
+  needs ~12-16K iters to converge cleanly. Tune-861 at 10K iters / 80 params
+  was undersized and SPRT'd negative.
 - c_end ~5-10% of parameter range, r_end 0.002 are good defaults.
 - Alpha 0.602, gamma 0.101, A_ratio 0.1 (standard SPSA constants).
 - SPRT the final values against main before merging — SPSA can overfit.
@@ -826,7 +843,7 @@ When LMR_C_QUIET or LMR_C_CAP change, LMR tables are automatically reinitialized
 Some features are neutral without retuning but gain significant Elo when pruning parameters are recalibrated on their branch. The workflow:
 
 1. **Create feature branch** on current main
-2. **Submit SPSA tune** on the branch (same 18 pruning params as baseline)
+2. **Submit SPSA tune** on the branch (cluster of pruning params relevant to the change, or full-sweep if scope is unclear)
 3. **Compare parameter convergence** against a baseline tune on main
 4. **If parameters diverge significantly** (>5% on multiple params): the feature is shifting the search landscape. Apply tuned values and SPRT the branch+tune against main.
 5. **If parameters converge to same values as main**: the feature is truly neutral, drop it.
@@ -900,7 +917,7 @@ Systematic approach for finding and fixing search feature issues. Each cycle com
 **3. Fix and SPRT test**
 - Create a feature branch with the structural fix.
 - Set parameter defaults to match consensus (e.g., Stockfish's value for the same formula).
-- SPRT test against main with bounds [0, 10]. The fix should be positive even with untuned constants if the structural change is correct.
+- SPRT test against main with the standard bounds policy (default `[0, 3]`; widen only if the change class has a load-bearing prior for larger magnitude — see §SPRT Testing Policy bounds table). The fix should be positive even with untuned constants if the structural change is correct.
 - If SPRT fails, review for secondary bugs (missing ply>0 guard, bestScore pollution, etc.).
 
 **4. SPSA tune the corrected feature**
