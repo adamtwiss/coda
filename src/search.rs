@@ -3055,9 +3055,17 @@ fn negamax(
         {
             // STM=WHITE: 7th rank is row 6 (squares 48..56). STM=BLACK: 7th
             // rank is row 1 (squares 8..16). `to` is the destination.
+            //
+            // CRITICAL: must use pre-move STM `us`, not board.side_to_move.
+            // make_move (line 3020) flips side_to_move to the opponent, so
+            // reading board.side_to_move here checks the WRONG side and the
+            // condition can never satisfy. Bug present since N6 introduced
+            // 2026-04 (~3 weeks dead); audit C2026-04-25-N6 + 2026-05-09
+            // correctness sweep. `us` is the value board.side_to_move had
+            // BEFORE make_move; reused here.
             let to_rank = to >> 3; // to / 8
-            let on_seventh = (board.side_to_move == WHITE && to_rank == 6)
-                || (board.side_to_move == BLACK && to_rank == 1);
+            let on_seventh = (us == WHITE && to_rank == 6)
+                || (us == BLACK && to_rank == 1);
             if on_seventh {
                 extension = 1;
             }
