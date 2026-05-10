@@ -79,15 +79,45 @@ def submit_tune(args):
     r = s.get(f'{args.server}/tune/new/')
     csrf = s.cookies.get('csrftoken')
 
-    # Step 4: Load params
-    if args.params_file:
-        with open(args.params_file) as f:
-            spsa_inputs = f.read().strip()
-    elif args.params:
-        spsa_inputs = args.params.strip()
+    # Step 4: Load params.
+    #
+    # Full-sweep specs are ALWAYS derived dynamically from `coda tune-spec`
+    # (the Rust `tunables!` macro is the canonical source of truth). Persisted
+    # full-sweep cache files are forbidden — they drift after every applied
+    # tune and silently restart SPSA from stale defaults.
+    #
+    # Focused clusters (subsets, biased starting points) are still allowed
+    # via --params/--params-file. The guard below validates that any user-
+    # supplied spec is a *strict subset* of trunk's tunables (or contains
+    # names not in trunk, which is treated as intentional override).
+    canonical = coda_tune_spec()
+    canonical_names = set()
+    if canonical:
+        canonical_names = {l.split(',', 1)[0].strip()
+                           for l in canonical.splitlines() if l.strip()}
+
+    if args.params_file or args.params:
+        if args.params_file:
+            with open(args.params_file) as f:
+                spsa_inputs = f.read().strip()
+            source_label = f'--params-file {args.params_file}'
+        else:
+            spsa_inputs = args.params.strip()
+            source_label = '--params'
+        user_names = {l.split(',', 1)[0].strip()
+                      for l in spsa_inputs.splitlines() if l.strip()}
+        # Refuse if user-supplied spec covers EVERY trunk tunable — that's
+        # a full-sweep cache, even if it was generated minutes ago. Always
+        # derive full sweeps fresh from the binary.
+        if canonical_names and user_names >= canonical_names:
+            print(f'Error: {source_label} contains all {len(canonical_names)} '
+                  f'trunk tunables — that is a full-sweep cache.')
+            print('Full sweeps must be derived dynamically. Re-run without '
+                  '--params/--params-file to use coda tune-spec directly.')
+            return False
     else:
         # No explicit spec — derive from `coda tune-spec` (canonical source).
-        spsa_inputs = coda_tune_spec()
+        spsa_inputs = canonical
         if not spsa_inputs:
             print('Error: no --params/--params-file given and could not run '
                   './coda tune-spec (build with `make` first)')
