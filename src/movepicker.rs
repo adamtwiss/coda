@@ -632,7 +632,7 @@ impl MovePicker {
             // Matches Obsidian/Alexandria/Berserk pattern (default 3).
             if piece != NO_PIECE {
                 let gp = go_piece(piece);
-                let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
+                let cm = crate::search::tp10(&crate::search::CONT_HIST_MULT_10X);
                 let weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
                 for (i, &w) in weights.iter().enumerate() {
                     if let Some(sub_ptr) = self.cont_hist_subs[i] {
@@ -851,7 +851,7 @@ impl MovePicker {
 
                 if piece != NO_PIECE {
                     let gp = go_piece(piece);
-                    let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
+                    let cm = crate::search::tp10(&crate::search::CONT_HIST_MULT_10X);
                     let weights = [cm, cm, 1i32, 1];
                     for (i, &w) in weights.iter().enumerate() {
                         if let Some(sub_ptr) = self.cont_hist_subs[i] {
