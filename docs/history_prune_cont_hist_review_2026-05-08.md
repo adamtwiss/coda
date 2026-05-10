@@ -4,14 +4,29 @@ Reviewed: Stockfish, Reckless, Obsidian, Viridithas, Alexandria, PlentyChess,
 Berserk, Caissa, Stormphrax, Halogen — top 11 of the 38-engine RR plus
 Reckless (top 2) and Halogen (top 10). Source paths in `~/chess/engines/`.
 
-**Outcome (2026-05-09):** Two of this doc's recommendations have shipped:
+**Outcome (2026-05-09 / 2026-05-10):** Multiple recommendations from this
+doc have shipped:
 - **Post-LMR-research cont-hist nudge (Berserk/Obsidian)** — SPRT #1007
   +1.2 ±1.0 H1 ✓, MERGED.
 - **Bonus depth-boost on big fail-high (SF/Obsidian)** — SPRT #1008
   +1.1 ±0.9 H1 ✓, MERGED.
+- **Capture-cutoff bonus extensions of #1020 (numFailHighs) and #1008
+  (depth-boost)** — SPRTs #1054 (+0.4) and #1069 (+0.2), trending H0 but
+  mild-positive on large samples; merged as bundle constituents 2026-05-10
+  for code symmetry / theme consistency.
 
-Other recommendations from this review (cont-hist bucketing #1009, hist-prune
-threshold widening) failed SPRT — see `experiments.md` 2026-05-09 entry.
+**H0'd dropped recommendations from this review:**
+- **SF malus decay `*977/1024`** (#1047 H0 -2.5; #1053 SPSA bench-neutral
+  exploration confirmed no-op is optimal). The malus-shape direction is
+  closed for Coda.
+- **Reckless asymmetric malus 3× magnitude** (#1068 H0 -39.6, severe
+  regression). Direct port of magnitude ratio doesn't survive in Coda's
+  scaling.
+- **Post-LMR-research nudge extended to captures** (#1055 H0 -1.1).
+  Capture re-search confirmation signal doesn't translate the way quiet's
+  does.
+- Cont-hist bucketing #1009, hist-prune threshold widening — see
+  `experiments.md` 2026-05-09 / 2026-05-10 entries for details.
 
 ## Summary findings
 

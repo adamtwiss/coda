@@ -442,6 +442,15 @@ A separate preprocessing step (`preprocess/permute.cpp`) reorders FT weights for
 
 ## 7. Novel Features Summary (Priority for Coda)
 
+### ✅ SHIPPED FROM THIS REVIEW (2026-05-10)
+
+- **Eval-vs-bestScore depth-boost** (`search.cpp:1185`):
+  `historyDepth = depth + (!inCheck && staticEval <= bestScore)`. When the
+  cutoff bestScore exceeds the static eval, boost history bonus depth by
+  +1. Different signal class from SF's beta-margin trigger; both can stack.
+  **SPRT #1056: +2.1 ±1.6 H1 ✓** (35,184 games). Adopted alongside #1008's
+  beta-margin boost (additive).
+
 ### HIGH PRIORITY
 1. **Sparse L1 MatMul**: Track NNZ in FT output, skip zero chunks in L1 matmul. 30-60% speedup on L1. Default impl works on AVX2. (`sparse_default.h`)
 2. **Threat-Aware History**: `[from][to][fromAttacked][toAttacked]` doubles history granularity. Simple to implement, likely +10-20 Elo. (`history.h`)

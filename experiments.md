@@ -9806,3 +9806,95 @@ attempts.
 - **Tier 1 NMP gate cascade** held until post-retune (per user direction).
 - **5.3b LMP_BASE 5 → 3** bisect step 2; **5.1b SE_DEPTH 6 + ttPv** — both
   queued post-retune.
+
+
+## 2026-05-10 — Capture-extension batch + Stormphrax depth-boost: +2.1 H1 + 2 mild-positive merges
+
+Continuation of the peer-pattern signal-enrichment work from 2026-05-09.
+Tested whether the three winning quiet-side patterns (#1007 post-LMR
+nudge, #1008 bonus depth-boost, #1020 numFailHighs scaling) transfer
+to capture moves, plus two orthogonal ideas (Stormphrax eval-vs-bestScore
+depth-boost, Reckless 3× malus magnitude, SF malus decay).
+
+### H1 ✓ — MERGE CANDIDATE
+
+**#1056 depth-boost when staticEval ≤ bestScore (Stormphrax pattern)** —
+**+2.1 ±1.6 H1 ✓** (35,184 games, LLR 2.95). Branch:
+`experiment/depth-boost-eval-vs-bestscore`. Source: Stormphrax
+search.cpp:1185 — `historyDepth = depth + (!inCheck && staticEval <= bestScore)`.
+Adds a second additive trigger to bonus_depth: when the cutoff bestScore
+exceeds the static eval (cutoff was 'unexpected'/strong-confidence), boost
+depth+1. Stacks with #1008's beta-margin trigger; both can fire for +2
+depth in extreme cases. Different signal class from #1008 (eval-vs-bestScore
+vs beta-margin). Bench drift -0.4%.
+
+### H0-trending — RECOMMENDED MERGE (mild-positive, low tech debt)
+
+**#1054 numFailHighs scaling extended to capture-cutoff bonus** —
++0.4 ±1.1 at 72,298 games, LLR -1.15 (stopped, trending H0). Branch:
+`experiment/numfailhighs-cap-bonus`. Extends #1020 mechanism to capture
+cutoffs. Tech debt: ~6 lines, no new tunables. Median positive at 72K
+games means probable real effect in [-0.7, +1.5]; merging at user
+direction as bundle constituent. Code symmetry: capture bonus path now
+matches quiet bonus path enrichments.
+
+**#1069 cap-history depth-boost (#1008 ext)** — +0.2 ±1.6 at 37,406 games,
+LLR -0.97 (stopped, trending H0). Branch: `experiment/cap-hist-depth-boost`.
+Extends #1008's BONUS_BOOST_AT trigger to capture history. Tech debt: ~7
+lines, reuses BONUS_BOOST_AT tunable. Same reasoning as #1054 — completes
+quiet/capture bonus path symmetry.
+
+### H0 ✗ — DROPPED
+
+**#1055 post-LMR nudge extended to captures (#1007 ext)** — -1.1 ±1.8
+H0 ✗ (29,490 games, LLR -2.97). Extending #1007's quiet post-LMR nudge
+to captures regressed slightly. Capture re-search confirmation signal
+doesn't translate the way quiet's does. Drop.
+
+**#1068 Reckless asymmetric malus (3× magnitude)** — **-39.6 ±8.3** H0 ✗
+(1,516 games, LLR -2.95). Direct port of Reckless's `352*d` malus vs
+`108*d` bonus (3.26×). Massive regression. Reckless's value is
+calibrated against their bonus magnitudes; direct port of the magnitude
+ratio doesn't survive in our scaling. Drop.
+
+**#1047 SF malus decay (`*1113/1024` boost + `*977/1024` per-iter decay)** —
+-2.5 ±2.4 H0 ✗ (16,536 games, LLR -2.95). Faithful port of SF's per-iteration
+malus softening (search.cpp:1855-1867). Bench-neutral SPSA exploration
+(#1053, MALUS_BOOST/MALUS_DECAY at 1024/1024 defaults) confirmed the
+no-op defaults are optimal — neither boost nor decay shifted in 720 iters
+(0.9% / 0.2% movement). The malus-shape direction is closed for Coda.
+
+### Tune outcomes
+
+**#1040 post-merge full retune** — applied as #1041, **-0.5 ±1.4 H0 ✗**
+at 47,248 games. Despite two consecutive tunes (#1010 bucketing, #1040
+post-merge) converging on same direction (HIST_PRUNE_DEPTH 3→2,
+HIST_PRUNE_MULT down 17%, LMR_HIST_DIV up ~25-29%), neither recovered
+Elo when applied. Lesson: SPSA loss surface has local minima that don't
+translate to actual Elo gain — likely self-play overfitting.
+
+**#1053 MALUS_BOOST/MALUS_DECAY tune** — stopped at 720/1500 iters with
+both params <1% movement from no-op defaults. Confirms the malus-shape
+direction is dead.
+
+### Meta-patterns observed
+
+1. **Captures-extensions are 2-of-3 mildly positive**, not the +1.2/+1.1
+   the quiet-side originals were. Capture history is sparser-touched than
+   quiet history — same multiplicative scaling produces less aggregate
+   signal. Worth: yes (low-cost, theme-consistent). Big Elo: no.
+
+2. **Bonus-side enrichments win, malus-side enrichments lose.** Two
+   independent malus-side experiments (decay shape #1047, magnitude #1068)
+   both H0 negative. Coda's malus magnitude/shape is at or near optimum.
+   This direction is closed; pivot to bonus-side or pruning-side ideas.
+
+3. **Cross-engine constants don't port directly.** Reckless's 3× malus
+   ratio nuked to -39.6 Elo. Always port mechanism + tune values, not
+   raw values, especially for magnitude scalars.
+
+4. **Early SPRT readings are noise + regression-to-mean.** All five
+   experiments started +5 to +8 at 700 games; by 2K games most had
+   regressed to the true magnitude. Confirms the 1K-2K threshold for
+   useful directional signal.
+

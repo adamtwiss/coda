@@ -22,6 +22,14 @@ adding novelty.
 `search: numFailHighs multiplicative history bonus (Starzix T1 #1)`.
 Hit the predicted "+2 to +6" magnitude.
 
+**Extended to capture-cutoff bonus 2026-05-10** — SPRT #1054 +0.4 ±1.1
+(72K games, trending H0 but median-positive). Merged as bundle constituent
+for code symmetry. Mechanism: when a capture causes the beta cutoff and
+fail-high cascades count up, scale capture_history_bonus by the same
+factor. Captures don't deliver the same +2.8 the quiet bonus saw — capture
+history is sparser-touched, so the multiplicative scaling produces less
+aggregate signal — but the median is positive on large samples.
+
 `src/search.hpp:690, 738, 749, 756, 812` + `src/thread_data.hpp:227`.
 
 Starzix counts how many fail-highs a single move triggered through the
