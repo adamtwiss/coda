@@ -29,7 +29,29 @@ Environment variables:
 import argparse
 import os
 import re
+import subprocess
 import requests
+
+
+def coda_tune_spec():
+    """Read the canonical SPSA spec from the compiled coda binary's `tune-spec`
+    subcommand. The Rust `tunables!` macro in src/search.rs is the single
+    source of truth for tunable defaults, ranges, and c_end values; never
+    hand-maintain a static params file."""
+    candidates = ['./coda', './target/release/coda']
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                out = subprocess.check_output([path, 'tune-spec'],
+                                              stderr=subprocess.DEVNULL).decode()
+                # Filter to SPSA-format lines (NAME, int, ...) — strip startup banners.
+                lines = [l for l in out.splitlines()
+                         if re.match(r'^[A-Z_][A-Z0-9_]*,\s*int,', l)]
+                if lines:
+                    return '\n'.join(lines)
+            except subprocess.CalledProcessError:
+                pass
+    return None
 
 SERVER   = os.environ.get('OPENBENCH_SERVER',   'https://ob.atwiss.com')
 USERNAME = os.environ.get('OPENBENCH_USERNAME', 'claude')
@@ -61,8 +83,17 @@ def submit_tune(args):
     if args.params_file:
         with open(args.params_file) as f:
             spsa_inputs = f.read().strip()
-    else:
+    elif args.params:
         spsa_inputs = args.params.strip()
+    else:
+        # No explicit spec — derive from `coda tune-spec` (canonical source).
+        spsa_inputs = coda_tune_spec()
+        if not spsa_inputs:
+            print('Error: no --params/--params-file given and could not run '
+                  './coda tune-spec (build with `make` first)')
+            return False
+        print(f'Using full-sweep spec from coda tune-spec '
+              f'({len(spsa_inputs.splitlines())} params)')
 
     n_params = len([l for l in spsa_inputs.strip().split('\n') if l.strip()])
     print(f'Submitting SPSA tune: {args.branch} ({n_params} params, {args.iterations} iterations)')
@@ -159,10 +190,6 @@ def main():
 
     if not args.password:
         print('Error: password required. Set OPENBENCH_PASSWORD or use --password')
-        return
-
-    if not args.params and not args.params_file:
-        print('Error: --params or --params-file required')
         return
 
     submit_tune(args)

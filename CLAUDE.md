@@ -787,16 +787,22 @@ right net first.
 
 **Submitting tunes:**
 ```bash
-# Submit via script (preferred) — params file covers the tunables you want to sweep:
+# Full-sweep tune (preferred — auto-derives the spec from `./coda tune-spec`,
+# which reads the live `tunables!` macro defaults; never hand-maintain a
+# static "all params" file):
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune.py <branch> [bench] --iterations 2500
+
+# Focused cluster — pass a curated subset via --params-file:
 OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune.py <branch> [bench] --params-file scripts/tune_nmp_cluster.txt --iterations 1000
 
-# Or with inline params:
+# Or inline params for ad-hoc subsets:
 OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune.py <branch> [bench] --params "LMR_C_QUIET, int, 132, 80, 300, 10.0, 0.002
 LMR_C_CAP, int, 164, 100, 350, 10.0, 0.002"
 
-# For full-sweep tunes, generate the spec from the tunables! macro:
-#   python3 -c 'import re; [print(f"{m[1]}, int, {m[2]}, {m[3]}, {m[4]}, {m[5]}, 0.002") for m in (re.match(r"    \\((\\w+), (-?\\d+), (-?\\d+), (-?\\d+), ([\\d.]+)\\),", l) for l in open("src/search.rs")) if m and m[1] != "name"]' > scripts/tune_all.txt
-# (skips the macro-definition line). See scripts/tune_force_more_pruning.txt for an example of the full sweep.
+# Static "all params" cache files (e.g. scripts/tune_all_main.txt) are
+# FORBIDDEN — they drift from src/search.rs after every applied tune,
+# silently restarting SPSA from stale defaults. ob_tune.py auto-derives
+# the spec from the binary when no --params/--params-file is given.
 
 # Bench is auto-detected from commit message. Pass explicitly only if OB can't parse it.
 ```
