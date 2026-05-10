@@ -15,6 +15,11 @@ use crate::types::*;
 
 const MAX_PLY: usize = 256;
 
+/// Maximum FT (threat-accumulator) hidden size we support inline.
+/// Production v9 uses 768; FT=1024 architecture probes need 1024.
+/// Sized as a power of two to keep SIMD chunk paths well-tiled.
+pub const MAX_FT_SIZE: usize = 1024;
+
 /// Fixed-capacity array (no heap, like ArrayVec but simpler).
 /// Tracks overflow so callers can force full recompute instead of
 /// silently using incomplete deltas.
@@ -70,7 +75,7 @@ impl DeltaVec {
 #[repr(C, align(64))]
 pub struct ThreatEntry {
     /// Per-perspective accumulator values: [WHITE][..h], [BLACK][..h]
-    pub values: [[i16; 768]; 2], // max accumulator size for v9
+    pub values: [[i16; MAX_FT_SIZE]; 2], // sized for v9 (768) + FT=1024 probes
     /// Per-perspective accuracy flags
     pub accurate: [bool; 2],
     /// Threat deltas for the move that produced this ply
@@ -92,7 +97,7 @@ impl Default for ThreatEntry {
 impl ThreatEntry {
     pub const fn new() -> Self {
         Self {
-            values: [[0i16; 768]; 2],
+            values: [[0i16; MAX_FT_SIZE]; 2],
             accurate: [false; 2],
             delta: DeltaVec::new(),
             mv: NO_MOVE,
