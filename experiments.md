@@ -9898,3 +9898,85 @@ direction is dead.
    regressed to the true magnitude. Confirms the 1K-2K threshold for
    useful directional signal.
 
+
+
+## 2026-05-10 — Cross-engine value-port batch: 3 H0 ✗ — slack-shape confirmed
+
+Fired 4 cross-engine value-port SPRTs (Tier 5 audit candidates) +
+2 P1/P2 from divergence audit. 3 of 4 H0'd at meaningfully
+negative Elo, with consistent mechanism: direct value imports break
+the co-tuned equilibrium that current trunk relies on.
+
+### H0 ✗ — DROPPED
+
+- **#1085 PROBCUT_MIN_DEPTH 3→4** — `-1.7 ± 2.4`, LLR -3.00 at
+  N=15282. SF/Reckless use 4-5; Coda was floor-pinned at 3.
+  Tunes #1080 wanted +14% (3.4); #1079, #1082 want stable at 3.
+  Direct port to 4 fails. **DROP** — depth=3 firings are net-positive
+  in our search context. Slack-shape: ProbCut at d=3 is co-tuned with
+  other low-depth pruning to pre-clear positions.
+
+- **#1090 RFP_MARGIN_IMP 30→50** — `-7.0 ± 4.9`, LLR -2.95 at
+  N=3748. P2 of cross-engine divergence audit. SF uses 50-90 with
+  capped depth; Coda uses 30 with depth=18. Big regression confirms
+  the slack-shape hypothesis: Coda's small-margin-everywhere RFP
+  shape is load-bearing. Other features (futility, LMP, SEE) are
+  calibrated assuming RFP cleared most easy positions at low depth.
+  Doubling margin reduces RFP cutoffs → downstream features see
+  positions they're not calibrated for → -7 Elo. **DROP direct
+  port**. Iterate via coupled retune of (RFP_MARGIN_IMP, FUT_BASE,
+  FUT_PER_DEPTH, LMP_BASE) together if revisiting.
+
+- **#1084 LMP_BASE 5→3** — `-7.1 ± 5.0`, LLR -2.95 at N=3822.
+  Tier 5.3b bisect step: 9→5 banked +1.1 (#1065), then 5→3 was the
+  next step. Result: LMP_BASE=5 IS the sweet spot. SF's BASE=3 is
+  context-dependent (different ordering quality, different feature
+  priority). **STOP bisect** — banked +1.1, optimum at 5.
+
+### H0 ✗ — pending iteration
+
+- **#1075 l1-32-probe-s200 vs cal-day0** — `-5.8 ± 3.8` at N=10078,
+  H0 untuned. Tune #1079 outputs ready to apply; will SPRT post-tune.
+- **#1074 reckless-ob-s800 vs prod** — `-6.9 ± 4.0` at N=8178, H0
+  untuned. Tune #1081 outputs applied (commit 9c81a33); SPRTs A/B
+  fired (tune-effect + vs-prod).
+- **#1072 warm0-s800 vs prod** — `-31.0 ± 8.0` at N=2024, H0 untuned
+  AND large. Real signal that warm30 matters at SB800 (per K=5
+  variance σ ≈ ±4 Elo, this is ~7σ from zero). Tune #1080 outputs
+  pending application.
+
+### Active SPRTs
+
+- #1077 ft1024-probe-s200 (untuned) vs cal-day0-S200: trending H0 -1.
+  Tune #1082 outputs applied (commit a757a38); SPRTs C/D fired.
+- #1086 alpha-raises-lmr (Atlas): +1.1 ± 3.3 at N=9052, alive H1
+- #1087 SE_DEPTH=6 + ttPv (Tier 5.1b): -0.3 ± 2.3 at N=17926,
+  trending H0
+- #1088 IIR prior_reduction <= 3 gate (Tier 5.6): -0.2 ± 2.7 at
+  N=13154, trending H0
+- #1093 CORR_HIST_ERR_MAX 1→2 (small bisect within A-basin): just
+  fired
+
+### Meta-patterns
+
+1. **Direct cross-engine value ports keep failing.** RFP_MARGIN_IMP,
+   LMP_BASE direct-port (vs bisect step), PROBCUT_MIN_DEPTH all H0.
+   Audit findings of "Coda diverges from consensus" identify REAL
+   miscalibration — but the FIX is bisect-style probing within current
+   basin, OR coupled retune of dependent features, NOT raw value port.
+
+2. **Slack-shape hypothesis confirmed.** Adam's framing — "different
+   order picks up slack from others" — explains the magnitude of -7
+   Elo penalties from single-tunable changes that should look small.
+   Coda's tunables are co-tuned. Single-feature ports break the
+   equilibrium without the dependent retune.
+
+3. **Bisect direction matters; stopping point matters.** LMP_BASE
+   9→5 was +1.1 H1; 5→3 was -7.1 H0. The function is concave with
+   optimum at 5. Always bisect step-by-step, don't leap to final
+   value.
+
+4. **For audit-doc Tier 5 follow-ups**: instead of "port the SF value",
+   reframe as "find Coda's optimum near SF's value via coupled
+   retune." Single-tunable SPRTs only work when the change stays in
+   current basin (small steps).
