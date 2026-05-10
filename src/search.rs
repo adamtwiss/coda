@@ -187,7 +187,7 @@ tunables!(
     (CORR_UPDATE_WEIGHT_MAX, 9, 4, 48, 2.2),
     (CORR_BONUS_CAP_DIV, 2, 1, 16, 1.5),
     (CORR_HIST_GRAIN_T, 11, 1, 32, 1.55),
-    (CORR_HIST_ERR_MAX, 1, 1, 64, 3.15),
+    (CORR_HIST_ERR_MAX_10X, 10, 10, 640, 5.0),
     (ESCAPE_BONUS_Q, 15838, 5000, 40000, 1750.0),
     (ESCAPE_BONUS_R, 10688, 3000, 30000, 1350.0),
     (ESCAPE_BONUS_MINOR, 5727, 2000, 20000, 900.0),
@@ -271,6 +271,17 @@ tunables!(
 #[inline(always)]
 fn tp(param: &AtomicI32) -> i32 {
     param.load(Ordering::Relaxed)
+}
+
+/// Read a `_10X`-scaled tunable, returning the effective integer value
+/// (round-half-up of stored/10). Tunables with the `_10X` suffix store
+/// 10× their effective value so SPSA can express decimal precision and
+/// retain decimal progress across tune cycles. See
+/// memory feedback_floor_pin_tunables_cross_recipe.md for rationale.
+#[inline(always)]
+fn tp10(param: &AtomicI32) -> i32 {
+    let v = param.load(Ordering::Relaxed);
+    if v >= 0 { (v + 5) / 10 } else { (v - 5) / 10 }
 }
 
 // Feature flags for ablation testing. All true = normal play.
@@ -1015,7 +1026,7 @@ fn update_corr_entry(entry: &mut i32, err: i32, weight: i32, cap_div: i32) {
 
 /// Update all correction history tables.
 fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, raw_eval: i32, depth: i32) {
-    let err_max = tp(&CORR_HIST_ERR_MAX);
+    let err_max = tp10(&CORR_HIST_ERR_MAX_10X);
     let err = (search_score - raw_eval).clamp(-err_max, err_max);
     let weight = (depth + 1).min(tp(&CORR_UPDATE_WEIGHT_MAX));
     let cap_div = tp(&CORR_BONUS_CAP_DIV);
@@ -4569,7 +4580,7 @@ mod tests {
     /// 1. Direct entry check — after one update, the per-table slots
     ///    indexed by the test position must be non-zero, while a
     ///    reference position's slots remain zero. Independent of
-    ///    `CORR_HIST_ERR_MAX` / `CORR_HIST_GRAIN_T` defaults.
+    ///    `CORR_HIST_ERR_MAX_10X` / `CORR_HIST_GRAIN_T` defaults.
     /// 2. corrected_eval drift — after enough updates to escape
     ///    integer-division flooring, corrected_eval(test_pos) must
     ///    rise above raw, while corrected_eval(reference_pos) must
@@ -4623,7 +4634,7 @@ mod tests {
         // current default grain (CORR_HIST_GRAIN_T=11). Each call
         // bumps each slot by the gravity-clamped bonus; ~30 iterations
         // is enough to push entries near steady-state given the small
-        // err clamp (CORR_HIST_ERR_MAX=1).
+        // err clamp (CORR_HIST_ERR_MAX_10X=10, effective 1).
         for _ in 0..50 {
             update_correction_history(&mut info, &board, raw + 400, raw, 20);
         }
