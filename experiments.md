@@ -9765,3 +9765,44 @@ is off in disguise; investigate the implementation."
 
 7,500 iterations total fleet cost. Resolves over ~1-2 days at standard
 OB throughput.
+
+
+## 2026-05-10 — Tier 0/4/5 correctness cluster mega-merge
+
+Five-fix cluster from the 2026-05-09 three-agent correctness audit
+(`docs/correctness_audit_plan_2026-05-09.md`) landed on main as
+sequential cherry-picks. Cumulative bench: 3593209 → 3244083 (-9.7%).
+
+### Merged (H1 + correctness)
+
+| OB # | Tier | Branch | Result | Notes |
+|---:|---|---|---:|---|
+| #1062 | 0.2 | `fix/cont-hist-king-write-include` | **+4.5 ±4.0 H1 ✓** | King-move cont_hist permanently zero before fix; 5 sites changed from `prior_piece < 12` → `< 13` |
+| #1066 | 5.1 | `experiment/se-depth-six` | **+1.5 ±2.3 H1 ✓** | SE_DEPTH 4 → 6 cross-engine port (SF=6+ttPv, Reckless=5+ttPv); recovered from early -14.5 misread at 742g |
+| #1065 | 5.3a | `experiment/lmp-base-five` | **+1.1 ±1.9 H1 ✓** | LMP_BASE 9 → 5 (SF/Obsidian/Reckless consensus is 3); bisect step 1 |
+| #1064 | A2 | `experiment/se-king-pressure-margin-zero` | **+1.1 ±1.9 H1 ✓** | SE_KING_PRESSURE_MARGIN ablation; tune-928 had voted ~0 at 25K iter |
+| #1061 | 0.1 | `fix/n6-promotion-imminent-stm-v2` | **+0.4 ±1.5 LLR 1.77 →H1** | N6 STM bug fix (stopped at 43K games for merge per user; correctness fix at neutral basis). Diagnostic counters confirmed the bug: gate reached 286K times, buggy check fires 0, fixed `us`-check fires 14736. |
+
+### H0 — dropped
+
+| OB # | Tier | Branch | Result | Notes |
+|---:|---|---|---:|---|
+| #1060 | 0.3 | `fix/lmr-endgame-pieces-restore-5` | -2.2 ±2.7 H0 ✗ | LMR_ENDGAME 4 → 5 + floor raise. Historically defended for Lichess play-quality. User decision 2026-05-10: keep at 4 — SPRT didn't hold. |
+| #1063 | A1 | `experiment/nmp-undefended-gate-remove` | -2.1 ±2.7 H0 ✗ | Hanging-piece gate is real signal; keep NMP_UNDEFENDED_MAX. Code comment "set to 0 disables feature" was incorrect (`< 0` always false → disables NMP entirely); worth a comment cleanup. |
+| #1067 | A4 | `experiment/nmp-no-prev-cap-bonus` | -2.6 ±3.0 H0 ✗ | NMP `r += 1 after capture` defends itself. Cross-engine "consensus" citation in commit 2da11be was inaccurate (Obsidian uses ttMoveNoisy of CURRENT node, not previous-move-was-capture), but the term works. Possible follow-up: port Obsidian's ttMoveNoisy as separate experiment. |
+
+### Cluster summary
+
+7 SPRTs, 5 H1, 2 H0. Bug-fix Elo bank (cont_hist king + N6 STM correctness)
++ structural improvements (SE_DEPTH, LMP_BASE) + ablation (SE_KING_PRESSURE).
+Net cumulative bench -9.7% reflects the SE_DEPTH gate change reducing SE
+attempts.
+
+### Next
+
+- **Big trunk retune** (~14K iter full-sweep) — see
+  `docs/post_tier0_retune_plan.md`. Trunk SPSA values are calibrated for
+  pre-fix tree shape; especially N6 active extension and SE-depth-6 gate.
+- **Tier 1 NMP gate cascade** held until post-retune (per user direction).
+- **5.3b LMP_BASE 5 → 3** bisect step 2; **5.1b SE_DEPTH 6 + ttPv** — both
+  queued post-retune.
