@@ -87,7 +87,7 @@ tunables!(
     (NMP_BASE_R, 7, 2, 8, 1.5),
     (NMP_DEPTH_DIV, 5, 1, 6, 1.5),
     (NMP_EVAL_DIV, 108, 50, 400, 17.5),
-    (NMP_EVAL_MAX, 2, 1, 6, 1.5),
+    (NMP_EVAL_MAX_10X, 20, 10, 60, 5.0),
     (NMP_VERIFY_DEPTH, 9, 4, 20, 2.0),
     (RFP_DEPTH, 18, 2, 20, 2.0),
     (RFP_MARGIN_IMP, 30, 30, 150, 6.0),
@@ -2424,7 +2424,7 @@ fn negamax(
             r += 1;
         }
         if static_eval > beta {
-            let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp(&NMP_EVAL_MAX));
+            let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp10(&NMP_EVAL_MAX_10X));
             r += eval_r;
         }
         // Clamp so null-move search is at least depth 1
