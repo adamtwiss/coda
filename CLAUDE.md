@@ -722,6 +722,71 @@ row, submit — don't hedge toward wider bounds out of uncertainty.
 - Code cleanup that doesn't change compiled output (verify with bench)
 - New tunables at default values that don't change behavior (verify bench unchanged)
 
+### Mini-prod Branch for S200 Experiments
+
+S200-targeted experiments (anything trained to ~SB200: training-recipe
+probes, architecture probes, factor/threat variants) **must fork from
+the `mini-prod` branch, NOT main**, and SPRT with `--base-branch mini-prod`.
+
+**Why.** Main's tunables are SPSA-calibrated for the prod SB800 net.
+Using main as the SPRT base for an S200 experiment gives the DEV side
+a ~+4-6 Elo tune-flation handicap on BASE — BASE runs mistuned trunk
+values for its S200 net. Empirically measured 2026-05-11 via SPRT
+#1117 (mini-prod tuned-vs-untuned, same net both sides): the latent
+tuning headroom on an S200 net was ~+4 Elo. Main does NOT have this
+problem because main's tunables are always calibrated for main's
+current net.
+
+**Workflow:**
+
+```bash
+git checkout mini-prod
+git checkout -b experiment/s200-<description>
+# ... make S200 experimental changes ...
+make && ./coda bench
+
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py experiment/s200-<...> \
+    --base-branch mini-prod --base-bench <mini-prod-bench> \
+    --dev-network <CANDIDATE_SHA> --base-network <baby-prod-SHA>
+```
+
+The branch name is always `mini-prod` (net-agnostic); the current
+baby-prod reference net is in net.txt and a comment at the top of the
+`tunables!` macro on that branch.
+
+**Asymmetric merge cadence** (load-bearing — read this):
+- Search/eval H1 wins merge to `main` ASAP via the normal SPRT flow.
+- The SAME wins propagate to `mini-prod` **only during scheduled
+  refresh windows when no S200 experiments are in flight**. A
+  mid-flight base shift would invalidate in-progress mini-prod SPRTs.
+
+This means mini-prod intentionally lags main between refreshes — by
+design, not bug. Don't try to "keep mini-prod fresh" on every main
+merge.
+
+**Refresh = rebase + retune** (NOT recreate from scratch).
+Trigger when ANY of:
+1. Main changed the `tunables!` macro structure (new/renamed tunable,
+   widened range, new feature).
+2. Main landed a search-shape change that may interact with tunings.
+3. Main accumulated ~5+ Elo of merged changes since the last refresh.
+4. **AND** no S200 experiments are currently in flight.
+
+Procedure: rebase mini-prod onto main, on conflicts take main's
+STRUCTURAL changes but keep mini-prod's tuned VALUES (S200-calibrated);
+fire focused ~1500-iter SPSA against the baby-prod net; apply outputs;
+SPRT-validate at `[-3, 3]` vs pre-refresh mini-prod; push.
+
+**Net rotation** (when training methodology produces a new baby-prod
+S200 net, not just a more-baked version): archive the current
+mini-prod, branch fresh from main, fire a ~2500-iter tune from main
+defaults. Force-push mini-prod — rotation is the one time history
+restarts. See `docs/mini_prod_branch_workflow.md` for the full
+procedure.
+
+See `docs/mini_prod_branch_workflow.md` for runnable detail and the
+methodology behind these policies.
+
 **OpenBench scripts** (all require `OPENBENCH_PASSWORD` env var, username defaults to `claude`):
 ```bash
 OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> <bench> [--bounds '[0, 3]'] [--priority 1]
