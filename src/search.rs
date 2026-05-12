@@ -2366,6 +2366,23 @@ fn negamax(
         }
     }
 
+    // Hindsight extension (Stormphrax search.cpp:749-752): mirror of the
+    // reduction. When parent reduced aggressively (>=3) but the combined
+    // eval shows position has worsened (eval_sum <= 0), extend +1 ply to
+    // find the threat we missed. Non-PV only (PV already searched fully).
+    if !in_check && ply >= 1 && ply_u >= 1
+        && !is_pv
+        && prior_reduction >= 3
+        && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
+        && static_eval > -INFINITY
+        && FEAT_HINDSIGHT.load(Ordering::Relaxed)
+    {
+        let eval_sum = info.static_evals[ply_u - 1] + static_eval;
+        if eval_sum <= 0 {
+            depth += 1;
+        }
+    }
+
     // Null-move pruning
     let us = board.side_to_move;
     let stm_non_pawn = board.colors[us as usize]
