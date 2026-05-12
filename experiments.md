@@ -9980,3 +9980,31 @@ the co-tuned equilibrium that current trunk relies on.
    reframe as "find Coda's optimum near SF's value via coupled
    retune." Single-tunable SPRTs only work when the change stays in
    current basin (small steps).
+
+## 2026-05-12 — Stormphrax T6 conthist base-aware update: +2.1 H1 ✓
+
+**#1129 conthist-base-aware** — **+2.1 ±1.4 H1 ✓** (~40K games, LLR 2.95).
+Branch: `experiment/conthist-base-aware`. Source: Stormphrax history.h:120
+gravity formula —
+
+  `new_val = val + bonus - base * |bonus| / MAX_HISTORY`
+  where `base = current_cont_hist + main_hist / 2`
+
+instead of using just `val` as gravity scalar. Intuition: gravity should pull
+when move's combined signal is strong (cont-hist + main-hist), not just when
+the specific cont-hist cell is large. If main_hist already says the move is
+great but cont-hist hasn't caught up, don't gravity-dampen the cont-hist bonus.
+
+Applied at 3 cont-hist write sites (cutoff bonus, malus loop, post-LMR nudge).
+TT-cutoff malus site (movepicker:2133) held for separate SPRT.
+
+**Trend pattern**: SPRT trended +10.5 early (2.2K games), regressed to +2.1 at
+lock (40K games). Classic regression-to-mean — but the structural mechanism
+held a real +2 even after CI tightened. Validates the "fresh mechanism class"
+prior over "extend a known pattern" — captures-extension trio averaged ~+0.2,
+this single mechanism-class change banked +2.1.
+
+**Open follow-ups**:
+- T6 extension to TT-cutoff cont-hist site (#XXXX submitted) — fourth write site.
+- T6 main_hist weight `/2` is hardcoded (Stormphrax default); could tune.
+

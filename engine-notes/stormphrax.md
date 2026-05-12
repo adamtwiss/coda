@@ -442,7 +442,16 @@ A separate preprocessing step (`preprocess/permute.cpp`) reorders FT weights for
 
 ## 7. Novel Features Summary (Priority for Coda)
 
-### ✅ SHIPPED FROM THIS REVIEW (2026-05-10)
+### ✅ SHIPPED FROM THIS REVIEW (2026-05-10 — 2026-05-12)
+
+- **T6 Conthist Base-Aware Update** (`history.h:112-125`): cont-hist
+  gravity formula uses combined `cont_hist + main_hist/2` as the gravity
+  base, not just the cell value. Gravity pulls only when move's
+  combined signal is strong, not when cont-hist alone is. **SPRT #1129:
+  +2.1 ±1.4 H1 ✓** (40K games). Biggest single Coda merge from cross-
+  engine review since the bonus-shape batch. Applied at 3 cont-hist
+  write sites (cutoff bonus, malus loop, post-LMR nudge); TT-cutoff
+  malus site held for separate follow-up.
 
 - **Eval-vs-bestScore depth-boost** (`search.cpp:1185`):
   `historyDepth = depth + (!inCheck && staticEval <= bestScore)`. When the
