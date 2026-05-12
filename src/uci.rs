@@ -93,7 +93,6 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("option name Ponder type check default false");
                 println!("option name SyzygyPath type string default <empty>");
                 println!("option name TBHash type spin default 16 min 0 max 1024");
-                println!("option name SparseL1 type check default false");
                 println!("option name HiddenActivation type combo default screlu var screlu var crelu");
                 println!("option name LoadAnyway type check default false");
                 // Tunable search parameters (for SPSA)
@@ -815,12 +814,6 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
         "MoveOverhead" => {
             if let Ok(ms) = value.parse::<u64>() {
                 info.move_overhead = ms.min(5000);
-            }
-        }
-        "SparseL1" => {
-            if let Some(net) = &info.nnue_net {
-                net.use_sparse_l1.store(value == "true", std::sync::atomic::Ordering::Relaxed);
-                println!("info string SparseL1 = {}", value == "true");
             }
         }
         "HiddenActivation" => {
