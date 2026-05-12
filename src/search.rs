@@ -3321,6 +3321,8 @@ fn negamax(
                     };
                     if nudge_bonus != 0 {
                         let gp_mv = go_piece(moved_piece);
+                        // T6: base = current cont_hist + main_hist / 2 (Stormphrax history.h:120).
+                        let main_score_v = info.history.main_score(from, to, enemy_attacks);
                         let ch_offsets = [1usize, 2, 4, 6];
                         for &off in &ch_offsets {
                             if ply_u >= off {
@@ -3328,8 +3330,11 @@ fn negamax(
                                 let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                 if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                                     let ch_b = if off <= 1 { nudge_bonus } else { nudge_bonus / 2 };
-                                    History::update_cont_history(
+                                    let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
+                                    let base = cur_cont + main_score_v / 2;
+                                    History::update_cont_history_with_base(
                                         &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
+                                        base,
                                         ch_b,
                                     );
                                 }
@@ -3423,6 +3428,8 @@ fn negamax(
                         // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
                         if moved_piece != NO_PIECE {
                             let gp_mv = go_piece(moved_piece);
+                            // T6: base = current cont_hist + main_hist / 2 (Stormphrax history.h:120).
+                            let main_score_v = info.history.main_score(from, to, enemy_attacks);
                             let ch_offsets = [1usize, 2, 4, 6];
                             for (i, &off) in ch_offsets.iter().enumerate() {
                                 if ply_u >= off {
@@ -3430,8 +3437,11 @@ fn negamax(
                                     let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                     if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                                         let ch_bonus = if off <= 1 { bonus } else { bonus / 2 };
-                                        History::update_cont_history(
+                                        let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
+                                        let base = cur_cont + main_score_v / 2;
+                                        History::update_cont_history_with_base(
                                             &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
+                                            base,
                                             ch_bonus,
                                         );
                                         info.stats.cont_hist_writes[i] += 1;
@@ -3460,11 +3470,13 @@ fn negamax(
                                 -bonus,
                             );
 
-                            // Penalize continuation history at plies 1, 2, 4, 6
+                            // Penalize continuation history at plies 1, 2, 4, 6.
+                            // T6: base uses qf,qt move's main_score (the move being malused).
                             {
                                 let q_piece = board.piece_at(qf);
                                 if q_piece != NO_PIECE {
                                     let gp_q = go_piece(q_piece);
+                                    let q_main_score = info.history.main_score(qf, qt, enemy_attacks);
                                     let ch_offsets = [1usize, 2, 4, 6];
                                     for (i, &off) in ch_offsets.iter().enumerate() {
                                         if ply_u >= off {
@@ -3472,8 +3484,11 @@ fn negamax(
                                             let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                             if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                                                 let ch_pen = if off <= 1 { -bonus } else { -bonus / 2 };
-                                                History::update_cont_history(
+                                                let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize] as i32;
+                                                let base = cur_cont + q_main_score / 2;
+                                                History::update_cont_history_with_base(
                                                     &mut info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize],
+                                                    base,
                                                     ch_pen,
                                                 );
                                                 info.stats.cont_hist_writes[i] += 1;

@@ -124,6 +124,18 @@ impl History {
         let new_val = val + clamped - val * clamped.abs() / MAX_HISTORY;
         *entry = new_val.clamp(-32000, 32000) as i16;
     }
+
+    /// Update cont-hist with gravity factor derived from a combined "base"
+    /// score (typically cont_hist + main_hist / 2). Stormphrax T6 pattern
+    /// (history.h:120) — gravity uses the move's combined signal strength
+    /// instead of just the cell's own value, so cont-hist can converge
+    /// even when main_hist already encodes the move's quality.
+    pub fn update_cont_history_with_base(entry: &mut i16, base: i32, bonus: i32) {
+        let clamped = bonus.clamp(-MAX_HISTORY, MAX_HISTORY);
+        let val = *entry as i32;
+        let new_val = val + clamped - base * clamped.abs() / MAX_HISTORY;
+        *entry = new_val.clamp(-32000, 32000) as i16;
+    }
 }
 
 /// Map a Coda piece (0-11, color*6+pt) to history piece index (1-12).
