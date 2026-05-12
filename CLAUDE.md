@@ -746,14 +746,11 @@ at +1 Elo without completing step 2.
 
 Self-play SPRT is the primary acceptance criterion for search changes.
 
-**Model comparison** (different NNUE nets): Self-play H2H is effective — two nets in the same engine. The eval biases are in the nets, not the search. 200+ games gives a fast signal.
-
 ### Known Testing Pitfalls
 
 - **CPU contention**: idle cores before launching SPRT. Background load halves effective TC and distorts marginal results — flipped history pruning from "false H1 +3" to "real H0 −17" in our ablation sweep.
 - **Coda-on-Coda contamination**: max 2 Coda variants in a RR; more amplifies shared eval biases.
 - **Optimism bias**: don't stop on "looks positive" — let SPRT decide.
-- **WDL blindspot**: WDL blending improvements are invisible in self-play; needs cross-engine RR.
 - **Self-play discount**: direction usually reliable, magnitude varies.
 - **Dig deeper on consensus H0s**: when a feature every top engine uses H0s, your implementation or its dependencies are broken. Don't accept "doesn't work for our engine" — ask why, compare numeric values, look for magnitude/scaling bugs. Capture history was 27× too small (3 prior H0s), fixing it was +31.6 Elo — biggest single gain in Coda's history, found by refusing to give up.
 
@@ -768,7 +765,11 @@ Systematic approach for finding and fixing search feature issues. Each cycle com
 
 **2. Diagnose via cross-engine comparison**
 - Compare the specific feature implementation against 6-8 top engines with source code available. Engine sources are in `/home/adam/chess/engines/`.
-- Reference engines (strongest, most relevant): Stockfish, Viridithas (Rust), Obsidian, Berserk, Reckless (Rust), PlentyChess, Caissa, RubiChess, Halogen, Stormphrax.
+- Reference engines (current top of our rivals RR, strongest first):
+  Stockfish, Reckless (Rust), Obsidian, Alexandria, Integral, Hobbes,
+  PlentyChess, Clover, Viridithas (Rust), Rubichess. Berserk, Caissa,
+  Stormphrax also in pool — useful for cross-checks but lower-priority
+  consensus reference.
 - For each engine: exact formula, gating conditions, position in move loop (before/after MakeMove), depth variable used (raw depth vs lmrDepth), history adjustments, numeric values.
 - Common structural issues found so far:
   - **Pre-move vs post-move**: Pruning after MakeMove wastes make/unmake + NNUE push/pop per pruned move, and makes the feature redundant with earlier pruning (futility, LMP catch most candidates first).
