@@ -10061,3 +10061,52 @@ H0'd. Need fresh sources (Reckless/Berserk untouched ideas) for next batch.
 Net merges this session: T6 (+2.1) + hindsight (+1.5) = +3.6 Elo banked from
 this cross-engine sweep.
 
+
+## 2026-05-13 (late) — Reckless/Hobbes batch all H0: stratified onto-threatened, rook king-ring, child fail-highs
+
+Following the hindsight extension merge, queued three cross-engine experiments
+(Reckless/Hobbes patterns). All three locked H0 ✗.
+
+### H0 ✗ — all dropped
+
+**#1154 rook-king-ring-ortho** — -1.1 ±1.8 H0 ✗ (29,948 games, LLR -2.95).
+Reckless-unique +5000 bonus for quiet rook moves landing adjacent to enemy
+king. Move-ordering shift didn't translate to Elo — likely Coda's existing
+quiet-check bonus + threats already capture the relevant "rook approaching
+king" signal, OR the bonus was over-amplified for already-well-ordered
+mating attacks.
+
+**#1157 hobbes-child-fail-highs (Hobbes #14)** — -1.0 ±1.7 H0 ✗ (32,112
+games, LLR -2.99). Track child num_fail_highs (via info.fail_highs_stack)
+and add LMR reduction +1 when child had >2 fail-highs. Refactor preserved
+the #1020 numFailHighs scaling. Different mechanism class from #1086
+alpha-raises (which was also H0). Both Hobbes/Stormphrax-pattern LMR
+adjustments based on sibling-information fail in Coda — suggests Coda's
+LMR adjustments are dense enough that adding more retrospective signals
+just adds noise.
+
+**#1159 onto-threatened-stratified-v2** — -3.7 ±4.5 at 4,710 games
+(stopped early for retune). Stratified pawn-attacked penalty by moving
+piece: 8k/14k/20k for minor/rook/queen. Reckless-faithful values. Bench
+shifted -13% so triggered retune-on-branch.
+
+**#1165 tune-1160-applied** — -4.6 ±3.0 H0 ✗ (10,268 games, LLR -2.97).
+Applied 7-param SPSA retune (movements all 1-4%, mostly *) on top of
+the onto-threatened branch. Retune did NOT save the direction.
+Confirms: stratified onto-threatened penalty is genuinely H0 for Coda
+even with recalibrated adjacent move-ordering values. Direction closed.
+
+### Meta-pattern observation
+
+Six recent peer-pattern ports have all been H0 (rook king-ring,
+hobbes-child-fail-highs, onto-threatened+retune, dynamic-policy-bonus,
+see-hist-offset, alpha-raises). The wins were T6 (gravity formula
+restructure) and hindsight extension (mirror of existing reduction) —
+both **modify existing computations** rather than **add new signals/
+penalties**. May be approaching the limit of peer-pattern porting:
+Coda's existing move-ordering + history infrastructure already captures
+most relevant signals; adding more just adds noise.
+
+Going forward: prefer experiments that **modify the shape of existing
+computations** over **add new signals**.
+
