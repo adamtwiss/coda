@@ -10008,3 +10008,56 @@ this single mechanism-class change banked +2.1.
 - T6 extension to TT-cutoff cont-hist site (#XXXX submitted) — fourth write site.
 - T6 main_hist weight `/2` is hardcoded (Stormphrax default); could tune.
 
+
+## 2026-05-13 — Hindsight extension: +1.5 H1 + closing of several mechanism extensions
+
+**#1130 hindsight-extension** — **+1.5 ±1.2 H1 ✓** (64,770 games, LLR 2.96).
+Branch: `experiment/hindsight-extension`. Source: Stormphrax search.cpp:749-752
+T13 — mirror of existing hindsight reduction. When parent reduced aggressively
+(>=3 plies) AND combined eval has worsened (eval_sum <= 0), extend depth by +1.
+Non-PV only. Hardcoded threshold 0 (Stormphrax default). Second mechanism-class
+win after T6 — validates "look for fresh structural mechanism" heuristic.
+
+### H0 ✗ — closed directions
+
+**#1132 t6-tt-cutoff-extension** — +0.2 ±0.9 H0 ✗ (116,788 games, LLR -2.99).
+Applied T6 base-aware gravity to the 4th cont-hist write site (TT-cutoff
+malus on opp's last move). Didn't translate — likely because the threats
+approximation (current enemy_attacks vs opp's actual threats) introduces
+noise, AND the gravity context is different (penalising opp's move from our
+POV, not reinforcing our own).
+
+**#1133 dynamic-policy-bonus** (Hobbes #15) — -3.0 ±2.5 H0 ✗ (14,468 games).
+Eval-driven history bonus at every non-root node: `value = MULT * -(static_eval
++ prev_eval)`. Didn't translate — possibly because parent threat indexing is
+approximated, possibly because Coda's existing PRIOR_COUNTERMOVE_BONUS at
+cutoff already captures the signal.
+
+**#1128 see-hist-offset** (Stormphrax T9) — -0.7 ±1.5 H0 ✗ (39,748 games).
+Adding +15cp constant offset to good-capture SEE threshold. Coda's existing
+`-capt_hist/18` formula doesn't benefit from the Stormphrax-style additive
+offset.
+
+**#1150 tune-1127-applied** — -0.3 ±1.3 H0 ✗ (54,592 games). Applied SPSA
+outputs from #1127 (cont-hist W4/W6 fractional weight shape [1.2, 1.2, 1.1,
+0.7]). The fractional shape SPSA found didn't translate to Elo despite ***
+significance on the tunable values. Sub-integer cont-hist weighting confirmed
+to be in the noise band for Coda.
+
+### Tunes confirmed defaults optimal
+
+**#1135 t6-mainhist-weight-tunable** — T6_MAIN_WEIGHT_10X 5.0→5.4 (rounds to
+5 = no change at int precision). Stormphrax /2 hardcoded is near-optimal.
+
+**#1137 tt-depth-margin-tunable** — TT_DEPTH_MARGIN_10X 30.0→30.1 (flat).
+Coda's hardcoded -3 margin matches Hobbes-equivalent value.
+
+### Cumulative state
+
+Stormphrax cross-engine review essentially exhausted on the runtime side:
+T6, T7 (already in Coda), T13 shipped; T8 alpha-raises and T9 SEE-offset
+H0'd. Need fresh sources (Reckless/Berserk untouched ideas) for next batch.
+
+Net merges this session: T6 (+2.1) + hindsight (+1.5) = +3.6 Elo banked from
+this cross-engine sweep.
+

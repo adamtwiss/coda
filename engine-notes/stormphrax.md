@@ -442,7 +442,14 @@ A separate preprocessing step (`preprocess/permute.cpp`) reorders FT weights for
 
 ## 7. Novel Features Summary (Priority for Coda)
 
-### ✅ SHIPPED FROM THIS REVIEW (2026-05-10 — 2026-05-12)
+### ✅ SHIPPED FROM THIS REVIEW (2026-05-10 — 2026-05-13)
+
+- **T13 Hindsight Extension** (`search.cpp:749-752`): mirror of existing
+  hindsight reduction. When parent reduced aggressively (>=3) AND
+  combined eval has worsened (eval_sum <= 0), extend depth +1.
+  **SPRT #1130: +1.5 ±1.2 H1 ✓** (64,770 games). Non-PV only.
+  Originally LOW PRIORITY in this review — turned out higher-yielding
+  than several MEDIUM PRIORITY items.
 
 - **T6 Conthist Base-Aware Update** (`history.h:112-125`): cont-hist
   gravity formula uses combined `cont_hist + main_hist/2` as the gravity
@@ -451,7 +458,7 @@ A separate preprocessing step (`preprocess/permute.cpp`) reorders FT weights for
   +2.1 ±1.4 H1 ✓** (40K games). Biggest single Coda merge from cross-
   engine review since the bonus-shape batch. Applied at 3 cont-hist
   write sites (cutoff bonus, malus loop, post-LMR nudge); TT-cutoff
-  malus site held for separate follow-up.
+  extension (4th site) was H0 ✗ at #1132.
 
 - **Eval-vs-bestScore depth-boost** (`search.cpp:1185`):
   `historyDepth = depth + (!inCheck && staticEval <= bestScore)`. When the
