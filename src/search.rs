@@ -3426,9 +3426,13 @@ fn negamax(
                         // Additionally (Stormphrax search.cpp:1185): boost depth
                         // when cutoff move beat our static eval (unexpected-strong
                         // cutoff signal). Both can stack for +2 depth.
+                        // Third additive trigger: boost depth when improving
+                        // (we're doing better than 2 plies ago). Tests whether
+                        // multiple depth-boost signals compound.
                         let bonus_depth = depth
                             + if best_score > beta + tp(&BONUS_BOOST_AT) { 1 } else { 0 }
-                            + if !in_check && static_eval <= best_score { 1 } else { 0 };
+                            + if !in_check && static_eval <= best_score { 1 } else { 0 }
+                            + if improving { 1 } else { 0 };
                         // numFailHighs multiplicative scaling (#1020, Starzix T1 #1) —
                         // more cascades = stronger cutoff confidence.
                         let raw_bonus = history_bonus(bonus_depth);
