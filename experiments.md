@@ -10110,3 +10110,60 @@ most relevant signals; adding more just adds noise.
 Going forward: prefer experiments that **modify the shape of existing
 computations** over **add new signals**.
 
+
+## 2026-05-14 — T6 universality refuted + several flat tunes
+
+Second batch of "modify existing computation" experiments. Results
+continue the H0 pattern but yield clean diagnostic findings.
+
+### H1 ✓ — MERGED
+
+**#1173 bonus-boost-on-improving** — +0.7 ±0.8 trending H1 at 141K
+games (LLR 0.61). Stopped at ~93% confidence per user direction.
+Lightweight (1-line addition), zero tech debt. Adds improving as
+3rd additive trigger to bonus_depth alongside BONUS_BOOST_AT margin
+(#1008) and Stormphrax eval-vs-bestScore (#1056). Confirms depth-
+boost triggers compound (mildly).
+
+### H0 ✗ — closed directions
+
+**#1182 t6-main-hist** — +0.2 ±0.9 H0 ✗ (109,372 games, LLR -2.97).
+T6 base-aware gravity applied to MAIN history (densest table, [from]
+[to][threats] indexed). The hypothesis that T6 is universal across
+history tables — refuted. Combined with #1180 t6-capture-history
+(H0) and #1181 t6-pawn-history (H0), the picture is now definitive:
+**T6 is cont_hist-specific**. The ply-offset multi-location structure
+of cont_hist (same key visited at multiple ply offsets) was load-
+bearing for base-aware gravity to differentiate.
+
+**#1189 pvs-research-nudge-quiet** — -0.7 ±1.5 H0 ✗ (39,712 games,
+LLR -2.95). Applied post-research cont-hist nudge pattern (#1007 +1.2
+H1 at LMR re-search) to PVS zero-window-fail-high re-search decision
+point. Different decision point, same pattern → H0. The post-research
+nudge is LMR-specific; PVS re-search outcomes don't carry similar
+information.
+
+### Tunes — defaults confirmed optimal
+
+**#1183 hindsight-ext-prior-reduce-tunable** — 3.0 → 3.1 (+3.7%, *).
+Hardcoded >=3 (Stormphrax) is correct for Coda; rounds to 3, no
+change to apply. Asymmetric vs reduction's >=2 is genuinely optimal.
+
+**#1190 tt-age-penalty-tunable** — 8.0 → 8.3 (+3.2%, *). SF
+GENERATION_DELTA = 8 is correct for Coda. Rounds to 8.
+
+### Meta-pattern (updated)
+
+Recent search-side experiments: 1 H1 (bonus-boost-on-improving) +
+10 H0 (T6 cap/pawn/main, hindsight !improving, hindsight thresh
+tune flat, hindsight prior-reduce flat, tt-age flat, pvs-research-
+nudge, rook-king-ring, hobbes-child-fail-highs, onto-threatened+retune).
+
+The peer-pattern porting well from Stormphrax/Reckless/Hobbes is
+essentially mined out on the runtime search side. Coda's existing
+move-ordering + history infrastructure already captures most
+relevant signals at peer-level depth. Next Elo will need:
+- Genuinely novel mechanisms (not in any peer engine catalog)
+- Different layer (NPS, eval refinements, correctness audits, training)
+- Or smaller-magnitude wins acquired in larger batches.
+
