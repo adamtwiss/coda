@@ -3081,11 +3081,10 @@ fn negamax(
         // Late Move Pruning: at shallow depths, skip late quiet moves.
         // Applied before MakeMove. Formula: (LMP_BASE + depth²) / (2 - improving)
         //
-        // C8 audit LIKELY #9: add !is_pv guard. CLAUDE.md "Pruning features"
-        // section states LMP is non-PV only, matching
-        // SF/Obsidian/Viridithas/Berserk consensus; the code was missing
-        // the gate so LMP fired on PV nodes.
-        if ply > 0 && !is_pv && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
+        // 2026-05-14 audit: remove !is_pv gate. SF/Obsidian/Reckless all run
+        // LMP on PV nodes; the prior "matches consensus" claim was incorrect.
+        // PV nodes had zero LMP coverage — a real gap.
+        if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
             && !is_cap && !is_promo
             && !board.gives_direct_check(mv)
             && best_score > -(MATE_SCORE - 100)
