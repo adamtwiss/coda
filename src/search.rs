@@ -2852,9 +2852,11 @@ fn negamax(
                 }
 
                 if singular_score >= singular_beta && singular_beta >= beta {
-                    // Multi-cut: alternatives are also good enough — prune the whole node
+                    // Multi-cut: alternatives are also good enough — prune the whole node.
+                    // Return singular_score (SF pattern, search.cpp:1183) — tighter score
+                    // for downstream TT propagation than singular_beta floor.
                     info.stats.multicut += 1;
-                    return singular_beta;
+                    return singular_score;
                 }
 
                 if singular_score < singular_beta {
