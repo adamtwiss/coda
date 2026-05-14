@@ -3053,6 +3053,10 @@ fn negamax(
 
             if hist_prune_score < -tp(&HIST_PRUNE_MULT) * depth as i32 {
                 info.stats.history_prunes += 1;
+                // 2026-05-14 audit: Obsidian/Alexandria/Stormphrax/Halogen all
+                // use skipQuiets here — once a quiet is hist-pruned, all later
+                // ones at this node should be too (they're worse-ordered).
+                skip_quiets = true;
                 continue;
             }
         }
