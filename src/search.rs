@@ -2924,7 +2924,9 @@ fn negamax(
         // cross_engine_comparison_2026-04-25.md item #10 — SF/Obsidian/
         // Halogen/Reckless gate hist-prune on neither. Coda's prior gate
         // suppressed firing in ~50% of nodes hist-prune was meant for.
-        if ply > 0 && !in_check && depth <= tp10(&HIST_PRUNE_DEPTH_10X)
+        // 2026-05-14 audit: gate on lmr_d instead of raw depth (SF/Obsidian/
+        // Reckless consensus). Standard "shallow after LMR reductions" semantic.
+        if ply > 0 && !in_check && lmr_d <= tp10(&HIST_PRUNE_DEPTH_10X)
             && !is_cap && !is_promo
             && mv != tt_move
             && best_score > -(MATE_SCORE - 100)
