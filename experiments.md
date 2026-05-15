@@ -10167,3 +10167,109 @@ relevant signals at peer-level depth. Next Elo will need:
 - Different layer (NPS, eval refinements, correctness audits, training)
 - Or smaller-magnitude wins acquired in larger batches.
 
+
+## 2026-05-14 — Code audit: movegen clean, SE/ProbCut yield concrete findings
+
+Pivoted to correctness-audit lane after the peer-pattern porting H0 string.
+Dispatched 3 parallel deep-dive subagents (pawn moves, castling, evasions)
+and read SE + ProbCut myself.
+
+### Movegen — clean
+
+Three parallel agent audits, plus is_pseudo_legal review:
+- **Pawn moves** (captures, pushes, EP, promotions): match SF/Reckless.
+  One minor FEN-parser robustness gap (board.rs:347 doesn't validate
+  rank). No live bug.
+- **Castling**: match all references. is_pseudo_legal duplicates the
+  3-square attack check (good defense-in-depth from 2026-04-22 audit).
+- **Evasions**: match SF (king attacked-through-itself correctly
+  handled via occ ^ king_bb). Defensive return at is_legal:643 for
+  malformed EP — mitigated by is_pseudo_legal upstream gate.
+- **Perft coverage**: all 6 standard positions, plus EP-legal test
+  and verify_evasions_match cross-validation.
+
+**Conclusion:** movegen is not a hidden Elo source. Prior 320-Elo
+class fixes (EP/castling/pawn validation) stuck.
+
+### SE audit — 6 findings (2 high-leverage)
+
+| # | Finding | Severity | Status |
+|---|---|---|---|
+| 1 | SE re-search cut_node hardcoded false vs parent's value | HIGH | SPRT'd |
+| 2 | -1 all-node negative ext (SF/Reckless = 0) | HIGH | SPRT'd |
+| 3 | IIR missing excluded_move guard | MED (defensive) | tested, no-op |
+| 4 | Hindsight reduction/extension missing excluded_move guard | MED | tested, harmful |
+| 5 | Multi-cut returns singular_beta (SF returns singular_score) | LOW | SPRT'd |
+| 6 | singular_beta lacks tt_pv && !is_pv widening (Reckless pattern) | LOW | SPRT'd |
+
+### ProbCut audit — 2 findings (no bugs)
+
+| # | Finding | Severity | Status |
+|---|---|---|---|
+| a | PROBCUT_MARGIN flat vs SF's `224 - 61*improving` modulation | MED | SPRT'd |
+| b | TT-noshot UPPER/EXACT only vs SF's any-flag | LOW/MED | SPRT'd |
+
+Doc-drift fix: CLAUDE.md described bad-noisy SEE prune as
+`SEE < -BAD_NOISY_MARGIN` but current code uses BAD_NOISY_MARGIN as
+futility scalar with SEE threshold hardcoded 0. Corrected.
+
+## 2026-05-14 evening — SE/ProbCut audit batch results
+
+5 audit-derived experiments completed.
+
+### H1 ✓ — MERGE CANDIDATE
+
+**#1215 se-multicut-return-score** — **+2.8 ±1.9 H1 ✓** (26,144 games,
+LLR 3.04). Multi-cut return changed from `singular_beta` (the threshold)
+to `singular_score` (actual value, SF pattern search.cpp:1183).
+Tighter score for downstream TT propagation. Held for merge pending
+iteration round on H0s.
+
+### H0 ✗ — iteration in flight
+
+**#1201 se-cutnode-propagation** — +0.2 ±0.9 H0 ✗ (107,030 games,
+LLR -2.95). Passing parent's cut_node to SE verification instead of
+hardcoded false. Narrow miss — median positive, just couldn't lock at
+[0, 3]. Audit found this is consensus deviation (SF + Reckless both
+pass parent's cut_node). LTC retry at 40+0.4 queued — cut_node
+propagation effects compound with depth.
+
+**#1202 se-no-allnode-negext** — -1.7 ±2.1 H0 ✗ (22,242 games). Removing
+the -1 negative extension at all-nodes (SF/Reckless skip this case).
+Bench shifted +17.2% (5.14M → 6.03M) — big tree reshape. Retune-on-
+branch queued (7-param SE-adjacent cluster, 1000 iters): SE_DEPTH_10X,
+DEXT_MARGIN_PV/QUIET/CORR/BASE, DEXT_CAP, SE_XRAY_BLOCKER_MARGIN.
+
+### H0 ✗ — closed directions
+
+**#1214 se-excluded-guards** — -2.2 ±2.7 H0 ✗ (12,180 games). Added
+defensive excluded_move guards to IIR + hindsight reduction +
+hindsight extension. Bench dropped -15.3%. Investigation showed:
+- IIR's existing `tt_move == NO_MOVE` gate already prevents it
+  during SE verification — IIR-only branch confirmed bench-neutral
+  no-op.
+- The hindsight guards caused the entire regression. Hindsight
+  reduction/extension was actually load-bearing inside SE
+  verification (counter-intuitive but verified by ablation).
+- Lesson: "defensive guards" intuition was wrong here. Closed.
+
+### Closed directions (already logged earlier)
+
+- #1182 t6-main-hist (T6 cont-hist-specific, confirmed across all 3
+  other history tables).
+- #1189 pvs-research-nudge-quiet (post-research nudge LMR-specific).
+
+### SE_KING_PRESSURE_MARGIN floor-pin investigation
+
+Adam flagged 2026-05-15: SE_KING_PRESSURE_MARGIN sits at 0. History:
+ablated to 0 by SPRT after tune-928 (25K iter) drove float to 0.22.
+But THREE OTHER tunes converged to 1.18, 1.92, 1.97 — fractional
+values fragmented by integer SPSA. Promoted to
+SE_KING_PRESSURE_MARGIN_10X with direct /10 scaling (same pattern
+as cont-hist W4/W6 work), default 0 (bench-neutral), range
+[-50, 300] = effective [-5.0, +30.0]. Focused tune queued.
+
+If SPSA finds effective 0.5-2.0 fractional optimum, that confirms
+the historical conflicting reads (0.22 vs 1-2) were SPSA noise on
+integer-rounded values.
+
