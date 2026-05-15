@@ -488,6 +488,22 @@ pub struct SearchInfo {
     /// Ponderhit: shared atomic time limit (ms). 0 = ponder mode (infinite).
     /// Set by UCI thread on ponderhit to switch from infinite to timed search.
     pub ponderhit_time: std::sync::Arc<AtomicU64>,
+    /// Ponderhit: shared atomic soft deadline (absolute ms since start_time).
+    /// 0 = unset. Written by UCI thread on ponderhit; read by the ID loop to
+    /// enable dynamic TM post-ponderhit (so stable positions don't burn the
+    /// full hard deadline at deep iterations).
+    pub ponderhit_soft: std::sync::Arc<AtomicU64>,
+    /// Ponderhit: minimum think time post-ponderhit (relative duration in
+    /// ms — typically ≈ increment-overhead). Floors the dynamically-scaled
+    /// soft so we still spend some time after a ponderhit even when the
+    /// position is rock-solid (prevents instant-emit).
+    pub ponderhit_floor: std::sync::Arc<AtomicU64>,
+    /// Time-management baseline: elapsed-ms at which the soft budget starts
+    /// counting. 0 for normal `go` (TM starts at search start). Set to the
+    /// elapsed-at-ponderhit value when post-ponderhit dynamic TM kicks in,
+    /// so soft/floor are interpreted as durations from the ponderhit moment
+    /// rather than from the original `go ponder` start.
+    pub tm_baseline: u64,
     /// Completed search depth (shared atomic). Updated by search thread after
     /// each completed iteration. Read by UCI thread on ponderhit to scale budget.
     pub ponder_depth: std::sync::Arc<AtomicU64>,
@@ -564,6 +580,9 @@ impl SearchInfo {
             soft_floor: 0,
             root_move_nodes: alloc_zeroed_box(),
             ponderhit_time: std::sync::Arc::new(AtomicU64::new(0)),
+            ponderhit_soft: std::sync::Arc::new(AtomicU64::new(0)),
+            ponderhit_floor: std::sync::Arc::new(AtomicU64::new(0)),
+            tm_baseline: 0,
             ponder_depth: std::sync::Arc::new(AtomicU64::new(0)),
             sel_depth: 0,
             last_score: 0,
@@ -1192,6 +1211,8 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     // deadline and only stopped when main set the shared stop flag —
     // burning CPU for the grace window on every ponderhit.
     helper.ponderhit_time = main.ponderhit_time.clone();
+    helper.ponderhit_soft = main.ponderhit_soft.clone();
+    helper.ponderhit_floor = main.ponderhit_floor.clone();
     helper.global_nodes = main.global_nodes.clone(); // share node counter
     helper.silent = true;                // helpers don't output UCI
     helper.nnue_net = main.nnue_net.clone(); // share NNUE weights (read-only)
@@ -1434,6 +1455,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.soft_limit = 0;
     info.hard_limit = 0;
     info.soft_floor = 0;
+    info.tm_baseline = 0;
 
     if limits.infinite {
         // Already zero above.
@@ -1570,6 +1592,26 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         let ph = info.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed);
         if ph > 0 && info.start_time.elapsed().as_millis() as u64 >= ph {
             break;
+        }
+        // Post-ponderhit dynamic TM setup. If UCI just stored a soft deadline
+        // AND the search has no soft_limit yet (i.e. this started as
+        // `go ponder` with no time budget), arm dynamic TM from here onward.
+        // Without this, the loop only honours the hard deadline and burns
+        // the full ~5s at 60+2 even on stable positions where a 2-3s emit
+        // would suffice. The floor (≈ inc-overhead) prevents instant-emit
+        // when stability has been confidently held through ponder.
+        let ph_soft = info.ponderhit_soft.load(std::sync::atomic::Ordering::Relaxed);
+        if ph_soft > 0 && info.soft_limit == 0 {
+            let now = info.start_time.elapsed().as_millis() as u64;
+            let soft_remaining = ph_soft.saturating_sub(now).max(1);
+            let hard_remaining = if ph > now { ph - now } else { soft_remaining };
+            let hard_remaining = hard_remaining.max(soft_remaining);
+            let floor = info.ponderhit_floor.load(std::sync::atomic::Ordering::Relaxed)
+                .min(soft_remaining);
+            info.tm_baseline = now;
+            info.soft_limit = soft_remaining;
+            info.hard_limit = hard_remaining;
+            info.soft_floor = floor;
         }
         let iter_start = std::time::Instant::now();
 
@@ -1764,10 +1806,14 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             );
         }
 
-        // Dynamic time management: 3-factor model (Obsidian/Clarity pattern)
-        // Combines node fraction, best-move stability, and score trend.
-        if info.soft_limit > 0 && depth >= 4 && !info.should_stop() {
-            // Track best-move stability
+        // Track best-move stability and score trend on every iteration so
+        // that ponder iterations accumulate TM state — when ponderhit fires
+        // mid-deep-search, dynamic TM (below) can immediately see "best move
+        // has been stable for N iterations" and scale down accordingly. With
+        // tracking gated behind `soft_limit > 0`, ponderhit started cold
+        // (tm_best_stable = 0, stability_factor = 1.71) and the dynamic
+        // adjustment couldn't bite.
+        let score_drop = if depth >= 4 {
             if info.tm_has_data {
                 let bm_from = move_from(best_move);
                 let bm_to = move_to(best_move);
@@ -1779,19 +1825,22 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     info.tm_best_stable = 0;
                 }
             }
-
-            // Score trend: how much has the score dropped since last iteration?
-            // Positive = score is dropping (need more time), negative = improving
-            let score_drop = if info.tm_has_data && !is_mate_score(prev_score) && !is_mate_score(info.tm_prev_score) {
-                info.tm_prev_score - prev_score  // positive when eval is falling
+            let drop = if info.tm_has_data && !is_mate_score(prev_score) && !is_mate_score(info.tm_prev_score) {
+                info.tm_prev_score - prev_score
             } else {
                 0
             };
-
             info.tm_prev_best = best_move;
             info.tm_prev_score = prev_score;
             info.tm_has_data = true;
+            drop
+        } else {
+            0
+        };
 
+        // Dynamic time management: 3-factor model (Obsidian/Clarity pattern)
+        // Combines node fraction, best-move stability, and score trend.
+        if info.soft_limit > 0 && depth >= 4 && !info.should_stop() {
             // Factor 1: Node fraction (Obsidian pattern)
             // How concentrated is the search on the best move?
             // High fraction → confident → use less time. Low fraction → uncertain → use more.
@@ -1830,7 +1879,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // endgames can't produce clock-growing instant emits.
             let adjusted_soft = (info.soft_limit as f64 * scale) as u64;
             let adjusted_soft = adjusted_soft.max(info.soft_floor).min(info.hard_limit);
-            if elapsed >= adjusted_soft {
+            // Subtract tm_baseline so soft is measured from the TM-start
+            // moment, not search start. tm_baseline is 0 for normal `go`
+            // (unchanged behaviour); set to elapsed-at-ponderhit when
+            // post-ponderhit dynamic TM arms above.
+            let elapsed_since_tm = elapsed.saturating_sub(info.tm_baseline);
+            if elapsed_since_tm >= adjusted_soft {
                 break;
             }
 
@@ -1870,8 +1924,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.stop.store(true, Ordering::Relaxed);
         loop {
             let elapsed = info.start_time.elapsed().as_millis() as u64;
-            if elapsed >= info.soft_floor { break; }
-            let remaining = info.soft_floor - elapsed;
+            // Floor is a duration measured from tm_baseline (0 for normal
+            // `go`; elapsed-at-ponderhit for post-ponderhit dynamic TM).
+            let elapsed_since_tm = elapsed.saturating_sub(info.tm_baseline);
+            if elapsed_since_tm >= info.soft_floor { break; }
+            let remaining = info.soft_floor - elapsed_since_tm;
             std::thread::sleep(std::time::Duration::from_millis(remaining.min(25)));
         }
     }

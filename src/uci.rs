@@ -12,7 +12,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut board = Board::startpos();
     let mut info = SearchInfo::new(64);
     let mut stop_flag = info.stop.clone(); // keep a handle to signal stop from UCI loop
-    let mut ponderhit_flag = info.ponderhit_time.clone(); // shared ponderhit time limit
+    let mut ponderhit_flag = info.ponderhit_time.clone(); // shared ponderhit hard deadline
+    let mut ponderhit_soft_flag = info.ponderhit_soft.clone(); // shared ponderhit soft deadline
+    let mut ponderhit_floor_flag = info.ponderhit_floor.clone(); // shared ponderhit min think
     // Separate flag set ONLY by external UCI "stop"/"ponderhit"/"quit" — distinct
     // from info.stop (which search_smp also sets internally when main search
     // returns). Used by the ponder wait loop below so it waits for an actual
@@ -114,6 +116,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         info = returned_info;
                         stop_flag = info.stop.clone();
                         ponderhit_flag = info.ponderhit_time.clone();
+                        ponderhit_soft_flag = info.ponderhit_soft.clone();
+                        ponderhit_floor_flag = info.ponderhit_floor.clone();
                     }
                 }
                 info.tt.clear();
@@ -238,6 +242,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 // if ponderhit arrives in the window between `go ponder` and search()
                 // entry, search() clearing it would clobber the legitimate deadline.
                 ponderhit_flag.store(0, Ordering::Relaxed);
+                ponderhit_soft_flag.store(0, Ordering::Relaxed);
+                ponderhit_floor_flag.store(0, Ordering::Relaxed);
                 // Clear the abandon-ponder suppress flag — this new search
                 // owns its bestmove emit. Set right before spawn so any value
                 // left from the prior go-handler abandonment can't leak into
@@ -252,6 +258,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     shared_stop, shared_tt, shared_net,
                 ));
                 ponderhit_flag = search_info.ponderhit_time.clone();
+                ponderhit_soft_flag = search_info.ponderhit_soft.clone();
+                ponderhit_floor_flag = search_info.ponderhit_floor.clone();
                 let threads = num_threads;
                 let is_ponder_search = is_ponder;
                 let ext_stop = external_stop.clone();
@@ -295,6 +303,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 let remaining = ph_deadline - now_elapsed;
                                 si.stop.store(false, std::sync::atomic::Ordering::Relaxed);
                                 si.ponderhit_time.store(0, std::sync::atomic::Ordering::Relaxed);
+                                si.ponderhit_soft.store(0, std::sync::atomic::Ordering::Relaxed);
+                                si.ponderhit_floor.store(0, std::sync::atomic::Ordering::Relaxed);
                                 // Movetime (not full TM): full TM's dynamic stability
                                 // cut (stability_factor → 0.5× in stable positions)
                                 // actively reduces fresh-search time in simple endgames,
@@ -504,8 +514,18 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             external_stop.store(true, Ordering::Relaxed);
                             stop_flag.store(true, Ordering::Relaxed);
                         } else {
+                            // Store hard deadline (absolute) for the should_stop
+                            // grace check. Also publish the soft deadline + floor
+                            // so the ID loop can arm dynamic TM — without that,
+                            // it burns the full hard budget (~5s at 60+2) even on
+                            // positions where 2-3s would suffice.
                             let deadline = elapsed + hard.max(10);
+                            let soft_deadline = elapsed + soft.max(10).min(hard.max(10));
+                            // Match normal-go floor formula. Capped at soft.
+                            let floor = our_inc.saturating_sub(overhead).min(soft);
                             ponderhit_flag.store(deadline, Ordering::Relaxed);
+                            ponderhit_soft_flag.store(soft_deadline, Ordering::Relaxed);
+                            ponderhit_floor_flag.store(floor, Ordering::Relaxed);
                         }
                     } else if pl.movetime > 0 {
                         // C8 audit LIKELY #33: `go ponder movetime X` (no
@@ -536,6 +556,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         info = returned_info;
                         stop_flag = info.stop.clone();
                         ponderhit_flag = info.ponderhit_time.clone();
+                        ponderhit_soft_flag = info.ponderhit_soft.clone();
+                        ponderhit_floor_flag = info.ponderhit_floor.clone();
                     }
                 }
                 parse_option(&tokens, &mut info, &mut num_threads);
