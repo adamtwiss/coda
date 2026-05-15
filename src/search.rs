@@ -25,7 +25,7 @@ use crate::types::*;
 /// L1 on the hot pv-copy path, and regressed STC by ~-13 Elo (OB #664).
 /// Keeping 64 — the original crash is fixed by the ply clamp in qsearch
 /// + bounds check in MovePicker, not by raising the ceiling.
-pub const MAX_PLY: usize = 64;
+pub const MAX_PLY: usize = 128;
 const INFINITY: i32 = 30000;
 // Contempt removed 2026-04-19 (SPRT #508 H1 +2.53).
 
@@ -534,13 +534,20 @@ pub struct SearchInfo {
 
 impl SearchInfo {
     pub fn new(tt_mb: usize) -> Self {
+        Self::new_with_tt(std::sync::Arc::new(TT::new(tt_mb)))
+    }
+
+    /// Construct a SearchInfo with a pre-existing shared TT. Used by helper
+    /// threads to avoid allocating a throwaway 1 MB TT (which prints a
+    /// misleading "TT 1 MB" info string before the shared TT is swapped in).
+    pub fn new_with_tt(tt: std::sync::Arc<TT>) -> Self {
         SearchInfo {
             nodes: 0,
             global_nodes: std::sync::Arc::new(AtomicU64::new(0)),
             silent: false,
             stats: PruneStats::default(),
             stats_tt_static_eval_hits: 0,
-            tt: std::sync::Arc::new(TT::new(tt_mb)),
+            tt,
             history: alloc_zeroed_box(),
             stop: std::sync::Arc::new(AtomicBool::new(false)),
             start_time: Instant::now(),
@@ -591,9 +598,11 @@ impl SearchInfo {
         tt: std::sync::Arc<crate::tt::TT>,
         nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
     ) -> Self {
-        let mut si = Self::new(1); // tiny dummy TT, replaced below
+        // Use the shared TT directly — avoids allocating a throwaway 1 MB
+        // TT and the misleading "TT 1 MB" info string that prints before
+        // the swap. Same pattern as create_helper_info.
+        let mut si = Self::new_with_tt(tt);
         si.stop = stop;
-        si.tt = tt;
         si.nnue_net = nnue_net;
         si
     }
@@ -1173,8 +1182,9 @@ fn alloc_zeroed_box<T>() -> Box<T> {
 
 /// Create a helper SearchInfo that shares TT and stop flag with the main thread.
 fn create_helper_info(main: &SearchInfo) -> SearchInfo {
-    let mut helper = SearchInfo::new(1); // dummy TT, will be replaced
-    helper.tt = main.tt.clone();             // share the same TT
+    // Use the shared TT directly (avoids allocating a throwaway 1 MB TT
+    // and the misleading "TT 1 MB" info string that prints before swap).
+    let mut helper = SearchInfo::new_with_tt(main.tt.clone());
     helper.stop = main.stop.clone();         // share the same stop flag
     // C8 audit LIKELY #35: share ponderhit_time so helpers respect the
     // ponderhit deadline set by the UCI thread. Previously helpers kept
