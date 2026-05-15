@@ -101,7 +101,7 @@ def submit_test(args):
         'test_mode':       'SPRT',
         'test_bounds':     args.bounds,
         'test_confidence': '[0.05, 0.05]',
-        'book_name':       '4moves_noob.epd',
+        'book_name':       args.book,
         'priority':        str(args.priority),
         'throughput':       str(args.throughput),
         'workload_size':   '32',
@@ -148,6 +148,7 @@ def main():
     p.add_argument('--base-options', default='', help='UCI options for base side only (overrides --options for base)')
     p.add_argument('--dev-network', default='', help='Dev network SHA256 hash (8 chars, from ob_upload_net.py)')
     p.add_argument('--base-network', default='', help='Base network SHA256 hash (8 chars, from ob_upload_net.py)')
+    p.add_argument('--book', default='4moves_noob.epd', help='Opening book (default: 4moves_noob.epd). Common: UHO_Lichess_4852_v1.epd for higher-variance positions matching Reckless/Halogen.')
     p.add_argument('--priority', type=int, default=0, help='Priority (default: 0)')
     p.add_argument('--throughput', type=int, default=100, help='Throughput (default: 100)')
     p.add_argument('--scale-nps', type=int, default=None, help='Reference NPS for TC scaling. Defaults to 250000 (v9, current main). Use --scale-nps 500000 for v5-only branches.')
