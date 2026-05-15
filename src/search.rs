@@ -221,10 +221,10 @@ tunables!(
     // Reuses offense's `attacks_from_to` computation — zero extra
     // attacks_from() calls. tp==0 disables.
     (QSEE_BONUS, 6397, 0, 20000, 1000.0),
-    // 2026-05-09 ablation (Tier 4 A2): 25K-iter tune-928 drove float to 0.22.
-    // Three other tunes wanted 1.18-1.97; #874 prior ablation showed -2.6 Elo
-    // (in noise). Decisive [-3, 3] SPRT at 0.
-    (SE_KING_PRESSURE_MARGIN, 0, 0, 30, 1.5),
+    // SE_KING_PRESSURE_MARGIN removed 2026-05-15: tune at _10X precision
+    // (range -5..+30, direct /10 scaling) confirmed optimum is genuinely 0.
+    // Historical conflicting reads (0.22 vs 1-2 across tunes) were SPSA
+    // noise on integer-rounded values. Direction closed.
     // xray-SE: widen singular test margin when TT move is from an x-ray
     // blocker square (moving it uncovers our slider's attack on an enemy).
     // Signal already delivered +52 in movepicker (#502). Flat bonus
@@ -2773,10 +2773,7 @@ fn negamax(
                 let xray_bonus = if our_xray_blockers & (1u64 << move_from(tt_move)) != 0 {
                     tp10(&SE_XRAY_BLOCKER_MARGIN_10X)
                 } else { 0 };
-                // S4: widen singular test margin when king under pressure.
-                let singular_beta = tt_score_local - depth
-                    - king_zone_pressure * tp(&SE_KING_PRESSURE_MARGIN)
-                    - xray_bonus;
+                let singular_beta = tt_score_local - depth - xray_bonus;
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
