@@ -132,7 +132,7 @@ Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from dept
 - SEE pruning: quiet -SEE_QUIET_MULT*d² at shallow depth, capture -SEE_CAP_MULT*d
 - ProbCut: beta+PROBCUT_MARGIN, staticEval gate, SEE>=0
 - History pruning: -HIST_PRUNE_MULT*depth at depth<=HIST_PRUNE_DEPTH
-- Bad noisy: prune losing captures when SEE < -BAD_NOISY_MARGIN
+- Bad noisy futility (BNFP): prune captures with `static_eval + depth*BAD_NOISY_MARGIN <= alpha && SEE < 0`, gated to `depth <= BAD_NOISY_DEPTH`. BAD_NOISY_MARGIN is a futility scalar (eval-vs-alpha), NOT a SEE threshold.
 - IIR: depth>=IIR_MIN_DEPTH (currently effective 2, _10X form), !inCheck, no TT move, PV or cut node
 - Singular extensions + double extensions (margin=DEXT_MARGIN, cap=DEXT_CAP)
 - Cuckoo cycle detection for proactive repetition avoidance
