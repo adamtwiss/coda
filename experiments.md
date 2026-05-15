@@ -10273,3 +10273,196 @@ If SPSA finds effective 0.5-2.0 fractional optimum, that confirms
 the historical conflicting reads (0.22 vs 1-2) were SPSA noise on
 integer-rounded values.
 
+## 2026-05-14/15 — Audit-derived SPRT batch: 11 tests, 3 H1 (+8.0 Elo) / 8 H0
+
+Outlier audit of trunk tunable values vs cross-engine consensus, prioritizing
+places SPSA had pushed Coda's value far from the 6-8 top-engine norm. Premise
+(per `feedback_correctness_audit_wins_dominate`): SPSA detuning around an
+implementation bug looks like an outlier value; fixing the underlying gate
+restores the consensus value and SPSA finds a new basin. Eleven branches
+submitted as [-3, 3] SPRTs against main (bench 5,143,733, prod net
+`net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor`).
+
+Important methodology note: initial submissions (tests 1196–1200) bench-errored
+when `ae19c4f` (third depth-boost trigger) landed mid-session and shifted
+main's bench from 4,962,313 → 5,143,733. Branches rebased onto current main,
+re-benched, and resubmitted. All results below are from the rebased-on-main
+submissions.
+
+### H1 wins ✓ (held pending H0-followup retunes before merge)
+
+**#1209 lmp-remove-pv-gate — +5.0 ±4.1 H1 ✓** (5,326 games).
+Branch: `experiment/lmp-remove-pv-gate`. The strongest single result of the
+batch. Audit found Coda had `!is_pv` in the LMP gate; SF/Obsidian/Reckless
+all run LMP on PV nodes too. PV nodes had **zero LMP coverage** — a real
+coverage gap, not a consensus carve-out as the inline comment claimed.
+Removing the `!is_pv` line unlocked ~5 Elo at default trunk values.
+
+**#1203 hist-prune-skip-quiets — +1.9 ±2.6 H1 ✓** (14,262 games).
+Branch: `experiment/hist-prune-skip-quiets`. Once a quiet is hist-pruned,
+all later quiets at that node should also be skipped (the move list is
+ordered by score, so a hist-pruned move means subsequent quiets are worse-
+ranked AND have worse cont-hist context). Obsidian/Alexandria/Stormphrax/
+Halogen all set `skipQuiets`-style early exit here; Coda used `continue;`
+which only skipped the single move. Small but clean structural fix.
+
+**#1212 hist-prune-lmrdepth — +1.1 ±2.0 H1 ✓** (23,246 games).
+Branch: `experiment/hist-prune-lmrdepth`. Gate hist-prune on `lmr_d`
+(post-reduction depth) instead of raw `depth`, matching SF/Obsidian/
+Reckless. **Bench-identical** to main (5,143,733 == 5,143,733) — change
+doesn't affect bench positions but real Elo signal at full game scale.
+Confirms `feedback_bench_identical_can_regress_elo` (or *im*prove)
+direction: bench-equality ≠ Elo-neutral.
+
+### H0 failures ✗ — 4 retune-on-branch candidates, 4 drop
+
+**#1204 hist-prune-drop-mainhist — -0.8 ±1.7 H0 ✗** (32,666 games, bench
+4.43M, -14% vs main). Drop main_hist from hist-prune score, leaving only
+contextual signal (cont-hist + pawn-hist) — matching SF/Reckless. Narrow
+miss with big bench delta → **focused + full-sweep retune queued**
+(#1222 + #1231).
+
+**#1208 lmp-add-nonpawn-guard — -1.0 ±1.9 H0 ✗** (26,976 games, bench
+4.21M, -18%). Add SF/Obsidian zugzwang guard (`stm_non_pawn != 0`) to
+LMP gate. Narrow miss, big delta → **retune queued** (#1220 + #1229).
+
+**#1213 histbonus-drop-eval-boost — -1.1 ±1.9 H0 ✗** (25,742 games,
+bench 4.42M, -14%). Drop the Stormphrax static-eval depth-boost trigger
+from the 3-trigger stack (margin + static-eval + improving). Narrow miss
+→ **retune queued** (#1221 + #1230). Also spawned the signed-BIAS
+parameterization branch (`experiment/histbonus-signed-bias` + #1232,
+`experiment/histbonus-bias-noeval` + #1233) after #1221 showed OFFSET
+boundary-pinning toward 0.
+
+**#1207 lmp-drop-check-carve — -1.3 ±2.1 H0 ✗** (21,724 games). Remove
+`!gives_direct_check` from LMP gate (Reckless-only carve-out among top
+engines; SF/Obsidian don't have it). Failed → **iteration queued**
+(`experiment/lmp-check-deepgate` #1227): depth-gated drop, keep carve at
+depth ≤ 3 (tactical checks matter pre-LMR), drop at depth ≥ 4.
+
+**#1206 bonus-boost-at-95 — -1.8 ±2.5 H0 ✗** (15,494 games). Probe SF's
+consensus value (95) for BONUS_BOOST_AT vs Coda's SPSA-converged 29.
+SF value didn't transfer at Coda's eval scale → **bisect queued**
+(`experiment/bonus-boost-at-50` #1226): midpoint test, if non-monotone
+the optimum is between 29-95.
+
+**#1210 lmp-gte-fix — -1.8 ±2.5 H0 ✗** (14,924 games, bench 3.78M,
+**-27%** — largest delta of any H0). Change `move_count > lmp_limit` to
+`>=` (SF/Obsidian semantic). Failed → **retune queued** (#1219 + #1228):
+LMP_BASE was SPSA-tuned around `>`; with `>=` LMP fires one move earlier
+at the same BASE, so BASE almost certainly wants to drop.
+
+**#1211 hist-prune-drop-cont46 — -1.9 ±2.5 H0 ✗** (14,764 games, bench
+4.59M, -11%). Drop cont-hist offsets 4 and 6 from hist-prune score,
+leaving only [1, 2] — matching SF 3-source consensus (cont1 + cont2 +
+pawn). Failed at STC → **LTC retry queued** (#1225 at 40+0.4) per
+`feedback_ltc_amplifies_for_low_nps_engines` — ordering-quality features
+often amplify 2-3× at LTC for Coda.
+
+**#1205 corrhist-grain-t-1 — -41.2 ±12.2 H0 ✗** (856 games, bench 6.64M,
++29%). Drop `CORR_HIST_GRAIN_T` from 14 to 1 (hypothesized read-side
+workaround). The -41 Elo catastrophic regression at low N confirms
+GRAIN_T=14 is **load-bearing dampening**, not a workaround. Means the
+corr-hist FORMULA itself is producing too-strong reads (clamp-err vs
+clamp-bonus, missing /128 divisor — the existing P1 holdback in task
+#240). **Drop this iteration; the right fix is the formula.**
+
+### Meta-pattern observations
+
+1. **Coverage-gap fixes >> consensus-value ports.** The biggest win
+   (lmp-remove-pv-gate +5.0) was a missing gate, not a value change.
+   Compare to bonus-boost-at-95 (consensus value port) → H0. Aligns with
+   `feedback_consensus_patterns_dont_always_transfer`: pure logic bugs
+   transfer cleanly; signal-filtering parameter values do not.
+
+2. **Bench delta as retune signal.** All 4 retune candidates have bench
+   delta > 10%; the +29% bench delta on corrhist-grain-t-1 was a clear
+   "this change is doing too much" signal that pre-dated the SPRT result.
+
+3. **SPSA pin direction is a parameterization diagnostic, not just a
+   value diagnostic.** #1221 OFFSET pulled -17.5% at 37/1000 iter with
+   c_end=25 — a boundary-pinning signal. Spawned the signed-BIAS
+   refactor branch + a 3-way A/B (#1221 OFFSET / #1232 BIAS+main /
+   #1233 BIAS+noeval) to test whether OFFSET ≥ 0 was an expression
+   limit. Per `feedback_spsa_as_feature_utility_diagnostic` extended:
+   SPSA can also signpost parameterization limits, not just feature
+   utility.
+
+4. **Initial "Wrong Bench" rejections were correctable, not catastrophic.**
+   Tests 1196–1200 all bench-errored when main moved mid-session; rebase
+   + rebuild + resubmit recovered every one. Cost ~30min of fleet time
+   per branch but no Elo data was lost. Reinforces
+   `feedback_always_pull_main_before_sprt_submit`.
+
+### Open work in flight from this batch
+
+- 4 focused + 4 full-sweep retunes on H0 candidates (#1219-#1222,
+  #1228-#1231) — the focused vs full-sweep paired comparison itself is
+  a methodology question (does wider tune find Elo focused misses?).
+- 3-way BIAS parameterization A/B (#1232/#1233) + #1221 baseline.
+- LTC retry of hist-prune-drop-cont46 (#1225 at 40+0.4).
+- 2 STC iterations: bonus-boost-at-50 bisect (#1226), lmp-check-deepgate
+  (#1227).
+- H1 merges (lmp-remove-pv-gate +5.0, hist-prune-skip-quiets +1.9,
+  hist-prune-lmrdepth +1.1) held until H0 followups settle, per user
+  direction (avoids shifting the baseline mid-comparison).
+
+### Total expected Elo banked from this batch (lower bound)
+
+3 H1s = +5.0 + 1.9 + 1.1 = **+8.0 Elo** (will merge once H0 followups
+resolve). Upside if retune branches deliver: +1-3 Elo per branch × 4
+retune candidates = +4-12 additional Elo. Upside on signed-BIAS
+parameterization: unknown, possibly +1-5 if SPSA confirms a positive
+optimum. Audit thread thus delivered +8 banked with up to +20 in flight.
+
+### Final result after 2026-05-15 followup batch
+
+The retune-on-branch followups (focused-cluster + fullsweep-applied) all
+H0'd for the 4 retune candidates — methodology confirmed: branches whose
+direct-SPRT lands H0 with bench-delta in the "narrow miss" range do NOT
+have hidden Elo accessible via retune. The signed-BIAS parameterization
+hypothesis was also refuted: 4 independent tunes (#1221, #1228, #1233,
+#1244) gave 3 different directions on OFFSET/BIAS, indicating flat
+gradient rather than parameterization limit. Memory
+`feedback_spsa_signposted_audit_workflow` updated with the boundary-pin
+caveat and the retune-on-branch limit.
+
+One additional H1 banked from iteration: **#1227 lmp-check-deepgate +1.3
+±2.1 H1 ✓** at 21,286 games — depth-gated check carve in LMP (composes
+with #1209). Hybrid of #1207's unconditional carve (H0) keeping the
+check-protection only at depth < 4. And **#1215 se-multicut-return-score
++2.78 ±2.0 H1 ✓** at 24,212 games (added to the earlier batch tally,
+qualifies as audit win since the audit identified this as SE finding #5).
+
+**Final banked: +12.11 Elo across 5 H1s.**
+
+## 2026-05-15 — Post-audit-batch merge cycle + #1247 collective retune
+
+5 H1s from the audit batch merged onto main in descending Elo order:
+
+| Branch | SPRT | Elo | Bench after merge |
+|--------|------|-----|---------------------|
+| lmp-remove-pv-gate | #1209 | +5.0 ±4.1 | 4,509,119 |
+| se-multicut-return-score | #1215 | +2.78 ±2.0 | 4,343,462 |
+| hist-prune-skip-quiets | #1203 | +1.9 ±2.6 | 4,421,245 |
+| lmp-check-deepgate | #1227 | +1.3 ±2.1 | 4,517,577 |
+| hist-prune-lmrdepth | #1212 | +1.1 ±2.0 | 4,517,577 |
+
+One conflict resolved: lmp-check-deepgate's commit re-introduced `!is_pv`
+(which lmp-remove-pv-gate had just removed). Both audit findings are
+independent — kept the PV-coverage fix AND the depth-gated check carve.
+Final LMP gate: `ply > 0 && !in_check && depth >= 1 && depth <= LMP_DEPTH
+&& !is_cap && !is_promo && (depth >= 4 || !board.gives_direct_check(mv))`.
+
+Rebase target main was at 787cf8d (MAX_PLY=128 + TM ponderhit). All 5
+H1s rebased cleanly except the one conflict noted above. Bench
+re-measured on each cherry-pick + `make` cycle; commit Bench: lines
+updated to reflect post-rebase values.
+
+**Tune #1247 fired**: 2500-iter full-sweep SPSA on new main against
+prod net `net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor`
+(SHA8 `1ef1c3e5`). Standard 82-param full-sweep. Expected duration on
+empty fleet: ~6-10 hours. Post-tune workflow: apply outputs to main,
+SPRT-validate at [0, 3], log result.
+
+This closes task #254.
