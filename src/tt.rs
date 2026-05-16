@@ -498,14 +498,27 @@ impl TT {
         }
     }
 
-    /// Estimate hashfull (permille of used slots).
+    /// Estimate hashfull (permille of current-generation slots).
+    ///
+    /// Matches Stockfish/Reckless/SF-derived engines: only entries from the
+    /// current search generation count. Stale entries from prior searches
+    /// are still resident but won't be re-probed cleanly, so excluding them
+    /// gives an honest "useful TT pressure" signal for UCI display.
+    ///
+    /// Pre-2026-05-15 this counted ANY non-empty slot, which caused
+    /// hashfull to saturate at ~99% after a few moves of warm-TT play even
+    /// when only ~3% of slots held current-gen entries (cross-engine
+    /// comparison with Reckless on Lichess 12+5 highlighted the gap).
     pub fn hashfull(&self) -> u32 {
         let sample = (self.mask + 1).min(1000);
+        let current_gen = self.generation.load(Ordering::Relaxed);
         let mut used = 0u32;
         for i in 0..sample {
             for j in 0..BUCKET_SIZE {
-                let flag = unpack_flag(self.buckets[i].data[j].load(Ordering::Relaxed));
-                if flag != TT_FLAG_NONE {
+                let data = self.buckets[i].data[j].load(Ordering::Relaxed);
+                if unpack_flag(data) != TT_FLAG_NONE
+                    && unpack_generation(data) == current_gen
+                {
                     used += 1;
                 }
             }
