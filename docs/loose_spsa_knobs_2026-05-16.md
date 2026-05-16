@@ -90,7 +90,12 @@ For each ablation candidate, grep `src/search.rs` for the gate structure:
 
 ### Phase 3 — First ablation batch (IN FLIGHT)
 Five `[-3, 3]` SPRTs against current main (UHO book, fleet-default since
-2026-05-16):
+2026-05-16). **Bounds choice in hindsight**: subsequent batches should
+use `[0, 3]` — the wide-CI results from `[-3, 3]` (e.g. #1258 +3.5 ±3.9)
+don't distinguish "+1 trivial" from "+7 substantial". `[0, 3]` needs
+more games to H1 but gives a tighter measurement, which matters when
+stacking many small ablation gains for compound estimates. Phase 4
+onward: `[0, 3]` default for ablations.
 
 | ID | Branch | Param ablated |
 |----|--------|---------------|
