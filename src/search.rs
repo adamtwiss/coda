@@ -1235,6 +1235,104 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     helper
 }
 
+/// Compute time-management budgets from clock state. Returns
+/// (soft, hard, soft_floor) all in milliseconds.
+///
+/// Shared by `start_search` (initial allocation on `go wtime/btime`)
+/// and the UCI ponderhit handler (allocation after ponderhit when the
+/// ponder search is already running). Keeping both paths on the same
+/// helper prevents the formulas from drifting — previously the
+/// handler reimplemented the formula and silently lost emergency-mode
+/// reduction at time<1s and movestogo-aware caps.
+///
+/// Inputs: `our_time` and `our_inc` are wtime/winc or btime/binc in
+/// ms. `movestogo` is 0 for sudden death. `overhead` is the
+/// MoveOverhead UCI option (default 100ms).
+pub fn compute_tm_budgets(
+    our_time: u64,
+    our_inc: u64,
+    movestogo: u32,
+    overhead: u64,
+) -> (u64, u64, u64) {
+    let time_left = our_time.saturating_sub(overhead).max(1);
+    let moves_left = if movestogo > 0 { movestogo as u64 } else { 25 };
+
+    // Soft allocation: time/movesLeft + 80% of increment.
+    let mut soft = time_left / moves_left + our_inc * 4 / 5;
+
+    // Cap soft allocation: scale with moves remaining.
+    // movestogo=1: 90%, movestogo=2: 85%, sudden death (effective 25): 50%.
+    let max_pct = if movestogo > 0 {
+        (95 - movestogo as u64 * 5).max(30).min(90)
+    } else {
+        50
+    };
+    let max_alloc = time_left * max_pct / 100;
+    if soft > max_alloc { soft = max_alloc; }
+
+    // Emergency: below 1 second, be very conservative.
+    if time_left < 1000 {
+        let mut emergency = time_left / 10;
+        if our_inc > 0 && our_inc < emergency { emergency = our_inc; }
+        if emergency < 10 { emergency = 10; }
+        if soft > emergency { soft = emergency; }
+    }
+
+    // Floor at 10ms.
+    if soft < 10 { soft = 10; }
+
+    // Save base soft before any clamp to hard. Hard uses base_soft, NOT
+    // a dynamically-scaled soft — dynamic factors at runtime can scale
+    // soft by up to ~2.5× (stability=0 × node_fraction=2.23), so hard
+    // derived from scaled soft would let max = soft × 2.5 × 3 = soft ×
+    // 7.5, recreating the overspend problem.
+    let base_soft = soft;
+
+    // Hard limit:
+    //   movestogo>0: 2× base_soft, capped at a movestogo-scaled fraction
+    //   sudden death: 3× base_soft.
+    let mut hard = if movestogo > 0 {
+        let hard_raw = base_soft * 2;
+        let hard_pct = (95 - movestogo as u64 * 10).max(30).min(90);
+        let mtg_cap = time_left * hard_pct / 100;
+        hard_raw.min(mtg_cap)
+    } else {
+        base_soft * 3
+    };
+
+    // Universal hard cap (time/20 + inc): only for sudden death.
+    //
+    // The "never risk more than 5% of clock + 1 increment" rule is a
+    // sudden-death safety: at the start of a 60+1 game we never want
+    // to spend 30s on move 1 because we'd be flat-out on move 2. With
+    // movestogo>0 the mtg_cap already scales the cap by moves
+    // remaining — applying time/20+inc on top makes movestogo=1 (last
+    // move before TC reset) play at 5% of remaining time when we
+    // could safely use ~85% (the clock resets right after).
+    if movestogo == 0 {
+        let mut max_hard = time_left / 20 + our_inc;
+        if max_hard > time_left * 3 / 4 {
+            max_hard = time_left * 3 / 4;
+        }
+        if hard > max_hard {
+            hard = max_hard;
+        }
+    }
+
+    // Clamp soft to hard. C8 audit LIKELY #28: must clamp BEFORE
+    // returning; otherwise downstream TM code could see soft > hard
+    // and try to spend more than the absolute cap.
+    if soft > hard { soft = hard; }
+
+    // Soft floor: never spend less than the increment we gain, so the
+    // dynamic stability cut can't produce clock-growing instant emits
+    // in stable endgames (lichess PZ7pCyrx stockpile). Capped at hard
+    // to preserve the absolute maximum. Zero when inc <= overhead.
+    let soft_floor = our_inc.saturating_sub(overhead).min(hard);
+
+    (soft, hard, soft_floor)
+}
+
 /// Run Lazy SMP search: main thread + N-1 helper threads.
 pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits, threads: usize) -> Move {
     // C8 audit LIKELY #37: advance TT generation here (before spawning
@@ -1466,81 +1564,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // it at 0 so they get exactly the movetime they asked for).
         info.soft_floor = limits.movetime_floor.min(limits.movetime);
     } else if our_time > 0 {
-        // Subtract move overhead (communication latency)
-        let overhead = info.move_overhead;
-        let time_left = our_time.saturating_sub(overhead).max(1);
-
-        let moves_left = if limits.movestogo > 0 { limits.movestogo as u64 } else { 25 };
-
-        // TC regime classification: seconds per move estimate
-
-        // Soft allocation: time/movesLeft + 80% of increment
-        let mut soft = time_left / moves_left + our_inc * 4 / 5;
-
-        // Cap soft allocation: scale with moves remaining
-        // movestogo=1: allow up to 90%, movestogo=2: 70%, sudden death (25): 50%
-        let max_pct = if limits.movestogo > 0 {
-            (95 - limits.movestogo as u64 * 5).max(30).min(90)
-        } else {
-            50
-        };
-        let max_alloc = time_left * max_pct / 100;
-        if soft > max_alloc { soft = max_alloc; }
-
-        // Emergency: below 1 second, be very conservative
-        if time_left < 1000 {
-            let mut emergency = time_left / 10;
-            if our_inc > 0 && our_inc < emergency { emergency = our_inc; }
-            if emergency < 10 { emergency = 10; }
-            if soft > emergency { soft = emergency; }
-        }
-
-        // Floor at 10ms
-        if soft < 10 { soft = 10; }
-
-        // Save base soft before dynamic factors scale it.
-        // CRITICAL: hard limit uses base_soft, not dynamically-scaled soft.
-        // Dynamic factors can scale soft by up to ~2.5x (stability=0 ×
-        // node_fraction=2.23). If hard uses scaled soft, the effective maximum
-        // becomes soft × 2.5 × 3 = soft × 7.5, recreating the overspend problem.
-        let base_soft = soft;
-
-        // Hard limit: 3x base soft, but never more than time/20 + inc
-        // The time/20 + inc cap prevents overspend at all TCs:
-        //   60+0: max = 3000ms    60+2: max = 5000ms
-        //   180+2: max = 11000ms  600+5: max = 35000ms
-        let mut hard = if limits.movestogo > 0 {
-            let hard_raw = base_soft * 2;
-            let hard_pct = (95 - limits.movestogo as u64 * 10).max(30).min(90);
-            let mtg_cap = time_left * hard_pct / 100;
-            hard_raw.min(mtg_cap)
-        } else {
-            base_soft * 3
-        };
-
-        // Absolute hard cap: time/20 + inc (never risk more than 5% of clock + 1 increment)
-        let mut max_hard = time_left / 20 + our_inc;
-        if max_hard > time_left * 3 / 4 {
-            max_hard = time_left * 3 / 4;
-        }
-        if hard > max_hard {
-            hard = max_hard;
-        }
-
-        // C8 audit LIKELY #28: clamp `soft` to `hard` BEFORE storing
-        // info.soft_limit. Previously the clamp only updated the local
-        // `soft`, leaving info.soft_limit possibly > info.hard_limit
-        // under movestogo=1. Downstream TM code then saw a soft budget
-        // larger than the hard cap.
-        if soft > hard { soft = hard; }
+        let (soft, hard, soft_floor) =
+            compute_tm_budgets(our_time, our_inc, limits.movestogo, info.move_overhead);
         info.soft_limit = soft;
         info.hard_limit = hard;
-        // Soft floor: never spend less than the increment we gain, so the
-        // dynamic stability cut can't produce clock-growing instant emits
-        // in stable endgames (lichess PZ7pCyrx stockpile). Capped at hard
-        // to preserve the absolute maximum. Zero when inc is zero.
-        info.soft_floor = our_inc.saturating_sub(overhead).min(hard);
-        info.time_limit = hard.max(soft); // search uses hard as absolute limit
+        info.soft_floor = soft_floor;
+        info.time_limit = hard; // search uses hard as absolute limit
         info.tm_has_data = false;
         info.tm_best_stable = 0;
     } else if !limits.infinite {

@@ -254,9 +254,15 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 let shared_tt = info.tt.clone();
                 let shared_net = info.nnue_net.clone();
                 let shared_stop = stop_flag.clone();
+                // Preserve user-set config (MoveOverhead) across mem::replace
+                // — the placeholder SearchInfo we leave behind on the UCI
+                // thread is what the ponderhit handler reads, and it must
+                // see the same overhead that the search thread is using.
+                let saved_overhead = info.move_overhead;
                 let search_info = std::mem::replace(&mut info, SearchInfo::new_with_shared(
                     shared_stop, shared_tt, shared_net,
                 ));
+                info.move_overhead = saved_overhead;
                 ponderhit_flag = search_info.ponderhit_time.clone();
                 ponderhit_soft_flag = search_info.ponderhit_soft.clone();
                 ponderhit_floor_flag = search_info.ponderhit_floor.clone();
@@ -497,19 +503,14 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     };
                     if our_time > 0 {
                         let overhead = info.move_overhead;
-                        let time_left = our_time.saturating_sub(overhead).max(1);
                         let elapsed = start.elapsed().as_millis() as u64;
 
-                        // Normal time allocation (same formula as go command)
-                        let moves_left = if pl.movestogo > 0 { pl.movestogo as u64 } else { 25 };
-                        let soft = (time_left / moves_left + our_inc * 4 / 5)
-                            .min(time_left / 2);
-                        // Hard = 3x soft, capped at time/20 + inc
-                        let hard = (soft * 3)
-                            .min(time_left / 20 + our_inc)
-                            .min(time_left * 3 / 4);
+                        // Single source of truth for soft/hard/floor —
+                        // shared with start_search via compute_tm_budgets.
+                        let (soft, hard, floor) = crate::search::compute_tm_budgets(
+                            our_time, our_inc, pl.movestogo, overhead);
 
-                        // Very low time (< 2s with no inc): instant stop
+                        // Very low time (< 2s with no inc): instant stop.
                         if hard <= overhead && our_inc == 0 && our_time < 2000 {
                             external_stop.store(true, Ordering::Relaxed);
                             stop_flag.store(true, Ordering::Relaxed);
@@ -521,8 +522,6 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             // positions where 2-3s would suffice.
                             let deadline = elapsed + hard.max(10);
                             let soft_deadline = elapsed + soft.max(10).min(hard.max(10));
-                            // Match normal-go floor formula. Capped at soft.
-                            let floor = our_inc.saturating_sub(overhead).min(soft);
                             ponderhit_flag.store(deadline, Ordering::Relaxed);
                             ponderhit_soft_flag.store(soft_deadline, Ordering::Relaxed);
                             ponderhit_floor_flag.store(floor, Ordering::Relaxed);
