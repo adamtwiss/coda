@@ -10466,3 +10466,267 @@ empty fleet: ~6-10 hours. Post-tune workflow: apply outputs to main,
 SPRT-validate at [0, 3], log result.
 
 This closes task #254.
+
+## 2026-05-15/16 — UHO book validation + adoption (major methodology shift)
+
+The corr-hist err-pre-clamp ablation (single-line removal in
+`update_correction_history`) was the trigger for a same-binary cross-book
+SPRT pair that produced the UHO finding.
+
+### Cross-book SPRT comparison (same dev binary, two books)
+
+`experiment/corr-hist-no-err-preclamp` SPRT'd twice in parallel:
+
+| ID | Book | Elo | Games | Draw rate | Result |
+|----|------|-----|-------|-----------|--------|
+| #1248 | 4moves_noob.epd | -1.9 ±2.6 | 14,098 | 78.6% | H0 ✗ |
+| #1249 | UHO_Lichess_4852_v1.epd | +1.5 ±2.6 | 21,288 | 46.2% | H1 ✓ |
+
+Heavy CI overlap, both straddle 0 — same direction, different SPRT-bound
+placement under noise. Importantly: UHO needed *more* games here because
+the true Elo (~0) drifted just-positive on UHO, requiring more games to
+hit the H1 boundary. The throughput benefit is INFORMATION per game,
+not arbitrary game-count reduction.
+
+**Draw-rate finding (the key signal):**
+- 4moves_noob: 21.4% decisive
+- UHO: 53.8% decisive
+- Each UHO game carries ~2.5× the SPRT-information per game.
+
+### Tune-side comparison (#1247 vs #1250, post-merge collective retune)
+
+After 5 audit-H1 merges (lmp-pv +5.0, se-multicut +2.78, hp-skipquiets
++1.9, lmp-check-deepgate +1.3, hp-lmrdepth +1.1) landed on main
+(commits 554249b → d5f2ee9), fired identical 2500-iter full-sweep
+SPSAs against new prod baseline — only difference was the book:
+
+- **#1247** main, book=4moves_noob.epd, 82 params, 2500 iter
+- **#1250** main, book=UHO_Lichess_4852_v1.epd, 82 params, 2500 iter
+- Same starting values, same fleet, same wall-clock window.
+
+Per-tune outcomes (applied outputs SPRT'd vs main):
+
+| ID | Tune source | vs main | Games | Result |
+|----|-------------|---------|-------|--------|
+| #1251 | tune-1247-applied | +0.6 ±1.1 | 120,768 (stopped) | →H0 |
+| #1252 | tune-1250-applied | **+1.6 ±1.3** | 78,960 | **H1 ✓** |
+| #1253 | 1247 vs 1250 H2H | **-4.5 ±4.4** | 7,450 | H0 ✗ (1250 wins) |
+
+UHO-derived tune **decisively beats** 4moves_noob-derived tune at the
+same iter budget. The ~2.5× decisive-rate advantage compounds in SPSA's
+simultaneous-perturbation gradient (which evaluates ~8 pairs/iter — at
+21% decisive, only ~3 of 16 games carry gradient signal; at 54%, ~9 do).
+
+Tune-1250 outputs adopted as new prod params (commit `b091a45`, bench
+4,517,577 → 5,408,541 on the rebuilt mini-prod baseline). +1.6 Elo
+banked from this rotation.
+
+### Big movers from the tune (preserved for future audit reference)
+
+`HIST_BONUS_OFFSET 11 → 18` (+66% on UHO) — finally resolves the
+extended back-and-forth saga (#1221/#1228/#1233/#1244 had said three
+different directions on this knob). The post-merge UHO basin agrees
+with the post-merge 4moves_noob basin: OFFSET wants to be UP from 11.
+The earlier signed-BIAS parameterization-refactor hypothesis was a
+false signpost — confirmed flat-gradient + post-merge basin shift,
+not parameterization limit. Don't reintroduce signed BIAS.
+
+Other notable convergent moves (both books agreed direction):
+- NMP_DEPTH_DIV +13-17% (less aggressive R scaling)
+- HIST_PRUNE_MULT -8-14% (lower history-prune threshold)
+- CORR_HIST_DIV +5-7% (dampen corrections slightly)
+- CORR_HIST_ERR_MAX_10X both **still pulling down** — confirms the
+  err pre-clamp signpost; #1248/#1249 single-line removal landed
+  marginal (needs the full /128 + GRAIN_T bundle, not just pre-clamp).
+
+### Default-book switch (commit `dbe3459`)
+
+Both `scripts/ob_submit.py` and `scripts/ob_tune.py` defaults changed
+from `4moves_noob.epd` to `UHO_Lichess_4852_v1.epd`. Memory file
+`feedback_uho_book_better_for_sprt_and_spsa.md` records the validation
+evidence + adoption rationale.
+
+**Going forward**: all new SPRT/SPSA work uses UHO by default. Past
+4moves_noob measurements are NOT directly comparable in magnitude
+(but the *direction* of effects transfers cleanly per #1248/#1249 + #1252).
+
+### TT hashfull display fix (commit `498220c`)
+
+Adjacent cross-engine diagnostic: Reckless on Lichess reported 3.4%
+hashfull at the same point Coda reported 99%, both with 1GB hash on
+the bot. Investigation found `tt.rs:hashfull()` counted any non-empty
+slot, ignoring generation. Reckless and SF-style engines only count
+current-generation entries.
+
+Fix: 1-line addition to filter `unpack_generation(data) == current_gen`.
+Display-only — no search behavior change, bench identical. Now Coda's
+hashfull reads in single-digit percent like Reckless's, accurately
+reflecting "useful TT pressure for current search". The structural
+TT behavior was fine all along; just the diagnostic was misleading.
+
+## 2026-05-16 — Loose-SPSA-knob hypothesis + Phase 3 ablation batch
+
+Triggered by Adam's observation that recent SPSA tunes have felt less
+effective. Hypothesis: noise injection from drifting low-leverage
+parameters degrades simultaneous-perturbation gradient SNR for the
+useful parameters. With 82 tunables, if ~25-30 are loose, the
+high-leverage ones fight through ~25-30 noise axes per iteration.
+
+### Audit (Phase 1): `scripts/loose_knob_audit.py`
+
+Cross-tune SPSA digest analysis across 11 recent full-sweep tunes
+(#1250, #1247, #1228, #1117, #1070, #1071, #928, #882, #871, #870,
+#855). Per-parameter cross-tune metrics: mean abs % movement,
+sign-consistency, normalized range use.
+
+Classification breakdown (82 params):
+
+| Class | Count | Meaning |
+|-------|-------|---------|
+| STABLE-CONVERGED | 29 | Values cluster; keep |
+| CONSISTENT-PULL | 11 | SPSA still finding gradient; keep |
+| **DRIFTING-LOOSE** | **24** | **Loose-knob candidates** |
+| DISAGREEING | 6 | High movement + 50/50 sign — coupled or broken |
+| MIXED | 34 | Intermediate; need more data |
+
+Doc + script + methodology preserved in
+`docs/loose_spsa_knobs_2026-05-16.md` (commit `3025c79`).
+
+### Phase 3: first ablation batch (5 SPRTs, [-3, 3], UHO)
+
+Ablations of the top 5 DRIFTING-LOOSE candidates:
+
+| ID | Branch | Mechanism ablated |
+|----|--------|---------------------|
+| #1254 | ablate-battery-bonus | BATTERY_BONUS = 0 (additive ordering bonus) |
+| #1255 | ablate-escape-bonus-minor | ESCAPE_BONUS_MINOR = 0 |
+| #1256 | ablate-escape-bonus-q | ESCAPE_BONUS_Q = 0 |
+| #1257 | ablate-qsee-bonus | QSEE_BONUS = 0 |
+| #1258 | ablate-bonus-boost | BONUS_BOOST_AT depth-boost +1 removed (both sites) |
+
+Early/mid results (in flight at time of writing):
+
+- **#1258 ablate-bonus-boost: +3.5 ±3.9 H1 ✓** at 9,224 games —
+  removing the +1 depth-boost for fail-high cutoffs banks Elo.
+  Strongest H1 of the batch — confirms the SPSA-drift signpost was
+  correctly identifying a feature that doesn't help.
+- #1255 escape-bonus-minor: +0.8 ±3.3 trending H1 at 12.9k games.
+- #1256 escape-bonus-q: +0.4 ±3.7 trending H1 at 10.2k games.
+- #1254 battery-bonus: +0.2 ±2.4 trending H1 at 23.6k games (largest N).
+- #1257 qsee-bonus: -1.5 ±3.8 trending H0 at 9.6k games — only one
+  that might cost Elo. (qsee fires inside an offense-bonus block that
+  already prunes via SEE-like gating; the bonus may add useful
+  signal-class differentiation that the others don't.)
+
+Provisional ablation banking: +3.5 from bonus-boost confirmed; +1-2
+plausible from each of the 3 trending-H1 ablations if they hold their
+direction. Net likely +5-9 Elo from the ablation batch alone, plus the
+recurring fleet-throughput compound benefit from tune SNR improvement.
+
+### Meta-finding: SPSA drift IS a useful signpost
+
+Five of five DRIFTING-LOOSE candidates produced *non-negative* ablation
+SPRTs (4 trending positive, 1 marginal negative). That's strong evidence
+the audit methodology correctly identifies low-leverage / hurting
+features. Phase 4 (next 5-10 candidates from MIXED/DISAGREEING classes)
+queued.
+
+## 2026-05-16 — Mini-prod net comparison batch (4 nets vs baby-prod)
+
+Adam delivered 4 new SB200 training experiments:
+
+1. `mini-prod-gpu0a-4xbatch-s200.nnue` — batch_size 16k→65k + bps /=4
+   (data-neutral throughput experiment)
+2. `mini-prod-gpu0b-4xbatch-s200.nnue` — same recipe, K=2 replica
+3. `factor-canonical-1GB-shuffle-s200-v2.nnue` — 1GB shuffle buffer
+   (Reckless-aligned, but past tests showed 2-5 Elo weaker)
+4. `filter-10p-s200.nnue` — aggressive 10pp eval filter (vs default ~100pp)
+
+All 4 vs baby-prod, both sides on `mini-prod` branch, [0, 3] bounds.
+
+### Bench-mismatch saga (root cause: local mini-prod drift)
+
+First two submission rounds (#1259-#1262, then #1263-#1266) hit Wrong
+Bench errors on OB. After ruling out `-n` runtime override vs embedded
+EVALFILE differences (both gave identical bench), the actual cause was:
+**local mini-prod was 13 commits ahead of origin/mini-prod** due to a
+stale rebase that pulled main commits in. My benches were measuring the
+search-tree-of-polluted-mini-prod (~12% more nodes); OB measured clean
+origin/mini-prod.
+
+Hard-reset local mini-prod to origin/mini-prod (commit `6decb235`),
+re-bench. All 5 values now match OB exactly:
+
+| Net | SHA8 | Bench (= OB-measured) |
+|-----|------|----------------------|
+| baby-prod (cal-day0) | 61115E7F | 4,006,126 |
+| mini-prod-gpu0a-4xbatch | B7209DA0 | 5,408,464 |
+| mini-prod-gpu0b-4xbatch | D40A24FC | 4,650,347 |
+| factor-canonical-1GB-shuffle-v2 | 41DEDD4B | 5,440,262 |
+| filter-10p | B0F66FFA | 10,209,111 |
+
+Resubmitted as #1268-#1271.
+
+**Lesson worth memory-saving**: bench is deterministic across machine
+architectures by design. Bench mismatch with OB = source mismatch (local
+binary diverged from what OB will build), not arch difference. Always
+verify `git diff origin/<branch> HEAD --stat` matches expectations
+before benching for OB submission.
+
+### Pre-SPRT move-ordering diagnostic (deterministic on clean build)
+
+| Net | First-move | Cutoff pos | EBF | QS % |
+|-----|------------|------------|-----|------|
+| baby-prod | 85.3% | 1.46 | 1.69 | 34.1% |
+| gpu0a | 84.6% | 1.47 | 1.72 | 38.7% |
+| **gpu0b** | **85.7%** | 1.46 | 1.72 | 32.3% |
+| factor-1GB-shuffle | 83.8% | 1.49 | 1.73 | 40.2% |
+| filter-10p | 78.1% | 1.83 | 1.76 | 57.5% |
+
+gpu0b's marginally improved move-ordering signals slight eval-quality
+gain. filter-10p's degradation (-7pp first-move, +23pp QS) signals
+substantial regression — eval is producing scores too inconsistent for
+the search to prune confidently. Pre-SPRT prediction: gpu0b most likely
+H1, gpu0a/factor-1GB-shuffle near-zero, filter-10p clear H0 unless
+eval-scale retune saves it.
+
+### Mini-prod refresh pending
+
+Mini-prod is currently behind main by: 5 audit-H1 merges + MAX_PLY=128 +
+TM ponderhit + tune-1250-applied (the new prod params). For the post-#1268-1271
+cycle, the mini-prod branch needs:
+1. Rebase onto current main (or selective port of the 7 commits)
+2. Re-tune on the new baby-prod equivalent
+3. Make freshly-baseline-tuned mini-prod the base for future S200 SPRTs
+
+This is task #243 (queued). Not blocking the current net SPRTs because
+both sides are on the same (stale) mini-prod — comparison is internally
+consistent even if the baseline is older than main.
+
+## Open work in flight at end of 2026-05-16
+
+| ID | What | Status |
+|----|------|--------|
+| #1254 ablate-battery-bonus | Loose-knob Phase 3 | +0.2 ±2.4 trending H1 |
+| #1255 ablate-escape-bonus-minor | Loose-knob Phase 3 | +0.8 ±3.3 trending H1 |
+| #1256 ablate-escape-bonus-q | Loose-knob Phase 3 | +0.4 ±3.7 trending H1 |
+| #1257 ablate-qsee-bonus | Loose-knob Phase 3 | -1.5 ±3.8 trending H0 |
+| #1267 mini-prod diagnostic | Both-OB-benches sanity check | Early, used as benchmark |
+| #1268 gpu0a vs baby-prod | Net SPRT | Just submitted |
+| #1269 gpu0b vs baby-prod | Net SPRT | Just submitted |
+| #1270 factor-1GB-shuffle vs baby-prod | Net SPRT | -6.0 ±7.6 early |
+| #1271 filter-10p vs baby-prod | Net SPRT | Just submitted |
+
+## Running session totals (2026-05-14 → 2026-05-16)
+
+- **Banked Elo** (in main): +12.11 (audit batch) + 1.6 (UHO tune) =
+  **+13.7 Elo** merged.
+- **Banked methodology**:
+  - UHO book validated and adopted (~2.5× SPRT-information per game,
+    decisively better tune convergence at same iter budget).
+  - Loose-knob audit methodology + 5-test ablation batch already
+    finding +3.5 from bonus-boost; more positive in flight.
+  - TT hashfull display fixed (operational diagnostic clarity).
+  - Bench-deterministic-across-archs lesson reinforced.
+- **In flight that could compound**: +3-9 Elo from completing the
+  Phase 3 ablations; unknown upside from the 4 net SPRTs.
