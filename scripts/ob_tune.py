@@ -196,7 +196,7 @@ def main():
     p.add_argument('--tc', default='10.0+0.1', help='Time control (default: 10.0+0.1)')
     p.add_argument('--options', default='Threads=1 Hash=64', help='UCI options')
     p.add_argument('--dev-network', default='', help='Dev network SHA256 hash (8 chars, from ob_upload_net.py)')
-    p.add_argument('--book', default='4moves_noob.epd', help='Opening book (default: 4moves_noob.epd). Common: UHO_Lichess_4852_v1.epd for higher-variance positions matching Reckless/Halogen testbeds — ~2.5× more decisive games per pair, so SPSA gradient signal per iteration is proportionally stronger.')
+    p.add_argument('--book', default='UHO_Lichess_4852_v1.epd', help='Opening book (default: UHO_Lichess_4852_v1.epd — ~2.5x more decisive games per iteration than 4moves_noob.epd; SPSA gradient signal proportionally stronger. #1247 vs #1250 H2H confirmed UHO produces meaningfully better-converged tunes at same iter count 2026-05-16). Pass 4moves_noob.epd to reproduce pre-2026-05-16 SPSA outputs.')
     p.add_argument('--priority', type=int, default=0, help='Priority (default: 0)')
     p.add_argument('--throughput', type=int, default=100, help='Throughput (default: 100)')
     p.add_argument('--scale-nps', type=int, default=None, help='Reference NPS for TC scaling. Defaults to 250000 (v9, current main). Use --scale-nps 500000 for v5-only branches.')

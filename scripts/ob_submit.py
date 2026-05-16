@@ -148,7 +148,7 @@ def main():
     p.add_argument('--base-options', default='', help='UCI options for base side only (overrides --options for base)')
     p.add_argument('--dev-network', default='', help='Dev network SHA256 hash (8 chars, from ob_upload_net.py)')
     p.add_argument('--base-network', default='', help='Base network SHA256 hash (8 chars, from ob_upload_net.py)')
-    p.add_argument('--book', default='4moves_noob.epd', help='Opening book (default: 4moves_noob.epd). Common: UHO_Lichess_4852_v1.epd for higher-variance positions matching Reckless/Halogen.')
+    p.add_argument('--book', default='UHO_Lichess_4852_v1.epd', help='Opening book (default: UHO_Lichess_4852_v1.epd — ~54%% decisive vs ~21%% on 4moves_noob.epd; ~2.5x SPRT-information per game, validated by #1248/#1249 same-binary cross-book direction agreement 2026-05-16). Pass 4moves_noob.epd to reproduce pre-2026-05-16 SPRT measurements.')
     p.add_argument('--priority', type=int, default=0, help='Priority (default: 0)')
     p.add_argument('--throughput', type=int, default=100, help='Throughput (default: 100)')
     p.add_argument('--scale-nps', type=int, default=None, help='Reference NPS for TC scaling. Defaults to 250000 (v9, current main). Use --scale-nps 500000 for v5-only branches.')
