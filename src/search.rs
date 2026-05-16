@@ -1225,7 +1225,25 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     helper.move_overhead = main.move_overhead;
     helper.root_stm = main.root_stm; // kept in sync for potential future stm-aware features
     helper.syzygy = main.syzygy.clone(); // share tablebases (read-only)
-    // Helpers start with fresh history for SMP diversity (cleared in search_helper)
+
+    // Seed helpers with the main thread's accumulated, aged history.
+    // Cross-engine consensus (SF/Reckless/Obsidian/Alexandria/Viridithas/
+    // PlentyChess): helpers never start from zero — they either share
+    // history with main lockless, persist it across `go` calls, or get
+    // a copy. Coda spawns helpers per `go`, so we copy from main
+    // (which has just been aged ×0.80 at the top of `start_search`).
+    //
+    // Without this, helpers spend the first few iterations re-learning
+    // move ordering from scratch, generating TT entries with worse
+    // ordering than main; this both wastes their work AND poisons
+    // shared-TT ordering, costing most of the potential SMP Elo.
+    helper.history.copy_from(&main.history);
+    // Pawn-hist and the correction-history tables are large
+    // (pawn_hist alone is ~13 MB) and main aggressively clears
+    // correction history at the top of every search anyway, so a copy
+    // there has no value. Main history (which includes the
+    // load-bearing 4D main + cont_hist) is the one that matters.
+
     helper
 }
 
@@ -1408,16 +1426,26 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
     best_move
 }
 
-/// Helper thread search — same as main but silent and with depth offset.
-fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimits, thread_id: usize) -> Move {
+/// Helper thread search — full aspiration ID loop matching the main
+/// thread's `search()`, just silent (no UCI output, no TM).
+///
+/// Previously this was a stripped-down `negamax(-INF, +INF)` per depth
+/// with no aspiration, no score carry, an empty history table, and a
+/// `thread_id % 2` depth offset. Cross-engine review (SF/Reckless/
+/// Obsidian/Alexandria/Viridithas/PlentyChess) showed every reference
+/// engine runs full aspiration in helpers — aspiration-window variance
+/// + slight asynchrony IS the diversity mechanism, not depth offsets.
+/// Helpers with full windows search far more nodes per depth than they
+/// need to and contribute worse-ordered TT entries.
+///
+/// History is seeded from main in `create_helper_info` — see comment
+/// there. We deliberately do NOT clear it here.
+fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimits, _thread_id: usize) -> Move {
     init_feature_flags();
 
-    info.history.clear();
-    info.clear_correction_history();
+    // History was just seeded from main in create_helper_info — do
+    // NOT clear it here. Reset only per-search scratch state.
     info.stats = PruneStats::default();
-    for entry in info.pawn_hist.iter_mut() {
-        *entry = [[0i16; 64]; 13];
-    }
     info.static_evals = [0; MAX_PLY + 1];
     info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
@@ -1427,6 +1455,8 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
     info.nodes = 0;
+    info.tm_has_data = false;
+    info.tm_best_stable = 0;
 
     // Mirror search()'s threat setup — helpers must evaluate consistently
     // with main or shared-TT entries disagree and search diverges at T>1.
@@ -1442,20 +1472,55 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     let root_legal = generate_legal_moves(board);
     let mut best_move = if root_legal.len > 0 { root_legal.get(0) } else { NO_MOVE };
 
+    // Iterative deepening with aspiration windows — same flow as main
+    // `search()` but no UCI output and no TM decisions. Helpers stop
+    // when main sets the shared stop flag.
     let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
+    let mut prev_score = 0i32;
     for depth in 1..=effective_max {
         if info.stop.load(Ordering::Relaxed) { break; }
 
-        // Depth offset for thread diversity: odd threads +1, even threads +0
-        let search_depth = depth + (thread_id % 2) as i32;
-        if search_depth > effective_max { break; }
+        let score;
 
-        let _score = negamax(board, info, -INFINITY, INFINITY, search_depth, 0, false);
+        // Aspiration windows (skip for mate scores) — mirrors search().
+        if depth >= 4 && prev_score > -MATE_SCORE + 100 && prev_score < MATE_SCORE - 100 {
+            let avg = prev_score;
+            let mut delta = tp(&ASP_DELTA) + (avg as i64 * avg as i64 / tp(&ASP_SCORE_DIV) as i64) as i32;
+            let mut alpha = (prev_score - delta).max(-INFINITY);
+            let mut beta = (prev_score + delta).min(INFINITY);
+            let mut asp_depth = depth;
+            #[allow(unused_assignments)]
+            let mut asp_result = prev_score;
+            loop {
+                let result = negamax(board, info, alpha, beta, asp_depth, 0, false);
+                if info.stop.load(Ordering::Relaxed) {
+                    asp_result = result;
+                    break;
+                }
+                if result <= alpha {
+                    beta = (3 * alpha + 5 * beta) / 8;
+                    alpha = (result - delta).max(-INFINITY);
+                } else if result >= beta {
+                    alpha = (5 * alpha + 3 * beta) / 8;
+                    beta = (result + delta).min(INFINITY);
+                    asp_depth = (asp_depth - 1).max(1);
+                } else {
+                    asp_result = result;
+                    break;
+                }
+                delta += delta / 2;
+            }
+            score = asp_result;
+        } else {
+            score = negamax(board, info, -INFINITY, INFINITY, depth, 0, false);
+        }
+
         if info.stop.load(Ordering::Relaxed) { break; }
 
         if info.pv_len[0] > 0 {
             best_move = info.pv_table[0][0];
         }
+        prev_score = score;
     }
 
     best_move
