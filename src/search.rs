@@ -115,8 +115,8 @@ tunables!(
     // singular_depth is too low to judge singularity reliably. Bumping
     // 4 → 6 first; ttPv add deferred to a follow-up if H1.
     (SE_DEPTH_10X, 43, 40, 200, 20.0, true),
-    (ASP_DELTA, 11, 5, 30, 1.5, true),
-    (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, true),
+    (ASP_DELTA, 11, 5, 30, 1.5, false),
+    (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, false),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
     // use LMP_BASE=3 with the same `(BASE + d²)/(2 - improving)` formula.
     // Coda's 9 is 3× consensus at d=1: allows 5-10 quiets vs SF's 2-4.
@@ -126,17 +126,17 @@ tunables!(
     (BAD_NOISY_MARGIN, 75, 30, 150, 6.0, true),
     (PROBCUT_MARGIN, 183, 80, 300, 11.0, true),
     (HINDSIGHT_THRESH, 158, 50, 400, 17.5, true),
-    (UNSTABLE_THRESH, 310, 50, 500, 22.5, true),
-    (SEE_MATERIAL_SCALE, 215, 30, 300, 13.5, true),
+    (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
+    (SEE_MATERIAL_SCALE, 215, 30, 300, 13.5, false),
     (QS_DELTA_MARGIN, 373, 100, 500, 20.0, true),
     (QS_SEE_THRESHOLD, -23, -200, 0, 10.0, true),
-    (QS_MAX_CAPTURES, 24, 2, 32, 2.0, true),
+    (QS_MAX_CAPTURES, 24, 2, 32, 2.0, false),
     (CORR_W_PAWN, 274, 100, 600, 25.0, true),
     (CORR_W_NP, 67, 50, 400, 17.5, true),
     (CORR_W_MINOR, 41, 30, 300, 13.5, true),
     (CORR_W_MAJOR, 104, 30, 300, 13.5, true),
     (CORR_W_CONT, 31, 30, 400, 18.5, true),
-    (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, true),
+    (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
     (HIST_BONUS_MULT, 305, 50, 400, 17.5, true),
     (HIST_BONUS_MAX, 1900, 500, 3000, 125.0, true),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
@@ -148,9 +148,9 @@ tunables!(
     // wider depth discrimination. cap-history already uses the offset
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 18, 0, 400, 25.0, true),
+    (HIST_BONUS_OFFSET, 18, 0, 400, 25.0, false),
     (CAP_HIST_MULT, 304, 50, 400, 17.5, true),
-    (CAP_HIST_BASE, 42, 0, 200, 10.0, true),
+    (CAP_HIST_BASE, 42, 0, 200, 10.0, false),
     (CAP_HIST_MAX, 1877, 500, 3000, 125.0, true),
     // BONUS_BOOST_AT removed 2026-05-17: ablation #1277 at [0, 3] H0
     // (+0.3 ±1.0, CI [-0.7, +1.3] at 136K games). Depth-boost trigger
@@ -158,8 +158,8 @@ tunables!(
     // numFailHighs multiplicative scaling (#1020 / Starzix T1 #1):
     // bonus = raw + raw * min(num_fail_highs, NFH_CAP) / NFH_DIV.
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
-    (NFH_CAP_10X, 31, 10, 60, 10.0, true),
-    (NFH_DIV_10X, 47, 20, 120, 10.0, true),
+    (NFH_CAP_10X, 31, 10, 60, 10.0, false),
+    (NFH_DIV_10X, 47, 20, 120, 10.0, false),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -186,17 +186,17 @@ tunables!(
     (DEXT_MARGIN_CORR, 21, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 45, -50, 150, 6.0, true),
     (DEXT_CAP, 14, 4, 32, 2.0, true),
-    (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, true),
+    (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
     (LMR_COMPLEXITY_DIV, 167, 30, 500, 23.5, true),
     (CORR_HIST_DIV, 1506, 256, 4096, 192.0, true),
     (CORR_UPDATE_WEIGHT_MAX, 13, 4, 48, 2.2, true),
-    (CORR_BONUS_CAP_DIV_10X, 32, 10, 160, 15.0, true),
-    (CORR_HIST_GRAIN_T, 14, 1, 32, 1.55, true),
-    (CORR_HIST_ERR_MAX_10X, 25, 10, 640, 5.0, true),
+    (CORR_BONUS_CAP_DIV_10X, 32, 10, 160, 15.0, false),
+    (CORR_HIST_GRAIN_T, 14, 1, 32, 1.55, false),
+    (CORR_HIST_ERR_MAX_10X, 25, 10, 640, 5.0, false),
     // ESCAPE_BONUS_Q / _MINOR removed 2026-05-17: ablations #1256/#1255
     // H0 at [-3, 3]. Slightly load-bearing (central -0.6/-1.3 to ablate),
     // hardcoded at current SPSA values in movepicker.rs.
-    (ESCAPE_BONUS_R, 8181, 3000, 30000, 1350.0, true),
+    (ESCAPE_BONUS_R, 8181, 3000, 30000, 1350.0, false),
     (NMP_KING_ZONE_MAX_10X, 68, 20, 90, 15.0, true),
     // T2.1 (Titan's next_ideas 2026-04-21): undefended-piece NMP skip
     // threshold. Count our pieces with ≥1 enemy attacker AND zero of
@@ -208,12 +208,12 @@ tunables!(
     // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering weight.
     // Bonus applied in movepicker quiets = (to_mobility - from_mobility) × this.
     // Default 32 = ±256 typical range, additive to history (~1000s scale).
-    (MOBILITY_DELTA_WEIGHT, 34, 0, 256, 8.0, true),
+    (MOBILITY_DELTA_WEIGHT, 34, 0, 256, 8.0, false),
     (PROBCUT_KING_ZONE_MAX_10X, 57, 20, 90, 15.0, true),
     (LMR_THREAT_DIV_10X, 39, 10, 50, 15.0, true),
     (LMR_KING_PRESSURE_DIV_10X, 67, 20, 90, 15.0, true),
     (FUT_THREATS_MARGIN, 19, 0, 200, 10.0, true),
-    (DISCOVERED_ATTACK_BONUS, 3534, 0, 30000, 1500.0, true),
+    (DISCOVERED_ATTACK_BONUS, 3534, 0, 30000, 1500.0, false),
     // BATTERY_BONUS removed 2026-05-17: ablation #1278 at [0, 3] H0
     // (+0.2 ±1.1, CI [-0.9, +1.3] at 114K games). Feature confirmed
     // neutral; movepicker.rs T1.4 battery-bonus block removed.
@@ -230,9 +230,9 @@ tunables!(
     // subtracted from singular_beta → easier to judge singular → more
     // extensions for tactically significant moves.
     (SE_XRAY_BLOCKER_MARGIN_10X, 41, 0, 400, 20.0, true),
-    (MVV_CAP_MULT, 28, 4, 64, 3.0, true),
+    (MVV_CAP_MULT, 28, 4, 64, 3.0, false),
     (CONT_HIST_MULT_10X, 11, 10, 80, 15.0, true),
-    (KNIGHT_FORK_BONUS, 8722, 0, 20000, 1000.0, true),
+    (KNIGHT_FORK_BONUS, 8722, 0, 20000, 1000.0, false),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
     // LMR over-reduces king-restriction queen moves that complete mates.
@@ -263,7 +263,7 @@ tunables!(
     // values where appropriate (per feedback_spsa_as_feature_utility_diagnostic).
     (NMP_MIN_DEPTH_10X, 75, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
     (HINDSIGHT_MIN_DEPTH_10X, 33, 10, 200, 15.0, true),        // was hardcoded 2 (hindsight reduction gate)
-    (TT_CUTOFF_HALFMOVE_MAX, 89, 50, 100, 3.0, true),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
+    (TT_CUTOFF_HALFMOVE_MAX, 89, 50, 100, 3.0, false),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
 );
 
 /// Get a tunable parameter value (inline for hot paths)
