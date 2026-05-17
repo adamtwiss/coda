@@ -39,26 +39,19 @@ openbench: rule
 
 # PGO build (profile-guided optimization).
 #
-# Status (2026-04-17):
-#   v5 on main:          +3-5% NPS. Use this.
-#   v5 on threat branch: -5% NPS regression.
-#   v9 on threat branch: -10 to -12% NPS regression. DO NOT USE.
+# Status (2026-05-17): builds cleanly with cgu=16 (the v9-era crash that
+# the prior comment described is gone), but PGO with bench-13 profile is
+# fleet-fragile and not shipped as default. Production-class hardware
+# (Lichess host, "fast ionos" cohort) shows ~0 Elo; Zen 5 hosts (zeus)
+# regress -18.5 Elo. Older silicon (Coffee Lake Xeon, Zen 1) wins.
 #
-# Why it regresses on the threat branch: the PGO *instrument* build inserts
-# entry/branch counters that slow the bench profile run by ~20%. That profile
-# captures a counter-burdened hot path (small SIMD functions dominate), and
-# PGO's inlining/layout decisions are made against that degraded view. The
-# final optimised binary over-inlines small functions into the delta-generation
-# hot path (push_threats_for_piece and friends), bloating those functions and
-# hurting icache behaviour. The regression is independent of binary size —
-# confirmed by testing without the embedded net (2.5MB binary regresses the
-# same amount as the 72MB one) and independent of which NNUE net is profiled
-# (v5 profile + v9 runtime regresses the same as v9 profile + v9 runtime).
+# See docs/pgo_fleet_finding_2026-05-17.md for the full per-machine data
+# and why we're not using PGO by default.
 #
-# If we want profile-guided optimisation for v9 later, try AutoFDO (sampling
-# via perf record) instead — its profile reflects actual uncounted execution.
+# `make pgo` here remains available for one-off local experiments and as
+# scaffolding for future profile-strategy work (richer profile, AutoFDO).
 #
-# Requires: rustup component add llvm-tools-preview
+# Requires: cargo install cargo-pgo; rustup component add llvm-tools-preview
 TARGET_TUPLE := $(shell rustc --print host-tuple 2>/dev/null)
 pgo: check-rust net
 	CODA_EVALFILE=$(abspath $(EVALFILE)) cargo pgo instrument build -- --features embedded-net
