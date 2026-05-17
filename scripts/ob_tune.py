@@ -33,16 +33,23 @@ import subprocess
 import requests
 
 
-def coda_tune_spec():
+def coda_tune_spec(core_only=False):
     """Read the canonical SPSA spec from the compiled coda binary's `tune-spec`
     subcommand. The Rust `tunables!` macro in src/search.rs is the single
     source of truth for tunable defaults, ranges, and c_end values; never
-    hand-maintain a static params file."""
+    hand-maintain a static params file.
+
+    If `core_only` is True, passes `--core` to filter to the curated subset
+    of tunables marked `core: true` in the macro (smaller dimensionality,
+    better SPSA SNR per parameter for routine retunes)."""
     candidates = ['./coda', './target/release/coda']
     for path in candidates:
         if os.path.exists(path):
             try:
-                out = subprocess.check_output([path, 'tune-spec'],
+                cmd = [path, 'tune-spec']
+                if core_only:
+                    cmd.append('--core')
+                out = subprocess.check_output(cmd,
                                               stderr=subprocess.DEVNULL).decode()
                 # Filter to SPSA-format lines (NAME, int, ...) — strip startup banners.
                 lines = [l for l in out.splitlines()
@@ -90,7 +97,10 @@ def submit_tune(args):
     # via --params/--params-file. The guard below validates that any user-
     # supplied spec is a *strict subset* of trunk's tunables (or contains
     # names not in trunk, which is treated as intentional override).
-    canonical = coda_tune_spec()
+    # `--core` filters the macro-canonical spec to entries marked `core: true`.
+    # Use for routine retunes (better SNR per param); omit for full-sweep
+    # retunes when a major recipe/net change wants every axis explored.
+    canonical = coda_tune_spec(core_only=args.core)
     canonical_names = set()
     if canonical:
         canonical_names = {l.split(',', 1)[0].strip()
@@ -122,7 +132,8 @@ def submit_tune(args):
             print('Error: no --params/--params-file given and could not run '
                   './coda tune-spec (build with `make` first)')
             return False
-        print(f'Using full-sweep spec from coda tune-spec '
+        sweep_label = '--core spec' if args.core else 'full-sweep spec'
+        print(f'Using {sweep_label} from coda tune-spec '
               f'({len(spsa_inputs.splitlines())} params)')
 
     n_params = len([l for l in spsa_inputs.strip().split('\n') if l.strip()])
@@ -191,6 +202,10 @@ def main():
     p.add_argument('bench', nargs='?', type=int, default=0, help='Bench value (0=auto-detect)')
     p.add_argument('--params', default='', help='SPSA params inline (newline-separated)')
     p.add_argument('--params-file', default='', help='File with SPSA params (one per line)')
+    p.add_argument('--core', action='store_true',
+                   help='Filter to core-tagged tunables only (smaller dimensionality, '
+                   'better per-parameter SNR — recommended for routine retunes). '
+                   'Has no effect when --params/--params-file is set.')
     p.add_argument('--iterations', type=int, default=2500, help='SPSA iterations (default: 2500)')
     p.add_argument('--pairs-per', type=int, default=8, help='Game pairs per iteration (default: 8)')
     p.add_argument('--tc', default='10.0+0.1', help='Time control (default: 10.0+0.1)')

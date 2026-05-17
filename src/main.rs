@@ -192,6 +192,9 @@ enum Commands {
         /// SPSA r_end (default 0.002)
         #[arg(long, default_value_t = 0.002)]
         r_end: f32,
+        /// Emit only `core: true` tunables (curated subset for routine retunes)
+        #[arg(long, default_value_t = false)]
+        core: bool,
     },
     /// Download NNUE net from net.txt URL
     FetchNet,
@@ -814,8 +817,9 @@ fn main() {
                 dest, flags, new_flags, ops.join(" + "));
         }
 
-        Some(Commands::TuneSpec { r_end }) => {
-            for (name, _, default, min, max, c_end) in search::tunable_params() {
+        Some(Commands::TuneSpec { r_end, core }) => {
+            for (name, _, default, min, max, c_end, is_core) in search::tunable_params() {
+                if core && !is_core { continue; }
                 println!("{}, int, {}, {}, {}, {}, {}", name, default, min, max, c_end, r_end);
             }
         }

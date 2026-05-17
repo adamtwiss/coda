@@ -98,7 +98,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("option name HiddenActivation type combo default screlu var screlu var crelu");
                 println!("option name LoadAnyway type check default false");
                 // Tunable search parameters (for SPSA)
-                for (name, _, default, min, max, _c_end) in crate::search::tunable_params() {
+                for (name, _, default, min, max, _c_end, _is_core) in crate::search::tunable_params() {
                     println!("option name {} type spin default {} min {} max {}", name, default, min, max);
                 }
                 println!("uciok");
@@ -867,7 +867,7 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
         }
         _ => {
             // Check tunable search parameters
-            for (pname, param, _, min, max, _c_end) in crate::search::tunable_params() {
+            for (pname, param, _, min, max, _c_end, _is_core) in crate::search::tunable_params() {
                 if name == pname {
                     if let Ok(v) = value.parse::<i32>() {
                         let clamped = v.max(min).min(max);
