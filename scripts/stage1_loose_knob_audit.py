@@ -15,19 +15,34 @@ import subprocess
 import sys
 
 
-# (name, default, c_end, range_lo, range_hi) — values from current main src/search.rs.
-CANDIDATES = [
-    ('DEXT_MARGIN_QUIET',     4,     4.0,    0,    100),
-    ('NMP_UNDEFENDED_MAX_10X',17,   10.0,    0,     50),
-    ('LMP_BASE',              9,    2.0,    1,     15),
-    ('FUT_THREATS_MARGIN',   23,   10.0,    0,    200),
-    ('QS_SEE_THRESHOLD',    -26,   10.0, -200,      0),
-    ('FUT_BASE',             23,    9.0,   20,    200),
-    ('HIST_PRUNE_MULT',   10410, 2475.0,  500,  50000),
-    ('LMR_THREAT_DIV_10X',   38,   15.0,   10,     50),
-    ('NMP_DEPTH_DIV_10X',    55,   15.0,   10,     60),
-    ('NMP_EVAL_MAX_10X',     24,    5.0,   10,     60),
-]
+def load_candidates(core_only=True):
+    """Auto-discover candidates from `coda tune-spec`. Returns list of
+    (name, default, c_end, range_lo, range_hi)."""
+    cmd = ['./coda', 'tune-spec']
+    if core_only:
+        cmd.append('--core')
+    out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode()
+    candidates = []
+    for line in out.splitlines():
+        line = line.strip()
+        # Format: NAME, int, default, min, max, c_end, r_end
+        parts = [p.strip() for p in line.split(',')]
+        if len(parts) >= 7 and parts[1] == 'int':
+            try:
+                candidates.append((
+                    parts[0],
+                    int(float(parts[2])),
+                    float(parts[5]),
+                    int(float(parts[3])),
+                    int(float(parts[4])),
+                ))
+            except ValueError:
+                pass
+    return candidates
+
+
+# Auto-discovered at run-time from `coda tune-spec --core`.
+CANDIDATES = load_candidates(core_only=True)
 
 
 def parse_stats(output):
