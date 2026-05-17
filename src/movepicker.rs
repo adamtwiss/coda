@@ -668,13 +668,15 @@ impl MovePicker {
             }
 
             // Escape-capture bonus: bonus for moving a piece off a threatened square
-            // (Reckless pattern). Values are tunable via SPSA.
+            // (Reckless pattern). _Q and _MINOR hardcoded after ablations
+            // #1256 (-0.6) / #1255 (-1.3) at [-3, 3] H0 — slightly load-bearing
+            // but not SPSA-worth tuning. _R remains tunable.
             if self.threats & (1u64 << from) != 0 && piece != NO_PIECE {
                 let pt = board.piece_type_at(from);
                 score += match pt {
-                    4 => crate::search::ESCAPE_BONUS_Q.load(std::sync::atomic::Ordering::Relaxed),
+                    4 => 17819,  // ESCAPE_BONUS_Q
                     3 => crate::search::ESCAPE_BONUS_R.load(std::sync::atomic::Ordering::Relaxed),
-                    1 | 2 => crate::search::ESCAPE_BONUS_MINOR.load(std::sync::atomic::Ordering::Relaxed),
+                    1 | 2 => 5250,  // ESCAPE_BONUS_MINOR
                     _ => 0,
                 };
             }
@@ -751,8 +753,9 @@ impl MovePicker {
                             // T3.2: "good quiet" — the offense move's
                             // strongest target is more valuable than us.
                             // Cheap proxy for positive quiet-SEE.
-                            let qsee_b = crate::search::QSEE_BONUS.load(std::sync::atomic::Ordering::Relaxed);
-                            if qsee_b > 0 {
+                            // QSEE_BONUS hardcoded 6687 after ablation #1257
+                            // H0 at [-3, 3] (-2.1 ±3.0, ~+2 Elo load-bearing).
+                            {
                                 let our_val = see_value(pt);
                                 let mut hits = attacks_from_to & enemy_non_pawns;
                                 let mut max_t_val = 0;
@@ -766,7 +769,7 @@ impl MovePicker {
                                     }
                                 }
                                 if max_t_val > our_val {
-                                    score += qsee_b;
+                                    score += 6687;
                                 }
                             }
                         }
@@ -778,29 +781,9 @@ impl MovePicker {
                             && popcount(attacks_from_to & enemy_non_pawns) >= 2 {
                             score += kf_bonus;
                         }
-                        // T1.4 Battery bonus: quiet-slider move (B/R/Q) lands
-                        // such that a friendly slider sits between `to` and
-                        // an enemy piece on the same ray — we've stacked up
-                        // behind a friendly attacker.
-                        let bat_bonus = crate::search::BATTERY_BONUS.load(std::sync::atomic::Ordering::Relaxed);
-                        if bat_bonus > 0 && (pt == 2 || pt == 3 || pt == 4) && !unsafe_square {
-                            let our_sliders = board.colors[us as usize]
-                                & (board.pieces[BISHOP as usize]
-                                   | board.pieces[ROOK as usize]
-                                   | board.pieces[QUEEN as usize])
-                                & !(1u64 << from);
-                            let enemies_hit = attacks_from_to & board.colors[them as usize];
-                            let mut targets = enemies_hit;
-                            while targets != 0 {
-                                let esq = targets.trailing_zeros();
-                                targets &= targets - 1;
-                                let between = crate::bitboard::between(to as u32, esq);
-                                if between & our_sliders != 0 {
-                                    score += bat_bonus;
-                                    break;
-                                }
-                            }
-                        }
+                        // T1.4 Battery bonus removed 2026-05-17: ablation
+                        // #1278 H0 at [0, 3] (+0.2 ±1.1 at 114K games).
+                        // Feature confirmed neutral; code path deleted.
                     }
                 }
             }

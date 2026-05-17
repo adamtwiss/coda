@@ -147,9 +147,9 @@ tunables!(
     (CAP_HIST_MULT, 304, 50, 400, 17.5),
     (CAP_HIST_BASE, 42, 0, 200, 10.0),
     (CAP_HIST_MAX, 1877, 500, 3000, 125.0),
-    // Bonus depth-boost margin (#1008): use depth+1 in history_bonus when
-    // cutoff exceeds beta by this margin (SF StatBonusBoostAt, Obsidian=95).
-    (BONUS_BOOST_AT, 29, 0, 300, 15.0),
+    // BONUS_BOOST_AT removed 2026-05-17: ablation #1277 at [0, 3] H0
+    // (+0.3 ±1.0, CI [-0.7, +1.3] at 136K games). Depth-boost trigger
+    // confirmed neutral; both call sites updated to drop the +1 clause.
     // numFailHighs multiplicative scaling (#1020 / Starzix T1 #1):
     // bonus = raw + raw * min(num_fail_highs, NFH_CAP) / NFH_DIV.
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
@@ -188,9 +188,10 @@ tunables!(
     (CORR_BONUS_CAP_DIV_10X, 32, 10, 160, 15.0),
     (CORR_HIST_GRAIN_T, 14, 1, 32, 1.55),
     (CORR_HIST_ERR_MAX_10X, 25, 10, 640, 5.0),
-    (ESCAPE_BONUS_Q, 17819, 5000, 40000, 1750.0),
+    // ESCAPE_BONUS_Q / _MINOR removed 2026-05-17: ablations #1256/#1255
+    // H0 at [-3, 3]. Slightly load-bearing (central -0.6/-1.3 to ablate),
+    // hardcoded at current SPSA values in movepicker.rs.
     (ESCAPE_BONUS_R, 8181, 3000, 30000, 1350.0),
-    (ESCAPE_BONUS_MINOR, 5250, 2000, 20000, 900.0),
     (NMP_KING_ZONE_MAX_10X, 68, 20, 90, 15.0),
     // T2.1 (Titan's next_ideas 2026-04-21): undefended-piece NMP skip
     // threshold. Count our pieces with ≥1 enemy attacker AND zero of
@@ -208,19 +209,12 @@ tunables!(
     (LMR_KING_PRESSURE_DIV_10X, 67, 20, 90, 15.0),
     (FUT_THREATS_MARGIN, 19, 0, 200, 10.0),
     (DISCOVERED_ATTACK_BONUS, 3534, 0, 30000, 1500.0),
-    // T1.4: quiet-slider move that completes a battery — lands on a square
-    // where a friendly slider stands between us and an enemy piece along
-    // the same ray. Flat bonus; tp==0 disables detection.
-    (BATTERY_BONUS, 8122, 0, 20000, 1000.0),
-    // T3.2 (next_ideas_2026-04-21): "good quiet" — bonus when a quiet
-    // move's destination attacks an enemy piece MORE valuable than the
-    // moving piece. Stacks on top of existing offense bonus (+6000 flat)
-    // which fires regardless of value. Cheap approximation of "quiet-SEE":
-    // skips full exchange evaluation and gates on victim_value > attacker_value,
-    // which is the dominant positive-SEE case (~70% of positive SEEs).
-    // Reuses offense's `attacks_from_to` computation — zero extra
-    // attacks_from() calls. tp==0 disables.
-    (QSEE_BONUS, 6687, 0, 20000, 1000.0),
+    // BATTERY_BONUS removed 2026-05-17: ablation #1278 at [0, 3] H0
+    // (+0.2 ±1.1, CI [-0.9, +1.3] at 114K games). Feature confirmed
+    // neutral; movepicker.rs T1.4 battery-bonus block removed.
+    // QSEE_BONUS removed 2026-05-17: ablation #1257 at [-3, 3] H0
+    // (-2.1 ±3.0, central +2 Elo from the feature — load-bearing).
+    // Feature kept, hardcoded at SPSA value in movepicker.rs.
     // SE_KING_PRESSURE_MARGIN removed 2026-05-15: tune at _10X precision
     // (range -5..+30, direct /10 scaling) confirmed optimum is genuinely 0.
     // Historical conflicting reads (0.22 vs 1-2 across tunes) were SPSA
@@ -3525,16 +3519,11 @@ fn negamax(
 
                     // Beta cutoff - update history for quiet moves (killers/counter removed — SF pattern)
                     if !is_cap {
-                        // Depth-boost on big fail-high (#1008, SF/Obsidian) —
-                        // use depth+1 when cutoff exceeds beta by BONUS_BOOST_AT.
-                        // Additionally (Stormphrax search.cpp:1185): boost depth
-                        // when cutoff move beat our static eval (unexpected-strong
-                        // cutoff signal). Both can stack for +2 depth.
-                        // Third additive trigger: boost depth when improving
-                        // (we're doing better than 2 plies ago). Tests whether
-                        // multiple depth-boost signals compound.
+                        // Depth-boost on big fail-high. BONUS_BOOST_AT trigger
+                        // removed 2026-05-17 (ablation #1277 H0). Two remaining
+                        // triggers (Stormphrax: cutoff beat static eval;
+                        // improving) can stack for +2 depth.
                         let bonus_depth = depth
-                            + if best_score > beta + tp(&BONUS_BOOST_AT) { 1 } else { 0 }
                             + if !in_check && static_eval <= best_score { 1 } else { 0 }
                             + if improving { 1 } else { 0 };
                         // numFailHighs multiplicative scaling (#1020, Starzix T1 #1) —
@@ -3639,9 +3628,9 @@ fn negamax(
 
                     } else {
                         // Capture caused beta cutoff: bonus the cutoff capture.
-                        // Depth-boost on big fail-high (#1069 ext of #1008): use
-                        // depth+1 when cutoff exceeds beta by BONUS_BOOST_AT.
-                        let cap_bonus_depth = depth + if best_score > beta + tp(&BONUS_BOOST_AT) { 1 } else { 0 };
+                        // BONUS_BOOST_AT depth-boost removed 2026-05-17
+                        // (ablation #1277 H0).
+                        let cap_bonus_depth = depth;
                         // numFailHighs multiplicative scaling (#1054 ext of #1020):
                         // more cascades = stronger cutoff confidence.
                         let raw_cap_bonus = capture_history_bonus(cap_bonus_depth);
