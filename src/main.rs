@@ -449,6 +449,7 @@ fn main() {
         Some(Commands::Bench { depth, threads, set }) => {
             let nnue_path = cli.nnue.as_deref();
             // Apply per-invocation tunable overrides (--set NAME=VALUE).
+            let mut lmr_c_changed = false;
             for kv in &set {
                 let (name, value_str) = match kv.split_once('=') {
                     Some(parts) => parts,
@@ -464,12 +465,18 @@ fn main() {
                         let clamped = value.max(min).min(max);
                         atomic.store(clamped, std::sync::atomic::Ordering::Relaxed);
                         eprintln!("--set {} = {} (clamped from {} into [{}, {}])", pname, clamped, value, min, max);
+                        if pname.starts_with("LMR_C") { lmr_c_changed = true; }
                         matched = true;
                         break;
                     }
                 }
                 if !matched { eprintln!("--set ignored (unknown tunable): {}", name); }
             }
+            // LMR_C_QUIET / LMR_C_CAP are baked into the LMR reduction table
+            // at startup. Without rebuilding it, --set updates the atomic but
+            // search keeps reading the old cached table. Mirror UCI setoption
+            // behavior in src/uci.rs.
+            if lmr_c_changed { search::init_lmr(); }
             let start = std::time::Instant::now();
             if threads <= 1 {
                 let nodes = search::bench(depth, nnue_path);

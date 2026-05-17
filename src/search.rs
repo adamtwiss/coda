@@ -185,9 +185,9 @@ tunables!(
     (DEXT_MARGIN_QUIET, 4, 0, 100, 4.0, true),
     (DEXT_MARGIN_CORR, 21, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 44, -50, 150, 6.0, true),
-    (DEXT_CAP, 14, 4, 32, 2.0, true),
+    (DEXT_CAP, 14, 4, 32, 2.0, false),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
-    (LMR_COMPLEXITY_DIV, 152, 30, 500, 23.5, true),
+    (LMR_COMPLEXITY_DIV, 152, 30, 500, 23.5, false),
     (CORR_HIST_DIV, 1559, 256, 4096, 192.0, true),
     (CORR_UPDATE_WEIGHT_MAX, 13, 4, 48, 2.2, true),
     (CORR_BONUS_CAP_DIV_10X, 32, 10, 160, 15.0, false),
@@ -256,7 +256,7 @@ tunables!(
     (IIR_MIN_DEPTH_10X, 20, 20, 100, 15.0, true),         // was hardcoded 4; tune #743 converged to 2 (strong signal)
     (PROBCUT_MIN_DEPTH_10X, 32, 30, 120, 15.0, true),     // was hardcoded 5 (ProbCut activation gate)
     (SEE_CAP_DEPTH, 6, 3, 15, 1.5, true),         // was hardcoded 6 (SEE capture prune depth cap)
-    (FUT_LMR_DEPTH, 15, 5, 20, 1.5, true),         // was hardcoded 10; tune #743 → 9
+    (FUT_LMR_DEPTH, 15, 5, 20, 1.5, false),        // was hardcoded 10; tune #743 → 9
     (BAD_NOISY_DEPTH, 8, 4, 15, 1.5, true),       // was hardcoded 4 (BNFP depth cap)
     // Second pass — additional gates exposed for the feature-utility
     // audit tune. Widened ranges allow SPSA to reach disable-endpoint
