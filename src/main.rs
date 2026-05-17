@@ -1990,6 +1990,11 @@ fn run_binpack_stats(input: &str) {
     let mut results = [0u64; 3]; // loss/draw/win
     let mut in_check = 0u64;
     let mut score_buckets = [0u64; 10]; // <100, <200, <500, <1000, <2000, <5000, <10000, <20000, <30000, 30000+
+    // Score-anomaly filter retention. Same formula as bullet/coda_v9_768_threats.rs
+    // `--max-score-anomaly`: for draws anomaly = |score|; for non-draws anomaly = max(0, -sign(result)*score).
+    let anomaly_thresholds: [i32; 9] = [500, 1000, 2000, 5000, 10000, 15000, 20000, 30000, 50000];
+    let mut anomaly_dropped = [0u64; 9];
+    let mut anomaly_draw_dropped = [0u64; 9];
     let start = std::time::Instant::now();
 
     while reader.has_next() {
@@ -2019,6 +2024,21 @@ fn run_binpack_stats(input: &str) {
             else if abs < 10000 { 6 } else if abs < 20000 { 7 } else if abs < 30000 { 8 }
             else { 9 };
         score_buckets[bucket] += 1;
+
+        // Score-anomaly: for draws = |score|; for non-draws = max(0, -sign(result)*score).
+        let anomaly_abs: u32 = match entry.result {
+            0 => score.unsigned_abs() as u32,
+            r => {
+                let sign = (r as i32).signum();
+                ((-sign * score as i32).max(0)) as u32
+            }
+        };
+        for (i, &t) in anomaly_thresholds.iter().enumerate() {
+            if anomaly_abs > t as u32 {
+                anomaly_dropped[i] += 1;
+                if entry.result == 0 { anomaly_draw_dropped[i] += 1; }
+            }
+        }
 
         if total_positions % 10_000_000 == 0 {
             let elapsed = start.elapsed().as_secs_f64();
@@ -2054,6 +2074,18 @@ fn run_binpack_stats(input: &str) {
         let pct = score_buckets[i] as f64 / total_positions as f64 * 100.0;
         let bar = "#".repeat((pct * 2.0) as usize);
         println!("  {:>8}: {:>10} ({:>5.1}%) {}", label, score_buckets[i], pct, bar);
+    }
+    println!();
+    println!("Score-anomaly filter retention (per `--max-score-anomaly`):");
+    println!("  threshold      dropped    drop%   retain%    of which draws");
+    for (i, &t) in anomaly_thresholds.iter().enumerate() {
+        let dropped = anomaly_dropped[i];
+        let drop_pct = dropped as f64 / total_positions as f64 * 100.0;
+        let retain_pct = 100.0 - drop_pct;
+        let draws = anomaly_draw_dropped[i];
+        let draw_share = if dropped > 0 { draws as f64 / dropped as f64 * 100.0 } else { 0.0 };
+        println!("  {:>9}    {:>10} ({:>5.2}%) ({:>5.2}%)    {:>10} ({:>5.1}%)",
+            t, dropped, drop_pct, retain_pct, draws, draw_share);
     }
 }
 
