@@ -1390,7 +1390,6 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
         handles.push(std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
             .spawn(move || {
-                // Helpers search at offset depths for diversity
                 helper.start_time = Instant::now();
                 // Reset NNUE for this position
                 if let Some(acc) = &mut helper.nnue_acc {
@@ -1407,28 +1406,54 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
                 helper.soft_floor = 0;
                 helper.max_depth = helper_limits.depth;
 
-                // Search with depth offset for diversity (standard Lazy SMP trick)
-                let _mv = search_helper(&mut helper_board, &mut helper, &helper_limits, thread_id);
-                helper.nodes // return node count
+                let mv = search_helper(&mut helper_board, &mut helper, &helper_limits, thread_id);
+                // Return (nodes, best_move, score, depth) for vote aggregation
+                (helper.nodes, mv, helper.last_score, helper.completed_depth)
             }).expect("Failed to spawn SMP helper"));
     }
 
     // Main thread searches normally
-    let best_move = search(board, info, limits);
+    let main_move = search(board, info, limits);
+    let main_score = info.last_score;
+    let main_depth = info.completed_depth;
 
     // Signal all helpers to stop
     info.stop.store(true, Ordering::Relaxed);
 
-    // Collect helper node counts
+    // Collect helper results
     let mut total_nodes = info.nodes;
+    let mut thread_results: Vec<(Move, i32, i32)> = Vec::with_capacity(threads);
+    if main_move != NO_MOVE && main_depth > 0 {
+        thread_results.push((main_move, main_score, main_depth));
+    }
     for h in handles {
-        if let Ok(helper_nodes) = h.join() {
+        if let Ok((helper_nodes, mv, score, depth)) = h.join() {
             total_nodes += helper_nodes;
+            if mv != NO_MOVE && depth > 0 {
+                thread_results.push((mv, score, depth));
+            }
         }
     }
     info.nodes = total_nodes;
 
-    best_move
+    // Vote-based best-move selection (SF/Obsidian/Plenty pattern).
+    // weight = depth * (score - min_score + 14). The +14 keeps the worst-
+    // scored thread's vote nonzero so depth still matters for tied scores;
+    // multiplying by depth makes shallow helpers count less than deep ones.
+    if thread_results.len() <= 1 {
+        return main_move;
+    }
+    let min_score = thread_results.iter().map(|(_, s, _)| *s).min().unwrap();
+    let mut votes: Vec<(Move, i64)> = Vec::with_capacity(thread_results.len());
+    for (mv, score, depth) in &thread_results {
+        let weight = *depth as i64 * (*score as i64 - min_score as i64 + 14);
+        if let Some(entry) = votes.iter_mut().find(|(m, _)| *m == *mv) {
+            entry.1 += weight;
+        } else {
+            votes.push((*mv, weight));
+        }
+    }
+    votes.iter().max_by_key(|(_, w)| *w).map(|(m, _)| *m).unwrap_or(main_move)
 }
 
 /// Helper thread search — full aspiration ID loop matching the main
@@ -1526,6 +1551,8 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
             best_move = info.pv_table[0][0];
         }
         prev_score = score;
+        info.last_score = score;
+        info.completed_depth = depth;
     }
 
     best_move
