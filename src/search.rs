@@ -129,7 +129,7 @@ tunables!(
     (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
     (SEE_MATERIAL_SCALE, 215, 30, 300, 13.5, false),
     (QS_DELTA_MARGIN, 367, 100, 500, 20.0, true),
-    (QS_SEE_THRESHOLD, -26, -200, 0, 10.0, true),
+    (QS_SEE_THRESHOLD, -26, -200, 0, 10.0, false),
     (QS_MAX_CAPTURES, 24, 2, 32, 2.0, false),
     (CORR_W_PAWN, 299, 100, 600, 25.0, true),
     (CORR_W_NP, 63, 50, 400, 17.5, true),

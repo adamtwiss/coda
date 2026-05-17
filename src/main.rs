@@ -88,6 +88,11 @@ enum Commands {
         /// Number of threads
         #[arg(long = "threads", short = 't', default_value_t = 1)]
         threads: usize,
+        /// Override tunable defaults for this bench invocation only.
+        /// Format: NAME=VALUE (repeatable). Diagnostic use for stage-1
+        /// loose-knob perturbation audits.
+        #[arg(long = "set", value_name = "NAME=VALUE")]
+        set: Vec<String>,
     },
     /// Pathology bench: run known-pathological positions, flag any
     /// whose tree exceeds `--threshold` nodes. Slow / optional —
@@ -441,8 +446,30 @@ fn main() {
             uci::uci_loop_with_nnue(nnue_ref, book_ref, cli.classical);
         }
 
-        Some(Commands::Bench { depth, threads }) => {
+        Some(Commands::Bench { depth, threads, set }) => {
             let nnue_path = cli.nnue.as_deref();
+            // Apply per-invocation tunable overrides (--set NAME=VALUE).
+            for kv in &set {
+                let (name, value_str) = match kv.split_once('=') {
+                    Some(parts) => parts,
+                    None => { eprintln!("--set ignored (no '='): {}", kv); continue; }
+                };
+                let value: i32 = match value_str.trim().parse() {
+                    Ok(v) => v,
+                    Err(_) => { eprintln!("--set ignored (bad value): {}", kv); continue; }
+                };
+                let mut matched = false;
+                for (pname, atomic, _d, min, max, _c, _is_core) in search::tunable_params() {
+                    if pname == name.trim() {
+                        let clamped = value.max(min).min(max);
+                        atomic.store(clamped, std::sync::atomic::Ordering::Relaxed);
+                        eprintln!("--set {} = {} (clamped from {} into [{}, {}])", pname, clamped, value, min, max);
+                        matched = true;
+                        break;
+                    }
+                }
+                if !matched { eprintln!("--set ignored (unknown tunable): {}", name); }
+            }
             let start = std::time::Instant::now();
             if threads <= 1 {
                 let nodes = search::bench(depth, nnue_path);
