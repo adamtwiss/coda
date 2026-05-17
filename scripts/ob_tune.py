@@ -202,10 +202,13 @@ def main():
     p.add_argument('bench', nargs='?', type=int, default=0, help='Bench value (0=auto-detect)')
     p.add_argument('--params', default='', help='SPSA params inline (newline-separated)')
     p.add_argument('--params-file', default='', help='File with SPSA params (one per line)')
-    p.add_argument('--core', action='store_true',
-                   help='Filter to core-tagged tunables only (smaller dimensionality, '
-                   'better per-parameter SNR — recommended for routine retunes). '
-                   'Has no effect when --params/--params-file is set.')
+    p.add_argument('--core', action=argparse.BooleanOptionalAction, default=True,
+                   help='Filter to core-tagged tunables only (default; smaller '
+                   'dimensionality, better per-parameter SNR — required for '
+                   'routine retunes per loose-knob audit 2026-05-17). '
+                   'Use --no-core for a full-sweep tune (rare — only for new '
+                   'nets / structural recipe shifts where every axis genuinely '
+                   'needs re-exploration). Has no effect when --params/--params-file is set.')
     p.add_argument('--iterations', type=int, default=2500, help='SPSA iterations (default: 2500)')
     p.add_argument('--pairs-per', type=int, default=8, help='Game pairs per iteration (default: 8)')
     p.add_argument('--tc', default='10.0+0.1', help='Time control (default: 10.0+0.1)')
