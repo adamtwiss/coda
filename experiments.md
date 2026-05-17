@@ -10623,13 +10623,48 @@ plausible from each of the 3 trending-H1 ablations if they hold their
 direction. Net likely +5-9 Elo from the ablation batch alone, plus the
 recurring fleet-throughput compound benefit from tune SNR improvement.
 
-### Meta-finding: SPSA drift IS a useful signpost
+### 2026-05-17 update — bounds-correction re-test killed the H1 banking
 
-Five of five DRIFTING-LOOSE candidates produced *non-negative* ablation
-SPRTs (4 trending positive, 1 marginal negative). That's strong evidence
-the audit methodology correctly identifies low-leverage / hurting
-features. Phase 4 (next 5-10 candidates from MIXED/DISAGREEING classes)
-queued.
+Adam flagged that [-3, 3] bounds were producing wide-CI H1 results that
+wouldn't have passed [0, 3] — re-fired the two ambiguous H1s at [0, 3]:
+
+- **#1277 bonus-boost** at [0, 3]: **+0.3 ±1.0 H0** at 136K games, CI
+  [-0.7, +1.3]. The original [-3, 3] H1 of +3.5 ±3.9 was noise inflation.
+- **#1278 battery-bonus** at [0, 3]: **+0.2 ±1.1 H0** at 114K games, CI
+  [-0.9, +1.3]. The original [-3, 3] H1 of +0.7 ±1.7 was also noise.
+
+**Final Phase 3 verdict: all 5 features confirmed neutral or weakly
+load-bearing — no Elo banked from removals, but 5 tunables reclaimed
+from SPSA.** Decisions:
+
+* **Removed entirely** (central ablation +, CI crosses zero): BONUS_BOOST_AT,
+  BATTERY_BONUS. Feature code deleted.
+* **Hardcoded at SPSA value** (central ablation -, slightly load-bearing):
+  ESCAPE_BONUS_MINOR, ESCAPE_BONUS_Q, QSEE_BONUS. Feature kept, tunable
+  removed from SPSA.
+
+Merge: `experiment/loose-knob-phase3-cleanup` SPRT #1284 +0.9 ±1.9 H1
+at [-3, 3] (37K games). Bench 5408541 → 4669324 (search-tree shape
+change from BONUS_BOOST_AT removal). Landed as `637b0c3` on main.
+
+### Meta-finding: SPSA drift IS a useful signpost (revised)
+
+5/5 DRIFTING-LOOSE candidates resolved as neutral-or-weakly-load-bearing
+at proper [0, 3] bounds. The drift signal correctly identifies "SPSA
+can't find a productive gradient here" — but neutral, not actively
+harmful. Phase 3 banked **0 direct Elo**; the win is the recurring
+SNR improvement on future SPSA cycles. SPSA dimensionality 82 → 77.
+
+### Methodology lesson: ablations need [0, 3] bounds, not [-3, 3]
+
+The 2026-05-16 batch ran at [-3, 3] and produced two false-positive H1s
+(bonus-boost, battery-bonus) that re-tests at [0, 3] revealed as noise.
+Saved as `feedback_ablation_sprt_bounds_use_0_3.md`. Phase 4 onward:
+default [0, 3].
+
+Phase 4 (next 5-10 candidates from DRIFTING-LOOSE + MIXED classes)
+queued. Phase 5 (`core:` flag on tunables! macro + `tune-spec --core`)
+follows.
 
 ## 2026-05-16 — Mini-prod net comparison batch (4 nets vs baby-prod)
 
