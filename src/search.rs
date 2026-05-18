@@ -185,7 +185,7 @@ tunables!(
     (DEXT_MARGIN_QUIET, 4, 0, 100, 4.0, true),
     (DEXT_MARGIN_CORR, 21, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 44, -50, 150, 6.0, true),
-    (DEXT_CAP, 14, 4, 32, 2.0, false),
+    (DEXT_CAP, 14, 4, 32, 2.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
     (LMR_COMPLEXITY_DIV, 152, 30, 500, 23.5, false),
     (CORR_HIST_DIV, 1559, 256, 4096, 192.0, true),
