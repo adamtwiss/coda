@@ -108,6 +108,15 @@ tunables!(
     (HIST_PRUNE_MULT, 10410, 500, 50000, 2475.0, true),
     (SEE_QUIET_MULT, 35, 5, 80, 3.75, true),
     (LMR_HIST_DIV, 7736, 2000, 100000, 4900.0, true),
+    // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
+    // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
+    // continuous `hist_score / LMR_HIST_DIV`. Obsidian uses continuous
+    // `R -= hist/(isQuiet?LmrQuietHistoryDiv:LmrCapHistoryDiv)` with
+    // LmrQuietHistoryDiv=9621, LmrCapHistoryDiv=5693 (cap divisor ~60%
+    // of quiet — single-source capt_hist needs smaller divisor for
+    // equivalent reduction magnitude). Coda's quiet div is 7736; same
+    // ratio gives ~4500. Defaulting 5000 as a starting point.
+    (LMR_HIST_DIV_CAP, 5000, 1000, 20000, 1500.0, true),
     (LMR_C_QUIET, 140, 40, 300, 13.0, true),
     (LMR_C_CAP, 108, 80, 350, 12.5, true),
     // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv,
@@ -3461,18 +3470,19 @@ fn negamax(
                 reduction = lmr_cap_reduction(d as i32, m as i32);
 
                 if reduction > 0 {
-                    // Continuous capture history adjustment
+                    // Continuous capture history adjustment — replaced the
+                    // prior step function (±1 at |capt_hist|>2000) with
+                    // continuous `capt_hist / LMR_HIST_DIV_CAP` to mirror
+                    // quiet-LMR's `hist_score / LMR_HIST_DIV` and Obsidian's
+                    // `R -= hist/(isQuiet?Q_DIV:C_DIV)`. 2026-05-18 outlier
+                    // audit traced LMR_C_CAP<LMR_C_QUIET inversion to this
+                    // step-vs-continuous asymmetry — SPSA had to compress
+                    // C_CAP because there was no per-feature carve-out for
+                    // tactical capt_hist signal beyond the binary fire.
                     if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                         let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
-                        let capt_hist_val = info.history.capture[go_piece(moved_piece)][to as usize][ct];
-                        // Positive capture history: reduce less
-                        if capt_hist_val > 2000 {
-                            reduction -= 1;
-                        }
-                        // Negative capture history: reduce more
-                        if capt_hist_val < -2000 {
-                            reduction += 1;
-                        }
+                        let capt_hist_val = info.history.capture[go_piece(moved_piece)][to as usize][ct] as i32;
+                        reduction -= capt_hist_val / tp(&LMR_HIST_DIV_CAP);
                     }
 
                     // Reduce less for captures that give check
