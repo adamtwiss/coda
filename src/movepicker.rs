@@ -223,7 +223,7 @@ pub struct MovePicker {
     // Ply for killer indexing
     #[allow(dead_code)]
     ply: usize,
-    skip_quiet: bool,
+    pub skip_quiet: bool,
     threats: Threats, // enemy attack bitboard for threat-aware history
     // B1: our own pieces blocking a slider's attack on an enemy piece.
     // Moving one of these creates a discovered attack.
