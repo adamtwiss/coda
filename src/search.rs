@@ -82,8 +82,12 @@ tunables!(
     //     DISCOVERED_ATTACK_BONUS 5808→6672 — tactical bonuses up
     //
     // Overrides applied to SPSA output:
-    //   LMR_ENDGAME_PIECES kept at 5 (SPSA drifted to 4 again; play-quality
-    //     load-bearing per feedback_play_quality_params_narrow_range)
+    //   LMR_ENDGAME_PIECES_10X restored to 50 (effective 5) with floor 45
+    //     (effective 5). The orphaned restore commit 74666f5 had set it to
+    //     5; the _10X migration (855f35b) silently captured the drifted
+    //     trunk value 4 → 40. Play-quality load-bearing per
+    //     feedback_play_quality_params_narrow_range. SPSA can still
+    //     explore 5..=9 within the [45, 90] clamp.
     //
     // Flags for future investigation:
     //   NMP_UNDEFENDED_MAX float-converged at 0.6 (int rounds to 1, no
@@ -259,12 +263,14 @@ tunables!(
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
     // LMR over-reduces king-restriction queen moves that complete mates.
     //
-    // NARROW RANGE [4, 9]: this parameter is correctness-load-bearing —
-    // too low and we regress on deep endgame conversions (play-quality bug
-    // discovered watching Coda on Lichess). 2026-04-22 SPSA #660 drifted
-    // it to 4 (pinned at floor); manually restored to 5 here. SPSA can
-    // still explore ±2-3 from 5 within the clamped range.
-    (LMR_ENDGAME_PIECES_10X, 40, 40, 90, 15.0, true),
+    // NARROW RANGE [5, 9]: correctness-load-bearing per Lichess play-quality
+    // (rook on open board over-reduced as "late"). 2026-04-22 SPSA #660
+    // drifted to 4; restore commit 74666f5 set it to 5 with floor 5 but
+    // that branch was never merged. The 2026-05-10 _10X migration (855f35b)
+    // then captured the drifted trunk value 4 → 40 (effective 4), so the
+    // intent was lost. Restored here as 50 (effective 5) with floor 45
+    // (also effective 5 via tp10 rounding); SPSA can explore 5..=9.
+    (LMR_ENDGAME_PIECES_10X, 50, 45, 90, 15.0, true),
     // --- Previously-hardcoded pruning depth gates, now tunable ---
     // Per 2026-04-24 strategy: at our strength/eval regime, optimal
     // depth caps/gates are sensitive to eval quality and will need
