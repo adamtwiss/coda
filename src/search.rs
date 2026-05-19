@@ -75,9 +75,9 @@ tunables!(
     //     HIST_PRUNE_DEPTH 4→5 (+16%) — pruning generally MORE aggressive
     //   LMR_C_QUIET 120→130, LMR_C_CAP 93→101, LMR_KING_PRESSURE_DIV 4→5,
     //     LMR_THREAT_DIV 4→3 — LMR fully recalibrated
-    //   CORR_W_MINOR +14%, CORR_W_MAJOR +11%, CORR_W_CONT -10%,
-    //     CORR_HIST_GRAIN_T 9→10 — corrhist reweighting toward
-    //     piece-specific signals
+    //   CORR_W_CONT -10%, CORR_HIST_GRAIN_T 9→10 — corrhist reweighting
+    //     (CORR_W_MINOR/MAJOR contributions dropped 2026-05-19, were
+    //     +14%/+11% in this tune but ablated post-#1318)
     //   ESCAPE_BONUS_Q 12758→14437 (+13%), KNIGHT_FORK_BONUS 8782→9716,
     //     DISCOVERED_ATTACK_BONUS 5808→6672 — tactical bonuses up
     //
@@ -146,19 +146,16 @@ tunables!(
     (QS_MAX_CAPTURES, 24, 2, 32, 2.0, false),
     (CORR_W_PAWN, 299, 100, 600, 25.0, true),
     (CORR_W_NP, 63, 50, 400, 17.5, true),
-    // 2026-05-18 audit outlier #3 deep-dive: minor_key/major_key are
-    // strict subsets of non_pawn_key (minor_key ⊕ major_key = NP per
-    // color, since both XOR the same piece-zobrists). So minor_corr +
-    // major_corr triple-count signal already in np_corr. SPSA's pull
-    // on both was near-floor for two tunes (NP=63 at floor, minor=46
-    // near floor 30). This branch zeroes the redundant contributors
-    // and widens range to [0, 300] so a follow-up SPSA can confirm
-    // they stay at 0 or find a tiny residual signal.
-    (CORR_W_MINOR, 0, 0, 300, 13.5, true),
-    (CORR_W_MAJOR, 0, 0, 300, 13.5, true),
-    // Floor lifted from 30 → 0 (audit 2026-05-19): SPSA-converged to 33,
-    // 1% from the floor. Lifting allows SPSA to find the true optimum,
-    // including disabling cont-corr if it wants. Default unchanged.
+    // CORR_W_MINOR / CORR_W_MAJOR were dropped 2026-05-18 (ablated to 0
+    // via #1318 H1; minor_key/major_key are strict subsets of
+    // non_pawn_key, so the contributions were redundant with np_corr).
+    // Tunables and supporting tables removed 2026-05-19 — they sat at
+    // weight 0 burning ~5% of every --core SPSA tune's iteration budget
+    // on parameters with no gradient.
+    //
+    // Floor on CORR_W_CONT lifted from 30 → 0 (audit 2026-05-19): SPSA
+    // converged 33, ~1% from floor. Lifting allows finding true optimum
+    // including disabling cont-corr if SPSA wants. Default unchanged.
     (CORR_W_CONT, 33, 0, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
     (HIST_BONUS_MULT, 315, 50, 400, 17.5, true),
@@ -574,10 +571,6 @@ pub struct SearchInfo {
     pawn_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
     /// Non-pawn correction history: [stm][color][nonpawn_hash % size]
     np_corr: Box<[[[i32; CORR_HIST_SIZE]; 2]; 2]>,
-    /// Minor piece correction history: [stm][minor_hash % size]
-    minor_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
-    /// Major piece correction history: [stm][major_hash % size]
-    major_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
     /// Continuation correction history: [piece][to_square]
     cont_corr: Box<[[i32; 64]; 12]>,
     pub nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
@@ -639,8 +632,6 @@ impl SearchInfo {
             pawn_hist: alloc_zeroed_box(),
             pawn_corr: alloc_zeroed_box(),
             np_corr: alloc_zeroed_box(),
-            minor_corr: alloc_zeroed_box(),
-            major_corr: alloc_zeroed_box(),
             cont_corr: alloc_zeroed_box(),
             nnue_net: None,
             nnue_acc: None,
@@ -796,8 +787,6 @@ impl SearchInfo {
     pub fn clear_correction_history(&mut self) {
         for row in self.pawn_corr.iter_mut() { row.fill(0); }
         for mat in self.np_corr.iter_mut() { for row in mat.iter_mut() { row.fill(0); } }
-        for row in self.minor_corr.iter_mut() { row.fill(0); }
-        for row in self.major_corr.iter_mut() { row.fill(0); }
         for row in self.cont_corr.iter_mut() { row.fill(0); }
     }
 
@@ -1014,10 +1003,6 @@ fn correction_value(info: &SearchInfo, board: &Board) -> i32 {
     let white_np_corr = info.np_corr[stm][WHITE as usize][white_np_idx] as i64;
     let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
     let black_np_corr = info.np_corr[stm][BLACK as usize][black_np_idx] as i64;
-    let minor_idx = (board.minor_key[WHITE as usize] ^ board.minor_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
-    let minor_corr = info.minor_corr[stm][minor_idx] as i64;
-    let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
-    let major_corr = info.major_corr[stm][major_idx] as i64;
     let cont_corr = if !board.undo_stack.is_empty() {
         let last = &board.undo_stack[board.undo_stack.len() - 1];
         if last.mv != NO_MOVE {
@@ -1032,7 +1017,7 @@ fn correction_value(info: &SearchInfo, board: &Board) -> i32 {
         } else { 0 }
     } else { 0 };
     let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
-        + minor_corr * tp(&CORR_W_MINOR) as i64 + major_corr * tp(&CORR_W_MAJOR) as i64 + cont_corr * tp(&CORR_W_CONT) as i64) / tp(&CORR_HIST_DIV) as i64;
+        + cont_corr * tp(&CORR_W_CONT) as i64) / tp(&CORR_HIST_DIV) as i64;
     (total_corr as i32) / tp(&CORR_HIST_GRAIN_T)
 }
 
@@ -1051,14 +1036,6 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
     let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
     let black_np_corr = info.np_corr[stm][BLACK as usize][black_np_idx] as i64;
 
-    // Minor piece correction (knight+bishop hash)
-    let minor_idx = (board.minor_key[WHITE as usize] ^ board.minor_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
-    let minor_corr = info.minor_corr[stm][minor_idx] as i64;
-
-    // Major piece correction (rook+queen hash)
-    let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
-    let major_corr = info.major_corr[stm][major_idx] as i64;
-
     // Continuation correction (from opponent's last move)
     let cont_corr = if !board.undo_stack.is_empty() {
         let last = &board.undo_stack[board.undo_stack.len() - 1];
@@ -1074,9 +1051,9 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
         } else { 0 }
     } else { 0 };
 
-    // Weighted blend: pawn 384, whiteNP 154, blackNP 154, minor 102, major 102, cont 128 = 1024
+    // Weighted blend: pawn, whiteNP, blackNP, cont (minor/major dropped 2026-05-19)
     let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
-        + minor_corr * tp(&CORR_W_MINOR) as i64 + major_corr * tp(&CORR_W_MAJOR) as i64 + cont_corr * tp(&CORR_W_CONT) as i64) / tp(&CORR_HIST_DIV) as i64;
+        + cont_corr * tp(&CORR_W_CONT) as i64) / tp(&CORR_HIST_DIV) as i64;
     let adjusted = raw_eval + (total_corr as i32) / tp(&CORR_HIST_GRAIN_T);
     adjusted.clamp(-MATE_SCORE + 100, MATE_SCORE - 100)
 }
@@ -1108,14 +1085,6 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     update_corr_entry(&mut info.np_corr[stm][WHITE as usize][white_np_idx], err, weight, cap_div);
     let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
     update_corr_entry(&mut info.np_corr[stm][BLACK as usize][black_np_idx], err, weight, cap_div);
-
-    // Minor piece correction
-    let minor_idx = (board.minor_key[WHITE as usize] ^ board.minor_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&mut info.minor_corr[stm][minor_idx], err, weight, cap_div);
-
-    // Major piece correction
-    let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&mut info.major_corr[stm][major_idx], err, weight, cap_div);
 
     // Continuation correction
     if !board.undo_stack.is_empty() {
@@ -4888,7 +4857,7 @@ mod tests {
         info.silent = true;
 
         // Distinctive position vs fresh startpos — different
-        // pawn_hash, non_pawn_key, minor_key, major_key.
+        // pawn_hash, non_pawn_key.
         let board = Board::from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
         let other = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
 
@@ -4904,8 +4873,6 @@ mod tests {
         let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
         let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
         let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
-        let minor_idx = (board.minor_key[WHITE as usize] ^ board.minor_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
-        let major_idx = (board.major_key[WHITE as usize] ^ board.major_key[BLACK as usize]) as usize & (CORR_HIST_SIZE - 1);
 
         // The slot indexed by the test position's hash must be non-zero
         // in every per-position table. cont_corr is excluded — needs a
@@ -4916,10 +4883,6 @@ mod tests {
             "white np_corr slot must be written");
         assert!(info.np_corr[stm][BLACK as usize][black_np_idx] != 0,
             "black np_corr slot must be written");
-        assert!(info.minor_corr[stm][minor_idx] != 0,
-            "minor_corr slot must be written");
-        assert!(info.major_corr[stm][major_idx] != 0,
-            "major_corr slot must be written");
 
         // Apply repeatedly to escape integer-division flooring at
         // current default grain (CORR_HIST_GRAIN_T=11). Each call

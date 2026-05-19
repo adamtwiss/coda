@@ -20,8 +20,6 @@ pub struct UndoInfo {
     pub hash: u64,
     pub pawn_hash: u64,
     pub non_pawn_key: [u64; 2],
-    pub minor_key: [u64; 2],
-    pub major_key: [u64; 2],
     pub checkers: Bitboard,
 }
 
@@ -45,8 +43,6 @@ pub struct Board {
     pub hash: u64,           // Zobrist hash
     pub pawn_hash: u64,      // Zobrist hash of pawns only (for correction history)
     pub non_pawn_key: [u64; 2], // per-color non-pawn, non-king piece Zobrist keys
-    pub minor_key: [u64; 2],   // per-color knight+bishop Zobrist keys
-    pub major_key: [u64; 2],   // per-color rook+queen Zobrist keys
     pub undo_stack: Vec<UndoInfo>,
     /// Threat deltas accumulated during make_move (cleared on each make_move).
     /// Used by the NNUE threat accumulator for incremental updates.
@@ -132,8 +128,6 @@ impl Board {
             hash: 0,
             pawn_hash: 0,
             non_pawn_key: [0; 2],
-            minor_key: [0; 2],
-            major_key: [0; 2],
             undo_stack: Vec::with_capacity(512),
             threat_deltas: Vec::with_capacity(128),
             generate_threat_deltas: false,
@@ -201,8 +195,6 @@ impl Board {
         if pt == PAWN { self.pawn_hash ^= k; }
         else if pt != KING {
             self.non_pawn_key[color as usize] ^= k;
-            if pt == KNIGHT || pt == BISHOP { self.minor_key[color as usize] ^= k; }
-            else { self.major_key[color as usize] ^= k; } // ROOK or QUEEN
         }
     }
 
@@ -215,8 +207,6 @@ impl Board {
         if pt == PAWN { self.pawn_hash ^= k; }
         else if pt != KING {
             self.non_pawn_key[color as usize] ^= k;
-            if pt == KNIGHT || pt == BISHOP { self.minor_key[color as usize] ^= k; }
-            else { self.major_key[color as usize] ^= k; } // ROOK or QUEEN
         }
     }
 
@@ -234,8 +224,6 @@ impl Board {
         if pt == PAWN { self.pawn_hash ^= k; }
         else if pt != KING {
             self.non_pawn_key[color as usize] ^= k;
-            if pt == KNIGHT || pt == BISHOP { self.minor_key[color as usize] ^= k; }
-            else { self.major_key[color as usize] ^= k; } // ROOK or QUEEN
         }
     }
 
@@ -444,10 +432,8 @@ impl Board {
                 self.pawn_hash ^= piece_key(make_piece(color, PAWN), sq);
             }
         }
-        // Compute per-color non-pawn / minor / major keys
+        // Compute per-color non-pawn key
         self.non_pawn_key = [0; 2];
-        self.minor_key = [0; 2];
-        self.major_key = [0; 2];
         for color in 0..2u8 {
             for pt in [KNIGHT, BISHOP, ROOK, QUEEN] {
                 let mut bb = self.pieces[pt as usize] & self.colors[color as usize];
@@ -455,8 +441,6 @@ impl Board {
                     let sq = pop_lsb(&mut bb) as u8;
                     let k = piece_key(make_piece(color, pt), sq);
                     self.non_pawn_key[color as usize] ^= k;
-                    if pt == KNIGHT || pt == BISHOP { self.minor_key[color as usize] ^= k; }
-                    else { self.major_key[color as usize] ^= k; }
                 }
             }
         }
@@ -812,8 +796,6 @@ impl Board {
             hash: self.hash,
             pawn_hash: self.pawn_hash,
             non_pawn_key: self.non_pawn_key,
-            minor_key: self.minor_key,
-            major_key: self.major_key,
             checkers: 0, // populated on demand
         });
 
@@ -958,8 +940,6 @@ impl Board {
             self.hash = undo.hash;
             self.pawn_hash = undo.pawn_hash;
             self.non_pawn_key = undo.non_pawn_key;
-            self.minor_key = undo.minor_key;
-            self.major_key = undo.major_key;
             self.side_to_move = us;
             if us == BLACK { self.fullmove -= 1; }
             return;
@@ -1002,8 +982,6 @@ impl Board {
         self.hash = undo.hash;
         self.pawn_hash = undo.pawn_hash;
         self.non_pawn_key = undo.non_pawn_key;
-        self.minor_key = undo.minor_key;
-        self.major_key = undo.major_key;
 
         if us == BLACK {
             self.fullmove -= 1;
@@ -1023,8 +1001,6 @@ impl Board {
             hash: self.hash,
             pawn_hash: self.pawn_hash,
             non_pawn_key: self.non_pawn_key,
-            minor_key: self.minor_key,
-            major_key: self.major_key,
             checkers: 0,
         });
 
@@ -1052,8 +1028,6 @@ impl Board {
         self.hash = undo.hash;
         self.pawn_hash = undo.pawn_hash;
         self.non_pawn_key = undo.non_pawn_key;
-        self.minor_key = undo.minor_key;
-        self.major_key = undo.major_key;
     }
 
     /// Display the board as ASCII art.
@@ -1538,15 +1512,13 @@ mod tests {
     }
 
     /// Recompute the four auxiliary Zobrist keys (pawn_hash, non_pawn_key,
-    /// minor_key, major_key) from the current piece/color bitboards. Mirrors
-    /// the logic in `set_fen` at the "Compute per-color" block. Used by
-    /// fuzzers to verify incremental updates in put_piece / remove_piece /
-    /// move_piece stay coherent.
-    fn recompute_aux_keys(b: &Board) -> (u64, [u64; 2], [u64; 2], [u64; 2]) {
+    /// from the current piece/color bitboards. Mirrors the logic in `set_fen`
+    /// at the "Compute per-color" block. Used by fuzzers to verify
+    /// incremental updates in put_piece / remove_piece / move_piece stay
+    /// coherent.
+    fn recompute_aux_keys(b: &Board) -> (u64, [u64; 2]) {
         let mut pawn = 0u64;
         let mut np = [0u64; 2];
-        let mut minor = [0u64; 2];
-        let mut major = [0u64; 2];
         for color in 0..2u8 {
             let mut pbb = b.pieces[PAWN as usize] & b.colors[color as usize];
             while pbb != 0 {
@@ -1559,23 +1531,21 @@ mod tests {
                     let sq = pop_lsb(&mut bb) as u8;
                     let k = piece_key(make_piece(color, pt), sq);
                     np[color as usize] ^= k;
-                    if pt == KNIGHT || pt == BISHOP { minor[color as usize] ^= k; }
-                    else { major[color as usize] ^= k; }
                 }
             }
         }
-        (pawn, np, minor, major)
+        (pawn, np)
     }
 
-    /// Property-based fuzzer for the four auxiliary Zobrist keys
-    /// (pawn_hash, non_pawn_key, minor_key, major_key) used by correction
-    /// history. After every move, incremental values must equal from-scratch
-    /// recomputation. These hashes drive correction-history indexing — a
-    /// silent divergence would poison per-bucket corrections and show up as
-    /// degraded search quality with no other symptom.
+    /// Property-based fuzzer for the auxiliary Zobrist keys
+    /// (pawn_hash, non_pawn_key) used by correction history. After every
+    /// move, incremental values must equal from-scratch recomputation. These
+    /// hashes drive correction-history indexing — a silent divergence would
+    /// poison per-bucket corrections and show up as degraded search quality
+    /// with no other symptom.
     ///
     /// Analogous to `fuzz_hash_incremental_matches_compute` for the main
-    /// Zobrist key, but for the four auxiliary keys which have no standalone
+    /// Zobrist key, but for the auxiliary keys which have no standalone
     /// from-scratch computation in production code.
     #[test]
     fn fuzz_aux_keys_match_incremental() {
@@ -1588,9 +1558,9 @@ mod tests {
             "rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2",
             // Rich in promotions / captures
             "4k3/PPPPPPPP/8/8/8/8/pppppppp/4K3 w - - 0 1",
-            // Mostly minors to exercise minor_key
+            // Mostly minors (knight/bishop only, no rooks/queens)
             "4k3/pp6/2nb4/8/8/2NB4/PP6/4K3 w - - 0 1",
-            // Mostly majors to exercise major_key
+            // Mostly majors (rook/queen only, no minors)
             "r2qk2r/8/8/8/8/8/8/R2QK2R w KQkq - 0 1",
         ];
 
@@ -1612,11 +1582,9 @@ mod tests {
 
                 let mut board = Board::from_fen(fen);
                 // Baseline invariant on starting position.
-                let (p, np, mi, ma) = recompute_aux_keys(&board);
+                let (p, np) = recompute_aux_keys(&board);
                 assert_eq!(board.pawn_hash, p, "start pawn_hash mismatch fen={}", fen);
                 assert_eq!(board.non_pawn_key, np, "start np mismatch fen={}", fen);
-                assert_eq!(board.minor_key, mi, "start minor mismatch fen={}", fen);
-                assert_eq!(board.major_key, ma, "start major mismatch fen={}", fen);
 
                 for ply in 0..PLIES {
                     let legal = generate_legal_moves(&board);
@@ -1625,23 +1593,18 @@ mod tests {
 
                     board.make_move(mv);
 
-                    let (p, np, mi, ma) = recompute_aux_keys(&board);
+                    let (p, np) = recompute_aux_keys(&board);
                     if board.pawn_hash != p || board.non_pawn_key != np
-                        || board.minor_key != mi || board.major_key != ma
                     {
                         panic!(
                             "aux key drift: fen_idx={} game={} ply={} move={} seed={:#x}\n\
                              pawn  incr={:#x} fresh={:#x}\n\
                              np    incr=[{:#x},{:#x}] fresh=[{:#x},{:#x}]\n\
-                             minor incr=[{:#x},{:#x}] fresh=[{:#x},{:#x}]\n\
-                             major incr=[{:#x},{:#x}] fresh=[{:#x},{:#x}]\n\
                              fen={}",
                             fen_idx, game, ply,
                             crate::types::move_to_uci(mv), seed,
                             board.pawn_hash, p,
                             board.non_pawn_key[0], board.non_pawn_key[1], np[0], np[1],
-                            board.minor_key[0], board.minor_key[1], mi[0], mi[1],
-                            board.major_key[0], board.major_key[1], ma[0], ma[1],
                             board.to_fen(),
                         );
                     }
@@ -1688,8 +1651,6 @@ mod tests {
                 let orig_fen = board.to_fen();
                 let orig_pawn = board.pawn_hash;
                 let orig_np = board.non_pawn_key;
-                let orig_minor = board.minor_key;
-                let orig_major = board.major_key;
 
                 // Track whether each op was null (true) or regular (false)
                 // so we unmake with the right function.
@@ -1727,8 +1688,6 @@ mod tests {
                 assert_eq!(board.hash, orig_hash);
                 assert_eq!(board.pawn_hash, orig_pawn);
                 assert_eq!(board.non_pawn_key, orig_np);
-                assert_eq!(board.minor_key, orig_minor);
-                assert_eq!(board.major_key, orig_major);
             }
         }
     }
@@ -1781,8 +1740,6 @@ mod tests {
                 let orig_hash = board.hash;
                 let orig_pawn = board.pawn_hash;
                 let orig_np = board.non_pawn_key;
-                let orig_minor = board.minor_key;
-                let orig_major = board.major_key;
                 let orig_mailbox = board.mailbox;
                 let orig_pieces = board.pieces;
                 let orig_colors = board.colors;
@@ -1812,8 +1769,6 @@ mod tests {
                     board.hash != orig_hash
                     || board.pawn_hash != orig_pawn
                     || board.non_pawn_key != orig_np
-                    || board.minor_key != orig_minor
-                    || board.major_key != orig_major
                     || board.mailbox != orig_mailbox
                     || board.pieces != orig_pieces
                     || board.colors != orig_colors
@@ -1830,8 +1785,6 @@ mod tests {
                          hash   orig={:#x} now={:#x}\n\
                          pawn   orig={:#x} now={:#x}\n\
                          np     orig={:?} now={:?}\n\
-                         minor  orig={:?} now={:?}\n\
-                         major  orig={:?} now={:?}\n\
                          castle orig={} now={}  ep orig={} now={}\n\
                          stm    orig={} now={}  hm orig={} now={} fm orig={} now={}",
                         fen_idx, game, move_count, seed,
@@ -1839,8 +1792,6 @@ mod tests {
                         orig_hash, board.hash,
                         orig_pawn, board.pawn_hash,
                         orig_np, board.non_pawn_key,
-                        orig_minor, board.minor_key,
-                        orig_major, board.major_key,
                         orig_castling, board.castling,
                         orig_ep, board.ep_square,
                         orig_stm, board.side_to_move,
