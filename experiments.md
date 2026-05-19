@@ -10765,3 +10765,26 @@ consistent even if the baseline is older than main.
   - Bench-deterministic-across-archs lesson reinforced.
 - **In flight that could compound**: +3-9 Elo from completing the
   Phase 3 ablations; unknown upside from the 4 net SPRTs.
+
+## 2026-05-19 — TM edge-case bisect (task #196) — no actionable fix
+
+Reviewed recent TM-related commits in SF and Reckless (since 2025-09) and
+mapped each to Coda's equivalent path. **All recent TM patches already
+have analogous Coda code.**
+
+| SF/Reckless fix | Coda equivalent | Status |
+|---|---|---|
+| SF `3c04b5c4` Depth-1 bug at very low TC (`optimum >= 1.0`, `max >= optimum`) | `compute_tm_budgets` floor `soft >= 10ms` + clamp `if soft > hard { soft = hard }` (C8 audit LIKELY #28) | Already present |
+| Reckless `6d6edf03` Multithread time-check (replace per-thread `td.stopped` with shared `Status::STOPPED`) | Uses shared `info.stop: Arc<AtomicBool>` everywhere; `should_stop()` always reads shared flag | Already present |
+| Reckless `2afe58bd` `go depth` bug | Not TM-class (UCI-protocol) | N/A |
+| SF `4b71d8e2` Allow time-check during DTZ probe (#5894 slow-disk TCEC) | `probe_root_pv` is synchronous in `uci.rs`; could block on slow disk in TCEC-style deployment | Not OB-visible; Lichess disk is local SSD |
+| Reckless `b6c14b9c` Node-TM scaling change (Berserk constants `(2.7168 - 2.2669*x).max(0.5630)`) | Coda's `nodes_factor = 0.63 + (1-frac)*2.0 = 2.63 - 2.0*frac` — same shape, slightly different slope (Coda 2.63→0.63, Reckless-new 2.72→0.56) | Already matches Berserk-style |
+
+**Verdict**: Coda's TM has aged well — when SF/Reckless ported fixes (and
+particularly when SF fixed `optimum > max` via `-10` subtraction), Coda
+either had the analogous clamp already (LIKELY #28) or used a different
+formulation that doesn't admit the bug. The node-fraction TM constants
+are essentially equivalent to Berserk's recent re-tune.
+
+No SPRT submitted from this audit. Task #196 closed without changes.
+
