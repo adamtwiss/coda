@@ -3587,7 +3587,12 @@ fn negamax(
                                 let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                 let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                 if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
-                                    let ch_b = if off <= 1 { nudge_bonus } else { nudge_bonus / 2 };
+                                    // B1 (audit 2026-05-19): uniform bonus across offsets
+                                    // {1,2,4,6}. Coda was unique in [bonus, b/2, b/2, b/2]
+                                    // shape; Reckless/Berserk/Alexandria/Stormphrax use
+                                    // uniform `bonus`. See docs/history_prune_cont_hist_
+                                    // review_2026-05-08.md Experiment B1.
+                                    let ch_b = nudge_bonus;
                                     let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
                                     let base = cur_cont + main_score_v / 2;
                                     History::update_cont_history_with_base(
@@ -3693,7 +3698,8 @@ fn negamax(
                                     let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                     let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                     if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
-                                        let ch_bonus = if off <= 1 { bonus } else { bonus / 2 };
+                                        // B1: uniform bonus (see LMR nudge site above).
+                                        let ch_bonus = bonus;
                                         let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
                                         let base = cur_cont + main_score_v / 2;
                                         History::update_cont_history_with_base(
@@ -3740,7 +3746,8 @@ fn negamax(
                                             let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                             let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                             if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
-                                                let ch_pen = if off <= 1 { -bonus } else { -bonus / 2 };
+                                                // B1: uniform penalty (see bonus site above).
+                                                let ch_pen = -bonus;
                                                 let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize] as i32;
                                                 let base = cur_cont + q_main_score / 2;
                                                 History::update_cont_history_with_base(
