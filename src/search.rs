@@ -109,9 +109,9 @@ tunables!(
     (FUT_BASE, 23, 20, 200, 9.0, true),
     (FUT_PER_DEPTH, 79, 40, 250, 10.5, true),
     (HIST_PRUNE_DEPTH_10X, 10, 10, 80, 15.0, true),
-    (HIST_PRUNE_MULT, 10410, 500, 50000, 2475.0, true),
+    (HIST_PRUNE_MULT, 10262, 500, 50000, 2475.0, true),
     (SEE_QUIET_MULT, 35, 5, 80, 3.75, true),
-    (LMR_HIST_DIV, 7736, 2000, 100000, 4900.0, true),
+    (LMR_HIST_DIV, 8173, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
     // continuous `hist_score / LMR_HIST_DIV`. Obsidian uses continuous
@@ -158,7 +158,7 @@ tunables!(
     // including disabling cont-corr if SPSA wants. Default unchanged.
     (CORR_W_CONT, 33, 0, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
-    (HIST_BONUS_MULT, 315, 50, 400, 17.5, true),
+    (HIST_BONUS_MULT, 309, 50, 400, 17.5, true),
     (HIST_BONUS_MAX, 1936, 500, 3000, 125.0, true),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
     // history bonus adopts Stockfish/cap-hist offset shape:
@@ -169,7 +169,7 @@ tunables!(
     // wider depth discrimination. cap-history already uses the offset
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 18, 0, 400, 25.0, false),
+    (HIST_BONUS_OFFSET, 24, 0, 400, 25.0, false),
     (CAP_HIST_MULT, 289, 50, 400, 17.5, true),
     (CAP_HIST_BASE, 42, 0, 200, 10.0, false),
     (CAP_HIST_MAX, 1881, 500, 3000, 125.0, true),
@@ -259,7 +259,7 @@ tunables!(
     // the value to the floor across tunes. Widened to allow 0× (full disable)
     // so SPSA can find the genuine optimum. CLAUDE.md previously claimed
     // "3× in move ordering" — stale; corrected to "1× current SPSA basin".
-    (CONT_HIST_MULT_10X, 10, 0, 80, 15.0, true),
+    (CONT_HIST_MULT_10X, 19, 0, 80, 15.0, true),
     (KNIGHT_FORK_BONUS, 8722, 0, 20000, 1000.0, false),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
