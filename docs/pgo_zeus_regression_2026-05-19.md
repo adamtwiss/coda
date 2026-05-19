@@ -197,6 +197,57 @@ Recommended next test: option 1, on a one-shot branch. Single
 `#[inline(never)]` annotation per AVX-512 helper. SPRT bench-13 PGO
 delta first (cheap), then fleet SPRT if Zeus recovers locally.
 
+## Update: Hypothesis 1 tested — `#[inline(never)]` on AVX-512 helpers — REJECTED
+
+Added `#[inline(never)]` to all ~24 functions with
+`#[target_feature(enable="…avx512…")]` annotations (`src/nnue.rs`,
+`src/threats.rs`, `src/sparse_l1.rs`). Branch
+`experiment/pgo-zen5-noinline-avx512` (deleted post-test).
+
+| Build | NPS (5-run median) | Δ vs plain main |
+|---|---:|---:|
+| plain main | 1,434K | baseline |
+| PGO main | 1,265K | −11.8% |
+| plain + inline(never) | 1,453K | +1.3% (within noise) |
+| **PGO + inline(never)** | **1,268K** | **−11.6%** (unchanged) |
+
+The annotation **did work** — `finny_batch_apply_avx512` (724 → 732
+insns) and `simd512_pairwise_pack_fused` (338 → 489) survived in the
+PGO binary as standalone functions instead of being inlined. And
+`forward_with_threats` dropped from 3,834 → 2,106 insns in PGO,
+showing that AVX-512 SIMD helpers WERE being inlined into it and we
+prevented that.
+
+**But the regression didn't close.** Why:
+
+- `negamax` is still 20,439 instructions in PGO (same as before).
+  Its growth came from inlining **non-AVX-512** helpers — history /
+  scoring / move-iteration paths. AVX-512 SIMD was a subset, not the
+  dominant lever.
+- `simd_acc_fused_avx512` *itself* still grew 717 → 2,880 instructions
+  in PGO. That's not inlining-out; it's **PGO unrolling / specialising
+  the function's internal loops**. `#[inline(never)]` doesn't affect
+  that.
+- The forward-path improvement from inlining-prevention (~1,700
+  instructions saved per `forward_with_threats` call) is offset by
+  whatever PGO does to `negamax` itself.
+
+The mechanism framing in the doc above was **partially correct but
+incomplete**. AVX-512 inlining is one of multiple compounding effects;
+removing it alone doesn't recover the regression.
+
+## Hypotheses 2-5 still queued
+
+The next thing worth trying is **option 3 — `-Cllvm-args=-inline-threshold-pgo=N`
+with smaller N** — targets the *overall* PGO inlining aggressiveness,
+not just AVX-512. Risk: regresses older hardware where aggressive
+inlining was helping. Would need fleet SPRT to verify.
+
+Option 5 (AutoFDO sampling profile) remains the most promising
+long-term — produces different inlining decisions because the profile
+is collected without instrumentation overhead. But it's significantly
+more setup work than a one-line annotation.
+
 ## Banked
 
 - **Same mechanism as v9-era PGO failure.** PGO's profile-driven
