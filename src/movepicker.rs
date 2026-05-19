@@ -1,7 +1,12 @@
 /// Staged move picker for search.
 ///
-/// Order: TT move -> good captures (MVV-LVA + captHist/16) -> killer1 -> killer2 ->
-///        counter-move -> quiets (history) -> bad captures.
+/// Order: TT move -> good captures (MVV-LVA + captHist) -> quiets (history-scored,
+///        including main/cont/pawn/etc.) -> bad captures.
+///
+/// Killer1/Killer2/CounterMove stages are SKIPPED — quiet ordering relies on
+/// history alone (SF/Reckless pattern, validated by SPRT commit e28c78a).
+/// The match arms for those stages exist in `Stage` for legacy compat but
+/// are unreachable from the live state machine.
 ///
 /// Evasion order: TT move -> evasions (captures scored above quiets).
 ///

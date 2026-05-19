@@ -248,7 +248,12 @@ tunables!(
     // extensions for tactically significant moves.
     (SE_XRAY_BLOCKER_MARGIN_10X, 47, 0, 400, 20.0, true),
     (MVV_CAP_MULT, 28, 4, 64, 3.0, false),
-    (CONT_HIST_MULT_10X, 10, 10, 80, 15.0, true),
+    // 2026-05-19 audit: floor was pinned at 10 (=1.0 effective), preventing
+    // SPSA from exploring below 1× even though SPSA had repeatedly driven
+    // the value to the floor across tunes. Widened to allow 0× (full disable)
+    // so SPSA can find the genuine optimum. CLAUDE.md previously claimed
+    // "3× in move ordering" — stale; corrected to "1× current SPSA basin".
+    (CONT_HIST_MULT_10X, 10, 0, 80, 15.0, true),
     (KNIGHT_FORK_BONUS, 8722, 0, 20000, 1000.0, false),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where

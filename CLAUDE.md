@@ -402,7 +402,7 @@ resource-allocation logic, see **`docs/improvement_threads.md`**
 - **is_pseudo_legal must be thorough**: TT hash collisions inject illegal moves. Pawn validation must check direction, intermediate squares (double push), starting rank, destination empty (pushes), enemy piece (captures). Castling must check rights, path clear, king/intermediate/destination not attacked, king on correct square. All three bugs cost 320 Elo combined.
 - **PV error warnings = TT collision bugs**: Every "Illegal PV move" from cutechess-cli means a TT collision passed is_pseudo_legal and corrupted the search tree. Treat as critical, not cosmetic.
 - **Feature flag ablation**: env var controlled flags (NO_XXX, ENABLE_XXX, DISABLE_ALL) for systematic search feature testing. Parsed once at startup via std::sync::Once.
-- LMR contHist weight: 3x in move ordering, ply-1+ply-2 in reduction adjustment
+- LMR contHist weight: 1x in move ordering (CONT_HIST_MULT_10X tp10, SPSA-converged from earlier 3x default), ply-1+ply-2 in reduction adjustment. 2026-05-19 audit: floor was pinned at 10 (1.0 effective); now widened to 0 to let SPSA explore below 1×.
 - PV nodes skip all TT cutoffs and QS beta blending
 - Polyglot book encodes castling as king-to-rook (must convert to king-to-destination)
 
