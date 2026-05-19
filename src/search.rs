@@ -551,6 +551,13 @@ pub struct SearchInfo {
     tm_prev_best: Move,
     tm_prev_score: i32,
     tm_best_stable: i32,
+    /// Cumulative count of root best-move changes between iterations,
+    /// reset at search start. Drives a Reckless/Stockfish-style upward
+    /// multiplier on tactical/unstable positions (Phase 1 TM redesign,
+    /// docs/tm_redesign_phase1_2026-05-19.md). Pairs with `tm_best_stable`
+    /// (which tracks CONSECUTIVE stable iterations and reduces time);
+    /// this tracks TOTAL changes and increases time.
+    tm_best_move_changes: u32,
     tm_has_data: bool,
     soft_limit: u64,  // ms — can be extended/shortened dynamically
     hard_limit: u64,  // ms — absolute maximum
@@ -646,6 +653,7 @@ impl SearchInfo {
             max_nodes: 0,
             move_overhead: 100,
             tm_prev_best: NO_MOVE,
+            tm_best_move_changes: 0,
             tm_prev_score: 0,
             tm_best_stable: 0,
             tm_has_data: false,
@@ -1540,6 +1548,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.nodes = 0;
     info.tm_has_data = false;
     info.tm_best_stable = 0;
+    info.tm_best_move_changes = 0;
 
     // Mirror search()'s threat setup — helpers must evaluate consistently
     // with main or shared-TT entries disagree and search diverges at T>1.
@@ -1667,6 +1676,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.tm_prev_best = NO_MOVE;
     info.tm_prev_score = 0;
     info.tm_best_stable = 0;
+    info.tm_best_move_changes = 0;
     info.tm_has_data = false;
     // Reset per-root-move node counts
     for v in info.root_move_nodes.iter_mut() { *v = 0; }
@@ -1716,6 +1726,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.time_limit = hard; // search uses hard as absolute limit
         info.tm_has_data = false;
         info.tm_best_stable = 0;
+        info.tm_best_move_changes = 0;
     } else if !limits.infinite {
         // No clock info (e.g. `go depth N` or `go nodes N`). Already zeroed
         // above; explicit reset kept for clarity.
@@ -1996,6 +2007,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     info.tm_best_stable += 1;
                 } else {
                     info.tm_best_stable = 0;
+                    // Phase 1: cumulative count of root best-move changes since
+                    // search start. Drives an upward multiplier on tactically
+                    // unstable positions (Reckless `1 + changes/4`, Stockfish
+                    // `1.096 + 2.29 * totBestMoveChanges` patterns).
+                    info.tm_best_move_changes = info.tm_best_move_changes.saturating_add(1);
                 }
             }
             let drop = if info.tm_has_data && !is_mate_score(prev_score) && !is_mate_score(info.tm_prev_score) {
@@ -2044,8 +2060,23 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // scoreFactor = clamp(0.86 + 0.010 * scoreDrop, 0.81, 1.50)
             let score_factor = (0.86 + 0.010 * score_drop as f64).clamp(0.81, 1.50);
 
-            // Combined: all three factors multiply against the soft limit
-            let scale = nodes_factor * stability_factor * score_factor;
+            // Factor 4: Best-move-changes upward boost (Phase 1 TM redesign).
+            // Mirrors Reckless `1.0 + changes/4.0` and SF `1.096 + 2.29 *
+            // bestMoveChanges` patterns — the upward instability signal that
+            // Coda was structurally missing. Clamped at 2.5 so it can't
+            // multiplicatively explode on pathological positions. Combined
+            // with the other factors and bounded by hard_limit downstream,
+            // so the catastrophe ceiling is unchanged.
+            //
+            // tm_best_move_changes is the cumulative count of root best-move
+            // flips between iterations since search start, reset at `go`.
+            let bmc_factor = (1.0 + info.tm_best_move_changes as f64 / 4.0).min(2.5);
+
+            // Combined: all four factors multiply against the soft limit.
+            // adjusted_soft is downstream-clamped to hard_limit, so this
+            // factor pushes us toward the existing hard cap on tactical
+            // positions but cannot exceed it.
+            let scale = nodes_factor * stability_factor * score_factor * bmc_factor;
 
             // Check if we should stop at the soft limit.
             // Floor at soft_floor (≈ increment) so stability cuts in stable
