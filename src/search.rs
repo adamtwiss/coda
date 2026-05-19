@@ -156,7 +156,10 @@ tunables!(
     // they stay at 0 or find a tiny residual signal.
     (CORR_W_MINOR, 0, 0, 300, 13.5, true),
     (CORR_W_MAJOR, 0, 0, 300, 13.5, true),
-    (CORR_W_CONT, 33, 30, 400, 18.5, true),
+    // Floor lifted from 30 → 0 (audit 2026-05-19): SPSA-converged to 33,
+    // 1% from the floor. Lifting allows SPSA to find the true optimum,
+    // including disabling cont-corr if it wants. Default unchanged.
+    (CORR_W_CONT, 33, 0, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
     (HIST_BONUS_MULT, 315, 50, 400, 17.5, true),
     (HIST_BONUS_MAX, 1936, 500, 3000, 125.0, true),
@@ -213,7 +216,9 @@ tunables!(
     (CORR_UPDATE_WEIGHT_MAX, 13, 4, 48, 2.2, true),
     (CORR_BONUS_CAP_DIV_10X, 32, 10, 160, 15.0, false),
     (CORR_HIST_GRAIN_T, 14, 1, 32, 1.55, false),
-    (CORR_HIST_ERR_MAX_10X, 25, 10, 640, 5.0, false),
+    // Floor lifted from 10 → 0 (audit 2026-05-19): SPSA converged 25, ~2%
+    // from the floor. Lifting allows exploration of looser clamps.
+    (CORR_HIST_ERR_MAX_10X, 25, 0, 640, 5.0, false),
     // ESCAPE_BONUS_Q / _MINOR removed 2026-05-17: ablations #1256/#1255
     // H0 at [-3, 3]. Slightly load-bearing (central -0.6/-1.3 to ablate),
     // hardcoded at current SPSA values in movepicker.rs.
@@ -281,8 +286,15 @@ tunables!(
     // Future retune-on-branch cycles will sweep these with the
     // eval+pruning co-tune; expect meaningful movement as net quality
     // changes.
-    (IIR_MIN_DEPTH_10X, 20, 20, 100, 15.0, true),         // was hardcoded 4; tune #743 converged to 2 (strong signal)
-    (PROBCUT_MIN_DEPTH_10X, 32, 30, 120, 15.0, true),     // was hardcoded 5 (ProbCut activation gate)
+    // IIR floor lifted from 20 → 5 (audit 2026-05-19): tune #743 drove
+    // value to 20 (eff depth 2). With floor=20 SPSA can't explore below
+    // depth 2; lifting to 5 (eff 0.5) lets SPSA find effective optimum,
+    // including "fire at any depth ≥ 1".
+    (IIR_MIN_DEPTH_10X, 20, 5, 100, 15.0, true),          // was hardcoded 4; tune #743 converged to 2 (strong signal)
+    // ProbCut floor lifted from 30 → 10 (audit 2026-05-19): SPSA at 32,
+    // ~2% from floor. Lifting to 10 (eff 1) allows exploration of more
+    // aggressive ProbCut activation.
+    (PROBCUT_MIN_DEPTH_10X, 32, 10, 120, 15.0, true),     // was hardcoded 5 (ProbCut activation gate)
     (SEE_CAP_DEPTH, 6, 3, 15, 1.5, true),         // was hardcoded 6 (SEE capture prune depth cap)
     (FUT_LMR_DEPTH, 15, 5, 20, 1.5, false),        // was hardcoded 10; tune #743 → 9
     (BAD_NOISY_DEPTH, 8, 4, 15, 1.5, true),       // was hardcoded 4 (BNFP depth cap)
