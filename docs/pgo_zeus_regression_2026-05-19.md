@@ -248,6 +248,116 @@ long-term — produces different inlining decisions because the profile
 is collected without instrumentation overhead. But it's significantly
 more setup work than a one-line annotation.
 
+## Cross-engine comparison — Reckless on Zen 5
+
+Reckless (Rust, similar codebase shape, also uses cargo-pgo) — built
+and benched on Zeus 2026-05-19 with the same toolchain:
+
+| Build | NPS (3-run median) | PGO Δ |
+|---|---:|---:|
+| Reckless plain (`cargo build --release`) | 2,197K | baseline |
+| Reckless PGO (`cargo pgo instrument → run -- bench → optimize`) | 2,130K | **−3.1%** |
+| Coda plain (cgu=16, lto=true) | 1,434K | baseline |
+| Coda PGO (cgu=16, lto=true) | 1,265K | **−11.8%** |
+| Coda + Reckless build settings (cgu=1, lto=fat) | 1,471K | (plain) |
+| Coda + Reckless build settings PGO | 1,289K | **−12.4%** vs same plain |
+
+**Reckless DOES regress under PGO on Zen 5**, just much less (−3.1% vs
+Coda's −11.8%). It's the same underlying mechanism (PGO mis-optimizing
+for the Zen 5 cost model), but Reckless's architecture mitigates it
+substantially.
+
+### What Reckless does differently
+
+1. **Module-level `#[cfg(target_feature)]` dispatch.** Each ISA is a
+   separate module, mutually-exclusive cfg-gated:
+   ```rust
+   mod simd {
+       #[cfg(target_feature = "avx512f")] mod avx512;
+       #[cfg(target_feature = "avx512f")] pub use avx512::*;
+       #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))] mod avx2;
+       #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))] pub use avx2::*;
+       #[cfg(all(target_feature = "neon", not(any(target_feature = "avx2", target_feature = "avx512f"))))] mod neon;
+       // ...
+   }
+   ```
+   For a Zen 5 build (`target-cpu=native`), only the `avx512` module
+   compiles. The `avx2` module's source isn't even visible to LLVM.
+   Each binary has ONE SIMD implementation, not multiple.
+
+2. **No runtime ISA dispatch.** No `if has_avx512 { … } else if has_avx2
+   { … }` trees in hot paths. Each callsite jumps straight to the
+   single SIMD body that compiled.
+
+3. **`#[inline]` (regular) on SIMD helpers.** Because each ISA has
+   exactly one version, LLVM inlines or doesn't based on normal cost
+   heuristics — no `#[target_feature(enable=...)]` semantic inline
+   barrier, no duplicate AVX-2-vs-AVX-512 paths for PGO to over-inline.
+
+4. **`codegen-units = 1` + `lto = "fat"`.** Whole-program LLVM
+   optimization. PGO's decisions have full inter-procedural context.
+
+5. **Smaller absolute codebase.** Less code overall means PGO has less
+   to bloat under aggressive inlining decisions.
+
+### What Coda does (and why it amplifies PGO+Zen5)
+
+1. **`#[target_feature(enable = "avx512f,avx512bw")]` on functions** —
+   both AVX-512 AND AVX-2 SIMD bodies are in the same compiled binary.
+   PGO inlines the hot ISA's version into callers, but the existence
+   of the other ISA's body bloats the binary regardless.
+
+2. **Runtime dispatch trees** — `if has_avx512 && ... { simd512_fn() }
+   else if has_avx2 && ... { simd_fn() }` patterns in hot functions.
+   PGO sees these as hot branches and may emit branch hints, but the
+   dispatch itself adds icache pressure.
+
+3. **`cgu = 16` + `lto = true`** (thin LTO). PGO inlining decisions
+   made per-CGU with limited inter-procedural context. Earlier
+   investigation showed `cgu = 1` was needed for SMP scaling (T=1
+   bundle), so reverting to Reckless's `cgu = 1` would un-do that
+   ship.
+
+4. **v9 threat features add significant hot-path code surface** vs
+   Reckless's leaner search.
+
+### Building Coda with Reckless's settings doesn't fix it
+
+Tested directly: `Cargo.toml` set to `lto = "fat", codegen-units = 1`
+and rebuilt + PGO'd on Zen 5. PGO regression is **−12.4%** with those
+settings — slightly *worse* than current main's −11.8%. Build
+settings alone aren't the lever. The structural piece (module-level
+cfg-dispatch eliminating duplicate ISA bodies) is what Reckless gets
+that Coda doesn't.
+
+### Can we get to Reckless's pattern?
+
+We already tested partial cfg-dispatch (SPRT #935 `cfg-dispatch-forward`
+and #936 `cfg-dispatch-bundle`). Both H0'd or trended slightly
+negative on the fleet — those experiments converted runtime branches
+to compile-time `cfg!()` but kept the function bodies as
+`#[target_feature(enable=...)]` attributed (so both ISA bodies
+remained in the binary).
+
+Reckless's approach goes **further**: split each ISA into its own
+module with `#[cfg(target_feature)]` at the module level, so only one
+ISA's source compiles per build. This is a substantially larger
+refactor than #935/#936 — ~1-2 days of restructuring the SIMD code
+layout in `nnue.rs`, `threats.rs`, `sparse_l1.rs`, plus migration of
+all the `#[target_feature]` annotations.
+
+**Expected payoff** if done: closes most of the −11.8% gap to
+Reckless's −3.1%, leaving ~−3% irreducible (the Zen 5 cost-model
+issue still applies). On AVX-2 hardware (most of fleet), would have
+to verify no regression — Reckless's plain numbers don't include the
+runtime-dispatch ladder that Coda's removal would also eliminate.
+
+**Recommendation**: not in scope right now. The training-side levers
+(hidden_size shrink, encoding redesign) have larger Elo ceilings and
+the cache-leg work already addressed search-side NPS to a large
+degree. Module-level cfg-dispatch is queued as a possible long-term
+refactor if/when we revisit PGO seriously.
+
 ## Banked
 
 - **Same mechanism as v9-era PGO failure.** PGO's profile-driven
