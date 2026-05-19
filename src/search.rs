@@ -2190,6 +2190,14 @@ fn negamax(
         if board.halfmove >= 100 {
             return draw_score;
         }
+        // FIDE Art 5.2: insufficient material to mate (any side). Matches
+        // Reckless / Viridithas; identified as gap after Lichess game
+        // I4qJhfQw move 103 where Coda failed to recapture into a clearly
+        // drawn KB-vs-K position. Returns 0 — tiebreak among multiple drawn
+        // paths is handled at the root, not here.
+        if board.is_insufficient_material() {
+            return draw_score;
+        }
         // C8 audit LIKELY #38: bound rep scan by min(halfmove, plies_from_null)
         // so we don't walk back across a null move boundary. halfmove
         // increments on null moves (board.rs:947) but plies_from_null resets

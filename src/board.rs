@@ -239,6 +239,77 @@ impl Board {
         }
     }
 
+    /// FIDE Art 5.2: insufficient material to deliver checkmate, by either side.
+    /// Returns true for:
+    ///   - K vs K
+    ///   - K + single minor (N or B) vs K
+    ///   - K + minor vs K + minor (any pair of single minors per side — neither
+    ///     side can force mate; technically FIDE only mandates draw on agreement
+    ///     here, but engines uniformly treat as drawn since no forced win exists)
+    ///   - K + B vs K + B with all bishops on the same color (no bishop
+    ///     of opposite color exists, so neither side can mate)
+    ///
+    /// Excluded (deliberately, matches Reckless/Viridithas):
+    ///   - KNN vs K (technically drawn FIDE-wise but extremely rare; opponent
+    ///     can blunder into mate). Engines that exclude this treat the position
+    ///     conservatively — eval/search will reach 0 anyway via NNUE/TB.
+    ///   - KBN vs K (winnable for the BN side; not a draw).
+    ///
+    /// Matches Reckless `draw_by_material` (src/board.rs:236) and Viridithas
+    /// `has_insufficient_material`. Pattern is consensus among engines that
+    /// implement IM-in-search (~half of the top engines do).
+    #[inline]
+    pub fn is_insufficient_material(&self) -> bool {
+        // Any pawn / rook / queen → sufficient material to mate.
+        if self.pieces[PAWN as usize]
+         | self.pieces[ROOK as usize]
+         | self.pieces[QUEEN as usize] != 0 {
+            return false;
+        }
+
+        let piece_count = crate::bitboard::popcount(self.occupied());
+        // K vs K, K+minor vs K — drawn.
+        if piece_count <= 3 {
+            return true;
+        }
+        // More than 4 pieces (≥3 minors total) — too rich to call draw.
+        if piece_count != 4 {
+            return false;
+        }
+
+        // 4 pieces total = 2 kings + 2 minors. Layouts:
+        //   (a) 1 minor each side  → drawn (B vs B, B vs N, N vs N, KBN is excluded)
+        //   (b) 2 minors on one side, 0 on other:
+        //         - both knights  → NOT drawn (KNN vs K — see exclusion note above)
+        //         - B + N         → NOT drawn (KBN vs K — winnable)
+        //         - 2 bishops:
+        //             - same color → drawn
+        //             - opposite color → NOT drawn (mate possible)
+        let white_minors = crate::bitboard::popcount(
+            self.colors[WHITE as usize] & (self.pieces[BISHOP as usize] | self.pieces[KNIGHT as usize])
+        );
+        let black_minors = crate::bitboard::popcount(
+            self.colors[BLACK as usize] & (self.pieces[BISHOP as usize] | self.pieces[KNIGHT as usize])
+        );
+
+        // (a) 1 minor each
+        if white_minors == 1 && black_minors == 1 {
+            return true;
+        }
+
+        // (b) 2 minors on one side. Must be 2 bishops same color to be drawn.
+        if self.pieces[KNIGHT as usize] != 0 {
+            return false;  // any knight present → not the same-color-bishops case
+        }
+        // All 2 minors are bishops. Drawn iff all on the same color squares.
+        // Light squares: 0x55AA55AA55AA55AA (a1, c1, ... pattern).
+        let light_mask: u64 = 0x55AA_55AA_55AA_55AA;
+        let bishops = self.pieces[BISHOP as usize];
+        let bishops_light = crate::bitboard::popcount(bishops & light_mask);
+        // 0 → both dark, 2 → both light, 1 → mixed (not drawn).
+        bishops_light != 1
+    }
+
     /// Compute the full Zobrist hash from scratch.
     pub fn compute_hash(&self) -> u64 {
         let mut h = 0u64;
@@ -1087,6 +1158,45 @@ mod tests {
     use super::*;
 
     fn init() { crate::init(); }
+
+    #[test]
+    fn test_insufficient_material() {
+        init();
+        // Drawn cases
+        assert!(Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").is_insufficient_material(),
+            "K vs K");
+        assert!(Board::from_fen("4k3/8/8/8/8/8/8/4KB2 w - - 0 1").is_insufficient_material(),
+            "KB vs K");
+        assert!(Board::from_fen("4k3/8/8/8/8/8/8/4KN2 w - - 0 1").is_insufficient_material(),
+            "KN vs K");
+        assert!(Board::from_fen("4kb2/8/8/8/8/8/8/4KB2 w - - 0 1").is_insufficient_material(),
+            "KB vs KB same-color (both light)");
+        assert!(Board::from_fen("4kn2/8/8/8/8/8/8/4KN2 w - - 0 1").is_insufficient_material(),
+            "KN vs KN");
+        assert!(Board::from_fen("4kb2/8/8/8/8/8/8/4KN2 w - - 0 1").is_insufficient_material(),
+            "KN vs KB (each side 1 minor)");
+
+        // NOT drawn cases — material sufficient to mate (or near it)
+        assert!(!Board::from_fen("4k3/8/8/8/8/8/P7/4K3 w - - 0 1").is_insufficient_material(),
+            "K+P vs K (pawn can promote)");
+        assert!(!Board::from_fen("4k3/8/8/8/8/8/8/3QK3 w - - 0 1").is_insufficient_material(),
+            "K+Q vs K");
+        assert!(!Board::from_fen("4k3/8/8/8/8/8/8/3RK3 w - - 0 1").is_insufficient_material(),
+            "K+R vs K");
+        // KBN vs K is winnable → must NOT be detected as draw
+        assert!(!Board::from_fen("4k3/8/8/8/8/8/8/2BNK3 w - - 0 1").is_insufficient_material(),
+            "K+B+N vs K (winnable)");
+        // KBB opposite-color vs K — can mate
+        assert!(!Board::from_fen("4k3/8/8/8/8/8/8/2B1KB2 w - - 0 1").is_insufficient_material(),
+            "KBB opposite-color vs K");
+        // KNN vs K — excluded from draw detection per Reckless pattern
+        assert!(!Board::from_fen("4k3/8/8/8/8/8/8/2N1KN2 w - - 0 1").is_insufficient_material(),
+            "KNN vs K (excluded per Reckless pattern)");
+
+        // 5+ pieces — too rich to call IM regardless of types
+        assert!(!Board::from_fen("4kb2/8/8/8/8/8/8/3BKB2 w - - 0 1").is_insufficient_material(),
+            "3 bishops total");
+    }
 
     #[test]
     fn test_startpos() {
