@@ -10788,3 +10788,58 @@ are essentially equivalent to Berserk's recent re-tune.
 
 No SPRT submitted from this audit. Task #196 closed without changes.
 
+
+## 2026-05-19 — Audit-banked SPRT pair: +1.9 (LMR-endgame restore) + (running) cont-hist symmetric writes
+
+**#1361 fix/lmr-endgame-pieces-restore-5-v2 — H1 ✓ +1.9 ±2.8 / 16406g LLR 2.98 @ [-3, 3]**
+
+Task #273 tp10 magnitude scrub found `LMR_ENDGAME_PIECES_10X = 40`
+(effective 4) where the load-bearing intent was 5 (per orphan restore
+commit 74666f5 on branch `fix/lmr-endgame-pieces-restore-5` that was
+never merged into main). The 2026-05-10 _10X migration silently
+captured the SPSA-drifted trunk value 4 → 40 instead of the intended
+5 → 50. Comment at search.rs:85 still claimed "kept at 5" — making the
+regression invisible to casual reading.
+
+Fix: declared 40→50 (effective 4→5), floor raised 40→45 (also effective
+5 via tp10 rounding) so SPSA can no longer re-drift below 5. The gate
+now fires on popcount ≤ 5, catching K+Q vs K and K+R vs K endgames
+where LMR was over-reducing king-restriction mating moves.
+
+Bench shifted 4528989 → 6868367 (+52%) from gate now firing more
+often. The +1.9 Elo is net of the depth-loss from that extra search
+— SPRT is time-bound.
+
+Merged 2026-05-19 (commit 104cf5a).
+
+**Methodology lesson reinforced**: orphan branches can carry
+load-bearing intent that gets silently overwritten by later automated
+migrations. Periodic `tp10` / `_10X` audits catch these. The "scrub"
+template:
+1. List all `_10X` tunables and compute effective values.
+2. Cross-reference each with git log of the migration commit and any
+   prior commit that explicitly set the pre-migration value (look for
+   "kept at N" / "restore" patterns in comments).
+3. Check if the original-intent commit lives on a non-merged branch.
+
+**#1363 experiment/conthist-symmetric-writes — running, trending H1**
+
+Task #227 cont-hist machinery audit / B1 from
+`docs/history_prune_cont_hist_review_2026-05-08.md`. Coda was the only
+engine in the 11-engine review pool with asymmetric writes
+`[bonus, bonus/2, bonus/2, bonus/2]` at offsets {1,2,4,6}. Modal peer
+choice is uniform `bonus` (Reckless/Berserk/Alexandria/Stormphrax).
+
+Replaced `if off <= 1 { bonus } else { bonus / 2 }` with `bonus` at
+all three write sites (LMR nudge, cutoff bonus, cutoff malus).
+
+Bench shift: 4528989 → 4928299 (+8.8%). Audit doc anticipated
+approximately bench-neutral — slight drift comes from deeper-offset
+cells reaching saturation differently with the larger writes.
+
+**SPRT #1363 trending strongly positive: +7.9 ±6.5 LLR 1.04 →H1 @ 3224g.**
+Final result pending. If H1, follow-up is focused SPSA on
+`CONT_HIST_MULT_10X` — was floor-pinned at 1 specifically because the
+write asymmetry took the deeper-offset role; with symmetric writes,
+SPSA can find the real multiplier.
+
