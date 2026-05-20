@@ -672,11 +672,12 @@ impl MovePicker {
                 }
             }
 
-            // Pawn history
+            // Pawn history (weight tunable via PAWN_HIST_MULT_10X)
             if let Some(ph_ptr) = self.pawn_hist_ptr {
                 if piece != NO_PIECE {
                     let ph = unsafe { &*ph_ptr };
-                    score += ph[go_piece(piece)][to as usize] as i32;
+                    let pw = crate::search::tp10(&crate::search::PAWN_HIST_MULT_10X);
+                    score += pw * ph[go_piece(piece)][to as usize] as i32;
                 }
             }
 
@@ -877,7 +878,8 @@ impl MovePicker {
                 if let Some(ph_ptr) = self.pawn_hist_ptr {
                     if piece != NO_PIECE {
                         let ph = unsafe { &*ph_ptr };
-                        s += ph[go_piece(piece)][to as usize] as i32;
+                        let pw = crate::search::tp10(&crate::search::PAWN_HIST_MULT_10X);
+                        s += pw * ph[go_piece(piece)][to as usize] as i32;
                     }
                 }
 

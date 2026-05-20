@@ -266,6 +266,10 @@ tunables!(
     // so SPSA can find the genuine optimum. CLAUDE.md previously claimed
     // "3× in move ordering" — stale; corrected to "1× current SPSA basin".
     (CONT_HIST_MULT_10X, 19, 0, 80, 15.0, true),
+    // Pawn-history weight in quiet move ordering. Was hardcoded at 1×;
+    // making tunable lets SPSA find the right pawn-structure weighting
+    // relative to main/cont/etc. Default 10 = eff 1× (bench-neutral).
+    (PAWN_HIST_MULT_10X, 10, 0, 80, 10.0, true),
     (KNIGHT_FORK_BONUS, 8722, 0, 20000, 1000.0, false),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
