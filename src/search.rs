@@ -97,21 +97,21 @@ tunables!(
     // Ceiling lifted from 60 → 200 (audit 2026-05-20): SPSA at 55, 90%
     // from min, only ~9% headroom. Symmetric to a floor pin — gradient
     // clamped at the top. Lifting lets SPSA find the true optimum.
-    (NMP_DEPTH_DIV_10X, 55, 10, 200, 15.0, true),
-    (NMP_EVAL_DIV, 126, 50, 400, 17.5, true),
+    (NMP_DEPTH_DIV_10X, 61, 10, 200, 15.0, true),
+    (NMP_EVAL_DIV, 129, 50, 400, 17.5, true),
     (NMP_EVAL_MAX_10X, 24, 10, 60, 5.0, true),
-    (NMP_VERIFY_DEPTH_10X, 113, 40, 200, 20.0, true),
+    (NMP_VERIFY_DEPTH_10X, 105, 40, 200, 20.0, true),
     (RFP_DEPTH, 17, 2, 20, 2.0, true),
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
     (RFP_MARGIN_IMP, 40, 0, 150, 6.0, true),
-    (RFP_MARGIN_NOIMP, 55, 0, 200, 7.5, true),
+    (RFP_MARGIN_NOIMP, 57, 0, 200, 7.5, true),
     // Futility margin reduced to Reckless scale. At lmr_d=5:
     //   Old: 78 + 160*5 = 878 (Coda 2.4× wider than Reckless 364)
     //   New: 40 + 65*5 = 365 (matches Reckless)
     // Force-more-pruning experiment: Coda was under-pruning at mid-depth
     // where Reckless prunes confidently. SPSA retune-on-branch expected.
     // Floor lifted from 20 → 0 (audit 2026-05-20): pinned at 23, 2% from floor.
-    (FUT_BASE, 23, 0, 200, 9.0, true),
+    (FUT_BASE, 27, 0, 200, 9.0, true),
     (FUT_PER_DEPTH, 79, 40, 250, 10.5, true),
     (HIST_PRUNE_DEPTH_10X, 10, 10, 80, 15.0, true),
     (HIST_PRUNE_MULT, 10262, 500, 50000, 2475.0, true),
@@ -151,7 +151,7 @@ tunables!(
     (QS_MAX_CAPTURES, 24, 2, 32, 2.0, false),
     (CORR_W_PAWN, 299, 100, 600, 25.0, true),
     // Floor lifted from 50 → 0 (audit 2026-05-20): pinned at 63, 4% from floor.
-    (CORR_W_NP, 63, 0, 400, 17.5, true),
+    (CORR_W_NP, 61, 0, 400, 17.5, true),
     // CORR_W_MINOR / CORR_W_MAJOR were dropped 2026-05-18 (ablated to 0
     // via #1318 H1; minor_key/major_key are strict subsets of
     // non_pawn_key, so the contributions were redundant with np_corr).
@@ -209,7 +209,7 @@ tunables!(
     // regime; bundling it into #815 dragged the result negative. Tested
     // alone in this branch.
     (DEXT_MARGIN_PV, 155, 50, 400, 15.0, true),
-    (DEXT_MARGIN_QUIET, 4, 0, 100, 4.0, true),
+    (DEXT_MARGIN_QUIET, 3, 0, 100, 4.0, true),
     (DEXT_MARGIN_CORR, 21, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 44, -50, 150, 6.0, true),
     (DEXT_CAP, 14, 4, 32, 2.0, true),
@@ -306,7 +306,7 @@ tunables!(
     // values where appropriate (per feedback_spsa_as_feature_utility_diagnostic).
     (NMP_MIN_DEPTH_10X, 59, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
     // Floor lifted from 10 → 0 (audit 2026-05-20): pinned at 25, 8% from floor.
-    (HINDSIGHT_MIN_DEPTH_10X, 25, 0, 200, 15.0, true),        // was hardcoded 2 (hindsight reduction gate)
+    (HINDSIGHT_MIN_DEPTH_10X, 23, 0, 200, 15.0, true),        // was hardcoded 2 (hindsight reduction gate)
     (TT_CUTOFF_HALFMOVE_MAX, 89, 50, 100, 3.0, false),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
 );
 
