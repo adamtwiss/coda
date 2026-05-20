@@ -98,9 +98,17 @@ impl TTBucket {
     }
 
     fn clear(&self) {
+        // Use Release to pair with the Acquire loads at probe() sites.
+        // On x86 store-release is the same instruction as a relaxed store;
+        // on aarch64 it inserts a `stlr`. Without this, an aarch64 reader
+        // could observe a torn slot (e.g. post-clear `data` with pre-clear
+        // `keys`) — the XOR-verification then accepts garbage. Audit
+        // 2026-04-25 flagged this as defensive on the assumption clear()
+        // is single-threaded; landing the cheap Release upgrade closes
+        // the gap if background-clear ever lands.
         for i in 0..BUCKET_SIZE {
-            self.data[i].store(0, Ordering::Relaxed);
-            self.keys[i].store(0, Ordering::Relaxed);
+            self.data[i].store(0, Ordering::Release);
+            self.keys[i].store(0, Ordering::Release);
         }
     }
 }
