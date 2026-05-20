@@ -533,14 +533,21 @@ impl TT {
 /// which is 100cp below the original `MATE_SCORE - 100` threshold. That
 /// meant TB scores passed through TT store/load unadjusted, so a TB
 /// score stored at ply=10 and retrieved at ply=20 was 10cp too
-/// optimistic. Threshold widened to `TB_WIN - 128` to cover the full
-/// `[TB_WIN - MAX_PLY, MATE_SCORE]` range (MAX_PLY=64 in search).
-/// Normal evals never reach this range.
+/// optimistic. Threshold widened to cover the full
+/// `[TB_WIN - MAX_PLY, MATE_SCORE]` range. Normal evals never reach this range.
+///
+/// 2026-05-20 audit: MAX_PLY bumped from 64 → 128 (`project_max_ply_depth_cap_bug.md`)
+/// without updating this threshold. The boundary at `TB_WIN - 128` is then
+/// inclusive of the deepest TB score (`TB_WIN - MAX_PLY = 28672`) but the
+/// `>` is strict — at ply=128 exactly, the score falls through without
+/// ply-adjustment, breaking round-trip. Widened to `TB_WIN - 200` to give
+/// 72cp headroom over MAX_PLY=128 (and any future bumps up to ~200).
+/// Normal evals stay well below 28600.
 #[inline]
 pub fn score_to_tt(score: i32, ply: i32) -> i32 {
-    if score > TB_WIN - 128 {
+    if score > TB_WIN - 200 {
         score + ply
-    } else if score < -(TB_WIN - 128) {
+    } else if score < -(TB_WIN - 200) {
         score - ply
     } else {
         score
@@ -559,9 +566,9 @@ pub fn is_mate_score(score: i32) -> bool {
 /// `score_to_tt` for the threshold rationale.
 #[inline]
 pub fn score_from_tt(score: i32, ply: i32) -> i32 {
-    if score > TB_WIN - 128 {
+    if score > TB_WIN - 200 {
         score - ply
-    } else if score < -(TB_WIN - 128) {
+    } else if score < -(TB_WIN - 200) {
         score + ply
     } else {
         score
