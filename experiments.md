@@ -10843,3 +10843,48 @@ Final result pending. If H1, follow-up is focused SPSA on
 write asymmetry took the deeper-offset role; with symmetric writes,
 SPSA can find the real multiplier.
 
+
+## 2026-05-20 — End-of-session merge cluster: ~+9 Elo banked across 3 audits
+
+Cumulative merges across the audit + tune cycle started 2026-05-19:
+
+| Commit | What | SPRT | Elo |
+|---|---|---|---|
+| `104cf5a` | LMR_ENDGAME_PIECES restore (50, eff 5) — tp10 magnitude scrub catch | #1361 [-3, 3] | **+1.9 ±2.8 H1** |
+| `2eafebd` | Symmetric cont-hist writes (audit B1) | #1363 [0, 3] | **+2.4 ±1.8 H1** |
+| `d4b74e3` | Audit-hygiene: 4 SPSA-pinned floors lifted (Atlas, bench-neutral) | n/a | — |
+| `6a383c8` | Structural remove CORR_W_MINOR/MAJOR (Atlas, follow-up to ablation) | n/a | — |
+| `d09bb5a` | Apply SPSA #1362 outputs — cont-hist cluster retune (Atlas) | #1366 [0, 3] | **+4.7 ±2.9 H1** |
+
+**Bench evolution**: main `4528989` (start) → `5458138` (after B1) → `5526008` (now,
+after Atlas's stack).
+
+**Methodology caveat to flag**: Atlas's #1366 tune was run on pre-B1
+main (asymmetric cont-hist writes still in place). Its
+`CONT_HIST_MULT_10X = 19` is the optimum in the asymmetric basin. With
+B1 (symmetric writes) merged underneath, the true optimum may differ.
+Empirically the +4.7 H1 was confirmed before stacking; whether the
+full +4.7 holds in the post-B1 basin is unproven. Net direction
+confidence is positive but magnitude is uncertain. A follow-up focused
+SPSA on `CONT_HIST_MULT_10X` would resolve.
+
+**Net-vs-net SPRTs (today)**:
+- **#1367** experiment/tune-1358-applied (prod-hobbes-tail-200-S1000 vs
+  prod, 20BCE6CB vs 1EF1C3E5) — **H0 −27.3 / 2548g**. Net is materially
+  weaker than current production; retune cannot recover. LMR_ENDGAME
+  preserved at post-#1361 value 50 (excluded from apply) — possible
+  interaction loss with the rest of the tune-1358 outputs (calibrated
+  around LMR_ENDGAME=4), but the magnitude (−27) is far too large to
+  be only that.
+- **#1368** experiment/tune-1356-applied (4GB-shuffle-s200 vs baby-prod
+  on mini-prod) — early.
+- **#1369** experiment/tune-1357-applied (wdl-ramp-0-40-s200 vs
+  baby-prod on mini-prod) — early.
+
+**Pattern emerging**: the three candidate nets tested today are
+intrinsically weaker than the trunk nets they were compared against.
+Retune-on-branch is not a recovery lever when the candidate net's
+eval quality is genuinely worse. The retune just calibrates the
+SAME-search to a DIFFERENT eval; it can't compensate for fundamental
+eval quality gaps of ~10+ Elo.
+
