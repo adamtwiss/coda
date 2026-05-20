@@ -1378,22 +1378,66 @@ pub fn compute_tm_budgets(
         base_soft * 3
     };
 
-    // Universal hard cap (time/20 + inc): only for sudden death.
+    // Universal hard cap (sudden-death only). Phase 2 TM redesign
+    // (docs/tm_redesign_phase2_2026-05-20.md, follows
+    // docs/tm_redesign.md Issue 1):
     //
-    // The "never risk more than 5% of clock + 1 increment" rule is a
-    // sudden-death safety: at the start of a 60+1 game we never want
-    // to spend 30s on move 1 because we'd be flat-out on move 2. With
-    // movestogo>0 the mtg_cap already scales the cap by moves
-    // remaining — applying time/20+inc on top makes movestogo=1 (last
-    // move before TC reset) play at 5% of remaining time when we
-    // could safely use ~85% (the clock resets right after).
+    // The old `time/20 + inc` cap pinned sudden-death hard to ~5% of
+    // clock + 1 increment. Phase 1 self-play gauntlets across
+    // 30+0.5/60+1/10+0.1 (200 games each, 2026-05-19) showed that
+    // every upward multiplier (bmc_factor, nodes_factor, score_factor)
+    // saturated against this ceiling on tactical positions, producing
+    // a uniform spend pattern indistinguishable from main. Phase 2
+    // widens the cap so the multipliers can express variance, guarded
+    // by an absolute minimum-reserve floor that prevents the v1 blitz-
+    // catastrophe regression (40-second moves at move 3).
+    //
+    // Two safety layers:
+    //   1. TC-aware multiplier (`mult_cap`) — looser at classical
+    //      where deep think pays, tighter at bullet where one bad
+    //      move loses. Combined with a per-TC max-single-move
+    //      percentage of remaining time.
+    //   2. Minimum-reserve floor (`max_consumable`) — never spend so
+    //      much that remaining clock would drop below
+    //      max(TM_RESERVE_INC × inc, TM_RESERVE_ABS_MS). The safety
+    //      that lets the cap widen without recreating v1's blitz
+    //      catastrophe.
     if movestogo == 0 {
-        let mut max_hard = time_left / 20 + our_inc;
-        if max_hard > time_left * 3 / 4 {
-            max_hard = time_left * 3 / 4;
+        let estimated_spm_ms = time_left / 25;
+        // TC-aware hard multiplier × 10 (integer math). Conservative
+        // initial values; SPSA-tunable later.
+        let hard_mult_x10: u64 = if estimated_spm_ms < 2000 { 20 }       // bullet 2.0×
+                                 else if estimated_spm_ms < 5000 { 25 }   // blitz 2.5×
+                                 else if estimated_spm_ms < 15000 { 30 }  // rapid 3.0×
+                                 else { 40 };                              // classical 4.0×
+        // Max-single-move percentage of remaining clock. Aligned with
+        // doc design table — bullet/blitz tight, rapid/classical loose.
+        let max_single_pct: u64 = if estimated_spm_ms < 2000 { 8 }        // bullet 8%
+                                  else if estimated_spm_ms < 5000 { 9 }    // blitz 9%
+                                  else if estimated_spm_ms < 15000 { 12 }  // rapid 12%
+                                  else { 15 };                              // classical 15%
+
+        let mult_cap = base_soft * hard_mult_x10 / 10;
+        let pct_cap = time_left * max_single_pct / 100;
+        let new_hard = mult_cap.min(pct_cap);
+
+        // Minimum-reserve floor: never spend such that remaining clock
+        // drops below max(TM_RESERVE_INC × inc, TM_RESERVE_ABS_MS).
+        // K_ABS = 2s is below the doc's 3s proposal to avoid strangling
+        // short STC games (10+0.1 would lose 30% of its clock otherwise).
+        const TM_RESERVE_INC_MULT: u64 = 5;
+        const TM_RESERVE_ABS_MS: u64 = 2000;
+        let min_reserve = (TM_RESERVE_INC_MULT * our_inc).max(TM_RESERVE_ABS_MS);
+        let max_consumable = time_left.saturating_sub(min_reserve);
+        let new_hard = new_hard.min(max_consumable);
+
+        if hard > new_hard {
+            hard = new_hard;
         }
-        if hard > max_hard {
-            hard = max_hard;
+        // Final absolute safety: never spend > 3/4 of remaining time on
+        // a single move (preserved from old formula).
+        if hard > time_left * 3 / 4 {
+            hard = time_left * 3 / 4;
         }
     }
 
