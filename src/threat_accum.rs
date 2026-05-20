@@ -131,10 +131,14 @@ impl ThreatStack {
         entry.moved_pt = moved_pt;
     }
 
-    /// Pop: decrement index.
+    /// Pop: decrement index. Saturates at 0 — if push/pop balance is
+    /// off, a stray pop stays put rather than wrapping to usize::MAX
+    /// and crashing on the next slice access. The debug_assert still
+    /// catches the bug in dev builds; release silently no-ops at the
+    /// boundary. Audit 2026-04-25 §"Confirmed-clean / orderings".
     pub fn pop(&mut self) {
         debug_assert!(self.index > 0);
-        self.index -= 1;
+        self.index = self.index.saturating_sub(1);
     }
 
     /// Reset: for new positions (between bench positions, new game).
@@ -943,7 +947,13 @@ mod incremental_tests {
                                         let revealed = through & !atts & ow;
                                         if revealed == 0 { continue; }
                                         let xsq = if sq < bsq {
-                                            let a = revealed & !((1u64 << (bsq + 1)) - 1);
+                                            // Mirror of threats.rs blocker-bounds fix
+                                            // (commit 97b805f): guard `1u64 << (bsq+1)`
+                                            // against UB at bsq=63.
+                                            let above_mask = if bsq + 1 < 64 {
+                                                !((1u64 << (bsq + 1)) - 1)
+                                            } else { 0 };
+                                            let a = revealed & above_mask;
                                             if a != 0 { a.trailing_zeros() } else { 64 }
                                         } else {
                                             let b = revealed & ((1u64 << bsq) - 1);
