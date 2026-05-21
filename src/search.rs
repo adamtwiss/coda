@@ -1468,6 +1468,19 @@ pub fn compute_tm_budgets(
         if hard > new_hard {
             hard = new_hard;
         }
+        // Phase 4 v2 (2026-05-21): also scale hard cap by phase factor in
+        // opening. Soft scaling alone wasn't enough because the dynamic
+        // TM multipliers (especially stability_factor starting at 1.71
+        // when 0 stable iterations seen) compensated for the reduced soft
+        // by pushing scale × soft back up toward original. Hard-cap
+        // scaling makes the early ceiling an absolute, multiplier-proof
+        // bound.
+        let phase_x100: u64 = if fullmove <= 5 { 40 }
+                              else if fullmove <= 10 { 60 }
+                              else if fullmove <= 15 { 85 }
+                              else { 100 };
+        hard = hard * phase_x100 / 100;
+
         // Final absolute safety: never spend > 3/4 of remaining time on
         // a single move (preserved from old formula).
         if hard > time_left * 3 / 4 {
