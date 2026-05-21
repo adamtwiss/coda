@@ -164,6 +164,21 @@ tunables!(
     // including disabling cont-corr if SPSA wants. Default unchanged.
     (CORR_W_CONT, 33, 0, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
+    // Re-expose 4 hardcoded search constants (audit 2026-05-21).
+    // All bench-neutral at current defaults.
+    //
+    // TT_DAMP_TT_WEIGHT: weight of tt_score in TT-LOWER non-PV cutoff score
+    // dampening. Formula: (W*tt_score + beta) / (W+1). Old hardcoded W=3.
+    (TT_DAMP_TT_WEIGHT, 3, 1, 10, 0.5, false),
+    // FH_BLEND_OFFSET: offset in fail-high score blending divisor.
+    // Formula: (best_score*depth + beta) / (depth + OFFSET). Old hardcoded 1.
+    (FH_BLEND_OFFSET, 1, 0, 5, 0.4, false),
+    // PROBCUT_TT_DEPTH_SLACK: TT depth must be >= current depth - SLACK for
+    // ProbCut-TT-noshot to consider the entry. Old hardcoded 3.
+    (PROBCUT_TT_DEPTH_SLACK, 3, 0, 10, 0.5, false),
+    // SE_TT_DEPTH_SLACK: TT depth must be >= current depth - SLACK to allow
+    // SE verification at this node. Old hardcoded 3.
+    (SE_TT_DEPTH_SLACK, 3, 0, 10, 0.5, false),
     (HIST_BONUS_MULT, 309, 50, 400, 17.5, true),
     (HIST_BONUS_MAX, 1936, 500, 3000, 125.0, true),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
@@ -2430,7 +2445,8 @@ fn negamax(
                         && tt_entry.flag == TT_FLAG_LOWER
                         && tt_score > -(MATE_SCORE - 100) && tt_score < MATE_SCORE - 100
                     {
-                        return (3 * tt_score + beta) / 4;
+                        let w = tp(&TT_DAMP_TT_WEIGHT);
+                        return (w * tt_score + beta) / (w + 1);
                     }
                     // P3: downgrade stored mate if 50mr will fire before mate.
                     return downgrade_50mr_mate(tt_score, ply, board.halfmove);
@@ -2760,7 +2776,7 @@ fn negamax(
     //   the true score can be much higher. Only UPPER/EXACT bounds are
     //   evidence of a ceiling. Switch to ply-adjusted score + bound gate.
     let probcut_beta = beta + tp(&PROBCUT_MARGIN);
-    let probcut_tt_noshot = if tt_hit && tt_entry.depth >= depth - 3 {
+    let probcut_tt_noshot = if tt_hit && tt_entry.depth >= depth - tp(&PROBCUT_TT_DEPTH_SLACK) {
         let adj_score = score_from_tt(tt_entry.score, ply);
         (tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT)
             && adj_score < probcut_beta
@@ -2981,7 +2997,7 @@ fn negamax(
             && info.excluded_move[ply_u] == NO_MOVE
             && tt_hit
             && tt_entry.flag != TT_FLAG_UPPER
-            && tt_entry.depth >= depth - 3
+            && tt_entry.depth >= depth - tp(&SE_TT_DEPTH_SLACK)
             && FEAT_SINGULAR.load(Ordering::Relaxed)
         {
             // Ply-only adjustment here — P3 downgrade deliberately not applied
@@ -3902,7 +3918,7 @@ fn negamax(
         && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
         && info.excluded_move[ply_u] == NO_MOVE
     {
-        return (best_score * depth + beta) / (depth + 1);
+        return (best_score * depth + beta) / (depth + tp(&FH_BLEND_OFFSET));
     }
 
     best_score
