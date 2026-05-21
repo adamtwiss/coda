@@ -10992,3 +10992,248 @@ The remaining audit-style probes have diminishing returns. The next
 high-leverage action is the full --core retune on current main, then
 look for fresh audit signals after a fresh tune-and-retest cycle.
 
+
+## 2026-05-19 — Atlas audit batch 2 (cross-engine alignment): 4-of-4 H0
+
+Pre-cycle to the +9 Elo banked merge cluster. SPSA-pin scan flagged
+4 areas where Coda's calibrated values are outliers vs cross-engine
+consensus. Tested each on its own merits.
+
+| ID | Branch | Hypothesis | Result |
+|----|--------|------------|--------|
+| #1344 | mvv-cap-mult-16 | Coda 28 vs SF=7 / Reckless/Obsidian/Hobbes=16 | -6.4 ±3.9 H0 ✗ |
+| #1345 | hist-prune-relax-gate | Coda lmr_d≤1 vs SF/Stormphrax lmr_d≤5 | -6.6 ±4.0 H0 ✗ |
+| #1346 | cont-hist-parent-bucket | SF/Obsidian [in_check][capture] bucketing | -4.8 ±3.4 H0 ✗ |
+| #1343 | audit-hygiene | CONT_HIST_MULT_10X range widening + docs | -0.8 ±1.1 stopped (called) |
+| #1340 | audit-bundle | drop minor/major + LMR-continuous + LMP-plumb | -0.6 ±1.2 stopped (called) |
+
+**Retune-on-branch SPRTs** (apply SPSA cluster-retune outputs):
+| #1352 | cont-hist-parent-bucket + tune | retune adjacent cluster | -3.0 ±2.9 H0 ✗ |
+| #1353 | hist-prune-relax-gate + tune | retune gate + bonuses | -3.4 ±3.0 H0 ✗ |
+
+**Meta-lesson**: cross-engine consensus alignment doesn't transfer to
+Coda's SPSA-locally-optimized calibration. Even with retune-on-branch
+the regressions only halve (-6.4 → -3.0 etc.), never recovering. The
++1.2 H1 on corrhist-drop-minor-major (#1318) was an exception driven
+by the redundancy structure (minor_key⊕major_key = NP), not the
+cross-engine pattern itself.
+
+Banked: 0 Elo. The two non-regression calls (#1340, #1343) were
+merged as bench-neutral hygiene: 78487ff drop CORR_W_MINOR/MAJOR,
+afd906c LMR-continuous, 2b29f83 plumb skip_quiet, f4cf79c
+CONT_HIST_MULT_10X floor unpin. The unpin was the unlock that made
+the +4.7 cont-hist cluster retune possible (see 2026-05-20 entry).
+
+
+## 2026-05-20 — Cap-hist family focused tune: H0
+
+#1375 7-param SPSA on capture-history family on fresh main (post-
+cont-hist + post-batch-3 retunes). 1500 iter. Movements all <12%:
+
+  LMR_HIST_DIV_CAP:    5000 → 5229  (+4.6%) *
+  CAP_HIST_MULT:        289 →  290  flat
+  CAP_HIST_BASE:         42 →   45  (+7.6%) ***
+  CAP_HIST_MAX:        1881 → 1860  (-1.1%)
+  BAD_NOISY_MARGIN:      80 →   83  (+4.3%) *
+  BAD_NOISY_DEPTH:        8 →    9  (+11.8%) ***
+  MVV_CAP_MULT:          28 →   29  (+2.6%) *
+
+**#1379 cap-hist-family-tune SPRT: H0 at -2.1 ±2.5 / 22370g LLR -2.97**
+
+Capture-history family was already near-optimum after the +9 Elo
+cont-hist + batch-3 shifts. MVV_CAP_MULT converging back to ~28
+confirms the #1344 cross-engine test (16) was wrong direction for
+Coda. No apply.
+
+
+## 2026-05-20 — Option B parallel scan: confirmed-optimum on 3 areas
+
+Three focused tunes fired in parallel on quiet areas not touched
+this session. All converged FLAT (<6% movements per param), no apply
+worth doing.
+
+| Tune | Params | Largest mover |
+|------|--------|---------------|
+| #1395 Aspiration | ASP_DELTA + ASP_SCORE_DIV (2 params, 500 iter) | ASP_DELTA -1.3% |
+| #1396 Quiescence | QS_DELTA_MARGIN + QS_SEE_THRESHOLD + QS_MAX_CAPTURES (3 params, 800 iter) | QS_SEE_THRESHOLD +2.6% |
+| #1397 Tactical bonuses | ESCAPE_BONUS_R + KNIGHT_FORK_BONUS + DISCOVERED_ATTACK_BONUS (3 params, 800 iter) | KNIGHT_FORK_BONUS +1.9% |
+
+Negative result with positive information value: these three areas
+are confirmed near-optimum at current main calibration. Don't waste
+fleet retuning them.
+
+**#1399 NMP-skip-tt-capture SPRT (option C structural port)**: H0
+at -0.3 ±1.6 / 57262g LLR -2.97. SF/Reckless gate NMP on
+"tt_move is NOT a capture" (tactical-position signal). Doesn't
+transfer to Coda.
+
+
+## 2026-05-21 — Per-offset cont-hist split (option 3): structural change, near-zero Elo
+
+Original `CONT_HIST_MULT_10X` linked ply-1 and ply-2 weights; ply-4
+and ply-6 hardcoded to 1×. Hypothesis: untying via per-offset
+tunables lets SPSA find asymmetric shape worth Elo.
+
+**First attempt (#1383, 1000 iter, broken precision)**: SPSA outputs
+[18.7, 22.1, 10.9, 9.2] looked promising, but were noise. Discovery:
+the consumers used `tp10()` which rounds the stored value to integer
+before the multiplication — `score += tp10(stored) * sub_val`. So any
+stored value in [15, 24] all produced the same integer effective
+weight 2 in the engine. SPSA was exploring a flat region.
+
+**Precision fix** (commit `ca18229`): switch consumers to fixed-point
+`(stored * sub_val) / 10`. Default 19 (effective 1.9×) instead of
+tp10-rounded 2×. Defaults [20, 20, 10, 10] preserve the prior
+[2, 2, 1, 1] integer behavior exactly.
+
+**Second attempt (#1388, 1500 iter, fixed-point)**: now SPSA sees
+real gradients:
+
+  CONT_HIST_MULT_1_10X:  20 → 17   (-13%, eff 1.7×)  ***
+  CONT_HIST_MULT_2_10X:  20 → 18   (-9%,  eff 1.8×)  ***
+  CONT_HIST_MULT_4_10X:  10 → 14   (+38%, eff 1.4×)  ***
+  CONT_HIST_MULT_6_10X:  10 →  8   (-20%, eff 0.8×)  ***
+
+Striking asymmetry: ply-1 and ply-2 both want LESS than linked 2×;
+ply-4 wants substantially MORE than hardcoded 1×; ply-6 wants LESS
+than 1×. Mental model "monotonically decreasing weight with depth"
+was wrong — ply-4 carries more useful signal than ply-2.
+
+**#1394 cont-hist-per-offset+tuned SPRT**: H0 at +0.2 ±1.1 / 104700g
+LLR -2.96. The asymmetric shape SPSA found is real but Elo-neutral —
+the basin is flat enough that redistributing weight doesn't change
+search outcomes meaningfully.
+
+**Structural-only validation (#1407 → #1409 with hoist fix)**:
+- #1407 (un-hoisted): H0 at -3.9 ±2.8. Per-move atomic-load overhead
+  on the inner quiet-scoring loop (4 atomics vs old 1) cost real NPS.
+- #1409 (with cont-hist weights hoisted out of the move loop):
+  H0 at -1.0 ±1.2 / 91826g LLR -2.96. Hoist closed most of the gap
+  but the structural change still has a small residual cost.
+
+**Decision**: do NOT merge cont-hist-per-offset-structural. Even
+bench-identical, the runtime cost from extra atomic loads (only
+partly closable) plus the asymmetric shape's near-zero benefit
+nets negative.
+
+
+## 2026-05-21 — tp10 multiplicative-precision-bug audit + companion fixes
+
+Bug discovered while applying #1383 (above). Systematic scan classified
+all `_10X` tunables by how they're consumed:
+- **Discrete threshold** (depth gates, integer comparisons, array
+  index): tp10 correct, sub-integer would have no meaning.
+- **Multiplicative weight** (multiplier on a numeric value, divisor):
+  tp10 swallows precision — any stored value in a 10-unit band gives
+  the same integer effective weight, making SPSA blind in that band.
+
+**Buggy consumers found**:
+- `CONT_HIST_MULT_10X` (already fixed above)
+- `NFH_DIV_10X`: bonus scaling divisor
+- `CORR_BONUS_CAP_DIV_10X`: correction-bonus cap divisor
+- `LMR_THREAT_DIV_10X`: LMR threat-divisor
+- `LMR_KING_PRESSURE_DIV_10X`: LMR king-pressure divisor
+
+**Fix** (commit `a38f738`): refactor each consumer to fixed-point
+`numerator * 10 / raw_stored`. Defaults rounded to nearest multiple of
+10 to preserve effective-integer behavior:
+- NFH_DIV_10X: 47 → 50 (eff 5)
+- CORR_BONUS_CAP_DIV_10X: 32 → 30 (eff 3)
+- LMR_THREAT_DIV_10X: 38 → 40 (eff 4)
+- LMR_KING_PRESSURE_DIV_10X: 68 → 70 (eff 7)
+
+**#1400 tune on these 4 (fixed-point precision visible)**:
+- LMR_THREAT_DIV_10X: 40 → 35 (-12.5%) *** — eff 4.0 → 3.5, genuine
+  sub-integer signal SPSA couldn't see before.
+- Others: <5% movements.
+
+**#1404 apply + SPRT**: H0 at -3.4 ±3.0 / 15342g LLR -2.96. The
+revealed-but-applied LMR_THREAT_DIV shift is a net regression.
+
+**#1408 structural-only SPRT (precision refactor, defaults preserved)**:
+Stopped at -0.6 ±1.2 / 94506g LLR -1.35 (near-zero, called as
+non-regression). Merged as `a38f738`.
+
+**Meta-output**: the precision fix is the durable win — `_10X`
+multiplicative consumers now expose real SPSA gradients. Saved to
+memory as `feedback_tunable_precision_fixed_point.md`. Future tunes
+on these 4 params see the true optimum, not a 10-unit-band
+random walk.
+
+
+## 2026-05-21 — Hardcoded constants → tunables: 5 branches merged bench-neutral
+
+Audit pattern: same shape as the cont-hist cluster win — un-hardcode
+values that have been baked in, mini-tune the new tunables, see if
+SPSA finds latent calibration room.
+
+**Branches merged to main (all bench-neutral pure additions):**
+
+| Commit | Adds | Mini-tune result |
+|--------|------|------------------|
+| `a656964` | `PAWN_HIST_MULT_10X` (was hardcoded 1×) | #1385: flat (+4.5%) |
+| `6f18e36` | `ESCAPE_BONUS_Q`, `ESCAPE_BONUS_MINOR`, `NULL_THREAT_ESCAPE_BONUS` (was hardcoded post-#1255/#1256 ablation) | #1403 4-param tune: largest +6.7% on _MINOR |
+| `0f468f8` | `TT_DAMP_TT_WEIGHT`, `FH_BLEND_OFFSET`, `PROBCUT_TT_DEPTH_SLACK`, `SE_TT_DEPTH_SLACK` (4 hardcoded ints in TT/FH/SE) | #1406 4-param tune |
+| `5ef011d` | core-flag hygiene fix: PAWN_HIST_MULT_10X true → false (loose-knob) | — |
+| `a38f738` | tp10-multiplicative-precision (see prior entry) | — |
+
+**Tune-apply SPRTs**:
+- **#1405** order-bonus 4-param apply: H0 at -0.4 ±1.6 / 55530g
+  LLR -3.01. Applied values didn't gain Elo over the structural change
+  that's already in main.
+
+**core flag policy**: all newly-exposed tunables stay `core: false`
+until an apply+SPRT proves Elo-positive. The PAWN_HIST_MULT_10X
+mistake (caught and fixed in `5ef011d`) was the only slip — adding
+unvalidated tunables to `core` makes them loose knobs that consume
+`--core` tune iterations on noise gradients.
+
+**Bench-neutral correctness wins from this batch**:
+- 12 new SPSA degrees-of-freedom on main (1 + 3 + 4 + 4 per-offset
+  cont-hist NOT merged due to perf cost).
+- Sub-integer precision on 5 multiplicative weights (4 divisors via
+  `a38f738`; the per-offset cont-hist not merged).
+- These compound with any future full-sweep tune.
+
+
+## 2026-05-21 — Cycle summary: +9.4 Elo banked, easy-wins frontier reached
+
+| Date | Branch | SPRT | Banked |
+|------|--------|------|--------|
+| 2026-05-19 | audit-bundle (78487ff + afd906c + 2b29f83) | #1340 stopped near-0 | non-regression merge |
+| 2026-05-19 | audit-hygiene (f4cf79c) | #1343 stopped near-0 | non-regression merge |
+| 2026-05-20 | cont-hist-cluster-applied (d09bb5a) | **#1366 H1 +4.7** | **+4.7 Elo** |
+| 2026-05-20 | drop CORR_W_MINOR/MAJOR cleanup (6a383c8) | — | bench-neutral cleanup |
+| 2026-05-20 | lift-spsa-pins-batch3 + tune (d4b74e3 + ae9f182) | **#1372 H1 +4.7** | **+4.7 Elo** |
+| 2026-05-21 | 5 bench-neutral structural branches | non-regression | 12 new tunables + sub-int precision |
+
+Net session Elo banked: **+9.4** (cont-hist cluster + batch-3 cluster).
+Plus 12 new SPSA degrees-of-freedom and sub-integer precision on
+multiplicative weights available for Hercules' upcoming full-sweep.
+
+**Failed audits this cycle** (logged so we don't re-attempt):
+- MVV cross-engine consensus (28→16): H0 -6.4
+- hist-prune-relax cross-engine gate (lmr_d ≤ 1 → ≤ 5): H0 default, H0 retuned
+- cont-hist parent bucketing (SF [in_check][capture]): H0 default, H0 retuned
+- Cap-hist family focused tune: H0 -2.1
+- NMP skip on tt_capture (SF/Reckless port): H0 -0.3
+- cont-hist per-offset weights (structural): bench-neutral, but small
+  per-move runtime cost ⇒ H0 -1.0 even with hoist
+- Aspiration / Quiescence / Tactical-bonuses tunes: flat (areas confirmed
+  already at optimum)
+- Apply of tp10-multiplicative-precision SPSA outputs: H0 -3.4 (the
+  precision fix itself shipped; the SPSA-preferred shift didn't)
+- Apply of order-bonus 4-param SPSA outputs: H0 -0.4 (structural shipped,
+  SPSA-preferred shift didn't)
+
+**Pattern across this cycle**:
+1. Easy wins from SPSA-pin floor lifts + cluster retune: 2 banked (+9.4)
+2. Cross-engine alignment ports: 0/many H1
+3. Hardcoded-constant exposures: bench-neutral, no SPSA-found Elo
+4. Per-offset weight splits: structural change carries small but real
+   runtime cost; SPSA-found asymmetry doesn't recoup it
+
+Next high-EV moves: Hercules' upcoming full-sweep (option A) with the
+expanded tunable surface; correctness audits of rarely-fired paths
+(option 3 from the conversation).
+
