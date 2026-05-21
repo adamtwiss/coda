@@ -10915,3 +10915,40 @@ propagate to shallow plies and amplify"). It evaporated under more
 samples. The mechanism may still be real but the magnitude is
 sub-noise-floor at SPRT TC.
 
+
+## 2026-05-21 — Cross-engine corrhist-scope ports: both H0
+
+Audit B (other engines beyond SF/Reckless) yielded two ports, both H0:
+
+| ID | Branch | Source | Result |
+|---|---|---|---|
+| #1401 | experiment/corrhist-update-during-se | Alexandria #590 | -1.6 ±2.3 / 27586g H0 ✗ |
+| #1402 | experiment/corrhist-train-losing-caps | Viridithas #420 | -0.4 ±1.6 / 53260g H0 ✗ |
+
+**#1401 post-mortem**: SE verification's `best_score` is bounded by
+`singular_beta = tt_score - depth - xray_bonus`, an arbitrary margin-
+derived cap. Training corrhist on capped scores biases the table
+toward margin-derived noise rather than positional signal. Coda's
+existing `excluded_move == NO_MOVE` gate was correct for our SE
+margin formula. Bucket: **mechanism context-dependent across engines**.
+
+**#1402 post-mortem**: losing-capture bestmoves are rare (<1% of
+cutoffs). Additional training signal is too sparse to measure against
+the broadened-scope noise. Viridithas's modest H1 didn't transfer.
+Bucket: **frequency-too-low for Coda's depth regime**.
+
+**Cross-engine audit summary** (this session's B-pass):
+- 4 engines surveyed: Alexandria, Obsidian, PlentyChess, Viridithas
+- 4 fixes confirmed already in Coda (gives_direct_check promo, 4-ply
+  conthist mismapping, LMR polarity, QS PV dispatch)
+- 2 actionable ports SPRT'd → both H0
+- Net Elo: 0
+- Net banked: methodology — corrhist-scope expansions don't transfer
+  cleanly; the gates we have are calibrated for Coda's specific SE
+  margins / capture-frequency basin
+
+Pattern noted: third consecutive cross-engine sweep yielding ~0 Elo
+(TM bisect found Coda already-protected; SF/Reckless commits found
+1 port already-shipped; this batch 2 ports → H0). Cross-engine
+porting is yielding less Elo-per-hour than direct audits.
+
