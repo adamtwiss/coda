@@ -1331,12 +1331,46 @@ pub fn compute_tm_budgets(
     our_inc: u64,
     movestogo: u32,
     overhead: u64,
+    fullmove: u16,
 ) -> (u64, u64, u64) {
     let time_left = our_time.saturating_sub(overhead).max(1);
     let moves_left = if movestogo > 0 { movestogo as u64 } else { 25 };
 
     // Soft allocation: time/movesLeft + 80% of increment.
     let mut soft = time_left / moves_left + our_inc * 4 / 5;
+
+    // Phase 4 v2 (2026-05-21): ply-aware soft scaling.
+    //
+    // Diagnosis from main/phase2/phase4 RR + clock-drain analyzer
+    // (scripts/tm_clock_drain.py): Coda spends 7.1s/move avg on moves 1-5
+    // at 120+1, vs SF's ~2-3s/move. Even main has this overspend pattern.
+    // Result: clock at 50% by move 10 vs SF at 78%, no reserve for
+    // middlegame.
+    //
+    // SF's optScale = 0.012112 + (ply+3.22713)^0.46866 × c — soft target
+    // GROWS sub-linearly with ply, low in opening, high in middlegame.
+    // Coda's `time/movesLeft + 0.8*inc` is uniform regardless of phase.
+    //
+    // Linear ramp piecewise approximation (full-move number):
+    //   fm=1-5:   soft × 0.4  (sharp early discipline)
+    //   fm=6-10:  soft × 0.6
+    //   fm=11-15: soft × 0.85
+    //   fm=16+:   soft × 1.0  (full middlegame TM)
+    //
+    // Only soft is scaled — hard cap stays as catastrophe ceiling.
+    // Multipliers (Phase 1's bmc, stability, nodes, score) still push
+    // tactical opening positions higher above this lower base; routine
+    // opening positions emit at the reduced soft target.
+    //
+    // Skip scaling when movestogo>0: the movestogo path already
+    // computes soft from remaining moves directly.
+    if movestogo == 0 {
+        let phase_x100: u64 = if fullmove <= 5 { 40 }
+                              else if fullmove <= 10 { 60 }
+                              else if fullmove <= 15 { 85 }
+                              else { 100 };
+        soft = soft * phase_x100 / 100;
+    }
 
     // Cap soft allocation: scale with moves remaining.
     // movestogo=1: 90%, movestogo=2: 85%, sudden death (effective 25): 50%.
@@ -1763,7 +1797,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.soft_floor = limits.movetime_floor.min(limits.movetime);
     } else if our_time > 0 {
         let (soft, hard, soft_floor) =
-            compute_tm_budgets(our_time, our_inc, limits.movestogo, info.move_overhead);
+            compute_tm_budgets(our_time, our_inc, limits.movestogo, info.move_overhead, board.fullmove);
         info.soft_limit = soft;
         info.hard_limit = hard;
         info.soft_floor = soft_floor;
