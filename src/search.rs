@@ -201,7 +201,9 @@ tunables!(
     // bonus = raw + raw * min(num_fail_highs, NFH_CAP) / NFH_DIV.
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
     (NFH_CAP_10X, 31, 10, 60, 10.0, false),
-    (NFH_DIV_10X, 47, 20, 120, 10.0, false),
+    // Was 47 (tp10→5). Now consumed as FIXED-POINT (stored/10) so SPSA's
+    // sub-integer precision is preserved. Default 50 → eff 5.0 ≡ old behavior.
+    (NFH_DIV_10X, 50, 20, 120, 10.0, false),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -232,7 +234,8 @@ tunables!(
     (LMR_COMPLEXITY_DIV, 152, 30, 500, 23.5, false),
     (CORR_HIST_DIV, 1559, 256, 4096, 192.0, true),
     (CORR_UPDATE_WEIGHT_MAX, 13, 4, 48, 2.2, true),
-    (CORR_BONUS_CAP_DIV_10X, 32, 10, 160, 15.0, false),
+    // Was 32 (tp10→3). Now FIXED-POINT. Default 30 → eff 3.0 ≡ old behavior.
+    (CORR_BONUS_CAP_DIV_10X, 30, 10, 160, 15.0, false),
     (CORR_HIST_GRAIN_T, 14, 1, 32, 1.55, false),
     // Floor lifted from 10 → 0 (audit 2026-05-19): SPSA converged 25, ~2%
     // from the floor. Lifting allows exploration of looser clamps.
@@ -263,8 +266,10 @@ tunables!(
     // Default 32 = ±256 typical range, additive to history (~1000s scale).
     (MOBILITY_DELTA_WEIGHT, 34, 0, 256, 8.0, false),
     (PROBCUT_KING_ZONE_MAX_10X, 58, 20, 90, 15.0, true),
-    (LMR_THREAT_DIV_10X, 38, 10, 50, 15.0, true),
-    (LMR_KING_PRESSURE_DIV_10X, 68, 20, 90, 15.0, true),
+    // Was 38 (tp10→4). Now FIXED-POINT. Default 40 → eff 4.0 ≡ old behavior.
+    (LMR_THREAT_DIV_10X, 40, 10, 50, 15.0, true),
+    // Was 68 (tp10→7). Now FIXED-POINT. Default 70 → eff 7.0 ≡ old behavior.
+    (LMR_KING_PRESSURE_DIV_10X, 70, 20, 90, 15.0, true),
     (FUT_THREATS_MARGIN, 23, 0, 200, 10.0, true),
     (DISCOVERED_ATTACK_BONUS, 3534, 0, 30000, 1500.0, false),
     // BATTERY_BONUS removed 2026-05-17: ablation #1278 at [0, 3] H0
@@ -1096,10 +1101,11 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
 }
 
 /// Update correction history entry with gravity.
-fn update_corr_entry(entry: &mut i32, err: i32, weight: i32, cap_div: i32) {
+fn update_corr_entry(entry: &mut i32, err: i32, weight: i32, cap_div_10x: i32) {
     // Proportional gravity (consensus: every top engine uses this)
     // Self-limiting: values near the limit get pulled back harder
-    let cap = CORR_HIST_LIMIT / cap_div.max(1);
+    // cap_div_10x is stored × 10 (fixed-point); cap = LIMIT * 10 / cap_div_10x.
+    let cap = CORR_HIST_LIMIT * 10 / cap_div_10x.max(1);
     let bonus = (err * weight).clamp(-cap, cap);
     *entry += bonus - *entry * bonus.abs() / CORR_HIST_LIMIT;
     *entry = (*entry).clamp(-CORR_HIST_LIMIT, CORR_HIST_LIMIT);
@@ -1110,7 +1116,8 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     let err_max = tp10(&CORR_HIST_ERR_MAX_10X);
     let err = (search_score - raw_eval).clamp(-err_max, err_max);
     let weight = (depth + 1).min(tp(&CORR_UPDATE_WEIGHT_MAX));
-    let cap_div = tp10(&CORR_BONUS_CAP_DIV_10X);
+    // Pass raw stored value; consumer treats it as fixed-point (×10).
+    let cap_div = CORR_BONUS_CAP_DIV_10X.load(Ordering::Relaxed);
     let stm = board.side_to_move as usize;
 
     // Pawn correction
@@ -3491,12 +3498,14 @@ fn negamax(
 
                 // Threat-density LMR: reduce less when multiple pieces are
                 // under pawn attack. Tactical positions need deeper search.
-                reduction -= threat_count / tp10(&LMR_THREAT_DIV_10X);
+                // Fixed-point divisor: stored × 10. Avoids tp10 swallowing
+                // sub-integer SPSA precision on this multiplicative use.
+                reduction -= threat_count * 10 / LMR_THREAT_DIV_10X.load(Ordering::Relaxed).max(1);
 
                 // King-pressure LMR modifier: reduce less when enemy has
                 // many attackers on our king zone. Parent-node signal reused
                 // from NMP/ProbCut gates — tactical king positions need depth.
-                reduction -= king_zone_pressure / tp10(&LMR_KING_PRESSURE_DIV_10X);
+                reduction -= king_zone_pressure * 10 / LMR_KING_PRESSURE_DIV_10X.load(Ordering::Relaxed).max(1);
 
                 // Clamp: never extend (negative), never reduce past depth 1
                 if reduction < 0 {
@@ -3697,7 +3706,8 @@ fn negamax(
                         // more cascades = stronger cutoff confidence.
                         let raw_bonus = history_bonus(bonus_depth);
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
-                        let bonus = raw_bonus + raw_bonus * scale_factor / tp10(&NFH_DIV_10X);
+                        // Fixed-point divisor (stored × 10).
+                        let bonus = raw_bonus + raw_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
 
                         // Update main history
                         History::update_history(
@@ -3804,7 +3814,8 @@ fn negamax(
                         // more cascades = stronger cutoff confidence.
                         let raw_cap_bonus = capture_history_bonus(cap_bonus_depth);
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
-                        let cap_bonus = raw_cap_bonus + raw_cap_bonus * scale_factor / tp10(&NFH_DIV_10X);
+                        // Fixed-point divisor (stored × 10).
+                        let cap_bonus = raw_cap_bonus + raw_cap_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
                         if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                             let cpt = if flags == FLAG_EN_PASSANT {
                                 captured_type(PAWN)
