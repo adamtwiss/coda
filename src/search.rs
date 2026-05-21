@@ -226,6 +226,15 @@ tunables!(
     // H0 at [-3, 3]. Slightly load-bearing (central -0.6/-1.3 to ablate),
     // hardcoded at current SPSA values in movepicker.rs.
     (ESCAPE_BONUS_R, 8181, 3000, 30000, 1350.0, false),
+    // ESCAPE_BONUS_Q / _MINOR were hardcoded post-ablation (#1255/#1256
+    // H0). Re-exposing as tunables 2026-05-21 — after this session's
+    // big cont-hist + NMP + shallow-margin shifts, optimal values may
+    // have drifted from the post-ablation snapshot. Bench-neutral at
+    // current defaults.
+    (ESCAPE_BONUS_Q, 17819, 0, 30000, 1500.0, false),
+    (ESCAPE_BONUS_MINOR, 5250, 0, 30000, 1000.0, false),
+    // Null-move threat-escape bonus in quiet ordering (was hardcoded 8000).
+    (NULL_THREAT_ESCAPE_BONUS, 8000, 0, 30000, 1000.0, false),
     (NMP_KING_ZONE_MAX_10X, 72, 20, 90, 15.0, true),
     // T2.1 (Titan's next_ideas 2026-04-21): undefended-piece NMP skip
     // threshold. Count our pieces with ≥1 enemy attacker AND zero of

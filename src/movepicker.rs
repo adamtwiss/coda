@@ -683,19 +683,19 @@ impl MovePicker {
 
             // Null-move threat: bonus for escaping the threatened square
             if self.threat_sq >= 0 && from as i32 == self.threat_sq {
-                score += 8000;
+                score += crate::search::NULL_THREAT_ESCAPE_BONUS
+                    .load(std::sync::atomic::Ordering::Relaxed);
             }
 
-            // Escape-capture bonus: bonus for moving a piece off a threatened square
-            // (Reckless pattern). _Q and _MINOR hardcoded after ablations
-            // #1256 (-0.6) / #1255 (-1.3) at [-3, 3] H0 — slightly load-bearing
-            // but not SPSA-worth tuning. _R remains tunable.
+            // Escape-capture bonus: bonus for moving a piece off a threatened
+            // square (Reckless pattern). All four (Q/R/B/N) now tunable.
             if self.threats & (1u64 << from) != 0 && piece != NO_PIECE {
+                use std::sync::atomic::Ordering;
                 let pt = board.piece_type_at(from);
                 score += match pt {
-                    4 => 17819,  // ESCAPE_BONUS_Q
-                    3 => crate::search::ESCAPE_BONUS_R.load(std::sync::atomic::Ordering::Relaxed),
-                    1 | 2 => 5250,  // ESCAPE_BONUS_MINOR
+                    4 => crate::search::ESCAPE_BONUS_Q.load(Ordering::Relaxed),
+                    3 => crate::search::ESCAPE_BONUS_R.load(Ordering::Relaxed),
+                    1 | 2 => crate::search::ESCAPE_BONUS_MINOR.load(Ordering::Relaxed),
                     _ => 0,
                 };
             }
