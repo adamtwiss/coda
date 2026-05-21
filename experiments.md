@@ -10888,3 +10888,30 @@ eval quality is genuinely worse. The retune just calibrates the
 SAME-search to a DIFFERENT eval; it can't compensate for fundamental
 eval quality gaps of ~10+ Elo.
 
+
+## 2026-05-21 — TT correctness fix cluster merged: 3 SPRTs, banked as non-regressions
+
+After early-N drift on #1380 STC (peaked +3.1 ±4.3 at 7K games), the
+fix's true effect at SPRT TC measured cleanly as ~0 Elo:
+
+| ID | Branch | TC | Final | N |
+|---|---|---|---|---|
+| #1380 | fix/tt-tb-threshold-max-ply-128 | 10+0.1 [-3, 0] | -0.5 ±1.1 (stopped) | 106,842 |
+| #1386 | fix/tt-tb-threshold-max-ply-128 | 40+0.4 [0, 3] | +0.7 ±1.9 (stopped) | 32,986 |
+| #1381 | fix/tt-clear-release-ordering | 10+0.1 [-3, 0] | +0.0 ±1.3 H1 ✓ | 77,890 |
+| #1382 | fix/threat-accum-hygiene | 10+0.1 [-3, 0] | +0.4 ±1.6 H1 ✓ | 54,602 |
+
+**Conclusion**: SPRT TCs (10+0.1 and 40+0.4 single-thread) don't reach
+ply=128 with enough frequency to make the threshold fix Elo-visible.
+Per `feedback_sprt_ltc_too_fast_for_deep_search_regime.md`, deep-search
+correctness fixes can be SPRT-invisible but still real. All three are
+merged as bench-neutral correctness changes (`b25467e`, `6d7c04e`,
+`38ca8b8`).
+
+**Methodology lesson reinforced** (updated
+`feedback_early_n_sprt_drift_both_directions.md`): I built a
+mechanistic story for the +3.1 spike ("TT entries corrupted at ply=128
+propagate to shallow plies and amplify"). It evaporated under more
+samples. The mechanism may still be real but the magnitude is
+sub-noise-floor at SPRT TC.
+
