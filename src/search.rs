@@ -551,6 +551,13 @@ pub struct SearchInfo {
     tm_prev_best: Move,
     tm_prev_score: i32,
     tm_best_stable: i32,
+    /// Cumulative count of root best-move changes between iterations,
+    /// reset at search start. Drives a Reckless/Stockfish-style upward
+    /// multiplier on tactical/unstable positions (Phase 1 TM redesign,
+    /// docs/tm_redesign_phase1_2026-05-19.md). Pairs with `tm_best_stable`
+    /// (which tracks CONSECUTIVE stable iterations and reduces time);
+    /// this tracks TOTAL changes and increases time.
+    tm_best_move_changes: u32,
     tm_has_data: bool,
     soft_limit: u64,  // ms — can be extended/shortened dynamically
     hard_limit: u64,  // ms — absolute maximum
@@ -646,6 +653,7 @@ impl SearchInfo {
             max_nodes: 0,
             move_overhead: 100,
             tm_prev_best: NO_MOVE,
+            tm_best_move_changes: 0,
             tm_prev_score: 0,
             tm_best_stable: 0,
             tm_has_data: false,
@@ -1323,12 +1331,46 @@ pub fn compute_tm_budgets(
     our_inc: u64,
     movestogo: u32,
     overhead: u64,
+    fullmove: u16,
 ) -> (u64, u64, u64) {
     let time_left = our_time.saturating_sub(overhead).max(1);
     let moves_left = if movestogo > 0 { movestogo as u64 } else { 25 };
 
     // Soft allocation: time/movesLeft + 80% of increment.
     let mut soft = time_left / moves_left + our_inc * 4 / 5;
+
+    // Phase 4 v2 (2026-05-21): ply-aware soft scaling.
+    //
+    // Diagnosis from main/phase2/phase4 RR + clock-drain analyzer
+    // (scripts/tm_clock_drain.py): Coda spends 7.1s/move avg on moves 1-5
+    // at 120+1, vs SF's ~2-3s/move. Even main has this overspend pattern.
+    // Result: clock at 50% by move 10 vs SF at 78%, no reserve for
+    // middlegame.
+    //
+    // SF's optScale = 0.012112 + (ply+3.22713)^0.46866 × c — soft target
+    // GROWS sub-linearly with ply, low in opening, high in middlegame.
+    // Coda's `time/movesLeft + 0.8*inc` is uniform regardless of phase.
+    //
+    // Linear ramp piecewise approximation (full-move number):
+    //   fm=1-5:   soft × 0.4  (sharp early discipline)
+    //   fm=6-10:  soft × 0.6
+    //   fm=11-15: soft × 0.85
+    //   fm=16+:   soft × 1.0  (full middlegame TM)
+    //
+    // Only soft is scaled — hard cap stays as catastrophe ceiling.
+    // Multipliers (Phase 1's bmc, stability, nodes, score) still push
+    // tactical opening positions higher above this lower base; routine
+    // opening positions emit at the reduced soft target.
+    //
+    // Skip scaling when movestogo>0: the movestogo path already
+    // computes soft from remaining moves directly.
+    if movestogo == 0 {
+        let phase_x100: u64 = if fullmove <= 5 { 40 }
+                              else if fullmove <= 10 { 60 }
+                              else if fullmove <= 15 { 85 }
+                              else { 100 };
+        soft = soft * phase_x100 / 100;
+    }
 
     // Cap soft allocation: scale with moves remaining.
     // movestogo=1: 90%, movestogo=2: 85%, sudden death (effective 25): 50%.
@@ -1370,22 +1412,79 @@ pub fn compute_tm_budgets(
         base_soft * 3
     };
 
-    // Universal hard cap (time/20 + inc): only for sudden death.
+    // Universal hard cap (sudden-death only). Phase 2 TM redesign
+    // (docs/tm_redesign_phase2_2026-05-20.md, follows
+    // docs/tm_redesign.md Issue 1):
     //
-    // The "never risk more than 5% of clock + 1 increment" rule is a
-    // sudden-death safety: at the start of a 60+1 game we never want
-    // to spend 30s on move 1 because we'd be flat-out on move 2. With
-    // movestogo>0 the mtg_cap already scales the cap by moves
-    // remaining — applying time/20+inc on top makes movestogo=1 (last
-    // move before TC reset) play at 5% of remaining time when we
-    // could safely use ~85% (the clock resets right after).
+    // The old `time/20 + inc` cap pinned sudden-death hard to ~5% of
+    // clock + 1 increment. Phase 1 self-play gauntlets across
+    // 30+0.5/60+1/10+0.1 (200 games each, 2026-05-19) showed that
+    // every upward multiplier (bmc_factor, nodes_factor, score_factor)
+    // saturated against this ceiling on tactical positions, producing
+    // a uniform spend pattern indistinguishable from main. Phase 2
+    // widens the cap so the multipliers can express variance, guarded
+    // by an absolute minimum-reserve floor that prevents the v1 blitz-
+    // catastrophe regression (40-second moves at move 3).
+    //
+    // Two safety layers:
+    //   1. TC-aware multiplier (`mult_cap`) — looser at classical
+    //      where deep think pays, tighter at bullet where one bad
+    //      move loses. Combined with a per-TC max-single-move
+    //      percentage of remaining time.
+    //   2. Minimum-reserve floor (`max_consumable`) — never spend so
+    //      much that remaining clock would drop below
+    //      max(TM_RESERVE_INC × inc, TM_RESERVE_ABS_MS). The safety
+    //      that lets the cap widen without recreating v1's blitz
+    //      catastrophe.
     if movestogo == 0 {
-        let mut max_hard = time_left / 20 + our_inc;
-        if max_hard > time_left * 3 / 4 {
-            max_hard = time_left * 3 / 4;
+        let estimated_spm_ms = time_left / 25;
+        // TC-aware hard multiplier × 10 (integer math). Conservative
+        // initial values; SPSA-tunable later.
+        let hard_mult_x10: u64 = if estimated_spm_ms < 2000 { 20 }       // bullet 2.0×
+                                 else if estimated_spm_ms < 5000 { 25 }   // blitz 2.5×
+                                 else if estimated_spm_ms < 15000 { 30 }  // rapid 3.0×
+                                 else { 40 };                              // classical 4.0×
+        // Max-single-move percentage of remaining clock. Aligned with
+        // doc design table — bullet/blitz tight, rapid/classical loose.
+        let max_single_pct: u64 = if estimated_spm_ms < 2000 { 8 }        // bullet 8%
+                                  else if estimated_spm_ms < 5000 { 9 }    // blitz 9%
+                                  else if estimated_spm_ms < 15000 { 12 }  // rapid 12%
+                                  else { 15 };                              // classical 15%
+
+        let mult_cap = base_soft * hard_mult_x10 / 10;
+        let pct_cap = time_left * max_single_pct / 100;
+        let new_hard = mult_cap.min(pct_cap);
+
+        // Minimum-reserve floor: never spend such that remaining clock
+        // drops below max(TM_RESERVE_INC × inc, TM_RESERVE_ABS_MS).
+        // K_ABS = 2s is below the doc's 3s proposal to avoid strangling
+        // short STC games (10+0.1 would lose 30% of its clock otherwise).
+        const TM_RESERVE_INC_MULT: u64 = 5;
+        const TM_RESERVE_ABS_MS: u64 = 2000;
+        let min_reserve = (TM_RESERVE_INC_MULT * our_inc).max(TM_RESERVE_ABS_MS);
+        let max_consumable = time_left.saturating_sub(min_reserve);
+        let new_hard = new_hard.min(max_consumable);
+
+        if hard > new_hard {
+            hard = new_hard;
         }
-        if hard > max_hard {
-            hard = max_hard;
+        // Phase 4 v2 (2026-05-21): also scale hard cap by phase factor in
+        // opening. Soft scaling alone wasn't enough because the dynamic
+        // TM multipliers (especially stability_factor starting at 1.71
+        // when 0 stable iterations seen) compensated for the reduced soft
+        // by pushing scale × soft back up toward original. Hard-cap
+        // scaling makes the early ceiling an absolute, multiplier-proof
+        // bound.
+        let phase_x100: u64 = if fullmove <= 5 { 40 }
+                              else if fullmove <= 10 { 60 }
+                              else if fullmove <= 15 { 85 }
+                              else { 100 };
+        hard = hard * phase_x100 / 100;
+
+        // Final absolute safety: never spend > 3/4 of remaining time on
+        // a single move (preserved from old formula).
+        if hard > time_left * 3 / 4 {
+            hard = time_left * 3 / 4;
         }
     }
 
@@ -1540,6 +1639,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.nodes = 0;
     info.tm_has_data = false;
     info.tm_best_stable = 0;
+    info.tm_best_move_changes = 0;
 
     // Mirror search()'s threat setup — helpers must evaluate consistently
     // with main or shared-TT entries disagree and search diverges at T>1.
@@ -1667,6 +1767,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.tm_prev_best = NO_MOVE;
     info.tm_prev_score = 0;
     info.tm_best_stable = 0;
+    info.tm_best_move_changes = 0;
     info.tm_has_data = false;
     // Reset per-root-move node counts
     for v in info.root_move_nodes.iter_mut() { *v = 0; }
@@ -1709,13 +1810,14 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.soft_floor = limits.movetime_floor.min(limits.movetime);
     } else if our_time > 0 {
         let (soft, hard, soft_floor) =
-            compute_tm_budgets(our_time, our_inc, limits.movestogo, info.move_overhead);
+            compute_tm_budgets(our_time, our_inc, limits.movestogo, info.move_overhead, board.fullmove);
         info.soft_limit = soft;
         info.hard_limit = hard;
         info.soft_floor = soft_floor;
         info.time_limit = hard; // search uses hard as absolute limit
         info.tm_has_data = false;
         info.tm_best_stable = 0;
+        info.tm_best_move_changes = 0;
     } else if !limits.infinite {
         // No clock info (e.g. `go depth N` or `go nodes N`). Already zeroed
         // above; explicit reset kept for clarity.
@@ -1996,6 +2098,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     info.tm_best_stable += 1;
                 } else {
                     info.tm_best_stable = 0;
+                    // Phase 1: cumulative count of root best-move changes since
+                    // search start. Drives an upward multiplier on tactically
+                    // unstable positions (Reckless `1 + changes/4`, Stockfish
+                    // `1.096 + 2.29 * totBestMoveChanges` patterns).
+                    info.tm_best_move_changes = info.tm_best_move_changes.saturating_add(1);
                 }
             }
             let drop = if info.tm_has_data && !is_mate_score(prev_score) && !is_mate_score(info.tm_prev_score) {
@@ -2044,8 +2151,23 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // scoreFactor = clamp(0.86 + 0.010 * scoreDrop, 0.81, 1.50)
             let score_factor = (0.86 + 0.010 * score_drop as f64).clamp(0.81, 1.50);
 
-            // Combined: all three factors multiply against the soft limit
-            let scale = nodes_factor * stability_factor * score_factor;
+            // Factor 4: Best-move-changes upward boost (Phase 1 TM redesign).
+            // Mirrors Reckless `1.0 + changes/4.0` and SF `1.096 + 2.29 *
+            // bestMoveChanges` patterns — the upward instability signal that
+            // Coda was structurally missing. Clamped at 2.5 so it can't
+            // multiplicatively explode on pathological positions. Combined
+            // with the other factors and bounded by hard_limit downstream,
+            // so the catastrophe ceiling is unchanged.
+            //
+            // tm_best_move_changes is the cumulative count of root best-move
+            // flips between iterations since search start, reset at `go`.
+            let bmc_factor = (1.0 + info.tm_best_move_changes as f64 / 4.0).min(2.5);
+
+            // Combined: all four factors multiply against the soft limit.
+            // adjusted_soft is downstream-clamped to hard_limit, so this
+            // factor pushes us toward the existing hard cap on tactical
+            // positions but cannot exceed it.
+            let scale = nodes_factor * stability_factor * score_factor * bmc_factor;
 
             // Check if we should stop at the soft limit.
             // Floor at soft_floor (≈ increment) so stability cuts in stable

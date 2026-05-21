@@ -590,7 +590,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         // Single source of truth for soft/hard/floor —
                         // shared with start_search via compute_tm_budgets.
                         let (soft, hard, floor) = crate::search::compute_tm_budgets(
-                            our_time, our_inc, pl.movestogo, overhead);
+                            our_time, our_inc, pl.movestogo, overhead, board.fullmove);
 
                         // Very low time (< 2s with no inc): instant stop.
                         if hard <= overhead && our_inc == 0 && our_time < 2000 {
