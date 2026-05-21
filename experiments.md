@@ -10952,3 +10952,43 @@ Pattern noted: third consecutive cross-engine sweep yielding ~0 Elo
 1 port already-shipped; this batch 2 ports → H0). Cross-engine
 porting is yielding less Elo-per-hour than direct audits.
 
+
+## 2026-05-21 — Audit C: gating consistency review — clean
+
+Scanned all `ply > 0` and `excluded_move[ply_u] == NO_MOVE` gates in
+search.rs.
+
+Classification:
+- **Node-level pruners** (TT cutoff, NMP, RFP, ProbCut): correctly
+  gated on BOTH `ply > 0` and `excluded_move == NO_MOVE`. Returning a
+  score during SE verification would short-circuit the SE goal.
+- **Move-level pruners** (LMP, hist-prune, futility, SEE-cap,
+  SEE-quiet, BNFP): correctly gated on `ply > 0` ONLY, not on
+  `excluded_move`. Cross-engine consensus (SF, Reckless): move-level
+  pruning's miss-rate during SE is acceptably small. They all do this.
+- **Position-truth checks** (draw, cuckoo, repetition): correctly
+  unguarded by excluded_move. Drawn positions are drawn regardless of
+  which move is excluded.
+- **Extensions** (recapture, N6): correctly unguarded — extensions
+  during SE are standard.
+- **TB probe**: TB cutoff IS excluded_move-gated; TT probe (for
+  tt_move) is not, by design — we still want TT-move hint during SE.
+
+No bugs found. No SPRT fired.
+
+**Cumulative this session's audit results:**
+- A (history-table read/write): clean
+- B (other engines beyond SF/Reckless): 2 ports → both H0
+- C (gating consistency): clean
+- D-F (B1 follow-up, cuckoo/rep, cross-engine TM): all clean
+
+**Direct-audit Elo banked this cycle**: +1.9 (LMR_ENDGAME orphan) +
+2.4 (B1 symmetric writes) = +4.3 banked + 3 bench-neutral correctness
+fixes (TT TB-threshold, TT clear Release, threat-accum hygiene).
+
+**Pattern**: audit hit rate dropped from ~3-of-3 H1 (tp10 + B1) to
+0-of-2 (cross-engine ports) to clean (B1 followup, cuckoo, gating C).
+The remaining audit-style probes have diminishing returns. The next
+high-leverage action is the full --core retune on current main, then
+look for fresh audit signals after a fresh tune-and-retest cycle.
+
