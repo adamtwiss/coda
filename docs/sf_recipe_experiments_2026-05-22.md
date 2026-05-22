@@ -71,7 +71,24 @@ cargo run --release --features cuda --example coda_v9_768_threats -- \
 - H0 at SPRT → conclude "skipping doesn't help at our data scale."
   Don't chase further skip variants.
 
-**Wall-clock**: 3-4h train + 6h SPRT = ~10h total.
+**Wall-clock**: ~10h train (2-3× slower than canonical due to decoder
+bottleneck — fen-skip 0.9 means decoding 10× positions per one kept,
+and binpack's chain-compressed format makes seek-skip impossible) +
+6h SPRT = **~16h total**. 1A is the slowest Tier 1 experiment despite
+being a flag flip.
+
+**Mitigation candidates if scaling to S800**:
+- Offline pre-filter binpacks (one-time CPU pass) to produce
+  pre-skipped binpacks. Eliminates runtime overhead.
+- Test at intermediate rates first: a 0.7 or 0.75 probe (decode
+  ~3.3× per kept) is 1.5-2× slower vs 2-3× at 0.9, and is already
+  qualitatively in the "fresh sampling" regime. Cheaper directional
+  signal before committing to the full 0.9.
+
+**Why SF can afford 0.9 cheaply**: their GPU work per batch (L1=1024
+matrix ops) is ~64× ours (L1=16), so they're GPU-bound and the 10×
+decode overhead is masked. Our smaller architecture is closer to
+data-loader-bound at baseline.
 
 ---
 
@@ -310,7 +327,7 @@ orthogonal probes, results in by end of day.
 
 | Phase | Experiments | Duration | Hosts needed |
 |---|---|---|---|
-| 1 (now) | 1A, 1B, 1C | ~10h wall-clock | 3 |
+| 1 (now) | 1A (~16h), 1B (~10h), 1C (~9h) | ~16h wall-clock (bounded by 1A) | 3 |
 | 2 (Tier 1 settled) | 2A or 2B conditional | ~10h | 1 |
 | 3 (Tier 1/2 settled) | SWA implementation | dev time | 0 (code) |
 | 4 (SWA built) | 3A | ~10h | 1 |
