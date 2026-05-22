@@ -170,15 +170,9 @@ tunables!(
     // TT_DAMP_TT_WEIGHT: weight of tt_score in TT-LOWER non-PV cutoff score
     // dampening. Formula: (W*tt_score + beta) / (W+1). Old hardcoded W=3.
     (TT_DAMP_TT_WEIGHT, 3, 1, 10, 0.5, false),
-    // FH_BLEND_OFFSET: offset in fail-high score blending divisor.
-    // Formula: (best_score*depth + beta) / (depth + OFFSET). Old hardcoded 1.
-    (FH_BLEND_OFFSET, 1, 0, 5, 0.4, false),
     // PROBCUT_TT_DEPTH_SLACK: TT depth must be >= current depth - SLACK for
     // ProbCut-TT-noshot to consider the entry. Old hardcoded 3.
     (PROBCUT_TT_DEPTH_SLACK, 3, 0, 10, 0.5, false),
-    // SE_TT_DEPTH_SLACK: TT depth must be >= current depth - SLACK to allow
-    // SE verification at this node. Old hardcoded 3.
-    (SE_TT_DEPTH_SLACK, 3, 0, 10, 0.5, false),
     (HIST_BONUS_MULT, 309, 50, 400, 17.5, true),
     (HIST_BONUS_MAX, 1936, 500, 3000, 125.0, true),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
@@ -288,7 +282,6 @@ tunables!(
     // subtracted from singular_beta → easier to judge singular → more
     // extensions for tactically significant moves.
     (SE_XRAY_BLOCKER_MARGIN_10X, 47, 0, 400, 20.0, true),
-    (MVV_CAP_MULT, 28, 4, 64, 3.0, false),
     // 2026-05-19 audit: floor was pinned at 10 (=1.0 effective), preventing
     // SPSA from exploring below 1× even though SPSA had repeatedly driven
     // the value to the floor across tunes. Widened to allow 0× (full disable)
@@ -334,7 +327,6 @@ tunables!(
     // aggressive ProbCut activation.
     (PROBCUT_MIN_DEPTH_10X, 32, 10, 120, 15.0, true),     // was hardcoded 5 (ProbCut activation gate)
     (SEE_CAP_DEPTH, 6, 3, 15, 1.5, true),         // was hardcoded 6 (SEE capture prune depth cap)
-    (FUT_LMR_DEPTH, 15, 5, 20, 1.5, false),        // was hardcoded 10; tune #743 → 9
     (BAD_NOISY_DEPTH, 8, 4, 15, 1.5, true),       // was hardcoded 4 (BNFP depth cap)
     // Second pass — additional gates exposed for the feature-utility
     // audit tune. Widened ranges allow SPSA to reach disable-endpoint
@@ -344,6 +336,14 @@ tunables!(
     (HINDSIGHT_MIN_DEPTH_10X, 23, 0, 200, 15.0, true),        // was hardcoded 2 (hindsight reduction gate)
     (TT_CUTOFF_HALFMOVE_MAX, 89, 50, 100, 3.0, false),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
 );
+
+// Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
+// signal, so removed from SPSA surface to improve SNR for the rest. Values
+// frozen at their pre-demotion defaults. Bench-neutral; UCI-invisible.
+pub static FH_BLEND_OFFSET: AtomicI32 = AtomicI32::new(1);
+pub static SE_TT_DEPTH_SLACK: AtomicI32 = AtomicI32::new(3);
+pub static MVV_CAP_MULT: AtomicI32 = AtomicI32::new(28);
+pub static FUT_LMR_DEPTH: AtomicI32 = AtomicI32::new(15);
 
 /// Get a tunable parameter value (inline for hot paths)
 #[inline(always)]
