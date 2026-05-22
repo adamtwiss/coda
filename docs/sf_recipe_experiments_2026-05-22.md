@@ -19,10 +19,21 @@ baby-prod via the mini-prod branch** unless otherwise noted.
   (paired-probe net direction is often signed but not always small).
 - **Dataset**: `/workspace/data` on GPU hosts (per memory
   `project_training_data_paths`).
-- **Canonical recipe reference**: from
-  `bullet/examples/coda_v9_768_threats.rs` docs block — `--superbatches 200
-  --wdl 0.15 --warmup 30 --kb-layout reckless --ob-layout material
-  --hidden-activation crelu --factoriser --seed 42 --threads 8`.
+- **Canonical recipe form (mini-prod-like S200)**:
+  ```bash
+  cargo run --release --features cuda --example coda_v9_768_threats -- \
+    --dataset-dir /workspace/data \
+    --superbatches 200 \
+    --wdl 0.15 \
+    --warmup 30 \
+    --kb-layout reckless \
+    --hidden-activation crelu \
+    --factoriser \
+    --seed 42 \
+    --save-rate 200
+  ```
+  All experiments below diff from this canonical form by one (or
+  bundled) axes.
 
 ---
 
@@ -39,17 +50,15 @@ augmentation. Prior 50% skip test was −0.5 retuned (essentially neutral)
 
 **Recipe** (canonical except for the one flag):
 ```bash
-cargo run --release --example coda_v9_768_threats -- \
+cargo run --release --features cuda --example coda_v9_768_threats -- \
   --dataset-dir /workspace/data \
   --superbatches 200 \
   --wdl 0.15 \
   --warmup 30 \
   --kb-layout reckless \
-  --ob-layout material \
   --hidden-activation crelu \
   --factoriser \
   --seed 42 \
-  --threads 8 \
   --save-rate 200 \
   --fen-skip-prob 0.9 \
   --net-id coda-v9-fenskip-0.9
@@ -110,22 +119,23 @@ training. Matches SF's stage-1 warmup proportion.)
 training quality while gaining 50% wall-clock. If H1 / neutral, all
 subsequent experiments benefit from the speedup.
 
-**Cost note**: `batch_size: 16_384` is hardcoded in `coda_v9_768_threats.rs:547`.
-Add a `--batch-size` flag (~10 LoC) BEFORE running this experiment.
+**Cost note**: Patch available at `feature/batch-size-flag` on
+`adamtwiss/bullet` (commit e19fa54). Adds `--batch-size` /
+`--batches-per-superbatch` flags; default preserves the 100M
+positions/SB invariant when batch is overridden. Merge to bullet main
+before running.
 
 **Recipe** (after batch-size flag added):
 ```bash
-cargo run --release --example coda_v9_768_threats -- \
+cargo run --release --features cuda --example coda_v9_768_threats -- \
   --dataset-dir /workspace/data \
   --superbatches 200 \
   --wdl 0.15 \
   --warmup 30 \
   --kb-layout reckless \
-  --ob-layout material \
   --hidden-activation crelu \
   --factoriser \
   --seed 42 \
-  --threads 8 \
   --save-rate 200 \
   --batch-size 65536 \
   --lr 0.002 \
