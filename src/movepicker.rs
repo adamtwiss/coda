@@ -727,8 +727,17 @@ impl MovePicker {
                 if pt < 5 { // skip king (pt==5)
                     let us = (piece >> 3) & 1;
                     let occ = board.colors[0] | board.colors[1];
+                    // For sliders, to_mob must be computed against POST-move
+                    // occupancy or the FROM square (which is on a ray from TO
+                    // for any natural slider move) acts as a phantom blocker.
+                    // Pre-fix `to_mob` systematically undercounts slider attacks;
+                    // SPSA drifted MOBILITY_DELTA_WEIGHT toward 0 because the
+                    // signal was partially noise. Knights/pawns are blocker-
+                    // independent so unaffected by occupancy choice, but the
+                    // unified post_occ keeps the branch clean.
+                    let post_occ = (occ ^ (1u64 << from)) | (1u64 << to);
                     let from_mob = crate::threats::piece_attacks_occ(pt, us, from as u32, occ).count_ones();
-                    let to_mob = crate::threats::piece_attacks_occ(pt, us, to as u32, occ).count_ones();
+                    let to_mob = crate::threats::piece_attacks_occ(pt, us, to as u32, post_occ).count_ones();
                     score += (to_mob as i32 - from_mob as i32) * crate::search::MOBILITY_DELTA_WEIGHT.load(std::sync::atomic::Ordering::Relaxed);
                 }
             }
