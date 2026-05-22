@@ -429,6 +429,19 @@ enum Commands {
 }
 
 fn main() {
+    // Restore default SIGPIPE behavior so writes to a closed stdout
+    // (e.g. cutechess killed the engine mid-search/mid-print between
+    // games at very-short TC) terminate the process cleanly instead
+    // of panicking inside `println!`. Without this, fastchess/OB
+    // workers see a `failed printing to stdout: Broken pipe` panic,
+    // the game is recorded as "abandoned" at PlyCount=0, and the
+    // SPSA tune (or SPRT) accumulates dozens-to-hundreds of phantom
+    // results. Diagnosed via tune #1417 (2026-05-22).
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     init();
 
     let cli = Cli::parse();
