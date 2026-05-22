@@ -15,8 +15,11 @@ baby-prod via the mini-prod branch** unless otherwise noted.
   SPRT vs baby-prod (`61115E7F`, `cal-day0-factor-w15-warm30-hlcrelu-s200`)
   using `ob_submit.py mini-prod` with `--dev-network <CANDIDATE_SHA>
   --base-network 61115E7F`.
-- **SPRT bounds**: `[-5, 5]` for net comparisons where magnitude matters
-  (paired-probe net direction is often signed but not always small).
+- **SPRT bounds**: `[0, 3]` per `feedback_sprt_bounds_use_0_3_always`.
+  Net comparisons follow the same default as feature SPRTs — a true
+  +5 effect H1s at `[0, 3]` faster than at `[-5, 5]`, and a true
+  +1.5 effect H0's more decisively. Magnitude info is in the final
+  Elo + CI regardless of bounds.
 - **Dataset**: `/workspace/data` on GPU hosts (per memory
   `project_training_data_paths`).
 - **Canonical recipe form (mini-prod-like S200)**:
