@@ -37,18 +37,25 @@ def stop_test(args):
         print('Error: login failed')
         return False
 
-    # Step 3: POST to /test/<id>/STOP/ with CSRF and Referer.
+    # Step 3: POST STOP to the right workload URL. Tunes live at
+    # /tune/<id>/ and tests at /test/<id>/; the /test/ URL does NOT
+    # route to the same view for tunes (silently 302s back to /index/
+    # with no effect). Try /tune/ first, fall back to /test/.
     # Note: the action MUST be uppercase STOP — modify_workload's
     # action dict only has uppercase keys, lowercase silently fails
     # (URL matches, but redirects with "Unknown Workload action").
-    # This /test/ URL also works for tunes (routes to the same view
-    # by pk; workload_type is ignored for modify actions).
     csrf = s.cookies.get('csrftoken')
-    r = s.post(f'{args.server}/test/{args.test_id}/STOP/', data={
-        'csrfmiddlewaretoken': csrf,
-    }, headers={
-        'Referer': f'{args.server}/test/{args.test_id}/',
-    }, allow_redirects=False)
+
+    def post_stop(url_prefix):
+        return s.post(f'{args.server}/{url_prefix}/{args.test_id}/STOP/', data={
+            'csrfmiddlewaretoken': csrf,
+        }, headers={
+            'Referer': f'{args.server}/{url_prefix}/{args.test_id}/',
+        }, allow_redirects=False)
+
+    r = post_stop('tune')
+    if r.headers.get('Location', '') != '/index/':
+        r = post_stop('test')
 
     if r.headers.get('Location', '') != '/index/':
         print(f'Error: unexpected response {r.status_code} {r.headers.get("Location", "")}')
@@ -59,7 +66,10 @@ def stop_test(args):
     # server accepted the action — e.g. unknown-action redirects also
     # return 302).
     import re
-    verify = s.get(f'{args.server}/test/{args.test_id}/')
+    # Verify against whichever URL the workload lives at.
+    verify = s.get(f'{args.server}/tune/{args.test_id}/')
+    if '"active"' not in verify.text and '"finished"' not in verify.text:
+        verify = s.get(f'{args.server}/test/{args.test_id}/')
     # Workload detail pages embed JSON like:
     #   ... "active": true/false, ... "finished": true/false, ...
     # Look for "finished": true as the success signal.
