@@ -4053,7 +4053,10 @@ fn negamax(
         && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
         && info.excluded_move[ply_u] == NO_MOVE
     {
-        return (best_score * depth + beta) / (depth + tp(&FH_BLEND_OFFSET));
+        // Divisor floor: SPSA can perturb FH_BLEND_OFFSET to 0 AND
+        // FH_BLEND_DEPTH_10X low enough that the gate admits depth=0,
+        // producing a 0+0 divisor → div-by-zero panic. Clamp.
+        return (best_score * depth + beta) / (depth + tp(&FH_BLEND_OFFSET)).max(1);
     }
 
     best_score
