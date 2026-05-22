@@ -2170,10 +2170,26 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Sticky once set — the verification itself is expensive (depth ~3-5
         // re-search with NMP/RFP/probcut gated by excluded_move) so we run it
         // at most once per search. Skip for mate scores and early depths.
+        // TC gate (Phase 6b, 2026-05-22): skip the detector when the floor
+        // already occupies ≥ 1/3 of the soft budget. At high-inc TCs (e.g.
+        // 60+5 → floor 2.45s vs soft 6.4s = 38%) the detector's downward
+        // multiplier can't actually push adjusted_soft below the floor by a
+        // meaningful amount — verification cost is paid but actual spend
+        // barely changes. Local 60+5 RR (n=170) showed phase6 (with detector)
+        // 13 Elo worse than phase6a (floor only) at that TC. At low-inc TCs
+        // the floor fraction stays small and the detector pays back (LTC
+        // SPRT delta phase6 − phase6a = +2.8 Elo).
+        //
+        // Behaviour table:
+        // 60+5: floor/soft = 0.38 → skip
+        // 60+1: floor/soft = 0.14 → fire
+        // LTC:  floor/soft = 0.00 → fire
+        let floor_dominates = info.soft_floor * 3 >= info.soft_limit;
         if info.tm_forced_state == ForcedState::None
             && depth >= 8
             && best_move != NO_MOVE
             && info.soft_limit > 0
+            && !floor_dominates
             && !info.should_stop()
             && !is_mate_score(prev_score)
         {
