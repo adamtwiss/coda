@@ -11237,3 +11237,45 @@ Next high-EV moves: Hercules' upcoming full-sweep (option A) with the
 expanded tunable surface; correctness audits of rarely-fired paths
 (option 3 from the conversation).
 
+## 2026-05-22 — STC --core full-sweep tune-1411-applied: H0
+
+Backdrop: Trunk had accumulated significant structural changes since
+last full-sweep retune (B1 symmetric cont-hist writes, LMR endgame
+restore, TT TB-threshold + Release ordering + threat-accum hygiene,
+4 audit-hygiene floor lifts, tp10 precision fix + 5 new tunables,
+TM Phase 4v2). Plan was STC + LTC --core full-sweep on current main
+vs prod net while fleet was quiet.
+
+Tunes (against `net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor.nnue`):
+- **#1411 STC --core** (10+0.1, 2500 iter, 53 params, UHO_Lichess_4852): completed
+- **#1412 LTC --core** (40+0.4, 2500 iter, 53 params, UHO_Lichess_4852): running
+
+STC outputs applied to `experiment/tune-1411-applied` (b737743, bench 4565386).
+48/53 params moved meaningfully. Biggest movements:
+- `IIR_MIN_DEPTH_10X` 20→12 (−40%, effective 2→1)
+- `DEXT_MARGIN_QUIET` 3→8 (+167% structural)
+- `PROBCUT_KING_ZONE_MAX_10X` 58→78 (+35%)
+- `CORR_UPDATE_WEIGHT_MAX` 13→17 (+31%)
+- `CORR_W_NP` 61→79 (+30%)
+- `FUT_THREATS_MARGIN` 23→16 (−30%)
+- `LMR_KING_PRESSURE_DIV_10X` 70→51 (−27%)
+- `NMP_DEPTH_DIV_10X` 61→48 (−21%)
+- `PROBCUT_MIN_DEPTH_10X` 32→26 (−19%)
+
+SPRT **#1415 H0 −0.9 ±2.0 at 39,384 games** at [0, 3] vs main bench 5273781.
+
+Reading:
+- Standard SPSA-overfit pattern; 53-param --core sweep at 2500 iter is at
+  the upper end of `feedback_spsa_snr_scales_inverse_sqrt_n` productive
+  zone (1000-1500), where extra noise can drift the basin.
+- LTC tune (#1412) on the same params from the same start runs in parallel;
+  STC and LTC were diverging mid-tune on several params (e.g.
+  `CONT_HIST_MULT_10X` +5% STC vs −45% LTC; `CORR_W_CONT` −6% STC vs
+  +47% LTC). Confirms basin sensitivity to TC.
+- This neither confirms nor denies "tune found nothing real" — LTC SPRT
+  is the matched signal. Wait for it.
+
+Status: STC branch shelved (no merge). LTC tune monitoring continues.
+Bench remains 5273781 on main.
+
+
