@@ -1358,7 +1358,21 @@ pub fn compute_tm_budgets(
     fullmove: u16,
 ) -> (u64, u64, u64) {
     let time_left = our_time.saturating_sub(overhead).max(1);
-    let moves_left = if movestogo > 0 { movestogo as u64 } else { 25 };
+    // No-inc TCs require more conservative pacing. With inc, each move
+    // costs only `inc` of net time (we regain inc per move). Without
+    // inc, every spent second is gone forever. The default 25-moves-left
+    // assumption produces ~7s/move on 3+0 (180s base) — but real games
+    // run 40-80 moves, so 25-move pacing leaves the engine massively
+    // out of time. Use 40 moves at no-inc to pace tighter.
+    // Lichess game 1yV9VbAA: Coda at 3+0 spent 8-12s on early moves,
+    // forfeited on time.
+    let moves_left = if movestogo > 0 {
+        movestogo as u64
+    } else if our_inc == 0 {
+        40
+    } else {
+        25
+    };
 
     // Soft allocation: time/movesLeft + 80% of increment.
     let mut soft = time_left / moves_left + our_inc * 4 / 5;
@@ -1477,10 +1491,22 @@ pub fn compute_tm_budgets(
                                  else { 40 };                              // classical 4.0×
         // Max-single-move percentage of remaining clock. Aligned with
         // doc design table — bullet/blitz tight, rapid/classical loose.
-        let max_single_pct: u64 = if estimated_spm_ms < 2000 { 8 }        // bullet 8%
-                                  else if estimated_spm_ms < 5000 { 9 }    // blitz 9%
-                                  else if estimated_spm_ms < 15000 { 12 }  // rapid 12%
-                                  else { 15 };                              // classical 15%
+        // 2026-05-23 hotfix: no-inc TCs (movestogo=0 + inc=0, e.g.
+        // lichess 3+0, 60+0) need MUCH tighter caps. Without inc we
+        // can't recover time, so spending 12% on one tactical move
+        // (= 21.6s at 3+0) wastes the budget the rest of the game
+        // can't replace. Halve the caps at no-inc.
+        let max_single_pct: u64 = if our_inc == 0 {
+            if estimated_spm_ms < 2000 { 4 }
+            else if estimated_spm_ms < 5000 { 5 }
+            else if estimated_spm_ms < 15000 { 6 }
+            else { 8 }
+        } else {
+            if estimated_spm_ms < 2000 { 8 }        // bullet 8%
+            else if estimated_spm_ms < 5000 { 9 }    // blitz 9%
+            else if estimated_spm_ms < 15000 { 12 }  // rapid 12%
+            else { 15 }                              // classical 15%
+        };
 
         let mult_cap = base_soft * hard_mult_x10 / 10;
         let pct_cap = time_left * max_single_pct / 100;
@@ -2184,12 +2210,27 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // 60+5: floor/soft = 0.38 → skip
         // 60+1: floor/soft = 0.14 → fire
         // LTC:  floor/soft = 0.00 → fire
+        //
+        // Additional gate (2026-05-23 hotfix): skip at NO-INC TCs.
+        // At no-inc TCs (1+0, 3+0, 60+0, 180+0) lichess showed time
+        // forfeit regression — detector verification at depth 3-5 costs
+        // 50-150ms per move and accumulates over the game. With no inc
+        // to recover spent time, this cumulative overhead drains the
+        // clock and causes time forfeits.
+        //
+        // Detection: `soft_floor == 0` triggers when `inc <= overhead`
+        // (i.e. inc <= 100ms by default), which captures all no-inc TCs
+        // including 1+0.1 ultra-bullet. At LTC 40+0.4, soft_floor=150ms
+        // so gate doesn't fire → detector runs normally at SPRT TC.
+        // At lichess 3+2 / 60+1, soft_floor is positive → detector runs.
         let floor_dominates = info.soft_floor * 3 >= info.soft_limit;
+        let no_inc = info.soft_floor == 0;
         if info.tm_forced_state == ForcedState::None
             && depth >= 8
             && best_move != NO_MOVE
             && info.soft_limit > 0
             && !floor_dominates
+            && !no_inc
             && !info.should_stop()
             && !is_mate_score(prev_score)
         {
