@@ -2756,7 +2756,13 @@ fn negamax(
     let mut scaled_eval = -INFINITY;
     let mut improving = false;
     if !in_check {
-        if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
+        // Consumer threshold matches pack_data's static_eval clamp range
+        // (-4095..4095). Stores that pass -INFINITY (in-check positions
+        // where eval is undefined) get clamped to -4095; we reject that
+        // value here and recompute. The legitimate-eval-at-exactly-(-4095)
+        // false positive case (~-40 pawns) is rare enough that re-eval
+        // is harmless.
+        if tt_hit && tt_entry.static_eval > -4095 {
             raw_eval = tt_entry.static_eval;
             info.stats_tt_static_eval_hits += 1;
         } else {
@@ -4420,7 +4426,10 @@ fn quiescence_with_depth(
     // Use TT staticEval when available to avoid recomputing. TT stores
     // halfmove-independent values (see SearchInfo::eval doc), so we apply
     // the scale freshly against `board.halfmove` after reading.
-    let raw_stand_pat = if tt_hit && tt_entry.static_eval > -(MATE_SCORE - 100) {
+    let raw_stand_pat = if tt_hit && tt_entry.static_eval > -4095 {
+        // Threshold matches pack_data's clamp range. -INFINITY sentinels
+        // (from in-check TT stores) get clamped to -4095 and would
+        // otherwise pass a wider check.
         info.stats_tt_static_eval_hits += 1;
         tt_entry.static_eval
     } else {
