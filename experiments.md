@@ -11279,3 +11279,391 @@ Status: STC branch shelved (no merge). LTC tune monitoring continues.
 Bench remains 5273781 on main.
 
 
+
+## 2026-05-22/23 — Correctness audit cluster: 8 fixes (Hercules + Atlas)
+
+Cumulative correctness audit batch landed across two sessions.
+All low-magnitude SPRT-side (rarely-fire paths) but real deployment
+value. Per `feedback_correctness_audit_wins_dominate`, this kind of
+audit has been Coda's highest Elo-per-engineer-hour thread.
+
+**Atlas's fixes (4)**:
+- `ab7a713` — NMP verification missing info.stop check before accepting
+  cutoff (verification could accept a bogus cutoff after time-up).
+- `f0a74c4` — TT static_eval sentinel poisoning: consumer threshold
+  too loose, accepted sentinel values as real eval at low depths.
+- `ea0b59f` — QS missing insufficient_material guard (parallel to
+  the negamax fix); QS could return non-zero score in K+B vs K etc.
+- `631265f` — SEE king-illegality guard was dead code (stm flip
+  ordering bug); SEE could continue past illegal king-captures.
+
+**Hercules's fixes (4)**:
+- `main.rs` (4e82c3d) — restore default SIGPIPE handler. Rust's
+  default lets `println!` panic on broken pipe → cutechess kills
+  engine mid-info-string → panic at `library/std/src/io/stdio.rs`
+  → "abandoned" game. Tune #1417 hit this ~7% of games at 4.59s TC.
+- `search.rs` (f804657) — clamp fail-high blend divisor.
+  `FH_BLEND_OFFSET` could perturb to 0 AND `FH_BLEND_DEPTH_10X` to
+  0 simultaneously → divide-by-zero panic in `(best_score * depth +
+  beta) / (depth + offset)`. Tune #1418 hit this 16.7% of games.
+- `movepicker.rs` (532de2d) — fix MOBILITY_DELTA slider mobility:
+  `to_mob` was computed against PRE-move occupancy, so the FROM
+  square acted as a phantom blocker on slider rays. `to_mob`
+  systematically undercounted for B/R/Q moves. SPSA had driven
+  `MOBILITY_DELTA_WEIGHT` to 34 to minimise the buggy signal's
+  damage. Post-fix focused tune (#1431) moved weight 34 → 39
+  (small confirmation of bug-then-retune pattern, smaller magnitude
+  than the cap-history precedent).
+- `search.rs` (d22060d) — drawn-position detection BEFORE MAX_PLY
+  guard. At `ply_u >= MAX_PLY` in drawn-material or repetition
+  positions, the fall-back `apply_halfmove_scale(eval, halfmove)`
+  could return non-zero (eval doesn't know about insufficient
+  material or repetition). Adjacent to the prior MAX_PLY=64→128
+  family.
+
+**SPRTs**: all H0-neutral at STC (rare-fire paths). Merge bar was
+non-regression at `[-3, 3]`, not "+Elo at SPRT". Each lands at
+`+0 to +0.6` measured Elo; aggregate deployment-relevant Elo is
+unmeasurable at STC but real in long endgame play.
+
+**Methodology callout**: the MOBILITY_DELTA case is a clean
+SPSA-detuning-reveals-bug signature. SPSA drove the weight toward
+zero specifically because the signal was wrong. Same shape as the
+cap-history magnitude story (27× too small → +31.6 Elo when fixed),
+but smaller magnitude here.
+
+## 2026-05-22 — Demote-loose-knob batches (1, 2)
+
+Continues SPSA-surface reduction per
+`feedback_loose_knobs_contaminate_core_gradients`.
+
+**#1428 demote-batch-1** — H1 +0.5 ±1.4 / 72,240 games. Bench-identical.
+Demoted 4 non-core tunables to consts: `FH_BLEND_OFFSET`,
+`SE_TT_DEPTH_SLACK`, `MVV_CAP_MULT`, `FUT_LMR_DEPTH`. tune-spec
+count 84 → 80.
+
+**Demote-batch-2** (refactor/demote-loose-knobs-2) — fired, bench-
+identical. 5 more NONCORE_QUIET candidates from cross-tune analysis:
+`SEE_MATERIAL_SCALE`, `QS_SEE_THRESHOLD`, `CAP_HIST_BASE`,
+`LMR_COMPLEXITY_DIV`, `TT_CUTOFF_HALFMOVE_MAX`. tune-spec count
+80 → 75 if H1.
+
+Cumulative SPSA surface shrink: 84 → 75 params over two batches.
+Improves gradient SNR on remaining tunables.
+
+## 2026-05-22/23 — TM thread: dominant deployment-Elo contributor
+
+Three TM merges this week, each banking deployment-amplified Elo
+that SPRT understates per `feedback_sprt_ltc_too_fast_for_deep_search_regime`.
+
+**Phase 4 v2.1** (#1410, abfaf0c) — H1 +3.3 ±2.2 / 23,908g.
+Ply-aware soft scaling at budget level + hard cap also scaled by
+phase factor.
+
+**Phase 6 / 6b / 6d** (023dd91, d43990c, 76d2a84 merge):
+- Phase 6: high-inc variance crush fix + forced-move detector.
+- Phase 6b: TC-gate the forced-move detector.
+- Merged variant tmv6b — cross-engine 30+1 at rivals RR (N=650):
+  **+20 Elo vs current main**. Same recipe self-play: +40 at 60+5.
+  OB LTC 40+0.4 was -1 to -2 (depth-sensitivity invisible at SPRT
+  scale).
+
+**Phase 8a** (in flight #1459) — +10.15 ±8.90 at 40+0.4 LTC,
+N=1336, LLR climbing toward H1. CI excludes zero. Conservative
+TM variant. Per `feedback_ltc_amplifies_for_low_nps_engines`,
+deployment magnitude likely ~2× the SPRT signal.
+
+**Cumulative TM session deployment-Elo estimate**: +30-50 Elo at
+Lichess T=4 / CCRL 40+15 across the three merges. By a wide margin
+the dominant deployment-impact contribution of the cycle.
+
+**Key methodology validation**: OB LTC (40+0.4 single-thread,
+depth 28-32 ceiling) routinely UNDER-states TM Elo by 5-10×.
+Cross-engine 30+1 + self-play 60+5 are the additional measurement
+frames needed for TM features. Don't gate TM merges on OB LTC
+alone — they pass deployment-side validation at much higher Elo
+than the SPRT shows.
+
+## 2026-05-22 — Mobility-delta slider fix + retune-on-branch
+
+- **#1427 fix/mobility-delta-slider-occupancy** — H0 −0.1 ±1.6 /
+  68,358g. Direction neutral but bench moved +6% (real ordering
+  signal change). Merged per the cap-history pattern.
+- **Focused 1-param tune #1431** on `MOBILITY_DELTA_WEIGHT` against
+  the merged fix — SPSA found 34 → 39 (+14%).
+- **#1433 retune SPRT** vs main — applied; landing in progress.
+  Magnitude prior +1 to +3 (small confirmation of cap-history-pattern
+  but with much smaller retune banking).
+
+Net learning: **structural correctness fix lands SPRT-flat, retune
+follows up** is the canonical pattern. Confidence in the bug-fix-
+then-retune workflow remains, but the magnitude of retune recovery
+varies widely (cap-history banked +31, mobility-delta banks ~+2).
+Don't assume +20-30 Elo from every retune.
+
+## 2026-05-23 — fen-skip thread: S200 huge win, S800 H0 fade
+
+**The headline finding of the training-recipe direction.**
+
+### S200 paired-probes (mini-prod vs baby-prod, [0, 3])
+
+Several fen-skip rate tests at S200 scale:
+
+| Test | fen-skip | Untuned SPRT vs baby-prod | Notes |
+|---|---|---|---|
+| Prior fen-skip-0.5 | 0.5 | naked H0 −5.4 / retuned H0 −0.5 | 2026-05-17 data |
+| **fenskip-0.75 (90EFD20E)** | 0.75 | **H1 +26.78 ±14.42 / 858g** | Major win |
+| (queued fen-skip-0.9) | 0.9 | not fired | Decoder cost too high |
+
+S200 bench-stats for fenskip-0.75: lower nodes (-13% vs baby-prod
+at S200 depth-10), HIGHER first-move% (87.0 vs 86.7). Classic
+"effective regularization" bench signature — slow loss decay during
+training but lower final loss, then better generalization.
+
+**Mechanism (validated by S800 data below)**: fen-skip 0.75 helps at
+under-data scale (S200 sees each position ~0.8× cumulatively) by
+giving fresh random subset per epoch → decorrelation between
+adjacent samples → less memorization. Acts like data augmentation.
+
+### S800 prod-replacement attempt (canonical-fenskip-0.75-s800, 25DE5E3F)
+
+| Test | Result |
+|---|---|
+| Untuned bundle vs prod (#?) | **H0 −28.92 ±8.16 / 2408g** |
+| Retune-on-branch tune (#1455) | --core 2500-iter SPSA against the new net |
+| #1463 retuned bundle vs prod | **H0 −23.0 ±7.6 / 3144g** |
+| #1462 retune-effect (retuned vs untuned bundle, same fenskip net) | +3.2 ±6.0 (trending H1) |
+
+**Retune banks only ~+3 Elo on top of untuned bundle** — vastly
+less than the cap-history precedent (+31). Bundle vs prod is
+−23 to −26 either way. **fenskip-0.75 does not scale to S800**
+at our current data scale.
+
+**Reason confirmed empirically**: at S800 we see each position
+~3.2× already (80B / 25B), past memorization threshold. Adding
+fen-skip 0.75 redistributes the same total views differently but
+doesn't add diversity (still ~3.2× cumulative per-position). No
+under-data regime to exploit; just noise vs prod's well-fit
+optimum.
+
+**Implications**:
+- fen-skip is a **data-efficiency multiplier**, not a generic Elo
+  lever. Helps only when under-data.
+- Unlocking fen-skip-at-S800 requires **more data** (~50B+ unique
+  → S800 revisit rate 1.6× → under-data regime restored).
+- Pre-replacement Bullet patches (`feature/fen-skip-prob` merged
+  earlier today) stay in tree — flag is useful for future
+  experiments at smaller scale and post-data-scaling.
+
+**Second fenskip-S800 net pending (N=2 confirmation)**. Expectation:
+similar magnitude, validates N=1 wasn't seed-luck.
+
+**Bullet pipeline work** (`feature/parallel-binpack-reader`):
+attempted to fix fen-skip 0.75's CPU-bound training (decoder
+single-threaded, ~2× slowdown vs no-skip). Two iterations both
+failed — bottleneck just shifted from reader to shuffle to other
+stages. Architecture rework would be substantial. Direction
+shelved pending S800 fen-skip strength validation. **NOT** merged.
+
+## 2026-05-23 — WDL ramp variant matrix: 5×H0 (direction narrowed, not closed)
+
+Five S200 paired-probe tests exploring WDL ramp shapes:
+
+| Variant | Pattern | SPRT vs baby-prod |
+|---|---|---|
+| wdl-warmup-w15 | warm30 + ramp-6 to 0.15 | H0 ≈ −1 |
+| canonical-w24 | warm30 + flat 0.24 | H0 ≈ −5.6 |
+| warm0-slow-wdl-15 | warm0 + ramp-50 to 0.15 | H0 |
+| warm0-slow-wdl-20 | warm0 + ramp-50 to 0.20 | H0 |
+| warm30-wdl-ramp30-15 | warm30 + ramp-30 to 0.15 | (fired; bench-stats look worst yet) |
+
+**Bench-stats trend**: warm30+ramp30 has the worst first-move% (84.1%)
+and largest tree (+52%). Counter-intuitive — matched-duration didn't
+help.
+
+**Direction is NOT closed** per `feedback_dont_declare_direction_closed_from_h0_count`:
+SF/Hobbes/Viridithas all use WDL ramping successfully. We've narrowed
+the search space but haven't found OUR configuration.
+
+**Unexplored variations**:
+- WDL ramp + fen-skip combination (different regularization mechanism)
+- WDL ramp at S400 / S800 (so far only S200 tests)
+- WDL ramp with diverse stage-1 data (SF stage-1 pattern)
+- Endpoint at 0.18 (between our 0.15 and SF's 0.24)
+- Cosine ramp shape (not linear)
+- Late-training WDL boost (Hobbes-style tail)
+
+**Hypothesis worth testing later**: L1 widening (v10) + WDL endpoint
+increase as a coupled bundle. L1=32 + WDL=0.20 (canonical-l1-32-w20-s200)
+test currently in flight on mini-prod — if H1, supports the coupling
+theory.
+
+**Connecting theory**: per Adam's framing, our T80 data is LC0-WP-
+calibrated, so we already have implicit WDL signal in our cp scores.
+Hobbes/Viridithas/SF train on SF self-play (more pure cp scores) so
+they need MORE explicit WDL blend. Our effective WDL signal at
+lambda=0.15 may already match their effective signal at 0.4.
+
+## 2026-05-23 — 4× batch + 2× LR: H0 −28 (under-training)
+
+Test of batch-size scaling for wall-clock speedup.
+
+- **#1432 batch4x-lr2x-s200** vs baby-prod: **H0 −28.4 ±14.9 / 796g**
+- 50% wall-clock speedup achieved at training
+- But final loss ≈ canonical at SB 130 (severely undertrained)
+
+Sub-linear LR scaling (2× LR for 4× batch) is too conservative.
+Next step (queued, pending GPU): 4× LR (true linear) or extend
+SB count to S300+ (preserving the wall-clock advantage since each
+SB is 50% faster).
+
+## 2026-05-23 — canonical-s1200: N=2 plateau confirmation
+
+- **N=2 fresh-S1200 vs prod**: H0 trending negative quickly (~−5 to
+  −10 range expected). N=1 prior also showed plateau.
+- **Training loss curve diagnostic**: loss bottomed at SB 900-950
+  then RISES through SB 1200. Textbook overfitting signature.
+- **Mechanism (refined per Adam)**: per-position revisit rate
+  exceeds memorization threshold at S800-S950 with our current 25B
+  filtered positions. S1200 adds nothing new — just memorizes
+  training-specific patterns.
+
+**Memory updated**: `feedback_schedule_plateaus_at_s800` upgraded
+from N=1 to N=2 confirmed. The plateau is **regularization-deficit
+ceiling**, not architecture cap. Path to extending past S800:
+either more data (~50B+ unique) OR regularization (fen-skip at S400
+or below where it works). SF can train 8000 SB because they have
+BOTH escape mechanisms (multi-stage warm restarts + ~200B unique
+data).
+
+## 2026-05-23 — canonical-l1-32-w20: L1+WDL coupling probe
+
+Test of "L1 widening alone H0'd (#1075 −5.8) and WDL=0.24 alone
+H0'd (canonical-w24 −5.6); does the bundle break parity?"
+
+- Bench-stats untuned: +5% nodes vs baby-prod, −2.3pp first-move%.
+- 11.4% NPS reported but contaminated by CPU contention (per Adam).
+  Real NPS hit ≈ documented 5-7%.
+- SPRT untuned: in flight on mini-prod at [0, 3].
+
+Same retune-on-branch caveat as fen-skip — moderate bench shift,
+trunk tunables may be miscalibrated. If untuned lands moderately
+H0 (~−3 to −8), retune could possibly close the gap. If clearly
+worse than either single-axis test, coupling theory is dead.
+
+## 2026-05-23 — Three corrupted nets caught via header diagnostic
+
+Adam delivered three S200 nets (filter-ply-12, filter-ply-20,
+prod-2024-s800). Initial benches showed dramatically worse stats
+(+38% to +120% nodes). Diagnosis: **`--hl-crelu` flag missing
+from `convert-bullet`** — nets converted with default SCReLU
+activation when training used CReLU hidden-layer. Silent net
+corruption per `project_convert_bullet_invocation`.
+
+**Diagnostic procedure (codified)**: byte 8 bit 5 of `.nnue`
+header indicates hl-crelu. `0xe7` = SET (CReLU hidden), `0xc7`
+= CLEAR (SCReLU hidden).
+
+**After re-conversion with `--hl-crelu`**:
+- filter-ply-12 (corrected): **H0 −13**
+- filter-ply-20 (corrected): H0 negative
+- prod-2024-s800 (corrected, half-data variant): **H0 −15**
+
+**Reads**:
+- ply-16 (current default) is the bracket peak — both 12 and 20
+  regress, 12 worse than 20. WDL filter axis closed at current
+  recipe.
+- prod-2024 −15 from halving data confirms data axis is gain-bearing.
+  Doubling data (~50B unique) expected to bank ~+15 Elo by the same
+  ratio. AND would unlock fen-skip-at-S800 by restoring under-data
+  regime. Compound deployment-Elo from data investment is meaningful.
+
+## 2026-05-23 — Broad cross-engine RR (43 engines, STC 10+0.1)
+
+Coda position update vs all top open-source engines at STC:
+- **Coda rank 21/43, Elo +47** (vs SF 261, Reckless 236, Halogen 91)
+- Up "a couple of places" from previous measurement
+- TC: 10+0.1 no ponder T=1 noob4moves — SPRT-equivalent frame
+
+Deployment-frame estimate (LTC T=4): Coda likely 2-4 positions
+higher due to LTC amplification favoring low-NPS engines + TM
+features amplifying with TC.
+
+**Today's TM merges** would land Coda at ~+57-62 STC Elo (above
+Tarnished and Koivisto, approaching Motor). Cumulative session
+deployment-Elo across TM + fixes + minor merges: +30-60 deployment
+range.
+
+## 2026-05-23 — Bullet patches: 2 merged, 1 abandoned
+
+**Merged to bullet main**:
+- `feature/fen-skip-prob` (5e227c2) — `--fen-skip-prob` flag for
+  Hobbes-style FEN skipping.
+- `feature/batch-size-flag` (e19fa54 → merged f7667ea) — `--batch-size`
+  and `--batches-per-superbatch` flags. Auto-scales BPS to preserve
+  100M positions/SB invariant when batch overridden.
+
+**Abandoned** (left on branch, not merged):
+- `feature/parallel-binpack-reader` — two iterations (v1 parallel
+  readers, v2 inline filter+convert). Both moved the bottleneck
+  (reader → shuffle/channel) without solving total throughput. Real
+  fix requires substantial Bullet pipeline rework. Not pursuing
+  further until S800 fen-skip strength validated.
+
+**Memory created**: `feedback_bullet_fork_divergence_audit` — keep
+to audit periodically, prefer upstreaming general-purpose changes.
+
+## 2026-05-23 — Methodology / infrastructure
+
+**`ob` skill created** (`.claude/skills/ob.md`, 487 lines):
+canonical reference for all OpenBench operations. Replaces
+~25 scattered per-Claude memories on the same topic. Cross-Claude
+knowledge sharing via the git-checked-in skill (vs local memories
+that don't propagate).
+
+**SF threats.yaml recipe deep-dive** (`docs/sf_recipe_experiments_2026-05-22.md`):
+documented full Tier 1-4 experiment plan based on SF's published
+training recipe. Tier 4 added in conversation today (multi-stage
+warm-restart). Available as runnable plan when GPU bandwidth
+permits.
+
+**King-threat exclusion finding** (`docs/king_threat_exclusion_2026-05-22.md`):
+documented difference between Coda (king-as-attacker tracked) and
+SF/Viridithas SFNNv12 layout (both directions excluded). Parked as
+candidate v10 experiment.
+
+**Session bench-mismatch lessons** codified in the ob skill:
+- Override-net bench must use `-n <override-net>` (2026-05-23
+  incident: 4.96M embedded vs 5.72M override on same binary)
+- Pull-before-bench discipline (OB pulls latest of branch; stale
+  local → Wrong Bench)
+- Stop endpoint URL: `/tune/` for tunes, `/test/` for SPRTs
+
+## Session-cumulative deployment Elo (rough)
+
+- TM merges (Phase 4 v2.1 + Phase 6b + Phase 8a pending): +30-60
+- Correctness fixes (8 of them): each SPRT-flat, aggregate +5-15 at
+  deployment (rare-fire paths summed)
+- Demote-batch 1 (#1428): +0.5 (banked)
+- Mobility-delta + retune: ~+2 (banked)
+
+**Total banked + pending this cycle**: ~+40-80 deployment Elo at
+Lichess T=4 / CCRL 40+15. **TM is the dominant contributor by a
+wide margin** — the cycle's biggest practical lesson.
+
+**Negative outcomes** (closed or narrowed directions):
+- fen-skip at S800 (closed for current data scale)
+- WDL ramp at S200 (5 variants H0; direction narrowed not closed)
+- 4× batch + 2× LR (under-training, retest at 4× LR queued)
+- S1200 plateau confirmed N=2
+- 3 corrupted-conversion nets caught early via header diagnostic
+
+**Methodology validated**:
+- `feedback_correctness_audit_wins_dominate` — 8 correctness fixes
+  per session is sustainable
+- `feedback_ltc_amplifies_for_low_nps_engines` — TM gains 5-10× at
+  deployment
+- `feedback_dont_declare_direction_closed_from_h0_count` — narrow
+  search space, don't write off directions prematurely
+- Cross-tune analysis as loose-knob audit tool (84 → 75 param
+  surface via two demote-batches)
