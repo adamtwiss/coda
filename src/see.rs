@@ -109,9 +109,15 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
         balance = -balance - 1 - effective_value;
 
         if balance >= 0 {
-            // If the attacker is king and opponent still has attackers, king can't capture
+            // King-illegality: if the just-made capture was by the king and
+            // the opponent still has attackers, the king moved into check —
+            // illegal. The king-side cannot actually make this capture, so
+            // the exchange ends with king-side losing. At this point
+            // `stm = flip_color(king_side)` (we already advanced it above);
+            // flip back so the final `board.side_to_move != stm` return
+            // correctly attributes the loss to king-side.
             if att_pt == KING && (attackers & board.colors[stm as usize]) != 0 {
-                // Side that just moved with king loses
+                stm = flip_color(stm);
                 break;
             }
             break;
