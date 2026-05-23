@@ -360,6 +360,83 @@ experiment:
 Log each SPRT result to `experiments.md` as it resolves, with the
 recipe diff vs canonical clearly stated.
 
+## Tier 4 — Multi-stage warm-restart training (SF-style schedule)
+
+Tests whether SF's multi-stage one-cycle pattern (peak LR resets
+between stages with annealing) banks Elo on top of canonical
+single-cosine. Per-stage approximation of SF's 7-stage schedule
+adapted to our 200-SB unit. Builds incrementally with fail-fast
+checkpoints — abandon after stage 2 if no benefit visible.
+
+### Schedule (anneal peak LR ~0.5× per stage)
+
+| Stage | SBs | Peak LR | Final LR | Warmup | Resume from | Compare vs |
+|---|---|---|---|---|---|---|
+| 1 (existing baby-prod) | 200 | 1e-3 | 2.43e-6 | 30 | (initial) | baby-prod baseline |
+| 2 (resume) | +200 → S400 | 0.5e-3 | 1.2e-6 | 10 (~5%) | stage 1 checkpoint | canonical e400s400 |
+| 3 (resume) | +200 → S600 | 0.25e-3 | 6e-7 | 10 | stage 2 checkpoint | canonical S600 |
+| 4 (resume) | +200 → S800 | 0.125e-3 | 3e-7 | 10 | stage 3 checkpoint | canonical prod S800 |
+
+### Bullet command per restart stage
+
+Template (Stage 2 example — adjust LR/net-id/resume-from for stages 3/4):
+
+```bash
+cargo run --release --features cuda --example coda_v9_768_threats -- \
+  --dataset-dir /workspace/data \
+  --superbatches 200 \
+  --wdl 0.15 --warmup 10 \
+  --lr 5e-4 --final-lr 1.2e-6 \
+  --kb-layout reckless --hidden-activation crelu --factoriser \
+  --seed 42 --save-rate 200 \
+  --resume-from checkpoints/<prior-stage-net-id>-200/ \
+  --net-id coda-v9-multistage-s400
+```
+
+Stage 3: `--lr 2.5e-4 --final-lr 6e-7 --net-id coda-v9-multistage-s600`
+Stage 4: `--lr 1.25e-4 --final-lr 3e-7 --net-id coda-v9-multistage-s800`
+
+### Decision criteria
+
+- **After stage 2 (S400 equivalent)**: SPRT vs canonical e400s400. If H0
+  with magnitude ≤ −5, abandon the multi-stage direction. If H1 or
+  close to neutral (−2 to +5), proceed to stage 3.
+- **After stage 3 (S600 equivalent)**: SPRT vs canonical S600. If
+  stages 2 and 3 both look promising, proceed to stage 4.
+- **After stage 4 (S800 equivalent)**: SPRT vs canonical prod S800.
+  This is the headline test — if H1, multi-stage banks Elo on top of
+  prod's single-cosine.
+
+### Wall-clock estimate (if all stages pass)
+
+- Training: ~12-16h (4 × 3-4h per S200 stage on 5070 Ti)
+- SPRTs: ~30h (3 stage-transition SPRTs × ~10h each)
+- Total: ~2 days end-to-end with fail-fast at S400
+
+### Risks
+
+- **LR-restart shock**: stage 2's peak LR (0.5e-3) is ~200× baby-prod's
+  endpoint (2.43e-6). The 10-SB warmup ramps from 0 → peak, but the
+  first few SBs of stage 2 see gradient updates that could destabilize
+  converged weights. **Mitigation**: if loss spikes early in stage 2
+  and doesn't recover within ~30 SBs, drop stage 2 peak to 3e-4 (more
+  conservative restart) and re-train stage 2 only.
+- **Recipe drift**: confirm baby-prod's checkpoint format is
+  compatible with `--resume-from` in the current Bullet trainer.
+- **Determinism**: each stage uses `--seed 42` but the multi-stage
+  resume changes data shuffle continuity. Comparison vs canonical
+  e400s400 (which uses a single-stage seed=42) is paired-probe-fair
+  in distribution, but bit-different in seed trajectory.
+
+### Cross-axis interaction (worth noting)
+
+If fen-skip-0.75 turns out to help at S800 (post-retune of the
+fenskip-0.75-S800 bundle), multi-stage on top of fen-skip might
+compound — each restart gives fresh exploration AND the data
+decorrelation continues throughout. Could be a follow-on experiment
+if both Tier 1 (fen-skip) and Tier 4 (multi-stage) land positive
+independently.
+
 ## Open questions / risks
 
 - **Reproducibility**: all recipes use `--seed 42` which fixes the data
