@@ -528,6 +528,22 @@ pub struct PruneStats {
     pub cutoff_movecount_sum: u64,
 }
 
+/// Forced-move detection state (Viridithas pattern, set by `detect_forced_move`).
+/// Once a position is classified at the root, the result is sticky for the rest of
+/// the search — both the verification's TT pollution and the result itself are
+/// monotonic. `None` is the default; once `Weak` or `Strong` is observed, the TM
+/// multiplier scales down accordingly.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum ForcedState {
+    None,
+    /// Best alternative was within `SLIGHTLY_FORCED_MARGIN` of TT score at depth ≥ 12.
+    /// Multiplier reduces soft by ~37% (Viridithas: 627/1000).
+    Weak,
+    /// Best alternative collapsed by ≥ `VERY_FORCED_MARGIN` at depth ≥ 8.
+    /// Multiplier reduces soft by ~61% (Viridithas: 386/1000).
+    Strong,
+}
+
 /// Search state for one thread.
 pub struct SearchInfo {
     pub nodes: u64,
@@ -558,6 +574,13 @@ pub struct SearchInfo {
     /// (which tracks CONSECUTIVE stable iterations and reduces time);
     /// this tracks TOTAL changes and increases time.
     tm_best_move_changes: u32,
+    /// Forced-move detection state (Viridithas pattern). Set after an ID iteration
+    /// at the root when `detect_forced_move` finds that excluding the current best
+    /// move collapses the alternative score by a meaningful margin. Sticky once
+    /// set — verification only fires while state == None and depth ≥ 8. Drives a
+    /// downward multiplier in the TM scale; this is the position-intrinsic signal
+    /// Coda was missing (every other signal is search-progress-derived).
+    tm_forced_state: ForcedState,
     tm_has_data: bool,
     soft_limit: u64,  // ms — can be extended/shortened dynamically
     hard_limit: u64,  // ms — absolute maximum
@@ -654,6 +677,7 @@ impl SearchInfo {
             move_overhead: 100,
             tm_prev_best: NO_MOVE,
             tm_best_move_changes: 0,
+            tm_forced_state: ForcedState::None,
             tm_prev_score: 0,
             tm_best_stable: 0,
             tm_has_data: false,
@@ -1437,7 +1461,14 @@ pub fn compute_tm_budgets(
     //      that lets the cap widen without recreating v1's blitz
     //      catastrophe.
     if movestogo == 0 {
-        let estimated_spm_ms = time_left / 25;
+        // Inc-aware per-move estimate: 1m+5s plays nothing like 1m+0s.
+        // The natural per-move budget is base/25 + inc (you regain the
+        // inc each move). Without including inc, a 1m+5s game was being
+        // classified as "blitz" (60s/25 = 2.4s → 9% pct_cap = 5.4s),
+        // and soft was clamped to a 5.4s hard cap while soft_floor at
+        // ~4.9s left a <500ms variance band — observed on lichess as
+        // "always uses 5s per move" at 1m+5s.
+        let estimated_spm_ms = time_left / 25 + our_inc;
         // TC-aware hard multiplier × 10 (integer math). Conservative
         // initial values; SPSA-tunable later.
         let hard_mult_x10: u64 = if estimated_spm_ms < 2000 { 20 }       // bullet 2.0×
@@ -1493,11 +1524,15 @@ pub fn compute_tm_budgets(
     // and try to spend more than the absolute cap.
     if soft > hard { soft = hard; }
 
-    // Soft floor: never spend less than the increment we gain, so the
-    // dynamic stability cut can't produce clock-growing instant emits
-    // in stable endgames (lichess PZ7pCyrx stockpile). Capped at hard
-    // to preserve the absolute maximum. Zero when inc <= overhead.
-    let soft_floor = our_inc.saturating_sub(overhead).min(hard);
+    // Soft floor: prevents instant-emit stockpile in stable endgames
+    // (lichess PZ7pCyrx) without crushing downward variance. Set at
+    // half the increment (overhead-adjusted) so dynamic stability cuts
+    // can take spend down to ~50% of inc, but no further. The old
+    // full-inc floor (`our_inc - overhead`) collapsed the variance band
+    // at high-inc TCs — 1m+5s was floored at 4.9s and capped near 5.4s,
+    // leaving no room for position-aware variance. Capped at hard.
+    // Zero when (inc - overhead) ≤ 1.
+    let soft_floor = (our_inc.saturating_sub(overhead) / 2).min(hard);
 
     (soft, hard, soft_floor)
 }
@@ -1640,6 +1675,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.tm_has_data = false;
     info.tm_best_stable = 0;
     info.tm_best_move_changes = 0;
+    info.tm_forced_state = ForcedState::None;
 
     // Mirror search()'s threat setup — helpers must evaluate consistently
     // with main or shared-TT entries disagree and search diverges at T>1.
@@ -1768,6 +1804,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.tm_prev_score = 0;
     info.tm_best_stable = 0;
     info.tm_best_move_changes = 0;
+    info.tm_forced_state = ForcedState::None;
     info.tm_has_data = false;
     // Reset per-root-move node counts
     for v in info.root_move_nodes.iter_mut() { *v = 0; }
@@ -2118,6 +2155,76 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             0
         };
 
+        // Forced-move detection (Viridithas pattern). Once-per-search verification
+        // that the chosen best move is meaningfully better than all alternatives.
+        // Fires at depth boundaries 8+ (state == None), excludes best_move at root,
+        // and runs a narrow-window search at reduced depth. If the alternative
+        // collapses by `margin` or more, the position is "forced" and the TM
+        // multiplier scales soft DOWN — this is the position-intrinsic signal
+        // Coda was missing (every other signal is search-progress-derived,
+        // correlated with stability_factor).
+        //
+        // - Strong (depth 8-11, margin 400cp): soft × 0.386
+        // - Weak   (depth 12+,   margin 170cp): soft × 0.627
+        //
+        // Sticky once set — the verification itself is expensive (depth ~3-5
+        // re-search with NMP/RFP/probcut gated by excluded_move) so we run it
+        // at most once per search. Skip for mate scores and early depths.
+        // TC gate (Phase 6b, 2026-05-22): skip the detector when the floor
+        // already occupies ≥ 1/3 of the soft budget. At high-inc TCs (e.g.
+        // 60+5 → floor 2.45s vs soft 6.4s = 38%) the detector's downward
+        // multiplier can't actually push adjusted_soft below the floor by a
+        // meaningful amount — verification cost is paid but actual spend
+        // barely changes. Local 60+5 RR (n=170) showed phase6 (with detector)
+        // 13 Elo worse than phase6a (floor only) at that TC. At low-inc TCs
+        // the floor fraction stays small and the detector pays back (LTC
+        // SPRT delta phase6 − phase6a = +2.8 Elo).
+        //
+        // Behaviour table:
+        // 60+5: floor/soft = 0.38 → skip
+        // 60+1: floor/soft = 0.14 → fire
+        // LTC:  floor/soft = 0.00 → fire
+        let floor_dominates = info.soft_floor * 3 >= info.soft_limit;
+        if info.tm_forced_state == ForcedState::None
+            && depth >= 8
+            && best_move != NO_MOVE
+            && info.soft_limit > 0
+            && !floor_dominates
+            && !info.should_stop()
+            && !is_mate_score(prev_score)
+        {
+            const FORCED_MARGIN_WEAK: i32 = 170;
+            const FORCED_MARGIN_STRONG: i32 = 400;
+            let margin = if depth >= 12 { FORCED_MARGIN_WEAK } else { FORCED_MARGIN_STRONG };
+            let r_beta = (prev_score - margin).max(-MATE_SCORE + 1);
+            // Viridithas r_depth: (min(12, depth-1) - 1) / 2 — caps verification at depth 5.
+            let r_depth = (depth.min(13) - 2) / 2;
+
+            // Save PV state — the verification call at ply=0 will overwrite
+            // pv_table[0] with the alternative line, which corrupts the
+            // bestmove path. Save and restore around the call.
+            let saved_pv_len = info.pv_len[0];
+            let mut saved_pv: [Move; MAX_PLY + 1] = [NO_MOVE; MAX_PLY + 1];
+            for i in 0..saved_pv_len { saved_pv[i] = info.pv_table[0][i]; }
+
+            info.excluded_move[0] = best_move;
+            let value = negamax(board, info, r_beta - 1, r_beta, r_depth, 0, false);
+            info.excluded_move[0] = NO_MOVE;
+
+            // Restore PV state regardless of stop flag (the saved PV is the
+            // current iteration's completed result).
+            info.pv_len[0] = saved_pv_len;
+            for i in 0..saved_pv_len { info.pv_table[0][i] = saved_pv[i]; }
+
+            if !info.stop.load(Ordering::Relaxed) && value < r_beta {
+                info.tm_forced_state = if depth >= 12 {
+                    ForcedState::Weak
+                } else {
+                    ForcedState::Strong
+                };
+            }
+        }
+
         // Dynamic time management: 3-factor model (Obsidian/Clarity pattern)
         // Combines node fraction, best-move stability, and score trend.
         if info.soft_limit > 0 && depth >= 4 && !info.should_stop() {
@@ -2163,11 +2270,29 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // flips between iterations since search start, reset at `go`.
             let bmc_factor = (1.0 + info.tm_best_move_changes as f64 / 4.0).min(2.5);
 
-            // Combined: all four factors multiply against the soft limit.
+            // Factor 5: Forced-move downward boost (Viridithas pattern,
+            // Phase 6 TM redesign). When the verification above has
+            // classified the position as forced, scale down decisively.
+            // Numbers verbatim from Viridithas (per-mille → fraction):
+            //   Strong (depth 8-11):  0.386 — best alternative was -400cp
+            //   Weak   (depth 12+):   0.627 — best alternative was -170cp
+            // This is the orthogonal downward signal: stability/score-factor
+            // both REACT to the search settling, while forced-state CAUSES
+            // a single discrete drop based on whether other moves are
+            // verifiably worse. Tying time-spend to position-intrinsic
+            // shape decorrelates adjacent-move spend (the autocorrelation
+            // gap to top engines).
+            let forced_factor = match info.tm_forced_state {
+                ForcedState::Strong => 0.386,
+                ForcedState::Weak   => 0.627,
+                ForcedState::None   => 1.0,
+            };
+
+            // Combined: all five factors multiply against the soft limit.
             // adjusted_soft is downstream-clamped to hard_limit, so this
             // factor pushes us toward the existing hard cap on tactical
             // positions but cannot exceed it.
-            let scale = nodes_factor * stability_factor * score_factor * bmc_factor;
+            let scale = nodes_factor * stability_factor * score_factor * bmc_factor * forced_factor;
 
             // Check if we should stop at the soft limit.
             // Floor at soft_floor (≈ increment) so stability cuts in stable
