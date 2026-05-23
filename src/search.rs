@@ -135,6 +135,15 @@ tunables!(
     (SE_DEPTH_10X, 45, 40, 200, 20.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, false),
+    // Phase 9: thresholded aspiration-fail-low signal for TM. Fires
+    // an upward multiplier when the ID loop accumulates more than
+    // TM_ASP_THRESHOLD fail-lows in the current search — empirical
+    // analysis shows top-decile (asp_fl ≥ 14) catches a position class
+    // largely orthogonal to bmc.
+    (TM_ASP_THRESHOLD, 14, 5, 30, 1.5, false),
+    // Phase 9: multiplier value × 10 when asp threshold tripped.
+    // 13 → 1.3×. Capped via combined hard_limit downstream.
+    (TM_ASP_MULT_10X, 13, 10, 25, 1.0, false),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
     // use LMP_BASE=3 with the same `(BASE + d²)/(2 - improving)` formula.
     // Coda's 9 is 3× consensus at d=1: allows 5-10 quiets vs SF's 2-4.
@@ -366,6 +375,9 @@ pub fn tp10(param: &AtomicI32) -> i32 {
 
 // Feature flags for ablation testing. All true = normal play.
 pub static FEAT_NMP: AtomicBool = AtomicBool::new(true);
+/// TM diagnostic mode — emit per-move TM state via `info string tm-debug`.
+/// Off by default, controlled by UCI option `TMDebug`.
+pub static TM_DEBUG: AtomicBool = AtomicBool::new(false);
 pub static FEAT_RFP: AtomicBool = AtomicBool::new(true);
 pub static FEAT_PROBCUT: AtomicBool = AtomicBool::new(true); // re-enabled after fixing missing qsearch filter, SEE threshold, and excluded_move guard
 pub static FEAT_LMR: AtomicBool = AtomicBool::new(true);
@@ -535,7 +547,7 @@ pub struct PruneStats {
 /// the search — both the verification's TT pollution and the result itself are
 /// monotonic. `None` is the default; once `Weak` or `Strong` is observed, the TM
 /// multiplier scales down accordingly.
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum ForcedState {
     None,
     /// Best alternative was within `SLIGHTLY_FORCED_MARGIN` of TT score at depth ≥ 12.
@@ -569,6 +581,17 @@ pub struct SearchInfo {
     tm_prev_best: Move,
     tm_prev_score: i32,
     tm_best_stable: i32,
+    /// Cumulative count of aspiration fail-lows in the current search.
+    /// Reset at search start. Drives the Phase 9 thresholded upward
+    /// multiplier when count exceeds TM_ASP_THRESHOLD — empirical
+    /// analysis shows top-decile asp_fl identifies a position class
+    /// largely orthogonal to bmc.
+    tm_asp_fail_low: u32,
+    /// Cumulative count of aspiration fail-highs in the current search.
+    /// Currently diagnostic-only; not used by TM yet (asymmetric vs
+    /// fail-low because fail-high means we found a BETTER move than
+    /// expected — already captured by score_factor's upward sense).
+    tm_asp_fail_high: u32,
     /// Cumulative count of root best-move changes between iterations,
     /// reset at search start. Drives a Reckless/Stockfish-style upward
     /// multiplier on tactical/unstable positions (Phase 1 TM redesign,
@@ -689,6 +712,8 @@ impl SearchInfo {
             tm_forced_state: ForcedState::None,
             tm_prev_score: 0,
             tm_best_stable: 0,
+            tm_asp_fail_low: 0,
+            tm_asp_fail_high: 0,
             tm_has_data: false,
             soft_limit: 0,
             hard_limit: 0,
@@ -1719,6 +1744,8 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.tm_has_data = false;
     info.tm_best_stable = 0;
     info.tm_best_move_changes = 0;
+    info.tm_asp_fail_low = 0;
+    info.tm_asp_fail_high = 0;
     info.tm_forced_state = ForcedState::None;
 
     // Mirror search()'s threat setup — helpers must evaluate consistently
@@ -1761,9 +1788,11 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
                     break;
                 }
                 if result <= alpha {
+                    info.tm_asp_fail_low = info.tm_asp_fail_low.saturating_add(1);
                     beta = (3 * alpha + 5 * beta) / 8;
                     alpha = (result - delta).max(-INFINITY);
                 } else if result >= beta {
+                    info.tm_asp_fail_high = info.tm_asp_fail_high.saturating_add(1);
                     alpha = (5 * alpha + 3 * beta) / 8;
                     beta = (result + delta).min(INFINITY);
                     asp_depth = (asp_depth - 1).max(1);
@@ -1848,6 +1877,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.tm_prev_score = 0;
     info.tm_best_stable = 0;
     info.tm_best_move_changes = 0;
+    info.tm_asp_fail_low = 0;
+    info.tm_asp_fail_high = 0;
     info.tm_forced_state = ForcedState::None;
     info.tm_has_data = false;
     // Reset per-root-move node counts
@@ -1901,6 +1932,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.tm_has_data = false;
         info.tm_best_stable = 0;
         info.tm_best_move_changes = 0;
+        info.tm_asp_fail_low = 0;
+        info.tm_asp_fail_high = 0;
     } else if !limits.infinite {
         // No clock info (e.g. `go depth N` or `go nodes N`). Already zeroed
         // above; explicit reset kept for clarity.
@@ -1996,10 +2029,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 }
 
                 if result <= alpha {
+                    info.tm_asp_fail_low = info.tm_asp_fail_low.saturating_add(1);
                     // Fail low: contract beta aggressively toward alpha, widen alpha
                     beta = (3 * alpha + 5 * beta) / 8;
                     alpha = (result - delta).max(-INFINITY);
                 } else if result >= beta {
+                    info.tm_asp_fail_high = info.tm_asp_fail_high.saturating_add(1);
                     // Fail high: contract alpha toward beta, widen beta
                     alpha = (5 * alpha + 3 * beta) / 8;
                     beta = (result + delta).min(INFINITY);
@@ -2350,6 +2385,21 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // verifiably worse. Tying time-spend to position-intrinsic
             // shape decorrelates adjacent-move spend (the autocorrelation
             // gap to top engines).
+            // Factor 6: Aspiration-fail-low threshold (Phase 9, 2026-05-23).
+            // Fires ONLY when accumulated asp_fl exceeds the threshold —
+            // empirical analysis (358-move 30+0.5 RR) showed asp_fl > 14
+            // identifies top-decile difficulty positions largely
+            // orthogonal to bmc. The cumulative count fires on 75% of
+            // moves so we MUST threshold to keep selectivity (else we'd
+            // just push every move toward hard_limit). Naive use of this
+            // signal in Phase 5h regressed; this thresholded version
+            // targets the same intent more carefully.
+            let asp_factor = if info.tm_asp_fail_low > tp(&TM_ASP_THRESHOLD) as u32 {
+                tp(&TM_ASP_MULT_10X) as f64 / 10.0
+            } else {
+                1.0
+            };
+
             let forced_factor = match info.tm_forced_state {
                 ForcedState::Strong => 0.386,
                 ForcedState::Weak   => 0.627,
@@ -2360,7 +2410,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // adjusted_soft is downstream-clamped to hard_limit, so this
             // factor pushes us toward the existing hard cap on tactical
             // positions but cannot exceed it.
-            let scale = nodes_factor * stability_factor * score_factor * bmc_factor * forced_factor;
+            let scale = nodes_factor * stability_factor * score_factor * bmc_factor * forced_factor * asp_factor;
 
             // Check if we should stop at the soft limit.
             // Floor at soft_floor (≈ increment) so stability cuts in stable
@@ -2418,6 +2468,45 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             if elapsed_since_tm >= info.soft_floor { break; }
             let remaining = info.soft_floor - elapsed_since_tm;
             std::thread::sleep(std::time::Duration::from_millis(remaining.min(25)));
+        }
+    }
+
+    // TM diagnostic: one-line per-move summary of the TM signals that
+    // fired during this search. Gated by UCI option TMDebug — default
+    // off. Format is parseable: key=value space-separated, prefixed by
+    // `info string tm-debug` so cutechess captures it.
+    if TM_DEBUG.load(Ordering::Relaxed) {
+        use std::io::Write;
+        let total_elapsed = info.start_time.elapsed().as_millis() as u64;
+        let elapsed_since_tm = total_elapsed.saturating_sub(info.tm_baseline);
+        // Append to /tmp/coda_tm_debug.log — cutechess strips `info string`
+        // from its own log, so writing to a file is the most reliable way
+        // to collect per-move data across a gauntlet. File path is fixed
+        // for simplicity; concurrent processes append safely (single
+        // small line at a time, no fsync needed for diagnostics).
+        let path = format!("/tmp/coda_tm_debug_{}.log", std::process::id());
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true).append(true).open(&path) {
+            let _ = writeln!(
+                f,
+                "tm-debug depth={} bestmove={} score={} \
+                 elapsed={} elapsed_since_ph={} soft={} hard={} floor={} \
+                 tm_baseline={} stab={} bmc={} asp_fl={} asp_fh={} forced={:?}",
+                info.completed_depth,
+                move_to_uci(best_move),
+                info.last_score,
+                total_elapsed,
+                elapsed_since_tm,
+                info.soft_limit,
+                info.hard_limit,
+                info.soft_floor,
+                info.tm_baseline,
+                info.tm_best_stable,
+                info.tm_best_move_changes,
+                info.tm_asp_fail_low,
+                info.tm_asp_fail_high,
+                info.tm_forced_state,
+            );
         }
     }
 

@@ -163,6 +163,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("option name TBHash type spin default 16 min 0 max 1024");
                 println!("option name HiddenActivation type combo default screlu var screlu var crelu");
                 println!("option name LoadAnyway type check default false");
+                println!("option name TMDebug type check default false");
                 // Tunable search parameters (for SPSA)
                 for (name, _, default, min, max, _c_end, _is_core) in crate::search::tunable_params() {
                     println!("option name {} type spin default {} min {} max {}", name, default, min, max);
@@ -946,6 +947,15 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
             let on = value.eq_ignore_ascii_case("true");
             crate::nnue::LOAD_ANYWAY.store(on, std::sync::atomic::Ordering::Relaxed);
             println!("info string LoadAnyway = {}", on);
+        }
+        "TMDebug" => {
+            // Diagnostic: emit per-move TM state via `info string tm-debug`
+            // before bestmove. Useful for investigating which TM signals
+            // fire when and how big the multipliers grow. Off by default
+            // since OB/SPRT runs should not have noisy output.
+            let on = value.eq_ignore_ascii_case("true");
+            crate::search::TM_DEBUG.store(on, std::sync::atomic::Ordering::Relaxed);
+            println!("info string TMDebug = {}", on);
         }
         _ => {
             // Check tunable search parameters
