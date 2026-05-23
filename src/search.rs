@@ -3730,7 +3730,14 @@ fn negamax(
         let endgame_threshold = tp10(&LMR_ENDGAME_PIECES_10X) as u32;
         let is_endgame_skip = endgame_threshold > 0
             && crate::bitboard::popcount(board.occupied()) <= endgame_threshold;
-        if !in_check && !is_cap && !is_promo && !is_endgame_skip && FEAT_LMR.load(Ordering::Relaxed) {
+        // Explicit `move_count > 1 && mv != tt_move` guards (defensive,
+        // bench-neutral). Currently safe via LMR_TABLE zero-init at
+        // depth<3 / move<3, but if the table is ever populated differently
+        // this would start reducing the TT move. Mirrors the capture-LMR
+        // gate at line ~3768 for symmetry.
+        if !in_check && !is_cap && !is_promo && !is_endgame_skip
+            && move_count > 1 && mv != tt_move
+            && FEAT_LMR.load(Ordering::Relaxed) {
             let d = (depth as usize).min(63);
             let m = (move_count as usize).min(63);
             reduction = lmr_reduction(d as i32, m as i32);
