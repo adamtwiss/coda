@@ -4241,6 +4241,14 @@ fn quiescence_with_depth(
     if board.halfmove >= 100 {
         return draw_score;
     }
+    // FIDE Art 5.2: insufficient material to mate (any side). Mirrors
+    // negamax's guard (added for Lichess game I4qJhfQw drawn KB-vs-K
+    // class). QS recurses capture chains that can transition into drawn
+    // KvK / KBvK / KBvKB-same-color without ever re-entering negamax's
+    // check, so the parallel guard is needed here too.
+    if board.is_insufficient_material() {
+        return draw_score;
+    }
     // Check for repetition in game history.
     // C8 audit LIKELY #38: also break on null-move boundary — scanning
     // past a null move looks for repetitions in a different search line.
