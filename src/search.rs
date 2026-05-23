@@ -2980,6 +2980,15 @@ fn negamax(
                 info.stats.nmp_verify += 1;
                 // Verification re-searches current position (no move made), so ply stays same
                 let v_score = negamax(board, info, beta - 1, beta, depth - r, ply, false);
+                // Stop-during-verification returns 0 from negamax; with
+                // beta <= 0 (fail-low re-searches / losing branches),
+                // `0 >= beta` is true and we'd return `nmp_score` (the
+                // unverified null_score) as a real cutoff. Mirror the
+                // post-recursion stop-check pattern used at every other
+                // negamax call site in this function.
+                if info.stop.load(Ordering::Relaxed) {
+                    return 0;
+                }
                 if v_score >= beta {
                     info.stats.nmp_cutoffs += 1;
                     return nmp_score;
