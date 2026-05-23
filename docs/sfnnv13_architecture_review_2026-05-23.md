@@ -254,24 +254,46 @@ SF docs document Quantmoid4 (piecewise quadratic approximation of
 sigmoid(4x)) but **don't deploy it in v13**. Treated as historical.
 Don't reinvest.
 
-### FT widening to 1024 — Coda's own prior experiment was net-negative
+### FT widening to 1024 — S200 test was net-negative; S800 retest open
 
-Per our prior testing: FT=1024 produced better eval (better bench-stats)
-but slower NPS, net down a few Elo. This is consistent with the
-data-limited-can't-support-wider-FT framing:
+**Prior test: #1100, H0 at −7.22 Elo at S200** (https://ob.atwiss.com/test/1100/).
+Bench-stats showed better eval, but combined with the NPS penalty
+(wider FT = slower inference) the net effect was negative.
 
-- At FT=1024, capacity exceeds what our 25B filtered positions can
-  train productively
-- Extra weights don't fully calibrate
-- NPS cost is real and immediate
-- Net: marginal negative
+**Important context**:
+- That test was at **S200**, where canonical training itself is
+  under-trained. A wider FT at S200 is doubly under-trained — more
+  weights to calibrate against the same insufficient data + training
+  budget.
+- The NPS penalty was at our then-current SIMD specialization. Some
+  of that cost is recoverable with FT=1024-aware kernels.
+- We never re-ran the experiment at **S800** scale, where the wider
+  FT might actually train to fit usefully.
 
-SF's FT=1024 works for them because they have **~200B unique positions
-(8× ours)** AND deployment hardware where NPS is less sensitive. Our
-architecture should be calibrated to OUR data scale.
+So the prior result is **not a definitive "FT=1024 is wrong for us"
+verdict**. It's evidence that "FT=1024 + S200 + current SIMD" is
+net-negative. The S800 picture, especially with retune-on-branch +
+SIMD specialization, is unknown.
 
-**Don't chase FT-width parity with SF** until data scales. The +15 Elo
-per data-doubling lever is the prerequisite for FT=1024 paying off.
+**Open questions for a future S800 FT=1024 retest**:
+1. Does S800 give the wider FT enough training to actually outperform
+   FT=768? (Loss curve at S800 would tell us if FT=1024 has saturated
+   training or is still gaining.)
+2. After SIMD specialization for FT=1024-shape inference, what's the
+   real NPS cost?
+3. Does retune-on-branch (the pattern we've established for major
+   bench shifts) close the Elo gap?
+
+**Why this isn't Tier 1 today**: substantial experiment cost (full S800
+train + retune + SIMD work, several days end-to-end). Lower priority
+than PSQT / dual-activation / L1=32 SIMD which are cheaper. **Park as
+medium-term S800 retest** once the cheaper architecture experiments
+have resolved and we have more bandwidth.
+
+**SF's FT=1024 works for them with ~200B unique positions (8× ours).**
+At our data scale, FT=1024 might land net-positive at S800 (or might
+still be data-starved). Without retesting at S800 we don't know.
+**The +15 Elo per data-doubling lever amplifies any future FT=1024 retest.**
 
 ---
 
@@ -307,24 +329,34 @@ and beyond that is data-axis territory.
 These five experiments close most of the structural gap to SFNNv13 at
 our data scale.
 
-### What NOT to chase
+### What NOT to chase (currently)
 
-- **FT widening to 1024** — we tested, net-negative
-- **King-threat exclusion in v10** — SF tested, no gain
-- **Quantmoid4** — SF removed it
+- **King-threat exclusion in v10** — SF tested, no gain. Definitive.
+- **Quantmoid4** — SF removed it from production.
 - **Aggressive weight pruning / structured sparsity** — SF documents
-  but doesn't deploy in v13; our group-lasso explorations parallel
+  but doesn't deploy in v13; our group-lasso explorations parallel.
 
-### Data-axis-gated future work
+### Queue for later (deferred, not closed)
 
-These require more unique data first (~50B+ filtered) before they make
-sense:
+- **FT widening to 1024** — prior S200 test was −7.22, but at S200
+  the wider FT was data-starved + NPS-penalty-uncovered. Worth an
+  S800 retest with retune-on-branch + SIMD work for the new shape.
+  Bigger experiment than Tier 1 candidates; defer until those settle.
+- **Multi-stage training (Tier 4)** — per `docs/sf_recipe_experiments_2026-05-22.md`,
+  in progress as of 2026-05-23.
+- **Half-data multi-stage with fenskip** — in progress as of 2026-05-23.
 
-- **FT widening to 1024** (revisit once data supports the capacity)
-- **L1 regularization** (only valuable when capacity exceeds data
-  ability to constrain)
-- **Multi-stage training past S800 with fenskip** (the under-data
-  regime fenskip needs)
+### Future work amplified by data-axis growth
+
+These become MORE attractive as we add data (~50B+ filtered):
+
+- **FT widening to 1024** — capacity makes sense once data supports it.
+- **L1 regularization** — only valuable when capacity exceeds data
+  ability to constrain.
+- **Fen-skip-at-S800** — only works in under-data regime, which
+  doubling data restores.
+- **Multi-stage training past S800** — the recipe-side scaling SF uses
+  requires their data scale.
 
 ---
 
