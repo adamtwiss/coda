@@ -590,6 +590,13 @@ pub struct SearchInfo {
     /// which would grow the clock instead of spending it (stockpile). 0 when
     /// there is no increment.
     soft_floor: u64,
+    /// True when our increment is exactly zero (lichess 3+0, 60+0, 180+0,
+    /// tournament 40/15). Tightened gate (2026-05-23) replacing the earlier
+    /// `soft_floor == 0` form, which incidentally captured STC 10+0.1
+    /// (inc == overhead == 100ms → soft_floor=0 by coincidence) and disabled
+    /// the forced-move detector at our SPRT TC, costing ~3 Elo at STC for
+    /// reasons orthogonal to the lichess no-inc fix.
+    tm_no_inc: bool,
     /// Per-root-move node counts for node-based time management.
     /// Indexed by from_sq * 64 + to_sq. Reset each search.
     root_move_nodes: Box<[u64; 4096]>,
@@ -684,6 +691,7 @@ impl SearchInfo {
             soft_limit: 0,
             hard_limit: 0,
             soft_floor: 0,
+            tm_no_inc: false,
             root_move_nodes: alloc_zeroed_box(),
             ponderhit_time: std::sync::Arc::new(AtomicU64::new(0)),
             ponderhit_soft: std::sync::Arc::new(AtomicU64::new(0)),
@@ -1861,6 +1869,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.soft_limit = 0;
     info.hard_limit = 0;
     info.soft_floor = 0;
+    info.tm_no_inc = false;
     info.tm_baseline = 0;
 
     if limits.infinite {
@@ -1877,6 +1886,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.soft_limit = soft;
         info.hard_limit = hard;
         info.soft_floor = soft_floor;
+        info.tm_no_inc = our_inc == 0 && limits.movestogo == 0;
         info.time_limit = hard; // search uses hard as absolute limit
         info.tm_has_data = false;
         info.tm_best_stable = 0;
@@ -2218,13 +2228,14 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // to recover spent time, this cumulative overhead drains the
         // clock and causes time forfeits.
         //
-        // Detection: `soft_floor == 0` triggers when `inc <= overhead`
-        // (i.e. inc <= 100ms by default), which captures all no-inc TCs
-        // including 1+0.1 ultra-bullet. At LTC 40+0.4, soft_floor=150ms
-        // so gate doesn't fire → detector runs normally at SPRT TC.
-        // At lichess 3+2 / 60+1, soft_floor is positive → detector runs.
+        // Earlier (also 2026-05-23) used `info.soft_floor == 0`, which
+        // incidentally fired at STC 10+0.1 because `inc == overhead ==
+        // 100ms` made `soft_floor=0` by coincidence — SPRT #1475 caught
+        // this, the gate was disabling the forced-move detector at STC
+        // (~-3 Elo). Now keyed directly on `tm_no_inc`, which is true
+        // only when our increment is exactly zero (sudden-death).
         let floor_dominates = info.soft_floor * 3 >= info.soft_limit;
-        let no_inc = info.soft_floor == 0;
+        let no_inc = info.tm_no_inc;
         if info.tm_forced_state == ForcedState::None
             && depth >= 8
             && best_move != NO_MOVE
