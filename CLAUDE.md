@@ -414,6 +414,20 @@ Warnings accumulate into noise that masks real issues. Fix or
 
 ## Testing Methodology
 
+### → Before any OB operation: invoke the `ob` skill
+
+For all OpenBench operations (submitting SPRTs, submitting SPSA tunes,
+benching for OB, stopping tests, reading results), invoke the **`ob`
+skill** at `.claude/skills/ob.md`. It is the canonical reference for
+OB usage and supersedes any scattered per-Claude memories on the topic.
+
+The skill covers: bench measurement (including the critical
+net-override case), SPRT submission with the bounds policy, SPSA tune
+submission, stopping tests, reading results with early-N caveats,
+common failure modes. **Recurring bench-mismatch and stop-didn't-stop
+issues have been from skipping this skill** — invoking it first is
+cheap and prevents the failure modes.
+
 ### Self-Play SPRT (primary acceptance test)
 
 Narrow cross-engine gauntlets (3 engines, 200 games) overfit to specific
