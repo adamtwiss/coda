@@ -2369,6 +2369,16 @@ fn negamax(
 ) -> i32 {
     let ply_u = ply as usize;
 
+    // Reset PV length FIRST — before any early return below — so the parent's
+    // PV propagation reads `pv_len[ply_u+1] == 0` for nodes that take a
+    // short-circuit path (draw, MAX_PLY, mate-dist). Without this, a child
+    // early-return leaves stale pv_len from a prior sibling at this ply, and
+    // the parent copies illegal moves out of pv_table[ply_u+1]. Symptom was
+    // "Illegal PV move" warnings from cutechess at root.
+    if ply_u <= MAX_PLY {
+        info.pv_len[ply_u] = 0;
+    }
+
     // Drawn-position detection must run BEFORE the MAX_PLY guard. At ply
     // >= MAX_PLY in drawn-material or repetition positions, the fall-back
     // `apply_halfmove_scale(info.eval(board), halfmove)` returns a possibly-
@@ -2462,10 +2472,7 @@ fn negamax(
         0
     };
 
-    // Clear PV for this node
-    if ply_u <= MAX_PLY {
-        info.pv_len[ply_u] = 0;
-    }
+    // (PV length already cleared at function entry, before early returns.)
 
     // Track seldepth
     if ply > info.sel_depth {
