@@ -186,7 +186,15 @@ ob_submit.py main <dev_bench_with_dev_net> \
 **Both benches MUST be measured with the corresponding net loaded
 via `-n`**. See §2.2.
 
-### 3.4. Always: 5-min /errors/ check after submit
+### 3.4. Priority — same for concurrent tests
+
+OB workers all go to the highest priority test. If you submit two
+tests with different `--priority` values, all workers pick the
+higher-priority one and the lower one gets zero workers. **Use the
+same `--priority` for concurrent tests** (default: 0). Vary priority
+only when you explicitly want one test to drain workers first.
+
+### 3.5. Always: 5-min /errors/ check after submit
 
 Workers report Wrong-Bench and other errors **asynchronously** —
 the test page shows "ACTIVE 0 games" and looks like it's just waiting.
