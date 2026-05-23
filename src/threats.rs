@@ -287,18 +287,39 @@ impl PiecePair {
     }
 }
 
-// Static lookup tables — initialised once at startup.
-static mut PIECE_PAIR_LOOKUP: [[PiecePair; NUM_COLORED_PIECES]; NUM_COLORED_PIECES] =
-    [[PiecePair { inner: 0 }; NUM_COLORED_PIECES]; NUM_COLORED_PIECES];
-static mut PIECE_OFFSET_LOOKUP: [[i32; 64]; NUM_COLORED_PIECES] = [[0; 64]; NUM_COLORED_PIECES];
-static mut ATTACK_INDEX_LOOKUP: [[[u8; 64]; 64]; NUM_COLORED_PIECES] = [[[0; 64]; 64]; NUM_COLORED_PIECES];
+// Static lookup tables — initialised once at startup via init_threats().
+//
+// Wrapped in OnceLock so that init's writes are visible to reader threads
+// with the correct Acquire/Release memory ordering (CLAUDE.md ARM-correctness
+// standard). The prior `static mut` form was technically a data race under
+// the Rust memory model — safe in practice because init happens on the main
+// thread before any helper search thread spawns, but the project standard is
+// explicit Acquire/Release on cross-thread shared atomics.
+//
+// Reads use `unwrap_unchecked` — init_threats() MUST be called from
+// `crate::init()` before any helper thread reads from these tables. Violating
+// that invariant is undefined behaviour.
+struct ThreatTables {
+    piece_pair: [[PiecePair; NUM_COLORED_PIECES]; NUM_COLORED_PIECES],
+    piece_offset: [[i32; 64]; NUM_COLORED_PIECES],
+    attack_index: [[[u8; 64]; 64]; NUM_COLORED_PIECES],
+    total_threat_features: usize,
+}
 
-/// Total number of threat features. Set during init_threats().
-static mut TOTAL_THREAT_FEATURES: usize = 0;
+static THREAT_TABLES: std::sync::OnceLock<ThreatTables> = std::sync::OnceLock::new();
+
+/// SAFETY: caller must ensure init_threats() has completed before invoking.
+#[inline(always)]
+fn get_threat_tables() -> &'static ThreatTables {
+    // SAFETY: init_threats() is called from `crate::init()` before any
+    // helper search threads spawn. OnceLock provides Acquire/Release
+    // ordering for the value, so the unchecked unwrap is safe post-init.
+    unsafe { THREAT_TABLES.get().unwrap_unchecked() }
+}
 
 /// Get the total threat feature count (call after init_threats).
 pub fn num_threat_features() -> usize {
-    unsafe { TOTAL_THREAT_FEATURES }
+    get_threat_tables().total_threat_features
 }
 
 /// Colored piece index: 0=WP, 1=WN, 2=WB, 3=WR, 4=WQ, 5=WK, 6=BP, ..., 11=BK
@@ -352,13 +373,19 @@ pub fn piece_attacks_occ(piece_type: u8, color: Color, sq: u32, occ: Bitboard) -
     }
 }
 
-/// Initialise threat feature lookup tables. Must be called at startup.
+/// Initialise threat feature lookup tables. Must be called at startup
+/// before any helper search thread spawns.
 pub fn init_threats() {
+    // Build locally, then publish via OnceLock for Acquire/Release ordering.
+    let mut piece_pair = [[PiecePair { inner: 0 }; NUM_COLORED_PIECES]; NUM_COLORED_PIECES];
+    let mut piece_offset_lookup = [[0i32; 64]; NUM_COLORED_PIECES];
+    let mut attack_index = [[[0u8; 64]; 64]; NUM_COLORED_PIECES];
+
     let mut offset: i32 = 0;
     let mut piece_offset = [0i32; NUM_COLORED_PIECES];
     let mut offset_table = [0i32; NUM_COLORED_PIECES];
 
-    // Build PIECE_OFFSET_LOOKUP: for each colored piece, for each square,
+    // Build piece_offset_lookup: for each colored piece, for each square,
     // how many attack squares exist below this square (cumulative count).
     for color in 0..2usize {
         for pt in 0..6usize {
@@ -366,7 +393,7 @@ pub fn init_threats() {
             let mut count: i32 = 0;
 
             for sq in 0..64u32 {
-                unsafe { PIECE_OFFSET_LOOKUP[cp][sq as usize] = count; }
+                piece_offset_lookup[cp][sq as usize] = count;
 
                 // Pawns on ranks 1 and 8 have no attacks (can't exist there)
                 if pt == 0 && (sq < 8 || sq >= 56) {
@@ -383,9 +410,9 @@ pub fn init_threats() {
         }
     }
 
-    unsafe { TOTAL_THREAT_FEATURES = offset as usize; }
+    let total_threat_features = offset as usize;
 
-    // Build PIECE_PAIR_LOOKUP: for each (attacker, victim) pair,
+    // Build piece_pair: for each (attacker, victim) pair,
     // compute the base index and exclusion flags.
     for attacking_cp in 0..NUM_COLORED_PIECES {
         let attacking_pt = piece_type_of(attacking_cp);
@@ -405,14 +432,12 @@ pub fn init_threats() {
                 && (enemy || attacking_pt != 0); // pawn-pawn same color not semi-excluded
             let excluded = map < 0;
 
-            unsafe {
-                PIECE_PAIR_LOOKUP[attacking_cp][attacked_cp] =
-                    PiecePair::new(excluded, semi_excluded, base);
-            }
+            piece_pair[attacking_cp][attacked_cp] =
+                PiecePair::new(excluded, semi_excluded, base);
         }
     }
 
-    // Build ATTACK_INDEX_LOOKUP: for each piece and source square,
+    // Build attack_index: for each piece and source square,
     // the ray index of each target square within the attack set.
     for cp in 0..NUM_COLORED_PIECES {
         for from in 0..64u32 {
@@ -420,13 +445,20 @@ pub fn init_threats() {
 
             for to in 0..64u32 {
                 let below_mask = if to > 0 { (1u64 << to) - 1 } else { 0 };
-                unsafe {
-                    ATTACK_INDEX_LOOKUP[cp][from as usize][to as usize] =
-                        popcount(below_mask & attacks) as u8;
-                }
+                attack_index[cp][from as usize][to as usize] =
+                    popcount(below_mask & attacks) as u8;
             }
         }
     }
+
+    // Publish — OnceLock provides Acquire/Release ordering so reader
+    // threads see the fully-constructed value.
+    let _ = THREAT_TABLES.set(ThreatTables {
+        piece_pair,
+        piece_offset: piece_offset_lookup,
+        attack_index,
+        total_threat_features,
+    });
 
     eprintln!("Threat features initialised: {} total", offset);
 }
@@ -457,26 +489,25 @@ pub fn threat_index(
         victim_cp
     };
 
-    unsafe {
-        let pair = PIECE_PAIR_LOOKUP[attacking][attacked];
-        // Semi-exclusion uses PHYSICAL squares to match Bullet training.
-        // Bullet decides once per pair using physical square ordering;
-        // both perspectives see the same decision. Previously we used
-        // perspective-flipped squares here, causing ~3-5% NTM feature
-        // mismatch vs training.
-        let base = pair.base(from, to);
-        if base < 0 {
-            return base; // excluded or semi-excluded pair
-        }
-
-        // Perspective flip for index computation only
-        let flip = (7 * mirrored as u32) ^ (56 * pov as u32);
-        let from_f = from ^ flip;
-        let to_f = to ^ flip;
-
-        base + PIECE_OFFSET_LOOKUP[attacking][from_f as usize]
-            + ATTACK_INDEX_LOOKUP[attacking][from_f as usize][to_f as usize] as i32
+    let tables = get_threat_tables();
+    let pair = tables.piece_pair[attacking][attacked];
+    // Semi-exclusion uses PHYSICAL squares to match Bullet training.
+    // Bullet decides once per pair using physical square ordering;
+    // both perspectives see the same decision. Previously we used
+    // perspective-flipped squares here, causing ~3-5% NTM feature
+    // mismatch vs training.
+    let base = pair.base(from, to);
+    if base < 0 {
+        return base; // excluded or semi-excluded pair
     }
+
+    // Perspective flip for index computation only
+    let flip = (7 * mirrored as u32) ^ (56 * pov as u32);
+    let from_f = from ^ flip;
+    let to_f = to ^ flip;
+
+    base + tables.piece_offset[attacking][from_f as usize]
+        + tables.attack_index[attacking][from_f as usize][to_f as usize] as i32
 }
 
 /// Enumerate all threat features active in a position.
@@ -697,20 +728,19 @@ fn threat_index_bullet_ref(
     let attacking = if pov == BLACK { (attacker_cp + 6) % 12 } else { attacker_cp };
     let attacked = if pov == BLACK { (victim_cp + 6) % 12 } else { victim_cp };
 
-    unsafe {
-        let pair = PIECE_PAIR_LOOKUP[attacking][attacked];
-        // The semi-excl decision is the one-and-only change vs Coda's
-        // current threat_index: use bf squares, not physical.
-        let base = pair.base(from_bf, to_bf);
-        if base < 0 {
-            return base;
-        }
-        let flip = (7 * mirrored as u32) ^ (56 * pov as u32);
-        let from_f = from_phys ^ flip;
-        let to_f = to_phys ^ flip;
-        base + PIECE_OFFSET_LOOKUP[attacking][from_f as usize]
-            + ATTACK_INDEX_LOOKUP[attacking][from_f as usize][to_f as usize] as i32
+    let tables = get_threat_tables();
+    let pair = tables.piece_pair[attacking][attacked];
+    // The semi-excl decision is the one-and-only change vs Coda's
+    // current threat_index: use bf squares, not physical.
+    let base = pair.base(from_bf, to_bf);
+    if base < 0 {
+        return base;
     }
+    let flip = (7 * mirrored as u32) ^ (56 * pov as u32);
+    let from_f = from_phys ^ flip;
+    let to_f = to_phys ^ flip;
+    base + tables.piece_offset[attacking][from_f as usize]
+        + tables.attack_index[attacking][from_f as usize][to_f as usize] as i32
 }
 
 /// Faithful port of post-C8fix-2 Bullet `map_features`
