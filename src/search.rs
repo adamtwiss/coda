@@ -145,9 +145,7 @@ tunables!(
     (PROBCUT_MARGIN, 185, 80, 300, 11.0, true),
     (HINDSIGHT_THRESH, 169, 50, 400, 17.5, true),
     (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
-    (SEE_MATERIAL_SCALE, 215, 30, 300, 13.5, false),
     (QS_DELTA_MARGIN, 367, 100, 500, 20.0, true),
-    (QS_SEE_THRESHOLD, -26, -200, 0, 10.0, false),
     (QS_MAX_CAPTURES, 24, 2, 32, 2.0, false),
     (CORR_W_PAWN, 299, 100, 600, 25.0, true),
     // Floor lifted from 50 → 0 (audit 2026-05-20): pinned at 63, 4% from floor.
@@ -186,7 +184,6 @@ tunables!(
     // only inconsistent one. Starting offset 72 mirrors SF.
     (HIST_BONUS_OFFSET, 24, 0, 400, 25.0, false),
     (CAP_HIST_MULT, 289, 50, 400, 17.5, true),
-    (CAP_HIST_BASE, 42, 0, 200, 10.0, false),
     (CAP_HIST_MAX, 1881, 500, 3000, 125.0, true),
     // BONUS_BOOST_AT removed 2026-05-17: ablation #1277 at [0, 3] H0
     // (+0.3 ±1.0, CI [-0.7, +1.3] at 136K games). Depth-boost trigger
@@ -225,7 +222,6 @@ tunables!(
     (DEXT_MARGIN_BASE, 44, -50, 150, 6.0, true),
     (DEXT_CAP, 14, 4, 32, 2.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
-    (LMR_COMPLEXITY_DIV, 152, 30, 500, 23.5, false),
     (CORR_HIST_DIV, 1559, 256, 4096, 192.0, true),
     (CORR_UPDATE_WEIGHT_MAX, 13, 4, 48, 2.2, true),
     // Was 32 (tp10→3). Now FIXED-POINT. Default 30 → eff 3.0 ≡ old behavior.
@@ -334,7 +330,6 @@ tunables!(
     (NMP_MIN_DEPTH_10X, 59, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
     // Floor lifted from 10 → 0 (audit 2026-05-20): pinned at 25, 8% from floor.
     (HINDSIGHT_MIN_DEPTH_10X, 23, 0, 200, 15.0, true),        // was hardcoded 2 (hindsight reduction gate)
-    (TT_CUTOFF_HALFMOVE_MAX, 89, 50, 100, 3.0, false),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
@@ -344,6 +339,13 @@ pub static FH_BLEND_OFFSET: AtomicI32 = AtomicI32::new(1);
 pub static SE_TT_DEPTH_SLACK: AtomicI32 = AtomicI32::new(3);
 pub static MVV_CAP_MULT: AtomicI32 = AtomicI32::new(28);
 pub static FUT_LMR_DEPTH: AtomicI32 = AtomicI32::new(15);
+// Demote-batch 2 (2026-05-23): 5 more NONCORE_QUIET from cross-tune analysis
+// — all moved <20% under #1419 noise. Same rationale as batch 1.
+pub static SEE_MATERIAL_SCALE: AtomicI32 = AtomicI32::new(215);
+pub static QS_SEE_THRESHOLD: AtomicI32 = AtomicI32::new(-26);
+pub static CAP_HIST_BASE: AtomicI32 = AtomicI32::new(42);
+pub static LMR_COMPLEXITY_DIV: AtomicI32 = AtomicI32::new(152);
+pub static TT_CUTOFF_HALFMOVE_MAX: AtomicI32 = AtomicI32::new(89);
 
 /// Get a tunable parameter value (inline for hot paths)
 #[inline(always)]
