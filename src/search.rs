@@ -2369,7 +2369,37 @@ fn negamax(
 ) -> i32 {
     let ply_u = ply as usize;
 
-    // Guard against stack overflow
+    // Drawn-position detection must run BEFORE the MAX_PLY guard. At ply
+    // >= MAX_PLY in drawn-material or repetition positions, the fall-back
+    // `apply_halfmove_scale(info.eval(board), halfmove)` returns a possibly-
+    // nonzero scaled eval — eval doesn't know about insufficient material
+    // or repetition (only halfmove via the scale itself handles 50mr).
+    // Found via correctness audit 2026-05-23, adjacent to the prior
+    // MAX_PLY=64→128 fix family.
+    if ply > 0 {
+        let draw_score: i32 = 0;
+        if board.halfmove >= 100 {
+            return draw_score;
+        }
+        if board.is_insufficient_material() {
+            return draw_score;
+        }
+        // Repetition scan (bounded by min(halfmove, plies_from_null) to avoid
+        // walking across null-move boundaries).
+        let stack_len = board.undo_stack.len();
+        let scan_limit = (board.halfmove as usize).min(board.plies_from_null as usize);
+        let limit = scan_limit.min(stack_len);
+        let mut i = 2usize;
+        while i <= limit {
+            if board.undo_stack[stack_len - i].hash == board.hash {
+                return draw_score;
+            }
+            i += 2;
+        }
+    }
+
+    // Guard against stack overflow — only reached for non-drawn positions
+    // at ply >= MAX_PLY.
     if ply_u >= MAX_PLY {
         return apply_halfmove_scale(info.eval(board), board.halfmove);
     }
@@ -2456,43 +2486,9 @@ fn negamax(
     info.nodes += 1;
 
 
-    // Draw detection: repetition and 50-move rule.
-    // Contempt removed 2026-04-19 per SPRT #508 H1 at +2.53 Elo — modern
-    // consensus (SF, Reckless, Obsidian, Viridithas, Alexandria all use 0).
-    // Draws scored from jitter alone to break ties between draw paths.
-    if ply > 0 {
-        // Jitter removed 2026-04-19 for SPRT — testing if it's another
-        // "low-impact drifted" feature like contempt was. If H0/positive,
-        // remove permanently.
-        let draw_score: i32 = 0;
-        if board.halfmove >= 100 {
-            return draw_score;
-        }
-        // FIDE Art 5.2: insufficient material to mate (any side). Matches
-        // Reckless / Viridithas; identified as gap after Lichess game
-        // I4qJhfQw move 103 where Coda failed to recapture into a clearly
-        // drawn KB-vs-K position. Returns 0 — tiebreak among multiple drawn
-        // paths is handled at the root, not here.
-        if board.is_insufficient_material() {
-            return draw_score;
-        }
-        // C8 audit LIKELY #38: bound rep scan by min(halfmove, plies_from_null)
-        // so we don't walk back across a null move boundary. halfmove
-        // increments on null moves (board.rs:947) but plies_from_null resets
-        // (board.rs:948). Scanning past a null move looks for repetitions
-        // against positions that aren't actually "this line of play" —
-        // spurious draws. Cuckoo already does min() at cuckoo.rs:114.
-        let stack_len = board.undo_stack.len();
-        let scan_limit = (board.halfmove as usize).min(board.plies_from_null as usize);
-        let limit = scan_limit.min(stack_len);
-        let mut i = 2usize;
-        while i <= limit {
-            if board.undo_stack[stack_len - i].hash == board.hash {
-                return draw_score;
-            }
-            i += 2;
-        }
-    }
+    // Draw detection moved above the MAX_PLY guard (2026-05-23 audit fix
+    // for ply >= MAX_PLY in drawn positions). Note: kept the broader
+    // contempt + jitter context comments at the new location for history.
 
     // Syzygy tablebase probe at interior nodes.
     // Probe WDL when piece count is within TB range. Returns a score that
