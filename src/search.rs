@@ -1376,12 +1376,20 @@ pub fn compute_tm_budgets(
     // out of time. Use 40 moves at no-inc to pace tighter.
     // Lichess game 1yV9VbAA: Coda at 3+0 spent 8-12s on early moves,
     // forfeited on time.
+    // Phase 10a (2026-05-24): lower base optimum at moderate-inc TCs from
+    // 25 → 35. Cross-engine review (9 engines) found Coda's base optimum
+    // at moderate-inc is ~4.8% of remaining vs SF/Obsidian/Reckless ~2-3%.
+    // Lower base gives multiplicative factors more headroom to produce
+    // sharp spikes without forfeiting (top engines spike to 4-5× p95/p50
+    // partly because they're spiking off a lower baseline). No-inc path
+    // unchanged (moves_left=40 from earlier hotfix); movestogo path
+    // unchanged (already uses the explicit movestogo count).
     let moves_left = if movestogo > 0 {
         movestogo as u64
     } else if our_inc == 0 {
         40
     } else {
-        25
+        35
     };
 
     // Soft allocation: time/movesLeft + 80% of increment.
@@ -2312,17 +2320,23 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // scoreFactor = clamp(0.86 + 0.010 * scoreDrop, 0.81, 1.50)
             let score_factor = (0.86 + 0.010 * score_drop as f64).clamp(0.81, 1.50);
 
-            // Factor 4: Best-move-changes upward boost (Phase 1 TM redesign).
+            // Factor 4: Best-move-changes upward boost (Phase 1 + Phase 10a).
             // Mirrors Reckless `1.0 + changes/4.0` and SF `1.096 + 2.29 *
             // bestMoveChanges` patterns — the upward instability signal that
-            // Coda was structurally missing. Clamped at 2.5 so it can't
-            // multiplicatively explode on pathological positions. Combined
-            // with the other factors and bounded by hard_limit downstream,
-            // so the catastrophe ceiling is unchanged.
+            // Coda was structurally missing.
+            //
+            // Phase 10a (2026-05-24): steepened from `changes/4 cap 2.5` to
+            // `changes/2 cap 5.0`, matching the SF-style wider upside the
+            // cross-engine review identified as the dominant lever for sharp
+            // selective spikes. At bmc=2: 1.5× → 2.0×; at bmc=4+ (genuinely
+            // unstable): 2.0× → 3.0+×; max 5.0× at bmc>=8 (very rare).
+            // Hard-cap downstream (post-2026-05-23 hotfix) still binds at
+            // the catastrophe ceiling, so this widens variation potential
+            // without changing the catastrophe floor.
             //
             // tm_best_move_changes is the cumulative count of root best-move
             // flips between iterations since search start, reset at `go`.
-            let bmc_factor = (1.0 + info.tm_best_move_changes as f64 / 4.0).min(2.5);
+            let bmc_factor = (1.0 + info.tm_best_move_changes as f64 / 2.0).min(5.0);
 
             // Factor 5: Forced-move downward boost (Viridithas pattern,
             // Phase 6 TM redesign). When the verification above has
