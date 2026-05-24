@@ -2385,20 +2385,27 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // verifiably worse. Tying time-spend to position-intrinsic
             // shape decorrelates adjacent-move spend (the autocorrelation
             // gap to top engines).
-            // Factor 6: Aspiration-fail-low threshold (Phase 9, 2026-05-23).
-            // Fires ONLY when accumulated asp_fl exceeds the threshold —
-            // empirical analysis (358-move 30+0.5 RR) showed asp_fl > 14
-            // identifies top-decile difficulty positions largely
-            // orthogonal to bmc. The cumulative count fires on 75% of
-            // moves so we MUST threshold to keep selectivity (else we'd
-            // just push every move toward hard_limit). Naive use of this
-            // signal in Phase 5h regressed; this thresholded version
-            // targets the same intent more carefully.
-            let asp_factor = if info.tm_asp_fail_low > tp(&TM_ASP_THRESHOLD) as u32 {
-                tp(&TM_ASP_MULT_10X) as f64 / 10.0
-            } else {
-                1.0
-            };
+            // Factor 6: Aspiration-fail-low event accumulator (Phase 10c,
+            // 2026-05-24, Viridithas pattern).
+            //
+            // Phase 9b/9c (thresholded multiplier at asp_fl > 14) measured ~0
+            // Elo at LTC and SPSA-flat — the threshold form picked the wrong
+            // signal axis. Cross-engine review identified Viridithas's
+            // additive event accumulator as the correct sharp-spike form:
+            // each aspiration fail-low EVENT in the current search adds a
+            // fixed bonus to the multiplier, capped at 2 events.
+            //
+            // Formula: asp_factor = 1.0 + 0.34 × min(2, asp_fl_count)
+            //   0 events: 1.00× (baseline)
+            //   1 event:  1.34× (sharp first ramp)
+            //   2 events: 1.68× (second ramp)
+            //   3+:       1.68× (cap — prevents sustained over-spend that
+            //                    would recreate the pre-hotfix forfeit pattern)
+            //
+            // Constants verbatim from Viridithas (per-mille → fraction). The
+            // TM_ASP_THRESHOLD / TM_ASP_MULT_10X tunables from Phase 9 remain
+            // in source for back-compat but are unused by this formula.
+            let asp_factor = 1.0 + 0.34 * info.tm_asp_fail_low.min(2) as f64;
 
             let forced_factor = match info.tm_forced_state {
                 ForcedState::Strong => 0.386,
