@@ -11874,3 +11874,57 @@ the directions.
 - σ/decay scaling argument for jitter: relative-to-(1-λ) is the right
   scale; SF's recipe at λ_score≈0.76 translates close to Coda's
   λ_score≈0.85 — SF-values probe in flight
+
+## 2026-05-25 — AVX2 L1=32 matmul kernel: +4.9 Elo H1 ✓
+
+After tune-1511-applied (#1517, the L1=32 retune diagnostic) revealed
+the L1=32 path was 10-12% NPS-slower than L1=16 on the OB machines
+page, instrumented the matmul path: existing AVX2 fast paths
+(`dense_l1_avx2`, `dense_l1_avx_vnni`, `dense_l1_avx512_vnni`) all
+gate on `l1 == 16` or `l1 <= 16`; L1>16 falls back to row-major
+per-neuron paths that reload the input once per neuron instead of
+once per chunk.
+
+Added `dense_l1_avx2_l1_32` in `src/sparse_l1.rs`: column-major
+(input-chunk-major) AVX2 kernel with four YMM accumulators (neurons
+0-7, 8-15, 16-23, 24-31). Per chunk: one VPBROADCASTD + four VMOVDQU
++ four VPMADDUBSW/VPMADDWD sequences. Dispatcher adds an `l1 == 32`
+branch immediately above the existing `l1 <= 16` AVX2 path.
+
+Tests added at the same time:
+- `fuzz_dense_avx2_l1_32_matches_scalar` — 1050 cases across pw ∈
+  {64, 128, 256, 384, 512} × density {0/10/25/50/75/89/100} × 30
+  seeds, cross-checked against scalar reference. Caught a VPMADDUBSW
+  i16-pair-sum saturation case on full u8 input range — production
+  pairwise output stays in [0, ~127] so the kernel matches the
+  scalar reference for real inputs (bench-bit-identical to the
+  row-major output on the canonical-l1-32-s800 net).
+- `#[ignore]` micro-benchmark `bench_l1_kernels` — L1=16: 137 ns/call
+  (72× scalar). L1=32: 227 ns/call (86× scalar). The 1.66× per-call
+  cost for 2× the neurons matches expected scaling.
+
+Local validation (Hercules):
+- L1=16 prod bench bit-identical to main: 5,639,102 nodes
+- L1=32 net bench bit-identical to main's row-major output:
+  5,159,150 nodes
+- L1=32 NPS: 665,823 → 705,509 (+6.0% throughput)
+- L1=32 vs L1=16 gap: 18% on main → 11% on branch
+
+SPRT outcomes:
+- **#1518** non-regression on prod, bounds `[-5, 5]`:
+  **+1.7 ±3.5 in 11,968 games, H1 ✓**. L1=16 dispatcher path
+  confirmed untouched (within noise of 0).
+- **#1519** L1=32 paired probe, both sides build branch/main
+  with `--dev-network = --base-network = D0DDB937`
+  (canonical-l1-32-s800), bounds `[0, 3]`:
+  **+4.9 ±2.9 in 16,436 games, H1 ✓**. Matches the local
+  NPS-derived prediction (~100 Elo/NPS-doubling × 6% = ~6 Elo).
+
+Merged as 8633103. Phase 2 (AVX-VNNI L1=32 for Alder Lake / Zen 4)
+and 3 (NEON L1=32 for aarch64) follow as separate branches.
+AVX-512 VNNI L1=32 parked until fleet coverage warrants — Zeus
+and gpu3 have AVX-512+VNNI but Zeus is currently off OB.
+
+Net effect: any future L1=32 net experiment now starts ~5 Elo less
+in the hole from inference cost alone. The L1-widening direction
+is more viable than it looked pre-optimization.
