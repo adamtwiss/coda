@@ -11667,3 +11667,210 @@ wide margin** — the cycle's biggest practical lesson.
   search space, don't write off directions prematurely
 - Cross-tune analysis as loose-knob audit tool (84 → 75 param
   surface via two demote-batches)
+
+## 2026-05-24 — Multistage warm-restart thread: S3 was peak, S4 regressed
+
+SF-inspired multistage warm-restart schedule, executed as a 4-stage
+sequence with progressively lower final LR. Three SPRTs decided where
+the curve actually peaks:
+
+| ID | What | Result |
+|----|------|--------|
+| #1492 | tune-1491-applied + multistage-s3-s600 vs prod | -38.0 ±9.9 H0 ✗ |
+| #1494 | multistage-s4-s800 vs multistage-s3-s600 (same trunk) | -13.0 ±5.7 H0 ✗ |
+| #1499 | multistage-s4b-s800 vs multistage-s3-s600 | -32.0 ±8.4 H0 ✗ |
+
+S3 is the peak of this attempt; S4 with `--final-lr 3e-7` regressed
+relative to S3 (≈8× below the 2.43e-6 Bullet default). S4b was an
+alternative LR variant — also worse. Even the S3-best with a dedicated
+retune (#1491→#1492) is −38 vs prod, so multistage at this configuration
+isn't a viable prod candidate, period.
+
+**The crisp lesson**: without SWA, very-low final LR repeatedly produces
+weaker nets — bench-stats on S4 showed reversion to S1-like KB-rebuild
+patterns. Memory:
+[feedback_final_lr_too_low_without_swa](feedback_final_lr_too_low_without_swa.md)
+codifies "below ~5e-7 final LR without SWA = degradation; SF tolerates
+2.68e-8 only because they SWA-average the last 5%."
+
+The multistage *thread* isn't closed — only this specific 4-stage
+recipe is. Many configurations untested (stages count, SWA integration,
+LR pattern, inter-stage ratio).
+[feedback_multistage_thread_still_open](feedback_multistage_thread_still_open.md)
+flags the premature-closure risk.
+
+## 2026-05-24/25 — L1=32 batch: capacity needs information
+
+Four SPRTs around the L1-widening probe, mapping the trade space:
+
+| ID | Comparison | Result |
+|----|------------|--------|
+| #1482 | l1-32-retune vs mini-prod (both with l1-32 net) | +2.4 ±1.9 H1 ✓ |
+| #1483 | l1-32-retune + l1-32 net vs mini-prod + baby-prod net | -2.6 ±2.9 H0 ✗ |
+| #1502 | canonical-l1-32-w20-s800 vs prod | -14.9 ±6.2 H0 ✗ |
+| #1506 | tune-1504-applied + l1-32-w20-s800 vs prod | -15.5 ±6.3 H0 ✗ |
+| #1509 | canonical-l1-32-s800 (w15 default) vs prod | -33.0 ±9.2 H0 ✗ |
+| #1512 | l1-32-w20-s800 vs l1-32-s800 (w20 vs default w15) | +12.8 ±7.8 H1 ✓ |
+
+**Two findings on top of each other:**
+
+1. **L1=32 prefers w20 over default w15 by +12.8 Elo** (#1512). Wider
+   capacity wants more WDL signal — confirms
+   [feedback_capacity_increases_need_information_increases](feedback_capacity_increases_need_information_increases.md).
+   The default recipe is calibrated for L1=16; reusing on a wider net
+   is wasting the capacity. So if we ever do ship a wider L1, w15 isn't
+   the recipe for it.
+2. **L1=32 at any tested WDL still loses vs prod-shape v9.** w20 with
+   retune is -15.5 (#1506); w15 is -33 (#1509). The retune for w20
+   (#1504 → #1506) didn't recover the gap. L1-widening isn't a free
+   lever; capacity-vs-data balance is more delicate than the prior
+   suggested.
+
+The retune-on-l1-32 result (#1482, +2.4) measured *only* the trunk-tune
+delta on top of the l1-32 net — confirms retune-on-branch produces real
+signal at this scale, but isn't enough to close the net-vs-net gap.
+
+## 2026-05-25 — prod-2x-data: catastrophic regression
+
+Doubled-data training run regressed massively against prod:
+
+| ID | What | Result |
+|----|------|--------|
+| #1510 | prod-2x-data-e800s600 (mid-cosine snapshot) vs prod | -99.3 ±15.3 H0 ✗ |
+| #1507 | prod-2x-data-s800 (completed) vs prod | -34.6 ±9.1 H0 ✗ |
+
+s600 is mid-cosine and shouldn't be benched as a comparator (matches
+`project_v9_low_lr_tail_critical` — mid-tail snapshot is ~88 Elo below
+its own completed run). The s800 result is the real signal: even
+*completed*, 2x-data regressed 35 Elo vs prod.
+
+Tune #1508 (2x-data retune, 2488/2500) ran to nearly completion; results
+not yet applied/tested. Hypothesis: the 2x-data run somehow shifted the
+optimum away from prod's trunk values, and the retune may or may not
+recover; given the -34.6 magnitude, recovery seems unlikely.
+
+Direction: more raw data is **not** a guaranteed Elo lever for Coda at
+the current scale. Possibly an interaction with the 12-file mix, the
+filtering pipeline, or some unintended recipe drift across the 2x
+training. Worth a triage when the tune lands.
+
+## 2026-05-25 — Jitter S200: untuned flat, retune +7.9 H1 ✓
+
+Per-batch lambda jitter (SF nnue-pytorch PR #473) ported to Bullet at
+σ=0.1 / decay=0.9. Trained a v9 S200 candidate (`jitter-b-0.1-d-0.9-s200`)
+and tested in two configurations:
+
+| ID | What | Result |
+|----|------|--------|
+| #1500 | jitter-S200 + mini-prod trunk vs baby-prod | +0.9 ±1.3 →H0 |
+| #1505 | jitter-S200 + tune-1503-applied vs baby-prod | +7.9 ±4.0 H1 ✓ |
+
+The untuned probe was flat (+0.9, didn't reach H1). The retune-on-branch
+SPSA (#1503, --core 2000 iter, vs mini-prod / jitter net) shifted several
+prune-direct params (FUT_THREATS_MARGIN -49%, NMP_DEPTH_DIV -24%,
+HINDSIGHT_MIN_DEPTH -29% etc.), and the tuned configuration banked +7.9
+H1. **Net candidate** for prod replacement after wider validation.
+
+Caveat: the +7.9 conflates jitter-the-feature with the retune that came
+with it. A clean σ=0 vs σ=0.1 paired probe (same trunk, jitter on/off)
+isn't in the data — would isolate jitter's standalone contribution.
+Likely worth one slot in any follow-up jitter σ sweep.
+
+**σ/decay analysis** (from PR #473 source + vondele/nettest threats.yaml):
+
+SF uses σ=0.01 / decay=0.999 (per-batch) + σ=0.003 per-sample, on
+λ=0.76 (≡ score weight). Coda uses σ=0.1 / decay=0.9 on λ_score=0.85
+(equivalent regime — both heavily score-dominated). SF's per-step
+delta is ~100× smaller than ours; their σ/(1-λ) is 4.2% vs ours 67%.
+
+Prediction: SF's σ=0.01/d=0.999 should transfer well at our λ; our
+σ=0.1 may be in the "WDL weight clamps frequently" zone. SF-values
+probe was fired (in flight as of 2026-05-25). Next-step sweep
+candidates: σ=0.03/d=0.997, σ=0.005/d=0.999. Memory: see the open
+question about scaled-σ landing on the curve.
+
+## 2026-05-25 — SWA S200: window placement is load-bearing
+
+Stochastic Weight Averaging (SF nnue-pytorch `ExplicitSWACallback`)
+ported to Bullet's value trainer. Equal-weight running mean of weights
+from `--swa-start-sb` onwards, written as an extra `{net}-swa/quantised.bin`.
+Two windows tested at S200:
+
+| ID | What | Result |
+|----|------|--------|
+| #1501 | swa-150-200-s200 (25% window) vs baby-prod | -23.7 ±7.6 H0 ✗ |
+| #1514 | swa-180-200-s200 vs swa-150-200-s200 (paired window probe) | +41.5 ±9.6 H1 ✓ |
+| #1515 | swa-180-200-s200 (10% window) vs baby-prod | +5.0 ±3.1 H1 ✓ |
+
+**The +41.5 is "SWA done wrong is destructive," not "SWA banks huge
+endpoint denoising."** Averaging from SB150 dragged in mid-cosine
+weights (LR still ≈2-3e-5, far from floor) and contaminated the
+snapshot. SWA done right — short, late window where LR is near the
+2.4e-6 floor — recovers the basin: **+5.0 vs baby-prod is the real SWA
+signal.**
+
+Aligns with SF's pattern (they average only the last ~5% of each
+stage). General rule: **SWA window only earns Elo if the LR inside it
+is close to the floor.** Outside that, you're averaging across distinct
+points in weight space, not denoising one.
+
+Implications:
+- SWA is "small but real" (+5), not load-bearing. Pre-floor windows
+  are net-negative. Future SWA experiments: keep ≤10% of training and
+  start where LR ≤ ~3-5× the floor.
+- Doesn't single-handedly unlock the very-low-LR regime — multistage
+  + SWA still needs probing as a combined recipe.
+- swa-180-200-s200 (SHA `BD615F15`) is a **net candidate** for prod
+  replacement on the back of #1515 (H1 +5.0 vs baby-prod). Worth a
+  cross-confirm against current prod-s800 before deploying.
+
+Next-step probe: swa-190-200 (5% window, matches SF percentage) —
+cheapest follow-up; if it lands ≥ +X on top of swa-180, curve hasn't
+peaked.
+
+## 2026-05-24 — Demote-loose-knobs batch 2 (non-regression)
+
+Five more tunables demoted from the SPSA surface to const after
+loose-knob audit: #1486 (`refactor/demote-loose-knobs-2` vs main),
+-0.5 ±2.8, 19704 games, →H0 at bounds `[-5, 5]`. Within non-regression
+bounds; merged as b9e1584. SPSA tunable count: 75 → 70 (post batch 1's
+84 → 75). Tighter `--core` set means cleaner gradients on the
+remaining 70 params. Cumulative loose-knob reduction is one of the
+session's compounding methodology wins.
+
+## 2026-05-24/25 — Active SPSA tunes
+
+| ID | What | Status |
+|----|------|--------|
+| #1508 | prod-2x-data-s800 retune (--core) | 2488/2500 — nearly done |
+| #1511 | canonical-l1-32-s800 retune (--core) | 1942/2500 — in flight |
+
+Both are post-mortem retunes for nets that lost their first SPRT.
+Marginal Elo upside; running them confirms whether the candidate
+nets have *any* retune-headroom worth chasing further before closing
+the directions.
+
+## Session-cumulative deltas (2026-05-24/25)
+
+**Banked**:
+- Demote-loose-knobs-2 (#1486 non-regression): 5 more tunables to const,
+  cumulative SPSA surface 84 → 70 across the two batches
+
+**Candidate nets discovered** (not yet deployed):
+- `jitter-b-0.1-d-0.9-s200` (SHA `6B91A740`) + tune-1503 trunk: +7.9 vs
+  baby-prod (#1505)
+- `swa-180-200-s200` (SHA `BD615F15`): +5.0 vs baby-prod (#1515)
+
+**Closed/narrowed**:
+- Multistage 4-stage recipe with --final-lr 3e-7: H0 -13 to -32 vs S3
+- L1=32 at any tested WDL: H0 -15 to -33 vs prod
+- prod-2x-data: H0 -34 vs prod (recovery unlikely; awaiting #1508)
+
+**Methodology / understanding banked**:
+- SWA placement rule: window only earns Elo when LR is within ~3-5× of
+  floor; pre-floor windows actively destructive
+- Capacity-vs-WDL coupling: wider L1 needs higher WDL (l1-32: w20 +12.8
+  over w15)
+- σ/decay scaling argument for jitter: relative-to-(1-λ) is the right
+  scale; SF's recipe at λ_score≈0.76 translates close to Coda's
+  λ_score≈0.85 — SF-values probe in flight
