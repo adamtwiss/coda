@@ -446,16 +446,20 @@ below for when to deviate.
 ### TM-class changes: inverted methodology
 
 **For time-management changes specifically**, the SPRT-as-primary rule is
-INVERTED. Self-play SPRT systematically undersells the subset of TM changes
+INVERTED. Self-play SPRT can **completely miss** the subset of TM changes
 that address ponder-asymmetric clock dynamics — because in self-play both
 sides drain symmetrically, saving clock cannot create the kind of endgame
-advantage that ponder-leeching opponents on lichess exploit.
+advantage that ponder-leeching opponents on lichess exploit. This applies
+to cross-engine RR without ponder TOO — only ponder-enabled cross-engine
+tests measure the deployment-relevant effect.
 
 **Concrete case (Phase 10h, 2026-05-25)**: cross-engine RR at 30+0.5 vs
-ponder-enabled similar-strength engines showed +25-30 Elo over Coda.main
-across 200+ games per engine. Same code at SPRT #1520 LTC 40+0.4 self-play
-tracked at +0.6 ±3.1 →H0. The ~30x magnitude gap is structural to the test
-setup, not noise.
+ponder-enabled similar-strength engines showed **+19 ±18 Elo** over
+Coda.main across 360 games per engine. Same code at SPRT #1520 LTC 40+0.4
+self-play tracked at +0.6 ±3.1 →H0. **Same code in cross-engine RR with
+ponder OFF tracked at ~0 Elo** at N=70+ per engine. The ponder enablement
+is the critical test condition — without it, neither SPRT nor cross-engine
+non-ponder RR detects the gain.
 
 **Methodology for TM-class changes:**
 1. **Inspect mechanism first**: 5-10 local games at the target TC, parse
