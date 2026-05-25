@@ -11928,3 +11928,285 @@ and gpu3 have AVX-512+VNNI but Zeus is currently off OB.
 Net effect: any future L1=32 net experiment now starts ~5 Elo less
 in the hole from inference cost alone. The L1-widening direction
 is more viable than it looked pre-optimization.
+
+## 2026-05-22 — Ply-N filter probes (S200, mini-prod): both H0
+
+Two S200 filtering experiments tested whether dropping low-ply
+training positions improves the net. Hypothesis: early-game positions
+(ply ≤ N) are noisier targets because the eval landscape is more
+opening-book-dominated and less search-driven.
+
+| ID | Filter | Result vs baby-prod |
+|----|--------|---------------------|
+| #1420 | filter-ply-12-s200 (drop ply ≤ 12) | -13.1 ±9.9 H0 |
+| #1421 | filter-ply-20-s200 (drop ply ≤ 20) | -4.0 ±5.6 H0 |
+
+Both H0. Direction: ply-20 (more aggressive cut) less bad than ply-12.
+Interpretation possibilities:
+- Filtering removes positions that contribute real training signal;
+  the eval on retained positions is fine but the net has been
+  starved of meaningful diversity in middlegame transition zones.
+- The current data mix already weights ply heavily enough via the
+  ply-x/y SF-style schedule that an absolute floor doesn't add value.
+
+Closes (for now) the "ply-floor filter" thread at S200; ply-floor
+filtering doesn't add Elo at our current setup.
+
+## 2026-05-25 — L1=32 retune SPRT (#1517): no recovery
+
+#1511 (canonical-l1-32-s800 retune) applied + SPRT'd as #1517:
+**H0 ✗ -23.6 ±7.6 in 3048 games**, bounds [0, 3]. Untuned was -33;
+post-tune is -23.6 → **+9 Elo retune recovery**, similar magnitude to
+the other retune-on-branch experiments but the underlying net was
+too far behind to bridge.
+
+The tune signature was "clearer-eval-at-shallow-depth" character
+(IIR much earlier, FUT_THREATS up, LMP shallower) — qualitatively
+opposite to prod-2x-data's noisier-shallow signature. So the L1=32
+net IS a different basin; the retune captures part of that, but
+the net itself is still much weaker than prod.
+
+Pairs with #1502 (l1-32-w20 -15.5), #1509 (l1-32-w15 -33),
+#1530/#1531 (l1-32-w25 -20.7 / -2.9 vs w20). L1=32 at default w15
+recipe is decisively worse than prod; the WDL sweep peaks at w20.
+
+## 2026-05-25 — SF-jitter probe (#1521, #1522): too soft
+
+Trained a v9 S200 with **SF-style jitter parameters** (σ=0.01,
+decay=0.999) — much softer than our σ=0.1/d=0.9 working point.
+Per-step delta is ~100× smaller than ours.
+
+| ID | Comparison | Result |
+|----|------------|--------|
+| #1521 | SF-jitter vs baby-prod | -1.5 ±3.2, LLR -1.62, →H0 (resolving) |
+| #1522 | SF-jitter vs prior jitter (σ=0.1/d=0.9) | **-3.8 ±4.1, H0 ✗** |
+
+So SF-style jitter at σ=0.01 is mildly worse than baby-prod (no
+jitter) and decisively worse than the σ=0.1/d=0.9 jitter that
+banked +7.9 H1 (#1505). At our λ ≈ 0.85 (heavily score-dominated),
+SF's σ=0.01 doesn't perturb enough to do meaningful regularization.
+
+**Methodology note (early-N drift)**: the interim reads of these
+SPRTs were +6.6 (#1522 at N=3168) and +1.4 (#1521 at N=3710) before
+both flipped sign on resolution. Classic Coda early-N drift pattern;
+both reports of interim Elo had CI envelopes that contained the
+resolved value. See [feedback_dont_promote_single_sprt_to_fact].
+
+## 2026-05-25 — Jitter parameter sweep (#1535-1538): in flight
+
+After the SF-jitter and prior-jitter anchors, queued a 2×2 sweep
+of (σ, d) space:
+
+| σ\d | 0.9 | 0.99 | 0.999 |
+|---|:---:|:---:|:---:|
+| 0.01 | — | — | SF (banked: -3.8 vs base, -1.5 vs baby-prod) |
+| 0.03 | — | **#1535/#1536** | — |
+| 0.1 | banked: +7.9 H1 tuned (#1505) | — | **#1537/#1538** |
+
+- jitter-b0.03-d0.99 (geometric midpoint): vs baby-prod (#1535),
+  vs jitter-base (#1536)
+- jitter-b0.1-d0.999 (decoupled — Coda σ + SF decay): vs baby-prod
+  (#1537), vs jitter-base (#1538)
+
+Goal: characterize whether the σ axis (perturbation magnitude) or
+the decay axis (temporal correlation) carries the jitter signal.
+All untuned, paired probes on mini-prod, [0, 3] vs baby-prod and
+[-3, 3] vs jitter-base.
+
+## 2026-05-25 — SWA-190 (5% window) probe: too narrow
+
+After SWA-180/200 (10% window) H1 +5.0 (#1515), tested a narrower
+swa-190/200 (5% window, 10 SBs) to see if shorter+later was better
+(matching SF's ~5% pattern).
+
+| ID | Comparison | Result |
+|----|------------|--------|
+| #1525 | swa-190/200 vs baby-prod | **H0 ✗ -9.2 ±4.9** |
+| #1526 | swa-190/200 vs swa-180/200 | **H0 ✗ -19.8 ±9.7** |
+
+5% window is meaningfully worse than 10%. The S200 SWA curve is
+now mapped at three points:
+
+| Window | SBs | Elo vs baby-prod |
+|---|---:|---:|
+| 25% (swa-150/200) | 50 | -23.7 (#1501) |
+| 10% (swa-180/200) | 20 | +5.0 (#1515) |
+| 5% (swa-190/200) | 10 | -9.2 (#1525) |
+
+Sharp peak at ~20 SBs (10% window) with ~30 Elo cliffs on both
+sides. Memory: [feedback_swa_window_placement] candidate — keep
+window ≤ 10% and starting where LR is ≤ ~5× the floor; too narrow
+fails to denoise, too wide includes non-floor weights.
+
+## 2026-05-25 — SWA at S800 (swa-750-800-s800): +7 Elo retune recovery
+
+First SWA experiment at S800 scale. Recipe: SWA over last 50 SBs
+(6.25% of S800; somewhere between absolute-scaling from S200 = 20
+SBs → 780-800, and %-scaling from S200 = 10% → 720-800). Otherwise
+canonical recipe.
+
+| ID | Comparison | Result |
+|----|------------|--------|
+| #1527 | swa-750-800 vs prod (untuned) | H0 -7.2 ±4.4 |
+| #1528 | --core retune on swa-750-800 | applied (43 of 53 params moved) |
+| #1529 | tune-1528-applied vs prod | -0.2 ±2.2 LLR -1.58 (resolving H0) |
+
+The tune recovers ~+7 Elo (from -7.2 to ~0), matching the typical
+retune-on-branch lift seen in the cycle (#1503 jitter +7, #1505
+jitter +7.9). Tune signature: 11 params moved ≥15% — IIR_MIN_DEPTH
+-73% (much earlier), DEXT_MARGIN_QUIET +68%, CORR_W_CONT +29%,
+FUT_THREATS_MARGIN +27%, NMP_DEPTH_DIV -23%, CORR_W_NP -19%.
+Closest signature to #1511 (l1-32-s800) — "clearer eval signal at
+shallow depth" — consistent with SWA denoising endpoint weights.
+
+**Open question (absolute vs % scaling at S800)**: swa-750-800 (50
+SBs) lands at ~0 tuned. The two hypotheses about how to scale the
+SWA window from S200 to S800 predict:
+- Absolute scaling (20 SBs): swa-780-800 = optimal
+- % scaling (10%): swa-720-800 = optimal (80 SBs)
+- 750-800 (50 SBs / 6.25%) is between
+
+A bracket probe (swa-720-800 and/or swa-780-800) would settle the
+question, but the per-S800 cost (10h train + tune + 2 SPRTs) is
+high. Parked for now pending swa-750-800 final read and other
+candidates landing.
+
+## 2026-05-25 — L1=32 w25 attempt (#1530, #1531): WDL trend peaked at w20
+
+After l1-32-w20 (-15.5 vs prod #1502/#1506) showed +13 Elo over
+l1-32-w15 default (-33 vs prod), trained l1-32-w25 testing whether
+the WDL trend continues upward.
+
+| ID | Comparison | Result |
+|----|------------|--------|
+| #1530 | l1-32-w25 vs prod | **H0 ✗ -20.7 ±7.0** |
+| #1531 | l1-32-w25 vs l1-32-w20 | **H0 ✗ -2.9 ±3.7** |
+
+With the AVX2 L1=32 kernel merged, the L1=32 WDL sweep effectively:
+- w15: -33 (pre-kernel) → ~-28 with kernel
+- w20: -15 (pre-kernel) → ~-10 with kernel ← peak
+- w25: -20.7 (measured with kernel)
+
+w25 over-shoots the WDL ceiling. The L1=32+w20 + AVX2 kernel is
+the working L1=32 configuration at ~-10 vs prod. Closing the
+remaining ~10 Elo gap would need:
+- Bigger architectural change (FT widening? L2 widening?)
+- Profile-driven L1=32 path optimization beyond matmul
+  (L2 matmul, activation, cache footprint)
+
+Bench-stats had correctly predicted w20 > w25 (move-ordering best
+at w20). Memory [feedback_bench_stats_dont_predict_net_quality]
+remains valid — bench-stats are internal-consistency metrics,
+sometimes aligned with strength, sometimes not.
+
+## 2026-05-25 — prod-2x-data + jitter rescue (#1532, #1533): jitter recovers +28
+
+#1507 prod-2x-data alone vs prod was -34.6 (#1516 +retune -12.4
+post-tune). The retune signature suggested "noisier shallow eval"
+— under-iteration on the larger data with fixed final-LR. Tested
+the hypothesis: **does jitter regularization rescue the regression?**
+
+Trained `prod-extra-data-jitter-b0.1-d0.9-s800.nnue` (= prod-2x-data
++ Coda σ=0.1/d=0.9 jitter).
+
+| ID | Comparison | Result |
+|----|------------|--------|
+| #1532 | jitter+2x-data vs prod | -4.0 ±6.7 N=3960, trending H0 |
+| #1533 | jitter+2x-data vs prod-2x-data (no-jitter) | **H1 ✓ +28.1 ±8.0** in 2822 games |
+| #1534 | --core retune on jitter+2x-data | running (2000 iter) |
+
+**#1533 is the cleanest evidence yet that jitter regularizes the
+2x-data under-iteration pathology.** Net rescue: +28 Elo vs the
+no-jitter 2x-data variant. The (-4 untuned vs prod) + (typical
++7 Elo retune lift) projects to **+3 vs prod after tune**, which
+would be the first S800 candidate to actually beat prod with this
+training thread.
+
+**Hypothesis (don't promote to fact yet):** if doubled data + jitter
+genuinely beats prod after retune, the bigger lever is in the
+data-recipe quality, not just the eval-search-loop. Lots of further
+recipe variations could compound — different jitter parameters
+(see jitter sweep above), different filters, different SB counts,
+SWA + jitter combos. Tune-1534 is the immediate decision point;
+the broader recipe-tuning thread opens after.
+
+## 2026-05-25 — AVX-VNNI L1=32 kernel (Phase 2): no improvement
+
+Following the +4.9 Elo H1 from the AVX2 L1=32 kernel (#1519,
+merged 8633103), the AVX-VNNI variant was the natural Phase 2 —
+hosts with VPDPBUSD but no AVX-512. Implemented as
+`dense_l1_avx_vnni_l1_32` with 2-way unroll (8 YMM accumulators)
+to fit the 16-YMM register budget.
+
+| ID | Comparison | Result |
+|----|------------|--------|
+| #1523 | branch vs main on prod (L1=16 dispatcher non-regression) | running, trending +2 |
+| #1524 | branch vs main on l1-32 net | **stopped** — no signal possible |
+
+Adam clarified mid-experiment: **no OB workers currently have
+AVX-VNNI without AVX-512** (gpu2 / laptop, but laptop is dev and
+gpu2 was off OB). #1524 would measure identically to main on every
+active worker, so no signal could exist; stopped to free cycles.
+
+Local manual NPS check on Alder Lake (Adam's i5-14500, with mild
+training-induced memcpy contention): branch L1=32 = 452k NPS avg
+(4 runs) vs baseline L1=32 = 453k. **~0% improvement** — VPDPBUSD's
+theoretical 1.5× throughput over the AVX2 (VPMADDUBSW+VPMADDWD)
+path didn't materialise.
+
+**Mechanistic inference**: the L1 matmul stopped being the L1=32
+bottleneck after Phase 1. The residual L1=32 vs L1=16 NPS gap
+(~10%) lives in L2 matmul, SCReLU activation, or cache pressure
+from the wider accumulator. Saved as memory
+[project_avx_vnni_limited_gain_history] — Coda historical pattern
+is AVX-VNNI delivers limited gains; AVX-512 (when fleet has
+coverage) is the higher-leverage parallel target.
+
+Phase 2 branch (`experiment/avx-vnni-l1-32-kernel`) parked on
+origin pending #1523 dispatcher non-regression read. **Not merged**
+since no net Elo gain on the current fleet; would re-measure if
+AVX-VNNI hosts return to OB.
+
+## Session-cumulative deltas (full cycle through 2026-05-25)
+
+**Banked since the previous summary (2026-05-23):**
+- AVX2 L1=32 kernel: +4.9 Elo H1 (merged 8633103)
+- prod-2x-data+jitter discovery: jitter rescues 2x-data by +28 Elo
+  (#1533), making jitter+2x-data a potential prod-replacement
+  candidate pending tune-1534
+
+**Closed/narrowed directions:**
+- Multistage 4-stage --final-lr=3e-7: H0 across all probes
+- L1=32 at default w15: H0 -33 (vs w20 peak)
+- L1=32 at w25: H0 -20.7 (over-shot WDL)
+- prod-2x-data without jitter: H0 -12 even with retune (terminal)
+- SWA-150 (25% window): catastrophic, dropped
+- SWA-190 (5% window): H0 -9, too narrow
+- SF-jitter (σ=0.01/d=0.999): too soft for our λ
+- Ply-12/ply-20 filter (S200): both H0, no benefit
+- AVX-VNNI L1=32: no perf gain (matmul not the bottleneck post-Phase-1)
+
+**Active / in flight:**
+- #1529 swa-750-800 tuned (-0.2 ±2.2, resolving H0)
+- #1532 jitter+2x-data vs prod (-4 ±6.7, trending H0)
+- #1534 jitter+2x-data retune (2000 iter, ~24h)
+- #1535-1538 jitter parameter sweep (b0.03/d0.99 and b0.1/d0.999)
+- swa-750-800-tuned (#1529) close to H1 but unlikely to reach +3
+
+**Candidate nets in active testing for prod replacement:**
+- swa-750-800 (tuned): ~0 vs prod, narrowly H0 expected
+- jitter+2x-data (untuned): -4 vs prod; tuned projection +3
+
+**Methodology / understanding banked:**
+- Move-ordering = internal consistency, not strength
+  ([feedback_bench_stats_dont_predict_net_quality] updated)
+- Coda-historical: AVX-VNNI delivers limited gains vs AVX-512
+  ([project_avx_vnni_limited_gain_history] saved)
+- "Always SPRT after applying a tune" formalised
+  ([feedback_always_sprt_after_tune])
+- "Don't promote single SPRT to fact" formalised
+  ([feedback_dont_promote_single_sprt_to_fact])
+- OB fleet instruction-set composition documented
+  ([project_ob_fleet_instruction_sets_2026-05])
+- SWA window placement: peak ~10% / ~20 SBs at S200, sharp
+  falloff outside ±5%
