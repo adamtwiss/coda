@@ -443,6 +443,58 @@ below for when to deviate.
 
 **LTC testing (40+0.4)** for time management changes — TM features are invisible at STC (10+0.1) where each move gets ~200ms. Node-based TM failed 3x at STC but passed at +11.9 LTC.
 
+### TM-class changes: inverted methodology
+
+**For time-management changes specifically**, the SPRT-as-primary rule is
+INVERTED. Self-play SPRT systematically undersells the subset of TM changes
+that address ponder-asymmetric clock dynamics — because in self-play both
+sides drain symmetrically, saving clock cannot create the kind of endgame
+advantage that ponder-leeching opponents on lichess exploit.
+
+**Concrete case (Phase 10h, 2026-05-25)**: cross-engine RR at 30+0.5 vs
+ponder-enabled similar-strength engines showed +25-30 Elo over Coda.main
+across 200+ games per engine. Same code at SPRT #1520 LTC 40+0.4 self-play
+tracked at +0.6 ±3.1 →H0. The ~30x magnitude gap is structural to the test
+setup, not noise.
+
+**Methodology for TM-class changes:**
+1. **Inspect mechanism first**: 5-10 local games at the target TC, parse
+   per-move clocks from PGN, verify the change actually fires as designed.
+   See `scripts/tm_pattern_inspect.py`. Catches "governor never fires" /
+   "wrong TC for mechanism" bugs cheaply before burning fleet/CPU.
+2. **Primary signal: cross-engine RR with ponder-enabled opponents.** Use
+   similar-strength engines (Halogen, Velvet, Koivisto, Igel — close to
+   Coda's rating) with `ponder` flag on the engine line. TC at deployment-
+   matched ratios (30+0.5 for 60:1 ratio, etc.). Target ≥200 games per
+   engine for ±20 Elo CI; default 30-50 rounds × 2 games × 21+ pairs.
+3. **Cross-check: SPRT before merging** at `[0, 3]` LTC. Required for
+   non-regression confirmation. Accept any verdict short of clear regression
+   — do NOT gate merge on SPRT magnitude for TM changes (it WILL undersell
+   ponder-asymmetric gains).
+4. **Ground truth: lichess A/B deployment** — codabot runs on two lichess
+   nodes; deploy to one, compare real-world Elo.
+
+**Some TM changes DO show in SPRT** (Phase 10a +11.1, Phase 10c +1.5, the
+no-inc hotfix). These are TM changes that improve symmetric-self-play
+behavior. The systematic undersell is specific to ponder-asymmetric gains.
+
+**Don't apply this inverted rule to search/eval changes.** They keep the
+standard SPRT-as-primary discipline.
+
+**Common-trap regex bug (2026-05-25)**: when parsing per-move spend from
+cutechess PGN comments `{+0.43/17 0.60s}`, the non-greedy regex
+`[^}]*?([0-9]+\.[0-9]+)s?[^}]*?\}` extracts the FIRST decimal (the score,
+`0.43`), NOT the spend (`0.60`). Use `([0-9]+\.[0-9]+)s\b` instead. Caught
+this after multiple wrong "mechanism not firing" conclusions on Phase
+10f/10g/10h analyses; tooling is now correct in `tm_pattern_inspect.py`
+and `tm_variation_analyzer.py`.
+
+**Concurrency for 8C/16T host (`feedback_conc_choice_8c16t`):**
+- Non-ponder gauntlets: `conc=16`
+- Ponder gauntlets: `conc=8` (each pondering engine uses ~1 extra thread
+  during opponent's turn)
+- Never drop to `conc=4` thinking ponder doubles thread cost — it doesn't.
+
 **SPRT via OpenBench** (preferred):
 ```bash
 # Standard submission — pass dev bench explicitly when commit at HEAD lacks
