@@ -2422,8 +2422,26 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Check if we should stop at the soft limit.
             // Floor at soft_floor (≈ increment) so stability cuts in stable
             // endgames can't produce clock-growing instant emits.
+            //
+            // Phase 10h (2026-05-25): cap adjusted_soft at a fraction of
+            // hard_limit (SOFT_VS_HARD_RATIO ≈ 0.5). Cross-engine review of
+            // 9 top engines: Alexandria, Stockfish, Obsidian, Viridithas,
+            // PlentyChess all apply `adjusted_soft = min(soft × scale, hard
+            // × K)` where K bounds the per-iteration spend ceiling well
+            // below hard. Coda's prior bound was the raw hard_limit
+            // (effectively K=1.0), which allowed sustained 1.5-3× soft
+            // overspending on routine middlegame moves. The lichess 10+1
+            // game vs SF (codabot 1-0 loss): Coda burned 17-40s per move on
+            // moves 8-19 when soft was 10-17s — exactly the unconstrained
+            // factor-product climb this clip blocks. Starting at 0.5
+            // (between Alexandria's tight clip and a generous upper bound);
+            // SPSA-tunable later if H1.
+            const SOFT_VS_HARD_RATIO_NUM: u64 = 1;
+            const SOFT_VS_HARD_RATIO_DEN: u64 = 2;  // 0.5
+            let max_adjusted = info.hard_limit
+                .saturating_mul(SOFT_VS_HARD_RATIO_NUM) / SOFT_VS_HARD_RATIO_DEN;
             let adjusted_soft = (info.soft_limit as f64 * scale) as u64;
-            let adjusted_soft = adjusted_soft.max(info.soft_floor).min(info.hard_limit);
+            let adjusted_soft = adjusted_soft.max(info.soft_floor).min(max_adjusted);
             // Subtract tm_baseline so soft is measured from the TM-start
             // moment, not search start. tm_baseline is 0 for normal `go`
             // (unchanged behaviour); set to elapsed-at-ponderhit when
