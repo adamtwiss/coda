@@ -2981,6 +2981,18 @@ impl NNUENet {
                     hidden32[i] += simd512_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
                 }
             }
+        } else if self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 == 32 && pw % 4 == 0 {
+            // L1=32 AVX2 specialisation. Four YMM accumulators (8 neurons
+            // each) instead of the L1=16 path's two. Column-major outer
+            // chunk loop matches dense_l1_avx2 structure — input is
+            // loaded once per chunk, all 32 neurons accumulate in
+            // parallel via VPMADDUBSW + VPMADDWD.
+            unsafe {
+                crate::sparse_l1::dense_l1_avx2_l1_32(
+                    &stm_pw, &ntm_pw, pw, &self.l1_weights_sparse,
+                    &self.l1_biases[l1_off..], pw_scale, &mut hidden32,
+                );
+            }
         } else if self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 <= 16 {
             // Column-major (input-chunk-major) L1 matmul — Reckless's pattern.
             // For each 4-byte input chunk, splat_i32 broadcast + maddubs/madd
@@ -3074,6 +3086,7 @@ impl NNUENet {
             && !(self.has_avx512_vnni && pw % 64 == 0 && !self.l1_weights_8t.is_empty())
             && !(self.has_avx_vnni && !self.l1_weights_sparse.is_empty() && l1 <= 16 && pw % 4 == 0)
             && !(self.has_avx512 && pw % 64 == 0 && !self.l1_weights_8t.is_empty())
+            && !(self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 == 32 && pw % 4 == 0)
             && !(self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 <= 16)
             && !(self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty()) {
             // Scalar fallback — raw weights in [input][neuron] layout
