@@ -622,6 +622,11 @@ pub struct SearchInfo {
     /// the forced-move detector at our SPRT TC, costing ~3 Elo at STC for
     /// reasons orthogonal to the lichess no-inc fix.
     tm_no_inc: bool,
+    /// Phase 13 (2026-05-26, Viridithas-shape rewrite): the absolute max time
+    /// we will ever spend on a single move, computed as 60% of our_clock.
+    /// Replaces Phase 10h's hard×0.5 cap with Viridithas's max_bank_usable
+    /// pattern. Factors multiply soft up against this — no separate cap.
+    tm_max_time: u64,
     /// Per-root-move node counts for node-based time management.
     /// Indexed by from_sq * 64 + to_sq. Reset each search.
     root_move_nodes: Box<[u64; 4096]>,
@@ -719,6 +724,7 @@ impl SearchInfo {
             hard_limit: 0,
             soft_floor: 0,
             tm_no_inc: false,
+            tm_max_time: 0,
             root_move_nodes: alloc_zeroed_box(),
             ponderhit_time: std::sync::Arc::new(AtomicU64::new(0)),
             ponderhit_soft: std::sync::Arc::new(AtomicU64::new(0)),
@@ -1390,8 +1396,42 @@ pub fn compute_tm_budgets(
     our_inc: u64,
     movestogo: u32,
     overhead: u64,
-    fullmove: u16,
-) -> (u64, u64, u64) {
+    _fullmove: u16,
+) -> (u64, u64, u64, u64) {
+    // Phase 13 (2026-05-26): Viridithas-shape TM windows.
+    //
+    // Top-engine audit (2026-05-26) showed Coda's pre-Phase-13 TM was a
+    // structural outlier among ~10 modern engines:
+    //   - 6 multiplicative factors compounding to ~30× product (Viridithas: 4
+    //     factors, ~9.5× max; Hobbes: 3 factors, ~3.3× max; SF/Obsidian/Plenty:
+    //     0 factors, fully static)
+    //   - Separate hard×0.5 cap (Phase 10h) as band-aid for the factor overflow
+    //   - Hard window only ~9% of clock vs Viridithas's 46%
+    // The diagnostic (TM_DIAG, 2026-05-26) showed 65% of TM iterations clamped
+    // to the Phase 10h cap, blocking factors=4-11× legitimate signals.
+    //
+    // Phase 13 ports Viridithas's TM window structure:
+    //   max_time = clock × 0.60 - overhead  (the only per-move ceiling)
+    //   hard_time = clock × 0.46            (mid-search abort, clamped to max)
+    //   opt_time = (clock/24 + inc × 0.94 - overhead) × 0.73, clamped to hard
+    //
+    // The factor multiplier applied in the dynamic TM block scales opt UP
+    // (factors can hit ~9.5× max) toward hard/max — no separate cap needed.
+    // This is the structural difference: a wide hard window with tight
+    // factors, instead of Coda's tight hard window with wide factors + cap.
+    //
+    // Constants verbatim from Viridithas (per-mille / per-hundred):
+    //   MAX_BANK_USABLE: 600 (60% of clock)
+    //   HARD_WINDOW_FRAC: 46 (46% of clock)
+    //   OPTIMAL_WINDOW_FRAC: 73 (73% of computed_window)
+    //   INCREMENT_FRAC: 94 (94% of inc added to computed_window)
+    //   DEFAULT_MOVES_TO_GO: 24 (sudden-death pacing assumption)
+    //
+    // Returns (opt, hard, max, soft_floor). soft_floor preserved at small
+    // value (10ms) — Viridithas has no separate floor, but Coda's stockpile-
+    // prevention sleep at line ~2520 still needs a non-zero value to be a
+    // no-op for movetime-limited searches. The Phase 13 factor multiplier
+    // can pull opt × multiplier well below any meaningful floor.
     let time_left = our_time.saturating_sub(overhead).max(1);
     // No-inc TCs require more conservative pacing. With inc, each move
     // costs only `inc` of net time (we regain inc per move). Without
@@ -1409,202 +1449,58 @@ pub fn compute_tm_budgets(
     // partly because they're spiking off a lower baseline). No-inc path
     // unchanged (moves_left=40 from earlier hotfix); movestogo path
     // unchanged (already uses the explicit movestogo count).
-    let moves_left = if movestogo > 0 {
-        movestogo as u64
-    } else if our_inc == 0 {
-        40
+    // Viridithas-style windows. max_time is the absolute single-move ceiling.
+    const MAX_BANK_USABLE_NUM: u64 = 600;
+    const MAX_BANK_USABLE_DEN: u64 = 1000;
+    const HARD_WINDOW_NUM: u64 = 46;
+    const HARD_WINDOW_DEN: u64 = 100;
+    const OPT_WINDOW_NUM: u64 = 73;
+    const OPT_WINDOW_DEN: u64 = 100;
+    const INC_FRAC_NUM: u64 = 94;
+    const INC_FRAC_DEN: u64 = 100;
+    const DEFAULT_MOVES_TO_GO: u64 = 24;
+
+    let max_time = (time_left * MAX_BANK_USABLE_NUM / MAX_BANK_USABLE_DEN).max(1);
+    let hard_time = (time_left * HARD_WINDOW_NUM / HARD_WINDOW_DEN).min(max_time).max(1);
+
+    let opt_time = if movestogo > 0 {
+        // Movestogo: divisor is clamped to [2, default_mtg]
+        let divisor = (movestogo as u64).clamp(2, DEFAULT_MOVES_TO_GO);
+        let computed = time_left / divisor;
+        (computed.min(max_time) * OPT_WINDOW_NUM / OPT_WINDOW_DEN).max(1)
     } else {
-        35
+        // Sudden death (or with inc). Add 94% of inc to base computed window.
+        let computed = time_left / DEFAULT_MOVES_TO_GO + our_inc * INC_FRAC_NUM / INC_FRAC_DEN;
+        ((computed.min(max_time) * OPT_WINDOW_NUM / OPT_WINDOW_DEN).min(hard_time)).max(1)
     };
 
-    // Soft allocation: time/movesLeft + 80% of increment.
-    let mut soft = time_left / moves_left + our_inc * 4 / 5;
+    // soft_floor: preserved at a small value (10ms) for stockpile sleep
+    // compatibility. The factor multiplier in dynamic TM block can pull
+    // soft well below this — Viridithas has no enforced floor.
+    let soft_floor: u64 = 10;
 
-    // Phase 4 v2 (2026-05-21): ply-aware soft scaling.
-    //
-    // Diagnosis from main/phase2/phase4 RR + clock-drain analyzer
-    // (scripts/tm_clock_drain.py): Coda spends 7.1s/move avg on moves 1-5
-    // at 120+1, vs SF's ~2-3s/move. Even main has this overspend pattern.
-    // Result: clock at 50% by move 10 vs SF at 78%, no reserve for
-    // middlegame.
-    //
-    // SF's optScale = 0.012112 + (ply+3.22713)^0.46866 × c — soft target
-    // GROWS sub-linearly with ply, low in opening, high in middlegame.
-    // Coda's `time/movesLeft + 0.8*inc` is uniform regardless of phase.
-    //
-    // Linear ramp piecewise approximation (full-move number):
-    //   fm=1-5:   soft × 0.4  (sharp early discipline)
-    //   fm=6-10:  soft × 0.6
-    //   fm=11-15: soft × 0.85
-    //   fm=16+:   soft × 1.0  (full middlegame TM)
-    //
-    // Only soft is scaled — hard cap stays as catastrophe ceiling.
-    // Multipliers (Phase 1's bmc, stability, nodes, score) still push
-    // tactical opening positions higher above this lower base; routine
-    // opening positions emit at the reduced soft target.
-    //
-    // Skip scaling when movestogo>0: the movestogo path already
-    // computes soft from remaining moves directly.
-    if movestogo == 0 {
-        let phase_x100: u64 = if fullmove <= 5 { 40 }
-                              else if fullmove <= 10 { 60 }
-                              else if fullmove <= 15 { 85 }
-                              else { 100 };
-        soft = soft * phase_x100 / 100;
-    }
-
-    // Cap soft allocation: scale with moves remaining.
-    // movestogo=1: 90%, movestogo=2: 85%, sudden death (effective 25): 50%.
-    let max_pct = if movestogo > 0 {
-        (95 - movestogo as u64 * 5).max(30).min(90)
-    } else {
-        50
-    };
-    let max_alloc = time_left * max_pct / 100;
-    if soft > max_alloc { soft = max_alloc; }
-
-    // Emergency: below 1 second, be very conservative.
-    if time_left < 1000 {
-        let mut emergency = time_left / 10;
-        if our_inc > 0 && our_inc < emergency { emergency = our_inc; }
-        if emergency < 10 { emergency = 10; }
-        if soft > emergency { soft = emergency; }
-    }
-
-    // Floor at 10ms.
-    if soft < 10 { soft = 10; }
-
-    // Save base soft before any clamp to hard. Hard uses base_soft, NOT
-    // a dynamically-scaled soft — dynamic factors at runtime can scale
-    // soft by up to ~2.5× (stability=0 × node_fraction=2.23), so hard
-    // derived from scaled soft would let max = soft × 2.5 × 3 = soft ×
-    // 7.5, recreating the overspend problem.
-    let base_soft = soft;
-
-    // Hard limit:
-    //   movestogo>0: 2× base_soft, capped at a movestogo-scaled fraction
-    //   sudden death: 3× base_soft.
-    let mut hard = if movestogo > 0 {
-        let hard_raw = base_soft * 2;
-        let hard_pct = (95 - movestogo as u64 * 10).max(30).min(90);
-        let mtg_cap = time_left * hard_pct / 100;
-        hard_raw.min(mtg_cap)
-    } else {
-        base_soft * 3
-    };
-
-    // Universal hard cap (sudden-death only). Phase 2 TM redesign
-    // (docs/tm_redesign_phase2_2026-05-20.md, follows
-    // docs/tm_redesign.md Issue 1):
-    //
-    // The old `time/20 + inc` cap pinned sudden-death hard to ~5% of
-    // clock + 1 increment. Phase 1 self-play gauntlets across
-    // 30+0.5/60+1/10+0.1 (200 games each, 2026-05-19) showed that
-    // every upward multiplier (bmc_factor, nodes_factor, score_factor)
-    // saturated against this ceiling on tactical positions, producing
-    // a uniform spend pattern indistinguishable from main. Phase 2
-    // widens the cap so the multipliers can express variance, guarded
-    // by an absolute minimum-reserve floor that prevents the v1 blitz-
-    // catastrophe regression (40-second moves at move 3).
-    //
-    // Two safety layers:
-    //   1. TC-aware multiplier (`mult_cap`) — looser at classical
-    //      where deep think pays, tighter at bullet where one bad
-    //      move loses. Combined with a per-TC max-single-move
-    //      percentage of remaining time.
-    //   2. Minimum-reserve floor (`max_consumable`) — never spend so
-    //      much that remaining clock would drop below
-    //      max(TM_RESERVE_INC × inc, TM_RESERVE_ABS_MS). The safety
-    //      that lets the cap widen without recreating v1's blitz
-    //      catastrophe.
-    if movestogo == 0 {
-        // Inc-aware per-move estimate: 1m+5s plays nothing like 1m+0s.
-        // The natural per-move budget is base/25 + inc (you regain the
-        // inc each move). Without including inc, a 1m+5s game was being
-        // classified as "blitz" (60s/25 = 2.4s → 9% pct_cap = 5.4s),
-        // and soft was clamped to a 5.4s hard cap while soft_floor at
-        // ~4.9s left a <500ms variance band — observed on lichess as
-        // "always uses 5s per move" at 1m+5s.
-        let estimated_spm_ms = time_left / 25 + our_inc;
-        // TC-aware hard multiplier × 10 (integer math). Conservative
-        // initial values; SPSA-tunable later.
-        let hard_mult_x10: u64 = if estimated_spm_ms < 2000 { 20 }       // bullet 2.0×
-                                 else if estimated_spm_ms < 5000 { 25 }   // blitz 2.5×
-                                 else if estimated_spm_ms < 15000 { 30 }  // rapid 3.0×
-                                 else { 40 };                              // classical 4.0×
-        // Max-single-move percentage of remaining clock. Aligned with
-        // doc design table — bullet/blitz tight, rapid/classical loose.
-        // 2026-05-23 hotfix: no-inc TCs (movestogo=0 + inc=0, e.g.
-        // lichess 3+0, 60+0) need MUCH tighter caps. Without inc we
-        // can't recover time, so spending 12% on one tactical move
-        // (= 21.6s at 3+0) wastes the budget the rest of the game
-        // can't replace. Halve the caps at no-inc.
-        let max_single_pct: u64 = if our_inc == 0 {
-            if estimated_spm_ms < 2000 { 4 }
-            else if estimated_spm_ms < 5000 { 5 }
-            else if estimated_spm_ms < 15000 { 6 }
-            else { 8 }
-        } else {
-            if estimated_spm_ms < 2000 { 8 }        // bullet 8%
-            else if estimated_spm_ms < 5000 { 9 }    // blitz 9%
-            else if estimated_spm_ms < 15000 { 12 }  // rapid 12%
-            else { 15 }                              // classical 15%
-        };
-
-        let mult_cap = base_soft * hard_mult_x10 / 10;
-        let pct_cap = time_left * max_single_pct / 100;
-        let new_hard = mult_cap.min(pct_cap);
-
-        // Minimum-reserve floor: never spend such that remaining clock
-        // drops below max(TM_RESERVE_INC × inc, TM_RESERVE_ABS_MS).
-        // K_ABS = 2s is below the doc's 3s proposal to avoid strangling
-        // short STC games (10+0.1 would lose 30% of its clock otherwise).
-        const TM_RESERVE_INC_MULT: u64 = 5;
-        const TM_RESERVE_ABS_MS: u64 = 2000;
-        let min_reserve = (TM_RESERVE_INC_MULT * our_inc).max(TM_RESERVE_ABS_MS);
-        let max_consumable = time_left.saturating_sub(min_reserve);
-        let new_hard = new_hard.min(max_consumable);
-
-        if hard > new_hard {
-            hard = new_hard;
-        }
-        // Phase 4 v2 (2026-05-21): also scale hard cap by phase factor in
-        // opening. Soft scaling alone wasn't enough because the dynamic
-        // TM multipliers (especially stability_factor starting at 1.71
-        // when 0 stable iterations seen) compensated for the reduced soft
-        // by pushing scale × soft back up toward original. Hard-cap
-        // scaling makes the early ceiling an absolute, multiplier-proof
-        // bound.
-        let phase_x100: u64 = if fullmove <= 5 { 40 }
-                              else if fullmove <= 10 { 60 }
-                              else if fullmove <= 15 { 85 }
-                              else { 100 };
-        hard = hard * phase_x100 / 100;
-
-        // Final absolute safety: never spend > 3/4 of remaining time on
-        // a single move (preserved from old formula).
-        if hard > time_left * 3 / 4 {
-            hard = time_left * 3 / 4;
-        }
-    }
-
-    // Clamp soft to hard. C8 audit LIKELY #28: must clamp BEFORE
-    // returning; otherwise downstream TM code could see soft > hard
-    // and try to spend more than the absolute cap.
-    if soft > hard { soft = hard; }
-
-    // Soft floor: prevents instant-emit stockpile in stable endgames
-    // (lichess PZ7pCyrx) without crushing downward variance. Set at
-    // half the increment (overhead-adjusted) so dynamic stability cuts
-    // can take spend down to ~50% of inc, but no further. The old
-    // full-inc floor (`our_inc - overhead`) collapsed the variance band
-    // at high-inc TCs — 1m+5s was floored at 4.9s and capped near 5.4s,
-    // leaving no room for position-aware variance. Capped at hard.
-    // Zero when (inc - overhead) ≤ 1.
-    let soft_floor = (our_inc.saturating_sub(overhead) / 2).min(hard);
-
-    (soft, hard, soft_floor)
+    (opt_time, hard_time, max_time, soft_floor)
 }
+
+#[allow(dead_code)]
+fn _phase13_deleted_old_compute_tm_budgets() {
+    // Phase 13 (2026-05-26) removed the prior multi-stage soft/hard formulas.
+    // The Coda pre-Phase-13 TM had accumulated:
+    //   - moves_left switch (35/40/movestogo)
+    //   - time_left/moves_left + 0.8×inc base soft
+    //   - phase scaling (0.4/0.6/0.85/1.0 by fullmove)
+    //   - max_pct (50% sudden-death) clamping
+    //   - emergency mode (<1s)
+    //   - base_soft × 2-3× for hard
+    //   - tc-aware hard_mult_x10 (2.0×-4.0×)
+    //   - max_single_pct (6-15%)
+    //   - reserve floor (5×inc or 2s)
+    //   - hard phase scaling
+    //   - 3/4 time_left ceiling
+    //   - (inc - overhead) / 2 floor
+    // Replaced by Viridithas-shape windows. Audit-driven structural rewrite.
+}
+
 
 /// Run Lazy SMP search: main thread + N-1 helper threads.
 pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits, threads: usize) -> Move {
@@ -1922,10 +1818,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // it at 0 so they get exactly the movetime they asked for).
         info.soft_floor = limits.movetime_floor.min(limits.movetime);
     } else if our_time > 0 {
-        let (soft, hard, soft_floor) =
+        let (soft, hard, max_time, soft_floor) =
             compute_tm_budgets(our_time, our_inc, limits.movestogo, info.move_overhead, board.fullmove);
         info.soft_limit = soft;
         info.hard_limit = hard;
+        info.tm_max_time = max_time;
         info.soft_floor = soft_floor;
         info.tm_no_inc = our_inc == 0 && limits.movestogo == 0;
         info.time_limit = hard; // search uses hard as absolute limit
@@ -2206,7 +2103,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // tracking gated behind `soft_limit > 0`, ponderhit started cold
         // (tm_best_stable = 0, stability_factor = 1.71) and the dynamic
         // adjustment couldn't bite.
-        let score_drop = if depth >= 4 {
+        let _score_drop = if depth >= 4 {
             if info.tm_has_data {
                 let bm_from = move_from(best_move);
                 let bm_to = move_to(best_move);
@@ -2322,126 +2219,84 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
         }
 
-        // Dynamic time management: 3-factor model (Obsidian/Clarity pattern)
-        // Combines node fraction, best-move stability, and score trend.
+        // Phase 13 (2026-05-26): Viridithas-shape dynamic TM — 4 factors,
+        // no separate Phase-10h cap (max_time clamps directly).
+        //
+        // Factor product max ~9.5× (vs Coda's prior ~30×). Wider hard window
+        // (46% of clock from compute_tm_budgets) means factors can express
+        // real variety without overflowing. max_time (60% of clock) is the
+        // only single-move ceiling. See top-engine audit 2026-05-26 for
+        // rationale; cap-bind diagnostic (TM_DIAG) showed 65% of iterations
+        // clamped under prior structure.
         if info.soft_limit > 0 && depth >= 4 && !info.should_stop() {
-            // Factor 1: Node fraction (Obsidian pattern)
-            // How concentrated is the search on the best move?
-            // High fraction → confident → use less time. Low fraction → uncertain → use more.
-            let nodes_factor = if depth > 9 && best_move != NO_MOVE {
+            // Factor 1: Stability multiplier (table-indexed by stable count).
+            // Verbatim from Viridithas: [2.50, 1.20, 0.90, 0.80, 0.75]
+            //   0 stable:  2.50× (uncertain, search more)
+            //   1 stable:  1.20×
+            //   2 stable:  0.90× (settling)
+            //   3 stable:  0.80×
+            //   4+ stable: 0.75× (confident, search less)
+            // This single factor absorbs what Coda previously split across
+            // stability_factor (0.5-1.71) + bmc_factor (1.0-5.0) — Viridithas
+            // doesn't separately track best-move-changes.
+            const STABILITY_TABLE: [f64; 5] = [2.50, 1.20, 0.90, 0.80, 0.75];
+            let stability_idx = (info.tm_best_stable as usize).min(4);
+            let stability_multiplier = STABILITY_TABLE[stability_idx];
+
+            // Factor 2: Aspiration fail-low bonus (Viridithas event accumulator).
+            // Formula: 1.0 + 0.34 × min(2, count), range [1.00, 1.68]
+            //   0 fails: 1.00× (baseline)
+            //   1 fail:  1.34×
+            //   2+ fails: 1.68× (cap)
+            // Captures the upward instability signal.
+            let failed_low_multiplier = 1.0 + 0.34 * (info.tm_asp_fail_low.min(2) as f64);
+
+            // Factor 3: Forced-move multiplier (Viridithas, position-intrinsic).
+            //   Strong: 0.386× (alternative -400cp behind)
+            //   Weak:   0.627× (alternative -170cp behind)
+            //   None:   1.00×
+            let forced_move_multiplier = match info.tm_forced_state {
+                ForcedState::Strong => 0.386,
+                ForcedState::Weak   => 0.627,
+                ForcedState::None   => 1.0,
+            };
+
+            // Factor 4: Best-move subtree-size multiplier (Viridithas).
+            // Formula: (1.62 - nodes_fraction) × 1.4, range ~[0.87, 2.27]
+            //   nodes_fraction = best_move_nodes / total_nodes
+            //   high fraction (>0.6): confident → reduce time
+            //   low fraction (<0.3):  uncertain → increase time
+            let subtree_size_multiplier = if depth > 9 && best_move != NO_MOVE {
                 let bm_from = move_from(best_move) as usize;
                 let bm_to = move_to(best_move) as usize;
                 let best_nodes = info.root_move_nodes[bm_from * 64 + bm_to];
                 let total = info.nodes;
                 if total > 0 {
                     let frac = best_nodes as f64 / total as f64;
-                    // Obsidian: 0.63 + (1.0 - frac) * 2.0
-                    // frac=0.9 → 0.83, frac=0.5 → 1.63, frac=0.2 → 2.23
-                    0.63 + (1.0 - frac) * 2.0
+                    (1.62 - frac) * 1.4
                 } else {
-                    1.25  // default when no data (Clarity pattern)
+                    1.0  // default when no node data
                 }
             } else {
-                1.25  // early depths: use default multiplier
+                1.0  // early depths: neutral
             };
 
-            // Factor 2: Best-move stability (Obsidian linear pattern)
-            // Each stable iteration reduces time by 8%
-            // 0 stable: 1.71x, 5 stable: 1.31x, 10 stable: 0.91x
-            let stability_factor = (1.71 - info.tm_best_stable as f64 * 0.08).max(0.5);
+            // Combined multiplier — Viridithas's 4 factors.
+            // Max product ~ 2.50 × 1.68 × 1.0 × 2.27 = 9.52×
+            // Min product ~ 0.75 × 1.0  × 0.386 × 0.87 = 0.252×
+            let multiplier = stability_multiplier
+                * failed_low_multiplier
+                * forced_move_multiplier
+                * subtree_size_multiplier;
 
-            // Factor 3: Score trend (Obsidian pattern, simplified)
-            // Dropping score → use more time. Rising score → slightly less.
-            // scoreFactor = clamp(0.86 + 0.010 * scoreDrop, 0.81, 1.50)
-            let score_factor = (0.86 + 0.010 * score_drop as f64).clamp(0.81, 1.50);
-
-            // Factor 4: Best-move-changes upward boost (Phase 1 + Phase 10a).
-            // Mirrors Reckless `1.0 + changes/4.0` and SF `1.096 + 2.29 *
-            // bestMoveChanges` patterns — the upward instability signal that
-            // Coda was structurally missing.
-            //
-            // Phase 10a (2026-05-24): steepened from `changes/4 cap 2.5` to
-            // `changes/2 cap 5.0`, matching the SF-style wider upside the
-            // cross-engine review identified as the dominant lever for sharp
-            // selective spikes. At bmc=2: 1.5× → 2.0×; at bmc=4+ (genuinely
-            // unstable): 2.0× → 3.0+×; max 5.0× at bmc>=8 (very rare).
-            // Hard-cap downstream (post-2026-05-23 hotfix) still binds at
-            // the catastrophe ceiling, so this widens variation potential
-            // without changing the catastrophe floor.
-            //
-            // tm_best_move_changes is the cumulative count of root best-move
-            // flips between iterations since search start, reset at `go`.
-            let bmc_factor = (1.0 + info.tm_best_move_changes as f64 / 2.0).min(5.0);
-
-            // Factor 5: Forced-move downward boost (Viridithas pattern,
-            // Phase 6 TM redesign). When the verification above has
-            // classified the position as forced, scale down decisively.
-            // Numbers verbatim from Viridithas (per-mille → fraction):
-            //   Strong (depth 8-11):  0.386 — best alternative was -400cp
-            //   Weak   (depth 12+):   0.627 — best alternative was -170cp
-            // This is the orthogonal downward signal: stability/score-factor
-            // both REACT to the search settling, while forced-state CAUSES
-            // a single discrete drop based on whether other moves are
-            // verifiably worse. Tying time-spend to position-intrinsic
-            // shape decorrelates adjacent-move spend (the autocorrelation
-            // gap to top engines).
-            // Factor 6: Aspiration-fail-low event accumulator (Phase 10c,
-            // 2026-05-24, Viridithas pattern).
-            //
-            // Phase 9b/9c (thresholded multiplier at asp_fl > 14) measured ~0
-            // Elo at LTC and SPSA-flat — the threshold form picked the wrong
-            // signal axis. Cross-engine review identified Viridithas's
-            // additive event accumulator as the correct sharp-spike form:
-            // each aspiration fail-low EVENT in the current search adds a
-            // fixed bonus to the multiplier, capped at 2 events.
-            //
-            // Formula: asp_factor = 1.0 + 0.34 × min(2, asp_fl_count)
-            //   0 events: 1.00× (baseline)
-            //   1 event:  1.34× (sharp first ramp)
-            //   2 events: 1.68× (second ramp)
-            //   3+:       1.68× (cap — prevents sustained over-spend that
-            //                    would recreate the pre-hotfix forfeit pattern)
-            //
-            // Constants verbatim from Viridithas (per-mille → fraction). The
-            // TM_ASP_THRESHOLD / TM_ASP_MULT_10X tunables from Phase 9 remain
-            // in source for back-compat but are unused by this formula.
-            let asp_factor = 1.0 + 0.34 * info.tm_asp_fail_low.min(2) as f64;
-
-            let forced_factor = match info.tm_forced_state {
-                ForcedState::Strong => 0.386,
-                ForcedState::Weak   => 0.627,
-                ForcedState::None   => 1.0,
-            };
-
-            // Combined: all five factors multiply against the soft limit.
-            // adjusted_soft is downstream-clamped to hard_limit, so this
-            // factor pushes us toward the existing hard cap on tactical
-            // positions but cannot exceed it.
-            let scale = nodes_factor * stability_factor * score_factor * bmc_factor * forced_factor * asp_factor;
-
-            // Check if we should stop at the soft limit.
-            // Floor at soft_floor (≈ increment) so stability cuts in stable
-            // endgames can't produce clock-growing instant emits.
-            //
-            // Phase 10h (2026-05-25): cap adjusted_soft at a fraction of
-            // hard_limit (SOFT_VS_HARD_RATIO ≈ 0.5). Cross-engine review of
-            // 9 top engines: Alexandria, Stockfish, Obsidian, Viridithas,
-            // PlentyChess all apply `adjusted_soft = min(soft × scale, hard
-            // × K)` where K bounds the per-iteration spend ceiling well
-            // below hard. Coda's prior bound was the raw hard_limit
-            // (effectively K=1.0), which allowed sustained 1.5-3× soft
-            // overspending on routine middlegame moves. The lichess 10+1
-            // game vs SF (codabot 1-0 loss): Coda burned 17-40s per move on
-            // moves 8-19 when soft was 10-17s — exactly the unconstrained
-            // factor-product climb this clip blocks. Starting at 0.5
-            // (between Alexandria's tight clip and a generous upper bound);
-            // SPSA-tunable later if H1.
-            const SOFT_VS_HARD_RATIO_NUM: u64 = 1;
-            const SOFT_VS_HARD_RATIO_DEN: u64 = 2;  // 0.5
-            let max_adjusted = info.hard_limit
-                .saturating_mul(SOFT_VS_HARD_RATIO_NUM) / SOFT_VS_HARD_RATIO_DEN;
-            let adjusted_soft = (info.soft_limit as f64 * scale) as u64;
-            let adjusted_soft = adjusted_soft.max(info.soft_floor).min(max_adjusted);
+            // Phase 13: adjusted_soft = soft × multiplier, clamped to max_time
+            // (the ONLY cap — no separate hard×0.5). Viridithas pattern.
+            let adjusted_soft_raw = (info.soft_limit as f64 * multiplier) as u64;
+            let adjusted_soft = adjusted_soft_raw.min(info.tm_max_time).max(1);
+            // Compatibility aliases for downstream code that references
+            // `scale` / `max_adjusted`. `scale` retained for TM_DIAG output.
+            let scale = multiplier;
+            let _ = scale;
             // Subtract tm_baseline so soft is measured from the TM-start
             // moment, not search start. tm_baseline is 0 for normal `go`
             // (unchanged behaviour); set to elapsed-at-ponderhit when
