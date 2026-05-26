@@ -1463,7 +1463,7 @@ pub fn compute_tm_budgets(
     let max_time = (time_left * MAX_BANK_USABLE_NUM / MAX_BANK_USABLE_DEN).max(1);
     let hard_time = (time_left * HARD_WINDOW_NUM / HARD_WINDOW_DEN).min(max_time).max(1);
 
-    let opt_time = if movestogo > 0 {
+    let opt_time_base = if movestogo > 0 {
         // Movestogo: divisor is clamped to [2, default_mtg]
         let divisor = (movestogo as u64).clamp(2, DEFAULT_MOVES_TO_GO);
         let computed = time_left / divisor;
@@ -1473,6 +1473,34 @@ pub fn compute_tm_budgets(
         let computed = time_left / DEFAULT_MOVES_TO_GO + our_inc * INC_FRAC_NUM / INC_FRAC_DEN;
         ((computed.min(max_time) * OPT_WINDOW_NUM / OPT_WINDOW_DEN).min(hard_time)).max(1)
     };
+
+    // Phase 13.1 (2026-05-26): phase scaling (Reckless/Hobbes pattern).
+    //
+    // First Phase 13 RR at 30+0.25 showed -35 Elo and 2× opening overspend
+    // (median 42% vs Coda.main's 24%). Root cause: with stability=0 at search
+    // start, the multiplier is 2.5×; at opt_base=1.08s the per-move adj_soft
+    // becomes 2.7s — across 10 opening moves that's 27s = entire 30+0.25
+    // budget burnt in opening.
+    //
+    // Top engines (Reckless, Hobbes, Viridithas's other formula) embed phase
+    // scaling in their base: `soft_scale = 0.024 + 0.042 × (1 - exp(-0.045 × fm))`
+    // grows from ~0.024 at fm=0 to 0.066 at fm=40+. Ratio ~0.36 → 1.0.
+    //
+    // Apply the same Reckless-style exponential here as a multiplier:
+    //   phase_mult = 0.36 + 0.64 × (1 - exp(-0.045 × fullmove))
+    //     fm=1:  0.39×
+    //     fm=5:  0.49×
+    //     fm=10: 0.59×
+    //     fm=20: 0.74×
+    //     fm=40: ~0.93×
+    // Skip when movestogo > 0 (movestogo path computes from explicit count).
+    let opt_time = if movestogo > 0 {
+        opt_time_base
+    } else {
+        let phase_mult = 0.36 + 0.64 * (1.0 - (-0.045 * _fullmove as f64).exp());
+        ((opt_time_base as f64) * phase_mult.clamp(0.36, 1.0)) as u64
+    };
+    let opt_time = opt_time.max(1).min(hard_time);
 
     // soft_floor: preserved at a small value (10ms) for stockpile sleep
     // compatibility. The factor multiplier in dynamic TM block can pull
