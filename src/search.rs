@@ -2267,7 +2267,16 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // This single factor absorbs what Coda previously split across
             // stability_factor (0.5-1.71) + bmc_factor (1.0-5.0) — Viridithas
             // doesn't separately track best-move-changes.
-            const STABILITY_TABLE: [f64; 5] = [2.50, 1.20, 0.90, 0.80, 0.75];
+            // Phase 13.2 (2026-05-26): lower stability_table[0] from 2.50 to 1.71.
+            // Phase 13.1 (Viridithas table 2.5 + phase scaling) still produced
+            // -41 Elo at 30+0.25 with opening overspend 37% (main: 21%).
+            // The 2.5× initial multiplier was 1.46× more aggressive than
+            // Coda's prior 1.71× stability_factor maximum. Even with phase
+            // scaling the per-move spend overshot Coda's pre-Phase-10h
+            // calibrated opening allocation. 1.71 matches Coda's prior
+            // stability_factor ceiling; preserves variety in middlegame
+            // (where stab=0 only briefly) while reducing opening spike.
+            const STABILITY_TABLE: [f64; 5] = [1.71, 1.20, 0.90, 0.80, 0.75];
             let stability_idx = (info.tm_best_stable as usize).min(4);
             let stability_multiplier = STABILITY_TABLE[stability_idx];
 
