@@ -12498,3 +12498,146 @@ to "competing with established mid-table top engines."
   proven highest-yield investigation methodology (Phase 13 + 14)
 - **5090 + CUDA 13.2 produces a different baseline net** vs other
   Blackwell GPUs on older CUDA — suspect pending downgrade test
+
+## 2026-05-27 (evening) — Lichess deployment diagnostics + 3 hotfix branches
+
+Phase 13+14 deployed to coda_bot earlier in the day. Across ~30
+post-deploy games on lichess (mostly 60+5 / 600+5, two 180+0):
+**22 W / 6 D / 2 L**. Both losses are 3+0 (no-inc) time forfeits;
+zero non-timeout losses. All 6 draws are vs SF-derived engines.
+This is the strongest deployment regime Coda has shown.
+
+Three separate codabot lichess blunders investigated and fixed:
+
+### Bug 1 — wej9jERO m65 blunder (multi-thread ponder-miss race)
+
+Game: Coda (W) vs duchessAI, 60+5. At move 65 (5-piece position
+`8/1P6/8/2P5/4k3/8/5K2/6r1 w` — KPPvKR with Black having just
+promoted to a rook on g1), SF analysis showed mate-in-12 via
+`f2g1` (Kxg1). Coda played `c5c6` in **280ms**; SF eval dropped
+#+12 → +2.27.
+
+Diagnosis:
+- Single-thread, 280ms search of the position cleanly finds `f2g1`
+  at depth 14 (`score cp 996`)
+- Threads=4 (codabot's config) at 280ms emits a non-`f2g1` move
+  ~50% of the time — `b7b8q`, pawn pushes, etc.
+- Ponder-miss confirmed: Coda's previous PV predicted `e4d5` (king
+  move), Black actually played `g1=R`
+- Phase 14 ponderhit floor (`MIN_POST_PONDERHIT_MS=50`) does NOT
+  apply to ponder-miss — only ponder-hit
+- Root cause: short fresh-search-after-pondermiss + helper-thread
+  race + late-stabilizing PV (correct move only stable at depth 11+)
+
+**Fix: `fix/ponder-miss-floor`** (commit 15e29cf, merged to main).
+Adds `min_think_ms` to SearchLimits; uci.rs sets it to
+`min(200ms, our_time/50)` after a pondermiss; search.rs floors
+`soft_limit/soft_floor` to it. Detection via `pondermiss_pending`
+flag set when `stop` arrives while `ponder_limits.is_some()` (the
+standard lichess-bot ponder-miss path).
+
+SPRT #1583 LTC 40+0.4 [-2,1]: 34490g, -0.1 ±1.7, LLR 0.26 →H1 when
+stopped to merge. Inert on OB (no ponder in fastchess).
+
+Local validation at T=4: pondermiss replay of m65 went from 50%
+baseline f2g1 → 95% (19/20) with the 200ms floor.
+
+### Bug 2 — qiHdjT7k + TaiqhFnS 3+0 timeouts (no-inc ceiling)
+
+Two games against ToromBot at 3+0, both lost on time, both with a
+single catastrophic-spend move early on:
+- **qiHdjT7k m6**: 76.4 sec spent (clock at start = 166110ms)
+- **TaiqhFnS m8**: 80.0 sec spent (clock at start = 174190ms)
+
+Both match `hard_time = 0.46 × clock_at_start` exactly. Phase 13
+ported Viridithas's hard window verbatim (46% of clock) — fine at
+moderate-inc TCs but catastrophic at 3+0: one deep iteration or
+aspiration-recovery search can hit the hard ceiling and burn ~half
+the entire game clock.
+
+**Fix: `fix/no-inc-hard-cap`** (commit 7d59f49, merged to main).
+For `our_inc == 0 && movestogo == 0`: caps `max = 0.15 × clock`,
+`hard = 0.10 × clock`. With movestogo > 0 (40/40 style) the
+explicit count drives allocation, no extra cap needed. With any
+inc, behavior is bit-identical.
+
+SPRT #1584 LTC 40+0.4 [-2,1]: 1708g -1.8 ±7.9 when stopped early
+to merge alongside ponder-miss-floor. Code path doesn't fire at
+inc>0 SPRT TCs — pure non-regression cover of the inc path.
+
+### Bug 3 — wej9jERO TB tiebreak (5-piece win, wrong move picked)
+
+After deploying EGTBs to lichess hosts and rerunning the m65
+diagnosis, root TB probe DOES fire — but emits `c5c6` not `f2g1`.
+Both moves are TB-wins (wdl=20000 in the shakmaty convention) but
+`f2g1` converts to 4-piece KPPvK (trivial), while `c5c6` leaves
+KPPvKR on the board.
+
+shakmaty's `probe_root_pv` returns a DTZ-optimal move but among
+DTZ-equivalent winners picks whichever it enumerates first. Coda's
+existing `pick_drawn_tb_move` tiebreak only fires for `wdl==0` —
+no analogous tiebreak for winning roots.
+
+**Fix: `fix/tb-winning-root-tiebreak`** (branch, SPRT pending,
+not yet merged). Adds `pick_winning_tb_move`: for `wdl >= 19000`
+(definite TB wins, excluding cursed wins at wdl=1), probe each
+legal move's child position; keep only those where the child
+remains a definite loss for the opponent (`child_wdl <= -19000`);
+among those, prefer highest-captured-value move. Wired into both
+the `go` and `ponderhit` TB-root call sites.
+
+Local validation: wej9jERO m65 now emits `bestmove f2g1`. KQ-vs-KR
+and drawn-endgame paths unaffected.
+
+False start: initially gated on `wdl >= TB_WIN - 100` (where
+`TB_WIN = 28800` in tt.rs) — but `probe_root_pv` returns the
+**ambiguous-WDL** convention (`±20000, ±1, 0`, NOT the `TB_WIN`
+constant). Threshold of `19000` is correct.
+
+SPRT #1587 LTC 40+0.4 [-2,1] stopped at 2358g (-3.8 ±6.5) — wrong
+TC choice; no LTC justification, 4× fleet cost. Restarted as
+**#1589 STC 10+0.1 [-2,1]**, in progress.
+
+### Move-time variability shape (deployment confirmation)
+
+Lichess game `7oR1p9wJ` (Coda B) shows the variability shape Phase
+13+14 was targeting: short emits on easy/forced moves through the
+opening, taller bars at middlegame critical points, distinct
+spikes at endgame conversion. Pre-Phase-13 codabot games showed
+bimodal (instant-emit on ponder-hit OR uniform-spend non-hit) +
+"geometric decay regardless of position". Confirms the 4-factor
+multiplier (stability × failed-low × subtree-size × phase-mult) is
+expressing variety instead of getting clamped or smeared. This is
+the qualitative shape signal that SPRT can't measure but matters
+for actual deployment strength.
+
+### Methodology notes from this session
+
+- **SPRT bounds for SPRT-inert hotfixes**: `[-2, 1]` is the right
+  convention. Wider bounds (`[-5, 5]`) on inert code paths produce
+  uninterpretable ±4 CI results.
+- **Default to STC unless there's a load-bearing reason for LTC**:
+  TM-class fixes that DO fire at STC should use STC (4× faster, 4×
+  cheaper). LTC is for TM changes whose mechanism only surfaces at
+  longer think times (e.g. some node-based features).
+- **OB workers use fastchess and do NOT ponder**: any ponder-gated
+  feature (Phase 14 floor, ponder-miss floor) is purely
+  non-regression cover under SPRT; the gain only shows up on
+  codabot deployment.
+- **Lichess game classes that SPRT can't see**: ponder-asymmetric
+  TM (Phase 14, ponder-miss floor), no-inc-specific TM (no-inc
+  cap), TB-root tiebreak (no TBs on workers). For these, cross-
+  engine local RR + codabot deployment are the real validators.
+- **Diagnostic-pattern signature reuse**: the no-inc bug had a
+  bright signature — single move ≈ 0.46 × clock. Saved as memory
+  so future no-inc forfeit reports get classified instantly.
+
+### Open candidates from this session
+
+- **SPRT #1589** (tb-winning-root-tiebreak STC) — pending
+- **`diag/tb-probe-instrumentation`** branch — not merged; logs
+  `info string TB_PROBE result=...` at every root TB decision.
+  Useful diagnostic but noisy in lichess logs; gating behind an
+  env var is worth considering before merge
+- Next codabot redeploy should pick up `no-inc-cap` +
+  `ponder-miss-floor` together; both currently on main
