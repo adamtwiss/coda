@@ -450,6 +450,13 @@ pub struct SearchLimits {
     /// they don't instant-emit on TT-cached positions (which would stockpile
     /// the clock on every move). See `search()`'s movetime branch.
     pub movetime_floor: u64,
+    /// Minimum think time floor in clock-mode (`our_time > 0` branch). Set
+    /// after a ponder MISS to prevent instant-emit from a polluted TT
+    /// (predicted-line analysis leaked into move ordering) racing the main
+    /// thread on positions where the correct move only stabilizes at depth
+    /// 10+. Caller must cap this against time-pressure before passing it
+    /// in (see uci.rs ponder-miss handling). Zero = no floor.
+    pub min_think_ms: u64,
 }
 
 impl Default for SearchLimits {
@@ -469,6 +476,7 @@ impl SearchLimits {
             nodes: 0,
             infinite: false,
             movetime_floor: 0,
+            min_think_ms: 0,
         }
     }
 }
@@ -1569,6 +1577,7 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
             nodes: 0, // helpers don't have node limits
             infinite: limits.infinite,
             movetime_floor: 0, // helpers don't need the floor — only main sleeps
+            min_think_ms: 0, // helpers don't enforce ponder-miss floor — main does
         };
 
         handles.push(std::thread::Builder::new()
@@ -1856,6 +1865,15 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.hard_limit = hard;
         info.tm_max_time = max_time;
         info.soft_floor = soft_floor;
+        // Apply ponder-miss min-think floor (set by uci.rs when the prior
+        // search was an abandoned ponder). Caps at hard_limit so we never
+        // floor above the absolute deadline. uci.rs is responsible for the
+        // time-pressure safety cap (don't burn >2% of clock on a floor).
+        if limits.min_think_ms > 0 {
+            let floor = limits.min_think_ms.min(hard);
+            info.soft_limit = info.soft_limit.max(floor);
+            info.soft_floor = info.soft_floor.max(floor);
+        }
         info.tm_no_inc = our_inc == 0 && limits.movestogo == 0;
         info.time_limit = hard; // search uses hard as absolute limit
         info.tm_has_data = false;
@@ -5179,6 +5197,7 @@ mod tests {
             wtime: 0, btime: 0, winc: 0, binc: 0,
             movestogo: 0, nodes: 0, infinite: false,
             movetime_floor: 0,
+            min_think_ms: 0,
         };
 
         search(&mut board, &mut info, &limits);

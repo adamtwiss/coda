@@ -98,6 +98,11 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let suppress_bestmove: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let mut ponder_limits: Option<SearchLimits> = None; // pending limits for ponderhit
     let mut ponder_stm: u8 = crate::types::WHITE; // side to move at ponder start
+    // Set when a pondering search was abandoned (either via `stop` from GUI,
+    // or via a new `go` arriving while ponder was running). The next
+    // non-ponder `go` consumes this flag to apply the ponder-miss min-think
+    // floor — see go-handler.
+    let mut pondermiss_pending: bool = false;
     let mut opening_book: Option<crate::book::OpeningBook> = None;
     let mut use_book = true;
     let mut syzygy: Option<std::sync::Arc<crate::tb::SyzygyTB>> = None;
@@ -205,6 +210,23 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 // a ponder (predicted opp move didn't happen), suppress its
                 // bestmove emit — it's for the predicted position, not whatever
                 // this new go is for.
+                //
+                // Ponder-miss detection: if the prior search was a ponder
+                // (`ponder_limits.is_some()`) and this go arrives while its
+                // handle is still around, that's a ponder MISS. The new fresh
+                // search starts with a polluted TT (analysis of the predicted
+                // line). At T>=2 + short TM allocation, the main thread can
+                // emit a low-depth wrong move before the correct move
+                // stabilizes (wej9jERO m65). Set a floor on the new search's
+                // soft deadline to give the main thread time to ratchet past
+                // the race window.
+                // If this go arrives while a ponder is still running (no `stop`
+                // was sent first — non-standard but possible), that's also a
+                // pondermiss. Set the flag now so the detection below sees it.
+                if search_handle.is_some() && ponder_limits.is_some() {
+                    pondermiss_pending = true;
+                }
+                let prev_was_pondermiss = pondermiss_pending;
                 if let Some(handle) = search_handle.take() {
                     suppress_bestmove.store(true, Ordering::Relaxed);
                     external_stop.store(true, Ordering::Relaxed);
@@ -302,6 +324,27 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     limits.infinite = true;
                 } else {
                     ponder_limits = None;
+                    // Ponder-miss min-think floor. Applies when this go is a
+                    // fresh search after an abandoned ponder. Capped to a tiny
+                    // fraction of remaining clock so it can't burn time
+                    // pressure (e.g. 40/40 endgame with 1s left would
+                    // otherwise spend 15% of clock on a 150ms floor).
+                    if prev_was_pondermiss {
+                        let our_time_ms = if board.side_to_move == crate::types::WHITE {
+                            limits.wtime
+                        } else {
+                            limits.btime
+                        };
+                        const MIN_POST_PONDERMISS_MS: u64 = 200;
+                        // 2% of clock OR 20ms, whichever is larger
+                        let safety_cap = (our_time_ms / 50).max(20);
+                        let floor = MIN_POST_PONDERMISS_MS.min(safety_cap);
+                        limits.min_think_ms = floor;
+                        eprintln!(
+                            "PONDER_MISS_FLOOR applied floor={}ms our_time={}ms cap={}ms",
+                            floor, our_time_ms, safety_cap);
+                    }
+                    pondermiss_pending = false; // consumed
                 }
                 // Warn if no NNUE net is loaded
                 if info.nnue_net.is_none() {
@@ -507,6 +550,13 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 // watches external_stop) sees it before we join the handle.
                 external_stop.store(true, Ordering::Relaxed);
                 stop_flag.store(true, Ordering::Relaxed);
+                // If we're stopping a pondering search, the GUI is signalling
+                // a ponder-MISS — flag the next go to apply the min-think
+                // floor (search_handle gets joined here, so the next go can't
+                // detect "was a ponder" via the handle alone).
+                if ponder_limits.is_some() {
+                    pondermiss_pending = true;
+                }
                 // Wait for search thread to finish and recover SearchInfo
                 if let Some(handle) = search_handle.take() {
                     if let Ok(returned_info) = handle.join() {
@@ -516,6 +566,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
             }
             "ponderhit" => {
+                // Ponderhit means our predicted move was played — this is NOT a
+                // pondermiss. Clear the pending flag in case a stale `stop`
+                // somehow set it (shouldn't happen in protocol, but defensive).
+                pondermiss_pending = false;
                 // Check TB first: in TB-range endgames, play the TB-optimal move
                 // instead of the ponder result. The ponder search uses NNUE eval
                 // which doesn't distinguish optimal from merely winning moves.
@@ -637,6 +691,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     external_stop.store(true, Ordering::Relaxed);
                     stop_flag.store(true, Ordering::Relaxed);
                 }
+                // Ponderhit consumed the ponder. Clear ponder_limits so the
+                // next `go` doesn't falsely detect a pondermiss off the stale
+                // value (the heuristic in go-handler checks handle+limits).
+                ponder_limits = None;
             }
             "setoption" => {
                 // Wait for any active search to finish before changing options
