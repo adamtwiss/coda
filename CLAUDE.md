@@ -143,7 +143,7 @@ Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from dept
 - TT cutoff cont-hist malus (penalize opponent's quiet on cutoff)
 - Mate distance pruning (non-PV, ply+1 offset)
 
-**Move ordering:** TT move → good captures (MVV×16 + captHist) → quiets (main hist + contHist×3 + pawn hist + quiet check bonus) → bad captures. Good/bad quiet split being tested (SF pattern: defer low-history quiets after bad captures).
+**Move ordering:** TT move → good captures (MVV×16 + captHist) → quiets (main hist + contHist×3 + pawn hist + quiet check bonus) → bad captures.
 
 **Exemptions:** TT move exempt from pruning. Promotions exempt from LMR.
 
@@ -559,8 +559,12 @@ Bench: 1780721
 | Bounds | When to use | Example |
 |--------|-------------|---------|
 | **`[0, 3]` (DEFAULT)** | "Does this feature help?" at Coda's current strength. Most new ideas target +1-3 Elo. **Pick this unless you have a specific reason for one of the rows below.** | Pruning/ordering tweak, parameter probe, small bonus adjustment, incremental feature, audit correctness fix, tune-applied retest, structural ports |
+| `[-2, 1]` | "Ship if not a meaningful regression." Bench-neutral refactors, NPS-only changes, ARM ordering, adding tunables at default values. Forces enough games to actually discriminate near zero. | Code cleanup with possible perf delta, OnceLock migration, defensive guard whose direction is uncertain |
 | `[-3, 3]` | Small-win correctness fix where a regression ≤ -3 would be a block. Use for fixes whose direction is uncertain but where the correctness side of the trade matters. | SE margin tweak, 50mr mate downgrade, stale-bound gate |
-| `[-5, 5]` | Pure non-regression / infrastructure check. | NPS-only bench-neutral change, adding tunables at default values, ARM ordering change |
+
+**`[-5, 5]` is on the do-not-use list** — it locks H1 on noise
+(`+1 ±4` ships, `-1 ±4` doesn't, same true effect). Adam pushed back
+on this 2026-05-26. If you reach for it, use `[-2, 1]` instead.
 
 **Why `[0, 3]` is the standing default.** Most ideas at our current
 rating land in the +1-3 Elo range. Wider bounds (`[0, 5]`, `[0, 10]`)
@@ -575,7 +579,8 @@ true Elo is +5, `[0, 3]` will H1 it just as fast. We've repeatedly
 regretted wider bounds and never regretted `[0, 3]`. **Don't hedge
 toward wider bounds out of uncertainty.** Use `[-3, 3]` for
 correctness fixes where regression matters symmetrically; use
-`[-5, 5]` for pure non-regression infrastructure changes.
+`[-2, 1]` for "ship if not a meaningful regression" on bench-neutral
+or infrastructure changes.
 
 **What does NOT need SPRT:**
 - Comments, documentation, tooling changes
