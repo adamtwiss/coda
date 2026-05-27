@@ -12210,3 +12210,291 @@ AVX-VNNI hosts return to OB.
   ([project_ob_fleet_instruction_sets_2026-05])
 - SWA window placement: peak ~10% / ~20 SBs at S200, sharp
   falloff outside ±5%
+
+## 2026-05-25 — S200 jitter (σ, d) parameter sweep: decay axis is load-bearing
+
+Completed the 2×2 sweep of jitter parameters at S200 on mini-prod:
+
+| σ\d | 0.9 | 0.99 | 0.999 |
+|---|:---:|:---:|:---:|
+| 0.01 | — | — | **SF (#1521/#1522: -1.5, -3.8 vs Coda)** |
+| 0.03 | — | **#1535/#1536: +0.48, +0.61** | — |
+| 0.1 | ✓ banked (+7.9 H1 tuned) | — | **#1537/#1538: -7.6, -6.5** |
+
+Key reading:
+
+| Config | σ × √(1-d²) per-step delta | Result vs baby-prod |
+|---|---:|---:|
+| Coda original (0.1, 0.9) | 0.044/step | +0.9 untuned → +7.9 tuned |
+| Midpoint (0.03, 0.99) | 0.0042/step | +0.48 (≈0) |
+| Decoupled (0.1, 0.999) | 0.0045/step | **-7.64 H0 ✗** |
+| SF-style (0.01, 0.999) | 0.000447/step | -1.5 H0 |
+
+**Surprising finding**: σ=0.1/d=0.999 (Coda's σ, SF's decay) lost
+decisively at -7.6 vs baby-prod, **strictly worse than either Coda's
+original (σ=0.1/d=0.9) or SF's (σ=0.01/d=0.999) configuration**. The
+*decay axis is load-bearing*, not σ. At our scale, **fast-drift jitter
+(d≈0.9) is what makes Coda's jitter work**; slow-drift (d=0.999) fails
+regardless of σ.
+
+This is opposite to what the relative-magnitude argument predicted —
+we thought σ size relative to λ would matter most. Instead, jitter's
+*temporal correlation* matters more. The SF recipe's slow-drift jitter
+likely works for them via a different mechanism (their per-sample
+jitter does the per-position perturbation; the per-batch jitter is a
+slow schedule perturbation). Without the per-sample component, slow
+per-batch jitter alone doesn't help us.
+
+The midpoint config (0.03, 0.99) is essentially equivalent to baby-prod
+(+0.48 ±0.99) — small perturbation in any direction is largely
+indistinguishable from no jitter. The Coda original (σ=0.1/d=0.9) is
+the only configuration so far that produces real Elo at S200, and only
+after retune.
+
+## 2026-05-25 — SWA at S800: window bracket complete (720/750/780)
+
+Bracketed the S800 SWA window question with three configurations on
+the standard recipe, otherwise canonical. Goal: determine whether
+absolute or % window scaling translates the S200 working point to S800.
+
+| Window | SBs | % | Untuned vs prod | Tuned vs prod |
+|---|---:|---:|---:|---:|
+| swa-720/800 (10%) | 80 | 10% | +0.7 (#1541) | +2.8 (#1549 H1) |
+| swa-750/800 (6.25%) | 50 | 6.25% | -7.2 (#1527) | -0.9 (#1529) |
+| swa-780/800 (2.5%) | 20 | 2.5% | **+3.0 H1 (#1543)** | +3.0 H1 (#1550) |
+
+**The shape is non-monotonic**: both swa-720 (wider) and swa-780
+(narrower) beat swa-750 (middle) materially. Direct comparisons:
+- #1542 swa-720 vs swa-750: H1 ✓ +2.65 ±3.51
+- #1544 swa-780 vs swa-750: H1 ✓ +10.1 ±6.9
+
+H2H of the two winners (#1551 swa-720-tuned vs swa-780-tuned):
+**+0.57 ±1.65** — essentially tied. Both converge to +3 vs prod once
+tuned.
+
+**Key observations**:
+1. **Absolute scaling beats % scaling**: swa-780 (20 SBs = same as
+   S200 working point) is the cleanest individual winner. % scaling
+   prediction (80 SBs = 10%) also works but the trunk shift is
+   larger.
+2. **swa-750 was a local pessimum**, not a generic "middle is best".
+3. **Tune lift varies despite similar untuned magnitudes**: swa-720
+   had a much larger basin shift (CORR_W_CONT +75%, PROBCUT_MIN_DEPTH
+   -59%) but only +2.1 tune lift; swa-780 had smaller basin shift and
+   0 tune lift (was already at +3 untuned). Confirms tune lift is not
+   well-predicted by basin shift magnitude.
+
+**Ship candidate**: swa-780 alone. Banked +3 vs prod, smaller trunk
+diff from main than swa-720 (less downstream disruption), matches S200
+absolute working point of 20 SBs.
+
+## 2026-05-25 — SWA + jitter combinations: anti-synergy at both σ values
+
+Tested whether SWA-780 and jitter stack productively. Two probes:
+
+| Net | Untuned vs prod | Untuned vs SWA-780 | Tuned vs prod |
+|---|---:|---:|---:|
+| swa-780 alone | +3.0 (H1) | (anchor) | +3.0 (H1) |
+| swa-780 + jitter σ=0.03/d=0.99 | -2.9 (#1557) | **-7.2 H0 (#1558)** | -2.43 (#1560 H0) |
+| swa-780 + jitter σ=0.01/d=0.999 (SF) | -8.98 (#1574) | -6.18 (#1575) | **-1.17 H0 (#1579)** |
+
+**Both jitter magnitudes fail to combine with SWA-780.** Anti-synergy
+in both cases — combination underperforms SWA alone. Tunes don't
+rescue (#1560 -2.43, #1579 -1.17, both H0 vs prod).
+
+The σ=0.03 combination tune (#1559) had the **largest basin shift of
+any tune in the cycle** (20 params ≥10%, including DEXT_MARGIN_QUIET
++100%, NMP_UNDEFENDED_MAX +65%, LMR_KING_PRESSURE_DIV -46%) — yet
+banked essentially 0 lift (+0.5 from -2.9 → -2.43). Cleanest evidence
+yet that basin shift magnitude doesn't predict tune lift.
+
+**Methodology validation** (Adam's earlier framing): "tune capacity is
+ability to shift parameters from existing basin to one optimised for
+the model. Not directly related to or driven by untuned gap to prod."
+The swa+jitter tunes confirm this — large basin shift, small lift,
+because the destination basin was also a local optimum at similar
+quality, not a better basin.
+
+**Implication**: SWA and jitter are mechanistically overlapping at
+SWA-780's 20-SB window. Both target similar noise/regularization. The
+combination over-smooths into a regime where the trunk can't extract
+the eval quality SWA alone produces.
+
+**Open question (Adam's, 2026-05-27)**: would WIDER SWA + jitter
+combine differently? SWA-720 (80-SB window) averages more weights —
+might dilute jitter-induced trajectory expansion. SF runs both
+mechanisms together at longer stage lengths. Untested at SWA-720 scale.
+
+## 2026-05-26 — shuffle4 + retune: +6 Elo banked (#1580 H1 ✓)
+
+Trained `gpu2-normal-shuffle4-S800` — standard prod recipe with
+shuffle buffer 4GB instead of default 256MB. On gpu2 (known-good host,
+ruling out GPU3 confound).
+
+- **#1576 untuned**: -3.05 ±3.78 vs prod (basically neutral, as past
+  S200/S800 shuffle-only tests had shown)
+- **#1578 SPSA tune** (--core 2000 iter, dev_network=9292D051):
+  substantial basin shift with 8 params ≥15%, most striking:
+  - CORR_W_CONT -67% (33→11) — cont-correction nearly disabled
+  - PROBCUT_MIN_DEPTH -64% — ProbCut radically earlier
+  - IIR_MIN_DEPTH +50% — IIR delayed
+  - NMP_DEPTH_DIV -41% — NMP much more aggressive
+- **#1580 tuned**: **H1 ✓ +6.03 ±3.53 vs prod** in 14510 games.
+
+**A single non-eval-recipe change (shuffle buffer 256MB → 4GB) banks
++6 Elo via retune.** Same "untuned ~0, tuned positive" pattern as
+jitter S200 (+0.8 → +7.9). Earlier conclusion that "shuffle buffer
+size is meaningless" was wrong — it's invisible without retune.
+
+**Implications**:
+- shuffle4 + tune-1578 is a banked prod-replacement candidate, +6 vs
+  prod (comparable to or better than swa-780 alone)
+- The +22.9 shuffle4+fenskip GPU3-rescue (#1546) partially decomposes:
+  ~+5-6 is shuffle4 itself, the rest is fenskip-on-GPU3 (likely some
+  mix of real fenskip gain + GPU3 platform mitigation)
+- **shuffle buffer should probably be the new default** at 4GB or
+  larger for prod training going forward
+
+## 2026-05-26 — prod-extra-data-s1200: longer training on extra data
+
+Trained on GPU3 with extra-data recipe + extended schedule to S1200.
+
+| Test | Comparison | Result |
+|---|---|---|
+| #1554 | prod-extra-data-s1200 vs prod-extra-data-s800 | **H1 ✓ +21.9 ±7.1** |
+| #1555 | prod-extra-data-s1200 vs prod | -4.25 ±3.51 (close to H0) |
+
+The s1200 extension recovered ~+22 Elo vs s800 on the SAME platform
+(GPU3). Vs prod (different platform), only -4.25 — almost reaches
+parity. **The longer training on extra data recovers most of the
+2x-data regression**, similar magnitude to the jitter rescue (+28
+#1533) and shuffle+fenskip rescue (+22.9 #1546). Same +20-25 ceiling
+pattern.
+
+S1200 didn't help on 12-file standard data in past tests (per
+[feedback_schedule_plateaus_at_s800]). With 2x data + longer schedule,
+the longer training produces real Elo on the same-platform sibling.
+
+Interpretation under the GPU3-platform-confound theory (#1553 / #1556
+showed gpu3-normal-data baseline at ~-30 to -49 vs prod): the
++22 same-platform recovery may be partially recovering GPU3 platform
+damage rather than a pure "longer schedule helps" finding. Resolution
+needs GPU3 platform issue to be sorted.
+
+## 2026-05-25/27 — GPU3 platform investigation: ongoing
+
+Discovered while running control experiments that **GPU3 produces
+materially weaker nets at S800**.
+
+| Test | Net trained on | Recipe | Result vs prod |
+|---|---|---|---|
+| #1553 (paused [-3,3]) | GPU3 | standard 12-file | -35.7 (resumed) |
+| #1556 (H0 [-5,5]) | GPU3 | standard 12-file | **-49.07 ±20.23 H0 ✗** |
+
+The gpu3-normal-data-s800 is a "control" — same recipe as prod, just
+trained on GPU3 (5090 GPU + CUDA 13.2). Resolution magnitude is **far
+outside any plausible train-noise envelope** (we've never measured
+±25 SD between trains).
+
+**Investigation findings**:
+- Data integrity: bit-identical (sha256sum match)
+- File order: Bullet sorts alphabetically (line 808 of
+  `examples/coda_v9_768_threats.rs`) — symlink/readdir order
+  hypothesis ruled out
+- Other Blackwell GPUs (5060, 5070, 5080) train fine across multiple
+  CUDA versions (12.4-13.1) — Blackwell architecture as a whole not
+  the issue
+- **5090 + CUDA 13.2 is the unique combination** — this specific
+  pairing is suspect
+
+**Implications for cycle interpretation**:
+- All `prod-extra-data-*` nets were trained on GPU3 (only host with
+  extra data) — magnitudes partially platform-confounded
+- The +20-25 rescue ceiling pattern across jitter / shuffle+fenskip /
+  s1200 likely combines real recipe gain + GPU3 platform mitigation
+- Non-GPU3 nets (SWA series, S200 jitter variants, L1=32, swa+jitter
+  combos, shuffle4 alone) are not platform-confounded
+
+**Workaround attempts in flight** (before GPU3 became unreachable):
+GPU3 + 12-file + fenskip and GPU3 + 12-file + shuffle-4GB to test
+whether these mechanisms mitigate the platform damage on the standard
+recipe. Status unknown — GPU3 went offline mid-experiment.
+
+**Recipe changes that are NOT platform-confounded** (still real Elo):
+- swa-780 +3 vs prod
+- shuffle4 + tune +6 vs prod
+- Phase 13 TM rewire +57 cross-engine (deployment)
+
+## 2026-05-26/27 — Phase 13 + Phase 14 TM (Zeus thread): massive deployment win
+
+Zeus's TM thread continues. **Phase 13 (Viridithas-shape) is the
+biggest single Elo gain in Coda's OB history.**
+
+| Test | Result |
+|---|---:|
+| #1568 Phase 13 STC self-play | **+135.0 ±14.1 H1 ✓** |
+| #1571 Phase 13 LTC self-play | **+51.7 ±9.2 H1 ✓** |
+| Phase 13 cross-engine RR (rivals pool) | **+57 Elo deployment** |
+| #1581 Phase 13 + Phase 14 STC self-play | **+161.3 ±14.7 H1 ✓** |
+
+Phase 14 adds ~+26 STC self-play on top of Phase 13. Projected
+deployment for Phase 13+14: ~+65-70 (cross-engine + ponder testing
+pending).
+
+**Methodology** (worth memorializing): PGN stats analysis identified
+specific TM-variability metrics where Coda was weak vs rival engines.
+Tried tweaks → didn't help → identified Viridithas as performing well
+on those metrics with similar signals → ported Viridithas's TM
+structure. Empirically-driven targeted rewire, not chance finding.
+**This pattern (identify weak metric → port from rival that excels on
+that metric) is the highest-yield investigation workflow of the cycle.**
+
+Cycle TM deployment running total: **~+90-100 Elo** if Phase 14
+cross-engine confirms at projected magnitude.
+
+## Session-cumulative deltas (2026-05-25 through 2026-05-27)
+
+**Banked deployment Elo** (cross-engine confirmed or projected):
+
+| Source | Cross-engine Elo |
+|---|---:|
+| Phase 13 TM (Viridithas-shape) | **+57** ✓ confirmed |
+| Phase 14 TM (#1581 in extension) | **+10** projected |
+| Phase 10h TM (prior banking) | +19 |
+| shuffle4 + tune-1578 | **+6** ✓ banked |
+| AVX2 L1=32 kernel | +5 |
+| swa-780 (ship candidate) | +3 (banked, not yet shipped) |
+| Earlier TM phases | ~+13 |
+| **Cycle deployment running total** | **~+113 Elo** |
+
+**Compared to 2026-05-23 all-engine Atlas RR** (where Coda was rank
+21 at +47 Elo, ~214 below Stockfish): banking even +100 deployment
+puts Coda at ~+147, **rank ~10-12 in the broader pool** (Caissa /
+Rubichess territory). The cycle moves Coda from "top-25 territory"
+to "competing with established mid-table top engines."
+
+**Closed/narrowed directions** this cycle:
+- S200 jitter sweep: σ=0.1/d=0.9 (Coda) is the only working
+  configuration. SF-style (0.01/0.999), midpoint (0.03/0.99), and
+  decoupled (0.1/0.999) all fail to outperform.
+- SWA + jitter combinations at SWA-780: anti-synergy at both σ values
+  tested. Closed (pending wider-SWA test).
+- L1=32 WDL sweep: peaked at w20, w25 over-shoots.
+
+**Open candidates pending verification**:
+- jitter+2x-data + tune: #1539 close to zero (-2.94 ±3.02), settling H0
+- prod-extra-data-s1200 vs prod: #1555 -4.25 (close to parity, GPU3
+  confound)
+- gpu3 diagnostic experiments interrupted; resume when host available
+
+**Methodology insights banked**:
+- **Decay axis matters more than σ in jitter** (against earlier
+  prediction)
+- **shuffle buffer needs retune to reveal value** — "neutral untuned"
+  is not "no effect"
+- **Basin shift magnitude does not predict tune lift** (#1559 had
+  largest shift in cycle, banked +0.5)
+- **PGN-stats → identify weak metric → port from rival** is the
+  proven highest-yield investigation methodology (Phase 13 + 14)
+- **5090 + CUDA 13.2 produces a different baseline net** vs other
+  Blackwell GPUs on older CUDA — suspect pending downgrade test
