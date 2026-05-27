@@ -1468,8 +1468,25 @@ pub fn compute_tm_budgets(
     const INC_FRAC_DEN: u64 = 100;
     const DEFAULT_MOVES_TO_GO: u64 = 24;
 
-    let max_time = (time_left * MAX_BANK_USABLE_NUM / MAX_BANK_USABLE_DEN).max(1);
-    let hard_time = (time_left * HARD_WINDOW_NUM / HARD_WINDOW_DEN).min(max_time).max(1);
+    // No-inc sudden-death TCs need a tighter ceiling. Viridithas's verbatim
+    // 60%/46% windows are fine at moderate-inc (each spent ms gets refilled
+    // by inc) but catastrophic at 3+0: lichess qiHdjT7k (2026-05-27) — at
+    // move 6 with 166s clock, hard_time = 76s; a deep single iteration ran
+    // to that ceiling, geometric-decayed to flag-fall by move 24.
+    // For no-inc sudden death: cap max at 15% of clock, hard at 10%. With
+    // movestogo > 0 the explicit count drives allocation, so no extra cap
+    // needed there.
+    let no_inc_sd = our_inc == 0 && movestogo == 0;
+    let max_time = if no_inc_sd {
+        (time_left * 15 / 100).max(1)
+    } else {
+        (time_left * MAX_BANK_USABLE_NUM / MAX_BANK_USABLE_DEN).max(1)
+    };
+    let hard_time = if no_inc_sd {
+        (time_left * 10 / 100).min(max_time).max(1)
+    } else {
+        (time_left * HARD_WINDOW_NUM / HARD_WINDOW_DEN).min(max_time).max(1)
+    };
 
     let opt_time_base = if movestogo > 0 {
         // Movestogo: divisor is clamped to [2, default_mtg]
