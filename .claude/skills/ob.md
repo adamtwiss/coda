@@ -18,6 +18,14 @@ acted-on-early-N noise, missed `/errors/` followups.
 ## 1. Credentials & setup
 
 - **Server**: `https://ob.atwiss.com`
+- **Game runner**: **fastchess** (not cutechess). Ponder is NOT exposed
+  as an SPRT configuration option — workers run engines without ponder
+  regardless of the `Ponder` UCI option default. Behavioural changes
+  gated on ponder (Phase 14 ponderhit floor, ponder-miss min-think
+  floor) are inert under OB SPRT — only deployment (codabot lichess)
+  exercises those paths. Use SPRT as a non-regression check for the
+  non-ponder path; rely on deployment + cross-engine local RR for the
+  actual gain measurement.
 - **Usernames** (different roles, filter by user to see who owns what):
   - `adam` — human
   - `claude` — Hercules (implementation/fleet)
