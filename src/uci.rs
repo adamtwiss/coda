@@ -74,6 +74,72 @@ fn pick_drawn_tb_move(board: &Board, fallback_uci: &str) -> String {
     best_uci
 }
 
+/// Among multiple TB-winning root moves (wdl > 0), pick the one most likely
+/// to actually convert under practical play. `probe_root_pv` returns a
+/// DTZ-optimal move but among DTZ-equivalent winners shakmaty picks the
+/// first one it enumerates — which can be a long pawn push when a capture
+/// would simplify the position immediately. lichess wej9jERO m65 (KPPvKR,
+/// w to move, 2026-05-27): shakmaty returned `c5c6` (pawn push, position
+/// stays 5-piece KPPvKR) over `f2g1` (Kxg1 → 4-piece KPPvK, trivial win).
+/// Both are TB_WIN per WDL but `f2g1` is the practical choice.
+///
+/// Tiebreak among `wdl >= TB_WIN-100` moves: re-probe each legal move's
+/// child position with WDL, keep only those that remain definite wins
+/// (child wdl ≤ -(TB_WIN-100), i.e. opponent definitely loses), then
+/// prefer highest-captured-value (which also reduces opponent's piece
+/// count and resets 50mr).
+fn pick_winning_tb_move(board: &Board, fallback_uci: &str, tb: &crate::tb::SyzygyTB) -> String {
+    use crate::movegen::generate_legal_moves;
+    let legal = generate_legal_moves(board);
+
+    // probe_wdl returns ambiguous_wdl_to_score values: ±20000 for definite,
+    // ±1 for cursed/blessed, 0 for draw. Gate on the definite-loss-for-
+    // opponent value.
+    const DEFINITE_LOSS_THRESHOLD: i32 = -19000;
+    let mut best_captured_value: i32 = -1;
+    let mut best_uci = fallback_uci.to_string();
+
+    for i in 0..legal.len {
+        let mv = legal.get(i);
+        let to = move_to(mv);
+        let flags = move_flags(mv);
+
+        // Captured-piece value (board reflects pre-move state).
+        let captured_pt = board.piece_type_at(to);
+        let captured_value = if captured_pt != NO_PIECE_TYPE {
+            crate::eval::see_value(captured_pt)
+        } else if flags == FLAG_EN_PASSANT {
+            crate::eval::see_value(PAWN)
+        } else {
+            0
+        };
+
+        // Make the move and probe TB on the child to verify it's still a
+        // definite win. Skip moves whose child is out of TB range or which
+        // don't preserve a definite win.
+        let mut probe = board.clone();
+        if !probe.make_move(mv) {
+            continue;
+        }
+        let child_wdl = match tb.probe_wdl(&probe) {
+            Some(w) => w,
+            None => continue,
+        };
+        // child_wdl is from CHILD STM (opponent). We win iff opponent loses
+        // definitively. Reject draws, cursed-loss, and unknown.
+        if child_wdl > DEFINITE_LOSS_THRESHOLD {
+            continue;
+        }
+
+        if captured_value > best_captured_value {
+            best_captured_value = captured_value;
+            best_uci = crate::types::move_to_uci(mv);
+        }
+    }
+
+    best_uci
+}
+
 pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, classical: bool) {
     let mut board = Board::startpos();
     let mut info = SearchInfo::new(64);
@@ -261,6 +327,15 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             // exhibited Coda skipping the IM-terminal recapture.
                             if wdl == 0 && !tb_pv.is_empty() {
                                 tb_pv[0] = pick_drawn_tb_move(&board, &tb_pv[0]);
+                            }
+                            // Winning-root tiebreak: among DTZ-equivalent
+                            // winners, prefer the move that captures the
+                            // highest-value enemy piece (also reduces piece
+                            // count and resets 50mr). lichess wej9jERO m65
+                            // case — shakmaty picked c5c6 over Kxg1.
+                            // wdl == 20000 only — skip cursed wins (wdl == 1).
+                            if wdl >= 19000 && !tb_pv.is_empty() {
+                                tb_pv[0] = pick_winning_tb_move(&board, &tb_pv[0], tb);
                             }
                             // Validate the FIRST move of the walked PV — if
                             // TB returns an illegal "king capture" in a mate
@@ -580,6 +655,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             // Mirrors the `go`-path logic.
                             if wdl == 0 {
                                 tb_move_str = pick_drawn_tb_move(&board, &tb_move_str);
+                            }
+                            // Winning-root tiebreak (mirror go-path).
+                            if wdl >= 19000 {
+                                tb_move_str = pick_winning_tb_move(&board, &tb_move_str, tb);
                             }
                             // Validate TB move against legal moves
                             let legal = crate::movegen::generate_legal_moves(&board);
