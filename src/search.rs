@@ -1497,8 +1497,12 @@ pub fn compute_tm_budgets(
     let opt_time = if movestogo > 0 {
         opt_time_base
     } else {
-        let phase_mult = 0.36 + 0.64 * (1.0 - (-0.045 * _fullmove as f64).exp());
-        ((opt_time_base as f64) * phase_mult.clamp(0.36, 1.0)) as u64
+        // Phase 13.3: tighter floor 0.36 → 0.22, sharper opening discipline.
+        // p13_2 still 66% of games over 35% opening-overspend threshold (main: 23%).
+        // Lowering floor cuts fm=1 from 0.39× to 0.25×, bringing opening allocation
+        // closer to Coda's prior calibrated level.
+        let phase_mult = 0.22 + 0.78 * (1.0 - (-0.045 * _fullmove as f64).exp());
+        ((opt_time_base as f64) * phase_mult.clamp(0.22, 1.0)) as u64
     };
     let opt_time = opt_time.max(1).min(hard_time);
 
