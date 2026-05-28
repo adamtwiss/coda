@@ -1488,6 +1488,17 @@ pub fn compute_tm_budgets(
         (time_left * HARD_WINDOW_NUM / HARD_WINDOW_DEN).min(max_time).max(1)
     };
 
+    // No-inc sudden death needs a higher moves-left assumption than
+    // moderate-inc TCs: each spent ms is gone forever, and real 3+0 games
+    // run 40-80 moves. Phase 13's verbatim Viridithas constant (24) was
+    // calibrated for inc TCs where the inc term dominates pacing — at
+    // no-inc the 24 produces an opt that's high enough for the factor
+    // multiplier (up to ~6.5×) to consistently blow past hard_time,
+    // making hard the binding constraint every move (uniform-spend
+    // pattern, lichess MJ442247 / 3+0).
+    const NO_INC_MOVES_TO_GO: u64 = 40;
+    let mtg_divisor = if no_inc_sd { NO_INC_MOVES_TO_GO } else { DEFAULT_MOVES_TO_GO };
+
     let opt_time_base = if movestogo > 0 {
         // Movestogo: divisor is clamped to [2, default_mtg]
         let divisor = (movestogo as u64).clamp(2, DEFAULT_MOVES_TO_GO);
@@ -1495,7 +1506,7 @@ pub fn compute_tm_budgets(
         (computed.min(max_time) * OPT_WINDOW_NUM / OPT_WINDOW_DEN).max(1)
     } else {
         // Sudden death (or with inc). Add 94% of inc to base computed window.
-        let computed = time_left / DEFAULT_MOVES_TO_GO + our_inc * INC_FRAC_NUM / INC_FRAC_DEN;
+        let computed = time_left / mtg_divisor + our_inc * INC_FRAC_NUM / INC_FRAC_DEN;
         ((computed.min(max_time) * OPT_WINDOW_NUM / OPT_WINDOW_DEN).min(hard_time)).max(1)
     };
 
@@ -2360,10 +2371,20 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Combined multiplier — Viridithas's 4 factors.
             // Max product ~ 2.50 × 1.68 × 1.0 × 2.27 = 9.52×
             // Min product ~ 0.75 × 1.0  × 0.386 × 0.87 = 0.252×
-            let multiplier = stability_multiplier
+            let mut multiplier = stability_multiplier
                 * failed_low_multiplier
                 * forced_move_multiplier
                 * subtree_size_multiplier;
+            // No-inc clamp: factor product up to 6.5× at no-inc TCs blows
+            // adjusted_soft past hard_time via iteration-overflow even with
+            // the smaller no-inc opt baseline. lichess MJ442247 (3+0):
+            // moves 8-19 every spent exactly hard = 10% of clock. Cap the
+            // multiplier so adjusted_soft stays well below hard at no-inc,
+            // letting the soft check actually fire and giving per-move
+            // variability instead of uniform hard-cap saturation.
+            if info.tm_no_inc {
+                multiplier = multiplier.min(2.5);
+            }
 
             // Phase 13: adjusted_soft = soft × multiplier, clamped to max_time
             // (the ONLY cap — no separate hard×0.5). Viridithas pattern.
