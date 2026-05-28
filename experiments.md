@@ -12641,3 +12641,184 @@ for actual deployment strength.
   env var is worth considering before merge
 - Next codabot redeploy should pick up `no-inc-cap` +
   `ponder-miss-floor` together; both currently on main
+
+## 2026-05-28 — GPU3 platform issue resolved: hardware-specific, not Blackwell+CUDA-13.x
+
+`gpu4-normal-s800` (vanilla 12-file prod recipe on the new GPU4 host —
+bare-metal 5090 with CUDA 13.3, vs GPU3's containerized 5090 + CUDA
+13.2 + history of crashes under load) tested vs prod.
+
+**#1591 (gpu4-normal-s800 vs prod, [-3, 3])**: settled at **-2.2 ±3.1
+H0 in 15,248 games** — effectively at parity within train-noise envelope.
+
+| Host | Recipe | vs prod |
+|---|---|---:|
+| gpu3-normal-data-s800 (#1556) | 12-file prod | **-49.07** (broken) |
+| **gpu4-normal-s800 (#1591)** | **12-file prod (identical)** | **-2.2** (parity) |
+
+47-Elo swing between two 5090 hosts on the SAME recipe. Confirms:
+- The platform regression was **specific to GPU3 hardware/setup**
+  (containerized + crash history under load), NOT generic to 5090,
+  Blackwell, or recent CUDA versions
+- 5090 + CUDA 13.x is a **validated training platform** on bare metal
+- GPU3 retired (already in 10-day maintenance); GPU4 becomes the
+  primary extra-data trainer
+
+Saved [[project_gpu3_vs_gpu4_platform_resolution]] memory with the
+full disambiguation evidence.
+
+## 2026-05-28 — L1=32-w20 + jitter combination: H0
+
+`canonical-l1-32-w20-jitter-b0.03-d0.99-s800` — L1=32 architecture
++ w20 WDL + jitter σ=0.03/d=0.99.
+
+| Test | Comparison | Result |
+|---|---|---|
+| #1585 | L1=32-w20+jitter vs prod | **H0 ✗ -13.4 ±5.7** |
+| #1586 | L1=32-w20+jitter vs L1=32-w20 alone | **+2.0 ±1.6 H1 ✓** |
+| #1588 | --core SPSA retune on the combo | 20 params ≥10%, NMP_UNDEFENDED -47% biggest move |
+| #1590 | tune-1588-applied vs prod | **H0 ✗ -9.1 ±4.8** in 6984 games |
+
+Untuned, jitter adds ~+2 Elo on top of L1=32-w20 (#1586 H1). With
+retune total recovery to -9 vs prod. The combination doesn't beat
+prod, but jitter has a real +small contribution on the wider arch.
+
+## 2026-05-28 — SWA + jitter combinations: third try fails (thread closed)
+
+After two prior failures (#1559 σ=0.03 at -2.43 tuned, #1577 σ=0.01
+SF at -1.17 tuned), tested SWA-780 + jitter at Coda's WORKING
+parameters (σ=0.1/d=0.9 — banks +7.9 alone at S200).
+
+| Test | Comparison | Result |
+|---|---|---|
+| #1592 | swa-780+jitter σ=0.1/d=0.9 vs prod | **H0 ✗ -1.7 ±2.4** in 27,114 games |
+| #1593 | combo vs swa-780 alone | **H0 ✗ -4.6 ±4.5** |
+| #1594 | --core SPSA retune | 17 params ≥10%, IIR_MIN_DEPTH -70% biggest move |
+| #1596 | tune-1594-applied vs prod | **H0 ✗ -1.0 ±2.1** in 36,418 games |
+
+Cleanest test of the "fast-drift jitter combines with SWA" hypothesis.
+**Decisively rejected**. Three σ values × three decay variants all
+tested in combination with swa-780; all fail.
+
+**SWA + jitter combination thread closed.** Ship swa-780 alone as
+the model-side candidate.
+
+## 2026-05-28 — gpu4-xtradata-s1200: -29 Elo, recipe-broken (not platform)
+
+The disambiguation experiment for "extra data + S1200" on clean GPU4
+platform. 300GB dataset (T80 + DFRC + multinet + UHO + wrongIsRight)
++ S1200 schedule + 4GB shuffle buffer.
+
+| Test | Comparison | Result |
+|---|---|---|
+| #1600 | gpu4-xtradata-s1200 vs prod | **H0 ✗ -29.2 ±8.3** in 2374 games |
+| #1601 | vs gpu4-normal-s800 (same platform) | **H0 ✗ -29.6 ±8.5** |
+| #1602 | --core SPSA retune | 20+ params ≥10%, **CORR_W_CONT -94%** (largest single tune move all cycle!) |
+| #1603 | tune-1602-applied vs prod | **H0 ✗ -22.3 ±7.3** in 3060 games |
+
+**Critical decomposition**: matching -29 magnitudes on both baselines
+(prod = different platform, gpu4-normal = same platform) means
+**issue is RECIPE, not platform-confounded**.
+
+**Tune signature points to over-smoothing**:
+- CORR_W_CONT -94% (33→2) — cont-correction nearly disabled
+- DEXT_MARGIN_QUIET -67%, HIST_PRUNE_MULT -45%, LMP_DEPTH -43%
+- "Everything more aggressive" pattern: tighter RFP, smaller bonuses,
+  more aggressive pruning
+- Classic over-averaged-at-low-LR signature
+  ([[feedback_final_lr_too_low_without_swa]])
+
+### Hypotheses, ranked by fit
+
+| Hypothesis | Fit |
+|---|---|
+| **Too long at low LR damages net** (preferred) | **Strongest** — tune signature directly supports |
+| Over-indexing on late positions (lack of fenskip/shuffle) | Mechanistically possible; predicts S1200-vs-S800 degradation on standard data too (not observed) |
+| Information capacity ceiling | Possible contributor; doesn't predict signature |
+| Data quality issue | Ruled out — quality would show as noisier eval, not smoother |
+
+### Diagnostic queue
+
+- **300GB + S800 on GPU4** (in flight, ~5h): does extra data alone
+  work at baseline density? Decomposes "schedule vs data"
+- **300GB + S1200 + SWA-tail**: direct test of over-smoothing
+  hypothesis — does denoising the LR-floor recover most of -29?
+
+## 2026-05-28 — TM no-inc fix banks +8.2 Elo (Zeus)
+
+`fix/no-inc-opt-divisor` — Zeus's TM fix specifically for
+zero-increment time controls. **#1595: +8.2 ±4.2 H1 ✓ in 7,420 games**.
+
+Identified during post-Phase-13+14 Lichess deployment where the
+no-inc-specific TM bug caused losses to SF-based engines on 3+0, 60+0,
+180+0 TCs. The opt-divisor fix specifically targets the no-increment
+regime; gain only shows up in deployment / SPRT games where no-inc
+TC is being played, but is genuine Elo there.
+
+Important for deployment — Lichess includes 3+0 and 60+0 bullet
+games where this previously cost games.
+
+## 2026-05-28 — Cycle validation: +45 broad-RR Elo confirmed
+
+Full 43-engine broad RR (Atlas, 10+0.1, same machine as 1-week-ago
+measurement):
+
+| Rank a week ago | Now | Engine |
+|---:|---:|---|
+| 21 (Elo +47) | **18 (Elo +92)** | Coda |
+
+**+45 Elo broad-RR delta in one week.** Independent measurement
+converging on the SPRT-derived projection (~+91 rivals/SPRT ÷ 2×
+compression = ~+45 broad-RR).
+
+Now within 110 Elo of all engines except SF (+161 ahead) and
+Reckless (+183 ahead) in 1-on-1 H2H. Top-3 territory in pure 1-on-1
+strength against the next-tier engines.
+
+**Notable qualitative milestones today**:
+- Coda beat both SF and Berserk in the first round of an x-engine RR
+- vs GoChess (Coda's fork point 8 weeks ago): **+423 Elo, 92% score**
+- 6/6 draws against SF-derived engines in early Lichess deployment
+- Lichess Phase 13+14: 12/12 wins vs non-SF in first ~18 non-bug games
+
+Memory calibration: the rivals-RR ~2× broad-RR compression factor
+confirmed. Apply when projecting from SPRT to deployment.
+
+## 2026-05-28 evening — Three SPRTs in flight (results pending)
+
+| ID | Test | Hypothesis being tested |
+|---|---|---|
+| #1604 | jitter-S800 (Coda values, standalone) vs prod | Does jitter scale from S200 (+7.9 tuned) to S800? Missing anchor all cycle |
+| #1605 | L1=32-w20+SWA-780 vs prod | Does the architectural combination beat prod? |
+| #1606 | L1=32-w20+SWA-780 vs L1=32-w20 alone | Does SWA help the L1=32 architecture? |
+
+Bench-stats preview:
+- **jitter-S800** shows over-smoothing pattern (first-move 84.4%,
+  pos² 9.6) consistent with gpu4-xtradata-s1200 signature
+- **L1=32+SWA** bench-stats look promising (first-move 87.9%,
+  approaching prod's 88.3%)
+
+## 2026-05-28 — Session summary
+
+**Closed/ruled out today**:
+- GPU3 platform regression as "Blackwell+CUDA-13.x" issue (host-specific)
+- SWA + jitter combinations at SWA-780 (all 3 σ values tested fail)
+- gpu4-xtradata-s1200 as prod-replacement candidate (-22 even tuned)
+
+**Validated/banked today**:
+- Cycle delta of +45 broad-RR Elo (independent measurement)
+- The 2× SPRT-to-broad-RR compression factor (methodology calibration)
+- GPU4 as validated extra-data trainer
+- TM no-inc fix: +8.2 Elo (#1595, Zeus)
+
+**Active diagnostic threads**:
+- "Too long at low LR" hypothesis for xtradata-s1200 failure — pending
+  300GB+S800 result + possible SWA-tail follow-up
+- jitter-S800 standalone read (#1604)
+- L1=32+SWA combination read (#1605/#1606)
+
+**Banked but not yet shipped**:
+- swa-780 alone + tune-1548 (+3 vs prod)
+- shuffle4 + tune-1578 (+6 vs prod)
+- Combining shuffle4 + swa-780 untested but mechanism-orthogonal —
+  worth probing as candidate combination experiment
