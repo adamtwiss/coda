@@ -27,18 +27,27 @@ use crate::types::*;
 ///
 /// Returns the chosen UCI move string. No effect when TB isn't loaded
 /// (caller is gated by `if let Some(ref tb) = syzygy { ... }`).
-fn pick_drawn_tb_move(board: &Board, fallback_uci: &str) -> String {
+fn pick_drawn_tb_move(board: &Board, fallback_uci: &str, tb: Option<&crate::tb::SyzygyTB>) -> String {
     use crate::movegen::generate_legal_moves;
     let legal = generate_legal_moves(board);
 
-    // Score each legal move: (im_terminal, captured_value).
-    // im_terminal: true if the position after this move has insufficient
-    //   material per FIDE 5.2 (game ends immediately by rule).
-    // captured_value: SEE value of the captured piece (0 for non-cap).
-    // Higher tuple wins, with im_terminal taking priority.
+    // DRAW-PRESERVATION FILTER (2026-05-30 — fixes local-reproduced lichess
+    // throw class). shakmaty's `best_move` at a drawn root returns a
+    // DTZ-"optimal" move, but DTZ semantics around drawn-with-pawns positions
+    // can hand back a move that does NOT actually hold the draw under best
+    // opponent play (e.g. KBPvKB `8/7k/1P1B4/2K5/8/8/8/5b2 b`: shakmaty
+    // returned Be2, which LOSES — opponent's child WDL is a win; Bg2/Ba6 hold,
+    // child WDL = draw). The previous code trusted that fallback whenever no
+    // capture/insufficient-material move existed, throwing the draw to a loss.
+    //
+    // Fix: re-probe each legal move's CHILD WDL and only consider moves whose
+    // child is NOT a win for the opponent (child_wdl <= 0 from child STM POV).
+    // Mirrors `pick_winning_tb_move`'s child-verification. Among the safe
+    // moves, keep the existing (insufficient-material, captured-value) tiebreak.
+    // Only if NO move is verified-safe do we fall back to the shakmaty move.
     let mut best_im_terminal = false;
     let mut best_captured_value: i32 = -1;
-    let mut best_uci = fallback_uci.to_string();
+    let mut best_uci: Option<String> = None;
 
     for i in 0..legal.len {
         let mv = legal.get(i);
@@ -55,23 +64,42 @@ fn pick_drawn_tb_move(board: &Board, fallback_uci: &str) -> String {
             0
         };
 
-        // IM check requires making the move. Clone board and apply.
+        // IM + draw-preservation check require making the move.
         let mut probe = board.clone();
         if !probe.make_move(mv) {
             continue;  // illegal — should not happen for legal moves but defensive
         }
         let im_terminal = probe.is_insufficient_material();
 
+        // Draw-preservation: child WDL is from the OPPONENT's POV (child STM).
+        // Reject moves where the opponent now definitively wins (child_wdl > 0).
+        // Accept draws (0) and opponent-losing (< 0). IM-terminal positions are
+        // accepted unconditionally (game ends by rule — cannot lose). If the
+        // child is out of TB range (None), keep it as acceptable rather than
+        // discarding — better than no candidate.
+        if !im_terminal {
+            if let Some(tbh) = tb {
+                if let Some(child_wdl) = tbh.probe_wdl(&probe) {
+                    if child_wdl > 0 {
+                        continue;  // this move lets the opponent win — drop it
+                    }
+                }
+            }
+        }
+
         // Lex order: im_terminal > captured_value > position-in-list (stable).
-        let better = (im_terminal, captured_value) > (best_im_terminal, best_captured_value);
+        let cand = crate::types::move_to_uci(mv);
+        let better = best_uci.is_none()
+            || (im_terminal, captured_value) > (best_im_terminal, best_captured_value);
         if better {
             best_im_terminal = im_terminal;
             best_captured_value = captured_value;
-            best_uci = crate::types::move_to_uci(mv);
+            best_uci = Some(cand);
         }
     }
 
-    best_uci
+    // Fall back to the shakmaty move only if nothing passed the filter.
+    best_uci.unwrap_or_else(|| fallback_uci.to_string())
 }
 
 /// Among multiple TB-winning root moves (wdl > 0), pick the one most likely
@@ -326,7 +354,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             // Lichess game I4qJhfQw m103 and VE9mvCIG m~67 both
                             // exhibited Coda skipping the IM-terminal recapture.
                             if wdl == 0 && !tb_pv.is_empty() {
-                                tb_pv[0] = pick_drawn_tb_move(&board, &tb_pv[0]);
+                                tb_pv[0] = pick_drawn_tb_move(&board, &tb_pv[0], Some(&**tb));
                             }
                             // Winning-root tiebreak: among DTZ-equivalent
                             // winners, prefer the move that captures the
@@ -654,7 +682,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             // Drawn-root qualitative tiebreak (wdl == 0 only).
                             // Mirrors the `go`-path logic.
                             if wdl == 0 {
-                                tb_move_str = pick_drawn_tb_move(&board, &tb_move_str);
+                                tb_move_str = pick_drawn_tb_move(&board, &tb_move_str, Some(&**tb));
                             }
                             // Winning-root tiebreak (mirror go-path).
                             if wdl >= 19000 {
@@ -1203,7 +1231,7 @@ mod tests {
         let board = Board::from_fen("8/8/7B/8/8/6k1/8/rK6 w - - 0 1");
         // Pretend shakmaty picked the non-recapturing escape "b1b2".
         let fallback = "b1b2";
-        let picked = pick_drawn_tb_move(&board, fallback);
+        let picked = pick_drawn_tb_move(&board, fallback, None);
         // The recapture is "b1a1" (Kxa1). pick_drawn_tb_move should
         // override the fallback and choose the IM-terminal recapture.
         assert_eq!(picked, "b1a1",
@@ -1221,7 +1249,7 @@ mod tests {
         // can capture either Black's rook or Black's knight.
         let board = Board::from_fen("8/8/8/3k4/3r4/3K1n2/4R3/B7 w - - 0 1");
         let fallback = "a1b2";  // arbitrary non-capture quiet
-        let picked = pick_drawn_tb_move(&board, fallback);
+        let picked = pick_drawn_tb_move(&board, fallback, None);
         // Rxd4 (e2d4 = rook captures rook) is higher value than rook
         // capturing knight. Expect e2d4 or equivalent.
         // Just verify the picked move IS a capture (target square has
@@ -1238,12 +1266,38 @@ mod tests {
     /// Function should return SOME legal move (we don't promise it's
     /// the fallback — shakmaty's fallback is itself arbitrary among
     /// tied drawn moves, so swapping among ties is no worse).
+    /// REGRESSION (2026-05-30): drawn TB root must not play a move that
+    /// LOSES. KBPvKB `8/7k/1P1B4/2K5/8/8/8/5b2 b`: shakmaty's DTZ pick Be2
+    /// loses (opponent child WDL = win); Bg2/Ba6 hold. With the draw-
+    /// preservation filter, pick_drawn_tb_move must avoid Be2/Bh3.
+    #[test]
+    fn drawn_tb_preserves_draw_kbpkb() {
+        init();
+        let tb = match crate::tb::SyzygyTB::new("/home/adam/chess/tablebases") {
+            Ok(t) => t,
+            Err(_) => return, // skip when TB unavailable
+        };
+        if tb.max_pieces() < 5 { return; }
+        let board = Board::from_fen("8/7k/1P1B4/2K5/8/8/8/5b2 b - - 0 191");
+        let fallback = "f1e2"; // the LOSING shakmaty pick
+        let picked = pick_drawn_tb_move(&board, fallback, Some(&tb));
+        assert!(picked != "f1e2" && picked != "f1h3",
+            "pick_drawn_tb_move returned losing move {}", picked);
+        // Verify the picked move actually holds: child must not be a win for White.
+        let mv = parse_uci_move(&board, &picked).expect("legal");
+        let mut probe = board.clone();
+        probe.make_move(mv);
+        if let Some(child_wdl) = tb.probe_wdl(&probe) {
+            assert!(child_wdl <= 0, "picked {} gives opponent a win (wdl {})", picked, child_wdl);
+        }
+    }
+
     #[test]
     fn drawn_tb_tiebreak_returns_legal_move_when_no_signal() {
         init();
         let board = Board::from_fen("8/8/4k3/8/4K3/8/4P3/8 w - - 0 1");
         let fallback = "e4d4";
-        let picked = pick_drawn_tb_move(&board, fallback);
+        let picked = pick_drawn_tb_move(&board, fallback, None);
         // Just verify the picked move is legal.
         assert!(parse_uci_move(&board, &picked).is_some(),
             "picked move {} is not a legal move", picked);
