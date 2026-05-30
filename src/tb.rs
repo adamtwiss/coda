@@ -455,4 +455,120 @@ mod tests {
             }
         }
     }
+
+    // ===== Broader EGTB coverage (2026-05-30) =====
+    // WDL convention (probe_wdl / ambiguous_wdl_to_score): +20000 definite win,
+    // +1 cursed win, 0 draw, -1 blessed loss, -20000 definite loss — from the
+    // side-to-move POV. Verified against the loaded 5-man Syzygy set.
+
+    /// Definite WINS (stm winning) across piece types must probe as large +.
+    #[test]
+    fn tb_wdl_definite_wins() {
+        crate::init();
+        let tb = match make_tb() { Some(t) => t, None => return };
+        for (fen, label) in [
+            ("4k3/8/8/8/8/8/8/R3K3 w - - 0 1", "KRvK"),
+            ("4k3/8/8/8/8/8/8/2B1KB2 w - - 0 1", "KBBvK"),
+            ("8/8/8/4k3/8/8/8/RB2K3 w - - 0 1", "KRBvK"),
+            ("4k3/8/8/8/8/8/4P3/3QK3 w - - 0 1", "KQPvK"),
+        ] {
+            if let Some(wdl) = tb.probe_wdl(&Board::from_fen(fen)) {
+                assert!(wdl >= 19000, "{}: expected definite win, got wdl={}", label, wdl);
+            }
+        }
+    }
+
+    /// Trivial DRAWS (insufficient material) must probe as 0 — NOT a win.
+    /// Guards the "thinks a drawn position is winning" eval blind-spot class.
+    #[test]
+    fn tb_wdl_known_draws() {
+        crate::init();
+        let tb = match make_tb() { Some(t) => t, None => return };
+        for (fen, label) in [
+            ("4k3/8/8/8/8/8/8/4KN2 w - - 0 1", "KNvK"),
+            ("4k3/8/8/8/8/8/8/4KB2 w - - 0 1", "KBvK"),
+            ("4k3/8/8/8/8/8/8/2N1KN2 w - - 0 1", "KNNvK"),
+        ] {
+            if let Some(wdl) = tb.probe_wdl(&Board::from_fen(fen)) {
+                assert_eq!(wdl, 0, "{}: expected draw (0), got wdl={}", label, wdl);
+            }
+        }
+    }
+
+    /// Definite LOSSES (stm losing) must probe as large negative.
+    #[test]
+    fn tb_wdl_definite_losses() {
+        crate::init();
+        let tb = match make_tb() { Some(t) => t, None => return };
+        if let Some(wdl) = tb.probe_wdl(&Board::from_fen("3kq3/8/8/8/8/8/8/4K3 w - - 0 1")) {
+            assert!(wdl <= -19000, "K vs KQ: expected definite loss, got wdl={}", wdl);
+        }
+    }
+
+    /// probe_wdl must DECLINE positions out of TB range or with castling rights
+    /// (Syzygy can't represent them) — returning None, not a wrong score.
+    #[test]
+    fn tb_wdl_declines_out_of_range_and_castling() {
+        crate::init();
+        let tb = match make_tb() { Some(t) => t, None => return };
+        assert_eq!(tb.probe_wdl(&Board::from_fen(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")), None,
+            "startpos (32 men) should be out of TB range");
+        // Castling rights present — Syzygy rejects; guard returns None.
+        let castle = Board::from_fen("r3k2r/8/8/8/8/8/8/4K3 w kq - 0 1");
+        assert!(castle.castling != 0, "test FEN should retain castling rights");
+        assert_eq!(tb.probe_wdl(&castle), None, "castling-rights position should decline");
+    }
+
+    /// probe_wdl is sign-symmetric across side-to-move for a decisive position.
+    #[test]
+    fn tb_wdl_stm_symmetry() {
+        crate::init();
+        let tb = match make_tb() { Some(t) => t, None => return };
+        let w = tb.probe_wdl(&Board::from_fen("4k3/8/8/8/8/8/4P3/3QK3 w - - 0 1"));
+        let b = tb.probe_wdl(&Board::from_fen("4k3/8/8/8/8/8/4P3/3QK3 b - - 0 1"));
+        if let (Some(w), Some(b)) = (w, b) {
+            assert!(w >= 19000 && b <= -19000,
+                "KQPvK: white-to-move wins ({}), black-to-move loses ({})", w, b);
+        }
+    }
+
+    /// Cache must round-trip: a repeat probe returns the same WDL.
+    #[test]
+    fn tb_wdl_cache_consistent_across_repeat_probe() {
+        crate::init();
+        let tb = match make_tb() { Some(t) => t, None => return };
+        let board = Board::from_fen("4k3/8/8/8/8/8/4P3/3QK3 w - - 0 1");
+        let a = tb.probe_wdl(&board);
+        let b = tb.probe_wdl(&board); // hits cache
+        assert_eq!(a, b, "cache returned a different WDL on repeat probe");
+    }
+
+    /// probe_root on a WIN returns a move that PRESERVES the win (child is a
+    /// definite loss for the opponent) — the conversion guard at the probe layer.
+    #[test]
+    fn tb_root_move_preserves_win() {
+        crate::init();
+        let tb = match make_tb() { Some(t) => t, None => return };
+        for (fen, label) in [
+            ("4k3/8/8/8/8/8/8/R3K3 w - - 0 1", "KRvK"),
+            ("4k3/8/8/8/8/8/4P3/3QK3 w - - 0 1", "KQPvK"),
+        ] {
+            let board = Board::from_fen(fen);
+            let (uci, wdl) = match tb.probe_root(&board) { Some(x) => x, None => continue };
+            assert!(wdl >= 19000, "{}: root not a win ({})", label, wdl);
+            let legal = crate::movegen::generate_legal_moves(&board);
+            let mut child = board.clone();
+            let mut applied = false;
+            for i in 0..legal.len {
+                let m = legal.get(i);
+                if crate::types::move_to_uci(m) == uci { child.make_move(m); applied = true; break; }
+            }
+            assert!(applied, "{}: root move {} not legal", label, uci);
+            if let Some(cw) = tb.probe_wdl(&child) {
+                assert!(cw <= -19000,
+                    "{}: root move {} did NOT preserve the win (child wdl {})", label, uci, cw);
+            }
+        }
+    }
 }
