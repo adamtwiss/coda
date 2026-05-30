@@ -220,10 +220,18 @@ mod tests {
     use std::path::Path;
 
     fn tb_path() -> Option<String> {
-        // Check common tablebase locations
-        for path in &["/tablebases", "/home/adam/chess/syzygy", "/syzygy"] {
+        // Check common tablebase locations (lichess deploy: /tablebases;
+        // dev hosts: ~/chess/tablebases).
+        let home = std::env::var("HOME").unwrap_or_default();
+        let candidates = [
+            "/tablebases".to_string(),
+            format!("{}/chess/tablebases", home),
+            format!("{}/chess/syzygy", home),
+            "/syzygy".to_string(),
+        ];
+        for path in &candidates {
             if Path::new(path).exists() {
-                return Some(path.to_string());
+                return Some(path.clone());
             }
         }
         None

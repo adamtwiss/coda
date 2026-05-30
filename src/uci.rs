@@ -1311,4 +1311,78 @@ mod tests {
         assert!(parse_uci_move(&board, &picked).is_some(),
             "picked move {} is not a legal move", picked);
     }
+
+    /// Locate Syzygy tablebases for tests (lichess: /tablebases; dev hosts:
+    /// ~/chess/tablebases). Returns None to skip when unavailable.
+    fn test_tb() -> Option<crate::tb::SyzygyTB> {
+        let home = std::env::var("HOME").unwrap_or_default();
+        for p in [
+            "/tablebases".to_string(),
+            format!("{}/chess/tablebases", home),
+            format!("{}/chess/syzygy", home),
+        ] {
+            if std::path::Path::new(&p).exists() {
+                if let Ok(tb) = crate::tb::SyzygyTB::new(&p) { return Some(tb); }
+            }
+        }
+        None
+    }
+
+    /// Drive the TB ROOT move-selection path (probe_root_pv + pick_winning_tb_move /
+    /// pick_drawn_tb_move) move-by-move from `fen` with a TB-optimal defender,
+    /// asserting a winning side actually MATES (no shuffle / 50-move / 3-fold draw).
+    /// This is the regression guard for the KQvK/KRvK "can't convert a trivial
+    /// TB win" bug (lichess V49tJcfl, 2026-05-30) — pick_winning_tb_move was
+    /// overriding shakmaty's DTZ-optimal move with an arbitrary non-progressing one.
+    fn assert_tb_root_mates(tb: &crate::tb::SyzygyTB, fen: &str, max_plies: usize, label: &str) {
+        use std::collections::HashMap;
+        let mut board = Board::from_fen(fen);
+        let mut seen: HashMap<String, u32> = HashMap::new();
+        for ply in 0..max_plies {
+            let legal = crate::movegen::generate_legal_moves(&board);
+            if legal.len == 0 {
+                // checkmate or stalemate; require checkmate (the win must convert)
+                assert!(board.in_check(),
+                    "{}: stalemate at ply {} — failed to convert TB win", label, ply);
+                return; // mated
+            }
+            // Pick the mover's move.
+            let (mut pv, wdl) = tb.probe_root_pv(&board, 8)
+                .unwrap_or_else(|| panic!("{}: probe_root_pv None at ply {}", label, ply));
+            let stm_winning = wdl >= 19000;
+            if stm_winning && !pv.is_empty() {
+                pv[0] = pick_winning_tb_move(&board, &pv[0], tb);
+            } else if wdl == 0 && !pv.is_empty() {
+                pv[0] = pick_drawn_tb_move(&board, &pv[0], Some(tb));
+            }
+            let mv = parse_uci_move(&board, &pv[0])
+                .unwrap_or_else(|| panic!("{}: illegal TB move {} at ply {}", label, pv[0], ply));
+            board.make_move(mv);
+            // 3-fold detection on board layout (the shuffle signature).
+            let key = board.to_fen().split_whitespace().next().unwrap().to_string();
+            *seen.entry(key.clone()).or_insert(0) += 1;
+            assert!(seen[&key] < 3,
+                "{}: 3-fold repetition at ply {} — TB win NOT converging (shuffle bug)", label, ply);
+        }
+        panic!("{}: did not mate within {} plies — TB win not converging", label, max_plies);
+    }
+
+    /// REGRESSION (2026-05-30, lichess V49tJcfl): basic TB mates must CONVERT,
+    /// not shuffle to a draw. pick_winning_tb_move must keep shakmaty's
+    /// DTZ-optimal (progressing) move rather than an arbitrary win-preserving one.
+    #[test]
+    fn tb_root_converts_kqvk_mate() {
+        init();
+        let tb = match test_tb() { Some(t) => t, None => return };
+        // Both sides played by the TB root path; KQvK is a forced mate well
+        // under 50 moves, so a non-converging shuffle trips the 3-fold assert.
+        assert_tb_root_mates(&tb, "2k5/8/8/8/8/8/8/3KQ3 w - - 0 1", 60, "KQvK");
+    }
+
+    #[test]
+    fn tb_root_converts_krvk_mate() {
+        init();
+        let tb = match test_tb() { Some(t) => t, None => return };
+        assert_tb_root_mates(&tb, "4k3/8/8/8/8/8/8/R3K3 w - - 0 1", 80, "KRvK");
+    }
 }
