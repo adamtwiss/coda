@@ -3,21 +3,25 @@
 Authoritative list of v9 nets, their OpenBench hashes, provenance, and status.
 Update this file when you promote a new production net or retire an old one.
 
-**Current v9 production:** `1EF1C3E5` —
-`net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor.nnue`.
-Published as `v0.4.0-nets` release; referenced by `net.txt`. Promoted
-2026-04-26 after deployment-package SPRT #789 H1'd at +4.9 Elo
-(net swap alone +3.3 in #782, plus tune-784 retune for the rest).
-**Caveat:** filename "C8fix" labels the FIRST C8 fix only (a8e2c7d).
-The "Complete C8 fix" (62931d1) was committed Apr 25 20:15, only
-~1h before the SB800 file's mtime (21:52) — SB800 train (~30-40h)
-was already done. So 1EF1C3E5 contains C8fix-1 only ("noisy threats").
-A future SB800 retrain on `bullet/feature/no-blocking-sync` (post-
-62931d1) would actually include C8fix-2 — that's the next prod
-candidate. All v9 SPRTs against trunk should pass
-`--dev-network 1EF1C3E5 --base-network 1EF1C3E5`.
+**Current v9 production:** `E2773E50` —
+`net-v9-768th16x32-kb10-w15-e1200s1200-crelu-factor-xtradata-swa.nnue`.
+Published as `v0.5.0-nets` release; referenced by `net.txt`. Promoted
+2026-05-30 after deployment-package SPRT #1645 H1'd at +13.1 ±5.2 Elo
+vs prior prod 1EF1C3E5. Prod recipe (kb10, w15, crelu hidden, factoriser)
+trained on extra data, SWA-averaged over SB1150-1200, schedule completed
+to s1200. The +13 decomposes as: net swap alone +12.3 (#1630, untuned
+swa-s1200 vs prod) plus +7.3 cumulative `--core` SPSA retune-on-net
+(#1631 +4.0 → #1643/#1644 +3.3). All v9 SPRTs against trunk should now
+pass `--dev-network E2773E50 --base-network E2773E50`.
 
-**Previous v9 production:** `DAA4C54E` —
+**Previous v9 production:** `1EF1C3E5` —
+`net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor.nnue`
+(`v0.4.0-nets`). Was prod from 2026-04-26 until 2026-05-30. Promoted
+then after #789 H1 +4.9. Contains C8fix-1 only ("noisy threats"), NOT
+C8fix-2 — the SB800 train (~30-40h) was already done before 62931d1
+(Apr 25 20:15) landed, ~1h before the file's mtime (21:52).
+
+**Earlier v9 production:** `DAA4C54E` —
 `net-v9-768th16x32-kb10-w15-e800s800-crelu.nnue`. Was prod from
 v0.3.0-nets release until 2026-04-26.
 
@@ -37,7 +41,8 @@ v0.3.0-nets release until 2026-04-26.
 
 | Hash | Layout | File | Status | Notes |
 |---|---|---|---|---|
-| `1EF1C3E5` | kb10 | `net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor.nnue` | **PROD** (v0.4.0-nets) | SB800 + factor. Filename "C8fix" labels the **first** C8 fix only (a8e2c7d Apr 22). The "Complete C8 fix" (62931d1, Apr 25 20:15) was committed only 1h37m before file mtime (Apr 25 21:52); SB800 train (~30-40h) was already done — file mtime is the conversion timestamp. So this net has **C8fix-1 only ("noisy threats")**, NOT C8fix-2. Promoted 2026-04-26 after #789 H1 +4.9. Net swap alone +3.3 (#782); tune-784 retune-on-this +3.0 (#788); deployment package together +4.9 (#789). Local: `nets/net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor.nnue` (Apr 25 21:52). |
+| `E2773E50` | kb10 | `net-v9-768th16x32-kb10-w15-e1200s1200-crelu-factor-xtradata-swa.nnue` | **PROD** (v0.5.0-nets) | SB1200 + factor + extra data + SWA (averaged SB1150-1200). Prod recipe (kb10, w15, crelu hidden). Promoted 2026-05-30 after deployment-package SPRT #1645 H1 +13.1 ±5.2 vs 1EF1C3E5. Net swap alone +12.3 untuned (#1630); +7.3 cumulative `--core` retune-on-net (#1631 +4.0, #1643/#1644 +3.3). Bench (embedded + tuned trunk) 4782984. Local: `nets/net-v9-768th16x32-kb10-w15-e1200s1200-crelu-factor-xtradata-swa.nnue` (= `gpu4-xtradata-swa-1150-1200-s1200.nnue`). |
+| `1EF1C3E5` | kb10 | `net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor.nnue` | previous PROD (v0.4.0-nets, retired 2026-05-30) | SB800 + factor. Filename "C8fix" labels the **first** C8 fix only (a8e2c7d Apr 22). The "Complete C8 fix" (62931d1, Apr 25 20:15) was committed only 1h37m before file mtime (Apr 25 21:52); SB800 train (~30-40h) was already done — file mtime is the conversion timestamp. So this net has **C8fix-1 only ("noisy threats")**, NOT C8fix-2. Promoted 2026-04-26 after #789 H1 +4.9. Net swap alone +3.3 (#782); tune-784 retune-on-this +3.0 (#788); deployment package together +4.9 (#789). Local: `nets/net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor.nnue` (Apr 25 21:52). |
 | `6C154331` | kb10 | `net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-xray-factor.nnue` | regression vs PROD; investigation open | SB800 + factor + **x-ray training**. Trained 2026-04-26 (GPU 2 promised batch). Tune #830 retune-on-net (5K iters, 80 params, 64 changed). Net-vs-net SPRT #836 vs PROD 1EF1C3E5: **H0 -10.7 ±6.3 / 3100g** at retuned state. Combined with #835 H1 +6.0 (pre-vs-post tune-830) implies the underlying net is ~15 Elo behind 1EF1C3E5 at equal-tune state. **Important framing (Adam 2026-04-27):** the C8fix-xray training change is a *committed correctness fix* to the training pipeline — future nets all use the corrected pipeline. This isn't an "adopt or reject" experiment; PROD 1EF1C3E5 is on borrowed time as the last net trained with the bug present. The -10.7 Elo is a diagnostic alarm, not a verdict. Open candidates for investigation: (a) which sub-change in the fix carries the regression — C8fix-2 alone vs adding x-ray feature labels to training data; (b) recipe re-search (LR tail, WDL, save-rate) at SB200 to find a recipe that recovers parity under the corrected pipeline; (c) widened-range SPSA on params tune-830 pinned at boundaries (HIST_PRUNE_MULT -20%, HIST_BONUS_OFFSET -57%). Local: `nets/net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-xray-factor.nnue` (Apr 27 13:31). Bench (with tune-830 outputs) 1505199. |
 | `CC483681` | kb10 | `net-v9-768th16x32-kb10-w15-e200s200-crelu-C8fix-factor.nnue` | C8fix-2 isolation test | **First net to actually contain C8fix-2.** SB200 + factor + complete C8-fix (both halves a8e2c7d + 62931d1). Trained Apr 26 ~01:15 (start) → Apr 26 08:31 (file mtime), well after the 62931d1 commit. Net-vs-net SPRT vs C0A97CF4 (#794, on tune-784 trunk) measures C8fix-2 contribution at SB200. Caveat: trunk tunables are calibrated against 1EF1C3E5 (noisy threats), so tunables fit the BASE here, not the DEV — SPRT result is a lower bound on C8fix-2 contribution. Local: `nets/net-v9-768th16x32-kb10-w15-e200s200-crelu-C8fix-factor.nnue` (Apr 26 08:31). Bench (post tune-784 main) 1502300. |
 | `FF8C93DC` | kb10 | `net-v9-768th16x32-kb10-w15-e400s400-crelu-C8fix-factor.nnue` | intermediate | SB400 + factor. Apr 23 12:59 — predates 62931d1 (Apr 25), so C8fix-1 only. Filename label is C8fix-1. |

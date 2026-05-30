@@ -12822,3 +12822,220 @@ Bench-stats preview:
 - shuffle4 + tune-1578 (+6 vs prod)
 - Combining shuffle4 + swa-780 untested but mechanism-orthogonal —
   worth probing as candidate combination experiment
+
+## 2026-05-29 — xtradata-s800 tail probes + multistage stage 1
+
+Investigating the "more data/more training hurts" riddle (S1200-xtradata
+< S800-xtradata by -23; S800-xtradata < prod by -12). Two GPU4 tail
+probes extend gpu4-xtradata-s800 by 200 SBs; a separate spare-GPU
+5-stage SF-style multistage run (normal 12-file data) is in progress.
+
+| ID | Test | Result | Verdict |
+|---|---|---|---|
+| #1623 | T2 tail (cos 1e-5→s1000) vs xtradata-s800 base | **-20.9 ±9.3** (N=1530) | **H0 ✗** [-3,3] |
+| #1622 | multistage-v1-s1 (s200) vs baby-prod (cal-day0) | **+13.1 ±7.7** (N=2796) | **H1 ✓** [-3,3] |
+
+**#1623 — re-warming the converged endpoint regresses (~-21 Elo).**
+Pre-registered prediction (Adam): "T2/T4 probably negative — the LR of
+the extensions is too high, undoes the fine-tuning." Confirmed. A 1e-5
+peak is ~4× the base's 2.4e-6 cosine endpoint; re-warming bounces the
+net out of its minimum and re-settles it worse, on the *same* data with
+no new diversity. Working hypothesis: **re-warming a converged endpoint
+pays off only when paired with fresh data variety** (new seed / reshuffle
+/ new data) — aligns with the different-seeds-per-stage requirement.
+Strong warning for T8 (5e-4 re-warm, 50× hotter): expect worse unless it
+carries the diversity changes; if T8 also regresses, the multistage gain
+is the diversity+staging, not the re-warm. T1 (constant 2.4e-6, NO
+re-warm) is the pending contrast for the clean dichotomy.
+
+**#1622 — multistage stage 1 already beats baby-prod (+13.1).** Healthy
++ reasonable confirmed, and a real win. Note the comparison is
+*conservative*: mini-prod trunk is SPSA-tuned for baby-prod's tree shape,
+and s1 benches +29% higher (5.79M vs 4.47M, undertrained 1-of-5 stages),
+so it overcomes a tuning handicap. Confounds vs baby-prod (cal-day0):
+final-LR 8e-7 vs 2.43e-6; warmup ~5-10 vs 30; fen-skip 0.5 vs none;
+**shuffle-buffer 1024 MB vs default 256 MB**; SWA none both (stage-1 has
+no SWA). Leading-driver hypothesis: the two *diversity/decorrelation*
+deltas (fen-skip 0.5 + 4× buffer). Binpacks are chain-compressed
+(adjacent positions = same game), so a 4× buffer decorrelates minibatches
+— same mechanism that produced T1's loss step-plateaus on the 256 MB
+buffer. Highest-leverage isolation probe: **256→1024 buffer alone at
+S200** (nearly free, transfers to all training); fen-skip 0.5 alone is
+the second. Still n=1/confounded until isolated; per-stage SPRTs (s2-s5)
+test the multistage-vs-single-run question for free.
+
+## 2026-05-30 — RIDDLE RESOLVED: SWA unlocks the long low-LR tail; swa-s1200 is a prod candidate
+
+The "more data/more training hurts" riddle resolves into a **shipping**
+problem, not a training problem. We ship the *raw* low-LR endpoint; a long
+run past the loss minimum accumulates low-LR oscillation noise, so the
+single endpoint sample we ship is *worse* than stopping early — even though
+the run is visiting better regions. SWA (averaging the last SBs) cancels
+the oscillation and recovers the latent strength. The five tail/S1200
+probes below isolate it. **All same xtradata** for the s800/vanilla/swa
+comparisons → the ladder isolates *schedule length*, not data.
+
+| ID | Test | Result | Verdict |
+|---|---|---|---|
+| #1624 | T1 tail (const 2.4e-6, NO re-warm→s1000) vs xtradata-s800 base | **-3.1 ±3.6** (N=10586) | **H0 ✗** [-3,3] |
+| #1625 | T8 tail (5e-4 re-warm + SWA180-200→s1200) vs xtradata-s800 base | **-3.5 ±3.9** (N=9788) | **H0 ✗** [-3,3] |
+| #1626 | fenskip-0.5-s1200 vs vanilla-s1200 | **+18.7 ±9.3** (N=1988) | **H1 ✓** [-3,3] |
+| #1627 | swa-1150-1200-s1200 vs vanilla-s1200 | **+42.4 ±13.6** (N=848) | **H1 ✓** [-3,3] |
+| #1629 | swa-1150-1200-s1200 vs xtradata-s800 | **+32.4 ±11.8** (N=1074) | **H1 ✓** [-3,3] |
+| #1630 | swa-1150-1200-s1200 vs **prod** | **+12.3 ±7.5** (N=2846) | **H1 ✓** [-3,3] |
+| #1628 | multistage-v1-s2 (s400) vs multistage-v1-s1 (s200) | **+24.0 ±10.3** (N=1508) | **H1 ✓** [-3,3] |
+
+**The resolving ladder (all xtradata, data held fixed):**
+```
+swa-s1200  >  s800  >  vanilla-s1200
+  (+32.4 vs s800)        (loses to s800)
+```
+vanilla-s1200 losing to s800 IS the original "more training hurts"
+observation. swa-s1200 beating s800 by +32 flips it. So **"more training
+hurts" was never true — "shipping the raw low-LR endpoint of a long run
+hurts" was.** SWA is mandatory to realize a long tail.
+
+**SWA's value scales with tail length.** SWA at s800 was only ~+3 (banked
+earlier); SWA at s1200 is +42 vs vanilla. More low-LR oscillation to
+average out → more SWA recovers. This **challenges
+`schedule_plateaus_at_s800`** — that was a *no-SWA* measurement. With SWA,
+the s800→s1200 extension is +32 net positive, not a plateau.
+
+**swa-s1200 vs prod = +12.3 H1, untuned → new prod candidate.** SPSA
+`--core` retune (#1631, 2500 iter) now running *on* the swa-s1200 net
+(E2773E50) to measure the tuned ceiling before promotion.
+
+**T1 (-3.1) and T8 (-3.5):** tail-extending a converged endpoint on the
+*same data* doesn't work even with no re-warm (T1) — the gain is not "more
+SBs," it's the averaging. T8 (5e-4 re-warm) was far better than #1623's T2
+(-20.9) *because T8 carried SWA* — the SWA rescued most of the hot-re-warm
+damage. Both still H0 vs s800: re-warm + same-data + SWA ≈ flat, while
+SWA-over-a-cosine-tail (swa-s1200) is +32. The averaging window matters
+more than the re-warm.
+
+**fenskip-0.5 (+18.7) is mechanism-orthogonal to SWA** (data diversity vs
+endpoint denoising) → should stack. Next GPU run: **fenskip-0.5 + SWA
+s1200** combined — the real prod-candidate contender.
+
+**Multistage compounds** (s1 +13.1 over baby-prod, s2 +24.0 over s1) —
+fresh seed/diversity per stage, unlike same-data tail extension which is
+flat-to-negative. Different mechanism from the SWA story; both live.
+
+**LR-threshold CLIFF for re-warm tails (T2/T3/T4 — clean peak-LR ablation,
+all identical recipe except `--lr`, cosine→2.4e-6 over 200 SBs, seed 43,
+fen-skip 0.5):**
+
+| ID | Tail peak LR | Result vs xtradata-s800 | Verdict |
+|---|---|---|---|
+| #1623 | T2: 1e-5 | **-20.9** | H0 ✗ |
+| #1634 | T2.5: 5e-5 | **-17.2 ±?** | H0 ✗ |
+| #1633 | T4: 1e-4 | **+8.1 ±6.0** (N=4174) | **H1 ✓** [-3,3] |
+
+A **cliff between 5e-5 and 1e-4**, not a smooth valley. Rule: a re-warm
+peak must clear **~1e-4 (~40× the 2.4e-6 floor)** to be productive; the
+1e-5–5e-5 band is *destructive* — worse than no re-warm at all (T1
+const-2.4e-6 = -3.1). Mechanism read: a too-gentle re-warm perturbs the
+converged weights without enough LR to re-settle into a better basin, so
+it bakes in drift. Adam confirms **all multistage stages start ≥1e-4** —
+which is exactly why multistage works (s1 +13, s2 +24) and same-data
+gentle tails don't. **T4 1e-4 is the first tail that adds strength.**
+
+**Tune on swa-s1200 HELPED (+4.0 isolated):**
+
+| ID | Test | Result | Verdict |
+|---|---|---|---|
+| #1635 | tuned-swa-s1200 vs **prod** | **+11.8 ±4.9** (N=6226) | **H1 ✓** [-3,3] |
+| #1636 | tuned-swa-s1200 vs **untuned**-swa-s1200 | **+4.0 ±4.1** (N=8006) | **H1 ✓** [-3,3] |
+
+#1631 `--core` retune (53 params, 2500 iter) applied on branch
+`experiment/swa-s1200-tuned` (commit 83d9077). The direct A/B (#1636,
++4.0 H1) is the clean measurement that the tune helped — the two
+separate vs-prod numbers (untuned +12.3 #1630, tuned +11.8 #1635) are
+confounded by run noise and look flat, which is exactly why the
+pre/post head-to-head was needed.
+
+**Second tune round HELPED AGAIN — long `--core` tunes now pay (+3.3):**
+
+| ID | Test | Result | Verdict |
+|---|---|---|---|
+| #1644 | r2 (5000-iter `--core`) vs #1631-tuned candidate | **+3.3 ±2.3** (N=25894) | **H1 ✓** [0,3] |
+
+#1643 was a **5000-iter** `--core` tune continuing *from* #1631's basin
+(53 params, started at #1631's applied values), against E2773E50. Applied
+to `experiment/swa-s1200-tuned-r2` (commit 762d24b, bench 4782984), big
+movers: NMP_VERIFY_DEPTH 109→71, LMR_THREAT_DIV 40→11, HINDSIGHT_MIN_DEPTH
+11→5, PROBCUT_MIN_DEPTH 16→12, LMP_BASE/DEPTH 10→7/6→4. The +3.3 (tight CI,
+same net both sides) **confirms long tunes pay post-2026-05-17 `--core`
+curation** — pre-curation long tunes found nothing (loose knobs flipped
+gradient signs). Cumulative tune gain on the swa-s1200 net: +4.0 (#1631)
++ +3.3 (#1643) = **+7.3** over untuned trunk. See
+[[feedback_failed_tunes_can_succeed_after_accumulated_structural_changes]].
+
+**r2 is now the promotion candidate: ~+15 vs prod (chained: +11.8 + 3.3),
+worth one direct r2-vs-prod measurement before shipping.**
+
+**Multistage s3 — stage 3 went FLAT (peak-too-hot-for-stage-length):**
+
+| ID | Test | Result | Verdict |
+|---|---|---|---|
+| #1637 | multistage-v1-s3 (SWA) vs **prod** | **-27.2 ±10.9** (N=1396) | H0 ✗ (expected, S600 vs S800) |
+| #1638 | multistage-v1-s3 vs multistage-v1-s2 | **+0.7 ±4.0** (N=9360) | flat |
+
+s1→s2 was +24 (a full 200→400 doubling); s2→s3 (400→600, 0.585 doublings)
+is +0.7. Normalized: +24/doubling → ~+1.2/doubling, a ~20× collapse.
+**Ruled out:** data wall (100B pool, S600 ≈ 0.6 of one pass — Adam),
+same-seed bug (seeds differ per stage — Adam), resume-from-SWA (resumed
+raw checkpoint — Adam). **Leading cause:** stage 3 used `--lr 5e-4` over
+only 200 SB. Our own data shows 5e-4/200 is past the useful upper edge —
+T4 1e-4/200 = +8.1 (#1633) but T8 5e-4/~200 = -3.5 (#1625) AND stage 3
+5e-4/200 = flat. A hot peak needs a long stage to consolidate (SF runs
+hot re-warms over *long* stages); over 200 SB it perturbs without runway
+to recover, and SWA denoises it back to ≈ s2. Also `--final-lr 4e-7` is
+below our 5e-7 safe floor (secondary tax). **Next tests:** stage 3 at
+`--lr 1e-4` (cheap, same length) and/or longer 400-600 SB stages at 5e-4.
+Adam is also re-running the net with fenskip-only to isolate the stacking
+regression below.
+
+**Stacking thesis REJECTED — fenskip + SWA are redundant, not orthogonal:**
+
+| ID | Test | Result | Verdict |
+|---|---|---|---|
+| #1642 | swa+fenskip0.5+1GBbuf-s1200 vs **swa-s1200** | **-21.2 ±9.7** (N=1672) | **H0 ✗** |
+| #1641 | swa+fenskip0.5+1GBbuf-s1200 vs **prod** | **-8.7** →H0 | H0 |
+
+Adding fenskip 0.5 + 1GB buffer on top of swa-s1200 cost ~20 Elo (swa-s1200
+was +12 vs prod; this is -8.7). Both attack the *same* problem (low-LR tail
+oscillation): SWA averages it out, fenskip decorrelates so there's less to
+begin with. Once SWA denoises the endpoint, fenskip's 50% per-epoch data
+loss is pure signal-loss with no offsetting benefit. My "mechanism-orthogonal,
+should stack" prior (from #1626 fenskip +18.7 over *vanilla*) was wrong —
+fenskip helps the *no-SWA* net but is a substitute for SWA, not a complement.
+Confound: net changed two knobs (fenskip + buffer); fenskip-only re-run
+pending to isolate.
+
+**PROMOTED to prod 2026-05-30 — new prod net E2773E50 + tuned trunk:**
+Deployment-package SPRT #1645 (r2 tuned trunk + candidate net E2773E50 vs
+main + prod 1EF1C3E5, [0,3]) **H1 +13.1 ±5.2, N=5654, LLR 2.98** — the
+clean deployable gap (net swap +12.3 untuned #1630 + cumulative +7.3
+`--core` tune). Shipped: `v0.5.0-nets` GitHub release (canonical name
+`net-v9-768th16x32-kb10-w15-e1200s1200-crelu-factor-xtradata-swa.nnue`),
+net.txt repointed, r2 tuned `search.rs` merged to main, net_catalog.md
+updated (E2773E50 = PROD, 1EF1C3E5 retired). New prod bench 4782984.
+
+**Open / next:**
+- Post-promotion validation (follow-up, not a gate): broad-RR + SF-H2H
+  60+1 on new prod to confirm +13 holds at deployment TCs; deploy to
+  codabot lichess.
+- Trunk full-sweep `--core` retune against E2773E50 now it's net.txt prod
+  (per CLAUDE.md post-net-deploy discipline) before the next eval cluster.
+- Possible 3rd tune round (#1631 +4.0 → #1643 +3.3; diminishing but still
+  positive; idle fleet = real-upside use).
+- fenskip-only s1200 re-run (isolate the -21 stacking regression: fenskip
+  vs 1GB-buffer).
+- Multistage: stage 3 at `--lr 1e-4` and/or longer 400-600 SB stages.
+- Isolate the *data* axis: a **prod-data s1200+SWA** point would test
+  "extra data enables longer productive tails" — currently confounded
+  (xtradata + length + SWA all move together).
+- 256→1024 shuffle-buffer alone at S200 (cheap, transfers everywhere).
+- 2e-4 same-recipe re-warm probe — map the *top* of the LR cliff (is
+  1e-4 the floor of the productive band or already optimal?).
