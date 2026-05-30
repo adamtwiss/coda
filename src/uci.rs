@@ -124,7 +124,16 @@ fn pick_winning_tb_move(board: &Board, fallback_uci: &str, tb: &crate::tb::Syzyg
     // ±1 for cursed/blessed, 0 for draw. Gate on the definite-loss-for-
     // opponent value.
     const DEFINITE_LOSS_THRESHOLD: i32 = -19000;
-    let mut best_captured_value: i32 = -1;
+    // Start at 0, NOT -1: the fallback (shakmaty `best_move`) is already the
+    // DTZ-OPTIMAL (fastest-mate, always-progressing) move. We only want to
+    // override it for a winning CAPTURE (captured_value > 0) that simplifies /
+    // resets the 50mr. Starting at -1 let the first no-capture win-preserving
+    // move (captured_value 0 > -1) replace the DTZ move with an arbitrary
+    // non-progressing one — catastrophic in KQvK etc. where NO move captures:
+    // every queen move "preserves the win" by WDL, so Coda picked an arbitrary
+    // square and could oscillate forever -> 50-move/3-fold draw of a trivial
+    // mate (lichess V49tJcfl: coda_bot drew KQvK vs ratsu-bot, 2026-05-30).
+    let mut best_captured_value: i32 = 0;
     let mut best_uci = fallback_uci.to_string();
 
     for i in 0..legal.len {
