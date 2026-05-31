@@ -2868,7 +2868,15 @@ fn negamax(
                 } else {
                     tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT
                 };
-                if !is_pv && cut_node == score_above_beta && bound_matches
+                // `is_pv` at line 2559 captured pre-mate-dist (`beta - alpha > 1`).
+                // Mate-distance pruning may have collapsed a PV window to zero;
+                // in that case the TT cutoff SHOULD fire (we're effectively ZW),
+                // but the stale is_pv blocks it. Use the post-mate-dist window
+                // directly (alpha at this point is still alpha_orig — TT
+                // narrowing happens at line 2776+ after this check).
+                // 2026-05-31 audit finding B.
+                let tt_cut_is_pv = beta - alpha > 1;
+                if !tt_cut_is_pv && cut_node == score_above_beta && bound_matches
                     && halfmove_ok
                 {
                     info.stats.tt_cutoffs += 1;
