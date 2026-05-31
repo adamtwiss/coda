@@ -1227,30 +1227,39 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     }
 }
 
-/// LMR reduction tables (quiet and capture).
-/// Safety: initialized once at startup (main.rs) and on setoption (UCI thread).
-/// Search threads read concurrently — technically a race on setoption during search,
-/// but values change monotonically and a stale read produces a slightly wrong reduction,
-/// not UB in practice (i32 reads/writes are atomic on x86-64).
-static mut LMR_TABLE: [[i32; 64]; 64] = [[0; 64]; 64];
-static mut LMR_TABLE_CAP: [[i32; 64]; 64] = [[0; 64]; 64];
+/// LMR reduction tables (quiet and capture). Storage is `AtomicI32` so
+/// SPSA-driven `setoption LMR_C_QUIET/CAP` (which calls `init_lmr()` from
+/// the UCI thread while helper threads are reading) is not Rust UB on
+/// concurrent access. Relaxed ordering is sufficient — readers tolerate
+/// either-old-or-new per-cell values; there's no data dependency between
+/// cells. 2026-05-31 audit (H3): prior `static mut [[i32; 64]; 64]` was UB
+/// under Rust's memory model and ARM-visible inconsistent reads during
+/// setoption storms.
+static LMR_TABLE: [[AtomicI32; 64]; 64] = {
+    const Z: AtomicI32 = AtomicI32::new(0);
+    const ROW: [AtomicI32; 64] = [Z; 64];
+    [ROW; 64]
+};
+static LMR_TABLE_CAP: [[AtomicI32; 64]; 64] = {
+    const Z: AtomicI32 = AtomicI32::new(0);
+    const ROW: [AtomicI32; 64] = [Z; 64];
+    [ROW; 64]
+};
 
 pub fn init_lmr() {
     for depth in 1..64 {
         for moves in 1..64 {
-            unsafe {
-                // Quiet table: C from tunable (default 130 = 1.30)
-                if depth >= 3 && moves >= 3 {
-                    let c = tp(&LMR_C_QUIET) as f64 / 100.0;
-                    let r = ((depth as f64).ln() * (moves as f64).ln() / c) as i32;
-                    LMR_TABLE[depth][moves] = r.min((depth - 2) as i32);
-                }
-                // Capture table: C from tunable (default 180 = 1.80)
-                if depth >= 3 && moves >= 3 {
-                    let c = tp(&LMR_C_CAP) as f64 / 100.0;
-                    let r = ((depth as f64).ln() * (moves as f64).ln() / c) as i32;
-                    LMR_TABLE_CAP[depth][moves] = r.min((depth - 2) as i32);
-                }
+            // Quiet table: C from tunable (default 130 = 1.30)
+            if depth >= 3 && moves >= 3 {
+                let c = tp(&LMR_C_QUIET) as f64 / 100.0;
+                let r = ((depth as f64).ln() * (moves as f64).ln() / c) as i32;
+                LMR_TABLE[depth][moves].store(r.min((depth - 2) as i32), Ordering::Relaxed);
+            }
+            // Capture table: C from tunable (default 180 = 1.80)
+            if depth >= 3 && moves >= 3 {
+                let c = tp(&LMR_C_CAP) as f64 / 100.0;
+                let r = ((depth as f64).ln() * (moves as f64).ln() / c) as i32;
+                LMR_TABLE_CAP[depth][moves].store(r.min((depth - 2) as i32), Ordering::Relaxed);
             }
         }
     }
@@ -1259,13 +1268,13 @@ pub fn init_lmr() {
 fn lmr_cap_reduction(depth: i32, moves: i32) -> i32 {
     let d = (depth as usize).min(63);
     let m = (moves as usize).min(63);
-    unsafe { LMR_TABLE_CAP[d][m] }
+    LMR_TABLE_CAP[d][m].load(Ordering::Relaxed)
 }
 
 fn lmr_reduction(depth: i32, moves: i32) -> i32 {
     let d = (depth as usize).min(63);
     let m = (moves as usize).min(63);
-    unsafe { LMR_TABLE[d][m] }
+    LMR_TABLE[d][m].load(Ordering::Relaxed)
 }
 
 /// Initialize feature flags from environment variables (called once at process startup).
