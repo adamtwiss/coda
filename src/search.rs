@@ -2394,6 +2394,19 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // rationale; cap-bind diagnostic (TM_DIAG) showed 65% of iterations
         // clamped under prior structure.
         if info.soft_limit > 0 && depth >= 4 && !info.should_stop() {
+            // Mate early-emit: if we've found a forced mate and the best move
+            // has held for at least one further iteration, stop deepening —
+            // more search cannot improve on a forced mate, and burning the
+            // soft budget (and the post-ponderhit floor below) on a position
+            // we've already solved just wastes clock and looks terrible (e.g.
+            // 18.8s to play a mate-in-1 at 60+10 under ponder — lichess
+            // KsX0b6KG). Require stability >= 1 so a one-iteration mate flicker
+            // that later flips doesn't cause a premature emit. Also sets the
+            // floor to 0 so the stockpile-prevention sleep is skipped.
+            if is_mate_score(prev_score) && info.tm_best_stable >= 1 {
+                info.soft_floor = 0;
+                break;
+            }
             // Factor 1: Stability multiplier (table-indexed by stable count).
             // Verbatim from Viridithas: [2.50, 1.20, 0.90, 0.80, 0.75]
             //   0 stable:  2.50× (uncertain, search more)
@@ -2522,7 +2535,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // wasting tens-hundreds of ms of CPU per ponderhit grace window at
     // blitz+inc. Main thread already has its best move, just waiting to
     // emit.
-    if info.soft_floor > 0 && !info.stop.load(Ordering::Relaxed) {
+    // Never sleep out the floor on a forced mate — we've solved the position
+    // and should emit immediately (covers mate paths that bypass the dynamic-TM
+    // loop above: depth<4 mate, single-legal-move). prev_score holds the last
+    // completed-iteration score.
+    if info.soft_floor > 0 && !is_mate_score(prev_score) && !info.stop.load(Ordering::Relaxed) {
         info.stop.store(true, Ordering::Relaxed);
         loop {
             let elapsed = info.start_time.elapsed().as_millis() as u64;
