@@ -2043,6 +2043,13 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             info.soft_limit = soft_remaining;
             info.hard_limit = hard_remaining;
             info.soft_floor = floor;
+            // H7 (Atlas review): init tm_max_time on the ponder path. The
+            // dynamic-TM consumer caps via .min(tm_max_time); it's never set
+            // on `go ponder` (C6 reset + infinite branch both skip it), so it
+            // carries 0 → min(soft*mult,0).max(1)=1ms → instant emit. Bites at
+            // inc>=500 (the dynamic-TM path); the gate-removal above handles
+            // the inc<500 path. Both fixes are needed and independent.
+            info.tm_max_time = hard_remaining;
         }
         let iter_start = std::time::Instant::now();
 
