@@ -2171,11 +2171,26 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Use PV table first (stop at repetition)
             let pv_len = info.pv_len[0].min(MAX_PLY);
             for i in 0..pv_len {
-                pv_board.make_move(info.pv_table[0][i]);
+                let pv_mv = info.pv_table[0][i];
+                // Legality guard: pv_table can carry a stale sibling-line move
+                // (e.g. a fail-high / stable_pv restore that overran pv_len, or
+                // an unguarded child-PV copy at the propagation site). Printing
+                // it verbatim would emit an illegal PV move — a cutechess
+                // "Illegal PV move" warning and a latent lichess forfeit risk
+                // (same class as oeZ7KRUt 2026-04-26, guarded at the TT-cutoff
+                // stuff site). Stop the PV at the first move not legal in the
+                // current pv_board, mirroring the TT-extension tail below.
+                if pv_mv == NO_MOVE
+                    || !crate::movepicker::is_pseudo_legal(&pv_board, pv_mv)
+                    || !pv_board.is_legal(pv_mv, pv_board.pinned(), pv_board.checkers())
+                {
+                    break;
+                }
+                pv_board.make_move(pv_mv);
                 if seen_hashes.iter().filter(|&&h| h == pv_board.hash).count() >= 2 { break; }
                 seen_hashes.push(pv_board.hash);
                 if !pv_str.is_empty() { pv_str.push(' '); }
-                pv_str.push_str(&move_to_uci(info.pv_table[0][i]));
+                pv_str.push_str(&move_to_uci(pv_mv));
                 pv_moves += 1;
             }
 
@@ -5427,6 +5442,51 @@ mod tests {
         assert!(drift < 100,
             "unrelated position should see near-zero drift, got {} (raw {})",
             other_corrected, raw);
+    }
+
+    /// Regression guard for the PV-print legality check (fix/pv-print-legality
+    /// -guard, 2026-05-31). The pv_table can carry a STALE sibling-line move —
+    /// e.g. a king move from a square the king occupied in a different branch.
+    /// The bug: game 132 (Coda vs Velvet, pooled RR) printed `g2f3` 66× while
+    /// the king was on h2, emitting cutechess "Illegal PV move" warnings (a
+    /// latent lichess forfeit class, cf. oeZ7KRUt 2026-04-26). The fix stops
+    /// the printed PV at the first move that fails is_pseudo_legal + is_legal
+    /// on the running pv_board. This test asserts that exact predicate: a move
+    /// legal in a sibling position is rejected against the current one.
+    #[test]
+    fn pv_print_rejects_stale_sibling_move() {
+        use crate::board::Board;
+        crate::init();
+
+        // Two positions reachable in the same search tree. In `sib` the white
+        // king is on g2 and Kf3 (g2f3) is legal. In `cur` the king has moved
+        // to h2 — g2f3 is now illegal (no piece on g2). A stale pv_table entry
+        // from the `sib` branch would be `g2f3`.
+        let sib = Board::from_fen("1R6/8/8/6pN/6P1/2k4p/3b2K1/5b2 w - - 0 1");
+        let cur = Board::from_fen("1R6/8/8/6pN/6P1/2k4p/3b3K/5b2 w - - 0 1");
+
+        // The stale move, encoded raw from/to (g2 -> f3), as it would sit in
+        // pv_table after the sibling line wrote it.
+        // g2 = file 6, rank 1; f3 = file 5, rank 2 (0-indexed).
+        let g2 = crate::types::square(6, 1);
+        let f3 = crate::types::square(5, 2);
+        let stale = crate::types::make_move(g2, f3, 0);
+
+        // In the sibling position it IS legal (sanity: the scenario is real).
+        assert!(
+            crate::movepicker::is_pseudo_legal(&sib, stale)
+                && sib.is_legal(stale, sib.pinned(), sib.checkers()),
+            "Kg2-f3 must be legal in the sibling position (king on g2)"
+        );
+
+        // In the current position the guard MUST reject it — this is exactly
+        // the predicate the PV-print loop uses before make_move/print.
+        let guard_passes = crate::movepicker::is_pseudo_legal(&cur, stale)
+            && cur.is_legal(stale, cur.pinned(), cur.checkers());
+        assert!(
+            !guard_passes,
+            "stale g2f3 must be rejected when the king is on h2 (no piece on g2)"
+        );
     }
 }
 
