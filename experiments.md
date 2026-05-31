@@ -13109,3 +13109,37 @@ tm_max_time). See `project_mate_tm_early_emit_2026-05-31` and
 `docs/decisive_move_tm_2026-05-31.md` (10-engine TM survey: no engine uses an
 absolute |score| trigger; falling-eval/score-trend is the consensus mechanism,
 landed separately as experiment/tm-score-trend).
+
+## 2026-05-31 — Defensive hardening bundle (#1672, H1 +4.25) — MERGED
+
+| ID | Test | Result | Verdict |
+|---|---|---|---|
+| #1672 | fix/defensive-hardening-bundle vs main | **+4.25 ±2.97** (N=13418, LLR 2.97) | **H1 ✓** [-2,1] |
+
+**Origin:** 2026-05-31 follow-up code-review sweep, findings E+F+G+H bundled
+into a single SPRT.
+
+**Fixes** (board.rs, movepicker.rs):
+
+- **E.** FEN EP field bounds check (board.rs:399-413). Out-of-range bytes
+  (uppercase, junk) used to wrap into a huge ep_square that later overflowed
+  `1u64 << ep_square`. Added `if f < 8 && r < 8` gate.
+- **F.** FEN castling rights sanitised against king/rook presence
+  (board.rs:386-414). A FEN declaring CASTLE_WK with no white rook on h1 used
+  to set the right anyway. Now AND rights against actual king+rook bitboards
+  at parse time (SF/Reckless pattern).
+- **G+H.** `is_pseudo_legal` castle now requires the rook on its corner
+  (movepicker.rs:1102-1145). Combined with F, a TT-collision castle on a
+  corrupt position can no longer survive to `make_move`.
+
+**Surprisingly positive** result on a bundle bounded `[-2, 1]` expecting ~0.
+Bench unchanged (4782984), confirming the changes don't fire on normal
+positions. Hypothesis for the gain: TT-collision-injected castle moves were
+occasionally surviving `is_pseudo_legal` → `make_move` rejected → wasted
+node but also corrupted ordering / pollution at the parent. Adding the
+rook-on-corner check upstream stops the wasted node AND removes the
+ordering disturbance. Bundle-vs-individual SNR also contributed — small
+each, sum was visible.
+
+Combined-bundle strategy worked well here. Worth repeating for "many tiny
+defensive guards" classes.
