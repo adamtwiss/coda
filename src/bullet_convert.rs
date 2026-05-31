@@ -1,12 +1,12 @@
-/// Convert Bullet quantised.bin to .nnue format.
-///
-/// Supports:
-///   v5/v6: (InputSize × H)×2 → output (direct, pairwise, SCReLU)
-///   v7: (InputSize × H)×2 → L1 → [L2 →] output (hidden layers)
-///
-/// King bucket count and layout are encoded into the .nnue header. Default
-/// 16 buckets is backwards compatible (no extended header needed). Non-16
-/// counts (e.g. Reckless 10) set flag bit 7 and emit two extra header bytes.
+//! Convert Bullet quantised.bin to .nnue format.
+//!
+//! Supports:
+//!   v5/v6: (InputSize × H)×2 → output (direct, pairwise, SCReLU)
+//!   v7: (InputSize × H)×2 → L1 → [L2 →] output (hidden layers)
+//!
+//! King bucket count and layout are encoded into the .nnue header. Default
+//! 16 buckets is backwards compatible (no extended header needed). Non-16
+//! counts (e.g. Reckless 10) set flag bit 7 and emit two extra header bytes.
 
 use std::io::Write;
 

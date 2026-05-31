@@ -1,7 +1,7 @@
-/// Syzygy tablebase probing via shakmaty-syzygy.
-///
-/// WDL probes at interior nodes (requires halfmove == 0).
-/// DTZ probes at root for best tablebase move.
+//! Syzygy tablebase probing via shakmaty-syzygy.
+//!
+//! WDL probes at interior nodes (requires halfmove == 0).
+//! DTZ probes at root for best tablebase move.
 
 use shakmaty::{Chess, FromSetup, CastlingMode, Position};
 use shakmaty::fen::Fen;
@@ -157,7 +157,7 @@ impl SyzygyTB {
                 }
             }
 
-            let uci = shakmaty::uci::UciMove::from_standard(m.clone()).to_string();
+            let uci = shakmaty::uci::UciMove::from_standard(m).to_string();
             moves.push(uci);
 
             chess = match chess.play(m) {

@@ -1,4 +1,4 @@
-/// Core types for the chess engine.
+//! Core types for the chess engine.
 
 // Colors
 pub const WHITE: u8 = 0;

@@ -1,7 +1,7 @@
-/// Move generation: pseudo-legal moves with legality filter.
-///
-/// GenerateAllMoves returns pseudo-legal moves (captures then quiets).
-/// GenerateEvasions produces fully legal evasions when in check.
+//! Move generation: pseudo-legal moves with legality filter.
+//!
+//! GenerateAllMoves returns pseudo-legal moves (captures then quiets).
+//! GenerateEvasions produces fully legal evasions when in check.
 
 use crate::bitboard::*;
 use crate::attacks::*;
@@ -377,38 +377,30 @@ pub fn generate_quiets(board: &Board) -> MoveList {
 fn generate_castling(board: &Board, list: &mut MoveList, us: Color, occ: Bitboard) {
     if us == WHITE {
         // Kingside: f1 and g1 must be empty, e1/f1/g1 not attacked
-        if board.castling & CASTLE_WK != 0 {
-            if occ & 0x60 == 0 {
-                if !is_attacked(board, 4, BLACK) && !is_attacked(board, 5, BLACK) && !is_attacked(board, 6, BLACK) {
+        if board.castling & CASTLE_WK != 0
+            && occ & 0x60 == 0
+                && !is_attacked(board, 4, BLACK) && !is_attacked(board, 5, BLACK) && !is_attacked(board, 6, BLACK) {
                     list.push(make_move(4, 6, FLAG_CASTLE));
                 }
-            }
-        }
         // Queenside: b1, c1, d1 must be empty, e1/d1/c1 not attacked
-        if board.castling & CASTLE_WQ != 0 {
-            if occ & 0x0E == 0 {
-                if !is_attacked(board, 4, BLACK) && !is_attacked(board, 3, BLACK) && !is_attacked(board, 2, BLACK) {
+        if board.castling & CASTLE_WQ != 0
+            && occ & 0x0E == 0
+                && !is_attacked(board, 4, BLACK) && !is_attacked(board, 3, BLACK) && !is_attacked(board, 2, BLACK) {
                     list.push(make_move(4, 2, FLAG_CASTLE));
                 }
-            }
-        }
     } else {
         // Kingside
-        if board.castling & CASTLE_BK != 0 {
-            if occ & (0x60u64 << 56) == 0 {
-                if !is_attacked(board, 60, WHITE) && !is_attacked(board, 61, WHITE) && !is_attacked(board, 62, WHITE) {
+        if board.castling & CASTLE_BK != 0
+            && occ & (0x60u64 << 56) == 0
+                && !is_attacked(board, 60, WHITE) && !is_attacked(board, 61, WHITE) && !is_attacked(board, 62, WHITE) {
                     list.push(make_move(60, 62, FLAG_CASTLE));
                 }
-            }
-        }
         // Queenside
-        if board.castling & CASTLE_BQ != 0 {
-            if occ & (0x0Eu64 << 56) == 0 {
-                if !is_attacked(board, 60, WHITE) && !is_attacked(board, 59, WHITE) && !is_attacked(board, 58, WHITE) {
+        if board.castling & CASTLE_BQ != 0
+            && occ & (0x0Eu64 << 56) == 0
+                && !is_attacked(board, 60, WHITE) && !is_attacked(board, 59, WHITE) && !is_attacked(board, 58, WHITE) {
                     list.push(make_move(60, 58, FLAG_CASTLE));
                 }
-            }
-        }
     }
 }
 

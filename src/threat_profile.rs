@@ -1,5 +1,5 @@
-/// Lightweight profiling counters for threat feature performance.
-/// Measures time spent in each phase of threat processing.
+//! Lightweight profiling counters for threat feature performance.
+//! Measures time spent in each phase of threat processing.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

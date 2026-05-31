@@ -1,4 +1,4 @@
-/// UCI protocol implementation.
+//! UCI protocol implementation.
 
 use std::io::{self, BufRead};
 use std::sync::Arc;
@@ -339,7 +339,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         stop_flag = info.stop.clone();
                     }
                 }
-                let is_ponder = tokens.iter().any(|&t| t == "ponder");
+                let is_ponder = tokens.contains(&"ponder");
 
                 // Try Syzygy tablebase at root. Behaviour splits on is_ponder:
                 //   - Non-ponder: walk DTZ to build a multi-ply PV, emit a

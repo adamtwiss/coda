@@ -1,4 +1,4 @@
-/// Precomputed attack tables: knights, kings, pawns, and magic bitboards for sliders.
+//! Precomputed attack tables: knights, kings, pawns, and magic bitboards for sliders.
 
 use crate::bitboard::*;
 use crate::types::*;
@@ -242,7 +242,7 @@ fn bishop_attacks_slow(sq: u32, occ: Bitboard) -> Bitboard {
     for &(dr, df) in &dirs {
         let mut ri = r + dr;
         let mut fi = f + df;
-        while ri >= 0 && ri < 8 && fi >= 0 && fi < 8 {
+        while (0..8).contains(&ri) && (0..8).contains(&fi) {
             let bit = 1u64 << (ri * 8 + fi);
             attacks |= bit;
             if occ & bit != 0 { break; }

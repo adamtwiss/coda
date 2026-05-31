@@ -1,4 +1,17 @@
 #![allow(dead_code)]
+// Intentional patterns, not defects — kept so `clippy -D warnings` stays a
+// usable regression gate without churning hot code:
+#![allow(clippy::needless_range_loop)] // manual indexing mirrors matmul math in SIMD/NNUE paths
+#![allow(clippy::too_many_arguments)] // hot inference/search signatures
+#![allow(clippy::identity_op)] // `color * 1` etc. document an encoding pattern
+#![allow(clippy::type_complexity)] // factoring SIMD tuple types out hurts locality
+#![allow(clippy::manual_memcpy)] // explicit element loops in hot accumulator paths
+#![allow(clippy::manual_clamp)] // .max().min() avoids clamp's max<min panic semantics
+#![allow(clippy::unusual_byte_groupings)] // hex/bit literals grouped by field, not by 4s
+#![allow(clippy::unnecessary_cast)] // explicit pointer casts document intrinsic intent
+#![allow(clippy::if_same_then_else)] // distinct conditions kept separate for documentation
+#![allow(clippy::manual_strip)] // index-slice form reads clearer in the EPD parser
+#![allow(clippy::doc_lazy_continuation)] // doc-comment markdown wrapping, cosmetic
 
 mod types;
 mod bitboard;
@@ -569,7 +582,7 @@ fn main() {
             for fen in positions_slice {
                 let board = Board::from_fen(fen);
                 acc.force_recompute(&net, &board);
-                let _ = evaluate_nnue(&board, &net, &mut acc, &mut tstack);
+                let _ = evaluate_nnue(&board, &net, &mut acc, &tstack);
             }
 
             let start = std::time::Instant::now();
@@ -1351,7 +1364,7 @@ fn run_measure_net_sparsity(net_path: &str) {
         hist[bucket] += 1;
         for &w in row {
             if w != 0 { nonzero_weights += 1; }
-            total_abs_sum += (w as i32).abs() as u64;
+            total_abs_sum += (w as i32).unsigned_abs() as u64;
         }
     }
     let total_rows = num_features;
@@ -1684,7 +1697,7 @@ fn run_profile_threats(input: &str, output: &str, limit: usize, net_path: Option
         if pos_firings > max_per_pos { max_per_pos = pos_firings; }
 
         positions += 1;
-        if positions % 100_000 == 0 {
+        if positions.is_multiple_of(100_000) {
             eprint!("\r  processed {} positions, {} firings", positions, total_firings);
         }
         if limit > 0 && positions >= limit { break; }
@@ -1751,12 +1764,12 @@ fn run_profile_threats(input: &str, output: &str, limit: usize, net_path: Option
     for attacker_cp in 0..12u8 {
         let attacker_pt = attacker_cp % 6;
         for attacker_sq in 0..64u32 {
-            if attacker_pt == 0 && (attacker_sq < 8 || attacker_sq >= 56) { continue; }
+            if attacker_pt == 0 && !(8..56).contains(&attacker_sq) { continue; }
             for victim_cp in 0..12u8 {
                 let victim_pt = victim_cp % 6;
                 for victim_sq in 0..64u32 {
                     if victim_sq == attacker_sq { continue; }
-                    if victim_pt == 0 && (victim_sq < 8 || victim_sq >= 56) { continue; }
+                    if victim_pt == 0 && !(8..56).contains(&victim_sq) { continue; }
                     for mirrored in [false, true] {
                         let idx = threats::threat_index(
                             attacker_cp as usize, attacker_sq,
@@ -2060,7 +2073,7 @@ fn run_binpack_stats(input: &str) {
             }
         }
 
-        if total_positions % 10_000_000 == 0 {
+        if total_positions.is_multiple_of(10_000_000) {
             let elapsed = start.elapsed().as_secs_f64();
             eprint!("\r{:.0}M positions scanned ({:.0}M/s)...",
                 total_positions as f64 / 1e6, total_positions as f64 / elapsed / 1e6);
@@ -2151,7 +2164,7 @@ fn run_sample_positions(input: &str, output: &str, n: usize, sample_rate: f64) {
             if count >= n { break; }
         }
 
-        if total % 10_000_000 == 0 {
+        if total.is_multiple_of(10_000_000) {
             println!("  scanned {}M positions, sampled {}", total / 1_000_000, count);
         }
     }
@@ -2225,7 +2238,7 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>) {
         // Also track search score from binpack for comparison
         // (uncomment to use search score instead of static eval for WDL fit)
 
-        if scores.len() % 100_000 == 0 {
+        if scores.len().is_multiple_of(100_000) {
             eprint!("\r  {} / {} evaluated ({} scanned)", scores.len(), n, total);
         }
     }

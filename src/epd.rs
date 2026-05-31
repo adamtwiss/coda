@@ -1,4 +1,4 @@
-/// EPD file loading and test suite runner.
+//! EPD file loading and test suite runner.
 
 use std::fs;
 use std::time::Instant;
@@ -60,13 +60,11 @@ fn parse_epd_line(line: &str) -> Option<EpdPosition> {
         let op = op.trim();
         if op.is_empty() { continue; }
 
-        if op.starts_with("bm ") {
-            let moves_str = &op[3..];
+        if let Some(moves_str) = op.strip_prefix("bm ") {
             for m in moves_str.split_whitespace() {
                 best_moves.push(m.trim_end_matches(';').to_string());
             }
-        } else if op.starts_with("am ") {
-            let moves_str = &op[3..];
+        } else if let Some(moves_str) = op.strip_prefix("am ") {
             for m in moves_str.split_whitespace() {
                 avoid_moves.push(m.trim_end_matches(';').to_string());
             }
@@ -223,7 +221,7 @@ pub fn run_epd(path: &str, time_per_pos: u64, max_positions: usize, nnue_path: O
         let matches_move = |mv: &str| {
             let mv_clean = mv.trim_end_matches('+').trim_end_matches('#');
             let san_clean = best_san.trim_end_matches('+').trim_end_matches('#');
-            mv_clean == san_clean || mv == &best_uci
+            mv_clean == san_clean || mv == best_uci
         };
 
         // A position is solved when:

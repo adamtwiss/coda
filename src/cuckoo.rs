@@ -1,11 +1,11 @@
-/// Cuckoo cycle detection for proactive repetition avoidance.
-///
-/// Detects when a single move could reach a previously seen position,
-/// allowing the search to treat such positions as draws before the
-/// repetition actually occurs. Eval-agnostic — transfers cleanly.
-///
-/// Based on Stockfish's implementation. Used by SF, Berserk, Viridithas,
-/// Stormphrax, Halogen, PlentyChess.
+//! Cuckoo cycle detection for proactive repetition avoidance.
+//!
+//! Detects when a single move could reach a previously seen position,
+//! allowing the search to treat such positions as draws before the
+//! repetition actually occurs. Eval-agnostic — transfers cleanly.
+//!
+//! Based on Stockfish's implementation. Used by SF, Berserk, Viridithas,
+//! Stormphrax, Halogen, PlentyChess.
 
 use crate::attacks::*;
 use crate::bitboard::between;

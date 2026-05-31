@@ -1,6 +1,6 @@
-/// Transposition table with lockless concurrent access.
-/// 5-slot buckets, cache-line aligned (64 bytes).
-/// Parallel arrays, 32-bit XOR key verification, power-of-2 indexing.
+//! Transposition table with lockless concurrent access.
+//! 5-slot buckets, cache-line aligned (64 bytes).
+//! Parallel arrays, 32-bit XOR key verification, power-of-2 indexing.
 
 use crate::types::*;
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
@@ -20,7 +20,6 @@ const BUCKET_SIZE: usize = 5;
 ///   bits 32-47:  score (16 bits, signed)
 ///   bits 48-55:  depth (8 bits, unsigned)
 ///   bits 56-63:  generation (8 bits)
-
 #[inline(always)]
 fn pack_data(best_move: Move, flag: u8, static_eval: i32, score: i32, depth: i32, generation: u8, tt_pv: bool) -> u64 {
     let mv = best_move as u64;
@@ -710,7 +709,7 @@ mod tests {
         assert_eq!(e.flag, TT_FLAG_EXACT);
         assert_eq!(e.best_move, 0x1234);
         assert_eq!(e.static_eval, -100);
-        assert_eq!(e.tt_pv, true);
+        assert!(e.tt_pv);
     }
 
     /// Five distinct hashes mapping to the same bucket must all coexist

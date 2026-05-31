@@ -1,7 +1,7 @@
-/// Polyglot opening book support.
-///
-/// Format: sorted array of 16-byte entries (key u64 BE, move u16 BE, weight u16 BE, learn u32).
-/// Uses its own Zobrist hash scheme (standard Polyglot randoms).
+//! Polyglot opening book support.
+//!
+//! Format: sorted array of 16-byte entries (key u64 BE, move u16 BE, weight u16 BE, learn u32).
+//! Uses its own Zobrist hash scheme (standard Polyglot randoms).
 
 use std::collections::HashMap;
 use std::fs;
@@ -198,9 +198,8 @@ fn polyglot_has_ep_capture(board: &Board) -> bool {
         while check != 0 {
             let sq = pop_lsb(&mut check) as u8;
             let f = file_of(sq);
-            if f == ep_file.wrapping_sub(1) || f == ep_file.wrapping_add(1) {
-                if f < 8 { return true; }
-            }
+            if (f == ep_file.wrapping_sub(1) || f == ep_file.wrapping_add(1))
+                && f < 8 { return true; }
         }
     } else {
         let rank3_mask = RANK_4;
@@ -208,9 +207,8 @@ fn polyglot_has_ep_capture(board: &Board) -> bool {
         while check != 0 {
             let sq = pop_lsb(&mut check) as u8;
             let f = file_of(sq);
-            if f == ep_file.wrapping_sub(1) || f == ep_file.wrapping_add(1) {
-                if f < 8 { return true; }
-            }
+            if (f == ep_file.wrapping_sub(1) || f == ep_file.wrapping_add(1))
+                && f < 8 { return true; }
         }
     }
 

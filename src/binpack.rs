@@ -1,17 +1,17 @@
-/// Stockfish BINP-format binpack writer.
-///
-/// Format: chunks of [BINP magic (4) + chunk_size (4)] + data.
-/// Each chain: stem (34 bytes) + movetext (variable-length bit-packed moves).
-///
-/// Stem layout:
-///   CompressedPosition (24 bytes): occ bitboard + nibble-packed pieces
-///   CompressedMove (2 bytes): type:2 | from:6 | to:6 | promo:2 (big-endian)
-///   Score (2 bytes): signedToUnsigned encoded (big-endian)
-///   PlyResult (2 bytes): result:2 | ply:14 (big-endian)
-///   Rule50 (2 bytes): big-endian
-///   NumPlies (2 bytes): number of continuation moves (big-endian)
-///
-/// Movetext: hierarchical piece+destination encoding using minimum bits.
+//! Stockfish BINP-format binpack writer.
+//!
+//! Format: chunks of [BINP magic (4) + chunk_size (4)] + data.
+//! Each chain: stem (34 bytes) + movetext (variable-length bit-packed moves).
+//!
+//! Stem layout:
+//!   CompressedPosition (24 bytes): occ bitboard + nibble-packed pieces
+//!   CompressedMove (2 bytes): type:2 | from:6 | to:6 | promo:2 (big-endian)
+//!   Score (2 bytes): signedToUnsigned encoded (big-endian)
+//!   PlyResult (2 bytes): result:2 | ply:14 (big-endian)
+//!   Rule50 (2 bytes): big-endian
+//!   NumPlies (2 bytes): number of continuation moves (big-endian)
+//!
+//! Movetext: hierarchical piece+destination encoding using minimum bits.
 
 use crate::board::Board;
 use crate::types::*;
@@ -66,7 +66,7 @@ impl BitWriter {
 
     /// Pad to byte boundary.
     fn flush(&mut self) {
-        while self.bit_pos % 8 != 0 {
+        while !self.bit_pos.is_multiple_of(8) {
             self.write_bit(0);
         }
     }
@@ -107,7 +107,7 @@ fn signed_to_unsigned(a: i16) -> u16 {
     if r & 0x8000 != 0 {
         r ^= 0x7FFF;
     }
-    (r << 1) | (r >> 15) // rotate left by 1
+    r.rotate_left(1) // rotate left by 1
 }
 
 /// Compress a Board into 24-byte BINP CompressedPosition.
@@ -478,7 +478,7 @@ impl<W: Write> BinpackWriter<W> {
         // m_lastScore starts as -stem.score, alternates sign each ply
         if num_plies > 0 {
             let mut bw = BitWriter::new();
-            let mut m_last_score = -(stem.score as i16);
+            let mut m_last_score = -stem.score;
 
             for i in 1..chain.samples.len() {
                 let sample = &chain.samples[i];

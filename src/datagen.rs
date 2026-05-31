@@ -1,12 +1,12 @@
-/// Data generation for NNUE training.
-///
-/// Modes:
-///   selfplay  — play games against itself, record positions + search scores
-///   material  — remove pieces from positions, deep-search each variant
-///
-/// Output: Stockfish BINP binpack format via sfbinpack crate.
-/// Multi-threaded: each worker plays games independently, sends entries
-/// to writer thread via channel.
+//! Data generation for NNUE training.
+//!
+//! Modes:
+//!   selfplay  — play games against itself, record positions + search scores
+//!   material  — remove pieces from positions, deep-search each variant
+//!
+//! Output: Stockfish BINP binpack format via sfbinpack crate.
+//! Multi-threaded: each worker plays games independently, sends entries
+//! to writer thread via channel.
 
 use crate::board::Board;
 use crate::search::{self, SearchInfo, SearchLimits};
@@ -116,7 +116,7 @@ pub fn run_datagen(config: &DatagenConfig) {
     let writer_handle = std::thread::spawn(move || {
         let file = std::fs::OpenOptions::new()
             .create(true).append(true).open(&output_path)
-            .expect(&format!("Failed to open output file: {}", output_path));
+            .unwrap_or_else(|_| panic!("Failed to open output file: {}", output_path));
         let buf = BufWriter::with_capacity(1 << 20, file);
         let mut writer = CompressedTrainingDataEntryWriter::new(buf)
             .expect("Failed to create binpack writer");
@@ -175,7 +175,7 @@ pub fn run_datagen(config: &DatagenConfig) {
         }
         DatagenMode::Material { source_epd } => {
             let contents = std::fs::read_to_string(source_epd)
-                .expect(&format!("Failed to read EPD: {}", source_epd));
+                .unwrap_or_else(|_| panic!("Failed to read EPD: {}", source_epd));
             let lines: Vec<String> = contents.lines()
                 .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
                 .map(|l| l.split(';').next().unwrap_or(l).trim().to_string())
@@ -230,9 +230,8 @@ fn selfplay_worker(
 
     for _ in 0..my_games {
         let entries = play_one_game(&mut info, &mut rng, depth, blunder_rate, force_capture_rate);
-        if !entries.is_empty() {
-            if tx.send(entries).is_err() { break; }
-        }
+        if !entries.is_empty()
+            && tx.send(entries).is_err() { break; }
         info.tt.clear();
         games_done.fetch_add(1, Ordering::Relaxed);
     }
@@ -326,7 +325,7 @@ fn play_one_game(info: &mut SearchInfo, rng: &mut SimpleRng, depth: i32, blunder
 
         let pos = if let Some(ref prev_pos) = running_pos {
             // Use chained position from previous after_move
-            prev_pos.clone()
+            *prev_pos
         } else {
             // First entry: create from FEN
             match SfPosition::from_fen(&board.to_fen()) {
@@ -428,9 +427,8 @@ fn material_worker(
             }
         }
 
-        if !batch.is_empty() {
-            if tx.send(batch).is_err() { return; }
-        }
+        if !batch.is_empty()
+            && tx.send(batch).is_err() { return; }
     }
 }
 

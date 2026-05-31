@@ -1,4 +1,4 @@
-/// Bitboard operations and precomputed masks.
+//! Bitboard operations and precomputed masks.
 
 pub type Bitboard = u64;
 
@@ -196,7 +196,7 @@ fn compute_between_and_line(sq1: u32, sq2: u32) -> (Bitboard, Bitboard, Bitboard
     let mut between_bb = 0u64;
     let mut r = r1 as i32 + step_r;
     let mut f = f1 as i32 + step_f;
-    while (r != r2 as i32 || f != f2 as i32) && r >= 0 && r < 8 && f >= 0 && f < 8 {
+    while (r != r2 as i32 || f != f2 as i32) && (0..8).contains(&r) && (0..8).contains(&f) {
         between_bb |= 1u64 << (r * 8 + f);
         r += step_r;
         f += step_f;
@@ -207,7 +207,7 @@ fn compute_between_and_line(sq1: u32, sq2: u32) -> (Bitboard, Bitboard, Bitboard
     // Extend backward from sq1
     let mut r = r1 as i32 - step_r;
     let mut f = f1 as i32 - step_f;
-    while r >= 0 && r < 8 && f >= 0 && f < 8 {
+    while (0..8).contains(&r) && (0..8).contains(&f) {
         line_bb |= 1u64 << (r * 8 + f);
         r -= step_r;
         f -= step_f;
@@ -216,7 +216,7 @@ fn compute_between_and_line(sq1: u32, sq2: u32) -> (Bitboard, Bitboard, Bitboard
     let mut extension_bb = 0u64;
     let mut r = r2 as i32 + step_r;
     let mut f = f2 as i32 + step_f;
-    while r >= 0 && r < 8 && f >= 0 && f < 8 {
+    while (0..8).contains(&r) && (0..8).contains(&f) {
         let bit = 1u64 << (r * 8 + f);
         line_bb |= bit;
         extension_bb |= bit;

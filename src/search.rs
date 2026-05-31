@@ -1,6 +1,6 @@
-/// Negamax alpha-beta search with iterative deepening, PVS, aspiration windows, and Lazy SMP.
-/// Features: NMP, RFP, LMR, LMP, futility, SEE pruning, history pruning,
-/// singular extensions, cuckoo cycle detection, correction history.
+//! Negamax alpha-beta search with iterative deepening, PVS, aspiration windows, and Lazy SMP.
+//! Features: NMP, RFP, LMR, LMP, futility, SEE pruning, history pruning,
+//! singular extensions, cuckoo cycle detection, correction history.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
@@ -848,12 +848,10 @@ impl SearchInfo {
             std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.nnue"))),
             Some(std::path::PathBuf::from("net.nnue")),
         ];
-        for maybe_path in &net_nnue_paths {
-            if let Some(path) = maybe_path {
-                if path.exists() {
-                    if let Ok(()) = self.load_nnue(path.to_str().unwrap()) {
-                        return true;
-                    }
+        for path in net_nnue_paths.iter().flatten() {
+            if path.exists() {
+                if let Ok(()) = self.load_nnue(path.to_str().unwrap()) {
+                    return true;
                 }
             }
         }
@@ -863,18 +861,16 @@ impl SearchInfo {
             std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("net.txt"))),
             Some(std::path::PathBuf::from("net.txt")),
         ];
-        for maybe_path in &net_txt_paths {
-            if let Some(path) = maybe_path {
-                if path.exists() {
-                    if let Ok(contents) = std::fs::read_to_string(path) {
-                        let url = contents.trim();
-                        if let Some(fname) = url.rsplit('/').next() {
-                            let net_dir = path.parent().unwrap_or(std::path::Path::new("."));
-                            let net_path = net_dir.join(fname);
-                            if net_path.exists() {
-                                if let Ok(()) = self.load_nnue(net_path.to_str().unwrap()) {
-                                    return true;
-                                }
+        for path in net_txt_paths.iter().flatten() {
+            if path.exists() {
+                if let Ok(contents) = std::fs::read_to_string(path) {
+                    let url = contents.trim();
+                    if let Some(fname) = url.rsplit('/').next() {
+                        let net_dir = path.parent().unwrap_or(std::path::Path::new("."));
+                        let net_path = net_dir.join(fname);
+                        if net_path.exists() {
+                            if let Ok(()) = self.load_nnue(net_path.to_str().unwrap()) {
+                                return true;
                             }
                         }
                     }
@@ -918,7 +914,7 @@ impl SearchInfo {
                 // Grace period scales with remaining budget: enough to finish
                 // an iteration but not enough to risk flagging. Caps at 500ms
                 // and shrinks to near-zero when budget is almost used.
-                let remaining = if ph_time > elapsed { ph_time - elapsed } else { 0 };
+                let remaining = ph_time.saturating_sub(elapsed);
                 let grace = (remaining / 4).min(500);
                 ph_time + grace
             } else {
@@ -1741,7 +1737,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
 
     // Mirror search()'s threat setup — helpers must evaluate consistently
     // with main or shared-TT entries disagree and search diverges at T>1.
-    board.generate_threat_deltas = info.nnue_net.as_ref().map_or(false, |n| n.has_threats);
+    board.generate_threat_deltas = info.nnue_net.as_ref().is_some_and(|n| n.has_threats);
     if info.threat_stack.active {
         info.threat_stack.reset();
         if let Some(ref net) = info.nnue_net {
@@ -1816,7 +1812,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     init_feature_flags();
 
     // Enable threat delta generation if we have a threat net
-    board.generate_threat_deltas = info.nnue_net.as_ref().map_or(false, |n| n.has_threats);
+    board.generate_threat_deltas = info.nnue_net.as_ref().is_some_and(|n| n.has_threats);
 
     // Initialize root position threat accumulator
     if info.threat_stack.active {
@@ -2675,11 +2671,10 @@ fn negamax(
     }
 
     // Check time periodically
-    if info.nodes & 1023 == 0 {
-        if info.should_stop() {
+    if info.nodes & 1023 == 0
+        && info.should_stop() {
             return 0;
         }
-    }
 
     if info.stop.load(Ordering::Relaxed) {
         return 0;
@@ -3602,7 +3597,7 @@ fn negamax(
             // Findings drive the next experiments; see
             // docs/history_prune_cont_hist_review_2026-05-08.md.
             info.stats.hist_prune_eligible += 1;
-            let threshold = tp(&HIST_PRUNE_MULT) * depth as i32;
+            let threshold = tp(&HIST_PRUNE_MULT) * depth;
             if threshold > 0 {
                 let ratio_x100 = (hist_prune_score * 100) / threshold;
                 let bucket = if ratio_x100 >= 100 { 0 }       // >= +1.0 (positive)
@@ -3695,7 +3690,7 @@ fn negamax(
                 }
             }
 
-            if hist_prune_score < -tp(&HIST_PRUNE_MULT) * depth as i32 {
+            if hist_prune_score < -tp(&HIST_PRUNE_MULT) * depth {
                 info.stats.history_prunes += 1;
                 // 2026-05-14 audit: Obsidian/Alexandria/Stormphrax/Halogen all
                 // use skipQuiets here — once a quiet is hist-pruned, all later
@@ -3839,7 +3834,7 @@ fn negamax(
         let mut new_depth = depth - 1 + extension + singular_extension;
 
         // Propagate double extension counter to child
-        if ply_u + 1 <= MAX_PLY {
+        if ply_u < MAX_PLY {
             info.double_ext_count[ply_u + 1] = info.double_ext_count[ply_u]
                 + if singular_extension >= 2 { 1 } else { 0 };
         }
@@ -3858,13 +3853,12 @@ fn negamax(
 
         // Track captures for capture history penalty on beta cutoff
         // Store piece/to/captured for history updates after search
-        if is_cap && n_captures_tried < 32 {
-            if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
+        if is_cap && n_captures_tried < 32
+            && moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                 let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
                 captures_tried[n_captures_tried] = (go_piece(moved_piece) as u8, to, ct as u8);
                 n_captures_tried += 1;
             }
-        }
 
         // Late Move Reductions (LMR) + Principal Variation Search (PVS)
         let mut reduction = 0i32;
@@ -4146,7 +4140,7 @@ fn negamax(
                 // Update triangular PV table
                 if ply_u <= MAX_PLY {
                     info.pv_table[ply_u][0] = mv;
-                    let child_len = if ply_u + 1 <= MAX_PLY { info.pv_len[ply_u + 1] } else { 0 };
+                    let child_len = if ply_u < MAX_PLY { info.pv_len[ply_u + 1] } else { 0 };
                     let copy_len = child_len.min(MAX_PLY - ply_u);
                     for i in 0..copy_len {
                         info.pv_table[ply_u][1 + i] = info.pv_table[ply_u + 1][i];
@@ -4484,11 +4478,10 @@ fn quiescence_with_depth(
     }
 
     // Check time periodically
-    if info.nodes & 1023 == 0 {
-        if info.should_stop() {
+    if info.nodes & 1023 == 0
+        && info.should_stop() {
             return 0;
         }
-    }
 
     if info.stop.load(Ordering::Relaxed) {
         return 0;
@@ -4668,14 +4661,13 @@ fn quiescence_with_depth(
         // into a huge TB_WIN signal that passes the check and pollutes
         // stand-pat.
         let tt_score = score_from_tt(tt_entry.score, ply);
-        if tt_score.abs() < MATE_SCORE - 100 {
-            if (tt_entry.flag == TT_FLAG_LOWER && tt_score > best_score)
+        if tt_score.abs() < MATE_SCORE - 100
+            && ((tt_entry.flag == TT_FLAG_LOWER && tt_score > best_score)
                 || (tt_entry.flag == TT_FLAG_UPPER && tt_score < best_score)
-                || tt_entry.flag == TT_FLAG_EXACT
+                || tt_entry.flag == TT_FLAG_EXACT)
             {
                 best_score = tt_score;
             }
-        }
     }
 
     if best_score >= beta {
@@ -4722,11 +4714,10 @@ fn quiescence_with_depth(
             } else {
                 board.piece_type_at(cap_to)
             };
-            if cap_pt != NO_PIECE_TYPE && (cap_pt as usize) < 6 {
-                if stand_pat + see_value(cap_pt) * tp(&SEE_MATERIAL_SCALE) / 100 + tp(&QS_DELTA_MARGIN) <= alpha {
+            if cap_pt != NO_PIECE_TYPE && (cap_pt as usize) < 6
+                && stand_pat + see_value(cap_pt) * tp(&SEE_MATERIAL_SCALE) / 100 + tp(&QS_DELTA_MARGIN) <= alpha {
                     continue;
                 }
-            }
         }
 
         // Skip bad captures (SEE below threshold)

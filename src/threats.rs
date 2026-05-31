@@ -396,7 +396,7 @@ pub fn init_threats() {
                 piece_offset_lookup[cp][sq as usize] = count;
 
                 // Pawns on ranks 1 and 8 have no attacks (can't exist there)
-                if pt == 0 && (sq < 8 || sq >= 56) {
+                if pt == 0 && !(8..56).contains(&sq) {
                     continue;
                 }
 
@@ -1635,6 +1635,11 @@ pub fn compute_move_deltas(
 /// but the attribute gives LLVM permission to emit tighter AVX2 sequences
 /// inside the inlined region. Callers must ensure AVX2 is available; on
 /// x86_64 with `-Ctarget-cpu=native` it is.
+///
+/// # Safety
+/// The CPU must support AVX2 (the `target_feature` is unconditional on
+/// x86_64). `threat_weights` must be at least `num_threats * hidden_size`
+/// elements, and every delta index must be `< num_threats`.
 #[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx2"))]
 pub unsafe fn apply_threat_deltas(
     dst: &mut [i16],           // destination threat accumulator (one perspective)
@@ -1714,16 +1719,16 @@ pub unsafe fn apply_threat_deltas(
     {
         if is_x86_feature_detected!("avx512f")
             && is_x86_feature_detected!("avx512bw")
-            && hidden_size % 32 == 0
+            && hidden_size.is_multiple_of(32)
         {
             unsafe {
-                apply_deltas_avx512(dst, src, threat_weights, hidden_size, &adds, &subs);
+                apply_deltas_avx512(dst, src, threat_weights, hidden_size, adds, subs);
             }
             return;
         }
-        if is_x86_feature_detected!("avx2") && hidden_size % 16 == 0 {
+        if is_x86_feature_detected!("avx2") && hidden_size.is_multiple_of(16) {
             unsafe {
-                apply_deltas_avx2(dst, src, threat_weights, hidden_size, &adds, &subs);
+                apply_deltas_avx2(dst, src, threat_weights, hidden_size, adds, subs);
             }
             return;
         }
@@ -1834,7 +1839,7 @@ unsafe fn apply_deltas_avx2(
 
     // Tail: never fires on v9, but covers other hidden_size values.
     if offset < hidden_size {
-        let nregs = ((hidden_size - offset) + 15) / 16;
+        let nregs = (hidden_size - offset).div_ceil(16);
         apply_chunk!(nregs);
     }
 }
@@ -1879,7 +1884,7 @@ unsafe fn apply_deltas_avx512(
     let mut offset = 0;
     while offset < hidden_size {
         let chunk_size = (hidden_size - offset).min(CHUNK);
-        let nregs = (chunk_size + 31) / 32;
+        let nregs = chunk_size.div_ceil(32);
 
         // Seed chunk accumulator from src (parent).
         let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
@@ -1951,7 +1956,7 @@ pub fn add_weight_rows(
     #[cfg(target_arch = "x86_64")]
     if is_x86_feature_detected!("avx512f")
         && is_x86_feature_detected!("avx512bw")
-        && hidden_size % 32 == 0
+        && hidden_size.is_multiple_of(32)
     {
         unsafe {
             add_weight_rows_avx512(dst, threat_weights, hidden_size, indices);
@@ -2002,7 +2007,7 @@ unsafe fn add_weight_rows_avx2(
     let mut offset = 0;
     while offset < hidden_size {
         let chunk_size = (hidden_size - offset).min(CHUNK);
-        let nregs = (chunk_size + 15) / 16;
+        let nregs = chunk_size.div_ceil(16);
 
         // Load accumulator chunk into registers
         let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
@@ -2054,7 +2059,7 @@ unsafe fn add_weight_rows_avx512(
     let mut offset = 0;
     while offset < hidden_size {
         let chunk_size = (hidden_size - offset).min(CHUNK);
-        let nregs = (chunk_size + 31) / 32;
+        let nregs = chunk_size.div_ceil(32);
 
         // Load existing dst chunk (the function adds to it, doesn't replace).
         let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
@@ -2412,13 +2417,13 @@ mod tests {
 
         // Pawn attacks bishop: excluded (PIECE_INTERACTION_MAP[0][2] = -1)
         let wp = colored_piece(WHITE, PAWN);
-        let bb = colored_piece(BLACK, BISHOP as u8);
+        let bb = colored_piece(BLACK, BISHOP);
         let idx = threat_index(wp, 28, bb, 35, false, WHITE); // e4 → d5
         assert!(idx < 0, "Pawn×Bishop should be excluded, got {}", idx);
 
         // King attacks queen: excluded (PIECE_INTERACTION_MAP[5][4] = -1)
-        let wk = colored_piece(WHITE, KING as u8);
-        let bq = colored_piece(BLACK, QUEEN as u8);
+        let wk = colored_piece(WHITE, KING);
+        let bq = colored_piece(BLACK, QUEEN);
         let idx = threat_index(wk, 4, bq, 5, false, WHITE);
         assert!(idx < 0, "King×Queen should be excluded, got {}", idx);
     }

@@ -1,6 +1,6 @@
-/// Zobrist hash keys for incremental hashing.
-/// Generated from Go math/rand with seed 0x1234567890ABCDEF.
-/// Piece index 0-11: White P,N,B,R,Q,K then Black P,N,B,R,Q,K.
+//! Zobrist hash keys for incremental hashing.
+//! Generated from Go math/rand with seed 0x1234567890ABCDEF.
+//! Piece index 0-11: White P,N,B,R,Q,K then Black P,N,B,R,Q,K.
 
 use crate::types::*;
 

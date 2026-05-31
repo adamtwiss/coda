@@ -1,6 +1,6 @@
-/// Classical PeSTO material+PST evaluation.
-/// Used as fallback when no NNUE net is loaded.
-/// Uses PeSTO tables for piece-square values with tapered eval.
+//! Classical PeSTO material+PST evaluation.
+//! Used as fallback when no NNUE net is loaded.
+//! Uses PeSTO tables for piece-square values with tapered eval.
 
 use crate::bitboard::*;
 use crate::types::*;
@@ -222,8 +222,8 @@ pub fn evaluate_nnue(
         }
     }
 
-    let score = net.forward_with_threats(acc, board.side_to_move, pc, threat_stack);
-    score
+    
+    net.forward_with_threats(acc, board.side_to_move, pc, threat_stack)
 }
 
 /// Evaluate the position from the side to move's perspective.
@@ -252,8 +252,8 @@ pub fn evaluate(board: &crate::board::Board) -> i32 {
     let mg_score = mg[board.side_to_move as usize] - mg[flip_color(board.side_to_move) as usize];
     let eg_score = eg[board.side_to_move as usize] - eg[flip_color(board.side_to_move) as usize];
 
-    let score = (mg_score * phase + eg_score * (TOTAL_PHASE - phase)) / TOTAL_PHASE;
-    score
+    
+    (mg_score * phase + eg_score * (TOTAL_PHASE - phase)) / TOTAL_PHASE
 }
 
 /// Material-only value of a piece type (midgame, for SEE).

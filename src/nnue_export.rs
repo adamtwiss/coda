@@ -1,13 +1,13 @@
-/// Convert .nnue file to Bullet checkpoint format for transfer learning.
-///
-/// Reads a v5/v6 .nnue file, dequantises the FT weights (l0w, l0b) to float32,
-/// and writes a Bullet-compatible checkpoint directory with:
-///   - weights.bin: l0w, l0b from .nnue + zeroed L1/L2/output for v7
-///   - momentum.bin: all zeros
-///   - velocity.bin: all zeros
-///
-/// The v7 training config then loads this checkpoint, freezes l0w/l0b,
-/// and trains only the hidden layers.
+//! Convert .nnue file to Bullet checkpoint format for transfer learning.
+//!
+//! Reads a v5/v6 .nnue file, dequantises the FT weights (l0w, l0b) to float32,
+//! and writes a Bullet-compatible checkpoint directory with:
+//!   - weights.bin: l0w, l0b from .nnue + zeroed L1/L2/output for v7
+//!   - momentum.bin: all zeros
+//!   - velocity.bin: all zeros
+//!
+//! The v7 training config then loads this checkpoint, freezes l0w/l0b,
+//! and trains only the hidden layers.
 
 use std::io::Write;
 

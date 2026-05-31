@@ -29,7 +29,7 @@ Alternatively, you can build using cargo:
 cargo build --release  # Plain release build into target/releases
 ```
 
-Requires Rust 1.95+
+Requires Rust 1.70+
 
 For PGO builds, install prerequisites:
 ```bash

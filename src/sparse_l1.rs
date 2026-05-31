@@ -1,14 +1,14 @@
-/// Sparse L1 matmul (Reckless dpbusd pattern).
-///
-/// Instead of processing ALL input elements for each neuron (dense),
-/// this skips zero 4-byte chunks of the pairwise output. With ~89%
-/// sparsity in pairwise outputs, this processes only ~11% of the work.
-///
-/// Requires input-chunk-major weight layout:
-///   [input_chunk][neuron * 4] instead of [neuron][input]
-///
-/// The dpbusd kernel: for each non-zero 4-byte input chunk, splat it
-/// across an AVX2 register and VPMADDUBSW with the weights for all neurons.
+//! Sparse L1 matmul (Reckless dpbusd pattern).
+//!
+//! Instead of processing ALL input elements for each neuron (dense),
+//! this skips zero 4-byte chunks of the pairwise output. With ~89%
+//! sparsity in pairwise outputs, this processes only ~11% of the work.
+//!
+//! Requires input-chunk-major weight layout:
+//!   [input_chunk][neuron * 4] instead of [neuron][input]
+//!
+//! The dpbusd kernel: for each non-zero 4-byte input chunk, splat it
+//! across an AVX2 register and VPMADDUBSW with the weights for all neurons.
 
 /// Transpose L1 weights from neuron-major to input-chunk-major layout.
 ///
@@ -122,6 +122,9 @@ pub fn sparse_l1_scalar(
 
 /// Sparse L1 matmul with AVX2 dpbusd.
 /// For each non-zero input chunk, splat it and VPMADDUBSW with neuron weights.
+///
+/// # Safety
+/// CPU must support AVX2. Slices must be sized for `pw`/`num_neurons`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 pub unsafe fn sparse_l1_avx2(
@@ -216,6 +219,9 @@ pub unsafe fn sparse_l1_avx2(
 /// Generalising it to a runtime-variable accumulator count would lose
 /// the const-folded loads. A dedicated L1=32 variant keeps the inner
 /// loop straight-line.
+///
+/// # Safety
+/// CPU must support AVX2. Slices must be sized for `pw`/`num_neurons`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 pub unsafe fn dense_l1_avx2_l1_32(
@@ -293,6 +299,9 @@ pub unsafe fn dense_l1_avx2_l1_32(
 /// Benefit vs row-major: input chunk loaded once per chunk (instead of
 /// once per output), weights accessed sequentially in input-chunk-major
 /// order (better cache behaviour than strided per-output rows).
+///
+/// # Safety
+/// CPU must support AVX2. Slices must be sized for `pw`/`num_neurons`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 pub unsafe fn dense_l1_avx2(
@@ -379,6 +388,9 @@ pub unsafe fn dense_l1_avx2(
 ///
 /// Only implemented for `num_neurons == 16` (the v9 pairwise case). For
 /// other widths, callers should continue to use the non-VNNI paths.
+///
+/// # Safety
+/// CPU must support AVX-512F/BW/VNNI. Slices must be sized for `pw`/`num_neurons`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
 pub unsafe fn dense_l1_avx512_vnni(
@@ -457,6 +469,9 @@ pub unsafe fn dense_l1_avx512_vnni(
 /// Sparse column-major L1 matmul, AVX-512 VNNI variant — skips 4-byte
 /// zero input chunks. Uses four interleaved accumulators to hide VPDPBUSD
 /// latency even when chunks are dense.
+///
+/// # Safety
+/// CPU must support AVX-512F/BW/VNNI. Slices must be sized for `pw`/`num_neurons`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
 pub unsafe fn sparse_l1_avx512_vnni(
@@ -535,6 +550,9 @@ pub unsafe fn sparse_l1_avx512_vnni(
 /// Uses 4 interleaved accumulator pairs to hide VPDPBUSD's ~5-cycle
 /// latency on Alder Lake / Zen 4. Without this, the loop serialises on
 /// the accumulator dependency chain and runs ~2.5× slower than AVX2.
+///
+/// # Safety
+/// CPU must support AVX2 + AVX-VNNI. Slices must be sized for `pw`/`num_neurons`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,avxvnni")]
 pub unsafe fn dense_l1_avx_vnni(

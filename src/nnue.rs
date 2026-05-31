@@ -405,7 +405,7 @@ unsafe fn simd_acc_fused_avx2(
     // Tail: any leftover < CHUNK elements. Runtime nregs dispatch only
     // here, never on the v9 hot path.
     if offset < h {
-        let nregs = ((h - offset) + 15) / 16;
+        let nregs = (h - offset).div_ceil(16);
         let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
         for i in 0..nregs {
             regs[i] = _mm256_loadu_si256(src_ptr.add(offset + i * 16) as *const __m256i);
@@ -459,7 +459,7 @@ unsafe fn simd_acc_fused_avx512(
 
     let mut offset = 0;
     while offset < h {
-        let nregs = ((h - offset).min(CHUNK) + LANE - 1) / LANE;
+        let nregs = (h - offset).min(CHUNK).div_ceil(LANE);
 
         let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
         for i in 0..nregs {
@@ -600,7 +600,7 @@ unsafe fn finny_batch_apply_avx2(
 
     // Tail: any leftover < CHUNK i16. Never fires on v9 production net.
     if offset < h {
-        let nregs = ((h - offset) + 15) / 16;
+        let nregs = (h - offset).div_ceil(16);
         let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
         for i in 0..nregs {
             regs[i] = _mm256_loadu_si256(acc_ptr.add(offset + i * 16) as *const __m256i);
@@ -2367,7 +2367,7 @@ impl NNUENet {
         let mut use_pairwise = false;
         let mut l1_size = 0usize;
         let mut l2_size = 0usize;
-        let mut l1_scale = QA as i32; // default int16 scale
+        let mut l1_scale = QA; // default int16 scale
         let mut bucketed_hidden = false; // bit 3: output buckets baked into L1/L2 dims
         let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
         // bit 5 is context-dependent:
@@ -2394,7 +2394,7 @@ impl NNUENet {
                 let body_size = data_len - 8;
                 let h_denom = 2 * (NNUE_INPUT_SIZE as u64 + 1 + 16);
                 let h_numer = body_size - 32;
-                if h_numer % h_denom != 0 {
+                if !h_numer.is_multiple_of(h_denom) {
                     return Err(format!("cannot infer hidden size from file size (body {})", body_size));
                 }
                 hidden_size = (h_numer / h_denom) as usize;
@@ -2409,12 +2409,12 @@ impl NNUENet {
                 let out_mul: u64 = if use_pairwise { 8 } else { 16 };
                 let h_denom = 2 * (NNUE_INPUT_SIZE as u64 + 1 + out_mul);
                 let h_numer = body_size - 32;
-                if h_numer % h_denom != 0 {
+                if !h_numer.is_multiple_of(h_denom) {
                     return Err(format!("cannot infer hidden size from file size (body {})", body_size));
                 }
                 hidden_size = (h_numer / h_denom) as usize;
             }
-            7 | 8 | 9 | 10 => {
+            7..=10 => {
                 let flags = read_u8(reader)?;
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
@@ -2736,12 +2736,10 @@ impl NNUENet {
         // multiply through those (mis-calibrated-distribution) weights
         // and degrade eval. Refuse to load by default.
         if !self.xray_trained && !LOAD_ANYWAY.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(format!(
-                "net was trained without xray features (--xray 0), but Coda \
+            return Err("net was trained without xray features (--xray 0), but Coda \
                  inference always emits them — inference/training mismatch \
                  would corrupt eval. Pass --load-anyway (CLI) or set UCI option \
-                 LoadAnyway=true to load for diagnostic purposes only."
-            ));
+                 LoadAnyway=true to load for diagnostic purposes only.".to_string());
         }
         Ok(())
     }
@@ -2822,8 +2820,8 @@ impl NNUENet {
         let pw = h / 2; // pairwise output per perspective
         let l1_total = self.l1_size; // total L1 neurons (bucketed or not)
         let l1_pb = self.l1_per_bucket; // per-bucket L1 size
-        let qa = QA as i32;
-        let qa_l1 = self.l1_scale as i32;
+        let qa = QA;
+        let qa_l1 = self.l1_scale;
 
         // For bucketed nets: only compute neurons for this bucket
         let l1_off = if self.bucketed_hidden { bucket * l1_pb } else { 0 };
@@ -2854,14 +2852,14 @@ impl NNUENet {
         };
 
         #[cfg(target_arch = "x86_64")]
-        if self.has_avx512 && pw % 32 == 0 {
+        if self.has_avx512 && pw.is_multiple_of(32) {
             unsafe {
                 let stm_tp = if has_threats { stm_threat.as_ptr() } else { std::ptr::null() };
                 let ntm_tp = if has_threats { ntm_threat.as_ptr() } else { std::ptr::null() };
                 simd512_pairwise_pack_fused(stm_acc, stm_tp, stm_pw, pw);
                 simd512_pairwise_pack_fused(ntm_acc, ntm_tp, ntm_pw, pw);
             }
-        } else if self.has_avx2 && pw % 16 == 0 {
+        } else if self.has_avx2 && pw.is_multiple_of(16) {
             unsafe {
                 if has_threats {
                     simd_pairwise_pack_fused(stm_acc, stm_threat.as_ptr(), stm_pw, pw);
@@ -2940,17 +2938,17 @@ impl NNUENet {
         }
         // L1 matmul: use SIMD int8 dot with transposed weights when available
         #[cfg(target_arch = "x86_64")]
-        if self.has_avx512_vnni && !self.l1_weights_sparse.is_empty() && l1 == 16 && pw % 4 == 0 {
+        if self.has_avx512_vnni && !self.l1_weights_sparse.is_empty() && l1 == 16 && pw.is_multiple_of(4) {
             // AVX-512 VNNI column-major: all 16 L1 neurons in one ZMM accumulator,
             // one VPDPBUSD per 4-byte input chunk. Dramatically reduces per-chunk
             // uop count vs the row-major per-neuron path below.
             unsafe {
                 crate::sparse_l1::dense_l1_avx512_vnni(
-                    &stm_pw, &ntm_pw, pw, &self.l1_weights_sparse,
-                    l1, &self.l1_biases[l1_off..], pw_scale, &mut hidden32,
+                    stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
+                    l1, &self.l1_biases[l1_off..], pw_scale, hidden32,
                 );
             }
-        } else if self.has_avx512_vnni && pw % 64 == 0 && !self.l1_weights_8t.is_empty() {
+        } else if self.has_avx512_vnni && pw.is_multiple_of(64) && !self.l1_weights_8t.is_empty() {
             // VNNI fallback for wider L1 — still VPDPBUSD, but row-major.
             let ntm_base = l1_total * pw;
             for i in 0..l1 {
@@ -2962,15 +2960,15 @@ impl NNUENet {
                     hidden32[i] += simd512_l1_int8_dot_vnni(&ntm_pw[..pw], ntm_w, pw);
                 }
             }
-        } else if self.has_avx_vnni && !self.l1_weights_sparse.is_empty() && l1 <= 16 && pw % 4 == 0 {
+        } else if self.has_avx_vnni && !self.l1_weights_sparse.is_empty() && l1 <= 16 && pw.is_multiple_of(4) {
             // AVX-VNNI (YMM VPDPBUSD) — Alder Lake+, Zen 4+ without full AVX-512.
             unsafe {
                 crate::sparse_l1::dense_l1_avx_vnni(
-                    &stm_pw, &ntm_pw, pw, &self.l1_weights_sparse,
-                    l1, &self.l1_biases[l1_off..], pw_scale, &mut hidden32,
+                    stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
+                    l1, &self.l1_biases[l1_off..], pw_scale, hidden32,
                 );
             }
-        } else if self.has_avx512 && pw % 64 == 0 && !self.l1_weights_8t.is_empty() {
+        } else if self.has_avx512 && pw.is_multiple_of(64) && !self.l1_weights_8t.is_empty() {
             let ntm_base = l1_total * pw;
             for i in 0..l1 {
                 let gi = l1_off + i;
@@ -2981,7 +2979,7 @@ impl NNUENet {
                     hidden32[i] += simd512_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
                 }
             }
-        } else if self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 == 32 && pw % 4 == 0 {
+        } else if self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 == 32 && pw.is_multiple_of(4) {
             // L1=32 AVX2 specialisation. Four YMM accumulators (8 neurons
             // each) instead of the L1=16 path's two. Column-major outer
             // chunk loop matches dense_l1_avx2 structure — input is
@@ -2989,8 +2987,8 @@ impl NNUENet {
             // parallel via VPMADDUBSW + VPMADDWD.
             unsafe {
                 crate::sparse_l1::dense_l1_avx2_l1_32(
-                    &stm_pw, &ntm_pw, pw, &self.l1_weights_sparse,
-                    &self.l1_biases[l1_off..], pw_scale, &mut hidden32,
+                    stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
+                    &self.l1_biases[l1_off..], pw_scale, hidden32,
                 );
             }
         } else if self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 <= 16 {
@@ -3006,8 +3004,8 @@ impl NNUENet {
             // straight-line SIMD with input-chunk-major weight access.
             unsafe {
                 crate::sparse_l1::dense_l1_avx2(
-                    &stm_pw, &ntm_pw, pw, &self.l1_weights_sparse,
-                    l1, &self.l1_biases[l1_off..], pw_scale, &mut hidden32,
+                    stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
+                    l1, &self.l1_biases[l1_off..], pw_scale, hidden32,
                 );
             }
             // DEBUG: compare against dense
@@ -3039,7 +3037,7 @@ impl NNUENet {
                     if !mismatch { eprintln!("SPARSE L1 MATCH (all {} neurons)", l1); }
                 }
             }
-        } else if self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty() {
+        } else if self.has_avx2 && pw.is_multiple_of(32) && !self.l1_weights_8t.is_empty() {
             let ntm_base = l1_total * pw;
             // Multi-neuron: process 4 neurons at once, loading input once per chunk
             let mut i = 0;
@@ -3082,13 +3080,13 @@ impl NNUENet {
         }
 
         #[cfg(target_arch = "x86_64")]
-        if !(self.has_avx512_vnni && !self.l1_weights_sparse.is_empty() && l1 == 16 && pw % 4 == 0)
-            && !(self.has_avx512_vnni && pw % 64 == 0 && !self.l1_weights_8t.is_empty())
-            && !(self.has_avx_vnni && !self.l1_weights_sparse.is_empty() && l1 <= 16 && pw % 4 == 0)
-            && !(self.has_avx512 && pw % 64 == 0 && !self.l1_weights_8t.is_empty())
-            && !(self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 == 32 && pw % 4 == 0)
+        if !(self.has_avx512_vnni && !self.l1_weights_sparse.is_empty() && l1 == 16 && pw.is_multiple_of(4))
+            && !(self.has_avx512_vnni && pw.is_multiple_of(64) && !self.l1_weights_8t.is_empty())
+            && !(self.has_avx_vnni && !self.l1_weights_sparse.is_empty() && l1 <= 16 && pw.is_multiple_of(4))
+            && !(self.has_avx512 && pw.is_multiple_of(64) && !self.l1_weights_8t.is_empty())
+            && !(self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 == 32 && pw.is_multiple_of(4))
             && !(self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 <= 16)
-            && !(self.has_avx2 && pw % 32 == 0 && !self.l1_weights_8t.is_empty()) {
+            && !(self.has_avx2 && pw.is_multiple_of(32) && !self.l1_weights_8t.is_empty()) {
             // Scalar fallback — raw weights in [input][neuron] layout
             for i in 0..l1 {
                 let gi = l1_off + i;
@@ -3228,7 +3226,7 @@ impl NNUENet {
                     l2_fmadd_avx512_x32(
                         &l1_out[..l1_out_count], l1_out_count,
                         &self.l2_weights_f, l2_total, l2_off,
-                        &self.l2_biases_f, &mut h2,
+                        &self.l2_biases_f, h2,
                     );
                 }
             } else if self.has_avx2 && l2 == 32 {
@@ -3236,7 +3234,7 @@ impl NNUENet {
                     l2_fmadd_avx2_x32(
                         &l1_out[..l1_out_count], l1_out_count,
                         &self.l2_weights_f, l2_total, l2_off,
-                        &self.l2_biases_f, &mut h2,
+                        &self.l2_biases_f, h2,
                     );
                 }
             } else {
@@ -3336,7 +3334,7 @@ impl NNUENet {
 
         // SIMD int8 path: pack SCReLU to u8, then VPMADDUBSW L1 matmul
         #[cfg(target_arch = "x86_64")]
-        if (self.has_avx512 || self.has_avx2) && h % 32 == 0 && !self.l1_weights_8t.is_empty() {
+        if (self.has_avx512 || self.has_avx2) && h.is_multiple_of(32) && !self.l1_weights_8t.is_empty() {
             let mut stm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
             let mut ntm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
             let stm_packed: &mut [u8] = unsafe {
@@ -3345,7 +3343,7 @@ impl NNUENet {
             let ntm_packed: &mut [u8] = unsafe {
                 std::slice::from_raw_parts_mut(ntm_packed_storage.as_mut_ptr() as *mut u8, 2048)
             };
-            if self.has_avx512 && h % 64 == 0 {
+            if self.has_avx512 && h.is_multiple_of(64) {
                 unsafe {
                     simd512_screlu_pack(stm_acc, stm_packed, h);
                     simd512_screlu_pack(ntm_acc, ntm_packed, h);
@@ -3358,13 +3356,13 @@ impl NNUENet {
             }
             // Int8 matmul: input at scale QA (v²/255), weights at scale QA_L1
             // Result at scale QA × QA_L1. Bias at scale QA_L1, scaled by QA to match.
-            let qa_int = QA as i32;
+            let qa_int = QA;
             for i in 0..l1 {
                 hidden[i] = self.l1_biases[b_off + i] as i64 * qa_int as i64; // bias × QA
             }
             // Weight layout: l1_weights_8t[neuron * h] for STM, [l1_total*h + neuron*h] for NTM
             // With bucket offset: STM starts at (b_off + i) * h, NTM at l1_total*h + (b_off+i)*h
-            if self.has_avx512 && h % 64 == 0 {
+            if self.has_avx512 && h.is_multiple_of(64) {
                 // Dispatch dense/sparse × vnni/plain combinations. Each branch
                 // specialises on the actual kernel to keep inner loops tight.
                 let use_sparse = self.use_sparse_l1.load(std::sync::atomic::Ordering::Relaxed);
@@ -3375,8 +3373,8 @@ impl NNUENet {
                     let mut ntm_nnz = [0u16; 32];
                     let (stm_nnz_count, ntm_nnz_count);
                     unsafe {
-                        stm_nnz_count = find_nnz_chunks_512(&stm_packed, &mut stm_nnz, h);
-                        ntm_nnz_count = find_nnz_chunks_512(&ntm_packed, &mut ntm_nnz, h);
+                        stm_nnz_count = find_nnz_chunks_512(stm_packed, &mut stm_nnz, h);
+                        ntm_nnz_count = find_nnz_chunks_512(ntm_packed, &mut ntm_nnz, h);
                     }
                     if use_vnni {
                         for i in 0..l1 {
@@ -3384,8 +3382,8 @@ impl NNUENet {
                             let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
                             let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
                             unsafe {
-                                hidden[i] += simd512_l1_int8_dot_sparse_vnni(&stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
-                                hidden[i] += simd512_l1_int8_dot_sparse_vnni(&ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
+                                hidden[i] += simd512_l1_int8_dot_sparse_vnni(stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
+                                hidden[i] += simd512_l1_int8_dot_sparse_vnni(ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
                             }
                         }
                     } else {
@@ -3394,8 +3392,8 @@ impl NNUENet {
                             let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
                             let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
                             unsafe {
-                                hidden[i] += simd512_l1_int8_dot_sparse(&stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
-                                hidden[i] += simd512_l1_int8_dot_sparse(&ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
+                                hidden[i] += simd512_l1_int8_dot_sparse(stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
+                                hidden[i] += simd512_l1_int8_dot_sparse(ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
                             }
                         }
                     }
@@ -3405,8 +3403,8 @@ impl NNUENet {
                         let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
                         let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
                         unsafe {
-                            hidden[i] += simd512_l1_int8_dot_vnni(&stm_packed, stm_w, h) as i64;
-                            hidden[i] += simd512_l1_int8_dot_vnni(&ntm_packed, ntm_w, h) as i64;
+                            hidden[i] += simd512_l1_int8_dot_vnni(stm_packed, stm_w, h) as i64;
+                            hidden[i] += simd512_l1_int8_dot_vnni(ntm_packed, ntm_w, h) as i64;
                         }
                     }
                 } else {
@@ -3415,8 +3413,8 @@ impl NNUENet {
                         let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
                         let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
                         unsafe {
-                            hidden[i] += simd512_l1_int8_dot(&stm_packed, stm_w, h) as i64;
-                            hidden[i] += simd512_l1_int8_dot(&ntm_packed, ntm_w, h) as i64;
+                            hidden[i] += simd512_l1_int8_dot(stm_packed, stm_w, h) as i64;
+                            hidden[i] += simd512_l1_int8_dot(ntm_packed, ntm_w, h) as i64;
                         }
                     }
                 }
@@ -3427,16 +3425,16 @@ impl NNUENet {
                     let mut ntm_nnz = [0u16; 64];
                     let (stm_nnz_count, ntm_nnz_count);
                     unsafe {
-                        stm_nnz_count = find_nnz_chunks(&stm_packed, &mut stm_nnz, h);
-                        ntm_nnz_count = find_nnz_chunks(&ntm_packed, &mut ntm_nnz, h);
+                        stm_nnz_count = find_nnz_chunks(stm_packed, &mut stm_nnz, h);
+                        ntm_nnz_count = find_nnz_chunks(ntm_packed, &mut ntm_nnz, h);
                     }
                     for i in 0..l1 {
                         let gi = b_off + i;
                         let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
                         let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
                         unsafe {
-                            hidden[i] += simd_l1_int8_dot_sparse(&stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
-                            hidden[i] += simd_l1_int8_dot_sparse(&ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
+                            hidden[i] += simd_l1_int8_dot_sparse(stm_packed, stm_w, &stm_nnz, stm_nnz_count) as i64;
+                            hidden[i] += simd_l1_int8_dot_sparse(ntm_packed, ntm_w, &ntm_nnz, ntm_nnz_count) as i64;
                         }
                     }
                 } else {
@@ -3445,8 +3443,8 @@ impl NNUENet {
                         let stm_w = &self.l1_weights_8t[gi * h..(gi + 1) * h];
                         let ntm_w = &self.l1_weights_8t[l1_total * h + gi * h..l1_total * h + (gi + 1) * h];
                         unsafe {
-                            hidden[i] += simd_l1_int8_dot(&stm_packed, stm_w, h) as i64;
-                            hidden[i] += simd_l1_int8_dot(&ntm_packed, ntm_w, h) as i64;
+                            hidden[i] += simd_l1_int8_dot(stm_packed, stm_w, h) as i64;
+                            hidden[i] += simd_l1_int8_dot(ntm_packed, ntm_w, h) as i64;
                         }
                     }
                 }
@@ -3459,20 +3457,20 @@ impl NNUENet {
             if self.dual_l1 {
                 // Dual L1 activation: CReLU(L1) concat SCReLU(L1)
                 for i in 0..l1 {
-                    let h_val = ((hidden[i] / qa as i64) as i32).clamp(0, qa_l1 as i32);
+                    let h_val = ((hidden[i] / qa) as i32).clamp(0, qa_l1 as i32);
                     l1_out[i] = h_val as f32 / qa_l1_f;               // CReLU: [0, 1]
                     l1_out[l1 + i] = (h_val * h_val) as f32 / qa_l1_sq; // SCReLU: [0, 1]
                 }
             } else if self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed) {
                 // Clipped ReLU variant
                 for i in 0..l1 {
-                    let h_val = ((hidden[i] / qa as i64) as i32).clamp(0, qa_l1 as i32);
+                    let h_val = ((hidden[i] / qa) as i32).clamp(0, qa_l1 as i32);
                     l1_out[i] = h_val as f32 / qa_l1_f; // CReLU: [0, 1]
                 }
             } else {
                 // Standard SCReLU only
                 for i in 0..l1 {
-                    let h_val = ((hidden[i] / qa as i64) as i32).clamp(0, qa_l1 as i32);
+                    let h_val = ((hidden[i] / qa) as i32).clamp(0, qa_l1 as i32);
                     l1_out[i] = (h_val * h_val) as f32 / qa_l1_sq; // → [0, 1]
                 }
             }
@@ -3616,7 +3614,7 @@ impl NNUENet {
         // Scalar fallback (bucket-aware)
         // L1 weight layout: transposed [neuron × h] per perspective, accessed via l1_total + b_off
         #[cfg(target_arch = "x86_64")]
-        if !((self.has_avx512 || self.has_avx2) && h % 32 == 0 && !self.l1_weights_8t.is_empty()) {
+        if !((self.has_avx512 || self.has_avx2) && h.is_multiple_of(32) && !self.l1_weights_8t.is_empty()) {
             for j in 0..h {
                 let v = (stm_acc[j] as i64).clamp(0, qa);
                 if v == 0 { continue; }
@@ -3869,7 +3867,7 @@ impl NNUENet {
             let pw = h / 2; // pairwise output size per perspective
 
             #[cfg(target_arch = "x86_64")]
-            if self.has_avx512 && pw % 32 == 0 {
+            if self.has_avx512 && pw.is_multiple_of(32) {
                 let bias = output;
                 let mut sum: i64;
                 unsafe {
@@ -3882,7 +3880,7 @@ impl NNUENet {
             }
 
             #[cfg(target_arch = "x86_64")]
-            if self.has_avx2 && pw % 16 == 0 {
+            if self.has_avx2 && pw.is_multiple_of(16) {
                 let bias = output;
                 let mut sum: i64;
                 unsafe {
@@ -3912,13 +3910,13 @@ impl NNUENet {
             let bias = output;
             let mut sum: i64 = 0;
             for i in 0..pw {
-                let a = (stm_acc[i] as i32).clamp(0, QA as i32);
-                let b = (stm_acc[i + pw] as i32).clamp(0, QA as i32);
+                let a = (stm_acc[i] as i32).clamp(0, QA);
+                let b = (stm_acc[i + pw] as i32).clamp(0, QA);
                 sum += (a * b) as i64 * out_w[i] as i64;
             }
             for i in 0..pw {
-                let a = (ntm_acc[i] as i32).clamp(0, QA as i32);
-                let b = (ntm_acc[i + pw] as i32).clamp(0, QA as i32);
+                let a = (ntm_acc[i] as i32).clamp(0, QA);
+                let b = (ntm_acc[i + pw] as i32).clamp(0, QA);
                 sum += (a * b) as i64 * out_w[pw + i] as i64;
             }
             output = sum / QA as i64 + bias;
@@ -3928,7 +3926,7 @@ impl NNUENet {
         }
 
         #[cfg(target_arch = "x86_64")]
-        if self.has_avx512 && h % 32 == 0 {
+        if self.has_avx512 && h.is_multiple_of(32) {
             if self.use_screlu {
                 let out_w_i8 = self.output_weight_row_i8(bucket);
                 let scale = self.output_scale[bucket];
@@ -3957,7 +3955,7 @@ impl NNUENet {
         }
 
         #[cfg(target_arch = "x86_64")]
-        if self.has_avx2 && h % 16 == 0 {
+        if self.has_avx2 && h.is_multiple_of(16) {
             if self.use_screlu {
                 let out_w_i8 = self.output_weight_row_i8(bucket);
                 let scale = self.output_scale[bucket];
@@ -4719,7 +4717,7 @@ impl NNUEAccumulator {
         let b_subs = &b_subs[..nbs];
 
         #[cfg(target_arch = "x86_64")]
-        if net.has_avx512 && h % 32 == 0 {
+        if net.has_avx512 && h.is_multiple_of(32) {
             let (parent_w, current_w) = self.psq.parent_and_current(parent_ply, top, WHITE as usize);
             unsafe { simd_acc_fused_avx512(current_w, parent_w, w_adds, w_subs, h); }
             let (parent_b, current_b) = self.psq.parent_and_current(parent_ply, top, BLACK as usize);
@@ -4728,7 +4726,7 @@ impl NNUEAccumulator {
             return;
         }
         #[cfg(target_arch = "x86_64")]
-        if net.has_avx2 && h % 16 == 0 {
+        if net.has_avx2 && h.is_multiple_of(16) {
             let (parent_w, current_w) = self.psq.parent_and_current(parent_ply, top, WHITE as usize);
             unsafe { simd_acc_fused_avx2(current_w, parent_w, w_adds, w_subs, h); }
             let (parent_b, current_b) = self.psq.parent_and_current(parent_ply, top, BLACK as usize);
@@ -4916,7 +4914,7 @@ unsafe fn finny_batch_apply_avx512(
 
     let mut offset = 0;
     while offset < h {
-        let nregs = ((h - offset).min(CHUNK) + LANE - 1) / LANE;
+        let nregs = (h - offset).min(CHUNK).div_ceil(LANE);
 
         let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
         for i in 0..nregs {
@@ -4960,12 +4958,12 @@ fn finny_batch_apply(
     subs: &[usize],
 ) {
     #[cfg(target_arch = "x86_64")]
-    if net.has_avx512 && h % 32 == 0 {
+    if net.has_avx512 && h.is_multiple_of(32) {
         unsafe { finny_batch_apply_avx512(acc, input_weights, h, adds, subs); }
         return;
     }
     #[cfg(target_arch = "x86_64")]
-    if net.has_avx2 && h % 16 == 0 {
+    if net.has_avx2 && h.is_multiple_of(16) {
         unsafe { finny_batch_apply_avx2(acc, input_weights, h, adds, subs); }
         return;
     }
@@ -5043,12 +5041,12 @@ unsafe fn finny_batch_apply_neon(
 #[inline]
 fn acc_add(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
     #[cfg(target_arch = "x86_64")]
-    if net.has_avx512 && h % 32 == 0 {
+    if net.has_avx512 && h.is_multiple_of(32) {
         unsafe { simd512_acc_add(acc, row, h); }
         return;
     }
     #[cfg(target_arch = "x86_64")]
-    if net.has_avx2 && h % 16 == 0 {
+    if net.has_avx2 && h.is_multiple_of(16) {
         unsafe { simd_acc_add(acc, row, h); }
         return;
     }
@@ -5064,12 +5062,12 @@ fn acc_add(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
 #[inline]
 fn acc_sub(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
     #[cfg(target_arch = "x86_64")]
-    if net.has_avx512 && h % 32 == 0 {
+    if net.has_avx512 && h.is_multiple_of(32) {
         unsafe { simd512_acc_sub(acc, row, h); }
         return;
     }
     #[cfg(target_arch = "x86_64")]
-    if net.has_avx2 && h % 16 == 0 {
+    if net.has_avx2 && h.is_multiple_of(16) {
         unsafe { simd_acc_sub(acc, row, h); }
         return;
     }
@@ -5950,6 +5948,8 @@ mod tests {
     fn test_simd_scalar_consistency() {
         use crate::board::Board;
 
+        crate::init();
+
         // Try to load a net — skip if none available
         let net_path = if let Ok(override_path) = std::env::var("CODA_TEST_NET") {
             if !std::path::Path::new(&override_path).exists() {
@@ -6004,6 +6004,7 @@ mod tests {
             // Compute accumulator once with SIMD (normal path)
             let mut acc = NNUEAccumulator::new(h);
             acc.force_recompute(&net, &board);
+            acc.recompute_threats_if_needed(&net, &board);
 
             // Forward with full SIMD (whatever the runtime detected).
             let simd_result = net.forward(&acc, board.side_to_move, piece_count);
@@ -6514,6 +6515,8 @@ mod tests {
     fn test_finny_incremental_consistency() {
         use crate::board::Board;
 
+        crate::init();
+
         let net_path = if std::path::Path::new("net.nnue").exists() {
             "net.nnue".to_string()
         } else {
@@ -6555,11 +6558,13 @@ mod tests {
             // Full recompute
             let mut acc_full = NNUEAccumulator::new(h);
             acc_full.force_recompute(&net, &board);
+            acc_full.recompute_threats_if_needed(&net, &board);
             let full_result = net.forward(&acc_full, board.side_to_move, piece_count);
 
             // Materialized from dirty state (simulates incremental)
             let mut acc_incr = NNUEAccumulator::new(h);
             acc_incr.force_recompute(&net, &board);
+            acc_incr.recompute_threats_if_needed(&net, &board);
             let incr_result = net.forward(&acc_incr, board.side_to_move, piece_count);
 
             assert_eq!(

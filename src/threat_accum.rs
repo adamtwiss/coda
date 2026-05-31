@@ -1,14 +1,14 @@
-/// Threat accumulator stack (Reckless pattern).
-///
-/// Separate from the PSQ accumulator. Each ply has:
-/// - Per-perspective i16 accumulator values (aligned)
-/// - Per-perspective accuracy flags
-/// - Threat deltas (ArrayVec, no heap allocation)
-/// - Move info for king mirror detection
-///
-/// The stack is pre-allocated for MAX_PLY entries. Push/pop is trivial.
-/// BoardObserver callbacks during make_move push deltas directly.
-/// Evaluate walks back to find an accurate ancestor and replays forward.
+//! Threat accumulator stack (Reckless pattern).
+//!
+//! Separate from the PSQ accumulator. Each ply has:
+//! - Per-perspective i16 accumulator values (aligned)
+//! - Per-perspective accuracy flags
+//! - Threat deltas (ArrayVec, no heap allocation)
+//! - Move info for king mirror detection
+//!
+//! The stack is pre-allocated for MAX_PLY entries. Push/pop is trivial.
+//! BoardObserver callbacks during make_move push deltas directly.
+//! Evaluate walks back to find an accurate ancestor and replays forward.
 
 use crate::threats::{RawThreatDelta, MAX_THREAT_DELTAS};
 use crate::types::*;
@@ -23,6 +23,12 @@ pub struct DeltaVec {
     data: [RawThreatDelta; MAX_THREAT_DELTAS],
     len: usize,
     overflowed: bool,
+}
+
+impl Default for DeltaVec {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DeltaVec {
@@ -75,6 +81,12 @@ pub struct ThreatEntry {
     pub moved_pt: u8,
     /// Color that moved (for per-perspective king mirror check)
     pub moved_color: u8,
+}
+
+impl Default for ThreatEntry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ThreatEntry {

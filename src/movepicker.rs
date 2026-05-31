@@ -1,16 +1,16 @@
-/// Staged move picker for search.
-///
-/// Order: TT move -> good captures (MVV-LVA + captHist) -> quiets (history-scored,
-///        including main/cont/pawn/etc.) -> bad captures.
-///
-/// Killer1/Killer2/CounterMove stages are SKIPPED — quiet ordering relies on
-/// history alone (SF/Reckless pattern, validated by SPRT commit e28c78a).
-/// The match arms for those stages exist in `Stage` for legacy compat but
-/// are unreachable from the live state machine.
-///
-/// Evasion order: TT move -> evasions (captures scored above quiets).
-///
-/// No legality checks — returns pseudo-legal moves; search caller does legality.
+//! Staged move picker for search.
+//!
+//! Order: TT move -> good captures (MVV-LVA + captHist) -> quiets (history-scored,
+//!        including main/cont/pawn/etc.) -> bad captures.
+//!
+//! Killer1/Killer2/CounterMove stages are SKIPPED — quiet ordering relies on
+//! history alone (SF/Reckless pattern, validated by SPRT commit e28c78a).
+//! The match arms for those stages exist in `Stage` for legacy compat but
+//! are unreachable from the live state machine.
+//!
+//! Evasion order: TT move -> evasions (captures scored above quiets).
+//!
+//! No legality checks — returns pseudo-legal moves; search caller does legality.
 
 use crate::attacks::*;
 use crate::bitboard::*;
@@ -70,13 +70,15 @@ impl History {
         }
     }
 
-    pub fn new() -> Self {
-        History {
-            main: [[[[0; 64]; 64]; 2]; 2],
-            capture: [[[0i16; 7]; 64]; 13],
-            killers: [[NO_MOVE; 2]; crate::search::MAX_PLY],
-            counter: [[NO_MOVE; 64]; 13],
-            cont_hist: [[[[0; 64]; 13]; 64]; 13],
+    /// Allocate a zeroed History directly on the heap. The struct is ~1.4MB;
+    /// `new()` builds it via stack array literals, which overflows the default
+    /// test-thread stack. All fields are valid when zeroed (NO_MOVE == 0).
+    pub fn boxed_zeroed() -> Box<History> {
+        unsafe {
+            let layout = std::alloc::Layout::new::<History>();
+            let ptr = std::alloc::alloc_zeroed(layout) as *mut History;
+            if ptr.is_null() { std::alloc::handle_alloc_error(layout); }
+            Box::from_raw(ptr)
         }
     }
 
@@ -576,11 +578,10 @@ impl MovePicker {
                 // Evasion stages
                 Stage::EvasionTTMove => {
                     self.stage = Stage::GenerateEvasions;
-                    if self.tt_move != NO_MOVE && is_pseudo_legal(board, self.tt_move) {
-                        if board.is_legal(self.tt_move, self.pinned, self.checkers) {
+                    if self.tt_move != NO_MOVE && is_pseudo_legal(board, self.tt_move)
+                        && board.is_legal(self.tt_move, self.pinned, self.checkers) {
                             return self.tt_move;
                         }
-                    }
                 }
 
                 Stage::GenerateEvasions => {
@@ -1183,9 +1184,8 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
                 if board.piece_type_at(to) != NO_PIECE_TYPE { return false; }
             }
             // Single push: destination must be empty
-            if diff == 8 {
-                if board.piece_type_at(to) != NO_PIECE_TYPE { return false; }
-            }
+            if diff == 8
+                && board.piece_type_at(to) != NO_PIECE_TYPE { return false; }
             // Capture: destination must have enemy piece and be file-adjacent
             // (EP is handled above with FLAG_EN_PASSANT and returns early)
             if diff == 7 || diff == 9 {
@@ -1310,11 +1310,10 @@ impl QMovePicker {
         // Try TT move first
         if self.tt_stage {
             self.tt_stage = false;
-            if self.tt_move != NO_MOVE {
-                if board.is_legal(self.tt_move, self.pinned, self.checkers) {
+            if self.tt_move != NO_MOVE
+                && board.is_legal(self.tt_move, self.pinned, self.checkers) {
                     return self.tt_move;
                 }
-            }
         }
 
         while self.idx < self.moves.len {
@@ -1374,7 +1373,7 @@ mod tests {
     /// 4D indexing must not accidentally corrupt the 2D fallback path.
     #[test]
     fn history_4d_flag_routes_correctly() {
-        let mut h = History::new();
+        let mut h = History::boxed_zeroed();
         // Give each table slot a distinct value so we can prove which branch ran.
         h.main[0][0][12][28] = 1;
         h.main[0][1][12][28] = 2;

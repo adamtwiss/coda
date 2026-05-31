@@ -1,16 +1,16 @@
-/// Syzygy probe-result cache, keyed by our native Zobrist hash.
-///
-/// A probe against shakmaty-syzygy involves a `Board -> shakmaty::Chess`
-/// rebuild plus the tablebase's own decompression work (dictionary lookups,
-/// permutation normalisation, several `.rtbw`/`.rtbz` reads even when warm
-/// in the page cache). On an endgame-heavy search the WDL probe can dominate
-/// NPS. This cache short-circuits repeats: a hit is one cache-line atomic
-/// load.
-///
-/// Lockless, Lazy-SMP-safe: each slot holds `(key ^ value, value)` so a torn
-/// read is detected by the XOR check and treated as a miss.
-///
-/// Stores only WDL probes (interior-node use). DTZ is root-only and rare.
+//! Syzygy probe-result cache, keyed by our native Zobrist hash.
+//!
+//! A probe against shakmaty-syzygy involves a `Board -> shakmaty::Chess`
+//! rebuild plus the tablebase's own decompression work (dictionary lookups,
+//! permutation normalisation, several `.rtbw`/`.rtbz` reads even when warm
+//! in the page cache). On an endgame-heavy search the WDL probe can dominate
+//! NPS. This cache short-circuits repeats: a hit is one cache-line atomic
+//! load.
+//!
+//! Lockless, Lazy-SMP-safe: each slot holds `(key ^ value, value)` so a torn
+//! read is detected by the XOR check and treated as a miss.
+//!
+//! Stores only WDL probes (interior-node use). DTZ is root-only and rare.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

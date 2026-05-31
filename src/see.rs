@@ -1,5 +1,5 @@
-/// Static Exchange Evaluation (SEE).
-/// Determines if a capture sequence is winning/losing.
+//! Static Exchange Evaluation (SEE).
+//! Determines if a capture sequence is winning/losing.
 
 use crate::attacks::*;
 use crate::bitboard::*;

@@ -1,7 +1,7 @@
-/// Board representation using bitboards + mailbox.
-///
-/// Bitboards: pieces[6] (by type) + colors[2] (by color).
-/// Mailbox: mailbox[64] for O(1) piece-at-square lookup.
+//! Board representation using bitboards + mailbox.
+//!
+//! Bitboards: pieces[6] (by type) + colors[2] (by color).
+//! Mailbox: mailbox[64] for O(1) piece-at-square lookup.
 
 use crate::bitboard::*;
 use crate::attacks::*;
@@ -700,7 +700,7 @@ impl Board {
             if checkers != 0 {
                 // Double check: only king moves resolve (EP is never a king move)
                 if checkers & (checkers - 1) != 0 { return false; }
-                let checker_sq = crate::bitboard::lsb(checkers) as u32;
+                let checker_sq = crate::bitboard::lsb(checkers);
                 // EP only resolves check if captured pawn is the checker
                 if checker_sq != captured_sq { return false; }
             }
@@ -1659,7 +1659,7 @@ mod tests {
                     // 1 in 3 chance of null, but only if not in check.
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { break; }
-                    let want_null = (next_u32(&mut rng) % 3) == 0;
+                    let want_null = next_u32(&mut rng).is_multiple_of(3);
                     let in_check = board.checkers() != 0;
                     if want_null && !in_check {
                         board.make_null_move();
