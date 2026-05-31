@@ -13143,3 +13143,31 @@ each, sum was visible.
 
 Combined-bundle strategy worked well here. Worth repeating for "many tiny
 defensive guards" classes.
+
+## 2026-05-31 — Score-trend (falling-eval) TM factor (#1665, H1 +5.6) — MERGED
+
+| ID | Test | Result | Verdict |
+|---|---|---|---|
+| #1665 | experiment/tm-score-trend vs main | **+5.6 ±2.9** (N=17068, LLR 3.01) | **H1 ✓** [0,3] |
+
+**Change** (search.rs): adds a 5th TM multiplier factor — the iteration-to-
+iteration score delta (`drop = tm_prev_score - prev_score`, cp) shaped as
+`clamp(1.0 + 0.0025*drop, [0.80, 1.45])`. More time when the eval is FALLING
+(position worsening — don't snap into trouble), less when stable/rising
+(calm/winning — move on). Centered at 1.0 on flat eval so the common case is
+unchanged and the existing 4-factor SPSA calibration is undisturbed (no retune
+needed to test direction).
+
+**Provenance:** the `decisive-move` survey (docs/decisive_move_tm_2026-05-31.md,
+10 engines) found NO engine uses an absolute |score| trigger; the consensus is
+this comparative falling-eval factor (SF fallingEval, Integral score_change,
+Obsidian scoreLoss, PlentyChess evalDiff, Reckless score_trend — 5 of 10).
+Coda already COMPUTED the exact signal and discarded it (`let _score_drop`).
+This just wired it in. Symmetric-self-play-visible (not ponder-asymmetric), so
+standard SPRT applied and saw it cleanly.
+
+**Surprised-positive note:** +5.6 is a strong result for a TM factor; banks
+the consensus feature Coda was uniquely missing. Follow-up candidate: SPSA the
+coefficient (0.0025) + clamp ([0.80,1.45]) + the adjacent factor cluster — the
+literal constants are Reckless-analogy, not Coda-tuned, so retune-on-branch
+should extract more.
