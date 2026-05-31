@@ -272,6 +272,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("option name HiddenActivation type combo default screlu var screlu var crelu");
                 println!("option name LoadAnyway type check default false");
                 println!("option name TMDebug type check default false");
+                println!("option name PonderhitCreditPct type spin default 50 min 0 max 100");
                 // Tunable search parameters (for SPSA)
                 for (name, _, default, min, max, _c_end, _is_core) in crate::search::tunable_params() {
                     println!("option name {} type spin default {} min {} max {}", name, default, min, max);
@@ -541,13 +542,19 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             } else {
                                 limits.binc
                             };
-                            // Phase 14 v4 (merged into Phase 13 branch): at deployment
-                            // TCs (inc>=500), use soft deadline (= ponder-aware post_min).
-                            // At STC, fall back to hard deadline (original behavior).
+                            // Gate-removal (2026-05-31): use the ponder-aware
+                            // soft deadline (= partial-credit post_min) at ALL
+                            // TCs, not just inc>=500. The old inc>=500 gate
+                            // existed only to keep this code out of STC SPRT —
+                            // but ponder code can't be SPRT'd anyway (no ponder
+                            // in OB/fastchess, #513). With PonderhitCreditPct,
+                            // credit=0 reproduces the old STC full-budget
+                            // behavior, so this is a strict generalization.
+                            let _ = our_inc;
                             let ph_soft_deadline = si.ponderhit_soft.load(std::sync::atomic::Ordering::Relaxed);
                             let ph_hard_deadline = si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed);
                             let now_elapsed = go_received.elapsed().as_millis() as u64;
-                            let target_deadline = if our_inc >= 500 && ph_soft_deadline > 0 {
+                            let target_deadline = if ph_soft_deadline > 0 {
                                 ph_soft_deadline
                             } else {
                                 ph_hard_deadline
@@ -558,11 +565,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 si.ponderhit_time.store(0, std::sync::atomic::Ordering::Relaxed);
                                 si.ponderhit_soft.store(0, std::sync::atomic::Ordering::Relaxed);
                                 si.ponderhit_floor.store(0, std::sync::atomic::Ordering::Relaxed);
-                                let movetime_floor_val = if our_inc >= 500 {
-                                    remaining  // ponder-aware target as both movetime and floor
-                                } else {
-                                    our_inc.saturating_sub(si.move_overhead)  // STC original
-                                };
+                                // Gate-removal: ponder-aware target as both
+                                // movetime and floor at all TCs (was inc>=500).
+                                let movetime_floor_val = remaining;
                                 // Real remaining clock for the side to move, so
                                 // the absolute forfeit guard applies in the
                                 // ponderhit fresh-search path too (start_time is
@@ -779,20 +784,27 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             external_stop.store(true, Ordering::Relaxed);
                             stop_flag.store(true, Ordering::Relaxed);
                         } else {
-                            // Phase 14 v4 (merged into Phase 13 branch): ponder-aware
-                            // budget gated to deployment TCs (inc>=500ms). At STC
-                            // (inc<500ms) preserve original `elapsed + soft` total.
-                            // At deployment: post=max(50, soft-elapsed) ensures total
-                            // ~= soft target (across ponder + post-ponderhit).
+                            // Post-ponderhit budget: credit only
+                            // PONDERHIT_CREDIT_PCT% of the elapsed ponder time
+                            // against the fresh budget (Option C), at ALL TCs
+                            // (gate-removal 2026-05-31 — the old inc>=500 gate
+                            // only existed to keep this out of un-SPRT-able STC
+                            // ponder play). A ponderhit's ponder work is a
+                            // genuine head-start (same move, warm TT) but NOT a
+                            // finished search, so deducting 100% (old Phase 14
+                            // v4: soft - elapsed) collapsed to the 50ms floor on
+                            // long ponders → shallow instant emits = the
+                            // ponder-on regression. credit=0 reproduces the old
+                            // STC full-fresh-budget behavior; default 50.
+                            let _ = floor;
                             const MIN_POST_PONDERHIT_MS: u64 = 50;
-                            let (deadline, soft_deadline, store_floor) = if our_inc >= 500 {
-                                let post_min = soft.saturating_sub(elapsed).max(MIN_POST_PONDERHIT_MS);
+                            let (deadline, soft_deadline, store_floor) = {
+                                let credited = elapsed
+                                    .saturating_mul(crate::search::ponderhit_credit_pct())
+                                    / 100;
+                                let post_min = soft.saturating_sub(credited).max(MIN_POST_PONDERHIT_MS);
                                 let post_min = post_min.min(hard.max(10));
                                 (elapsed + hard.max(10), elapsed + post_min, post_min)
-                            } else {
-                                (elapsed + hard.max(10),
-                                 elapsed + soft.max(10).min(hard.max(10)),
-                                 floor)
                             };
                             ponderhit_flag.store(deadline, Ordering::Relaxed);
                             ponderhit_soft_flag.store(soft_deadline, Ordering::Relaxed);
@@ -1149,6 +1161,16 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
             let on = value.eq_ignore_ascii_case("true");
             crate::search::TM_DEBUG.store(on, std::sync::atomic::Ordering::Relaxed);
             println!("info string TMDebug = {}", on);
+        }
+        "PonderhitCreditPct" => {
+            // Post-ponderhit budget credit % (Option C). NOT a SPSA tunable —
+            // OB/fastchess has no ponder, so it can only be swept in a local
+            // ponder gauntlet. See search::PONDERHIT_CREDIT_PCT.
+            if let Ok(v) = value.parse::<i32>() {
+                let clamped = v.clamp(0, 100);
+                crate::search::PONDERHIT_CREDIT_PCT.store(clamped, std::sync::atomic::Ordering::Relaxed);
+                println!("info string PonderhitCreditPct = {}", clamped);
+            }
         }
         _ => {
             // Check tunable search parameters
