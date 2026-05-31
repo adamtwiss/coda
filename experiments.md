@@ -13049,3 +13049,32 @@ updated (E2773E50 = PROD, 1EF1C3E5 retired). New prod bench 4782984.
 - 256→1024 shuffle-buffer alone at S200 (cheap, transfers everywhere).
 - 2e-4 same-recipe re-warm probe — map the *top* of the LR cliff (is
   1e-4 the floor of the productive band or already optimal?).
+
+## 2026-05-31 — QS quiet-TT-move suppression: H0 ✗ (-5.3) — the quiet TT move in QS is load-bearing, not pollution
+
+| ID | Test | Result | Verdict |
+|---|---|---|---|
+| #1660 | fix/qs-quiet-ttmove vs main | **-5.3 ±3.5** (N=10244, LLR -2.95) | **H0 ✗** [0,3] |
+
+**Change** (`fix/qs-quiet-ttmove`, 76336ac): in non-check quiescence, hand
+the QS MovePicker a TT move only if it's a capture/EP/promotion — suppress
+quiet TT moves. Theory: the main search stores quiet best_moves in TT, and
+the QS picker returns the TT move first without a noisy check, so a quiet TT
+move "leaks" into a node that's supposed to search noisy moves only (SEE
+passes a quiet move to a safe square: balance starts at 0, no recapture).
+
+**Result: a clean -5.3 regression, well outside noise.** The premise was
+wrong — searching the quiet TT move in non-check QS is **beneficial**, not a
+bug. Mechanism read: the quiet TT move is a known-high-quality continuation;
+trying it first frequently raises alpha or produces a cheap beta cutoff
+*before* the captures-only fallback, improving QS bound quality at trivial
+cost. Removing it forfeits those cheap cutoffs/alpha-raises. This is the same
+class of result as other "tidy up the search to match a mental model" changes
+that regress because the messy behavior was doing real work.
+
+**Disposition:** do not merge. Branch left for reference. Not a parameter
+probe (no bisect); it's a structural removal whose direction is settled
+negative. If revisited, the question to answer first is *why* top engines
+that only generate captures in QS still don't lose this — likely because
+their TT-move-in-QS path is gated differently (legality/noisy check) rather
+than the move simply being absent.
