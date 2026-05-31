@@ -13078,3 +13078,34 @@ negative. If revisited, the question to answer first is *why* top engines
 that only generate captures in QS still don't lose this — likely because
 their TT-move-in-QS path is gated differently (legality/noisy check) rather
 than the move simply being absent.
+
+## 2026-05-31 — Mate TM early-emit (#1664, H1 +5.0) — MERGED (62fc213)
+
+| ID | Test | Result | Verdict |
+|---|---|---|---|
+| #1664 | fix/mate-tm-early-emit vs main | **+5.0 ±3.1** (N=12008, LLR 3.07) | **H1 ✓** [-2,1] |
+
+**Origin:** lichess KsX0b6KG (60+10, ponder) — codabot took 18.8s to play a
+mate-in-1 and ~8.7s/move in a trivially won position. Root cause: the
+post-ponderhit "don't stockpile" floor (~inc seconds) sleeps before emitting,
+and there was NO mate/decisive early-exit anywhere — so even holding a forced
+mate the engine burned the full soft budget then slept the floor.
+
+**Fix** (`fix/mate-tm-early-emit`, search.rs — two guards keyed on
+`is_mate_score(prev_score)`):
+1. ID loop: forced mate + `tm_best_stable >= 1` → zero `soft_floor` and break.
+2. Floor sleep: never sleep out `soft_floor` on a mate score (covers depth<4 /
+   single-legal-move mate paths).
+Probe (go ponder→ponderhit, M1, 60+10): main 1017ms → fix 1ms. Bench unchanged.
+
+**Surprisingly positive** for a "mate-only" fix (bounded [-2,1] expecting ~0).
+The Elo source is clock economy across the whole CONVERSION phase: once
+winning, search finds forced mates many moves before the end (mate-in-N), and
+every such move previously wasted the full budget + floor. Snap-playing the
+mate sequence banks time for contested positions — a real symmetric-self-play
+gain (SPRT-legible, not ponder-asymmetric). Same "don't burn clock on
+already-solved positions" theme as the ponderhit fixes (gate removal +
+tm_max_time). See `project_mate_tm_early_emit_2026-05-31` and
+`docs/decisive_move_tm_2026-05-31.md` (10-engine TM survey: no engine uses an
+absolute |score| trigger; falling-eval/score-trend is the consensus mechanism,
+landed separately as experiment/tm-score-trend).
