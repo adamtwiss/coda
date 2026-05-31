@@ -395,15 +395,34 @@ impl Board {
                 }
             }
         }
+        // Sanitise castling rights against actual king/rook presence.
+        // A FEN may declare rights for a rook that doesn't exist (corrupt
+        // input, Chess960-style mixed FENs). SF/Reckless do the same AND
+        // at parse time so downstream movegen + is_pseudo_legal can assume
+        // rights imply a rook on the corner. 2026-05-31 audit finding F.
+        let wk_on_e1 = self.pieces[KING as usize] & self.colors[WHITE as usize] & (1u64 << 4) != 0;
+        let bk_on_e8 = self.pieces[KING as usize] & self.colors[BLACK as usize] & (1u64 << 60) != 0;
+        let wr_on_h1 = self.pieces[ROOK as usize] & self.colors[WHITE as usize] & (1u64 << 7) != 0;
+        let wr_on_a1 = self.pieces[ROOK as usize] & self.colors[WHITE as usize] & (1u64 << 0) != 0;
+        let br_on_h8 = self.pieces[ROOK as usize] & self.colors[BLACK as usize] & (1u64 << 63) != 0;
+        let br_on_a8 = self.pieces[ROOK as usize] & self.colors[BLACK as usize] & (1u64 << 56) != 0;
+        if !(wk_on_e1 && wr_on_h1) { self.castling &= !CASTLE_WK; }
+        if !(wk_on_e1 && wr_on_a1) { self.castling &= !CASTLE_WQ; }
+        if !(bk_on_e8 && br_on_h8) { self.castling &= !CASTLE_BK; }
+        if !(bk_on_e8 && br_on_a8) { self.castling &= !CASTLE_BQ; }
 
-        // En passant
+        // En passant. Bounds-check f and r to avoid wrapping into a
+        // huge ep_square that later overflows `1u64 << ep_square`
+        // (board.rs / movegen.rs). 2026-05-31 audit finding E.
         self.ep_square = NO_SQUARE;
         if parts.len() > 3 && parts[3] != "-" {
             let bytes = parts[3].as_bytes();
             if bytes.len() == 2 {
-                let f = bytes[0] - b'a';
-                let r = bytes[1] - b'1';
-                self.ep_square = square(f, r);
+                let f = bytes[0].wrapping_sub(b'a');
+                let r = bytes[1].wrapping_sub(b'1');
+                if f < 8 && r < 8 {
+                    self.ep_square = square(f, r);
+                }
             }
         }
 
