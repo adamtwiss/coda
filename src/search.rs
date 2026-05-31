@@ -2737,9 +2737,21 @@ fn negamax(
                         wdl  // ambiguous (±1) or draw (0): use as-is
                     };
 
+                    // Exact draw (wdl==0) and ambiguous cursed-win/blessed-loss
+                    // (wdl==±1) are non-mate game-theoretic values — return
+                    // directly even when in-window. Otherwise the in-window case
+                    // below only raises alpha and keeps searching, letting
+                    // NNUE/qsearch produce a non-TB score in a solved subtree:
+                    // a fortress draw read as +150 steers the root off a real
+                    // win, and a cursed win read as winning gets overpressed into
+                    // the 50-move draw. Definite Win/Loss (|wdl|>1) fall through
+                    // to the bound logic: rule-50 can make a TB win unrealizable,
+                    // so they're only trusted as a lower/upper bound (SF pattern).
+                    if (-1..=1).contains(&wdl) { return tb_score; }
+
                     if tb_score >= beta { return tb_score; }
                     if tb_score <= alpha { return tb_score; }
-                    // Exact score in window: tighten bounds
+                    // Definite Win/Loss in window: tighten bounds
                     alpha = tb_score;
                 }
             }
