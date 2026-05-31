@@ -309,7 +309,24 @@ was 20× too high (cost +47 Elo when fixed).
 
 ## NNUE Model Naming Convention
 
-Format: `net-v{N}-{accumWidth}[t][d]h{layers}[s]-w{wdl}-e{epochs}s{snap}.nnue`
+**Production nets (going forward, since 2026-05-31): hash-based.** Name a
+promoted prod net `net-v{N}-{OB_HASH}.nnue` — reuse the 8-char OpenBench
+content hash you already pass to `--dev-network` (e.g.
+`net-v9-E2773E50.nnue`). Rationale: descriptive filenames encode recipe
+*inferences* that rot or turn out wrong (the retired `...C8fix-factor.nnue`
+prod actually never contained C8fix-2 — the filename lied), and a content
+hash can't. Reusing the OB hash also collapses the net's two identities
+(filename + OB hash) into one, killing a class of mismatch bugs. Keep only
+the `v{N}` arch-generation prefix — v5/v7/v9 coexist and the inference path
+is generation-load-bearing. **Recipe / provenance lives in
+`docs/net_catalog.md`**, keyed by hash, where it can be corrected without a
+rename. This matches SF (`nn-<hash>.nnue`) and most engines.
+
+**Legacy descriptive format** (for decoding pre-2026-05-31 names — do NOT
+use for new prod nets; fine for throwaway experiment nets where a
+self-describing name is convenient):
+
+`net-v{N}-{accumWidth}[t][d]h{layers}[s]-w{wdl}-e{epochs}s{snap}.nnue`
 
 - **`v{N}`**: architecture generation. v5 (direct FT→output), v7 (FT→hidden→output), v9 (FT + threats → hidden → output, current production).
 - **`accumWidth`**: accumulator width per perspective. For v9+ this is literal (`768t` = 768 accum + threats). Legacy v5/v7 names confusingly use the input feature count `768pw` to mean 1536 accum on v7 — see git history if decoding old names.
