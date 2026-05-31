@@ -1096,15 +1096,21 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
         return true;
     }
 
-    // Castling: validate rights, path, and no attacks on king/intermediate/destination
+    // Castling: validate rights, path, ROOK-on-corner, and no attacks on
+    // king/intermediate/destination. Rook-on-corner check is the
+    // 2026-05-31 audit addition (finding G+H) — defends against TT-
+    // collision castles on a board where the rook moved away but the
+    // synthetic FEN / corrupt state still has the right set.
     if flags == FLAG_CASTLE {
         if pt != KING { return false; }
         let occ = board.occupied();
         let them_bb = board.colors[flip_color(us) as usize];
+        let our_rooks = board.pieces[ROOK as usize] & board.colors[us as usize];
         if us == WHITE {
             if from != 4 { return false; } // king must be on e1
             if to == 6 { // kingside
                 if board.castling & CASTLE_WK == 0 { return false; }
+                if our_rooks & (1u64 << 7) == 0 { return false; } // rook on h1
                 if occ & 0x60 != 0 { return false; }
                 // King(e1), f1, g1 must not be attacked
                 if board.attackers_to(4, occ) & them_bb != 0 { return false; }
@@ -1112,6 +1118,7 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
                 if board.attackers_to(6, occ) & them_bb != 0 { return false; }
             } else if to == 2 { // queenside
                 if board.castling & CASTLE_WQ == 0 { return false; }
+                if our_rooks & 1u64 == 0 { return false; } // rook on a1
                 if occ & 0x0E != 0 { return false; }
                 // King(e1), d1, c1 must not be attacked
                 if board.attackers_to(4, occ) & them_bb != 0 { return false; }
@@ -1122,6 +1129,7 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
             if from != 60 { return false; } // king must be on e8
             if to == 62 { // kingside
                 if board.castling & CASTLE_BK == 0 { return false; }
+                if our_rooks & (1u64 << 63) == 0 { return false; } // rook on h8
                 if occ & (0x60u64 << 56) != 0 { return false; }
                 // King(e8), f8, g8 must not be attacked
                 if board.attackers_to(60, occ) & them_bb != 0 { return false; }
@@ -1129,6 +1137,7 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
                 if board.attackers_to(62, occ) & them_bb != 0 { return false; }
             } else if to == 58 { // queenside
                 if board.castling & CASTLE_BQ == 0 { return false; }
+                if our_rooks & (1u64 << 56) == 0 { return false; } // rook on a8
                 if occ & (0x0Eu64 << 56) != 0 { return false; }
                 // King(e8), d8, c8 must not be attacked
                 if board.attackers_to(60, occ) & them_bb != 0 { return false; }
