@@ -2765,6 +2765,10 @@ fn negamax(
     // Probe WDL when piece count is within TB range. Returns a score that
     // causes a cutoff, so the search doesn't waste time in solved endgames.
     // Only at non-root (ply > 0) and non-excluded (not in singular verification).
+    //
+    // tb_floor: Some(tb_score) when an in-window PV TB hit raised alpha.
+    // Search must not return / store below this — TB is ground truth.
+    let mut tb_floor: Option<i32> = None;
     if ply > 0 && info.excluded_move[ply_u] == NO_MOVE {
         if let Some(ref tb) = info.syzygy {
             if crate::bitboard::popcount(board.occupied()) as usize <= tb.max_pieces() {
@@ -2795,8 +2799,17 @@ fn negamax(
 
                     if tb_score >= beta { return tb_score; }
                     if tb_score <= alpha { return tb_score; }
-                    // Definite Win/Loss in window: tighten bounds
+                    // Definite Win/Loss in window: tighten bounds AND remember
+                    // the TB ground truth so the final TT store / return doesn't
+                    // poison future probes with a sub-TB UPPER bound. (The
+                    // ambiguous wdl ∈ {-1, 0, +1} cases now return directly
+                    // above via f5d9809; this branch covers definite wdl ±2
+                    // landing in a wide window.) Without the floor, if the
+                    // local search returns best_score < tb_score the final
+                    // flag computation stuffs UPPER at sub-TB best_score —
+                    // contradicting TB ground truth on every future probe.
                     alpha = tb_score;
+                    tb_floor = Some(tb_score);
                 }
             }
         }
@@ -4415,6 +4428,16 @@ fn negamax(
         }
         // Stalemate
         return 0;
+    }
+
+    // TB floor: a PV in-window TB hit established `tb_score` as ground
+    // truth. If the local search couldn't beat it, return / store the TB
+    // value instead of the sub-TB local result. Without this the next
+    // block stores UPPER below TB truth and poisons future probes.
+    if let Some(floor) = tb_floor {
+        if best_score < floor {
+            best_score = floor;
+        }
     }
 
     // Store in transposition table (skip during singular verification)
