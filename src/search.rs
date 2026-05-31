@@ -2268,7 +2268,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // tracking gated behind `soft_limit > 0`, ponderhit started cold
         // (tm_best_stable = 0, stability_factor = 1.71) and the dynamic
         // adjustment couldn't bite.
-        let _score_drop = if depth >= 4 {
+        let score_drop = if depth >= 4 {
             if info.tm_has_data {
                 let bm_from = move_from(best_move);
                 let bm_to = move_to(best_move);
@@ -2468,13 +2468,31 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 1.0  // early depths: neutral
             };
 
-            // Combined multiplier — Viridithas's 4 factors.
-            // Max product ~ 2.50 × 1.68 × 1.0 × 2.27 = 9.52×
-            // Min product ~ 0.75 × 1.0  × 0.386 × 0.87 = 0.252×
+            // Factor 5: Score-trend multiplier (falling-eval). The signal
+            // `score_drop` (= tm_prev_score - prev_score, in cp; positive =
+            // eval FELL this iteration) was already computed but discarded.
+            // 5 of 10 surveyed top engines (SF fallingEval, Integral, Obsidian,
+            // PlentyChess, Reckless score_trend) feed it into the TM product:
+            // give MORE time when the eval is falling (position worsening —
+            // don't snap-move into trouble) and LESS when it's stable or
+            // improving (calm/winning — move on). Shaped after Reckless
+            // (clamp(0.8 + 0.05*(prev-cur))) but in cp units. CENTERED AT 1.0
+            // when drop==0, so the flat-eval common case (most moves) leaves
+            // the baseline allocation untouched and no retune is required to
+            // test direction. Range [0.80, 1.45].
+            let score_trend_multiplier = {
+                let drop = score_drop as f64;
+                (1.0 + 0.0025 * drop).clamp(0.80, 1.45)
+            };
+
+            // Combined multiplier — Viridithas's 4 factors + score-trend.
+            // Max product ~ 2.50 × 1.68 × 1.0 × 2.27 × 1.45 = 13.8×
+            // Min product ~ 0.75 × 1.0  × 0.386 × 0.87 × 0.80 = 0.20×
             let mut multiplier = stability_multiplier
                 * failed_low_multiplier
                 * forced_move_multiplier
-                * subtree_size_multiplier;
+                * subtree_size_multiplier
+                * score_trend_multiplier;
             // No-inc clamp: factor product up to 6.5× at no-inc TCs blows
             // adjusted_soft past hard_time via iteration-overflow even with
             // the smaller no-inc opt baseline. lichess MJ442247 (3+0):
