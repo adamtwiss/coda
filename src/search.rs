@@ -356,6 +356,29 @@ pub static CAP_HIST_BASE: AtomicI32 = AtomicI32::new(42);
 pub static LMR_COMPLEXITY_DIV: AtomicI32 = AtomicI32::new(152);
 pub static TT_CUTOFF_HALFMOVE_MAX: AtomicI32 = AtomicI32::new(89);
 
+/// Post-ponderhit budget credit: PERCENT of elapsed ponder time deducted from
+/// the fresh post-hit think budget (Option C, 2026-05-31). A ponderhit means
+/// the ponder search WAS on the played move, so its TT/work is a genuine
+/// head-start — but NOT a finished search. We deduct a FRACTION of the ponder
+/// time: post_budget = soft − pondered_time × (pct/100), floored by
+/// MIN_POST_PONDERHIT_MS. Phase 14 v4 effectively used 100% (collapsed to the
+/// 50ms floor on long ponders → shallow instant emits = the ponder-on
+/// regression vs pre-P13). Pre-P13 used 0% (full fresh budget, ignored the
+/// head-start). Default 50 = bank half, still think meaningfully.
+///
+/// DELIBERATELY NOT a `tunables!` entry: SPSA runs on OB/fastchess, which has
+/// NO ponder support (fastchess#513 open), so the ponderhit path never fires
+/// there — SPSA would random-walk this on noise and could silently detune it.
+/// UCI-settable (`setoption name PonderhitCreditPct`) so it can be swept in a
+/// LOCAL ponder gauntlet, the only instrument that exercises it.
+pub static PONDERHIT_CREDIT_PCT: AtomicI32 = AtomicI32::new(50);
+
+/// Effective post-ponderhit credit percent (clamped 0..=100).
+#[inline(always)]
+pub fn ponderhit_credit_pct() -> u64 {
+    PONDERHIT_CREDIT_PCT.load(Ordering::Relaxed).clamp(0, 100) as u64
+}
+
 /// Get a tunable parameter value (inline for hot paths)
 #[inline(always)]
 fn tp(param: &AtomicI32) -> i32 {

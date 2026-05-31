@@ -272,6 +272,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("option name HiddenActivation type combo default screlu var screlu var crelu");
                 println!("option name LoadAnyway type check default false");
                 println!("option name TMDebug type check default false");
+                println!("option name PonderhitCreditPct type spin default 50 min 0 max 100");
                 // Tunable search parameters (for SPSA)
                 for (name, _, default, min, max, _c_end, _is_core) in crate::search::tunable_params() {
                     println!("option name {} type spin default {} min {} max {}", name, default, min, max);
@@ -782,11 +783,21 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             // Phase 14 v4 (merged into Phase 13 branch): ponder-aware
                             // budget gated to deployment TCs (inc>=500ms). At STC
                             // (inc<500ms) preserve original `elapsed + soft` total.
-                            // At deployment: post=max(50, soft-elapsed) ensures total
-                            // ~= soft target (across ponder + post-ponderhit).
+                            // At deployment: credit only PONDERHIT_CREDIT_PCT%
+                            // of the elapsed ponder time against the fresh
+                            // budget (Option C). A ponderhit's ponder work is a
+                            // genuine head-start (same move, warm TT) but NOT a
+                            // finished search, so deducting 100% (old Phase 14
+                            // v4: soft - elapsed) collapsed to the 50ms floor on
+                            // long ponders and emitted shallow instant moves =
+                            // the ponder-on regression. Deduct a fraction so the
+                            // engine still gets a meaningful post-hit think.
                             const MIN_POST_PONDERHIT_MS: u64 = 50;
                             let (deadline, soft_deadline, store_floor) = if our_inc >= 500 {
-                                let post_min = soft.saturating_sub(elapsed).max(MIN_POST_PONDERHIT_MS);
+                                let credited = elapsed
+                                    .saturating_mul(crate::search::ponderhit_credit_pct())
+                                    / 100;
+                                let post_min = soft.saturating_sub(credited).max(MIN_POST_PONDERHIT_MS);
                                 let post_min = post_min.min(hard.max(10));
                                 (elapsed + hard.max(10), elapsed + post_min, post_min)
                             } else {
@@ -1149,6 +1160,16 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
             let on = value.eq_ignore_ascii_case("true");
             crate::search::TM_DEBUG.store(on, std::sync::atomic::Ordering::Relaxed);
             println!("info string TMDebug = {}", on);
+        }
+        "PonderhitCreditPct" => {
+            // Post-ponderhit budget credit % (Option C). NOT a SPSA tunable —
+            // OB/fastchess has no ponder, so it can only be swept in a local
+            // ponder gauntlet. See search::PONDERHIT_CREDIT_PCT.
+            if let Ok(v) = value.parse::<i32>() {
+                let clamped = v.clamp(0, 100);
+                crate::search::PONDERHIT_CREDIT_PCT.store(clamped, std::sync::atomic::Ordering::Relaxed);
+                println!("info string PonderhitCreditPct = {}", clamped);
+            }
         }
         _ => {
             // Check tunable search parameters
