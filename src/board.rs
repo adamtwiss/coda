@@ -547,6 +547,25 @@ impl Board {
         let them = flip_color(us);
         let their_king = self.king_sq(them);
         let their_king_bb = 1u64 << their_king;
+        let flags = move_flags(mv);
+
+        // Castling: the king itself never gives direct check, but the ROOK
+        // landing on f1/d1/f8/d8 can. Compute rook destination from the
+        // king's from/to (same encoding as make_move at board.rs:855-860)
+        // and check rook attacks from there with the post-castle occupancy
+        // (both king and rook moved). 2026-05-31 audit: prior version
+        // returned false for FLAG_CASTLE, so futility/LMP/bad-noisy
+        // direct-check carve-outs pruned check-giving castles.
+        if flags == FLAG_CASTLE {
+            let (rook_from, rook_to) = if to > from {
+                if us == WHITE { (7u8, 5u8) } else { (63u8, 61u8) }
+            } else {
+                if us == WHITE { (0u8, 3u8) } else { (56u8, 59u8) }
+            };
+            let occ = (self.occupied() ^ (1u64 << from) ^ (1u64 << rook_from))
+                | (1u64 << to) | (1u64 << rook_to);
+            return rook_attacks(rook_to as u32, occ) & their_king_bb != 0;
+        }
 
         // Post-move occupancy: lift from-square, place on to-square.
         let occ = (self.occupied() ^ (1u64 << from)) | (1u64 << to);
