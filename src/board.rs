@@ -945,6 +945,32 @@ impl Board {
         let to = move_to(mv);
         let flags = move_flags(mv);
 
+        // Corruption guard: HOIST above the promotion undo so a corrupt
+        // mailbox doesn't get phantom-bit XORed before bail-out. If `to`
+        // is empty here, the bitboards/mailbox diverged in an earlier
+        // make/unmake pair — never expected in correct code.
+        //
+        // 2026-05-31 audit (H1): prior version ran promotion-undo's
+        // remove+put XOR FIRST, potentially setting phantom QUEEN+PAWN
+        // bits at `to` when the queen wasn't actually there. Then
+        // "recovered" castling/ep/hash from undo but left pieces[],
+        // colors[], mailbox[] inconsistent — turned detected corruption
+        // into SILENT corruption (hash looked clean, bitboards didn't).
+        // debug_assert in dev/test surfaces the bug; release bails
+        // without making state worse.
+        if self.piece_type_at(to) == NO_PIECE_TYPE {
+            debug_assert!(
+                false,
+                "unmake_move: piece missing at to={} for move {:?} — child search corrupted state",
+                to, mv,
+            );
+            // Release-build bail. side_to_move + fullmove already updated
+            // above so the parent's turn-tracking is consistent on the
+            // corrupt state. Don't XOR phantom bits.
+            if us == BLACK { self.fullmove -= 1; }
+            return;
+        }
+
         // Undo promotion
         if is_promotion(mv) {
             let promo_pt = promotion_piece_type(mv);
@@ -954,21 +980,6 @@ impl Board {
 
         // Undo piece move
         let pt = self.piece_type_at(to);
-        // If the piece is missing at `to`, the board was corrupted by a child search.
-        // Restore from the saved hash (which was correct at make time).
-        if pt == NO_PIECE_TYPE {
-            // Board corruption detected — restore what we can from undo
-            self.castling = undo.castling;
-            self.ep_square = undo.ep_square;
-            self.halfmove = undo.halfmove;
-            self.plies_from_null = undo.plies_from_null;
-            self.hash = undo.hash;
-            self.pawn_hash = undo.pawn_hash;
-            self.non_pawn_key = undo.non_pawn_key;
-            self.side_to_move = us;
-            if us == BLACK { self.fullmove -= 1; }
-            return;
-        }
         let from_to = (1u64 << from) | (1u64 << to);
         self.pieces[pt as usize] ^= from_to;
         self.colors[us as usize] ^= from_to;
