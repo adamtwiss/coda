@@ -457,6 +457,11 @@ pub struct SearchLimits {
     /// 10+. Caller must cap this against time-pressure before passing it
     /// in (see uci.rs ponder-miss handling). Zero = no floor.
     pub min_think_ms: u64,
+    /// Real remaining clock (ms) for the side to move, for the absolute forfeit
+    /// guard on a `movetime` search. Set by the ponderhit fresh-search so the
+    /// guard applies there too (start_time is reset to the ponderhit moment).
+    /// 0 = no clock concept (plain `go movetime`/depth). See SearchInfo::abs_deadline.
+    pub abs_clock: u64,
 }
 
 impl Default for SearchLimits {
@@ -477,6 +482,7 @@ impl SearchLimits {
             infinite: false,
             movetime_floor: 0,
             min_think_ms: 0,
+            abs_clock: 0,
         }
     }
 }
@@ -657,6 +663,16 @@ pub struct SearchInfo {
     /// so soft/floor are interpreted as durations from the ponderhit moment
     /// rather than from the original `go ponder` start.
     pub tm_baseline: u64,
+    /// ABSOLUTE forfeit-guard deadline (ms since start_time). Hard ceiling that
+    /// makes flagging structurally impossible: the search is force-stopped once
+    /// `elapsed >= abs_deadline`, with NO grace and NO ponder exception. Set to
+    /// `our_time - overhead - margin` when a real clock is present (0 = disabled,
+    /// e.g. movetime/depth/infinite searches). This is independent of the soft/
+    /// hard TM budget — it's the last line of defence against search overrun
+    /// (iteration overflow, ponder accounting, thread startup, clock lag) that
+    /// the fractional `hard` cap can't prevent at low clock. "Never forfeit with
+    /// time on the clock" (lichess MJ4lEpXF no-inc flag, loss-55 inc flag).
+    pub abs_deadline: u64,
     /// Completed search depth (shared atomic). Updated by search thread after
     /// each completed iteration. Read by UCI thread on ponderhit to scale budget.
     pub ponder_depth: std::sync::Arc<AtomicU64>,
@@ -738,6 +754,7 @@ impl SearchInfo {
             ponderhit_soft: std::sync::Arc::new(AtomicU64::new(0)),
             ponderhit_floor: std::sync::Arc::new(AtomicU64::new(0)),
             tm_baseline: 0,
+            abs_deadline: 0,
             ponder_depth: std::sync::Arc::new(AtomicU64::new(0)),
             sel_depth: 0,
             last_score: 0,
@@ -883,6 +900,14 @@ impl SearchInfo {
         // Check time every 4096 nodes
         if self.nodes & 4095 == 0 {
             let elapsed = self.start_time.elapsed().as_millis() as u64;
+            // ABSOLUTE forfeit guard — checked FIRST, with NO grace and NO
+            // ponder exception. Makes flagging impossible regardless of what the
+            // soft/hard budget, ponder accounting, or iteration overflow do.
+            // (lichess MJ4lEpXF no-inc flag, loss-55 inc flag.)
+            if self.abs_deadline > 0 && elapsed >= self.abs_deadline {
+                self.stop.store(true, Ordering::Relaxed);
+                return true;
+            }
             // For ponderhit: allow a grace period beyond the deadline so the
             // current iteration can finish cleanly. But hard-stop if the grace
             // period expires to prevent time loss. The ID loop also checks the
@@ -1606,6 +1631,7 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
             infinite: limits.infinite,
             movetime_floor: 0, // helpers don't need the floor — only main sleeps
             min_think_ms: 0, // helpers don't enforce ponder-miss floor — main does
+            abs_clock: 0, // helpers don't enforce the forfeit guard — main does
         };
 
         handles.push(std::thread::Builder::new()
@@ -1877,6 +1903,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.soft_floor = 0;
     info.tm_no_inc = false;
     info.tm_baseline = 0;
+    info.abs_deadline = 0;
 
     if limits.infinite {
         // Already zero above.
@@ -1886,6 +1913,14 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // this to enforce the increment floor; plain `go movetime` callers leave
         // it at 0 so they get exactly the movetime they asked for).
         info.soft_floor = limits.movetime_floor.min(limits.movetime);
+        // Absolute forfeit guard when a real clock was supplied (ponderhit
+        // fresh-search sets abs_clock). Plain `go movetime` leaves abs_clock=0
+        // (no clock concept) and is unaffected.
+        if limits.abs_clock > 0 {
+            const FORFEIT_MARGIN_MS: u64 = 50;
+            let reserve = info.move_overhead + FORFEIT_MARGIN_MS;
+            info.abs_deadline = limits.abs_clock.saturating_sub(reserve).max(1);
+        }
     } else if our_time > 0 {
         let (soft, hard, max_time, soft_floor) =
             compute_tm_budgets(our_time, our_inc, limits.movestogo, info.move_overhead, board.fullmove);
@@ -1904,6 +1939,17 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         }
         info.tm_no_inc = our_inc == 0 && limits.movestogo == 0;
         info.time_limit = hard; // search uses hard as absolute limit
+        // ABSOLUTE forfeit guard: never spend past (clock - overhead - margin).
+        // This is the hard ceiling that makes flagging impossible regardless of
+        // the soft/hard budget or any overrun. Plain `go wtime/btime`: start_time
+        // is the clock-start, so the guard is our_time minus overhead and a small
+        // safety margin (covers the 4096-node check granularity + I/O latency).
+        // The ponderhit path overrides this with a baseline-adjusted value.
+        {
+            const FORFEIT_MARGIN_MS: u64 = 50;
+            let reserve = info.move_overhead + FORFEIT_MARGIN_MS;
+            info.abs_deadline = our_time.saturating_sub(reserve).max(1);
+        }
         info.tm_has_data = false;
         info.tm_best_stable = 0;
         info.tm_best_move_changes = 0;
@@ -5236,6 +5282,7 @@ mod tests {
             movestogo: 0, nodes: 0, infinite: false,
             movetime_floor: 0,
             min_think_ms: 0,
+            abs_clock: 0,
         };
 
         search(&mut board, &mut info, &limits);

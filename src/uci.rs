@@ -563,10 +563,20 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 } else {
                                     our_inc.saturating_sub(si.move_overhead)  // STC original
                                 };
+                                // Real remaining clock for the side to move, so
+                                // the absolute forfeit guard applies in the
+                                // ponderhit fresh-search path too (start_time is
+                                // reset to the ponderhit moment by search()).
+                                let our_clock = if search_board.side_to_move == crate::types::WHITE {
+                                    limits.wtime
+                                } else {
+                                    limits.btime
+                                };
                                 let fresh_limits = SearchLimits {
                                     infinite: false,
                                     movetime: remaining,
                                     movetime_floor: movetime_floor_val,
+                                    abs_clock: our_clock,
                                     ..SearchLimits::new()
                                 };
                                 let fresh_start = std::time::Instant::now();
