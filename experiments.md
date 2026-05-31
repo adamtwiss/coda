@@ -13002,6 +13002,7 @@ regression below.
 |---|---|---|---|
 | #1642 | swa+fenskip0.5+1GBbuf-s1200 vs **swa-s1200** | **-21.2 ±9.7** (N=1672) | **H0 ✗** |
 | #1641 | swa+fenskip0.5+1GBbuf-s1200 vs **prod** | **-8.7** →H0 | H0 |
+| #1646 | swa+fenskip0.5-s1200 (**fenskip only, no buffer**) vs **prod E2773E50** | **-13.7 ±5.8** (N=4892) | **H0 ✗** |
 
 Adding fenskip 0.5 + 1GB buffer on top of swa-s1200 cost ~20 Elo (swa-s1200
 was +12 vs prod; this is -8.7). Both attack the *same* problem (low-LR tail
@@ -13010,8 +13011,17 @@ begin with. Once SWA denoises the endpoint, fenskip's 50% per-epoch data
 loss is pure signal-loss with no offsetting benefit. My "mechanism-orthogonal,
 should stack" prior (from #1626 fenskip +18.7 over *vanilla*) was wrong —
 fenskip helps the *no-SWA* net but is a substitute for SWA, not a complement.
-Confound: net changed two knobs (fenskip + buffer); fenskip-only re-run
-pending to isolate.
+
+**Isolation resolved (#1646, 2026-05-31): BOTH factors hurt; fenskip is
+dominant.** fenskip-only (buffer stripped back out) is **-13.7 vs prod**;
+the full stack was ~-21. So fenskip alone ≈ -14, the 1GB buffer adds the
+remaining ~-7. Neither extra is innocent on top of SWA. **Caveat:** #1646
+ran on the r2-tuned trunk (calibrated for prod E2773E50), so the fenskip
+net carries ~5 Elo tune-flation handicap — true fenskip cost is likely
+~-8/-9, with the buffer's share correspondingly larger. Either way the
+decision is clean: **do not stack fenskip OR a bigger shuffle buffer on the
+SWA prod recipe** — SWA already banks the denoising benefit, and both extras
+are net-negative. Prod recipe (swa-s1200 = E2773E50) stands.
 
 **PROMOTED to prod 2026-05-30 — new prod net E2773E50 + tuned trunk:**
 Deployment-package SPRT #1645 (r2 tuned trunk + candidate net E2773E50 vs
