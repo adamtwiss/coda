@@ -3112,10 +3112,15 @@ fn negamax(
             diff > tp(&UNSTABLE_THRESH)
         };
 
-    // Detect if TT move is a capture
+    // Detect if TT move is noisy. Captures, EP, AND promotions
+    // (including non-capture promotions — they create a queen, are
+    // tactically loud). Prior version classified non-capture promotion
+    // as `!noisy`, asymmetric with tt_move_is_quiet at line 3155 which
+    // calls it quiet. 2026-05-31 audit finding D.
     let tt_move_noisy = tt_move != NO_MOVE && {
         board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
             || move_flags(tt_move) == FLAG_EN_PASSANT
+            || is_promotion(tt_move)
     };
 
     // Internal Iterative Reduction: reduce depth when no TT move exists.
@@ -3296,7 +3301,8 @@ fn negamax(
         // If we know a good quiet move exists, don't prune based on static eval alone.
         let tt_move_is_quiet = tt_move != NO_MOVE
             && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
-            && move_flags(tt_move) != FLAG_EN_PASSANT;
+            && move_flags(tt_move) != FLAG_EN_PASSANT
+            && !is_promotion(tt_move);
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
