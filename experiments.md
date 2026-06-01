@@ -13692,3 +13692,47 @@ partly reflect undertraining, so this can't *rank* checkpoint strength on its
 own (SPRT remains the arbiter). What it *can* do cheaply: flag scale
 instability and tail-fattening onset, and explain *why* a net craters without
 burning fleet games.
+
+### eval-dist applied to the midladder-v1 multistage ladder — corroborates the s2 plateau
+
+Same diagnostic (`scripts/train_diag.py`, fixed 80k binpack) on the 4-stage
+warm-restart ladder, at each stage endpoint (global SB: s1→250, s2→550,
+s3→900, s4→1300; s4-end-swa IS the swa-s1300 net from the midladder probes).
+
+| global SB | stage    | RMS | p99 | SWA RMS | SWA p99 |
+|-----------|----------|-----|-----|---------|---------|
+| 250  | s1-end | 300.5 | 773 | — | — |
+| 550  | s2-end | 244.1 | 628 | **219.6** | **581** |
+| 900  | s3-end | 285.5 | 750 | 249.1 | 671 |
+| 1300 | s4-end | 329.7 | 828 | 366.4 | 897 |
+
+(prod E2773E50: RMS 277, p99 755.)
+
+**Findings:**
+1. **s2 is the distribution sweet spot — independently fingered by eval-dist.**
+   s2-swa has the tightest, most-controlled distribution of the whole ladder
+   (RMS 220, p99 581 — *tighter than prod*). This is exactly the stage the
+   SPRT ladder plateaus at (#1681 s4 vs s2 = +0.7 →H0). Two independent
+   instruments (SPRT strength + eval-dist distribution) agree s2 is the
+   healthiest net — strong corroboration, no fleet games spent.
+2. **The ladder LOOSENS after s2, it doesn't refine.** RMS climbs
+   244→285→330 and p99 fattens 628→750→828 across s2→s3→s4. Extra stages add
+   scale/tail volatility, not refinement — the "plateau" is actually mild
+   distribution *degradation* past s2.
+3. **SWA's denoising INVERTS by s4.** s2: SWA tightens (244→220). s3: SWA
+   still tightens (285→249). s4: **SWA makes it worse** (330→366, p99
+   828→897 — the fattest net in the ladder). Same mechanism as S1600: SWA
+   needs a stable plateau to average over; by s4 the weight trajectory is
+   non-stationary so averaging within the window amplifies rather than
+   denoises. The s4-end-swa (= swa-s1300, which SPRT'd −21 vs prod at #1682)
+   is the worst-scaled checkpoint we measured.
+4. **n=2 cross-train for "SWA only denoises a stable plateau."** Now seen in
+   BOTH the S1600 single-cosine tail AND this 4-stage ladder. Mechanism +
+   corroborating signal across two independent trains → promotable beyond a
+   single observation (see `memory/project_swa_needs_stable_plateau.md`).
+
+**Lever implication (both trains agree):** the controllable variable is the
+**tail schedule**, not more SB / more stages. Past the point where the
+distribution stabilizes, more training loosens it and SWA stops helping (or
+hurts). This is the empirical backing for the S800-restart tail probes
+(warm-restart cosine / higher final-LR / SWA-only-over-a-stabilized-plateau).
