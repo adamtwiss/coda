@@ -122,7 +122,8 @@ def plot(args):
             p90.append(float(r["p90"]))
             p99.append(float(r["p99"]))
 
-    npanel = 3 if args.loss else 2
+    have_loss = bool(args.loss or args.loss_stage)
+    npanel = 3 if have_loss else 2
     fig, ax = plt.subplots(npanel, 1, figsize=(10, 3.2 * npanel))
     if npanel == 2:
         ax = list(ax)
@@ -155,18 +156,45 @@ def plot(args):
     ax[1].legend(fontsize=8, ncol=2)
     ax[1].grid(alpha=0.3)
 
-    # Panel 3 (optional): smoothed train loss
-    if args.loss:
-        x, y = [], []
-        with open(args.loss) as f:
-            for line in f:
-                parts = line.strip().split(",")
-                if len(parts) >= 3:
-                    try:
-                        x.append(float(parts[0]))
-                        y.append(float(parts[2]))
-                    except ValueError:
-                        continue
+    # Panel 3 (optional): smoothed train loss (single cosine or multistage ladder)
+    if have_loss:
+        def _read_log(path):
+            xs, ys = [], []
+            with open(path) as f:
+                for line in f:
+                    parts = line.strip().split(",")
+                    if len(parts) >= 3:
+                        try:
+                            xs.append(float(parts[0]))
+                            ys.append(float(parts[2]))
+                        except ValueError:
+                            continue
+            return xs, ys
+
+        if args.loss_stage:
+            offset = 0.0
+            bounds = []
+            x, y = [], []
+            for spec in args.loss_stage:
+                label, path = spec.split(":", 1)
+                sx, sy = _read_log(path)
+                x.extend(v + offset for v in sx)
+                y.extend(sy)
+                stage_len = max(sx)
+                mid = offset + stage_len / 2
+                ax[2].text(mid, 0.97, label, transform=ax[2].get_xaxis_transform(),
+                           ha="center", va="top", fontsize=8, color="0.4")
+                offset += stage_len
+                bounds.append(offset)
+            for b in bounds[:-1]:
+                ax[2].axvline(b, ls="-", color="0.7", lw=0.8)
+            title = ("Train loss (smoothed, GLOBAL SB) — warm-restart sawtooth: "
+                     "each stage's cosine restarts LR")
+        else:
+            x, y = _read_log(args.loss)
+            title = ("Train loss (smoothed) — data-order-confounded; trough is a "
+                     "hint, not proof of overtraining")
+
         r50 = _rolling(x, y, 50)
         r200 = _rolling(x, y, 200)
         ax[2].plot(x, y, color="0.8", lw=0.4, label="raw (per-batch)")
@@ -176,9 +204,8 @@ def plot(args):
         ax[2].axvline(x[imin], ls=":", color="C3", alpha=0.6,
                       label=f"macro trough SB~{int(x[imin])}")
         ax[2].set_ylabel("train loss")
-        ax[2].set_xlabel("superbatch")
-        ax[2].set_title("Train loss (smoothed) — data-order-confounded; trough "
-                        "is a hint, not proof of overtraining")
+        ax[2].set_xlabel("global superbatch" if args.loss_stage else "superbatch")
+        ax[2].set_title(title)
         ax[2].legend(fontsize=8)
         ax[2].grid(alpha=0.3)
 
@@ -204,7 +231,12 @@ def main():
 
     p = sub.add_parser("plot", help="results.csv (+ loss log) -> diagnostic PNG")
     p.add_argument("--results", required=True)
-    p.add_argument("--loss", help="optional train-log CSV: SB,batch,loss")
+    p.add_argument("--loss", help="single-cosine train-log CSV: SB,batch,loss")
+    p.add_argument("--loss-stage", action="append", default=[],
+                   help="multistage train log as LABEL:PATH (repeatable). Each "
+                        "stage's SB is offset by the cumulative length of prior "
+                        "stages so the x-axis is GLOBAL SB; stage boundaries are "
+                        "drawn. Use instead of --loss for warm-restart ladders.")
     p.add_argument("--out", required=True)
     p.add_argument("--ref-rms", type=float)
     p.add_argument("--ref-p99", type=float)
