@@ -13405,3 +13405,222 @@ shape and ~prod parity on node count, after s3's regression (82.9 / 1.58 /
 real finding is the multistage increment from s2 onward is flat: s1→s2 was
 +43, s2→s3 ≈ 0 (a dip then recovery), s3→s4 recovers but s2→s4 ≈ 0. The
 ladder is not compounding past stage 2 at these LR/length settings.
+
+## 2026-06-01 — Loss-class analysis, book trim (negative), hist-prune structural bug
+
+A full-day session that started with "10 Elo from audits at 100 Elo from
+top-5; where else?" and traversed three independent threads. Two
+produced negative experimental results; one surfaced a real
+implementation bug that's still being tuned. Methodological lessons
+throughout.
+
+### 1. Loss-class analysis from local gauntlet — HORIZON dominates
+
+Ran `scripts/classify_losses.py` on `tough_rivals.pgn` (222 Coda losses)
+and a slice of the big gauntlet (`gauntlet.pgn`, 86 losses). Both
+samples gave essentially the same answer:
+
+| Class                    | tough_rivals | gauntlet slice |
+|--------------------------|--------------|----------------|
+| HORIZON (1-2 ply tactical miss) | **77.9%**    | **62.8%**      |
+| SELF_BLUNDER             | 15.8%        | 20.9%          |
+| POSITIONAL               | 1.8%         | 11.6%          |
+| UNCLASSIFIED / MIXED     | 4.6%         | 4.7%           |
+
+Drill-down on HORIZON: **90% of losses had a lag of just 1-2 plies**
+(opponent saw the tactic 1-2 plies before Coda), **87% of drops were
+1.5-8 pawns** (piece-drop tactics not full-game throws), **92% in
+middlegame + late middlegame** (endgames are fine — TB + search hold).
+
+**Strategic implication.** Tactical-horizon is the dominant loss mode.
+The lever is *effective depth*, not eval feature engineering. Three
+sub-mechanisms produce effective depth: raw NPS, pruning safety, move
+ordering. Adam's framing: "We already prune more than most engines and
+our EBF is very low" — so the 1-2 ply gap is more likely **over-pruning
+blind spots** than under-pruning. We're at comparable depth to
+opponents but pruning the lines that contain the tactic.
+
+### 2. Book trim experiment — depth-10 pre-analysis insufficient (negative)
+
+**Phase 1 (validate hypothesis) — passed:** Adapted `lichess_book_check.py`
+to pull codabot + coda_bot games, detect book-exit via time-jump, and
+score Coda's eval at book-exit. Across both bots, **~30-50% of HORIZON
+losses had Coda already below -0.25 cp at book exit** vs ~12-24% for
+wins — a **2-4× over-representation**. Plus losses exited book ~2
+moves earlier than wins (median move 4-5 vs 6-7), suggesting either
+shallow book coverage or opponents prepping us out. Book quality is a
+real upstream cause.
+
+**Pre-analysis:** Wrote `book_analyze.py` driving 32 parallel Coda UCI
+workers. Walked Titans.bin (121K entries → 87K reachable from startpos
+→ 114K (parent_hash, move) tuples). Depth-10 search per tuple. **Total
+wall time: 40 minutes** on 32 cores — way faster than my initial
+estimate (which assumed slower middlegame search; opening positions
+are very TT-friendly).
+
+**Headline from the eval CSV:**
+
+| Threshold | Bad book moves | By selection weight |
+|-----------|----------------|---------------------|
+| < -25 cp  | 42.5%          | (similar)           |
+| < -50 cp  | 32.0%          | **29.0%**           |
+| < -100 cp | 13.7%          | (significant)       |
+
+So nearly 1 in 3 selection-probability units in Titans goes to a
+move that leaves Coda at -50cp or worse. Confirms Adam's "weaker
+human masters' cargo-culted choices may not be right for Coda at
++1000 Elo above them" thesis. Bad-move avg weight 17.8 ≈ good-move avg
+weight 20.2 — master games **don't distinguish** good-for-Coda from
+bad-for-Coda.
+
+**Two trim variants tested against Titans.bin baseline:**
+- `Titans_trim50.bin` (drop-strategy): drop entries < -50cp; if all
+  moves at a position are bad, drop the entire position so Coda
+  searches.
+- `Titans_trim50_floor.bin` (floor-strategy): same but keep the
+  "best-of-bad" move at fully-trimmed positions to preserve instant
+  book.
+
+**Local RR gauntlets (six engines, Coda variants + close-Elo
+opponents):**
+
+| Run | TrimFloor vs Titans | TrimDrop vs Titans |
+|-----|----------------------|---------------------|
+| v1 (50 rounds, 4 bookless rivals)  | **+14** (noise, ±~40) | (not tested) |
+| v1 extended (100 rounds, 3 variants) | -25 → +6 (drifted to noise) | -45 (firm) |
+| v2 (Koivisto as book-having peer)  | **-25 ±~38** | (dropped — already proven bad) |
+
+The v1 +14 was an artifact of variety-collapsed-rivals: bookless
+opponents play deterministic responses to Coda's openings, so 350
+"games" reduce to maybe 5-10 distinct game trees per pair. When v2 added
+Koivisto with `OwnBook + BookPath=Titans.bin` for genuine response
+variety, **the +14 inverted to -25**. The trim approach at depth 10 is
+firmly dead.
+
+**Two big methodology lessons:**
+
+1. **Book-having vs book-less peer asymmetry inflates Elo dramatically.**
+   In v2, with Coda having a book and most rivals bookless, all 3 Coda
+   variants placed at +85-125 Elo with Koivisto (the only book-having
+   rival) tied at the top. Adam's previous EPD-preseeded RR put Coda at
+   +3 Elo against this same pool. **Coda's polyglot is worth ~80 Elo
+   against book-less peers** — a huge structural asymmetry that
+   evaporates the moment the opponents have books wired in (lichess
+   adapter / CCRL book / EPD seed). Implication: any cross-engine Elo
+   delta measured under book-asymmetry is inflated.
+2. **Without rival book-variety, "more games" doesn't reduce variance**
+   the way you'd expect. With deterministic responses, the variance is
+   gated by how many distinct Coda book picks land in the games, not
+   by raw game count. The v1 +14/-25 swing on the same setup was the
+   warning sign here.
+
+**Mechanism-level lesson on the trim itself.** Depth-10 evaluations
+are **insufficient to discriminate book moves accurately** for Coda.
+Many moves that score -60cp at depth 10 are fine at depth 18-20 (the
+depths real games play at). The trim filters noise, not real bad
+moves, and dropping fully-trimmed positions (TrimDrop = forced
+runtime search) costs ~45 Elo from wasted opening time. A future
+attempt would need depth 14-16 pre-analysis (~5-8 hours on 32 cores).
+
+Adam called it: "I'd expect this game to be very very level. Not
+sure if there's any signal in that itself that we should consider."
+Yes — the level expectation was right; the +80 Elo Coda showed was
+the book-asymmetry tell. Trust the calibrated cross-engine RR over
+single-variable book tests.
+
+### 3. SPSA outlier audit + hist-prune structural bug (in progress)
+
+Pulled current values from `./coda tune-spec` and bucketed each
+tunable by position-in-range. 15/77 tunables pinned at range edges
+(EDGE_PCT ≤ 10%). Adam's clarification on `LMR_ENDGAME_PIECES_10X`
+(SPSA value matches user-intent; not a bug) and on `tp10` rounding
+(`(46+5)/10 = 5`, not 4) trimmed the actionable list to:
+
+| Tunable               | SPSA position       | Reading |
+|-----------------------|----------------------|---------|
+| `HIST_PRUNE_DEPTH_10X` | **at MIN floor**     | wants to disable |
+| `LMP_DEPTH`            | at MIN floor         | wants to disable |
+| `NMP_BASE_R_10X`       | 95% to MAX           | wants more aggressive |
+| `RFP_DEPTH`            | at MAX               | wants deeper firing |
+| `FUT_THREATS_MARGIN`   | 4.5% of range        | feature ~off, likely buggy |
+
+**Range-widening experiment** (`experiment/widen-overprune-ranges`,
+SPSA #1685): widened HIST_PRUNE_DEPTH_10X [10,80]→[0,80] and LMP_DEPTH
+[4,20]→[1,20] so SPSA could express true optima. Quickly revealed
+opposite directions:
+
+- HIST_PRUNE_DEPTH_10X: 10 → 1.5 (effectively 0 after `tp10` rounding)
+  — **SPSA aggressively disabling**.
+- LMP_DEPTH: 4 → 5.5 (+36%) — **SPSA wants MORE LMP**, not less.
+
+Adam's instinct on this: "Hist Prune as implemented is dead weight. It
+MIGHT also mean that there's a bug in our implementation. Either way
+it's actionable." Every top engine has hist-prune as a working
+feature; if SPSA wants Coda's off, it's likely an implementation
+issue not a "feature unwanted."
+
+**Comparison vs SF/Reckless/Obsidian:**
+
+| Engine | Hist-prune score | Notes |
+|--------|------------------|-------|
+| **Stockfish** | `contHist[0] + contHist[1] + pawn_entry` | NO main_hist, only 2 cont-hist offsets |
+| Reckless | (folded into FP/SEE/LMR margins) | no standalone hist-prune |
+| Obsidian | similar to SF pattern | |
+| **Coda (prior)** | `main_hist + cont_hist[1,2,4,6] + pawn_hist` | **includes main_hist + 4 cont-hist offsets** |
+
+The structural bug: **including `main_hist` in the pruning decision**.
+main_hist is the context-BLIND signal ("this from-to has generally
+scored well"); cont_hist is the context-SPECIFIC one. Hist-prune
+exists to catch moves bad IN THIS CONTEXT — only cont-hist is the
+right signal. Adding main_hist DILUTES: a strong cont-hist negative
+(-25000) can be masked by a moderate main_hist positive (+8000),
+producing -17000 that doesn't pass the threshold.
+
+That's exactly why SPSA wanted to disable: the score is too noisy to
+identify contextually-bad moves reliably.
+
+`git blame` traced the bug to `e7f52b5` ("Add 4D threat-aware history
+and eval-dependent aspiration delta") — main_hist was added during
+the 4D-history refactor, probably as "more signal" without
+considering the dilution effect.
+
+**Fix branch:** `fix/hist-prune-cont-only` (`11133b5`). Score becomes
+`cont_hist[ply-1] + cont_hist[ply-2] + pawn_hist` — exact SF pattern.
+Defaults reset to SF-matching: `HIST_PRUNE_MULT 7603 → 4097`,
+`HIST_PRUNE_DEPTH_10X 10 → 50`.
+
+**Baseline SPRT #1691** (defaults only, no tune) **H0'd at -7.5 ±5.5**
+/ 4282 games. SF defaults don't transfer directly to Coda because
+Coda's cont-hist values run higher magnitude (different bonus formula,
+different gravity). SF's `-4097 × depth` is too easy to trip with
+Coda's history scale.
+
+**Focused SPSA tune #1690** (2 params, 1500 iter, fix branch as base)
+running. Early signal at ~160 iters:
+- HIST_PRUNE_DEPTH_10X: 50 → 46.2 (slightly less depth coverage)
+- HIST_PRUNE_MULT: 4097 → 4886 (+19%, less aggressive)
+
+Both directions = "fire less than SF defaults." Plan: wait for SPSA
+to settle, apply tuned values, re-SPRT vs main at `[0, 3]`. If H1,
+hist-prune is resurrected as a positive-Elo feature; if H0 even with
+tuning, evidence that Coda's history machinery is structurally
+divergent enough from SF that hist-prune just isn't a fit, and we
+remove the code path.
+
+### Threads still in flight at end-of-session
+
+- SPSA #1690 (`HIST_PRUNE_*` recalibration on the fix branch).
+- `FUT_THREATS_MARGIN` audit (next).
+- LMP recalibration: SPSA #1685 had LMP_DEPTH at +36%. With
+  HIST_PRUNE_DEPTH widening reverted (now living in the hist-prune
+  fix branch), this signal is unused; might want a separate LMP-only
+  tune.
+
+### Closed off
+
+- Trim approach at depth 10: dead.
+- The over-pruning hypothesis is structurally validated by two
+  independent signals (HORIZON-loss data + SPSA dampening) and
+  partially actioned via hist-prune fix.
+- Book-asymmetry methodology lesson: measure Elo where opponents have
+  books OR seed openings, not where we have books and they don't.
