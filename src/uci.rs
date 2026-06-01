@@ -902,9 +902,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     match info.load_nnue(tokens[1]) {
                         Ok(_) => println!("info string NNUE loaded"),
                         Err(e) => {
+                            // Recoverable: keep the current net rather than
+                            // killing the engine on a bad interactive path.
                             eprintln!("ERROR: Failed to load NNUE from {}: {}", tokens[1], e);
                             println!("info string ERROR: Failed to load NNUE from {}: {}", tokens[1], e);
-                            std::process::exit(1);
                         }
                     }
                 }
@@ -1110,9 +1111,11 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
             match info.load_nnue(value) {
                 Ok(_) => {}
                 Err(e) => {
+                    // Report and keep the currently-loaded net. A bad NNUEFile
+                    // path is recoverable user/GUI input — exiting the process
+                    // mid-UCI kills the engine and forfeits the game.
                     eprintln!("ERROR: Failed to load NNUE from {}: {}", value, e);
                     println!("info string ERROR: Failed to load NNUE from {}: {}", value, e);
-                    std::process::exit(1);
                 }
             }
         }
