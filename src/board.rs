@@ -720,7 +720,12 @@ impl Board {
         // En passant: special case (discovered check through EP capture)
         if flags == FLAG_EN_PASSANT {
             let captured_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
-            if captured_sq >= 64 { return true; } // invalid EP, allow move through (won't be legal)
+            // Malformed EP (e.g. TT collision delivers EP with `to` on rank
+            // 0/1 so captured_sq wraps): contract of is_legal is "true iff
+            // legal", so report FALSE rather than the prior "allow through"
+            // lie. make_move still rejects defensively if this ever slips by.
+            // 2026-05-31 audit (H2).
+            if captured_sq >= 64 { return false; }
             // If in check, EP only resolves it if the captured pawn is the checker
             if checkers != 0 {
                 // Double check: only king moves resolve (EP is never a king move)
