@@ -13171,3 +13171,84 @@ the consensus feature Coda was uniquely missing. Follow-up candidate: SPSA the
 coefficient (0.0025) + clamp ([0.80,1.45]) + the adjacent factor cluster — the
 literal constants are Reckless-analogy, not Coda-tuned, so retune-on-branch
 should extract more.
+
+## 2026-06-01 — Overnight batch reconciliation: 3 more H1 fixes merged, tb-pv-floor held, 2 H0, 5 net probes
+
+Three of the overnight H1 correctness fixes (#1664 mate-tm-early-emit, #1672
+defensive-hardening-bundle, #1665 tm-score-trend) were already merged on
+origin/main (logged above). This entry covers the remaining three H1 fixes,
+the held branch, the H0 fixes, and the net experiments.
+
+### Merged to main (combined bench 4782984 → 4558030)
+
+| ID | Branch | Elo | Verdict | Notes |
+|---|---|---|---|---|
+| #1670 | fix/tt-move-classifiers-promo | **+2.5 ±1.9** (N=35598, LLR 2.96) | H1 ✓ [0,3] | promotions consistently noisy; **only node-count mover** (−4.7%, 4782984→4558030) |
+| #1666 | fix/go-depth-guard | **+1.8 ±2.0** (N=29446, LLR 2.98) | H1 ✓ [0,3] | clamp malformed `go depth` to a real depth-1 search |
+| #1659 | fix/lmr-table-atomicize | **+1.0 ±1.6** (N=48260, LLR 2.95) | H1 ✓ [0,3] | atomicize LMR_TABLE/LMR_TABLE_CAP — removes Rust UB on SPSA setoption |
+
+Each branch was 11 commits behind main; `git merge-tree` confirmed clean
+3-way merges; merged `--no-ff` onto current origin/main, rebuilt clean (zero
+warnings), bench **4558030**.
+
+### Held — NOT merged
+
+| ID | Branch | Elo | Verdict | Reason |
+|---|---|---|---|---|
+| #1655 | fix/tb-pv-floor | +1.0 ±1.6 (N=49926, LLR 2.95) | H1 ✓ but **HELD** | overlaps + textually conflicts with f5d9809 (TB-interior-exact return) |
+
+fix/tb-pv-floor floors `best_score` to TB ground truth on an in-window TB PV
+hit so the TT store / return respect it. Its +1.0 was measured on a baseline
+*without* f5d9809, and both touch the same TB-interior return path. **Rebase
+onto current main, reconcile with f5d9809's interior-exact logic, re-SPRT
+before merging.** Stale-baseline +1.0 is not trustworthy here.
+
+### H0 — correctness fixes that regressed
+
+| ID | Branch | Elo | Verdict |
+|---|---|---|---|
+| #1671 | fix/input-validation-bundle | **−4.5 ±2.9** (N=14446, LLR −2.98) | H0 ✗ [0,3] |
+| #1656 | fix/to-fen-ep-gating | **−1.6 ±1.6** (N=44350, LLR −2.98) | H0 ✗ [0,3] |
+
+**#1671 — split, don't drop.** This is a SUPERSET of fix/defensive-hardening-
+bundle (#1672 +4.25 H1✓, the board.rs/movepicker.rs subset, already merged).
+The safe subset is banked, so the **harmful delta is the remaining uci.rs
+changes**: (1) the `position ... moves` loop breaking on first parse failure
+instead of skipping, (2) parse_option multi-word value join, (3) the removed
+`process::exit`. The break-on-first-failure is the prime suspect — it turns a
+tolerant parser strict and can silently truncate a legal moves list under GUI
+quirks, forfeiting the rest of the game line. Re-test the three uci.rs changes
+**individually at [-3,3]**; the EP/castling Elo is already banked, so a
+regression on the uci.rs parts is a real block and there's no urgency to
+recover them.
+
+**#1656 — drop.** to-fen EP gating (only emit EP square when a capture is
+actually possible) is a serialisation tidy with no search benefit; −1.6 says
+it costs a hair in a hot path for zero strength. Drop unless a concrete
+FEN-roundtrip bug needs it.
+
+### Net experiments (paired-probe net-vs-net, same branch both sides)
+
+| ID | Candidate net | vs | Elo | Verdict |
+|---|---|---|---|---|
+| #1667 | coda-midladder-v1-s2-s550 | s1 | **+43.1 ±9.6** (N=1750, LLR 2.97) | H1 ✓ |
+| #1676 | gpu2-normaldata-swa-1150-s1200 | prod E2773E50 | **−0.8 ±1.9** (N=42154, LLR −2.97) | H0 ✗ |
+| #1674 | coda-midladder-v1-s3-s900 | s2 | **−5.4 ±3.7** (N=10786, LLR −2.95) | H0 ✗ |
+| #1673 | gpu4-xtraxtradata-swa-1150-s1200 | prod E2773E50 | **−25.7 ±7.6** (N=2598, LLR −2.95) | H0 ✗ |
+| #1675 | coda-midladder-v1-s3-s900 | prod E2773E50 | **−30.9 ±8.4** (N=2208, LLR −2.94) | H0 ✗ |
+
+- **xtraxtradata (−25.7):** extra "specials" data (DFRC etc.) on top of prod's
+  recipe HURT badly. Uniformly unfavourable move-ordering stats (first-move
+  cut, avg cutoff pos, pos², EBF all worse than prod) predicted it before the
+  SPRT concluded. Specials dilute the standard-chess eval signal at this ratio.
+- **normaldata (−0.8 H0):** prod recipe minus the extra data (12 standard T80
+  files only). −0.8 *is* the value of prod's extra data — small, not
+  separable from zero. The extra data is roughly free, not a real lever.
+- **midladder s2 (+43.1) → s3 (−5.4 vs s2, −30.9 vs prod):** the deliberately-
+  compressed mid-length SF-style multistage gains hugely s1→s2 but stage-3 is
+  flat/slightly-negative vs stage-2. s3-vs-prod −30.9 is expected (prod is the
+  fuller SB1200 net). Thread to *make work*, not abandon: stage-3 is a
+  compressed late cosine cycle with marginal signal headroom; restart
+  perturbation + ~64%-of-SF-length recovery yields a near-flat increment.
+  Compression-preserving levers to try before concluding: proportional warmup
+  (SF's 5% ≈ 17 SB vs our flat 10) and a modest stage-3 length bump.
