@@ -103,6 +103,10 @@ pub const NNUE_OUTPUT_BUCKETS: usize = 8;
 /// Maximum king bucket count we allocate static tables for (covers all
 /// known layouts: uniform/consensus=16, Reckless=10).
 pub const NNUE_MAX_KING_BUCKETS: usize = 16;
+/// Pairwise SIMD pack buffer size (bytes per perspective). Bounds the largest
+/// loadable net: pw = hidden_size/2 must be ≤ this, i.e. hidden_size ≤ 2×this.
+/// Enforced at net load (see Net::read) and asserted at the buffer.
+pub const NNUE_PW_BUF: usize = 1024;
 const NNUE_NUM_PIECE_TYPES: usize = 12;
 
 /// King bucket layout identifier. Mirrors `bullet_convert::KbLayout` so the
@@ -2444,9 +2448,17 @@ impl NNUENet {
                     kb_layout = KbLayout::from_id(layout_id)
                         .ok_or_else(|| format!("unknown kb_layout_id: {}", layout_id))?;
                     // Consistency check: layout's default count matches unless
-                    // caller has intentionally overridden it (rare).
-                    if !(1..=NNUE_MAX_KING_BUCKETS).contains(&num_king_buckets) {
-                        return Err(format!("invalid num_king_buckets: {}", num_king_buckets));
+                    // caller has intentionally overridden it (rare). The count
+                    // may be larger than the layout default (extra, unused
+                    // PSQ space) but never smaller: the layout can emit bucket
+                    // indices up to default_count()-1, and a smaller allocation
+                    // would let input_weight_row() index past input_weights →
+                    // OOB slice panic on probe.
+                    if !(kb_layout.default_count()..=NNUE_MAX_KING_BUCKETS).contains(&num_king_buckets) {
+                        return Err(format!(
+                            "invalid num_king_buckets {} for layout {:?} (must be {}..={})",
+                            num_king_buckets, kb_layout, kb_layout.default_count(), NNUE_MAX_KING_BUCKETS
+                        ));
                     }
                 } else {
                     // Legacy 16-bucket path: consensus bit 5 picks layout.
@@ -2471,6 +2483,17 @@ impl NNUENet {
             }
             _ => return Err(format!("unsupported NNUE version: {}", version)),
         };
+
+        // The pairwise SIMD pack writes pw = hidden_size/2 bytes into a fixed
+        // PW_BUF (1024) stack buffer. A net header claiming hidden_size > 2048
+        // would overflow it — an out-of-bounds write in release. Reject such a
+        // net at load with a clean error rather than corrupting memory later.
+        if hidden_size > 2 * NNUE_PW_BUF {
+            return Err(format!(
+                "NNUE hidden_size {} exceeds supported maximum {} (PW_BUF {})",
+                hidden_size, 2 * NNUE_PW_BUF, NNUE_PW_BUF
+            ));
+        }
 
         // Read input weights (PSQ block sized by kb_count × 768).
         let psq_input_size = num_king_buckets * PSQ_INPUTS_PER_BUCKET;
@@ -2840,8 +2863,11 @@ impl NNUENet {
         // Storage sized to fit any plausibly-loaded Coda net while keeping the
         // function's total stack frame inside L1's working budget. Caller-side
         // assert guards against a future net exceeding bounds.
-        const PW_BUF: usize = 1024;  // pw ≤ 1024 (hidden_size ≤ 2048)
-        debug_assert!(pw <= PW_BUF, "pw {} exceeds PW_BUF {}", pw, PW_BUF);
+        const PW_BUF: usize = NNUE_PW_BUF;  // pw ≤ 1024 (hidden_size ≤ 2048)
+        // Real (release) assert, not debug_assert: an oversized net slipping
+        // past load-time validation must abort here rather than write OOB into
+        // the fixed-size stack buffers below (genuine memory unsafety).
+        assert!(pw <= PW_BUF, "pw {} exceeds PW_BUF {}", pw, PW_BUF);
         let mut stm_pw_storage = std::mem::MaybeUninit::<[u8; PW_BUF]>::uninit();
         let mut ntm_pw_storage = std::mem::MaybeUninit::<[u8; PW_BUF]>::uninit();
         let stm_pw: &mut [u8] = unsafe {

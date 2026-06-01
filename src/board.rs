@@ -372,8 +372,14 @@ impl Board {
                         'k' => (BLACK, KING),
                         _ => continue,
                     };
-                    let sq = (rank * 8 + file) as u8;
-                    self.put_piece_no_hash(color, pt, sq);
+                    // Malformed FEN (too many files on a rank, or too many
+                    // ranks) can drive file/rank out of [0,7]; placing at the
+                    // resulting square would index mailbox/bitboards OOB and
+                    // panic in release. Skip out-of-board glyphs instead.
+                    if (0..8).contains(&rank) && (0..8).contains(&file) {
+                        let sq = (rank * 8 + file) as u8;
+                        self.put_piece_no_hash(color, pt, sq);
+                    }
                     file += 1;
                 }
             }
