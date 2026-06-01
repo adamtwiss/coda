@@ -1023,11 +1023,13 @@ fn parse_go(tokens: &[&str]) -> SearchLimits {
             "depth" => {
                 idx += 1;
                 if idx < tokens.len() {
-                    // C8 audit LIKELY #32: fail-closed on parse error (0),
-                    // matching every other integer field in this parser.
-                    // Previously malformed `depth ???` parsed as 100,
-                    // producing a near-infinite search.
-                    limits.depth = tokens[idx].parse().unwrap_or(0);
+                    // Fail-closed to a real depth-1 search on malformed /
+                    // non-positive input. A bare 0 is NOT safe: search()
+                    // treats depth <= 0 as "no depth limit" and remaps it to
+                    // MAX_PLY/2, so `go depth nope|0|-1` would become a long
+                    // untimed search. .max(1) keeps a present-but-bad depth
+                    // token bounded instead of collapsing into that sentinel.
+                    limits.depth = tokens[idx].parse().unwrap_or(0).max(1);
                 }
             }
             "movetime" => {
