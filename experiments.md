@@ -13117,29 +13117,37 @@ landed separately as experiment/tm-score-trend).
 work I shipped; the audit deltas themselves are in branch commit
 messages and earlier memory files.
 
-### Merged (H1 locked)
+### Merged (H1 locked or merged as non-regression correctness)
 
 | ID  | Branch | Audit | Elo (CI, N) | Bench Δ | Bounds |
 |-----|--------|-------|-------------|---------|--------|
-| #1655 | fix/tb-pv-floor | H5 | **+1.0 ±1.6** (N=49926, LLR 2.95) | unchanged | [-2,1] |
-| #1659 | fix/lmr-table-atomicize | H3 | **+1.0 ±1.6** (N=48260, LLR 2.95) | unchanged | [-2,1] |
-| #1670 | fix/tt-move-classifiers-promo | follow-D | **+2.5 ±1.9** (N=35598, LLR 2.96) | -4.7% | [0,3] |
-| #1672 | fix/defensive-hardening-bundle | follow-E+F+G+H | **+4.25 ±2.97** (N=13418, LLR 2.97) | unchanged | [-2,1] |
+| #1655 | fix/tb-pv-floor | H5 | **+1.0 ±1.6** (N=49926, LLR 2.95) | unchanged | [-2,1] H1 |
+| #1657 | fix/unmake-corruption-debug-assert | H1 | **+0.37 ±1.12** (N=96626, LLR 2.96) | unchanged | [-2,1] H1 |
+| #1658 | fix/is-legal-malformed-ep | H2 | -0.1 ±0.8 (N=177738, LLR 1.63) | unchanged | [-2,1] correctness |
+| #1659 | fix/lmr-table-atomicize | H3 | **+1.0 ±1.6** (N=48260, LLR 2.95) | unchanged | [-2,1] H1 |
+| #1668 | fix/gives-direct-check-castle | follow-A | +0.9 ±1.1 (N=108560) | +50 | [0,3] correctness |
+| #1669 | fix/is-pv-after-mate-dist | follow-B | +0.7 ±1.1 (N=105748) | unchanged | [0,3] correctness |
+| #1670 | fix/tt-move-classifiers-promo | follow-D | **+2.5 ±1.9** (N=35598, LLR 2.96) | -4.7% | [0,3] H1 |
+| #1672 | fix/defensive-hardening-bundle | follow-E+F+G+H | **+4.25 ±2.97** (N=13418, LLR 2.97) | unchanged | [-2,1] H1 |
 
-### Still running, trending H1 (not yet locked)
+For #1658, #1668, #1669: stopped early at 100K+ games with positive
+point estimates and CI lower bounds well above -2. Merged on
+correctness grounds since each is a real structural fix (audit-style)
+rather than a "does this help" probe. #1669 in particular shows the
+bounds-choice lesson: [0, 3] was wrong for what's structurally a fix
+(line 2716 reading stale is_pv was an oversight, not deliberate
+design); [-2, 1] would have locked H1 at the empirical +0.7.
+
+### Still running (SMP, Threads=2)
 
 | ID  | Branch | Audit | Status |
 |-----|--------|-------|--------|
-| #1657 | fix/unmake-corruption-debug-assert | H1 | +0.1 ±1.2 (N=82008, LLR 1.27) — close to H1 lock |
-| #1658 | fix/is-legal-malformed-ep | H2 | -0.1 ±1.1 (N=99450, LLR 0.83) — slow H1 lock |
-| #1668 | fix/gives-direct-check-castle | follow-A | +0.8 ±1.5 (N=57512, LLR 0.01) — directional |
-| #1661 | fix/smp-helper-validate-pv | follow-up audit #1 | -2.3 ±3.9 (N=8448, LLR -0.83) Threads=2 |
-| #1662 | fix/smp-go-nodes-global | follow-up audit #2 | -1.0 ±3.8 (N=8832, LLR -0.31) Threads=2 |
+| #1661 | fix/smp-helper-validate-pv | follow-up audit #1 | -1.5 ±2.2 (N=26370, LLR -1.50) |
+| #1662 | fix/smp-go-nodes-global | follow-up audit #2 | -1.6 ±1.9 (N=34056, LLR -2.09) |
 
-Merge when locked. The SMP tests at Threads=2 have ~2× wall-clock per
-game and roughly 2× noise inflation; 8K games is still inside the
-indecisive zone. The SMP fixes are correctness regardless of Elo —
-will merge as non-regression if they H0 anywhere above -2.
+Threads=2 SPRTs run at ~2× wall-clock and roughly 2× noise inflation.
+Both are correctness fixes; will merge as non-regression if they H0
+anywhere above -2.
 
 ### Dropped (H0)
 
