@@ -1002,13 +1002,21 @@ fn parse_position(tokens: &[&str], board: &mut Board) {
     if idx < tokens.len() && tokens[idx] == "moves" {
         idx += 1;
         while idx < tokens.len() {
+            // Every move in the list is relative to the board state produced by
+            // all preceding moves. If one fails to parse or apply, continuing to
+            // the rest would make them relative to the WRONG position, silently
+            // desyncing us from the GUI. Stop at the first failure instead.
             if let Some(mv) = parse_uci_move(board, tokens[idx]) {
                 if !board.make_move(mv) {
-                    eprintln!("info string WARNING: make_move failed for UCI move {} (parsed as {})",
+                    eprintln!("info string WARNING: make_move failed for UCI move {} (parsed as {}); \
+                        ignoring this and any further moves",
                         tokens[idx], crate::types::move_to_uci(mv));
+                    break;
                 }
             } else {
-                eprintln!("info string WARNING: failed to parse UCI move: {}", tokens[idx]);
+                eprintln!("info string WARNING: failed to parse UCI move: {}; \
+                    ignoring this and any further moves", tokens[idx]);
+                break;
             }
             idx += 1;
         }
