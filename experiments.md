@@ -13624,3 +13624,71 @@ remove the code path.
   partially actioned via hist-prune fix.
 - Book-asymmetry methodology lesson: measure Elo where opponents have
   books OR seed openings, not where we have books and they don't.
+
+## 2026-06-01 — S1600 single-cosine + L1=32-w20 net probes + eval-dist diagnostics
+
+Two new nets, both versus an appropriately-matched reference (paired-probe,
+both sides build main, differ only by `--dev-network`/`--base-network`).
+
+| Test  | Net                                   | Reference          | Result          |
+|-------|---------------------------------------|--------------------|-----------------|
+| #1687 | gpu4-stage2data-swa1500-s1600         | prod E2773E50      | **−52.6 H0 ✗**  |
+| #1688 | canonical-l1-32-fs0.5-w20-swa720-800-s800 | gpu4-normal-s800 | **−17.6 →H0**   |
+
+**#1687 (S1600) — overtrained, confirmed.** The longest single-cosine run
+we've done (1600 SB, broader stage2+ data, 100-SB SWA tail). Craters −52.6
+vs the SB1200 prod. Not a measurement artifact — the eval-distribution sweep
+(below) shows a clear overtraining-volatility signature, matching Adam's
+"loss minimal ~SB1300" visual read.
+
+**#1688 (L1=32-w20) — treading water against the tax.** −17.6 vs the
+matched-length gpu4-normal-s800 reference (chosen over prod-S1200 to avoid a
+schedule-length handicap). This is *better* than the early −46 reading and is
+roughly what the structural headwind predicts: ~10-12 Elo of L1=32 NPS tax
+(see `memory/project_l1_32_nps_tax.md`) + an eval-scale detune (#1688 RMS is
+~+30% vs reference). Retune-on-net is in flight (tune #1689, 53 core params,
+2500 iters) to recalibrate cp-denominated thresholds to the net's natural
+scale; SPRT (L1=32 + tune) vs (prod + trunk) after it converges.
+
+### eval-dist checkpoint sweep — the first empirical training diagnostic
+
+Pulled every-200-SB raw checkpoints for the S1600 run from gpu4
+(`gpu4-stage2data-swa-1500-1600-{SB}/quantised.bin`), converted each with the
+exact prod flags, and ran `eval-dist` on a **fixed** 80k-position binpack
+(`/training/coda/selfplay-d8-2026-04-11.binpack`) — fixed positions make this
+immune to the data-order confound that dominates the train-loss curve.
+
+| SB | mean | absmean | RMS | p50 | p90 | p99 |
+|----|------|---------|-----|-----|-----|-----|
+| 200 | 82.1 | 140.7 | 183.6 | 69 | 280 | 530 |
+| 400 | 57.6 | 112.7 | 148.6 | 49 | 218 | 440 |
+| 600 | 98.9 | 142.3 | 187.3 | 82 | 299 | 528 |
+| 800 | 139.0 | 175.1 | 231.5 | 107 | 374 | 620 |
+| 1000 | 54.2 | 136.2 | 179.6 | 43 | 277 | 510 |
+| 1200 | 120.6 | 201.1 | 273.8 | 72 | 484 | 743 |
+| 1400 | 163.8 | 228.2 | 311.6 | 125 | 567 | 910 |
+| 1600 | 155.9 | 220.9 | 302.5 | 102 | 480 | 900 |
+| 1600swa | 136.4 | 222.1 | 303.6 | 85 | 482 | 906 |
+
+(prod E2773E50 on 30k same binpack: RMS 277.2, p99 755, p90 528, p50 97.)
+
+**Findings:**
+1. **Eval scale OSCILLATES ±50% across checkpoints on fixed data** (RMS:
+   SB400 149 → SB800 231 → SB1000 180 → SB1200 274). Convergence is not
+   smooth — the model's output scale is unstable, consistent with an LR that
+   stays too high through the back half.
+2. **Back-half tail fattening**: p99 climbs 530→910 from SB200→SB1400 while
+   the median barely moves. The eval is producing more extreme outputs, not a
+   uniform scale-up — the overtraining signature.
+3. **SWA at 1600 is ineffective**: 1600-raw (RMS 302/p99 900) ≈ 1600-swa
+   (RMS 304/p99 906). The whole 1500-1600 window is already fat-tailed, so
+   averaging *within* it can't denoise. SWA needs a stable plateau to average
+   over; here there isn't one.
+4. **Pipeline validated**: the 1600swa checkpoint (RMS 303.6/p99 906) matches
+   the independently-deployed net 2C263A11 (304.5/908).
+
+**CAVEAT — eval-dist measures distribution, NOT strength.** Thin early tails
+partly reflect undertraining, so this can't *rank* checkpoint strength on its
+own (SPRT remains the arbiter). What it *can* do cheaply: flag scale
+instability and tail-fattening onset, and explain *why* a net craters without
+burning fleet games.
