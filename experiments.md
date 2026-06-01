@@ -13110,6 +13110,89 @@ tm_max_time). See `project_mate_tm_early_emit_2026-05-31` and
 absolute |score| trigger; falling-eval/score-trend is the consensus mechanism,
 landed separately as experiment/tm-score-trend).
 
+## 2026-05-31 / 2026-06-01 — Audit batch results
+
+7-agent code-review sweep on 2026-05-31 surfaced 10 HIGH findings plus
+~25 MED/LOW. This section logs the SPRT outcomes for the audit-driven
+work I shipped; the audit deltas themselves are in branch commit
+messages and earlier memory files.
+
+### Merged (H1 locked)
+
+| ID  | Branch | Audit | Elo (CI, N) | Bench Δ | Bounds |
+|-----|--------|-------|-------------|---------|--------|
+| #1655 | fix/tb-pv-floor | H5 | **+1.0 ±1.6** (N=49926, LLR 2.95) | unchanged | [-2,1] |
+| #1659 | fix/lmr-table-atomicize | H3 | **+1.0 ±1.6** (N=48260, LLR 2.95) | unchanged | [-2,1] |
+| #1670 | fix/tt-move-classifiers-promo | follow-D | **+2.5 ±1.9** (N=35598, LLR 2.96) | -4.7% | [0,3] |
+| #1672 | fix/defensive-hardening-bundle | follow-E+F+G+H | **+4.25 ±2.97** (N=13418, LLR 2.97) | unchanged | [-2,1] |
+
+### Still running, trending H1 (not yet locked)
+
+| ID  | Branch | Audit | Status |
+|-----|--------|-------|--------|
+| #1657 | fix/unmake-corruption-debug-assert | H1 | +0.1 ±1.2 (N=82008, LLR 1.27) — close to H1 lock |
+| #1658 | fix/is-legal-malformed-ep | H2 | -0.1 ±1.1 (N=99450, LLR 0.83) — slow H1 lock |
+| #1668 | fix/gives-direct-check-castle | follow-A | +0.8 ±1.5 (N=57512, LLR 0.01) — directional |
+| #1661 | fix/smp-helper-validate-pv | follow-up audit #1 | -2.3 ±3.9 (N=8448, LLR -0.83) Threads=2 |
+| #1662 | fix/smp-go-nodes-global | follow-up audit #2 | -1.0 ±3.8 (N=8832, LLR -0.31) Threads=2 |
+
+Merge when locked. The SMP tests at Threads=2 have ~2× wall-clock per
+game and roughly 2× noise inflation; 8K games is still inside the
+indecisive zone. The SMP fixes are correctness regardless of Elo —
+will merge as non-regression if they H0 anywhere above -2.
+
+### Dropped (H0)
+
+| ID  | Branch | Audit | Elo (CI, N) | Verdict |
+|-----|--------|-------|-------------|---------|
+| #1656 | fix/to-fen-ep-gating | H6 | -1.6 ±1.6 (N=44350, LLR -2.98) | H0 ✗ |
+| #1669 | fix/is-pv-after-mate-dist | follow-B | +0.4 ±1.5 (N=56212, LLR -1.06) | stop+drop |
+
+**#1656 (to-fen EP gating).** Canonicalised FEN to suppress the EP
+square when no enemy pawn could capture, mirroring the Zobrist
+ep_key gate. Audit theory was that shakmaty-syzygy was seeing a
+spurious EP child and skewing WDL. Empirically regressed -1.6.
+Possible explanations: (a) the shakmaty EP child is in practice a
+no-op (no candidate pawn to capture) and the FEN change disturbed
+some other path; (b) datagen / UCI debug / TT-cache consumer
+relied on the prior shape. Did not investigate further; dropped.
+
+**#1669 (is-pv after mate-dist).** Replaced the `!is_pv` gate at
+TT cutoff (search.rs:2716) with a fresh post-mate-dist `beta - alpha > 1`
+check. Theory: mate-dist collapsing a PV window to ZW should let
+the TT cutoff fire. SPRT at [0, 3] trended LLR -1.06 at 56K games;
+stopped. The conservative pre-mate-dist is_pv was apparently
+load-bearing — either mate-dist collapse is too rare to matter, or
+the TT cutoffs unlocked do more harm than good.
+
+### Not fired (de-prioritised)
+
+- **C — find_lva pin info.** SF removes pinned attackers across the
+  SEE swap loop; Reckless skips it (consensus optional). Complex
+  implementation with uncertain Elo; deferred until a concrete
+  failing test position surfaces.
+- **H4 / H7 / H8 — TM/ponder area.** Adjacent to Zeus's in-flight TM
+  refactor (mate-tm-early-emit #1664 +5.0, score-trend TM #1665 +5.6,
+  Phase 14 v4 ponderhit, gate removal). Bundled into Zeus's lane.
+- **H9 — SEE in-loop promotion.** Already partly addressed by "C8
+  audit LIKELY #40" in see.rs:93. Agent couldn't construct a position
+  where the proposed reshape flipped SEE result. Needs targeted EPD.
+- **H10 — cont-hist asymmetry.** False positive — it's the Stormphrax
+  T6 pattern, already validated in SPRT #1129 +2.1 H1.
+
+### Lessons
+
+- Bundling small defensive guards into one SPRT (E+F+G+H → +4.25 at
+  [-2, 1]) worked far better than expected. Individually each guard
+  would have been sub-noise; combined SNR pushed past the bound.
+  Repeat pattern for "many tiny correctness checks" classes.
+- Two "asymmetric gate" claims H0'd in the same batch (#1562 hist-
+  prune `lmr_d`/depth, #1563 hindsight-ext depth-gate) — already
+  noted in `memory/feedback_audit_asymmetric_gates_intentional.md`;
+  the batch result reinforced (don't reflexively symmetrise without
+  SPRT). #1669 (is-pv after mate-dist) is a third instance of the
+  same pattern.
+
 ## 2026-05-31 — Defensive hardening bundle (#1672, H1 +4.25) — MERGED
 
 | ID | Test | Result | Verdict |
