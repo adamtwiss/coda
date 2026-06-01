@@ -13335,3 +13335,65 @@ FEN-roundtrip bug needs it.
   perturbation + ~64%-of-SF-length recovery yields a near-flat increment.
   Compression-preserving levers to try before concluding: proportional warmup
   (SF's 5% ≈ 17 SB vs our flat 10) and a modest stage-3 length bump.
+
+## 2026-06-01 — #1671 input-validation split + midladder stage-4
+
+### #1671 input-validation-bundle split (−4.5 H0 → isolate the harm)
+
+The defensive input-validation bundle (#1671, −4.5 H0) was split into three
+independently-SPRT'able branches to find which hunk carried the regression:
+
+| Test  | Branch                          | Scope                                   | Result          |
+|-------|---------------------------------|-----------------------------------------|-----------------|
+| #1677 | fix/input-validation-safe-subset| net load + malformed-path hardening     | **+4.2 H1 ✓** merged (b480a47) |
+| #1678 | fix/uci-position-moves-break    | `break` on bad move/parse in `position` | **+1.8 →H1**    |
+| #1679 | fix/uci-setoption-multiword     | multi-word setoption name/value join    | **−1.3 →H0**    |
+
+Dropped from the split as redundant with #1672 (defensive-hardening-bundle,
+which independently H1'd at +4.2): the movegen home-rank check and the EP
+validation hunk. Neither was on main; #1672 covers that surface via a
+different mechanism.
+
+**The +4.2 surprise (#1677).** The safe-subset is load-path + malformed-input
+only — none of its validation can fire on the inputs OB actually sends, and
+the build is bench-identical (4558030). It still H1'd at +4.2. Read: this is
+codegen/layout variance from the release `assert!` inserted in the nnue
+pairwise pack path (±5 Elo, bench-invisible — see
+`feedback_layout_variance_is_a_known_unknown`), NOT the validation logic.
+Banked as a real H1 + a genuine memory-safety win (closes an OOB-write
+window in the pairwise pack), but the magnitude is fragile, not a
+mechanistic Elo lever. Per `feedback_dont_promote_single_sprt_to_fact`:
+n=1, don't cite the +4.2 as a repeatable gain.
+
+**Diagnostic complication — the splits don't sum to the bundle.** Splits
+track +4.2 / +1.8 / −1.3 ≈ +4.7 net positive, yet the bundle was −4.5.
+Non-additive. Candidate explanations, unresolved: (a) the bundle was
+measured against an older main lacking #1672, so the dropped movegen/EP
+hunks were load-bearing-negative there but are now redundant; (b) genuine
+interaction between the dropped hunks and the kept ones; (c) the original
+−4.5 carried more variance than its CI suggested. The earlier "uci.rs is
+the culprit" story is retired — #1679 (−1.3) is the only mildly-negative
+split and it's setoption parsing, not the position loop. Net outcome: the
+useful safety hardening is merged (#1677), the position-loop break is
+heading H1 (#1678), and the one weakly-negative piece (#1679) is dropped.
+
+### midladder stage-4 (swa-s1300) — "was s3 just unlucky?"
+
+Stage-4 of the SF-style multistage ladder (coda-midladder-v1-s4-swa-s1300),
+probed three ways:
+
+| Test  | Matchup        | Result        | Read                                  |
+|-------|----------------|---------------|---------------------------------------|
+| #1680 | s4 vs s3       | **+4.2 →H1**  | s4 recovers the entire s3 regression  |
+| #1681 | s4 vs s2       | **+0.7 →H0**  | s4 ≈ s2 — flat, the ladder plateaus   |
+| #1682 | s4 vs prod     | **−21.4 H0 ✗**| expected, prod is the fuller SB1200   |
+
+**Conclusion: s3 was a blip, and the ladder plateaus at the s2 level.** s4
+fully recovers over s3 (+4.2) but lands back at s2 parity (+0.7, →H0), not
+above it. Move-ordering progression corroborated: s4 (84.8% first-move /
+1.52 avg cutoff / 10.5 pos² / EBF 1.79 / 4,004,512 nodes) is back to ~s2
+shape and ~prod parity on node count, after s3's regression (82.9 / 1.58 /
+11.8 / 6,355,623). So this rules out "s3 was unlucky" as the *cause* — the
+real finding is the multistage increment from s2 onward is flat: s1→s2 was
++43, s2→s3 ≈ 0 (a dip then recovery), s3→s4 recovers but s2→s4 ≈ 0. The
+ladder is not compounding past stage 2 at these LR/length settings.
