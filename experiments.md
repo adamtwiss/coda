@@ -13346,7 +13346,7 @@ independently-SPRT'able branches to find which hunk carried the regression:
 | Test  | Branch                          | Scope                                   | Result          |
 |-------|---------------------------------|-----------------------------------------|-----------------|
 | #1677 | fix/input-validation-safe-subset| net load + malformed-path hardening     | **+4.2 H1 ✓** merged (b480a47) |
-| #1678 | fix/uci-position-moves-break    | `break` on bad move/parse in `position` | **+1.8 →H1**    |
+| #1678 | fix/uci-position-moves-break    | `break` on bad move/parse in `position` | **+2.1 H1 ✓** merged |
 | #1679 | fix/uci-setoption-multiword     | multi-word setoption name/value join    | **−1.3 →H0**    |
 
 Dropped from the split as redundant with #1672 (defensive-hardening-bundle,
