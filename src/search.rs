@@ -113,8 +113,8 @@ tunables!(
     // Floor lifted from 20 → 0 (audit 2026-05-20): pinned at 23, 2% from floor.
     (FUT_BASE, 29, 0, 200, 9.0, true),
     (FUT_PER_DEPTH, 81, 40, 250, 10.5, true),
-    (HIST_PRUNE_DEPTH_10X, 10, 10, 80, 15.0, true),
-    (HIST_PRUNE_MULT, 7603, 500, 50000, 2475.0, true),
+    // HIST_PRUNE_DEPTH_10X / HIST_PRUNE_MULT removed 2026-06-02 — see hist-prune
+    // removal block in main negamax body for rationale (three H0 SPRTs).
     (SEE_QUIET_MULT, 35, 5, 80, 3.75, true),
     (LMR_HIST_DIV, 7258, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
@@ -407,7 +407,6 @@ pub static FEAT_LMR: AtomicBool = AtomicBool::new(true);
 pub static FEAT_LMP: AtomicBool = AtomicBool::new(true);
 pub static FEAT_FUTILITY: AtomicBool = AtomicBool::new(true);
 pub static FEAT_SEE_PRUNE: AtomicBool = AtomicBool::new(true); // confirmed: -17 Elo without (clean CPU retest)
-pub static FEAT_HIST_PRUNE: AtomicBool = AtomicBool::new(true); // confirmed: -17 Elo without (retested without CPU contention)
 pub static FEAT_BAD_NOISY: AtomicBool = AtomicBool::new(true); // confirmed: -26 Elo without (retested without CPU contention)
 pub static FEAT_EXTENSIONS: AtomicBool = AtomicBool::new(true);
 pub static FEAT_ALPHA_REDUCE: AtomicBool = AtomicBool::new(true); // confirmed: -4 Elo without and trending keep (clean CPU retest)
@@ -427,7 +426,7 @@ pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 
 pub fn disable_all_features() {
     FEAT_NMP.store(false, Ordering::Relaxed); FEAT_RFP.store(false, Ordering::Relaxed);
     FEAT_PROBCUT.store(false, Ordering::Relaxed); FEAT_LMR.store(false, Ordering::Relaxed); FEAT_LMP.store(false, Ordering::Relaxed);
-    FEAT_FUTILITY.store(false, Ordering::Relaxed); FEAT_SEE_PRUNE.store(false, Ordering::Relaxed); FEAT_HIST_PRUNE.store(false, Ordering::Relaxed);
+    FEAT_FUTILITY.store(false, Ordering::Relaxed); FEAT_SEE_PRUNE.store(false, Ordering::Relaxed);
     FEAT_BAD_NOISY.store(false, Ordering::Relaxed); FEAT_EXTENSIONS.store(false, Ordering::Relaxed); FEAT_ALPHA_REDUCE.store(false, Ordering::Relaxed);
     FEAT_IIR.store(false, Ordering::Relaxed); FEAT_HINDSIGHT.store(false, Ordering::Relaxed); FEAT_CORRECTION.store(false, Ordering::Relaxed);
     FEAT_PVS.store(false, Ordering::Relaxed); FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); FEAT_TT_NEARMISS.store(false, Ordering::Relaxed);
@@ -441,7 +440,7 @@ pub fn disable_all_features() {
 pub fn enable_all_features() {
     FEAT_NMP.store(true, Ordering::Relaxed); FEAT_RFP.store(true, Ordering::Relaxed); FEAT_PROBCUT.store(true, Ordering::Relaxed);
     FEAT_LMR.store(true, Ordering::Relaxed); FEAT_LMP.store(true, Ordering::Relaxed);
-    FEAT_FUTILITY.store(true, Ordering::Relaxed); FEAT_SEE_PRUNE.store(true, Ordering::Relaxed); FEAT_HIST_PRUNE.store(true, Ordering::Relaxed);
+    FEAT_FUTILITY.store(true, Ordering::Relaxed); FEAT_SEE_PRUNE.store(true, Ordering::Relaxed);
     FEAT_BAD_NOISY.store(true, Ordering::Relaxed); FEAT_EXTENSIONS.store(true, Ordering::Relaxed); FEAT_ALPHA_REDUCE.store(true, Ordering::Relaxed);
     FEAT_IIR.store(true, Ordering::Relaxed); FEAT_HINDSIGHT.store(true, Ordering::Relaxed); FEAT_CORRECTION.store(true, Ordering::Relaxed);
     FEAT_PVS.store(true, Ordering::Relaxed); FEAT_TT_CUTOFF.store(true, Ordering::Relaxed); FEAT_TT_NEARMISS.store(true, Ordering::Relaxed);
@@ -1336,7 +1335,6 @@ fn init_feature_flags() {
             if std::env::var("ENABLE_LMP").is_ok() { FEAT_LMP.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_FUTILITY").is_ok() { FEAT_FUTILITY.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE.store(true, Ordering::Relaxed); }
-            if std::env::var("ENABLE_HIST_PRUNE").is_ok() { FEAT_HIST_PRUNE.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_BAD_NOISY").is_ok() { FEAT_BAD_NOISY.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_EXTENSIONS").is_ok() { FEAT_EXTENSIONS.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE.store(true, Ordering::Relaxed); }
@@ -1356,7 +1354,6 @@ fn init_feature_flags() {
             if std::env::var("NO_LMP").is_ok() { FEAT_LMP.store(false, Ordering::Relaxed); }
             if std::env::var("NO_FUTILITY").is_ok() { FEAT_FUTILITY.store(false, Ordering::Relaxed); }
             if std::env::var("NO_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE.store(false, Ordering::Relaxed); }
-            if std::env::var("NO_HIST_PRUNE").is_ok() { FEAT_HIST_PRUNE.store(false, Ordering::Relaxed); }
             if std::env::var("NO_BAD_NOISY").is_ok() { FEAT_BAD_NOISY.store(false, Ordering::Relaxed); }
             if std::env::var("NO_EXTENSIONS").is_ok() { FEAT_EXTENSIONS.store(false, Ordering::Relaxed); }
             if std::env::var("NO_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE.store(false, Ordering::Relaxed); }
@@ -3669,157 +3666,24 @@ fn negamax(
             NO_PIECE_TYPE
         };
 
-        // History-based pruning: prune quiet moves with deeply negative history at shallow depths.
-        // Removed `!improving && !unstable` gate clauses per
-        // cross_engine_comparison_2026-04-25.md item #10 — SF/Obsidian/
-        // Halogen/Reckless gate hist-prune on neither. Coda's prior gate
-        // suppressed firing in ~50% of nodes hist-prune was meant for.
-        // 2026-05-14 audit: gate on lmr_d instead of raw depth (SF/Obsidian/
-        // Reckless consensus). Standard "shallow after LMR reductions" semantic.
-        if ply > 0 && !in_check && lmr_d <= tp10(&HIST_PRUNE_DEPTH_10X)
-            && !is_cap && !is_promo
-            && mv != tt_move
-            && best_score > -(MATE_SCORE - 100)
-            && FEAT_HIST_PRUNE.load(Ordering::Relaxed)
-        {
-            let mut hist_prune_score = info.history.main_score(from, to, enemy_attacks);
-            if moved_piece != NO_PIECE {
-                let gp = go_piece(moved_piece);
-                // Cont-hist at offsets {1, 2, 4, 6} — full set used by
-                // Coda's move-ordering already; bringing hist-prune score
-                // in line. Diagnostic data showed including ply-6 doubles
-                // fire rate at unchanged threshold (most-often-dominant
-                // offset). See docs/history_prune_cont_hist_data_2026-05-08.md.
-                let offsets = [1usize, 2, 4, 6];
-                for &off in &offsets {
-                    if ply_u >= off {
-                        let p = info.moved_piece_stack[ply_u - off] as usize;
-                        let pt = info.moved_to_stack[ply_u - off] as usize;
-                        if p > 0 && p < 13 && pt < 64 {
-                            hist_prune_score += info.history.cont_hist[p][pt][gp][to as usize] as i32;
-                        }
-                    }
-                }
-                // Pawn history in pruning decision
-                let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
-                hist_prune_score += info.pawn_hist[ph_idx][gp][to as usize] as i32;
-            }
-
-            // Diagnostics: bucket the gate score and per-offset cont-hist magnitudes.
-            // One sample per gate-eligible move — cost ~12 i32 reads + 12 increments.
-            // Findings drive the next experiments; see
-            // docs/history_prune_cont_hist_review_2026-05-08.md.
-            info.stats.hist_prune_eligible += 1;
-            let threshold = tp(&HIST_PRUNE_MULT) * depth;
-            if threshold > 0 {
-                let ratio_x100 = (hist_prune_score * 100) / threshold;
-                let bucket = if ratio_x100 >= 100 { 0 }       // >= +1.0 (positive)
-                    else if ratio_x100 >= 0 { 1 }              // [0, 1)
-                    else if ratio_x100 >= -50 { 2 }            // [-0.5, 0)
-                    else if ratio_x100 >= -100 { 3 }           // [-1, -0.5)
-                    else if ratio_x100 >= -150 { 4 }           // [-1.5, -1)  — FIRES
-                    else if ratio_x100 >= -200 { 5 }           // [-2, -1.5)
-                    else if ratio_x100 >= -300 { 6 }           // [-3, -2)
-                    else { 7 };                                // < -3.0
-                info.stats.hist_prune_ratio_buckets[bucket] += 1;
-            }
-            // Per-offset cont-hist read magnitudes
-            if moved_piece != NO_PIECE {
-                let gp = go_piece(moved_piece);
-                let offsets = [1usize, 2, 4, 6];
-                for (i, &off) in offsets.iter().enumerate() {
-                    if ply_u >= off {
-                        let p = info.moved_piece_stack[ply_u - off] as usize;
-                        let pt = info.moved_to_stack[ply_u - off] as usize;
-                        if p > 0 && p < 13 && pt < 64 {
-                            let v = info.history.cont_hist[p][pt][gp][to as usize] as i32;
-                            let abs_v = v.unsigned_abs() as u64;
-                            let mb = if abs_v < 200 { 0 }
-                                else if abs_v < 1000 { 1 }
-                                else if abs_v < 5000 { 2 }
-                                else if abs_v < 10000 { 3 }
-                                else { 4 };
-                            info.stats.cont_hist_mag_buckets[i][mb] += 1;
-                        }
-                    }
-                }
-            }
-            // 4D main-history bucket-read counter (ft, tt)
-            if crate::search::FEAT_4D_HISTORY.load(Ordering::Relaxed) {
-                let ft = ((enemy_attacks >> from) & 1) as usize;
-                let tt = ((enemy_attacks >> to) & 1) as usize;
-                info.stats.main_hist_bucket_reads[ft * 2 + tt] += 1;
-            } else {
-                info.stats.main_hist_bucket_reads[0] += 1;
-            }
-
-            // What-if fire rates for hypothetical hist-prune scores with
-            // varying cont-hist offset combinations. Tells us the marginal
-            // fire-rate gain of including each deeper offset in the score.
-            if moved_piece != NO_PIECE && threshold > 0 {
-                let gp = go_piece(moved_piece);
-                let main_score_only = info.history.main_score(from, to, enemy_attacks);
-                let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
-                let pawn_score = info.pawn_hist[ph_idx][gp][to as usize] as i32;
-                // Read all 4 cont-hist offsets (regardless of ply_u sufficiency:
-                // 0 if not enough plies, treated as no contribution).
-                let mut conts = [0i32; 4];
-                let offsets = [1usize, 2, 4, 6];
-                for (i, &off) in offsets.iter().enumerate() {
-                    if ply_u >= off {
-                        let p = info.moved_piece_stack[ply_u - off] as usize;
-                        let pt = info.moved_to_stack[ply_u - off] as usize;
-                        if p > 0 && p < 13 && pt < 64 {
-                            conts[i] = info.history.cont_hist[p][pt][gp][to as usize] as i32;
-                        }
-                    }
-                }
-                // V0 = main + cont1 + pawn (CURRENT)
-                let s_v0 = main_score_only + conts[0] + pawn_score;
-                let s_v1 = s_v0 + conts[1];
-                let s_v2 = s_v1 + conts[2];
-                let s_v3 = s_v2 + conts[3];
-                if s_v0 < -threshold { info.stats.hist_prune_what_if_fires[0] += 1; }
-                if s_v1 < -threshold { info.stats.hist_prune_what_if_fires[1] += 1; }
-                if s_v2 < -threshold { info.stats.hist_prune_what_if_fires[2] += 1; }
-                if s_v3 < -threshold { info.stats.hist_prune_what_if_fires[3] += 1; }
-
-                // Sign agreement: main_hist vs sum-of-cont-hist
-                let cont_sum = conts[0] + conts[1] + conts[2] + conts[3];
-                let agree_bucket = if main_score_only > 0 && cont_sum > 0 { 0 }
-                    else if main_score_only < 0 && cont_sum < 0 { 1 }
-                    else if main_score_only != 0 && cont_sum != 0 { 2 }
-                    else { 3 };
-                info.stats.cont_hist_sign_buckets[agree_bucket] += 1;
-
-                // Per-offset dominance: which |cont_hist[i]| is largest?
-                let mags = [conts[0].unsigned_abs(), conts[1].unsigned_abs(),
-                            conts[2].unsigned_abs(), conts[3].unsigned_abs()];
-                let total: u32 = mags.iter().sum();
-                if total > 0 {
-                    let mut best = 0;
-                    for i in 1..4 { if mags[i] > mags[best] { best = i; } }
-                    info.stats.cont_hist_dominant_offset[best] += 1;
-                }
-            }
-
-            if hist_prune_score < -tp(&HIST_PRUNE_MULT) * depth {
-                info.stats.history_prunes += 1;
-                // 2026-05-14 audit: Obsidian/Alexandria/Stormphrax/Halogen all
-                // use skipQuiets here — once a quiet is hist-pruned, all later
-                // ones at this node should be too (they're worse-ordered).
-                //
-                // 2026-05-18 LMP investigation: plumb skip_quiet into the picker
-                // so it stops generating/scoring quiets entirely (vs picker
-                // yielding them and search discarding via `continue`). Cuts
-                // wasted ordering work, and changes move_count seen by bad
-                // captures (they yield after quiets) — lower move_count for
-                // bad-cap LMR. SF/Obsidian both wire this into the picker.
-                skip_quiets = true;
-                picker.skip_quiet = true;
-                continue;
-            }
-        }
+        // History-based pruning REMOVED 2026-06-02.
+        //
+        // Three SPRT attempts H0'd consecutively despite progressive structural
+        // fixes:
+        //   #1562 original (main_hist + 4 cont-hist + pawn): H0 −9.4 Elo
+        //   #1691 SF pattern (cont[1]+cont[2]+pawn), SF defaults: H0 −7.5
+        //   #1697 SF pattern, Coda-tuned SPSA values (#1690): H0 −6.8
+        //
+        // The cumulative evidence is that hist-prune as a feature genuinely
+        // doesn't fit Coda's search/eval shape, irrespective of how it's
+        // shaped or tuned. SF/Obsidian benefit; Coda doesn't. Different from
+        // "we have a bug"; closer to "this feature isn't a fit." Net win to
+        // remove: less code + complexity, one fewer per-node check, no more
+        // ambiguity about whether the feature is doing anything useful.
+        //
+        // Companion removals: HIST_PRUNE_DEPTH_10X, HIST_PRUNE_MULT tunables;
+        // FEAT_HIST_PRUNE flag; ENABLE_/NO_HIST_PRUNE env vars; the diagnostic
+        // PruneStats fields (hist_prune_*, history_prunes, cont_hist_*).
 
         // Futility pruning: skip quiet moves when static eval + margin is below alpha.
         // Uses shared lmr_d for both gate and margin (SF/Obsidian/Berserk consensus).
