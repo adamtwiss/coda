@@ -113,8 +113,8 @@ tunables!(
     // Floor lifted from 20 → 0 (audit 2026-05-20): pinned at 23, 2% from floor.
     (FUT_BASE, 29, 0, 200, 9.0, true),
     (FUT_PER_DEPTH, 81, 40, 250, 10.5, true),
-    (HIST_PRUNE_DEPTH_10X, 10, 10, 80, 15.0, true),
-    (HIST_PRUNE_MULT, 7603, 500, 50000, 2475.0, true),
+    // HIST_PRUNE_DEPTH_10X / HIST_PRUNE_MULT removed 2026-06-02 — see hist-prune
+    // removal block in main negamax body for rationale (three H0 SPRTs).
     (SEE_QUIET_MULT, 35, 5, 80, 3.75, true),
     (LMR_HIST_DIV, 7258, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
@@ -407,7 +407,6 @@ pub static FEAT_LMR: AtomicBool = AtomicBool::new(true);
 pub static FEAT_LMP: AtomicBool = AtomicBool::new(true);
 pub static FEAT_FUTILITY: AtomicBool = AtomicBool::new(true);
 pub static FEAT_SEE_PRUNE: AtomicBool = AtomicBool::new(true); // confirmed: -17 Elo without (clean CPU retest)
-pub static FEAT_HIST_PRUNE: AtomicBool = AtomicBool::new(true); // confirmed: -17 Elo without (retested without CPU contention)
 pub static FEAT_BAD_NOISY: AtomicBool = AtomicBool::new(true); // confirmed: -26 Elo without (retested without CPU contention)
 pub static FEAT_EXTENSIONS: AtomicBool = AtomicBool::new(true);
 pub static FEAT_ALPHA_REDUCE: AtomicBool = AtomicBool::new(true); // confirmed: -4 Elo without and trending keep (clean CPU retest)
@@ -427,7 +426,7 @@ pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 
 pub fn disable_all_features() {
     FEAT_NMP.store(false, Ordering::Relaxed); FEAT_RFP.store(false, Ordering::Relaxed);
     FEAT_PROBCUT.store(false, Ordering::Relaxed); FEAT_LMR.store(false, Ordering::Relaxed); FEAT_LMP.store(false, Ordering::Relaxed);
-    FEAT_FUTILITY.store(false, Ordering::Relaxed); FEAT_SEE_PRUNE.store(false, Ordering::Relaxed); FEAT_HIST_PRUNE.store(false, Ordering::Relaxed);
+    FEAT_FUTILITY.store(false, Ordering::Relaxed); FEAT_SEE_PRUNE.store(false, Ordering::Relaxed);
     FEAT_BAD_NOISY.store(false, Ordering::Relaxed); FEAT_EXTENSIONS.store(false, Ordering::Relaxed); FEAT_ALPHA_REDUCE.store(false, Ordering::Relaxed);
     FEAT_IIR.store(false, Ordering::Relaxed); FEAT_HINDSIGHT.store(false, Ordering::Relaxed); FEAT_CORRECTION.store(false, Ordering::Relaxed);
     FEAT_PVS.store(false, Ordering::Relaxed); FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); FEAT_TT_NEARMISS.store(false, Ordering::Relaxed);
@@ -441,7 +440,7 @@ pub fn disable_all_features() {
 pub fn enable_all_features() {
     FEAT_NMP.store(true, Ordering::Relaxed); FEAT_RFP.store(true, Ordering::Relaxed); FEAT_PROBCUT.store(true, Ordering::Relaxed);
     FEAT_LMR.store(true, Ordering::Relaxed); FEAT_LMP.store(true, Ordering::Relaxed);
-    FEAT_FUTILITY.store(true, Ordering::Relaxed); FEAT_SEE_PRUNE.store(true, Ordering::Relaxed); FEAT_HIST_PRUNE.store(true, Ordering::Relaxed);
+    FEAT_FUTILITY.store(true, Ordering::Relaxed); FEAT_SEE_PRUNE.store(true, Ordering::Relaxed);
     FEAT_BAD_NOISY.store(true, Ordering::Relaxed); FEAT_EXTENSIONS.store(true, Ordering::Relaxed); FEAT_ALPHA_REDUCE.store(true, Ordering::Relaxed);
     FEAT_IIR.store(true, Ordering::Relaxed); FEAT_HINDSIGHT.store(true, Ordering::Relaxed); FEAT_CORRECTION.store(true, Ordering::Relaxed);
     FEAT_PVS.store(true, Ordering::Relaxed); FEAT_TT_CUTOFF.store(true, Ordering::Relaxed); FEAT_TT_NEARMISS.store(true, Ordering::Relaxed);
@@ -526,43 +525,6 @@ pub struct PruneStats {
     pub rfp_cutoffs: u64,
     pub lmp_prunes: u64,
     pub futility_prunes: u64,
-    pub history_prunes: u64,
-    /// Number of quiet moves reaching the history-prune gate (passed all
-    /// preceding checks). hist_prune_eligible >= history_prunes.
-    pub hist_prune_eligible: u64,
-    /// Distribution of `score / (HIST_PRUNE_MULT * depth)` at the gate.
-    /// Buckets: 0=>=1.0, 1=[0,1), 2=[-0.5,0), 3=[-1,-0.5), 4=[-1.5,-1),
-    /// 5=[-2,-1.5), 6=[-3,-2), 7=<-3.0. Buckets 4-7 = "would have fired".
-    pub hist_prune_ratio_buckets: [u64; 8],
-    /// Cont-hist read magnitude distribution per offset, sampled once per
-    /// hist-prune-eligible move. Offsets [ply-1, ply-2, ply-4, ply-6].
-    /// Mag buckets: 0=[0,200), 1=[200,1k), 2=[1k,5k), 3=[5k,10k), 4=[10k+).
-    pub cont_hist_mag_buckets: [[u64; 5]; 4],
-    /// Cont-hist write counts and magnitude sums per offset.
-    /// Indexed [ply-1, ply-2, ply-4, ply-6].
-    pub cont_hist_writes: [u64; 4],
-    pub cont_hist_write_mag_sum: [u64; 4],
-    /// Main-history (4D threat-aware) cell-density at end of search.
-    /// Indexed [ft*2 + tt]: 0=[0][0], 1=[0][1], 2=[1][0], 3=[1][1].
-    /// Each value: count of cells with |entry|>1000 in that bucket
-    /// (0..4096 cells per bucket).
-    pub main_hist_density: [u64; 4],
-    /// Read counts of main-history per (ft, tt) bucket, sampled at
-    /// hist-prune gate. Same indexing as main_hist_density.
-    pub main_hist_bucket_reads: [u64; 4],
-    /// Hypothetical hist-prune fire rates with different cont-hist offset
-    /// combinations in the score:
-    ///   [0] = main + cont[1] + pawn (CURRENT gate sources)
-    ///   [1] = main + cont[1,2] + pawn
-    ///   [2] = main + cont[1,2,4] + pawn
-    ///   [3] = main + cont[1,2,4,6] + pawn
-    /// Marginal fire-rate gain of adding each deeper offset.
-    pub hist_prune_what_if_fires: [u64; 4],
-    /// Sign-agreement between main_hist and sum-of-cont-hist at gate:
-    /// [0]=both-positive, [1]=both-negative, [2]=disagree, [3]=one-zero.
-    pub cont_hist_sign_buckets: [u64; 4],
-    /// Per-offset dominance at gate (which |contribution| is largest).
-    pub cont_hist_dominant_offset: [u64; 4],
     pub see_prunes: u64,
     pub probcut_cutoffs: u64,
     pub lmr_searches: u64,
@@ -1336,7 +1298,6 @@ fn init_feature_flags() {
             if std::env::var("ENABLE_LMP").is_ok() { FEAT_LMP.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_FUTILITY").is_ok() { FEAT_FUTILITY.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE.store(true, Ordering::Relaxed); }
-            if std::env::var("ENABLE_HIST_PRUNE").is_ok() { FEAT_HIST_PRUNE.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_BAD_NOISY").is_ok() { FEAT_BAD_NOISY.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_EXTENSIONS").is_ok() { FEAT_EXTENSIONS.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE.store(true, Ordering::Relaxed); }
@@ -1356,7 +1317,6 @@ fn init_feature_flags() {
             if std::env::var("NO_LMP").is_ok() { FEAT_LMP.store(false, Ordering::Relaxed); }
             if std::env::var("NO_FUTILITY").is_ok() { FEAT_FUTILITY.store(false, Ordering::Relaxed); }
             if std::env::var("NO_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE.store(false, Ordering::Relaxed); }
-            if std::env::var("NO_HIST_PRUNE").is_ok() { FEAT_HIST_PRUNE.store(false, Ordering::Relaxed); }
             if std::env::var("NO_BAD_NOISY").is_ok() { FEAT_BAD_NOISY.store(false, Ordering::Relaxed); }
             if std::env::var("NO_EXTENSIONS").is_ok() { FEAT_EXTENSIONS.store(false, Ordering::Relaxed); }
             if std::env::var("NO_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE.store(false, Ordering::Relaxed); }
@@ -3669,157 +3629,24 @@ fn negamax(
             NO_PIECE_TYPE
         };
 
-        // History-based pruning: prune quiet moves with deeply negative history at shallow depths.
-        // Removed `!improving && !unstable` gate clauses per
-        // cross_engine_comparison_2026-04-25.md item #10 — SF/Obsidian/
-        // Halogen/Reckless gate hist-prune on neither. Coda's prior gate
-        // suppressed firing in ~50% of nodes hist-prune was meant for.
-        // 2026-05-14 audit: gate on lmr_d instead of raw depth (SF/Obsidian/
-        // Reckless consensus). Standard "shallow after LMR reductions" semantic.
-        if ply > 0 && !in_check && lmr_d <= tp10(&HIST_PRUNE_DEPTH_10X)
-            && !is_cap && !is_promo
-            && mv != tt_move
-            && best_score > -(MATE_SCORE - 100)
-            && FEAT_HIST_PRUNE.load(Ordering::Relaxed)
-        {
-            let mut hist_prune_score = info.history.main_score(from, to, enemy_attacks);
-            if moved_piece != NO_PIECE {
-                let gp = go_piece(moved_piece);
-                // Cont-hist at offsets {1, 2, 4, 6} — full set used by
-                // Coda's move-ordering already; bringing hist-prune score
-                // in line. Diagnostic data showed including ply-6 doubles
-                // fire rate at unchanged threshold (most-often-dominant
-                // offset). See docs/history_prune_cont_hist_data_2026-05-08.md.
-                let offsets = [1usize, 2, 4, 6];
-                for &off in &offsets {
-                    if ply_u >= off {
-                        let p = info.moved_piece_stack[ply_u - off] as usize;
-                        let pt = info.moved_to_stack[ply_u - off] as usize;
-                        if p > 0 && p < 13 && pt < 64 {
-                            hist_prune_score += info.history.cont_hist[p][pt][gp][to as usize] as i32;
-                        }
-                    }
-                }
-                // Pawn history in pruning decision
-                let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
-                hist_prune_score += info.pawn_hist[ph_idx][gp][to as usize] as i32;
-            }
-
-            // Diagnostics: bucket the gate score and per-offset cont-hist magnitudes.
-            // One sample per gate-eligible move — cost ~12 i32 reads + 12 increments.
-            // Findings drive the next experiments; see
-            // docs/history_prune_cont_hist_review_2026-05-08.md.
-            info.stats.hist_prune_eligible += 1;
-            let threshold = tp(&HIST_PRUNE_MULT) * depth;
-            if threshold > 0 {
-                let ratio_x100 = (hist_prune_score * 100) / threshold;
-                let bucket = if ratio_x100 >= 100 { 0 }       // >= +1.0 (positive)
-                    else if ratio_x100 >= 0 { 1 }              // [0, 1)
-                    else if ratio_x100 >= -50 { 2 }            // [-0.5, 0)
-                    else if ratio_x100 >= -100 { 3 }           // [-1, -0.5)
-                    else if ratio_x100 >= -150 { 4 }           // [-1.5, -1)  — FIRES
-                    else if ratio_x100 >= -200 { 5 }           // [-2, -1.5)
-                    else if ratio_x100 >= -300 { 6 }           // [-3, -2)
-                    else { 7 };                                // < -3.0
-                info.stats.hist_prune_ratio_buckets[bucket] += 1;
-            }
-            // Per-offset cont-hist read magnitudes
-            if moved_piece != NO_PIECE {
-                let gp = go_piece(moved_piece);
-                let offsets = [1usize, 2, 4, 6];
-                for (i, &off) in offsets.iter().enumerate() {
-                    if ply_u >= off {
-                        let p = info.moved_piece_stack[ply_u - off] as usize;
-                        let pt = info.moved_to_stack[ply_u - off] as usize;
-                        if p > 0 && p < 13 && pt < 64 {
-                            let v = info.history.cont_hist[p][pt][gp][to as usize] as i32;
-                            let abs_v = v.unsigned_abs() as u64;
-                            let mb = if abs_v < 200 { 0 }
-                                else if abs_v < 1000 { 1 }
-                                else if abs_v < 5000 { 2 }
-                                else if abs_v < 10000 { 3 }
-                                else { 4 };
-                            info.stats.cont_hist_mag_buckets[i][mb] += 1;
-                        }
-                    }
-                }
-            }
-            // 4D main-history bucket-read counter (ft, tt)
-            if crate::search::FEAT_4D_HISTORY.load(Ordering::Relaxed) {
-                let ft = ((enemy_attacks >> from) & 1) as usize;
-                let tt = ((enemy_attacks >> to) & 1) as usize;
-                info.stats.main_hist_bucket_reads[ft * 2 + tt] += 1;
-            } else {
-                info.stats.main_hist_bucket_reads[0] += 1;
-            }
-
-            // What-if fire rates for hypothetical hist-prune scores with
-            // varying cont-hist offset combinations. Tells us the marginal
-            // fire-rate gain of including each deeper offset in the score.
-            if moved_piece != NO_PIECE && threshold > 0 {
-                let gp = go_piece(moved_piece);
-                let main_score_only = info.history.main_score(from, to, enemy_attacks);
-                let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
-                let pawn_score = info.pawn_hist[ph_idx][gp][to as usize] as i32;
-                // Read all 4 cont-hist offsets (regardless of ply_u sufficiency:
-                // 0 if not enough plies, treated as no contribution).
-                let mut conts = [0i32; 4];
-                let offsets = [1usize, 2, 4, 6];
-                for (i, &off) in offsets.iter().enumerate() {
-                    if ply_u >= off {
-                        let p = info.moved_piece_stack[ply_u - off] as usize;
-                        let pt = info.moved_to_stack[ply_u - off] as usize;
-                        if p > 0 && p < 13 && pt < 64 {
-                            conts[i] = info.history.cont_hist[p][pt][gp][to as usize] as i32;
-                        }
-                    }
-                }
-                // V0 = main + cont1 + pawn (CURRENT)
-                let s_v0 = main_score_only + conts[0] + pawn_score;
-                let s_v1 = s_v0 + conts[1];
-                let s_v2 = s_v1 + conts[2];
-                let s_v3 = s_v2 + conts[3];
-                if s_v0 < -threshold { info.stats.hist_prune_what_if_fires[0] += 1; }
-                if s_v1 < -threshold { info.stats.hist_prune_what_if_fires[1] += 1; }
-                if s_v2 < -threshold { info.stats.hist_prune_what_if_fires[2] += 1; }
-                if s_v3 < -threshold { info.stats.hist_prune_what_if_fires[3] += 1; }
-
-                // Sign agreement: main_hist vs sum-of-cont-hist
-                let cont_sum = conts[0] + conts[1] + conts[2] + conts[3];
-                let agree_bucket = if main_score_only > 0 && cont_sum > 0 { 0 }
-                    else if main_score_only < 0 && cont_sum < 0 { 1 }
-                    else if main_score_only != 0 && cont_sum != 0 { 2 }
-                    else { 3 };
-                info.stats.cont_hist_sign_buckets[agree_bucket] += 1;
-
-                // Per-offset dominance: which |cont_hist[i]| is largest?
-                let mags = [conts[0].unsigned_abs(), conts[1].unsigned_abs(),
-                            conts[2].unsigned_abs(), conts[3].unsigned_abs()];
-                let total: u32 = mags.iter().sum();
-                if total > 0 {
-                    let mut best = 0;
-                    for i in 1..4 { if mags[i] > mags[best] { best = i; } }
-                    info.stats.cont_hist_dominant_offset[best] += 1;
-                }
-            }
-
-            if hist_prune_score < -tp(&HIST_PRUNE_MULT) * depth {
-                info.stats.history_prunes += 1;
-                // 2026-05-14 audit: Obsidian/Alexandria/Stormphrax/Halogen all
-                // use skipQuiets here — once a quiet is hist-pruned, all later
-                // ones at this node should be too (they're worse-ordered).
-                //
-                // 2026-05-18 LMP investigation: plumb skip_quiet into the picker
-                // so it stops generating/scoring quiets entirely (vs picker
-                // yielding them and search discarding via `continue`). Cuts
-                // wasted ordering work, and changes move_count seen by bad
-                // captures (they yield after quiets) — lower move_count for
-                // bad-cap LMR. SF/Obsidian both wire this into the picker.
-                skip_quiets = true;
-                picker.skip_quiet = true;
-                continue;
-            }
-        }
+        // History-based pruning REMOVED 2026-06-02.
+        //
+        // Three SPRT attempts H0'd consecutively despite progressive structural
+        // fixes:
+        //   #1562 original (main_hist + 4 cont-hist + pawn): H0 −9.4 Elo
+        //   #1691 SF pattern (cont[1]+cont[2]+pawn), SF defaults: H0 −7.5
+        //   #1697 SF pattern, Coda-tuned SPSA values (#1690): H0 −6.8
+        //
+        // The cumulative evidence is that hist-prune as a feature genuinely
+        // doesn't fit Coda's search/eval shape, irrespective of how it's
+        // shaped or tuned. SF/Obsidian benefit; Coda doesn't. Different from
+        // "we have a bug"; closer to "this feature isn't a fit." Net win to
+        // remove: less code + complexity, one fewer per-node check, no more
+        // ambiguity about whether the feature is doing anything useful.
+        //
+        // Companion removals: HIST_PRUNE_DEPTH_10X, HIST_PRUNE_MULT tunables;
+        // FEAT_HIST_PRUNE flag; ENABLE_/NO_HIST_PRUNE env vars; the diagnostic
+        // PruneStats fields (hist_prune_*, history_prunes, cont_hist_*).
 
         // Futility pruning: skip quiet moves when static eval + margin is below alpha.
         // Uses shared lmr_d for both gate and margin (SF/Obsidian/Berserk consensus).
@@ -4296,7 +4123,7 @@ fn negamax(
                             // T6: base = current cont_hist + main_hist / 2 (Stormphrax history.h:120).
                             let main_score_v = info.history.main_score(from, to, enemy_attacks);
                             let ch_offsets = [1usize, 2, 4, 6];
-                            for (i, &off) in ch_offsets.iter().enumerate() {
+                            for &off in ch_offsets.iter() {
                                 if ply_u >= off {
                                     let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                     let prior_to = info.moved_to_stack[ply_u - off] as usize;
@@ -4310,8 +4137,6 @@ fn negamax(
                                             base,
                                             ch_bonus,
                                         );
-                                        info.stats.cont_hist_writes[i] += 1;
-                                        info.stats.cont_hist_write_mag_sum[i] += ch_bonus.unsigned_abs() as u64;
                                     }
                                 }
                             }
@@ -4344,7 +4169,7 @@ fn negamax(
                                     let gp_q = go_piece(q_piece);
                                     let q_main_score = info.history.main_score(qf, qt, enemy_attacks);
                                     let ch_offsets = [1usize, 2, 4, 6];
-                                    for (i, &off) in ch_offsets.iter().enumerate() {
+                                    for &off in ch_offsets.iter() {
                                         if ply_u >= off {
                                             let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                             let prior_to = info.moved_to_stack[ply_u - off] as usize;
@@ -4358,8 +4183,6 @@ fn negamax(
                                                     base,
                                                     ch_pen,
                                                 );
-                                                info.stats.cont_hist_writes[i] += 1;
-                                                info.stats.cont_hist_write_mag_sum[i] += ch_pen.unsigned_abs() as u64;
                                             }
                                         }
                                     }
@@ -5090,35 +4913,6 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         total_stats.rfp_cutoffs += info.stats.rfp_cutoffs;
         total_stats.lmp_prunes += info.stats.lmp_prunes;
         total_stats.futility_prunes += info.stats.futility_prunes;
-        total_stats.history_prunes += info.stats.history_prunes;
-        total_stats.hist_prune_eligible += info.stats.hist_prune_eligible;
-        for i in 0..8 { total_stats.hist_prune_ratio_buckets[i] += info.stats.hist_prune_ratio_buckets[i]; }
-        for off in 0..4 {
-            for mb in 0..5 {
-                total_stats.cont_hist_mag_buckets[off][mb] += info.stats.cont_hist_mag_buckets[off][mb];
-            }
-            total_stats.cont_hist_writes[off] += info.stats.cont_hist_writes[off];
-            total_stats.cont_hist_write_mag_sum[off] += info.stats.cont_hist_write_mag_sum[off];
-            total_stats.main_hist_bucket_reads[off] += info.stats.main_hist_bucket_reads[off];
-            total_stats.hist_prune_what_if_fires[off] += info.stats.hist_prune_what_if_fires[off];
-            total_stats.cont_hist_sign_buckets[off] += info.stats.cont_hist_sign_buckets[off];
-            total_stats.cont_hist_dominant_offset[off] += info.stats.cont_hist_dominant_offset[off];
-        }
-        // Sample 4D main-history density: count cells with |val|>1000 per bucket.
-        // Sampled once per bench position; final sum is approximate density.
-        for ft in 0..2usize {
-            for tt in 0..2usize {
-                let mut count: u64 = 0;
-                for from in 0..64 {
-                    for to in 0..64 {
-                        if info.history.main[ft][tt][from][to].unsigned_abs() > 1000 {
-                            count += 1;
-                        }
-                    }
-                }
-                total_stats.main_hist_density[ft * 2 + tt] += count;
-            }
-        }
         total_stats.see_prunes += info.stats.see_prunes;
         total_stats.probcut_cutoffs += info.stats.probcut_cutoffs;
         total_stats.lmr_searches += info.stats.lmr_searches;
@@ -5167,102 +4961,6 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     eprintln!("RFP cutoffs:    {:>8}  ({:.1}% of nodes)", s.rfp_cutoffs, s.rfp_cutoffs as f64 / total_nodes as f64 * 100.0);
     eprintln!("LMP prunes:     {:>8}", s.lmp_prunes);
     eprintln!("Futility prunes:{:>8}", s.futility_prunes);
-    eprintln!("History prunes: {:>8}  ({:.1}% of eligible {})", s.history_prunes,
-        if s.hist_prune_eligible > 0 { s.history_prunes as f64 / s.hist_prune_eligible as f64 * 100.0 } else { 0.0 },
-        s.hist_prune_eligible);
-    if s.hist_prune_eligible > 0 {
-        let total = s.hist_prune_eligible as f64;
-        let pct = |n: u64| n as f64 / total * 100.0;
-        eprintln!("Hist-prune score / threshold buckets (sum=eligible):");
-        eprintln!("    >= +1.0      (positive history)         {:>8} ({:>5.1}%)", s.hist_prune_ratio_buckets[0], pct(s.hist_prune_ratio_buckets[0]));
-        eprintln!("    [0.0, +1.0)                              {:>8} ({:>5.1}%)", s.hist_prune_ratio_buckets[1], pct(s.hist_prune_ratio_buckets[1]));
-        eprintln!("    [-0.5, 0.0)                              {:>8} ({:>5.1}%)", s.hist_prune_ratio_buckets[2], pct(s.hist_prune_ratio_buckets[2]));
-        eprintln!("    [-1.0, -0.5)  (close to gate)            {:>8} ({:>5.1}%)", s.hist_prune_ratio_buckets[3], pct(s.hist_prune_ratio_buckets[3]));
-        eprintln!("    [-1.5, -1.0)  FIRES (just over gate)     {:>8} ({:>5.1}%)", s.hist_prune_ratio_buckets[4], pct(s.hist_prune_ratio_buckets[4]));
-        eprintln!("    [-2.0, -1.5)  FIRES                      {:>8} ({:>5.1}%)", s.hist_prune_ratio_buckets[5], pct(s.hist_prune_ratio_buckets[5]));
-        eprintln!("    [-3.0, -2.0)  FIRES (deep)               {:>8} ({:>5.1}%)", s.hist_prune_ratio_buckets[6], pct(s.hist_prune_ratio_buckets[6]));
-        eprintln!("    < -3.0        FIRES (very deep)          {:>8} ({:>5.1}%)", s.hist_prune_ratio_buckets[7], pct(s.hist_prune_ratio_buckets[7]));
-    }
-    // Cont-hist read magnitude distribution per offset (sampled at hist-prune gate).
-    // Tells us whether deeper offsets are saturating, near-zero, or in the noise band.
-    if s.hist_prune_eligible > 0 {
-        eprintln!("Cont-hist read magnitudes per offset (sampled at hist-prune gate):");
-        eprintln!("    offset    [0,200)   [200,1k)    [1k,5k)   [5k,10k)    [10k+)");
-        let labels = ["ply-1", "ply-2", "ply-4", "ply-6"];
-        for off in 0..4 {
-            let row = &s.cont_hist_mag_buckets[off];
-            let row_total: u64 = row.iter().sum();
-            if row_total == 0 {
-                eprintln!("    {}    (no samples — offset never reached)", labels[off]);
-                continue;
-            }
-            let pct_of = |n: u64| n as f64 / row_total as f64 * 100.0;
-            eprintln!("    {}  {:>7}({:>4.1}%) {:>7}({:>4.1}%) {:>7}({:>4.1}%) {:>7}({:>4.1}%) {:>7}({:>4.1}%)",
-                labels[off],
-                row[0], pct_of(row[0]),
-                row[1], pct_of(row[1]),
-                row[2], pct_of(row[2]),
-                row[3], pct_of(row[3]),
-                row[4], pct_of(row[4]));
-        }
-    }
-    // Cont-hist write counts and average magnitudes per offset.
-    let total_writes: u64 = s.cont_hist_writes.iter().sum();
-    if total_writes > 0 {
-        eprintln!("Cont-hist writes per offset (cutoff bonus + non-cutoff malus):");
-        let labels = ["ply-1", "ply-2", "ply-4", "ply-6"];
-        for off in 0..4 {
-            let n = s.cont_hist_writes[off];
-            let avg_mag = if n > 0 { s.cont_hist_write_mag_sum[off] as f64 / n as f64 } else { 0.0 };
-            eprintln!("    {}  count {:>9}  avg |bonus| {:>7.1}", labels[off], n, avg_mag);
-        }
-    }
-    // What-if hist-prune fire rates with varying cont-hist offset combos.
-    // Tells us the marginal benefit of adding each deeper offset to the
-    // gate score. Same threshold (HIST_PRUNE_MULT * depth) for each variant.
-    let v0 = s.hist_prune_what_if_fires[0];
-    if v0 > 0 || s.hist_prune_eligible > 0 {
-        eprintln!("Hist-prune what-if fire counts (same threshold, varying score sources):");
-        eprintln!("    main + cont[1] + pawn (CURRENT):       {:>8} fires", s.hist_prune_what_if_fires[0]);
-        eprintln!("    + cont[2]:                              {:>8} fires", s.hist_prune_what_if_fires[1]);
-        eprintln!("    + cont[2,4]:                            {:>8} fires", s.hist_prune_what_if_fires[2]);
-        eprintln!("    + cont[2,4,6] (all offsets):            {:>8} fires", s.hist_prune_what_if_fires[3]);
-    }
-    // Sign agreement between main_hist and sum of cont-hist
-    let sign_total: u64 = s.cont_hist_sign_buckets.iter().sum();
-    if sign_total > 0 {
-        let pct = |n: u64| n as f64 / sign_total as f64 * 100.0;
-        eprintln!("Cont-hist vs main_hist sign agreement (at hist-prune gate):");
-        eprintln!("    both positive (reinforce good move):   {:>8} ({:>5.1}%)", s.cont_hist_sign_buckets[0], pct(s.cont_hist_sign_buckets[0]));
-        eprintln!("    both negative (reinforce bad move):    {:>8} ({:>5.1}%)", s.cont_hist_sign_buckets[1], pct(s.cont_hist_sign_buckets[1]));
-        eprintln!("    DISAGREE (cont fights main):           {:>8} ({:>5.1}%)", s.cont_hist_sign_buckets[2], pct(s.cont_hist_sign_buckets[2]));
-        eprintln!("    one or both zero:                      {:>8} ({:>5.1}%)", s.cont_hist_sign_buckets[3], pct(s.cont_hist_sign_buckets[3]));
-    }
-    // Per-offset dominance: which offset has the largest |contribution|
-    let dom_total: u64 = s.cont_hist_dominant_offset.iter().sum();
-    if dom_total > 0 {
-        let pct = |n: u64| n as f64 / dom_total as f64 * 100.0;
-        eprintln!("Cont-hist dominant offset (largest |value| at gate):");
-        let labels = ["ply-1", "ply-2", "ply-4", "ply-6"];
-        for i in 0..4 {
-            eprintln!("    {} dominant:                          {:>8} ({:>5.1}%)", labels[i], s.cont_hist_dominant_offset[i], pct(s.cont_hist_dominant_offset[i]));
-        }
-    }
-    // 4D main-history bucket distribution (read counts at hist-prune gate).
-    // Tells us if (ft, tt) buckets are evenly populated for cell-density purposes.
-    let total_bucket_reads: u64 = s.main_hist_bucket_reads.iter().sum();
-    if total_bucket_reads > 0 {
-        eprintln!("4D main-history (ft, tt) bucket distribution (sampled at hist-prune gate):");
-        let labels = ["[ft=0][tt=0]", "[ft=0][tt=1]", "[ft=1][tt=0]", "[ft=1][tt=1]"];
-        for b in 0..4 {
-            let n = s.main_hist_bucket_reads[b];
-            let pct_b = n as f64 / total_bucket_reads as f64 * 100.0;
-            // Density: cells with |val|>1000 out of 4096 cells per bucket * positions
-            let density_cells = s.main_hist_density[b];
-            eprintln!("    {}  reads {:>8} ({:>5.1}%)   |val|>1000 cells (sum across positions): {:>6}",
-                labels[b], n, pct_b, density_cells);
-        }
-    }
     eprintln!("SEE prunes:     {:>8}", s.see_prunes);
     eprintln!("ProbCut cutoffs:{:>8}", s.probcut_cutoffs);
     eprintln!("LMR searches:   {:>8}  ({:.1}% of nodes)", s.lmr_searches, s.lmr_searches as f64 / total_nodes as f64 * 100.0);
@@ -5303,7 +5001,6 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     eprintln!("RFP cutoffs:    {:>6.1}/Kn", s.rfp_cutoffs as f64 / kn);
     eprintln!("LMP prunes:     {:>6.1}/Kn", s.lmp_prunes as f64 / kn);
     eprintln!("Futility:       {:>6.1}/Kn", s.futility_prunes as f64 / kn);
-    eprintln!("Hist prune:     {:>6.1}/Kn", s.history_prunes as f64 / kn);
     eprintln!("SEE prune:      {:>6.1}/Kn", s.see_prunes as f64 / kn);
     eprintln!("LMR searches:   {:>6.1}/Kn", s.lmr_searches as f64 / kn);
     eprintln!("QS nodes:       {:>5.1}%", s.qnodes as f64 / total_nodes as f64 * 100.0);
