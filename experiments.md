@@ -13736,3 +13736,70 @@ s3→900, s4→1300; s4-end-swa IS the swa-s1300 net from the midladder probes).
 distribution stabilizes, more training loosens it and SWA stops helping (or
 hurts). This is the empirical backing for the S800-restart tail probes
 (warm-restart cosine / higher final-LR / SWA-only-over-a-stabilized-plateau).
+
+---
+
+## 2026-06-03 — In-trainer interleave: the data-mixing thread (#1711/#1712/#1714/#1715)
+
+**Context.** Until now Coda nets were trained on **sequentially concatenated**
+binpacks — under sub-epoch budgets the trainer only ever traverses the front
+of the file list; later files are never sampled. Built an in-trainer parallel
+interleave reader in the Bullet fork (branch `feature/intrainer-interleave`,
+commit c9ccd2e, `--data-order sequential|interleave`): N per-file decoders,
+chunk-count-weighted random selection, seeded random start chunk, cyclic
+wraparound (no drain). Replaces offline `chunkinterleave` disk pre-mix at zero
+disk cost with per-seed remix. **Merged to bullet fork main 2026-06-03.**
+
+**Paired-probe SPRTs** (same `main` engine both sides, differ only by
+`--dev-network`; 10+0.1, `[0,3]`):
+
+| Test | Dev net | Base net | Result |
+|------|---------|----------|--------|
+| #1712 | ord-inter (40B, interleave) | ord-seq (40B, sequential) | **+40.28 ±9.14, 1802g, H1 ✓** |
+| #1711 | ord-inter (40B, interleave) | ord-mix (40B, offline disk pre-mix) | **+4.42 ±4.42, 8012g, H1** (CI touches 0; magnitude not bankable) |
+| #1714 | ord-inter-stage2 (200B, interleave, S800) | ord-inter (40B, interleave, S800) | **+7 H1 ✓** (data-scaling unlock) |
+| #1715 | ord-inter-stage2 (200B, S800) | prod E2773E50 (S1200+SWA+fenskip) | running; not like-for-like (S800 vs S1200, no SWA) |
+
+**Headline.** #1712 **+40 Elo** is the single biggest training-recipe win in
+Coda's history — sequential data ordering was leaving ~40 Elo on the table.
+~25% of the remaining gap to the world #1. Interleave ≥ offline mix (#1711) at
+zero disk → retire offline `chunkinterleave`, make interleave the default.
+
+**Move-ordering caveat banked.** stage2 (200B) is uniformly *slightly worse*
+ordered than inter-40B (first-move 83.0 vs 83.7%, EBF 1.81 vs 1.78) yet SPRTs
+**+7**. Clean live demo that move-ordering stats measure efficiency-given-eval,
+NOT eval accuracy — a richer-data eval can order a hair later but play stronger.
+Don't infer SPRT direction from ordering deltas alone (also: don't infer EBF
+from bench node count — measured EBF was higher despite fewer nodes).
+
+**SB-constraint reframe (#1714 → S1200 follow-up).** At S800 the trainer sees
+~80B position-samples; on the 200B pool that's only ~0.4 epoch — most positions
+never touched once. So **+7 is a FLOOR, not the data-scaling slope** — the test
+was SB-constrained, achieving +7 *without* fully consuming the larger pool. An
+identical **S1200** run (more SB budget → consumes more of the 200B) is training
+to measure how much more the data is worth once it's actually traversed.
+Design rule: **scale SB with pool size** when measuring data-scaling, else the
+larger pool is under-consumed and its gain is undersold. (Seq-era reference:
+47B→120B ≈ +3, but that was sequential and couldn't traverse the extra data at
+all — interleave is the prerequisite for data scaling to pay off.)
+
+**Stage2 core-tune (#1716 → #1717/#1718).** Surprised stage2 was −15.9 vs prod
+(#1715), fired a 2000-iter core SPSA (#1716, 51 core params) against the stage2
+net (8F38C169) to isolate tune-flation (main's trunk is calibrated for prod
+E2773E50). Applied 47/51 changed defaults (branch `experiment/stage2-tuned`,
+commit d6f0fa1). Ordering jumped dramatically (first-move 83.0 → 86.1%, now
+edging prod) — classic tune-flation recovery *signature*. But the strength
+payoff was small:
+
+| Test | Dev | Base | Result |
+|------|-----|------|--------|
+| #1717 | stage2-tuned | stage2-untuned | **+1.0 ±1.4, 67k g, →H1** (slow grind; small) |
+| #1718 | stage2-tuned | prod E2773E50 | **−13.4 ±5.8, H0 ✗** (narrowed from −15.9) |
+
+**Lesson.** The whole tune recovered only ~+1 Elo vs untuned and closed only
+~2.5 of the 15.9 prod gap. So the prod deficit is **overwhelmingly recipe**
+(SWA + S1200 schedule + fenskip), NOT tune-flation — the tuning headroom on the
+stage2 net was ~+1, not the ~+4-6 S200 mini-prod precedent suggested. And the
++3pp first-move ordering jump bought ~+1 Elo: another clean datapoint that
+move-ordering gains ≠ proportional strength gains. The real stage2 lever is the
+S1200 (+SWA) re-bake, not search-side tuning.
