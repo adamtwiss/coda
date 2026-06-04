@@ -13803,3 +13803,247 @@ stage2 net was ~+1, not the ~+4-6 S200 mini-prod precedent suggested. And the
 +3pp first-move ordering jump bought ~+1 Elo: another clean datapoint that
 move-ordering gains ≠ proportional strength gains. The real stage2 lever is the
 S1200 (+SWA) re-bake, not search-side tuning.
+## 2026-06-02 / 2026-06-03 — Hist-prune removal merged; R/Q LMP carve dies on trunk shift; book sweep finds two new wins
+
+### Hist-prune cont-only fix — H0 again, then removal (#1705 +3.0 H1)
+
+After SPSA #1690 settled (`HIST_PRUNE_DEPTH_10X 50→38`, `HIST_PRUNE_MULT 4097→4761`),
+SPRT #1697 of the SPSA-tuned values against main H0'd at **-6.8 ±3.9 / 8470g**.
+That's the third consecutive H0 on hist-prune attempts:
+- #1562 (original main_hist + 4 cont + pawn): H0 -9.4
+- #1691 (SF cont[1]+cont[2]+pawn, SF defaults): H0 -7.5
+- #1697 (SF pattern + SPSA-tuned values): H0 -6.8
+
+Cumulative evidence: **hist-prune as a feature doesn't fit Coda's
+search/eval shape**, regardless of parameterisation. SF/Obsidian benefit;
+Coda doesn't. The right action is removal, not further tuning.
+
+**Removal branch** `experiment/remove-hist-prune` dropped ~330 lines:
+fire site + 2 tunables (`HIST_PRUNE_DEPTH_10X`, `HIST_PRUNE_MULT`) + `FEAT_HIST_PRUNE`
+flag + ENV var handlers + companion diagnostic instrumentation (`PruneStats`
+fields, aggregation, eprintln reporting).
+
+**SPRT #1705** at `[-2, 1]` bounds: **+3.0 ±2.6 / 19,496g, LLR 2.95 → H1 ✓**.
+One fewer per-node check, two fewer SPSA params. Bench: 4558080 → 4841092 (+6.2%,
+tree shape shifts as quiets that hist-prune used to swallow now reach LMR/futility/LMP).
+Merged 2026-06-02.
+
+### R/Q LMP carve-out: original H1'd vs old main, then H0'd vs new main
+
+Motivated by 34-position HORIZON regression set where SF-best was R or Q in
+59% (12+8 / 34). Designed five variants:
+
+| ID | Variant | Gate condition | Result vs old main |
+|----|---------|----------------|-------------------|
+| **#1706** | **original (LMP)** | `(R\|Q quiet) && best_score+100 < alpha` | **+1.2 ±0.9 / 145K, H1 ✓** |
+| #1707 | A (LMP, static-eval) | `static_eval+300 < alpha` | H0 -1.6 ±2.2 |
+| #1708 | B (LMP, overshoot) | `lmp_limit + 2 for R/Q` (no gate) | H0 -1.3 ±2.1 |
+| #1709 | C (LMP, root-gate) | `info.last_score < -200` | H0 -0.3 ±1.5 |
+| #1710 | SEE-prune carve (analogous gate) | `(R\|Q) && best_score+100 < alpha` on SEE | H0 -2.6 ±2.7 |
+
+#### Critical follow-up: trunk-shift invalidated the H1
+
+#1706 was measured against **old main (with hist-prune)**. After hist-prune
+removal merged, the carve was rebased onto new main and re-SPRT'd as #1713:
+
+- Old-main bench delta: +0.06% (carve fires rarely, tree barely changes)
+- **New-main bench delta: -5.0%** (carve fires *much* more often without
+  hist-prune masking some bad quiets first)
+- Input metric on 27-position RR-generated regression set: **-6 net for the carve**
+
+**SPRT #1713 H0'd at +0.4 ±0.9 / 170K games / LLR -2.98**. The original
++1.2 was a feature×feature interaction with hist-prune that doesn't survive
+trunk shift. **Did not merge.** A rook-only variant (#1727) at same gate
+also H0'd at +0.3 ±0.9 / 146K — splitting R from Q doesn't rescue the
+pattern either.
+
+**Methodology lessons recorded:**
+1. **Small-magnitude SPRT wins need re-validation after trunk shift.**
+   Especially when the shift touches the same fire region. The bench delta
+   is a fast pre-SPRT check: if a rebased branch's bench moves substantially
+   relative to its old measurement (>2-3%), the new SPRT is the only
+   trustworthy reading.
+2. **Don't trust input metric +N/M on a regression set as a deploy signal.**
+   The R/Q sibling sweep produced four different "winners" by input metric
+   at different points (+4/34 for the original, +12/19 in the analyzer);
+   all but the original H0'd on real SPRT. The 34-position set selects
+   for "Coda misses SF-best here" by construction — it captures false-positive
+   prunes but never the false-negative cost of relaxing the same gate
+   in other contexts.
+
+### Feature-attribution analyzer + the SEE-prune trap
+
+Built a parallel analyzer that runs each of 11 search features individually
+disabled (`NO_LMR`, `NO_LMP`, `NO_FUTILITY`, `NO_NMP`, `NO_RFP`, `NO_SEE_PRUNE`,
+`NO_HINDSIGHT`, `NO_IIR`, `NO_SINGULAR`, `NO_ALPHA_REDUCE`, `NO_PROBCUT`) on
+the 19 PRUNED_TRUNCATE HORIZON positions to identify which feature truncates
+SF-best lines.
+
+Results (17/19 — 2 hung on subprocess stall):
+- 4 baseline-matches (already fixed by hist-prune removal)
+- 4 no-single-feature-rescues (intractable)
+- 2 single-feature attributions: pos 31→FUTILITY, pos 45→HINDSIGHT
+- 7 multi-feature rescues
+
+**Histogram (rescuers per feature):**
+- NO_SEE_PRUNE: 5 (top)
+- NO_LMP: 4, NO_NMP: 4, NO_SINGULAR: 4
+- NO_HINDSIGHT: 3, NO_FUTILITY: 3, NO_IIR: 3, NO_PROBCUT: 3
+- NO_LMR: 2, NO_RFP: 2
+- NO_ALPHA_REDUCE: 0
+
+**Acted on the top signal**: SEE_PRUNE R/Q carve-out at same gate as #1706
+(`best_score+100 < alpha`). SPRT #1710 **H0'd at -2.6 ±2.7**. The methodology
+lesson here is sharp:
+
+> Feature-attribution-on-position ≠ Elo-on-carve-out.
+>
+> "Disabling SEE rescues this position" measures a single-position effect.
+> The SEE gate is also load-bearing across many other positions where
+> Coda's static-exchange analysis is correct — the carve drops legitimate
+> prunes across the whole search distribution to recover a small handful
+> of position-specific lines.
+
+### Hindsight endgame carve — single-feature attribution also doesn't carry
+
+Pos 45 (K+P endgame, SF Kf1 vs Coda Kf2) was the single-feature
+attribution to HINDSIGHT. Designed an endgame carve: skip hindsight
+reduction when `popcount(occupied) ≤ 12`.
+
+Two diagnostic flags before SPRT'ing:
+1. Input metric didn't reproduce — even full `NO_HINDSIGHT=1` on current
+   trunk fails to recover Kf1 (Coda plays g3g4 instead). The analyzer's
+   rescue may have been a tree-state coincidence.
+2. The new RR-derived dataset independently showed king-moves at 20% of
+   SF-best in actionable losses — same direction from independent data.
+
+Per methodology lesson ("trust SPRT, not input metric"), fired anyway.
+**SPRT #1725 H0'd at -0.6 ±1.7 / 44K games**. Cleanly resolves the question.
+
+### Book thread — eval-weighted selection wins big, then trim25's Black-asymmetry bug
+
+#### Trim sweep below 25 — exhausted lever
+Five variants (trim 0/5/10/15/20) vs trim25 in 500-game self-play
+gauntlets. All within ±6 Elo of trim25, well inside the ±11 noise band.
+trim25 was already the optimum in this lever.
+
+#### Eval-weighted selection — the new win
+Two reweighting modes on the same trim25_floor base:
+- **deterministic** (always pick highest-eval move per position): **+14.6 ±10.4 vs trim25, LOS 99.7%**
+- **sharp25** (multiply weights by `exp(eval/25)`, normalise per-position): **+12.5 ±11.3 vs trim25, LOS 98.4%**
+- sharp50/100/200: +3.5 / +0.7 / +6.3 — monotonic trend, sharper = better
+
+Sharp25 and determin are statistically indistinguishable (gap 2.1 Elo
+inside combined CI ±15). Picked sharp25 for deploy: preserves diversity
+at the startpos (e4 47% / d4 45% vs determin's e4 100%) and at
+near-tied evals; near-deterministic when eval clearly favours one move
+(Open Sicilian Nf3 at 94%). Hedges against lichess opponent pre-analysis.
+
+#### The trim25 Black-asymmetry bug
+
+Inspecting the book at canonical positions revealed: **After 1.e4, Black
+has only ONE entry: e5.** Same for 1.d4 (Nf6 only), 1.c4 (e5 only),
+1.d4 d5 2.c4 (c6 only).
+
+BFS-walk diagnosed:
+- White-to-move parents: median eval +51cp, 75% retain ≥1 passing move
+- Black-to-move parents: median eval -66cp, **only 4% retain ≥1 passing**
+- **96% of Black positions fell to floor strategy** (1 best-of-bad move kept)
+
+Root cause: `trim25` uses an absolute `parent-POV eval ≥ +25cp` threshold,
+which is structurally asymmetric — White starts with a natural +50cp,
+Black with -50cp. Same threshold drops nearly all Black entries. The
++28 Elo gain measured for trim25 came almost entirely from cleaning up
+White's book; the Black side was silently handicapped.
+
+#### Fix: relative-to-best trim (`rel25`)
+
+Per-position threshold: keep moves where `eval ≥ best_at_position - 25`.
+Symmetric in W/B by construction.
+
+**Result**: Black variety restored — `After 1.e4` becomes e5 39% / c5 37%
+/ e6 17% / c6 8% (Sicilian, French, Caro-Kann recovered). `After 1.d4`
+becomes Nf6 83% / d5 17%. White behaviour preserved (startpos still
+e4 ~48% / d4 ~46% / Nf3 ~7%).
+
+**Gauntlets vs sharp25 (the current local champion)**:
+- rel25_sharp25 vs sharp25: **+0.7 ±11.3** (noise)
+- rel50_sharp25 vs sharp25: **+2.8 ±11.7** (noise)
+
+**No measurable Elo change** in self-play — expected, because both sides
+of the gauntlet share the same handicapped book and the asymmetry
+cancels out. The original trim25 sweep at +28 Elo couldn't have seen
+this bug either. Deploy candidate is `rel25_sharp25` as a "diversity
+bug fix, no Elo claim" — practical lichess benefit (opponents who
+track codabot's games can no longer pre-analyse one Black line).
+
+**Methodology lesson recorded:**
+
+> Symmetric self-play gauntlets can't see asymmetric book bugs.
+> When measuring book changes via self-play, also inspect what the
+> book *does* at canonical positions — symmetric handicaps cancel
+> out in the Elo measurement. The +28 Elo from trim25 was real, but
+> it was measured against a baseline that shared the same Black
+> handicap. The bug only surfaces under cross-color inspection.
+
+### Overnight 2026-06-03 → 2026-06-04: four parallel experiments
+
+While fleet was idle, fired four parallel:
+
+1. **A1 — SPSA #1724 on LMP+fut cluster** (5 params, 1500 iter, post-hist-prune-removal trunk). Direction: more pruning across the board.
+   - LMP_BASE: 8 → 7 (-12.5%)
+   - LMP_DEPTH: 4 → 4 (unchanged)
+   - FUT_BASE: 29 → 32 (+10.3%)
+   - FUT_PER_DEPTH: 81 → 86 (+6.2%)
+   - **FUT_THREATS_MARGIN: 9 → 13 (+44.4%) — biggest mover**
+
+   The +44% jump on FUT_THREATS_MARGIN is the standout — SPSA wants
+   much more threat-density-aware futility margin. Mechanism: post-
+   hist-prune-removal, more quiets reach futility; threat-density is
+   the discriminator that protects tactical positions from over-pruning.
+   Tuned-values SPRT **#1728 H0'd at +0.5 ±0.7 / 250K / LLR -2.98**.
+   Bench 4347280 vs 4841092 (-10.2%). Trended +1.0 at 156K games, then
+   settled toward zero as sample size grew — classic SPSA-overfits-the-
+   noise pattern noted in CLAUDE.md. Don't merge. Possible follow-up:
+   split the cluster (just FUT_THREATS_MARGIN alone, or just LMP_BASE
+   alone) to identify which mover was load-bearing — not queued.
+
+2. **A2 — Deeper book pre-analysis at depth 14**. 113,954/113,954 entries
+   scored in 127 minutes. Output `/tmp/titans_eval_d14.csv` replaces
+   the d10 source for all future book builds.
+   - Rebuilt `rel25_sharp25` from d14 evals.
+   - Gauntlet vs d10 version (500 games): **d14 +6.9 ±11.7, LOS 87.7%**.
+   - Directional positive but inside noise. Banked as deploy without
+     Elo claim ("strictly more accurate eval data; bundled with rel25
+     for codabot deploy").
+
+3. **B3a — Hindsight endgame carve SPRT** (see above). **#1725 H0 -0.6.**
+
+4. **B3b — Rook-only LMP carve SPRT** (split half of the failed R+Q carve).
+   **#1727 H0 +0.3 ±0.9 / 146K games**. Definitive close on the R/Q-carve
+   thread.
+
+### Net tally for the two days
+
+**Merged or queued for merge:**
+- `#1705 remove-hist-prune` +3.0 ±2.6 H1 — merged 2026-06-02
+- `#1728 lmp-fut-tuned-1724` +0.5 ±0.7 H0 — SPSA overfit, not merged
+- Book bundle (`Titans_rel25_sharp25_d14.bin`): +12.5 Elo (sharp25 win)
+  + diversity bug fix + d14 evals. Deploying to codabot today.
+
+**Closed as no-go:**
+- LMP R/Q carve and all four sibling variants (1707/1708/1709/1710)
+- LMP R/Q rebased onto new trunk (1713)
+- LMP rook-only (1727)
+- Hindsight endgame (1725)
+- SEE-prune R/Q (1710)
+- Trim sweep below 25 (5 variants, all in noise vs trim25)
+- Determin vs sharp25 (statistically tied, sharp25 chosen for diversity)
+
+**Methodology lessons captured (in CLAUDE.md or memory):**
+- Feature-attribution-on-position ≠ Elo-on-carve-out
+- Small-magnitude SPRT wins need re-validation after trunk shift
+- Symmetric self-play can't see asymmetric book bugs
+- Trust SPRT, not input metric (multiple confirmations across this sweep)
+- The 34-position regression set selects for false-positive prunes
+  only — never measures false-negative cost
