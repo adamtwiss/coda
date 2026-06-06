@@ -239,9 +239,6 @@ pub unsafe fn dense_l1_avx2_l1_32(
     const CHUNK_STRIDE: usize = NUM_NEURONS * 4; // = 128 bytes per chunk
     let ones = _mm256_set1_epi16(1);
 
-    // Initialise output with scaled biases.
-    for i in 0..NUM_NEURONS { output[i] = bias[i] as i32 * bias_scale; }
-
     let mut acc0 = _mm256_setzero_si256(); // neurons 0-7
     let mut acc1 = _mm256_setzero_si256(); // neurons 8-15
     let mut acc2 = _mm256_setzero_si256(); // neurons 16-23
@@ -279,14 +276,28 @@ pub unsafe fn dense_l1_avx2_l1_32(
     let ntm_ptr = ntm_pw.as_ptr() as *const u32;
     accumulate_perspective!(ntm_ptr, pw / 4);
 
-    let mut results = [0i32; 32];
-    _mm256_storeu_si256(results.as_mut_ptr()        as *mut __m256i, acc0);
-    _mm256_storeu_si256(results.as_mut_ptr().add(8) as *mut __m256i, acc1);
-    _mm256_storeu_si256(results.as_mut_ptr().add(16) as *mut __m256i, acc2);
-    _mm256_storeu_si256(results.as_mut_ptr().add(24) as *mut __m256i, acc3);
-    for i in 0..NUM_NEURONS {
-        output[i] += results[i];
-    }
+    let scale = _mm256_set1_epi32(bias_scale);
+    let b0 = _mm256_mullo_epi32(
+        _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr() as *const __m128i)),
+        scale,
+    );
+    let b1 = _mm256_mullo_epi32(
+        _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr().add(8) as *const __m128i)),
+        scale,
+    );
+    let b2 = _mm256_mullo_epi32(
+        _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr().add(16) as *const __m128i)),
+        scale,
+    );
+    let b3 = _mm256_mullo_epi32(
+        _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr().add(24) as *const __m128i)),
+        scale,
+    );
+    let out_ptr = output.as_mut_ptr();
+    _mm256_storeu_si256(out_ptr as *mut __m256i, _mm256_add_epi32(acc0, b0));
+    _mm256_storeu_si256(out_ptr.add(8) as *mut __m256i, _mm256_add_epi32(acc1, b1));
+    _mm256_storeu_si256(out_ptr.add(16) as *mut __m256i, _mm256_add_epi32(acc2, b2));
+    _mm256_storeu_si256(out_ptr.add(24) as *mut __m256i, _mm256_add_epi32(acc3, b3));
 }
 
 /// Dense column-major L1 matmul: identical layout to sparse_l1_avx2 but
@@ -318,9 +329,6 @@ pub unsafe fn dense_l1_avx2(
 
     let chunk_stride = num_neurons * 4;
     let ones = _mm256_set1_epi16(1);
-
-    // Initialize with biases
-    for i in 0..num_neurons { output[i] = bias[i] as i32 * bias_scale; }
 
     let mut acc0 = _mm256_setzero_si256();
     let mut acc1 = _mm256_setzero_si256();
@@ -364,11 +372,26 @@ pub unsafe fn dense_l1_avx2(
         }
     }
 
-    let mut results = [0i32; 16];
-    _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, acc0);
-    _mm256_storeu_si256(results.as_mut_ptr().add(8) as *mut __m256i, acc1);
-    for i in 0..num_neurons {
-        output[i] += results[i];
+    if num_neurons == 16 {
+        let scale = _mm256_set1_epi32(bias_scale);
+        let b0 = _mm256_mullo_epi32(
+            _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr() as *const __m128i)),
+            scale,
+        );
+        let b1 = _mm256_mullo_epi32(
+            _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr().add(8) as *const __m128i)),
+            scale,
+        );
+        _mm256_storeu_si256(output.as_mut_ptr() as *mut __m256i, _mm256_add_epi32(acc0, b0));
+        _mm256_storeu_si256(output.as_mut_ptr().add(8) as *mut __m256i, _mm256_add_epi32(acc1, b1));
+    } else {
+        for i in 0..num_neurons { output[i] = bias[i] as i32 * bias_scale; }
+        let mut results = [0i32; 16];
+        _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, acc0);
+        _mm256_storeu_si256(results.as_mut_ptr().add(8) as *mut __m256i, acc1);
+        for i in 0..num_neurons {
+            output[i] += results[i];
+        }
     }
 }
 
@@ -407,8 +430,6 @@ pub unsafe fn dense_l1_avx512_vnni(
     debug_assert_eq!(num_neurons, 16, "dense_l1_avx512_vnni currently specialised to 16 neurons");
 
     let chunk_stride = num_neurons * 4; // = 64 bytes — exactly one ZMM
-
-    for i in 0..num_neurons { output[i] = bias[i] as i32 * bias_scale; }
 
     // Four interleaved accumulators break the VPDPBUSD dependency chain
     // (4-cycle latency on Zen 5 / Sapphire Rapids). A single accumulator
@@ -459,11 +480,9 @@ pub unsafe fn dense_l1_avx512_vnni(
     run_perspective!(ntm_chunks_ptr, pw / 4);
 
     let acc = _mm512_add_epi32(_mm512_add_epi32(a0, a1), _mm512_add_epi32(a2, a3));
-    let mut results = [0i32; 16];
-    _mm512_storeu_si512(results.as_mut_ptr() as *mut __m512i, acc);
-    for i in 0..num_neurons {
-        output[i] += results[i];
-    }
+    let bias_i32 = _mm512_cvtepi16_epi32(_mm256_loadu_si256(bias.as_ptr() as *const __m256i));
+    let scaled_bias = _mm512_mullo_epi32(bias_i32, _mm512_set1_epi32(bias_scale));
+    _mm512_storeu_si512(output.as_mut_ptr() as *mut __m512i, _mm512_add_epi32(acc, scaled_bias));
 }
 
 /// Sparse column-major L1 matmul, AVX-512 VNNI variant — skips 4-byte
@@ -569,8 +588,6 @@ pub unsafe fn dense_l1_avx_vnni(
 
     let chunk_stride = num_neurons * 4;
 
-    for i in 0..num_neurons { output[i] = bias[i] as i32 * bias_scale; }
-
     // Four accumulator pairs (lo=neurons 0-7, hi=neurons 8-15) break
     // the VPDPBUSD dependency chain. Same pattern as dense_l1_avx512_vnni
     // but with YMM registers (8 neurons each instead of 16).
@@ -649,11 +666,26 @@ pub unsafe fn dense_l1_avx_vnni(
     // Merge the four accumulator pairs.
     let lo = _mm256_add_epi32(_mm256_add_epi32(a0_lo, a1_lo), _mm256_add_epi32(a2_lo, a3_lo));
     let hi = _mm256_add_epi32(_mm256_add_epi32(a0_hi, a1_hi), _mm256_add_epi32(a2_hi, a3_hi));
-    let mut results = [0i32; 16];
-    _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, lo);
-    _mm256_storeu_si256(results.as_mut_ptr().add(8) as *mut __m256i, hi);
-    for i in 0..num_neurons {
-        output[i] += results[i];
+    if num_neurons == 16 {
+        let scale = _mm256_set1_epi32(bias_scale);
+        let b0 = _mm256_mullo_epi32(
+            _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr() as *const __m128i)),
+            scale,
+        );
+        let b1 = _mm256_mullo_epi32(
+            _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr().add(8) as *const __m128i)),
+            scale,
+        );
+        _mm256_storeu_si256(output.as_mut_ptr() as *mut __m256i, _mm256_add_epi32(lo, b0));
+        _mm256_storeu_si256(output.as_mut_ptr().add(8) as *mut __m256i, _mm256_add_epi32(hi, b1));
+    } else {
+        for i in 0..num_neurons { output[i] = bias[i] as i32 * bias_scale; }
+        let mut results = [0i32; 16];
+        _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, lo);
+        _mm256_storeu_si256(results.as_mut_ptr().add(8) as *mut __m256i, hi);
+        for i in 0..num_neurons {
+            output[i] += results[i];
+        }
     }
 }
 
