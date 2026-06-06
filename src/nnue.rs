@@ -867,12 +867,16 @@ unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
 unsafe fn simd_pairwise_pack_plain(acc: &[i16], out: &mut [u8], pw: usize) {
     simd_pairwise_pack_impl::<false>(acc, std::ptr::null(), out, pw);
 }
 
 /// Pairwise pack with fused threat combine.
 /// Adds threat[i] to acc[i] before clamping (Reckless activate_ft pattern).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
 unsafe fn simd_pairwise_pack_threat(acc: &[i16], threat: *const i16, out: &mut [u8], pw: usize) {
     simd_pairwise_pack_impl::<true>(acc, threat, out, pw);
 }
@@ -1414,12 +1418,16 @@ unsafe fn simd512_pairwise_pack_impl<const HAS_THREAT: bool>(
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
 unsafe fn simd512_pairwise_pack_plain(acc: &[i16], out: &mut [u8], pw: usize) {
     simd512_pairwise_pack_impl::<false>(acc, std::ptr::null(), out, pw);
 }
 
 /// AVX-512 pairwise pack with fused threat combine.
 /// Adds threat[i] to acc[i] before clamp (v9 fused pack).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
 unsafe fn simd512_pairwise_pack_threat(acc: &[i16], threat: *const i16, out: &mut [u8], pw: usize) {
     simd512_pairwise_pack_impl::<true>(acc, threat, out, pw);
 }
@@ -2871,7 +2879,6 @@ impl NNUENet {
         let pw = h / 2; // pairwise output per perspective
         let l1_total = self.l1_size; // total L1 neurons (bucketed or not)
         let l1_pb = self.l1_per_bucket; // per-bucket L1 size
-        let qa = QA;
         let qa_l1 = self.l1_scale;
 
         // For bucketed nets: only compute neurons for this bucket
@@ -2930,15 +2937,15 @@ impl NNUENet {
             for i in 0..pw {
                 let ta = if has_threats { stm_threat[i] as i32 } else { 0 };
                 let tb = if has_threats { stm_threat[i + pw] as i32 } else { 0 };
-                let a = (stm_acc[i] as i32 + ta).clamp(0, qa);
-                let b = (stm_acc[i + pw] as i32 + tb).clamp(0, qa);
+                let a = (stm_acc[i] as i32 + ta).clamp(0, QA);
+                let b = (stm_acc[i + pw] as i32 + tb).clamp(0, QA);
                 stm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
             for i in 0..pw {
                 let ta = if has_threats { ntm_threat[i] as i32 } else { 0 };
                 let tb = if has_threats { ntm_threat[i + pw] as i32 } else { 0 };
-                let a = (ntm_acc[i] as i32 + ta).clamp(0, qa);
-                let b = (ntm_acc[i + pw] as i32 + tb).clamp(0, qa);
+                let a = (ntm_acc[i] as i32 + ta).clamp(0, QA);
+                let b = (ntm_acc[i + pw] as i32 + tb).clamp(0, QA);
                 ntm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
         }
@@ -2961,15 +2968,15 @@ impl NNUENet {
             for i in 0..pw {
                 let ta = if has_threats { stm_threat[i] as i32 } else { 0 };
                 let tb = if has_threats { stm_threat[i + pw] as i32 } else { 0 };
-                let a = (stm_acc[i] as i32 + ta).clamp(0, qa);
-                let b = (stm_acc[i + pw] as i32 + tb).clamp(0, qa);
+                let a = (stm_acc[i] as i32 + ta).clamp(0, QA);
+                let b = (stm_acc[i + pw] as i32 + tb).clamp(0, QA);
                 stm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
             for i in 0..pw {
                 let ta = if has_threats { ntm_threat[i] as i32 } else { 0 };
                 let tb = if has_threats { ntm_threat[i + pw] as i32 } else { 0 };
-                let a = (ntm_acc[i] as i32 + ta).clamp(0, qa);
-                let b = (ntm_acc[i + pw] as i32 + tb).clamp(0, qa);
+                let a = (ntm_acc[i] as i32 + ta).clamp(0, QA);
+                let b = (ntm_acc[i + pw] as i32 + tb).clamp(0, QA);
                 ntm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
         }
@@ -3249,10 +3256,7 @@ impl NNUENet {
         let l1_out_count = if self.dual_l1 { l1 * 2 } else { l1 };
         const L1_OUT_BUF: usize = 128;  // l1*2 ≤ 128 (dual_l1 with l1 ≤ 64)
         debug_assert!(l1_out_count <= L1_OUT_BUF, "l1_out_count {} exceeds L1_OUT_BUF {}", l1_out_count, L1_OUT_BUF);
-        let mut l1_out_storage = std::mem::MaybeUninit::<[f32; L1_OUT_BUF]>::uninit();
-        let l1_out: &mut [f32] = unsafe {
-            std::slice::from_raw_parts_mut(l1_out_storage.as_mut_ptr() as *mut f32, L1_OUT_BUF)
-        };
+        let mut l1_out = [0.0f32; L1_OUT_BUF];
         if self.dual_l1 {
             // Dual L1 activation: CReLU(L1) concat SCReLU(L1)
             for i in 0..l1 {
