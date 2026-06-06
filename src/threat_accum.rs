@@ -187,9 +187,7 @@ impl ThreatStack {
         // 2 KB zero-init per refresh — `indices[..n_indices]` is fully written
         // by enumerate_threats below; consumers only read that prefix.
         let mut indices_storage = std::mem::MaybeUninit::<[usize; 256]>::uninit();
-        let indices: &mut [usize] = unsafe {
-            std::slice::from_raw_parts_mut(indices_storage.as_mut_ptr() as *mut usize, 256)
-        };
+        let indices_ptr = indices_storage.as_mut_ptr() as *mut usize;
         let mut n_indices = 0usize;
         // C8 audit LIKELY #18: track whether the enumerator produced more
         // features than the buffer can hold. Previously excess features
@@ -206,8 +204,8 @@ impl ThreatStack {
             occ, pov, mirrored,
             |feat_idx| {
                 if feat_idx < num_features {
-                    if n_indices < indices.len() {
-                        indices[n_indices] = feat_idx;
+                    if n_indices < 256 {
+                        unsafe { indices_ptr.add(n_indices).write(feat_idx); }
                         n_indices += 1;
                     } else {
                         overflowed = true;
@@ -220,8 +218,9 @@ impl ThreatStack {
         crate::threats::refresh_stats::record(n_indices, overflowed);
 
         // Apply all weight rows with SIMD
+        let indices = unsafe { std::slice::from_raw_parts(indices_ptr, n_indices) };
         crate::threats::add_weight_rows(
-            &mut entry.values[p][..h], net_weights, h, &indices[..n_indices],
+            &mut entry.values[p][..h], net_weights, h, indices,
         );
 
         entry.accurate[p] = !overflowed;
@@ -291,20 +290,23 @@ impl ThreatStack {
                 let n_deltas = self.stack[ply].delta.len;
                 let mut local_deltas_storage =
                     std::mem::MaybeUninit::<[crate::threats::RawThreatDelta; 128]>::uninit();
-                let local_deltas: &mut [crate::threats::RawThreatDelta] = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        local_deltas_storage.as_mut_ptr() as *mut crate::threats::RawThreatDelta,
-                        128,
-                    )
-                };
-                local_deltas[..n_deltas].copy_from_slice(&self.stack[ply].delta.data[..n_deltas]);
+                let local_deltas_ptr =
+                    local_deltas_storage.as_mut_ptr() as *mut crate::threats::RawThreatDelta;
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        self.stack[ply].delta.data.as_ptr(),
+                        local_deltas_ptr,
+                        n_deltas,
+                    );
+                }
+                let local_deltas = unsafe { std::slice::from_raw_parts(local_deltas_ptr, n_deltas) };
                 // Use SIMD apply_threat_deltas (copies src + applies adds/subs)
                 let (prev, curr) = self.stack.split_at_mut(ply);
                 unsafe {
                     crate::threats::apply_threat_deltas(
                         &mut curr[0].values[p][..h],
                         &prev[ply - 1].values[p][..h],
-                        &local_deltas[..n_deltas],
+                        local_deltas,
                         net_weights, h, num_features,
                         pov, mirrored,
                     );

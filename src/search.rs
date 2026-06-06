@@ -3236,7 +3236,7 @@ fn negamax(
         board.make_null_move();
         info.tt.prefetch(board.hash);
         let null_key = board.hash; // save hash for threat detection after unmake
-        if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::recompute()); }
+        if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::incremental(&[])); }
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
         // C3 (2026-04-22 audit): set null sentinel on moved_piece_stack /
         // moved_to_stack at ply_u. Without this, child at ply+1 reads
@@ -5330,4 +5330,3 @@ mod tests {
         );
     }
 }
-

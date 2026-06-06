@@ -766,7 +766,7 @@ unsafe fn simd_pairwise_dot(acc_first: &[i16], acc_second: &[i16], weights: &[i1
 /// Output buffer must be at least h bytes. h must be multiple of 16.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn simd_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
+unsafe fn simd_screlu_pack(acc: &[i16], out: *mut u8, h: usize) {
     let zero = _mm256_setzero_si256();
     let qa = _mm256_set1_epi16(QA as i16);
     let mut i = 0;
@@ -787,13 +787,13 @@ unsafe fn simd_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
         let packed = _mm256_packus_epi16(d0, d1);
         // Fix lane crossing: packus interleaves 128-bit lanes, need permute
         let fixed = _mm256_permute4x64_epi64(packed, 0xD8); // 0,2,1,3
-        _mm256_storeu_si256(out.as_mut_ptr().add(i) as *mut __m256i, fixed);
+        _mm256_storeu_si256(out.add(i) as *mut __m256i, fixed);
         i += 32;
     }
     // Handle remaining 16 if h is not multiple of 32
     while i < h {
         let v = (acc[i] as i32).clamp(0, 255);
-        out[i] = ((v * v) >> 8) as u8;
+        out.add(i).write(((v * v) >> 8) as u8);
         i += 1;
     }
 }
@@ -808,7 +808,7 @@ unsafe fn simd_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
 unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
     acc: &[i16],
     threat: *const i16,
-    out: &mut [u8],
+    out: *mut u8,
     pw: usize,
 ) {
     let zero = _mm256_setzero_si256();
@@ -846,14 +846,14 @@ unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
             let d2 = _mm256_srli_epi16(prod2, FT_SHIFT);
             let packed = _mm256_packus_epi16(d, d2);
             let fixed = _mm256_permute4x64_epi64(packed, 0xD8);
-            _mm256_storeu_si256(out.as_mut_ptr().add(i) as *mut __m256i, fixed);
+            _mm256_storeu_si256(out.add(i) as *mut __m256i, fixed);
             i += 32;
         } else {
             // Remaining 16: pack with zeros
             let packed = _mm256_packus_epi16(d, zero);
             let fixed = _mm256_permute4x64_epi64(packed, 0xD8);
             // Only store 16 bytes (lower half)
-            _mm_storeu_si128(out.as_mut_ptr().add(i) as *mut __m128i,
+            _mm_storeu_si128(out.add(i) as *mut __m128i,
                 _mm256_castsi256_si128(fixed));
             i += 16;
         }
@@ -862,14 +862,14 @@ unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
         let mut a = acc[i] as i32;
         let mut b = acc[pw + i] as i32;
         if HAS_THREAT { a += *threat.add(i) as i32; b += *threat.add(pw + i) as i32; }
-        out[i] = ((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8;
+        out.add(i).write(((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8);
         i += 1;
     }
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn simd_pairwise_pack_plain(acc: &[i16], out: &mut [u8], pw: usize) {
+unsafe fn simd_pairwise_pack_plain(acc: &[i16], out: *mut u8, pw: usize) {
     simd_pairwise_pack_impl::<false>(acc, std::ptr::null(), out, pw);
 }
 
@@ -877,7 +877,7 @@ unsafe fn simd_pairwise_pack_plain(acc: &[i16], out: &mut [u8], pw: usize) {
 /// Adds threat[i] to acc[i] before clamping (Reckless activate_ft pattern).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn simd_pairwise_pack_threat(acc: &[i16], threat: *const i16, out: &mut [u8], pw: usize) {
+unsafe fn simd_pairwise_pack_threat(acc: &[i16], threat: *const i16, out: *mut u8, pw: usize) {
     simd_pairwise_pack_impl::<true>(acc, threat, out, pw);
 }
 
@@ -1356,7 +1356,7 @@ unsafe fn simd512_pairwise_dot(acc_first: &[i16], acc_second: &[i16], weights: &
 unsafe fn simd512_pairwise_pack_impl<const HAS_THREAT: bool>(
     acc: &[i16],
     threat: *const i16,
-    out: &mut [u8],
+    out: *mut u8,
     pw: usize,
 ) {
     let zero = _mm512_setzero_si512();
@@ -1397,13 +1397,13 @@ unsafe fn simd512_pairwise_pack_impl<const HAS_THREAT: bool>(
             // Pack 2×32 i16 → 64 u8
             let packed = _mm512_packus_epi16(d0, d1);
             let fixed = _mm512_permutexvar_epi64(perm_idx, packed);
-            _mm512_storeu_si512(out.as_mut_ptr().add(i) as *mut __m512i, fixed);
+            _mm512_storeu_si512(out.add(i) as *mut __m512i, fixed);
             i += 64;
         } else {
             // Remaining 32: pack with zeros into 64 bytes, store lower 32
             let packed = _mm512_packus_epi16(d0, zero);
             let fixed = _mm512_permutexvar_epi64(perm_idx, packed);
-            _mm256_storeu_si256(out.as_mut_ptr().add(i) as *mut __m256i,
+            _mm256_storeu_si256(out.add(i) as *mut __m256i,
                 _mm512_castsi512_si256(fixed));
             i += 32;
         }
@@ -1413,14 +1413,14 @@ unsafe fn simd512_pairwise_pack_impl<const HAS_THREAT: bool>(
         let mut a = acc[i] as i32;
         let mut b = acc[pw + i] as i32;
         if HAS_THREAT { a += *threat.add(i) as i32; b += *threat.add(pw + i) as i32; }
-        out[i] = ((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8;
+        out.add(i).write(((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8);
         i += 1;
     }
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw")]
-unsafe fn simd512_pairwise_pack_plain(acc: &[i16], out: &mut [u8], pw: usize) {
+unsafe fn simd512_pairwise_pack_plain(acc: &[i16], out: *mut u8, pw: usize) {
     simd512_pairwise_pack_impl::<false>(acc, std::ptr::null(), out, pw);
 }
 
@@ -1428,7 +1428,7 @@ unsafe fn simd512_pairwise_pack_plain(acc: &[i16], out: &mut [u8], pw: usize) {
 /// Adds threat[i] to acc[i] before clamp (v9 fused pack).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw")]
-unsafe fn simd512_pairwise_pack_threat(acc: &[i16], threat: *const i16, out: &mut [u8], pw: usize) {
+unsafe fn simd512_pairwise_pack_threat(acc: &[i16], threat: *const i16, out: *mut u8, pw: usize) {
     simd512_pairwise_pack_impl::<true>(acc, threat, out, pw);
 }
 
@@ -1436,7 +1436,7 @@ unsafe fn simd512_pairwise_pack_threat(acc: &[i16], threat: *const i16, out: &mu
 /// h must be multiple of 64.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw")]
-unsafe fn simd512_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
+unsafe fn simd512_screlu_pack(acc: &[i16], out: *mut u8, h: usize) {
     let zero = _mm512_setzero_si512();
     let qa = _mm512_set1_epi16(QA as i16);
     let perm_idx = _mm512_set_epi64(7, 5, 3, 1, 6, 4, 2, 0);
@@ -1452,7 +1452,7 @@ unsafe fn simd512_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
         let d1 = _mm512_srli_epi16(sq1, 8);
         let packed = _mm512_packus_epi16(d0, d1);
         let fixed = _mm512_permutexvar_epi64(perm_idx, packed);
-        _mm512_storeu_si512(out.as_mut_ptr().add(i) as *mut __m512i, fixed);
+        _mm512_storeu_si512(out.add(i) as *mut __m512i, fixed);
         i += 64;
     }
     // Tail: 32 elements
@@ -1463,7 +1463,7 @@ unsafe fn simd512_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
         let d = _mm512_srli_epi16(sq, 8);
         let packed = _mm512_packus_epi16(d, zero);
         let fixed = _mm512_permutexvar_epi64(perm_idx, packed);
-        _mm256_storeu_si256(out.as_mut_ptr().add(i) as *mut __m256i,
+        _mm256_storeu_si256(out.add(i) as *mut __m256i,
             _mm512_castsi512_si256(fixed));
         i += 32;
     }
@@ -1632,7 +1632,7 @@ unsafe fn l2_fmadd_avx512_x32(
     l2_total: usize,
     l2_off: usize,
     biases: &[f32],
-    h2: &mut [f32],
+    h2: *mut f32,
 ) {
     let mut h_lo = _mm512_loadu_ps(biases.as_ptr().add(l2_off));
     let mut h_hi = _mm512_loadu_ps(biases.as_ptr().add(l2_off + 16));
@@ -1646,8 +1646,8 @@ unsafe fn l2_fmadd_avx512_x32(
         h_lo = _mm512_fmadd_ps(bcast, w_lo, h_lo);
         h_hi = _mm512_fmadd_ps(bcast, w_hi, h_hi);
     }
-    _mm512_storeu_ps(h2.as_mut_ptr(), h_lo);
-    _mm512_storeu_ps(h2.as_mut_ptr().add(16), h_hi);
+    _mm512_storeu_ps(h2, h_lo);
+    _mm512_storeu_ps(h2.add(16), h_hi);
 }
 
 /// AVX-2 sibling of `l2_fmadd_avx512_x32` for the AVX-2 fleet (Atlas + most
@@ -1664,7 +1664,7 @@ unsafe fn l2_fmadd_avx2_x32(
     l2_total: usize,
     l2_off: usize,
     biases: &[f32],
-    h2: &mut [f32],
+    h2: *mut f32,
 ) {
     let mut h0 = _mm256_loadu_ps(biases.as_ptr().add(l2_off));
     let mut h1 = _mm256_loadu_ps(biases.as_ptr().add(l2_off + 8));
@@ -1684,10 +1684,10 @@ unsafe fn l2_fmadd_avx2_x32(
         h2v = _mm256_fmadd_ps(bcast, w2, h2v);
         h3 = _mm256_fmadd_ps(bcast, w3, h3);
     }
-    _mm256_storeu_ps(h2.as_mut_ptr(), h0);
-    _mm256_storeu_ps(h2.as_mut_ptr().add(8), h1);
-    _mm256_storeu_ps(h2.as_mut_ptr().add(16), h2v);
-    _mm256_storeu_ps(h2.as_mut_ptr().add(24), h3);
+    _mm256_storeu_ps(h2, h0);
+    _mm256_storeu_ps(h2.add(8), h1);
+    _mm256_storeu_ps(h2.add(16), h2v);
+    _mm256_storeu_ps(h2.add(24), h3);
 }
 
 /// AVX-2 f32 SCReLU activation for l2==32 (clamp [0,1] then square).
@@ -1962,7 +1962,7 @@ unsafe fn neon_pairwise_dot(acc_first: &[i16], acc_second: &[i16], weights: &[i1
 /// Pack SCReLU'd accumulator into uint8 (NEON): clamp [0,255], v²/256 → [0,254].
 /// Output buffer must be at least h bytes.
 #[cfg(target_arch = "aarch64")]
-unsafe fn neon_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
+unsafe fn neon_screlu_pack(acc: &[i16], out: *mut u8, h: usize) {
     let zero = vdupq_n_s16(0);
     let qa = vdupq_n_s16(QA as i16);
     let mut i = 0;
@@ -1986,12 +1986,12 @@ unsafe fn neon_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
         // Narrow i16 → u8 with unsigned saturation (values are [0, 254])
         let lo = vqmovun_s16(d0);
         let hi = vqmovun_s16(d1);
-        vst1q_u8(out.as_mut_ptr().add(i), vcombine_u8(lo, hi));
+        vst1q_u8(out.add(i), vcombine_u8(lo, hi));
         i += 16;
     }
     while i < h {
         let v = (acc[i] as i32).clamp(0, 255);
-        out[i] = ((v * v) >> 8) as u8;
+        out.add(i).write(((v * v) >> 8) as u8);
         i += 1;
     }
 }
@@ -1999,7 +1999,7 @@ unsafe fn neon_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
 /// CReLU + pairwise pack (NEON): acc[0..pw] × acc[pw..2*pw] → out[0..pw] u8.
 /// clamp(a, 0, 255) * clamp(b, 0, 255) >> 8 for each pair.
 #[cfg(target_arch = "aarch64")]
-unsafe fn neon_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
+unsafe fn neon_pairwise_pack(acc: &[i16], out: *mut u8, pw: usize) {
     neon_pairwise_pack_fused(acc, std::ptr::null(), out, pw);
 }
 
@@ -2008,7 +2008,7 @@ unsafe fn neon_pairwise_pack(acc: &[i16], out: &mut [u8], pw: usize) {
 /// [0, QA] clamp. Required for v9 nets with threat inputs — without it, threat contributions
 /// are silently dropped on aarch64.
 #[cfg(target_arch = "aarch64")]
-unsafe fn neon_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut [u8], pw: usize) {
+unsafe fn neon_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: *mut u8, pw: usize) {
     let zero = vdupq_n_s16(0);
     let qa = vdupq_n_s16(QA as i16);
     let has_threat = !threat.is_null();
@@ -2034,7 +2034,7 @@ unsafe fn neon_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut [u
         let d1 = vreinterpretq_s16_u16(vshrq_n_u16::<9>(vreinterpretq_u16_s16(prod1)));
         let lo = vqmovun_s16(d0);
         let hi = vqmovun_s16(d1);
-        vst1q_u8(out.as_mut_ptr().add(i), vcombine_u8(lo, hi));
+        vst1q_u8(out.add(i), vcombine_u8(lo, hi));
         i += 16;
     }
     while i + 8 <= pw {
@@ -2048,7 +2048,7 @@ unsafe fn neon_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut [u
         let cb = vminq_s16(vmaxq_s16(b, zero), qa);
         let prod = vmulq_s16(ca, cb);
         let d = vreinterpretq_s16_u16(vshrq_n_u16::<9>(vreinterpretq_u16_s16(prod)));
-        vst1_u8(out.as_mut_ptr().add(i), vqmovun_s16(d));
+        vst1_u8(out.add(i), vqmovun_s16(d));
         i += 8;
     }
     while i < pw {
@@ -2058,7 +2058,7 @@ unsafe fn neon_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut [u
             a += *threat.add(i) as i32;
             b += *threat.add(pw + i) as i32;
         }
-        out[i] = ((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8;
+        out.add(i).write(((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8);
         i += 1;
     }
 }
@@ -2905,32 +2905,28 @@ impl NNUENet {
         assert!(pw <= PW_BUF, "pw {} exceeds PW_BUF {}", pw, PW_BUF);
         let mut stm_pw_storage = std::mem::MaybeUninit::<[u8; PW_BUF]>::uninit();
         let mut ntm_pw_storage = std::mem::MaybeUninit::<[u8; PW_BUF]>::uninit();
-        let stm_pw: &mut [u8] = unsafe {
-            std::slice::from_raw_parts_mut(stm_pw_storage.as_mut_ptr() as *mut u8, PW_BUF)
-        };
-        let ntm_pw: &mut [u8] = unsafe {
-            std::slice::from_raw_parts_mut(ntm_pw_storage.as_mut_ptr() as *mut u8, PW_BUF)
-        };
+        let stm_pw_ptr = stm_pw_storage.as_mut_ptr() as *mut u8;
+        let ntm_pw_ptr = ntm_pw_storage.as_mut_ptr() as *mut u8;
 
         #[cfg(target_arch = "x86_64")]
         if self.has_avx512 && pw.is_multiple_of(32) {
             unsafe {
                 if has_threats {
-                    simd512_pairwise_pack_threat(stm_acc, stm_threat.as_ptr(), stm_pw, pw);
-                    simd512_pairwise_pack_threat(ntm_acc, ntm_threat.as_ptr(), ntm_pw, pw);
+                    simd512_pairwise_pack_threat(stm_acc, stm_threat.as_ptr(), stm_pw_ptr, pw);
+                    simd512_pairwise_pack_threat(ntm_acc, ntm_threat.as_ptr(), ntm_pw_ptr, pw);
                 } else {
-                    simd512_pairwise_pack_plain(stm_acc, stm_pw, pw);
-                    simd512_pairwise_pack_plain(ntm_acc, ntm_pw, pw);
+                    simd512_pairwise_pack_plain(stm_acc, stm_pw_ptr, pw);
+                    simd512_pairwise_pack_plain(ntm_acc, ntm_pw_ptr, pw);
                 }
             }
         } else if self.has_avx2 && pw.is_multiple_of(16) {
             unsafe {
                 if has_threats {
-                    simd_pairwise_pack_threat(stm_acc, stm_threat.as_ptr(), stm_pw, pw);
-                    simd_pairwise_pack_threat(ntm_acc, ntm_threat.as_ptr(), ntm_pw, pw);
+                    simd_pairwise_pack_threat(stm_acc, stm_threat.as_ptr(), stm_pw_ptr, pw);
+                    simd_pairwise_pack_threat(ntm_acc, ntm_threat.as_ptr(), ntm_pw_ptr, pw);
                 } else {
-                    simd_pairwise_pack_plain(stm_acc, stm_pw, pw);
-                    simd_pairwise_pack_plain(ntm_acc, ntm_pw, pw);
+                    simd_pairwise_pack_plain(stm_acc, stm_pw_ptr, pw);
+                    simd_pairwise_pack_plain(ntm_acc, ntm_pw_ptr, pw);
                 }
             }
         } else {
@@ -2939,14 +2935,14 @@ impl NNUENet {
                 let tb = if has_threats { stm_threat[i + pw] as i32 } else { 0 };
                 let a = (stm_acc[i] as i32 + ta).clamp(0, QA);
                 let b = (stm_acc[i + pw] as i32 + tb).clamp(0, QA);
-                stm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
+                unsafe { stm_pw_ptr.add(i).write(((a * b) >> FT_SHIFT) as u8); }
             }
             for i in 0..pw {
                 let ta = if has_threats { ntm_threat[i] as i32 } else { 0 };
                 let tb = if has_threats { ntm_threat[i + pw] as i32 } else { 0 };
                 let a = (ntm_acc[i] as i32 + ta).clamp(0, QA);
                 let b = (ntm_acc[i + pw] as i32 + tb).clamp(0, QA);
-                ntm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
+                unsafe { ntm_pw_ptr.add(i).write(((a * b) >> FT_SHIFT) as u8); }
             }
         }
 
@@ -2954,11 +2950,11 @@ impl NNUENet {
         {
             unsafe {
                 if has_threats {
-                    neon_pairwise_pack_fused(stm_acc, stm_threat.as_ptr(), stm_pw, pw);
-                    neon_pairwise_pack_fused(ntm_acc, ntm_threat.as_ptr(), ntm_pw, pw);
+                    neon_pairwise_pack_fused(stm_acc, stm_threat.as_ptr(), stm_pw_ptr, pw);
+                    neon_pairwise_pack_fused(ntm_acc, ntm_threat.as_ptr(), ntm_pw_ptr, pw);
                 } else {
-                    neon_pairwise_pack_fused(stm_acc, std::ptr::null(), stm_pw, pw);
-                    neon_pairwise_pack_fused(ntm_acc, std::ptr::null(), ntm_pw, pw);
+                    neon_pairwise_pack_fused(stm_acc, std::ptr::null(), stm_pw_ptr, pw);
+                    neon_pairwise_pack_fused(ntm_acc, std::ptr::null(), ntm_pw_ptr, pw);
                 }
             }
         }
@@ -2970,16 +2966,19 @@ impl NNUENet {
                 let tb = if has_threats { stm_threat[i + pw] as i32 } else { 0 };
                 let a = (stm_acc[i] as i32 + ta).clamp(0, QA);
                 let b = (stm_acc[i + pw] as i32 + tb).clamp(0, QA);
-                stm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
+                unsafe { stm_pw_ptr.add(i).write(((a * b) >> FT_SHIFT) as u8); }
             }
             for i in 0..pw {
                 let ta = if has_threats { ntm_threat[i] as i32 } else { 0 };
                 let tb = if has_threats { ntm_threat[i + pw] as i32 } else { 0 };
                 let a = (ntm_acc[i] as i32 + ta).clamp(0, QA);
                 let b = (ntm_acc[i + pw] as i32 + tb).clamp(0, QA);
-                ntm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
+                unsafe { ntm_pw_ptr.add(i).write(((a * b) >> FT_SHIFT) as u8); }
             }
         }
+
+        let stm_pw = unsafe { std::slice::from_raw_parts(stm_pw_ptr, pw) };
+        let ntm_pw = unsafe { std::slice::from_raw_parts(ntm_pw_ptr, pw) };
 
         // L1 int8 matmul — only compute l1 neurons starting at l1_off
         // Pairwise: input = (a*b)>>FT_SHIFT, u8 at scale QA²>>FT_SHIFT ≈ PW_SCALE.
@@ -2993,16 +2992,13 @@ impl NNUENet {
         const HIDDEN32_BUF: usize = 64;  // l1 ≤ 64
         debug_assert!(l1 <= HIDDEN32_BUF, "l1 {} exceeds HIDDEN32_BUF {}", l1, HIDDEN32_BUF);
         let mut hidden32_storage = std::mem::MaybeUninit::<[i32; HIDDEN32_BUF]>::uninit();
-        let mut hidden32: &mut [i32] = unsafe {
-            std::slice::from_raw_parts_mut(hidden32_storage.as_mut_ptr() as *mut i32, HIDDEN32_BUF)
-        };
-        let _ = &mut hidden32; // silence unused-mut on the binding itself; slice refs are mutated
+        let hidden32_ptr = hidden32_storage.as_mut_ptr() as *mut i32;
         let mut hidden32_seeded = false;
         macro_rules! seed_hidden32 {
             () => {
                 if !hidden32_seeded {
                     for i in 0..l1 {
-                        hidden32[i] = self.l1_biases[l1_off + i] as i32 * pw_scale;
+                        unsafe { hidden32_ptr.add(i).write(self.l1_biases[l1_off + i] as i32 * pw_scale); }
                     }
                     hidden32_seeded = true;
                 }
@@ -3017,12 +3013,13 @@ impl NNUENet {
             unsafe {
                 crate::sparse_l1::dense_l1_avx512_vnni(
                     stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
-                    l1, &self.l1_biases[l1_off..], pw_scale, hidden32,
+                    l1, &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
                 );
             }
         } else if self.has_avx512_vnni && pw.is_multiple_of(64) && !self.l1_weights_8t.is_empty() {
             // VNNI fallback for wider L1 — still VPDPBUSD, but row-major.
             seed_hidden32!();
+            let hidden32 = unsafe { std::slice::from_raw_parts_mut(hidden32_ptr, l1) };
             let ntm_base = l1_total * pw;
             for i in 0..l1 {
                 let gi = l1_off + i;
@@ -3038,11 +3035,12 @@ impl NNUENet {
             unsafe {
                 crate::sparse_l1::dense_l1_avx_vnni(
                     stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
-                    l1, &self.l1_biases[l1_off..], pw_scale, hidden32,
+                    l1, &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
                 );
             }
         } else if self.has_avx512 && pw.is_multiple_of(64) && !self.l1_weights_8t.is_empty() {
             seed_hidden32!();
+            let hidden32 = unsafe { std::slice::from_raw_parts_mut(hidden32_ptr, l1) };
             let ntm_base = l1_total * pw;
             for i in 0..l1 {
                 let gi = l1_off + i;
@@ -3062,7 +3060,7 @@ impl NNUENet {
             unsafe {
                 crate::sparse_l1::dense_l1_avx2_l1_32(
                     stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
-                    &self.l1_biases[l1_off..], pw_scale, hidden32,
+                    &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
                 );
             }
         } else if self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 <= 16 {
@@ -3079,7 +3077,7 @@ impl NNUENet {
             unsafe {
                 crate::sparse_l1::dense_l1_avx2(
                     stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
-                    l1, &self.l1_biases[l1_off..], pw_scale, hidden32,
+                    l1, &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
                 );
             }
             // DEBUG: compare against dense
@@ -3099,11 +3097,12 @@ impl NNUENet {
                         }
                     }
                     let mut mismatch = false;
+                    let hidden32_dbg = unsafe { std::slice::from_raw_parts(hidden32_ptr, l1) };
                     for i in 0..l1 {
-                        if hidden32[i] != dense[i] {
+                        if hidden32_dbg[i] != dense[i] {
                             if !mismatch {
                                 eprintln!("SPARSE L1 MISMATCH neuron {}: sparse={} dense={} diff={}",
-                                    i, hidden32[i], dense[i], hidden32[i] - dense[i]);
+                                    i, hidden32_dbg[i], dense[i], hidden32_dbg[i] - dense[i]);
                             }
                             mismatch = true;
                         }
@@ -3113,6 +3112,7 @@ impl NNUENet {
             }
         } else if self.has_avx2 && pw.is_multiple_of(32) && !self.l1_weights_8t.is_empty() {
             seed_hidden32!();
+            let hidden32 = unsafe { std::slice::from_raw_parts_mut(hidden32_ptr, l1) };
             let ntm_base = l1_total * pw;
             // Multi-neuron: process 4 neurons at once, loading input once per chunk
             let mut i = 0;
@@ -3164,6 +3164,7 @@ impl NNUENet {
             && !(self.has_avx2 && pw.is_multiple_of(32) && !self.l1_weights_8t.is_empty()) {
             // Scalar fallback — raw weights in [input][neuron] layout
             seed_hidden32!();
+            let hidden32 = unsafe { std::slice::from_raw_parts_mut(hidden32_ptr, l1) };
             for i in 0..l1 {
                 let gi = l1_off + i;
                 for j in 0..pw {
@@ -3178,6 +3179,7 @@ impl NNUENet {
         #[cfg(target_arch = "aarch64")]
         if self.has_neon && pw % 16 == 0 && !self.l1_weights_8t.is_empty() {
             seed_hidden32!();
+            let hidden32 = unsafe { std::slice::from_raw_parts_mut(hidden32_ptr, l1) };
             let ntm_base = l1_total * pw;
             // Multi-neuron: 4 neurons at once, loading each input chunk once
             // and feeding all 4 accumulators (mirrors x86_64 simd_l1_int8_dot_x4).
@@ -3223,6 +3225,7 @@ impl NNUENet {
         #[cfg(target_arch = "aarch64")]
         if !(self.has_neon && pw % 16 == 0 && !self.l1_weights_8t.is_empty()) {
             seed_hidden32!();
+            let hidden32 = unsafe { std::slice::from_raw_parts_mut(hidden32_ptr, l1) };
             for i in 0..l1 {
                 let gi = l1_off + i;
                 for j in 0..pw {
@@ -3238,6 +3241,7 @@ impl NNUENet {
         {
             // Scalar fallback for other architectures
             seed_hidden32!();
+            let hidden32 = unsafe { std::slice::from_raw_parts_mut(hidden32_ptr, l1) };
             for i in 0..l1 {
                 let gi = l1_off + i;
                 for j in 0..pw {
@@ -3249,6 +3253,7 @@ impl NNUENet {
             }
         }
         let _ = hidden32_seeded;
+        let hidden32 = unsafe { std::slice::from_raw_parts(hidden32_ptr, l1) };
 
         // Dequantize + activation
         let qa_l1_f = qa_l1 as f32;
@@ -3292,10 +3297,7 @@ impl NNUENet {
             const H2_BUF: usize = 128;  // l2 ≤ 128
             debug_assert!(l2 <= H2_BUF, "l2 {} exceeds H2_BUF {}", l2, H2_BUF);
             let mut h2_storage = std::mem::MaybeUninit::<[f32; H2_BUF]>::uninit();
-            let mut h2: &mut [f32] = unsafe {
-                std::slice::from_raw_parts_mut(h2_storage.as_mut_ptr() as *mut f32, H2_BUF)
-            };
-            let _ = &mut h2;
+            let h2_ptr = h2_storage.as_mut_ptr() as *mut f32;
             // L2 matmul. The common v9 shape (L2=32) takes a hand-vectorised
             // AVX-512 FMA path: LLVM's autovec turned into `VGATHERQPS` here
             // and ate ~13% of total cycles. Explicit 2-register broadcast-FMA
@@ -3306,7 +3308,7 @@ impl NNUENet {
                     l2_fmadd_avx512_x32(
                         &l1_out[..l1_out_count], l1_out_count,
                         &self.l2_weights_f, l2_total, l2_off,
-                        &self.l2_biases_f, h2,
+                        &self.l2_biases_f, h2_ptr,
                     );
                 }
             } else if self.has_avx2 && l2 == 32 {
@@ -3314,11 +3316,14 @@ impl NNUENet {
                     l2_fmadd_avx2_x32(
                         &l1_out[..l1_out_count], l1_out_count,
                         &self.l2_weights_f, l2_total, l2_off,
-                        &self.l2_biases_f, h2,
+                        &self.l2_biases_f, h2_ptr,
                     );
                 }
             } else {
-                for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
+                for k in 0..l2 {
+                    unsafe { h2_ptr.add(k).write(self.l2_biases_f[l2_off + k]); }
+                }
+                let h2 = unsafe { std::slice::from_raw_parts_mut(h2_ptr, l2) };
                 for i in 0..l1_out_count {
                     if l1_out[i] == 0.0 { continue; }
                     for k in 0..l2 {
@@ -3328,7 +3333,10 @@ impl NNUENet {
             }
             #[cfg(not(target_arch = "x86_64"))]
             {
-                for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
+                for k in 0..l2 {
+                    unsafe { h2_ptr.add(k).write(self.l2_biases_f[l2_off + k]); }
+                }
+                let h2 = unsafe { std::slice::from_raw_parts_mut(h2_ptr, l2) };
                 for i in 0..l1_out_count {
                     if l1_out[i] == 0.0 { continue; }
                     for k in 0..l2 {
@@ -3336,6 +3344,7 @@ impl NNUENet {
                     }
                 }
             }
+            let h2 = unsafe { std::slice::from_raw_parts_mut(h2_ptr, l2) };
             let crelu = self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed);
             #[cfg(target_arch = "x86_64")]
             if self.has_avx2 && l2 == 32 {
@@ -3404,36 +3413,32 @@ impl NNUENet {
         // MaybeUninit: writers below initialise [0..l1]; readers only read [0..l1].
         // Same memset-skip pattern as forward_with_l1_pairwise_inner.
         let mut hidden_storage = std::mem::MaybeUninit::<[i64; 256]>::uninit();
-        let mut hidden: &mut [i64] = unsafe {
-            std::slice::from_raw_parts_mut(hidden_storage.as_mut_ptr() as *mut i64, 256)
-        };
-        let _ = &mut hidden;
+        let hidden_ptr = hidden_storage.as_mut_ptr() as *mut i64;
         for i in 0..l1 {
-            hidden[i] = self.l1_biases[b_off + i] as i64 * bias_scale;
+            unsafe { hidden_ptr.add(i).write(self.l1_biases[b_off + i] as i64 * bias_scale); }
         }
+        let hidden = unsafe { std::slice::from_raw_parts_mut(hidden_ptr, l1) };
 
         // SIMD int8 path: pack SCReLU to u8, then VPMADDUBSW L1 matmul
         #[cfg(target_arch = "x86_64")]
         if (self.has_avx512 || self.has_avx2) && h.is_multiple_of(32) && !self.l1_weights_8t.is_empty() {
             let mut stm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
             let mut ntm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
-            let stm_packed: &mut [u8] = unsafe {
-                std::slice::from_raw_parts_mut(stm_packed_storage.as_mut_ptr() as *mut u8, 2048)
-            };
-            let ntm_packed: &mut [u8] = unsafe {
-                std::slice::from_raw_parts_mut(ntm_packed_storage.as_mut_ptr() as *mut u8, 2048)
-            };
+            let stm_packed_ptr = stm_packed_storage.as_mut_ptr() as *mut u8;
+            let ntm_packed_ptr = ntm_packed_storage.as_mut_ptr() as *mut u8;
             if self.has_avx512 && h.is_multiple_of(64) {
                 unsafe {
-                    simd512_screlu_pack(stm_acc, stm_packed, h);
-                    simd512_screlu_pack(ntm_acc, ntm_packed, h);
+                    simd512_screlu_pack(stm_acc, stm_packed_ptr, h);
+                    simd512_screlu_pack(ntm_acc, ntm_packed_ptr, h);
                 }
             } else {
                 unsafe {
-                    simd_screlu_pack(stm_acc, stm_packed, h);
-                    simd_screlu_pack(ntm_acc, ntm_packed, h);
+                    simd_screlu_pack(stm_acc, stm_packed_ptr, h);
+                    simd_screlu_pack(ntm_acc, ntm_packed_ptr, h);
                 }
             }
+            let stm_packed = unsafe { std::slice::from_raw_parts(stm_packed_ptr, h) };
+            let ntm_packed = unsafe { std::slice::from_raw_parts(ntm_packed_ptr, h) };
             // Int8 matmul: input at scale QA (v²/255), weights at scale QA_L1
             // Result at scale QA × QA_L1. Bias at scale QA_L1, scaled by QA to match.
             let qa_int = QA;
@@ -3563,9 +3568,11 @@ impl NNUENet {
                 let l2_total_stride = if self.bucketed_hidden { l2_stride * NNUE_OUTPUT_BUCKETS } else { l2_stride };
                 let _ = l2_total_stride; // used below
                 let mut h2_storage = std::mem::MaybeUninit::<[f32; 256]>::uninit();
-                let mut h2: &mut [f32] = unsafe { std::slice::from_raw_parts_mut(h2_storage.as_mut_ptr() as *mut f32, 256) };
-                let _ = &mut h2;
-                for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
+                let h2_ptr = h2_storage.as_mut_ptr() as *mut f32;
+                for k in 0..l2 {
+                    unsafe { h2_ptr.add(k).write(self.l2_biases_f[l2_off + k]); }
+                }
+                let h2 = unsafe { std::slice::from_raw_parts_mut(h2_ptr, l2) };
                 for i in 0..l1_out_count {
                     if l1_out[i] == 0.0 { continue; }
                     let w_off = if self.bucketed_hidden {
@@ -3596,16 +3603,14 @@ impl NNUENet {
         if self.has_neon && h % 16 == 0 && !self.l1_weights_8t.is_empty() {
             let mut stm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
             let mut ntm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
-            let stm_packed: &mut [u8] = unsafe {
-                std::slice::from_raw_parts_mut(stm_packed_storage.as_mut_ptr() as *mut u8, 2048)
-            };
-            let ntm_packed: &mut [u8] = unsafe {
-                std::slice::from_raw_parts_mut(ntm_packed_storage.as_mut_ptr() as *mut u8, 2048)
-            };
+            let stm_packed_ptr = stm_packed_storage.as_mut_ptr() as *mut u8;
+            let ntm_packed_ptr = ntm_packed_storage.as_mut_ptr() as *mut u8;
             unsafe {
-                neon_screlu_pack(stm_acc, stm_packed, h);
-                neon_screlu_pack(ntm_acc, ntm_packed, h);
+                neon_screlu_pack(stm_acc, stm_packed_ptr, h);
+                neon_screlu_pack(ntm_acc, ntm_packed_ptr, h);
             }
+            let stm_packed = unsafe { std::slice::from_raw_parts(stm_packed_ptr, h) };
+            let ntm_packed = unsafe { std::slice::from_raw_parts(ntm_packed_ptr, h) };
             // Int8 matmul: input at scale QA (v²/255), weights at scale QA_L1
             // Result at scale QA × QA_L1. Bias at scale QA_L1, scaled by QA to match.
             let qa_int = QA as i32;
@@ -3663,9 +3668,11 @@ impl NNUENet {
                 let l2 = if self.bucketed_hidden { self.l2_per_bucket } else { self.l2_size };
                 let l2_off = if self.bucketed_hidden { bucket * l2 } else { 0 };
                 let mut h2_storage = std::mem::MaybeUninit::<[f32; 256]>::uninit();
-                let mut h2: &mut [f32] = unsafe { std::slice::from_raw_parts_mut(h2_storage.as_mut_ptr() as *mut f32, 256) };
-                let _ = &mut h2;
-                for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
+                let h2_ptr = h2_storage.as_mut_ptr() as *mut f32;
+                for k in 0..l2 {
+                    unsafe { h2_ptr.add(k).write(self.l2_biases_f[l2_off + k]); }
+                }
+                let h2 = unsafe { std::slice::from_raw_parts_mut(h2_ptr, l2) };
                 for i in 0..l1_out_count {
                     if l1_out[i] == 0.0 { continue; }
                     let w_off = if self.bucketed_hidden {
@@ -3787,11 +3794,11 @@ impl NNUENet {
             let l2 = if self.bucketed_hidden { self.l2_per_bucket } else { self.l2_size };
             let l2_off = if self.bucketed_hidden { bucket * l2 } else { 0 };
             let mut h2_storage = std::mem::MaybeUninit::<[f32; 256]>::uninit();
-                let mut h2: &mut [f32] = unsafe { std::slice::from_raw_parts_mut(h2_storage.as_mut_ptr() as *mut f32, 256) };
-                let _ = &mut h2;
+            let h2_ptr = h2_storage.as_mut_ptr() as *mut f32;
             for k in 0..l2 {
-                h2[k] = self.l2_biases_f[l2_off + k];
+                unsafe { h2_ptr.add(k).write(self.l2_biases_f[l2_off + k]); }
             }
+            let h2 = unsafe { std::slice::from_raw_parts_mut(h2_ptr, l2) };
             for i in 0..l1_out_count {
                 if l1_out[i] == 0.0 { continue; }
                 let w_off = if self.bucketed_hidden {
@@ -4868,9 +4875,7 @@ impl NNUEAccumulator {
             // is fully written below; consumers only read that prefix. Same pattern as
             // forward_with_l1 and apply_threat_deltas (#921, #927, #931).
             let mut piece_indices_storage = std::mem::MaybeUninit::<[usize; 32]>::uninit();
-            let piece_indices: &mut [usize] = unsafe {
-                std::slice::from_raw_parts_mut(piece_indices_storage.as_mut_ptr() as *mut usize, 32)
-            };
+            let piece_indices_ptr = piece_indices_storage.as_mut_ptr() as *mut usize;
             let mut n_pieces = 0usize;
             for color in 0..2u8 {
                 for pt in 0..6u8 {
@@ -4878,12 +4883,16 @@ impl NNUEAccumulator {
                     while bb != 0 {
                         let sq = pop_lsb(&mut bb) as u8;
                         let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
-                        if n_pieces < 32 { piece_indices[n_pieces] = idx; n_pieces += 1; }
+                        if n_pieces < 32 {
+                            unsafe { piece_indices_ptr.add(n_pieces).write(idx); }
+                            n_pieces += 1;
+                        }
                     }
                 }
             }
+            let piece_indices = unsafe { std::slice::from_raw_parts(piece_indices_ptr, n_pieces) };
             let empty: [usize; 0] = [];
-            finny_batch_apply(net, &mut entry.acc[..h], &net.input_weights, h, &piece_indices[..n_pieces], &empty);
+            finny_batch_apply(net, &mut entry.acc[..h], &net.input_weights, h, piece_indices, &empty);
             entry.piece_bbs = (board.pieces, board.colors);
             entry.valid = true;
             // Mirror cache → live psq slot.
@@ -4899,13 +4908,9 @@ impl NNUEAccumulator {
         // MaybeUninit skips the 512-byte zero-init memset (2 × 256). [..n_*] is
         // fully written below.
         let mut add_rows_storage = std::mem::MaybeUninit::<[usize; 32]>::uninit();
-        let add_rows: &mut [usize] = unsafe {
-            std::slice::from_raw_parts_mut(add_rows_storage.as_mut_ptr() as *mut usize, 32)
-        };
+        let add_rows_ptr = add_rows_storage.as_mut_ptr() as *mut usize;
         let mut sub_rows_storage = std::mem::MaybeUninit::<[usize; 32]>::uninit();
-        let sub_rows: &mut [usize] = unsafe {
-            std::slice::from_raw_parts_mut(sub_rows_storage.as_mut_ptr() as *mut usize, 32)
-        };
+        let sub_rows_ptr = sub_rows_storage.as_mut_ptr() as *mut usize;
         let mut n_adds = 0usize;
         let mut n_subs = 0usize;
 
@@ -4919,23 +4924,31 @@ impl NNUEAccumulator {
                 while removed != 0 {
                     let sq = pop_lsb(&mut removed) as u8;
                     let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
-                    if n_subs < 32 { sub_rows[n_subs] = idx; n_subs += 1; }
+                    if n_subs < 32 {
+                        unsafe { sub_rows_ptr.add(n_subs).write(idx); }
+                        n_subs += 1;
+                    }
                 }
 
                 let mut added = curr & !prev;
                 while added != 0 {
                     let sq = pop_lsb(&mut added) as u8;
                     let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
-                    if n_adds < 32 { add_rows[n_adds] = idx; n_adds += 1; }
+                    if n_adds < 32 {
+                        unsafe { add_rows_ptr.add(n_adds).write(idx); }
+                        n_adds += 1;
+                    }
                 }
             }
         }
+        let add_rows = unsafe { std::slice::from_raw_parts(add_rows_ptr, n_adds) };
+        let sub_rows = unsafe { std::slice::from_raw_parts(sub_rows_ptr, n_subs) };
 
         // Batch apply with register blocking (Reckless pattern)
         if n_adds > 0 || n_subs > 0 {
             finny_batch_apply(
                 net, &mut entry.acc[..h], &net.input_weights, h,
-                &add_rows[..n_adds], &sub_rows[..n_subs],
+                add_rows, sub_rows,
             );
         }
         entry.piece_bbs = (board.pieces, board.colors);
@@ -5444,7 +5457,7 @@ mod tests {
                 unsafe {
                     l2_fmadd_avx512_x32(
                         &l1_out, l1_out_count, &weights, l2_total, l2_off,
-                        &biases, &mut h2_simd,
+                        &biases, h2_simd.as_mut_ptr(),
                     );
                 }
 
@@ -5780,7 +5793,7 @@ mod tests {
         let mut scalar_out = vec![0u8; pw];
         pairwise_pack_scalar_ref(&acc, None, &mut scalar_out, pw);
         let mut neon_out = vec![0u8; pw];
-        unsafe { neon_pairwise_pack_fused(&acc, std::ptr::null(), &mut neon_out, pw); }
+        unsafe { neon_pairwise_pack_fused(&acc, std::ptr::null(), neon_out.as_mut_ptr(), pw); }
         assert_eq!(scalar_out, neon_out,
             "neon_pairwise_pack_fused (no threat) diverged from scalar");
 
@@ -5788,7 +5801,7 @@ mod tests {
         let mut scalar_out = vec![0u8; pw];
         pairwise_pack_scalar_ref(&acc, Some(&threat), &mut scalar_out, pw);
         let mut neon_out = vec![0u8; pw];
-        unsafe { neon_pairwise_pack_fused(&acc, threat.as_ptr(), &mut neon_out, pw); }
+        unsafe { neon_pairwise_pack_fused(&acc, threat.as_ptr(), neon_out.as_mut_ptr(), pw); }
         assert_eq!(scalar_out, neon_out,
             "neon_pairwise_pack_fused (with threat) diverged from scalar");
 
@@ -5801,7 +5814,7 @@ mod tests {
         let mut scalar_out = vec![0u8; pw];
         pairwise_pack_scalar_ref(&boundary_acc, None, &mut scalar_out, pw);
         let mut neon_out = vec![0u8; pw];
-        unsafe { neon_pairwise_pack_fused(&boundary_acc, std::ptr::null(), &mut neon_out, pw); }
+        unsafe { neon_pairwise_pack_fused(&boundary_acc, std::ptr::null(), neon_out.as_mut_ptr(), pw); }
         assert_eq!(scalar_out, neon_out,
             "neon_pairwise_pack_fused at clamp boundaries diverged from scalar");
     }

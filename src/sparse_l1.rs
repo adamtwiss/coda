@@ -221,7 +221,8 @@ pub unsafe fn sparse_l1_avx2(
 /// loop straight-line.
 ///
 /// # Safety
-/// CPU must support AVX2. Slices must be sized for `pw`/`num_neurons`.
+/// CPU must support AVX2. Slices must be sized for `pw`; `output` must point to
+/// at least 32 writable i32s.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 pub unsafe fn dense_l1_avx2_l1_32(
@@ -231,7 +232,7 @@ pub unsafe fn dense_l1_avx2_l1_32(
     sparse_weights: &[i8],  // input-chunk-major layout (same as sparse_l1_avx2)
     bias: &[i16],
     bias_scale: i32,
-    output: &mut [i32],
+    output: *mut i32,
 ) {
     use std::arch::x86_64::*;
 
@@ -293,7 +294,7 @@ pub unsafe fn dense_l1_avx2_l1_32(
         _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr().add(24) as *const __m128i)),
         scale,
     );
-    let out_ptr = output.as_mut_ptr();
+    let out_ptr = output;
     _mm256_storeu_si256(out_ptr as *mut __m256i, _mm256_add_epi32(acc0, b0));
     _mm256_storeu_si256(out_ptr.add(8) as *mut __m256i, _mm256_add_epi32(acc1, b1));
     _mm256_storeu_si256(out_ptr.add(16) as *mut __m256i, _mm256_add_epi32(acc2, b2));
@@ -312,7 +313,8 @@ pub unsafe fn dense_l1_avx2_l1_32(
 /// order (better cache behaviour than strided per-output rows).
 ///
 /// # Safety
-/// CPU must support AVX2. Slices must be sized for `pw`/`num_neurons`.
+/// CPU must support AVX2. Slices must be sized for `pw`; `output` must point to
+/// at least `num_neurons` writable i32s.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 pub unsafe fn dense_l1_avx2(
@@ -323,7 +325,7 @@ pub unsafe fn dense_l1_avx2(
     num_neurons: usize,
     bias: &[i16],
     bias_scale: i32,
-    output: &mut [i32],
+    output: *mut i32,
 ) {
     use std::arch::x86_64::*;
 
@@ -382,10 +384,11 @@ pub unsafe fn dense_l1_avx2(
             _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr().add(8) as *const __m128i)),
             scale,
         );
-        _mm256_storeu_si256(output.as_mut_ptr() as *mut __m256i, _mm256_add_epi32(acc0, b0));
-        _mm256_storeu_si256(output.as_mut_ptr().add(8) as *mut __m256i, _mm256_add_epi32(acc1, b1));
+        _mm256_storeu_si256(output as *mut __m256i, _mm256_add_epi32(acc0, b0));
+        _mm256_storeu_si256(output.add(8) as *mut __m256i, _mm256_add_epi32(acc1, b1));
     } else {
-        for i in 0..num_neurons { output[i] = bias[i] as i32 * bias_scale; }
+        for i in 0..num_neurons { output.add(i).write(bias[i] as i32 * bias_scale); }
+        let output = std::slice::from_raw_parts_mut(output, num_neurons);
         let mut results = [0i32; 16];
         _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, acc0);
         _mm256_storeu_si256(results.as_mut_ptr().add(8) as *mut __m256i, acc1);
@@ -413,7 +416,8 @@ pub unsafe fn dense_l1_avx2(
 /// other widths, callers should continue to use the non-VNNI paths.
 ///
 /// # Safety
-/// CPU must support AVX-512F/BW/VNNI. Slices must be sized for `pw`/`num_neurons`.
+/// CPU must support AVX-512F/BW/VNNI. Slices must be sized for `pw`; `output`
+/// must point to at least `num_neurons` writable i32s.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
 pub unsafe fn dense_l1_avx512_vnni(
@@ -424,7 +428,7 @@ pub unsafe fn dense_l1_avx512_vnni(
     num_neurons: usize,
     bias: &[i16],
     bias_scale: i32,
-    output: &mut [i32],
+    output: *mut i32,
 ) {
     use std::arch::x86_64::*;
     debug_assert_eq!(num_neurons, 16, "dense_l1_avx512_vnni currently specialised to 16 neurons");
@@ -482,7 +486,7 @@ pub unsafe fn dense_l1_avx512_vnni(
     let acc = _mm512_add_epi32(_mm512_add_epi32(a0, a1), _mm512_add_epi32(a2, a3));
     let bias_i32 = _mm512_cvtepi16_epi32(_mm256_loadu_si256(bias.as_ptr() as *const __m256i));
     let scaled_bias = _mm512_mullo_epi32(bias_i32, _mm512_set1_epi32(bias_scale));
-    _mm512_storeu_si512(output.as_mut_ptr() as *mut __m512i, _mm512_add_epi32(acc, scaled_bias));
+    _mm512_storeu_si512(output as *mut __m512i, _mm512_add_epi32(acc, scaled_bias));
 }
 
 /// Sparse column-major L1 matmul, AVX-512 VNNI variant — skips 4-byte
@@ -571,7 +575,8 @@ pub unsafe fn sparse_l1_avx512_vnni(
 /// the accumulator dependency chain and runs ~2.5× slower than AVX2.
 ///
 /// # Safety
-/// CPU must support AVX2 + AVX-VNNI. Slices must be sized for `pw`/`num_neurons`.
+/// CPU must support AVX2 + AVX-VNNI. Slices must be sized for `pw`; `output`
+/// must point to at least `num_neurons` writable i32s.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,avxvnni")]
 pub unsafe fn dense_l1_avx_vnni(
@@ -582,7 +587,7 @@ pub unsafe fn dense_l1_avx_vnni(
     num_neurons: usize,
     bias: &[i16],
     bias_scale: i32,
-    output: &mut [i32],
+    output: *mut i32,
 ) {
     use std::arch::x86_64::*;
 
@@ -676,10 +681,11 @@ pub unsafe fn dense_l1_avx_vnni(
             _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr().add(8) as *const __m128i)),
             scale,
         );
-        _mm256_storeu_si256(output.as_mut_ptr() as *mut __m256i, _mm256_add_epi32(lo, b0));
-        _mm256_storeu_si256(output.as_mut_ptr().add(8) as *mut __m256i, _mm256_add_epi32(hi, b1));
+        _mm256_storeu_si256(output as *mut __m256i, _mm256_add_epi32(lo, b0));
+        _mm256_storeu_si256(output.add(8) as *mut __m256i, _mm256_add_epi32(hi, b1));
     } else {
-        for i in 0..num_neurons { output[i] = bias[i] as i32 * bias_scale; }
+        for i in 0..num_neurons { output.add(i).write(bias[i] as i32 * bias_scale); }
+        let output = std::slice::from_raw_parts_mut(output, num_neurons);
         let mut results = [0i32; 16];
         _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, lo);
         _mm256_storeu_si256(results.as_mut_ptr().add(8) as *mut __m256i, hi);
@@ -891,7 +897,7 @@ mod tests {
 
                 let mut vnni_out = vec![0i32; nn];
                 unsafe {
-                    dense_l1_avx512_vnni(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut vnni_out);
+                    dense_l1_avx512_vnni(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, vnni_out.as_mut_ptr());
                 }
 
                 for i in 0..nn {
@@ -962,7 +968,7 @@ mod tests {
 
                 let mut vnni_out = vec![0i32; nn];
                 unsafe {
-                    dense_l1_avx_vnni(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut vnni_out);
+                    dense_l1_avx_vnni(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, vnni_out.as_mut_ptr());
                 }
 
                 for i in 0..nn {
@@ -1055,7 +1061,7 @@ mod tests {
                     let mut avx2_out = vec![0i32; nn];
                     unsafe {
                         dense_l1_avx2_l1_32(
-                            &s_pw, &n_pw, pw_, &sw, &bias, scale, &mut avx2_out,
+                            &s_pw, &n_pw, pw_, &sw, &bias, scale, avx2_out.as_mut_ptr(),
                         );
                     }
 
@@ -1120,22 +1126,22 @@ mod tests {
             let mut out = vec![0i32; nn];
             if nn == 16 {
                 for _ in 0..WARMUP {
-                    unsafe { dense_l1_avx2(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut out); }
+                    unsafe { dense_l1_avx2(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, out.as_mut_ptr()); }
                 }
                 let t1 = Instant::now();
                 for _ in 0..ITERS {
-                    unsafe { dense_l1_avx2(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut out); }
+                    unsafe { dense_l1_avx2(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, out.as_mut_ptr()); }
                     sink = sink.wrapping_add(out[0] as i64);
                 }
                 let ns = t1.elapsed().as_nanos() as f64 / ITERS as f64;
                 eprintln!("L1=16  dense_l1_avx2        {:>7.1} ns/call  ({:.1}x scalar)", ns, ns_scalar / ns);
             } else if nn == 32 {
                 for _ in 0..WARMUP {
-                    unsafe { dense_l1_avx2_l1_32(&s_pw, &n_pw, pw, &sw, &bias, scale, &mut out); }
+                    unsafe { dense_l1_avx2_l1_32(&s_pw, &n_pw, pw, &sw, &bias, scale, out.as_mut_ptr()); }
                 }
                 let t1 = Instant::now();
                 for _ in 0..ITERS {
-                    unsafe { dense_l1_avx2_l1_32(&s_pw, &n_pw, pw, &sw, &bias, scale, &mut out); }
+                    unsafe { dense_l1_avx2_l1_32(&s_pw, &n_pw, pw, &sw, &bias, scale, out.as_mut_ptr()); }
                     sink = sink.wrapping_add(out[0] as i64);
                 }
                 let ns = t1.elapsed().as_nanos() as f64 / ITERS as f64;

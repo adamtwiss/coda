@@ -1662,12 +1662,8 @@ pub unsafe fn apply_threat_deltas(
     // forward_with_l1_pairwise_inner.
     let mut adds_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS]>::uninit();
     let mut subs_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS]>::uninit();
-    let adds_full: &mut [usize] = unsafe {
-        std::slice::from_raw_parts_mut(adds_storage.as_mut_ptr() as *mut usize, MAX_THREAT_DELTAS)
-    };
-    let subs_full: &mut [usize] = unsafe {
-        std::slice::from_raw_parts_mut(subs_storage.as_mut_ptr() as *mut usize, MAX_THREAT_DELTAS)
-    };
+    let adds_ptr = adds_storage.as_mut_ptr() as *mut usize;
+    let subs_ptr = subs_storage.as_mut_ptr() as *mut usize;
     let mut n_adds = 0usize;
     let mut n_subs = 0usize;
     for delta in deltas {
@@ -1680,11 +1676,16 @@ pub unsafe fn apply_threat_deltas(
             pov,
         );
         if idx < 0 || (idx as usize) >= num_threats { continue; }
-        if delta.add() { adds_full[n_adds] = idx as usize; n_adds += 1; }
-        else { subs_full[n_subs] = idx as usize; n_subs += 1; }
+        if delta.add() {
+            unsafe { adds_ptr.add(n_adds).write(idx as usize); }
+            n_adds += 1;
+        } else {
+            unsafe { subs_ptr.add(n_subs).write(idx as usize); }
+            n_subs += 1;
+        }
     }
-    let adds = &adds_full[..n_adds];
-    let subs = &subs_full[..n_subs];
+    let adds = unsafe { std::slice::from_raw_parts(adds_ptr, n_adds) };
+    let subs = unsafe { std::slice::from_raw_parts(subs_ptr, n_subs) };
 
     // Prefetch weight rows for upcoming deltas (hide L3 latency)
     #[cfg(target_arch = "x86_64")]
