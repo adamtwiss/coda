@@ -259,7 +259,11 @@ tunables!(
     // NMP — opponent's free tempo is very likely to exploit the hanger.
     // Fits Titan's W2 pattern (binary signal gating a pruning decision).
     // Default 1 = skip NMP whenever any piece is hanging.
-    (NMP_UNDEFENDED_MAX_10X, 18, 0, 50, 10.0, true),
+    // Min 1 (not 0): the gate is `undefended_count < tp10(this)`. Since
+    // undefended_count >= 0, a value of 0 makes the condition impossible
+    // and disables NMP entirely — SPSA/ablation hitting this min would
+    // accidentally test "NMP off" while labeled "undefended guard off".
+    (NMP_UNDEFENDED_MAX_10X, 18, 1, 50, 10.0, true),
     // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering weight.
     // Bonus applied in movepicker quiets = (to_mobility - from_mobility) × this.
     // Default 32 = ±256 typical range, additive to history (~1000s scale).
@@ -409,7 +413,6 @@ pub static FEAT_FUTILITY: AtomicBool = AtomicBool::new(true);
 pub static FEAT_SEE_PRUNE: AtomicBool = AtomicBool::new(true); // confirmed: -17 Elo without (clean CPU retest)
 pub static FEAT_BAD_NOISY: AtomicBool = AtomicBool::new(true); // confirmed: -26 Elo without (retested without CPU contention)
 pub static FEAT_EXTENSIONS: AtomicBool = AtomicBool::new(true);
-pub static FEAT_ALPHA_REDUCE: AtomicBool = AtomicBool::new(true); // confirmed: -4 Elo without and trending keep (clean CPU retest)
 pub static FEAT_IIR: AtomicBool = AtomicBool::new(true);
 pub static FEAT_HINDSIGHT: AtomicBool = AtomicBool::new(true); // confirmed: -18 Elo without (clean CPU retest)
 pub static FEAT_CORRECTION: AtomicBool = AtomicBool::new(true);
@@ -427,7 +430,7 @@ pub fn disable_all_features() {
     FEAT_NMP.store(false, Ordering::Relaxed); FEAT_RFP.store(false, Ordering::Relaxed);
     FEAT_PROBCUT.store(false, Ordering::Relaxed); FEAT_LMR.store(false, Ordering::Relaxed); FEAT_LMP.store(false, Ordering::Relaxed);
     FEAT_FUTILITY.store(false, Ordering::Relaxed); FEAT_SEE_PRUNE.store(false, Ordering::Relaxed);
-    FEAT_BAD_NOISY.store(false, Ordering::Relaxed); FEAT_EXTENSIONS.store(false, Ordering::Relaxed); FEAT_ALPHA_REDUCE.store(false, Ordering::Relaxed);
+    FEAT_BAD_NOISY.store(false, Ordering::Relaxed); FEAT_EXTENSIONS.store(false, Ordering::Relaxed);
     FEAT_IIR.store(false, Ordering::Relaxed); FEAT_HINDSIGHT.store(false, Ordering::Relaxed); FEAT_CORRECTION.store(false, Ordering::Relaxed);
     FEAT_PVS.store(false, Ordering::Relaxed); FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); FEAT_TT_NEARMISS.store(false, Ordering::Relaxed);
     FEAT_TT_STORE.store(false, Ordering::Relaxed); FEAT_QS_CAPTURES.store(false, Ordering::Relaxed);
@@ -441,7 +444,7 @@ pub fn enable_all_features() {
     FEAT_NMP.store(true, Ordering::Relaxed); FEAT_RFP.store(true, Ordering::Relaxed); FEAT_PROBCUT.store(true, Ordering::Relaxed);
     FEAT_LMR.store(true, Ordering::Relaxed); FEAT_LMP.store(true, Ordering::Relaxed);
     FEAT_FUTILITY.store(true, Ordering::Relaxed); FEAT_SEE_PRUNE.store(true, Ordering::Relaxed);
-    FEAT_BAD_NOISY.store(true, Ordering::Relaxed); FEAT_EXTENSIONS.store(true, Ordering::Relaxed); FEAT_ALPHA_REDUCE.store(true, Ordering::Relaxed);
+    FEAT_BAD_NOISY.store(true, Ordering::Relaxed); FEAT_EXTENSIONS.store(true, Ordering::Relaxed);
     FEAT_IIR.store(true, Ordering::Relaxed); FEAT_HINDSIGHT.store(true, Ordering::Relaxed); FEAT_CORRECTION.store(true, Ordering::Relaxed);
     FEAT_PVS.store(true, Ordering::Relaxed); FEAT_TT_CUTOFF.store(true, Ordering::Relaxed); FEAT_TT_NEARMISS.store(true, Ordering::Relaxed);
     FEAT_TT_STORE.store(true, Ordering::Relaxed); FEAT_QS_CAPTURES.store(true, Ordering::Relaxed);
@@ -870,13 +873,20 @@ impl SearchInfo {
         if self.stop.load(Ordering::Relaxed) {
             return true;
         }
-        if self.max_nodes > 0 && self.nodes >= self.max_nodes {
-            return true;
-        }
         // Flush local node count to global counter every 4096 nodes
-        // (skip at nodes==0 to avoid phantom 4096 at search start)
+        // (skip at nodes==0 to avoid phantom 4096 at search start).
+        // Done BEFORE the node-limit check so the global view is fresh.
         if self.nodes & 4095 == 0 && self.nodes > 0 {
             self.global_nodes.fetch_add(4096, Ordering::Relaxed);
+        }
+        // SMP-correct node-limit gate: helpers don't get max_nodes propagated
+        // (helper init at clone_for_helper leaves max_nodes=0), and main's
+        // per-thread `self.nodes` excludes helper contributions. Both effects
+        // made `go nodes N` overshoot by ~N*T at T threads. Check global
+        // counter so all threads stop together; up to T*4096 unflushed nodes
+        // of slack is acceptable.
+        if self.max_nodes > 0 && self.global_nodes.load(Ordering::Relaxed) >= self.max_nodes {
+            return true;
         }
         // Check time every 4096 nodes
         if self.nodes & 4095 == 0 {
@@ -1300,7 +1310,6 @@ fn init_feature_flags() {
             if std::env::var("ENABLE_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_BAD_NOISY").is_ok() { FEAT_BAD_NOISY.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_EXTENSIONS").is_ok() { FEAT_EXTENSIONS.store(true, Ordering::Relaxed); }
-            if std::env::var("ENABLE_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_IIR").is_ok() { FEAT_IIR.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_HINDSIGHT").is_ok() { FEAT_HINDSIGHT.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_CORRECTION").is_ok() { FEAT_CORRECTION.store(true, Ordering::Relaxed); }
@@ -1319,7 +1328,6 @@ fn init_feature_flags() {
             if std::env::var("NO_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE.store(false, Ordering::Relaxed); }
             if std::env::var("NO_BAD_NOISY").is_ok() { FEAT_BAD_NOISY.store(false, Ordering::Relaxed); }
             if std::env::var("NO_EXTENSIONS").is_ok() { FEAT_EXTENSIONS.store(false, Ordering::Relaxed); }
-            if std::env::var("NO_ALPHA_REDUCE").is_ok() { FEAT_ALPHA_REDUCE.store(false, Ordering::Relaxed); }
             if std::env::var("NO_IIR").is_ok() { FEAT_IIR.store(false, Ordering::Relaxed); }
             if std::env::var("NO_HINDSIGHT").is_ok() { FEAT_HINDSIGHT.store(false, Ordering::Relaxed); }
             if std::env::var("NO_CORRECTION").is_ok() { FEAT_CORRECTION.store(false, Ordering::Relaxed); }
@@ -3908,12 +3916,20 @@ fn negamax(
                 // from NMP/ProbCut gates — tactical king positions need depth.
                 reduction -= king_zone_pressure * 10 / LMR_KING_PRESSURE_DIV_10X.load(Ordering::Relaxed).max(1);
 
-                // Clamp: never extend (negative), never reduce past depth 1
+                // Clamp: never extend (negative), never reduce past depth 1.
+                // Note: `new_depth - 1` can be -1 when negative singular
+                // extensions drove `new_depth` to 0; re-clamp to keep the
+                // stored value non-negative (downstream reads compare to
+                // 0/2/3 thresholds, but a negative `info.reductions[ply_u]`
+                // violates the local invariant).
                 if reduction < 0 {
                     reduction = 0;
                 }
                 if reduction > new_depth - 1 {
                     reduction = new_depth - 1;
+                }
+                if reduction < 0 {
+                    reduction = 0;
                 }
             }
         }
@@ -3950,9 +3966,13 @@ fn negamax(
                     if reduction < 0 {
                         reduction = 0;
                     }
-                    // Never reduce past depth 1
+                    // Never reduce past depth 1. Same `new_depth == 0` re-clamp
+                    // as the quiet-LMR path above.
                     if reduction > new_depth - 1 {
                         reduction = new_depth - 1;
+                    }
+                    if reduction < 0 {
+                        reduction = 0;
                     }
                 }
             }
