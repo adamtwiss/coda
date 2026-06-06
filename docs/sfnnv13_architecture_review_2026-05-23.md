@@ -26,7 +26,7 @@ from SF architectural review).
 | Hidden activation | SqrCReLU(31) ++ CReLU(31) concat | CReLU | (unchanged) |
 | Eval scaling | output × 600 | output × 400 | (unchanged) |
 | Sigmoid scaling | 410 | 400 | (unchanged) |
-| MSE loss exponent | 2.6 (per docs) | 2.0 (Bullet default) | (unchanged) |
+| MSE loss exponent | 2.6 (per docs) | **2.5** (coda_v9 trainer) | (unchanged) |
 | QA (accumulator) | 255 | 255 | (unchanged) |
 | QB (output) | 64-ish | 64 | (unchanged) |
 
@@ -92,22 +92,31 @@ because either led the other.
 
 ### Tier 1 — high signal, currently miscalibrated vs SF
 
-#### 1. L1 widening 16 → 32 (in flight as of 2026-05-23)
+#### 1. L1 widening 16 → 32 — structurally done, NPS-blocked (update 2026-06-06)
 
 **Validation**: SFNNv13's headline change was exactly this widening at
-the corresponding layer. The fact that SF shipped this in production in
-Feb 2026 is strong validation that L1=32 banks Elo at our scale too.
+the corresponding layer. SF shipped this in production in Feb 2026.
 
-**Effort**: SIMD kernel work (L1=16 has specialized AVX2/AVX-512 VNNI
-kernels; L1>16 falls to slower row-major path at ~5-7% NPS cost
-documented).
+**Status update (2026-06-06)**: L1=32 trains cleanly, produces a stronger
+*net* by bench-stats, but does NOT yet win net-of-NPS at SPRT. We have
+**partial L1=32 SIMD work landed** in Coda's inference path, but the
+remaining ~10% NPS gap relative to L1=16 still costs the net more Elo
+than the eval improvement gives back. So L1=32 is currently weaker
+overall **at our current training scale and SIMD specialization**, not
+an unproven direction.
 
-**Magnitude prior**: small (+1 to +3 Elo at our scale) plus the NPS
-overhead that recovers when we specialize.
+Two independent paths to flip L1=32 net-positive: (a) close the NPS gap
+with more L1=32-specific SIMD kernels (AVX2 / AVX-VNNI / AVX-512 VNNI /
+NEON); (b) richer training (more data, better recipe) that grows the
+L1=32 eval advantage past the NPS tax.
 
-**Status**: untuned −3.79 Elo at S200 paired probe; retune in flight.
-The fenskip-S800 precedent for retune-on-branch banking was small (~+3);
-this case has less bench delta (33%) so retune may bank more.
+**Magnitude prior** (treat as direction-only, not load-bearing): a few
+Elo with full SIMD specialization; uncertain magnitude from training-recipe
+improvements.
+
+**Action**: pursue the SIMD path independently of training-recipe work.
+A bigger eval-side win from v5/v6 recipe iterations would unlock L1=32
+without needing to fully close the SIMD gap.
 
 #### 2. PSQT outputs per bucket
 
@@ -176,19 +185,25 @@ NPS wins are uniform. Worth disproportionately on aarch64 deployment.
 
 ### Tier 2 — meaningful but lower priority
 
-#### 5. MSE loss exponent 2.6 (instead of 2.0)
+#### 5. MSE loss exponent 2.5 → 2.6 (correction 2026-06-06)
 
 SF docs L887: *"in practice, the exponent can be >2. Higher exponents
 give more weight towards precision at a cost of accuracy. Stockfish
 networks had good training results with an exponent of 2.6 for example."*
 
-**Effort**: trivial Bullet config change (may need small patch if Bullet
-hardcodes 2.0).
+**Correction**: Coda's `coda_v9_768_threats` trainer already uses
+`power_error(target, 2.5)` (hardcoded at `examples/coda_v9_768_threats.rs:644`,
+not the Bullet default 2.0 the original table suggested). So the actual
+delta to SF is 2.5 → 2.6, not 2.0 → 2.6.
 
-**Magnitude prior**: +0 to +2 Elo. Cheap probe, near-zero cost.
+**Effort**: trivial — expose as `--mse-power` flag (~5 lines).
 
-**Action**: fire as a quick S200 paired probe whenever there's GPU
-slack.
+**Magnitude prior**: tiny (one-tenth of the exponent we're already at).
+The big jump (2.0 → 2.5) is already baked in.
+
+**Action**: add `--mse-power` flag for future experimentation, but
+don't allocate dedicated SPRT cycles to a 2.5 → 2.6 probe. Use the
+flag if some other recipe direction wants to vary exponent.
 
 #### 6. Blocked-sparse linear layer with input chunk size 4
 
@@ -254,46 +269,52 @@ SF docs document Quantmoid4 (piecewise quadratic approximation of
 sigmoid(4x)) but **don't deploy it in v13**. Treated as historical.
 Don't reinvest.
 
-### FT widening to 1024 — S200 test was net-negative; S800 retest open
+### FT widening to 1024 — S200 negative, S800 positive (update 2026-06-06)
 
 **Prior test: #1100, H0 at −7.22 Elo at S200** (https://ob.atwiss.com/test/1100/).
 Bench-stats showed better eval, but combined with the NPS penalty
-(wider FT = slower inference) the net effect was negative.
+(wider FT = slower inference) the net effect was negative at the
+under-trained S200 scale.
 
-**Important context**:
-- That test was at **S200**, where canonical training itself is
-  under-trained. A wider FT at S200 is doubly under-trained — more
-  weights to calibrate against the same insufficient data + training
-  budget.
-- The NPS penalty was at our then-current SIMD specialization. Some
-  of that cost is recoverable with FT=1024-aware kernels.
-- We never re-ran the experiment at **S800** scale, where the wider
-  FT might actually train to fit usefully.
+**S800 retest landed positive: #1693, +6.35 ±3.52 H1 at N=12808**
+(https://ob.atwiss.com/test/1693/). Dev branch `experiment/ft1024-s800`,
+dev net `ft1024-fs0.5-swa720-800-s800`, base `main` with `gpu4-normal-s800`
+(FT=768). Net-of-NPS at the SPRT — the wider FT's eval gain at S800
+overcame the NPS tax.
 
-So the prior result is **not a definitive "FT=1024 is wrong for us"
-verdict**. It's evidence that "FT=1024 + S200 + current SIMD" is
-net-negative. The S800 picture, especially with retune-on-branch +
-SIMD specialization, is unknown.
+**What we now know:**
+- S200 result is exactly what it was — **FT=1024 is data-starved at S200**.
+  Not a "FT=1024 is wrong for us" finding.
+- S800 with fenskip 0.5 + SWA720 has FT=1024 **already at parity-to-positive**
+  vs FT=768 at the same training scale. That's a small but real win
+  with the NPS tax already paid.
+- The recipe of #1693 was **pre-interleave and pre-SWA-understanding**
+  (it used SWA720 for what we now know was a sequential-data wobble
+  mechanism). With our current understanding (interleave subsumes most
+  of what SWA was fixing, see SWA discussion in `experiments.md`
+  2026-06-06), the FT=1024 advantage might transfer differently —
+  worth a fresh interleave-based retest before deploying.
+- **Pause reason was data-pipeline issues, not architecture**: at the
+  time we'd been struggling to consume more data (sequential file-list
+  distribution shifts pre-interleave hurt us in many tests). With
+  interleave fixing that and SWA's role better understood, the
+  data-axis question that was blocking FT=1024 is now resolved.
 
-**Open questions for a future S800 FT=1024 retest**:
-1. Does S800 give the wider FT enough training to actually outperform
-   FT=768? (Loss curve at S800 would tell us if FT=1024 has saturated
-   training or is still gaining.)
-2. After SIMD specialization for FT=1024-shape inference, what's the
-   real NPS cost?
-3. Does retune-on-branch (the pattern we've established for major
-   bench shifts) close the Elo gap?
+**Action: pick FT=1024 back up.** A fresh S800 paired probe with
+interleave (no SWA, or with-SWA as a separate axis) vs a matched
+FT=768 baseline answers whether the +6.35 transfers, regresses, or
+grows under the new data regime. Independent of multistage; doesn't
+need v5 to land. Could run in parallel on a non-GPU4 host once one
+is free.
 
-**Why this isn't Tier 1 today**: substantial experiment cost (full S800
-train + retune + SIMD work, several days end-to-end). Lower priority
-than PSQT / dual-activation / L1=32 SIMD which are cheaper. **Park as
-medium-term S800 retest** once the cheaper architecture experiments
-have resolved and we have more bandwidth.
+**Magnitude prior**: not load-bearing. The #1693 number sets a real
+floor (+6.35 with old recipe); modern recipe may move it either way.
 
 **SF's FT=1024 works for them with ~200B unique positions (8× ours).**
-At our data scale, FT=1024 might land net-positive at S800 (or might
-still be data-starved). Without retesting at S800 we don't know.
-**The +15 Elo per data-doubling lever amplifies any future FT=1024 retest.**
+The data-gap argument hasn't gone away — at our scale FT=1024's
+advantage may be smaller than SF gets — but #1693 already shows it's
+crossed the net-positive threshold at S800, so the question is
+direction-of-improvement, not viability.
 
 ---
 
@@ -317,17 +338,30 @@ and beyond that is data-axis territory.
 
 ## Roadmap implications for Coda
 
-### What to chase
+### What to chase (updated 2026-06-06)
 
-1. **L1=32** (currently in flight) — matches SFNNv13 at first hidden dense
-2. **PSQT-per-bucket** — adds capacity for material-imbalance signal
-3. **Dual SqrCReLU+CReLU activation** — effective capacity boost, no
-   parameter increase
-4. **i8 threat weights** — NPS win, ARM-amplified
-5. **MSE exponent 2.6** — cheap recipe-side probe
+Each of these can be tested as an **independent S200 paired probe**,
+NOT bundled into multistage runs. Multistage (v5 in flight on GPU4) is
+a separable recipe-iteration thread.
 
-These five experiments close most of the structural gap to SFNNv13 at
-our data scale.
+1. **PSQT-per-bucket** — adds capacity for material-imbalance signal.
+   Significant Bullet patch + new net format section. Highest doc-prior
+   among untested probes, but biggest setup cost. Decouple from multistage.
+2. **Dual SqrCReLU+CReLU activation at L1** — effective capacity boost,
+   no parameter increase. Small Bullet patch + small Coda SIMD work.
+   Validate as S200 paired probe.
+3. **L1=32 NPS specialization** — engineering thread (no GPU). L1=32
+   already structurally done; closing the SIMD-NPS gap flips it net-positive.
+4. **FT=1024 retest with interleave** — pick back up. S800 retest with
+   #1693's +6.35 prior + interleave data regime. Independent of multistage.
+5. **i8 threat weights** — NPS win, ARM-amplified for Lichess deployment.
+   Medium SIMD work, independent of training.
+6. **MSE exponent flag** — add `--mse-power` to coda_v9 trainer for future
+   experimentation. Not worth dedicated SPRT cycles at 2.5→2.6.
+
+Priors above are direction-only, not load-bearing magnitudes. Historical
+record (per Adam, 2026-06-06): priors have been wrong in both directions;
+don't size decisions on them.
 
 ### What NOT to chase (currently)
 
@@ -338,13 +372,12 @@ our data scale.
 
 ### Queue for later (deferred, not closed)
 
-- **FT widening to 1024** — prior S200 test was −7.22, but at S200
-  the wider FT was data-starved + NPS-penalty-uncovered. Worth an
-  S800 retest with retune-on-branch + SIMD work for the new shape.
-  Bigger experiment than Tier 1 candidates; defer until those settle.
-- **Multi-stage training (Tier 4)** — per `docs/sf_recipe_experiments_2026-05-22.md`,
-  in progress as of 2026-05-23.
-- **Half-data multi-stage with fenskip** — in progress as of 2026-05-23.
+- **FT widening to 1024** — see "FT widening to 1024" section above.
+  No longer "open" — #1693 closed it positive at S800 (+6.35 H1 net of
+  NPS). Pick back up under the current interleave regime.
+- **Multi-stage training** — multi-v4 chain landed 2026-06-06: cumulative
+  1300 SB, ≈ −12.5 vs prod, methodology validated, see experiments.md.
+  v5 iteration (1900 SB cumulative) planned on GPU4.
 
 ### Future work amplified by data-axis growth
 
