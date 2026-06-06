@@ -14047,3 +14047,404 @@ While fleet was idle, fired four parallel:
 - Trust SPRT, not input metric (multiple confirmations across this sweep)
 - The 34-position regression set selects for false-positive prunes
   only — never measures false-negative cost
+
+## 2026-06-05 — S200 dataset-ablation batch (4 nets vs 'normal', mini-prod)
+
+Five S200 nets `data-warm10-inter-{normal,2022,early2023,leela,stage1}-s200.nnue`
+identical in code/recipe, varying ONLY by input training dataset. Net-vs-net
+SPRT on `mini-prod` (identical binary both sides), bounds `[0, 3]`, vs 'normal'
+(12× most-recent T80) as baseline.
+
+| Test | Net vs normal | Elo | Status | RMS scale |
+|------|---------------|-----|--------|-----------|
+| 1741 | 2022 (older T80 vintage) | **+23.2** ±7.2 | H1 ✓ | 322 |
+| 1743 | leela (=leela96: Leela self-play from DFRC starts) | +27.5 ±8.6 | →H1 LLR 2.47 | 235 |
+| 1744 | stage1 (DFRC + RightIsWrong mix) | +6.6 ±6.4 | →H1 LLR 0.96 | 183 |
+| 1742 | early2023 | +6.5 ±8.0 | →H1 LLR 0.61 | 284 |
+| —    | normal (baseline) | — | — | 317 |
+
+Eval-scale RMS measured over fixed 100k-pos T80 binpack
+(`/training/sf/test80-2024-01-jan-2tb7p.min-v2.v6.binpack`); baby-prod tuning
+anchor (`cal-day0-...-s200.nnue`, net.txt) = 192.8.
+
+**Key findings:**
+- **Scale mismatch does NOT explain the ranking.** 2022 (RMS 322) and normal
+  (RMS 317) have essentially identical eval scale, yet 2022 beats normal by
+  +23. The driver is data composition, not EVAL_SCALE miscalibration. Per-net
+  EVAL_SCALE normalization would not recover the gap.
+- **normal (recent T80) is the weakest training data** for an S200 net. The
+  cleanest signal is 2022: same T80 format, no DFRC, no different generator,
+  just older vintage — +23 over recent T80.
+- **leela96 (+27)** combines DFRC position diversity with MCTS-smoothed,
+  less heavy-tailed eval targets (p99 721 vs normal 1029). Both stage1 and
+  early2023 (also non-leela) only reach +6, so DFRC alone isn't the driver —
+  leela's target quality adds real signal on top.
+- **All T80/SF files may themselves be Leela-generated** (lineage uncertain),
+  so these are dataset-*slice* differences within LC0-family data, not a
+  SF-engine-vs-Leela-engine split.
+- Same-seed variance nets (pending, trained elsewhere) needed to disambiguate
+  "normal is genuinely worse data" vs "this seed landed badly" (unlucky-train).
+
+WDL-K logistic fit pinned at 2000 ceiling for all 5 nets (undertrained S200 —
+not usable as a calibration signal).
+
+### 2026-06-05 — S200 smoothing-technique batch (net-vs-net vs canonical)
+
+Fresh clean datapoint on the impact of each smoothing technique, all on
+12×T80 "normal" data, warm10, S200. Net-vs-net on `mini-prod` (identical
+binary both sides, tune-flation cancels), bounds `[-3, 3]`, TC 10+0.1.
+BASE = `smooth-canonical-warm10-s200` (no smoothing, SHA C9AE5BF5).
+
+| # | DEV (technique) | SHA | Elo | ± | Games | Result |
+|---|---|---|---|---|---|---|
+| 1746 | fs05 (fen-skip 0.5) | 717F6D70 | +10.0 | 6.6 | 3708 | H1 ✓ |
+| 1745 | inter (in-trainer interleave) | 7CD6D993 | +6.4 | 5.4 | 5664 | H1 ✓ |
+| 1747 | swa180 (SWA from SB180) | 3766FE94 | +1.3 | 2.5 | 26760 | H1 ✓ |
+| 1750 | sf-jitter b.01 d0.999 | CC824645 | −7.5 | 5.9 | 4742 | H0 ✗ |
+
+**Findings:**
+- **Three of four smoothing techniques beat no-smoothing**, ordering
+  fen-skip (+10) > interleave (+6.4) > SWA (+1.3), all H1 at `[-3, 3]`.
+- **sf-jitter (b.01 d0.999) REGRESSED** (−7.5, H0, CI clearly negative) —
+  the lone loser of the batch. Lambda-jitter at these hyperparams hurts
+  vs no-smoothing where the data-order smoothers help. Not a verdict on
+  jitter in general, but this (b.01/d0.999) config is net-negative.
+- swa180 needed 26.8k games to resolve a tiny +1.3; fs05/inter banked
+  fast on larger effects. swa180 bench is ~25% lower than the others
+  (3.93M vs ~5.2M) — SWA-smoothed eval reshapes the search tree, not a
+  fault.
+- Self-play magnitude is discounted vs cross-engine and these are S200
+  nets: direction reliable, exact Elo less so. Not yet a basis for
+  ranking the techniques against each other for prod.
+
+### 2026-06-06 — fen-skip 0.75 regresses despite LOWER train loss
+
+Addendum to the smoothing batch (fs05 = +10, #1746). A higher fen-skip
+fs=0.75 net tested ~−10 vs the same reference (≈ #1764, −11.3 ±7.3 H0):
+i.e. fs=0.5 (+10) > fs=0.75 (−10), a ~20 Elo head-to-head gap.
+
+- **Fact:** fs=0.75's final TRAIN loss was *lower* than fs=0.5's
+  (0.00351 vs 0.00364), yet it played ~20 Elo *weaker*.
+- **Interpretation (supported):** cross-run train loss is only comparable
+  on an identical data stream. fen-skip changes which positions are
+  retained (and ~2× widens corpus traversal at fixed SB), so 0.75 vs 0.5
+  are "different exams"; the 0.00013 gap is also within data-order noise.
+  Lower loss did not — and should not be expected to — predict strength.
+  Reinforces [[feedback_loss_is_not_strength]].
+
+## 2026-06-06 — Multistage v4 (s1→s2→s3): each stage weakens; diagnosis
+
+New multistage attempt after the file-seed fix (different data per stage
+now actually works). SF-style 3-stage primer→refine; net-vs-net SPRT on
+mini-prod trunk. **Adam's open question:** why does the model get *weaker*
+each stage when the train-loss graph and move-ordering stats both *improve*?
+
+**Recipe (Fact).**
+- **s1** (`multi-v4-s1`, SHA C4E5FC79): fresh primer on `/workspace/stage1`
+  (SF-replica "specials" — DFRC/LC960 + curated), 250 SB, peak 1e-3 →
+  final 2.4e-6, warm10, fs0.5, interleave, seed 42, **no SWA**.
+- **s2** (SHA 86871B30): resume s1, SWAP to `/workspace/stage2`, 300 SB,
+  **re-warm peak 1e-3** → 2.4e-6, seed 43, interleave, **no SWA**.
+- **s3** (SHA 196AB04F): resume s2, SAME `/workspace/stage2`, 350 SB,
+  peak 5e-4 → 2.4e-6, seed 44, interleave, **no SWA**.
+- Cumulative SB: 250 / 550 / 900.
+- `/workspace/stage2` (Fact) = SF-stage2 replica, ~428 GB / ~200B pos:
+  leela96-filt (5 splits) + test78/79 2022 + T80 2022-06→2024-06. A STRONG,
+  diverse pool — contains the dataset-ablation's top performers (leela96
+  +27, 2022 +23; #1741-1744). NOT weak data.
+
+**SPRT (Fact, mini-prod trunk, net-vs-net):**
+
+| Test | Comparison | Elo | Result |
+|------|-----------|-----|--------|
+| 1765 | s1 vs miniprod baseline | +28.2 ±10.8 | H1 ✓ (N=1320) |
+| 1766 | s2 vs s1 | −14.7 ±8.3 | H0 ✗ (N=2430) |
+| 1767 | s3 vs s2 | −5.5 ±5.0 | H0 ✗ (N=6408) |
+
+→ Strength ranking **s1 > s2 > s3**; each stage subtracts. (1768 s3-vs-prod
+on main was submitted then stopped — Adam trusts the relative deltas; a
+fixed anchor adds little.)
+
+**Eval-scale (Fact, `coda eval-dist` 100k pos on test80-2024-01-jan):**
+
+| net | Mean | RMS | p50 | p99 |
+|-----|------|-----|-----|-----|
+| s1 | +248 | 361 | +194 | +851 |
+| s2 | +69 | 156 | +70 | +448 |
+| s3 | +125 | 226 | +125 | +608 |
+| prod | +88 | 166 | +70 | +519 |
+
+→ eval scale OSCILLATES 2.3× across the chain (361 → 156 → 226); s2→s3
+alone is a 45% swing on the SAME data. s1 carries a large side-to-move
+bias (mean +248, median +194) — a specials/DFRC-data fingerprint — that
+regresses toward prod as bulk data enters.
+
+**Move ordering (Fact, bench):**
+
+| net | first-move | avg pos² | EBF |
+|-----|-----------|----------|-----|
+| s1 | 83.8% | 10.5 | 1.80 |
+| s2 | 84.8% | 9.5 | 1.81 |
+| s3 | 86.6% | 8.7 | 1.77 |
+| prod | 85.8% | 10.6 | 1.79 |
+
+→ ordering improves monotonically s1→s2→s3 (rises with cumulative SB).
+
+**The paradox (Fact):** train loss and move-ordering both "improve" with
+stages while SPRT strength DROPS. Ordering and strength are ANTI-correlated
+across the chain: s1 strongest + worst-ordered; s3 weakest + best-ordered.
+
+**Interpretation (supported — mechanism + corroborating memory, not a lone
+SPRT):** both train-loss and move-ordering measure CONVERGENCE /
+self-consistency (they rise with cumulative SB), NOT eval ACCURACY. A
+more-converged net fits its pool better (loss↓) and predicts its own
+cutoffs better (ordering↑) regardless of whether the eval it converges
+*toward* is more or less accurate. Neither can vouch for strength.
+Train-loss is also cross-stage incomparable (different data per stage).
+Consistent with [[feedback_bench_stats_dont_predict_net_quality]].
+
+**Ruled out (Fact):**
+- *Data quality* — stage2 is the best ablation slices, not weak data.
+- *Catastrophic forgetting from the high re-warm peak* — SF's threats.yaml
+  re-warms to 1.5e-3 each stage and works; 1e-3 is not inherently the bug.
+- *Scale-miscalibration as the ranking driver* — distance to trunk
+  calibration (~193) predicts s1 WEAKEST (361, farthest); s1 is STRONGEST.
+  Scale contaminates SPRT MAGNITUDES but does not set the sign/ranking.
+
+**Leading HYPOTHESIS (PLAUSIBLE, NOT PROVEN):** the strength loss is from
+shipping RAW low-final-LR endpoints WITHOUT SWA on the big-T80 pool — a
+regime Adam has previously found weak without SWA. Evidence FOR: (a) the
+45% s2→s3 scale oscillation is exactly the endpoint noise SWA averages;
+(b) Adam's prior "big T80 without SWA = poor strength" finding; (c)
+[[feedback_schedule_plateaus_at_s800]] (SWA recovered +12–32). NOT PROVEN —
+there is NO controlled SWA-vs-no-SWA strength comparison on THIS chain yet.
+**Decisive test pending:** stage-4 is training now WITH SWA (unaffected by
+earlier raw stages); if it recovers strength, this is supported; if not,
+re-open.
+
+**Open question (THEORY, unconfirmed):** interleave was used as a partial
+SWA-substitute (Adam: "somewhat found, not fully confirmed"). Theory:
+interleave denoises DATA-ORDER (which file/distribution appears when); SWA
+denoises the WEIGHT-SPACE endpoint (optimizer wobble at low LR) — different
+axes, so interleave can smooth the loss curve without denoising the shipped
+weights and may not fully replace SWA. Untested directly.
+
+### 2026-06-06 — Training determinism: sfbinpack conversion race fixed
+
+- **Fact:** same-seed training runs were non-reproducible. Decomposed:
+  at `--threads=1`, residual variance = GPU FP nondeterminism only
+  (atomicAdd/cuBLAS reductions; SB1–2 bit-identical, drift from SB3 — the
+  irreducible floor). At `--threads=8` (production) divergence was much
+  larger.
+- **Fact:** root cause = a thread-race in Bullet's sfbinpack converter
+  (`crates/bullet_lib/src/value/loader/sfbinpack.rs`): parallel sub-chunks
+  were sent in thread-COMPLETION order, feeding the seeded Fisher-Yates
+  shuffle → nondeterministic data order at threads>1. Fix = ordered drain
+  (conversion stays parallel; hand-off serialized in chunk-push order).
+  Commit `54286be`, branch `fix/sfbinpack-deterministic-shuffle-order`,
+  pushed to origin (adamtwiss/bullet). Race is in upstream jw1912 code →
+  upstream PR candidate.
+- **Fact:** post-fix threads=8 (fix-a vs fix-b) divergence profile MATCHES
+  the threads=1 GPU floor (peak ~171e-6 at SB8); fix-b tracks threads=1 to
+  ~1e-6 at every SB → data pipeline now deterministic, residual = pure GPU
+  floor. Validated at LOSS level.
+- **Pending (NOT yet Elo-validated):** 6×S200 same-seed variance batch
+  (restarted after a GPU-host disk-space failure) to confirm strength
+  SD < 5 Elo. Until it lands, the fix is confirmed at loss level only.
+
+## 2026-06-06 — Multi-v4 stage 4: per-stage regression reverses; SWA is net-NEGATIVE on interleave
+
+Stage 4 of the multi-v4 chain landed. New nets:
+- **s4** (raw, SHA `2DB6E620`): resume s3, 400 SB, peak 2.5e-4 → final 1.2e-6,
+  warm10, fs0.5, interleave, seed 45, SWA window 300→400. Cumulative 1300 SB.
+- **s4-swa** (SHA `1FDE577B`): SWA-averaged twin of s4 over SB 300-400.
+- Same `/workspace/stage2` data, same arch (v9, FT=768, L1=16, CReLU, factor,
+  kb-reckless).
+
+**SPRT (Fact, main trunk, net-vs-net, bounds [-3, 3] except where noted):**
+
+| Test | Comparison | Elo | Result |
+|------|-----------|-----|--------|
+| 1775 | s4 vs s3 | +41.46 ±13.49 | H1 ✓ (N=842) |
+| 1776 | s4-swa vs s3 | +40.90 ±13.15 | H1 ✓ (N=862) |
+| 1777 | s4-swa vs s4 (direct SWA effect) | −13.5 (H0 magnitude) | H0 ✗ |
+| 1778 | s4 vs prod (E2773E50) | −12.54 ±7.45 (live) | →H0, running |
+
+**Stopping-point bias note:** 1775/1776 both stopped at H1 near N=850 where
+the LLR boundary inflates the point estimate. The −13.5 from 1777 (direct)
+is the trustworthy measurement of the SWA effect; the +41 magnitudes are
+ceiling-biased and the "true" values are likely lower by some amount.
+
+**Fact: stage4 reverses the per-stage regression pattern.** Chain reads
+s1 +28 → s2 −15 → s3 −5.5 → s4 ≈ +41 vs s3 (with stopping-point caveat).
+Multistage as a *deliverable* is working — it was just non-monotonic per
+stage.
+
+**Fact: SWA on s4 with interleave is net-negative (−13.5 Elo).** Not zero,
+not noise. Falsifies the leading hypothesis from the 2026-06-06 multi-v4
+diagnosis section above (raw-endpoint-no-SWA as cause of per-stage
+regression). The hypothesis predicted s4-swa would jump but s4 raw would
+remain weak; instead s4 raw and s4-swa are within ~13 Elo of each other
+and BOTH dramatically beat s3.
+
+**Interpretation (supported):** the "per-stage regression" measured at
+s2/s3 was an artifact of measuring un-finished intermediate stages of a
+multistage recipe — they were resumed-then-mid-cosine snapshots, not
+finished products. Stage4 is the only stage with a fully-tuned terminal
+recipe (lower peak, lower floor, longest cosine). Once a finished recipe
+runs, the chain delivers strength.
+
+**Interpretation (supported, mechanism + corroborating memories):** SWA's
+value depends on data-order regime, not just LR-floor or tail position.
+- Adam's frame: SWA's prior wins on big-T80 were largely averaging
+  weight wobble at FILE BOUNDARIES of sequential data. Each file
+  switch is a distribution shift → optimizer wobble → SWA averages it.
+- Interleave shuffles the file-boundary shifts continuously through the
+  run → no concentrated wobble → SWA has nothing to denoise.
+- Additional mechanism on top: s4's SWA window starts at SB 300 of 400,
+  with cosine LR running 3.7e-5 → 1.2e-6 across the window — a 30× LR
+  drop. SWA averages active-cosine-region weights with their less-converged
+  earlier states, pulling away from the most-converged endpoint.
+- Both mechanisms predict SWA ≤ 0 here. Direct measurement: −13.5.
+- Unifies the sequential 80%-cosine bump and SWA's prior wins as
+  manifestations of the same data-order-distribution-shift cause.
+- Consistent with [[project_swa_needs_stable_plateau]]: SWA on
+  unstable/oscillating tails can invert. With interleave the tail is
+  stable AND the cosine is dropping, both anti-SWA conditions.
+
+**Ruled out (Fact):**
+- *Raw-endpoint-no-SWA as cause of per-stage regression.* The 2026-06-06
+  leading hypothesis is dead. Falsified by direct s4-swa-vs-s4 SPRT.
+- *Multistage-is-broken interpretation of s2/s3 regression.* Stage4's
+  +41 vs s3 shows the chain delivers when the terminal stage is tuned.
+
+**vs prod (Fact, live):** #1778 multi-v4-s4 vs production net E2773E50
+is trending −12.5 ±7.5 at N≈1000+. (H0-bound stopping-point bias works
+in our favour here — pulls magnitude toward 0, not away. This is the
+trustworthy direction of gap reading.) Multi-v4 ran cumulative 1300 SB
+vs SF's ~4000 SB target; the −12.5 sets the gap-to-prod for a half-length
+proof-of-concept of SF-style multistage on Coda.
+
+**Pending (NOT yet Elo-validated):**
+- #1778 vs prod CI to tighten; expecting magnitude near −10 to −15 at H0.
+- v5 multistage iteration (length and stage-shape change) to test whether
+  closing the SB gap closes the prod gap. Spec below.
+
+## 2026-06-06 — WDL sweep at FT=768 (S200 paired probes, mini-prod trunk)
+
+Question: does w15 hold as the FT=768 optimum, or has the FT=1024/L1=32
+finding ("w20 > w15") transferred down to FT=768 in our new data recipe
+(interleave + warm10)?
+
+**Nets** (all `warm10-inter`, S200, mini-prod arch):
+- `data-warm10-inter-normal-s200` (SHA `7DC0685B`, baseline, w15)
+- `warm10-inter-w20-s200` (SHA `46B29BF9`)
+- `warm10-inter-w25-s200` (SHA `D512626E`)
+
+**SPRT (Fact, mini-prod trunk, net-vs-net, bounds [-3, 3], live):**
+
+| Test | Comparison | Elo (live) | Result |
+|------|-----------|------------|--------|
+| 1773 | w20 vs w15 | +9.7 ±11.3 | →H1, running |
+| 1774 | w25 vs w15 | −1.2 ±9.2 | →H0, running |
+
+(Initial submissions #1769/#1770 failed with "Wrong Bench" because I'd
+used the embedded-net bench rather than per-override-net benches; stopped
+and resubmitted with correct per-net benches.)
+
+**Interpretation (early, not banked):** if these magnitudes hold, the
+inverted-parabola fit of w15:0, w20:+9.7, w25:−1.2 puts the WDL optimum
+near **w20-w21**, lower end of the w20→w25 band, robust to w25's CI. SF
+runs w24, which is consistent with our pattern of "optimum rises with
+eval quality and capacity" ([[feedback_capacity_increases_need_information_increases]]):
+SF's larger net + SWA + data scale pushes their peak above ours, not in
+conflict with our finding.
+
+**Caveat (Fact):** these magnitudes are at early N and will compress.
+Don't bank the +9.7 or the parabola location until both land H1/H0.
+
+**Implication for v5:** w20 is the higher-prior pick for v5's terminal
+stages where the eval is most converged. Multi-v4 used w15 throughout
+(predates this evidence). v5 keeps w15 through replay-stage for direct
+comparability with v4-s3, then varies to w20 at the long terminal stage.
+
+## 2026-06-06 — v5 multistage spec (planned, not yet started)
+
+**Goal:** test whether closing the SB gap to SF (1300 → ~1900 SB) and
+giving the terminal stage proper bake time closes the multi-v4-vs-prod
+gap (current ≈ −12.5). NOT a prod-beating attempt — a methodical "are
+we scaling up properly" iteration with intermediate SPRT gates to
+allow per-stage redo.
+
+**Resume from:** `multi-v4-s2-300` checkpoint (saves 550 SB of GPU
+time vs re-running s1+s2). v4-s2 is already SF-stage2-equivalent
+(300 SB at peak 1e-3 on T80 data, matches SF's 250-300 stage2 length).
+
+**Spec:**
+
+| Stage | SBs | Peak LR | Final LR | WDL | Seed | SWA | Resume |
+|-------|-----|---------|----------|-----|------|-----|--------|
+| v5-s3 | 550 | 5e-4 | 2.4e-6 | 0.15 | 46 | no | v4-s2-300 |
+| v5-s4 | 800 | 2.5e-4 | 1.2e-6 | 0.20 | 47 | no | v5-s3-550 |
+
+Cumulative 1900 SB (≈ 47% of SF's 4000, vs multi-v4's 32%). Same arch
+(v9, FT=768, L1=16, CReLU, factor, kb-reckless, fs0.5, interleave).
+WDL switches from w15 to w20 at s4 only (bundles "longer s4 recipe"
+with "higher WDL" — accepted bundle since it's the production-candidate
+question; if v5-s4 disappoints, redo at w15 to ablate).
+
+**Gating SPRTs:** v5-s3 vs v4-s3 (length-only signal); v5-s4 vs v4-s4
+(s4 recipe + WDL change); v5-s4 vs prod (the gap question).
+
+## 2026-06-06 — SF doc corrections (docs/sfnnv13_architecture_review_2026-05-23.md)
+
+Updated `docs/sfnnv13_architecture_review_2026-05-23.md` (the
+SFNNv13-vs-Coda architecture review):
+
+- **MSE exponent:** Coda's `coda_v9_768_threats` trainer already uses
+  `power_error(target, 2.5)` (line 644), not Bullet default 2.0. So
+  the actual SF delta is 2.5 → 2.6, tiny. Add `--mse-power` flag for
+  future experimentation; don't allocate dedicated SPRT cycles to
+  2.5→2.6 probe specifically.
+- **L1=32 status:** structurally done with partial SIMD work landed, NOT
+  "in flight." Currently weaker overall because the ~10% NPS gap costs
+  more Elo than the eval gain returns. Two flip-positive paths: (a)
+  complete L1=32 SIMD specialization; (b) richer training (v5/v6 recipe)
+  growing the L1=32 eval advantage past the NPS tax.
+- **FT=1024:** **S800 retest already done and POSITIVE** —
+  `#1693 experiment/ft1024-s800` vs main: **+6.35 ±3.52 H1 at N=12808**,
+  net-of-NPS (https://ob.atwiss.com/test/1693/). Dev net
+  `ft1024-fs0.5-swa720-800-s800` vs base `gpu4-normal-s800` (FT=768).
+  Recipe was pre-interleave / pre-SWA-understanding (used SWA720 which
+  we now understand was averaging sequential-data wobble); worth a
+  fresh interleave-based retest. The pause was data-pipeline-issues,
+  not architecture. **Pick FT=1024 back up** independent of multistage.
+- **Tier 1 priors are direction-only, not magnitudes.** Per Adam:
+  historical record shows priors have been wrong in both directions;
+  don't lean on them for sizing decisions.
+
+## 2026-06-06 — Tooling backports to mini-prod (no behavior change)
+
+Commits `6a7e090` (skills+scripts+docs), `4198b41` (CLAUDE.md + Makefile).
+Lossless backport from main of: `.claude/skills/ob.md`, `.claude/skills/lichess.md`,
+`scripts/ob_stop.py` tune/test STOP-URL bugfix, TM/TB/train analysis
+scripts (tm_simulator, tm_pattern_inspect, tm_variation_analyzer,
+tm_clock_drain, tb_selection_fuzz, train_diag, lichess_blunder_scan),
+6 new docs, plus `CLAUDE.md` (+97 lines methodology) and `Makefile`
+(PGO comments only, recipe unchanged). NO `src/`, NO `net.txt`, NO
+bench change. `experiments.md` deliberately not touched (this file
+diverges per-branch).
+
+## 2026-06-06 — train_curve_app.py UI: val-only smoothing
+
+Added a "val smooth:" dropdown (off / 5 / 11 / 21 / 51 / 101 SB) that
+applies a centered moving average to the dotted validation line in
+the `mean` and `tail` views. Train (solid) line is left at native
+resolution — Adam's request, the train line was already legible and
+only val was visually noisy. Default window 11 SB. Smoother handles
+null-sparse val arrays correctly (averages only non-null neighbours,
+preserves `connectgaps:true`). Discussion identified val noise as
+likely real measurement of model-state oscillation, not pool-size
+sampling noise (16k pool → SE ~2e-5 vs observed ±4e-4 spikes), so a
+data-side fix (bigger pool) wouldn't help — UI smoothing was the
+right pragmatic call.
