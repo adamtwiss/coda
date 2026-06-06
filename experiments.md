@@ -14448,3 +14448,86 @@ likely real measurement of model-state oscillation, not pool-size
 sampling noise (16k pool → SE ~2e-5 vs observed ±4e-4 spikes), so a
 data-side fix (bigger pool) wouldn't help — UI smoothing was the
 right pragmatic call.
+## 2026-06-06 — Mega-book from GM games: pipeline, move-15 input-metric, deploy
+
+### Motivation
+Book thread has been the highest-converting lever (trim25 +28, sharp25 +12.5,
+all visible on lichess). Loss analysis on 1193 codabot/coda_bot games (SF
+re-eval, opponent-rating-filtered) quantified WHY: eval at move 15 correlates
+with outcome (r≈0.45 at move 15 rising to 0.60 at move 30; for COMPARABLE-
+strength opponents, +50-100cp@move15 → 0.66 score, +100-200cp → ~1.00). The
+deployed Titans-derived book only reaches ~move 12; goal was to extend good
+coverage to move 15-20.
+
+### Source + pipeline
+- Sources: mega2600 (138K GM games, both players 2400+, rozim/ChessData) +
+  gochess/testdata/2600.pgn (10K) = ~148K GM games.
+- Coverage vs Titans: 2600.pgn-only added 339K NEW positions; 97% of move
+  16-20 positions are new (Titans dies ~move 12).
+- 5.38M unique (position,move) pairs → graded frequency filter:
+  moves 1-5 keep f≥10, moves 6-7 f≥5, moves 8-20 f≥3, cap ply 40 (move 20)
+  → 138,166 survivors. 88% of all pairs are played-once singletons at deep
+  plies (frequency filter is essential, not optional).
+- Split: 99,657 single-move positions (GM consensus, auto-keep) + 15,778
+  multi-move positions (38,509 entries needing eval).
+- Deep eval: all 38,509 multi-move entries scored by Coda at depth 18,
+  parent-POV, 0 failures, 119 min.
+
+### Three candidate books (all share the above)
+- **gm2600_freq50** (was Titans_mega_freq50): pure GM, rel50 trim (drop moves
+  >50cp below position-best d18), weight = freq × exp(eval/25). 134,283 entries.
+- **gm2600_eval50**: same but weight = exp(eval/25) only (no freq). 134,283.
+- **mergeddeep**: deployed Titans-book kept 100% as-is + 67,084 GM positions
+  grafted where deployed had no coverage. 186,464 entries. (Only this one has
+  Titans lineage.)
+
+### Self-play gauntlet (1000 games each, 10+0.1, vs deployed) — INCONCLUSIVE
+- gm2600_freq50: −1.4 ±7.9 (tied), 86% draws
+- mergeddeep:    0.0 ±8.4 (tied), 85% draws
+- gm2600_eval50: −8.3 ±8.8 (REGRESSED, LOS 96.8%), 83% draws
+Self-play draw-death (both sides equal-strength Coda) masks book gains — only
+detected the regression. Same pattern as rel25/rel50 (measured ~0 self-play,
+converted on lichess). Self-play CANNOT A/B book coverage changes.
+
+### Move-15 input-metric — THE METHODOLOGY WIN
+Extracted move-15 eval per side from the EXISTING gauntlet PGNs (asymmetric:
+Coda+deployed vs Coda+candidate), then re-evaluated those move-15 positions
+with SF d16 (neutral ground truth). Candidate-side POV:
+
+  book            SF mean@m15   %>=+50   %<=-50
+  gm2600_freq50      +7cp        16.6%     9.8%   <- best
+  mergeddeep          0cp        14.5%    13.5%
+  gm2600_eval50      -6cp        10.0%    16.5%   <- worst
+
+This CLEANLY SEPARATED books that 1000-game self-play could not, at ~2 min of
+SF eval on existing games (no new games). gm2600_freq50 reaches move 15 ~+7cp
+better than deployed with fewer losing positions.
+
+Verdicts:
+- **Popularity-weighting >> eval-weighting.** rel50 leaves survivors within
+  50cp (noise), so exp(eval/25) weighting is near-flat and over-plays offbeat
+  moves. Eval's correct role is the TRIM CUT, not the weight. eval50 lost both
+  in gauntlet (−8.3) and move-15 metric (−6cp). Dead.
+- **gm2600_freq50 is strictly best**: it has the better mid-game positions
+  (+7cp@m15) AND already includes deep coverage to move 20. mergeddeep only
+  tied because it keeps deployed's weaker shallow play for moves 1-12; the
+  GM shallow play is better.
+
+### Methodology lessons (durable)
+- **Move-15 SF-eval is the book A/B metric.** Self-play gauntlets can't
+  separate book coverage changes (draw-death); lichess is too slow/uncontrolled
+  (80 games/day). Re-eval move-15 positions from existing asymmetric games
+  with neutral SF — fast, directly measures the win-predictive quantity.
+- **Persistent-worker eval pattern.** Spawn-per-eval reloads the 48MB threat
+  net every call → 4× slowdown under contention. One Coda per Pool worker,
+  reused via ucinewgame, is the right pattern for any large eval sweep.
+- **Single-move positions (86% of book) are frequency-only — NOT eval-filtered.**
+  Lone polyglot entries always play regardless of weight, so weighting/trim
+  are moot — but the keep/drop decision was skipped. A v2 pass could eval the
+  99,657 singles and drop clearly-losing GM lines (conservative <−100cp floor;
+  GMs rarely play into −100 by move 20, so likely few drops).
+
+### Deployed
+gm2600_freq50_d18.bin (md5 80120e87…) copied to codabot 2026-06-06.
+Move-15 metric is the acceptance signal. Naming: gm2600=source, freq50=
+popularity-weight+rel50-trim, d18=eval depth. Durable copy in ~/chess/books/.
