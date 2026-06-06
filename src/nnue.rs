@@ -798,24 +798,28 @@ unsafe fn simd_screlu_pack(acc: &[i16], out: &mut [u8], h: usize) {
     }
 }
 
-/// CReLU + pairwise pack: acc[0..pw] and acc[pw..2*pw] → out[0..pw] u8.
-/// clamp(a, 0, 255) * clamp(b, 0, 255) >> 8 for each pair.
+/// Pairwise pack implementation. When `HAS_THREAT` is false, the threat
+/// loads/adds are compile-time dead code.
+/// acc[0..pw] and acc[pw..2*pw] → out[0..pw] u8.
+/// clamp(a, 0, 255) * clamp(b, 0, 255) >> FT_SHIFT for each pair.
 /// pw must be multiple of 16.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-/// Pairwise pack with optional fused threat combine.
-/// If threat is non-null, adds threat[i] to acc[i] before clamping (Reckless activate_ft pattern).
-unsafe fn simd_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut [u8], pw: usize) {
+unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
+    acc: &[i16],
+    threat: *const i16,
+    out: &mut [u8],
+    pw: usize,
+) {
     let zero = _mm256_setzero_si256();
     let qa = _mm256_set1_epi16(QA as i16);
-    let has_threat = !threat.is_null();
     let mut i = 0;
     while i + 16 <= pw {
         // Load 16 values from each half
         let mut a = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
         let mut b = _mm256_loadu_si256(acc.as_ptr().add(pw + i) as *const __m256i);
         // Fused threat combine: add threat values before clamp
-        if has_threat {
+        if HAS_THREAT {
             let ta = _mm256_loadu_si256(threat.add(i) as *const __m256i);
             let tb = _mm256_loadu_si256(threat.add(pw + i) as *const __m256i);
             a = _mm256_add_epi16(a, ta);
@@ -832,7 +836,7 @@ unsafe fn simd_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut [u
         if i + 32 <= pw {
             let mut a2 = _mm256_loadu_si256(acc.as_ptr().add(i + 16) as *const __m256i);
             let mut b2 = _mm256_loadu_si256(acc.as_ptr().add(pw + i + 16) as *const __m256i);
-            if has_threat {
+            if HAS_THREAT {
                 a2 = _mm256_add_epi16(a2, _mm256_loadu_si256(threat.add(i + 16) as *const __m256i));
                 b2 = _mm256_add_epi16(b2, _mm256_loadu_si256(threat.add(pw + i + 16) as *const __m256i));
             }
@@ -857,10 +861,24 @@ unsafe fn simd_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut [u
     while i < pw {
         let mut a = acc[i] as i32;
         let mut b = acc[pw + i] as i32;
-        if has_threat { a += *threat.add(i) as i32; b += *threat.add(pw + i) as i32; }
+        if HAS_THREAT { a += *threat.add(i) as i32; b += *threat.add(pw + i) as i32; }
         out[i] = ((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8;
         i += 1;
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_pairwise_pack_plain(acc: &[i16], out: &mut [u8], pw: usize) {
+    simd_pairwise_pack_impl::<false>(acc, std::ptr::null(), out, pw);
+}
+
+/// Pairwise pack with fused threat combine.
+/// Adds threat[i] to acc[i] before clamping (Reckless activate_ft pattern).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_pairwise_pack_threat(acc: &[i16], threat: *const i16, out: &mut [u8], pw: usize) {
+    simd_pairwise_pack_impl::<true>(acc, threat, out, pw);
 }
 
 
@@ -1335,10 +1353,14 @@ unsafe fn simd512_pairwise_dot(acc_first: &[i16], acc_second: &[i16], weights: &
 /// pw must be multiple of 32.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw")]
-unsafe fn simd512_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut [u8], pw: usize) {
+unsafe fn simd512_pairwise_pack_impl<const HAS_THREAT: bool>(
+    acc: &[i16],
+    threat: *const i16,
+    out: &mut [u8],
+    pw: usize,
+) {
     let zero = _mm512_setzero_si512();
     let qa = _mm512_set1_epi16(QA as i16);
-    let has_threat = !threat.is_null();
     // Permutation index to fix lane ordering after packus_epi16
     // _mm512_packus_epi16 interleaves 128-bit lanes: [0,4,1,5,2,6,3,7]
     // We need: [0,1,2,3,4,5,6,7] → permute qwords by [0,2,4,6,1,3,5,7]
@@ -1348,7 +1370,7 @@ unsafe fn simd512_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut
         // Load 32 values from each half (two ZMM registers of i16)
         let mut a0 = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
         let mut b0 = _mm512_loadu_si512(acc.as_ptr().add(pw + i) as *const __m512i);
-        if has_threat {
+        if HAS_THREAT {
             let ta0 = _mm512_loadu_si512(threat.add(i) as *const __m512i);
             let tb0 = _mm512_loadu_si512(threat.add(pw + i) as *const __m512i);
             a0 = _mm512_add_epi16(a0, ta0);
@@ -1362,7 +1384,7 @@ unsafe fn simd512_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut
         if i + 64 <= pw {
             let mut a1 = _mm512_loadu_si512(acc.as_ptr().add(i + 32) as *const __m512i);
             let mut b1 = _mm512_loadu_si512(acc.as_ptr().add(pw + i + 32) as *const __m512i);
-            if has_threat {
+            if HAS_THREAT {
                 let ta1 = _mm512_loadu_si512(threat.add(i + 32) as *const __m512i);
                 let tb1 = _mm512_loadu_si512(threat.add(pw + i + 32) as *const __m512i);
                 a1 = _mm512_add_epi16(a1, ta1);
@@ -1390,10 +1412,24 @@ unsafe fn simd512_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: &mut
     while i < pw {
         let mut a = acc[i] as i32;
         let mut b = acc[pw + i] as i32;
-        if has_threat { a += *threat.add(i) as i32; b += *threat.add(pw + i) as i32; }
+        if HAS_THREAT { a += *threat.add(i) as i32; b += *threat.add(pw + i) as i32; }
         out[i] = ((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8;
         i += 1;
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn simd512_pairwise_pack_plain(acc: &[i16], out: &mut [u8], pw: usize) {
+    simd512_pairwise_pack_impl::<false>(acc, std::ptr::null(), out, pw);
+}
+
+/// AVX-512 pairwise pack with fused threat combine.
+/// Adds threat[i] to acc[i] before clamp (v9 fused pack).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn simd512_pairwise_pack_threat(acc: &[i16], threat: *const i16, out: &mut [u8], pw: usize) {
+    simd512_pairwise_pack_impl::<true>(acc, threat, out, pw);
 }
 
 /// AVX-512 SCReLU pack: clamp [0,255], v²/255 → [0,255] as u8.
@@ -2843,7 +2879,6 @@ impl NNUENet {
         let pw = h / 2; // pairwise output per perspective
         let l1_total = self.l1_size; // total L1 neurons (bucketed or not)
         let l1_pb = self.l1_per_bucket; // per-bucket L1 size
-        let qa = QA;
         let qa_l1 = self.l1_scale;
 
         // For bucketed nets: only compute neurons for this bucket
@@ -2880,34 +2915,37 @@ impl NNUENet {
         #[cfg(target_arch = "x86_64")]
         if self.has_avx512 && pw.is_multiple_of(32) {
             unsafe {
-                let stm_tp = if has_threats { stm_threat.as_ptr() } else { std::ptr::null() };
-                let ntm_tp = if has_threats { ntm_threat.as_ptr() } else { std::ptr::null() };
-                simd512_pairwise_pack_fused(stm_acc, stm_tp, stm_pw, pw);
-                simd512_pairwise_pack_fused(ntm_acc, ntm_tp, ntm_pw, pw);
+                if has_threats {
+                    simd512_pairwise_pack_threat(stm_acc, stm_threat.as_ptr(), stm_pw, pw);
+                    simd512_pairwise_pack_threat(ntm_acc, ntm_threat.as_ptr(), ntm_pw, pw);
+                } else {
+                    simd512_pairwise_pack_plain(stm_acc, stm_pw, pw);
+                    simd512_pairwise_pack_plain(ntm_acc, ntm_pw, pw);
+                }
             }
         } else if self.has_avx2 && pw.is_multiple_of(16) {
             unsafe {
                 if has_threats {
-                    simd_pairwise_pack_fused(stm_acc, stm_threat.as_ptr(), stm_pw, pw);
-                    simd_pairwise_pack_fused(ntm_acc, ntm_threat.as_ptr(), ntm_pw, pw);
+                    simd_pairwise_pack_threat(stm_acc, stm_threat.as_ptr(), stm_pw, pw);
+                    simd_pairwise_pack_threat(ntm_acc, ntm_threat.as_ptr(), ntm_pw, pw);
                 } else {
-                    simd_pairwise_pack_fused(stm_acc, std::ptr::null(), stm_pw, pw);
-                    simd_pairwise_pack_fused(ntm_acc, std::ptr::null(), ntm_pw, pw);
+                    simd_pairwise_pack_plain(stm_acc, stm_pw, pw);
+                    simd_pairwise_pack_plain(ntm_acc, ntm_pw, pw);
                 }
             }
         } else {
             for i in 0..pw {
                 let ta = if has_threats { stm_threat[i] as i32 } else { 0 };
                 let tb = if has_threats { stm_threat[i + pw] as i32 } else { 0 };
-                let a = (stm_acc[i] as i32 + ta).clamp(0, qa);
-                let b = (stm_acc[i + pw] as i32 + tb).clamp(0, qa);
+                let a = (stm_acc[i] as i32 + ta).clamp(0, QA);
+                let b = (stm_acc[i + pw] as i32 + tb).clamp(0, QA);
                 stm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
             for i in 0..pw {
                 let ta = if has_threats { ntm_threat[i] as i32 } else { 0 };
                 let tb = if has_threats { ntm_threat[i + pw] as i32 } else { 0 };
-                let a = (ntm_acc[i] as i32 + ta).clamp(0, qa);
-                let b = (ntm_acc[i + pw] as i32 + tb).clamp(0, qa);
+                let a = (ntm_acc[i] as i32 + ta).clamp(0, QA);
+                let b = (ntm_acc[i + pw] as i32 + tb).clamp(0, QA);
                 ntm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
         }
@@ -2930,15 +2968,15 @@ impl NNUENet {
             for i in 0..pw {
                 let ta = if has_threats { stm_threat[i] as i32 } else { 0 };
                 let tb = if has_threats { stm_threat[i + pw] as i32 } else { 0 };
-                let a = (stm_acc[i] as i32 + ta).clamp(0, qa);
-                let b = (stm_acc[i + pw] as i32 + tb).clamp(0, qa);
+                let a = (stm_acc[i] as i32 + ta).clamp(0, QA);
+                let b = (stm_acc[i + pw] as i32 + tb).clamp(0, QA);
                 stm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
             for i in 0..pw {
                 let ta = if has_threats { ntm_threat[i] as i32 } else { 0 };
                 let tb = if has_threats { ntm_threat[i + pw] as i32 } else { 0 };
-                let a = (ntm_acc[i] as i32 + ta).clamp(0, qa);
-                let b = (ntm_acc[i + pw] as i32 + tb).clamp(0, qa);
+                let a = (ntm_acc[i] as i32 + ta).clamp(0, QA);
+                let b = (ntm_acc[i + pw] as i32 + tb).clamp(0, QA);
                 ntm_pw[i] = ((a * b) >> FT_SHIFT) as u8;
             }
         }
@@ -2959,8 +2997,16 @@ impl NNUENet {
             std::slice::from_raw_parts_mut(hidden32_storage.as_mut_ptr() as *mut i32, HIDDEN32_BUF)
         };
         let _ = &mut hidden32; // silence unused-mut on the binding itself; slice refs are mutated
-        for i in 0..l1 {
-            hidden32[i] = self.l1_biases[l1_off + i] as i32 * pw_scale;
+        let mut hidden32_seeded = false;
+        macro_rules! seed_hidden32 {
+            () => {
+                if !hidden32_seeded {
+                    for i in 0..l1 {
+                        hidden32[i] = self.l1_biases[l1_off + i] as i32 * pw_scale;
+                    }
+                    hidden32_seeded = true;
+                }
+            };
         }
         // L1 matmul: use SIMD int8 dot with transposed weights when available
         #[cfg(target_arch = "x86_64")]
@@ -2976,6 +3022,7 @@ impl NNUENet {
             }
         } else if self.has_avx512_vnni && pw.is_multiple_of(64) && !self.l1_weights_8t.is_empty() {
             // VNNI fallback for wider L1 — still VPDPBUSD, but row-major.
+            seed_hidden32!();
             let ntm_base = l1_total * pw;
             for i in 0..l1 {
                 let gi = l1_off + i;
@@ -2995,6 +3042,7 @@ impl NNUENet {
                 );
             }
         } else if self.has_avx512 && pw.is_multiple_of(64) && !self.l1_weights_8t.is_empty() {
+            seed_hidden32!();
             let ntm_base = l1_total * pw;
             for i in 0..l1 {
                 let gi = l1_off + i;
@@ -3064,6 +3112,7 @@ impl NNUENet {
                 }
             }
         } else if self.has_avx2 && pw.is_multiple_of(32) && !self.l1_weights_8t.is_empty() {
+            seed_hidden32!();
             let ntm_base = l1_total * pw;
             // Multi-neuron: process 4 neurons at once, loading input once per chunk
             let mut i = 0;
@@ -3114,6 +3163,7 @@ impl NNUENet {
             && !(self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 <= 16)
             && !(self.has_avx2 && pw.is_multiple_of(32) && !self.l1_weights_8t.is_empty()) {
             // Scalar fallback — raw weights in [input][neuron] layout
+            seed_hidden32!();
             for i in 0..l1 {
                 let gi = l1_off + i;
                 for j in 0..pw {
@@ -3127,6 +3177,7 @@ impl NNUENet {
 
         #[cfg(target_arch = "aarch64")]
         if self.has_neon && pw % 16 == 0 && !self.l1_weights_8t.is_empty() {
+            seed_hidden32!();
             let ntm_base = l1_total * pw;
             // Multi-neuron: 4 neurons at once, loading each input chunk once
             // and feeding all 4 accumulators (mirrors x86_64 simd_l1_int8_dot_x4).
@@ -3171,6 +3222,7 @@ impl NNUENet {
 
         #[cfg(target_arch = "aarch64")]
         if !(self.has_neon && pw % 16 == 0 && !self.l1_weights_8t.is_empty()) {
+            seed_hidden32!();
             for i in 0..l1 {
                 let gi = l1_off + i;
                 for j in 0..pw {
@@ -3185,6 +3237,7 @@ impl NNUENet {
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
             // Scalar fallback for other architectures
+            seed_hidden32!();
             for i in 0..l1 {
                 let gi = l1_off + i;
                 for j in 0..pw {
@@ -3195,6 +3248,7 @@ impl NNUENet {
                 }
             }
         }
+        let _ = hidden32_seeded;
 
         // Dequantize + activation
         let qa_l1_f = qa_l1 as f32;
