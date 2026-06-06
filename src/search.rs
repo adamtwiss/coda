@@ -3754,13 +3754,11 @@ fn negamax(
         // count as a "previous capture" against the first root-move capture
         // even though it's not an in-search recapture pattern.
         let mut extension = 0;
-        if ply > 0 && is_cap && board.undo_stack.len() >= 2 {
-            let prev_undo = &board.undo_stack[board.undo_stack.len() - 2];
-            if prev_undo.captured != NO_PIECE_TYPE && to == move_to(prev_undo.mv) {
-                extension = if FEAT_EXTENSIONS.load(Ordering::Relaxed) { 1 } else { 0 };
-                if extension > 0 { info.stats.recapture_ext += 1; }
-            }
-        }
+        // Recapture extension REMOVED (2026-06-06 experiment): bound whether
+        // the feature adds value at all. Fired on 2.7% of nodes ungated; the
+        // SEE>=0-gated sibling (recap-ext-see0) tests the tighten path. If
+        // this removal is neutral/positive, drop the feature; if negative,
+        // the extension helps and the SEE gate is the refinement.
         // N6 Promotion-imminent extension: pawn push to 7th rank (from STM's
         // perspective) very often decides the game. Extend by 1. Gated by
         // FEAT_EXTENSIONS to share the ablation flag with recapture ext.
