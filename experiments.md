@@ -14531,3 +14531,65 @@ Verdicts:
 gm2600_freq50_d18.bin (md5 80120e87…) copied to codabot 2026-06-06.
 Move-15 metric is the acceptance signal. Naming: gm2600=source, freq50=
 popularity-weight+rel50-trim, d18=eval depth. Durable copy in ~/chess/books/.
+
+## 2026-06-06 — Bench-stats anomaly dig: NMP weakest pruner, recapture-ext huge node cost
+
+Studied the full `coda bench` pruning-stats dump for outliers (user flagged
+NMP-low, hist-prune-low, NNUE-rebuilds-high; I sourced others).
+
+### NMP — working but the weakest major pruner
+- Gated at depth>=7 (`NMP_MIN_DEPTH_10X=68`→7; was hardcoded 3, SPSA pushed
+  it up) + cut_node + static_eval>=beta + threat/king-zone gates. Only 0.32%
+  of nodes attempt it.
+- Node ablation (NO_xxx env, deterministic): NO_NMP +5.6% nodes vs NO_RFP
+  +152%, NO_FUTILITY +21.6%, NO_SEE_PRUNE +15.1%. NMP is real but smallest —
+  RFP dominates the shallow nodes NMP used to cover, which is why SPSA squeezed
+  NMP into a deep niche. Not broken; deliberately minimized. Open: is
+  min-depth=7 over-conservative? (focused NMP retune, low expected return.)
+
+### hist-prune — already dead; stats corroborate
+The pasted bench was from a PRE-removal binary. 0.5% fire rate, 87% of eligible
+in the [-1,+1] band — this is the evidence that justified the removal we did
+earlier (#1705). Moot for current main.
+
+### NNUE 51% full-rebuild — looks bad, is mostly already-optimized
+"Full rebuild" = Finny-table diff (cached bucket acc vs live pos), not a
+from-scratch recompute. Chain-breaks (61% of rebuilds) are an inherent
+lazy-accumulator + TT-static-eval-skip tradeoff. Walk-back-to-nearest-ancestor
+was tried before and didn't take (Reckless-specific). Dropped.
+
+### cross-gen TT ~0 — bench artifact, not a bug
+Bench bumps generation but doesn't clear TT between positions; the 48 bench
+positions are unrelated openings that don't transpose, so position N+1 never
+hits position N. In games (overlapping trees) cross-gen would be substantial.
+
+### RECAPTURE EXTENSION — the real find: huge node cost, tiny fire rate
+The only extension with NO gating: unconditional +1 on every recapture, fired
+on 2.7% of nodes (~5x singular-ext count). Node ablation:
+  baseline (ungated):     4,841,092
+  SEE>=0 gated:          4,699,822  (-2.9%)
+  REMOVED entirely:     3,183,992  (-34.2%!)
+Extending 132K recaptures +1 ply each inflates the tree ~52%. SEE-gating barely
+dents it (cost is from materially-SOUND recaptures, not bad ones). So the real
+question is whether the extension's tactical depth is worth ~a third of the
+tree (effective depth given up elsewhere in time-limited play).
+
+Two SPRTs fired [0,3] vs main, priority 0:
+- experiment/recap-ext-off  (removal, bench 3183992) — does it help at all?
+- experiment/recap-ext-see0 (SEE>=0 gate, bench 4699822) — tighten path
+If removal is neutral/+ → drop the feature (big depth/NPS win). If clearly
+negative → tactical value justifies cost, SEE-gate is the refinement.
+
+### Methodology lessons
+- **A small extension fire-rate can hide a large node cost.** Recapture-ext
+  fires on 2.7% of nodes but costs 34% of the tree (each fire deepens a whole
+  subtree). Always ablate extensions by NODE COUNT, not fire count.
+- **Verify make-move timing before "fixing" an off-by-one.** The recapture
+  check uses undo_stack[len-2], which looked like a bug (should be opponent's
+  move at len-1) — but make_move runs BEFORE the extension (line 3720 vs 3739),
+  so len-1 IS the just-made move and len-2 correctly references the opponent's
+  move. A len-1 "fix" exploded the tree 8.3x (extended every capture). Code
+  was correct; I'd have broken it. Empirically validated before submitting.
+- **SEE must be computed pre-make_move.** The original recapture check ran
+  post-make; gating it on see_ge(board,mv) there is meaningless (board is
+  post-move). Moved detection+SEE before make_move, applied extension after.
