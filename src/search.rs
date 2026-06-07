@@ -3757,32 +3757,14 @@ fn negamax(
         let gives_check = board.in_check();
 
         let mut extension = 0;
-        // N6 Promotion-imminent extension: pawn push to 7th rank (from STM's
-        // perspective) very often decides the game. Extend by 1. Gated by
-        // FEAT_EXTENSIONS.
-        if extension == 0
-            && FEAT_EXTENSIONS.load(Ordering::Relaxed)
-            && !is_cap
-            && !is_promo
-            && moved_pt == PAWN
-        {
-            // STM=WHITE: 7th rank is row 6 (squares 48..56). STM=BLACK: 7th
-            // rank is row 1 (squares 8..16). `to` is the destination.
-            //
-            // CRITICAL: must use pre-move STM `us`, not board.side_to_move.
-            // make_move (line 3020) flips side_to_move to the opponent, so
-            // reading board.side_to_move here checks the WRONG side and the
-            // condition can never satisfy. Bug present since N6 introduced
-            // 2026-04 (~3 weeks dead); audit C2026-04-25-N6 + 2026-05-09
-            // correctness sweep. `us` is the value board.side_to_move had
-            // BEFORE make_move; reused here.
-            let to_rank = to >> 3; // to / 8
-            let on_seventh = (us == WHITE && to_rank == 6)
-                || (us == BLACK && to_rank == 1);
-            if on_seventh {
-                extension = 1;
-            }
-        }
+        // N6 promotion-imminent (7th-rank pawn push) extension REMOVED
+        // 2026-06-07 (structural-audit experiment). Coda-unique — NONE of the
+        // 18 stronger engines in our RR extend 7th-rank pushes — ungated
+        // beyond pawn/non-capture. Coda's OWN earlier testing (experiments.md
+        // 2026-03-12) called these "pure noise — waste as much depth as they
+        // gain." Re-added as N6, silently DEAD ~3 weeks (side_to_move bug),
+        // "fixed" 2026-05-09 without an isolated SPRT — positive Elo never
+        // established. Same profile as the recapture ext (+5.9 to remove).
 
         let mut new_depth = depth - 1 + extension + singular_extension;
 
