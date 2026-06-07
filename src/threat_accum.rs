@@ -134,6 +134,25 @@ impl ThreatStack {
     #[inline]
     pub fn current_mut(&mut self) -> &mut ThreatEntry { &mut self.stack[self.index] }
 
+    /// Copy `Board::threat_deltas` into the current entry after a successful
+    /// `make_move`, and record the move metadata needed by mirror checks.
+    #[inline]
+    pub fn absorb_deltas(&mut self, board: &crate::board::Board) {
+        let entry = self.current_mut();
+        entry.delta.clear();
+        for d in board.threat_deltas.iter() {
+            entry.delta.push(*d);
+        }
+
+        if let Some(undo) = board.undo_stack.last() {
+            entry.mv = undo.mv;
+            if undo.mv != NO_MOVE {
+                entry.moved_pt = board.mailbox[move_to(undo.mv) as usize];
+                entry.moved_color = flip_color(board.side_to_move);
+            }
+        }
+    }
+
     /// Push: increment index, reset flags, clear deltas.
     /// Called BEFORE make_move (mirrors Reckless's Network::push).
     pub fn push(&mut self, mv: Move, moved_pt: u8) {
@@ -414,21 +433,8 @@ mod incremental_tests {
         panic!("no legal move {} in position", s);
     }
 
-    /// Copy board.threat_deltas into the current ThreatStack entry and
-    /// record the move metadata (replicates what search.rs does post-make_move).
     fn absorb_deltas(ts: &mut ThreatStack, board: &mut Board) {
-        let entry = ts.current_mut();
-        entry.delta.clear();
-        for d in board.threat_deltas.iter() { entry.delta.push(*d); }
-        let ul = board.undo_stack.len();
-        if ul > 0 {
-            let u = &board.undo_stack[ul - 1];
-            entry.mv = u.mv;
-            if u.mv != NO_MOVE {
-                entry.moved_pt = board.mailbox[move_to(u.mv) as usize];
-                entry.moved_color = crate::types::flip_color(board.side_to_move);
-            }
-        }
+        ts.absorb_deltas(board);
     }
 
     /// Run the scenario: play each UCI move, verifying after every ply
