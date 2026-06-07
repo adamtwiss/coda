@@ -413,6 +413,13 @@ pub static FEAT_FUTILITY: AtomicBool = AtomicBool::new(true);
 pub static FEAT_SEE_PRUNE: AtomicBool = AtomicBool::new(true); // confirmed: -17 Elo without (clean CPU retest)
 pub static FEAT_BAD_NOISY: AtomicBool = AtomicBool::new(true); // confirmed: -26 Elo without (retested without CPU contention)
 pub static FEAT_EXTENSIONS: AtomicBool = AtomicBool::new(true);
+pub static FEAT_FH_BLEND: AtomicBool = AtomicBool::new(true); // gates fail-high score blending (replaces dead FEAT_ALPHA_REDUCE — see below)
+// FEAT_ALPHA_REDUCE removed 2026-06-06: it gated the `alpha_raised` LMR
+// adjustment that was deleted in 21c8f7f (Apr 7, "LMR simplify", H0'd
+// -2..-4). The flag was orphaned — never read (.load) anywhere — so its
+// env var / disable_all entry silently did nothing and the "-4 Elo" comment
+// was stale (described the removed feature). Repurposed the slot to give
+// fail-high score blending (previously unablatable) a real ablation flag.
 pub static FEAT_IIR: AtomicBool = AtomicBool::new(true);
 pub static FEAT_HINDSIGHT: AtomicBool = AtomicBool::new(true); // confirmed: -18 Elo without (clean CPU retest)
 pub static FEAT_CORRECTION: AtomicBool = AtomicBool::new(true);
@@ -430,7 +437,7 @@ pub fn disable_all_features() {
     FEAT_NMP.store(false, Ordering::Relaxed); FEAT_RFP.store(false, Ordering::Relaxed);
     FEAT_PROBCUT.store(false, Ordering::Relaxed); FEAT_LMR.store(false, Ordering::Relaxed); FEAT_LMP.store(false, Ordering::Relaxed);
     FEAT_FUTILITY.store(false, Ordering::Relaxed); FEAT_SEE_PRUNE.store(false, Ordering::Relaxed);
-    FEAT_BAD_NOISY.store(false, Ordering::Relaxed); FEAT_EXTENSIONS.store(false, Ordering::Relaxed);
+    FEAT_BAD_NOISY.store(false, Ordering::Relaxed); FEAT_EXTENSIONS.store(false, Ordering::Relaxed); FEAT_FH_BLEND.store(false, Ordering::Relaxed);
     FEAT_IIR.store(false, Ordering::Relaxed); FEAT_HINDSIGHT.store(false, Ordering::Relaxed); FEAT_CORRECTION.store(false, Ordering::Relaxed);
     FEAT_PVS.store(false, Ordering::Relaxed); FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); FEAT_TT_NEARMISS.store(false, Ordering::Relaxed);
     FEAT_TT_STORE.store(false, Ordering::Relaxed); FEAT_QS_CAPTURES.store(false, Ordering::Relaxed);
@@ -444,7 +451,7 @@ pub fn enable_all_features() {
     FEAT_NMP.store(true, Ordering::Relaxed); FEAT_RFP.store(true, Ordering::Relaxed); FEAT_PROBCUT.store(true, Ordering::Relaxed);
     FEAT_LMR.store(true, Ordering::Relaxed); FEAT_LMP.store(true, Ordering::Relaxed);
     FEAT_FUTILITY.store(true, Ordering::Relaxed); FEAT_SEE_PRUNE.store(true, Ordering::Relaxed);
-    FEAT_BAD_NOISY.store(true, Ordering::Relaxed); FEAT_EXTENSIONS.store(true, Ordering::Relaxed);
+    FEAT_BAD_NOISY.store(true, Ordering::Relaxed); FEAT_EXTENSIONS.store(true, Ordering::Relaxed); FEAT_FH_BLEND.store(true, Ordering::Relaxed);
     FEAT_IIR.store(true, Ordering::Relaxed); FEAT_HINDSIGHT.store(true, Ordering::Relaxed); FEAT_CORRECTION.store(true, Ordering::Relaxed);
     FEAT_PVS.store(true, Ordering::Relaxed); FEAT_TT_CUTOFF.store(true, Ordering::Relaxed); FEAT_TT_NEARMISS.store(true, Ordering::Relaxed);
     FEAT_TT_STORE.store(true, Ordering::Relaxed); FEAT_QS_CAPTURES.store(true, Ordering::Relaxed);
@@ -1310,6 +1317,7 @@ fn init_feature_flags() {
             if std::env::var("ENABLE_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_BAD_NOISY").is_ok() { FEAT_BAD_NOISY.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_EXTENSIONS").is_ok() { FEAT_EXTENSIONS.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_FH_BLEND").is_ok() { FEAT_FH_BLEND.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_IIR").is_ok() { FEAT_IIR.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_HINDSIGHT").is_ok() { FEAT_HINDSIGHT.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_CORRECTION").is_ok() { FEAT_CORRECTION.store(true, Ordering::Relaxed); }
@@ -1328,6 +1336,7 @@ fn init_feature_flags() {
             if std::env::var("NO_SEE_PRUNE").is_ok() { FEAT_SEE_PRUNE.store(false, Ordering::Relaxed); }
             if std::env::var("NO_BAD_NOISY").is_ok() { FEAT_BAD_NOISY.store(false, Ordering::Relaxed); }
             if std::env::var("NO_EXTENSIONS").is_ok() { FEAT_EXTENSIONS.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_FH_BLEND").is_ok() { FEAT_FH_BLEND.store(false, Ordering::Relaxed); }
             if std::env::var("NO_IIR").is_ok() { FEAT_IIR.store(false, Ordering::Relaxed); }
             if std::env::var("NO_HINDSIGHT").is_ok() { FEAT_HINDSIGHT.store(false, Ordering::Relaxed); }
             if std::env::var("NO_CORRECTION").is_ok() { FEAT_CORRECTION.store(false, Ordering::Relaxed); }
@@ -4357,6 +4366,7 @@ fn negamax(
     if best_score >= beta && beta - alpha_orig == 1 && depth >= tp10(&FH_BLEND_DEPTH_10X)
         && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
         && info.excluded_move[ply_u] == NO_MOVE
+        && FEAT_FH_BLEND.load(Ordering::Relaxed)
     {
         // Divisor floor: SPSA can perturb FH_BLEND_OFFSET to 0 AND
         // FH_BLEND_DEPTH_10X low enough that the gate admits depth=0,
