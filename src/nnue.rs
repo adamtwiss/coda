@@ -18,6 +18,9 @@ pub mod mat_stats {
     static REFRESHES: AtomicU64 = AtomicU64::new(0);
     static INCREMENTALS: AtomicU64 = AtomicU64::new(0);
     static TOTAL_DELTA_CHANGES: AtomicU64 = AtomicU64::new(0);
+    static PERSPECTIVE_REFRESHES: AtomicU64 = AtomicU64::new(0);
+    static PERSPECTIVE_INCREMENTALS: AtomicU64 = AtomicU64::new(0);
+    static MIXED_REFRESH_INCREMENT_CALLS: AtomicU64 = AtomicU64::new(0);
     /// Walk-back distance buckets for refresh fallbacks:
     /// idx 0 = no computed ancestor found (full rebuild inevitable).
     /// idx i (1..=8) = computed ancestor at distance i.
@@ -47,18 +50,37 @@ pub mod mat_stats {
         INCREMENTALS.fetch_add(1, Ordering::Relaxed);
         TOTAL_DELTA_CHANGES.fetch_add(n_changes, Ordering::Relaxed);
     }
+    #[inline(always)]
+    pub fn record_perspective_refreshes(n: u64) {
+        PERSPECTIVE_REFRESHES.fetch_add(n, Ordering::Relaxed);
+    }
+    #[inline(always)]
+    pub fn record_perspective_incrementals(n: u64) {
+        PERSPECTIVE_INCREMENTALS.fetch_add(n, Ordering::Relaxed);
+    }
+    #[inline(always)]
+    pub fn record_mixed_refresh_increment_call() {
+        MIXED_REFRESH_INCREMENT_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
     pub fn report() {
         let c = CALLS.load(Ordering::Relaxed);
         let e = EARLY_OUT.load(Ordering::Relaxed);
         let r = REFRESHES.load(Ordering::Relaxed);
         let i = INCREMENTALS.load(Ordering::Relaxed);
         let td = TOTAL_DELTA_CHANGES.load(Ordering::Relaxed);
+        let pr = PERSPECTIVE_REFRESHES.load(Ordering::Relaxed);
+        let pi = PERSPECTIVE_INCREMENTALS.load(Ordering::Relaxed);
+        let mixed = MIXED_REFRESH_INCREMENT_CALLS.load(Ordering::Relaxed);
         eprintln!(
             "materialize stats: calls={} early={} ({:.1}%) refresh={} ({:.1}% of non-early) incr={} ({:.1}% of non-early) avg_deltas_per_incr={:.2}",
             c, e, 100.0 * e as f64 / c.max(1) as f64,
             r, 100.0 * r as f64 / (c - e).max(1) as f64,
             i, 100.0 * i as f64 / (c - e).max(1) as f64,
             if i > 0 { td as f64 / i as f64 } else { 0.0 }
+        );
+        eprintln!(
+            "psq perspective ops: refresh={} incr={} mixed_calls={} saved_refresh_perspectives_vs_legacy={}",
+            pr, pi, mixed, r.saturating_mul(2).saturating_sub(pr)
         );
         // Walk-back distance distribution for refresh fallbacks.
         let wb_total: u64 = (0..10).map(|i| WALKBACK_BUCKETS[i].load(Ordering::Relaxed)).sum();
@@ -4141,7 +4163,10 @@ impl NNUENet {
 /// Dirty piece info for lazy materialization.
 #[derive(Clone, Copy)]
 pub struct DirtyPiece {
-    /// 0 = needs full recompute (king bucket change), 1+ = incremental
+    /// 1 = incremental for both perspectives.
+    /// 2/3 = WHITE/BLACK perspective needs refresh; the other perspective
+    /// can still apply the stored deltas.
+    /// 4 = both perspectives need refresh.
     pub kind: u8,
     pub changes: [(bool, u8, u8, u8); 5], // (add, color, pt, sq)
     pub n_changes: u8,
@@ -4149,7 +4174,7 @@ pub struct DirtyPiece {
 
 impl DirtyPiece {
     pub fn recompute() -> Self {
-        DirtyPiece { kind: 0, changes: [(false, 0, 0, 0); 5], n_changes: 0 }
+        DirtyPiece { kind: 4, changes: [(false, 0, 0, 0); 5], n_changes: 0 }
     }
     pub fn incremental(changes: &[(bool, u8, u8, u8)]) -> Self {
         let mut d = DirtyPiece { kind: 1, changes: [(false, 0, 0, 0); 5], n_changes: changes.len() as u8 };
@@ -4157,6 +4182,19 @@ impl DirtyPiece {
             d.changes[i] = c;
         }
         d
+    }
+    pub fn refresh_perspective(perspective: u8, changes: &[(bool, u8, u8, u8)]) -> Self {
+        let mut d = Self::incremental(changes);
+        d.kind = if perspective == WHITE { 2 } else { 3 };
+        d
+    }
+    #[inline(always)]
+    pub fn refreshes_perspective(self, perspective: u8) -> bool {
+        self.kind == 4 || self.kind == 2 + perspective
+    }
+    #[inline(always)]
+    pub fn refreshes_any(self) -> bool {
+        self.kind != 1
     }
 }
 
@@ -4193,7 +4231,7 @@ pub const MAX_HIDDEN_SIZE: usize = 2048;
 /// straddling reads.
 #[repr(C, align(64))]
 pub struct AccEntry {
-    computed: bool,
+    psq_accurate: [bool; 2],
     dirty: DirtyPiece,
     pub threat_accurate: [bool; 2], // per-perspective [WHITE, BLACK]
     pub threat_deltas: Vec<crate::threats::RawThreatDelta>,
@@ -4345,7 +4383,7 @@ impl NNUEAccumulator {
         let mut stack = Vec::with_capacity(ACC_STACK_PLIES);
         for _ in 0..ACC_STACK_PLIES {
             stack.push(AccEntry {
-                computed: false,
+                psq_accurate: [false; 2],
                 dirty: DirtyPiece::recompute(),
                 threat_accurate: [false; 2],
                 threat_deltas: Vec::new(),
@@ -4400,7 +4438,7 @@ impl NNUEAccumulator {
     /// real cost paid on king-bucket crossings and first-touch nodes in
     /// search.
     pub fn invalidate_for_bench(&mut self) {
-        self.stack[self.top].computed = false;
+        self.stack[self.top].psq_accurate = [false; 2];
         self.stack[self.top].threat_accurate = [false; 2];
         for entry in self.finny.iter_mut() {
             entry.valid = false;
@@ -4498,7 +4536,7 @@ impl NNUEAccumulator {
                 }
             }
         }
-        self.stack[self.top].computed = true;
+        self.stack[self.top].psq_accurate = [true; 2];
     }
 
     /// Compute threat accumulator if not already done.
@@ -4695,7 +4733,7 @@ impl NNUEAccumulator {
         // psq/threat AccDataStacks are also fixed-size so no heap growth on
         // push. The pre-allocation removes the realloc-on-push pattern that
         // existed before the AccDataStack restructure.
-        self.stack[self.top].computed = false;
+        self.stack[self.top].psq_accurate = [false; 2];
         self.stack[self.top].threat_accurate = [false; 2];
         self.stack[self.top].threat_deltas.clear();
         self.stack[self.top].dirty = dirty;
@@ -4706,16 +4744,17 @@ impl NNUEAccumulator {
         self.top -= 1;
     }
 
-    /// Find the nearest computed ancestor that can be replayed to the current
-    /// ply using only ordinary incremental dirty entries.
-    fn replay_ancestor(&self) -> Option<usize> {
+    /// Find the nearest accurate ancestor for one PSQ perspective that can be
+    /// replayed to the current ply without crossing that perspective's king
+    /// bucket/mirror barrier.
+    fn replay_ancestor(&self, perspective: u8) -> Option<usize> {
         let mut ply = self.top;
         while ply > 0 {
-            if self.stack[ply].dirty.kind == 0 {
+            if self.stack[ply].dirty.refreshes_perspective(perspective) {
                 return None;
             }
             ply -= 1;
-            if self.stack[ply].computed {
+            if self.stack[ply].psq_accurate[perspective as usize] {
                 return Some(ply);
             }
         }
@@ -4730,21 +4769,12 @@ impl NNUEAccumulator {
         total
     }
 
-    fn apply_incremental_from_parent(&mut self, net: &NNUENet, board: &Board, top: usize) {
+    fn apply_incremental_both_from_parent(&mut self, net: &NNUENet, board: &Board, top: usize) {
         debug_assert!(top > 0);
-        debug_assert!(self.stack[top - 1].computed);
-        debug_assert!(self.stack[top].dirty.kind != 0);
+        debug_assert!(self.stack[top - 1].psq_accurate[0] && self.stack[top - 1].psq_accurate[1]);
+        debug_assert!(!self.stack[top].dirty.refreshes_any());
 
         let dirty = self.stack[top].dirty;
-
-        // Incremental update: gather all deltas for this move, then apply them
-        // in a SINGLE fused pass per perspective. Replaces the previous
-        // copy+per-delta-pass pattern which did N passes over the full
-        // accumulator for an N-change move (capture = 3, castling = 4).
-        //
-        // Reckless pattern: for each perspective, read parent once, apply
-        // all add/sub weight rows while the chunk is in registers, write
-        // current once. Memory traffic is constant in N.
         let h = self.hidden_size;
         let parent_ply = top - 1;
 
@@ -4752,9 +4782,6 @@ impl NNUEAccumulator {
         let b_king_sq = board.king_sq(BLACK);
 
         let n = dirty.n_changes as usize;
-
-        // Collect add/sub weight rows per perspective. Max ~4 deltas per move
-        // (promotion capture = 4); using 8-slot stack arrays gives headroom.
         let mut w_adds: [&[i16]; 8] = [&[]; 8];
         let mut w_subs: [&[i16]; 8] = [&[]; 8];
         let mut b_adds: [&[i16]; 8] = [&[]; 8];
@@ -4790,7 +4817,7 @@ impl NNUEAccumulator {
             unsafe { simd_acc_fused_avx512(current_w, parent_w, w_adds, w_subs, h); }
             let (parent_b, current_b) = self.psq.parent_and_current(parent_ply, top, BLACK as usize);
             unsafe { simd_acc_fused_avx512(current_b, parent_b, b_adds, b_subs, h); }
-            self.stack[top].computed = true;
+            self.stack[top].psq_accurate = [true; 2];
             return;
         }
         #[cfg(target_arch = "x86_64")]
@@ -4799,7 +4826,7 @@ impl NNUEAccumulator {
             unsafe { simd_acc_fused_avx2(current_w, parent_w, w_adds, w_subs, h); }
             let (parent_b, current_b) = self.psq.parent_and_current(parent_ply, top, BLACK as usize);
             unsafe { simd_acc_fused_avx2(current_b, parent_b, b_adds, b_subs, h); }
-            self.stack[top].computed = true;
+            self.stack[top].psq_accurate = [true; 2];
             return;
         }
 
@@ -4809,12 +4836,10 @@ impl NNUEAccumulator {
             unsafe { simd_acc_fused_neon(current_w, parent_w, w_adds, w_subs, h); }
             let (parent_b, current_b) = self.psq.parent_and_current(parent_ply, top, BLACK as usize);
             unsafe { simd_acc_fused_neon(current_b, parent_b, b_adds, b_subs, h); }
-            self.stack[top].computed = true;
+            self.stack[top].psq_accurate = [true; 2];
             return;
         }
 
-        // Scalar fallback: single-pass apply, analogous to SIMD path.
-        // Pre-snapshot parent to drop the immutable borrow before mutating.
         let parent_w_owned: Vec<i16> = self.psq.view(parent_ply, WHITE as usize).to_vec();
         let parent_b_owned: Vec<i16> = self.psq.view(parent_ply, BLACK as usize).to_vec();
         let current_w = self.psq.view_mut(top, WHITE as usize);
@@ -4831,72 +4856,224 @@ impl NNUEAccumulator {
             for row in b_subs { b -= row[j]; }
             current_b[j] = b;
         }
+        self.stack[top].psq_accurate = [true; 2];
+    }
 
-        self.stack[top].computed = true;
+    fn apply_incremental_perspective_from_parent(&mut self, net: &NNUENet, board: &Board, top: usize, perspective: u8) {
+        debug_assert!(top > 0);
+        debug_assert!(self.stack[top - 1].psq_accurate[perspective as usize]);
+        debug_assert!(!self.stack[top].dirty.refreshes_perspective(perspective));
+
+        let dirty = self.stack[top].dirty;
+
+        // Incremental update: gather all deltas for this move, then apply them
+        // in a SINGLE fused pass per perspective. Replaces the previous
+        // copy+per-delta-pass pattern which did N passes over the full
+        // accumulator for an N-change move (capture = 3, castling = 4).
+        //
+        // Reckless pattern: for each perspective, read parent once, apply
+        // all add/sub weight rows while the chunk is in registers, write
+        // current once. Memory traffic is constant in N.
+        let h = self.hidden_size;
+        let parent_ply = top - 1;
+
+        let king_sq = board.king_sq(perspective);
+
+        let n = dirty.n_changes as usize;
+
+        // Collect add/sub weight rows per perspective. Max ~4 deltas per move
+        // (promotion capture = 4); using 8-slot stack arrays gives headroom.
+        let mut adds: [&[i16]; 8] = [&[]; 8];
+        let mut subs: [&[i16]; 8] = [&[]; 8];
+        let mut na = 0usize;
+        let mut ns = 0usize;
+
+        for i in 0..n {
+            let (add, color, pt, sq) = dirty.changes[i];
+            let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
+            let row = net.input_weight_row(idx);
+            if add {
+                adds[na] = row; na += 1;
+            } else {
+                subs[ns] = row; ns += 1;
+            }
+        }
+
+        let adds = &adds[..na];
+        let subs = &subs[..ns];
+
+        #[cfg(target_arch = "x86_64")]
+        if net.has_avx512 && h.is_multiple_of(32) {
+            let (parent, current) = self.psq.parent_and_current(parent_ply, top, perspective as usize);
+            unsafe { simd_acc_fused_avx512(current, parent, adds, subs, h); }
+            self.stack[top].psq_accurate[perspective as usize] = true;
+            return;
+        }
+        #[cfg(target_arch = "x86_64")]
+        if net.has_avx2 && h.is_multiple_of(16) {
+            let (parent, current) = self.psq.parent_and_current(parent_ply, top, perspective as usize);
+            unsafe { simd_acc_fused_avx2(current, parent, adds, subs, h); }
+            self.stack[top].psq_accurate[perspective as usize] = true;
+            return;
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        if net.has_neon && h % 8 == 0 {
+            let (parent, current) = self.psq.parent_and_current(parent_ply, top, perspective as usize);
+            unsafe { simd_acc_fused_neon(current, parent, adds, subs, h); }
+            self.stack[top].psq_accurate[perspective as usize] = true;
+            return;
+        }
+
+        // Scalar fallback: single-pass apply, analogous to SIMD path.
+        // Pre-snapshot parent to drop the immutable borrow before mutating.
+        let parent_owned: Vec<i16> = self.psq.view(parent_ply, perspective as usize).to_vec();
+        let current = self.psq.view_mut(top, perspective as usize);
+        for j in 0..h {
+            let mut v = parent_owned[j];
+            for row in adds { v += row[j]; }
+            for row in subs { v -= row[j]; }
+            current[j] = v;
+        }
+        self.stack[top].psq_accurate[perspective as usize] = true;
     }
 
     /// Materialize: ensure current accumulator is computed.
     pub fn materialize(&mut self, net: &NNUENet, board: &Board) {
         #[cfg(feature = "profile-materialize")]
-        crate::nnue::mat_stats::record_entry(self.stack[self.top].computed);
-        if self.stack[self.top].computed {
+        crate::nnue::mat_stats::record_entry(self.stack[self.top].psq_accurate[0] && self.stack[self.top].psq_accurate[1]);
+        if self.stack[self.top].psq_accurate[0] && self.stack[self.top].psq_accurate[1] {
             self.stats_cached_skips += 1;
             return;
         }
 
-        let dirty = self.stack[self.top].dirty;
+        let top = self.top;
+        let dirty = self.stack[top].dirty;
 
-        if dirty.kind != 0 && self.top > 0 && self.stack[self.top - 1].computed {
-            #[cfg(feature = "profile-materialize")]
-            crate::nnue::mat_stats::record_incremental(dirty.n_changes as u64);
+        if top > 0
+            && !dirty.refreshes_any()
+            && !self.stack[top].psq_accurate[0]
+            && !self.stack[top].psq_accurate[1]
+            && self.stack[top - 1].psq_accurate[0]
+            && self.stack[top - 1].psq_accurate[1]
+        {
+            self.apply_incremental_both_from_parent(net, board, top);
             self.stats_incremental_updates += 1;
-            self.apply_incremental_from_parent(net, board, self.top);
+            #[cfg(feature = "profile-materialize")]
+            {
+                crate::nnue::mat_stats::record_perspective_incrementals(2);
+                crate::nnue::mat_stats::record_incremental(dirty.n_changes as u64);
+            }
             return;
         }
 
-        if dirty.kind != 0 && self.top > 0 {
-            if let Some(ancestor) = self.replay_ancestor() {
-                #[cfg(feature = "profile-materialize")]
-                crate::nnue::mat_stats::record_incremental(self.incremental_change_count(ancestor, self.top));
-                self.stats_incremental_updates += 1;
-                for ply in (ancestor + 1)..=self.top {
-                    self.apply_incremental_from_parent(net, board, ply);
+        if top > 0
+            && !dirty.refreshes_any()
+            && !self.stack[top].psq_accurate[0]
+            && !self.stack[top].psq_accurate[1]
+        {
+            let w_ancestor = self.replay_ancestor(WHITE);
+            let b_ancestor = self.replay_ancestor(BLACK);
+            if let (Some(w), Some(b)) = (w_ancestor, b_ancestor) {
+                if w == b {
+                    for ply in (w + 1)..=top {
+                        self.apply_incremental_both_from_parent(net, board, ply);
+                    }
+                    self.stats_incremental_updates += 1;
+                    #[cfg(feature = "profile-materialize")]
+                    {
+                        crate::nnue::mat_stats::record_perspective_incrementals(((top - w) * 2) as u64);
+                        crate::nnue::mat_stats::record_incremental(self.incremental_change_count(w, top));
+                    }
+                    return;
                 }
-                return;
             }
         }
 
-        // Full recompute needed.
-        self.stats_full_rebuilds += 1;
-        // Cause split — first matching condition wins (priority order).
-        if dirty.kind == 0 {
-            self.stats_rebuild_kind0 += 1;
-        } else if self.top == 0 {
-            self.stats_rebuild_root += 1;
-        } else {
-            self.stats_rebuild_chain += 1;
-        }
+        let mut refreshed = false;
+        let mut incremented = false;
         #[cfg(feature = "profile-materialize")]
-        {
-            crate::nnue::mat_stats::record_refresh();
-            // Walk ancestors to find nearest computed frame; record
-            // distance. 0 = no ancestor / root. 1 = parent computed
-            // (wouldn't fire here by definition but reported for shape).
-            let mut d: usize = 0;
-            if self.top > 0 {
-                let mut i = self.top;
-                while i > 0 {
-                    i -= 1;
-                    d += 1;
-                    if self.stack[i].computed { break; }
-                }
-                if d > 0 && !self.stack[self.top - d].computed { d = 0; }
+        let mut refreshed_perspectives = 0u64;
+        #[cfg(feature = "profile-materialize")]
+        let mut incremental_perspective_ops = 0u64;
+        let mut chain_break = false;
+        let mut replay_start: Option<usize> = None;
+
+        for perspective in [WHITE, BLACK] {
+            let pidx = perspective as usize;
+            if self.stack[top].psq_accurate[pidx] {
+                continue;
             }
-            crate::nnue::mat_stats::record_walkback_distance(d);
+            if top == 0 || dirty.refreshes_perspective(perspective) {
+                self.refresh_accumulator(net, board, perspective);
+                refreshed = true;
+                #[cfg(feature = "profile-materialize")]
+                {
+                    refreshed_perspectives += 1;
+                }
+                continue;
+            }
+            if self.stack[top - 1].psq_accurate[pidx] {
+                self.apply_incremental_perspective_from_parent(net, board, top, perspective);
+                incremented = true;
+                #[cfg(feature = "profile-materialize")]
+                {
+                    incremental_perspective_ops += 1;
+                }
+                continue;
+            }
+            if let Some(ancestor) = self.replay_ancestor(perspective) {
+                replay_start = Some(replay_start.map_or(ancestor, |prev| prev.min(ancestor)));
+                for ply in (ancestor + 1)..=top {
+                    self.apply_incremental_perspective_from_parent(net, board, ply, perspective);
+                }
+                incremented = true;
+                #[cfg(feature = "profile-materialize")]
+                {
+                    incremental_perspective_ops += (top - ancestor) as u64;
+                }
+                continue;
+            }
+            self.refresh_accumulator(net, board, perspective);
+            refreshed = true;
+            #[cfg(feature = "profile-materialize")]
+            {
+                refreshed_perspectives += 1;
+            }
+            chain_break = true;
         }
-        self.refresh_accumulator(net, board, WHITE);
-        self.refresh_accumulator(net, board, BLACK);
-        self.stack[self.top].computed = true;
+
+        if refreshed {
+            self.stats_full_rebuilds += 1;
+            if top == 0 {
+                self.stats_rebuild_root += 1;
+            } else if dirty.refreshes_any() {
+                self.stats_rebuild_kind0 += 1;
+            } else if chain_break {
+                self.stats_rebuild_chain += 1;
+            } else {
+                self.stats_rebuild_chain += 1;
+            }
+            #[cfg(feature = "profile-materialize")]
+            {
+                crate::nnue::mat_stats::record_refresh();
+                crate::nnue::mat_stats::record_walkback_distance(0);
+                crate::nnue::mat_stats::record_perspective_refreshes(refreshed_perspectives);
+                crate::nnue::mat_stats::record_perspective_incrementals(incremental_perspective_ops);
+                if incremented {
+                    crate::nnue::mat_stats::record_mixed_refresh_increment_call();
+                }
+            }
+        } else if incremented {
+            self.stats_incremental_updates += 1;
+            #[cfg(feature = "profile-materialize")]
+            {
+                let from = replay_start.unwrap_or(top - 1);
+                crate::nnue::mat_stats::record_perspective_incrementals(incremental_perspective_ops);
+                crate::nnue::mat_stats::record_incremental(self.incremental_change_count(from, top));
+            }
+        }
+        debug_assert!(self.stack[top].psq_accurate[0] && self.stack[top].psq_accurate[1]);
     }
 
     /// Refresh one perspective using the Finny table.
@@ -4943,6 +5120,7 @@ impl NNUEAccumulator {
             // Mirror cache → live psq slot.
             let dst = self.psq.view_mut(self.top, perspective as usize);
             dst.copy_from_slice(&self.finny[perspective as usize * 32 + bucket * 2 + mirror_idx].acc[..h]);
+            self.stack[self.top].psq_accurate[perspective as usize] = true;
             return;
         }
 
@@ -5001,12 +5179,13 @@ impl NNUEAccumulator {
         // Copy updated cache to accumulator (drop entry borrow first).
         let dst = self.psq.view_mut(self.top, perspective as usize);
         dst.copy_from_slice(&self.finny[perspective as usize * 32 + bucket * 2 + mirror_idx].acc[..h]);
+        self.stack[self.top].psq_accurate[perspective as usize] = true;
     }
 
     /// Reset to bottom of stack and invalidate Finny table.
     pub fn reset(&mut self) {
         self.top = 0;
-        self.stack[0].computed = false;
+        self.stack[0].psq_accurate = [false; 2];
         self.stack[0].threat_accurate = [false; 2];
         for entry in self.finny.iter_mut() {
             entry.valid = false;

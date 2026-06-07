@@ -1047,7 +1047,6 @@ pub fn build_dirty_piece(
     let to = move_to(mv);
     let flags = move_flags(mv);
 
-    // King moves: check if bucket+mirror change for the moving side's perspective
     if moved_pt == KING {
         let mut from_ks = from as usize;
         let mut to_ks = to as usize;
@@ -1058,14 +1057,6 @@ pub fn build_dirty_piece(
         let from_mirror = net.king_mirror(from_ks);
         let to_mirror = net.king_mirror(to_ks);
 
-        if from_bucket != to_bucket || from_mirror != to_mirror {
-            // Bucket or mirror changed: full recompute needed
-            return DirtyPiece::recompute();
-        }
-
-        // Same bucket+mirror: only the king feature changes for our perspective.
-        // The opponent's perspective is always incremental (their king didn't move).
-        // We can treat this as a normal incremental update.
         let mut changes: [(bool, u8, u8, u8); 5] = [(false, 0, 0, 0); 5];
         let mut n = 0;
 
@@ -1091,11 +1082,10 @@ pub fn build_dirty_piece(
             changes[n] = (true, us, ROOK, rook_to); n += 1;
         }
 
-        let mut d = DirtyPiece::recompute();
-        d.kind = 1;
-        d.n_changes = n as u8;
-        d.changes = changes;
-        return d;
+        if from_bucket != to_bucket || from_mirror != to_mirror {
+            return DirtyPiece::refresh_perspective(us, &changes[..n]);
+        }
+        return DirtyPiece::incremental(&changes[..n]);
     }
 
     let mut changes: [(bool, u8, u8, u8); 5] = [(false, 0, 0, 0); 5];
