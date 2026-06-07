@@ -3,10 +3,8 @@
 //! Order: TT move -> good captures (MVV-LVA + captHist) -> quiets (history-scored,
 //!        including main/cont/pawn/etc.) -> bad captures.
 //!
-//! Killer1/Killer2/CounterMove stages are SKIPPED — quiet ordering relies on
-//! history alone (SF/Reckless pattern, validated by SPRT commit e28c78a).
-//! The match arms for those stages exist in `Stage` for legacy compat but
-//! are unreachable from the live state machine.
+//! Killer/counter stages were removed — quiet ordering relies on history alone
+//! (SF/Reckless pattern, validated by SPRT commit e28c78a).
 //!
 //! Evasion order: TT move -> evasions (captures scored above quiets).
 //!
@@ -35,11 +33,6 @@ pub struct History {
     /// captured_type uses 0-6 scheme (0=empty, 1=pawn, ..., 6=king).
     /// int16 values (i32 causes different gravity behavior).
     pub capture: [[[i16; 7]; 64]; 13],
-    /// Killer moves: [ply][2]
-    pub killers: [[Move; 2]; crate::search::MAX_PLY],
-    /// Counter-move: [piece 1-12][to]
-    /// piece uses 1-12 indexing (slot 0 unused).
-    pub counter: [[Move; 64]; 13],
     /// Continuation history: [piece 1-12][to][piece 1-12][to]
     /// piece uses 1-12 indexing (slot 0 unused).
     pub cont_hist: [[[[i16; 64]; 13]; 64]; 13],
@@ -85,8 +78,6 @@ impl History {
     pub fn clear(&mut self) {
         self.main = [[[[0; 64]; 64]; 2]; 2];
         self.capture = [[[0i16; 7]; 64]; 13];
-        self.killers = [[NO_MOVE; 2]; crate::search::MAX_PLY];
-        self.counter = [[NO_MOVE; 64]; 13];
         self.cont_hist = [[[[0; 64]; 13]; 64]; 13];
     }
 
@@ -98,14 +89,11 @@ impl History {
     pub fn copy_from(&mut self, src: &History) {
         self.main = src.main;
         self.capture = src.capture;
-        self.killers = src.killers;
-        self.counter = src.counter;
         self.cont_hist = src.cont_hist;
     }
 
     /// Age all history tables by multiplying by factor/divisor (e.g. 4/5 = 0.80).
     /// Preserves useful information from prior searches while letting new data dominate.
-    /// Killers and counter-moves are cleared (they're position-specific, not transferable).
     pub fn age(&mut self, factor: i32, divisor: i32) {
         for t0 in self.main.iter_mut() {
             for t1 in t0.iter_mut() {
@@ -126,8 +114,6 @@ impl History {
                 }
             }
         }
-        self.killers = [[NO_MOVE; 2]; crate::search::MAX_PLY];
-        self.counter = [[NO_MOVE; 64]; 13];
     }
 
     /// Update history with gravity (bonus capped, decayed toward zero).
@@ -191,13 +177,10 @@ enum Stage {
     // Non-picking transitions
     TTMove = 0,
     GenerateCaptures = 1,
-    Killer1 = 2,
-    Killer2 = 3,
-    CounterMove = 4,
-    GenerateQuiets = 5,
-    Done = 6,
-    EvasionTTMove = 7,
-    GenerateEvasions = 8,
+    GenerateQuiets = 2,
+    Done = 3,
+    EvasionTTMove = 4,
+    GenerateEvasions = 5,
 
     // Picking stages — contiguous range [PICK_BASE..PICK_BASE+4)
     GoodCaptures = 16,
@@ -211,8 +194,6 @@ const PICK_BASE: u8 = Stage::GoodCaptures as u8;
 pub struct MovePicker {
     stage: Stage,
     tt_move: Move,
-    killers: [Move; 2],
-    counter_move: Move,
     // Pointer to the History struct (lives for the duration of search)
     history: *const History,
     // Continuation history sub-table pointers at plies 1, 2, 4, 6 back.
@@ -227,9 +208,6 @@ pub struct MovePicker {
     bad_moves: [Move; 256],
     bad_scores: [i32; 256],
     bad_len: usize,
-    // Ply for killer indexing
-    #[allow(dead_code)]
-    ply: usize,
     pub skip_quiet: bool,
     threats: Threats, // enemy attack bitboard for threat-aware history
     // B1: our own pieces blocking a slider's attack on an enemy piece.
@@ -253,31 +231,13 @@ impl MovePicker {
         tt_move: Move,
         ply: usize,
         history: &History,
-        prev_move: Move,
+        _prev_move: Move,
         pawn_hist: Option<&[[i16; 64]; 13]>,
         threats: Threats,
         xray_blockers: Bitboard,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
     ) -> Self {
-        let killers = if ply < 64 {
-            history.killers[ply]
-        } else {
-            [NO_MOVE; 2]
-        };
-
-        let counter_move = if prev_move != NO_MOVE {
-            let prev_to = move_to(prev_move);
-            let prev_piece = board.piece_at(prev_to);
-            if prev_piece != NO_PIECE {
-                history.counter[go_piece(prev_piece)][prev_to as usize]
-            } else {
-                NO_MOVE
-            }
-        } else {
-            NO_MOVE
-        };
-
         // Get continuation history sub-table pointers at plies 1, 2, 4, 6 back.
         // Uses moved_piece_stack for correct piece lookup (avoids stale board.piece_at).
         // Upper-bound guard: callers (search + qsearch) should clamp ply but
@@ -314,21 +274,12 @@ impl MovePicker {
             [0; 6]
         };
 
-        // Compute pinned for non-evasion picker too. Non-evasion implies
-        // checkers == 0 by definition (caller picks evasion when in check),
-        // but pinned must be real to validate TT/killer/counter moves
-        // against pin-line legality. Without this, an illegal pinned-move
-        // or king-move-into-check from the TT/killer/counter pool can
-        // survive is_pseudo_legal, get returned to the search, and reach
-        // pv_table[0][0] as the engine's bestmove — a forfeit on lichess
-        // (game 2agDftuq, 2026-04-29).
+        // Compute pinned for the TT move validation path.
         let pinned = board.pinned();
 
         MovePicker {
             stage: Stage::TTMove,
             tt_move,
-            killers,
-            counter_move,
             history: history as *const History,
             cont_hist_subs,
             pawn_hist_ptr,
@@ -338,7 +289,6 @@ impl MovePicker {
             bad_moves: [NO_MOVE; 256],
             bad_scores: [0; 256],
             bad_len: 0,
-            ply,
             skip_quiet: false,
             threats,
             xray_blockers,
@@ -359,8 +309,6 @@ impl MovePicker {
         MovePicker {
             stage: Stage::TTMove,
             tt_move,
-            killers: [NO_MOVE; 2],
-            counter_move: NO_MOVE,
             history: history as *const History,
             cont_hist_subs: [None; 4],
             pawn_hist_ptr: None,
@@ -370,7 +318,6 @@ impl MovePicker {
             bad_moves: [NO_MOVE; 256],
             bad_scores: [0; 256],
             bad_len: 0,
-            ply: 0,
             skip_quiet: true,
             threats: 0,
             xray_blockers: 0,
@@ -417,8 +364,6 @@ impl MovePicker {
         MovePicker {
             stage: Stage::EvasionTTMove,
             tt_move,
-            killers: [NO_MOVE; 2],
-            counter_move: NO_MOVE,
             history: history as *const History,
             cont_hist_subs,
             pawn_hist_ptr,
@@ -428,7 +373,6 @@ impl MovePicker {
             bad_moves: [NO_MOVE; 256],
             bad_scores: [0; 256],
             bad_len: 0,
-            ply,
             skip_quiet: false,
             // C8 audit LIKELY #19: evasion history READS must use the same
             // enemy_attacks key as beta-cutoff WRITES. Previously hardcoded
@@ -499,53 +443,7 @@ impl MovePicker {
                         self.stage = Stage::BadCaptures;
                         self.restore_bad_captures();
                     } else {
-                        self.stage = Stage::GenerateQuiets;  // Skip killers/counter (SF pattern: history handles ordering)
-                    }
-                }
-
-                Stage::Killer1 => {
-                    self.stage = Stage::Killer2;
-                    if self.killers[0] != NO_MOVE && self.killers[0] != self.tt_move {
-                        let k = fixup_move_flags(board, self.killers[0]);
-                        self.killers[0] = k;
-                        if is_pseudo_legal(board, k) && !is_capture(board, k)
-                            && board.is_legal(k, self.pinned, self.checkers)
-                        {
-                            return k;
-                        }
-                    }
-                }
-
-                Stage::Killer2 => {
-                    self.stage = Stage::CounterMove;
-                    if self.killers[1] != NO_MOVE
-                        && self.killers[1] != self.tt_move
-                        && self.killers[1] != self.killers[0]
-                    {
-                        let k = fixup_move_flags(board, self.killers[1]);
-                        self.killers[1] = k;
-                        if is_pseudo_legal(board, k) && !is_capture(board, k)
-                            && board.is_legal(k, self.pinned, self.checkers)
-                        {
-                            return k;
-                        }
-                    }
-                }
-
-                Stage::CounterMove => {
-                    self.stage = Stage::GenerateQuiets;
-                    if self.counter_move != NO_MOVE
-                        && self.counter_move != self.tt_move
-                        && self.counter_move != self.killers[0]
-                        && self.counter_move != self.killers[1]
-                    {
-                        let cm = fixup_move_flags(board, self.counter_move);
-                        self.counter_move = cm;
-                        if is_pseudo_legal(board, cm) && !is_capture(board, cm)
-                            && board.is_legal(cm, self.pinned, self.checkers)
-                        {
-                            return cm;
-                        }
+                        self.stage = Stage::GenerateQuiets;
                     }
                 }
 
@@ -555,7 +453,7 @@ impl MovePicker {
                 }
 
                 Stage::Quiets => {
-                    // TT/killers/counter already filtered during scoring
+                    // TT move already filtered during scoring.
                     if self.index < self.moves.len {
                         return self.pick_best();
                     }
@@ -639,8 +537,7 @@ impl MovePicker {
         self.index = 0;
     }
 
-    /// Generate quiet moves and score by history.
-    /// Generate and score quiets. TT, killers, counter filtered out.
+    /// Generate and score quiets. TT move is filtered out.
     fn generate_and_score_quiets(&mut self, board: &Board) {
         let quiets = generate_quiets(board);
         self.moves = MoveList::new();
@@ -1039,7 +936,7 @@ pub fn fixup_move_flags(board: &Board, mv: Move) -> Move {
     make_move(from, to, FLAG_NONE)
 }
 
-/// Thorough pseudo-legality check for TT/killer/counter moves.
+/// Thorough pseudo-legality check for TT moves and defensive PV validation.
 /// Must validate all special flags to prevent board corruption.
 pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
     if mv == NO_MOVE { return false; }
@@ -1419,7 +1316,7 @@ mod tests {
 
     /// Positive fuzzer: every legal move in every position must pass
     /// `is_pseudo_legal`. If this fails, we're rejecting legal moves
-    /// that come from TT/killer/counter slots, losing move-ordering
+    /// that come from TT slots, losing move-ordering
     /// information and potentially missing key moves.
     ///
     /// Also indirectly: tests that `generate_legal_moves` and

@@ -77,7 +77,7 @@ src/
   eval.rs          PeSTO material+PST eval (fallback), SEE values, NNUE eval wrapper
   see.rs           Static Exchange Evaluation
   tt.rs            Transposition table (5-slot buckets, XOR key verification)
-  movepicker.rs    Staged move ordering, 4D history tables, killer/counter moves
+  movepicker.rs    Staged move ordering, 4D history tables, continuation history
   search.rs        Negamax, pruning, LMR, correction history, cuckoo, pruning stats
   cuckoo.rs        Cuckoo cycle detection for proactive repetition avoidance
   tb.rs            Syzygy tablebase probing (via shakmaty-syzygy)
@@ -131,13 +131,11 @@ Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from dept
 - LMP: non-PV only, depth<=LMP_DEPTH, threshold (LMP_BASE+d²)/(2-improving)
 - SEE pruning: quiet -SEE_QUIET_MULT*d² at shallow depth, capture -SEE_CAP_MULT*d
 - ProbCut: beta+PROBCUT_MARGIN, staticEval gate, SEE>=0
-- History pruning: -HIST_PRUNE_MULT*depth at depth<=HIST_PRUNE_DEPTH
 - Bad noisy futility (BNFP): prune captures with `static_eval + depth*BAD_NOISY_MARGIN <= alpha && SEE < 0`, gated to `depth <= BAD_NOISY_DEPTH`. BAD_NOISY_MARGIN is a futility scalar (eval-vs-alpha), NOT a SEE threshold.
 - IIR: depth>=IIR_MIN_DEPTH (currently effective 2, _10X form), !inCheck, no TT move, PV or cut node
 - Singular extensions + double extensions (margin=DEXT_MARGIN, cap=DEXT_CAP)
 - Cuckoo cycle detection for proactive repetition avoidance
 - Hindsight reduction: reduce when parent was LMR-reduced and both sides quiet
-- Recapture extensions
 - Fail-high score blending at non-PV nodes
 - TT cutoff node-type guard (Alexandria pattern)
 - TT cutoff cont-hist malus (penalize opponent's quiet on cutoff)
@@ -913,4 +911,3 @@ For historical examples (SEE quiet pruning +11.4, history magnitude +31.6,
 LMR simplify +6.3, cont-hist malus +6.5, NMP capture R +3.5, node-based TM
 +11.9, etc.) and the cumulative list of resolved experiments, see
 `experiments.md`.
-
