@@ -13,6 +13,23 @@
 #![allow(clippy::manual_strip)] // index-slice form reads clearer in the EPD parser
 #![allow(clippy::doc_lazy_continuation)] // doc-comment markdown wrapping, cosmetic
 
+// Local scratch buffers use MaybeUninit to skip hot-path zeroing. These macros
+// keep the raw pointer plus initialized-prefix slice pattern consistent.
+macro_rules! scratch_ptr {
+    ($storage:expr, $ty:ty) => {
+        $storage.as_mut_ptr() as *mut $ty
+    };
+}
+
+macro_rules! scratch_slice {
+    ($ptr:expr, $len:expr) => {
+        unsafe { std::slice::from_raw_parts($ptr, $len) }
+    };
+    (mut $ptr:expr, $len:expr) => {
+        unsafe { std::slice::from_raw_parts_mut($ptr, $len) }
+    };
+}
+
 mod types;
 mod bitboard;
 mod zobrist;

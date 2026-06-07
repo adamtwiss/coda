@@ -2905,8 +2905,8 @@ impl NNUENet {
         assert!(pw <= PW_BUF, "pw {} exceeds PW_BUF {}", pw, PW_BUF);
         let mut stm_pw_storage = std::mem::MaybeUninit::<[u8; PW_BUF]>::uninit();
         let mut ntm_pw_storage = std::mem::MaybeUninit::<[u8; PW_BUF]>::uninit();
-        let stm_pw_ptr = stm_pw_storage.as_mut_ptr() as *mut u8;
-        let ntm_pw_ptr = ntm_pw_storage.as_mut_ptr() as *mut u8;
+        let stm_pw_ptr = scratch_ptr!(stm_pw_storage, u8);
+        let ntm_pw_ptr = scratch_ptr!(ntm_pw_storage, u8);
 
         #[cfg(target_arch = "x86_64")]
         if self.has_avx512 && pw.is_multiple_of(32) {
@@ -2977,8 +2977,8 @@ impl NNUENet {
             }
         }
 
-        let stm_pw = unsafe { std::slice::from_raw_parts(stm_pw_ptr, pw) };
-        let ntm_pw = unsafe { std::slice::from_raw_parts(ntm_pw_ptr, pw) };
+        let stm_pw = scratch_slice!(stm_pw_ptr, pw);
+        let ntm_pw = scratch_slice!(ntm_pw_ptr, pw);
 
         // L1 int8 matmul — only compute l1 neurons starting at l1_off
         // Pairwise: input = (a*b)>>FT_SHIFT, u8 at scale QA²>>FT_SHIFT ≈ PW_SCALE.
@@ -2992,7 +2992,7 @@ impl NNUENet {
         const HIDDEN32_BUF: usize = 64;  // l1 ≤ 64
         debug_assert!(l1 <= HIDDEN32_BUF, "l1 {} exceeds HIDDEN32_BUF {}", l1, HIDDEN32_BUF);
         let mut hidden32_storage = std::mem::MaybeUninit::<[i32; HIDDEN32_BUF]>::uninit();
-        let hidden32_ptr = hidden32_storage.as_mut_ptr() as *mut i32;
+        let hidden32_ptr = scratch_ptr!(hidden32_storage, i32);
         let mut hidden32_seeded = false;
         macro_rules! seed_hidden32 {
             () => {
@@ -3019,7 +3019,7 @@ impl NNUENet {
         } else if self.has_avx512_vnni && pw.is_multiple_of(64) && !self.l1_weights_8t.is_empty() {
             // VNNI fallback for wider L1 — still VPDPBUSD, but row-major.
             seed_hidden32!();
-            let hidden32 = unsafe { std::slice::from_raw_parts_mut(hidden32_ptr, l1) };
+            let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
             let ntm_base = l1_total * pw;
             for i in 0..l1 {
                 let gi = l1_off + i;
@@ -3040,7 +3040,7 @@ impl NNUENet {
             }
         } else if self.has_avx512 && pw.is_multiple_of(64) && !self.l1_weights_8t.is_empty() {
             seed_hidden32!();
-            let hidden32 = unsafe { std::slice::from_raw_parts_mut(hidden32_ptr, l1) };
+            let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
             let ntm_base = l1_total * pw;
             for i in 0..l1 {
                 let gi = l1_off + i;
@@ -3097,7 +3097,7 @@ impl NNUENet {
                         }
                     }
                     let mut mismatch = false;
-                    let hidden32_dbg = unsafe { std::slice::from_raw_parts(hidden32_ptr, l1) };
+                    let hidden32_dbg = scratch_slice!(hidden32_ptr, l1);
                     for i in 0..l1 {
                         if hidden32_dbg[i] != dense[i] {
                             if !mismatch {
@@ -3112,7 +3112,7 @@ impl NNUENet {
             }
         } else if self.has_avx2 && pw.is_multiple_of(32) && !self.l1_weights_8t.is_empty() {
             seed_hidden32!();
-            let hidden32 = unsafe { std::slice::from_raw_parts_mut(hidden32_ptr, l1) };
+            let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
             let ntm_base = l1_total * pw;
             // Multi-neuron: process 4 neurons at once, loading input once per chunk
             let mut i = 0;
@@ -3164,7 +3164,7 @@ impl NNUENet {
             && !(self.has_avx2 && pw.is_multiple_of(32) && !self.l1_weights_8t.is_empty()) {
             // Scalar fallback — raw weights in [input][neuron] layout
             seed_hidden32!();
-            let hidden32 = unsafe { std::slice::from_raw_parts_mut(hidden32_ptr, l1) };
+            let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
             for i in 0..l1 {
                 let gi = l1_off + i;
                 for j in 0..pw {
@@ -3179,7 +3179,7 @@ impl NNUENet {
         #[cfg(target_arch = "aarch64")]
         if self.has_neon && pw % 16 == 0 && !self.l1_weights_8t.is_empty() {
             seed_hidden32!();
-            let hidden32 = unsafe { std::slice::from_raw_parts_mut(hidden32_ptr, l1) };
+            let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
             let ntm_base = l1_total * pw;
             // Multi-neuron: 4 neurons at once, loading each input chunk once
             // and feeding all 4 accumulators (mirrors x86_64 simd_l1_int8_dot_x4).
@@ -3225,7 +3225,7 @@ impl NNUENet {
         #[cfg(target_arch = "aarch64")]
         if !(self.has_neon && pw % 16 == 0 && !self.l1_weights_8t.is_empty()) {
             seed_hidden32!();
-            let hidden32 = unsafe { std::slice::from_raw_parts_mut(hidden32_ptr, l1) };
+            let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
             for i in 0..l1 {
                 let gi = l1_off + i;
                 for j in 0..pw {
@@ -3241,7 +3241,7 @@ impl NNUENet {
         {
             // Scalar fallback for other architectures
             seed_hidden32!();
-            let hidden32 = unsafe { std::slice::from_raw_parts_mut(hidden32_ptr, l1) };
+            let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
             for i in 0..l1 {
                 let gi = l1_off + i;
                 for j in 0..pw {
@@ -3253,7 +3253,7 @@ impl NNUENet {
             }
         }
         let _ = hidden32_seeded;
-        let hidden32 = unsafe { std::slice::from_raw_parts(hidden32_ptr, l1) };
+        let hidden32 = scratch_slice!(hidden32_ptr, l1);
 
         // Dequantize + activation
         let qa_l1_f = qa_l1 as f32;
@@ -3297,7 +3297,7 @@ impl NNUENet {
             const H2_BUF: usize = 128;  // l2 ≤ 128
             debug_assert!(l2 <= H2_BUF, "l2 {} exceeds H2_BUF {}", l2, H2_BUF);
             let mut h2_storage = std::mem::MaybeUninit::<[f32; H2_BUF]>::uninit();
-            let h2_ptr = h2_storage.as_mut_ptr() as *mut f32;
+            let h2_ptr = scratch_ptr!(h2_storage, f32);
             // L2 matmul. The common v9 shape (L2=32) takes a hand-vectorised
             // AVX-512 FMA path: LLVM's autovec turned into `VGATHERQPS` here
             // and ate ~13% of total cycles. Explicit 2-register broadcast-FMA
@@ -3323,7 +3323,7 @@ impl NNUENet {
                 for k in 0..l2 {
                     unsafe { h2_ptr.add(k).write(self.l2_biases_f[l2_off + k]); }
                 }
-                let h2 = unsafe { std::slice::from_raw_parts_mut(h2_ptr, l2) };
+                let h2 = scratch_slice!(mut h2_ptr, l2);
                 for i in 0..l1_out_count {
                     if l1_out[i] == 0.0 { continue; }
                     for k in 0..l2 {
@@ -3336,7 +3336,7 @@ impl NNUENet {
                 for k in 0..l2 {
                     unsafe { h2_ptr.add(k).write(self.l2_biases_f[l2_off + k]); }
                 }
-                let h2 = unsafe { std::slice::from_raw_parts_mut(h2_ptr, l2) };
+                let h2 = scratch_slice!(mut h2_ptr, l2);
                 for i in 0..l1_out_count {
                     if l1_out[i] == 0.0 { continue; }
                     for k in 0..l2 {
@@ -3344,7 +3344,7 @@ impl NNUENet {
                     }
                 }
             }
-            let h2 = unsafe { std::slice::from_raw_parts_mut(h2_ptr, l2) };
+            let h2 = scratch_slice!(mut h2_ptr, l2);
             let crelu = self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed);
             #[cfg(target_arch = "x86_64")]
             if self.has_avx2 && l2 == 32 {
@@ -3413,19 +3413,19 @@ impl NNUENet {
         // MaybeUninit: writers below initialise [0..l1]; readers only read [0..l1].
         // Same memset-skip pattern as forward_with_l1_pairwise_inner.
         let mut hidden_storage = std::mem::MaybeUninit::<[i64; 256]>::uninit();
-        let hidden_ptr = hidden_storage.as_mut_ptr() as *mut i64;
+        let hidden_ptr = scratch_ptr!(hidden_storage, i64);
         for i in 0..l1 {
             unsafe { hidden_ptr.add(i).write(self.l1_biases[b_off + i] as i64 * bias_scale); }
         }
-        let hidden = unsafe { std::slice::from_raw_parts_mut(hidden_ptr, l1) };
+        let hidden = scratch_slice!(mut hidden_ptr, l1);
 
         // SIMD int8 path: pack SCReLU to u8, then VPMADDUBSW L1 matmul
         #[cfg(target_arch = "x86_64")]
         if (self.has_avx512 || self.has_avx2) && h.is_multiple_of(32) && !self.l1_weights_8t.is_empty() {
             let mut stm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
             let mut ntm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
-            let stm_packed_ptr = stm_packed_storage.as_mut_ptr() as *mut u8;
-            let ntm_packed_ptr = ntm_packed_storage.as_mut_ptr() as *mut u8;
+            let stm_packed_ptr = scratch_ptr!(stm_packed_storage, u8);
+            let ntm_packed_ptr = scratch_ptr!(ntm_packed_storage, u8);
             if self.has_avx512 && h.is_multiple_of(64) {
                 unsafe {
                     simd512_screlu_pack(stm_acc, stm_packed_ptr, h);
@@ -3437,8 +3437,8 @@ impl NNUENet {
                     simd_screlu_pack(ntm_acc, ntm_packed_ptr, h);
                 }
             }
-            let stm_packed = unsafe { std::slice::from_raw_parts(stm_packed_ptr, h) };
-            let ntm_packed = unsafe { std::slice::from_raw_parts(ntm_packed_ptr, h) };
+            let stm_packed = scratch_slice!(stm_packed_ptr, h);
+            let ntm_packed = scratch_slice!(ntm_packed_ptr, h);
             // Int8 matmul: input at scale QA (v²/255), weights at scale QA_L1
             // Result at scale QA × QA_L1. Bias at scale QA_L1, scaled by QA to match.
             let qa_int = QA;
@@ -3568,11 +3568,11 @@ impl NNUENet {
                 let l2_total_stride = if self.bucketed_hidden { l2_stride * NNUE_OUTPUT_BUCKETS } else { l2_stride };
                 let _ = l2_total_stride; // used below
                 let mut h2_storage = std::mem::MaybeUninit::<[f32; 256]>::uninit();
-                let h2_ptr = h2_storage.as_mut_ptr() as *mut f32;
+                let h2_ptr = scratch_ptr!(h2_storage, f32);
                 for k in 0..l2 {
                     unsafe { h2_ptr.add(k).write(self.l2_biases_f[l2_off + k]); }
                 }
-                let h2 = unsafe { std::slice::from_raw_parts_mut(h2_ptr, l2) };
+                let h2 = scratch_slice!(mut h2_ptr, l2);
                 for i in 0..l1_out_count {
                     if l1_out[i] == 0.0 { continue; }
                     let w_off = if self.bucketed_hidden {
@@ -3603,14 +3603,14 @@ impl NNUENet {
         if self.has_neon && h % 16 == 0 && !self.l1_weights_8t.is_empty() {
             let mut stm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
             let mut ntm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
-            let stm_packed_ptr = stm_packed_storage.as_mut_ptr() as *mut u8;
-            let ntm_packed_ptr = ntm_packed_storage.as_mut_ptr() as *mut u8;
+            let stm_packed_ptr = scratch_ptr!(stm_packed_storage, u8);
+            let ntm_packed_ptr = scratch_ptr!(ntm_packed_storage, u8);
             unsafe {
                 neon_screlu_pack(stm_acc, stm_packed_ptr, h);
                 neon_screlu_pack(ntm_acc, ntm_packed_ptr, h);
             }
-            let stm_packed = unsafe { std::slice::from_raw_parts(stm_packed_ptr, h) };
-            let ntm_packed = unsafe { std::slice::from_raw_parts(ntm_packed_ptr, h) };
+            let stm_packed = scratch_slice!(stm_packed_ptr, h);
+            let ntm_packed = scratch_slice!(ntm_packed_ptr, h);
             // Int8 matmul: input at scale QA (v²/255), weights at scale QA_L1
             // Result at scale QA × QA_L1. Bias at scale QA_L1, scaled by QA to match.
             let qa_int = QA as i32;
@@ -3668,11 +3668,11 @@ impl NNUENet {
                 let l2 = if self.bucketed_hidden { self.l2_per_bucket } else { self.l2_size };
                 let l2_off = if self.bucketed_hidden { bucket * l2 } else { 0 };
                 let mut h2_storage = std::mem::MaybeUninit::<[f32; 256]>::uninit();
-                let h2_ptr = h2_storage.as_mut_ptr() as *mut f32;
+                let h2_ptr = scratch_ptr!(h2_storage, f32);
                 for k in 0..l2 {
                     unsafe { h2_ptr.add(k).write(self.l2_biases_f[l2_off + k]); }
                 }
-                let h2 = unsafe { std::slice::from_raw_parts_mut(h2_ptr, l2) };
+                let h2 = scratch_slice!(mut h2_ptr, l2);
                 for i in 0..l1_out_count {
                     if l1_out[i] == 0.0 { continue; }
                     let w_off = if self.bucketed_hidden {
@@ -3794,11 +3794,11 @@ impl NNUENet {
             let l2 = if self.bucketed_hidden { self.l2_per_bucket } else { self.l2_size };
             let l2_off = if self.bucketed_hidden { bucket * l2 } else { 0 };
             let mut h2_storage = std::mem::MaybeUninit::<[f32; 256]>::uninit();
-            let h2_ptr = h2_storage.as_mut_ptr() as *mut f32;
+            let h2_ptr = scratch_ptr!(h2_storage, f32);
             for k in 0..l2 {
                 unsafe { h2_ptr.add(k).write(self.l2_biases_f[l2_off + k]); }
             }
-            let h2 = unsafe { std::slice::from_raw_parts_mut(h2_ptr, l2) };
+            let h2 = scratch_slice!(mut h2_ptr, l2);
             for i in 0..l1_out_count {
                 if l1_out[i] == 0.0 { continue; }
                 let w_off = if self.bucketed_hidden {
@@ -4875,7 +4875,7 @@ impl NNUEAccumulator {
             // is fully written below; consumers only read that prefix. Same pattern as
             // forward_with_l1 and apply_threat_deltas (#921, #927, #931).
             let mut piece_indices_storage = std::mem::MaybeUninit::<[usize; 32]>::uninit();
-            let piece_indices_ptr = piece_indices_storage.as_mut_ptr() as *mut usize;
+            let piece_indices_ptr = scratch_ptr!(piece_indices_storage, usize);
             let mut n_pieces = 0usize;
             for color in 0..2u8 {
                 for pt in 0..6u8 {
@@ -4890,7 +4890,7 @@ impl NNUEAccumulator {
                     }
                 }
             }
-            let piece_indices = unsafe { std::slice::from_raw_parts(piece_indices_ptr, n_pieces) };
+            let piece_indices = scratch_slice!(piece_indices_ptr, n_pieces);
             let empty: [usize; 0] = [];
             finny_batch_apply(net, &mut entry.acc[..h], &net.input_weights, h, piece_indices, &empty);
             entry.piece_bbs = (board.pieces, board.colors);
@@ -4908,9 +4908,9 @@ impl NNUEAccumulator {
         // MaybeUninit skips the 512-byte zero-init memset (2 × 256). [..n_*] is
         // fully written below.
         let mut add_rows_storage = std::mem::MaybeUninit::<[usize; 32]>::uninit();
-        let add_rows_ptr = add_rows_storage.as_mut_ptr() as *mut usize;
+        let add_rows_ptr = scratch_ptr!(add_rows_storage, usize);
         let mut sub_rows_storage = std::mem::MaybeUninit::<[usize; 32]>::uninit();
-        let sub_rows_ptr = sub_rows_storage.as_mut_ptr() as *mut usize;
+        let sub_rows_ptr = scratch_ptr!(sub_rows_storage, usize);
         let mut n_adds = 0usize;
         let mut n_subs = 0usize;
 
@@ -4941,8 +4941,8 @@ impl NNUEAccumulator {
                 }
             }
         }
-        let add_rows = unsafe { std::slice::from_raw_parts(add_rows_ptr, n_adds) };
-        let sub_rows = unsafe { std::slice::from_raw_parts(sub_rows_ptr, n_subs) };
+        let add_rows = scratch_slice!(add_rows_ptr, n_adds);
+        let sub_rows = scratch_slice!(sub_rows_ptr, n_subs);
 
         // Batch apply with register blocking (Reckless pattern)
         if n_adds > 0 || n_subs > 0 {
