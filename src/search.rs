@@ -4563,6 +4563,18 @@ fn quiescence_with_depth(
                 build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt, net)
             } else { DirtyPiece::recompute() };
 
+            // Record on search stack so deeper QS evasion's MovePicker::new_evasion
+            // reads correct ply-1/ply-2 continuation-history context. Without
+            // this, QS evasion chains read stale moved_piece_stack from the
+            // ply at which main search entered QS.
+            if qs_safe_ply <= MAX_PLY {
+                let qs_mp = board.piece_at(move_from(mv));
+                if qs_mp != NO_PIECE {
+                    info.moved_piece_stack[qs_safe_ply] = go_piece(qs_mp) as u8;
+                    info.moved_to_stack[qs_safe_ply] = move_to(mv);
+                }
+            }
+
             if let Some(acc) = &mut info.nnue_acc { acc.push(qs_dirty); }
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
             if !board.make_move(mv) {
@@ -4711,6 +4723,16 @@ fn quiescence_with_depth(
         let qs_dirty = if let Some(net) = info.nnue_net.as_deref() {
             build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt, net)
         } else { DirtyPiece::recompute() };
+
+        // Record on search stack — same reason as the evasion path above.
+        {
+            let qs_idx = (ply as usize).min(MAX_PLY - 1);
+            let qs_mp = board.piece_at(move_from(mv));
+            if qs_mp != NO_PIECE {
+                info.moved_piece_stack[qs_idx] = go_piece(qs_mp) as u8;
+                info.moved_to_stack[qs_idx] = move_to(mv);
+            }
+        }
 
         if let Some(acc) = &mut info.nnue_acc { acc.push(qs_dirty); }
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
