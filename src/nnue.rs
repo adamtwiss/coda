@@ -4706,54 +4706,36 @@ impl NNUEAccumulator {
         self.top -= 1;
     }
 
-    /// Materialize: ensure current accumulator is computed.
-    pub fn materialize(&mut self, net: &NNUENet, board: &Board) {
-        #[cfg(feature = "profile-materialize")]
-        crate::nnue::mat_stats::record_entry(self.stack[self.top].computed);
-        if self.stack[self.top].computed {
-            self.stats_cached_skips += 1;
-            return;
-        }
-
-        let dirty = self.stack[self.top].dirty;
-
-        // Full recompute needed?
-        if dirty.kind == 0 || self.top == 0 || !self.stack[self.top - 1].computed {
-            self.stats_full_rebuilds += 1;
-            // Cause split — first matching condition wins (priority order).
-            if dirty.kind == 0 {
-                self.stats_rebuild_kind0 += 1;
-            } else if self.top == 0 {
-                self.stats_rebuild_root += 1;
-            } else {
-                self.stats_rebuild_chain += 1;
+    /// Find the nearest computed ancestor that can be replayed to the current
+    /// ply using only ordinary incremental dirty entries.
+    fn replay_ancestor(&self) -> Option<usize> {
+        let mut ply = self.top;
+        while ply > 0 {
+            if self.stack[ply].dirty.kind == 0 {
+                return None;
             }
-            #[cfg(feature = "profile-materialize")]
-            {
-                crate::nnue::mat_stats::record_refresh();
-                // Walk ancestors to find nearest computed frame; record
-                // distance. 0 = no ancestor / root. 1 = parent computed
-                // (wouldn't fire here by definition but reported for shape).
-                let mut d: usize = 0;
-                if self.top > 0 {
-                    let mut i = self.top;
-                    while i > 0 {
-                        i -= 1;
-                        d += 1;
-                        if self.stack[i].computed { break; }
-                    }
-                    if d > 0 && !self.stack[self.top - d].computed { d = 0; }
-                }
-                crate::nnue::mat_stats::record_walkback_distance(d);
+            ply -= 1;
+            if self.stack[ply].computed {
+                return Some(ply);
             }
-            self.refresh_accumulator(net, board, WHITE);
-            self.refresh_accumulator(net, board, BLACK);
-            self.stack[self.top].computed = true;
-            return;
         }
-        #[cfg(feature = "profile-materialize")]
-        crate::nnue::mat_stats::record_incremental(dirty.n_changes as u64);
-        self.stats_incremental_updates += 1;
+        None
+    }
+
+    fn incremental_change_count(&self, from_exclusive: usize, to_inclusive: usize) -> u64 {
+        let mut total = 0u64;
+        for ply in (from_exclusive + 1)..=to_inclusive {
+            total += self.stack[ply].dirty.n_changes as u64;
+        }
+        total
+    }
+
+    fn apply_incremental_from_parent(&mut self, net: &NNUENet, board: &Board, top: usize) {
+        debug_assert!(top > 0);
+        debug_assert!(self.stack[top - 1].computed);
+        debug_assert!(self.stack[top].dirty.kind != 0);
+
+        let dirty = self.stack[top].dirty;
 
         // Incremental update: gather all deltas for this move, then apply them
         // in a SINGLE fused pass per perspective. Replaces the previous
@@ -4764,7 +4746,6 @@ impl NNUEAccumulator {
         // all add/sub weight rows while the chunk is in registers, write
         // current once. Memory traffic is constant in N.
         let h = self.hidden_size;
-        let top = self.top;
         let parent_ply = top - 1;
 
         let w_king_sq = board.king_sq(WHITE);
@@ -4852,6 +4833,70 @@ impl NNUEAccumulator {
         }
 
         self.stack[top].computed = true;
+    }
+
+    /// Materialize: ensure current accumulator is computed.
+    pub fn materialize(&mut self, net: &NNUENet, board: &Board) {
+        #[cfg(feature = "profile-materialize")]
+        crate::nnue::mat_stats::record_entry(self.stack[self.top].computed);
+        if self.stack[self.top].computed {
+            self.stats_cached_skips += 1;
+            return;
+        }
+
+        let dirty = self.stack[self.top].dirty;
+
+        if dirty.kind != 0 && self.top > 0 && self.stack[self.top - 1].computed {
+            #[cfg(feature = "profile-materialize")]
+            crate::nnue::mat_stats::record_incremental(dirty.n_changes as u64);
+            self.stats_incremental_updates += 1;
+            self.apply_incremental_from_parent(net, board, self.top);
+            return;
+        }
+
+        if dirty.kind != 0 && self.top > 0 {
+            if let Some(ancestor) = self.replay_ancestor() {
+                #[cfg(feature = "profile-materialize")]
+                crate::nnue::mat_stats::record_incremental(self.incremental_change_count(ancestor, self.top));
+                self.stats_incremental_updates += 1;
+                for ply in (ancestor + 1)..=self.top {
+                    self.apply_incremental_from_parent(net, board, ply);
+                }
+                return;
+            }
+        }
+
+        // Full recompute needed.
+        self.stats_full_rebuilds += 1;
+        // Cause split — first matching condition wins (priority order).
+        if dirty.kind == 0 {
+            self.stats_rebuild_kind0 += 1;
+        } else if self.top == 0 {
+            self.stats_rebuild_root += 1;
+        } else {
+            self.stats_rebuild_chain += 1;
+        }
+        #[cfg(feature = "profile-materialize")]
+        {
+            crate::nnue::mat_stats::record_refresh();
+            // Walk ancestors to find nearest computed frame; record
+            // distance. 0 = no ancestor / root. 1 = parent computed
+            // (wouldn't fire here by definition but reported for shape).
+            let mut d: usize = 0;
+            if self.top > 0 {
+                let mut i = self.top;
+                while i > 0 {
+                    i -= 1;
+                    d += 1;
+                    if self.stack[i].computed { break; }
+                }
+                if d > 0 && !self.stack[self.top - d].computed { d = 0; }
+            }
+            crate::nnue::mat_stats::record_walkback_distance(d);
+        }
+        self.refresh_accumulator(net, board, WHITE);
+        self.refresh_accumulator(net, board, BLACK);
+        self.stack[self.top].computed = true;
     }
 
     /// Refresh one perspective using the Finny table.
