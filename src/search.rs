@@ -1,5 +1,5 @@
 //! Negamax alpha-beta search with iterative deepening, PVS, aspiration windows, and Lazy SMP.
-//! Features: NMP, RFP, LMR, LMP, futility, SEE pruning, history pruning,
+//! Features: NMP, RFP, LMR, LMP, futility, SEE pruning,
 //! singular extensions, cuckoo cycle detection, correction history.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -18,7 +18,7 @@ use crate::types::*;
 /// Maximum ply depth supported by per-SearchInfo arrays.
 ///
 /// Public because MovePicker and History share the cap for fixed-size
-/// ply-indexed arrays (killers, pv_table, moved_piece_stack, etc.).
+/// ply-indexed arrays (pv_table, moved_piece_stack, etc.).
 ///
 /// Tried 128 to lift the iterative-deepening cap to depth 64, but the
 /// resulting pv_table grew from ~17 KB to ~67 KB per SearchInfo, spilled
@@ -538,7 +538,6 @@ pub struct PruneStats {
     pub see_prunes: u64,
     pub probcut_cutoffs: u64,
     pub lmr_searches: u64,
-    pub recapture_ext: u64,
     pub singular_ext: u64,
     pub double_ext: u64,
     pub negative_ext: u64,
@@ -3241,7 +3240,7 @@ fn negamax(
         // C3 (2026-04-22 audit): set null sentinel on moved_piece_stack /
         // moved_to_stack at ply_u. Without this, child at ply+1 reads
         // stale (piece, to) from a prior sibling move at this ply, feeding
-        // cont-hist, history pruning and LMR-history adjustment with
+        // cont-hist and LMR-history adjustment with
         // unrelated data. Stockfish sets the null sentinel similarly.
         if ply_u <= MAX_PLY {
             info.moved_piece_stack[ply_u] = 0;
@@ -3405,7 +3404,7 @@ fn negamax(
         }
     }
 
-    // Continuation history lookup from search stack (killers/counter removed — SF pattern)
+    // Continuation history lookup from search stack.
     let safe_ply = ply_u.min(MAX_PLY - 1);
     let mut prev_piece_for_cont: usize = 0; // go_piece index (1-12), 0 = none
     let mut prev_to_for_cont: u8 = 0;
@@ -3748,20 +3747,10 @@ fn negamax(
         // Check if move gives check (opponent is now in check after make_move)
         let gives_check = board.in_check();
 
-        // Recapture extension: extend when recapturing on the same square.
-        // ply > 0 guard: at root, undo_stack contains game-history moves;
-        // without the guard, the last played game move (if a capture) would
-        // count as a "previous capture" against the first root-move capture
-        // even though it's not an in-search recapture pattern.
         let mut extension = 0;
-        // Recapture extension REMOVED (2026-06-06 experiment): bound whether
-        // the feature adds value at all. Fired on 2.7% of nodes ungated; the
-        // SEE>=0-gated sibling (recap-ext-see0) tests the tighten path. If
-        // this removal is neutral/positive, drop the feature; if negative,
-        // the extension helps and the SEE gate is the refinement.
         // N6 Promotion-imminent extension: pawn push to 7th rank (from STM's
         // perspective) very often decides the game. Extend by 1. Gated by
-        // FEAT_EXTENSIONS to share the ablation flag with recapture ext.
+        // FEAT_EXTENSIONS.
         if extension == 0
             && FEAT_EXTENSIONS.load(Ordering::Relaxed)
             && !is_cap
@@ -4121,7 +4110,7 @@ fn negamax(
                     info.stats.cutoff_movecount_sum += move_count as u64;
                     info.stats.cutoff_movecount_sq_sum += (move_count as u64) * (move_count as u64);
 
-                    // Beta cutoff - update history for quiet moves (killers/counter removed — SF pattern)
+                    // Beta cutoff - update history for quiet moves.
                     if !is_cap {
                         // Depth-boost on big fail-high. BONUS_BOOST_AT trigger
                         // removed 2026-05-17 (ablation #1277 H0). Two remaining
@@ -4970,7 +4959,6 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         total_stats.see_prunes += info.stats.see_prunes;
         total_stats.probcut_cutoffs += info.stats.probcut_cutoffs;
         total_stats.lmr_searches += info.stats.lmr_searches;
-        total_stats.recapture_ext += info.stats.recapture_ext;
         total_stats.singular_ext += info.stats.singular_ext;
         total_stats.double_ext += info.stats.double_ext;
         total_stats.negative_ext += info.stats.negative_ext;
@@ -5018,7 +5006,6 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     eprintln!("SEE prunes:     {:>8}", s.see_prunes);
     eprintln!("ProbCut cutoffs:{:>8}", s.probcut_cutoffs);
     eprintln!("LMR searches:   {:>8}  ({:.1}% of nodes)", s.lmr_searches, s.lmr_searches as f64 / total_nodes as f64 * 100.0);
-    eprintln!("Recapture ext:  {:>8}", s.recapture_ext);
     eprintln!("Singular ext:   {:>8}  (single +1 ply)", s.singular_ext);
     eprintln!("Double ext:     {:>8}  (additional +1 on top of singular)", s.double_ext);
     eprintln!("Negative ext:   {:>8}  (-1/-2/-3 fail-high reduce)", s.negative_ext);
