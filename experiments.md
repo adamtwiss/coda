@@ -14612,3 +14612,26 @@ before declaring a flag dead (alpha_raised was a real removed feature).
 Follow-up #1812 (experiment/fh-blend-off): now that fail-high blending is
 ablatable, SPRT measures its Elo for the first time (expect H0 — it's a
 22%-node saver so removal should cost). Running.
+
+## 2026-06-07 — Recapture extension REMOVED (#1805 +5.9 H1); gated re-add fails
+
+Merged experiment/recap-ext-off (#1805 [0,3]: +5.9 ±3.3 / 12,472, LLR 2.96
+H1). Main bench 4,841,092 -> 3,183,992 (the ungated recapture extension was
+adding ~34% of the tree). Matches 16/18 stronger engines (no recapture ext).
+
+Follow-ups settled the feature completely:
+- #1817 gated recapture ext (PV+TT-move, Reckless/Caissa pattern) vs the
+  removal baseline: H0 -6.0 ±3.7. A properly-gated re-add is 6 Elo WORSE
+  than just removing it. Coda genuinely doesn't want a recapture extension
+  in any form — confirms the removal, don't re-add.
+- #1806 SEE-gated recapture ext vs ungated main: H0 -1.1 (moot; removed).
+
+Bonus from the dead-flag cleanup: #1812 (fh-blend-off) measured fail-high
+score blending for the first time (it was unablatable until FEAT_FH_BLEND
+was added): H0 -3.5 ±3.0 — blending OFF costs 3.5 Elo, so it's worth ~+3.5.
+Confirmed keeper.
+
+Methodology note: OB snapshots the base-branch commit at submission time, so
+merging recap-ext-off to main mid-flight did NOT confound #1812/#1817 (they
+tested against their pre-merge base commits). Verified before acting — a
+mid-flight base merge is only a problem if OB re-pulls, which it doesn't.
