@@ -14593,3 +14593,22 @@ negative → tactical value justifies cost, SEE-gate is the refinement.
 - **SEE must be computed pre-make_move.** The original recapture check ran
   post-make; gating it on see_ge(board,mv) there is meaningless (board is
   post-move). Moved detection+SEE before make_move, applied extension after.
+
+## 2026-06-07 — Dead-flag cleanup merged (#1807 non-regression)
+
+FEAT_ALPHA_REDUCE was a dead flag (gated the alpha_raised LMR adj deleted
+Apr 7; never read, made DISABLE_ALL ablations subtly dishonest). Removed it;
+added FEAT_FH_BLEND gating fail-high score blending (previously unablatable —
+ablation shows it saves ~22% nodes). SPRT #1807 [-2,1]: +0.1 ±1.8 / 36,282
+games, LLR 0.60 — stopped early as a confirmed non-regression (CI excludes
+-2; centred on zero as expected for bench-neutral hygiene). Merged 0457470,
+bench 4841092 unchanged.
+
+Methodology note: audit flag .load() usage across ALL src files, not one —
+the FEAT_4D_HISTORY "dead" scare was a false alarm (it IS read, in
+movepicker.rs); only search.rs was grepped initially. And check git history
+before declaring a flag dead (alpha_raised was a real removed feature).
+
+Follow-up #1812 (experiment/fh-blend-off): now that fail-high blending is
+ablatable, SPRT measures its Elo for the first time (expect H0 — it's a
+22%-node saver so removal should cost). Running.
