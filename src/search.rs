@@ -4628,8 +4628,12 @@ fn quiescence_with_depth(
     let mut best_score = stand_pat;
 
     // TT bound refinement of stand-pat (consensus: every top engine does this)
-    // Use TT score as a better estimate when the bound direction agrees
-    if tt_hit {
+    // Use TT score as a better estimate when the bound direction agrees.
+    // Apply the SAME halfmove guard as the direct cutoff path at line
+    // ~4468: without this, an inflated near-50mr TT lower bound replaces
+    // stand_pat and triggers the `best_score >= beta` return below —
+    // bypassing the gate that exists for exactly this case.
+    if tt_hit && (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX) {
         // Ply-only adjustment; refinement is explicitly for non-mate scores
         // per the abs check below. P3 downgrade would turn a stored mate
         // into a huge TB_WIN signal that passes the check and pollutes
