@@ -4744,6 +4744,13 @@ impl NNUEAccumulator {
         self.top -= 1;
     }
 
+    #[inline]
+    pub fn has_unmaterialized_psq_barrier(&self) -> bool {
+        let entry = &self.stack[self.top];
+        (entry.dirty.kind == 2 && !entry.psq_accurate[WHITE as usize])
+            || (entry.dirty.kind == 3 && !entry.psq_accurate[BLACK as usize])
+    }
+
     /// Find the nearest accurate ancestor for one PSQ perspective that can be
     /// replayed to the current ply without crossing that perspective's king
     /// bucket/mirror barrier.

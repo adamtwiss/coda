@@ -1004,6 +1004,15 @@ impl SearchInfo {
         // halfmove-independent, apply scale freshly on read.
         score * (22400 + material) / 32 / 1024
     }
+
+    #[inline]
+    fn materialize_tt_barrier(&mut self, board: &Board) {
+        if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
+            if acc.has_unmaterialized_psq_barrier() {
+                acc.materialize(net, board);
+            }
+        }
+    }
 }
 
 /// Scale a raw (halfmove-independent) eval toward zero as the halfmove
@@ -3021,6 +3030,7 @@ fn negamax(
     let mut raw_eval = -INFINITY;
     let mut scaled_eval = -INFINITY;
     let mut improving = false;
+    let mut tt_static_eval_hit = false;
     if !in_check {
         // Consumer threshold matches pack_data's static_eval clamp range
         // (-4095..4095). Stores that pass -INFINITY (in-check positions
@@ -3031,6 +3041,7 @@ fn negamax(
         if tt_hit && tt_entry.static_eval > -4095 {
             raw_eval = tt_entry.static_eval;
             info.stats_tt_static_eval_hits += 1;
+            tt_static_eval_hit = true;
         } else {
             raw_eval = info.eval(board);
             // Eval-only TT writeback: when we paid for an NNUE eval AND
@@ -3394,6 +3405,10 @@ fn negamax(
                 return score - (probcut_beta - beta);
             }
         }
+    }
+
+    if tt_static_eval_hit && depth >= 3 {
+        info.materialize_tt_barrier(board);
     }
 
     // Continuation history lookup from search stack.
