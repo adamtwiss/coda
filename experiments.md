@@ -14635,3 +14635,38 @@ Methodology note: OB snapshots the base-branch commit at submission time, so
 merging recap-ext-off to main mid-flight did NOT confound #1812/#1817 (they
 tested against their pre-merge base commits). Verified before acting — a
 mid-flight base merge is only a problem if OB re-pulls, which it doesn't.
+
+## 2026-06-07/08 — Structural-gate audit: promo-ext removed (+0.9), LMR-unique-adj kept (H0)
+
+Four-agent structural + tunable audit vs stronger engines (#1-18 only). Two
+Tier-1 recapture-analogs tested:
+
+**7th-rank promotion extension — REMOVED (#1841 +0.9 ±0.8 / 221k, H1).**
+Coda-unique (no stronger engine extends 7th-rank pushes), ungated, unproven
+(silently dead ~3 weeks via a side_to_move bug, then "fixed" without isolated
+SPRT). Coda's OWN 2026-03 testing called these "pure noise." Marginally +Elo;
+stopped at 221k to conserve fleet; ablated on the structural case. Merged
+c662887. Bench (on post-tune-1827 main) 3,814,740 -> 2,688,505 (-29.5%).
+NOTE: the +0.9 was measured on the pre-tune-1827 regime; new main is a
+different (less-pruned) tree, but the structural case carried the decision.
+
+**3 Coda-unique LMR reduce-less adjustments — KEPT (#1842 H0 -1.2 ±2.0).**
+threat-density, king-pressure, from-square-attacked. Despite being absent
+from all 18 stronger engines (and the precedent of removing 3 OTHER unique
+LMR adjustments for +6), THIS bundle tested -1.2 to remove — they earn their
+keep. The "remove Coda-unique LMR adjustments" pattern does NOT generalize;
+these three are net-positive. Do not remove.
+
+**Process lessons (both logged to memory):**
+1. Pull latest main before branching/benching. I cut both branches from a
+   10-commit-stale main; benches didn't match OB and I wrongly blamed an OB
+   worker cache bug. The `[Coda-<HEX>]` in OB's error is the commit that
+   benched wrong — same hex across two branches = the shared BASE is stale,
+   not your branch. (Adam caught it: "have you pulled main?")
+2. A few-% same-commit bench mismatch is staleness/uncommitted-edit, never
+   toolchain/OB. Check `git rev-list --count HEAD..origin/main` + `git status`
+   first.
+
+Remaining audit queue (task #72): TT near-miss replacement (Coda-unique 80cp
+margin vs consensus margin-free fail-low relax), all-node negative-ext -1
+branch, NMP cluster (min-depth=6 vs consensus 1-4 — low node-share).
