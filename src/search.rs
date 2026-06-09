@@ -103,8 +103,9 @@ tunables!(
     // Lifted 74 → 120 (eff 8 → 12, toward consensus 14-16): at 74 the verify
     // gate sat below the old min-depth gate, so 100% of NMP cutoffs paid a
     // verification re-search — NMP never had a cheap cutoff. #1901 measured
-    // verify=120 alone at +1 Elo. With min-depth de-gated to 3, depths 3-11
-    // now get the classic unverified cutoff; 12+ verify (zugzwang guard).
+    // verify=120 alone as neutral/slightly positive, supporting this direction.
+    // With min-depth de-gated to 3, depths 3-11 now get the classic unverified
+    // cutoff; 12+ verify (zugzwang guard).
     (NMP_VERIFY_DEPTH_10X, 120, 40, 200, 20.0, true),
     (RFP_DEPTH, 17, 2, 20, 2.0, true),
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
@@ -3302,14 +3303,16 @@ fn negamax(
         }
     }
 
+    let nmp_threat_margin =
+        (king_zone_pressure - (tp10(&NMP_KING_ZONE_MAX_10X) - 1)).max(0) * 64
+        + (any_threat_count - 2).max(0) * 64
+        + (undefended_count - (tp10(&NMP_UNDEFENDED_MAX_10X) - 1)).max(0) * 128;
+
     if depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0 && stm_non_pawn != 0
-        && beta - alpha == 1 && static_eval >= beta
+        && beta - alpha == 1 && static_eval >= beta + nmp_threat_margin
         && !prev_was_null  // Prevent consecutive null moves
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
-        && king_zone_pressure < tp10(&NMP_KING_ZONE_MAX_10X)  // New gate
-        && any_threat_count < 3  // S7-style: skip NMP when many of our pieces are under threat
-        && undefended_count < tp10(&NMP_UNDEFENDED_MAX_10X)  // T2.1: skip when hanging pieces
         && cut_node  // Reckless gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
         && FEAT_NMP.load(Ordering::Relaxed)
     {
