@@ -1,1 +1,1 @@
-https://github.com/adamtwiss/coda/releases/download/v0.5.0-nets/net-v9-768th16x32-kb10-w15-e1200s1200-crelu-factor-xtradata-swa.nnue
+https://github.com/adamtwiss/coda/releases/download/v0.6.0-nets/net-E4B66CE4.nnue
