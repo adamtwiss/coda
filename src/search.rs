@@ -3834,7 +3834,7 @@ fn negamax(
         // Check if move gives check (opponent is now in check after make_move)
         let gives_check = board.in_check();
 
-        let mut extension = 0;
+        let extension = 0;
         // N6 promotion-imminent (7th-rank pawn push) extension REMOVED
         // 2026-06-07 (structural-audit experiment). Coda-unique — NONE of the
         // 18 stronger engines in our RR extend 7th-rank pushes — ungated
