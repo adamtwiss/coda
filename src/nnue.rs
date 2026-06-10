@@ -1807,6 +1807,88 @@ unsafe fn find_nnz_chunks_512(packed: &[u8], nnz_indices: &mut [u16], h: usize) 
 
 // ---- NEON SIMD helper functions (aarch64) ----
 
+/// NEON f32 L2 matmul for l2==32 — mirror of `l2_fmadd_avx2_x32`. Broadcast-FMA
+/// fan-out: each non-zero l1_out activation multiplies a 32-wide weight row into
+/// 8 × float32x4 accumulators seeded from the biases. Closes the ARM L2 gap
+/// where the v9 pairwise prod path previously ran this stage scalar.
+///
+/// Preconditions mirror the x86 sibling: `l2 == 32`, `h2.len() >= 32`, biases
+/// contiguous at `l2_off`, weights `l2_weights_f[i*l2_total + l2_off ..][..32]`.
+#[cfg(target_arch = "aarch64")]
+unsafe fn l2_fmadd_neon_x32(
+    l1_out: &[f32],
+    l1_out_count: usize,
+    l2_weights_f: &[f32],
+    l2_total: usize,
+    l2_off: usize,
+    biases: &[f32],
+    h2: *mut f32,
+) {
+    let bp = biases.as_ptr().add(l2_off);
+    let mut acc = [
+        vld1q_f32(bp), vld1q_f32(bp.add(4)), vld1q_f32(bp.add(8)), vld1q_f32(bp.add(12)),
+        vld1q_f32(bp.add(16)), vld1q_f32(bp.add(20)), vld1q_f32(bp.add(24)), vld1q_f32(bp.add(28)),
+    ];
+    for i in 0..l1_out_count {
+        let v = *l1_out.get_unchecked(i);
+        if v == 0.0 { continue; }
+        let wp = l2_weights_f.as_ptr().add(i * l2_total + l2_off);
+        // vfmaq_n_f32(a, b, c) = a + b * c (c scalar) — single fused op per lane.
+        acc[0] = vfmaq_n_f32(acc[0], vld1q_f32(wp), v);
+        acc[1] = vfmaq_n_f32(acc[1], vld1q_f32(wp.add(4)), v);
+        acc[2] = vfmaq_n_f32(acc[2], vld1q_f32(wp.add(8)), v);
+        acc[3] = vfmaq_n_f32(acc[3], vld1q_f32(wp.add(12)), v);
+        acc[4] = vfmaq_n_f32(acc[4], vld1q_f32(wp.add(16)), v);
+        acc[5] = vfmaq_n_f32(acc[5], vld1q_f32(wp.add(20)), v);
+        acc[6] = vfmaq_n_f32(acc[6], vld1q_f32(wp.add(24)), v);
+        acc[7] = vfmaq_n_f32(acc[7], vld1q_f32(wp.add(28)), v);
+    }
+    for k in 0..8 { vst1q_f32(h2.add(k * 4), acc[k]); }
+}
+
+/// NEON f32 SCReLU activation for l2==32 (clamp [0,1] then square). Mirror of
+/// `screlu_f32_avx2_x32`.
+#[cfg(target_arch = "aarch64")]
+unsafe fn screlu_f32_neon_x32(h2: &mut [f32]) {
+    let zeros = vdupq_n_f32(0.0);
+    let ones = vdupq_n_f32(1.0);
+    let p = h2.as_mut_ptr();
+    for chunk in 0..8 {
+        let off = chunk * 4;
+        let v = vld1q_f32(p.add(off));
+        let clamped = vmaxq_f32(zeros, vminq_f32(ones, v));
+        vst1q_f32(p.add(off), vmulq_f32(clamped, clamped));
+    }
+}
+
+/// NEON f32 CReLU activation for l2==32 (clamp [0,1]). Mirror of
+/// `crelu_f32_avx2_x32`.
+#[cfg(target_arch = "aarch64")]
+unsafe fn crelu_f32_neon_x32(h2: &mut [f32]) {
+    let zeros = vdupq_n_f32(0.0);
+    let ones = vdupq_n_f32(1.0);
+    let p = h2.as_mut_ptr();
+    for chunk in 0..8 {
+        let off = chunk * 4;
+        let v = vld1q_f32(p.add(off));
+        vst1q_f32(p.add(off), vmaxq_f32(zeros, vminq_f32(ones, v)));
+    }
+}
+
+/// NEON f32 dot product of 32 elements with bias. Mirror of
+/// `dot_fmadd_avx2_x32` — single fused-MAC accumulator, horizontal reduce.
+#[cfg(target_arch = "aarch64")]
+unsafe fn dot_fmadd_neon_x32(a: &[f32], b: &[f32], bias: f32) -> f32 {
+    let ap = a.as_ptr();
+    let bp = b.as_ptr();
+    let mut acc = vdupq_n_f32(0.0);
+    for k in 0..8 {
+        let off = k * 4;
+        acc = vfmaq_f32(acc, vld1q_f32(ap.add(off)), vld1q_f32(bp.add(off)));
+    }
+    bias + vaddvq_f32(acc)
+}
+
 /// Add a weight row to an accumulator (NEON, 8 × i16 per iteration).
 #[cfg(target_arch = "aarch64")]
 unsafe fn neon_acc_add(acc: &mut [i16], row: &[i16], h: usize) {
@@ -1948,8 +2030,13 @@ unsafe fn neon_pairwise_dot(acc_first: &[i16], acc_second: &[i16], weights: &[i1
         let prod = vmulq_s16(a_cl, b_cl);
         // byte0 = prod & 0xFF (using qa as mask)
         let byte0 = vandq_s16(prod, qa);
-        // byte1 = prod >> 8 (unsigned shift)
-        let byte1 = vreinterpretq_s16_u16(vshrq_n_u16::<9>(vreinterpretq_u16_s16(prod)));
+        // byte1 = prod >> 8 (unsigned shift). MUST be >>8 to match the x86
+        // `simd_pairwise_dot` decomposition (prod = byte0 + byte1*256) and the
+        // scalar fallback. A >>9 here drops bit 8 and halves the high byte —
+        // a real bug that shipped on aarch64 until the parity test
+        // `test_neon_pairwise_dot_matches_scalar` caught it (v5/v7 pairwise
+        // output path; v9 prod uses the int8 path so was unaffected).
+        let byte1 = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(prod)));
 
         // Widening multiply-accumulate: i16 × i16 → i32
         sum_b0_lo = vmlal_s16(sum_b0_lo, vget_low_s16(byte0), vget_low_s16(w));
@@ -3353,7 +3440,28 @@ impl NNUENet {
                     }
                 }
             }
-            #[cfg(not(target_arch = "x86_64"))]
+            #[cfg(target_arch = "aarch64")]
+            if self.has_neon && l2 == 32 {
+                unsafe {
+                    l2_fmadd_neon_x32(
+                        &l1_out[..l1_out_count], l1_out_count,
+                        &self.l2_weights_f, l2_total, l2_off,
+                        &self.l2_biases_f, h2_ptr,
+                    );
+                }
+            } else {
+                for k in 0..l2 {
+                    unsafe { h2_ptr.add(k).write(self.l2_biases_f[l2_off + k]); }
+                }
+                let h2 = scratch_slice!(mut h2_ptr, l2);
+                for i in 0..l1_out_count {
+                    if l1_out[i] == 0.0 { continue; }
+                    for k in 0..l2 {
+                        h2[k] += l1_out[i] * self.l2_weights_f[i * l2_total + l2_off + k];
+                    }
+                }
+            }
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
             {
                 for k in 0..l2 {
                     unsafe { h2_ptr.add(k).write(self.l2_biases_f[l2_off + k]); }
@@ -3379,7 +3487,18 @@ impl NNUENet {
             } else {
                 for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; } // SCReLU
             }
-            #[cfg(not(target_arch = "x86_64"))]
+            #[cfg(target_arch = "aarch64")]
+            if self.has_neon && l2 == 32 {
+                unsafe {
+                    if crelu { crelu_f32_neon_x32(&mut h2[..32]); }
+                    else { screlu_f32_neon_x32(&mut h2[..32]); }
+                }
+            } else if crelu {
+                for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); }
+            } else {
+                for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; }
+            }
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
             if crelu {
                 for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); }
             } else {
@@ -3399,7 +3518,15 @@ impl NNUENet {
                 for k in 0..l2 { acc += h2[k] * out_w[k]; }
                 acc
             };
-            #[cfg(not(target_arch = "x86_64"))]
+            #[cfg(target_arch = "aarch64")]
+            let out_f = if self.has_neon && l2 == 32 {
+                unsafe { dot_fmadd_neon_x32(&h2[..32], &out_w[..32], bias) }
+            } else {
+                let mut acc = bias;
+                for k in 0..l2 { acc += h2[k] * out_w[k]; }
+                acc
+            };
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
             let out_f = {
                 let mut acc = bias;
                 for k in 0..l2 { acc += h2[k] * out_w[k]; }
@@ -6048,6 +6175,401 @@ mod tests {
         unsafe { neon_pairwise_pack_fused(&boundary_acc, std::ptr::null(), neon_out.as_mut_ptr(), pw); }
         assert_eq!(scalar_out, neon_out,
             "neon_pairwise_pack_fused at clamp boundaries diverged from scalar");
+    }
+
+    /// Scalar reference for neon_pairwise_dot — mirrors the dispatcher's
+    /// scalar fallback (nnue.rs output path): clamp both halves to [0, QA],
+    /// multiply the pair, dot with the (i16) output weight. Integer math, so
+    /// the SIMD byte-decomposition must reproduce this exactly.
+    #[cfg(target_arch = "aarch64")]
+    fn pairwise_dot_scalar_ref(a: &[i16], b: &[i16], w: &[i16], count: usize) -> i64 {
+        let mut sum: i64 = 0;
+        for i in 0..count {
+            let av = (a[i] as i32).clamp(0, QA);
+            let bv = (b[i] as i32).clamp(0, QA);
+            sum += (av * bv) as i64 * w[i] as i64;
+        }
+        sum
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_neon_pairwise_dot_matches_scalar() {
+        // Fuzz-grade: this is the byte-decomposition bug locus, so sweep seeds
+        // and the 128-element drain boundary / non-multiple tails broadly.
+        // Inputs span the full clamp range so products routinely exceed 256
+        // (the bit-8 case a >>9 shift gets wrong).
+        for &count in &[16usize, 64, 128, 256, 384, 512] {
+            for seed in 0u64..40 {
+                let mut r = rng(0xc0da_d07_0000_0005 ^ (count as u64) << 32 ^ seed);
+                let a: Vec<i16> = (0..count).map(|_| (r() as i32 as i16).rem_euclid(401) - 50).collect();
+                let b: Vec<i16> = (0..count).map(|_| (r() as i32 as i16).rem_euclid(401) - 50).collect();
+                let w: Vec<i16> = (0..count).map(|_| (r() as i32 as i16).rem_euclid(255) - 127).collect();
+
+                let scalar = pairwise_dot_scalar_ref(&a, &b, &w, count);
+                let neon = unsafe { neon_pairwise_dot(&a, &b, &w, count) };
+                assert_eq!(scalar, neon,
+                    "neon_pairwise_dot diverged at count={} seed={}: scalar={} neon={}",
+                    count, seed, scalar, neon);
+            }
+        }
+
+        // Targeted regression: products that straddle bit 8 (>= 256) are the
+        // exact case the byte-1 decomposition must get right. A >>9-instead-of
+        // ->8 shift drops bit 8 and halves the high byte — this case pins it.
+        let count = 16usize;
+        let a: Vec<i16> = vec![QA as i16; count]; // 255
+        let b: Vec<i16> = vec![QA as i16; count]; // 255  → prod 65025
+        let w: Vec<i16> = vec![1i16; count];
+        let scalar = pairwise_dot_scalar_ref(&a, &b, &w, count);
+        let neon = unsafe { neon_pairwise_dot(&a, &b, &w, count) };
+        assert_eq!(scalar, neon,
+            "neon_pairwise_dot high-byte decomposition wrong: scalar={} neon={}", scalar, neon);
+    }
+
+    // ---- NEON int8 / accumulator kernel parity (aarch64) ----
+    // These were previously untested (only 4 of the NEON kernels had parity
+    // coverage), the gap that let the neon_pairwise_dot >>9 bug ship. Integer
+    // kernels are compared with exact assert_eq — NEON's widening MLAL chains
+    // carry no intermediate saturation, so any grouping yields the same sum.
+
+    #[cfg(target_arch = "aarch64")]
+    fn l1_int8_dot_scalar_ref(packed: &[u8], weights: &[i8], h: usize) -> i32 {
+        let mut s: i32 = 0;
+        for i in 0..h { s += packed[i] as i32 * weights[i] as i32; }
+        s
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_neon_l1_int8_dot_matches_scalar() {
+        let mut r = rng(0xc0da_1d07_0000_0011);
+        // Realistic v9 regime: packed ∈ [0, 64], weights ∈ [-120, 120].
+        for &h in &[16usize, 32, 64, 128, 256, 384, 512] {
+            for _ in 0..4 {
+                let packed: Vec<u8> = (0..h).map(|_| (r() & 0x3F) as u8).collect();
+                let weights: Vec<i8> = (0..h).map(|_| ((r() & 0xFF) as i8).clamp(-120, 120)).collect();
+                let scalar = l1_int8_dot_scalar_ref(&packed, &weights, h);
+                let neon = unsafe { neon_l1_int8_dot(&packed, &weights, h) };
+                assert_eq!(scalar, neon, "neon_l1_int8_dot mismatch h={}", h);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_neon_l1_int8_dot_x4_matches_scalar() {
+        let mut r = rng(0xc0da_1d07_0000_0022);
+        for &h in &[16usize, 32, 64, 128, 384] {
+            let packed: Vec<u8> = (0..h).map(|_| (r() & 0x3F) as u8).collect();
+            let mk = |r: &mut dyn FnMut() -> u64| -> Vec<i8> {
+                (0..h).map(|_| ((r() & 0xFF) as i8).clamp(-120, 120)).collect()
+            };
+            let w0 = mk(&mut r); let w1 = mk(&mut r);
+            let w2 = mk(&mut r); let w3 = mk(&mut r);
+            let want = [
+                l1_int8_dot_scalar_ref(&packed, &w0, h),
+                l1_int8_dot_scalar_ref(&packed, &w1, h),
+                l1_int8_dot_scalar_ref(&packed, &w2, h),
+                l1_int8_dot_scalar_ref(&packed, &w3, h),
+            ];
+            let got = unsafe { neon_l1_int8_dot_x4(&packed, &w0, &w1, &w2, &w3, h) };
+            assert_eq!(want, got, "neon_l1_int8_dot_x4 mismatch h={}", h);
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_neon_find_nnz_and_sparse_dot_matches_scalar() {
+        let mut r = rng(0xc0da_1d07_0000_0033);
+        for &h in &[16usize, 32, 64, 128, 256, 512] {
+            for density in [0u32, 25, 50, 100] {
+                let packed: Vec<u8> = (0..h)
+                    .map(|_| if (r() % 100) < density as u64 { (r() & 0x3F) as u8 } else { 0 })
+                    .collect();
+                let weights: Vec<i8> = (0..h).map(|_| ((r() & 0xFF) as i8).clamp(-120, 120)).collect();
+
+                // find_nnz parity: a chunk is NNZ iff any of its 16 bytes != 0.
+                let mut nnz = vec![0u16; h / 16];
+                let count = unsafe { neon_find_nnz_chunks(&packed, &mut nnz, h) };
+                let mut expect_chunks = Vec::new();
+                let mut c = 0;
+                while c < h {
+                    if packed[c..c + 16].iter().any(|&b| b != 0) { expect_chunks.push(c as u16); }
+                    c += 16;
+                }
+                assert_eq!(&nnz[..count], &expect_chunks[..],
+                    "neon_find_nnz_chunks mismatch h={} density={}", h, density);
+
+                // Sparse dot over the NNZ list equals the full dense dot
+                // (zero chunks contribute nothing).
+                let scalar = l1_int8_dot_scalar_ref(&packed, &weights, h);
+                let neon = unsafe { neon_l1_int8_dot_sparse(&packed, &weights, &nnz, count) };
+                assert_eq!(scalar, neon,
+                    "neon_l1_int8_dot_sparse mismatch h={} density={}", h, density);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_neon_screlu_pack_matches_scalar() {
+        let mut r = rng(0xc0da_1d07_0000_0044);
+        // Include a non-multiple-of-16 width to exercise the scalar tail.
+        for &h in &[16usize, 32, 64, 128, 256, 768, 24] {
+            let acc: Vec<i16> = (0..h).map(|_| (r() as i32 as i16).rem_euclid(601) - 50).collect();
+            let mut scalar = vec![0u8; h];
+            for i in 0..h {
+                let v = (acc[i] as i32).clamp(0, 255);
+                scalar[i] = ((v * v) >> 8) as u8;
+            }
+            let mut neon = vec![0u8; h];
+            unsafe { neon_screlu_pack(&acc, neon.as_mut_ptr(), h); }
+            assert_eq!(scalar, neon, "neon_screlu_pack mismatch h={}", h);
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_neon_crelu_dot_matches_scalar() {
+        let mut r = rng(0xc0da_1d07_0000_0055);
+        for &h in &[8usize, 16, 128, 256, 384, 768] {
+            let acc: Vec<i16> = (0..h).map(|_| (r() as i32 as i16).rem_euclid(601) - 100).collect();
+            let w: Vec<i16> = (0..h).map(|_| (r() as i32 as i16).rem_euclid(255) - 127).collect();
+            let mut scalar: i64 = 0;
+            for i in 0..h { scalar += (acc[i] as i32).clamp(0, QA) as i64 * w[i] as i64; }
+            let neon = unsafe { neon_crelu_dot(&acc, &w, h) };
+            assert_eq!(scalar, neon, "neon_crelu_dot mismatch h={}", h);
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_neon_screlu_dot_i8_matches_scalar() {
+        let mut r = rng(0xc0da_1d07_0000_0066);
+        for &h in &[8usize, 16, 128, 256, 384, 768] {
+            let acc: Vec<i16> = (0..h).map(|_| (r() as i32 as i16).rem_euclid(601) - 100).collect();
+            // i8-range weights carried in i16, mirroring output_weight_row_i8.
+            let w: Vec<i16> = (0..h).map(|_| (r() as i32 as i16).rem_euclid(255) - 127).collect();
+            let mut scalar: i32 = 0;
+            for i in 0..h {
+                let v = (acc[i] as i32).clamp(0, QA);
+                scalar += v * v * w[i] as i32;
+            }
+            let neon = unsafe { neon_screlu_dot_i8(&acc, &w, h) };
+            assert_eq!(scalar, neon, "neon_screlu_dot_i8 mismatch h={}", h);
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_neon_acc_add_sub_matches_scalar() {
+        let mut r = rng(0xc0da_1d07_0000_0077);
+        for &h in &[8usize, 16, 256, 768, 1024] {
+            let init: Vec<i16> = (0..h).map(|_| (r() as i32 as i16).rem_euclid(2001) - 1000).collect();
+            let row: Vec<i16> = (0..h).map(|_| (r() as i32 as i16).rem_euclid(1001) - 500).collect();
+
+            let mut scalar = init.clone();
+            for j in 0..h { scalar[j] += row[j]; }
+            let mut neon = init.clone();
+            unsafe { neon_acc_add(&mut neon, &row, h); }
+            assert_eq!(scalar, neon, "neon_acc_add mismatch h={}", h);
+
+            let mut scalar = init.clone();
+            for j in 0..h { scalar[j] -= row[j]; }
+            let mut neon = init.clone();
+            unsafe { neon_acc_sub(&mut neon, &row, h); }
+            assert_eq!(scalar, neon, "neon_acc_sub mismatch h={}", h);
+        }
+    }
+
+    /// Scalar reference for simd_acc_fused_neon (aarch64). Mirrors the
+    /// dispatcher's scalar fallback, wrapping like the SIMD i16 lanes.
+    #[cfg(target_arch = "aarch64")]
+    fn acc_fused_scalar_ref_neon(dst: &mut [i16], src: &[i16], add_rows: &[&[i16]], sub_rows: &[&[i16]], h: usize) {
+        for j in 0..h {
+            let mut v = src[j];
+            for row in add_rows { v = v.wrapping_add(row[j]); }
+            for row in sub_rows { v = v.wrapping_sub(row[j]); }
+            dst[j] = v;
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_simd_acc_fused_neon_matches_scalar() {
+        for &h in &[8usize, 16, 64, 256, 512, 768, 1024, 1536] {
+            let mut r = rng(0xc0da_1d07_0088_0000 ^ h as u64);
+            let n_rows = 10usize;
+            let row_bufs: Vec<Vec<i16>> = (0..n_rows)
+                .map(|_| (0..h).map(|_| ((r() % 1024) as i16) - 512).collect())
+                .collect();
+            let row_refs: Vec<&[i16]> = row_bufs.iter().map(|v| v.as_slice()).collect();
+            let add_rows: &[&[i16]] = &row_refs[..4];
+            let sub_rows: &[&[i16]] = &row_refs[4..9];
+            let src: Vec<i16> = (0..h).map(|_| ((r() % 2000) as i16) - 1000).collect();
+
+            let mut dst_scalar = vec![0i16; h];
+            acc_fused_scalar_ref_neon(&mut dst_scalar, &src, add_rows, sub_rows, h);
+            let mut dst_neon = vec![0i16; h];
+            unsafe { simd_acc_fused_neon(&mut dst_neon, &src, add_rows, sub_rows, h); }
+            assert_eq!(dst_scalar, dst_neon, "simd_acc_fused_neon mismatch h={}", h);
+
+            // Empty deltas → identity.
+            let mut dst_neon = vec![0i16; h];
+            unsafe { simd_acc_fused_neon(&mut dst_neon, &src, &[], &[], h); }
+            assert_eq!(src, dst_neon, "simd_acc_fused_neon empty-deltas altered dst h={}", h);
+        }
+    }
+
+    // ---- NEON float L2 kernel parity (aarch64) ----
+    // The v9 pairwise prod path runs L1=16 → L2=32; these kernels close the
+    // ARM gap where that float stage previously ran scalar. FMA reorders/fuses
+    // rounding, so (like the x86 float tests) comparison is tolerance-based.
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_l2_fmadd_neon_x32_matches_scalar() {
+        let l2: usize = 32;
+        let mut r = rng(0xc0da_b00b_0000_0a11);
+        for &l1_out_count in &[8usize, 16, 24, 32, 64] {
+            for &(l2_total, l2_off) in &[(32usize, 0usize), (64, 16), (96, 64)] {
+                let total_w = l1_out_count * l2_total;
+                let mut weights = vec![0.0f32; total_w];
+                for w in weights.iter_mut() { *w = ((r() as i32 as f32) / 1e9).clamp(-2.0, 2.0); }
+                let mut biases = vec![0.0f32; l2_total];
+                for b in biases.iter_mut() { *b = ((r() as i32 as f32) / 1e9).clamp(-1.0, 1.0); }
+                let mut l1_out = vec![0.0f32; l1_out_count];
+                for v in l1_out.iter_mut() {
+                    let raw = ((r() as i32 as f32) / 1e9).clamp(0.0, 1.0);
+                    *v = if raw < 0.25 { 0.0 } else { raw };
+                }
+
+                let mut h2_scalar = vec![0.0f32; l2];
+                for k in 0..l2 { h2_scalar[k] = biases[l2_off + k]; }
+                for i in 0..l1_out_count {
+                    if l1_out[i] == 0.0 { continue; }
+                    for k in 0..l2 { h2_scalar[k] += l1_out[i] * weights[i * l2_total + l2_off + k]; }
+                }
+
+                let mut h2_neon = vec![0.0f32; l2];
+                unsafe {
+                    l2_fmadd_neon_x32(&l1_out, l1_out_count, &weights, l2_total, l2_off,
+                        &biases, h2_neon.as_mut_ptr());
+                }
+                for k in 0..l2 {
+                    let diff = (h2_scalar[k] - h2_neon[k]).abs();
+                    assert!(diff < 1e-4,
+                        "l2_fmadd_neon divergence k={} l1c={} l2t={} l2o={}: scalar={} neon={} diff={}",
+                        k, l1_out_count, l2_total, l2_off, h2_scalar[k], h2_neon[k], diff);
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_screlu_crelu_f32_neon_x32_matches_scalar() {
+        let mut r = rng(0xc0da_b00b_0000_0a22);
+        for _trial in 0..8 {
+            let base: Vec<f32> = (0..32).map(|_| ((r() as i32 as f32) / 1e9).clamp(-3.0, 3.0)).collect();
+
+            // SCReLU: clamp [0,1] then square.
+            let mut scalar = base.clone();
+            for v in scalar.iter_mut() { *v = v.clamp(0.0, 1.0); *v *= *v; }
+            let mut neon = base.clone();
+            unsafe { screlu_f32_neon_x32(&mut neon); }
+            for k in 0..32 {
+                assert!((scalar[k] - neon[k]).abs() < 1e-6,
+                    "screlu_f32_neon mismatch k={}: scalar={} neon={}", k, scalar[k], neon[k]);
+            }
+
+            // CReLU: clamp [0,1].
+            let mut scalar = base.clone();
+            for v in scalar.iter_mut() { *v = v.clamp(0.0, 1.0); }
+            let mut neon = base.clone();
+            unsafe { crelu_f32_neon_x32(&mut neon); }
+            for k in 0..32 {
+                assert!((scalar[k] - neon[k]).abs() < 1e-6,
+                    "crelu_f32_neon mismatch k={}: scalar={} neon={}", k, scalar[k], neon[k]);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_dot_fmadd_neon_x32_matches_scalar() {
+        let mut r = rng(0xc0da_b00b_0000_0a33);
+        for _trial in 0..8 {
+            let a: Vec<f32> = (0..32).map(|_| ((r() as i32 as f32) / 1e9).clamp(-5.0, 5.0)).collect();
+            let b: Vec<f32> = (0..32).map(|_| ((r() as i32 as f32) / 1e9).clamp(-5.0, 5.0)).collect();
+            let bias = ((r() as i32 as f32) / 1e9).clamp(-5.0, 5.0);
+
+            let mut scalar = bias;
+            for i in 0..32 { scalar += a[i] * b[i]; }
+            let neon = unsafe { dot_fmadd_neon_x32(&a, &b, bias) };
+            let diff = (scalar - neon).abs();
+            assert!(diff < 1e-3 || diff / scalar.abs().max(1.0) < 1e-5,
+                "dot_fmadd_neon divergence: scalar={} neon={} diff={}", scalar, neon, diff);
+        }
+    }
+
+    /// aarch64 counterpart to sparse_l1's `fuzz_dense_avx2_l1_32_matches_scalar`.
+    /// The x86 fuzz sweep only ever exercised x86 kernels — ARM got no
+    /// equivalent density/seed coverage. This drives the full NEON int8 L1
+    /// path (dense single + dense-x4 + find_nnz + sparse) across the same
+    /// density × seed × width grid so the NEON kernels are fuzzed to the same
+    /// rigour. Integer math → exact assert_eq.
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn fuzz_neon_l1_int8_matches_scalar() {
+        let mut cases = 0usize;
+        for &h in &[16usize, 32, 64, 128, 256, 384, 512] {
+            for density in [0u32, 10, 25, 50, 75, 89, 100] {
+                for seed in 0u64..30 {
+                    let mut r = rng(0xc0da_f0_0000_0000 ^ (h as u64) << 40 ^ (density as u64) << 16 ^ seed);
+                    // Production packed values stay in [0, 127] (the >>9 pairwise
+                    // shift bounds them); zero with probability (1 - density).
+                    let packed: Vec<u8> = (0..h)
+                        .map(|_| if (r() % 100) < density as u64 { (r() & 0x7F) as u8 } else { 0 })
+                        .collect();
+                    let mk = |r: &mut dyn FnMut() -> u64| -> Vec<i8> {
+                        (0..h).map(|_| ((r() & 0xFF) as i8).clamp(-127, 127)).collect()
+                    };
+                    let w0 = mk(&mut r); let w1 = mk(&mut r);
+                    let w2 = mk(&mut r); let w3 = mk(&mut r);
+
+                    // Dense single-neuron.
+                    for w in [&w0, &w1, &w2, &w3] {
+                        let want = l1_int8_dot_scalar_ref(&packed, w, h);
+                        let got = unsafe { neon_l1_int8_dot(&packed, w, h) };
+                        assert_eq!(want, got,
+                            "neon_l1_int8_dot fuzz mismatch h={} density={} seed={}", h, density, seed);
+                    }
+
+                    // Dense x4 (loads input once, 4 accumulators).
+                    let want4 = [
+                        l1_int8_dot_scalar_ref(&packed, &w0, h),
+                        l1_int8_dot_scalar_ref(&packed, &w1, h),
+                        l1_int8_dot_scalar_ref(&packed, &w2, h),
+                        l1_int8_dot_scalar_ref(&packed, &w3, h),
+                    ];
+                    let got4 = unsafe { neon_l1_int8_dot_x4(&packed, &w0, &w1, &w2, &w3, h) };
+                    assert_eq!(want4, got4,
+                        "neon_l1_int8_dot_x4 fuzz mismatch h={} density={} seed={}", h, density, seed);
+
+                    // Sparse path: find_nnz then sparse dot must equal dense.
+                    let mut nnz = vec![0u16; h / 16];
+                    let count = unsafe { neon_find_nnz_chunks(&packed, &mut nnz, h) };
+                    let got_sp = unsafe { neon_l1_int8_dot_sparse(&packed, &w0, &nnz, count) };
+                    assert_eq!(want4[0], got_sp,
+                        "neon_l1_int8_dot_sparse fuzz mismatch h={} density={} seed={}", h, density, seed);
+
+                    cases += 1;
+                }
+            }
+        }
+        eprintln!("fuzz_neon_l1_int8: {} cases passed", cases);
     }
 
     #[test]
