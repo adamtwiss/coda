@@ -127,11 +127,11 @@ grows superlinearly toward deployment depth (~50 on lichess hardware).
 | #1874 | RFP_DEPTH 18→8 via UCI @ LTC | **+3.5** | static cutting at d9-17 is net-negative at LTC — the FP-cost mechanism, measured |
 | #1782 | LMP_BASE/DEPTH 5/5 via UCI @ 180+2 | **+4.5** | aggressive movecount pruning pays at depth (consensus LMP_BASE=3) |
 | #1882 | NMP moved after RFP | -0.06 ±1.9 (neutral) | reorder is free; an enabler, not a win |
-| #1901 | NMP_VERIFY 74→120 | **+1** | per-cutoff verification cost was real |
-| #1903 | NMP threat gates → margins | **+2.13** | modulate-don't-gate (consensus style) wins |
+| #1901 | NMP_VERIFY 74→120 | final **H0 +0.2 ±1.1** (early +1 faded) | verification cost alone too small to bank standalone |
+| #1903 | NMP threat gates → margins | final **+2.6 ±1.9 H1**, merged | modulate-don't-gate (consensus style) wins |
 | #1904 | NMP consensus R-shape standalone (NMP-first order) | **-6.68 H0** | shallow NMP intercepted free RFP cutoffs — wrong without the reorder |
 | #1896/#1900 | v6-s5-swa 5000-iter tunes (STC/LTC) | in flight | both dialing RFP down + verify down |
-| (this) | `experiment/rfp-first-nmp-ungated`: reorder + MIN_DEPTH 75→25 + VERIFY 74→120 | SPRT in flight | the #1904 retry with the interception mechanism removed; bench 3,141,699 → 2,724,601 (-13%) |
+| #1906 | `experiment/rfp-first-nmp-ungated`: reorder + MIN_DEPTH 75→25 + VERIFY 74→120 | final **+1.5 ±1.2 H1 (87,936 games), merged** | the #1904 retry with the interception mechanism removed; bench 3,141,699 → 2,724,601 (-13%). Includes #1901's verify change, which H0'd standalone — the bundle is what banks |
 
 ## The unifying claim
 
@@ -143,6 +143,15 @@ SPSA cannot see. The cross-engine table is best read as a map of
 deployment-TC-optimal shapes, while our 10+0.1 SPSA explores
 STC-optimal shapes. This is a candidate explanation for part of the
 ~-50 Elo cross-engine gap at LTC vs STC.
+
+**AMENDED 2026-06-10 (hash discovery):** most of that −50 was TT
+starvation, not pruning shape. Adam's 43-engine LTC RR rerun at
+Hash=512 recovered ~40 of it (Coda +25, the pool's largest gainer);
+the shape claim above applies to the residual ~10, which matches the
+banked carve-outs (#1874 +3.5, #1782 +4.5). Mechanism and fill
+measurements in experiments.md 2026-06-09/10. Corollary: #1900's LTC
+outputs were tuned at Hash=64 (starved regime); #1915 (LTC@256,
+warm-started) is the deployment-valid LTC tune.
 
 ## Queued follow-ups
 

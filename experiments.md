@@ -14670,3 +14670,82 @@ these three are net-positive. Do not remove.
 Remaining audit queue (task #72): TT near-miss replacement (Coda-unique 80cp
 margin vs consensus margin-free fail-low relax), all-node negative-ext -1
 branch, NMP cluster (min-depth=6 vs consensus 1-4 — low node-share).
+
+## 2026-06-09/10 — v6-s5-swa + tune #1896 banked; STC/LTC twin tunes; TT-hash dependence discovered
+
+**v6-s5 (1600SB extended terminal, lower initial LR) works.** #1895 v6-s5-swa
+vs prod (E4B66CE4): +5.3 ±4.8 H1 at [-3,3]. The old ">1000 SB in a stage
+hurts" rule was recipe-shape-confounded (high initial LR, 2x final LR, no
+SWA); with the v6 recipe a 1600SB stage banks Elo.
+
+**Tune #1896 (v6-s5-swa, 5000 iters STC) banked.** #1908 tuned-vs-untuned
++3.1 ±2.2 H1; #1909 tuned-vs-prod +7.9 ±3.8 H1 (both [0,3], pre-merge main).
+Branch experiment/tune-1896-v6s5-swa-applied — NOTE: predates the #1903 +
+rfp-first merges; needs NMP-cluster reconciliation before promotion (see
+below).
+
+**#1896 (STC) vs #1900 (LTC@64, in flight ~80%) controlled pair** — same
+net, same start values, only TC differs. Shared moves (TC-independent):
+CORR_W_CONT +31%/+27% (v7 design hint), ProbCut min-depth retreat (3rd
+consecutive tune), DEXT_CAP up, RFP_MARGIN_IMP down. Opposite directions:
+FUT_BASE -36% STC vs +25% LTC (headline), NMP_EVAL_DIV, RFP_MARGIN_NOIMP
+(STC -23%, LTC flat), BAD_NOISY_MARGIN, DEXT_MARGIN_PV. LTC-only: LMP_BASE
+8->6.7 + LMP_DEPTH 6->7.2 (SPSA independently rediscovering #1782's LMP 5/5
+direction), NMP_DEPTH_DIV -22% with BASE_R pinned at its 80 rail (censored
+— widen range next round). Loose knobs CONFIRMED (opposite extremes, no
+gradient): FUT_THREATS_MARGIN (+57%/-33%), HINDSIGHT_MIN_DEPTH_10X. Also
+NMP_VERIFY sits below NMP_MIN_DEPTH in BOTH tunes' outputs -> knob inert
+(100% of cutoffs verified regardless); only the merged structural de-gate
+changes that.
+
+**TT-hash dependence (Adam's LTC RR, 43 engines, 40+0.4).** Hash=64: Coda
+rank 21, +66 ±32. Hash=512: rank 16, +91 ±22. Coda +25 = largest gainer in
+the pool; Reckless +21 second. Both are slow-NPS big-threat-net engines —
+the fast small-net engines (most nodes!) gained nothing, so hash demand is
+NOT volumetric. Mechanism: per-entry replacement cost — a lost TT entry
+costs a big-net engine an expensive eval+accumulator redo, so entries are
+worth more. Implications: (1) most of the "-50 Elo at LTC" cross-engine gap
+was TT starvation, residual ~10 ≈ the banked LTC carve-outs (#1874 +3.5,
+#1782 +4.5); (2) hash sensitivity GROWS as eval gets richer (FT1024 -> L1=32
+-> v7); (3) TT-efficiency work (aging-graded replacement, store discipline)
+is leveraged for us specifically and pays where we're RATED (OB LTC,
+CCRL fixed-hash frames). Lichess bot runs 1GB = healthy; deployment
+unaffected.
+
+**Hard fill data** (40s single-thread search, midgame, this host): Hash=64
+reaches 399 permille at 26s (~15/s); Hash=512 51 permille (clean 8x ratio).
+A 40+0.4 game accumulates ~60-70s search/side with TT persisting across
+moves -> 64MB functionally saturates within one LTC game; 256MB ends ~250
+permille (healthy). OB LTC at Hash=64 is a starved-regime measurement frame.
+
+**#1910/#1911 post-mortems** (both stopped same-day): #1910 wrong bench —
+origin/main moved under me (#1903 threat-margins + #1906 rfp-first merged);
+worker 420's "Wrong Bench 2591218" was the CORRECT bench for the pinned
+commit. Lesson re-learned: fetch immediately before bench+submit. Also the
+warm-start spec would have re-imposed pre-merge NMP values, silently undoing
+the de-gate — tune specs must be reconciled against structural merges, not
+just rebenched. #1911 (Hash=512 resubmit): worker 391 (8GB RAM, 6 cores, no
+swap) OOM'd — 6 concurrent SPSA games x 2x512MB = 6GB of TT alone. 25
+simultaneous Disconnects = whole-worker OOM signature.
+
+**#1915 (running): LTC@256 warm-started tune.** 2500 iters, 40+0.4,
+Threads=1 Hash=256, net 549C20A5, bench 2,591,218 (post-merge main). Spec
+scripts/tune_ltc512_warmstart.txt: 41 params warm-started from #1900's 71%
+digest; 8-param NMP cluster at post-merge structural defaults (doubles as
+the de-gate's round-1 calibration, at LTC); NULL_THREAT_ESCAPE_BONUS (#1903,
+non-core) added; FUT_THREATS_MARGIN + HINDSIGHT_MIN_DEPTH dropped as proven
+loose. 256MB (not 512) so 8GB workers stay usable — fill data says 256 is
+comfortably unstarved at this TC. Goal: three-way diff #1896/#1900/#1915
+separates depth effects from starvation artifacts; #1915 endpoint = the
+deployment-valid LTC value set.
+
+**#1916 (running): multi-v6-s2a vs multi-v6-s2** [0,3] STC. Adam's pipeline
+variant: stage 2 on the 'easier' leela+older-SF pool (the +20 S200 data
+finding) — easy-data-first curriculum hypothesis, +10-20 expected. Ordering
+stats lean s2a (first-move 84.3 vs 83.2, pos 1.48 vs 1.56, pos^2 8.9 vs
+10.9; EBF 1.74 vs 1.72 mixed); RMS 301 vs 323.
+
+**Also:** #1907 v6-s4-swa-v2 (same-recipe retrain) vs prod: -14.1 — large
+same-recipe variance at full stage scale, BUT confounded by the sfbinpack
+determinism fix changing data order; Adam re-checking recipe identity before
+we log it as a variance datapoint.
