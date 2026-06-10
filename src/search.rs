@@ -100,7 +100,12 @@ tunables!(
     (NMP_DEPTH_DIV_10X, 78, 10, 200, 15.0, true),
     (NMP_EVAL_DIV, 117, 50, 400, 17.5, true),
     (NMP_EVAL_MAX_10X, 34, 10, 60, 5.0, true),
-    (NMP_VERIFY_DEPTH_10X, 74, 40, 200, 20.0, true),
+    // Lifted 74 → 120 (eff 8 → 12, toward consensus 14-16): at 74 the verify
+    // gate sat below the old min-depth gate, so 100% of NMP cutoffs paid a
+    // verification re-search — NMP never had a cheap cutoff. #1901 measured
+    // verify=120 alone at +1 Elo. With min-depth de-gated to 3, depths 3-11
+    // now get the classic unverified cutoff; 12+ verify (zugzwang guard).
+    (NMP_VERIFY_DEPTH_10X, 120, 40, 200, 20.0, true),
     (RFP_DEPTH, 17, 2, 20, 2.0, true),
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
     (RFP_MARGIN_IMP, 38, 0, 150, 6.0, true),
@@ -340,7 +345,11 @@ tunables!(
     // Second pass — additional gates exposed for the feature-utility
     // audit tune. Widened ranges allow SPSA to reach disable-endpoint
     // values where appropriate (per feedback_spsa_as_feature_utility_diagnostic).
-    (NMP_MIN_DEPTH_10X, 75, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
+    // De-gated 75 → 25 (eff 8 → 3) with the RFP-before-NMP reorder: with RFP
+    // running first, shallow NMP only sees nodes static pruning couldn't cut,
+    // removing the free-cutoff interception that killed #1904. SPSA had pushed
+    // this to 8 as compensation for NMP-first ordering + per-cutoff verify cost.
+    (NMP_MIN_DEPTH_10X, 25, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
     // Floor lifted from 10 → 0 (audit 2026-05-20): pinned at 25, 8% from floor.
     (HINDSIGHT_MIN_DEPTH_10X, 3, 0, 200, 15.0, true),        // was hardcoded 2 (hindsight reduction gate)
 );
@@ -431,6 +440,9 @@ pub static FEAT_QS_CAPTURES: AtomicBool = AtomicBool::new(true); // false = QS r
 pub static FEAT_SINGULAR: AtomicBool = AtomicBool::new(true); // singular extensions specifically
 pub static FEAT_CUCKOO: AtomicBool = AtomicBool::new(true);
 pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 4D history indexing
+// Diagnostic-only (env RFP_AUDIT=1): null-verify every RFP cutoff and count
+// false positives per depth. NOT a play feature — costs NPS; bench/EPD use.
+pub static RFP_AUDIT: AtomicBool = AtomicBool::new(false);
 
 /// Disable all features (pure negamax + eval)
 pub fn disable_all_features() {
@@ -548,6 +560,14 @@ pub struct PruneStats {
     // Move ordering quality: sum of move_count² at beta cutoff (lower = better ordering)
     pub cutoff_movecount_sq_sum: u64,
     pub cutoff_movecount_sum: u64,
+    // RFP false-positive audit (diagnostic, env RFP_AUDIT=1). At each RFP
+    // cutoff, additionally run an NMP-style null-move verification (same R
+    // formula as real NMP) and count cutoffs the null search REJECTS
+    // (null_score < beta), bucketed by remaining depth. Answers "is RFP's
+    // expanded habitat cutting nodes a dynamic threat check would refuse?"
+    // Behavior-preserving: the RFP cutoff is returned regardless.
+    pub rfp_audit_attempts: [u64; 24],
+    pub rfp_audit_fp: [u64; 24],
 }
 
 /// Forced-move detection state (Viridithas pattern, set by `detect_forced_move`).
@@ -577,6 +597,10 @@ pub struct SearchInfo {
     // cached static_eval and did NOT call NNUE. The NNUE counters live on
     // `nnue_acc` (full rebuilds vs incremental updates vs computed skips).
     pub stats_tt_static_eval_hits: u64,
+    /// True while inside an RFP_AUDIT verification subtree — suppresses
+    /// nested audits (each audited cutoff would otherwise spawn audits at
+    /// every RFP cutoff inside its own verification, compounding cost).
+    pub rfp_audit_active: bool,
     pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
     pub history: Box<History>,
     pub stop: std::sync::Arc<AtomicBool>,  // shared stop flag
@@ -771,6 +795,7 @@ impl SearchInfo {
             nnue_acc: None,
             threat_stack: crate::threat_accum::ThreatStack::new(768), // max v9 accum size
             syzygy: None,
+            rfp_audit_active: false,
         }
     }
 
@@ -1346,6 +1371,11 @@ fn init_feature_flags() {
             if std::env::var("NO_SINGULAR").is_ok() { FEAT_SINGULAR.store(false, Ordering::Relaxed); }
             if std::env::var("NO_CUCKOO").is_ok() { FEAT_CUCKOO.store(false, Ordering::Relaxed); }
             if std::env::var("NO_4D_HISTORY").is_ok() { FEAT_4D_HISTORY.store(false, Ordering::Relaxed); }
+        }
+        // Diagnostic audit modes (orthogonal to DISABLE_ALL/NO_XXX).
+        if std::env::var("RFP_AUDIT").is_ok() {
+            RFP_AUDIT.store(true, Ordering::Relaxed);
+            eprintln!("RFP_AUDIT enabled: null-verifying every RFP cutoff (diagnostic, slow)");
         }
     });
 }
@@ -3205,6 +3235,73 @@ fn negamax(
         }
     };
 
+    // RFP moved BEFORE NMP (consensus order: SF/Reckless/Obsidian/Berserk all
+    // run the free static prune first; the null search only sees nodes static
+    // pruning couldn't cut). Reorder alone tested neutral (#1882, -0.06 ±1.9),
+    // but it removes the mechanism that killed shallow NMP in #1904 (NMP-first
+    // intercepted free RFP cutoffs), enabling the min-depth de-gate below.
+    if !in_check {
+        // Reverse Futility Pruning (Static Null Move Pruning) — pre-NMP site.
+        // RFP TT quiet guard: skip RFP when TT has a quiet best move (Tucano/Weiss).
+        // If we know a good quiet move exists, don't prune based on static eval alone.
+        let tt_move_is_quiet = tt_move != NO_MOVE
+            && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
+            && move_flags(tt_move) != FLAG_EN_PASSANT
+            && !is_promotion(tt_move);
+        if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
+            let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
+            if has_pawn_threats { margin += margin / 3; }
+            // E2: widen margin when position is unstable (parent-child eval gap
+            // > UNSTABLE_THRESH). Static eval can't be trusted for RFP when
+            // eval is volatile. Mirrors unstable × ProbCut skip (#542 +6.7).
+            if unstable { margin += margin / 3; }
+            if static_eval - margin >= beta {
+                info.stats.rfp_cutoffs += 1;
+                // RFP_AUDIT (diagnostic): null-verify this static cutoff with
+                // the SAME R formula real NMP uses (sans post-capture +1), and
+                // count rejections per depth. The cutoff is returned regardless
+                // — behavior-preserving, measurement-only. Nested audits are
+                // suppressed via rfp_audit_active (each verification subtree
+                // contains its own RFP cutoffs). Skipped when a null move is
+                // unsound/meaningless (pawn-only, consecutive null, mate beta).
+                if RFP_AUDIT.load(Ordering::Relaxed)
+                    && !info.rfp_audit_active
+                    && stm_non_pawn != 0
+                    && !prev_was_null
+                    && beta.abs() < MATE_SCORE - 100
+                    && !info.stop.load(Ordering::Relaxed)
+                {
+                    let d_idx = depth.clamp(0, 23) as usize;
+                    info.stats.rfp_audit_attempts[d_idx] += 1;
+                    let mut r = tp10(&NMP_BASE_R_10X) + depth / tp10(&NMP_DEPTH_DIV_10X);
+                    if static_eval > beta {
+                        let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp10(&NMP_EVAL_MAX_10X));
+                        r += eval_r;
+                    }
+                    if depth - r < 1 { r = depth - 1; }
+                    info.rfp_audit_active = true;
+                    board.make_null_move();
+                    if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::incremental(&[])); }
+                    if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
+                    if ply_u <= MAX_PLY {
+                        info.moved_piece_stack[ply_u] = 0;
+                        info.moved_to_stack[ply_u] = 0;
+                    }
+                    let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
+                    if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                    if info.threat_stack.active { info.threat_stack.pop(); }
+                    board.unmake_null_move();
+                    info.rfp_audit_active = false;
+                    if null_score < beta && !info.stop.load(Ordering::Relaxed) {
+                        info.stats.rfp_audit_fp[d_idx] += 1;
+                    }
+                }
+                return static_eval - margin;
+            }
+        }
+    }
+
     if depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta
         && !prev_was_null  // Prevent consecutive null moves
@@ -3293,29 +3390,7 @@ fn negamax(
         }
     }
 
-    if !in_check {
-        // Reverse Futility Pruning (Static Null Move Pruning)
-        // RFP TT quiet guard: skip RFP when TT has a quiet best move (Tucano/Weiss).
-        // If we know a good quiet move exists, don't prune based on static eval alone.
-        let tt_move_is_quiet = tt_move != NO_MOVE
-            && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
-            && move_flags(tt_move) != FLAG_EN_PASSANT
-            && !is_promotion(tt_move);
-        if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
-            let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
-            // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
-            if has_pawn_threats { margin += margin / 3; }
-            // E2: widen margin when position is unstable (parent-child eval gap
-            // > UNSTABLE_THRESH). Static eval can't be trusted for RFP when
-            // eval is volatile. Mirrors unstable × ProbCut skip (#542 +6.7).
-            if unstable { margin += margin / 3; }
-            if static_eval - margin >= beta {
-                info.stats.rfp_cutoffs += 1;
-                return static_eval - margin;
-            }
-        }
-
-    }
+    // (RFP moved above NMP — see pre-NMP site.)
 
     // ProbCut: at moderate+ depths, if a shallow search of captures with
     // raised beta confirms the position is winning, prune the node.
@@ -4963,6 +5038,10 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         total_stats.first_move_cutoffs += info.stats.first_move_cutoffs;
         total_stats.cutoff_movecount_sum += info.stats.cutoff_movecount_sum;
         total_stats.cutoff_movecount_sq_sum += info.stats.cutoff_movecount_sq_sum;
+        for d in 0..24 {
+            total_stats.rfp_audit_attempts[d] += info.stats.rfp_audit_attempts[d];
+            total_stats.rfp_audit_fp[d] += info.stats.rfp_audit_fp[d];
+        }
 
         // Accumulate EBF data across all positions
         let max_d = info.completed_depth as usize;
@@ -5043,6 +5122,22 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     eprintln!("First-move cut: {:>5.1}%", if s.beta_cutoffs > 0 { s.first_move_cutoffs as f64 / s.beta_cutoffs as f64 * 100.0 } else { 0.0 });
 
     eprintln!("Total nodes:    {:>8}", total_nodes);
+
+    // RFP false-positive audit table (only when RFP_AUDIT=1 produced data).
+    let audit_total: u64 = s.rfp_audit_attempts.iter().sum();
+    if audit_total > 0 {
+        let fp_total: u64 = s.rfp_audit_fp.iter().sum();
+        eprintln!("--- RFP False-Positive Audit (null-verified, NMP R formula) ---");
+        eprintln!("depth | audited  | rejected | FP rate");
+        for d in 0..24 {
+            let a = s.rfp_audit_attempts[d];
+            if a == 0 { continue; }
+            let f = s.rfp_audit_fp[d];
+            eprintln!("{:>5} | {:>8} | {:>8} | {:>6.2}%", d, a, f, f as f64 * 100.0 / a as f64);
+        }
+        eprintln!("TOTAL | {:>8} | {:>8} | {:>6.2}%", audit_total, fp_total,
+            fp_total as f64 * 100.0 / audit_total as f64);
+    }
 
     // Eval-path decomposition — supports the "evals/node" investigation
     // (see docs/coda_vs_reckless_nps_2026-04-23.md). Reports how search
