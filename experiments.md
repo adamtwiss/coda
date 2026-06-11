@@ -14973,3 +14973,50 @@ Main bench: 2,644,458. Sum of parts ~+16 (mixed frames); stacked
 validation SPRT submitted: main vs baseline/pre-stack (c746ac8) at
 40+0.4 Hash=256 [0,3]. Lichess deploy of the new binary is worthwhile
 after validation (carries the LTC value set the bot was waiting for).
+
+## 2026-06-13 — search.rs audit wave 1 (atlas): razoring +3.7 and QS-no-EXACT +1.0 merged on top of the stack; 2 H0s; corrhist-persist pending
+
+Five disjoint branches from docs/search_audit_2026-06-11.md, all SPRT'd
+vs pre-stack main (base bench 3,149,744):
+
+- **#1936 atlas/razoring H1 +3.7 ±2.4** (21,434 games, [0,3]) — MERGED
+  on the post-queue trunk (bench 2,757,367; tune-1915 RFP margins kept
+  in the conflict). Re-added qsearch-verified non-PV razoring (T2.6):
+  RAZOR_MULT=275, RAZOR_DEPTH=4, |alpha|<2000, before RFP. Removed
+  2026-04-01 on pre-v9-eval ablations; 10/10 stronger engines have it.
+  Textbook "consensus H0 on stale evidence." Follow-up: the two new
+  tunables join the next full-sweep SPSA; a focused razor pair tune may
+  squeeze more.
+- **#1932 atlas/qs-no-exact H1 +1.0 ±2.0** (31,372 games, [-3,3]) —
+  MERGED (main bench now 2,428,489). QS TT stores collapse EXACT into
+  UPPER at both store sites (T1.5). Unblocks the #1927 TT same-key gate
+  bisect (Hercules).
+- **#1931 atlas/ttcut-bonus-lower-only H0 -1.6 ±2.3** (25,842 games,
+  [0,3]). Gating the TT bound-narrowing cutoff history bonus to
+  fail-high (LOWER) collapses only — the "fix" REGRESSED. Reading: the
+  UPPER-direction bonus, though theoretically wrong-direction (rewards
+  the best move of a failed node), evidently carries useful ordering
+  signal — the tt_move of an UPPER entry is still the least-bad move,
+  and bonusing it on a fail-low cutoff approximates the consensus
+  "fail-low prior-countermove" family from the parent's perspective.
+  Do NOT re-propose as a plain gate; if revisited, pair removal with an
+  explicit PCM fail-low bonus (T2.13) so the signal is replaced, not
+  deleted.
+- **#1935 atlas/aspiration-pair H0 -0.9 ±1.9** (37,768 games, [0,3]).
+  Fail-high count reset/cap (T2.7) + avg-score window centring (T2.8)
+  bundled. Either half may be masking the other (reset/cap weakens the
+  Alexandria-pattern depth reduction that was individually SPRT'd in;
+  centring on avg lags re-centring after genuine eval swings). If
+  revisited, test halves separately; low priority.
+- **#1930 atlas/corrhist-persist** still running (+0.5 ±1.8 at 38k, LLR
+  -0.59). Let it lock; if H0, the T2.4 corrhist overhaul bundle should
+  still test persistence WITHIN the bundle (clamp removal interacts).
+
+NOTE: both wins were SPRT'd against the pre-stack trunk and merged onto
+the post-stack trunk — interactions with the queue (esp. lmp-skip and
+qs-legality, both tree-shaping) are assumed additive; the running
+stacked-validation LTC SPRT plus the next periodic SF H2H will catch
+any surprise. Audit wave-1 net: ~+4.7 nominal from 5 probes. Wave 2:
+LMR re-search bundle (T1.2+T1.3), multicut is_decisive (T1.4+T2.3),
+threat-hoist+QS-double-probe perf branch, corrhist overhaul (T2.4), QS
+in-check (T2.10), BNFP victim (T2.11), SE !in_check (T2.12).
