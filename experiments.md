@@ -14840,3 +14840,20 @@ at 79% vs itself, [-3,3]) in flight isolates pure scale-deviation with
 zero net difference. Step-2 normalization (header-baked) is ON HOLD
 pending #1934; if down-scaling also hurts, normalization must happen in
 training (scale-anneal stage), not at inference.
+
+## 2026-06-12 — #1933 H0 -18.1: easy-data-first curriculum fails downstream (s3a vs s3)
+
+multi-v6-s3a-swa (stage 3 on normal data, built on the easy-data s2a)
+vs multi-v6-s3-swa (standard lineage): H0 -18.1 ±6.2 (3,482 games,
+[0,3]). The curriculum hypothesis is refuted AND the stage-heritability
+question gets a dramatic answer: s2a measured EQUAL to s2 in strength
+(#1916, +0.7 ±1.0 at 126k), yet its lineage is ~18 worse one stage
+later. Parent strength does not measure parent quality — the easy-data
+parent put the model in a worse basin that stage 3's settle could not
+escape. Implications: (1) endpoint SPRTs on intermediate stages are
+weak selectors for multistage lineages (relevant to the best-of-3
+selection idea — picking by stage-k strength may pick wrong); (2) data
+composition in early stages matters MORE than stage-k strength shows;
+(3) s3a's eval RMS also drifted high (386 vs 329) — scale confound
+present but cannot explain -18 (per #1929/#1934, scale deltas of this
+size move single digits at most).
