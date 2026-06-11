@@ -810,6 +810,30 @@ impl MovePicker {
         self.index = 0;
     }
 
+    /// Abandon the remaining quiets and move straight to bad captures.
+    ///
+    /// Called by search when LMP fires: every remaining quiet would be
+    /// discarded by the caller anyway, so keeping them in the selection
+    /// pool costs O(n²) pick_best scans per node. Replicates exactly the
+    /// Quiets-exhausted handoff in next_slow (stage = BadCaptures +
+    /// restore_bad_captures). The old `picker.skip_quiet = true` at the
+    /// LMP site was dead: that flag is only consulted at the
+    /// GoodCaptures → GenerateQuiets transition, which has already
+    /// happened by the time LMP fires on a quiet move.
+    ///
+    /// Behavior note: post-LMP quiets no longer reach search at all, so
+    /// they no longer inflate move_count for the bad captures that
+    /// follow (previously each discarded quiet bumped move_count before
+    /// the skip check, deepening LMR on late bad captures).
+    ///
+    /// No-op outside the Quiets stage (guard for edge orderings).
+    pub fn skip_remaining_quiets(&mut self) {
+        if self.stage == Stage::Quiets {
+            self.stage = Stage::BadCaptures;
+            self.restore_bad_captures();
+        }
+    }
+
     /// Selection sort: find best from current index, swap to front, return it.
     /// Selection sort: find best scored move and swap to front.
     fn pick_best(&mut self) -> Move {
