@@ -14958,3 +14958,18 @@ parent-hash read. Move-ordering audit total: +4.0 (#1923) +3.5 (#1924)
 +1.6 (#1921) + malus null = ~+9 banked. Merge queued behind the 1915
 value set. (Atlas's #1932 qs-no-exact also H1 +1.0 same tick — unblocks
 the #1927 TT-gate bisect.)
+
+## 2026-06-13 — MERGE QUEUE EXECUTED: four H1 branches stacked onto main
+
+Merged in order (verify-between, all 169 tests + perft each step):
+1. tune-1915 LTC@256 value set (+7.2 LTC / -2.1 STC accepted trade);
+   conflict resolved by re-pinning malus tunables to the new bonus
+   values — bench reproduced the branch's tested 2,649,824 bit-exact.
+2. fix/qs-legality-bundle (+1.6) — bench 2,349,098 stacked.
+3. fix/lmp-skip-quiets (+3.5) — bench 2,644,458.
+4. perf/movepicker-hotpath (+4.0) — auto-merged with the LMP picker
+   changes; verified bench-identical (2,644,458).
+Main bench: 2,644,458. Sum of parts ~+16 (mixed frames); stacked
+validation SPRT submitted: main vs baseline/pre-stack (c746ac8) at
+40+0.4 Hash=256 [0,3]. Lichess deploy of the new binary is worthwhile
+after validation (carries the LTC value set the bot was waiting for).
