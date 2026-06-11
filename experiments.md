@@ -14857,3 +14857,13 @@ composition in early stages matters MORE than stage-k strength shows;
 (3) s3a's eval RMS also drifted high (386 vs 329) — scale confound
 present but cannot explain -18 (per #1929/#1934, scale deltas of this
 size move single digits at most).
+
+## 2026-06-12 — #1924 H1 +3.5: LMP skip-quiets fix (dead flag -> real picker skip)
+
+fix/lmp-skip-quiets H1 +3.5 ±2.4 (23,150 games, [0,3]). The LMP
+skip_quiet flag was dead (only consulted at a stage transition that had
+already happened); the fix makes the picker jump straight to bad
+captures — kills the O(n^2) post-LMP selection scans AND stops
+discarded quiets inflating move_count for late bad captures (bench
+3,149,744 -> 2,513,179). Second banked win from the move-ordering
+audit (after #1923 perf +4.0). Merge queued behind the 1915 value set.
