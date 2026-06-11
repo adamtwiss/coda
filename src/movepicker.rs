@@ -200,13 +200,23 @@ pub struct MovePicker {
     // cont_hist_subs[0] = ply-1 (3x weight), [1] = ply-2 (3x), [2] = ply-4 (1x), [3] = ply-6 (1x)
     cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4],
     pawn_hist_ptr: Option<*const [[i16; 64]; 13]>,
-    // Main moves list and scores
+    // Main moves list and scores.
     moves: MoveList,
-    scores: [i32; 256],
+    /// Scores parallel to `moves`. `[MaybeUninit<i32>; 256]` rather than
+    /// `[i32; 256]` to skip the 1KB zero-init per picker construction —
+    /// same memset-skip pattern as `MoveList` (movegen.rs). Invariant:
+    /// every `moves.push(m)` in the generate/restore paths is paired with
+    /// a `scores[idx].write(..)` for the same index, so slots
+    /// `[0..moves.len)` are always initialized before `pick_best` reads
+    /// them, and reads never go beyond `moves.len`.
+    scores: [std::mem::MaybeUninit<i32>; 256],
     index: usize,
-    // Bad captures saved from partition
-    bad_moves: [Move; 256],
-    bad_scores: [i32; 256],
+    /// Bad captures saved from the good/bad partition. Same
+    /// writes-before-reads invariant: `generate_and_score_captures`
+    /// writes slot `bad_len` of both arrays before incrementing
+    /// `bad_len`, and `restore_bad_captures` only reads `[0..bad_len)`.
+    bad_moves: [std::mem::MaybeUninit<Move>; 256],
+    bad_scores: [std::mem::MaybeUninit<i32>; 256],
     bad_len: usize,
     pub skip_quiet: bool,
     threats: Threats, // enemy attack bitboard for threat-aware history
@@ -226,10 +236,15 @@ pub struct MovePicker {
 impl MovePicker {
     /// Create a new MovePicker for main search (non-evasion).
     /// Initialize for main search.
+    ///
+    /// `checkers`/`pinned` are passed in (search already computes both per
+    /// node) instead of recomputed here — consistent with `new_evasion`.
     pub fn new(
-        board: &Board,
+        _board: &Board,
         tt_move: Move,
         ply: usize,
+        checkers: Bitboard,
+        pinned: Bitboard,
         history: &History,
         _prev_move: Move,
         pawn_hist: Option<&[[i16; 64]; 13]>,
@@ -256,27 +271,6 @@ impl MovePicker {
 
         let pawn_hist_ptr = pawn_hist.map(|ph| ph as *const [[i16; 64]; 13]);
 
-        // Checking squares: from which squares does each piece type give direct check?
-        let opponent = if board.side_to_move == 0 { 1u8 } else { 0u8 };
-        let their_king_bb = board.pieces[KING as usize] & board.colors[opponent as usize];
-        let their_king_sq = if their_king_bb != 0 { their_king_bb.trailing_zeros() } else { 64 };
-        let occ = board.occupied();
-        let checking_sqs = if their_king_sq < 64 {
-            [
-                pawn_attacks(opponent, their_king_sq),   // PAWN
-                knight_attacks(their_king_sq),            // KNIGHT
-                bishop_attacks(their_king_sq, occ),       // BISHOP
-                rook_attacks(their_king_sq, occ),         // ROOK
-                bishop_attacks(their_king_sq, occ) | rook_attacks(their_king_sq, occ), // QUEEN
-                0, // KING (can't give direct check)
-            ]
-        } else {
-            [0; 6]
-        };
-
-        // Compute pinned for the TT move validation path.
-        let pinned = board.pinned();
-
         MovePicker {
             stage: Stage::TTMove,
             tt_move,
@@ -284,18 +278,26 @@ impl MovePicker {
             cont_hist_subs,
             pawn_hist_ptr,
             moves: MoveList::new(),
-            scores: [0; 256],
+            // SAFETY: `[MaybeUninit<_>; N]::uninit().assume_init()` is sound —
+            // each slot is itself a `MaybeUninit`, which has no validity
+            // invariants. Reads are gated by the writes-before-reads
+            // invariants documented on the field declarations.
+            scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             index: 0,
-            bad_moves: [NO_MOVE; 256],
-            bad_scores: [0; 256],
+            bad_moves: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
+            bad_scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_len: 0,
             skip_quiet: false,
             threats,
             xray_blockers,
-            checkers: 0,
+            checkers,
             pinned,
             threat_sq: -1,
-            checking_sqs,
+            // Deferred: computed once at the start of
+            // generate_and_score_quiets — only quiet scoring consumes it,
+            // so nodes that cut off before the quiet stage never pay the
+            // 4 attack computations.
+            checking_sqs: [0; 6],
         }
     }
 
@@ -313,10 +315,12 @@ impl MovePicker {
             cont_hist_subs: [None; 4],
             pawn_hist_ptr: None,
             moves: MoveList::new(),
-            scores: [0; 256],
+            // SAFETY: see MovePicker::new — uninit MaybeUninit arrays are
+            // sound; reads gated by writes-before-reads field invariants.
+            scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             index: 0,
-            bad_moves: [NO_MOVE; 256],
-            bad_scores: [0; 256],
+            bad_moves: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
+            bad_scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_len: 0,
             skip_quiet: true,
             threats: 0,
@@ -372,10 +376,12 @@ impl MovePicker {
             cont_hist_subs,
             pawn_hist_ptr,
             moves: MoveList::new(),
-            scores: [0; 256],
+            // SAFETY: see MovePicker::new — uninit MaybeUninit arrays are
+            // sound; reads gated by writes-before-reads field invariants.
+            scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             index: 0,
-            bad_moves: [NO_MOVE; 256],
-            bad_scores: [0; 256],
+            bad_moves: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
+            bad_scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_len: 0,
             skip_quiet: false,
             // C8 audit LIKELY #19: evasion history READS must use the same
@@ -527,15 +533,17 @@ impl MovePicker {
                 // could silently drop moves in pathological tactical
                 // positions (multiple queens + rooks with many captures).
                 if self.bad_len < 256 {
-                    self.bad_moves[self.bad_len] = m;
-                    self.bad_scores[self.bad_len] = cap_score;
+                    // Write slot bad_len before incrementing — upholds the
+                    // [0..bad_len) initialized invariant.
+                    self.bad_moves[self.bad_len].write(m);
+                    self.bad_scores[self.bad_len].write(cap_score);
                     self.bad_len += 1;
                 }
             } else {
                 // Good capture
                 let idx = self.moves.len;
                 self.moves.push(m);
-                self.scores[idx] = cap_score;
+                self.scores[idx].write(cap_score);
             }
         }
         self.index = 0;
@@ -543,10 +551,62 @@ impl MovePicker {
 
     /// Generate and score quiets. TT move is filtered out.
     fn generate_and_score_quiets(&mut self, board: &Board) {
+        // Checking squares: from which squares does each piece type give
+        // direct check? Computed here (not in MovePicker::new) because only
+        // quiet scoring consumes it — nodes that cut off before the quiet
+        // stage never pay for the attack computations.
+        {
+            let opponent = if board.side_to_move == 0 { 1u8 } else { 0u8 };
+            let their_king_bb = board.pieces[KING as usize] & board.colors[opponent as usize];
+            self.checking_sqs = if their_king_bb != 0 {
+                let their_king_sq = their_king_bb.trailing_zeros();
+                let occ = board.occupied();
+                let bishop = bishop_attacks(their_king_sq, occ);
+                let rook = rook_attacks(their_king_sq, occ);
+                [
+                    pawn_attacks(opponent, their_king_sq), // PAWN
+                    knight_attacks(their_king_sq),         // KNIGHT
+                    bishop,                                // BISHOP
+                    rook,                                  // ROOK
+                    bishop | rook,                         // QUEEN
+                    0, // KING (can't give direct check)
+                ]
+            } else {
+                [0; 6]
+            };
+        }
+
         let quiets = generate_quiets(board);
         self.moves = MoveList::new();
 
         let history = unsafe { &*self.history };
+
+        // Per-node invariants hoisted out of the scoring loop: atomic
+        // tunable loads and board-derived bitboards. Pure loads with no
+        // side effects — the per-move scoring arithmetic is unchanged.
+        use std::sync::atomic::Ordering;
+        let cm = crate::search::tp10(&crate::search::CONT_HIST_MULT_10X);
+        let cont_weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
+        let pw = crate::search::tp10(&crate::search::PAWN_HIST_MULT_10X);
+        let null_threat_escape_bonus = crate::search::NULL_THREAT_ESCAPE_BONUS.load(Ordering::Relaxed);
+        let escape_bonus_q = crate::search::ESCAPE_BONUS_Q.load(Ordering::Relaxed);
+        let escape_bonus_r = crate::search::ESCAPE_BONUS_R.load(Ordering::Relaxed);
+        let escape_bonus_minor = crate::search::ESCAPE_BONUS_MINOR.load(Ordering::Relaxed);
+        let quiet_check_bonus = crate::search::QUIET_CHECK_BONUS.load(Ordering::Relaxed);
+        let discovered_attack_bonus = crate::search::DISCOVERED_ATTACK_BONUS.load(Ordering::Relaxed);
+        let mobility_delta_weight = crate::search::MOBILITY_DELTA_WEIGHT.load(Ordering::Relaxed);
+        let kf_bonus = crate::search::KNIGHT_FORK_BONUS.load(Ordering::Relaxed);
+        let us = board.side_to_move;
+        let them = 1 - us;
+        let occ = board.colors[us as usize] | board.colors[them as usize];
+        let enemy_non_pawns = board.colors[them as usize]
+            & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+        let their_pawns = board.pieces[PAWN as usize] & board.colors[them as usize];
+        let enemy_pawn_attacks = if them == WHITE {
+            ((their_pawns & !FILE_A) << 7) | ((their_pawns & !FILE_H) << 9)
+        } else {
+            ((their_pawns & !FILE_A) >> 9) | ((their_pawns & !FILE_H) >> 7)
+        };
 
         for i in 0..quiets.len {
             let m = quiets.get(i);
@@ -557,6 +617,9 @@ impl MovePicker {
             let from = move_from(m);
             let to = move_to(m);
             let piece = board.piece_at(from);
+            // Hoisted: piece_type_at(from) was previously recomputed in up
+            // to 4 score-term blocks below.
+            let pt = board.piece_type_at(from);
 
             let mut score = history.main_score(from, to, self.threats);
 
@@ -564,9 +627,7 @@ impl MovePicker {
             // Matches Obsidian/Alexandria/Berserk pattern (default 3).
             if piece != NO_PIECE {
                 let gp = go_piece(piece);
-                let cm = crate::search::tp10(&crate::search::CONT_HIST_MULT_10X);
-                let weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
-                for (i, &w) in weights.iter().enumerate() {
+                for (i, &w) in cont_weights.iter().enumerate() {
                     if let Some(sub_ptr) = self.cont_hist_subs[i] {
                         let sub = unsafe { &*sub_ptr };
                         score += w * sub[gp][to as usize] as i32;
@@ -578,36 +639,30 @@ impl MovePicker {
             if let Some(ph_ptr) = self.pawn_hist_ptr {
                 if piece != NO_PIECE {
                     let ph = unsafe { &*ph_ptr };
-                    let pw = crate::search::tp10(&crate::search::PAWN_HIST_MULT_10X);
                     score += pw * ph[go_piece(piece)][to as usize] as i32;
                 }
             }
 
             // Null-move threat: bonus for escaping the threatened square
             if self.threat_sq >= 0 && from as i32 == self.threat_sq {
-                score += crate::search::NULL_THREAT_ESCAPE_BONUS
-                    .load(std::sync::atomic::Ordering::Relaxed);
+                score += null_threat_escape_bonus;
             }
 
             // Escape-capture bonus: bonus for moving a piece off a threatened
             // square (Reckless pattern). All four (Q/R/B/N) now tunable.
             if self.threats & (1u64 << from) != 0 && piece != NO_PIECE {
-                use std::sync::atomic::Ordering;
-                let pt = board.piece_type_at(from);
                 score += match pt {
-                    4 => crate::search::ESCAPE_BONUS_Q.load(Ordering::Relaxed),
-                    3 => crate::search::ESCAPE_BONUS_R.load(Ordering::Relaxed),
-                    1 | 2 => crate::search::ESCAPE_BONUS_MINOR.load(Ordering::Relaxed),
+                    4 => escape_bonus_q,
+                    3 => escape_bonus_r,
+                    1 | 2 => escape_bonus_minor,
                     _ => 0,
                 };
             }
 
             // Quiet check bonus: moves that give direct check (SF +16384, Viridithas +10000)
-            if piece != NO_PIECE {
-                let pt = board.piece_type_at(from);
-                if pt < 6 && self.checking_sqs[pt as usize] & (1u64 << to) != 0 {
-                    score += crate::search::QUIET_CHECK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
-                }
+            if piece != NO_PIECE
+                && pt < 6 && self.checking_sqs[pt as usize] & (1u64 << to) != 0 {
+                score += quiet_check_bonus;
             }
 
             // B1: Discovered-attack bonus. If `from` is one of our pieces
@@ -615,7 +670,7 @@ impl MovePicker {
             // it uncovers that attack. Flat bonus — victim-value scaling
             // is a follow-up if H1 resolves.
             if self.xray_blockers & (1u64 << from) != 0 {
-                score += crate::search::DISCOVERED_ATTACK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+                score += discovered_attack_bonus;
             }
 
             // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering bonus.
@@ -625,10 +680,11 @@ impl MovePicker {
             // additive to history. King mobility delta excluded (king activity
             // is eval-handled, not ordering-relevant in pre-endgame).
             if piece != NO_PIECE {
-                let pt = board.piece_type_at(from);
                 if pt < 5 { // skip king (pt==5)
-                    let us = (piece >> 3) & 1;
-                    let occ = board.colors[0] | board.colors[1];
+                    // NOTE: deliberately (piece >> 3) & 1, NOT side_to_move —
+                    // preserved exactly from the pre-hoist code (renamed from
+                    // `us` to avoid shadowing the hoisted side_to_move local).
+                    let mob_color = (piece >> 3) & 1;
                     // For sliders, to_mob must be computed against POST-move
                     // occupancy or the FROM square (which is on a ray from TO
                     // for any natural slider move) acts as a phantom blocker.
@@ -638,9 +694,9 @@ impl MovePicker {
                     // independent so unaffected by occupancy choice, but the
                     // unified post_occ keeps the branch clean.
                     let post_occ = (occ ^ (1u64 << from)) | (1u64 << to);
-                    let from_mob = crate::threats::piece_attacks_occ(pt, us, from as u32, occ).count_ones();
-                    let to_mob = crate::threats::piece_attacks_occ(pt, us, to as u32, post_occ).count_ones();
-                    score += (to_mob as i32 - from_mob as i32) * crate::search::MOBILITY_DELTA_WEIGHT.load(std::sync::atomic::Ordering::Relaxed);
+                    let from_mob = crate::threats::piece_attacks_occ(pt, mob_color, from as u32, occ).count_ones();
+                    let to_mob = crate::threats::piece_attacks_occ(pt, mob_color, to as u32, post_occ).count_ones();
+                    score += (to_mob as i32 - from_mob as i32) * mobility_delta_weight;
                 }
             }
 
@@ -651,11 +707,7 @@ impl MovePicker {
             // Safety filter: skip if `to` is attacked by any lower-value enemy
             // piece (the capture back would be net negative for us).
             if piece != NO_PIECE {
-                let pt = board.piece_type_at(from);
                 if pt < 6 {
-                    let us = board.side_to_move;
-                    let them = 1 - us;
-                    let occ = board.colors[us as usize] | board.colors[them as usize];
                     // We'd be on `to` after the move; compute attacks from `to` by our piece type.
                     let attacks_from_to = match pt {
                         0 => pawn_attacks(us, to as u32),  // pawn
@@ -665,17 +717,9 @@ impl MovePicker {
                         4 => queen_attacks(to as u32, occ & !(1u64 << from)),   // queen
                         _ => 0,  // king — no offense bonus, too risky
                     };
-                    let enemy_non_pawns = board.colors[them as usize]
-                        & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
                     if attacks_from_to & enemy_non_pawns != 0 {
                         // Safety check: skip if `to` is attacked by enemy pawn
                         // (which could recapture us).
-                        let their_pawns = board.pieces[PAWN as usize] & board.colors[them as usize];
-                        let enemy_pawn_attacks = if them == WHITE {
-                            ((their_pawns & !FILE_A) << 7) | ((their_pawns & !FILE_H) << 9)
-                        } else {
-                            ((their_pawns & !FILE_A) >> 9) | ((their_pawns & !FILE_H) >> 7)
-                        };
                         // Only skip if WE would be a bigger target than a pawn
                         let unsafe_square = pt != 0 && (enemy_pawn_attacks & (1u64 << to)) != 0;
                         if !unsafe_square {
@@ -706,7 +750,6 @@ impl MovePicker {
                         // Knight-fork bonus: knight move attacking 2+ enemy
                         // non-pawn pieces from `to` is a fork. Tunable
                         // (KNIGHT_FORK_BONUS), stacks on top of offense.
-                        let kf_bonus = crate::search::KNIGHT_FORK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
                         if kf_bonus > 0 && pt == 1 && !unsafe_square
                             && popcount(attacks_from_to & enemy_non_pawns) >= 2 {
                             score += kf_bonus;
@@ -720,7 +763,7 @@ impl MovePicker {
 
             let idx = self.moves.len;
             self.moves.push(m);
-            self.scores[idx] = score;
+            self.scores[idx].write(score);
         }
         self.index = 0;
     }
@@ -736,6 +779,12 @@ impl MovePicker {
         self.moves = MoveList::new();
 
         let history = unsafe { &*self.history };
+
+        // Per-node tunable loads hoisted out of the scoring loop (pure
+        // atomic loads — quiet-branch arithmetic unchanged).
+        let cm = crate::search::tp10(&crate::search::CONT_HIST_MULT_10X);
+        let cont_weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
+        let pw = crate::search::tp10(&crate::search::PAWN_HIST_MULT_10X);
 
         for i in 0..all.len {
             let m = all.get(i);
@@ -776,9 +825,7 @@ impl MovePicker {
 
                 if piece != NO_PIECE {
                     let gp = go_piece(piece);
-                    let cm = crate::search::tp10(&crate::search::CONT_HIST_MULT_10X);
-                    let weights = [cm, cm, 1i32, 1];
-                    for (i, &w) in weights.iter().enumerate() {
+                    for (i, &w) in cont_weights.iter().enumerate() {
                         if let Some(sub_ptr) = self.cont_hist_subs[i] {
                             let sub = unsafe { &*sub_ptr };
                             s += w * sub[gp][to as usize] as i32;
@@ -789,7 +836,6 @@ impl MovePicker {
                 if let Some(ph_ptr) = self.pawn_hist_ptr {
                     if piece != NO_PIECE {
                         let ph = unsafe { &*ph_ptr };
-                        let pw = crate::search::tp10(&crate::search::PAWN_HIST_MULT_10X);
                         s += pw * ph[go_piece(piece)][to as usize] as i32;
                     }
                 }
@@ -799,7 +845,7 @@ impl MovePicker {
 
             let idx = self.moves.len;
             self.moves.push(m);
-            self.scores[idx] = score;
+            self.scores[idx].write(score);
         }
         self.index = 0;
     }
@@ -808,8 +854,10 @@ impl MovePicker {
     fn restore_bad_captures(&mut self) {
         self.moves = MoveList::new();
         for i in 0..self.bad_len {
-            self.moves.push(self.bad_moves[i]);
-            self.scores[i] = self.bad_scores[i];
+            // SAFETY: generate_and_score_captures wrote bad_moves[i] and
+            // bad_scores[i] for all i < bad_len before incrementing bad_len.
+            self.moves.push(unsafe { self.bad_moves[i].assume_init() });
+            self.scores[i].write(unsafe { self.bad_scores[i].assume_init() });
         }
         self.index = 0;
     }
@@ -846,17 +894,23 @@ impl MovePicker {
         }
 
         let mut best_idx = self.index;
-        let mut best_score = self.scores[self.index];
+        // SAFETY (all assume_init below): scores[0..moves.len) are written
+        // by the generate/restore paths before any move is exposed — see
+        // the invariant on the `scores` field declaration. index < moves.len
+        // is checked above and the loop bound is moves.len.
+        let mut best_score = unsafe { self.scores[self.index].assume_init() };
 
         for i in (self.index + 1)..self.moves.len {
-            if self.scores[i] > best_score {
-                best_score = self.scores[i];
+            let s = unsafe { self.scores[i].assume_init() };
+            if s > best_score {
+                best_score = s;
                 best_idx = i;
             }
         }
 
         if best_idx != self.index {
             self.moves.swap(self.index, best_idx);
+            // Swapping MaybeUninit slots is safe — no reads of the contents.
             self.scores.swap(self.index, best_idx);
         }
 
@@ -1171,7 +1225,12 @@ pub struct QMovePicker {
     tt_move: Move,
     tt_stage: bool, // true = haven't tried TT move yet
     moves: MoveList,
-    scores: [i32; 256],
+    /// Scores parallel to `moves`. `[MaybeUninit<i32>; 256]` to skip the
+    /// 1KB zero-init per picker (same memset-skip pattern as `MoveList`).
+    /// Invariant: the constructor writes scores[i] for every i in
+    /// [0..moves.len) (every branch of the scoring loop assigns), and
+    /// `next` only reads within [idx..moves.len).
+    scores: [std::mem::MaybeUninit<i32>; 256],
     idx: usize,
     pinned: Bitboard,
     checkers: Bitboard,
@@ -1190,7 +1249,9 @@ impl QMovePicker {
             tt_move: if tt_move != NO_MOVE && is_pseudo_legal(board, tt_move) { tt_move } else { NO_MOVE },
             tt_stage: true,
             moves,
-            scores: [0; 256],
+            // SAFETY: uninit MaybeUninit array is sound; the loop below
+            // writes scores[i] for every i < moves.len before any read.
+            scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             idx: 0,
             pinned,
             checkers,
@@ -1202,7 +1263,7 @@ impl QMovePicker {
             let mv = picker.moves.get(i);
             // Skip TT move in scoring (will be tried first)
             if mv == picker.tt_move {
-                picker.scores[i] = i32::MIN;
+                picker.scores[i].write(i32::MIN);
                 continue;
             }
 
@@ -1219,20 +1280,20 @@ impl QMovePicker {
                 let capt_hist = capt_hist_score_static(board, history, mv);
                 if in_check {
                     // Evasion captures scored high (10000 + mvvlva + captHist)
-                    picker.scores[i] = 10000 + mvv_lva + capt_hist;
+                    picker.scores[i].write(10000 + mvv_lva + capt_hist);
                 } else {
-                    picker.scores[i] = mvv_lva + capt_hist;
+                    picker.scores[i].write(mvv_lva + capt_hist);
                 }
             } else if is_promotion(mv) {
                 if in_check {
                     let pt = promotion_piece_type(mv);
-                    picker.scores[i] = if pt == QUEEN { 9000 } else { -1000 };
+                    picker.scores[i].write(if pt == QUEEN { 9000 } else { -1000 });
                 } else {
-                    picker.scores[i] = see_value(promotion_piece_type(mv));
+                    picker.scores[i].write(see_value(promotion_piece_type(mv)));
                 }
             } else {
                 // Quiet (only in evasion mode)
-                picker.scores[i] = -1_000_000;
+                picker.scores[i].write(-1_000_000);
             }
         }
 
@@ -1253,10 +1314,13 @@ impl QMovePicker {
         while self.idx < self.moves.len {
             // Selection sort: find best remaining
             let mut best_idx = self.idx;
-            let mut best_score = self.scores[self.idx];
+            // SAFETY (both assume_init): constructor wrote scores[i] for
+            // every i < moves.len; reads here stay within [idx..moves.len).
+            let mut best_score = unsafe { self.scores[self.idx].assume_init() };
             for j in (self.idx + 1)..self.moves.len {
-                if self.scores[j] > best_score {
-                    best_score = self.scores[j];
+                let s = unsafe { self.scores[j].assume_init() };
+                if s > best_score {
+                    best_score = s;
                     best_idx = j;
                 }
             }
