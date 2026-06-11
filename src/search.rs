@@ -3805,7 +3805,7 @@ fn negamax(
             if move_count > lmp_limit {
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
-                picker.skip_quiet = true;
+                picker.skip_remaining_quiets();
                 continue;
             }
         }
