@@ -14816,3 +14816,12 @@ checking_sqs, scoring-loop hoists) H1 at +4.0 ±2.9 (14,324 games,
 [-2,1]). Pure NPS gain measured as real Elo. Merge queued BEHIND the
 1915 value set per the stacking plan (one change at a time, re-bench
 between).
+
+## 2026-06-12 — #1920 H1 +7.2: tune-1915 value set validated at LTC@256
+
+experiment/tune-1915-ltc256-applied vs main at 40+0.4 Hash=256 [0,3]:
+H1 +7.2 ±3.5 (9,016 games). The deployment-regime LTC parameter set is
+real. Merge to main pends #1926 (STC [-2,1] non-regression leg, in
+flight ~-1.3). #1929 (eval-scale ×1.27 on dual) trending hard H0 at -20
+— the naive global output multiplier HURTS; scale normalization needs
+rethink before step 2.
