@@ -693,6 +693,29 @@ Search parameters are exposed as UCI options for SPSA optimization via OpenBench
 The `tunables!` macro in `search.rs` is the single source of truth for defaults,
 ranges, and c_end values.
 
+**TC convention for tunes (Adam, 2026-06-12):**
+
+- **Production tunes (anything whose outputs will be applied to trunk
+  defaults): LTC, `--tc 40.0+0.4 --options 'Threads=1 Hash=256'`.**
+  Hash=256 is load-bearing — Hash=64 at LTC is a TT-starved regime that
+  distorts pruning economics (tune #1900 vs #1915 decomposition,
+  2026-06-11; the starved LTC RR cost ~25 Elo vs healthy hash). Slower
+  per iteration; warm-start from the previous production tune's outputs
+  and use ~2500 iters instead of 5000 (the #1915 pattern) to keep cost
+  sane. Avoid Hash=512: 8GB workers OOM at 6 concurrent games (worker
+  391, #1911 post-mortem).
+- **Quick retune-on-branch validation tunes (focused clusters proving a
+  feature direction): STC is fine.** The LTC-healthy production values
+  measure ~neutral at STC (#1926), so STC branch-tunes don't fight the
+  production calibration much. Anything that graduates to trunk
+  application should get its final values from (or be validated at) the
+  LTC regime.
+- Rationale: every deployment regime (lichess on bare metal, CCRL) is
+  the deep regime; OB STC is a measurement frame, not a deployment
+  target. STC-optimal and LTC-optimal pruning shapes genuinely differ
+  (FUT_BASE, RFP_MARGIN_NOIMP, LMP cluster — see experiments.md
+  2026-06-11 three-way decomposition).
+
 **CRITICAL RULE — always tune against the net in `net.txt`:**
 
 Trunk's param defaults and the currently-deployed production net
