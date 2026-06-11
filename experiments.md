@@ -14879,3 +14879,16 @@ nothing ("tune changed nothing" carve-out); merged the tunables at
 parity as bench-identical infra so LTC production tunes explore the
 axis for free. Open variant (Atlas audit T2.15): un-boosted malus
 (decouple malus from NFH/depth boosts) — different mechanism, untested.
+
+## 2026-06-12 — #1928 H0: Lemire exact-size TT indexing costs ~2 at pow2 sizes
+
+fix/tt-exact-size-lemire H0 at -2.4 ±2.2 (25,570 games, [-2,1]). The
+"should-be-neutral" remap (exact bucket count + mul-hi indexing + XOR
+key moved to low 32 bits) has a real small cost at pow2 hash sizes —
+most plausibly the u128 multiply on every probe/store/prefetch vs a
+single AND. The non-pow2 waste bug (Hash=1000 -> 512MB used) is real
+but doesn't justify -2 in the measurement frames (which all use pow2).
+DROP the branch; instead document the pow2 constraint and optionally
+snap UCI Hash to the nearest pow2 with an info string (deployment
+correctness without hot-path cost). Lesson: even "free" hot-path
+indexing changes are [-2,1]-measurable at 25k games.
