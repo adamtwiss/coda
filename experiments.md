@@ -14892,3 +14892,17 @@ DROP the branch; instead document the pow2 constraint and optionally
 snap UCI Hash to the nearest pow2 with an info string (deployment
 correctness without hot-path cost). Lesson: even "free" hot-path
 indexing changes are [-2,1]-measurable at 25k games.
+
+## 2026-06-12 — #1934 H1 +1.4: scale asymmetry confirmed (down free, up costly)
+
+Reverse probe (w20 baseline at EVAL_SCALE_PCT=79 vs itself, [-3,3]):
+H1 +1.4 ±2.4 (23,970 games). With #1929 (-18.1 for x1.27 up-scaling),
+the pair fully maps the mechanism: trunk margins have NO upward slack —
+candidates whose eval scale sits ABOVE prod calibration (~330) are
+heavily handicapped in net-vs-net probes; below-scale candidates are
+fine. Consequences: (1) #1925's dual verdict (low-scale candidate) is
+trustworthy; (2) #1933's s3a verdict (RMS 386, 17% hot) is CONFOUNDED —
+de-confound rerun submitted (s3a at PCT=85 vs s3); (3) probe protocol:
+check candidate RMS vs prod; if hot, rescale DOWN via EVAL_SCALE_PCT
+(valid direction) before judging; (4) training-side: prefer recipes
+that land at-or-below prod scale, or add a scale-anneal stage.
