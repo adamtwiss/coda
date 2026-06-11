@@ -14781,3 +14781,29 @@ the rebuilt promotion bundle on the post-#1903/#1906 structure — better
 than the ~+4 naive estimate (7.9 minus independently-banked merges),
 suggesting mild positive interaction between the de-gated NMP structure
 and the #1896 values. Promotion fully validated; prod = 549C20A5.
+
+## 2026-06-11 — Tune #1915 (LTC@256) complete: three-way decomposition + validation SPRT
+
+#1915 (2500 iters, 40+0.4 Hash=256, warm-started from #1900@71%) finished.
+Three-way diff vs #1896 (STC) and #1900 (LTC@64):
+
+**The LTC shape is GENUINE depth effect, not TT starvation.** Of ~25
+STC/LTC-divergent params, only 4 walked back toward STC at healthy hash:
+LMR_C_QUIET (150->143), LMR_HIST_DIV_CAP (3938->2775, overshoot),
+SE_DEPTH (40->44), SE_XRAY_BLOCKER_MARGIN (33->42). All pruning-SHAPE
+divergences held or extended at Hash=256: FUT_BASE 32 (STC 15),
+RFP_MARGIN_NOIMP 43 (STC 32), LMP 6/8 (STC 8/6), DEXT margins,
+BAD_NOISY_MARGIN 73, SEE_CAP_DEPTH 7. Starvation was being compensated
+through SE/LMR micro-knobs, not margins. ProbCut went MORE aggressive at
+healthy hash (margin 117, min-depth 21) — TT-dependent feature benefits
+from TT health. IIR min depth dropped to eff ~1.9.
+
+**NMP de-gate independently validated**: the NMP cluster was tuned fresh
+on the merged structure with freedom to re-gate; SPSA KEPT min-depth 25
+(eff 2.5) and verify 112 at LTC@256. NULL_THREAT_ESCAPE_BONUS 8000->8321.
+
+Branch experiment/tune-1915-ltc256-applied (all 49 params, bench
+2,649,824) submitted vs main at 40+0.4 Hash=256 [0,3] — validation in
+the deployment-matched regime. If H1: values become the lichess bot UCI
+override set (NOT a main merge — main stays STC-calibrated; see #1917
++3.5 for the cost of LTC values at STC).
