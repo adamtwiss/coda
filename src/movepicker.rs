@@ -302,7 +302,7 @@ impl MovePicker {
     /// Create a MovePicker for quiescence search (captures only).
     /// Initialize for quiescence search.
     pub fn new_quiescence(
-        _board: &Board,
+        board: &Board,
         tt_move: Move,
         history: &History,
     ) -> Self {
@@ -321,8 +321,12 @@ impl MovePicker {
             skip_quiet: true,
             threats: 0,
             xray_blockers: 0,
-            checkers: 0,
-            pinned: 0,
+            // Real pin/check masks so the TTMove-stage is_legal check works.
+            // Were hardcoded 0 (fixed 2026-06-11) — same bug class as the
+            // main-picker fix of 2026-04-26 (#890 +3.4): with pinned=0,
+            // is_legal cannot reject pinned-piece TT moves in QS.
+            checkers: board.checkers(),
+            pinned: board.pinned(),
             threat_sq: -1,
             checking_sqs: [0; 6], // not used in QS
         }

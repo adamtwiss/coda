@@ -3962,8 +3962,11 @@ fn negamax(
                     if prev2_piece_for_cont != 0 {
                         hist_score += info.history.cont_hist[prev2_piece_for_cont][prev2_to_for_cont as usize][gp][to as usize] as i32 / 2;
                     }
-                    // Pawn history: pawn-structure-aware move quality (SF/Alexandria pattern)
-                    let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
+                    // Pawn history: pawn-structure-aware move quality (SF/Alexandria pattern).
+                    // Uses the node-level ph_idx (parent pawn hash) — this code runs
+                    // post-make_move, and board.pawn_hash here is the CHILD hash, which
+                    // for pawn moves reads an unrelated bucket (write/read mismatch,
+                    // fixed 2026-06-11).
                     hist_score += info.pawn_hist[ph_idx][gp][to as usize] as i32;
                 }
                 let hist_adj = hist_score / tp(&LMR_HIST_DIV);
@@ -4778,6 +4781,16 @@ fn quiescence_with_depth(
     loop {
         let mv = picker.next(board);
         if mv == NO_MOVE { break; }
+
+        // Legality: every other move loop (negamax, QS evasions, probcut)
+        // filters illegal moves; this one didn't. A capture by an absolutely
+        // pinned piece passes make_move (which only rejects king captures),
+        // and the child's refutation — capturing the king — is then blocked
+        // by that same guard, so the illegal capture scores as winning.
+        // SEE can't catch it (it deliberately ignores pins).
+        if !board.is_legal(mv, qs_pinned, qs_checkers) {
+            continue;
+        }
 
         // Move count cutoff: stop searching after N captures (Obsidian: 3)
         qs_move_count += 1;
