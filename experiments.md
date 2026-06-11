@@ -14906,3 +14906,17 @@ de-confound rerun submitted (s3a at PCT=85 vs s3); (3) probe protocol:
 check candidate RMS vs prod; if hot, rescale DOWN via EVAL_SCALE_PCT
 (valid direction) before judging; (4) training-side: prefer recipes
 that land at-or-below prod scale, or add a scale-anneal stage.
+
+## 2026-06-13 — #1937 H0 -16.6: s3a failure is scale-independent (curriculum verdict stands)
+
+De-confound rerun (s3a-swa at EVAL_SCALE_PCT=85, normalizing its RMS
+386 down to s3's 329) vs s3-swa: H0 -16.6 ±6.0 — statistically
+identical to the unrescaled #1933 (-18.1). The 17%-hot eval scale
+explains essentially none of the deficit; the easy-data-first stage-2
+lineage is genuinely ~17 Elo worse. #1933's conclusions stand at full
+strength: stage-k endpoint SPRTs are weak lineage selectors, and
+early-stage data composition matters far more than intermediate
+strength shows. Also calibrates the scale-confound magnitude: at +17%
+hot, the confound is small (couple Elo at most) — the #1929 -18 at +27%
+suggests a sharply nonlinear onset, or that #1929's dual-specific
+interaction was larger than pure scale.
