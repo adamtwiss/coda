@@ -111,6 +111,11 @@ tunables!(
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
     (RFP_MARGIN_IMP, 33, 0, 150, 6.0, true),
     (RFP_MARGIN_NOIMP, 43, 0, 200, 7.5, true),
+    // Razoring (re-added 2026-06-11, audit T2.6). Consensus band:
+    // Obsidian 352/d<=5, Berserk 214/d<=5, Clover 145/d<=2, Integral
+    // 393/d<=4, Stormphrax ~290/d<=4.
+    (RAZOR_MULT, 275, 100, 500, 20.0, true),
+    (RAZOR_DEPTH, 4, 1, 8, 0.5, true),
     // Futility margin reduced to Reckless scale. At lmr_d=5:
     //   Old: 78 + 160*5 = 878 (Coda 2.4× wider than Reckless 364)
     //   New: 40 + 65*5 = 365 (matches Reckless)
@@ -559,6 +564,7 @@ pub struct PruneStats {
     pub nmp_verify: u64,
     pub nmp_verify_fail: u64,
     pub rfp_cutoffs: u64,
+    pub razor_cutoffs: u64,
     pub lmp_prunes: u64,
     pub futility_prunes: u64,
     pub see_prunes: u64,
@@ -3255,6 +3261,25 @@ fn negamax(
     // but it removes the mechanism that killed shallow NMP in #1904 (NMP-first
     // intercepted free RFP cutoffs), enabling the min-depth de-gate below.
     if !in_check {
+        // Razoring (re-added 2026-06-11, audit T2.6; removed d996d6f on
+        // pre-v9-eval evidence). 10/10 stronger engines have the
+        // qsearch-verified non-PV form: when static eval is hopelessly below
+        // alpha at shallow depth, drop to qsearch and trust its fail-low.
+        // Runs before RFP (consensus order: razor -> RFP -> NMP).
+        if !is_pv
+            && ply > 0
+            && depth <= tp(&RAZOR_DEPTH)
+            && alpha.abs() < 2000
+            && info.excluded_move[ply_u] == NO_MOVE
+            && static_eval + tp(&RAZOR_MULT) * depth <= alpha
+        {
+            let v = quiescence(board, info, alpha, alpha + 1, ply);
+            if v <= alpha {
+                info.stats.razor_cutoffs += 1;
+                return v;
+            }
+        }
+
         // Reverse Futility Pruning (Static Null Move Pruning) — pre-NMP site.
         // RFP TT quiet guard: skip RFP when TT has a quiet best move (Tucano/Weiss).
         // If we know a good quiet move exists, don't prune based on static eval alone.
