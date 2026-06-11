@@ -142,7 +142,13 @@ known eval-weak-spot, not a data-scale-dependent feature.
 **Action**: fire as Tier-1 architecture experiment in next net rev.
 Highest-prior architecture change we haven't tried.
 
-#### 3. Dual SqrCReLU + CReLU activation at first hidden layer
+#### 3. Dual SqrCReLU + CReLU activation at first hidden layer — **IN FLIGHT (2026-06-11)**
+
+**Status**: trainer support landed (bullet fork `feature/dual-hl-activation`,
+`--hidden-activation dual`); converter/inference already supported it
+(legacy `--dual` + `--hl-crelu`, v8-era feature). SB20 smoke passed
+end-to-end (sane RMS, zero NPS cost). S200 paired probe
+(`warm10-inter-w20-dual` vs crelu control) training on gpu2.
 
 SFNNv13 splits the first dense's 32 outputs into `SqrCReLU(31) ++
 CReLU(31)` (drops one element) → concat 62 → second dense input. We use
@@ -161,7 +167,15 @@ in parallel rather than replacing one with the other).
 
 **Action**: fire as Tier-1 training-recipe + architecture experiment.
 
-#### 4. i8 threat weights (ARM-amplified NPS win)
+#### 4. i8 threat weights (ARM-amplified NPS win) — **ALREADY IMPLEMENTED, gap row was wrong (verified 2026-06-11)**
+
+**Correction**: Coda has stored threat weights as i8 in memory since the
+ORIGINAL v9 threat accumulator (commit 2d7c562, Phase 1b/2a) —
+`threat_weights: Vec<i8>`, i16 accumulator, on-the-fly i8→i16 widening
+in both scalar and SIMD paths, NEON parity backfilled 1af1bdc. The
+"Coda's threat weights are i16" gap claim below was never true; we
+inherited the i8 pattern from Reckless. Nothing to do. Original
+(incorrect) analysis kept below for the record.
 
 Per SF docs: *"Threat features have different refresh patterns... 3-4×
 as many changing threat features as piece features in midgame... memory
