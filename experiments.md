@@ -14807,3 +14807,12 @@ Branch experiment/tune-1915-ltc256-applied (all 49 params, bench
 the deployment-matched regime. If H1: values become the lichess bot UCI
 override set (NOT a main merge — main stays STC-calibrated; see #1917
 +3.5 for the cost of LTC values at STC).
+
+## 2026-06-12 — #1923 H1 +4.0: movepicker hot-path perf bundle
+
+perf/movepicker-hotpath (bench-identical NPS work from the move-ordering
+audit: MaybeUninit picker arrays, pinned/checkers dedup, deferred
+checking_sqs, scoring-loop hoists) H1 at +4.0 ±2.9 (14,324 games,
+[-2,1]). Pure NPS gain measured as real Elo. Merge queued BEHIND the
+1915 value set per the stacking plan (one change at a time, re-bench
+between).
