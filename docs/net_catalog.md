@@ -3,16 +3,34 @@
 Authoritative list of v9 nets, their OpenBench hashes, provenance, and status.
 Update this file when you promote a new production net or retire an old one.
 
-**Current v9 production:** `E2773E50` —
+**Current v9 production:** `549C20A5` — `net-549C20A5.nnue`
+(source file `multi-v6-s5-swa.nnue`). Published as `v0.7.0-nets`;
+referenced by `net.txt`. Promoted 2026-06-11 with SPSA tune #1896
+applied (STC 5000-iter, NMP cluster reconciled to the post-#1903/#1906
+merged structure). Recipe: v6 multistage (FT=1024, kb10 reckless,
+crelu hidden, factoriser, wdl 0.20 from primer, mse-power 3.0,
+interleave, fs0.5), stage 5 = 1600SB extended terminal with lower
+initial LR, SWA tail. SPRTs: #1895 untuned +5.3 vs E4B66CE4; #1908
+tune +3.1 vs untuned; #1909 bundle +7.9 vs prod (pre-merge trunk);
+post-merge validation SPRT vs baseline/pre-v6s5 in flight. All v9
+SPRTs against trunk should now pass
+`--dev-network 549C20A5 --base-network 549C20A5`.
+
+**Previous v9 production:** `E4B66CE4` — `net-E4B66CE4.nnue` (source
+`multi-v6-s4-swa.nnue`, `v0.6.0-nets`). First hash-named prod. Was prod
+2026-06-09 → 2026-06-11. v6 multistage stage 4 (250/300/550/1000 SB
+geometric ladder), SWA. Promoted after #1857/#1858-era H1s (+19.4 raw /
++12.4 swa vs E2773E50-era prod, swa won H2H by +1).
+
+**Earlier v9 production:** `E2773E50` —
 `net-v9-768th16x32-kb10-w15-e1200s1200-crelu-factor-xtradata-swa.nnue`.
-Published as `v0.5.0-nets` release; referenced by `net.txt`. Promoted
-2026-05-30 after deployment-package SPRT #1645 H1'd at +13.1 ±5.2 Elo
+Published as `v0.5.0-nets` release. Was prod 2026-05-30 → 2026-06-09.
+Promoted after deployment-package SPRT #1645 H1'd at +13.1 ±5.2 Elo
 vs prior prod 1EF1C3E5. Prod recipe (kb10, w15, crelu hidden, factoriser)
 trained on extra data, SWA-averaged over SB1150-1200, schedule completed
 to s1200. The +13 decomposes as: net swap alone +12.3 (#1630, untuned
 swa-s1200 vs prod) plus +7.3 cumulative `--core` SPSA retune-on-net
-(#1631 +4.0 → #1643/#1644 +3.3). All v9 SPRTs against trunk should now
-pass `--dev-network E2773E50 --base-network E2773E50`.
+(#1631 +4.0 → #1643/#1644 +3.3).
 
 **Previous v9 production:** `1EF1C3E5` —
 `net-v9-768th16x32-kb10-w15-e800s800-crelu-C8fix-factor.nnue`

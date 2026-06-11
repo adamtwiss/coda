@@ -14759,3 +14759,16 @@ differing only in the 43 non-structural tuned values. Result: LTC-shaped
 values cost ~3.5 Elo at STC. LTC leg (#1918, 40+0.4, reverse direction)
 in flight. Bench note: LTC values produce a 16% smaller tree on identical
 structure (2,632,760 vs 3,149,744).
+
+## 2026-06-11 — PROD PROMOTION: v6-s5-swa (549C20A5) + tune #1896 merged to main
+
+Bundle: net.txt -> net-549C20A5.nnue (v0.7.0-nets release) + tune-#1896
+values (NMP cluster at post-merge de-gate defaults). Main bench 3,149,744
+(embedded). Evidence chain: #1895 net untuned +5.3 H1; #1908 tune +3.1 H1;
+#1909 bundle vs prior prod +7.9 H1 (pre-merge trunk); #1917 these values
+vs #1900 LTC set +3.5 H1. Post-merge validation SPRT main vs
+baseline/pre-v6s5 (pre-merge main + E4B66CE4, bench 2,668,823) submitted
+[0,3] STC — expected ~+4 (the 7.9 minus #1903/#1906 gains main banked
+independently). Catalog updated (E4B66CE4 retro-entry added). Lichess
+deploy = Adam, pending. LTC overrides for deployment to come from #1915
+when it converges.
