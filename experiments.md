@@ -14867,3 +14867,15 @@ captures — kills the O(n^2) post-LMP selection scans AND stops
 discarded quiets inflating move_count for late bad captures (bench
 3,149,744 -> 2,513,179). Second banked win from the move-ordering
 audit (after #1923 perf +4.0). Merge queued behind the 1915 value set.
+
+## 2026-06-12 — Malus-split tune #1922: SPSA wants SYMMETRIC malus (null result, banked as infra)
+
+6-param focused tune (1500 iters STC) on the bonus/malus split: every
+param within one c_end of its bonus-parity start (HIST_MALUS_MULT
+300->298 with range open to 900; offset moves are c_end drift). The
+14/16-engine asymmetric-malus consensus does not pull at Coda — the
+NFH-scaled bonus formula plausibly already encodes the signal. Applied
+nothing ("tune changed nothing" carve-out); merged the tunables at
+parity as bench-identical infra so LTC production tunes explore the
+axis for free. Open variant (Atlas audit T2.15): un-boosted malus
+(decouple malus from NFH/depth boosts) — different mechanism, untested.
