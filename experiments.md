@@ -14920,3 +14920,17 @@ strength shows. Also calibrates the scale-confound magnitude: at +17%
 hot, the confound is small (couple Elo at most) — the #1929 -18 at +27%
 suggests a sharply nonlinear onset, or that #1929's dual-specific
 interaction was larger than pure scale.
+
+## 2026-06-13 — #1925 H1 +1.9: dual activation wins its S200 probe
+
+dual-s200 (--hidden-activation dual, SF SFNNv5+ pattern: L1 output
+activated CReLU+SCReLU concatenated, L2 input 16->32) vs
+warm10-inter-w20-s200 (identical recipe, crelu): H1 +1.9 ±1.6 at 68,506
+games [0,3]. Net-vs-net, zero NPS cost, scale-confound bounded small
+(#1937 calibration; dual was low-scale = safe direction). Per the
+scale-dependence analysis dual is only mildly scale-sensitive, so +1.9
+at S200 likely persists or grows modestly at full scale. NEXT: include
+--hidden-activation dual in the next full-scale training run (v6.5/v7
+recipe candidate); trainer support on bullet feature/dual-hl-activation
+(also carries the SB200-validated pipeline: convert with --dual
+--hl-crelu).
