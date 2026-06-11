@@ -14825,3 +14825,18 @@ real. Merge to main pends #1926 (STC [-2,1] non-regression leg, in
 flight ~-1.3). #1929 (eval-scale ×1.27 on dual) trending hard H0 at -20
 — the naive global output multiplier HURTS; scale normalization needs
 rethink before step 2.
+
+## 2026-06-12 — #1929 H0 -18.1: naive eval up-scaling refuted (controlled pair vs #1925)
+
+dual-s200 at EVAL_SCALE_PCT=127 (rescaled to baseline's RMS) vs
+warm10-inter-w20 baseline: H0 at -18.1 ±6.7 (3,780 games). Controlled
+pair: #1925 (same nets, no rescale) sits ~+2 at 28k games — the ×1.27
+output multiplier costs ~20 Elo. The "scale confound handicaps
+low-scale candidates" hypothesis is refuted in this direction; a net's
+trained scale appears co-adapted with its own eval-noise distribution
+(margins should match noise, not magnitude). Naive global multipliers
+are NOT a viable normalization mechanism. Reverse probe #1934 (baseline
+at 79% vs itself, [-3,3]) in flight isolates pure scale-deviation with
+zero net difference. Step-2 normalization (header-baked) is ON HOLD
+pending #1934; if down-scaling also hurts, normalization must happen in
+training (scale-anneal stage), not at inference.
