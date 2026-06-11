@@ -14749,3 +14749,13 @@ stats lean s2a (first-move 84.3 vs 83.2, pos 1.48 vs 1.56, pos^2 8.9 vs
 same-recipe variance at full stage scale, BUT confounded by the sfbinpack
 determinism fix changing data order; Adam re-checking recipe identity before
 we log it as a variance datapoint.
+
+## 2026-06-11 — Regime matrix leg 1: STC-tune vs LTC-tune at STC (#1917)
+
+H1 +3.5 ±2.4 (23,268 games, [0,3], net 549C20A5 both sides). Branches
+experiment/tune-1896-stc-applied vs experiment/tune-1900-ltc-applied —
+identical post-merge structure (NMP cluster at de-gate defaults on both),
+differing only in the 43 non-structural tuned values. Result: LTC-shaped
+values cost ~3.5 Elo at STC. LTC leg (#1918, 40+0.4, reverse direction)
+in flight. Bench note: LTC values produce a 16% smaller tree on identical
+structure (2,632,760 vs 3,149,744).
