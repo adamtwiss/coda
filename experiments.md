@@ -14946,3 +14946,15 @@ atlas/qs-no-exact lands (currently +0.7, LLR 1.91 toward H1), bisect:
 (a) gen-refresh alone (bench-identical, the carried-over-entry
 protection), (b) gate change on the cleaned-EXACT trunk. Don't retry
 the bundle as-is.
+
+## 2026-06-13 — #1921 H1 +1.6: QS legality bundle (third move-ordering audit win)
+
+fix/qs-legality-bundle H1 +1.6 ±1.3 (77,934 games, [0,3]): is_legal in
+the QS capture loop (the only unfiltered move loop in the engine —
+pinned-piece captures scored as winning via the blocked-king-capture
+refutation), real pin masks in new_quiescence (TT-move legality check
+was neutered, same class as the +3.4 #890 fix), LMR pawn-hist
+parent-hash read. Move-ordering audit total: +4.0 (#1923) +3.5 (#1924)
++1.6 (#1921) + malus null = ~+9 banked. Merge queued behind the 1915
+value set. (Atlas's #1932 qs-no-exact also H1 +1.0 same tick — unblocks
+the #1927 TT-gate bisect.)
