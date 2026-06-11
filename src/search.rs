@@ -200,6 +200,19 @@ tunables!(
     (HIST_BONUS_OFFSET, 24, 0, 400, 25.0, false),
     (CAP_HIST_MULT, 298, 50, 400, 17.5, true),
     (CAP_HIST_MAX, 2014, 500, 3000, 125.0, true),
+    // Malus split (2026-06-11 move-ordering audit): 14/16 stronger engines
+    // use SEPARATE malus constants (SF malus slope ~7x its bonus slope;
+    // Obsidian goes the other way at 0.74x — the optimum is engine-specific
+    // and only discoverable by tuning). Coda's malus was hardwired to
+    // -bonus, so SPSA never had this axis. Defaults = the bonus values →
+    // bench-identical until tuned. Ranges deliberately wide upward
+    // (SF's 882-vs-128 slope ratio says don't anchor near the bonus max).
+    (HIST_MALUS_MULT, 300, 50, 900, 40.0, true),
+    (HIST_MALUS_OFFSET, 24, 0, 400, 25.0, false),
+    (HIST_MALUS_MAX, 1654, 500, 4000, 175.0, true),
+    (CAP_HIST_MALUS_MULT, 298, 50, 900, 40.0, true),
+    (CAP_HIST_MALUS_BASE, 42, 0, 400, 25.0, false),
+    (CAP_HIST_MALUS_MAX, 2014, 500, 4000, 175.0, true),
     // BONUS_BOOST_AT removed 2026-05-17: ablation #1277 at [0, 3] H0
     // (+0.3 ±1.0, CI [-0.7, +1.3] at 136K games). Depth-boost trigger
     // confirmed neutral; both call sites updated to drop the +1 clause.
@@ -4194,6 +4207,10 @@ fn negamax(
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         // Fixed-point divisor (stored × 10).
                         let bonus = raw_bonus + raw_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
+                        // Malus magnitude: separate constants, same scaling chain
+                        // (identical to bonus at default tunables → bench-identical).
+                        let raw_malus = history_malus(bonus_depth);
+                        let malus = raw_malus + raw_malus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
 
                         // Update main history
                         History::update_history(
@@ -4243,7 +4260,7 @@ fn negamax(
                             let qt = move_to(q);
                             History::update_history(
                                 info.history.main_entry(qf, qt, enemy_attacks),
-                                -bonus,
+                                -malus,
                             );
 
                             // Penalize continuation history at plies 1, 2, 4, 6.
@@ -4260,7 +4277,7 @@ fn negamax(
                                             let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                             if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                                                 // B1: uniform penalty (see bonus site above).
-                                                let ch_pen = -bonus;
+                                                let ch_pen = -malus;
                                                 let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize] as i32;
                                                 let base = cur_cont + q_main_score / 2;
                                                 History::update_cont_history_with_base(
@@ -4280,7 +4297,7 @@ fn negamax(
                                 if q_piece != NO_PIECE {
                                     let gp = go_piece(q_piece);
                                     let v = info.pawn_hist[ph_idx][gp][qt as usize] as i32;
-                                    let clamped = (-bonus).clamp(-16384, 16384);
+                                    let clamped = (-malus).clamp(-16384, 16384);
                                     let new_v = v + clamped - v * clamped.abs() / 16384;
                                     info.pawn_hist[ph_idx][gp][qt as usize] = new_v.clamp(-32000, 32000) as i16;
                                 }
@@ -4316,7 +4333,7 @@ fn negamax(
                     // (matching Stockfish/Obsidian/Viridithas — captures that fail should be
                     // penalized regardless of whether the best move was quiet or tactical)
                     {
-                        let cap_malus = capture_history_bonus(depth);
+                        let cap_malus = capture_history_malus(depth);
                         let cap_count = if is_cap { n_captures_tried.saturating_sub(1) } else { n_captures_tried };
                         for i in 0..cap_count {
                             let (cp, ct, cv) = captures_tried[i];
@@ -4447,6 +4464,18 @@ fn history_bonus(depth: i32) -> i32 {
 
 fn capture_history_bonus(depth: i32) -> i32 {
     (tp(&CAP_HIST_MULT) * depth - tp(&CAP_HIST_BASE)).clamp(0, tp(&CAP_HIST_MAX))
+}
+
+/// Malus (penalty) magnitude for quiet-history updates. Same shape as
+/// history_bonus but with independent constants — see the tunables!
+/// comment at HIST_MALUS_MULT for the cross-engine rationale.
+fn history_malus(depth: i32) -> i32 {
+    (tp(&HIST_MALUS_MULT) * depth - tp(&HIST_MALUS_OFFSET)).clamp(0, tp(&HIST_MALUS_MAX))
+}
+
+/// Malus magnitude for capture-history updates (independent constants).
+fn capture_history_malus(depth: i32) -> i32 {
+    (tp(&CAP_HIST_MALUS_MULT) * depth - tp(&CAP_HIST_MALUS_BASE)).clamp(0, tp(&CAP_HIST_MALUS_MAX))
 }
 
 /// Quiescence search wrapper.
