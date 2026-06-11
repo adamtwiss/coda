@@ -14934,3 +14934,15 @@ at S200 likely persists or grows modestly at full scale. NEXT: include
 recipe candidate); trainer support on bullet feature/dual-hl-activation
 (also carries the SB200-validated pipeline: convert with --dual
 --hl-crelu).
+
+## 2026-06-13 — #1927 H0 -3.1: TT same-key gate + gen-refresh (rework queued)
+
+fix/tt-samekey-gate-gen-refresh H0 at ~-3.1 ±2.8 (LTC 40+0.4 Hash=64,
+[0,3]). Two changes were bundled; the suspected culprit is the
+EXACT-bypass in the same-key gate, which Atlas's audit (T1.5) showed is
+poisoned by QS storing spurious EXACT entries — the bypass hands those
+entries a weapon to evict deeper same-key entries. Rework plan: after
+atlas/qs-no-exact lands (currently +0.7, LLR 1.91 toward H1), bisect:
+(a) gen-refresh alone (bench-identical, the carried-over-entry
+protection), (b) gate change on the cleaned-EXACT trunk. Don't retry
+the bundle as-is.
