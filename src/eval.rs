@@ -222,8 +222,11 @@ pub fn evaluate_nnue(
         }
     }
 
-    
-    net.forward_with_threats(acc, board.side_to_move, pc, threat_stack)
+
+    let v = net.forward_with_threats(acc, board.side_to_move, pc, threat_stack);
+    // Eval-scale normalization (EVAL_SCALE_PCT, default 100 = no-op).
+    let pct = crate::search::EVAL_SCALE_PCT.load(std::sync::atomic::Ordering::Relaxed);
+    if pct != 100 { v * pct / 100 } else { v }
 }
 
 /// Evaluate the position from the side to move's perspective.

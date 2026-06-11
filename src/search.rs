@@ -353,6 +353,14 @@ tunables!(
     (NMP_MIN_DEPTH_10X, 25, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
     // Floor lifted from 10 → 0 (audit 2026-05-20): pinned at 25, 8% from floor.
     (HINDSIGHT_MIN_DEPTH_10X, 1, 0, 200, 15.0, true),        // was hardcoded 2 (hindsight reduction gate)
+    // Net output scale in percent (eval-scale normalization experiment,
+    // 2026-06-12). Final NNUE eval is multiplied by PCT/100. Different
+    // nets train to very different natural scales (eval RMS 219-369
+    // measured across same-recipe S200 runs) while all cp-denominated
+    // search margins are calibrated to prod's scale — this knob lets a
+    // probe rescale a candidate net to prod's scale (e.g. 127 = dual-s200
+    // RMS 254 -> baseline 323) to de-confound net-vs-net SPRTs. 100 = off.
+    (EVAL_SCALE_PCT, 100, 50, 200, 5.0, false),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
