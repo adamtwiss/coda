@@ -4668,14 +4668,17 @@ fn quiescence_with_depth(
             return -MATE_SCORE + ply;
         }
 
-        // Store in TT (skip if stopped — partial QS results corrupt TT)
+        // Store in TT (skip if stopped — partial QS results corrupt TT).
+        // Never EXACT: a QS score is an approximation (children are
+        // captures-only subtrees), and EXACT entries satisfy unconditional
+        // EXACT cutoffs and the stand-pat refinement at full confidence.
+        // SF/Reckless/Obsidian all store only LOWER/UPPER in QS
+        // (2026-06-11 audit T1.5).
         let store_score = score_to_tt(best_score, ply);
         let flag = if best_score >= beta {
             TT_FLAG_LOWER
-        } else if best_score <= alpha_orig {
-            TT_FLAG_UPPER
         } else {
-            TT_FLAG_EXACT
+            TT_FLAG_UPPER
         };
         if FEAT_TT_STORE.load(Ordering::Relaxed) && !info.stop.load(Ordering::Relaxed) {
             info.tt.store(board.hash, -1, store_score, flag, best_move, -INFINITY, false);
@@ -4822,14 +4825,13 @@ fn quiescence_with_depth(
         }
     }
 
-    // Store in TT (skip if stopped — partial QS results corrupt TT)
+    // Store in TT (skip if stopped — partial QS results corrupt TT).
+    // Never EXACT — see the note at the evasion-path store above (audit T1.5).
     let store_score = score_to_tt(best_score, ply);
     let flag = if best_score >= beta {
         TT_FLAG_LOWER
-    } else if best_score <= alpha_orig {
-        TT_FLAG_UPPER
     } else {
-        TT_FLAG_EXACT
+        TT_FLAG_UPPER
     };
     if FEAT_TT_STORE.load(Ordering::Relaxed) && !info.stop.load(Ordering::Relaxed) {
         // Store the halfmove-INDEPENDENT value so later probes at a
