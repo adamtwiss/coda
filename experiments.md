@@ -14772,3 +14772,12 @@ baseline/pre-v6s5 (pre-merge main + E4B66CE4, bench 2,668,823) submitted
 independently). Catalog updated (E4B66CE4 retro-entry added). Lichess
 deploy = Adam, pending. LTC overrides for deployment to come from #1915
 when it converges.
+
+## 2026-06-11 — #1919 H1 +6.7: post-merge promotion validation
+
+main (549C20A5 + tune-1896 values) vs baseline/pre-v6s5 (E4B66CE4 +
+tune-1872-era values): H1 +6.7 ±3.5 at 11,422 games [0,3] STC. Confirms
+the rebuilt promotion bundle on the post-#1903/#1906 structure — better
+than the ~+4 naive estimate (7.9 minus independently-banked merges),
+suggesting mild positive interaction between the de-gated NMP structure
+and the #1896 values. Promotion fully validated; prod = 549C20A5.
