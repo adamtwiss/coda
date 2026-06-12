@@ -15141,3 +15141,19 @@ this stage (249K vs 200K — undertrained-sparsity inflation; expect the
 tax to appear as the net densifies). RMS 289 vs 282 — no scale concern.
 Reinforces ordering-stats-are-convergence-not-strength yet again.
 #1954 (swa pair) still in flight.
+
+## 2026-06-13 — #1948 H1 +1.3: latent SIMD-bug bundle merged
+
+fix/simd-latent-correctness vs main, [-2,1] STC: **H1 +1.3 ±1.7** at
+39,946 games. The 2026-06-12 SIMD-audit correctness bundle (all latent
+— none fire on the current prod net): MAX_FT_SIZE combine buffers +
+load-time overwide-threat-net reject (was a panic for FT>768
+non-pairwise threat nets); L1 dispatch as load-time L1Kernel enum with
+!bucketed_hidden guards on the column-major kernels (silent
+wrong-bucket eval for bucketed pairwise nets — and kills the
+negated-condition-chain editing hazard); read_unaligned u32 chunk
+reads + Align64 scratch (misaligned-reference UB); saturating adds in
+the pack threat-combine (SIMD ≡ scalar at the i16 rails). The +1.3 is
+presumably the Align64/enum micro-perf side; the value is the
+soundness. Merged 3233517 (trunk bench 2523846 after Atlas wave-2).
+Both SIMD-audit branches now landed (#1951 retile +3.0, this +1.3).
