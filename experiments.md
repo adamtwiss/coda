@@ -15201,3 +15201,23 @@ it fires ONLY in the orthogonal "stable at iteration end but churned
 inside" case. If v2 also fails: stacks with Viridithas/Clarity-family
 stability tables don't need this factor — drop, counter reverts to
 diagnostic.
+
+## 2026-06-14 — #1957 H0 ~-20: PSQT v2 — genuine architecture verdict, PARKED
+
+psqt-v2 (recipe-fixed: effective-input init, decay 0, clip +-4; weight
+block 6.6x v1 magnitude with max at queen scale; trainer-parity oracle
+GREEN; rook-odds pathology gone) vs w20 baseline: H0 at ~-20. With the
+pipeline proven bit-faithful and the branch demonstrably trained, this
+is a real verdict: the PSQT skip connection HURTS Coda at S200/w0.20 —
+the joint optimum with a material bypass is worse than the funnel-only
+optimum at this scale. Hypotheses for the residual gap to SF's
+years-shipped success: their data scale (8x), lower WDL fraction at
+introduction (eval-dominated loss leans harder on linear material), or
+needing a material-prior init rather than random. PARKED after two
+strikes; revisit only as a full-pipeline variant (v6.5+ stage test) or
+with material-prior init if motivation returns. feature/psqt-inference
+stays unmerged (v11 support inert without a psqt prod candidate); the
+durable wins from the arc: the trainer-parity oracle (now standing
+smoke-battery practice) and the sparse-affine recipe lesson
+(init_with_effective_input_size + per-weight optimiser params for ANY
+new sparse-input branch).
