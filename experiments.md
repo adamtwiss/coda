@@ -15188,3 +15188,16 @@ zero/negative clocks clamp to 1ms instead of failing open to unbounded
 search; go-infinite waits for stop. New scripted-UCI harness
 tests/uci_deploy_tests.sh: 7/7 PASS with negative control vs pre-fix
 binary. SHIP WITH NEXT LICHESS DEPLOY — these fixes only matter there.
+
+## 2026-06-14 — #1950 H0 -7.4: BMC factor v1 (ungated) — redundancy compounding
+
+tm/bmc-factor v1 at LTC [0,3]: H0 ~-7.4. Post-mortem: mechanically
+correct (locally verified firing) but fires on stability-reset moves
+where the stability table (x1.71), score-trend, and this factor all
+respond to the SAME root flip — three correlated upward multipliers =
+geometric overspend. SF avoids the triple-count via a differently-shaped
+stability factor. v2 (#1956, in flight) gates on tm_best_stable >= 1 so
+it fires ONLY in the orthogonal "stable at iteration end but churned
+inside" case. If v2 also fails: stacks with Viridithas/Clarity-family
+stability tables don't need this factor — drop, counter reverts to
+diagnostic.
