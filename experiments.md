@@ -15322,3 +15322,23 @@ first-move vs 83.8, pos2 3.6 vs 4.9) with 30%% more bench nodes and
 eval RMS 261 vs 329 — classic retune-on-branch signature (big tree
 shape change, near-flat Elo). #1963 core retune (1500 STC, 57 params)
 running per Adam; tuned-vs-baseline rerun decides the thread.
+
+## 2026-06-14 — #1964/#1965 H0: L1=32 stage-2 pair — deficit stable, not converging
+
+L1=32 stage curve points 3+4 ([-3,3] STC, same-stage L1=16 baselines,
+both sides main): l132-s2 raw -12.3 +-7.2 (#1964); l132-s2-swa -6.1
++-5.1 (#1965). vs stage 1 (raw -9.7, swa -4.9): the deficit is stable
+to slightly worse — two stages of full-pipeline training have NOT
+started closing the gap. SWA consistently recovers ~half. Battery
+nuance at s2: the L1=32 trees flipped to 16-22% SMALLER than L1=16
+(s1 was +38% bigger) and bench NPS showed no visible tax this run
+(noisy; structural ~10% prior stands), ordering stats mildly favoured
+l132-swa uniformly. Interpretation: at fixed recipe the wider funnel
+is roughly paying its tax with eval quality and no more. Next lever
+per plan: focused retune-on-net for the SWA arm (tree shape changed
+sign s1->s2; trunk params are calibrated for prod) — fire after #1963
+completes to avoid splitting fleet throughput between tunes. Also
+queued thinking: dual x L1=32 interaction probe (missing 2x2 cell,
+S200) — dual may be the information increase the extra width needs
+(capacity-needs-information), with a cache caveat (96KB int8 L1
+weights blow L1d).
