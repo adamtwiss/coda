@@ -4115,6 +4115,13 @@ fn negamax(
             let lmr_depth = new_depth - reduction;
             let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
 
+            // The reduction applies to the reduced search ONLY: zero the slot
+            // before any re-search so children of the (near-)full-depth
+            // re-searches don't read a stale prior_reduction and mis-fire
+            // hindsight reduce/extend (SF `ss->reduction = 0` after the
+            // reduced search; Stormphrax identical; audit T1.2).
+            info.reductions[ply_u] = 0;
+
             if lmr_score > alpha && !info.stop.load(Ordering::Relaxed) {
                 // LMR failed high: doDeeper/doShallower before re-search.
                 //
@@ -4132,7 +4139,13 @@ fn negamax(
                     do_deeper_adj = -1;
                 }
 
-                lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth + do_deeper_adj, ply + 1, !cut_node);
+                // Mutate new_depth itself so the adjustment persists into the
+                // full-window PVS re-search below (SF/Obsidian/Alexandria/
+                // Stormphrax/Integral/Reckless all mutate newDepth; the old
+                // inline form ran the PV re-search SHALLOWER than the
+                // zero-window search that justified it; audit T1.3).
+                new_depth += do_deeper_adj;
+                lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
 
                 // EXPERIMENT: post-LMR-research cont-hist nudge (Berserk pattern,
                 // search.c:747-748). After the zero-window re-search, nudge cont-hist
