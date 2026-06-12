@@ -15071,3 +15071,60 @@ need no changes (oracle committed on feature/psqt-inference).
 Meta-lesson: internal verifiers (CODA_VERIFY_NNUE, lane fuzz) compare
 the engine to itself; new net-format features need a TRAINER-parity
 oracle as part of the smoke battery — adopted as standing practice.
+
+## 2026-06-13 — search.rs audit wave 2 (atlas): four H1s merged (+11.7 nominal); asp-reset H0 inverts #1935 diagnosis; 3 still in flight
+
+Eight branches from docs/search_audit_2026-06-11.md wave 2 (all vs main
+bench 2,428,489); merged in order se-in-check -> qs-budget ->
+lmr-research-fixes -> multicut-no-decisive, verify-between, main bench
+now 2,523,846:
+
+- **#1943 atlas/se-in-check H1 +5.1 ±3.0** (14,700 games, [0,3]) —
+  MERGED. Dropped the zero-engine-consensus !in_check gate from SE
+  (T2.12): deep in-check nodes (TT move often the single forced evasion
+  — maximally singular) now get SE/multicut/negative-ext. Biggest
+  wave-2 win, and was never probed in 200+ prior experiments.
+- **#1946 atlas/qs-budget H1 +3.1 ±2.2** (27,408 games, [0,3]) —
+  MERGED. T2.10: QS capture budget counts only SEARCHED moves (the old
+  counter charged delta/SEE-pruned moves, which is why SPSA detuned the
+  cap to 24 ≈ off vs "Obsidian: 3"), non-losing + promo gates (SF
+  form), quiet-evasion skip once not losing, QS_MAX_CAPTURES 24->5.
+  Another confirmed "SPSA detunes a mis-implemented feature" case (cf.
+  capture history 27x, SEE quiet).
+- **#1939 atlas/lmr-research-fixes H1 +1.9 ±2.8** (16,696 games,
+  [-3,3]) — MERGED. T1.2 stale reductions[ply] zeroed after the reduced
+  search (children of fail-high re-searches no longer feed hindsight a
+  false prior_reduction) + T1.3 doDeeper adj persists into the
+  full-window re-search. FOLLOW-UP QUEUED: hindsight cluster retune
+  (HINDSIGHT_THRESH, HINDSIGHT_MIN_DEPTH_10X ~500-1000 iters) — the
+  min-depth floor-pin was plausibly compensation for the polluted
+  signal and should be re-derived on the fixed trunk.
+- **#1941 atlas/multicut-no-decisive H1 +1.6 ±2.5** (18,818 games,
+  [-3,3]) — MERGED. T1.4: multicut returns singular_beta instead of an
+  unproven reduced-depth excluded-TT-move mate/TB score (was TT-stored
+  at full depth as LOWER). Adds tt::is_decisive() (mate OR TB range) —
+  the T2.3 prerequisite for the corrhist overhaul.
+- **#1944 atlas/asp-failhigh-reset H0 -4.6 ±3.3** (11,648 games,
+  [0,3]). DIAGNOSIS INVERTED vs the #1935 post-mortem: the reset/cap
+  half alone is WORSE (-4.6) than the bundle (-0.9), so the fail-high
+  depth-reduction reset/cap is the regressor and avg-centring was
+  partially masking it. Reading: Coda's monotonic asp_depth decrement —
+  unlike the consensus engines' — is calibrated INTO the current
+  aspiration contraction shapes ((3a+5b)/8 etc., individually SPRT'd);
+  resetting it re-searches fail-lows at full depth that the contraction
+  schedule already prices as cheap. Do not retry reset/cap standalone;
+  if aspiration is revisited, it needs the whole-loop consensus port
+  (centring + delta + contraction + reset together) as one calibrated
+  unit. Aspiration axis closed for now (2 H0s).
+- **#1942 atlas/bnfp-victim** still running: +1.3 ±2.3 at 23k, LLR
+  0.58 ->H1 trending.
+- **#1945 atlas/pcm-faillow-bonus** still running: -0.7 ±2.3 at 25k,
+  LLR -1.79 ->H0 trending. If H0: combined with #1931 (-1.6), the
+  fail-low signal family is hostile in Coda's history stack — close
+  the T1.1/T2.13 axis, keep the existing UPPER-bonus as-is.
+- **#1947 atlas/perf-node-entry** still running: -0.3 ±2.3 at 23k
+  ([-2,1] non-regression), LLR -0.06. Bench-identical hoist of the
+  threat/xray block below node-entry exits + QS probe reuse.
+
+Wave-2 merged total: +11.7 nominal on top of wave 1's +4.7. Audit
+running total ~+16 from 13 probes (9 H1-or-merged, 4 H0).
