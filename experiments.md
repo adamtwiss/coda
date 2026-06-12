@@ -15221,3 +15221,17 @@ durable wins from the arc: the trainer-parity oracle (now standing
 smoke-battery practice) and the sparse-affine recipe lesson
 (init_with_effective_input_size + per-weight optimiser params for ANY
 new sparse-input branch).
+
+## 2026-06-14 — #1940 H0 -0.3: un-boosted malus (audit T2.15) — symmetric-coupled malus confirmed
+
+experiment/malus-unboosted (decouple quiet-history malus from the
+NFH/depth boost multipliers that the bonus side gets; malus uses plain
+depth-linear formula): H0 at -0.3 +-1.5 after 57k games. Together with
+tune #1922 (SPSA pinned all six split params at symmetric values), this
+closes the malus-shape axis from both directions: neither asymmetric
+MAGNITUDE (#1922) nor asymmetric BOOSTING (#1940) beats the symmetric
+coupled form at our history sizing. Cross-engine asymmetric-malus
+consensus (14/16 engines) does not transfer — consistent with the
+banked "naive ordering ports don't transfer; 4D threat-aware history
+already encodes the gradient" pattern. Axis closed unless a future
+history-rework reopens it.
