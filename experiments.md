@@ -15298,3 +15298,27 @@ factor; tm_iter_bmc counter stays as a diagnostic only. Remaining TM
 tracks: B1 (stability-table tunables, queued for next LTC production
 tune), B2 (one-sided falling-eval), B4 (don't-deepen), C1/C2/C3
 (ponder-side, needs ponder-RR methodology).
+
+## 2026-06-14 — #1962 H0 -1.8: PSQT v3 (SF-parity: PSQ-only + material prior) — untuned verdict; retune #1963 in flight
+
+psqt-v3 closed both structural deviations from SF's PSQT after Adam
+pushed back on parking the thread: (1) PSQ features only — threat
+columns are a concat'd zero constant in the trainer graph (elementwise
+mask constant fails GPU lowering: standalone Constant op has no kernel;
+the factoriser's concat-of-zeros shape is the proven path), saved block
+padded back to full width with exact zeros (verified 534,912/534,912
+zero in the .nnue tail); (2) material-prior init — own +cp/400, opp
+-cp/400, P 0.25..Q 2.25 trainer units. Trainer-parity oracle GREEN.
+
+Untuned SPRT vs w20 baseline (#1962, same branch both sides): H0 at
+-1.8 +-2.5 after 26k games — a major recovery from v2's -20 and v1's
+-29.6, i.e. the two SF-parity fixes were worth ~18 Elo, but the bypass
+still doesn't beat funnel-only untuned. Notable: trained net pulled the
+material prior mostly back into the funnel (effective PSQT material
+P~26cp N~91 R~104 Q~188, ~20-30%% offload — close to v2's equilibrium
+from random init), so the joint optimum genuinely wants only partial
+material in the linear branch. Ordering stats UNIFORMLY better (88.4%%
+first-move vs 83.8, pos2 3.6 vs 4.9) with 30%% more bench nodes and
+eval RMS 261 vs 329 — classic retune-on-branch signature (big tree
+shape change, near-flat Elo). #1963 core retune (1500 STC, 57 params)
+running per Adam; tuned-vs-baseline rerun decides the thread.
