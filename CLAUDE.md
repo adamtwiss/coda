@@ -893,36 +893,41 @@ Systematic approach for finding and fixing search feature issues. Each cycle com
 - Compare the specific feature implementation against 6-8 top engines with source code available. Engine sources are in `/home/adam/chess/engines/`.
 - **Only survey engines STRONGER than Coda** for "what should we do" consensus.
   Weaker engines' choices are not evidence (they may be weak *because* of them).
-  Coda currently ranks #19 in our local RR — engines #1-18 are the valid
-  reference set.
+  Coda currently ranks #7 in our local top-20 RR — **engines #1-6 are the
+  valid reference set** (Stockfish, Reckless, Berserk, Obsidian,
+  PlentyChess, Alexandria). A "14-of-16 engines do X" consensus that
+  leans on mid-table engines no longer carries weight; weigh agreement
+  among the six above us, and treat near-peers (Integral, Viridithas)
+  as corroboration only.
 
-**Current local RR (10+0.1, 420 games/engine, 2026-06-07)** — Elo relative to
-the pool, NOT absolute. Coda = #19 (+76). Survey only #1-18 for consensus:
+**Current local RR (10+0.1, ~218 games/engine, 2026-06-12, top-20 pool —
+includes every CCRL-top engine in C/C++/Rust)** — Elo relative to the
+pool, NOT absolute. Coda = #7 (+16), up from #14 a few days earlier
+(+25-30 banked on main that week; rivals-RR stretches internal Elo ~2×):
 
 | # | Engine | Elo | | # | Engine | Elo |
 |---|--------|-----|-|---|--------|-----|
-| 1 | Stockfish | +281 | | 12 | Rubichess | +129 |
-| 2 | Reckless | +249 | | 13 | Starzix | +114 |
-| 3 | Obsidian | +180 | | 14 | Halogen | +91 |
-| 4 | Berserk | +163 | | 15 | Quanticade | +88 |
-| 5 | PlentyChess | +159 | | 16 | Tarnished | +84 |
-| 6 | Alexandria | +157 | | 17 | Astra | +79 |
-| 7 | Clover | +151 | | 18 | Stormphrax | +77 |
-| 8 | Integral | +146 | | **19** | **Coda** | **+76** |
-| 9 | Viridithas | +142 | | 20 | Horsie | +65 |
-| 10 | Hobbes | +141 | | 22 | Koivisto | +55 |
-| 11 | Caissa | +136 | | 23 | Seer | +49 |
+| 1 | Stockfish | +148 | | 11 | Hobbes | −13 |
+| 2 | Reckless | +107 | | 12 | Astra | −21 |
+| 3 | Berserk | +66 | | 13 | Clover | −27 |
+| 4 | Obsidian | +66 | | 14 | Stormphrax | −32 |
+| 5 | PlentyChess | +48 | | 15 | Halogen | −32 |
+| 6 | Alexandria | +37 | | 16 | Quanticade | −40 |
+| **7** | **Coda** | **+16** | | 17 | Starzix | −58 |
+| 8 | Integral | −2 | | 18 | Tarnished | −61 |
+| 9 | Viridithas | −2 | | 19 | Motor | −63 |
+| 10 | Caissa | −11 | | 20 | Clarity | −119 |
 
-Below Coda (NOT reference for "should we"): Motor +63, Koivisto, Seer,
-PZChessBot, Clarity, Velvet, Altair, BlackMarlin, Arasan, Igel, then
-Tucano −108, Wasp, Midnight, Winter, Minic, Weiss, Ethereal, GoChess,
-Texel, Laser, Demolito, Crafty −545, Monolith −561. **Monolith/Crafty/
-Greko/Rodent are 500-600+ Elo behind us — do NOT cite them as references.**
+Engines below Coda (Integral, Viridithas, Caissa, Hobbes, Clover,
+Halogen, Starzix, Quanticade, Tarnished, Astra, Stormphrax, and the
+rest of the historical pool: Horsie, Koivisto, Seer, Motor, Clarity,
+Velvet, ... down to Crafty/Monolith at −500+) are NOT references for
+"should we" consensus. **Monolith/Crafty/Greko/Rodent are 500-600+
+Elo behind us — do NOT cite them as references.**
 
-Reference engines for cross-engine review (strongest first, all #1-18):
-Stockfish, Reckless (Rust), Obsidian, Berserk, PlentyChess, Alexandria,
-Clover, Integral, Viridithas (Rust), Hobbes, Caissa, Rubichess, Starzix,
-Halogen, Quanticade, Tarnished, Astra, Stormphrax.
+Reference engines for cross-engine review (strongest first, the #1-6
+set): Stockfish, Reckless (Rust), Berserk, Obsidian, PlentyChess,
+Alexandria.
 - For each engine: exact formula, gating conditions, position in move loop (before/after MakeMove), depth variable used (raw depth vs lmrDepth), history adjustments, numeric values.
 - Common structural issues found so far:
   - **Pre-move vs post-move**: Pruning after MakeMove wastes make/unmake + NNUE push/pop per pruned move, and makes the feature redundant with earlier pruning (futility, LMP catch most candidates first).
