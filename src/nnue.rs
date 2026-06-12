@@ -381,13 +381,11 @@ unsafe fn simd_acc_fused_avx2(
     sub_rows: &[&[i16]],
     h: usize,
 ) {
-    // 12 AVX-2 registers × 16 i16 = 192 elements per chunk — for v9
-    // hidden_size=768 each weight row is read 4× instead of 6× under the
-    // previous REGS=8 / CHUNK=128 tile. Direct i16 add has no i8→i16
-    // expansion temps, so 12 YMM accumulators + ~3 for address/loop temps
-    // sit comfortably in AVX-2's 16-YMM register file. Same architectural
-    // pattern as the AVX-512 REGS=24 (#926 +1.5 Elo H1) but scaled to AVX-2's
-    // smaller register file.
+    // 12 AVX-2 registers × 16 i16 = 192 elements per chunk. Direct i16 add
+    // has no i8→i16 expansion temps, so 12 YMM accumulators + ~3 for
+    // address/loop temps sit comfortably in AVX-2's 16-YMM register file.
+    // Same architectural pattern as the AVX-512 REGS=24 (#926 +1.5 Elo H1)
+    // but scaled to AVX-2's smaller register file.
     const REGS: usize = 12;
     const CHUNK: usize = REGS * 16;
 
@@ -396,63 +394,52 @@ unsafe fn simd_acc_fused_avx2(
 
     let mut offset = 0;
 
-    // Full-chunk fast path. nregs == REGS == 12 statically, so the inner
-    // loops fully unroll without runtime dispatch. For h % CHUNK == 0
-    // (v9 hidden_size 768 is 4× CHUNK) the entire body is this loop and
-    // the tail below never runs. Atlas perf annotate (2026-05-06) showed
-    // the previous unified loop emitting a switch on nregs covering
-    // values 2-12 even though only nregs=12 is ever taken on v9 — that
-    // dispatch was ~9% of total eval cycles.
-    while offset + CHUNK <= h {
-        let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
-        for i in 0..REGS {
-            regs[i] = _mm256_loadu_si256(src_ptr.add(offset + i * 16) as *const __m256i);
-        }
-        for row in add_rows {
-            let row_ptr = row.as_ptr().add(offset);
-            for i in 0..REGS {
-                let w = _mm256_loadu_si256(row_ptr.add(i * 16) as *const __m256i);
-                regs[i] = _mm256_add_epi16(regs[i], w);
+    // Shared body parameterised on the register count so every pass below
+    // runs with a COMPILE-TIME nregs and fully unrolls. Atlas perf
+    // annotate (2026-05-06) showed a unified runtime-nregs loop emitting
+    // a switch covering nregs 2-12 — ~9% of total eval cycles. Tiling per
+    // hidden size: h=768 → 4×CHUNK, no tail; h=1024 (current prod) →
+    // 5×CHUNK + ONE const 4-register (64-element) pass. The runtime-nregs
+    // tail only fires for h not a multiple of 64.
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
+            for i in 0..nregs {
+                regs[i] = _mm256_loadu_si256(src_ptr.add(offset + i * 16) as *const __m256i);
             }
-        }
-        for row in sub_rows {
-            let row_ptr = row.as_ptr().add(offset);
-            for i in 0..REGS {
-                let w = _mm256_loadu_si256(row_ptr.add(i * 16) as *const __m256i);
-                regs[i] = _mm256_sub_epi16(regs[i], w);
+            for row in add_rows {
+                let row_ptr = row.as_ptr().add(offset);
+                for i in 0..nregs {
+                    let w = _mm256_loadu_si256(row_ptr.add(i * 16) as *const __m256i);
+                    regs[i] = _mm256_add_epi16(regs[i], w);
+                }
             }
-        }
-        for i in 0..REGS {
-            _mm256_storeu_si256(dst_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
-        }
-        offset += CHUNK;
+            for row in sub_rows {
+                let row_ptr = row.as_ptr().add(offset);
+                for i in 0..nregs {
+                    let w = _mm256_loadu_si256(row_ptr.add(i * 16) as *const __m256i);
+                    regs[i] = _mm256_sub_epi16(regs[i], w);
+                }
+            }
+            for i in 0..nregs {
+                _mm256_storeu_si256(dst_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
+            }
+        }};
     }
 
-    // Tail: any leftover < CHUNK elements. Runtime nregs dispatch only
-    // here, never on the v9 hot path.
+    while offset + CHUNK <= h {
+        apply_chunk!(REGS);
+        offset += CHUNK;
+    }
+    // Const 4-register (64-element) passes — h=1024 takes exactly one.
+    while offset + 64 <= h {
+        apply_chunk!(4);
+        offset += 64;
+    }
+    // Runtime tail for h not a multiple of 64.
     if offset < h {
-        let nregs = (h - offset).div_ceil(16);
-        let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
-        for i in 0..nregs {
-            regs[i] = _mm256_loadu_si256(src_ptr.add(offset + i * 16) as *const __m256i);
-        }
-        for row in add_rows {
-            let row_ptr = row.as_ptr().add(offset);
-            for i in 0..nregs {
-                let w = _mm256_loadu_si256(row_ptr.add(i * 16) as *const __m256i);
-                regs[i] = _mm256_add_epi16(regs[i], w);
-            }
-        }
-        for row in sub_rows {
-            let row_ptr = row.as_ptr().add(offset);
-            for i in 0..nregs {
-                let w = _mm256_loadu_si256(row_ptr.add(i * 16) as *const __m256i);
-                regs[i] = _mm256_sub_epi16(regs[i], w);
-            }
-        }
-        for i in 0..nregs {
-            _mm256_storeu_si256(dst_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
-        }
+        apply_chunk!((h - offset).div_ceil(16));
     }
 }
 
@@ -469,13 +456,20 @@ unsafe fn simd_acc_fused_avx512(
     sub_rows: &[&[i16]],
     h: usize,
 ) {
-    // 24 AVX-512 registers × 32 i16 = 768 elements per chunk — the v9 hidden_size.
-    // Single outer iteration, each weight row read once. Mirrors Reckless's
-    // REGISTERS=L1_SIZE/I16_LANES register-tiling pattern (commit 381ac2f3
-    // +4.90 STC). Direct `add_i16` operations have low register pressure
-    // (no temp i8→i16 conversion like the threat-side apply needs), so 24 ZMM
-    // accumulators + a few for src/dst pointers + add_w/sub_w loads fit
-    // comfortably in AVX-512's 32-ZMM file.
+    // 24 AVX-512 registers × 32 i16 = 768 elements per chunk. Mirrors
+    // Reckless's REGISTERS=L1_SIZE/I16_LANES register-tiling pattern
+    // (commit 381ac2f3 +4.90 STC). Direct `add_i16` operations have low
+    // register pressure (no temp i8→i16 conversion like the threat-side
+    // apply needs), so 24 ZMM accumulators + a few for src/dst pointers +
+    // add_w/sub_w loads fit comfortably in AVX-512's 32-ZMM file.
+    //
+    // The previous unified loop computed nregs at runtime per iteration —
+    // fine at h=768 (one pass, nregs always 24) but at h=1024 (current
+    // prod) it alternated nregs 24/8, putting LLVM's nregs switch on the
+    // hot path (same dispatch cost class as the AVX-2 fused kernel's
+    // measured ~9%). Tiling now: h=768 → one const 24-reg pass; h=1024 →
+    // one const 24-reg + one const 8-reg (256-element) pass. The
+    // runtime-nregs tail only fires for h not a multiple of 256.
     const REGS: usize = 24;
     const LANE: usize = 32;
     const CHUNK: usize = REGS * LANE;
@@ -484,35 +478,46 @@ unsafe fn simd_acc_fused_avx512(
     let src_ptr = src.as_ptr();
 
     let mut offset = 0;
-    while offset < h {
-        let nregs = (h - offset).min(CHUNK).div_ceil(LANE);
 
-        let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
-        for i in 0..nregs {
-            regs[i] = _mm512_loadu_si512(src_ptr.add(offset + i * LANE) as *const __m512i);
-        }
-
-        for row in add_rows {
-            let row_ptr = row.as_ptr().add(offset);
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
             for i in 0..nregs {
-                let w = _mm512_loadu_si512(row_ptr.add(i * LANE) as *const __m512i);
-                regs[i] = _mm512_add_epi16(regs[i], w);
+                regs[i] = _mm512_loadu_si512(src_ptr.add(offset + i * LANE) as *const __m512i);
             }
-        }
-
-        for row in sub_rows {
-            let row_ptr = row.as_ptr().add(offset);
+            for row in add_rows {
+                let row_ptr = row.as_ptr().add(offset);
+                for i in 0..nregs {
+                    let w = _mm512_loadu_si512(row_ptr.add(i * LANE) as *const __m512i);
+                    regs[i] = _mm512_add_epi16(regs[i], w);
+                }
+            }
+            for row in sub_rows {
+                let row_ptr = row.as_ptr().add(offset);
+                for i in 0..nregs {
+                    let w = _mm512_loadu_si512(row_ptr.add(i * LANE) as *const __m512i);
+                    regs[i] = _mm512_sub_epi16(regs[i], w);
+                }
+            }
             for i in 0..nregs {
-                let w = _mm512_loadu_si512(row_ptr.add(i * LANE) as *const __m512i);
-                regs[i] = _mm512_sub_epi16(regs[i], w);
+                _mm512_storeu_si512(dst_ptr.add(offset + i * LANE) as *mut __m512i, regs[i]);
             }
-        }
+        }};
+    }
 
-        for i in 0..nregs {
-            _mm512_storeu_si512(dst_ptr.add(offset + i * LANE) as *mut __m512i, regs[i]);
-        }
-
+    while offset + CHUNK <= h {
+        apply_chunk!(REGS);
         offset += CHUNK;
+    }
+    // Const 8-register (256-element) passes — h=1024 takes exactly one.
+    while offset + 8 * LANE <= h {
+        apply_chunk!(8);
+        offset += 8 * LANE;
+    }
+    // Runtime tail for h not a multiple of 256.
+    if offset < h {
+        apply_chunk!((h - offset).div_ceil(LANE));
     }
 }
 
@@ -580,13 +585,12 @@ unsafe fn finny_batch_apply_avx2(
     adds: &[usize],
     subs: &[usize],
 ) {
-    // 12 AVX-2 registers × 16 i16 = 192 elements per chunk. v9 hidden_size=768
-    // weight rows are read 4× per refresh instead of 6× under the previous
-    // REGS=8 / CHUNK=128 tile. Most of the OB fleet is AVX-2-only (no AVX-512),
-    // so this path covers the bulk of fleet workers — the AVX-512 sibling
-    // change covers Zeus only. Direct i16 add (no expansion temps) keeps 12
-    // YMM accumulators + ~3 temps within AVX-2's 16-YMM register file even
-    // when the delta loop persists them across many add/sub iterations.
+    // 12 AVX-2 registers × 16 i16 = 192 elements per chunk. Most of the
+    // OB fleet is AVX-2-only (no AVX-512), so this path covers the bulk
+    // of fleet workers — the AVX-512 sibling covers Zeus/thor. Direct
+    // i16 add (no expansion temps) keeps 12 YMM accumulators + ~3 temps
+    // within AVX-2's 16-YMM register file even when the delta loop
+    // persists them across many add/sub iterations.
     const REGS: usize = 12;
     const CHUNK: usize = REGS * 16; // 192 i16 elements per chunk
 
@@ -595,59 +599,47 @@ unsafe fn finny_batch_apply_avx2(
 
     let mut offset = 0;
 
-    // Full-chunk fast path with REGS as a compile-time constant — same
-    // dispatch-elimination pattern as simd_acc_fused_avx2. Without this
-    // split LLVM emits a switch on nregs covering values 2..=REGS even
-    // though for v9 (h=768, CHUNK=192) nregs is always REGS.
-    while offset + CHUNK <= h {
-        let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
-        for i in 0..REGS {
-            regs[i] = _mm256_loadu_si256(acc_ptr.add(offset + i * 16) as *const __m256i);
-        }
-        for &idx in adds {
-            let row = w_ptr.add(idx * h + offset);
-            for i in 0..REGS {
-                let w = _mm256_loadu_si256(row.add(i * 16) as *const __m256i);
-                regs[i] = _mm256_add_epi16(regs[i], w);
+    // Compile-time nregs everywhere — same dispatch-elimination pattern
+    // as simd_acc_fused_avx2. h=768 → 4×CHUNK; h=1024 (current prod) →
+    // 5×CHUNK + one const 4-register (64-element) pass. Runtime-nregs
+    // tail only for h not a multiple of 64.
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
+            for i in 0..nregs {
+                regs[i] = _mm256_loadu_si256(acc_ptr.add(offset + i * 16) as *const __m256i);
             }
-        }
-        for &idx in subs {
-            let row = w_ptr.add(idx * h + offset);
-            for i in 0..REGS {
-                let w = _mm256_loadu_si256(row.add(i * 16) as *const __m256i);
-                regs[i] = _mm256_sub_epi16(regs[i], w);
+            for &idx in adds {
+                let row = w_ptr.add(idx * h + offset);
+                for i in 0..nregs {
+                    let w = _mm256_loadu_si256(row.add(i * 16) as *const __m256i);
+                    regs[i] = _mm256_add_epi16(regs[i], w);
+                }
             }
-        }
-        for i in 0..REGS {
-            _mm256_storeu_si256(acc_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
-        }
-        offset += CHUNK;
+            for &idx in subs {
+                let row = w_ptr.add(idx * h + offset);
+                for i in 0..nregs {
+                    let w = _mm256_loadu_si256(row.add(i * 16) as *const __m256i);
+                    regs[i] = _mm256_sub_epi16(regs[i], w);
+                }
+            }
+            for i in 0..nregs {
+                _mm256_storeu_si256(acc_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
+            }
+        }};
     }
 
-    // Tail: any leftover < CHUNK i16. Never fires on v9 production net.
+    while offset + CHUNK <= h {
+        apply_chunk!(REGS);
+        offset += CHUNK;
+    }
+    while offset + 64 <= h {
+        apply_chunk!(4);
+        offset += 64;
+    }
     if offset < h {
-        let nregs = (h - offset).div_ceil(16);
-        let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
-        for i in 0..nregs {
-            regs[i] = _mm256_loadu_si256(acc_ptr.add(offset + i * 16) as *const __m256i);
-        }
-        for &idx in adds {
-            let row = w_ptr.add(idx * h + offset);
-            for i in 0..nregs {
-                let w = _mm256_loadu_si256(row.add(i * 16) as *const __m256i);
-                regs[i] = _mm256_add_epi16(regs[i], w);
-            }
-        }
-        for &idx in subs {
-            let row = w_ptr.add(idx * h + offset);
-            for i in 0..nregs {
-                let w = _mm256_loadu_si256(row.add(i * 16) as *const __m256i);
-                regs[i] = _mm256_sub_epi16(regs[i], w);
-            }
-        }
-        for i in 0..nregs {
-            _mm256_storeu_si256(acc_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
-        }
+        apply_chunk!((h - offset).div_ceil(16));
     }
 }
 
@@ -5356,6 +5348,10 @@ unsafe fn finny_batch_apply_avx512(
     // 32-ZMM file. The threat-side `apply_deltas_avx512` couldn't go past
     // REGS=16 because of `_mm512_cvtepi8_epi16` temps; this path doesn't
     // have that constraint.
+    // Compile-time nregs everywhere (see simd_acc_fused_avx512): h=768 →
+    // one const 24-reg pass; h=1024 (current prod) → one const 24-reg +
+    // one const 8-reg (256-element) pass. Runtime-nregs tail only for h
+    // not a multiple of 256.
     const REGS: usize = 24;
     const LANE: usize = 32; // 32 i16 per ZMM
     const CHUNK: usize = REGS * LANE; // 768 elements per chunk
@@ -5364,35 +5360,44 @@ unsafe fn finny_batch_apply_avx512(
     let w_ptr = input_weights.as_ptr();
 
     let mut offset = 0;
-    while offset < h {
-        let nregs = (h - offset).min(CHUNK).div_ceil(LANE);
 
-        let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
-        for i in 0..nregs {
-            regs[i] = _mm512_loadu_si512(acc_ptr.add(offset + i * LANE) as *const __m512i);
-        }
-
-        for &idx in adds {
-            let row = w_ptr.add(idx * h + offset);
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
             for i in 0..nregs {
-                let w = _mm512_loadu_si512(row.add(i * LANE) as *const __m512i);
-                regs[i] = _mm512_add_epi16(regs[i], w);
+                regs[i] = _mm512_loadu_si512(acc_ptr.add(offset + i * LANE) as *const __m512i);
             }
-        }
-
-        for &idx in subs {
-            let row = w_ptr.add(idx * h + offset);
+            for &idx in adds {
+                let row = w_ptr.add(idx * h + offset);
+                for i in 0..nregs {
+                    let w = _mm512_loadu_si512(row.add(i * LANE) as *const __m512i);
+                    regs[i] = _mm512_add_epi16(regs[i], w);
+                }
+            }
+            for &idx in subs {
+                let row = w_ptr.add(idx * h + offset);
+                for i in 0..nregs {
+                    let w = _mm512_loadu_si512(row.add(i * LANE) as *const __m512i);
+                    regs[i] = _mm512_sub_epi16(regs[i], w);
+                }
+            }
             for i in 0..nregs {
-                let w = _mm512_loadu_si512(row.add(i * LANE) as *const __m512i);
-                regs[i] = _mm512_sub_epi16(regs[i], w);
+                _mm512_storeu_si512(acc_ptr.add(offset + i * LANE) as *mut __m512i, regs[i]);
             }
-        }
+        }};
+    }
 
-        for i in 0..nregs {
-            _mm512_storeu_si512(acc_ptr.add(offset + i * LANE) as *mut __m512i, regs[i]);
-        }
-
+    while offset + CHUNK <= h {
+        apply_chunk!(REGS);
         offset += CHUNK;
+    }
+    while offset + 8 * LANE <= h {
+        apply_chunk!(8);
+        offset += 8 * LANE;
+    }
+    if offset < h {
+        apply_chunk!((h - offset).div_ceil(LANE));
     }
 }
 

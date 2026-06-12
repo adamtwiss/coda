@@ -1872,9 +1872,8 @@ unsafe fn apply_deltas_avx512(
     let src_ptr = src.as_ptr();
     let w_ptr = threat_weights.as_ptr();
 
-    // 16 AVX-512 registers × 32 i16 = 512 elements per chunk. Each weight row
-    // is read 2× across the v9 hidden_size=768 instead of 3× under REGS=8 — a
-    // partial step toward Reckless's REGISTERS=full L1 tile (commit 381ac2f3
+    // 16 AVX-512 registers × 32 i16 = 512 elements per chunk — a partial
+    // step toward Reckless's REGISTERS=full L1 tile (commit 381ac2f3
     // +4.90 STC). REGS=24 here regressed −4.4% on Zen 5 because the
     // i8→i16 expansion (`_mm512_cvtepi8_epi16`) needs temporary registers,
     // and 24 + temps spilled past the 32 ZMM file. PSQ-side `simd_acc_fused_avx512`
@@ -1883,60 +1882,69 @@ unsafe fn apply_deltas_avx512(
     const CHUNK: usize = REGS * 32; // 512 elements
 
     let mut offset = 0;
-    while offset < hidden_size {
-        let chunk_size = (hidden_size - offset).min(CHUNK);
-        let nregs = chunk_size.div_ceil(32);
 
-        // Seed chunk accumulator from src (parent).
-        let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
-        for i in 0..nregs {
-            regs[i] = _mm512_loadu_si512(src_ptr.add(offset + i * 32) as *const _);
-        }
-
-        // Paired add+sub. _mm512_cvtepi8_epi16 widens 32 i8 (loaded as a
-        // 256-bit ymm) into 32 i16 in a 512-bit zmm — sign-extending in a
-        // single VPMOVSXBW instruction. Same pattern as the AVX2 helper
-        // but at twice the width.
-        let mut ai = 0;
-        let mut si = 0;
-        while ai < adds.len() && si < subs.len() {
-            let aw = w_ptr.add(adds[ai] * hidden_size + offset);
-            let sw = w_ptr.add(subs[si] * hidden_size + offset);
+    // Compile-time nregs everywhere — same dispatch-elimination split as
+    // apply_deltas_avx2. h=1024 (current prod) → two const 16-reg passes;
+    // h=768 → one const 16-reg + one const 8-reg (256-element) pass.
+    // Runtime-nregs tail only for h not a multiple of 256.
+    //
+    // Paired add+sub inside: _mm512_cvtepi8_epi16 widens 32 i8 (loaded as
+    // a 256-bit ymm) into 32 i16 in a 512-bit zmm — sign-extending in a
+    // single VPMOVSXBW instruction. Same pattern as the AVX2 helper but
+    // at twice the width.
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            // Seed chunk accumulator from src (parent).
+            let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
             for i in 0..nregs {
-                let add_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(aw.add(i * 32) as *const __m256i));
-                let sub_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(sw.add(i * 32) as *const __m256i));
-                regs[i] = _mm512_sub_epi16(_mm512_add_epi16(regs[i], add_w), sub_w);
+                regs[i] = _mm512_loadu_si512(src_ptr.add(offset + i * 32) as *const _);
             }
-            ai += 1;
-            si += 1;
-        }
-
-        // Remaining adds.
-        while ai < adds.len() {
-            let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+            let mut ai = 0;
+            let mut si = 0;
+            while ai < adds.len() && si < subs.len() {
+                let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+                let sw = w_ptr.add(subs[si] * hidden_size + offset);
+                for i in 0..nregs {
+                    let add_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(aw.add(i * 32) as *const __m256i));
+                    let sub_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(sw.add(i * 32) as *const __m256i));
+                    regs[i] = _mm512_sub_epi16(_mm512_add_epi16(regs[i], add_w), sub_w);
+                }
+                ai += 1;
+                si += 1;
+            }
+            while ai < adds.len() {
+                let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+                for i in 0..nregs {
+                    let add_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(aw.add(i * 32) as *const __m256i));
+                    regs[i] = _mm512_add_epi16(regs[i], add_w);
+                }
+                ai += 1;
+            }
+            while si < subs.len() {
+                let sw = w_ptr.add(subs[si] * hidden_size + offset);
+                for i in 0..nregs {
+                    let sub_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(sw.add(i * 32) as *const __m256i));
+                    regs[i] = _mm512_sub_epi16(regs[i], sub_w);
+                }
+                si += 1;
+            }
             for i in 0..nregs {
-                let add_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(aw.add(i * 32) as *const __m256i));
-                regs[i] = _mm512_add_epi16(regs[i], add_w);
+                _mm512_storeu_si512(dst_ptr.add(offset + i * 32) as *mut _, regs[i]);
             }
-            ai += 1;
-        }
+        }};
+    }
 
-        // Remaining subs.
-        while si < subs.len() {
-            let sw = w_ptr.add(subs[si] * hidden_size + offset);
-            for i in 0..nregs {
-                let sub_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(sw.add(i * 32) as *const __m256i));
-                regs[i] = _mm512_sub_epi16(regs[i], sub_w);
-            }
-            si += 1;
-        }
-
-        // Store registers back.
-        for i in 0..nregs {
-            _mm512_storeu_si512(dst_ptr.add(offset + i * 32) as *mut _, regs[i]);
-        }
-
+    while offset + CHUNK <= hidden_size {
+        apply_chunk!(REGS);
         offset += CHUNK;
+    }
+    while offset + 8 * 32 <= hidden_size {
+        apply_chunk!(8);
+        offset += 8 * 32;
+    }
+    if offset < hidden_size {
+        apply_chunk!((hidden_size - offset).div_ceil(32));
     }
 }
 
@@ -2006,35 +2014,42 @@ unsafe fn add_weight_rows_avx2(
     const CHUNK: usize = REGS * 16; // 128 elements
 
     let mut offset = 0;
-    while offset < hidden_size {
-        let chunk_size = (hidden_size - offset).min(CHUNK);
-        let nregs = chunk_size.div_ceil(16);
 
-        // Load accumulator chunk into registers
-        let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
-        for i in 0..nregs {
-            regs[i] = _mm256_loadu_si256(dst_ptr.add(offset + i * 16) as *const __m256i);
-        }
-
-        // Add all weight rows with prefetch for next row
-        for (fi, &idx) in indices.iter().enumerate() {
-            let aw = w_ptr.add(idx * hidden_size + offset);
-            // Prefetch next feature's weight row
-            if fi + 1 < indices.len() {
-                _mm_prefetch(w_ptr.add(indices[fi + 1] * hidden_size + offset) as *const i8, _MM_HINT_T0);
-            }
+    // Compile-time nregs on the main loop (h=768 and h=1024 both divide
+    // CHUNK evenly); runtime-nregs only in the off-boundary tail.
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            // Load accumulator chunk into registers
+            let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
             for i in 0..nregs {
-                let add_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(aw.add(i * 16) as *const __m128i));
-                regs[i] = _mm256_add_epi16(regs[i], add_w);
+                regs[i] = _mm256_loadu_si256(dst_ptr.add(offset + i * 16) as *const __m256i);
             }
-        }
+            // Add all weight rows with prefetch for next row
+            for (fi, &idx) in indices.iter().enumerate() {
+                let aw = w_ptr.add(idx * hidden_size + offset);
+                // Prefetch next feature's weight row
+                if fi + 1 < indices.len() {
+                    _mm_prefetch(w_ptr.add(indices[fi + 1] * hidden_size + offset) as *const i8, _MM_HINT_T0);
+                }
+                for i in 0..nregs {
+                    let add_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(aw.add(i * 16) as *const __m128i));
+                    regs[i] = _mm256_add_epi16(regs[i], add_w);
+                }
+            }
+            // Store registers back
+            for i in 0..nregs {
+                _mm256_storeu_si256(dst_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
+            }
+        }};
+    }
 
-        // Store registers back
-        for i in 0..nregs {
-            _mm256_storeu_si256(dst_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
-        }
-
+    while offset + CHUNK <= hidden_size {
+        apply_chunk!(REGS);
         offset += CHUNK;
+    }
+    if offset < hidden_size {
+        apply_chunk!((hidden_size - offset).div_ceil(16));
     }
 }
 
@@ -2058,37 +2073,44 @@ unsafe fn add_weight_rows_avx512(
     const CHUNK: usize = REGS * 32; // 256 elements
 
     let mut offset = 0;
-    while offset < hidden_size {
-        let chunk_size = (hidden_size - offset).min(CHUNK);
-        let nregs = chunk_size.div_ceil(32);
 
-        // Load existing dst chunk (the function adds to it, doesn't replace).
-        let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
-        for i in 0..nregs {
-            regs[i] = _mm512_loadu_si512(dst_ptr.add(offset + i * 32) as *const _);
-        }
-
-        // Add all weight rows; prefetch the next row to hide L3 latency.
-        for (fi, &idx) in indices.iter().enumerate() {
-            let aw = w_ptr.add(idx * hidden_size + offset);
-            if fi + 1 < indices.len() {
-                _mm_prefetch(
-                    w_ptr.add(indices[fi + 1] * hidden_size + offset) as *const i8,
-                    _MM_HINT_T0,
-                );
-            }
+    // Compile-time nregs on the main loop (h=768 and h=1024 both divide
+    // CHUNK evenly); runtime-nregs only in the off-boundary tail.
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            // Load existing dst chunk (the function adds to it, doesn't replace).
+            let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
             for i in 0..nregs {
-                let add_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(aw.add(i * 32) as *const __m256i));
-                regs[i] = _mm512_add_epi16(regs[i], add_w);
+                regs[i] = _mm512_loadu_si512(dst_ptr.add(offset + i * 32) as *const _);
             }
-        }
+            // Add all weight rows; prefetch the next row to hide L3 latency.
+            for (fi, &idx) in indices.iter().enumerate() {
+                let aw = w_ptr.add(idx * hidden_size + offset);
+                if fi + 1 < indices.len() {
+                    _mm_prefetch(
+                        w_ptr.add(indices[fi + 1] * hidden_size + offset) as *const i8,
+                        _MM_HINT_T0,
+                    );
+                }
+                for i in 0..nregs {
+                    let add_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(aw.add(i * 32) as *const __m256i));
+                    regs[i] = _mm512_add_epi16(regs[i], add_w);
+                }
+            }
+            // Store back.
+            for i in 0..nregs {
+                _mm512_storeu_si512(dst_ptr.add(offset + i * 32) as *mut _, regs[i]);
+            }
+        }};
+    }
 
-        // Store back.
-        for i in 0..nregs {
-            _mm512_storeu_si512(dst_ptr.add(offset + i * 32) as *mut _, regs[i]);
-        }
-
+    while offset + CHUNK <= hidden_size {
+        apply_chunk!(REGS);
         offset += CHUNK;
+    }
+    if offset < hidden_size {
+        apply_chunk!((hidden_size - offset).div_ceil(32));
     }
 }
 
