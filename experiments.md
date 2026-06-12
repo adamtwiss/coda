@@ -15280,3 +15280,21 @@ history-rework reopens it.
 Deferred: Tier-4 ponder atomics (tm/* work is active in that region —
 coordinate with Hercules); quality cleanup batch (bench-neutral,
 bundle when search.rs traffic quiets).
+
+## 2026-06-14 — #1956 H0 -2.7: BMC factor v2 (gated) — thread closed, counter reverts to diagnostic
+
+tm/bmc-factor-v2 (BMC spend factor gated on tm_best_stable >= 1, firing
+only in the orthogonal "stable at iteration end but churned inside"
+case) at LTC [0,3]: H0 at -2.7 +-2.5 after 16.8k games. v1 (#1950,
+ungated) was -8.1; the gate recovered ~5 Elo of the redundancy
+compounding but the remaining signal is still negative — with the
+Viridithas-family stability table + score-trend + node-fraction factors
+already responding to root churn, within-iteration churn carries no
+additional spendable information for us. SF's BMC works inside a
+DIFFERENTLY-SHAPED factor stack (their stability factor is not ours);
+this is the consensus-doesn't-transfer pattern, not an implementation
+bug (v1 mechanism was locally verified firing). Thread closed: drop the
+factor; tm_iter_bmc counter stays as a diagnostic only. Remaining TM
+tracks: B1 (stability-table tunables, queued for next LTC production
+tune), B2 (one-sided falling-eval), B4 (don't-deepen), C1/C2/C3
+(ponder-side, needs ponder-RR methodology).
