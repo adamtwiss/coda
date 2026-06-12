@@ -196,12 +196,25 @@ Polyglot .bin format. Weighted random selection. Polyglot Zobrist hashing with s
 - `Ponder` (check, default false)
 - `SyzygyPath` (string) — path to Syzygy tablebase files
 
-### Time Management
-- Soft allocation: timeLeft/movesLeft + 80% of increment
-- MoveOverhead subtracted from available time
-- Emergency mode below 1 second: cap at timeLeft/10
-- Default 25 moves left for sudden death
-- Cap at 50% remaining time
+### Time Management (Phase 13 model, 2026-05-26 — see `compute_tm_budgets`)
+- Viridithas-style windows: max = 60% of clock (absolute single-move
+  ceiling), hard = 46%, opt = 73% of (timeLeft/mtg + 94% inc) capped by
+  hard. Default mtg 24; no-inc sudden death uses mtg 40 with tighter
+  caps (max 15%, hard 10% of clock — flag-fall protection).
+- Phase multiplier on opt: 0.36 + 0.64·(1 − e^(−0.045·fullmove))
+  (Reckless pattern — spend less in the opening).
+- Dynamic factors on opt (the 3-factor model + extras): stability table
+  [2.50, 1.20, 0.90, 0.80, 0.75]; subtree/node-fraction multiplier;
+  score-trend drop term; aspiration fail-low factor 1 + 0.34·min(2, fl)
+  (applies to opt AND hard); forced-move exclusion-search multipliers
+  (×0.386 margin 400 @ d8, ×0.627 margin 170 @ d12).
+- abs_deadline = clock − MoveOverhead − 50ms: absolute forfeit guard,
+  checked first, no grace, no ponder exception. NO emergency mode —
+  the no-inc caps + abs_deadline replace the old timeLeft/10 rule.
+- Soft floor (stockpile prevention) on no-inc; ponderhit paths arm
+  absolute deadlines (H7). Ponder-path constants deliberately excluded
+  from `tunables!` (OB has no ponder).
+- Living detail + audit findings: `docs/tm_audit_2026-06-13.md`.
 
 ## NNUE Training (Bullet GPU)
 
