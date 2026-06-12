@@ -189,6 +189,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     // returns). Used by the ponder wait loop below so it waits for an actual
     // external ack rather than racing with search_smp's internal teardown.
     let external_stop: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    // Share the external-stop source with SearchInfo so search-side wait
+    // loops (stockpile-floor sleep) can poll it — info.stop can't serve
+    // there because the search sets it internally (TM audit 2026-06-13 A2).
+    info.external_stop = external_stop.clone();
     // Set when the running ponder is being abandoned because a NEW position+go
     // arrived (opponent didn't play the predicted ponder move). The search
     // thread checks this on its way out and skips emitting bestmove — its
@@ -286,8 +290,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 // Wait for any active search to finish before clearing state
                 if let Some(handle) = search_handle.take() {
                     suppress_bestmove.store(true, Ordering::Relaxed);
-                    external_stop.store(true, Ordering::Relaxed);
-                    stop_flag.store(true, Ordering::Relaxed);
+                    external_stop.store(true, Ordering::SeqCst);
+                    stop_flag.store(true, Ordering::SeqCst);
                     if let Ok(returned_info) = handle.join() {
                         info = returned_info;
                         stop_flag = info.stop.clone();
@@ -333,8 +337,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 let prev_was_pondermiss = pondermiss_pending;
                 if let Some(handle) = search_handle.take() {
                     suppress_bestmove.store(true, Ordering::Relaxed);
-                    external_stop.store(true, Ordering::Relaxed);
-                    stop_flag.store(true, Ordering::Relaxed);
+                    external_stop.store(true, Ordering::SeqCst);
+                    stop_flag.store(true, Ordering::SeqCst);
                     if let Ok(returned_info) = handle.join() {
                         info = returned_info;
                         stop_flag = info.stop.clone();
@@ -475,7 +479,12 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 // Clear ponderhit_time here too (not in search()), same race reason:
                 // if ponderhit arrives in the window between `go ponder` and search()
                 // entry, search() clearing it would clobber the legitimate deadline.
-                ponderhit_flag.store(0, Ordering::Relaxed);
+                // A1 unpublish order: hard FIRST (Release), then soft/floor —
+                // a protocol reader that observes hard == 0 never reads
+                // soft/floor, so their momentarily-stale values are inert.
+                // (No search thread is running here — handle joined above —
+                // so this ordering is protocol hygiene, not a live race.)
+                ponderhit_flag.store(0, Ordering::Release);
                 ponderhit_soft_flag.store(0, Ordering::Relaxed);
                 ponderhit_floor_flag.store(0, Ordering::Relaxed);
                 // Clear the abandon-ponder suppress flag — this new search
@@ -497,6 +506,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     shared_stop, shared_tt, shared_net,
                 ));
                 info.move_overhead = saved_overhead;
+                // Re-share the external-stop source on the placeholder (the
+                // moved-out search_info keeps the shared Arc; the placeholder
+                // would otherwise carry a fresh, never-signalled one).
+                info.external_stop = external_stop.clone();
                 ponderhit_flag = search_info.ponderhit_time.clone();
                 ponderhit_soft_flag = search_info.ponderhit_soft.clone();
                 ponderhit_floor_flag = search_info.ponderhit_floor.clone();
@@ -511,14 +524,30 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         let go_received = std::time::Instant::now();
                         let mut best_move = search_smp(&mut search_board, &mut si, &limits, threads);
                         let search_elapsed = go_received.elapsed();
+                        // A4-residual (TM audit 2026-06-13): `go infinite`
+                        // (non-ponder) must NOT emit bestmove until the GUI
+                        // sends `stop` (UCI spec) — search() can return on
+                        // its own at depth-64 (MAX_PLY/2) exhaustion, e.g. in
+                        // trivial/TB endgames. Mirrors the ponder wait-loop
+                        // below: poll the external stop (set by stop/quit/
+                        // new-go/ucinewgame paths) before the emit.
+                        if limits.infinite && !is_ponder_search {
+                            while !ext_stop.load(std::sync::atomic::Ordering::Acquire) {
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                            }
+                        }
                         // In ponder mode, if search completed naturally (not stopped
                         // externally), wait for stop/ponderhit before outputting
                         // bestmove.
+                        // A1: ponderhit_time (hard) loads use Acquire — it is
+                        // the publish flag for the deadline trio; observing it
+                        // non-zero here guarantees the soft/floor reads in the
+                        // fresh-search block below see the matching values.
                         let wait_start = std::time::Instant::now();
                         if is_ponder_search && !ext_stop.load(std::sync::atomic::Ordering::Relaxed)
-                            && si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                            && si.ponderhit_time.load(std::sync::atomic::Ordering::Acquire) == 0 {
                             while !ext_stop.load(std::sync::atomic::Ordering::Relaxed)
-                                && si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                                && si.ponderhit_time.load(std::sync::atomic::Ordering::Acquire) == 0 {
                                 std::thread::sleep(std::time::Duration::from_millis(1));
                             }
                         }
@@ -551,8 +580,25 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             // credit=0 reproduces the old STC full-budget
                             // behavior, so this is a strict generalization.
                             let _ = our_inc;
-                            let ph_soft_deadline = si.ponderhit_soft.load(std::sync::atomic::Ordering::Relaxed);
-                            let ph_hard_deadline = si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed);
+                            // A1: hard (ponderhit_time) is the deadline trio's
+                            // publish flag — load it FIRST with Acquire; soft
+                            // is only read (Relaxed) after observing hard != 0,
+                            // which the Release/Acquire pairing guarantees is
+                            // coherent with the published soft. Pre-fix (soft
+                            // read first, all Relaxed) an ARM reader could see
+                            // hard set with a STALE soft == 0 and target the
+                            // HARD deadline — overspending the full 46% window
+                            // exactly when ponder finished early. hard == 0
+                            // here means no ponderhit was published (wait-loop
+                            // exit paths guarantee ext_stop in that case, and
+                            // ext_stop is excluded above) — both deadlines 0
+                            // → no fresh search.
+                            let ph_hard_deadline = si.ponderhit_time.load(std::sync::atomic::Ordering::Acquire);
+                            let ph_soft_deadline = if ph_hard_deadline > 0 {
+                                si.ponderhit_soft.load(std::sync::atomic::Ordering::Relaxed)
+                            } else {
+                                0
+                            };
                             let now_elapsed = go_received.elapsed().as_millis() as u64;
                             let target_deadline = if ph_soft_deadline > 0 {
                                 ph_soft_deadline
@@ -561,32 +607,58 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             };
                             if target_deadline > now_elapsed + 5 {
                                 let remaining = target_deadline - now_elapsed;
-                                si.stop.store(false, std::sync::atomic::Ordering::Relaxed);
-                                si.ponderhit_time.store(0, std::sync::atomic::Ordering::Relaxed);
+                                // A2 (TM audit 2026-06-13): clearing si.stop for
+                                // the fresh search can ERASE a GUI `stop`/`quit`
+                                // that landed after the wait-loop exit — the
+                                // fresh search would then run its full movetime
+                                // while the UCI thread blocks in join(). SeqCst
+                                // on this clear + the re-check below, paired
+                                // with SeqCst on the UCI-side
+                                // (external_stop=true, stop=true) store pairs,
+                                // gives a single total order: either the GUI's
+                                // stop=true store came AFTER this clear (it
+                                // survives and the fresh search stops
+                                // immediately), or it was erased — in which
+                                // case its program-earlier external_stop=true
+                                // store precedes this clear in the total order
+                                // and the load below MUST see it.
+                                si.stop.store(false, std::sync::atomic::Ordering::SeqCst);
+                                // A1 unpublish order: hard FIRST (Release),
+                                // then soft/floor (see publish protocol at the
+                                // ponderhit handler).
+                                si.ponderhit_time.store(0, std::sync::atomic::Ordering::Release);
                                 si.ponderhit_soft.store(0, std::sync::atomic::Ordering::Relaxed);
                                 si.ponderhit_floor.store(0, std::sync::atomic::Ordering::Relaxed);
-                                // Gate-removal: ponder-aware target as both
-                                // movetime and floor at all TCs (was inc>=500).
-                                let movetime_floor_val = remaining;
-                                // Real remaining clock for the side to move, so
-                                // the absolute forfeit guard applies in the
-                                // ponderhit fresh-search path too (start_time is
-                                // reset to the ponderhit moment by search()).
-                                let our_clock = if search_board.side_to_move == crate::types::WHITE {
-                                    limits.wtime
+                                if ext_stop.load(std::sync::atomic::Ordering::SeqCst) {
+                                    // External stop fired in the clear window —
+                                    // restore the flag and skip the fresh
+                                    // search; the ponder result is emitted
+                                    // promptly below.
+                                    si.stop.store(true, std::sync::atomic::Ordering::SeqCst);
                                 } else {
-                                    limits.btime
-                                };
-                                let fresh_limits = SearchLimits {
-                                    infinite: false,
-                                    movetime: remaining,
-                                    movetime_floor: movetime_floor_val,
-                                    abs_clock: our_clock,
-                                    ..SearchLimits::new()
-                                };
-                                let fresh_start = std::time::Instant::now();
-                                best_move = search_smp(&mut search_board, &mut si, &fresh_limits, threads);
-                                fresh_elapsed = fresh_start.elapsed();
+                                    // Gate-removal: ponder-aware target as both
+                                    // movetime and floor at all TCs (was inc>=500).
+                                    let movetime_floor_val = remaining;
+                                    // Real remaining clock for the side to move, so
+                                    // the absolute forfeit guard applies in the
+                                    // ponderhit fresh-search path too (start_time is
+                                    // reset to the ponderhit moment by search()).
+                                    let our_clock = if search_board.side_to_move == crate::types::WHITE {
+                                        limits.wtime
+                                    } else {
+                                        limits.btime
+                                    };
+                                    let fresh_limits = SearchLimits {
+                                        infinite: false,
+                                        movetime: remaining,
+                                        movetime_floor: movetime_floor_val,
+                                        abs_clock: our_clock,
+                                        ..SearchLimits::new()
+                                    };
+                                    let fresh_start = std::time::Instant::now();
+                                    best_move = search_smp(&mut search_board, &mut si, &fresh_limits, threads);
+                                    fresh_elapsed = fresh_start.elapsed();
+                                }
                             }
                         }
 
@@ -675,8 +747,14 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
             "stop" => {
                 // Signal external stop FIRST so the ponder wait loop (which
                 // watches external_stop) sees it before we join the handle.
-                external_stop.store(true, Ordering::Relaxed);
-                stop_flag.store(true, Ordering::Relaxed);
+                // A2: every UCI-side (external_stop=true, stop=true) pair
+                // uses SeqCst so it participates in a total order with the
+                // ponderhit fresh-search window's (stop=false, external_stop
+                // load) — see the comment there. If our stop=true gets
+                // erased by that window's clear, the window is guaranteed to
+                // observe our external_stop=true and restore it.
+                external_stop.store(true, Ordering::SeqCst);
+                stop_flag.store(true, Ordering::SeqCst);
                 // If we're stopping a pondering search, the GUI is signalling
                 // a ponder-MISS — flag the next go to apply the min-think
                 // floor (search_handle gets joined here, so the next go can't
@@ -731,8 +809,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             // safer.
                             if tb_valid {
                                 // Stop search and play TB move
-                                external_stop.store(true, Ordering::Relaxed);
-                                stop_flag.store(true, Ordering::Relaxed);
+                                external_stop.store(true, Ordering::SeqCst);
+                                stop_flag.store(true, Ordering::SeqCst);
                                 if let Some(handle) = search_handle.take() {
                                     if let Ok(returned_info) = handle.join() {
                                         info = returned_info;
@@ -781,8 +859,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
 
                         // Very low time (< 2s with no inc): instant stop.
                         if hard <= overhead && our_inc == 0 && our_time < 2000 {
-                            external_stop.store(true, Ordering::Relaxed);
-                            stop_flag.store(true, Ordering::Relaxed);
+                            external_stop.store(true, Ordering::SeqCst);
+                            stop_flag.store(true, Ordering::SeqCst);
                         } else {
                             // Post-ponderhit budget: credit only
                             // PONDERHIT_CREDIT_PCT% of the elapsed ponder time
@@ -806,9 +884,24 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 let post_min = post_min.min(hard.max(10));
                                 (elapsed + hard.max(10), elapsed + post_min, post_min)
                             };
-                            ponderhit_flag.store(deadline, Ordering::Relaxed);
-                            ponderhit_soft_flag.store(soft_deadline, Ordering::Relaxed);
+                            // A1 publish protocol (TM audit 2026-06-13, ARM
+                            // standard): the deadline trio is read by the
+                            // search thread assuming mutual consistency, so
+                            // it must be PUBLISHED atomically-enough: store
+                            // floor and soft FIRST (Relaxed is fine — they
+                            // are inert until hard is seen), then hard
+                            // (ponderhit_flag) LAST with Release. Every
+                            // reader loads hard with Acquire first and only
+                            // then reads soft/floor. Pre-fix (all Relaxed,
+                            // hard stored first) an ARM reader could see
+                            // soft > 0 with stale floor == 0 (stockpile
+                            // floor erased → instant-emit class) or hard set
+                            // with stale soft == 0 (post-completion wait
+                            // targets the HARD deadline → overspends the
+                            // full 46% window when ponder finished early).
                             ponderhit_floor_flag.store(store_floor, Ordering::Relaxed);
+                            ponderhit_soft_flag.store(soft_deadline, Ordering::Relaxed);
+                            ponderhit_flag.store(deadline, Ordering::Release);
                         }
                     } else if pl.movetime > 0 {
                         // C8 audit LIKELY #33: `go ponder movetime X` (no
@@ -818,16 +911,20 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         // caller asked for.
                         let elapsed = start.elapsed().as_millis() as u64;
                         let deadline = elapsed + pl.movetime.max(10);
-                        ponderhit_flag.store(deadline, Ordering::Relaxed);
+                        // A1: hard published with Release (soft/floor stay 0
+                        // from the pre-spawn clear — readers key off hard and
+                        // treat soft==0 as "no dynamic TM", which is correct
+                        // for the movetime path).
+                        ponderhit_flag.store(deadline, Ordering::Release);
                     } else {
                         // No time info: instant stop
-                        external_stop.store(true, Ordering::Relaxed);
-                        stop_flag.store(true, Ordering::Relaxed);
+                        external_stop.store(true, Ordering::SeqCst);
+                        stop_flag.store(true, Ordering::SeqCst);
                     }
                 } else {
                     // No ponder limits saved: instant stop
-                    external_stop.store(true, Ordering::Relaxed);
-                    stop_flag.store(true, Ordering::Relaxed);
+                    external_stop.store(true, Ordering::SeqCst);
+                    stop_flag.store(true, Ordering::SeqCst);
                 }
                 // Ponderhit consumed the ponder. Clear ponder_limits so the
                 // next `go` doesn't falsely detect a pondermiss off the stale
@@ -837,8 +934,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
             "setoption" => {
                 // Wait for any active search to finish before changing options
                 if let Some(handle) = search_handle.take() {
-                    external_stop.store(true, Ordering::Relaxed);
-                    stop_flag.store(true, Ordering::Relaxed);
+                    external_stop.store(true, Ordering::SeqCst);
+                    stop_flag.store(true, Ordering::SeqCst);
                     if let Ok(returned_info) = handle.join() {
                         info = returned_info;
                         stop_flag = info.stop.clone();
@@ -911,8 +1008,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 }
             }
             "quit" => {
-                external_stop.store(true, Ordering::Relaxed);
-                stop_flag.store(true, Ordering::Relaxed);
+                external_stop.store(true, Ordering::SeqCst);
+                stop_flag.store(true, Ordering::SeqCst);
                 if let Some(handle) = search_handle.take() {
                     let _ = handle.join();
                 }
@@ -1023,6 +1120,22 @@ fn parse_position(tokens: &[&str], board: &mut Board) {
     }
 }
 
+/// Parse a clock/movetime token that was PRESENT in the `go` command
+/// (TM audit 2026-06-13 A3). GUIs send negative values at the flag edge
+/// (`go wtime -23`) and explicit zeros (`go movetime 0`); the previous
+/// `parse::<u64>().unwrap_or(0)` turned both into 0 == "token absent" ==
+/// no clock info == UNBOUNDED search == time forfeit. Parse as i64 and
+/// clamp any present-but-<=0 (or unparseable) value to a 1ms clock —
+/// fail CLOSED to an instant move, never open to an untimed search.
+/// Absence semantics are preserved because this is only called when the
+/// token is present.
+fn parse_clock_ms(tok: &str) -> u64 {
+    match tok.parse::<i64>() {
+        Ok(v) if v >= 1 => v as u64,
+        _ => 1,
+    }
+}
+
 fn parse_go(tokens: &[&str]) -> SearchLimits {
     let mut limits = SearchLimits::new();
     let mut idx = 1;
@@ -1044,19 +1157,20 @@ fn parse_go(tokens: &[&str]) -> SearchLimits {
             "movetime" => {
                 idx += 1;
                 if idx < tokens.len() {
-                    limits.movetime = tokens[idx].parse().unwrap_or(0);
+                    // A3: present-but-<=0 clamps to 1ms (see parse_clock_ms).
+                    limits.movetime = parse_clock_ms(tokens[idx]);
                 }
             }
             "wtime" => {
                 idx += 1;
                 if idx < tokens.len() {
-                    limits.wtime = tokens[idx].parse().unwrap_or(0);
+                    limits.wtime = parse_clock_ms(tokens[idx]);
                 }
             }
             "btime" => {
                 idx += 1;
                 if idx < tokens.len() {
-                    limits.btime = tokens[idx].parse().unwrap_or(0);
+                    limits.btime = parse_clock_ms(tokens[idx]);
                 }
             }
             "winc" => {
