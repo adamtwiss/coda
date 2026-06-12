@@ -192,7 +192,10 @@ pub fn run_epd(path: &str, time_per_pos: u64, max_positions: usize, nnue_path: O
     let mut info = SearchInfo::new(64);
     if let Some(path) = nnue_path {
         if let Err(e) = info.load_nnue(path) {
-            eprintln!("Warning: failed to load NNUE: {}", e);
+            // Explicit override failing is fatal — silent PeSTO fallback
+            // produces plausible-looking but wrong suite results.
+            eprintln!("FATAL: failed to load NNUE '{}': {}", path, e);
+            std::process::exit(2);
         }
     }
     let mut passed = 0;

@@ -5125,7 +5125,9 @@ pub fn bench_pathology(depth: i32, node_threshold: u64, nnue_path: Option<&str>)
     info.silent = true;  // suppress UCI info lines, want only the per-position report
     if let Some(path) = nnue_path {
         if let Err(e) = info.load_nnue(path) {
-            eprintln!("Warning: failed to load NNUE: {}", e);
+            // Explicit override failing is fatal — see bench_inner.
+            eprintln!("FATAL: failed to load NNUE '{}': {}", path, e);
+            std::process::exit(2);
         }
     } else {
         info.auto_discover_nnue();
@@ -5176,7 +5178,14 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     info.silent = !print_stats;
     if let Some(path) = nnue_path {
         if let Err(e) = info.load_nnue(path) {
-            eprintln!("Warning: failed to load NNUE: {}", e);
+            // An EXPLICIT net override that fails must be fatal: silently
+            // falling back (PeSTO or embedded net) produces a wrong bench /
+            // wrong ordering stats that look plausible — the ~1M NPS PeSTO
+            // numbers have been mistaken for real net stats twice
+            // (2026-06-12, 2026-06-14). Fallback is for the no-override
+            // auto-discovery path only.
+            eprintln!("FATAL: failed to load NNUE '{}': {}", path, e);
+            std::process::exit(2);
         }
     } else {
         info.auto_discover_nnue();
