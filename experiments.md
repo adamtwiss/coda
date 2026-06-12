@@ -15176,3 +15176,15 @@ noise-range, not signal. Adam's decomposition stands: tax-dominated,
 tree +38% vs L1=16 despite the best ordering stats ever benched =
 retune-on-branch signature. Plan: s2 pair untuned (curve point 2), then
 focused retune on the l132-s2 net for the tuned-vs-tuned comparison.
+
+## 2026-06-14 — TM Track A merged: ponder/clock-edge deployment correctness
+
+tm/deploy-correctness merged (bench-identical 2,523,846; paths
+unreachable in OB games, no SPRT owed per policy). Ponderhit deadline
+trio now uses a Release/Acquire publish protocol (hard = publish flag);
+external_stop threaded into SearchInfo (interruptible floor sleep,
+stop-erasure window closed via SeqCst pair — Dekker-style race);
+zero/negative clocks clamp to 1ms instead of failing open to unbounded
+search; go-infinite waits for stop. New scripted-UCI harness
+tests/uci_deploy_tests.sh: 7/7 PASS with negative control vs pre-fix
+binary. SHIP WITH NEXT LICHESS DEPLOY — these fixes only matter there.
