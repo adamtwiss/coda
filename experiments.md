@@ -15020,3 +15020,13 @@ any surprise. Audit wave-1 net: ~+4.7 nominal from 5 probes. Wave 2:
 LMR re-search bundle (T1.2+T1.3), multicut is_decisive (T1.4+T2.3),
 threat-hoist+QS-double-probe perf branch, corrhist overhaul (T2.4), QS
 in-check (T2.10), BNFP victim (T2.11), SE !in_check (T2.12).
+
+## 2026-06-13 — #1938 H1 +10.3: stacked merge validated at LTC@256
+
+main (4-merge stack: 1915 values + QS legality + LMP skip + perf) vs
+baseline/pre-stack: H1 +10.3 ±4.3 at 6,100 games, 40+0.4 Hash=256
+[0,3]. The stack holds double digits at the deployment frame — roughly
+the 1915 set's +7 plus a few from the fixes (their STC magnitudes
+partially LTC-amplified, partially overlapping). Main bench 2,644,458.
+Binary-only lichess deploy recommended (carries the LTC value set +
+~9 STC Elo of fixes; no net change).
