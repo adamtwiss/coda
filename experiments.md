@@ -15128,3 +15128,16 @@ now 2,523,846:
 
 Wave-2 merged total: +11.7 nominal on top of wave 1's +4.7. Audit
 running total ~+16 from 13 probes (9 H1-or-merged, 4 H0).
+
+## 2026-06-13 — L1=32 stage curve, point 1: s1 raw H0 -9.7 (#1953)
+
+multi-v6-l132-s1 vs multi-v6-s1 at [-3,3]: -9.7 ±6.5 (3,542 games).
+First point on the stage-trend curve — a stage-1 deficit was the
+EXPECTED shape (fixed NPS tax vs undertrained eval gain); the verdict
+is the s2/s3/s4 slope, not this number. Battery (logged for the curve):
+l132-s1 posted the best ordering sweep ever benched (first-move 90.1%,
+pos 1.24, pos² 3.3 vs 84.5/1.40/4.8 for L1=16) AND showed no NPS tax at
+this stage (249K vs 200K — undertrained-sparsity inflation; expect the
+tax to appear as the net densifies). RMS 289 vs 282 — no scale concern.
+Reinforces ordering-stats-are-convergence-not-strength yet again.
+#1954 (swa pair) still in flight.
