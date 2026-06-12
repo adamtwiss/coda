@@ -15030,3 +15030,22 @@ the 1915 set's +7 plus a few from the fixes (their STC magnitudes
 partially LTC-amplified, partially overlapping). Main bench 2,644,458.
 Binary-only lichess deploy recommended (carries the LTC value set +
 ~9 STC Elo of fixes; no net change).
+
+## 2026-06-13 — #1951 H1 +3.0: FT1024 SIMD kernel retile merged
+
+change/simd-ft1024-retile vs main, [-2,1] STC: **H1 +3.0 ±2.5** at
+18,602 games. NPS-only change (bench node count identical, 2,428,489):
+the six register-tiled fused-update kernels (acc_fused/finny AVX2 +
+AVX-512, threat apply_deltas_avx512, add_weight_rows_*) were
+chunk-sized for FT768; at FT1024 their runtime-nregs tails ran every
+call (the LLVM switch dispatch the const splits were built to kill —
+~9% of eval cycles when measured on Atlas 2026-05-06). All now share a
+const-nregs apply_chunk! pattern with a second const tail pass sized so
+h=768 AND h=1024 run entirely on compile-time register counts. Local
+pinned A/B: +2.4% NPS on AVX-512. From the 2026-06-12 SIMD audit
+(FT1024/L1=16/L2=32 coverage review). Merged fffd605.
+
+Companion branch fix/simd-latent-correctness (#1948, [-2,1] STC,
+latent-bug bundle from the same audit: 768-buffer panic, bucketed-
+dispatch soundness via L1Kernel enum, misaligned-u32 UB, pack
+saturating adds — bench-identical) still running.
