@@ -15049,3 +15049,25 @@ Companion branch fix/simd-latent-correctness (#1948, [-2,1] STC,
 latent-bug bundle from the same audit: 768-buffer panic, bucketed-
 dispatch soundness via L1Kernel enum, misaligned-u32 UB, pack
 saturating adds — bench-identical) still running.
+
+## 2026-06-13 — #1952 H0 -29.6: PSQT post-mortem — TRAINING-RECIPE bug, engine verified faithful
+
+The psqt S200 probe failed at corruption magnitude. Debug chain: wedge
+tests (perspective clean; psqt term only +11cp on rook-odds; funnel
+alone HOTTER than control) -> trainer-parity oracle (new test
+psqt_trainer_parity_oracle: engine == trainer formula EXACTLY, layout
+[feature][8] confirmed against bullet save.rs; converter byte-exact;
+quantised == round(raw*255) for all 596,352 values). Root cause is in
+TRAINING: the psqt affine had default He init over 74.5k inputs (stdev
+0.005), default AdamW decay 0.01 on sparsely-activated weights, and
+default clip +-1.98 < queen scale (~2.25) — it equilibrated at rms
+0.034 (near-no-op) while perturbing the funnel into a materially-hot
+optimum. Killer detail: train loss BEAT control (0.004090 vs 0.004144)
+while play measured -29.6 — the strongest example yet of
+loss-is-not-strength. Fix: psqt.init_with_effective_input_size(32) +
+per-weight optimiser params (decay 0, clip +-4), mirroring l0's own
+fix class. psqt-v2 S200 retraining on gpu2. Engine inference/converter
+need no changes (oracle committed on feature/psqt-inference).
+Meta-lesson: internal verifiers (CODA_VERIFY_NNUE, lane fuzz) compare
+the engine to itself; new net-format features need a TRAINER-parity
+oracle as part of the smoke battery — adopted as standing practice.
