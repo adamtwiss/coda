@@ -15166,3 +15166,13 @@ soft-stop clock re-read / mate-sign gate). Two dead TM tunables removed
 from the SPSA surface. TM track B5+A4 complete; B3 v2 (#1956, gated BMC
 factor) in flight at LTC; A1-A3 deployment branch and C1 ponder
 experiment remain queued.
+
+## 2026-06-14 — #1954 H0: L1=32 s1 SWA arm (stage-curve point 1b)
+
+multi-v6-l132-s1-swa vs multi-v6-s1-swa at [-3,3]: resolved H0 (final
+~-4.6). Both s1 arms negative as expected (NPS tax ~-15 STC vs
+undertrained eval gain); the SWA arm's smaller deficit vs raw (-9.7) is
+noise-range, not signal. Adam's decomposition stands: tax-dominated,
+tree +38% vs L1=16 despite the best ordering stats ever benched =
+retune-on-branch signature. Plan: s2 pair untuned (curve point 2), then
+focused retune on the l132-s2 net for the tuned-vs-tuned comparison.
