@@ -154,7 +154,7 @@ tunables!(
     (LMP_DEPTH, 8, 4, 20, 2.0, true),
     (BAD_NOISY_MARGIN, 73, 30, 150, 6.0, true),
     (PROBCUT_MARGIN, 117, 80, 300, 11.0, true),
-    (HINDSIGHT_THRESH, 184, 50, 400, 17.5, true),
+    (HINDSIGHT_THRESH, 179, 50, 400, 17.5, true),
     (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
     (QS_DELTA_MARGIN, 352, 100, 500, 20.0, true),
     // 24 -> 5 with the T2.10 counting fix: the old counter charged
@@ -365,7 +365,11 @@ tunables!(
     // this to 8 as compensation for NMP-first ordering + per-cutoff verify cost.
     (NMP_MIN_DEPTH_10X, 25, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
     // Floor lifted from 10 → 0 (audit 2026-05-20): pinned at 25, 8% from floor.
-    (HINDSIGHT_MIN_DEPTH_10X, 1, 0, 200, 15.0, true),        // was hardcoded 2 (hindsight reduction gate)
+    // 1 -> 17 (eff 0 -> 2, consensus floor): tune #1959 on the post-T1.2
+    // trunk. The diagnostic was seeded at eff 2 and SPSA HELD (17.1) rather
+    // than reverting to the old floor-pin at 0 — the pin was compensation
+    // for the stale prior_reduction signal fixed by #1939, not signal.
+    (HINDSIGHT_MIN_DEPTH_10X, 17, 0, 200, 15.0, true),
     // Net output scale in percent (eval-scale normalization experiment,
     // 2026-06-12). Final NNUE eval is multiplied by PCT/100. Different
     // nets train to very different natural scales (eval RMS 219-369
