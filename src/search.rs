@@ -164,7 +164,7 @@ tunables!(
     (QS_MAX_CAPTURES, 5, 2, 32, 2.0, false),
     (CORR_W_PAWN, 290, 100, 600, 25.0, true),
     // Floor lifted from 50 → 0 (audit 2026-05-20): pinned at 63, 4% from floor.
-    (CORR_W_NP, 60, 0, 400, 17.5, true),
+    (CORR_W_NP, 62, 0, 400, 17.5, true),
     // CORR_W_MINOR / CORR_W_MAJOR were dropped 2026-05-18 (ablated to 0
     // via #1318 H1; minor_key/major_key are strict subsets of
     // non_pawn_key, so the contributions were redundant with np_corr).
@@ -175,7 +175,7 @@ tunables!(
     // Floor on CORR_W_CONT lifted from 30 → 0 (audit 2026-05-19): SPSA
     // converged 33, ~1% from floor. Lifting allows finding true optimum
     // including disabling cont-corr if SPSA wants. Default unchanged.
-    (CORR_W_CONT, 64, 0, 400, 18.5, true),
+    (CORR_W_CONT, 74, 0, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
     // Re-expose 4 hardcoded search constants (audit 2026-05-21).
     // All bench-neutral at current defaults.
@@ -250,12 +250,12 @@ tunables!(
     (DEXT_MARGIN_BASE, 35, -50, 150, 6.0, true),
     (DEXT_CAP, 13, 4, 32, 2.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
-    (CORR_HIST_DIV, 1543, 256, 4096, 192.0, true),
+    (CORR_HIST_DIV, 1587, 256, 4096, 192.0, true),
     // 4 -> 16 with T2.4: the floor-pin at 4 was calibrated for the
     // sign-only (err-clamped) regime; consensus weights ~depth uncapped.
     (CORR_UPDATE_WEIGHT_MAX, 16, 4, 48, 2.2, true),
     // Was 32 (tp10→3). Now FIXED-POINT. Default 30 → eff 3.0 ≡ old behavior.
-    (CORR_BONUS_CAP_DIV_10X, 30, 10, 160, 15.0, false),
+    (CORR_BONUS_CAP_DIV_10X, 26, 10, 160, 15.0, false),
     (CORR_HIST_GRAIN_T, 14, 1, 32, 1.55, false),
     // Floor lifted from 10 → 0 (audit 2026-05-19): SPSA converged 25, ~2%
     // from the floor. Lifting allows exploration of looser clamps.
