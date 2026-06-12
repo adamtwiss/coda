@@ -15342,3 +15342,36 @@ queued thinking: dual x L1=32 interaction probe (missing 2x2 cell,
 S200) — dual may be the information increase the extra width needs
 (capacity-needs-information), with a cache caveat (96KB int8 L1
 weights blow L1d).
+
+## 2026-06-13 — wave-2/3 closures + queue refill (atlas): 6 new submissions
+
+Closed:
+- **#1942 atlas/bnfp-victim H0 +0.1** (85k games, [0,3]) — the victim
+  term doesn't help Coda's BNFP despite 4/4 same-mechanism engines
+  having it. With the SEE<0 stage gate, the margin evidently already
+  carries enough information. Axis closed.
+- **#1961 atlas/early-refuted-malus H0 -1.2** (30k games, [0,3]) — the
+  SF/Reckless early-move-gated variant also doesn't transplant. With
+  #1945 (PCM fail-low H0) and #1931, ALL THREE consensus
+  fail-low/early-refuted history signals are now negative-to-flat in
+  Coda's stack. Strong pattern: Coda's 4D-threat-keyed main history +
+  TT-cutoff malus already cover this signal family. CLOSED — do not
+  re-propose ports from this family without a mechanism-level reason
+  Coda differs.
+- **Tune #1960 (razor pair)**: RAZOR_MULT 275->281, DEPTH 4->4.1 —
+  defaults confirmed calibrated; no apply needed.
+- **Tune #1959 (hindsight)**: MIN_DEPTH seeded at consensus eff-2 and
+  HELD (17.1, not reverting to the old floor-pin 0) — the
+  revert-from-consensus diagnostic confirms the pin was compensation
+  for the pre-#1939 stale prior_reduction signal.
+- **Tune #1958 (corrhist overhaul cluster)**: stable in the new regime
+  (WEIGHT_MAX held 16, ERR_DIV held 8); W_CONT +15%, cap raised.
+
+New submissions (board audit + tune applies):
+- atlas/see-promo-revert [0,3] — B1, VERIFIED SEE sign flip (early +2.8)
+- atlas/npkey-king [0,3] — S1, king into non_pawn_key
+- atlas/board-perf-bundle [-2,1] — 5 items, bench bit-identical
+- atlas/checking-sqs [-2,1] — per-node check-squares table,
+  empirically bit-identical
+- atlas/corrhist-overhaul + tune-#1958 values [0,3] — bench 2,209,240
+- atlas/hindsight-retune [0,3] — MIN_DEPTH eff 0->2, THRESH 179
