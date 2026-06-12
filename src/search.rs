@@ -3722,7 +3722,18 @@ fn negamax(
                     // Multi-cut: alternatives are also good enough — prune the whole node.
                     // Return singular_score (SF pattern, search.cpp:1183) — tighter score
                     // for downstream TT propagation than singular_beta floor.
+                    // EXCEPT decisive scores: singular_score is fail-soft from a
+                    // reduced (depth-1)/2 search with the TT move EXCLUDED — a
+                    // mate/TB score from it is unproven at this node's depth and
+                    // would be TT-stored at full depth as LOWER. SF/Reckless
+                    // gate with !is_decisive and fall through; Obsidian/Berserk
+                    // return singularBeta. Per #761 (mate-clamp H0: suppressing
+                    // multicut in mate shapes loses Elo), keep FIRING and fix
+                    // only the returned value (audit T1.4).
                     info.stats.multicut += 1;
+                    if is_decisive(singular_score) {
+                        return singular_beta;
+                    }
                     return singular_score;
                 }
 
