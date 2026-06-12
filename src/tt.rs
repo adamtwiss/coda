@@ -569,6 +569,16 @@ pub fn is_mate_score(score: i32) -> bool {
     score.abs() > MATE_SCORE - 100
 }
 
+/// True for any decisive score: mate OR tablebase range. The widespread
+/// `|s| < MATE_SCORE - 100` (= 28900) guards admit TB scores (TB_WIN =
+/// 28800, stored as TB_WIN - ply) — use this where TB scores must also
+/// be excluded (SF/Reckless/Stormphrax is_decisive; 2026-06-11 audit
+/// T2.3).
+#[inline]
+pub fn is_decisive(score: i32) -> bool {
+    score.abs() >= TB_WIN - 200
+}
+
 /// Adjust mate and TB scores from TT retrieval (subtract ply). See
 /// `score_to_tt` for the threshold rationale.
 #[inline]
