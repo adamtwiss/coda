@@ -630,6 +630,17 @@ pub struct SearchInfo {
     pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
     pub history: Box<History>,
     pub stop: std::sync::Arc<AtomicBool>,  // shared stop flag
+    /// EXTERNAL stop flag (TM audit 2026-06-13 A2): set ONLY by the UCI
+    /// thread on `stop`/`quit`/abandon (uci.rs shares its external_stop
+    /// Arc here). Distinct from `stop`, which the search itself also sets
+    /// internally (e.g. to halt helpers during the stockpile-floor sleep)
+    /// — so `stop` cannot be used to detect a GUI interrupt once the
+    /// search has set it. Polled by the stockpile-floor sleep loop so a
+    /// GUI `stop`/`quit` interrupts the wait (on the ponderhit
+    /// fresh-search path the floor can be large). Defaults to a fresh
+    /// Arc (never set) for non-UCI callers (bench/datagen/epd), which
+    /// preserves their behavior exactly.
+    pub external_stop: std::sync::Arc<AtomicBool>,
     pub start_time: Instant,
     pub time_limit: u64,  // ms
     pub max_depth: i32,
@@ -775,6 +786,7 @@ impl SearchInfo {
             tt,
             history: alloc_zeroed_box(),
             stop: std::sync::Arc::new(AtomicBool::new(false)),
+            external_stop: std::sync::Arc::new(AtomicBool::new(false)),
             start_time: Instant::now(),
             time_limit: 0,
             max_depth: 100,
@@ -963,7 +975,11 @@ impl SearchInfo {
             // period expires to prevent time loss. The ID loop also checks the
             // deadline (without grace) between iterations to prevent starting
             // new iterations after the budget expires.
-            let ph_time = self.ponderhit_time.load(Ordering::Relaxed);
+            // A1 publish protocol: ponderhit_time (hard) is the publish
+            // flag for the deadline trio — always loaded with Acquire.
+            // (Only hard is consumed here, but uniform Acquire keeps every
+            // reader on the protocol.)
+            let ph_time = self.ponderhit_time.load(Ordering::Acquire);
             let effective_limit = if ph_time > 0 {
                 // Grace period scales with remaining budget: enough to finish
                 // an iteration but not enough to risk flagging. Caps at 500ms
@@ -2069,36 +2085,49 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Ponderhit check: stop between iterations (not mid-search) to avoid
         // partial TT entries and PV inconsistency. The engine completes the
         // current iteration fully before stopping, producing clean state.
-        let ph = info.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed);
-        if ph > 0 && info.start_time.elapsed().as_millis() as u64 >= ph {
-            break;
-        }
-        // Post-ponderhit dynamic TM setup. If UCI just stored a soft deadline
-        // AND the search has no soft_limit yet (i.e. this started as
-        // `go ponder` with no time budget), arm dynamic TM from here onward.
-        // Without this, the loop only honours the hard deadline and burns
-        // the full ~5s at 60+2 even on stable positions where a 2-3s emit
-        // would suffice. The floor (≈ inc-overhead) prevents instant-emit
-        // when stability has been confidently held through ponder.
-        let ph_soft = info.ponderhit_soft.load(std::sync::atomic::Ordering::Relaxed);
-        if ph_soft > 0 && info.soft_limit == 0 {
-            let now = info.start_time.elapsed().as_millis() as u64;
-            let soft_remaining = ph_soft.saturating_sub(now).max(1);
-            let hard_remaining = if ph > now { ph - now } else { soft_remaining };
-            let hard_remaining = hard_remaining.max(soft_remaining);
-            let floor = info.ponderhit_floor.load(std::sync::atomic::Ordering::Relaxed)
-                .min(soft_remaining);
-            info.tm_baseline = now;
-            info.soft_limit = soft_remaining;
-            info.hard_limit = hard_remaining;
-            info.soft_floor = floor;
-            // H7 (Atlas review): init tm_max_time on the ponder path. The
-            // dynamic-TM consumer caps via .min(tm_max_time); it's never set
-            // on `go ponder` (C6 reset + infinite branch both skip it), so it
-            // carries 0 → min(soft*mult,0).max(1)=1ms → instant emit. Bites at
-            // inc>=500 (the dynamic-TM path); the gate-removal above handles
-            // the inc<500 path. Both fixes are needed and independent.
-            info.tm_max_time = hard_remaining;
+        // A1 publish protocol (TM audit 2026-06-13): the ponderhit deadline
+        // trio (hard=ponderhit_time, soft=ponderhit_soft, floor=
+        // ponderhit_floor) is published by the UCI thread as
+        //   floor (Relaxed) → soft (Relaxed) → hard (Release)
+        // so hard is the publish flag. We load hard with Acquire FIRST and
+        // read soft/floor ONLY after observing hard != 0 — the Acquire pairs
+        // with the Release store, guaranteeing both Relaxed-stored fields
+        // are visible. Keying the arming off soft alone (the pre-fix shape)
+        // could, on ARM, observe soft > 0 with a STALE floor == 0 (killing
+        // the stockpile floor) or stale hard == 0.
+        let ph = info.ponderhit_time.load(std::sync::atomic::Ordering::Acquire);
+        if ph > 0 {
+            if info.start_time.elapsed().as_millis() as u64 >= ph {
+                break;
+            }
+            // Post-ponderhit dynamic TM setup. If UCI just stored a soft deadline
+            // AND the search has no soft_limit yet (i.e. this started as
+            // `go ponder` with no time budget), arm dynamic TM from here onward.
+            // Without this, the loop only honours the hard deadline and burns
+            // the full ~5s at 60+2 even on stable positions where a 2-3s emit
+            // would suffice. The floor (≈ inc-overhead) prevents instant-emit
+            // when stability has been confidently held through ponder.
+            // (soft stays 0 on the `go ponder movetime` path — no arming there.)
+            let ph_soft = info.ponderhit_soft.load(std::sync::atomic::Ordering::Relaxed);
+            if ph_soft > 0 && info.soft_limit == 0 {
+                let now = info.start_time.elapsed().as_millis() as u64;
+                let soft_remaining = ph_soft.saturating_sub(now).max(1);
+                let hard_remaining = if ph > now { ph - now } else { soft_remaining };
+                let hard_remaining = hard_remaining.max(soft_remaining);
+                let floor = info.ponderhit_floor.load(std::sync::atomic::Ordering::Relaxed)
+                    .min(soft_remaining);
+                info.tm_baseline = now;
+                info.soft_limit = soft_remaining;
+                info.hard_limit = hard_remaining;
+                info.soft_floor = floor;
+                // H7 (Atlas review): init tm_max_time on the ponder path. The
+                // dynamic-TM consumer caps via .min(tm_max_time); it's never set
+                // on `go ponder` (C6 reset + infinite branch both skip it), so it
+                // carries 0 → min(soft*mult,0).max(1)=1ms → instant emit. Bites at
+                // inc>=500 (the dynamic-TM path); the gate-removal above handles
+                // the inc<500 path. Both fixes are needed and independent.
+                info.tm_max_time = hard_remaining;
+            }
         }
         let iter_start = std::time::Instant::now();
 
@@ -2584,7 +2613,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Without this, ponder searches start arbitrarily deep iterations after
             // ponderhit, get stopped mid-search, and leave incomplete TT entries.
             let effective_hard = {
-                let ph = info.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed);
+                // A1: Acquire — hard is the trio's publish flag (see the
+                // load at the top of the ID loop).
+                let ph = info.ponderhit_time.load(std::sync::atomic::Ordering::Acquire);
                 if ph > 0 { ph } else { info.hard_limit }
             };
             if effective_hard > 0 {
@@ -2599,8 +2630,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // Don't stockpile: if the ID loop finished below the soft_floor (e.g. all
     // iterations were TT hits in a repetitive endgame), wait out the rest of
     // the floor time before emitting. Prevents clock growth from instant emits
-    // at 1s-inc bullet on lichess (PZ7pCyrx). Polls the stop flag so the UCI
-    // thread can still interrupt. Skip when there's no time budget (depth/
+    // at 1s-inc bullet on lichess (PZ7pCyrx). Polls the EXTERNAL stop flag so
+    // the UCI thread can still interrupt — `info.stop` cannot serve here
+    // because the line below sets it ourselves (to halt helpers), and on the
+    // ponderhit fresh-search path the floor can equal the entire remaining
+    // clock, so an un-interruptible sleep would block `stop`/`quit` for that
+    // long (TM audit 2026-06-13 A2). Skip when there's no time budget (depth/
     // node-limited search) or when already stopped.
     //
     // C8 audit LIKELY #29: set the shared stop flag BEFORE the sleep so
@@ -2617,6 +2652,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     if info.soft_floor > 0 && !is_mate_score(prev_score) && !info.stop.load(Ordering::Relaxed) {
         info.stop.store(true, Ordering::Relaxed);
         loop {
+            // A2: GUI `stop`/`quit` aborts the floor wait. external_stop is
+            // set only by the UCI thread (never by search internals), so it
+            // unambiguously means "emit bestmove NOW".
+            if info.external_stop.load(Ordering::Acquire) { break; }
             let elapsed = info.start_time.elapsed().as_millis() as u64;
             // Floor is a duration measured from tm_baseline (0 for normal
             // `go`; elapsed-at-ponderhit for post-ponderhit dynamic TM).
