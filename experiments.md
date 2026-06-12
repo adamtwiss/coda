@@ -15157,3 +15157,12 @@ the pack threat-combine (SIMD ≡ scalar at the i16 rails). The +1.3 is
 presumably the Align64/enum micro-perf side; the value is the
 soundness. Merged 3233517 (trunk bench 2523846 after Atlas wave-2).
 Both SIMD-audit branches now landed (#1951 retile +3.0, this +1.3).
+
+## 2026-06-14 — #1949 H1 +1.0: TM hygiene bundle merged
+
+tm/hygiene-bundle cleared [-2,1] at +1.0 ±1.5 (49,156 games) — the
+hygiene + A4 edge-case fixes are in (slightly positive, likely the
+soft-stop clock re-read / mate-sign gate). Two dead TM tunables removed
+from the SPSA surface. TM track B5+A4 complete; B3 v2 (#1956, gated BMC
+factor) in flight at LTC; A1-A3 deployment branch and C1 ponder
+experiment remain queued.
