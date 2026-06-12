@@ -3677,7 +3677,13 @@ fn negamax(
             && tt_move != NO_MOVE
             && ply > 0
             && depth >= tp10(&SE_DEPTH_10X)
-            && !in_check
+            // No !in_check gate: zero-engine-consensus carve-out removed
+            // (audit T2.12). None of SF/Reckless/Obsidian/Berserk/Stormphrax
+            // gate SE on check; a deep in-check node's TT move (often the
+            // single forced evasion — maximally singular) was never extended,
+            // and got no multicut/negative-ext either. Mechanically safe:
+            // the SE path reads no static_eval (-INFINITY in check); the
+            // correction_value margin input is position-keyed.
             && info.excluded_move[ply_u] == NO_MOVE
             && tt_hit
             && tt_entry.flag != TT_FLAG_UPPER
