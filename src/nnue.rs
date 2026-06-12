@@ -832,12 +832,16 @@ unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
         // Load 16 values from each half
         let mut a = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
         let mut b = _mm256_loadu_si256(acc.as_ptr().add(pw + i) as *const __m256i);
-        // Fused threat combine: add threat values before clamp
+        // Fused threat combine: add threat values before clamp.
+        // Saturating add (ADDS) so the SIMD path matches the scalar
+        // fallback (i32 add, then clamp) for ALL inputs: with a wrapping
+        // ADD, |acc+threat| > i16::MAX would wrap and clamp to the wrong
+        // end. Same latency/throughput as the wrapping form.
         if HAS_THREAT {
             let ta = _mm256_loadu_si256(threat.add(i) as *const __m256i);
             let tb = _mm256_loadu_si256(threat.add(pw + i) as *const __m256i);
-            a = _mm256_add_epi16(a, ta);
-            b = _mm256_add_epi16(b, tb);
+            a = _mm256_adds_epi16(a, ta);
+            b = _mm256_adds_epi16(b, tb);
         }
         // Clamp [0, QA]
         let ca = _mm256_min_epi16(_mm256_max_epi16(a, zero), qa);
@@ -851,8 +855,8 @@ unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
             let mut a2 = _mm256_loadu_si256(acc.as_ptr().add(i + 16) as *const __m256i);
             let mut b2 = _mm256_loadu_si256(acc.as_ptr().add(pw + i + 16) as *const __m256i);
             if HAS_THREAT {
-                a2 = _mm256_add_epi16(a2, _mm256_loadu_si256(threat.add(i + 16) as *const __m256i));
-                b2 = _mm256_add_epi16(b2, _mm256_loadu_si256(threat.add(pw + i + 16) as *const __m256i));
+                a2 = _mm256_adds_epi16(a2, _mm256_loadu_si256(threat.add(i + 16) as *const __m256i));
+                b2 = _mm256_adds_epi16(b2, _mm256_loadu_si256(threat.add(pw + i + 16) as *const __m256i));
             }
             let ca2 = _mm256_min_epi16(_mm256_max_epi16(a2, zero), qa);
             let cb2 = _mm256_min_epi16(_mm256_max_epi16(b2, zero), qa);
@@ -1385,10 +1389,12 @@ unsafe fn simd512_pairwise_pack_impl<const HAS_THREAT: bool>(
         let mut a0 = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
         let mut b0 = _mm512_loadu_si512(acc.as_ptr().add(pw + i) as *const __m512i);
         if HAS_THREAT {
+            // Saturating add — matches the scalar i32-add-then-clamp
+            // semantics for all inputs (see simd_pairwise_pack_impl).
             let ta0 = _mm512_loadu_si512(threat.add(i) as *const __m512i);
             let tb0 = _mm512_loadu_si512(threat.add(pw + i) as *const __m512i);
-            a0 = _mm512_add_epi16(a0, ta0);
-            b0 = _mm512_add_epi16(b0, tb0);
+            a0 = _mm512_adds_epi16(a0, ta0);
+            b0 = _mm512_adds_epi16(b0, tb0);
         }
         let ca0 = _mm512_min_epi16(_mm512_max_epi16(a0, zero), qa);
         let cb0 = _mm512_min_epi16(_mm512_max_epi16(b0, zero), qa);
@@ -1401,8 +1407,8 @@ unsafe fn simd512_pairwise_pack_impl<const HAS_THREAT: bool>(
             if HAS_THREAT {
                 let ta1 = _mm512_loadu_si512(threat.add(i + 32) as *const __m512i);
                 let tb1 = _mm512_loadu_si512(threat.add(pw + i + 32) as *const __m512i);
-                a1 = _mm512_add_epi16(a1, ta1);
-                b1 = _mm512_add_epi16(b1, tb1);
+                a1 = _mm512_adds_epi16(a1, ta1);
+                b1 = _mm512_adds_epi16(b1, tb1);
             }
             let ca1 = _mm512_min_epi16(_mm512_max_epi16(a1, zero), qa);
             let cb1 = _mm512_min_epi16(_mm512_max_epi16(b1, zero), qa);
@@ -2105,6 +2111,8 @@ unsafe fn neon_pairwise_pack(acc: &[i16], out: *mut u8, pw: usize) {
 }
 
 /// Pairwise pack with optional fused threat combine (NEON mirror of simd_pairwise_pack_fused).
+/// Threat combine uses saturating adds (VQADD) to match the scalar
+/// i32-add-then-clamp semantics for all inputs — see simd_pairwise_pack_impl.
 /// If threat is non-null, adds threat[i] to acc[i] (and threat[pw+i] to acc[pw+i]) before the
 /// [0, QA] clamp. Required for v9 nets with threat inputs — without it, threat contributions
 /// are silently dropped on aarch64.
@@ -2120,10 +2128,10 @@ unsafe fn neon_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: *mut u8
         let mut a1 = vld1q_s16(acc.as_ptr().add(i + 8));
         let mut b1 = vld1q_s16(acc.as_ptr().add(pw + i + 8));
         if has_threat {
-            a0 = vaddq_s16(a0, vld1q_s16(threat.add(i)));
-            b0 = vaddq_s16(b0, vld1q_s16(threat.add(pw + i)));
-            a1 = vaddq_s16(a1, vld1q_s16(threat.add(i + 8)));
-            b1 = vaddq_s16(b1, vld1q_s16(threat.add(pw + i + 8)));
+            a0 = vqaddq_s16(a0, vld1q_s16(threat.add(i)));
+            b0 = vqaddq_s16(b0, vld1q_s16(threat.add(pw + i)));
+            a1 = vqaddq_s16(a1, vld1q_s16(threat.add(i + 8)));
+            b1 = vqaddq_s16(b1, vld1q_s16(threat.add(pw + i + 8)));
         }
         let ca0 = vminq_s16(vmaxq_s16(a0, zero), qa);
         let cb0 = vminq_s16(vmaxq_s16(b0, zero), qa);
@@ -2142,8 +2150,8 @@ unsafe fn neon_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: *mut u8
         let mut a = vld1q_s16(acc.as_ptr().add(i));
         let mut b = vld1q_s16(acc.as_ptr().add(pw + i));
         if has_threat {
-            a = vaddq_s16(a, vld1q_s16(threat.add(i)));
-            b = vaddq_s16(b, vld1q_s16(threat.add(pw + i)));
+            a = vqaddq_s16(a, vld1q_s16(threat.add(i)));
+            b = vqaddq_s16(b, vld1q_s16(threat.add(pw + i)));
         }
         let ca = vminq_s16(vmaxq_s16(a, zero), qa);
         let cb = vminq_s16(vmaxq_s16(b, zero), qa);
@@ -2370,6 +2378,110 @@ pub static LOAD_ANYWAY: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// NNUE network weights (shared, read-only after loading).
+/// 64-byte-aligned wrapper for stack scratch buffers. Two reasons:
+/// 1. Soundness: the L1 kernels reinterpret the packed pairwise buffer as
+///    u32 chunks. The kernels use `read_unaligned` so any alignment is
+///    sound, but an aligned buffer keeps the fast path on aligned loads.
+/// 2. Perf: every SIMD load/store on a 64-byte-aligned buffer stays inside
+///    one cache line (a `[u8; N]` array only guarantees align 1, so ZMM
+///    accesses could straddle lines on an unlucky stack offset).
+#[repr(C, align(64))]
+struct Align64<T>(T);
+
+/// Which L1 matmul kernel `forward_with_l1_pairwise_inner` uses. The choice
+/// depends only on net shape and CPU features, so it is computed ONCE at
+/// load time by `select_l1_kernel` instead of re-evaluating a 7-arm
+/// condition chain per eval (whose scalar-fallback guard had to repeat
+/// every condition negated — an editing hazard where a forgotten mirror
+/// meant silent double-accumulation or a missing bias seed).
+///
+/// Column-major `Dense*` kernels read the input-chunk-major
+/// `l1_weights_sparse` table. That table is laid out with the TOTAL
+/// (bucketed) neuron count as its per-chunk stride and the kernels take no
+/// bucket offset, so they are only sound for UNBUCKETED nets —
+/// `select_l1_kernel` guards them with `!bucketed_hidden`. `RowMajor*`
+/// kernels index `l1_weights_8t` with an explicit `l1_off` and support
+/// bucketed-hidden nets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum L1Kernel {
+    /// AVX-512 VNNI column-major dense (one VPDPBUSD per chunk, L1=16).
+    DenseAvx512Vnni,
+    /// AVX-512 VNNI row-major per-neuron dots (wider/bucketed L1).
+    RowMajorAvx512Vnni,
+    /// AVX-VNNI (YMM VPDPBUSD) column-major dense, L1<=16.
+    DenseAvxVnni,
+    /// AVX-512 row-major per-neuron dots (no VNNI).
+    RowMajorAvx512,
+    /// AVX2 column-major dense, L1=32 specialisation.
+    DenseAvx2L1_32,
+    /// AVX2 column-major dense, L1<=16 (the AVX2-fleet prod kernel).
+    DenseAvx2,
+    /// AVX2 row-major 4-neuron dots.
+    RowMajorAvx2,
+    /// NEON row-major 4-neuron dots.
+    NeonX4,
+    /// Scalar fallback (also the placeholder for non-pairwise nets,
+    /// which never consult this enum).
+    Scalar,
+}
+
+/// Mirror of the historical dispatch priority in
+/// `forward_with_l1_pairwise_inner`, with `!bucketed_hidden` guards added
+/// to the column-major arms (see `L1Kernel` docs). All inputs are
+/// net/CPU-static, so the result is cached in `NNUENet::l1_kernel`.
+#[allow(clippy::too_many_arguments)]
+fn select_l1_kernel(
+    use_pairwise: bool,
+    l1: usize,            // per-bucket L1 width (== total when unbucketed)
+    bucketed_hidden: bool,
+    pw: usize,            // hidden_size / 2
+    have_sparse: bool,    // !l1_weights_sparse.is_empty()
+    have_8t: bool,        // !l1_weights_8t.is_empty()
+    has_avx2: bool,
+    has_avx512: bool,
+    has_avx512_vnni: bool,
+    has_avx_vnni: bool,
+    has_neon: bool,
+) -> L1Kernel {
+    if !use_pairwise {
+        return L1Kernel::Scalar;
+    }
+    let col_ok = have_sparse && !bucketed_hidden;
+    #[cfg(target_arch = "x86_64")]
+    {
+        if has_avx512_vnni && col_ok && l1 == 16 && pw.is_multiple_of(4) {
+            return L1Kernel::DenseAvx512Vnni;
+        }
+        if has_avx512_vnni && pw.is_multiple_of(64) && have_8t {
+            return L1Kernel::RowMajorAvx512Vnni;
+        }
+        if has_avx_vnni && col_ok && l1 <= 16 && pw.is_multiple_of(4) {
+            return L1Kernel::DenseAvxVnni;
+        }
+        if has_avx512 && pw.is_multiple_of(64) && have_8t {
+            return L1Kernel::RowMajorAvx512;
+        }
+        if has_avx2 && col_ok && l1 == 32 && pw.is_multiple_of(4) {
+            return L1Kernel::DenseAvx2L1_32;
+        }
+        if has_avx2 && col_ok && l1 <= 16 {
+            return L1Kernel::DenseAvx2;
+        }
+        if has_avx2 && pw.is_multiple_of(32) && have_8t {
+            return L1Kernel::RowMajorAvx2;
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if has_neon && pw.is_multiple_of(16) && have_8t {
+            return L1Kernel::NeonX4;
+        }
+    }
+    let _ = (l1, bucketed_hidden, pw, col_ok, have_8t,
+             has_avx2, has_avx512, has_avx512_vnni, has_avx_vnni, has_neon);
+    L1Kernel::Scalar
+}
+
 pub struct NNUENet {
     pub hidden_size: usize,
     pub input_weights: Vec<i16>,  // [NNUE_INPUT_SIZE × hidden_size]
@@ -2444,6 +2556,9 @@ pub struct NNUENet {
     /// Zen 4+. Used by AVX2-only build configurations on VNNI-capable CPUs.
     pub has_avx_vnni: bool,
     pub has_neon: bool,
+    /// L1 matmul kernel for the pairwise forward pass — net/CPU-static,
+    /// selected once at load by `select_l1_kernel`.
+    pub l1_kernel: L1Kernel,
 }
 
 impl NNUENet {
@@ -2835,6 +2950,20 @@ impl NNUENet {
                 max_err, sum_err / total as f64);
         }
 
+        let l1_kernel = select_l1_kernel(
+            use_pairwise,
+            l1_size, // header (per-bucket) width — equals total when unbucketed
+            bucketed_hidden,
+            hidden_size / 2,
+            !l1_weights_sparse.is_empty(),
+            !l1_weights_8t.is_empty(),
+            has_avx2,
+            has_avx512,
+            has_avx512_vnni,
+            has_avx_vnni,
+            has_neon,
+        );
+
         Ok(NNUENet {
             hidden_size,
             input_weights,
@@ -2879,6 +3008,7 @@ impl NNUENet {
             has_avx512_vnni,
             has_avx_vnni,
             has_neon,
+            l1_kernel,
         })
     }
 
@@ -2889,6 +3019,18 @@ impl NNUENet {
     fn validate_compat(&self) -> Result<(), String> {
         if !self.has_threats {
             return Ok(());
+        }
+        // The threat pipeline (ThreatEntry::values, the non-pairwise combine
+        // buffers in forward/forward_with_threats) is statically sized to
+        // MAX_FT_SIZE. A threat net wider than that would index out of
+        // bounds at eval time — reject it up front with a clear message.
+        if self.hidden_size > crate::threat_accum::MAX_FT_SIZE {
+            return Err(format!(
+                "threat net hidden_size {} exceeds threat-pipeline maximum {} \
+                 (threat_accum::MAX_FT_SIZE) — raise MAX_FT_SIZE to support \
+                 wider threat nets",
+                self.hidden_size, crate::threat_accum::MAX_FT_SIZE,
+            ));
         }
         // Coda inference always emits xray threat features. A net trained
         // with --xray 0 has weight rows for the same indices trained only
@@ -3004,8 +3146,10 @@ impl NNUENet {
         // past load-time validation must abort here rather than write OOB into
         // the fixed-size stack buffers below (genuine memory unsafety).
         assert!(pw <= PW_BUF, "pw {} exceeds PW_BUF {}", pw, PW_BUF);
-        let mut stm_pw_storage = std::mem::MaybeUninit::<[u8; PW_BUF]>::uninit();
-        let mut ntm_pw_storage = std::mem::MaybeUninit::<[u8; PW_BUF]>::uninit();
+        // Align64: the L1 kernels read this buffer as u32 chunks and the
+        // packs store whole SIMD registers into it — see Align64 docs.
+        let mut stm_pw_storage = std::mem::MaybeUninit::<Align64<[u8; PW_BUF]>>::uninit();
+        let mut ntm_pw_storage = std::mem::MaybeUninit::<Align64<[u8; PW_BUF]>>::uninit();
         let stm_pw_ptr = scratch_ptr!(stm_pw_storage, u8);
         let ntm_pw_ptr = scratch_ptr!(ntm_pw_storage, u8);
 
@@ -3105,251 +3249,230 @@ impl NNUENet {
                 }
             };
         }
-        // L1 matmul: use SIMD int8 dot with transposed weights when available
-        #[cfg(target_arch = "x86_64")]
-        if self.has_avx512_vnni && !self.l1_weights_sparse.is_empty() && l1 == 16 && pw.is_multiple_of(4) {
-            // AVX-512 VNNI column-major: all 16 L1 neurons in one ZMM accumulator,
-            // one VPDPBUSD per 4-byte input chunk. Dramatically reduces per-chunk
-            // uop count vs the row-major per-neuron path below.
-            unsafe {
-                crate::sparse_l1::dense_l1_avx512_vnni(
-                    stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
-                    l1, &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
-                );
-            }
-        } else if self.has_avx512_vnni && pw.is_multiple_of(64) && !self.l1_weights_8t.is_empty() {
-            // VNNI fallback for wider L1 — still VPDPBUSD, but row-major.
-            seed_hidden32!();
-            let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
-            let ntm_base = l1_total * pw;
-            for i in 0..l1 {
-                let gi = l1_off + i;
-                let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
-                let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
+        // L1 matmul. Kernel choice is net/CPU-static and cached at load
+        // (`select_l1_kernel`) — see the `L1Kernel` docs for why the
+        // column-major arms exclude bucketed-hidden nets.
+        match self.l1_kernel {
+            #[cfg(target_arch = "x86_64")]
+            L1Kernel::DenseAvx512Vnni => {
+                // AVX-512 VNNI column-major: all 16 L1 neurons in one ZMM
+                // accumulator, one VPDPBUSD per 4-byte input chunk.
+                // Dramatically reduces per-chunk uop count vs the row-major
+                // per-neuron paths.
                 unsafe {
-                    hidden32[i] += simd512_l1_int8_dot_vnni(&stm_pw[..pw], stm_w, pw);
-                    hidden32[i] += simd512_l1_int8_dot_vnni(&ntm_pw[..pw], ntm_w, pw);
+                    crate::sparse_l1::dense_l1_avx512_vnni(
+                        stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
+                        l1, &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
+                    );
                 }
             }
-        } else if self.has_avx_vnni && !self.l1_weights_sparse.is_empty() && l1 <= 16 && pw.is_multiple_of(4) {
-            // AVX-VNNI (YMM VPDPBUSD) — Alder Lake+, Zen 4+ without full AVX-512.
-            unsafe {
-                crate::sparse_l1::dense_l1_avx_vnni(
-                    stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
-                    l1, &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
-                );
-            }
-        } else if self.has_avx512 && pw.is_multiple_of(64) && !self.l1_weights_8t.is_empty() {
-            seed_hidden32!();
-            let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
-            let ntm_base = l1_total * pw;
-            for i in 0..l1 {
-                let gi = l1_off + i;
-                let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
-                let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
-                unsafe {
-                    hidden32[i] += simd512_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
-                    hidden32[i] += simd512_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
-                }
-            }
-        } else if self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 == 32 && pw.is_multiple_of(4) {
-            // L1=32 AVX2 specialisation. Four YMM accumulators (8 neurons
-            // each) instead of the L1=16 path's two. Column-major outer
-            // chunk loop matches dense_l1_avx2 structure — input is
-            // loaded once per chunk, all 32 neurons accumulate in
-            // parallel via VPMADDUBSW + VPMADDWD.
-            unsafe {
-                crate::sparse_l1::dense_l1_avx2_l1_32(
-                    stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
-                    &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
-                );
-            }
-        } else if self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 <= 16 {
-            // Column-major (input-chunk-major) L1 matmul — Reckless's pattern.
-            // For each 4-byte input chunk, splat_i32 broadcast + maddubs/madd
-            // contributes to all L1 outputs simultaneously via 2 AVX2 registers.
-            // Replaces the row-major path that scanned the full input per
-            // output neuron (16× cache-line touches per input chunk).
-            //
-            // Dense variant (no zero-check): pairwise-CReLU inputs have high
-            // density (~89%), so the if-check overhead in the sparse variant
-            // exceeded the skip savings at L1=16. The dense path is
-            // straight-line SIMD with input-chunk-major weight access.
-            unsafe {
-                crate::sparse_l1::dense_l1_avx2(
-                    stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
-                    l1, &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
-                );
-            }
-            // DEBUG: compare against dense
-            #[cfg(debug_assertions)]
-            {
-                static SDBG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                let c = SDBG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if c < 5 {
-                    let ntm_base = l1_total * pw;
-                    let mut dense = vec![0i32; l1];
-                    for i in 0..l1 { dense[i] = self.l1_biases[l1_off + i] as i32 * pw_scale; }
-                    for i in 0..l1 {
-                        let gi = l1_off + i;
-                        for j in 0..pw {
-                            dense[i] += stm_pw[j] as i32 * self.l1_weights_8t[gi * pw + j] as i32;
-                            dense[i] += ntm_pw[j] as i32 * self.l1_weights_8t[ntm_base + gi * pw + j] as i32;
-                        }
+            #[cfg(target_arch = "x86_64")]
+            L1Kernel::RowMajorAvx512Vnni => {
+                // VNNI fallback for wider/bucketed L1 — still VPDPBUSD, but row-major.
+                seed_hidden32!();
+                let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
+                let ntm_base = l1_total * pw;
+                for i in 0..l1 {
+                    let gi = l1_off + i;
+                    let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
+                    let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
+                    unsafe {
+                        hidden32[i] += simd512_l1_int8_dot_vnni(&stm_pw[..pw], stm_w, pw);
+                        hidden32[i] += simd512_l1_int8_dot_vnni(&ntm_pw[..pw], ntm_w, pw);
                     }
-                    let mut mismatch = false;
-                    let hidden32_dbg = scratch_slice!(hidden32_ptr, l1);
-                    for i in 0..l1 {
-                        if hidden32_dbg[i] != dense[i] {
-                            if !mismatch {
-                                eprintln!("SPARSE L1 MISMATCH neuron {}: sparse={} dense={} diff={}",
-                                    i, hidden32_dbg[i], dense[i], hidden32_dbg[i] - dense[i]);
+                }
+            }
+            #[cfg(target_arch = "x86_64")]
+            L1Kernel::DenseAvxVnni => {
+                // AVX-VNNI (YMM VPDPBUSD) — Alder Lake+, Zen 4+ without full AVX-512.
+                unsafe {
+                    crate::sparse_l1::dense_l1_avx_vnni(
+                        stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
+                        l1, &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
+                    );
+                }
+            }
+            #[cfg(target_arch = "x86_64")]
+            L1Kernel::RowMajorAvx512 => {
+                seed_hidden32!();
+                let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
+                let ntm_base = l1_total * pw;
+                for i in 0..l1 {
+                    let gi = l1_off + i;
+                    let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
+                    let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
+                    unsafe {
+                        hidden32[i] += simd512_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
+                        hidden32[i] += simd512_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
+                    }
+                }
+            }
+            #[cfg(target_arch = "x86_64")]
+            L1Kernel::DenseAvx2L1_32 => {
+                // L1=32 AVX2 specialisation. Four YMM accumulators (8 neurons
+                // each) instead of the L1=16 path's two. Column-major outer
+                // chunk loop matches dense_l1_avx2 structure — input is
+                // loaded once per chunk, all 32 neurons accumulate in
+                // parallel via VPMADDUBSW + VPMADDWD.
+                unsafe {
+                    crate::sparse_l1::dense_l1_avx2_l1_32(
+                        stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
+                        &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
+                    );
+                }
+            }
+            #[cfg(target_arch = "x86_64")]
+            L1Kernel::DenseAvx2 => {
+                // Column-major (input-chunk-major) L1 matmul — Reckless's pattern.
+                // For each 4-byte input chunk, splat_i32 broadcast + maddubs/madd
+                // contributes to all L1 outputs simultaneously via 2 AVX2 registers.
+                // Replaces the row-major path that scanned the full input per
+                // output neuron (16× cache-line touches per input chunk).
+                //
+                // Dense variant (no zero-check): pairwise-CReLU inputs have high
+                // density (~89%), so the if-check overhead in the sparse variant
+                // exceeded the skip savings at L1=16. The dense path is
+                // straight-line SIMD with input-chunk-major weight access.
+                unsafe {
+                    crate::sparse_l1::dense_l1_avx2(
+                        stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
+                        l1, &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
+                    );
+                }
+                // DEBUG: compare against the row-major reference
+                #[cfg(debug_assertions)]
+                {
+                    static SDBG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                    let c = SDBG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if c < 5 {
+                        let ntm_base = l1_total * pw;
+                        let mut dense = vec![0i32; l1];
+                        for i in 0..l1 { dense[i] = self.l1_biases[l1_off + i] as i32 * pw_scale; }
+                        for i in 0..l1 {
+                            let gi = l1_off + i;
+                            for j in 0..pw {
+                                dense[i] += stm_pw[j] as i32 * self.l1_weights_8t[gi * pw + j] as i32;
+                                dense[i] += ntm_pw[j] as i32 * self.l1_weights_8t[ntm_base + gi * pw + j] as i32;
                             }
-                            mismatch = true;
+                        }
+                        let mut mismatch = false;
+                        let hidden32_dbg = scratch_slice!(hidden32_ptr, l1);
+                        for i in 0..l1 {
+                            if hidden32_dbg[i] != dense[i] {
+                                if !mismatch {
+                                    eprintln!("SPARSE L1 MISMATCH neuron {}: sparse={} dense={} diff={}",
+                                        i, hidden32_dbg[i], dense[i], hidden32_dbg[i] - dense[i]);
+                                }
+                                mismatch = true;
+                            }
+                        }
+                        if !mismatch { eprintln!("SPARSE L1 MATCH (all {} neurons)", l1); }
+                    }
+                }
+            }
+            #[cfg(target_arch = "x86_64")]
+            L1Kernel::RowMajorAvx2 => {
+                seed_hidden32!();
+                let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
+                let ntm_base = l1_total * pw;
+                // Multi-neuron: process 4 neurons at once, loading input once per chunk
+                let mut i = 0;
+                while i + 4 <= l1 {
+                    let gi = l1_off + i;
+                    unsafe {
+                        let stm_results = simd_l1_int8_dot_x4(
+                            &stm_pw[..pw],
+                            &self.l1_weights_8t[gi * pw..(gi + 1) * pw],
+                            &self.l1_weights_8t[(gi + 1) * pw..(gi + 2) * pw],
+                            &self.l1_weights_8t[(gi + 2) * pw..(gi + 3) * pw],
+                            &self.l1_weights_8t[(gi + 3) * pw..(gi + 4) * pw],
+                            pw,
+                        );
+                        let ntm_results = simd_l1_int8_dot_x4(
+                            &ntm_pw[..pw],
+                            &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw],
+                            &self.l1_weights_8t[ntm_base + (gi + 1) * pw..ntm_base + (gi + 2) * pw],
+                            &self.l1_weights_8t[ntm_base + (gi + 2) * pw..ntm_base + (gi + 3) * pw],
+                            &self.l1_weights_8t[ntm_base + (gi + 3) * pw..ntm_base + (gi + 4) * pw],
+                            pw,
+                        );
+                        for k in 0..4 {
+                            hidden32[i + k] += stm_results[k] + ntm_results[k];
                         }
                     }
-                    if !mismatch { eprintln!("SPARSE L1 MATCH (all {} neurons)", l1); }
+                    i += 4;
                 }
-            }
-        } else if self.has_avx2 && pw.is_multiple_of(32) && !self.l1_weights_8t.is_empty() {
-            seed_hidden32!();
-            let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
-            let ntm_base = l1_total * pw;
-            // Multi-neuron: process 4 neurons at once, loading input once per chunk
-            let mut i = 0;
-            while i + 4 <= l1 {
-                let gi = l1_off + i;
-                unsafe {
-                    let stm_results = simd_l1_int8_dot_x4(
-                        &stm_pw[..pw],
-                        &self.l1_weights_8t[gi * pw..(gi + 1) * pw],
-                        &self.l1_weights_8t[(gi + 1) * pw..(gi + 2) * pw],
-                        &self.l1_weights_8t[(gi + 2) * pw..(gi + 3) * pw],
-                        &self.l1_weights_8t[(gi + 3) * pw..(gi + 4) * pw],
-                        pw,
-                    );
-                    let ntm_results = simd_l1_int8_dot_x4(
-                        &ntm_pw[..pw],
-                        &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw],
-                        &self.l1_weights_8t[ntm_base + (gi + 1) * pw..ntm_base + (gi + 2) * pw],
-                        &self.l1_weights_8t[ntm_base + (gi + 2) * pw..ntm_base + (gi + 3) * pw],
-                        &self.l1_weights_8t[ntm_base + (gi + 3) * pw..ntm_base + (gi + 4) * pw],
-                        pw,
-                    );
-                    for k in 0..4 {
-                        hidden32[i + k] += stm_results[k] + ntm_results[k];
+                // Handle remaining neurons (if l1 not divisible by 4)
+                while i < l1 {
+                    let gi = l1_off + i;
+                    let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
+                    let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
+                    unsafe {
+                        hidden32[i] += simd_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
+                        hidden32[i] += simd_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
                     }
-                }
-                i += 4;
-            }
-            // Handle remaining neurons (if l1 not divisible by 4)
-            while i < l1 {
-                let gi = l1_off + i;
-                let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
-                let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
-                unsafe {
-                    hidden32[i] += simd_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
-                    hidden32[i] += simd_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
-                }
-                i += 1;
-            }
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        if !(self.has_avx512_vnni && !self.l1_weights_sparse.is_empty() && l1 == 16 && pw.is_multiple_of(4))
-            && !(self.has_avx512_vnni && pw.is_multiple_of(64) && !self.l1_weights_8t.is_empty())
-            && !(self.has_avx_vnni && !self.l1_weights_sparse.is_empty() && l1 <= 16 && pw.is_multiple_of(4))
-            && !(self.has_avx512 && pw.is_multiple_of(64) && !self.l1_weights_8t.is_empty())
-            && !(self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 == 32 && pw.is_multiple_of(4))
-            && !(self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 <= 16)
-            && !(self.has_avx2 && pw.is_multiple_of(32) && !self.l1_weights_8t.is_empty()) {
-            // Scalar fallback — raw weights in [input][neuron] layout
-            seed_hidden32!();
-            let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
-            for i in 0..l1 {
-                let gi = l1_off + i;
-                for j in 0..pw {
-                    hidden32[i] += stm_pw[j] as i32 * self.l1_weights[j * l1_total + gi] as i32;
-                }
-                for j in 0..pw {
-                    hidden32[i] += ntm_pw[j] as i32 * self.l1_weights[(pw + j) * l1_total + gi] as i32;
+                    i += 1;
                 }
             }
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        if self.has_neon && pw % 16 == 0 && !self.l1_weights_8t.is_empty() {
-            seed_hidden32!();
-            let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
-            let ntm_base = l1_total * pw;
-            // Multi-neuron: 4 neurons at once, loading each input chunk once
-            // and feeding all 4 accumulators (mirrors x86_64 simd_l1_int8_dot_x4).
-            let mut i = 0;
-            while i + 4 <= l1 {
-                let gi = l1_off + i;
-                unsafe {
-                    let stm_results = neon_l1_int8_dot_x4(
-                        &stm_pw[..pw],
-                        &self.l1_weights_8t[gi * pw..(gi + 1) * pw],
-                        &self.l1_weights_8t[(gi + 1) * pw..(gi + 2) * pw],
-                        &self.l1_weights_8t[(gi + 2) * pw..(gi + 3) * pw],
-                        &self.l1_weights_8t[(gi + 3) * pw..(gi + 4) * pw],
-                        pw,
-                    );
-                    let ntm_results = neon_l1_int8_dot_x4(
-                        &ntm_pw[..pw],
-                        &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw],
-                        &self.l1_weights_8t[ntm_base + (gi + 1) * pw..ntm_base + (gi + 2) * pw],
-                        &self.l1_weights_8t[ntm_base + (gi + 2) * pw..ntm_base + (gi + 3) * pw],
-                        &self.l1_weights_8t[ntm_base + (gi + 3) * pw..ntm_base + (gi + 4) * pw],
-                        pw,
-                    );
-                    for k in 0..4 {
-                        hidden32[i + k] += stm_results[k] + ntm_results[k];
+            #[cfg(target_arch = "aarch64")]
+            L1Kernel::NeonX4 => {
+                seed_hidden32!();
+                let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
+                let ntm_base = l1_total * pw;
+                // Multi-neuron: 4 neurons at once, loading each input chunk once
+                // and feeding all 4 accumulators (mirrors x86_64 simd_l1_int8_dot_x4).
+                let mut i = 0;
+                while i + 4 <= l1 {
+                    let gi = l1_off + i;
+                    unsafe {
+                        let stm_results = neon_l1_int8_dot_x4(
+                            &stm_pw[..pw],
+                            &self.l1_weights_8t[gi * pw..(gi + 1) * pw],
+                            &self.l1_weights_8t[(gi + 1) * pw..(gi + 2) * pw],
+                            &self.l1_weights_8t[(gi + 2) * pw..(gi + 3) * pw],
+                            &self.l1_weights_8t[(gi + 3) * pw..(gi + 4) * pw],
+                            pw,
+                        );
+                        let ntm_results = neon_l1_int8_dot_x4(
+                            &ntm_pw[..pw],
+                            &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw],
+                            &self.l1_weights_8t[ntm_base + (gi + 1) * pw..ntm_base + (gi + 2) * pw],
+                            &self.l1_weights_8t[ntm_base + (gi + 2) * pw..ntm_base + (gi + 3) * pw],
+                            &self.l1_weights_8t[ntm_base + (gi + 3) * pw..ntm_base + (gi + 4) * pw],
+                            pw,
+                        );
+                        for k in 0..4 {
+                            hidden32[i + k] += stm_results[k] + ntm_results[k];
+                        }
                     }
+                    i += 4;
                 }
-                i += 4;
-            }
-            // Tail (if l1 not divisible by 4)
-            while i < l1 {
-                let gi = l1_off + i;
-                let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
-                let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
-                unsafe {
-                    hidden32[i] += neon_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
-                    hidden32[i] += neon_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
-                }
-                i += 1;
-            }
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        if !(self.has_neon && pw % 16 == 0 && !self.l1_weights_8t.is_empty()) {
-            seed_hidden32!();
-            let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
-            for i in 0..l1 {
-                let gi = l1_off + i;
-                for j in 0..pw {
-                    hidden32[i] += stm_pw[j] as i32 * self.l1_weights[j * l1_total + gi] as i32;
-                }
-                for j in 0..pw {
-                    hidden32[i] += ntm_pw[j] as i32 * self.l1_weights[(pw + j) * l1_total + gi] as i32;
+                // Tail (if l1 not divisible by 4)
+                while i < l1 {
+                    let gi = l1_off + i;
+                    let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
+                    let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
+                    unsafe {
+                        hidden32[i] += neon_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
+                        hidden32[i] += neon_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
+                    }
+                    i += 1;
                 }
             }
-        }
-
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        {
-            // Scalar fallback for other architectures
-            seed_hidden32!();
-            let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
-            for i in 0..l1 {
-                let gi = l1_off + i;
-                for j in 0..pw {
-                    hidden32[i] += stm_pw[j] as i32 * self.l1_weights[j * l1_total + gi] as i32;
-                }
-                for j in 0..pw {
-                    hidden32[i] += ntm_pw[j] as i32 * self.l1_weights[(pw + j) * l1_total + gi] as i32;
+            _ => {
+                // Scalar fallback — raw weights in [input][neuron] layout.
+                // Also reached for kernels of another arch (never selected
+                // by the loader on this one).
+                seed_hidden32!();
+                let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
+                for i in 0..l1 {
+                    let gi = l1_off + i;
+                    for j in 0..pw {
+                        hidden32[i] += stm_pw[j] as i32 * self.l1_weights[j * l1_total + gi] as i32;
+                    }
+                    for j in 0..pw {
+                        hidden32[i] += ntm_pw[j] as i32 * self.l1_weights[(pw + j) * l1_total + gi] as i32;
+                    }
                 }
             }
         }
@@ -3563,8 +3686,8 @@ impl NNUENet {
         // SIMD int8 path: pack SCReLU to u8, then VPMADDUBSW L1 matmul
         #[cfg(target_arch = "x86_64")]
         if (self.has_avx512 || self.has_avx2) && h.is_multiple_of(32) && !self.l1_weights_8t.is_empty() {
-            let mut stm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
-            let mut ntm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
+            let mut stm_packed_storage = std::mem::MaybeUninit::<Align64<[u8; 2048]>>::uninit();
+            let mut ntm_packed_storage = std::mem::MaybeUninit::<Align64<[u8; 2048]>>::uninit();
             let stm_packed_ptr = scratch_ptr!(stm_packed_storage, u8);
             let ntm_packed_ptr = scratch_ptr!(ntm_packed_storage, u8);
             if self.has_avx512 && h.is_multiple_of(64) {
@@ -3742,8 +3865,8 @@ impl NNUENet {
         // NEON int8 path: pack SCReLU to u8, then NEON L1 matmul
         #[cfg(target_arch = "aarch64")]
         if self.has_neon && h % 16 == 0 && !self.l1_weights_8t.is_empty() {
-            let mut stm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
-            let mut ntm_packed_storage = std::mem::MaybeUninit::<[u8; 2048]>::uninit();
+            let mut stm_packed_storage = std::mem::MaybeUninit::<Align64<[u8; 2048]>>::uninit();
+            let mut ntm_packed_storage = std::mem::MaybeUninit::<Align64<[u8; 2048]>>::uninit();
             let stm_packed_ptr = scratch_ptr!(stm_packed_storage, u8);
             let ntm_packed_ptr = scratch_ptr!(ntm_packed_storage, u8);
             unsafe {
@@ -3999,8 +4122,12 @@ impl NNUENet {
                     return self.forward_with_l1_pairwise_threats(stm_acc, ntm_acc, t_stm, t_ntm, bucket);
                 }
                 // Non-pairwise with threats: combine on stack (rare path)
-                let mut stm_combined = [0i16; 768];
-                let mut ntm_combined = [0i16; 768];
+                // Sized to the threat-pipeline maximum, not the historical
+                // v9 width: a non-pairwise threat net with FT>768 would
+                // have panicked on the old [i16; 768] buffers. Threat nets
+                // with h > MAX_FT_SIZE are rejected at load.
+                let mut stm_combined = [0i16; crate::threat_accum::MAX_FT_SIZE];
+                let mut ntm_combined = [0i16; crate::threat_accum::MAX_FT_SIZE];
                 for i in 0..h {
                     stm_combined[i] = stm_acc[i].wrapping_add(t_stm[i]);
                     ntm_combined[i] = ntm_acc[i].wrapping_add(t_ntm[i]);
@@ -4079,8 +4206,10 @@ impl NNUENet {
             }
             // Non-pairwise: combine then forward (no fused path)
             if !t_stm.is_empty() {
-                let mut stm_buf = [0i16; 768];
-                let mut ntm_buf = [0i16; 768];
+                // See forward_with_threats: sized to the threat-pipeline
+                // maximum so FT1024 non-pairwise threat nets don't panic.
+                let mut stm_buf = [0i16; crate::threat_accum::MAX_FT_SIZE];
+                let mut ntm_buf = [0i16; crate::threat_accum::MAX_FT_SIZE];
                 for i in 0..h { stm_buf[i] = stm_acc_raw[i].wrapping_add(t_stm[i]); }
                 for i in 0..h { ntm_buf[i] = ntm_acc_raw[i].wrapping_add(t_ntm[i]); }
                 return self.forward_with_l1(&stm_buf[..h], &ntm_buf[..h], bucket);

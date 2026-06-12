@@ -60,10 +60,13 @@ pub fn transpose_weights_for_sparse(
 #[inline]
 pub fn find_nnz_chunks4(data: &[u8], len: usize, nnz_indices: &mut [u16]) -> usize {
     let chunks = len / 4;
-    let data32 = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u32, chunks) };
+    // read_unaligned: a &[u8] only guarantees align 1, so materialising a
+    // &[u32] over it (the previous code) was UB. Compiles to the same
+    // plain `mov` on x86 either way.
+    let p = data.as_ptr() as *const u32;
     let mut count = 0;
     for i in 0..chunks {
-        if data32[i] != 0 {
+        if unsafe { p.add(i).read_unaligned() } != 0 {
             nnz_indices[count] = i as u16;
             count += 1;
         }
@@ -90,10 +93,11 @@ pub fn sparse_l1_scalar(
         output[i] = bias[i] as i32 * bias_scale;
     }
 
-    // STM perspective: chunks 0..pw/4
-    let stm_chunks = unsafe { std::slice::from_raw_parts(stm_pw.as_ptr() as *const u32, pw / 4) };
+    // STM perspective: chunks 0..pw/4. read_unaligned because &[u8] only
+    // guarantees align 1 (creating a &[u32] view over it is UB).
+    let stm_chunks = stm_pw.as_ptr() as *const u32;
     for chunk_idx in 0..pw / 4 {
-        if stm_chunks[chunk_idx] == 0 { continue; }
+        if unsafe { stm_chunks.add(chunk_idx).read_unaligned() } == 0 { continue; }
         let w_base = chunk_idx * chunk_stride;
         for neuron in 0..num_neurons {
             let w_off = w_base + neuron * 4;
@@ -106,9 +110,9 @@ pub fn sparse_l1_scalar(
 
     // NTM perspective: chunks pw/4..pw*2/4
     let ntm_chunk_offset = pw / 4;
-    let ntm_chunks = unsafe { std::slice::from_raw_parts(ntm_pw.as_ptr() as *const u32, pw / 4) };
+    let ntm_chunks = ntm_pw.as_ptr() as *const u32;
     for chunk_idx in 0..pw / 4 {
-        if ntm_chunks[chunk_idx] == 0 { continue; }
+        if unsafe { ntm_chunks.add(chunk_idx).read_unaligned() } == 0 { continue; }
         let w_base = (ntm_chunk_offset + chunk_idx) * chunk_stride;
         for neuron in 0..num_neurons {
             let w_off = w_base + neuron * 4;
@@ -153,9 +157,9 @@ pub unsafe fn sparse_l1_avx2(
     let w_ptr = sparse_weights.as_ptr();
 
     // STM perspective
-    let stm_chunks = std::slice::from_raw_parts(stm_pw.as_ptr() as *const u32, pw / 4);
+    let stm_chunks = stm_pw.as_ptr() as *const u32;
     for chunk_idx in 0..pw / 4 {
-        let val = *stm_chunks.get_unchecked(chunk_idx);
+        let val = stm_chunks.add(chunk_idx).read_unaligned();
         if val == 0 { continue; }
         let input = _mm256_set1_epi32(val as i32);
         let w_off = chunk_idx * chunk_stride;
@@ -175,9 +179,9 @@ pub unsafe fn sparse_l1_avx2(
 
     // NTM perspective
     let ntm_chunk_offset = pw / 4;
-    let ntm_chunks = std::slice::from_raw_parts(ntm_pw.as_ptr() as *const u32, pw / 4);
+    let ntm_chunks = ntm_pw.as_ptr() as *const u32;
     for chunk_idx in 0..pw / 4 {
-        let val = *ntm_chunks.get_unchecked(chunk_idx);
+        let val = ntm_chunks.add(chunk_idx).read_unaligned();
         if val == 0 { continue; }
         let input = _mm256_set1_epi32(val as i32);
         let w_off = (ntm_chunk_offset + chunk_idx) * chunk_stride;
@@ -253,7 +257,7 @@ pub unsafe fn dense_l1_avx2_l1_32(
             let chunks: *const u32 = $chunks;
             let chunk_offset: usize = $chunk_offset;
             for c in 0..total_chunks {
-                let val = *chunks.add(c);
+                let val = chunks.add(c).read_unaligned();
                 let input = _mm256_set1_epi32(val as i32);
                 let w_off = (chunk_offset + c) * CHUNK_STRIDE;
                 let w0 = _mm256_loadu_si256(w_ptr.add(w_off)       as *const __m256i);
@@ -338,9 +342,9 @@ pub unsafe fn dense_l1_avx2(
     let w_ptr = sparse_weights.as_ptr();
 
     // STM perspective — all chunks, no zero-skip.
-    let stm_chunks = std::slice::from_raw_parts(stm_pw.as_ptr() as *const u32, pw / 4);
+    let stm_chunks = stm_pw.as_ptr() as *const u32;
     for chunk_idx in 0..pw / 4 {
-        let val = *stm_chunks.get_unchecked(chunk_idx);
+        let val = stm_chunks.add(chunk_idx).read_unaligned();
         let input = _mm256_set1_epi32(val as i32);
         let w_off = chunk_idx * chunk_stride;
 
@@ -357,9 +361,9 @@ pub unsafe fn dense_l1_avx2(
 
     // NTM perspective
     let ntm_chunk_offset = pw / 4;
-    let ntm_chunks = std::slice::from_raw_parts(ntm_pw.as_ptr() as *const u32, pw / 4);
+    let ntm_chunks = ntm_pw.as_ptr() as *const u32;
     for chunk_idx in 0..pw / 4 {
-        let val = *ntm_chunks.get_unchecked(chunk_idx);
+        let val = ntm_chunks.add(chunk_idx).read_unaligned();
         let input = _mm256_set1_epi32(val as i32);
         let w_off = (ntm_chunk_offset + chunk_idx) * chunk_stride;
 
@@ -454,10 +458,10 @@ pub unsafe fn dense_l1_avx512_vnni(
             let chunk_offset: usize = $chunk_offset;
             let mut c = 0usize;
             while c + 4 <= total_chunks {
-                let v0 = *chunks.add(c);
-                let v1 = *chunks.add(c + 1);
-                let v2 = *chunks.add(c + 2);
-                let v3 = *chunks.add(c + 3);
+                let v0 = chunks.add(c).read_unaligned();
+                let v1 = chunks.add(c + 1).read_unaligned();
+                let v2 = chunks.add(c + 2).read_unaligned();
+                let v3 = chunks.add(c + 3).read_unaligned();
                 let w0 = _mm512_loadu_si512(w_ptr.add((chunk_offset + c) * chunk_stride) as *const __m512i);
                 let w1 = _mm512_loadu_si512(w_ptr.add((chunk_offset + c + 1) * chunk_stride) as *const __m512i);
                 let w2 = _mm512_loadu_si512(w_ptr.add((chunk_offset + c + 2) * chunk_stride) as *const __m512i);
@@ -469,7 +473,7 @@ pub unsafe fn dense_l1_avx512_vnni(
                 c += 4;
             }
             while c < total_chunks {
-                let v = *chunks.add(c);
+                let v = chunks.add(c).read_unaligned();
                 let w = _mm512_loadu_si512(w_ptr.add((chunk_offset + c) * chunk_stride) as *const __m512i);
                 a0 = _mm512_dpbusd_epi32(a0, _mm512_set1_epi32(v as i32), w);
                 c += 1;
@@ -522,9 +526,9 @@ pub unsafe fn sparse_l1_avx512_vnni(
     let w_ptr = sparse_weights.as_ptr();
     let mut rot: u32 = 0;
 
-    let stm_chunks = std::slice::from_raw_parts(stm_pw.as_ptr() as *const u32, pw / 4);
+    let stm_chunks = stm_pw.as_ptr() as *const u32;
     for chunk_idx in 0..pw / 4 {
-        let val = *stm_chunks.get_unchecked(chunk_idx);
+        let val = stm_chunks.add(chunk_idx).read_unaligned();
         if val == 0 { continue; }
         let input = _mm512_set1_epi32(val as i32);
         let w_off = chunk_idx * chunk_stride;
@@ -539,9 +543,9 @@ pub unsafe fn sparse_l1_avx512_vnni(
     }
 
     let ntm_chunk_offset = pw / 4;
-    let ntm_chunks = std::slice::from_raw_parts(ntm_pw.as_ptr() as *const u32, pw / 4);
+    let ntm_chunks = ntm_pw.as_ptr() as *const u32;
     for chunk_idx in 0..pw / 4 {
-        let val = *ntm_chunks.get_unchecked(chunk_idx);
+        let val = ntm_chunks.add(chunk_idx).read_unaligned();
         if val == 0 { continue; }
         let input = _mm512_set1_epi32(val as i32);
         let w_off = (ntm_chunk_offset + chunk_idx) * chunk_stride;
@@ -615,10 +619,10 @@ pub unsafe fn dense_l1_avx_vnni(
             let chunk_offset: usize = $chunk_offset;
             let mut c = 0usize;
             while c + 4 <= total_chunks {
-                let v0 = *chunks.add(c);
-                let v1 = *chunks.add(c + 1);
-                let v2 = *chunks.add(c + 2);
-                let v3 = *chunks.add(c + 3);
+                let v0 = chunks.add(c).read_unaligned();
+                let v1 = chunks.add(c + 1).read_unaligned();
+                let v2 = chunks.add(c + 2).read_unaligned();
+                let v3 = chunks.add(c + 3).read_unaligned();
                 let i0 = _mm256_set1_epi32(v0 as i32);
                 let i1 = _mm256_set1_epi32(v1 as i32);
                 let i2 = _mm256_set1_epi32(v2 as i32);
@@ -649,7 +653,7 @@ pub unsafe fn dense_l1_avx_vnni(
             }
             // Tail: remaining chunks into accumulator pair 0.
             while c < total_chunks {
-                let v = *chunks.add(c);
+                let v = chunks.add(c).read_unaligned();
                 let inp = _mm256_set1_epi32(v as i32);
                 let base = (chunk_offset + c) * chunk_stride;
                 let w = _mm256_loadu_si256(w_ptr.add(base) as *const __m256i);
