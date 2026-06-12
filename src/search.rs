@@ -166,7 +166,11 @@ tunables!(
     (HINDSIGHT_THRESH, 184, 50, 400, 17.5, true),
     (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
     (QS_DELTA_MARGIN, 352, 100, 500, 20.0, true),
-    (QS_MAX_CAPTURES, 24, 2, 32, 2.0, false),
+    // 24 -> 5 with the T2.10 counting fix: the old counter charged
+    // delta/SEE-pruned moves against the budget, so SPSA detuned the cap
+    // to near-off. Counting searched-only, consensus is 3 (Obsidian/
+    // Reckless) to ~"2 extra" (SF moveCount > 2).
+    (QS_MAX_CAPTURES, 5, 2, 32, 2.0, false),
     (CORR_W_PAWN, 290, 100, 600, 25.0, true),
     // Floor lifted from 50 → 0 (audit 2026-05-20): pinned at 63, 4% from floor.
     (CORR_W_NP, 60, 0, 400, 17.5, true),
@@ -4680,6 +4684,19 @@ fn quiescence_with_depth(
             let mv = evasion_picker.next(board);
             if mv == NO_MOVE { break; }
 
+            // Skip quiet evasions once we have a non-losing score (audit
+            // T2.10): SF searches quiet evasions only while still losing
+            // (search.cpp:1681 `if (!capture) continue` inside !is_loss);
+            // Obsidian breaks after one quiet; Reckless gates skip_quiets
+            // the same way. Capture evasions always searched. The gate is
+            // only satisfiable after at least one legal move scored, so
+            // checkmate detection (move_count == 0) is unaffected.
+            let ev_is_cap = board.piece_type_at(move_to(mv)) != NO_PIECE_TYPE
+                || move_flags(mv) == FLAG_EN_PASSANT;
+            if !ev_is_cap && !is_promotion(mv) && best_score > -(MATE_SCORE - 100) {
+                continue;
+            }
+
             let qs_moved_pt = board.piece_type_at(move_from(mv));
             let qs_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
             let qs_dirty = if let Some(net) = info.nnue_net.as_deref() {
@@ -4828,10 +4845,18 @@ fn quiescence_with_depth(
             continue;
         }
 
-        // Move count cutoff: stop searching after N captures (Obsidian: 3)
-        qs_move_count += 1;
-        if qs_move_count > qs_max_caps {
-            break;
+        // Move-count budget (audit T2.10): count only SEARCHED moves — the
+        // old form incremented before delta/SEE pruning, so pruned moves
+        // consumed budget and SPSA pushed the cap to near-off (24; comment
+        // cited "Obsidian: 3"). Consensus gates: only while best_score
+        // isn't a loss (SF is_loss(futilityBase) / Obsidian TB_LOSS gate)
+        // and promotions exempt (SF). `continue` not `break` so later
+        // promotions still get through (SF form).
+        if qs_move_count >= qs_max_caps
+            && best_score > -(MATE_SCORE - 100)
+            && !is_promotion(mv)
+        {
+            continue;
         }
 
         // Delta pruning: skip captures that can't possibly raise alpha
@@ -4879,6 +4904,7 @@ fn quiescence_with_depth(
         if info.threat_stack.active { info.threat_stack.pop(); }
             continue;
         }
+        qs_move_count += 1;
         if info.threat_stack.active {
             info.threat_stack.absorb_deltas(board);
         }
