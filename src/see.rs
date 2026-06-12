@@ -90,23 +90,20 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
         attackers &= occ;
 
         stm = flip_color(stm);
-        // C8 audit LIKELY #40: if a pawn captures onto the promotion rank
-        // it becomes a queen — balance should reflect the promotion gain,
-        // not just PAWN value. Rare but can flip SEE decisions in deep
-        // exchanges involving promotion recaptures.
-        let to_rank = to >> 3;
-        let effective_value = if att_pt == PAWN && (to_rank == 0 || to_rank == 7) {
-            // Assume queen promotion (optimal): PAWN moves to `to`, promotes
-            // → on the board as QUEEN, so victim value on next capture is
-            // queen-shaped. For THIS balance step (the capture we just
-            // made), the attacker "paid" pawn value but will be a queen;
-            // SEE treats both this move's cost and the next recapture's
-            // victim-value the same way — use queen's value.
-            see_value(QUEEN)
-        } else {
-            see_value(att_pt)
-        };
-        balance = -balance - 1 - effective_value;
+        // In-loop promotion needs NO special case (revert of C8 #40, audit
+        // 2026-06-13 B1): the swap update with the PLAIN pawn value is the
+        // exact algebra. Correct accounting for a pawn capturing onto the
+        // promotion rank is `balance = -balance - 1 + (Q-P) - Q`: the
+        // promoting side gains (Q-P) and puts Q at risk — and those terms
+        // cancel to `- P`. The negation next iteration then automatically
+        // credits the recapturer +Q while permanently charging the (Q-P)
+        // gain. The C8 #40 form (risk Q without crediting Q-P) made the
+        // promoting side ~1100cp too pessimistic, flipping SEE verdicts:
+        // FEN 3R2k1/4P3/3q4/3r4/8/8/8/6K1 b, Qd6xd8 returned +640 vs true
+        // -460 (see test_see_inloop_promotion_*). No reference engine
+        // special-cases this (SF position.cpp:1467 `swap = PawnValue -
+        // swap`; Reckless/Berserk/Ethereal plain attacker value).
+        balance = -balance - 1 - see_value(att_pt);
 
         if balance >= 0 {
             // King-illegality: if the just-made capture was by the king and
@@ -292,6 +289,31 @@ mod see_assertive_tests {
             }
         }
         panic!("no legal move {} → {} in {}", from, to, b.to_fen());
+    }
+
+    /// In-loop promotion recapture (audit 2026-06-13 B1, the C8 #40 revert).
+    /// QxR, exd8=Q, Rxd8: white loses R+P (740), black loses Q (1200)
+    /// -> true exchange value for black is -460. The C8 #40 form returned
+    /// +640 (sign flip at every SEE threshold in use).
+    #[test]
+    fn see_inloop_promotion_recapture_losing() {
+        init();
+        let b = Board::from_fen("3R2k1/4P3/3q4/3r4/8/8/8/6K1 b - - 0 1");
+        let mv = find_move(&b, 43, 59); // d6 -> d8 (QxR)
+        assert_eq!(see_value_of(&b, mv), -460);
+        assert!(!see_ge(&b, mv, 0));
+    }
+
+    /// Same motif with queen/rook swapped: RxR, exd8=Q, Qxd8.
+    /// White loses R+P (740), black loses R (640) -> +100 for black
+    /// (no sign flip, but C8 #40 returned +640 — large magnitude error).
+    #[test]
+    fn see_inloop_promotion_recapture_winning() {
+        init();
+        let b = Board::from_fen("3R2k1/4P3/3r4/3q4/8/8/8/6K1 b - - 0 1");
+        let mv = find_move(&b, 43, 59); // d6 -> d8 (RxR)
+        assert_eq!(see_value_of(&b, mv), 100);
+        assert!(see_ge(&b, mv, 0));
     }
 
     #[test]
