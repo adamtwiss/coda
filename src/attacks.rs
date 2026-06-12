@@ -63,7 +63,25 @@ struct MagicEntry {
 
 static mut BISHOP_MAGICS: [MagicEntry; 64] = unsafe { std::mem::zeroed() };
 static mut ROOK_MAGICS: [MagicEntry; 64] = unsafe { std::mem::zeroed() };
-static mut ATTACK_TABLE: Vec<Bitboard> = Vec::new();
+// Fixed-size table (audit P bundle): the size is a compile-time constant —
+// 102,400 rook + 5,248 bishop entries — and IDENTICAL in both dispatch
+// modes (PEXT indexes by mask popcount, magic by ROOK_BITS/BISHOP_BITS,
+// which are equal per-square; init asserts this). The previous
+// `static mut Vec` paid a data-pointer indirection plus an un-elidable
+// bounds check on every slider lookup — the hottest primitive in the
+// engine. SF/Reckless/cozy-chess all use fixed static tables.
+const ATTACK_TABLE_SIZE: usize = 107_648;
+static mut ATTACK_TABLE: [Bitboard; ATTACK_TABLE_SIZE] = [0; ATTACK_TABLE_SIZE];
+
+/// Raw-pointer read avoiding a shared reference to the mutable static
+/// (static_mut_refs lint). SAFETY: index < ATTACK_TABLE_SIZE by magic
+/// construction (asserted at init); table is written only during
+/// single-threaded init (Once), read-only afterwards.
+#[inline(always)]
+unsafe fn attack_entry(index: usize) -> Bitboard {
+    debug_assert!(index < ATTACK_TABLE_SIZE);
+    *std::ptr::addr_of!(ATTACK_TABLE).cast::<Bitboard>().add(index)
+}
 
 // Use PEXT when available (Intel/AMD Zen3+) for perfect hashing
 #[cfg(target_arch = "x86_64")]
@@ -73,13 +91,16 @@ static mut USE_PEXT: bool = false;
 pub fn bishop_attacks(sq: u32, occ: Bitboard) -> Bitboard {
     unsafe {
         let entry = &BISHOP_MAGICS[sq as usize];
+        // SAFETY: offset + idx < ATTACK_TABLE_SIZE by magic construction
+        // (idx < 2^bits, offset partitions the table by 2^bits blocks;
+        // asserted at init and exercised by perft).
         #[cfg(target_arch = "x86_64")]
         if USE_PEXT {
             let idx = std::arch::x86_64::_pext_u64(occ, entry.mask) as usize;
-            return ATTACK_TABLE[entry.offset as usize + idx];
+            return attack_entry(entry.offset as usize + idx);
         }
         let idx = ((occ & entry.mask).wrapping_mul(entry.magic) >> entry.shift) as usize;
-        ATTACK_TABLE[entry.offset as usize + idx]
+        attack_entry(entry.offset as usize + idx)
     }
 }
 
@@ -87,13 +108,14 @@ pub fn bishop_attacks(sq: u32, occ: Bitboard) -> Bitboard {
 pub fn rook_attacks(sq: u32, occ: Bitboard) -> Bitboard {
     unsafe {
         let entry = &ROOK_MAGICS[sq as usize];
+        // SAFETY: see bishop_attacks.
         #[cfg(target_arch = "x86_64")]
         if USE_PEXT {
             let idx = std::arch::x86_64::_pext_u64(occ, entry.mask) as usize;
-            return ATTACK_TABLE[entry.offset as usize + idx];
+            return attack_entry(entry.offset as usize + idx);
         }
         let idx = ((occ & entry.mask).wrapping_mul(entry.magic) >> entry.shift) as usize;
-        ATTACK_TABLE[entry.offset as usize + idx]
+        attack_entry(entry.offset as usize + idx)
     }
 }
 
@@ -357,10 +379,12 @@ pub fn init_attacks() {
         }
     }
 
-    // Allocate attack table
-    unsafe {
-        ATTACK_TABLE = vec![0; total_size as usize];
-    }
+    // Table is statically sized; verify the layout math matches in the
+    // active dispatch mode (PEXT popcounts == BITS tables).
+    assert_eq!(
+        total_size as usize, ATTACK_TABLE_SIZE,
+        "attack-table layout drifted from ATTACK_TABLE_SIZE"
+    );
 
     // Fill bishop magic entries and attack table
     for sq in 0..64u32 {
