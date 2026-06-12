@@ -146,15 +146,6 @@ tunables!(
     (SE_DEPTH_10X, 44, 40, 200, 20.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, false),
-    // Phase 9: thresholded aspiration-fail-low signal for TM. Fires
-    // an upward multiplier when the ID loop accumulates more than
-    // TM_ASP_THRESHOLD fail-lows in the current search — empirical
-    // analysis shows top-decile (asp_fl ≥ 14) catches a position class
-    // largely orthogonal to bmc.
-    (TM_ASP_THRESHOLD, 14, 5, 30, 1.5, false),
-    // Phase 9: multiplier value × 10 when asp threshold tripped.
-    // 13 → 1.3×. Capped via combined hard_limit downstream.
-    (TM_ASP_MULT_10X, 13, 10, 25, 1.0, false),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
     // use LMP_BASE=3 with the same `(BASE + d²)/(2 - improving)` formula.
     // Coda's 9 is 3× consensus at d=1: allows 5-10 quiets vs SF's 2-4.
@@ -622,6 +613,9 @@ pub enum ForcedState {
 pub struct SearchInfo {
     pub nodes: u64,
     pub global_nodes: std::sync::Arc<AtomicU64>,  // aggregate nodes across SMP threads
+    /// Last per-thread node count flushed into global_nodes (delta flushing,
+    /// TM audit 2026-06-13 A4). Cell: should_stop takes &self.
+    last_flushed_nodes: std::cell::Cell<u64>,
     pub silent: bool,  // suppress UCI output (for datagen)
     pub stats: PruneStats,
     // Eval-path decomposition counters (see docs/coda_vs_reckless_nps_*.md).
@@ -646,10 +640,10 @@ pub struct SearchInfo {
     tm_prev_score: i32,
     tm_best_stable: i32,
     /// Cumulative count of aspiration fail-lows in the current search.
-    /// Reset at search start. Drives the Phase 9 thresholded upward
-    /// multiplier when count exceeds TM_ASP_THRESHOLD — empirical
-    /// analysis shows top-decile asp_fl identifies a position class
-    /// largely orthogonal to bmc.
+    /// Reset at search start. Consumed by the Phase 13 fail-low factor
+    /// `1.0 + 0.34 * min(2, asp_fail_low)` applied to both opt and hard
+    /// windows (Viridithas pattern). The Phase 9 thresholded mechanism
+    /// (TM_ASP_THRESHOLD/TM_ASP_MULT_10X) was removed with Phase 13.
     tm_asp_fail_low: u32,
     /// Cumulative count of aspiration fail-highs in the current search.
     /// Currently diagnostic-only; not used by TM yet (asymmetric vs
@@ -657,11 +651,10 @@ pub struct SearchInfo {
     /// expected — already captured by score_factor's upward sense).
     tm_asp_fail_high: u32,
     /// Cumulative count of root best-move changes between iterations,
-    /// reset at search start. Drives a Reckless/Stockfish-style upward
-    /// multiplier on tactical/unstable positions (Phase 1 TM redesign,
-    /// docs/tm_redesign_phase1_2026-05-19.md). Pairs with `tm_best_stable`
-    /// (which tracks CONSECUTIVE stable iterations and reduces time);
-    /// this tracks TOTAL changes and increases time.
+    /// reset at search start. Since Phase 13 this is DIAGNOSTIC-ONLY
+    /// (TMDebug output) — the upward multiplier it used to drive was
+    /// dropped. Candidate for re-use as an SF/Reckless-style
+    /// within-iteration instability factor (TM audit 2026-06-13, B3).
     tm_best_move_changes: u32,
     /// Forced-move detection state (Viridithas pattern). Set after an ID iteration
     /// at the root when `detect_forced_move` finds that excluding the current best
@@ -775,6 +768,7 @@ impl SearchInfo {
         SearchInfo {
             nodes: 0,
             global_nodes: std::sync::Arc::new(AtomicU64::new(0)),
+            last_flushed_nodes: std::cell::Cell::new(0),
             silent: false,
             stats: PruneStats::default(),
             stats_tt_static_eval_hits: 0,
@@ -936,11 +930,13 @@ impl SearchInfo {
         if self.stop.load(Ordering::Relaxed) {
             return true;
         }
-        // Flush local node count to global counter every 4096 nodes
-        // (skip at nodes==0 to avoid phantom 4096 at search start).
-        // Done BEFORE the node-limit check so the global view is fresh.
-        if self.nodes & 4095 == 0 && self.nodes > 0 {
-            self.global_nodes.fetch_add(4096, Ordering::Relaxed);
+        // Flush local node count to global counter every 4096 nodes.
+        // Delta-tracked (TM audit 2026-06-13 A4): the old flat
+        // fetch_add(4096) double-counted when should_stop was re-invoked
+        // from ID-loop sites at an unchanged boundary-resting count.
+        if self.nodes & 4095 == 0 && self.nodes > self.last_flushed_nodes.get() {
+            self.global_nodes.fetch_add(self.nodes - self.last_flushed_nodes.get(), Ordering::Relaxed);
+            self.last_flushed_nodes.set(self.nodes);
         }
         // SMP-correct node-limit gate: helpers don't get max_nodes propagated
         // (helper init at clone_for_helper leaves max_nodes=0), and main's
@@ -1494,7 +1490,7 @@ pub fn compute_tm_budgets(
     our_inc: u64,
     movestogo: u32,
     overhead: u64,
-    _fullmove: u16,
+    fullmove: u16,
 ) -> (u64, u64, u64, u64) {
     // Phase 13 (2026-05-26): Viridithas-shape TM windows.
     //
@@ -1590,9 +1586,13 @@ pub fn compute_tm_budgets(
     let mtg_divisor = if no_inc_sd { NO_INC_MOVES_TO_GO } else { DEFAULT_MOVES_TO_GO };
 
     let opt_time_base = if movestogo > 0 {
-        // Movestogo: divisor is clamped to [2, default_mtg]
+        // Movestogo: divisor is clamped to [2, default_mtg]. TM audit
+        // 2026-06-13 (A4): the increment term was missing here — the
+        // sudden-death branch credits 94% of inc but this one didn't,
+        // systematically under-allocating ~0.7*inc/move at movestogo+inc
+        // TCs (CCRL-style). Same INC_FRAC weighting as the SD branch.
         let divisor = (movestogo as u64).clamp(2, DEFAULT_MOVES_TO_GO);
-        let computed = time_left / divisor;
+        let computed = time_left / divisor + our_inc * INC_FRAC_NUM / INC_FRAC_DEN;
         (computed.min(max_time) * OPT_WINDOW_NUM / OPT_WINDOW_DEN).max(1)
     } else {
         // Sudden death (or with inc). Add 94% of inc to base computed window.
@@ -1627,7 +1627,7 @@ pub fn compute_tm_budgets(
         // p13_2 still 66% of games over 35% opening-overspend threshold (main: 23%).
         // Lowering floor cuts fm=1 from 0.39× to 0.25×, bringing opening allocation
         // closer to Coda's prior calibrated level.
-        let phase_mult = 0.22 + 0.78 * (1.0 - (-0.045 * _fullmove as f64).exp());
+        let phase_mult = 0.22 + 0.78 * (1.0 - (-0.045 * fullmove as f64).exp());
         ((opt_time_base as f64) * phase_mult.clamp(0.22, 1.0)) as u64
     };
     let opt_time = opt_time.max(1).min(hard_time);
@@ -1641,23 +1641,6 @@ pub fn compute_tm_budgets(
 }
 
 #[allow(dead_code)]
-fn _phase13_deleted_old_compute_tm_budgets() {
-    // Phase 13 (2026-05-26) removed the prior multi-stage soft/hard formulas.
-    // The Coda pre-Phase-13 TM had accumulated:
-    //   - moves_left switch (35/40/movestogo)
-    //   - time_left/moves_left + 0.8×inc base soft
-    //   - phase scaling (0.4/0.6/0.85/1.0 by fullmove)
-    //   - max_pct (50% sudden-death) clamping
-    //   - emergency mode (<1s)
-    //   - base_soft × 2-3× for hard
-    //   - tc-aware hard_mult_x10 (2.0×-4.0×)
-    //   - max_single_pct (6-15%)
-    //   - reserve floor (5×inc or 2s)
-    //   - hard phase scaling
-    //   - 3/4 time_left ceiling
-    //   - (inc - overhead) / 2 floor
-    // Replaced by Viridithas-shape windows. Audit-driven structural rewrite.
-}
 
 
 /// Run Lazy SMP search: main thread + N-1 helper threads.
@@ -1672,6 +1655,7 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
 
     if threads <= 1 {
         info.global_nodes.store(0, Ordering::Relaxed);
+        info.last_flushed_nodes.set(0);
         return search(board, info, limits);
     }
 
@@ -1797,6 +1781,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
     info.nodes = 0;
+    info.last_flushed_nodes.set(0);
     info.tm_has_data = false;
     info.tm_best_stable = 0;
     info.tm_best_move_changes = 0;
@@ -1899,6 +1884,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // sets ponderhit_time → search() clobbers it → ponder runs truly infinite →
     // wait-loop → eventual time forfeit (observed at blitz TC).
     info.nodes = 0;
+    info.last_flushed_nodes.set(0);
     // Note: global_nodes reset is done by callers (search_smp, bench) to avoid
     // clobbering helper thread contributions in SMP mode.
     info.sel_depth = 0;
@@ -1969,6 +1955,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.tm_no_inc = false;
     info.tm_baseline = 0;
     info.abs_deadline = 0;
+    // TM audit 2026-06-13 (A4): tm_max_time was the one TM field missing
+    // from this reset. Latent today (every soft_limit setter also sets
+    // it) but one refactor away from a stale clamp.
+    info.tm_max_time = 0;
 
     if limits.infinite {
         // Already zero above.
@@ -2049,6 +2039,19 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     let root_legal = generate_legal_moves(board);
     if root_legal.len > 0 {
         best_move = root_legal.get(0);
+        // TM audit 2026-06-13 (A4): prefer the TT move (previous search's
+        // best for this position) over raw movegen order as the
+        // emergency fallback — nearly free, and the move actually emitted
+        // if abs_deadline expires before depth 1 completes.
+        let tt_entry = info.tt.probe(board.hash);
+        if tt_entry.hit && tt_entry.best_move != NO_MOVE {
+            for i in 0..root_legal.len {
+                if root_legal.get(i) == tt_entry.best_move {
+                    best_move = tt_entry.best_move;
+                    break;
+                }
+            }
+        }
     }
 
     // Forced move: only one legal move, skip full search (just return it quickly).
@@ -2449,7 +2452,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // KsX0b6KG). Require stability >= 1 so a one-iteration mate flicker
             // that later flips doesn't cause a premature emit. Also sets the
             // floor to 0 so the stockpile-prevention sleep is skipped.
-            if is_mate_score(prev_score) && info.tm_best_stable >= 1 {
+            // TM audit 2026-06-13 (A4): gate on prev_score > 0 — the old
+            // sign-agnostic check also fired when stably LOSING by force,
+            // stopping the search instead of hunting longer defenses or
+            // swindle lines with the remaining budget.
+            if prev_score > 0 && is_mate_score(prev_score) && info.tm_best_stable >= 1 {
                 info.soft_floor = 0;
                 break;
             }
@@ -2556,13 +2563,17 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             let adjusted_soft = adjusted_soft_raw.min(info.tm_max_time).max(1);
             // Compatibility aliases for downstream code that references
             // `scale` / `max_adjusted`. `scale` retained for TM_DIAG output.
-            let scale = multiplier;
-            let _ = scale;
             // Subtract tm_baseline so soft is measured from the TM-start
             // moment, not search start. tm_baseline is 0 for normal `go`
             // (unchanged behaviour); set to elapsed-at-ponderhit when
             // post-ponderhit dynamic TM arms above.
-            let elapsed_since_tm = elapsed.saturating_sub(info.tm_baseline);
+            // TM audit 2026-06-13 (A4): re-read the clock — the iteration-top
+            // `elapsed` snapshot predates the info-line print and any
+            // forced-move verification (50-150ms), letting one extra
+            // iteration start past the soft budget on exactly the
+            // iteration the detector fires.
+            let elapsed_now = info.start_time.elapsed().as_millis() as u64;
+            let elapsed_since_tm = elapsed_now.saturating_sub(info.tm_baseline);
             if elapsed_since_tm >= adjusted_soft {
                 break;
             }
@@ -5093,6 +5104,7 @@ pub fn bench_pathology(depth: i32, node_threshold: u64, nnue_path: Option<&str>)
     for (i, fen) in BENCH_PATHOLOGY_POSITIONS.iter().enumerate() {
         let mut board = Board::from_fen(fen);
         info.nodes = 0;
+        info.last_flushed_nodes.set(0);
         info.history.clear();
         info.tt.new_search();
         let start = std::time::Instant::now();
@@ -5144,6 +5156,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     for fen in positions {
         let mut board = Board::from_fen(fen);
         info.nodes = 0;
+        info.last_flushed_nodes.set(0);
         info.history.clear();
         info.tt.new_search();
 
