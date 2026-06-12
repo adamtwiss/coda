@@ -2242,19 +2242,18 @@ mod tests {
         }
     }
 
-    #[test]
+    /// Shared body for the x86 apply_deltas SIMD-vs-scalar tests.
+    /// `h` sweeps cover FT768 (768), FT1024 (512/1024, current prod) and
+    /// an off-chunk-boundary width (320) so the runtime tails are hit.
     #[cfg(target_arch = "x86_64")]
-    fn test_apply_deltas_avx512_matches_scalar() {
-        // Skip when AVX-512 BW isn't available on the host — test
-        // becomes a no-op rather than a false failure.
-        if !is_x86_feature_detected!("avx512f") || !is_x86_feature_detected!("avx512bw") {
-            eprintln!("apply_deltas_avx512 test: AVX-512 unavailable on this host, skipping");
-            return;
-        }
-
-        let h = 768;
+    fn check_apply_deltas_kernel(
+        h: usize,
+        seed: u64,
+        kernel: unsafe fn(&mut [i16], &[i16], &[i8], usize, &[usize], &[usize]),
+        name: &str,
+    ) {
         let n_threats = 64;
-        let mut r = rng(0xc0da_d317_a5_0512);
+        let mut r = rng(seed ^ h as u64);
 
         let mut weights = vec![0i8; n_threats * h];
         for w in weights.iter_mut() { *w = (r() % 256) as i8; }
@@ -2267,28 +2266,82 @@ mod tests {
         let subs = [5usize, 12, 30, 55, 63];
         let mut scalar_dst = vec![0i16; h];
         apply_deltas_scalar_ref(&mut scalar_dst, &src, &weights, h, &adds, &subs);
-        let mut avx512_dst = vec![0i16; h];
-        unsafe { apply_deltas_avx512(&mut avx512_dst, &src, &weights, h, &adds, &subs); }
-        assert_eq!(scalar_dst, avx512_dst, "apply_deltas_avx512 mixed diverged");
+        let mut simd_dst = vec![0i16; h];
+        unsafe { kernel(&mut simd_dst, &src, &weights, h, &adds, &subs); }
+        assert_eq!(scalar_dst, simd_dst, "{} mixed diverged at h={}", name, h);
 
         // Adds-only — tail loop for adds.
         let mut scalar_dst = vec![0i16; h];
         apply_deltas_scalar_ref(&mut scalar_dst, &src, &weights, h, &adds, &[]);
-        let mut avx512_dst = vec![0i16; h];
-        unsafe { apply_deltas_avx512(&mut avx512_dst, &src, &weights, h, &adds, &[]); }
-        assert_eq!(scalar_dst, avx512_dst, "apply_deltas_avx512 adds-only diverged");
+        let mut simd_dst = vec![0i16; h];
+        unsafe { kernel(&mut simd_dst, &src, &weights, h, &adds, &[]); }
+        assert_eq!(scalar_dst, simd_dst, "{} adds-only diverged at h={}", name, h);
 
         // Subs-only — tail loop for subs.
         let mut scalar_dst = vec![0i16; h];
         apply_deltas_scalar_ref(&mut scalar_dst, &src, &weights, h, &[], &subs);
-        let mut avx512_dst = vec![0i16; h];
-        unsafe { apply_deltas_avx512(&mut avx512_dst, &src, &weights, h, &[], &subs); }
-        assert_eq!(scalar_dst, avx512_dst, "apply_deltas_avx512 subs-only diverged");
+        let mut simd_dst = vec![0i16; h];
+        unsafe { kernel(&mut simd_dst, &src, &weights, h, &[], &subs); }
+        assert_eq!(scalar_dst, simd_dst, "{} subs-only diverged at h={}", name, h);
 
         // Empty — identity copy of src.
-        let mut avx512_dst = vec![0i16; h];
-        unsafe { apply_deltas_avx512(&mut avx512_dst, &src, &weights, h, &[], &[]); }
-        assert_eq!(src, avx512_dst, "apply_deltas_avx512 empty-deltas should be identity");
+        let mut simd_dst = vec![0i16; h];
+        unsafe { kernel(&mut simd_dst, &src, &weights, h, &[], &[]); }
+        assert_eq!(src, simd_dst, "{} empty-deltas should be identity at h={}", name, h);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_apply_deltas_avx512_matches_scalar() {
+        // Skip when AVX-512 BW isn't available on the host — test
+        // becomes a no-op rather than a false failure.
+        if !is_x86_feature_detected!("avx512f") || !is_x86_feature_detected!("avx512bw") {
+            eprintln!("apply_deltas_avx512 test: AVX-512 unavailable on this host, skipping");
+            return;
+        }
+        for &h in &[320usize, 512, 768, 1024] {
+            check_apply_deltas_kernel(h, 0xc0da_d317_a5_0512, apply_deltas_avx512, "apply_deltas_avx512");
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_apply_deltas_avx2_matches_scalar() {
+        if !is_x86_feature_detected!("avx2") {
+            eprintln!("apply_deltas_avx2 test: AVX2 unavailable on this host, skipping");
+            return;
+        }
+        for &h in &[320usize, 512, 768, 1024] {
+            check_apply_deltas_kernel(h, 0xc0da_d317_a5_0002, apply_deltas_avx2, "apply_deltas_avx2");
+        }
+    }
+
+    /// Shared body for the x86 add_weight_rows SIMD-vs-scalar tests.
+    #[cfg(target_arch = "x86_64")]
+    fn check_add_weight_rows_kernel(
+        h: usize,
+        seed: u64,
+        kernel: unsafe fn(&mut [i16], &[i8], usize, &[usize]),
+        name: &str,
+    ) {
+        let n_features = 32;
+        let mut r = rng(seed ^ h as u64);
+
+        let mut weights = vec![0i8; n_features * h];
+        for w in weights.iter_mut() { *w = (r() % 256) as i8; }
+
+        let indices = [0usize, 3, 7, 11, 15, 19, 23, 27, 31];
+
+        let mut scalar_dst = vec![0i16; h];
+        for v in scalar_dst.iter_mut() { *v = (r() as i32 as i16).rem_euclid(501) - 250; }
+        let mut simd_dst = scalar_dst.clone();
+
+        for &idx in &indices {
+            let base = idx * h;
+            for j in 0..h { scalar_dst[j] += weights[base + j] as i16; }
+        }
+        unsafe { kernel(&mut simd_dst, &weights, h, &indices); }
+        assert_eq!(scalar_dst, simd_dst, "{} diverged at h={}", name, h);
     }
 
     #[test]
@@ -2298,26 +2351,21 @@ mod tests {
             eprintln!("add_weight_rows_avx512 test: AVX-512 unavailable, skipping");
             return;
         }
-
-        let h = 768;
-        let n_features = 32;
-        let mut r = rng(0xc0da_add1_a5_0512);
-
-        let mut weights = vec![0i8; n_features * h];
-        for w in weights.iter_mut() { *w = (r() % 256) as i8; }
-
-        let indices = [0usize, 3, 7, 11, 15, 19, 23, 27, 31];
-
-        let mut scalar_dst = vec![0i16; h];
-        for v in scalar_dst.iter_mut() { *v = (r() as i32 as i16).rem_euclid(501) - 250; }
-        let mut avx512_dst = scalar_dst.clone();
-
-        for &idx in &indices {
-            let base = idx * h;
-            for j in 0..h { scalar_dst[j] += weights[base + j] as i16; }
+        for &h in &[320usize, 512, 768, 1024] {
+            check_add_weight_rows_kernel(h, 0xc0da_add1_a5_0512, add_weight_rows_avx512, "add_weight_rows_avx512");
         }
-        unsafe { add_weight_rows_avx512(&mut avx512_dst, &weights, h, &indices); }
-        assert_eq!(scalar_dst, avx512_dst, "add_weight_rows_avx512 diverged");
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_add_weight_rows_avx2_matches_scalar() {
+        if !is_x86_feature_detected!("avx2") {
+            eprintln!("add_weight_rows_avx2 test: AVX2 unavailable, skipping");
+            return;
+        }
+        for &h in &[320usize, 512, 768, 1024] {
+            check_add_weight_rows_kernel(h, 0xc0da_add1_a5_0002, add_weight_rows_avx2, "add_weight_rows_avx2");
+        }
     }
 
     #[test]

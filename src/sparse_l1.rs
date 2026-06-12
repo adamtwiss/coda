@@ -841,13 +841,14 @@ mod tests {
     /// Build a representative L1=16 pairwise test case and return
     /// (sparse_weights, bias, stm_pw, ntm_pw, pw, num_neurons, bias_scale).
     /// Uses a mix of dense and zero chunks so both dense and sparse paths
-    /// are exercised meaningfully.
+    /// are exercised meaningfully. `pw` is parameterised so tests cover
+    /// both the FT768 (pw=384) and FT1024 (pw=512, current prod) shapes.
     #[cfg(target_arch = "x86_64")]
     fn build_l1_16_test_case(
         seed: u64,
         density_pct: u32,
+        pw: usize,
     ) -> (Vec<i8>, Vec<i16>, Vec<u8>, Vec<u8>, usize, usize, i32) {
-        let pw = 384;
         let num_neurons = 16;
         let total_input = pw * 2;
 
@@ -888,24 +889,26 @@ mod tests {
             return;
         }
 
-        for density in [0u32, 25, 50, 75, 100] {
-            for seed in 0u64..6 {
-                let (sw, bias, s_pw, n_pw, pw, nn, scale) = build_l1_16_test_case(seed, density);
+        for &pw_dim in &[384usize, 512] {
+            for density in [0u32, 25, 50, 75, 100] {
+                for seed in 0u64..6 {
+                    let (sw, bias, s_pw, n_pw, pw, nn, scale) = build_l1_16_test_case(seed, density, pw_dim);
 
-                let mut scalar_out = vec![0i32; nn];
-                sparse_l1_scalar(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut scalar_out);
+                    let mut scalar_out = vec![0i32; nn];
+                    sparse_l1_scalar(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut scalar_out);
 
-                let mut vnni_out = vec![0i32; nn];
-                unsafe {
-                    dense_l1_avx512_vnni(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, vnni_out.as_mut_ptr());
-                }
+                    let mut vnni_out = vec![0i32; nn];
+                    unsafe {
+                        dense_l1_avx512_vnni(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, vnni_out.as_mut_ptr());
+                    }
 
-                for i in 0..nn {
-                    assert_eq!(
-                        vnni_out[i], scalar_out[i],
-                        "dense_l1_avx512_vnni mismatch seed={} density={} neuron={} vnni={} scalar={}",
-                        seed, density, i, vnni_out[i], scalar_out[i]
-                    );
+                    for i in 0..nn {
+                        assert_eq!(
+                            vnni_out[i], scalar_out[i],
+                            "dense_l1_avx512_vnni mismatch seed={} density={} pw={} neuron={} vnni={} scalar={}",
+                            seed, density, pw, i, vnni_out[i], scalar_out[i]
+                        );
+                    }
                 }
             }
         }
@@ -925,24 +928,26 @@ mod tests {
             return;
         }
 
-        for density in [0u32, 10, 50, 90, 100] {
-            for seed in 0u64..6 {
-                let (sw, bias, s_pw, n_pw, pw, nn, scale) = build_l1_16_test_case(seed, density);
+        for &pw_dim in &[384usize, 512] {
+            for density in [0u32, 10, 50, 90, 100] {
+                for seed in 0u64..6 {
+                    let (sw, bias, s_pw, n_pw, pw, nn, scale) = build_l1_16_test_case(seed, density, pw_dim);
 
-                let mut scalar_out = vec![0i32; nn];
-                sparse_l1_scalar(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut scalar_out);
+                    let mut scalar_out = vec![0i32; nn];
+                    sparse_l1_scalar(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut scalar_out);
 
-                let mut vnni_out = vec![0i32; nn];
-                unsafe {
-                    sparse_l1_avx512_vnni(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut vnni_out);
-                }
+                    let mut vnni_out = vec![0i32; nn];
+                    unsafe {
+                        sparse_l1_avx512_vnni(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut vnni_out);
+                    }
 
-                for i in 0..nn {
-                    assert_eq!(
-                        vnni_out[i], scalar_out[i],
-                        "sparse_l1_avx512_vnni mismatch seed={} density={} neuron={} vnni={} scalar={}",
-                        seed, density, i, vnni_out[i], scalar_out[i]
-                    );
+                    for i in 0..nn {
+                        assert_eq!(
+                            vnni_out[i], scalar_out[i],
+                            "sparse_l1_avx512_vnni mismatch seed={} density={} pw={} neuron={} vnni={} scalar={}",
+                            seed, density, pw, i, vnni_out[i], scalar_out[i]
+                        );
+                    }
                 }
             }
         }
@@ -959,24 +964,26 @@ mod tests {
             return;
         }
 
-        for density in [0u32, 50, 100] {
-            for seed in 0u64..4 {
-                let (sw, bias, s_pw, n_pw, pw, nn, scale) = build_l1_16_test_case(seed, density);
+        for &pw_dim in &[384usize, 512] {
+            for density in [0u32, 50, 100] {
+                for seed in 0u64..4 {
+                    let (sw, bias, s_pw, n_pw, pw, nn, scale) = build_l1_16_test_case(seed, density, pw_dim);
 
-                let mut scalar_out = vec![0i32; nn];
-                sparse_l1_scalar(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut scalar_out);
+                    let mut scalar_out = vec![0i32; nn];
+                    sparse_l1_scalar(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut scalar_out);
 
-                let mut vnni_out = vec![0i32; nn];
-                unsafe {
-                    dense_l1_avx_vnni(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, vnni_out.as_mut_ptr());
-                }
+                    let mut vnni_out = vec![0i32; nn];
+                    unsafe {
+                        dense_l1_avx_vnni(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, vnni_out.as_mut_ptr());
+                    }
 
-                for i in 0..nn {
-                    assert_eq!(
-                        vnni_out[i], scalar_out[i],
-                        "dense_l1_avx_vnni mismatch seed={} density={} neuron={} vnni={} scalar={}",
-                        seed, density, i, vnni_out[i], scalar_out[i]
-                    );
+                    for i in 0..nn {
+                        assert_eq!(
+                            vnni_out[i], scalar_out[i],
+                            "dense_l1_avx_vnni mismatch seed={} density={} pw={} neuron={} vnni={} scalar={}",
+                            seed, density, pw, i, vnni_out[i], scalar_out[i]
+                        );
+                    }
                 }
             }
         }
@@ -988,8 +995,8 @@ mod tests {
     ///
     /// Input bytes are bounded to [0, max_input] to control whether
     /// VPMADDUBSW i16 saturation can fire. Production pairwise output
-    /// stays in roughly [0, 127] (the engine applies `>> 7` inside the
-    /// pairwise kernel), so `max_input=100` is a realistic stress.
+    /// stays in [0, 127] (the engine applies `>> FT_SHIFT` (9) inside
+    /// the pairwise pack), so `max_input=100` is a realistic stress.
     /// `max_input=255` exercises full u8 range and WILL trigger
     /// saturation — only use that variant if you want to characterise
     /// the saturation envelope, not for correctness assertions.
@@ -1077,6 +1084,59 @@ mod tests {
             }
         }
         eprintln!("dense_l1_avx2_l1_32 fuzz: {} cases passed", cases);
+    }
+
+    /// Fuzz: `dense_l1_avx2` matches the scalar reference. This is the
+    /// production L1 kernel for every AVX2-only host (most of the OB
+    /// fleet + the codabot VPS) — until 2026-06 it had no correctness
+    /// test at all (only the debug-build runtime probe in
+    /// `forward_with_l1_pairwise_inner` and the ns/call benchmark).
+    ///
+    /// Sweeps pw over both net generations (384 = FT768, 512 = FT1024
+    /// prod) plus boundary widths, and num_neurons over 16 (prod) and 8
+    /// (the `wide=false` half-register path). max_input=100 keeps inputs
+    /// inside the VPMADDUBSW saturation envelope, matching production
+    /// pairwise output range [0, 127] (FT_SHIFT=9).
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn fuzz_dense_avx2_matches_scalar() {
+        crate::init();
+        if !is_x86_feature_detected!("avx2") {
+            eprintln!("No AVX2 — skipping dense_l1_avx2 fuzz test");
+            return;
+        }
+
+        let mut cases = 0usize;
+        for &nn_dim in &[8usize, 16] {
+            for &pw in &[64usize, 128, 256, 384, 512] {
+                for density in [0u32, 10, 25, 50, 75, 89, 100] {
+                    for seed in 0u64..30 {
+                        let (sw, bias, s_pw, n_pw, pw_, nn, scale) =
+                            build_l1_n_test_case(seed, density, nn_dim, pw, 100);
+
+                        let mut scalar_out = vec![0i32; nn];
+                        sparse_l1_scalar(&s_pw, &n_pw, pw_, &sw, nn, &bias, scale, &mut scalar_out);
+
+                        let mut avx2_out = vec![0i32; nn];
+                        unsafe {
+                            dense_l1_avx2(
+                                &s_pw, &n_pw, pw_, &sw, nn, &bias, scale, avx2_out.as_mut_ptr(),
+                            );
+                        }
+
+                        for i in 0..nn {
+                            assert_eq!(
+                                avx2_out[i], scalar_out[i],
+                                "dense_l1_avx2 mismatch seed={} density={} pw={} nn={} neuron={} avx2={} scalar={}",
+                                seed, density, pw, nn, i, avx2_out[i], scalar_out[i]
+                            );
+                        }
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        eprintln!("dense_l1_avx2 fuzz: {} cases passed", cases);
     }
 
     /// Micro-benchmark for L1 kernel comparison. Ignored by default —
