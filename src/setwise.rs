@@ -59,7 +59,13 @@ pub fn pawn_attacks_setwise(bb: Bitboard, color: Color) -> Bitboard {
 ///   -15 ESE  exclude {H, R1, R2}
 ///   -17 WSW  exclude {A, R1, R2}
 ///   -10 SSW  exclude {A, B, R1}
-#[cfg(not(target_feature = "avx2"))]
+// cfg must be the exact complement of the x86_64 dispatching wrapper below
+// (audit B2): `not(target_feature = "avx2")` overlapped with
+// `target_arch = "x86_64"` on non-AVX2 x86_64 baselines (e.g. any build
+// where RUSTFLAGS overrides .cargo/config.toml's -Ctarget-cpu=native),
+// defining the symbol twice -> E0428. The x86_64 wrapper already falls
+// back to the scalar path when AVX2 isn't runtime-detected.
+#[cfg(not(target_arch = "x86_64"))]
 #[inline]
 pub fn knight_attacks_setwise(bb: Bitboard) -> Bitboard {
     knight_attacks_setwise_scalar(bb)
