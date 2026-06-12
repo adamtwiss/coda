@@ -15235,3 +15235,48 @@ consensus (14/16 engines) does not transfer — consistent with the
 banked "naive ordering ports don't transfer; 4D threat-aware history
 already encodes the gradient" pattern. Axis closed unless a future
 history-rework reopens it.
+
+## 2026-06-13 — wave-2 stragglers: pcm-faillow H0 closes the fail-low-signal axis; perf-node-entry H0 (latency-hiding lesson)
+
+- **#1945 atlas/pcm-faillow-bonus H0 -0.3 ±1.5** (55,168 games, [0,3]).
+  With #1931 (-1.6), both attempts to touch the fail-low TT-move bonus
+  are negative-to-flat: the consensus PCM mechanism does NOT transplant
+  into Coda's history stack, and the accidental UPPER-bonus stays.
+  T1.1/T2.13 axis CLOSED — keep the existing behavior as-is.
+- **#1947 atlas/perf-node-entry H0 -1.4 ±1.5** (50,714 games, [-2,1]).
+  The bench-identical threat/xray hoist + QS probe reuse FAILED
+  non-regression. Lesson: the pre-TT-probe bitboard computation was
+  plausibly hiding TT-probe memory latency (prefetch at node entry,
+  compute, then probe) — work that looks wasted on paper can be paying
+  for itself in the pipeline. Do not retry the plain hoist; a future
+  variant would need to preserve compute between prefetch and probe.
+  Audit Tier3 #1+#2 CLOSED.
+- **#1942 atlas/bnfp-victim** still running, drifting H0 (+0.1, LLR
+  -1.64 at 48k). Let it lock.
+
+## 2026-06-13 — search.rs audit wave 3 LAUNCHED: corrhist overhaul + 3 tunes + T2.14
+
+- **atlas/corrhist-overhaul** (branch, bench 2,963,448): T2.1
+  persistence + helper seeding, T2.2 bound-direction gate, T2.3
+  is_decisive TB gate, T2.4 full-error updates (±3cp pre-clamp removed;
+  CORR_HIST_ERR_MAX replaced by CORR_ERR_DIV=8 output scaling;
+  CORR_UPDATE_WEIGHT_MAX 4->16 — its floor-pin was clamped-regime
+  calibration). Focused 8-param CORR-cluster SPSA submitted on branch
+  (1500 iters, net 549C20A5); SPRT branch+tune vs main [0,3] after.
+- **Hindsight pair tune on main** (600 iters): re-derive
+  HINDSIGHT_THRESH + HINDSIGHT_MIN_DEPTH_10X on the fixed trunk
+  (T1.2 zeroed the polluted prior_reduction signal). MIN_DEPTH seeded
+  at 20 (eff 2, consensus floor) per the revert-from-consensus
+  diagnostic: if SPSA drives it back to 0, the carve-out is real; if
+  it holds, the old floor-pin was compensation.
+- **Razor pair tune on main** (600 iters): RAZOR_MULT/RAZOR_DEPTH from
+  defaults (275/4) — first calibration since the #1936 merge.
+- **atlas/early-refuted-malus** SPRT [0,3] (bench 3,049,213): T2.14
+  cont-hist malus for the opponent's early-tried (parent move_count
+  <= 2) refuted quiet, SF/Reckless gate; adds move_count_stack
+  plumbing. The early-move gate distinguishes this from the previously
+  rejected ungated variants.
+
+Deferred: Tier-4 ponder atomics (tm/* work is active in that region —
+coordinate with Hercules); quality cleanup batch (bench-neutral,
+bundle when search.rs traffic quiets).
