@@ -15421,3 +15421,30 @@ Board-audit merged total so far: +11.7 nominal (+ SEE pending). The
 two correctness fixes already on main from this audit (B2 cfg build
 break, and the perf bundle's dead-field/table cleanups) plus the
 verification-gap and SEE work remain in docs/board_audit_2026-06-13.md.
+
+## 2026-06-13 — SEE promo sign-flip fix MERGED on correctness grounds (#1966 stopped at +0.9/82k)
+
+atlas/see-promo-revert (audit B1) merged to main (bench 2,325,223).
+This was a VERIFIED bug fix (C8 #40 produced a SEE sign flip:
+3R2k1/4P3/3q4/3r4 Qxd8 returned +640 vs true -460), so it belonged at
+[-2,1] "ship if not a meaningful regression", NOT the [0,3] I submitted
+it under. At [0,3] it tracked +0.9 over 82k games (a true small-but-
+real correctness gain that [0,3] can't lock); at [-2,1] it would have
+H1'd. Stopped and merged on correctness + small-incremental-Elo.
+
+BOUNDS LESSON (reinforces the policy table): a fix that REMOVES a
+verified bug is a [-2,1]/[-3,3] correctness submission, not a [0,3]
+"does this feature help". I mis-bounded it because the audit framed it
+as a strength item; classify by "is this fixing wrong behavior?" not
+by which audit track surfaced it. Two other audit correctness items
+(B2 cfg break, the perf-bundle dead-field cleanup) went straight to
+main bench-neutral and didn't hit this.
+
+Follow-up queued: focused SEE-cluster retune (SEE_QUIET_MULT etc. were
+SPSA-calibrated on the broken semantics since April; the fix measured
+net-positive DESPITE that de-calibration, so a retune should recover a
+bit more).
+
+Board-audit running total: 4 H1/merged (+11.7 + this), plus 2 bench-
+neutral correctness fixes on main. 3 H0 (checking-sqs, perf-node-entry,
++ the earlier fail-low family). npkey-king pending (->H0).
