@@ -15375,3 +15375,49 @@ New submissions (board audit + tune applies):
   empirically bit-identical
 - atlas/corrhist-overhaul + tune-#1958 values [0,3] — bench 2,209,240
 - atlas/hindsight-retune [0,3] — MIN_DEPTH eff 0->2, THRESH 179
+
+## 2026-06-13 — board audit: 3 H1s MERGED (+11.7 nominal); checking-sqs/perf-node-entry H0; SEE/npkey still running
+
+MERGED in order (verify-between, main bench now 2,345,922):
+- **#1968 atlas/board-perf-bundle H1 +5.5 ±3.3** (10,426 games, [-2,1]).
+  Bench-identical NPS bundle (audit P): QS/probcut pinned-checkers
+  dedup, ATTACK_TABLE Vec->fixed static array, repetition scan starts
+  at i=4, dead UndoInfo.checkers removed. Same class as #1923's +4.0 —
+  pure NPS measuring as real Elo. Biggest single board-audit win.
+- **#1970 atlas/corrhist-overhaul H1 +4.6 ±2.8** (16,548 games, [0,3]).
+  T2.1+T2.2+T2.3+T2.4 bundle + SPSA #1958. Vindicates the bundling
+  call: persistence-alone (#1930) and clamp-alone (#1248/#1249) were
+  both flat; the four changes compound (full-error updates need the
+  persistent table to converge against; the bound-gate + is_decisive
+  keep the now-larger updates clean). CORR_UPDATE_WEIGHT_MAX held 16 in
+  the retune — the old floor-pin at 4 was clamped-regime calibration.
+- **#1971 atlas/hindsight-retune H1 +1.6 ±1.3** (74,150 games, [0,3]).
+  Tune #1959: HINDSIGHT_MIN_DEPTH eff 0->2, THRESH 179. The cleanest
+  revert-from-consensus result yet — seeded at consensus on the
+  post-#1939 trunk, SPSA held instead of reverting to the old pin,
+  proving the pin was compensation for the stale prior_reduction bug.
+
+H0 (closed):
+- **#1969 atlas/checking-sqs H0 -0.8** (103k games, [-2,1]). The
+  per-node check-squares table (SF StateInfo pattern) was empirically
+  bench-IDENTICAL yet REGRESSED at scale. Two plausible mechanisms:
+  (a) the lazy Option<[Bitboard;6]> get_or_insert adds a branch on the
+  hot pruning path that the per-call gives_direct_check didn't, and
+  (b) computing the 6-entry table on first carve-out use does MORE work
+  than the ~0-2 gives_direct_check calls most nodes actually made
+  (gives_direct_check was already cheap — profile had it at 0.25%).
+  The "redundant per-node recompute" was mostly hypothetical. Do not
+  retry; gives_direct_check per-candidate is fine. (Note vs #1947: a
+  second board-audit perf item that was bench-identical but H0'd — the
+  bundle that WON (#1968) was the one with a real memory/footprint
+  win, not a recompute-elimination.)
+- **#1947 atlas/perf-node-entry H0 -1.4** (already logged): threat/xray
+  hoist, same lesson.
+
+Still running: atlas/see-promo-revert (+0.9 ->H1 at 65k, the VERIFIED
+SEE sign-flip fix), atlas/npkey-king (+0.4 ->H0 at 66k, drifting).
+
+Board-audit merged total so far: +11.7 nominal (+ SEE pending). The
+two correctness fixes already on main from this audit (B2 cfg build
+break, and the perf bundle's dead-field/table cleanups) plus the
+verification-gap and SEE work remain in docs/board_audit_2026-06-13.md.
