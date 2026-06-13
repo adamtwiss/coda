@@ -22,44 +22,50 @@ import subprocess
 import sys
 import numpy as np
 
-# (label, binary, extra UCI setoption lines) — each uses its own production net.
+# (label, binary, eval-line regex, scale_to_cp). All verified WHITE-POV via a
+# white-up-a-queen probe, so no per-position sign flip is needed. The
+# per-engine logistic/correlation fit absorbs scale, but we note units.
+# SF/Reckless/Stormphrax print pawns (×100 → cp); the rest print integer cp/units.
 ENGINES = [
-    ("Stockfish", "/home/adam/chess/engines/Stockfish/src/stockfish", []),
-    ("Reckless", "/home/adam/chess/engines/Reckless/reckless", []),
+    ("Stockfish",  "/home/adam/chess/engines/Stockfish/src/stockfish",
+     r"NNUE evaluation\s+([+-]?[0-9]+\.[0-9]+)", 100.0),
+    ("Reckless",   "/home/adam/chess/engines/Reckless/reckless",
+     r"NNUE evaluation\s+([+-]?[0-9]+\.[0-9]+)", 100.0),
+    ("Berserk",    "/home/adam/chess/engines/berserk-13/src/berserk",
+     r"NNUE Score:\s*([+-]?[0-9]+)\s*cp", 1.0),
+    ("Obsidian",   "/home/adam/chess/engines/Obsidian/Obsidian",
+     r"Evaluation:\s*([+-]?[0-9]+)", 1.0),
+    # Alexandria dropped: its `eval` reports stale values in batch mode without
+    # a per-position isready sync (startpos 528 > queen-up 354 — backwards).
 ]
-EVAL_RE = re.compile(r"NNUE evaluation\s+([+-]?[0-9]+\.[0-9]+)", re.IGNORECASE)
 
 
-def drive_engine(binary, setopts, fens):
+def drive_engine(binary, eval_re, scale, fens):
     """Return list of static evals (white-POV cp) for each FEN, or None on miss.
 
     Writes all UCI commands to a temp file and runs `engine < cmds > out` so
-    there's no stdin/stdout pipe deadlock and no per-position sync. Each
-    `eval` emits exactly one 'NNUE evaluation' line; we map them to FENs by
-    order, using a printed marker line per position to stay aligned even if
-    an engine skips a position.
+    there's no stdin/stdout pipe deadlock and no per-position sync. Each `eval`
+    emits exactly one matching line; we map them to FENs by strict order.
+    `eval_re` is the engine's eval-line regex (one capture group); `scale`
+    converts its units to cp (×100 for pawn-printing engines, ×1 for cp).
     """
     import tempfile, os
     cmd_path = tempfile.mktemp(suffix=".uci")
     out_path = tempfile.mktemp(suffix=".out")
     with open(cmd_path, "w") as f:
         f.write("uci\n")
-        for so in setopts:
-            f.write(so + "\n")
-        for i, fen in enumerate(fens):
-            # MARK line (echoed back via an unknown command is unreliable;
-            # instead rely on strict ordering — one eval line per position).
+        for fen in fens:
             f.write(f"position fen {fen}\neval\n")
         f.write("quit\n")
     with open(cmd_path) as fin, open(out_path, "w") as fout:
         subprocess.run([binary], stdin=fin, stdout=fout,
-                       stderr=subprocess.DEVNULL, timeout=600)
+                       stderr=subprocess.DEVNULL, timeout=900)
     evals = []
     with open(out_path) as f:
         for line in f:
-            m = EVAL_RE.search(line)
+            m = eval_re.search(line)
             if m:
-                evals.append(float(m.group(1)) * 100.0)
+                evals.append(float(m.group(1)) * scale)
     os.unlink(cmd_path); os.unlink(out_path)
     # Strict ordering: one eval per position. If counts mismatch, return what
     # we have padded/truncated so the caller can warn.
@@ -128,10 +134,10 @@ def main():
 
     # Drive each engine once; cache its evals; score against every target.
     engine_evals = {"Coda (549C20A5)": np.asarray(coda_eval)}
-    for label, binary, setopts in ENGINES:
+    for label, binary, regex, scale in ENGINES:
         print(f"Driving {label} over {len(fens)} positions...", flush=True)
         try:
-            evs = drive_engine(binary, setopts, fens)
+            evs = drive_engine(binary, re.compile(regex, re.IGNORECASE), scale, fens)
         except Exception as e:
             print(f"  {label} failed: {e}")
             continue
