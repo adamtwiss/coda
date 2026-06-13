@@ -20,7 +20,6 @@ pub struct UndoInfo {
     pub hash: u64,
     pub pawn_hash: u64,
     pub non_pawn_key: [u64; 2],
-    pub checkers: Bitboard,
 }
 
 /// The board state.
@@ -845,7 +844,6 @@ impl Board {
             hash: self.hash,
             pawn_hash: self.pawn_hash,
             non_pawn_key: self.non_pawn_key,
-            checkers: 0, // populated on demand
         });
 
         // Remove EP hash — only if the old EP was "legal" (we, side_to_move,
@@ -1061,7 +1059,6 @@ impl Board {
             hash: self.hash,
             pawn_hash: self.pawn_hash,
             non_pawn_key: self.non_pawn_key,
-            checkers: 0,
         });
 
         if self.ep_square != NO_SQUARE {

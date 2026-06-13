@@ -304,9 +304,13 @@ impl MovePicker {
     /// Create a MovePicker for quiescence search (captures only).
     /// Initialize for quiescence search.
     pub fn new_quiescence(
-        board: &Board,
         tt_move: Move,
         history: &History,
+        // Passed in (QS already computes both per node) instead of
+        // recomputed here — consistent with MovePicker::new / new_evasion
+        // (#1923 dedup pattern; audit P1).
+        checkers: Bitboard,
+        pinned: Bitboard,
     ) -> Self {
         MovePicker {
             stage: Stage::TTMove,
@@ -329,8 +333,8 @@ impl MovePicker {
             // Were hardcoded 0 (fixed 2026-06-11) — same bug class as the
             // main-picker fix of 2026-04-26 (#890 +3.4): with pinned=0,
             // is_legal cannot reject pinned-piece TT moves in QS.
-            checkers: board.checkers(),
-            pinned: board.pinned(),
+            checkers,
+            pinned,
             threat_sq: -1,
             checking_sqs: [0; 6], // not used in QS
         }
@@ -1240,9 +1244,16 @@ pub struct QMovePicker {
 impl QMovePicker {
     /// Create QS picker: TT move first, then captures scored by MVV-LVA + captHist.
     /// When in_check, generates all moves (evasions); otherwise captures only.
-    pub fn new(board: &Board, tt_move: Move, in_check: bool, history: &History) -> Self {
-        let pinned = board.pinned();
-        let checkers = board.checkers();
+    pub fn new(
+        board: &Board,
+        tt_move: Move,
+        in_check: bool,
+        history: &History,
+        // Passed in — the probcut block runs after the node-entry
+        // pinned/checkers computation (audit P bundle).
+        pinned: Bitboard,
+        checkers: Bitboard,
+    ) -> Self {
 
         let moves = if in_check { generate_all_moves(board) } else { generate_captures(board) };
         let mut picker = QMovePicker {

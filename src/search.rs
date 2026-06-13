@@ -2751,7 +2751,9 @@ fn negamax(
         let stack_len = board.undo_stack.len();
         let scan_limit = (board.halfmove as usize).min(board.plies_from_null as usize);
         let limit = scan_limit.min(stack_len);
-        let mut i = 2usize;
+        // Start at 4: a repetition at distance 2 is impossible (one move per
+        // side cannot restore the moved piece). SF starts at 4 (audit P5).
+        let mut i = 4usize;
         while i <= limit {
             if board.undo_stack[stack_len - i].hash == board.hash {
                 return draw_score;
@@ -3526,7 +3528,7 @@ fn negamax(
         // SEE threshold: only consider captures that gain enough material
         let see_threshold = (probcut_beta - static_eval).max(0);
         let pc_depth = depth - 4;
-        let mut pc_picker = QMovePicker::new(board, NO_MOVE, false, &info.history);
+        let mut pc_picker = QMovePicker::new(board, NO_MOVE, false, &info.history, pinned, checkers);
         loop {
             let mv = pc_picker.next(board);
             if mv == NO_MOVE { break; }
@@ -4906,7 +4908,7 @@ fn quiescence_with_depth(
 
     // Use main MovePicker in quiescence mode.
     // This partitions captures into good (SEE>=0) and bad, and uses staged ordering.
-    let mut picker = MovePicker::new_quiescence(board, tt_move, &info.history);
+    let mut picker = MovePicker::new_quiescence(tt_move, &info.history, qs_checkers, qs_pinned);
     let mut best_move = NO_MOVE;
     let mut qs_move_count = 0i32;
     let qs_max_caps = tp(&QS_MAX_CAPTURES);
