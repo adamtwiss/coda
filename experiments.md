@@ -15448,3 +15448,23 @@ bit more).
 Board-audit running total: 4 H1/merged (+11.7 + this), plus 2 bench-
 neutral correctness fixes on main. 3 H0 (checking-sqs, perf-node-entry,
 + the earlier fail-low family). npkey-king pending (->H0).
+
+## 2026-06-13 — #1972 STOPPED +0.9: PSQT v3 (SF-parity) TUNED — regression fixed, thread alive
+
+Tuned psqt-v3 (core retune #1963 applied) vs w20 baseline, [0,3] STC,
+manually stopped at 147,626 games at +0.9 +-1.1 (LLR bouncing in the
+band, would never cleanly hit a bound). Arc summary across the three
+iterations: v1 -29.6 (broken recipe) -> v2 -20.0 (recipe fixed, but
+threat rows noisy + random init) -> v3 untuned -1.8 (SF-parity: PSQ
+features only + material-prior init) -> v3 TUNED +0.9. So the two
+SF-parity fixes + retune-on-branch recovered ~30 Elo and turned PSQT
+from a hard regression into a mild positive. Decision (Adam): PSQT is
+interesting enough to PURSUE, but this SPRT has taught us all it will.
+Not merging at S200 scale (mild + the v11 inference path is inert
+without a prod psqt net); the real test is a full-pipeline psqt net
+(fold into the everything-net / a v6.x stage train) where it can be
+tuned alongside L1=32 + dual. feature/psqt-inference stays unmerged but
+LIVE. Durable salvage reaffirmed: trainer-parity oracle, sparse-affine
+recipe (init_with_effective_input_size + per-weight optimiser params),
+and the GPU-lowering lesson (mask constant fails; concat-of-zeros is the
+proven reparameterization path).
