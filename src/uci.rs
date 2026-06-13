@@ -1036,27 +1036,40 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 } else {
                     crate::eval::evaluate(&board)
                 };
-                println!("info string fen {}", board.to_fen());
-                println!("info string hash {:016x}", board.hash);
-                println!("info string pawn_hash {:016x}", board.pawn_hash);
-                println!("info string npkey_w {:016x}", board.non_pawn_key[0]);
-                println!("info string npkey_b {:016x}", board.non_pawn_key[1]);
-                println!("info string raw_nnue {}", score);
-                println!("info string side {}", board.side_to_move);
+                // Clean, parseable static-eval line (white POV, pawns) —
+                // matches the Stockfish/Reckless `eval` format so external
+                // tooling can extract all three engines uniformly. `score`
+                // is STM-POV cp; flip to white POV for the printed value.
+                let white_cp = if board.side_to_move == 0 { score } else { -score };
+                println!("NNUE evaluation       {:+.2} (white side)", white_cp as f32 / 100.0);
 
-                // Dump accumulator values
-                if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
-                    // Force full recompute for clean values
-                    acc.force_recompute(net, &board);
-                    let h = net.hidden_size;
-                    let n = 16.min(h);
-                    let w_vals: Vec<String> = acc.white()[..n].iter().map(|v| v.to_string()).collect();
-                    let b_vals: Vec<String> = acc.black()[..n].iter().map(|v| v.to_string()).collect();
-                    println!("info string white_acc [{}]", w_vals.join(","));
-                    println!("info string black_acc [{}]", b_vals.join(","));
-                    let pc = crate::nnue::piece_count(&board);
-                    let bucket = net.output_bucket(pc);
-                    println!("info string piece_count {} bucket {}", pc, bucket);
+                // Verbose dump (hashes, accumulator values) only on
+                // `eval debug` / `eval verbose` — keeps the default output
+                // clean. Nothing in scripts/tests parses these lines.
+                let verbose = tokens.len() > 1 && (tokens[1] == "debug" || tokens[1] == "verbose");
+                if verbose {
+                    println!("info string fen {}", board.to_fen());
+                    println!("info string hash {:016x}", board.hash);
+                    println!("info string pawn_hash {:016x}", board.pawn_hash);
+                    println!("info string npkey_w {:016x}", board.non_pawn_key[0]);
+                    println!("info string npkey_b {:016x}", board.non_pawn_key[1]);
+                    println!("info string raw_nnue {} (stm)", score);
+                    println!("info string side {}", board.side_to_move);
+
+                    // Dump accumulator values
+                    if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
+                        // Force full recompute for clean values
+                        acc.force_recompute(net, &board);
+                        let h = net.hidden_size;
+                        let n = 16.min(h);
+                        let w_vals: Vec<String> = acc.white()[..n].iter().map(|v| v.to_string()).collect();
+                        let b_vals: Vec<String> = acc.black()[..n].iter().map(|v| v.to_string()).collect();
+                        println!("info string white_acc [{}]", w_vals.join(","));
+                        println!("info string black_acc [{}]", b_vals.join(","));
+                        let pc = crate::nnue::piece_count(&board);
+                        let bucket = net.output_bucket(pc);
+                        println!("info string piece_count {} bucket {}", pc, bucket);
+                    }
                 }
             }
             "see" => {
