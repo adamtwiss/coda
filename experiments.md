@@ -15502,3 +15502,13 @@ untuned-trunk confound (both sides ran trunk calibrated for L1=16/prod;
 the deciding test is the L1=32 fine-tune after prod tune #1977 lands).
 Note this LTC ran healthy Hash=256, so TT-starvation is excluded as the
 cause. Eval-richness-emerges-at-LTC: not seen at s3.
+
+## 2026-06-13 — #1977 prod tune (LTC@256, 2500 iters): #1981 STC H0 -0.4, #1980 LTC trending H1 +1.4
+
+Applied #1977 prod core retune (recalibrates trunk for ~+50 Elo of
+audit-wave merges since #1915). Validation mirrors the #1915 LTC-tune
+signature exactly: STC (#1981) H0 at -0.4 +-1.6 (neutral/tiny cost),
+LTC (#1980) trending H1 at +1.4 +-1.6 (LLR 1.43, recovers tune-flation).
+Per the prod-tune-at-LTC philosophy (accept small STC cost for LTC gain),
+merge gated on #1980 LTC resolving H1. Bench 2951560 (softer pruning,
++27% nodes vs main 2325223).
