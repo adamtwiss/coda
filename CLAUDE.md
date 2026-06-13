@@ -537,7 +537,7 @@ OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> <bench> --base-ben
 OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch>
 
 # Custom TC or bounds:
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> --tc '40.0+0.4' --bounds '[-3, 3]'
+OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> --tc '40.0+0.4' --bounds '[0, 3]'
 ```
 
 **Key rules:**
@@ -584,15 +584,23 @@ Bench: 1780721
 > use `[0, 3]` anyway: a true +5 effect lands H1 at `[0, 3]` faster, while
 > a true +1.5 effect H0's at `[0, 5]`. Tightening is never wrong.
 
+> **ALWAYS keep the bounds RANGE at 3 (width = H1 − H0 = 3).** Adam,
+> 2026-06-13: wider-range bounds (`[-3, 3]` = range 6, `[-5, 5]`, `[0, 5]`,
+> `[0, 10]`) need far more games AND routinely return WITHOUT a meaningful
+> signal — they H0 out on a real small effect or never separate. Every
+> bounds choice below is range-3. There is no range-6 option.
+
 | Bounds | When to use | Example |
 |--------|-------------|---------|
 | **`[0, 3]` (DEFAULT)** | "Does this feature help?" at Coda's current strength. Most new ideas target +1-3 Elo. **Pick this unless you have a specific reason for one of the rows below.** | Pruning/ordering tweak, parameter probe, small bonus adjustment, incremental feature, audit correctness fix, tune-applied retest, structural ports |
 | `[-2, 1]` | "Ship if not a meaningful regression." Bench-neutral refactors, NPS-only changes, ARM ordering, adding tunables at default values. Forces enough games to actually discriminate near zero. | Code cleanup with possible perf delta, OnceLock migration, defensive guard whose direction is uncertain |
-| `[-3, 3]` | Small-win correctness fix where a regression ≤ -3 would be a block. Use for fixes whose direction is uncertain but where the correctness side of the trade matters. | SE margin tweak, 50mr mate downgrade, stale-bound gate |
+| `[-1.5, 1.5]` | Direction GENUINELY uncertain (net-vs-net, alternative-net compare, a correctness fix that could go either way). Centered, range-3 — resolves with a real signal instead of the range-6 `[-3, 3]` that returns CIs too wide to act on. | New candidate net vs prod/baseline, SE margin tweak, 50mr mate downgrade, stale-bound gate |
 
-**`[-5, 5]` is on the do-not-use list** — it locks H1 on noise
-(`+1 ±4` ships, `-1 ±4` doesn't, same true effect). Adam pushed back
-on this 2026-05-26. If you reach for it, use `[-2, 1]` instead.
+**Do-NOT-use (all range > 3): `[-3, 3]`, `[-5, 5]`, `[0, 5]`, `[0, 10]`.**
+They lock H1 on noise and/or return without separating. `[-3, 3]`
+specifically (the trap I keep falling into): use **`[-1.5, 1.5]`** instead
+for uncertain-direction, or `[-2, 1]` for non-regression. Adam pushed back
+on `[-5, 5]` 2026-05-26 and on `[-3, 3]` 2026-06-13.
 
 **Why `[0, 3]` is the standing default.** Most ideas at our current
 rating land in the +1-3 Elo range. Wider bounds (`[0, 5]`, `[0, 10]`)
@@ -605,10 +613,10 @@ path. Stack them, don't dismiss them.
 Even structural ports with priors for +3-5 Elo: use `[0, 3]`. If the
 true Elo is +5, `[0, 3]` will H1 it just as fast. We've repeatedly
 regretted wider bounds and never regretted `[0, 3]`. **Don't hedge
-toward wider bounds out of uncertainty.** Use `[-3, 3]` for
-correctness fixes where regression matters symmetrically; use
-`[-2, 1]` for "ship if not a meaningful regression" on bench-neutral
-or infrastructure changes.
+toward wider bounds out of uncertainty.** Use `[-1.5, 1.5]` (range 3)
+for genuinely-uncertain direction where regression matters symmetrically
+— NOT `[-3, 3]`; use `[-2, 1]` for "ship if not a meaningful regression"
+on bench-neutral or infrastructure changes.
 
 **What does NOT need SPRT:**
 - Comments, documentation, tooling changes
@@ -668,7 +676,7 @@ Trigger when ANY of:
 Procedure: rebase mini-prod onto main, on conflicts take main's
 STRUCTURAL changes but keep mini-prod's tuned VALUES (S200-calibrated);
 fire focused ~1500-iter SPSA against the baby-prod net; apply outputs;
-SPRT-validate at `[-3, 3]` vs pre-refresh mini-prod; push.
+SPRT-validate at `[-1.5, 1.5]` vs pre-refresh mini-prod; push.
 
 **Net rotation** (when training methodology produces a new baby-prod
 S200 net, not just a more-baked version): archive the current
