@@ -334,6 +334,15 @@ enum Commands {
         /// Number of positions to evaluate
         #[arg(long, short = 'c', default_value_t = 1_000_000)]
         count: usize,
+        /// Optional CSV dump: `fen,white_result,coda_eval_white_cp` per kept
+        /// position (for cross-engine eval-quality benchmarking).
+        #[arg(long)]
+        csv: Option<String>,
+        /// Quiet-filter positions (skip captures/promotions/in-check) to
+        /// match how NNUE is consumed. Off by default (scale measurement
+        /// wants all positions); on for eval-quality CSV export.
+        #[arg(long, default_value_t = false)]
+        quiet_only: bool,
     },
     /// Dump threat features for a FEN position (for cross-checking with Bullet)
     DumpThreats {
@@ -1017,8 +1026,8 @@ fn main() {
             run_sample_positions(&input, &output, count, rate);
         }
 
-        Some(Commands::EvalDist { input, count }) => {
-            run_eval_dist(&input, count, &cli.nnue);
+        Some(Commands::EvalDist { input, count, csv, quiet_only }) => {
+            run_eval_dist(&input, count, &cli.nnue, &csv, quiet_only);
         }
 
         Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, xray_trained, reckless_buckets }) => {
@@ -2189,8 +2198,9 @@ fn run_sample_positions(input: &str, output: &str, n: usize, sample_rate: f64) {
     println!("Sampled {} positions from {} scanned → {}", count, total, output);
 }
 
-fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>) {
+fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option<String>, quiet_only: bool) {
     use sfbinpack::CompressedTrainingDataEntryReader;
+    use std::io::Write as _;
 
     // Load NNUE
     let mut info = search::SearchInfo::new(1);
@@ -2201,6 +2211,18 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>) {
         eprintln!("Error: No NNUE net. Use -n <path>");
         return;
     }
+
+    // Optional CSV: `fen,white_result,coda_eval_white_cp` per kept position,
+    // for the cross-engine eval-quality benchmark (scripts/eval_quality.py).
+    let mut csv_w = csv.as_ref().map(|p| {
+        let f = std::fs::File::create(p).unwrap_or_else(|_| panic!("Failed to create CSV {}", p));
+        let mut w = std::io::BufWriter::new(f);
+        // lc0_score = the binpack's LC0 WDL-calibrated eval (white POV) — the
+        // strong-oracle ground truth (game RESULT is too drawish on T80
+        // self-play to discriminate static evals; corr ≈ 0).
+        writeln!(w, "fen,white_result,coda_eval_white_cp,lc0_score_white_cp").unwrap();
+        w
+    });
 
     println!("Evaluating {} positions from {}", n, input);
     let file = std::fs::File::open(input).unwrap_or_else(|_| panic!("Failed to open {}", input));
@@ -2220,6 +2242,17 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>) {
         if entry.pos.is_checked(entry.pos.side_to_move()) { continue; }
         if entry.score.unsigned_abs() > 10000 { continue; }
 
+        // Quiet filter (eval-quality export): skip positions whose played
+        // move is a capture or promotion — matches how NNUE is consumed at
+        // QS leaves. (The .min-v2.v6 binpacks are already quiet-filtered at
+        // creation; this is belt-and-suspenders for raw binpacks.)
+        if quiet_only {
+            let is_capture = entry.pos.piece_at(entry.mv.to()) != sfbinpack::chess::piece::Piece::NONE
+                || entry.mv.mtype() == sfbinpack::chess::r#move::MoveType::EnPassant;
+            let is_promo = entry.mv.mtype() == sfbinpack::chess::r#move::MoveType::Promotion;
+            if is_capture || is_promo { continue; }
+        }
+
         // Convert to our Board and evaluate
         let fen = match entry.pos.fen() {
             Ok(f) => f,
@@ -2236,6 +2269,12 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>) {
             if ts.active {
                 ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
             }
+            // CRITICAL: the accumulator is reused across positions; each FEN
+            // is an unrelated board, so the cached acc is stale. Without a
+            // full recompute, evaluate_nnue runs on garbage state (off by
+            // 100cp+). The UCI path is refreshed by the `position` command;
+            // this batch path must refresh explicitly.
+            acc.force_recompute(net, &board);
             eval::evaluate_nnue(&board, net, acc, &ts)
         } else {
             continue;
@@ -2252,8 +2291,15 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>) {
 
         scores.push(score);
         results.push(result_f);
-        // Also track search score from binpack for comparison
-        // (uncomment to use search score instead of static eval for WDL fit)
+
+        if let Some(w) = csv_w.as_mut() {
+            // White-POV result and eval, to match the white-POV `eval`
+            // output of all engines in the benchmark driver.
+            let white_result = match entry.result { 1 => 1.0, -1 => 0.0, _ => 0.5 };
+            let white_cp = if stm_is_white { score } else { -score };
+            let lc0_white = if stm_is_white { entry.score } else { -entry.score };
+            writeln!(w, "{},{:.1},{},{}", fen, white_result, white_cp, lc0_white).unwrap();
+        }
 
         if scores.len().is_multiple_of(100_000) {
             eprint!("\r  {} / {} evaluated ({} scanned)", scores.len(), n, total);
