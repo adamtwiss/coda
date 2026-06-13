@@ -91,9 +91,18 @@ def agreement(evals_cp, oracle_cp):
     return sp, pe, rms
 
 
+# T80 score scale: ~100cp ≈ 75% WP (memory reference_t80_lc0_scoring_calibration)
+# → sigmoid(100/K)=0.75 → K = 100/ln(3) ≈ 91.
+WP_K = 91.0
+
+
+def wp(cp):
+    return 1.0 / (1.0 + np.exp(-np.asarray(cp, float) / WP_K))
+
+
 def main():
     csv_path = sys.argv[1] if len(sys.argv) > 1 else "/tmp/evalq.csv"
-    fens, oracle, coda_eval = [], [], []
+    fens, result, oracle, coda_eval = [], [], [], []
     with open(csv_path) as f:
         next(f)  # header: fen,white_result,coda_eval_white_cp,lc0_score_white_cp
         for line in f:
@@ -101,16 +110,24 @@ def main():
             if len(parts) != 4:
                 continue
             fens.append(parts[0])
+            result.append(float(parts[1]))   # actual game result (white)
             coda_eval.append(float(parts[2]))
-            oracle.append(float(parts[3]))  # LC0 deep-eval oracle (white cp)
-    print(f"Loaded {len(fens)} positions from {csv_path}")
-    print("Ground truth: LC0 WDL-calibrated deep eval (game RESULT is ~0-corr "
-          "on T80 self-play — too drawish to use).\n")
+            oracle.append(float(parts[3]))    # LC0 deep-eval (white cp)
+    result = np.asarray(result); oracle = np.asarray(oracle)
+    print(f"Loaded {len(fens)} positions from {csv_path}\n")
 
-    rows = []
-    sp, pe, rms = agreement(coda_eval, oracle)
-    rows.append(("Coda (549C20A5)", sp, pe, rms, len(fens)))
+    # Targets to score against. The net is trained on a WDL blend of search
+    # score (LC0) and game result; that blended target is the most faithful.
+    # Pure result is ~0-corr on T80 (too drawish); pure LC0 is the search-only
+    # target; blends mix in real-outcome signal (Coda λ=0.20, SF λ=0.24).
+    targets = {
+        "LC0-only (λ=0)":  wp(oracle),
+        "blend λ=0.20":    0.80 * wp(oracle) + 0.20 * result,
+        "blend λ=0.24":    0.76 * wp(oracle) + 0.24 * result,
+    }
 
+    # Drive each engine once; cache its evals; score against every target.
+    engine_evals = {"Coda (549C20A5)": np.asarray(coda_eval)}
     for label, binary, setopts in ENGINES:
         print(f"Driving {label} over {len(fens)} positions...", flush=True)
         try:
@@ -118,24 +135,28 @@ def main():
         except Exception as e:
             print(f"  {label} failed: {e}")
             continue
-        pairs = [(ev, o) for ev, o in zip(evs, oracle) if ev is not None]
-        if len(pairs) < 0.9 * len(fens):
-            print(f"  {label}: only {len(pairs)}/{len(fens)} evals parsed — check format")
-        if not pairs:
-            continue
-        ev2, o2 = zip(*pairs)
-        sp, pe, rms = agreement(ev2, o2)
-        rows.append((label, sp, pe, rms, len(pairs)))
+        arr = np.array([np.nan if e is None else e for e in evs], float)
+        if np.isnan(arr).mean() > 0.1:
+            print(f"  {label}: {np.isnan(arr).mean():.0%} evals missing — check format")
+        engine_evals[label] = arr
 
-    rows.sort(key=lambda x: -x[1])  # by Spearman desc, higher = closer to oracle
-    print("\n=== Static-eval agreement with LC0 deep-eval oracle (higher Spearman = better) ===")
-    print(f"{'Engine':<22} {'Spearman':>9} {'Pearson':>8} {'residRMS':>9} {'N':>7}")
-    best = rows[0][1]
-    for label, sp, pe, rms, n in rows:
-        gap = best - sp
-        print(f"{label:<22} {sp:>9.4f} {pe:>8.4f} {rms:>9.1f} {n:>7}  {'(best)' if gap==0 else f'-{gap:.4f}'}")
-    print("\nCaveat: Coda trains on T80/LC0 scores, so it has a home-field bias "
-          "toward matching this oracle. SF/Reckless train on their own data.")
+    for tname, tvals in targets.items():
+        print(f"\n=== Static-eval agreement with target: {tname} (Spearman, higher=better) ===")
+        print(f"{'Engine':<22} {'Spearman':>9} {'Pearson':>8} {'N':>7}")
+        rows = []
+        for label, ev in engine_evals.items():
+            mask = ~np.isnan(ev)
+            sp = spearman(ev[mask], tvals[mask])
+            pe = float(np.corrcoef(ev[mask], tvals[mask])[0, 1])
+            rows.append((label, sp, pe, int(mask.sum())))
+        rows.sort(key=lambda x: -x[1])
+        best = rows[0][1]
+        for label, sp, pe, n in rows:
+            gap = best - sp
+            print(f"{label:<22} {sp:>9.4f} {pe:>8.4f} {n:>7}  {'(best)' if gap==0 else f'-{gap:.4f}'}")
+    print("\nNote: Coda and SF train on the SAME T80/LC0 data — no home-field "
+          "bias between them, so the Coda-vs-SF gap is a genuine eval-quality "
+          "difference. (Reckless's training data may differ.)")
 
 
 if __name__ == "__main__":
