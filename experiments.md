@@ -15468,3 +15468,21 @@ LIVE. Durable salvage reaffirmed: trainer-parity oracle, sparse-affine
 recipe (init_with_effective_input_size + per-weight optimiser params),
 and the GPU-lowering lesson (mask constant fails; concat-of-zeros is the
 proven reparameterization path).
+
+## 2026-06-13 — #1975/#1976 H0: L1=32 stage-3 pair — interim positive dissolved, deficit persists
+
+L1=32 stage-curve points 5+6 ([-3,3] STC, same-stage L1=16 baselines):
+l132-s3-swa -2.7 +-3.4 (#1975); l132-s3 raw -3.1 +-3.7 (#1976). The
+early interim (+3.2 SWA at 2k games, which seeded the "advantage emerges
+at scale" optimism) fully dissolved into the same ~-3 deficit as s2 as
+games accumulated — a clean reminder that 2k-game SPRT reads are noise.
+Full SWA curve: s1 -4.9, s2 -6.1, s3 -2.7 (untuned, detuned-trunk
+baseline both sides). So across three full-pipeline stages L1=32 has NOT
+overtaken L1=16 at fixed recipe + untuned trunk. TWO confounds remain
+unaddressed and are the reason this isn't a closed verdict: (1) trunk is
+~+50 Elo detuned from audit-wave merges (prod retune #1977 in flight);
+(2) L1=32 has never had its own SPSA calibration (the psqt precedent:
+-1.8 untuned -> +0.9 tuned). The real L1=32 read is: after #1977 prod
+tune lands, run the L1=32 STC fine-tune on those values and re-SPRT
+tuned-vs-tuned. Stage 4 (~9h, factoriser dropped via new --warmstart-from
+path) continues the curve in parallel.
