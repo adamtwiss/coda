@@ -15512,3 +15512,23 @@ LTC (#1980) trending H1 at +1.4 +-1.6 (LLR 1.43, recovers tune-flation).
 Per the prod-tune-at-LTC philosophy (accept small STC cost for LTC gain),
 merge gated on #1980 LTC resolving H1. Bench 2951560 (softer pruning,
 +27% nodes vs main 2325223).
+
+## 2026-06-13 — #1982 H1 +14.9: L1=32 BEATS L1=16 at stage 4 — capacity-needs-data CONFIRMED
+
+multi-v6-l132-s4-swa vs multi-v6-s4-swa (L16) [-3,3] STC: H1 +14.9 +-8.0.
+The L1=32 architecture FINALLY wins — decisively, at STC where its ~10%
+NPS tax is worst (so the underlying eval edge is ~+25). This closes the
+stage-curve arc: L1=32 lost s1-s3 (-5 to -15) NOT because the eval was
+worse but because the extra capacity was UNDER-TRAINED — the eval edge
+was growing under a fixed NPS tax and hadn't yet cleared it. s4 (a
+1000-SB leg on an already-well-trained base) is where it crossed.
+Clean confirmation of capacity-needs-DATA (the SB-volume axis, not just
+recipe): bigger models need the long tail to shine, and S200/short-run
+probes systematically UNDERSTATE them (we nearly killed L1=32 three
+times on short runs). Transitivity check: prod beat L16-s4-swa by
++5.26, so l132-s4-swa ~= prod +15; #1983 (l132-s4-swa vs prod direct,
+handicapped: prod-tuned trunk + bigger tree) early +8.2 trending H1 —
+i.e. l132-s4-swa is a genuine PROD-BEATER. s5 (+1600 SB) is the prod
+candidate; a retune-on-net + LTC check banks deployment (where the NPS
+tax ~vanishes → even higher). Roadmap: the everything-net (L1=32+dual+
+PSQT) must be a FULL-LENGTH train from the start, not an S200 probe.
