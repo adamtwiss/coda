@@ -164,7 +164,7 @@ tunables!(
     (QS_MAX_CAPTURES, 5, 2, 32, 2.0, false),
     (CORR_W_PAWN, 290, 100, 600, 25.0, true),
     // Floor lifted from 50 → 0 (audit 2026-05-20): pinned at 63, 4% from floor.
-    (CORR_W_NP, 60, 0, 400, 17.5, true),
+    (CORR_W_NP, 62, 0, 400, 17.5, true),
     // CORR_W_MINOR / CORR_W_MAJOR were dropped 2026-05-18 (ablated to 0
     // via #1318 H1; minor_key/major_key are strict subsets of
     // non_pawn_key, so the contributions were redundant with np_corr).
@@ -175,7 +175,7 @@ tunables!(
     // Floor on CORR_W_CONT lifted from 30 → 0 (audit 2026-05-19): SPSA
     // converged 33, ~1% from floor. Lifting allows finding true optimum
     // including disabling cont-corr if SPSA wants. Default unchanged.
-    (CORR_W_CONT, 64, 0, 400, 18.5, true),
+    (CORR_W_CONT, 74, 0, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
     // Re-expose 4 hardcoded search constants (audit 2026-05-21).
     // All bench-neutral at current defaults.
@@ -250,14 +250,19 @@ tunables!(
     (DEXT_MARGIN_BASE, 35, -50, 150, 6.0, true),
     (DEXT_CAP, 13, 4, 32, 2.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
-    (CORR_HIST_DIV, 1543, 256, 4096, 192.0, true),
-    (CORR_UPDATE_WEIGHT_MAX, 4, 4, 48, 2.2, true),
+    (CORR_HIST_DIV, 1587, 256, 4096, 192.0, true),
+    // 4 -> 16 with T2.4: the floor-pin at 4 was calibrated for the
+    // sign-only (err-clamped) regime; consensus weights ~depth uncapped.
+    (CORR_UPDATE_WEIGHT_MAX, 16, 4, 48, 2.2, true),
     // Was 32 (tp10→3). Now FIXED-POINT. Default 30 → eff 3.0 ≡ old behavior.
-    (CORR_BONUS_CAP_DIV_10X, 30, 10, 160, 15.0, false),
+    (CORR_BONUS_CAP_DIV_10X, 26, 10, 160, 15.0, false),
     (CORR_HIST_GRAIN_T, 14, 1, 32, 1.55, false),
     // Floor lifted from 10 → 0 (audit 2026-05-19): SPSA converged 25, ~2%
     // from the floor. Lifting allows exploration of looser clamps.
-    (CORR_HIST_ERR_MAX_10X, 25, 0, 640, 5.0, false),
+    // T2.4: CORR_HIST_ERR_MAX (±3cp input pre-clamp) replaced by output
+    // scaling: bonus = err*(depth+1).min(W)/CORR_ERR_DIV, clamped at the
+    // gravity cap only. Obsidian err*depth/8; SF err*depth*12/128.
+    (CORR_ERR_DIV, 8, 2, 64, 3.0, false),
     // ESCAPE_BONUS_Q / _MINOR removed 2026-05-17: ablations #1256/#1255
     // H0 at [-3, 3]. Slightly load-bearing (central -0.6/-1.3 to ablate),
     // hardcoded at current SPSA values in movepicker.rs.
@@ -1272,34 +1277,40 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
 }
 
 /// Update correction history entry with gravity.
-fn update_corr_entry(entry: &mut i32, err: i32, weight: i32, cap_div_10x: i32) {
+fn update_corr_entry(entry: &mut i32, scaled_err: i32, cap_div_10x: i32) {
     // Proportional gravity (consensus: every top engine uses this)
     // Self-limiting: values near the limit get pulled back harder
     // cap_div_10x is stored × 10 (fixed-point); cap = LIMIT * 10 / cap_div_10x.
     let cap = CORR_HIST_LIMIT * 10 / cap_div_10x.max(1);
-    let bonus = (err * weight).clamp(-cap, cap);
+    let bonus = scaled_err.clamp(-cap, cap);
     *entry += bonus - *entry * bonus.abs() / CORR_HIST_LIMIT;
     *entry = (*entry).clamp(-CORR_HIST_LIMIT, CORR_HIST_LIMIT);
 }
 
 /// Update all correction history tables.
 fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, raw_eval: i32, depth: i32) {
-    let err_max = tp10(&CORR_HIST_ERR_MAX_10X);
-    let err = (search_score - raw_eval).clamp(-err_max, err_max);
+    // T2.4 consensus shape: feed the FULL error scaled by depth, clamping
+    // only the resulting bonus (at the gravity cap, in update_corr_entry).
+    // The old ±3cp err pre-clamp (CORR_HIST_ERR_MAX) made corrhist a
+    // sign-only integrator — max update 21 vs cap ~341. No surveyed engine
+    // clamps the input error: SF err*depth*12/128, Obsidian err*depth/8,
+    // Reckless 142*depth*err/128, all clamped at the output only.
+    let err = search_score - raw_eval;
     let weight = (depth + 1).min(tp(&CORR_UPDATE_WEIGHT_MAX));
+    let scaled_err = err * weight / tp(&CORR_ERR_DIV).max(1);
     // Pass raw stored value; consumer treats it as fixed-point (×10).
     let cap_div = CORR_BONUS_CAP_DIV_10X.load(Ordering::Relaxed);
     let stm = board.side_to_move as usize;
 
     // Pawn correction
     let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&mut info.pawn_corr[stm][pawn_idx], err, weight, cap_div);
+    update_corr_entry(&mut info.pawn_corr[stm][pawn_idx], scaled_err, cap_div);
 
     // Non-pawn corrections (per color)
     let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&mut info.np_corr[stm][WHITE as usize][white_np_idx], err, weight, cap_div);
+    update_corr_entry(&mut info.np_corr[stm][WHITE as usize][white_np_idx], scaled_err, cap_div);
     let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&mut info.np_corr[stm][BLACK as usize][black_np_idx], err, weight, cap_div);
+    update_corr_entry(&mut info.np_corr[stm][BLACK as usize][black_np_idx], scaled_err, cap_div);
 
     // Continuation correction
     if !board.undo_stack.is_empty() {
@@ -1310,7 +1321,7 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
             if pt < 6 {
                 let piece = make_piece(flip_color(board.side_to_move), pt);
                 if (piece as usize) < 12 {
-                    update_corr_entry(&mut info.cont_corr[piece as usize][to as usize], err, weight, cap_div);
+                    update_corr_entry(&mut info.cont_corr[piece as usize][to as usize], scaled_err, cap_div);
                 }
             }
         }
@@ -1479,11 +1490,12 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     // ordering than main; this both wastes their work AND poisons
     // shared-TT ordering, costing most of the potential SMP Elo.
     helper.history.copy_from(&main.history);
-    // Pawn-hist and the correction-history tables are large
-    // (pawn_hist alone is ~13 MB) and main aggressively clears
-    // correction history at the top of every search anyway, so a copy
-    // there has no value. Main history (which includes the
-    // load-bearing 4D main + cont_hist) is the one that matters.
+    // T2.1/T2.4: with corrhist persistent and full-error updates, seed
+    // helpers from main's accumulated corrections (~260 KB total — cheap,
+    // unlike the ~13 MB pawn_hist which stays unseeded).
+    helper.pawn_corr.copy_from_slice(&main.pawn_corr[..]);
+    helper.np_corr.copy_from_slice(&main.np_corr[..]);
+    helper.cont_corr.copy_from_slice(&main.cont_corr[..]);
 
     helper
 }
@@ -1907,9 +1919,13 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.root_stm = board.side_to_move;
 
     // Age history tables (×0.80) to preserve useful move ordering from prior searches.
-    // Killers and counter-moves are cleared (position-specific). Correction history reset.
+    // Killers and counter-moves are cleared (position-specific).
+    // T2.1: correction history PERSISTS across `go` (cleared on ucinewgame
+    // only, uci.rs) — all 5 surveyed engines persist within a game. With
+    // the T2.4 full-error updates the table converges fast enough that
+    // plain persistence (#1930, flat under the ±3cp clamp) becomes
+    // load-bearing: each move starts from a warm eval-calibration.
     info.history.age(4, 5);
-    info.clear_correction_history();
     info.stats = PruneStats::default();
     // Age pawn history (×0.80, matching main/capture history aging)
     for entry in info.pawn_hist.iter_mut() {
@@ -4533,8 +4549,17 @@ fn negamax(
         && !best_move_noisy
         && info.excluded_move[ply_u] == NO_MOVE
         && best_score > alpha_orig
-        && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
+        // T2.3: is_decisive (mate OR TB range) — the old ±(MATE-100) guards
+        // admitted TB scores (tb_floor raises best_score before this point),
+        // training corrhist on coarse TB values.
+        && !is_decisive(best_score)
         && scaled_eval > -(MATE_SCORE - 100)
+        // T2.2 bound-direction consistency (all 5 surveyed engines): on a
+        // fail-high best_score is only a LOWER bound — if eval already sits
+        // at/above it the true score may be above eval too, so training
+        // corrhist downward is wrong-direction. (UPPER updates are already
+        // excluded by best_score > alpha_orig.)
+        && !(best_score >= beta && best_score <= scaled_eval)
         // C8 audit LIKELY #12: TT-store has a stop guard (see tt write
         // path); corrhist update previously didn't. On a stop, children
         // returned 0, which can bubble up as best_score > alpha_orig
@@ -5453,7 +5478,7 @@ mod tests {
     }
 
     /// Correction-history update primitive (`update_corr_entry`) must:
-    /// (a) move the entry in the direction of `err * weight`,
+    /// (a) move the entry in the direction of `scaled_err`,
     /// (b) respect the bound ±CORR_HIST_LIMIT,
     /// (c) apply proportional gravity (saturates at the bound),
     /// (d) be symmetric for positive vs negative errors (equal magnitude
@@ -5463,20 +5488,20 @@ mod tests {
         // (d) Symmetry from zero.
         let mut pos = 0i32;
         let mut neg = 0i32;
-        update_corr_entry(&mut pos, 4, 5, 4);   // err=+4
-        update_corr_entry(&mut neg, -4, 5, 4);  // err=-4
+        update_corr_entry(&mut pos, 20, 4);   // scaled_err=+20 (err 4 × w 5)
+        update_corr_entry(&mut neg, -20, 4);  // scaled_err=-20
         assert_eq!(pos, -neg, "symmetric updates from zero: pos={}, neg={}", pos, neg);
         assert!(pos > 0, "positive err must raise entry: got {}", pos);
 
         // (a) Directional.
         let mut e = 0i32;
-        update_corr_entry(&mut e, 3, 2, 4);
+        update_corr_entry(&mut e, 6, 4);
         assert!(e > 0, "err > 0, weight > 0 → entry must rise, got {}", e);
 
         // (b) Bounded at ±CORR_HIST_LIMIT.
         let mut e = 0i32;
         for _ in 0..10000 {
-            update_corr_entry(&mut e, 1000, 1000, 1); // saturate hard
+            update_corr_entry(&mut e, 1_000_000, 1); // saturate hard
         }
         assert!(e <= CORR_HIST_LIMIT, "entry must stay ≤ LIMIT, got {}", e);
         assert!(e >= -CORR_HIST_LIMIT, "entry must stay ≥ -LIMIT, got {}", e);
@@ -5485,7 +5510,7 @@ mod tests {
         //     don't grow without bound.
         let mut e = CORR_HIST_LIMIT / 2;
         let before = e;
-        update_corr_entry(&mut e, 1, 1, 4);
+        update_corr_entry(&mut e, 1, 4);
         let delta = e - before;
         // Small update near saturation should be small.
         assert!(delta.abs() < 4, "near-saturation delta should be tiny, got {}", delta);
@@ -5497,11 +5522,11 @@ mod tests {
     #[test]
     fn corr_entry_zero_err_noop() {
         let mut e = 500i32;
-        update_corr_entry(&mut e, 0, 5, 4);
+        update_corr_entry(&mut e, 0, 4);
         assert_eq!(e, 500, "zero err must not change entry");
 
         let mut e = -500i32;
-        update_corr_entry(&mut e, 0, 5, 4);
+        update_corr_entry(&mut e, 0, 4);
         assert_eq!(e, -500, "zero err must not change negative entry either");
     }
 
