@@ -15486,3 +15486,19 @@ unaddressed and are the reason this isn't a closed verdict: (1) trunk is
 tune lands, run the L1=32 STC fine-tune on those values and re-SPRT
 tuned-vs-tuned. Stage 4 (~9h, factoriser dropped via new --warmstart-from
 path) continues the curve in parallel.
+
+## 2026-06-13 — #1979 H0 -2.6: L1=32 s3-swa vs L1=16 LTC@256 — NPS-tax hypothesis NOT supported
+
+L1=32 multi-v6-s3-swa vs L1=16 s3-swa at LTC 40+0.4 Hash=256 [-3,3]:
+H0 at -2.6 +-3.2 (12k games). Tested Adam's hypothesis that the L1=32
+STC deficit is the wider-matmul NPS tax, which should shrink at LTC
+(NPS->Elo conversion flattens with TC). Result: the deficit is ESSENTIALLY
+UNCHANGED LTC vs STC (-2.7 STC #1975 -> -2.6 LTC), and the early LTC
+interim (+5.6 at 1.3k games) fully dissolved. So at s3, fixed recipe,
+untuned trunk, L1=32's deficit is NOT primarily NPS — it's robust across
+TC. Two readings remain open: (a) genuine eval (L1=32 not yet paying off
+at s3 data scale — stage 4 train continues the curve), or (b) the
+untuned-trunk confound (both sides ran trunk calibrated for L1=16/prod;
+the deciding test is the L1=32 fine-tune after prod tune #1977 lands).
+Note this LTC ran healthy Hash=256, so TT-starvation is excluded as the
+cause. Eval-richness-emerges-at-LTC: not seen at s3.
