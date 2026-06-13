@@ -111,6 +111,14 @@ tunables!(
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
     (RFP_MARGIN_IMP, 33, 0, 150, 6.0, true),
     (RFP_MARGIN_NOIMP, 43, 0, 200, 7.5, true),
+    // Root-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
+    // demand MORE static-eval confidence to RFP-cut as the OVERALL search
+    // depth grows past RFP_ROOT_THRESH (diminishing-returns of depth — the
+    // marginal ply is cheap at LTC so deep pruning trades blindness for
+    // worthless depth). Inactive at STC (root_depth < thresh) by construction
+    // -> STC-neutral; relaxes deep RFP at LTC. SPSA tunes both.
+    (RFP_ROOT_THRESH, 16, 6, 30, 1.5, true),
+    (RFP_ROOT_COEF, 33, 0, 150, 7.5, true),
     // Razoring (re-added 2026-06-11, audit T2.6). Consensus band:
     // Obsidian 352/d<=5, Berserk 214/d<=5, Clover 145/d<=2, Integral
     // 393/d<=4, Stormphrax ~290/d<=4.
@@ -746,6 +754,12 @@ pub struct SearchInfo {
     /// Per-depth cumulative node counts (for EBF calculation in bench)
     pub depth_nodes: [u64; MAX_PLY + 1],
     pub completed_depth: i32,
+    /// Current ID iteration's target (root) depth, set at the top of each
+    /// iteration in both ID loops. Visible at every node so depth-dependent
+    /// formulas adjust by the OVERALL search depth (= the time control's
+    /// reach), giving a single tunable set that self-adapts STC<->LTC instead
+    /// of two constant sets (Adam directive 2026-06-13).
+    pub root_depth: i32,
     /// Triangular PV table
     pub pv_table: [[Move; MAX_PLY + 1]; MAX_PLY + 1],
     pub pv_len: [usize; MAX_PLY + 1],
@@ -826,6 +840,7 @@ impl SearchInfo {
             root_stm: WHITE,
             depth_nodes: [0; MAX_PLY + 1],
             completed_depth: 0,
+            root_depth: 0,
             static_evals: [0; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
@@ -1842,6 +1857,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     let mut prev_score = 0i32;
     for depth in 1..=effective_max {
         if info.stop.load(Ordering::Relaxed) { break; }
+        info.root_depth = depth;
 
         let score;
 
@@ -2102,6 +2118,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
     for depth in 1..=effective_max {
         if info.should_stop() { break; }
+        info.root_depth = depth;
         // Ponderhit check: stop between iterations (not mid-search) to avoid
         // partial TT entries and PV inconsistency. The engine completes the
         // current iteration fully before stopping, producing clean state.
@@ -3373,6 +3390,11 @@ fn negamax(
             && !is_promotion(tt_move);
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
+            // Zero at STC (root_depth <= thresh); grows with both remaining
+            // depth and how deep the overall search is, so deep RFP at LTC
+            // demands much more confidence. One formula, one tunable set.
+            margin += (depth * (info.root_depth - tp(&RFP_ROOT_THRESH)).max(0) * tp(&RFP_ROOT_COEF)) / 100;
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
             // E2: widen margin when position is unstable (parent-child eval gap
