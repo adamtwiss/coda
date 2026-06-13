@@ -15532,3 +15532,18 @@ i.e. l132-s4-swa is a genuine PROD-BEATER. s5 (+1600 SB) is the prod
 candidate; a retune-on-net + LTC check banks deployment (where the NPS
 tax ~vanishes → even higher). Roadmap: the everything-net (L1=32+dual+
 PSQT) must be a FULL-LENGTH train from the start, not an S200 probe.
+
+## 2026-06-13 — #1983 H0 -4.5: l132-s4-swa vs prod (HANDICAPPED) — net-swap detune, not a refutation
+
+l132-s4-swa vs prod 549C20A5, straight [-3,3] STC: H0 -4.5 +-4.4. EXPECTED
+and explained: the conservative setup handicaps the new net two ways —
+(1) main's trunk is SPSA-calibrated for prod's eval scale, so l132-s4-swa
+runs on a mistuned trunk (the known net-swap detune, ~5-15 Elo), and
+(2) +31% bigger tree (3.05M vs 2.33M nodes) → less depth at fixed TC.
+The early +8 was N-optimism; it settled to -4.5 as the handicap showed.
+This does NOT contradict #1982 (l132 beats L16-s4-swa +14.9, the real
+within-lineage validation) — it just confirms a new net needs a
+retune-on-net before it shows its edge vs a prod-tuned trunk. Path to a
+prod upgrade: s5-swa (stronger, +1600 SB) + focused retune-on-net, then
+SPRT vs prod; LTC check banks deployment (NPS tax ~vanishes). Cross-ref
+[[feedback_capacity_increases_need_information_increases]].
