@@ -15579,3 +15579,61 @@ only pays when real tune-flation has accumulated (structural pruning-shape
 changes); a wave of correctness fixes alone doesn't necessarily move the
 SPSA optimum. Next prod tune: wait for a structural pruning change, not just
 merged-Elo count.
+
+## 2026-06-14 — NNUE contention-bandwidth investigation: it's LATENCY-HIDING (MLP), not layout
+
+Adam: "we won't ever catch SF if we leave material things like this on the
+table" (the NPS-retention-under-contention gap). Full mechanism dig on
+Hercules (2-ch Coffee Lake Xeon, 16C). All measured at conc=16 self-contention
+(15 load loops + 1 perf'd instance), median-of-3.
+
+**NPS retention (nps@16 / nps@1):** Stockfish 0.334, **Coda 0.268**, Reckless
+0.231. KEY REFRAME: Coda is NOT an outlier — Reckless (closest model shape,
+Rust threat-net) degrades *more*. Coda's scaling is NORMAL for the threat-net
+class; **SF is the outlier that retains better.** So the gap is architectural
+(threat-nets vs SF), not a Coda-specific bug.
+
+**Per-node memory traffic (single-thread):** Coda 102 B/node, SF 115, Reckless
+107. SF touches MORE memory per node yet scales better -> "SF streams less" is
+WRONG.
+
+**The discriminator — DRAM-stall amplification + MLP (cycle_activity.stalls_l3_miss,
+l1d_pend_miss):** single-thread L3-stall Coda 2.3% / SF 3.5%; under 16x
+contention Coda **33.5%** / SF 28.3%. Coda amplifies **14.5x** vs SF's 8.1x.
+SF sustains higher memory-level parallelism (MLP 3.22->2.70 vs Coda 2.75->2.57),
+so when DRAM latency balloons under contention SF keeps more misses in flight
+and overlaps the waits; Coda issues fewer concurrent misses -> each stalls the
+core on the critical path. **It's latency-hiding, not cache residency.** This
+RETIRES the earlier "importance-order the hot rows for residency" framing.
+
+Null results along the way: (a) **zero-element removal** (Adam's idea) — moot:
+`NONZERO hits but zero |max| = 0`, every all-zero row (5604) is also a
+never-fired row (lasso killed exactly the non-firing features), so zeros are
+never in the hot path. (b) **Fix D (Finny acc arena)** — analyzed out: the 64
+acc Vecs are only 128KB; finny_batch_apply's 18% of misses are FT
+input_weights streaming (60KB/call) not acc scatter.
+
+## 2026-06-14 — #1993 H0 -4.9: Fix A (threat-row importance reorder) — wrong lever, confirmed
+
+experiment/threat-row-importance-reorder vs main [-2,1] STC: **H0 -4.9 +-3.0
+(12880 games)**. Relocated the hottest threat-weight rows to the front of the
+65MB matrix at load (committed perm blob, bit-identical eval, bench 2325223).
+Regressed: with bit-identical eval the only Elo channel is overhead, and the
+per-access perm-indirection LUT in the hot accumulator path cost more than any
+contiguity gained. Consistent with the mechanism finding above — the problem
+is latency-hiding (MLP), which a residency reorder cannot address. Branch
+unmerged.
+
+## 2026-06-14 — #1994 (RUNNING): FT weight-row prefetch to raise MLP — the right lever
+
+experiment/ft-accum-mlp-prefetch [-2,1] STC. Acting on the MLP mechanism:
+front-load `_mm_prefetch(T0)` for every active add/sub weight row's cache
+lines at the top of the fused FT accumulator kernels (simd_acc_fused_avx2 +
+_avx512), so the per-row DRAM misses fetch concurrently instead of serialising
+on the critical path. The kernel was chunk-major with ZERO prefetch and runs
+every node (32% of contention misses). **Measured: contended L3-stall drops
+~35% -> ~29.8% (2 reps each), landing at SF's 28.3%** — most of the Coda<->SF
+contention-stall gap closed on the FT path alone. Bit-identical, bench 2325223.
+If H1, next targets are the threat full-refresh (add_weight_rows) and
+finny_batch_apply paths with rolling-distance prefetch (many rows -> can't
+front-load all). NEON path left unchanged (x86 is the OB/deployment target).
