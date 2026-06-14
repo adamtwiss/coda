@@ -15563,3 +15563,19 @@ thrash sooner. TT audit fix #1 (shrink to a 16-bit key → 10-byte slot →
 careful impl + retune-on-branch). Quadratic-age (#3) deprioritized given
 the policy axis read neutral here. See docs net_catalog / the TT audit
 synthesis 2026-06-13.
+
+## 2026-06-14 — #1980 H0 +0.2: prod tune #1977 NEUTRAL at LTC too — DROPPED (not merged)
+
+experiment/tune-1977-ltc-applied LTC 40+0.4 Hash=256 [0,3]: H0 +0.2 +-1.1
+(104k games). With #1981 (STC) H0 -0.4, the #1977 prod core retune is
+NEUTRAL both regimes — recovered essentially nothing, unlike #1915 (+7.2
+LTC). Mechanism: the trunk was already well-calibrated; little tune-flation
+had accumulated since #1915, so there was nothing to recover. The "~+50 Elo
+of audit-wave merges need a retune" prior did NOT hold here — the
+audit-wave changes were mostly correctness/policy fixes that didn't shift
+the pruning-economics optimum. DECISION: do NOT merge #1977; trunk stays as
+is. Branch experiment/tune-1977-ltc-applied unmerged. Lesson: a prod retune
+only pays when real tune-flation has accumulated (structural pruning-shape
+changes); a wave of correctness fixes alone doesn't necessarily move the
+SPSA optimum. Next prod tune: wait for a structural pruning change, not just
+merged-Elo count.
