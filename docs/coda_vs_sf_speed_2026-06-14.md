@@ -8,7 +8,39 @@ this is pure implementation efficiency, fully recoverable without touching eval
 quality. Mechanism: Coda runs higher IPC (1.52 vs 1.37) and less memory/node
 (102 vs 115 B) yet lower NPS → **more instructions per node**.
 
-Comparative source review (read-only, 2 agents). Targets ordered by leverage.
+**EMPIRICAL PROFILE (perf, single-thread, Hercules AVX2, `bench 14` / SF `bench`,
+2026-06-14) — this supersedes the source-review guesses below.** SF is faster
+on THIS AVX2 box, so the gap is NOT an AVX-512 story. Flat self-cycles:
+
+| area | **Coda** | **Stockfish** |
+|---|---|---|
+| **Threat accumulator** | **~31%** (ThreatStack::update 23.4, push_threats 6.3, refresh 1.7) | **~5.5%** (update_piece_threats 2.8, FullThreats::apply 1.5, swap_piece 1.2) |
+| NNUE FT + L1/L2/out | ~25% (fwd_l1_pairwise 12.3, simd_acc_fused 9.2, finny 1.8, corrected_eval 1.4) | folded into `evaluate` 35.7 (incl. its threats) |
+| Search + movepick | ~20% (negamax 12.1, next_slow 6.1, pick_best 2.0) | ~27% (search 14, next_move 10, qsearch 2.7) |
+| movegen/make/legal | ~5% (make_move 1.9, is_legal 1.7, gen_captures 1.1) | do_move 4.9 |
+
+**THE GAP IS THE THREAT ACCUMULATOR: Coda ~31% vs SF ~5.5% (~25 points, ~most
+of the 44% speed gap).** `threat_accum::ThreatStack::update` (23.4%) is Coda's
+single hottest function. Annotation of `update` (apply_threat_deltas inlined):
+~37% is the SIMD weight-apply (`vpmovsxbw` i8→i16 + streaming threat rows,
+mod.rs:547), ~10% is the `threat_index` 48KB-`attack_index`-table chase
+(threats.rs:509-510). SF maintains threats cheaply: builds the DirtyThreats
+list incrementally inside `do_move` (`update_piece_threats`/`swap_piece`) and
+applies once (`FullThreats::apply` 1.5%) — no replay, indices computed once.
+
+**REVISED top target: make Coda's threat accumulator ~SF-cheap.** Candidates,
+in order: (1) **threat-index precompute at delta-gen** (kill the ~10% table
+chase, agent item E — was underranked); (2) **understand why Coda's apply is
+~5x SF's** — likely Coda's replay-from-ancestor walks many plies vs SF's eager
+per-`do_move` incremental, OR more active deltas/node; (3) the i8→i16 apply
+cost. The L1-sparse and movegen-cache theories are BOTH refuted by this profile
+(movegen ~5%, L1 a fraction of the 12% forward). This also re-confirms the
+contention finding (threat_accum::update was #1 there too) — the threat
+accumulator is Coda's central inefficiency vs SF, for both cycles AND bandwidth.
+
+---
+Comparative source review (read-only, 2 agents) — PARTLY SUPERSEDED by the
+profile above (it over-weighted movegen/check-info, which is only ~5%).
 SF source: `/home/adam/chess/engines/Stockfish/src`.
 
 ## Bit-identical wins (pure speed, no Elo risk — non-regression SPRT only)
