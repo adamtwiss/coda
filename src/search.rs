@@ -119,6 +119,14 @@ tunables!(
     // -> STC-neutral; relaxes deep RFP at LTC. SPSA tunes both.
     (RFP_ROOT_THRESH, 16, 6, 30, 1.5, true),
     (RFP_ROOT_COEF, 33, 0, 150, 7.5, true),
+    // Additional depth-local RFP relaxation: current main already scales RFP
+    // by overall root depth; this term raises the margin for high remaining
+    // depth regardless of TC. Consensus engines either cap RFP around d9-11
+    // or use a quadratic/deepening margin so static eval does not keep
+    // cheaply pruning d12+ nodes.
+    (RFP_DEEP_KNEE, 8, 4, 17, 2.0, true),
+    (RFP_DEEP_LINEAR, 64, 0, 200, 10.0, true),
+    (RFP_DEEP_QUAD, 12, 0, 80, 5.0, true),
     // Razoring (re-added 2026-06-11, audit T2.6). Consensus band:
     // Obsidian 352/d<=5, Berserk 214/d<=5, Clover 145/d<=2, Integral
     // 393/d<=4, Stormphrax ~290/d<=4.
@@ -3402,6 +3410,11 @@ fn negamax(
             // depth and how deep the overall search is, so deep RFP at LTC
             // demands much more confidence. One formula, one tunable set.
             margin += (depth * (info.root_depth - tp(&RFP_ROOT_THRESH)).max(0) * tp(&RFP_ROOT_COEF)) / 100;
+            let deep_extra = (depth - tp(&RFP_DEEP_KNEE)).max(0);
+            if deep_extra > 0 {
+                margin += deep_extra * tp(&RFP_DEEP_LINEAR)
+                    + deep_extra * deep_extra * tp(&RFP_DEEP_QUAD);
+            }
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
             // E2: widen margin when position is unstable (parent-child eval gap
