@@ -15547,3 +15547,19 @@ retune-on-net before it shows its edge vs a prod-tuned trunk. Path to a
 prod upgrade: s5-swa (stronger, +1600 SB) + focused retune-on-net, then
 SPRT vs prod; LTC check banks deployment (NPS tax ~vanishes). Cross-ref
 [[feedback_capacity_increases_need_information_increases]].
+
+## 2026-06-14 — #1984 H0 +0.2: TT bound/PV eviction bonus — neutral (entry-size is the real lever)
+
+fix/tt-bound-eviction-bonus (Viri-style +3/+2/+1 bound + PV bonus in the
+eviction score, so EXACT/PV entries survive a full bucket) vs main,
+[0,3] STC Hash=64 (the pressure regime): H0 +0.2 +-1.0 at 108k games.
+So the eviction-POLICY tweak alone is ~neutral for Coda. Together with
+the audit this localizes the hash-pressure weakness to the **entry SIZE**,
+not the replacement policy: we pack 12 bytes/slot vs every peer's 10
+(32-bit XOR key vs their 16-bit), so ~22% fewer positions fit and we
+thrash sooner. TT audit fix #1 (shrink to a 16-bit key → 10-byte slot →
+6 slots/64B line, +20% positions) is the high-value follow-up — structural
+(collision rate, lockless torn-read detection, node counts change → needs
+careful impl + retune-on-branch). Quadratic-age (#3) deprioritized given
+the policy axis read neutral here. See docs net_catalog / the TT audit
+synthesis 2026-06-13.
