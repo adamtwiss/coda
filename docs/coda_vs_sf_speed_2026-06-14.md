@@ -28,7 +28,29 @@ mod.rs:547), ~10% is the `threat_index` 48KB-`attack_index`-table chase
 list incrementally inside `do_move` (`update_piece_threats`/`swap_piece`) and
 applies once (`FullThreats::apply` 1.5%) — no replay, indices computed once.
 
-**REVISED top target: make Coda's threat accumulator ~SF-cheap.** Candidates,
+**ROOT CAUSE — X-RAY THREATS (Coda does them, SF/Reckless do NOT).** Replay
+depth is ~1.24 plies/update (4.4% refresh) → NOT a replay problem; cost is
+per-node single-ply apply of ~10 deltas (profile-threats: apply avg 9.98
+deltas/call, max 78). The threat-GENERATION breakdown (profile-threats):
+- direct (step 1): 492 Mcy, 1.55 d/call, 28% zero-emit
+- **own-xray (1b): 420 Mcy, 0.43 d/call, 72.8% zero-emit**
+- sliders (2): 788 Mcy, 0.83 d/call, 50% zero-emit
+- **slider-xray (2b): 434 Mcy, 0.37 d/call, 77.8% zero-emit**
+- nonsliders (3): 268 Mcy, 0.56 d/call, 58% zero-emit
+
+**The two X-ray steps are ~854 Mcy = ~36% of threat-generation cycles, 73-78%
+WASTED (zero-emit)** — plus X-ray deltas inflate the ~10/node the apply streams.
+SF/Reckless skip X-ray entirely → that's the bulk of why their threats cost
+~5.5% vs Coda's ~31%. **The "+100 Elo X-ray" prior is SUSPECT: the +110 (H1
+2026-04-17, project_xray_bug_fix) was a BUG FIX of broken X-ray, NOT a clean
+"X-ray vs no-X-ray" A/B — that comparison may never have been run.** Revalidate:
+(1) quick — ablate X-ray enumeration (env flag), measure NPS upside (profile
+implies ~15-20% of total, ~30-50 STC Elo of speed at 135/doubling); (2) real —
+RETRAIN a no-X-ray net (current net learned X-ray, so inference-disable = garbage
+eval) + SPRT for the eval cost. If X-ray eval value < its NPS cost, dropping it
+is a large net win AND closes most of the SF threat gap.
+
+**Other threat target: make Coda's threat accumulator ~SF-cheap.** Candidates,
 in order: (1) **threat-index precompute at delta-gen** (kill the ~10% table
 chase, agent item E — was underranked); (2) **understand why Coda's apply is
 ~5x SF's** — likely Coda's replay-from-ancestor walks many plies vs SF's eager
