@@ -15676,3 +15676,34 @@ effect SPRT can't reward, AND it's not cheaply closable via prefetch layout.
 Prefetch thread CLOSED. Branches unmerged. Near-term Elo remains in
 search/depth (eval-quality study), not memory-layout micro-opts. See
 [[project_coda_bandwidth_starvation_under_concurrency]].
+
+## 2026-06-14 — Root-depth single-tunable-set architecture MERGED (#1987 +0.8, #1991 +1.6 STC); rebalance #1999 in flight
+
+Landed the **single-tunable-set, root-depth-aware** pruning architecture (Adam
+directive 2026-06-13: "one set of tunables not two; if things are better at
+higher depth, have formulas that adjust"). `info.root_depth` (current ID
+iteration target depth) is threaded to every node so depth-dependent formulas
+self-adapt STC<->LTC instead of needing a separate LTC-override constant set.
+
+- **`atlas/rfp-rootdepth-formula` MERGED** (#1987 STC [-2,1] **H1 +0.8**). RFP
+  margin gains `+= depth*(root_depth-RFP_ROOT_THRESH).max(0)*RFP_ROOT_COEF/100`
+  (THRESH=16, COEF=33). Inactive <=depth 16 => STC-neutral by construction;
+  relaxes RFP deep (where it was the lone structural over-pruner — see
+  ltc_audit_2026-06-13 S1). Bench 2325223 (d12-inactive, unchanged).
+- **`atlas/lmr-rootdepth-formula` MERGED** (#1991 STC [-2,1] **H1 +1.6**). LMR
+  reduction relaxes by `(root_depth-LMR_ROOT_THRESH).max(0)*LMR_ROOT_COEF/100`
+  deep (THRESH=16, COEF=10). Same d12-inactive / STC-neutral construction.
+- Both LTC [0,3] arms (#1986 +0.7, #1990 +0.3) did NOT lock — the [0,3]-stall
+  (true effect below H1=3 wanders near LLR 0 forever, #1986 ran 90k games).
+  The STC [-2,1] arms are the real verdict: neutral-positive + structural DOF.
+- Merged main bench **2325223**, 0 warnings (1d18bce).
+
+**Retune-on-branch (rebalancing gain):** SPSA #1989 (LTC 40+0.4, Hash=256,
+1500 iters, 11-param adjacent cluster on the RFP root-depth branch) converged —
+the feature's OWN params held (RFP_ROOT_THRESH/COEF unmoved = well-calibrated)
+while the adjacent cluster reshaped: NMP_MIN_DEPTH 25->30, NMP_BASE_R 78->75,
+NMP_EVAL_DIV 124->119, FUT_PER_DEPTH 89->91, LMP_BASE 6->4. Net = NMP less
+aggressive + LMP more aggressive (+15% bench tree, 2680016). Coherent: deep RFP
+relaxed -> optimum shifts prune-work NMP->LMP. **`atlas/rfp-rootdepth-rebalance`
+#1999 running** (STC [-2,1]) to capture the rebalancing gain on top of the
+merged feature. (LTC [0,3] avoided — would stall like #1986.)
