@@ -3329,10 +3329,15 @@ impl NNUENet {
                 // Replaces the row-major path that scanned the full input per
                 // output neuron (16× cache-line touches per input chunk).
                 //
-                // Dense variant (no zero-check): pairwise-CReLU inputs have high
-                // density (~89%), so the if-check overhead in the sparse variant
-                // exceeded the skip savings at L1=16. The dense path is
-                // straight-line SIMD with input-chunk-major weight access.
+                // Dense variant (no zero-check). The old "~89% density"
+                // rationale was stale: re-measured 2026-06-14, the pairwise
+                // input is ~58% nonzero (L1=16) / ~60% (L1=32). But dense still
+                // wins — a proper SF-style branch-free find_nnz+list kernel was
+                // benched 1.8-2.4x SLOWER than dense at EVERY density. L1 is too
+                // small (16-32 neurons): find_nnz detection cost dominates and
+                // the matmul savings (~40% of a tiny per-chunk op) can't cover
+                // it. Dense straight-line SIMD over input-chunk-major weights is
+                // correct here. See docs/coda_vs_sf_speed_2026-06-14.md.
                 unsafe {
                     crate::sparse_l1::dense_l1_avx2(
                         stm_pw, ntm_pw, pw, &self.l1_weights_sparse,

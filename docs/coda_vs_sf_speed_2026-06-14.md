@@ -13,7 +13,14 @@ SF source: `/home/adam/chess/engines/Stockfish/src`.
 
 ## Bit-identical wins (pure speed, no Elo risk — non-regression SPRT only)
 
-### A. L1 fc_0 sparse-input — LIVE WIN, was dismissed on STALE density data (MEASURED 2026-06-14)
+### A. L1 fc_0 sparse-input — TESTED AND DEAD (dense is correct, 2026-06-14)
+- **FINAL VERDICT (microbench, proper SF-style branch-free kernel): sparse LOSES at every density.** Built a vectorized `find_nnz` (cmpeq+movemask+LUT) → compact list → straight-line matmul (bit-identical to scalar, asserted). Result vs dense, PW=512: L1=16 @40% **1.79x slower**, @58% (real) **2.37x slower**; L1=32 @40% **1.83x**, @58% **1.95x**. The inline-branch `sparse_l1_avx2` was even worse (and is L1=16-only — panics at 32).
+- **Why: Coda's L1 is too small (16-32 neurons).** list-sparse time is ~CONSTANT across density (~900ns L1=16 regardless of 40%/100%) → `find_nnz` *detection* dominates and the matmul *savings* are tiny (~144ns of skippable work at 40%). Detection cost > skip savings because each chunk's matmul is only 2-4 YMM ops. The dense decision was RIGHT all along (its 89% rationale was stale, but the conclusion holds at the real 58%).
+- **Kills the sparsity-training lever for THIS target too:** `find_nnz` cost is density-INDEPENDENT, so more activation sparsity can't rescue it (list-sparse ~900ns at any density). Sparsity-training only helps if detection is ~free, which it isn't at this layer width.
+- **Sliver (not worth chasing):** a maximally-optimized find_nnz (mine likely has 4KB-LUT cache misses; SF's is more tuned) *might* squeak L1=16/40% marginally — but it's marginal vs the much larger movegen/check-info wins. SF's sparse-input is likely near-neutral for SF too; its speed comes from the movegen/state-caching side.
+- Method preserved: re-run via the `bench_l1_kernels` ignored test (set DENSITY sweep + add list kernel); reverted from main to keep it clean.
+
+### (historical) the density re-measurement that motivated the test:
 - **The dense-over-sparse decision was wrong-data.** Comment `nnue.rs:3332-3335` justified `DenseAvx2` with "pairwise-CReLU inputs have high density (~89%)." **Re-measured live (env `CODA_L1_DENSITY`, bench corpus): the input is ~58-60% nonzero → ~40% SKIPPABLE, not ~11%.** L1=16 prod 58.1% nonzero (41.9% skip); L1=32 multi-v6-l132-s5-swa 59.8% nonzero (40.2% skip). The 89% was stale.
 - **SF is pairwise too (verified, NOT raw CReLU).** SF `transform()` (`nnue_feature_transformer.h:364-367`) does `vec_mulhi_16(sum0,sum1)` = pairwise multiply of the two accumulator halves (comment: "pairwise multiplication"); `sfnnv13_architecture_review_2026-05-23.md` is correct. So **pairwise does NOT preclude sparse** — SF runs pairwise + sparse-input + FT=1024 (fc_0 1024->31, ~= our L1=32) and wins. The earlier "SF wider" and "pairwise densifies → kills sparse" claims were BOTH wrong (inferred, not measured).
 - **Why Coda's old test lost:** it skipped only ~11% (per the wrong 89%) AND Coda's `find_nnz_chunks4` is SCALAR (read u32 + branch per chunk) vs SF's vectorized cmpgt+movemask+256-LUT. At the real ~40% skip + a vectorized find_nnz, Coda is in SF's exact regime.
@@ -62,12 +69,12 @@ SF source: `/home/adam/chess/engines/Stockfish/src`.
 - Pairwise pack (`simd_pairwise_pack_impl`) ≈ SF `transform()`.
 - `is_pseudo_legal` weight ≈ SF `pseudo_legal`, same frequency (TT move only).
 
-## Recommended sequencing (REVISED 2026-06-14 after measuring density — A is back on top)
-1. **A (L1 sparse-input)** — ~40% of the largest matmul skippable (measured, both L1=16/32), dismissed only on stale 89% data. Vectorize `find_nnz` + select sparse + measure NPS. Bit-identical, highest single-kernel leverage, doesn't need pairwise dropped.
-2. **B+C (check-info cache)** — biggest verified movegen-side prize (recompute checkers/pinned/check-squares every node); large refactor but bit-identical.
-3. **D (direct-write movegen) + F (fixed undo stack)** — localized bit-identical wins, bank them.
-4. **E (threat index precompute)** — medium bit-identical.
-5. **G/H** — behavior-affecting / structural, SPRT-gated. Note: "drop pairwise" is a SEPARATE untested eval question (we copied Reckless's pairwise; never measured vs plain CReLU) — SF keeps pairwise, so it's not required for A.
+## Recommended sequencing (REVISED 2026-06-14 — A tested DEAD, movegen-side is the thread)
+1. **B+C (check-info cache)** — biggest verified win: recompute checkers/pinned/check-squares every node vs SF's once-in-do_move `set_check_info`. Large refactor, bit-identical. This is the real movegen/search-overhead slice of the 44% gap.
+2. **D (direct-write movegen) + F (fixed undo stack)** — localized bit-identical wins, bank them.
+3. **E (threat index precompute)** — medium bit-identical.
+4. ~~A (L1 sparse-input)~~ — TESTED DEAD (loses 1.8-2.4x at all densities; L1 too small for skip-detection to pay). Dense is correct.
+5. **G/H** — behavior-affecting / structural, SPRT-gated. "Drop pairwise" is a SEPARATE untested eval question (copied Reckless; never measured vs plain CReLU) — but NOT a speed lever (SF is pairwise and fast).
 
 **Process note:** A's already-rejected status (in-code comment) was missed by the
 agent review and caught by manual verification. Verify each remaining target the
