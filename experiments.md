@@ -15707,3 +15707,21 @@ aggressive + LMP more aggressive (+15% bench tree, 2680016). Coherent: deep RFP
 relaxed -> optimum shifts prune-work NMP->LMP. **`atlas/rfp-rootdepth-rebalance`
 #1999 running** (STC [-2,1]) to capture the rebalancing gain on top of the
 merged feature. (LTC [0,3] avoided — would stall like #1986.)
+
+## 2026-06-14 — #1999 H0 -1.0: RFP-rebalance tune #1989 does NOT convert (param-shading exhausted)
+
+The retune-on-branch (#1989, LTC cluster: NMP_MIN_DEPTH 25->30, NMP_BASE_R
+78->75, NMP_EVAL_DIV 124->119, FUT_PER_DEPTH 89->91, LMP_BASE 6->4) applied
+onto the merged root-depth RFP feature SPRT'd **H0 -1.0 +-1.2** at STC [-2,1]
+(#1999, 87k games, LLR -2.96). The adjacent-cluster movement looked like a
+rebalancing-gain signature but did NOT translate to Elo — a mild regression.
+Branch `atlas/rfp-rootdepth-rebalance` DROPPED, not merged.
+
+Reinforces the #1977 lesson (full LTC retune also neutral/dropped): **re-shading
+existing pruning tunables is exhausted at current convergence.** The remaining
+over-pruning Elo is not reachable by SPSA on the existing DOFs — it needs new
+STRUCTURAL gates on context signals the pruners currently ignore (see the
+RFP threat-count finding, #2000: RFP null-FP rate 32%@0t -> 63%@3+, gated by
+any_threat_count which RFP previously ignored). Corrhist/eval-reliability
+tested as an RFP separator and REFUTED (flat 43% across |correction|, and
+corrections are tiny at RFP nodes) — threat-context is the live signal.
