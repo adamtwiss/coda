@@ -37,9 +37,9 @@ cargo test            # Run all tests including perft
 
 ./coda bench [depth]                  # Search benchmark, 48 positions @ default depth 12 — use THIS for OB
 ./coda                                # UCI mode
-./coda -nnue net.nnue                 # UCI with explicit NNUE
-./coda -nnue net.nnue -book book.bin  # ... + opening book
-./coda epd wac.epd 1000 0 -nnue net.nnue
+./coda --nnue net.nnue                # UCI with explicit NNUE (-n is the short form; -nnue single-dash is INVALID)
+./coda --nnue net.nnue --book book.bin  # ... + opening book
+./coda epd wac.epd --nnue net.nnue -t 1000    # epd: -t <ms/pos>, -m <max>, -n/--nnue <net>
 ./coda perft [depth] [fen...]
 ./coda perft-bench                    # 6-position perft suite
 ./coda datagen [options]              # Self-play / material-removal data
@@ -278,10 +278,10 @@ coda convert-bullet -input quantised.bin -output net.nnue -screlu -hidden 16 -hi
 Coda can generate supplementary training data (material-imbalance positions, self-play with blunders):
 ```bash
 # Material removal: remove pieces from EPD positions, deep-search each
-coda datagen -nnue net.nnue -epd positions.epd -depth 10 -threads 32 -output material.binpack
+coda datagen --nnue net.nnue --epd positions.epd --depth 10 --threads 32 --output material.binpack
 
 # Self-play with blunders
-coda datagen -nnue net.nnue -games 50000 -depth 8 -threads 32 -blunder 0.1 -output selfplay.binpack
+coda datagen --nnue net.nnue --games 50000 --depth 8 --threads 32 --blunder 0.1 --output selfplay.binpack
 ```
 
 Output is SF BINP binpack format, directly usable by Bullet.
