@@ -15637,3 +15637,42 @@ contention-stall gap closed on the FT path alone. Bit-identical, bench 2325223.
 If H1, next targets are the threat full-refresh (add_weight_rows) and
 finny_batch_apply paths with rolling-distance prefetch (many rows -> can't
 front-load all). NEON path left unchanged (x86 is the OB/deployment target).
+
+## 2026-06-14 — NNUE prefetch thread CLOSED negative: mechanism real, lever doesn't convert
+
+Followed the MLP/latency mechanism finding with a full prefetch ladder, all
+bit-identical (bench 2325223), all [-2,1] STC vs main. Hercules (the
+memory-bound worker where the effect is strongest) was confirmed back in the
+pool for these. Results:
+
+| # | what | where | locality | rows | verdict |
+|---|------|-------|----------|------|---------|
+| 1994 | FT accum | apply-time (kernel) | T0 | all (1-3) | ~neutral -0.2 ->H1 |
+| 1992 | threat | apply-time (kernel) | T0 | all | **H0 -2.4** |
+| 1995 | threat | apply-time (kernel) | T2 | all | H0-trend -3.7 |
+| 1998 | threat | **make_move (lead time)** | T2 | all | **H0 -8.6 (worst)** |
+
+**Conclusions:**
+- **The FT-side prefetch is neutral** (few rows, small localized active bucket
+  — not where the contention bandwidth hurts; SF doesn't prefetch FT either).
+- **Every threat-side prefetch REGRESSES**, monotonically worse as it gets more
+  aggressive/earlier. The threat path touches many rows (up to ~16 deltas x 2
+  POV), so prefetching all of them = real index-computation + instruction
+  overhead per node.
+- **Early (make_move-time) prefetch is the WORST** (-8.6), directly answering
+  "can we prefetch early enough?": yes, but it fights the **lazy accumulator** —
+  computing threat indices for EVERY child at make_move (incl. the majority
+  pruned before eval) is exactly the wasted work lazy materialization exists to
+  avoid. SF gets enumerate-time lead time for free because its update structure
+  differs; porting the *timing* without the lazy-conflict makes it net-negative.
+- **T0 vs T2 (L1 pollution) is a second-order effect** next to the
+  overhead/lead-time axis — both lose on the threat side.
+
+**Meta:** the contention/MLP mechanism is REAL (conc=16 L3-stall 33.5% vs SF
+28.3%, FT-prefetch dropped it to 29.8% locally), but it **does not convert to
+OB STC Elo** and the threat-side fixes carry overhead that hurts. The Coda<->SF
+contention-retention gap (0.268 vs 0.334) is a genuine deployment-condition
+effect SPRT can't reward, AND it's not cheaply closable via prefetch layout.
+Prefetch thread CLOSED. Branches unmerged. Near-term Elo remains in
+search/depth (eval-quality study), not memory-layout micro-opts. See
+[[project_coda_bandwidth_starvation_under_concurrency]].
