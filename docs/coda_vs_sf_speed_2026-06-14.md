@@ -13,11 +13,11 @@ SF source: `/home/adam/chess/engines/Stockfish/src`.
 
 ## Bit-identical wins (pure speed, no Elo risk — non-regression SPRT only)
 
-### A. L1 fc_0 matmul: Coda runs DENSE, SF runs sparse-input (nnz-skipping) — top eval target
-- Coda's production AVX2 L1 kernel is `DenseAvx2` (`nnue.rs:2464` select, `sparse_l1.rs:324`): processes ALL `pw/4` input chunks every eval (~256 chunks). The kernel file is *named* sparse but the dense arm is selected (comment `nnue.rs:3332` removed the zero-check citing ~89% density).
-- SF (`layers/affine_transform_sparse_input.h`): builds a nonzero-block index list (`find_nnz`: cmpgt+movemask + 256-entry offset LUT) and multiplies only weight columns for nonzero input blocks. The 1024→32 fc_0 is the largest matmul, every node.
-- **Coda already HAS `sparse_l1_avx2` (`sparse_l1.rs:134`) and the input-chunk-major weight layout** — it just isn't selected. Missing piece: the `find_nnz` pre-pass + flip the selection. Bit-identical (skipping zero inputs doesn't change the dot product). Medium effort, **highest eval-side leverage**.
-- Also closes a VNNI/AVX-512 gap on the rest of the fleet (SF's VNNI L1 is sparse + 3-chain; Coda's VNNI arms are dense).
+### A. L1 fc_0 sparse-input — ALREADY TESTED AND REJECTED at L1=16 (NOT a free win)
+- **VERIFIED 2026-06-14 (corrects the initial agent finding):** Coda's `L1Kernel::DenseAvx2` is a *deliberate* choice, not an oversight. Comment `nnue.rs:3332-3335`: "Dense variant (no zero-check): pairwise-CReLU inputs have high density (~89%), so the if-check overhead in the sparse variant exceeded the skip savings at L1=16." Coda HAS `sparse_l1_avx2` (`sparse_l1.rs:134`) + `find_nnz_chunks4` (`sparse_l1.rs:61`) and tested them — dense won empirically.
+- Why SF's sparse wins but Coda's doesn't: (1) SF's L1 is WIDER → skipping a chunk saves more weight-work; at Coda's L1=16 each chunk is only 16 neurons×4B, so the ~11% skip is tiny. (2) SF's `find_nnz` is vectorized (cmpgt+movemask+256-LUT); **Coda's `find_nnz_chunks4` is a SCALAR loop** (read u32, branch, store) — detection overhead alone likely exceeds the L1=16 savings.
+- **Two LIVE angles remain (secondary, not free):** (a) vectorize Coda's `find_nnz` SF-style and re-measure — cheaper detection might tip the balance even at L1=16; (b) it may pay off for the **L1=32 nets currently in training** (wider L1 → bigger per-chunk savings → sparse calculus flips). For the current L1=16 prod net, sparse is a settled loss — do NOT re-litigate without one of these two changes.
+- **Lesson: agent source-reviews can miss explanatory history — verify each "gap" against in-code comments/git before implementing.**
 
 ### B. Incremental check/pin/check-square cache (SF StateInfo) — biggest movegen-side sink
 - Coda recomputes `checkers()` + `pinned()` (each = 2 slider magics + leapers, `board.rs:664/692`) and the movepicker's `checking_sqs` (`movepicker.rs:562`) **from scratch every node** (`search.rs:3145-3146`, QS `4751`).
@@ -60,12 +60,17 @@ SF source: `/home/adam/chess/engines/Stockfish/src`.
 - Pairwise pack (`simd_pairwise_pack_impl`) ≈ SF `transform()`.
 - `is_pseudo_legal` weight ≈ SF `pseudo_legal`, same frequency (TT move only).
 
-## Recommended sequencing
-1. **A (L1 sparse kernel)** — highest eval leverage, bit-identical, Coda already has the kernel+layout. Start here.
-2. **D (direct-write movegen) + F (fixed undo stack)** — localized bit-identical wins, bank them.
-3. **B+C (check-info cache)** — biggest movegen-side prize but large refactor; do after the cheap wins prove the thread.
-4. **E (threat index precompute)** — medium bit-identical.
+## Recommended sequencing (REVISED after verifying A is already-rejected)
+1. **D (direct-write movegen) + F (fixed undo stack)** — localized bit-identical wins, no prior-rejection history, bank them first.
+2. **B+C (check-info cache)** — biggest verified movegen-side prize (recompute checkers/pinned/check-squares every node); large refactor but bit-identical. The single highest-leverage *open* target.
+3. **E (threat index precompute)** — medium bit-identical.
+4. **A (L1 sparse)** — only via vectorized find_nnz re-measure OR the L1=32 nets; settled loss at L1=16 otherwise.
 5. **G/H** — behavior-affecting / structural, SPRT-gated, later.
+
+**Process note:** A's already-rejected status (in-code comment) was missed by the
+agent review and caught by manual verification. Verify each remaining target the
+same way (search comments + git log) before implementing — the agents surface
+candidates, not vetted work.
 
 Bit-identical changes need only a bench-speed check + non-regression SPRT `[-2,1]`
 (they can't lose Elo except via a bug; the win is NPS that converts at ~130-140
