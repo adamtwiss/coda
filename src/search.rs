@@ -152,6 +152,13 @@ tunables!(
     // Bisecting 9 → 5 first.
     (LMP_BASE, 6, 1, 15, 2.0, true),
     (LMP_DEPTH, 8, 4, 20, 2.0, true),
+    // Root-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
+    // reduce LESS as the OVERALL search depth grows past LMR_ROOT_THRESH
+    // (diminishing returns — at LTC the reduced re-search is cheap vs the
+    // budget and a wrong reduction costs more). Inactive at STC by
+    // construction -> STC-neutral. SPSA tunes both.
+    (LMR_ROOT_THRESH, 16, 6, 30, 1.5, true),
+    (LMR_ROOT_COEF, 10, 0, 80, 4.0, true),
     (BAD_NOISY_MARGIN, 73, 30, 150, 6.0, true),
     (PROBCUT_MARGIN, 117, 80, 300, 11.0, true),
     (HINDSIGHT_THRESH, 179, 50, 400, 17.5, true),
@@ -746,6 +753,9 @@ pub struct SearchInfo {
     /// Per-depth cumulative node counts (for EBF calculation in bench)
     pub depth_nodes: [u64; MAX_PLY + 1],
     pub completed_depth: i32,
+    /// Current ID iteration's target (root) depth — global search-depth signal
+    /// visible at every node so formulas self-adapt STC<->LTC (one tunable set).
+    pub root_depth: i32,
     /// Triangular PV table
     pub pv_table: [[Move; MAX_PLY + 1]; MAX_PLY + 1],
     pub pv_len: [usize; MAX_PLY + 1],
@@ -826,6 +836,7 @@ impl SearchInfo {
             root_stm: WHITE,
             depth_nodes: [0; MAX_PLY + 1],
             completed_depth: 0,
+            root_depth: 0,
             static_evals: [0; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
@@ -1842,6 +1853,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     let mut prev_score = 0i32;
     for depth in 1..=effective_max {
         if info.stop.load(Ordering::Relaxed) { break; }
+        info.root_depth = depth;
 
         let score;
 
@@ -2102,6 +2114,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
     for depth in 1..=effective_max {
         if info.should_stop() { break; }
+        info.root_depth = depth;
         // Ponderhit check: stop between iterations (not mid-search) to avoid
         // partial TT entries and PV inconsistency. The engine completes the
         // current iteration fully before stopping, producing clean state.
@@ -4183,6 +4196,15 @@ fn negamax(
                     }
                 }
             }
+        }
+
+        // Root-depth-aware LMR relaxation: reduce LESS when the overall
+        // search is deep. Zero at STC (root_depth <= thresh); grows with how
+        // deep the search reaches, so late moves at LTC are searched closer
+        // to full depth. One formula, one tunable set (Adam directive).
+        if reduction > 0 {
+            reduction -= ((info.root_depth - tp(&LMR_ROOT_THRESH)).max(0) * tp(&LMR_ROOT_COEF)) / 100;
+            if reduction < 0 { reduction = 0; }
         }
 
         // Store reduction for child's hindsight gating
