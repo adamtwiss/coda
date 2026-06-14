@@ -160,6 +160,13 @@ tunables!(
     // Bisecting 9 → 5 first.
     (LMP_BASE, 6, 1, 15, 2.0, true),
     (LMP_DEPTH, 8, 4, 20, 2.0, true),
+    // Root-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
+    // reduce LESS as the OVERALL search depth grows past LMR_ROOT_THRESH
+    // (diminishing returns — at LTC the reduced re-search is cheap vs the
+    // budget and a wrong reduction costs more). Inactive at STC by
+    // construction -> STC-neutral. SPSA tunes both.
+    (LMR_ROOT_THRESH, 16, 6, 30, 1.5, true),
+    (LMR_ROOT_COEF, 10, 0, 80, 4.0, true),
     (BAD_NOISY_MARGIN, 73, 30, 150, 6.0, true),
     (PROBCUT_MARGIN, 117, 80, 300, 11.0, true),
     (HINDSIGHT_THRESH, 179, 50, 400, 17.5, true),
@@ -4205,6 +4212,15 @@ fn negamax(
                     }
                 }
             }
+        }
+
+        // Root-depth-aware LMR relaxation: reduce LESS when the overall
+        // search is deep. Zero at STC (root_depth <= thresh); grows with how
+        // deep the search reaches, so late moves at LTC are searched closer
+        // to full depth. One formula, one tunable set (Adam directive).
+        if reduction > 0 {
+            reduction -= ((info.root_depth - tp(&LMR_ROOT_THRESH)).max(0) * tp(&LMR_ROOT_COEF)) / 100;
+            if reduction < 0 { reduction = 0; }
         }
 
         // Store reduction for child's hindsight gating
