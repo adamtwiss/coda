@@ -171,7 +171,28 @@ NOT micro-opts.
 - FT/L1/L2 forward, search, movegen — roughly comparable to SF per the profile,
   but the non-threat slice is where remaining bit-identical wins would live.
 
-## 7. Cross-ply cancellation (`double_inc_update`) — REOPENED, real lever
+## 7. Cross-ply cancellation (`double_inc_update`) — IMPLEMENTED, then DROPPED (net-negative on fleet)
+
+**Outcome (the headline):** implemented as `recapture-combine`
+(`experiment/recapture-combine`, branch parked) and SPRT'd as **#2015**. Despite
+measuring **+0.5% single / +2.1% 16×-contended on Hercules**, it SPRT'd
+**net-negative (~−2.9 ±2.5, converging H0 at ~21k games)**. DROPPED.
+- **Why (the lesson): Hercules is the fleet's memory-bound outlier, so its NPS
+  bench OVER-states bandwidth-saving opts.** The combine trades compute
+  (sort/cancel) + cache (skipping intermediate materializations → siblings
+  replay further back) for memory bandwidth. Memory-bound Hercules → win;
+  non-memory-bound fleet majority → the compute+caching costs dominate →
+  net-negative. See `memory/feedback_hercules_bench_overstates_bandwidth_opts.md`.
+- The cross-ply lever (~8.8% of streamed rows) is **real but not cheaply
+  capturable** — cancellation requires combining/skipping the middle ply, which
+  costs sibling cache hits (structural tension), and it'd only pay on
+  memory-bound hosts (deployment Zen5 is not one). My `move_to`-equality gate
+  also skipped MORE intermediates than SF's narrow `threateningSqs` condition.
+- **Process note:** I prematurely called it "net-negative/dropped" at N=4420
+  (LLR −0.85, unresolved); Adam resumed it for more games — the early −4.7 was
+  pessimistic noise; it settled to ~−2.9. Don't conclude from an unresolved SPRT.
+
+The original measurement/design (still useful background) follows.
 
 Precise measurement (gap>=2 replay spans, net-zero add/sub over the combined span):
 - **28.96% cancellable** over gap>=2 spans (vs 3.80% per-ply).
@@ -209,9 +230,51 @@ incoming-slider-attack features *from the victim side*.
   direct attacks ENTIRELY (step 1 + step 2, engine + Bullet) — big, likely very
   negative. Not a quick test. **S200 train NOT launched.**
 
-### TODO
-- Implement the `double_inc_update` capture+recapture port (§7) — the priority.
-- Instrument Reckless's apply to confirm Coda inherited its density.
+## 9. L1=32 VNNI kernel gap (compute, not bandwidth — still LIVE)
+
+A *compute* speed lever (not subject to §7's Hercules-mirage caveat). The fused
+int8 dot is `VPDPBUSD` (1 instr vs AVX2's 2). Dispatch (`select_l1_kernel`,
+nnue.rs:2452-2456):
+- **Prod L1=16:** column-major `DenseAvx512Vnni` — optimal, input loaded once
+  per chunk. On the Zen5 deploy box (Ryzen 9700X) we already run this. No gap.
+- **L1=32:** falls back to **row-major** `RowMajorAvx512Vnni` (per-neuron, re-
+  scans input per neuron) — we never wrote a column-major VPDPBUSD kernel for 32
+  neurons. This is a real part of the ~10% L1=32 NPS tax — a *missing kernel*,
+  not intrinsic.
+- **Handoff:** `docs/l1_32_vnni_kernel_handoff_2026-06-15.md` — a Zeus (Zen5)
+  Claude is writing the column-major L1=32 VPDPBUSD kernel. Measure on Zen5
+  (invisible on AVX2-only Hercules). Directly informs the L1=32 go/no-go (tune
+  #2017) by cutting the speed half of the tax.
+
+## Current state & where the thread stands (2026-06-15)
+
+**Reframe (Adam): eval is near-ceiling, so SPEED is the high-leverage lever** —
+Coda's eval is #2 vs LC0 (Spearman 0.853, SF 0.861, Reckless 0.836); limited eval
+headroom. So a free 5-10% speed is valuable in itself; the per-feature "is it
+worth its cost" framing is secondary.
+
+**What's settled:**
+- Threat accumulator is the dominant SF gap (Coda ~31% cycles vs SF ~5.5%); most
+  of it is **intrinsic eval richness we've validated as worth it** (X-ray = +187
+  Elo, #2014). Not recoverable implementation.
+- Bit-identical micro-opts (cull, table-shrink, gives_check): neutral (§4).
+- Static-eval cache: keep (ablating = −13.5% NPS, §5).
+- Cross-ply/recapture-combine: net-negative on fleet, DROPPED (§7).
+- slider-sees: invalid experiment, not a feature type (§8).
+
+**Live speed levers (ranked):**
+1. **L1=32 VNNI kernel** (§9) — compute, deployment-relevant, Zeus working it.
+   Only matters if L1=32 proves worth it (tune #2017).
+2. **FT-prefetch / contention-retention (#1994)** — bandwidth; **re-validate on
+   the fleet, NOT Hercules** (the recapture-combine lesson: Hercules over-states
+   bandwidth opts). May be a mirage too.
+3. Reckless apply instrumentation — diagnostic only (confirm Coda≈Reckless density).
+
+**Bottom line:** the bit-identical *speed* recovery in the threat accumulator is
+thin (recapture-combine was the best shot and didn't survive the fleet). The
+remaining real speed is the L1=32 VNNI kernel (compute) and a fleet-validated
+re-look at FT-prefetch. Beyond that, the SF NPS gap is largely our deliberate,
++187-Elo eval richness — not waste, and we should not trade it away.
 
 ## Methodology notes
 - Delta counts are deterministic (no clean machine needed); NPS needs the OB
