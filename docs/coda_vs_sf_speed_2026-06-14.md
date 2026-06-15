@@ -91,7 +91,30 @@ SF source: `/home/adam/chess/engines/Stockfish/src`.
 - Implemented: `Board::check_squares()` (per-node table) + `Board::gives_check_cached()`, lazily computed once per node, replacing the per-move `gives_direct_check` (post-move occ + magic) in the futility/LMP/bad-noisy carve-outs (`search.rs` ~3937/3955/3975). Branch `experiment/check-info-cache` (9f81d84).
 - **Bit-identical** (bench 2325223; proven vs `gives_direct_check` by differential test `board::tests::gives_check_cached_matches` over a depth-3 perft tree — sliders/unblock/promo/EP/castle).
 - **NPS-NEUTRAL** both single-thread (BASE ~777k vs ~775k) and 16× contended (3.437M vs 3.431M), clean Hercules. The per-move `gives_direct_check` was too small a slice. **Fourth scalar micro-opt to measure neutral** (after the zero-emit cull, the 48KB→6KB table shrink; Fix A regressed). Parked, do NOT SPRT/merge.
-- **Pattern (now robust): scalar search/movegen/threat micro-opts do not move Coda's NPS** — per-node cost is NNUE-eval-dominated. The speed levers are eval-cost (feature set / x-ray, in flight) and SIMD kernels (AVX-512), not scalar shaving. Re-weight the sequencing below accordingly.
+- **Pattern: small scalar micro-opts (~2-3% slices each) don't move NPS** — but this is NOT "the gap is eval-bound / unrecoverable" (that was an overreach; corrected by the hard data below).
+
+### NPS DECOMPOSITION — hard data (2026-06-15, Adam pushed for it)
+Gating build, x-ray on/off via same-net `CODA_NO_XRAY` isolation, clean
+Hercules, vs SF `bench`:
+
+| | Coda **+xray** | Coda **−xray** | Stockfish |
+|---|---|---|---|
+| single-thread | 793,748 | 881,829 (**+11.1%**) | ~1,140,000 |
+| 16× contended (agg) | ~3,406,000 | ~3,892,000 (**+14.3%**) | ~6,589,000 |
+
+- **x-ray NPS cost is REAL: ~11% single / ~14% contended.** The micro-opts were
+  neutral because they shave loop-overhead/tables, not the emission+apply
+  volume (only removing the feature does that).
+- **x-ray is only ~25% of the single-thread gap, ~15% contended.** With x-ray
+  removed, SF is STILL **+29% single / +69% contended** faster on the SAME
+  FT1024+threats arch. **~75-85% of the SF gap is non-x-ray implementation
+  headroom — recoverable** (re-confirms the top-of-doc "~80% recoverable" thesis).
+- **Keep x-ray**: SPRT #2014 = +187 Elo for ~3-5 deployment Elo of NPS.
+- **The real lever (UNTOUCHED): the threat-accumulator APPLY** — Coda ~31% of
+  cycles vs SF ~5.5%, even with x-ray gone. SF builds the dirty-threat list once
+  in `do_move`, applies once. The 4 neutral micro-opts did NOT touch it. First
+  confirm cost = replay DEPTH (doc says ~1.24 plies, likely not) vs per-node
+  apply VOLUME, then scope.
 
 ### D. Direct-write move generation (kill the 514-byte MoveList copies)
 - Coda `generate_captures`/`generate_quiets` return `MoveList` (~514 B) BY VALUE (`movegen.rs:97/271`), then the picker re-pushes into `self.moves`. `generate_all_moves` (`movegen.rs:444`) copies caps+quiets into a 3rd list (every evasion/QS-in-check node).
