@@ -493,6 +493,123 @@ pub unsafe fn dense_l1_avx512_vnni(
     _mm512_storeu_si512(output as *mut __m512i, _mm512_add_epi32(acc, scaled_bias));
 }
 
+/// Dense column-major L1 matmul, AVX-512 VNNI variant, specialised to L1=32.
+///
+/// The column-major counterpart to `dense_l1_avx2_l1_32` (same
+/// input-chunk-major weight layout, same outer loop) but emitting one
+/// `VPDPBUSD` per neuron-group instead of the AVX2
+/// `VPMADDUBSW + VPMADDWD + VPADDD` triple. 32 neurons = 32 i32 = **two
+/// ZMM wide** (vs L1=16's single ZMM in `dense_l1_avx512_vnni`): per input
+/// chunk the 32 neurons' weights occupy `32 * 4 = 128` contiguous bytes =
+/// two ZMM loads — the low ZMM is neurons 0-15, the high ZMM neurons
+/// 16-31.
+///
+/// Why this exists: on VNNI hardware (Zen5 / Sapphire Rapids) an L1=32 net
+/// previously fell back to `RowMajorAvx512Vnni`, which re-scans the whole
+/// input once *per neuron* (`simd512_l1_int8_dot_vnni` × 32). The
+/// column-major form loads each input chunk once and feeds all 32 neurons,
+/// the same locality win the L1=16 column-major kernel banks over its
+/// row-major sibling. The AVX2-only fleet already had the column-major
+/// `dense_l1_avx2_l1_32`; this is the missing VNNI twin.
+///
+/// Four interleaved accumulator PAIRS (lo0..lo3 for neurons 0-15, hi0..hi3
+/// for neurons 16-31) break the VPDPBUSD dependency chain (4-cycle latency
+/// on Zen 5). Eight ZMM accumulators + a couple of weight/input temps sit
+/// well inside the 32-ZMM file.
+///
+/// # Safety
+/// CPU must support AVX-512F/BW/VNNI. Slices must be sized for `pw`; `output`
+/// must point to at least 32 writable i32s.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+pub unsafe fn dense_l1_avx512_vnni_l1_32(
+    stm_pw: &[u8],
+    ntm_pw: &[u8],
+    pw: usize,
+    sparse_weights: &[i8],  // input-chunk-major layout (same as dense_l1_avx2_l1_32)
+    bias: &[i16],
+    bias_scale: i32,
+    output: *mut i32,
+) {
+    use std::arch::x86_64::*;
+
+    const NUM_NEURONS: usize = 32;
+    const CHUNK_STRIDE: usize = NUM_NEURONS * 4; // = 128 bytes per chunk = 2 ZMM
+
+    // Neurons 0-15 in the lo accumulators, 16-31 in the hi accumulators.
+    // Four interleaved pairs hide the VPDPBUSD latency.
+    let mut lo0 = _mm512_setzero_si512();
+    let mut lo1 = _mm512_setzero_si512();
+    let mut lo2 = _mm512_setzero_si512();
+    let mut lo3 = _mm512_setzero_si512();
+    let mut hi0 = _mm512_setzero_si512();
+    let mut hi1 = _mm512_setzero_si512();
+    let mut hi2 = _mm512_setzero_si512();
+    let mut hi3 = _mm512_setzero_si512();
+
+    let w_ptr = sparse_weights.as_ptr();
+    let total_chunks = pw / 4;
+
+    macro_rules! run_perspective {
+        ($chunks:expr, $chunk_offset:expr) => {{
+            let chunks: *const u32 = $chunks;
+            let chunk_offset: usize = $chunk_offset;
+            let mut c = 0usize;
+            // 4-at-a-time: chunk c..c+3 feed accumulator pairs 0..3.
+            while c + 4 <= total_chunks {
+                macro_rules! step {
+                    ($k:expr, $lo:ident, $hi:ident) => {{
+                        let v = chunks.add(c + $k).read_unaligned();
+                        let input = _mm512_set1_epi32(v as i32);
+                        let base = (chunk_offset + c + $k) * CHUNK_STRIDE;
+                        let w_lo = _mm512_loadu_si512(w_ptr.add(base) as *const __m512i);
+                        let w_hi = _mm512_loadu_si512(w_ptr.add(base + 64) as *const __m512i);
+                        $lo = _mm512_dpbusd_epi32($lo, input, w_lo);
+                        $hi = _mm512_dpbusd_epi32($hi, input, w_hi);
+                    }};
+                }
+                step!(0, lo0, hi0);
+                step!(1, lo1, hi1);
+                step!(2, lo2, hi2);
+                step!(3, lo3, hi3);
+                c += 4;
+            }
+            // Tail: remaining chunks fold into pair 0.
+            while c < total_chunks {
+                let v = chunks.add(c).read_unaligned();
+                let input = _mm512_set1_epi32(v as i32);
+                let base = (chunk_offset + c) * CHUNK_STRIDE;
+                let w_lo = _mm512_loadu_si512(w_ptr.add(base) as *const __m512i);
+                let w_hi = _mm512_loadu_si512(w_ptr.add(base + 64) as *const __m512i);
+                lo0 = _mm512_dpbusd_epi32(lo0, input, w_lo);
+                hi0 = _mm512_dpbusd_epi32(hi0, input, w_hi);
+                c += 1;
+            }
+        }};
+    }
+
+    // STM chunks live at offsets [0..pw/4); NTM chunks at [pw/4..pw/2).
+    let stm_chunks_ptr = stm_pw.as_ptr() as *const u32;
+    run_perspective!(stm_chunks_ptr, 0);
+    let ntm_chunks_ptr = ntm_pw.as_ptr() as *const u32;
+    run_perspective!(ntm_chunks_ptr, pw / 4);
+
+    let acc_lo = _mm512_add_epi32(_mm512_add_epi32(lo0, lo1), _mm512_add_epi32(lo2, lo3));
+    let acc_hi = _mm512_add_epi32(_mm512_add_epi32(hi0, hi1), _mm512_add_epi32(hi2, hi3));
+
+    let scale = _mm512_set1_epi32(bias_scale);
+    let bias_lo = _mm512_mullo_epi32(
+        _mm512_cvtepi16_epi32(_mm256_loadu_si256(bias.as_ptr() as *const __m256i)),
+        scale,
+    );
+    let bias_hi = _mm512_mullo_epi32(
+        _mm512_cvtepi16_epi32(_mm256_loadu_si256(bias.as_ptr().add(16) as *const __m256i)),
+        scale,
+    );
+    _mm512_storeu_si512(output as *mut __m512i, _mm512_add_epi32(acc_lo, bias_lo));
+    _mm512_storeu_si512(output.add(16) as *mut __m512i, _mm512_add_epi32(acc_hi, bias_hi));
+}
+
 /// Sparse column-major L1 matmul, AVX-512 VNNI variant — skips 4-byte
 /// zero input chunks. Uses four interleaved accumulators to hide VPDPBUSD
 /// latency even when chunks are dense.
@@ -1088,6 +1205,90 @@ mod tests {
             }
         }
         eprintln!("dense_l1_avx2_l1_32 fuzz: {} cases passed", cases);
+    }
+
+    /// Fuzz: AVX-512 VNNI L1=32 column-major kernel matches scalar across
+    /// seeds, densities, and pw widths. The VNNI twin of the AVX2 L1=32
+    /// fuzz above. Bit-exactness against the scalar reference is the
+    /// correctness gate for the column-major-vs-row-major kernel swap.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn fuzz_dense_avx512_vnni_l1_32_matches_scalar() {
+        crate::init();
+        if !is_x86_feature_detected!("avx512f")
+            || !is_x86_feature_detected!("avx512bw")
+            || !is_x86_feature_detected!("avx512vnni")
+        {
+            eprintln!("No AVX-512 VNNI on this CPU — skipping L1=32 VNNI fuzz test");
+            return;
+        }
+
+        let mut cases = 0usize;
+        // 512 = FT1024 prod width; others exercise boundary chunk counts.
+        for &pw in &[64usize, 128, 256, 384, 512] {
+            for density in [0u32, 10, 25, 50, 75, 89, 100] {
+                for seed in 0u64..30 {
+                    let (sw, bias, s_pw, n_pw, pw_, nn, scale) =
+                        build_l1_n_test_case(seed, density, 32, pw, 100);
+
+                    let mut scalar_out = vec![0i32; nn];
+                    sparse_l1_scalar(&s_pw, &n_pw, pw_, &sw, nn, &bias, scale, &mut scalar_out);
+
+                    let mut vnni_out = vec![0i32; nn];
+                    unsafe {
+                        dense_l1_avx512_vnni_l1_32(
+                            &s_pw, &n_pw, pw_, &sw, &bias, scale, vnni_out.as_mut_ptr(),
+                        );
+                    }
+
+                    for i in 0..nn {
+                        assert_eq!(
+                            vnni_out[i], scalar_out[i],
+                            "dense_l1_avx512_vnni_l1_32 mismatch seed={} density={} pw={} neuron={} vnni={} scalar={}",
+                            seed, density, pw, i, vnni_out[i], scalar_out[i]
+                        );
+                    }
+                    cases += 1;
+                }
+            }
+        }
+        eprintln!("dense_l1_avx512_vnni_l1_32 fuzz: {} cases passed", cases);
+    }
+
+    /// Cross-check: the new VNNI L1=32 kernel agrees with the existing AVX2
+    /// L1=32 kernel byte-for-byte. Both are column-major over the same
+    /// `l1_weights_sparse` layout, so any divergence is a kernel bug.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn dense_l1_avx512_vnni_l1_32_matches_avx2() {
+        crate::init();
+        if !is_x86_feature_detected!("avx512f")
+            || !is_x86_feature_detected!("avx512bw")
+            || !is_x86_feature_detected!("avx512vnni")
+            || !is_x86_feature_detected!("avx2")
+        {
+            eprintln!("Need AVX2 + AVX-512 VNNI — skipping L1=32 VNNI-vs-AVX2 cross-check");
+            return;
+        }
+        for &pw in &[128usize, 384, 512] {
+            for density in [25u32, 60, 100] {
+                for seed in 0u64..8 {
+                    let (sw, bias, _s, _n, _pw, _nn, scale) =
+                        build_l1_n_test_case(seed, density, 32, pw, 100);
+                    let (_sw2, _b2, s_pw, n_pw, pw_, _nn2, _sc2) =
+                        build_l1_n_test_case(seed, density, 32, pw, 100);
+
+                    let mut avx2_out = vec![0i32; 32];
+                    let mut vnni_out = vec![0i32; 32];
+                    unsafe {
+                        dense_l1_avx2_l1_32(&s_pw, &n_pw, pw_, &sw, &bias, scale, avx2_out.as_mut_ptr());
+                        dense_l1_avx512_vnni_l1_32(&s_pw, &n_pw, pw_, &sw, &bias, scale, vnni_out.as_mut_ptr());
+                    }
+                    assert_eq!(avx2_out, vnni_out,
+                        "VNNI L1=32 != AVX2 L1=32 at pw={} density={} seed={}", pw, density, seed);
+                }
+            }
+        }
     }
 
     /// Fuzz: `dense_l1_avx2` matches the scalar reference. This is the

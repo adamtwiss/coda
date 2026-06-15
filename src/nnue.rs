@@ -2406,6 +2406,8 @@ struct Align64<T>(T);
 pub enum L1Kernel {
     /// AVX-512 VNNI column-major dense (one VPDPBUSD per chunk, L1=16).
     DenseAvx512Vnni,
+    /// AVX-512 VNNI column-major dense, L1=32 (two ZMM-wide, VPDPBUSD).
+    DenseAvx512VnniL1_32,
     /// AVX-512 VNNI row-major per-neuron dots (wider/bucketed L1).
     RowMajorAvx512Vnni,
     /// AVX-VNNI (YMM VPDPBUSD) column-major dense, L1<=16.
@@ -2451,6 +2453,9 @@ fn select_l1_kernel(
     {
         if has_avx512_vnni && col_ok && l1 == 16 && pw.is_multiple_of(4) {
             return L1Kernel::DenseAvx512Vnni;
+        }
+        if has_avx512_vnni && col_ok && l1 == 32 && pw.is_multiple_of(4) {
+            return L1Kernel::DenseAvx512VnniL1_32;
         }
         if has_avx512_vnni && pw.is_multiple_of(64) && have_8t {
             return L1Kernel::RowMajorAvx512Vnni;
@@ -3263,6 +3268,20 @@ impl NNUENet {
                     crate::sparse_l1::dense_l1_avx512_vnni(
                         stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
                         l1, &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
+                    );
+                }
+            }
+            #[cfg(target_arch = "x86_64")]
+            L1Kernel::DenseAvx512VnniL1_32 => {
+                // AVX-512 VNNI column-major, L1=32: all 32 L1 neurons across
+                // two ZMM accumulators, two VPDPBUSD per 4-byte input chunk
+                // (input loaded once). The column-major twin of the AVX2
+                // dense_l1_avx2_l1_32; replaces the row-major per-neuron VNNI
+                // fallback that re-scanned the input 32×.
+                unsafe {
+                    crate::sparse_l1::dense_l1_avx512_vnni_l1_32(
+                        stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
+                        &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
                     );
                 }
             }
