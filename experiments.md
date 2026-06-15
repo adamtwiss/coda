@@ -15840,3 +15840,20 @@ was noise). The bandwidth-mirage diagnosis holds: Hercules's +2.1% didn't
 translate; the combine's compute+caching costs slightly outweigh the bandwidth
 saving on the non-memory-bound fleet. DROPPED (branch parked). Net lesson stands:
 validate perf-sensitive/bandwidth changes on the fleet, not a Hercules bench.
+
+## 2026-06-15: L1=32 + net-specific tune BEATS prod — L1=32 path validated (#2023)
+
+L1=32 net `multi-v6-l132-s5-swa` (035195DB) tested -3.62 vs prod untuned (#1988).
+Fired a net-specific core SPSA tune (#2017, 1500 iter STC, dev-network 035195DB)
+on main; applied 57/64 core params (clean apply, all params incl. NMP — NOT the
+NMP-skipping /tmp tool). SPRT the tuned-L1=32 vs prod (#2023):
+
+**#2023 H1 ✓: +2.4 ±2.3 (LLR 2.96, 27476 games).** The tune closed the -3.62 gap
+AND put tuned-L1=32 +2.4 ahead of prod. **L1=32 path validated on the eval side.**
+(Early N was noisy: -11.3 at 1600 games -> recovered to +2.4 by 27k. Don't read
+sub-500/sub-2k.) Branch experiment/l1-32-tuned-2017.
+
+Implication: pursue L1=32. Speed half = the column-major VPDPBUSD L1=32 kernel
+(Zeus, docs/l1_32_vnni_kernel_handoff). Stack dual (+2 @ S200, merged Coda /
+Bullet pushed) + PSQT (neutral @ S200, planned) on top — all orthogonal
+(docs/dual_psqt_merge_plan).
