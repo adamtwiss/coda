@@ -140,6 +140,7 @@ tunables!(
     // Floor lifted from 20 → 0 (audit 2026-05-20): pinned at 23, 2% from floor.
     (FUT_BASE, 32, 0, 200, 9.0, true),
     (FUT_PER_DEPTH, 89, 40, 250, 10.5, true),
+    (FUT_LMR_DEPTH, 15, 6, 24, 2.0, true),
     // HIST_PRUNE_DEPTH_10X / HIST_PRUNE_MULT removed 2026-06-02 — see hist-prune
     // removal block in main negamax body for rationale (three H0 SPRTs).
     (SEE_QUIET_MULT, 33, 5, 80, 3.75, true),
@@ -414,7 +415,6 @@ tunables!(
 pub static FH_BLEND_OFFSET: AtomicI32 = AtomicI32::new(1);
 pub static SE_TT_DEPTH_SLACK: AtomicI32 = AtomicI32::new(3);
 pub static MVV_CAP_MULT: AtomicI32 = AtomicI32::new(28);
-pub static FUT_LMR_DEPTH: AtomicI32 = AtomicI32::new(15);
 // Demote-batch 2 (2026-05-23): 5 more NONCORE_QUIET from cross-tune analysis
 // — all moved <20% under #1419 noise. Same rationale as batch 1.
 pub static SEE_MATERIAL_SCALE: AtomicI32 = AtomicI32::new(215);
