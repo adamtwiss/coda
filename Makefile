@@ -61,11 +61,17 @@ pgo: check-rust net
 
 # Download production NNUE net (uses actual filename from net.txt, not generic net.nnue)
 net:
-	@if [ ! -f "$(EVALFILE)" ] && [ -n "$(NET_URL)" ]; then \
+	@if [ ! -s "$(EVALFILE)" ] && [ -n "$(NET_URL)" ]; then \
+		set -e; \
+		tmp="$(EVALFILE).tmp"; \
+		trap 'rm -f "$$tmp"' EXIT; \
 		echo "Downloading NNUE net from $(NET_URL)..."; \
-		curl -sL "$(NET_URL)" -o "$(EVALFILE)"; \
+		curl -fsSL --retry 3 --retry-delay 2 "$(NET_URL)" -o "$$tmp"; \
+		test -s "$$tmp"; \
+		mv "$$tmp" "$(EVALFILE)"; \
+		trap - EXIT; \
 		echo "Downloaded $(EVALFILE)"; \
-	elif [ -f "$(EVALFILE)" ]; then \
+	elif [ -s "$(EVALFILE)" ]; then \
 		echo "$(EVALFILE) already exists"; \
 	else \
 		echo "Warning: no net.txt found and no $(EVALFILE) present"; \
