@@ -482,6 +482,10 @@ pub static FEAT_PVS: AtomicBool = AtomicBool::new(true);
 pub static FEAT_TT_CUTOFF: AtomicBool = AtomicBool::new(true);
 pub static FEAT_TT_NEARMISS: AtomicBool = AtomicBool::new(true);
 pub static FEAT_TT_STORE: AtomicBool = AtomicBool::new(true);
+// Static-eval cache: reuse TT-stored static_eval instead of calling NNUE.
+// Ablate (NO_TT_STATIC_EVAL=1) to test whether skipping evals hurts more
+// than it helps via deeper lazy-replay gaps (fatter threat/finny applies).
+pub static FEAT_TT_STATIC_EVAL: AtomicBool = AtomicBool::new(true);
 pub static FEAT_QS_CAPTURES: AtomicBool = AtomicBool::new(true); // false = QS returns eval immediately
 pub static FEAT_SINGULAR: AtomicBool = AtomicBool::new(true); // singular extensions specifically
 pub static FEAT_CUCKOO: AtomicBool = AtomicBool::new(true);
@@ -1448,6 +1452,7 @@ fn init_feature_flags() {
             if std::env::var("NO_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); }
             if std::env::var("NO_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS.store(false, Ordering::Relaxed); }
             if std::env::var("NO_TT_STORE").is_ok() { FEAT_TT_STORE.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_TT_STATIC_EVAL").is_ok() { FEAT_TT_STATIC_EVAL.store(false, Ordering::Relaxed); }
             if std::env::var("NO_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES.store(false, Ordering::Relaxed); }
             if std::env::var("NO_SINGULAR").is_ok() { FEAT_SINGULAR.store(false, Ordering::Relaxed); }
             if std::env::var("NO_CUCKOO").is_ok() { FEAT_CUCKOO.store(false, Ordering::Relaxed); }
@@ -3196,7 +3201,7 @@ fn negamax(
         // value here and recompute. The legitimate-eval-at-exactly-(-4095)
         // false positive case (~-40 pawns) is rare enough that re-eval
         // is harmless.
-        if tt_hit && tt_entry.static_eval > -4095 {
+        if FEAT_TT_STATIC_EVAL.load(Ordering::Relaxed) && tt_hit && tt_entry.static_eval > -4095 {
             raw_eval = tt_entry.static_eval;
             info.stats_tt_static_eval_hits += 1;
             tt_static_eval_hit = true;
