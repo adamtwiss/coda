@@ -31,6 +31,28 @@ pub mod apply_stats {
     static B65_96: AtomicU64 = AtomicU64::new(0);
     static B97_127: AtomicU64 = AtomicU64::new(0);
     static CAP_HIT: AtomicU64 = AtomicU64::new(0); // n == MAX_THREAT_DELTAS (128)
+    // Cancellation instrumentation: how many streamed weight rows (adds+subs)
+    // are net-zero same-index add/sub pairs SF would cancel (FusedUpdateData)
+    // but Coda currently streams twice. STREAMED = total rows applied;
+    // CANCELLED = rows that net to zero (2 per matched add/sub index pair).
+    static STREAMED_ROWS: AtomicU64 = AtomicU64::new(0);
+    static CANCELLED_ROWS: AtomicU64 = AtomicU64::new(0);
+
+    /// Count net-zero same-index add/sub pairs in one apply call. Each matched
+    /// (idx in adds AND idx in subs) pair = 2 streamed rows that cancel.
+    /// O(n log n); profile-only, allocations fine.
+    pub fn record_cancel(adds: &[usize], subs: &[usize]) {
+        STREAMED_ROWS.fetch_add((adds.len() + subs.len()) as u64, Ordering::Relaxed);
+        let mut a = adds.to_vec(); a.sort_unstable();
+        let mut s = subs.to_vec(); s.sort_unstable();
+        let (mut i, mut j, mut cancelled) = (0usize, 0usize, 0u64);
+        while i < a.len() && j < s.len() {
+            if a[i] == s[j] { cancelled += 2; i += 1; j += 1; }
+            else if a[i] < s[j] { i += 1; }
+            else { j += 1; }
+        }
+        CANCELLED_ROWS.fetch_add(cancelled, Ordering::Relaxed);
+    }
 
     #[inline(always)]
     pub fn record(n: usize) {
@@ -82,6 +104,13 @@ pub mod apply_stats {
         eprintln!("  65-96:   {:>10} ({:.1}%)", B65_96.load(Ordering::Relaxed), pct(B65_96.load(Ordering::Relaxed)));
         eprintln!("  97-127:  {:>10} ({:.1}%)", B97_127.load(Ordering::Relaxed), pct(B97_127.load(Ordering::Relaxed)));
         eprintln!("  128(cap):{:>10} ({:.4}%)  [forced fallback]", cap, pct(cap));
+        let streamed = STREAMED_ROWS.load(Ordering::Relaxed);
+        let cancelled = CANCELLED_ROWS.load(Ordering::Relaxed);
+        eprintln!(
+            "  CANCELLATION: {} rows streamed, {} cancellable (net-zero add/sub pairs) = {:.2}% wasted bandwidth (SF cancels these)",
+            streamed, cancelled,
+            100.0 * cancelled as f64 / streamed.max(1) as f64
+        );
     }
 }
 
@@ -1686,6 +1715,9 @@ pub unsafe fn apply_threat_deltas(
     }
     let adds = scratch_slice!(adds_ptr, n_adds);
     let subs = scratch_slice!(subs_ptr, n_subs);
+
+    #[cfg(feature = "profile-threats")]
+    crate::threats::apply_stats::record_cancel(adds, subs);
 
     // Prefetch weight rows for upcoming deltas (hide L3 latency)
     #[cfg(target_arch = "x86_64")]
