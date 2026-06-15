@@ -131,19 +131,49 @@ lazy-replay gaps. Tested via `NO_TT_STATIC_EVAL=1` (flag 84906b8, default on).
 skipping 35% of *whole* evals (forward pass + both accumulators) dominates the
 fatter-apply cost. Ablating is −13.5% NPS for zero behavior change.
 
-## 6. Open levers (ranked)
+## 6. ALL bit-identical threat-apply levers are small — the real conclusion
 
-1. **`double_inc_update` cross-ply cancellation** (bit-identical). Measure the
-   cross-ply-cancellable fraction first (single-call was only 3.8%; cross-ply
-   is the real SF mechanism). If significant, port it — reduces both generation
-   and apply volume. *First bit-identical lever with a real mechanism.*
-2. **Core threat-model density** (7.31 vs SF 4.46/call). Eval-architecture:
-   could trim threat relationship types Coda enumerates that SF doesn't — but
-   needs retrain + SPRT (like X-ray), and risks the same kind of +100-Elo loss.
-   Instrument Reckless first to confirm Coda inherited its density.
-3. **SF contention retention** (36% vs 27% per-process under 16×) — the
-   bandwidth/MLP side; partly the FT-prefetch thread (#1994). Bigger under
-   contention (the deployment-relevant regime).
+Every bit-identical route to making the threat apply SF-cheap has now been
+measured and bounded small:
+
+| Lever | Measured | Bound |
+|---|---|---|
+| Identical apply kernel | i8→i16 widen+add, both engines | no gap |
+| Same-index cancellation | 3.80% of streamed rows | ~0.3% NPS |
+| **`double_inc_update` (cross-ply)** | replay gap: **82.6% gap==1, only 17.4% gap>=2** (avg 1.27 plies) | ≤17.4%-of-materializations × cancelling-fraction = tiny |
+| Re-streaming overhead | 11.0 streamed/move vs 8.43 generated = 1.30× | lazy-replay-inherent; SF has it too |
+
+**So the threat-accumulator speed gap is NOT recoverable implementation waste.**
+The Coda 7.31 vs SF 4.46 core deltas/call difference is **threat-model density**
+— Coda enumerates more feature *types* (direct + own-xray + slider-sees +
+slider-xray + non-sliders) than SF (direct + discovered). This is
+eval-architecture (Reckless-derived), fixed by the feature-set *code*, not
+training.
+
+**Reframe of the "120 Elo recoverable" target:** most of Coda's ~31%-vs-5.5%
+threat cost is **buying eval richness, not waste.** X-ray (~27% of the volume)
+is worth **+187 Elo** for ~11% NPS — proven. The threat cost is largely a
+deliberate, valuable eval choice. The free (bit-identical) speed recovery in the
+threat accumulator is therefore *small*.
+
+### The productive path — per-feature-type value/cost A/Bs
+The X-ray test is the methodology: train a net with a threat feature *type*
+removed, SPRT for the eval cost, compare to the type's NPS cost. X-ray passed
+decisively (+187). **The other types are untested** — `slider-sees` (step 2,
+~0.83 d/piece-push), `slider-xray` (2b), `own-xray` (1b). If any type costs
+speed without buying comparable Elo (unlike X-ray), trimming it is a pure win
+(faster + neutral Elo). This is the real lever on the threat accumulator —
+NOT micro-opts.
+
+### Speed levers OUTSIDE the threat accumulator (the non-threat ~part of the gap)
+- **SF contention retention** (36% vs 27% per-process under 16×) — bandwidth/MLP;
+  partly the FT-prefetch thread (#1994). Bigger under contention (deployment).
+- FT/L1/L2 forward, search, movegen — roughly comparable to SF per the profile,
+  but the non-threat slice is where remaining bit-identical wins would live.
+
+### TODO
+- Instrument Reckless's apply to confirm Coda inherited its density (Coda≈Reckless≫SF).
+- Per-type ablation A/Bs (slider-sees first — largest non-xray type).
 
 ## Methodology notes
 - Delta counts are deterministic (no clean machine needed); NPS needs the OB
