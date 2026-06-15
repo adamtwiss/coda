@@ -15725,3 +15725,41 @@ RFP threat-count finding, #2000: RFP null-FP rate 32%@0t -> 63%@3+, gated by
 any_threat_count which RFP previously ignored). Corrhist/eval-reliability
 tested as an RFP separator and REFUTED (flat 43% across |correction|, and
 corrections are tiny at RFP nodes) — threat-context is the live signal.
+
+## 2026-06-15: X-ray threat features confirmed worth ~187 Elo at SB800 (#2014)
+
+**Question**: Are Coda's X-ray threat features (slider-through-blocker, emitted
+as NNUE features — unique to Coda; SF/Reckless don't do this) actually worth
+their ~11% NPS cost, or an accidental artifact?
+
+**Test**: paired-probe A/B on `experiment/xray-ablation` (gating build, reads
+the net's `xray_trained` bit to enable/disable X-ray emission). DEV =
+`gpu4-normal-noxray-s800` (A18036A1, trained `--xray 0`), BASE =
+`gpu4-normal-s800` (E54D2E4E, X-ray on). Matched recipe (FT768, wdl0.15,
+warm30, crelu hidden, factoriser, SB800), the only difference is X-ray.
+
+**Result: #2014 H0, −187.5 ±19.1 Elo, 692 games.** Removing X-ray costs ~187
+Elo at SB800 — *larger* than the −157 ±17 measured at S200 (#2008). Direction
+of optimum confirmed at deployment scale: X-ray is a real, large,
+Coda-specific eval advantage ("secret weapon"). **Do not remove it.** Its NPS
+cost (the threat-row weight-streaming volume it inflates) is the price of a
+~187 Elo feature — worth paying.
+
+Ties off the session's two threads: the X-ray speed cost and the X-ray Elo
+value are the same lever, and the Elo wins decisively.
+
+## 2026-06-15: Perf — gives_check cache (C of B+C) tested NEUTRAL
+
+`experiment/check-info-cache` (9f81d84): per-node `Board::check_squares()` +
+`gives_check_cached()` replacing per-move `gives_direct_check` in the
+futility/LMP/bad-noisy carve-outs. Bit-identical (differential-tested vs
+`gives_direct_check` over a perft tree; bench 2325223). **NPS-NEUTRAL**
+single-thread (~777k vs ~775k) AND 16× contended (3.437M vs 3.431M).
+
+Fourth scalar micro-opt to measure neutral (zero-emit cull 23b7e05, 48KB→6KB
+table shrink 6f1e329, now C; Fix A #1993 regressed). **Robust pattern: scalar
+search/movegen/threat micro-opts don't move Coda's NPS — per-node cost is
+NNUE-eval-dominated.** Downgrades B (make_move checkers/pinned cache) from
+"biggest movegen-side win" to low-prior/high-risk untested. Real speed levers
+are eval-cost (feature set) and SIMD kernels, not scalar shaving. Parked, not
+merged. Docs: 97da3fe / d561c9d.
