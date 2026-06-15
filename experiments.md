@@ -15832,3 +15832,11 @@ Adam resumed #2015 for more games — at N=4420 the result was UNRESOLVED (LLR
 above are a HYPOTHESIS, not a finding — the extra games will test it. If it
 resolves clearly H0, the bandwidth-mirage diagnosis holds; if it recovers toward
 0/+, the Hercules +2.1% wasn't a mirage. Verdict pending resolution.
+
+### FINAL (#2015 resolved): H0, net-negative CONFIRMED (mild)
+#2015 resolved **H0 (LLR −2.97, −2.4 ±2.0, 28528 games)**. recapture-combine is
+net-negative on the fleet — confirmed, but MILD (~−2.4, not the early −4.7 which
+was noise). The bandwidth-mirage diagnosis holds: Hercules's +2.1% didn't
+translate; the combine's compute+caching costs slightly outweigh the bandwidth
+saving on the non-memory-bound fleet. DROPPED (branch parked). Net lesson stands:
+validate perf-sensitive/bandwidth changes on the fleet, not a Hercules bench.
