@@ -1049,6 +1049,17 @@ pub fn push_threats_on_change(
     push_threats_for_piece(deltas, pieces_bb, colors_bb, mailbox, occ, white_bb, cp, piece_color, piece_type, square, add);
 }
 
+/// Ablation flag (CODA_NO_SLIDER_SEES=1): skip emitting step-2 "slider-sees"
+/// threat deltas (incoming slider attacks on the square). NOT bit-identical —
+/// the net was trained with these features, so eval is wrong/weaker; this is a
+/// fast NPS-impact test of the feature type's cost. Cached once.
+#[inline]
+fn skip_slider_sees() -> bool {
+    use std::sync::OnceLock;
+    static F: OnceLock<bool> = OnceLock::new();
+    *F.get_or_init(|| std::env::var("CODA_NO_SLIDER_SEES").is_ok())
+}
+
 /// Core: compute all threat deltas for a piece on a square.
 /// Matches Reckless's push_threats_single exactly:
 /// 1. Threats FROM this piece to occupied squares
@@ -1169,6 +1180,7 @@ fn push_threats_for_piece(
     let past_first_region  = rays_from_sq_empty & !queen_att;
     let do_z_finding       = (occ & past_first_region) != 0;
 
+    let emit_slider_sees = !skip_slider_sees();
     let mut sliders = (diagonal_sliders | orthogonal_sliders) & occ;
     while sliders != 0 {
         let slider_sq = sliders.trailing_zeros();
@@ -1231,7 +1243,9 @@ fn push_threats_for_piece(
         }
 
         // The slider itself attacks/no longer attacks this square
-        deltas.push(RawThreatDelta::new(slider_cp as u8, slider_sq as u8, cp as u8, square as u8, add));
+        if emit_slider_sees {
+            deltas.push(RawThreatDelta::new(slider_cp as u8, slider_sq as u8, cp as u8, square as u8, add));
+        }
     }
 
     #[cfg(feature = "profile-threats")]
