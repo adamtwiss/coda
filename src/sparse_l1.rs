@@ -610,6 +610,111 @@ pub unsafe fn dense_l1_avx512_vnni_l1_32(
     _mm512_storeu_si512(output.add(16) as *mut __m512i, _mm512_add_epi32(acc_hi, bias_hi));
 }
 
+/// Dense column-major L1 matmul, AVX-VNNI (YMM `VPDPBUSD`) variant,
+/// specialised to L1=32. For hosts with AVX-VNNI but NOT full AVX-512
+/// (Intel Alder Lake / Raptor Lake and similar) — there the AVX-512 L1=32
+/// kernel can't run, and L1=32 otherwise falls to `dense_l1_avx2_l1_32`
+/// (already column-major, same locality), so this kernel's only delta is
+/// the fused inner op: one `VPDPBUSD` per neuron-group replaces AVX2's
+/// `VPMADDUBSW + VPMADDWD(ones) + VPADDD` triple. Same column-major weight
+/// layout as `dense_l1_avx2_l1_32`.
+///
+/// 32 neurons = four YMM groups (0-7, 8-15, 16-23, 24-31). AVX2/AVX-VNNI
+/// has only 16 YMM registers (vs AVX-512's 32), so unlike the 512-bit
+/// kernel's 8 accumulators this uses 8 = four groups × two interleaved
+/// chunks (`even`/`odd`), enough to partly hide VPDPBUSD latency while
+/// leaving registers for the broadcasts and folded weight loads.
+///
+/// # Safety
+/// CPU must support AVX2 + AVX-VNNI. Slices must be sized for `pw`; `output`
+/// must point to at least 32 writable i32s.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,avxvnni")]
+pub unsafe fn dense_l1_avx_vnni_l1_32(
+    stm_pw: &[u8],
+    ntm_pw: &[u8],
+    pw: usize,
+    sparse_weights: &[i8],  // input-chunk-major layout (same as dense_l1_avx2_l1_32)
+    bias: &[i16],
+    bias_scale: i32,
+    output: *mut i32,
+) {
+    use std::arch::x86_64::*;
+
+    const NUM_NEURONS: usize = 32;
+    const CHUNK_STRIDE: usize = NUM_NEURONS * 4; // = 128 bytes per chunk = 4 YMM
+
+    // Eight accumulators: four neuron groups × two interleaved chunk slots.
+    let mut e0 = _mm256_setzero_si256(); // even chunk, neurons 0-7
+    let mut e1 = _mm256_setzero_si256(); //             neurons 8-15
+    let mut e2 = _mm256_setzero_si256(); //             neurons 16-23
+    let mut e3 = _mm256_setzero_si256(); //             neurons 24-31
+    let mut o0 = _mm256_setzero_si256(); // odd chunk,  neurons 0-7
+    let mut o1 = _mm256_setzero_si256(); //             neurons 8-15
+    let mut o2 = _mm256_setzero_si256(); //             neurons 16-23
+    let mut o3 = _mm256_setzero_si256(); //             neurons 24-31
+
+    let w_ptr = sparse_weights.as_ptr();
+    let total_chunks = pw / 4;
+
+    macro_rules! run_perspective {
+        ($chunks:expr, $chunk_offset:expr) => {{
+            let chunks: *const u32 = $chunks;
+            let chunk_offset: usize = $chunk_offset;
+            let mut c = 0usize;
+            while c + 2 <= total_chunks {
+                let ve = _mm256_set1_epi32(chunks.add(c).read_unaligned() as i32);
+                let vo = _mm256_set1_epi32(chunks.add(c + 1).read_unaligned() as i32);
+                let be = (chunk_offset + c) * CHUNK_STRIDE;
+                let bo = (chunk_offset + c + 1) * CHUNK_STRIDE;
+                e0 = _mm256_dpbusd_avx_epi32(e0, ve, _mm256_loadu_si256(w_ptr.add(be) as *const __m256i));
+                e1 = _mm256_dpbusd_avx_epi32(e1, ve, _mm256_loadu_si256(w_ptr.add(be + 32) as *const __m256i));
+                e2 = _mm256_dpbusd_avx_epi32(e2, ve, _mm256_loadu_si256(w_ptr.add(be + 64) as *const __m256i));
+                e3 = _mm256_dpbusd_avx_epi32(e3, ve, _mm256_loadu_si256(w_ptr.add(be + 96) as *const __m256i));
+                o0 = _mm256_dpbusd_avx_epi32(o0, vo, _mm256_loadu_si256(w_ptr.add(bo) as *const __m256i));
+                o1 = _mm256_dpbusd_avx_epi32(o1, vo, _mm256_loadu_si256(w_ptr.add(bo + 32) as *const __m256i));
+                o2 = _mm256_dpbusd_avx_epi32(o2, vo, _mm256_loadu_si256(w_ptr.add(bo + 64) as *const __m256i));
+                o3 = _mm256_dpbusd_avx_epi32(o3, vo, _mm256_loadu_si256(w_ptr.add(bo + 96) as *const __m256i));
+                c += 2;
+            }
+            // Tail: a single leftover chunk folds into the even slots.
+            while c < total_chunks {
+                let v = _mm256_set1_epi32(chunks.add(c).read_unaligned() as i32);
+                let b = (chunk_offset + c) * CHUNK_STRIDE;
+                e0 = _mm256_dpbusd_avx_epi32(e0, v, _mm256_loadu_si256(w_ptr.add(b) as *const __m256i));
+                e1 = _mm256_dpbusd_avx_epi32(e1, v, _mm256_loadu_si256(w_ptr.add(b + 32) as *const __m256i));
+                e2 = _mm256_dpbusd_avx_epi32(e2, v, _mm256_loadu_si256(w_ptr.add(b + 64) as *const __m256i));
+                e3 = _mm256_dpbusd_avx_epi32(e3, v, _mm256_loadu_si256(w_ptr.add(b + 96) as *const __m256i));
+                c += 1;
+            }
+        }};
+    }
+
+    let stm_chunks_ptr = stm_pw.as_ptr() as *const u32;
+    run_perspective!(stm_chunks_ptr, 0);
+    let ntm_chunks_ptr = ntm_pw.as_ptr() as *const u32;
+    run_perspective!(ntm_chunks_ptr, pw / 4);
+
+    let g0 = _mm256_add_epi32(e0, o0);
+    let g1 = _mm256_add_epi32(e1, o1);
+    let g2 = _mm256_add_epi32(e2, o2);
+    let g3 = _mm256_add_epi32(e3, o3);
+
+    let scale = _mm256_set1_epi32(bias_scale);
+    macro_rules! bias_grp {
+        ($off:expr) => {
+            _mm256_mullo_epi32(
+                _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr().add($off) as *const __m128i)),
+                scale,
+            )
+        };
+    }
+    _mm256_storeu_si256(output as *mut __m256i, _mm256_add_epi32(g0, bias_grp!(0)));
+    _mm256_storeu_si256(output.add(8) as *mut __m256i, _mm256_add_epi32(g1, bias_grp!(8)));
+    _mm256_storeu_si256(output.add(16) as *mut __m256i, _mm256_add_epi32(g2, bias_grp!(16)));
+    _mm256_storeu_si256(output.add(24) as *mut __m256i, _mm256_add_epi32(g3, bias_grp!(24)));
+}
+
 /// Sparse column-major L1 matmul, AVX-512 VNNI variant — skips 4-byte
 /// zero input chunks. Uses four interleaved accumulators to hide VPDPBUSD
 /// latency even when chunks are dense.
@@ -1253,6 +1358,85 @@ mod tests {
             }
         }
         eprintln!("dense_l1_avx512_vnni_l1_32 fuzz: {} cases passed", cases);
+    }
+
+    /// Fuzz: AVX-VNNI (YMM VPDPBUSD) L1=32 column-major kernel matches
+    /// scalar. For Alder/Raptor-Lake-class hosts (AVX-VNNI without AVX-512).
+    /// Runs anywhere `avxvnni` is present (incl. Zen5).
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn fuzz_dense_avx_vnni_l1_32_matches_scalar() {
+        crate::init();
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("avxvnni") {
+            eprintln!("No AVX-VNNI on this CPU — skipping AVX-VNNI L1=32 fuzz test");
+            return;
+        }
+        let mut cases = 0usize;
+        for &pw in &[64usize, 128, 256, 384, 512] {
+            for density in [0u32, 10, 25, 50, 75, 89, 100] {
+                for seed in 0u64..30 {
+                    let (sw, bias, s_pw, n_pw, pw_, nn, scale) =
+                        build_l1_n_test_case(seed, density, 32, pw, 100);
+                    let mut scalar_out = vec![0i32; nn];
+                    sparse_l1_scalar(&s_pw, &n_pw, pw_, &sw, nn, &bias, scale, &mut scalar_out);
+                    let mut vnni_out = vec![0i32; nn];
+                    unsafe {
+                        dense_l1_avx_vnni_l1_32(&s_pw, &n_pw, pw_, &sw, &bias, scale, vnni_out.as_mut_ptr());
+                    }
+                    for i in 0..nn {
+                        assert_eq!(vnni_out[i], scalar_out[i],
+                            "dense_l1_avx_vnni_l1_32 mismatch seed={} density={} pw={} neuron={} vnni={} scalar={}",
+                            seed, density, pw, i, vnni_out[i], scalar_out[i]);
+                    }
+                    cases += 1;
+                }
+            }
+        }
+        eprintln!("dense_l1_avx_vnni_l1_32 fuzz: {} cases passed", cases);
+    }
+
+    /// Microbench: the three L1=32 kernels at pw=512 (FT1024 prod width).
+    /// AVX2-maddubs vs AVX-VNNI is the delta an Alder/Raptor-Lake host
+    /// sees (both 256-bit); AVX-512 VNNI is the reference for full-512 hosts.
+    /// `cargo test --release bench_l1_32_kernels -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    #[cfg(target_arch = "x86_64")]
+    fn bench_l1_32_kernels() {
+        use std::time::Instant;
+        crate::init();
+        const PW: usize = 512;
+        const ITERS: usize = 400_000;
+        const WARMUP: usize = 10_000;
+        let (sw, bias, s_pw, n_pw, _pw, _nn, scale) = build_l1_n_test_case(7, 60, 32, PW, 100);
+        let mut out = vec![0i32; 32];
+
+        macro_rules! time_kernel {
+            ($name:expr, $avail:expr, $call:expr) => {{
+                if $avail {
+                    for _ in 0..WARMUP { unsafe { $call; } }
+                    let t = Instant::now();
+                    for _ in 0..ITERS { unsafe { $call; } }
+                    let ns = t.elapsed().as_nanos() as f64 / ITERS as f64;
+                    eprintln!("  {:<28} {:>7.1} ns/call", $name, ns);
+                    ns
+                } else { eprintln!("  {:<28} (unavailable)", $name); f64::NAN }
+            }};
+        }
+        eprintln!("L1=32 kernels @ pw={} ({} iters):", PW, ITERS);
+        let avx2 = time_kernel!("dense_l1_avx2_l1_32 (AVX2)", is_x86_feature_detected!("avx2"),
+            dense_l1_avx2_l1_32(&s_pw, &n_pw, PW, &sw, &bias, scale, out.as_mut_ptr()));
+        let avxv = time_kernel!("dense_l1_avx_vnni_l1_32", is_x86_feature_detected!("avxvnni"),
+            dense_l1_avx_vnni_l1_32(&s_pw, &n_pw, PW, &sw, &bias, scale, out.as_mut_ptr()));
+        let av512 = time_kernel!("dense_l1_avx512_vnni_l1_32",
+            is_x86_feature_detected!("avx512vnni"),
+            dense_l1_avx512_vnni_l1_32(&s_pw, &n_pw, PW, &sw, &bias, scale, out.as_mut_ptr()));
+        if avx2.is_finite() && avxv.is_finite() {
+            eprintln!("  AVX-VNNI vs AVX2 (Alder-Lake-relevant): {:+.1}% faster", (avx2 / avxv - 1.0) * 100.0);
+        }
+        if avx2.is_finite() && av512.is_finite() {
+            eprintln!("  AVX-512 VNNI vs AVX2: {:+.1}% faster", (avx2 / av512 - 1.0) * 100.0);
+        }
     }
 
     /// Cross-check: the new VNNI L1=32 kernel agrees with the existing AVX2
