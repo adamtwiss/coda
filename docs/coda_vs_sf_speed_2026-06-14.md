@@ -82,14 +82,16 @@ SF source: `/home/adam/chess/engines/Stockfish/src`.
 - **METHOD LESSON: three architecture claims this thread were wrong from inference (SF wider / SF not pairwise / pairwise kills sparse). Read source + measure; never infer arch.**
 - **Lesson: agent source-reviews can miss explanatory history — verify each "gap" against in-code comments/git before implementing.**
 
-### B. Incremental check/pin/check-square cache (SF StateInfo) — biggest movegen-side sink
-- Coda recomputes `checkers()` + `pinned()` (each = 2 slider magics + leapers, `board.rs:664/692`) and the movepicker's `checking_sqs` (`movepicker.rs:562`) **from scratch every node** (`search.rs:3145-3146`, QS `4751`).
+### B. Incremental check/pin/check-square cache (SF StateInfo) — UNTESTED, lower prior now
+- Coda recomputes `checkers()` + `pinned()` (each = 2 slider magics + leapers, `board.rs:664/692`) **from scratch every node** (`search.rs:3169-3170`, QS `4789`).
 - SF's `set_check_info()` (`position.cpp:473`) computes `checkersBB`, `blockersForKing`, `pinners`, `checkSquares[all pt]` ONCE incrementally at the tail of `do_move`; movepicker/legal/gives_check read them as O(1) StateInfo loads.
-- Fix: per-ply `CheckInfo` populated in/around `make_move`, threaded through the search stack. Bit-identical search. Large refactor but the single biggest movegen-side instructions/node win. **Enables C.**
+- Fix: per-ply `CheckInfo` populated in/around `make_move`, threaded through the search stack. Bit-identical search. **Large, correctness-critical (320-Elo-class) refactor.** Was framed "biggest movegen-side win" — but C (below) measured NEUTRAL, and `checkers`/`pinned` don't surface as a standalone hotspot in perf (inlined, small). Prior on B is now LOW-value/HIGH-risk: don't attempt speculatively; profile that checkers/pinned is a real slice first.
 
-### C. gives_check from cached check-squares (depends on B)
-- Coda: `let gives_check = board.in_check()` AFTER make_move (`search.rs:3974`) = full attacker scan w/ 2 magics, every made move (and the child recomputes `checkers()` a 3rd time).
-- SF: `gives_check(move)` BEFORE do_move from cached `check_squares(pt) & to` + discovered test — handful of bitboard ops, and the result seeds `checkersBB`. Bit-identical once B exists.
+### C. gives_check from cached check-squares — TESTED NEUTRAL (2026-06-15)
+- Implemented: `Board::check_squares()` (per-node table) + `Board::gives_check_cached()`, lazily computed once per node, replacing the per-move `gives_direct_check` (post-move occ + magic) in the futility/LMP/bad-noisy carve-outs (`search.rs` ~3937/3955/3975). Branch `experiment/check-info-cache` (9f81d84).
+- **Bit-identical** (bench 2325223; proven vs `gives_direct_check` by differential test `board::tests::gives_check_cached_matches` over a depth-3 perft tree — sliders/unblock/promo/EP/castle).
+- **NPS-NEUTRAL** both single-thread (BASE ~777k vs ~775k) and 16× contended (3.437M vs 3.431M), clean Hercules. The per-move `gives_direct_check` was too small a slice. **Fourth scalar micro-opt to measure neutral** (after the zero-emit cull, the 48KB→6KB table shrink; Fix A regressed). Parked, do NOT SPRT/merge.
+- **Pattern (now robust): scalar search/movegen/threat micro-opts do not move Coda's NPS** — per-node cost is NNUE-eval-dominated. The speed levers are eval-cost (feature set / x-ray, in flight) and SIMD kernels (AVX-512), not scalar shaving. Re-weight the sequencing below accordingly.
 
 ### D. Direct-write move generation (kill the 514-byte MoveList copies)
 - Coda `generate_captures`/`generate_quiets` return `MoveList` (~514 B) BY VALUE (`movegen.rs:97/271`), then the picker re-pushes into `self.moves`. `generate_all_moves` (`movegen.rs:444`) copies caps+quiets into a 3rd list (every evasion/QS-in-check node).
