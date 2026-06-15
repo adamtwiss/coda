@@ -51,6 +51,22 @@ pub mod apply_stats {
         GEN_DELTAS.fetch_add(n as u64, Ordering::Relaxed);
     }
 
+    // Replay-gap distribution: plies replayed per materialization (index -
+    // ancestor). double_inc_update (SF cross-ply cancellation) can ONLY help
+    // when gap >= 2; gap == 1 has zero cross-ply opportunity. Bounds the lever.
+    static REPLAY_CALLS: AtomicU64 = AtomicU64::new(0);
+    static REPLAY_GAP_SUM: AtomicU64 = AtomicU64::new(0);
+    static REPLAY_GAP1: AtomicU64 = AtomicU64::new(0);
+    static REPLAY_GAP2P: AtomicU64 = AtomicU64::new(0);
+
+    #[inline(always)]
+    pub fn record_replay_gap(gap: usize) {
+        REPLAY_CALLS.fetch_add(1, Ordering::Relaxed);
+        REPLAY_GAP_SUM.fetch_add(gap as u64, Ordering::Relaxed);
+        if gap >= 2 { REPLAY_GAP2P.fetch_add(1, Ordering::Relaxed); }
+        else { REPLAY_GAP1.fetch_add(1, Ordering::Relaxed); }
+    }
+
     /// Count net-zero same-index add/sub pairs in one apply call. Each matched
     /// (idx in adds AND idx in subs) pair = 2 streamed rows that cancel.
     /// O(n log n); profile-only, allocations fine.
@@ -129,6 +145,14 @@ pub mod apply_stats {
         eprintln!(
             "  GENERATED (caching-immune): {} moves, {} deltas, avg {:.2} deltas/move (vs deltas/apply-call above which lazy-replay inflates)",
             gm, gd, gd as f64 / gm.max(1) as f64
+        );
+        let rc = REPLAY_CALLS.load(Ordering::Relaxed);
+        let g2p = REPLAY_GAP2P.load(Ordering::Relaxed);
+        eprintln!(
+            "  REPLAY GAP: {} materializations, avg {:.3} plies, gap==1 {:.1}%, gap>=2 {:.1}% (only gap>=2 can use double_inc_update cross-ply cancellation)",
+            rc, REPLAY_GAP_SUM.load(Ordering::Relaxed) as f64 / rc.max(1) as f64,
+            100.0 * REPLAY_GAP1.load(Ordering::Relaxed) as f64 / rc.max(1) as f64,
+            100.0 * g2p as f64 / rc.max(1) as f64
         );
     }
 }

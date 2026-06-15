@@ -294,6 +294,9 @@ impl ThreatStack {
         let king_sq = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
         let mirrored = (king_sq % 8) >= 4;
 
+        #[cfg(feature = "profile-threats")]
+        crate::threats::apply_stats::record_replay_gap(self.index - ancestor);
+
         for ply in (ancestor + 1)..=self.index {
             let entry_mv = self.stack[ply].mv;
 
