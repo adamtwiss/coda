@@ -15857,3 +15857,26 @@ Implication: pursue L1=32. Speed half = the column-major VPDPBUSD L1=32 kernel
 (Zeus, docs/l1_32_vnni_kernel_handoff). Stack dual (+2 @ S200, merged Coda /
 Bullet pushed) + PSQT (neutral @ S200, planned) on top — all orthogonal
 (docs/dual_psqt_merge_plan).
+
+## 2026-06-15 — L1=32 VNNI SIMD kernels merged (column-major, AVX-512 + AVX-VNNI)
+
+Merged feature/l1-32-vnni-kernel (d4d8892): the "speed half" of the L1=32
+go/no-go. Two column-major VPDPBUSD kernels that prod L1=16 already had but
+L1=32 lacked (it fell to the row-major per-neuron VNNI path, re-scanning the
+pairwise input once per neuron):
+- dense_l1_avx512_vnni_l1_32 (2 ZMM wide): +8.5% whole-engine NPS on the
+  L1=32 net (Zen5, idle), bit-identical.
+- dense_l1_avx_vnni_l1_32 (YMM, Alder/Raptor Lake without AVX-512): +9.7% on
+  the L1 matmul vs the AVX2 maddubs fallback those hosts use.
+Both bit-identical + inert on AVX-512 hosts and the current L1=16 prod net
+(dispatch never reaches the l1==32 arms). Validated locally NOT via OB SPRT
+(VNNI-host-only — AVX2 fleet can't run them; same-binary L1=16 SPRT = noise).
+Deployment-regime self-play (conc=8, 1 game/physical core to avoid SMT
+dilution on the 8C/16T 9700X): +2.3 ±4.1, LOS 87%, non-regression.
+
+NOTE: the merge commit d4d8892 message carries a STALE "Bench: 2554835" (my
+branch's isolated bench); the true merged-HEAD bench is 2791086 — the delta is
+entirely main's intervening commits (dual-psqt etc.), the kernels being
+node-neutral. This commit records the correct number for OB auto-detection.
+
+Bench: 2791086
