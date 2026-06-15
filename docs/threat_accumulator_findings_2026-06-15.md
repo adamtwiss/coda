@@ -171,9 +171,47 @@ NOT micro-opts.
 - FT/L1/L2 forward, search, movegen — roughly comparable to SF per the profile,
   but the non-threat slice is where remaining bit-identical wins would live.
 
+## 7. Cross-ply cancellation (`double_inc_update`) — REOPENED, real lever
+
+Precise measurement (gap>=2 replay spans, net-zero add/sub over the combined span):
+- **28.96% cancellable** over gap>=2 spans (vs 3.80% per-ply).
+- gap>=2 spans are **30.3% of all streamed rows**.
+- → `double_inc_update` would cancel **~8.8% of ALL streamed threat rows**
+  (~0.8% NPS single-thread, ~2% contended — bandwidth regime, the big gap).
+  **Bit-identical, no Elo risk.**
+
+**SF's design (the right scope):** SF's `double_inc_update`
+(`nnue_accumulator.cpp:224/540`) is NOT general gap>=2 — it targets
+**capture+recapture** specifically (trigger: `dp2.remove_sq` is a square the
+middle move threatened). It combines middle+target diffs via `FusedUpdateData`,
+cancels the captured piece's redundant toggles, applies once from the computed
+ancestor, and skips the (transient) middle materialization. This sidesteps the
+intermediate-caching tradeoff (the skipped middle is a transient capture seq).
+- **Coda port:** in `ThreatStack::update` replay, detect ply N+1 capturing a
+  piece on a square ply N's move affected; combine N,N+1 deltas; cancel the
+  captured piece's toggles; apply once; skip middle. Bit-identical (verify bench
+  node count + accumulator consistency vs refresh). **This is the priority lever.**
+
+## 8. slider-sees ablation — INVALID experiment (do NOT train)
+
+Attempted as a "per-feature-type" A/B. **It is not a feature type.** Bullet
+enumerates threats attacker-centrically (each piece emits all its direct
+attacks). The engine's step-2 "slider-sees" emits `(slider S → moved piece P)`
+when **P** moves — the SAME feature S emits via its own step 1 `(S → P)` when
+**S** moves. So slider-sees is the incremental-update path that maintains
+incoming-slider-attack features *from the victim side*.
+- Disabling step 2 doesn't weaken eval cleanly — it **corrupts** it (`(S→P)`
+  maintained only on S-moves, stale on P-moves → move-order-dependent garbage).
+- **No matching net can be trained** (Bullet has no slider-sees subset; it's a
+  complete direct-attack feature). So the `CODA_NO_SLIDER_SEES` +3% NPS is the
+  cost of *necessary* machinery, not a removable feature.
+- The valid "are slider-attack threats worth it" experiment removes slider
+  direct attacks ENTIRELY (step 1 + step 2, engine + Bullet) — big, likely very
+  negative. Not a quick test. **S200 train NOT launched.**
+
 ### TODO
-- Instrument Reckless's apply to confirm Coda inherited its density (Coda≈Reckless≫SF).
-- Per-type ablation A/Bs (slider-sees first — largest non-xray type).
+- Implement the `double_inc_update` capture+recapture port (§7) — the priority.
+- Instrument Reckless's apply to confirm Coda inherited its density.
 
 ## Methodology notes
 - Delta counts are deterministic (no clean machine needed); NPS needs the OB
