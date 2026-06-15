@@ -175,8 +175,8 @@ NOT micro-opts.
 
 **Outcome (the headline):** implemented as `recapture-combine`
 (`experiment/recapture-combine`, branch parked) and SPRT'd as **#2015**. Despite
-measuring **+0.5% single / +2.1% 16×-contended on Hercules**, it SPRT'd
-**net-negative (~−2.9 ±2.5, converging H0 at ~21k games)**. DROPPED.
+measuring **+0.5% single / +2.1% 16×-contended on Hercules**, it **resolved H0
+net-negative (−2.4 ±2.0, LLR −2.97, 28.5k games)**. DROPPED.
 - **Why (the lesson): Hercules is the fleet's memory-bound outlier, so its NPS
   bench OVER-states bandwidth-saving opts.** The combine trades compute
   (sort/cancel) + cache (skipping intermediate materializations → siblings
