@@ -15824,3 +15824,11 @@ Hercules single/contended bench.** Casts doubt on other bandwidth-targeting work
 (FT-prefetch #1994) — re-validate those on the fleet too. NOTE: the L1=32 VNNI
 kernel (Zeus handoff) is a COMPUTE opt (VPDPBUSD instruction count), NOT bandwidth
 — so it is NOT subject to this and remains valid.
+
+### UPDATE (#2015 resumed): conclusion above was PREMATURE
+Adam resumed #2015 for more games — at N=4420 the result was UNRESOLVED (LLR
+−0.85, far from the −2.94 H0 boundary; CI upper still positive ~+1.1). The
+"net-negative / DROPPED" verdict and the worker-variance/caching-loss diagnosis
+above are a HYPOTHESIS, not a finding — the extra games will test it. If it
+resolves clearly H0, the bandwidth-mirage diagnosis holds; if it recovers toward
+0/+, the Hercules +2.1% wasn't a mirage. Verdict pending resolution.
