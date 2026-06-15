@@ -15763,3 +15763,36 @@ NNUE-eval-dominated.** Downgrades B (make_move checkers/pinned cache) from
 "biggest movegen-side win" to low-prior/high-risk untested. Real speed levers
 are eval-cost (feature set) and SIMD kernels, not scalar shaving. Parked, not
 merged. Docs: 97da3fe / d561c9d.
+## 2026-06-15 — threat-gate RFP DEAD (#2000 H0 -2.0 STC, #2001 ~-1.1 LTC stopped); #2007 quadratic deep-margin is the real RFP lever (+7.6 STC)
+
+The threat-context RFP gate (scale margin by any_threat_count) H0'd at STC
+(#2000 -2.0) and trended H0 at LTC (#2001 -1.1 +-1.7 @ 40k, upper CI +0.6 —
+stopped near-lock, superseded). The driving RFP_AUDIT signal (null-FP rate
+32%@0t -> 63%@3+) did NOT convert to Elo at any TC.
+
+**Why it failed — two compounding errors:**
+1. **Null-move audit overcounts in tactical positions.** The "null search
+   refuses the cut" FP metric rises under threats partly because null-move is
+   ITSELF unreliable when threats are live (hands the opponent a free tactical
+   shot), not because RFP is genuinely unsound there. The threat-FP separation
+   was largely a null-move artifact. RFP_AUDIT null-FP rate is NOT a reliable
+   proxy for Elo-losing cuts — calibrate future "instrument-the-unsound-cuts"
+   work against a REAL reduced-depth search verify, not null-move.
+2. **FP-RATE misses LEVERAGE.** My FP-rate-by-remaining-depth read (rate FALLS
+   with depth, deep buckets low-volume) led me to "deep RFP isn't the lever,
+   over-pruning is shallow." WRONG. Deep RFP cuts are rare but CATASTROPHIC: a
+   wrong cut at remaining-depth 12 discards a huge subtree. Per-cut leverage
+   (FP x subtree-value) dwarfs raw FP rate. The lever is deep, as ltc_audit S1
+   originally said — I talked myself out of it on the rate data.
+
+**The win (other agent, #2007 `experiment/rfp-deep-margin-submit`):**
+quadratic deep-margin — beyond remaining-depth RFP_DEEP_KNEE=8, widen RFP
+margin by `deep*LINEAR + deep^2*QUAD` (LINEAR=64, QUAD=12). **+7.6 STC,
+neutral LTC.** This is the ltc_audit S1 quadratic-margin lever. It STACKS on
+the merged root-depth RFP term (composes, root-depth merge not wasted).
+
+**Lesson for the structural-gate methodology:** "find the ignored context
+signal and gate on it" is sound, but (a) validate the unsoundness signal with
+a real search not null-move, and (b) weight candidate cuts by leverage
+(subtree value), not just frequency/FP-rate. The deep-margin SHAPE (quadratic
+in remaining depth) beat the context-GATE (threat count) decisively.
