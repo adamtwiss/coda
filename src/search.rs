@@ -132,14 +132,11 @@ tunables!(
     // 393/d<=4, Stormphrax ~290/d<=4.
     (RAZOR_MULT, 275, 100, 500, 20.0, true),
     (RAZOR_DEPTH, 4, 1, 8, 0.5, true),
-    // Futility margin reduced to Reckless scale. At lmr_d=5:
-    //   Old: 78 + 160*5 = 878 (Coda 2.4× wider than Reckless 364)
-    //   New: 40 + 65*5 = 365 (matches Reckless)
-    // Force-more-pruning experiment: Coda was under-pruning at mid-depth
-    // where Reckless prunes confidently. SPSA retune-on-branch expected.
-    // Floor lifted from 20 → 0 (audit 2026-05-20): pinned at 23, 2% from floor.
-    (FUT_BASE, 32, 0, 200, 9.0, true),
-    (FUT_PER_DEPTH, 89, 40, 250, 10.5, true),
+    // Futility margin widened after the pruning audit: 80/110 H1'd at STC
+    // (#2018 +3.5) and was flat at LTC (#2019), with focused SPSA #2020
+    // converging back to 81.5/109.0. Keep depth/threat gates unchanged.
+    (FUT_BASE, 80, 0, 200, 9.0, true),
+    (FUT_PER_DEPTH, 110, 40, 250, 10.5, true),
     (FUT_LMR_DEPTH, 15, 6, 24, 2.0, true),
     // HIST_PRUNE_DEPTH_10X / HIST_PRUNE_MULT removed 2026-06-02 — see hist-prune
     // removal block in main negamax body for rationale (three H0 SPRTs).
