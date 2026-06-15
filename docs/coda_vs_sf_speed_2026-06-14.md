@@ -96,10 +96,13 @@ SF source: `/home/adam/chess/engines/Stockfish/src`.
 - SF generates straight into the picker buffer; no by-value return, no re-push, dedicated `MoveList<EVASIONS>`.
 - Fix: `&mut MoveList`/`&mut MovePicker` direct write. Localized, bit-identical, removes 1-2 full list copies per node.
 
-### E. Threat feature-index precompute (avoid double table-chase per ply)
-- `apply_threat_deltas` (`threats.rs:1644`) re-derives every delta's index via `threat_index` (`threats.rs:472`: color remap + `piece_pair` LUT + `pair.base()` + flip + `piece_offset` + a 48KB `attack_index[12][64][64]` chase) **twice per ply** (once per perspective), every evaluated make_move. The apply SIMD kernel itself is SF-class; the scalar index loop + 48KB table thrash is the cost.
-- SF builds the changed-index list once in `append_changed_indices`; `double_inc_update` cancels recapture toggles.
-- Fix: precompute per-perspective indices at delta-generation (`push_threats_*`) or cache in `RawThreatDelta`. Bit-identical, medium effort.
+### E. Threat feature-index precompute — TWO VARIANTS TESTED NEUTRAL (2026-06-15)
+- `apply_threat_deltas` (`threats.rs:1644`) re-derives every delta's index via `threat_index` (`threats.rs:472`: color remap + `piece_pair` LUT + `pair.base()` + flip + `piece_offset` + a 48KB `attack_index[12][64][64]` chase) twice per ply (once per perspective).
+- **The premise that "the 48KB table thrash is the cost" was wrong.** Two bit-identical micro-opts on the threat-index machinery measured NPS-NEUTRAL (clean Hercules, OB worker stopped, 16× contended aggregate, 4-5 rounds each, direction flips round-to-round = noise floor ~0.5%):
+  - **48KB `attack_index` → 6KB `empty_attacks` + on-demand `popcount`** (`experiment/threat-index-compute`, commit `6f1e329`): base mean 3,439,591 vs 3,442,296 (+0.08%). An 8× table shrink moved nothing — a 48KB table is negligible against the multi-MB NNUE weight working set that dominates the contended L3 pressure.
+  - **X-ray zero-emit cull** (gate the 1b own-x-ray loop, skips 72.8% of zero-emit calls; `experiment/xray-zeroemit-cull`, commit `23b7e05`): single-thread +0.3%, 16× contended +0.06%. Skipping the cheapest 73% of a cheap loop is Amdahl-invisible.
+- **Conclusion (two angles — instruction count AND memory footprint — both neutral):** the threat *index/generation* subsystem (scalar code + small tables) is NOT the lever. The contended cost is **streaming the NNUE threat-row weights in the apply** (the ~37% `vpmovsxbw` weight-apply), whose volume is set by **how many threat features fire** — which x-ray inflates (see line 42 / §"WASTED" above). The threat-side speed lever and the −157 Elo x-ray finding are the SAME lever: the feature set. Pursue via the x-ray SB800 A/B, not index micro-opts.
+- Both branches are bit-identical and harmless but pointless on NPS grounds — do not SPRT (measured-neutral; would burn fleet). Drop or leave parked.
 
 ### F. Fixed-array undo stack (replace Vec push/pop)
 - Coda `undo_stack: Vec<UndoInfo>` push/pop per make/unmake (`board.rs:837/959`) — capacity check + `Option` unwrap on the absolute hottest path (pre-reserved, so no realloc).
@@ -124,9 +127,9 @@ SF source: `/home/adam/chess/engines/Stockfish/src`.
 - `is_pseudo_legal` weight ≈ SF `pseudo_legal`, same frequency (TT move only).
 
 ## Recommended sequencing (REVISED 2026-06-14 — A tested DEAD, movegen-side is the thread)
-1. **B+C (check-info cache)** — biggest verified win: recompute checkers/pinned/check-squares every node vs SF's once-in-do_move `set_check_info`. Large refactor, bit-identical. This is the real movegen/search-overhead slice of the 44% gap.
-2. **D (direct-write movegen) + F (fixed undo stack)** — localized bit-identical wins, bank them.
-3. **E (threat index precompute)** — medium bit-identical.
+1. **B+C (check-info cache)** — biggest verified win: recompute checkers/pinned/check-squares every node vs SF's once-in-do_move `set_check_info`. Large refactor, bit-identical. This is the real movegen/search-overhead slice of the 44% gap. NOT yet tested — distinct subsystem from the neutral threat-index results below.
+2. **D (direct-write movegen) + F (fixed undo stack)** — localized bit-identical wins. NOTE: the two threat-side micro-opts (E) measured neutral at the ~0.5% noise floor, which is a prior that small scalar wins in an NNUE-dominated path may not register; measure D/F at conc≤2 before assuming they bank. Lower priority than B+C.
+3. ~~E (threat index precompute)~~ — TESTED NEUTRAL both as table-shrink and zero-emit cull (see §E). The threat-index machinery is not the lever; the cost is NNUE weight-streaming volume (feature count / x-ray). DEAD for NPS.
 4. ~~A (L1 sparse-input)~~ — TESTED DEAD (loses 1.8-2.4x at all densities; L1 too small for skip-detection to pay). Dense is correct.
 5. **G/H** — behavior-affecting / structural, SPRT-gated. "Drop pairwise" is a SEPARATE untested eval question (copied Reckless; never measured vs plain CReLU) — but NOT a speed lever (SF is pairwise and fast).
 
