@@ -15796,3 +15796,31 @@ signal and gate on it" is sound, but (a) validate the unsoundness signal with
 a real search not null-move, and (b) weight candidate cuts by leverage
 (subtree value), not just frequency/FP-rate. The deep-margin SHAPE (quadratic
 in remaining depth) beat the context-GATE (threat count) decisively.
+
+## 2026-06-15: recapture-combine (double_inc_update) — net-negative on fleet, DROPPED (#2015)
+
+Cross-ply cancellation port (double_inc_update): in ThreatStack::update's lazy
+replay, on a recapture (move_to(N)==move_to(N+1)) apply ply-1->ply+1 with
+combined deltas + net-zero cancellation, skipping the middle materialization.
+Bit-identical (bench 2554835, CODA_VERIFY_NNUE 0/10000, 175 tests pass).
+
+**Local NPS (Hercules): +0.5% single / +2.1% 16x-contended. SPRT #2015 tracked
+−4.2 ±5.3 (LLR −0.85, 4420 games) → stopped, H0-ward.**
+
+Diagnosis: **Hercules is the fleet's memory-bound outlier — its +2.1% was a
+mirage.** The combine trades compute (sort/cancel) + cache (skipping intermediate
+materializations → siblings replay from further back) for memory bandwidth. On
+memory-bound Hercules the bandwidth saving wins; on the non-memory-bound fleet
+majority the compute+caching costs dominate → net-negative. The `move_to`-equality
+gate skips MORE intermediates than SF's `threateningSqs` condition, amplifying the
+caching loss. Cross-ply cancellation and intermediate caching are fundamentally in
+tension (can't cancel without combining/skipping the middle) — the lever (~8.8% of
+streamed rows) is real but NOT cheaply capturable, and would only help memory-bound
+hosts (deployment Zen5 isn't one). DROPPED — branch parked, not merged.
+
+**LESSON: Hercules NPS for perf-sensitive/bandwidth changes is unrepresentative
+(memory-bound outlier). Validate on fleet SPRT or a deployment-class host, not a
+Hercules single/contended bench.** Casts doubt on other bandwidth-targeting work
+(FT-prefetch #1994) — re-validate those on the fleet too. NOTE: the L1=32 VNNI
+kernel (Zeus handoff) is a COMPUTE opt (VPDPBUSD instruction count), NOT bandwidth
+— so it is NOT subject to this and remains valid.
