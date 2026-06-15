@@ -37,6 +37,19 @@ pub mod apply_stats {
     // CANCELLED = rows that net to zero (2 per matched add/sub index pair).
     static STREAMED_ROWS: AtomicU64 = AtomicU64::new(0);
     static CANCELLED_ROWS: AtomicU64 = AtomicU64::new(0);
+    // Generation-side: deltas GENERATED per move (counted at absorb, once per
+    // move). Caching/laziness-immune — unlike deltas/apply-call which is
+    // inflated by lazy-replay depth + eval-cache materialization frequency.
+    // This is the architecture-pure "threat-model density" number.
+    static GEN_MOVES: AtomicU64 = AtomicU64::new(0);
+    static GEN_DELTAS: AtomicU64 = AtomicU64::new(0);
+
+    /// Record per-move generated delta count (once per make_move, at absorb).
+    #[inline(always)]
+    pub fn record_generated(n: usize) {
+        GEN_MOVES.fetch_add(1, Ordering::Relaxed);
+        GEN_DELTAS.fetch_add(n as u64, Ordering::Relaxed);
+    }
 
     /// Count net-zero same-index add/sub pairs in one apply call. Each matched
     /// (idx in adds AND idx in subs) pair = 2 streamed rows that cancel.
@@ -110,6 +123,12 @@ pub mod apply_stats {
             "  CANCELLATION: {} rows streamed, {} cancellable (net-zero add/sub pairs) = {:.2}% wasted bandwidth (SF cancels these)",
             streamed, cancelled,
             100.0 * cancelled as f64 / streamed.max(1) as f64
+        );
+        let gm = GEN_MOVES.load(Ordering::Relaxed);
+        let gd = GEN_DELTAS.load(Ordering::Relaxed);
+        eprintln!(
+            "  GENERATED (caching-immune): {} moves, {} deltas, avg {:.2} deltas/move (vs deltas/apply-call above which lazy-replay inflates)",
+            gm, gd, gd as f64 / gm.max(1) as f64
         );
     }
 }

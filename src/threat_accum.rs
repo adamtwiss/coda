@@ -138,6 +138,8 @@ impl ThreatStack {
     /// `make_move`, and record the move metadata needed by mirror checks.
     #[inline]
     pub fn absorb_deltas(&mut self, board: &crate::board::Board) {
+        #[cfg(feature = "profile-threats")]
+        crate::threats::apply_stats::record_generated(board.threat_deltas.len());
         let entry = self.current_mut();
         entry.delta.clear();
         for d in board.threat_deltas.iter() {
