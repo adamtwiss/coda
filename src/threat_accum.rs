@@ -297,6 +297,27 @@ impl ThreatStack {
         #[cfg(feature = "profile-threats")]
         crate::threats::apply_stats::record_replay_gap(self.index - ancestor);
 
+        // Cross-ply cancellation measurement (double_inc_update upside #1): for
+        // gap>=2 replays, gather all valid delta indices across the span and
+        // count net-zero add/sub pairs over the COMBINED multiset. Compared to
+        // the per-ply 3.8%, the excess is the cross-ply cancellation double_inc
+        // would capture. Profile-only.
+        #[cfg(feature = "profile-threats")]
+        if self.index - ancestor >= 2 {
+            let mut adds: Vec<usize> = Vec::new();
+            let mut subs: Vec<usize> = Vec::new();
+            for ply in (ancestor + 1)..=self.index {
+                for d in &self.stack[ply].delta.data[..self.stack[ply].delta.len] {
+                    let idx = crate::threats::threat_index(
+                        d.attacker_cp() as usize, d.from_sq() as u32,
+                        d.victim_cp() as usize, d.to_sq() as u32, mirrored, pov);
+                    if idx < 0 || (idx as usize) >= num_features { continue; }
+                    if d.add() { adds.push(idx as usize); } else { subs.push(idx as usize); }
+                }
+            }
+            crate::threats::apply_stats::record_crossply(&adds, &subs);
+        }
+
         for ply in (ancestor + 1)..=self.index {
             let entry_mv = self.stack[ply].mv;
 

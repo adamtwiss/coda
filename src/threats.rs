@@ -67,6 +67,24 @@ pub mod apply_stats {
         else { REPLAY_GAP1.fetch_add(1, Ordering::Relaxed); }
     }
 
+    // Cross-ply (gap>=2 span) cancellation: net-zero add/sub pairs over the
+    // COMBINED multi-ply span. Span rate vs the 3.8% per-ply rate = the extra
+    // double_inc_update would capture. Plus the gap>=2 rows are where the
+    // intermediate-copy saving lives.
+    static XPLY_STREAMED: AtomicU64 = AtomicU64::new(0);
+    static XPLY_CANCELLED: AtomicU64 = AtomicU64::new(0);
+    pub fn record_crossply(adds: &[usize], subs: &[usize]) {
+        XPLY_STREAMED.fetch_add((adds.len() + subs.len()) as u64, Ordering::Relaxed);
+        let mut a = adds.to_vec(); a.sort_unstable();
+        let mut s = subs.to_vec(); s.sort_unstable();
+        let (mut i, mut j, mut c) = (0usize, 0usize, 0u64);
+        while i < a.len() && j < s.len() {
+            if a[i] == s[j] { c += 2; i += 1; j += 1; }
+            else if a[i] < s[j] { i += 1; } else { j += 1; }
+        }
+        XPLY_CANCELLED.fetch_add(c, Ordering::Relaxed);
+    }
+
     /// Count net-zero same-index add/sub pairs in one apply call. Each matched
     /// (idx in adds AND idx in subs) pair = 2 streamed rows that cancel.
     /// O(n log n); profile-only, allocations fine.
@@ -153,6 +171,13 @@ pub mod apply_stats {
             rc, REPLAY_GAP_SUM.load(Ordering::Relaxed) as f64 / rc.max(1) as f64,
             100.0 * REPLAY_GAP1.load(Ordering::Relaxed) as f64 / rc.max(1) as f64,
             100.0 * g2p as f64 / rc.max(1) as f64
+        );
+        let xs = XPLY_STREAMED.load(Ordering::Relaxed);
+        let xc = XPLY_CANCELLED.load(Ordering::Relaxed);
+        eprintln!(
+            "  CROSS-PLY (gap>=2 spans): {} rows in spans, {} cancellable over combined span = {:.2}% (vs 3.8% per-ply; excess is double_inc upside #1). These spans are {:.1}% of all streamed rows.",
+            xs, xc, 100.0 * xc as f64 / xs.max(1) as f64,
+            100.0 * xs as f64 / streamed.max(1) as f64
         );
     }
 }
