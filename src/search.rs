@@ -175,6 +175,13 @@ tunables!(
     (LMR_ROOT_COEF, 10, 0, 80, 4.0, true),
     (BAD_NOISY_MARGIN, 73, 30, 150, 6.0, true),
     (PROBCUT_MARGIN, 117, 80, 300, 11.0, true),
+    // Root-depth-aware conservative ProbCut:
+    // #2021 found PROBCUT_MARGIN=170 / MIN_DEPTH_10X=45 wins at STC,
+    // while #2022 rejected it at LTC. Add that conservative offset at
+    // shallow root depths, then fade back to current main as root depth grows.
+    (PROBCUT_ROOT_THRESH, 16, 8, 28, 1.5, true),
+    (PROBCUT_ROOT_FADE, 4, 1, 12, 1.0, true),
+    (PROBCUT_ROOT_MARGIN, 53, 0, 120, 8.0, true),
     (HINDSIGHT_THRESH, 179, 50, 400, 17.5, true),
     (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
     (QS_DELTA_MARGIN, 352, 100, 500, 20.0, true),
@@ -380,6 +387,7 @@ tunables!(
     // ~2% from floor. Lifting to 10 (eff 1) allows exploration of more
     // aggressive ProbCut activation.
     (PROBCUT_MIN_DEPTH_10X, 21, 10, 120, 15.0, true),     // was hardcoded 5 (ProbCut activation gate)
+    (PROBCUT_ROOT_MIN_DEPTH_10X, 24, 0, 80, 8.0, true),
     (SEE_CAP_DEPTH, 7, 3, 15, 1.5, true),         // was hardcoded 6 (SEE capture prune depth cap)
     (BAD_NOISY_DEPTH, 8, 4, 15, 1.5, true),       // was hardcoded 4 (BNFP depth cap)
     // Second pass — additional gates exposed for the feature-utility
@@ -3573,7 +3581,14 @@ fn negamax(
     //   "score is AT LEAST X" — it does not mean "no chance at probcut_beta",
     //   the true score can be much higher. Only UPPER/EXACT bounds are
     //   evidence of a ceiling. Switch to ply-adjusted score + bound gate.
-    let probcut_beta = beta + tp(&PROBCUT_MARGIN);
+    let probcut_root_over = (info.root_depth - tp(&PROBCUT_ROOT_THRESH)).max(0);
+    let probcut_fade_span = tp(&PROBCUT_ROOT_FADE).max(1);
+    let probcut_fade_num = (probcut_fade_span - probcut_root_over).clamp(0, probcut_fade_span);
+    let probcut_beta = beta + tp(&PROBCUT_MARGIN)
+        + (tp(&PROBCUT_ROOT_MARGIN) * probcut_fade_num) / probcut_fade_span;
+    let probcut_min_depth_10x = tp(&PROBCUT_MIN_DEPTH_10X)
+        + (tp(&PROBCUT_ROOT_MIN_DEPTH_10X) * probcut_fade_num) / probcut_fade_span;
+    let probcut_min_depth = (probcut_min_depth_10x + 5) / 10;
     let probcut_tt_noshot = if tt_hit && tt_entry.depth >= depth - tp(&PROBCUT_TT_DEPTH_SLACK) {
         let adj_score = score_from_tt(tt_entry.score, ply);
         (tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT)
@@ -3581,7 +3596,7 @@ fn negamax(
     } else {
         false
     };
-    if !in_check && ply > 0 && !is_pv && depth >= tp10(&PROBCUT_MIN_DEPTH_10X)
+    if !in_check && ply > 0 && !is_pv && depth >= probcut_min_depth
         && beta.abs() < MATE_SCORE - 100  // skip for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
         && !probcut_tt_noshot  // TT says no chance
