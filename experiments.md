@@ -16008,3 +16008,41 @@ after the calibration-recoverable part).
    dropped the NMP cluster — replaced with committed self-validating
    scripts/apply_tune.py (cross-checks coda tune-spec, hard-errors on any
    unknown/ambiguous param). ob skill §7 updated.
+
+### Why-worse decomposition: eval-quality + NPS (idle Hercules, 2026-06-16)
+
+Direct measurement of WHY each net regressed, separating eval quality from speed.
+Tools: `coda eval-dist --quiet-only --csv` (exports fen,result,coda_eval,lc0_oracle
+from T80 jun-2023, 20k quiet pos) -> per-net logistic fit (SCALE-ABSORBED, so dual's
+compression doesn't penalise it); `coda eval-bench` (pure inference); `coda bench`
+(search NPS). PSQT and Dual failed for COMPLETELY DIFFERENT reasons:
+
+| net | Spearman vs LC0 | Brier(blend) | pure-eval NPS | search NPS | nodes@d14 |
+|---|---|---|---|---|---|
+| baseline | 0.8801 | 0.0196 | 1.46M/s | 762k | 6.19M |
+| +psqt | 0.8836 (=/better) | 0.0190 | -5% | -12% | 6.05M |
+| +dual | 0.8632 (-0.017 WORSE) | 0.0228 (+16% WORSE) | -8% | +5% | 9.01M (+46%) |
+
+(Pure game-result Brier was degenerate/identical across nets — T80 result alone is
+~uncorrelated/too-drawish; the LC0-oracle blend is the meaningful target.)
+
+- **PSQT = NPS-tax-for-nothing.** Eval quality MATCHES baseline (Spearman 0.884 vs
+  0.880, even marginally better) — the skip-connection didn't break prediction. But
+  the output head costs ~5% pure inference / -12% search NPS = less depth for no eval
+  gain. The -12.5 is "small NPS tax + plausibly some unlucky train" — nothing
+  structural to rescue (consistent with #2042's ~0 tune recovery).
+- **DUAL = genuine eval-quality regression, three ways.** (1) Eval quality DEGRADED:
+  Spearman 0.863 vs 0.880, Brier +16%, scale-absorbed — the [crelu;screlu] concat
+  HURTS the eval's position-ranking vs oracle. This is the ~-18 the tune couldn't
+  touch. (2) -33% scale compression -> bad EBF -> +46% nodes to reach d14 = far less
+  effective depth (the ~1/3 the tune partly recovered). (3) -8% pure-eval speed on
+  top. Three independent harms stacked.
+
+Conclusion: neither regression is an under-tuned calibration miss — they're
+structural (psqt: pure speed cost; dual: worse eval + tree bloat + speed), which is
+exactly why the recovery tunes capped at partial (dual) / none (psqt). Caveat:
+NPS measured on Hercules (memory-bound outlier) — pure-eval compute deltas (psqt
+output head, dual 2x L2) are if anything UNDER-stated there
+([[feedback_hercules_bench_overstates_bandwidth_opts]] is about bandwidth opts;
+compute costs read smaller on a memory-bound box), so deployment NPS gaps may be
+larger.
