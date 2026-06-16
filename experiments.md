@@ -15904,3 +15904,43 @@ The "mild interaction emerging" read at ~1-2k games was noise.
 
 Corollary: the relative-LTC-weakness puzzle is NOT explained by MSE — stays open
 (candidate causes: TC-sensitive search/TM/pruning, or cross-engine ranking noise).
+
+## 2026-06-16: PSQT and Dual-activation both REGRESS vs baseline at S800 (#2036/#2037)
+
+Matched-triplet marginal feature test. Three fresh single-S800 nets, identical
+recipe (FT=1024, L1=32, threats, kb reckless-10, wdl 0.20, mse-power 3, fen-skip
+0.5, interleave, factoriser, SWA@720), varying ONE feature each:
+- BASELINE (71770EBD) — hidden-activation crelu, no extras
+- +PSQT  (BCAA7A26) — SF-style PSQT skip-connection output head (v11)
+- +DUAL  (E3040DF2) — dual L1 activation [crelu;screlu] concat (v8), doubles L2 in
+
+Both candidates SPRT'd vs the SAME baseline net, [-1.5,1.5], 10+0.1. PSQT test ran
+on experiment/psqt-inference-on-main (bit-identical to main for non-psqt nets,
+verified: baseline benched 2466418 on both branches); dual test on main.
+
+- **+DUAL  #2036: H0 ✗  -27.9 ±7.9  (2530 games, LLR -2.95)**
+- **+PSQT  #2037: H0 ✗  -12.5 ±5.3  (5568 games, LLR -2.98)**
+
+**Verdict: at S800, BOTH features regress vs the plain baseline** (baseline >
+psqt > dual). The added eval-architecture capacity (psqt output head / dual
+activation) did NOT convert to search strength at this recipe/length.
+
+Proxy mispredict — both pre-SPRT signals pointed the WRONG way:
+- Move-ordering (bench d12): +DUAL had the BEST EBF of all four (1.72 vs baseline
+  1.77), +PSQT the best first-move (83.9% vs 82.5%, even beating long-multistage
+  prod). Neither edge survived to self-play strength.
+- S200 training/val loss ranked PSQT best, Dual 2nd, baseline 3rd — inverted vs
+  S800 SPRT. Textbook loss != strength ([[feedback_loss_is_not_strength]]) and
+  ordering-proxy != strength.
+- Early-N drift was severe and symmetric: dual sat at +1.9 (N=184) and ~+20 before
+  collapsing to -28; do NOT read these below ~2-3k games.
+
+Caveat: single-S800, trunk-default tunables (no net-specific retune) — same as
+baseline, so a FAIR marginal comparison, but the features might behave differently
+with capacity-matched recipe changes
+([[feedback_capacity_increases_need_information_increases]]: wider/richer nets want
+higher WDL etc.; here all three shared wdl 0.20). Not pursued — the regressions are
+large enough (-12, -28) that a recipe tweak is unlikely to flip them at S800.
+
+Consequence: the in-flight gpu2 dual+psqt COMBINED run stacks two independently-
+regressing features — premise weakened; pending Adam's keep/kill call.
