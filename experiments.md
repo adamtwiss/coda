@@ -15880,3 +15880,27 @@ entirely main's intervening commits (dual-psqt etc.), the kernels being
 node-neutral. This commit records the correct number for OB auto-detection.
 
 Bench: 2791086
+
+## 2026-06-16: MSE-power STC vs LTC — NO interaction, higher MSE better at both (#2032/#2033)
+
+Tested whether Viridithas's "higher MSE helps STC / hurts LTC" finding transfers
+to Coda (motivated by a surprising relative LTC weakness, and that we'd only ever
+validated --mse-power at STC; current recipe uses mse-power 3 = "mse30"). Pair:
+warm10-inter-mse30-s200 (F7D61335, dev) vs warm10-inter-mse24-s200 (E0D2D77C,
+base), SAME net pair at both TCs, [-1.5,1.5].
+
+- **STC (10+0.1) #2032: +12.2 ±5.3 H1 ✓** (5840 games).
+- **LTC (40+0.4) #2033: +10.2 ±4.9** (5818 games, LLR 2.71, CI excludes 0, H1 imminent).
+
+**Verdict: NO meaningful MSE×TC interaction.** mse30 is better than mse24 by
+~the same margin (~+11) at BOTH STC and LTC (delta ~+2, within noise). The
+Viridithas STC-helps/LTC-hurts pattern does NOT transfer to Coda for the 24-vs-30
+pair. **--mse-power 3 is confirmed good at both TCs** — not an LTC liability, so
+no free LTC Elo from dialing MSE back.
+
+Process note: the LTC arm swung -4.8 -> +8.4 -> +4.1 -> +7.4 -> +4.6 -> +10.4
+before settling ~+10 — a clean illustration of NOT reading LTC below ~4k games.
+The "mild interaction emerging" read at ~1-2k games was noise.
+
+Corollary: the relative-LTC-weakness puzzle is NOT explained by MSE — stays open
+(candidate causes: TC-sensitive search/TM/pruning, or cross-engine ranking noise).
