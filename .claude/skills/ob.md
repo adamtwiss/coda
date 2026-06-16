@@ -397,22 +397,31 @@ secondary; SPRT stopping-point bias matters more.
 ## 7. Applying tune outputs
 
 ```bash
-# Pull outputs:
-OPENBENCH_PASSWORD=$PW python3 scripts/ob_tune_status.py <tune_id> --outputs > /tmp/tune-N.txt
+# Pull outputs — prefer the RAW API (the `--outputs` CLI drops the _10X
+# cluster and other params; the raw endpoint is complete):
+curl -s "https://ob.atwiss.com/api/spsa/<tune_id>/outputs/" > /tmp/tune-N.txt
 
-# Apply to branch (creates new commit isn't necessary, but checkout to branch first):
-git checkout -b experiment/tune-<id>-applied
-python3 /tmp/apply_tune.py /tmp/tune-N.txt src/search.rs
+# Apply with the COMMITTED, self-validating tool (checkout the branch first):
+git checkout -b experiment/<model-descriptor>-tuned
+make                                   # tune-spec reads the live macro
+python3 scripts/apply_tune.py /tmp/tune-N.txt   # --dry-run to preview
 
 # Sanity:
 make && ./coda bench    # confirm builds + get new bench number
 # Commit + push + SPRT at [0, 3] vs main (or vs pre-tune trunk for retune-on-branch).
 ```
 
-The apply tool replaces default values in the `tunables!(...)` macro
-in `src/search.rs`. It does NOT modify the macro structure — if
-tune-spec changed (new tunables, demotions), re-derive the spec
-first.
+**ALWAYS use the committed `scripts/apply_tune.py` — never an ad-hoc
+`/tmp` script.** Uncommitted apply scripts drift out of sync and have
+silently mis-applied tunes (a hardcoded NMP-cluster skip-list once
+detuned the trunk with no error; the SPRT then runs on wrong values
+and the result is meaningless). `scripts/apply_tune.py` is
+self-validating: it cross-checks every input param against the live
+`./coda tune-spec` macro, requires exactly one match per param, and
+HARD-ERRORS (non-zero exit, no write) on any unknown/renamed/ambiguous
+param instead of skipping it. It replaces default values in the
+`tunables!(...)` macro only — it does NOT modify macro structure. It
+accepts both the raw `NAME, value` format and the full SPSA spec.
 
 ---
 
