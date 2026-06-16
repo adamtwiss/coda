@@ -123,3 +123,36 @@ combinations, and has explicit extension logic (singular, check, etc.). The
 corpus is the instrument to find which exemption, ported to Coda, recovers
 the danger on the most positions without costing speed — then SPRT it.
 The EPD suite (`bm`/`am`) is the cheap inner-loop test for any such change.
+
+### Run 2 follow-up — persist-vs-resolve split of the 13 LIVE (the key result)
+
+Re-ran current trunk at fixed **depth 24** on each LIVE position to separate
+"blitz-speed artifact" from "genuine deep blindspot":
+- **8 PERSIST** (still pick the refuted move at d24 → eval mis-ranks it; more
+  search won't help): stvSVmsf m54 Rf2, rUzmU7SA m49 f5 / m43 f6, Imh13UtW
+  m47 Rf8, RpZ9LbYM m36 Bxf4, 68DKXljp m36 Bd6, PycXl3yr m36 Qa5, stvSVmsf
+  m51 Bf3.
+- **5 resolve** (correct at d24 → the Bd2 effective-depth class; blitz time
+  was the constraint, fix = NPS/pruning efficiency or TM): Bb3, Ra8,
+  RpZ9LbYM m37, PycXl3yr m37, stvSVmsf m24.
+
+**Reframe:** the thread started on over-*pruning* (the Bd2 effective-depth
+case). But ~60% of current-trunk's real-game LIVE blindspots are **eval**
+(persist at depth), not search. The recurring concrete hypothesis: Coda's
+NNUE **over-values active bishop sorties** (Bxf4/Bd6/Bf3/Bb3/Bd2/Bd4+ all
+appear) and some loosening pawn pushes (f5/f6). Caveat: all from LOST games,
+so several are "best defence in an already-bad position" (lower fix-value
+than blindspots in equal positions) — but the eval mis-ranking is systematic
+and real.
+
+**Recommended next steps (two sub-threads, now separable):**
+1. *Eval (bigger share):* probe the bishop-sortie over-valuation — build a
+   small targeted set, check whether it's an NNUE training-data artifact or a
+   scaling issue; this is a training/eval lever, not pruning.
+2. *Effective-depth (the original):* the 5 resolve-at-depth cases are the
+   NPS/pruning-efficiency lever (and tie to the L1=32 speed work). The
+   SF-gate comparison still applies here, but it's the minority of the signal.
+3. *Data:* the real bottleneck is loss volume (only 22 exist). Generate a
+   Coda-vs-SF (node-capped) gauntlet to harvest 100s of losses, then this
+   pipeline produces a corpus large enough to SPRT-validate eval/pruning
+   changes against `testdata/overrate.epd`.
