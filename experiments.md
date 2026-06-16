@@ -15944,3 +15944,67 @@ large enough (-12, -28) that a recipe tweak is unlikely to flip them at S800.
 
 Consequence: the in-flight gpu2 dual+psqt COMBINED run stacks two independently-
 regressing features — premise weakened; pending Adam's keep/kill call.
+
+## 2026-06-16: PSQT/Dual regressions are NOT rescuable by recalibration (#2040/#2041/#2042)
+
+Follow-up to the PSQT/Dual S800 regressions above — diagnosing WHY and whether a
+tune fixes them. Three lines of evidence; conclusion: both features genuinely
+regress at S800, neither is recoverable by recalibration.
+
+**Eval-scale measurement (coda eval-dist, 100k T80 positions, jun-2023):**
+| net | RMS (all) | RMS (quiet-only) | abs-mean |
+|---|---|---|---|
+| baseline | 309.0 | 303.6 | 188.7 |
+| +psqt | 319.3 (+3%) | — | 196.0 |
+| +dual | 206.4 (-33%) | 195.3 (-36%) | 119.8 |
+
+Dual's eval is compressed ~1.5x vs baseline, *pervasively* (quiet-only ratio 1.55,
+NOT a tail artifact) — a deterministic structural effect of the [crelu;screlu]
+concat into the fixed-QA/QB output (the CLAUDE.md "pairwise/dual nets don't scale
+linearly with EVAL_SCALE" warning). PSQT's scale is ~baseline (+3%), so its
+regression is NOT scale.
+
+**#2040 — dual @ EVAL_SCALE_PCT=150 (scale eval UP to match baseline) vs baseline:
+H0 -29.2 ±8.0 (N=2336).** Scaling the eval up to baseline's RMS recovered NOTHING
+(~= untuned dual -27.9). Why eval-UP is the wrong lever: (a) it forces a low-loss,
+WDL-calibrated net to OVERSHOOT its own predictions (worse vs T80 oracle — Adam's
+insight); (b) a uniform eval multiply is monotonic so it can't change move ranking,
+only the eval:threshold ratio, and that ratio change is ~equivalent to moving
+thresholds — EXCEPT it also trips fixed-scale search constants (TT 13-bit static
+eval cap ±4095, mate/draw scores, aspiration deltas) that don't scale. So eval-up
+adds side-effects without the benefit. The correct direction is thresholds-DOWN to
+the eval (the tune), preserving the net's calibration.
+
+**Net-specific core retunes (#2038 dual, #2039 psqt; 1500-iter STC, --core 65
+params, --dev-network = the candidate net) then tuned-vs-baseline SPRT:**
+- **#2041 dual-tuned vs baseline: H0 -18.4 ±6.2 (N=3524).** Tune recovered ~9.5
+  Elo (-27.9 -> -18.4) but ~-18 SURVIVES. SPSA movements were modest/mixed (RFP_-
+  MARGIN_IMP -27%, LMP_BASE -19%, RFP_DEEP_QUAD -23%, but RFP_MARGIN_NOIMP flat,
+  FUT_BASE/NMP_DEPTH_DIV UP) — NOT the uniform margin-drop a pure scale problem
+  would force. So ~1/3 of dual's gap is calibration; ~2/3 is genuine eval-quality.
+- **#2042 psqt-tuned vs baseline: H0 -10.9 ±4.8 (N=6022).** Tune recovered ~nothing
+  (-12.5 -> -10.9, within noise). PSQT's regression is not calibration at all.
+
+**Train-variance caveat (Adam):** same-seed (all three = seed 42) still carries
+~5-10 Elo SD (GPU-FP / sfbinpack nondeterminism). Folding a ~±10.6 net-pair train
+SD into the SPRT CIs, PSQT's -12.5 does NOT separate from zero (true-effect CI
+~[-34,+9]) — so psqt may be largely train-luck; a tune can't fix an unlucky net
+either, consistent with #2042's null. DUAL's -27.9 has an INDEPENDENT measured
+mechanism (-33% scale) that luck can't produce, so it's a real regression (~-18
+after the calibration-recoverable part).
+
+**Conclusions:**
+1. SF-style PSQT outputs and dual L1 activation both REGRESS at S800 on Coda's
+   setup, and neither is rescuable by recalibration (eval-scale override OR core
+   tune). "SF does it" did not transfer ([[feedback_consensus_patterns_dont_always_transfer]]).
+2. Loss/ordering-proxy/S200 all mispredicted ([[feedback_loss_is_not_strength]]):
+   low training loss + best EBF/first-move + neutral-S200 -> H0 at S800.
+3. Methodology win: net-specific tune recovery magnitude IS the calibration
+   diagnostic ([[feedback_always_sprt_after_tune]]) — dual ~1/3 recoverable proves
+   *some* of the gap was trunk miscalibration; psqt ~0 recovery proves its gap
+   is not. EVAL_SCALE_PCT (eval-up) is the WRONG lever vs a tune (thresholds-down)
+   for a well-calibrated net.
+4. Tooling: the apply step exposed an uncommitted /tmp apply script that silently
+   dropped the NMP cluster — replaced with committed self-validating
+   scripts/apply_tune.py (cross-checks coda tune-spec, hard-errors on any
+   unknown/ambiguous param). ob skill §7 updated.
