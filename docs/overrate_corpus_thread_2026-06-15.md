@@ -94,8 +94,23 @@ Takeaways:
    that need d27+, which are exactly the hardest (Bd2 itself needed d24). So
    Coda matching SF-d24 ≠ Coda is right at d30.
 
-### Run 2 (refinement) — all 22 real losses, deeper SF
-<!-- RUN2_STATS -->
+### Run 2 — all 22 real losses, SF-d26, Coda 1.5s
+**19 avoid-move positions, 13 LIVE (current trunk still errs), 17 quiet.**
+Deep SF (d26) on the 22 real losses + Coda at 1.5s blitz depth turned a thin
+result into a real corpus. Top LIVE blindspots (current trunk prefers the
+refuted move): j7SwKR8a m58 Bb3 (−290 vs Bc2), rUzmU7SA m39 Ra8 (−197 vs Rc8)
+/ m49 f5 (−186) / m43 f6 (−175), stvSVmsf m54 Rf2 (−186), Imh13UtW m47 Rf8
+(−157), RpZ9LbYM m36 Bxf4 (−154), 68DKXljp m36 Bd6 (−141). Visible themes:
+over-valued **bishop sorties** (Bb3/Bd6/Bxf4/Bf3/Bd2/Bd4+) and **rook
+misplacements** (Ra8 vs Rc8, Rf2 vs g4, Rf8 vs h5/Qb4). Several cluster in
+single lost games (rUzmU7SA ×3, RpZ9LbYM ×3) — the systematic-blindspot
+signature (repeatedly mis-evaluating one plan in a lost game).
+
+Full list: `docs/overrate_corpus_positions_2026-06-15.md`; EPD suite:
+`testdata/overrate.epd`. Caveat: these are positions from LOST games (Coda
+often already worse), so part of the move-loss is "every move is bad, Coda
+picks a worse one" — but the LIVE ones (current trunk reproduces) are
+genuine and the cheap inner-loop test for any pruning/search change.
 
 ## Next: the SF-gate comparison
 
