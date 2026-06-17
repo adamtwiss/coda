@@ -143,7 +143,8 @@ enum Commands {
     /// with an invalidated Finny cache (mirrors a king-bucket-cross
     /// first-touch in search).
     /// `--mode incremental` makes one legal move per iter and pops,
-    /// measuring realistic incremental cost.
+    /// measuring realistic incremental cost. `make-unmake-all` cycles
+    /// through each position's legal moves instead of timing only move 0.
     EvalBench {
         /// Search-bench positions are used if no EPD is supplied.
         #[arg(long, default_value = "")]
@@ -154,12 +155,15 @@ enum Commands {
         /// Repetitions per position
         #[arg(long, default_value_t = 100_000)]
         reps: u64,
-        /// `fresh` | `refresh` | `incremental` | `make-unmake`
+        /// `fresh` | `refresh` | `incremental` | `make-unmake` | `make-unmake-all`
         #[arg(long, default_value = "fresh")]
         mode: String,
         /// Disable AVX-512 & VNNI for this run (forces AVX-2 SIMD path)
         #[arg(long, default_value_t = false)]
         no_avx512: bool,
+        /// Disable threat-delta generation in make/unmake eval-bench modes.
+        #[arg(long, default_value_t = false)]
+        no_threat_deltas: bool,
     },
     /// Run EPD test suite
     Epd {
@@ -571,7 +575,7 @@ fn main() {
             std::process::exit(over.min(127) as i32);
         }
 
-        Some(Commands::EvalBench { epd, positions, reps, mode, no_avx512 }) => {
+        Some(Commands::EvalBench { epd, positions, reps, mode, no_avx512, no_threat_deltas }) => {
             use crate::{board::Board, nnue::{NNUENet, NNUEAccumulator}, eval::evaluate_nnue, threat_accum::ThreatStack};
             let nnue_path = cli.nnue.as_deref().expect("EvalBench requires --nnue/-n");
             let mut net = NNUENet::load(nnue_path).expect("failed to load NNUE");
@@ -614,6 +618,13 @@ fn main() {
             let start = std::time::Instant::now();
             let mut sum: i64 = 0;
             let mut count: u64 = 0;
+            let mut threat_delta_total: u64 = 0;
+            let mut threat_delta_max: usize = 0;
+            let mut move_bucket_counts = [0u64; 5];
+            let mut move_bucket_deltas = [0u64; 5];
+            let mut move_corpus_positions = 0u64;
+            let mut move_corpus_legal_moves = 0u64;
+            const MOVE_BUCKET_NAMES: [&str; 5] = ["quiet", "capture", "promotion", "castle", "ep"];
             if mode == "fresh" {
                 for fen in positions_slice {
                     let board = Board::from_fen(fen);
@@ -677,31 +688,57 @@ fn main() {
                         count += 1;
                     }
                 }
-            } else if mode == "make-unmake" {
+            } else if mode == "make-unmake" || mode == "make-unmake-all" {
                 // Times make_move + unmake_move. No NNUE evaluation happens.
                 // With threat-delta generation enabled (as in v9 production
                 // search), the dominant cost inside make_move is
                 // `push_threats_for_piece` + deltas fanout. Disabling
                 // threat deltas (measured separately) shows the base
                 // move-make cost alone.
-                //
-                // The user controls which via `--no-threat-deltas`.
                 use crate::movegen::generate_legal_moves;
+                use crate::types::{
+                    move_flags, move_to, is_promotion, FLAG_CASTLE, FLAG_EN_PASSANT,
+                    NO_PIECE_TYPE,
+                };
+                let cycle_all_moves = mode == "make-unmake-all";
                 for fen in positions_slice {
                     let mut board = Board::from_fen(fen);
                     // v9 production path: threat deltas always on.
-                    board.generate_threat_deltas = net.has_threats;
+                    board.generate_threat_deltas = net.has_threats && !no_threat_deltas;
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { continue; }
-                    let mv = legal.get(0);
-                    for _ in 0..reps {
+                    move_corpus_positions += 1;
+                    move_corpus_legal_moves += legal.len as u64;
+                    for rep in 0..reps {
+                        let mv_idx = if cycle_all_moves {
+                            (rep as usize) % legal.len
+                        } else {
+                            0
+                        };
+                        let mv = legal.get(mv_idx);
+                        let bucket = if move_flags(mv) == FLAG_EN_PASSANT {
+                            4
+                        } else if move_flags(mv) == FLAG_CASTLE {
+                            3
+                        } else if is_promotion(mv) {
+                            2
+                        } else if board.piece_type_at(move_to(mv)) != NO_PIECE_TYPE {
+                            1
+                        } else {
+                            0
+                        };
                         if !board.make_move(mv) { break; }
+                        let delta_count = board.threat_deltas.len();
+                        threat_delta_total += delta_count as u64;
+                        threat_delta_max = threat_delta_max.max(delta_count);
+                        move_bucket_counts[bucket] += 1;
+                        move_bucket_deltas[bucket] += delta_count as u64;
                         board.unmake_move();
                         count += 1;
                     }
                 }
             } else {
-                eprintln!("Unknown --mode: {} (expected 'fresh' | 'refresh' | 'incremental' | 'make-unmake')", mode);
+                eprintln!("Unknown --mode: {} (expected 'fresh' | 'refresh' | 'incremental' | 'make-unmake' | 'make-unmake-all')", mode);
                 return;
             }
             let secs = start.elapsed().as_secs_f64();
@@ -713,6 +750,32 @@ fn main() {
                 mode, n_positions, reps, count, secs, evs,
                 sum / count.max(1) as i64,
             );
+            if mode == "make-unmake" || mode == "make-unmake-all" {
+                let avg_deltas = threat_delta_total as f64 / count.max(1) as f64;
+                let avg_legal = move_corpus_legal_moves as f64 / move_corpus_positions.max(1) as f64;
+                println!(
+                    "evalbench move_corpus active_positions={} legal_moves={} avg_legal_moves_per_position={:.2}",
+                    move_corpus_positions, move_corpus_legal_moves, avg_legal,
+                );
+                println!(
+                    "evalbench threat_deltas total={} avg_per_move={:.2} max_per_move={}",
+                    threat_delta_total, avg_deltas, threat_delta_max,
+                );
+                for i in 0..MOVE_BUCKET_NAMES.len() {
+                    if move_bucket_counts[i] == 0 { continue; }
+                    let avg = move_bucket_deltas[i] as f64 / move_bucket_counts[i] as f64;
+                    println!(
+                        "evalbench move_bucket name={} count={} avg_deltas={:.2}",
+                        MOVE_BUCKET_NAMES[i], move_bucket_counts[i], avg,
+                    );
+                }
+                #[cfg(feature = "profile-threats")]
+                {
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                    crate::threats::thr_stats::report();
+                }
+            }
         }
 
         Some(Commands::Epd { path, time, max }) => {

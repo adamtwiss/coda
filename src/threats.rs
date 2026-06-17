@@ -278,6 +278,23 @@ pub mod thr_stats {
     static ZERO_SLIDERS_2B: AtomicU64 = AtomicU64::new(0);
     static ZERO_NONSLIDERS: AtomicU64 = AtomicU64::new(0);
 
+    static OWN_XRAY_NONSLIDER: AtomicU64 = AtomicU64::new(0);
+    static OWN_XRAY_NO_DIRECT: AtomicU64 = AtomicU64::new(0);
+    static OWN_XRAY_BLOCKERS: AtomicU64 = AtomicU64::new(0);
+    static OWN_XRAY_NO_BEHIND: AtomicU64 = AtomicU64::new(0);
+    static OWN_XRAY_INVALID: AtomicU64 = AtomicU64::new(0);
+    static OWN_XRAY_EMITS: AtomicU64 = AtomicU64::new(0);
+
+    static S2B_NO_CANDIDATES: AtomicU64 = AtomicU64::new(0);
+    static S2B_CANDIDATES: AtomicU64 = AtomicU64::new(0);
+    static S2B_BLOCKERS_ZERO: AtomicU64 = AtomicU64::new(0);
+    static S2B_BLOCKERS_MULTI: AtomicU64 = AtomicU64::new(0);
+    static S2B_EXACT_ONE: AtomicU64 = AtomicU64::new(0);
+    static S2B_INVALID: AtomicU64 = AtomicU64::new(0);
+    static S2B_SQ_EMITS: AtomicU64 = AtomicU64::new(0);
+    static S2B_NO_W: AtomicU64 = AtomicU64::new(0);
+    static S2B_W_EMITS: AtomicU64 = AtomicU64::new(0);
+
     #[inline(always)]
     pub fn rdtsc() -> u64 {
         #[cfg(target_arch = "x86_64")]
@@ -311,6 +328,46 @@ pub mod thr_stats {
         CYC_TOTAL.fetch_add(cycles, Ordering::Relaxed);
     }
 
+    #[inline(always)]
+    pub fn record_own_xray_reasons(
+        nonslider: u64,
+        no_direct: u64,
+        blockers: u64,
+        no_behind: u64,
+        invalid: u64,
+        emits: u64,
+    ) {
+        OWN_XRAY_NONSLIDER.fetch_add(nonslider, Ordering::Relaxed);
+        OWN_XRAY_NO_DIRECT.fetch_add(no_direct, Ordering::Relaxed);
+        OWN_XRAY_BLOCKERS.fetch_add(blockers, Ordering::Relaxed);
+        OWN_XRAY_NO_BEHIND.fetch_add(no_behind, Ordering::Relaxed);
+        OWN_XRAY_INVALID.fetch_add(invalid, Ordering::Relaxed);
+        OWN_XRAY_EMITS.fetch_add(emits, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_s2b_reasons(
+        no_candidates: u64,
+        candidates: u64,
+        blockers_zero: u64,
+        blockers_multi: u64,
+        exact_one: u64,
+        invalid: u64,
+        sq_emits: u64,
+        no_w: u64,
+        w_emits: u64,
+    ) {
+        S2B_NO_CANDIDATES.fetch_add(no_candidates, Ordering::Relaxed);
+        S2B_CANDIDATES.fetch_add(candidates, Ordering::Relaxed);
+        S2B_BLOCKERS_ZERO.fetch_add(blockers_zero, Ordering::Relaxed);
+        S2B_BLOCKERS_MULTI.fetch_add(blockers_multi, Ordering::Relaxed);
+        S2B_EXACT_ONE.fetch_add(exact_one, Ordering::Relaxed);
+        S2B_INVALID.fetch_add(invalid, Ordering::Relaxed);
+        S2B_SQ_EMITS.fetch_add(sq_emits, Ordering::Relaxed);
+        S2B_NO_W.fetch_add(no_w, Ordering::Relaxed);
+        S2B_W_EMITS.fetch_add(w_emits, Ordering::Relaxed);
+    }
+
     pub fn report() {
         let c = CALLS.load(Ordering::Relaxed);
         if c == 0 { eprintln!("threats stats: 0 calls (feature not hit)"); return; }
@@ -332,6 +389,31 @@ pub mod thr_stats {
                 *dlt as f64 / c as f64,
                 zero_pct);
         }
+        let own_nonslider = OWN_XRAY_NONSLIDER.load(Ordering::Relaxed);
+        let own_no_direct = OWN_XRAY_NO_DIRECT.load(Ordering::Relaxed);
+        let own_blockers = OWN_XRAY_BLOCKERS.load(Ordering::Relaxed);
+        let own_no_behind = OWN_XRAY_NO_BEHIND.load(Ordering::Relaxed);
+        let own_invalid = OWN_XRAY_INVALID.load(Ordering::Relaxed);
+        let own_emits = OWN_XRAY_EMITS.load(Ordering::Relaxed);
+        eprintln!(
+            "  own-xray reasons: nonslider={} no-direct={} blockers={} no-behind={} invalid={} emits={}",
+            own_nonslider, own_no_direct, own_blockers, own_no_behind, own_invalid, own_emits,
+        );
+
+        let s2b_no_candidates = S2B_NO_CANDIDATES.load(Ordering::Relaxed);
+        let s2b_candidates = S2B_CANDIDATES.load(Ordering::Relaxed);
+        let s2b_blockers_zero = S2B_BLOCKERS_ZERO.load(Ordering::Relaxed);
+        let s2b_blockers_multi = S2B_BLOCKERS_MULTI.load(Ordering::Relaxed);
+        let s2b_exact_one = S2B_EXACT_ONE.load(Ordering::Relaxed);
+        let s2b_invalid = S2B_INVALID.load(Ordering::Relaxed);
+        let s2b_sq_emits = S2B_SQ_EMITS.load(Ordering::Relaxed);
+        let s2b_no_w = S2B_NO_W.load(Ordering::Relaxed);
+        let s2b_w_emits = S2B_W_EMITS.load(Ordering::Relaxed);
+        eprintln!(
+            "  sliders-2b reasons: no-candidates={} candidates={} blockers0={} blockers2p={} exact1={} invalid={} sq-emits={} no-w={} w-emits={}",
+            s2b_no_candidates, s2b_candidates, s2b_blockers_zero, s2b_blockers_multi,
+            s2b_exact_one, s2b_invalid, s2b_sq_emits, s2b_no_w, s2b_w_emits,
+        );
     }
 }
 
@@ -1117,15 +1199,41 @@ fn push_threats_for_piece(
     let s1b_start = crate::threats::thr_stats::rdtsc();
     #[cfg(feature = "profile-threats")]
     let s1b_deltas_before = deltas.len() as u64;
+    #[cfg(feature = "profile-threats")]
+    let mut own_xray_nonslider = 0u64;
+    #[cfg(feature = "profile-threats")]
+    let mut own_xray_no_direct = 0u64;
+    #[cfg(feature = "profile-threats")]
+    let mut own_xray_blockers = 0u64;
+    #[cfg(feature = "profile-threats")]
+    let mut own_xray_no_behind = 0u64;
+    #[cfg(feature = "profile-threats")]
+    let mut own_xray_invalid = 0u64;
+    #[cfg(feature = "profile-threats")]
+    let mut own_xray_emits = 0u64;
     if piece_type == BISHOP || piece_type == ROOK || piece_type == QUEEN {
         let mut direct_targets = my_attacks & occ;
+        #[cfg(feature = "profile-threats")]
+        if direct_targets == 0 {
+            own_xray_no_direct += 1;
+        }
         while direct_targets != 0 {
             let blocker_sq = direct_targets.trailing_zeros();
             direct_targets &= direct_targets - 1;
+            #[cfg(feature = "profile-threats")]
+            {
+                own_xray_blockers += 1;
+            }
 
             let extension = crate::bitboard::ray_extension(square, blocker_sq);
             let xray_candidates = extension & occ;
-            if xray_candidates == 0 { continue; }
+            if xray_candidates == 0 {
+                #[cfg(feature = "profile-threats")]
+                {
+                    own_xray_no_behind += 1;
+                }
+                continue;
+            }
 
             // First occupant past the blocker on the same ray direction.
             let xray_sq = if square < blocker_sq {
@@ -1134,12 +1242,27 @@ fn push_threats_for_piece(
                 63 - xray_candidates.leading_zeros()
             };
             let xpt = mailbox[xray_sq as usize];
-            if xpt >= 6 { continue; }
+            if xpt >= 6 {
+                #[cfg(feature = "profile-threats")]
+                {
+                    own_xray_invalid += 1;
+                }
+                continue;
+            }
             let xcolor = if white_bb & (1u64 << xray_sq) != 0 { WHITE } else { BLACK };
             deltas.push(RawThreatDelta::new(
                 cp as u8, square as u8,
                 colored_piece(xcolor, xpt) as u8, xray_sq as u8, add,
             ));
+            #[cfg(feature = "profile-threats")]
+            {
+                own_xray_emits += 1;
+            }
+        }
+    } else {
+        #[cfg(feature = "profile-threats")]
+        {
+            own_xray_nonslider += 1;
         }
     }
 
@@ -1148,6 +1271,15 @@ fn push_threats_for_piece(
         1,
         crate::threats::thr_stats::rdtsc().wrapping_sub(s1b_start),
         deltas.len() as u64 - s1b_deltas_before,
+    );
+    #[cfg(feature = "profile-threats")]
+    crate::threats::thr_stats::record_own_xray_reasons(
+        own_xray_nonslider,
+        own_xray_no_direct,
+        own_xray_blockers,
+        own_xray_no_behind,
+        own_xray_invalid,
+        own_xray_emits,
     );
 
     // 2. Sliding pieces that see this square (Reckless pattern)
@@ -1296,26 +1428,71 @@ fn push_threats_for_piece(
     let ortho_candidates = (pieces_bb[ROOK as usize] | pieces_bb[QUEEN as usize]) & ortho_ray_mask & occ;
     let diag_candidates  = (pieces_bb[BISHOP as usize] | pieces_bb[QUEEN as usize]) & diag_ray_mask & occ;
     let mut candidates = ortho_candidates | diag_candidates;
+    #[cfg(feature = "profile-threats")]
+    let mut s2b_no_candidates = 0u64;
+    #[cfg(feature = "profile-threats")]
+    let mut s2b_candidates = 0u64;
+    #[cfg(feature = "profile-threats")]
+    let mut s2b_blockers_zero = 0u64;
+    #[cfg(feature = "profile-threats")]
+    let mut s2b_blockers_multi = 0u64;
+    #[cfg(feature = "profile-threats")]
+    let mut s2b_exact_one = 0u64;
+    #[cfg(feature = "profile-threats")]
+    let mut s2b_invalid = 0u64;
+    #[cfg(feature = "profile-threats")]
+    let mut s2b_sq_emits = 0u64;
+    #[cfg(feature = "profile-threats")]
+    let mut s2b_no_w = 0u64;
+    #[cfg(feature = "profile-threats")]
+    let mut s2b_w_emits = 0u64;
+    #[cfg(feature = "profile-threats")]
+    if candidates == 0 {
+        s2b_no_candidates += 1;
+    }
 
     while candidates != 0 {
         let s_sq = candidates.trailing_zeros();
         candidates &= candidates - 1;
+        #[cfg(feature = "profile-threats")]
+        {
+            s2b_candidates += 1;
+        }
 
         // Count blockers strictly between S and sq. between() excludes
         // endpoints, so occ (not occ_rays) is the right mask — sq is not
         // in the between set.
         let between_mask = crate::bitboard::between(s_sq, square);
         let blockers_between = between_mask & occ;
-        if blockers_between.count_ones() != 1 {
+        let blockers_count = blockers_between.count_ones();
+        if blockers_count != 1 {
             // 0 → direct attacker (section 2 handles). 2+ → 2+ level x-ray
             // (not encoded). Neither emits a 2b delta.
+            #[cfg(feature = "profile-threats")]
+            {
+                if blockers_count == 0 {
+                    s2b_blockers_zero += 1;
+                } else {
+                    s2b_blockers_multi += 1;
+                }
+            }
             continue;
+        }
+        #[cfg(feature = "profile-threats")]
+        {
+            s2b_exact_one += 1;
         }
 
         let s_pt = mailbox[s_sq as usize];
         // Set-membership already guarantees slider-type match for ray.
         // Defensive check retained for robustness; should never fail.
-        if s_pt >= 6 { continue; }
+        if s_pt >= 6 {
+            #[cfg(feature = "profile-threats")]
+            {
+                s2b_invalid += 1;
+            }
+            continue;
+        }
 
         let s_color = if white_bb & (1u64 << s_sq) != 0 { WHITE } else { BLACK };
         let s_cp = colored_piece(s_color, s_pt);
@@ -1323,6 +1500,10 @@ fn push_threats_for_piece(
         deltas.push(RawThreatDelta::new(
             s_cp as u8, s_sq as u8, cp as u8, square as u8, add,
         ));
+        #[cfg(feature = "profile-threats")]
+        {
+            s2b_sq_emits += 1;
+        }
 
         // W = first piece past sq on the ray from S, continuing in the
         // S→sq direction (away from S past sq). ray_extension(S, sq)
@@ -1343,6 +1524,20 @@ fn push_threats_for_piece(
                 deltas.push(RawThreatDelta::new(
                     s_cp as u8, s_sq as u8, w_cp as u8, w_sq as u8, !add,
                 ));
+                #[cfg(feature = "profile-threats")]
+                {
+                    s2b_w_emits += 1;
+                }
+            } else {
+                #[cfg(feature = "profile-threats")]
+                {
+                    s2b_invalid += 1;
+                }
+            }
+        } else {
+            #[cfg(feature = "profile-threats")]
+            {
+                s2b_no_w += 1;
             }
         }
     }
@@ -1352,6 +1547,18 @@ fn push_threats_for_piece(
         3,
         crate::threats::thr_stats::rdtsc().wrapping_sub(s2b_start),
         deltas.len() as u64 - s2b_deltas_before,
+    );
+    #[cfg(feature = "profile-threats")]
+    crate::threats::thr_stats::record_s2b_reasons(
+        s2b_no_candidates,
+        s2b_candidates,
+        s2b_blockers_zero,
+        s2b_blockers_multi,
+        s2b_exact_one,
+        s2b_invalid,
+        s2b_sq_emits,
+        s2b_no_w,
+        s2b_w_emits,
     );
 
     #[cfg(feature = "profile-threats")]
