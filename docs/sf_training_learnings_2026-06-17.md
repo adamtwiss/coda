@@ -60,6 +60,36 @@ ported and mostly tested.
 
 ### Tier 1 — genuinely unexplored, worth a probe
 
+**0. Soft early-ply filtering — IMPLEMENTED 2026-06-17, pending S200 probe.**
+SF separates *two* ply/skip mechanisms that Coda had conflated (correction to
+the original framing of this doc):
+- **`random_fen_skipping`** — *uniform* game-**decorrelation** ("stirring"), so
+  you don't over-read one game's correlated chain. SF runs it *high*
+  (`--random-fen-skipping=10` ⇒ skip ≈ 10/11 ≈ **91%**). Coda's
+  `--fen-skip-prob` is the same mechanism at **0.5** — and that 0.5 is a
+  **decoder-throughput floor, not a data choice**: interleaving already shuffles,
+  and the Bullet binpack decoder is single-threaded in places, so skip >0.5
+  makes it CPU-bound and starves the GPU. (A prior parallelization attempt —
+  bullet branch `feature/parallel-binpack-reader` — just moved the bottleneck to
+  the next single-threaded stage, so the *global* skip is genuinely capped until
+  that's fixed. Parked, not abandoned.)
+- **`soft_early_fen_skipping`** — a *ply-dependent accept curve*
+  (`training_data_loader.cpp`, piecewise-linear through control points) applied
+  *separately* from the random skip, to stop early-opening positions being
+  over-**represented** (they recur across games). **Coda had nothing equivalent**
+  — only the hard `ply>=16` cut + the uniform skip.
+
+Implemented as a *separate, independent* knob (bullet `feature/soft-early-ply`):
+**`--soft-early-ply <N>`** + `--soft-early-ply-floor <Y0>` — below N, accept-prob
+ramps linearly from Y0 (at the hard floor, ply 16) to 1.0 at N; hard cut and
+`--fen-skip-prob` untouched. Crucially it only gates the *thin* `ply<N` slice, so
+it **sidesteps the decoder-throughput wall** that caps the global skip. **Effort:
+done. Prior: med-high** — ply filtering is a *known* 30-40 Elo-sensitive axis.
+**Validate:** S200 paired probe (e.g. `--soft-early-ply 28 --soft-early-ply-floor
+0.2`) vs the hard-cut baseline. (NB: we have the **full SF-sized dataset** on
+GPU4 — earlier "less data than SF" framing in this doc was wrong; the constraint
+is SB/compute + decoder throughput, not data quantity.)
+
 **1. Learned eval calibration: in/out-scaling + in/out-offset (4 params) vs a
 single hardcoded EVAL_SCALE=400.**
 - *SF:* the eval→win-prob sigmoid uses scaling (~410 in docs); `optimize.py`
