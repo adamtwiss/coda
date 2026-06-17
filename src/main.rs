@@ -330,6 +330,28 @@ enum Commands {
         #[arg(long, default_value_t = 0.0)]
         rate: f64,
     },
+    /// Import a TSV of (fen, score) rows into an sfbinpack binpack for fine-tuning.
+    /// Score = STM-POV cp (SF deep eval); WDL derived from score; mate-ish dropped.
+    ImportTsv {
+        /// Input TSV (tab-separated; first line is a header)
+        #[arg(long, short = 'i')]
+        input: String,
+        /// Output binpack file
+        #[arg(long, short = 'o', default_value = "imported.binpack")]
+        output: String,
+        /// 0-based column index of the FEN
+        #[arg(long, default_value_t = 15)]
+        fen_col: usize,
+        /// 0-based column index of the STM-POV score (cp)
+        #[arg(long, default_value_t = 10)]
+        score_col: usize,
+        /// Drop positions with |score| above this (mate-ish filter)
+        #[arg(long, default_value_t = 2000)]
+        max_abs: i32,
+        /// Upsample each kept position N times
+        #[arg(long, default_value_t = 1)]
+        repeat: usize,
+    },
     /// Evaluate positions from binpack to measure eval scale distribution
     EvalDist {
         /// Input binpack file
@@ -1087,6 +1109,10 @@ fn main() {
 
         Some(Commands::SamplePositions { input, output, count, rate }) => {
             run_sample_positions(&input, &output, count, rate);
+        }
+
+        Some(Commands::ImportTsv { input, output, fen_col, score_col, max_abs, repeat }) => {
+            datagen::import_tsv(&input, &output, fen_col, score_col, max_abs, repeat);
         }
 
         Some(Commands::EvalDist { input, count, csv, quiet_only }) => {
