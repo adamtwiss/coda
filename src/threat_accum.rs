@@ -59,6 +59,16 @@ impl DeltaVec {
     }
 
     #[inline]
+    pub fn copy_from_slice(&mut self, src: &[RawThreatDelta]) {
+        let n = src.len().min(MAX_THREAT_DELTAS);
+        self.len = n;
+        self.overflowed = src.len() > MAX_THREAT_DELTAS;
+        unsafe {
+            std::ptr::copy_nonoverlapping(src.as_ptr(), self.data.as_mut_ptr(), n);
+        }
+    }
+
+    #[inline]
     pub fn as_slice(&self) -> &[RawThreatDelta] { &self.data[..self.len] }
 
     #[inline]
@@ -141,10 +151,7 @@ impl ThreatStack {
         #[cfg(feature = "profile-threats")]
         crate::threats::apply_stats::record_generated(board.threat_deltas.len());
         let entry = self.current_mut();
-        entry.delta.clear();
-        for d in board.threat_deltas.iter() {
-            entry.delta.push(*d);
-        }
+        entry.delta.copy_from_slice(&board.threat_deltas);
 
         if let Some(undo) = board.undo_stack.last() {
             entry.mv = undo.mv;
@@ -326,30 +333,13 @@ impl ThreatStack {
                 let (prev, curr) = self.stack.split_at_mut(ply);
                 curr[0].values[p][..h].copy_from_slice(&prev[ply - 1].values[p][..h]);
             } else {
-                // Copy deltas to local buffer to avoid borrow conflict with split_at_mut.
-                // MaybeUninit skips the per-iteration 512-byte zero-init memset that
-                // perf annotate showed on the inlined `[ZERO; 128]` initialiser. The
-                // copy_from_slice below fully writes [..n_deltas]; consumers only
-                // read &local_deltas[..n_deltas]. Same pattern as forward_with_l1
-                // pairwise inner (#927) and apply_threat_deltas (#921).
-                let n_deltas = self.stack[ply].delta.len;
-                let mut local_deltas_storage =
-                    std::mem::MaybeUninit::<[crate::threats::RawThreatDelta; 128]>::uninit();
-                let local_deltas_ptr =
-                    scratch_ptr!(local_deltas_storage, crate::threats::RawThreatDelta);
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        self.stack[ply].delta.data.as_ptr(),
-                        local_deltas_ptr,
-                        n_deltas,
-                    );
-                }
-                let local_deltas = scratch_slice!(local_deltas_ptr, n_deltas);
                 // Use SIMD apply_threat_deltas (copies src + applies adds/subs)
                 let (prev, curr) = self.stack.split_at_mut(ply);
+                let entry = &mut curr[0];
+                let local_deltas = entry.delta.as_slice();
                 unsafe {
                     crate::threats::apply_threat_deltas(
-                        &mut curr[0].values[p][..h],
+                        &mut entry.values[p][..h],
                         &prev[ply - 1].values[p][..h],
                         local_deltas,
                         net_weights, h, num_features,
