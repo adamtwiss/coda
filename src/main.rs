@@ -352,6 +352,18 @@ enum Commands {
         #[arg(long, default_value_t = 1)]
         repeat: usize,
     },
+    /// Import a per-position game TSV (fen, uci, score, result, ply) into an
+    /// sfbinpack binpack — every position, in game order, with actual move (for
+    /// chain compression), actual WDL and ply, NO filtering (the loader filters).
+    /// Feed `scripts/pgn_to_game_tsv.py` output; input "-" reads stdin.
+    ImportGameTsv {
+        /// Input TSV ("-" for stdin); cols: fen, uci, score, result, ply (no header)
+        #[arg(long, short = 'i')]
+        input: String,
+        /// Output binpack file
+        #[arg(long, short = 'o', default_value = "games.binpack")]
+        output: String,
+    },
     /// Evaluate positions from binpack to measure eval scale distribution
     EvalDist {
         /// Input binpack file
@@ -1128,6 +1140,10 @@ fn main() {
 
         Some(Commands::ImportTsv { input, output, fen_col, score_col, max_abs, repeat }) => {
             datagen::import_tsv(&input, &output, fen_col, score_col, max_abs, repeat);
+        }
+
+        Some(Commands::ImportGameTsv { input, output }) => {
+            datagen::import_game_tsv(&input, &output);
         }
 
         Some(Commands::EvalDist { input, count, csv, quiet_only }) => {

@@ -101,6 +101,69 @@ pub fn import_tsv(tsv_path: &str, out_path: &str, fen_col: usize, score_col: usi
               (mate-ish/parse/illegal)", written, unique, repeat.max(1), skipped);
 }
 
+/// Find the legal move matching a UCI string (e.g. "g1f3", "e7e8q") by formatting
+/// each legal move and comparing — robust to flag/encoding details (EP, castle,
+/// promotion) since it uses the same `move_to_uci` the engine emits.
+fn find_move_by_uci(board: &Board, uci: &str) -> Option<Move> {
+    let legal = generate_legal_moves(board);
+    for i in 0..legal.len {
+        let m = legal.get(i);
+        if crate::types::move_to_uci(m) == uci {
+            return Some(m);
+        }
+    }
+    None
+}
+
+/// Import a per-position game TSV into an sfbinpack binpack, writing EVERY
+/// position in game order with its ACTUAL move played (so consecutive same-game
+/// positions chain -> the binpack delta-compresses them), the ACTUAL game WDL
+/// result, and the ACTUAL ply. NO filtering: the trainer's loader does that, and
+/// keeping all positions in order is what preserves chain compression. This is
+/// the full-game complement to `import_tsv` (which writes isolated positions).
+///
+/// Columns (TAB-separated, NO header — feed `pgn_to_game_tsv.py` output, file or
+/// "-" for stdin): 0 fen | 1 uci_move | 2 score(STM-POV cp) | 3 result(+1/0/-1
+/// STM-POV) | 4 ply.
+pub fn import_game_tsv(tsv_path: &str, out_path: &str) {
+    use std::io::{BufRead, BufReader, BufWriter, Read};
+    let reader: Box<dyn Read> = if tsv_path == "-" {
+        Box::new(std::io::stdin())
+    } else {
+        Box::new(std::fs::File::open(tsv_path).unwrap_or_else(|e| panic!("open {}: {}", tsv_path, e)))
+    };
+    let outf = std::fs::File::create(out_path)
+        .unwrap_or_else(|e| panic!("create {}: {}", out_path, e));
+    let buf = BufWriter::with_capacity(1 << 20, outf);
+    let mut writer = CompressedTrainingDataEntryWriter::new(buf)
+        .expect("Failed to create binpack writer");
+    let (mut written, mut skipped) = (0u64, 0u64);
+    for line in BufReader::new(reader).lines() {
+        let line = match line { Ok(l) => l, Err(_) => { skipped += 1; continue } };
+        if line.is_empty() { continue; }
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() < 5 { skipped += 1; continue; }
+        let board = Board::from_fen(cols[0].trim());
+        let mv = match find_move_by_uci(&board, cols[1].trim()) {
+            Some(m) => m,
+            None => { skipped += 1; continue }
+        };
+        let score: i32 = cols[2].trim().parse().unwrap_or(0);
+        let result: i16 = cols[3].trim().parse().unwrap_or(0);
+        let ply: u16 = cols[4].trim().parse().unwrap_or(0);
+        match to_sf_entry(&board, mv, score.clamp(-32000, 32000) as i16, result, ply) {
+            Some(entry) => { writer.write_entry(&entry).expect("Failed to write entry"); written += 1; }
+            None => { skipped += 1; }
+        }
+        if written != 0 && written % 5_000_000 == 0 {
+            eprintln!("  ...{} positions written", written);
+        }
+    }
+    drop(writer); // flush
+    println!("import-game-tsv: {} positions written, {} skipped (parse/illegal-move)",
+             written, skipped);
+}
+
 /// Convert a Coda move to sfbinpack Move format.
 fn make_sf_move(_pos: &SfPosition, mv: Move, board: &Board) -> Option<SfMove> {
     let from = SfSquare::new(move_from(mv) as u32);
