@@ -352,6 +352,60 @@ impl ThreatStack {
         }
     }
 
+    /// Incremental update for both perspectives when they share an ancestor.
+    ///
+    /// The replay validity checks are still performed by `can_update` before
+    /// this is called. This path only removes the duplicate raw-delta walk; the
+    /// SIMD accumulator apply remains per perspective.
+    pub fn update_dual(&mut self, ancestor: usize, net_weights: &[i8], num_features: usize,
+                       board: &crate::board::Board) {
+        let h = self.hidden_size;
+        let white_king_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
+        let black_king_sq = (board.pieces[KING as usize] & board.colors[BLACK as usize]).trailing_zeros();
+        let mirrored_w = (white_king_sq % 8) >= 4;
+        let mirrored_b = (black_king_sq % 8) >= 4;
+
+        #[cfg(feature = "profile-threats")]
+        {
+            crate::threats::apply_stats::record_replay_gap(self.index - ancestor);
+            crate::threats::apply_stats::record_replay_gap(self.index - ancestor);
+        }
+
+        for ply in (ancestor + 1)..=self.index {
+            let entry_mv = self.stack[ply].mv;
+
+            let (prev, curr) = self.stack.split_at_mut(ply);
+            let prev_entry = &prev[ply - 1];
+            let entry = &mut curr[0];
+
+            if entry_mv == NO_MOVE || entry.delta.is_empty() {
+                entry.values[WHITE as usize][..h]
+                    .copy_from_slice(&prev_entry.values[WHITE as usize][..h]);
+                entry.values[BLACK as usize][..h]
+                    .copy_from_slice(&prev_entry.values[BLACK as usize][..h]);
+            } else {
+                let local_deltas = entry.delta.as_slice();
+                let (dst_w, dst_b) = {
+                    let (w, b) = entry.values.split_at_mut(1);
+                    (&mut w[0][..h], &mut b[0][..h])
+                };
+                unsafe {
+                    crate::threats::apply_threat_deltas_dual(
+                        dst_w,
+                        &prev_entry.values[WHITE as usize][..h],
+                        dst_b,
+                        &prev_entry.values[BLACK as usize][..h],
+                        local_deltas,
+                        net_weights, h, num_features,
+                        mirrored_w, mirrored_b,
+                    );
+                }
+            }
+
+            entry.accurate = [true, true];
+        }
+    }
+
     /// Get the accumulator values for a perspective.
     #[inline]
     pub fn values(&self, pov: Color) -> &[i16] {
@@ -366,6 +420,17 @@ impl ThreatStack {
         if !self.active { return; }
 
         let idx = self.index;
+        if !self.stack[idx].accurate[WHITE as usize] && !self.stack[idx].accurate[BLACK as usize] {
+            let white_ancestor = self.can_update(WHITE);
+            let black_ancestor = self.can_update(BLACK);
+            if let (Some(w), Some(b)) = (white_ancestor, black_ancestor) {
+                if w == b {
+                    self.update_dual(w, net_weights, num_features, board);
+                    return;
+                }
+            }
+        }
+
         for pov in [WHITE, BLACK] {
             if self.stack[idx].accurate[pov as usize] {
                 continue;

@@ -486,6 +486,13 @@ struct ThreatTables {
 }
 
 static THREAT_TABLES: std::sync::OnceLock<ThreatTables> = std::sync::OnceLock::new();
+const FLIPPED_COLORED_PIECE: [usize; NUM_COLORED_PIECES] = [6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5];
+
+#[inline(always)]
+fn flipped_colored_piece(cp: usize) -> usize {
+    debug_assert!(cp < NUM_COLORED_PIECES);
+    unsafe { *FLIPPED_COLORED_PIECE.get_unchecked(cp) }
+}
 
 /// SAFETY: caller must ensure init_threats() has completed before invoking.
 #[inline(always)]
@@ -2008,6 +2015,128 @@ pub unsafe fn apply_threat_deltas(
     #[cfg(feature = "profile-threats")]
     crate::threats::apply_stats::record_cancel(adds, subs);
 
+    unsafe {
+        apply_threat_indices(dst, src, threat_weights, hidden_size, adds, subs);
+    }
+}
+
+/// Apply raw threat deltas for both perspectives after a shared replay walk.
+///
+/// This avoids traversing the raw delta list twice when the WHITE and BLACK
+/// threat accumulators can replay from the same ancestor. The SIMD apply phase
+/// still runs once per perspective because the destination accumulators differ.
+///
+/// # Safety
+/// Same requirements as [`apply_threat_deltas`].
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx2"))]
+pub unsafe fn apply_threat_deltas_dual(
+    dst_w: &mut [i16],
+    src_w: &[i16],
+    dst_b: &mut [i16],
+    src_b: &[i16],
+    deltas: &[RawThreatDelta],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    num_threats: usize,
+    mirrored_w: bool,
+    mirrored_b: bool,
+) {
+    #[cfg(feature = "profile-threats")]
+    {
+        crate::threats::apply_stats::record(deltas.len());
+        crate::threats::apply_stats::record(deltas.len());
+    }
+
+    let mut adds_w_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS]>::uninit();
+    let mut subs_w_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS]>::uninit();
+    let mut adds_b_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS]>::uninit();
+    let mut subs_b_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS]>::uninit();
+    let adds_w_ptr = scratch_ptr!(adds_w_storage, usize);
+    let subs_w_ptr = scratch_ptr!(subs_w_storage, usize);
+    let adds_b_ptr = scratch_ptr!(adds_b_storage, usize);
+    let subs_b_ptr = scratch_ptr!(subs_b_storage, usize);
+    let mut n_adds_w = 0usize;
+    let mut n_subs_w = 0usize;
+    let mut n_adds_b = 0usize;
+    let mut n_subs_b = 0usize;
+    let tables = get_threat_tables();
+    let flip_w = 7 * mirrored_w as u32;
+    let flip_b = (7 * mirrored_b as u32) ^ 56;
+
+    for delta in deltas {
+        let attacker = delta.attacker_cp() as usize;
+        let from = delta.from_sq() as u32;
+        let victim = delta.victim_cp() as usize;
+        let to = delta.to_sq() as u32;
+        let add = delta.add();
+
+        let pair_w = tables.piece_pair[attacker][victim];
+        let base_w = pair_w.base(from, to);
+        if base_w >= 0 {
+            let from_w = from ^ flip_w;
+            let to_w = to ^ flip_w;
+            let idx_w = base_w
+                + tables.piece_offset[attacker][from_w as usize]
+                + tables.attack_index[attacker][from_w as usize][to_w as usize] as i32;
+            if (idx_w as usize) < num_threats {
+                if add {
+                    unsafe { adds_w_ptr.add(n_adds_w).write(idx_w as usize); }
+                    n_adds_w += 1;
+                } else {
+                    unsafe { subs_w_ptr.add(n_subs_w).write(idx_w as usize); }
+                    n_subs_w += 1;
+                }
+            }
+        }
+
+        let attacker_b = flipped_colored_piece(attacker);
+        let victim_b = flipped_colored_piece(victim);
+        let pair_b = tables.piece_pair[attacker_b][victim_b];
+        let base_b = pair_b.base(from, to);
+        if base_b >= 0 {
+            let from_b = from ^ flip_b;
+            let to_b = to ^ flip_b;
+            let idx_b = base_b
+                + tables.piece_offset[attacker_b][from_b as usize]
+                + tables.attack_index[attacker_b][from_b as usize][to_b as usize] as i32;
+            if (idx_b as usize) < num_threats {
+                if add {
+                    unsafe { adds_b_ptr.add(n_adds_b).write(idx_b as usize); }
+                    n_adds_b += 1;
+                } else {
+                    unsafe { subs_b_ptr.add(n_subs_b).write(idx_b as usize); }
+                    n_subs_b += 1;
+                }
+            }
+        }
+    }
+
+    let adds_w = scratch_slice!(adds_w_ptr, n_adds_w);
+    let subs_w = scratch_slice!(subs_w_ptr, n_subs_w);
+    let adds_b = scratch_slice!(adds_b_ptr, n_adds_b);
+    let subs_b = scratch_slice!(subs_b_ptr, n_subs_b);
+
+    #[cfg(feature = "profile-threats")]
+    {
+        crate::threats::apply_stats::record_cancel(adds_w, subs_w);
+        crate::threats::apply_stats::record_cancel(adds_b, subs_b);
+    }
+
+    unsafe {
+        apply_threat_indices(dst_w, src_w, threat_weights, hidden_size, adds_w, subs_w);
+        apply_threat_indices(dst_b, src_b, threat_weights, hidden_size, adds_b, subs_b);
+    }
+}
+
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx2"))]
+unsafe fn apply_threat_indices(
+    dst: &mut [i16],
+    src: &[i16],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    adds: &[usize],
+    subs: &[usize],
+) {
     // Prefetch weight rows for upcoming deltas (hide L3 latency)
     #[cfg(target_arch = "x86_64")]
     {
