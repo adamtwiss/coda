@@ -364,6 +364,15 @@ enum Commands {
         #[arg(long, short = 'o', default_value = "games.binpack")]
         output: String,
     },
+    /// Import datagen PGN -> binpack natively (replaces pgn_to_game_tsv.py | import-game-tsv)
+    ImportPgn {
+        /// Input PGN ("-" for stdin; e.g. bzcat *.pgn.bz2 | coda import-pgn -i -)
+        #[arg(long, short = 'i')]
+        input: String,
+        /// Output binpack file
+        #[arg(long, short = 'o', default_value = "games.binpack")]
+        output: String,
+    },
     /// Evaluate positions from binpack to measure eval scale distribution
     EvalDist {
         /// Input binpack file
@@ -1142,6 +1151,9 @@ fn main() {
             datagen::import_tsv(&input, &output, fen_col, score_col, max_abs, repeat);
         }
 
+        Some(Commands::ImportPgn { input, output }) => {
+            datagen::import_pgn(&input, &output);
+        }
         Some(Commands::ImportGameTsv { input, output }) => {
             datagen::import_game_tsv(&input, &output);
         }

@@ -8,6 +8,15 @@ authors = ["Adam Twiss"]
 [dependencies]
 shakmaty = "0.30"
 shakmaty-syzygy = "0.28"
+pgn-reader = "0.27"
+# pgn-reader 0.27 tracks board state with shakmaty 0.28; pull that exact
+# version (renamed) so the Visitor can build positions/UCI/FEN with the same
+# types the reader hands back. Coexists with the 0.30 above (separate crates).
+shakmaty028 = { package = "shakmaty", version = "0.28" }
+# bzip2 decompression for `import-pgn` so it reads the OB datagen tar's
+# `*.pgn.bz2` files directly (0.5 defaults to a pure-Rust backend — no system
+# libbz2-dev needed). MultiBzDecoder handles concatenated bz2 streams.
+bzip2 = "0.5"
 libc = "0.2"
 sfbinpack = "0.6.0"
 clap = { version = "4.6.0", features = ["derive"] }

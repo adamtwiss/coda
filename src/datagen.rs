@@ -101,6 +101,26 @@ pub fn import_tsv(tsv_path: &str, out_path: &str, fen_col: usize, score_col: usi
               (mate-ish/parse/illegal)", written, unique, repeat.max(1), skipped);
 }
 
+/// Build and write one binpack entry from string-form fields
+/// (fen, uci, STM-POV cp score, STM-POV WDL result, ply). Returns true if
+/// written, false if skipped (illegal/unmatched move or unconstructable entry).
+/// Shared by `import_game_tsv` (python-PGN path) and `import_pgn` (native path)
+/// so both produce byte-identical binpack entries.
+fn write_game_entry<W: std::io::Write>(
+    writer: &mut CompressedTrainingDataEntryWriter<W>,
+    fen: &str, uci: &str, score: i32, result: i16, ply: u16,
+) -> bool {
+    let board = Board::from_fen(fen);
+    let mv = match find_move_by_uci(&board, uci) {
+        Some(m) => m,
+        None => return false,
+    };
+    match to_sf_entry(&board, mv, score.clamp(-32000, 32000) as i16, result, ply) {
+        Some(entry) => { writer.write_entry(&entry).expect("Failed to write entry"); true }
+        None => false,
+    }
+}
+
 /// Find the legal move matching a UCI string (e.g. "g1f3", "e7e8q") by formatting
 /// each legal move and comparing — robust to flag/encoding details (EP, castle,
 /// promotion) since it uses the same `move_to_uci` the engine emits.
@@ -143,17 +163,13 @@ pub fn import_game_tsv(tsv_path: &str, out_path: &str) {
         if line.is_empty() { continue; }
         let cols: Vec<&str> = line.split('\t').collect();
         if cols.len() < 5 { skipped += 1; continue; }
-        let board = Board::from_fen(cols[0].trim());
-        let mv = match find_move_by_uci(&board, cols[1].trim()) {
-            Some(m) => m,
-            None => { skipped += 1; continue }
-        };
         let score: i32 = cols[2].trim().parse().unwrap_or(0);
         let result: i16 = cols[3].trim().parse().unwrap_or(0);
         let ply: u16 = cols[4].trim().parse().unwrap_or(0);
-        match to_sf_entry(&board, mv, score.clamp(-32000, 32000) as i16, result, ply) {
-            Some(entry) => { writer.write_entry(&entry).expect("Failed to write entry"); written += 1; }
-            None => { skipped += 1; }
+        if write_game_entry(&mut writer, cols[0].trim(), cols[1].trim(), score, result, ply) {
+            written += 1;
+        } else {
+            skipped += 1;
         }
         if written != 0 && written % 5_000_000 == 0 {
             eprintln!("  ...{} positions written", written);
@@ -162,6 +178,208 @@ pub fn import_game_tsv(tsv_path: &str, out_path: &str) {
     drop(writer); // flush
     println!("import-game-tsv: {} positions written, {} skipped (parse/illegal-move)",
              written, skipped);
+}
+
+/// Parse the in-game eval out of a PGN move comment, e.g. `+0.43/17 0.60s`
+/// (-> 43cp) or `+M3/30` (-> +30000). Faithful to the python regex
+/// `([+-]?)(M)?(\d+(?:\.\d+)?)/`: the leftmost run of optional sign, optional
+/// capital-`M` (mate), a decimal number, immediately followed by `/` (the
+/// `eval/depth` separator fastchess writes). Returns STM-POV centipawns; mate
+/// capped at ±30000. Returns None when the comment has no eval token (a
+/// position python's loop skips).
+fn parse_eval_comment(c: &str) -> Option<i32> {
+    let b = c.as_bytes();
+    let n = b.len();
+    let mut i = 0usize;
+    while i < n {
+        let mut j = i;
+        let mut sign = 1i32;
+        if b[j] == b'+' || b[j] == b'-' {
+            if b[j] == b'-' { sign = -1; }
+            j += 1;
+        }
+        let is_mate = j < n && b[j] == b'M';
+        if is_mate { j += 1; }
+        let dig_start = j;
+        while j < n && b[j].is_ascii_digit() { j += 1; }
+        if j > dig_start {
+            // optional fractional part — `\.\d+` requires >=1 digit after '.'
+            if j < n && b[j] == b'.' {
+                let mut k = j + 1;
+                while k < n && b[k].is_ascii_digit() { k += 1; }
+                if k > j + 1 { j = k; }
+            }
+            if j < n && b[j] == b'/' {
+                if is_mate { return Some(sign * 30000); }
+                let val: f64 = std::str::from_utf8(&b[dig_start..j]).ok()?.parse().ok()?;
+                return Some((sign as f64 * val * 100.0).round() as i32);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// pgn-reader Visitor that streams Coda-vs-SF datagen games straight into a
+/// binpack. pgn-reader tracks board state with shakmaty 0.28, so this bridges
+/// to Coda's binpack writer via version-agnostic FEN/UCI strings (same as the
+/// TSV path). Emits EVERY position that carries an eval comment, in game order
+/// with its actual move (so the binpack chain-compresses consecutive plies),
+/// with the game WDL from the side-to-move POV and the absolute ply — NO
+/// filtering (the trainer's loader does that). Mirrors `pgn_to_game_tsv.py`.
+struct PgnHarvest {
+    writer: CompressedTrainingDataEntryWriter<std::io::BufWriter<std::fs::File>>,
+    pos: shakmaty028::Chess,
+    /// Game result from white's POV (+1/0/-1); None until the Result tag is seen.
+    white_res: Option<i16>,
+    /// The move awaiting its trailing eval comment: (fen, uci, ply, stm_white).
+    pending: Option<(String, String, u16, bool)>,
+    /// Set when a SAN fails to parse — suppresses the rest of a corrupt game.
+    corrupt: bool,
+    written: u64,
+    skipped: u64,
+    games: u64,
+}
+
+impl pgn_reader::Visitor for PgnHarvest {
+    type Result = ();
+
+    fn begin_game(&mut self) {
+        self.pos = shakmaty028::Chess::default();
+        self.white_res = None;
+        self.pending = None;
+        self.corrupt = false;
+    }
+
+    fn tag(&mut self, name: &[u8], value: pgn_reader::RawTag<'_>) {
+        if name == b"FEN" {
+            // datagen games start from a genfens FEN — honour it (else the
+            // board, hence every FEN/ply we emit, would be wrong).
+            use shakmaty028::fen::Fen;
+            use shakmaty028::CastlingMode;
+            if let Ok(f) = Fen::from_ascii(value.as_bytes()) {
+                if let Ok(p) = f.into_position::<shakmaty028::Chess>(CastlingMode::Standard) {
+                    self.pos = p;
+                }
+            }
+        } else if name == b"Result" {
+            self.white_res = match value.as_bytes() {
+                b"1-0" => Some(1),
+                b"0-1" => Some(-1),
+                b"1/2-1/2" => Some(0),
+                _ => None,
+            };
+        }
+    }
+
+    fn end_tags(&mut self) -> pgn_reader::Skip {
+        // Skip games with an unknown/unfinished result (python `continue`).
+        pgn_reader::Skip(self.white_res.is_none())
+    }
+
+    fn san(&mut self, san_plus: pgn_reader::SanPlus) {
+        use shakmaty028::{Position, CastlingMode, Color, EnPassantMode};
+        use shakmaty028::fen::Fen;
+        use shakmaty028::uci::UciMove;
+        if self.corrupt { return; }
+        // Drop any pending move that never received an eval comment (skipped,
+        // matching python's `cp is None`).
+        self.pending = None;
+        let m = match san_plus.san.to_move(&self.pos) {
+            Ok(m) => m,
+            Err(_) => { self.corrupt = true; self.skipped += 1; return; }
+        };
+        let stm_white = self.pos.turn() == Color::White;
+        let fm = self.pos.fullmoves().get();
+        let ply = (2 * (fm - 1) + if stm_white { 0 } else { 1 }) as u16;
+        let fen = Fen::from_position(&self.pos, EnPassantMode::Legal).to_string();
+        let uci = UciMove::from_move(m, CastlingMode::Standard).to_string();
+        self.pos.play_unchecked(m);
+        self.pending = Some((fen, uci, ply, stm_white));
+    }
+
+    fn comment(&mut self, comment: pgn_reader::RawComment<'_>) {
+        if self.corrupt { return; }
+        if let Some((fen, uci, ply, stm_white)) = self.pending.take() {
+            let s = match std::str::from_utf8(comment.as_bytes()) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            if let Some(cp) = parse_eval_comment(s) {
+                let wr = self.white_res.unwrap_or(0);
+                let result = if stm_white { wr } else { -wr };
+                if write_game_entry(&mut self.writer, &fen, &uci, cp, result, ply) {
+                    self.written += 1;
+                    if self.written % 5_000_000 == 0 {
+                        eprintln!("  ...{} positions written", self.written);
+                    }
+                } else {
+                    self.skipped += 1;
+                }
+            }
+        }
+    }
+
+    fn begin_variation(&mut self) -> pgn_reader::Skip {
+        pgn_reader::Skip(true) // datagen PGNs have no variations
+    }
+
+    fn end_game(&mut self) -> Self::Result {
+        self.games += 1;
+        if self.games % 5000 == 0 {
+            eprintln!("  ...{} games, {} positions", self.games, self.written);
+        }
+    }
+}
+
+/// Native PGN -> binpack importer: replaces the `pgn_to_game_tsv.py | coda
+/// import-game-tsv` pipeline with a single in-process pass (the python PGN
+/// parse was the throughput bottleneck). Reads PGN from `pgn_path` — a plain
+/// `.pgn`, a `.bz2` (the OB datagen tar's `*.pgn.bz2` files, decoded inline so
+/// no `bzcat` pipe is needed), or "-" for stdin (auto-detected as bz2 if the
+/// stream starts with the `BZh` magic, else plain) — and writes an sfbinpack
+/// binpack to `out_path`. Output is byte-equivalent to the TSV path (shared
+/// `write_game_entry`).
+pub fn import_pgn(pgn_path: &str, out_path: &str) {
+    use std::io::{BufWriter, Read};
+    use bzip2::read::MultiBzDecoder;
+    let reader: Box<dyn Read> = if pgn_path == "-" {
+        // Peek the first 3 bytes for the bz2 magic so a piped `*.pgn.bz2`
+        // still decodes without the caller knowing to add `bzcat`.
+        use std::io::BufRead;
+        let mut stdin = std::io::BufReader::new(std::io::stdin());
+        let is_bz2 = matches!(stdin.fill_buf(), Ok(buf) if buf.starts_with(b"BZh"));
+        if is_bz2 { Box::new(MultiBzDecoder::new(stdin)) } else { Box::new(stdin) }
+    } else {
+        let file = std::fs::File::open(pgn_path)
+            .unwrap_or_else(|e| panic!("open {}: {}", pgn_path, e));
+        if pgn_path.ends_with(".bz2") {
+            Box::new(MultiBzDecoder::new(file))
+        } else {
+            Box::new(file)
+        }
+    };
+    let outf = std::fs::File::create(out_path)
+        .unwrap_or_else(|e| panic!("create {}: {}", out_path, e));
+    let buf = BufWriter::with_capacity(1 << 20, outf);
+    let writer = CompressedTrainingDataEntryWriter::new(buf)
+        .expect("Failed to create binpack writer");
+    let mut harvest = PgnHarvest {
+        writer,
+        pos: shakmaty028::Chess::default(),
+        white_res: None,
+        pending: None,
+        corrupt: false,
+        written: 0,
+        skipped: 0,
+        games: 0,
+    };
+    let mut br = pgn_reader::BufferedReader::new(reader);
+    br.read_all(&mut harvest).expect("pgn read error");
+    let (games, written, skipped) = (harvest.games, harvest.written, harvest.skipped);
+    drop(harvest); // flush + finalize the binpack writer
+    println!("import-pgn: {} games -> {} positions written, {} skipped \
+              (no-eval/illegal-move)", games, written, skipped);
 }
 
 /// Convert a Coda move to sfbinpack Move format.
