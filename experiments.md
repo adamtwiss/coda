@@ -16046,3 +16046,37 @@ output head, dual 2x L2) are if anything UNDER-stated there
 ([[feedback_hercules_bench_overstates_bandwidth_opts]] is about bandwidth opts;
 compute costs read smaller on a memory-bound box), so deployment NPS gaps may be
 larger.
+
+### Combined dual+psqt: scale incompatibility breaks the PSQT skip-term (#2043)
+
+Confirmation run for the stacked features. Trained the combined net (gpu2,
+`--hidden-activation dual --psqt`, otherwise identical recipe, seed 42, S800 SWA).
+First-ever `--dual --psqt` combined convert — verified 0/10000, eval RMS 206.9.
+
+**#2043 combined vs baseline: H0 -104.0 ±13.7 (N=918).** Far worse than either
+component (psqt -12.5, dual -27.9) OR their sum — and INCONSISTENT with the static
+eval, which triangulates the mechanism:
+- eval-dist RMS 206.9 ~= dual-only 206.4 (network output is dual-compressed; psqt
+  adds ~nothing to the static distribution).
+- Spearman vs LC0 oracle 0.832 (only mildly worse than dual 0.863) — a "decent"
+  static ranking.
+- Yet plays -104 (76 Elo worse than dual).
+
+**Mechanism = scale incompatibility, NOT additive regression.** The PSQT
+skip-connection adds a material/positional term at its trained ~×255/QA scale;
+dual compresses the *network* output to ~2/3. So the material term DOMINATES the
+compressed network signal -> the net evaluates ~like a material-heavy evaluator
+with a weak positional correction. Consistent with every number: on QUIET positions
+material ~= the oracle (Spearman stays ~0.83); in TACTICAL/dynamic play a
+material-dominated eval is catastrophic (-104). No crashes — nothing is technically
+broken, the two features are just internally mis-scaled relative to each other.
+
+Lesson: you cannot naively stack a scale-COMPRESSING L1 feature (dual) with an
+output-SKIP feature (psqt) — the skip term must be rescaled to the compressed
+network output or it overpowers it. NOT pursued (both features abandoned anyway);
+the combined-path scale-matching "fix" is left undone deliberately.
+
+Thread CLOSED: PSQT outputs and dual activation are dead on Coda — psqt =
+NPS-tax-for-nothing (eval fine), dual = genuine eval-quality regression + scale
+compression tree-bloat, combined = scale-incompatible. See
+[[project_psqt_dual_regress_s800]].
