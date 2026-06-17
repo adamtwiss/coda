@@ -791,19 +791,27 @@ pub fn enumerate_threats<F: FnMut(usize)>(
     }
 }
 
-/// C8 reference: enumerate threat features using **Bullet's bf-frame**
-/// semi-exclusion rule instead of Coda's physical-frame rule.
+/// HISTORICAL reference — the **pre-C8-fix** Bullet enumeration (bf-frame
+/// same-type-pair skip). DOES NOT describe current training.
 ///
-/// Bullet stores positions in STM-relative frame (rank-flipped when real
-/// STM is black). Its same-type-pair skip (`sq < to`) evaluates in that
-/// frame. When real STM is black, physical squares vs bf squares disagree
-/// on which side of the pair to keep. This function reimplements the
-/// enumeration in bf-frame so the fuzzer can diff Coda's current output
-/// against Bullet's intended output.
+/// Before the 2026-04-22 C8 fix, Bullet evaluated the same-type-pair skip
+/// (`sq < to`) in its internal bf-frame (rank-flipped when real STM is
+/// black), which disagreed with Coda inference (physical-frame) for
+/// black-STM positions. Bullet was SINCE changed to do the skip on physical
+/// squares (`phys_flip`), matching Coda exactly — see
+/// `bullet/.../chess_threats.rs` and `enumerate_threats_bullet_postfix_ref`
+/// below, which `fuzz-threats --postfix` verifies at **0 mismatches**
+/// (40000 evals, both STMs, 2026-06-17). So there is NO live train/inference
+/// divergence; this function is retained only to characterise the OLD bug.
 ///
-/// Only direct-attack features are handled here (no x-ray) — those
-/// x-ray features aren't emitted from same-type pairs in the
-/// Coda-visible bugs, but the same semi-excl asymmetry applies.
+/// Note: the physical-frame skip both engines now use is STM-invariant (so
+/// Coda's incremental threat deltas stay clean) but is NOT mirror-symmetric
+/// — a deliberate tradeoff. It is the source of a small, consistent
+/// color-eval asymmetry on same-type-pair (bishop/rook) threats; see
+/// `docs/threat_eval_asymmetry_2026-06-17.md`. That is a feature-design
+/// property, not a divergence.
+///
+/// Only direct-attack features are handled here (no x-ray).
 pub fn enumerate_threats_bullet_ref<F: FnMut(usize)>(
     pieces_bb: &[Bitboard; 6],
     colors_bb: &[Bitboard; 2],
