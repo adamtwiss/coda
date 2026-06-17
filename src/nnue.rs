@@ -4146,7 +4146,13 @@ impl NNUENet {
     /// Forward pass with ThreatStack (new path).
     pub fn forward_with_threats(&self, acc: &NNUEAccumulator, stm: u8, piece_count: u32,
                                 threat_stack: &crate::threat_accum::ThreatStack) -> i32 {
-        if threat_stack.active && self.has_threats {
+        // DIAGNOSTIC: CODA_NO_THREAT_ACC=1 zeros the threat-accumulator contribution
+        // (falls through to the FT-only forward) to isolate whether the threat
+        // features drive an eval behaviour (e.g. forward-bishop over-credit). Not a
+        // gameplay flag — produces a degraded eval; for relative A/B probing only.
+        static NO_THREAT_ACC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let no_threats = *NO_THREAT_ACC.get_or_init(|| std::env::var("CODA_NO_THREAT_ACC").is_ok());
+        if threat_stack.active && self.has_threats && !no_threats {
             let bucket = self.output_bucket(piece_count);
             let h = self.hidden_size;
 
