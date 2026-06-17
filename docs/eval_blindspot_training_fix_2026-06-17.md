@@ -73,9 +73,18 @@ normal train-bigger/longer flywheel.
   data so the threat *weights* learn forward-active-but-loose bishops are bad
   (keeps the architecture — the features exist, the weights mis-rank), or (b) a
   threat-feature change ensuring the attacked-in-return signal is present and
-  weighted (retrain + revalidate). Open sub-question being checked: does an
-  *incoming*-threat feature even fire on the bishop after Bf3/Bd2? If not → a
-  feature-coverage gap; if yes → a weight/training-emphasis gap.
+  weighted (retrain + revalidate).
+  **RESOLVED (2026-06-17, `dump-threats`):** the incoming "bishop is attacked"
+  features DO fire after each sortie (`w Bf4→b Bd2`, `b Be7→w Bd6`, `b Re3→w
+  Bf3`) — so it's **(a), a weight/training-emphasis gap, not a coverage gap.**
+  Sharper: on the *pure* sorties (Bf3, Bd2) the bishop has ~0 *outgoing* threats
+  (Bf3 attacks no enemy piece), so the over-credit is the net threat-*delta of
+  relocating* the bishop (collateral line shifts + under-penalized incoming)
+  coming out positive, NOT "active bishop attacks more." Fix = targeted
+  SF/LC0-labeled forced-sortie data, dense enough to re-teach the *threat*
+  weights on this sparse class; no architecture change. (Next probe to fully
+  pinpoint: per-feature threat-contribution decomposition — is the incoming
+  feature mis-signed, or is it collateral threats dominating?)
 - **FT-side (captures + residual):** the targeted-data approach below.
 
 So the training-corpus method below is still right for the FT-side and for
