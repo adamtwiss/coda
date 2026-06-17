@@ -132,6 +132,10 @@ def build(args):
                 for k in ('quiet','live','mv','coda_cp','sf_cp'): d[k]=toi(d.get(k,'')) or 0
                 rows.append(d)
     def worst(r):  # the move-to-avoid for this row = whichever lost more
+        # Focus on blindspots that mattered: skip positions where Coda was
+        # already lost (best-defence-in-a-lost-position is low fix-value).
+        if args.min_pos_cp is not None and r['sf_cp'] < args.min_pos_cp:
+            return None
         pl, cl = r['played_loss'], r['coda_loss']
         cand=[]
         if cl is not None and cl>=args.gap_thresh and r['coda_uci']!=r['sf_uci']:
@@ -192,6 +196,8 @@ def main():
     ap.add_argument('--out-tsv', default='/tmp/overrate.tsv')
     ap.add_argument('--out-md', default='/tmp/overrate.md'); ap.add_argument('--out-epd', default='/tmp/overrate.epd')
     ap.add_argument('--build-from-tsv', nargs='+', default=None)
+    ap.add_argument('--min-pos-cp', type=int, default=None,
+                    help='build: only flag positions where SF pos-eval >= this (skip already-lost)')
     args = ap.parse_args()
     if args.build_from_tsv: build(args)
     else:
