@@ -66,7 +66,7 @@ def scan(args):
     out.write('\t'.join(FIELDS) + '\n')
     def sf_move_cp(board, uci):
         try:
-            mi = sf.analyse(board, chess.engine.Limit(depth=args.sf_depth), root_moves=[uci])
+            mi = sf.analyse(board, chess.engine.Limit(depth=args.sf_depth, time=args.sf_maxtime), root_moves=[uci])
             return cp_stm(mi, board)
         except Exception:
             return None
@@ -87,7 +87,7 @@ def scan(args):
                 fen = board.fen(); played = board.san(mv); played_mv = mv  # Move object
                 try:
                     ci = coda.analyse(board, chess.engine.Limit(time=args.coda_movetime))
-                    si = sf.analyse(board, chess.engine.Limit(depth=args.sf_depth))
+                    si = sf.analyse(board, chess.engine.Limit(depth=args.sf_depth, time=args.sf_maxtime))
                 except Exception:
                     board.push(mv); continue
                 ccp = cp_stm(ci, board); scp = cp_stm(si, board)
@@ -187,6 +187,7 @@ def main():
     ap.add_argument('--coda-net', default=None)
     ap.add_argument('--coda-movetime', type=float, default=0.6); ap.add_argument('--coda-threads', type=int, default=1)
     ap.add_argument('--sf-depth', type=int, default=22); ap.add_argument('--sf-threads', type=int, default=2)
+    ap.add_argument('--sf-maxtime', type=float, default=15.0, help='wall-clock cap (s) per SF search; prevents pathological-position hangs')
     ap.add_argument('--sf-hash', type=int, default=512)
     ap.add_argument('--gap-thresh', type=int, default=150)
     ap.add_argument('--blowout', type=int, default=600, help='skip move-loss when |sf_cp|>this')
