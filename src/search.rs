@@ -394,6 +394,17 @@ tunables!(
     (PROBCUT_MIN_DEPTH_10X, 21, 10, 120, 15.0, true),     // was hardcoded 5 (ProbCut activation gate)
     (PROBCUT_ROOT_MIN_DEPTH_10X, 24, 0, 80, 8.0, true),
     (SEE_CAP_DEPTH, 7, 3, 15, 1.5, true),         // was hardcoded 6 (SEE capture prune depth cap)
+    // Capture-SEE prune margin, SF-shaped (search.cpp): margin = depth*MULT +
+    // capt_hist*HIST/1024, prune if SEE < -margin. Was sharing the hardcoded
+    // SEE_MATERIAL_SCALE=215 (a QS-delta constant) with NO history term, giving
+    // a flat 2.15 pawn/depth margin — ~2.5× wider than SF's 0.84 pawn/depth, so
+    // Coda pruned far fewer bad captures. The capt-hist term is load-bearing:
+    // it protects historically-good captures (which produce cutoffs) so the
+    // base can be lowered without over-pruning them (a naive base-only drop to
+    // 130 cost +17% bench nodes). Base 110 (1.1 pawn/depth, toward SF's 0.84);
+    // HIST 11 ≈ SF's 34/1024 rescaled for Coda's ±16384 capt-hist. Audit #3.
+    (SEE_CAP_MULT, 110, 40, 250, 12.0, true),
+    (SEE_CAP_HIST, 11, 0, 40, 2.0, true),
     (BAD_NOISY_DEPTH, 8, 4, 15, 1.5, true),       // was hardcoded 4 (BNFP depth cap)
     // Second pass — additional gates exposed for the feature-utility
     // audit tune. Widened ranges allow SPSA to reach disable-endpoint
@@ -3777,13 +3788,19 @@ fn negamax(
             continue;
         }
 
-        // SEE capture pruning: at shallow depths, prune captures that lose material
+        // SEE capture pruning: at shallow depths, prune captures that lose
+        // material. SF-shaped margin: base depth*MULT plus a capture-history
+        // relaxation so historically-good captures (cutoff producers) survive a
+        // lower base. Prune if SEE < -margin.
         if is_cap && ply > 0 && !in_check && depth <= tp(&SEE_CAP_DEPTH)
             && mv != tt_move && best_score > -(MATE_SCORE - 100)
-            && !see_ge(board, mv, -(depth * tp(&SEE_MATERIAL_SCALE)))
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
-            continue;
+            let cap_ch = crate::movepicker::capt_hist_score_static(board, &info.history, mv);
+            let cap_margin = (depth * tp(&SEE_CAP_MULT) + cap_ch * tp(&SEE_CAP_HIST) / 1024).max(0);
+            if !see_ge(board, mv, -cap_margin) {
+                continue;
+            }
         }
 
         // Estimated LMR depth for pre-MakeMove pruning (SEE quiet, futility).
