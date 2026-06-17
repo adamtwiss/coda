@@ -10,26 +10,27 @@ This note is the methodology.
 
 ## Why an NNUE has a persistent blindspot
 
-The net is an interpolator over its training distribution: accurate where
-(position, label) pairs are **dense and correctly labeled**, wrong where they
-are **sparse or mislabeled**. A persistent over-valuation of a move type means
-one (or more) of:
+**Training setup (correct as of 2026-06-17, per Adam):** Coda trains on the
+**same SF/LC0-generated datasets that SF trains on** (T80 etc.), scored by LC0
+or SF. **No self-play training.** So the labels are high-quality and identical-
+in-kind to SF's — the blindspot is *not* a label-quality or self-play-echo
+problem. That rules out two tempting hypotheses and narrows the cause to one:
 
-1. **Sparse coverage (most likely).** Bishop sorties that are *bad* are
-   off-the-beaten-path of strong play — strong engines/players rarely enter
-   them, so the post-sortie positions barely appear in T80 (Lc0) data. The net
-   never saw the refutation, so it extrapolates and guesses high. Blindspots
-   live exactly where the training games don't go.
-2. **Self-play echo chamber.** If the net's *own* (blind) eval generates
-   training data, both sides allow the sortie and the resulting positions get
-   labeled with the net's own too-rosy number → the blindspot is reinforced,
-   never corrected. Coda's bulk data is T80/Lc0 (good), but supplementary
-   `coda datagen` self-play is labeled by **Coda search at depth 8** (see
-   `coda datagen` default) — shallow enough to share the effective-depth
-   blindspot. Any of that in the mix teaches the wrong ranking.
-3. **Shallow labels.** Same root as (2): a label is only as good as the search
-   that produced it. Depth-8 self-play labels on tactically-deep positions are
-   systematically wrong in the engine's blind direction.
+1. **Sparse coverage + weaker generalization on the sparse region (the cause).**
+   The net is an interpolator over its training distribution: accurate where
+   (position, label) pairs are dense, less accurate where they are sparse.
+   Bishop sorties that are *bad* are off-the-beaten-path of strong play —
+   LC0/SF self-play rarely enters them, so the post-sortie positions are rare
+   in the shared data. The net extrapolates there and guesses high.
+2. **Why Coda and not SF, on the same data?** Because it's a *generalization*
+   gap, not a *data* gap: SF's net is larger/differently-shaped and converges
+   better on those sparse regions, and — critically — SF's *search* papers over
+   any residual static error (recall the RpZ9LbYM start position, where Coda's
+   static eval +1.87 was actually *more* accurate than SF's −0.47; SF wins via
+   depth, not a better static read everywhere). So the lever for Coda is either
+   (a) **more density in the sparse region** of the shared corpus, or (b) a
+   bigger/better-converged net (the L1=32 direction already pushes (b)). This
+   note is about (a).
 
 ## The fix: targeted hard-example mining → re-label → mix → verify
 
@@ -41,34 +42,39 @@ This is the eval-flywheel made deliberate. The overrate corpus is the
    flight) tests whether the bishop-sortie / pawn-push themes recur across
    many losses. Only intervene on a class that shows up repeatedly.
 
-2. **Generate the position TYPE in volume.** A few dozen exact positions won't
-   move a net trained on billions; you need hundreds–thousands of the *type*.
-   Options (combine):
-   - **Seeded self-play**: start games a few plies *before* each corpus
-     position (or from the games' openings/structures) and play out — surfaces
-     many positions where the bad sortie is available and gets refuted.
-   - **Perturbation**: `coda datagen` material-removal around the seeds to
-     vary material/structure while keeping the motif.
+2. **Generate the position TYPE in volume, and FORCE entry into the sparse
+   region.** A few dozen exact positions won't move a net trained on billions;
+   you need hundreds–thousands of the *type*. The key difficulty: these
+   positions are sparse *precisely because* strong play avoids them, so normal
+   strong-vs-strong games won't produce them. You have to deliberately steer
+   in. Options (combine):
+   - **Forced-move openings**: from each corpus position (or a few plies
+     before), *play the bad sortie* and continue with strong play — generates
+     the refutation positions that LC0/SF games skip. The point is to densely
+     populate the region the net is blind to.
+   - **Perturbation**: material/structure variations around the seeds (e.g.
+     `coda datagen` material-removal) to broaden the motif without leaving it.
    - **Structural mining**: scan existing T80 binpacks for positions matching
      the signature (side-to-move has an active bishop sortie) — they exist but
      are under-weighted; re-surfacing them is cheap.
 
-3. **Re-label with a STRONG, blindspot-free engine — this is the crux.** The
-   blindspot exists because labels were sparse/shallow; the cure is *correct*
-   labels. Label the targeted set with **deep Stockfish** (or deep Coda at
-   d24+, or Lc0) — anything that ranks the sortie correctly (we confirmed deep
-   SF does). **Do NOT re-label with Coda's depth-8 self-play** — that re-teaches
-   the blindspot. If you generate positions via Coda self-play (fine, to hit
-   the on-distribution-for-Coda blind positions), the *labels* must still come
-   from the strong source. Break the echo at the label, not the generator.
+3. **Label with the SAME pipeline as the base data: LC0 or SF.** This is the
+   one part that was already right — the targeted positions must be scored by
+   LC0/SF so they're consistent in kind with the T80 base (same eval scale,
+   same WDL convention) and so they carry the *correct* ranking (we confirmed
+   deep SF ranks the sortie correctly). The earlier draft wrongly framed this
+   as "don't let Coda re-label its own self-play" — Coda has no self-play in
+   the training loop; the only requirement is that the supplementary
+   positions are LC0/SF-scored like everything else. The novelty is purely
+   *which positions* get added (dense in the blind region), not how they're
+   labeled.
 
 4. **Mix a modest fraction into the next run.** Too much targeted data distorts
    the net / overfits the motif; too little does nothing. Either blend a few %
    into the main training mix, or add a short **fine-tune stage** (low LR, a
-   few SBs) on the targeted set after the main run. WDL is a useful blindspot-
-   free signal here (the sortie's game outcome is "lost"), so these positions
-   benefit from outcome labels too — but a sharp *eval* re-label is more
-   targeted than globally bumping WDL weight (already tuned to w0.15 for v9).
+   few SBs) on the targeted set after the main run. The supplementary set is an
+   *addition* to the shared T80/LC0 base, not a replacement — keep the broad
+   distribution, add density only where the net is blind.
 
 5. **Verify cheaply, then SPRT.** Static/shallow eval of the retrained net on
    `testdata/overrate.epd` should now rank `bm` over `am` on the targeted
@@ -78,12 +84,15 @@ This is the eval-flywheel made deliberate. The overrate corpus is the
 
 ## Coda-infra specifics
 
-- Generation/labeling: `coda datagen` (self-play + material-removal,
-  binpack out) — but **raise its label depth well above 8** for this purpose,
-  or label with SF via a small adapter. Shallow labels are the enemy here.
+- The supplementary set is generated to force entry into the sparse region
+  (play the bad sortie, continue with strong play) and **scored by LC0/SF**,
+  matching the base T80 data exactly — same format (SF BINP binpack), same
+  scoring source. No Coda-scored data enters the training mix.
 - Training: Bullet (`adamtwiss/bullet`), `coda convert-bullet` → `.nnue`.
-- The targeted set is a *supplement* to T80, not a replacement — keep the
-  broad distribution, add density where the net is blind.
+- Whether this beats simply training a bigger/better-converged net on the
+  existing data (the L1=32 direction) is an empirical question — the targeted-
+  data route is the cheaper, more surgical test, and the EPD suite makes its
+  effect directly measurable.
 
 ## The general framing
 
