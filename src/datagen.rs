@@ -515,3 +515,62 @@ impl SimpleRng {
     }
     fn next_f64(&mut self) -> f64 { (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64 }
 }
+
+/// genfens — OpenBench datagen opening-book generation.
+///
+/// OB invokes the *dev* engine as `./coda "genfens N seed S book B" quit`, i.e.
+/// argv[1] is the entire genfens command string (with spaces). For each of N
+/// openings we play a short run of random legal moves from the start position
+/// and print the resulting FEN as `info string genfens <FEN>`, which OB's
+/// `genfens.py` collects into the datagen opening book. Pure movegen — never
+/// touches search or eval, so it cannot affect playing strength. The `book`
+/// token (e.g. "None") is accepted and ignored; we always start from the
+/// initial position. `seed` makes the output reproducible (OB runs several
+/// processes, each with a distinct seed, for parallelism + diversity).
+pub fn run_genfens(arg: &str) {
+    let toks: Vec<&str> = arg.split_whitespace().collect();
+    let mut n: usize = 0;
+    let mut seed: u64 = 1;
+    let mut i = 0;
+    while i < toks.len() {
+        match toks[i] {
+            "genfens" => { if i + 1 < toks.len() { n = toks[i + 1].parse().unwrap_or(0); i += 1; } }
+            "seed"    => { if i + 1 < toks.len() { seed = toks[i + 1].parse().unwrap_or(1); i += 1; } }
+            _ => {} // "book <name>" and any extra tokens are ignored
+        }
+        i += 1;
+    }
+    genfens(n, seed);
+}
+
+fn genfens(n: usize, seed: u64) {
+    use std::io::Write;
+    let mut rng = SimpleRng::new(seed);
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let mut generated = 0usize;
+    let mut attempts = 0usize;
+    // Safety cap so a pathological seed can never spin forever (random 6–9 ply
+    // walks dead-end into mate/stalemate only very rarely, so this is slack).
+    let attempt_cap = n.saturating_mul(1000).saturating_add(1000);
+    while generated < n {
+        attempts += 1;
+        if attempts > attempt_cap { break; }
+        let mut board = Board::startpos();
+        let plies = 6 + (rng.next_u64() % 4); // 6–9 random plies (PlentyChess pattern)
+        let mut dead = false;
+        for _ in 0..plies {
+            let legal = generate_legal_moves(&board);
+            if legal.len == 0 { dead = true; break; } // mate/stalemate mid-walk → retry
+            let idx = rng.next_u64() as usize % legal.len;
+            board.make_move(legal.get(idx));
+        }
+        if dead { continue; }
+        // The opening must itself be playable (the last random move could have
+        // delivered mate/stalemate) — otherwise OB can't start a game from it.
+        if generate_legal_moves(&board).len == 0 { continue; }
+        let _ = writeln!(out, "info string genfens {}", board.to_fen());
+        let _ = out.flush();
+        generated += 1;
+    }
+}

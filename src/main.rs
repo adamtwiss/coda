@@ -509,6 +509,21 @@ fn main() {
 
     init();
 
+    // OpenBench datagen invokes the *dev* engine as
+    //   ./coda "genfens N seed S book B" quit
+    // where argv[1] is the entire genfens command string (with spaces).
+    // Intercept it before clap, which would otherwise reject it as an unknown
+    // subcommand. Emits `info string genfens <FEN>` lines for OB's opening-book
+    // generation (see datagen::run_genfens). Runs after init() so the magic
+    // attack tables are ready for move generation.
+    {
+        let raw: Vec<String> = std::env::args().collect();
+        if raw.get(1).map_or(false, |a| a.starts_with("genfens")) {
+            datagen::run_genfens(&raw[1]);
+            return;
+        }
+    }
+
     let cli = Cli::parse();
 
     if cli.load_anyway {
