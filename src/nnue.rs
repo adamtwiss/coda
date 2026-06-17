@@ -4146,7 +4146,13 @@ impl NNUENet {
     /// Forward pass with ThreatStack (new path).
     pub fn forward_with_threats(&self, acc: &NNUEAccumulator, stm: u8, piece_count: u32,
                                 threat_stack: &crate::threat_accum::ThreatStack) -> i32 {
-        if threat_stack.active && self.has_threats {
+        // DIAGNOSTIC: CODA_NO_THREAT_ACC=1 zeros the threat-accumulator contribution
+        // (falls through to the FT-only forward) to isolate whether the threat
+        // features drive an eval behaviour (e.g. forward-bishop over-credit). Not a
+        // gameplay flag — produces a degraded eval; for relative A/B probing only.
+        static NO_THREAT_ACC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let no_threats = *NO_THREAT_ACC.get_or_init(|| std::env::var("CODA_NO_THREAT_ACC").is_ok());
+        if threat_stack.active && self.has_threats && !no_threats {
             let bucket = self.output_bucket(piece_count);
             let h = self.hidden_size;
 
@@ -7383,18 +7389,25 @@ mod tests {
             "7k/8/8/8/8/8/8/7K w - - 0 1",
         ];
 
-        // v9/v10 threat nets: semi-exclusion is orientation-dependent by
-        // design, so mirrored positions activate different threat-feature
-        // indices. Well-trained nets converge to near-symmetric weights at
-        // those indices, but a residual remains that's larger than
-        // quantization drift alone, and its magnitude is NET-dependent.
-        // Measured kiwipete residuals: ~10-20cp (v9 s200 768 nets), 54cp
-        // (net-E4B66CE4 FT1024), 113cp (net-549C20A5 FT1024 prod). All
-        // other fixture positions stay at exactly 0 on a correct
-        // implementation — a real perspective/flip bug breaks MOST
-        // positions by hundreds of cp (often with sign flips), which
-        // 150cp still catches loudly. Non-threat nets have no
-        // semi-exclusion residual and keep the tight 50cp bar.
+        // v9/v10 THREAT nets are slightly color-asymmetric BY DESIGN — this
+        // is NOT a perspective/flip bug and NOT a train/inference divergence.
+        // The same-type-pair threat semi-exclusion (`PiecePair::base`,
+        // threats.rs) breaks the tie on PHYSICAL squares
+        // (`attacking_sq < attacked_sq`). That is STM-invariant — required so
+        // the incremental threat-delta accumulator stays correct — but NOT
+        // mirror-symmetric: a position and its color-mirror activate
+        // different same-type-pair (bishop/rook) threat features, so the net
+        // evals them slightly differently. The non-threat v5 net is EXACTLY 0
+        // on every fixture (proving the HalfKA base + king buckets are
+        // symmetric); the residual is entirely the threat semi-exclusion.
+        // Training matches inference EXACTLY here (Bullet post-C8-fix
+        // `phys_flip`; `fuzz-threats --postfix` = 0/40000, both STMs,
+        // 2026-06-17), so it is a feature-design tradeoff, not a divergence.
+        // Residuals are NET-dependent: ~10-20cp (v9 s200), 54cp (E4B66CE4),
+        // 113cp (549C20A5 prod). A genuine flip bug instead breaks MOST
+        // fixtures by hundreds of cp (often sign-flipped), which 150cp still
+        // catches loudly. See docs/threat_eval_asymmetry_2026-06-17.md.
+        // Non-threat nets keep the tight 50cp bar.
         let tolerance_cp: i32 = if net.has_threats { 150 } else { 50 };
         let h = net.hidden_size;
         let mut max_diff = 0i32;

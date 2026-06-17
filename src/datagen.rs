@@ -50,6 +50,57 @@ fn to_sf_entry(board: &Board, mv: Move, score: i16, result: i16, ply: u16) -> Op
     Some(TrainingDataEntry { pos, mv: sf_move, score, ply, result })
 }
 
+/// Import a TSV of (fen, score) rows into an sfbinpack binpack for fine-tuning.
+/// `score` is STM-POV cp (the SF deep eval = the corrective target). The WDL
+/// `result` is DERIVED FROM THE SCORE (STM-POV: win if >200, loss if <-200,
+/// else draw) because harvested-loss corpora have a uniform/dead `res` column.
+/// Positions with |score| > `max_abs` are dropped (mate-ish — not the subtle
+/// over-valuation signal). `repeat` upsamples each kept position (for a small
+/// targeted fine-tune set). Standalone entries (no chaining).
+pub fn import_tsv(tsv_path: &str, out_path: &str, fen_col: usize, score_col: usize,
+                  max_abs: i32, repeat: usize) {
+    use std::io::{BufRead, BufReader, BufWriter};
+    let f = std::fs::File::open(tsv_path)
+        .unwrap_or_else(|e| panic!("open {}: {}", tsv_path, e));
+    let outf = std::fs::File::create(out_path)
+        .unwrap_or_else(|e| panic!("create {}: {}", out_path, e));
+    let buf = BufWriter::with_capacity(1 << 20, outf);
+    let mut writer = CompressedTrainingDataEntryWriter::new(buf)
+        .expect("Failed to create binpack writer");
+    let (mut written, mut unique, mut skipped) = (0u64, 0u64, 0u64);
+    let mut lines = BufReader::new(f).lines();
+    lines.next(); // skip header
+    let need = fen_col.max(score_col);
+    for line in lines {
+        let line = match line { Ok(l) => l, Err(_) => { skipped += 1; continue } };
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() <= need { skipped += 1; continue; }
+        let fen = cols[fen_col].trim();
+        let score: i32 = match cols[score_col].trim().parse() {
+            Ok(s) => s, Err(_) => { skipped += 1; continue }
+        };
+        if score.abs() > max_abs { skipped += 1; continue; }
+        let board = Board::from_fen(fen);
+        let legal = generate_legal_moves(&board);
+        if legal.len == 0 { skipped += 1; continue; }
+        let mv = legal.get(0);
+        let result: i16 = if score > 200 { 1 } else if score < -200 { -1 } else { 0 };
+        match to_sf_entry(&board, mv, score.clamp(-32000, 32000) as i16, result, 0) {
+            Some(entry) => {
+                unique += 1;
+                for _ in 0..repeat.max(1) {
+                    writer.write_entry(&entry).expect("Failed to write entry");
+                    written += 1;
+                }
+            }
+            None => { skipped += 1; }
+        }
+    }
+    drop(writer); // flush
+    println!("import-tsv: {} entries written ({} unique x{} repeat), {} skipped \
+              (mate-ish/parse/illegal)", written, unique, repeat.max(1), skipped);
+}
+
 /// Convert a Coda move to sfbinpack Move format.
 fn make_sf_move(_pos: &SfPosition, mv: Move, board: &Board) -> Option<SfMove> {
     let from = SfSquare::new(move_from(mv) as u32);
