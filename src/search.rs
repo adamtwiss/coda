@@ -283,6 +283,11 @@ tunables!(
     (DEXT_MARGIN_BASE, 35, -50, 150, 6.0, true),
     (DEXT_CAP, 13, 4, 32, 2.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
+    // SEE gate on the quiet check bonus (SF movepick.cpp: check bonus only
+    // applies when see_ge(m, -75)). Without it Coda orders losing check-sacs
+    // into the first-searched slot. Margin on Coda's pawn=100 SEE scale:
+    // a check that loses more than this by SEE gets no ordering bonus.
+    (QUIET_CHECK_SEE_MARGIN, 75, 0, 300, 12.0, true),
     (CORR_HIST_DIV, 1587, 256, 4096, 192.0, true),
     // 4 -> 16 with T2.4: the floor-pin at 4 was calibrated for the
     // sign-only (err-clamped) regime; consensus weights ~depth uncapped.

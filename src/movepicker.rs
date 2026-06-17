@@ -597,6 +597,7 @@ impl MovePicker {
         let escape_bonus_r = crate::search::ESCAPE_BONUS_R.load(Ordering::Relaxed);
         let escape_bonus_minor = crate::search::ESCAPE_BONUS_MINOR.load(Ordering::Relaxed);
         let quiet_check_bonus = crate::search::QUIET_CHECK_BONUS.load(Ordering::Relaxed);
+        let quiet_check_see_margin = crate::search::QUIET_CHECK_SEE_MARGIN.load(Ordering::Relaxed);
         let discovered_attack_bonus = crate::search::DISCOVERED_ATTACK_BONUS.load(Ordering::Relaxed);
         let mobility_delta_weight = crate::search::MOBILITY_DELTA_WEIGHT.load(Ordering::Relaxed);
         let kf_bonus = crate::search::KNIGHT_FORK_BONUS.load(Ordering::Relaxed);
@@ -663,9 +664,12 @@ impl MovePicker {
                 };
             }
 
-            // Quiet check bonus: moves that give direct check (SF +16384, Viridithas +10000)
+            // Quiet check bonus: moves that give direct check (SF +16384, Viridithas +10000).
+            // SEE-gated like SF (movepick.cpp): a check that loses material by more
+            // than QUIET_CHECK_SEE_MARGIN is a losing sac — don't order it first.
             if piece != NO_PIECE
-                && pt < 6 && self.checking_sqs[pt as usize] & (1u64 << to) != 0 {
+                && pt < 6 && self.checking_sqs[pt as usize] & (1u64 << to) != 0
+                && see_ge(board, m, -quiet_check_see_margin) {
                 score += quiet_check_bonus;
             }
 
