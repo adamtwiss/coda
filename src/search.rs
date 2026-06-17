@@ -175,6 +175,11 @@ tunables!(
     (LMR_ROOT_COEF, 10, 0, 80, 4.0, true),
     (BAD_NOISY_MARGIN, 73, 30, 150, 6.0, true),
     (PROBCUT_MARGIN, 117, 80, 300, 11.0, true),
+    // Consensus ProbCut shape (Stockfish/Reckless/Viridithas/Alexandria):
+    // improving positions can use a lower verification beta, while
+    // non-improving nodes keep the safer base margin. Default 117-27=90cp
+    // when improving, matching the promising low-margin STC signal.
+    (PROBCUT_MARGIN_IMP, 27, 0, 120, 8.0, true),
     (HINDSIGHT_THRESH, 179, 50, 400, 17.5, true),
     (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
     (QS_DELTA_MARGIN, 352, 100, 500, 20.0, true),
@@ -3573,7 +3578,10 @@ fn negamax(
     //   "score is AT LEAST X" — it does not mean "no chance at probcut_beta",
     //   the true score can be much higher. Only UPPER/EXACT bounds are
     //   evidence of a ceiling. Switch to ply-adjusted score + bound gate.
-    let probcut_beta = beta + tp(&PROBCUT_MARGIN);
+    let probcut_margin = (tp(&PROBCUT_MARGIN)
+        - (improving as i32) * tp(&PROBCUT_MARGIN_IMP))
+        .max(1);
+    let probcut_beta = beta + probcut_margin;
     let probcut_tt_noshot = if tt_hit && tt_entry.depth >= depth - tp(&PROBCUT_TT_DEPTH_SLACK) {
         let adj_score = score_from_tt(tt_entry.score, ply);
         (tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT)
