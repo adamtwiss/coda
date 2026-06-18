@@ -19,6 +19,29 @@ Going forward, all changes must pass self-play SPRT before merging (see CLAUDE.m
 
 **Net convention**: All experiments use the checked-in `net.nnue`, referenced by commit hash.
 
+## 2026-06-18: Threat Generation / NPS Experiments
+
+Context: current production net `net-549C20A5.nnue`, current-main bench `2944948`. Initial stale submissions `#2077/#2078` used old bench `2621104` and finished with zero games due wrong-bench errors; ignore those.
+
+| ID | Branch | Change | Result | Decision |
+|---:|---|---|---|---|
+| 2079 | `perf/threat-empty-ray-table` | Cache `rook_attacks(sq, 0)` / `bishop_attacks(sq, 0)` in 64-entry empty-board slider tables and use them in threat ray generation. | `+1.9 +- 1.5`, 54,668 games, LLR 3.02, H1 | **MERGED**. Small, bench-identical hot-path cleanup. |
+| 2080 | `experiment/lazy-threat-deltas` | Defer threat-delta generation until a ply actually needs threat accumulator materialization; reconstruct last-move deltas on demand. | `+0.6 +- 1.1`, 98,028 games, LLR -0.59 when stopped | **Rejected**. Too much code complexity for flat result. Confirms unused-row signal but reconstruction/materialization overhead eats the saving. |
+| local | `perf/threat-filter-raw-deltas` | Filter hard-excluded and semi-excluded raw deltas before appending. | Bench-identical, local NPS about `-1.8%` | Discarded. Per-emission branch/control overhead exceeded saved apply bandwidth. |
+| local | `perf/threat-2b-exact-one` | Replace section-2b `count_ones() == 1` gate with zero/multiple bit tests. | Bench-identical, local NPS about `-0.6%` | Discarded. No speed signal. |
+| local | `perf/threat-direct-victim-mask` | Mask direct-threat attacked occupants to victim piece types that can produce a feature. | Bench-identical, local NPS about `-0.3%` | Discarded. Extra masking did not pay for itself. |
+
+Profile notes on current main before `2079`: `push_threats_for_piece` remained the right target (`5.7M` calls in bench 12); hot sections were direct threats, slider-sees/Z finding, and 2b x-ray-to-square. Generation averaged `8.55` raw deltas/move; lazy-delta work showed many generated rows are not ultimately useful, but avoiding them after make/unmake is not cheap enough in the tested design.
+
+## 2026-06-18: Recent Search / TM SPRTs
+
+| ID | Branch | Change | Result | Decision |
+|---:|---|---|---|---|
+| 2076 | `experiment/tm-lowinc-ceiling` | Low-increment time-management ceiling / overspend control. | `+1.8 +- 2.0`, 29,766 games, LLR 2.96, H1 | Merge candidate / merged separately if code review clean. |
+| 2065 | `experiment/lmr-cutnode-bump` | LMR cut-node bump. | `+1.2 +- 0.9`, 145,908 games, LLR 2.96, H1 | Merge candidate / merged separately if code review clean. |
+| 2072 | `experiment/quiet-see-hist` | Quiet SEE/history experiment. | `-0.3 +- 1.5`, 58,468 games, LLR -2.95, H0 | Rejected. |
+| 2081 | `experiment/tm-lowinc-ceiling` | Follow-up / alternate validation of low-increment ceiling. | `-0.2 +- 2.6`, 15,474 games, LLR -0.01 | Flat; no independent merge signal. |
+
 ## Suspects: Potential False Positives (merged, need SPRT retest)
 
 Changes in Coda that were never SPRT-validated. Currently in the codebase.
