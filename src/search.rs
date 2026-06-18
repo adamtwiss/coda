@@ -141,6 +141,23 @@ tunables!(
     // HIST_PRUNE_DEPTH_10X / HIST_PRUNE_MULT removed 2026-06-02 — see hist-prune
     // removal block in main negamax body for rationale (three H0 SPRTs).
     (SEE_QUIET_MULT, 33, 5, 80, 3.75, true),
+    // Low-increment TM multiplier ceiling (2026-06-18). The factor product
+    // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
+    // clamped for no_inc; at increments that are SMALL RELATIVE TO THE CLOCK
+    // it ran uncapped, so a complex middlegame drew deep on a RUN of moves the
+    // increment can't refill -> clock drained by early middlegame -> flag
+    // (lichess rapid 10+1 = 600s+1s). The discriminator is increment relative
+    // to the per-move budget: inc_cover = inc / (timeLeft/mtg). Cap by an
+    // inc_cover-scaled ceiling: cmin at inc_cover->0 (starved), rising to cmax
+    // (≈ uncapped) at inc_cover >= TM_INC_COVER_REF/100.
+    //   inc_cover ≈ 0.04 at lichess 600+1 (capped);  0.24 at OB STC 10s+0.1s
+    //   and 0.4 at 600+10 (both ~uncapped) — so OB STC / LTC / big-inc are
+    //   untouched, only true low-inc-vs-clock (rapid) is throttled.
+    // NB: an earlier ABSOLUTE-inc form (inc/12000) crushed OB STC (inc 100ms
+    // -> 1.6× cap) and lost 24 Elo (#2075). _10X ceilings are /10.
+    (TM_INC_COVER_REF, 20, 5, 60, 4.0, true),
+    (TM_MULT_CEIL_MIN_10X, 15, 10, 40, 2.0, true),
+    (TM_MULT_CEIL_MAX_10X, 130, 40, 140, 8.0, true),
     (LMR_HIST_DIV, 8731, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
@@ -757,6 +774,12 @@ pub struct SearchInfo {
     /// Replaces Phase 10h's hard×0.5 cap with Viridithas's max_bank_usable
     /// pattern. Factors multiply soft up against this — no separate cap.
     tm_max_time: u64,
+    /// Our increment (ms) for the current search — feeds the low-increment
+    /// multiplier ceiling. 0 when there is no increment.
+    tm_our_inc: u64,
+    /// Our remaining clock (ms, post-overhead) for the current search — feeds
+    /// the inc-relative-to-budget ceiling discriminator.
+    tm_time_left: u64,
     /// Per-root-move node counts for node-based time management.
     /// Indexed by from_sq * 64 + to_sq. Reset each search.
     root_move_nodes: Box<[u64; 4096]>,
@@ -873,6 +896,8 @@ impl SearchInfo {
             soft_floor: 0,
             tm_no_inc: false,
             tm_max_time: 0,
+            tm_our_inc: 0,
+            tm_time_left: 0,
             root_move_nodes: alloc_zeroed_box(),
             ponderhit_time: std::sync::Arc::new(AtomicU64::new(0)),
             ponderhit_soft: std::sync::Arc::new(AtomicU64::new(0)),
@@ -2080,6 +2105,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.soft_limit = soft;
         info.hard_limit = hard;
         info.tm_max_time = max_time;
+        info.tm_our_inc = our_inc;
+        info.tm_time_left = our_time.saturating_sub(info.move_overhead).max(1);
         info.soft_floor = soft_floor;
         // Apply ponder-miss min-think floor (set by uci.rs when the prior
         // search was an abandoned ponder). Caps at hard_limit so we never
@@ -2667,6 +2694,23 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // variability instead of uniform hard-cap saturation.
             if info.tm_no_inc {
                 multiplier = multiplier.min(2.5);
+            } else {
+                // Low-increment ceiling (2026-06-18). When the increment is
+                // small RELATIVE TO THE CLOCK it can't refill a run of deep
+                // moves, so cap the factor product. Discriminator is
+                // inc_cover = inc / (timeLeft/mtg): ~0.04 at lichess 600+1
+                // (capped), ~0.24 at OB STC 10s+0.1s and ~0.4 at 600+10 (both
+                // ~uncapped). cmin at inc_cover->0, rising to cmax at
+                // inc_cover >= TM_INC_COVER_REF/100.
+                // 24 = DEFAULT_MOVES_TO_GO (the inc-path sudden-death mtg).
+                let base_move = (info.tm_time_left / 24).max(1);
+                let inc_cover = (info.tm_our_inc as f64) / (base_move as f64);
+                let ref_cover = (tp(&TM_INC_COVER_REF) as f64 / 100.0).max(0.001);
+                let inc_factor = (inc_cover / ref_cover).clamp(0.0, 1.0);
+                let cmin = tp(&TM_MULT_CEIL_MIN_10X) as f64 / 10.0;
+                let cmax = tp(&TM_MULT_CEIL_MAX_10X) as f64 / 10.0;
+                let inc_ceiling = (cmin + (cmax - cmin) * inc_factor).max(1.0);
+                multiplier = multiplier.min(inc_ceiling);
             }
 
             // Phase 13: adjusted_soft = soft × multiplier, clamped to max_time
