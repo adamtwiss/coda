@@ -332,33 +332,55 @@ impl pgn_reader::Visitor for PgnHarvest {
     }
 }
 
-/// Native PGN -> binpack importer: replaces the `pgn_to_game_tsv.py | coda
-/// import-game-tsv` pipeline with a single in-process pass (the python PGN
-/// parse was the throughput bottleneck). Reads PGN from `pgn_path` — a plain
-/// `.pgn`, a `.bz2` (the OB datagen tar's `*.pgn.bz2` files, decoded inline so
-/// no `bzcat` pipe is needed), or "-" for stdin (auto-detected as bz2 if the
-/// stream starts with the `BZh` magic, else plain) — and writes an sfbinpack
-/// binpack to `out_path`. Output is byte-equivalent to the TSV path (shared
-/// `write_game_entry`).
-pub fn import_pgn(pgn_path: &str, out_path: &str) {
-    use std::io::{BufWriter, Read};
+/// Open the PGN input as a byte stream. WITH the `bz2` feature: decodes a
+/// `.bz2` file inline and auto-detects a bz2-on-stdin via the `BZh` magic
+/// (MultiBzDecoder handles concatenated streams — a whole datagen batch via
+/// `cat *.pgn.bz2 | coda import-pgn -i -`).
+#[cfg(feature = "bz2")]
+fn open_pgn_reader(pgn_path: &str) -> Box<dyn std::io::Read> {
+    use std::io::BufRead;
     use bzip2::read::MultiBzDecoder;
-    let reader: Box<dyn Read> = if pgn_path == "-" {
+    if pgn_path == "-" {
         // Peek the first 3 bytes for the bz2 magic so a piped `*.pgn.bz2`
         // still decodes without the caller knowing to add `bzcat`.
-        use std::io::BufRead;
         let mut stdin = std::io::BufReader::new(std::io::stdin());
         let is_bz2 = matches!(stdin.fill_buf(), Ok(buf) if buf.starts_with(b"BZh"));
         if is_bz2 { Box::new(MultiBzDecoder::new(stdin)) } else { Box::new(stdin) }
     } else {
         let file = std::fs::File::open(pgn_path)
             .unwrap_or_else(|e| panic!("open {}: {}", pgn_path, e));
+        if pgn_path.ends_with(".bz2") { Box::new(MultiBzDecoder::new(file)) } else { Box::new(file) }
+    }
+}
+
+/// Open the PGN input as a byte stream. WITHOUT the `bz2` feature (the default,
+/// incl. OB/`make`): plain file or stdin only. An explicit `.bz2` path fails
+/// loudly with the external workaround; stdin is assumed already-decompressed
+/// (so `bzcat file.pgn.bz2 | coda import-pgn -i -` still works).
+#[cfg(not(feature = "bz2"))]
+fn open_pgn_reader(pgn_path: &str) -> Box<dyn std::io::Read> {
+    if pgn_path == "-" {
+        Box::new(std::io::stdin())
+    } else {
         if pgn_path.ends_with(".bz2") {
-            Box::new(MultiBzDecoder::new(file))
-        } else {
-            Box::new(file)
+            panic!("{p} is bz2 but this build has no bz2 support — pipe it: \
+                    `bzcat {p} | coda import-pgn -i -`, or rebuild with \
+                    `cargo build --release --features bz2`", p = pgn_path);
         }
-    };
+        Box::new(std::fs::File::open(pgn_path)
+            .unwrap_or_else(|e| panic!("open {}: {}", pgn_path, e)))
+    }
+}
+
+/// Native PGN -> binpack importer: replaces the `pgn_to_game_tsv.py | coda
+/// import-game-tsv` pipeline with a single in-process pass (the python PGN
+/// parse was the throughput bottleneck). Reads PGN from `pgn_path` — a plain
+/// `.pgn`, "-" for stdin, or (with `--features bz2`) a `.bz2` directly — and
+/// writes an sfbinpack binpack to `out_path`. Output is byte-equivalent to the
+/// TSV path (shared `write_game_entry`).
+pub fn import_pgn(pgn_path: &str, out_path: &str) {
+    use std::io::BufWriter;
+    let reader = open_pgn_reader(pgn_path);
     let outf = std::fs::File::create(out_path)
         .unwrap_or_else(|e| panic!("create {}: {}", out_path, e));
     let buf = BufWriter::with_capacity(1 << 20, outf);

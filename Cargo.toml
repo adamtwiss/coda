@@ -13,16 +13,24 @@ pgn-reader = "0.27"
 # version (renamed) so the Visitor can build positions/UCI/FEN with the same
 # types the reader hands back. Coexists with the 0.30 above (separate crates).
 shakmaty028 = { package = "shakmaty", version = "0.28" }
-# bzip2 decompression for `import-pgn` so it reads the OB datagen tar's
-# `*.pgn.bz2` files directly (0.5 defaults to a pure-Rust backend — no system
-# libbz2-dev needed). MultiBzDecoder handles concatenated bz2 streams.
-bzip2 = "0.5"
+# bzip2 decompression for `import-pgn` (.pgn.bz2). OPTIONAL + OFF by default:
+# bzip2 pulls bzip2-sys, which compiles bundled libbz2 C source via `cc`, and
+# the OB fleet build environment cannot compile C (its `cc` resolves to
+# `cargo`), so pulling it into the default/embedded-net build breaks every
+# fleet build. Gate behind `--features bz2` for local data-prep; OB / `make`
+# (embedded-net only) never compiles it. Without the feature, decompress
+# externally: `bzcat file.pgn.bz2 | coda import-pgn -i -`.
+bzip2 = { version = "0.5", optional = true }
 libc = "0.2"
 sfbinpack = "0.6.0"
 clap = { version = "4.6.0", features = ["derive"] }
 
 [features]
 embedded-net = []
+# Optional .bz2 decompression for `import-pgn` (NOT default — keeps the OB/make
+# build free of the bzip2-sys C dependency). Build local data-prep with
+# `cargo build --release --features bz2`.
+bz2 = ["dep:bzip2"]
 profile-materialize = []
 profile-threats = []
 
