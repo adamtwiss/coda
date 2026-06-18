@@ -79,16 +79,41 @@ the original framing of this doc):
   over-**represented** (they recur across games). **Coda had nothing equivalent**
   — only the hard `ply>=16` cut + the uniform skip.
 
-Implemented as a *separate, independent* knob (bullet `feature/soft-early-ply`):
-**`--soft-early-ply <N>`** + `--soft-early-ply-floor <Y0>` — below N, accept-prob
-ramps linearly from Y0 (at the hard floor, ply 16) to 1.0 at N; hard cut and
-`--fen-skip-prob` untouched. Crucially it only gates the *thin* `ply<N` slice, so
-it **sidesteps the decoder-throughput wall** that caps the global skip. **Effort:
-done. Prior: med-high** — ply filtering is a *known* 30-40 Elo-sensitive axis.
-**Validate:** S200 paired probe (e.g. `--soft-early-ply 28 --soft-early-ply-floor
-0.2`) vs the hard-cut baseline. (NB: we have the **full SF-sized dataset** on
-GPU4 — earlier "less data than SF" framing in this doc was wrong; the constraint
-is SB/compute + decoder throughput, not data quantity.)
+Implemented (bullet `feature/soft-early-ply`). Initial probe used a crude single
+linear ramp (`--soft-early-ply 28 --soft-early-ply-floor 0.2/0.1`, OB SPRTs
+2073/2074). Then ported SF's **actual** mechanism (commit b4a1c08).
+
+**SF's REAL tuned values** (from `vondele/nettest/threats.yaml` + nnue-pytorch
+`data_loader/`, fetched 2026-06-18 — supersedes earlier guesses in this doc):
+- `early-fen-skipping: 18` (HARD cut, skip ply≤18; nnue-pytorch *default* is −1
+  = off, but the threats run uses 18). Coda's hard cut is ply≥16.
+- `soft-early-fen_skipping: 32` ⇒ **peak ply = 32** (accept reaches 1.0 there).
+  Our 28 was below this. The soft curve is **5-point piecewise-LINEAR**
+  `interpolate_ply` through (x1,y1)..(x4,y4)+(32,1.0).
+- **Two stage curves** (matches the multi-stage ~3000-SB prod recipe):
+  - *warmup*: `(0,.01)(14,.20)(18.5,.50)(29.5,.80)(32,1.0)` → after hard-cut-18,
+    ~0.51 accept @ply19 → 1.0 @32.
+  - *advanced*: `(0,.025)(22,.05)(25.5,.20)(29.5,.80)(32,1.0)` → brutal: ~5% @22,
+    20% @25.5. Late training nearly drops sub-30-ply.
+- **Piece-count rebalancer** (`pc-y0..y4 = -0.20,0.45,1.0,0.95,0.75`): a *Hermite*
+  target spline at piece counts 0/8/16/24/32 + an **adaptive importance-resampler**
+  (alpha=(1−0.975)/min_ratio). Targets peak ~16 pieces, suppresses deep endgames
+  (≤8) and mildly the opening (32). **Coda had NO analog** — biggest new lever.
+
+Both ported to bullet (commit b4a1c08): `--ply-x1..y4` (default = SF warmup),
+`--soft-early-ply` = peak; `--pc-y0..y4` enables the rebalancer (default OFF).
+Hard ply≥16 cut and `--fen-skip-prob` untouched. **Effort: done. Prior: med-high**
+— ply filtering is a *known* 30-40 Elo-sensitive axis. **NB CPU cost (Adam
+2026-06-18):** stacking soft-ply + pc + wld on top of fenskip=0.5 will make the
+single-threaded decoder CPU-bound fast; fine for S200 probes, but **drop
+`--fen-skip-prob` if we adopt this** beyond probes. (We have the full SF-sized
+dataset on GPU4; constraint is SB/compute + decoder throughput, not data qty.)
+
+**Other threats.yaml borrowables** (beyond ply/pc): `pow-exp 2.435` (MSE power —
+LOWER than our 3.0), learned eval calibration `in/out-scaling 300/350`,
+`in/out-offset 300/300` (vs single EVAL_SCALE=400 — see §1), WDL `start/end-lambda`
+ramp (warmup 1.0→0.75, advanced 0.74 const + jitter), `qp-asymmetry 0.23`,
+`wld_filtered` + `simple_eval_skipping` (extra skip stages Coda lacks).
 
 **1. Learned eval calibration: in/out-scaling + in/out-offset (4 params) vs a
 single hardcoded EVAL_SCALE=400.**
