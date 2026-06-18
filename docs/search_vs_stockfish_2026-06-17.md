@@ -202,3 +202,50 @@ in *reduction aggressiveness on late/cut nodes*, exactly the "+3–6 ply
 ordering/pruning carve-out" class the strength-frontier doc says Coda's
 loss-profile favours. This is search-side Elo that does not depend on the eval
 flywheel and can run in parallel with the bishop-blindness training work.
+
+---
+
+## Results — overnight SPRT batch (2026-06-18)
+
+First implementation pass over the levers above (self-play SPRT, [0,3], STC
+10+0.1, vs main). Net: **2 wins banked, 2 informative negatives, 1 validated
+but blocked on OB infra.**
+
+| # | Lever | Branch | Result |
+|---|-------|--------|--------|
+| 3 | SF-shaped capture-SEE (decouple `SEE_CAP_MULT` from QS + capt-hist relaxation) | `see-cap-tighten` | **H1 +4.8** ✓ merge-ready |
+| 7 | SEE-gate the quiet check bonus (`see_ge(m,-75)`) | `check-bonus-see-gate` | **H1 +4.1** ✓ merge-ready |
+| 4 | SF-shaped quiet-SEE (lower base + main-hist relaxation, −7.4% bench) | `quiet-see-hist` | Validated locally; **OB-infra-blocked** (see below) |
+| 1 | Cut-node LMR bump (`LMR_CUTNODE_BUMP`) | `lmr-cutnode-bump` | **Neutral** — raw ~0 + focused retune converged (held bump at 2) → dropped |
+| 8 | Main-history ×2 (`MAIN_HIST_MULT`) | `main-hist-2x` | **~0 / H0-drift** — SF's 2× weighting doesn't transfer to Coda's SPSA-balanced ordering |
+| 5 | LMP depth-cap extension | — | Deprioritized — `(6+d²)/(2−impr)` ≈ 43–87 quiets at d9 already exceeds most positions, so the cap is near-inert |
+
+### The load-bearing insight (#3, #4)
+Both SEE wins came from the same realization: **SF's tighter SEE margins only
+work because of a history-relaxation term Coda was missing.** A naive base-only
+tighten of capture-SEE cost +17% bench nodes (it over-pruned the good-history
+captures that produce cutoffs); porting SF's `+ capt_hist·K/1024` relaxation let
+the base drop *further* while bringing node cost to +2%. The same shape applied
+to quiet-SEE pruned 7.4% more nodes cleanly. This is the general lesson for the
+remaining Tier-2/3 levers: **port the whole SF shape (incl. its history terms),
+not just the constant.**
+
+### Why two SF values *didn't* transfer (#1, #8)
+- Cut-node LMR: SF's ~+4-ply cutNode reduction is balanced by SF's whole tuning;
+  Coda's LMR is already SPSA-calibrated, so the extra reduction is absorbed
+  (bench ~flat, raw SPRT ~0, retune found no headroom).
+- Main-history ×2: Coda's history magnitudes/update rules differ from SF's, and
+  its quiet ordering was SPSA-converged at 1×; doubling main just perturbs that
+  balance (bench ordering-quality worsened ~5%, SPRT ~0).
+
+### Build-infra issues found (fleet-side, for follow-up)
+None are in Coda search code; all surfaced while testing this batch:
+1. **OB re-resolves deps** instead of using the committed `Cargo.lock`, pulling a
+   newer transitive `bzip2-sys` (C dep). Fix attempted: `--locked` in the
+   Makefile `rule` target (on `quiet-see-hist`) — but OB also appears to build a
+   **stale checkout** (cited `Makefile:35` when our HEAD has the recipe on line
+   40), so the fix wasn't exercised.
+2. **`CC=cargo`** on a subset of workers → any C dep's build script dies
+   (`cargo -O3 … -c` → "unexpected argument '-O'").
+3. **`.gitignore` line 43 `!coda`** un-ignores the 87 MB build artifact, so
+   `git add -A` silently commits it. Recommend removing the negation.
