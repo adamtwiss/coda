@@ -16080,3 +16080,28 @@ Thread CLOSED: PSQT outputs and dual activation are dead on Coda — psqt =
 NPS-tax-for-nothing (eval fine), dual = genuine eval-quality regression + scale
 compression tree-bloat, combined = scale-incompatible. See
 [[project_psqt_dual_regress_s800]].
+
+## 2026-06-18: Soft early-ply filtering (SF soft_early_fen_skipping) — S200 paired probe
+
+Borrowed SF's `soft_early_fen_skipping` (ply-dependent accept ramp that
+down-weights over-represented early-opening positions). Bullet
+`feature/soft-early-ply`: below peak ply N, accept-prob ramps from a floor
+(at the hard ply≥16 cut) to 1.0 at N; hard cut + `--fen-skip-prob` untouched.
+
+S200 paired probes (FT1024/L1=32, fresh e200s200 baseline both sides, seed 42,
+net-vs-net SPRT on main binary, `[-1.5, 1.5]`, STC 10+0.1):
+
+- **2073 `sep28-f20`** (peak 28, floor 0.2): **+7.7 ±4.1, LLR 2.96 → H1 ✓**
+- **2074 `sep28-f10`** (peak 28, floor 0.1, more aggressive): **−9.2 ±6.1 → H0**
+
+Soft-early-ply is a genuine win (+7.7 at S200), but the floor is a sharp knob:
+halving early-ply acceptance (0.2→0.1) flips +7.7 → −9.2. Gentler wins;
+over-aggressive discards load-bearing opening signal. n=1 / S200 / on main's
+L1=16 tunables (paired, so the delta is clean); net-override bench held (no
+Wrong-Bench across 8808 games).
+
+Round-2 in flight: SF-faithful values from vondele/nettest threats.yaml — 5-point
+ply curve (accept 0.333@ply16, peak 32 — even gentler than f20) + piece-count
+rebalancer (bullet b4a1c08). 3-way isolation (sfply32 / sfpc / sfboth) vs the
+same baseline. Prod path: a winning floor folds into the multi-stage ~3000-SB
+recipe, not a one-shot S800.
