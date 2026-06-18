@@ -37,6 +37,8 @@ fn has_fast_pext() -> bool {
 static mut KNIGHT_ATTACKS: [Bitboard; 64] = [0; 64];
 static mut KING_ATTACKS: [Bitboard; 64] = [0; 64];
 static mut PAWN_ATTACKS: [[Bitboard; 64]; 2] = [[0; 64]; 2]; // [color][square]
+static mut BISHOP_EMPTY_ATTACKS: [Bitboard; 64] = [0; 64];
+static mut ROOK_EMPTY_ATTACKS: [Bitboard; 64] = [0; 64];
 
 #[inline(always)]
 pub fn knight_attacks(sq: u32) -> Bitboard {
@@ -51,6 +53,16 @@ pub fn king_attacks(sq: u32) -> Bitboard {
 #[inline(always)]
 pub fn pawn_attacks(color: Color, sq: u32) -> Bitboard {
     unsafe { PAWN_ATTACKS[color as usize][sq as usize] }
+}
+
+#[inline(always)]
+pub fn bishop_attacks_empty(sq: u32) -> Bitboard {
+    unsafe { BISHOP_EMPTY_ATTACKS[sq as usize] }
+}
+
+#[inline(always)]
+pub fn rook_attacks_empty(sq: u32) -> Bitboard {
+    unsafe { ROOK_EMPTY_ATTACKS[sq as usize] }
 }
 
 // Magic bitboard tables for sliding pieces
@@ -465,6 +477,13 @@ pub fn init_attacks() {
                 assert!(*entry == 0 || *entry == attacks, "Magic collision for rook on sq {}", sq);
                 *entry = attacks;
             }
+        }
+    }
+
+    for sq in 0..64 {
+        unsafe {
+            BISHOP_EMPTY_ATTACKS[sq] = bishop_attacks_slow(sq as u32, 0);
+            ROOK_EMPTY_ATTACKS[sq] = rook_attacks_slow(sq as u32, 0);
         }
     }
 }

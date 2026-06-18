@@ -532,9 +532,9 @@ fn piece_attacks_empty(cp: usize, sq: u32) -> Bitboard {
     match pt {
         0 => pawn_attacks(if color_of(cp) == 0 { WHITE } else { BLACK }, sq),
         1 => knight_attacks(sq),
-        2 => bishop_attacks(sq, 0), // empty board
-        3 => rook_attacks(sq, 0),
-        4 => queen_attacks(sq, 0),
+        2 => bishop_attacks_empty(sq), // empty board
+        3 => rook_attacks_empty(sq),
+        4 => bishop_attacks_empty(sq) | rook_attacks_empty(sq),
         5 => king_attacks(sq),
         _ => 0,
     }
@@ -1321,8 +1321,8 @@ fn push_threats_for_piece(
     // is computed once here and reused. Cost: 2 magic lookups + 4
     // bitwise ops. Savings per skipped slider: 2 magic lookups.
     // Break-even at 1 skipped slider.
-    let ortho_ray_mask = rook_attacks(square, 0);
-    let diag_ray_mask  = bishop_attacks(square, 0);
+    let ortho_ray_mask = rook_attacks_empty(square);
+    let diag_ray_mask  = bishop_attacks_empty(square);
     let rays_from_sq_empty = ortho_ray_mask | diag_ray_mask;
     let past_first_region  = rays_from_sq_empty & !queen_att;
     let do_z_finding       = (occ & past_first_region) != 0;
