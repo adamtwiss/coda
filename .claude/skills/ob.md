@@ -207,11 +207,40 @@ only when you explicitly want one test to drain workers first.
 Workers report Wrong-Bench and other errors **asynchronously** —
 the test page shows "ACTIVE 0 games" and looks like it's just waiting.
 
+**Use `scripts/ob_errors.py`, do NOT eyeball the raw page.** The HTML
+stores each error's time as a bare Unix epoch in a `<td class="timestamp">`
+cell; grepping the summary strings (`curl … | grep "Wrong Bench"`) strips
+the Date/Test columns, so a 26-hour-old error and a live one look
+identical. Claudes repeatedly mis-read stale errors as current this way.
+The script keeps the row intact (AGE + time + test id + branch + summary)
+and time-filters by default.
+
 ```bash
-# 5 minutes after every ob_submit.py:
-# Visit https://ob.atwiss.com/errors/ — look for entries with your branch name.
-# Filter by user=claude if multiple Claudes are submitting.
+# 5 minutes after every ob_submit.py — clean window only:
+python3 scripts/ob_errors.py                 # errors in the last 6h (default)
+python3 scripts/ob_errors.py --test <id>     # did THIS test error? (any age)
+python3 scripts/ob_errors.py --user claude   # only my rows
+# exit code 1 if any error matched (gate scripts on it); 0 if clean.
 ```
+
+Each row carries its full **Summary** (e.g. `[Coda-D13549A4] Wrong Bench:
+2944948` — the second number is the bench OB measured, which is what you
+need to fix a Wrong-Bench). Build-fail rows also carry a `[log <id>]`
+hint; pull the actual cargo output (the real error is at the *tail*) with:
+
+```bash
+python3 scripts/ob_errors.py --log <event_id>            # last 80 lines
+python3 scripts/ob_errors.py --log <event_id> --tail 0   # whole log
+```
+
+This is how you distinguish e.g. a generic "main build failed" from the
+specific cause (bzip2-sys `cc`→`cargo` C-compile break, a missing
+feature flag, a Rust compile error) without guessing.
+
+The faster real-time signal is **game accrual**: if `ob_status.py` shows
+the test gaining games, it cleared the bench gate — a Wrong-Bench never
+produces games. Treat "0 games for >5 min AND a matching fresh row in
+`ob_errors.py`" as the actual error condition.
 
 If errors appear, **investigate and fix before letting the test sit**.
 Common causes:
@@ -460,8 +489,12 @@ OPENBENCH_PASSWORD=$PW python3 scripts/ob_tune_status.py <id> --outputs  # tune 
 # Stop:
 OPENBENCH_PASSWORD=$PW python3 scripts/ob_stop.py <id>
 
-# Errors page:
-# https://ob.atwiss.com/errors/  (check 5min after every submit)
+# Errors (check 5min after every submit) — parses the epoch timestamps so
+# stale rows don't read as current; do NOT grep the raw /errors/ HTML:
+python3 scripts/ob_errors.py                  # last 6h (default)
+python3 scripts/ob_errors.py --test <id>      # one test, any age
+python3 scripts/ob_errors.py --hours 48 --limit 20   # wider window
+python3 scripts/ob_errors.py --log <event_id>        # build log tail (real cause)
 ```
 
 ---
