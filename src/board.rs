@@ -744,13 +744,14 @@ impl Board {
             // lie. make_move still rejects defensively if this ever slips by.
             // 2026-05-31 audit (H2).
             if captured_sq >= 64 { return false; }
-            // If in check, EP only resolves it if the captured pawn is the checker
             if checkers != 0 {
                 // Double check: only king moves resolve (EP is never a king move)
                 if checkers & (checkers - 1) != 0 { return false; }
                 let checker_sq = crate::bitboard::lsb(checkers);
-                // EP only resolves check if captured pawn is the checker
-                if checker_sq != captured_sq { return false; }
+                let check_mask = (1u64 << checker_sq) | between(checker_sq, ksq);
+                if checker_sq != captured_sq && (check_mask & (1u64 << to)) == 0 {
+                    return false;
+                }
             }
             let occ = (self.occupied() ^ (1u64 << from) ^ (1u64 << captured_sq)) | (1u64 << to);
             let their_bishops = (self.pieces[BISHOP as usize] | self.pieces[QUEEN as usize])
@@ -1363,6 +1364,17 @@ mod tests {
         b.unmake_move();
         assert_eq!(b.to_fen(), fen_before);
         assert_eq!(b.hash, hash_before);
+    }
+
+    #[test]
+    fn ep_can_interpose_slider_check() {
+        init();
+        let b = Board::from_fen("4k3/8/K6r/Pp6/8/8/8/8 w - b6 0 1");
+        let checkers = b.checkers();
+        let pinned = b.pinned();
+        let ep = make_move(32, 41, FLAG_EN_PASSANT); // a5xb6 e.p.
+
+        assert!(b.is_legal(ep, pinned, checkers));
     }
 
     #[test]
