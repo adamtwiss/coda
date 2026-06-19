@@ -4693,26 +4693,24 @@ fn negamax(
             || move_flags(best_move) == FLAG_EN_PASSANT
             || is_promotion(best_move)
     };
-    if !in_check && best_move != NO_MOVE
+    // Correction history update: train on BOTH directions of error.
+    // Previously gated on `best_score > alpha_orig` (fail-high only), which
+    // never trained on fail-low (all-node) positions where static eval was
+    // over-optimistic. SF and Reckless both update on fail-low when the error
+    // direction is consistent: bound==Upper && best_score < scaled_eval means
+    // eval predicted higher than any move achieved — train correction downward.
+    // (audit S1)
+    let corrhist_lower_ok = best_score > alpha_orig   // fail-high: lower bound
+        && !(best_score >= beta && best_score <= scaled_eval); // direction-consistent
+    let corrhist_upper_ok = best_score <= alpha_orig  // fail-low: upper bound
+        && best_score < scaled_eval;                   // eval was over-optimistic
+    if !in_check
         && !best_move_noisy
         && info.excluded_move[ply_u] == NO_MOVE
-        && best_score > alpha_orig
-        // T2.3: is_decisive (mate OR TB range) — the old ±(MATE-100) guards
-        // admitted TB scores (tb_floor raises best_score before this point),
-        // training corrhist on coarse TB values.
+        && (corrhist_lower_ok || corrhist_upper_ok)
+        // T2.3: is_decisive (mate OR TB range)
         && !is_decisive(best_score)
         && scaled_eval > -(MATE_SCORE - 100)
-        // T2.2 bound-direction consistency (all 5 surveyed engines): on a
-        // fail-high best_score is only a LOWER bound — if eval already sits
-        // at/above it the true score may be above eval too, so training
-        // corrhist downward is wrong-direction. (UPPER updates are already
-        // excluded by best_score > alpha_orig.)
-        && !(best_score >= beta && best_score <= scaled_eval)
-        // C8 audit LIKELY #12: TT-store has a stop guard (see tt write
-        // path); corrhist update previously didn't. On a stop, children
-        // returned 0, which can bubble up as best_score > alpha_orig
-        // from a polluted baseline. Writing that into corrhist poisons
-        // per-thread tables for every subsequent iteration.
         && !info.stop.load(Ordering::Relaxed)
     {
         // Train corrhist on the halfmove-scaled pre-correction value.
