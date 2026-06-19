@@ -52,7 +52,7 @@ cargo install cargo-pgo
 
 ## Strength
 
-Plays around 2900-3000 on lichess, competes with most engines ranked around 3500-3600 on CCRL
+Plays around 3000-3080 on lichess, competes with most engines ranked around 3500-3600 on CCRL
 
 ## License
 
