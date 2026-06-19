@@ -828,6 +828,10 @@ pub struct SearchInfo {
     /// reach), giving a single tunable set that self-adapts STC<->LTC instead
     /// of two constant sets (Adam directive 2026-06-13).
     pub root_depth: i32,
+    /// Ply barrier for NMP verification: prevents NMP from re-triggering
+    /// inside its own verification subtree (all peers: Reckless, Alexandria,
+    /// Stormphrax use nmpMinPly / nmp_min_ply). Default 0 = no barrier. (audit B1)
+    pub nmp_min_ply: i32,
     /// Triangular PV table
     pub pv_table: [[Move; MAX_PLY + 1]; MAX_PLY + 1],
     pub pv_len: [usize; MAX_PLY + 1],
@@ -911,6 +915,7 @@ impl SearchInfo {
             depth_nodes: [0; MAX_PLY + 1],
             completed_depth: 0,
             root_depth: 0,
+            nmp_min_ply: 0,
             static_evals: [0; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
@@ -3550,6 +3555,7 @@ fn negamax(
     if depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta + nmp_threat_margin
         && !prev_was_null  // Prevent consecutive null moves
+        && ply >= info.nmp_min_ply  // Ply barrier: verification subtree cannot re-trigger NMP (audit B1)
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && cut_node  // Reckless gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
@@ -3603,8 +3609,15 @@ fn negamax(
             // Verification search at high depths to guard against zugzwang
             if depth >= tp10(&NMP_VERIFY_DEPTH_10X) {
                 info.stats.nmp_verify += 1;
+                // Set ply barrier so NMP cannot fire again inside the verification
+                // subtree. All peer engines do this (Reckless: nmp_min_ply = ply +
+                // 3*(depth-r)/4; Alexandria: nmpPlies = ply + (depth-R)*2/3).
+                // Without this, NMP can verify itself, defeating zugzwang detection.
+                let old_nmp_min_ply = info.nmp_min_ply;
+                info.nmp_min_ply = ply + 3 * (depth - r) / 4;
                 // Verification re-searches current position (no move made), so ply stays same
                 let v_score = negamax(board, info, beta - 1, beta, depth - r, ply, false);
+                info.nmp_min_ply = old_nmp_min_ply;
                 // Stop-during-verification returns 0 from negamax; with
                 // beta <= 0 (fail-low re-searches / losing branches),
                 // `0 >= beta` is true and we'd return `nmp_score` (the
