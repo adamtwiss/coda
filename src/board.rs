@@ -526,14 +526,9 @@ impl Board {
         attacks
     }
 
-    /// Approximate pre-move direct-check detection for pruning carve-outs.
-    /// Returns true if `mv`'s moved piece would directly attack the enemy
-    /// king from its destination square, using the post-move occupancy.
-    ///
-    /// Does NOT cover discovered checks, castling rook-checks, EP discovered
-    /// checks, or promotion-to-checker. Intended as a cheap "don't prune
-    /// obviously aggressive moves" filter, not a ground-truth check detector.
-    /// Reckless pattern (commits #410, #630): `might_give_check_if_you_squint`.
+    /// Pre-move check detection for pruning carve-outs.
+    /// Covers direct, promotion, discovered, castling-rook, and EP-discovered
+    /// checks using the post-move occupancy.
     #[inline]
     pub fn gives_direct_check(&self, mv: Move) -> bool {
         let from = move_from(mv);
@@ -548,44 +543,67 @@ impl Board {
         let their_king_bb = 1u64 << their_king;
         let flags = move_flags(mv);
 
-        // Castling: the king itself never gives direct check, but the ROOK
-        // landing on f1/d1/f8/d8 can. Compute rook destination from the
-        // king's from/to (same encoding as make_move at board.rs:855-860)
-        // and check rook attacks from there with the post-castle occupancy
-        // (both king and rook moved). 2026-05-31 audit: prior version
-        // returned false for FLAG_CASTLE, so futility/LMP/bad-noisy
-        // direct-check carve-outs pruned check-giving castles.
+        let from_bb = 1u64 << from;
+        let to_bb = 1u64 << to;
+        let mut occ = self.occupied() ^ from_bb;
+        let mut our_diag = (self.pieces[BISHOP as usize] | self.pieces[QUEEN as usize])
+            & self.colors[us as usize] & !from_bb;
+        let mut our_orth = (self.pieces[ROOK as usize] | self.pieces[QUEEN as usize])
+            & self.colors[us as usize] & !from_bb;
+
         if flags == FLAG_CASTLE {
             let (rook_from, rook_to) = if to > from {
                 if us == WHITE { (7u8, 5u8) } else { (63u8, 61u8) }
             } else {
                 if us == WHITE { (0u8, 3u8) } else { (56u8, 59u8) }
             };
-            let occ = (self.occupied() ^ (1u64 << from) ^ (1u64 << rook_from))
-                | (1u64 << to) | (1u64 << rook_to);
-            return rook_attacks(rook_to as u32, occ) & their_king_bb != 0;
+            occ = (occ ^ (1u64 << rook_from)) | to_bb | (1u64 << rook_to);
+            our_orth = (our_orth & !(1u64 << rook_from)) | (1u64 << rook_to);
+        } else {
+            if flags == FLAG_EN_PASSANT {
+                let captured_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
+                if captured_sq >= 64 {
+                    return false;
+                }
+                occ ^= 1u64 << captured_sq;
+            }
+            occ |= to_bb;
         }
 
-        // Post-move occupancy: lift from-square, place on to-square.
-        let occ = (self.occupied() ^ (1u64 << from)) | (1u64 << to);
-
-        // For promotions, attack pattern comes from the promoted piece type.
         let effective_pt = if is_promotion(mv) {
             promotion_piece_type(mv)
         } else {
             pt
         };
 
-        let attacks: Bitboard = match effective_pt {
-            PAWN => pawn_attacks(us, to as u32),
-            KNIGHT => knight_attacks(to as u32),
-            BISHOP => bishop_attacks(to as u32, occ),
-            ROOK => rook_attacks(to as u32, occ),
-            QUEEN => queen_attacks(to as u32, occ),
-            _ => 0, // King moves can't give direct check.
-        };
+        match effective_pt {
+            PAWN => {
+                if pawn_attacks(us, to as u32) & their_king_bb != 0 {
+                    return true;
+                }
+            }
+            KNIGHT => {
+                if knight_attacks(to as u32) & their_king_bb != 0 {
+                    return true;
+                }
+            }
+            BISHOP => our_diag |= to_bb,
+            ROOK => our_orth |= to_bb,
+            QUEEN => {
+                our_diag |= to_bb;
+                our_orth |= to_bb;
+            }
+            _ => {}
+        }
 
-        attacks & their_king_bb != 0
+        let needs_slider_check = matches!(effective_pt, BISHOP | ROOK | QUEEN)
+            || flags == FLAG_CASTLE
+            || flags == FLAG_EN_PASSANT
+            || line(from as u32, their_king as u32) != 0;
+
+        needs_slider_check
+            && (bishop_attacks(their_king as u32, occ) & our_diag != 0
+                || rook_attacks(their_king as u32, occ) & our_orth != 0)
     }
 
     /// Squares of `color`'s pieces that are currently blocking one of
@@ -1255,6 +1273,14 @@ mod tests {
             let b = Board::from_fen(fen);
             assert_eq!(b.to_fen(), *fen, "FEN roundtrip failed for: {}", fen);
         }
+    }
+
+    #[test]
+    fn discovered_check_detected_for_pruning_carveouts() {
+        init();
+        let b = Board::from_fen("k7/8/8/8/8/8/N7/R3K3 w - - 0 1");
+        let nb4 = make_move(8, 25, FLAG_NONE); // Na2-b4 uncovers Ra1-a8+
+        assert!(b.gives_direct_check(nb4));
     }
 
     #[test]
