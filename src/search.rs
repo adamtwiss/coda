@@ -3092,7 +3092,12 @@ fn negamax(
                 // narrowing happens at line 2776+ after this check).
                 // 2026-05-31 audit finding B.
                 let tt_cut_is_pv = beta - alpha > 1;
-                if !tt_cut_is_pv && cut_node == score_above_beta && bound_matches
+                // At depth>5, relax the cut_node direction guard: Reckless takes
+                // any-direction TT cutoffs at depth>5 regardless of expected node type.
+                // At shallow depth the guard prevents wrong-direction cutoffs; deep
+                // enough, the TT score is reliable enough to cut freely. (audit T4)
+                let deep_tt_ok = depth > 5 || cut_node == score_above_beta;
+                if !tt_cut_is_pv && deep_tt_ok && bound_matches
                     && halfmove_ok
                 {
                     info.stats.tt_cutoffs += 1;
