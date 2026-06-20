@@ -22,25 +22,59 @@ import subprocess
 import sys
 import numpy as np
 
-# (label, binary, eval-line regex, scale_to_cp). All verified WHITE-POV via a
-# white-up-a-queen probe, so no per-position sign flip is needed. The
-# per-engine logistic/correlation fit absorbs scale, but we note units.
-# SF/Reckless/Stormphrax print pawns (×100 → cp); the rest print integer cp/units.
+# (label, binary, eval-line regex, scale_to_cp, stm_pov). `stm_pov=True` means
+# the engine reports its static eval from the SIDE-TO-MOVE perspective (positive
+# = good for whoever is to move); we then negate when the FEN's side-to-move is
+# black to convert to the white-POV the tool assumes. `stm_pov=False` means the
+# engine already reports white-POV (no flip).
+#
+# POV/format were verified per engine with three probes: startpos (≈0),
+# white-up-a-queen white-to-move (must be strongly +), and white-up-a-queen
+# BLACK-to-move (strongly + for white-POV engines, strongly − for STM-POV
+# engines). All five legacy engines below are white-POV; all six engines added
+# 2026-06-20 (PlentyChess, Caissa, Clover, Stormphrax, Halogen, Tarnished) are
+# STM-POV and use the per-position sign flip.
+#
+# Units: SF/Reckless/Stormphrax print pawns (×100 → cp); the rest print integer
+# cp/units. The per-engine logistic/correlation fit absorbs scale, so only
+# predictive power (Spearman/Pearson vs oracle) is compared.
 ENGINES = [
     ("Stockfish",  "/home/adam/chess/engines/Stockfish/src/stockfish",
-     r"NNUE evaluation\s+([+-]?[0-9]+\.[0-9]+)", 100.0),
+     r"NNUE evaluation\s+([+-]?[0-9]+\.[0-9]+)", 100.0, False),
     ("Reckless",   "/home/adam/chess/engines/Reckless/reckless",
-     r"NNUE evaluation\s+([+-]?[0-9]+\.[0-9]+)", 100.0),
+     r"NNUE evaluation\s+([+-]?[0-9]+\.[0-9]+)", 100.0, False),
     ("Berserk",    "/home/adam/chess/engines/berserk-13/src/berserk",
-     r"NNUE Score:\s*([+-]?[0-9]+)\s*cp", 1.0),
+     r"NNUE Score:\s*([+-]?[0-9]+)\s*cp", 1.0, False),
     ("Obsidian",   "/home/adam/chess/engines/Obsidian/Obsidian",
-     r"Evaluation:\s*([+-]?[0-9]+)", 1.0),
-    # Alexandria dropped: its `eval` reports stale values in batch mode without
-    # a per-position isready sync (startpos 528 > queen-up 354 — backwards).
+     r"Evaluation:\s*([+-]?[0-9]+)", 1.0, False),
+    # --- added 2026-06-20 (all STM-POV; verified white-up-a-queen probes) ---
+    # PlentyChess/Caissa/Clover print a bare signed integer cp on its own line;
+    # the full-line-integer anchor avoids matching option/info lines (verified
+    # exactly one match per `eval` in batch).
+    ("PlentyChess", "/home/adam/chess/engines/PlentyChess/engine",
+     r"^\s*([+-]?[0-9]+)\s*$", 1.0, True),
+    ("Caissa",      "/home/adam/chess/engines/Caissa/src/caissa",
+     r"^\s*([+-]?[0-9]+)\s*$", 1.0, True),
+    ("Clover",      "/home/adam/chess/engines/CloverEngine/src/Clover.9.1",
+     r"^\s*([+-]?[0-9]+)\s*$", 1.0, True),
+    ("Stormphrax",  "/home/adam/chess/engines/Stormphrax/stormphrax-7.0.70-native",
+     r"Static eval:\s*([+-]?[0-9]+(?:\.[0-9]+)?)", 100.0, True),
+    ("Halogen",     "/home/adam/chess/engines/Halogen/bin/Halogen-pgo",
+     r"Eval:\s*([+-]?[0-9]+)cp", 1.0, True),
+    ("Tarnished",   "/home/adam/chess/engines/Tarnished/tarnished",
+     r"Raw:\s*([+-]?[0-9]+)", 1.0, True),
+    # SKIPPED:
+    #  Quanticade — no static `eval` command (eval/evaluate/static all silent;
+    #    only `go depthN` yields a *search* score, not a static eval).
+    #  Alexandria — `eval` is broken in this build: returns fixed, non-position-
+    #    tracking values (startpos 528 > white-up-a-queen 354, backwards) and is
+    #    unfixed by isready/ucinewgame/go-first sync; `go` also returns nodes 0,
+    #    pv a8a8. Binary appears non-functional. (This is the same staleness it
+    #    was originally dropped for, now confirmed unrecoverable.)
 ]
 
 
-def drive_engine(binary, eval_re, scale, fens):
+def drive_engine(binary, eval_re, scale, fens, stm_pov=False):
     """Return list of static evals (white-POV cp) for each FEN, or None on miss.
 
     Writes all UCI commands to a temp file and runs `engine < cmds > out` so
@@ -48,6 +82,11 @@ def drive_engine(binary, eval_re, scale, fens):
     emits exactly one matching line; we map them to FENs by strict order.
     `eval_re` is the engine's eval-line regex (one capture group); `scale`
     converts its units to cp (×100 for pawn-printing engines, ×1 for cp).
+
+    If `stm_pov` is True the engine reports from the side-to-move perspective,
+    so we negate the eval for every FEN whose side-to-move (2nd FEN field) is
+    black — converting to the white-POV the tool assumes. The negation is keyed
+    to the FEN, mapped by strict eval order, so mixed-STM CSVs are handled.
     """
     import tempfile, os
     cmd_path = tempfile.mktemp(suffix=".uci")
@@ -60,12 +99,19 @@ def drive_engine(binary, eval_re, scale, fens):
     with open(cmd_path) as fin, open(out_path, "w") as fout:
         subprocess.run([binary], stdin=fin, stdout=fout,
                        stderr=subprocess.DEVNULL, timeout=900)
+    # Per-FEN white-POV sign: +1 for white-to-move, -1 for black-to-move (only
+    # applied when the engine is side-to-move POV). FEN STM is field index 1.
+    signs = [(-1.0 if (stm_pov and fen.split()[1] == 'b') else 1.0)
+             for fen in fens]
     evals = []
-    with open(out_path) as f:
-        for line in f:
+    with open(out_path, "rb") as f:  # rb: some engines emit NUL in board dumps
+        for raw in f:
+            line = raw.decode("utf-8", "replace")
             m = eval_re.search(line)
             if m:
-                evals.append(float(m.group(1)) * scale)
+                i = len(evals)
+                sign = signs[i] if i < len(signs) else 1.0
+                evals.append(float(m.group(1)) * scale * sign)
     os.unlink(cmd_path); os.unlink(out_path)
     # Strict ordering: one eval per position. If counts mismatch, return what
     # we have padded/truncated so the caller can warn.
@@ -134,10 +180,12 @@ def main():
 
     # Drive each engine once; cache its evals; score against every target.
     engine_evals = {"Coda (549C20A5)": np.asarray(coda_eval)}
-    for label, binary, regex, scale in ENGINES:
-        print(f"Driving {label} over {len(fens)} positions...", flush=True)
+    for label, binary, regex, scale, stm_pov in ENGINES:
+        print(f"Driving {label} over {len(fens)} positions"
+              f"{' (STM-POV→flip)' if stm_pov else ''}...", flush=True)
         try:
-            evs = drive_engine(binary, re.compile(regex, re.IGNORECASE), scale, fens)
+            evs = drive_engine(binary, re.compile(regex, re.IGNORECASE), scale,
+                               fens, stm_pov=stm_pov)
         except Exception as e:
             print(f"  {label} failed: {e}")
             continue
