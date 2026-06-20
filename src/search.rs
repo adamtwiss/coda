@@ -3736,12 +3736,18 @@ fn negamax(
                 // Stockfish search.cpp:994-995. Prior code stored `dampened` and
                 // hardcoded tt_pv=false, losing both pruning information on
                 // future probes and the PV stickiness used by LMR reduction
-                // decisions. Return value is still dampened — score was
-                // verified at probcut_beta = beta+margin, not beta.
+                // decisions. Return value is still dampened for normal
+                // scores — score was verified at probcut_beta = beta+margin,
+                // not beta. Decisive mate/TB scores are exact enough that
+                // margin subtraction corrupts their distance/range; SF avoids
+                // damped decisive ProbCut returns and Reckless returns them raw.
                 info.tt.store(
                     board.hash, depth - 3, score_to_tt(score, ply),
                     TT_FLAG_LOWER, mv, raw_eval, tt_pv,
                 );
+                if is_decisive(score) {
+                    return score;
+                }
                 return score - (probcut_beta - beta);
             }
         }
