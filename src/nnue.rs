@@ -114,6 +114,50 @@ use std::arch::aarch64::*;
 use crate::bitboard::*;
 use crate::board::Board;
 use crate::types::*;
+/// A heap-allocated vector of T guaranteed to be 64-byte (cache-line) aligned.
+/// Used for NNUE weight arrays so that AVX-512 ZMM loads (64 bytes) never straddle
+/// cache-line boundaries. Matches Reckless `Aligned<T>` / SF `alignas(64)`. (perf M2)
+pub struct AlignedVec<T> {
+    ptr: *mut T,
+    len: usize,
+    cap: usize,
+}
+unsafe impl<T: Send> Send for AlignedVec<T> {}
+unsafe impl<T: Sync> Sync for AlignedVec<T> {}
+impl<T: Default + Copy> AlignedVec<T> {
+    pub fn zeros(n: usize) -> Self {
+        use std::alloc::{alloc_zeroed, Layout};
+        if n == 0 { return Self { ptr: std::ptr::NonNull::dangling().as_ptr(), len: 0, cap: n }; }
+        let layout = Layout::from_size_align(n * std::mem::size_of::<T>(), 64).unwrap();
+        let ptr = unsafe { alloc_zeroed(layout) } as *mut T;
+        if ptr.is_null() { std::alloc::handle_alloc_error(layout); }
+        Self { ptr, len: n, cap: n }
+    }
+}
+impl<T> std::ops::Deref for AlignedVec<T> {
+    type Target = [T];
+    #[inline] fn deref(&self) -> &[T] { unsafe { std::slice::from_raw_parts(self.ptr, self.len) } }
+}
+impl<T> std::ops::DerefMut for AlignedVec<T> {
+    #[inline] fn deref_mut(&mut self) -> &mut [T] { unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) } }
+}
+impl<T: Default + Copy> From<Vec<T>> for AlignedVec<T> {
+    fn from(v: Vec<T>) -> Self {
+        let mut a = Self::zeros(v.len());
+        a.copy_from_slice(&v);
+        a
+    }
+}
+impl<T> Drop for AlignedVec<T> {
+    fn drop(&mut self) {
+        if self.cap == 0 { return; }
+        use std::alloc::{dealloc, Layout};
+        let layout = Layout::from_size_align(self.cap * std::mem::size_of::<T>(), 64).unwrap();
+        unsafe { dealloc(self.ptr as *mut u8, layout); }
+    }
+}
+
+
 
 // Network dimensions
 /// PSQ inputs per king bucket (12 piece types × 64 squares).
@@ -2494,7 +2538,7 @@ fn select_l1_kernel(
 
 pub struct NNUENet {
     pub hidden_size: usize,
-    pub input_weights: Vec<i16>,  // [NNUE_INPUT_SIZE × hidden_size]
+    pub input_weights: AlignedVec<i16>,  // [NNUE_INPUT_SIZE × hidden_size] 64B-aligned (perf M2)
     pub input_biases: Vec<i16>,   // [hidden_size]
     pub output_weights: Vec<i16>, // [NNUE_OUTPUT_BUCKETS × out_width]
     /// Quantized output weights for fast SCReLU: i16 but clamped to [-128, 127] range.
@@ -2513,7 +2557,7 @@ pub struct NNUENet {
     pub l1_weights: Vec<i16>,     // [2*hidden_size × l1_size] row-major
     pub l1_weights_t: Vec<i16>,   // [l1_size × 2*hidden_size] transposed for SIMD
     pub l1_weights_8t: Vec<i8>,   // [l1_size × 2*hidden_size] transposed int8 for VPMADDUBSW
-    pub l1_weights_sparse: Vec<i8>, // input-chunk-major for sparse L1 dpbusd
+    pub l1_weights_sparse: AlignedVec<i8>, // input-chunk-major for sparse L1 dpbusd 64B-aligned (perf M2)
     pub l1_biases: Vec<i16>,      // [l1_size]
     pub l2_weights_f: Vec<f32>,   // [l2_input × l2_size] — float (l2_input = l1*2 if dual)
     pub l2_biases_f: Vec<f32>,    // [l2_size]
@@ -2759,7 +2803,7 @@ impl NNUENet {
 
         // Read input weights (PSQ block sized by kb_count × 768).
         let psq_input_size = num_king_buckets * PSQ_INPUTS_PER_BUCKET;
-        let mut input_weights = vec![0i16; psq_input_size * hidden_size];
+        let mut input_weights: AlignedVec<i16> = AlignedVec::zeros(psq_input_size * hidden_size);
         read_i16_slice(reader, &mut input_weights)?;
 
         // Read input biases
@@ -2884,11 +2928,11 @@ impl NNUENet {
         }).collect();
 
         // Sparse L1 weights: input-chunk-major for dpbusd kernel
-        let l1_weights_sparse = if l1_size > 0 && use_pairwise {
+        let l1_weights_sparse: AlignedVec<i8> = if l1_size > 0 && use_pairwise {
             let total_input = if use_pairwise { hidden_size } else { 2 * hidden_size };
-            crate::sparse_l1::transpose_weights_for_sparse(&l1_weights_8t, total_input, bl1)
+            crate::sparse_l1::transpose_weights_for_sparse(&l1_weights_8t, total_input, bl1).into()
         } else {
-            Vec::new()
+            AlignedVec::zeros(0)
         };
 
         // Prepare float weights for v7 hidden layer forward pass
