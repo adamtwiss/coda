@@ -361,6 +361,11 @@ tunables!(
     (LMR_THREAT_DIV_10X, 18, 10, 50, 15.0, true),
     // Was 68 (tp10→7). Now FIXED-POINT. Default 70 → eff 7.0 ≡ old behavior.
     (LMR_KING_PRESSURE_DIV_10X, 67, 20, 90, 15.0, true),
+    // Reduce later moves more once this node has already raised alpha N times
+    // (Viridithas #431 alpha_raises). Fixed-point ×10: reduction += raises *
+    // VALUE/10. Only fires at PV nodes (cut nodes break on the first fail-high
+    // before alpha is raised). Default 10 = +1.0 reduction per prior alpha-raise.
+    (LMR_ALPHA_RAISE_10X, 10, 0, 40, 5.0, true),
     (FUT_THREATS_MARGIN, 20, 0, 200, 10.0, true),
     (DISCOVERED_ATTACK_BONUS, 3534, 0, 30000, 1500.0, false),
     // BATTERY_BONUS removed 2026-05-17: ablation #1278 at [0, 3] H0
@@ -3822,6 +3827,11 @@ fn negamax(
     let mut best_move = NO_MOVE;
     let mut best_score = -INFINITY;
     let mut move_count = 0i32;
+    // Count of how many moves at THIS node have raised alpha so far. Later
+    // moves reduce more proportionally (Viridithas #431 alpha_raises) — once
+    // improving moves are found, the rest are progressively less likely to beat
+    // them. Only fires at PV nodes (cut nodes break on first fail-high).
+    let mut alpha_raise_count = 0i32;
     // EXPERIMENT (Starzix T1 #1): track PVS fail-high cascades at this node.
     // Each child that triggers a re-search (LMR failed high → re-search at
     // full depth, or zero-window PVS failed high → full-window re-search)
@@ -4214,6 +4224,13 @@ fn negamax(
                     reduction += 1;
                 }
 
+                // Reduce later moves more once this node has already raised
+                // alpha (Viridithas #431). Fixed-point ×10. At cut nodes this is
+                // 0 (they break on the first fail-high before alpha rises), so it
+                // only sharpens late-move reduction at PV nodes where several
+                // improving moves have already been found.
+                reduction += alpha_raise_count * LMR_ALPHA_RAISE_10X.load(Ordering::Relaxed) / 10;
+
                 // Reduce less when the position is improving
                 if improving {
                     reduction -= 1;
@@ -4497,6 +4514,7 @@ fn negamax(
 
             if score > alpha {
                 alpha = score;
+                alpha_raise_count += 1;
 
                 // Update triangular PV table
                 if ply_u <= MAX_PLY {
