@@ -4636,8 +4636,12 @@ impl AccDataStack {
 
 /// Finny table entry: cached accumulator for a specific king bucket.
 struct FinnyEntry {
-    acc: Vec<i16>,                      // cached accumulator values
-    piece_bbs: ([Bitboard; 6], [Bitboard; 2]), // piece and color bitboards when cached
+    /// Cached per-perspective accumulator — inline fixed array eliminates the
+    /// Vec heap pointer and ensures the entire 64-entry Finny table is a
+    /// contiguous ~138 KB slab (fits in L2) rather than 64 scattered 1.5 KB
+    /// heap blocks requiring pointer-chasing on every Finny hit. (perf M1)
+    acc: [i16; NNUE_PW_BUF],
+    piece_bbs: ([Bitboard; 6], [Bitboard; 2]),
     valid: bool,
 }
 
@@ -4694,7 +4698,7 @@ impl NNUEAccumulator {
         let mut finny = Vec::with_capacity(FINNY_SIZE);
         for _ in 0..FINNY_SIZE {
             finny.push(FinnyEntry {
-                acc: vec![0; hidden_size],
+                acc: [0; NNUE_PW_BUF],
                 piece_bbs: ([0; 6], [0; 2]),
                 valid: false,
             });
