@@ -3688,7 +3688,16 @@ fn negamax(
         // SEE threshold: only consider captures that gain enough material
         let see_threshold = (probcut_beta - static_eval).max(0);
         let pc_depth = depth - 4;
-        let mut pc_picker = QMovePicker::new(board, NO_MOVE, false, &info.history, pinned, checkers);
+        let pc_tt_move = if tt_move_noisy
+            && is_pseudo_legal(board, tt_move)
+            && board.is_legal(tt_move, pinned, checkers)
+            && see_ge(board, tt_move, see_threshold)
+        {
+            tt_move
+        } else {
+            NO_MOVE
+        };
+        let mut pc_picker = QMovePicker::new(board, pc_tt_move, false, &info.history, pinned, checkers);
         loop {
             let mv = pc_picker.next(board);
             if mv == NO_MOVE { break; }
