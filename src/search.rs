@@ -4040,6 +4040,8 @@ fn negamax(
             // (Reckless #410 +1.62 STC).
             if futility_value <= alpha && main_hist < 12000 && !board.gives_direct_check(mv) {
                 info.stats.futility_prunes += 1;
+                skip_quiets = true;
+                picker.skip_remaining_quiets();
                 continue;
             }
         }
