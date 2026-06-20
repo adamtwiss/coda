@@ -152,3 +152,110 @@ Both pure-EBF, both landed in Viridithas with **bench drops + Elo gains**
 Key files for follow-up: Viridithas `src/transpositiontable.rs:298-385`,
 `src/search.rs:1364-1500` (June master); Coda `src/tt.rs:437-508`,
 `src/search.rs:3899-4007` (SE), `:4170-4296` (LMR), `:1310-1317`+`:856` (corrhist).
+
+---
+
+# viri.dev OpenBench — measured wins, regimes, and our ports (2026-06-20)
+
+Viridithas runs its own OpenBench at **https://viri.dev** (`/index/`, `/greens/`,
+`/test/<id>/`). Far higher-signal than structural archaeology: it shows which
+changes actually *banked* Elo, **at what time control**, and by how much. **These
+are ALL their notable search/eval winners going back to Feb 2026** — ~6 changes.
+(For scale: we ran more non-model search experiments in one day than they ship in
+~3 months. Velocity is our edge; their edge is regime-discipline — see the TC
+lesson below.)
+
+## Their measured winners (search/eval, excluding version-bump merges)
+
+| change | Elo | their TC | test | what it is |
+|---|---|---|---|---|
+| **pawn-pawn** (pawn-pair NNUE) | **+12.54 ±5.29** | 25 knodes | /test/663 | dense pawn-pair eval inputs — biggest single win |
+| **alpha_raises** (LMR) | **+5.38 ±2.96** | **LTC 40+0.4** | /test/629 | reduce later moves more after alpha rises |
+| **ttpv_fail_low** (LMR) | **+5.00 ±2.83** | **STC 8+0.08** | /test/626 | reduce TTPV nodes more when cached value ≤ alpha |
+| **bad-capture-corrhist** | +4.77 ±2.84 | STC 8+0.08 | /test/575 | new corrhist source keyed on bad/losing captures |
+| branchless-threat-indexing | +2.51 ±1.86 | STC 4+0.04 | — | NPS/threat-indexing opt |
+| tune-extract-rfp | +1.27 ±1.01 | STC 8+0.08 | — | RFP parameter tuning |
+| (`master vs v19.0.1` = +52.65 LTC — cumulative version bump, not one change) |
+
+## THE LESSON: match their test TC — scaling features are LTC features
+
+The most important methodology takeaway. **alpha_raises and ttpv_fail_low are
+both "reduce later/worse moves more" LMR carve-outs, but Viridithas tested one at
+LTC and one at STC — deliberately, because they behave differently by regime:**
+- **alpha_raises** needs *depth* (multiple alpha-raises per node only happen with
+  the depth to search many improving moves). Viridithas: **+5.38 at LTC**. Coda
+  STC test (#2160): **−3.5** — it *actively hurts* at STC. The LTC re-test (#2163)
+  is the only valid measurement. **We would have wrongly killed a real win on the
+  STC result.**
+- **ttpv_fail_low** is an STC feature for them (+5.00 STC). Coda STC test (#2161):
+  **+1.9** (real but below their +5 and below the [0,3] cliff → likely H0; a
+  focused retune of `LMR_TTPV_FAIL_LOW_10X` is the move if so).
+
+**Rule (strong enough to bank): scaling/depth-class features — EBF, extensions,
+TT, reductions, "use-the-extra-depth" — default to LTC (40+0.4, Hash=256), not
+STC.** STC stays right for genuine STC features and breadth carve-outs. Coda is
+*already* strong at STC; the deployment regime (lichess/CCRL, deep) is where the
+scaling gap lives, and STC can return the wrong sign there. When porting a
+specific Viridithas change, **use their test's TC** — their OB tells us both the
+right regime and the expected magnitude.
+
+## Our port status (2026-06-20)
+
+| port | branch | test | regime | status |
+|---|---|---|---|---|
+| alpha_raises | `experiment/lmr-alpha-raises` | 2163 | LTC (re-fired) | live |
+| ttpv_fail_low | `experiment/lmr-ttpv-faillow` | 2161 | STC | +1.9, likely H0 → retune candidate |
+| TT quad-age (Step A) | `experiment/tt-quadratic-age` | 2162 | LTC Hash=256 | live, early |
+| bad-capture-corrhist | — | — | STC | not yet ported |
+| pawn-pair NNUE | — | — | — | training probe (plan below) |
+
+---
+
+# Pawn-pair NNUE features (`pawn-pawn`, +12.54) — implementation plan
+
+Their **biggest single eval win**, and the one **Coda's architecture is uniquely
+ready to absorb** (we already have the threat aux block + accumulator it slots
+into). Source: Viridithas commit `331e83f`.
+
+## What it is
+Every **(file-proximity-masked) pair of pawns** gets its own learned NNUE weight,
+**king-bucketed and color-aware**. Single-pawn features can't express pawn-structure
+*interactions* (doubled/isolated/chains/phalanxes/opposing tension); the all-pairs
+family learns them directly. ~2,000–4,500 features after the file masks
+(`PAWN_PAWN_MASKS` restrict by file distance; full unmasked would be 96·95/2 =
+4560). Rides in the **same int8 "aux" input block as the threat features**,
+concatenated into the FT input (threats offset by `PAWN_TUPLE_FEATURES`), and is
+**incrementally updated** by diffing the pawn bitboard `afore`/`after` each move →
+adds/removes. Key Viridithas symbols: `pawn_pawn_index()`, `add_pawn_pawn_indexes()`,
+`PAWN_PAWN_MASKS`, `AuxUpdateBuffer` (renamed from `ThreatUpdateBuffer`),
+`vector_update_aux()`.
+
+## Why it maps cleanly to Coda v9
+Coda v9 = FT(1024) + **threat aux block** → L1 → L2 → output, with a full
+**threat accumulator** (`threats.rs` / `threat_accum.rs`) already doing exactly
+this before/after incremental aux update. Viridithas added pawn-pairs *as a
+sibling family in that same aux block*. So the port is "**add a pawn-pair family
+alongside threats**," mirroring the threat accumulator — not new infrastructure.
+**Genuinely additive**: Coda's v9 threats are pawn *attacks*; pawn-hash corrhist
+is search-side; neither is the dense structural all-pairs input.
+
+## Effort — two threads
+1. **Bullet (training):** add the pawn-pair input family to the `coda_v9_768_threats`
+   config (feature enumeration + masks) and retrain. A new arch variant
+   (v9 + pawn-pairs); needs a full SB run to learn the weights. The bigger piece.
+2. **Coda (inference):** a `pawn_pairs` accumulator paralleling `threat_accum.rs`
+   (masked pair indices, before/after pawn-bitboard diff, int8 apply into the aux
+   block). Extension of existing code, not from scratch.
+
+## Caveat (honest leverage)
+Coda's eval is already SF-class (#2/12, Spearman 0.853) and the strength frontier
+says the bottleneck is **search/depth, not eval** — so +12.54 of *eval quality*
+may not transfer 1:1 to Coda strength the way it did for Viridithas (more eval
+headroom). BUT pawn-structure games are long/deep (Coda's deployment regime), it
+closes a *different* signal than threats, and +12.54 is large enough that even a
+partial transfer is worth a probe.
+
+## Recommendation
+Scope as a **training probe for when a GPU frees** (post-multi-v7, or gpu2 after
+the WDL probe). Highest-value single change *and* the one our architecture is
+ready for — but a retrain, so it queues behind the prod run rather than jumping it.
