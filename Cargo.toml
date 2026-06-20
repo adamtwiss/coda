@@ -5,6 +5,13 @@ edition = "2021"
 description = "Chess Optimised, Developed Agentically — a UCI chess engine"
 authors = ["Adam Twiss"]
 
+# Offline data-pipeline tooling lives in a SEPARATE workspace member so its
+# dependencies never enter the engine's build (cf. the bzip2 fleet-build break).
+# `make` builds only the engine (root package); the tools build with
+# `cargo build --release -p coda-tools`.
+[workspace]
+members = ["tools"]
+
 [dependencies]
 shakmaty = "0.30"
 shakmaty-syzygy = "0.28"

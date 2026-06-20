@@ -1,0 +1,27 @@
+[package]
+name = "coda-tools"
+version = "0.1.0"
+edition = "2021"
+description = "Offline data-pipeline tooling for Coda (PGN -> SF-relabelled binpack, etc.). Built separately from the engine."
+authors = ["Adam Twiss"]
+
+[[bin]]
+name = "coda-rescore"
+path = "src/rescore.rs"
+
+[[bin]]
+name = "coda-filterstats"
+path = "src/filterstats.rs"
+
+[[bin]]
+name = "coda-stamp"
+path = "src/stamp.rs"
+
+[dependencies]
+# Same external crates the engine uses for I/O — format compatibility comes from
+# sharing the `sfbinpack` crate, NOT from depending on the engine's code.
+pgn-reader = "0.27"
+shakmaty = "0.28"     # matches pgn-reader's board types
+sfbinpack = "0.6.0"
+clap = { version = "4.6.0", features = ["derive"] }
+# NB profiles are workspace-root-only; the engine's [profile.release] applies here.
