@@ -468,11 +468,24 @@ impl TT {
                 return;
             }
 
-            // Key match: update if newer generation or sufficiently deep
+            // Key match: update if newer generation, sufficiently deep, or EXACT.
+            // Also preserve the existing TT move when no new move is available
+            // (all-node stores with NO_MOVE must not erase a move from a deeper
+            // prior iteration — all 5 reference engines implement this).
+            // (audit T2 + T3)
             if recovered_upper == key_upper {
-                if depth > slot_depth - 3 || gen != slot_gen {
-                    bucket.data[i].store(new_data, Ordering::Release);
-                    bucket.keys[i].store(new_key, Ordering::Release);
+                let flag_is_exact = flag == TT_FLAG_EXACT;
+                if depth > slot_depth - 3 || gen != slot_gen || flag_is_exact {
+                    // Preserve the existing best move when we have none (T2)
+                    let effective_move = if best_move == NO_MOVE {
+                        unpack_move(slot_data)
+                    } else {
+                        best_move
+                    };
+                    let stored_data = pack_data(effective_move, flag, static_eval, score, depth, gen, is_pv);
+                    let stored_key = key_upper ^ (stored_data as u32);
+                    bucket.data[i].store(stored_data, Ordering::Release);
+                    bucket.keys[i].store(stored_key, Ordering::Release);
                 }
                 return;
             }
