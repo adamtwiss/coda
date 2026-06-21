@@ -16128,3 +16128,105 @@ ply curve (accept 0.333@ply16, peak 32 — even gentler than f20) + piece-count
 rebalancer (bullet b4a1c08). 3-way isolation (sfply32 / sfpc / sfboth) vs the
 same baseline. Prod path: a winning floor folds into the multi-stage ~3000-SB
 recipe, not a one-shot S800.
+
+## 2026-06-19/20/21 — Search/TT/QS/NNUE audit wave (#2079–#2184)
+
+Major audit session across search.rs, tt.rs, qs, board mechanics, and NNUE inference.
+Six parallel agent audits per subsystem; ~100 experiments across all agents.
+
+### Merges (H1 wins)
+
+**#2079 perf/threat-empty-ray-table H1 +1.9** — cache empty slider attacks. MERGED.
+
+**#2109 codex/futility-skip-remaining-quiets H1 +3.5** — skip remaining quiets after futility prune. MERGED.
+
+**#2110 codex/probcut-decisive-guard H1 +0.9** — preserve decisive ProbCut scores. MERGED.
+
+**#2115 atlas/b1-nmp-verify-barrier H1 +0.6 [-2,1]** — NMP verification ply barrier prevents self-re-triggering zugzwang bug. MERGED.
+
+**#2116 atlas/s1-corrhist-allnode H1 +1.8** — correction history now trains on fail-low (all-node) positions. Was only updating on fail-high; ~half the training signal was silent. MERGED.
+
+**#2121 atlas/tt-store-fixes H1 +5.6** — TT move preservation at all-nodes + EXACT-bound always-overwrites. Both missing vs all 5 reference engines. Largest single win of audit. MERGED.
+
+**#2126 codex/move-mechanics-audit-fixes H1 +0.9** — board mechanics correctness fixes. MERGED.
+
+**#2128 codex/dedicated-evasion-picker H1 +1.3** — dedicated evasion move picker. MERGED.
+
+**#2129 codex/ep-interpose-legal H1 +3.1** — EP interpose legality fix. MERGED.
+
+**#2131 codex/probcut-tt-seed H1 +1.4** — seed ProbCut with TT captures. MERGED.
+
+**#2154 perf/finny-inline-acc H1 +1.8 [-2,1]** — Finny accumulator from Vec<i16> (64 scattered heap blocks) to inline [i16; NNUE_PW_BUF] array. Eliminates pointer-chasing on Finny hits. MERGED.
+
+**#2155 perf/weight-alignment H1 +1.4 [-2,1]** — 64-byte aligned allocations for FT/L1 weights. input_weights rows are 1536 bytes; with Vec<i16> rows could split cache lines on every accumulator delta. MERGED.
+
+**#2160/#2163 experiment/lmr-alpha-raises H1 +1.2/+2.0** — LMR alpha-raises reduction. MERGED (codex lane).
+
+**#2169 experiment/v6-l132-core-tuned H1 +2.4** — L1=32 tuned net candidate. MERGED (Hercules lane).
+
+**#2181 experiment/l132-prod-candidate H1 +4.1** — L1=32 production candidate. MERGED (Hercules lane).
+
+Also merged (other agents, not individually tracked here):
+codex/ep-interpose-legal, codex/futility-skip-remaining-quiets, codex/probcut-decisive-guard,
+codex/probcut-tt-seed, codex/dedicated-evasion-picker — all confirmed merges in git log.
+
+### H0 results (atlas lane — search/TT/QS audit)
+
+**#2113 atlas/b2-lmr-doshallower-guard H0 -0.0** — guard LMR re-search when new_depth==lmr_depth. Bench −7.5% at submission; after main merges bench delta absorbed. Re-SPRT as #2180.
+
+**#2114 atlas/b3-rfp-return-blend H0 -0.4** (108k games) — RFP return blended toward beta. All 5 peers do this but Coda's additional margin adjustments make it unnecessary. DROPPED.
+
+**#2117 atlas/s2-see-cap-depth-raise H0 -1.1** — SEE_CAP_DEPTH ceiling raised 7→16. The depth=7 ceiling was calibrated, not wasted. DROPPED.
+
+**#2118 atlas/s3-capture-lmr-adjustments H0 -0.0** — add improving/cut_node/tt_pv to capture LMR. Bench +0.2% → retune unlikely to help. DROPPED.
+
+**#2122 atlas/tt-eval-seed-pv-only H0 -23.4** — gate eval-seed TT stubs to PV only. Confirmed negative; stubs provide useful eval caching even for non-PV nodes.
+
+**#2124 atlas/tt-cutoff-deep-relax H0 -0.2** — relax TT cutoff cut_node guard at depth>5. DROPPED.
+
+**#2136 atlas/qs-blend-before-store H0 -1.9** — QS beta-blend before TT store (audit QS-B1). Peers blend before store but the practical impact is near-zero for Coda's patterns.
+
+**#2139 atlas/qs-delta-scale-125 H0 -4.0** — QS_DELTA_MATERIAL_SCALE 215→125. SPSA-tune #2138 confirmed 215 near-optimal (<0.5% movement over 624 iters); 125 too low.
+
+**#2144 atlas/npkey-king H0 -1.3** (58k games) — king in non_pawn_key. After main merges, bench delta flipped +5%; dropped (absorbed by other corrhist changes).
+
+**#2145 atlas/movepicker-see-threshold-mvv H0 -2.5** — SEE threshold includes MVV. SPSA had already compensated for missing MVV in captHist. DROPPED.
+
+**#2146 atlas/movepicker-offense-unsafe-full H0 -1.4** — offense bonus unsafe check uses full enemy attacks. After main merges, bench delta absorbed. Re-SPRT as #2177, again H0.
+
+### Re-SPRT on latest main (all H0 — absorbed by main's accumulated changes)
+
+**#2175 codex/main-futility-fallback H0 -3.0** — bench delta flipped from -21% to +1.9%; idea absorbed.
+**#2176 codex/exact-check-carveouts H0 -1.8** — bench delta from -18% to -3.5%; idea absorbed.
+**#2177 atlas/movepicker-offense-unsafe-full H0 -1.0** — bench delta absorbed.
+
+**Pattern**: Many changes that showed -16 to -21% bench delta in June 19 tests came back to
+<1% bench delta after main's accumulated merges (corrhist S1, TT fixes, NMP barrier, Finny/weight
+alignment). The merges absorbed the calibration shifts, making retune-on-branch unnecessary.
+
+### Other agent results (codex lane / Hercules)
+
+**#2111 codex/tt-cutoff-depth-escape H0 -0.5** — TT cutoff depth escape. DROPPED.
+**#2127 codex/ep-hash-legal H0 -1.7** — EP hash legality. DROPPED.
+**#2130 codex/exact-check-carveouts H0 -0.6** — −18% bench at orig test; idea sound but H0 before retune.
+**#2133 codex/tm-disable-forced-verify H0 -2.0** — TM forced verify disabled. DROPPED.
+**#2135 codex/tm-bmc-replacement H0 -4.0** — TM BMC replacement. DROPPED.
+**#2161 experiment/lmr-ttpv-faillow H0 +0.1** — LMR tt_pv fail-low. Neutral.
+**#2162 experiment/tt-quadratic-age H0 -0.7** — TT quadratic age. DROPPED.
+**#2095 experiment/tm-bank-governor H0 -8.5** — TM bank governor. DROPPED.
+**#2157 experiment/tm-c2-variance H0 -21.2** — TM c2 variance. DROPPED.
+**#2170 experiment/tm-inc-cover-25 running -1.4** — TM inc cover.
+
+### Ongoing
+
+**#2180 atlas/b2-lmr-doshallower-guard** (running) — bench still -5.2% vs main; re-SPRT at [0,3].
+**#2184 experiment/rfp-simplified** (running, Hercules).
+
+### NNUE inference audit findings
+
+Full AVX-512 audit across accumulator, L1, memory layout. Key finding: Coda's SIMD kernels
+are at parity with or ahead of Reckless/Obsidian (native VPDPBUSD vs emulated). Performance
+gap was in memory layout: Finny heap scatter and weight alignment — both fixed above.
+perf/avx512-pack-no-permute (eliminate vpermutexvar in pairwise pack) pending Zeus worker.
+See docs/nnue_avx512_audit_2026-06-20.md.
+
