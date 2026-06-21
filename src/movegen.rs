@@ -467,7 +467,7 @@ pub fn generate_all_moves(board: &Board) -> MoveList {
 /// Generate all legal evasion moves when in check.
 /// checkers and pinned should be precomputed via board.checkers() / board.pinned().
 /// The returned moves are fully legal.
-pub fn generate_evasions(board: &mut Board, checkers: Bitboard, pinned: Bitboard) -> MoveList {
+pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) -> MoveList {
     let mut list = MoveList::new();
     let us = board.side_to_move;
     let them = flip_color(us);
@@ -497,55 +497,69 @@ pub fn generate_evasions(board: &mut Board, checkers: Bitboard, pinned: Bitboard
     let target = (1u64 << checker_sq) | between(king_sq as u32, checker_sq);
     let block_target = between(king_sq as u32, checker_sq); // blocking squares only
 
-    // Only non-pinned pieces can resolve check
-    let non_pinned = our_pieces & !pinned & !(1u64 << king_sq);
+    // Generate targeted non-king candidates and run the normal legality
+    // oracle. This keeps pinned-piece edge cases correct while still avoiding
+    // the full non-evasion move set.
+    let non_king = our_pieces & !(1u64 << king_sq);
 
     // Knights
-    let mut knights = board.pieces[KNIGHT as usize] & non_pinned;
+    let mut knights = board.pieces[KNIGHT as usize] & non_king;
     while knights != 0 {
         let from = pop_lsb(&mut knights) as u8;
         let mut attacks = knight_attacks(from as u32) & target;
         while attacks != 0 {
             let to = pop_lsb(&mut attacks) as u8;
-            list.push(make_move(from, to, FLAG_NONE));
+            let m = make_move(from, to, FLAG_NONE);
+            if board.is_legal(m, pinned, checkers) {
+                list.push(m);
+            }
         }
     }
 
     // Bishops
-    let mut bishops = board.pieces[BISHOP as usize] & non_pinned;
+    let mut bishops = board.pieces[BISHOP as usize] & non_king;
     while bishops != 0 {
         let from = pop_lsb(&mut bishops) as u8;
         let mut attacks = bishop_attacks(from as u32, board.occupied()) & target;
         while attacks != 0 {
             let to = pop_lsb(&mut attacks) as u8;
-            list.push(make_move(from, to, FLAG_NONE));
+            let m = make_move(from, to, FLAG_NONE);
+            if board.is_legal(m, pinned, checkers) {
+                list.push(m);
+            }
         }
     }
 
     // Rooks
-    let mut rooks = board.pieces[ROOK as usize] & non_pinned;
+    let mut rooks = board.pieces[ROOK as usize] & non_king;
     while rooks != 0 {
         let from = pop_lsb(&mut rooks) as u8;
         let mut attacks = rook_attacks(from as u32, board.occupied()) & target;
         while attacks != 0 {
             let to = pop_lsb(&mut attacks) as u8;
-            list.push(make_move(from, to, FLAG_NONE));
+            let m = make_move(from, to, FLAG_NONE);
+            if board.is_legal(m, pinned, checkers) {
+                list.push(m);
+            }
         }
     }
 
     // Queens
-    let mut queens = board.pieces[QUEEN as usize] & non_pinned;
+    let mut queens = board.pieces[QUEEN as usize] & non_king;
     while queens != 0 {
         let from = pop_lsb(&mut queens) as u8;
         let mut attacks = queen_attacks(from as u32, board.occupied()) & target;
         while attacks != 0 {
             let to = pop_lsb(&mut attacks) as u8;
-            list.push(make_move(from, to, FLAG_NONE));
+            let m = make_move(from, to, FLAG_NONE);
+            if board.is_legal(m, pinned, checkers) {
+                list.push(m);
+            }
         }
     }
 
     // Pawns
-    let pawns = board.pieces[PAWN as usize] & non_pinned;
+    let pawns = board.pieces[PAWN as usize] & non_king;
     let checker_bb = 1u64 << checker_sq;
     let empty = !board.occupied();
 
@@ -561,9 +575,14 @@ pub fn generate_evasions(board: &mut Board, checkers: Bitboard, pinned: Bitboard
             let to = pop_lsb(&mut cl) as u8;
             let from = to - 7;
             if (1u64 << to) & promo_rank != 0 {
+                let before = list.len;
                 add_promotions(&mut list, from, to);
+                filter_new_legal(&mut list, before, board, pinned, checkers);
             } else {
-                list.push(make_move(from, to, FLAG_NONE));
+                let m = make_move(from, to, FLAG_NONE);
+                if board.is_legal(m, pinned, checkers) {
+                    list.push(m);
+                }
             }
         }
         let mut cr = capture_r;
@@ -571,9 +590,14 @@ pub fn generate_evasions(board: &mut Board, checkers: Bitboard, pinned: Bitboard
             let to = pop_lsb(&mut cr) as u8;
             let from = to - 9;
             if (1u64 << to) & promo_rank != 0 {
+                let before = list.len;
                 add_promotions(&mut list, from, to);
+                filter_new_legal(&mut list, before, board, pinned, checkers);
             } else {
-                list.push(make_move(from, to, FLAG_NONE));
+                let m = make_move(from, to, FLAG_NONE);
+                if board.is_legal(m, pinned, checkers) {
+                    list.push(m);
+                }
             }
         }
 
@@ -586,15 +610,23 @@ pub fn generate_evasions(board: &mut Board, checkers: Bitboard, pinned: Bitboard
             let to = pop_lsb(&mut p) as u8;
             let from = to - 8;
             if (1u64 << to) & promo_rank != 0 {
+                let before = list.len;
                 add_promotions(&mut list, from, to);
+                filter_new_legal(&mut list, before, board, pinned, checkers);
             } else {
-                list.push(make_move(from, to, FLAG_NONE));
+                let m = make_move(from, to, FLAG_NONE);
+                if board.is_legal(m, pinned, checkers) {
+                    list.push(m);
+                }
             }
         }
         let mut p = push2;
         while p != 0 {
             let to = pop_lsb(&mut p) as u8;
-            list.push(make_move(to - 16, to, FLAG_DOUBLE_PUSH));
+            let m = make_move(to - 16, to, FLAG_DOUBLE_PUSH);
+            if board.is_legal(m, pinned, checkers) {
+                list.push(m);
+            }
         }
 
         // En passant: only if the captured pawn IS the checking piece
@@ -606,19 +638,15 @@ pub fn generate_evasions(board: &mut Board, checkers: Bitboard, pinned: Bitboard
                 let ep_r = ((pawns & NOT_FILE_H) << 9) & ep_bb;
                 if ep_l != 0 {
                     let m = make_move(board.ep_square - 7, board.ep_square, FLAG_EN_PASSANT);
-                    board.make_move(m);
-                    if !is_attacked(board, king_sq, them) {
+                    if board.is_legal(m, pinned, checkers) {
                         list.push(m);
                     }
-                    board.unmake_move();
                 }
                 if ep_r != 0 {
                     let m = make_move(board.ep_square - 9, board.ep_square, FLAG_EN_PASSANT);
-                    board.make_move(m);
-                    if !is_attacked(board, king_sq, them) {
+                    if board.is_legal(m, pinned, checkers) {
                         list.push(m);
                     }
-                    board.unmake_move();
                 }
             }
         }
@@ -634,9 +662,14 @@ pub fn generate_evasions(board: &mut Board, checkers: Bitboard, pinned: Bitboard
             let to = pop_lsb(&mut cl) as u8;
             let from = to + 9;
             if (1u64 << to) & promo_rank != 0 {
+                let before = list.len;
                 add_promotions(&mut list, from, to);
+                filter_new_legal(&mut list, before, board, pinned, checkers);
             } else {
-                list.push(make_move(from, to, FLAG_NONE));
+                let m = make_move(from, to, FLAG_NONE);
+                if board.is_legal(m, pinned, checkers) {
+                    list.push(m);
+                }
             }
         }
         let mut cr = capture_r;
@@ -644,9 +677,14 @@ pub fn generate_evasions(board: &mut Board, checkers: Bitboard, pinned: Bitboard
             let to = pop_lsb(&mut cr) as u8;
             let from = to + 7;
             if (1u64 << to) & promo_rank != 0 {
+                let before = list.len;
                 add_promotions(&mut list, from, to);
+                filter_new_legal(&mut list, before, board, pinned, checkers);
             } else {
-                list.push(make_move(from, to, FLAG_NONE));
+                let m = make_move(from, to, FLAG_NONE);
+                if board.is_legal(m, pinned, checkers) {
+                    list.push(m);
+                }
             }
         }
 
@@ -658,15 +696,23 @@ pub fn generate_evasions(board: &mut Board, checkers: Bitboard, pinned: Bitboard
             let to = pop_lsb(&mut p) as u8;
             let from = to + 8;
             if (1u64 << to) & promo_rank != 0 {
+                let before = list.len;
                 add_promotions(&mut list, from, to);
+                filter_new_legal(&mut list, before, board, pinned, checkers);
             } else {
-                list.push(make_move(from, to, FLAG_NONE));
+                let m = make_move(from, to, FLAG_NONE);
+                if board.is_legal(m, pinned, checkers) {
+                    list.push(m);
+                }
             }
         }
         let mut p = push2;
         while p != 0 {
             let to = pop_lsb(&mut p) as u8;
-            list.push(make_move(to + 16, to, FLAG_DOUBLE_PUSH));
+            let m = make_move(to + 16, to, FLAG_DOUBLE_PUSH);
+            if board.is_legal(m, pinned, checkers) {
+                list.push(m);
+            }
         }
 
         // En passant
@@ -678,25 +724,41 @@ pub fn generate_evasions(board: &mut Board, checkers: Bitboard, pinned: Bitboard
                 let ep_r = ((pawns & NOT_FILE_H) >> 7) & ep_bb;
                 if ep_l != 0 {
                     let m = make_move(board.ep_square + 9, board.ep_square, FLAG_EN_PASSANT);
-                    board.make_move(m);
-                    if !is_attacked(board, king_sq, them) {
+                    if board.is_legal(m, pinned, checkers) {
                         list.push(m);
                     }
-                    board.unmake_move();
                 }
                 if ep_r != 0 {
                     let m = make_move(board.ep_square + 7, board.ep_square, FLAG_EN_PASSANT);
-                    board.make_move(m);
-                    if !is_attacked(board, king_sq, them) {
+                    if board.is_legal(m, pinned, checkers) {
                         list.push(m);
                     }
-                    board.unmake_move();
                 }
             }
         }
     }
 
     list
+}
+
+fn filter_new_legal(
+    list: &mut MoveList,
+    start: usize,
+    board: &Board,
+    pinned: Bitboard,
+    checkers: Bitboard,
+) {
+    let mut write = start;
+    for read in start..list.len {
+        let mv = list.get(read);
+        if board.is_legal(mv, pinned, checkers) {
+            if write != read {
+                list.set(write, mv);
+            }
+            write += 1;
+        }
+    }
+    list.len = write;
 }
 
 // ---------------------------------------------------------------------------
