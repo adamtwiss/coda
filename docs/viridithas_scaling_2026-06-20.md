@@ -1,5 +1,10 @@
 # Why Viridithas scales better with time than Coda — and what to port
 
+> **The ACTIVE work plan + running state lives in
+> `tc_scaling_methodology_2026-06-21.md`** (the flex-formula + per-TC-SPSA-
+> divergence loop). This doc is the value-level Viri-vs-Coda comparison that
+> feeds it.
+
 **Date:** 2026-06-20
 **Trigger:** Adam's TC-scaling gauntlets showed Viridithas gains Elo as TC
 grows while Coda *loses* it — they cross over around 40+0.4, and the newer
@@ -259,3 +264,130 @@ partial transfer is worth a probe.
 Scope as a **training probe for when a GPU frees** (post-multi-v7, or gpu2 after
 the WDL probe). Highest-value single change *and* the one our architecture is
 ready for — but a retrain, so it queues behind the prod run rather than jumping it.
+
+---
+
+# Value-level comparison (2026-06-21): WHY Coda over-prunes at depth
+
+The earlier sections covered structure + measured viri.dev wins but not the
+*values*. This section is the param-by-param audit (4-agent sweep over Viri
+`1ec9381` latest vs Coda trunk), and it converges on a single thesis.
+
+## The measured scaling curve (Adam's gauntlet, 2026-06-21)
+
+| TC | Coda | Viri | Coda−Viri | Coda gain/doubling | Viri gain/doubling |
+|----|------|------|-----------|--------------------|--------------------|
+| 1× | −71  | −115 | **+44 Coda** | — | — |
+| 2× | +6   | +31  | **−25 Viri** | +77 | +146 |
+| 4× | +72  | +81  | −9 (~tied)   | +66 | +50  |
+
+Coda is **stronger at STC (+44)** but Viri overtakes by 2×; the swing is
+**front-loaded in the first doubling** (Viri +146 vs Coda +77). By 4× they
+re-converge (Viri only +9, within CI). **The symptom is draws, not losses:**
+Coda-2× draws **80.2%** vs Viri-2× **69.5%** — Coda is *drawing winnable
+games* at longer TC, not getting tactically beaten. That is a
+conversion / deep-resource signature, and it points the diagnosis at
+**forward pruning that discards the deep quiet resources needed to convert**,
+not at tactical oversight.
+
+## THESIS: Coda's forward pruning is STC-shaped; it over-prunes at LTC depths
+
+Coda's tunables are SPSA-tuned at STC, where the tuner inflates forward-pruning
+aggression (pruned nodes → depth, which wins at STC). Those same params, at the
+depths LTC reaches, prune the long-horizon quiet resources that decide
+draw-vs-win. Viri's shapes are structurally LTC-robust (hard depth caps, linear
+rather than depth² margins), so they don't over-prune deep. The unit-independent
+*shape* divergences (not the absolute values) are the robust findings.
+
+### The forward-pruning over-aggression cluster (highest LTC leverage)
+
+All values normalized to Coda-cp (Viri eval ≈ 2.33× Coda: SEE pawn 233 vs 100).
+
+| feature | Coda | Viri | divergence (shape) |
+|---|---|---|---|
+| **RFP depth gate** | `depth ≤ 16` | `depth < 9` | Coda makes the reverse-futility static-eval bet to **~2× the depth**. Coda bolts on a superlinear "deep-knee" (DEEP_LINEAR/QUAD) + root-coef widener to stay safe past d8; Viri just **caps at d8**. |
+| **SEE-quiet pruning** | `−33·lmr_d²` (**quadratic**) | `−62·d` linear (≈−27·d Coda-cp) | Quadratic is the textbook STC-overfit: at LTC lmr_d hits 6–10 and the spared-quiet threshold explodes (−33·64 ≈ −2112cp at lmr_d=8) → prunes deep defensive/prophylactic quiets. Viri's linear shape spares them. |
+| **NMP base reduction** | base R ≈ 7.8 | base R = 4 | Coda nulls away ~2 extra ply at the base of the NMP reduction before depth/eval terms — across the whole zugzwang-risky tree. |
+| **Futility** | base 80, per-depth 110, gate lmr_d≤15 | base 37, per-depth 30 (Coda-cp), gate lmr_d<6 | Coda's futility band is 2–4× wider AND gates **2.5× deeper** — still eval-pruning quiets at depths where Viri stopped trusting static eval. |
+
+Coda's RFP-root-coef / deep-knee / unstable-threat margin wideners are evidence
+the authors already *diagnosed* this failure mode and patched it with
+LTC-protective widening rather than Viri's simpler depth caps. SEE-quiet has no
+such LTC term at all.
+
+### LMR: integer ±1 quantization vs Viri fixed-point fractional
+
+Viri accumulates the whole reduction in 1024-units (every per-condition
+adjustment is a *fraction* of a ply, one `÷1024` at the end); Coda applies each
+condition as integer `±1`. Where Coda's ±1 is materially weaker: **cut-node**
+(Viri −1.56 ply vs Coda 1.0 → Coda searches the dominant cut-node tail ~0.5 ply
+deeper *per node*), ttpv (1.26 vs 1.0), in-check (1.33 vs 1.0). Per-condition
+LMR muls Viri has that Coda lacks: **killer/refutation reduce-less (−0.76 ply)**,
+**alpha-raise progressive reduction** (Coda removed FEAT_ALPHA_REDUCE 2026-06-06;
+re-added and tested on Coda at BOTH TCs — **+1.09 STC (#2160) / +1.32 LTC
+(#2161), ≈flat** — NB the +5.38 figure was Viridithas's own measurement on their
+engine, not a Coda LTC number), **ttpv→lmr_depth** (feeds the pruning gate, not
+just reduction). Coda's
+`do_deeper`/`do_shallower` re-search-depth margins are **hardcoded
+(60+10·r / 20)** and flagged un-bisected; Viri exposes them to SPSA — these
+literally govern how re-search depth grows (the LTC depth knob).
+
+### Structural capabilities Viri has that Coda lacks
+
+- **Triple extensions** (+3 ply on a quiet TT move failing singular by >text_margin;
+  `dextensions≤12` guard). Coda caps at +2. Deep forced lines are the canonical
+  SPRT-invisible / LTC-amplifying feature.
+- **Correction-history breadth**: Viri has 6 sources (pawn, major, minor,
+  nonpawn, cont-12, cont-14); Coda has 4 and **dropped major+minor** (2026-05-19)
+  and has only one continuation-corr source. Also Coda's `CORR_W_NP` is **0.21×
+  its pawn weight** vs Viri's **~parity** — under-weighting the non-pawn key that
+  carries the positional signal in deep endgames (conversion!).
+- **Adaptive aspiration delta growth**: Coda widens a fixed ×1.5 on every fail;
+  Viri widens gently (×1.34) then *escalates* with consecutive fails — fewer
+  nodes on the common single-fail case, the bulk of deep-iteration re-search cost.
+- **Optimism**, **material-scaled eval**, **eval-policy (value-difference history
+  update)**, **adaptive/eval-scaled ProbCut depth (cj5716)** — all absent in Coda.
+- **Shallower singular gate**: Coda SE at depth≥4 vs Viri depth≥6/7 — Coda spends
+  verification searches 2 ply shallower (cheap at LTC but noisier TT).
+
+## Ranked portable candidates (LTC-scaling leverage)
+
+The draw-conversion symptom ranks the forward-pruning shape fixes first.
+
+1. **Linearize SEE-quiet pruning** (`−33·lmr_d²` → linear `−k·lmr_d`). The
+   cleanest STC-overfit; no LTC-protective term exists today. Directly spares
+   deep quiet resources.
+2. **RFP depth-gate / shape** — cap nearer Viri's d8–9 (or test whether the
+   deep-knee can be removed once capped). Stops the deepest reverse-futility bets.
+3. **Triple extensions** — one-tier addition on existing singular/dext
+   machinery; SPRT-invisible at STC, the LTC profile we want.
+4. **NMP base R + futility width/depth** — pull toward Viri's less-aggressive
+   shapes; the STC core tune (#2166) just pushed several of these the *wrong way*
+   for LTC, so this is partly an STC-vs-LTC retune-shape question.
+5. **CorrHist: reweight CORR_W_NP toward pawn-parity + add cont-14** — eval
+   accuracy compounds over depth; cheap (one reweight + one table).
+6. **Adaptive aspiration delta growth** — isolated deep-iteration re-search cost.
+7. **LMR fixed-point fractional** — meta-change un-quantizing cut-node (1.56 vs
+   1.0) and enabling alpha-raise/refutation muls to tune as fractions.
+
+## METHODOLOGY — validate in the scaling gauntlet, not by STC SPRT
+
+Coda is already **+44 ahead at STC**; the deficit is purely a scaling/conversion
+problem that appears at 2×+. So an STC-only "does it help?" SPRT is the wrong
+acceptance frame here — but note we should NOT assume a big LTC *amplification*
+either: Coda's own alpha-raise port was **+1.09 STC / +1.32 LTC (≈flat)**, i.e. a
+small TC-stable win, not a STC-invisible-then-large-at-LTC effect (the +5.38 was
+Viri's number on their engine). So the honest position is: (a) the
+forward-pruning *shape* changes (SEE-quiet quadratic→linear, RFP depth cap, NMP
+base, futility width) have a *mechanistic* LTC argument — they bite at depths STC
+rarely reaches — but that amplification is **unvalidated for Coda**; (b) we have
+no Coda evidence these amplify, and the alpha-raise data point is mildly
+cautionary that ports may just be TC-stable.
+
+**Therefore validate directly in the 2×/4× scaling gauntlet** (the harness that
+produced the table above) — it measures the actual scaling effect, rather than
+relying on an LTC-SPRT assumption. A cheap first pass: apply ONE shape fix and
+re-run the gauntlet; if the 2× draw-rate drops / the 2× Elo closes, the lever is
+real. Independently, **STC-tuning these would push the wrong way** (toward more
+STC aggression — exactly what the #2166 STC core tune did to RFP/FUT/SEE), so
+even if a candidate is TC-stable, don't let an STC tune walk it back.
