@@ -155,9 +155,18 @@ tunables!(
     //   untouched, only true low-inc-vs-clock (rapid) is throttled.
     // NB: an earlier ABSOLUTE-inc form (inc/12000) crushed OB STC (inc 100ms
     // -> 1.6× cap) and lost 24 Elo (#2075). _10X ceilings are /10.
-    (TM_INC_COVER_REF, 20, 5, 60, 4.0, true),
-    (TM_MULT_CEIL_MIN_10X, 15, 10, 40, 2.0, true),
-    (TM_MULT_CEIL_MAX_10X, 130, 40, 140, 8.0, true),
+    // core: false — and NOT because TM is "invisible at STC": it is one of the
+    // highest-leverage STC levers in BOTH directions. The Phase-13 TM rework was
+    // +135 self-play / ~+75 x-engine at 10+0.1 (#1568, biggest single recent
+    // gain); a bad TM form lost -24 (#2075). It's kept OUT of the routine --core
+    // pruning sweep *because* it's that high-leverage and deployment-critical:
+    // TM is tuned deliberately, TC-matched and cross-engine/ponder-validated,
+    // not perturbed incidentally by a broad ~33-iter/param STC core retune where
+    // a noisy TM movement could regress lichess. Still UCI-loadable for
+    // deliberate TM tunes; just not swept by --core.
+    (TM_INC_COVER_REF, 20, 5, 60, 4.0, false),
+    (TM_MULT_CEIL_MIN_10X, 15, 10, 40, 2.0, false),
+    (TM_MULT_CEIL_MAX_10X, 130, 40, 140, 8.0, false),
     (LMR_HIST_DIV, 8731, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
