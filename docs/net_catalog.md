@@ -3,7 +3,18 @@
 Authoritative list of v9 nets, their OpenBench hashes, provenance, and status.
 Update this file when you promote a new production net or retire an old one.
 
-**Current v9 production:** `549C20A5` — `net-549C20A5.nnue`
+**Current v9 production:** `035195DB` — `net-035195DB.nnue`
+(source file `multi-v6-l132-s5-swa.nnue`). **First L1=32 prod** (prior prods
+were L1=16). Uploaded as an asset to the existing `v0.7.0-nets` release (no
+version bump — parity-strength switch); referenced by `net.txt`. Promoted
+2026-06-21 with SPSA core tune #2166 applied (73 non-TM params, re-applied
+onto current main as `experiment/l132-prod-candidate`). Recipe: v6 multistage,
+FT=1024 **L1=32**, kb10 reckless, crelu hidden, factoriser, wdl 0.20, mse-power
+3.0, interleave, fs0.5, ply-skip f25, stage 5 = 1600SB SWA tail. SPRT **#2181
+H1 +4.1 ±3.1** (L1=32 candidate+tune+net vs prior prod 549C20A5). All v9 SPRTs
+against trunk should now pass `--dev-network 035195DB --base-network 035195DB`.
+
+**Previous v9 production (L1=16, pre-L1=32 switch):** `549C20A5` — `net-549C20A5.nnue`
 (source file `multi-v6-s5-swa.nnue`). Published as `v0.7.0-nets`;
 referenced by `net.txt`. Promoted 2026-06-11 with SPSA tune #1896
 applied (STC 5000-iter, NMP cluster reconciled to the post-#1903/#1906
@@ -16,7 +27,7 @@ post-merge validation SPRT vs baseline/pre-v6s5 in flight. All v9
 SPRTs against trunk should now pass
 `--dev-network 549C20A5 --base-network 549C20A5`.
 
-**Previous v9 production:** `E4B66CE4` — `net-E4B66CE4.nnue` (source
+**Earlier v9 production:** `E4B66CE4` — `net-E4B66CE4.nnue` (source
 `multi-v6-s4-swa.nnue`, `v0.6.0-nets`). First hash-named prod. Was prod
 2026-06-09 → 2026-06-11. v6 multistage stage 4 (250/300/550/1000 SB
 geometric ladder), SWA. Promoted after #1857/#1858-era H1s (+19.4 raw /
