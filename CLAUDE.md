@@ -149,7 +149,7 @@ Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from dept
 
 **Correction history:** Multi-source static eval correction. Six source tables (pawn, white-NP, black-NP, minor, major, continuation) with five SPSA-tunable weights (the two NP tables share `CORR_W_NP`). Proportional gravity update.
 
-**Time management:** 3-factor multiplicative model (Obsidian/Clarity). Node fraction (tracks per-root-move nodes), best-move stability (linear), score trend. Validated at LTC (40+0.4) — TM features invisible at STC.
+**Time management:** 3-factor multiplicative model (Obsidian/Clarity). Node fraction (tracks per-root-move nodes), best-move stability (linear), score trend. Validated at LTC (40+0.4); TM is also high-leverage at STC (#1568 TM rework +135 self-play STC) — see §TM-class changes for the methodology.
 
 **Other:** Insufficient material detection. Repetition + cuckoo cycle detection. (Contempt removed 2026-04-19 per SPRT #508 — modern engine practice; was net +2.53 Elo to drop.)
 
@@ -469,7 +469,15 @@ All search/eval changes must pass self-play SPRT before merging.
 **Default bounds: `[0, 3]`** — see the bounds table in §SPRT Testing Policy
 below for when to deviate.
 
-**LTC testing (40+0.4)** for time management changes — TM features are invisible at STC (10+0.1) where each move gets ~200ms. Node-based TM failed 3x at STC but passed at +11.9 LTC.
+**LTC + ponder-enabled cross-engine testing** for time management changes.
+**TM is NOT "invisible at STC"** — it is among our highest-leverage STC levers
+in BOTH directions: the Phase-13 TM rework was **+135 self-play / ~+75
+x-engine at 10+0.1** (#1568, biggest single recent gain); a bad TM form lost
+**−24** (#2075). The narrow truth is only that (a) the *ponder-asymmetric*
+subset of TM gains is undersold by STC *self-play*, and (b) some specific
+*node-based* TM changes surfaced only at LTC (failed 3× at STC, passed +11.9
+LTC). So validate TM at LTC + ponder-enabled cross-engine — but never dismiss a
+TM result as "won't show at STC."
 
 ### TM-class changes: inverted methodology
 
