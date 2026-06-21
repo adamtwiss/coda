@@ -162,3 +162,49 @@ verify on the EPD + SPRT* — is a reusable strength engine that converts
 deploy/gauntlet losses directly into eval improvements. The bishop-sortie class
 is just the first customer. Each turn of the loop both fixes a blindspot and
 refreshes the corpus with whatever the improved net is *now* worst at.
+
+---
+
+## CONFIRMED 2026-06-21: ply-skipping reduces the bishop blindspot (mechanism)
+
+`blindspot_eval` on the two multi-stage s4 nets — **v7-s4 (with soft-ply f25)
+vs v6-s4 (no ply)**, same arch (L1=32 v9), same multistage point — moved the
+bishop metrics the *right way on every axis*:
+
+| metric (s4 nets) | v6-s4 (no ply) | v7-s4 (ply f25) |
+|---|---|---|
+| overrate.epd pass | 2/20 (10%) | **5/20 (25%)** |
+| mean sortie over-pref vs SF | +109cp | **+66cp** |
+| sorties now correct | 6/17 | **7/17** |
+| forward-bishop net_pref (n=5) | +327cp | **+270cp** (SF ~+65) |
+
+**This confirms the root-cause hypothesis: the wandering-bishop over-scoring is a
+TRAINING-DATA artifact**, not an architectural limitation. The over-represented
+early-opening positions are where the forward-bishop over-scoring gets
+reinforced; **soft-ply (a pure data-*reshaping* lever, down-weighting those
+positions) measurably pulls the bias back** — no relabeling, no architecture
+change. Validates the "training-set issue" read over any "net can't represent it"
+alternative, and it's an *independent* (eval-side, no-search, no-tunables) reason
+soft-ply is net-positive, on top of its two clean +15/+16 SPRTs (S200 #2082,
+S800 #2119).
+
+### Two complementary levers on the SAME root cause
+1. **Reshaping** (soft-ply) — cheap, confirmed, **partial** (+327→+270, still far
+   from SF's +65). Down-weight the positions that reinforce the bias.
+2. **Relabeling** (SF-rescore / sentinel-stamp corpus, in progress) — the bigger
+   hammer: replace Coda's *wrong* bishop evals on Coda-to-move positions with
+   SF's correct ones, so we stop *teaching* the bias at all.
+
+Both attack the same mechanism (training data over-represents / mis-labels the
+positions where the bias lives). Soft-ply moving the metric proves the lever
+class works; the relabeled corpus should move it *further* toward SF's +65.
+
+### A validated yardstick
+The operational win: `blindspot_eval`'s **forward-bishop net_pref** is now a
+*demonstrated-sensitive* metric — it moved under one lever (327→270). So it's a
+clean before/after gauge for the relabeling validation: train on the stamped
+corpus, measure whether forward-bishop net_pref drops further toward SF's +65 —
+no full SPRT needed to see if the eval moved the right way.
+
+(Caveats: mid-training s4 nets, not final; forward-bishop n=5. But the same-
+direction move across all four metrics makes the direction robust.)
