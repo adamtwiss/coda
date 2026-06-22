@@ -19,6 +19,28 @@ Going forward, all changes must pass self-play SPRT before merging (see CLAUDE.m
 
 **Net convention**: All experiments use the checked-in `net.nnue`, referenced by commit hash.
 
+## 2026-06-22: TC-scaling thread — LMP consensus + LMR repair/fractional
+
+Context: prod net `net-035195DB.nnue` (L1=32), TC-scaling thread (close
+Coda's worse-than-Viri/Obsidian LTC scaling; symptom = draws not losses).
+Methodology: flex formula → seed at cross-engine consensus → STC+LTC SPSA →
+divergence diagnostic. See `docs/tc_scaling_methodology_2026-06-21.md`.
+
+| ID | Branch | Change | Result | Decision |
+|---:|---|---|---|---|
+| 2187 | `experiment/lmp-consensus` | LMP toward consensus: `LMP_BASE 6→5`, `LMP_DEPTH 7→8` (Coda's BASE was ~2× SF/Reckless/Berserk). | `+2.7 +- 2.4`, 22,644 games, LLR 2.96, **H1** (STC 10+0.1) | **MERGED** (91892fa). TC-stable. |
+| 2190 | `experiment/lmp-consensus` | Same, LTC 40+0.4. | `+3.8 +- 2.7`, ~15k games, LLR 2.95, **H1** | Confirms — *larger* at LTC, matching the over-pruning-of-long-horizon-quiets thesis. |
+| 2189 | `experiment/rfp-cap8-ltc` | Remove the recently-added RFP deep-knee (LTC). | Drifting H0 (`−1.6`, LLR −1.1) | **Keep the knee** — removing the conservative deep-RFP behavior does not help; corroborates "deep RFP wants to stay conservative." |
+| 2192 | `experiment/lmr-fractional` | Centi-ply (×100) fixed-point LMR accumulator — continuous terms truly fractional (commit 1 bench-identical scaffold; commit 2 fractional). Non-regression gate at default tunables. | In flight, `~+1.0` (LLR climbing →H1) | Value is in the LTC SPSA of the cluster, not the untuned branch. |
+| 2193 | `experiment/lmr-repair-flex` | LMR re-search repair: `do_shallower` margin `20→9` (SF consensus; Coda's 20 was ~2× the 5–11 reference set, over-triggering shallower re-searches on marginal late moves). | In flight | First single-lever of the repair cluster; `LMR_DEEPER_BASE`/`RED_COEF` (non-consensus reduction-scaling) go to the cluster SPSA. |
+
+Cross-engine repair-margin survey (do_deeper base / scaling / do_shallower):
+SF 48/none/9, Reckless 61/none/5+rd, Berserk 69/none/newDepth, Obsidian
+43/+2·nd/11, Plenty 40/·/nd, Alexandria 77/+2·nd/nd. **Coda alone scales the
+deeper threshold with `reduction` (Viri-only pattern)** — flagged as an LTC
+suppressor (deeper threshold grows as reductions grow, which happens more at
+LTC). Resolved via the cluster SPSA divergence diagnostic.
+
 ## 2026-06-18: Threat Generation / NPS Experiments
 
 Context: current production net `net-549C20A5.nnue`, current-main bench `2944948`. Initial stale submissions `#2077/#2078` used old bench `2621104` and finished with zero games due wrong-bench errors; ignore those.
