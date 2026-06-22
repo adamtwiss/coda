@@ -86,6 +86,22 @@ OB benches with the fenskip net, gets 5,722,832, rejects as Wrong Bench.
 respective net. dev_bench uses dev-network net; base_bench uses
 base-network net.
 
+**HERCULES OUTLIER — override-net bench can diverge from workers (2026-06-22).**
+For **non-prod** nets (e.g. multistage/experiment v9/v10 threat nets), the
+`./coda bench -n <net>` node-count on **Hercules (AVX2)** can differ from what
+OB workers measure — the net's float-L2 evals sit near prune thresholds, so
+AVX2-vs-worker SIMD rounding flips prunes and cascades the node count (one s5
+net: Hercules 3,770,303 vs workers stable 3,430,524, same commit, same net).
+The **embedded prod net is Hercules-stable**, so normal SPRTs are fine; this
+bites **net-vs-net `--dev/--base-network` SPRTs** only. Don't burn time
+re-diagnosing it as a commit mismatch (verify `git rev-parse main` ==
+`origin/main` once, then rule it out). **Workflow:** submit with the Hercules
+benches, then read worker-measured benches off `https://ob.atwiss.com/errors/`
+(`Wrong Bench: <N>` lines, keyed by the `Coda-<bin>-<NETHASH>` tag), and
+resubmit each mismatched side with the **worker** value. Usually only one or two
+nets diverge; the rest match. (Harvest snippet: grep the errors page for your
+net SHA8s.)
+
 ### 2.3. Branch-state awareness — pull before bench
 
 **OB workers pull the latest of the specified branch at build time.**
