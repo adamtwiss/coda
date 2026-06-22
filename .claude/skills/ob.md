@@ -86,21 +86,28 @@ OB benches with the fenskip net, gets 5,722,832, rejects as Wrong Bench.
 respective net. dev_bench uses dev-network net; base_bench uses
 base-network net.
 
-**HERCULES OUTLIER — override-net bench can diverge from workers (2026-06-22).**
-For **non-prod** nets (e.g. multistage/experiment v9/v10 threat nets), the
-`./coda bench -n <net>` node-count on **Hercules (AVX2)** can differ from what
-OB workers measure — the net's float-L2 evals sit near prune thresholds, so
-AVX2-vs-worker SIMD rounding flips prunes and cascades the node count (one s5
-net: Hercules 3,770,303 vs workers stable 3,430,524, same commit, same net).
-The **embedded prod net is Hercules-stable**, so normal SPRTs are fine; this
-bites **net-vs-net `--dev/--base-network` SPRTs** only. Don't burn time
-re-diagnosing it as a commit mismatch (verify `git rev-parse main` ==
-`origin/main` once, then rule it out). **Workflow:** submit with the Hercules
-benches, then read worker-measured benches off `https://ob.atwiss.com/errors/`
-(`Wrong Bench: <N>` lines, keyed by the `Coda-<bin>-<NETHASH>` tag), and
-resubmit each mismatched side with the **worker** value. Usually only one or two
-nets diverge; the rest match. (Harvest snippet: grep the errors page for your
-net SHA8s.)
+**BENCH IS BINARY-SPECIFIC — re-bench on the CURRENT binary; don't reuse old
+values (2026-06-22).** A net-override bench is only valid for the exact binary
+it was measured on. When main moves (any search change — e.g. an LMP merge — or
+a branch's tunables), the **same net benches to a different node count**. The
+OB error line `[Coda-<BINHASH>-<NETHASH>] Wrong Bench: <N>` reports N **for that
+BINHASH** — a value from a *different* binhash is useless to you.
+
+Failure mode to avoid (I hit it): attempt-1 worker reported `Wrong Bench:
+3430524` (binary `35E03F9F`); I reused `3430524` for attempt-2's binary
+(`e6dac99`, post-LMP) where the correct value was `3770303` — then invented a
+"Hercules ISA outlier / fleet-split" story to explain the mismatch. There was
+no ISA issue: workers are consistent **within a binhash**; I was comparing
+values across two binaries. (See memory
+`feedback_dont_blame_fleet_rebench_current_binary`.)
+
+**Workflow for net-vs-net `--dev/--base-network`:**
+1. `git rev-parse HEAD` == `origin/main`, `make`, then `./coda bench -n <net>`
+   for EACH side **right before submitting** — trust those fresh numbers.
+2. If it Wrong-Benches, **check the error's `<BINHASH>` matches your local
+   build** before anything else. If main moved, rebuild + rebench; do NOT paste
+   a worker value from a stale binhash.
+3. Don't reach for ISA/fleet explanations — that's ~99% a miscalc.
 
 ### 2.3. Branch-state awareness — pull before bench
 
