@@ -1412,10 +1412,14 @@ unsafe fn simd512_pairwise_pack_impl<const HAS_THREAT: bool>(
             let d1 = _mm512_srli_epi16(prod1, FT_SHIFT as u32);
             // Pack 2×32 i16 → 64 u8 using vpmovuswb (no lane-crossing, no permute).
             // _mm512_cvtusepi16_epi8 saturates 32 i16→u8 into a 256-bit register
-            // with correct sequential order — eliminates the packus lane-crossing
-            // and the subsequent vpermutexvar_epi64 fix. Values in [0,127] (after
-            // srli_epi16) so saturation is a no-op. Two independent cvt+store pairs
-            // can execute in parallel vs the serial packus→permute chain. (perf M3)
+            // with correct sequential order — removing the packus lane-crossing and
+            // the subsequent vpermutexvar_epi64 fix-up. Values are in [0,127] (after
+            // srli_epi16) so the saturation is a no-op.
+            // NOTE: this is a SIMPLIFICATION, not a measured speedup. It drops a
+            // lane-crossing shuffle but adds a second store (1 packus+permute+512b
+            // store → 2 cvt + 2×256b store), so instruction count is ~flat. Measured
+            // whole-engine effect on Zen 5: NPS +0.1% (within noise), SPRT neutral
+            // (+0.1 ±6.6, 4745g), DRAM traffic unchanged. Kept for readability.
             let pack0 = _mm512_cvtusepi16_epi8(d0);
             let pack1 = _mm512_cvtusepi16_epi8(d1);
             _mm256_storeu_si256(out.add(i) as *mut __m256i, pack0);
@@ -1469,7 +1473,8 @@ unsafe fn simd512_screlu_pack(acc: &[i16], out: *mut u8, h: usize) {
         let sq1 = _mm512_mullo_epi16(c1, c1);
         let d0 = _mm512_srli_epi16(sq0, 8);
         let d1 = _mm512_srli_epi16(sq1, 8);
-        // cvtusepi16_epi8 (vpmovuswb): no lane-crossing, no permute needed. (perf M3)
+        // cvtusepi16_epi8 (vpmovuswb): no lane-crossing, no permute needed.
+        // Simplification (see simd512_pairwise_pack_impl) — neutral perf, kept for clarity.
         _mm256_storeu_si256(out.add(i) as *mut __m256i, _mm512_cvtusepi16_epi8(d0));
         _mm256_storeu_si256(out.add(i + 32) as *mut __m256i, _mm512_cvtusepi16_epi8(d1));
         i += 64;
