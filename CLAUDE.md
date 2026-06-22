@@ -4,6 +4,19 @@ Coda is a UCI chess engine written in Rust. Rewritten from GoChess with all accu
 
 **Chess Optimised, Developed Agentically** — built through human-AI collaboration.
 
+## Where durable knowledge goes (read this before "saving" anything)
+
+**Put durable, cross-session knowledge in THIS file (CLAUDE.md) or an in-repo
+skill (`.claude/skills/`) — NOT in per-machine `~/.claude` memories.** Adam works
+with Claude across multiple machines; memories are local to one machine and don't
+travel, so they fragment and rot. In-repo docs travel with the checkout and get
+human-reviewed. Two more discipline notes that have bitten us:
+- **No war-stories / unverified specifics.** Don't assert "+X Elo, biggest gain
+  ever" or similar anecdotes — they're frequently wrong and add noise. State the
+  rule/mechanism; cite a specific number only if you can verify it right now.
+- **Keep OB mechanics in the `ob` skill; local cutechess RR/profiling in the
+  `local-rr` skill.** CLAUDE.md holds methodology/policy and points to the skills.
+
 ## Supported CPU families
 
 **x86_64 (primary):** OpenBench fleet, Lichess deployment, CCRL, all SPRT
@@ -29,7 +42,7 @@ rustup component add llvm-tools-preview
 
 ```bash
 make                  # Build with embedded NNUE net + native CPU (produces ./coda)
-make pgo              # PGO build — helps v5 on main; regresses v9 on on most x86 platforms. See Makefile.
+make pgo              # PGO build — helps v5 on main; regresses v9 on most x86 platforms. See Makefile.
 make net              # Download production NNUE net (from net.txt)
 make openbench        # OpenBench-compatible build (alias for `make`)
 cargo build --release # Plain release (no embedded net) — NOT what OB workers use
@@ -217,7 +230,7 @@ Polyglot .bin format. Weighted random selection. Polyglot Zobrist hashing with s
 
 ## NNUE Training (Bullet GPU)
 
-We train on **Bullet** (Rust, CUDA, fork: `adamtwiss/bullet`) using T80 binpack data. The core set (/workspace/data on on training hosts) ~47B positions across 12 files; measured 2026-05). We have about 4x this (full SF trainng set) on GPU4 that we use for production builds. Training produces `quantised.bin` which is converted to `.nnue` via `coda convert-bullet`.
+We train on **Bullet** (Rust, CUDA, fork: `adamtwiss/bullet`) using T80 binpack data. The core set (/workspace/data on training hosts) ~47B positions across 12 files; measured 2026-05). We have about 4x this (full SF trainng set) on GPU4 that we use for production builds. Training produces `quantised.bin` which is converted to `.nnue` via `coda convert-bullet`.
 
 ### GPU Host Setup
 
@@ -232,7 +245,7 @@ Both `cargo build --release` once after cloning.
 
 The  T80 binpack data (~47B positions across core 12 files, more on GPU4).
 
-These are LC0 generated positions that are WDL scored (100cp = 50% win chance). The T80 dataset uses 800 MTCS nodes (broadly equivalent to depth 20+ for SF)
+These are LC0 generated positions that are WDL scored (100cp = 50% win chance). The T80 dataset uses 800 MCTS nodes (broadly equivalent to depth 20+ for SF)
 
 
 ### Model Conversion
@@ -261,7 +274,7 @@ Output is SF BINP binpack format, directly usable by Bullet.
 
 ### Key Training Findings
 
-- **LR warmup is chelpful for hidden layers**: 5-10 SB linear warmup 0.0001→0.001, then cosine 0.001→0.0001.
+- **LR warmup is helpful for hidden layers**: 5-10 SB linear warmup 0.0001→0.001, then cosine 0.001→0.0001.
 - **SCReLU scale chain**: keep v² at QA² through matmul, bias×QA² to match, /QA² after.
 - **Hidden→output activation is linear** in Bullet (no SCReLU before output buckets).
 - **WDL blend (linear / fixed-blend)**: **v5 optimum is w0.07; v9 optimum is w0.20 on modern nets**. **Direction of optimum**: as architecture richness increases (V5 → V9 with threats), optimal WDL weight *increases* — eval-quality improves, so the WDL ground-truth signal can take more weight without polluting eval signal.
@@ -380,13 +393,13 @@ cheap and prevents the failure modes.
 
 ### Self-Play SPRT (primary acceptance test)
 
-SPRT on OB with tight bounds is disciplined, reproducible, and matches the direction of broader cross-engine testing. This is our primary acceptance criterio
+SPRT on OB with tight bounds is disciplined, reproducible, and matches the direction of broader cross-engine testing. This is our primary acceptance criterion.
 
-All search/eval changes should normally pass self-play SPRT before merging. This servers the purpose of stress testing, and checking for non-regressions.
+All search/eval changes should normally pass self-play SPRT before merging. This serves the purpose of stress testing, and checking for non-regressions.
 
 **Default bounds: `[0, 3]`** — see the bounds table in §SPRT Testing Policy below for when to deviate.
 
-For some time management (TM) changes (e.g. involving pondering that OB can't do) then OB is not effective. It's better in these cases to do local cutechess RRs. TM changes often need the behaviours of other eninges to provoke our behaviour.
+For some time management (TM) changes (e.g. involving pondering that OB can't do) then OB is not effective. It's better in these cases to do local cutechess RRs. TM changes often need the behaviours of other engines to provoke our behaviour.
 
 **Methodology for TM-class changes:**
 1. **Inspect mechanism first**: 5-10 local games at the target TC, parse
@@ -412,7 +425,7 @@ this after multiple wrong "mechanism not firing" conclusions on Phase
 and `tm_variation_analyzer.py`.
 
 **Concurrency for local RR**
-- It's generally best to to have one engine running per CPU thread. Without ponder only one engine runs at a time, so on a 8C/16T CPU you can running cutechess with concurrency 16.
+- It's generally best to have one engine running per CPU thread. Without ponder only one engine runs at a time, so on an 8C/16T CPU you can run cutechess with concurrency 16.
 
 **Key rules:**
 - One change per branch. Never stack untested changes.
@@ -456,9 +469,9 @@ SPRTs.** Reckless uses the same default. Avoid temptation to use wider bounds in
 
 | Bounds | When to use | Example |
 |--------|-------------|---------|
-| **`[0, 3]` (DEFAULT)** | "Does this feature help enogh to be worht making a change?" at Coda's current strength. Most new ideas target +1-3 Elo. **Pick this unless you have a specific reason for one of the rows below.** | Pruning/ordering tweak, parameter probe, small bonus adjustment, incremental feature, audit correctness fix, tune-applied retest, structural ports |
+| **`[0, 3]` (DEFAULT)** | "Does this feature help enough to be worth making a change?" at Coda's current strength. Most new ideas target +1-3 Elo. **Pick this unless you have a specific reason for one of the rows below.** | Pruning/ordering tweak, parameter probe, small bonus adjustment, incremental feature, audit correctness fix, tune-applied retest, structural ports |
 | `[-2, 1]` | "Ship if not a meaningful regression." Bench-neutral refactors, NPS-only changes, ARM ordering, adding tunables at default values. Forces enough games to actually discriminate near zero. | Code cleanup with possible perf delta, OnceLock migration, defensive guard whose direction is uncertain |
-| `[-1.5, 1.5]` | Where the cost of of a change is zero, and you are comparing two netural things (net-vs-net, alternative-net compare). | New candidate net vs prod/baseline, SE margin tweak, 50mr mate downgrade, stale-bound gate |
+| `[-1.5, 1.5]` | Where the cost of a change is zero, and you are comparing two neutral things (net-vs-net, alternative-net compare). | New candidate net vs prod/baseline, SE margin tweak, 50mr mate downgrade, stale-bound gate |
 
 **Do-NOT-use (all range > 3): `[-3, 3]`, `[-5, 5]`, `[0, 5]`, `[0, 10]`.**
 They lock H1 on noise and/or return without separating. `[-3, 3]`
@@ -535,14 +548,6 @@ procedure.
 
 See `docs/mini_prod_branch_workflow.md` for runnable detail and the
 methodology behind these policies.
-
-**Bench measurement.** Always `make && ./coda bench` on the exact branch you're
-submitting (see Build and Test §Bench-for-OB ritual). Never reuse bench values
-across branches — branch-specific tunables AND the production net both move
-the number. Pass the result as `dev_bench` (positional arg to `ob_submit.py`)
-and the corresponding main bench as `--base-bench`. The Bench: line in commit
-messages is also useful for OB auto-detection but isn't a substitute for
-re-measuring before submission.
 
 ### SPSA Parameter Tuning
 

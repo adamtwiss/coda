@@ -178,23 +178,31 @@ OPENBENCH_PASSWORD=$PW python3 scripts/ob_submit.py <dev_branch> <dev_bench> \
 - `<base_bench>` same for the base side (default: main)
 - `--base-branch <name>` if base is not main (e.g. `mini-prod`
   for S200 paired probes)
+- **Reference NPS / `--scale-nps`**: OB scales time budgets off a reference
+  NPS, default **250000 (v9 prod)** — correct for current work, so omit it.
+  Explicit **v5-only** work (legacy `bullet_convert` experiments, v5 net
+  comparisons) MUST pass **`--scale-nps 500000`**. Wrong scale_nps → wrong
+  time budgets: v9 code run at 500000 takes ~2× wall-clock, halving fleet
+  throughput. (Same flag applies to `ob_tune.py`.)
 
 ### 3.2. Bounds policy — DO NOT improvise
+
+**ALWAYS range-3 (width = H1 − H0 = 3). There is no range-6 option.**
 
 | Change class | Bounds | Rationale |
 |---|---|---|
 | **DEFAULT — "does this feature/change help?"** | **`[0, 3]`** | Coda standing policy. Most ideas target +1-3 Elo. |
-| Correctness fix, regression cap matters | `[-3, 3]` | Tight on both sides for "small win but regression blocks merge" |
-| Pure non-regression / infrastructure check | `[-5, 5]` | Use sparingly. Code-cleanup, demote-loose-knobs, etc. |
-| Non-regression where primary gain is banked elsewhere | `[-3, 0]` | Sharper than `[-3, 3]` for "check only that secondary regime isn't hurt" |
-| Correctness bundle, "too small to measure" | `[-2, 1]` | Narrow merge-pattern; preserves rigour |
+| Direction GENUINELY uncertain | `[-1.5, 1.5]` | Net-vs-net / alt-net compare, a correctness fix that could go either way. Centered, range-3. |
+| Ship if not a meaningful regression | `[-2, 1]` | Bench-neutral refactor, NPS-only, ARM ordering, new tunables at default, correctness bundle. |
 
-**Default is `[0, 3]`. Don't widen to `[0, 5]` or `[0, 10]`** "in case
-the change is big." A true +5 effect H1s at `[0, 3]` faster than
-`[0, 5]`. A true +1.5 effect H0s at `[0, 5]` while H1ing at `[0, 3]`.
-Tightening is never wrong.
-
-**Never use** `[-10, 5]` or other asymmetric large bounds.
+**Default is `[0, 3]`. Do NOT use range-6+ bounds** — `[-3, 3]`, `[-5, 5]`,
+`[0, 5]`, `[0, 10]`, `[-3, 0]`, `[-10, 5]` all need far more games AND routinely
+return without a meaningful signal (H0 on a real small effect, or never
+separate). A true +5 effect H1s at `[0, 3]` faster than `[0, 5]`; a true +1.5
+effect H0s at `[0, 5]` while H1ing at `[0, 3]`. Tightening is never wrong. For
+uncertain-direction use `[-1.5, 1.5]` (NOT `[-3, 3]`); for non-regression use
+`[-2, 1]`. (Matches CLAUDE.md §SPRT Testing Policy and memory
+`feedback_sprt_bounds_range_3_never_minus3_3`.)
 
 ### 3.3. Paired-probe net-vs-net (mini-prod or main + override)
 
