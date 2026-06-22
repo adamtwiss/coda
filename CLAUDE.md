@@ -829,14 +829,22 @@ OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune_status.py --compare 175 176
 When LMR_C_QUIET or LMR_C_CAP change, LMR tables are automatically reinitialized.
 
 **Practical guidance:**
-- **Iteration counts (Adam's working convention — do NOT inflate these):**
-  **~2500 iters for a full production tune; 1000-1500 for a retune-on-branch
-  over all params (incl. the full `--core` ~74-param set); 800-1000 for a
-  limited parameter-set tune.** These are what have repeatedly worked. **Longer
-  tunes have been tried many times and have NOT consistently produced better
-  results** — do not propose 10K+ "full-sweep" runs or flag a 1500-iter
-  all-params tune as "undersized." (Earlier text here cited a √N "150-200
-  iter/param / 12-16K full-sweep" rule — that was wrong for us and is removed.)
+- **SPSA iteration counts.** SPSA uses **2 objective evals per iteration
+  regardless of param count** — iters do NOT scale linearly with params (the old
+  √N "150-200 iter/param, 12-16K full-sweep" rule here was wrong and is removed).
+  Total iters-to-converge scales with **dimensionality + noise**, not param count
+  directly: moderate dim (≤~50-60 params) **500-2000 iters**; high dim (100+
+  params) 5000-10000+ (ref: pennylane.ai/demos/tutorial_spsa). **Our tunes sit in
+  the moderate band (~60 params), so Adam's working convention is: ~2500 full
+  production tune; 1000-1500 retune-on-branch over all params (incl. the
+  ~74-param `--core` set); 800-1000 limited set.** Longer tunes have been tried
+  repeatedly **at our param count** and not consistently helped — so don't propose
+  10K+ runs or flag a 1500-iter all-params tune as undersized *at our scale*.
+- **Watch param-creep / "loose knobs."** The `--core` count has crept up (now
+  ~74). Past ~60-70, extra params add dimensionality + noise (each loose,
+  non-load-bearing knob the tuner wanders) and push toward the high-dim regime.
+  The fix is **audit + prune loose knobs** (SPSA-detuning signal: params it
+  pushes hard off-default or wanders without converging), NOT just more iters.
 - c_end ~5-10% of parameter range, r_end 0.002 are good defaults.
 - Alpha 0.602, gamma 0.101, A_ratio 0.1 (standard SPSA constants).
 - SPRT the final values against main before merging — SPSA can overfit.
