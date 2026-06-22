@@ -399,12 +399,22 @@ All search/eval changes should normally pass self-play SPRT before merging. This
 
 **Default bounds: `[0, 3]`** — see the bounds table in §SPRT Testing Policy below for when to deviate.
 
-**STC-first gating.** A good change should work at **all** time controls. STC
-(10+0.1) runs ~4× faster than LTC, so **fire STC first as a cheap gating/initial
-signal** before committing fleet to LTC. And for any change aimed at a specific
-TC (e.g. an LTC-targeted pruning/reduction tweak), **also validate it doesn't
-disproportionately hurt STC before merging** — if it does, a future STC tune
-will just move it back. Don't merge a change that only holds at one TC.
+**STC-first gating (run STC even for LTC work).** A good change should work at
+**all** time controls. STC (10+0.1) runs ~4× faster than LTC, so **fire STC
+first as a cheap gating/initial signal** before committing fleet to LTC. Three
+reasons it's almost always worth an STC run:
+- **Fail-fast.** STC rejects a *really bad* change decisively ~4× quicker, so
+  the marginal cost of adding an STC is normally **net-negative** (it saves
+  fleet you'd otherwise burn on a doomed LTC run).
+- **It can reveal bankable wins the LTC test misses.** We've repeatedly found
+  changes that were **neutral at LTC but a nice STC win still worth banking**.
+  So run STC even when the target was LTC — don't discard a change just because
+  LTC came back flat.
+- **Non-regression both ways.** For a change aimed at one TC, validate it
+  doesn't disproportionately hurt the *other* TC before merging — if it does, a
+  future tune at that TC just moves it back. Don't merge a change that only
+  holds at one TC (unless it's a clear, bankable win at the other and neutral
+  where it's not).
 
 For some time management (TM) changes (e.g. involving pondering that OB can't do) then OB is not effective. It's better in these cases to do local cutechess RRs. TM changes often need the behaviours of other engines to provoke our behaviour.
 
