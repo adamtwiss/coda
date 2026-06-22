@@ -190,8 +190,8 @@ tunables!(
     // use LMP_BASE=3 with the same `(BASE + d²)/(2 - improving)` formula.
     // Coda's 9 is 3× consensus at d=1: allows 5-10 quiets vs SF's 2-4.
     // Bisecting 9 → 5 first.
-    (LMP_BASE, 6, 1, 15, 2.0, true),
-    (LMP_DEPTH, 7, 4, 20, 2.0, true),
+    (LMP_BASE, 5, 1, 15, 2.0, true),
+    (LMP_DEPTH, 8, 4, 20, 2.0, true),
     // Root-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
     // reduce LESS as the OVERALL search depth grows past LMR_ROOT_THRESH
     // (diminishing returns — at LTC the reduced re-search is cheap vs the
