@@ -29,7 +29,7 @@ rustup component add llvm-tools-preview
 
 ```bash
 make                  # Build with embedded NNUE net + native CPU (produces ./coda)
-make pgo              # PGO build — helps v5 on main; regresses v9. See Makefile.
+make pgo              # PGO build — helps v5 on main; regresses v9 on on most x86 platforms. See Makefile.
 make net              # Download production NNUE net (from net.txt)
 make openbench        # OpenBench-compatible build (alias for `make`)
 cargo build --release # Plain release (no embedded net) — NOT what OB workers use
@@ -52,15 +52,12 @@ cargo test            # Run all tests including perft
 
 **Bench-for-OB ritual.** OB workers use `make` (which emits `./coda` at the
 repo root via `--emit link=coda`). To get a bench number that matches what
-OB will measure, **always** `make && ./coda bench`. `cargo build --release`
-+ `./target/release/coda bench` produces a DIFFERENT number (no embedded
-net, different code paths) — submitting that bench triggers OB "Wrong
-Bench" rejections.
+OB will measure, **always** 
 
-After every SPRT submission, check https://ob.atwiss.com/errors/ 5-10 min
-later before assuming success — workers report build/bench errors async,
-not in the test page or `ob_status.py`. Don't resubmit on stall without
-checking errors first.
+* Make sure you have the latest code on the branch
+* Run coda bench with the net that you want OB to test with (coda bench -n {NNUEFILE})
+
+For further information on using OB see the OB skill.
 
 ## Project Structure
 
@@ -141,6 +138,8 @@ Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from dept
 - TT cutoff cont-hist malus (penalize opponent's quiet on cutoff)
 - Mate distance pruning (non-PV, ply+1 offset)
 
+Do not add tunables to the core set unless you are confident that they are not 'lose knobs' that have little elo impact. They will likely negatively impact SPSA effectiveness.
+
 **Move ordering:** TT move → good captures (MVV×16 + captHist) → quiets (main hist + contHist×3 + pawn hist + quiet check bonus) → bad captures.
 
 **Exemptions:** TT move exempt from pruning. Promotions exempt from LMR.
@@ -175,7 +174,7 @@ Quantization: QA=255 (accumulator), QB=64 (output weights).
 
 - **Lazy accumulator**: push stores DirtyPiece info, materialize on demand (saves work for pruned nodes)
 - **Finny table**: per-perspective, per-bucket cache. On king bucket change, diffs cached vs current bitboards (~5 delta ops vs ~30 full recompute)
-- **SIMD**: AVX2 and AVX-512 via `std::arch::x86_64` (runtime detected). Int8 weight quantization for SCReLU forward pass.
+- **SIMD**: AVX2 and AVX-512 via `std::arch::x86_64` (runtime detected). Int8 weight quantization for SCReLU forward pass. ARM NEON support also.
 - **CReLU**: clamp [0, 255], VPMADDWD dot product
 - **SCReLU**: clamp [0, 255], square, int8 byte decomposition for VPMADDUBSW. Scale correction ×0.8 for search threshold compatibility.
 - **Pairwise**: split accumulator halves, CReLU-clamp, multiply pairs. SIMD byte decomposition like SCReLU.
@@ -187,7 +186,7 @@ Quantization: QA=255 (accumulator), QB=64 (output weights).
 Polyglot .bin format. Weighted random selection. Polyglot Zobrist hashing with standard 781-entry random table. Castling encoded as king-to-rook, converted to king-to-destination. EP hash only when capture is actually possible.
 
 ### UCI Options
-- `Hash` (spin, 1-4096, default 64) — TT size in MB
+- `Hash` (spin, 1-4096, default 64) — TT size in MB. For anything above STC (10+0.1) consider increasing this as the default will fill quickly on a modern CPU.
 - `Threads` (spin, 1-256, default 1) — Lazy SMP thread count
 - `NNUEFile` (string) — path to .nnue network file
 - `OwnBook` (check, default true) — use opening book
@@ -218,7 +217,7 @@ Polyglot .bin format. Weighted random selection. Polyglot Zobrist hashing with s
 
 ## NNUE Training (Bullet GPU)
 
-We train on **Bullet** (Rust, CUDA, fork: `adamtwiss/bullet`) using T80 binpack data (~47B positions across 12 files; measured 2026-05). Training produces `quantised.bin` which is converted to `.nnue` via `coda convert-bullet`.
+We train on **Bullet** (Rust, CUDA, fork: `adamtwiss/bullet`) using T80 binpack data. The core set (/workspace/data on on training hosts) ~47B positions across 12 files; measured 2026-05). We have about 4x this (full SF trainng set) on GPU4 that we use for production builds. Training produces `quantised.bin` which is converted to `.nnue` via `coda convert-bullet`.
 
 ### GPU Host Setup
 
@@ -229,53 +228,27 @@ Both `cargo build --release` once after cloning.
 ### Training Data Locations
 
 **GPU hosts** (cloud): `/workspace/data/`
-**Dev hosts** (Hercules, Atlas, Titan): `/training/data/`
+**Dev hosts** (Hercules, Atlas, Titan): `/training/`
 
-```
-# T80 binpack data (~30B positions across 12 files)
-T80_test-80-2024-10-d12-3B.binpack          # 3B positions
-T80_test-80-2024-01-d9-12B.binpack          # 12B positions
-T80_test-80-2024-04-d12-6B.binpack          # 6B positions
-T80_test-80-2024-06-d12-6B.binpack          # 6B positions
-...                                          # additional T80 files
+The  T80 binpack data (~47B positions across core 12 files, more on GPU4).
 
-# Supplementary data
-blunders-0.2.binpack                         # Self-play with 20% blunder rate (~1B positions)
-```
+These are LC0 generated positions that are WDL scored (100cp = 50% win chance). The T80 dataset uses 800 MTCS nodes (broadly equivalent to depth 20+ for SF)
 
-Bullet training configs reference these paths directly. When setting up a new GPU host, ensure the data directory is populated (symlink or copy from storage).
-
-**Output directory**: All trained models and checkpoints go in `coda/nets/`:
-```
-coda/nets/
-  v5-1024s-w5-e800/           # training run directory
-    quantised-s100.bin         # checkpoint at SB 100
-    quantised-s400.bin         # checkpoint at SB 400
-    quantised-s800.bin         # final checkpoint
-    net-v5-1024s-w5-e800s800.nnue   # converted .nnue
-  v7-1024h16x32s-w0-e800/     # v7 training run
-    ...
-```
-
-Create the directory if it doesn't exist: `mkdir -p coda/nets`
 
 ### Model Conversion
 
 Convert Bullet output to .nnue format (run on the GPU host after training):
 ```bash
-# v5 (no hidden layers)
-coda convert-bullet -input quantised.bin -output net.nnue -screlu
 
-# v5 pairwise
-coda convert-bullet -input quantised.bin -output net.nnue -pairwise
+# Current v9 models -(hidden layers, L1=32, typical modern config is something like)
 
-# v7 (hidden layers)
-coda convert-bullet -input quantised.bin -output net.nnue -screlu -hidden 16 -hidden2 32 -int8l1
+./coda convert-bullet     -i quantised.bin     -o net.nnue     --pairwise --screlu --hidden 32 --hidden2 32 --int8l1 --threats 66864  --kb-layout reckless --hl-crelu
 ```
 
 ### Training Data Generation
 
-Coda can generate supplementary training data (material-imbalance positions, self-play with blunders):
+Coda can generate supplementary training data (material-imbalance positions, self-play with blunders). We don't currently train using this data though.
+
 ```bash
 # Material removal: remove pieces from EPD positions, deep-search each
 coda datagen --nnue net.nnue --epd positions.epd --depth 10 --threads 32 --output material.binpack
@@ -288,14 +261,13 @@ Output is SF BINP binpack format, directly usable by Bullet.
 
 ### Key Training Findings
 
-- **CReLU kills hidden layer neurons** during long training (dying ReLU). SCReLU prevents this.
-- **LR warmup is critical for hidden layers**: 5-10 SB linear warmup 0.0001→0.001, then cosine 0.001→0.0001.
+- **LR warmup is chelpful for hidden layers**: 5-10 SB linear warmup 0.0001→0.001, then cosine 0.001→0.0001.
 - **SCReLU scale chain**: keep v² at QA² through matmul, bias×QA² to match, /QA² after.
 - **Hidden→output activation is linear** in Bullet (no SCReLU before output buckets).
-- **WDL blend (linear / fixed-blend)**: **v5 optimum is w0.07; v9 optimum is w0.15**. Note older line ("w0 better than w5 for v7-style hidden-layer nets +30 Elo") referred to an earlier v7 architecture and is superseded by direct v9 measurement. v7-style w3-w5 equivalence still holds for v5. **Direction of optimum**: as architecture richness increases (V5 → V9 with threats), optimal WDL weight *increases* — eval-quality improves, so the WDL ground-truth signal can take more weight without polluting eval signal.
-- **WDL schedule (alternative to fixed blend)**: Hobbes uses a *ramping* schedule (`100sb constant(0.2), 700sb linear(0.2 → 0.4)` early; `0.6` to `0.75` in late iterations h-33+). The pattern is **WDL weight increases as training progresses** — early on the eval is undertrained so eval signal is noisy and WDL ground-truth dominates; late, the eval has converged and higher WDL focuses the residual signal on game outcomes (strategic/long-term patterns). Viridithas also tested an end-stage WDL ramp ("everedge", "basilisk.4-.8" finetunes 0.4 → 0.8); their basilisk series mostly regressed (best −0.3 at 0.5, worst −19 at 0.8), so the pattern is **engine-dependent**. Hobbes-style ramp is worth testing for Coda but H0 risk is real.
+- **WDL blend (linear / fixed-blend)**: **v5 optimum is w0.07; v9 optimum is w0.20 on modern nets**. **Direction of optimum**: as architecture richness increases (V5 → V9 with threats), optimal WDL weight *increases* — eval-quality improves, so the WDL ground-truth signal can take more weight without polluting eval signal.
+- **WDL schedule (alternative to fixed blend)**: Hobbes uses a *ramping* schedule (`100sb constant(0.2), 700sb linear(0.2 → 0.4)` early; `0.6` to `0.75` in late iterations h-33+). Our bullet fork supports this but we've yet to see this really work for us..
 - **12-file training data** gives +33 Elo over 6-file for 768pw (data diversity matters).
-- **Low final LR is critical**: cosine `final_lr 0.0001` was 20× too high. Reducing to **2.43e-6** (Bullet default `0.001 * 0.3^5`) gave **+47 Elo** — net was oscillating, not converging. Every Coda training config (v5/v7/v8/v9) uses this same default endpoint; there is no V5→V9 LR drop.
+- **Low final LR is critical**: cosine `final_lr 0.0001` was 20× too high. Reducing to **2.43e-6** (Bullet default `0.001 * 0.3^5`) gave **+47 Elo** — net was oscillating, not converging. For our long multi-stage runs we now prefer 1e-6.
 - **Data filtering**: quiet positions only (ply≥16, no checks/captures/tactical moves) gave **+22 untuned, +48 tuned**. Aligns with how NNUE is consumed (quiet nodes after QS).
 - **v9 schedule completion is load-bearing, not "more SBs"**: the +88 Elo we used to attribute to "SB400 → SB800 tail" was actually *schedule mismatch*: an `e800` net stopped mid-cosine at SB600 is −88 vs the same `e800` run completed to SB800. A *fully-baked* `e400s400` (own cosine ending at SB400) is only ~5–6 Elo behind `e800s800`. Schedule doubling is roughly +4.7 Elo per doubling. Lesson: complete the schedule you started; don't half-bake. v9 has *not* been tested below the 2.43e-6 final-LR default; floor is ~2.43e-7 (regressed). See `memory/project_v9_low_lr_tail_critical.md`.
 
@@ -313,10 +285,6 @@ nets do NOT scale linearly with EVAL_SCALE** — large values overflow int8
 quantization. Always verify RMS empirically; never compute it as
 `400 * baseline / candidate`.
 
-Standard Bullet LR schedule for hidden-layer nets: linear warmup
-0.0001→0.001 over 5 SBs, then cosine 0.001→`final_lr` over N-5 SBs.
-For v9, target final_lr ~2.4e-6 (Bullet examples) — Coda's earlier 1e-4
-was 20× too high (cost +47 Elo when fixed).
 
 ## NNUE Model Naming Convention
 
@@ -368,7 +336,7 @@ quickly to keep accurate in a checked-in file. Authoritative sources:
 
 - **Current production nets:** `docs/net_catalog.md` (v5 + v9 prod hashes,
   retired/active nets, invariants)
-- **Recent experiment history / lessons:** `experiments.md`
+- **Recent experiment history / lessons:** `experiments.md`. Always log new experiments (H1 or H0) here for our memory.
 - **Current bench:** the `Bench: <nodes>` line of the latest commit on the
   branch you're submitting. Re-measure on the exact branch+net before any
   SPRT; don't carry bench values across branches.
@@ -378,59 +346,13 @@ quickly to keep accurate in a checked-in file. Authoritative sources:
 Testing methodology is durable and documented below (Self-play SPRT primary,
 retune-on-branch for tree-shape-changing features, LTC for TM features).
 
-## Strength Frontier — Where the Elo Gap Lives
-
-**Effective depth is the target.** Effective depth ≈ log(NPS × time) /
-log(EBF), so depth = f(raw NPS, pruning efficiency, eval quality).
-Closing the gap = NPS + pruning + eval compounding. Coda's specific
-loss-pattern profile favours "+3-6 ply ordering/pruning" carve-outs
-and "force more pruning + retune" branches over raw eval tweaks.
-
-**Workflow when sizing a new experiment**: ask (1) does it increase
-effective depth? (2) is Coda's pruning value here an outlier vs top
-engines? (3) would it show up in a 100-game SF bullet H2H? If all
-three are "no", expected Elo-per-effort is probably low.
-
-For current Elo budgets, gap-decomposition tables, TC/threading
-sweeps, loss-class analysis, and the prediction priors that update
-with new data, see **`docs/strength_frontier.md`** (living reference).
-Don't duplicate those numbers here — they age fast.
-
-## Improvement Portfolio — Diversified Threads
-
-Beyond the eval-search flywheel (better eval → better ordering → safer
-pruning → more depth → better self-play training data → better eval),
-gap-closing runs multiple ORTHOGONAL threads in parallel. When picking
-the next experiment, name which thread it sits in — prevents
-accidental concentration on one axis.
-
-**The threads** (different resource pools — parallelise across pools,
-not just within one):
-- **Flywheel** — search/eval features with retune-on-branch. SPRT fleet.
-- **Correctness audits** — bugs in rarely-fired paths. Highest Elo-per-hour. Dev time.
-- **Comparative engine review** — instrumented top-engine ablation, then port. Dev time.
-- **Training hyperparameters + data** — recipe iteration, filtering, architecture probes. GPU hours.
-- **Long tunes** — full-sweep SPSA at 10-20K iter on changing trunk. SPRT fleet.
-- **Time management** — TM parameterisation; methodologically must be LTC-validated. SPRT fleet (LTC).
-- **Infrastructure** — book, TB walkback, TM edge cases, Lichess-visible. Dev time.
-
-**Selection heuristic**: if a thread hasn't delivered in 4+ weeks,
-prefer it. **Loss analysis** is a meta-input that informs the others
-rather than producing Elo directly — re-run periodically.
-
-For per-thread characterisation, current sub-thread status, and the
-resource-allocation logic, see **`docs/improvement_threads.md`**
-(living reference).
-
 ## Key Gotchas
 - Move flag equality vs bitwise: check non-promotion flags with ==, not &
 - EP moves only valid when EP square is empty (occupied square = corruption)
 - TT stores raw (uncorrected) eval to avoid double correction on probe
-- Correction history only updated when bestScore > originalAlpha
 - **is_pseudo_legal must be thorough**: TT hash collisions inject illegal moves. Pawn validation must check direction, intermediate squares (double push), starting rank, destination empty (pushes), enemy piece (captures). Castling must check rights, path clear, king/intermediate/destination not attacked, king on correct square. All three bugs cost 320 Elo combined.
 - **PV error warnings = TT collision bugs**: Every "Illegal PV move" from cutechess-cli means a TT collision passed is_pseudo_legal and corrupted the search tree. Treat as critical, not cosmetic.
 - **Feature flag ablation**: env var controlled flags (NO_XXX, ENABLE_XXX, DISABLE_ALL) for systematic search feature testing. Parsed once at startup via std::sync::Once.
-- LMR contHist weight: 1x in move ordering (CONT_HIST_MULT_10X tp10, SPSA-converged from earlier 3x default), ply-1+ply-2 in reduction adjustment. 2026-05-19 audit: floor was pinned at 10 (1.0 effective); now widened to 0 to let SPSA explore below 1×.
 - PV nodes skip all TT cutoffs and QS beta blending
 - Polyglot book encodes castling as king-to-rook (must convert to king-to-destination)
 
@@ -458,44 +380,13 @@ cheap and prevents the failure modes.
 
 ### Self-Play SPRT (primary acceptance test)
 
-Narrow cross-engine gauntlets (3 engines, 200 games) overfit to specific
-opponents just like self-play overfits to shared eval blindspots. Self-play
-SPRT with tight bounds is disciplined, reproducible, and matches the direction
-of broader cross-engine testing — primary acceptance criterion. **Never merge
-based on a narrow gauntlet alone.**
+SPRT on OB with tight bounds is disciplined, reproducible, and matches the direction of broader cross-engine testing. This is our primary acceptance criterio
 
-All search/eval changes must pass self-play SPRT before merging.
+All search/eval changes should normally pass self-play SPRT before merging. This servers the purpose of stress testing, and checking for non-regressions.
 
-**Default bounds: `[0, 3]`** — see the bounds table in §SPRT Testing Policy
-below for when to deviate.
+**Default bounds: `[0, 3]`** — see the bounds table in §SPRT Testing Policy below for when to deviate.
 
-**LTC + ponder-enabled cross-engine testing** for time management changes.
-**TM is NOT "invisible at STC"** — it is among our highest-leverage STC levers
-in BOTH directions: the Phase-13 TM rework was **+135 self-play / ~+75
-x-engine at 10+0.1** (#1568, biggest single recent gain); a bad TM form lost
-**−24** (#2075). The narrow truth is only that (a) the *ponder-asymmetric*
-subset of TM gains is undersold by STC *self-play*, and (b) some specific
-*node-based* TM changes surfaced only at LTC (failed 3× at STC, passed +11.9
-LTC). So validate TM at LTC + ponder-enabled cross-engine — but never dismiss a
-TM result as "won't show at STC."
-
-### TM-class changes: inverted methodology
-
-**For time-management changes specifically**, the SPRT-as-primary rule is
-INVERTED. Self-play SPRT can **completely miss** the subset of TM changes
-that address ponder-asymmetric clock dynamics — because in self-play both
-sides drain symmetrically, saving clock cannot create the kind of endgame
-advantage that ponder-leeching opponents on lichess exploit. This applies
-to cross-engine RR without ponder TOO — only ponder-enabled cross-engine
-tests measure the deployment-relevant effect.
-
-**Concrete case (Phase 10h, 2026-05-25)**: cross-engine RR at 30+0.5 vs
-ponder-enabled similar-strength engines showed **+19 ±18 Elo** over
-Coda.main across 360 games per engine. Same code at SPRT #1520 LTC 40+0.4
-self-play tracked at +0.6 ±3.1 →H0. **Same code in cross-engine RR with
-ponder OFF tracked at ~0 Elo** at N=70+ per engine. The ponder enablement
-is the critical test condition — without it, neither SPRT nor cross-engine
-non-ponder RR detects the gain.
+For some time management (TM) changes (e.g. involving pondering that OB can't do) then OB is not effective. It's better in these cases to do local cutechess RRs. TM changes often need the behaviours of other eninges to provoke our behaviour.
 
 **Methodology for TM-class changes:**
 1. **Inspect mechanism first**: 5-10 local games at the target TC, parse
@@ -503,23 +394,14 @@ non-ponder RR detects the gain.
    See `scripts/tm_pattern_inspect.py`. Catches "governor never fires" /
    "wrong TC for mechanism" bugs cheaply before burning fleet/CPU.
 2. **Primary signal: cross-engine RR with ponder-enabled opponents.** Use
-   similar-strength engines (Halogen, Velvet, Koivisto, Igel — close to
-   Coda's rating) with `ponder` flag on the engine line. TC at deployment-
-   matched ratios (30+0.5 for 60:1 ratio, etc.). Target ≥200 games per
+   similar-strength engines with `ponder` flag on the engine line. TC at deployment-matched ratios (30+0.5 for 60:1 ratio, etc.). Target ≥200 games per
    engine for ±20 Elo CI; default 30-50 rounds × 2 games × 21+ pairs.
 3. **Cross-check: SPRT before merging** at `[0, 3]` LTC. Required for
    non-regression confirmation. Accept any verdict short of clear regression
    — do NOT gate merge on SPRT magnitude for TM changes (it WILL undersell
    ponder-asymmetric gains).
-4. **Ground truth: lichess A/B deployment** — codabot runs on two lichess
-   nodes; deploy to one, compare real-world Elo.
 
-**Some TM changes DO show in SPRT** (Phase 10a +11.1, Phase 10c +1.5, the
-no-inc hotfix). These are TM changes that improve symmetric-self-play
-behavior. The systematic undersell is specific to ponder-asymmetric gains.
-
-**Don't apply this inverted rule to search/eval changes.** They keep the
-standard SPRT-as-primary discipline.
+Some, but not all, TM changes do show up in SPRT. We have seen tests that have given us over 100 Elo from TM measurable from STC SPRT.
 
 **Common-trap regex bug (2026-05-25)**: when parsing per-move spend from
 cutechess PGN comments `{+0.43/17 0.60s}`, the non-greedy regex
@@ -529,30 +411,14 @@ this after multiple wrong "mechanism not firing" conclusions on Phase
 10f/10g/10h analyses; tooling is now correct in `tm_pattern_inspect.py`
 and `tm_variation_analyzer.py`.
 
-**Concurrency for 8C/16T host (`feedback_conc_choice_8c16t`):**
-- Non-ponder gauntlets: `conc=16`
-- Ponder gauntlets: `conc=8` (each pondering engine uses ~1 extra thread
-  during opponent's turn)
-- Never drop to `conc=4` thinking ponder doubles thread cost — it doesn't.
-
-**SPRT via OpenBench** (preferred):
-```bash
-# Standard submission — pass dev bench explicitly when commit at HEAD lacks
-# a Bench: line (e.g. doc-only commits don't have one):
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> <bench> --base-bench <main_bench>
-
-# Or let OB auto-detect when both HEADs have Bench: lines:
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch>
-
-# Custom TC or bounds:
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> --tc '40.0+0.4' --bounds '[0, 3]'
-```
+**Concurrency for local RR**
+- It's generally best to to have one engine running per CPU thread. Without ponder only one engine runs at a time, so on a 8C/16T CPU you can running cutechess with concurrency 16.
 
 **Key rules:**
 - One change per branch. Never stack untested changes.
 - Wait for H0 or H1. Do not stop early based on "looks good".
-- H0 = reject. H1 = accept. Log result to experiments.md.
-- For tree-shape-changing features: retune-on-branch before deciding (see methodology below).
+- H0 = reject. H1 = accept. Always log result to experiments.md.
+- For tree-shape-changing features consider retune-on-branch before deciding (see methodology below).
 - Pass explicit `dev_bench` + `--base-bench` whenever there's any chance of staleness, branch-switch confusion, or commit-without-Bench at HEAD.
 
 ### Commit Messages
@@ -585,46 +451,20 @@ Bench: 1780721
 
 **Choosing SPRT bounds.**
 
-> **Standing policy: `[0, 3]` is the default for ALL "does this feature help?"
-> SPRTs.** Reckless uses the same default. Adam has corrected `[0, 5]` /
-> `[0, 10]` submissions multiple times — **we don't use them**. If you
-> think a change is large enough to want wider bounds, that's a sign to
-> use `[0, 3]` anyway: a true +5 effect lands H1 at `[0, 3]` faster, while
-> a true +1.5 effect H0's at `[0, 5]`. Tightening is never wrong.
-
-> **ALWAYS keep the bounds RANGE at 3 (width = H1 − H0 = 3).** Adam,
-> 2026-06-13: wider-range bounds (`[-3, 3]` = range 6, `[-5, 5]`, `[0, 5]`,
-> `[0, 10]`) need far more games AND routinely return WITHOUT a meaningful
-> signal — they H0 out on a real small effect or never separate. Every
-> bounds choice below is range-3. There is no range-6 option.
+**Standing policy: `[0, 3]` is the default for ALL "does this feature help?"
+SPRTs.** Reckless uses the same default. Avoid temptation to use wider bounds in almost any circumstances
 
 | Bounds | When to use | Example |
 |--------|-------------|---------|
-| **`[0, 3]` (DEFAULT)** | "Does this feature help?" at Coda's current strength. Most new ideas target +1-3 Elo. **Pick this unless you have a specific reason for one of the rows below.** | Pruning/ordering tweak, parameter probe, small bonus adjustment, incremental feature, audit correctness fix, tune-applied retest, structural ports |
+| **`[0, 3]` (DEFAULT)** | "Does this feature help enogh to be worht making a change?" at Coda's current strength. Most new ideas target +1-3 Elo. **Pick this unless you have a specific reason for one of the rows below.** | Pruning/ordering tweak, parameter probe, small bonus adjustment, incremental feature, audit correctness fix, tune-applied retest, structural ports |
 | `[-2, 1]` | "Ship if not a meaningful regression." Bench-neutral refactors, NPS-only changes, ARM ordering, adding tunables at default values. Forces enough games to actually discriminate near zero. | Code cleanup with possible perf delta, OnceLock migration, defensive guard whose direction is uncertain |
-| `[-1.5, 1.5]` | Direction GENUINELY uncertain (net-vs-net, alternative-net compare, a correctness fix that could go either way). Centered, range-3 — resolves with a real signal instead of the range-6 `[-3, 3]` that returns CIs too wide to act on. | New candidate net vs prod/baseline, SE margin tweak, 50mr mate downgrade, stale-bound gate |
+| `[-1.5, 1.5]` | Where the cost of of a change is zero, and you are comparing two netural things (net-vs-net, alternative-net compare). | New candidate net vs prod/baseline, SE margin tweak, 50mr mate downgrade, stale-bound gate |
 
 **Do-NOT-use (all range > 3): `[-3, 3]`, `[-5, 5]`, `[0, 5]`, `[0, 10]`.**
 They lock H1 on noise and/or return without separating. `[-3, 3]`
 specifically (the trap I keep falling into): use **`[-1.5, 1.5]`** instead
 for uncertain-direction, or `[-2, 1]` for non-regression. Adam pushed back
 on `[-5, 5]` 2026-05-26 and on `[-3, 3]` 2026-06-13.
-
-**Why `[0, 3]` is the standing default.** Most ideas at our current
-rating land in the +1-3 Elo range. Wider bounds (`[0, 5]`, `[0, 10]`)
-accumulate negative LLR on a true +1.5 effect because H1=5 (or 10) is
-out of reach — wasting fleet cycles on something `[0, 3]` would bank.
-Closing the gap to top-engine #2 is a **finite, enumerable list of
-small wins**; missing them via wide bounds throws away part of the
-path. Stack them, don't dismiss them.
-
-Even structural ports with priors for +3-5 Elo: use `[0, 3]`. If the
-true Elo is +5, `[0, 3]` will H1 it just as fast. We've repeatedly
-regretted wider bounds and never regretted `[0, 3]`. **Don't hedge
-toward wider bounds out of uncertainty.** Use `[-1.5, 1.5]` (range 3)
-for genuinely-uncertain direction where regression matters symmetrically
-— NOT `[-3, 3]`; use `[-2, 1]` for "ship if not a meaningful regression"
-on bench-neutral or infrastructure changes.
 
 **What does NOT need SPRT:**
 - Comments, documentation, tooling changes
@@ -696,18 +536,6 @@ procedure.
 See `docs/mini_prod_branch_workflow.md` for runnable detail and the
 methodology behind these policies.
 
-**OpenBench scripts** (all require `OPENBENCH_PASSWORD` env var, username defaults to `claude`):
-```bash
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py <branch> <bench> [--bounds '[0, 3]'] [--priority 1]
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_stop.py <test_id>
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_status.py
-```
-
-**Reference NPS** for OB scaling defaults to 250000 (v9 prod). Explicit v5-only
-work (legacy bullet_convert experiments, v5 net comparisons) must pass
-`--scale-nps 500000`. Wrong scale_nps means wrong time budgets — v9 code at
-500K runs ~2× wall-clock, halving fleet throughput.
-
 **Bench measurement.** Always `make && ./coda bench` on the exact branch you're
 submitting (see Build and Test §Bench-for-OB ritual). Never reuse bench values
 across branches — branch-specific tunables AND the production net both move
@@ -741,37 +569,8 @@ ranges, and c_end values.
   LTC regime.
 - Rationale: every deployment regime (lichess on bare metal, CCRL) is
   the deep regime; OB STC is a measurement frame, not a deployment
-  target. STC-optimal and LTC-optimal pruning shapes genuinely differ
-  (FUT_BASE, RFP_MARGIN_NOIMP, LMP cluster — see experiments.md
-  2026-06-11 three-way decomposition).
+  target. STC-optimal and LTC-optimal pruning shapes can genuinely differ.
 
-**CRITICAL RULE — always tune against the net in `net.txt`:**
-
-Trunk's param defaults and the currently-deployed production net
-must stay calibrated together. If trunk is tuned for Net-A but
-we deploy Net-B and run SPRTs against Net-B, every result is on
-a **detuned baseline** — usually costing 5-15 Elo of baseline
-strength and producing confusing SPSA movements on top.
-
-Before firing any trunk retune:
-
-1. `cat net.txt` on trunk (main; v9 merged 2026-04-24)
-2. The filename in net.txt IS the production net for that trunk
-3. Pass the matching `--dev-network <SHA8>` to `ob_tune.py`
-4. If the SHA doesn't match, DO NOT SUBMIT — fix the mismatch
-   (either update net.txt for a new prod, or use the correct net)
-
-**This is not optional.** We burnt on this 2026-04-24: #682/#686
-retune was on factor-SB400, deployed net stayed prod-SB800, and
-subsequent SPRTs ran on a silently-detuned trunk. Only noticed
-via confusing movements in tune #733.
-
-**Pre-merge check for any experiment:**
-
-Any branch proposed for merge to trunk must have been SPRT'd
-against the current net in net.txt. If the dev-network used in
-the submission doesn't match, don't merge — re-SPRT with the
-right net first.
 
 **Post-tune / net-deploy discipline:**
 
@@ -779,22 +578,10 @@ right net first.
   trunk retune against the new net before landing large clusters
   of eval-dependent experiments on top.
 - Don't ship "new net with old trunk" as a hidden detune.
-- Periodic SF H2H (100 games, 60+1) every ~5-10 merges to
-  confirm trunk still holds; re-tune if the baseline has drifted.
 
 **Submitting tunes:**
-```bash
-# Full-sweep tune (preferred — auto-derives the spec from `./coda tune-spec`,
-# which reads the live `tunables!` macro defaults; never hand-maintain a
-# static "all params" file):
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune.py <branch> [bench] --iterations 2500
 
-# Focused cluster — pass a curated subset via --params-file:
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune.py <branch> [bench] --params-file scripts/tune_nmp_cluster.txt --iterations 1000
-
-# Or inline params for ad-hoc subsets:
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune.py <branch> [bench] --params "LMR_C_QUIET, int, 132, 80, 300, 10.0, 0.002
-LMR_C_CAP, int, 164, 100, 350, 10.0, 0.002"
+See the OB skill.
 
 # Static "all params" cache files (e.g. scripts/tune_all_main.txt) are
 # FORBIDDEN — they drift from src/search.rs after every applied tune,
@@ -802,27 +589,6 @@ LMR_C_CAP, int, 164, 100, 350, 10.0, 0.002"
 # the spec from the binary when no --params/--params-file is given.
 
 # Bench is auto-detected from commit message. Pass explicitly only if OB can't parse it.
-```
-
-**Reading tune results:**
-```bash
-# Show all active tunes with parameter values and % change:
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune_status.py
-
-# Show specific tune:
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune_status.py 175
-
-# Get SPSA outputs (for applying to code):
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune_status.py 175 --outputs
-
-# Compare two tunes side by side:
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune_status.py --compare 175 176
-
-# Raw digest API (used by scripts):
-# GET /api/spsa/{tune_id}/digest/   → CSV of current values
-# GET /api/spsa/{tune_id}/outputs/  → SPSA input format with current values
-# GET /api/spsa/{tune_id}/inputs/   → Original SPSA inputs
-```
 
 **SPSA format per parameter:** `NAME, int, default, min, max, c_end, r_end`
 
@@ -868,45 +634,6 @@ Some features are neutral without retuning but gain significant Elo when pruning
 - Cont-hist malus: flat (-0.15 at 16K games) → +6.5 with retune
 - Pattern: big bench/node change but flat Elo → retune candidate
 
-#### Guard / Safety-Gate Sub-Pattern (2026-04-24)
-
-A special case of retune-on-branch: experiments that ADD a guard
-around an existing pruning feature (e.g. "skip NMP when TT move is a
-capture", "don't LMR when X", "require Y before probcut").
-
-A vanilla SPRT of the guard at default tunables measures only the
-DIRECT safety gain — "these specific unsafe prunes no longer happen."
-It does NOT measure the REBALANCING gain: adjacent pruning tunables
-were globally calibrated to avoid the unsafe case the guard now
-handles. With the guard in place, those tunables have latent headroom
-they're no longer using — the rest of the pruning can become more
-aggressive because the worst case is defended.
-
-**Right workflow for guard experiments:**
-
-1. SPRT the guard at default tunables (confirms direction isn't
-   negative and captures the direct gain)
-2. SPSA retune the ADJACENT cluster on branch (e.g. for an NMP
-   guard: NMP_BASE_R, NMP_DEPTH_DIV, NMP_EVAL_DIV, NMP_EVAL_MAX,
-   NMP_VERIFY_DEPTH — 5-6 params, 1200-1500 iters is usually
-   enough for a focused cluster)
-3. SPRT guard + retuned-cluster vs trunk
-
-A guard that SPRTs at +1 without retune is often +3-5 with retune —
-same multiplier as TT PV flag and cont-hist malus. Don't drop a guard
-at +1 Elo without completing step 2.
-
-### Cross-Engine and Model Testing
-
-Self-play SPRT is the primary acceptance criterion for search changes.
-
-### Known Testing Pitfalls
-
-- **CPU contention**: idle cores before launching SPRT. Background load halves effective TC and distorts marginal results — flipped history pruning from "false H1 +3" to "real H0 −17" in our ablation sweep.
-- **Coda-on-Coda contamination**: max 2 Coda variants in a RR; more amplifies shared eval biases.
-- **Optimism bias**: don't stop on "looks positive" — let SPRT decide.
-- **Self-play discount**: direction usually reliable, magnitude varies.
-- **Dig deeper on consensus H0s**: when a feature every top engine uses H0s, your implementation or its dependencies are broken. Don't accept "doesn't work for our engine" — ask why, compare numeric values, look for magnitude/scaling bugs. Capture history was 27× too small (3 prior H0s), fixing it was +31.6 Elo — biggest single gain in Coda's history, found by refusing to give up.
 
 ### Feature Improvement Cycle (Detect → Diagnose → Fix → Tune)
 
@@ -976,7 +703,5 @@ Alexandria.
 **5. Repeat**
 The retuned baseline exposes the next weak feature. Check SPSA trends for the next parameter being aggressively detuned.
 
-For historical examples (SEE quiet pruning +11.4, history magnitude +31.6,
-LMR simplify +6.3, cont-hist malus +6.5, NMP capture R +3.5, node-based TM
-+11.9, etc.) and the cumulative list of resolved experiments, see
+For historical examples and the cumulative list of resolved experiments, see
 `experiments.md`.
