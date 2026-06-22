@@ -829,10 +829,14 @@ OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune_status.py --compare 175 176
 When LMR_C_QUIET or LMR_C_CAP change, LMR tables are automatically reinitialized.
 
 **Practical guidance:**
-- SPSA SNR scales as √N — target ~150-200 iter/param for full-sweep tunes.
-  Focused tunes (4-8 params) need only ~1000 iters; full-sweep (~80 params)
-  needs ~12-16K iters to converge cleanly. Tune-861 at 10K iters / 80 params
-  was undersized and SPRT'd negative.
+- **Iteration counts (Adam's working convention — do NOT inflate these):**
+  **~2500 iters for a full production tune; 1000-1500 for a retune-on-branch
+  over all params (incl. the full `--core` ~74-param set); 800-1000 for a
+  limited parameter-set tune.** These are what have repeatedly worked. **Longer
+  tunes have been tried many times and have NOT consistently produced better
+  results** — do not propose 10K+ "full-sweep" runs or flag a 1500-iter
+  all-params tune as "undersized." (Earlier text here cited a √N "150-200
+  iter/param / 12-16K full-sweep" rule — that was wrong for us and is removed.)
 - c_end ~5-10% of parameter range, r_end 0.002 are good defaults.
 - Alpha 0.602, gamma 0.101, A_ratio 0.1 (standard SPSA constants).
 - SPRT the final values against main before merging — SPSA can overfit.
