@@ -157,3 +157,72 @@ ports may just be TC-stable. Validate in the gauntlet/fleet, don't assume.
   NMP_BASE_R toward LTC values (SPRT'd +12 at 180+2). Those overrides are the
   *symptom* this thread aims to eliminate (auto-adjust instead of magic config),
   and a useful prior for which params are TC-sensitive.
+
+---
+
+# UPDATE 2026-06-22: full three-TC RR (solid sample) + the gap is STRUCTURAL
+
+The overnight top-20 RR finished with a solid LTC sample (825 games/engine,
+±11 — not the earlier 26-game noise). Coda's scaling curve, confirmed:
+
+| TC | Coda Elo | rank | draw% |
+|----|----------|------|-------|
+| STC (10+0.1, 950g) | +22 | **#7** | 66.8% |
+| MTC (20+0.2, 272g) | +5  | **#9** | 72.2% |
+| LTC (40+0.4, 825g) | −11 | **#12** | 77.3% |
+
+**Monotonic #7→#9→#12.** Five engines that were ≤Coda at STC out-scale us by
+LTC (Integral, Hobbes, Clover, Viridithas, Caissa). Starkest: **Viri is −32
+behind Coda at STC but +9 ahead at LTC.** The earlier "#17 at LTC" was 26-game
+noise; #12 is the real standing.
+
+**Draw-rate refinement (corrects the earlier "Coda draws more" framing):** at
+LTC the *whole field* draws ~77% (Coda 77.3% ≈ Obsidian 77.2%, PlentyChess
+76.9%, Integral 79.6%). So it is **not** that Coda draws more at LTC — the
+leaders draw just as much but **win a larger share of the decisive games.** The
+deficit is decisive-game *quality at depth*, not draw-excess. (At MTC it's
+sharper: Coda draws *less* than several peers yet ranks below them → it's
+*losing* the decisive games it plays.)
+
+## The gap is structural, not in tunable pruning values
+
+Both clusters we divergence-tuned came back **already well-tuned**:
+- **LMP** (STC/LTC/VLTC tunes #2173/#2174/#2183): TC-stable; only LMP_BASE
+  drifted (main 6 vs consensus ~4-5), a small win (#2187 +1.3 STC →H1). The
+  lichess 5/5 was forced-start (VLTC landed 8.8). No root-depth needed.
+- **RFP** (STC/LTC tunes #2185/#2186, seeded at *current* values): barely moved
+  (<7%), mild LTC-direction divergence (root-coef wants slightly higher, depth
+  gate slightly lower at LTC) but tiny; the existing root-coef absorbs it. RFP
+  margins are in the engine ballpark (between Viri's simple/shallow and
+  PlentyChess's quadratic/deep) — the difference is *structural* (deep-knee +
+  depth-16 gate), not a value drift. METHODOLOGY NOTE: seeding RFP at *current*
+  can only confirm the local basin; future basin-tests must **seed at
+  consensus** (the LMP lesson).
+
+So the ~30-Elo-to-the-leaders LTC gap is **not sitting in mistuned pruning
+values** — small tunable tweaks (rfp-cap8, lmp-consensus) won't close it. It's
+**structural + eval**:
+
+1. **Fractional (centi-ply) LMR** — Coda reduces in integer plies (every
+   per-condition adjustment is ±1); **both** Viridithas (1024-unit) and
+   PlentyChess (centi-ply) accumulate fractions and round once. This is the
+   #1 structural LTC lever — confirmed independently in two stronger-and-better-
+   scaling engines. It's a code change, which is exactly why the divergence-tunes
+   couldn't reach it. **Next build.**
+2. **Futility slope** (Coda 99·lmr_d vs PlentyChess 0.74·lmr_d — ~130× steeper)
+   — real shape outlier but low prune-volume (13/Kn), so smaller impact.
+3. **Triple extensions** — Coda caps at +2; Viri does +3 on deep quiet TT moves
+   (SPRT-invisible / LTC-amplifying).
+4. **Eval/conversion** — the leaders win more decisive games at the same draw
+   rate; partly an eval-decisiveness frontier.
+
+**Gold scaling reference: PlentyChess** (#4 at *every* TC — stronger AND scales),
+with Integral and Viridithas as the dramatic-scalers to study. Survey these for
+scaling structure, not the mid/lower pool.
+
+## Cluster queue (updated)
+- LMP — done (small win, banking via #2187/#2190).
+- RFP — deep-knee LTC verdict in flight (#2189); base margins well-tuned.
+- SEE — *shape* review (Coda quiet=d²/cap=linear is OPPOSITE to consensus
+  quiet=linear/cap=d²); needs a flex + seed-at-consensus tune. Queued.
+- **Fractional LMR — the priority structural build (this is where the LTC Elo is).**
