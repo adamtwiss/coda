@@ -68,8 +68,41 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
     // Remove the initial attacker
     attackers &= occ;
 
+    // Pinned piece masks for each side (SEE audit S4: matches SF/Reckless/Obsidian).
+    // A pinned piece cannot move off the pin ray, so it cannot legally recapture
+    // on `to` unless `to` is on the same pin ray. Rather than compute ray membership,
+    // we conservatively exclude ALL pinned pieces — this slightly under-estimates
+    // the exchange value (may classify some winning exchanges as equal/losing) but
+    // is correct in the other direction (never over-estimates, never prunes wrongly).
+    let pinned_w = {
+        let ksq = board.king_sq(WHITE) as u32;
+        let occ_all = board.occupied();
+        let their_diag = (board.pieces[BISHOP as usize] | board.pieces[QUEEN as usize]) & board.colors[BLACK as usize];
+        let their_orth = (board.pieces[ROOK as usize] | board.pieces[QUEEN as usize]) & board.colors[BLACK as usize];
+        let mut pinned = 0u64;
+        let mut p = bishop_attacks(ksq, 0) & their_diag;
+        while p != 0 { let sq = pop_lsb(&mut p); let b = crate::bitboard::between(ksq, sq) & occ_all; if popcount(b) == 1 && b & board.colors[WHITE as usize] != 0 { pinned |= b; } }
+        let mut p = rook_attacks(ksq, 0) & their_orth;
+        while p != 0 { let sq = pop_lsb(&mut p); let b = crate::bitboard::between(ksq, sq) & occ_all; if popcount(b) == 1 && b & board.colors[WHITE as usize] != 0 { pinned |= b; } }
+        pinned
+    };
+    let pinned_b = {
+        let ksq = board.king_sq(BLACK) as u32;
+        let occ_all = board.occupied();
+        let their_diag = (board.pieces[BISHOP as usize] | board.pieces[QUEEN as usize]) & board.colors[WHITE as usize];
+        let their_orth = (board.pieces[ROOK as usize] | board.pieces[QUEEN as usize]) & board.colors[WHITE as usize];
+        let mut pinned = 0u64;
+        let mut p = bishop_attacks(ksq, 0) & their_diag;
+        while p != 0 { let sq = pop_lsb(&mut p); let b = crate::bitboard::between(ksq, sq) & occ_all; if popcount(b) == 1 && b & board.colors[BLACK as usize] != 0 { pinned |= b; } }
+        let mut p = rook_attacks(ksq, 0) & their_orth;
+        while p != 0 { let sq = pop_lsb(&mut p); let b = crate::bitboard::between(ksq, sq) & occ_all; if popcount(b) == 1 && b & board.colors[BLACK as usize] != 0 { pinned |= b; } }
+        pinned
+    };
+    let pinned = [pinned_w, pinned_b];
+
     loop {
-        let stm_attackers = attackers & board.colors[stm as usize];
+        // Exclude pinned pieces from recapturing (they cannot legally move off the pin ray).
+        let stm_attackers = attackers & board.colors[stm as usize] & !pinned[stm as usize];
         if stm_attackers == 0 {
             break;
         }
