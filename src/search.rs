@@ -5156,6 +5156,22 @@ fn quiescence_with_depth(
     }
 
     if best_score >= beta {
+        // Cache eval + LOWER bound on the stand-pat fail-high (QS audit
+        // 2026-06-23). This is the most common QS exit, and Coda was returning
+        // here WITHOUT any TT store — so the raw eval wasn't cached (revisits
+        // re-run NNUE) and no bound was left for a cheap future cutoff. All 6
+        // reference engines store here (SF/Alexandria/Plenty gate on TT-miss).
+        // Store on TT miss only, depth -1, LOWER bound, no move, raw eval —
+        // stand-pat is a valid lower bound on the QS node value. score_to_tt
+        // stores the halfmove-independent value (raw_stand_pat); the score is
+        // best_score (== stand_pat on a miss, since TT refinement needs a hit).
+        if !tt_hit
+            && FEAT_TT_STORE.load(Ordering::Relaxed)
+            && !info.stop.load(Ordering::Relaxed)
+        {
+            info.tt.store(board.hash, -1, score_to_tt(best_score, ply),
+                TT_FLAG_LOWER, NO_MOVE, raw_stand_pat, false);
+        }
         // QS beta blending: dampen stand-pat cutoff at non-PV nodes
         if beta - alpha == 1
             && best_score < MATE_SCORE - 100 && best_score > -(MATE_SCORE - 100)
