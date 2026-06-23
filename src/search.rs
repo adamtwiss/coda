@@ -5118,7 +5118,20 @@ fn quiescence_with_depth(
     } else {
         info.eval(board)
     };
-    let stand_pat = apply_halfmove_scale(raw_stand_pat, board.halfmove);
+    // Apply correction history to the QS stand-pat, mirroring negamax's
+    // static-eval path (halfmove-scale THEN corrected_eval, line ~3361).
+    // Consensus QS audit (2026-06-23): all 6 reference engines (SF, Reckless,
+    // Berserk, Obsidian, PlentyChess, Alexandria) correct the QS stand-pat;
+    // Coda was the sole outlier using the raw eval. The stand-pat feeds the
+    // returned cutoff score, the best_score floor, AND the delta-prune base,
+    // so the uncorrected error compounds. TT still stores the RAW value
+    // (raw_stand_pat) — correct-on-read discipline is unchanged.
+    let scaled_stand_pat = apply_halfmove_scale(raw_stand_pat, board.halfmove);
+    let stand_pat = if FEAT_CORRECTION.load(Ordering::Relaxed) {
+        corrected_eval(info, board, scaled_stand_pat)
+    } else {
+        scaled_stand_pat
+    };
     let mut best_score = stand_pat;
 
     // TT bound refinement of stand-pat (consensus: every top engine does this)
