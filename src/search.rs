@@ -167,23 +167,6 @@ tunables!(
     (TM_INC_COVER_REF, 20, 5, 60, 4.0, false),
     (TM_MULT_CEIL_MIN_10X, 15, 10, 40, 2.0, false),
     (TM_MULT_CEIL_MAX_10X, 130, 40, 140, 8.0, false),
-    // Low-inc absolute single-move ceiling (2026-06-22, overspend PART2).
-    // inc_cover (PART1) caps the factor MULTIPLIER, so adjusted_soft stays
-    // ~11% of clock — but a single deep iteration that starts just under
-    // adjusted_soft runs uninterrupted (the soft check only fires BETWEEN
-    // iterations) until the mid-iteration hard check stops it at hard = 46%
-    // of clock. At low-inc-ratio TCs (lichess 600+1 == OB 60+0.1, inc/base
-    // ~0.0017) the engine reaches deep enough for one iteration to span
-    // soft->hard, so a single move eats 46% of the clock, repeatedly,
-    // geometric-draining the clock (lichess J4tHOcvR/OO0ADWTA/ozALf371).
-    // Fix: lower the hard/max ceiling directly when the increment is small,
-    // keyed on the (constant) increment so it never flips mid-game:
-    //   inc_ceiling = inc * TM_INC_HARD_MULT + TM_INC_HARD_FLOOR_MS
-    // MULT=30, FLOOR=10s leaves standard OB TCs (10+0.1/40+0.4/60+0.6) and
-    // rich TCs (600+10) essentially untouched (the 46%/60% windows still
-    // bind), while capping 600+1 at 40s (was 276s) and 60+0.1 at 13s.
-    (TM_INC_HARD_MULT, 30, 0, 120, 4.0, false),
-    (TM_INC_HARD_FLOOR_MS, 10000, 0, 60000, 1000.0, false),
     (LMR_HIST_DIV, 9143, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
@@ -1717,22 +1700,10 @@ pub fn compute_tm_budgets(
     // movestogo > 0 the explicit count drives allocation, so no extra cap
     // needed there.
     let no_inc_sd = our_inc == 0 && movestogo == 0;
-    // Low-inc absolute single-move ceiling (overspend PART2 — see the
-    // TM_INC_HARD_MULT tunable comment). Stable across the game: keyed on the
-    // constant increment, not on shrinking time_left, so it never flips. Only
-    // applied on the inc>0 / non-movestogo path (no_inc_sd has its own tighter
-    // 15%/10% caps; movestogo paces from the explicit count).
-    let inc_hard_ceiling = if !no_inc_sd && movestogo == 0 {
-        our_inc.saturating_mul(tp(&TM_INC_HARD_MULT).max(0) as u64)
-            .saturating_add(tp(&TM_INC_HARD_FLOOR_MS).max(0) as u64)
-            .max(1)
-    } else {
-        u64::MAX
-    };
     let max_time = if no_inc_sd {
         (time_left * 15 / 100).max(1)
     } else {
-        (time_left * MAX_BANK_USABLE_NUM / MAX_BANK_USABLE_DEN).min(inc_hard_ceiling).max(1)
+        (time_left * MAX_BANK_USABLE_NUM / MAX_BANK_USABLE_DEN).max(1)
     };
     let hard_time = if no_inc_sd {
         (time_left * 10 / 100).min(max_time).max(1)
