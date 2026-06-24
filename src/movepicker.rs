@@ -599,7 +599,6 @@ impl MovePicker {
         let quiet_check_bonus = crate::search::QUIET_CHECK_BONUS.load(Ordering::Relaxed);
         let quiet_check_see_margin = crate::search::QUIET_CHECK_SEE_MARGIN.load(Ordering::Relaxed);
         let discovered_attack_bonus = crate::search::DISCOVERED_ATTACK_BONUS.load(Ordering::Relaxed);
-        let mobility_delta_weight = crate::search::MOBILITY_DELTA_WEIGHT.load(Ordering::Relaxed);
         let kf_bonus = crate::search::KNIGHT_FORK_BONUS.load(Ordering::Relaxed);
         let us = board.side_to_move;
         let them = 1 - us;
@@ -681,32 +680,11 @@ impl MovePicker {
                 score += discovered_attack_bonus;
             }
 
-            // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering bonus.
-            // popcount(attacks_from(piece, to)) - popcount(attacks_from(piece, from))
-            // Positive = piece attacks more squares after the move (centralization
-            // heuristic, implicit without writing an eval term). Small weight —
-            // additive to history. King mobility delta excluded (king activity
-            // is eval-handled, not ordering-relevant in pre-endgame).
-            if piece != NO_PIECE {
-                if pt < 5 { // skip king (pt==5)
-                    // NOTE: deliberately (piece >> 3) & 1, NOT side_to_move —
-                    // preserved exactly from the pre-hoist code (renamed from
-                    // `us` to avoid shadowing the hoisted side_to_move local).
-                    let mob_color = (piece >> 3) & 1;
-                    // For sliders, to_mob must be computed against POST-move
-                    // occupancy or the FROM square (which is on a ray from TO
-                    // for any natural slider move) acts as a phantom blocker.
-                    // Pre-fix `to_mob` systematically undercounts slider attacks;
-                    // SPSA drifted MOBILITY_DELTA_WEIGHT toward 0 because the
-                    // signal was partially noise. Knights/pawns are blocker-
-                    // independent so unaffected by occupancy choice, but the
-                    // unified post_occ keeps the branch clean.
-                    let post_occ = (occ ^ (1u64 << from)) | (1u64 << to);
-                    let from_mob = crate::threats::piece_attacks_occ(pt, mob_color, from as u32, occ).count_ones();
-                    let to_mob = crate::threats::piece_attacks_occ(pt, mob_color, to as u32, post_occ).count_ones();
-                    score += (to_mob as i32 - from_mob as i32) * mobility_delta_weight;
-                }
-            }
+            // (mobility-delta quiet-ordering bonus removed 2026-06-24, move-
+            // ordering audit speed cleanup: it ran TWO piece_attacks_occ slider
+            // calls per quiet move for a weight-34 signal — references precompute
+            // such signals per-node. SPRT tests whether the per-move NPS saving
+            // pays for the lost ordering signal.)
 
             // Reckless "offense bonus": quiet move that lands on a square
             // attacking an enemy non-pawn piece. +6000 flat. Not yet present
