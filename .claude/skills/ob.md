@@ -279,6 +279,39 @@ Common causes:
 - Build failure → fix and force-push the branch
 - Disconnects → may be transient worker issues; retry resubmit if persistent
 
+### 3.6. Wrong-Bench is almost always submitter-side staleness, NOT a bad worker
+
+When a Wrong-Bench summary shows a build hash like `[Coda-654C354A]`, that
+8-char tag is the **git commit short-SHA OB built** — frequently it IS the
+current `origin/main` HEAD. If multiple workers report the *same* wrong
+bench across *different* branches, that is **not** a broken worker; it is the
+**base** being built from a `main` that is ahead of your stale local `main`,
+so the base-bench you declared (from your stale local build) doesn't match.
+Don't blame a worker. Fix it submitter-side:
+
+```bash
+git fetch origin && git checkout main && git pull   # get true HEAD
+make net && make && ./coda bench                     # the REAL base bench
+```
+
+**Base is PINNED at submit time; mid-run main drift does NOT confound a
+running test.** OB records the base branch's commit when you submit; every
+worker (including ones that join later) builds *that same pinned base
+commit*, not whatever `origin/main` is now. So a test whose dev branch was
+forked from the then-current main and submitted with the correct base bench
+is fine for its whole life even if main advances afterwards — **do NOT stop
+it for "base drift".** (Learned the hard way 2026-06-24: stopped a healthy
++1-Elo test for this non-reason.)
+
+The genuinely-needs-rebase case is different: if your **local main was
+already stale when you forked/benched** (origin had advanced), then (a) your
+declared base bench is wrong → real Wrong-Bench rejection, and (b) your dev
+branch is missing the commits main gained → the dev-vs-base delta is
+confounded by those commits. Fix = pull main, **rebase the branch**, rebuild,
+re-bench, force-push, resubmit. The tell for *which* case you're in: did
+`origin/main` move **before** you forked (→ rebase) or **after** you
+submitted (→ leave it running)?
+
 ---
 
 ## 4. Submitting SPSA tunes
