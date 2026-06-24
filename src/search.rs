@@ -4455,7 +4455,13 @@ fn negamax(
                 // inline form ran the PV re-search SHALLOWER than the
                 // zero-window search that justified it; audit T1.3).
                 new_depth += do_deeper_adj;
-                lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
+                // Guard: only re-search when new_depth actually changed from lmr_depth.
+                // do_shallower with reduction==1 makes new_depth == lmr_depth — the
+                // re-search would duplicate the already-completed LMR search. Every
+                // reference engine guards with `if new_depth > lmr_depth`. (audit B2)
+                if new_depth > lmr_depth {
+                    lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
+                }
 
                 // EXPERIMENT: post-LMR-research cont-hist nudge (Berserk pattern,
                 // search.c:747-748). After the zero-window re-search, nudge cont-hist
