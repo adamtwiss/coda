@@ -3526,7 +3526,10 @@ fn negamax(
             && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
             && move_flags(tt_move) != FLAG_EN_PASSANT
             && !is_promotion(tt_move);
-        if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
+        // TB/mate guard: every peer skips RFP when eval is near mate/TB range.
+        // Without this, RFP could cut a node where NNUE sees forced mate. (RFP audit RFP-3)
+        if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
+            && static_eval.abs() < MATE_SCORE - 200 {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
             // Zero at STC (root_depth <= thresh); grows with both remaining
