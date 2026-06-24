@@ -4297,7 +4297,8 @@ fn negamax(
                 // Continuous history adjustment: good history reduces less, bad more
                 // Uses main history + ply-1 + ply-2 continuation history (consensus).
                 // Ply-2 weighted at half to avoid over-scaling the total.
-                let mut hist_score = info.history.main_score(from, to, enemy_attacks);
+                // SF weights main history 2× vs continuation history. (LMR audit L7)
+                let mut hist_score = info.history.main_score(from, to, enemy_attacks) * 2;
                 if moved_piece != NO_PIECE {
                     let gp = go_piece(moved_piece);
                     if prev_piece_for_cont != 0 {
