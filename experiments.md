@@ -16252,3 +16252,22 @@ gap was in memory layout: Finny heap scatter and weight alignment — both fixed
 perf/avx512-pack-no-permute (eliminate vpermutexvar in pairwise pack) pending Zeus worker.
 See docs/nnue_avx512_audit_2026-06-20.md.
 
+
+## Extensions audit (2026-06-24) — `docs/extensions_audit_2026-06-24.md`
+
+Cross-engine audit vs top-6. No bugs; gaps = no triple ext (6/6 have it),
+no ttPv-non-PV margin widen (4/6), no ply-ext-limiter (4/6), plus a
+Coda-unique -1 all-node neg-ext. Isolated single-feature SPRTs (STC,
+base 654c354a):
+
+- **#2248 ext/triple-extension** — triple ext alone, TEXT_MARGIN=80.
+  **H0 ✗ (-1.3 ±2.0, LLR -2.97).** [SPRT-validated] Triple alone, on
+  Coda's depth-4 SE floor (singular_depth=(d-1)/2=1 → depth-1
+  verification), is net-negative. References pair triple with a
+  ply-limiter + SE floor 5-6; tested those as a system in
+  `ext/triple-system` (#2259).
+- #2249 ext/se-ttpv-widen, #2250 ext/drop-allnode-negext,
+  #2251 ext/ply-limiter — running; all trending neutral/negative when
+  isolated (each consensus gap alone doesn't fit Coda).
+- **#2259 ext/triple-system** — triple + ply-limiter + SE floor 4->6 as
+  one co-tuned system (the way refs ship it). Running.
