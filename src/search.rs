@@ -3412,11 +3412,7 @@ fn negamax(
 
     // Internal Iterative Reduction: reduce depth when no TT move exists.
     // Restricted to PV/cut nodes (Obsidian/Berserk/Stormphrax pattern).
-    // All-nodes have tight bounds already, IIR there wastes depth.
     let is_pv = beta - alpha_orig > 1;
-    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
-        depth -= 1;
-    }
 
     // Threat square from null-move failure
     let mut threat_sq: i32 = -1;
@@ -3689,6 +3685,14 @@ fn negamax(
                 threat_sq = move_to(threat_entry.best_move) as i32;
             }
         }
+    }
+
+    // IIR: moved after NMP so null search uses full depth, not IIR-reduced depth.
+    // All 6 reference engines run NMP at full depth; IIR only applies to the moves loop.
+    // Coda previously ran IIR before NMP, silently reducing null depth by 1 at cut nodes.
+    // (NMP audit N2)
+    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
+        depth -= 1;
     }
 
     // (RFP moved above NMP — see pre-NMP site.)
