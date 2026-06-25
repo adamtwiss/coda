@@ -16507,3 +16507,9 @@ peers 14-16, N4 missing depth-relaxed eval gate, N5 missing TT-capture guard.
 
 NMP audit net: only N2 (IIR-after, #2280 +2.46) converted. N1/N3/N5 all flat-to-H0
 — Coda's NMP shape is well-calibrated apart from the IIR ordering. Audit closed.
+
+- **probcut/multicut-ttmove-malus #2286 (retuned)** — retune-on-branch for the
+  flat #2272: applied #2281 (1000-iter --core, 38 params, mostly noise; LMP_BASE
+  5->6). **H0 ✗ (-0.4 ±1.5, LLR -2.96).** [STC [0,3]] The retune did NOT rescue
+  the multicut ttMove-history-malus — feature is genuinely neutral-to-negative in
+  Coda regardless of trunk calibration. Multicut-malus fully retired.
