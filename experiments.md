@@ -16467,3 +16467,12 @@ delta-pruning), and ProbCut's see_threshold fed the raw eval gap to see_ge
   an intrinsic preference. Pairs with the structural experiments (#2282
   nonpawn-guard, #2283 first-order reorder) which test the underlying cause. See
   docs/lmp_audit_2026-06-25.md.
+
+- **lmp/improving-quad #2285 (tune)** — E3: added LMP_IMP_MULT (x10) for an
+  improving-dependent quadratic slope (Berserk/Alexandria shape), SPSA'd
+  {LMP_BASE, LMP_IMP_MULT, LMP_DEPTH}. Result: **LMP_IMP_MULT 10->9.9 (flat,
+  shape NOT wanted)**; LMP_BASE 5->5.4 and LMP_DEPTH 8->8.8 both rose. No shape
+  win — NOT applied. Re-confirms the compensatory thesis: even free to lower BASE
+  and reshape, SPSA pushes LMP blunter/wider under the current structure. The
+  only real lever is the structural fix (#2282 nonpawn-guard / #2283 reorder),
+  not the formula shape. E3 closed.
