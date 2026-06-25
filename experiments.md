@@ -16306,3 +16306,55 @@ retune-on-branch SPSA.
   SE_PLY_LIMIT_10X) — these defaults were all set/tuned WITHOUT triple.
   CONCLUSION: Coda's singular-extension scheme is already well-fitted; no
   top-6 consensus extension gap helps at STC without a dedicated retune.
+
+## 2026-06-24/25 — QS audit + move-ordering audit (consolidated log)
+
+Cross-engine audits vs top-6 (SF/Reckless/Berserk/Obsidian/PlentyChess/
+Alexandria), same method as the extensions audit above. Logging
+back-filled — these resolved across the session.
+
+### QS (quiescence) audit
+- **qs/corrhist-standpat (merged 387a02d)** — apply correction history to
+  the QS stand-pat eval. **H1, merged.** (~+6.6 self-play; the audit's
+  biggest QS win.)
+- **#2233 qs/standpat-fh-store — H1 ✓ (+2.6 ±1.9, LLR 2.96, merged 0e18453).**
+  Cache the QS eval and store a LOWER-bound TT entry on a stand-pat
+  fail-high (was discarding the bound). [SPRT-validated]
+- **#2234 qs/quiet-checks — H0 ✗ (-2.9 ±2.7, LLR -2.97).** Generating quiet
+  checks in QS; net-negative for Coda (QS already deep enough; extra checks
+  cost nodes). [SPRT-validated]
+- **#2223 qs/max-captures-3 — H0 ✗ (+0.2 ±1.1, LLR -2.96, 110k games).**
+  Capping QS captures at 3 — neutral-to-negative. [SPRT-validated]
+- Ruled out without SPRT (concrete reasons): QS TT-move-ordering fix
+  (already correct), QS SEE-threshold change (no signal).
+
+### Move-ordering audit
+- **#2240 mo/drop-mobility-delta — H1 ✓ (+2.3 ±2.3, LLR 2.94, merged 3066543).**
+  Drop the per-quiet mobility-delta ordering term (computed 2 slider
+  attacks/quiet move; SPSA had already driven its weight low). Clean NPS
+  win, no Elo cost. [SPRT-validated]
+- **#2239 mo/to-threat-penalty — H0 ✗ (-5.1 ±3.4, LLR -2.95).** Crude
+  move-into-threat penalty (penalize ANY enemy-attacked to-square at full
+  escape-bonus magnitude). Double-counts with the 4D threat-aware main
+  history. [SPRT-validated]
+- **#2242 mo/to-threat-penalty-graded — H0 ✗ (+0.5 ±0.8, LLR -2.95, 196k
+  games).** Reshaped to the consensus form (penalize only a NON-PAWN quiet
+  landing on an enemy-PAWN-attacked square, graded by piece value). Fixed
+  the crude form's -5.1 regression to ~neutral, but adds nothing — the 4D
+  threat-aware main history (main[from_threatened][to_threatened][from][to])
+  already captures the to-square-threatened signal. DROP. [SPRT-validated]
+- **mo/offense-precompute — MEASURED-NEGATIVE, not SPRT'd.** Per-node
+  precompute of offense-target masks (Reckless threatenedBy pattern) to
+  replace per-quiet slider attacks. Bench bit-identical but ~0.8% NPS
+  SLOWER (depth-16, single-core pinned, OB worker stopped, 4/4 runs).
+  Single-consumer precompute can't amortize its build cost; Coda's per-move
+  offense code already pays a slider PEXT only for the minority of
+  slider-piece quiets. See docs (memory project_offense_precompute_negative).
+
+### Audit verdicts
+QS: two banked wins (corrhist +6.6, standpat-store +2.6); the rest
+(quiet-checks, max-captures, ttmove, see-threshold) don't fit Coda's QS.
+Move-ordering: one banked win (drop-mobility +2.3); to-threat ordering
+penalties and offense-precompute don't fit (history already captures the
+signal; precompute can't amortize). Extensions: scheme well-fitted, all 5
+experiments H0 (see section above).
