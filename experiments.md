@@ -16431,3 +16431,9 @@ delta-pruning), and ProbCut's see_threshold fed the raw eval gap to see_ge
   (PlentyChess pattern). **H0 ✗ (-0.8 ±1.8, LLR -2.98).** [SPRT-validated]
   The multicut corrhist signal doesn't help Coda (rare path; corrhist
   already well-fed at node-end).
+- **#2271 probcut/ablate-threats-gates** — ablate the Coda-unique
+  king-zone-pressure (threats signal) + eval-unstable ProbCut suppression
+  gates. **H0 ✗ (-0.9 ±1.9, LLR -2.95).** [SPRT-validated] Removing them is
+  net-negative -> both still LOAD-BEARING; keep. The novel threats-driven
+  ProbCut gates hold up post-other-changes (re-check confirms the original
+  SPRT-validated additions).
