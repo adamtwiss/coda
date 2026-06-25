@@ -16476,3 +16476,23 @@ delta-pruning), and ProbCut's see_threshold fed the raw eval gap to see_ge
   and reshape, SPSA pushes LMP blunter/wider under the current structure. The
   only real lever is the structural fix (#2282 nonpawn-guard / #2283 reorder),
   not the formula shape. E3 closed.
+
+## 2026-06-25 — NMP audit (docs/nmp_audit_2026-06-25.md)
+
+Three-agent audit vs top-6. Headline structural finding: Coda's null-search floor
+`max(1, depth-R)` with BASE_R=8 makes **every** null search land at depth 1 (the
+clamp consumes the whole budget at all depths); peers allow QS null searches. Other
+findings: N2 IIR fires before NMP (unique among peers), N3 verify threshold 10 vs
+peers 14-16, N4 missing depth-relaxed eval gate, N5 missing TT-capture guard.
+
+- **nmp-iir-after #2280 — H1 +2.46** ✅ **MERGED** (this commit). Move IIR below NMP
+  (N2) so NMP fires at full depth at cut nodes with no TT move. Raw change H0'd
+  (#2279 −4.3) — big bench/tree-shape change (2235673→2630768). A 1000-iter all-core
+  retune (#2278, 58 params: RFP tightened for deeper nulls, LMR_HIST_DIV_CAP −42%,
+  IIR_MIN_DEPTH 20→27, LMP_DEPTH 8→7) recovered it to **+2.46**. Retune-on-branch
+  vindicated: the structural move was right but needed the search landscape
+  recalibrated around it. Bench 2630768.
+- **nmp-qs-null #2266** — N1 partial: allow null search to drop toward QS. Result
+  flat (+0.12 at 137k). Stopped — not additive (see below).
+- **nmp-verify-raise #2270** — N3: raise NMP_VERIFY_DEPTH 10→14ish. Similar flat
+  result. Stopped.
