@@ -16296,3 +16296,13 @@ top-6 consensus gaps add Elo in isolation, and the Coda-unique -1
 all-node neg-ext is load-bearing (don't remove). Combined ext/triple-system
 (#2259) trending ~neutral; if H0, remaining lever is extension-cluster
 retune-on-branch SPSA.
+
+- **#2259 ext/triple-system** — combined triple + ply-limiter + SE-floor-6,
+  the diagnosed fix for #2248's triple-alone H0. **H0 ✗ (-0.1 ±1.4, LLR -2.95).**
+  [SPRT-validated] The system framing removed triple-alone's regression
+  (-1.3 -> 0.0) but adds no Elo at DEFAULT tunings. Per docs/extensions_audit,
+  the only remaining lever is a retune-on-branch SPSA of the extension
+  cluster (TEXT_MARGIN, DEXT_MARGIN_*, DEXT_CAP, SE_DEPTH_10X,
+  SE_PLY_LIMIT_10X) — these defaults were all set/tuned WITHOUT triple.
+  CONCLUSION: Coda's singular-extension scheme is already well-fitted; no
+  top-6 consensus extension gap helps at STC without a dedicated retune.
