@@ -16276,3 +16276,8 @@ base 654c354a):
   (+depth, ×1.0). **H0 ✗ (-2.3 ±2.5, LLR -2.95).** [SPRT-validated] 4/6-ref
   consensus, doesn't fit Coda (likely double-counts with Coda's already
   conservative singular margin = 1.0·depth vs refs' 0.6-1.0).
+
+- **#2250 ext/drop-allnode-negext** — ablate the Coda-unique -1 all-node
+  singular negative extension. **H0 ✗ (-1.0 ±1.9, LLR -2.95).**
+  [SPRT-validated] Removing it is net-negative → the -1 is load-bearing for
+  Coda (keep it; the 5/6-ref "leave at 0" consensus does NOT apply here).
