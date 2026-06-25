@@ -16437,3 +16437,17 @@ delta-pruning), and ProbCut's see_threshold fed the raw eval gap to see_ge
   net-negative -> both still LOAD-BEARING; keep. The novel threats-driven
   ProbCut gates hold up post-other-changes (re-check confirms the original
   SPRT-validated additions).
+
+- **probcut/multicut-ttmove-malus #2272** — apply an SF-style history malus to
+  the tt_move on a multicut return (main-history malus for quiet tt_move,
+  capture-history malus for noisy). **H0 ✗ (+0.0 ±1.2, LLR -2.96).** [STC [0,3]]
+  SF's ttMove-history-malus on multicut doesn't fit Coda's history shape; net
+  neutral-to-noise. Multicut path left unchanged.
+
+- **ext/triple-system-tuned #2264** — triple-extension + ttPv-nonPV singular
+  widen + ply-based extension limiter, with the extension cluster SPSA-retuned
+  on-branch (tune_ext_cluster). **H0 ✗ (+0.2 ±1.1, LLR -2.96).** [STC [0,3]]
+  Even with retune the combined extension scheme is neutral — Coda's
+  singular-only scheme (with the Coda-unique -1 all-node neg-ext, confirmed
+  load-bearing) is already well-fitted; the 6/6 triple-extension consensus gap
+  does not transfer. Extensions audit closed.
