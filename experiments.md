@@ -16459,3 +16459,11 @@ delta-pruning), and ProbCut's see_threshold fed the raw eval gap to see_ge
   NEUTRAL — the retune kept PROBCUT_MARGIN dead flat at 119, disproving the
   compensation thesis; ProbCut's SEE gate is already well-calibrated without the
   bridge. ProbCut/Multicut audit fully closed (all variants H0).
+
+- **lmp/tighten-consensus #2284** — tighten LMP to SF/Obsidian consensus
+  (LMP_BASE 5->3 + `>`->`>=`). **H0 ✗ (-6.5 ±3.8, LLR -2.95).** [STC [0,3]]
+  CONTROL for the LMP audit: tightening the lenient knob ALONE clearly regresses,
+  confirming the high LMP_BASE is COMPENSATORY (masking a structural issue), not
+  an intrinsic preference. Pairs with the structural experiments (#2282
+  nonpawn-guard, #2283 first-order reorder) which test the underlying cause. See
+  docs/lmp_audit_2026-06-25.md.
