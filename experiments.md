@@ -16407,3 +16407,13 @@ adjusted: NMP_EVAL_DIV 119→125, LMP_BASE 4→5, SEE_QUIET_MULT 30→28, FUT_BA
 - LMR cut_node fix: marginal direction (+0.5 at 207k, couldn't lock). Leave.
 - RFP raise (with retune): test in flight (#2262). If H0, the direction (loosening shallow RFP) is confirmed wrong and the current calibration is correct.
 - Futility no-best-move: DROP.
+
+- **#2264 ext/triple-system-tuned** — applied the #2260 ext-cluster
+  retune-on-branch SPSA to the triple+ply-limiter system. Key finding:
+  **SE_DEPTH_10X reverted 60->40 (SPSA pinned at the floor min = depth 4)**
+  — the SE-floor-6 raised in the combined triple-system is firmly
+  REJECTED; Coda's SE floor wants to stay at 4. Other moves modest
+  (DEXT_MARGIN_QUIET 15->19, _BASE 34->38, _PV 164->171, SE_PLY_LIMIT
+  25->28, TEXT_MARGIN 80->78). Running vs main [0,3]. If H0, the
+  extension scheme is conclusively well-fitted (retune can't extract Elo
+  even with floor reverted). bench 2638589.
