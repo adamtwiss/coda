@@ -16271,3 +16271,8 @@ base 654c354a):
   isolated (each consensus gap alone doesn't fit Coda).
 - **#2259 ext/triple-system** — triple + ply-limiter + SE floor 4->6 as
   one co-tuned system (the way refs ship it). Running.
+
+- **#2249 ext/se-ttpv-widen** — widen singular margin on ttPv non-PV nodes
+  (+depth, ×1.0). **H0 ✗ (-2.3 ±2.5, LLR -2.95).** [SPRT-validated] 4/6-ref
+  consensus, doesn't fit Coda (likely double-counts with Coda's already
+  conservative singular margin = 1.0·depth vs refs' 0.6-1.0).
