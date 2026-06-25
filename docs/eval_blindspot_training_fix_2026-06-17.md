@@ -167,6 +167,16 @@ refreshes the corpus with whatever the improved net is *now* worst at.
 
 ## CONFIRMED 2026-06-21: ply-skipping reduces the bishop blindspot (mechanism)
 
+> **⚠️ SUPERSEDED 2026-06-24 — this "confirmation" was small-N noise.** The
+> result below rests on a 5–6-position forward-bishop subset (per-position SE
+> ~150cp). Re-tested on a 119-position mined corpus
+> (`testdata/wandering_bishop_corpus.epd`), the soft-ply v6-s4→v7-s4 effect is
+> **+6 ± 9cp — within noise** (the −68cp it shows on the old n=6 subset does
+> NOT generalize). See the "## RE-TESTED 2026-06-24 at n=119" section at the
+> bottom. Keep this section for history; **do not cite ply-skip as a
+> blindspot-reducing lever** — only the relabeled (stamped) corpus survives the
+> larger N.
+
 `blindspot_eval` on the two multi-stage s4 nets — **v7-s4 (with soft-ply f25)
 vs v6-s4 (no ply)**, same arch (L1=32 v9), same multistage point — moved the
 bishop metrics the *right way on every axis*:
@@ -208,3 +218,141 @@ no full SPRT needed to see if the eval moved the right way.
 
 (Caveats: mid-training s4 nets, not final; forward-bishop n=5. But the same-
 direction move across all four metrics makes the direction robust.)
+
+---
+
+## RE-TESTED 2026-06-24 at n=119: only the relabeled corpus survives
+
+The original blindspot metrics (this doc + the n=6 `wbench`/`blindspot_eval`
+forward-bishop subset) rest on **5–6 hand-picked positions** with per-position
+net_pref SD ~130–180cp → SE ~150cp at n=6 / ~100cp paired. That is far too
+noisy to separate a real ~40cp eval shift from chance — multiple "confirmed"
+reductions below turned out to be noise.
+
+**New corpus.** `testdata/wandering_bishop_corpus.epd` — **119** SF-refuted,
+quiet, positional forward-bishop sorties mined from ~137k Coda-vs-SF datagen
+games (OB datagen 2061/2062/2094) via the pipeline:
+`scripts/bishop_sortie_prefilter.py` (cheap, engine-disagreement-gated) →
+`scripts/bishop_sortie_validate.py` (deep-SF bm + move_loss 100–600, net_pref
+gate) → `scripts/mine_bishop_corpus.sh` (parallel orchestration). Score any
+net with `scripts/net_pref_score.py --epd testdata/wandering_bishop_corpus.epd`.
+Paired SE drops to **~7–16cp** (≈10× tighter than n=6), making the metric a
+real net-discriminator.
+
+**Re-test (paired net_pref delta, baseline − treatment; >0 = treatment reduces
+the over-credit):**
+
+| lever | nets | n=119 paired Δ | verdict | prior small-N claim |
+|---|---|---|---|---|
+| **SF-relabel (stamped) — full** | bishop-A-baseline − B-stamped | **+39 ± 16cp** | ✅ **real reduction** | held up |
+| **SF-relabel (stamped) — 2%** | bishop-A-2pct − B-2pct-stamped | **+43 ± 10cp** | ✅ **real, ~4σ** | held up |
+| Soft-ply f25 (multistage) | multi-v6-s4 − multi-v7-s4 | +6 ± 9cp | ❌ null | "327→270 CONFIRMED" (n=5) |
+| Soft-ply dose (S200) | baseline +82 vs f10–f40 +91…+105 | none (ply ≥ baseline) | ❌ null/worse | optimum claimed at f25 |
+| v7-s5 newer data | v7-s5 − v7-s5-ws-newer | −13 ± 7cp | ❌ no reduction (marginally worse) | "significantly reduced" |
+| QAT | qatpair-baseline − qatpair-qat | −0 ± 9cp | ❌ null (expected; quant lever) | — |
+
+**Conclusion.** Of every lever claimed to dent the wandering-bishop blindspot,
+**only the SF-relabeled (stamped) supplementary data robustly reduces it**
+(~40cp, ~35–40% of the over-credit, significant at both dilution levels). Soft-
+ply, newer-data, and QAT all come back null at n=119 — their earlier
+"reductions" lived inside the ≤6-position noise floor. This both (a) validates
+the relabel lever this doc advocates and (b) is a cautionary tale: **never
+declare a blindspot lever confirmed on the n=6 subset** — use the 119-corpus.
+
+**Caveat (corpus selection).** The 119-corpus was gated on the *prod* net
+(035195DB) over-crediting (net_pref ≥ 0), so absolute levels for prod-like nets
+are selection-inflated and not cross-comparable to dissimilar nets. Every Δ
+above is **within-arm** (both nets non-gate, same fixed positions), so the
+*deltas* are unbiased; but a fully clean absolute read — and an airtight null
+for nets unlike prod — wants an **ungated** rebuild (all SF-refuted quiet
+sorties regardless of any net's view) or a union-gate across candidate nets.
+Cheap to regenerate via `mine_bishop_corpus.sh` (drop `--coda-net`).
+
+---
+
+## PLAN 2026-06-24: corrective-data scaling + binpack skip-flag (compression)
+
+Two linked workstreams, set down so we don't lose the thread.
+
+### A. Does *more* corrective data help? (the volume curve)
+The dilution test (2% vs 6.5%) varied the **T80 base count**, holding the
+**corrective set fixed at 230M** — so it tested dilution *rate*, NOT corrective
+*volume*. Volume is untested. Prior (Adam + the sparse-region-density argument):
+more independent corrective points should help.
+
+**In flight (GPU2, S200):** `bishop-B2-halfstamped` = 1 T80 file (jan) + **half**
+the stamped shards (even 0–14 of 2062+2094 ≈ 115M corrective pts, ~3.2% dilution,
+in the tested band). Compare net_pref on `wandering_bishop_corpus.epd` vs:
+- `bishop-A-baseline` (1 file, no stamped) — baseline
+- `bishop-B-stamped` (1 file, full 230M) — full corrective
+Read: B2≈B ⟹ past the knee (volume saturated); B2≪B reduction ⟹ curve still
+climbing ⟹ generating more is justified. (Single-run; trust a clear gap. A 3rd
+point at 57M sharpens curvature.)
+
+**Two distinct sizing questions:**
+1. *Push past 40%* at small scale — needs the curve shape (≥3 points); residual
+   floor after full-B is still +54cp (likely the threat-weight ceiling).
+2. *Hold 40% at production* — arithmetic: 40 T80 files ≈ 40× base ⟹ ~40× the
+   corrective data (~9.2B positions) just to keep 6.5% dilution. This is the
+   real generation target regardless of (1). We can generate 2–4× more on the
+   fleet as a low-throughput job over a few days.
+
+### B. Binpack skip-flag (compression fix) — enables the scale-up
+
+> **⚠️ SUPERSEDED 2026-06-25 — the bloat was a different bug; the skip-flag is
+> NOT needed.** Direct measurement showed the sentinel oscillation costs only
+> ~10–20% (1.6 B/pos). The real ~2× bloat was **chain fragmentation**: the
+> stamper re-derived each position via `from_fen`, whose halfmove (rule50) clock
+> disagreed with sfbinpack's `after_move`, breaking `is_continuation` ~13% of
+> plies → ~7-position chains instead of ~100 → the 32-byte stem paid ~14×/game.
+> Fixed in `coda-stamp` (main `7c8e971`) by chaining positions via `after_move`:
+> 7.61 → 3.54 B/pos (2.15×), content-identical; the stamped corpus was
+> re-stamped (3.4G → 1.56G). The raw-score skip-flag below is therefore moot —
+> keep this section only as the record of how we got here. Subsection A
+> (corrective-data *volume*) stands.
+
+**Problem (originally hypothesised):** stamping Coda-to-move positions with the
+32000 sentinel makes the per-position score stream oscillate `[real, 32000,
+real, …]`, defeating the chain's score-delta coding: **7.4 B/pos** (14.8 per
+*trainable* pos) vs ~2 B/pos for raw-scored T80. (This framing was wrong — see
+the superseded banner above; the gap was chain fragmentation, not the score.)
+
+**Fix:** stop stamping. Keep **raw smooth scores** (both engines' real PGN evals
+compress normally) and skip Coda-to-move positions at *train time* via a
+**per-chain marker + reader parity-skip**.
+
+**Why per-chain (not per-position):** the binpack stores explicit ply/result
+**only on the chain stem**; continuations are pure movetext (move + score-delta).
+The score is the *only* per-position field — which is why the sentinel had to
+live in the score. So a smooth-score marker must be on the stem and the reader
+reconstructs the skip per position by side-to-move parity.
+
+**Marker encoding (tooling-safe, backward-compatible):** the `PlyResult` u16 is
+`result:2 (bits 14–15) | ply:14 (bits 0–13)`. `result` is full (2 bits), but real
+ply ≪ 4096, so **bits 12–13 of the ply field are spare**. Use a **2-bit skip-code
+there**: `0 = none` (⟹ all existing T80/old-stamped data is unchanged — the
+load-bearing back-compat property), `1 = skip white-to-move`, `2 = skip
+black-to-move`. Writer sets it from Coda's color; reader masks `ply &= 0x0FFF`
+before any ply use (e.g. soft-early-ply) and applies the skip. (Assumes stem ply
+< 4096 — assert in the writer.)
+
+**Four pieces + files:**
+1. **Writer** — `tools/src/stamp.rs`: add `--skip-marker` mode: keep raw evals for
+   *both* movers (Coda's eval is in the PGN too), and set the 2-bit skip-code on
+   the **first position of each game** (= the chain stem), `1` if Coda is White
+   else `2`. Default (sentinel) path unchanged. *[STARTED — see branch.]*
+2. **Reader** — `crates/bullet_lib/src/value/loader/sfbinpack.rs` (+ the forked
+   `sfbinpack` crate): track chain boundaries, read the stem's skip-code, hold it
+   for the chain, and in the per-position `filter` skip entries where
+   `side_to_move == coda_color`. Mask the marker out of ply before use.
+3. **Regenerate** binpacks from raw `dg*.pgn.bz2` with `--skip-marker` (no SF
+   search, pure CPU). ~2 B/pos.
+4. **Round-trip test** (gate before any training use): write a small marked
+   binpack → read it back → assert (a) ~half the positions are skipped, (b) the
+   *right* half (Coda-to-move), (c) scores are smooth (no sentinels), (d) ply
+   decodes correctly after masking, (e) old (code-0) binpacks are byte-for-byte
+   unaffected.
+
+**Sequencing:** B2 result → if volume helps, fit the curve → size generation →
+land the skip-flag (small, but touches the forked sfbinpack crate) → generate at
+scale with cheap compression.
