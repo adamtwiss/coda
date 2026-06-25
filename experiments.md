@@ -16358,3 +16358,52 @@ Move-ordering: one banked win (drop-mobility +2.3); to-threat ordering
 penalties and offense-precompute don't fit (history already captures the
 signal; precompute can't amortize). Extensions: scheme well-fitted, all 5
 experiments H0 (see section above).
+
+## 2026-06-23/24/25 — LMR + RFP/Futility audit wave (#2225–#2262)
+
+### LMR audit results (docs/lmr_audit_2026-06-23.md)
+
+**Merged wins:**
+- **#2229 atlas/lmr-main-hist-double H1 +0.5** — doubling main history weight in LMR stat score (SF uses 2×; Coda used 1×). MERGED.
+- **#2230 atlas/b2-lmr-doshallower-guard H1 +0.9** — guard LMR do_shallower re-search when new_depth==lmr_depth (wasted work, all peers have this guard). MERGED.
+- **#2252 atlas/rfp-mate-guard H1 +1.9** — add static_eval.abs() < MATE_SCORE-200 to RFP gate; every peer has this, Coda lacked the eval-side guard. MERGED.
+
+**H0s — analysis:**
+- **#2225 atlas/lmr-base-offset H0 -0.9** (−17% bench): LMR_BASE_QUIET=0.50 too large; SPSA barely moved (<3%), indicating local optimum. Retry at base=0.20 (#2243, also H0 -0.2 at 65k). The structural argument is sound but the correct base is very small or zero.
+- **#2226 atlas/lmr-cutoff-count H0 -1.2** (−21% bench): Next-ply cutoff count threshold >2 too loose. Retry #2238 at >3 also H0 −1.9. Feature doesn't convert for Coda's current search shape.
+- **#2227 atlas/lmr-tt-faillow H0 -1.7**: TT fail-low reduction. Too aggressive at +1 integer.
+- **#2228 atlas/lmr-cutnode-fix H0 -2.3** (+22% bench): cut_node+TT-miss bonus combined. Isolated version #2237 (lmr-cutnode-simple, just !is_pv→cut_node) trended H1 at +0.5 but locked H0 at 207k. Marginal.
+- **#2229** H1 (see above)
+- **#2237 atlas/lmr-cutnode-simple H0 +0.5 at 207k** — positive direction but couldn't lock.
+- **#2243 atlas/lmr-base-offset-v2 H0 -0.2** — LMR_BASE_QUIET=0.20; flat.
+- **#2255 atlas/fut-no-best-move H0 -0.8** — futility bonus when no best move. Doesn't help.
+
+### RFP/Futility audit results (docs/rfp_futility_audit_2026-06-24.md)
+
+Key quantitative finding: RFP fires at **301.1/Kn** (dominant pruner, >all others combined).
+False-positive rates: d=1-3: 42-45% (98% of volume), d=8+: 12-29% (low volume).
+The shallow end (d=1-7) is where over-aggressiveness lives; deep-knee quadratic validated.
+Structural finding: Coda base multipliers (37/33) are ~half peer consensus (70-87/50-80).
+
+**RFP experiments:**
+- **#2252 rfp-mate-guard H1 +1.9** — MERGED (see above).
+- **#2253 atlas/rfp-raise-margins H0 −4.4** — raw test without retune; expected miscalibration.
+- **#2254 atlas/rfp-flat-imp-const H0 −17.1** — flat improving constant; too aggressive alone.
+- **#2258 stopped** — wrong bench after partial tune application.
+- **#2261 stopped** — duplicate, wrong bench (3153558 partial tune).
+- **#2262 atlas/rfp-raise-margins RUNNING** — fully-tuned version (SPSA #2257 applied: NOIMP 70→63, IMP 50→40, RFP_DEPTH 17→16, NMP/LMP/SEE/FUT rebalanced). Bench 3507714. [-1.5,1.5].
+
+**Retune #2257 (1000 iters, 10-param cluster):**
+SPSA pulled NOIMP back from 70 to 63, IMP from 50 to 40, confirming the correct
+margin is intermediate between original (37) and full raise (70). Adjacent pruners
+adjusted: NMP_EVAL_DIV 119→125, LMP_BASE 4→5, SEE_QUIET_MULT 30→28, FUT_BASE 75→79.
+
+**Futility experiments:**
+- **#2255 fut-no-best-move H0 -0.8** — futility +bonus when best_move==NO_MOVE.
+
+**H0 iteration analysis:**
+- LMR base offset: structural argument valid but correct base may be very small (~0-20); leave for next full SPSA sweep.
+- LMR cutoff count: doesn't convert at either >2 or >3 threshold. DROP.
+- LMR cut_node fix: marginal direction (+0.5 at 207k, couldn't lock). Leave.
+- RFP raise (with retune): test in flight (#2262). If H0, the direction (loosening shallow RFP) is confirmed wrong and the current calibration is correct.
+- Futility no-best-move: DROP.
