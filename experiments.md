@@ -16451,3 +16451,11 @@ delta-pruning), and ProbCut's see_threshold fed the raw eval gap to see_ge
   singular-only scheme (with the Coda-unique -1 all-node neg-ext, confirmed
   load-bearing) is already well-fitted; the 6/6 triple-extension consensus gap
   does not transfer. Extensions audit closed.
+
+- **probcut/see-material-scale-tuned #2277** — apply SEE_MATERIAL_SCALE (215) as
+  the eval->material bridge on ProbCut's SEE threshold (was raw `probcut_beta -
+  static_eval`), plus the #2265 margin retune (PROBCUT_MARGIN held 119, IMP->37,
+  ROOT->56). **H0 ✗ (-0.2 ±1.4, LLR -3.02).** [STC [-1.5,1.5] base 654c354a]
+  NEUTRAL — the retune kept PROBCUT_MARGIN dead flat at 119, disproving the
+  compensation thesis; ProbCut's SEE gate is already well-calibrated without the
+  bridge. ProbCut/Multicut audit fully closed (all variants H0).
