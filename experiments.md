@@ -16492,7 +16492,18 @@ peers 14-16, N4 missing depth-relaxed eval gate, N5 missing TT-capture guard.
   IIR_MIN_DEPTH 20→27, LMP_DEPTH 8→7) recovered it to **+2.46**. Retune-on-branch
   vindicated: the structural move was right but needed the search landscape
   recalibrated around it. Bench 2630768.
-- **nmp-qs-null #2266** — N1 partial: allow null search to drop toward QS. Result
-  flat (+0.12 at 137k). Stopped — not additive (see below).
-- **nmp-verify-raise #2270** — N3: raise NMP_VERIFY_DEPTH 10→14ish. Similar flat
-  result. Stopped.
+- **nmp-qs-null #2266** — N1 partial: allow null search to drop toward QS instead
+  of clamping at depth 1. **Flat (+0.2 ±0.9, 138k games), stopped.** Not a
+  correctness fix (depth-1 clamp isn't wrong, just a design choice vs peers) and
+  not additive → drop. The N1 "every null lands at depth 1" structural observation
+  is real but the peer-style QS-null behavior is neutral for Coda in isolation.
+- **nmp-tt-capture-guard #2270** — N5: skip NMP / R+1 when TT move is noisy
+  (Reckless/Obsidian tactical-safety guard). **Flat (+0.3 ±1.3, 76k games),
+  stopped.** Uncertain-direction `[-1.5,1.5]` came back neutral — Coda's NMP is
+  reliable enough without it. Drop.
+- **nmp-verify-raise #2268** — N3: raise NMP_VERIFY_DEPTH 10→14ish toward peers.
+  **H0 ✗ (−0.8 ±1.8, 40k games).** Coda's earlier verification at d=10 is not
+  costing Elo; the conservatism is paying for itself. Drop.
+
+NMP audit net: only N2 (IIR-after, #2280 +2.46) converted. N1/N3/N5 all flat-to-H0
+— Coda's NMP shape is well-calibrated apart from the IIR ordering. Audit closed.
