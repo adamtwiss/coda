@@ -3916,6 +3916,28 @@ fn negamax(
             continue;
         }
 
+        // Late Move Pruning (reordered FIRST, SF Step-14 order): at shallow
+        // depths, skip late quiet moves by movecount BEFORE SEE/futility filter
+        // them. Running LMP last (the prior Coda order) meant its count check
+        // only saw SEE/futility survivors — a pre-filtered residual that made
+        // count-pruning riskier and kept LMP_BASE blunt. SF/Reckless/Berserk/
+        // Obsidian all set skipQuiets before SEE/futility.
+        // Formula: (LMP_BASE + depth²) / (2 - improving); check carve at depth<4.
+        if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
+            && !is_cap && !is_promo
+            && (depth >= 4 || !board.gives_direct_check(mv))
+            && best_score > -(MATE_SCORE - 100)
+            && FEAT_LMP.load(Ordering::Relaxed)
+        {
+            let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
+            if move_count > lmp_limit {
+                info.stats.lmp_prunes += 1;
+                skip_quiets = true;
+                picker.skip_remaining_quiets();
+                continue;
+            }
+        }
+
         // SEE capture pruning: at shallow depths, prune captures that lose
         // material. SF-shaped margin: base depth*MULT plus a capture-history
         // relaxation so historically-good captures (cutoff producers) survive a
@@ -4125,30 +4147,8 @@ fn negamax(
             }
         }
 
-        // Late Move Pruning: at shallow depths, skip late quiet moves.
-        // Applied before MakeMove. Formula: (LMP_BASE + depth²) / (2 - improving)
-        //
-        // 2026-05-14 audit: removed !is_pv gate (SPRT #1209 +5.0 H1).
-        // SF/Obsidian/Reckless all run LMP on PV nodes; Coda's PV nodes
-        // previously had zero LMP coverage — a real gap.
-        // 2026-05-15: depth-gated check carve (SPRT #1227 +1.3 H1). Keep
-        // check-protection at shallow depths where tactical checks matter
-        // most; drop at depth ≥ 4 where the carve mostly preserves
-        // low-quality late checks.
-        if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
-            && !is_cap && !is_promo
-            && (depth >= 4 || !board.gives_direct_check(mv))
-            && best_score > -(MATE_SCORE - 100)
-            && FEAT_LMP.load(Ordering::Relaxed)
-        {
-            let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
-            if move_count > lmp_limit {
-                info.stats.lmp_prunes += 1;
-                skip_quiets = true;
-                picker.skip_remaining_quiets();
-                continue;
-            }
-        }
+        // (Late Move Pruning moved earlier — now runs before SEE/futility,
+        // immediately after the skip_quiets check. SF Step-14 order.)
 
         // Bad noisy pruning: skip losing captures when eval is far below alpha.
         // Applied before MakeMove. Direct-check carve-out: don't prune moves
