@@ -16417,3 +16417,17 @@ adjusted: NMP_EVAL_DIV 119→125, LMP_BASE 4→5, SEE_QUIET_MULT 30→28, FUT_BA
   25->28, TEXT_MARGIN 80->78). Running vs main [0,3]. If H0, the
   extension scheme is conclusively well-fitted (retune can't extract Elo
   even with floor reverted). bench 2638589.
+
+## 2026-06-25 — ProbCut/Multicut audit
+Cross-engine audit vs top-6. No bugs in core ProbCut/multicut mechanics
+(two-stage qsearch->negamax, depth-4, SEE threshold, TT store all match
+consensus). Margin "anomaly" (119 vs refs ~200) RETRACTED: the eval is
+win-probability based (T80/LC0 WDL), so eval/material is non-linear — can't
+derive a scale factor from material-up positions. But Coda's eval DOES run
+~2.15x material near the operating range (SEE_MATERIAL_SCALE=215, used by QS
+delta-pruning), and ProbCut's see_threshold fed the raw eval gap to see_ge
+(material) without that bridge -> see-material-scale fix (#2265 retune).
+- **#2263 probcut/multicut-corrhist** — corrhist update on multicut
+  (PlentyChess pattern). **H0 ✗ (-0.8 ±1.8, LLR -2.98).** [SPRT-validated]
+  The multicut corrhist signal doesn't help Coda (rare path; corrhist
+  already well-fed at node-end).
