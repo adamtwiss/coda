@@ -16281,3 +16281,18 @@ base 654c354a):
   singular negative extension. **H0 ✗ (-1.0 ±1.9, LLR -2.95).**
   [SPRT-validated] Removing it is net-negative → the -1 is load-bearing for
   Coda (keep it; the 5/6-ref "leave at 0" consensus does NOT apply here).
+
+- **#2251 ext/ply-limiter** — global ply-based singular-ext limiter
+  (ply<2.5*root_depth), isolated. **H0 ✗ (-0.2 ±1.4, LLR -2.95).**
+  [SPRT-validated] Neutral-to-slightly-negative alone. 4/6-ref consensus
+  but Coda doesn't need it in isolation (no extension-explosion problem to
+  fix; only useful PAIRED with aggressive triple, per ext/triple-system).
+
+### Extensions audit verdict (2026-06-24)
+All four isolated consensus-gap experiments H0'd: triple-alone (#2248),
+ttPv-widen (#2249), drop-allnode-negext (#2250), ply-limiter (#2251).
+Coda's singular-extension scheme is already well-fitted — none of the
+top-6 consensus gaps add Elo in isolation, and the Coda-unique -1
+all-node neg-ext is load-bearing (don't remove). Combined ext/triple-system
+(#2259) trending ~neutral; if H0, remaining lever is extension-cluster
+retune-on-branch SPSA.
