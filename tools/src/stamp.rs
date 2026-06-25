@@ -116,6 +116,10 @@ struct Stamper {
     pub positions: u64,
     pub stamped: u64, // Coda-mover -> sentinel
     pub kept: u64,    // SF-mover -> real eval
+    // CHAIN FIX: the position chained forward via after_move, so the writer's
+    // is_continuation always holds (re-deriving each position from FEN gives a
+    // mismatched halfmove clock and fragments chains ~14x/game -> ~2x bloat).
+    cur_sf: Option<SfPosition>,
 }
 
 impl Visitor for Stamper {
@@ -125,6 +129,7 @@ impl Visitor for Stamper {
         self.white_res = None;
         self.white.clear(); self.black.clear();
         self.pending = None;
+        self.cur_sf = None; // a chain always restarts at a new game
     }
     fn tag(&mut self, name: &[u8], value: RawTag<'_>) {
         match name {
@@ -158,6 +163,9 @@ impl Visitor for Stamper {
     }
     fn comment(&mut self, comment: RawComment<'_>) {
         let Some((fen, smv, ply, result, is_sf)) = self.pending.take() else { return };
+        // CHAIN FIX: chain from the prior position via after_move; take() => any
+        // early return below resets to from_fen at the next ply (correct on drops).
+        let chained = self.cur_sf.take();
         // SF-mover keeps its parsed eval; Coda-mover gets the filtered sentinel
         // (no eval parse needed for the Coda half — it's discarded at train time).
         let score = if is_sf {
@@ -166,7 +174,10 @@ impl Visitor for Stamper {
             self.stamped += 1;
             self.sentinel as i32
         };
-        if let Ok(pos) = SfPosition::from_fen(&fen) {
+        // Use the exact after_move(prev) position when chaining (so is_continuation
+        // holds); only at a game start (or after a drop) fall back to from_fen.
+        let maybe_pos = chained.or_else(|| SfPosition::from_fen(&fen).ok());
+        if let Some(pos) = maybe_pos {
             let entry = TrainingDataEntry {
                 pos, mv: smv,
                 score: score.clamp(-32000, 32000) as i16,
@@ -174,6 +185,7 @@ impl Visitor for Stamper {
             };
             let _ = self.writer.write_entry(&entry);
             self.positions += 1;
+            self.cur_sf = Some(pos.after_move(smv)); // advance the chain for the next ply
         }
     }
     fn end_game(&mut self) { self.games += 1; }
@@ -196,6 +208,7 @@ fn main() {
         white_res: None, sf_player: a.sf_player.clone(), sentinel: a.sentinel,
         writer, pending: None,
         games: 0, positions: 0, stamped: 0, kept: 0,
+        cur_sf: None,
     };
     let mut br = BufferedReader::new(reader);
     let mut last_log = 0u64;
