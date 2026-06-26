@@ -1258,21 +1258,23 @@ impl QMovePicker {
             }
 
             let to = move_to(mv);
-            let from = move_from(mv);
             let target_pt = board.piece_type_at(to);
             let flags = move_flags(mv);
 
             if target_pt != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT {
-                // Capture: MVV-LVA + captHist/16
-                let victim = if flags == FLAG_EN_PASSANT { PAWN } else { target_pt };
-                let attacker = board.piece_type_at(from);
-                let mvv_lva = see_value(victim) * 10 - see_value(attacker);
+                // Capture: route through the SAME scorer main search uses
+                // (MVV-only ×MVV_CAP_MULT + captHist, no LVA term). The old QS
+                // fork used `victim*10 - attacker` MVV-LVA, left behind when
+                // main search dropped LVA (65dac27); captHist's relative weight
+                // was ~1.6× higher here. Unified per Reckless/Stockfish, which
+                // use one capture scorer for both search and QS.
+                let mvv = mvv_lva(board, mv);
                 let capt_hist = capt_hist_score_static(board, history, mv);
                 if in_check {
-                    // Evasion captures scored high (10000 + mvvlva + captHist)
-                    picker.scores[i].write(10000 + mvv_lva + capt_hist);
+                    // Evasion captures scored high (10000 + mvv + captHist)
+                    picker.scores[i].write(10000 + mvv + capt_hist);
                 } else {
-                    picker.scores[i].write(mvv_lva + capt_hist);
+                    picker.scores[i].write(mvv + capt_hist);
                 }
             } else if is_promotion(mv) {
                 if in_check {
