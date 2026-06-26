@@ -16584,7 +16584,7 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
   reverted 60->42** (undid the floor-6 premise, back to ~main's value) and
   **TEXT_MARGIN widened 80->88** (triple fires less) — both detuning the feature.
   Broad RFP softening + LMR rebalance also (full-sweep, partly loose-knob noise).
-  Applied the tuned config (bench 2408811) and SPRT'd vs main [0,3] STC. [result pending]
+  Applied the tuned config (bench 2408811) and SPRT'd vs main: **#2295 H0 ✗ (-5.3 ±3.5, LLR -2.95) [0,3] STC** — REGRESSION. Even a full --core recalibration doesn't rescue triple extensions; the retune was WORSE than the un-retuned +0.24 (#2264) because SPSA reverted the floor-6 premise (SE_DEPTH 60->42) that the whole feature depends on, while keeping triple logic at a wider bar. **Verdict: triple extensions genuinely don't fit Coda's search — give up.** 3 attempts now H0 (#2264 narrow-tune, #2293/#2295 full-retune). Extensions audit fully closed; Coda's singular-only scheme stands.
 
 - **tb/egtb-cleanup-bundle (F1 + F2 + Finding 5) — applied, no SPRT (bench-neutral,
   correctness/cosmetic).** Three zero-risk polish items from the same audit, bundled
