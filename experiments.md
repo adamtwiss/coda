@@ -16599,3 +16599,20 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
   (zero warnings); TB tests 11/11, SEE tests 13/13. Also fixed stale SEE-value comments
   in `src/see.rs` + `CLAUDE.md` (were the old textbook 100/320/330/500/900; actual
   `eval::see_value` is 100/420/420/640/1200).
+
+- **DEEP-AUDIT WAVE 3 (2026-06-26) — move-ordering / corrhist / hist-update second
+  pass.** After the 20+ win first audit pass, a deeper second pass (agents over
+  move ordering, corrhist, NNUE inference, threat pipeline, feature coupling — docs
+  `*_deepaudit_2026-06-26.md`). NNUE-inference + threat-pipeline passes found no
+  actionable Elo (both provably correct). Four search branches reached SPRT (all
+  base main 2565782, STC 10+0.1):
+  - **#2316 audit/ttcut-malus-rescale — H0 ✗ (-8.2 ±4.2, LLR -2.97, N=6858) [0,3].**
+    Routed the TT-cutoff opponent-quiet cont-hist malus from its frozen magic
+    `-min(155*d, 385)` (Alexandria port) through the tuned `history_malus()` helper.
+    Clean regression — confirms the standing prior art (#2490 V5 TT-cutoff-history-malus
+    REJECTED "pollutes history tables", #672 symmetry -1.7, #169 v2 -0.5): the
+    deliberately-weak frozen constant on this specific update is load-bearing, NOT a
+    missed tunable. The ~4.5×-weaker magic is doing real work; scaling it up over-penalizes.
+    **Verdict: leave the frozen constant alone. TT-cutoff cont-hist malus audit closed (4 H0s).**
+  - #2314 audit/qs-capture-unify [-2,1], #2315 audit/cap-malus-nfh [-2,1],
+    #2317 audit/paired-cont-corr [0,3] — in flight at time of writing.
