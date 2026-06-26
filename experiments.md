@@ -16533,3 +16533,12 @@ NMP audit net: only N2 (IIR-after, #2280 +2.46) converted. N1/N3/N5 all flat-to-
   BASE drop. Nuances the audit thesis — the high BASE was less about the ordering
   than expected; LMP-first pruning the raw stream is the win, not a lower BASE.
   Nothing applied. LMP audit effectively closed (1 merged win: the reorder).
+
+- **lmp/nonpawn-guard #2282** — add stm_non_pawn != 0 guard to LMP
+  (SF/Obsidian/PlentyChess consensus: don't count-prune late quiets in
+  pawn-only/few-piece endgames). **H0 ✗ (+0.2 ±1.1, LLR -2.99).** [STC [0,3]]
+  Neutral non-regression — the consensus endgame guard is correct in spirit but
+  measures no gain at Coda's calibration; #2291 confirmed the post-reorder LMP
+  cluster is already balanced, so no retune upside. Not merged. **LMP audit
+  CLOSED** — net result: the LMP-first reorder (#2283, +0.6, merged); everything
+  else (tighten-consensus, improving-quad shape, nonpawn-guard) H0/flat.
