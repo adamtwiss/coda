@@ -3956,6 +3956,7 @@ fn negamax(
             && !is_cap && !is_promo
             && (depth >= 4 || !board.gives_direct_check(mv))
             && best_score > -(MATE_SCORE - 100)
+            && beta < MATE_SCORE - 100  // forced-win guard (Reckless 4a2efd5a): don't count-prune quiets while proving a win
             && FEAT_LMP.load(Ordering::Relaxed)
         {
             let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
@@ -3998,6 +3999,7 @@ fn negamax(
             && !is_cap && !is_promo
             && mv != tt_move
             && best_score > -(MATE_SCORE - 100)
+            && beta < MATE_SCORE - 100  // forced-win guard: don't SEE-prune quiets while proving a win
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
             let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
@@ -4156,6 +4158,7 @@ fn negamax(
         if ply > 0 && static_eval > -INFINITY && !in_check
             && !is_cap && !is_promo
             && best_score > -(MATE_SCORE - 100)
+            && beta < MATE_SCORE - 100  // forced-win guard: don't futility-prune quiets while proving a win
             && FEAT_FUTILITY.load(Ordering::Relaxed)
             && lmr_d <= tp(&FUT_LMR_DEPTH)
         {
