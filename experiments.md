@@ -16577,3 +16577,11 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
   LOS 92%). +2 Elo is a real banked gain at our strength; reject-as-noise would be the
   wrong bar for a free default change. Bench unchanged 2565782 (bench positions all
   >5 men → never probe). Cannot be OB-tested. Default is now 4.
+- **ext/triple-system #2293 (--core retune) + SPRT** — rebased the triple-extension
+  SYSTEM (triple + ply-limiter + SE floor 6) onto current main and ran a full
+  1000-iter --core retune (76 params) to test whether full recalibration rescues
+  the +0.24 H0 (#2264). SPSA's verdict on the feature's own knobs: **SE_DEPTH_10X
+  reverted 60->42** (undid the floor-6 premise, back to ~main's value) and
+  **TEXT_MARGIN widened 80->88** (triple fires less) — both detuning the feature.
+  Broad RFP softening + LMR rebalance also (full-sweep, partly loose-knob noise).
+  Applied the tuned config (bench 2408811) and SPRT'd vs main [0,3] STC. [result pending]
