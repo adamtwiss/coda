@@ -4,6 +4,18 @@
 modern/actively-developed Rust engine, ~Coda's strength on Lichess. Reviewed
 2026-06-26 (cinder HEAD `2a751e9`). ~20k LOC.
 
+> **Strength context (2026-06-26, in-progress local RR):** Cinder is **#9 (+5
+> Elo), BELOW Coda at #6 (+18)** — a near-peer but ~13 Elo weaker. Per our
+> cross-engine rule (CLAUDE.md: only engines *stronger* than Coda are valid
+> "should we do X" consensus references), **Cinder is weak evidence, not
+> consensus.** Its design choices are at most corroboration. This is borne out
+> below: of the top search ideas, **4 (A1/A2/A3/A6a) were already in Coda** and
+> Coda is the stronger engine. So treat the novel survivors (A4/A7/A9) as
+> *speculative cheap probes* — a good idea can still come from a weaker engine,
+> but the prior that any given Cinder divergence helps Coda is low. **Do not
+> keep mining Cinder for more ports expecting wins; the cheap-and-clean probes
+> are already fired.**
+
 This captures only where Cinder **diverges** from Coda — things Coda doesn't
 already do — framed as concrete, SPRT-able hypotheses. Filtered against Coda's
 known feature set; ranked by promise/transferability. Pure-logic and
