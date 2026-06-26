@@ -16513,3 +16513,12 @@ NMP audit net: only N2 (IIR-after, #2280 +2.46) converted. N1/N3/N5 all flat-to-
   5->6). **H0 ✗ (-0.4 ±1.5, LLR -2.96).** [STC [0,3]] The retune did NOT rescue
   the multicut ttMove-history-malus — feature is genuinely neutral-to-negative in
   Coda regardless of trunk calibration. Multicut-malus fully retired.
+
+- **lmp/first-order #2283 — H1 ✓ MERGED (399eb55).** Reorder LMP ahead of
+  SEE-quiet + futility (SF Step-14 order) so it count-prunes the raw quiet stream
+  instead of the SEE/futility-survivor residual. **+0.6 ±1.1, LLR 2.96 [STC
+  [-1.5,1.5]].** Confirms the LMP-audit diagnosis (docs/lmp_audit_2026-06-25.md):
+  LMP had been demoted to a backstop by the pruners running ahead of it, and
+  count-pruning the enriched-good residual was net-negative — hence SPSA kept
+  LMP_BASE blunt. Live follow-up: LMP_BASE-drop retune on the reordered main
+  (the high LMP_BASE was compensating for the old last-place ordering).
