@@ -273,7 +273,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("option name Ponder type check default false");
                 println!("option name SyzygyPath type string default <empty>");
                 println!("option name TBHash type spin default 16 min 0 max 1024");
-                println!("option name SyzygyProbeDepth type spin default 1 min 1 max 100");
+                println!("option name SyzygyProbeDepth type spin default 4 min 1 max 100");
                 println!("option name HiddenActivation type combo default screlu var screlu var crelu");
                 println!("option name LoadAnyway type check default false");
                 println!("option name TMDebug type check default false");

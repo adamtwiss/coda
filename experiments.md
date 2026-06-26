@@ -16562,5 +16562,18 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
   2565782 → **+6.5 ±3.9 Elo, LOS 99.9%, N=7556** (early +9.6 @ N≈1500 regressed to a
   stable +6.5 as the CI tightened; 16% flag-falls — endgame NPS converts to Elo via
   the clock). No-adjudication makes this MORE deployment-representative, not less.
-  Follow-up under test: `ProbeDepth=1` vs `=4` (our 5-man-everything economics differ
-  from SF's 6/7-man default; a higher gate may gain more before knowledge loss bites).
+
+- **tb/syzygy-probe-depth default 1 → 4 — local RR +2.0 ✅ H1 MERGED.** Follow-up to
+  the gate above: our deploy set is 5-man-everything, so max-men interior probes at
+  depth<gate are frequent and largely redundant (re-probed deeper up the tree), unlike
+  SF's 6/7-man default where the gated top layer is rare/transient — so a higher gate
+  should harvest more NPS before lost TB knowledge bites. Same rig (same binary both
+  sides, only UCI `SyzygyProbeDepth` differs; 5-man, STC 10+0.1, no adjudication):
+  `coda_pd4` (=4) vs `coda_pd1` (=1, prior default) → **+2.0 ±2.7 Elo, LOS 92.2%,
+  N=10000** (83.8% draws — no-adjudication 5-man endgames mostly draw, so the decisive
+  sample is small even at 10k; tightening to 95%-two-sided significance would need
+  ~30k+ games). **Classified `[-1, 2]`** (zero-risk one-line default flip, validated
+  in the exact deploy config) — at those bounds the result is H1 (lower CI −0.7 > −1,
+  LOS 92%). +2 Elo is a real banked gain at our strength; reject-as-noise would be the
+  wrong bar for a free default change. Bench unchanged 2565782 (bench positions all
+  >5 men → never probe). Cannot be OB-tested. Default is now 4.

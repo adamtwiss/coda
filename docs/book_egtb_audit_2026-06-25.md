@@ -80,7 +80,7 @@ mate (`TB_WIN=28800` < `MATE=29000`; deepest TB ≈28672 stays below the mate ba
 |---|---------|-----------|------|-----|
 | F1 | Interior probes bump no `tbhits` counter (info lines under-report) | search.rs:3039 | Stat/cosmetic | add `stats.tb_hits += 1` on interior probe hit, thread into UCI info |
 | F2 | Root probes lack the castling gate the interior probe has | tb.rs:99,132 | Robustness | add `if board.castling != 0 { return None; }` to `probe_root`/`probe_root_pv` for parity + guaranteed fall-through |
-| F3 | No `SyzygyProbeDepth`; interior probe fires at every node incl depth-0 frontier | search.rs:3036 | NPS | **DONE 2026-06-26.** Added SF-style gate `pc<max \|\| depth>=tb_probe_depth` + UCI spin `SyzygyProbeDepth` (default 1). Local RR (5-man = deploy config, STC 10+0.1, **no adjudication** to force endgames, coda_dev gated vs coda_base always-probe): **+6.5 ±3.9 Elo, LOS 99.9%, N=7556**. Real local-only-measurable win (OB has no TB). See NET TAKEAWAY below. |
+| F3 | No `SyzygyProbeDepth`; interior probe fires at every node incl depth-0 frontier | search.rs:3036 | NPS | **DONE 2026-06-26.** Added SF-style gate `pc<max \|\| depth>=tb_probe_depth` + UCI spin `SyzygyProbeDepth` (default raised 1→4 after follow-up RR). Local RR (5-man = deploy config, STC 10+0.1, **no adjudication** to force endgames): gate on vs always-probe **+6.5 ±3.9 Elo, LOS 99.9%, N=7556**; default `=4` vs `=1` **+2.0 ±2.7, LOS 92.2%, N=10000** (H1 at `[-1,2]`, merged). Real local-only-measurable win (OB has no TB). See NET TAKEAWAY below. |
 | F4 | Interior TB cutoff returns without a TT store | search.rs:3062-65 | Efficiency | optional TT store with bound+high depth so parent ordering sees the TB bound |
 
 ---
@@ -153,7 +153,12 @@ normal adjudicated RR, not less — real lichess endgames are played out and dec
 on the clock (16% flag-falls in this RR), exactly where the endgame NPS saving
 converts to Elo.
 
-Follow-up under test: `SyzygyProbeDepth=1` only skips the qsearch frontier; our
-5-man-everything economics differ from SF's 6/7-man default (where the gated top
-layer is rarer/transient), so a higher value (skip 5-man probes up to depth 2–3) may
-gain more before the lost knowledge bites — `gated-ProbeDepth=1` vs `=4` RR.
+**Follow-up DONE 2026-06-26 — default raised 1 → 4 (+2.0 Elo, H1, MERGED).**
+`SyzygyProbeDepth=1` only skips the qsearch frontier; our 5-man-everything economics
+differ from SF's 6/7-man default (where the gated top layer is rarer/transient), so a
+higher value (skip max-men interior probes up to depth 3) harvests more redundant-probe
+NPS before the lost knowledge bites. Same rig (same binary both sides, only the UCI
+option differs; 5-man, STC 10+0.1, no adjudication): `=4` vs `=1` → **+2.0 ±2.7 Elo,
+LOS 92.2%, N=10000** (83.8% draws dilute the decisive sample). Classified `[-1, 2]`
+(zero-risk one-line default flip in the exact deploy config) → H1 (lower CI −0.7 > −1).
++2 Elo is a real banked gain at our strength. Bench unchanged 2565782. Default is now 4.

@@ -893,8 +893,11 @@ pub struct SearchInfo {
     pub syzygy: Option<std::sync::Arc<crate::tb::SyzygyTB>>,
     /// Min depth at which to probe Syzygy WDL when at the maximum loaded
     /// piece count (SF `SyzygyProbeDepth`). Below the max piece count we
-    /// always probe regardless of depth. Default 1 = skip only the depth<1
-    /// frontier at max men. UCI option `SyzygyProbeDepth`.
+    /// always probe regardless of depth. Default 4: our deploy set is
+    /// 5-man-everything, so max-men interior probes at depth<4 are frequent
+    /// and largely redundant (re-probed deeper up the tree). Local RR
+    /// (5-man, STC, no-adjudication) measured =4 vs =1 at +2.0 Elo, LOS
+    /// 92.2%, N=10000. UCI option `SyzygyProbeDepth`.
     pub tb_probe_depth: i32,
 }
 
@@ -968,7 +971,7 @@ impl SearchInfo {
             nnue_acc: None,
             threat_stack: crate::threat_accum::ThreatStack::new(768), // max v9 accum size
             syzygy: None,
-            tb_probe_depth: 1,
+            tb_probe_depth: 4,
             rfp_audit_active: false,
         }
     }
