@@ -16522,3 +16522,14 @@ NMP audit net: only N2 (IIR-after, #2280 +2.46) converted. N1/N3/N5 all flat-to-
   count-pruning the enriched-good residual was net-negative — hence SPSA kept
   LMP_BASE blunt. Live follow-up: LMP_BASE-drop retune on the reordered main
   (the high LMP_BASE was compensating for the old last-place ordering).
+
+- **LMP-cluster retune on reordered main #2291 (tune)** — after merging the
+  LMP-first reorder (#2283), retuned {LMP_BASE, LMP_DEPTH, SEE_QUIET_MULT,
+  FUT_BASE, FUT_PER_DEPTH, FUT_LMR_DEPTH} to test if LMP_BASE finally drops.
+  Result: **cluster held ~flat** — LMP_BASE 6->5.8 (sub-unit, rounds to 6),
+  LMP_DEPTH/SEE_QUIET flat, FUT_BASE 80->75.7 (-5.4%, largest but noise-level).
+  Conclusion: the reorder CAPTURED the gain standalone (+0.6); post-reorder the
+  quiet-pruning cluster is already well-calibrated and does NOT want a meaningful
+  BASE drop. Nuances the audit thesis — the high BASE was less about the ordering
+  than expected; LMP-first pruning the raw stream is the win, not a lower BASE.
+  Nothing applied. LMP audit effectively closed (1 merged win: the reorder).
