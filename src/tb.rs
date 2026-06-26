@@ -100,6 +100,11 @@ impl SyzygyTB {
         if crate::bitboard::popcount(board.occupied()) as usize > self.max_pieces {
             return None;
         }
+        // Castling-gate parity with probe_wdl (C8 #43): Syzygy assumes no
+        // castling rights, so a probe here would be unsound. Decline → search.
+        if board.castling != 0 {
+            return None;
+        }
 
         let chess = board_to_shakmaty(board)?;
         // Get all legal moves with their DTZ
@@ -107,7 +112,7 @@ impl SyzygyTB {
             Ok(Some((m, dtz))) => {
                 // Format as UCI (e.g. "b2c2" not "Rb2-c2")
                 let uci = shakmaty::uci::UciMove::from_standard(m);
-                let wdl = dtz_to_wdl_score(dtz);
+                let wdl = dtz_to_wdl_score(dtz, board.halfmove as i32);
                 Some((uci.to_string(), wdl))
             }
             _ => None,
@@ -133,6 +138,11 @@ impl SyzygyTB {
         if crate::bitboard::popcount(board.occupied()) as usize > self.max_pieces {
             return None;
         }
+        // Castling-gate parity with probe_wdl (C8 #43): Syzygy assumes no
+        // castling rights, so a probe here would be unsound. Decline → search.
+        if board.castling != 0 {
+            return None;
+        }
 
         let mut chess = board_to_shakmaty(board)?;
         let mut moves: Vec<String> = Vec::new();
@@ -144,7 +154,7 @@ impl SyzygyTB {
                 _ => break,
             };
 
-            let wdl = dtz_to_wdl_score(dtz);
+            let wdl = dtz_to_wdl_score(dtz, chess.halfmoves() as i32);
             if root_wdl.is_none() {
                 root_wdl = Some(wdl);
                 // If the root position is drawn / cursed / blessed, the
@@ -192,22 +202,25 @@ fn ambiguous_wdl_to_score(wdl: AmbiguousWdl) -> i32 {
     }
 }
 
-fn dtz_to_wdl_score(dtz: MaybeRounded<Dtz>) -> i32 {
+fn dtz_to_wdl_score(dtz: MaybeRounded<Dtz>, halfmove: i32) -> i32 {
     // shakmaty-syzygy DTZ convention: negative = side to move wins,
     // positive = side to move loses. Invert for our score convention
     // (positive = good for side to move).
     //
-    // C8 audit LIKELY #41: |DTZ| > 100 means the 50-move rule claims
-    // draw before conversion (cursed-win / blessed-loss). Report ±1 to
-    // match `ambiguous_wdl_to_score`'s convention — previously we
-    // collapsed these into ±20000, making the root print "mate-ish"
-    // scores for positions that are drawn by rule.
+    // C8 audit LIKELY #41 + Finding 5: the win/loss converts only if it
+    // can zero the halfmove clock before the 50-move rule fires — i.e.
+    // `|DTZ| + halfmove <= 100`. Beyond that it is cursed-win/blessed-loss
+    // (drawn by rule), so report ±1 to match `ambiguous_wdl_to_score`
+    // rather than a "mate-ish" ±20000. Using the *current* halfmove (not a
+    // bare |DTZ| > 100) makes a root that is winning-by-DTZ but
+    // cursed-by-clock print the honest near-draw score. Move choice is
+    // already safe — pick_winning_tb_move re-probes children halfmove-aware.
     let d = dtz.ignore_rounding();
-    let abs_d = d.0.abs();
+    let cursed = d.0.abs() + halfmove > 100;
     if d.0 < 0 {
-        if abs_d > 100 { 1 } else { 20000 }
+        if cursed { 1 } else { 20000 }
     } else if d.0 > 0 {
-        if abs_d > 100 { -1 } else { -20000 }
+        if cursed { -1 } else { -20000 }
     } else {
         0
     }

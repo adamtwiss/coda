@@ -339,7 +339,7 @@ reflect multiple SPSA rounds + retune-on-branch calibration. See the macro
 in `search.rs` for authoritative defaults and `experiments.md` for which
 tunes shaped them.
 
-- SEE values: P=100, N=320, B=330, R=500, Q=900
+- SEE values: P=100, N=420, B=420, R=640, Q=1200 (consensus-aligned; old textbook 100/320/330/500/900 underestimated minors/rook/queen — see `eval::see_value`)
 - History bonus: linear formula min(MAX, MULT*depth - BASE)
 
 ## Current Status

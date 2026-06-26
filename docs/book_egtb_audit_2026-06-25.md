@@ -78,8 +78,8 @@ mate (`TB_WIN=28800` < `MATE=29000`; deepest TB ≈28672 stays below the mate ba
 ### Actionable (all LOW severity)
 | # | Finding | file:line | Type | Fix |
 |---|---------|-----------|------|-----|
-| F1 | Interior probes bump no `tbhits` counter (info lines under-report) | search.rs:3039 | Stat/cosmetic | add `stats.tb_hits += 1` on interior probe hit, thread into UCI info |
-| F2 | Root probes lack the castling gate the interior probe has | tb.rs:99,132 | Robustness | add `if board.castling != 0 { return None; }` to `probe_root`/`probe_root_pv` for parity + guaranteed fall-through |
+| F1 | Interior probes bump no `tbhits` counter (info lines under-report) | search.rs:3039 | Stat/cosmetic | **DONE 2026-06-26.** Added `info.tb_hits` (main thread), incremented on interior probe hit, surfaced as `tbhits` in the search info line. |
+| F2 | Root probes lack the castling gate the interior probe has | tb.rs:99,132 | Robustness | **DONE 2026-06-26.** Added `if board.castling != 0 { return None; }` to `probe_root`/`probe_root_pv` for parity with `probe_wdl` (C8 #43) + guaranteed fall-through to search. |
 | F3 | No `SyzygyProbeDepth`; interior probe fires at every node incl depth-0 frontier | search.rs:3036 | NPS | **DONE 2026-06-26.** Added SF-style gate `pc<max \|\| depth>=tb_probe_depth` + UCI spin `SyzygyProbeDepth` (default raised 1→4 after follow-up RR). Local RR (5-man = deploy config, STC 10+0.1, **no adjudication** to force endgames): gate on vs always-probe **+6.5 ±3.9 Elo, LOS 99.9%, N=7556**; default `=4` vs `=1` **+2.0 ±2.7, LOS 92.2%, N=10000** (H1 at `[-1,2]`, merged). Real local-only-measurable win (OB has no TB). See NET TAKEAWAY below. |
 | F4 | Interior TB cutoff returns without a TT store | search.rs:3062-65 | Efficiency | optional TT store with bound+high depth so parent ordering sees the TB bound |
 
@@ -110,7 +110,7 @@ over-claims); TBHash resize/clear on ucinewgame race-free.
 ### Actionable (cosmetic)
 | # | Finding | file:line | Type | Fix |
 |---|---------|-----------|------|-----|
-| 5 | Root `dtz_to_wdl_score` is halfmove-UNAWARE — a cursed-by-clock root prints `score cp ±TB_WIN` and walks a multi-ply PV | tb.rs:195-214 | Cosmetic (display only) | gate on `\|DTZ\|+halfmove>100`; move choice already safe because `pick_winning_tb_move` re-probes children halfmove-aware |
+| 5 | Root `dtz_to_wdl_score` is halfmove-UNAWARE — a cursed-by-clock root prints `score cp ±TB_WIN` and walks a multi-ply PV | tb.rs:195-214 | Cosmetic (display only) | **DONE 2026-06-26.** `dtz_to_wdl_score` now takes halfmove; cursed test is `\|DTZ\|+halfmove>100` (root passes `board.halfmove`, PV walk passes `chess.halfmoves()`). Move choice was already safe (`pick_winning_tb_move` re-probes halfmove-aware). |
 
 **Minor strength notes (fine-as-is):** Coda declines the 6-man parent when only
 5-man tables loaded (`popcount>max → None`), forgoing the one-capture-into-TB reach
@@ -123,12 +123,12 @@ re-searching; Coda takes the conservative ±1) — acceptable at Coda's strength
 ## NET TAKEAWAY & RECOMMENDATION
 
 Both subsystems are in good shape — this audit found **no correctness bug worth a
-test**. The sensible polish, if we touch anything, is a tiny cleanup bundle that
-needs no Elo validation:
+test**. The sensible polish was a tiny cleanup bundle that needed no Elo validation
+— **all applied 2026-06-26** (bench-neutral 2565782; can't be OB-tested):
 - **F2** (root castling-gate parity) + **Finding 5** (halfmove-aware
-  `dtz_to_wdl_score`) — both one-liners, both make the root TB path strictly more
-  correct/honest, zero strength risk.
-- **F1** (tbhits accounting) — cosmetic, improves observability of TB usage.
+  `dtz_to_wdl_score`) — both make the root TB path strictly more correct/honest,
+  zero strength risk. **DONE.**
+- **F1** (tbhits accounting) — cosmetic, improves observability of TB usage. **DONE.**
 - Book: optional **selection-policy / seed UCI option** if reproducible book
   openings are ever wanted for local RR testing (would also let us A/B
   best-weight vs weighted-random book play).

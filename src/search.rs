@@ -722,6 +722,10 @@ pub enum ForcedState {
 /// Search state for one thread.
 pub struct SearchInfo {
     pub nodes: u64,
+    /// Interior Syzygy WDL probe hits this search (main thread). Cosmetic —
+    /// surfaced in the UCI `tbhits` field so TB usage is observable. Root
+    /// TB-move hits are reported separately at their own info lines.
+    pub tb_hits: u64,
     pub global_nodes: std::sync::Arc<AtomicU64>,  // aggregate nodes across SMP threads
     /// Last per-thread node count flushed into global_nodes (delta flushing,
     /// TM audit 2026-06-13 A4). Cell: should_stop takes &self.
@@ -912,6 +916,7 @@ impl SearchInfo {
     pub fn new_with_tt(tt: std::sync::Arc<TT>) -> Self {
         SearchInfo {
             nodes: 0,
+            tb_hits: 0,
             global_nodes: std::sync::Arc::new(AtomicU64::new(0)),
             last_flushed_nodes: std::cell::Cell::new(0),
             silent: false,
@@ -2500,10 +2505,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         if !info.silent {
             println!(
-                "info depth {} seldepth {} {} nodes {} nps {} time {} hashfull {} pv {}",
+                "info depth {} seldepth {} {} nodes {} nps {} time {} hashfull {} tbhits {} pv {}",
                 depth, info.sel_depth, score_str,
                 global, nps, elapsed,
-                info.tt.hashfull(), pv_str
+                info.tt.hashfull(), info.tb_hits, pv_str
             );
         }
 
@@ -3056,6 +3061,7 @@ fn negamax(
             let max_pc = tb.max_pieces();
             if pc <= max_pc && (pc < max_pc || depth >= info.tb_probe_depth) {
                 if let Some(wdl) = tb.probe_wdl(board) {
+                    info.tb_hits += 1;
                     // wdl from ambiguous_wdl_to_score: ±20000 = definite, ±1 = ambiguous, 0 = draw
                     // Only use large TB scores for definite Win/Loss.
                     // Ambiguous results (CursedWin=1, MaybeLoss=-1) stay small

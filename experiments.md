@@ -16585,3 +16585,17 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
   **TEXT_MARGIN widened 80->88** (triple fires less) — both detuning the feature.
   Broad RFP softening + LMR rebalance also (full-sweep, partly loose-knob noise).
   Applied the tuned config (bench 2408811) and SPRT'd vs main [0,3] STC. [result pending]
+
+- **tb/egtb-cleanup-bundle (F1 + F2 + Finding 5) — applied, no SPRT (bench-neutral,
+  correctness/cosmetic).** Three zero-risk polish items from the same audit, bundled
+  because none changes search shape or strength: **F2** root castling-gate parity
+  (`probe_root`/`probe_root_pv` now decline when `board.castling != 0`, matching the
+  interior `probe_wdl` C8 #43 gate — Syzygy assumes no castling rights, so a root probe
+  there was unsound; guaranteed fall-through to search). **Finding 5** halfmove-aware
+  `dtz_to_wdl_score` (cursed-by-clock root now prints the ±1 small score instead of
+  ±TB_WIN; move choice was already safe via halfmove-aware `pick_winning_tb_move`).
+  **F1** `tbhits` accounting (interior probe hits now bump `info.tb_hits`, surfaced in
+  the UCI search info line — observability only). Bench unchanged 2565782; build clean
+  (zero warnings); TB tests 11/11, SEE tests 13/13. Also fixed stale SEE-value comments
+  in `src/see.rs` + `CLAUDE.md` (were the old textbook 100/320/330/500/900; actual
+  `eval::see_value` is 100/420/420/640/1200).

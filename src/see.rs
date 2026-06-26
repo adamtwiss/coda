@@ -302,8 +302,8 @@ mod see_xray_tests {
 /// exchange ordering, missing x-ray attackers, incorrect EP victim
 /// location, incorrect promotion gain calculation.
 ///
-/// Piece values (from eval::see_value): P=100, N=320, B=330, R=500,
-/// Q=900, K=huge.
+/// Piece values (from eval::see_value): P=100, N=420, B=420, R=640,
+/// Q=1200, K=huge.
 #[cfg(test)]
 mod see_assertive_tests {
     use super::*;
