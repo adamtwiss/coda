@@ -34,12 +34,16 @@ target
 *.pgn
 nets/
 
-# Build output
+# Build output — engine binary + experiment-snapshot / PGO / profile copies.
+# NOTE: never re-add `!coda` here. That negation un-ignored the built binary
+# and let ~1 GB of engine binaries get committed across branches (caught
+# 2026-06). /coda.* catches coda.rr, coda.pgo, coda.fresh, coda.768pw, etc.
 /coda
+/coda.*
+/coda_*
 
 # Old test artifacts
 *.log
 coda-*
-!coda
 debug_*.go
 run_*.sh
