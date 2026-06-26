@@ -238,7 +238,7 @@ tunables!(
     // to near-off. Counting searched-only, consensus is 3 (Obsidian/
     // Reckless) to ~"2 extra" (SF moveCount > 2).
     (QS_MAX_CAPTURES, 5, 2, 32, 2.0, false),
-    (CORR_W_PAWN, 301, 100, 600, 25.0, true),
+    (CORR_W_PAWN, 303, 100, 600, 25.0, true),
     // Floor lifted from 50 → 0 (audit 2026-05-20): pinned at 63, 4% from floor.
     (CORR_W_NP, 71, 0, 400, 17.5, true),
     // CORR_W_MINOR / CORR_W_MAJOR were dropped 2026-05-18 (ablated to 0
@@ -251,12 +251,12 @@ tunables!(
     // Floor on CORR_W_CONT lifted from 30 → 0 (audit 2026-05-19): SPSA
     // converged 33, ~1% from floor. Lifting allows finding true optimum
     // including disabling cont-corr if SPSA wants. Default unchanged.
-    (CORR_W_CONT, 81, 0, 400, 18.5, true),
+    (CORR_W_CONT, 80, 0, 400, 18.5, true),
     // Transition (zobrist-delta) correction weight (Cinder idea): correction
     // keyed by hash(ply-1) ^ hash(ply) — a hash of the last move IN CONTEXT
     // (from+to+captured+side), richer than cont_corr's [piece][to]. Captures
     // "this structural CHANGE tends to be mis-evaluated."
-    (CORR_W_TRANS, 64, 0, 400, 18.5, true),
+    (CORR_W_TRANS, 67, 0, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
     // Re-expose 4 hardcoded search constants (audit 2026-05-21).
     // All bench-neutral at current defaults.
@@ -336,7 +336,7 @@ tunables!(
     // into the first-searched slot. Margin on Coda's pawn=100 SEE scale:
     // a check that loses more than this by SEE gets no ordering bonus.
     (QUIET_CHECK_SEE_MARGIN, 70, 0, 300, 12.0, true),
-    (CORR_HIST_DIV, 1483, 256, 4096, 192.0, true),
+    (CORR_HIST_DIV, 1423, 256, 4096, 192.0, true),
     // 4 -> 16 with T2.4: the floor-pin at 4 was calibrated for the
     // sign-only (err-clamped) regime; consensus weights ~depth uncapped.
     (CORR_UPDATE_WEIGHT_MAX, 17, 4, 48, 2.2, true),
@@ -348,7 +348,7 @@ tunables!(
     // T2.4: CORR_HIST_ERR_MAX (±3cp input pre-clamp) replaced by output
     // scaling: bonus = err*(depth+1).min(W)/CORR_ERR_DIV, clamped at the
     // gravity cap only. Obsidian err*depth/8; SF err*depth*12/128.
-    (CORR_ERR_DIV, 8, 2, 64, 3.0, false),
+    (CORR_ERR_DIV, 6, 2, 64, 3.0, false),
     // ESCAPE_BONUS_Q / _MINOR removed 2026-05-17: ablations #1256/#1255
     // H0 at [-3, 3]. Slightly load-bearing (central -0.6/-1.3 to ablate),
     // hardcoded at current SPSA values in movepicker.rs.
