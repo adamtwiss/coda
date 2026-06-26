@@ -16614,8 +16614,16 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
     deliberately-weak frozen constant on this specific update is load-bearing, NOT a
     missed tunable. The ~4.5×-weaker magic is doing real work; scaling it up over-penalizes.
     **Verdict: leave the frozen constant alone. TT-cutoff cont-hist malus audit closed (4 H0s).**
-  - #2314 audit/qs-capture-unify [-2,1], #2315 audit/cap-malus-nfh [-2,1],
-    #2317 audit/paired-cont-corr [0,3] — in flight at time of writing.
+  - **#2314 audit/qs-capture-unify — H1 ✓ (+2.3 ±2.2, LLR 3.01, N=24408) [-2,1] — MERGED.**
+    QS capture scorer had silently forked from main search: it still used the old
+    GoChess `victim*10 - attacker + captHist` (MVV-LVA ×10 with an LVA term) while
+    main search moved to the shared `mvv_lva()` helper `victim*16 + captHist` (MVV-only,
+    no LVA) when LVA was dropped (65dac27). Net: captHist weight ~1.6× higher in QS and
+    QS still paid the dropped LVA penalty. Routed the QS capture branch through the same
+    `mvv_lva()` helper (no new constants). Reckless/SF use one unified capture scorer for
+    search+QS. Rebased onto post-#2313 main, re-benched 2218199, merged.
+  - #2315 audit/cap-malus-nfh [-2,1], #2317 audit/paired-cont-corr [0,3] — in flight at
+    time of writing (2315 hovering ~0, 2317 trending H0).
 
 - **CINDER-INSPIRED CORRECTION + retune-on-branch interaction (2026-06-26).**
   Mined Cinder (v0.4.1, fresh ~peer engine) for ideas. 4 top search ideas were
