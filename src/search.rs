@@ -891,6 +891,11 @@ pub struct SearchInfo {
     pub threat_stack: crate::threat_accum::ThreatStack,
     /// Syzygy tablebases (shared, read-only). Interior WDL probes in search.
     pub syzygy: Option<std::sync::Arc<crate::tb::SyzygyTB>>,
+    /// Min depth at which to probe Syzygy WDL when at the maximum loaded
+    /// piece count (SF `SyzygyProbeDepth`). Below the max piece count we
+    /// always probe regardless of depth. Default 1 = skip only the depth<1
+    /// frontier at max men. UCI option `SyzygyProbeDepth`.
+    pub tb_probe_depth: i32,
 }
 
 impl SearchInfo {
@@ -963,6 +968,7 @@ impl SearchInfo {
             nnue_acc: None,
             threat_stack: crate::threat_accum::ThreatStack::new(768), // max v9 accum size
             syzygy: None,
+            tb_probe_depth: 1,
             rfp_audit_active: false,
         }
     }
@@ -1603,6 +1609,7 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     helper.move_overhead = main.move_overhead;
     helper.root_stm = main.root_stm; // kept in sync for potential future stm-aware features
     helper.syzygy = main.syzygy.clone(); // share tablebases (read-only)
+    helper.tb_probe_depth = main.tb_probe_depth; // same probe-depth gate as main
 
     // Seed helpers with the main thread's accumulated, aged history.
     // Cross-engine consensus (SF/Reckless/Obsidian/Alexandria/Viridithas/
@@ -3035,7 +3042,16 @@ fn negamax(
     let mut tb_floor: Option<i32> = None;
     if ply > 0 && info.excluded_move[ply_u] == NO_MOVE {
         if let Some(ref tb) = info.syzygy {
-            if crate::bitboard::popcount(board.occupied()) as usize <= tb.max_pieces() {
+            // SF SyzygyProbeDepth gate: at the maximum loaded piece count,
+            // only probe when depth >= tb_probe_depth — the depth<gate
+            // frontier is the most numerous, least-rewarding layer to probe
+            // (a cutoff there saves only a tiny qsearch, but the probe pays
+            // full FEN-roundtrip + table-decompression on a cache miss).
+            // Below the max piece count we always probe (smaller tables,
+            // deeper endgame, a cutoff prunes more).
+            let pc = crate::bitboard::popcount(board.occupied()) as usize;
+            let max_pc = tb.max_pieces();
+            if pc <= max_pc && (pc < max_pc || depth >= info.tb_probe_depth) {
                 if let Some(wdl) = tb.probe_wdl(board) {
                     // wdl from ambiguous_wdl_to_score: ±20000 = definite, ±1 = ambiguous, 0 = draw
                     // Only use large TB scores for definite Win/Loss.

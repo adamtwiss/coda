@@ -273,6 +273,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("option name Ponder type check default false");
                 println!("option name SyzygyPath type string default <empty>");
                 println!("option name TBHash type spin default 16 min 0 max 1024");
+                println!("option name SyzygyProbeDepth type spin default 1 min 1 max 100");
                 println!("option name HiddenActivation type combo default screlu var screlu var crelu");
                 println!("option name LoadAnyway type check default false");
                 println!("option name TMDebug type check default false");
@@ -1263,6 +1264,12 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
         "MoveOverhead" => {
             if let Ok(ms) = value.parse::<u64>() {
                 info.move_overhead = ms.min(5000);
+            }
+        }
+        "SyzygyProbeDepth" => {
+            if let Ok(d) = value.parse::<i32>() {
+                info.tb_probe_depth = d.max(1).min(100);
+                println!("info string SyzygyProbeDepth = {}", info.tb_probe_depth);
             }
         }
         "HiddenActivation" => {

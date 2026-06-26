@@ -16542,3 +16542,25 @@ NMP audit net: only N2 (IIR-after, #2280 +2.46) converted. N1/N3/N5 all flat-to-
   cluster is already balanced, so no retune upside. Not merged. **LMP audit
   CLOSED** — net result: the LMP-first reorder (#2283, +0.6, merged); everything
   else (tighten-consensus, improving-quad shape, nonpawn-guard) H0/flat.
+
+## 2026-06-26 — Book + EGTB audit (docs/book_egtb_audit_2026-06-25.md)
+
+Book + EGTB are both correct/well-defended — no game-losing bug (book handles all
+4 Polyglot gotchas; EGTB scores cursed/blessed ±1, cache key incorporates rule50,
+no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
+
+- **tb/syzygy-probe-depth (F3) — local RR +6.5 ✅ MERGED.** SF-style
+  `SyzygyProbeDepth` gate on the interior WDL probe: at the max loaded piece count,
+  probe only when `depth >= tb_probe_depth` (default 1) — skip the depth≤0 qsearch
+  frontier, the most numerous/least-rewarding probe layer (each probe pays a FEN
+  round-trip + table decompression, but the suppressed probes are redundant with the
+  depth≥1 re-probe one ply up). New UCI spin `SyzygyProbeDepth`. **Cannot be tested
+  on OB (workers have no tablebases.)** Validated by local cutechess RR on the exact
+  5-man set codabot deploys (7-man = 17 TB, 6-man = 150 GB — impractical; lichess
+  runs 5-man), STC 10+0.1, **resign/draw adjudication removed** to force games into
+  real endgames: `coda_dev` (gated) vs `coda_base` (always-probe), bench-identical
+  2565782 → **+6.5 ±3.9 Elo, LOS 99.9%, N=7556** (early +9.6 @ N≈1500 regressed to a
+  stable +6.5 as the CI tightened; 16% flag-falls — endgame NPS converts to Elo via
+  the clock). No-adjudication makes this MORE deployment-representative, not less.
+  Follow-up under test: `ProbeDepth=1` vs `=4` (our 5-man-everything economics differ
+  from SF's 6/7-man default; a higher gate may gain more before knowledge loss bites).
