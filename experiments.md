@@ -16616,3 +16616,25 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
     **Verdict: leave the frozen constant alone. TT-cutoff cont-hist malus audit closed (4 H0s).**
   - #2314 audit/qs-capture-unify [-2,1], #2315 audit/cap-malus-nfh [-2,1],
     #2317 audit/paired-cont-corr [0,3] — in flight at time of writing.
+
+- **CINDER-INSPIRED CORRECTION + retune-on-branch interaction (2026-06-26).**
+  Mined Cinder (v0.4.1, fresh ~peer engine) for ideas. 4 top search ideas were
+  already in Coda (singular multi-cut/reduction/graded-ext, aspiration fail-high
+  depth reduction, cont-hist in LMR, ProbCut improving-margin) — verification
+  confirmed search maturity. Three novel ports SPRT'd (all base main, STC 10+0.1):
+  - **A7 tt-nearmiss-graded — #2300 H0 ✗ (-3.1, N=16122) [0,3].** Generalized TT
+    near-miss from "1 ply short / fixed 80cp" to "up to 2 ply short / depth-gap-graded
+    margin". Accepting 2-ply-short cutoffs is too aggressive (stale bounds). Dead.
+  - **A9 contcorr-check — #2304 H0 (-0.3, N=42110).** is_check-conditioned
+    continuation correction. Early +1.8 was N-drift; washed out neutral.
+  - **A4 transition (zobrist-delta) correction — the win, via INTERACTION.** A 5th
+    correction source keyed by hash(ply-1)^hash(ply). Decomposition:
+    - source alone, default cluster — #2298 **H0 -0.8** (N=38688)
+    - CORR_ERR_DIV 8->6 alone on main — #2318 **+0.5 ->H0** (N~12k)
+    - source + corr-cluster co-tune (#2299) — #2313 **+5.1 H1 ✓** (N=14570)
+    Neither change helps alone; together +5.1 (~+5.4 pure synergy). Textbook
+    retune-on-branch: the transition source needs the faster correction-update rate
+    to express, and vice versa. **MERGED to main (877e192, bench 2324594).** Lesson:
+    don't isolation-test a co-tuned feature and declare it dead — the source looked
+    dead at #2298 untuned but is load-bearing in the tuned bundle. Mining a fresh
+    ~peer engine paid off (the port needed the right calibration, not rejection).
