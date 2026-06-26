@@ -5,16 +5,15 @@ modern/actively-developed Rust engine, ~Coda's strength on Lichess. Reviewed
 2026-06-26 (cinder HEAD `2a751e9`). ~20k LOC.
 
 > **Strength context (2026-06-26, in-progress local RR):** Cinder is **#9 (+5
-> Elo), BELOW Coda at #6 (+18)** — a near-peer but ~13 Elo weaker. Per our
-> cross-engine rule (CLAUDE.md: only engines *stronger* than Coda are valid
-> "should we do X" consensus references), **Cinder is weak evidence, not
-> consensus.** Its design choices are at most corroboration. This is borne out
-> below: of the top search ideas, **4 (A1/A2/A3/A6a) were already in Coda** and
-> Coda is the stronger engine. So treat the novel survivors (A4/A7/A9) as
-> *speculative cheap probes* — a good idea can still come from a weaker engine,
-> but the prior that any given Cinder divergence helps Coda is low. **Do not
-> keep mining Cinder for more ports expecting wins; the cheap-and-clean probes
-> are already fired.**
+> Elo), ~peer to Coda at #6 (+18)** — and a *fresh, actively-developed* engine.
+> That makes it a **good source of novel ideas to mine**: a fresh peer often
+> carries implementation ideas the established set hasn't converged on. The
+> CLAUDE.md "only stronger engines" rule is specifically about weighting
+> *consensus* (don't conclude "we should do X" just because a pile of weaker
+> engines do it) — it is **not** a reason to dismiss a peer's individual fresh
+> ideas. So: mine freely, verify each against Coda's *actual code* (4 of the top
+> ideas here — A1/A2/A3/A6a — turned out already present), and test the novel
+> survivors on their merits.
 
 This captures only where Cinder **diverges** from Coda — things Coda doesn't
 already do — framed as concrete, SPRT-able hypotheses. Filtered against Coda's
