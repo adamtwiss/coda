@@ -16622,8 +16622,17 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
     QS still paid the dropped LVA penalty. Routed the QS capture branch through the same
     `mvv_lva()` helper (no new constants). Reckless/SF use one unified capture scorer for
     search+QS. Rebased onto post-#2313 main, re-benched 2218199, merged.
-  - #2315 audit/cap-malus-nfh [-2,1], #2317 audit/paired-cont-corr [0,3] — in flight at
-    time of writing (2315 hovering ~0, 2317 trending H0).
+  - **#2315 audit/cap-malus-nfh — H1 ✓ (+1.0 ±1.6, LLR 2.95, N=49102) [-2,1].**
+    The only beta-cutoff history update missing numFailHighs multiplicative scaling:
+    the capture-BONUS path (#1054) scales by num_fail_highs but the failed-captures
+    MALUS path did not, slowly inflating capture-history magnitude vs the (scaled)
+    bonus + quiets. Mirrored the bonus path exactly. [-2,1] non-regression bound — point
+    estimate +1.0 (lower CI ~-0.6), a marginal bankable win. Rebased onto current main,
+    re-benched 2612184, split into clean docs+search commits, branch pushed; merge-ready,
+    merge gated on Adam's go.
+  - #2317 audit/paired-cont-corr [0,3] — in flight (−0.7 ±1.8, LLR −2.70 @ N=37392,
+    trending H0). Paired 2-D continuation correction; contrary prior #101 (2-ply
+    continuation correction H0, "ply-2 context too noisy for correction signal").
 
 - **CINDER-INSPIRED CORRECTION + retune-on-branch interaction (2026-06-26).**
   Mined Cinder (v0.4.1, fresh ~peer engine) for ideas. 4 top search ideas were
