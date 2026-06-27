@@ -381,8 +381,9 @@ Warnings accumulate into noise that masks real issues. Fix or
 
 For all OpenBench operations (submitting SPRTs, submitting SPSA tunes,
 benching for OB, stopping tests, reading results), invoke the **`ob`
-skill** at `.claude/skills/ob.md`. It is the canonical reference for
-OB usage and supersedes any scattered per-Claude memories on the topic.
+skill** at `.claude/skills/ob/SKILL.md` (invokable via the Skill tool as
+`ob`). It is the canonical reference for OB usage and supersedes any
+scattered per-Claude memories on the topic.
 
 The skill covers: bench measurement (including the critical
 net-override case), SPRT submission with the bounds policy, SPSA tune
