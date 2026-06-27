@@ -30,8 +30,15 @@ acted-on-early-N noise, missed `/errors/` followups.
   - `adam` — human
   - `claude` — Hercules (implementation/fleet)
   - `atlas` — Atlas (tactical/live-play)
-- **Password env**: `OPENBENCH_PASSWORD=SE1APo1O413Gn`
-- All scripts in `scripts/ob_*.py` read `OPENBENCH_PASSWORD` from env.
+- **Password**: read ONLY from the `OPENBENCH_PASSWORD` environment variable.
+  NEVER hardcode it here, in a script, or in any committed file, and NEVER paste
+  it inline into a shell command — this is an admin OB account, and a leaked
+  password is a remote-code-execution risk on the fleet workers. If
+  `OPENBENCH_PASSWORD` is not set in your shell, STOP and ask the user to set it
+  on this machine; do not guess, reconstruct, or inline it. All
+  `scripts/ob_*.py` already read it from env
+  (`os.environ.get('OPENBENCH_PASSWORD')`) — just run them with the env var
+  present (e.g. it's exported in your shell profile).
 
 **Per-Claude OB identity**: claims-of-test-ownership matter for `ob_stop.py`
 and similar — you can only stop your own tests. Don't stop tests
