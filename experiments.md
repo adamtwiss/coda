@@ -16651,3 +16651,10 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
   (Reckless 6f7ccc60). **H0 ✗ (-0.4 ±1.5, LLR -2.95).** [STC [0,3]] Coda's NMP R
   formula (BASE + depth/DIV + eval-margin) is already well-shaped; the improving
   ply doesn't add over it. From the SF/Reckless 2-month survey batch.
+
+- **zeus/lmr-winning-beta #2324** — extra LMR reduction (+1) when beta is a
+  winning score (Reckless ae986dff). **H0 ✗ (-2.1 ±2.4, LLR -2.99).** [STC [0,3]]
+  Reducing late moves harder at mate-proving nodes regressed for Coda — at those
+  nodes Coda apparently still needs to search the later moves at fuller depth
+  (consistent with its forced-win-guards direction of pruning LESS there). From
+  the SF/Reckless 2-month survey batch.
