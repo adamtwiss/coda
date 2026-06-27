@@ -304,6 +304,11 @@ tunables!(
     // Was 47 (tp10→5). Now consumed as FIXED-POINT (stored/10) so SPSA's
     // sub-integer precision is preserved. Default 50 → eff 5.0 ≡ old behavior.
     (NFH_DIV_10X, 50, 20, 120, 10.0, false),
+    // Sibling-count history-bonus scaling (SF 645b636d). At non-PV cutoffs,
+    // amplify the best move's bonus by (quiets+caps searched)/HIST_SIBLING_DIV:
+    // a move that cut off after more competition proved itself more strongly.
+    // SF default divisor 256.
+    (HIST_SIBLING_DIV, 256, 64, 1024, 40.0, true),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -4646,7 +4651,15 @@ fn negamax(
                         let raw_bonus = history_bonus(bonus_depth);
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         // Fixed-point divisor (stored × 10).
-                        let bonus = raw_bonus + raw_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
+                        let mut bonus = raw_bonus + raw_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
+                        // SF 645b636d: at non-PV nodes, amplify the cutoff move's
+                        // bonus by the number of moves searched before it cut off
+                        // (more competition survived = stronger signal). Best-move
+                        // bonus only — the malus is left unscaled.
+                        if !is_pv {
+                            let siblings = (quiets_count + n_captures_tried) as i32;
+                            bonus += bonus * siblings / tp(&HIST_SIBLING_DIV);
+                        }
                         // Malus magnitude: separate constants, same scaling chain
                         // (identical to bonus at default tunables → bench-identical).
                         let raw_malus = history_malus(bonus_depth);
