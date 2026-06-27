@@ -3162,14 +3162,59 @@ impl NNUENet {
         unsafe { self.forward_with_l1_pairwise_inner(stm_acc, ntm_acc, stm_threat, ntm_threat, bucket) }
     }
 
-    /// Marked `#[target_feature]` to propagate AVX2 codegen context through
-    /// the inlined SIMD helpers. LTO was already inlining the helpers across
-    /// the boundary, but the attribute gives LLVM permission to emit tighter
-    /// AVX2 sequences inside the inlined region (measured +~5% NPS, identical
-    /// bench node count). Callers must ensure AVX2 is available; on x86_64
-    /// with `-Ctarget-cpu=native` it is.
-    #[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx2"))]
+    /// Runtime dispatcher for the pairwise forward pass (function
+    /// multiversioning). On x86_64 it calls the AVX2-specialized wrapper only
+    /// when AVX2 is actually present (`self.has_avx2`); otherwise a plain
+    /// scalar-codegen copy of the same body. The body lives in
+    /// `forward_with_l1_pairwise_body` (`#[inline(always)]`, NO
+    /// `target_feature`) so it adopts the caller's codegen context — AVX2 when
+    /// inlined into `_inner_avx2`, scalar via the fallback branch here.
+    ///
+    /// Why this shape (2026-06-27): a bare `#[target_feature(enable = "avx2")]`
+    /// on the body makes LLVM autovectorize even its *scalar fallback* loops to
+    /// AVX2, which SIGILLs on pre-AVX2 CPUs (e.g. Sandy Bridge / Xeon E5 v1)
+    /// the instant the function is entered — even though the runtime
+    /// `self.has_avx2` checks correctly steer execution to the scalar path.
+    /// Dispatching here keeps the +~5% NPS AVX2 codegen on capable hosts (the
+    /// `_avx2` wrapper inlines the body in an AVX2 context, identical to the
+    /// old attributed function) while staying correct on older CPUs.
+    #[inline]
     unsafe fn forward_with_l1_pairwise_inner(&self, stm_acc: &[i16], ntm_acc: &[i16],
+        stm_threat: &[i16], ntm_threat: &[i16], bucket: usize) -> i32
+    {
+        #[cfg(target_arch = "x86_64")]
+        if self.has_avx2 {
+            return unsafe {
+                self.forward_with_l1_pairwise_inner_avx2(
+                    stm_acc, ntm_acc, stm_threat, ntm_threat, bucket)
+            };
+        }
+        unsafe {
+            self.forward_with_l1_pairwise_body(
+                stm_acc, ntm_acc, stm_threat, ntm_threat, bucket)
+        }
+    }
+
+    /// AVX2-specialized wrapper — `target_feature` so the `#[inline(always)]`
+    /// body gets AVX2 codegen. Only call when AVX2 is available.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn forward_with_l1_pairwise_inner_avx2(&self, stm_acc: &[i16], ntm_acc: &[i16],
+        stm_threat: &[i16], ntm_threat: &[i16], bucket: usize) -> i32
+    {
+        unsafe {
+            self.forward_with_l1_pairwise_body(stm_acc, ntm_acc, stm_threat, ntm_threat, bucket)
+        }
+    }
+
+    /// Shared body for the pairwise forward pass. No `target_feature`, so its
+    /// scalar fallback loops compile to scalar code (correct on pre-AVX2 CPUs).
+    /// SIMD-heavy work goes through separately-gated helpers selected by
+    /// `self.has_avx2` / `has_avx512`. `#[inline(always)]` lets it adopt the
+    /// caller's codegen context: AVX2 via `_inner_avx2`, scalar via the
+    /// dispatcher fallback.
+    #[inline(always)]
+    unsafe fn forward_with_l1_pairwise_body(&self, stm_acc: &[i16], ntm_acc: &[i16],
         stm_threat: &[i16], ntm_threat: &[i16], bucket: usize) -> i32
     {
         let h = self.hidden_size;

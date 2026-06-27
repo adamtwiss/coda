@@ -1963,22 +1963,68 @@ pub fn compute_move_deltas(
 /// Apply raw threat deltas to update the threat accumulator incrementally.
 /// Copies from `prev` and applies all deltas for a specific perspective.
 ///
-/// Marked `#[target_feature]` to propagate AVX2 codegen context into the
-/// inlined `apply_deltas_avx2` helper. LTO was already inlining the helper,
-/// but the attribute gives LLVM permission to emit tighter AVX2 sequences
-/// inside the inlined region. Callers must ensure AVX2 is available; on
-/// x86_64 with `-Ctarget-cpu=native` it is.
+/// Runtime dispatcher (function multiversioning): on x86_64 with AVX2 it
+/// calls the `target_feature`-specialized wrapper; otherwise the plain
+/// scalar-codegen body. A bare `#[target_feature(enable = "avx2")]` on the
+/// body autovectorizes its scalar fallback (in `apply_threat_indices`) to
+/// AVX2 and SIGILLs on pre-AVX2 CPUs; dispatching keeps AVX2 codegen on
+/// capable hosts while staying correct on older ones. See the matching
+/// note on `NNUENet::forward_with_l1_pairwise_inner`.
 ///
 /// # Safety
-/// The CPU must support AVX2 (the `target_feature` is unconditional on
-/// x86_64). `threat_weights` must be at least `num_threats * hidden_size`
-/// elements, and every delta index must be `< num_threats`.
-#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx2"))]
+/// `threat_weights` must be at least `num_threats * hidden_size` elements,
+/// and every delta index must be `< num_threats`.
 pub unsafe fn apply_threat_deltas(
     dst: &mut [i16],           // destination threat accumulator (one perspective)
     src: &[i16],               // source (previous position's threat accumulator)
     deltas: &[RawThreatDelta],
     threat_weights: &[i8],     // [num_threats × hidden_size]
+    hidden_size: usize,
+    num_threats: usize,
+    pov: Color,
+    mirrored: bool,
+) {
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx2") {
+        return unsafe {
+            apply_threat_deltas_avx2(
+                dst, src, deltas, threat_weights, hidden_size, num_threats, pov, mirrored)
+        };
+    }
+    unsafe {
+        apply_threat_deltas_body(
+            dst, src, deltas, threat_weights, hidden_size, num_threats, pov, mirrored)
+    }
+}
+
+/// AVX2-specialized wrapper for [`apply_threat_deltas`]. Only call when AVX2
+/// is available.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn apply_threat_deltas_avx2(
+    dst: &mut [i16],
+    src: &[i16],
+    deltas: &[RawThreatDelta],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    num_threats: usize,
+    pov: Color,
+    mirrored: bool,
+) {
+    unsafe {
+        apply_threat_deltas_body(
+            dst, src, deltas, threat_weights, hidden_size, num_threats, pov, mirrored)
+    }
+}
+
+/// Shared body for [`apply_threat_deltas`] — no `target_feature`, so its
+/// (and `apply_threat_indices`') scalar fallbacks compile to scalar code.
+#[inline(always)]
+unsafe fn apply_threat_deltas_body(
+    dst: &mut [i16],
+    src: &[i16],
+    deltas: &[RawThreatDelta],
+    threat_weights: &[i8],
     hidden_size: usize,
     num_threats: usize,
     pov: Color,
@@ -2036,8 +2082,61 @@ pub unsafe fn apply_threat_deltas(
 ///
 /// # Safety
 /// Same requirements as [`apply_threat_deltas`].
-#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx2"))]
+///
+/// Runtime dispatcher (function multiversioning) — see [`apply_threat_deltas`].
 pub unsafe fn apply_threat_deltas_dual(
+    dst_w: &mut [i16],
+    src_w: &[i16],
+    dst_b: &mut [i16],
+    src_b: &[i16],
+    deltas: &[RawThreatDelta],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    num_threats: usize,
+    mirrored_w: bool,
+    mirrored_b: bool,
+) {
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx2") {
+        return unsafe {
+            apply_threat_deltas_dual_avx2(
+                dst_w, src_w, dst_b, src_b, deltas, threat_weights,
+                hidden_size, num_threats, mirrored_w, mirrored_b)
+        };
+    }
+    unsafe {
+        apply_threat_deltas_dual_body(
+            dst_w, src_w, dst_b, src_b, deltas, threat_weights,
+            hidden_size, num_threats, mirrored_w, mirrored_b)
+    }
+}
+
+/// AVX2-specialized wrapper for [`apply_threat_deltas_dual`]. Only call when
+/// AVX2 is available.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn apply_threat_deltas_dual_avx2(
+    dst_w: &mut [i16],
+    src_w: &[i16],
+    dst_b: &mut [i16],
+    src_b: &[i16],
+    deltas: &[RawThreatDelta],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    num_threats: usize,
+    mirrored_w: bool,
+    mirrored_b: bool,
+) {
+    unsafe {
+        apply_threat_deltas_dual_body(
+            dst_w, src_w, dst_b, src_b, deltas, threat_weights,
+            hidden_size, num_threats, mirrored_w, mirrored_b)
+    }
+}
+
+/// Shared body for [`apply_threat_deltas_dual`] — no `target_feature`.
+#[inline(always)]
+unsafe fn apply_threat_deltas_dual_body(
     dst_w: &mut [i16],
     src_w: &[i16],
     dst_b: &mut [i16],
@@ -2136,7 +2235,12 @@ pub unsafe fn apply_threat_deltas_dual(
     }
 }
 
-#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx2"))]
+/// No `target_feature` (see [`apply_threat_deltas`]): the heavy SIMD work is
+/// dispatched internally to the separately-gated `apply_deltas_avx2` /
+/// `apply_deltas_avx512` kernels via `is_x86_feature_detected!`, so the
+/// attribute would only autovectorize the (never-taken-on-AVX2) scalar
+/// fallback below — which SIGILLs on pre-AVX2 CPUs. Dropping it keeps the
+/// fallback scalar and correct everywhere with no perf cost on capable hosts.
 unsafe fn apply_threat_indices(
     dst: &mut [i16],
     src: &[i16],
