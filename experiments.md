@@ -16646,3 +16646,8 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
     don't isolation-test a co-tuned feature and declare it dead — the source looked
     dead at #2298 untuned but is load-bearing in the tuned bundle. Mining a fresh
     ~peer engine paid off (the port needed the right calibration, not rejection).
+
+- **zeus/nmp-improving-r #2323** — extra full ply of NMP reduction when improving
+  (Reckless 6f7ccc60). **H0 ✗ (-0.4 ±1.5, LLR -2.95).** [STC [0,3]] Coda's NMP R
+  formula (BASE + depth/DIV + eval-margin) is already well-shaped; the improving
+  ply doesn't add over it. From the SF/Reckless 2-month survey batch.
