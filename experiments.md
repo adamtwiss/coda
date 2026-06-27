@@ -16681,3 +16681,10 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
   ±1.1, LLR -2.99).** [STC [0,3]] Both engines gained ~+2.5 from it, but it's
   neutral for Coda's ProbCut (already gated on staticEval + the threats/unstable
   carve-outs). From the SF/Reckless 2-month survey batch.
+
+- **zeus/forced-win-guards #2321 — H1 ✓ MERGED (e7194c9).** Add `beta <
+  MATE_SCORE-100` to LMP/SEE-quiet/futility gates: never prune a late quiet in a
+  mate-proving window (Reckless 4a2efd5a). **+1.0, LLR 2.95 [STC [-2,1]]** — passed
+  the non-regression upper bound. Correctness + Elo; aligns with the
+  never-forfeit-a-won-game theme. First win from the SF/Reckless 2-month survey
+  batch. (Corroborated by #2324 reduce-more-at-winning-beta regressing.)
