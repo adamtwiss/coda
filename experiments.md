@@ -16696,3 +16696,15 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
   that rank-decay doesn't move the needle). The convergent history-weighting idea
   splits: sibling-bonus (#2319) carries, decayed-malus doesn't. From the
   SF/Reckless 2-month survey batch.
+
+- **zeus/hist-sibling-bonus #2319 — H1 ✓ MERGED (00ae67f).** At non-PV cutoffs,
+  amplify the best move's history bonus by (quiets+caps searched)/HIST_SIBLING_DIV
+  (default 256) — more competition survived before the cutoff = stronger signal
+  (SF 645b636d). **+1.8, [STC [0,3]].** New tunable HIST_SIBLING_DIV. Second win
+  from the SF/Reckless 2-month survey batch (after forced-win-guards). The
+  convergent history-weighting idea split cleanly: sibling-BONUS wins (+1.8),
+  rank-decayed MALUS (#2320) was neutral.
+
+- **#2318 experiment/corr-err-div-6 — STOPPED (not mine to merge).** CORR_ERR_DIV
+  8->6 probe; +0.4 ±1.2 at 83k, trending H0; learnings captured, stopped to free
+  fleet for the zeus batch.
