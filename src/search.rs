@@ -3992,7 +3992,6 @@ fn negamax(
             && (depth >= 4 || !board.gives_direct_check(mv))
             && best_score > -(MATE_SCORE - 100)
             && beta < MATE_SCORE - 100  // forced-win guard (Reckless 4a2efd5a): don't count-prune quiets while proving a win
-            && stm_non_pawn != 0  // non-pawn-material guard (SF/Obsidian/Plenty): don't count-prune in pawn-only endgames
             && FEAT_LMP.load(Ordering::Relaxed)
         {
             let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
