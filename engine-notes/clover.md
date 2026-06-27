@@ -1,12 +1,92 @@
 # Clover Chess Engine - Technical Review
 
-Source: `~/chess/engines/CloverEngine/`
+Source: `~/chess/engines/CloverEngine/`  (git HEAD e647926, 2025-09-14 — **unchanged since the Apr review**)
 Version: 9.1
 Language: C++
 NNUE: Single-accumulator (768x7 king-bucketed PST -> 2x1280 hidden -> 8 output buckets) with pairwise activation
-Rating: 3577 CCRL 40/15 (v6.2, #12); estimated 3650+ for v9.1 based on recent development trajectory
+Rating: 3577 CCRL 40/15 (v6.2, #12); v9.1 higher. **Clover is rank #12 locally — BELOW Coda (#7). Its choices are HYPOTHESES, not authority.**
 
-Last reviewed: 2026-04-18
+Last reviewed: 2026-04-18 · Refreshed: 2026-06-27 (see §Review refresh 2026-06-27)
+
+---
+
+## Testable Experiments for Coda (ranked, vetted 2026-06-27)
+
+Three candidates survive prior-art screening. Everything else in §7 ("Ideas
+to Port") is now **stale or dead**: Coda already has multi-source correction
+history (pawn + W/B non-pawn + continuation + transposition — `src/search.rs`
+CORR_W_* ~L241-259) and 4D threat-aware main history (`[from_threatened]
+[to_threatened][from][to]`), and it re-enabled singular+double extensions. The
+note's old Tier-1 "ports" are done. The **fail-low / prior-countermove history
+family is CLOSED** (#1945 pcm-faillow-bonus H0, #1931 H0, #1961 early-refuted
+H0 — "do not re-propose ports from this family"), which kills Clover's fail-low
+parent-bonus (search.h:796-802) and its hindsight-*extend* (search.h:390-391,
+already H0 as #866 lmr-hindsight-extend). Complexity-scaled margins are H0'd
+twice (experiments L1538 LMR, L1566 RFP).
+
+### 1. Search-effort (`tried_count`) weighting of history bonus/malus
+- **Clover** (`search.h:744-777`, `:787-789`): every history update — main,
+  continuation, pawn, capture, for BOTH the cutoff move (bonus) and each tried
+  move (malus) — is multiplied by that move's `tried_count` = how many times it
+  was actually searched (1 if LMR-only; 2-3 if it went through the
+  re-search/PVS chain). Moves that survived a full re-search get 2-3× the
+  history signal of a move pruned at reduced depth. `SearchMove(move,
+  tried_count)` carries the per-move count (`:787`).
+- **Coda today**: `history_bonus(depth)` / `capture_history_bonus(depth)` are
+  depth-only, no effort weighting (`src/search.rs:4643, 4751, 4909-4922`).
+  Every tried quiet gets the same-magnitude malus regardless of how deeply it
+  was searched.
+- **Prior art**: none. grep of experiments.md for tried_count / search-effort /
+  times-searched history scaling is empty. Genuinely untested.
+- **Sketch**: alongside `quiets_tried` / `captures_tried` (`src/search.rs:4272-4284`)
+  store a per-move search-count (incremented at each LMR / re-search / PV call
+  for that move), then multiply the bonus and malus by it in the cutoff-update
+  block (~L4643-4760). Likely needs a history-bonus retune afterward (it
+  rescales total history magnitude).
+- **Magnitude / risk**: small-moderate; eval-agnostic and mechanical, so should
+  transfer despite Clover-tuned constants. Risk: changes history balance →
+  pair with `scripts/tune_history_shape.txt` retune-on-branch. **Effort: medium.**
+
+### 2. Eval-difference retroactive bonus to the prior quiet move
+- **Clover** (`search.h:381-388`): at EVERY non-check, non-null, non-capture
+  node it rewards/penalizes the move that led here, by the eval trajectory:
+  `bonus = clamp(-EvalHistCoef * ((stack-1).eval + static_eval), EvalHistMin,
+  EvalHistMax) + EvalHistMargin`, applied to the parent move's main-hist AND
+  pawn-hist. Fires on all quiet nodes, not just fail-low.
+- **Coda today**: the same `prevEval + staticEval` ("eval-sum") signal drives
+  only the hindsight *reduction* (`src/search.rs` ~L3424-3435); it never feeds
+  a history bonus. SF/Clover both bonus the prior move from it.
+- **Prior art**: the fail-low PCM family is closed (above) — but that family
+  fires on fail-low/all-node refutation. This is the SF "quietMoveBonus from
+  eval delta" that fires on every quiet node via the eval trajectory; the
+  mechanism and gating differ. Not directly tested. Coda's hindsight ablations
+  (#2972 keep-hindsight, fix-hindsight-sign H0) confirm the eval-sum signal is
+  *useful* in Coda for reductions — open question is whether it also helps as a
+  history bonus.
+- **Sketch**: after static_eval is known and parent move is quiet/exists, call
+  the existing main-hist + pawn-hist update for `(stack-1).move` with the
+  clamped eval-delta bonus. ~6 lines + 3 tunables (coef/margin/clamp).
+- **Magnitude / risk**: moderate magnitude; **risk moderate-high** — adjacent
+  to the hostile fail-low family, and Coda's history stack has repeatedly
+  rejected extra prior-move signals. Worth one clean SPRT precisely because the
+  reduction-side signal is already proven useful here. **Effort: low-medium.**
+
+### 3. Three-state `improving` (add a "worsening" = −1 state)
+- **Clover** (`search.h:351-359`): `improving ∈ {−1, 0, +1}`; −1 when
+  `eval_diff < NegativeImprovingMargin`. Feeds LMP denominator `(2 - improving)`
+  (→ 3 when worsening = prune earlier) and two distinct LMR terms
+  (`LMRImprovingM1` for −1, `LMRImproving0` for 0).
+- **Coda today**: `improving` is a plain `bool` (`src/search.rs:3374, 3431-3435`),
+  and the LMP formula already uses `(2 - improving as i32)` (`:3989`) — so the
+  −1 state plugs straight in, no formula change.
+- **Prior art**: none found (grep 3-state / negative-improving empty). Coda's
+  binary-improving is original, not a rejected port.
+- **Sketch**: change `improving` to `i32 ∈ {−1,0,1}` driven by a tunable
+  `NEG_IMPROVING_MARGIN`; LMP picks it up for free; add an `improving == -1`
+  LMR reduction term. ~10 lines + 1-2 tunables.
+- **Magnitude / risk**: small; low-moderate risk. The worsening branch needs
+  tuning or it over-prunes. **Effort: low-medium.** Lowest-priority of the three
+  (smallest expected delta), but cheapest and least entangled with dead families.
 
 ---
 
@@ -660,6 +740,45 @@ Total: ~60 SPSA-tuned parameters. Indicates careful engineering to find sweet sp
     - Expected gain: ~1-2 Elo (or negative if we're correct to avoid SE)
 
 ---
+
+## Review refresh 2026-06-27
+
+**Source state**: Clover HEAD is `e647926` (2025-09-14) — *older* than the Apr-18
+note. Nothing in the C++ changed; this refresh is verification + prior-art
+screening against Coda's current trunk, not new Clover features. The §1-6
+technical descriptions below were spot-checked against `search.h` / `history.h`
+and remain accurate.
+
+**Corrections to stale claims in this note:**
+- **§2.11 "We disabled SE"** — STALE. Coda re-enabled singular + double
+  extensions (CLAUDE.md §Search; `tunables!` DEXT_MARGIN/DEXT_CAP). The
+  asymmetric non-PV margins remain a valid comparison point but "we don't have
+  SE" is wrong.
+- **§2.3 / §7 #1 "port multi-source correction history"** — DONE. Coda has
+  pawn + white-NP + black-NP + continuation + transposition corrhist
+  (`src/search.rs` CORR_W_PAWN/NP/CONT/TRANS ~L241-259); minor/major sources
+  were *ablated out* 2026-05-18. Clover keys its non-pawn corrhist on a
+  material-count `mat_key`; Coda keys on the non-pawn Zobrist key. The
+  material-count keying is the one untested variant, but Coda's three Zobrist
+  non-pawn attempts (experiments L1197/L1422/L1458) and the minor/major ablation
+  make this a low-value revisit, not a port.
+- **§7 #2 "threat-aware main history"** — DONE. Coda main history is
+  `[from_threatened][to_threatened][from][to]` (CLAUDE.md §History tables).
+- **§7 #3 / §5 hindsight** — Clover's eval-diff hindsight has two halves: a
+  *reduction*-side (Coda has this, #2972 KEEP) and a history-*bonus* side (new —
+  now §Testable-Experiments #2). Clover's hindsight *depth-extend*
+  (search.h:390-391) maps to Coda #866 lmr-hindsight-extend, **H0 — drop**.
+- **§7 fail-low reward / PCM** — the whole prior-move fail-low/early-refuted
+  history family is **CLOSED in Coda** (#1945 H0, #1931 H0, #1961 H0). Clover's
+  fail-low parent bonus (search.h:796-802) is a member — **do not port**.
+- **§4 / §7 #7 adaptive time management** — Coda's TM is now a 3-factor
+  multiplicative model (score trend + node-fraction + best-move stability),
+  i.e. it already implements exactly the three Clover factors described here
+  (CLAUDE.md §Time Management). No longer "simpler fixed percentages." Stale.
+
+**Net of this refresh**: of the note's 10 "ideas to port," 6 are done/closed,
+2 are H0'd, and the 2 survivors plus one newly-isolated half (the eval-diff
+history-*bonus*) are promoted to the §Testable-Experiments block at the top.
 
 ## 8. Net-Level Observations
 

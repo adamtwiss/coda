@@ -1,12 +1,91 @@
 # Integral Chess Engine - Technical Review
 
 Source: `~/chess/engines/integral/`
-Version: Zekrom-v7 (git hash 3f15ba6b)
+Version: Zekrom-v7 (git hash 3f15ba6b, 2026-04-02 — UNCHANGED since the Apr review; no new upstream commits)
 Language: C++20 (GCC >= 13 or Clang >= 10)
 NNUE: Single factorized accumulator (768×12 → 1536) → 16 → 32 → 1×8, with i8 L1 weights
-Rating: ~3650 CCRL / Top commercial tier
+Rating: ~3650 CCRL. **Local RR rank #8 — a NEAR-PEER, one below Coda (#7).** Its
+choices are HYPOTHESES, not authority; weight them as corroboration only.
 
-Last reviewed: 2026-04-18
+Last reviewed: 2026-04-18. Refreshed 2026-06-27 (see "## Review refresh 2026-06-27").
+
+---
+
+## Testable Experiments for Coda (ranked, refreshed 2026-06-27)
+
+**Headline finding: Coda has already converged on essentially every distinctive
+Integral choice.** Cross-checked against current `src/search.rs` /
+`src/movepicker.rs` + `experiments.md`, the following Integral features that the
+old "Ideas to Port" list (§8) recommended are **already in Coda or already H0'd**
+— do NOT re-propose them:
+
+| Integral feature | Coda status |
+|---|---|
+| 4-ply cont-hist (offsets 1,2,4,6) | **Already in Coda** (movepicker.rs cont_hist_subs, plies 1,2,4,6) |
+| Cont-hist gravity from a combined "base" | **Already in Coda** — `update_cont_history_with_base` (Stormphrax T6), base = cell + main/2 |
+| LMR re-search → cont-hist nudge (search.cc:1135) | **Already in Coda** (Berserk pattern, search.rs:4527) |
+| Material scaling `eval*(base+mat)/N` | **Already in Coda** — #813 MERGED (non-pawn-only) |
+| Razoring `eval + M*depth < alpha, alpha<2000` | **Already in Coda** — #1936 MERGED (RAZOR_MULT≈281, depth 4, pre-RFP) |
+| Caphist-adjusted good/bad-capture SEE split (move_picker.cc:78) | **Already in Coda** — movepicker.rs:533 `see_threshold = -capt_hist/18` |
+| Corr-magnitude "complexity" in LMR (search.cc:1092) | **Already in Coda** — continuous form, search.rs:4390 `reduction -= complexity/LMR_COMPLEXITY_DIV` |
+| Eval-dependent aspiration delta | **H0** (experiments.md:79, ~0 Elo; kept as infra) |
+| Corr-magnitude "complexity" in RFP margin (search.cc:731) | **H0 twice** (experiments.md:1565 +0.5/1907g; :2401) |
+| Quiet check bonus in ordering | **Already in Coda** — MERGED (experiments.md:505, #122) |
+
+What's genuinely left (both marginal — near-peer, so treat as low-confidence
+probes, not "free Elo"):
+
+### 1. Cont-hist gravity base = cross-ply SUM, not per-ply cell  (effort: low-med)
+- **Integral** (`history/continuation_history.h:34-41`): when updating a quiet's
+  cont-hist, it first computes `total = GetScore(-1) + GetScore(-2) +
+  GetScore(-4) + GetScore(-6)` (the move's aggregate cont-hist across all 4
+  plies), then updates EACH ply with `entry += ScaleBonus(total, bonus)` where
+  `ScaleBonus(s,b) = b - s*|b|/gravity`. The gravity-decay term is proportional
+  to the move's **cross-ply aggregate strength**, identical for all 4 updates.
+  This is commit #227 (`b9905bb3`, "Update continuation history with total score
+  as the base influence") — Integral's headline cont-hist change.
+- **Coda today** (`search.rs:4672-4677`, and the LMR-nudge site :4559-4564):
+  `update_cont_history_with_base` with `base = cur_cont(this ply) + main_hist/2`
+  — a **per-ply** base (the cell's own value), plus half the main-history
+  signal. Different signal: per-cell + main-hist vs cross-ply cont-hist sum.
+- **Prior art:** none. experiments.md has the *with_base* adoption (T6) and the
+  uniform-bonus B1 audit, but NOT the cross-ply-sum-as-base variant. Not tried.
+- **Sketch:** in `History::update_cont_history_*` call sites, precompute the
+  4-ply cont-hist sum for the move before the offset loop and pass that as
+  `base` (replacing `cur_cont + main_score/2`), for both the cutoff-update path
+  (~:4664) and the LMR-nudge path (~:4548). Keep gravity divisor; SPSA may want
+  a retune of the divisor since the base magnitude changes ~4×.
+- **Magnitude/risk:** small (+0–4). It's a tweak to an already-tuned, already-
+  base-gravity mechanism; the ~4× larger base will need the gravity divisor
+  recalibrated or it over-decays. Coda's existing base already encodes "combined
+  signal strength," so this may simply be a re-parameterization → neutral. Worth
+  one cheap STC run; do NOT chase if flat.
+
+### 2. RFP margin includes the parent move's history score  (effort: low)
+- **Integral** (`search.cc:725-737`): RFP margin =
+  `depth*kRevFutMargin − improving*… − oppWorsening*… + eval_complexity*…/32 +
+  (stack-1)->history_score / kRevFutHistoryDiv`. The last term widens/narrows the
+  RFP cushion by the **history score of the opponent's move that reached this
+  node** (high-history parent → larger margin → prune less).
+- **Coda today** (`search.rs` RFP block, RFP_MARGIN_IMP/NOIMP + RFP_ROOT_COEF):
+  margin is depth × improving-dependent, plus root-depth-aware relaxation. **No
+  parent-move-history term.**
+- **Prior art:** the corr-*complexity* RFP term is H0'd twice (experiments.md
+  :1565, :2401) — but that is a DIFFERENT signal (|corrected−raw|). Parent-move
+  history in RFP is not in experiments.md. Genuinely untried.
+- **Sketch:** thread the parent move's main-history score onto the search stack
+  (Coda already tracks moved_piece/to per ply), add `+ parent_hist /
+  RFP_HIST_DIV` to the RFP margin behind a new tunable.
+- **Magnitude/risk:** small (+0–3), medium risk of flat. Coda notes call RFP
+  margins "fully bracketed," and a near-peer's tuned constant may not transfer.
+  Only worth bundling into a broader RFP-margin SPSA, not a standalone run.
+
+**Excluded as non-ideas:** larger 1536 single accumulator (architecture/training,
+not search; trades away Coda's threat accumulator — Coda's v9 threats are a
+deliberate edge); Integral's simpler time management (Coda's 3-factor TM is
+strictly more sophisticated — nothing to port); LMP `/(3 − (improving||eval≥beta))`
+base (pure "tune X"); double-extend-in-PV (Coda double-ext lowering H0'd,
+experiments.md:711/3204).
 
 ---
 
@@ -569,6 +648,55 @@ Evaluation weakens with fewer pieces, aiding tabletop play.
    - Both engines have it; no change needed.
 
 ---
+
+## Review refresh 2026-06-27
+
+Re-verified the whole note against the live Integral source (HEAD `3f15ba6b`,
+**unchanged** since the April review — no upstream commits, so the engine itself
+is the same; this refresh corrects stale Coda-comparison facts and re-scores the
+port list against current Coda).
+
+**Corrections to the body above (were stale or wrong vs current Coda):**
+- §6.1 / §8: the recommendation to "extend Coda's 2-ply cont-hist to 4-ply" is
+  **obsolete** — Coda already uses 4-ply (offsets 1,2,4,6) and already uses a
+  combined-base gravity (`update_cont_history_with_base`). The only *novel* part
+  of Integral's cont-hist is the **cross-ply-sum base** (#227); see top §1.
+- §6.3 "Quiet history update after LMR re-search" — **already in Coda**
+  (search.rs:4527, Berserk pattern). Not a port candidate.
+- §6.5 / §8 "Material-scaled eval" — **already merged in Coda** (#813,
+  non-pawn-only). Not a port candidate.
+- §2.6 Razoring — **already in Coda** (#1936). Note's framing of it as a
+  Integral-distinctive is moot.
+- §2.3 material scaling is now done in **search**, not the net (Integral #233
+  `d6ce508b`); the eval-complexity term used in RFP/LMR is
+  `|static_eval − raw_static_eval|` = the correction-history adjustment
+  magnitude (search.cc:674). Coda uses this exact signal in LMR already
+  (continuous form) and has **H0'd** it for RFP.
+- §3.2 capture SEE-threshold-with-history (`see_threshold − capt_hist/92`) —
+  Coda has the same mechanism (`-capt_hist/18`, movepicker.rs:533).
+
+**Recent Integral commits relative to the note's content (all ≤ #238, pre-HEAD):**
+- #234 `1568901f` switched aspiration to SF-style additive widening (the note's
+  §2.2 multiplicative ×1.3983 description is now stale for Integral, though the
+  point is moot for Coda — eval-dependent aspiration is H0'd here).
+- #235 `0f65df61` reordered History Pruning *before* SEE Pruning (search.cc:957
+  then :968). Cheap reorder; low expected magnitude, not promoted to the top list.
+- #236 `484db145` exempts direct-check-givers from futility (search.cc:951
+  `!board.MoveGivesDirectCheck(move)`) and boosts them in ordering — Coda already
+  exempts check-givers from its futility-class pruning (gives_check guards) and
+  has the quiet-check ordering bonus.
+- #227 `b9905bb3` cont-hist total-score base — the one genuinely-novel item
+  (top §1).
+- #228 `8103098a` double-extend in PV — Coda's double-ext threshold-lowering is
+  H0'd; not promoted.
+
+**Net assessment:** Integral is a finely-tuned near-peer whose search shape has
+almost entirely been independently reached (or deliberately rejected) by Coda.
+Honest headroom from this engine is **2 marginal probes** (top §1, §2), both
+low-confidence. This is expected for a #8 engine vs Coda at #7 — no superiority
+to mine. The big architectural difference (1536 single accumulator vs Coda's
+768+threats v9) is a training-side choice, not a search port, and Coda's threat
+accumulator is a deliberate edge, not a gap.
 
 ## Final Notes
 

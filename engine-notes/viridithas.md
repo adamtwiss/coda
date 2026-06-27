@@ -1,16 +1,129 @@
 # Viridithas Chess Engine - Deep Review
 
-Source: https://github.com/cosmobobak/viridithas (v19.0.1)
+Source: https://github.com/cosmobobak/viridithas (git HEAD 1ec9381, 2026-06-20)
 Author: Cosmo (cosmobobak)
 Language: Rust
-CCRL Ranking: ~Top 20 (superhuman, ~3400+ Elo)
-NNUE: (704x32 -> 2560)x2 -> 16 -> 32 -> 1x8 (pairwise CReLU, SCReLU hidden layers, NNZ-sparse L1)
+CCRL Ranking: ~Top 20 (superhuman, ~3400+ Elo). Local RR rank #11 — BELOW Coda (#7).
+  Its choices are HYPOTHESES, not authority.
+NNUE: (704x32 -> 2560)x2 -> 16 -> 32 -> 1x8 (pairwise CReLU, SCReLU hidden layers, NNZ-sparse L1).
+  **Now has threat inputs + pawn-pawn inputs (added 2026-04/06).**
 
-Last v9-refreshed: 2026-04-19
+Last refreshed: 2026-06-27 (prior: 2026-04-19 — was badly stale; source was ~2 months newer).
 
 ---
 
-## v9 Refresh (2026-04-19)
+## Testable Experiments for Coda (ranked, refreshed 2026-06-27)
+
+**Context after this refresh:** Coda has independently caught up on nearly
+everything the April note flagged. Already done or dead in Coda:
+- **#431 "increase reduction each time alpha is raised"** — Coda HAS this
+  (`LMR_ALPHA_RAISE_10X`, search.rs:387-390, explicitly cites Vir #431). DROP.
+- **#432 "increase reduction in TTPV nodes that look like fail-lows"** — Coda
+  H0'd this TWICE (#2161 lmr-ttpv-faillow +0.1; #2227 lmr-tt-faillow −1.7). DROP.
+- **Optimism** — Coda #671 H0 −7.1. DROP.
+- **Material scaling of eval** — Coda already ships it (`MAT_SCALE`), #529/#828
+  variants H0'd. DROP.
+- **Post-LMR-research cont-hist nudge** — Coda HAS it (Berserk pattern,
+  search.rs:4530+). DROP.
+- **Eval-policy / value-difference history** — covered by Coda's nudge + 4D
+  threat history. Not fresh.
+- **#444 RFP_MARGIN 73→65** — pure tune value. DROP (vague tune).
+
+That leaves a SHORT list of genuinely-fresh, SPRT-able ideas:
+
+### 1. Paired (two-move) continuation correction history  ★ best fresh idea
+- **Mechanism (Vir #424, b171ce4; history.rs:227-290):** continuation corrhist
+  is now keyed by a **zobrist hash of a PAIR of prior moves**, not a single
+  move: `index = PIECE_KEYS[ch1.piece][ch1.to] ^ PIECE_KEYS[ch2.piece][ch2.to]`,
+  with a **second** table over the (ply-1, ply-4) pair (`cont14`). Two weights:
+  `continuation_12_corrhist_weight`, `continuation_14_corrhist_weight`.
+- **How Coda differs today:** every Coda correction source is keyed on a
+  **single** move. `cont_corr` is `[piece][to]` of the opponent's last move
+  (search.rs:897, 1413-1421); `trans_corr` is `hash(ply) ^ hash(ply-1)`
+  (search.rs:1427-1434) — last move in context. Coda has NO two-move-sequence
+  correction key.
+- **Prior-art check:** Coda #101 (`fix-corr-cont-2ply`, H0 +0.4) tested a 2-ply
+  continuation correction — BUT that was V5-era, with dense
+  `[piece][to][piece][to]` indexing and BEFORE the entire 6-source corrhist
+  rework (white/black-NP + minor/major + cont + trans). The cheap zobrist-pair
+  index over the current multi-source baseline is materially different and
+  untested. Not a clean re-run of #101.
+- **Sketch:** add `cont_pair_corr: Box<[[i32; 2]; CORR_HIST_SIZE]>`. Index =
+  `(PIECE_KEYS[p1][to1] ^ PIECE_KEYS[p2][to2]) & (SIZE-1)` using the existing
+  `moved_piece_stack`/`moved_to_stack`. Blend with new `CORR_W_CONT_PAIR`
+  tunable; update in `update_correction_history`. Optionally add the (1,4) pair.
+- **Magnitude/risk:** low-single-digit Elo; LOW risk (additive, gravity-bounded,
+  tunable to zero). Transfer caveat: Vir trains/tunes at higher Elo; the pair
+  signal may be noisier at Coda's depth — gate behind SPSA weight, accept H0
+  gracefully.
+
+### 2. cont14: 4-ply-back correction tuple (bundle with #1, or standalone)
+- **Mechanism:** the second table above pairs ply-1 with **ply-4** (the same
+  side's previous move). Captures "my-plan-then-this-change" mis-eval patterns.
+- **Coda diff:** none of Coda's corr sources reach back 4 ply.
+- **Prior-art:** Coda's 4-ply *continuation HISTORY* (move ordering) faded to
+  noise (experiments.md:726). But that's ordering, not correction — different
+  consumer. Worth one shot, ideally bundled into #1's branch as a second weight.
+- **Magnitude/risk:** marginal; LOW. Test only if #1 shows signal.
+
+### 3. (NNUE, training-side — NOT a quick SPRT) pawn-pawn input features
+- **Mechanism (Vir #445, 331e83f):** explicit pawn×pawn pair input features in
+  the FT, alongside HalfKA. Cosmo's recent net gain.
+- **Coda diff:** Coda v9 has threats but no pawn-pair FT features.
+- **Caveat:** requires a Bullet retrain + new inference path; this is an
+  architecture experiment for the S200/mini-prod track, not a search SPRT.
+  Logged here for completeness; do not attempt as a cheap port.
+
+**Note for the human:** the central thesis of the old note — "threats are
+Coda's unique moat that Vir can't replicate" — is now FALSE. Vir shipped threat
+inputs (c14c332, #425) + branchless threat indexing (#442) + pawn-pawn inputs
+(#445). Coda's threat enumeration is still richer (66864 features, x-ray), but
+threats are no longer a differentiator vs Viridithas specifically.
+
+---
+
+## Review refresh 2026-06-27 (HEAD 1ec9381)
+
+What landed in Viridithas since the 2026-04-19 note (`git log --since=2026-04-01`):
+
+**NNUE / eval (the big news):**
+- **c14c332 Threat inputs (#425)** + **450e62e branchless threat indexing (#442)**
+  + **87a7540 prefetch threat weights (#433)** + **ff0d8a6 remove intermediate
+  threat buffering (#426)**. Viridithas now HAS threats. The old note's whole
+  "threats = Coda's moat" thesis is dead (see top section). Coda's threats are
+  still richer (66864 + x-ray vs Vir's set), but no longer unique vs Vir.
+- **331e83f Add pawn-pawn NNUE inputs (#445)** — explicit pawn-pair FT features.
+  New, training-side (idea #3 above). New net `atlantis` (c74b3c7, #430).
+
+**Search:**
+- **72c28e0 Increase reduction each time alpha is raised (#431)** — per-node
+  `alpha_raises` counter, LMR `r += alpha_raises * 384` (milliplies). **Coda
+  already has this** (`LMR_ALPHA_RAISE_10X`). Confirms Coda's port direction.
+- **63a1db8 Increase reduction in TTPV nodes that look like fail-lows (#432)** —
+  `r += (ttpv && tt.value <= alpha) * 1136`. **Coda H0'd twice** (#2161, #2227).
+- **89a83b6 Tweak RFP margin (#444)** — `RFP_MARGIN 73→65`. Pure tune.
+- **801281b / 543d52a Prevent invalid PV extensions (#443)** — correctness
+  guard on PV emission. Coda-specific applicability unclear; not an Elo idea.
+- **7eed93c General cleanup of history (#441)**, **1640a03 PVs from the stack
+  (#439)**, **bd3c476 cache/UCI refactor (#438)** — refactors, no new Elo idea.
+
+**Correction history:**
+- **b171ce4 zobrist-indexed + 4-ply continuation correction (#424)** — the one
+  genuinely-fresh, SPRT-able search idea (ideas #1/#2 above). Cont-corrhist
+  switched from dense `[to][pt][to][pt]` to a zobrist hash of a **move PAIR**
+  `PIECE_KEYS[p1][to1] ^ PIECE_KEYS[p2][to2]`, plus a second (ply-1, ply-4)
+  table. Coda's corr is all single-move-keyed — real gap.
+
+**TT / infra:**
+- **09041aa checksum to mitigate cluster tearing (#437)** — Coda already uses
+  XOR-key torn-read detection; equivalent, nothing to port.
+
+---
+
+## v9 Refresh (2026-04-19) — SUPERSEDED, see refresh above
+
+NOTE (2026-06-27): the "Vir has no threats / threats are Coda's moat" framing
+below is now STALE — Vir shipped threat inputs in #425. Kept for history.
 
 Viridithas is a **different architectural point**: big FT (2560 accumulator), no threats. Architecturally Coda v9 is *smaller* (768 FT, has threats).
 

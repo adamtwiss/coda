@@ -15,6 +15,79 @@ modern/actively-developed Rust engine, ~Coda's strength on Lichess. Reviewed
 > ideas here — A1/A2/A3/A6a — turned out already present), and test the novel
 > survivors on their merits.
 
+---
+
+## Testable Experiments for Coda (refreshed 2026-06-27 — READ FIRST)
+
+**The original A-section ranking below is largely SUPERSEDED.** A 2026-06-27
+re-verification against Coda's *current* `src/search.rs` + a prior-art sweep of
+`experiments.md` found that **the entire original "pure-logic top-5 queue"
+(A1a, A1b, A2, A4, A6a) is dead** — present in Coda already, or repeatedly H0'd.
+Details and citations in `## Review refresh 2026-06-27`. The genuinely live,
+not-already-present, not-H0'd survivors, ranked:
+
+1. **[NNUE/NPS — HIGHEST] B1 arity-specialized fused threat-accumulator apply.**
+   Cinder dispatches `accumulate` on the *exact (sub,add) arity* (8 branchless
+   fused arms, `transformer.rs:136-143`). Coda's threat-apply is the **named
+   #1 untouched NPS hotspot** — ~31% cyc vs SF ~5.5% (`project_threat_index_microopts_neutral`).
+   **Coda diff:** audit `src/threat_accum.rs` / `nnue.rs` apply — if it's a
+   variable-length dirty loop with per-element branches, specialize the common
+   skewed arities. **Prior art:** the only near-miss is `perf/threat-filter-raw-deltas`
+   (discarded, −1.8% NPS, experiments.md:52) — that filtered deltas; arity-specialized
+   fused apply is a *different* lever and untested. Effort: med (audit-first).
+   SPRT `[-2,1]`, no retrain. Measure on the existing cycle-attribution harness.
+
+2. **[search — LOW effort, marginal] A7 windowed TT near-miss (2–3 ply, depth-gap margin).**
+   Cinder accepts TT fail-highs up to K plies short with `margin = fhp_margin_depth*(depth−t.depth)
+   + fhp_margin_scalar` (`engine.rs:655-668`). **Coda diff:** Coda's near-miss is
+   hard-fixed to **exactly 1 ply / 80cp flat** (`search.rs:3327-3343`). **Prior art:**
+   the 1-ply *margin* has been bracket-tested to death (64→80 merged; 96 +1.6 but
+   rejected; 112 rejected — experiments.md:105,1717,1724,1760) so the margin is
+   well-calibrated, **but the depth-window generalization (accepting 2–3-ply-short
+   entries at all, with a depth-gap-scaled margin) is genuinely untested.** Effort: low.
+   SPRT `[0,3]`. Expect small; the heavy margin-tuning prior caps upside.
+
+3. **[search — tree-shape, retune-gated] A1c proportional/graded singular extension.**
+   Cinder grades the extension by how far the best alternative fell short:
+   `ext = clamp(gamma*(se_beta−se_score)^delta, 0..cap)` (`engine.rs:773-824`).
+   **Coda diff:** Coda's double-ext is a **binary step** gated by a PV/quiet/corr-aware
+   *additive* `dext_margin` (`search.rs:4117-4130`) — already shaped, but not continuous
+   in the margin. **Prior art:** SE *positive* extension has historically cost Coda
+   ~−30 Elo (experiments.md:2317-2324) — but that was pre-current-SE; today's additive
+   PV/quiet/corr margin is the live shape and a *graded* variant has not been tried on it.
+   Effort: med (retune-on-branch mandatory — tree-shape). Risk: SE-extension prior is hostile.
+
+4. **[NNUE/NPS — audit-first] B2/B3 nnz-gather sparse L1 + mulhi-fused pairwise.**
+   Cinder gathers non-zero L1 inputs via VBMI2 `compress` (`lin.rs:52-104`, `nzs.rs`)
+   and fuses the pairwise multiply+rescale into one `mulhi`-with-shift (`lin.rs:38`,
+   `mulhi.rs`). **Coda diff: VERIFY FIRST** whether `src/sparse_l1.rs` already does
+   vpcompress nnz-gather (CLAUDE.md implies a sparse int8 kernel exists — may be
+   already-present). Only port if absent. Effort: med-high; needs quant scales to line up.
+   SPRT `[-2,1]`, no retrain (mulhi may need a one-time requantize). Lower confidence —
+   not verified against Coda's kernel this pass.
+
+**Explicitly DROPPED this refresh (do not test):**
+- ~~A1a multi-cut~~ — **PRESENT** (`search.rs:4084-4101`, returns `singular_score`, decisive-clamp).
+- ~~A1b singular reduction / negative ext~~ — **PRESENT and *more* graded than Cinder**:
+  Coda uses −3 (fail-high)/−2 (cut)/−1 (all) by node type (`search.rs:4131-4144`).
+- ~~A2 aspiration fail-high *depth* reduction~~ — **H0'd ≥3×, fundamentally incompatible**
+  with Coda's shared-depth aspiration loop (experiments.md:1319, 2418-2422 "−353 Elo",
+  3297-3300). Hard drop.
+- ~~A3 cont-hist term in LMR amount~~ — **PRESENT**: LMR reads main×2 + ply-1 + ply-2
+  cont-hist + pawn-hist (`search.rs:4357-4378`).
+- ~~A4 zobrist-delta / transition correction source~~ — **PRESENT**: `trans_corr`
+  keyed `[stm][(hash(ply-1) ^ hash(ply)) % size]` (`search.rs:898`, `CORR_W_TRANS`).
+  Also: every non-pawn/zobrist corrhist variant H0'd (experiments.md:1427,1462).
+- ~~A6a ProbCut improving-aware margin~~ — **PRESENT**: `PROBCUT_MARGIN_IMP`
+  (`search.rs:225`).
+- ~~A8 node-type IIR amount~~ — **DOWNGRADE/DROP**: "extra IIR reduction beyond a
+  single decrement is harmful" (PV-extra-IIR rejected ×2, deep-IIR-2 neutral —
+  experiments.md:278,978,1441-1445).
+- ~~A11 QS TT store~~ — Coda already has QS TT store/probe (`FEAT_TT_STORE`, CLAUDE.md).
+- A9 (threat-aware cont *correction*) is the one corrhist idea NOT present (`cont_corr`
+  is plain `[piece][to]`, `search.rs:896`) — but corrhist additions carry a strong
+  negative prior; speculative only, do not prioritize over 1–4 above.
+
 This captures only where Cinder **diverges** from Coda — things Coda doesn't
 already do — framed as concrete, SPRT-able hypotheses. Filtered against Coda's
 known feature set; ranked by promise/transferability. Pure-logic and
@@ -233,6 +306,47 @@ correctness add if our binpacks ever carry skip-marker zeros (relevant to the st
 **TM-class (LTC + ponder RR):** A5 persistent butterfly attention factor.
 
 **Retrain-gated (S200 probe first, mostly unfavorable prior):** B7, B8.
+
+## Review refresh 2026-06-27
+
+Re-verified at the SAME Cinder HEAD as the original note (`2a751e9`, 2026-06-03,
+"implement probabilistic ply filtering") — Cinder has **not advanced** since the
+2026-06-26 review, so the source survey stands. This refresh re-checked the
+*Coda* side against current `src/search.rs` and did a `experiments.md` prior-art
+sweep, which materially changed the rankings (see top section).
+
+**Cinder HEAD commit detail (`2a751e9`).** The "probabilistic ply filtering" change
+is purely a *trainer* change (`bin/trainer.rs`; the net binary is the only other
+file). It replaces the hard `min_ply < 16` cutoff with a **spline acceptance ramp**
+— `[(12,0.0),(16,0.4),(18,0.65),(20,1.0)]`, sampled per-position via `rng.random_bool`
+(reject = 1−accept). It also: renames `random_skip_chance`→`random_rejection`,
+raises `max_score_anomaly` 1000→2500, and refactors the suspicious-score /
+placeholder-zero / piece-count / WDL filters into separate per-position rejection
+probabilities OR'd together in `should_skip`. The committed self-play result was
+**+1.78 ±1.99 Elo** (30.8k games, H1 vs `[-3,1]`). The original note's **B8 already
+described** this (spline early-ply ramp + piece-count balancing + placeholder-zero
+guard) — so the doc was already current on HEAD; nothing to add to B8 beyond the
+exact spline knots above. Transfer caveat unchanged: Coda already does ply≥16/quiet/WDL
+filtering, and `feedback_aggressive_filters_overfit_at_s200` says port *mechanics not
+constants*; the probabilistic *ramp* (vs hard cutoff) is the one untested-by-Coda
+mechanic and would need an S200 paired probe.
+
+**What the original A-section got wrong (Coda-side drift since the note was written
+or under-verified).** The note's headline claim — "4 of the top ideas (A1/A2/A3/A6a)
+turned out already present" — actually *understated* it. On re-verification **A1a,
+A1b, A3, A4, A6a are all present**, A2 is multiply-H0'd, and A8 has a hostile prior.
+The note's own "## C. Combined test queue" item 1-5 (A1a, A1b, A2, A4, A6a) are
+therefore **all dead** and should not be run. Treat the top "Testable Experiments"
+section as the authoritative queue; the A/B bodies below are kept for the Cinder-side
+mechanism detail (still accurate) but their Coda-diff/ranking claims are stale.
+
+**Still-valid, still-unverified-against-Coda (carry forward as-is):** the NNUE/NPS
+B-section (B1 arity-apply, B2 nnz-gather, B3 mulhi-pairwise, B4 single-side refresh,
+B5 weight layout) was not re-audited against `src/nnue.rs`/`sparse_l1.rs` this pass —
+these remain audit-first hypotheses, with **B1 (arity-specialized threat-apply) the
+single highest-value survivor** because it targets Coda's named 31%-cyc hotspot.
+A5 (persistent butterfly attention TM factor) remains a TM-class idea requiring
+LTC + ponder-RR validation, not re-verified against Coda's node-fraction TM this pass.
 
 ## D. Not worth porting
 - Full `convolve` quadratic model + 14-vector LMR model — too many loose knobs

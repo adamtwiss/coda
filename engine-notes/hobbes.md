@@ -1,4 +1,128 @@
-# Hobbes Search/Eval Review (2026-05-01)
+# Hobbes Search/Eval Review (2026-05-01, refreshed 2026-06-27)
+
+> **2026-06-27 refresh note.** Hobbes source is UNCHANGED since the original
+> review — same HEAD `fdc47e1` ("Low-depth singular double extensions", #359).
+> This refresh re-verifies the note against (a) the current Hobbes tree and
+> (b) what *Coda* now does (Coda has moved a lot since 2026-05-01). Several
+> Tier-1/Tier-2 items below are now DONE or H0'd in Coda — see the ranked
+> "## Testable Experiments for Coda" and "## Review refresh 2026-06-27"
+> sections at the top; treat the old Tier-1/2/3 text as historical detail.
+
+## Testable Experiments for Coda (ranked, refreshed 2026-06-27)
+
+Survivors after re-checking Coda src + `experiments.md` prior art. Hobbes is
+rank #10 (NOT stronger than Coda) — these are HYPOTHESES, retune-on-branch
+expected (Hobbes defaults are SPSA midpoints for ITS search shape).
+
+### E1. Quiet-history **factoriser** (shared, threat-bucket-independent component)
+
+- **Hobbes**: `history.rs:73-77, 212-229`. Each `QuietHistoryEntry` is
+  `{ factoriser: i16, bucket: ThreatBucket<i16> }` and `score = factoriser +
+  bucket[from_threatened][to_threatened]` (history.rs:214-216). Both the
+  from-to and piece-to quiet tables carry a factoriser. On every quiet update
+  (search.rs:810/820), the factoriser is updated *regardless of threat index*
+  with its OWN bonus/malus (`quiet_factoriser_bonus/malus`, search.rs:765-771,
+  params `quiet_fact_*`, FACTORISER_MAX=8192 vs BUCKET_MAX=16384). It is a
+  shared baseline that generalizes across the 4 threat buckets.
+- **Coda today**: `movepicker.rs:28` — `main_hist` is fully threat-partitioned
+  `[from_threatened][to_threatened][from][to]` with NO shared component. Every
+  (from,to) move's learning is split across 4 disjoint buckets; a move first
+  seen under one threat state carries nothing to another. Coda also has no
+  from-to/piece-to *lerp* — its quiet score is a sum.
+- **Prior art**: NONE. `experiments.md` "factoriser" hits (4525-4526, 5466-5468)
+  are all NNUE-training `--factoriser`, unrelated to history.
+- **Sketch**: give each main_hist slot (or a parallel `[from][to]` + `[piece][to]`
+  table) a factoriser updated on every cutoff/malus alongside the bucketed value;
+  read `factoriser + bucket`. Add `QUIET_FACT_*` bonus/malus tunables + a
+  factoriser cap. Structural → retune-on-branch (history shape).
+- **Magnitude/risk**: +2–5 Elo plausible; this directly attacks Coda's
+  bucket-fragmentation, which is a real and Coda-specific weakness. Risk:
+  medium (touches the hot main_hist path; needs retune). **Highest-leverage
+  genuinely-new item; the original note missed it entirely.**
+
+### E2. **2-ply (follow-up) move-keyed correction history**
+
+- **Hobbes**: `correction.rs:25, 59-61, 74, 134-140`. `follow_up_move_corrhist`
+  keyed by `ss[ply-2].mv.encoded() as u64` (4096-entry, gravity), weighted
+  `corr_follow_up_weight=125` (params:237) — *above* pawn(93)/nonpawn(97). The
+  1-ply `countermove_corrhist` (ply-1 move) is weighted 100 (params:236).
+- **Coda today**: `search.rs:1364-1438`. Correction sources = pawn, white-NP,
+  black-NP, cont_corr (1-ply `[piece][to]`, search.rs:1372-1392) and trans_corr
+  (1-ply zobrist-delta `board.hash ^ last.hash`, search.rs:1492). **Both
+  move-context axes are 1-ply (ply-1).** No grandparent/2-ply axis exists. Note:
+  Coda's trans_corr (hash-delta in context) is RICHER than Hobbes's context-free
+  countermove key — so the real gap is *only* the 2-ply (follow-up) axis, NOT
+  the 1-ply one the old note #1 emphasized.
+- **Prior art**: NONE for 2-ply/follow-up/grandparent corrhist in `experiments.md`.
+- **Sketch**: add `follow_up_corr: [[i32; 4096]; 2]` keyed on `ply-2` move
+  encoding; add `CORR_W_FOLLOWUP` weight + bonus tunables; update in
+  `update_correction_history`, read in `correction_value`. Small, drops next to
+  existing sources.
+- **Magnitude/risk**: +2–4 Elo (SF/Berserk/Obsidian/Reckless all carry a 2-ply
+  corr axis). Low risk; retune the weight.
+
+### E3. **from-square + to-square 1D histories**
+
+- **Hobbes**: `history.rs:68-70, 84-85, 105-107, 328-344`; read at
+  history.rs:105-107 (`from_history[stm][from] + to_history[stm][to]` added into
+  the quiet score), updated on cutoff at search.rs:812-813/822-823 with their own
+  `from_hist_*`/`to_hist_*` bonus/malus (params:187-200, MAX=4096). Two `[2][64]`
+  tables (~256 B).
+- **Coda today**: `movepicker.rs:27-38` — quiet ordering = main_hist + cont_hist
+  + pawn_hist; no single-square axis.
+- **Prior art**: NONE (`experiments.md` "from-square" hits 1436/14699 are
+  futility threat-escape and NNUE features, not ordering history).
+- **Sketch**: two `[2][64]` i16 tables, add into quiet ordering score, bonus/malus
+  on cutoff with the standard linear formula. Cheap.
+- **Magnitude/risk**: +1–3 Elo (SF added from-history for ~this; to-square is
+  rarer / Hobbes-leaning). Low risk, low effort. Good cheap first SPRT.
+
+### E4. **Cut-node TT-reduction (a second depth cut beyond IIR, for stale TT)**
+
+- **Hobbes**: `search.rs:380-385`. *After* IIR, if `cut_node && depth >=
+  cutnode_red_min_depth (8) && (tt_move null OR tt_depth + 4 <= depth)` then
+  `depth -= 1`. Fires even when a TT move EXISTS but is shallow — IIR does not.
+- **Coda today**: `search.rs:3747` — IIR fires only when `tt_move == NO_MOVE`
+  (already gated on `is_pv || cut_node`). The "have a tt_move but it's stale at a
+  cut node" reduction is absent.
+- **Prior art**: Coda has the +1 cut-node *LMR* reduction (#2065 H1 merged,
+  #1340 "+2 too aggressive") — that's a different site. No prior art on a
+  cut-node *pre-loop depth* reduction for stale TT.
+- **Sketch**: one `if cut_node && depth >= CUTNODE_RED_MIN_DEPTH && (tt_move ==
+  NO_MOVE || tt_depth + CUTNODE_RED_TT_OFFSET <= depth) { depth -= 1 }` after the
+  IIR block. 2 tunables (min_depth, tt_offset).
+- **Magnitude/risk**: +1–3 Elo. Risk: overlaps IIR economics — retune IIR +
+  this together; medium confidence.
+
+**Gated / lower-priority (do not lead with these):**
+- **LDSE** (low-depth no-search singular ext, Hobbes HEAD #359, search.rs:448-461):
+  at `depth <= 7`, if `static_eval <= alpha - ldse_margin(25) && tt_flag==Lower`,
+  extend the TT move *without* a verification search; +1 more if eval is far below
+  alpha and TT move is quiet. Cheap, but it is a singular-extension mechanism and
+  Coda's SE has a long H0 history (experiments §2076-2092, SE floor churn #2264) —
+  only worth it once SE is confirmed healthy. Small effort.
+- **History context modifiers on cutoff** (search.rs:757-793): scale the quiet/
+  cont/capt history bonus by `cut_node` (subtract), `new_tt_move` (add), and
+  `capture_count` (add). Real in Hobbes but a cluster of *loose knobs* — CLAUDE.md
+  warns against adding low-leverage tunables to the core set. Bundle-and-SPRT at
+  most; do not split into many SPSA params.
+
+**DROPPED on re-check (were in the old ranking):**
+- Material-phase eval scaling (old #17): **Coda ALREADY scales** by material +
+  halfmove (`search.rs:1227`, `score * (22400 + material) / 32 / 1024`, np-only
+  per #813). The granular per-piece phase variant was H0 (#529 material-scale-
+  tunable, −3.0 Elo; #2484 V5 scaling REJECTED). Do not revisit.
+- cut_node propagation bundle (old #4): **Coda now threads `cut_node` through
+  negamax** (search.rs:3631/4524/4581 etc.), has the +1 cut-node LMR reduction
+  (#2065), and gates IIR/ProbCut/TT-cutoff on it. Only the E4 sliver remains.
+- SE double/triple extension margins (old #13 positive side): Coda already has
+  `DEXT_MARGIN_*`, `DEXT_CAP`, `TEXT_MARGIN` (double + triple ext) — present and
+  actively tuned. Negative SE side-channels partially present.
+- Hindsight extension (old #7): H0 #866/#881 — confirmed still dropped.
+
+---
+
+# Original review (2026-05-01) — historical detail below
 
 CCRL Blitz #19 (~3715). Rust source at `~/chess/engines/hobbes-chess-engine/src/`.
 Single-file negamax (`search.rs`, 1286 lines), three nested submodules

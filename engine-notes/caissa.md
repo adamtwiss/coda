@@ -1,10 +1,91 @@
 # Caissa Engine - Technical Review
 
 Source: `~/chess/engines/Caissa/src/backend/`
-Version: 1.24.21
+Version: 1.24.21 (git HEAD `d77117c`, 2026-03-12 — source UNCHANGED since this note's last body refresh)
 Author: Michal Czardybon
 
+> **Caissa is rank #13 in our local RR — NOT stronger than Coda (#7).** Its
+> choices are HYPOTHESES, not authority. The body below was written against the
+> old "GoChess" predecessor and many "Coda comparison" lines are now stale (Coda
+> has since shipped most of the headline ideas). See **Review refresh 2026-06-27**
+> at the bottom for what Coda already does and what was H0'd. Use the ranked
+> experiment list immediately below — everything in it has been prior-art checked.
+
 All parameter values are SPRT-tuned via `DEFINE_PARAM` macros. Values listed are the tuned defaults.
+
+---
+
+## Testable Experiments for Coda (ranked, refreshed 2026-06-27)
+
+Only ideas that (a) Coda does NOT already do and (b) are not already H0'd in
+`experiments.md` survive here. Everything else is consolidated under "Already in
+Coda / already H0'd" in the refresh section.
+
+### 1. Node-count move-ordering bonus at shallow plies (HEADLINE — genuinely untested)
+- **Caissa mechanism**: a persistent per-position `NodeCache` keyed by hash, populated
+  for `ply < 3` (`Search.cpp:1667-1671`). After each move it records nodes spent
+  (`Search.cpp:2000-2001 AddMoveStats`). On the NEXT iteration the move orderer adds
+  `score += 4096 * moveInfo.nodesSearched / nodesSum` when `nodesSum > 256`
+  (`MoveOrderer.cpp:417-421`). Moves that consumed the most subtree last iteration get
+  ordered earlier — a cross-iteration "this branch was hard/important" signal.
+- **How Coda differs today**: Coda has `root_move_nodes: Box<[u64;4096]>` but it is
+  **root-only (ply 0), reset every iteration** (`search.rs:825, 2141`) and feeds ONLY
+  the TM `subtree_size_multiplier` (`search.rs:2739-2777`). It is never used for move
+  ordering, and never at ply 1-2. `movepicker.rs` has no node-count term.
+- **Prior-art check**: no hit in `experiments.md` for node-count/node-cache *move
+  ordering* (only node-fraction-for-TM at line 3257). Genuinely untested direction.
+- **Sketch**: extend `root_move_nodes` accounting to ply<3 keyed by (ply, from*64+to)
+  or a small hash-keyed cache; do NOT zero it between iterations; in the quiet/capture
+  scoring loop add `BONUS * nodes_this_move / nodes_sum` (BONUS ~ one history unit) when
+  `nodes_sum > threshold`. Gate to ply<3 and `info.root_depth >= 4` so iteration 1 has data.
+- **Magnitude / risk / transfer**: moderate upside (used by SF/Caissa/Obsidian-class);
+  medium effort (cross-iteration accounting + new ordering term); risk it overlaps with
+  Coda's already-rich 4D threat history. Worth a single clean SPRT `[0,3]` STC-first.
+
+### 2. IIR also fires on STALE TT entries (trivial, untested)
+- **Caissa mechanism** (`Search.cpp:1487-1490`): IIR reduces depth by 1 when
+  `depth >= IIRStartDepth(3) && (cutNode||pv) && (!ttMove.valid || ttEntry.depth + 4 < depth)`.
+  The second clause fires IIR even when a TT move exists, if that entry is too shallow to trust.
+- **How Coda differs today** (`search.rs:3747`): Coda's IIR fires ONLY on
+  `tt_move == NO_MOVE`. A present-but-shallow TT move never triggers IIR.
+- **Prior-art check**: no `experiments.md` hit for "IIR stale TT" / "IIR tt depth". Untested.
+- **Sketch**: change the gate to
+  `tt_move == NO_MOVE || (tt_hit && tt_entry.depth + SLACK < depth)` with SLACK as a new
+  tunable defaulting ~4. One-line behavioral change behind `FEAT_IIR`.
+- **Magnitude / risk / transfer**: low magnitude; low effort; low risk. Caveat: Coda's
+  IIR ordering vs NMP was recently audited (search.rs:3745 note, NMP audit N2) — keep the
+  same call-site, only widen the condition. Good cheap `[0,3]` probe.
+
+### 3. Threat-gate the RFP "improving" discount (low effort, untested angle)
+- **Caissa mechanism** (`Search.cpp:1508-1514`): the improving term is
+  `- RfpImprovingScale * (isImproving && !OppCanWinMaterial(position, threats))` — i.e. the
+  improving discount is *suppressed* when the opponent has a material-winning threat
+  (rook-on-queen, minor-on-Q/R, pawn-on-Q/R/B/N from the threat bitboards).
+- **How Coda differs today** (`search.rs:3582`): Coda picks `RFP_MARGIN_IMP` vs
+  `RFP_MARGIN_NOIMP` on the raw `improving` flag with no threat qualification.
+- **Prior-art check**: line 642 ("improving doesn't help per-move pruning") is about
+  futility/SEE, NOT a threat-gated RFP improving term; line 78 4D-threat-history is
+  unrelated. The specific "suppress improving discount under enemy material threat" is
+  not in `experiments.md`. Coda already computes full threat bitboards (`threats.rs`), so
+  the gate is cheap.
+- **Sketch**: when `improving`, additionally require "no opponent material-winning threat"
+  before using `RFP_MARGIN_IMP`; else fall back to `RFP_MARGIN_NOIMP`. Reuse existing
+  threat masks.
+- **Magnitude / risk / transfer**: low magnitude; low effort; low risk. Plausibly redundant
+  with NNUE+threat eval already encoding the threat — but cheap to falsify. `[0,3]`.
+
+### Considered and DROPPED (do not propose)
+- **History folded into quiet SEE-pruning threshold** — H0: `#2072 quiet-see-hist`
+  (-0.3, 58k games) and line 3496 "SEE history gate" (raw -21). Caissa does this
+  (`Search.cpp:1788`) but Coda has tested it both ways.
+- **Capture-history into SEE threshold** — H0 (line 374, early-noise fade).
+- **In-check ProbCut** — the old note claimed Caissa has it; current source does NOT
+  (probcut at `Search.cpp:1582` sits inside the `!isInCheck` block). Non-idea.
+- **NMP only on cut nodes** — Coda ALREADY does this (`search.rs:3656`).
+- **ProbCut dynamic SEE threshold `probBeta - staticEval`** — Coda ALREADY does this
+  (`search.rs:3792`).
+- **4D threat-aware history / recapture extension / non-pawn + continuation corrhist** —
+  all ALREADY in Coda (CLAUDE.md history+corrhist sections; recapture H1 #758/#1817).
 
 ---
 
@@ -447,3 +528,57 @@ Note: only 1 killer move per ply (not 2). Counter move is a separate stage.
 | VNNI SIMD path | Medium | Low (hardware-dependent) | Only helps on Zen4+ / SPR |
 | NMP only on cut nodes | Trivial | Unknown | Could help or hurt, test both |
 | Prior conthist bonus on fail-low | Low | Low | Rewards good predecessor moves |
+
+---
+
+## Review refresh 2026-06-27
+
+**Source state:** Caissa HEAD `d77117c` (2026-03-12) — the C++ source is byte-identical
+to when the body above was written. The only thing that has moved is **Coda**, so this
+refresh re-frames the body against Coda's *current* feature set and supersedes the
+"Coda comparison" / "Priority Adoption Candidates" tables above where they conflict.
+
+### Verified against current Caissa source (file:line)
+- RFP: `Search.cpp:1507-1516` — confirmed `RfpDepthScaleLinear*d + RfpDepthScaleQuad*d² -
+  RfpImprovingScale*(improving && !OppCanWinMaterial)`, blended return
+  `(eval*(1024-RfpAdjBetaScale)+beta*RfpAdjBetaScale)/1024`.
+- Razoring `Search.cpp:1521-1528`; NMP cut-node-only `1531-1535`; ProbCut dynamic SEE
+  `1583-1606`; IIR incl. stale-TT clause `1487-1490`; quiet SEE pruning with history
+  `1787-1788`; LMP/history/futility `1744-1772`; node cache ply<3 `1667-1671` + ordering
+  bonus `MoveOrderer.cpp:417-421`; qsearch capture-count by depth `Search.cpp:1204-1205`.
+
+### Already in Coda since this note was written (REMOVE from "adoption candidates")
+The body's "Priority Adoption Candidates" table is now largely **done** — do not re-propose:
+- **Threat-aware quiet history** → Coda ships the richer 4D
+  `[from_threatened][to_threatened][from][to]` main history (CLAUDE.md; `e7f52b5`).
+- **6-ply / weighted continuation history** → Coda has continuation history (plies 1,2,4,6).
+- **Non-pawn white/black + continuation correction** → Coda's multi-source corrhist
+  (pawn, NP-white, NP-black, minor, major, continuation) is in production (CLAUDE.md).
+- **NMP only on cut nodes** → `search.rs:3656` (Reckless gate, already merged).
+- **ProbCut dynamic SEE threshold** → `search.rs:3792`.
+- **Fail-high score blending** → Coda has it (FH_BLEND, CLAUDE.md TT section).
+- **Recapture extension** → H1 and gated (`#758`, `#1817`); ablation -18 Elo.
+- **Singular extensions** → Coda found the *positive* extension worth ~-30 Elo
+  (`experiments.md` SE v6/v7); keeps multi-cut + negative ext only. Caissa's
+  triple-extension/blended-multicut is therefore NOT a transfer candidate for Coda.
+
+### Already H0'd in Coda (do not retest as "Caissa idea")
+- Quiet SEE threshold + history (`#2072`, line 3496) — H0.
+- Capture history into SEE threshold (line 374) — H0.
+- History bonus scaled by score-diff (line 1188) — strongly negative.
+- Equal-weight expanded correction blends (lines 1201, 1860-1866, 2672) — the *weighted*
+  version is what Coda kept; equal-weight dilutes pawn signal.
+
+### Stale claims in the body, corrected
+- **"In-check ProbCut (from Stockfish)"** (body §ProbCut): NOT present in current source —
+  all of RFP/razor/NMP/ProbCut sit inside the `!node->isInCheck` block. Treat as removed.
+- All **"GoChess"** comparison lines predate Coda's v9 + 5-source corrhist + 4D history;
+  read them as historical, not current gaps.
+
+### Net result — what actually survives as testable for Coda
+Three ideas, ranked in the top section: (1) **node-count move ordering at ply<3**
+(headline, genuinely untested, medium effort), (2) **IIR on stale TT entries** (trivial),
+(3) **threat-gated RFP improving discount** (low effort). Minor/marginal also-rans not
+promoted: Caissa's depth-scaled qsearch capture-count cap (`Search.cpp:1204`) — Coda's
+`QS_MAX_CAPTURES` infra exists at a no-op 32 (`experiments.md` line 3936); the aggressive
+1/2/3-move-at-deep-qs variant is untested but low-magnitude.

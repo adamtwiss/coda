@@ -4,9 +4,58 @@ Source: `~/chess/engines/Astra/`
 Version: 7.0-dev
 Language: C++
 NNUE: Single-accumulator (13x768 -> 1536) -> 16 -> 32 -> 1x8 with CReLU activations
-Rating: Strong modern engine (competitive gauntlet strength)
+Rating: Astra is rank **#14** in the local RR pool — **below Coda (#7)**. Its
+choices are HYPOTHESES, not authority. Do not blind-copy.
 
-Last reviewed: 2026-04-19
+Last reviewed: 2026-04-19; **refreshed 2026-06-27** (Astra source HEAD bded862
+unchanged since 2026-01-24, so Astra's code has NOT moved — the changes below
+are all on the **Coda** side: Coda has closed nearly every gap the April note
+flagged).
+
+---
+
+## Testable Experiments for Coda (refreshed 2026-06-27)
+
+**Headline: there is almost nothing left to port.** Every "high-priority" item
+in the April §10 list is now either already-in-Coda, richer-in-Coda, or
+explicitly H0'd. Astra is a near-peer *below* us; this review's main value is
+recording that the gap closed. Verified against current `src/` + `experiments.md`.
+
+### Status of the April porting list (all now CLOSED — do NOT re-propose)
+
+| April idea | Status in Coda today | Evidence |
+|---|---|---|
+| 4-source correction history | **RICHER**: Coda has pawn + np(W) + np(B) + minor + major + continuation **+ transition** (6+ sources) | `search.rs:892-899` (`pawn_corr`/`np_corr`/`cont_corr`/`trans_corr`), CLAUDE.md §Correction history |
+| Threat-based move-ordering bonuses | **RICHER**: escape bonuses Q/R/minor, null-threat escape, offense bonus, discovered-attack, SEE-gated quiet-check | `movepicker.rs:650-712` |
+| 4-ply continuation history (1,2,4,6) | **DONE** | `movepicker.rs:630-640`, CLAUDE.md §History tables |
+| TT-cutoff history bonus | **DONE** (merged v5) + cont-hist malus on cutoff | exp #1871-1875; `search.rs:3218` |
+| Linear history bonus shape `MULT*d+OFF` | **DONE**: `clamp(0,MAX,MULT*d−OFFSET)` is exactly this | CLAUDE.md §History tables |
+| Aspiration fail-high depth reduction (`root_depth−fail_high_count`) | **DEAD — H0'd 3×** (one attempt −353 Elo; fundamental conflict with Coda's aspiration loop) | exp #1319, #2418-2422 |
+| 50-move eval decay `eval*(200−hmc)/200` | Astra's exact form **H0'd −3.0**; Coda since adopted a *better* halfmove scale that actually reaches 0 | exp 50-Move §; `search.rs:1252 apply_halfmove_scale` |
+| Static-eval opponent-quiet history update (`static_h_mult*(cur+prev)/16`) | **DEAD — H0'd**: "opponent move feedback too noisy" | exp #2437, #3336-3342 |
+| Destination-threatened / enter-threat penalty | **DEAD — H0'd ×2** (mechanism overlaps escape bonus) | exp #773, #781 |
+| `r -= (tt_depth>=depth)` LMR "trust deep TT" term | Coda lacks this *one* term, but it's a loose knob overlapping `tt_pv` (which Coda has) — CLAUDE.md warns against loose knobs | `search.rs:4346-4355` |
+
+### The only genuinely-untested residue (LOW confidence)
+
+**1. Material-scaled eval — `eval = (230 + material/42) * raw / 440`**
+   (Astra `search.cpp:900-906`; Berserk/Texel also use it.)
+   - **Coda diff**: Coda applies no explicit material multiplier on the NNUE
+     output (`eval.rs` / `nnue.rs` forward → search threshold).
+   - **Prior art**: no *direct* SPRT found, BUT Coda already has 8 NNUE output
+     buckets indexed by `(popcount−2)/4` (`nnue.rs:335-338`), the SAME material
+     signal Astra buckets on — so the net already conditions eval on material.
+     The search-side multiplier is only the *residual* not captured by buckets.
+   - **Sketch**: 1 line at the eval call site; gate the two constants behind
+     tunables (Astra: 230, 42 over `EVAL_SCALE`-equivalent 440).
+   - **Magnitude/risk**: small (≤ a few Elo) and **high redundancy risk** vs
+     output buckets — likely neutral. Cheap to try, low expected value. Run STC
+     `[0,3]` only if fleet is idle; do not prioritise.
+
+**Recommendation:** spend no fleet on Astra-derived ports beyond optionally the
+material-scale probe. The productive near-peer signal has been exhausted; future
+gains are more likely from the #1-6 reference engines (Stockfish, Reckless,
+Berserk, Obsidian, PlentyChess, Alexandria), not from #14.
 
 ---
 
@@ -157,6 +206,10 @@ Adds pawn/minor/non-pawn + continuation-based corrections.
 **Coda comparison**: Material scaling is novel and sensible. We don't scale eval by material. The decay is standard. Correction histories, we have only pawn; they have 4 sources + continuation. Worth porting.
 
 ### 2.4 Correction Histories
+
+> **STALE (2026-06-27):** the "Coda has only pawn" comparison below is wrong as
+> of this refresh. Coda now has 6+ sources (pawn / np-W / np-B / minor / major /
+> continuation + transition). Astra's 4-source design is a SUBSET of Coda's.
 
 **Sources** (`history.h:130-165`):
 1. `pawn[color][8192]` indexed by pawn_hash
@@ -695,6 +748,11 @@ Combines stability, eval volatility, and node distribution for sophisticated sto
 ---
 
 ## 10. Summary: Ideas to Port
+
+> **SUPERSEDED (2026-06-27):** the ranked list below was written in April and is
+> now stale — see the "Testable Experiments for Coda" section at the TOP of this
+> file. Every item here is now already-in-Coda, richer-in-Coda, or H0'd. Do not
+> action this section; it is retained only for history.
 
 ### High Priority (10-20 Elo each, moderate effort)
 
