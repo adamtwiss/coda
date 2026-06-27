@@ -16715,3 +16715,13 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
   Coda it's neutral-to-negative — our NMP (cut-node gated, eval-margin R, threat
   margin) already extracts the available NMP value. From the SF/Reckless 2-month
   survey batch.
+- **zeus/lmp-nonpawn-guard-v2 #2343** — add `stm_non_pawn != 0` to the LMP gate
+  (SF/Obsidian/Plenty consensus; from the 2026-06-25 LMP audit, hypothesis (A)
+  "missing non-pawn guard"). **H0 ✗ (-0.7 ±1.7, LLR -3.01).** [STC [0,3]]
+  Neutral standalone — but +14% bench (LMP no longer fires in pawn/low-material
+  endgames), a real tree-shape change. The audit predicted the guard alone is
+  neutral and the win comes from a cluster retune (guard removes dangerous
+  prunes → SPSA can pull LMP_BASE toward consensus 3 and prune harder in the safe
+  middlegame). **Retune-on-branch in flight as tune #2353** (LMP_BASE/LMP_DEPTH/
+  SEE_QUIET_MULT/FUT_BASE/FUT_PER_DEPTH/FUT_LMR_DEPTH, STC). Verdict on the guard
+  pending that tune + its SPRT.
