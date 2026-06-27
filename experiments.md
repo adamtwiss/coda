@@ -16708,3 +16708,10 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
 - **#2318 experiment/corr-err-div-6 — STOPPED (not mine to merge).** CORR_ERR_DIV
   8->6 probe; +0.4 ±1.2 at 83k, trending H0; learnings captured, stopped to free
   fleet for the zeus batch.
+
+- **zeus/nmp-tt-bound #2329** — NMP "touching bounds" (Reckless f27c57c6, Beal):
+  null-search against a TT-proven lower bound below beta + !is_win guard. **H0 ✗
+  (-2.1 ±2.4, LLR -2.96).** [STC [0,3]] Reckless gained +2.35/+1.66 STC/LTC; for
+  Coda it's neutral-to-negative — our NMP (cut-node gated, eval-margin R, threat
+  margin) already extracts the available NMP value. From the SF/Reckless 2-month
+  survey batch.
