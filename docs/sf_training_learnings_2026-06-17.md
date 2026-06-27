@@ -217,3 +217,70 @@ Two to fund: **(#3)** the targeted-data blindspot loop (already in flight; tied
 to a measured loss class) and **(#1)** the out-offset eval calibration (cheapest
 slice of the one unported SF mechanism; targets Coda's measured win/loss
 asymmetry). Both are S200-probe-cheap to falsify before committing GPU-hours.
+
+---
+
+## Source-verified threats.yaml values + fen-skip semantics (2026-06-27)
+
+Re-read SF's recipe from source (`vondele/nettest/threats.yaml` @ `b5023a3`, and
+the nnue-pytorch dataloader `data_loader/cpp/training_data_loader.cpp`) to pin
+the *exact* semantics — a casual read of the YAML got the skip direction
+backwards.
+
+**Verified threats.yaml values (advanced stage):**
+
+| key | value | meaning |
+|-----|-------|---------|
+| `random-fen-skipping` | 10 | keep 1/(N+1) = **1/11 ≈ 9.1%** of positions (NOT "every 10th") |
+| `early-fen-skipping` | 18 | hard cut: skip `ply <= 18` (keep ply ≥ 19) |
+| `soft-early-fen-skipping` | 32 | probabilistic accept ramp for ply 19–31, full keep ≥ 32 |
+| `pow-exp` | 2.435 | loss exponent |
+| `qp-asymmetry` | 0.23 | over-estimation penalty |
+| `in-scaling` / `in-offset` | 300 / 300 | sigmoid on NETWORK output (loss) |
+| `out-scaling` / `out-offset` | 350 / 300 | sigmoid on DATA score (loss) |
+| `start-lambda` / `end-lambda` | 0.74 / 0.74 | constant **WDL = 0.26** |
+
+**`random-fen-skipping` — exact code** (`training_data_loader.cpp`):
+```cpp
+skip_prob = double(N) / (N + 1);                  // N=10 -> 10/11 = 0.909
+random_skip_threshold = skip_prob * ~0ULL;
+if (random_fen_skipping && prng() < random_skip_threshold) return true; // SKIP
+```
+So N=10 **skips ~90.9%, keeps ~9.1%**. Its purpose is intra-game decorrelation
+(consecutive positions in a game are highly correlated; sparse sampling breaks
+that), plus broad epoch coverage.
+
+**How Coda achieves the same goal — differently, and we keep it that way:**
+- **Shuffle buffer** (size-adjustable) + **multi-file interleave**
+  (`--data-order interleave`, measured very effective — +40 #1712). These
+  decorrelate by *reordering* while keeping **all** decoded positions.
+- We deliberately do **NOT** copy SF's keep-9%: Bullet decodes positions on CPU,
+  so skipping ~90% means decoding ~11× the positions to feed the GPU the same
+  batch rate → **CPU-decode becomes the bottleneck** (would need a Bullet
+  redesign). Our shuffle+interleave is strictly more *decode-efficient* (no
+  discarded decodes) and reaches the same decorrelation end. **This is not a
+  recipe gap to close** — it is a different valid solution to the same problem.
+  We also run a light `--fen-skip-prob 0.5` (keep 50%) for coverage, not as the
+  primary decorrelator.
+- The ply cuts DO map: our hard `ply >= 16` ≈ SF `> 18` (SF one ply stricter;
+  the S200 ply18 probe tested moving toward it); our `--soft-early-ply 28
+  --soft-early-ply-floor 0.25` ≈ SF soft-32 + its 4-point ply ramp.
+
+**in/out scaling + offset — what they are, and our take (we do none of it).**
+These parameterize the antisymmetric double-sigmoid that maps eval →
+win-probability *inside the loss*: `in-*` on the network output, `out-*` on the
+data/target score. `offset` shifts where the sigmoid is centred (offset 300
+concentrates loss sensitivity around ±300cp — moderate, decisive-ish advantages
+— and flattens it near 0 and at the extremes); `scaling` sets the slope. Bullet
+currently applies a plain sigmoid (no in/out split, no offset).
+
+Assessment: a **second-order loss-calibration refinement, not a fundamental** —
+Coda already measures SF-class on eval quality (Spearman ~0.853) without it, so
+**low priority in isolation**. Two things keep it from zero: (a) the
+**out-offset** specifically reshapes *where* eval accuracy is pushed, which
+plausibly touches our measured win/loss asymmetry (this doc's rec #1); (b) these
+four params are **co-tuned by SF against nElo alongside pow-exp / qp-asymmetry /
+WDL**, so bolting one onto our current loss in isolation may undersell or misfire
+— same coupling lesson as qp-asymmetry over-correcting at our exponent (#2308 /
+the exponent study). If pursued: implement in the Bullet fork and test the
+*coherent* SF loss block together, not this one slice alone.
