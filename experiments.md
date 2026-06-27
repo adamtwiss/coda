@@ -16628,8 +16628,7 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
     MALUS path did not, slowly inflating capture-history magnitude vs the (scaled)
     bonus + quiets. Mirrored the bonus path exactly. [-2,1] non-regression bound — point
     estimate +1.0 (lower CI ~-0.6), a marginal bankable win. Rebased onto current main,
-    re-benched 2612184, split into clean docs+search commits, branch pushed; merge-ready,
-    merge gated on Adam's go.
+    re-benched 2612184, merged (commit 29dfec7).
   - **#2317 audit/paired-cont-corr — H0 ✗ (−0.7 ±1.7, LLR −2.96, N=42452) [0,3].**
     Paired 2-D continuation correction (the deep-audit corrhist doc flagged all 6
     reference engines using 2-D cont-corr). Clean regression — confirms the contrary
@@ -16637,8 +16636,8 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
     correction signal"). Coda's existing continuation-correction shape stands.
     **Verdict: leave cont-corr as-is; the 2-D pairing doesn't fit Coda's signal.**
 
-  **Wave-3 net result: 4 SPRTs → 1 H1 merged (qs-capture-unify +2.3), 1 H1 merge-ready
-  (cap-malus-nfh +1.0, gated), 2 H0 (ttcut-malus-rescale −8.2, paired-cont-corr −0.7).
+  **Wave-3 net result: 4 SPRTs → 2 H1 merged (qs-capture-unify +2.3, cap-malus-nfh +1.0
+  = +3.3 Elo banked), 2 H0 (ttcut-malus-rescale −8.2, paired-cont-corr −0.7).
   Both H0s confirmed standing prior art (frozen-constant load-bearing; ply-2 corr too
   noisy) — the deeper second pass found genuine wins are now scarcer and need careful
   prior-art cross-checks, exactly as expected.**
