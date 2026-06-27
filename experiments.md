@@ -16676,3 +16676,9 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
   nodes Coda apparently still needs to search the later moves at fuller depth
   (consistent with its forced-win-guards direction of pruning LESS there). From
   the SF/Reckless 2-month survey batch.
+
+- **zeus/probcut-improving #2322** — improving-conditioned ProbCut depth
+  (pc_depth = depth-4-improving; SF d6483505 / Reckless 08f2cfa4). **H0 ✗ (+0.2
+  ±1.1, LLR -2.99).** [STC [0,3]] Both engines gained ~+2.5 from it, but it's
+  neutral for Coda's ProbCut (already gated on staticEval + the threats/unstable
+  carve-outs). From the SF/Reckless 2-month survey batch.
