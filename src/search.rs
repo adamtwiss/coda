@@ -4770,7 +4770,15 @@ fn negamax(
                     // (matching Stockfish/Obsidian/Viridithas — captures that fail should be
                     // penalized regardless of whether the best move was quiet or tactical)
                     {
-                        let cap_malus = capture_history_malus(depth);
+                        // numFailHighs multiplicative scaling — mirror the
+                        // capture-BONUS path (#1054) exactly so the failed
+                        // captures' penalty tracks the cutoff capture's bonus.
+                        // Previously the only beta-cutoff history update missing
+                        // NFH scaling, which slowly inflated capture-history
+                        // magnitude relative to the (scaled) bonus and quiets.
+                        let raw_cap_malus = capture_history_malus(depth);
+                        let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
+                        let cap_malus = raw_cap_malus + raw_cap_malus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
                         let cap_count = if is_cap { n_captures_tried.saturating_sub(1) } else { n_captures_tried };
                         for i in 0..cap_count {
                             let (cp, ct, cv) = captures_tried[i];
