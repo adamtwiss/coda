@@ -1984,7 +1984,10 @@ pub unsafe fn apply_threat_deltas(
     pov: Color,
     mirrored: bool,
 ) {
-    #[cfg(target_arch = "x86_64")]
+    // Runtime dispatch only in non-AVX2-baseline builds; AVX2-baseline (native
+    // fleet) builds fall through to the body directly — see the note on
+    // `NNUENet::forward_with_l1_pairwise_inner`.
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
     if is_x86_feature_detected!("avx2") {
         return unsafe {
             apply_threat_deltas_avx2(
@@ -1999,7 +2002,7 @@ pub unsafe fn apply_threat_deltas(
 
 /// AVX2-specialized wrapper for [`apply_threat_deltas`]. Only call when AVX2
 /// is available.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
 #[target_feature(enable = "avx2")]
 unsafe fn apply_threat_deltas_avx2(
     dst: &mut [i16],
@@ -2096,7 +2099,7 @@ pub unsafe fn apply_threat_deltas_dual(
     mirrored_w: bool,
     mirrored_b: bool,
 ) {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
     if is_x86_feature_detected!("avx2") {
         return unsafe {
             apply_threat_deltas_dual_avx2(
@@ -2113,7 +2116,7 @@ pub unsafe fn apply_threat_deltas_dual(
 
 /// AVX2-specialized wrapper for [`apply_threat_deltas_dual`]. Only call when
 /// AVX2 is available.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
 #[target_feature(enable = "avx2")]
 unsafe fn apply_threat_deltas_dual_avx2(
     dst_w: &mut [i16],
