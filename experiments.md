@@ -16688,3 +16688,11 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
   the non-regression upper bound. Correctness + Elo; aligns with the
   never-forfeit-a-won-game theme. First win from the SF/Reckless 2-month survey
   batch. (Corroborated by #2324 reduce-more-at-winning-beta regressing.)
+
+- **zeus/hist-decayed-malus #2320** — rank-decay the quiet malus by ~1/i² so
+  late never-plausible quiets get smaller penalties (Reckless 5e669a65). **H0 ✗
+  (-0.1 ±1.3, LLR -2.96).** [STC [0,3]] Neutral for Coda — our flat malus over
+  searched quiets is already well-shaped (and the per-quiet malus is small enough
+  that rank-decay doesn't move the needle). The convergent history-weighting idea
+  splits: sibling-bonus (#2319) carries, decayed-malus doesn't. From the
+  SF/Reckless 2-month survey batch.
