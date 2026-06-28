@@ -16844,3 +16844,15 @@ strongest signal in this band). Working the ranked queue as one-change SPRTs.
     retune pulled the untuned +13.5% node-blowup back to +0.4% (dev 2,704,370 vs
     base 2,692,538) — what a correct magnitude recalibration should do.
   - **Re-SPRT #2359** (tuned, rebased) vs main, `[0,3]` — IN FLIGHT.
+
+- **zeus/history-shape-tuned #2354** — applied the #2340 history-shape SPSA
+  outputs (9-param cluster: HIST_BONUS_OFFSET 24→19, HIST_BONUS_MULT 314→309,
+  HIST_BONUS_MAX 1506→1481, HIST_MALUS_MULT/MAX, NFH_CAP/DIV_10X, HIST_SIBLING_DIV
+  256→240). **H0 ✗ (-0.5 ±1.6, LLR -2.95) at [0,3].** The SPSA cluster shift
+  read as a coherent move in the tune but is **neutral on the prod net** in
+  self-play — no bankable gain; do NOT re-apply these values to trunk. (Note: the
+  #2340 tune ran on the v6 net; the #2342 ProbCut merge advanced main mid-run but
+  #2354's base was pinned pre-probcut so the result is clean. Atlas's T3a #2357/
+  #2359 retune independently moved HIST_BONUS_OFFSET 24→16 as part of a broader
+  magnitude rescale — that's a separate, in-flight basin.) Closes the
+  history-shape-tune follow-up from the cross-engine survey batch.
