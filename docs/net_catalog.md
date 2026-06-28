@@ -3,7 +3,22 @@
 Authoritative list of v9 nets, their OpenBench hashes, provenance, and status.
 Update this file when you promote a new production net or retire an old one.
 
-**Current v9 production:** `035195DB` — `net-035195DB.nnue`
+**Current v9 production:** `E7D892E3` — `net-E7D892E3.nnue`
+(source file `multi-v8-l132-s3-v3-swa.nnue`). Promoted **2026-06-28**.
+**multi-v8 multistage, stage-3 "v3"** = all-data stage 3 (vs the
+newer-files-only s3-v1), based on s3-v1 with `final-lr 1e-6` over
+`/workspace/stage2`. Arch: FT=1024 **L1=32**, kb10 reckless, crelu hidden,
+factoriser, mse-power 3.0, SWA tail — same L1=32 family as the 035195DB prod it
+replaces. Validation: **#2305** v8s3(v1) **+5.9** vs prod 035195DB; **#2358**
+v3 **+4.3** over v1 → transitively **~+10** vs 035195DB. Promoted on the
+**current (035195DB-era) trunk** (a validated config — #2305/#2358 measured the
+net delta on this trunk, so it is not a hidden detune). The v8s3-calibrated LTC
+retune **#2351** is in validation (2361/2362 LTC + 2364/2365 STC, all net-matched
+`--dev/--base-network`; 1× H1, rest trending +) and lands as a fast-follow once
+resolved. All v9 SPRTs against trunk should now pass
+`--dev-network E7D892E3 --base-network E7D892E3`.
+
+**Previous v9 production:** `035195DB` — `net-035195DB.nnue`
 (source file `multi-v6-l132-s5-swa.nnue`). **First L1=32 prod** (prior prods
 were L1=16). Uploaded as an asset to the existing `v0.7.0-nets` release (no
 version bump — parity-strength switch); referenced by `net.txt`. Promoted
