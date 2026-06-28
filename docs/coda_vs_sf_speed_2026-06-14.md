@@ -1,5 +1,20 @@
 # Coda vs Stockfish per-node speed review (2026-06-14)
 
+> **⚠️ STALE PREMISE — corrected 2026-06-28.** The "SF ~44% faster
+> single-thread / ~69-80% contended" headline below was measured on Hercules
+> (AVX2) with an old net. **Re-measured head-to-head on Zen 5 / AVX-512 with the
+> v8s3 net: the gap is closed.** Single-thread Coda is +2.4% cycles/node (~6.5%
+> NPS) of SF; **16× contended Coda is AHEAD** (12.2M vs 8.7M agg nps). The
+> L1=32 AVX-512 VNNI kernels + FT retile + new net did it. Also corrected: this
+> doc's thesis *"THE GAP IS THE THREAT ACCUMULATOR"* is wrong — SF has the
+> structurally identical separate-threat-accumulator design (Reckless pattern);
+> the 31%-vs-5.5% was a profiling-attribution artifact (SF's threat update is
+> template-inlined into `evaluate`). **Do not use this doc to justify a
+> pure-speed hunt — Coda is SF-class.** Full evidence:
+> `docs/inference_profile_2026-06-28.md`. The bit-identical-cleanup candidates
+> (D/F/G) and structural notes below remain accurate as *descriptions*, but the
+> motivating gap is gone.
+
 **Why:** SF is ~44% faster single-thread and ~80% faster under 16× contention
 than Coda on identical hardware (Hercules). At Coda's measured ~130-140 STC
 Elo/NPS-doubling, the contended gap is **~115 STC Elo — ~80% of the ~130-150

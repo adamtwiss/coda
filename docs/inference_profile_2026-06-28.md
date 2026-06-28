@@ -137,3 +137,38 @@ FT-gather prefetch (no-op, above).
   -Cforce-frame-pointers=yes"` for symbolized `perf record --call-graph fp`.
 - Driver: `scripts/profile_inference.sh <net> [depth]`.
 - All numbers on v8s3 with the local OB worker stopped (single-engine, full NPS).
+
+## HEAD-TO-HEAD vs Stockfish on this box (2026-06-28) — the "30% gap" is STALE
+
+Ran Coda (v8s3) and the OB Stockfish binary (`Stockfish-E556FA69`) under `perf
+stat` on the **same** Zen 5 box, worker stopped. This is the apples-to-apples
+the June-14 doc did on *old* hardware (Hercules AVX2) + *old* net; redone here:
+
+| regime | Coda | SF | gap |
+|---|---|---|---|
+| single-thread cycles/node | 2981 | 2912 | Coda **+2.4%** |
+| single-thread insns/node | 6587 | 6173 | Coda +6.7% |
+| single-thread IPC | 2.21 | 2.12 | Coda higher |
+| single-thread NPS | ~1.85M | ~1.97M | SF +6.5% |
+| **16× contended agg NPS** | **12.2M** | **8.7M** | **Coda ahead** |
+
+**Coda is SF-class on current hardware + net.** The "SF ~44% faster
+single-thread / ~69-80% contended" premise in `coda_vs_sf_speed_2026-06-14.md`
+is **no longer true** — closed by the L1=32 AVX-512 VNNI kernels, FT retile,
+SIMD-latent fixes, and the v8s3 net since June. Single-thread is ~even
+(+2.4% cycles/node); **contended (the bots' regime) Coda is ahead**, because
+Coda uses less memory traffic/node so it scales better under SMT bandwidth
+pressure. (Contended SF may also be hash-thrashing — the binary is tagged
+`1C000000` ≈ 469MB hash × 16 — so don't over-read the +40%; the point is it is
+NOT 30-69% slower.)
+
+**Consequence:** there is no 30% NPS gap to find. The +6.7% single-thread
+instruction overhead (checkers/pinned ~2.4% measured, the f32 L2/output tail,
+threat-gen scalar) is distributed single-digit slices that Coda's higher IPC +
+better contended scaling already offset — none worth a refactor. **Pure-speed
+vs SF is effectively done.** The real ~100-Elo Coda↔SF gap is eval/search
+*quality* per node, not NPS — redirect speed effort there.
+
+Caveats: bench positions, one box (Zen 5 / AVX-512 — matches the codabot/coda_bot
+deploy hosts); cross-engine node-counting differs slightly so cycles/node is
+approximate but standard. A pure-AVX2 host (no AVX-512) could still favor SF more.
