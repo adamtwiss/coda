@@ -99,26 +99,7 @@ threat-feature hypothesis.
 
 > Coda search **+7.06** · static **+2.86**, SF **+0.00**
 
-```
-  -----------------
-8 |.|.|.|.|.|.|♚|.|
-  -----------------
-7 |.|.|.|♜|.|.|♝|.|
-  -----------------
-6 |.|.|.|.|♜|♟|.|.|
-  -----------------
-5 |.|♟|♟|.|♞|♘|.|♕|
-  -----------------
-4 |.|.|.|.|.|.|.|.|
-  -----------------
-3 |.|♙|.|.|.|.|♖|.|
-  -----------------
-2 |.|.|♛|.|.|.|♙|.|
-  -----------------
-1 |.|.|.|.|.|♖|.|♔|
-  -----------------
-   a b c d e f g h
-```
+![Stormphrax m40 — Coda +7.06, SF 0.00; green = SF best move](img/overrate_stormphrax_m40.svg)
 
 SF PV: Qh6 Ree7 Qh5 Re6 (repetition). Coda is White and **a clean minor piece down** (Black has N+B for nothing). The threat features value the Qh5/Nf5 battery at +7; there is no breakthrough — it is a draw by perpetual.
 
@@ -128,26 +109,7 @@ SF PV: Qh6 Ree7 Qh5 Re6 (repetition). Coda is White and **a clean minor piece do
 
 > Coda search **+5.58** · static **+5.46**, SF **+0.38**
 
-```
-  -----------------
-8 |♛|.|.|.|.|♜|.|.|
-  -----------------
-7 |.|.|.|.|.|♟|.|.|
-  -----------------
-6 |.|.|♞|♟|.|♞|.|♚|
-  -----------------
-5 |.|.|♟|.|♟|♙|♘|♝|
-  -----------------
-4 |.|♟|♙|.|.|.|.|.|
-  -----------------
-3 |.|♙|.|♙|.|.|♕|♙|
-  -----------------
-2 |.|.|.|.|.|.|♗|♔|
-  -----------------
-1 |.|.|.|.|.|♖|.|.|
-  -----------------
-   a b c d e f g h
-```
+![Quanticade m27 — static +5.46, SF +0.38; green = SF Bxc6](img/overrate_quanticade_m27.svg)
 
 SF PV: Bxc6 Qxc6 Qe3 … ≈equal. The static net (no search) already returns +5.46 on a position SF calls +0.46. The Ng5 + Qg3 attacking shape reads as winning; Black is fine once the c6 knight is traded. This is the purest threat-overrate in the set.
 
@@ -166,26 +128,7 @@ that are fundamentally drawn or very hard to convert. Mix of EVAL-blind
 
 > Coda search **+3.15** · static **+4.02**, SF **+0.07**
 
-```
-  -----------------
-8 |.|.|.|.|.|.|.|.|
-  -----------------
-7 |.|.|.|.|♚|♟|.|.|
-  -----------------
-6 |.|.|.|.|♝|.|♟|.|
-  -----------------
-5 |.|.|.|.|♕|.|.|.|
-  -----------------
-4 |.|♙|.|♟|♙|.|♙|.|
-  -----------------
-3 |♟|.|.|♙|♛|♙|.|.|
-  -----------------
-2 |♙|.|♜|.|.|♘|♔|.|
-  -----------------
-1 |.|.|.|.|.|♖|.|.|
-  -----------------
-   a b c d e f g h
-```
+![PlentyChess m34 — static +4.02, SF +0.07; green = SF b5](img/overrate_plentychess_m34.svg)
 
 SF PV: b5 g5 Qb8 … 0.00. Static +4.02 vs SF +0.07. Net overrates the centralised Qe5 + pawn mass and misses Black's a3 passer + active Qe3/Rc2 counterplay.
 
@@ -195,26 +138,7 @@ SF PV: b5 g5 Qb8 … 0.00. Static +4.02 vs SF +0.07. Net overrates the centralis
 
 > Coda search **+3.90** · static **+3.30**, SF **+0.18**
 
-```
-  -----------------
-8 |.|.|.|.|.|.|.|.|
-  -----------------
-7 |.|♖|.|.|.|.|.|.|
-  -----------------
-6 |.|.|.|.|.|♟|♟|♔|
-  -----------------
-5 |.|.|.|♜|.|♚|.|♟|
-  -----------------
-4 |.|.|.|.|.|.|.|♙|
-  -----------------
-3 |.|.|.|.|.|♙|♙|.|
-  -----------------
-2 |.|.|.|.|.|.|.|.|
-  -----------------
-1 |.|.|.|.|.|.|.|.|
-  -----------------
-   a b c d e f g h
-```
+![Viridithas m72 — Coda +3.90, SF +0.18; green = SF Rb4](img/overrate_viridithas_m72.svg)
 
 SF PV: Rb4 g5 … +0.18. Material dead equal (R+3P each). Textbook drawn rook ending; the net scores activity as +3.9 and does not grasp the drawing tendency of balanced rook endgames.
 
@@ -224,26 +148,7 @@ SF PV: Rb4 g5 … +0.18. Material dead equal (R+3P each). Textbook drawn rook en
 
 > Coda search **+5.49** · SF **+1.82**
 
-```
-  -----------------
-8 |.|.|.|.|.|.|.|.|
-  -----------------
-7 |.|.|.|.|.|♚|.|.|
-  -----------------
-6 |.|.|.|.|.|.|.|.|
-  -----------------
-5 |.|.|.|.|.|.|.|.|
-  -----------------
-4 |.|.|.|.|♖|.|.|.|
-  -----------------
-3 |.|.|.|.|.|♙|.|.|
-  -----------------
-2 |.|.|.|.|.|♔|.|.|
-  -----------------
-1 |.|.|.|♛|.|.|.|.|
-  -----------------
-   a b c d e f g h
-```
+![Clover m81 — Coda +5.49, SF +1.82; green = SF Qh1](img/overrate_clover_m81.svg)
 
 SF PV: Qh1 Re2 … +1.82 (slow technical Q-vs-R win). Coda (Black) correctly sees it is winning, but +5.49 vs +1.82 overstates how easy the conversion is — and it was not converted (drawn).
 
@@ -261,26 +166,7 @@ correction should help; if it doesn't, it's a genuine search-optimism bug.
 
 > Coda search **+2.87** · static **-1.55**, SF **+0.00**
 
-```
-  -----------------
-8 |.|.|.|.|.|.|.|.|
-  -----------------
-7 |.|.|.|.|.|.|.|.|
-  -----------------
-6 |.|.|.|.|.|.|.|♖|
-  -----------------
-5 |.|.|.|.|.|.|.|.|
-  -----------------
-4 |.|.|.|♟|.|♔|.|.|
-  -----------------
-3 |♜|.|.|.|.|.|.|♙|
-  -----------------
-2 |.|.|♚|.|.|.|.|.|
-  -----------------
-1 |.|.|.|.|.|.|.|.|
-  -----------------
-   a b c d e f g h
-```
+![Integral m57 — search +2.87, SF 0.00; green = SF d3](img/overrate_integral_m57.svg)
 
 SF PV: d3 Rc6+ … 0.00. R+P vs R+P, dead drawn. STATIC is honest (−1.55); the SEARCH returns +2.87. The overrate is produced by the search, not the root eval — the leaf-inflation class.
 
@@ -342,6 +228,10 @@ bug. Keep these two classes separate.
   Coda-POV. PGN eval comments are STM-POV; python-chess strips the `{}` braces
   (regex must NOT require `{`). Mate → ±30000. `mine` filters draws/losses with
   sustained overrate; `oracle` adds SF ground truth + `true_overrate`.
+- `scripts/gen_overrate_svgs.py` — regenerates the board diagrams as
+  `docs/img/overrate_*.svg` (python-chess `chess.svg`; green arrow = SF's deep
+  best move). SVGs render natively on GitHub **and** GitLab. Add a position to
+  its `POSITIONS` list and re-run; reference with `![alt](img/<key>.svg)`.
 - Decomposition scratch: `/tmp/static_decomp2.py`, `/tmp/enrich_decomp.py`
   (adds quietness/phase), `/tmp/sf_diag.py` (SF PV + diagram).
 - Gotchas: `len(board.pieces(...))` not `chess.popcount(...)` on a SquareSet;
@@ -355,3 +245,6 @@ bug. Keep these two classes separate.
   overrates (33 draws / 2 losses) → static-vs-search decomposition (11 EVAL-blind,
   16 search-inflate, 8 tactical). Three themes named with diagrams. KBN Integral
   game classified as conversion (not eval).
+- **2026-06-28** — Diagrams converted from ASCII to SVG
+  (`scripts/gen_overrate_svgs.py`, green arrow = SF best move) for clean GitHub
+  **and** GitLab rendering.
