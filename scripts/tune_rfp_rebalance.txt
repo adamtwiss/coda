@@ -1,0 +1,3 @@
+RFP_DEPTH, int, 17, 2, 20, 2.0, 0.002
+RFP_MARGIN_IMP, int, 29, 0, 150, 8.0, 0.002
+RFP_MARGIN_NOIMP, int, 34, 0, 200, 10.0, 0.002

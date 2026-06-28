@@ -301,6 +301,52 @@ SPSA-down signal argues against it.
 
 ---
 
+## Threat-feature probe — does the threat block *cause* the overrates? (2026-06-28)
+
+Ran item #3 (threat-feature probe) on the current prod net **035195DB** using
+`CODA_NO_THREAT_ACC=1` (zeros the threat-accumulator contribution, falls through
+to FT-only). This is a **degraded** path — the threat features were trained
+jointly, so the FT-only forward is not a calibrated sub-net. Trust the
+**direction/sign** of movement, not the absolute magnitudes. Statics are
+white-side; SF is Coda-POV.
+
+| theme · position | static (035195DB) | threats-OFF | Δ | SF |
+|---|---|---|---|---|
+| 1 Stormphrax m40 | +1.84 | +5.14 | **+3.30** | 0.00 |
+| 1 Quanticade m27 | **+0.02** | +4.61 | **+4.59** | +0.38 |
+| 2 PlentyChess m34 | −1.73 | +0.94 | +2.67 | +0.07 |
+| 2 Viridithas m72 | +2.82 | +0.63 | **−2.19** | +0.18 |
+| 2 Clover m81 (Coda-POV +7.32) | −7.32 | −7.36 | ~0 | +1.82 |
+| 3 Integral m57 | −0.84 | −0.72 | ~0 | 0.00 |
+
+**Two findings that revise the doc's framing:**
+
+1. **The current net (035195DB) has already self-healed most of Theme 1.** The
+   headline statics in §Themes were measured on an *older* prod net. On 035195DB,
+   **Quanticade — the "purest threat overrate" at static +5.46 — now reads
+   +0.02** (SF +0.38). Stormphrax fell +2.86 → +1.84. The threat-overrate-on-
+   attacks class is largely gone on the deployed net; the doc's Theme-1 numbers
+   are stale and must be re-baselined before being used as training targets.
+
+2. **Threats are NOT the universal cause — the sign is position-specific.**
+   Turning threats off moves attack positions and PlentyChess *up* (further from
+   SF) → on those, the threat block is **restraining/corrective**; the base FT
+   over-attacks and threats pull it back toward SF. It moves Viridithas (balanced
+   rook ending) *down*, ~all of its +2.82 → +0.63 → there the threat features
+   **are the culprit** (rook-activity over-credit). On the Q-vs-R / R+P endings
+   (Clover, Integral) threats are **inert** → that overrate is material/technique
+   scaling, not threats. The heterogeneous signs rule out a uniform
+   degraded-path artifact.
+
+**Implication for the plan.** "Emit a threat-overrate training set" is weaker
+than assumed on the current net: the attack class is mostly fixed, and where real
+overrates survive they split into (a) **threat-attributable** (balanced rook
+activity — Viridithas class) and (b) **non-threat** (Q-vs-R/R+P technique —
+Clover/Integral class). Re-baselining the full mined set on 035195DB to find
+which overrates *survive* the current net is now the gating step (see #4).
+
+---
+
 ## Actionable hypotheses & next steps
 
 1. **Training correction set (theme 1 + drawn endgames).** Emit the bucket-B
@@ -315,11 +361,15 @@ SPSA-down signal argues against it.
    static ≈ SF(leaf) → genuine search-propagation bug. *Blocker:* Coda
    suppresses `info`/`pv` lines over UCI — need a PV dump path or instrument the
    search.
-3. **Threat-feature probe (theme 1).** On the theme-1 statics (Stormphrax,
-   Quanticade), check whether dampening/ablating threat features pulls the
-   static eval toward SF. If yes, it localises the overrate to the threat block
-   and motivates either a training fix or a threat-scaling change.
-4. **Scale the mine.** This run was a 43-position proof-of-pipeline. Run the full
+3. **Threat-feature probe (theme 1). ✅ DONE 2026-06-28** — see §"Threat-feature
+   probe" above. Result: threats are *not* the universal cause. Restraining on
+   attacks (Theme 1, which the current net mostly already fixed), causal only on
+   the balanced-rook-ending overrate (Viridithas class), inert on Q-vs-R/R+P.
+4. **Re-baseline the mined set on 035195DB, then scale the mine (GATING).** The
+   probe showed the net moved under the doc (Quanticade +5.46 → +0.02), so the
+   first job is to re-score the existing mined positions on the *current* prod net
+   and keep only the overrates that **survive** — those are the real targets. Then
+   run the full
    950-game gauntlet, **focused on the strategic opponents** (Alexandria,
    Integral, Stockfish) where eval — not depth — is the wall.
 5. **Drawn-endgame eval damping.** Separately consider whether 50-move / shuffle
@@ -380,3 +430,12 @@ SPSA-down signal argues against it.
   flat-eval plateaus** — re-confirming the `RFP_AUDIT` 42–45% shallow FP rate and
   the RFP-1 (margins half peers) finding. The 4 non-KBN "conversion failures"
   reclassified as Theme 2 (SF only +1.3–3.4). Added actionable #6 + open question.
+- **2026-06-28** — Threat-feature probe (item #3) run on prod net 035195DB via
+  `CODA_NO_THREAT_ACC`. Two revisions to the framing: (1) the current net has
+  **already self-healed most of Theme 1** (Quanticade static +5.46 → +0.02), so
+  the doc's Theme-1 statics are stale; (2) threats are **not** the universal
+  cause — restraining on attacks, causal only on the balanced-rook-ending overrate
+  (Viridithas), inert on Q-vs-R/R+P. New §"Threat-feature probe"; #3 marked done;
+  #4 promoted to the gating step (re-baseline mined set on 035195DB first). Also
+  fired focused RFP-cluster SPSA #2366 (RFP_DEPTH/MARGIN_IMP/MARGIN_NOIMP, 1500
+  iters STC) for the #6 / conversion-study lever.
