@@ -16762,3 +16762,11 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
   it was the LMP-last ordering (B, fixed by the LMP-first reorder) plus the
   net's own eval shape. The +14% pawn-endgame node cost the guard adds buys
   nothing. Branches zeus/lmp-nonpawn-guard-v2 dropped.
+- **zeus/tt-penalize #2330** — "penalize useless TT entry" (SF 319d61ef):
+  decrement the stored TT depth of a wrong-side-bound entry that didn't help at
+  a node (lockless RMW on the packed depth field, XOR key recomputed, move
+  preserved so no illegal-move injection). **H0 ✗ (-0.3 ±1.5, LLR -2.95).**
+  [STC [0,3]] Neutral-to-slightly-negative for Coda over 57k games — our 5-slot
+  bucket replacement (d > slotDepth-3 + generation-aware) already evicts stale
+  low-value entries, so actively penalizing depth is redundant churn. From the
+  SF/Reckless 2-month survey batch.
