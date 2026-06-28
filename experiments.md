@@ -16864,3 +16864,40 @@ strongest signal in this band). Working the ranked queue as one-change SPRTs.
   #2359 retune independently moved HIST_BONUS_OFFSET 24→16 as part of a broader
   magnitude rescale — that's a separate, in-flight basin.) Closes the
   history-shape-tune follow-up from the cross-engine survey batch.
+
+---
+
+### 2026-06-28 — v8-s3-v3 promoted to prod; tune #2351 validation; wdl26 H0; WRM probe
+
+**Net promotion (#2358 / #2305):** `multi-v8-l132-s3-v3-swa` (OB `E7D892E3`)
+promoted to production (commit 13cbcc1), replacing `035195DB`. Transitively
+~+10 vs old prod: **#2305** v8s3(v1) +5.9 vs 035195DB; **#2358** v3 +4.3 over v1
+(H1 ✓). Promoted on the current (035195DB-era) trunk — a validated config, not a
+detune. See `docs/net_catalog.md`.
+
+**LTC retune #2351 (2500-iter core, calibrated for v8-s3-v1):** validated
+tuned-vs-untuned across TC×net. **2364** (v1, STC) **H1 +2.7 ✓**; **2361** (v1,
+LTC) +3.1 trending H1 (stopped, moot once prod=v3); **2362** (v3, LTC) +0.7,
+**2365** (v3, STC) +0.7 — tune helps v1 more than v3 (expected; calibrated for
+v1). Bench-asymmetry note: #2351 compresses v1's tree −14% but v3's only −3.3%.
+Follow-up: **fine-tune #2367** (1500-iter LTC, warm-started from #2351, vs new
+prod E7D892E3) in flight to re-center for the deployment net.
+
+**wdl26 (#2363): H0 ✗** at [-1.5,1.5] (−1.6) — `s200-wdl26` (wdl 0.26) **not
+better** than `s200-baseline-wdl20` (wdl 0.20), same l1-32 recipe. The "more WDL
+blend" direction does not pay at S200.
+
+**SWA vs non-SWA (#2369):** non-SWA v3 raw endpoint vs SWA prod E7D892E3,
+[-1.5,1.5] STC — trending H0 (SWA helping, non-SWA ~−2) at resolution; the SF
+no-SWA-on-final-stages finding does **not** transfer to our shorter schedule
+(our final-LR floor ~1e-6 leaves noise SWA scrubs; SF anneals to ~1.3e-8).
+
+**WRM (in/out scale/offset) S200 probe:** implemented SF antisymmetric
+double-sigmoid loss in the bullet fork (c886f36). Two arms vs wdl26 baseline:
+`s200-wrm-sf` (WRM only) and `s200-wrm-qp` (+qp-asymmetry 0.23). **Key bench
+finding:** WRM-only shifts eval scale hard (bench +53% vs baseline — flattens
+eval magnitudes), and qp-asymmetry largely counteracts it (+7%). SPRTs **#2370**
+(wrm-sf) / **#2371** (wrm-qp) in flight; wrm-sf is off-tree (handicapped on
+shared tunables — floor only). Per Atlas's eval-overrate findings, WRM demoted
+to low-priority probe; eval blind-spots are data-fixable (LC0-scored corrective
+harvest + SF-vs-Coda games as stage-1 bootstrap), not loss-fixable.
