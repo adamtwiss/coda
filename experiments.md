@@ -16795,3 +16795,52 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
     — clean isolation of the data-pool variable (all-data vs newer-files at
     fixed 2000 SB; the `project_data_scaling_is_sb_constrained` "diversity vs
     epochs" question).
+
+## 2026-06-28 — Peer-engine review queue (ranks #8–14): T1/T2/T3a results
+
+Source: `engine-notes/peer_review_2026-06-27.md` (near-peer band below Coda;
+ideas are hypotheses, not consensus — convergence across ≥2 peers is the
+strongest signal in this band). Working the ranked queue as one-change SPRTs.
+
+- **T1 — IIR on stale/shallow TT entries (`atlas/iir-stale-tt` #2341).**
+  *Convergent: Caissa + Hobbes.* Widen the IIR gate to also fire when a TT
+  entry exists but `tt_depth + K < depth` (was: IIR only when `tt_move ==
+  NO_MOVE`). +12% bench (IIR shrinks recorded TT depths). **Heading H1
+  (+1.3 ±1.1, 94k, LLR 2.27 and climbing)** — genuine small win, not yet
+  locked; merge on lock. Methodology note: early-N was misleading — sat at
+  −8/1446 with a mechanistic "IIR-shrinks-depths-so-harmful" prior; it
+  *reversed* to +1.3. Reinforces "don't conclude from early-N or mechanistic
+  priors."
+
+- **T2 — quiet-history factoriser (`atlas/main-hist-factoriser` #2344).**
+  *Hobbes.* Add a threat-bucket-independent `[from][to]` factoriser summed with
+  the 4D threat-partitioned `main_hist`. **H0 ✗ (−4.0 ±3.1, 12.9k, LLR −2.97).**
+  Averaging a shared baseline *into* the 4D threat-partitioned signal diluted it
+  rather than de-fragmenting it. Weakens the whole de-fragmentation family →
+  **lowers T4's (single-square histories) EV**; reassess T4 before spending on it.
+
+- **T3a — Clover search-effort (`tried_count`) history weighting
+  (`atlas/tried-count-history`).** *Convergent: Clover + Caissa.* Multiply
+  quiet + capture history bonus/malus by `move_searches` (how many times the
+  move was actually searched: 1 LMR-only, 2–3 re-searched), behind
+  `FEAT_TRIED_COUNT` / `NO_TRIED_COUNT`. Note: main already merged the
+  *sibling*-count bonus (#2319 hist-sibling-bonus) — a related-but-distinct
+  search-effort signal (siblings-searched vs self-re-search-count), which may
+  explain partial overlap.
+  - **Untuned probe #2345 flat (+0.4 ±1.6, 50k, LLR −0.93), stopped** — +13.5%
+    bench → canonical *retune-on-branch* profile (cf. TT-PV flag, cont-hist
+    malus: flat-raw → won-after-retune).
+  - **Retune SPSA #2357** (12 history-magnitude params,
+    `scripts/tune_t3a_history_rescale.txt`, 1500 iters): the predicted
+    co-dependency held — the divisors that READ the rescaled magnitude moved up
+    materially (`LMR_HIST_DIV` 11550→12982 +12.4%, `LMR_HIST_DIV_CAP`
+    1754→1894 +8.0%), plus `HIST_BONUS_OFFSET` 24→16, `HIST_BONUS_MAX`
+    1506→1592. Multiple params >5% = genuine recalibrated basin → applied.
+  - **Confound caught at SPRT-prep:** origin/main had advanced 14 commits incl.
+    the merged ProbCut-improving (#2342 H1, Elo-positive); the branch (forked at
+    b57836b) lacked it, so a raw dev-vs-main SPRT would have measured *T3a minus
+    ProbCut-improving*. **Rebased the branch onto current origin/main** (clean;
+    tuned values are T3a-intrinsic rescale recalibration, carry across). The
+    retune pulled the untuned +13.5% node-blowup back to +0.4% (dev 2,704,370 vs
+    base 2,692,538) — what a correct magnitude recalibration should do.
+  - **Re-SPRT #2359** (tuned, rebased) vs main, `[0,3]` — IN FLIGHT.
