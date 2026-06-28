@@ -3182,7 +3182,14 @@ impl NNUENet {
     unsafe fn forward_with_l1_pairwise_inner(&self, stm_acc: &[i16], ntm_acc: &[i16],
         stm_threat: &[i16], ntm_threat: &[i16], bucket: usize) -> i32
     {
-        #[cfg(target_arch = "x86_64")]
+        // Runtime dispatch ONLY in builds where AVX2 is not a compile-time
+        // baseline. On an AVX2-baseline build (`-Ctarget-cpu=native` on an AVX2
+        // host — every OB worker + our deployments), the attribute-free body
+        // already gets full AVX2 codegen, so we fall straight through to it:
+        // no runtime `has_avx2` branch, and no non-inlinable `target_feature`
+        // wrapper call boundary on this hot per-node path. Only non-AVX2-baseline
+        // (portable) builds need the wrapper-or-scalar runtime dispatch.
+        #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
         if self.has_avx2 {
             return unsafe {
                 self.forward_with_l1_pairwise_inner_avx2(
@@ -3197,7 +3204,7 @@ impl NNUENet {
 
     /// AVX2-specialized wrapper — `target_feature` so the `#[inline(always)]`
     /// body gets AVX2 codegen. Only call when AVX2 is available.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
     #[target_feature(enable = "avx2")]
     unsafe fn forward_with_l1_pairwise_inner_avx2(&self, stm_acc: &[i16], ntm_acc: &[i16],
         stm_threat: &[i16], ntm_threat: &[i16], bucket: usize) -> i32
