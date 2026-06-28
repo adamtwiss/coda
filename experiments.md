@@ -16770,3 +16770,10 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
   bucket replacement (d > slotDepth-3 + generation-aware) already evicts stale
   low-value entries, so actively penalizing depth is redundant churn. From the
   SF/Reckless 2-month survey batch.
+- **zeus/probcut-improving-v2 #2342 — MERGED (30a50b2).** ProbCut reduced-depth
+  lowered by 1 when improving (SF d6483505): `let pc_depth = depth - 4 - improving
+  as i32;`. **H1 ✓ (+0.6 ±, LLR 2.96) at [-2,1].** Free one-liner — small but
+  real, banked on the ship lane (the same change H0'd as v1 #2322 under [0,3];
+  the [-2,1] free-flag lane is what let the genuine sub-1-Elo gain through, per
+  the bounds-philosophy discussion). Bench 2692538. From the SF/Reckless 2-month
+  survey batch.
