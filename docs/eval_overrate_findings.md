@@ -174,6 +174,12 @@ SF PV: d3 Rc6+ … 0.00. R+P vs R+P, dead drawn. STATIC is honest (−1.55); the
 
 ## Egregious example — the +8 Integral draw (KBN-vs-K: eval was RIGHT)
 
+![KBN-vs-K conversion: Coda reads a flat +6, SF sees the mate](img/overrate_hobbes_kbn_m74.svg)
+
+*KBN-v-K (Hobbes m74, `8/6B1/8/8/2k2K2/8/8/N7 w`). Objectively won (SF: deep
+mate); Coda reads a flat ~+6 (B+N material) and shuffles. Green arrow = SF's
+move. Full investigation: §"Is the 'unable to convert' a bad pruning bug?".*
+
 The headline game that kicked this off (Coda scoring ~+8 vs Integral ~0, drawn)
 turned out **not** to be an eval blind-spot. It reduced to **KBN-vs-K**, a
 forced win. Coda's eval was *correct* (static **+10.83**, SF mate). The failure
@@ -184,6 +190,114 @@ tablebase-style knowledge / 50-move awareness in search). Logged here because it
 is the canonical "big eval that drew" and shows why the **result + SF** filter
 matters: without SF this looks like a −8 eval bug; with SF it is a conversion
 bug. Keep these two classes separate.
+
+---
+
+## Is the "unable to convert" a *bad pruning* bug? (investigation, 2026-06-28)
+
+**Hypothesis (Adam):** "We should be able to find most of these mates given our
+search depth — the unable-to-convert might be a 'bad pruning' bug." Tested on the
+7 conversion-failure positions, **fixed time** (never fixed depth — it explodes
+in complex positions), no assumption the mate is out of horizon (codabot
+regularly hits 40-ply / seldepth 50+).
+
+### Step 1 — disable ALL forward pruning at once (flawed, but the first cut)
+
+`go movetime 15000`, baseline vs `NO_LMR+NMP+RFP+FUTILITY+LMP+SEE+BAD_NOISY+PROBCUT+RAZOR`:
+
+| position | SF | Coda normal 15s | Coda ALL-prune-off 15s |
+|---|---|---|---|
+| Hobbes m74 KBN-v-K | mate33 | d28 sd37 cp626 f4e4 | d12 sd45 cp668 f4e4 |
+| Integral m101 KBN-v-K | cp8115 | d30 cp688 c6c5 | d16 cp640 c6c5 |
+| Integral m80 KBN-v-K+P | mate15 | d21 cp814 b7f3 | d10 cp834 b7f3 |
+| Caissa m72 Q-v-R | cp278 | d21 cp545 | d20 cp573 |
+| Clover m81 Q-v-R+P | cp216 | d29 cp557 | d23 cp568 |
+| Stormphrax m65 Q+P-v-Q | cp132 | d26 cp475 | d17 cp506 |
+| Astra m38 R+B-v-R | cp337 | d30 cp458 | d12 cp477 |
+
+Same move, scores within ~30cp, **no hidden mate** — but this test is
+**confounded**: turning everything off collapses depth (d28→d12), so "no mate
+appeared" can't distinguish *pruning hid it* from *we lost the depth*. (Adam
+caught this.) It also splits the 7 positions: the **KBN** trio is objectively
+won (SF mate/huge); the other four are **not conversion failures at all** — SF
+rates them only +1.3 to +3.4 (drawish/fortress Q-v-R, R+B-v-R, Q+P-v-Q) and Coda
+**overrates by ~250–350cp** → that's **Theme 2**, not a missed win.
+
+### Step 2 — Coda's KBN mate horizon (why it shuffles)
+
+Walking SF's mating line from the Hobbes position and probing Coda (5s) at
+decreasing true mate-distance:
+
+| true dist | SF | Coda 5s |
+|---|---|---|
+| mate20 | mate20 | cp471 |
+| mate17 | mate17 | cp445 |
+| mate12 | mate12 | cp422 |
+| mate11 | mate11 | cp351 |
+| **mate9** | mate9 | **mate11** ← locks on |
+| mate10 | mate10 | mate11 |
+| mate8 | mate8 | mate9 |
+
+**Coda's KBN mate horizon is ~mate-9/10.** Within it, Coda *does* find the mate
+(so there is **no structural blindness** / no missing mate logic). The game
+position is **mate-33** — over 3× the horizon. Worse, **the cp eval has no useful
+gradient — it falls as the mate nears** (cp471@mate20 → cp351@mate11). The NNUE
+reads a flat ~+6 (B+N material) regardless of where the kings are, so the search
+has *nothing to climb* to navigate the ~60-ply king-driving maneuver into its own
+horizon. Even Stockfish needs 25s + SMP and still reports `cp 8115`, not a mate —
+this KBN is genuinely deep, not a Coda quirk.
+
+### Step 3 — per-feature ablation (the *correct* test of the hypothesis)
+
+Disable features **one at a time** at fixed 8s (preserves general depth), on the
+boundary positions where baseline is *just* failing:
+
+| position | baseline | NO_LMR | NO_RFP | NO_FUT | NO_RFP+FUT |
+|---|---|---|---|---|---|
+| GAME mate33 | d26/cp626 | d26/cp626 | d20/cp631 | d22/cp639 | d17/cp654 |
+| ply24 mate12 | d18/cp422 | d18/cp422 | d17/cp402 | d21/cp438 | d17/cp410 |
+| ply26 mate11 | d19/cp351 | **d19/cp351** | **d19/mate12** | **d21/cp20473** | d19/cp346 |
+| ply30 mate11 | d19/cp354 | d19/cp354 | **d19/cp17432** | d21/cp9217 | d17/cp358 |
+
+**Verdict — Adam's hypothesis is confirmed for RFP and futility, not LMR:**
+- **RFP-off and FUT-off alone flip cp→mate at the boundary, at the *same depth*** (ply26: baseline `d19/cp351` → NO_RFP `d19/mate12`; ply30 `cp354`→`cp17432`). Same d19 ⇒ pruning hid the line, *not* lost depth. Reproducible across two runs.
+- **NO_LMR is byte-identical to baseline.** Not a wiring bug (`FEAT_LMR` is read at search.rs:4310/4434) — LMR only *reduces then re-searches*, so the mating line still surfaces; it isn't the binding prune in flat-eval endgames. RFP/futility are **hard** static-margin prunes (early cutoff / skip, no re-search), so they're what chops the progress move.
+- **But it is immaterial to the actual game:** with RFP+FUT both off, the mate-33 game position stays flat at **cp654 — still no mate** (and only d17, because removing both prunes *costs* depth). The pruning misfire is worth ~**1 ply of mate-horizon** (flips mate-11, not mate-12). `NO_RFP+FUT` is *worse* than either alone at ply26 (mate lost) — the depth/pruning trade-off Adam predicted.
+
+### Conclusion
+
+The KBN draw is **not** caused by bad pruning. Root cause = **flat (even
+inverted) NNUE eval gradient** + mate-distance ~3× the search horizon; in
+deployment it is fully covered by **Syzygy TB** (KBN-v-K = 4 men; this gauntlet
+ran TB-less, which is why it surfaced). Training will not fix it (endgame
+technique / TB knowledge), consistent with the egregious-example classification
+above.
+
+**However, the experiment independently re-confirms a real, separate finding:**
+RFP (and to a lesser extent futility) **does prune good lines** when the static
+eval is a flat plateau above beta. This is the same failure quantified in
+`docs/rfp_futility_audit_2026-06-24.md`: RFP is the dominant pruner (**301/Kn**),
+and the `RFP_AUDIT` null-verification shows a **42–45% false-positive rate at
+d=1–3 (98% of RFP volume)** — i.e. ~2 in 5 shallow RFP cuts disagree with an
+NMP-style verification. The structural cause (RFP-1) is that Coda's shallow base
+margin multiplier (~34) is **half the peer consensus (~70–87)**; Coda cuts at
+beta+222 @ d6 where peers require beta+420–522. **The mate/TB guard exists on
+the eval side now** (`static_eval.abs() < MATE_SCORE-200`, search.rs:3586) but
+does *not* help the KBN case — there the eval is +6 cp, nowhere near a mate
+score; the missing gate is **phase/material awareness**, not a mate guard.
+
+**Discipline / what NOT to conclude.** A 42% verification-FP rate does **not**
+prove RFP costs Elo — RFP is a *speculative* prune whose net effect (depth bought
+≫ lines lost) is positive, and the live **SPSA tuner pushes the base margin
+*down* (37→34), i.e. toward *more* aggression** — direct evidence that shallow
+RFP currently pays in self-play despite the high FP rate. Every *conditional* RFP
+gate we've tried (threat-aware, opponent-threat, correction-aware,
+complexity-aware) has **H0'd** — "threat-based guards on pruning are consistently
+negative for our engine." So the promising-but-untested lever is the **blanket
+RFP-1 margin raise on the v10 net** (the old "100/70 optimal, don't retest" notes
+are **V5-era / stale** — different eval scale), with an SPSA retune, validated by
+`RFP_AUDIT` FP-rate before/after as the mechanism check. Temper expectations: the
+SPSA-down signal argues against it.
 
 ---
 
@@ -210,6 +324,13 @@ bug. Keep these two classes separate.
    Integral, Stockfish) where eval — not depth — is the wall.
 5. **Drawn-endgame eval damping.** Separately consider whether 50-move / shuffle
    awareness or endgame eval scaling reduces theme-2 overrates (test on OB).
+6. **RFP-1 margin raise on v10 (separate track, from the conversion study).** The
+   bad-pruning investigation re-surfaced that shallow RFP cuts good lines (42–45%
+   `RFP_AUDIT` FP @ d1–3; base margin ~34 vs peers ~70–87). Untested on the v10
+   net (old "100/70 optimal" notes are V5-era). Worth one clean SPRT of raising
+   `RFP_MARGIN_NOIMP` toward peers + SPSA retune, with `RFP_AUDIT` FP-rate as the
+   mechanism check — **but** SPSA pushes the margin *down* and all conditional RFP
+   gates have H0'd, so temper expectations. Details in the investigation section.
 
 ## Open questions
 
@@ -219,6 +340,9 @@ bug. Keep these two classes separate.
   bug? (Leaf walk, item 2.)
 - How much of the strategic gap to Alexandria/Integral is these blind-spots vs
   general eval noise?
+- Conversion: is there a gate that keeps aggressive shallow RFP where it pays
+  (tactical middlegame) but suppresses it on flat-eval / low-material plateaus,
+  given blanket de-aggression and all prior conditional gates have failed?
 
 ---
 
@@ -248,3 +372,11 @@ bug. Keep these two classes separate.
 - **2026-06-28** — Diagrams converted from ASCII to SVG
   (`scripts/gen_overrate_svgs.py`, green arrow = SF best move) for clean GitHub
   **and** GitLab rendering.
+- **2026-06-28** — Conversion / "bad pruning" investigation added (new section +
+  KBN diagram). All-off ablation (confounded), KBN mate-horizon curve
+  (~mate-9/10; flat/inverted eval gradient), and the *correct* per-feature
+  ablation. Result: KBN draw is **not** a pruning bug (gradient + horizon + no
+  TB; TB-covered in deployment), but **RFP/futility do prune good lines on
+  flat-eval plateaus** — re-confirming the `RFP_AUDIT` 42–45% shallow FP rate and
+  the RFP-1 (margins half peers) finding. The 4 non-KBN "conversion failures"
+  reclassified as Theme 2 (SF only +1.3–3.4). Added actionable #6 + open question.

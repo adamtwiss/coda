@@ -29,6 +29,9 @@ POSITIONS = [
      "8/5k2/8/8/4R3/5P2/5K2/3q4 b - - 1 81", "d1h1"),
     ("overrate_integral_m57",
      "8/8/7R/8/3p1K2/r6P/2k5/8 b - - 2 57", "d4d3"),
+    # KBN-v-K conversion study (Hobbes m74): objectively mate, Coda reads flat +6
+    ("overrate_hobbes_kbn_m74",
+     "8/6B1/8/8/2k2K2/8/8/N7 w - - 13 74", "f4e4"),
 ]
 
 GREEN = "#15781b"
