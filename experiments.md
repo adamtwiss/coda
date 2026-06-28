@@ -16802,6 +16802,14 @@ Source: `engine-notes/peer_review_2026-06-27.md` (near-peer band below Coda;
 ideas are hypotheses, not consensus — convergence across ≥2 peers is the
 strongest signal in this band). Working the ranked queue as one-change SPRTs.
 
+- **codex/rfp-ttpv-guard #2301 — MERGED (d9d89f9).** RFP now skips former-PV
+  nodes by using the sticky `tt_pv` flag in the RFP gate instead of only the
+  current `is_pv` flag. Final stopped SPRT after 218k games:
+  **+0.94 ±0.76**, LLR 1.75 on `[0,3]`. The effect is too small to prove H1=3
+  in reasonable time, but the CI is fully positive and this is a proven
+  non-regression / likely ~+1 Elo. Merge rationale: former-PV nodes have already
+  carried PV context, so static RFP should be conservative there.
+
 - **T1 — IIR on stale/shallow TT entries (`atlas/iir-stale-tt` #2341).**
   *Convergent: Caissa + Hobbes.* Widen the IIR gate to also fire when a TT
   entry exists but `tt_depth + K < depth` (was: IIR only when `tt_move ==
