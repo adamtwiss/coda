@@ -88,25 +88,48 @@ already cover these gathers, and the rows are consumed almost immediately
 it could only help on weaker-prefetcher AVX-512 hosts, but the local signal is
 nil and slightly negative on LLC). Branch left unpushed.
 
-## The real levers (from coda_vs_sf_speed_2026-06-14.md, re-confirmed here)
+## Spike — threat-apply cost decomposition: redesign is NO-GO
 
-The prefetch/AVX-512-width angles are spent. The recoverable speed is the
-**threat-accumulator apply** + the movegen-side micro-structure:
+Before committing to the big "SF-style apply" refactor, decomposed the threat
+cost by `perf annotate` (symbolized, v8s3). Result: **the dominant threat slice
+is irreducible weight-streaming bandwidth, not avoidable overhead.**
 
-1. **Threat-apply redesign (biggest, untouched).** Make Coda's apply SF-cheap:
-   build the dirty-threat list eagerly in `make_move` and apply once, instead of
-   replay-from-ancestor + re-derive indices. Coda ~31% → target ~SF 5.5%.
-   Large, correctness-critical (the threat path is well-tested — see deepaudit).
-2. **D — direct-write movegen** (kill the ~514B `MoveList` by-value copies) and
-   **F — fixed-array undo stack**. Localized, bit-identical, `[-2,1]` SPRT.
-3. **G — per-quiet move scoring** is much heavier than SF (~4-6 magics/quiet vs
-   SF's history reads + one `see_ge`, with per-node-constant sets hoisted once).
-   Isolate the hoists (bit-identical); the tuned bonuses need a full SPRT.
-4. **H — int8 L2/L3/output pipeline** (drop Coda's f32 dequant pipeline for
-   SF-style folded-scale VPDPBUSD). Structural (needs requant/retrain).
+- `apply_threat_indices` (11.7% self, 36% of RAM misses) is **~100%
+  weight-streaming**: 27% on `vpmovsxbw` (i8→i16 widening load of the scattered
+  threat weight row — the cache-missing gather), 13%+13% on `vpaddw`/`vpsubw`
+  (accumulate). No index derivation in it; already optimal AVX-512 REGS=24.
+- The SF-style "dirty-list-once-in-make_move, apply-once" redesign attacks
+  **replay + re-derivation** — but replay is only ~1.24 plies (deepaudit), and
+  the derivation slice (`update_dual` ~5.5%: `PiecePair::base`, `threat_index`,
+  attack-index chase) is exactly what item E tested **NEUTRAL twice**.
+- So the redesign would chase a ~5.5% slice already shown not to bank, and leave
+  the dominant 11.7% streaming untouched. **NO-GO** — saved a large
+  correctness-critical refactor.
+
+**The real threat lever is eval-coupled, not a speed refactor.** Bytes streamed
+= deltas/node × accumulator width (~10 × 1024 i8). Cutting it means fewer deltas
+(drop x-ray = rejected +187 Elo; or a leaner threat set) or a **narrower
+threat-accumulator width** (apply cost scales linearly with width — a training
+experiment, SPRT eval-cost vs NPS gain). Owned by the training/eval workstream.
+
+## Revised levers (pure-speed)
+
+1. ~~Threat-apply redesign~~ — **NO-GO** (spike above).
+2. **Movegen-side bundle: D (direct-write movegen, kill ~514B `MoveList`
+   by-value copies) + F (fixed-array undo stack) + G-hoists (lift
+   per-node-constant attack sets out of the per-quiet scoring loop).** The best
+   remaining *pure-speed, bit-identical* lever. Bundle + measure once + `[-2,1]`
+   SPRT. Prior: modest/possibly-neutral (4 prior micro-opts were), but it bounds
+   the recoverable pure-speed headroom.
+3. **Narrow-threat-accumulator** training experiment — the genuine big threat
+   lever; eval-coupled, training workstream.
+4. **H — int8 L2/L3/output pipeline** (drop f32 dequant for folded-scale
+   VPDPBUSD). Structural (requant/retrain). Deferred.
+5. **Not B** (check-info cache) — high-risk/low-value, sibling C already neutral.
 
 Already tested DEAD/neutral (don't re-attempt): L1 sparse-input (loses
-1.8-2.4×), threat-index micro-opts (neutral), check-square cache C (neutral).
+1.8-2.4×), threat-index micro-opts (neutral), check-square cache C (neutral),
+FT-gather prefetch (no-op, above).
 
 ## Method notes
 - `strip = true` in `[profile.release]` blanks perf symbols — rebuild with
