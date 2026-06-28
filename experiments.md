@@ -16746,3 +16746,19 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
     fallback must use the cfg-gated multiversion-wrapper shape, NEVER a bare
     `target_feature` on the whole fn (silently AVX2-vectorizes the "scalar" path)
     and NEVER a plain wrapper-dispatch (un-inlinable boundary on AVX2 hosts).
+- **zeus/lmp-nonpawn-guard-v2 retune #2353** — focused STC SPSA (LMP_BASE,
+  LMP_DEPTH, SEE_QUIET_MULT, FUT_BASE, FUT_PER_DEPTH, FUT_LMR_DEPTH) on the
+  guard branch, testing the LMP audit's hypothesis (A): that the non-pawn guard
+  would let SPSA pull LMP_BASE toward the cross-engine consensus 3 (prune harder
+  in the safe middlegame once the dangerous pawn-endgame prunes are removed).
+  **Result: hypothesis (A) REFUTED.** Over the full 1000 iters LMP_BASE never
+  moved off 6 (final 6.0, -0.7%); the whole cluster stayed within ±1 integer of
+  default (FUT_BASE 81, SEE_QUIET_MULT 28, rest unchanged). SPSA found no
+  recalibrated basin that exploits the guard — the cluster optimum with the
+  guard present is identical to main's. Since the tuned values round to default,
+  a confirming SPRT would just re-run #2343 (already H0 -0.7) for no new
+  information, so the guard is **abandoned** without burning fleet. Takeaway:
+  Coda's high LMP_BASE is NOT compensation for the missing endgame guard (A) —
+  it was the LMP-last ordering (B, fixed by the LMP-first reorder) plus the
+  net's own eval shape. The +14% pawn-endgame node cost the guard adds buys
+  nothing. Branches zeus/lmp-nonpawn-guard-v2 dropped.
