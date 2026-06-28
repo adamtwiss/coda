@@ -316,6 +316,16 @@ temper expectations.
 - **"Static NNUE is the culprit only for the attack theme."** Wrong — static is
   the dominant culprit for the **endgame-fortress** cluster (41/58
   static-rooted), not the attack theme.
+- **"The overrate shows up at random T80 positions, so we can fix it by
+  re-weighting the existing data."** Ruled out — see the companion doc
+  `docs/eval_oracle_t80_2026-06-28.md`. At RANDOM T80 the overrate is
+  essentially *symmetric* (300k scan: 6.3% over / 6.5% under, net −1.1cp; even
+  the TB-exact ≤7-men band is only a mild 1.16× echo). The blind spot is
+  **play-conditioned** — it lives in the tail the search steers into, not the
+  average position — so random-T80 re-weighting is not a substitute for the
+  play-conditioned Coda-vs-SF corpus. (That same doc also shows Coda's static
+  eval ties #1 with SF on the LC0 oracle, because Coda and SF train on identical
+  data — which is why this metric can't, alone, expose the shared blind spot.)
 
 ---
 
@@ -338,7 +348,13 @@ temper expectations.
    corpus (e.g. sample both, bucket by the same feature scan used here). If the
    class is markedly under-represented in T80 and well-represented in Coda-vs-SF,
    that confirms the mechanism and tells us the correction is *coverage*, not
-   architecture.
+   architecture. **Partial result in `docs/eval_oracle_t80_2026-06-28.md`:** the
+   random-T80 scan already shows the overrate is *play-conditioned* (symmetric at
+   random, one-sided in the gauntlet) — strong evidence the correction is
+   coverage of the play-reached tail, not architecture. The SF-free
+   overrate detector (`scripts/t80_overrate_scan.py`, `--emit-tsv` →
+   `coda import-tsv --repeat N`) is the billion-scalable funnel for harvesting +
+   over-sampling that tail.
 3. **Leaf-eval walk (search-rooted tail, 21%).** For each search-rooted
    position, take Coda's PV to the leaf and static-eval it vs SF(leaf).
    leaf-static ≫ SF(leaf) → still eval/training one ply forward (same fix);
