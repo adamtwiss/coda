@@ -32,6 +32,18 @@ POSITIONS = [
     # KBN-v-K conversion study (Hobbes m74): objectively mate, Coda reads flat +6
     ("overrate_hobbes_kbn_m74",
      "8/6B1/8/8/2k2K2/8/8/N7 w - - 13 74", "f4e4"),
+    # --- Clean full re-eval 2026-06-28: dominant ENDGAME-FORTRESS cluster ---
+    # Clover fortress: Black up R+N+B vs R+2P, but White's connected a6/g6
+    # passers hold. static +14.48, search +9.33, SF +3.26 (drawn).
+    ("overrate_clover_fortress_m77",
+     "8/6b1/P4kP1/3R4/r2n4/4K3/8/8 b - - 10 77", "f6g6"),
+    # Stormphrax: White up a piece for a pawn, static +9.49 search +5.86 SF +2.15.
+    ("overrate_stormphrax_m39",
+     "6k1/5p2/4p1p1/7p/1rB5/8/5PPP/2R3K1 w - - 16 39", "g1f1"),
+    # Search-ROOTED example: static honest (+2.43) but 2s search runs to +6.45,
+    # SF +2.39 (sharp minor-piece middlegame).
+    ("overrate_tarnished_searchrooted_m43",
+     "8/4k3/5p2/2nN2p1/3R2K1/2n2PP1/8/3b4 b - - 18 43", "c3d5"),
 ]
 
 GREEN = "#15781b"

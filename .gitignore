@@ -47,3 +47,4 @@ nets/
 coda-*
 debug_*.go
 run_*.sh
+scripts/__pycache__/

@@ -12,10 +12,18 @@ unfiltered — measurably cut the overscoring of that class).
 **Status:** started 2026-06-28. Pipeline is `scripts/game_analysis.py`
 (taxonomy / mine / oracle / features). Tooling notes at the bottom.
 
-> **One-line takeaway so far:** the overrate is *not* a single bug. It splits
-> into three themes — (1) **illusory attacks** the threat features over-value,
-> (2) **drawn-endgame blindness**, (3) **search-leaf inflation** over an honest
-> static eval. The static NNUE is the dominant culprit only for theme (1).
+> **One-line takeaway (revised 2026-06-28 after a clean full re-eval — read
+> §"Clean full re-eval" first; it supersedes the cherry-picked sections below).**
+> Across the **whole** mined set the overrate is **real and systematic** —
+> median clean 2s-search **+136cp** over SF on 135 drawn/lost candidates, **58**
+> of them confirmed (≥150cp over SF, |SF|≤600, **all draws**). The dominant
+> cluster is **simplified minor-piece / fortress endgames** (60% endgame, 53%
+> "up material"): the NNUE static is wildly optimistic (e.g. **+14.5 vs SF
+> +3.3** on a held fortress) and search only *partially* corrects. **~71% of
+> confirmed overrates are static-rooted (NNUE)**, ~21% search-rooted. **Threats
+> RESTRAIN** the eval toward SF (threats-off is *higher*), so they are not the
+> cause. The earlier "headline overrates vanish" claim was an artifact of
+> cherry-picking 4 *attack* positions (the one class threats+search do fix).
 
 ---
 
@@ -48,6 +56,12 @@ unfiltered — measurably cut the overscoring of that class).
      (static ≈/below SF, search runs high).
    (8 more positions are tactical/in-check, where static eval is meaningless and
    excluded.)
+
+> ⚠️ **The "static − SF = −0.61" figure here is from the first-wave 27-quiet
+> sample and is NOT representative** — it used the in-game PGN search value and a
+> quiet subset. The clean full re-eval (§"Clean full re-eval") finds the median
+> static is **+182 over SF** on the mined overrate set. Keep this section for the
+> *method*; trust the clean section for the *numbers*.
 
 **Reading that result.** Across the *same* mined positions the **static net is,
 on average, slightly *below* SF** — so "threats make the static eval too high"
@@ -83,14 +97,14 @@ not eval.
 Three recurring classes. Diagrams are White-at-bottom; the score line is
 Coda-POV (so "+" = Coda thinks it is better).
 
-> ⚠️ **The static/search numbers in these Theme blocks did NOT survive a clean
-> fixed-time re-analysis on the gauntlet net** (see §"Reproduction check + threat
-> probe"). 3 of the 4 Theme-1/2 headline overrates resolve to ≈SF when re-measured
-> with `coda eval` + `coda epd -t 4000`; only Viridithas (balanced rook ending)
-> is a genuine, reproducible overrate. The recorded "static" figures track the
-> threats-OFF path and the "search" figures were in-game PGN comments. Treat the
-> per-theme numbers below as the *original mined values pending re-validation*, not
-> confirmed eval bugs.
+> ⚠️ **These hand-picked Theme blocks use the original in-game PGN numbers and
+> over-weight the *attack* class. Read §"Clean full re-eval of the gauntlet"
+> first — it re-measures the whole set cleanly.** The clean data keeps Theme 2
+> (drawn/fortress endgames) as the **dominant, real** cluster, demotes Theme 1
+> (illusory attacks — threats+search mostly correct these), and confirms Theme 3
+> (search-leaf inflation) as the ~21% search-rooted tail. The specific
+> static/search figures in the four attack examples below did **not** reproduce
+> on a clean re-search; trust the aggregate clean numbers, not these four.
 
 ### Theme 1 — Illusory attacks (threat features over-value an attack that is only a draw)
 
@@ -312,6 +326,15 @@ SPSA-down signal argues against it.
 
 ## Reproduction check + threat probe on the GAUNTLET net (2026-06-28)
 
+> ⚠️ **SUPERSEDED by §"Clean full re-eval of the gauntlet" below.** This section
+> probed only **4 cherry-picked *attack* positions** and wrongly generalised
+> "the headline overrates vanish." The full 135-candidate clean re-eval shows the
+> overrate **is** real and systematic (median search +136 over SF; 58 confirmed),
+> dominated by **endgame fortresses**, not attacks. The two things that *do*
+> survive from here: (1) **threats restrain** (re-confirmed at scale, 89/135), and
+> (2) the **attack** subclass specifically *is* corrected by threats+search. Keep
+> this section for the threat-ablation mechanism; ignore its top-line conclusion.
+
 **Net discipline (read first).** Every static/search number in §Themes came from
 the **gauntlet net = `multi-v8-l132-s3-v3-swa`** (v8 recipe; the net that played
 the mined games). It is **not** the embedded-prod / `net.txt` net (035195DB, v6
@@ -368,14 +391,115 @@ and **not** the attack/threat class that motivated the training-set idea.
 
 ---
 
+## Clean full re-eval of the gauntlet (2026-06-28) — **AUTHORITATIVE**
+
+This supersedes the cherry-picked "Reproduction check" section above. We re-ran
+the **entire** mine end-to-end with a clean measurement harness — no in-game PGN
+eval anywhere — on the **gauntlet net** (`multi-v8-l132-s3-v3-swa`):
+
+- **Candidate set:** mine the 2026.06.28 v8 gauntlet slice (`mine`, draws/losses,
+  ≥150cp sustained over ≥6 plies) → **135 candidates**.
+- **Three fresh Coda numbers per FEN** (`game_analysis.py reeval`, all Coda-POV):
+  **static** (`coda eval`), **threats-off static** (`CODA_NO_THREAT_ACC=1`),
+  **search** (`coda epd -t 2000`, the only path that prints info lines — UCI `go`
+  emits none). Plus **SF depth-22** ground truth.
+- `true_overrate` is now computed from the **clean Coda search**, not the PGN
+  value. Confirmed = search ≥150 over SF **and** |SF| ≤ 600.
+
+### Result — the overrate is real and systematic
+
+Robust **medians** over all 135 candidates (means are swamped by lost-position
+outliers where SF is hugely negative — use the median):
+
+| number (Coda-POV − SF) | median | what it is |
+|---|---:|---|
+| `pgn_or` (in-game belief) | **+208** | what Coda thought *during* the game |
+| `static_or` (clean static) | **+182** | NNUE eval, no search |
+| `staticnoth_or` (threats-off) | **+276** | FT-only, threats zeroed |
+| `search_or` (clean 2s search) | **+136** | what Coda believes given clean time |
+
+**58 of 135** candidates are search-confirmed overrates (≥150cp over SF) — and
+**every one is a draw** (0 losses, 0 wins in the confirmed set; losses fall
+outside the |SF|≤600 cap). Search corrects the static *partially* (`search_or
+< static_or` in 79/135) but a large residual remains.
+
+**Where the overrate lives (the 58 confirmed):**
+- **41/58 (71%) static-rooted** — clean static *also* ≥150 over SF. The NNUE
+  itself is optimistic; this is the **training-correction** target.
+- **12/58 (21%) search-rooted** — static honest (<50 over SF) but the 2s search
+  runs ≥150 over SF. Search invents optimism the root eval doesn't have.
+
+**Threats RESTRAIN (re-confirmed at scale):** threats-off static is *higher*
+than threats-on in **89/135** (median +68cp higher). The threat block pulls the
+eval *toward* SF; it is not the cause of the overrate.
+
+### The dominant cluster — simplified minor-piece / fortress endgames
+
+Feature scan of the 58 confirmed: **60% endgame**, **53% "up material"**, 64%
+"king exposed" (an endgame artifact — bare kings). The biggest static-rooted
+overrates are drawn or barely-better endings the NNUE reads as crushing:
+
+| position (Coda-POV) | static | search | SF | note |
+|---|---:|---:|---:|---|
+| `8/6b1/P4kP1/3R4/r2n4/4K3/8/8 b` | **+14.48** | +9.33 | **+3.26** | Black up R+N+B vs R+2P; White's connected a6/g6 passers **hold** (drawn) |
+| `8/8/2B5/8/5k2/2K5/8/7N w` | +11.80 | +7.19 | +1.52 | **KBN-v-K** — really won but slow; magnitude overrate (see KBN study) |
+| `8/n1b5/8/3K4/8/3k4/8/8 b` | +8.96 | +7.41 | +0.17 | **50-move rule already at 73 half-moves** — dead draw; static has no 50mr awareness |
+| `6k1/5p2/4p1p1/7p/1rB5/8/5PPP/2R3K1 w` | +9.49 | +5.86 | +2.15 | White up a piece for a pawn; ≈+2 not +9 |
+| `8/4kp2.../3P3p/...` (PlentyChess R+P) | +4.95 | +1.66 | 0.00 | drawn R+P ending read as +5 static |
+
+![Clover fortress — static +14.48 / search +9.33, SF +3.26; green = SF Kxg6](img/overrate_clover_fortress_m77.svg)
+
+![Stormphrax — static +9.49 / search +5.86, SF +2.15; green = SF Kf1](img/overrate_stormphrax_m39.svg)
+
+The static eval has **no fortress / 50-move / insufficient-progress sense**: it
+counts material + piece activity and reads "up a minor with active rook" as +9
+to +14 even when the position is a known fortress, a 50-move draw, or only +2.
+Search shaves a few cp off but cannot see a 50+ ply fortress, so a large
+residual survives into play — and these games **drew**.
+
+### The search-rooted tail (21%)
+
+A smaller, distinct class: the root static is honest but the 2s search runs
+high in sharp minor-piece middlegames. Example (search-ROOTED):
+
+`8/4k3/5p2/2nN2p1/3R2K1/2n2PP1/8/3b4 b` — static **+2.43** (≈SF +2.39), but the
+2s search returns **+6.45**. The search resolves a tactical sequence
+over-optimistically; the leaf the PV reaches is overrated, not the root.
+
+![Tarnished search-rooted — static +2.43 honest, search +6.45, SF +2.39; green = SF Nxd5](img/overrate_tarnished_searchrooted_m43.svg)
+
+### What this corrects in the earlier sections
+
+- The cherry-picked "Reproduction check" (4 attack positions) concluded the
+  overrates "vanish" — but those 4 were the *attack* class, exactly where threats
+  + search **do** correct. The endgame-fortress cluster (the actual bulk) was
+  under-sampled by that hand-pick. **The systematic overrate is real.**
+- "Static NNUE is the dominant culprit only for theme 1" is **wrong**: static is
+  dominant for the *endgame-fortress* cluster (41/58 static-rooted), not theme 1.
+- The methodology note "mean static−SF = −0.61" was over a *quiet broad* subset;
+  on the *mined high-overrate* set the median static is **+182 over SF**.
+
+### Data + repro
+
+- Clean scored set: `/tmp/scored_clean.tsv` (135 rows, all numbers), confirmed
+  subset `/tmp/confirmed_clean.tsv` (58). Slice: `/tmp/gauntlet_v8_0628.pgn`.
+- Repro: `mine /tmp/gauntlet_v8_0628.pgn --out cand.tsv` then `reeval cand.tsv
+  --net nets/multi-v8-l132-s3-v3-swa.nnue --movetime 2000 --depth 22`.
+
+---
+
 ## Actionable hypotheses & next steps
 
-1. **Training correction set (theme 1 + drawn endgames).** Emit the bucket-B
-   positions as **SF-rescored EPD/binpack** and mix into training (the
-   wandering-bishop recipe: even a few % of self-play-vs-SF, unfiltered, moved
-   the needle). Prioritise: *attack-fizzles-to-perpetual*, *balanced rook
-   endings*, *Q-ending / Q-vs-R technique*. `game_analysis.py oracle` already
-   produces SF-scored rows; add an EPD emitter.
+1. **Training correction set (endgame-fortress cluster first). ⭐ NOW UNBLOCKED.**
+   The clean re-eval gives a trustworthy confirmed set (`/tmp/confirmed_clean.tsv`,
+   58 SF-rescored draws). Emit these as **SF-rescored EPD/binpack** and mix into
+   training (wandering-bishop recipe: even a few % of self-play-vs-SF, unfiltered,
+   moved the needle). **Prioritise the dominant static-rooted cluster:** simplified
+   minor-piece / fortress endgames, drawn R+P and Q-vs-R endings, 50-move /
+   insufficient-progress draws — *not* the attack class (threats+search already fix
+   it). 58 is thin for a training signal; widen by lowering the mine's `--min-run`
+   / running the full multi-gauntlet, then `reeval`. Add an EPD emitter to
+   `game_analysis.py` (the confirmed rows already carry FEN + SF score).
 2. **Leaf-eval walk (theme 3 root-cause).** For each search-inflate position,
    take Coda's PV to the leaf and static-eval the leaf vs SF(leaf). If leaf
    static ≫ SF(leaf) → still eval/training (one ply forward) → same fix. If leaf
@@ -386,14 +510,14 @@ and **not** the attack/threat class that motivated the training-set idea.
    check + threat probe" above. Result: threats **restrain** the eval toward SF on
    the attack positions (not the cause); the only surviving overrate (Viridithas
    balanced rook ending) is a **base-net** problem, present even threats-off.
-4. **Re-run the mine with clean fixed-time measurement (GATING).** The headline
-   overrates did **not** reproduce under `coda eval` + `coda epd -t 4000` on the
-   gauntlet net (3 of 4 vanished). Before any training set: re-score the mined
-   positions with clean static (`coda eval`) and clean fixed-time search (`coda
-   epd`), drop the in-game-PGN-value path (POV/parse gotchas), and keep only
-   overrates that survive a clean re-search. Then run the full
-   950-game gauntlet, **focused on the strategic opponents** (Alexandria,
-   Integral, Stockfish) where eval — not depth — is the wall.
+4. **Re-run the mine with clean fixed-time measurement. ✅ DONE 2026-06-28** — see
+   §"Clean full re-eval of the gauntlet". 135 candidates re-scored with clean
+   `coda eval` + `coda epd -t 2000` + threats-off, all vs SF depth-22; PGN-value
+   path dropped. **The overrate reproduced and is systematic** (median search +136
+   over SF; 58 confirmed draws; endgame-fortress dominant). The earlier "3 of 4
+   vanish" was a cherry-pick artifact. *Next widening:* run the full multi-gauntlet
+   focused on strategic opponents (Alexandria, Integral, Stockfish) and re-mine to
+   grow the confirmed set past 58 for a training-grade signal.
 5. **Drawn-endgame eval damping.** Separately consider whether 50-move / shuffle
    awareness or endgame eval scaling reduces theme-2 overrates (test on OB).
 6. **RFP-1 margin raise on v10 (separate track, from the conversion study).** The
@@ -406,8 +530,13 @@ and **not** the attack/threat class that motivated the training-set idea.
 
 ## Open questions
 
-- Does the static net *systematically* overrate, or only on theme 1? (Current
-  data: only theme 1; mean static−SF is slightly negative overall.)
+- ~~Does the static net *systematically* overrate, or only on theme 1?~~
+  **ANSWERED (clean re-eval):** it systematically overrates the **mined
+  drawn/lost set** (median static +182 over SF), dominated by simplified
+  minor-piece / fortress endgames — *not* theme 1. (The earlier "mean
+  static−SF ≈ −0.61" was over a quiet *broad* sample, not the overrate set.)
+  Open follow-up: is the overrate present in *quiet won/equal* positions too, or
+  only in the drawn-endgame tail the mine selects for?
 - Is the search-leaf inflation an eval problem one ply forward, or a real search
   bug? (Leaf walk, item 2.)
 - How much of the strategic gap to Alexandria/Integral is these blind-spots vs
@@ -420,10 +549,17 @@ and **not** the attack/threat class that motivated the training-set idea.
 
 ## Tooling
 
-- `scripts/game_analysis.py` — `taxonomy | mine | oracle | features`. Works in
-  Coda-POV. PGN eval comments are STM-POV; python-chess strips the `{}` braces
-  (regex must NOT require `{`). Mate → ±30000. `mine` filters draws/losses with
-  sustained overrate; `oracle` adds SF ground truth + `true_overrate`.
+- `scripts/game_analysis.py` — `taxonomy | mine | oracle | reeval | features`.
+  Works in Coda-POV. PGN eval comments are STM-POV; python-chess strips the `{}`
+  braces (regex must NOT require `{`). Mate → ±30000. `mine` filters draws/losses
+  with sustained overrate (a coarse PGN-eval candidate finder). `oracle` adds SF
+  ground truth + `true_overrate` **from the PGN value** (legacy — has POV/parse
+  gotchas). **`reeval` is the trustworthy path:** it re-evaluates each candidate
+  with fresh **gauntlet-net** Coda numbers — `static` (`coda eval`), threats-off
+  static (`CODA_NO_THREAT_ACC=1`), and `search` (`coda epd -t <ms>` — UCI `go`
+  emits **no** info lines, only `epd` does) — and computes overrates from the
+  clean Coda search vs SF. Always pass `--net <gauntlet-net>`; it loads the net 3×
+  per position (slow, ~20s/pos), so run it backgrounded.
 - `scripts/gen_overrate_svgs.py` — regenerates the board diagrams as
   `docs/img/overrate_*.svg` (python-chess `chess.svg`; green arrow = SF's deep
   best move). SVGs render natively on GitHub **and** GitLab. Add a position to
@@ -466,3 +602,16 @@ and **not** the attack/threat class that motivated the training-set idea.
   threats-off). #4 promoted to gating step: re-run the mine with clean fixed-time
   measurement before any training set. Also fired focused RFP-cluster SPSA #2366
   (RFP_DEPTH/MARGIN_IMP/MARGIN_NOIMP, 1500 iters STC) for the #6 lever.
+- **2026-06-28** — **Clean full re-eval (AUTHORITATIVE section added).** Re-ran the
+  whole mine end-to-end on the gauntlet net with a new `reeval` subcommand
+  (`game_analysis.py`: `Coda` engine class + clean static / threats-off static /
+  `coda epd` fixed-time search, all vs SF d22; PGN-value path dropped). 135
+  candidates → **58 search-confirmed overrates, all draws**; median clean search
+  **+136cp** over SF. **Corrects the prior "headline overrates vanish" claim** (a
+  4-position cherry-pick artifact): the overrate is real and systematic, dominated
+  by **simplified minor-piece / fortress endgames** (60% endgame, 53% up-material;
+  71% static-rooted, 21% search-rooted). Threats restrain re-confirmed at scale
+  (89/135). Revised one-line takeaway, Themes caveat, action items #1 (training set
+  unblocked) + #4 (done), open-question #1 (answered). New diagrams:
+  `overrate_clover_fortress_m77`, `overrate_stormphrax_m39`,
+  `overrate_tarnished_searchrooted_m43`.

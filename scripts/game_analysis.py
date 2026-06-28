@@ -398,6 +398,81 @@ class SF:
             self.p.kill()
 
 
+class Coda:
+    """Clean Coda re-eval on a chosen net. Two trustworthy numbers per FEN:
+
+      static  -- `eval` command, NNUE static eval (white-side), -> Coda-POV
+      search  -- fixed-time `go movetime`, final info `score cp`, STM-POV (= Coda-POV)
+
+    Replaces the in-game PGN eval (parse/POV/time gotchas) used by the old
+    oracle. The net MUST be the one that played the gauntlet — pass it via -n.
+    """
+    EVAL_RE = re.compile(r'evaluation\s+([+-]?\d+(?:\.\d+)?)')
+
+    def __init__(self, path, net, movetime=2000, no_threats=False):
+        self.path = path
+        self.net = net
+        self.movetime = movetime
+        self.no_threats = no_threats
+
+    def _env(self):
+        import os
+        env = dict(os.environ)
+        if self.no_threats:
+            env['CODA_NO_THREAT_ACC'] = '1'
+        return env
+
+    def static_codapov(self, fen):
+        """NNUE static eval in centipawns, Coda-POV (Coda = STM at fen).
+
+        Uses the UCI `eval` command (white-side print). NOTE: UCI `go movetime`
+        emits NO info lines in Coda, so search uses the epd path below instead.
+        """
+        script = ("uci\nsetoption name OwnBook value false\n"
+                  f"position fen {fen}\neval\nquit\n")
+        p = subprocess.run([self.path, '-n', self.net], input=script,
+                           capture_output=True, text=True, env=self._env(),
+                           timeout=120)
+        m = self.EVAL_RE.search(p.stdout)
+        if not m:
+            return None
+        cp_white = int(round(float(m.group(1)) * 100))
+        stm_white = fen.split()[1] == 'w'
+        return cp_white if stm_white else -cp_white
+
+    def search_codapov(self, fen):
+        """Fixed-time search score (cp), Coda-POV (STM-POV == Coda-POV here).
+
+        Routed through `coda epd <file> -t <ms>` (the only path that prints
+        per-iteration info lines). Returns the deepest-iteration score.
+        """
+        import tempfile, os
+        with tempfile.NamedTemporaryFile('w', suffix='.epd', delete=False) as tf:
+            tf.write(fen + "\n")
+            epd = tf.name
+        try:
+            p = subprocess.run([self.path, 'epd', epd, '--nnue', self.net,
+                                '-t', str(self.movetime)],
+                               capture_output=True, text=True, env=self._env(),
+                               timeout=max(30, self.movetime // 1000 * 4 + 30))
+        finally:
+            os.unlink(epd)
+        last = None
+        for line in p.stdout.splitlines():
+            if line.startswith("info ") and " score " in line:
+                t = line.split()
+                try:
+                    si = t.index("score")
+                    if t[si + 1] == "cp":
+                        last = int(t[si + 2])
+                    elif t[si + 1] == "mate":
+                        v = int(t[si + 2])
+                        last = (MATE_CP - abs(v) * 100) * (1 if v >= 0 else -1)
+                except (ValueError, IndexError):
+                    pass
+        return last
+
+
 def cmd_oracle(args):
     sf = SF(args.sf, threads=args.threads, hashmb=args.hash)
     rows = []
@@ -529,6 +604,65 @@ def extract_features(fen, coda_white):
     return feats
 
 
+def cmd_reeval(args):
+    """Clean re-eval: replace the unreliable in-game PGN eval with fresh
+    gauntlet-net Coda numbers (static + threats-off static + fixed-time search)
+    and SF ground truth. Emits ALL candidates with every number so themeing can
+    filter; `confirmed` marks search_overrate >= min AND |SF| <= cap."""
+    sf = SF(args.sf, threads=args.threads, hashmb=args.hash)
+    coda = Coda(args.coda, args.net, movetime=args.movetime)
+    coda_noth = Coda(args.coda, args.net, movetime=args.movetime, no_threats=True)
+    rows = []
+    with open(args.cand) as fh:
+        header = fh.readline().rstrip("\n").split("\t")
+        idx = {h: i for i, h in enumerate(header)}
+        for line in fh:
+            f = line.rstrip("\n").split("\t")
+            if len(f) >= len(header):
+                rows.append(f)
+    out = open(args.out, 'w')
+    out.write("gid\tfullmove\tcoda_res\tpgn_self\tsf_codapov\tcoda_static\t"
+              "coda_static_noth\tcoda_search\tstatic_or\tstaticnoth_or\t"
+              "search_or\tpgn_or\tconfirmed\tsf_best\tsan\tfen_before\n")
+    kept = 0
+    for n, f in enumerate(rows):
+        if args.max and n >= args.max:
+            break
+        fen = f[idx['fen_before']]
+        pgn_self = int(f[idx['coda_self']])
+        coda_white = fen.split()[1] == 'w'
+        cp_white, best = sf.eval_fen(fen, args.depth)
+        if cp_white is None:
+            continue
+        sf_cp = cp_white if coda_white else -cp_white
+        st = coda.static_codapov(fen)
+        stn = coda_noth.static_codapov(fen)
+        se = coda.search_codapov(fen)
+        static_or = (st - sf_cp) if st is not None else None
+        staticnoth_or = (stn - sf_cp) if stn is not None else None
+        search_or = (se - sf_cp) if se is not None else None
+        pgn_or = pgn_self - sf_cp
+        confirmed = (search_or is not None and search_or >= args.min_search_overrate
+                     and abs(sf_cp) <= args.sf_cap)
+        if confirmed:
+            kept += 1
+        def s(x):
+            return str(x) if x is not None else ''
+        out.write(f"{f[idx['gid']]}\t{f[idx['fullmove']]}\t{f[idx['coda_res']]}\t"
+                  f"{pgn_self}\t{sf_cp}\t{s(st)}\t{s(stn)}\t{s(se)}\t{s(static_or)}\t"
+                  f"{s(staticnoth_or)}\t{s(search_or)}\t{pgn_or}\t{int(confirmed)}\t"
+                  f"{best}\t{f[idx['san']]}\t{fen}\n")
+        out.flush()
+        if (n + 1) % 10 == 0:
+            print(f"  ...{n+1}/{len(rows)} re-eval'd, {kept} confirmed", file=sys.stderr)
+    out.close()
+    sf.quit()
+    print(f"reeval: scored {min(len(rows), args.max or len(rows))} positions, "
+          f"{kept} search-confirmed overrates -> {args.out}")
+    print(f"  net={args.net} movetime={args.movetime}ms sf_depth={args.depth} "
+          f"min_search_overrate={args.min_search_overrate} sf_cap={args.sf_cap}")
+
+
 def cmd_features(args):
     feat_count = Counter()
     res_count = Counter()
@@ -591,6 +725,22 @@ def main():
     o.add_argument('--sf-cap', type=int, default=600, help='|SF eval| cap (skip won/lost)')
     o.add_argument('--max', type=int, default=0, help='cap positions scored (0=all)')
     o.set_defaults(func=cmd_oracle)
+
+    r = sub.add_parser('reeval', help='clean Coda re-eval (gauntlet net) + SF -> trustworthy overrates')
+    r.add_argument('cand')
+    r.add_argument('--out', required=True)
+    r.add_argument('--net', required=True, help='gauntlet net that played the games')
+    r.add_argument('--coda', default='/home/adam/code/coda/coda')
+    r.add_argument('--sf', default='/home/adam/chess/engines/Stockfish/src/stockfish')
+    r.add_argument('--depth', type=int, default=22, help='SF ground-truth depth')
+    r.add_argument('--movetime', type=int, default=2000, help='Coda fixed-time search (ms)')
+    r.add_argument('--threads', type=int, default=4, help='SF threads')
+    r.add_argument('--hash', type=int, default=256, help='SF hash MB')
+    r.add_argument('--min-search-overrate', type=int, default=150,
+                   help='cp Coda SEARCH overrates vs SF to mark confirmed')
+    r.add_argument('--sf-cap', type=int, default=600, help='|SF eval| cap (skip won/lost)')
+    r.add_argument('--max', type=int, default=0, help='cap positions (0=all)')
+    r.set_defaults(func=cmd_reeval)
 
     fe = sub.add_parser('features', help='common chess features of confirmed overrates')
     fe.add_argument('scored')
