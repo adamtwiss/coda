@@ -16725,3 +16725,24 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
   middlegame). **Retune-on-branch in flight as tune #2353** (LMP_BASE/LMP_DEPTH/
   SEE_QUIET_MULT/FUT_BASE/FUT_PER_DEPTH/FUT_LMR_DEPTH, STC). Verdict on the guard
   pending that tune + its SPRT.
+
+- **AVX2 multiversion SIGILL fix (2026-06-28).** Bare `target_feature(enable="avx2")`
+  on the hot forward/threat-apply fns AVX2-autovectorized even the scalar
+  fallback → SIGILL on AVX-but-no-AVX2 CPUs (Sandy Bridge / Xeon E5 v1), even
+  though runtime `has_avx2` steered to the fallback. Verified the crash on a real
+  Xeon E5-2670.
+  - **#2335 fix/avx2-target-feature-sigill — H0 -1.6 (39k, [-2,1] -> H0).** Plain
+    function-multiversioning (attribute-free body + `target_feature` wrapper +
+    runtime dispatch) fixed the crash but cost -1.6 on the AVX2 fleet: the
+    `target_feature` wrapper CANNOT inline into the portable dispatcher, adding a
+    function-call boundary on the hottest per-node path.
+  - **#2347 fix/avx2-cfg-gated — +1 MERGED (885bef4).** cfg-gate the runtime
+    dispatch + wrapper on `not(target_feature="avx2")`. On native AVX2 builds
+    (every OB worker; `-Ctarget-cpu=native`), the attribute-free `#[inline(always)]`
+    body already gets AVX2 codegen from the crate baseline, so the dispatcher falls
+    straight through to it — no wrapper boundary, codegen identical to the original.
+    Pre-AVX2 builds keep the runtime dispatch. Correctness AND zero fleet cost.
+  - **Footgun (durable):** a hot SIMD fn with an internal runtime-branched scalar
+    fallback must use the cfg-gated multiversion-wrapper shape, NEVER a bare
+    `target_feature` on the whole fn (silently AVX2-vectorizes the "scalar" path)
+    and NEVER a plain wrapper-dispatch (un-inlinable boundary on AVX2 hosts).
