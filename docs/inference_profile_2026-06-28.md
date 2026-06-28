@@ -1,0 +1,116 @@
+# NNUE Inference Profile — v8s3 net (2026-06-28)
+
+Fresh profiling of the inference hot path on the **v8s3 prod-beater net**
+(`multi-v8-l132-s3-v3-swa.nnue`, FT=1024 / L1=32, v9 inference format).
+Host: **AMD Ryzen 7 9700X** (Zen 5, AVX-512 + AVX-VNNI), single-thread,
+**OB worker stopped** for clean numbers. `coda bench 13`, ~1.84M NPS.
+
+**Companion / supersedes-context:** the authoritative Coda-vs-SF speed analysis
+is `docs/coda_vs_sf_speed_2026-06-14.md` (read it first). This doc re-confirms
+its findings on v8s3 and adds AVX-512-host detail + a tested (negative) prefetch
+experiment. Correctness of the threat path: `docs/threat_pipeline_deepaudit_2026-06-26.md`.
+
+## Important: SF has the SAME architecture (FT1024 + threats)
+
+**Stockfish has threat features too** — same FT1024 + threats arch as Coda.
+SF does NOT do *x-ray* threats; Coda does. So the speed gap is **implementation
+efficiency, not "SF lacks threats."** Per `coda_vs_sf_speed_2026-06-14.md`:
+Coda's threat accumulator is **~31% of cycles vs SF's ~5.5%** for the same
+feature class. Two drivers:
+- **X-ray threats (Coda-only):** ~11% single-thread / ~14% contended NPS cost,
+  but only ~25% of the total gap. **Kept** — SPRT #2014 = +187 Elo for ~3-5
+  deployment Elo of NPS. Not a drop candidate.
+- **The threat-accumulator APPLY design (the real, untouched lever):** Coda
+  replays deltas from an ancestor and re-derives indices; SF builds a
+  dirty-threat list once inside `do_move` and applies once. This is the bulk
+  (~75-85%) of the gap and is independent of x-ray.
+
+## Headline: memory-bound, and AVX-512 is already saturated
+
+`perf stat` (depth 13, v8s3):
+
+| metric | value | read |
+|---|---|---|
+| IPC | 2.20 | OK |
+| **L1-dcache load-miss** | **21.95%** | high — memory-bound |
+| cache-miss (→LLC/RAM) | 5.20% of refs (279M) | the expensive ones |
+| branch-miss | 2.69% | fine |
+| NPS (1T) | 1.84M | — |
+
+Dispatch log confirms **AVX-512 + VNNI active** ("VPDPBUSD int8 matmul"). The
+hot kernels already run 512-bit with maximal register blocking (REGS=24). **A
+code-survey pass claimed two AVX-512 gaps — both are already closed and do NOT
+apply to v8s3** (verified vs live profile): v8s3 uses the fast column-major
+`dense_l1_avx512_vnni_l1_32` (9.2% self), and `finny_batch_apply_avx512` /
+`simd_acc_fused_avx512` are already REGS=24 (nnue.rs:517/5632), not REGS=8. So
+**"add more AVX-512" buys little here** — the inference kernels are saturated.
+
+## Hot functions (self %, cycles)
+
+| self% | function | role |
+|---|---|---|
+| 12.8 | search::negamax | search |
+| **11.5** | **threats::apply_threat_indices** | threat weight apply |
+| 9.2 | sparse_l1::dense_l1_avx512_vnni_l1_32 | L1=32 matmul (AVX-512 VNNI ✓) |
+| 8.2 | nnue::forward_with_l1_pairwise_threats | FT pack + L1/L2 orchestration |
+| 6.6 | nnue::simd_acc_fused_avx512 | FT accumulator update (1024-wide) |
+| 6.5 | movepicker::next_slow | move ordering |
+| **6.3** | **threats::push_threats_for_piece** | threat feature enumeration (scalar) |
+| **5.2** | **threat_accum::update_dual** | threat delta orchestration |
+| 3.4 | see::see_ge | — |
+
+**Threat subsystem ≈ 23% of cycles** (apply_threat_indices + push_threats +
+update_dual) — consistent with the 06-14 finding that the threat accumulator,
+*as Coda implements it*, is the central inefficiency vs SF (~5.5%). The fix is
+making Coda's apply SF-cheap, not removing threats.
+
+## Cache/RAM-miss attribution
+
+**LLC / RAM misses** (the DRAM traffic that actually costs):
+| % of RAM misses | function | prefetch today? |
+|---|---|---|
+| 36.3 | apply_threat_indices | ✅ yes (4-deep + next-row) |
+| 22.7 | simd_acc_fused_avx512 (FT apply) | ❌ none |
+| 11.1 | finny_batch_apply (king-bucket refresh) | ❌ none |
+
+## Tested experiment — FT-gather software prefetch: NO-OP (do not ship)
+
+Hypothesis: add next-row `_mm_prefetch(T0)` to the two FT gathers that lack it
+(`simd_acc_fused_avx512`, `finny_batch_apply_avx512`), mirroring the threat
+path. Implemented on `zeus/ft-gather-prefetch` (bench-identical: node count
+4880208 both sides).
+
+**Result on Zen 5: measured no-op.** L1-dcache-miss rate **21.82% identical**
+both binaries; LLC misses marginally *worse* (5.00% vs 4.90%); NPS within noise
+(branch 1839k vs main 1836k mean, +0.2%). The Zen 5 HW prefetcher + 32MB L3
+already cover these gathers, and the rows are consumed almost immediately
+(no lead time). **Abandoned — not worth fleet time** (zero miss-rate movement;
+it could only help on weaker-prefetcher AVX-512 hosts, but the local signal is
+nil and slightly negative on LLC). Branch left unpushed.
+
+## The real levers (from coda_vs_sf_speed_2026-06-14.md, re-confirmed here)
+
+The prefetch/AVX-512-width angles are spent. The recoverable speed is the
+**threat-accumulator apply** + the movegen-side micro-structure:
+
+1. **Threat-apply redesign (biggest, untouched).** Make Coda's apply SF-cheap:
+   build the dirty-threat list eagerly in `make_move` and apply once, instead of
+   replay-from-ancestor + re-derive indices. Coda ~31% → target ~SF 5.5%.
+   Large, correctness-critical (the threat path is well-tested — see deepaudit).
+2. **D — direct-write movegen** (kill the ~514B `MoveList` by-value copies) and
+   **F — fixed-array undo stack**. Localized, bit-identical, `[-2,1]` SPRT.
+3. **G — per-quiet move scoring** is much heavier than SF (~4-6 magics/quiet vs
+   SF's history reads + one `see_ge`, with per-node-constant sets hoisted once).
+   Isolate the hoists (bit-identical); the tuned bonuses need a full SPRT.
+4. **H — int8 L2/L3/output pipeline** (drop Coda's f32 dequant pipeline for
+   SF-style folded-scale VPDPBUSD). Structural (needs requant/retrain).
+
+Already tested DEAD/neutral (don't re-attempt): L1 sparse-input (loses
+1.8-2.4×), threat-index micro-opts (neutral), check-square cache C (neutral).
+
+## Method notes
+- `strip = true` in `[profile.release]` blanks perf symbols — rebuild with
+  `CARGO_PROFILE_RELEASE_STRIP=false make RUSTFLAGS="-Ctarget-cpu=native -g
+  -Cforce-frame-pointers=yes"` for symbolized `perf record --call-graph fp`.
+- Driver: `scripts/profile_inference.sh <net> [depth]`.
+- All numbers on v8s3 with the local OB worker stopped (single-engine, full NPS).
