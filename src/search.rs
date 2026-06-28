@@ -3795,7 +3795,9 @@ fn negamax(
     {
         // SEE threshold: only consider captures that gain enough material
         let see_threshold = (probcut_beta - static_eval).max(0);
-        let pc_depth = depth - 4;
+        // Improving-conditioned ProbCut depth (SF d6483505 / Reckless 08f2cfa4) —
+        // bundled near-miss; tuned with the LMP/ProbCut margin cluster.
+        let pc_depth = depth - 4 - improving as i32;
         let pc_tt_move = if tt_move_noisy
             && is_pseudo_legal(board, tt_move)
             && board.is_legal(tt_move, pinned, checkers)
