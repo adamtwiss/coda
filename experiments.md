@@ -16777,3 +16777,21 @@ no panics, aarch64-safe atomics). One genuine NPS change found and shipped:
   the [-2,1] free-flag lane is what let the genuine sub-1-Elo gain through, per
   the bounds-philosophy discussion). Bench 2692538. From the SF/Reckless 2-month
   survey batch.
+
+- **multi-v8 Stage-3 variants — the prod-beater + its LR/data axes (2026-06-28).**
+  Stage 3 = warmstart from `multi-v8-l132-s2-v2-900-swa`, 2000 SB, warmup 66,
+  lr 3.5e-4, seed 44, swa-start 1920, wdl 0.20, qat, FT1024/L1=32, mse-power 3,
+  soft-ply 28/0.25, interleave. Two single-variable axes off the v1 baseline:
+  - **s3-v1** (`68A34D19`, data `/workspace/t80-newer`, final-lr **1e-6**) —
+    **the prod-beater.** Beat prod (untuned) **+5.90 ±3.53 H1** [-1.5,1.5]
+    (N=10960, penta [59,1263,2670,1409,79]); beat S2 **+15.67 ±5.67 H1**
+    (N=4060). So the v8 stage-3 is a big jump over S2.
+  - **s3-v2** (`2C294898`) — ONLY change vs v1: final-lr **3.3e-7** (3× lower,
+    "matching SF"). **#2331 vs v1: −1.18 ±1.55 H0** (N=53000). Lower tail LR
+    HURT — 1e-6 is the right tail; going lower (toward the ~2.43e-7 v9 floor)
+    is a small regression. **LR axis settled: keep 1e-6.**
+  - **s3-v3** (`E7D892E3`) — ONLY change vs v1: data `/workspace/stage2`
+    (ALL stage-2 data, not just t80-newer), final-lr 1e-6. SPRT vs v1 in flight
+    — clean isolation of the data-pool variable (all-data vs newer-files at
+    fixed 2000 SB; the `project_data_scaling_is_sb_constrained` "diversity vs
+    epochs" question).
