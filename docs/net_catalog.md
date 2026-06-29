@@ -3,7 +3,18 @@
 Authoritative list of v9 nets, their OpenBench hashes, provenance, and status.
 Update this file when you promote a new production net or retire an old one.
 
-**Current v9 production:** `E7D892E3` — `net-E7D892E3.nnue`
+**Current v9 production:** `E6C62000` — `net-E6C62000.nnue`
+(source file `multi-v8-l132-s3-v4-swa.nnue`). Promoted **2026-06-29**.
+**multi-v8 stage-3 "v4"** = the v3 recipe with the long final stage extended to
+**S3000** (vs v3's S2000), SWA tail, `final-lr 1e-6` (floor unchanged — fired
+before the SF-low-LR analysis, so it isolates schedule length from the LR floor).
+Validation: **#2392** v4-swa **+3.5** vs prod E7D892E3 (net-vs-net `[-1.5,1.5]`
+STC, H1); v4-raw (#2391) was the non-SWA control. Promoted on the #2367 trunk; a
+1500-iter LTC core fine-tune FOR this net follows (the +3–5 retune-for-net
+pattern from #2351/#2367). All v9 SPRTs against trunk should now pass
+`--dev-network E6C62000 --base-network E6C62000`.
+
+**Previous v9 production:** `E7D892E3` — `net-E7D892E3.nnue`
 (source file `multi-v8-l132-s3-v3-swa.nnue`). Promoted **2026-06-28**.
 **multi-v8 multistage, stage-3 "v3"** = all-data stage 3 (vs the
 newer-files-only s3-v1), based on s3-v1 with `final-lr 1e-6` over
