@@ -45,15 +45,41 @@ by crushing the eval to 0 as the clock fills. No hidden post-NNUE filtering exis
 **So for training:** adding KQ-v-K-type data is *not* the fix (our net already
 knows it; mate-scores are filtered for good reason; SF's net is also flat). The
 fix is to give the eval a **progress gradient**, which is missing.
-**Deployment-masked** for the tiny cases (CCRL + lichess both 5-man EGTB). Levers:
-(1, eval, the direct fix) a tiny **mop-up term** (push enemy king to edge/corner +
-kings close), gated to a lone-king opponent so it never disturbs draw-acceptance
-in K+piece-vs-K+piece endings — gives the search the gradient *and* improves
-move-ordering of king-driving moves; (2, search) check whether LMR over-reduces in
-**6–7-piece won endgames** (above the ≤5 gate — untested); (3, eval/training,
-*offensive*) **DTZ/eval-gradient-labelled won-endgame data** (6–7+ men,
-TB-uncovered) for general won-endgame conversion. Full detail + the 167-candidate
-breakdown below.
+**Deployment-masked** for the tiny cases (CCRL + lichess both 5-man EGTB).
+
+**Two eval/scaling fixes PROTOTYPED, both FAILED (2026-06-29).**
+1. *Mop-up gradient* (lone-king-gated push-to-edge/corner + KBN bishop-corner
+   bias): net-negative at every magnitude — fixed some starts, regressed others,
+   slowed KQ/KR-v-K. Branch `zeus/endgame-mopup-eval` discarded.
+2. *Rule50-damping exemption for forced-mate lone-king endgames* (keep the eval
+   honest-winning so the search doesn't give up): also net-negative under clean
+   methodology — fixed 4 KR-v-K cases at high halfmove but regressed 4 KQ-v-K
+   cases (5→4 mates). Branch `zeus/endgame-no-rule50-damp` discarded.
+
+**Why both fail — and the reliable path.** These mates are converted by *pure
+tactical search on a flat eval*, so ANY eval perturbation (a gradient OR a
+magnitude change) just reshuffles the search's pruning/ordering — helping some
+positions, hurting others, netting neutral-to-negative. **The eval is not the
+lever.** Coda *already* mates KQ/KR-v-K from normal/moderate clocks; the residual
+failures are (a) high-halfmove arrivals where the 50-move budget is genuinely
+near-exhausted, and (b) KBN-v-K vs best defense (33-ply technique beyond STC
+depth). The only *reliable* "mate KX-v-K without EGTB" fixes are: a **hardcoded
+mating-technique driver** for bare-king endgames (KQ/KR/KBB/KBN-v-K — the
+Caissa approach, a bounded correct algorithm, not an eval nudge), or **more
+endgame search depth**. Eval/scaling hacks are a dead end here.
+
+**METHODOLOGY LESSON (load-bearing).** Single-game endgame conversion tests are
+treacherous: (1) **movetime is non-deterministic** (same config → MATE/DRAW/DRAW),
+and (2) **TT carries over between positions** unless you send `ucinewgame` per
+position — both silently corrupted earlier conclusions in this very study (an
+LMR "fix" and a mop-up "fail" that evaporated under clean testing). Always use
+**fixed nodes + fresh `ucinewgame` per position + N>1**, and validate any real
+change with an SPRT.
+
+Remaining (non-elementary) levers unchanged: the **52%-OVERSCORE bucket** (Atlas
+corpus) and **general 6–7+-men conversion** (LMR-in-bigger-endgames untested;
+DTZ-labelled training data) carry the real competitive value. Full detail + the
+167-candidate breakdown below.
 
 **Goal.** Find where Coda reaches a winning position and fails to win it —
 the bucket the T80 overscore-mining (Atlas) is structurally blind to, because
