@@ -176,6 +176,56 @@ fn flip_sq(sq: u32) -> u32 {
     sq ^ 56
 }
 
+/// DOMINANT endgame "mop-up" gradient. The NNUE is materially correct in won
+/// endgames but provides no MATING gradient and swings ~200cp across king
+/// positions (noise w.r.t. the mate). To steer the search to a bare-king mate
+/// the drive-to-edge gradient must EXCEED that noise — so EDGE spans ~600cp.
+/// Gated to a lone king vs material that can FORCE mate (Q, R, BB, BN);
+/// KB/KN/KNN-v-K are excluded (drawn — no drive). WHITE-relative centipawns.
+// Magnitude window: must EXCEED the ~200cp NNUE position-noise but stay UNDER
+// the protected material (~500cp rook) so king-driving never outweighs piece
+// safety (EDGE=100 hung rooks). Env-tunable for sweeping the sweet spot.
+#[inline(always)]
+fn mopup_params() -> (i32, i32, i32) { (70, 15, 80) }
+fn endgame_mopup(board: &crate::board::Board) -> i32 {
+    use crate::bitboard::popcount;
+    let (k, b, n) = (crate::types::KING as usize, crate::types::BISHOP as usize,
+                     crate::types::KNIGHT as usize);
+    let wpc = popcount(board.colors[0]);
+    let bpc = popcount(board.colors[1]);
+    let winner = if bpc == 1 && wpc > 1 { 0usize }
+                 else if wpc == 1 && bpc > 1 { 1usize }
+                 else { return 0 };
+    let cw = board.colors[winner];
+    let q = popcount(board.pieces[crate::types::QUEEN as usize] & cw);
+    let r = popcount(board.pieces[crate::types::ROOK as usize] & cw);
+    let bi = popcount(board.pieces[b] & cw);
+    let kn = popcount(board.pieces[n] & cw);
+    // matable material only — KB/KN/KNN cannot force mate, leave them alone
+    if !(q > 0 || r > 0 || bi >= 2 || (bi >= 1 && kn >= 1)) {
+        return 0;
+    }
+    let loser = 1 - winner;
+    let lk = (board.pieces[k] & board.colors[loser]).trailing_zeros() as i32;
+    let wk = (board.pieces[k] & board.colors[winner]).trailing_zeros() as i32;
+    let (lf, lr) = (lk % 8, lk / 8);
+    let (wf, wr) = (wk % 8, wk / 8);
+    let cmd = (if lf < 4 { 3 - lf } else { lf - 4 }) + (if lr < 4 { 3 - lr } else { lr - 4 });
+    let md = (lf - wf).abs() + (lr - wr).abs();
+    let (p_edge, p_prox, p_corner) = mopup_params();
+    let mut term = p_edge * cmd + p_prox * (14 - md);
+    // KBN: only the bishop-coloured corners mate — bias the bare king there.
+    let wb = board.pieces[b] & cw;
+    if popcount(cw) == 3 && bi == 1 && kn == 1 {
+        let bsq = wb.trailing_zeros() as i32;
+        let light = ((bsq % 8) + (bsq / 8)) & 1 == 1;
+        let corners: [(i32, i32); 2] = if light { [(0, 7), (7, 0)] } else { [(0, 0), (7, 7)] };
+        let dmin = corners.iter().map(|&(cf, cr)| (lf - cf).abs() + (lr - cr).abs()).min().unwrap();
+        term += p_corner * (7 - dmin);
+    }
+    if winner == 0 { term } else { -term }
+}
+
 /// Evaluate with NNUE if available, otherwise fall back to PeSTO.
 pub fn evaluate_nnue(
     board: &crate::board::Board,
@@ -223,7 +273,10 @@ pub fn evaluate_nnue(
     }
 
 
-    let v = net.forward_with_threats(acc, board.side_to_move, pc, threat_stack);
+    let mut v = net.forward_with_threats(acc, board.side_to_move, pc, threat_stack);
+    // Dominant endgame mop-up gradient (lone-king-vs-matable only). WHITE-rel -> stm.
+    let mu = endgame_mopup(board);
+    v += if board.side_to_move == crate::types::WHITE { mu } else { -mu };
     // Eval-scale normalization (EVAL_SCALE_PCT, default 100 = no-op).
     let pct = crate::search::EVAL_SCALE_PCT.load(std::sync::atomic::Ordering::Relaxed);
     if pct != 100 { v * pct / 100 } else { v }
