@@ -29,25 +29,31 @@ conversion-aware eval** (it scores KBN-v-K at +1.8, knowing it's hard; Coda says
 per a prior cross-engine review, only Caissa uses internal mate recognizers — the
 rest don't.
 
-**Confirmed root cause = LMR over-reduction (a SEARCH bug, not training).** With
-all pruning flags available, the KBN-v-K-vs-best-defense game was run at STC
-speed: baseline (LMR on) **draws**; **`NO_LMR` mates in 26**; `NO_LMR+NO_LMP+NO_NMP`
-draws *again* (those only cost depth); baseline at 2s mates in 26. So **LMR
-specifically** reduces the technique moves to shallow depth — because the flat
-NNUE gives no ordering gradient in a rare endgame, so the progress move is ordered
-late and gets reduced away. The rule50 damping then finishes it by crushing the
-eval to 0 as the clock fills. No hidden post-NNUE filtering exists (only
-`EVAL_SCALE_PCT` no-op + material scale + rule50 scale).
+**Confirmed cause = flat eval + insufficient depth (NOT LMR — corrected
+2026-06-29).** LMR is *already* disabled for ≤5-piece positions by the existing
+`LMR_ENDGAME_PIECES_10X` gate (`tp10(49)=5`, skip LMR when `popcount ≤ 5`), so it
+was never active in KBN-v-K. Deterministic fixed-node test (200k nodes/move)
+confirms **baseline ≡ `NO_LMR` bit-identical** on KBN-v-K — an earlier *movetime*
+test that suggested "NO_LMR fixes it" was non-determinism noise (the same config
+gave MATE/DRAW/DRAW). The true cause: even at 200k nodes/move KBN-v-K is
+**position-dependent** (draws from the symmetric-centre start, mates from others) —
+the flat NNUE gives no gradient to find the ~33-ply W-maneuver, and it's beyond
+reachable depth from the hard start. The rule50 damping then finishes losing games
+by crushing the eval to 0 as the clock fills. No hidden post-NNUE filtering exists
+(only `EVAL_SCALE_PCT` no-op + material scale + rule50 scale).
 
 **So for training:** adding KQ-v-K-type data is *not* the fix (our net already
-knows it; mate-scores are filtered for good reason; SF's net is also flat). This
-is a **search problem (LMR) + flat-eval-ordering**, **deployment-masked** for the
-tiny cases (CCRL + lichess both 5-man EGTB). Two levers: (1, search) **cap LMR
-reduction in winning low-material endgames** — cheap, SPRT-able, the direct fix;
-(2, eval/training, *offensive*) **DTZ/eval-gradient-labelled won-endgame data**
-(6–7+ men, TB-uncovered) to give the net a *progress gradient* neither SF nor we
-have — fixes the ordering at the source and helps general won-endgame conversion,
-not just toy mates. Full detail + the 167-candidate breakdown below.
+knows it; mate-scores are filtered for good reason; SF's net is also flat). The
+fix is to give the eval a **progress gradient**, which is missing.
+**Deployment-masked** for the tiny cases (CCRL + lichess both 5-man EGTB). Levers:
+(1, eval, the direct fix) a tiny **mop-up term** (push enemy king to edge/corner +
+kings close), gated to a lone-king opponent so it never disturbs draw-acceptance
+in K+piece-vs-K+piece endings — gives the search the gradient *and* improves
+move-ordering of king-driving moves; (2, search) check whether LMR over-reduces in
+**6–7-piece won endgames** (above the ≤5 gate — untested); (3, eval/training,
+*offensive*) **DTZ/eval-gradient-labelled won-endgame data** (6–7+ men,
+TB-uncovered) for general won-endgame conversion. Full detail + the 167-candidate
+breakdown below.
 
 **Goal.** Find where Coda reaches a winning position and fails to win it —
 the bucket the T80 overscore-mining (Atlas) is structurally blind to, because
