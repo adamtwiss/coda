@@ -16918,3 +16918,21 @@ harvest + SF-vs-Coda games as stage-1 bootstrap), not loss-fixable.
   base 2410041) — **H0 ✗ (-0.8 ±1.8, LLR -3.03, 38.7k).** The bundle slightly HURTS; #813/#886 still hold on v8s3. Correction: only HALFMOVE had a real SPSA gradient (100→108); PAWN_MAT_SCALE sat at its seed (no gradient) — the pawn-term reintroduction (0→104) is the likely drag (re-confirms #813). Next: isolate the rule50 softening alone (#2381). Motivated by the top-10 endgame-eval survey + the
   convert-fail/push-into-draw symptom; eval-scaling is the consensus draw-shaping
   lever (no top-6 engine uses recognizers/fortress).
+
+- **Draws: overrate-dominated, not conversion-dominated (2026-06-29).** Mined the
+  `coda-1.2-time-boost.pgn` gauntlet (950 games, +1.2× time vs top-20 pool, no
+  EGTB; 67.5% draws) for 151 faded-draw peaks (Coda eval peaked ≥+1.5, game drew).
+  Oracle disagreement is the finding: **SF static** adjudication said ~48% real /
+  ~34% mirage; **SF16 depth-24 search** said **8 real (5%) / 89 overrate (59%) / 54
+  ambiguous (36%)**. SF's *static* eval over-rated the same sharp positions Coda
+  did; deep search reverses the cut. So the draw rate is **overrate-dominated** —
+  independent validation of the eval-blindspot / corrective-net programme (these
+  are exactly the positions it targets), and endgame-conversion *search* is not the
+  frontier for these games. Artifacts: `testdata/coda_conversion.epd` (8 real wins,
+  bm from d24 oracle; 5 ≥6-men) and `testdata/coda_overrate_gauntlet.epd` (89
+  deep-confirmed overrates, peak≥1.5 but d24 ≤+50cp). Material prior (lichess
+  stats.json, 7-men perfect-play WDL) touches only ~8/114 failures (rest >7-men) →
+  recommended *against* a Caissa-style internal recognizer; data is better as an
+  analysis lens. Full writeup: `docs/draw_overrate_analysis_2026-06-29.md`.
+  Parallel: blindspot harvest completed for 6 monthly T80 files (Jan–Jun 2024,
+  150/80 filter, ~318M coda-worse positions in `/training/blindspot/`).
