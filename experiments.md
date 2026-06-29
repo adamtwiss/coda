@@ -16936,3 +16936,18 @@ harvest + SF-vs-Coda games as stage-1 bootstrap), not loss-fixable.
   analysis lens. Full writeup: `docs/draw_overrate_analysis_2026-06-29.md`.
   Parallel: blindspot harvest completed for 6 monthly T80 files (Jan–Jun 2024,
   150/80 filter, ~318M coda-worse positions in `/training/blindspot/`).
+
+- **Endgame mop-up gradient — MERGED +10 Elo (2026-06-29, #2397 H1 / #2396).**
+  Post-NNUE processing in `evaluate_nnue`, gated to a lone king vs force-mate
+  material (Q/R/BB/BN; excludes KB/KN/KNN): rewards the winner for driving the
+  bare king to the edge/corner (EDGE=70/PROX=15/CORNER=80). Fixes trivially-won
+  KX-v-K drawn by the 50-move rule — the NNUE is materially-correct but FLAT (no
+  mating gradient; it swings ~200cp across king positions as noise). Two KEY
+  lessons: (1) the gradient must EXCEED that ~200cp noise (earlier small versions
+  were swamped — the "failed" attempts in the study doc); (2) the gain is HIDDEN
+  by win-adjudication (OB scores a winning eval as a win regardless of whether the
+  engine converts) — only visible via `ob_submit.py --no-win-adj`. SPRT: **+10.4
+  Elo H1 win-adj-off (#2397)**, +2.9 trending default (#2396). King-mobility
+  confine-term variant retired (+3.2, underperformed; #2398/#2399). KBN-v-K still
+  drawn vs best defense (W-maneuver — deferred). Validated with a TB-perfect-
+  defender harness. Study: `docs/conversion_failure_study_2026-06-29.md`.

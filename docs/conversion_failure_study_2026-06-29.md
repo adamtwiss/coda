@@ -1,5 +1,13 @@
 # Conversion-failure study — "correct eval, didn't convert" (2026-06-29)
 
+> **RESOLVED 2026-06-29 — MERGED +10 Elo.** The dominant-magnitude mop-up gradient
+> (EDGE=70/PROX=15/CORNER=80, lone-king-vs-matable) was banked to main: SPRT #2397
+> **+10.4 Elo H1** (win-adjudication OFF), #2396 +2.9 (default, trending H1). The
+> "two eval fixes FAILED" notes below refer to UNDER-powered magnitudes (gradient
+> *below* the ~200cp NNUE position-noise) — once it EXCEEDED that noise and stayed
+> structured, it worked. The king-mobility *confine* variant underperformed (+3.2)
+> and was retired. KBN-v-K still drawn vs best defense (W-maneuver — deferred).
+
 ## TL;DR (for Hercules / training)
 
 We played Coda (v8s3) 3,800 STC games vs 18 top-20 engines with **resign
