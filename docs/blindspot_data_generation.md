@@ -79,11 +79,16 @@ b=3.013`.
 
 ```
 coda import-tsv -i import_M.tsv --fen-col 0 --score-col 1 \
-  -o /training/blindspot/t80_blindspot_150_80_M.binpack
+  -o /training/blindspot/t80_blindspot_150_80_<mon>_<year>.binpack
 ```
 
-Per-month candidate TSVs are kept gzipped (`cands_M.tsv.gz`) for provenance;
-heavy scratch (shard CSVs, SF in/out) is deleted.
+Output names carry the **month _and_ year** (`..._may_2024.binpack`) — the T80
+set has several Mays/Aprils across years, so bare-month names would collide.
+The driver's `FILE` map is keyed `<mon>_<year>` and the output/candidate names
+derive from that key.
+
+Per-month candidate TSVs are kept gzipped (`cands_<mon>_<year>.tsv.gz`) for
+provenance; heavy scratch (shard CSVs, SF in/out) is deleted.
 
 ## Supporting scripts
 

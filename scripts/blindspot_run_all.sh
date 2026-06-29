@@ -18,14 +18,17 @@ MAXLC0=600
 ts(){ date '+%Y-%m-%d %H:%M:%S'; }
 free_gb(){ df -BG / | awk 'NR==2{gsub("G","",$4); print $4}'; }
 
+# Keys are <mon>_<year> so output names carry the year — the T80 set has
+# several Mays/Aprils across years; bare-month names would collide. Add more
+# files here (any month/year) to grow the harvest without touching the recipe.
 declare -A FILE=(
-  [feb]="$SRC/test80-2024-02-feb-2tb7p.min-v2.v6.binpack"
-  [mar]="$SRC/test80-2024-03-mar-2tb7p.min-v2.v6.binpack"
-  [apr]="$SRC/test80-2024-04-apr-2tb7p.min-v2.v6.binpack"
-  [may]="$SRC/test80-2024-05-may-2tb7p.min-v2.v6.binpack"
-  [jun]="$SRC/test80-2024-06-jun-2tb7p.min-v2.v6.binpack"
+  [feb_2024]="$SRC/test80-2024-02-feb-2tb7p.min-v2.v6.binpack"
+  [mar_2024]="$SRC/test80-2024-03-mar-2tb7p.min-v2.v6.binpack"
+  [apr_2024]="$SRC/test80-2024-04-apr-2tb7p.min-v2.v6.binpack"
+  [may_2024]="$SRC/test80-2024-05-may-2tb7p.min-v2.v6.binpack"
+  [jun_2024]="$SRC/test80-2024-06-jun-2tb7p.min-v2.v6.binpack"
 )
-ORDER="feb mar apr may jun"
+ORDER="feb_2024 mar_2024 apr_2024 may_2024 jun_2024"
 
 mkdir -p "$OUT"
 echo "[$(ts)] RUN_ALL start. order=$ORDER  free=$(free_gb)G"
