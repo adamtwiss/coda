@@ -16901,3 +16901,15 @@ eval magnitudes), and qp-asymmetry largely counteracts it (+7%). SPRTs **#2370**
 shared tunables — floor only). Per Atlas's eval-overrate findings, WRM demoted
 to low-priority probe; eval blind-spots are data-fixable (LC0-scored corrective
 harvest + SF-vs-Coda games as stage-1 bootstrap), not loss-fixable.
+- **zeus/eval-scale-tune-v8s3 #2375 tune → #2379 SPRT** — endgame/draw eval-scaling
+  re-tuned for the v8s3 prod-beater net (April-era values were SPRT-fixed against
+  old nets, never re-optimized). Exposed 3 NON-CORE tunables (HALFMOVE_SCALE_DENOM,
+  MATERIAL_SCALE_BASE, PAWN_MAT_SCALE), defaults bench-identical; SPSA #2375 (1500
+  iters STC, --dev-network E7D892E3, PAWN seeded 100 to avoid a 0-boundary).
+  **Outputs: PAWN_MAT_SCALE 0→104, HALFMOVE_SCALE_DENOM 100→108, MATERIAL_SCALE_BASE
+  22400→22283.** Two old-net findings REVERSED on v8s3: #813 (drop pawn term) → pawn
+  term wants ~104 back (un-damps pawn endgames); #886 (rule50 /100) → mild softening
+  to /108. Validation SPRT **#2379** vs main [0,3], both sides v8s3 (dev 2438460 /
+  base 2410041) — IN FLIGHT. Motivated by the top-10 endgame-eval survey + the
+  convert-fail/push-into-draw symptom; eval-scaling is the consensus draw-shaping
+  lever (no top-6 engine uses recognizers/fortress).
