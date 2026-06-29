@@ -42,13 +42,18 @@ def main():
     p.add_argument('--workload-size', type=int, default=32)
     p.add_argument('--scale-nps', type=int, default=250000)
     p.add_argument('--pgnout', default='VERBOSE', choices=['FALSE','COMPACT','VERBOSE'])
-    p.add_argument('--book', default='UHO_Lichess_4852_v1.epd',
-                   help='OB opening book for variety (default UHO; or noob_4moves.epd). '
-                        'Pass NONE to rely on genfens only — AVOID: genfens openings recycle '
-                        'and, with fixed-nodes deterministic play, the SAME opening+colour yields '
-                        'IDENTICAL games, so ~50%% of the corpus ends up exact duplicates '
-                        '(measured on run 2061). A big book gives far more distinct, non-recycled '
-                        'openings. See the Datagen section of the ob skill.')
+    p.add_argument('--book', default='NONE',
+                   help='OB opening book name. Default NONE because Coda datagen IGNORES the book '
+                        'anyway — its genfens drops the book arg (src/datagen.rs ~842), so a book '
+                        'has zero effect; openings come from genfens random walks (6-9 plies). '
+                        'Diverse off-book positions are what we want for reaching Coda idiosyncrasies.')
+    p.add_argument('--reverses', default='NO', choices=['YES','NO'],
+                   help='Play each opening from both colours (YES) or once (NO). Default NO: with '
+                        'YES the OB client under-provisions openings via //(1+repeat) so '
+                        'order=sequential WRAPS, and fixed-nodes deterministic play then replays '
+                        'byte-identical games (~50%% exact duplicates, measured run 2061). NO gives '
+                        'openings==rounds (no recycle), 2x more distinct openings, zero dups, and '
+                        'needs no OB client change. See ob skill section 11.')
     p.add_argument('--server', default=SERVER); p.add_argument('--username', default=USERNAME)
     p.add_argument('--password', default=PASSWORD)
     a = p.parse_args()
@@ -81,7 +86,7 @@ def main():
         'base_options': 'Threads=1 Hash=64', 'base_time_control': 'N=15000', 'base_network': '1C000000',
         # Datagen
         'datagen_max_games': str(a.max_games), 'datagen_custom_genfens': a.genfens,
-        'datagen_play_reverses': 'YES', 'book_name': a.book, 'upload_pgns': a.pgnout,
+        'datagen_play_reverses': a.reverses, 'book_name': a.book, 'upload_pgns': a.pgnout,
         # General + scaling + adjudication (2062 values)
         'priority': str(a.priority), 'throughput': str(a.throughput),
         'workload_size': str(a.workload_size),

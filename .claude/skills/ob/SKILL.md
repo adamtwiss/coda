@@ -622,27 +622,43 @@ OPENBENCH_PASSWORD=$PW python3 scripts/ob_datagen.py \
 - `--dev-bench` is usually needed explicitly: `git_bench` parses `Bench:` from
   the HEAD commit, and HEAD is often a docs/experiments commit with no `Bench:`
   line → pass the current prod bench.
-- `--book` (default `UHO_Lichess_4852_v1.epd`; alt `noob_4moves.epd`) — see
-  11.2. Also `--max-games`, `--priority`, `--throughput`, `--pgnout`.
+- `--book` (default `NONE`) and `--reverses` (default `NO`) — see 11.2; these
+  defaults are the no-duplication setup. Also `--max-games`, `--priority`,
+  `--throughput`, `--pgnout`.
 
-### 11.2 ALWAYS use an opening book — the genfens duplication trap (load-bearing)
+### 11.2 The genfens duplication trap — and the fix (load-bearing)
 
-`book_name: NONE` relies on Coda's **genfens** (random-opening walks). genfens
-DOES give distinct openings per workload (≈192 unique/workload, **0 overlap
-across workloads**). **BUT** with **fixed-nodes deterministic play**, the same
-opening + same colour produces a **byte-identical game** every time. With
-`play_reverses=YES` each opening is played 4× → 2 colours × **2 exact
-duplicates** → **~50% of the corpus is duplicate games** (verified on run 2061:
-g62≡g447, g67≡g452, identical move/eval/node lines). Duplicates *over-weight*
-those positions in training — actively harmful, not just wasted. (The 2062/2094
-genfens corpus was deleted 2026-06-29 for this reason; re-downloadable from OB.)
+**The opening book does NOT matter for Coda datagen.** OB passes the book into
+genfens (`genfens N seed S book Books/<book>`, `Client/genfens.py`), but **Coda's
+genfens IGNORES the book arg** (`src/datagen.rs` ~842: "book … ignored") — it
+always generates from startpos + 6-9 random plies. So `book_name` has zero
+effect; openings are genfens random walks regardless. (An earlier version of this
+section wrongly said to use UHO — it does nothing.)
 
-A big book (UHO 175MB / noob 122MB) supplies far more distinct, non-recycled
-openings, cutting the duplication. **The script now defaults to UHO**; only pass
-`--book NONE` with a specific reason and accepting the ~50% waste. (A book does
-NOT fix the per-opening determinism itself — fixed nodes means no gameplay
-variety beyond the opening — but it makes openings plentiful enough that
-recycling, hence duplication, largely stops.)
+**The real bug is opening recycling, gated on `play_reverses`.** With
+`play_reverses=YES`, the client provisions openings as
+`runner_cnt·rounds_per // (1+repeat)` = **half** the rounds (it double-counts the
+reverse, which `-games 2` already handles from one opening). fastchess then plays
+`-rounds R -games 2 -openings … order=sequential`: each round = **1 opening → 2
+colour-reversed games**, so R rounds need R openings but only R/2 exist →
+`order=sequential` **wraps** → every opening is replayed in a 2nd round → and
+**fixed-nodes deterministic play makes that 2nd round byte-identical** → **~50%
+exact-duplicate games** (verified run 2061: g62≡g447, g67≡g452, identical
+move/eval/node lines). Duplicates *over-weight* positions in training — harmful.
+(The 2062/2094 corpus was deleted 2026-06-29 for this; re-downloadable from OB.)
+
+**The fix is a submission param, NOT a book and NOT a client change: set
+`play_reverses=NO`.** Then `//(1+repeat)` → `//1` → openings == rounds → no wrap →
+**zero exact dups**, plus 2× more distinct openings (good for diversity; reverses'
+colour-mirror pairs aren't wanted for corrective data anyway). `ob_datagen.py`
+now defaults to `--reverses NO` and `--book NONE`.
+
+The "keep reverses" alternative is to fix `genfens_required_openings_each` in
+`Client/genfens.py` (drop the `//(1+repeat)`) — but that's **client-side code**:
+workers auto-pull `Client/*` from OB master, so deploying it needs a
+`client_version` bump in `Config/config.json` + an OB-server restart (then
+workers re-download). The `play_reverses=NO` submission-param fix avoids all of
+that, so prefer it.
 
 Aside: the varying `n=` in PGN comments (12288/8192/4096/0) is a **reporting
 artefact** — Coda searches to ~15k but reports the last *completed* iteration's
