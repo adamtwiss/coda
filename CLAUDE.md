@@ -641,32 +641,42 @@ Systematic approach for finding and fixing search feature issues. Each cycle com
 
 **2. Diagnose via cross-engine comparison**
 - Compare the specific feature implementation against 6-8 top engines with source code available. Engine sources are in `/home/adam/chess/engines/`.
-- **Only survey engines STRONGER than Coda** for "what should we do" consensus.
-  Weaker engines' choices are not evidence (they may be weak *because* of them).
-  Coda currently ranks #7 in our local top-20 RR — **engines #1-6 are the
-  valid reference set** (Stockfish, Reckless, Berserk, Obsidian,
-  PlentyChess, Alexandria). A "14-of-16 engines do X" consensus that
-  leans on mid-table engines no longer carries weight; weigh agreement
-  among the six above us, and treat near-peers (Integral, Viridithas)
-  as corroboration only.
+- **Focus primarily on the strongest engines** for "what should we do"
+  consensus. Weaker engines' choices are weak evidence (they may be weak
+  *because* of them) — this isn't an absolute ban on ever glancing at a
+  weaker engine, just don't *build* a consensus on mid-table-or-below
+  (the guidance exists because surveying weak engines for "should we"
+  kept going nowhere). Coda currently ranks #7 in our local top-20 RR —
+  **engines #1-6 are the primary reference set** (Stockfish, Reckless,
+  Obsidian, Berserk, PlentyChess, Alexandria). A "14-of-16 engines do X"
+  consensus that leans on mid-table engines carries little weight; weigh
+  agreement among the strongest, and treat near-peers (Cinder, Integral,
+  Viridithas) as corroboration only.
 
-**Current local RR (10+0.1, ~218 games/engine, 2026-06-12, top-20 pool —
+**Current local RR (10+0.1, 950 games/engine, 2026-06-29, top-20 pool —
 includes every CCRL-top engine in C/C++/Rust)** — Elo relative to the
-pool, NOT absolute. Coda = #7 (+16), up from #14 a few days earlier
-(+25-30 banked on main that week; rivals-RR stretches internal Elo ~2×):
+pool, NOT absolute. Coda = #7 (+29), 6 Elo off the #5/#6 cluster; +11 vs
+~3 days earlier (rivals-RR stretches internal Elo ~2×):
 
 | # | Engine | Elo | | # | Engine | Elo |
 |---|--------|-----|-|---|--------|-----|
-| 1 | Stockfish | +148 | | 11 | Hobbes | −13 |
-| 2 | Reckless | +107 | | 12 | Astra | −21 |
-| 3 | Berserk | +66 | | 13 | Clover | −27 |
-| 4 | Obsidian | +66 | | 14 | Stormphrax | −32 |
-| 5 | PlentyChess | +48 | | 15 | Halogen | −32 |
-| 6 | Alexandria | +37 | | 16 | Quanticade | −40 |
-| **7** | **Coda** | **+16** | | 17 | Starzix | −58 |
-| 8 | Integral | −2 | | 18 | Tarnished | −61 |
-| 9 | Viridithas | −2 | | 19 | Motor | −63 |
-| 10 | Caissa | −11 | | 20 | Clarity | −119 |
+| 1 | Stockfish | +143 | | 11 | Viridithas | −9 |
+| 2 | Reckless | +120 | | 12 | Clover | −14 |
+| 3 | Obsidian | +72 | | 13 | Caissa | −33 |
+| 4 | Berserk | +46 | | 14 | Astra | −43 |
+| 5 | PlentyChess | +35 | | 15 | Stormphrax | −43 |
+| 6 | Alexandria | +35 | | 16 | Halogen | −48 |
+| **7** | **Coda** | **+29** | | 17 | Quanticade | −62 |
+| 8 | Cinder | +14 | | 18 | Starzix | −65 |
+| 9 | Integral | +13 | | 19 | Motor | −84 |
+| 10 | Hobbes | 0 | | 20 | Tarnished | −98 |
+
+**Pool membership changed since the 2026-06-12 table — don't compare Elo
+across the two directly.** Cinder was added and Clarity dropped (a
+stronger pool — that swap alone took Coda ~27→18), and Viridithas was
+rebuilt on its latest threat-net code (likely climbed). Pool-relative Elo
+moves with membership and rivals' versions, so read rank + within-table
+gaps, not cross-table deltas.
 
 Engines below Coda (Integral, Viridithas, Caissa, Hobbes, Clover,
 Halogen, Starzix, Quanticade, Tarnished, Astra, Stormphrax, and the
@@ -676,7 +686,7 @@ Velvet, ... down to Crafty/Monolith at −500+) are NOT references for
 Elo behind us — do NOT cite them as references.**
 
 Reference engines for cross-engine review (strongest first, the #1-6
-set): Stockfish, Reckless (Rust), Berserk, Obsidian, PlentyChess,
+set): Stockfish, Reckless (Rust), Obsidian, Berserk, PlentyChess,
 Alexandria.
 - For each engine: exact formula, gating conditions, position in move loop (before/after MakeMove), depth variable used (raw depth vs lmrDepth), history adjustments, numeric values.
 - Common structural issues found so far:
