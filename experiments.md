@@ -16813,12 +16813,17 @@ strongest signal in this band). Working the ranked queue as one-change SPRTs.
 - **T1 — IIR on stale/shallow TT entries (`atlas/iir-stale-tt` #2341).**
   *Convergent: Caissa + Hobbes.* Widen the IIR gate to also fire when a TT
   entry exists but `tt_depth + K < depth` (was: IIR only when `tt_move ==
-  NO_MOVE`). +12% bench (IIR shrinks recorded TT depths). **Heading H1
-  (+1.3 ±1.1, 94k, LLR 2.27 and climbing)** — genuine small win, not yet
-  locked; merge on lock. Methodology note: early-N was misleading — sat at
-  −8/1446 with a mechanistic "IIR-shrinks-depths-so-harmful" prior; it
-  *reversed* to +1.3. Reinforces "don't conclude from early-N or mechanistic
-  priors."
+  NO_MOVE`). +12% bench (IIR shrinks recorded TT depths). Original pre-v8s3
+  trunk test **#2341 H1 +1.3 ±1.1 / 113k**. Rebased after the v8-s3-v3 prod
+  promotion + #2351 LTC retune, the same `+4 < depth` shape **#2374 H0 ✗
+  −2.0 ±2.4 / 21.7k**. Follow-up instrumentation (`codex/tt-iir-audit`) showed
+  stale legal TT moves are real but small: 4.0% of IIR-eligible nodes at bench
+  d12, 5.9% at d16, 5.0% at d20; 100% legal, effectively no cross-gen
+  pollution. Conservative `+5 < depth` / deficit≥6 probe **#2378 stopped at
+  +0.32 ±0.68 / 340k, LLR −2.14** — likely tiny-positive/flat, not a proven
+  non-regression and not worth merging. Lesson: stale-TT IIR was absorbed or
+  displaced by the later retune/model/search changes; do not port #2341 forward
+  without a fresh tune-backed signal.
 
 - **T2 — quiet-history factoriser (`atlas/main-hist-factoriser` #2344).**
   *Hobbes.* Add a threat-bucket-independent `[from][to]` factoriser summed with
