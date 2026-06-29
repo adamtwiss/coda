@@ -16947,7 +16947,12 @@ harvest + SF-vs-Coda games as stage-1 bootstrap), not loss-fixable.
   were swamped — the "failed" attempts in the study doc); (2) the gain is HIDDEN
   by win-adjudication (OB scores a winning eval as a win regardless of whether the
   engine converts) — only visible via `ob_submit.py --no-win-adj`. SPRT: **+10.4
-  Elo H1 win-adj-off (#2397)**, +2.9 trending default (#2396). King-mobility
-  confine-term variant retired (+3.2, underperformed; #2398/#2399). KBN-v-K still
+  Elo H1 win-adj-off (#2397)**, +2.9 trending default (#2396). King-mobility confine-term variant (#2399)
+  ALSO H1'd win-adj-off (+7.5) but went slightly NEGATIVE on default
+  adjudication (#2398 -1.8 ->H0) — so the no-confine 'dominant' variant was
+  correctly merged (default-neutral +0.4, #2396; the confine term's per-eval
+  cost + search interactions outweigh its conversion edge in general play).
+  (Lesson: the early +3.2 'underperform' read was N<1500 noise — the real
+  discriminator was the DEFAULT test, not the adj-off gap.) KBN-v-K still
   drawn vs best defense (W-maneuver — deferred). Validated with a TB-perfect-
   defender harness. Study: `docs/conversion_failure_study_2026-06-29.md`.
