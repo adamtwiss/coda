@@ -1,5 +1,20 @@
 # Mini-prod branch workflow
 
+> **⚠️ DORMANT (since 2026-06-29).** The `mini-prod` branch is not in
+> active use and is far behind `main` on code + tunables — do **not** use
+> it as an SPRT base today. We currently test S200 net ablations
+> (data / recipe / architecture) net-vs-net on `main` with `--dev-network`
+> / `--base-network` overrides, where the prod-tunable handicap is
+> symmetric and cancels. The mini-prod concept may well come good again,
+> but right now our **baseline-model concept is changing too fast** (rapid
+> new-architecture / new-recipe iteration) for a separately-calibrated
+> baseline branch to be worth maintaining. This document is retained as
+> the **archived methodology + revival procedure**: revive (rebase onto
+> main + retune, never recreate) only if/when we resume S200
+> *search-feature or tunable* experiments — the only class where the
+> tune-flation asymmetry below actually bites. See CLAUDE.md
+> §"Mini-prod Branch for S200 Experiments — DORMANT" for the short version.
+
 `mini-prod` is a long-lived branch carrying trunk tunables that are
 SPSA-calibrated for the current **baby-prod S200 net** (currently
 `cal-day0-factor-w15-warm30-hlcrelu-s200`, SHA8 `61115E7F`). It exists
