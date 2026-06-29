@@ -600,3 +600,76 @@ either:
 - Update this skill if it's an OB-operational detail
 - Save as a memory ONLY for truly per-instance / per-session
   observations (rare)
+
+---
+
+## 11. Datagen (Coda-vs-SF corrective-data generation)
+
+OB also runs **datagen workloads** (not SPRTs/tunes): Coda plays Stockfish at
+fixed nodes, both engines' per-move evals recorded, to build corrective
+training data (the "SF-vs-Coda games"). Workloads get IDs like SPRTs (2059,
+2062, 2094, 2290, 2383, …) and live at `/datagen/<id>/`.
+
+### 11.1 Launching — `scripts/ob_datagen.py`
+
+```bash
+OPENBENCH_PASSWORD=$PW python3 scripts/ob_datagen.py \
+    --max-games 6000000 --dev-bench <coda-bench>   # book defaults to UHO
+```
+- **Dev = Coda** (`main`, embedded prod net via net.txt) generates openings and
+  plays; **Base = Stockfish `ob_17.1` + net `1C000000`** plays and provides the
+  labels. Both at **`N=15000` fixed nodes**.
+- `--dev-bench` is usually needed explicitly: `git_bench` parses `Bench:` from
+  the HEAD commit, and HEAD is often a docs/experiments commit with no `Bench:`
+  line → pass the current prod bench.
+- `--book` (default `UHO_Lichess_4852_v1.epd`; alt `noob_4moves.epd`) — see
+  11.2. Also `--max-games`, `--priority`, `--throughput`, `--pgnout`.
+
+### 11.2 ALWAYS use an opening book — the genfens duplication trap (load-bearing)
+
+`book_name: NONE` relies on Coda's **genfens** (random-opening walks). genfens
+DOES give distinct openings per workload (≈192 unique/workload, **0 overlap
+across workloads**). **BUT** with **fixed-nodes deterministic play**, the same
+opening + same colour produces a **byte-identical game** every time. With
+`play_reverses=YES` each opening is played 4× → 2 colours × **2 exact
+duplicates** → **~50% of the corpus is duplicate games** (verified on run 2061:
+g62≡g447, g67≡g452, identical move/eval/node lines). Duplicates *over-weight*
+those positions in training — actively harmful, not just wasted. (The 2062/2094
+genfens corpus was deleted 2026-06-29 for this reason; re-downloadable from OB.)
+
+A big book (UHO 175MB / noob 122MB) supplies far more distinct, non-recycled
+openings, cutting the duplication. **The script now defaults to UHO**; only pass
+`--book NONE` with a specific reason and accepting the ~50% waste. (A book does
+NOT fix the per-opening determinism itself — fixed nodes means no gameplay
+variety beyond the opening — but it makes openings plentiful enough that
+recycling, hence duplication, largely stops.)
+
+Aside: the varying `n=` in PGN comments (12288/8192/4096/0) is a **reporting
+artefact** — Coda searches to ~15k but reports the last *completed* iteration's
+node count; `n=0` = instant/forced move. It does NOT indicate search variation.
+
+### 11.3 Where the data lands + processing
+
+- PGNs are **uploaded to OB** (`upload_pgns=VERBOSE`) and stay there until
+  downloaded — NOT auto-saved locally. Download a finished run as
+  `/tmp/dg<id>.pgn.tar` (tar of `<id>.*.pgn.bz2` shards; **one shard = one OB
+  workload**).
+- Game PGN = `[Event]…[FEN "<opening>"]…`, blank line, then one move line of
+  space-separated SAN with `{+eval/depth time, n=nodes, sd=}` comments. SF's
+  evals are the trusted labels.
+- Convert with **`coda import-pgn`** (replaces `pgn_to_game_tsv.py`), or the
+  sentinel-stamp pipeline `scripts/stamp_shard.sh` (16-way over `bzcat`'d
+  shards; stamps Coda-to-move score to 32000 so Bullet drops it, keeping only
+  SF's labels) → `/training/stamped_corpus/<id>/shard_*.binpack`. See
+  `docs/eval_blindspot_training_fix_2026-06-17.md`.
+
+### 11.4 Variety-check recipe (run BEFORE trusting any corpus)
+
+```bash
+tar xf /tmp/dg<id>.pgn.tar <shard> -C /tmp/                # one shard = one workload
+bzcat /tmp/<shard> | grep '^\[FEN' | sort | uniq -c | sort -rn | head   # within-workload repeats
+# cross-workload: extract 3-4 shards, comm -12 their sort -u'd FEN sets → expect 0
+```
+Within-workload top-repeat ≫ 4 (the 2-colour × 2-dup no-book value), or high
+cross-workload overlap, = a seeding/book problem. To prove duplication, pull
+the move lines of a repeated (opening,colour) pair — identical = the trap.
