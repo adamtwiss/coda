@@ -16915,6 +16915,6 @@ harvest + SF-vs-Coda games as stage-1 bootstrap), not loss-fixable.
   22400→22283.** Two old-net findings REVERSED on v8s3: #813 (drop pawn term) → pawn
   term wants ~104 back (un-damps pawn endgames); #886 (rule50 /100) → mild softening
   to /108. Validation SPRT **#2379** vs main [0,3], both sides v8s3 (dev 2438460 /
-  base 2410041) — IN FLIGHT. Motivated by the top-10 endgame-eval survey + the
+  base 2410041) — **H0 ✗ (-0.8 ±1.8, LLR -3.03, 38.7k).** The bundle slightly HURTS; #813/#886 still hold on v8s3. Correction: only HALFMOVE had a real SPSA gradient (100→108); PAWN_MAT_SCALE sat at its seed (no gradient) — the pawn-term reintroduction (0→104) is the likely drag (re-confirms #813). Next: isolate the rule50 softening alone (#2381). Motivated by the top-10 endgame-eval survey + the
   convert-fail/push-into-draw symptom; eval-scaling is the consensus draw-shaping
   lever (no top-6 engine uses recognizers/fortress).
