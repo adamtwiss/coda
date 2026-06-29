@@ -390,6 +390,22 @@ enum Commands {
         /// wants all positions); on for eval-quality CSV export.
         #[arg(long, default_value_t = false)]
         quiet_only: bool,
+        /// Shard `k/N`: process only entries whose global index % N == k.
+        /// Run N copies (k=0..N-1) in parallel to scan a whole binpack across
+        /// cores. Implies scan-to-EOF (ignores --count) and streaming CSV
+        /// (no in-memory distribution stats — required for billion-scale).
+        #[arg(long)]
+        shard: Option<String>,
+        /// Only emit CSV rows where |coda_eval - lc0| >= this (cp). 0 = off.
+        /// Coda's eval is ~LC0-scale by construction, so this is the cheap
+        /// pre-filter for the eval-blindspot harvest (the "150" of 150/80).
+        #[arg(long, default_value_t = 0)]
+        min_error: i32,
+        /// Only emit CSV rows where |lc0| <= this (cp). 0 = off. Restricts to
+        /// the balanced/non-decided band; applied before the NNUE eval so it
+        /// also saves compute on out-of-band positions.
+        #[arg(long, default_value_t = 0)]
+        max_abs_lc0: i32,
     },
     /// Dump threat features for a FEN position (for cross-checking with Bullet)
     DumpThreats {
@@ -1158,8 +1174,8 @@ fn main() {
             datagen::import_game_tsv(&input, &output);
         }
 
-        Some(Commands::EvalDist { input, count, csv, quiet_only }) => {
-            run_eval_dist(&input, count, &cli.nnue, &csv, quiet_only);
+        Some(Commands::EvalDist { input, count, csv, quiet_only, shard, min_error, max_abs_lc0 }) => {
+            run_eval_dist(&input, count, &cli.nnue, &csv, quiet_only, &shard, min_error, max_abs_lc0);
         }
 
         Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, xray_trained, reckless_buckets }) => {
@@ -2330,9 +2346,27 @@ fn run_sample_positions(input: &str, output: &str, n: usize, sample_rate: f64) {
     println!("Sampled {} positions from {} scanned → {}", count, total, output);
 }
 
-fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option<String>, quiet_only: bool) {
+#[allow(clippy::too_many_arguments)]
+fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option<String>,
+                 quiet_only: bool, shard: &Option<String>, min_error: i32, max_abs_lc0: i32) {
     use sfbinpack::CompressedTrainingDataEntryReader;
     use std::io::Write as _;
+
+    // Parse `--shard k/N`. Present => stream-scan the whole binpack (ignore
+    // --count) and skip in-memory stats, so N copies can cover the file across
+    // cores without OOMing on billions of rows.
+    let shard_kn: Option<(usize, usize)> = shard.as_ref().map(|s| {
+        let (k, nn) = s.split_once('/').expect("--shard must be k/N");
+        let k: usize = k.trim().parse().expect("--shard k must be an integer");
+        let nn: usize = nn.trim().parse().expect("--shard N must be an integer");
+        assert!(nn > 0 && k < nn, "--shard requires 0 <= k < N");
+        (k, nn)
+    });
+    let scan_all = shard_kn.is_some();
+    if scan_all && csv.is_none() {
+        eprintln!("Error: --shard requires --csv (streaming harvest mode)");
+        return;
+    }
 
     // Load NNUE
     let mut info = search::SearchInfo::new(1);
@@ -2361,18 +2395,32 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option
     let reader = CompressedTrainingDataEntryReader::new(file)
         .unwrap_or_else(|_| panic!("Failed to parse binpack {}", input));
 
-    let mut scores: Vec<i32> = Vec::with_capacity(n);
-    let mut results: Vec<f64> = Vec::with_capacity(n); // 1.0=white win, 0.5=draw, 0.0=black win
+    let mut scores: Vec<i32> = Vec::with_capacity(if scan_all { 0 } else { n });
+    let mut results: Vec<f64> = Vec::with_capacity(if scan_all { 0 } else { n }); // 1.0=white win, 0.5=draw, 0.0=black win
     let mut total = 0usize;
+    let mut kept = 0usize;
     let mut reader = reader;
 
-    while reader.has_next() && scores.len() < n {
+    while reader.has_next() && (scan_all || scores.len() < n) {
         let entry = reader.next();
         total += 1;
+
+        // Modulo shard: copy k of N processes only entries where
+        // (global_index) % N == k. Union of all N shards = the full file.
+        // The reader is sequential (chain-compressed, no seek), so every
+        // copy still decompresses everything, but the 9GB binpack caches
+        // in RAM once and decompression is cheap vs the NNUE eval below.
+        if let Some((k, nn)) = shard_kn {
+            if (total - 1) % nn != k { continue; }
+        }
 
         // Skip checks and extreme scores (same filter as training)
         if entry.pos.is_checked(entry.pos.side_to_move()) { continue; }
         if entry.score.unsigned_abs() > 10000 { continue; }
+
+        // Band pre-filter (before the expensive NNUE eval): only harvest
+        // positions the oracle rates as roughly balanced. Cheap reject.
+        if max_abs_lc0 > 0 && (entry.score as i32).abs() > max_abs_lc0 { continue; }
 
         // Quiet filter (eval-quality export): skip positions whose played
         // move is a capture or promotion — matches how NNUE is consumed at
@@ -2412,6 +2460,11 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option
             continue;
         };
 
+        // Min-error post-filter (after the NNUE eval): only harvest
+        // positions where Coda disagrees with the LC0 oracle by at least
+        // `min_error` cp (both STM-POV). This is the eval-blindspot gate.
+        if min_error > 0 && (score - entry.score as i32).abs() < min_error { continue; }
+
         // Game result from STM perspective: 1.0=stm wins, 0.0=stm loses
         // entry.result: 1=white win, 0=draw, -1=black win
         let stm_is_white = entry.pos.side_to_move() == sfbinpack::chess::color::Color::White;
@@ -2421,8 +2474,13 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option
             _ => 0.5, // draw
         };
 
-        scores.push(score);
-        results.push(result_f);
+        // In scan/harvest mode we stream straight to CSV and never
+        // accumulate (the file has billions of rows — Vecs would OOM).
+        if !scan_all {
+            scores.push(score);
+            results.push(result_f);
+        }
+        kept += 1;
 
         if let Some(w) = csv_w.as_mut() {
             // White-POV result and eval, to match the white-POV `eval`
@@ -2433,11 +2491,23 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option
             writeln!(w, "{},{:.1},{},{}", fen, white_result, white_cp, lc0_white).unwrap();
         }
 
-        if scores.len().is_multiple_of(100_000) {
-            eprint!("\r  {} / {} evaluated ({} scanned)", scores.len(), n, total);
+        if kept.is_multiple_of(100_000) {
+            if scan_all {
+                eprint!("\r  {} harvested ({} scanned)", kept, total);
+            } else {
+                eprint!("\r  {} / {} evaluated ({} scanned)", kept, n, total);
+            }
         }
     }
     eprintln!();
+
+    // Scan/harvest mode: CSV already streamed to disk; no in-memory stats.
+    if scan_all {
+        if let Some(mut w) = csv_w.take() { w.flush().ok(); }
+        println!("Harvested {} positions from {} scanned → {}",
+                 kept, total, csv.as_ref().unwrap());
+        return;
+    }
 
     let count = scores.len();
     if count == 0 {
