@@ -1260,7 +1260,7 @@ impl SearchInfo {
 fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
     // Leave sentinel scores untouched so downstream comparisons with
     // `-INFINITY` / `MATE_SCORE - ply` keep their absolute magnitudes.
-    if score <= -INFINITY + 1 || score.abs() >= MATE_SCORE - 100 {
+    if score <= -INFINITY + 1 || score.abs() >= MATE_IN_MAX_PLY {
         return score;
     }
     let hm = (halfmove as i32).min(100);
@@ -1445,7 +1445,10 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
     let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
         + cont_corr * tp(&CORR_W_CONT) as i64 + trans_corr * tp(&CORR_W_TRANS) as i64) / tp(&CORR_HIST_DIV) as i64;
     let adjusted = raw_eval + (total_corr as i32) / tp(&CORR_HIST_GRAIN_T);
-    adjusted.clamp(-MATE_SCORE + 100, MATE_SCORE - 100)
+    // Keep the corrected static eval strictly inside the non-mate band so it
+    // can never be read back as a mate by the MATE_IN_MAX_PLY guards. (Real
+    // evals live in ±4095, so this clamp is purely defensive.)
+    adjusted.clamp(-MATE_IN_MAX_PLY + 1, MATE_IN_MAX_PLY - 1)
 }
 
 /// Update correction history entry with gravity.
@@ -2032,7 +2035,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
         let score;
 
         // Aspiration windows (skip for mate scores) — mirrors search().
-        if depth >= 4 && prev_score > -MATE_SCORE + 100 && prev_score < MATE_SCORE - 100 {
+        if depth >= 4 && prev_score > -MATE_IN_MAX_PLY && prev_score < MATE_IN_MAX_PLY {
             let avg = prev_score;
             let mut delta = tp(&ASP_DELTA) + (avg as i64 * avg as i64 / tp(&ASP_SCORE_DIV) as i64) as i32;
             let mut alpha = (prev_score - delta).max(-INFINITY);
@@ -2343,7 +2346,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         let score;
 
         // Aspiration windows (skip for mate scores)
-        if depth >= 4 && prev_score > -MATE_SCORE + 100 && prev_score < MATE_SCORE - 100 {
+        if depth >= 4 && prev_score > -MATE_IN_MAX_PLY && prev_score < MATE_IN_MAX_PLY {
             // Eval-dependent aspiration delta: wider for extreme scores (Reckless pattern)
             // Calm positions (avg~0): delta=13, winning (avg~500): delta=24, crushing (avg~1000): delta=55
             let avg = prev_score;
@@ -3313,7 +3316,7 @@ fn negamax(
                     // blend the TT score toward beta to prevent score inflation
                     if beta - alpha_orig == 1
                         && tt_entry.flag == TT_FLAG_LOWER
-                        && tt_score > -(MATE_SCORE - 100) && tt_score < MATE_SCORE - 100
+                        && tt_score > -(MATE_IN_MAX_PLY) && tt_score < MATE_IN_MAX_PLY
                     {
                         let w = tp(&TT_DAMP_TT_WEIGHT);
                         return (w * tt_score + beta) / (w + 1);
@@ -3323,7 +3326,7 @@ fn negamax(
                 }
             } else if tt_depth >= depth - 1
                 && beta - alpha_orig == 1
-                && tt_score > -(MATE_SCORE - 100) && tt_score < MATE_SCORE - 100
+                && tt_score > -(MATE_IN_MAX_PLY) && tt_score < MATE_IN_MAX_PLY
                 && FEAT_TT_NEARMISS.load(Ordering::Relaxed)
                 && halfmove_ok
             {
@@ -3473,7 +3476,7 @@ fn negamax(
     let prior_reduction = if ply_u >= 1 { info.reductions[ply_u - 1] } else { 0 };
     if !in_check && ply >= 1 && depth >= tp10(&HINDSIGHT_MIN_DEPTH_10X) && ply_u >= 1
         && prior_reduction >= 2
-        && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
+        && info.static_evals[ply_u - 1] > -(MATE_IN_MAX_PLY)
         && static_eval > -INFINITY
         && FEAT_HINDSIGHT.load(Ordering::Relaxed)
     {
@@ -3492,7 +3495,7 @@ fn negamax(
     if !in_check && ply >= 1 && ply_u >= 1
         && !is_pv
         && prior_reduction >= 3
-        && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
+        && info.static_evals[ply_u - 1] > -(MATE_IN_MAX_PLY)
         && static_eval > -INFINITY
         && FEAT_HINDSIGHT.load(Ordering::Relaxed)
     {
@@ -3527,7 +3530,7 @@ fn negamax(
         let nmp_gate_cheap = depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0
             && stm_non_pawn != 0 && beta - alpha == 1
             && static_eval >= beta && !prev_was_null
-            && beta.abs() < MATE_SCORE - 100
+            && beta.abs() < MATE_IN_MAX_PLY
             && info.excluded_move[ply_u] == NO_MOVE;
         if nmp_gate_cheap && tp10(&NMP_UNDEFENDED_MAX_10X) > 0 {
             let our_non_pawn = board.colors[board.side_to_move as usize]
@@ -3606,7 +3609,7 @@ fn negamax(
                     && !info.rfp_audit_active
                     && stm_non_pawn != 0
                     && !prev_was_null
-                    && beta.abs() < MATE_SCORE - 100
+                    && beta.abs() < MATE_IN_MAX_PLY
                     && !info.stop.load(Ordering::Relaxed)
                 {
                     let d_idx = depth.clamp(0, 23) as usize;
@@ -3648,7 +3651,7 @@ fn negamax(
         && beta - alpha == 1 && static_eval >= beta + nmp_threat_margin
         && !prev_was_null  // Prevent consecutive null moves
         && ply >= info.nmp_min_ply  // Ply barrier: verification subtree cannot re-trigger NMP (audit B1)
-        && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
+        && beta.abs() < MATE_IN_MAX_PLY  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && cut_node  // Reckless gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
         && FEAT_NMP.load(Ordering::Relaxed)
@@ -3696,7 +3699,7 @@ fn negamax(
         if null_score >= beta {
             // Return null score directly (no dampening — no top engine uses it)
             // Clamp mate scores to beta to avoid inflated mate distance
-            let nmp_score = if null_score.abs() > MATE_SCORE - 100 { beta } else { null_score };
+            let nmp_score = if null_score.abs() > MATE_IN_MAX_PLY { beta } else { null_score };
 
             // Verification search at high depths to guard against zugzwang
             if depth >= tp10(&NMP_VERIFY_DEPTH_10X) {
@@ -3778,7 +3781,7 @@ fn negamax(
         false
     };
     if !in_check && ply > 0 && !is_pv && depth >= probcut_min_depth
-        && beta.abs() < MATE_SCORE - 100  // skip for mate/TB scores
+        && beta.abs() < MATE_IN_MAX_PLY  // skip for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
         && !probcut_tt_noshot  // TT says no chance
         && king_zone_pressure < tp10(&PROBCUT_KING_ZONE_MAX_10X)  // A3: skip in high-threat positions
@@ -3982,8 +3985,8 @@ fn negamax(
         if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
             && !is_cap && !is_promo
             && (depth >= 4 || !board.gives_direct_check(mv))
-            && best_score > -(MATE_SCORE - 100)
-            && beta < MATE_SCORE - 100  // forced-win guard (Reckless 4a2efd5a): don't count-prune quiets while proving a win
+            && best_score > -(MATE_IN_MAX_PLY)
+            && beta < MATE_IN_MAX_PLY  // forced-win guard (Reckless 4a2efd5a): don't count-prune quiets while proving a win
             && FEAT_LMP.load(Ordering::Relaxed)
         {
             let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
@@ -4000,7 +4003,7 @@ fn negamax(
         // relaxation so historically-good captures (cutoff producers) survive a
         // lower base. Prune if SEE < -margin.
         if is_cap && ply > 0 && !in_check && depth <= tp(&SEE_CAP_DEPTH)
-            && mv != tt_move && best_score > -(MATE_SCORE - 100)
+            && mv != tt_move && best_score > -(MATE_IN_MAX_PLY)
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
             let cap_ch = crate::movepicker::capt_hist_score_static(board, &info.history, mv);
@@ -4025,8 +4028,8 @@ fn negamax(
         if ply > 0 && !in_check
             && !is_cap && !is_promo
             && mv != tt_move
-            && best_score > -(MATE_SCORE - 100)
-            && beta < MATE_SCORE - 100  // forced-win guard: don't SEE-prune quiets while proving a win
+            && best_score > -(MATE_IN_MAX_PLY)
+            && beta < MATE_IN_MAX_PLY  // forced-win guard: don't SEE-prune quiets while proving a win
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
             let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
@@ -4060,11 +4063,11 @@ fn negamax(
         {
             // Ply-only adjustment here — P3 downgrade deliberately not applied
             // at SE: would cause over-extension on downgraded mate scores that
-            // pass the < MATE_SCORE - 100 check below.
+            // pass the < MATE_IN_MAX_PLY check below.
             let tt_score_local = score_from_tt(tt_entry.score, ply);
 
             // Skip SE for mate scores (margin comparison meaningless)
-            if tt_score_local > -(MATE_SCORE - 100) && tt_score_local < MATE_SCORE - 100 {
+            if tt_score_local > -(MATE_IN_MAX_PLY) && tt_score_local < MATE_IN_MAX_PLY {
                 // xray bonus: if TT move uncovers our slider's attack on enemy
                 // (from-square ∈ our_xray_blockers), widen margin → easier
                 // singular → more extensions on tactical discoveries.
@@ -4184,8 +4187,8 @@ fn negamax(
         // Uses shared lmr_d for both gate and margin (SF/Obsidian/Berserk consensus).
         if ply > 0 && static_eval > -INFINITY && !in_check
             && !is_cap && !is_promo
-            && best_score > -(MATE_SCORE - 100)
-            && beta < MATE_SCORE - 100  // forced-win guard: don't futility-prune quiets while proving a win
+            && best_score > -(MATE_IN_MAX_PLY)
+            && beta < MATE_IN_MAX_PLY  // forced-win guard: don't futility-prune quiets while proving a win
             && FEAT_FUTILITY.load(Ordering::Relaxed)
             && lmr_d <= tp(&FUT_LMR_DEPTH)
         {
@@ -4213,7 +4216,7 @@ fn negamax(
         // Applied before MakeMove. Direct-check carve-out: don't prune moves
         // that give direct check (Reckless #630 +1.85 STC).
         if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= tp(&BAD_NOISY_DEPTH) && mv != tt_move
-            && !is_promo && best_score > -(MATE_SCORE - 100)
+            && !is_promo && best_score > -(MATE_IN_MAX_PLY)
             && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
             && !see_ge(board, mv, 0)
             && !board.gives_direct_check(mv)
@@ -4879,7 +4882,7 @@ fn negamax(
         && (corrhist_lower_ok || corrhist_upper_ok)
         // T2.3: is_decisive (mate OR TB range)
         && !is_decisive(best_score)
-        && scaled_eval > -(MATE_SCORE - 100)
+        && scaled_eval > -(MATE_IN_MAX_PLY)
         && !info.stop.load(Ordering::Relaxed)
     {
         // Train corrhist on the halfmove-scaled pre-correction value.
@@ -4899,7 +4902,7 @@ fn negamax(
     // SE verification needs the raw cutoff score to make the right extension
     // call.
     if best_score >= beta && beta - alpha_orig == 1 && depth >= tp10(&FH_BLEND_DEPTH_10X)
-        && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
+        && best_score > -(MATE_IN_MAX_PLY) && best_score < MATE_IN_MAX_PLY
         && info.excluded_move[ply_u] == NO_MOVE
         && FEAT_FH_BLEND.load(Ordering::Relaxed)
     {
@@ -5109,7 +5112,7 @@ fn quiescence_with_depth(
             // checkmate detection (move_count == 0) is unaffected.
             let ev_is_cap = board.piece_type_at(move_to(mv)) != NO_PIECE_TYPE
                 || move_flags(mv) == FLAG_EN_PASSANT;
-            if !ev_is_cap && !is_promotion(mv) && best_score > -(MATE_SCORE - 100) {
+            if !ev_is_cap && !is_promotion(mv) && best_score > -(MATE_IN_MAX_PLY) {
                 continue;
             }
 
@@ -5225,7 +5228,7 @@ fn quiescence_with_depth(
         // into a huge TB_WIN signal that passes the check and pollutes
         // stand-pat.
         let tt_score = score_from_tt(tt_entry.score, ply);
-        if tt_score.abs() < MATE_SCORE - 100
+        if tt_score.abs() < MATE_IN_MAX_PLY
             && ((tt_entry.flag == TT_FLAG_LOWER && tt_score > best_score)
                 || (tt_entry.flag == TT_FLAG_UPPER && tt_score < best_score)
                 || tt_entry.flag == TT_FLAG_EXACT)
@@ -5253,7 +5256,7 @@ fn quiescence_with_depth(
         }
         // QS beta blending: dampen stand-pat cutoff at non-PV nodes
         if beta - alpha == 1
-            && best_score < MATE_SCORE - 100 && best_score > -(MATE_SCORE - 100)
+            && best_score < MATE_IN_MAX_PLY && best_score > -(MATE_IN_MAX_PLY)
         {
             return (best_score + beta) / 2;
         }
@@ -5298,7 +5301,7 @@ fn quiescence_with_depth(
         // and promotions exempt (SF). `continue` not `break` so later
         // promotions still get through (SF form).
         if qs_move_count >= qs_max_caps
-            && best_score > -(MATE_SCORE - 100)
+            && best_score > -(MATE_IN_MAX_PLY)
             && !is_promotion(mv)
         {
             continue;
@@ -5388,7 +5391,7 @@ fn quiescence_with_depth(
 
     // QS beta blending: dampen capture fail-high at non-PV nodes
     if best_score >= beta && beta - alpha_orig == 1
-        && best_score < MATE_SCORE - 100 && best_score > -(MATE_SCORE - 100)
+        && best_score < MATE_IN_MAX_PLY && best_score > -(MATE_IN_MAX_PLY)
     {
         return (best_score + beta) / 2;
     }

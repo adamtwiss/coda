@@ -577,16 +577,30 @@ pub fn score_to_tt(score: i32, ply: i32) -> i32 {
 pub const MATE_SCORE: i32 = 29000; // distinct from Infinity = 30000
 pub const TB_WIN: i32 = 28800;
 
+/// Lowest magnitude a true mate score can take. A mate found at ply `p` is
+/// stored as `MATE_SCORE - p`, and the search caps ply at `MAX_PLY` (=128,
+/// search.rs), so the deepest mate is `MATE_SCORE - MAX_PLY` = 28872.
+///
+/// Mate-recognition guards MUST compare against this, NOT a hardcoded
+/// `MATE_SCORE - 100` (=28900): that bound sits ABOVE the deepest mate, so
+/// mates at ply 100..=128 (mate-in-~50..64 — reachable now that searches hit
+/// depth 50-64) fall in `[28872, 28900)` and were misclassified as ordinary
+/// scores (mis-scaled, NMP/pruned, mis-reported). Stays clear of the TB band
+/// (`TB_WIN` = 28800): the gap `[28800, 28872)` is empty, so this never
+/// admits a TB score as a mate. (`MATE_SCORE - 100` is also why
+/// `is_decisive` exists — TB scores slip under it; that helper is unchanged.)
+pub const MATE_IN_MAX_PLY: i32 = MATE_SCORE - crate::search::MAX_PLY as i32;
+
 #[inline]
 pub fn is_mate_score(score: i32) -> bool {
-    score.abs() > MATE_SCORE - 100
+    score.abs() >= MATE_IN_MAX_PLY
 }
 
 /// True for any decisive score: mate OR tablebase range. The widespread
-/// `|s| < MATE_SCORE - 100` (= 28900) guards admit TB scores (TB_WIN =
-/// 28800, stored as TB_WIN - ply) — use this where TB scores must also
-/// be excluded (SF/Reckless/Stormphrax is_decisive; 2026-06-11 audit
-/// T2.3).
+/// `|s| < MATE_IN_MAX_PLY` (= 28872) mate guards admit TB scores (TB_WIN =
+/// 28800, stored as TB_WIN - ply, sits below the mate band) — use this where
+/// TB scores must also be excluded (SF/Reckless/Stormphrax is_decisive;
+/// 2026-06-11 audit T2.3).
 #[inline]
 pub fn is_decisive(score: i32) -> bool {
     score.abs() >= TB_WIN - 200
@@ -611,17 +625,17 @@ pub fn score_from_tt(score: i32, ply: i32) -> i32 {
 /// signal instead of a false mate.
 ///
 /// **Apply only at cutoff return sites**, not at every TT-score
-/// read. Many downstream checks (`< MATE_SCORE - 100`) filter out
+/// read. Many downstream checks (`< MATE_IN_MAX_PLY`) filter out
 /// mate scores specifically; pushing a downgraded-mate through them
 /// changes the meaning of those filters and enables unintended
 /// extensions / cutoffs / refinements.
 #[inline]
 pub fn downgrade_50mr_mate(adjusted_score: i32, ply: i32, halfmove: u16) -> i32 {
     let halfmove = halfmove as i32;
-    if adjusted_score > MATE_SCORE - 100 && MATE_SCORE - adjusted_score > 100 - halfmove {
+    if adjusted_score > MATE_IN_MAX_PLY && MATE_SCORE - adjusted_score > 100 - halfmove {
         return TB_WIN - ply;
     }
-    if adjusted_score < -(MATE_SCORE - 100) && MATE_SCORE + adjusted_score > 100 - halfmove {
+    if adjusted_score < -MATE_IN_MAX_PLY && MATE_SCORE + adjusted_score > 100 - halfmove {
         return -TB_WIN + ply;
     }
     adjusted_score
@@ -630,6 +644,28 @@ pub fn downgrade_50mr_mate(adjusted_score: i32, ply: i32, halfmove: u16) -> i32 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The mate-recognition boundary must (a) catch the deepest possible mate
+    /// (`MATE_SCORE - MAX_PLY`, mate-in-~64), and (b) never admit a TB score.
+    /// Regressing to a hardcoded `MATE_SCORE - 100` reintroduces the
+    /// misclassification of mates at ply 100..=128.
+    #[test]
+    fn test_mate_in_max_ply_boundary() {
+        let max_ply = crate::search::MAX_PLY as i32;
+        // Constant tracks MAX_PLY, sits between TB_WIN and the deepest mate.
+        assert_eq!(MATE_IN_MAX_PLY, MATE_SCORE - max_ply);
+        assert!(MATE_IN_MAX_PLY > TB_WIN, "mate band must clear the TB band");
+
+        // Deepest mate (ply == MAX_PLY) is a mate.
+        assert!(is_mate_score(MATE_SCORE - max_ply));
+        assert!(is_mate_score(-(MATE_SCORE - max_ply)));
+        // A mate at ply 110 (score 28890) — the window the old bound dropped.
+        assert!(is_mate_score(MATE_SCORE - 110));
+        // TB win and a large ordinary eval are NOT mates.
+        assert!(!is_mate_score(TB_WIN));
+        assert!(!is_mate_score(TB_WIN - 50));
+        assert!(!is_mate_score(4095));
+    }
 
     /// The huge-page fix relies on the TT's base pointer being 2 MB
     /// aligned — otherwise `madvise(MADV_HUGEPAGE)` silently falls back
