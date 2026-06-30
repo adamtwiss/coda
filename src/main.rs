@@ -183,7 +183,7 @@ enum Commands {
         #[arg(short = 'i', long = "input")]
         input: String,
         /// Max positions to read (0 = all)
-        #[arg(short = 'n', long = "count", default_value_t = 1000000)]
+        #[arg(long = "count", default_value_t = 1000000)]
         count: u64,
     },
     /// Report average chain (game-fragment) length of a binpack — singletons
@@ -258,7 +258,7 @@ enum Commands {
     /// STM is Black.
     FuzzThreats {
         /// Number of random positions to generate
-        #[arg(short = 'n', long, default_value_t = 10000)]
+        #[arg(long, default_value_t = 10000)]
         count: usize,
         /// Random seed (0 = time-based)
         #[arg(long, default_value_t = 0)]
@@ -339,7 +339,7 @@ enum Commands {
         #[arg(long, short = 'o', default_value = "positions.epd")]
         output: String,
         /// Number of positions to sample
-        #[arg(long, short = 'n', default_value_t = 1_000_000)]
+        #[arg(long, default_value_t = 1_000_000)]
         count: usize,
         /// Sample rate (0.0 = keep all until count)
         #[arg(long, default_value_t = 0.0)]
@@ -527,9 +527,6 @@ enum Commands {
     },
     /// Convert .nnue to Bullet checkpoint (for transfer learning)
     ConvertCheckpoint {
-        /// Input .nnue path
-        #[arg(long)]
-        nnue: String,
         /// Output checkpoint directory
         #[arg(long, short = 'o', default_value = "v7_checkpoint")]
         output: String,
@@ -1257,8 +1254,9 @@ fn main() {
             }
         }
 
-        Some(Commands::ConvertCheckpoint { nnue, output, ft, l1, l2 }) => {
-            if let Err(e) = nnue_export::nnue_to_bullet_checkpoint(&nnue, &output, ft, l1, l2) {
+        Some(Commands::ConvertCheckpoint { output, ft, l1, l2 }) => {
+            let nnue_path = cli.nnue.as_deref().expect("ConvertCheckpoint requires --nnue/-n");
+            if let Err(e) = nnue_export::nnue_to_bullet_checkpoint(nnue_path, &output, ft, l1, l2) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
