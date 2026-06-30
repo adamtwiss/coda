@@ -12,9 +12,10 @@ README). Current prod net `E6C62000` (v4-swa, FT1024/L1=32).
   **flat across king buckets** (incl. castled vs uncastled-center) and the
   output-bucket/piece-count gradient is a **difficulty** gradient, not a
   coverage one (the *most-trained* bucket has the *lowest* error).
-- The blind spot is **eval quality / training signal, not bucket architecture.**
-  Net **capacity** (SF's net is much larger) remains a live contributor; the
-  bucket *layout* is not.
+- The blind spot is **eval quality / training signal, not architecture.**
+  **Coda prod and SFNNv13 are the SAME net shape** — FT1024 → 32 → 32 → 8 (see
+  `docs/sfnnv13_architecture_review_2026-05-23.md`). So it is **not** capacity
+  and **not** bucket layout — the gap is in **training recipe + maturity**.
 - The dominant motif is **king-safety / king-danger under-weighting** (~54% of
   the worst-error mass), then material-over-count and under-valued passers.
 - Across **every recent recipe** (wdl/wrm/mse/bake-length/blindspot), the
@@ -107,9 +108,13 @@ it** — it is a persistent eval-quality gap.
   survive every filter and are **already in training at normal frequency.** The
   problem is they're a **rare minority**; MSE on the bulk doesn't pressure the
   net to get them right (signal-emphasis, not data-absence).
-- Live differences from SF: **capacity** (SF's net is much larger → can afford
-  to encode the hard dynamic tail) and possibly SF's loss/filtering. The
-  bake-helps signal points the same way (learning-the-tail problem).
+- Live differences from SF are **training recipe + maturity, NOT capacity** —
+  the nets are the same shape. SF's recipe differs in: **dual L1 activation**
+  (SqrCReLU(31)++CReLU(31) vs our single CReLU(32)), **eval-scale 600 vs 400**,
+  **MSE exponent 2.6 vs 2.5**, **WDL ~0.25–0.40 vs our 0.15–0.20**, plus far
+  more training maturity/scale. The bake-helps signal points the same way
+  (a learning-the-tail problem, solved by better/longer/targeted training, not
+  by more parameters).
 
 ## Levers (ranked)
 
@@ -117,10 +122,12 @@ it** — it is a persistent eval-quality gap.
    dynamic mid-material positions specifically (blindspot diluted moved only
    −20cp because it spreads across all motifs). Needs agent/LLM labelling since
    cheap heuristics fail.
-2. **Capacity** — a larger net (toward SF size) to afford the dynamic tail;
-   the one architecture axis not yet refuted.
+2. **Adopt SF's recipe choices** on the (identical-shape) net — dual L1
+   activation, eval-scale 600, MSE exponent 2.6, higher WDL — and more training
+   maturity/scale. This is the SF-vs-Coda delta, since the nets are the same.
 3. **Loss-shaping** (wrm/wdl) — marginal but real (tails weighted more).
-4. Not a lever: king-bucket or output-bucket layout changes.
+4. **Not a lever**: king-bucket / output-bucket layout changes, **or a bigger
+   net** — Coda and SF are the same size (FT1024→32→32→8).
 
 ## Open / next
 
