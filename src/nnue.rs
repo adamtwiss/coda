@@ -1,6 +1,10 @@
-/// NNUE v5/v6 inference: HalfKA network with CReLU/SCReLU activation.
+/// NNUE v5/v7/v9 inference: HalfKA network with CReLU/SCReLU/pairwise
+/// activation. v5 is direct FT→output; v7 adds a hidden layer
+/// (FT→hidden→output); v9 (current production) adds threat features on top
+/// of v7's shape (FT+threats→hidden→output).
 ///
-/// Architecture: (12288 → N)×2 → 1×8
+/// Base architecture (v5; v7/v9 add hidden layers after the FT stage):
+/// (12288 → N)×2 → 1×8
 /// - 12288 input features = 16 king buckets × 12 piece types × 64 squares
 /// - Two perspectives (side-to-move and not-side-to-move)
 /// - CReLU: clamp [0, QA=255]
@@ -369,48 +373,6 @@ pub fn output_bucket_reckless(piece_count: u32) -> usize {
 
 // ---- AVX2 SIMD helper functions ----
 
-/// Add a weight row to an accumulator vector (both i16, length h).
-/// SAFETY: requires AVX2. Caller must ensure acc and row have length >= h,
-/// and h is a multiple of 16.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn simd_acc_add(acc: &mut [i16], row: &[i16], h: usize) {
-    let mut i = 0;
-    while i < h {
-        let a = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
-        let b = _mm256_loadu_si256(row.as_ptr().add(i) as *const __m256i);
-        let sum = _mm256_add_epi16(a, b);
-        _mm256_storeu_si256(acc.as_mut_ptr().add(i) as *mut __m256i, sum);
-        i += 16;
-    }
-}
-
-/// Fused copy + add: dst[i] = src[i] + row[i]
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn simd_acc_copy_add(dst: &mut [i16], src: &[i16], row: &[i16], h: usize) {
-    let mut i = 0;
-    while i < h {
-        let a = _mm256_loadu_si256(src.as_ptr().add(i) as *const __m256i);
-        let b = _mm256_loadu_si256(row.as_ptr().add(i) as *const __m256i);
-        _mm256_storeu_si256(dst.as_mut_ptr().add(i) as *mut __m256i, _mm256_add_epi16(a, b));
-        i += 16;
-    }
-}
-
-/// Fused copy + sub: dst[i] = src[i] - row[i]
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn simd_acc_copy_sub(dst: &mut [i16], src: &[i16], row: &[i16], h: usize) {
-    let mut i = 0;
-    while i < h {
-        let a = _mm256_loadu_si256(src.as_ptr().add(i) as *const __m256i);
-        let b = _mm256_loadu_si256(row.as_ptr().add(i) as *const __m256i);
-        _mm256_storeu_si256(dst.as_mut_ptr().add(i) as *mut __m256i, _mm256_sub_epi16(a, b));
-        i += 16;
-    }
-}
-
 /// Fused accumulator update: dst = src + Σ add_rows - Σ sub_rows in ONE pass.
 /// Replaces the copy+per-delta-pass pattern with a single load/compute/store
 /// sequence per accumulator chunk.
@@ -695,26 +657,13 @@ unsafe fn finny_batch_apply_avx2(
     }
 }
 
-/// Subtract a weight row from an accumulator vector (both i16, length h).
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn simd_acc_sub(acc: &mut [i16], row: &[i16], h: usize) {
-    let mut i = 0;
-    while i < h {
-        let a = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
-        let b = _mm256_loadu_si256(row.as_ptr().add(i) as *const __m256i);
-        let diff = _mm256_sub_epi16(a, b);
-        _mm256_storeu_si256(acc.as_mut_ptr().add(i) as *mut __m256i, diff);
-        i += 16;
-    }
-}
-
 /// CReLU dot product: clamp acc values to [0, QA=255], dot with output weights.
 /// Returns i64 sum. acc and weights have length h.
 ///
 /// Uses VPMADDWD for efficient i16×i16→i32 pairwise multiply-accumulate.
-/// Drains i32 accumulator to i64 every 128 elements to prevent overflow.
-/// (Max per pair: 255*32767 + 255*32767 ≈ 16.7M. After 128 pairs: ≈ 2.1B, near i32 limit.)
+/// Drains i32 accumulator to i64 every 128 elements (64 VPMADDWD pairs) to
+/// prevent overflow. (Max per pair: 255*32767 + 255*32767 ≈ 16.7M. After 64
+/// pairs: ≈ 1.07B, within i32::MAX with headroom.)
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn simd_crelu_dot(acc: &[i16], weights: &[i16], h: usize) -> i64 {
@@ -1078,86 +1027,6 @@ unsafe fn simd_l1_int8_dot_sparse(packed: &[u8], weights: &[i8], nnz_indices: &[
 /// SCReLU dot product: clamp acc to [0, QA=255], square, dot with output weights.
 /// Returns i64 sum at scale QA² × QB. acc and weights have length h.
 ///
-/// Approach: v²*w computed per-element in i32, accumulated in i64.
-/// Process 16 elements per iteration: unpack i16→i32 in two halves,
-/// square, multiply by weights, widen to i64 and accumulate.
-///
-/// Overflow analysis: v² max = 65025, v²*w max = 65025*32767 ≈ 2.13B < i32::MAX.
-/// Must go to i64 for accumulation since two i32 products can overflow.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn simd_screlu_dot(acc: &[i16], weights: &[i16], h: usize) -> i64 {
-    let zero = _mm256_setzero_si256();
-    let qa = _mm256_set1_epi16(QA as i16);
-    let mut sum0 = _mm256_setzero_si256(); // 4 × i64
-    let mut sum1 = _mm256_setzero_si256(); // 4 × i64
-
-    let mut i = 0;
-    while i + 32 <= h {
-        // === First 16 elements ===
-        let v0 = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
-        let c0 = _mm256_min_epi16(_mm256_max_epi16(v0, zero), qa);
-        let w0 = _mm256_loadu_si256(weights.as_ptr().add(i) as *const __m256i);
-
-        let v0_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(c0));
-        let w0_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(w0));
-        let p0_lo = _mm256_mullo_epi32(_mm256_mullo_epi32(v0_lo, v0_lo), w0_lo);
-
-        let v0_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(c0, 1));
-        let w0_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(w0, 1));
-        let p0_hi = _mm256_mullo_epi32(_mm256_mullo_epi32(v0_hi, v0_hi), w0_hi);
-
-        // === Second 16 elements ===
-        let v1 = _mm256_loadu_si256(acc.as_ptr().add(i + 16) as *const __m256i);
-        let c1 = _mm256_min_epi16(_mm256_max_epi16(v1, zero), qa);
-        let w1 = _mm256_loadu_si256(weights.as_ptr().add(i + 16) as *const __m256i);
-
-        let v1_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(c1));
-        let w1_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(w1));
-        let p1_lo = _mm256_mullo_epi32(_mm256_mullo_epi32(v1_lo, v1_lo), w1_lo);
-
-        let v1_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(c1, 1));
-        let w1_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(w1, 1));
-        let p1_hi = _mm256_mullo_epi32(_mm256_mullo_epi32(v1_hi, v1_hi), w1_hi);
-
-        // Widen i32 → i64 and accumulate (8 widenings for 32 elements)
-        sum0 = _mm256_add_epi64(sum0, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(p0_lo)));
-        sum1 = _mm256_add_epi64(sum1, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(p0_lo, 1)));
-        sum0 = _mm256_add_epi64(sum0, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(p0_hi)));
-        sum1 = _mm256_add_epi64(sum1, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(p0_hi, 1)));
-        sum0 = _mm256_add_epi64(sum0, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(p1_lo)));
-        sum1 = _mm256_add_epi64(sum1, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(p1_lo, 1)));
-        sum0 = _mm256_add_epi64(sum0, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(p1_hi)));
-        sum1 = _mm256_add_epi64(sum1, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(p1_hi, 1)));
-
-        i += 32;
-    }
-
-    // Handle remaining 16 elements (if h is not a multiple of 32)
-    while i < h {
-        let v = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
-        let clamped = _mm256_min_epi16(_mm256_max_epi16(v, zero), qa);
-        let w = _mm256_loadu_si256(weights.as_ptr().add(i) as *const __m256i);
-
-        let v_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(clamped));
-        let w_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(w));
-        let prod_lo = _mm256_mullo_epi32(_mm256_mullo_epi32(v_lo, v_lo), w_lo);
-
-        let v_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(clamped, 1));
-        let w_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(w, 1));
-        let prod_hi = _mm256_mullo_epi32(_mm256_mullo_epi32(v_hi, v_hi), w_hi);
-
-        sum0 = _mm256_add_epi64(sum0, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(prod_lo)));
-        sum1 = _mm256_add_epi64(sum1, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(prod_lo, 1)));
-        sum0 = _mm256_add_epi64(sum0, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(prod_hi)));
-        sum1 = _mm256_add_epi64(sum1, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(prod_hi, 1)));
-
-        i += 16;
-    }
-
-    hsum_epi64(_mm256_add_epi64(sum0, sum1))
-}
-
 /// Fast SCReLU dot product using int8-quantized weights.
 /// Since v ∈ [0,255] and w_i8 ∈ [-127,127], v*w fits in i16 (max 255*127 = 32385).
 /// Then madd_epi16(v, v*w) gives pairwise i32 sums of v²*w, staying in i16/i32.
@@ -1210,22 +1079,6 @@ unsafe fn simd_screlu_dot_i8(acc: &[i16], weights_i8: &[i16], h: usize) -> i32 {
     _mm_cvtsi128_si32(sum32)
 }
 
-/// Horizontal sum of 8 × i32 in a __m256i to i64.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn hsum_epi32_to_i64(v: __m256i) -> i64 {
-    // Extract high and low 128-bit lanes, add as i32
-    let lo = _mm256_castsi256_si128(v);
-    let hi = _mm256_extracti128_si256(v, 1);
-    let sum128 = _mm_add_epi32(lo, hi); // 4 × i32
-    // Shuffle and add pairs
-    let hi64 = _mm_unpackhi_epi64(sum128, sum128);
-    let sum64 = _mm_add_epi32(sum128, hi64); // 2 × i32 in low 64 bits
-    let hi32 = _mm_shuffle_epi32(sum64, 0b_00_00_00_01);
-    let sum32 = _mm_add_epi32(sum64, hi32);
-    _mm_cvtsi128_si32(sum32) as i64
-}
-
 /// Horizontal sum of 4 × i64 in a __m256i.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
@@ -1239,54 +1092,6 @@ unsafe fn hsum_epi64(v: __m256i) -> i64 {
 }
 
 // ---- AVX-512 SIMD helper functions ----
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f,avx512bw")]
-unsafe fn simd512_acc_add(acc: &mut [i16], row: &[i16], h: usize) {
-    let mut i = 0;
-    while i < h {
-        let a = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
-        let b = _mm512_loadu_si512(row.as_ptr().add(i) as *const __m512i);
-        _mm512_storeu_si512(acc.as_mut_ptr().add(i) as *mut __m512i, _mm512_add_epi16(a, b));
-        i += 32;
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f,avx512bw")]
-unsafe fn simd512_acc_sub(acc: &mut [i16], row: &[i16], h: usize) {
-    let mut i = 0;
-    while i < h {
-        let a = _mm512_loadu_si512(acc.as_ptr().add(i) as *const __m512i);
-        let b = _mm512_loadu_si512(row.as_ptr().add(i) as *const __m512i);
-        _mm512_storeu_si512(acc.as_mut_ptr().add(i) as *mut __m512i, _mm512_sub_epi16(a, b));
-        i += 32;
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f,avx512bw")]
-unsafe fn simd512_acc_copy_add(dst: &mut [i16], src: &[i16], row: &[i16], h: usize) {
-    let mut i = 0;
-    while i < h {
-        let a = _mm512_loadu_si512(src.as_ptr().add(i) as *const __m512i);
-        let b = _mm512_loadu_si512(row.as_ptr().add(i) as *const __m512i);
-        _mm512_storeu_si512(dst.as_mut_ptr().add(i) as *mut __m512i, _mm512_add_epi16(a, b));
-        i += 32;
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f,avx512bw")]
-unsafe fn simd512_acc_copy_sub(dst: &mut [i16], src: &[i16], row: &[i16], h: usize) {
-    let mut i = 0;
-    while i < h {
-        let a = _mm512_loadu_si512(src.as_ptr().add(i) as *const __m512i);
-        let b = _mm512_loadu_si512(row.as_ptr().add(i) as *const __m512i);
-        _mm512_storeu_si512(dst.as_mut_ptr().add(i) as *mut __m512i, _mm512_sub_epi16(a, b));
-        i += 32;
-    }
-}
 
 /// AVX-512 CReLU dot product. Processes 32 × i16 per iteration.
 /// Uses periodic i64 drain like AVX2 version to prevent i32 overflow.
@@ -1959,30 +1764,6 @@ unsafe fn neon_acc_sub(acc: &mut [i16], row: &[i16], h: usize) {
         let a = vld1q_s16(acc.as_ptr().add(i));
         let b = vld1q_s16(row.as_ptr().add(i));
         vst1q_s16(acc.as_mut_ptr().add(i), vsubq_s16(a, b));
-        i += 8;
-    }
-}
-
-/// Fused copy + add: dst = src + row (NEON).
-#[cfg(target_arch = "aarch64")]
-unsafe fn neon_acc_copy_add(dst: &mut [i16], src: &[i16], row: &[i16], h: usize) {
-    let mut i = 0;
-    while i < h {
-        let a = vld1q_s16(src.as_ptr().add(i));
-        let b = vld1q_s16(row.as_ptr().add(i));
-        vst1q_s16(dst.as_mut_ptr().add(i), vaddq_s16(a, b));
-        i += 8;
-    }
-}
-
-/// Fused copy + sub: dst = src - row (NEON).
-#[cfg(target_arch = "aarch64")]
-unsafe fn neon_acc_copy_sub(dst: &mut [i16], src: &[i16], row: &[i16], h: usize) {
-    let mut i = 0;
-    while i < h {
-        let a = vld1q_s16(src.as_ptr().add(i));
-        let b = vld1q_s16(row.as_ptr().add(i));
-        vst1q_s16(dst.as_mut_ptr().add(i), vsubq_s16(a, b));
         i += 8;
     }
 }
@@ -3158,16 +2939,15 @@ impl NNUENet {
         &self.output_weights_i8[off..off + w]
     }
 
-    /// v7 pairwise hidden layer forward pass.
-    /// acc → CReLU → pairwise_mul → L1 matmul → ReLU → float L2 → ReLU → output
-    /// L1 input is H (hidden_size) after pairwise halves each perspective.
-    /// Pairwise forward with fused PSQ+threat combine (Reckless activate_ft pattern).
-    /// Adds threat values inside the pairwise loop, eliminating a separate combine pass.
-    /// Pairwise forward with fused PSQ+threat combine (Reckless activate_ft pattern).
-    /// Pairwise forward with threat combine.
-    /// Pairwise forward with fused PSQ+threat combine.
-    /// Passes threat pointers through to the SIMD pairwise pack, combining
-    /// PSQ + threats in the same SIMD pass (no separate stack combine).
+    /// v7 pairwise hidden layer forward pass: acc → CReLU → pairwise_mul →
+    /// L1 matmul → ReLU → float L2 → ReLU → output. L1 input is H
+    /// (hidden_size) after pairwise halves each perspective.
+    ///
+    /// Dispatcher: routes to the plain pairwise path when there are no
+    /// threat features (`stm_threat.is_empty()`), otherwise to
+    /// `forward_with_l1_pairwise_threats`, which fuses the PSQ+threat
+    /// combine into the SIMD pairwise pack itself (Reckless `activate_ft`
+    /// pattern) instead of a separate combine pass.
     #[inline(always)]
     fn forward_with_l1_pairwise_fused(&self, stm_acc: &[i16], ntm_acc: &[i16],
         stm_threat: &[i16], ntm_threat: &[i16], bucket: usize) -> i32
@@ -4621,37 +4401,15 @@ impl DirtyPiece {
     }
 }
 
-/// Maximum NNUE hidden-size we support. Sizes the inline accumulator
-/// arrays inside `AccEntry` so the full stack is one contiguous buffer
-/// (HW-prefetcher-friendly, no scattered heap allocations). Current
-/// production v9 uses 768; v5-family nets top out at ~1024. 2048 leaves
-/// headroom and matches the existing `[0u8; 2048]` packing buffers
-/// elsewhere in this file.
-pub const MAX_HIDDEN_SIZE: usize = 2048;
-
-/// Per-ply accumulator entry. All four i16 buffers are inline arrays
-/// (not heap-allocated `Vec`s) so that the whole 256-ply accumulator
-/// stack lives in a single contiguous allocation — matching Reckless's
-/// `[PstEntry; MAX_PLY]` layout. Key effects:
-///
-/// - `materialize` walking back through the stack looking for a
-///   computed ancestor touches consecutive memory rather than chasing
-///   scattered heap blocks. HW prefetcher handles it.
-/// - Each entry is a fixed ~17 KB; the accumulator effectively always
-///   runs at its max width (`MAX_HIDDEN_SIZE`) but only `hidden_size`
-///   elements are read/written, so the extra tail costs only memory,
-///   not bandwidth.
-/// - No allocator calls on push / pop. Incremental updates copy slices
-///   between adjacent stack entries that are already hot in cache.
-///
-/// Previous layout used `Vec<i16>` × 4 per entry — 4 separate heap
-/// allocations per ply × 256 plies = ~1,000 scattered heap blocks. The
-/// v9 inference microbench saw 15.7% L1-dcache miss rate on incremental
-/// eval vs Reckless's 0.55%; this flatten targets that gap.
-///
-/// `#[repr(C, align(64))]`: align to a cache-line boundary so the
-/// four inline arrays start on clean cache-line boundaries, avoiding
-/// straddling reads.
+/// Per-ply accumulator entry. The PSQ i16 accumulator data itself lives in
+/// the separate `AccDataStack` (one contiguous Box<[i16]> for the whole
+/// stack, see below) — `AccEntry` holds only the per-ply bookkeeping:
+/// accuracy flags, the dirty-piece delta, and the threat-feature delta
+/// list for incremental threat updates. `threat_deltas` is a `Vec`
+/// (heap-allocated, not an inline array); a prior layout had inline i16
+/// accumulator arrays directly in `AccEntry` (see `AccDataStack`'s doc
+/// below for why that was replaced), but that's no longer what this
+/// struct holds.
 #[repr(C, align(64))]
 pub struct AccEntry {
     psq_accurate: [bool; 2],
@@ -4661,9 +4419,6 @@ pub struct AccEntry {
     pub threat_move: Move, // the move that produced this ply (for king mirror check)
     pub threat_moved_pt: u8, // piece type that moved
     pub threat_moved_color: Color, // color that moved
-    // Stored threat feature indices for diff-based incremental (per perspective)
-    pub threat_features_white: Vec<usize>,
-    pub threat_features_black: Vec<usize>,
 }
 
 const ACC_STACK_PLIES: usize = 256;
@@ -4827,8 +4582,6 @@ impl NNUEAccumulator {
                 threat_move: NO_MOVE,
                 threat_moved_pt: NO_PIECE_TYPE,
                 threat_moved_color: WHITE,
-                threat_features_white: Vec::new(),
-                threat_features_black: Vec::new(),
             });
         }
         // Build finny table (flat array)
@@ -5638,9 +5391,10 @@ impl NNUEAccumulator {
 }
 
 /// AVX-512 batch-apply add/sub weight rows. Same semantics as the AVX2
-/// variant but uses 512-bit registers — 32 i16 per register, CHUNK=256.
-/// For the common `h=768` case this processes the accumulator in 3 passes
-/// instead of AVX2's 6. Measured ~1.5% NPS on v9 after VNNI landed.
+/// variant but uses 512-bit registers — 32 i16 per register, REGS=24 lanes
+/// tiled together (CHUNK=768). For the common `h=768` case this processes
+/// the accumulator in a SINGLE pass (vs AVX2's multi-pass tiling).
+/// Measured ~1.5% NPS on v9 after VNNI landed.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw")]
 unsafe fn finny_batch_apply_avx512(
@@ -5666,10 +5420,10 @@ unsafe fn finny_batch_apply_avx512(
     // 32-ZMM file. The threat-side `apply_deltas_avx512` couldn't go past
     // REGS=16 because of `_mm512_cvtepi8_epi16` temps; this path doesn't
     // have that constraint.
-    // Compile-time nregs everywhere (see simd_acc_fused_avx512): h=768 →
-    // one const 24-reg pass; h=1024 (current prod) → one const 24-reg +
-    // one const 8-reg (256-element) pass. Runtime-nregs tail only for h
-    // not a multiple of 256.
+    // Compile-time nregs everywhere (see simd_acc_fused_avx512): h=768
+    // (current prod) → one const 24-reg pass; a wider h (e.g. 1024) would
+    // need one const 24-reg + one const 8-reg (256-element) pass. Runtime
+    // nregs tail only for h not a multiple of 256.
     const REGS: usize = 24;
     const LANE: usize = 32; // 32 i16 per ZMM
     const CHUNK: usize = REGS * LANE; // 768 elements per chunk
@@ -5811,47 +5565,6 @@ unsafe fn finny_batch_apply_neon(
     }
 }
 
-/// Add a weight row to an accumulator (SIMD-aware).
-#[inline]
-fn acc_add(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
-    #[cfg(target_arch = "x86_64")]
-    if net.has_avx512 && h.is_multiple_of(32) {
-        unsafe { simd512_acc_add(acc, row, h); }
-        return;
-    }
-    #[cfg(target_arch = "x86_64")]
-    if net.has_avx2 && h.is_multiple_of(16) {
-        unsafe { simd_acc_add(acc, row, h); }
-        return;
-    }
-    #[cfg(target_arch = "aarch64")]
-    if net.has_neon && h % 8 == 0 {
-        unsafe { neon_acc_add(acc, row, h); }
-        return;
-    }
-    for j in 0..h { acc[j] += row[j]; }
-}
-
-/// Subtract a weight row from an accumulator (SIMD-aware).
-#[inline]
-fn acc_sub(net: &NNUENet, acc: &mut [i16], row: &[i16], h: usize) {
-    #[cfg(target_arch = "x86_64")]
-    if net.has_avx512 && h.is_multiple_of(32) {
-        unsafe { simd512_acc_sub(acc, row, h); }
-        return;
-    }
-    #[cfg(target_arch = "x86_64")]
-    if net.has_avx2 && h.is_multiple_of(16) {
-        unsafe { simd_acc_sub(acc, row, h); }
-        return;
-    }
-    #[cfg(target_arch = "aarch64")]
-    if net.has_neon && h % 8 == 0 {
-        unsafe { neon_acc_sub(acc, row, h); }
-        return;
-    }
-    for j in 0..h { acc[j] -= row[j]; }
-}
 
 /// Count total pieces on the board.
 pub fn piece_count(board: &Board) -> u32 {
