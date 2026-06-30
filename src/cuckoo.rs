@@ -127,13 +127,16 @@ pub fn has_game_cycle(board: &Board, ply: i32) -> bool {
     for i in (3..=end).step_by(2) {
         // diff matches a cuckoo table entry iff the position i plies ago
         // differs from the current position by exactly one reversible piece
-        // move (Stockfish pattern). The table membership check below is
-        // itself the filter — diff is computed fresh each iteration, no
-        // incremental pre-filter needed (a prior XOR-accumulator "early
-        // reject" here was mathematically wrong: it telescoped to the XOR
-        // of every intermediate key rather than original_key ^ key_at(i),
-        // silently disabling detection for i >= 5 and only working at i == 3
-        // by symmetric-undo coincidence).
+        // move. The table membership check below is itself the filter —
+        // diff is computed fresh each iteration, no incremental pre-filter
+        // needed (a prior XOR-accumulator "early reject" here, modelled on
+        // (and structurally identical to) Stockfish's own `other` gate in
+        // Position::upcoming_repetition, was not a sound predicate: it
+        // telescopes to the XOR of the odd-ply move deltas only, not
+        // original_key ^ key_at(i), so it silently skips real matches for
+        // i >= 5 and only worked at i == 3 by symmetric-undo coincidence.
+        // This is a real incompleteness in upstream SF too, not a Coda-only
+        // bug — see docs/code_review_2026-06-30.md for the derivation).
         let diff = original_key ^ key_at(i);
 
         let j;

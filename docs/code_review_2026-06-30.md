@@ -28,33 +28,52 @@ for i in (3..=end).step_by(2) {
 computed correctly and independently every iteration. `other` is meant as a
 cheap early-reject gate before paying for that lookup — but it doesn't
 compute (or approximate) `original_key ^ key_at(i)`. Tracing the
-accumulation: `other` telescopes to the XOR of **every** intermediate key
-from `key_at(0)` through `key_at(i)` (the recurrence uses `key_at(i-1)`,
-not `key_at(i-2)`, so it never cancels back down to just the two
-endpoints). Real Stockfish's `has_game_cycle` has no such pre-filter at
-all — it computes `moveKey = originalKey ^ stp->key` fresh every iteration
-and looks it up directly, exactly like Coda's `diff`. Coda's `other` gate
-is a bolted-on "optimization" that is mathematically wrong.
+accumulation: `other` telescopes to the XOR of the **odd-ply move deltas
+only** (the moves made by one side — m1, m3, m5, ...), not the full
+`key_at(0) ^ key_at(i)` (the XOR of *all* i deltas, both sides). These are
+different linear combinations over GF(2)^64 of the same per-move deltas,
+and `other == 0` is not a sound predicate for "diff is a valid single-move
+delta" in general — not even at i=3. The reason the one existing unit test
+(`cuckoo_detects_knight_dance_at_ply_3`) passes is that it's a symmetric
+out-and-back (same piece, same two squares, reversed), which makes
+`delta(m1) == delta(m3)` trivially true by construction, independent of
+whether the gate's logic is sound in general.
 
-Net effect: `other == 0` is essentially uncorrelated with whether
-`key_at(i)` is a real single-move-reversal away from the current position,
-for `i >= 5` it requires an astronomical 64-bit coincidence. The `i == 3`
-case only passes the one existing unit test
-(`cuckoo_detects_knight_dance_at_ply_3`) because that test is a symmetric
-out-and-back move, which makes the (wrong) accumulator zero by
-construction (XOR is direction-symmetric). `fuzz_cuckoo_sanity` discards
-the return value (`let _ = has_game_cycle(...)`), so it can't catch the
-false negatives either.
+**Correction (added after merge):** the first draft of this finding
+claimed "real Stockfish has no such pre-filter at all." That was wrong —
+checked directly against
+`/home/adam/chess/engines/Stockfish/src/position.cpp:1536-1572`, SF's
+`upcoming_repetition` has the **exact same `other` XOR-accumulator gate**,
+structurally identical to Coda's pre-fix code (same `other ^= stp->key ^
+stp->previous->key ^ Zobrist::side` pattern). So this isn't a
+Coda-specific bug relative to upstream — it's a real, demonstrable
+incompleteness present in upstream Stockfish too, most likely accepted
+there because proactive cycle detection is a pruning heuristic on top of
+unconditional repetition-rules enforcement elsewhere, not the sole
+detection mechanism. This does **not** invalidate the fix: the downstream
+verification logic (table lookup, path-clear check, root-boundary check)
+is completely unchanged, so removing a filter that can only ever cause
+false negatives cannot introduce false positives. Coda's fix makes cycle
+detection **strictly more complete than vanilla Stockfish's own
+implementation** — a more interesting result than "matched upstream."
+
+Net effect (pre-fix): `other == 0` is essentially uncorrelated with
+whether `key_at(i)` is a real single-move-reversal away from the current
+position; for `i >= 5` it requires an astronomical 64-bit coincidence to
+land on zero by chance — confirmed both by direct derivation and by
+empirical reproduction (constructing a concrete non-symmetric i=5 position
+and confirming the gate skips a genuine cuckoo-table match).
+`fuzz_cuckoo_sanity` discards the return value (`let _ =
+has_game_cycle(...)`), so it can't catch the false negatives either.
 
 **Practical impact:** proactive repetition/cycle avoidance — the entire
-purpose of `cuckoo.rs` — is largely non-functional outside this narrow
-coincidence case. Real strength gap, not a crash.
+purpose of `cuckoo.rs` — was largely non-functional outside the narrow
+symmetric-undo coincidence case. Real strength gap, not a crash.
 
 **Fix direction:** drop the `other` pre-filter entirely (just compute
-`diff` directly every iteration, like upstream SF — it's already computed
-regardless, the gate isn't saving meaningful work) — or, if the gate is
-worth keeping for the array-lookup avoidance, fix the recurrence to
-`other ^= key_at(i - 2) ^ key_at(i);` (no `side_key()`, 2-ply step). Once
+`diff` directly every iteration — it's already computed regardless, the
+gate isn't saving meaningful work, and upstream's "savings" come at the
+cost of the false negatives documented above). Once
 fixed, `src/cuckoo.rs:176-182`'s historical-repetition rescan (currently a
 linear O(end) scan per hit) becomes hot and is worth revisiting at the
 same time — Stockfish uses a sticky per-position `repetition` flag instead
