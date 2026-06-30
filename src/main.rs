@@ -188,8 +188,11 @@ enum Commands {
     },
     /// Report average chain (game-fragment) length of a binpack — singletons
     /// (avg ~1, e.g. import-tsv outlier sets) vs proper game chains (avg ~20-40).
-    /// Singleton/un-chained files are byte-heavy and get over-weighted by the
-    /// size-weighted interleave loader. Chain boundary = ply discontinuity.
+    /// Bullet's interleave loader (since 2026-06-30) weights files by sampled
+    /// position density, not raw bytes, so low-chain files are no longer
+    /// over-weighted — but density still varies run-to-run with file
+    /// composition, so use this to sanity-check expected exposure before/after
+    /// changing a file's chain structure. Chain boundary = ply discontinuity.
     ChainStats {
         /// Input binpack file
         #[arg(short = 'i', long = "input")]
