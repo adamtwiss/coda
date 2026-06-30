@@ -186,6 +186,18 @@ enum Commands {
         #[arg(short = 'n', long = "count", default_value_t = 1000000)]
         count: u64,
     },
+    /// Report average chain (game-fragment) length of a binpack — singletons
+    /// (avg ~1, e.g. import-tsv outlier sets) vs proper game chains (avg ~20-40).
+    /// Singleton/un-chained files are byte-heavy and get over-weighted by the
+    /// size-weighted interleave loader. Chain boundary = ply discontinuity.
+    ChainStats {
+        /// Input binpack file
+        #[arg(short = 'i', long = "input")]
+        input: String,
+        /// Number of chains to read (0 = whole file)
+        #[arg(short = 'c', long = "chains", default_value_t = 100)]
+        chains: u64,
+    },
     /// Perft with divide
     Perft {
         /// Search depth
@@ -946,6 +958,44 @@ fn main() {
                         piece_count_hist[pc], 100.0 * piece_count_hist[pc] as f64 / total as f64);
                 }
             }
+        }
+
+        Some(Commands::ChainStats { input, chains }) => {
+            use sfbinpack::CompressedTrainingDataEntryReader;
+            let file_size = std::fs::metadata(&input).map(|m| m.len()).unwrap_or(0);
+            let file = std::fs::File::open(&input).expect("Failed to open binpack");
+            let mut reader = CompressedTrainingDataEntryReader::new(file).expect("Failed to read binpack");
+            let target = if chains == 0 { u64::MAX } else { chains };
+            let mut lens: Vec<u32> = Vec::new();
+            let mut cur: u32 = 0;
+            let mut prev_ply: i64 = -1000;
+            while reader.has_next() && (lens.len() as u64) < target {
+                let e = reader.next();
+                let ply = e.ply as i64;
+                if cur == 0 {
+                    cur = 1;
+                } else if ply == prev_ply + 1 {
+                    cur += 1;
+                } else {
+                    lens.push(cur);
+                    cur = 1;
+                }
+                prev_ply = ply;
+            }
+            if cur > 0 { lens.push(cur); }
+            let n = lens.len().max(1);
+            let total: u64 = lens.iter().map(|&x| x as u64).sum();
+            let avg = total as f64 / n as f64;
+            let singletons = lens.iter().filter(|&&x| x == 1).count();
+            let maxl = lens.iter().copied().max().unwrap_or(0);
+            let minl = lens.iter().copied().min().unwrap_or(0);
+            println!("File: {} ({:.2} GB)", input, file_size as f64 / 1_073_741_824.0);
+            println!("Chains read:       {}", n);
+            println!("Positions in them: {}", total);
+            println!("Avg chain length:  {:.2}   (min {}, max {})", avg, minl, maxl);
+            println!("Singletons (len=1): {} / {} ({:.1}%)", singletons, n,
+                100.0 * singletons as f64 / n as f64);
+            println!("(singletons/short chains => byte-heavy => over-weighted by size-weighted interleave)");
         }
 
         Some(Commands::Perft { depth, fen }) => {
