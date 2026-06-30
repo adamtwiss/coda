@@ -1,14 +1,27 @@
-//! Sparse L1 matmul (Reckless dpbusd pattern).
+//! L1 matmul kernels, input-chunk-major (Reckless dpbusd pattern).
 //!
-//! Instead of processing ALL input elements for each neuron (dense),
-//! this skips zero 4-byte chunks of the pairwise output. With ~89%
-//! sparsity in pairwise outputs, this processes only ~11% of the work.
+//! **Production path is the DENSE kernels** (`dense_l1_avx2`,
+//! `dense_l1_avx512_vnni_l1_32`, etc.) — `select_l1_kernel` in `nnue.rs`
+//! only ever dispatches to these. An earlier design rationale here claimed
+//! "~89% sparsity in pairwise outputs, processes only ~11% of the work"
+//! and shipped zero-skip sparse kernels (`sparse_l1_avx2`,
+//! `sparse_l1_avx512_vnni`, `find_nnz_chunks4`) to exploit it — that
+//! density figure was stale. Re-measured 2026-06-14: the pairwise input is
+//! actually ~58% nonzero (L1=16) / ~60% (L1=32), and a proper
+//! branch-free find_nnz+list sparse kernel benched **1.8–2.4× SLOWER**
+//! than dense at every density tested. L1 is too small (16-32 neurons) for
+//! the zero-skip to pay for its own detection cost. See
+//! `docs/coda_vs_sf_speed_2026-06-14.md` and `nnue.rs`'s `DenseAvx2` arm
+//! comment for the full writeup. The sparse kernels in this file are kept
+//! only because their tests (`sparse_l1_scalar` as the reference oracle)
+//! still exercise them — they have no production call site.
 //!
 //! Requires input-chunk-major weight layout:
 //!   [input_chunk][neuron * 4] instead of [neuron][input]
 //!
-//! The dpbusd kernel: for each non-zero 4-byte input chunk, splat it
-//! across an AVX2 register and VPMADDUBSW with the weights for all neurons.
+//! The dpbusd kernel: for each (zero-skipped, in the sparse variants; all,
+//! in dense) 4-byte input chunk, splat it across an AVX2 register and
+//! VPMADDUBSW with the weights for all neurons.
 
 /// Transpose L1 weights from neuron-major to input-chunk-major layout.
 ///
