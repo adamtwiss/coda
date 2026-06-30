@@ -189,8 +189,21 @@ pub fn has_game_cycle(board: &Board, ply: i32) -> bool {
 mod cuckoo_tests {
     use super::*;
     use crate::board::Board;
+    use crate::movegen::generate_legal_moves;
 
     fn init() { crate::init(); }
+
+    fn upcoming_repetition_oracle(board: &Board, ply: i32) -> bool {
+        let legal = generate_legal_moves(board);
+        for idx in 0..legal.len {
+            let mv = legal.get(idx);
+            let mut child = board.clone();
+            if child.make_move(mv) && child.is_repetition_draw(ply + 1) {
+                return true;
+            }
+        }
+        false
+    }
 
     /// The cuckoo table should be populated with exactly 3668 entries
     /// for the 4-piece types and their reversible-move pairs. If
@@ -259,9 +272,32 @@ mod cuckoo_tests {
         b.make_move(make_move(57, 42, FLAG_NONE));  // Nc6 (b8→c6)
         b.make_move(make_move(21, 6, FLAG_NONE));   // Ng1 (f3→g1)
         // Now at D. Black to move. Playing Nb8 would reach A.
+        // At the root boundary this is only a second occurrence, not a draw.
+        assert!(!has_game_cycle(&b, 3),
+            "second occurrence at root boundary is not yet repetition-drawn");
+        assert!(!upcoming_repetition_oracle(&b, 3));
         // has_game_cycle should detect this via distance-3 XOR match.
         assert!(has_game_cycle(&b, 100),
             "cuckoo must detect 4-ply knight dance at distance 3");
+        assert!(upcoming_repetition_oracle(&b, 100));
+    }
+
+    /// Once the same cycle has already occurred in game history, the next
+    /// completing move is a true third occurrence even at the root boundary.
+    #[test]
+    fn cuckoo_detects_third_occurrence_at_root_boundary() {
+        init();
+        let mut b = Board::startpos();
+        b.make_move(make_move(6, 21, FLAG_NONE));   // Nf3
+        b.make_move(make_move(57, 42, FLAG_NONE));  // Nc6
+        b.make_move(make_move(21, 6, FLAG_NONE));   // Ng1
+        b.make_move(make_move(42, 57, FLAG_NONE));  // Nb8
+        b.make_move(make_move(6, 21, FLAG_NONE));   // Nf3
+        b.make_move(make_move(57, 42, FLAG_NONE));  // Nc6
+        b.make_move(make_move(21, 6, FLAG_NONE));   // Ng1
+        assert!(has_game_cycle(&b, 0),
+            "upcoming Nb8 reaches a third occurrence in game history");
+        assert!(upcoming_repetition_oracle(&b, 0));
     }
 
     /// A 5-ply relay: the white knight takes b1->a3->b5->c3 (three hops
@@ -311,7 +347,6 @@ mod cuckoo_tests {
     /// repeatable move (one that when made reaches a past position).
     #[test]
     fn fuzz_cuckoo_sanity() {
-        use crate::movegen::generate_legal_moves;
         init();
 
         const FENS: &[&str] = &[
@@ -342,6 +377,59 @@ mod cuckoo_tests {
                     if legal.len == 0 { break; }
                     // has_game_cycle must not panic at any intermediate state.
                     let _ = has_game_cycle(&board, 100);
+                    let mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
+                    board.make_move(mv);
+                }
+            }
+        }
+    }
+
+    /// Slow oracle for root/pre-root boundary plies: `has_game_cycle(board, ply)`
+    /// should match "there exists a legal move after which
+    /// `is_repetition_draw(ply + 1)` is true".
+    ///
+    /// At deeper in-tree plies, `has_game_cycle` intentionally uses the
+    /// Stockfish-style cycle shortcut (`ply > i`) before the side-to-move
+    /// ownership check, so this immediate-legal-move oracle is not equivalent.
+    #[test]
+    fn fuzz_cuckoo_matches_legal_move_oracle() {
+        init();
+
+        const FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "4k3/8/4n3/8/2N5/8/8/4K3 w - - 0 1",
+            "8/8/8/2n5/8/4N3/8/4K2k w - - 0 1",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const PLIES: usize = 64;
+        const GAMES: usize = 8;
+
+        for (fen_idx, fen) in FENS.iter().enumerate() {
+            for game in 0..GAMES {
+                let seed: u32 = 0xC0DA_C00Cu32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(65_537))
+                    .wrapping_add((game as u32).wrapping_mul(1_000_003));
+                let mut rng = if seed == 0 { 1 } else { seed };
+                let mut board = Board::from_fen(fen);
+
+                for step in 0..PLIES {
+                    let ply_cases = [0, 1, 2, 3];
+                    for &ply in &ply_cases {
+                        let got = has_game_cycle(&board, ply);
+                        let want = upcoming_repetition_oracle(&board, ply);
+                        assert_eq!(got, want,
+                            "cuckoo/oracle mismatch fen_idx={} game={} step={} ply={} seed={:#x} fen={}",
+                            fen_idx, game, step, ply, seed, board.to_fen());
+                    }
+
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
                     let mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
                     board.make_move(mv);
                 }

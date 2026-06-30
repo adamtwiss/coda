@@ -2972,19 +2972,8 @@ fn negamax(
         if board.is_insufficient_material() {
             return draw_score;
         }
-        // Repetition scan (bounded by min(halfmove, plies_from_null) to avoid
-        // walking across null-move boundaries).
-        let stack_len = board.undo_stack.len();
-        let scan_limit = (board.halfmove as usize).min(board.plies_from_null as usize);
-        let limit = scan_limit.min(stack_len);
-        // Start at 4: a repetition at distance 2 is impossible (one move per
-        // side cannot restore the moved piece). SF starts at 4 (audit P5).
-        let mut i = 4usize;
-        while i <= limit {
-            if board.undo_stack[stack_len - i].hash == board.hash {
-                return draw_score;
-            }
-            i += 2;
+        if board.is_repetition_draw(ply) {
+            return draw_score;
         }
     }
 
@@ -4986,14 +4975,8 @@ fn quiescence_with_depth(
     if board.is_insufficient_material() {
         return draw_score;
     }
-    // Check for repetition in game history.
-    // C8 audit LIKELY #38: also break on null-move boundary — scanning
-    // past a null move looks for repetitions in a different search line.
-    let hash = board.hash;
-    for undo in board.undo_stack.iter().rev().skip(1).step_by(2) {
-        if undo.hash == hash { return draw_score; }
-        if undo.halfmove == 0 { break; } // irreversible move
-        if undo.mv == NO_MOVE { break; } // null-move boundary
+    if board.is_repetition_draw(ply) {
+        return draw_score;
     }
 
     // Limit quiescence depth to prevent stack overflow
