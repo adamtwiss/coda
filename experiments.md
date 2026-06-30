@@ -16985,3 +16985,24 @@ harvest + SF-vs-Coda games as stage-1 bootstrap), not loss-fixable.
   control the dose, then SPRT a corrective net vs prod. Doc:
   `docs/draw_overrate_analysis_2026-06-29.md` addendum;
   `testdata/heldout_overrate_lc0_2023_06.README.md`.
+
+- **Coda-vs-SF "stamped" corrective data — bishop-overscoring (logged late
+  2026-06-30; runs were ~2026-06-28, S200).** Stamp pipeline = positions where
+  Coda and SF disagree, Coda-to-move score sentinel'd out so Bullet drops it,
+  SF labels kept. Mixed into a T80 S200 run, targeting the wandering-bishop
+  overscoring motif. **bishop-A = T80-only baseline; bishop-B = +stamped data;
+  `2pct` = a more-diluted variant (more T80 added); `halfstamp` = half the
+  Coda-vs-SF positions.** Metric = wandering-bishop net_pref (`scripts/net_pref_score.py`
+  on `testdata/wandering_bishop_corpus.epd`, n=119, lower=better):
+  A-baseline **+93** → B-stamped **+54 (−39)**; A-2pct **+116** → B-2pct-stamped
+  **+73 (−43)**; B2-halfstamped **+82** (fewer stamped positions → most of the
+  gain lost). **Verdict: the Coda-vs-SF data reduces bishop-overscoring ~−40cp,
+  the gain HOLDS across dilution (more T80 didn't kill it: 2pct still −43), and
+  halving the positions loses it → the gain is from the VOLUME/DIVERSITY of new
+  targeted positions, not the dilution level.** Same lesson as the blindspot
+  dilution result and the SFvCoda datagen finding. **Caveat:** the corpus had
+  duplicate positions (being redone). **Cross-ref:** on the *general* LC0-overscore
+  metric (213-model scan 2026-06-30, `docs/overrate_eval_investigation_2026-06-30.md`)
+  the stamped data is only *modest* (signed overscore +28–50 vs baseline +41–55) —
+  it's targeted at the bishop motif, whereas the big general-overscore levers are
+  **higher WDL** (wdl024 → +8 vs prod +40) and **MSE exponent** (mse24-qa23 → ~0).
