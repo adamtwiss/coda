@@ -57,7 +57,11 @@ Nets (v10 FT1024/L1=32): control `5EC53278`, mix `CE196733`.
 |---|---|---|---|
 | net_pref overrate.epd (lower=better) | +29cp | −24cp | mix −53cp (≈1 SE, within noise) |
 | net_pref wandering_bishop | +102cp | +106cp | −4cp (flat) |
-| **strength SPRT 2402** (mix vs ctrl) | — | — | **early +10 ±10.5, LLR ~0.6 →H1 (in progress)** |
+| **strength SPRT 2402** (mix vs ctrl) | 5EC53278 | CE196733 | **+4.0 ±3.0, LLR 2.98 → H1 ✓ (17,764 g)** |
+
+**Run 1 verdict: blindspot data H1 +4.0 at 50% exposure**, with flat
+normal-holdout val_loss (no bulk-eval cost). Early +10 was opening-pair
+noise; settled to +4.0. The lever works.
 
 ## Run 2 — diluted to ~20% (4× T80 carrier)
 
@@ -68,8 +72,11 @@ Nets (v10 FT1024/L1=32): control `5EC53278`, mix `CE196733`.
 
 | metric | control | mix | delta |
 |---|---|---|---|
-| strength SPRT (mix vs ctrl) | — | — | _pending_ |
-| net_pref overrate / wandering | — | — | _pending_ |
+| net_pref overrate.epd (lower=better) | +88cp | +55cp | mix −33cp (≈1.2 SE, same direction as run 1) |
+| **strength SPRT 2403** (mix vs ctrl) | D611EE3F | 81DFA839 | _live, early_ |
+
+Key question this run answers: does the +4 survive the 2.5× exposure cut
+(50%→20%) — or, per the less-oversampling intuition, **exceed** it?
 
 ## Read
 
