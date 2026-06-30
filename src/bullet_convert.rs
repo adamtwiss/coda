@@ -3,10 +3,17 @@
 //! Supports:
 //!   v5/v6: (InputSize × H)×2 → output (direct, pairwise, SCReLU)
 //!   v7: (InputSize × H)×2 → L1 → [L2 →] output (hidden layers)
+//!   v8 (dual L1) / v9-v10 (threats): same v7 entry point — convert_v7
+//!   derives the actual written version from dual_l1/num_threats. v9/v10
+//!   (FT + threats → hidden → output) is current production — see
+//!   CLAUDE.md/docs/net_catalog.md.
 //!
 //! King bucket count and layout are encoded into the .nnue header. Default
 //! 16 buckets is backwards compatible (no extended header needed). Non-16
 //! counts (e.g. Reckless 10) set flag bit 7 and emit two extra header bytes.
+//! Plain-CReLU (v5) output has no extended-KB support at all — convert_v5
+//! rejects a non-default kb_count/kb_layout in that mode rather than
+//! silently dropping it.
 
 use std::io::Write;
 
@@ -110,8 +117,13 @@ pub fn convert_v5(
     let expected = psq_input_size * h * 2 + h * 2 + output_width * ob * 2 + ob * 4;
     println!("Input: {} bytes, hidden size: {}, src buckets: {}, kb: {} ({:?}), expected: {} bytes",
         data.len(), h, ob, kb_count, kb_layout, expected);
-    if data_len < expected {
-        return Err(format!("file too small: got {}, need {}", data_len, expected));
+    // Exact equality, not `<`: h is itself DERIVED from data_len by integer
+    // division a few lines above, so a non-evenly-dividing shape silently
+    // recomputes `expected` to match the wrong h and can still pass a `<`
+    // check -- producing a wrong-but-undetected conversion instead of
+    // erroring loudly. Matches convert_v7's `expected != data_len` check.
+    if expected != data_len {
+        return Err(format!("Size mismatch: expected {} bytes for hidden size {}, got {}", expected, h, data_len));
     }
 
     let mut offset = 0;
@@ -168,6 +180,21 @@ pub fn convert_v5(
     write_u32_le(&mut buf, version);
 
     let write_extended_kb = kb_count != 16 || kb_layout == KbLayout::Reckless;
+
+    // Plain-CReLU (version 5) has no extended-KB header at all -- the v5
+    // loader hardcodes the 16-bucket uniform layout (nnue.rs's version-5
+    // arm), so a non-default kb_count/kb_layout would be silently dropped
+    // here rather than written, producing a file whose PSQ data layout
+    // (sized by the real kb_count) doesn't match what the loader assumes.
+    // Fail loud instead of writing a silently-mismatched file.
+    if version == 5 && write_extended_kb {
+        return Err(format!(
+            "non-default king-bucket config (kb_count={}, kb_layout={:?}) requires \
+             --screlu or --pairwise (version 6+ extended-KB header) -- plain CReLU \
+             (v5) has no extended-KB support and would silently drop it",
+            kb_count, kb_layout
+        ));
+    }
 
     if version == 6 {
         let mut flags = 0u8;
