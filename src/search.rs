@@ -1245,14 +1245,17 @@ impl SearchInfo {
 /// Scale a raw (halfmove-independent) eval toward zero as the halfmove
 /// clock approaches the 100-ply draw horizon.
 ///
-/// Formula: `score * (100 - clamp(hm, 0, 100)) / 100`. At `hm=0` returns
-/// `score` unchanged; at `hm=100` returns `0`. Callers apply this at the
+/// Formula: `score * (200 - clamp(hm, 0, 100)) / 200`. At `hm=0` returns
+/// `score` unchanged; at `hm=100` returns `0.5×`. Callers apply this at the
 /// *point of use*, never before storing to TT — see the comment in
 /// `SearchInfo::eval`.
 ///
-/// Consensus-aligned with Obsidian/Reckless-style `(100 - hm) / 100`,
-/// which unlike the previous `(200 - hm) / 200` actually reaches zero
-/// at the draw cliff rather than topping out at 0.5×.
+/// Consensus form, shared by the entire reference set — SF `v - v*rule50/199`,
+/// Obsidian/Reckless/Berserk `(200 - hm)/200`, PlentyChess `(293 - rule50)/293`
+/// — which all HALVE (not zero) the eval at the 50-move cliff. The previous
+/// `(100 - hm)/100` was a 2× outlier that nulls a won eval to 0.00 at the
+/// cliff; Coda's own conversion study (docs/conversion_failure_study
+/// _2026-06-29.md) traced won-position draws to exactly that over-damping.
 #[inline]
 fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
     // Leave sentinel scores untouched so downstream comparisons with
@@ -1261,7 +1264,7 @@ fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
         return score;
     }
     let hm = (halfmove as i32).min(100);
-    score * (100 - hm) / 100
+    score * (200 - hm) / 200
 }
 
 /// Build a DirtyPiece for lazy NNUE accumulator update.
