@@ -173,6 +173,14 @@ pub const NNUE_MAX_KING_BUCKETS: usize = 16;
 /// loadable net: pw = hidden_size/2 must be ≤ this, i.e. hidden_size ≤ 2×this.
 /// Enforced at net load (see Net::read) and asserted at the buffer.
 pub const NNUE_PW_BUF: usize = 1024;
+/// Stack buffer size for L1 output (forward_with_l1_pairwise_body). Bounds
+/// the largest loadable per-bucket L1 width. Enforced at net load and
+/// asserted at the buffer (see HIDDEN32_BUF below).
+pub const NNUE_L1_BUF: usize = 64;
+/// Stack buffer size for L2 output (forward_with_l1_pairwise_body). Bounds
+/// the largest loadable per-bucket L2 width. Enforced at net load and
+/// asserted at the buffer (see H2_BUF below).
+pub const NNUE_L2_BUF: usize = 128;
 const NNUE_NUM_PIECE_TYPES: usize = 12;
 
 /// King bucket layout identifier. Mirrors `bullet_convert::KbLayout` so the
@@ -2801,6 +2809,24 @@ impl NNUENet {
             ));
         }
 
+        // forward_with_l1_pairwise_body writes l1/l2 neurons into fixed
+        // NNUE_L1_BUF/NNUE_L2_BUF stack buffers. l1_size/l2_size as read here
+        // is always the PER-BUCKET width (bucketed_hidden multiplies it out
+        // into self.l1_size/self.l2_size separately; the per-bucket value is
+        // what flows into the buffer-indexed loops). Reject an oversized
+        // header at load with a clean error rather than overflowing the
+        // stack buffer later.
+        if l1_size > NNUE_L1_BUF {
+            return Err(format!(
+                "NNUE l1_size {} exceeds supported maximum {}", l1_size, NNUE_L1_BUF
+            ));
+        }
+        if l2_size > NNUE_L2_BUF {
+            return Err(format!(
+                "NNUE l2_size {} exceeds supported maximum {}", l2_size, NNUE_L2_BUF
+            ));
+        }
+
         // Read input weights (PSQ block sized by kb_count × 768).
         let psq_input_size = num_king_buckets * PSQ_INPUTS_PER_BUCKET;
         let mut input_weights: AlignedVec<i16> = AlignedVec::zeros(psq_input_size * hidden_size);
@@ -3340,8 +3366,12 @@ impl NNUENet {
         // Skip the 2 KB zero-init memset (perf annotate showed it as a top
         // L1-miss source). Bias seed below initialises [..l1]; consumers only
         // read [..l1].
-        const HIDDEN32_BUF: usize = 64;  // l1 ≤ 64
-        debug_assert!(l1 <= HIDDEN32_BUF, "l1 {} exceeds HIDDEN32_BUF {}", l1, HIDDEN32_BUF);
+        const HIDDEN32_BUF: usize = NNUE_L1_BUF;  // l1 ≤ 64
+        // Real assert, not debug_assert: an oversized net slipping past
+        // load-time validation must abort here rather than write OOB into
+        // this fixed stack buffer in release (matches the PW_BUF precedent
+        // above).
+        assert!(l1 <= HIDDEN32_BUF, "l1 {} exceeds HIDDEN32_BUF {}", l1, HIDDEN32_BUF);
         let mut hidden32_storage = std::mem::MaybeUninit::<[i32; HIDDEN32_BUF]>::uninit();
         let hidden32_ptr = scratch_ptr!(hidden32_storage, i32);
         let mut hidden32_seeded = false;
@@ -3656,8 +3686,9 @@ impl NNUENet {
             // h2 is fully initialised by either l2_fmadd_avx512_x32 (writes all
             // 32 lanes from biases+fmadd) or the manual `for k in 0..l2 { h2[k] = bias }`
             // loop. Tail [l2..H2_BUF] never read.
-            const H2_BUF: usize = 128;  // l2 ≤ 128
-            debug_assert!(l2 <= H2_BUF, "l2 {} exceeds H2_BUF {}", l2, H2_BUF);
+            const H2_BUF: usize = NNUE_L2_BUF;  // l2 ≤ 128
+            // Real assert, not debug_assert — see HIDDEN32_BUF above.
+            assert!(l2 <= H2_BUF, "l2 {} exceeds H2_BUF {}", l2, H2_BUF);
             let mut h2_storage = std::mem::MaybeUninit::<[f32; H2_BUF]>::uninit();
             let h2_ptr = scratch_ptr!(h2_storage, f32);
             // L2 matmul. The common v9 shape (L2=32) takes a hand-vectorised
@@ -4734,9 +4765,18 @@ impl AccDataStack {
 struct FinnyEntry {
     /// Cached per-perspective accumulator — inline fixed array eliminates the
     /// Vec heap pointer and ensures the entire 64-entry Finny table is a
-    /// contiguous ~138 KB slab (fits in L2) rather than 64 scattered 1.5 KB
-    /// heap blocks requiring pointer-chasing on every Finny hit. (perf M1)
-    acc: [i16; NNUE_PW_BUF],
+    /// contiguous slab rather than 64 scattered heap blocks requiring
+    /// pointer-chasing on every Finny hit. (perf M1)
+    ///
+    /// Sized 2×NNUE_PW_BUF (not NNUE_PW_BUF): refresh_accumulator slices
+    /// this with the FULL hidden_size (`entry.acc[..h]`), not hidden_size/2
+    /// — NNUE_PW_BUF is a half-width bound on a *different* buffer (the
+    /// pairwise SIMD pack), reused here without re-deriving the needed
+    /// size. A net with hidden_size in (1024, 2048] — within the range the
+    /// loader already accepts — would otherwise panic/OOB on first Finny
+    /// refresh after a king-bucket crossing. Dormant today (prod is 768)
+    /// but a real landmine for future net widening; fixed defensively.
+    acc: [i16; 2 * NNUE_PW_BUF],
     piece_bbs: ([Bitboard; 6], [Bitboard; 2]),
     valid: bool,
 }
@@ -4744,7 +4784,8 @@ struct FinnyEntry {
 // Finny slots sized for the maximum supported bucket count. Nets with fewer
 // buckets (e.g. Reckless 10) use the low indices only; remaining slots sit
 // unused but cost nothing significant (~1KB per slot × 12 unused ≈ 12KB).
-const FINNY_SIZE: usize = 2 * NNUE_MAX_KING_BUCKETS * 2; // [perspective][bucket][mirror]
+const FINNY_STRIDE_PER_PERSPECTIVE: usize = NNUE_MAX_KING_BUCKETS * 2; // [bucket][mirror]
+const FINNY_SIZE: usize = 2 * FINNY_STRIDE_PER_PERSPECTIVE; // [perspective][bucket][mirror]
 
 /// Accumulator stack with lazy materialization and Finny table.
 pub struct NNUEAccumulator {
@@ -4756,7 +4797,7 @@ pub struct NNUEAccumulator {
     pub threat: AccDataStack,
     top: usize,
     hidden_size: usize,
-    /// Finny table: flat [perspective * 32 + bucket * 2 + mirror]
+    /// Finny table: flat [perspective * FINNY_STRIDE_PER_PERSPECTIVE + bucket * 2 + mirror]
     finny: Vec<FinnyEntry>, // length = FINNY_SIZE (64)
     // --- eval-path instrumentation counters (reset by `reset_stats`) ---
     // `materialize` increments one of these every call, based on which
@@ -4794,7 +4835,7 @@ impl NNUEAccumulator {
         let mut finny = Vec::with_capacity(FINNY_SIZE);
         for _ in 0..FINNY_SIZE {
             finny.push(FinnyEntry {
-                acc: [0; NNUE_PW_BUF],
+                acc: [0; 2 * NNUE_PW_BUF],
                 piece_bbs: ([0; 6], [0; 2]),
                 valid: false,
             });
@@ -5490,7 +5531,7 @@ impl NNUEAccumulator {
         let bucket = net.king_bucket(ks);
         let mirror_idx = if net.king_mirror(ks) { 1 } else { 0 };
 
-        let entry = &mut self.finny[perspective as usize * 32 + bucket * 2 + mirror_idx];
+        let entry = &mut self.finny[perspective as usize * FINNY_STRIDE_PER_PERSPECTIVE + bucket * 2 + mirror_idx];
 
         if !entry.valid {
             // No cache — full recompute with register blocking. Build into the
@@ -5522,7 +5563,7 @@ impl NNUEAccumulator {
             entry.valid = true;
             // Mirror cache → live psq slot.
             let dst = self.psq.view_mut(self.top, perspective as usize);
-            dst.copy_from_slice(&self.finny[perspective as usize * 32 + bucket * 2 + mirror_idx].acc[..h]);
+            dst.copy_from_slice(&self.finny[perspective as usize * FINNY_STRIDE_PER_PERSPECTIVE + bucket * 2 + mirror_idx].acc[..h]);
             self.stack[self.top].psq_accurate[perspective as usize] = true;
             return;
         }
@@ -5581,7 +5622,7 @@ impl NNUEAccumulator {
 
         // Copy updated cache to accumulator (drop entry borrow first).
         let dst = self.psq.view_mut(self.top, perspective as usize);
-        dst.copy_from_slice(&self.finny[perspective as usize * 32 + bucket * 2 + mirror_idx].acc[..h]);
+        dst.copy_from_slice(&self.finny[perspective as usize * FINNY_STRIDE_PER_PERSPECTIVE + bucket * 2 + mirror_idx].acc[..h]);
         self.stack[self.top].psq_accurate[perspective as usize] = true;
     }
 
