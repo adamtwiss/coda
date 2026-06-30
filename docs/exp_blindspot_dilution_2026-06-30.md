@@ -11,6 +11,28 @@ All runs: GPU4, current prod-shape S200 recipe (identical across arms so
 they cross-compare). Net-vs-net SPRT on `main`, `[-1.5, 1.5]` STC. Only
 `--dataset-dir` differs.
 
+## CRITICAL: the trainer mixes by BYTES, not positions (verified in code)
+
+The `--data-order interleave` path is a **size-weighted round-robin**
+(`sfbinpack.rs`): each file's sampling weight = `scan_chunk_starts(path).len()`
+∝ **file bytes**; streams are drawn ∝ byte-weight and emit 4096-pos blocks;
+small files **wrap** (re-read from start) to keep filling their weight, with
+the wrap count salting the fen-skip hash so a different subset passes each
+pass. So **the fraction of positions the net trains on = the BYTE fraction**,
+NOT the unique-position fraction. Because blindspot is un-chained (~33 B/pos
+vs T80 ~3 B/pos, ~11× less dense), its byte-share ≫ its position-share, and
+the 300M unique positions get **oversampled ~5–9×** (wrapped) to fill it.
+
+| run | blindspot bytes | **EXPOSURE (net trains on)** | unique-pool fraction |
+|---|---|---|---|
+| 1 (1×T80, mar)  | 10G / 20G | **~50%** | ~10% (300M / ~3–4B) |
+| 2 (4×T80, jan-apr) | 10G / 50G | **~20%** | ~2.5% |
+
+So run 2 is a **2.5× exposure cut (50%→20%)**, not "2.5%". A production-like
+~2.5–5% *exposure* needs blindspot at ~2.5–5% of BYTES → ~20× T80 (or less
+blindspot byte-volume), not 4×. The GPU starvation in run 1 (~50% idle) is
+the byte-weight tell — half the loader's bytes were the slow blindspot.
+
 Shared recipe:
 ```
 --superbatches 200 --warmup 20 --final-lr 1e-6 --seed 44 \
