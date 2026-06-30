@@ -23,7 +23,9 @@ problem. That rules out two tempting hypotheses and narrows the cause to one:
    LC0/SF self-play rarely enters them, so the post-sortie positions are rare
    in the shared data. The net extrapolates there and guesses high.
 2. **Why Coda and not SF, on the same data?** Because it's a *generalization*
-   gap, not a *data* gap: SF's net is larger/differently-shaped and converges
+   gap, not a *data* gap: SF's net is the **same shape** as Coda's (both
+   FT1024→32→32→8; see `sfnnv13_architecture_review_2026-05-23.md` — NOT larger)
+   but is differently-*trained* (recipe + maturity) and converges
    better on those sparse regions, and — critically — SF's *search* papers over
    any residual static error (recall the RpZ9LbYM start position, where Coda's
    static eval +1.87 was actually *more* accurate than SF's −0.47; SF wins via

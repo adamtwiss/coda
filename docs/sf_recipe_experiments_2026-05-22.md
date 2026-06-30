@@ -88,10 +88,14 @@ being a flag flip.
   qualitatively in the "fresh sampling" regime. Cheaper directional
   signal before committing to the full 0.9.
 
-**Why SF can afford 0.9 cheaply**: their GPU work per batch (L1=1024
-matrix ops) is ~64× ours (L1=16), so they're GPU-bound and the 10×
-decode overhead is masked. Our smaller architecture is closer to
-data-loader-bound at baseline.
+**Why SF can afford 0.9 cheaply**: ~~their GPU work per batch (L1=1024
+matrix ops) is ~64× ours (L1=16)~~ — **CORRECTION (2026-06-30): this is the
+FT-vs-L1 naming-confusion error.** It compares SF's FT *output width* (1024) to
+Coda's *first-dense* width (16) — apples to oranges, "wrong by an order of
+magnitude" (`sfnnv13_architecture_review_2026-05-23.md`). SF and Coda are the
+**same net shape** (FT1024→32→32→8); SF's per-batch GPU work is **comparable,
+not 64×**. The original GPU-bound-vs-loader-bound intuition may still hold
+directionally at the *then*-current Coda FT768/L1=16, but not via a 64× gap.
 
 ---
 
