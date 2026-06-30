@@ -44,9 +44,9 @@ failures. Endgame-conversion search is **not** the frontier for these games.
   drew. `bm` from the SF16 d24 oracle. 5 are ≥6-men (genuine search targets);
   3 are ≤5-men (TB-trivial, kept for completeness). The honest version of "the
   64 conversion failures" — the static-cut's 64 collapsed to 8 under search.
-- **`testdata/coda_overrate_gauntlet.epd`** (89) — deep-confirmed overrates
-  (Coda peak ≥1.5 but SF d24 ≤ +50cp). Magnitude spread: 63 at 1.5–2.5, 23 at
-  2.5–4, 3 at 4+. Oracle-confirmed addition to the overrate corpus.
+- **`testdata/coda_overrate_gauntlet.epd`** (89) — **REMOVED 2026-06-30, see
+  the addendum below.** Was: deep-confirmed overrates (Coda peak ≥1.5 but SF d24
+  ≤ +50cp).
 
 ## Material-prior (lichess stats.json) idea — recommendation: don't build it
 
@@ -64,5 +64,47 @@ experiment is OCB/RvB eval draw-scaling, and that is speculative.
 The corrective-net harvest completed for 6 monthly T80 files (Jan–Jun 2024):
 150/80 blindspot filter (Coda eval vs LC0 ≥150cp, then SF-worse-by-80),
 ~318M coda-worse positions total in `/training/blindspot/`. The
-overrate-dominated finding above argues this corpus is aimed at the right
+overrate-dominated finding above argues this corpus is aimed at the right target.
+
+## Addendum (2026-06-30): the d24-EPD was the WRONG test-set oracle
+
+The draw-attribution finding above (the 67.5% draw rate is overrate-dominated,
+not conversion-dominated) **stands** — for "is this position actually winnable?"
+the d24 *search* oracle is correct.
+
+But the 89-position `coda_overrate_gauntlet.epd` it spawned was **contaminated
+as a corrective-net *test set*** and has been removed. The reason: the harvest
+(and the corrective training labels) arbitrate on SF **static** eval; the EPD
+adjudicated on SF **searched to depth 24**. Those select different populations —
+search resolves tactics, so the d24 cut *keeps* deep-tactical positions where SF
+static is also far out. Those are not static-learnable eval errors; they're
+tactics the LC0-static-label corrective data can never fix. Measuring the
+corrective net on that set therefore mixes the population the fine-tune targets
+with one it provably cannot move, producing a misleading (reversed) verdict.
+
+**Replacement test set: `testdata/heldout_overrate_lc0_2023_06.tsv`** — a
+held-out twin (June 2023, out of Jan–Jun-2024 training) of the *harvest* filter
+itself: Coda static far from LC0 (≥150cp) AND SF **static** closer (≥80cp),
+LC0-MCTS truth, no search anywhere, deduped to ≤1 position/game (7,847 positions
+/ 7,847 distinct games). See `testdata/heldout_overrate_lc0_2023_06.README.md`.
+
+On this clean set the verdict reverses back to "the blindspot data works",
+monotonically and within bake-matched pairs (lower `mean |eval−truth|` is
+better):
+
+| net (S200 bake) | mean \|eval−truth\| |
+|---|---|
+| ctrl_1x (T80 only) | 427 |
+| **mix_1x (T80 + blindspot)** | **407**  (−20) |
+| ctrl_4x (T80 only) | 401 |
+| **mix_4x (T80 + blindspot)** | **396**  (−5) |
+
+(prod E6C62000, deep bake, = 418 for reference — both mixes beat it despite the
+undercooked S200 bake.) The 1× pair shows the larger on-target gain, consistent
+with the known interleave-dilution effect (file-size-weighted interleave + the
+poorly-compressed correction binpack gave the "1×" net a much heavier real dose
+than intended). Next step is to fix the dilution so the dose is controlled, then
+SPRT a corrective net vs prod.
+
+The overrate-dominated finding above argues this corpus is aimed at the right
 target.

@@ -2436,7 +2436,11 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option
         // lc0_score = the binpack's LC0 WDL-calibrated eval (white POV) — the
         // strong-oracle ground truth (game RESULT is too drawish on T80
         // self-play to discriminate static evals; corr ≈ 0).
-        writeln!(w, "fen,white_result,coda_eval_white_cp,lc0_score_white_cp").unwrap();
+        // game_id: globally-consistent game index (incremented on every
+        // ply-continuation break). Lets the harvest dedupe to <=1 position per
+        // game — same-game positions share the eval blind spot, so keeping
+        // several from one game would correlate the test set and inflate signal.
+        writeln!(w, "fen,white_result,coda_eval_white_cp,lc0_score_white_cp,game_id").unwrap();
         w
     });
 
@@ -2451,9 +2455,18 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option
     let mut kept = 0usize;
     let mut reader = reader;
 
+    // Globally-consistent game id, derived from ply-continuation breaks (the
+    // binpack's own game-boundary signal: a new game resets ply, breaking
+    // `prev_ply + 1 == ply`). Tracked for EVERY entry read — before the shard
+    // skip — so all N shards compute identical ids and the union dedupes by game.
+    let mut game_id: u64 = 0;
+    let mut prev_ply: i64 = -2;
+
     while reader.has_next() && (scan_all || scores.len() < n) {
         let entry = reader.next();
         total += 1;
+        if entry.ply as i64 != prev_ply + 1 { game_id += 1; }
+        prev_ply = entry.ply as i64;
 
         // Modulo shard: copy k of N processes only entries where
         // (global_index) % N == k. Union of all N shards = the full file.
@@ -2538,7 +2551,7 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option
             let white_result = match entry.result { 1 => 1.0, -1 => 0.0, _ => 0.5 };
             let white_cp = if stm_is_white { score } else { -score };
             let lc0_white = if stm_is_white { entry.score } else { -entry.score };
-            writeln!(w, "{},{:.1},{},{}", fen, white_result, white_cp, lc0_white).unwrap();
+            writeln!(w, "{},{:.1},{},{},{}", fen, white_result, white_cp, lc0_white, game_id).unwrap();
         }
 
         if kept.is_multiple_of(100_000) {

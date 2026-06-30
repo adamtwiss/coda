@@ -16956,3 +16956,32 @@ harvest + SF-vs-Coda games as stage-1 bootstrap), not loss-fixable.
   discriminator was the DEFAULT test, not the adj-off gap.) KBN-v-K still
   drawn vs best defense (W-maneuver — deferred). Validated with a TB-perfect-
   defender harness. Study: `docs/conversion_failure_study_2026-06-29.md`.
+
+- **Held-out overrate test set + corrective-net ablation (2026-06-30).** Built a
+  clean held-out instrument to measure whether the blindspot corrective data
+  reduces eval error on the population it targets, and fixed a methodology bug in
+  the prior EPD. **Bug:** `testdata/coda_overrate_gauntlet.epd` adjudicated on SF
+  *searched to depth 24*, but the harvest (and the corrective training labels)
+  arbitrate on SF *static* eval — different populations. Search resolves tactics,
+  so the d24 cut kept deep-tactical positions where SF static is also far out;
+  those are not static-learnable eval errors and the LC0-static-label corrective
+  data can never fix them. So the contaminated EPD gave a misleading (reversed)
+  verdict. **Removed it.** **Replacement:** `testdata/heldout_overrate_lc0_2023_06.tsv`
+  — held-out twin (June **2023**, out of Jan–Jun-2024 training) of the *harvest*
+  filter: Coda static far from LC0 (≥150cp) AND SF **static** closer (≥80cp),
+  LC0-MCTS truth (STM-POV), no search anywhere, **deduped to ≤1 position/game**
+  (7,847 positions / 7,847 distinct games — same-game positions share the blind
+  spot, so several from one game would correlate the set). Game-dedup needed a
+  globally-consistent `game_id` in `eval-dist` (ply-continuation break, computed
+  before the shard skip so all shards agree); bench-neutral (offline tooling).
+  **Result** (mean |eval−truth|, lower better; within bake-matched S200 pairs):
+  ctrl_1x 427 → **mix_1x 407 (−20)**; ctrl_4x 401 → **mix_4x 396 (−5)**; prod
+  E6C62000 (deep bake) 418 for reference — both mixes beat it despite undercooked
+  S200 bake. **Verdict: blindspot data works, monotonically within pairs** —
+  reverses the contaminated-EPD conclusion and confirms the interim partial-file
+  result. Larger 1× gain is consistent with the known interleave-dilution effect
+  (file-size-weighted interleave + poorly-compressed correction binpack → the "1×"
+  net got a much heavier real dose than intended). Next: fix the dilution to
+  control the dose, then SPRT a corrective net vs prod. Doc:
+  `docs/draw_overrate_analysis_2026-06-29.md` addendum;
+  `testdata/heldout_overrate_lc0_2023_06.README.md`.

@@ -2,21 +2,30 @@
 """
 eval_compare_nets.py — mechanism metric for the blindspot corrective net.
 
-Eval one or more .nnue nets over the oracle-labelled EPD sets and report, per
-set, how far each net's STATIC eval sits from the SF16-d24 ground truth encoded
-in the EPD `c0` comment. The blindspot hypothesis predicts the corrective net
-(T80 + blindspot data) pulls the OVERRATE set down toward truth while keeping the
-CONVERSION set (real wins) high.
+Eval one or more .nnue nets over a labelled test set and report, per set, how
+far each net's STATIC eval sits from the ground-truth score. The blindspot
+hypothesis predicts the corrective net (T80 + blindspot data) pulls the OVERRATE
+positions down toward truth.
 
-Positions are oriented STM-favoured by construction (the `coda_peak` was an
-STM-POV search value), so we compare the net's STM-POV static eval (cp) to the
-`d24 <signed>cp` truth, which is also STM-POV.
+PRIMARY test set (`--tsv`): the held-out LC0-truth overrate set
+`testdata/heldout_overrate_lc0_2023_06.tsv` — `fen<TAB>lc0_stm_cp`. Built as a
+held-out twin (June 2023, NOT in Jan–Jun-2024 training) of the training harvest
+filter: Coda static far from LC0 (>=150cp) AND SF static closer to LC0 (>=80cp),
+deduped to <=1 position per game. Truth = LC0 800-node-MCTS score, STM-POV. This
+matches what the corrective data trains toward and uses NO search anywhere.
+See docs/blindspot_data_generation.md.
+
+Legacy EPD sets (`--epd`) used an SF-searched-to-d24 oracle (the `d24 <cp>`
+token). That oracle MISMATCHES the harvest's SF-*static* arbitrator: search
+resolves tactics, so the EPD kept deep-tactical positions the static corrective
+data cannot fix — contaminating the set. The contaminated
+`coda_overrate_gauntlet.epd` was removed 2026-06-30; the `--epd`/parse_epd path
+is retained only for ad-hoc d24-labelled sets.
 
 Usage:
   python3 scripts/eval_compare_nets.py \
-      --net baseline=/path/t80_only.nnue --net corrective=/path/t80_plus.nnue \
-      --epd overrate=testdata/coda_overrate_gauntlet.epd \
-      --epd conversion=testdata/coda_conversion.epd \
+      --net ctrl=/path/t80_only.nnue --net mix=/path/t80_plus.nnue \
+      --tsv heldout=testdata/heldout_overrate_lc0_2023_06.tsv \
       [--coda ./coda] [--dump]
 """
 import argparse, re, subprocess, sys
@@ -42,6 +51,19 @@ def parse_epd(path):
         m = TRUTH_RE.search(line)
         truth = int(m.group(1)) if m else None   # STM-POV cp (d24 was STM)
         out.append((fen, stm_white, truth))
+    return out
+
+
+def parse_tsv(path):
+    """Held-out LC0-truth test set: `fen<TAB>truth_stm_cp` (truth already STM-POV,
+    the LC0 score the corrective data was trained toward — NOT an SF-search oracle)."""
+    out = []
+    for line in open(path):
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        fen, truth = line.split("\t")
+        out.append((fen, fen.split()[1] == "w", int(truth)))
     return out
 
 
@@ -74,18 +96,23 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--net", action="append", required=True,
                     help="label=path (repeatable)")
-    ap.add_argument("--epd", action="append", required=True,
-                    help="label=path (repeatable)")
+    ap.add_argument("--epd", action="append", default=[],
+                    help="label=path EPD with d24 truth token (repeatable)")
+    ap.add_argument("--tsv", action="append", default=[],
+                    help="label=path  `fen<TAB>lc0_stm_cp` LC0-truth set (repeatable)")
     ap.add_argument("--coda", default="./coda")
     ap.add_argument("--dump", action="store_true",
                     help="per-position eval table")
     args = ap.parse_args()
 
     nets = [s.split("=", 1) for s in args.net]
-    epds = [s.split("=", 1) for s in args.epd]
+    epds = [(*s.split("=", 1), parse_epd) for s in args.epd] + \
+           [(*s.split("=", 1), parse_tsv) for s in args.tsv]
+    if not epds:
+        sys.exit("need at least one --epd or --tsv")
 
-    for elabel, epath in epds:
-        positions = parse_epd(epath)
+    for elabel, epath, parser in epds:
+        positions = parser(epath)
         truths = [t for _, _, t in positions]
         has_truth = all(t is not None for t in truths)
         evals = {nlabel: eval_net(args.coda, npath, positions)
