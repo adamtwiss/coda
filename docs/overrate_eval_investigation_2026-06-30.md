@@ -108,29 +108,97 @@ it** — it is a persistent eval-quality gap.
   survive every filter and are **already in training at normal frequency.** The
   problem is they're a **rare minority**; MSE on the bulk doesn't pressure the
   net to get them right (signal-emphasis, not data-absence).
-- Live differences from SF are **training recipe + maturity, NOT capacity** —
-  the nets are the same shape. SF's recipe differs in: **dual L1 activation**
-  (SqrCReLU(31)++CReLU(31) vs our single CReLU(32)), **eval-scale 600 vs 400**,
-  **MSE exponent 2.6 vs 2.5**, **WDL ~0.25–0.40 vs our 0.15–0.20**, plus far
-  more training maturity/scale. The bake-helps signal points the same way
-  (a learning-the-tail problem, solved by better/longer/targeted training, not
-  by more parameters).
+- Live differences from SF are **training recipe, NOT capacity or maturity** —
+  the nets are the same shape, and **training scale/data is NOT a meaningful
+  delta either**: our prod schedule (350/900/3000-equivalent stage lengths)
+  matches SF's nettest schedule (`max_epochs: 250/950/3000`,
+  `vondele/nettest/threats.yaml`), and the data pools overlap heavily
+  (leela96, test60/70/78/79/80 — the same `linrock`/`vondele` HF sets we use).
+  **CORRECTED 2026-06-30 (Adam, against source)** — the recipe deltas that
+  actually hold up:
+  - **MSE exponent: SF 2.435, us 3.0** (`pow-exp: 2.435`, threats.yaml line
+    ~99 in commit `b5023a3e`) — we are HIGHER than SF, not lower as
+    previously stated here (was wrongly written as "SF 2.6 vs us 2.5",
+    backwards on both numbers).
+  - **WDL: SF 0.26 (single value, not a range)** — derived from
+    `end-lambda: 0.74` / `start-lambda: 0.74` in `advanced_stage_options`
+    (SF's `lambda` = eval-label weight, so WDL-equivalent = 1 − lambda =
+    0.26). Our recent prods are all 0.20. (Previously wrongly stated here as
+    "SF ~0.25–0.40" — no source for a range; 0.26 is the actual fixed value
+    in the current published recipe.)
+  - **Eval-scale 600 vs 400 — RETRACTED, unsourced.** No `eval-scale` /
+    output-scale field exists in threats.yaml; the `in-scaling`/`out-scaling:
+    300/350` fields there are WRM (win-rate-model) input scaling, not a
+    centipawn eval-scale analogue to Coda's `EVAL_SCALE`. Don't restate this
+    claim without a real source.
+  - **Dual L1 activation — NOT a closed door, just under-tested at current
+    recipe.** `project_psqt_dual_regress_s800.md` H0'd dual at S800 on
+    2026-06-16, but the recipe (wdl/mse/fenskip/etc.) has moved meaningfully
+    since then; that memory's own caution against over-claiming closure
+    applies. Worth a fresh probe under the current recipe before ruling it
+    out again, not asserting it's dead.
+  - **Training maturity/scale — RETRACTED as a delta.** See above; SF's
+    schedule and data pool are comparable to ours, not "far more."
+  - **MSE exponent — RETESTED 2026-06-30, the SF-matching direction LOSES for
+    us, on both axes.** We already have a same-recipe paired comparison
+    (`warm10-inter-mse30-s200` = our default 3.0, vs `warm10-inter-mse24-s200`
+    = the exact net SPRT-tested in #2032/#2033 at ≈SF's 2.435). On THIS
+    overrate set, mse30 ranks #123/213 (\|err\| 218) vs mse24 #191/213
+    (\|err\| 228) — mse30 is better here too, not just in general Elo (mse30
+    won decisively #2032/#2033: STC +12.2±5.3 H1, LTC +10.2±4.9). So "match
+    SF's MSE exponent" is not an untested lever or even a tradeoff — it's
+    tested and loses on both the general-Elo and the overrate-specific
+    metric for our recipe. Drop it. (A *different* mse24 net, `mse24-qa23-200`,
+    ranks #9 on the overscore scan — but that's a different recipe family,
+    not an MSE-only ablation, so it doesn't contradict this; don't cite it as
+    support for adopting mse24.)
+  - **"SF does corrective fine-tuning too (`fine_tune_binpacks`)" — RETRACTED
+    as an explanation (Adam, 2026-06-30).** `fine_tune_binpacks` was added to
+    `vondele/nettest` only in the last few weeks; the SF build/net we
+    benchmark overscore against in this investigation predates that addition.
+    So it cannot explain why SF doesn't show this overscoring — SF's
+    resistance to the king-safety blind spot must come from something else
+    (recipe, data, or simply not being decomposed yet), not from a corrective
+    stage it didn't have when measured. The corrective-data lever for Coda
+    (below) still stands on its own measured merits (the −20cp blindspot
+    result), just not as "parity with what SF does."
 
 ## Levers (ranked)
 
 1. **Concentrated, motif-aware corrective data** — oversample king-safety /
    dynamic mid-material positions specifically (blindspot diluted moved only
    −20cp because it spreads across all motifs). Needs agent/LLM labelling since
-   cheap heuristics fail.
-2. **Adopt SF's recipe choices** on the (identical-shape) net — dual L1
-   activation, eval-scale 600, MSE exponent 2.6, higher WDL — and more training
-   maturity/scale. This is the SF-vs-Coda delta, since the nets are the same.
-3. **Loss-shaping** (wrm/wdl) — marginal but real (tails weighted more).
-4. **Not a lever**: king-bucket / output-bucket layout changes, **or a bigger
-   net** — Coda and SF are the same size (FT1024→32→32→8).
+   cheap heuristics fail. Stands on its own measured result, NOT on an
+   (incorrect) claim that SF does the same thing — see retraction above.
+2. **WDL → SF's 0.26, but only paired with WRM.** wdl24 alone ranks #1/213 on
+   the overscore metric (\|err\| 204 vs 0.20's 208) but H0'd −4.0 Elo alone in
+   general SPRT (#2405); only the wdl24+WRM pairing was H1 (+4.6, #2404), and
+   WRM carried essentially all of that gain. MSE-exponent matching is NOT a
+   lever (see retest above — loses on both axes for us).
+3. **Loss-shaping** (WRM specifically) — the one piece of "adopt SF's recipe"
+   that has cleanly won alone (+7.0 H1, #2406).
+4. **Not a lever**: king-bucket / output-bucket layout changes, a bigger net
+   (Coda and SF are the same size, FT1024→32→32→8), training scale/data
+   volume (comparable, not a gap), or MSE-exponent matching (tested, loses).
 
 ## Open / next
 
+- **"Why doesn't SF have this issue" is still genuinely unanswered.** Neither
+  capacity, bucket layout, training scale, MSE exponent, nor (per the
+  retraction above) SF's own corrective-data stage explain it — that stage
+  postdates the SF build we're comparing against. WDL=0.26+WRM is the one
+  lever with positive evidence so far, but it's untested specifically against
+  THIS overscore population.
+- **Piece-type specificity probe — done, refuted.** Tried to isolate which
+  piece type drives the blind spot via synthetic perturbation (remove
+  bishops/knights/rooks/queens from worst-overscored positions) and via a
+  natural-subpopulation comparison (bin real positions by piece-presence,
+  true LC0 labels, no synthetic edits). Synthetic probe gave an unstable,
+  confounded signal (sign flipped between samples); the natural-data
+  follow-up refutes the one thing that looked consistent (bishop
+  specificity) — knight/rook show comparable or larger effects. The blind
+  spot is not isolable to one piece type by either method. See
+  `docs/overscore_perturbation_probe_2026-06-30.md`.
 - Locate + test the SF-vs-Coda corrective model (overscore metric + SPRT) once
   the de-duplicated data is retrained.
 - Population-scale motif frequencies on the 300M corpus (agent-assisted
