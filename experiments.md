@@ -17052,3 +17052,30 @@ Five disjoint branches, one change each, SPRT'd in parallel at STC (10+0.1).
   switched to per-term `w*hist/10`, defaults bumped so bench is bit-identical
   (CONT 17→20, PAWN unchanged; 2838689). Enables a follow-up SPSA at 0.1
   granularity. [-2,1] non-regression.
+
+- **Cuckoo cycle-detection pre-filter fix (#2408/#2410, `fix/cuckoo-cycle-detection-gate`)**
+  — `has_game_cycle`'s `other` XOR pre-filter was mathematically wrong (found
+  during the 2026-06-30 code-review sweep): it telescoped to the XOR of one
+  side's move-deltas only, not the true position delta, so it silently
+  skipped almost every real cycle candidate at distance i≥5 and only worked
+  at i=3 by symmetric-undo coincidence. Verified against real Stockfish
+  source (`upcoming_repetition`) — SF has the exact same gate and the exact
+  same incompleteness; this isn't Coda-specific, but fixing it (drop the
+  gate, compute the lookup key fresh every iteration) makes Coda's detection
+  strictly more complete than vanilla SF's. Regression test added
+  (`cuckoo_detects_knight_relay_at_ply_5`), confirmed to fail on old code /
+  pass on new code by hand before committing. Deep audit (fork) found no
+  false-positive risk in the downstream verification logic. Bench dropped
+  ~15% (2838689→2413500, cycle detection now actually fires and prunes).
+  **SPRT: `[0,3]` +0.9±1.4 (N=63,728, LLR 0.38) and `[-2,1]` −0.7±1.3
+  (N=71,276, LLR −1.47) — both stopped manually once CIs were tight enough
+  to confirm non-regression, close to neutral either way.** Reading: real,
+  small-magnitude completeness fix — proactive cycle detection overlaps
+  with slower fallback mechanisms (literal repetition detection, TT draw
+  scores) that reach the same outcome anyway, and the newly-fixed cases
+  (non-trivial i≥5 relays) are a narrow slice of an already-narrow feature.
+  **MERGED (6cefd97) as a correctness fix independent of Elo magnitude** —
+  matches standing policy that correctness fixes need non-regression, not
+  positive Elo. A focused NMP/RFP/LMP retune-on-branch (per the >15%
+  node-delta trigger) was considered but skipped — not worth fleet time
+  since the merge decision didn't depend on the gain's size.
