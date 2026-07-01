@@ -5766,23 +5766,25 @@ mod tests {
     use super::*;
 
     /// 50-move eval scaling helper. Locks in both the formula (linear decay
-    /// over 100 plies, reaches zero at the 50-move claim cliff) and the
-    /// sentinel preservation that downstream search relies on when
-    /// comparing against `-INFINITY` and mate scores.
+    /// via `(200 - hm)/200`, so the eval is HALVED — not zeroed — at the
+    /// 50-move claim cliff, matching engine consensus) and the sentinel
+    /// preservation that downstream search relies on when comparing against
+    /// `-INFINITY` and mate scores.
     #[test]
     fn test_apply_halfmove_scale() {
-        // Linear decay from full to zero across the draw horizon.
+        // Linear decay from full at hm=0 to half at the draw horizon.
         assert_eq!(apply_halfmove_scale(100, 0), 100);
-        assert_eq!(apply_halfmove_scale(100, 25), 75);
-        assert_eq!(apply_halfmove_scale(100, 50), 50);
-        assert_eq!(apply_halfmove_scale(100, 75), 25);
-        assert_eq!(apply_halfmove_scale(100, 99), 1);
-        assert_eq!(apply_halfmove_scale(100, 100), 0);
+        assert_eq!(apply_halfmove_scale(100, 25), 87);
+        assert_eq!(apply_halfmove_scale(100, 50), 75);
+        assert_eq!(apply_halfmove_scale(100, 75), 62);
+        assert_eq!(apply_halfmove_scale(100, 99), 50);
+        assert_eq!(apply_halfmove_scale(100, 100), 50);
         // Sign preserved.
-        assert_eq!(apply_halfmove_scale(-400, 50), -200);
+        assert_eq!(apply_halfmove_scale(-400, 50), -300);
         // Saturation past 100 (hm > 100 is normally intercepted as a draw,
-        // but the scale function still clamps so it never flips sign).
-        assert_eq!(apply_halfmove_scale(100, 150), 0);
+        // but `hm` is clamped to 100 so it settles at the half-eval floor
+        // and never flips sign).
+        assert_eq!(apply_halfmove_scale(100, 150), 50);
         // Zero in → zero out at any hm.
         assert_eq!(apply_halfmove_scale(0, 50), 0);
         // Sentinel scores are not scaled — comparisons against -INFINITY /
