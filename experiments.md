@@ -17033,10 +17033,15 @@ Five disjoint branches, one change each, SPRT'd in parallel at STC (10+0.1).
     EXPECTED: STC search doesn't reach the deep-mate depths where the bug fires,
     so at STC the fix is inert and the tiny negative is noise. Not the
     diagnostic frame — a STC H0 here does NOT condemn the fix.
-  - **#2418 LTC — →H1, +0.5 ±1.3, LLR 2.29 @ 57k (STILL RUNNING)**. The
-    diagnostic frame IS trending positive: the fix helps where the bug actually
-    bites. Let it resolve; if it locks H1 the fix is a real (small) LTC gain and
-    should merge.
+  - **#2418 LTC — H1 ✓ (ACCEPTED)**, +0.7 ±1.2, LLR 2.98 locked @ 61,144 games
+    (40+0.4). The diagnostic frame confirms it: the fix is a real (small) LTC
+    gain, exactly where the depth-gated bug bites. **MERGED** to main (cherry-pick
+    de0741e onto current trunk — the branch was fork-stale, so the single commit
+    was cherry-picked rather than the branch merged). Bench-neutral, verified
+    against parent 2cd3cdf (both 2481396 with net-E6C62000); commit Bench line
+    corrected from the stale 2838689 (branch dev-net) to 2481396 (prod net).
+    Net wave verdict: of the 5 code-review fixes, this is the ONE keeper —
+    accepted at its diagnostic TC as a correctness+small-Elo win.
 
 - **fiftymove-checkmate precedence (#2416)** — **H0 ✗ (REJECTED)**, −0.4 ±0.5,
   LLR −2.99 locked at **412,340 games** (STC [0,3]). The early +16→+9.1 was
