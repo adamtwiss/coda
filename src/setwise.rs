@@ -301,9 +301,9 @@ pub fn rook_attacks_setwise(bb: Bitboard, occ: Bitboard) -> Bitboard {
 /// 4-lane variable shift: each lane shifts by a different amount. Negative
 /// amounts mean right-shift. Implemented as two variable shifts + OR.
 ///
-/// On AVX-512+F+VL hosts a single `_mm256_rolv_epi64` (rotate-vector) does
-/// the same in one instruction — see `shiftv_avx512` below. Reckless's
-/// micro-opt pattern.
+/// On AVX-512+F+VL hosts a single `_mm256_rolv_epi64` (rotate-vector) could
+/// do the same in one instruction (Reckless's micro-opt pattern) — not yet
+/// implemented here, no AVX-512 variant of this helper exists currently.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[inline]

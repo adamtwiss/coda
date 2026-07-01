@@ -889,30 +889,3 @@ mod targeted_tests {
     }
 }
 
-impl TT {
-    /// Dump all non-empty TT entries to a file (debug/diagnostic).
-    /// Format: one line per entry: "bucket_idx slot_idx hash depth score flag move static_eval"
-    pub fn dump_to_file(&self, path: &str) -> std::io::Result<()> {
-        use std::io::Write;
-        let mut f = std::fs::File::create(path)?;
-        let num_buckets = self.mask + 1;
-        for bi in 0..num_buckets {
-            let bucket = &self.buckets[bi];
-            for si in 0..BUCKET_SIZE {
-                let data = bucket.data[si].load(Ordering::Relaxed);
-                let key = bucket.keys[si].load(Ordering::Relaxed);
-                let flag = unpack_flag(data);
-                if flag == TT_FLAG_NONE { continue; }
-                let upper32 = key ^ (data as u32);
-                let hash = ((upper32 as u64) << 32) | (bi as u64); // approximate — lower bits are bucket index
-                let depth = unpack_depth(data);
-                let score = unpack_score(data);
-                let mv = unpack_move(data);
-                let se = unpack_static_eval(data);
-                let gen = unpack_generation(data);
-                writeln!(f, "{} {} {:016x} {} {} {} {} {} {}", bi, si, hash, depth, score, flag, mv, se, gen)?;
-            }
-        }
-        Ok(())
-    }
-}

@@ -958,45 +958,6 @@ fn mvv_lva(board: &Board, m: Move) -> i32 {
     see_value(target_pt) * mult + promo_bonus
 }
 
-/// Check if a move is a capture.
-#[inline(always)]
-fn is_capture(board: &Board, m: Move) -> bool {
-    board.piece_type_at(move_to(m)) != NO_PIECE_TYPE || move_flags(m) == FLAG_EN_PASSANT
-}
-
-/// Re-derive move flags from the board state. TT/killer moves may have stale flags.
-pub fn fixup_move_flags(board: &Board, mv: Move) -> Move {
-    let from = move_from(mv);
-    let to = move_to(mv);
-
-    // Keep promotion flags as-is (they're encoded in the move)
-    if is_promotion(mv) {
-        return mv;
-    }
-
-    let pt = board.piece_type_at(from);
-
-    // Re-derive EP: must be pawn moving to ep_square diagonally (file-adjacent)
-    if pt == PAWN && to == board.ep_square && board.ep_square != NO_SQUARE {
-        let diff = (to as i32 - from as i32).abs();
-        let file_diff = ((from & 7) as i32 - (to & 7) as i32).unsigned_abs();
-        if (diff == 7 || diff == 9) && file_diff == 1 {
-            return make_move(from, to, FLAG_EN_PASSANT);
-        }
-    }
-
-    // Re-derive castling: king moving 2 squares
-    if pt == KING {
-        let diff = (to as i32 - from as i32).abs();
-        if diff == 2 {
-            return make_move(from, to, FLAG_CASTLE);
-        }
-    }
-
-    // Normal move (double pushes use FLAG_NONE=0, detected by distance in make_move)
-    make_move(from, to, FLAG_NONE)
-}
-
 /// Thorough pseudo-legality check for TT moves and defensive PV validation.
 /// Must validate all special flags to prevent board corruption.
 pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {

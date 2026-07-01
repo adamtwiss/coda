@@ -102,23 +102,44 @@ pub fn import_tsv(tsv_path: &str, out_path: &str, fen_col: usize, score_col: usi
 }
 
 /// Build and write one binpack entry from string-form fields
-/// (fen, uci, STM-POV cp score, STM-POV WDL result, ply). Returns true if
-/// written, false if skipped (illegal/unmatched move or unconstructable entry).
-/// Shared by `import_game_tsv` (python-PGN path) and `import_pgn` (native path)
-/// so both produce byte-identical binpack entries.
+/// (fen, uci, STM-POV cp score, STM-POV WDL result, ply). Returns the
+/// written entry (so the caller can chain `entry.pos.after_move(entry.mv)`
+/// into the next call) on success, None if skipped (illegal/unmatched move
+/// or unconstructable entry). Shared by `import_game_tsv` (python-PGN path)
+/// and `import_pgn` (native path) so both produce byte-identical binpack
+/// entries.
+///
+/// `chained_pos`, when Some, is used directly as the entry's starting
+/// position instead of re-parsing from `fen` — REQUIRED for binpack chain
+/// compression to actually fire. sfbinpack's `is_continuation()` compares
+/// full `Position` equality including the `enpassant` field; Coda's
+/// `Board::to_fen()` always emits the EP square after a double pawn push
+/// regardless of whether a capture is actually legal there, while
+/// sfbinpack's own `after_move()` only sets `enpassant` when a capture is
+/// actually available. Re-parsing every position fresh from FEN (the old
+/// behavior) made these two routinely disagree on `enpassant` even for the
+/// SAME logical board state, breaking the chain on most double-pawn-push
+/// positions and bloating output (32+ byte stems instead of 2-3 byte
+/// continuations). Pass the previous call's `entry.pos.after_move(entry.mv)`
+/// when this entry is known to be the immediate next ply of the same game;
+/// pass None to start a fresh chain (new game, or after a gap/skip).
 fn write_game_entry<W: std::io::Write>(
     writer: &mut CompressedTrainingDataEntryWriter<W>,
+    chained_pos: Option<SfPosition>,
     fen: &str, uci: &str, score: i32, result: i16, ply: u16,
-) -> bool {
+) -> Option<TrainingDataEntry> {
     let board = Board::from_fen(fen);
-    let mv = match find_move_by_uci(&board, uci) {
-        Some(m) => m,
-        None => return false,
+    let mv = find_move_by_uci(&board, uci)?;
+    let pos = match chained_pos {
+        Some(p) => p,
+        None => SfPosition::from_fen(fen).ok()?,
     };
-    match to_sf_entry(&board, mv, score.clamp(-32000, 32000) as i16, result, ply) {
-        Some(entry) => { writer.write_entry(&entry).expect("Failed to write entry"); true }
-        None => false,
-    }
+    let sf_move = make_sf_move(&pos, mv, &board)?;
+    let entry = TrainingDataEntry {
+        pos, mv: sf_move, score: score.clamp(-32000, 32000) as i16, ply, result,
+    };
+    writer.write_entry(&entry).expect("Failed to write entry");
+    Some(entry)
 }
 
 /// Find the legal move matching a UCI string (e.g. "g1f3", "e7e8q") by formatting
@@ -158,18 +179,32 @@ pub fn import_game_tsv(tsv_path: &str, out_path: &str) {
     let mut writer = CompressedTrainingDataEntryWriter::new(buf)
         .expect("Failed to create binpack writer");
     let (mut written, mut skipped) = (0u64, 0u64);
+    // (chained position, the ply it represents — i.e. the ply of the NEXT
+    // row IF that row is the immediate continuation of this game). Reset to
+    // None whenever continuity breaks (ply doesn't match, or the previous
+    // row was skipped) so the next row falls back to a fresh from_fen parse.
+    let mut running: Option<(SfPosition, u16)> = None;
     for line in BufReader::new(reader).lines() {
-        let line = match line { Ok(l) => l, Err(_) => { skipped += 1; continue } };
+        let line = match line { Ok(l) => l, Err(_) => { skipped += 1; running = None; continue } };
         if line.is_empty() { continue; }
         let cols: Vec<&str> = line.split('\t').collect();
-        if cols.len() < 5 { skipped += 1; continue; }
+        if cols.len() < 5 { skipped += 1; running = None; continue; }
         let score: i32 = cols[2].trim().parse().unwrap_or(0);
         let result: i16 = cols[3].trim().parse().unwrap_or(0);
         let ply: u16 = cols[4].trim().parse().unwrap_or(0);
-        if write_game_entry(&mut writer, cols[0].trim(), cols[1].trim(), score, result, ply) {
-            written += 1;
-        } else {
-            skipped += 1;
+        let chained = match running {
+            Some((pos, expect_ply)) if expect_ply == ply => Some(pos),
+            _ => None,
+        };
+        match write_game_entry(&mut writer, chained, cols[0].trim(), cols[1].trim(), score, result, ply) {
+            Some(entry) => {
+                written += 1;
+                running = Some((entry.pos.after_move(entry.mv), ply + 1));
+            }
+            None => {
+                skipped += 1;
+                running = None;
+            }
         }
         if written != 0 && written % 5_000_000 == 0 {
             eprintln!("  ...{} positions written", written);
@@ -236,6 +271,13 @@ struct PgnHarvest {
     pending: Option<(String, String, u16, bool)>,
     /// Set when a SAN fails to parse — suppresses the rest of a corrupt game.
     corrupt: bool,
+    /// (chained position after the last WRITTEN entry's move, the ply it
+    /// represents). See write_game_entry's doc comment for why this is
+    /// needed for chain compression. Reset on every game boundary and
+    /// whenever a move has no eval comment (a ply gap breaks the chain,
+    /// since `self.pos` still advances on every move regardless of whether
+    /// it gets written).
+    running: Option<(SfPosition, u16)>,
     written: u64,
     skipped: u64,
     games: u64,
@@ -248,6 +290,7 @@ impl pgn_reader::Visitor for PgnHarvest {
         self.pos = shakmaty028::Chess::default();
         self.white_res = None;
         self.pending = None;
+        self.running = None;
         self.corrupt = false;
     }
 
@@ -283,8 +326,12 @@ impl pgn_reader::Visitor for PgnHarvest {
         use shakmaty028::uci::UciMove;
         if self.corrupt { return; }
         // Drop any pending move that never received an eval comment (skipped,
-        // matching python's `cp is None`).
-        self.pending = None;
+        // matching python's `cp is None`). self.pos still advanced past it,
+        // so the next written entry can't chain from our last write — there's
+        // a ply gap.
+        if self.pending.take().is_some() {
+            self.running = None;
+        }
         let m = match san_plus.san.to_move(&self.pos) {
             Ok(m) => m,
             Err(_) => { self.corrupt = true; self.skipped += 1; return; }
@@ -303,19 +350,30 @@ impl pgn_reader::Visitor for PgnHarvest {
         if let Some((fen, uci, ply, stm_white)) = self.pending.take() {
             let s = match std::str::from_utf8(comment.as_bytes()) {
                 Ok(s) => s,
-                Err(_) => return,
+                Err(_) => { self.running = None; return; }
             };
             if let Some(cp) = parse_eval_comment(s) {
                 let wr = self.white_res.unwrap_or(0);
                 let result = if stm_white { wr } else { -wr };
-                if write_game_entry(&mut self.writer, &fen, &uci, cp, result, ply) {
-                    self.written += 1;
-                    if self.written % 5_000_000 == 0 {
-                        eprintln!("  ...{} positions written", self.written);
+                let chained = match self.running {
+                    Some((pos, expect_ply)) if expect_ply == ply => Some(pos),
+                    _ => None,
+                };
+                match write_game_entry(&mut self.writer, chained, &fen, &uci, cp, result, ply) {
+                    Some(entry) => {
+                        self.written += 1;
+                        self.running = Some((entry.pos.after_move(entry.mv), ply + 1));
+                        if self.written % 5_000_000 == 0 {
+                            eprintln!("  ...{} positions written", self.written);
+                        }
                     }
-                } else {
-                    self.skipped += 1;
+                    None => {
+                        self.skipped += 1;
+                        self.running = None;
+                    }
                 }
+            } else {
+                self.running = None;
             }
         }
     }
@@ -392,6 +450,7 @@ pub fn import_pgn(pgn_path: &str, out_path: &str) {
         white_res: None,
         pending: None,
         corrupt: false,
+        running: None,
         written: 0,
         skipped: 0,
         games: 0,

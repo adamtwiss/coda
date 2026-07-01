@@ -47,7 +47,7 @@ pub fn nnue_to_bullet_checkpoint(
         return Err(format!("FT size mismatch: .nnue has {}, expected {}", h, ft_size));
     }
 
-    println!("Loaded .nnue: FT size = {}, SCReLU = {}", h, net.use_screlu);
+    println!("Loaded .nnue: FT size = {}, SCReLU = {}, pairwise = {}", h, net.use_screlu, net.use_pairwise);
 
     // Dequantise FT weights: int16 at scale QA=255 → float32
     let qa = 255.0f32;
@@ -60,8 +60,16 @@ pub fn nnue_to_bullet_checkpoint(
     // Determine output layer size
     let out_input_size = if l2_size > 0 { l2_size } else { l1_size };
 
-    // Create zeroed weights for hidden layers
-    let l1w = vec![0.0f32; 2 * h * l1_size];  // [2*FT_size × L1]
+    // L1 input width depends on the source net's activation: pairwise nets
+    // halve the FT (input = hidden_size, not 2×hidden_size — matches
+    // nnue.rs's `l1_input_size = if use_pairwise { hidden_size } else {
+    // 2*hidden_size }`). Using the direct/CReLU-concat convention
+    // unconditionally here produced a checkpoint with the WRONG l1w
+    // parameter count whenever the source net was pairwise (the common
+    // case for current production-shaped nets), causing a shape mismatch
+    // when loaded into a pairwise training config.
+    let l1_input_width = if net.use_pairwise { h } else { 2 * h };
+    let l1w = vec![0.0f32; l1_input_width * l1_size];  // [L1_input_width × L1]
     let l1b = vec![0.0f32; l1_size];
     let l2w = if l2_size > 0 { vec![0.0f32; l1_size * l2_size] } else { Vec::new() };
     let l2b = if l2_size > 0 { vec![0.0f32; l2_size] } else { Vec::new() };
