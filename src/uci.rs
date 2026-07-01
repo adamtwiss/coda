@@ -458,9 +458,18 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         let safety_cap = (our_time_ms / 50).max(20);
                         let floor = MIN_POST_PONDERMISS_MS.min(safety_cap);
                         limits.min_think_ms = floor;
-                        eprintln!(
-                            "PONDER_MISS_FLOOR applied floor={}ms our_time={}ms cap={}ms",
-                            floor, our_time_ms, safety_cap);
+                        // Debug-only: this fires on every routine ponder-miss
+                        // (a common event, not an anomaly), unlike PV_PONDER_BUG
+                        // / TM_TRACE below which are gated on genuine anomaly
+                        // thresholds. Was unconditional (stray dev-era eprintln,
+                        // flooding stderr on every deployed ponder-miss);
+                        // gated behind TMDebug to match the existing tm-debug
+                        // diagnostic convention.
+                        if TM_DEBUG.load(Ordering::Relaxed) {
+                            eprintln!(
+                                "PONDER_MISS_FLOOR applied floor={}ms our_time={}ms cap={}ms",
+                                floor, our_time_ms, safety_cap);
+                        }
                     }
                     pondermiss_pending = false; // consumed
                 }
