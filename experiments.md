@@ -17049,11 +17049,18 @@ Five disjoint branches, one change each, SPRT'd in parallel at STC (10+0.1).
   merged — Coda's SE verification prefers the hard-`false` (all-node) framing.
   Consistent with the earlier `se-cutnode-propagation` H0 (#1201, +0.2 ±0.9).
 
-- **movepicker tp10 → fixed-point (#2417)** — in flight. cont/pawn-hist `_10X`
-  weights consumed via `tp10()` (rounds to integer, defeats sub-integer SPSA);
-  switched to per-term `w*hist/10`, defaults bumped so bench is bit-identical
-  (CONT 17→20, PAWN unchanged; 2838689). Enables a follow-up SPSA at 0.1
-  granularity. [-2,1] non-regression.
+- **movepicker tp10 → fixed-point (#2417)** — **H0 ✗ (REJECTED)**, −1.6 ±1.6,
+  LLR −2.96 locked at 44,460 games ([-2,1] non-regression). cont/pawn-hist
+  `_10X` weights consumed via `tp10()` (rounds to integer, defeats sub-integer
+  SPSA); switched to per-term `w*hist/10`, defaults bumped so bench is
+  bit-identical (CONT 17→20, PAWN unchanged; 2838689) to enable a follow-up
+  SPSA at 0.1 granularity. Failed the non-regression bound — measured a mild
+  regression (point est −1.6, below the −2 H0). The default-bump was intended
+  bench-neutral, but the tp10→fixed-point change is NOT behavior-neutral at
+  non-integer-equivalent weights; not merged. If the finer-granularity SPSA is
+  still wanted, it needs the precision change bundled WITH the retune (so the
+  new defaults land on values the fixed-point form actually improves), not as a
+  standalone non-regression first.
 
 - **Cuckoo cycle-detection pre-filter fix (#2408/#2410, `fix/cuckoo-cycle-detection-gate`)**
   — `has_game_cycle`'s `other` XOR pre-filter was mathematically wrong (found
