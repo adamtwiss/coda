@@ -17022,25 +17022,37 @@ Five disjoint branches, one change each, SPRT'd in parallel at STC (10+0.1).
   `docs/conversion_failure_study_2026-06-29.md` (which first flagged the `/100`
   damping manufacturing 0.00 on won KQ-v-K).
 
-- **mate-score MAX_PLY misclassification (#2412 STC / #2418 LTC 40+0.4)** — in
-  flight. `is_mate_score` / clamp / aspiration used `MATE_SCORE−100` (28900),
-  which sits *above* the deepest real mate (MATE_SCORE−MAX_PLY = 28872 at
-  MAX_PLY=128), so mate-in-~50–64 (now reachable at depth 50–64) was
-  misclassified. Fix introduces `MATE_IN_MAX_PLY` (28872). Bench-identical
-  (2838689). Depth-gated bug → **LTC is the diagnostic frame** (STC rarely
-  reaches the misclassified window). Awaiting verdicts.
+- **mate-score MAX_PLY misclassification (#2412 STC / #2418 LTC 40+0.4)** —
+  `is_mate_score` / clamp / aspiration used `MATE_SCORE−100` (28900), which sits
+  *above* the deepest real mate (MATE_SCORE−MAX_PLY = 28872 at MAX_PLY=128), so
+  mate-in-~50–64 (now reachable at depth 50–64) was misclassified. Fix
+  introduces `MATE_IN_MAX_PLY` (28872). Bench-identical (2838689). Depth-gated
+  bug → **LTC is the diagnostic frame** (STC rarely reaches the misclassified
+  window). **Split by TC exactly as predicted:**
+  - **#2412 STC — H0 ✗ (REJECTED)**, −0.9 ±1.1, LLR −2.98 @ 84,746 games.
+    EXPECTED: STC search doesn't reach the deep-mate depths where the bug fires,
+    so at STC the fix is inert and the tiny negative is noise. Not the
+    diagnostic frame — a STC H0 here does NOT condemn the fix.
+  - **#2418 LTC — →H1, +0.5 ±1.3, LLR 2.29 @ 57k (STILL RUNNING)**. The
+    diagnostic frame IS trending positive: the fix helps where the bug actually
+    bites. Let it resolve; if it locks H1 the fix is a real (small) LTC gain and
+    should merge.
 
-- **fiftymove-checkmate precedence (#2416)** — in flight, settled +16→+9.1 ±6.8
-  (LLR 1.15, ~2.4k games; opening-pair inflation regressing toward truth).
-  Checkmate on the 100th halfmove is mate, not a 50-move draw (FIDE 5.2a/9.3);
-  guarded both `halfmove>=100` early-returns (negamax + qsearch). Bench-identical.
-  **Believability probe:** instrumented the fall-through + niced depth-12
-  self-play (120 games) → fired **~1,600×/game**, concentrated in pawnless
-  mating endgames (KQ-v-K etc.) where the clock climbs toward 100 while
-  maneuvering to mate — old code scored those in-tree mates as draws, blinding
-  the search near the 50-move boundary. So the fix is a genuine correctness win
-  (not inert), effect likely low-single-digit-to-~+9, and should show more at
-  LTC/VLTC than STC.
+- **fiftymove-checkmate precedence (#2416)** — **H0 ✗ (REJECTED)**, −0.4 ±0.5,
+  LLR −2.99 locked at **412,340 games** (STC [0,3]). The early +16→+9.1 was
+  pure opening-pair inflation; with a ±0.5 CI at 412k the true effect is
+  neutral-to-a-hair-negative (CI ≈ [−0.9, +0.1]). Checkmate on the 100th
+  halfmove is mate, not a 50-move draw (FIDE 5.2a/9.3); guarded both
+  `halfmove>=100` early-returns (negamax + qsearch). Bench-identical.
+  **Believability probe** (kept for the record): instrumented fall-through +
+  niced depth-12 self-play (120 games) → fired **~1,600×/game** in pawnless
+  mating endgames — so the mechanism is very live, but the search already found
+  those mates via other lines, so correcting the classification changed almost
+  no games' *results*. Verdict: **genuine rule-correctness fix, measured
+  neutral** — not an Elo source. Would PASS a [-2,1] non-regression (it was run
+  under [0,3], where H0 just means "not a ≥1.5 gain"). Merge only if
+  rule-correctness is valued for its own sake; there is no strength argument and
+  a hair of measured downside at the tightest CI in the wave.
 
 - **SE verification search cut_node (#2415)** — **H0 ✗ (REJECTED)**, −0.9 ±1.8,
   LLR −2.96 locked at 36,986 games (STC [0,3]). Passed parent `cut_node` to the
