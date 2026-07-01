@@ -124,19 +124,19 @@ pub fn has_game_cycle(board: &Board, ply: i32) -> bool {
         if i == 0 { original_key } else { board.undo_stack[stack_len - i].hash }
     };
 
-    // Track XOR chain: if `other == 0`, positions at distance i differ
-    // from current by exactly one piece move (Stockfish pattern).
-    // Pre-seed with first pair so the XOR accumulation works correctly.
-    let mut other: u64 = original_key ^ key_at(1) ^ side_key();
-
     for i in (3..=end).step_by(2) {
-        other ^= key_at(i - 1) ^ key_at(i) ^ side_key();
-
-        if other != 0 {
-            continue;
-        }
-
-        // Positions differ by exactly one move — look it up in cuckoo table
+        // diff matches a cuckoo table entry iff the position i plies ago
+        // differs from the current position by exactly one reversible piece
+        // move. The table membership check below is itself the filter —
+        // diff is computed fresh each iteration, no incremental pre-filter
+        // needed (a prior XOR-accumulator "early reject" here, modelled on
+        // (and structurally identical to) Stockfish's own `other` gate in
+        // Position::upcoming_repetition, was not a sound predicate: it
+        // telescopes to the XOR of the odd-ply move deltas only, not
+        // original_key ^ key_at(i), so it silently skips real matches for
+        // i >= 5 and only worked at i == 3 by symmetric-undo coincidence.
+        // This is a real incompleteness in upstream SF too, not a Coda-only
+        // bug — see docs/code_review_2026-06-30.md for the derivation).
         let diff = original_key ^ key_at(i);
 
         let j;
@@ -262,6 +262,31 @@ mod cuckoo_tests {
         // has_game_cycle should detect this via distance-3 XOR match.
         assert!(has_game_cycle(&b, 100),
             "cuckoo must detect 4-ply knight dance at distance 3");
+    }
+
+    /// A 5-ply relay: the white knight takes b1->a3->b5->c3 (three hops
+    /// that telescope to the single legal move b1->c3) while the black
+    /// knight goes g8->f6->g8 (out and back, net zero). The net 5-ply
+    /// hash delta from start equals exactly one white-knight move's
+    /// cuckoo-table entry (b1<->c3) plus one side-to-move flip.
+    ///
+    /// This regression-tests the i=5 case specifically: it is NOT a
+    /// symmetric single-piece out-and-back (unlike the i=3 test above),
+    /// so it could never be detected by the previous buggy XOR
+    /// pre-filter, which telescoped to the XOR of every intermediate key
+    /// rather than original_key ^ key_at(i) and only ever happened to
+    /// pass at i==3 by coincidence.
+    #[test]
+    fn cuckoo_detects_knight_relay_at_ply_5() {
+        init();
+        let mut b = Board::startpos();
+        b.make_move(make_move(1, 16, FLAG_NONE));   // Na3  (b1→a3)
+        b.make_move(make_move(62, 45, FLAG_NONE));  // Nf6  (g8→f6)
+        b.make_move(make_move(16, 33, FLAG_NONE));  // Nb5  (a3→b5)
+        b.make_move(make_move(45, 62, FLAG_NONE));  // Ng8  (f6→g8, back to start)
+        b.make_move(make_move(33, 18, FLAG_NONE));  // Nc3  (b5→c3)
+        assert!(has_game_cycle(&b, 100),
+            "cuckoo must detect the 5-ply knight relay at distance 5");
     }
 
     /// In the starting position no cycle is possible (no history).
