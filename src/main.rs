@@ -1179,6 +1179,14 @@ fn main() {
                     },
                 );
 
+                // Complete feature-index set (incl x-ray) for cross-implementation diffing
+                // against Bullet's map_features. The detail loop below prints DIRECT threats
+                // only, so this IDX line is the authoritative per-POV set.
+                let mut idxs: Vec<usize> = features.iter().map(|(i, _)| *i).collect();
+                idxs.sort_unstable();
+                idxs.dedup();
+                println!("IDX {}", idxs.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "));
+
                 // Re-enumerate with detail for printing
                 let white_bb = board.colors[types::WHITE as usize];
                 for color in [types::WHITE, types::BLACK] {
