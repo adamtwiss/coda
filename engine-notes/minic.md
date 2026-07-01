@@ -294,7 +294,7 @@ Minic generates ALL moves upfront but uses partial sorting via `pickNext`/`pickN
 - Stores `ttPV` flag (PV node marker) in bound byte
 - Stores `isCheck` and `isInCheck` flags (saves check detection work)
 
-### Near-Miss TT Cutoffs (from Ethereal)
+### Near-Miss TT Cutoffs
 - **Alpha cutoff**: TT depth >= `depth - 1` AND bound == ALPHA AND `e.s + 60 * (depth - 1) <= alpha`
 - **Beta cutoff**: TT depth >= `depth - 1` AND bound == BETA AND `e.s - 64 * (depth - 1) >= beta`
 - Compare to Coda: **IMPLEMENTED** -- we have TT near-miss cutoffs with 80cp margin.

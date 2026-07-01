@@ -383,4 +383,4 @@ Values are out of 128 (full scale). Late in the 50-move clock, evaluation is dis
 3. **Half-move eval scaling** -- discount eval near 50-move rule. Related to Weiss's 50-move correction decay.
 4. **Defense move LMR cancellation** -- detect pieces retreating from threats by lesser pieces, reduce less. Coda's 4D history partially captures this but explicit detection may help.
 5. **QS check generation** at first ply -- generate checks as well as captures at QS depth 0. Most engines do this.
-6. **NMP TT-based skip** -- skip NMP when TT entry has upper bound below beta. Also in Ethereal.
+6. **NMP TT-based skip** -- skip NMP when TT entry has upper bound below beta.

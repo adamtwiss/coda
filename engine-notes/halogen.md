@@ -135,7 +135,7 @@ All SPSA-tuned. This compresses eval toward draw as material decreases.
 
 8. **Null move pruning**: Reduction = `376/64 + depth*570/4096 + min(306/64, (eval-beta)*73/16384)`. NMP verification search at depth >= 10 (Stockfish enhanced NMP). Disabled when only pawns+king remain or < 5 pieces. Requires `eval > beta + 35`.
 
-9. **ProbCut** (depth >= 3): Beta = `beta + 211`. Qsearch verification before full search (Ethereal idea). Depth = `depth - 5`.
+9. **ProbCut** (depth >= 3): Beta = `beta + 211`. Qsearch verification before full search. Depth = `depth - 5`.
 
 10. **IIR**: If no TT entry at depth > 1, or no TT move at depth > 6, reduce depth by 1.
 

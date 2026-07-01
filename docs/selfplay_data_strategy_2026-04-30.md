@@ -24,7 +24,7 @@ The V5→V9 result over-states the cost of *same-architecture* self-play. A clea
 
 ## The four recipes that actually work
 
-Drawn from the cross-engine survey of 17 engines (`engines/{Stockfish, Obsidian, Alexandria, Quanticade, Stormphrax, viridithas, PlentyChess, Caissa, Tarnished, integral, Reckless, Halogen, CloverEngine, Astra, blackmarlin, Ethereal, …}`):
+Drawn from the cross-engine survey of 17 engines (`engines/{Stockfish, Obsidian, Alexandria, Quanticade, Stormphrax, viridithas, PlentyChess, Caissa, Tarnished, integral, Reckless, Halogen, CloverEngine, Astra, blackmarlin, …}`):
 
 ### Recipe A — Random-weight RL bootstrap (Stormphrax, Halogen)
 

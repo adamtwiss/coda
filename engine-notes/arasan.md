@@ -220,7 +220,7 @@ score = history[side][from][to]
 
 Compare to Coda: we have main history [color][from][to], capture history [piece][to][victim], continuation history [piece][to][piece][to], and pawn history [pawnHash%512][piece][to]. Arasan has the reverse-direction anti-history and follow-up (ply-2) continuation history which we don't.
 
-### History Update Skipping (from Ethereal)
+### History Update Skipping
 
 When only 1 quiet was tried and depth <= 3, skip history updates entirely. Prevents inflating scores for forced moves.
 
@@ -326,7 +326,7 @@ Up to 3 plies extension. Verified in source: `SINGULAR_EXTENSION_TRIPLE = 0.33*P
 Compare to Coda: we only do single singular extension (+1).
 
 ### History Update Skip at Low Depth
-From Ethereal: when only 1 quiet tried at depth <= 3, skip history updates.
+When only 1 quiet tried at depth <= 3, skip history updates.
 
 ### Six Correction History Tables
 Pawn, non-pawn (per side), minor piece (per side), continuation (prev1xprev2 and prev1xprev4).

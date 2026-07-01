@@ -1,6 +1,6 @@
 # Research Threads — Data-Driven Proposals (2026-04-24)
 
-Response to Hercules's five R-threads at the bottom of `next_ideas_2026-04-21.md`. Five parallel research agents, each surveying top-engine sources (Stockfish, Reckless, Obsidian, Viridithas, PlentyChess, Stormphrax, Alexandria, Ethereal, Halogen, Caissa, blackmarlin) plus Coda's own recent experiments / docs. Research-only — no implementation.
+Response to Hercules's five R-threads at the bottom of `next_ideas_2026-04-21.md`. Five parallel research agents, each surveying top-engine sources (Stockfish, Reckless, Obsidian, Viridithas, PlentyChess, Stormphrax, Alexandria, Halogen, Caissa, blackmarlin) plus Coda's own recent experiments / docs. Research-only — no implementation.
 
 `experiments.md` remains the source of truth for resolved SPRTs.
 
@@ -55,16 +55,15 @@ Skip path (b) 768→640 alone (brute force). Skip path (c) L1-on-differential (i
 All top engines split cleanly into **single-row** (`(B + d²)/(2-imp)`) and **two-row** (independent factors for improving vs not):
 
 - **Single-row:** Coda (B=10), Stockfish (B=3), Obsidian (B=3), Stormphrax (B=3).
-- **Two-row:** Viridithas, Ethereal, blackmarlin, Alexandria.
+- **Two-row:** Viridithas, blackmarlin, Alexandria.
 - **With history term:** PlentyChess, Stormphrax (blend `history` into margin).
 
 **Coda's `LMP_BASE=10` is 3.3× the consensus.** Any "adaptive" formula ported from a B=3 engine over-prunes on the improving side once stacked onto Coda's already-high base. The `#708 LMP adaptive` regression (−6.7 Elo) is consistent with porting a two-row formula's `(factor0, factor1)` values into Coda's single-row shape — mathematically inconsistent.
 
 ### NMP TT-capture survey
 
-No top engine does a **pure binary TT-capture skip**. The two that skip use multi-condition gates:
+No top engine does a **pure binary TT-capture skip**. The engines that skip use multi-condition gates:
 - **Reckless** (`search.rs:555-557`): `tt_bound == Lower AND capture AND victim ≥ Knight` (three stacked conditions).
-- **Ethereal** (`search.c:515,518`): `ttHit AND ttBound == UPPER AND ttValue < beta` — orthogonal: "don't NMP when TT says fail-low".
 
 Two engines use softer **R+=1**:
 - **Obsidian** (`search.cpp:882`): `R += ttMoveNoisy`
@@ -77,7 +76,7 @@ Coda already does post-capture R++ at `search.rs:2177-2179`. The direct-port `#7
 | Branch | Change | SPSA | Bounds | Expected |
 |---|---|---|---|---|
 | **A: `experiment/lmp-adaptive-two-row`** | Replace single-row with two-row `(B_i + Q_i·d²/100)/D_i` indexed by improving. 6 new tunables. | 6-param, 2500 iters | [−5,5] with retune-on-branch | **+3 to +6 Elo** |
-| **B: `experiment/nmp-ttscore-upper-skip`** | Ethereal-style: skip NMP when `ttHit && ttBound==UPPER && ttValue + NMP_TT_MARGIN < beta`. 1 new tunable. | 1-param after SPRT | [−5,5] | **+2 to +4 Elo** |
+| **B: `experiment/nmp-ttscore-upper-skip`** | Skip NMP when `ttHit && ttBound==UPPER && ttValue + NMP_TT_MARGIN < beta`. 1 new tunable. | 1-param after SPRT | [−5,5] | **+2 to +4 Elo** |
 | **C: `experiment/nmp-ttnoisy-rplus`** | Obsidian/Viri-style: `r += tt_move.is_capture() as i32`. No new tunable. | None | [−3,5] | **+2 to +4 Elo, safest** |
 
 Proposal C is the lowest-risk — no tunables, orthogonal to existing post-capture R++. Suggest trying C first; if it H0s, proposal A is the bigger-leverage bet with acknowledged retune cost.

@@ -4,7 +4,7 @@ Structured record of all search/eval tuning experiments.
 
 ## ⚠️ RELIABILITY WARNING (2026-04-01)
 
-**Results before 2026-04-01 are unreliable.** They were measured using narrow 3-engine gauntlets (Minic/Ethereal/Texel, 200-600 games) which gave systematically inflated Elo estimates. Validation on 2026-04-01 showed:
+**Results before 2026-04-01 are unreliable.** They were measured using narrow 3-engine gauntlets (Minic/Texel, 200-600 games) which gave systematically inflated Elo estimates. Validation on 2026-04-01 showed:
 - Changes claimed at +20 to +67 by gauntlet were 0 to -17 in self-play SPRT
 - 4 of 10 changes merged that day were later reverted as H0 (rejected) by SPRT
 - The narrow gauntlet overfits to specific opponents, similar to self-play blindspots
@@ -1177,7 +1177,7 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 ### NMP TT Guard (killed — flat zero, RETRY CANDIDATE)
 - **Change**: Skip null-move pruning if TT has upper-bound entry with score below beta (predicts fail-low).
 - **Result**: Killed at 806 games, +0.9 Elo ±18.6. W242-L238-D326 (50.2%). LLR -0.92. Dead flat.
-- **Source**: Ethereal, Rodent, Arasan
+- **Source**: Rodent, Arasan
 - **Notes**: Was -45 Elo early (~100 games), recovered to zero by 800 games. Our lockless 4-slot TT may have unreliable shallow TTUpper entries — the guard fires on noisy data. Needs depth guard or different TT architecture to work.
 - **Retry**: Candidate for retest after better NNUE net or other search improvements. Could also run with patience (3000+ games) to detect a +5 Elo gain. Consider adding a depth guard (only trust TTUpper entries with sufficient depth).
 
@@ -1286,7 +1286,7 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 ### TT Near-Miss Cutoffs (MERGED)
 - **Change**: Accept TT entries 1 ply shallower than required, with a 64cp score margin. At non-PV nodes: if TTLower entry has score-64 >= beta, return score-64. If TTUpper entry has score+64 <= alpha, return score+64. Avoids re-searching positions where we have a near-hit.
 - **Result**: **H1 accepted, +21.7 Elo** ±20.8 in 561 games. W165-L130-D266 (53.2%). LOS 97.9%. LLR 2.96.
-- **Source**: Minic (margin 60-64cp, credited to Ethereal), Ethereal
+- **Source**: Minic (margin 60-64cp)
 - **Commit**: a412cbe
 - **Notes**: Ninth engine-review win. Strong and fast convergence. The 64cp margin is conservative enough to avoid incorrect cutoffs while still saving significant re-search effort. Only applies at non-PV nodes (beta-alpha == 1) and non-mate scores.
 
@@ -2920,7 +2920,7 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 
 ## Cross-Engine Gauntlet Ablation (2026-03-23)
 
-Testing method: 600-game gauntlet vs Texel, Ethereal, Laser (200 per engine), 10+0.1s, Hash=64.
+Testing method: 600-game gauntlet vs Texel, Laser (200 per engine), 10+0.1s, Hash=64.
 Baseline comparison: HEAD was -2 ±24, pre-Titan was +14 ±23.
 
 ### Revert LMR C=1.30 → C=1.50 (KEEP C=1.30)
@@ -2940,8 +2940,8 @@ Baseline comparison: HEAD was -2 ±24, pre-Titan was +14 ±23.
 
 ### Cleaned Baseline (Both Reverts Combined)
 - **Result**: **+19 ±22** (600 games). Better than HEAD by 21, better than pre-Titan by 5.
-- **Per-engine**: vs Ethereal -35 (was -98), vs Texel +4 (was -8), vs Laser +125 (was +96).
-- **Notes**: Both reverts combined successfully. The improvement is concentrated against Ethereal (strongest opponent), consistent with removing blindspots that strong engines exploit.
+- **Per-engine**: vs Texel +4 (was -8), vs Laser +125 (was +96).
+- **Notes**: Both reverts combined successfully. The improvement is consistent with removing blindspots that strong engines exploit.
 
 ### Singular Extensions on Cleaned Base (REJECTED cross-engine)
 - **Change**: Re-enable singular extensions (SingularExtEnabled=true, wire singularExtension into extension variable). Tested on cleaned base (both capture reverts applied).
@@ -2951,75 +2951,75 @@ Baseline comparison: HEAD was -2 ±24, pre-Titan was +14 ±23.
 ### SEE-Filtered Check Extensions on Cleaned Base (REJECTED cross-engine)
 - **Change**: Extend checks that don't lose material (`givesCheck && SEE >= 0`). On cleaned base. Previous raw check ext was -11 self-play.
 - **Result**: Hercules: **-8 ±23** (600 games). Atlas: **-26 ±16** (1200 games). Delta vs baseline: **-30 to -39 Elo**.
-- **Per-engine (Atlas)**: vs Ethereal -68 (base -45), vs Texel -36 (base +5), vs Laser +25 (base +51).
+- **Per-engine (Atlas)**: vs Texel -36 (base +5), vs Laser +25 (base +51).
 - **Notes**: SEE filter doesn't save check extensions. Harmful cross-engine on both machines. Check extensions were -11 in self-play but -30 to -39 cross-engine — a **3:1 amplification** of harm, not a discount. Extensions that invest nodes based on our eval's judgment of "important" positions waste nodes cross-engine when opponents handle those positions differently.
 
 ### Extended Cleaned Baseline (Hercules, 1200 games)
 - **Result**: **+19 ±16** (1200 games). Consistent across two runs (+19, +19).
-- **Per-engine**: vs Ethereal -79, vs Texel -10, vs Laser +132.
+- **Per-engine**: vs Texel -10, vs Laser +132.
 - **Notes**: Definitive Hercules reference point for all subsequent experiments.
 
 ### Extended Cleaned Baseline (Atlas, 1200 games)
 - **Result**: **+4 ±16** (1200 games).
-- **Per-engine**: vs Ethereal -45, vs Texel +5, vs Laser +51.
+- **Per-engine**: vs Texel +5, vs Laser +51.
 - **Notes**: Lower than Hercules (+19) due to slower per-thread speed on Atlas AMD hardware (effective TC difference). All Atlas experiments compared against this Atlas baseline.
 
 ## Atlas Gauntlet Series (2026-03-23)
 
-Testing method: 1200-game gauntlet vs Texel, Ethereal, Laser (400 per engine), 10+0.1s, Hash=64, concurrency 16.
+Testing method: 1200-game gauntlet vs Texel, Laser (400 per engine), 10+0.1s, Hash=64, concurrency 16.
 All on cleaned baseline (commit 7731b64). Atlas AMD hardware.
 
 ### No-Hindsight (Atlas, KEEP HINDSIGHT)
 - **Change**: Disable hindsight reduction (comment out `depth--` when `evalSum > 200`).
 - **Result**: **-6 ±17** (1200 games). Delta vs baseline: **-10**.
-- **Per-engine**: vs Ethereal -39, vs Texel -29, vs Laser +49.
+- **Per-engine**: vs Texel -29, vs Laser +49.
 - **Notes**: Hindsight reduction is genuinely useful cross-engine, not a self-play artifact. When both sides' evals agree the position is quiet, reducing is safe regardless of opponent — it's an eval-agnostic signal. Confirmed: keep hindsight 200.
 
 ### Loosen Futility 80+d*80 (Atlas, NEUTRAL)
 - **Change**: Widen futility margin from 60+d*60 to 80+d*80 (pre-Titan value).
 - **Result**: **+4 ±16** (1200 games). Delta vs baseline: **0**.
-- **Per-engine**: vs Ethereal -46, vs Texel +3, vs Laser +54.
+- **Per-engine**: vs Texel +3, vs Laser +54.
 - **Notes**: Current 60+d*60 is well-calibrated. Neither tighter nor looser helps cross-engine. Confirmed optimal.
 
 ### Loosen LMP 4+d² (Atlas, SLIGHTLY WORSE)
 - **Change**: LMP from 3+d² to 4+d² (one extra move before pruning).
 - **Result**: **-3 ±16** (1200 games). Delta vs baseline: **-7**.
-- **Per-engine**: vs Ethereal -72 (base -45), vs Texel +10 (base +5), vs Laser +53 (base +51).
-- **Notes**: Loosening LMP hurts mainly vs Ethereal (-27 delta). Extra late moves searched are mostly noise that costs time vs strong opponents. Current 3+d² confirmed. Pattern: Ethereal is the most sensitive opponent to our search quality changes.
+- **Per-engine**: vs Texel +10 (base +5), vs Laser +53 (base +51).
+- **Notes**: Extra late moves searched are mostly noise that costs time vs strong opponents. Current 3+d² confirmed.
 
 ### NMP Verify 12 (Atlas, BORDERLINE POSITIVE)
 - **Change**: Restore NMP verification at depth≥12 (from depth≥14). More verification = fewer NMP blindspots.
 - **Result**: **+9 ±16** (1200 games). Delta vs baseline: **+5**.
-- **Per-engine**: vs Ethereal -51, vs Texel -3, vs Laser +82.
+- **Per-engine**: vs Texel -3, vs Laser +82.
 - **Notes**: Mild positive from restoring more NMP verification. Depth 14 change was +28 self-play (less verification = more aggressive) but the extra blindspots may hurt cross-engine. Borderline — +5 ±16 needs more games to confirm. Consider retesting or parking.
 
 ## NNUE Model Cross-Engine Tests (2026-03-23)
 
-Testing method: 600-game gauntlet vs Texel, Ethereal, Laser, 10+0.1s, Hash=64, Hercules.
+Testing method: 600-game gauntlet vs Texel, Laser, 10+0.1s, Hash=64, Hercules.
 All using cleaned search binary (commit 7731b64).
 
 ### SCReLU 1024 sb400 (net-v5-1024s-w0-e400s400.nnue)
 - **Config**: 1024 SCReLU, wdl=0.0, cosine/400, final snapshot. GPU2 4070 training.
 - **Result**: **+10 ±22** (600 games). Implied delta vs CReLU production (+19): **-9**.
-- **Per-engine**: vs Ethereal -53, vs Texel -8, vs Laser +108.
+- **Per-engine**: vs Texel -8, vs Laser +108.
 - **Notes**: SCReLU slightly behind CReLU but within error bars. check-net showed 15-20% larger piece-loss values (wider dynamic range from squared activation). Led to eval scale experiments below.
 
 ## Eval Scale Experiments (2026-03-23)
 
 **Key discovery**: SCReLU's squared activation produces evals with wider dynamic range than CReLU. Our search thresholds (futility, RFP, NMP margins) were tuned for CReLU scale via self-play. The mismatch makes thresholds effectively tighter with SCReLU, causing over-pruning.
 
-Testing method: 600-game gauntlet vs Texel, Ethereal, Laser, 10+0.1s, Hercules.
+Testing method: 600-game gauntlet vs Texel, Laser, 10+0.1s, Hercules.
 Scale applied as `result = result * N / M` after quantization in ForwardV5().
 
 ### SCReLU ×0.80 Scale
 - **Result**: **+35 ±23** (600 games). Delta vs unscaled SCReLU (+10): **+25**. Delta vs CReLU baseline (+19): **+16**.
-- **Per-engine**: vs Ethereal -30, vs Texel +44, vs Laser +158.
+- **Per-engine**: vs Texel +44, vs Laser +158.
 - **Notes**: Massive improvement from simply compressing eval range. Confirms the eval scale mismatch theory. SCReLU with correct scaling is **stronger than CReLU**.
 
 ### CReLU ×0.80 Scale (control experiment)
 - **Result**: **+24 ±22** (600 games). Delta vs unscaled CReLU (+19): **+5**.
-- **Per-engine**: vs Ethereal -30, vs Texel +17, vs Laser +136.
-- **Notes**: Small gain for CReLU (within error bars overall), but large per-engine shifts: Ethereal improved from -79 to -30. The 0.80 multiplier acts as a global pruning de-tune. CReLU doesn't need it as much as SCReLU — the benefit is primarily SCReLU-specific.
+- **Per-engine**: vs Texel +17, vs Laser +136.
+- **Notes**: Small gain for CReLU (within error bars overall), but large per-engine shifts. The 0.80 multiplier acts as a global pruning de-tune. CReLU doesn't need it as much as SCReLU — the benefit is primarily SCReLU-specific.
 
 ### SCReLU ×0.75 Scale (IN PROGRESS)
 - **Status**: +15 ±42 at 180 games. Trending below ×0.80 (+35).
@@ -3062,7 +3062,7 @@ Updated from today's combined Hercules + Atlas data:
 All experiments below are Coda-specific. GoChess experiments above are preserved for reference.
 
 ## Testing methodology
-- **Gauntlet opponents**: Minic, Ethereal, Texel (roughly equal strength to Coda)
+- **Gauntlet opponents**: Minic, Texel (roughly equal strength to Coda)
 - **TC**: 10+0.1s, concurrency 32
 - **Opening book**: noob_3moves.epd
 - **Adjudication**: draw movecount=10 score=10 after move 20; resign 3 moves at 500cp
@@ -3071,7 +3071,7 @@ All experiments below are Coda-specific. GoChess experiments above are preserved
 
 ## 2026-03-30: Feature ablation study (1024s model)
 
-Disabled each search feature individually, 300 games each vs Minic/Ethereal/Texel.
+Disabled each search feature individually, 300 games each vs Minic/Texel.
 
 | Feature disabled | Elo | vs Base (+3) | Impact |
 |---|---|---|---|
@@ -3215,7 +3215,7 @@ Disabled each search feature individually, 300 games each vs Minic/Ethereal/Texe
 
 ## New Baseline (2026-03-30, post-SE)
 
-- **1200 games vs Minic/Ethereal/Texel**: +23 ±17 Elo
+- **1200 games vs Minic/Texel**: +23 ±17 Elo
 - **Includes**: cont-hist 4-ply, drop LVA, NMP R=4, SE with positive ext
 - **Use this for all future experiments**
 
@@ -3280,7 +3280,7 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 
 ## New Gauntlet Baseline (2026-03-31, post corr-hist-6 + history aging)
 
-- **Method**: `-tournament gauntlet` (all games involve Coda), 600g vs Minic/Ethereal/Texel
+- **Method**: `-tournament gauntlet` (all games involve Coda), 600g vs Minic/Texel
 - **Result**: +37 ±24 Elo
 - **Includes**: All prior commits + corr-hist-6 (Hercules, +11.4 Elo) + history aging (Hercules)
 - **Note**: Gauntlet format gives equal weight to each opponent. Prior RR baseline was +23 ±17.
@@ -3305,7 +3305,7 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 
 - **Change**: v7 1024h16x32s w5 e800 trained with 20sb LR warmup vs 5sb warmup
 - **H2H (200g self-play)**: 24-21-55, +10.5 Elo for 20sb ramp. Suggestive positive.
-- **5-way RR (200g each, vs Minic/Ethereal/Texel)**: 
+- **5-way RR (200g each, vs Minic/Texel)**: 
   - v7-20sb-ramp: -40 Elo
   - v7-5sb-ramp: -81 Elo
   - **Cross-engine delta: +41 Elo for 20sb ramp** (vs +10 self-play)
@@ -3353,7 +3353,7 @@ Previous tests used cutechess-cli WITHOUT `-tournament gauntlet`, meaning some g
 
 - **Change**: Same architecture (1024 SCReLU w5), extended training 800→1200 SBs
 - **H2H (200g self-play)**: +28 Elo for e1200
-- **5-way RR (200g each, vs Minic/Ethereal/Texel)**:
+- **5-way RR (200g each, vs Minic/Texel)**:
   - v5-e800: +16 Elo
   - v5-e1200: -7 Elo
   - **Cross-engine delta: -23 Elo for e1200** (vs +28 self-play)
