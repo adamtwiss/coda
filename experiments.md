@@ -17006,3 +17006,49 @@ harvest + SF-vs-Coda games as stage-1 bootstrap), not loss-fixable.
   the stamped data is only *modest* (signed overscore +28–50 vs baseline +41–55) —
   it's targeted at the bishop motif, whereas the big general-overscore levers are
   **higher WDL** (wdl024 → +8 vs prod +40) and **MSE exponent** (mse24-qa23 → ~0).
+
+## Code-review fix wave (2026-06-30/07-01) — 5 correctness/precision fixes from a peripheral-search review
+
+Five disjoint branches, one change each, SPRT'd in parallel at STC (10+0.1).
+
+- **halfmove eval-scale (200−hm)/200 — MERGED +2.9 Elo (#2414 H1 ✓, 2026-07-01).**
+  `apply_halfmove_scale` damped static eval by `(100−hm)/100`, which *zeroes*
+  eval at the 50-move cliff (hm=100 → ×0) — a 2× outlier vs the SF / Obsidian /
+  Reckless / Berserk / PlentyChess consensus `(200−hm)/200` (halves at the
+  cliff). Old form manufactured 0.00 on won pawnless endgames (e.g. KQ-v-K)
+  near the 50-move counter. Fix = consensus `(200−hm)/200`. SPRT #2414 [0,3]:
+  **+2.9 ±2.1, LLR 2.95, 29,038 games, H1 ✓.** Merged to main 035ce14, bench
+  2709992 (down from 2838689 — the softer damping changes tree shape). Cross-ref
+  `docs/conversion_failure_study_2026-06-29.md` (which first flagged the `/100`
+  damping manufacturing 0.00 on won KQ-v-K).
+
+- **mate-score MAX_PLY misclassification (#2412 STC / #2418 LTC 40+0.4)** — in
+  flight. `is_mate_score` / clamp / aspiration used `MATE_SCORE−100` (28900),
+  which sits *above* the deepest real mate (MATE_SCORE−MAX_PLY = 28872 at
+  MAX_PLY=128), so mate-in-~50–64 (now reachable at depth 50–64) was
+  misclassified. Fix introduces `MATE_IN_MAX_PLY` (28872). Bench-identical
+  (2838689). Depth-gated bug → **LTC is the diagnostic frame** (STC rarely
+  reaches the misclassified window). Awaiting verdicts.
+
+- **fiftymove-checkmate precedence (#2416)** — in flight, settled +16→+9.1 ±6.8
+  (LLR 1.15, ~2.4k games; opening-pair inflation regressing toward truth).
+  Checkmate on the 100th halfmove is mate, not a 50-move draw (FIDE 5.2a/9.3);
+  guarded both `halfmove>=100` early-returns (negamax + qsearch). Bench-identical.
+  **Believability probe:** instrumented the fall-through + niced depth-12
+  self-play (120 games) → fired **~1,600×/game**, concentrated in pawnless
+  mating endgames (KQ-v-K etc.) where the clock climbs toward 100 while
+  maneuvering to mate — old code scored those in-tree mates as draws, blinding
+  the search near the 50-move boundary. So the fix is a genuine correctness win
+  (not inert), effect likely low-single-digit-to-~+9, and should show more at
+  LTC/VLTC than STC.
+
+- **SE verification search cut_node (#2415)** — trending H0 (−3.5 ±8.3, LLR
+  −0.35 at ~1.7k). Passed parent `cut_node` to the SE verification search
+  (SF search.cpp:1157 pattern) instead of hard `false`. Textbook-correct but
+  measuring mildly negative — let resolve before concluding.
+
+- **movepicker tp10 → fixed-point (#2417)** — in flight. cont/pawn-hist `_10X`
+  weights consumed via `tp10()` (rounds to integer, defeats sub-integer SPSA);
+  switched to per-term `w*hist/10`, defaults bumped so bench is bit-identical
+  (CONT 17→20, PAWN unchanged; 2838689). Enables a follow-up SPSA at 0.1
+  granularity. [-2,1] non-regression.
