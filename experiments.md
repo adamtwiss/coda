@@ -17042,10 +17042,12 @@ Five disjoint branches, one change each, SPRT'd in parallel at STC (10+0.1).
   (not inert), effect likely low-single-digit-to-~+9, and should show more at
   LTC/VLTC than STC.
 
-- **SE verification search cut_node (#2415)** — trending H0 (−3.5 ±8.3, LLR
-  −0.35 at ~1.7k). Passed parent `cut_node` to the SE verification search
-  (SF search.cpp:1157 pattern) instead of hard `false`. Textbook-correct but
-  measuring mildly negative — let resolve before concluding.
+- **SE verification search cut_node (#2415)** — **H0 ✗ (REJECTED)**, −0.9 ±1.8,
+  LLR −2.96 locked at 36,986 games (STC [0,3]). Passed parent `cut_node` to the
+  SE verification search (SF search.cpp:1157 pattern) instead of hard `false`.
+  Textbook-correct per SF but measured mildly negative and locked H0. Not
+  merged — Coda's SE verification prefers the hard-`false` (all-node) framing.
+  Consistent with the earlier `se-cutnode-propagation` H0 (#1201, +0.2 ±0.9).
 
 - **movepicker tp10 → fixed-point (#2417)** — in flight. cont/pawn-hist `_10X`
   weights consumed via `tp10()` (rounds to integer, defeats sub-integer SPSA);
