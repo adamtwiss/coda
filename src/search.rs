@@ -3252,19 +3252,28 @@ fn negamax(
                     return downgrade_50mr_mate(tt_score, ply, board.halfmove);
                 }
 
-                // Fall through: use TT bounds to narrow alpha/beta window at non-PV nodes
-                match tt_entry.flag {
-                    TT_FLAG_LOWER => {
-                        if beta - alpha_orig == 1 && tt_score > alpha {
-                            alpha = tt_score;
+                // Fall through: use TT bounds to narrow alpha/beta window at non-PV nodes.
+                // Gated on halfmove_ok for the same reason the returns below are (P2/#628):
+                // near the 50-move cliff the stored tt_score is untrustworthy. At a
+                // zero-window node this narrowing can only ever fully collapse the window
+                // (tt_score > alpha implies tt_score >= beta), and the collapse-return
+                // below IS halfmove-gated — so without this gate, at halfmove >= 89 the
+                // node fell through with an inverted window (alpha >= beta) and searched +
+                // TT-stored a degenerate full-depth bound. (P0.3, 2026-07-01 review.)
+                if halfmove_ok {
+                    match tt_entry.flag {
+                        TT_FLAG_LOWER => {
+                            if beta - alpha_orig == 1 && tt_score > alpha {
+                                alpha = tt_score;
+                            }
                         }
-                    }
-                    TT_FLAG_UPPER => {
-                        if beta - alpha_orig == 1 && tt_score < beta {
-                            beta = tt_score;
+                        TT_FLAG_UPPER => {
+                            if beta - alpha_orig == 1 && tt_score < beta {
+                                beta = tt_score;
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
 
                 if alpha >= beta && halfmove_ok {
