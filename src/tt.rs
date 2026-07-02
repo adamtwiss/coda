@@ -606,6 +606,17 @@ pub fn is_decisive(score: i32) -> bool {
     score.abs() >= TB_WIN - 200
 }
 
+/// True for a proven loss against the side to move: mate-getting-mated OR a
+/// tablebase loss. The counterpart to `is_decisive` for the many prune gates
+/// whose intent is "don't prune while we're still losing" — those used
+/// `> -(MATE_IN_MAX_PLY)`, which admits TB losses (a TB loss `-(TB_WIN - ply)`
+/// sits above `-MATE_IN_MAX_PLY`), so the search kept pruning while it should
+/// have been widening to escape the loss. Use `!is_loss(best_score)`.
+#[inline]
+pub fn is_loss(score: i32) -> bool {
+    score <= -(TB_WIN - 200)
+}
+
 /// Adjust mate and TB scores from TT retrieval (subtract ply). See
 /// `score_to_tt` for the threshold rationale.
 #[inline]
