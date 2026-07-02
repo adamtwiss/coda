@@ -1676,6 +1676,12 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     helper.pawn_corr.copy_from_slice(&main.pawn_corr[..]);
     helper.np_corr.copy_from_slice(&main.np_corr[..]);
     helper.cont_corr.copy_from_slice(&main.cont_corr[..]);
+    // trans_corr (transition corrhist, #2313, ~12% of corrhist weight) landed
+    // after the T2.1 seeding and was never added here — helpers ran every
+    // search with a zeroed transition component while main ran warm, computing
+    // divergent corrected evals and pushing conflicting results into the shared
+    // TT. Seed it like the other corrhist tables (#2313 add-table-forget-seed).
+    helper.trans_corr.copy_from_slice(&main.trans_corr[..]);
 
     helper
 }
@@ -1923,8 +1929,11 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
                 helper.max_depth = helper_limits.depth;
 
                 let mv = search_helper(&mut helper_board, &mut helper, &helper_limits, thread_id);
-                // Return (nodes, best_move, score, depth) for vote aggregation
-                (helper.nodes, mv, helper.last_score, helper.completed_depth)
+                // Ponder move = the helper's 2nd PV move, so a winning helper can
+                // supply a consistent ponder to uci.rs (see selection below).
+                let ponder = if helper.pv_len[0] >= 2 { helper.pv_table[0][1] } else { NO_MOVE };
+                // Return (nodes, best_move, score, depth, ponder) for vote aggregation
+                (helper.nodes, mv, helper.last_score, helper.completed_depth, ponder)
             }).expect("Failed to spawn SMP helper"));
     }
 
@@ -1936,40 +1945,89 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
     // Signal all helpers to stop
     info.stop.store(true, Ordering::Relaxed);
 
-    // Collect helper results
+    // Collect per-thread candidates: (move, score, depth, ponder, is_main).
+    // Helpers now also return their 2nd PV move (ponder) so a winning helper
+    // can hand uci.rs a consistent bestmove+ponder pair.
+    struct Cand { mv: Move, score: i32, depth: i32, ponder: Move, is_main: bool }
     let mut total_nodes = info.nodes;
-    let mut thread_results: Vec<(Move, i32, i32)> = Vec::with_capacity(threads);
+    let mut cands: Vec<Cand> = Vec::with_capacity(threads);
+    let main_ponder = if info.pv_len[0] >= 2 { info.pv_table[0][1] } else { NO_MOVE };
     if main_move != NO_MOVE && main_depth > 0 {
-        thread_results.push((main_move, main_score, main_depth));
+        cands.push(Cand { mv: main_move, score: main_score, depth: main_depth, ponder: main_ponder, is_main: true });
     }
     for h in handles {
-        if let Ok((helper_nodes, mv, score, depth)) = h.join() {
+        if let Ok((helper_nodes, mv, score, depth, ponder)) = h.join() {
             total_nodes += helper_nodes;
             if mv != NO_MOVE && depth > 0 {
-                thread_results.push((mv, score, depth));
+                cands.push(Cand { mv, score, depth, ponder, is_main: false });
             }
         }
     }
     info.nodes = total_nodes;
 
-    // Vote-based best-move selection (SF/Obsidian/Plenty pattern).
-    // weight = depth * (score - min_score + 14). The +14 keeps the worst-
-    // scored thread's vote nonzero so depth still matters for tied scores;
-    // multiplying by depth makes shallow helpers count less than deep ones.
-    if thread_results.len() <= 1 {
+    // Nothing completed a real iteration — fall back to main's move (which may
+    // itself be NO_MOVE only in pathological instant-stop cases).
+    if cands.is_empty() {
         return main_move;
     }
-    let min_score = thread_results.iter().map(|(_, s, _)| *s).min().unwrap();
-    let mut votes: Vec<(Move, i64)> = Vec::with_capacity(thread_results.len());
-    for (mv, score, depth) in &thread_results {
-        let weight = *depth as i64 * (*score as i64 - min_score as i64 + 14);
-        if let Some(entry) = votes.iter_mut().find(|(m, _)| *m == *mv) {
+
+    // Vote-based selection (SF/Obsidian/Plenty). weight = depth * (score -
+    // min_score + 14): the +14 keeps the worst-scored thread's vote nonzero so
+    // depth still matters on tied scores; ×depth makes shallow helpers count
+    // less. Votes are summed per move across threads.
+    let min_score = cands.iter().map(|c| c.score).min().unwrap();
+    let mut votes: Vec<(Move, i64)> = Vec::with_capacity(cands.len());
+    for c in &cands {
+        let weight = c.depth as i64 * (c.score as i64 - min_score as i64 + 14);
+        if let Some(entry) = votes.iter_mut().find(|(m, _)| *m == c.mv) {
             entry.1 += weight;
         } else {
-            votes.push((*mv, weight));
+            votes.push((c.mv, weight));
         }
     }
-    votes.iter().max_by_key(|(_, w)| *w).map(|(m, _)| *m).unwrap_or(main_move)
+    let vote_of = |mv: Move| votes.iter().find(|(m, _)| *m == mv).map(|(_, w)| *w).unwrap_or(0);
+
+    // Select the best THREAD, not just the max-vote move (SF get_best_thread):
+    // prefer a proven win (shortest mate = highest score); otherwise switch to a
+    // thread whose move has more votes (deeper on ties), but never onto a proven
+    // loss. Picking a thread (vs a bare move) is what lets us carry a consistent
+    // PV/ponder out — the previous `max_by_key(votes)` returned a move with no
+    // owning thread, so on any vote-override uci.rs saw pv_table[0][0] != bestmove
+    // and dropped the ponder entirely.
+    let mut best = 0usize;
+    for i in 1..cands.len() {
+        let (cs, cmv, cd) = (cands[i].score, cands[i].mv, cands[i].depth);
+        let (bs, bmv) = (cands[best].score, cands[best].mv);
+        if bs >= MATE_IN_MAX_PLY {
+            if cs > bs { best = i; }
+        } else if cs >= MATE_IN_MAX_PLY
+            || (cs > -MATE_IN_MAX_PLY
+                && (vote_of(cmv) > vote_of(bmv)
+                    || (vote_of(cmv) == vote_of(bmv) && cd > cands[best].depth)))
+        {
+            best = i;
+        }
+    }
+
+    // If a non-main thread won, adopt its move + ponder into info so uci.rs sees
+    // pv_table[0][0] == returned bestmove and can emit the ponder. Main's own PV
+    // is already in info and richer, so leave it when main wins.
+    let winner_mv = cands[best].mv;
+    if !cands[best].is_main {
+        info.pv_table[0][0] = winner_mv;
+        info.last_score = cands[best].score;
+        if cands[best].ponder != NO_MOVE {
+            info.pv_table[0][1] = cands[best].ponder;
+            info.pv_len[0] = 2;
+        } else {
+            // No ponder from this thread — clear the slot so uci.rs's ponder
+            // legality check (which reads pv_table[0][1] without a pv_len gate)
+            // fails cleanly instead of emitting a stale ponder.
+            info.pv_table[0][1] = NO_MOVE;
+            info.pv_len[0] = 1;
+        }
+    }
+    winner_mv
 }
 
 /// Helper thread search — full aspiration ID loop matching the main
