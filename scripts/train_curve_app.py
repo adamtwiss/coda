@@ -378,7 +378,7 @@ def main():
     global HOSTS
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8042)
-    ap.add_argument("--hosts", default="gpu0,gpu2,gpu4")
+    ap.add_argument("--hosts", default="gpu3,gpu4")
     args = ap.parse_args()
     HOSTS = [h.strip() for h in args.hosts.split(",") if h.strip()]
     print(f"training-curve app: hosts={HOSTS}  http://localhost:{args.port}/",
