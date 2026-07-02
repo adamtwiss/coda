@@ -2914,7 +2914,18 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             };
             if effective_hard > 0 {
                 let iter_elapsed = iter_start.elapsed().as_millis() as u64;
-                if elapsed > 0 && effective_hard > elapsed && (effective_hard - elapsed) < 2 * iter_elapsed {
+                // Use elapsed_now, not the iteration-top `elapsed` snapshot: the
+                // A4 fix re-read the clock for the soft check but this hard-window
+                // estimate still used the stale value taken before the info print
+                // and the 50-150ms forced-move verification, granting an
+                // unaffordable next iteration that then dies mid-search. Also
+                // stop outright once already past the hard budget (the old
+                // `effective_hard > elapsed` guard let a new iteration start when
+                // elapsed had already crossed hard).
+                if elapsed_now >= effective_hard {
+                    break;
+                }
+                if (effective_hard - elapsed_now) < 2 * iter_elapsed {
                     break;
                 }
             }
