@@ -4591,8 +4591,17 @@ fn negamax(
             }
             score = pvs_score;
         } else {
-            // First move: always full window
-            score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
+            // First move: always full window. Child cut_node: at a PV node the
+            // first child is itself a PV node (never a cut node) -> false; at a
+            // non-PV node the first child's expected type is the negation of
+            // this node's (all-node -> child is cut; cut-node -> first child is
+            // all after the cutoff move) -> !cut_node. Matches SF (Step 18
+            // `!cutNode` for non-PV first move vs `search<PV>(... false)`) and
+            // Reckless (FDS `!cut_node` vs PVS `false`). Previously hardcoded
+            // `false`, which mislabeled every non-PV first move as an all node
+            // and disabled NMP/IIR/TT-cutoff node-type guards on that spine.
+            let child_cut = if is_pv { false } else { !cut_node };
+            score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, child_cut);
         }
 
         board.unmake_move();
