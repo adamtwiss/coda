@@ -10,7 +10,11 @@ A recurring theme: a large fraction of the confirmed correctness items are **inv
 
 ## P0 — Likely bugs (traced + confirmed)
 
-> **Status (2026-07-02): items 1–3 TESTED & MERGED — 3/3 H1 ✓, +3.8 Elo combined.** All at `[-2,1]` STC (10+0.1), each on its own branch, merged together to main (bench 2487929). See experiments.md `2026-07-02 — Deep search-review P0 fixes`. Items 4–9 remain open. Per-item results inline below.
+> **Status (2026-07-02): ALL P0s RESOLVED — 8 of 9 merged, 1 rejected.**
+> - **Items 1–3** (first-move cut_node, ProbCut cont-hist stack, ZW halfmove gate): MERGED, all H1 at `[-2,1]` STC, +3.8 Elo combined.
+> - **Items 4–8** (max-nodes stop flag, SMP ponder+thread-select, trans_corr seed, is_decisive TB sweep, TM stale-elapsed): MERGED. #7 is-decisive delivered a **+8.7 Elo local 5-man EGTB RR win** (LOS 98%) — a genuine tablebase/deployment gain the OB no-TB test couldn't see; #5/#6 validated by a vote-override mechanism probe (2.5% firing, ponder now supplied 100%).
+> - **Item 9** (cap-guards in-check): **REJECTED** — SPRT-caught as a −1.4 regression (H0, OB #2441). The salvageable half (QS `ply>=MAX_PLY` guard returning eval) is re-testing as `fix/qs-maxply-guard` (OB #2444).
+> - Full results + method notes: experiments.md `2026-07-02` sections. Per-item verdicts inline below.
 
 ### 1. Non-PV first-move child searched with `cut_node=false` instead of `!cut_node`
 > ✅ **MERGED 2026-07-02** — OB #2429 `fix/first-move-cutnode`: **+2.2 ±2.2, LLR 2.99, H1 ✓** (25,682 games). Implemented as `let child_cut = if is_pv { false } else { !cut_node };`. Verified against SF (Step 18 `!cutNode`) and Reckless (FDS `!cut_node`) before merging. Bench shift was modest (2481396→2494732), not "substantial" as guessed. Retune-on-branch upside not yet chased.
