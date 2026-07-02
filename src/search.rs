@@ -3810,6 +3810,10 @@ fn negamax(
             if !see_ge(board, mv, see_threshold) { continue; }
 
             let pc_moved_pt = board.piece_type_at(move_from(mv));
+            // Colored mover, read before make_move — written to the cont-hist
+            // context stack after the move so the ply+1 child reads THIS move
+            // as its parent (see stack write below).
+            let pc_moved_piece = board.piece_at(move_from(mv));
             let pc_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
             let pc_dirty = if let Some(net) = info.nnue_net.as_deref() {
                 build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), pc_moved_pt, pc_captured_pt, net)
@@ -3826,6 +3830,17 @@ fn negamax(
                         info.threat_stack.absorb_deltas(board);
                     }
             info.tt.prefetch(board.hash);
+
+            // Record this move on the cont-hist context stack before recursing.
+            // ProbCut was the only recursion site that skipped this; without it
+            // the ply+1 child (and its beta-cutoff cont-hist writes) read a
+            // stale sibling's [piece][to] slot, corrupting the shared table.
+            // Overwritten by the main move loop's own write, so no restore
+            // needed. Mirrors the main loop (piece_at(from) -> go_piece).
+            if pc_moved_piece != NO_PIECE && ply_u <= MAX_PLY {
+                info.moved_piece_stack[ply_u] = go_piece(pc_moved_piece) as u8;
+                info.moved_to_stack[ply_u] = move_to(mv);
+            }
 
             // Cheap qsearch verification before expensive negamax (Stockfish pattern)
             let mut score = -quiescence(board, info, -probcut_beta, -probcut_beta + 1, ply + 1);
