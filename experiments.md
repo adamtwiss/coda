@@ -17152,3 +17152,33 @@ Review meta: the review verified 62 findings across 8 clusters (see the
 audit doc). These were the top-3 traced bugs; P1/P3 items (lost H1 #2065
 LMR cut-node bump, QS gap-aware futility, TT-bound pruning-eval
 refinement) remain queued.
+
+---
+
+## 2026-07-02 — Deep search-review P0 fixes #4–#9 (5 of 6 merged, +8.7 EGTB)
+
+Second wave from the 2026-07-01 review (`docs/search_review_2026-07-01.md`),
+P0 items #4–#9. Two need regimes OB can't measure (SMP/ponder; tablebases),
+so validated locally. Baseline main bench 2487929. **5 of 6 merged; #9
+rejected by SPRT (regression); its salvageable half re-submitted.**
+
+| ID | Branch | Change | Result | Decision |
+|---:|---|---|---|---|
+| 2439 | `fix/max-nodes-stop-flag` | #4: set the shared stop flag on the `max_nodes` limit (node-limit branch of `should_stop` returned true without it, so `go nodes` polluted TT/history with partial 0-scores; helpers never saw the limit). | `+0.1 ±1.6`, 50,446g, →H1 (stopped) | **MERGED** (a491c13). Non-regression; invisible to timed play (expected ~0 on OB), fixes `go nodes`/datagen correctness. |
+| — | `fix/smp-thread-select-ponder` | #5: SMP vote returned a bare move → uci.rs dropped the ponder on every vote-override. Now helpers return their 2nd PV move; select a best THREAD SF-style (proven-win→shortest mate; else more votes, deeper on ties; never onto a proven loss); adopt the winner's move+ponder into `info`. #6: seed `helper.trans_corr` (the one corrhist table missing from `create_helper_info`). | Threads=1 untouched (bench-identical). Ponder RR 300g Threads=4+ponder: `-2.3 ±16.4` (non-reg, 0 illegal-ponder/crash). Mechanism probe (400 STS, Threads=4): **vote-override = 2.5% of moves, ponder now supplied on 100% of them.** | **MERGED** (20e4b55). OB can't measure (Threads=1); merged on correctness — additive, sub-1-Elo deployment ceiling, can't regress. |
+| 2443 | `fix/is-decisive-tb-sweep` | #7: complete the `is_decisive` migration — added `is_loss()`; 7 prune gates → `!is_loss(best_score)`; NMP fail-high clamp → `is_decisive` (also fixes strict `>` missing a ply-128 mate); 7 score-shaping sites → `!is_decisive`. ±MATE_IN_MAX_PLY admitted TB scores (TB_WIN−ply ∈ [28672,28800]). | OB no-TB `-0.0 ±1.3`, 65,924g, →H1 (non-reg). **Local 5-man EGTB RR (1000g, Threads=1+SyzygyPath): +8.7 ±8.2, LOS 98.0%.** | **MERGED** (47e01c9). Genuine deployment/TB-regime win — the OB test structurally can't see it; that's why the doc mandated an EGTB RR. |
+| 2440 | `fix/tm-stale-elapsed` | #8: next-iteration hard-window TM estimate used the stale iteration-top `elapsed` (A4 fix wired `elapsed_now` only into the soft check). Use `elapsed_now`; also break once already past hard. | `-0.1 ±1.7`, 41,744g, →H1 (stopped) | **MERGED** (7356d62). Non-regression; TM-hygiene, strictly tightens over-generous slack. |
+| 2441 | `fix/cap-guards-in-check` | #9: return draw (0) instead of NNUE eval when in check at the negamax/QS ply/depth caps + add QS `ply>=MAX_PLY` guard. | `-1.4 ±1.4`, LLR **-2.96, H0 ✗ (locked, 49,694g)** | **REJECTED.** The "return draw in check at the caps" change is empirically harmful (likely the QS `qs_depth>=32`-in-check path firing in deep tactical check sequences, discarding usable eval). Do not merge. |
+| 2444 | `fix/qs-maxply-guard` | #9-salvage: **only** the QS `ply>=MAX_PLY` entry guard, returning eval (drops the harmful draw-in-check). Closes the deep-QS mate-score-into-TB-band leak that #7's guards now depend on. Bench-identical. | SPRT `[-2,1]` submitted | **PENDING.** Non-regression check on the salvaged half. |
+
+Method notes worth keeping:
+- **cutechess ponder syntax:** enable with the bare `ponder` keyword on the
+  `-engine` line, NOT `option.Ponder=true` (cutechess self-manages "Ponder" and
+  silently runs without it otherwise — a whole ponder RR was wasted before this
+  was caught; `local-rr` skill corrected, commit d6ab72e).
+- **Mechanism-bound > underpowered Elo RR** for tiny effects: the vote-override
+  probe (instrument the decision, count firing rate over a position set)
+  answered "is #5 worth anything and can it regress?" far more cheaply than any
+  self-play RR could, given a sub-1-Elo effect vs an ~±16 CI at 300 games.
+- **#9 is the discipline win:** a plausible "correctness" fix, SPRT-caught as a
+  real −1.4 regression. Always SPRT even the obvious-looking ones.

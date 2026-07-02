@@ -31,18 +31,26 @@ A recurring theme: a large fraction of the confirmed correctness items are **inv
 **Change:** wrap the narrowing `match` in `if halfmove_ok { ... }`. **Test:** [-2,1] correctness; LTC is the diagnostic frame (cf. #2418: STC inert, LTC H1 +0.7). Bench changes. Novelty: new (#628 gated returns only).
 
 ### 4. `max_nodes` limit never sets the stop flag — partial 0-scores TT/history-stored on node-limited searches
+> ✅ **MERGED 2026-07-02** — OB #2439 `fix/max-nodes-stop-flag`: +0.1 ±1.6 (50k, non-regression; invisible to timed play by design). `go nodes 200000` verified to stop cleanly + emit a valid ponder.
+
 `src/search.rs:1116-1118` vs time branches :1126-1128/:1150-1152; guards keyed off the flag at :4838 (TT store), :4886 (corrhist), :4608 (unwind). The node-limit branch of `should_stop()` returns true without `self.stop.store(true)`, so on `go nodes N` every negamax entry returns 0 but ancestors complete their epilogues, storing polluted best_score/best_move into the TT at full claimed depth (persisting across the game) and firing fake beta-cutoff history bonuses when beta ≤ 0. Helpers also never see the limit. No effect on time-based play or bench.
 **Change:** mirror the time branches — `self.stop.store(true, Ordering::Relaxed); return true;`. **Test:** [-2,1] non-regression (behavior-neutral for timed play). Affects `go nodes` / fixed-node / node-odds use only. Novelty: new.
 
 ### 5. SMP result selection picks a move, not a thread: vote override silently forfeits the ponder move (deployment regime)
+> ✅ **MERGED 2026-07-02** (`fix/smp-thread-select-ponder`, with #6). Implemented as prescribed: best-thread selection (proven-win/loss guards, votes+depth), helpers return their 2nd PV move, winner's move+ponder adopted into `info`. OB can't measure (Threads=1 untouched, bench-identical). Ponder RR 300g: −2.3 ±16.4 (non-reg, 0 illegal-ponder). **Mechanism probe: vote-override = 2.5% of moves, ponder supplied on 100% of them** → the drop is fixed; effect is additive, sub-1-Elo, can't regress.
+
 `src/search.rs:1926-1972`, `src/uci.rs:704-721`. Helpers return only `(nodes, mv, score, depth)` — no PV — and the vote returns a bare move without updating `pv_table[0]`/last_score. When the vote picks a helper's move (exactly when voting adds value), uci.rs's `pv_consistent` check fails **by construction**, so `bestmove` is emitted with **no ponder** — the lichess deployment (Threads>1 + ponder) forfeits its entire ponder benefit on every vote-override move, plus GUI info/bestmove desync. Also missing: the 5-engine proven-win/proven-loss vote guards, helper-move validation against root_legal, and the `len()<=1` early-out prefers main's depth-0 fallback over a depth>0 helper result.
 **Change:** select a best *thread* (proven-win → highest score; never switch to proven-loss or pv_len<2), return per-thread `(move, score, depth, pv[0..2])`, adopt the winner's 2-move PV into `si` so the ponder emit stays armed. Cheap ponder-only alternative: probe shared TT after the winning move. **Test:** OB cannot measure this — local cutechess RR with ponder per TM-class methodology, then [-2,1] Threads=1 non-regression. Novelty: new.
 
 ### 6. Helper threads never seeded with `trans_corr` — the one corrhist table missing from the copy list
+> ✅ **MERGED 2026-07-02** (bundled into `fix/smp-thread-select-ponder`). One-line `helper.trans_corr.copy_from_slice(&main.trans_corr[..])`. Bench-identical.
+
 `src/search.rs:1676-1678` (seed list), field at :904, cleared at :1162, read at :1436 with weight `CORR_W_TRANS=74` (~12% of corrhist weight). Seeding landed 2026-06-12 (T2.1, #1970 H1 +4.6); trans_corr landed 2026-06-26 (#2313 H1 +5.1) without touching `create_helper_info` — classic add-table-forget-the-seed. Helpers (respawned per `go`) run every search with a zeroed transition component while main runs warm, so threads compute systematically different corrected evals and push divergent search results into the shared TT.
 **Change:** `helper.trans_corr.copy_from_slice(&main.trans_corr[..]);` at :1678. **Test:** bench-identical at Threads=1; [-2,1] at T>1 or bundle with another SMP change (standard OB SPRTs run Threads=1 and cannot see it). Novelty: new.
 
 ### 7. Incomplete `is_decisive` migration: mate-only bounds (±MATE_IN_MAX_PLY) admit TB-band scores at ~10 sites
+> ✅ **MERGED 2026-07-02** — OB #2443 `fix/is-decisive-tb-sweep`. 14 sites swept (added `is_loss()`; 7 prune gates → `!is_loss`, NMP clamp → `is_decisive`, 7 shaping → `!is_decisive`; beta-side #2321 guards left). OB no-TB −0.0 ±1.3 (66k, non-reg). **Local 5-man EGTB RR: +8.7 ±8.2, LOS 98%** — a real deployment/TB-regime win, exactly the signal OB can't see. Not "near-zero" as guessed.
+
 (Merged: whole-node #3 + move-loop #6 + tt #17.) TB scores (`TB_WIN − ply` ∈ [28672, 28800]) pass every `|s| < MATE_IN_MAX_PLY` (28872) guard — the exact trap `tt.rs:599-606` documents and that T2.3/#1941 fixed for multicut/corrhist/ProbCut but not for:
 - **NMP fail-high clamp** `src/search.rs:3702` — returns unproven TB-wins (SF/Reckless skip the cutoff for win-scores; minimal fix: `is_decisive(null_score) → beta`; also the strict `>` misses a mate at exactly ply 128).
 - **Move-loop prune gates** :3988-89 (LMP), :4006 (SEE-cap), :4031-32 (SEE-quiet), :4190-91 (futility), :4219 (BNFP), SE gate :4070, QS quiet-evasion skip :5118 — prunes stay live while best_score is a TB-loss (when the search should widen). Consensus fix is the **best_score side** (`> -(TB_WIN-200)` / is_loss); the beta side is Coda's own #2321 extension.
@@ -51,10 +59,14 @@ Reachable mostly with SyzygyPath set (lichess/CCRL) — but `downgrade_50mr_mate
 **Change:** replace the mate-only bounds with `is_decisive()`/is_loss-style helpers (already exist) across all sites in one sweep. **Test:** bench-identical without TB; [-2,1] non-regression + local 5-man EGTB RR per the local-rr skill (F3 precedent). Novelty: new; #2321/#2412/#2418 are the supportive same-family priors.
 
 ### 8. Next-iteration hard-window estimate uses the stale pre-verification `elapsed` snapshot (half-applied A4 fix)
+> ✅ **MERGED 2026-07-02** — OB #2440 `fix/tm-stale-elapsed`: −0.1 ±1.7 (42k, non-regression). Uses `elapsed_now` + breaks once past hard.
+
 `src/search.rs:2852` uses `elapsed` from :2464 (taken before the info print and the 50–150ms forced-move verification at :2660); the A4 audit fix added `elapsed_now` (:2833) but applied it only to the soft check (:2835). On common non-firing verification iterations the check grants ~50–150ms of unwarranted slack, green-lighting an unaffordable iteration that dies mid-way (partial iteration discarded). (Merged: skeleton #22 + driver #55.)
 **Change:** use `elapsed_now` in the :2850-2854 check; consider also breaking when `elapsed_now >= effective_hard`. **Test:** one-liner, TM-hygiene class — bundle into the next TM pass at [-2,1] (same class as #1949), with a quick tm_pattern_inspect mechanism check. Novelty: new.
 
 ### 9. Rare-path cap-guard bundle: in-check eval at ply/depth caps + QS missing MAX_PLY guard
+> ❌ **REJECTED 2026-07-02** — OB #2441 `fix/cap-guards-in-check`: **−1.4 ±1.4, LLR −2.96, H0 locked**. The "return draw in check at the caps" change is empirically harmful (likely the QS `qs_depth>=32`-in-check path in deep tactical checks, discarding usable eval). ⏳ **Salvaged half in test:** the QS `ply>=MAX_PLY` entry guard *returning eval* (drops the draw-in-check) — bench-identical, closes the mate-into-TB-band leak #7 relies on — is on `fix/qs-maxply-guard`, OB #2444 `[-2,1]` pending.
+
 (Merged: skeleton #24 + qsearch #35 + skeleton #27.)
 - `src/search.rs:2985-2987` (negamax `ply >= MAX_PLY`) and :4986-4988 (QS `qs_depth >= 32`) return raw NNUE eval **even in check** — the only places Coda ever evaluates an in-check position (treated as undefined everywhere else: `static_evals=-INFINITY`). SF/Obsidian/Berserk/PlentyChess all return draw/0 in check at their caps.
 - QS has **no ply ≥ MAX_PLY entry guard**: entered at ply ≤ 128 (ProbCut passes ply+1) and recursing 32 more, the evasion checkmate return `-MATE_SCORE + ply` (:5169) can emit |score| ∈ [28841, 28871] — inside the "empty" TB band that ~30 guards now rely on (commit 077f727). Reachability of deep QS evasion chains is empirically proven (lichess ASuoXT9f clamp comment at :5087-5091).
