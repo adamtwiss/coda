@@ -17128,3 +17128,27 @@ Five disjoint branches, one change each, SPRT'd in parallel at STC (10+0.1).
 **Earlier recipe results (were missing from this log):** WRM **#2406 +7.0 H1** (biggest single win); wdl24+WRM **#2404 +4.6 H1**; wdl24 alone **#2405 −4.0 H0**; blindspot-mix **#2402 +4.0 H1** (corrective data, data-scale-dependent — the one corrective approach that added Elo).
 
 **Miss-scoring / overscore status (meta).** The overscore *metric* is a **weak proxy for Elo** — it diverged from Elo in 4 experiments (blindspot-mix both moved; SF-vs-Coda corrective metric-improved but Elo-flat; extra[0] Elo+ but metric-flat; king-removal both worse). Gate on Elo, treat the metric as a hint. Ruled out this cycle: threat encoding (extra[0] orthogonal), king-as-attacker (refuted), architecture/capacity, bucket layout, recipe values. **Load-bearing fact: SF shares our structural limits (king-as-victim excluded on both) yet evaluates king-safety better → it is a training-signal gap, not features/architecture.** Leading lever: king-safety corrective data (validated once by blindspot-mix +4, now unblocked by the interleave fix) — next step is to decompose *why* blindspot-mix was Elo-positive where SF-vs-Coda corrective was Elo-flat. **Banked this cycle: extra[0] + WRM ≈ +10; the ~20 miss-scoring prize remains open but the tools (correct interleave, cross-differ, motif detector) are now in place.**
+
+---
+
+## 2026-07-02 — Deep search-review P0 fixes (3/3 merged, +3.8 Elo)
+
+Three P0 findings from the 2026-07-01 multi-agent deep search review
+(`docs/search_review_2026-07-01.md`) — each a correctness fix to
+verified-wrong behavior, isolated on its own branch, SPRT'd at `[-2,1]`
+(non-regression frame for correctness fixes; positive point estimates
+are upside). Baseline main bench 2481396 (prod net). **All three H1 ✓,
+100% hit rate, +3.8 Elo combined.** Merged together (combined bench
+2487929 — the three interact, so benches don't add linearly): merge
+commits 9a53747 / 0b0919e / dd4ebc5.
+
+| ID | Branch | Change | Result | Decision |
+|---:|---|---|---|---|
+| 2429 | `fix/first-move-cutnode` | Non-PV first move searched its child with `cut_node` hardcoded `false`; correct only at PV nodes. Changed to `if is_pv { false } else { !cut_node }`. Hardcoded `false` mislabeled every non-PV first move as an all-node, disabling NMP (gated `&& cut_node`), IIR (`is_pv \|\| cut_node`), and the TT-cutoff node-type guard on the leftmost spine of every non-PV subtree. Matches SF (Step 18 `!cutNode` vs `search<PV>(... false)`) and Reckless (FDS `!cut_node` vs PVS `false`). | `+2.2 ±2.2`, 25,682 games, LLR 2.99, **H1 ✓** | **MERGED** (P0.1). Largest of the three. Retune-on-branch upside not yet chased (all SPSA calibration predates the fix). |
+| 2432 | `fix/probcut-conthist-stack` | ProbCut was the only recursion site that never wrote `moved_piece_stack/moved_to_stack[ply]` before recursing to ply+1, so the child (and every beta-cutoff cont-hist write in the verification subtree) read a stale sibling's `[piece][to]` slot and wrote bonuses/maluses into the wrong cont_hist bins — polluting the shared table for the rest of the search. Now captures the colored mover before make_move and writes the slot after. Direct analog of the C3 NMP-sentinel fix (#640/#668). Bench 2481396→2674292 standalone (history evolution changes globally). | `+0.6 ±1.3`, 68,750 games, LLR 2.96, **H1 ✓** | **MERGED** (P0.2). Also unblocks future cont-hist-sensitive experiments. |
+| 2433 | `fix/zw-narrowing-halfmove-gate` | TT bounds-narrowing at non-PV nodes mutated alpha/beta without the `halfmove_ok` gate that protects the collapse-return below it (#628 gated returns only). At a ZW node the narrowing can only fully collapse the window, so at halfmove ≥ 89 the node fell through with an inverted window (alpha ≥ beta), searched children with an inverted window, and TT-stored a degenerate full-depth bound — re-stamping exactly the stale near-50mr score P2 exists to distrust. Now gated on `halfmove_ok`. | `+1.0 ±1.5`, 48,378 games, LLR 3.01, **H1 ✓** | **MERGED** (P0.3). LTC-diagnostic-class (near-cliff), positive at STC anyway. |
+
+Review meta: the review verified 62 findings across 8 clusters (see the
+audit doc). These were the top-3 traced bugs; P1/P3 items (lost H1 #2065
+LMR cut-node bump, QS gap-aware futility, TT-bound pruning-eval
+refinement) remain queued.

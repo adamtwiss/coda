@@ -10,15 +10,23 @@ A recurring theme: a large fraction of the confirmed correctness items are **inv
 
 ## P0 — Likely bugs (traced + confirmed)
 
+> **Status (2026-07-02): items 1–3 TESTED & MERGED — 3/3 H1 ✓, +3.8 Elo combined.** All at `[-2,1]` STC (10+0.1), each on its own branch, merged together to main (bench 2487929). See experiments.md `2026-07-02 — Deep search-review P0 fixes`. Items 4–9 remain open. Per-item results inline below.
+
 ### 1. Non-PV first-move child searched with `cut_node=false` instead of `!cut_node`
+> ✅ **MERGED 2026-07-02** — OB #2429 `fix/first-move-cutnode`: **+2.2 ±2.2, LLR 2.99, H1 ✓** (25,682 games). Implemented as `let child_cut = if is_pv { false } else { !cut_node };`. Verified against SF (Step 18 `!cutNode`) and Reckless (FDS `!cut_node`) before merging. Bench shift was modest (2481396→2494732), not "substantial" as guessed. Retune-on-branch upside not yet chased.
+
 `src/search.rs:4595` (convention comment at :2949). The "first move: always full window" branch hardcodes the child's cut_node to false; at a non-PV all-node the first child is an expected CUT node and all 6 references pass `!cutNode`. This mislabels the entire leftmost spine of every all-node subtree and directly disables NMP (`&& cut_node`, :3656 — the merged #864 Reckless gate means NMP can *never* fire there), IIR (:3752), the TT-cutoff node-type guard (:3196 — legitimate LOWER-bound cutoffs rejected), and degrades the SE negative-ext branch (:4145). Dates unchanged to the GoChess translation; a 2026-06-26 audit passed the line via misread, not deliberate choice.
 **Change:** pass `if is_pv { false } else { !cut_node }` in the first-move branch. **Test:** [-2,1] per bug-fix bounds policy (or [0,3] as feature-enable). Bench will shift substantially — **retune-on-branch candidate if raw SPRT is flat** (all SPSA calibration happened with the mislabel). Novelty: new; no prior test of this line (SE-site cut_node H0s #1201/#2415 are a different, no-consensus site).
 
 ### 2. ProbCut child searches run with a stale `moved_piece_stack`/`moved_to_stack` slot — cont-hist corruption
+> ✅ **MERGED 2026-07-02** — OB #2432 `fix/probcut-conthist-stack`: **+0.6 ±1.3, LLR 2.96, H1 ✓** (68,750 games). Captured `board.piece_at(move_from(mv))` before make_move, write `go_piece(..)`/`move_to(mv)` after — as prescribed. Standalone bench 2481396→2674292 (~7.8%; global history evolution changes), confirming the pollution was real and broad.
+
 `src/search.rs:3806-3867` (loop), readers/writers at :3883, :4555/:4680/:4726. (Merged: whole-node #4 + ordering #32.) The ProbCut loop is the **only recursion site** that never writes the cont-hist context stack (writers: :3628, :3687, :4157-4159, :5132, :5343). The child at ply+1 reads whatever unrelated sibling move last occupied the slot, feeds it to MovePicker ordering, and on every beta cutoff in the verification subtree **writes** bonuses/maluses into `cont_hist[stale_piece][stale_to][...]` (offsets 1/2/4/6), polluting the shared table for the rest of the search. SF/Reckless both set the stack in their ProbCut do_move. Exact analog of the C3 NMP-sentinel bug (#640/#668, merged as confident-correctness).
 **Change:** capture the colored mover via `board.piece_at(move_from(mv))` *before* make_move (the loop currently only computes piece_type), then write `go_piece(..)`/`move_to(mv)` into the slot after make_move succeeds; no restore needed. **Test:** [-2,1] confident-correctness (NMP-sentinel precedent H0'd −1.3/−1.6 standalone and was merged anyway; expect ~0 to small positive). Novelty: new.
 
 ### 3. ZW TT window narrowing not gated on `halfmove_ok` — inverted window (alpha > beta) at halfmove 89–99, re-stored at full depth
+> ✅ **MERGED 2026-07-02** — OB #2433 `fix/zw-narrowing-halfmove-gate`: **+1.0 ±1.5, LLR 3.01, H1 ✓** (48,378 games). Wrapped the narrowing `match` in `if halfmove_ok`, as prescribed. Positive at STC despite the LTC-diagnostic framing. Bench 2481396→2504389.
+
 `src/search.rs:3256-3268` (mutation), :3270 (gated collapse-return), :3176 (`halfmove_ok`, default 89). (Merged: tt #12 + skeleton #28.) At zero-window nodes the narrowing can only ever fully collapse the window (LOWER with `tt_score > alpha` implies `tt_score >= beta`); the collapse-*return* is halfmove-gated (P2, #628) but the alpha/beta *mutation* is not. At halfmove ≥ 89 with a matching deep TT bound, the node proceeds through the whole move loop with alpha ≥ beta: first child gets a literally inverted window, PVS re-search conditions become unsatisfiable, razoring/futility fire against the inflated alpha, and the node TT-stores a full-depth, current-generation bound derived from this degenerate search — re-stamping exactly the stale near-50mr bound P2 exists to distrust. The in-code comment "it only biases the search" (:3173-3175) is mathematically wrong for the only window shape narrowing applies to. Fires in shuffle/conversion endgames (the documented conversion-failure regime).
 **Change:** wrap the narrowing `match` in `if halfmove_ok { ... }`. **Test:** [-2,1] correctness; LTC is the diagnostic frame (cf. #2418: STC inert, LTC H1 +0.7). Bench changes. Novelty: new (#628 gated returns only).
 
@@ -182,10 +190,12 @@ No trace in src/ today, but **#671 p1-optimism-c8-retry H0 −7.1 @ 4268g** ("co
 ## Top 5 to run first (expected Elo ÷ implementation risk)
 
 1. **Rebase & re-run the lost H1: LMR cut-node bump #2065** (P1.1) — already locked H1 +1.2 at [0,3] over 146k games; the code exists on `origin/experiment/lmr-cutnode-bump`; only a rebase + re-bench + revalidation stands between it and main.
-2. **Fix `cut_node=false` on the non-PV first move** (P0.1) — a one-token, 6/6-consensus bug disabling NMP/IIR/TT-cutoffs on the hottest path in the tree; [-2,1] with retune-on-branch fallback.
+2. ~~**Fix `cut_node=false` on the non-PV first move** (P0.1)~~ — ✅ **DONE, MERGED 2026-07-02, +2.2 H1** (OB #2429). a one-token, 6/6-consensus bug disabling NMP/IIR/TT-cutoffs on the hottest path in the tree; [-2,1] with retune-on-branch fallback.
 3. **QS gap-aware futility clause** (P1.2) — ~6-line port of a 6/6-consensus prune into the highest-volume loop in the engine, in the exact audit family that just banked +6.6 and +2.6; [0,3].
 4. **TT-bound refinement of the pruning eval, razor+RFP scope** (P3.1) — the consensus form was never actually tested (all three priors were structurally different); the QS half of the same audit item banked +6.5; the failure-mode guards are now identified; [0,3].
-5. **ProbCut `moved_piece_stack` fix** (P0.2) — two lines, [-2,1] confident-correctness, stops active pollution of the shared cont-hist tables and unblocks every future cont-hist-sensitive experiment (the stated rationale for merging the NMP-sentinel analog).
+5. ~~**ProbCut `moved_piece_stack` fix** (P0.2)~~ — ✅ **DONE, MERGED 2026-07-02, +0.6 H1** (OB #2432). two lines, [-2,1] confident-correctness, stops active pollution of the shared cont-hist tables and unblocks every future cont-hist-sensitive experiment (the stated rationale for merging the NMP-sentinel analog).
+
+(P0.3 ZW-narrowing halfmove gate — not in this Top 5 but also ✅ **DONE, MERGED 2026-07-02, +1.0 H1**, OB #2433.)
 
 Honorable mentions if fleet allows: in-check QS capture-evasion SEE gate (P1.5), aborted-iteration banking (P1.4), corrhist residual training + CORR retune (P1.3).
 
