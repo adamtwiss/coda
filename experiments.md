@@ -17182,3 +17182,33 @@ Method notes worth keeping:
   self-play RR could, given a sub-1-Elo effect vs an ~±16 CI at 300 games.
 - **#9 is the discipline win:** a plausible "correctness" fix, SPRT-caught as a
   real −1.4 regression. Always SPRT even the obvious-looking ones.
+
+---
+
+## No-inc adaptive-mtg divisor (2026-07-02)
+
+Lichess coda_bot forfeits are dominated by zero-increment bullet/ultra-
+bullet games (`outoftime`), all preceded by 70-88% of the clock burned by
+move ~60 in games running 130-220+ plies — `NO_INC_MOVES_TO_GO=40` was a
+fixed constant, never tightening as a game outlived its own 40-move
+assumption. Local RR (Coda vs Reckless/Obsidian/Berserk/Alexandria, 30+0,
+no adjudication, 320 games) confirmed a real gap: 7/320 Coda forfeits vs
+0/320 for all 4 peers.
+
+**Fix v1 — fixed adaptive divisor** (`tm/no-inc-adaptive-mtg`, commit
+182f3f4): `effective_mtg = 40 + max(0, fullmove - 40)` (1:1 growth past
+the 40-move horizon). Local RR: **0/320 forfeits, complete elimination**
+in-sample. OB SPRT #2438 (30+0, `[-2,1]`): **H0 ✗** — LLR -2.95 at
+N=17,670, -3.5 ±2.5 Elo. The mechanism works (kills forfeits) but the
+fixed base=40/growth=100% constants cost real Elo elsewhere, most likely
+by over-tightening mid-game allocation even in games that were never
+going to forfeit. **NOT MERGED.**
+
+**Fix v2 — SPSA-tunable divisor** (`tm/no-inc-mtg-tunable`, commit
+6751e0b): same formula, `NO_INC_MTG_BASE` (default 40, range 20-80) and
+`NO_INC_MTG_GROWTH_PCT` (default 100, range 0-200) exposed as tunables
+instead of fixed. Bench-identical to main (2487929). Focused SPSA tune
+#2444 (2 params, 1000 iters, 30+0 zero-inc TC, `scripts/tune_no_inc_mtg.txt`)
+in progress — see follow-up entry once applied+validated (local RR
+forfeit-count re-check + non-regression SPRT, same two-criteria bar as
+v1).
