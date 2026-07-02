@@ -71,8 +71,14 @@ Recommended standard arguments (the block above):
   (this is the fallback when an OB net-vs-net Wrong-Benches across the fleet).
 - Max **2 Coda variants** in a single RR — more amplifies shared-eval bias
   (Coda-on-Coda contamination).
-- TM-class changes need **ponder-enabled** cross-engine RR (add `option.Ponder=true`
-  on the engine lines) — see CLAUDE.md §TM-class changes.
+- TM-class changes need **ponder-enabled** cross-engine RR. Enable it with the
+  bare **`ponder`** keyword on each `-engine` line, NOT `option.Ponder=true`:
+  `-engine name=dev cmd=./coda ponder`. cutechess reserves "Ponder" as a
+  self-managed option, so passing `option.Ponder=true` is *rejected* with
+  `Warning: <engine> doesn't have option Ponder` and the match silently runs
+  **without pondering** (verified 2026-07-02 — a whole ponder RR was wasted this
+  way; always grep the log for that warning and confirm it's absent before
+  trusting a ponder run). See CLAUDE.md §TM-class changes.
 - Read results from the cutechess stdout score line / the PGN; parse per-move
   spend from PGN comments with `([0-9]+\.[0-9]+)s\b` (the FIRST decimal is the
   score, not the spend).
