@@ -5424,10 +5424,17 @@ fn quiescence_with_depth(
             } else {
                 board.piece_type_at(cap_to)
             };
-            if cap_pt != NO_PIECE_TYPE && (cap_pt as usize) < 6
-                && stand_pat + see_value(cap_pt) * tp(&SEE_MATERIAL_SCALE) / 100 + tp(&QS_DELTA_MARGIN) <= alpha {
+            if cap_pt != NO_PIECE_TYPE && (cap_pt as usize) < 6 {
+                let delta_val = stand_pat + see_value(cap_pt) * tp(&SEE_MATERIAL_SCALE) / 100 + tp(&QS_DELTA_MARGIN);
+                if delta_val <= alpha {
+                    // Fail-soft (P1.12a): delta_val is an upper bound on what this
+                    // capture could achieve; raise best_score to it so the returned
+                    // UPPER bound reflects it (all 5 value-prune references do this).
+                    // delta_val <= alpha, so best_score stays <= alpha — no cutoff.
+                    best_score = best_score.max(delta_val);
                     continue;
                 }
+            }
         }
 
         // Skip bad captures (SEE below threshold)
