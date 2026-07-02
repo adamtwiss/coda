@@ -1114,6 +1114,13 @@ impl SearchInfo {
         // counter so all threads stop together; up to T*4096 unflushed nodes
         // of slack is acceptable.
         if self.max_nodes > 0 && self.global_nodes.load(Ordering::Relaxed) >= self.max_nodes {
+            // Set the shared stop flag (like the time branches below) so
+            // ancestors abort their epilogues instead of storing partial
+            // best_score/best_move to the TT and firing fake history bonuses,
+            // and so helper threads see the limit too. Without this, `go nodes`
+            // returned 0 up the tree while nodes completed their TT/history
+            // stores at full claimed depth (persisting across the game).
+            self.stop.store(true, Ordering::Relaxed);
             return true;
         }
         // Check time every 4096 nodes
