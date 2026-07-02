@@ -17212,3 +17212,23 @@ instead of fixed. Bench-identical to main (2487929). Focused SPSA tune
 in progress — see follow-up entry once applied+validated (local RR
 forfeit-count re-check + non-regression SPRT, same two-criteria bar as
 v1).
+
+---
+
+## 2026-07-02 — Deep search-review P1 wave (first results)
+
+P1 items from the 2026-07-01 review (`docs/search_review_2026-07-01.md`),
+fired as independent [0,3] branches off main (bench 2487929). First four to
+resolve below; P1.5/P1.6/P1.3 + the P0.9 salvage still running at log time.
+
+| ID | Branch | Change | Result | Decision |
+|---:|---|---|---|---|
+| 2447 | `fix/lmr-cutnode-bump` | P1.1: explicit cut-node LMR bump — the flat +1 non-PV reduction didn't distinguish cut nodes from all-nodes (the "cut node" term was vacuous). Split: cut nodes get tunable LMR_CUTNODE_BUMP (default 2, +1 more with no TT move); all-nodes keep +1 (SF/Reckless). **Rebase of the lost H1 #2065** (e616393, +1.2 H1 @ 146k, never merged — dropped on a stale audit note). | `+3.2 ±2.2`, 25,372g, LLR 2.96, **H1 ✓** | **MERGED** (f723641). Re-confirmed *higher* than the original +1.2. |
+| 2454 | `fix/qs-delta-failsoft` | P1.12a: fail-soft QS delta pruning — the delta prune returned without raising best_score, leaving a looser UPPER bound than the pruned capture's own upper bound (stand_pat + victim*scale + margin). Raise best_score to it (all 5 value-prune references do; delta_val <= alpha so no spurious cutoff). | `+3.0 ±2.1`, 27,700g, LLR 2.95, **H1 ✓** | **MERGED** (b8dc21d, combined bench 2634351). |
+| 2448 | `fix/qs-gap-futility` | P1.2: QS gap-aware futility — SEE-based prune of equal trades (QxQ) when stand_pat + QS_FP_MARGIN <= alpha, which the victim-value delta prune misses. 6/6-engine consensus; in the QS-audit family that banked +6.6/+2.6. Default margin 130. | `-1.5 ±2.1`, 27,190g, LLR **-2.99, H0 ✗** | **REJECTED.** Over-prunes on top of Coda's existing delta + SEE QS pruning. A margin bisect *might* rescue it, but -1.5 (not flat) suggests the clause is redundant here; not chased. |
+| 2450 | `fix/qs-ttpv-preserve` | P1.7: preserve tt_pv in the QS evasion + capture-loop TT stores (were hardcoded false, erasing the sticky PV marker on cross-gen overwrite). SF/Obsidian form `tt_hit && tt_entry.tt_pv`; identical ProbCut fix (#428) was H1. | `-0.3 ±1.5`, 55,446g, LLR **-2.96, H0 ✗** | **REJECTED (raw form).** Flagged upfront as a retune-on-branch candidate (+9% nodes from tt_pv preservation, per #160/#173). -0.3 is neutral, not a regression — "didn't help untuned." A focused LMR/RFP/SE retune-on-branch is the legitimate revisit; not dead. |
+
+Wave running-total (search-review P1): 2 merged (+6.2 self-play Elo), 2
+rejected. P1.9 (promo-history noisy-path routing, #1670 class) deferred — a
+7-site history-machinery change that wants a careful dedicated pass, not a
+parallel-batch fire.
