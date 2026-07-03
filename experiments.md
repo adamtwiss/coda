@@ -17262,3 +17262,54 @@ strength without cross-engine confirmation. **Methodology caveat:** a multi-Coda
 RR at low N is dominated by noise + regression-to-mean (same-family binaries
 pulled toward the group mean); not a reliable bisect substrate until CIs are
 ~±10. Bisect binaries staged in `/tmp/bisect/` if a real signal ever separates.
+
+---
+
+## No-inc adaptive-mtg divisor — MERGED despite confirmed SPRT regression (2026-07-03)
+
+Continuation of the 2026-07-02 entry above. Both attempts fully eliminate the
+Lichess coda_bot forfeit pattern in local RR (0/320 vs 7/320 baseline) but both
+cost real self-play Elo:
+
+| Attempt | Values | Local RR forfeits | OB SPRT (30+0, `[-2,1]`) |
+|---|---|---|---|
+| v1 fixed | base=40, growth=100% | 0/320 | #2438 **H0** −3.5 ±2.5, LLR −2.95, N=17,670 |
+| v2 SPSA-tuned | base=34, growth=94% (#2444, 1000 iters) | 0/320 | #2451 **H0** −1.4 ±1.5, LLR −2.97, N=51,322 |
+
+v2's SPRT held near-neutral (LLR oscillating ±1.5 through N~40k) far longer
+than v1's before eventually resolving H0 — the SPSA tune materially reduced
+but did not eliminate the cost.
+
+**Decision (Adam, 2026-07-03): merge v2 anyway.** Rationale: a self-play SPRT
+Elo point doesn't capture the asymmetry of a forfeit — it converts a game that
+might have been drawn or won into a guaranteed loss, which is worse for real
+deployment (Lichess) rating than the -1.4 the SPRT measures in a symmetric
+sense. Merged as commit range `3ee31fb`..`98e03d8` (merge bench re-measured
+from the merged tree: 2634351, superseding the branch-isolated 2487929 — main
+had moved substantially from other sessions' work in the interim). Both new
+tunables (`NO_INC_MTG_BASE`, `NO_INC_MTG_GROWTH_PCT`) are `core=false`.
+
+**Follow-up finding (material-count signal):** reconstructed the final
+position of all 7 baseline-forfeit games (`analyze_forfeits.py`,
+`/tmp/.../tm_forfeit_rr/`). **Every one was a deep, heavily-simplified
+technical endgame** — fullmove 163-223, 1-6 non-king pieces on the board (K+B
+vs K, KQ vs K, KR vs KB, etc.) — NOT a slow middlegame. The current fix only
+reacts to fullmove count; it has no signal for "this specific position is a
+long grind regardless of move number." **Next iteration (v3, in progress):**
+add a material-based term (e.g. non-king piece count below a threshold) that
+tightens the no-inc divisor directly from position simplicity, independent of
+fullmove — the goal is to target tightening at the actual endgame-grind risk
+instead of blanket-tightening every long game, which is the likely source of
+v2's residual -1.4 Elo cost in games that were never going to forfeit.
+
+**Reference — why the earlier EMA/"banking governor" approach (abandoned
+2026-07-02, never merged) doesn't generalize to this:** it tracked an EMA of
+`actual_spend / target` and damped future moves when the EMA ran high — the
+same "overspend now, compensate later" idea. It failed for a structural reason:
+iterative deepening's per-iteration overshoot means actual spend routinely
+exceeds ANY per-move target by a large, non-stationary margin even on healthy
+moves, so the EMA never settled near a neutral baseline and the governor was
+permanently damping rather than reacting to real anomalies. Fullmove and
+material count are both stationary, externally-defined signals (not derived
+from the search's own noisy timing), which is why they don't inherit that
+failure mode.
