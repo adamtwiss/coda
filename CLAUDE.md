@@ -689,12 +689,10 @@ Reference engines for cross-engine review (strongest first, the #1-6
 set): Stockfish, Reckless (Rust), Obsidian, Berserk, PlentyChess,
 Alexandria.
 
-**Do NOT reference the removed third-party engine (see GitHub PR #5).**
-The engine named in that PR must not be cited, named, or used as a
-reference/testing opponent anywhere in this repo (code comments, docs,
-engine-notes, experiment logs, test data, or commit messages). Use the
-reference set above instead. A repo-wide grep for that engine's name must
-return nothing.
+**Do NOT reference Ethereal.** Ethereal must not be cited, named, or used
+as a reference/testing opponent anywhere in this repo (code comments,
+docs, engine-notes, experiment logs, test data, or commit messages). Use
+the reference set above instead.
 - For each engine: exact formula, gating conditions, position in move loop (before/after MakeMove), depth variable used (raw depth vs lmrDepth), history adjustments, numeric values.
 - Common structural issues found so far:
   - **Pre-move vs post-move**: Pruning after MakeMove wastes make/unmake + NNUE push/pop per pruned move, and makes the feature redundant with earlier pruning (futility, LMP catch most candidates first).
