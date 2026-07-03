@@ -2361,6 +2361,16 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     let mut stable_pv_len: usize = 0;
     let mut stable_pv: [Move; MAX_PLY + 1] = [NO_MOVE; MAX_PLY + 1];
 
+    // P1.4: the best root PV seen during the CURRENT iteration (captured after
+    // each aspiration search, so a widening re-search or a mid-iteration abort
+    // can't wipe a proven fail-high move). On abort we bank this deepest
+    // completed root result instead of reverting to the previous iteration's
+    // shallower `stable_pv`. pv_table[0] is internally paired (move + its
+    // ponder), so banking it never reintroduces the oeZ7KRUt old-move/new-ponder
+    // mismatch. iter_pv_len is declared fresh each iteration (below); the array
+    // is reused (only iter_pv[..iter_pv_len] is ever read).
+    let mut iter_pv: [Move; MAX_PLY + 1] = [NO_MOVE; MAX_PLY + 1];
+
     // Get a fallback move and keep the legal list for final validation
     let root_legal = generate_legal_moves(board);
     if root_legal.len > 0 {
@@ -2394,6 +2404,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         if info.should_stop() { break; }
         info.root_depth = depth;
         info.sel_depth = 0; // P2.8: reset per iteration (consensus) — the info line then reports THIS iteration's seldepth, not a whole-search running max
+        let mut iter_pv_len: usize = 0; // P1.4: fresh best-PV snapshot per iteration
         // Ponderhit check: stop between iterations (not mid-search) to avoid
         // partial TT entries and PV inconsistency. The engine completes the
         // current iteration fully before stopping, producing clean state.
@@ -2460,6 +2471,15 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             loop {
                 let result = negamax(board, info, alpha, beta, asp_depth, 0, false);
 
+                // P1.4: capture this search's root PV before the widening
+                // re-search (or an abort) wipes it. A fail-high search populates
+                // pv_table[0] with a proven-better move; a fail-low leaves
+                // pv_len[0]==0 (no move raised alpha), so nothing to bank there.
+                if info.pv_len[0] > 0 {
+                    iter_pv_len = info.pv_len[0].min(iter_pv.len());
+                    iter_pv[..iter_pv_len].copy_from_slice(&info.pv_table[0][..iter_pv_len]);
+                }
+
                 if info.should_stop() {
                     asp_result = result;
                     break;
@@ -2486,24 +2506,41 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
 
             score = asp_result;
-            if info.should_stop() {
-                // Mid-iteration interrupt — restore the last completed iteration's
-                // PV so pv_table[0] stays in sync with `best_move`.
-                if stable_pv_len > 0 {
-                    info.pv_len[0] = stable_pv_len;
-                    for i in 0..stable_pv_len { info.pv_table[0][i] = stable_pv[i]; }
-                }
-                break;
-            }
         } else {
             score = negamax(board, info, -INFINITY, INFINITY, depth, 0, false);
-            if info.should_stop() {
-                if stable_pv_len > 0 {
-                    info.pv_len[0] = stable_pv_len;
-                    for i in 0..stable_pv_len { info.pv_table[0][i] = stable_pv[i]; }
-                }
-                break;
+            // P1.4: snapshot this single search's root PV (depth<4 path).
+            if info.pv_len[0] > 0 {
+                iter_pv_len = info.pv_len[0].min(iter_pv.len());
+                iter_pv[..iter_pv_len].copy_from_slice(&info.pv_table[0][..iter_pv_len]);
             }
+        }
+
+        // P1.4: unified mid-iteration abort handling. Bank this iteration's
+        // deepest completed root result (iter_pv — an internally-paired
+        // move+ponder that a root move actually proved this iteration, deeper
+        // than stable_pv). Only revert to the previous iteration's stable_pv
+        // when this iteration completed no root move (iter_pv_len == 0).
+        if info.should_stop() {
+            if iter_pv_len > 0 {
+                info.pv_len[0] = iter_pv_len;
+                info.pv_table[0][..iter_pv_len].copy_from_slice(&iter_pv[..iter_pv_len]);
+                // Adopt the banked move only if it validates against the legal list.
+                let bm = iter_pv[0];
+                let (bf, bt, bfl) = (move_from(bm), move_to(bm), move_flags(bm));
+                for i in 0..root_legal.len {
+                    let m = root_legal.get(i);
+                    if move_from(m) == bf && move_to(m) == bt
+                        && (!is_promotion(bm) || move_flags(m) == bfl)
+                    {
+                        best_move = m;
+                        break;
+                    }
+                }
+            } else if stable_pv_len > 0 {
+                info.pv_len[0] = stable_pv_len;
+                info.pv_table[0][..stable_pv_len].copy_from_slice(&stable_pv[..stable_pv_len]);
+            }
+            break;
         }
 
         // Get best move from PV table
