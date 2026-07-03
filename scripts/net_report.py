@@ -16,8 +16,9 @@ by FEN (never by line order — the UCI-scrape misalignment trap can't happen):
        = mover-POV cp by which the net prefers the bad bishop sortie over the
        correct move. Lower = better; <=0 means the net ranks the correct move
        first. Reference points (same metric, same subset): SF static ~+65;
-       current prod nets ~+60-70. NO Stockfish, NO stamped corpus in the
-       measurement — the net's own STATIC eval only.
+       current prod nets ~+145-156 (measured — deep bake is WORSE on this
+       motif than undercooked stage-1 nets). NO Stockfish, NO stamped corpus
+       in the measurement — the net's own STATIC eval only.
 
 Uses `coda eval-fens` (batch, FEN-keyed) and `coda eval-dist` (general CSV).
 Builds ./coda if missing. Needs python-chess for section D.
@@ -217,7 +218,7 @@ def main():
               f"{r['bs']['p90']:>5} {r['bs']['p99']:>5} {r['bs']['mx']:>6}")
 
     print(f"\nD. WANDERING BISHOP  (forward-bishop sortie subset; lower=better, "
-          f"<=0 = ranks correct move first; SF static ~+65, prod nets ~+60-70)")
+          f"<=0 = ranks correct move first; refs: SF static ~+65, current prod nets ~+145-156)")
     h = f"   {'net':<32} {'fb_net_pref':>12} {'n':>3} {'sorties-now-correct':>20}"
     print(h); print("   " + "-" * (len(h) - 3))
     for r in rows:
