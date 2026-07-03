@@ -2,7 +2,7 @@
 
 Cross-referencing 37 engines against Coda. Ranked by estimated impact, implementation complexity, and alignment with our proven success patterns.
 
-**Engines reviewed**: Ethereal, Caissa, Midnight, Winter, Texel, Wasp, Arasan, Berserk, Koivisto, Stormphrax, RubiChess, Seer, Minic, Tucano, Weiss, Obsidian, BlackMarlin, Altair, Reckless, Igel, Alexandria, Stockfish, Viridithas, Halogen, PlentyChess, Quanticade, **Clarity** (+200 above us), **Velvet** (+100 above us), **Astra**, **Clover**, **Horsie**, **Tarnished**, **integral** (added 2026-04-19), **Hobbes**, **Motor**, **Starzix** (added 2026-05-01)
+**Engines reviewed**: Caissa, Midnight, Winter, Texel, Wasp, Arasan, Berserk, Koivisto, Stormphrax, RubiChess, Seer, Minic, Tucano, Weiss, Obsidian, BlackMarlin, Altair, Reckless, Igel, Alexandria, Stockfish, Viridithas, Halogen, PlentyChess, Quanticade, **Clarity** (+200 above us), **Velvet** (+100 above us), **Astra**, **Clover**, **Horsie**, **Tarnished**, **integral** (added 2026-04-19), **Hobbes**, **Motor**, **Starzix** (added 2026-05-01)
 
 **Removed** (too weak to be informative): Crafty, ExChess, GreKo, Rodent III, Laser
 
@@ -31,13 +31,13 @@ These ideas from engine reviews have been implemented and confirmed:
 | Fail-high score blending `(score*d+beta)/(d+1)` | Caissa, Stormphrax, Berserk | Implemented |
 | ~~Alpha-raise reduction~~ | Caissa, Altair, Reckless | Removed — SPSA zeroed it out |
 | QS beta blending (bestScore+beta)/2 | Caissa, Berserk, Stormphrax | Implemented |
-| TT near-miss cutoffs (1 ply, 80cp margin) | Minic, Ethereal | Implemented |
+| TT near-miss cutoffs (1 ply, 80cp margin) | Minic | Implemented |
 | TT noisy move detection (+1 LMR for quiets) | Obsidian, Berserk | Implemented |
 | DoDeeper/DoShallower after LMR re-search | Stockfish, Weiss, Obsidian, Berserk | Implemented |
 | Multi-source correction history (5 tables) | Stormphrax, Seer, Obsidian, Alexandria | Implemented |
 | Continuation history plies 1,2,4,6 (writes at half bonus) | Berserk, Obsidian, Reckless, Alexandria | Implemented |
 | Pawn history [pawnHash%512][piece][to] | Obsidian, Weiss | Implemented |
-| 4D threat-aware history [from_thr][to_thr][from][to] | Ethereal, Berserk, Stormphrax | Implemented |
+| 4D threat-aware history [from_thr][to_thr][from][to] | Berserk, Stormphrax | Implemented |
 | Hindsight reduction (parent compensation) | Stormphrax, Berserk, Tucano, Alexandria | Implemented |
 | Singular extensions (positive/double/multi-cut/negative) | All strong engines | Implemented |
 | Cuckoo cycle detection | Weiss, Stockfish | Implemented |

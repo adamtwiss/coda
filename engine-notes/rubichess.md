@@ -31,7 +31,7 @@ Compare to Coda: Coda uses v5/v6/v7 with 16 king buckets, 8 output buckets, SCRe
 
 ## 2. Search Architecture
 
-Standard iterative deepening, PVS, Lazy SMP with skip-depth pattern (Laser/Ethereal style). Best thread selection: picks thread with highest score among those that completed to main thread's depth.
+Standard iterative deepening, PVS, Lazy SMP with skip-depth pattern (Laser style). Best thread selection: picks thread with highest score among those that completed to main thread's depth.
 
 ### Aspiration Windows
 - Initial delta: 15 (after depth > 4)

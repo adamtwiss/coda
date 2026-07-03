@@ -42,7 +42,7 @@ has a backup attacker) is COMMON: misclassified as a good capture in
 movepicker ordering, passes the QS SEE gate, ProbCut SEE>=0, and escapes
 SEE capture pruning. No reference engine special-cases in-loop promotion
 (SF position.cpp:1467 `swap = PawnValue - swap`; Reckless plain
-`attacker.value()`; Berserk/Ethereal same) — because the algebra makes
+`attacker.value()`; Berserk same) — because the algebra makes
 it unnecessary.
 **Fix:** revert the hunk to `let effective_value = see_value(att_pt);`
 + add the two assertive FEN tests (-460 and +100 cases). Bench shifts

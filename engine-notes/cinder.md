@@ -130,7 +130,7 @@ multi-cut fold-in, no singular reduction. Three separable tests:
 `engine.rs:1075-1092`. Each consecutive root fail-high re-searches at progressively
 **reduced depth** (`reduction += aw_fh_reduction[0]`, capped); fail-low decays it and
 lerps the upper bound inward. Coda widens the window on failure but doesn't appear
-to drop depth on repeated fail-highs (standard SF/Ethereal pattern → less time wasted
+to drop depth on repeated fail-highs (standard SF pattern → less time wasted
 re-searching a deep tree on volatile roots). Test: on the Nth consecutive root
 fail-high, reduce re-search depth ~N (capped). SPRT `[0,3]` + LTC.
 

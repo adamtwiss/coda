@@ -162,7 +162,7 @@ Bonus: the two-step `/32 /1024` truncates twice; fold to single `/32768`.
 
 ### 9. **Single-row LMP with B=8**
 
-`src/search.rs:97, 2648`. **Consensus is B=3 with two-row improving formula** (Halogen, Reckless, Alexandria, Ethereal). Coda's row at depth 4 imp=false: 24 vs SF's 19. Single-row vs two-row matters most at d=2..4 where pruning volume is highest.
+`src/search.rs:97, 2648`. **Consensus is B=3 with two-row improving formula** (Halogen, Reckless, Alexandria). Coda's row at depth 4 imp=false: 24 vs SF's 19. Single-row vs two-row matters most at d=2..4 where pruning volume is highest.
 
 Halved-d² shape with separate improving multiplier:
 ```
