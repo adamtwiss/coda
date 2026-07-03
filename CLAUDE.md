@@ -487,7 +487,7 @@ SPRTs.** Reckless uses the same default. Avoid temptation to use wider bounds in
 
 | Bounds | When to use | Example |
 |--------|-------------|---------|
-| **`[0, 3]` (DEFAULT)** | "Does this feature help enough to be worth making a change?" at Coda's current strength. Most new ideas target +1-3 Elo. **Pick this unless you have a specific reason for one of the rows below.** | Pruning/ordering tweak, parameter probe, small bonus adjustment, incremental feature, audit correctness fix, tune-applied retest, structural ports |
+| **`[0, 3]` (DEFAULT)** | "Does this feature help enough to be worth making a change?" at Coda's current strength. Most new ideas target +1-3 Elo. **Pick this unless you have a specific reason for one of the rows below.** | Pruning/ordering tweak, parameter probe, small bonus adjustment, incremental feature, audit correctness fix, tune-applied retest, structural changes |
 | `[-2, 1]` | "Ship if not a meaningful regression." Bench-neutral refactors, NPS-only changes, ARM ordering, adding tunables at default values. Forces enough games to actually discriminate near zero. | Code cleanup with possible perf delta, OnceLock migration, defensive guard whose direction is uncertain |
 | `[-1.5, 1.5]` | Where the cost of a change is zero, and you are comparing two neutral things (net-vs-net, alternative-net compare). | New candidate net vs prod/baseline, SE margin tweak, 50mr mate downgrade, stale-bound gate |
 
@@ -640,7 +640,7 @@ Systematic approach for finding and fixing search feature issues. Each cycle com
 - **Cross-engine parameter divergence**: If our value for a parameter is far outside the consensus range, understand why before assuming we're special.
 
 **2. Diagnose via cross-engine comparison**
-- Compare the specific feature implementation against 6-8 top engines with source code available. Engine sources are in `/home/adam/chess/engines/`.
+- Compare the specific feature implementation against 6-8 top engines with source code available. Engine sources are in `/home/adam/chess/engines/`. The point is to learn the *idea* — the formula, gating conditions, the consensus shape — and then write Coda's own version to fit its architecture. We study techniques and implement them ourselves; we don't copy code.
 - **Focus primarily on the strongest engines** for "what should we do"
   consensus. Weaker engines' choices are weak evidence (they may be weak
   *because* of them) — this isn't an absolute ban on ever glancing at a
@@ -678,12 +678,11 @@ rebuilt on its latest threat-net code (likely climbed). Pool-relative Elo
 moves with membership and rivals' versions, so read rank + within-table
 gaps, not cross-table deltas.
 
-Engines below Coda (Integral, Viridithas, Caissa, Hobbes, Clover,
-Halogen, Starzix, Quanticade, Tarnished, Astra, Stormphrax, and the
-rest of the historical pool: Horsie, Koivisto, Seer, Motor, Clarity,
-Velvet, ... down to Crafty/Monolith at −500+) are NOT references for
-"should we" consensus. **Monolith/Crafty/Greko/Rodent are 500-600+
-Elo behind us — do NOT cite them as references.**
+For the narrow purpose of "what's the consensus, should we do X," weaker
+engines are correspondingly weaker evidence: weigh agreement among the
+strongest engines and don't build a case on mid-table-or-below agreement
+alone. This is a statement about signal quality for our own decisions,
+not a judgement of the engines — every one is the product of real work.
 
 Reference engines for cross-engine review (strongest first, the #1-6
 set): Stockfish, Reckless (Rust), Obsidian, Berserk, PlentyChess,

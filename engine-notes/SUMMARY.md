@@ -4,7 +4,7 @@ Cross-referencing 37 engines against Coda. Ranked by estimated impact, implement
 
 **Engines reviewed**: Caissa, Midnight, Winter, Texel, Wasp, Arasan, Berserk, Koivisto, Stormphrax, RubiChess, Seer, Minic, Tucano, Weiss, Obsidian, BlackMarlin, Altair, Reckless, Igel, Alexandria, Stockfish, Viridithas, Halogen, PlentyChess, Quanticade, **Clarity** (+200 above us), **Velvet** (+100 above us), **Astra**, **Clover**, **Horsie**, **Tarnished**, **integral** (added 2026-04-19), **Hobbes**, **Motor**, **Starzix** (added 2026-05-01)
 
-**Removed** (too weak to be informative): Crafty, ExChess, GreKo, Rodent III, Laser
+**Not included in this review** (older or further from our current reference set, so less directly useful for consensus): Crafty, ExChess, GreKo, Rodent III, Laser
 
 **Our success patterns** (from GoChess era, still valid):
 1. Score dampening works at noisy boundaries (TT cutoffs, QS) — not at well-calibrated margins (RFP)
