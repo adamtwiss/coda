@@ -2393,6 +2393,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     for depth in 1..=effective_max {
         if info.should_stop() { break; }
         info.root_depth = depth;
+        info.sel_depth = 0; // P2.8: reset per iteration (consensus) — the info line then reports THIS iteration's seldepth, not a whole-search running max
         // Ponderhit check: stop between iterations (not mid-search) to avoid
         // partial TT entries and PV inconsistency. The engine completes the
         // current iteration fully before stopping, producing clean state.
@@ -5734,6 +5735,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         let mut board = Board::from_fen(fen);
         info.nodes = 0;
         info.last_flushed_nodes.set(0);
+        info.global_nodes.store(0, Ordering::Relaxed); // P2.8: reset per position — was cumulative, so every info line after #1 printed garbage NPS
         info.history.clear();
         info.tt.new_search();
 
