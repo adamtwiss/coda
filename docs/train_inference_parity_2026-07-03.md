@@ -121,9 +121,29 @@ pending prod retrain is unbooked Elo.
 
 **Secondary observation (not the blindspot):** total inference-vs-fp32 noise of
 ~±20–30cp σ per position is larger than commonly assumed. It is unbiased and
-error-neutral here, but the tail (p99 ~65–98cp, max ~300cp) suggests a cheap
-future probe: QAT (already supported, unused in prod recipe) or i16 threat
-storage, valued in Elo not in this metric.
+error-neutral here. **Correction (Adam, 2026-07-03): prod multi-v8 AND
+multi-v9 were both trained WITH `--qat`** (an earlier draft wrongly said the
+prod recipe omitted it), so this σ is the noise remaining *after* QAT models
+the FT-act/pairwise/weight quantization — the audit's unmodeled site (the L1
+matmul-output `/127` truncation) plus weight-grid rounding is what's left. An
+i16-threat-storage or L1-truncation probe stays a possible small generic win,
+valued in Elo, explicitly not blindspot-related.
+
+## Addendum: multi-v9-s3-swa (post-extra[0]-fix prod-beater, 2026-07-03)
+
+Same heldout corpus, `nets/multi-v9-s3-swa.nnue`:
+
+| net | mean \|coda−lc0\| | mean \|mirror residual\| |
+|---|---|---|
+| prod E6C62000 (multi-v8, pre-fix) | 211.6 | 12.6 |
+| multi-v9-s3-swa (post-fix) | 208.8 | **5.6** |
+
+The blindspot persists essentially unchanged (208.8, inside the 207–224
+recipe-invariance band) — consistent with everything above. But the mirror
+residual **halved to control level** (heldout 5.6 vs old-net control 5.0):
+the extra[0] fix removed trained-in frame inconsistency on black-STM
+same-type pairs, cleaning the learned representation's color symmetry without
+moving the blindspot — further confirmation the asymmetry was never the cause.
 
 ## Tooling added (permanent gates)
 
