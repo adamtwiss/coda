@@ -1187,6 +1187,27 @@ fn main() {
                 idxs.dedup();
                 println!("IDX {}", idxs.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "));
 
+                // PSQ (HalfKA) feature-index set for this POV, reckless kb10
+                // layout, for cross-implementation diffing against Bullet's
+                // ChessBucketsMirrored (scripts/psq_cross_differ.py). The
+                // threat IDX gate above says nothing about this half of the
+                // input — it has its own mirror/bucket/perspective machinery.
+                let (kb_tab, km_tab) = nnue::compute_king_buckets(nnue::KbLayout::Reckless);
+                let mut psq: Vec<usize> = Vec::new();
+                for color in [types::WHITE, types::BLACK] {
+                    for pt in 0..6u8 {
+                        let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
+                        while bb != 0 {
+                            let sq = bb.trailing_zeros() as u8;
+                            bb &= bb - 1;
+                            psq.push(nnue::halfka_index_with(
+                                &kb_tab, &km_tab, pov, king_sq as u8, color, pt, sq));
+                        }
+                    }
+                }
+                psq.sort_unstable();
+                println!("PSQ {}", psq.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "));
+
                 // Re-enumerate with detail for printing
                 let white_bb = board.colors[types::WHITE as usize];
                 for color in [types::WHITE, types::BLACK] {
