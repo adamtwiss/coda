@@ -3643,30 +3643,6 @@ fn negamax(
     let king_zone = crate::attacks::king_attacks(our_king_sq as u32) | (1u64 << our_king_sq);
     let king_zone_pressure = popcount(enemy_attacks & king_zone) as i32;
 
-    // T2.1: undefended ("hanging") piece count. Our non-pawn pieces
-    // that are attacked by enemy AND NOT defended by any of our own
-    // pieces. Zero-cost-when-skipped: computation only runs for
-    // NMP-eligible nodes (most nodes either fail the depth gate or are
-    // in_check). ~10-15 magic lookups per computed node — comparable
-    // to king-zone-pressure's cost.
-    let undefended_count: i32 = {
-        // Only bother computing when NMP might actually fire.
-        let nmp_gate_cheap = depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0
-            && stm_non_pawn != 0 && beta - alpha == 1
-            && static_eval >= beta && !prev_was_null
-            && beta.abs() < MATE_IN_MAX_PLY
-            && info.excluded_move[ply_u] == NO_MOVE;
-        if nmp_gate_cheap && tp10(&NMP_UNDEFENDED_MAX_10X) > 0 {
-            let our_non_pawn = board.colors[board.side_to_move as usize]
-                & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
-            let attacked = our_non_pawn & enemy_attacks;
-            let our_attacks = board.attacks_by_color(board.side_to_move);
-            popcount(attacked & !our_attacks) as i32
-        } else {
-            0
-        }
-    };
-
     // RFP moved BEFORE NMP (consensus order: SF/Reckless/Obsidian/Berserk all
     // run the free static prune first; the null search only sees nodes static
     // pruning couldn't cut). Reorder alone tested neutral (#1882, -0.06 ±1.9),
@@ -3765,6 +3741,30 @@ fn negamax(
             }
         }
     }
+
+    // T2.1: undefended ("hanging") piece count — our non-pawn pieces attacked
+    // by the enemy and NOT defended by us. P2.4: moved here (past RFP, right
+    // before NMP consumes it) and gated on cut_node/nmp_min_ply — it feeds NMP
+    // ONLY, so every RFP-cut node used to pay ~10-15 magic lookups for nothing.
+    // Value is identical (no move made between the old site and here), so
+    // bench-nodes are unchanged.
+    let undefended_count: i32 = {
+        let nmp_gate_cheap = depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0
+            && stm_non_pawn != 0 && beta - alpha == 1
+            && static_eval >= beta && !prev_was_null
+            && beta.abs() < MATE_IN_MAX_PLY
+            && info.excluded_move[ply_u] == NO_MOVE
+            && cut_node && ply >= info.nmp_min_ply;
+        if nmp_gate_cheap && tp10(&NMP_UNDEFENDED_MAX_10X) > 0 {
+            let our_non_pawn = board.colors[board.side_to_move as usize]
+                & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+            let attacked = our_non_pawn & enemy_attacks;
+            let our_attacks = board.attacks_by_color(board.side_to_move);
+            popcount(attacked & !our_attacks) as i32
+        } else {
+            0
+        }
+    };
 
     let nmp_threat_margin =
         (king_zone_pressure - (tp10(&NMP_KING_ZONE_MAX_10X) - 1)).max(0) * 64
@@ -4123,13 +4123,15 @@ fn negamax(
         // Formula: (LMP_BASE + depth²) / (2 - improving); check carve at depth<4.
         if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
             && !is_cap && !is_promo
-            && (depth >= 4 || !board.gives_direct_check(mv))
             && !is_loss(best_score)
             && beta < MATE_IN_MAX_PLY  // forced-win guard (Reckless 4a2efd5a): don't count-prune quiets while proving a win
             && FEAT_LMP.load(Ordering::Relaxed)
         {
             let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
-            if move_count > lmp_limit {
+            // P2.5: gives_direct_check carve moved inside the movecount test — only
+            // pay the check-detection call when the count prune would actually
+            // fire (node-count identical).
+            if move_count > lmp_limit && (depth >= 4 || !board.gives_direct_check(mv)) {
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
                 picker.skip_remaining_quiets();
