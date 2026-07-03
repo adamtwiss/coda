@@ -17232,3 +17232,33 @@ Wave running-total (search-review P1): 2 merged (+6.2 self-play Elo), 2
 rejected. P1.9 (promo-history noisy-path routing, #1670 class) deferred — a
 7-site history-machinery change that wants a careful dedicated pass, not a
 parallel-batch fire.
+
+---
+
+## 2026-07-03 — P1/P0 batch: cross-engine check (no regression, no measurable gain)
+
+Suspected an x-engine regression from the 2026-07-02 search-review batch
+(self-play: ~+10 summed over the individual [0,3] SPRTs, but **+4.8 aggregate**
+measured directly as HEAD-vs-July1 — OB #2462 →H1; the individual gains do NOT
+fully stack). Checked both oracles.
+
+- **Self-play OB bisect** (HEAD=main vs July1=`93777da`, midpoint `33504dc`, +
+  finer splits `f723641`/`47e01c9`): aggregate +4.8; every segment
+  flat-to-positive; no self-play regression at any split. Self-play sees the
+  gains but is blind to any cross-engine cost.
+- **Local top-20 RR** (`July1` / `33504dc` / `bb5a1d7` / HEAD as up to 4 Coda
+  entries): overnight, all clustered within noise (~±30 CI, spread ~34), and
+  the ordering fully **reshuffled** across snapshots (July1 top→bottom; HEAD
+  middle→top; midpoint low→mid). The early apparent "−58" and the
+  "1st-half-broke-it / midpoint-is-the-low-point" reads were within-noise
+  scatter that reorganised as N grew — NOT signal.
+
+**Conclusion: no regression, and no measurable cross-engine Elo either.** The
+batch is self-play-positive (+4.8) but cross-engine-neutral — true effect below
+RR resolution (~±10-15 at overnight N). Kept (merged; neutral-to-marginal, not
+worth revert churn). **Lesson:** for this change class (cut_node / pruning / QS
+/ cont-hist) self-play SPRT *overstates* — don't count self-play gains as
+strength without cross-engine confirmation. **Methodology caveat:** a multi-Coda
+RR at low N is dominated by noise + regression-to-mean (same-family binaries
+pulled toward the group mean); not a reliable bisect substrate until CIs are
+~±10. Bisect binaries staged in `/tmp/bisect/` if a real signal ever separates.
