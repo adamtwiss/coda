@@ -5412,10 +5412,9 @@ fn quiescence_with_depth(
             info.tt.store(board.hash, -1, score_to_tt(best_score, ply),
                 TT_FLAG_LOWER, NO_MOVE, raw_stand_pat, false);
         }
-        // QS beta blending: dampen stand-pat cutoff at non-PV nodes
-        if beta - alpha == 1
-            && !is_decisive(best_score)
-        {
+        // QS beta blending (P1.12d: blend regardless of node type — 6/6
+        // references don't gate on non-PV; Coda gated `beta - alpha == 1`).
+        if !is_decisive(best_score) {
             return (best_score + beta) / 2;
         }
         return best_score;
@@ -5554,10 +5553,8 @@ fn quiescence_with_depth(
         info.tt.store(board.hash, -1, store_score, flag, best_move, raw_stand_pat, false);
     }
 
-    // QS beta blending: dampen capture fail-high at non-PV nodes
-    if best_score >= beta && beta - alpha_orig == 1
-        && !is_decisive(best_score)
-    {
+    // QS beta blending (P1.12d: blend regardless of node type).
+    if best_score >= beta && !is_decisive(best_score) {
         return (best_score + beta) / 2;
     }
 
