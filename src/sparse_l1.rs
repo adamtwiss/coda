@@ -318,6 +318,150 @@ pub unsafe fn dense_l1_avx2_l1_32(
     _mm256_storeu_si256(out_ptr.add(24) as *mut __m256i, _mm256_add_epi32(acc3, b3));
 }
 
+/// Load-time saturation gate for `dense_l1_avx2_l1_32_x2`.
+///
+/// Checks, in the same input-chunk-major layout the kernel reads, that for
+/// every aligned chunk pair, output neuron, and maddubs lane, the fused
+/// i16 lane cannot exceed ±32767 at the maximum input value (127, the
+/// pairwise activation's upper bound): `127 × Σ|w| ≤ 32767` over the 4
+/// co-lane weights, i.e. `Σ|w| ≤ 258`. Runs once at net load; O(weights).
+///
+/// Prod net E6C62000 measures worst lane sum = 163 (2026-07-03) — safe
+/// with margin. A future net that violates the bound falls back to the
+/// unfused kernel automatically via kernel selection.
+pub fn x2_fusion_safe(sparse_weights: &[i8], num_neurons: usize) -> bool {
+    let chunk_stride = num_neurons * 4;
+    if chunk_stride == 0 || !sparse_weights.len().is_multiple_of(chunk_stride) {
+        return false;
+    }
+    let chunks = sparse_weights.len() / chunk_stride;
+    if !chunks.is_multiple_of(2) {
+        return false;
+    }
+    for cp in (0..chunks).step_by(2) {
+        for j in 0..num_neurons {
+            let a = cp * chunk_stride + j * 4;
+            let b = a + chunk_stride;
+            for lane in 0..2 {
+                let s = (sparse_weights[a + 2 * lane] as i32).abs()
+                    + (sparse_weights[a + 2 * lane + 1] as i32).abs()
+                    + (sparse_weights[b + 2 * lane] as i32).abs()
+                    + (sparse_weights[b + 2 * lane + 1] as i32).abs();
+                if 127 * s > i16::MAX as i32 {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// `dense_l1_avx2_l1_32` with the maddubs-pair ("double dpbusd") fusion:
+/// two input chunks per iteration, summing their VPMADDUBSW products with
+/// one VPADDW *before* a single shared VPMADDWD — halving the madd count
+/// (4/6 reference engines: Reckless `double_dpbusd`, Berserk
+/// `m256_add_dpbusd_epi32_x2`, PlentyChess, Alexandria; audit item B4).
+///
+/// # Saturation precondition (why this kernel is gated)
+/// VPMADDUBSW saturates its i16 lane at ±32767, and the fusing VPADDW
+/// wraps. The fused lane sums FOUR u8×i8 products (two per chunk), so it
+/// is exact iff, for every output neuron and every aligned chunk pair,
+/// `max_input(127) × Σ|w|` over the 4 co-lane weights stays ≤ 32767 —
+/// i.e. `Σ|w| ≤ 258`. The caller MUST verify this at net-load time
+/// (`NNUENet::x2_fusion_safe`) and fall back to `dense_l1_avx2_l1_32`
+/// otherwise (current prod net E6C62000: worst lane sum 163 — safe).
+/// Inputs are ≤127 by construction (pairwise output is (QA·QA)>>FT_SHIFT).
+///
+/// # Safety
+/// CPU must support AVX2. Slices must be sized for `pw`; `pw` must be a
+/// multiple of 8 (even chunk count); `output` must point to at least 32
+/// writable i32s. Weights must satisfy the saturation precondition above.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+pub unsafe fn dense_l1_avx2_l1_32_x2(
+    stm_pw: &[u8],
+    ntm_pw: &[u8],
+    pw: usize,
+    sparse_weights: &[i8],  // input-chunk-major layout (same as dense_l1_avx2_l1_32)
+    bias: &[i16],
+    bias_scale: i32,
+    output: *mut i32,
+) {
+    use std::arch::x86_64::*;
+
+    const NUM_NEURONS: usize = 32;
+    const CHUNK_STRIDE: usize = NUM_NEURONS * 4; // = 128 bytes per chunk
+    let ones = _mm256_set1_epi16(1);
+
+    let mut acc0 = _mm256_setzero_si256(); // neurons 0-7
+    let mut acc1 = _mm256_setzero_si256(); // neurons 8-15
+    let mut acc2 = _mm256_setzero_si256(); // neurons 16-23
+    let mut acc3 = _mm256_setzero_si256(); // neurons 24-31
+
+    let w_ptr = sparse_weights.as_ptr();
+    let total_chunks = pw / 4;
+    debug_assert!(total_chunks.is_multiple_of(2), "x2 kernel needs even chunk count");
+
+    macro_rules! accumulate_perspective {
+        ($chunks:expr, $chunk_offset:expr) => {{
+            let chunks: *const u32 = $chunks;
+            let chunk_offset: usize = $chunk_offset;
+            let mut c = 0;
+            while c + 2 <= total_chunks {
+                let in_a = _mm256_set1_epi32(chunks.add(c).read_unaligned() as i32);
+                let in_b = _mm256_set1_epi32(chunks.add(c + 1).read_unaligned() as i32);
+                let wa_off = (chunk_offset + c) * CHUNK_STRIDE;
+                let wb_off = wa_off + CHUNK_STRIDE;
+                let wa0 = _mm256_loadu_si256(w_ptr.add(wa_off)      as *const __m256i);
+                let wa1 = _mm256_loadu_si256(w_ptr.add(wa_off + 32) as *const __m256i);
+                let wa2 = _mm256_loadu_si256(w_ptr.add(wa_off + 64) as *const __m256i);
+                let wa3 = _mm256_loadu_si256(w_ptr.add(wa_off + 96) as *const __m256i);
+                let wb0 = _mm256_loadu_si256(w_ptr.add(wb_off)      as *const __m256i);
+                let wb1 = _mm256_loadu_si256(w_ptr.add(wb_off + 32) as *const __m256i);
+                let wb2 = _mm256_loadu_si256(w_ptr.add(wb_off + 64) as *const __m256i);
+                let wb3 = _mm256_loadu_si256(w_ptr.add(wb_off + 96) as *const __m256i);
+                let p0 = _mm256_add_epi16(_mm256_maddubs_epi16(in_a, wa0), _mm256_maddubs_epi16(in_b, wb0));
+                let p1 = _mm256_add_epi16(_mm256_maddubs_epi16(in_a, wa1), _mm256_maddubs_epi16(in_b, wb1));
+                let p2 = _mm256_add_epi16(_mm256_maddubs_epi16(in_a, wa2), _mm256_maddubs_epi16(in_b, wb2));
+                let p3 = _mm256_add_epi16(_mm256_maddubs_epi16(in_a, wa3), _mm256_maddubs_epi16(in_b, wb3));
+                acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(p0, ones));
+                acc1 = _mm256_add_epi32(acc1, _mm256_madd_epi16(p1, ones));
+                acc2 = _mm256_add_epi32(acc2, _mm256_madd_epi16(p2, ones));
+                acc3 = _mm256_add_epi32(acc3, _mm256_madd_epi16(p3, ones));
+                c += 2;
+            }
+        }};
+    }
+
+    let stm_ptr = stm_pw.as_ptr() as *const u32;
+    accumulate_perspective!(stm_ptr, 0);
+    let ntm_ptr = ntm_pw.as_ptr() as *const u32;
+    accumulate_perspective!(ntm_ptr, pw / 4);
+
+    let scale = _mm256_set1_epi32(bias_scale);
+    let b0 = _mm256_mullo_epi32(
+        _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr() as *const __m128i)),
+        scale,
+    );
+    let b1 = _mm256_mullo_epi32(
+        _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr().add(8) as *const __m128i)),
+        scale,
+    );
+    let b2 = _mm256_mullo_epi32(
+        _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr().add(16) as *const __m128i)),
+        scale,
+    );
+    let b3 = _mm256_mullo_epi32(
+        _mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr().add(24) as *const __m128i)),
+        scale,
+    );
+    let out_ptr = output;
+    _mm256_storeu_si256(out_ptr as *mut __m256i, _mm256_add_epi32(acc0, b0));
+    _mm256_storeu_si256(out_ptr.add(8) as *mut __m256i, _mm256_add_epi32(acc1, b1));
+    _mm256_storeu_si256(out_ptr.add(16) as *mut __m256i, _mm256_add_epi32(acc2, b2));
+    _mm256_storeu_si256(out_ptr.add(24) as *mut __m256i, _mm256_add_epi32(acc3, b3));
+}
+
 /// Dense column-major L1 matmul: identical layout to sparse_l1_avx2 but
 /// without the zero-chunk skip check. For pairwise-CReLU inputs where
 /// most chunks are non-zero, the if-check overhead exceeds the skip
@@ -1323,6 +1467,82 @@ mod tests {
             }
         }
         eprintln!("dense_l1_avx2_l1_32 fuzz: {} cases passed", cases);
+    }
+
+    /// Fuzz: the maddubs-pair-fused AVX2 L1=32 kernel matches scalar under
+    /// the saturation gate. Weights are capped at ±60 (worst lane sum
+    /// 4×60=240 ≤ 258) so every case passes `x2_fusion_safe`; inputs use
+    /// the full production range (≤127). Also asserts the gate itself:
+    /// accepts the capped weights, rejects a crafted violating set, and
+    /// accepts an exactly-at-the-bound set which the kernel must still
+    /// compute exactly (127×258 = 32766 < 32767).
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn fuzz_dense_avx2_l1_32_x2_matches_scalar() {
+        crate::init();
+        if !is_x86_feature_detected!("avx2") {
+            eprintln!("No AVX2 — skipping L1=32 x2 fuzz test");
+            return;
+        }
+
+        let mut cases = 0usize;
+        for &pw in &[64usize, 128, 256, 384, 512] {
+            for density in [0u32, 25, 50, 89, 100] {
+                for seed in 0u64..30 {
+                    let (sw, bias, s_pw, n_pw, pw_, nn, scale) =
+                        build_l1_n_test_case(seed, density, 32, pw, 127);
+                    // Cap weights to the always-safe band.
+                    let sw: Vec<i8> = sw.iter().map(|&w| w.clamp(-60, 60)).collect();
+                    assert!(x2_fusion_safe(&sw, nn), "capped weights must pass the gate");
+
+                    let mut scalar_out = vec![0i32; nn];
+                    sparse_l1_scalar(&s_pw, &n_pw, pw_, &sw, nn, &bias, scale, &mut scalar_out);
+
+                    let mut x2_out = vec![0i32; nn];
+                    unsafe {
+                        dense_l1_avx2_l1_32_x2(
+                            &s_pw, &n_pw, pw_, &sw, &bias, scale, x2_out.as_mut_ptr(),
+                        );
+                    }
+                    for i in 0..nn {
+                        assert_eq!(
+                            x2_out[i], scalar_out[i],
+                            "dense_l1_avx2_l1_32_x2 mismatch seed={} density={} pw={} neuron={}",
+                            seed, density, pw, i
+                        );
+                    }
+                    cases += 1;
+                }
+            }
+        }
+        eprintln!("dense_l1_avx2_l1_32_x2 fuzz: {} cases passed", cases);
+
+        // Gate rejection: one co-lane quad summing 259 (> 258) must fail.
+        let nn = 32;
+        let pw = 64usize;
+        let mut bad = vec![0i8; (2 * pw / 4) * nn * 4];
+        // chunk 0, neuron 0, lane 0 weights: 127+127+4+1 = 259
+        bad[0] = 127;                 // chunk 0, n0, w0
+        bad[1] = 127;                 // chunk 0, n0, w1
+        bad[nn * 4] = 4;              // chunk 1, n0, w0
+        bad[nn * 4 + 1] = 1;          // chunk 1, n0, w1
+        assert!(!x2_fusion_safe(&bad, nn), "sum-259 lane must fail the gate");
+
+        // Exactly at the bound (sum 258): gate accepts, kernel exact at
+        // max input (127×258 = 32766 fits i16).
+        let mut edge = vec![0i8; (2 * pw / 4) * nn * 4];
+        edge[0] = 127;
+        edge[1] = 127;
+        edge[nn * 4] = 4;             // 127+127+4+0 = 258
+        assert!(x2_fusion_safe(&edge, nn), "sum-258 lane must pass the gate");
+        let s_pw = vec![127u8; pw];
+        let n_pw = vec![127u8; pw];
+        let bias: Vec<i16> = vec![0; nn];
+        let mut scalar_out = vec![0i32; nn];
+        sparse_l1_scalar(&s_pw, &n_pw, pw, &edge, nn, &bias, 127, &mut scalar_out);
+        let mut x2_out = vec![0i32; nn];
+        unsafe { dense_l1_avx2_l1_32_x2(&s_pw, &n_pw, pw, &edge, &bias, 127, x2_out.as_mut_ptr()); }
+        assert_eq!(x2_out, scalar_out, "x2 kernel must be exact at the 258 saturation bound");
     }
 
     /// Fuzz: AVX-512 VNNI L1=32 column-major kernel matches scalar across

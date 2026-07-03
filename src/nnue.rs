@@ -2366,6 +2366,11 @@ pub enum L1Kernel {
     DenseAvxVnniL1_32,
     /// AVX-512 row-major per-neuron dots (no VNNI).
     RowMajorAvx512,
+    /// AVX2 column-major dense, L1=32 with maddubs-pair fusion (2 chunks
+    /// per iteration, one shared madd) — only selected when the net's
+    /// weights pass the load-time saturation gate
+    /// (`sparse_l1::x2_fusion_safe`); unsafe nets fall to DenseAvx2L1_32.
+    DenseAvx2L1_32X2,
     /// AVX2 column-major dense, L1=32 specialisation.
     DenseAvx2L1_32,
     /// AVX2 column-major dense, L1<=16 (the AVX2-fleet prod kernel).
@@ -2391,6 +2396,7 @@ fn select_l1_kernel(
     pw: usize,            // hidden_size / 2
     have_sparse: bool,    // !l1_weights_sparse.is_empty()
     have_8t: bool,        // !l1_weights_8t.is_empty()
+    x2_safe: bool,        // sparse_l1::x2_fusion_safe on the loaded weights
     has_avx2: bool,
     has_avx512: bool,
     has_avx512_vnni: bool,
@@ -2421,6 +2427,9 @@ fn select_l1_kernel(
         if has_avx512 && pw.is_multiple_of(64) && have_8t {
             return L1Kernel::RowMajorAvx512;
         }
+        if has_avx2 && col_ok && l1 == 32 && pw.is_multiple_of(8) && x2_safe {
+            return L1Kernel::DenseAvx2L1_32X2;
+        }
         if has_avx2 && col_ok && l1 == 32 && pw.is_multiple_of(4) {
             return L1Kernel::DenseAvx2L1_32;
         }
@@ -2437,7 +2446,7 @@ fn select_l1_kernel(
             return L1Kernel::NeonX4;
         }
     }
-    let _ = (l1, bucketed_hidden, pw, col_ok, have_8t,
+    let _ = (l1, bucketed_hidden, pw, col_ok, have_8t, x2_safe,
              has_avx2, has_avx512, has_avx512_vnni, has_avx_vnni, has_neon);
     L1Kernel::Scalar
 }
@@ -2936,6 +2945,15 @@ impl NNUENet {
                 max_err, sum_err / total as f64);
         }
 
+        // maddubs-pair fusion saturation gate — O(weights), once at load.
+        let x2_safe = !l1_weights_sparse.is_empty()
+            && crate::sparse_l1::x2_fusion_safe(&l1_weights_sparse, l1_size);
+        if has_avx2 && !has_avx_vnni && !has_avx512_vnni && l1_size == 32 {
+            // Only worth logging where the choice is live (plain-AVX2 hosts).
+            println!("info string maddubs-pair fusion: {}",
+                if x2_safe { "safe — using fused AVX2 L1 kernel" }
+                else { "weights exceed saturation bound — unfused kernel" });
+        }
         let l1_kernel = select_l1_kernel(
             use_pairwise,
             l1_size, // header (per-bucket) width — equals total when unbucketed
@@ -2943,6 +2961,7 @@ impl NNUENet {
             hidden_size / 2,
             !l1_weights_sparse.is_empty(),
             !l1_weights_8t.is_empty(),
+            x2_safe,
             has_avx2,
             has_avx512,
             has_avx512_vnni,
@@ -3373,6 +3392,21 @@ impl NNUENet {
                         hidden32[i] += simd512_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
                         hidden32[i] += simd512_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
                     }
+                }
+            }
+            #[cfg(target_arch = "x86_64")]
+            L1Kernel::DenseAvx2L1_32X2 => {
+                // L1=32 AVX2 with maddubs-pair fusion: two input chunks per
+                // iteration, VPMADDUBSW products summed with one VPADDW
+                // before a single shared VPMADDWD — halves the madd count
+                // of the emulated dot product. Exactness guaranteed by the
+                // load-time x2_fusion_safe gate (else this arm is never
+                // selected).
+                unsafe {
+                    crate::sparse_l1::dense_l1_avx2_l1_32_x2(
+                        stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
+                        &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
+                    );
                 }
             }
             #[cfg(target_arch = "x86_64")]
