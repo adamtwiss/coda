@@ -139,7 +139,7 @@ Reachable mostly with SyzygyPath set (lichess/CCRL) — but `downgrade_50mr_mate
 **Change:** move `best_move = mv;` inside the `score > alpha` block (negamax first; QS as a separate probe). **Test:** [-1.5,1.5] (uncertain direction) or [0,3]; if H0, log next to #1931/#1945 as deliberate divergence to close the axis. Novelty: new.
 
 ### 11. Main-search evasion ordering: capture band crossable by history (references make it uncrossable)
-> ❌ **FADED TO NEUTRAL 2026-07-03** — OB #2474 `fix/evasion-capture-band` (1<<20 band): **+5.7 early → +0.7 →H0** (36k). A textbook small-sample-noise cautionary tale — the early +5.7 evaporated. Priors ~0 held.
+> ✅ **MERGED 2026-07-03** — OB #2474 `fix/evasion-capture-band` (1<<20 band): **+1.6 ±1.3, LLR 2.99, H1 ✓** (71k, 1ae2700). A cautionary tale in BOTH directions: early +5.7 (noise) → dipped to +0.7 →H0 at 36k (I logged it "faded, heading H0") → recovered to +1.6 and locked H1 at 71k. Vindicates NOT killing losers asymmetrically — stopping it early would have discarded a real win.
 
 `src/movepicker.rs:787-792`. Evasion captures get `10000 + mvv_lva + capt_hist` vs full quiet-history sums spanning ±80k — a hot quiet outranks a fresh capture of the checker, and a negative-captHist capture sinks below quiets. SF (`+ (1<<28)`), Berserk (`1e7 +`), Obsidian (separate captures stage) all enforce strict captures-first. Scope correction from verification: QS evasions are already uncrossable (flat −1M quiets) — main-search evasions only.
 **Change:** raise the capture band offset to uncrossable (e.g. `1 << 20`), keeping mvv+captHist intra-band; preserve the C8 #26 capture-promo handling. **Test:** [0,3]. Magnitude priors small (evasion sets 2–8 moves; prior evasion-ordering experiments ~0). Novelty: new.
