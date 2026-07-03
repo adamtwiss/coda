@@ -421,6 +421,28 @@ use crate::attacks::*;
 use crate::bitboard::*;
 use crate::types::*;
 
+/// Cached x86 SIMD tier for the threat-apply dispatch: 2 = AVX-512
+/// (f+bw), 1 = AVX2, 0 = scalar. `is_x86_feature_detected!` caches each
+/// feature in its own atomic, but the old dispatch paid THREE checks per
+/// call (two always-false AVX-512 probes before the AVX2 arm) on AVX2-only
+/// hosts, on functions called 1-2× per push plus per replay ply. One
+/// OnceLock load + compare replaces all three.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn x86_simd_tier() -> u8 {
+    use std::sync::OnceLock;
+    static TIER: OnceLock<u8> = OnceLock::new();
+    *TIER.get_or_init(|| {
+        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
+            2
+        } else if is_x86_feature_detected!("avx2") {
+            1
+        } else {
+            0
+        }
+    })
+}
+
 /// Piece interaction map: which attacker×victim pairs are tracked.
 /// Rows = attacker piece type (P/N/B/R/Q/K), columns = victim piece type.
 /// -1 = excluded (not tracked). Non-negative values index into target buckets.
@@ -1933,16 +1955,14 @@ unsafe fn apply_threat_indices(
     // showed this function at 17.98% of cycles with no AVX-512 path.
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx512f")
-            && is_x86_feature_detected!("avx512bw")
-            && hidden_size.is_multiple_of(32)
-        {
+        let tier = x86_simd_tier();
+        if tier >= 2 && hidden_size.is_multiple_of(32) {
             unsafe {
                 apply_deltas_avx512(dst, src, threat_weights, hidden_size, adds, subs);
             }
             return;
         }
-        if is_x86_feature_detected!("avx2") && hidden_size.is_multiple_of(16) {
+        if tier >= 1 && hidden_size.is_multiple_of(16) {
             unsafe {
                 apply_deltas_avx2(dst, src, threat_weights, hidden_size, adds, subs);
             }
@@ -1993,9 +2013,16 @@ unsafe fn apply_deltas_avx2(
     let src_ptr = src.as_ptr();
     let w_ptr = threat_weights.as_ptr();
 
-    // 8 AVX2 registers × 16 i16 = 128 elements per chunk
-    const REGS: usize = 8;
-    const CHUNK: usize = REGS * 16; // 128 elements
+    // 12 AVX2 registers × 16 i16 = 192 elements per chunk. Was 8 (half the
+    // AVX-512 variant's 16, by analogy) — but the widening loads
+    // (`vpmovsxbw ymm, m128`) fold their temps, so accumulator count is
+    // bounded by the 16-YMM file minus pointers, exactly like
+    // `simd_acc_fused_avx2` (REGS=12, matching SF's deliberate 12-of-16
+    // AVX2 budget). Fewer outer passes = fewer re-walks of the add/sub
+    // index lists: h=1024 drops from 8 passes to 5 + a const-4-reg tail
+    // (avx2_gap_audit_2026-07-03 item 4).
+    const REGS: usize = 12;
+    const CHUNK: usize = REGS * 16; // 192 elements
 
     let mut offset = 0;
 
@@ -2046,17 +2073,23 @@ unsafe fn apply_deltas_avx2(
     }
 
     // Full-chunk fast path: REGS is a compile-time constant, inner loops
-    // unroll without dispatch. For v9 (h=768, CHUNK=128) all 6 iterations
-    // hit this branch.
+    // unroll without dispatch. For h=1024 (v10 prod, CHUNK=192) this covers
+    // 5 chunks (960 elements).
     while offset + CHUNK <= hidden_size {
         apply_chunk!(REGS);
         offset += CHUNK;
     }
 
-    // Tail: never fires on v9, but covers other hidden_size values.
+    // Tail. h=1024 leaves 64 elements = exactly 4 regs — give that case a
+    // const-nregs unrolled path like the full chunks; anything else (other
+    // hidden sizes) takes the runtime-nregs form.
     if offset < hidden_size {
         let nregs = (hidden_size - offset).div_ceil(16);
-        apply_chunk!(nregs);
+        if nregs == 4 {
+            apply_chunk!(4);
+        } else {
+            apply_chunk!(nregs);
+        }
     }
 }
 
@@ -2178,21 +2211,20 @@ pub fn add_weight_rows(
     // 2026-04-30 — same perf rationale (zmm register width on
     // AVX-512+VNNI hosts).
     #[cfg(target_arch = "x86_64")]
-    if is_x86_feature_detected!("avx512f")
-        && is_x86_feature_detected!("avx512bw")
-        && hidden_size.is_multiple_of(32)
     {
-        unsafe {
-            add_weight_rows_avx512(dst, threat_weights, hidden_size, indices);
+        let tier = x86_simd_tier();
+        if tier >= 2 && hidden_size.is_multiple_of(32) {
+            unsafe {
+                add_weight_rows_avx512(dst, threat_weights, hidden_size, indices);
+            }
+            return;
         }
-        return;
-    }
-    #[cfg(target_arch = "x86_64")]
-    if is_x86_feature_detected!("avx2") {
-        unsafe {
-            add_weight_rows_avx2(dst, threat_weights, hidden_size, indices);
+        if tier >= 1 {
+            unsafe {
+                add_weight_rows_avx2(dst, threat_weights, hidden_size, indices);
+            }
+            return;
         }
-        return;
     }
 
     #[cfg(target_arch = "aarch64")]

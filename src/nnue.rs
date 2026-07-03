@@ -125,17 +125,65 @@ pub struct AlignedVec<T> {
     ptr: *mut T,
     len: usize,
     cap: usize,
+    align: usize,
 }
 unsafe impl<T: Send> Send for AlignedVec<T> {}
 unsafe impl<T: Sync> Sync for AlignedVec<T> {}
 impl<T: Default + Copy> AlignedVec<T> {
-    pub fn zeros(n: usize) -> Self {
+    /// 2 MiB — x86-64 huge page size; alignment required for the kernel to
+    /// back an allocation with transparent huge pages (see tt.rs allocator).
+    const HUGE_PAGE: usize = 2 * 1024 * 1024;
+
+    fn zeros_aligned(n: usize, align: usize) -> Self {
         use std::alloc::{alloc_zeroed, Layout};
-        if n == 0 { return Self { ptr: std::ptr::NonNull::dangling().as_ptr(), len: 0, cap: n }; }
-        let layout = Layout::from_size_align(n * std::mem::size_of::<T>(), 64).unwrap();
+        if n == 0 { return Self { ptr: std::ptr::NonNull::dangling().as_ptr(), len: 0, cap: n, align }; }
+        let layout = Layout::from_size_align(n * std::mem::size_of::<T>(), align).unwrap();
         let ptr = unsafe { alloc_zeroed(layout) } as *mut T;
         if ptr.is_null() { std::alloc::handle_alloc_error(layout); }
-        Self { ptr, len: n, cap: n }
+        Self { ptr, len: n, cap: n, align }
+    }
+
+    pub fn zeros(n: usize) -> Self {
+        Self::zeros_aligned(n, 64)
+    }
+
+    /// 2 MiB-aligned allocation with `MADV_HUGEPAGE` advised up front, for the
+    /// big weight matrices (threat 65 MiB, PSQ 15 MiB). Weight rows are indexed
+    /// effectively at random per node; on 4 KiB pages the threat matrix alone
+    /// spans ~16,700 pages (~20 dTLB entries touched per node) — real STLB
+    /// pressure on small-cache AVX2-era hosts. Same THP pattern as the TT
+    /// allocator tier 2 (tt.rs `from_heap_with_thp`), minus the explicit
+    /// hugetlb tier. Call `advise_collapse` AFTER filling the data (COLLAPSE
+    /// needs populated pages; the weight-load write populates them).
+    pub fn hugepage_zeros(n: usize) -> Self {
+        let v = Self::zeros_aligned(n, Self::HUGE_PAGE);
+        #[cfg(target_os = "linux")]
+        if n > 0 {
+            unsafe {
+                libc::madvise(
+                    v.ptr as *mut libc::c_void,
+                    n * std::mem::size_of::<T>(),
+                    libc::MADV_HUGEPAGE,
+                );
+            }
+        }
+        v
+    }
+
+    /// Best-effort synchronous THP promotion (MADV_COLLAPSE, Linux 6.1+).
+    /// Benign no-op on older kernels or non-hugepage allocations.
+    pub fn advise_collapse(&self) {
+        #[cfg(target_os = "linux")]
+        if self.cap > 0 && self.align >= Self::HUGE_PAGE {
+            const MADV_COLLAPSE: libc::c_int = 25;
+            unsafe {
+                libc::madvise(
+                    self.ptr as *mut libc::c_void,
+                    self.len * std::mem::size_of::<T>(),
+                    MADV_COLLAPSE,
+                );
+            }
+        }
     }
 }
 impl<T> std::ops::Deref for AlignedVec<T> {
@@ -156,7 +204,7 @@ impl<T> Drop for AlignedVec<T> {
     fn drop(&mut self) {
         if self.cap == 0 { return; }
         use std::alloc::{dealloc, Layout};
-        let layout = Layout::from_size_align(self.cap * std::mem::size_of::<T>(), 64).unwrap();
+        let layout = Layout::from_size_align(self.cap * std::mem::size_of::<T>(), self.align).unwrap();
         unsafe { dealloc(self.ptr as *mut u8, layout); }
     }
 }
@@ -2354,7 +2402,7 @@ pub struct NNUENet {
     pub out_bias_f: Vec<f32>,     // [NNUE_OUTPUT_BUCKETS]
     pub dual_l1: bool,            // v8: dual L1 activation (CReLU+SCReLU on L1 output)
     // v9 threat features
-    pub threat_weights: Vec<i8>,  // [num_threat_features × hidden_size] i8 weights
+    pub threat_weights: AlignedVec<i8>,  // [num_threat_features × hidden_size] i8 weights, 64-B rows, hugepage-backed
     pub num_threat_features: usize,
     pub has_threats: bool,
     /// Whether the net was trained WITH xray threat features. Coda inference
@@ -2609,24 +2657,32 @@ impl NNUENet {
         }
 
         // Read input weights (PSQ block sized by kb_count × 768).
+        // Hugepage-backed (2 MiB pages): weight rows are indexed effectively
+        // at random per node; on 4 KiB pages the two big matrices cost real
+        // dTLB/STLB pressure on small-cache hosts (avx2_gap_audit_2026-07-03).
         let psq_input_size = num_king_buckets * PSQ_INPUTS_PER_BUCKET;
-        let mut input_weights: AlignedVec<i16> = AlignedVec::zeros(psq_input_size * hidden_size);
+        let mut input_weights: AlignedVec<i16> = AlignedVec::hugepage_zeros(psq_input_size * hidden_size);
         read_i16_slice(reader, &mut input_weights)?;
+        input_weights.advise_collapse();
 
         // Read input biases
         let mut input_biases = vec![0i16; hidden_size];
         read_i16_slice(reader, &mut input_biases)?;
 
-        // Read threat weights (v9): i8 [num_threat_features × hidden_size]
-        let mut threat_weights = Vec::new();
+        // Read threat weights (v9): i8 [num_threat_features × hidden_size].
+        // AlignedVec (was a plain Vec<i8>): guarantees rows start 64-B-aligned
+        // so each 1 KiB row spans exactly 16 cache lines, not a possible 17;
+        // hugepage-backed like the PSQ matrix above.
+        let mut threat_weights: AlignedVec<i8> = AlignedVec::zeros(0);
         if has_threats && num_threat_features > 0 {
             let total = num_threat_features * hidden_size;
-            threat_weights = vec![0i8; total];
+            threat_weights = AlignedVec::hugepage_zeros(total);
             let mut bytes = vec![0u8; total];
             reader.read_exact(&mut bytes).map_err(|e| format!("read threat weights: {}", e))?;
             for i in 0..total {
                 threat_weights[i] = bytes[i] as i8;
             }
+            threat_weights.advise_collapse();
             println!("info string Loaded {} threat features ({}×{}, {}MB)",
                 num_threat_features, num_threat_features, hidden_size,
                 total / (1024 * 1024));
