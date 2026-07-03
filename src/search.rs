@@ -5179,7 +5179,6 @@ fn quiescence_with_depth(
     // Probe transposition table
     let tt_entry = info.tt.probe(board.hash);
     let tt_move = if tt_entry.hit { tt_entry.best_move } else { NO_MOVE };
-    let alpha_orig = alpha;
 
     let tt_hit = tt_entry.hit;
     let tt_cur_gen = info.tt.current_generation();
