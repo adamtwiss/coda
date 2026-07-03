@@ -203,15 +203,16 @@ def main():
 
     print(f"\nB/C. BLINDSPOT overscore + long tail  (heldout overrate set, "
           f"{rows[0]['bs']['n']} pos)")
-    h = f"   {'net':<32} {'overscore':>10} {'mean|err|':>10} {'p90':>5} {'p99':>5} {'max':>6}"
+    h = (f"   {'net':<32} {'overscore':>10} {'mean|err|':>10} {'vs.first':>9} "
+         f"{'p90':>5} {'p99':>5} {'max':>6}")
     print(h); print("   " + "-" * (len(h) - 3))
     base_mae = None
     for r in rows:
         mae = r["bs"]["mae"]
-        d = "" if base_mae is None else f"  ({mae-base_mae:+.1f})"
+        d = "" if base_mae is None else f"{mae-base_mae:+.1f}"
         if base_mae is None:
             base_mae = mae
-        print(f"   {r['net'][:32]:<32} {r['bs']['overscore']:>+10.1f} {mae:>10.1f}{d} "
+        print(f"   {r['net'][:32]:<32} {r['bs']['overscore']:>+10.1f} {mae:>10.1f} {d:>9} "
               f"{r['bs']['p90']:>5} {r['bs']['p99']:>5} {r['bs']['mx']:>6}")
 
     wb_n = next((r["wb"]["n"] for r in rows if r["wb"]), "?")
