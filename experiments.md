@@ -17384,3 +17384,38 @@ for expensive changes (architecture, retrains) where you can't just try it.
 **P1 backlog now: only P1.4 (bank aborted-iteration, architecture-scale) and the
 never-attempted P1.3 corrhist retune remain unstarted.** The interior-search
 list is otherwise exhausted.
+## 2026-07-03 — Train-vs-inference parity: full-surface verification (hypothesis CLOSED)
+
+Adam's preferred blindspot hypothesis was another C8-class train/inference
+delta hiding behind the self-referential fuzzer. Enumerated every remaining
+divergence surface and closed each empirically (full detail:
+`docs/train_inference_parity_2026-07-03.md`):
+
+- **PSQ/HalfKA cross-differ** (new, was NEVER empirically checked): Coda
+  `halfka_index_with` vs real Bullet `ChessBucketsMirrored`, exact
+  per-perspective pairing, standard+960+promotion corpus — **0/12,000**.
+  With threats (0/12,000, 2026-07-01) the entire v9 input feature path is
+  verified train==inference. Tooling: coda `tooling/psq-cross-differ`
+  (also adds `eval-fens` batch FEN-keyed static eval), bullet
+  `tooling/eval-fens-parity`.
+- **fp32 forward parity harness** (new): bullet `--eval-fens` +
+  `--warmstart-from <ckpt>` runs the REAL fp32 training graph over FEN lists.
+  On prod ckpt (multi-v8-l132-s3-v4-3000-swa ≙ E6C62000), heldout overrate
+  corpus: **mean |fp32−lc0| = 212.0 vs |coda−lc0| = 211.6** — the blindspot is
+  fully present in the trained weights with zero Coda code in the loop.
+  Inference-vs-fp32 delta is small and near-unbiased (mean|d| 23cp heldout /
+  15cp control, means ±3-5cp, corr with err ≤0.2).
+- **Mirror-residual scan** (deliberate threat asymmetry, corpus-scale
+  quantification the 06-17 doc asked for): heldout mean |res| 12.6cp vs
+  control 5.0cp, corr(|res|,|err|) 0.08 — real, minor, NOT the cause.
+- **Threat i16→i8 clip**: prod pre-clip quantised.bin has 0.0036% clipped
+  (excess mean 37, max 386, 1,602 rows) but ~95% of ALL positions touch
+  clipped rows, heldout clip-mass LOWER than control, corr ≈0/negative —
+  refuted as class-specific cause.
+
+**Verdict: the overscore blindspot is a training-signal problem (rare-motif
+under-emphasis under bulk MSE), not a pipeline bug.** Effort redirects to
+data/objective levers (motif-targeted corrective data — 318M-corpus now also
+on Hercules /training/blindspot — WRM/WDL, emphasis mechanisms). Secondary:
+inference quantization noise is ~±20-30cp σ unbiased (p99 65-98cp) — possible
+cheap QAT / i16-threat probe later, explicitly not blindspot-related.
