@@ -17483,3 +17483,24 @@ Next from the audit: Tier-2 kernel tricks (mulhi pairwise pack +
 load-time packus permutation; maddubs-pair fusion gated on max|w|≤64) —
 these are the actual AVX2-vs-AVX512 gap items; tier-1 turned out to be a
 fleet-wide win rather than an AVX2-specific one.
+
+---
+
+## AVX2 tier-2: gated maddubs-pair fused L1 kernel — MERGED +2.1 H1 (2026-07-03)
+
+Tier-2 item B4 from `docs/avx2_gap_audit_2026-07-03.md` (the reference-engine
+catalog's "double dpbusd": Reckless/Berserk/PlentyChess/Alexandria).
+`dense_l1_avx2_l1_32_x2`: two input chunks per iteration, VPMADDUBSW
+products summed with one VPADDW before a single shared VPMADDWD — halves
+the madd count of the AVX2 VPDPBUSD emulation. **Gated at net load** on an
+exact per-lane saturation check (`sparse_l1::x2_fusion_safe`,
+`127·Σ|w| ≤ 32767` per co-lane quad): the prod net measures worst lane sum
+163 (safe with margin) even though its global max|w|=127 — a naive
+global-max gate would have wrongly rejected it. Unsafe future nets fall
+back to the unfused kernel automatically. Plain-AVX2 dispatch hosts only.
+
+Titan (Zen 1, perf -r 3): **−4.3% instructions, ~+3.7% wall**. OB #2495
+(STC `[-2,1]`): **H1 +2.1 ±2.1, LLR 2.96, N=24,902.** Merge `1217755`.
+
+Sibling tier-2 branch `nps/avx2-mulhi-pack` (#2494, consensus mulhi pack,
+~+0.8% titan) still in flight at time of logging.
