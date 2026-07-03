@@ -17384,3 +17384,62 @@ for expensive changes (architecture, retrains) where you can't just try it.
 **P1 backlog now: only P1.4 (bank aborted-iteration, architecture-scale) and the
 never-attempted P1.3 corrhist retune remain unstarted.** The interior-search
 list is otherwise exhausted.
+## 2026-07-03 — Train-vs-inference parity: full-surface verification (hypothesis CLOSED)
+
+Adam's preferred blindspot hypothesis was another C8-class train/inference
+delta hiding behind the self-referential fuzzer. Enumerated every remaining
+divergence surface and closed each empirically (full detail:
+`docs/train_inference_parity_2026-07-03.md`):
+
+- **PSQ/HalfKA cross-differ** (new, was NEVER empirically checked): Coda
+  `halfka_index_with` vs real Bullet `ChessBucketsMirrored`, exact
+  per-perspective pairing, standard+960+promotion corpus — **0/12,000**.
+  With threats (0/12,000, 2026-07-01) the entire v9 input feature path is
+  verified train==inference. Tooling: coda `tooling/psq-cross-differ`
+  (also adds `eval-fens` batch FEN-keyed static eval), bullet
+  `tooling/eval-fens-parity`.
+- **fp32 forward parity harness** (new): bullet `--eval-fens` +
+  `--warmstart-from <ckpt>` runs the REAL fp32 training graph over FEN lists.
+  On prod ckpt (multi-v8-l132-s3-v4-3000-swa ≙ E6C62000), heldout overrate
+  corpus: **mean |fp32−lc0| = 212.0 vs |coda−lc0| = 211.6** — the blindspot is
+  fully present in the trained weights with zero Coda code in the loop.
+  Inference-vs-fp32 delta is small and near-unbiased (mean|d| 23cp heldout /
+  15cp control, means ±3-5cp, corr with err ≤0.2).
+- **Mirror-residual scan** (deliberate threat asymmetry, corpus-scale
+  quantification the 06-17 doc asked for): heldout mean |res| 12.6cp vs
+  control 5.0cp, corr(|res|,|err|) 0.08 — real, minor, NOT the cause.
+- **Threat i16→i8 clip**: prod pre-clip quantised.bin has 0.0036% clipped
+  (excess mean 37, max 386, 1,602 rows) but ~95% of ALL positions touch
+  clipped rows, heldout clip-mass LOWER than control, corr ≈0/negative —
+  refuted as class-specific cause.
+
+**Verdict: the overscore blindspot is a training-signal problem (rare-motif
+under-emphasis under bulk MSE), not a pipeline bug.** Effort redirects to
+data/objective levers (motif-targeted corrective data — 318M-corpus now also
+on Hercules /training/blindspot — WRM/WDL, emphasis mechanisms). Secondary:
+inference quantization noise is ~±20-30cp σ unbiased (p99 65-98cp) — possible
+cheap QAT / i16-threat probe later, explicitly not blindspot-related.
+
+### 2026-07-03 addendum — symmetric blindspot count: SF has them too (the "why us, not SF" question dissolves)
+
+First-ever two-directional count, unbiased 100k sample (jun-2024 T80, quiet,
+|lc0|<=600, calibrated scales, multi-v9-s3-swa vs SF static via sf-evalfile):
+**Coda-specific blindspots 2.59% vs SF-specific 2.36%** (>=150 off, other
+engine closer by >=80); both->=150-off (shared, statically-unfittable) 8.57%;
+mean|err| 65.4 vs 65.0, quantiles indistinguishable (p50/p90/p99 37/168/352 vs
+37/165/353). The "Coda has blindspots SF doesn't" framing was a one-directional
+-filter artifact — the harvest only ever scanned our own direction. Two
+equally-good nets place residuals on different positions; games adversarially
+self-sample YOUR OWN overrates (search steers into positions it over-values),
+which is why ours are so visible in our games. Remaining true asymmetry ~0.2pp
+(~10% relative) — the wdl26+WRM lever remains the candidate refinement for
+that. Corrective-data program unaffected (LC0-truth labels can't teach wrong
+values); monitor redistribution by re-running this symmetric count per
+candidate net (recipe: calib_sample.csv pattern, /workspace/blindspot_scratch).
+
+Also this session: full-corpus blindspot harvest v2 (multi-v9 selection net,
+recalibrated coda a=0.833/sf a=2.711 r~0.81, all 45 binpacks /workspace/all,
+~436B positions) launched on gpu4 tmux `blindspot`, N=12 nice-19 (bandwidth-
+bound: same throughput as N=16, ~13.9M pos/s), ETA ~1-2 days, newest-T80
+first; synthetic SF-scored tail files ordered last + flagged (weaker oracle
+logic). Supersedes the Jan-Jun-2024 old-net harvest.

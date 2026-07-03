@@ -420,6 +420,19 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         max_abs_lc0: i32,
     },
+    /// Batch static-eval a FEN list: one FEN per line (extra tab-separated
+    /// columns after the FEN are ignored), emits `fen<TAB>eval_stm_cp` keyed
+    /// by FEN. Exists so corpus tooling never scrapes UCI `eval` output by
+    /// line order (known misalignment trap, see
+    /// docs/overrate_eval_investigation_2026-06-30.md).
+    EvalFens {
+        /// Input file: one FEN per line, or TSV with FEN in column 0
+        #[arg(long, short = 'i')]
+        input: String,
+        /// Output TSV path ("-" for stdout)
+        #[arg(long, short = 'o', default_value = "-")]
+        output: String,
+    },
     /// Dump threat features for a FEN position (for cross-checking with Bullet)
     DumpThreats {
         /// FEN string
@@ -1166,6 +1179,35 @@ fn main() {
                     },
                 );
 
+                // Complete feature-index set (incl x-ray) for cross-implementation diffing
+                // against Bullet's map_features. The detail loop below prints DIRECT threats
+                // only, so this IDX line is the authoritative per-POV set.
+                let mut idxs: Vec<usize> = features.iter().map(|(i, _)| *i).collect();
+                idxs.sort_unstable();
+                idxs.dedup();
+                println!("IDX {}", idxs.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "));
+
+                // PSQ (HalfKA) feature-index set for this POV, reckless kb10
+                // layout, for cross-implementation diffing against Bullet's
+                // ChessBucketsMirrored (scripts/psq_cross_differ.py). The
+                // threat IDX gate above says nothing about this half of the
+                // input — it has its own mirror/bucket/perspective machinery.
+                let (kb_tab, km_tab) = nnue::compute_king_buckets(nnue::KbLayout::Reckless);
+                let mut psq: Vec<usize> = Vec::new();
+                for color in [types::WHITE, types::BLACK] {
+                    for pt in 0..6u8 {
+                        let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
+                        while bb != 0 {
+                            let sq = bb.trailing_zeros() as u8;
+                            bb &= bb - 1;
+                            psq.push(nnue::halfka_index_with(
+                                &kb_tab, &km_tab, pov, king_sq as u8, color, pt, sq));
+                        }
+                    }
+                }
+                psq.sort_unstable();
+                println!("PSQ {}", psq.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "));
+
                 // Re-enumerate with detail for printing
                 let white_bb = board.colors[types::WHITE as usize];
                 for color in [types::WHITE, types::BLACK] {
@@ -1224,6 +1266,10 @@ fn main() {
 
         Some(Commands::EvalDist { input, count, csv, quiet_only, shard, min_error, max_abs_lc0 }) => {
             run_eval_dist(&input, count, &cli.nnue, &csv, quiet_only, &shard, min_error, max_abs_lc0);
+        }
+
+        Some(Commands::EvalFens { input, output }) => {
+            run_eval_fens(&input, &output, &cli.nnue);
         }
 
         Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, xray_trained, reckless_buckets }) => {
@@ -2396,6 +2442,55 @@ fn run_sample_positions(input: &str, output: &str, n: usize, sample_rate: f64) {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn run_eval_fens(input: &str, output: &str, nnue_path: &Option<String>) {
+    use std::io::{BufRead as _, Write as _};
+
+    let mut info = search::SearchInfo::new(1);
+    info.silent = true;
+    if let Some(path) = nnue_path {
+        info.load_nnue(path).expect("Failed to load NNUE");
+    } else if !info.auto_discover_nnue() {
+        eprintln!("Error: No NNUE net. Use -n <path>");
+        return;
+    }
+
+    let file = std::fs::File::open(input).unwrap_or_else(|_| panic!("Failed to open {}", input));
+    let reader = std::io::BufReader::new(file);
+    let mut out: Box<dyn std::io::Write> = if output == "-" {
+        Box::new(std::io::BufWriter::new(std::io::stdout()))
+    } else {
+        Box::new(std::io::BufWriter::new(
+            std::fs::File::create(output).unwrap_or_else(|_| panic!("Failed to create {}", output)),
+        ))
+    };
+
+    let (net, acc) = match (&info.nnue_net, &mut info.nnue_acc) {
+        (Some(net), Some(acc)) => (net, acc),
+        _ => { eprintln!("Error: NNUE not initialised"); return; }
+    };
+
+    let mut n = 0usize;
+    for line in reader.lines() {
+        let line = line.expect("read error");
+        let fen = line.split('\t').next().unwrap_or("").trim();
+        if fen.is_empty() || fen.starts_with('#') { continue; }
+        let board = board::Board::from_fen(fen);
+
+        let mut ts = crate::threat_accum::ThreatStack::new(net.hidden_size);
+        ts.active = net.has_threats;
+        if ts.active {
+            ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+        }
+        // Each FEN is an unrelated board: full recompute, same as eval-dist.
+        acc.force_recompute(net, &board);
+        let score = eval::evaluate_nnue(&board, net, acc, &ts);
+        writeln!(out, "{}\t{}", fen, score).unwrap();
+        n += 1;
+    }
+    out.flush().unwrap();
+    eprintln!("eval-fens: {} positions evaluated", n);
+}
+
 fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option<String>,
                  quiet_only: bool, shard: &Option<String>, min_error: i32, max_abs_lc0: i32) {
     use sfbinpack::CompressedTrainingDataEntryReader;
