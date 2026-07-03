@@ -4475,6 +4475,31 @@ fn negamax(
             depth
         };
 
+        // Futility pruning (P2.2: moved ABOVE SEE-quiet so the cheap static prune
+        // fires first — SEE-quiet then only re-runs see_ge on survivors; 5/6
+        // references order it this way, analog LMP reorder #2283 was H1 +0.6).
+        // Skip quiet moves when static eval + margin is below alpha. Uses shared
+        // lmr_d for both gate and margin.
+        if ply > 0 && static_eval > -INFINITY && !in_check
+            && !is_cap && !is_promo
+            && !is_loss(best_score)
+            && beta < MATE_IN_MAX_PLY  // forced-win guard: don't futility-prune quiets while proving a win
+            && FEAT_FUTILITY.load(Ordering::Relaxed)
+            && lmr_d <= tp(&FUT_LMR_DEPTH)
+        {
+            let main_hist = info.history.main_score(from, to, enemy_attacks);
+            let hist_adj = main_hist / 128;
+            let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
+            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
+            // Direct-check carve-out + strong-history exemption (Igel/Reckless #410).
+            if futility_value <= alpha && main_hist < 12000 && !board.gives_direct_check(mv) {
+                info.stats.futility_prunes += 1;
+                skip_quiets = true;
+                picker.skip_remaining_quiets();
+                continue;
+            }
+        }
+
         // SEE quiet pruning: prune quiet moves landing on attacked squares.
         // Use lmrDepth² scaling (matching Stockfish/Berserk/Obsidian).
         if ply > 0 && !in_check
@@ -4638,31 +4663,7 @@ fn negamax(
         // FEAT_HIST_PRUNE flag; ENABLE_/NO_HIST_PRUNE env vars; the diagnostic
         // PruneStats fields (hist_prune_*, history_prunes, cont_hist_*).
 
-        // Futility pruning: skip quiet moves when static eval + margin is below alpha.
-        // Uses shared lmr_d for both gate and margin (SF/Obsidian/Berserk consensus).
-        if ply > 0 && static_eval > -INFINITY && !in_check
-            && !is_cap && !is_promo
-            && !is_loss(best_score)
-            && beta < MATE_IN_MAX_PLY  // forced-win guard: don't futility-prune quiets while proving a win
-            && FEAT_FUTILITY.load(Ordering::Relaxed)
-            && lmr_d <= tp(&FUT_LMR_DEPTH)
-        {
-            let main_hist = info.history.main_score(from, to, enemy_attacks);
-            let hist_adj = main_hist / 128;
-            // our_defenses widener: add margin per our-piece-under-attack so
-            // tactical positions keep more lines from being pruned on eval.
-            let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
-            // Don't futility-prune moves with very strong history (Igel pattern)
-            // Direct-check carve-out: don't prune moves that give direct check
-            // (Reckless #410 +1.62 STC).
-            if futility_value <= alpha && main_hist < 12000 && !board.gives_direct_check(mv) {
-                info.stats.futility_prunes += 1;
-                skip_quiets = true;
-                picker.skip_remaining_quiets();
-                continue;
-            }
-        }
+        // (Futility pruning moved above SEE-quiet — P2.2.)
 
         // (Late Move Pruning moved earlier — now runs before SEE/futility,
         // immediately after the skip_quiets check. SF Step-14 order.)
