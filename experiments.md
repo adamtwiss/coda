@@ -17419,3 +17419,27 @@ data/objective levers (motif-targeted corrective data — 318M-corpus now also
 on Hercules /training/blindspot — WRM/WDL, emphasis mechanisms). Secondary:
 inference quantization noise is ~±20-30cp σ unbiased (p99 65-98cp) — possible
 cheap QAT / i16-threat probe later, explicitly not blindspot-related.
+
+### 2026-07-03 addendum — symmetric blindspot count: SF has them too (the "why us, not SF" question dissolves)
+
+First-ever two-directional count, unbiased 100k sample (jun-2024 T80, quiet,
+|lc0|<=600, calibrated scales, multi-v9-s3-swa vs SF static via sf-evalfile):
+**Coda-specific blindspots 2.59% vs SF-specific 2.36%** (>=150 off, other
+engine closer by >=80); both->=150-off (shared, statically-unfittable) 8.57%;
+mean|err| 65.4 vs 65.0, quantiles indistinguishable (p50/p90/p99 37/168/352 vs
+37/165/353). The "Coda has blindspots SF doesn't" framing was a one-directional
+-filter artifact — the harvest only ever scanned our own direction. Two
+equally-good nets place residuals on different positions; games adversarially
+self-sample YOUR OWN overrates (search steers into positions it over-values),
+which is why ours are so visible in our games. Remaining true asymmetry ~0.2pp
+(~10% relative) — the wdl26+WRM lever remains the candidate refinement for
+that. Corrective-data program unaffected (LC0-truth labels can't teach wrong
+values); monitor redistribution by re-running this symmetric count per
+candidate net (recipe: calib_sample.csv pattern, /workspace/blindspot_scratch).
+
+Also this session: full-corpus blindspot harvest v2 (multi-v9 selection net,
+recalibrated coda a=0.833/sf a=2.711 r~0.81, all 45 binpacks /workspace/all,
+~436B positions) launched on gpu4 tmux `blindspot`, N=12 nice-19 (bandwidth-
+bound: same throughput as N=16, ~13.9M pos/s), ETA ~1-2 days, newest-T80
+first; synthetic SF-scored tail files ordered last + flagged (weaker oracle
+logic). Supersedes the Jan-Jun-2024 old-net harvest.
