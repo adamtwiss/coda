@@ -789,7 +789,11 @@ impl MovePicker {
                 // history. mvv_lva now adds the promotion material delta
                 // internally (audit #25), so capture-promotions rank above
                 // regular captures.
-                10000 + mvv_lva(board, m) + capt_hist_score_static(board, history, m)
+                // P1.11: uncrossable capture band (1<<20) — quiet-history sums
+                // span ±80k, so a 10000-offset let a hot quiet outrank a fresh
+                // capture of the checker. SF (1<<28), Berserk (1e7). mvv+captHist
+                // still order within the band (preserves C8 #26 capture-promo).
+                (1 << 20) + mvv_lva(board, m) + capt_hist_score_static(board, history, m)
             } else if is_promotion(m) {
                 if flags == FLAG_PROMOTE_Q {
                     9000
@@ -1232,8 +1236,8 @@ impl QMovePicker {
                 let mvv = mvv_lva(board, mv);
                 let capt_hist = capt_hist_score_static(board, history, mv);
                 if in_check {
-                    // Evasion captures scored high (10000 + mvv + captHist)
-                    picker.scores[i].write(10000 + mvv + capt_hist);
+                    // Evasion captures: uncrossable band (P1.11, see new_evasion).
+                    picker.scores[i].write((1 << 20) + mvv + capt_hist);
                 } else {
                     picker.scores[i].write(mvv + capt_hist);
                 }
