@@ -184,6 +184,12 @@ tunables!(
     // bind), while capping 600+1 at 40s (was 276s) and 60+0.1 at 13s.
     (TM_INC_HARD_MULT, 30, 0, 120, 4.0, false),
     (TM_INC_HARD_FLOOR_MS, 10000, 0, 60000, 1000.0, false),
+    // No-inc adaptive mtg divisor (2026-07-02): base assumed moves-to-go
+    // and growth rate once a game outlives that assumption — see
+    // compute_tm_budgets for the full derivation. Tuned by focused SPSA
+    // #2444 (1000 iters, 30+0 zero-inc): base 40->34.4, growth 100->94.3.
+    (NO_INC_MTG_BASE, 34, 20, 80, 4.0, false),
+    (NO_INC_MTG_GROWTH_PCT, 94, 0, 200, 10.0, false),
     (LMR_HIST_DIV, 13381, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
@@ -1819,8 +1825,32 @@ pub fn compute_tm_budgets(
     // multiplier (up to ~6.5×) to consistently blow past hard_time,
     // making hard the binding constraint every move (uniform-spend
     // pattern, lichess MJ442247 / 3+0).
-    const NO_INC_MOVES_TO_GO: u64 = 40;
-    let mtg_divisor = if no_inc_sd { NO_INC_MOVES_TO_GO } else { DEFAULT_MOVES_TO_GO };
+    //
+    // Adaptive tightening (2026-07-02): a FIXED base assumption never
+    // tightens as a game outlives it (move 80 still assumes "40 moves
+    // left"). Diagnosed from real coda_bot Lichess losses (all "outoftime"
+    // zero-inc bullet forfeits) and confirmed via local RR (Coda vs
+    // Reckless/Obsidian/Berserk/Alexandria, 30+0, no adjudication): 0/320
+    // forfeits for the 4 peer engines vs 7/320 for Coda, all preceded by
+    // 70-88% of the clock burned by move ~60 in games running 130-220+
+    // plies. Once fullmove exceeds NO_INC_MTG_BASE, grow the divisor by
+    // NO_INC_MTG_GROWTH_PCT% of the overrun: effective_mtg = base +
+    // growth_pct/100 * max(0, fullmove - base).
+    //
+    // A first attempt with fixed constants (base=40, growth=100%, OB
+    // #2438) fully eliminated forfeits in local RR (0/320) but was a real
+    // SPRT regression (-3.5 ±2.5, LLR -2.95 H0 at N=17,670 at 30+0) — the
+    // mechanism works but over-tightens mid-game allocation even in games
+    // that were never going to forfeit. Exposed as tunables instead and
+    // SPSA-tuned (#2444, focused 2-param, 1000 iters, 30+0 zero-inc):
+    // base 40->34.4, growth_pct 100->94.3 (both significant movement,
+    // held steady across the whole tune). Applied here as new defaults;
+    // re-verify forfeit-count + non-regression SPRT before merge.
+    let no_inc_mtg_base = tp(&NO_INC_MTG_BASE).max(1) as u64;
+    let no_inc_growth_pct = tp(&NO_INC_MTG_GROWTH_PCT).max(0) as u64;
+    let no_inc_effective_mtg = no_inc_mtg_base
+        + (fullmove as u64).saturating_sub(no_inc_mtg_base) * no_inc_growth_pct / 100;
+    let mtg_divisor = if no_inc_sd { no_inc_effective_mtg.max(1) } else { DEFAULT_MOVES_TO_GO };
 
     let opt_time_base = if movestogo > 0 {
         // Movestogo: divisor is clamped to [2, default_mtg]. TM audit
