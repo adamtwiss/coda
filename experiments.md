@@ -17443,3 +17443,43 @@ recalibrated coda a=0.833/sf a=2.711 r~0.81, all 45 binpacks /workspace/all,
 bound: same throughput as N=16, ~13.9M pos/s), ETA ~1-2 days, newest-T80
 first; synthetic SF-scored tail files ordered last + flagged (weaker oracle
 logic). Supersedes the Jan-Jun-2024 old-net harvest.
+
+---
+
+## AVX2-gap audit tier-1: hugepage weight matrices — MERGED +7.4 H1 (2026-07-03)
+
+From the three-workstream AVX2-host NPS audit
+(`docs/avx2_gap_audit_2026-07-03.md`). Tier-1 batch (bit-identical, bench
+2620566 unchanged): (1) hugepage-backed threat (65 MiB) + PSQ (15 MiB)
+weight matrices via mmap-first + `MADV_HUGEPAGE` (works in THP `[madvise]`
+mode, no sysctls needed); (2) 64-B-align `threat_weights`; (3) threat
+dispatch ISA probes hoisted to a cached tier. A 4th item (threat-apply
+AVX2 REGS 8→12 retile) was **measured −5.6% on Zen 1** (titan, perf -r 3,
+IPC 1.26→1.18 — 256-bit ops crack to 2×128-bit µops, PRF oversubscription,
+same failure mode as the REGS=24 AVX-512 attempt) and reverted pre-SPRT.
+
+**Validation** (titan EPYC 7351P Zen 1 + ionos6 Milan VPS, OB workers
+stopped): THP engagement confirmed live (142 MiB AnonHugePages);
+**dTLB-load-misses −86% (titan) / −96% (ionos6)**; cache-misses −6%;
+single-thread bench ~+1.5%. **OB SPRT #2493 (STC, `[-2,1]`
+non-regression): H1 +7.4 ±3.8, LLR 2.99, N=7,520** — far above the
+NPS-predicted Elo. Interpretation: the fleet is KVM VPSes (dedicated
+cores, shared memory/cache); a guest dTLB miss costs a 2D page walk
+(guest × host EPT, up to ~24 memory accesses), so 2 MiB guest pages are
+worth much more in deployment than in an idle single-thread bench.
+Per-worker breakdown (Adam raised throughput to spread across hosts):
+positive on both AVX-512 prod instances and AVX2 ionos VPSes, 0
+timelosses/crashes on 18 workers. Merge commit `dab809c`.
+
+**Lessons:** (a) measure kernel retiles per-uArch before shipping — the
+"obvious" SF-style REGS=12 budget is wrong for Zen 1's split-execution
+AVX2; (b) allocation-order matters for THP: `alloc_zeroed` faults pages
+4 KiB before any madvise can run — mmap-first so the data-load writes
+fault huge; (c) per-worker dev/base NPS on the OB machines page is a
+useful uArch-breakdown signal for NPS changes
+(`scratchpad/ob_worker_breakdown.py`, candidate for scripts/).
+
+Next from the audit: Tier-2 kernel tricks (mulhi pairwise pack +
+load-time packus permutation; maddubs-pair fusion gated on max|w|≤64) —
+these are the actual AVX2-vs-AVX512 gap items; tier-1 turned out to be a
+fleet-wide win rather than an AVX2-specific one.
