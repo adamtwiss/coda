@@ -3254,7 +3254,12 @@ fn negamax(
             // near-miss + QS) on halfmove < 90. Window-narrowing is still applied —
             // it only biases the search, while returning stale tt_score is unsafe.
             let halfmove_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
-            if tt_depth >= depth && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
+            // P1.8: require +1 ply of TT depth for a fail-high (LOWER) cutoff —
+            // SF/Reckless/Obsidian/PlentyChess all demand `depth > depth - (value
+            // <= beta)`, i.e. fail-lows accept at tt_depth>=depth but fail-highs
+            // need tt_depth>=depth+1. Coda's symmetric `>= depth` is more
+            // permissive on fail-highs than the top 3.
+            if tt_depth > depth - (tt_score <= beta) as i32 && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 // Unified TT cutoff with node-type guard (Alexandria pattern):
                 // At non-PV nodes, accept TT cutoff when:
                 // - cut_node matches score direction (cut expects fail-high, all expects fail-low)
