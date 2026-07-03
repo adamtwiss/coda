@@ -126,6 +126,9 @@ pub struct AlignedVec<T> {
     len: usize,
     cap: usize,
     align: usize,
+    /// True when backed by a direct anonymous mmap (hugepage path) —
+    /// Drop must munmap instead of dealloc.
+    mmapped: bool,
 }
 unsafe impl<T: Send> Send for AlignedVec<T> {}
 unsafe impl<T: Sync> Sync for AlignedVec<T> {}
@@ -136,42 +139,96 @@ impl<T: Default + Copy> AlignedVec<T> {
 
     fn zeros_aligned(n: usize, align: usize) -> Self {
         use std::alloc::{alloc_zeroed, Layout};
-        if n == 0 { return Self { ptr: std::ptr::NonNull::dangling().as_ptr(), len: 0, cap: n, align }; }
+        if n == 0 { return Self { ptr: std::ptr::NonNull::dangling().as_ptr(), len: 0, cap: n, align, mmapped: false }; }
         let layout = Layout::from_size_align(n * std::mem::size_of::<T>(), align).unwrap();
         let ptr = unsafe { alloc_zeroed(layout) } as *mut T;
         if ptr.is_null() { std::alloc::handle_alloc_error(layout); }
-        Self { ptr, len: n, cap: n, align }
+        Self { ptr, len: n, cap: n, align, mmapped: false }
     }
 
     pub fn zeros(n: usize) -> Self {
         Self::zeros_aligned(n, 64)
     }
 
-    /// 2 MiB-aligned allocation with `MADV_HUGEPAGE` advised up front, for the
-    /// big weight matrices (threat 65 MiB, PSQ 15 MiB). Weight rows are indexed
-    /// effectively at random per node; on 4 KiB pages the threat matrix alone
-    /// spans ~16,700 pages (~20 dTLB entries touched per node) — real STLB
-    /// pressure on small-cache AVX2-era hosts. Same THP pattern as the TT
-    /// allocator tier 2 (tt.rs `from_heap_with_thp`), minus the explicit
-    /// hugetlb tier. Call `advise_collapse` AFTER filling the data (COLLAPSE
-    /// needs populated pages; the weight-load write populates them).
+    /// 2 MiB-aligned zeroed allocation with `MADV_HUGEPAGE` advised BEFORE any
+    /// page is touched, for the big weight matrices (threat 65 MiB, PSQ
+    /// 15 MiB). Weight rows are indexed effectively at random per node; on
+    /// 4 KiB pages the threat matrix alone spans ~16,700 pages (~20 dTLB
+    /// entries touched per node) — real STLB pressure on small-cache
+    /// AVX2-era hosts.
+    ///
+    /// Ordering is the load-bearing detail (learned from the TT allocator,
+    /// tt.rs): `alloc_zeroed` memsets — faulting every page in as 4 KiB
+    /// BEFORE any madvise could run — leaving THP to a `MADV_COLLAPSE` that
+    /// EINVALs on some setups (e.g. PR_SET_THP_DISABLE'd process trees) and
+    /// to khugepaged's slow background pass. A direct anonymous mmap is
+    /// kernel-zeroed WITHOUT faulting pages in, so advising the fresh
+    /// mapping first means the subsequent weight-load writes fault straight
+    /// into 2 MiB pages on both `enabled=always` and `enabled=madvise`
+    /// systems. Falls back to the plain aligned heap + advise-after path if
+    /// mmap fails (or off-Linux), where `advise_collapse` after the load is
+    /// the recovery.
     pub fn hugepage_zeros(n: usize) -> Self {
+        if n == 0 { return Self::zeros(0); }
+        #[cfg(target_os = "linux")]
+        unsafe {
+            let size = n * std::mem::size_of::<T>();
+            // Over-allocate by one huge page so the base can be aligned up
+            // to a 2 MiB boundary (mmap only guarantees 4 KiB alignment;
+            // PMD-size THP only backs 2 MiB-aligned virtual extents).
+            let alloc_size = size + Self::HUGE_PAGE;
+            let raw = libc::mmap(
+                std::ptr::null_mut(),
+                alloc_size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            );
+            if raw != libc::MAP_FAILED {
+                let base = raw as usize;
+                let aligned = (base + Self::HUGE_PAGE - 1) & !(Self::HUGE_PAGE - 1);
+                // Trim the unaligned head and the tail beyond the data
+                // (rounded up to a 4 KiB page boundary).
+                if aligned > base {
+                    libc::munmap(raw, aligned - base);
+                }
+                let page = 4096usize;
+                let data_end = (aligned + size + page - 1) & !(page - 1);
+                let map_end = base + alloc_size;
+                if map_end > data_end {
+                    libc::munmap(data_end as *mut libc::c_void, map_end - data_end);
+                }
+                libc::madvise(aligned as *mut libc::c_void, size, libc::MADV_HUGEPAGE);
+                return Self {
+                    ptr: aligned as *mut T,
+                    len: n,
+                    cap: n,
+                    align: Self::HUGE_PAGE,
+                    mmapped: true,
+                };
+            }
+        }
+        // Fallback: aligned heap. Pages are already faulted in 4 KiB by the
+        // zeroing memset; advise anyway so khugepaged / advise_collapse can
+        // promote later.
         let v = Self::zeros_aligned(n, Self::HUGE_PAGE);
         #[cfg(target_os = "linux")]
-        if n > 0 {
-            unsafe {
-                libc::madvise(
-                    v.ptr as *mut libc::c_void,
-                    n * std::mem::size_of::<T>(),
-                    libc::MADV_HUGEPAGE,
-                );
-            }
+        unsafe {
+            libc::madvise(
+                v.ptr as *mut libc::c_void,
+                n * std::mem::size_of::<T>(),
+                libc::MADV_HUGEPAGE,
+            );
         }
         v
     }
 
     /// Best-effort synchronous THP promotion (MADV_COLLAPSE, Linux 6.1+).
-    /// Benign no-op on older kernels or non-hugepage allocations.
+    /// Benign no-op on older kernels, non-hugepage allocations, or
+    /// THP-disabled process trees; the mmap path usually doesn't need it
+    /// (pages fault in huge), but it recovers the heap-fallback path and
+    /// any pages that faulted before the data write.
     pub fn advise_collapse(&self) {
         #[cfg(target_os = "linux")]
         if self.cap > 0 && self.align >= Self::HUGE_PAGE {
@@ -203,6 +260,18 @@ impl<T: Default + Copy> From<Vec<T>> for AlignedVec<T> {
 impl<T> Drop for AlignedVec<T> {
     fn drop(&mut self) {
         if self.cap == 0 { return; }
+        if self.mmapped {
+            #[cfg(target_os = "linux")]
+            unsafe {
+                // munmap rounds the length up to the page boundary, which
+                // matches the tail-trim in hugepage_zeros.
+                libc::munmap(
+                    self.ptr as *mut libc::c_void,
+                    self.cap * std::mem::size_of::<T>(),
+                );
+            }
+            return;
+        }
         use std::alloc::{dealloc, Layout};
         let layout = Layout::from_size_align(self.cap * std::mem::size_of::<T>(), self.align).unwrap();
         unsafe { dealloc(self.ptr as *mut u8, layout); }
