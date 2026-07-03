@@ -17504,3 +17504,29 @@ Titan (Zen 1, perf -r 3): **−4.3% instructions, ~+3.7% wall**. OB #2495
 
 Sibling tier-2 branch `nps/avx2-mulhi-pack` (#2494, consensus mulhi pack,
 ~+0.8% titan) still in flight at time of logging.
+
+---
+
+## No-inc TM v3 (material-aware term) — STOPPED unresolved, NOT merged (2026-07-03)
+
+`tm/no-inc-material-aware` (#2482, 30+0, `[-2,1]`): the material-count
+supplement on top of merged v2 (flat mtg bonus when non-king pieces ≤ 6,
+motivated by all 7 baseline forfeits being deep simplified endgames).
+Local RR criterion passed identically to v1/v2 (0/320 forfeits). SPRT ran
+**65k games without resolving**: -0.4 ±1.3, LLR -0.61 — a true effect
+near -0.5 sits almost equidistant between the bounds (SPRT worst case).
+Stopped per the OB-skill early-stop rule (H0-trending + CI upper < elo1 +
+very large N): more games could not change the decision, because v3's
+purpose was Elo *recovery* over v2 and the CI already excludes any
+meaningful positive effect, while forfeit protection is fully delivered
+by v2 alone.
+
+**The no-inc forfeit arc, closed for now:** v1 fixed constants (-3.5 H0)
+→ v2 SPSA-tuned (-1.4 H0, merged anyway on forfeit-asymmetry grounds) →
+v3 material-aware (~-0.4 unresolved, abandoned). All three eliminate
+forfeits; none is Elo-free. Main stays on v2. If the residual ~-1.4 cost
+ever needs recovering, candidates: fold the no-inc divisor params into
+the LTC TM campaign's tune (they're core=false but UCI-loadable), or a
+principled "spend-rate vs remaining-horizon" reformulation — NOT more
+constant-tweaking on this formula shape (three attempts = diminishing
+returns).
