@@ -17313,3 +17313,74 @@ permanently damping rather than reacting to real anomalies. Fullmove and
 material count are both stationary, externally-defined signals (not derived
 from the search's own noisy timing), which is why they don't inherit that
 failure mode.
+
+---
+
+## 2026-07-03 — Deep search-review P1/P3 wave: full results
+
+Continuation of the 2026-07-01 review. After the two early wins (P1.1 +3.2,
+P1.12a +3.0), the rest of the P1 list + P3.1 were fired as independent [0,3]
+(or [-1.5,1.5] uncertain-direction) branches off main. **Net across the whole
+P1 wave: +11.9 Elo merged** (P1.1, P1.8, P1.12a, P1.12d), everything else
+rejected/neutral. Base main bench 2634351 at time of this batch.
+
+| ID | Branch | Item | Result | Decision |
+|---:|---|---|---|---|
+| 2473 | `fix/tt-cutoff-fh-depth` | P1.8: require +1 ply TT depth for fail-high (LOWER) cutoffs — `tt_depth > depth - (tt_score <= beta)`, SF/Reckless/Obsidian/Plenty consensus; Coda's symmetric gate was more permissive. | `+3.6 ±2.4`, 22k, LLR 2.95, **H1 ✓** | **MERGED** (6c25c26, +11% bench — retune-on-branch upside untapped). |
+| 2477 | `fix/qs-fhblend-allnodes` | P1.12d: QS fail-high blend at all node types (dropped the `beta-alpha==1` non-PV gate). CONTRADICTED Coda's "PV skips QS blending" convention — consensus won. | `+2.1 ±2.1`, 29k, LLR 2.96, **H1 ✓** | **MERGED** (6b3b5e0). Follow-up removed now-dead `alpha_orig`. |
+| 2476 | `fix/qs-queen-only-promo` | P1.12b: skip non-queen QS push-underpromotions (SF/Reckless/Plenty queen-only in noisy movegen). | `-2.1 ±2.3`, 20k, LLR -2.95, **H0 ✗** | **REJECTED.** Coda finds real underpromo tactics in QS that queen-only movegen forgoes. |
+| 2475 | `fix/bestmove-alpha-gate` | P1.10: record best_move only on alpha-raise (negamax). Uncertain direction, 3 contra-priors. | `~-0.5`, →H0 (running to lock) | **Heading H0** — as #1931/#1945/#1660 predicted. |
+| 2474 | `fix/evasion-capture-band` | P1.11: uncrossable main-search evasion capture band (1<<20 vs 10000). | `+5.7 early → +0.7`, →H0 (running) | **Faded to neutral** — the early +5.7 was pure small-sample noise. |
+| 2478 | `fix/ttcut-malus-movecount` | P1.12c: gate TT-cutoff cont-hist malus on opp moveCount<4 (added a per-ply move_count stack). | `~-0.9`, →H0 (running) | **Heading H0.** |
+| 2453 | `fix/corrhist-residual` | P1.3: train corrhist on corrected residual not pre-correction error. | `-0.9`, H0 (untuned) | **Rejected untuned**; never retuned (retune track record poor — see P1.7/P3.1). |
+| 2452 | `fix/qs-evasion-see` | P1.5: SEE-prune losing capture evasions in QS. | `+0.3`, 133k, **H0 ✗** | **REJECTED.** |
+| 2449 | `fix/see-prune-in-check` | P1.6: run move-loop SEE pruning at in-check nodes. | `-0.2`, 65k, **H0 ✗** | **REJECTED.** |
+| 2459 | `fix/promo-noisy-history` | P1.9: route non-cap promos through the noisy history path (6-site change; picker reads capture[p][to][0]). | `-1.0`, 35k, **H0 ✗** | **REJECTED** despite the careful, verified implementation. |
+
+### P1.7 (QS tt_pv preservation) — retune resolved neutral, shelved
+Raw form H0'd -0.3 (#2450). First retune (#2455) ran on a STALE branch (forked
+before P1.1/P1.12a merged — the `LMR_CUTNODE_BUMP` apply-error exposed it), so
+it was confounded and shelved. **Rebased onto current main + fresh retune
+(#2470) → applied → SPRT #2472: +0.2 ±2.5, →H0 (neutral).** tt_pv preservation
+is genuinely ~neutral in Coda even retuned. Shelved. **Lesson: rebase a branch
+onto current main before firing a retune-on-branch if other work merged since
+the fork** — the stale tune's 1500 iters were wasted fleet.
+
+### P3.1 (TT-bound refinement of pruning eval) — the doc's "highest-EV" pick, SHELVED
+Untuned razor+RFP: **-9.5** (#2458). Retune-on-branch (#2460 applied → #2469):
+**-6.6, H0** — the retune improved it but nowhere near rescued it. **Root cause
+verified line-by-line against real SF source (search.cpp:750-905), NOT a coding
+bug:** my implementation faithfully matched the doc's design (refine a separate
+eval on bound-agreement, use for razor+RFP, NMP stays raw — confirmed SF's NMP
+uses raw `ss->staticEval`). The failure is a STRUCTURAL mismatch the doc didn't
+account for — **Coda's RFP is deep (depth<=18) and undampened (returns
+`eval-margin`), unlike SF's shallow (depth<15) dampened (`(2*beta+eval)/3`)
+RFP** — so refining the eval makes Coda's deep RFP over-fire on shallow TT LOWER
+bounds and inflate the fail-high. Isolation test **razor-only (#2471): -0.1,
+~neutral** (52k) — razoring refines safely, RFP was the entire -9.5. The doc's
+confidence came from the QS stand-pat analog (+6.5), a shallow/benign context
+that doesn't transfer to negamax deep-RFP. **P3.1 fully closed.** A dampened-RFP
+variant is possible but not pursued (razor-only couldn't even clear neutral).
+
+### P0.9 salvage (QS ply>=MAX_PLY guard)
+`fix/qs-maxply-guard` #2446: **-0.5, H0** (195k) — the salvaged half of the
+rejected #9 also measured slightly negative. Dropped.
+
+### Meta-observation: the doc's EV magnitude ranking was not predictive
+The single "highest-EV experiment after P1.1" (P3.1) failed hardest (-9.5);
+three items filed as "smaller / low-value" (P1.8, P1.12d, and the faded P1.11)
+were the ones that trended/landed positive. **Change-EV magnitude is ~unguessable
+a priori** — it's conditional on the exact shape of the heavily-tuned code the
+change touches (P3.1's failure is entirely about Coda's RFP being un-SF-shaped),
+and most changes sit within ±3 Elo where sign-prediction is a coin flip. What DID
+have value in the review: the *floor* (known-dead flags kept us from re-running
+H0'd ideas), exact code locations, and — decisively — verifying mechanisms
+against real reference source (the SF-source read produced the P3.1 diagnosis;
+the EV column never told us anything the SPRT didn't). Practical rule: **when an
+SPRT is cheap (idle fleet), EV estimates should gate almost nothing — fire
+everything plausible and let the SPRT be the estimator.** Reserve EV-weighting
+for expensive changes (architecture, retrains) where you can't just try it.
+
+**P1 backlog now: only P1.4 (bank aborted-iteration, architecture-scale) and the
+never-attempted P1.3 corrhist retune remain unstarted.** The interior-search
+list is otherwise exhausted.
