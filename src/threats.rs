@@ -2013,16 +2013,18 @@ unsafe fn apply_deltas_avx2(
     let src_ptr = src.as_ptr();
     let w_ptr = threat_weights.as_ptr();
 
-    // 12 AVX2 registers × 16 i16 = 192 elements per chunk. Was 8 (half the
-    // AVX-512 variant's 16, by analogy) — but the widening loads
-    // (`vpmovsxbw ymm, m128`) fold their temps, so accumulator count is
-    // bounded by the 16-YMM file minus pointers, exactly like
-    // `simd_acc_fused_avx2` (REGS=12, matching SF's deliberate 12-of-16
-    // AVX2 budget). Fewer outer passes = fewer re-walks of the add/sub
-    // index lists: h=1024 drops from 8 passes to 5 + a const-4-reg tail
-    // (avx2_gap_audit_2026-07-03 item 4).
-    const REGS: usize = 12;
-    const CHUNK: usize = REGS * 16; // 192 elements
+    // 8 AVX2 registers × 16 i16 = 128 elements per chunk. REGS=12 (the
+    // simd_acc_fused_avx2 / SF AVX2 budget — audit item 4,
+    // avx2_gap_audit_2026-07-03) was tried 2026-07-03 and measured +5.6%
+    // SLOWER on Zen 1 (EPYC 7351P / titan, perf stat -r 3, IPC
+    // 1.26 -> 1.18): Zen 1 cracks every 256-bit op into 2x128-bit uops,
+    // and 12 live YMM accumulators plus the two cvtepi8_epi16 widening
+    // temps per step oversubscribe the physical register file — the same
+    // failure mode as REGS=24 on the AVX-512 variant (-4.4%, see its
+    // comment). This kernel differs from simd_acc_fused_avx2 (fine at 12)
+    // in needing widening temps instead of folded memory operands. Keep 8.
+    const REGS: usize = 8;
+    const CHUNK: usize = REGS * 16; // 128 elements
 
     let mut offset = 0;
 
@@ -2073,16 +2075,16 @@ unsafe fn apply_deltas_avx2(
     }
 
     // Full-chunk fast path: REGS is a compile-time constant, inner loops
-    // unroll without dispatch. For h=1024 (v10 prod, CHUNK=192) this covers
-    // 5 chunks (960 elements).
+    // unroll without dispatch. For h=1024 (v10 prod, CHUNK=128) all 8
+    // iterations hit this branch.
     while offset + CHUNK <= hidden_size {
         apply_chunk!(REGS);
         offset += CHUNK;
     }
 
-    // Tail. h=1024 leaves 64 elements = exactly 4 regs — give that case a
-    // const-nregs unrolled path like the full chunks; anything else (other
-    // hidden sizes) takes the runtime-nregs form.
+    // Tail: never fires on prod hidden sizes (multiples of 128); a 64-elem
+    // remainder gets a const-4-reg unrolled path, anything else the
+    // runtime-nregs form.
     if offset < hidden_size {
         let nregs = (hidden_size - offset).div_ceil(16);
         if nregs == 4 {
