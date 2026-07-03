@@ -68,7 +68,7 @@ r1r2k2/pp2bpp1/2bppn1p/6B1/2qNPPPP/2N5/PPPQ4/1K1RR3 w - - bm f5; id "arasan2023.
 r4r1k/ppqbn1pp/3b1p2/2pP3B/2P4N/7P/P2B1PP1/1R1QR1K1 w - - bm Rxe7; id "arasan2023.68"; c0 "Q9550(Rybka)-Arasan, ICC 2009";
 1r4k1/1q3pp1/r3b2p/p2N4/3R4/QP3P2/2P3PP/1K1R4 w - - bm Nf6+; id "arasan2023.69"; c0 "Topalov-Lutz, Sparkassen Gp 1 2002";
 r2q1r2/1bp1npk1/3p1p1p/p3p2Q/P3P2N/1BpPP3/1P1N2PP/5RK1 w - - bm Rf3; id "arasan2023.70"; c0 "Spark 0.3-Doch 09.980, Johan Havegheer 2009";
-5k2/2N2p2/1p1p1nr1/p2P4/P1P3Pb/1P2Q3/1q6/3B1RK1 b - - bm b5; id "arasan2023.71"; c0 "Ethereal 11.0-Stockfish 9, Andreas Strangmueller 2018";
+5k2/2N2p2/1p1p1nr1/p2P4/P1P3Pb/1P2Q3/1q6/3B1RK1 b - - bm b5; id "arasan2023.71"; c0 "arasan2023 suite, Andreas Strangmueller 2018";
 2r3r1/1p1qb2k/p5pp/2n1Bp2/2RP3P/1P2PNQ1/5P1K/3R4 w - - bm Ng5+; id "arasan2023.72"; c0 "Stockfish-Shredder, Pavel Hase 2010";
 rn3rk1/pp1q3p/4p1B1/2p5/3N1b2/4B3/PPQ2PPP/3R2K1 w - - bm Nf5; id "arasan2023.73"; c0 "Chiru-Tudor, ROM-ch2 email 2006";
 rr5k/1q2pPbp/3p2p1/PbpP4/1nB1nP1Q/1NB5/1P4PP/R4R1K w - - bm f5; id "arasan2023.74"; c0 "Chiku-Ratte - Rakotomaharo, Montreal, 2015";
