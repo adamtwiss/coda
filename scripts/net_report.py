@@ -14,8 +14,10 @@ by FEN (never by line order — the UCI-scrape misalignment trap can't happen):
   C. LONG-TAIL on the blindspot set: p90/p99/max |err| — where blindspots live.
   D. WANDERING BISHOP (overrate.epd forward-bishop subset, n=6): mean net_pref
        = mover-POV cp by which the net prefers the bad bishop sortie over the
-       correct move. Lower = better; SF ref ~+65, prod ~+457. NO Stockfish, NO
-       stamped corpus — the net's own eval only.
+       correct move. Lower = better; <=0 means the net ranks the correct move
+       first. Reference points (same metric, same subset): SF static ~+65;
+       current prod nets ~+60-70. NO Stockfish, NO stamped corpus in the
+       measurement — the net's own STATIC eval only.
 
 Uses `coda eval-fens` (batch, FEN-keyed) and `coda eval-dist` (general CSV).
 Builds ./coda if missing. Needs python-chess for section D.
@@ -105,8 +107,14 @@ def blindspot(net):
 
 
 def wandering_bishop(net):
-    import chess
+    import chess, re
     # Build after-am / after-bm FENs for every epd line; batch-eval them all.
+    # After either move it's the OPPONENT to move, so the STM-POV eval of the
+    # resulting position is the opponent's POV; the mover's POV is its negation
+    # for BOTH resulting positions. Hence net_pref (mover prefers am over bm) =
+    # moverPOV(am) - moverPOV(bm) = (-ev[fa]) - (-ev[fb]) = ev[fb] - ev[fa].
+    # No mover-color sign term (that was a white-POV-eval artifact; eval-fens is
+    # STM-POV, verified white-up-a-queen +/-).
     cases = []
     need = set()
     for line in open(OVERRATE_EPD):
@@ -116,7 +124,6 @@ def wandering_bishop(net):
         fen = line.split(" bm ")[0].strip()
         if len(fen.split()) == 4:
             fen += " 0 1"
-        import re
         bm = re.search(r" bm (\S+?);", line); am = re.search(r" am (\S+?);", line)
         if not (bm and am):
             continue
@@ -126,21 +133,20 @@ def wandering_bishop(net):
             mv = next((m for m in b.legal_moves
                        if b.san(m).rstrip("+#") == san.rstrip("+#")), None)
             if mv is None:
-                return None, None
+                return None
             bb = chess.Board(fen); bb.push(mv)
-            return bb.fen(), (mv and b.turn)
-        fa, mover = after(am); fb, _ = after(bm)
+            return bb.fen()
+        fa = after(am); fb = after(bm)
         if fa is None or fb is None:
             continue
         need.add(fa); need.add(fb)
-        cases.append((am, bm, fa, fb, mover))
+        cases.append((am, bm, fa, fb))
     ev = eval_fens(net, list(need))
     rows = []
-    for am, bm, fa, fb, mover in cases:
+    for am, bm, fa, fb in cases:
         if fa not in ev or fb not in ev:
             continue
-        s = 1 if mover == chess.WHITE else -1
-        pref = s * ev[fa] - s * ev[fb]      # mover-POV cp preferring am over bm
+        pref = ev[fb] - ev[fa]      # mover-POV cp preferring the bad am over bm
         rows.append((am, bm, pref))
     fb_rows = [r for r in rows if r[0] in FWD_BISHOP]
     fb_mean = sum(r[2] for r in fb_rows) / len(fb_rows) if fb_rows else float("nan")
@@ -211,7 +217,7 @@ def main():
               f"{r['bs']['p90']:>5} {r['bs']['p99']:>5} {r['bs']['mx']:>6}")
 
     print(f"\nD. WANDERING BISHOP  (forward-bishop sortie subset; lower=better, "
-          f"SF ref ~+65, prod ~+457)")
+          f"<=0 = ranks correct move first; SF static ~+65, prod nets ~+60-70)")
     h = f"   {'net':<32} {'fb_net_pref':>12} {'n':>3} {'sorties-now-correct':>20}"
     print(h); print("   " + "-" * (len(h) - 3))
     for r in rows:
