@@ -1646,7 +1646,7 @@ fn alloc_zeroed_box<T>() -> Box<T> {
 }
 
 /// Create a helper SearchInfo that shares TT and stop flag with the main thread.
-fn create_helper_info(main: &SearchInfo) -> SearchInfo {
+pub(crate) fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     // Use the shared TT directly (avoids allocating a throwaway 1 MB TT
     // and the misleading "TT 1 MB" info string that prints before swap).
     let mut helper = SearchInfo::new_with_tt(main.tt.clone());
@@ -1707,7 +1707,7 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
 /// cheap per-search state is refreshed. Behavior-identical to the old inline
 /// copy for the per-`go` spawn path. (Stage 2 will replace the history/corr
 /// copy here with in-place aging to keep worker-learned diversity.)
-fn refresh_helper_per_go(helper: &mut SearchInfo, main: &SearchInfo) {
+pub(crate) fn refresh_helper_per_go(helper: &mut SearchInfo, main: &SearchInfo) {
     // Re-share the Arcs that the UCI loop may have swapped since this worker
     // was created (TT on Hash resize; stop/ponderhit/global_nodes on the
     // per-`go` SearchInfo swap). Cheap Arc clones; guarantees no worker ever
@@ -1729,6 +1729,69 @@ fn refresh_helper_per_go(helper: &mut SearchInfo, main: &SearchInfo) {
     helper.np_corr.copy_from_slice(&main.np_corr[..]);
     helper.cont_corr.copy_from_slice(&main.cont_corr[..]);
     helper.trans_corr.copy_from_slice(&main.trans_corr[..]);
+}
+
+/// Per-`go` preparation of a helper `SearchInfo` for a search on `board`:
+/// timing zeroed (helpers never manage time), the accumulator rebuilt for the
+/// root position, and the few counters `search_helper` does NOT itself reset
+/// zeroed (load-bearing when the thread pool reuses a `SearchInfo` across `go`s;
+/// a no-op for the fresh per-`go` spawn path). Does NOT set `max_depth` — the
+/// caller sets that from main's depth. Threat-stack + the bulk of scratch state
+/// are reset inside `search_helper`.
+pub(crate) fn prepare_helper_for_search(info: &mut SearchInfo, board: &Board) {
+    info.start_time = Instant::now();
+    info.time_limit = 0;
+    info.soft_limit = 0;
+    info.hard_limit = 0;
+    info.soft_floor = 0;
+    // Reset counters search_helper leaves alone — stale values from a prior
+    // pooled search would otherwise leak into the vote if this search completes
+    // zero iterations (instant-stop).
+    info.completed_depth = 0;
+    info.last_score = 0;
+    info.sel_depth = 0;
+    info.tb_hits = 0;
+    // Rebuild the NNUE accumulator for the root position.
+    if let Some(acc) = &mut info.nnue_acc {
+        acc.reset();
+    }
+    if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
+        acc.materialize(net, board);
+    }
+}
+
+/// Run one helper search to completion and return the vote tuple
+/// `(nodes, best_move, score, completed_depth, ponder)`. Shared verbatim by
+/// the per-`go` spawn path and the persistent thread pool so both produce
+/// byte-identical helper behavior. `search_helper` ignores its `_limits`
+/// (helpers take depth from `info.max_depth` and stop on the shared flag), so
+/// a zeroed placeholder is passed.
+pub(crate) fn helper_run(
+    info: &mut SearchInfo,
+    board: &mut Board,
+    max_depth: i32,
+    thread_id: usize,
+) -> (u64, Move, i32, i32, Move) {
+    prepare_helper_for_search(info, board);
+    info.max_depth = max_depth;
+    let placeholder = SearchLimits {
+        depth: max_depth, movetime: 0, wtime: 0, btime: 0, winc: 0, binc: 0,
+        movestogo: 0, nodes: 0, infinite: false, movetime_floor: 0,
+        min_think_ms: 0, abs_clock: 0,
+    };
+    let mv = search_helper(board, info, &placeholder, thread_id);
+    let ponder = if info.pv_len[0] >= 2 { info.pv_table[0][1] } else { NO_MOVE };
+    (info.nodes, mv, info.last_score, info.completed_depth, ponder)
+}
+
+/// Identity of the NNUE net a `SearchInfo` currently holds (0 if none). The
+/// thread pool rebuilds when this changes across `go`s, since each worker's
+/// accumulator is sized for a specific net (NNUEFile swap → different net).
+pub(crate) fn nnue_net_identity(info: &SearchInfo) -> usize {
+    info.nnue_net
+        .as_ref()
+        .map(|n| std::sync::Arc::as_ptr(n) as *const () as usize)
+        .unwrap_or(0)
 }
 
 /// Compute time-management budgets from clock state. Returns
@@ -1960,51 +2023,13 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
     // before the search thread starts).
     info.global_nodes.store(0, Ordering::Relaxed); // Reset before helpers start
 
-    // Spawn helper threads
-    let mut handles = Vec::new();
-    for thread_id in 1..threads {
-        let mut helper = create_helper_info(info);
-        let mut helper_board = board.clone();
-        let helper_limits = SearchLimits {
-            depth: limits.depth,
-            movetime: limits.movetime,
-            wtime: limits.wtime, btime: limits.btime,
-            winc: limits.winc, binc: limits.binc,
-            movestogo: limits.movestogo,
-            nodes: 0, // helpers don't have node limits
-            infinite: limits.infinite,
-            movetime_floor: 0, // helpers don't need the floor — only main sleeps
-            min_think_ms: 0, // helpers don't enforce ponder-miss floor — main does
-            abs_clock: 0, // helpers don't enforce the forfeit guard — main does
-        };
-
-        handles.push(std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
-            .spawn(move || {
-                helper.start_time = Instant::now();
-                // Reset NNUE for this position
-                if let Some(acc) = &mut helper.nnue_acc {
-                    acc.reset();
-                }
-                if let (Some(net), Some(acc)) = (&helper.nnue_net, &mut helper.nnue_acc) {
-                    acc.materialize(net, &helper_board);
-                }
-                // Helpers don't do time management — they stop when the main
-                // thread sets the shared stop flag. Only main thread controls timing.
-                helper.time_limit = 0;
-                helper.soft_limit = 0;
-                helper.hard_limit = 0;
-                helper.soft_floor = 0;
-                helper.max_depth = helper_limits.depth;
-
-                let mv = search_helper(&mut helper_board, &mut helper, &helper_limits, thread_id);
-                // Ponder move = the helper's 2nd PV move, so a winning helper can
-                // supply a consistent ponder to uci.rs (see selection below).
-                let ponder = if helper.pv_len[0] >= 2 { helper.pv_table[0][1] } else { NO_MOVE };
-                // Return (nodes, best_move, score, depth, ponder) for vote aggregation
-                (helper.nodes, mv, helper.last_score, helper.completed_depth, ponder)
-            }).expect("Failed to spawn SMP helper"));
-    }
+    // Dispatch the persistent helper pool (Stage 1). Reuses parked worker
+    // threads + their SearchInfos across `go` — refreshing per-search state from
+    // main via refresh_helper_per_go — instead of spawning `threads-1` fresh
+    // threads and allocating ~13 MB of tables per move. Behavior-identical to
+    // the old per-go spawn: workers run the same `helper_run`. The pool is
+    // dispatched now and collected after main's search + stop below.
+    crate::thread_pool::dispatch(threads - 1, info, board, limits.depth);
 
     // Main thread searches normally
     let main_move = search(board, info, limits);
@@ -2024,12 +2049,10 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
     if main_move != NO_MOVE && main_depth > 0 {
         cands.push(Cand { mv: main_move, score: main_score, depth: main_depth, ponder: main_ponder, is_main: true });
     }
-    for h in handles {
-        if let Ok((helper_nodes, mv, score, depth, ponder)) = h.join() {
-            total_nodes += helper_nodes;
-            if mv != NO_MOVE && depth > 0 {
-                cands.push(Cand { mv, score, depth, ponder, is_main: false });
-            }
+    for (helper_nodes, mv, score, depth, ponder) in crate::thread_pool::collect() {
+        total_nodes += helper_nodes;
+        if mv != NO_MOVE && depth > 0 {
+            cands.push(Cand { mv, score, depth, ponder, is_main: false });
         }
     }
     info.nodes = total_nodes;
@@ -2113,7 +2136,7 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
 ///
 /// History is seeded from main in `create_helper_info` — see comment
 /// there. We deliberately do NOT clear it here.
-fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimits, _thread_id: usize) -> Move {
+pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimits, _thread_id: usize) -> Move {
     init_feature_flags();
 
     // History was just seeded from main in create_helper_info — do

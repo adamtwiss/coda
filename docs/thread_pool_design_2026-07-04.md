@@ -115,6 +115,19 @@ today (`search_helper` already stops on it). No change to the stop mechanism.
 - **Ponder pairing:** helpers already return their 2nd PV move; the vote/select
   logic in `search_smp` is unchanged. Run the ponder-RR gate before merge.
 
+## `pawn_hist` persistence (Stage 1 design note, 2026-07-04)
+
+The old per-go path allocated a **fresh zeroed `pawn_hist` (~13 MB)** per helper
+per go. The pool persists it across `go`s. Zeroing it each go to be strictly
+behavior-identical would cost a 13 MB memset × workers × move — roughly the
+allocation cost we're removing, negating most of the overhead win. So Stage 1
+**lets `pawn_hist` persist** (a `clear_pawn_hist()` per go is deliberately NOT
+called). This is always correct (a heuristic ordering table — any contents are
+valid) and is a small slice of Stage-2 diversity, but it captures the full
+overhead win. History/corr are still copied from main each go (Stage 1); only
+Stage 2 stops copying those. The parity RR + `[-2,1]` SPRT validate that the
+`pawn_hist` carry-over doesn't regress.
+
 ## Staging plan
 
 1. **Stage 1a — pool infra, T=1 no-op.** Add `thread_pool.rs`; wire `search_smp`

@@ -42,6 +42,7 @@ mod see;
 mod tt;
 mod movepicker;
 mod search;
+mod thread_pool;
 mod uci;
 mod epd;
 pub mod nnue;
