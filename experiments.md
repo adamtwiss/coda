@@ -17932,3 +17932,29 @@ gradient-flat at defaults, i.e. textbook loose knobs — adding them to the
 SPSA surface would violate the demoted-loose-knobs hygiene for zero EV.
 No SPRT needed (tune changed nothing). Do not re-open without a new net
 family or eval-landscape shift.
+
+---
+
+## PC-skip, milder spline: +12.16 H1 UNTUNED — new PC recipe component (2026-07-04, #2541)
+
+**skip-pc-milder-swa (46680F5C) vs skip-baseline-swa (B29054AF)**, net-vs-net on
+main `[-1.5,1.5]` STC: **H1 +12.16 +-5.05, N=5260** (penta [18,571,1297,697,47]).
+Milder piece-count rebalance spline vs the SF-exact spline tested in #2523/#2531.
+
+Comparison to the SF-exact spline: pc-sf was +6.3 untuned (1.9x off-tree
+handicap) -> +8.4 after a 1500-iter retune (#2525/#2531). pc-milder posts
+**+12.2 with NO tune** and a prod-shaped tree (bench 2.13M vs baseline 2.33M —
+~8% BELOW, vs pc-sf's +90% inflation). CIs overlap so milder>pc-sf isn't
+individually resolved, but milder >= pc-sf-tuned at zero calibration tax is —
+**pc-milder supersedes pc-sf as the PC component** of the consolidated stage-1
+recipe (no retune step, no handicap discount, bigger point estimate).
+
+Third instance of the borrowed-SF-settings pattern: SF-exact magnitudes don't
+transfer raw (skip-anomaly-1000 -48; wld-filter negative pending decomposition;
+PC spline: milder beats exact). SF's pipeline constants are co-tuned to SF's
+bake lengths and data flow — port the MECHANISM, rescale the MAGNITUDE.
+
+Recipe shortlist for the full multi-stage bake: **pc-milder (this) + fs9
+(#2529 pending)**; wdl-filter awaits its isolation verdict (#2532); nofs-4g
+(#2538) expected negative (mechanism + net_report both point down). All S200
+results — the full bake decides deployment vs prod E161C665.
