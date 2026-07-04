@@ -17714,3 +17714,34 @@ expansion table-chase (REQUIRES input-metric measurement first —
 fraction of generated deltas ever expanded — offense-precompute risk
 shape), sparse-L1 density probe, training-side threat-width narrowing
 (next net cycle), NEON splat (Phase C, low priority).
+
+---
+
+## Sparse-L1 density probe — dense CONFIRMED correct, item closed (2026-07-04)
+
+The audit flagged the old "sparse loses 1.8-2.4×" measurement as
+methodologically invalid (scalar NNZ harvest vs the consensus fused
+movemask+LUT form all 6 reference engines use). Re-measured the
+DECISION INPUT properly: instrumented non-zero 4-byte-chunk density of
+the packed pairwise L1 input over 2M evals of bench-14 with the prod
+net. Result: **67.0% average chunk density; per-eval histogram
+[0,0,0,0,0,77k,1.44M,480k,0.6k,0] by decile — not a single eval below
+50% density.** At 67% density, fused-NNZ sparse saves ≤33% of the
+maddubs/VPDPBUSD work while adding extraction + irregular access; dense
+straight-line wins regardless of NNZ implementation quality. The old
+conclusion stands (with correct evidence this time); Reckless wins with
+sparse because THEIR net's activations are sparse — ours aren't. Item
+CLOSED for the current net family; the probe is one bench run to redo
+if a future training recipe changes activation sparsity (a deliberate
+sparsity-regularized net would re-open it — training-side idea, filed
+with width-narrowing for the next net cycle).
+
+**Free bonus finding from existing counters:** the
+generation-vs-expansion ratio kills the "precompute feature indices at
+generation time" variant of the expansion table-chase idea too:
+bench-12 counters show 20.55M deltas GENERATED vs 25.5M delta-
+expansions applied — i.e. ~1.24 expansions per generated delta where
+eager precompute would pay 2.0 (both perspectives). Precompute would do
+~61% MORE index computations than lazy expansion does today. Same
+offense-precompute lesson, confirmed by arithmetic before writing any
+code this time.
