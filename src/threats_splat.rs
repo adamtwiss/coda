@@ -1,24 +1,24 @@
-//! AVX-512 byteboard-splat threat-delta enumeration (port of Reckless's
-//! `nnue/accumulator/threats/vectorized` machinery).
+//! AVX-512 byteboard-splat threat-delta enumeration with Coda x-ray
+//! semantics (Phase A of the threat-pipeline campaign).
 //!
-//! Modelled on Reckless's `splat_threats` / `splat_xray_threats` /
-//! `push_threats_on_change` / `push_threats_on_move`. The byteboard splat
-//! does threat-delta ENUMERATION in batched SIMD over the entire mailbox in
-//! one pass, replacing Coda's per-piece scalar magic-bitboard pattern in
-//! `threats::push_threats_for_piece`. Cache benefit comes from:
-//!   1. Single SIMD sweep over the board (no per-piece scalar loop)
-//!   2. Ray-grouped delta emission — consecutive deltas correspond to
-//!      spatially adjacent threat features, which means the subsequent
-//!      apply path's weight-row reads are HW-prefetcher-friendly
-//!   3. No per-piece magic-bitboard lookups
+//! The SIMD *primitives* (ray permutation, closest-on-rays carry trick,
+//! compress-store emission) are modelled on Reckless's
+//! `nnue/accumulator/threats/vectorized` machinery, but the ENUMERATION is
+//! Coda's own: the feature space encodes direct-OR-depth-1-x-ray at one
+//! index (contract §1.1/§1.3, `docs/threat_semantics_contract_2026-07-04.md`),
+//! so a direct-only splat double-counts (the May 2026 blocker,
+//! `docs/byteboard_splat_scoping_2026-05-03.md`). Instead, everything is
+//! derived from ONE focus-square ray frame with TWO hits per ray
+//! (`docs/threat_splat_phase_a_2026-07-04.md` §Design): Y_d = first
+//! occupant on ray direction d, Z_d = second. All five contract sections
+//! read their emissions from the (Y_d, Z_d) pairs — see `splat_focus`.
 //!
-//! The actual weight-row apply still goes through `threats::apply_threat_deltas`;
-//! this module only changes how the `RawThreatDelta` list is built.
+//! This module only changes how the `RawThreatDelta` list is built; the
+//! weight-row apply still goes through `threats::apply_threat_deltas`.
+//! Dispatch (CODA_SPLAT=1 + CPU checks, default scalar) lives in
+//! `threats::push_threats_on_move` / `push_threats_on_change`.
 //!
-//! Phase A (this file): AVX-512 + VBMI2 path. Coda already requires VBMI2
-//! for the `find_nnz_chunks_avx512` SIMD scan landed in #946 — same hosts
-//! (Sapphire Rapids+, Zen 4+).
-//!
+//! Phase A (this file): AVX-512 F+BW+VBMI+VBMI2 path (Zen 4+/SPR+).
 //! Phase B (followup): AVX-2 fallback (mirror of Reckless's
 //! `vectorized/avx2.rs`). Most fleet hosts (Hercules Coffee Lake, Atlas
 //! Zen 1) only do AVX-2; AVX-512-only would shift fleet results away from
@@ -37,7 +37,6 @@
 //!   `Vec<RawThreatDelta>` buffer.
 
 #![cfg(target_arch = "x86_64")]
-#![allow(dead_code)] // gated until production integration in Phase B
 
 use std::arch::x86_64::*;
 
@@ -227,28 +226,47 @@ pub(crate) unsafe fn board_to_rays(perm: __m512i, valid: u64, board: __m512i) ->
     (pboard, rays)
 }
 
-/// Mask of ray-positions that are the closest occupied square along their
-/// ray. (Per-ray: first-from-focus occupied position is "closest".)
+/// Per-octet mask of true ray positions (distance 1..7). Bit 0 of each
+/// octet is the knight position — not on the ray.
+pub(crate) const RAY_POSITIONS: u64 = 0xFEFEFEFEFEFEFEFE;
+
+/// Carry trick: lowest set bit per octet of `occupied`, PLUS bit 0 of any
+/// octet whose bit 0 is set (the subtract-3 always flips bit 0, so a set
+/// knight-position bit survives the `& occupied`). Invariants: per octet,
+/// sentinel bits 0+7 (0x81) confine the borrow — no cross-octet carries.
 ///
-/// Algorithm: occupied = nonzero positions; o = occupied | sentinel;
-/// x = o ^ (o - delta); first-occupied bit per ray = x & occupied.
-/// Sentinel + delta values are tuned so the subtract carries from each
-/// ray's start (position 0 = LSB of each byte-octet) up to its first
-/// occupied position; XOR cancels everything before/after.
-#[target_feature(enable = "avx512f,avx512bw")]
-pub(crate) unsafe fn closest_on_rays(rays: __m512i) -> u64 {
-    let occupied = _mm512_test_epi8_mask(rays, rays);
+/// Callers: `closest_on_rays` passes raw occupancy (knight ring wanted for
+/// §1 knight attacks / §3 knight attackers); the second-hit pass in
+/// `splat_focus` pre-masks with `RAY_POSITIONS` so only true ray occupants
+/// participate.
+#[inline(always)]
+pub(crate) const fn closest_from_occupied(occupied: u64) -> u64 {
     let o = occupied | 0x8181818181818181;
     let x = o ^ (o - 0x0303030303030303);
     x & occupied
 }
 
-/// Mask of ray-positions that are valid pawn-victim x-ray endpoints.
-/// Used by `splat_xray_threats` to find the slider-then-victim chain.
+/// Mask of ray-positions that are the closest occupied square along their
+/// ray (per-ray first hit, Y_d), plus occupied knight-position bits.
+#[target_feature(enable = "avx512f,avx512bw")]
+pub(crate) unsafe fn closest_on_rays(rays: __m512i) -> u64 {
+    closest_from_occupied(_mm512_test_epi8_mask(rays, rays))
+}
+
+/// Fill each octet that has any set bit to a full-octet mask. Used to
+/// intersect two per-ray masks down to the octets where BOTH have a bit,
+/// which keeps `splat_xray_threats`' compress-pairing aligned (per octet
+/// ≤1 bit per operand, k-th set bit of one mask pairs with k-th of the
+/// other). Input bits must be at positions 1..7 (bit 0 would not carry
+/// into bit 7). The final `|x` restores bit 7 itself: without it a bit at
+/// position 7 fills only 0x7F and would drop its own octet's bit — that
+/// position is geometrically unreachable in the pairing calls (distance-7
+/// hit in direction d puts the focus on the board edge in direction -d,
+/// so the opposite octet is empty), but harden rather than rely on it.
 #[inline(always)]
 pub(crate) const fn ray_fill(x: u64) -> u64 {
     let x = (x + 0x7E7E7E7E7E7E7E7E) & 0x8080808080808080;
-    x - (x >> 7)
+    x | (x - (x >> 7))
 }
 
 /// Mask of ray-positions that have an attacker (any class) firing toward
@@ -276,13 +294,21 @@ pub(crate) unsafe fn sliders_along_rays(rays: __m512i) -> u64 {
     _mm512_test_epi8_mask(rays, mask) & 0xFEFEFEFEFEFEFEFE
 }
 
-/// Exclude a square from the board mailbox by overwriting its byte with
-/// NO_PIECE (12). Used by `push_threats_on_move` to compute attackers
-/// from the source square as if the moving piece were already removed.
+/// Colored mailbox vector masked to the CALLER's occupancy: squares whose
+/// occ bit is clear read as NO_PIECE regardless of mailbox content.
+///
+/// This enforces contract invariant 6 (occ_transit discipline): during
+/// `push_threats_on_move` the mover sits in mailbox/pieces_bb at `to`
+/// while occ_transit has `to` clear — every candidate read must respect
+/// the passed occ, not the board arrays. Masking the board vector once at
+/// entry makes every downstream ray read occ-correct by construction.
+/// Precondition (holds at every §3.1 call site): occ ⊆ mailbox-occupied
+/// squares, except possibly the focus square (whose mailbox byte is never
+/// read — the focus is not in its own ray frame).
 #[target_feature(enable = "avx512f,avx512bw")]
-pub(crate) unsafe fn exclude_square(board: __m512i, sq: u32) -> __m512i {
-    let bb = 1u64 << sq;
-    _mm512_mask_blend_epi8(bb, board, _mm512_set1_epi8(crate::types::NO_PIECE as i8))
+unsafe fn occ_masked_board(mailbox: &[u8; 64], white_bb: u64, occ: u64) -> __m512i {
+    let board = mailbox_vector_avx512(mailbox, white_bb);
+    _mm512_mask_blend_epi8(occ, _mm512_set1_epi8(crate::types::NO_PIECE as i8), board)
 }
 
 // =============================================================================
@@ -352,11 +378,16 @@ pub(crate) unsafe fn splat_threats(
     let attackers_vector =
         _mm512_or_si512(_mm512_mask_mov_epi8(focus_pair, 0x3333333333333333, attackers_pairs), add_v);
 
-    // Append into deltas Vec via raw pointer writes.
+    // Append into deltas Vec via raw pointer writes. The stores below write
+    // FULL vector widths (8 records for attacked, 16 for attackers) into
+    // reserved-but-unused capacity; only `total` records become visible via
+    // set_len. Reserve the maximum store EXTENT (attacked_count + 16), not
+    // just `total`, or the trailing lanes scribble past the allocation.
     let attacked_count = attacked.count_ones() as usize;
     let attackers_count = attackers.count_ones() as usize;
+    debug_assert!(attacked_count <= 8 && attackers_count <= 16);
     let total = attacked_count + attackers_count;
-    deltas.reserve(total);
+    deltas.reserve(attacked_count + 16);
     let len_before = deltas.len();
     let dst = deltas.as_mut_ptr().add(len_before) as *mut __m256i;
     _mm256_storeu_si256(dst, attacked_vector);
@@ -393,7 +424,10 @@ pub(crate) unsafe fn splat_xray_threats(
 
     debug_assert_eq!(sliders.count_ones(), victim_mask.count_ones());
     let count = sliders.count_ones() as usize;
-    deltas.reserve(count);
+    debug_assert!(count <= 8);
+    // Both stores below write full 128-bit widths (8 records total extent)
+    // regardless of `count` — reserve the extent, not just `count`.
+    deltas.reserve(8);
     let len_before = deltas.len();
     let dst = deltas.as_mut_ptr().add(len_before) as *mut __m128i;
     _mm_storeu_si128(dst, _mm_or_si128(_mm_unpacklo_epi16(pair1, pair2), add_v));
@@ -403,7 +437,85 @@ pub(crate) unsafe fn splat_xray_threats(
 }
 
 // =============================================================================
-// High-level entry points
+// The unified x-ray-aware enumerator
+// =============================================================================
+
+/// One focus-square pass: emit all five contract sections
+/// (`docs/threat_semantics_contract_2026-07-04.md` §3.3) for the piece
+/// `piece_cp` appearing (add) / disappearing (!add) on `square`, given the
+/// occ-masked board vector.
+///
+/// Everything derives from TWO hits per ray direction d:
+///   Y_d = first occupant, Z_d = second occupant (first-hit pass rerun
+///   with the first hits masked out). Section reads:
+/// - §1  direct-from:  Y_d on rays the focus class attacks (+ knight ring).
+/// - §1b own-x-ray:    Z_d on the same rays. `RAY_ATTACKS_MASK & second`
+///   enforces §1b's slider-only + class-alignment by construction: Z_d
+///   sits at distance ≥2, where only slider octet masks have bits (pawn/
+///   king masks cover distance 1 only, the knight mask position 0 only).
+/// - §2  sliders-see:  S = Y_d of slider class aligned with d. Direct emit
+///   (S→focus, add) rides the §3 attackers mask; the Z-delta victim is
+///   Z_{-d} (first-past-focus is Y_{-d}, next is Z_{-d}), sign !add.
+/// - §2b x-ray-onto-focus: S = Z_d of slider class aligned with d; the
+///   single blocker Y_d exists by construction (second implies first) and
+///   is deliberately unfiltered (blocker may be ANY piece, §1.3). Focus
+///   emit (S→focus, add) + W-delta victim Y_{-d}, sign !add.
+/// - §3  non-slider attackers: RAY_ATTACKERS_MASK hits at Y_d / knight
+///   ring (shared mask with §2's direct emit).
+///
+/// Emission is raw physical tuples; pair-map filtering and semi-exclusion
+/// stay at index-expansion time (contract invariants 2-4).
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi,avx512vbmi2")]
+unsafe fn splat_focus(
+    deltas: &mut Vec<RawThreatDelta>,
+    board: __m512i,
+    piece_cp: u8,
+    square: u32,
+    add: bool,
+) {
+    let (perm, valid) = ray_permutation(square);
+    let (pboard, rays) = board_to_rays(perm, valid, board);
+
+    let closest = closest_on_rays(rays); // Y_d ∪ occupied knight ring
+    let first = closest & RAY_POSITIONS; // Y_d
+    let ray_occ = _mm512_test_epi8_mask(rays, rays) & RAY_POSITIONS;
+    let second = closest_from_occupied(ray_occ & !first); // Z_d
+
+    // §1 direct-from + (§2-direct ∪ §3) incoming direct attackers.
+    let attacked_direct = attacking_along_rays(piece_cp, closest);
+    let attackers_direct = attackers_along_rays(rays) & closest;
+    splat_threats(deltas, pboard, perm, attacked_direct, attackers_direct, piece_cp, square, add);
+
+    // §1b x-rays FROM the focus slider + §2b sliders whose x-ray target is
+    // the focus square (their S→focus emissions carry the same sign `add`).
+    let attacked_xray = attacking_along_rays(piece_cp, second);
+    let slider_hits = sliders_along_rays(rays);
+    let xray_attackers = slider_hits & second;
+    if attacked_xray | xray_attackers != 0 {
+        splat_threats(deltas, pboard, perm, attacked_xray, xray_attackers, piece_cp, square, add);
+    }
+
+    // §2 Z-deltas: seeing slider S = Y_d loses/gains its depth-1 x-ray to
+    // Z_{-d} when the focus piece appears/disappears (S's feature for
+    // Y_{-d} is index-unchanged — direct ↔ x-ray). Sign INVERTED (!add).
+    let seers = slider_hits & first;
+    let z_opp = second.rotate_right(32); // Z_{-d}, expressed in octet d
+    let z_pairs = ray_fill(seers) & ray_fill(z_opp);
+    if z_pairs != 0 {
+        splat_xray_threats(deltas, pboard, perm, seers & z_pairs, z_opp & z_pairs, !add);
+    }
+
+    // §2b W-deltas: x-raying slider S = Z_d shifts its depth-1 victim
+    // between the focus square and W = Y_{-d}. Sign INVERTED (!add).
+    let y_opp = first.rotate_right(32); // Y_{-d}, expressed in octet d
+    let w_pairs = ray_fill(xray_attackers) & ray_fill(y_opp);
+    if w_pairs != 0 {
+        splat_xray_threats(deltas, pboard, perm, xray_attackers & w_pairs, y_opp & w_pairs, !add);
+    }
+}
+
+// =============================================================================
+// High-level entry points (signatures mirror the scalar §3.2 entry points)
 // =============================================================================
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vbmi,avx512vbmi2")]
@@ -411,101 +523,32 @@ pub unsafe fn push_threats_on_change_avx512(
     deltas: &mut Vec<RawThreatDelta>,
     mailbox: &[u8; 64],
     white_bb: u64,
+    occ: u64,
     piece_cp: u8,
     square: u32,
     add: bool,
 ) {
-    let board = mailbox_vector_avx512(mailbox, white_bb);
-    let (perm, valid) = ray_permutation(square);
-    let (pboard, rays) = board_to_rays(perm, valid, board);
-
-    let closest = closest_on_rays(rays);
-    let attacked_occupied = attacking_along_rays(piece_cp, closest);
-    let attackers = attackers_along_rays(rays) & closest;
-    let sliders = sliders_along_rays(rays) & closest;
-
-    if std::env::var_os("CODA_SPLAT_DEBUG").is_some() {
-        let mut rays_bytes = [0u8; 64];
-        let mut perm_bytes = [0u8; 64];
-        let mut pboard_bytes = [0u8; 64];
-        let mut board_bytes = [0u8; 64];
-        _mm512_storeu_si512(rays_bytes.as_mut_ptr().cast(), rays);
-        _mm512_storeu_si512(perm_bytes.as_mut_ptr().cast(), perm);
-        _mm512_storeu_si512(pboard_bytes.as_mut_ptr().cast(), pboard);
-        _mm512_storeu_si512(board_bytes.as_mut_ptr().cast(), board);
-        let occupied = _mm512_test_epi8_mask(rays, rays);
-        eprintln!("[splat] focus_sq={} focus_piece={} add={} valid_mask={:016x}", square, piece_cp, add, valid);
-        eprintln!("[splat]   occupied = {:016x}", occupied);
-        eprintln!("[splat]   closest  = {:016x}", closest);
-        eprintln!("[splat]   attacked = {:016x}  count={}", attacked_occupied, attacked_occupied.count_ones());
-        eprintln!("[splat]   attackrs = {:016x}  count={}", attackers, attackers.count_ones());
-        eprintln!("[splat]   sliders  = {:016x}", sliders);
-        eprintln!("[splat]   board[0..8]   = {:?}", &board_bytes[..8]);
-        eprintln!("[splat]   board[8..16]  = {:?}", &board_bytes[8..16]);
-        eprintln!("[splat]   board[48..56] = {:?}", &board_bytes[48..56]);
-        eprintln!("[splat]   board[56..64] = {:?}", &board_bytes[56..64]);
-        eprintln!("[splat]   N-ray perm   = {:?}", &perm_bytes[..8]);
-        eprintln!("[splat]   N-ray pboard = {:?}", &pboard_bytes[..8]);
-        eprintln!("[splat]   N-ray rays   = {:?}", &rays_bytes[..8]);
-    }
-
-    splat_threats(deltas, pboard, perm, attacked_occupied, attackers, piece_cp, square, add);
-
-    let victim = (closest & 0xFEFEFEFEFEFEFEFE).rotate_right(32);
-    let xray_valid = ray_fill(victim) & ray_fill(sliders);
-    splat_xray_threats(
-        deltas, pboard, perm,
-        sliders & xray_valid,
-        victim & xray_valid,
-        !add, // X-rays of an `add` are removed (the new piece blocks the x-ray)
-    );
+    let board = occ_masked_board(mailbox, white_bb, occ);
+    splat_focus(deltas, board, piece_cp, square, add);
 }
 
+/// `occ` is the post-move_piece occupancy exactly as the scalar entry point
+/// receives it (`from` clear, `to` set); occ_transit clears `to` so BOTH
+/// legs run with the mover absent from occupancy (contract §3.2).
 #[target_feature(enable = "avx512f,avx512bw,avx512vbmi,avx512vbmi2")]
 pub unsafe fn push_threats_on_move_avx512(
     deltas: &mut Vec<RawThreatDelta>,
     mailbox: &[u8; 64],
     white_bb: u64,
+    occ: u64,
     piece_cp: u8,
     src: u32,
     dst: u32,
 ) {
-    let board = mailbox_vector_avx512(mailbox, white_bb);
-
-    let board_src = exclude_square(board, dst);
-    let (src_perm, src_valid) = ray_permutation(src);
-    let (src_pboard, src_rays) = board_to_rays(src_perm, src_valid, board_src);
-    let src_closest = closest_on_rays(src_rays);
-    let src_attacked = attacking_along_rays(piece_cp, src_closest);
-    let src_attackers = attackers_along_rays(src_rays) & src_closest;
-    let src_sliders = sliders_along_rays(src_rays) & src_closest;
-
-    let (dst_perm, dst_valid) = ray_permutation(dst);
-    let (dst_pboard, dst_rays) = board_to_rays(dst_perm, dst_valid, board);
-    let dst_closest = closest_on_rays(dst_rays);
-    let dst_attacked = attacking_along_rays(piece_cp, dst_closest);
-    let dst_attackers = attackers_along_rays(dst_rays) & dst_closest;
-    let dst_sliders = sliders_along_rays(dst_rays) & dst_closest;
-
-    splat_threats(deltas, src_pboard, src_perm, src_attacked, src_attackers, piece_cp, src, false);
-    splat_threats(deltas, dst_pboard, dst_perm, dst_attacked, dst_attackers, piece_cp, dst, true);
-
-    let src_victim = (src_closest & 0xFEFEFEFEFEFEFEFE).rotate_right(32);
-    let dst_victim = (dst_closest & 0xFEFEFEFEFEFEFEFE).rotate_right(32);
-    let src_xray_valid = ray_fill(src_victim) & ray_fill(src_sliders);
-    let dst_xray_valid = ray_fill(dst_victim) & ray_fill(dst_sliders);
-    splat_xray_threats(
-        deltas, src_pboard, src_perm,
-        src_sliders & src_xray_valid,
-        src_victim & src_xray_valid,
-        true,  // src removal → x-ray re-enabled
-    );
-    splat_xray_threats(
-        deltas, dst_pboard, dst_perm,
-        dst_sliders & dst_xray_valid,
-        dst_victim & dst_xray_valid,
-        false, // dst arrival → x-ray blocked
-    );
+    let occ_transit = occ ^ (1u64 << dst);
+    let board = occ_masked_board(mailbox, white_bb, occ_transit);
+    splat_focus(deltas, board, piece_cp, src, false);
+    splat_focus(deltas, board, piece_cp, dst, true);
 }
 
 // =============================================================================
@@ -581,21 +624,17 @@ mod tests {
     /// `change_add` = the board change under test was an ADD (piece appears);
     /// `focus_cp`/`focus_sq` = the changed piece.
     ///
-    /// Categories (the May 2026 blocker, structured):
-    /// - xray-add-on-blocker-removal: removing a blocker makes a slider's
-    ///   attack on the piece behind it DIRECT; Reckless's direct-only space
-    ///   emits an ADD, but in Coda's space the feature was ALREADY active as
-    ///   an x-ray (same feature index) → double-count.
-    /// - xray-sub-on-blocker-arrival: the mirror image — a new piece blocks
-    ///   a direct slider attack; Reckless emits a SUB, Coda's model keeps the
-    ///   feature alive as an x-ray.
-    /// - scalar-only-slider-focus-xray: Coda's §1b emits x-rays FROM a slider
-    ///   focus piece (through its first blocker); the splat has no
-    ///   second-hit-per-ray enumeration (known Phase A scope gap).
-    /// - scalar-only-xray-behind-focus: Coda's §2 emits the x-ray target
-    ///   BEHIND the focus square for sliders that see it; splat's
-    ///   splat_xray_threats emits these with the OPPOSITE add-sense or not
-    ///   at all (semantic mismatch sibling of the two categories above).
+    /// Parity is exact since the two-hit rewrite — any nonzero bucket is a
+    /// regression. The categories structure the May 2026 blocker's failure
+    /// modes and remain the fastest way to localize a future divergence:
+    /// - xray-add-on-blocker-removal / xray-sub-on-blocker-arrival
+    ///   (simd-only): Reckless direct-only-space semantics leaking in — a
+    ///   blocker arrival/removal toggling a feature that Coda's model keeps
+    ///   alive at the same index (contract §1.1).
+    /// - scalar-only-slider-focus-xray: §1b gap — x-rays FROM a slider
+    ///   focus (second-hit-per-ray enumeration).
+    /// - scalar-only-xray-behind-focus: §2-Z / §2b gap — emissions whose
+    ///   attacker is a slider elsewhere on the board.
     fn categorize(
         simd_only: bool,
         d: u32,
@@ -626,60 +665,67 @@ mod tests {
         }
     }
 
-    /// Parity diagnostic: AVX-512 splat vs Coda's scalar
-    /// `push_threats_on_change`, over ~1000 positions from deterministic
-    /// random playouts. For every position it tests removal of each piece on
-    /// the board and addition of every colored piece at each empty square,
-    /// compares the two delta sets, and CATEGORIZES each disagreement.
-    ///
-    /// KNOWN TO FAIL — #[ignore]d by design. This documents the May 2026
-    /// Phase A blocker (commit 5096ac0): Coda's threat space encodes x-ray
-    /// features (slider → piece beyond first blocker) at the SAME feature
-    /// index as direct attacks, while Reckless's byteboard splat assumes a
-    /// direct-only space and emits add/sub deltas whenever an attack changes
-    /// between direct and x-ray. A direct port therefore double-counts.
-    /// Do NOT "fix" this test by tweaking the splat masks — the next phase
-    /// is an x-ray-aware enumerator; this diagnostic (run with
-    /// `cargo test --release splat_change_parity -- --ignored --nocapture`)
-    /// is its design input.
-    #[test]
-    #[ignore = "documents the known Reckless-vs-Coda x-ray threat-space mismatch (5096ac0); diagnostic, not a regression gate"]
-    fn splat_change_parity_with_scalar() {
-        if !std::is_x86_feature_detected!("avx512vbmi2")
-            || !std::is_x86_feature_detected!("avx512vbmi")
-        {
-            eprintln!("skipping: host lacks avx512vbmi/vbmi2");
+    /// True when the host can run the splat (mirrors threats.rs's
+    /// `splat_cpu_ok`, which is private to that module).
+    fn splat_host() -> bool {
+        std::is_x86_feature_detected!("avx512f")
+            && std::is_x86_feature_detected!("avx512bw")
+            && std::is_x86_feature_detected!("avx512vbmi")
+            && std::is_x86_feature_detected!("avx512vbmi2")
+    }
+
+    /// Corpus start positions: deterministic random playouts from varied
+    /// starting positions (same seeding scheme as threat_accum's fuzzer).
+    /// Includes kiwipete (index 2), promotion-heavy and bare-king endgames.
+    const START_FENS: &[&str] = &[
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "4k3/P6P/8/8/8/8/p6p/4K3 w - - 0 1",
+        "8/8/8/4k3/8/8/8/4K3 w - - 0 1",
+    ];
+
+    /// Tactically dense extensions for the deep corpus (WAC 004/126/188/220):
+    /// slider batteries, pins, and multi-x-ray stacking — the shapes the
+    /// two-hit enumeration must not get wrong.
+    const TACTICAL_FENS: &[&str] = &[
+        "r1bq2rk/pp3pbp/2p1p1pQ/7P/3P4/2PB1N2/PP3PPR/2KR4 w - - 0 1",
+        "r5r1/pQ5p/1qp2R2/2k1p3/4P3/2PP4/P1P3PP/6K1 w - - 0 1",
+        "3RNbk1/pp3p2/4rQpp/8/1qr5/7P/P4P2/3R2K1 w - - 0 1",
+        "3rr1k1/ppp2ppp/8/5Q2/4n3/1B5R/PPP1qPP1/5RK1 b - - 0 1",
+    ];
+
+    fn next_u32(state: &mut u32) -> u32 {
+        let mut x = *state;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        *state = x;
+        x
+    }
+
+    /// Change-level parity driver: over deterministic random playouts from
+    /// `fens`, at every position exercise removal of each piece on the
+    /// board and addition of every colored piece at each empty square;
+    /// compare scalar `push_threats_on_change` vs the AVX-512 splat as
+    /// exact delta multisets, and assert ZERO mismatches. On failure,
+    /// disagreements are categorized (see `categorize`) to localize the
+    /// regression.
+    fn run_change_parity(fens: &[&str], target_positions: usize) {
+        if !splat_host() {
+            eprintln!("skipping: host lacks avx512f/bw/vbmi/vbmi2");
             return;
         }
         crate::init();
         use crate::board::Board;
         use crate::movegen::generate_legal_moves;
-        use crate::threats::push_threats_on_change as scalar_push;
+        use crate::threats::push_threats_on_change_scalar as scalar_push;
         use std::collections::BTreeMap;
 
-        // Corpus: deterministic random playouts from varied starting
-        // positions (same seeding scheme as threat_accum's fuzzer).
-        const START_FENS: &[&str] = &[
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-            "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
-            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
-            "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
-            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-            "4k3/P6P/8/8/8/8/p6p/4K3 w - - 0 1",
-            "8/8/8/4k3/8/8/8/4K3 w - - 0 1",
-        ];
-        const TARGET_POSITIONS: usize = 1000;
         const MAX_PLIES_PER_GAME: usize = 60;
-
-        fn next_u32(state: &mut u32) -> u32 {
-            let mut x = *state;
-            x ^= x << 13;
-            x ^= x >> 17;
-            x ^= x << 5;
-            *state = x;
-            x
-        }
 
         // (category → (count, up-to-5 example strings))
         let mut cats: BTreeMap<&'static str, (u64, Vec<String>)> = BTreeMap::new();
@@ -704,7 +750,9 @@ mod tests {
             );
             let mut simd_d: Vec<RawThreatDelta> = Vec::with_capacity(64);
             unsafe {
-                push_threats_on_change_avx512(&mut simd_d, &board.mailbox, board.colors[0], cp, sq, add);
+                push_threats_on_change_avx512(
+                    &mut simd_d, &board.mailbox, board.colors[0], occ, cp, sq, add,
+                );
             }
             let mut av: Vec<u32> = scalar_d.iter().map(delta_raw).collect();
             let mut bv: Vec<u32> = simd_d.iter().map(delta_raw).collect();
@@ -741,14 +789,14 @@ mod tests {
         };
 
         'corpus: for round in 0.. {
-            for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for (fen_idx, fen) in fens.iter().enumerate() {
                 let seed: u32 = 0x5b1a7_a5eu32
                     .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
                     .wrapping_add((round as u32).wrapping_mul(7919));
                 let mut rng = if seed == 0 { 1 } else { seed };
                 let mut board = Board::from_fen(fen);
                 for _ply in 0..MAX_PLIES_PER_GAME {
-                    if positions >= TARGET_POSITIONS {
+                    if positions >= target_positions {
                         break 'corpus;
                     }
                     positions += 1;
@@ -785,7 +833,7 @@ mod tests {
         }
 
         let total_bad_deltas: u64 = cats.values().map(|(n, _)| *n).sum();
-        eprintln!("=== splat parity diagnostic ===");
+        eprintln!("=== splat parity ===");
         eprintln!(
             "positions={} changes_tested={} changes_mismatched={} disagreeing_deltas={}",
             positions, changes_tested, changes_mismatched, total_bad_deltas
@@ -798,9 +846,152 @@ mod tests {
         }
         assert_eq!(
             changes_mismatched, 0,
-            "splat parity mismatches: {} changes ({} deltas) disagree — see category summary above. \
-             EXPECTED with the current Reckless-semantics splat (x-ray space mismatch, 5096ac0).",
+            "splat parity mismatches: {} changes ({} deltas) disagree — see category \
+             summary above. Any nonzero bucket is silent eval corruption in the \
+             CODA_SPLAT=1 path; do NOT ship until zero.",
             changes_mismatched, total_bad_deltas
         );
+    }
+
+    /// CI gate: exact change-level parity on a reduced corpus (~1s release).
+    #[test]
+    fn splat_change_parity_small() {
+        run_change_parity(START_FENS, 100);
+    }
+
+    /// Deep check: the full 1000-position corpus (553k changes) plus the
+    /// tactically dense extension FENs. Run with
+    /// `cargo test --release splat_change_parity -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "deep parity corpus; splat_change_parity_small is the CI gate"]
+    fn splat_change_parity_with_scalar() {
+        run_change_parity(START_FENS, 1000);
+        let extended: Vec<&str> =
+            START_FENS.iter().chain(TACTICAL_FENS.iter()).copied().collect();
+        run_change_parity(&extended, 1200);
+    }
+
+    /// Move-level dispatch parity across ALL move shapes: for every legal
+    /// move at each corpus position, generate `board.threat_deltas` twice
+    /// through the REAL make_move — once scalar (default dispatch), once
+    /// with the splat forced (thread-local SPLAT_TEST_FORCE) — and require
+    /// exact multiset equality. This exercises the full §3.1 call-site
+    /// sequence (occ_transit legs, capture/EP change legs, promotion
+    /// double-change, castle rook leg) rather than synthetic single
+    /// changes, and asserts each move shape actually occurs.
+    #[test]
+    fn splat_move_parity_all_shapes() {
+        if !splat_host() {
+            eprintln!("skipping: host lacks avx512f/bw/vbmi/vbmi2");
+            return;
+        }
+        if std::env::var("CODA_SPLAT").map(|v| v == "1").unwrap_or(false) {
+            // The reference side of this test is make_move's DEFAULT dispatch;
+            // with CODA_SPLAT=1 both sides would run the splat (vacuous).
+            eprintln!("skipping: CODA_SPLAT=1 makes the scalar reference side splat too");
+            return;
+        }
+        crate::init();
+        use crate::board::Board;
+        use crate::movegen::generate_legal_moves;
+        use crate::types::{
+            is_promotion, move_flags, move_to, move_to_uci, FLAG_CASTLE, FLAG_EN_PASSANT,
+        };
+
+        // START_FENS guarantee castles (kiwipete) and promotions / promo-
+        // captures (indices 4, 6); the EP FEN makes an immediate EP capture
+        // legal (all legal moves are tested at every position, so poised
+        // shapes are guaranteed exercised, not left to random playout).
+        let mut fens: Vec<&str> = START_FENS.to_vec();
+        fens.push("rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3");
+
+        // [quiet, capture, en-passant, castle, promotion, promo-capture]
+        let mut shape_counts = [0u64; 6];
+        let mut moves_tested = 0u64;
+
+        for (fen_idx, fen) in fens.iter().enumerate() {
+            let mut rng = 0x0ddba11u32.wrapping_add(fen_idx as u32 * 7919);
+            let mut board = Board::from_fen(fen);
+            board.generate_threat_deltas = true;
+            for _ply in 0..40 {
+                let legal = generate_legal_moves(&board);
+                if legal.len == 0 {
+                    break;
+                }
+                for i in 0..legal.len {
+                    let mv = legal.get(i);
+                    let flags = move_flags(mv);
+                    let is_capture = board.mailbox[move_to(mv) as usize] < 6
+                        || flags == FLAG_EN_PASSANT;
+                    let shape = if flags == FLAG_EN_PASSANT {
+                        2
+                    } else if flags == FLAG_CASTLE {
+                        3
+                    } else if is_promotion(mv) && is_capture {
+                        5
+                    } else if is_promotion(mv) {
+                        4
+                    } else if is_capture {
+                        1
+                    } else {
+                        0
+                    };
+
+                    let mut b_scalar = board.clone();
+                    if !b_scalar.make_move(mv) {
+                        continue;
+                    }
+                    let mut scalar: Vec<u32> =
+                        b_scalar.threat_deltas.iter().map(delta_raw).collect();
+
+                    let mut b_simd = board.clone();
+                    crate::threats::SPLAT_TEST_FORCE.with(|f| f.set(true));
+                    let ok = b_simd.make_move(mv);
+                    crate::threats::SPLAT_TEST_FORCE.with(|f| f.set(false));
+                    assert!(ok);
+                    let mut simd: Vec<u32> =
+                        b_simd.threat_deltas.iter().map(delta_raw).collect();
+
+                    scalar.sort_unstable();
+                    simd.sort_unstable();
+                    if scalar != simd {
+                        eprintln!("fen=\"{}\" mv={}", board.to_fen(), move_to_uci(mv));
+                        for &d in scalar.iter().filter(|x| !simd.contains(x)) {
+                            eprintln!("  scalar-only: {}", fmt_delta(d));
+                        }
+                        for &d in simd.iter().filter(|x| !scalar.contains(x)) {
+                            eprintln!("  simd-only:   {}", fmt_delta(d));
+                        }
+                        panic!("splat move-parity mismatch (see stderr)");
+                    }
+                    shape_counts[shape] += 1;
+                    moves_tested += 1;
+                }
+                let mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
+                if !board.make_move(mv) {
+                    break;
+                }
+            }
+        }
+
+        eprintln!(
+            "splat move parity: moves={} quiet={} capture={} ep={} castle={} promo={} promo-capture={}",
+            moves_tested,
+            shape_counts[0],
+            shape_counts[1],
+            shape_counts[2],
+            shape_counts[3],
+            shape_counts[4],
+            shape_counts[5],
+        );
+        const SHAPES: [&str; 6] =
+            ["quiet", "capture", "en-passant", "castle", "promotion", "promo-capture"];
+        for (i, name) in SHAPES.iter().enumerate() {
+            assert!(
+                shape_counts[i] > 0,
+                "move shape '{}' never exercised — corpus regression",
+                name
+            );
+        }
     }
 }

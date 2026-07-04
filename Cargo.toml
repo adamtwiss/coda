@@ -40,10 +40,6 @@ embedded-net = []
 bz2 = ["dep:bzip2"]
 profile-materialize = []
 profile-threats = []
-# Dev-only gate for the archived byteboard-splat scaffolding (threats_splat.rs,
-# resurrected from 5096ac0). Never enabled by `make` / OB builds; the module
-# also compiles under cfg(test) so its parity diagnostics stay in the suite.
-splat-dev = []
 
 [profile.release]
 opt-level = 3

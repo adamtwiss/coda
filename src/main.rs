@@ -53,9 +53,10 @@ pub mod nnue_export;
 pub mod bullet_convert;
 mod cuckoo;
 pub mod threats;
-// Byteboard-splat scaffolding (resurrected from 5096ac0): dev/test only,
-// NEVER part of the production binary — bench must be unaffected.
-#[cfg(any(test, feature = "splat-dev"))]
+// AVX-512 splat threat-delta enumerator (Phase A). Always compiled (the
+// AVX-512 fns are target_feature-gated so they build everywhere), but only
+// dispatched behind CODA_SPLAT=1 + CPU checks in threats.rs — default
+// remains scalar and bench must be identical in both switch states.
 pub mod threats_splat;
 pub mod threat_accum;
 pub mod sparse_l1;
