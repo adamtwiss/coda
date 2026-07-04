@@ -10,6 +10,18 @@ bench isn't OB-reproducible, ponder-enabled / TM cross-engine work, deployment-T
 round-robins, or a quick local head-to-head. For ordinary "does this change
 help?" SPRTs, use **OpenBench** (see the `ob` skill), not local RR.
 
+## When modifying OTHER engines' checkouts (ablations, patches)
+
+Restore the checkout to its starting state when the builds are staged —
+**source AND local binary** (Adam, 2026-07-04). `git checkout -- <file>`
+cleans the source but leaves `target/release/<engine>` as the PATCHED build;
+the RR pool or any rebuild-skipping script then silently runs the modified
+engine. Sequence: build stock → copy binary out → patch → build → copy
+patched binary out → `git checkout -- .` → **copy the stock binary back over
+`target/release/<engine>`** (or rebuild). Verify with `cmp` + `git status`.
+Keep experiment binaries in a dedicated dir (e.g. `~/chess/ablation-*/`),
+never in the engine's own tree.
+
 ## ALWAYS FIRST: kill CPU contention
 
 **Before any local CPU-bound measurement — profiling, NPS, a local bench, an RR,
