@@ -1690,10 +1690,10 @@ pub(crate) fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     // move ordering from scratch, generating TT entries with worse
     // ordering than main; this both wastes their work AND poisons
     // shared-TT ordering, costing most of the potential SMP Elo.
-    // Per-go seeding (history/corr copy + shared-Arc refresh) is done by
-    // refresh_helper_per_go — called here for the per-`go` spawn path and,
-    // for the persistent thread pool, once per search on each reused worker.
-    refresh_helper_per_go(&mut helper, main);
+    // One-time cold seed: copy main's history + corr so the worker's first
+    // search isn't ordering-blind. Subsequent searches age the worker's own
+    // history (SMP diversity) via refresh_helper_per_go.
+    seed_helper_from_main(&mut helper, main);
 
     helper
 }
@@ -1707,11 +1707,18 @@ pub(crate) fn create_helper_info(main: &SearchInfo) -> SearchInfo {
 /// cheap per-search state is refreshed. Behavior-identical to the old inline
 /// copy for the per-`go` spawn path. (Stage 2 will replace the history/corr
 /// copy here with in-place aging to keep worker-learned diversity.)
-pub(crate) fn refresh_helper_per_go(helper: &mut SearchInfo, main: &SearchInfo) {
-    // Re-share the Arcs that the UCI loop may have swapped since this worker
-    // was created (TT on Hash resize; stop/ponderhit/global_nodes on the
-    // per-`go` SearchInfo swap). Cheap Arc clones; guarantees no worker ever
-    // runs on a stale TT or a dead stop flag.
+/// State refreshed identically on BOTH the one-time seed and every per-`go`
+/// refresh: re-share the mutable Arcs the UCI loop may have swapped (TT on Hash
+/// resize; stop/ponderhit/global_nodes on the per-`go` SearchInfo swap), copy
+/// the CORRECTION tables from main, and reset the per-search state a fresh
+/// helper would have zeroed.
+///
+/// Corrhist is COPIED from main every go on purpose: it feeds the corrected
+/// static eval, so a helper running its OWN corrhist would evaluate differently
+/// from main, its shared-TT entries would carry divergent scores, and the
+/// search would diverge at T>1 (the -8 class, OB #2539). Move-ordering history
+/// (below) is different — divergence there IS the Lazy-SMP diversity mechanism.
+fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
     helper.tt = main.tt.clone();
     helper.stop = main.stop.clone();
     helper.ponderhit_time = main.ponderhit_time.clone();
@@ -1719,30 +1726,41 @@ pub(crate) fn refresh_helper_per_go(helper: &mut SearchInfo, main: &SearchInfo) 
     helper.ponderhit_floor = main.ponderhit_floor.clone();
     helper.global_nodes = main.global_nodes.clone();
 
-    // Seed history from main's accumulated, aged tables (see create_helper_info
-    // rationale: helpers never start cold — that both wastes their early
-    // iterations and poisons shared-TT ordering).
-    helper.history.copy_from(&main.history);
-    // T2.1/T2.4: seed the correction tables too (~260 KB total — cheap, unlike
-    // the ~13 MB pawn_hist which stays unseeded). trans_corr (#2313) included.
+    // Correction tables — copied for eval consistency (see fn-doc). ~260 KB.
     helper.pawn_corr.copy_from_slice(&main.pawn_corr[..]);
     helper.np_corr.copy_from_slice(&main.np_corr[..]);
     helper.cont_corr.copy_from_slice(&main.cont_corr[..]);
     helper.trans_corr.copy_from_slice(&main.trans_corr[..]);
 
-    // Reset per-search state that a FRESH helper (create_helper_info ->
-    // new_with_tt) would have zeroed but a reused pool worker carries across
-    // `go`s. Without this the pool is NOT behavior-identical — measured -8 Elo
-    // at T=4 (OB #2539). The dominant term is pawn_hist: the old per-go helper
-    // started it zeroed and built it for the CURRENT position, whereas a reused
-    // worker accumulates it (unaged) from its own divergent, lower-quality
-    // search trajectory, polluting move ordering and the shared TT. (Stage 2
-    // may deliberately persist+AGE selected history for diversity — but that is
-    // a separate, measured lever, not an accidental carry-over.)
+    // pawn_hist is position-specific (indexed by pawn hash); a helper's
+    // self-accumulated table carries toxic stale ordering across positions
+    // (measured -8 at T=4, OB #2539), so it is cleared every go even in Stage 2.
     helper.clear_pawn_hist();
+    // Per-search scalars a fresh helper had zeroed.
     helper.nmp_min_ply = 0;
     helper.rfp_audit_active = false;
     helper.max_nodes = 0;
+}
+
+/// One-time seed of a freshly-built pool worker from main: cold workers copy
+/// main's accumulated (already-aged) history so their first search isn't
+/// starting from zero ordering.
+pub(crate) fn seed_helper_from_main(helper: &mut SearchInfo, main: &SearchInfo) {
+    refresh_helper_common(helper, main);
+    helper.history.copy_from(&main.history);
+}
+
+/// Per-`go` refresh of a reused pool worker (Stage 2 — SMP diversity). Unlike
+/// the seed, the worker KEEPS its own move-ordering `history` across `go`s and
+/// AGES it (same ×4/5 decay main applies at search start) instead of recopying
+/// main's. Over successive moves each worker's history diverges from main's and
+/// from the other workers', which is the Lazy-SMP search-diversity source Coda
+/// previously threw away by rebuilding a fresh helper every move. Eval-side
+/// state (corrhist) is still copied from main by `refresh_helper_common` for
+/// consistency, and pawn_hist is still cleared.
+pub(crate) fn refresh_helper_per_go(helper: &mut SearchInfo, main: &SearchInfo) {
+    refresh_helper_common(helper, main);
+    helper.history.age(4, 5);
 }
 
 /// Per-`go` preparation of a helper `SearchInfo` for a search on `board`:
