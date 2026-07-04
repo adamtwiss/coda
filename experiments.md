@@ -17682,3 +17682,35 @@ avx512 f/bw/vbmi/vbmi2; scalar retained as oracle/fallback. OB #2518
 on the fast path → implied ~+5 Elo on AVX-512-class hosts (including the
 main lichess account's machine). Phase B (AVX2 fallback, validated Zen 1
 +3.3% / Zen 3 -3.9% cycles) under SPRT #2522 vs this branch.
+
+---
+
+## Threat-splat Phase B: AVX2 fallback — MERGED +1.9 H1; CAMPAIGN COMPLETE (2026-07-04)
+
+`nps/threat-splat-phase-b` (merge `12dfe49`), OB #2522 tested B's marginal
+effect with Phase A pinned on both sides: **H1 +1.9 ±1.5, LLR 2.97,
+N=50,126** with ~57% of the fleet (the AVX2 workers) on the new path.
+
+Implementation: Phase A's two-hit ray-frame design at 256 bits — 64-byte
+ray gather via shuffle_epi8 + permute2x128/blendv (modelled on Reckless's
+half-swizzler technique, own implementation), section math shared with
+the 512 path through a common u64 ray-position mask domain, mask-drain
+emission. ~8 live YMMs (the Zen 1 PRF lesson honored — and Zen 1
+validates POSITIVE this time: titan +3.3% wall). Same zero-mismatch
+parity gates as Phase A on all corpora; bench identical in all three
+dispatch states; also fixed a test-oracle degeneration from A's
+default-on flip (move-parity reference now forces scalar).
+
+**Enumeration campaign closed.** Whole x86 fleet on SIMD threat
+enumeration; scalar retained as oracle/pre-AVX2 fallback. Since the two
+SPRTs' host sets are disjoint, the fleet aggregate is additive:
+A +2.3 + B +1.9 ≈ **+4 Elo fleet-wide**, larger per host class (~+5 on
+AVX-512, ~+3-4 on AVX2). Week total for the NPS campaign (all merged,
+all output-identical): hugepages +7.4, fused L1 kernel +2.1, splat A+B
+≈ +4 → **~+13-14 Elo of eval-risk-free speed.**
+
+Remaining pipeline items (docs/threat_splat_phase_a_2026-07-04.md):
+expansion table-chase (REQUIRES input-metric measurement first —
+fraction of generated deltas ever expanded — offense-precompute risk
+shape), sparse-L1 density probe, training-side threat-width narrowing
+(next net cycle), NEON splat (Phase C, low priority).
