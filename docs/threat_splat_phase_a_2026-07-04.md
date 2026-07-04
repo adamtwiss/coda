@@ -130,3 +130,38 @@ Gate: exact-multiset parity vs scalar per change (the resurrected
 diagnostic, now to be flipped from "categorize known gaps" to "assert
 zero"), then net-count parity per move, then the full incremental
 suite, then bench-identical.
+
+## Phase B (2026-07-04): AVX2 fallback
+
+Same enumeration, 2×__m256i primitives (second half of
+`src/threats_splat.rs`). All tables, the scalar mask helpers
+(`closest_from_occupied`, `ray_fill`, `attacking_along_rays`) and the
+five-section logic are shared/identical; only three things change:
+
+- **64-byte ray gather without VBMI** — per-index-byte: bits 0–3 via
+  `shuffle_epi8`, bit 4 (lane) and bit 5 (register) via `blendv` on
+  `slli_epi64`-shifted index copies over `permute2x128`-duplicated
+  halves (technique modelled on Reckless's `vectorized/avx2.rs`).
+- **Masks via movemask** — `cmpeq_epi8`+`movemask_epi8` per half glued
+  into the same u64 ray-position masks the AVX-512 path uses; the u64
+  section math is byte-for-byte common.
+- **Scalar mask-drain emission instead of vpcompressb** — the ray
+  frame (pboard/perm) is spilled to two stack arrays right after the
+  gather and each section's mask is drained bit-by-bit into
+  `RawThreatDelta::new` pushes (avg emission ~1.5 deltas/section call,
+  so a compress-LUT pipeline isn't worth its complexity — and the
+  emission phase holds zero vector registers, kind to Zen 1's PRF).
+
+Dispatch: AVX-512 if the CPU qualifies, else AVX2, else scalar.
+`CODA_NO_SPLAT=1` forces scalar; `CODA_SPLAT_FORCE_AVX2=1` pins AVX2
+on an AVX-512 host (the on-host A/B knob for AVX-512 machines).
+
+Parity (Zen 5 dev host, AVX2 functions called directly): zero
+mismatches on the 552,950-change base corpus, the 676,883-change
+extended dense corpus, and the 9,598-move all-shapes suite; the whole
+threat_accum incremental+fuzz suite also passes with the AVX2 path
+forced (`incremental_suite_forced_avx2`). Bench identical (2620566)
+in all three dispatch states. Indicative Zen 5 NPS (not the target
+uArch): scalar ~1.741M, AVX2 ~1.780M (+2.2%), AVX-512 ~1.852M
+(+6.4%). Real target-host validation (ionos-class Zen 3, and the
+titan Zen 1 gate-or-ship decision) happens next.
