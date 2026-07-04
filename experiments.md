@@ -17557,3 +17557,31 @@ the span target and the intermediates (which then forfeits the
 cross-ply cancellation, since intermediates need every row). Item
 closed; per-move (within-ply) cancellation from `nps/threat-delta-cancel`
 (#2504, in flight) is unaffected — it cancels without skipping writes.
+
+---
+
+## Within-ply threat-delta cancellation — H0, not merged (2026-07-04)
+
+Threat-pipeline campaign item 1 (`nps/threat-delta-cancel`, 5456ed1,
+#2504 STC `[-2,1]`): cancel net-zero add/sub row pairs before the SIMD
+apply. Bit-exact, saves ~3.8% of streamed weight rows (the
+instrumentation's "wasted bandwidth" number). **H0 ✗ — -4.5 ±2.9, LLR
+-2.97, N=14,006.** A real regression, resolved fast and decisively.
+
+Post-mortem read: the input metric was real but the wrong currency. On
+the fleet's majority host class (VNNI/AVX-512, healthy caches, THP now
+backing the weight matrices post-#2493) a threat row costs far less than
+the O(n_adds×n_subs) scalar scan + branchy swap-remove inserted into
+every apply call's hot path. The 3.8% row saving prices in at
+AVX2/small-cache rates; the scan cost prices in everywhere.
+
+**Threat-pipeline campaign scorecard so far:** item 1 within-ply
+cancellation H0 (-4.5); item 2 cross-ply cancellation measured-negative
+pre-SPRT (+10-22% rows, intermediate writes are load-bearing). Both
+"reduce wasted rows" angles are now closed — the remaining campaign item
+is the structural one (byteboard-splat SIMD threat-index derivation, the
+`attack_index` table-chase in delta expansion), which attacks compute
+per delta rather than row count. Also note: with hugepages merged, the
+marginal cost of a streamed row dropped fleet-wide, which shrinks the
+prize for ALL row-count-reduction ideas — future NPS work should target
+instruction count (the measured gap currency on AVX2 hosts) instead.
