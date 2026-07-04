@@ -17645,3 +17645,40 @@ the four losses all traded a small measured saving for hot-loop shape
 changes whose costs only appear under fleet conditions. Measure on
 fleet-representative hosts under load, and prefer structural removals
 over micro-op shaving.
+
+---
+
+## Threat-splat Phase A: x-ray-aware AVX-512 enumerator — MERGED +2.3 H1 (2026-07-04)
+
+The threat-pipeline campaign's structural centerpiece (`nps/threat-splat-phase-a`,
+merge `1787c53`; campaign doc `docs/threat_splat_phase_a_2026-07-04.md`).
+Adam's GO on Option B after Option C (retrain to Reckless's direct-only
+threat space) was rejected permanently — x-ray threats are worth 150+ Elo
+and are Coda's most powerful unique feature.
+
+**Method (the part worth reusing):**
+1. Extracted a code-cited semantic contract of the scalar enumeration
+   first (`docs/threat_semantics_contract_2026-07-04.md`) — feature tuple,
+   x-ray depth-1 rule, the 5-section per-change delta contract with sign
+   rules, net-count guarantees.
+2. Resurrected the May 2026 scaffolding (5096ac0) and upgraded its parity
+   test to structured mismatch categorization: all 825k disagreeing deltas
+   fell into exactly 4 x-ray-class buckets — the direct pipeline was
+   already parity-perfect, precisely scoping the remaining work. Two
+   latent scaffolding bugs found en route (Vec reserve undersized vs SIMD
+   store extent; ray_fill dropping a distance-7 bit).
+3. Design: ONE focus-square ray frame, TWO closest-on-rays passes (first
+   hit Y_d, second hit Z_d per ray) — all five contract sections read
+   their emissions from the (Y_d, Z_d) pairs, including opposite-ray
+   reads for §2's Z-deltas and §2b's W-deltas. The scalar per-candidate
+   ray_extension/between chases collapse entirely.
+4. Parity gate: zero mismatches over 1.2M+ board changes + 9.6k
+   real-game moves (all shapes) + the full incremental/fuzz suite routed
+   through the SIMD path. Bench identical in both dispatch states.
+
+**Result:** +6.7% NPS Zen 5 idle (~+3% under fleet load). Default-on for
+avx512 f/bw/vbmi/vbmi2; scalar retained as oracle/fallback. OB #2518
+`[0,3]`: **H1 +2.3 ±1.7, LLR 3.02, N=37,800** with only ~43% of the fleet
+on the fast path → implied ~+5 Elo on AVX-512-class hosts (including the
+main lichess account's machine). Phase B (AVX2 fallback, validated Zen 1
++3.3% / Zen 3 -3.9% cycles) under SPRT #2522 vs this branch.
