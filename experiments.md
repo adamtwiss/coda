@@ -17530,3 +17530,30 @@ the LTC TM campaign's tune (they're core=false but UCI-loadable), or a
 principled "spend-rate vs remaining-horizon" reformulation — NOT more
 constant-tweaking on this formula shape (three attempts = diminishing
 returns).
+
+---
+
+## Cross-ply threat-delta cancellation — MEASURED NEGATIVE, not merged (2026-07-04)
+
+Threat-pipeline campaign item 2 ("double_inc_update" cross-ply
+cancellation for gap≥2 replays, branch `nps/threat-xply-cancel`,
+e60e860, pushed for the record, no SPRT). Bit-exact (bench 2620566,
+all threat tests + new gap-2/3/4/5 + fuzz tests pass) but
+**input-metric NEGATIVE**: combining a gap≥2 span into one apply skips
+writing the intermediate plies' accumulators — and those intermediate
+writes are load-bearing, seeding gap-1 replays for sibling
+materializations. Avg replay gap rose 1.250 → 1.555; total weight rows
+streamed went UP ~10-22% (main 19.79M rows on bench-12; branch ≥21.7M
+post-cancel). The cancellation win is structurally small: gap≥2 spans
+are only 1.4% of streamed rows, ~28% of which cancel. Stockfish
+(checked: nnue_accumulator.cpp forward loop) materializes every
+intermediate state too.
+
+**Lesson (same family as offense-precompute 2026-06-24):** in a lazy
+DAG-shaped accumulator cache, intermediate materializations are shared
+infrastructure, not waste — optimizations that skip writing them repay
+the saving elsewhere with interest. Any future variant must write BOTH
+the span target and the intermediates (which then forfeits the
+cross-ply cancellation, since intermediates need every row). Item
+closed; per-move (within-ply) cancellation from `nps/threat-delta-cancel`
+(#2504, in flight) is unaffected — it cancels without skipping writes.
