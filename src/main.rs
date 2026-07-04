@@ -53,6 +53,10 @@ pub mod nnue_export;
 pub mod bullet_convert;
 mod cuckoo;
 pub mod threats;
+// Byteboard-splat scaffolding (resurrected from 5096ac0): dev/test only,
+// NEVER part of the production binary — bench must be unaffected.
+#[cfg(any(test, feature = "splat-dev"))]
+pub mod threats_splat;
 pub mod threat_accum;
 pub mod sparse_l1;
 pub mod nnue_simd;
