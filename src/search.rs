@@ -3138,6 +3138,23 @@ fn negamax(
         return apply_halfmove_scale(info.eval(board), board.halfmove);
     }
 
+    // Leaf node — dispatch to quiescence at the TOP of negamax (P2.1),
+    // after the draw checks + MAX_PLY guard but BEFORE the interior preamble
+    // (reductions reset, mate-distance pruning, TT prefetch, enemy_attacks /
+    // xray computation, TB probe, TT probe). Every depth<=0 entry (~14% of
+    // calls) previously paid that whole preamble and then re-ran draw checks,
+    // prefetch and a second TT probe inside quiescence, plus a duplicate
+    // `info.nodes += 1` (~10% boundary node-count inflation that also leaked
+    // into the TM node-fraction signal). SF/Reckless dive to qsearch as the
+    // first thing in search(). Quiescence independently does nodes++, seldepth,
+    // stop/time and draw checks, so nothing is lost. Two deliberate semantic
+    // deltas (both SF-consistent): boundary nodes no longer get the interior
+    // TB probe, nor negamax mate-distance pruning (qsearch's TT cutoff at
+    // depth >= -1 is a superset of the depth-0 requirement).
+    if depth <= 0 {
+        return quiescence(board, info, alpha, beta, ply);
+    }
+
     // C8 audit LIKELY #3: reset reductions slot at node entry so NMP and
     // any other pre-move-loop child call reads "no prior reduction", not
     // a sibling's stale LMR value from an earlier visit to this ply.
@@ -3510,10 +3527,7 @@ fn negamax(
         }
     }
 
-    // Leaf node - go to quiescence search
-    if depth <= 0 {
-        return quiescence(board, info, alpha, beta, ply);
-    }
+    // (Leaf-node quiescence dispatch hoisted to the top of negamax — P2.1.)
 
     // Compute pinned, checkers, in_check
     let pinned = board.pinned();
