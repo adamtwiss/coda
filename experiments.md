@@ -17901,3 +17901,34 @@ SPRT tuned values [0,3]. Note v3's mean-preservation was also wrong-ANCHORED:
 it preserved mean 1.0, but Coda's calibrated operating point is the old
 scaler's mean (~0.88) — another reason expose-and-tune beats computing shapes
 by hand.
+
+---
+
+## Material scaling: THREAD CLOSED — existing shape is optimal (2026-07-04, tune #2537)
+
+Final act of the material-scaling saga. After correction #2 (Coda has had the
+Alexandria scaler since April), the v4 expose-and-tune ran: MAT_DAMP_BASE and
+MAT_PAWN_W (branch `experiment/mat-damp-expose`, defaults bench-identical to
+main), focused 2-param SPSA #2537, 1000 iters STC, prod net E161C665.
+
+**Result: zero movement.** BASE 22400->22462 (+0.3%), PAWN_W 0->5.9 (< one
+c_end step from its boundary start — noise). With the SF/RK amplification
+region (BASE>~24800 => startpos factor >1.0) and the all-material direction
+(PAWN_W up to 300) both freely reachable, the tuner sat on the April defaults.
+
+**Closure statement (mechanism identified, per the closure rule):** Coda has
+had the SF/Reckless material-scaling lever since 2026-04-13, and its shape
+(npm-only, 0.684->0.927, gradient ratio 1.36 ~= SF's 1.32) is locally optimal
+for our net + threshold calibration. The v1/v2/v3 failures were overdoses on
+top of it; the "missing SF/RK feature" never existed. What genuinely remains
+unportable: their optimism coupling (we removed contempt, SPRT-validated).
+Caveat for the record: SPSA answers "better shape GIVEN current thresholds" —
+a joint shape+threshold basin elsewhere is not excluded, but three failed
+adds + the Reckless in-source ablation (gradient worth only ~4 +-8 Elo even
+co-tuned) price that expedition well below its cost.
+
+Branch kept as reference, NOT merged: #2537 proves these two knobs are
+gradient-flat at defaults, i.e. textbook loose knobs — adding them to the
+SPSA surface would violate the demoted-loose-knobs hygiene for zero EV.
+No SPRT needed (tune changed nothing). Do not re-open without a new net
+family or eval-landscape shift.
