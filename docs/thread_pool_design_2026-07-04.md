@@ -8,13 +8,22 @@ discarding all learned state on join. Deployment is multi-threaded (lichess
 **OB does support Threads>1 SPRTs**, so this is directly OB-measurable, not
 local-RR-only.
 
+**OB thread cap: Threads=4 (never above).** A Threads=N SPRT game needs N cores
+per engine (2N total), so higher thread counts exclude smaller workers from
+scheduling — **even Threads=4 already takes ~65% of the fleet out of play**
+(only 8+ core machines can host it), so multi-thread SPRTs accrue games
+noticeably slower and must be budgeted for that. Going above 4 would strand
+almost the whole fleet, so **4 is the hard ceiling** regardless of the T=8
+deployment target; T=4 is a representative, fleet-safe proxy. Local
+deadlock/parity testing may use higher counts (more contention surfaces races).
+
 Two separable levers (build + test independently):
 - **Stage 1 (overhead):** persist the worker threads across `go` (park/unpark),
   keep the per-search copy-from-main → behavior-identical, saves spawn + alloc +
-  NNUE-acc-alloc per move. Validate: OB Threads=8, `[-2,1]` non-regression.
+  NNUE-acc-alloc per move. Validate: OB **Threads=4**, `[-2,1]` non-regression.
 - **Stage 2 (diversity):** stop copying from main; workers keep + age their own
   history across moves (like main's `history.age(4,5)`) → genuine Lazy-SMP
-  diversity Coda currently throws away. Validate: OB Threads=8, `[0,3]`.
+  diversity Coda currently throws away. Validate: OB **Threads=4**, `[0,3]`.
 
 ## Ownership / lifetime
 
@@ -110,11 +119,12 @@ today (`search_helper` already stops on it). No change to the stop mechanism.
 
 1. **Stage 1a — pool infra, T=1 no-op.** Add `thread_pool.rs`; wire `search_smp`
    to use the pool for `threads>1`; keep per-go copy. Verify T=1 bench unchanged,
-   T=8 runs correctly and is behavior-identical (local RR self-play parity vs
-   current main at T=8). OB Threads=8 `[-2,1]`.
+   multi-thread runs correctly and is behavior-identical (local RR self-play
+   parity vs current main — run local at T=4 and higher to shake out races).
+   OB **Threads=4** `[-2,1]`.
 2. **Stage 1b (if 1a clean).** — nothing; 1a IS stage 1.
 3. **Stage 2 — diversity.** Drop the per-go history/corr copy; age worker tables
-   instead. OB Threads=8 `[0,3]`. Keep Stage 1 merged first so the lever is
+   instead. OB **Threads=4** `[0,3]`. Keep Stage 1 merged first so the lever is
    isolated.
 
 Files: new `src/thread_pool.rs`; edits to `src/search.rs` (`search_smp`,
