@@ -1,1 +1,1 @@
-https://github.com/adamtwiss/coda/releases/download/v0.7.0-nets/net-E6C62000.nnue
+https://github.com/adamtwiss/coda/releases/download/v0.7.0-nets/net-E161C665.nnue

@@ -3,7 +3,19 @@
 Authoritative list of v9 nets, their OpenBench hashes, provenance, and status.
 Update this file when you promote a new production net or retire an old one.
 
-**Current v9 production:** `E6C62000` — `net-E6C62000.nnue`
+**Current v9 production:** `E161C665` — `net-E161C665.nnue`
+(source file `multi-v9-s3-swa.nnue`). Promoted **2026-07-04**.
+**multi-v9 stage-3, SWA tail, WDL 0.20** — first *multi-v9* prod (prior prods
+were multi-v8). Validation: **#2480** net-vs-net `[-1.5,1.5]` STC **+4.80** vs
+prior prod E6C62000 (H1). A `--core` retune-on-branch FOR this net found no
+improvement over main's tunables, so **main tunables are kept unchanged** (not a
+hidden detune). Chosen over the w24 sibling (`multi-v9-w24-s3-swa`, E9061A9A):
+w20-vs-w24 measured a wash across STC (#2507 −0.5), LTC (#2514 +1.2) and LTC+4T
+(#2527 −0.6) — all CIs crossing zero, no consistent direction — so the incumbent
+w20 was kept; WDL to be re-probed on the next mixin/filtering recipe. All v9
+SPRTs against trunk should now pass `--dev-network E161C665 --base-network E161C665`.
+
+**Previous v9 production:** `E6C62000` — `net-E6C62000.nnue`
 (source file `multi-v8-l132-s3-v4-swa.nnue`). Promoted **2026-06-29**.
 **multi-v8 stage-3 "v4"** = the v3 recipe with the long final stage extended to
 **S3000** (vs v3's S2000), SWA tail, `final-lr 1e-6` (floor unchanged — fired
