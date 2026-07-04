@@ -1690,21 +1690,45 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     // move ordering from scratch, generating TT entries with worse
     // ordering than main; this both wastes their work AND poisons
     // shared-TT ordering, costing most of the potential SMP Elo.
+    // Per-go seeding (history/corr copy + shared-Arc refresh) is done by
+    // refresh_helper_per_go — called here for the per-`go` spawn path and,
+    // for the persistent thread pool, once per search on each reused worker.
+    refresh_helper_per_go(&mut helper, main);
+
+    helper
+}
+
+/// Refresh a helper's per-`go` state from the current main thread: re-share
+/// the mutable Arcs (they can be swapped between `go`s — TT resize, a fresh
+/// SearchInfo per search, ponderhit deadlines) and seed history/correction
+/// tables from main's just-aged copies. Split out of `create_helper_info` so
+/// the persistent thread pool can reuse a worker across `go`s: the one-time
+/// allocations (NNUE acc, threat stack, table boxes) stay put, only this
+/// cheap per-search state is refreshed. Behavior-identical to the old inline
+/// copy for the per-`go` spawn path. (Stage 2 will replace the history/corr
+/// copy here with in-place aging to keep worker-learned diversity.)
+fn refresh_helper_per_go(helper: &mut SearchInfo, main: &SearchInfo) {
+    // Re-share the Arcs that the UCI loop may have swapped since this worker
+    // was created (TT on Hash resize; stop/ponderhit/global_nodes on the
+    // per-`go` SearchInfo swap). Cheap Arc clones; guarantees no worker ever
+    // runs on a stale TT or a dead stop flag.
+    helper.tt = main.tt.clone();
+    helper.stop = main.stop.clone();
+    helper.ponderhit_time = main.ponderhit_time.clone();
+    helper.ponderhit_soft = main.ponderhit_soft.clone();
+    helper.ponderhit_floor = main.ponderhit_floor.clone();
+    helper.global_nodes = main.global_nodes.clone();
+
+    // Seed history from main's accumulated, aged tables (see create_helper_info
+    // rationale: helpers never start cold — that both wastes their early
+    // iterations and poisons shared-TT ordering).
     helper.history.copy_from(&main.history);
-    // T2.1/T2.4: with corrhist persistent and full-error updates, seed
-    // helpers from main's accumulated corrections (~260 KB total — cheap,
-    // unlike the ~13 MB pawn_hist which stays unseeded).
+    // T2.1/T2.4: seed the correction tables too (~260 KB total — cheap, unlike
+    // the ~13 MB pawn_hist which stays unseeded). trans_corr (#2313) included.
     helper.pawn_corr.copy_from_slice(&main.pawn_corr[..]);
     helper.np_corr.copy_from_slice(&main.np_corr[..]);
     helper.cont_corr.copy_from_slice(&main.cont_corr[..]);
-    // trans_corr (transition corrhist, #2313, ~12% of corrhist weight) landed
-    // after the T2.1 seeding and was never added here — helpers ran every
-    // search with a zeroed transition component while main ran warm, computing
-    // divergent corrected evals and pushing conflicting results into the shared
-    // TT. Seed it like the other corrhist tables (#2313 add-table-forget-seed).
     helper.trans_corr.copy_from_slice(&main.trans_corr[..]);
-
-    helper
 }
 
 /// Compute time-management budgets from clock state. Returns
