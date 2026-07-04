@@ -1125,54 +1125,93 @@ impl RawThreatDelta {
     #[inline(always)] pub fn add(self) -> bool { self.0 & (1 << 31) != 0 }
 }
 
-/// True when the host can run the AVX-512 splat enumerator
-/// (threats_splat.rs): F/BW for the mailbox/mask ops, VBMI for the ray
-/// permute, VBMI2 for the compress-store emission (Zen 4+/SPR+).
+/// Which splat enumerator (threats_splat.rs) the delta-generation entry
+/// points route through. `Scalar` = the push_threats_for_piece path below.
+#[cfg(target_arch = "x86_64")]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum SplatPath {
+    Scalar,
+    Avx512,
+    Avx2,
+}
+
+/// True when the host can run the AVX-512 splat enumerator: F/BW for the
+/// mailbox/mask ops, VBMI for the ray permute, VBMI2 for the compress-store
+/// emission (Zen 4+/SPR+).
 #[cfg(target_arch = "x86_64")]
 #[inline]
-fn splat_cpu_ok() -> bool {
+fn splat_avx512_ok() -> bool {
     std::is_x86_feature_detected!("avx512f")
         && std::is_x86_feature_detected!("avx512bw")
         && std::is_x86_feature_detected!("avx512vbmi")
         && std::is_x86_feature_detected!("avx512vbmi2")
 }
 
-/// Route the two delta-generation entry points below through the AVX-512
-/// splat enumerator — DEFAULT ON when the CPU qualifies (Phase A default-on
-/// decision, 2026-07-04: +6.7% NPS on Zen 5, zero-mismatch multiset parity
-/// over 1.2M+ changes, bench-identical through full search). The
-/// enumeration is output-identical by construction, so `CODA_NO_SPLAT=1`
-/// exists only to A/B-measure NPS on the same binary. Parsed once at first
-/// use (OnceLock, same pattern as `skip_slider_sees`). The
-/// CODA_NO_SLIDER_SEES ablation is implemented scalar-only, so it disables
-/// the splat.
+/// True when the host can run the AVX2 splat fallback.
 #[cfg(target_arch = "x86_64")]
 #[inline]
-fn use_splat() -> bool {
+fn splat_avx2_ok() -> bool {
+    std::is_x86_feature_detected!("avx2")
+}
+
+/// Route the two delta-generation entry points below through a splat
+/// enumerator — DEFAULT ON, best path the CPU supports: AVX-512 (Phase A
+/// default-on decision, 2026-07-04: +6.7% NPS on Zen 5, zero-mismatch
+/// multiset parity over 1.2M+ changes, bench-identical through full
+/// search), else AVX2 (Phase B), else scalar. The enumeration is
+/// output-identical by construction across all three, so the env knobs
+/// exist only for same-binary A/B measurement:
+/// - `CODA_NO_SPLAT=1` — force scalar.
+/// - `CODA_SPLAT_FORCE_AVX2=1` — pin the AVX2 path on an AVX-512 host
+///   (needed for on-host A/B of the AVX2 fallback on AVX-512 machines).
+/// Parsed once at first use (OnceLock, same pattern as `skip_slider_sees`).
+/// The CODA_NO_SLIDER_SEES ablation is implemented scalar-only, so it
+/// disables the splat.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn use_splat() -> SplatPath {
     use std::sync::OnceLock;
-    static F: OnceLock<bool> = OnceLock::new();
+    static F: OnceLock<SplatPath> = OnceLock::new();
     *F.get_or_init(|| {
-        std::env::var("CODA_NO_SPLAT").map(|v| v != "1").unwrap_or(true)
-            && std::env::var("CODA_NO_SLIDER_SEES").is_err()
-            && splat_cpu_ok()
+        let disabled = std::env::var("CODA_NO_SPLAT").map(|v| v == "1").unwrap_or(false)
+            || std::env::var("CODA_NO_SLIDER_SEES").is_ok();
+        if disabled {
+            SplatPath::Scalar
+        } else if std::env::var("CODA_SPLAT_FORCE_AVX2").map(|v| v == "1").unwrap_or(false) {
+            if splat_avx2_ok() { SplatPath::Avx2 } else { SplatPath::Scalar }
+        } else if splat_avx512_ok() {
+            SplatPath::Avx512
+        } else if splat_avx2_ok() {
+            SplatPath::Avx2
+        } else {
+            SplatPath::Scalar
+        }
     })
 }
 
 #[cfg(all(test, target_arch = "x86_64"))]
 thread_local! {
-    /// Test-only per-thread splat forcing, so a parity test can generate a
-    /// move's deltas via BOTH generators without process-global env-var
-    /// races across the threaded test runner. The CPU check still applies.
-    pub(crate) static SPLAT_TEST_FORCE: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
+    /// Test-only per-thread splat-path forcing, so a parity test can
+    /// generate a move's deltas via a CHOSEN generator (including scalar,
+    /// regardless of the host's default dispatch) without process-global
+    /// env-var races across the threaded test runner. `None` = default
+    /// dispatch; `Some(path)` = use that path (CPU check still applies —
+    /// unsupported forced paths fall back to scalar, and tests gate on the
+    /// host-feature checks before forcing).
+    pub(crate) static SPLAT_TEST_FORCE: std::cell::Cell<Option<SplatPath>> =
+        const { std::cell::Cell::new(None) };
 }
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
-fn dispatch_splat() -> bool {
+fn dispatch_splat() -> SplatPath {
     #[cfg(test)]
-    if SPLAT_TEST_FORCE.with(|f| f.get()) {
-        return splat_cpu_ok();
+    if let Some(forced) = SPLAT_TEST_FORCE.with(|f| f.get()) {
+        return match forced {
+            SplatPath::Avx512 if splat_avx512_ok() => SplatPath::Avx512,
+            SplatPath::Avx2 if splat_avx2_ok() => SplatPath::Avx2,
+            _ => SplatPath::Scalar,
+        };
     }
     use_splat()
 }
@@ -1194,14 +1233,25 @@ pub fn push_threats_on_move(
     let white_bb = colors_bb[WHITE as usize];
     let cp = colored_piece(piece_color, piece_type);
     #[cfg(target_arch = "x86_64")]
-    if dispatch_splat() {
-        // SAFETY: dispatch_splat verified avx512f/bw/vbmi/vbmi2.
-        unsafe {
-            crate::threats_splat::push_threats_on_move_avx512(
-                deltas, mailbox, white_bb, occ, cp as u8, from, to,
-            );
+    match dispatch_splat() {
+        // SAFETY: dispatch_splat verified the respective CPU features.
+        SplatPath::Avx512 => {
+            unsafe {
+                crate::threats_splat::push_threats_on_move_avx512(
+                    deltas, mailbox, white_bb, occ, cp as u8, from, to,
+                );
+            }
+            return;
         }
-        return;
+        SplatPath::Avx2 => {
+            unsafe {
+                crate::threats_splat::push_threats_on_move_avx2(
+                    deltas, mailbox, white_bb, occ, cp as u8, from, to,
+                );
+            }
+            return;
+        }
+        SplatPath::Scalar => {}
     }
     // Use occupancy with the moving piece removed from `from` but not yet at `to`
     // This matches how Reckless handles it: occ ^ to_bb
@@ -1228,14 +1278,25 @@ pub fn push_threats_on_change(
     let white_bb = colors_bb[WHITE as usize];
     let cp = colored_piece(piece_color, piece_type);
     #[cfg(target_arch = "x86_64")]
-    if dispatch_splat() {
-        // SAFETY: dispatch_splat verified avx512f/bw/vbmi/vbmi2.
-        unsafe {
-            crate::threats_splat::push_threats_on_change_avx512(
-                deltas, mailbox, white_bb, occ, cp as u8, square, add,
-            );
+    match dispatch_splat() {
+        // SAFETY: dispatch_splat verified the respective CPU features.
+        SplatPath::Avx512 => {
+            unsafe {
+                crate::threats_splat::push_threats_on_change_avx512(
+                    deltas, mailbox, white_bb, occ, cp as u8, square, add,
+                );
+            }
+            return;
         }
-        return;
+        SplatPath::Avx2 => {
+            unsafe {
+                crate::threats_splat::push_threats_on_change_avx2(
+                    deltas, mailbox, white_bb, occ, cp as u8, square, add,
+                );
+            }
+            return;
+        }
+        SplatPath::Scalar => {}
     }
     push_threats_for_piece(deltas, pieces_bb, colors_bb, mailbox, occ, white_bb, cp, piece_color, piece_type, square, add);
 }

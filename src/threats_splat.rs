@@ -18,11 +18,15 @@
 //! Dispatch (CODA_SPLAT=1 + CPU checks, default scalar) lives in
 //! `threats::push_threats_on_move` / `push_threats_on_change`.
 //!
-//! Phase A (this file): AVX-512 F+BW+VBMI+VBMI2 path (Zen 4+/SPR+).
-//! Phase B (followup): AVX-2 fallback (mirror of Reckless's
-//! `vectorized/avx2.rs`). Most fleet hosts (Hercules Coffee Lake, Atlas
-//! Zen 1) only do AVX-2; AVX-512-only would shift fleet results away from
-//! older hosts which gain the most from cache work.
+//! Phase A: AVX-512 F+BW+VBMI+VBMI2 path (Zen 4+/SPR+).
+//! Phase B (this file too, second half): AVX2 fallback with the SAME
+//! enumeration — 2×__m256i primitives modelled on Reckless's
+//! `vectorized/avx2.rs` techniques, scalar mask-drain emission. Most fleet
+//! hosts (Hercules Coffee Lake, Atlas Zen 1) only do AVX2; AVX-512-only
+//! would shift fleet results away from older hosts which gain the most
+//! from cache work. Dispatch: AVX-512 if the CPU qualifies, else AVX2,
+//! else scalar (threats.rs `use_splat`); `CODA_SPLAT_FORCE_AVX2=1` pins
+//! the AVX2 path on AVX-512 hosts for on-host A/B measurement.
 //!
 //! Encoding decisions:
 //! - **Piece IDs**: Coda's `colored_piece()` uses (color × 6 + piece_type),
@@ -552,6 +556,299 @@ pub unsafe fn push_threats_on_move_avx512(
 }
 
 // =============================================================================
+// AVX2 fallback (Phase B) — same enumeration, 2×__m256i primitives
+// =============================================================================
+//
+// The section logic is IDENTICAL to `splat_focus` (all of it operates on
+// u64 ray-position masks and the shared scalar helpers
+// `closest_from_occupied` / `ray_fill` / `attacking_along_rays`); only the
+// vector primitives change width, and emission drains masks scalar instead
+// of vpcompressb. The SIMD techniques (64-byte cross-lane gather via
+// permute2x128 + shuffle_epi8 + blendv, movemask-based ray masks, scalar
+// mask-drain emission) are modelled on Reckless's AVX2 threat machinery
+// (`nnue/accumulator/threats/vectorized/avx2.rs`).
+//
+// Register budget note (Zen 1 cracks 256-bit ops to 2×128 with tight PRF
+// budgets — 2026-07-04 scorecard): the hot gather keeps ~8 live YMMs and
+// `splat_focus_avx2` spills pboard/perm to two stack arrays immediately
+// after the gather, so the emission phase holds no vector registers at all.
+
+#[target_feature(enable = "avx2")]
+unsafe fn loadu2(ptr: *const __m256i) -> [__m256i; 2] {
+    [_mm256_loadu_si256(ptr), _mm256_loadu_si256(ptr.add(1))]
+}
+
+/// Byte-wise "== 0?" over both halves, inverted: bit i of the result is set
+/// iff byte i is NONZERO. The AVX2 stand-in for `_mm512_test_epi8_mask(v, m)`
+/// callers (they pre-AND with the mask).
+#[target_feature(enable = "avx2")]
+unsafe fn nonzero_bytes_mask(v: [__m256i; 2]) -> u64 {
+    let z = _mm256_setzero_si256();
+    let lo = _mm256_movemask_epi8(_mm256_cmpeq_epi8(v[0], z)) as u32 as u64;
+    let hi = _mm256_movemask_epi8(_mm256_cmpeq_epi8(v[1], z)) as u32 as u64;
+    !(lo | (hi << 32))
+}
+
+/// Expand a 32-square bitmask into a byte-lane mask (0xFF where the bit is
+/// set). AVX2 has no mask registers; this is the standard broadcast +
+/// per-byte-bit test. Used to synthesize the AVX-512 masked add/blend ops.
+#[target_feature(enable = "avx2")]
+unsafe fn mask_bytes_avx2(mask: u32) -> __m256i {
+    let v = _mm256_set1_epi32(mask as i32);
+    // Byte j of each 128-bit lane must read mask byte j/8 (shuffle_epi8 is
+    // per-lane, but set1 replicated the mask into every lane).
+    #[rustfmt::skip]
+    let sel = _mm256_setr_epi8(
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1,
+        2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
+    );
+    #[rustfmt::skip]
+    let bits = _mm256_setr_epi8(
+        1, 2, 4, 8, 16, 32, 64, -128, 1, 2, 4, 8, 16, 32, 64, -128,
+        1, 2, 4, 8, 16, 32, 64, -128, 1, 2, 4, 8, 16, 32, 64, -128,
+    );
+    let picked = _mm256_and_si256(_mm256_shuffle_epi8(v, sel), bits);
+    _mm256_cmpeq_epi8(picked, bits)
+}
+
+/// AVX2 analogue of `mailbox_vector_avx512`: piece-type mailbox + white
+/// bitboard → colored-piece byte vector (add 6 where NOT white; empty 6→12).
+#[target_feature(enable = "avx2")]
+pub(crate) unsafe fn mailbox_vector_avx2(mailbox: &[u8; 64], white_bb: u64) -> [__m256i; 2] {
+    let types = loadu2(mailbox.as_ptr().cast());
+    let six = _mm256_set1_epi8(6);
+    let not_white = !white_bb;
+    [
+        _mm256_add_epi8(types[0], _mm256_and_si256(six, mask_bytes_avx2(not_white as u32))),
+        _mm256_add_epi8(types[1], _mm256_and_si256(six, mask_bytes_avx2((not_white >> 32) as u32))),
+    ]
+}
+
+/// AVX2 analogue of `occ_masked_board`: squares whose occ bit is clear read
+/// as NO_PIECE (contract invariant 6 — occ_transit discipline; see the
+/// AVX-512 version's doc for the full rationale).
+#[target_feature(enable = "avx2")]
+unsafe fn occ_masked_board_avx2(mailbox: &[u8; 64], white_bb: u64, occ: u64) -> [__m256i; 2] {
+    let board = mailbox_vector_avx2(mailbox, white_bb);
+    let none = _mm256_set1_epi8(crate::types::NO_PIECE as i8);
+    [
+        _mm256_blendv_epi8(none, board[0], mask_bytes_avx2(occ as u32)),
+        _mm256_blendv_epi8(none, board[1], mask_bytes_avx2((occ >> 32) as u32)),
+    ]
+}
+
+/// AVX2 analogue of `ray_permutation`: returns `(perm, invalid)` where
+/// `invalid` is a byte-lane mask (0xFF at off-board 0x80 entries) — AVX2 has
+/// no mask registers, so invalidity travels as a vector and is applied with
+/// `andnot` in `board_to_rays_avx2` instead of a maskz shuffle.
+#[target_feature(enable = "avx2")]
+pub(crate) unsafe fn ray_permutation_avx2(focus: u32) -> ([__m256i; 2], [__m256i; 2]) {
+    let perm = loadu2(RAY_PERMUTATIONS.get_unchecked(focus as usize).as_ptr().cast());
+    let inv = _mm256_set1_epi8(0x80u8 as i8);
+    let invalid = [_mm256_cmpeq_epi8(perm[0], inv), _mm256_cmpeq_epi8(perm[1], inv)];
+    (perm, invalid)
+}
+
+/// AVX2 analogue of `board_to_rays`: 64-byte gather-by-index across two YMM
+/// registers, without VBMI. Technique modelled on Reckless's AVX2
+/// half-swizzler: per index byte, bits 0–3 select within a 16-byte lane
+/// (shuffle_epi8), bit 4 selects the lane (blendv on idx<<3, after
+/// permute2x128 builds lane-duplicated copies), bit 5 selects the source
+/// register (blendv on idx<<2). The `slli_epi64` shifts move each byte's
+/// bit 4/5 into its bit 7 — blendv only reads bit 7, and cross-byte spill
+/// from a 64-bit shift < 8 only pollutes bits below 7, so per-byte selection
+/// stays exact. Invalid entries (0x80) have bit 7 set, so all four
+/// shuffle_epi8 legs zero those bytes: pboard reads 0 (not garbage like the
+/// AVX-512 permutexvar version) at invalid positions — harmless either way,
+/// since every consumer mask is a subset of the valid occupancy, and `rays`
+/// is additionally forced to 0 there via andnot(invalid).
+#[target_feature(enable = "avx2")]
+pub(crate) unsafe fn board_to_rays_avx2(
+    perm: [__m256i; 2],
+    invalid: [__m256i; 2],
+    board: [__m256i; 2],
+) -> ([__m256i; 2], [__m256i; 2]) {
+    let gather = |idxs: __m256i| -> __m256i {
+        let reg_sel = _mm256_slli_epi64(idxs, 2); // bit 5 → bit 7
+        let lane_sel = _mm256_slli_epi64(idxs, 3); // bit 4 → bit 7
+        let from_reg = |b: __m256i| -> __m256i {
+            let lo = _mm256_shuffle_epi8(_mm256_permute2x128_si256::<0x00>(b, b), idxs);
+            let hi = _mm256_shuffle_epi8(_mm256_permute2x128_si256::<0x11>(b, b), idxs);
+            _mm256_blendv_epi8(lo, hi, lane_sel)
+        };
+        _mm256_blendv_epi8(from_reg(board[0]), from_reg(board[1]), reg_sel)
+    };
+    let lut = _mm256_broadcastsi128_si256(_mm_loadu_si128(PIECE_TO_BIT_TABLE.as_ptr().cast()));
+    let pboard = [gather(perm[0]), gather(perm[1])];
+    let rays = [
+        _mm256_andnot_si256(invalid[0], _mm256_shuffle_epi8(lut, pboard[0])),
+        _mm256_andnot_si256(invalid[1], _mm256_shuffle_epi8(lut, pboard[1])),
+    ];
+    (pboard, rays)
+}
+
+/// AVX2 analogue of `attackers_along_rays`.
+#[target_feature(enable = "avx2")]
+pub(crate) unsafe fn attackers_along_rays_avx2(rays: [__m256i; 2]) -> u64 {
+    let mask = loadu2(RAY_ATTACKERS_MASK.as_ptr().cast());
+    nonzero_bytes_mask([
+        _mm256_and_si256(rays[0], mask[0]),
+        _mm256_and_si256(rays[1], mask[1]),
+    ])
+}
+
+/// AVX2 analogue of `sliders_along_rays`.
+#[target_feature(enable = "avx2")]
+pub(crate) unsafe fn sliders_along_rays_avx2(rays: [__m256i; 2]) -> u64 {
+    let mask = loadu2(RAY_SLIDERS_MASK.as_ptr().cast());
+    nonzero_bytes_mask([
+        _mm256_and_si256(rays[0], mask[0]),
+        _mm256_and_si256(rays[1], mask[1]),
+    ]) & RAY_POSITIONS
+}
+
+// ---- Scalar mask-drain emission ---------------------------------------------
+//
+// No vpcompressb below AVX-512, and emission counts are tiny (avg ~1.5
+// deltas per section call), so draining the masks scalar beats building a
+// compress-LUT pipeline. Measured before getting fancy: see the Phase B
+// commit message. `pb`/`pm` are the ray-frame pboard/perm spilled to stack.
+
+/// Scalar-drain analogue of `splat_threats`: focus→victim records for each
+/// `attacked` bit, attacker→focus records for each `attackers` bit.
+#[inline(always)]
+fn emit_threats(
+    deltas: &mut Vec<RawThreatDelta>,
+    pb: &[u8; 64],
+    pm: &[u8; 64],
+    mut attacked: u64,
+    mut attackers: u64,
+    focus_piece: u8,
+    focus_sq: u8,
+    add: bool,
+) {
+    while attacked != 0 {
+        let i = attacked.trailing_zeros() as usize;
+        deltas.push(RawThreatDelta::new(focus_piece, focus_sq, pb[i], pm[i], add));
+        attacked &= attacked - 1;
+    }
+    while attackers != 0 {
+        let i = attackers.trailing_zeros() as usize;
+        deltas.push(RawThreatDelta::new(pb[i], pm[i], focus_piece, focus_sq, add));
+        attackers &= attackers - 1;
+    }
+}
+
+/// Scalar-drain analogue of `splat_xray_threats`. `victims` is expressed in
+/// the OPPOSITE ray's octet (the caller rotates the mask by 32 bits — 4
+/// octets — instead of flipping the vector halves like the AVX-512 path),
+/// so the actual victim ray-position is `(bit + 32) % 64`. Pairing: both
+/// masks carry ≤1 bit per octet on MATCHING octets (guaranteed by the
+/// caller's ray_fill intersection), so k-th set bits pair up.
+#[inline(always)]
+fn emit_xray_threats(
+    deltas: &mut Vec<RawThreatDelta>,
+    pb: &[u8; 64],
+    pm: &[u8; 64],
+    mut sliders: u64,
+    mut victims: u64,
+    add: bool,
+) {
+    debug_assert_eq!(sliders.count_ones(), victims.count_ones());
+    while sliders != 0 {
+        let s = sliders.trailing_zeros() as usize;
+        let v = (victims.trailing_zeros() as usize + 32) % 64;
+        deltas.push(RawThreatDelta::new(pb[s], pm[s], pb[v], pm[v], add));
+        sliders &= sliders - 1;
+        victims &= victims - 1;
+    }
+}
+
+/// AVX2 focus pass — the exact section logic of `splat_focus` (see its doc
+/// for the contract mapping); only the primitives and emission differ.
+#[target_feature(enable = "avx2")]
+unsafe fn splat_focus_avx2(
+    deltas: &mut Vec<RawThreatDelta>,
+    board: [__m256i; 2],
+    piece_cp: u8,
+    square: u32,
+    add: bool,
+) {
+    let (perm, invalid) = ray_permutation_avx2(square);
+    let (pboard, rays) = board_to_rays_avx2(perm, invalid, board);
+
+    // Spill the ray frame for the scalar emitters (frees all YMMs).
+    let mut pb = [0u8; 64];
+    let mut pm = [0u8; 64];
+    _mm256_storeu_si256(pb.as_mut_ptr().cast(), pboard[0]);
+    _mm256_storeu_si256(pb.as_mut_ptr().add(32).cast(), pboard[1]);
+    _mm256_storeu_si256(pm.as_mut_ptr().cast(), perm[0]);
+    _mm256_storeu_si256(pm.as_mut_ptr().add(32).cast(), perm[1]);
+
+    let occupied = nonzero_bytes_mask(rays);
+    let closest = closest_from_occupied(occupied); // Y_d ∪ occupied knight ring
+    let first = closest & RAY_POSITIONS; // Y_d
+    let second = closest_from_occupied((occupied & RAY_POSITIONS) & !first); // Z_d
+
+    // §1 direct-from + (§2-direct ∪ §3) incoming direct attackers.
+    let attacked_direct = attacking_along_rays(piece_cp, closest);
+    let attackers_direct = attackers_along_rays_avx2(rays) & closest;
+    emit_threats(deltas, &pb, &pm, attacked_direct, attackers_direct, piece_cp, square as u8, add);
+
+    // §1b x-rays FROM the focus slider + §2b sliders x-raying the focus.
+    let attacked_xray = attacking_along_rays(piece_cp, second);
+    let slider_hits = sliders_along_rays_avx2(rays);
+    let xray_attackers = slider_hits & second;
+    emit_threats(deltas, &pb, &pm, attacked_xray, xray_attackers, piece_cp, square as u8, add);
+
+    // §2 Z-deltas (sign inverted — same-index direct↔x-ray property).
+    let seers = slider_hits & first;
+    let z_opp = second.rotate_right(32); // Z_{-d}, expressed in octet d
+    let z_pairs = ray_fill(seers) & ray_fill(z_opp);
+    if z_pairs != 0 {
+        emit_xray_threats(deltas, &pb, &pm, seers & z_pairs, z_opp & z_pairs, !add);
+    }
+
+    // §2b W-deltas (sign inverted).
+    let y_opp = first.rotate_right(32); // Y_{-d}, expressed in octet d
+    let w_pairs = ray_fill(xray_attackers) & ray_fill(y_opp);
+    if w_pairs != 0 {
+        emit_xray_threats(deltas, &pb, &pm, xray_attackers & w_pairs, y_opp & w_pairs, !add);
+    }
+}
+
+#[target_feature(enable = "avx2")]
+pub unsafe fn push_threats_on_change_avx2(
+    deltas: &mut Vec<RawThreatDelta>,
+    mailbox: &[u8; 64],
+    white_bb: u64,
+    occ: u64,
+    piece_cp: u8,
+    square: u32,
+    add: bool,
+) {
+    let board = occ_masked_board_avx2(mailbox, white_bb, occ);
+    splat_focus_avx2(deltas, board, piece_cp, square, add);
+}
+
+/// See `push_threats_on_move_avx512` for the occ_transit contract.
+#[target_feature(enable = "avx2")]
+pub unsafe fn push_threats_on_move_avx2(
+    deltas: &mut Vec<RawThreatDelta>,
+    mailbox: &[u8; 64],
+    white_bb: u64,
+    occ: u64,
+    piece_cp: u8,
+    src: u32,
+    dst: u32,
+) {
+    let occ_transit = occ ^ (1u64 << dst);
+    let board = occ_masked_board_avx2(mailbox, white_bb, occ_transit);
+    splat_focus_avx2(deltas, board, piece_cp, src, false);
+    splat_focus_avx2(deltas, board, piece_cp, dst, true);
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -665,13 +962,28 @@ mod tests {
         }
     }
 
-    /// True when the host can run the splat (mirrors threats.rs's
-    /// `splat_cpu_ok`, which is private to that module).
+    /// True when the host can run the AVX-512 splat (mirrors threats.rs's
+    /// `splat_avx512_ok`, which is private to that module).
     fn splat_host() -> bool {
         std::is_x86_feature_detected!("avx512f")
             && std::is_x86_feature_detected!("avx512bw")
             && std::is_x86_feature_detected!("avx512vbmi")
             && std::is_x86_feature_detected!("avx512vbmi2")
+    }
+
+    /// True when the host can run the AVX2 splat fallback.
+    fn avx2_host() -> bool {
+        std::is_x86_feature_detected!("avx2")
+    }
+
+    /// True when `path` is runnable on this host (skip the test otherwise).
+    fn path_available(path: crate::threats::SplatPath) -> bool {
+        use crate::threats::SplatPath;
+        match path {
+            SplatPath::Avx512 => splat_host(),
+            SplatPath::Avx2 => avx2_host(),
+            SplatPath::Scalar => true,
+        }
     }
 
     /// Corpus start positions: deterministic random playouts from varied
@@ -710,13 +1022,14 @@ mod tests {
     /// Change-level parity driver: over deterministic random playouts from
     /// `fens`, at every position exercise removal of each piece on the
     /// board and addition of every colored piece at each empty square;
-    /// compare scalar `push_threats_on_change` vs the AVX-512 splat as
-    /// exact delta multisets, and assert ZERO mismatches. On failure,
-    /// disagreements are categorized (see `categorize`) to localize the
-    /// regression.
-    fn run_change_parity(fens: &[&str], target_positions: usize) {
-        if !splat_host() {
-            eprintln!("skipping: host lacks avx512f/bw/vbmi/vbmi2");
+    /// compare scalar `push_threats_on_change` vs the `simd_path` splat
+    /// (called DIRECTLY, bypassing dispatch — this dev host would dispatch
+    /// AVX-512 otherwise) as exact delta multisets, and assert ZERO
+    /// mismatches. On failure, disagreements are categorized (see
+    /// `categorize`) to localize the regression.
+    fn run_change_parity(fens: &[&str], target_positions: usize, simd_path: crate::threats::SplatPath) {
+        if !path_available(simd_path) {
+            eprintln!("skipping: host lacks the CPU features for {:?}", simd_path);
             return;
         }
         crate::init();
@@ -749,10 +1062,18 @@ mod tests {
                 occ, pcolor, ptype, sq, add,
             );
             let mut simd_d: Vec<RawThreatDelta> = Vec::with_capacity(64);
-            unsafe {
-                push_threats_on_change_avx512(
-                    &mut simd_d, &board.mailbox, board.colors[0], occ, cp, sq, add,
-                );
+            match simd_path {
+                crate::threats::SplatPath::Avx512 => unsafe {
+                    push_threats_on_change_avx512(
+                        &mut simd_d, &board.mailbox, board.colors[0], occ, cp, sq, add,
+                    );
+                },
+                crate::threats::SplatPath::Avx2 => unsafe {
+                    push_threats_on_change_avx2(
+                        &mut simd_d, &board.mailbox, board.colors[0], occ, cp, sq, add,
+                    );
+                },
+                crate::threats::SplatPath::Scalar => unreachable!("parity vs scalar itself"),
             }
             let mut av: Vec<u32> = scalar_d.iter().map(delta_raw).collect();
             let mut bv: Vec<u32> = simd_d.iter().map(delta_raw).collect();
@@ -856,7 +1177,13 @@ mod tests {
     /// CI gate: exact change-level parity on a reduced corpus (~1s release).
     #[test]
     fn splat_change_parity_small() {
-        run_change_parity(START_FENS, 100);
+        run_change_parity(START_FENS, 100, crate::threats::SplatPath::Avx512);
+    }
+
+    /// CI gate, AVX2 path.
+    #[test]
+    fn splat_change_parity_small_avx2() {
+        run_change_parity(START_FENS, 100, crate::threats::SplatPath::Avx2);
     }
 
     /// Deep check: the full 1000-position corpus (553k changes) plus the
@@ -865,30 +1192,36 @@ mod tests {
     #[test]
     #[ignore = "deep parity corpus; splat_change_parity_small is the CI gate"]
     fn splat_change_parity_with_scalar() {
-        run_change_parity(START_FENS, 1000);
+        run_change_parity(START_FENS, 1000, crate::threats::SplatPath::Avx512);
         let extended: Vec<&str> =
             START_FENS.iter().chain(TACTICAL_FENS.iter()).copied().collect();
-        run_change_parity(&extended, 1200);
+        run_change_parity(&extended, 1200, crate::threats::SplatPath::Avx512);
+    }
+
+    /// Deep check, AVX2 path — same corpora as the AVX-512 gate.
+    #[test]
+    #[ignore = "deep parity corpus; splat_change_parity_small_avx2 is the CI gate"]
+    fn splat_change_parity_with_scalar_avx2() {
+        run_change_parity(START_FENS, 1000, crate::threats::SplatPath::Avx2);
+        let extended: Vec<&str> =
+            START_FENS.iter().chain(TACTICAL_FENS.iter()).copied().collect();
+        run_change_parity(&extended, 1200, crate::threats::SplatPath::Avx2);
     }
 
     /// Move-level dispatch parity across ALL move shapes: for every legal
     /// move at each corpus position, generate `board.threat_deltas` twice
-    /// through the REAL make_move — once scalar (default dispatch), once
-    /// with the splat forced (thread-local SPLAT_TEST_FORCE) — and require
-    /// exact multiset equality. This exercises the full §3.1 call-site
-    /// sequence (occ_transit legs, capture/EP change legs, promotion
-    /// double-change, castle rook leg) rather than synthetic single
-    /// changes, and asserts each move shape actually occurs.
-    #[test]
-    fn splat_move_parity_all_shapes() {
-        if !splat_host() {
-            eprintln!("skipping: host lacks avx512f/bw/vbmi/vbmi2");
-            return;
-        }
-        if std::env::var("CODA_SPLAT").map(|v| v == "1").unwrap_or(false) {
-            // The reference side of this test is make_move's DEFAULT dispatch;
-            // with CODA_SPLAT=1 both sides would run the splat (vacuous).
-            eprintln!("skipping: CODA_SPLAT=1 makes the scalar reference side splat too");
+    /// through the REAL make_move — once with scalar FORCED (thread-local
+    /// SPLAT_TEST_FORCE; the default dispatch would pick a splat path on
+    /// qualifying hosts, making the comparison vacuous), once with the
+    /// `simd_path` splat forced — and require exact multiset equality.
+    /// This exercises the full §3.1 call-site sequence (occ_transit legs,
+    /// capture/EP change legs, promotion double-change, castle rook leg)
+    /// rather than synthetic single changes, and asserts each move shape
+    /// actually occurs.
+    fn run_move_parity(simd_path: crate::threats::SplatPath) {
+        use crate::threats::{SplatPath, SPLAT_TEST_FORCE};
+        if !path_available(simd_path) {
+            eprintln!("skipping: host lacks the CPU features for {:?}", simd_path);
             return;
         }
         crate::init();
@@ -938,16 +1271,19 @@ mod tests {
                     };
 
                     let mut b_scalar = board.clone();
-                    if !b_scalar.make_move(mv) {
+                    SPLAT_TEST_FORCE.with(|f| f.set(Some(SplatPath::Scalar)));
+                    let ok_scalar = b_scalar.make_move(mv);
+                    SPLAT_TEST_FORCE.with(|f| f.set(None));
+                    if !ok_scalar {
                         continue;
                     }
                     let mut scalar: Vec<u32> =
                         b_scalar.threat_deltas.iter().map(delta_raw).collect();
 
                     let mut b_simd = board.clone();
-                    crate::threats::SPLAT_TEST_FORCE.with(|f| f.set(true));
+                    SPLAT_TEST_FORCE.with(|f| f.set(Some(simd_path)));
                     let ok = b_simd.make_move(mv);
-                    crate::threats::SPLAT_TEST_FORCE.with(|f| f.set(false));
+                    SPLAT_TEST_FORCE.with(|f| f.set(None));
                     assert!(ok);
                     let mut simd: Vec<u32> =
                         b_simd.threat_deltas.iter().map(delta_raw).collect();
@@ -993,5 +1329,15 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn splat_move_parity_all_shapes() {
+        run_move_parity(crate::threats::SplatPath::Avx512);
+    }
+
+    #[test]
+    fn splat_move_parity_all_shapes_avx2() {
+        run_move_parity(crate::threats::SplatPath::Avx2);
     }
 }

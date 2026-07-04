@@ -583,24 +583,73 @@ mod incremental_tests {
         }
     }
 
+    /// The curated scenario corpus — one table so path-forced sweeps
+    /// (`incremental_suite_forced_avx2`) can't drift from the individual
+    /// tests below, which each run one entry by name.
+    const SCENARIOS: &[(&str, &str, &[&str])] = &[
+        ("startpos_quiet",
+         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+         &["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "f8c5"]),
+        ("simple_captures",
+         "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+         &["b8c6", "f1b5", "a7a6", "b5c6", "d7c6"]),
+        ("rook_xray_capture",
+         "r3k3/8/8/8/p7/8/8/R3K3 w Q - 0 1",
+         &["a1a4"]),
+        ("bishop_xray_diagonal",
+         "7r/8/8/8/3p4/8/8/B3K2k w - - 0 1",
+         &["a1d4"]),
+        ("queen_xray",
+         "3k4/8/8/8/3p4/8/8/3QK3 w - - 0 1",
+         &["d1d4"]),
+        ("unrelated_capture",
+         "k1b5/pp6/8/8/4n3/2B5/PP6/K1R5 w - - 0 1",
+         &["c3e5"]),
+        ("rook_captures_blocker_with_xray_behind",
+         "k7/n7/8/8/p7/8/8/R3K3 w Q - 0 1",
+         &["a1a4"]),
+        ("capture_then_retreat",
+         "k7/n5p1/8/8/p7/8/8/R3K3 w Q - 0 1",
+         &["a1a4", "g7g6", "a4a1"]),
+        ("kiwipete",
+         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+         &["e5g6", "f7g6", "e2f1", "c7c6", "d5c6"]),
+        ("ep_capture",
+         "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
+         &["e5f6"]),
+        ("castle_ks",
+         "r3k2r/pppqppbp/2np1np1/4P3/2B5/2NQ1N2/PPP2PPP/R1B1K2R w KQkq - 0 1",
+         &["e1g1"]),
+        ("castle_qs_phantom",
+         "rQr5/p2pkp1n/1n2p1p1/7q/b1P1P3/Np2NB1P/PP3P1P/R3K2R w KQ - 3 15",
+         &["e1c1"]),
+        ("slider_move_reveals_xray",
+         "4k3/8/8/3r4/8/8/3R4/3QK3 w - - 0 1",
+         &["d2d4"]),
+        ("chain_captures",
+         "4k3/8/3p4/4p3/3P4/2N5/8/4K3 w - - 0 1",
+         &["d4e5", "d6e5", "c3e4", "e8d8"]),
+        ("promotion_capture",
+         "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
+         &["a7a8q"]),
+    ];
+
+    fn scenario(name: &str) {
+        let (n, fen, moves) =
+            SCENARIOS.iter().find(|s| s.0 == name).expect("unknown scenario name");
+        run_scenario(n, fen, moves);
+    }
+
     #[test]
     fn startpos_quiet_moves() {
         // Sanity: no captures, no x-rays activated.
-        run_scenario(
-            "startpos_quiet",
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-            &["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "f8c5"],
-        );
+        scenario("startpos_quiet");
     }
 
     #[test]
     fn simple_captures_no_xray() {
         // Knight captures with no slider x-ray behind the captured square.
-        run_scenario(
-            "simple_captures",
-            "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
-            &["b8c6", "f1b5", "a7a6", "b5c6", "d7c6"],
-        );
+        scenario("simple_captures");
     }
 
     #[test]
@@ -611,11 +660,7 @@ mod incremental_tests {
         // Position: white rook a1, black pawn a4 (blocker), black rook a8 (x-ray target).
         // Wa1 captures a4 pawn directly; before capture a1→a4 direct, a1→a8 x-ray.
         // After capture (Ra1xa4), rook now on a4; direct Ra4→a8 on a-file.
-        run_scenario(
-            "rook_xray_capture",
-            "r3k3/8/8/8/p7/8/8/R3K3 w Q - 0 1",
-            &["a1a4"],
-        );
+        scenario("rook_xray_capture");
     }
 
     #[test]
@@ -624,22 +669,14 @@ mod incremental_tests {
         // Before: Ba1 directly attacks pawn d4; x-ray through d4 reveals... nothing
         // (h8 is on the a1-h8 diagonal, pawn d4 is also on it, rook h8 behind).
         // Capture Bxd4 changes geometry.
-        run_scenario(
-            "bishop_xray_diagonal",
-            "7r/8/8/8/3p4/8/8/B3K2k w - - 0 1",
-            &["a1d4"],
-        );
+        scenario("bishop_xray_diagonal");
     }
 
     #[test]
     fn queen_xray_orthogonal_and_diagonal() {
         // Queen on d1 with pawn on d4 (blocker) and king on d8 (x-ray target).
         // Capture reveals queen → king x-ray on d-file.
-        run_scenario(
-            "queen_xray",
-            "3k4/8/8/8/3p4/8/8/3QK3 w - - 0 1",
-            &["d1d4"],
-        );
+        scenario("queen_xray");
     }
 
     #[test]
@@ -663,11 +700,8 @@ mod incremental_tests {
         // A real third-party x-ray: white rook a1 blocked by white pawn a2
         // from seeing black pawn a7 → black king a8. When something else
         // captures elsewhere, nothing should change on the a-file.
-        run_scenario(
-            "unrelated_capture",
-            "k1b5/pp6/8/8/4n3/2B5/PP6/K1R5 w - - 0 1",
-            &["c3e5"],  // unrelated knight takes would be c3xe4; we move bishop c3-e5 then tests after
-        );
+        // (unrelated knight takes would be c3xe4; we move bishop c3-e5)
+        scenario("unrelated_capture");
     }
 
     #[test]
@@ -677,11 +711,7 @@ mod incremental_tests {
         // Before Rxa4: direct a1→a4 pawn; x-ray a1→a7 knight (through pawn a4).
         // After Rxa4: rook now on a4; direct a4→a7 knight.
         // Incremental path must net out the x-ray-through-pawn feature loss.
-        run_scenario(
-            "rook_captures_blocker_with_xray_behind",
-            "k7/n7/8/8/p7/8/8/R3K3 w Q - 0 1",
-            &["a1a4"],
-        );
+        scenario("rook_captures_blocker_with_xray_behind");
     }
 
     #[test]
@@ -690,44 +720,29 @@ mod incremental_tests {
         // delta application. The BN on a7 is pinned against BK on a8 once
         // the rook lands on a4, so use a black pawn move between the two
         // white moves to test incremental survival across a black move.
-        run_scenario(
-            "capture_then_retreat",
-            "k7/n5p1/8/8/p7/8/8/R3K3 w Q - 0 1",
-            &["a1a4", "g7g6", "a4a1"],
-        );
+        scenario("capture_then_retreat");
     }
 
     #[test]
     fn kiwipete_tactical_sequence() {
         // Rich middlegame with many sliders and captures.
         // e5g6: Nxg6 (captures BP). f7g6: black pawn recapture.
-        run_scenario(
-            "kiwipete",
-            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-            &["e5g6", "f7g6", "e2f1", "c7c6", "d5c6"],
-        );
+        scenario("kiwipete");
     }
 
     #[test]
     fn en_passant_capture() {
         // EP captures remove a piece from a square other than the move's `to`.
-        // Tests push_threats_on_change for EP cap_sq + push_threats_on_move for pawn.
-        run_scenario(
-            "ep_capture",
-            "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
-            &["e5f6"],  // exf6 en passant
-        );
+        // Tests push_threats_on_change for EP cap_sq + push_threats_on_move
+        // for the pawn (exf6 en passant).
+        scenario("ep_capture");
     }
 
     #[test]
     fn castling_kingside() {
         // Castle moves both king and rook — tests back-to-back deltas
-        // plus per-perspective king-file-mirror change.
-        run_scenario(
-            "castle_ks",
-            "r3k2r/pppqppbp/2np1np1/4P3/2B5/2NQ1N2/PPP2PPP/R1B1K2R w KQkq - 0 1",
-            &["e1g1"],  // O-O
-        );
+        // plus per-perspective king-file-mirror change (O-O).
+        scenario("castle_ks");
     }
 
     #[test]
@@ -738,44 +753,28 @@ mod incremental_tests {
         // candidates, d1 is iterated as a phantom x-ray candidate from
         // sq=a1 (with king@c1 between d1 and a1 → exactly one blocker)
         // and a spurious (rook@d1, wrook, a1) delta is emitted. Caught
-        // by fuzz_random_games seed 0xdebd0132 ply 28.
-        run_scenario(
-            "castle_qs_phantom",
-            "rQr5/p2pkp1n/1n2p1p1/7q/b1P1P3/Np2NB1P/PP3P1P/R3K2R w KQ - 3 15",
-            &["e1c1"],  // O-O-O
-        );
+        // by fuzz_random_games seed 0xdebd0132 ply 28. (O-O-O)
+        scenario("castle_qs_phantom");
     }
 
     #[test]
     fn slider_move_reveals_x_ray_for_other_slider() {
         // WQ on d1, WR on d2 blocking. WR moves to d5 — WQ's rank/file view
         // shifts: gains direct d-file targets, loses the blocker.
-        run_scenario(
-            "slider_move_reveals_xray",
-            "4k3/8/8/3r4/8/8/3R4/3QK3 w - - 0 1",
-            &["d2d4"],
-        );
+        scenario("slider_move_reveals_xray");
     }
 
     #[test]
     fn chain_of_captures() {
         // Back-to-back captures — pawn trades leaving the incremental
         // state to absorb multiple small deltas in sequence.
-        run_scenario(
-            "chain_captures",
-            "4k3/8/3p4/4p3/3P4/2N5/8/4K3 w - - 0 1",
-            &["d4e5", "d6e5", "c3e4", "e8d8"],
-        );
+        scenario("chain_captures");
     }
 
     #[test]
     fn promotion_with_capture() {
         // Pawn captures and promotes — double state change.
-        run_scenario(
-            "promotion_capture",
-            "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
-            &["a7a8q"],
-        );
+        scenario("promotion_capture");
     }
 
     /// Deterministic fuzzer: plays random legal moves from several
@@ -791,6 +790,10 @@ mod incremental_tests {
     /// regression.
     #[test]
     fn fuzz_random_games() {
+        run_fuzz_random_games();
+    }
+
+    fn run_fuzz_random_games() {
         crate::init();
         let nf = num_threat_features();
         let weights = make_weights(nf);
@@ -900,6 +903,30 @@ mod incremental_tests {
                 }
             }
         }
+    }
+
+    /// The whole incremental suite (all curated scenarios + the fuzzer)
+    /// with the AVX2 splat path FORCED via the thread-local
+    /// SPLAT_TEST_FORCE. On this AVX-512 dev host the default dispatch
+    /// picks the AVX-512 splat, so without forcing, the AVX2 enumerator
+    /// would never be exercised end-to-end (make_move call sites,
+    /// occ_transit legs, king-crossing refresh interplay). The force is
+    /// thread-local and each test runs on its own thread, so this cannot
+    /// leak into other tests.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn incremental_suite_forced_avx2() {
+        if !std::is_x86_feature_detected!("avx2") {
+            eprintln!("skipping: host lacks avx2");
+            return;
+        }
+        use crate::threats::{SplatPath, SPLAT_TEST_FORCE};
+        SPLAT_TEST_FORCE.with(|f| f.set(Some(SplatPath::Avx2)));
+        for (name, fen, moves) in SCENARIOS {
+            run_scenario(name, fen, moves);
+        }
+        run_fuzz_random_games();
+        SPLAT_TEST_FORCE.with(|f| f.set(None));
     }
 
     /// Sanity: manual i16 value comparison across all 256 channels
