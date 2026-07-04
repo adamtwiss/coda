@@ -1729,6 +1729,20 @@ pub(crate) fn refresh_helper_per_go(helper: &mut SearchInfo, main: &SearchInfo) 
     helper.np_corr.copy_from_slice(&main.np_corr[..]);
     helper.cont_corr.copy_from_slice(&main.cont_corr[..]);
     helper.trans_corr.copy_from_slice(&main.trans_corr[..]);
+
+    // Reset per-search state that a FRESH helper (create_helper_info ->
+    // new_with_tt) would have zeroed but a reused pool worker carries across
+    // `go`s. Without this the pool is NOT behavior-identical — measured -8 Elo
+    // at T=4 (OB #2539). The dominant term is pawn_hist: the old per-go helper
+    // started it zeroed and built it for the CURRENT position, whereas a reused
+    // worker accumulates it (unaged) from its own divergent, lower-quality
+    // search trajectory, polluting move ordering and the shared TT. (Stage 2
+    // may deliberately persist+AGE selected history for diversity — but that is
+    // a separate, measured lever, not an accidental carry-over.)
+    helper.clear_pawn_hist();
+    helper.nmp_min_ply = 0;
+    helper.rfp_audit_active = false;
+    helper.max_nodes = 0;
 }
 
 /// Per-`go` preparation of a helper `SearchInfo` for a search on `board`:

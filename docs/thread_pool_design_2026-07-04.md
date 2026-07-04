@@ -115,18 +115,25 @@ today (`search_helper` already stops on it). No change to the stop mechanism.
 - **Ponder pairing:** helpers already return their 2nd PV move; the vote/select
   logic in `search_smp` is unchanged. Run the ponder-RR gate before merge.
 
-## `pawn_hist` persistence (Stage 1 design note, 2026-07-04)
+## `pawn_hist` — must be cleared per go (CORRECTED 2026-07-04, OB #2539)
 
-The old per-go path allocated a **fresh zeroed `pawn_hist` (~13 MB)** per helper
-per go. The pool persists it across `go`s. Zeroing it each go to be strictly
-behavior-identical would cost a 13 MB memset × workers × move — roughly the
-allocation cost we're removing, negating most of the overhead win. So Stage 1
-**lets `pawn_hist` persist** (a `clear_pawn_hist()` per go is deliberately NOT
-called). This is always correct (a heuristic ordering table — any contents are
-valid) and is a small slice of Stage-2 diversity, but it captures the full
-overhead win. History/corr are still copied from main each go (Stage 1); only
-Stage 2 stops copying those. The parity RR + `[-2,1]` SPRT validate that the
-`pawn_hist` carry-over doesn't regress.
+First attempt let `pawn_hist` **persist** across `go`s to save the 13 MB
+memset. That **regressed −8 Elo at T=4** (OB #2539). Why: a fresh per-go helper
+(old code) started `pawn_hist` zeroed and built it for the CURRENT position; a
+reused worker instead accumulates it **unaged, from its own divergent,
+lower-quality search trajectory**, so it carries stale/misleading pawn-ordering
+signal into the next position, polluting move ordering and the shared TT. Main
+persists `pawn_hist` too — but from *main's* (primary-line) trajectory, which is
+higher quality; a helper's self-accumulated table is not the same thing.
+
+So Stage 1 **clears `pawn_hist` per go** (`refresh_helper_per_go` calls
+`clear_pawn_hist()` + resets `nmp_min_ply`/`rfp_audit_active`/`max_nodes`) to be
+strictly behavior-identical. The 13 MB memset × workers × move is accepted; the
+overhead win comes from eliminating the thread spawn + the *other* per-go
+allocations (nnue_acc, threat_stack, history/corr boxes) and replacing
+`alloc_zeroed` with an in-place memset (no allocator, no first-touch faults).
+Lesson: persisting helper history is a **Stage 2** lever that requires *aging*
+(Reckless decays it) — not an accidental Stage-1 carry-over.
 
 ## Staging plan
 
