@@ -1125,6 +1125,58 @@ impl RawThreatDelta {
     #[inline(always)] pub fn add(self) -> bool { self.0 & (1 << 31) != 0 }
 }
 
+/// True when the host can run the AVX-512 splat enumerator
+/// (threats_splat.rs): F/BW for the mailbox/mask ops, VBMI for the ray
+/// permute, VBMI2 for the compress-store emission (Zen 4+/SPR+).
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn splat_cpu_ok() -> bool {
+    std::is_x86_feature_detected!("avx512f")
+        && std::is_x86_feature_detected!("avx512bw")
+        && std::is_x86_feature_detected!("avx512vbmi")
+        && std::is_x86_feature_detected!("avx512vbmi2")
+}
+
+/// Route the two delta-generation entry points below through the AVX-512
+/// splat enumerator — DEFAULT ON when the CPU qualifies (Phase A default-on
+/// decision, 2026-07-04: +6.7% NPS on Zen 5, zero-mismatch multiset parity
+/// over 1.2M+ changes, bench-identical through full search). The
+/// enumeration is output-identical by construction, so `CODA_NO_SPLAT=1`
+/// exists only to A/B-measure NPS on the same binary. Parsed once at first
+/// use (OnceLock, same pattern as `skip_slider_sees`). The
+/// CODA_NO_SLIDER_SEES ablation is implemented scalar-only, so it disables
+/// the splat.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn use_splat() -> bool {
+    use std::sync::OnceLock;
+    static F: OnceLock<bool> = OnceLock::new();
+    *F.get_or_init(|| {
+        std::env::var("CODA_NO_SPLAT").map(|v| v != "1").unwrap_or(true)
+            && std::env::var("CODA_NO_SLIDER_SEES").is_err()
+            && splat_cpu_ok()
+    })
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+thread_local! {
+    /// Test-only per-thread splat forcing, so a parity test can generate a
+    /// move's deltas via BOTH generators without process-global env-var
+    /// races across the threaded test runner. The CPU check still applies.
+    pub(crate) static SPLAT_TEST_FORCE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn dispatch_splat() -> bool {
+    #[cfg(test)]
+    if SPLAT_TEST_FORCE.with(|f| f.get()) {
+        return splat_cpu_ok();
+    }
+    use_splat()
+}
+
 /// Compute raw threat deltas when a piece moves from `from` to `to`.
 /// Must be called BEFORE the move is applied on the board (board still has old state).
 /// `occ_without_dest` = occupancy with `from` removed but `to` not yet occupied.
@@ -1141,6 +1193,16 @@ pub fn push_threats_on_move(
 ) {
     let white_bb = colors_bb[WHITE as usize];
     let cp = colored_piece(piece_color, piece_type);
+    #[cfg(target_arch = "x86_64")]
+    if dispatch_splat() {
+        // SAFETY: dispatch_splat verified avx512f/bw/vbmi/vbmi2.
+        unsafe {
+            crate::threats_splat::push_threats_on_move_avx512(
+                deltas, mailbox, white_bb, occ, cp as u8, from, to,
+            );
+        }
+        return;
+    }
     // Use occupancy with the moving piece removed from `from` but not yet at `to`
     // This matches how Reckless handles it: occ ^ to_bb
     let occ_transit = occ ^ (1u64 << to);
@@ -1153,6 +1215,38 @@ pub fn push_threats_on_move(
 
 /// Compute raw threat deltas when a piece appears or disappears.
 pub fn push_threats_on_change(
+    deltas: &mut Vec<RawThreatDelta>,
+    pieces_bb: &[Bitboard; 6],
+    colors_bb: &[Bitboard; 2],
+    mailbox: &[u8; 64],
+    occ: Bitboard,
+    piece_color: Color,
+    piece_type: u8,
+    square: u32,
+    add: bool,
+) {
+    let white_bb = colors_bb[WHITE as usize];
+    let cp = colored_piece(piece_color, piece_type);
+    #[cfg(target_arch = "x86_64")]
+    if dispatch_splat() {
+        // SAFETY: dispatch_splat verified avx512f/bw/vbmi/vbmi2.
+        unsafe {
+            crate::threats_splat::push_threats_on_change_avx512(
+                deltas, mailbox, white_bb, occ, cp as u8, square, add,
+            );
+        }
+        return;
+    }
+    push_threats_for_piece(deltas, pieces_bb, colors_bb, mailbox, occ, white_bb, cp, piece_color, piece_type, square, add);
+}
+
+/// Scalar-only variant of `push_threats_on_change` that bypasses the
+/// CODA_SPLAT dispatch. Test oracle for the splat parity suite — the
+/// reference side must stay scalar even when the process runs with
+/// CODA_SPLAT=1 (otherwise parity degenerates to SIMD-vs-SIMD).
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn push_threats_on_change_scalar(
     deltas: &mut Vec<RawThreatDelta>,
     pieces_bb: &[Bitboard; 6],
     colors_bb: &[Bitboard; 2],
