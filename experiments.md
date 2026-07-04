@@ -17384,6 +17384,37 @@ for expensive changes (architecture, retrains) where you can't just try it.
 **P1 backlog now: only P1.4 (bank aborted-iteration, architecture-scale) and the
 never-attempted P1.3 corrhist retune remain unstarted.** The interior-search
 list is otherwise exhausted.
+
+## 2026-07-04 — P1.4 bank-aborted MERGED; P3 retests + P1.3/P2.2 closed
+
+Closing out the review backlog. Base main bench 2620566 (post-NPS-campaign:
+avx2-tier1 +7.4/#2493, dpbusd-x2 +2.1/#2495, P2.4/P2.5 +1.5/#2488, P2.8 hygiene
+all landed).
+
+| ID | Branch | Item | Result | Decision |
+|---:|---|---|---|---|
+| 2486 | `fix/bank-aborted-iteration` | **P1.4:** on a mid-iteration time abort, bank the aborted iteration's best move/PV (validated vs root_legal) instead of reverting to the last completed iteration. Preserves best_move/PV pairing (ponder-consistency, oeZ7KRUt class). **LTC 40+0.4.** | `+1.8 ±1.4`, 50k, LLR 2.95, **H1 ✓** | **MERGED** (9c5afd8). Bench-identical (only the time-abort path changes; inert on fixed-depth bench). |
+| 2485 | `fix/bank-aborted-iteration` | Same, **STC 10+0.1.** | `+0.4 ±0.8`, 181k, **H0 ✗** | Neutral, not a regression — a driver/root change whose value is most visible at LTC. LTC-H1 is the accept signal. |
+| 2502 | `lmr/tt-depth-reduce-less` | **P3.2:** LMR reduce-less when `tt_hit && tt_entry.depth >= depth` (Obsidian/Berserk unconditional one-line form). Clean re-isolation of the confounded #876 H0. | `-1.1 ±1.9`, 34k, LLR -2.99, **H0 ✗** | **REJECTED.** The clean isolation still doesn't beat the confounded prior. |
+| 2503 | `asp/running-average` | **P3.3:** center the aspiration window (and delta²) on a running average `(avg+value)/2` instead of raw last score (SF/Reckless/Berserk/Alexandria). Clean-half retest of bundled #1935. | `-0.4 ±1.5`, 53k, LLR -2.96, **H0 ✗** | **REJECTED.** T2.8-alone confirms it wasn't the useful half of #1935 either. |
+| 2500 | `fix/corrhist-residual` | **P1.3 (retuned):** train corrhist on corrected residual not pre-correction error, + #2492 CORR_HIST_DIV retune-on-branch. | `-3.8 ±3.1`, 13k, LLR -2.95, **H0 ✗** | **REJECTED.** Retune didn't rescue it (raw #2453 was -0.9). Corrhist-residual genuinely doesn't fit Coda. Fifth retune-on-branch to resolve ≤neutral (cf. P1.7, P3.1) — the retune track record for *rescuing* an ≈flat feature is now clearly poor. |
+| 2489 | `fix/futility-before-see` | **P2.2:** run quiet futility before SEE-quiet pruning (SF/Reckless move-loop order). | `+0.3 ±1.0`, 131k, LLR -2.97, **H0 ✗** | **REJECTED at [0,3].** Point estimate mildly positive (CI ≈ [-0.7,+1.3]) but unmeasurably so; wandered to +1.1 →H1 at 85k then faded to H0 by 131k. Another "don't weight early-N" datapoint (mirror of P1.11, which faded *then recovered*). |
+
+**Retest-of-confounded-H0 scorecard (this session): 0/2.** Both P3.2 and P3.3
+were clean isolations of previously-bundled H0s — the exact pattern that
+recovered P1.11 — and both still H0'd. Re-isolating a bundled H0 is *worth
+doing* when the fleet is idle (cheap, and P1.11 proved it sometimes flips), but
+the base rate is low: the bundle usually H0'd because the idea is flat, not
+because the confound hid a winner.
+
+**Review backlog status:** P0 (9) and P1 (12) fully resolved. P1.4 was the last
+open P1 and it merged. Remaining P3 items are all low-value/project-scale
+(root-optimism retune, QS double-SEE dedup, FH-blend-before-store, LMR
+neg-reduction) — none a clean quick-fire. **The interior search-review is
+effectively closed;** further Elo now comes from the higher-leverage tracks the
+gap-decomposition points at (TM/ponder, LTC-scaling, net retraining), not
+single-knob search tweaks.
+
 ## 2026-07-03 — Train-vs-inference parity: full-surface verification (hypothesis CLOSED)
 
 Adam's preferred blindspot hypothesis was another C8-class train/inference

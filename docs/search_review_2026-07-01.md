@@ -99,6 +99,8 @@ Reachable mostly with SyzygyPath set (lichess/CCRL) — but `downgrade_50mr_mate
 **Change:** pass `static_eval` (corrected) instead of `scaled_eval` at :4893 **and** in the :4875-4878 direction gates (references are consistent on both). **Test:** [0,3]; expect the CORR_* basin to shift — plan a focused corr-cluster **retune-on-branch**. Novelty: new. Direction not guaranteed; magnitude +0-3 class.
 
 ### 4. Bank aborted-iteration root results — including completed aspiration fail-highs
+> ✅ **MERGED 2026-07-04** (9c5afd8) — OB #2486 (LTC 40+0.4): **+1.8 ±1.4, LLR 2.95, H1** (50k); STC #2485 neutral (+0.4, H0) — a driver/root change most visible at LTC. Implemented the banking-fix core (bank pv_table[0] validated vs root_legal on abort; snapshot fail-high move+PV before widening) *without* the full RootMoves-array rewrite — that architecture investment is deferred to when the average-score window / MultiPV consumers actually need it. Bench-identical (time-abort path only).
+
 `src/search.rs:2360-2406` (aspiration loop), :2389-2397 (stop restore), :4620-4628 (root PV write). (Merged: skeleton #30 + driver #56; #57 as enabler.) On any mid-iteration stop Coda restores the previous iteration's stable PV and discards everything the deepest, most expensive iteration learned — including a **fully-searched new best root move** (pv_table[0] is internally consistent at abort; pv_len[0]==0 cleanly signals "nothing completed") and a **proven root fail-high move** (the loop widens beta at :2373-2379 without capturing pv_table[0][0]; negamax wipes pv_len[0] at entry, so a stop during the re-search reverts to the older, known-worse move). All 6 references keep partial-iteration root results usable (SF sorts rootMoves before the stop-break; Obsidian: "usable at any time"). Costs exactly at time pressure, Coda's diagnosed weak regime (LTC/TM).
 **Change:** (1) on abort, if `pv_len[0] > 0` take `best_move = pv_table[0][0]` validated against root_legal (Reckless-style unproven-loss guard), only restoring stable_pv when nothing completed; (2) inside the aspiration loop, snapshot the fail-high move + PV before widening. Preserve best_move/PV pairing (ponder-consistency, lichess oeZ7KRUt class). **Test:** [0,3], most visible at LTC. Novelty: new. The full persistent **RootMoves array** (driver #57: per-move score/prev_score/avg/pv, stable-sorted per aspiration attempt — 5/6 consensus) is the architecture investment that also enables the average-score window, SMP thread selection (P0.5), and MultiPV; justify it by these consumers rather than direct Elo.
 
@@ -197,10 +199,14 @@ Reachable mostly with SyzygyPath set (lichess/CCRL) — but `downgrade_50mr_mate
 **Test:** [0,3]; retune-on-branch fallback given three prior fails in the family. Priority: highest-EV experiment in this report after P1.1.
 
 ### 2. LMR `tt_depth >= depth` reduce-less term — re-isolation of a bundled H0
+> ❌ **REJECTED 2026-07-04** — OB #2502 `lmr/tt-depth-reduce-less`: **−1.1 ±1.9, LLR −2.99, H0** (34k). Clean one-line Obsidian/Berserk form; the re-isolation still doesn't beat the confounded #876 prior. Shelved.
+
 `src/search.rs:4308-4431` (no tt_entry.depth use in either LMR block). Obsidian (:1079) and Berserk (:729-730) apply it unconditionally; SF/Reckless inside their ttPv term (4/6). **Prior:** #876 lmr-tt-bound-informs H0 −2.7 @ 15k (2026-04-30, class-closure) — but it *bundled* tt_depth with a tt_score≤alpha term later shown independently negative (#2227 H0 −1.7) and used the old-Reckless reduce-MORE-when-shallow complement, not the one-line reduce-less form. Baseline has moved ~+116 Elo since.
 **Change:** `if tt_hit && tt_entry.depth as i32 >= depth { reduction -= 1; }` (Obsidian form). **Test:** [0,3]; modest prior given the June audit's LMR hit-rate.
 
 ### 3. Aspiration window centered on a running average — clean half of a bundled H0
+> ❌ **REJECTED 2026-07-04** — OB #2503 `asp/running-average`: **−0.4 ±1.5, LLR −2.96, H0** (53k). Centered window+delta² on `(avg+value)/2` running average, main-thread loop. T2.8-alone confirms it wasn't the useful half of #1935. Shelved.
+
 `src/search.rs:2352` (`let avg = prev_score;` — center and delta² both use the raw last score). SF/Reckless/Berserk/Alexandria center on `(avg+value)/2`. **Prior:** #1935 atlas/aspiration-pair H0 −0.9 ±1.9 @ 37.8k — T2.8 (this) bundled with T2.7 (fail-high reset/cap that weakened an individually-SPRT'd mechanism); the experiments.md note itself says "if revisited, test halves separately". **Test:** T2.8 alone, [0,3] STC; expected ≤ +1.
 
 ### 4. QS double-SEE dedup (picker partition + loop QS_SEE_THRESHOLD gate)
