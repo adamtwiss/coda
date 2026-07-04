@@ -84,3 +84,49 @@ non-AVX-512 fallback until Phase B (AVX2), and the king-crossing path.
   until the enumerator is switched on (the enumeration is
   output-identical by construction — bench must stay identical even
   after switch-on).
+
+## Design (2026-07-04, after contract + scaffolding + section profile)
+
+Per-section generation cycles (bench 12, profile-threats, Zeus):
+direct 357 Mcy (32%), own-xray/1b 163 (15%), sliders/2 178 (16%),
+sliders-2b 235 (21%), nonsliders 178 (16%). The splat's parity-proven
+direct pipeline covers only ~48%; x-ray sections are ~52% with 74-76%
+zero-emit rates (mostly wasted scans — ideal SIMD-culling prey). So:
+full unified enumerator, not a hybrid.
+
+**Key insight — everything falls out of ONE focus-square ray frame with
+TWO hits per ray.** `board_to_rays(focus)` gives the mailbox permuted
+into 8 rays × 8 positions. `closest_on_rays` gives the FIRST occupant
+per ray (Y_d for ray direction d). Mask those out and rerun the carry
+trick → SECOND occupant per ray (Z_d). With (Y_d, Z_d) for all 8 rays,
+every section's emissions are direct reads:
+
+- **§1 direct-from** (focus attacks): Y_d per aligned ray (+ pawn/
+  knight/king tables) — already in the splat.
+- **§1b own-x-ray** (focus is slider): x-ray victim on ray d = Z_d
+  (when Y_d exists) — emit (focus, Z_d).
+- **§2 sliders-see-focus**: S = Y_d where S is a slider aligned with d.
+  Its Z-delta target = the piece the slider hits BEYOND focus =
+  Y_{-d} (first hit on the opposite ray); the depth-2 piece it loses/
+  gains = Z_{-d}. Emit (S, Z_{-d}, !add)... precisely: Y = Y_{-d},
+  Z = Z_{-d} per the contract's §3.3-2 (Y first past focus, Z first
+  past Y). Plus the direct emit (S, focus, add).
+- **§2b x-ray-onto-focus**: S = Z_d where Z_d is a slider aligned with
+  d AND Y_d (the single blocker) exists. Emit (S, focus, add) and the
+  W-delta (S, Y_{-d}, !add) — W is the first hit continuing away.
+- **§3 non-sliders**: reverse table lookups — already in the splat.
+
+The scalar code's per-candidate ray_extension chases and between()
+popcounts all collapse into the two closest_on_rays passes. One new
+SIMD primitive needed: second-hit-per-ray (exclude first hits, rerun).
+
+Emission sign rules carry over verbatim from the contract (§3.3): the
+"same index" property makes Z/W deltas INVERTED sign (!add). The
+call structure (push_threats_on_move/on_change legs, occ_transit
+discipline, post-mutation board state) is inherited unchanged — this
+replaces push_threats_for_piece's internals only.
+
+Gate: exact-multiset parity vs scalar per change (the resurrected
+diagnostic, now to be flipped from "categorize known gaps" to "assert
+zero"), then net-count parity per move, then the full incremental
+suite, then bench-identical.
