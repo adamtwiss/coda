@@ -34,9 +34,9 @@ but it's the #1 way local numbers go wrong.
 after:
 
 ```bash
-~/code/OpenBench/ob_worker.sh stop     # before local measurement
+~/code/OpenBench/ob-worker.sh stop     # before local measurement (hyphen, not underscore)
 # ... run your RR / profile / bench ...
-~/code/OpenBench/ob_worker.sh start    # when done
+~/code/OpenBench/ob-worker.sh start    # when done
 ```
 
 Also check for stray `cutechess-cli` / `coda` / build jobs (`htop`, or
