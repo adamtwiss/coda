@@ -17801,3 +17801,13 @@ Both nets are S200 (half-baked): this SIZES the recipe, it doesn't decide
 deployment (that needs full-bake pc-sf vs prod). PC-skip is a stage1 DATA lever,
 so it's composable with the wdl-filter (#2528) and mixin experiments — fold the
 winners into ONE stage1 recipe before committing the ~2-day full multi-stage bake.
+
+**Retune-on-branch result (#2525 → #2531):** applied the pc-sf `--core` retune
+(1500-iter STC, net 60FCA198) and re-SPRT'd tuned-pc-sf vs baseline: **H1 +8.44**
+(net-vs-net `[-1.5,1.5]` STC). So the tune recovered **+2.1 over the +6.34 floor**,
+confirming the 1.9× handicap was real and costing Elo. The retune also cut the
+node inflation from ~90% to ~40% over baseline (bench 4.56M→3.13M vs base 2.33M) —
+still inflated, so a little headroom likely remains (full-bake net gets its OWN
+retune; these S200 values don't carry). Decisive "bake to full length" signal.
+CI wide-ish (~±3-4, H1'd fast on an +8 effect) — direction/size solid, exact
+value approximate.
