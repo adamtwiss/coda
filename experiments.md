@@ -17585,3 +17585,32 @@ per delta rather than row count. Also note: with hugepages merged, the
 marginal cost of a streamed row dropped fleet-wide, which shrinks the
 prize for ALL row-count-reduction ideas — future NPS work should target
 instruction count (the measured gap currency on AVX2 hosts) instead.
+
+---
+
+## Consensus mulhi pairwise pack — H0, not merged (2026-07-04)
+
+`nps/avx2-mulhi-pack` (c817c57, #2494 STC `[-2,1]`): the 5/5-consensus
+AVX2 pack form (clamp elision on the second operand + slli/mulhi folding
+the FT_SHIFT). Bit-exact (randomized + i16-rail equivalence tests),
++0.8% single-thread on titan. **H0 ✗ — -1.1 ±1.2, LLR -2.98, N=71,180**
+after a long mid-band grind.
+
+Read: same lesson as #2504 in milder form — a titan single-thread
+micro-win on the AVX2-dispatch path did not survive fleet game
+conditions. The saved vpmaxsw/srli are throughput-cheap ops; plausibly
+the slli→mulhi dependency chain is no better (or slightly worse) than
+mullo→srli on the fleet's actual AVX2-class parts under concurrent load,
+and the change only fires on a minority of hosts to begin with. Branch
+left unmerged for the record.
+
+**AVX2/NPS session net result (2026-07-03/04):** merged +7.4 (hugepage
+weight matrices, #2493) and +2.1 (gated maddubs-pair fused L1, #2495);
+rejected/closed: REGS-12 retile (-5.6% titan pre-SPRT), mulhi pack
+(#2494 H0), within-ply cancellation (#2504 H0), cross-ply cancellation
+(input-metric negative pre-SPRT). Pattern for future NPS work: the two
+wins removed *structural* costs (TLB walks, madd instruction count);
+the four losses all traded a small measured saving for hot-loop shape
+changes whose costs only appear under fleet conditions. Measure on
+fleet-representative hosts under load, and prefer structural removals
+over micro-op shaving.
