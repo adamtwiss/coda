@@ -8,9 +8,11 @@ by FEN (never by line order — the UCI-scrape misalignment trap can't happen):
        mean|err|, the long tail (p90/p99/max), and Spearman + Pearson of the
        net's eval vs the oracle. This is the strength-relevant number; prod-era
        nets sit ~Spearman 0.85 / Pearson 0.83.
-  B. BLINDSPOT overscore (held-out overrate corpus — positions Coda is KNOWN
-       to misscore): signed overscore (mean eval-lc0; +ve = rates too high) and
-       mean|err|. prod-era nets ~207-224 mean|err| here (recipe-invariant band).
+  B. BLINDSPOT eval error (held-out overrate corpus — positions Coda is KNOWN
+       to misscore): the headline is mean|err| (prod-era nets ~207-224, a
+       recipe-invariant band). Signed overscore (mean eval-lc0) is reported too
+       as a directional-bias hint, but do NOT rank nets by it — over/under
+       errors cancel, so a net can post a low overscore yet a worse mean|err|.
   C. LONG-TAIL on the blindspot set: p90/p99/max |err| — where blindspots live.
   D. WANDERING BISHOP (testdata/wandering_bishop_corpus.epd, 119 bishop-sortie
        positions): mean net_pref = mover-POV cp by which the net prefers the bad
@@ -201,10 +203,11 @@ def main():
                   f"{col(r,'gen.p90','{:.0f}'):>5} {col(r,'gen.p99','{:.0f}'):>5} "
                   f"{col(r,'gen.mx','{:.0f}'):>6}")
 
-    print(f"\nB/C. BLINDSPOT overscore + long tail  (heldout overrate set, "
-          f"{rows[0]['bs']['n']} pos)")
-    h = (f"   {'net':<32} {'overscore':>10} {'mean|err|':>10} {'vs.first':>9} "
-         f"{'p90':>5} {'p99':>5} {'max':>6}")
+    print(f"\nB/C. BLINDSPOT eval error + long tail  (heldout overrate set, "
+          f"{rows[0]['bs']['n']} pos) — mean|err| is the headline; overscore is a "
+          f"directional-bias hint only (can mislead alone)")
+    h = (f"   {'net':<32} {'mean|err|':>10} {'vs.first':>9} "
+         f"{'p90':>5} {'p99':>5} {'max':>6} {'overscore':>11}")
     print(h); print("   " + "-" * (len(h) - 3))
     base_mae = None
     for r in rows:
@@ -212,8 +215,9 @@ def main():
         d = "" if base_mae is None else f"{mae-base_mae:+.1f}"
         if base_mae is None:
             base_mae = mae
-        print(f"   {r['net'][:32]:<32} {r['bs']['overscore']:>+10.1f} {mae:>10.1f} {d:>9} "
-              f"{r['bs']['p90']:>5} {r['bs']['p99']:>5} {r['bs']['mx']:>6}")
+        print(f"   {r['net'][:32]:<32} {mae:>10.1f} {d:>9} "
+              f"{r['bs']['p90']:>5} {r['bs']['p99']:>5} {r['bs']['mx']:>6} "
+              f"{r['bs']['overscore']:>+11.1f}")
 
     wb_n = next((r["wb"]["n"] for r in rows if r["wb"]), "?")
     print(f"\nD. WANDERING BISHOP  ({wb_n}-position bishop-sortie corpus; net_pref = "
