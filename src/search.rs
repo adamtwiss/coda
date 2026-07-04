@@ -415,11 +415,15 @@ tunables!(
     // (range -5..+30, direct /10 scaling) confirmed optimum is genuinely 0.
     // Historical conflicting reads (0.22 vs 1-2 across tunes) were SPSA
     // noise on integer-rounded values. Direction closed.
-    // xray-SE: widen singular test margin when TT move is from an x-ray
-    // blocker square (moving it uncovers our slider's attack on an enemy).
-    // Signal already delivered +52 in movepicker (#502). Flat bonus
-    // subtracted from singular_beta → easier to judge singular → more
-    // extensions for tactically significant moves.
+    // xray-SE: when the TT move is from an x-ray blocker square (moving it
+    // uncovers our slider's attack on an enemy), this flat bonus is
+    // SUBTRACTED from singular_beta (`singular_beta = tt_score - depth -
+    // xray_bonus`). That LOWERS singular_beta → WIDENS the SE margin →
+    // STRICTER singularity test → FEWER extensions on x-ray-blocker TT moves,
+    // not more. (Empirically good: #604 H1 +1.1, and SPSA drives the value UP
+    // away from the 0 floor — so do NOT "fix" the sign. The earlier comment
+    // here described the mechanism backwards.) Ordering signal for these moves
+    // is delivered separately in movepicker (#502, +52).
     (SE_XRAY_BLOCKER_MARGIN_10X, 46, 0, 400, 20.0, true),
     // 2026-05-19 audit: floor was pinned at 10 (=1.0 effective), preventing
     // SPSA from exploring below 1× even though SPSA had repeatedly driven
@@ -3821,8 +3825,11 @@ fn negamax(
         info.stats.nmp_attempts += 1;
         // Adaptive reduction: scales with depth and eval margin above beta
         let mut r = tp10(&NMP_BASE_R_10X) + depth / tp10(&NMP_DEPTH_DIV_10X);
-        // Reduce more after captures: opponent just captured, null move more likely to work
-        // (Consensus: SF/Obsidian increase R after captures, not decrease)
+        // Reduce more after captures: opponent just captured, null move more likely to work.
+        // NOT a live cross-engine consensus (SF's R is flat; Obsidian keys on the
+        // CURRENT node's ttMoveNoisy, and that port is dead ×4 — #732/#754/#768/#2270).
+        // This term is kept purely on Coda's own evidence: #195 H1 +3.5 (with retune),
+        // removal #1067 H0 −2.6.
         if !board.undo_stack.is_empty() && board.undo_stack[board.undo_stack.len() - 1].captured != NO_PIECE_TYPE {
             r += 1;
         }
@@ -4248,8 +4255,11 @@ fn negamax(
             // Skip SE for mate scores (margin comparison meaningless)
             if !is_decisive(tt_score_local) {
                 // xray bonus: if TT move uncovers our slider's attack on enemy
-                // (from-square ∈ our_xray_blockers), widen margin → easier
-                // singular → more extensions on tactical discoveries.
+                // (from-square ∈ our_xray_blockers), subtract this from
+                // singular_beta → WIDER SE margin → STRICTER singularity →
+                // FEWER extensions on these discovered-attack TT moves (the
+                // margin comment at the tunable def has the full rationale;
+                // the effect is the opposite of the old "more extensions" note).
                 let xray_bonus = if our_xray_blockers & (1u64 << move_from(tt_move)) != 0 {
                     tp10(&SE_XRAY_BLOCKER_MARGIN_10X)
                 } else { 0 };
