@@ -17745,3 +17745,30 @@ eager precompute would pay 2.0 (both perspectives). Precompute would do
 ~61% MORE index computations than lazy expansion does today. Same
 offense-precompute lesson, confirmed by arithmetic before writing any
 code this time.
+
+---
+
+## PC-skip S200 data lever — net-vs-net floor confirmed (2026-07-04)
+
+**skip-pc-sf-swa (60FCA198) vs skip-baseline-swa (B29054AF)** — net-vs-net on
+main, both `--dev/--base-network` overrides, `[-1.5, 1.5]` STC. OB #2523:
+**H1 +6.34** (final). PC-skip = SF-style dynamic piece-count rebalancer in the
+stage1 data loader (`--pc-y0..--pc-y4`, ~78% drop), applied to the S200 skip
+experiment; baseline is the same recipe without the rebalancer.
+
+**This is a FLOOR, not the true delta.** pc-sf benches 1.9× baseline (4.56M vs
+2.41M @ d12) — its eval landscape prunes far less under main's prod-calibrated
+tunables, so it runs off-tree/handicapped and the shared-tunables pattern
+understates it. Eval *scale* is prod-like (RMS 199 vs prod 204), so it's a
+genuine landscape/shape difference, NOT an EVAL_SCALE hack. Retune-on-branch
+#2525 (77-param `--core`, pc-sf as dev-network, 1500 iter STC) in flight to
+recover the un-handicapped magnitude.
+
+net_report corroborated on every lens: pc-sf edged baseline on blindspot
+mean|err| and won wandering-bishop decisively (+80, 33/119 sorties correct vs
+baseline +93/25 — best in the pool, beating both prod nets).
+
+Both nets are S200 (half-baked): this SIZES the recipe, it doesn't decide
+deployment (that needs full-bake pc-sf vs prod). PC-skip is a stage1 DATA lever,
+so it's composable with the wdl-filter (#2528) and mixin experiments — fold the
+winners into ONE stage1 recipe before committing the ~2-day full multi-stage bake.
