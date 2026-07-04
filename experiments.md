@@ -17415,6 +17415,35 @@ effectively closed;** further Elo now comes from the higher-leverage tracks the
 gap-decomposition points at (TM/ponder, LTC-scaling, net retraining), not
 single-knob search tweaks.
 
+## 2026-07-04 — Last fireable P2/P3 batch + P4 comment fixes
+
+Draining the last three fireable audit items + two comment-only P4 fixes.
+Base main 2620566.
+
+| ID | Branch | Item | Result | Decision |
+|---:|---|---|---|---|
+| 2519 | `p2/qs-dispatch-hoist` | **P2.1:** hoist the `depth<=0 -> quiescence` dispatch to the top of negamax (before the interior preamble); removes the duplicate boundary `nodes++` (also polluted the TM node-fraction signal) + double TT probe. Two SF-consistent deltas (no interior TB probe / mate-dist at boundary). Bench 2620566→2351112. | `+1.4 ±1.8`, 37k, LLR 2.95, **H1 ✓** (`[-2,1]`) | **MERGED** (d980a09). Faded from +11 early to +1.4 — real, part-TM. |
+| 2520 | `p2/bnfp-stage-gate` | **P2.3:** BNFP prunes via the picker's BadCaptures stage (dynamic `-capt_hist/18`) instead of re-running `see_ge(mv,0)`. Behavior change, not a dedup. Bench →2380783. | `+0.2 ±2.1`, →H0 (29k) | **Heading H0.** The dynamic split threshold ≠ SEE<0 didn't help. |
+| 2521 | `p3/qs-double-see` | **P3.4:** dedup the QS double-SEE by fixing the picker split at QS_SEE_THRESHOLD; searched-set + best_score preserved, only good-capture order changes. Bench →2738514 (+4.5% — the ordering cost). | `-0.7 ±2.2`, →H0 (26k) | **Heading H0.** A single-SEE dedup *forces* the split-threshold unification, and collapsing the 2-tier ordering (SEE-tier→cap_score) into 1-tier costs ~4.5% nodes — inherent, not fixable (the −26 verdict can't be derived from the −capt_hist/18 verdict). The ordering cost ≥ the saved see_ge. |
+| — | `main` (P4.1/P4.2) | **P4 comment fixes:** corrected the inverted xray-SE margin comments (bonus *lowers* singular_beta → *stricter* → *fewer* extensions) and the stale NMP post-capture "consensus" claim. Comment-only, bench unchanged. | — | **MERGED** (9f7940c). |
+
+**P2.2 futility-before-see retune-on-branch (tune #2515, --core 1000 iters STC):**
+fired per Adam's "low cost, worth trying" after #2489 H0'd (+0.3). The
+reorder-relevant cluster moved only *modestly* — FUT_PER_DEPTH −8%,
+FUT_THREATS_MARGIN −9%, SEE_QUIET_MULT −4% — while the big `***` swings landed
+on *unrelated* knobs (LMR_THREAT_DIV −33%, CONT_HIST_MULT +18%, IIR +16%,
+LMP_BASE +20%), the loose-knob-wander signature, not a reorder-driven landscape
+shift. Combined with a now-stale base (P2.1 + threat-splat merged since submit)
+and the 0/4 retune-rescue record this campaign, **not applied — P2.2 dropped.**
+
+**Audit fully drained of fireable items.** P0 (9), P1 (12), P2 (1,2,3,4,5,8
+resolved; 6 persistent-pool + 7 aarch64-prefetch are project/ARM-only), P3
+(1–4 resolved; 5 root-optimism-retune, 6 FH-blend, 7 LMR-neg all low/dead), P4
+(comment fixes done; 5 50mr known-dead). Net merged from the whole review:
+the P0 wave (+8-ish measurable + EGTB) + P1.1/1.8/1.11/1.12 + P1.4 (LTC) + P2.1
++ P2.4/2.5 + the NPS campaign. Interior search-review **closed** — remaining
+leverage is driver/root rearchitecture, TM/ponder, LTC-scaling, net retraining.
+
 ## 2026-07-03 — Train-vs-inference parity: full-surface verification (hypothesis CLOSED)
 
 Adam's preferred blindspot hypothesis was another C8-class train/inference

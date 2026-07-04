@@ -159,6 +159,8 @@ Reachable mostly with SyzygyPath set (lichess/CCRL) — but `downgrade_50mr_mate
 ## P2 — NPS / efficiency
 
 ### 1. QS dispatch after the negamax preamble: TT probe, draw checks, cuckoo, prefetch run twice; nodes double-counted
+> ✅ **MERGED 2026-07-04** (d980a09) — OB #2519 `p2/qs-dispatch-hoist`: **+1.4 ±1.8, LLR 2.95, H1** (37k, [-2,1]). Hoisted the `depth<=0 -> quiescence` dispatch to the top of negamax (after draw checks + MAX_PLY guard, before the interior preamble). Faded from a +11 early start but locked a clean positive — plausibly part-TM (removed the duplicate boundary `nodes++` that polluted the node-fraction signal), not pure NPS. Bench 2620566→2351112 (~10%, mostly the removed double-count). Two SF-consistent deltas: boundary nodes lose the interior TB probe + negamax mate-distance pruning.
+
 `src/search.rs:3350` (dispatch) vs quiescence :4968-5024. Every depth≤0 negamax entry (~14% of calls) pays the full preamble — including the enemy_attacks/xray computation (~20-30 magic lookups, unused before dispatch) and a full 5-slot TT probe — then QS repeats draw checks (provably dead on first entry), prefetch, cuckoo, a second TT probe of the same hash, and a second `info.nodes += 1` (~10% node-count inflation at the boundary, which also leaks into the TM node-fraction signal). SF/Reckless dive to qsearch as the first thing in search().
 **Change:** hoist the depth≤0 dispatch to the top of negamax — *after* the ply≥MAX_PLY guard; validate the two deliberate semantic deltas (boundary nodes lose the interior TB probe — SF-consistent — and mate-distance pruning). QS's TT cutoff (depth ≥ −1) is a superset of the depth-0 requirement. **Test:** [-2,1]; ~0.5-1% NPS. Novelty: new. (qsearch #49)
 
