@@ -17816,3 +17816,48 @@ still inflated, so a little headroom likely remains (full-bake net gets its OWN
 retune; these S200 values don't carry). Decisive "bake to full length" signal.
 CI wide-ish (~±3-4, H1'd fast on an +8 effect) — direction/size solid, exact
 value approximate.
+
+---
+
+## Material scaling post-mortem: neither attempt tested the mechanism (2026-07-04)
+
+Two SPRT failures — v1 #2517 **H0 −4.9**, v2 #2524 **H0 −9.7** — but a source-level
+contrast against SF (evaluate.cpp:80-81) + Reckless (evaluation.rs correct_eval)
+shows each failed on a different PORT error, so the SF/RK mechanism itself is
+still UNTESTED on Coda:
+
+**What SF/Reckless actually do:**
+1. **Inside the eval function, all consumers.** SF's scale lives in Eval::evaluate
+   itself; Reckless calls correct_eval at all 3 eval sites **including the QS
+   stand-pat** (search.rs:1190). One consistent eval space everywhere.
+2. **TT stores the scaled value — and that's safe** because material is a pure
+   function of the position (hash-keyed). The rule50 store-raw/scale-fresh lesson
+   does NOT transfer: halfmove clock is not hash-keyed, material is.
+3. **The gradient is the feature, not the mean.** Measured over the 7845-position
+   heldout set: Reckless's factor (20664+mat)/26685 has **mean 0.996** — their
+   SPSA converged to a mean-PRESERVING gradient (p10 0.846 → p90 1.122). SF's
+   factor has mean 1.19, but SF's entire threshold ecosystem is tuned with that
+   mean baked in — for a port, only the gradient is transferable.
+4. **Half the SF/RK expression is material-weighted OPTIMISM** (root-score-derived
+   contempt), which Coda doesn't have (removed 2026-04-19). The portable slice is
+   smaller than "both top engines do it" suggests.
+
+**v1 (−4.9):** placement inside evaluate_nnue was actually FINE (consistent, TT-safe).
+Real defects: kneed shape (all gradient below mat=3500, zero above) and endgame
+anchored 30% BELOW the threshold-calibrated scale.
+
+**v2 (−9.7):** right smooth shape, three compounding port errors: (a) anchored ×1.0
+at bare kings like SF → measured **mean factor 1.18** on real positions = untuned
+global EVAL_SCALE_PCT≈118 detune (known-bad lever); (b) applied at ONE consumer
+(negamax static eval) while QS stand-pat (search.rs:5459) + two depth-cap eval
+returns stayed unscaled → search and qsearch ran in different eval spaces with
+bounds flowing between them; (c) shared corrhist tables updated from both spaces.
+The commit's "correct rail" rationale was wrong — it CREATED the inconsistency.
+
+**Verdict:** "material scaling doesn't work for us" is NOT established. What's
+established is that a mean-shifting or consumer-inconsistent port fails. The valid
+test (v3) is: mean-preserving factor `(BASE+mat)/(BASE+MAT_REF)` (MAT_REF=5880,
+median heldout material; startpos ≈+10%, bare kings ≈−18%, mean 0.994), applied
+inside evaluate_nnue (one space, all consumers, TT-safe), single tunable BASE.
+Optional calibration first per ablate-source-before-port: neutralize the material
+term in Reckless locally (keep optimism), RR vs stock, to size the true prize.
