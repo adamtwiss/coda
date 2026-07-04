@@ -1137,20 +1137,22 @@ fn splat_cpu_ok() -> bool {
         && std::is_x86_feature_detected!("avx512vbmi2")
 }
 
-/// CODA_SPLAT=1 opt-in: route the two delta-generation entry points below
-/// through the AVX-512 splat enumerator. Default remains scalar; the
-/// enumeration is output-identical by construction (multiset parity proven
-/// by threats_splat's corpus tests), so this switch exists to A/B-measure
-/// NPS on the same binary. Parsed once at first use (OnceLock, same
-/// pattern as `skip_slider_sees`). The CODA_NO_SLIDER_SEES ablation is
-/// implemented scalar-only, so it disables the splat.
+/// Route the two delta-generation entry points below through the AVX-512
+/// splat enumerator — DEFAULT ON when the CPU qualifies (Phase A default-on
+/// decision, 2026-07-04: +6.7% NPS on Zen 5, zero-mismatch multiset parity
+/// over 1.2M+ changes, bench-identical through full search). The
+/// enumeration is output-identical by construction, so `CODA_NO_SPLAT=1`
+/// exists only to A/B-measure NPS on the same binary. Parsed once at first
+/// use (OnceLock, same pattern as `skip_slider_sees`). The
+/// CODA_NO_SLIDER_SEES ablation is implemented scalar-only, so it disables
+/// the splat.
 #[cfg(target_arch = "x86_64")]
 #[inline]
 fn use_splat() -> bool {
     use std::sync::OnceLock;
     static F: OnceLock<bool> = OnceLock::new();
     *F.get_or_init(|| {
-        std::env::var("CODA_SPLAT").map(|v| v == "1").unwrap_or(false)
+        std::env::var("CODA_NO_SPLAT").map(|v| v != "1").unwrap_or(true)
             && std::env::var("CODA_NO_SLIDER_SEES").is_err()
             && splat_cpu_ok()
     })
