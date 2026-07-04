@@ -17861,3 +17861,43 @@ median heldout material; startpos ≈+10%, bare kings ≈−18%, mean 0.994), ap
 inside evaluate_nnue (one space, all consumers, TT-safe), single tunable BASE.
 Optional calibration first per ablate-source-before-port: neutralize the material
 term in Reckless locally (keep optimism), RR vs stock, to size the true prize.
+
+---
+
+## Material scaling, correction #2: CODA ALREADY HAS IT (2026-07-04, credit: codex review)
+
+A fresh-eyes review (codex) of the v3 fail (#2536, -2.5 +-4.3, stopped) found what
+three of my audits missed: **Coda has had material scaling since 2026-04-13**
+(`daa7b68`, "Alexandria pattern"): `score * (22400 + npm) / 32768`, npm-only
+(N=B=422 R=642 Q=1015, no pawns), inside `SearchInfo::eval` — so every consumer
+already gets it, and ~3 months of SPSA has calibrated all thresholds around it.
+
+Corrected factor table (bare kings -> startpos, ratio):
+- Coda existing:  0.684 -> 0.927  (ratio 1.36) — SF-magnitude gradient ALREADY
+- SF:             1.000 -> 1.323  (1.32)
+- Reckless:       0.774 -> 1.160  (1.50)
+- v3 as tested (existing x new): 0.578 -> 1.026 (**1.78**) — steeper than any
+  reference engine, with the harshest endgame floor. An overdose, not a port.
+
+This rewrites all three "failures" into one dose-response story: v1/v2/v3 each
+ADDED gradient on top of an already-SF-magnitude gradient (plus their individual
+bugs), and all lost — mildest overdose (v3) lost least. "Material scaling doesn't
+work in Coda" was never tested; "doubling it doesn't" was, three times.
+
+Also corrected (codex): Reckless stores RAW eval in TT and recomputes
+correct_eval on read (my earlier claim that it caches the scaled value was
+wrong; SF does store its evaluate() output). Both are TT-safe since material is
+hash-keyed; the doc claim is fixed here for the record. Additional v3 nit:
+inner scale applied pre-mopup, outer post-mopup, so mopup got asymmetric
+treatment.
+
+**Remaining REAL deltas vs SF/RK** (tunable questions, not design questions):
+no amplification above 1.0 (our ceiling 0.927), npm-only vs all-material, no
+optimism coupling. **v4 plan = expose-and-tune, not hand-design a 4th shape:**
+make the existing scaler's constants tunable (`MAT_DAMP_BASE`=22400,
+`MAT_PAWN_W`=0 — defaults bench-identical), focused SPSA (800-1000 iters) lets
+the tuner decide pawns/steepness/mean jointly against the real thresholds, then
+SPRT tuned values [0,3]. Note v3's mean-preservation was also wrong-ANCHORED:
+it preserved mean 1.0, but Coda's calibrated operating point is the old
+scaler's mean (~0.88) — another reason expose-and-tune beats computing shapes
+by hand.
