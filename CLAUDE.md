@@ -359,22 +359,42 @@ quickly to keep accurate in a checked-in file. Authoritative sources:
 Testing methodology is durable and documented below (Self-play SPRT primary,
 retune-on-branch for tree-shape-changing features, LTC for TM features).
 
-### Versioned releases (policy set 2026-07-05, first release pending)
+### Versioned releases (policy 2026-07-05; machinery built + CI-validated same day)
 
-External testers now compile Coda from arbitrary main commits (talkchess
-RUST_TOURNAMENT etc.), producing public numbers for builds we can't date —
-and Cargo has said `0.1.0` forever, so binaries don't self-identify. Policy:
-**milestone releases, not backfill**. Cut a tagged release when ALL of:
-1. A new production net has been promoted (net_catalog.md updated), AND
+**When to release (Adam decides the moment):** ALL of —
+1. a new production net has been promoted (net_catalog.md updated), AND
 2. it has soaked on lichess (~a week, no regressions/anomalies), AND
 3. the trunk is quiet (no half-landed tune/merge trains).
+No backfilling old versions; no releases outside this cadence. Likely first
+candidate: the skip-recipe consolidation net if it takes prod and soaks clean.
 
-At release time: bump the Cargo `version` (binary self-identifies), tag
-`vX.Y.Z`, GitHub release with source + the prod-net reference (nets already
-live on the `v0.7.0-nets`-style release assets). Do NOT create releases
-outside this cadence; do not backfill old versions. Adam decides the moment;
-the likely first candidate is the skip-recipe consolidation net if it takes
-prod and soaks clean.
+**Versioning scheme (single source of truth = Cargo.toml `version`):**
+- MINOR bump per release (1.1, 1.2, ...), PATCH for hotfix re-releases,
+  MAJOR for era-class changes (rewrite, net-architecture generation).
+- Currently `0.9.0` (deliberate pre-1.0 signal); first release = `1.0.0`.
+- `build.rs` stamps `CODA_VERSION` via `git describe` (engine tags only —
+  `*-nets*` tags are EXCLUDED so net-asset buckets can never read as engine
+  versions). UCI reports `id name Coda <version>`: clean `X.Y.Z` when built
+  exactly on a release tag, `X.Y.Z-dev+<sha>[-dirty]` otherwise, `-nogit`
+  for tarball builds. Never hand-edit a version string anywhere else.
+
+**Release ceremony (five minutes, fully automated after the tag):**
+1. Bump `version` in Cargo.toml (root package), commit to main.
+2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. `.github/workflows/release.yml` fires: builds static embedded-net
+   binaries — linux-x86-64-v2 + v3 (musl), linux-aarch64 (musl),
+   windows-x86-64-v3, macos-aarch64 — smoke-benches each, and attaches
+   binaries + sha256s + generated notes to the GitHub release.
+4. Sanity: download one asset, check `id name` matches the tag.
+
+Dry-run without tagging: `gh workflow run release.yml` builds the same
+matrix as workflow artifacts only (validated green 5/5 on 2026-07-05).
+Matrix stays small because Coda's SIMD is runtime-dispatched (75 detection
+sites); compile target only affects general codegen (x86-64-v2 = popcnt
+floor) and the one `avx512vnni` cfg (portable builds fall back to the
+AVX-512BW path — build from source with target-cpu=native for the last
+percent). Net-asset releases continue on their own `*-nets` tags; future
+net buckets should avoid semver-shaped names.
 
 ## Key Gotchas
 - Move flag equality vs bitwise: check non-promotion flags with ==, not &
