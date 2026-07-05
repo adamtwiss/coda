@@ -2,7 +2,7 @@
 //! Features: NMP, RFP, LMR, LMP, futility, SEE pruning,
 //! singular extensions, cuckoo cycle detection, correction history.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::bitboard::*;
@@ -167,6 +167,21 @@ tunables!(
     (TM_INC_COVER_REF, 20, 5, 60, 4.0, false),
     (TM_MULT_CEIL_MIN_10X, 15, 10, 40, 2.0, false),
     (TM_MULT_CEIL_MAX_10X, 130, 40, 140, 8.0, false),
+    // Cross-thread best-move-instability TM factor (SF port, 2026-07-05).
+    // factor = BASE/1000 + MULT/1000 * (Σ per-thread bmc)/n_threads, applied
+    // to the soft budget only at Threads>1. Defaults are SF's 1.088 / 2.315
+    // (search.cpp:519); will want a focused TM-cluster retune-on-branch since
+    // Coda's TM is Viridithas-shaped. Fixed-point /1000 for the sub-integer
+    // precision these multiplicative constants need. Not --core (TM is tuned
+    // deliberately, TC-matched, never swept by the STC core retune).
+    // BASE defaults to 1000 (=1.0), NOT SF's 1088: SF's base is balanced
+    // against SF's OWN factor product; on Coda's already-calibrated product a
+    // >1.0 base would add a blanket ~9% time to EVERY position (settled or not),
+    // contaminating the raw test. At 1.0 the factor is neutral when the pool
+    // agrees and only scales UP on genuine cross-thread churn — the retune can
+    // lift BASE if beneficial. MULT starts at SF's 2.315.
+    (TM_BMC_INSTAB_BASE, 1000, 900, 1500, 25.0, false),
+    (TM_BMC_INSTAB_MULT, 2315, 500, 4000, 100.0, false),
     // Low-inc absolute single-move ceiling (2026-06-22, overspend PART2).
     // inc_cover (PART1) caps the factor MULTIPLIER, so adjusted_soft stays
     // ~11% of clock — but a single deep iteration that starts just under
@@ -820,6 +835,17 @@ pub struct SearchInfo {
     /// TB-move hits are reported separately at their own info lines.
     pub tb_hits: u64,
     pub global_nodes: std::sync::Arc<AtomicU64>,  // aggregate nodes across SMP threads
+    /// Cross-thread best-move-changes, PER THREAD (SF port). Thread `i` writes
+    /// slot `i` on a root best-move change; main reads+sums+resets per ID
+    /// iteration for the instability TM factor. A PER-THREAD array (not one
+    /// shared counter) so hundreds of TCEC-scale threads don't contend a single
+    /// cache line — writes are rare (≤ once/iteration/thread) so the packed
+    /// array's adjacent-slot false-sharing is negligible. Shared Arc like
+    /// global_nodes; re-shared each `go`.
+    pub thread_bmc: std::sync::Arc<[AtomicU32; 256]>,
+    /// Thread count for the current search (1 for the single-thread path). Set
+    /// by search_smp; gates the cross-thread instability factor to Threads>1.
+    pub num_threads: usize,
     /// Last per-thread node count flushed into global_nodes (delta flushing,
     /// TM audit 2026-06-13 A4). Cell: should_stop takes &self.
     last_flushed_nodes: std::cell::Cell<u64>,
@@ -1033,6 +1059,8 @@ impl SearchInfo {
             nodes: 0,
             tb_hits: 0,
             global_nodes: std::sync::Arc::new(AtomicU64::new(0)),
+            thread_bmc: std::sync::Arc::new(std::array::from_fn(|_| AtomicU32::new(0))),
+            num_threads: 1,
             last_flushed_nodes: std::cell::Cell::new(0),
             silent: false,
             stats: PruneStats::default(),
@@ -1854,6 +1882,7 @@ fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
     helper.ponderhit_floor = main.ponderhit_floor.clone();
     helper.ponderhit_abs = main.ponderhit_abs.clone(); // in-flight forfeit guard
     helper.global_nodes = main.global_nodes.clone();
+    helper.thread_bmc = main.thread_bmc.clone(); // shared per-thread bmc array (SF cross-thread TM)
 
     // Correction tables — copied for eval consistency (see fn-doc). ~260 KB.
     helper.pawn_corr.copy_from_slice(&main.pawn_corr[..]);
@@ -2190,11 +2219,17 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
     // looking freshest in replacement. Main's search() no longer bumps;
     // single-thread path bumps here too for consistency.
     info.tt.new_search();
+    info.num_threads = threads; // gates the cross-thread instability TM factor
 
     if threads <= 1 {
         info.global_nodes.store(0, Ordering::Relaxed);
         info.last_flushed_nodes.set(0);
         return search(board, info, limits);
+    }
+
+    // Reset the per-thread best-move-change counters for this search.
+    for slot in info.thread_bmc.iter().take(threads) {
+        slot.store(0, Ordering::Relaxed);
     }
 
     // Reset shared state.
@@ -2316,7 +2351,7 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
 ///
 /// History is seeded from main in `create_helper_info` — see comment
 /// there. We deliberately do NOT clear it here.
-pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimits, _thread_id: usize) -> Move {
+pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimits, thread_id: usize) -> Move {
     init_feature_flags();
 
     // History was just seeded from main in create_helper_info — do
@@ -2358,6 +2393,10 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     // when main sets the shared stop flag.
     let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
     let mut prev_score = 0i32;
+    // Cross-thread TM (SF port): track this helper's best-move changes between
+    // completed iterations and publish into its own slot of the shared array.
+    let mut prev_best = NO_MOVE;
+    let bmc_slot = thread_id.min(info.thread_bmc.len() - 1);
     for depth in 1..=effective_max {
         if info.stop.load(Ordering::Relaxed) { break; }
         info.root_depth = depth;
@@ -2404,6 +2443,12 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
         if info.pv_len[0] > 0 {
             best_move = info.pv_table[0][0];
         }
+        // Publish a best-move change (vs the previous completed iteration) into
+        // this helper's cross-thread bmc slot.
+        if prev_best != NO_MOVE && best_move != prev_best {
+            info.thread_bmc[bmc_slot].fetch_add(1, Ordering::Release);
+        }
+        prev_best = best_move;
         prev_score = score;
         info.last_score = score;
         info.completed_depth = depth;
@@ -2966,6 +3011,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // unstable positions (Reckless `1 + changes/4`, Stockfish
                     // `1.096 + 2.29 * totBestMoveChanges` patterns).
                     info.tm_best_move_changes = info.tm_best_move_changes.saturating_add(1);
+                    // Publish main's change into its own slot (thread 0) of the
+                    // cross-thread bmc array (SF port). Read+reset in the TM block.
+                    info.thread_bmc[0].fetch_add(1, Ordering::Release);
                 }
             }
             let drop = if info.tm_has_data && !is_mate_score(prev_score) && !is_mate_score(info.tm_prev_score) {
@@ -3175,11 +3223,31 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Combined multiplier — Viridithas's 4 factors + score-trend.
             // Max product ~ 2.50 × 1.68 × 1.0 × 2.27 × 1.45 = 13.8×
             // Min product ~ 0.75 × 1.0  × 0.386 × 0.87 × 0.80 = 0.20×
+            // Factor 6: cross-thread best-move instability (SF port, Threads>1
+            // only). Sum this iteration's best-move changes across ALL threads,
+            // normalize by thread count, and scale time UP when the pool is
+            // collectively still churning — main may have momentarily settled
+            // while helpers disagree, which its own stability table can't see.
+            // Reset the per-thread slots after reading (per-iteration window).
+            let cross_thread_instability = if info.num_threads > 1 {
+                let n = info.num_threads;
+                let mut total: u32 = 0;
+                for slot in info.thread_bmc.iter().take(n) {
+                    total = total.saturating_add(slot.swap(0, Ordering::AcqRel));
+                }
+                let base = tp(&TM_BMC_INSTAB_BASE) as f64 / 1000.0;
+                let mult = tp(&TM_BMC_INSTAB_MULT) as f64 / 1000.0;
+                base + mult * (total as f64) / (n as f64)
+            } else {
+                1.0
+            };
+
             let mut multiplier = stability_multiplier
                 * failed_low_multiplier
                 * forced_move_multiplier
                 * subtree_size_multiplier
-                * score_trend_multiplier;
+                * score_trend_multiplier
+                * cross_thread_instability;
             // No-inc clamp: factor product up to 6.5× at no-inc TCs blows
             // adjusted_soft past hard_time via iteration-overflow even with
             // the smaller no-inc opt baseline. lichess MJ442247 (3+0):
