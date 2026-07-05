@@ -330,21 +330,26 @@ advantage may be smaller than SF gets — but #1693 already shows it's
 crossed the net-positive threshold at S800, so the question is
 direction-of-improvement, not viability.
 
+> **Update 2026-07-05**: the data-gap argument HAS now gone away — GPU3/GPU4
+> hold the entire SF training dataset (+ SFvsCoda supplements), and FT=1024
+> is in production (E161C665). This section is resolved history.
+
 ---
 
 ## SF's path-vs-data scale calibration
 
 > **STALE TABLE — superseded 2026-07-05.** Every "gap" row below has since
-> closed. Data: the full SF training set was acquired onto GPU4 (~4× the 47B
-> core set; CLAUDE.md §Training Data) and production nets train on it — plus
-> SFvsCoda datagen supplements, so Coda's pool is now the SAME data, slightly
-> LARGER. Position-views: multi-stage prod runs (e.g. 250/900/3000-SB chains
-> ≈ 400B+ views) are within ~2× of SF's. Arch: FT=1024 + L1=32 are in prod
-> (E161C665-era), matching SFNNv13's 1024/32/32; PSQT-per-bucket and dual
-> activation were TESTED and H0-regressed for us (#2036-#2042) — closed, not
-> pending. Ratios below are kept only as the 2026-05-23 historical snapshot.
-> Do not cite them as current (this table was mis-cited 2026-07-05 as live
-> evidence of an "8× data gap" that no longer exists).
+> closed. Data: **GPU3 and GPU4 both hold the ENTIRE SF training dataset**,
+> plus our own SFvsCoda datagen data on top — so Coda trains on the same
+> pool with, if anything, slightly MORE diversity than SF. There is no data
+> gap in either quantity or composition. Position-views: multi-stage prod
+> runs (e.g. 250/900/3000-SB chains ≈ 400B+ views) are within ~2× of SF's.
+> Arch: FT=1024 + L1=32 are in prod (E161C665-era), matching SFNNv13's
+> 1024/32/32; PSQT-per-bucket and dual activation were TESTED and
+> H0-regressed for us (#2036-#2042) — closed, not pending. Ratios below are
+> kept only as the 2026-05-23 historical snapshot. Do not cite them as
+> current (this table was mis-cited 2026-07-05 as live evidence of an "8×
+> data gap" that no longer exists).
 
 | Dimension | SF | Coda (2026-05-23) | Ratio (then) |
 |---|---|---|---|
@@ -406,6 +411,11 @@ don't size decisions on them.
   v5 iteration (1900 SB cumulative) planned on GPU4.
 
 ### Future work amplified by data-axis growth
+
+> **Update 2026-07-05**: condition met — GPU3/GPU4 hold the full SF training
+> dataset (+ SFvsCoda data; slightly more diversity than SF's own pool, if
+> anything). Items below are unblocked on the data axis: FT=1024 is already
+> in prod; fen-skip and multistage-depth are active experiment threads.
 
 These become MORE attractive as we add data (~50B+ filtered):
 
