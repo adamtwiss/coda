@@ -17989,3 +17989,20 @@ All net-vs-net vs skip-baseline-swa (B29054AF) on main, `[-1.5,1.5]` STC:
   (pc-milder × fs9) before committing the full multi-stage bake — if it holds
   ≥ pc-milder's +12, bake it; if it collapses toward fs9's +3, the levers
   overlap and the bake carries pc-milder alone.
+
+---
+
+## Placeholder-zero incidence: NEGLIGIBLE — item closed, gate not ported (2026-07-05)
+
+Measured via the counter-only diagnostic (bullet fork f90d19e) on a live train:
+**0.00247% of the raw stream** (244k/9.9B, uniform across the whole stream) and
+**~0.0014% of the trained stream** (35.7k survivors / ~2.6B trained) — 1 in
+~73,000, two orders below the pre-registered port threshold (~0.05%). Existing
+gates already remove placeholders at ~1.8x the average filter rate (survivor
+pass-rate 14.6% vs 26% stream average). Some detections are genuine
+repetition/TB-draw 0.00 evals in decisively-ended games, not placeholders, so
+even these numbers overstate the poison. Verdict: SF's placeholder-zero gate
+protects against a data-gen artifact our filtered pipeline barely admits — NOT
+a component of SF's data-consumption advantage. Gate not ported; counter KEPT
+as a free per-run data-quality monitor (new pools/datagen sources could differ;
+the [pz] line flags that automatically).
