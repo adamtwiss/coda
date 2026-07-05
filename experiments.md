@@ -17958,3 +17958,34 @@ Recipe shortlist for the full multi-stage bake: **pc-milder (this) + fs9
 (#2529 pending)**; wdl-filter awaits its isolation verdict (#2532); nofs-4g
 (#2538) expected negative (mechanism + net_report both point down). All S200
 results — the full bake decides deployment vs prod E161C665.
+
+---
+
+## Skip campaign: four verdicts (2026-07-05, #2529/#2532/#2538/#2555)
+
+All net-vs-net vs skip-baseline-swa (B29054AF) on main, `[-1.5,1.5]` STC:
+
+- **fs9 (fenskip 0.9, SF level): H1 +3.6 ±2.7, N=18392 (#2529).** Second
+  confirmed recipe component (with pc-milder +12.2, #2541).
+- **wld-filter isolated (w20 + filter vs w20 baseline): H0 −1.3 ±1.7, N=49724
+  (#2532).** Decomposition complete: the w24-vs-w20 battles showed the BLEND is
+  neutral; this shows the FILTER alone is the negative. Implementation verified
+  bit-faithful to nnue-pytorch (same coefficients, same skip formula, default
+  lambda=1.0 == SF exactly) — so this is a genuine TRANSFER failure, not a port
+  bug. SF's wld-filter does not fit our recipe/bake regime. OUT. (Leading
+  mechanism hypothesis, unproven: it drops "high-eval but drawn" positions —
+  exactly the corrective examples for our drawn-endgame blindspot — and filters
+  on single-game result noise rather than eval error.)
+- **nofs-4g-shuffle (no fenskip, 4GB buffer): H0 −10.0 ±4.6 (#2538).** The
+  curve-analysis prediction (train-loss memorization credit + worse holdout val
+  + sawtooth aliasing diagnosis) held exactly. Fenskip is load-bearing as
+  DECORRELATION-BY-DILUTION; a bigger shuffle buffer cannot substitute (window
+  shuffling fixes adjacency, not same-game density). With fs9 positive, the
+  fenskip dose-response is monotone: nofs −10 < fs0.5 (baseline) < fs9 +3.6.
+- **pc-sf × fs8 combo: trending ~0 (−0.7 at 5.2k, #2555 still running).**
+  Components were +6.3 and ~+3 alone → aggressive stacking is NON-ADDITIVE
+  (report card agreed: combo gave back the blindspot/general gains, kept the
+  bishop gains). Consequence: S200-probe the ACTUAL consolidation pair
+  (pc-milder × fs9) before committing the full multi-stage bake — if it holds
+  ≥ pc-milder's +12, bake it; if it collapses toward fs9's +3, the levers
+  overlap and the bake carries pc-milder alone.
