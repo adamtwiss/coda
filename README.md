@@ -56,4 +56,13 @@ Plays around 3000-3080 on lichess, competes with most engines ranked around 3500
 
 ## License
 
-MIT
+**GPL-3.0-or-later** — see [LICENSE](LICENSE).
+
+Coda was briefly labelled MIT in this repo's early days, which was likely
+accurate for the code as it stood then. Our dependencies have drifted since:
+after auditing them (July 2026) the engine now links several GPLv3 libraries
+(the shakmaty family for Syzygy tablebase probing and PGN handling, and
+sfbinpack), so binaries can only be distributed under GPL terms — and rather
+than carry a split notice, we think GPL is simply the better license for
+Coda: it matches the engine ecosystem we learn from and contribute back to.
+Thanks to Disservin for pointing out the mismatch.

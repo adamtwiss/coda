@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Chess Optimised, Developed Agentically — a UCI chess engine"
 authors = ["Adam Twiss"]
+license = "GPL-3.0-or-later"
 
 # Offline data-pipeline tooling lives in a SEPARATE workspace member so its
 # dependencies never enter the engine's build (cf. the bzip2 fleet-build break).
