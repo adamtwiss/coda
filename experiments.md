@@ -18041,11 +18041,19 @@ Measurements (titan, ponder-on cross-engine, 10+0.1, Hash=256, T=1):
   thought; the only <10ms emits were mate-score early-exits).
 - **Self-play ponder A/B**: −6.9±15.4 (expected ~null — both sides ponder,
   savings symmetric; 0 forfeits).
-- **OB #2567 [-2,1] STC non-regression**: pending at −5.1±4.4 N=5.6k →H0
-  trend. Diff audit: every timing change is ponderhit-gated and
-  compute_tm_budgets is value-identical with Ponder off, so the OB-visible
-  binary is a behavioral no-op — treat a residual negative as noise unless
-  the resolved CI stays clearly negative, then re-audit.
+- **OB #2567 [-2,1] STC non-regression**: H0 at −2.7±2.1 N=23k; re-test
+  #2571 hovered −1.5±2.0. RESOLVED AS NOISE, mechanism hunt exhaustive:
+  (a) 100% of diff read — every behavioral change ponderhit-gated,
+  compute_tm_budgets value-identical with Ponder off; (b) solo NPS A/B
+  ±0.1% both uArchs (titan Zen1 + Zeus Zen5, insns +0.02%); (c) SATURATED
+  32-thread mixed-binary A/B on titan (the OB worker regime, Adam's
+  cache-contention hypothesis): fix +0.49% — not slower; (d) timeloss=0,
+  deficit uniform across 16 workers (no uArch cluster); (e) simulated
+  [-2,1] SPRT has **P(H0|true 0) = 27.5%** (the 5% error bound only holds
+  AT the hypothesis points) and boundary-stopped estimates overstate
+  magnitude. LESSON: a [-2,1] H0 on a structurally-inert change is a
+  ~1-in-3 coin, not proof of regression; bound the mechanism (audit +
+  solo + saturated perf) before believing the verdict.
 
 Residual/follow-up: our post-hit distribution lacks SF's >1s fail-low
 extension tail (SF 3.3% >1s, we 0.0% — P2 cap clips it); candidate next step
