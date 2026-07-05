@@ -359,6 +359,23 @@ quickly to keep accurate in a checked-in file. Authoritative sources:
 Testing methodology is durable and documented below (Self-play SPRT primary,
 retune-on-branch for tree-shape-changing features, LTC for TM features).
 
+### Versioned releases (policy set 2026-07-05, first release pending)
+
+External testers now compile Coda from arbitrary main commits (talkchess
+RUST_TOURNAMENT etc.), producing public numbers for builds we can't date —
+and Cargo has said `0.1.0` forever, so binaries don't self-identify. Policy:
+**milestone releases, not backfill**. Cut a tagged release when ALL of:
+1. A new production net has been promoted (net_catalog.md updated), AND
+2. it has soaked on lichess (~a week, no regressions/anomalies), AND
+3. the trunk is quiet (no half-landed tune/merge trains).
+
+At release time: bump the Cargo `version` (binary self-identifies), tag
+`vX.Y.Z`, GitHub release with source + the prod-net reference (nets already
+live on the `v0.7.0-nets`-style release assets). Do NOT create releases
+outside this cadence; do not backfill old versions. Adam decides the moment;
+the likely first candidate is the skip-recipe consolidation net if it takes
+prod and soaks clean.
+
 ## Key Gotchas
 - Move flag equality vs bitwise: check non-promotion flags with ==, not &
 - EP moves only valid when EP square is empty (occupied square = corruption)
