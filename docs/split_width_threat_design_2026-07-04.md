@@ -31,6 +31,10 @@ larger under KVM). Bigger than the entire splat campaign if eval holds.
 
 ## 2. Eval-risk priors (honest)
 
+- Scale of the signal at stake: x-ray ablation measured **-187 ±20 Elo**
+  (OB #2014, S800 net) — pure eval value (ablation keeps the compute
+  cost). Even the CI's lower edge dwarfs the +5-8 speed prize, so any
+  variant that measurably dents threat expression is a net loss.
 - FOR: threat information looks intrinsically low-rank — ~24 active
   features per position (refresh histogram) acting as sparse adjustment
   signals over the dense PSQ picture; hard to believe it needs 1024
@@ -46,22 +50,36 @@ larger under KVM). Bigger than the entire splat campaign if eval holds.
   experiment, not a sure thing. Fallback point on the curve: w=768
   (−25% streaming, less risk). DO NOT skip the short-bake derisk (§7).
 
-## 3. The one load-bearing design choice: WHICH slice
+## 3. The load-bearing design choice: WHICH slice (two candidate layouts)
 
 Pairwise activation multiplies channel `i` (a-half, 0..512) with
-channel `i+512` (b-half). **Threats project into the a-half
-(channels 0..pw)**:
+channel `i+512` (b-half). Today's full-width threat projection makes
+every product `(psq_a+thr_a)·(psq_b+thr_b)` — THREE threat term
+classes: `thr_a·psq_b`, `psq_a·thr_b`, and the quadratic `thr_a·thr_b`
+(mutual attacks, x-ray stacks — the tactically dense class where the
+187-Elo signal earns its keep). The slice layout decides which classes
+survive (Hercules review R1):
 
-- Every pairwise product still receives threat influence through its
-  a-operand — no product is threat-blind.
-- The pack's fused threat-add simplifies: `a = adds_epi16(psq_a,
-  threat)`, `b = psq_b` untouched — one fused add instead of two
-  (today's pack adds threat to both halves). The AVX2/AVX-512/NEON/
-  scalar pack variants all get SIMPLER.
-- For general ft_size/threat_width: require `threat_width == pw ==
-  ft_size/2` for the clean form, or `threat_width <= pw` with the add
-  covering `0..threat_width`. The probe uses exactly `pw` (512 at
-  ft=1024).
+**Layout A — a-half (channels 0..pw):** every product becomes
+`(psq_a+thr)·psq_b` — only the single cross-term survives; the
+quadratic class vanishes from the pairwise layer entirely (composable
+only in L1, 32 wide), and ALL threat expression is multiplicatively
+gated by psq_b's clamp (b-channel CReLUs to 0 → threat contribution
+erased). Pack simplifies to ONE fused add (`a = adds(psq_a, thr)`).
+Fastest/simplest; highest representational risk.
+
+**Layout B — interleaved (thr[0..256] → a-front, thr[256..512] →
+b-front, i.e. channels 512..768):** the front 256 products retain all
+three term classes; the back 256 become threat-blind. Same row width,
+same streaming bytes, same cache win; pack does two half-width adds
+(trivially different NPS). Hedge, not a fix — ¾ of products still lose
+the quadratic terms — but it preserves an ungated threat expression
+channel.
+
+**Resolution is empirical, not aesthetic: the short-bake is a TRIPLE
+(baseline / A / B), §7.** For general widths: layout A requires
+`threat_width <= pw`; layout B requires `threat_width/2 <= pw` per
+half. The probe uses threat_width = pw = 512 at ft=1024.
 
 ## 4. Training side (bullet fork, ~2-3 days — the riskier half)
 
@@ -88,6 +106,15 @@ Changes:
 4. **Smoke validation**: loss-curve sanity on ~50 SB vs baseline; a
    thr_width == ft_size configuration must reproduce the fused
    architecture's loss trajectory (equivalence degenerate case).
+   CAVEAT (review R3): two separately-initialized tensors won't
+   bit-reproduce the fused run unless the init RNG streams are
+   seed-matched — either match seeds or compare converged loss
+   statistically; don't chase a phantom regression.
+5. **Fork coordination** (review R3): the loader work touches the file
+   carrying the live skip-campaign machinery. Branch from current
+   recipe state; the fused single-tensor path must stay bit-identical
+   (a silent regression there confounds every in-flight recipe
+   experiment).
 
 New config flag: `--threat-width <N>` (default = ft_size → today's
 topology; probe value pw).
@@ -108,13 +135,17 @@ topology; probe value pw).
    chunk sizes.
 4. **Threat accumulator** (`threat_accum.rs`): `ThreatEntry.values`
    hard-sized `[[i16; MAX_FT_SIZE]; 2]` → keep the buffer, use
-   `threat_width` as the live extent (also fixes the known footprint
-   wart). Refresh/update paths pass threat_width.
-5. **Pairwise pack** (`nnue.rs` + NEON + scalar): threat add covers the
-   a-half only (§3). With threat_width == pw this REMOVES the b-half
-   threat loads/adds — simpler and slightly faster even before the row
-   savings. Gate: the existing pack equivalence tests (incl. the
-   i16-rail case) extended with a threat_width parameter.
+   `threat_width` as the live extent. Precisely (review R3): this
+   halves COPY/replay traffic (which is what §1's "stays hotter in L2"
+   rests on) but not the allocation itself; the 1.17 MiB/thread
+   footprint wart needs a separate sizing change if ever worth it.
+   Refresh/update paths pass threat_width.
+5. **Pairwise pack** (`nnue.rs` + NEON + scalar): layout-dependent —
+   layout A: one fused add on the a-half; layout B: two half-width adds
+   (a-front and b-front). Implement BOTH behind the net header's layout
+   field so the triple-bake candidates run on one binary. Gate: the
+   existing pack equivalence tests (incl. the i16-rail case) extended
+   with (threat_width, layout) parameters.
 6. **Tests**: incremental/fuzz suites parameterized by threat_width;
    add a synthetic-net test (random weights, threat_width=512) so the
    whole inference path is validated BEFORE any real training run —
@@ -133,19 +164,28 @@ RMS on the candidate per the standard net-deploy discipline.
 
 ## 7. Validation plan (order matters)
 
-1. **Inference first, synthetic net**: build a random-weights
-   threat_width=512 net; full test suite + bench determinism + NPS
-   measurement (this yields the REAL speed number for §1's estimate
-   before spending any GPU time — if it's not ≥+5% on Zeus, stop).
-2. **Short-bake pair (the eval derisk)**: baseline vs split-512,
-   identical S200-class recipe, both fully-baked at the short schedule
-   (the "complete the schedule you started" rule). Net-vs-net on main,
-   `[-1.5, 1.5]`, both as --dev/--base-network overrides. This answers
-   the eval question for a few GPU-hours. If split-512 dents eval
-   meaningfully, re-probe at w=768 before giving up.
-3. **Prod-length run** only if (2) is within noise: full recipe,
-   candidate vs prod net-vs-net, then the standard deploy discipline
-   (retune plan, net_catalog.md entry, hash-based name).
+1. **Inference first, synthetic nets**: random-weights nets for BOTH
+   layouts at 512 (plus 768/layout-A for curve context — near-free once
+   kernels take the width parameter, review R3); full test suite +
+   bench determinism + NPS on Zeus. This prices the whole
+   speed-vs-eval trade before any GPU time — if neither 512 layout
+   reaches ≥+5% on Zeus, stop.
+2. **Short-bake TRIPLE (the eval derisk)**: baseline / layout-A-512 /
+   layout-B-512, identical S200-class recipe, all fully-baked at the
+   short schedule (the "complete the schedule you started" rule).
+   Net-vs-net on main, `[-1.5, 1.5]`, as --dev/--base-network
+   overrides. Answers the term-class question (§3) empirically for a
+   few GPU-hours.
+2.5. **End-to-end numerical parity** (review R2 — the historically
+   dangerous step): run the fork-side fp32 `--eval-fens` FEN list
+   through each trained checkpoint AND through `coda eval-fens` on the
+   converted .nnue; demand the known error floor. This is the ONLY
+   step that exercises the new format block through the full
+   train→convert→infer chain (convert flag mismatches corrupt
+   silently — standing CRITICAL failure class).
+3. **Prod-length run** only for a (2)-winner within noise of baseline:
+   full recipe, candidate vs prod net-vs-net, then the standard deploy
+   discipline (retune plan, net_catalog.md entry, hash-based name).
 4. NPS validation on titan + ionos-class + Zeus per the multi-host
    rule; SPRT `[0,3]` for the final candidate (speed + eval combined).
 
@@ -159,8 +199,10 @@ today, but a lambda-tuned retrain reaching ~30% chunk density would
 re-open the fused-NNZ sparse-L1 kernel (all-6-reference-engine
 consensus form). Zero inference changes needed for the probe itself;
 judge sparsity-vs-loss at s100 per the config's own guidance
-(start lambda=0.001). Independent of split-width; can share the
-short-bake batch.
+(start lambda=0.001). Shares the GPU session, NOT a net (review R3):
+l1reg changes activation density, and under this design activation
+density GATES threat expression (§3 layout A) — stacking the levers in
+one net makes results unattributable.
 
 ## 9. Effort summary
 
@@ -172,9 +214,14 @@ short-bake batch.
 | Short-bake pair + net-vs-net | GPU hours + 1 SPRT |
 | l1reg rider (transplant only) | 0.5 day |
 
-Decision gates: synthetic-net NPS ≥ +5% on Zeus (else stop);
-short-bake eval within `[-1.5, 1.5]` noise (else fall back to w=768 or
-stop). Both gates are cheap relative to a prod-length training run.
+Decision gates: synthetic-net NPS ≥ +5% on Zeus for at least one 512
+layout (else stop); short-bake triple has a layout within `[-1.5,1.5]`
+noise of baseline (else stop — w=768/layout-A only as a curve point if
+the triple shows a width-not-layout pattern). Both gates are cheap
+relative to a prod-length training run.
+
+Sequencing (review R3): explicitly AFTER the skip-consolidation full
+bake — this design's EV must not preempt measured eval work in flight.
 
 ---
 
