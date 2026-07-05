@@ -306,7 +306,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
 
         match tokens[0] {
             "uci" => {
-                println!("id name Coda");
+                println!("id name Coda {}", env!("CODA_VERSION"));
                 println!("id author Adam Twiss");
                 println!("option name Hash type spin default 64 min 1 max 4096");
                 println!("option name Threads type spin default 1 min 1 max 256");

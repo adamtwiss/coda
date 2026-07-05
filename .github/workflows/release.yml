@@ -1,0 +1,99 @@
+# Release builds — SF-style: one tag push produces source + static per-platform
+# binaries with the embedded production net, named by the same version the
+# binary reports over UCI (`id name Coda X.Y.Z`, stamped by build.rs).
+#
+# Triggers:
+#   - push of an engine tag vX.Y.Z  -> builds matrix AND attaches assets to the
+#     GitHub release for that tag.
+#   - workflow_dispatch             -> DRY RUN: builds the same matrix, uploads
+#     workflow artifacts only (no release touched). Use this to validate the
+#     pipeline before the first real tag.
+#
+# Matrix note: Coda's SIMD kernel selection (AVX2/AVX-512/VNNI/PEXT/NEON) is
+# RUNTIME-dispatched (75 detection sites), so unlike Stockfish we don't need a
+# binary per ISA. Compile target only sets general codegen: x86-64-v2 is the
+# portability floor (popcnt), v3 the recommended default. The one compile-time
+# gate (avx512vnni in nnue_simd.rs) is absent from these portable builds —
+# VNNI hosts fall back to the AVX-512BW path; build from source with
+# target-cpu=native for the last percent.
+
+name: release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    name: linux-x86-64-v2,   target: x86_64-unknown-linux-musl,  cpuflags: "-C target-cpu=x86-64-v2" }
+          - { os: ubuntu-latest,    name: linux-x86-64-v3,   target: x86_64-unknown-linux-musl,  cpuflags: "-C target-cpu=x86-64-v3" }
+          - { os: ubuntu-24.04-arm, name: linux-aarch64,     target: aarch64-unknown-linux-musl, cpuflags: "" }
+          - { os: windows-latest,   name: windows-x86-64-v3, target: x86_64-pc-windows-msvc,     cpuflags: "-C target-cpu=x86-64-v3 -C target-feature=+crt-static", ext: ".exe" }
+          - { os: macos-latest,     name: macos-aarch64,     target: aarch64-apple-darwin,       cpuflags: "-C target-cpu=apple-m1" }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # build.rs needs tags for git describe
+
+      - name: Install target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install musl tools (linux)
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+
+      - name: Fetch production net (per net.txt)
+        run: |
+          NET_URL=$(cat net.txt)
+          NET_FILE=$(basename "$NET_URL")
+          curl -fsSL --retry 3 "$NET_URL" -o "$NET_FILE"
+          echo "NET_FILE=$NET_FILE" >> "$GITHUB_ENV"
+
+      - name: Compute version + artifact name
+        run: |
+          VERSION=$(git describe --tags --always --exclude '*-nets*' | sed 's/^v//')
+          BIN="coda-${VERSION}-${{ matrix.name }}${{ matrix.ext }}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "BIN=$BIN" >> "$GITHUB_ENV"
+
+      - name: Build (embedded net, static)
+        env:
+          # Env RUSTFLAGS overrides the repo's .cargo/config.toml target-cpu=native.
+          RUSTFLAGS: "${{ matrix.cpuflags }}"
+        run: |
+          CODA_EVALFILE="$(pwd)/$NET_FILE" cargo rustc --release \
+            --features embedded-net --target ${{ matrix.target }} \
+            -- --emit link="$BIN"
+          ./"$BIN" bench 8 | tail -2   # smoke: binary runs + deterministic bench
+
+      - name: Checksum
+        run: shasum -a 256 "$BIN" > "$BIN.sha256" || sha256sum "$BIN" > "$BIN.sha256"
+
+      - name: Upload artifact (always — this is the dry-run output)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BIN }}
+          path: |
+            ${{ env.BIN }}
+            ${{ env.BIN }}.sha256
+
+      - name: Attach to release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.BIN }}
+            ${{ env.BIN }}.sha256
+          generate_release_notes: true
