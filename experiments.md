@@ -18088,11 +18088,18 @@ mid-iteration band clipped exactly those. Three mechanism iterations
   because STC hard frames are small; LTC will fatten it naturally), bulk
   unchanged (p50 120ms / p95 441ms ≈ baseline), 0 forfeits everywhere.
 
-Elo (titan, 500g/arm vs SF, ponder, 10+0.1, Hash=256):
-**v3 −96.9±15.3 vs baseline-main −104.5±16.4 → +7.6 (±~22)** — positive
-lean, not significant, expected for a change touching only deep-fail-low
-hits. OB [-2,1] non-regression gate submitted (bench-identical 2200903;
-remember P(H0|true 0)=27.5% at these bounds). Merge = Adam (TM-class).
+Elo:
+- **vs SF** (titan, 500g/arm, ponder, 10+0.1, Hash=256): v3 −96.9±15.3 vs
+  baseline −104.5±16.4 → **+7.6 (±~22)**, positive lean.
+- **vs near-peers** (Zeus local, 500g/arm, Berserk/Obsidian/Alexandria/
+  Cinder/Integral, all ponder, Plenty excluded for its broken instant-reply
+  ponder): v3 +26±12 vs baseline +30±12 pool Elo → **−4 (±~17)**, flat.
+- Net read: FL-EXT's Elo is BELOW local-RR resolution (true effect
+  plausibly −2..+5); the case for it is SF-correctness of the mechanism +
+  non-regression, not a measured gain. Peer pool drew 84% at 10+0.1
+  ponder — future TM RRs should consider the UHO book for decisives.
+- OB [-2,1] non-regression gate = **#2575** (bench-identical 2200903;
+  P(H0|true 0)=27.5% at these bounds). Merge = Adam (TM-class).
 
 LESSON (mechanism-first vindicated 3x in one day): each variant LOOKED
 plausible in code; only the -debug spend-distribution parse showed v1/v2
