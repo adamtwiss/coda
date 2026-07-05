@@ -153,6 +153,13 @@ while main may move under you).
 After `git checkout <branch>`:
 - **Always rebuild before benching**: `make && ./coda bench`. Stale
   binaries from a different branch return the wrong number.
+- **`make` can silently SKIP the relink after a branch switch** (2026-07-05,
+  test #2573): cargo judged the target fresh and `./coda` stayed as the
+  OTHER branch's binary despite a 'Finished' line — the 'main' bench was
+  actually the dev binary's number. Defense: `touch src/main.rs && make`
+  before any cross-branch bench, or verify `md5sum ./coda` changed after
+  the rebuild. A dev/base bench pair measured in one session without this
+  is suspect.
 - **Compare your branch base vs `origin/main`** if you want to be
   sure your branch isn't behind on a fast-moving trunk:
   ```bash
