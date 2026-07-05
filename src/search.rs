@@ -948,6 +948,16 @@ pub struct SearchInfo {
     /// handler with the deadline group; read by the fail-low extension to
     /// inflate the optimum SF-style (soft x (1 + 0.34 x min(2, fl))).
     pub ponderhit_isoft: std::sync::Arc<AtomicU64>,
+    /// FL-EXT v3: MAIN thread's "deep root fail-low unresolved in the
+    /// post-hit frame" state. While true, should_stop suspends the
+    /// mid-iteration soft band (hard + abs still bind) — SF semantics: a
+    /// root fail-low revokes the optimum stop entirely; only maximum time
+    /// bounds the re-think (the >1s tail source; a soft multiple cannot
+    /// reach it: STC intended-soft x1.68 ~ 340ms). Written ONLY by the main
+    /// thread (helpers' aspiration state must not clobber it) but SHARED to
+    /// helpers so they ride along instead of tripping the shared stop at
+    /// the stale band.
+    pub ph_fl_active: std::sync::Arc<AtomicBool>,
     /// Time-management baseline: elapsed-ms at which the soft budget starts
     /// counting. 0 for normal `go` (TM starts at search start). Set to the
     /// elapsed-at-ponderhit value when post-ponderhit dynamic TM kicks in,
@@ -1094,6 +1104,7 @@ impl SearchInfo {
             ponderhit_soft: std::sync::Arc::new(AtomicU64::new(0)),
             ponderhit_floor: std::sync::Arc::new(AtomicU64::new(0)),
             ponderhit_isoft: std::sync::Arc::new(AtomicU64::new(0)),
+            ph_fl_active: std::sync::Arc::new(AtomicBool::new(false)),
             tm_baseline: 0,
             abs_deadline: 0,
             ponderhit_abs: std::sync::Arc::new(AtomicU64::new(0)),
@@ -1303,7 +1314,12 @@ impl SearchInfo {
                 // `soft + slice` = "elapsed exceeds soft by 2×" in the
                 // post-hit frame regardless of how long the ponder ran.
                 let ph_soft = self.ponderhit_soft.load(Ordering::Relaxed);
-                if ph_soft > 0 {
+                if ph_soft > 0 && !self.ph_fl_active.load(Ordering::Relaxed) {
+                    // FL-EXT v3: while the MAIN thread's root fail-low is
+                    // unresolved the soft band is suspended (SF: fail-low
+                    // revokes the optimum stop; only maximum time binds).
+                    // hard + grace below and the abs forfeit wall above
+                    // still bound the re-think — that IS the >1s tail.
                     let slice = self.ponderhit_floor.load(Ordering::Relaxed)
                         .max(MIN_POST_PONDERHIT_MS);
                     if elapsed >= ph_soft.saturating_add(slice) {
@@ -1813,6 +1829,7 @@ pub(crate) fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     helper.ponderhit_soft = main.ponderhit_soft.clone();
     helper.ponderhit_floor = main.ponderhit_floor.clone();
     helper.ponderhit_isoft = main.ponderhit_isoft.clone();
+    helper.ph_fl_active = main.ph_fl_active.clone();
     // Share the in-flight post-ponderhit forfeit guard too (same rationale as
     // ponderhit_time). root_fail_low is deliberately NOT shared: it is the
     // MAIN thread's root aspiration state — a helper's own fail-lows must not
@@ -1884,6 +1901,7 @@ fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
     helper.ponderhit_soft = main.ponderhit_soft.clone();
     helper.ponderhit_floor = main.ponderhit_floor.clone();
     helper.ponderhit_isoft = main.ponderhit_isoft.clone();
+    helper.ph_fl_active = main.ph_fl_active.clone();
     helper.ponderhit_abs = main.ponderhit_abs.clone(); // in-flight forfeit guard
     helper.global_nodes = main.global_nodes.clone();
 
@@ -2504,6 +2522,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // never satisfy the gate (double-ponderhit guard).
     info.ponder_depth.store(0, std::sync::atomic::Ordering::Relaxed);
     info.root_fail_low.store(false, std::sync::atomic::Ordering::Relaxed);
+    if !info.silent {
+        info.ph_fl_active.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
     info.ph_fl_extensions = 0;
     info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
@@ -2789,6 +2810,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     {
                         let ph_hard = info.ponderhit_time.load(std::sync::atomic::Ordering::Acquire);
                         if ph_hard > 0 {
+                            // v3: suspend the soft band until this fail-low
+                            // resolves (cleared in the resolve branch below;
+                            // a mid-fail-low abort leaves it true harmlessly
+                            // — the search is ending anyway and the next
+                            // search resets it).
+                            info.ph_fl_active.store(true, std::sync::atomic::Ordering::Relaxed);
                             let isoft = info.ponderhit_isoft.load(std::sync::atomic::Ordering::Relaxed);
                             let abs = info.ponderhit_abs.load(std::sync::atomic::Ordering::Relaxed);
                             let clamp_abs = |v: u64| if abs > 0 { v.min(abs) } else { v };
@@ -2832,6 +2859,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // flag true, which safely blocks instant replies until
                     // the next search resets it.
                     info.root_fail_low.store(false, std::sync::atomic::Ordering::Relaxed);
+                    if !info.silent {
+                        // FL-EXT v3: fail-low resolved — re-enable the
+                        // post-hit soft band (the v2-extended deadline now
+                        // applies at the next check).
+                        info.ph_fl_active.store(false, std::sync::atomic::Ordering::Relaxed);
+                    }
                     asp_result = result;
                     break;
                 }
