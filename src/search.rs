@@ -1288,6 +1288,48 @@ fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
     score * (200 - hm) / 200
 }
 
+/// TT-cutoff child-consistency verification (SF search.cpp:873-892, ported
+/// via the 2026-07-05 SF search audit, Tier 1 #3). Before trusting a DEEP
+/// (depth >= 7) TT cutoff, make the TT move (board-only — no NNUE work),
+/// probe the child's TT entry, and unmake. Returns true (decline the cutoff,
+/// search the node normally) when the child entry exists and its negated
+/// value contradicts the cutoff direction. Deep trees are TT-cutoff-dominated;
+/// this rejects stale/one-sided deep cutoffs for the cost of one make/unmake
+/// + one probe, on deep cutoffs only.
+fn tt_cutoff_child_disagrees(
+    info: &SearchInfo,
+    board: &mut Board,
+    tt_move: Move,
+    tt_score: i32,
+    beta: i32,
+    depth: i32,
+    ply: i32,
+) -> bool {
+    if depth < 7 || tt_move == NO_MOVE || is_decisive(tt_score) {
+        return false;
+    }
+    // Full legality validation before speculatively making the move (stale TT
+    // entries / hash collisions can carry garbage moves).
+    if !crate::movepicker::is_pseudo_legal(board, tt_move)
+        || !board.is_legal(tt_move, board.pinned(), board.checkers())
+    {
+        return false;
+    }
+    if !board.make_move(tt_move) {
+        return false;
+    }
+    let child = info.tt.probe(board.hash);
+    board.unmake_move();
+    if !child.hit {
+        return false; // no child evidence -> trust the cutoff (SF behaviour)
+    }
+    let child_score = score_from_tt(child.score, ply + 1);
+    if is_decisive(child_score) {
+        return false; // skip mate-distance comparisons across plies
+    }
+    (tt_score >= beta) != (-child_score >= beta)
+}
+
 /// Build a DirtyPiece for lazy NNUE accumulator update.
 /// `us`/`them` are the sides BEFORE the move.
 /// `net`: NNUE net whose king-bucket layout determines bucket/mirror
@@ -3446,8 +3488,17 @@ fn negamax(
                 // narrowing happens at line 2776+ after this check).
                 // 2026-05-31 audit finding B.
                 let tt_cut_is_pv = beta - alpha > 1;
+                // Child-consistency verification for DEEP cutoffs (SF
+                // search.cpp:873-892; 2026-07-05 audit Tier1 #3): at depth>=7,
+                // make the TT move, probe the child's entry, unmake; decline
+                // the cutoff when the child's (negated) value contradicts the
+                // cutoff direction — rejects stale/one-sided deep cutoffs.
+                // Cost: one board-only make/unmake + one probe, deep cutoffs
+                // only. Shallow cutoffs and the bounds-collapse path below stay
+                // unverified (matching SF's single-site scope).
                 if !tt_cut_is_pv && cut_node == score_above_beta && bound_matches
                     && halfmove_ok
+                    && !tt_cutoff_child_disagrees(info, board, tt_move, tt_score, beta, depth, ply)
                 {
                     info.stats.tt_cutoffs += 1;
                     if tt_cross_gen {
