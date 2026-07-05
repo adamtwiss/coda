@@ -475,7 +475,11 @@ impl TT {
             // (audit T2 + T3)
             if recovered_upper == key_upper {
                 let flag_is_exact = flag == TT_FLAG_EXACT;
-                if depth > slot_depth - 3 || gen != slot_gen || flag_is_exact {
+                // Same-key overwrite gate. Margin 4 (`slot_depth - 4`) matches
+                // all four primary peers (SF/Reckless/Berserk `depth+4`); Coda's
+                // prior margin 3 preserved deep same-key entries one ply harder
+                // than any reference. External-search audit 2026-07-04, probe 1.
+                if depth > slot_depth - 4 || gen != slot_gen || flag_is_exact {
                     // Preserve the existing best move when we have none (T2)
                     let effective_move = if best_move == NO_MOVE {
                         unpack_move(slot_data)
