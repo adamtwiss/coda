@@ -1024,17 +1024,28 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                     / 100;
                                 let mut post_min = soft.saturating_sub(credited)
                                     .max(crate::search::MIN_POST_PONDERHIT_MS);
-                                // Root failing low at the hit with the soft
-                                // budget already spent: grant a re-think
-                                // slice of half the intended soft instead of
-                                // the 50ms floor (SF spends EXTRA time
-                                // exactly when the pondered conclusion
-                                // destabilized — a floored slice would emit
-                                // the destabilized move nearly instantly).
+                                // FL-EXT at-hit half (2026-07-05): arriving
+                                // at the hit failing low → grant the FULL
+                                // fresh soft (was soft/2) and extend the
+                                // post-hit hard frame by one fail-low factor
+                                // step (×1.34). SF spends EXTRA time exactly
+                                // when the pondered conclusion destabilized;
+                                // its post-hit tail is >1s on 3.3% of moves
+                                // while ours was 0.0% — clipped exactly by
+                                // this cap. ponderhit_abs (below) remains the
+                                // uncrossable forfeit wall (checked FIRST in
+                                // should_stop, so hard_eff may exceed it
+                                // harmlessly).
+                                let hard_eff = if failing_low {
+                                    hard.saturating_mul(
+                                        100 + crate::search::PH_FL_HARD_EXT_PCT) / 100
+                                } else {
+                                    hard
+                                };
                                 if failing_low {
-                                    post_min = post_min.max(soft / 2);
+                                    post_min = post_min.max(soft);
                                 }
-                                let post_min = post_min.min(hard.max(10));
+                                let post_min = post_min.min(hard_eff.max(10));
                                 // P2(b): absolute forfeit guard for the
                                 // in-flight post-hit search (loss55 class —
                                 // this path previously had NO abs deadline).
@@ -1045,7 +1056,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 let reserve = overhead + FORFEIT_MARGIN_MS;
                                 let abs = elapsed
                                     + our_time.saturating_sub(reserve).max(1);
-                                (elapsed + hard.max(10), elapsed + post_min, post_min, abs)
+                                (elapsed + hard_eff.max(10), elapsed + post_min, post_min, abs)
                             };
                             // A1 publish protocol (TM audit 2026-06-13, ARM
                             // standard): the deadline group is read by the

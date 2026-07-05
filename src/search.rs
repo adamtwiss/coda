@@ -587,6 +587,21 @@ pub const MIN_PONDER_ELAPSED_FOR_INSTANT_MS: u64 = 10;
 /// enforcement floor).
 pub const MIN_POST_PONDERHIT_MS: u64 = 50;
 
+/// FL-EXT (2026-07-05, fail-low extension tail): hard-frame extension per
+/// root fail-low event in the post-ponderhit frame, in percent of the hard
+/// budget — the single step of the aspiration fail-low factor
+/// (1 + 0.34·min(2, fl), SF/Viridithas shape) applied to the post-hit
+/// deadlines. The 2026-07-05 ponder diagnosis measured SF spending >1s
+/// post-hit on 3.3% of moves (its fail-low re-thinks) vs our 0.0% — the P2
+/// cap clipped exactly those. Consts, DELIBERATELY NOT tunables: OB cannot
+/// ponder, SPSA would detune them on noise; sweep in a local ponder
+/// gauntlet only.
+pub const PH_FL_HARD_EXT_PCT: u64 = 34;
+/// Max fail-low deadline extensions per post-hit search (SF's min(2, fl)).
+pub const PH_FL_MAX_EXTENSIONS: u32 = 2;
+/// Soft grant per during-post-hit fail-low event: soft_limit / this.
+pub const PH_FL_SOFT_GRANT_DIV: u64 = 2;
+
 /// stopOnPonderhit-class instant-reply decision (SF search.cpp:563-571
 /// pattern, evaluated at the ponderhit instead of during pondering — our
 /// clock doesn't tick while pondering, so the budgets the move would have
@@ -963,6 +978,10 @@ pub struct SearchInfo {
     /// Completed search depth (shared atomic). Updated by search thread after
     /// each completed iteration. Read by UCI thread on ponderhit to scale budget.
     pub ponder_depth: std::sync::Arc<AtomicU64>,
+    /// FL-EXT: count of fail-low deadline extensions granted in THIS post-hit
+    /// search (main thread only writes; capped at PH_FL_MAX_EXTENSIONS).
+    /// Plain field — never shared; helpers' copies stay 0 (silent-gated).
+    pub ph_fl_extensions: u32,
     pub sel_depth: i32,
     pub last_score: i32,
     /// Root side-to-move (was used for contempt; retained for potential future use)
@@ -1070,6 +1089,7 @@ impl SearchInfo {
             ponderhit_abs: std::sync::Arc::new(AtomicU64::new(0)),
             root_fail_low: std::sync::Arc::new(AtomicBool::new(false)),
             ponder_depth: std::sync::Arc::new(AtomicU64::new(0)),
+            ph_fl_extensions: 0,
             sel_depth: 0,
             last_score: 0,
             root_stm: WHITE,
@@ -2472,6 +2492,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // never satisfy the gate (double-ponderhit guard).
     info.ponder_depth.store(0, std::sync::atomic::Ordering::Relaxed);
     info.root_fail_low.store(false, std::sync::atomic::Ordering::Relaxed);
+    info.ph_fl_extensions = 0;
     info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
@@ -2737,6 +2758,50 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // below. Relaxed: independent bool gate, no dependent
                     // data (see field doc).
                     info.root_fail_low.store(true, std::sync::atomic::Ordering::Relaxed);
+                    // FL-EXT during-post-hit half (2026-07-05): the root
+                    // failed low DURING the post-hit think — push the shared
+                    // post-hit deadlines forward so the widened re-search
+                    // actually gets the time. Without this the static
+                    // mid-iteration band (ph_soft + slice) and the
+                    // tm_max_time = hard-remaining cap cut the re-search at
+                    // the pre-fail-low budget, which is exactly why our
+                    // post-hit spend had no >1s tail (SF: 3.3% of moves).
+                    // Main thread only (helpers must not clobber the shared
+                    // deadlines); at most PH_FL_MAX_EXTENSIONS events per
+                    // search (SF's min(2, fl)); every push saturates at
+                    // ponderhit_abs — the forfeit wall never moves.
+                    if !info.silent && info.ph_fl_extensions < PH_FL_MAX_EXTENSIONS {
+                        let ph_hard = info.ponderhit_time.load(std::sync::atomic::Ordering::Acquire);
+                        if ph_hard > 0 {
+                            info.ph_fl_extensions += 1;
+                            let now = info.start_time.elapsed().as_millis() as u64;
+                            let abs = info.ponderhit_abs.load(std::sync::atomic::Ordering::Relaxed);
+                            let clamp_abs = |v: u64| if abs > 0 { v.min(abs) } else { v };
+                            let grant = (info.soft_limit / PH_FL_SOFT_GRANT_DIV)
+                                .max(info.ponderhit_floor.load(std::sync::atomic::Ordering::Relaxed))
+                                .max(MIN_POST_PONDERHIT_MS);
+                            let cur_soft = info.ponderhit_soft.load(std::sync::atomic::Ordering::Relaxed);
+                            let new_soft = clamp_abs(cur_soft.max(now.saturating_add(grant)));
+                            let new_hard = clamp_abs(
+                                ph_hard
+                                    .saturating_add(info.hard_limit.saturating_mul(PH_FL_HARD_EXT_PCT) / 100)
+                                    .max(new_soft));
+                            // Widen the dynamic-TM cap (main's own plain copy)
+                            // so the failed_low_multiplier can express at
+                            // iteration boundaries in the post-hit frame.
+                            info.tm_max_time = info.tm_max_time
+                                .max(new_hard.saturating_sub(info.tm_baseline));
+                            // A1 publish order: soft Relaxed first, hard
+                            // (the publish flag) Release last.
+                            info.ponderhit_soft.store(new_soft, std::sync::atomic::Ordering::Relaxed);
+                            info.ponderhit_time.store(new_hard, std::sync::atomic::Ordering::Release);
+                            if TM_DEBUG.load(std::sync::atomic::Ordering::Relaxed) {
+                                eprintln!(
+                                    "PH_FL_EXT n={} now={}ms soft->{}ms hard->{}ms abs={}ms",
+                                    info.ph_fl_extensions, now, new_soft, new_hard, abs);
+                            }
+                        }
+                    }
                     // Fail low: contract beta aggressively toward alpha, widen alpha
                     beta = (3 * alpha + 5 * beta) / 8;
                     alpha = (result - delta).max(-INFINITY);
