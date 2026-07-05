@@ -199,8 +199,21 @@ OPENBENCH_PASSWORD=$PW python3 scripts/ob_submit.py <dev_branch> <dev_bench> \
 | Change class | Bounds | Rationale |
 |---|---|---|
 | **DEFAULT — "does this feature/change help?"** | **`[0, 3]`** | Coda standing policy. Most ideas target +1-3 Elo. |
+| Complexity-FREE one-liner with validated mechanism | `[-1, 2]` | Midpoint +0.5: banks true +1s that `[0, 3]` (midpoint +1.5) systematically H0s despite being positive. STRICT eligibility — see below. |
 | Direction GENUINELY uncertain | `[-1.5, 1.5]` | Net-vs-net / alt-net compare, a correctness fix that could go either way. Centered, range-3. |
 | Ship if not a meaningful regression | `[-2, 1]` | Bench-neutral refactor, NPS-only, ARM ordering, new tunables at default, correctness bundle. |
+
+**`[-1, 2]` eligibility (Adam, 2026-07-05) — BOTH must hold:**
+1. **Zero accumulated complexity**: a one-line gate/term using existing
+   state. No new tables, stacks, struct fields, tunables, or NPS cost.
+   The moment a change adds tech debt it must earn its keep at `[0, 3]`.
+2. **Externally validated mechanism**: the idea is load-bearing in a top
+   reference engine (e.g. an SF-master port), not speculative.
+Trade-off to budget: true-zero changes resolve SLOWER at `[-1, 2]` than
+at `[0, 3]` (zero sits 0.5 from the midpoint) — that's the price of
+detecting +1s. Do not let this become the soft default for features.
+Related: the bundle pattern — individually-H0-but-positive one-liners
+(decent N, mechanism-disjoint) can be re-tested as ONE bundle at `[0, 3]`.
 
 **Default is `[0, 3]`. Do NOT use range-6+ bounds** — `[-3, 3]`, `[-5, 5]`,
 `[0, 5]`, `[0, 10]`, `[-3, 0]`, `[-10, 5]` all need far more games AND routinely
