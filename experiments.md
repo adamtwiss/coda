@@ -18050,4 +18050,5 @@ Measurements (titan, ponder-on cross-engine, 10+0.1, Hash=256, T=1):
 Residual/follow-up: our post-hit distribution lacks SF's >1s fail-low
 extension tail (SF 3.3% >1s, we 0.0% — P2 cap clips it); candidate next step
 is relaxing the cap when root_fail_low. ~34 Elo of the original ~60 gap
-remains. Merge decision = Adam (TM-class; cross-engine RR is primary signal).
+remains. MERGED to main 9b0cb0f (2026-07-05, Adam's call at the ~0-1 Elo
+evidence tier; merged-tree bench 2200903 re-verified).
