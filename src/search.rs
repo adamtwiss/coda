@@ -522,26 +522,95 @@ pub static LMR_COMPLEXITY_DIV: AtomicI32 = AtomicI32::new(152);
 pub static TT_CUTOFF_HALFMOVE_MAX: AtomicI32 = AtomicI32::new(89);
 
 /// Post-ponderhit budget credit: PERCENT of elapsed ponder time deducted from
-/// the fresh post-hit think budget (Option C, 2026-05-31). A ponderhit means
-/// the ponder search WAS on the played move, so its TT/work is a genuine
-/// head-start — but NOT a finished search. We deduct a FRACTION of the ponder
-/// time: post_budget = soft − pondered_time × (pct/100), floored by
-/// MIN_POST_PONDERHIT_MS. Phase 14 v4 effectively used 100% (collapsed to the
-/// 50ms floor on long ponders → shallow instant emits = the ponder-on
-/// regression vs pre-P13). Pre-P13 used 0% (full fresh budget, ignored the
-/// head-start). Default 50 = bank half, still think meaningfully.
+/// the fresh post-hit think budget. HISTORY: Option C (2026-05-31) defaulted
+/// this to 50 ("bank half the ponder time"). The 2026-07-05 ponder diagnosis
+/// (docs/ponder_diagnosis_2026-07-05.md) showed 50% credit SATURATES to the
+/// 50ms floor at STC (any ponder >= 2×soft zeroes the budget) and the realized
+/// spend was then iteration-quantized bleed up to hard+500ms grace — the
+/// dominant cause of the ~50 Elo ponder deficit vs SF. The replacement policy
+/// is FULL charge for pondered time (budgets fixed at `go ponder`, SF
+/// timeman model), made profitable by its two compensators: the
+/// stopOnPonderhit-style instant reply (`should_instant_reply`) and the
+/// ponder-on +25% optimum bump (`compute_tm_budgets`).
+///
+/// This knob is kept ONLY for local A/B comparability: default is the -1
+/// sentinel = INERT (full 100% charge). Explicitly setting 0..=100 via
+/// `setoption name PonderhitCreditPct` re-enables fractional crediting
+/// (0 reproduces the pre-P13 full-fresh-budget behavior, 50 reproduces
+/// Option C).
 ///
 /// DELIBERATELY NOT a `tunables!` entry: SPSA runs on OB/fastchess, which has
 /// NO ponder support (fastchess#513 open), so the ponderhit path never fires
 /// there — SPSA would random-walk this on noise and could silently detune it.
-/// UCI-settable (`setoption name PonderhitCreditPct`) so it can be swept in a
-/// LOCAL ponder gauntlet, the only instrument that exercises it.
-pub static PONDERHIT_CREDIT_PCT: AtomicI32 = AtomicI32::new(50);
+pub static PONDERHIT_CREDIT_PCT: AtomicI32 = AtomicI32::new(-1);
 
-/// Effective post-ponderhit credit percent (clamped 0..=100).
+/// Effective post-ponderhit credit percent. -1 sentinel (default, "unset")
+/// means FULL charge (100). Explicit values are clamped 0..=100.
 #[inline(always)]
 pub fn ponderhit_credit_pct() -> u64 {
-    PONDERHIT_CREDIT_PCT.load(Ordering::Relaxed).clamp(0, 100) as u64
+    let v = PONDERHIT_CREDIT_PCT.load(Ordering::Relaxed);
+    if v < 0 { 100 } else { v.min(100) as u64 }
+}
+
+/// `Ponder` UCI option state. Set by the GUI (cutechess/lichess-bot set it
+/// when pondering is enabled). Gates the +25% optimum pre-funding in
+/// `compute_tm_budgets` (SF timeman.cpp:134 semantics — applied on EVERY
+/// move when on; refunded on average by the instant replies of
+/// `should_instant_reply`). Default false → bit-identical no-ponder behavior.
+pub static PONDER_ENABLED: AtomicBool = AtomicBool::new(false);
+
+#[inline(always)]
+pub fn ponder_enabled() -> bool {
+    PONDER_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Minimum completed root depth of the ponder search before a ponderhit may
+/// instant-emit the pondered bestmove. Backstops the elapsed>=soft condition
+/// against degenerate cases (tiny soft at low clock, stale/early depth
+/// readings): an instant reply must be backed by a real search. NOT a
+/// tunable — OB can't ponder, SPSA would detune it on noise.
+pub const MIN_PONDER_DEPTH_FOR_INSTANT: i32 = 10;
+
+/// Hard structural floor on the go-ponder→ponderhit window for instant
+/// replies. Immune-by-construction guard against DOUBLE-PONDERHIT CASCADES:
+/// if the opponent instant-replied out of their own ponderhit, our
+/// `go ponder`→`ponderhit` window can be ~1ms — no flag combination may
+/// instant-emit then (we would be echoing moves at zero depth back and
+/// forth). `elapsed >= intended_soft` already fails in any sane case (soft
+/// is tens of ms to seconds), and MIN_PONDER_DEPTH_FOR_INSTANT backstops
+/// tiny-soft cases; this floor makes the guarantee unconditional.
+pub const MIN_PONDER_ELAPSED_FOR_INSTANT_MS: u64 = 10;
+
+/// Minimum post-ponderhit think slice (ms) when the budget is exhausted but
+/// the instant-reply gate did not fire. Shared by the uci.rs ponderhit
+/// handler (slice computation) and `should_stop` (mid-iteration soft
+/// enforcement floor).
+pub const MIN_POST_PONDERHIT_MS: u64 = 50;
+
+/// stopOnPonderhit-class instant-reply decision (SF search.cpp:563-571
+/// pattern, evaluated at the ponderhit instead of during pondering — our
+/// clock doesn't tick while pondering, so the budgets the move would have
+/// are computable at either point and the handler already has all inputs).
+/// Instant-emit the pondered bestmove iff:
+///   - the pondered time already covers the soft budget the move would have
+///     been given (`elapsed >= intended_soft`), AND
+///   - the ponder search completed a real search (depth floor), AND
+///   - the root is not currently failing low (SF search.cpp:411-418: a root
+///     fail-low revokes the instant reply — spend extra time exactly when
+///     the pondered conclusion destabilized), AND
+///   - the elapsed window is not a double-ponderhit cascade artifact (see
+///     MIN_PONDER_ELAPSED_FOR_INSTANT_MS).
+#[inline]
+pub fn should_instant_reply(
+    elapsed_ms: u64,
+    intended_soft_ms: u64,
+    ponder_completed_depth: i32,
+    root_failing_low: bool,
+) -> bool {
+    elapsed_ms >= MIN_PONDER_ELAPSED_FOR_INSTANT_MS
+        && elapsed_ms >= intended_soft_ms
+        && ponder_completed_depth >= MIN_PONDER_DEPTH_FOR_INSTANT
+        && !root_failing_low
 }
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -871,6 +940,26 @@ pub struct SearchInfo {
     /// the fractional `hard` cap can't prevent at low clock. "Never forfeit with
     /// time on the clock" (lichess MJ4lEpXF no-inc flag, loss-55 inc flag).
     pub abs_deadline: u64,
+    /// ABSOLUTE forfeit-guard deadline for the IN-FLIGHT post-ponderhit search
+    /// (ms since start_time; 0 = unset). Shared atomic counterpart of
+    /// `abs_deadline` for the path where the ponder search keeps running
+    /// through a ponderhit (the plain-field guard is only armed by
+    /// `start_search`, which that path never re-enters — the loss55
+    /// forfeit-class gap). Published by the UCI ponderhit handler as part of
+    /// the A1 deadline group (stored Relaxed BEFORE the hard `ponderhit_time`
+    /// Release store; readers Acquire hard first) and enforced by
+    /// `should_stop` with NO grace.
+    pub ponderhit_abs: std::sync::Arc<AtomicU64>,
+    /// Root aspiration fail-low state (shared atomic). Set true by the main
+    /// ID loop when a root aspiration search fails low, cleared when the
+    /// widening re-search resolves inside the window. Read by the UCI thread
+    /// at ponderhit to REVOKE the instant reply (SF search.cpp:411-418
+    /// pattern: spend extra time exactly when the pondered conclusion
+    /// destabilized). Relaxed ordering is correct: an independent bool gate
+    /// with no data-dependency on other shared state — a stale `true` blocks
+    /// an instant reply (safe/conservative); a stale `false` is the same
+    /// benign race SF's async time check has.
+    pub root_fail_low: std::sync::Arc<AtomicBool>,
     /// Completed search depth (shared atomic). Updated by search thread after
     /// each completed iteration. Read by UCI thread on ponderhit to scale budget.
     pub ponder_depth: std::sync::Arc<AtomicU64>,
@@ -978,6 +1067,8 @@ impl SearchInfo {
             ponderhit_floor: std::sync::Arc::new(AtomicU64::new(0)),
             tm_baseline: 0,
             abs_deadline: 0,
+            ponderhit_abs: std::sync::Arc::new(AtomicU64::new(0)),
+            root_fail_low: std::sync::Arc::new(AtomicBool::new(false)),
             ponder_depth: std::sync::Arc::new(AtomicU64::new(0)),
             sel_depth: 0,
             last_score: 0,
@@ -1159,11 +1250,43 @@ impl SearchInfo {
             // reader on the protocol.)
             let ph_time = self.ponderhit_time.load(Ordering::Acquire);
             let effective_limit = if ph_time > 0 {
-                // Grace period scales with remaining budget: enough to finish
-                // an iteration but not enough to risk flagging. Caps at 500ms
-                // and shrinks to near-zero when budget is almost used.
+                // P2(b) — ABSOLUTE forfeit guard for the in-flight
+                // post-ponderhit search (loss55 class: only the wait-loop
+                // fresh-search path used to arm abs_deadline; the in-flight
+                // path had no guarantee at all). NO grace. Published with
+                // the deadline group (Relaxed store before the hard Release;
+                // hard observed non-zero above ⇒ this value is coherent).
+                let ph_abs = self.ponderhit_abs.load(Ordering::Relaxed);
+                if ph_abs > 0 && elapsed >= ph_abs {
+                    self.stop.store(true, Ordering::Relaxed);
+                    return true;
+                }
+                // P2(a) — mid-iteration SOFT enforcement, 2×-band only. The
+                // normal band (up to one post-hit slice past the soft
+                // deadline) is deliberately NOT soft-stopped mid-iteration —
+                // finishing the in-flight iteration has real value. But past
+                // 2× the slice, cut the iteration: the pre-fix behavior
+                // (hard + 500ms grace as the only mid-iteration bound) let a
+                // single deep iteration bleed up to ~4s at 10+0.1 = 40% of
+                // the base clock (ponder diagnosis 2026-07-05, max 4147ms).
+                // ponderhit_floor carries the post-hit slice length, so
+                // `soft + slice` = "elapsed exceeds soft by 2×" in the
+                // post-hit frame regardless of how long the ponder ran.
+                let ph_soft = self.ponderhit_soft.load(Ordering::Relaxed);
+                if ph_soft > 0 {
+                    let slice = self.ponderhit_floor.load(Ordering::Relaxed)
+                        .max(MIN_POST_PONDERHIT_MS);
+                    if elapsed >= ph_soft.saturating_add(slice) {
+                        self.stop.store(true, Ordering::Relaxed);
+                        return true;
+                    }
+                }
+                // Hard-deadline grace: enough to finish an iteration close to
+                // the wire but not enough to bleed. Was min(remaining/4,
+                // 500ms) — at 10+0.1 that grace alone is ~5 base-time
+                // increments; shrunk to min(remaining/8, 100ms) (P2).
                 let remaining = ph_time.saturating_sub(elapsed);
-                let grace = (remaining / 4).min(500);
+                let grace = (remaining / 8).min(100);
                 ph_time + grace
             } else {
                 self.time_limit
@@ -1659,6 +1782,11 @@ pub(crate) fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     helper.ponderhit_time = main.ponderhit_time.clone();
     helper.ponderhit_soft = main.ponderhit_soft.clone();
     helper.ponderhit_floor = main.ponderhit_floor.clone();
+    // Share the in-flight post-ponderhit forfeit guard too (same rationale as
+    // ponderhit_time). root_fail_low is deliberately NOT shared: it is the
+    // MAIN thread's root aspiration state — a helper's own fail-lows must not
+    // clobber the instant-reply gate (helpers keep their fresh, inert Arc).
+    helper.ponderhit_abs = main.ponderhit_abs.clone();
     helper.global_nodes = main.global_nodes.clone(); // share node counter
     helper.silent = true;                // helpers don't output UCI
     helper.nnue_net = main.nnue_net.clone(); // share NNUE weights (read-only)
@@ -1724,6 +1852,7 @@ fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
     helper.ponderhit_time = main.ponderhit_time.clone();
     helper.ponderhit_soft = main.ponderhit_soft.clone();
     helper.ponderhit_floor = main.ponderhit_floor.clone();
+    helper.ponderhit_abs = main.ponderhit_abs.clone(); // in-flight forfeit guard
     helper.global_nodes = main.global_nodes.clone();
 
     // Correction tables — copied for eval consistency (see fn-doc). ~260 KB.
@@ -1838,13 +1967,16 @@ pub(crate) fn nnue_net_identity(info: &SearchInfo) -> usize {
 ///
 /// Inputs: `our_time` and `our_inc` are wtime/winc or btime/binc in
 /// ms. `movestogo` is 0 for sudden death. `overhead` is the
-/// MoveOverhead UCI option (default 100ms).
+/// MoveOverhead UCI option (default 100ms). `ponder_on` is the `Ponder`
+/// UCI option state (callers pass `ponder_enabled()`): when true the
+/// optimum gets the +25% ponder pre-funding bump (see PONDER_OPT_BUMP_PCT).
 pub fn compute_tm_budgets(
     our_time: u64,
     our_inc: u64,
     movestogo: u32,
     overhead: u64,
     fullmove: u16,
+    ponder_on: bool,
 ) -> (u64, u64, u64, u64) {
     // Phase 13 (2026-05-26): Viridithas-shape TM windows.
     //
@@ -2019,6 +2151,22 @@ pub fn compute_tm_budgets(
         // closer to Coda's prior calibrated level.
         let phase_mult = 0.22 + 0.78 * (1.0 - (-0.045 * fullmove as f64).exp());
         ((opt_time_base as f64) * phase_mult.clamp(0.22, 1.0)) as u64
+    };
+    // P3 (2026-07-05, ponder diagnosis): +25% optimum when the Ponder UCI
+    // option is on — SF timeman.cpp:134-135 semantics. Pre-funding applied
+    // on EVERY move when pondering is enabled: the average move is refunded
+    // by the pondered time itself (full-charge model) and by the
+    // stopOnPonderhit-style instant replies. Do NOT ship without those
+    // compensators (fix plan P1/P2 — the pieces work as a set).
+    //
+    // Plain const, DELIBERATELY NOT in `tunables!`: OB/fastchess cannot
+    // ponder, so SPSA would only ever see this as a dead knob and detune it
+    // on noise. Sweep it in a local ponder gauntlet if needed.
+    const PONDER_OPT_BUMP_PCT: u64 = 25;
+    let opt_time = if ponder_on {
+        opt_time + opt_time * PONDER_OPT_BUMP_PCT / 100
+    } else {
+        opt_time
     };
     let opt_time = opt_time.max(1).min(hard_time);
 
@@ -2314,6 +2462,16 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.static_evals = [0; MAX_PLY + 1];
     info.depth_nodes = [0; MAX_PLY + 1];
     info.completed_depth = 0;
+    // Reset the shared instant-reply gate inputs for THIS search. The UCI
+    // thread also clears both before spawning (belt-and-braces there); this
+    // reset covers non-UCI callers and reuse. Unlike the ponderhit deadline
+    // trio (which the UCI thread WRITES on ponderhit and must not be
+    // clobbered here), these are only ever written by the search thread —
+    // a ponderhit racing this line reads 0/false, which conservatively
+    // blocks the instant reply. Stale values from the PREVIOUS search must
+    // never satisfy the gate (double-ponderhit guard).
+    info.ponder_depth.store(0, std::sync::atomic::Ordering::Relaxed);
+    info.root_fail_low.store(false, std::sync::atomic::Ordering::Relaxed);
     info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
@@ -2385,7 +2543,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         }
     } else if our_time > 0 {
         let (soft, hard, max_time, soft_floor) =
-            compute_tm_budgets(our_time, our_inc, limits.movestogo, info.move_overhead, board.fullmove);
+            compute_tm_budgets(our_time, our_inc, limits.movestogo, info.move_overhead,
+                               board.fullmove, ponder_enabled());
         info.soft_limit = soft;
         info.hard_limit = hard;
         info.tm_max_time = max_time;
@@ -2570,6 +2729,14 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
                 if result <= alpha {
                     info.tm_asp_fail_low = info.tm_asp_fail_low.saturating_add(1);
+                    // P1 (ponder instant-reply gate): root is failing low —
+                    // publish it so a ponderhit arriving NOW does not
+                    // instant-emit the destabilized pondered conclusion
+                    // (SF search.cpp:411-418: fail-low revokes
+                    // stopOnPonderhit). Cleared when the re-search resolves
+                    // below. Relaxed: independent bool gate, no dependent
+                    // data (see field doc).
+                    info.root_fail_low.store(true, std::sync::atomic::Ordering::Relaxed);
                     // Fail low: contract beta aggressively toward alpha, widen alpha
                     beta = (3 * alpha + 5 * beta) / 8;
                     alpha = (result - delta).max(-INFINITY);
@@ -2581,6 +2748,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // Reduce depth for re-search (Alexandria/Midnight/Seer pattern)
                     asp_depth = (asp_depth - 1).max(1);
                 } else {
+                    // Window resolved — any earlier fail-low this iteration
+                    // has been re-searched to a settled score; re-arm the
+                    // instant reply (P1). A mid-fail-low abort leaves the
+                    // flag true, which safely blocks instant replies until
+                    // the next search resets it.
+                    info.root_fail_low.store(false, std::sync::atomic::Ordering::Relaxed);
                     asp_result = result;
                     break;
                 }
@@ -6256,6 +6429,106 @@ mod tests {
         assert!(drift < 100,
             "unrelated position should see near-zero drift, got {} (raw {})",
             other_corrected, raw);
+    }
+
+    /// P1 instant-reply gate — DOUBLE-PONDERHIT CASCADE GUARD (Adam's
+    /// non-negotiable requirement, 2026-07-05 ponder fix). If the opponent
+    /// instant-replied out of their own ponderhit, our go-ponder→ponderhit
+    /// window can be ~1ms. A ponderhit arriving <10ms after `go ponder`
+    /// must NEVER instant-emit, REGARDLESS of what the depth / fail-low
+    /// flags claim (they could be stale in a degenerate interleaving).
+    #[test]
+    fn ponder_instant_reply_double_ponderhit_guard() {
+        // The structural elapsed floor: no flag combination may pass below
+        // MIN_PONDER_ELAPSED_FOR_INSTANT_MS, even with an absurd tiny soft
+        // and a maximal (stale) depth claim.
+        for elapsed in 0..MIN_PONDER_ELAPSED_FOR_INSTANT_MS {
+            assert!(
+                !should_instant_reply(elapsed, 0, 100, false),
+                "elapsed={}ms < {}ms must never instant-emit (soft=0, depth=100)",
+                elapsed, MIN_PONDER_ELAPSED_FOR_INSTANT_MS
+            );
+            assert!(!should_instant_reply(elapsed, 1, i32::MAX, false));
+        }
+
+        // Big-increment scenario: at 60s+10s the intended soft is multiple
+        // seconds — a 1ms ponder must lead to a full normal think via the
+        // elapsed >= soft condition alone.
+        let (soft, _hard, _max, _floor) =
+            compute_tm_budgets(60_000, 10_000, 0, 100, 20, true);
+        assert!(soft >= 1000,
+            "test premise: big-inc soft should be seconds, got {}ms", soft);
+        assert!(!should_instant_reply(1, soft, 64, false),
+            "1ms ponder with multi-second soft must not instant-emit");
+
+        // Depth floor backstops degenerate tiny-soft cases even past the
+        // structural elapsed floor.
+        assert!(!should_instant_reply(50, 20, MIN_PONDER_DEPTH_FOR_INSTANT - 1, false),
+            "depth below MIN_PONDER_DEPTH_FOR_INSTANT must block instant reply");
+        // Fresh-search reset state (depth=0) always blocks.
+        assert!(!should_instant_reply(5000, 20, 0, false));
+    }
+
+    /// P1 instant-reply gate — fires when the pondered time covers the soft
+    /// budget, the ponder search is deep enough, and the root is settled;
+    /// a root fail-low revokes it (SF search.cpp:411-418 pattern).
+    #[test]
+    fn ponder_instant_reply_fires_when_budget_covered() {
+        // elapsed >= soft, depth >= floor, not failing low → instant.
+        assert!(should_instant_reply(5000, 3000, 15, false));
+        assert!(should_instant_reply(3000, 3000, MIN_PONDER_DEPTH_FOR_INSTANT, false));
+        // Root failing low revokes the instant reply.
+        assert!(!should_instant_reply(5000, 3000, 15, true));
+        // Budget not yet covered → keep thinking.
+        assert!(!should_instant_reply(2999, 3000, 15, false));
+        // Depth floor.
+        assert!(!should_instant_reply(5000, 3000, MIN_PONDER_DEPTH_FOR_INSTANT - 1, false));
+    }
+
+    /// P3 — the Ponder-on +25% optimum bump: applied to opt only (hard/max/
+    /// floor identical), clamped to hard, and OFF by default (no-ponder
+    /// behavior bit-identical).
+    #[test]
+    fn ponder_opt_bump_only_when_ponder_on() {
+        for (t, inc, mtg, fm) in [
+            (60_000u64, 600u64, 0u32, 20u16),
+            (10_000, 100, 0, 8),
+            (300_000, 0, 0, 30),   // no-inc sudden death
+            (120_000, 2000, 0, 1),
+            (60_000, 0, 40, 15),   // movestogo
+        ] {
+            let (opt_np, hard_np, max_np, floor_np) =
+                compute_tm_budgets(t, inc, mtg, 100, fm, false);
+            let (opt_p, hard_p, max_p, floor_p) =
+                compute_tm_budgets(t, inc, mtg, 100, fm, true);
+            assert_eq!(hard_np, hard_p, "hard must be ponder-independent");
+            assert_eq!(max_np, max_p, "max must be ponder-independent");
+            assert_eq!(floor_np, floor_p, "floor must be ponder-independent");
+            // Bump is +25% pre-clamp; opt_np is the same pre-clamp value
+            // un-bumped, so the relation holds whether or not hard clamps.
+            let expected = (opt_np + opt_np * 25 / 100).min(hard_np).max(1);
+            assert_eq!(opt_p, expected,
+                "ponder-on opt at t={} inc={} mtg={} fm={}: got {}, want {}",
+                t, inc, mtg, fm, opt_p, expected);
+            assert!(opt_p >= opt_np);
+        }
+    }
+
+    /// P2 — PonderhitCreditPct defaults to the -1 sentinel = INERT = full
+    /// 100% charge of pondered time (the Option C 50% default is retired;
+    /// explicit sets still work for local A/B).
+    #[test]
+    fn ponderhit_credit_default_is_full_charge() {
+        let saved = PONDERHIT_CREDIT_PCT.load(Ordering::Relaxed);
+        PONDERHIT_CREDIT_PCT.store(-1, Ordering::Relaxed);
+        assert_eq!(ponderhit_credit_pct(), 100, "sentinel must mean full charge");
+        PONDERHIT_CREDIT_PCT.store(50, Ordering::Relaxed);
+        assert_eq!(ponderhit_credit_pct(), 50, "explicit set must be honored");
+        PONDERHIT_CREDIT_PCT.store(0, Ordering::Relaxed);
+        assert_eq!(ponderhit_credit_pct(), 0);
+        PONDERHIT_CREDIT_PCT.store(saved, Ordering::Relaxed);
+        // Fresh-binary default is the sentinel.
+        assert_eq!(saved, -1, "shipping default must be the -1 sentinel");
     }
 
     /// Regression guard for the PV-print legality check (fix/pv-print-legality

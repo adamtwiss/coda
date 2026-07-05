@@ -177,6 +177,47 @@ fn pick_winning_tb_move(board: &Board, fallback_uci: &str, tb: &crate::tb::Syzyg
     best_uci
 }
 
+/// Count of ponder hints manufactured via the TT-probe fallback (P4) —
+/// diagnostic only, reported per occurrence behind TMDebug.
+static PONDER_HINT_MANUFACTURED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// P4 — TT-probe ponder-hint fallback (2026-07-05 ponder diagnosis §2).
+/// When a search ends without a usable pv[1] (short PV, illegal-hint drop,
+/// inconsistent PV after an SMP vote), the GUI cannot ponder at all that
+/// turn — measured at 4.6% of Coda's moves vs 0.5% for engines that
+/// manufacture a hint from the TT (technique modelled on Berserk's
+/// TT-probe-after-bestmove and SF's extract_ponder_from_tt).
+///
+/// `after_best` is the position AFTER our bestmove. Probes the TT there and
+/// returns its move ONLY if it survives the same validation the pv[1] path
+/// applies: the cheap is_pseudo_legal screen first, then FULL legality by
+/// matching against the generated legal move list (TT collisions inject
+/// illegal moves — the PV_PONDER_BUG history makes these guards
+/// load-bearing). Returns the legal list's own encoding (canonical flags),
+/// or NO_MOVE when no validated hint exists.
+pub(crate) fn tt_ponder_hint(tt: &crate::tt::TT, after_best: &Board) -> Move {
+    let entry = tt.probe(after_best.hash);
+    if !entry.hit || entry.best_move == NO_MOVE {
+        return NO_MOVE;
+    }
+    let cand = entry.best_move;
+    if !crate::movepicker::is_pseudo_legal(after_best, cand) {
+        return NO_MOVE;
+    }
+    let legal = crate::movegen::generate_legal_moves(after_best);
+    let (cf, ct, cfl) = (move_from(cand), move_to(cand), move_flags(cand));
+    for i in 0..legal.len {
+        let m = legal.get(i);
+        if move_from(m) == cf && move_to(m) == ct
+            && (!is_promotion(cand) || move_flags(m) == cfl)
+        {
+            return m;
+        }
+    }
+    NO_MOVE
+}
+
 pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, classical: bool) {
     let mut board = Board::startpos();
     let mut info = SearchInfo::new(64);
@@ -184,6 +225,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut ponderhit_flag = info.ponderhit_time.clone(); // shared ponderhit hard deadline
     let mut ponderhit_soft_flag = info.ponderhit_soft.clone(); // shared ponderhit soft deadline
     let mut ponderhit_floor_flag = info.ponderhit_floor.clone(); // shared ponderhit min think
+    let mut ponderhit_abs_flag = info.ponderhit_abs.clone(); // shared in-flight forfeit guard
+    let mut ponder_depth_flag = info.ponder_depth.clone(); // ponder search's completed depth
+    let mut root_fail_low_flag = info.root_fail_low.clone(); // root aspiration fail-low state
     // Separate flag set ONLY by external UCI "stop"/"ponderhit"/"quit" — distinct
     // from info.stop (which search_smp also sets internally when main search
     // returns). Used by the ponder wait loop below so it waits for an actual
@@ -277,7 +321,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("option name HiddenActivation type combo default screlu var screlu var crelu");
                 println!("option name LoadAnyway type check default false");
                 println!("option name TMDebug type check default false");
-                println!("option name PonderhitCreditPct type spin default 50 min 0 max 100");
+                // default -1 = "unset" sentinel → full charge (100). See
+                // search::PONDERHIT_CREDIT_PCT (full-charge model 2026-07-05).
+                println!("option name PonderhitCreditPct type spin default -1 min -1 max 100");
                 // Tunable search parameters (for SPSA)
                 for (name, _, default, min, max, _c_end, _is_core) in crate::search::tunable_params() {
                     println!("option name {} type spin default {} min {} max {}", name, default, min, max);
@@ -299,6 +345,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         ponderhit_flag = info.ponderhit_time.clone();
                         ponderhit_soft_flag = info.ponderhit_soft.clone();
                         ponderhit_floor_flag = info.ponderhit_floor.clone();
+                        ponderhit_abs_flag = info.ponderhit_abs.clone();
+                        ponder_depth_flag = info.ponder_depth.clone();
+                        root_fail_low_flag = info.root_fail_low.clone();
                     }
                 }
                 info.tt.clear();
@@ -497,6 +546,17 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 ponderhit_flag.store(0, Ordering::Release);
                 ponderhit_soft_flag.store(0, Ordering::Relaxed);
                 ponderhit_floor_flag.store(0, Ordering::Relaxed);
+                ponderhit_abs_flag.store(0, Ordering::Relaxed);
+                // Clear the instant-reply gate inputs (P1) so a stale depth /
+                // fail-low state from the PREVIOUS search can never satisfy
+                // (or wrongly block) the gate for this one. The search thread
+                // resets them again at search start; only the search thread
+                // ever writes them after this point, the ponderhit handler
+                // only reads. Double-ponderhit guard: a ponderhit arriving
+                // before the new ponder search stores a real depth reads 0
+                // here → instant reply structurally blocked.
+                ponder_depth_flag.store(0, Ordering::Relaxed);
+                root_fail_low_flag.store(false, Ordering::Relaxed);
                 // Clear the abandon-ponder suppress flag — this new search
                 // owns its bestmove emit. Set right before spawn so any value
                 // left from the prior go-handler abandonment can't leak into
@@ -523,6 +583,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 ponderhit_flag = search_info.ponderhit_time.clone();
                 ponderhit_soft_flag = search_info.ponderhit_soft.clone();
                 ponderhit_floor_flag = search_info.ponderhit_floor.clone();
+                ponderhit_abs_flag = search_info.ponderhit_abs.clone();
+                ponder_depth_flag = search_info.ponder_depth.clone();
+                root_fail_low_flag = search_info.root_fail_low.clone();
                 let threads = num_threads;
                 let is_ponder_search = is_ponder;
                 let ext_stop = external_stop.clone();
@@ -639,6 +702,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 si.ponderhit_time.store(0, std::sync::atomic::Ordering::Release);
                                 si.ponderhit_soft.store(0, std::sync::atomic::Ordering::Relaxed);
                                 si.ponderhit_floor.store(0, std::sync::atomic::Ordering::Relaxed);
+                                // (abs is re-armed via fresh_limits.abs_clock
+                                // below — the fresh search's own plain-field
+                                // guard takes over.)
+                                si.ponderhit_abs.store(0, std::sync::atomic::Ordering::Relaxed);
                                 if ext_stop.load(std::sync::atomic::Ordering::SeqCst) {
                                     // External stop fired in the clear window —
                                     // restore the flag and skip the fresh
@@ -726,7 +793,30 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         } else if pv_consistent {
                             println!("bestmove {} ponder {}", move_to_uci(best_move), move_to_uci(si.pv_table[0][1]));
                         } else {
-                            println!("bestmove {}", move_to_uci(best_move));
+                            // P4: no usable pv[1] (short PV / dropped illegal
+                            // hint / SMP-vote inconsistency) — manufacture a
+                            // ponder hint by probing the TT at the position
+                            // after bestmove. A missing hint forfeits the
+                            // entire opponent-time think for this turn.
+                            let mut hint = NO_MOVE;
+                            if best_move != NO_MOVE {
+                                let mut after_best = search_board.clone();
+                                if after_best.make_move(best_move) {
+                                    hint = tt_ponder_hint(&si.tt, &after_best);
+                                }
+                            }
+                            if hint != NO_MOVE {
+                                let n = PONDER_HINT_MANUFACTURED
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                                if crate::search::TM_DEBUG.load(std::sync::atomic::Ordering::Relaxed) {
+                                    eprintln!(
+                                        "PONDER_HINT_TT manufactured hint={} after best={} (total={})",
+                                        move_to_uci(hint), move_to_uci(best_move), n);
+                                }
+                                println!("bestmove {} ponder {}", move_to_uci(best_move), move_to_uci(hint));
+                            } else {
+                                println!("bestmove {}", move_to_uci(best_move));
+                            }
                         }
                         // Explicit flush: default stdout is LineWriter which *should*
                         // flush on \n, but when piped to another process (cutechess)
@@ -864,53 +954,117 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
 
                         // Single source of truth for soft/hard/floor —
                         // shared with start_search via compute_tm_budgets.
+                        // These are the budgets this move WOULD have been
+                        // given on a plain `go` (our clock does not tick
+                        // while pondering, so computing them here from the
+                        // saved go-ponder clocks is equivalent to computing
+                        // them at `go ponder` time). ponder_enabled() passes
+                        // the P3 +25% optimum bump through.
                         let (soft, hard, _max_time, floor) = crate::search::compute_tm_budgets(
-                            our_time, our_inc, pl.movestogo, overhead, board.fullmove);
+                            our_time, our_inc, pl.movestogo, overhead, board.fullmove,
+                            crate::search::ponder_enabled());
+
+                        // Instant-reply gate inputs (P1): the ponder search's
+                        // completed root depth and root fail-low state.
+                        // Relaxed loads — independent gate values, stale-
+                        // conservative by construction (see search.rs docs).
+                        let ponder_depth =
+                            ponder_depth_flag.load(Ordering::Relaxed) as i32;
+                        let failing_low = root_fail_low_flag.load(Ordering::Relaxed);
 
                         // Very low time (< 2s with no inc): instant stop.
                         if hard <= overhead && our_inc == 0 && our_time < 2000 {
                             external_stop.store(true, Ordering::SeqCst);
                             stop_flag.store(true, Ordering::SeqCst);
+                        } else if crate::search::should_instant_reply(
+                            elapsed, soft, ponder_depth, failing_low)
+                        {
+                            // P1 stopOnPonderhit (2026-07-05 ponder diagnosis;
+                            // SF search.cpp:563-571 technique): the pondered
+                            // time already covers this move's soft budget and
+                            // the ponder search is deep + settled — emit the
+                            // pondered bestmove with ~zero additional own
+                            // clock. This is where the +25% pre-funding (P3)
+                            // and the full-charge model (P2) get refunded.
+                            // The gate is double-ponderhit-cascade-proof:
+                            // elapsed >= soft fails inherently on a ~1ms
+                            // go-ponder→ponderhit window (soft is >= tens of
+                            // ms), the depth floor backstops tiny-soft
+                            // degenerate cases, and the structural
+                            // MIN_PONDER_ELAPSED floor makes it unconditional.
+                            if crate::search::TM_DEBUG.load(Ordering::Relaxed) {
+                                eprintln!(
+                                    "PONDERHIT_INSTANT elapsed={}ms soft={}ms depth={}",
+                                    elapsed, soft, ponder_depth);
+                            }
+                            external_stop.store(true, Ordering::SeqCst);
+                            stop_flag.store(true, Ordering::SeqCst);
                         } else {
-                            // Post-ponderhit budget: credit only
-                            // PONDERHIT_CREDIT_PCT% of the elapsed ponder time
-                            // against the fresh budget (Option C), at ALL TCs
-                            // (gate-removal 2026-05-31 — the old inc>=500 gate
-                            // only existed to keep this out of un-SPRT-able STC
-                            // ponder play). A ponderhit's ponder work is a
-                            // genuine head-start (same move, warm TT) but NOT a
-                            // finished search, so deducting 100% (old Phase 14
-                            // v4: soft - elapsed) collapsed to the 50ms floor on
-                            // long ponders → shallow instant emits = the
-                            // ponder-on regression. credit=0 reproduces the old
-                            // STC full-fresh-budget behavior; default 50.
+                            // P2 full-charge post-hit budget (2026-07-05,
+                            // replaces Option C partial credit): the search
+                            // continues in the from-go-ponder time frame —
+                            // remaining think = intended_soft − elapsed, i.e.
+                            // budgets fixed at `go ponder` and the pondered
+                            // time charged in FULL (SF timeman model; dynamic
+                            // factors still apply at iteration boundaries).
+                            // Option C's 50% credit saturated to the 50ms
+                            // floor at STC and the realized spend became
+                            // iteration-quantized bleed (median 169ms vs SF
+                            // 71ms). The historical failure of full charge
+                            // alone (Phase 14 v4: shallow instant emits) is
+                            // now handled by the P1 depth-gated instant
+                            // reply + P3 pre-funding — the pieces work as a
+                            // set. ponderhit_credit_pct() is 100 unless
+                            // PonderhitCreditPct was explicitly set (local
+                            // A/B only).
                             let _ = floor;
-                            const MIN_POST_PONDERHIT_MS: u64 = 50;
-                            let (deadline, soft_deadline, store_floor) = {
+                            let (deadline, soft_deadline, store_floor, abs_deadline) = {
                                 let credited = elapsed
                                     .saturating_mul(crate::search::ponderhit_credit_pct())
                                     / 100;
-                                let post_min = soft.saturating_sub(credited).max(MIN_POST_PONDERHIT_MS);
+                                let mut post_min = soft.saturating_sub(credited)
+                                    .max(crate::search::MIN_POST_PONDERHIT_MS);
+                                // Root failing low at the hit with the soft
+                                // budget already spent: grant a re-think
+                                // slice of half the intended soft instead of
+                                // the 50ms floor (SF spends EXTRA time
+                                // exactly when the pondered conclusion
+                                // destabilized — a floored slice would emit
+                                // the destabilized move nearly instantly).
+                                if failing_low {
+                                    post_min = post_min.max(soft / 2);
+                                }
                                 let post_min = post_min.min(hard.max(10));
-                                (elapsed + hard.max(10), elapsed + post_min, post_min)
+                                // P2(b): absolute forfeit guard for the
+                                // in-flight post-hit search (loss55 class —
+                                // this path previously had NO abs deadline).
+                                // Our clock starts ticking ~at the ponderhit,
+                                // so in the search's start_time frame the
+                                // forfeit wall is elapsed + clock − reserve.
+                                const FORFEIT_MARGIN_MS: u64 = 50;
+                                let reserve = overhead + FORFEIT_MARGIN_MS;
+                                let abs = elapsed
+                                    + our_time.saturating_sub(reserve).max(1);
+                                (elapsed + hard.max(10), elapsed + post_min, post_min, abs)
                             };
                             // A1 publish protocol (TM audit 2026-06-13, ARM
-                            // standard): the deadline trio is read by the
+                            // standard): the deadline group is read by the
                             // search thread assuming mutual consistency, so
                             // it must be PUBLISHED atomically-enough: store
-                            // floor and soft FIRST (Relaxed is fine — they
-                            // are inert until hard is seen), then hard
+                            // floor, soft and abs FIRST (Relaxed is fine —
+                            // they are inert until hard is seen), then hard
                             // (ponderhit_flag) LAST with Release. Every
                             // reader loads hard with Acquire first and only
-                            // then reads soft/floor. Pre-fix (all Relaxed,
-                            // hard stored first) an ARM reader could see
-                            // soft > 0 with stale floor == 0 (stockpile
+                            // then reads soft/floor/abs. Pre-fix (all
+                            // Relaxed, hard stored first) an ARM reader could
+                            // see soft > 0 with stale floor == 0 (stockpile
                             // floor erased → instant-emit class) or hard set
                             // with stale soft == 0 (post-completion wait
                             // targets the HARD deadline → overspends the
                             // full 46% window when ponder finished early).
                             ponderhit_floor_flag.store(store_floor, Ordering::Relaxed);
                             ponderhit_soft_flag.store(soft_deadline, Ordering::Relaxed);
+                            ponderhit_abs_flag.store(abs_deadline, Ordering::Relaxed);
                             ponderhit_flag.store(deadline, Ordering::Release);
                         }
                     } else if pl.movetime > 0 {
@@ -952,6 +1106,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         ponderhit_flag = info.ponderhit_time.clone();
                         ponderhit_soft_flag = info.ponderhit_soft.clone();
                         ponderhit_floor_flag = info.ponderhit_floor.clone();
+                        ponderhit_abs_flag = info.ponderhit_abs.clone();
+                        ponder_depth_flag = info.ponder_depth.clone();
+                        root_fail_low_flag = info.root_fail_low.clone();
                     }
                 }
                 parse_option(&tokens, &mut info, &mut num_threads);
@@ -1289,14 +1446,16 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
             }
         }
         "Ponder" => {
-            // C8 audit LIKELY #30: `Ponder` is advertised at startup
-            // (line 83) but was falling through to the tunable loop,
-            // silently not storing anywhere. The engine actually reads
-            // ponder state from the `go ponder` command, not a stored
-            // flag, so the handler is a no-op acknowledgement — but it
-            // must explicitly match here so the protocol contract is
-            // satisfied (some GUIs fail if setoption response is empty).
-            println!("info string Ponder = {}", value);
+            // P3 (2026-07-05 ponder diagnosis): the Ponder option now
+            // gates the +25% optimum pre-funding in compute_tm_budgets
+            // (SF timeman semantics — applied on every move while on,
+            // refunded by the P1 instant replies). Previously a no-op
+            // acknowledgement (the engine reads per-move ponder state
+            // from `go ponder`; that part is unchanged). Default false →
+            // bit-identical no-ponder behavior.
+            let on = value.eq_ignore_ascii_case("true");
+            crate::search::PONDER_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
+            println!("info string Ponder = {}", on);
         }
         "LoadAnyway" => {
             // Diagnostic override — load nets even on training/inference
@@ -1319,11 +1478,17 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
             println!("info string TMDebug = {}", on);
         }
         "PonderhitCreditPct" => {
-            // Post-ponderhit budget credit % (Option C). NOT a SPSA tunable —
-            // OB/fastchess has no ponder, so it can only be swept in a local
-            // ponder gauntlet. See search::PONDERHIT_CREDIT_PCT.
+            // Post-ponderhit budget credit % — INERT by default since the
+            // 2026-07-05 full-charge model (default is the -1 sentinel =
+            // charge 100% of pondered time). Explicitly setting 0..=100
+            // re-enables fractional crediting for local A/B comparability
+            // (50 reproduces Option C, 0 the pre-P13 full-fresh-budget).
+            // NOT a SPSA tunable — OB/fastchess has no ponder, so it can
+            // only be swept in a local ponder gauntlet. See
+            // search::PONDERHIT_CREDIT_PCT.
             if let Ok(v) = value.parse::<i32>() {
-                let clamped = v.clamp(0, 100);
+                // -1 (or any negative) restores the "unset" sentinel.
+                let clamped = v.clamp(-1, 100);
                 crate::search::PONDERHIT_CREDIT_PCT.store(clamped, std::sync::atomic::Ordering::Relaxed);
                 println!("info string PonderhitCreditPct = {}", clamped);
             }
@@ -1413,6 +1578,107 @@ mod tests {
     use super::*;
 
     fn init() { crate::init(); }
+
+    /// P4 — the TT-probe ponder-hint fallback must NEVER emit an illegal
+    /// hint (PV_PONDER_BUG class), and must produce the TT move when it IS
+    /// legal. Property test over random playouts: at every position we
+    /// "play" a random bestmove, inject three classes of TT entry at the
+    /// resulting position (random junk bits — simulated hash collision; a
+    /// plausible-but-foreign move legal only in the PRE-move position; and
+    /// a genuinely legal move), and assert the manufactured hint is always
+    /// legal-or-none, and equals the stored move in the legal case.
+    #[test]
+    fn tt_ponder_hint_always_legal_or_none() {
+        init();
+        let tt = crate::tt::TT::new(1);
+        // Deterministic LCG so failures reproduce.
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut rng = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed >> 16
+        };
+        let assert_legal_or_none = |after: &Board, hint: Move, label: &str| {
+            if hint == NO_MOVE { return; }
+            let legal = crate::movegen::generate_legal_moves(after);
+            let mut found = false;
+            for i in 0..legal.len {
+                if legal.get(i) == hint { found = true; break; }
+            }
+            assert!(found,
+                "{}: manufactured hint {} is not legal in {}",
+                label, move_to_uci(hint), after.to_fen());
+        };
+        let mut legal_hits = 0u32;
+        for _game in 0..25 {
+            let mut board = Board::startpos();
+            for _ply in 0..80 {
+                let legal = crate::movegen::generate_legal_moves(&board);
+                if legal.len == 0 { break; }
+                let bm = legal.get((rng() % legal.len as u64) as usize);
+                let mut after = board.clone();
+                assert!(after.make_move(bm));
+
+                // (1) Random junk bits — simulated TT hash collision.
+                let junk = (rng() & 0xFFFF) as Move;
+                tt.store(after.hash, 5, 0, crate::tt::TT_FLAG_LOWER, junk, 0, false);
+                assert_legal_or_none(&after, tt_ponder_hint(&tt, &after), "junk");
+
+                // (2) A move legal in the PRE-move position (foreign to
+                // `after` unless coincidentally shared) — the classic
+                // stale-sibling / collision shape.
+                let foreign = legal.get((rng() % legal.len as u64) as usize);
+                tt.store(after.hash, 5, 0, crate::tt::TT_FLAG_EXACT, foreign, 0, false);
+                assert_legal_or_none(&after, tt_ponder_hint(&tt, &after), "foreign");
+
+                // (3) A genuinely legal move — the short-PV rescue case:
+                // the fallback must recover it (not drop the ponder).
+                let after_legal = crate::movegen::generate_legal_moves(&after);
+                if after_legal.len > 0 {
+                    let good = after_legal.get((rng() % after_legal.len as u64) as usize);
+                    tt.store(after.hash, 5, 0, crate::tt::TT_FLAG_EXACT, good, 0, false);
+                    let hint = tt_ponder_hint(&tt, &after);
+                    assert_eq!(hint, good,
+                        "legal TT move {} must be recovered as the hint in {}",
+                        move_to_uci(good), after.to_fen());
+                    legal_hits += 1;
+                }
+                board = after;
+            }
+        }
+        assert!(legal_hits > 500, "test must exercise the rescue path (got {})", legal_hits);
+    }
+
+    /// P4 rescue on a realistic short-PV shape: run a real (shallow) search
+    /// so the TT is warm, then ask for a hint after the search's bestmove —
+    /// the fallback must produce a legal hint here (this is the 4.6%
+    /// forfeited-ponder class the fallback exists to cut).
+    #[test]
+    fn tt_ponder_hint_recovers_after_real_search() {
+        init();
+        let mut info = crate::search::SearchInfo::new(16);
+        info.silent = true;
+        let mut board = Board::from_fen(
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        let limits = crate::search::SearchLimits {
+            depth: 8, ..crate::search::SearchLimits::new()
+        };
+        let best = crate::search::search(&mut board, &mut info, &limits);
+        assert!(best != NO_MOVE);
+        let mut after = board.clone();
+        assert!(after.make_move(best));
+        let hint = tt_ponder_hint(&info.tt, &after);
+        // A depth-8 search always leaves a TT move at the child of the root
+        // best — the fallback must find and validate it.
+        assert!(hint != NO_MOVE, "warm TT must yield a manufactured hint");
+        let legal = crate::movegen::generate_legal_moves(&after);
+        let mut found = false;
+        for i in 0..legal.len {
+            if legal.get(i) == hint { found = true; break; }
+        }
+        assert!(found, "manufactured hint {} must be legal", move_to_uci(hint));
+    }
 
     /// Reproduces the Lichess game I4qJhfQw move 103 scenario: White's
     /// king is in check from a black rook on a1. Kxa1 captures the rook
