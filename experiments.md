@@ -18060,3 +18060,41 @@ extension tail (SF 3.3% >1s, we 0.0% — P2 cap clips it); candidate next step
 is relaxing the cap when root_fail_low. ~34 Elo of the original ~60 gap
 remains. MERGED to main 9b0cb0f (2026-07-05, Adam's call at the ~0-1 Elo
 evidence tier; merged-tree bench 2200903 re-verified).
+
+---
+
+## FL-EXT: post-ponderhit fail-low extension tail (2026-07-05, branch tm/ponder-faillow-ext)
+
+The largest identified residual of the ponder-gap work (P1-P4 merged
+9b0cb0f): SF re-thinks >1s on 3.3% of post-hit moves (root fail-low
+extensions); we measured a structural 0.0% — the P2 cap + static
+mid-iteration band clipped exactly those. Three mechanism iterations
+(30-game 10+0.1 ponder-vs-SF -debug runs on titan, ~1100-1280 hits each):
+
+- **v1** (at-hit grant soft/2→soft; +34%-of-hard pushes on any root
+  fail-low): tail still 0.0%. Two bugs: the min(2,fl) event cap burned on
+  SHALLOW aspiration noise (extensions at now=2ms, d~4), and the soft
+  grant was anchored to the leftover slice (~100-300ms).
+- **v2** (depth>=10 gate; ponderhit handler publishes intended FULL soft;
+  extension = isoft x (1+0.34n) in the from-go-ponder frame; no-change
+  events don't consume the cap): events now all d10-21 — but tail STILL
+  0.0%. A soft MULTIPLE cannot reach 1s at STC (median isoft 201ms;
+  x1.68 ~ 340ms; even early-game ~860ms).
+- **v3** (SF's actual semantics): while a deep root fail-low is UNRESOLVED
+  in the post-hit frame, should_stop suspends the soft band entirely —
+  only hard+grace and ponderhit_abs bind. Main-thread-owned shared flag
+  (ph_fl_active) so helpers ride along instead of tripping the shared
+  stop. **Tail exists: max 1226ms, >1s 0.09%** (SF 3.3% — ours thinner
+  because STC hard frames are small; LTC will fatten it naturally), bulk
+  unchanged (p50 120ms / p95 441ms ≈ baseline), 0 forfeits everywhere.
+
+Elo (titan, 500g/arm vs SF, ponder, 10+0.1, Hash=256):
+**v3 −96.9±15.3 vs baseline-main −104.5±16.4 → +7.6 (±~22)** — positive
+lean, not significant, expected for a change touching only deep-fail-low
+hits. OB [-2,1] non-regression gate submitted (bench-identical 2200903;
+remember P(H0|true 0)=27.5% at these bounds). Merge = Adam (TM-class).
+
+LESSON (mechanism-first vindicated 3x in one day): each variant LOOKED
+plausible in code; only the -debug spend-distribution parse showed v1/v2
+produced no tail at all. Never SPRT a TM shape change without the
+input-metric pass.
