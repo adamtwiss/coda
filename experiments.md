@@ -18006,3 +18006,48 @@ protects against a data-gen artifact our filtered pipeline barely admits — NOT
 a component of SF's data-consumption advantage. Gate not ported; counter KEPT
 as a free per-run data-quality monitor (new pools/datagen sources could differ;
 the [pz] line flags that automatically).
+
+---
+
+## Ponder deficit: post-hit time-policy fix P1-P4 — evidence stack (2026-07-05)
+
+Context: Adam's TC/threading/ponder study measured a ~60 Elo ponder-asymmetric
+deficit vs SF (−131 with ponder vs −84 without). Diagnosis
+(`docs/ponder_diagnosis_2026-07-05.md`): hit rates EQUAL (63.9% us / 63.0% SF);
+the whole gap is post-ponderhit spend policy + forfeited hints. Fix on
+`tm/ponder-policy` (def8081, bench-identical 2200903): P1 instant reply after a
+long-enough hit (guarded: min depth 10 AND min 10ms pondered — the
+double-ponderhit guard Adam asked for), P2 full-credit budgets fixed at go
+ponder + grace shrunk min(rem/8,100ms) + mid-iter soft enforcement, P3 +25% opt
+when Ponder option on (SF pattern; const, deliberately NOT tunable — OB can't
+ponder so SPSA would detune it on noise), P4 TT-probe ponder-hint fallback.
+
+Measurements (titan, ponder-on cross-engine, 10+0.1, Hash=256, T=1):
+- **Input metrics (decisive)**: post-hit spend p25 112→1ms, mean 290→153ms
+  (SF 176), max 4147→623ms, >1s bleed 4.1%→0.0%, hintless bestmoves
+  4.6%→0.2%, instant-reply rate 30%→44.2% (SF 60.8%).
+- **vs SF 500g/arm**: main −144.4±32 → fix **−117.8±29** (~+27).
+- **Near-peer 2-arm gauntlet 504g/arm** (Berserk/Obsidian/Alexandria/Plenty,
+  all with ponder): fix +98±19 pool vs main −14±14 — BUT the headline is
+  driven by a non-bankable PlentyChess collapse (99.2% vs 45.6%).
+  **Plenty-excluded: fix 52.0% vs main 48.8% (378g each, ~+22 ±27)** —
+  positive lean consistent with the vs-SF delta, not independently
+  significant. Cinder absent on titan; only Berserk truly ponders back.
+- **Plenty forensics (12g -debug repro, 7-0)**: Plenty instant-replies on
+  EVERY ponderhit with NO double-hit guard — when our instant replies
+  compress its ponder window to ~0ms it plays ~1ms moves all game and
+  collapses. Validates exactly the failure mode our P1 guard prevents (UCI
+  traffic confirms: our 0ms-ponder double-hits get 118-356ms of real
+  thought; the only <10ms emits were mate-score early-exits).
+- **Self-play ponder A/B**: −6.9±15.4 (expected ~null — both sides ponder,
+  savings symmetric; 0 forfeits).
+- **OB #2567 [-2,1] STC non-regression**: pending at −5.1±4.4 N=5.6k →H0
+  trend. Diff audit: every timing change is ponderhit-gated and
+  compute_tm_budgets is value-identical with Ponder off, so the OB-visible
+  binary is a behavioral no-op — treat a residual negative as noise unless
+  the resolved CI stays clearly negative, then re-audit.
+
+Residual/follow-up: our post-hit distribution lacks SF's >1s fail-low
+extension tail (SF 3.3% >1s, we 0.0% — P2 cap clips it); candidate next step
+is relaxing the cap when root_fail_low. ~34 Elo of the original ~60 gap
+remains. Merge decision = Adam (TM-class; cross-engine RR is primary signal).
