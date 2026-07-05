@@ -334,7 +334,19 @@ direction-of-improvement, not viability.
 
 ## SF's path-vs-data scale calibration
 
-| Dimension | SF | Coda | Ratio |
+> **STALE TABLE — superseded 2026-07-05.** Every "gap" row below has since
+> closed. Data: the full SF training set was acquired onto GPU4 (~4× the 47B
+> core set; CLAUDE.md §Training Data) and production nets train on it — plus
+> SFvsCoda datagen supplements, so Coda's pool is now the SAME data, slightly
+> LARGER. Position-views: multi-stage prod runs (e.g. 250/900/3000-SB chains
+> ≈ 400B+ views) are within ~2× of SF's. Arch: FT=1024 + L1=32 are in prod
+> (E161C665-era), matching SFNNv13's 1024/32/32; PSQT-per-bucket and dual
+> activation were TESTED and H0-regressed for us (#2036-#2042) — closed, not
+> pending. Ratios below are kept only as the 2026-05-23 historical snapshot.
+> Do not cite them as current (this table was mis-cited 2026-07-05 as live
+> evidence of an "8× data gap" that no longer exists).
+
+| Dimension | SF | Coda (2026-05-23) | Ratio (then) |
 |---|---|---|---|
 | Unique filtered training positions | ~200B (stage 1 alone ~80-150B) | ~25B | 8× |
 | Total position-views per net (max) | ~800B over 7 stages | 80B (S800) | 10× |
