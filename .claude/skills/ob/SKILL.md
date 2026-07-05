@@ -39,6 +39,12 @@ acted-on-early-N noise, missed `/errors/` followups.
   `scripts/ob_*.py` already read it from env
   (`os.environ.get('OPENBENCH_PASSWORD')`) — just run them with the env var
   present (e.g. it's exported in your shell profile).
+- **Worker accounts are a separate, deliberately low-privilege credential**
+  (Adam, 2026-07-05): the per-host worker login that `ob-worker.sh` passes to
+  `client.py -P` has ~no power, and fleet hosts are single-user, so seeing it
+  in local `ps` output is NOT an incident and does not warrant a rotation
+  request. The env-only discipline above applies to the ADMIN account used by
+  `scripts/ob_*.py`.
 
 **Per-Claude OB identity**: claims-of-test-ownership matter for `ob_stop.py`
 and similar — you can only stop your own tests. Don't stop tests
