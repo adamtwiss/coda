@@ -232,6 +232,24 @@ ob_submit.py main <dev_bench_with_dev_net> \
 **Both benches MUST be measured with the corresponding net loaded
 via `-n`**. See §2.2.
 
+### 3.3b. Multi-thread SPRTs — scale Hash, cap Threads=4
+
+For `Threads>1` tests (SMP changes: thread pool, diversity, thread voting):
+
+- **Cap Threads=4 (hard ceiling).** A Threads=N game needs N cores/engine
+  (2N total); higher counts strand smaller workers — even Threads=4 excludes
+  ~65% of the fleet (only 8+ core hosts), so these accrue much slower. Never
+  go above 4. T=4 is a fleet-safe proxy for the 4–8T deployment.
+- **Scale Hash with Threads.** Threads=4 fills the TT ~4× faster, so the STC
+  default Hash=64 makes the test **hash-constrained** — distorted results that
+  don't reflect deployment (bigger hash). Use **`--options 'Threads=4 Hash=256'`**
+  (mirrors the LTC Hash=256 rule). Hash=256 is safe at T=4 (lower concurrency/
+  worker → no OOM, unlike Hash=512).
+- Bench is single-thread regardless (`./coda bench`), so an SMP-only change is
+  T=1-bench-neutral: dev_bench == base_bench, gate unaffected.
+- SMP changes accrue slowly + are non-deterministic; lean on the pentanomial
+  and don't misread slow fill as a stall.
+
 ### 3.4. Priority — same for concurrent tests
 
 OB workers all go to the highest priority test. If you submit two
