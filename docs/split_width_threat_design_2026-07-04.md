@@ -175,3 +175,75 @@ short-bake batch.
 Decision gates: synthetic-net NPS ≥ +5% on Zeus (else stop);
 short-bake eval within `[-1.5, 1.5]` noise (else fall back to w=768 or
 stop). Both gates are cheap relative to a prod-length training run.
+
+---
+
+## Review (Hercules, 2026-07-05) — endorse with amendments
+
+Design is sound and correctly gated (synthetic-NPS before GPU, short-bake
+before prod-length). Proceed. One substantive objection, one missing
+validation step, and smaller amendments:
+
+### R1. §3's "no product is threat-blind" is true but glosses the capacity loss
+
+Today (full-width) each pairwise product is `(psq_a+thr_a)·(psq_b+thr_b)` —
+THREE threat term classes: `thr_a·psq_b`, `psq_a·thr_b`, and the pure
+quadratic `thr_a·thr_b`. With threats confined to the a-half, every product
+is `(psq_a+thr)·psq_b` — only the single cross-term survives:
+
+- **Threat-threat interactions vanish from the pairwise layer entirely.**
+  Mutual attacks, x-ray stacks, overloaded defenders can then only be
+  composed downstream in L1 (32 wide). That's the tactically-dense class
+  where eval precision matters most, and threats are a +187-Elo-class
+  signal for Coda.
+- **Threat influence is gated by psq_b's clamp**: wherever `psq_b` CReLUs
+  to 0, the threat contribution to that product is erased. Threats keep no
+  expression channel independent of the b-half's activation pattern.
+
+This reshapes the fallback ladder. w=768 is a poor first fallback: it
+breaks the §3 pack simplification anyway (768 > pw → back to two adds, a
+different NPS point). The same-cost, eval-safer variant is **interleaving
+the 512 threat channels across both halves** (256 into each half's front):
+same row width, same streaming bytes, same cache win, but the front 256
+products retain all three term classes. Costs the single-fused-add
+elegance (two half-adds); trivial NPS delta against a potentially decisive
+eval difference. **Recommend the short-bake pair be a TRIPLE: baseline /
+a-half-512 / interleaved-512.**
+
+### R2. Missing validation: end-to-end numerical parity (train→convert→infer)
+
+§7's synthetic net validates inference in isolation; the s50 smoke
+validates training in isolation. The historical killer is the CHAIN
+(convert-bullet flag mismatches corrupt silently — standing CRITICAL
+memory). The fork-side fp32 `--eval-fens` (built for the C8 parity work)
+exists for exactly this: same FEN list through the trained checkpoint and
+through `coda eval-fens` on the converted net, demand the known error
+floor. Add as §7 step 2.5 — free, and the only step that exercises the new
+format block end-to-end.
+
+### R3. Smaller amendments
+
+- **§4 equivalence test**: two separately-initialized tensors won't
+  bit-reproduce the fused run's loss trajectory unless init RNG streams are
+  matched — seed-match the init, or compare converged loss statistically.
+  Otherwise someone chases a phantom regression.
+- **§5.4 wording**: keeping the hard-sized buffer with a live extent makes
+  the COPIES cheap but does not fix the 1.17 MiB/thread allocation wart.
+  §1's "stack stays hotter in L2" rests on copy-extent, which holds — say
+  it precisely.
+- **Price the fallbacks up front**: once kernels take `threat_width` as a
+  parameter, synthetic NPS at 512, 768, AND interleaved-512 is nearly free
+  in §7.1 — measure all three so the eval-vs-speed trade is fully priced
+  before the short-bake result forces a choice.
+- **§8 rider: don't stack levers in one net.** l1reg changes activation
+  density, which interacts with pairwise and with this design's premise.
+  Sharing a GPU session is fine; sharing a net is not.
+- **Fork coordination**: the two-tensor loader work touches the file
+  carrying the live skip-campaign machinery (pc spline, wld filter,
+  max-score, wrap salts, pz counter). Branch from current recipe state and
+  keep the fused path bit-identical — a silent regression there confounds
+  every in-flight recipe experiment.
+- **Sequencing**: "next net cycle" is right — explicitly AFTER the
+  skip-consolidation full bake (pc-milder +12.2 / fs9 +3.6 measured and
+  waiting). This design's EV (+5-8 speed minus eval risk) shouldn't preempt
+  that.
