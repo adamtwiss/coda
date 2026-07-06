@@ -237,3 +237,23 @@ correction pass (left to Adam; not touched as part of this audit):
    continuation / transition** — the "minor, major" tables CLAUDE.md lists
    were **ablated to 0 and dropped 2026-05-18/19** (comment at
    `search.rs:79,269`).
+
+---
+
+## Lever status ledger (live — 2026-07-06)
+
+Coordinated split with Hercules to avoid double-work:
+
+| Lever | Owner | Status |
+|---|---|---|
+| T1.1 LMR correction-term battery (#1087/#1044/#1022/tt_depth) | **Hercules** | in progress |
+| T1.2 `cutoff_count` propagation | **Hercules** | queued |
+| #3 threatened-TO ordering malus (SEE-gated, stratified) | Fable | OB #2593 `[0,3]` running |
+| #4 `key_after` pre-make TT prefetch | Fable | OB #2595 `[-2,1]` — **flat on Zeus** (Adam: explicit-prefetch timing has never paid off for us; kept running for the fleet uArch read only, low prior) |
+| #6 index-decayed quiet malus (#1038) | Fable | OB #2597 `[0,3]` running |
+
+Next unclaimed non-LMR candidates (Fable queue): #7 (limit good captures to
+3 when TT move is quiet, #992), #5 (history term in quiet-SEE/LMP
+thresholds), #8/#9 (deep-node TT-cutoff relax / PV replacement protection),
+#10 (NMP improving term + `estimated_score`). Hold on anything touching the
+LMR reduction expression or `cutoff_count` — Hercules owns those.
