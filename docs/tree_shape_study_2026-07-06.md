@@ -83,3 +83,26 @@ prescription: base offset (thin shallow/early) + flatter deep slope /
 moveCount rebate (preserve deep) — the fractional-LMR regime cluster, now
 with a measured target (tail EBF -> ~1.5, shallow density -> SF-ish) and a
 10-minute verification instrument (this sweep).
+
+## Stage 3 addendum (2026-07-06 evening) — the correction-terms arc, measured
+
+Same 150 fens, `go depth 18`, Hash 256. Three states of the LMR
+correction-terms branch vs the Stage-1 main baseline:
+
+| d18 metric | main | enabler+battery+cutoff (full Reckless consts) | + tune #2603 (STC) |
+|---|---|---|---|
+| EBF d17 | 1.38 | 1.48 | 1.44 |
+| EBF d18 | 1.32 | 1.43 | 1.35 |
+| nodes d18 | 335,686 | 358,638 | 318,410 |
+
+Arc: the full-strength terms lifted the deep tail to Reckless's shape
+(1.43) but lost Elo at STC (#2594/#2596 H0 — magnitude wrong, place
+right). The STC cluster tune (#2603) recovered STC to ~flat (#2606) by
+**giving back most of the tail lift** — an STC objective cannot see the
+deep regime, so SPSA spent the tail on shallow nodes (tree now ~5-11%
+thinner than main overall). The branch under LTC SPRT therefore carries
+only ~1/4 of the intended redistribution. Pre-registered: LTC flat →
+re-tune the cluster AT LTC (warm-start from #2603) before any closure;
+only LTC-clearly-negative closes the thread. Lesson for the 2-DOF
+follow-up: deep-slope parameters must be tuned with an LTC (or mixed-TC)
+objective from the start — STC tuning structurally deletes the tail.
