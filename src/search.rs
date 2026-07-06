@@ -223,19 +223,21 @@ tunables!(
     (LMR_CUTNODE_BUMP, 2, 1, 5, 0.4, true),
     // Reckless LMR correction battery (T1.1, docs/reckless_audit_2026-07-06.md).
     // Sub-ply centi-ply terms — need the fractional LMR accumulator to express.
-    // Defaults = Reckless's tuned 1024-scale values converted to centi
-    // (+1024→100, +464→45, +326→32, 418/128→41/128 per cp of alpha-eval gap).
-    (LMR_WINBETA_CENTI, 100, 0, 250, 12.0, true),
-    (LMR_TTALPHA_CENTI, 45, 0, 150, 8.0, true),
-    (LMR_TTDEPTH_CENTI, 32, 0, 150, 8.0, true),
-    (LMR_EXPECT_MULT, 41, 0, 120, 6.0, true),
+    // Reseeded at HALF the Reckless-converted values (full: 100/45/32/41)
+    // after #2594/#2596 H0'd at full strength — our ln(d)·ln(m) base keeps
+    // its move-count term (Reckless deleted theirs) so their constants
+    // double-count; ranges run to 0 so SPSA can kill dead terms.
+    (LMR_WINBETA_CENTI, 50, 0, 250, 12.0, true),
+    (LMR_TTALPHA_CENTI, 22, 0, 150, 8.0, true),
+    (LMR_TTDEPTH_CENTI, 16, 0, 150, 8.0, true),
+    (LMR_EXPECT_MULT, 20, 0, 120, 6.0, true),
     // cutoff_count LMR terms (T1.2, docs/reckless_audit_2026-07-06.md).
     // Child ply failed high >2 times under this node -> reduce late moves
     // more (+extra at non-PV all-nodes). Defaults = Reckless's tuned
-    // 1024-scale values converted to centi-ply (+1151->112, +400->39).
+    // values reseeded at half (full: 112/39) — see battery note above.
     // Threshold >2 fixed (SF uses >3) — not a knob.
-    (LMR_CUTOFF_CNT_CENTI, 112, 0, 250, 12.0, true),
-    (LMR_CUTOFF_ALLNODE_CENTI, 39, 0, 150, 8.0, true),
+    (LMR_CUTOFF_CNT_CENTI, 56, 0, 250, 12.0, true),
+    (LMR_CUTOFF_ALLNODE_CENTI, 20, 0, 150, 8.0, true),
     // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv,
     // Reckless at >=5+ttPv. Coda's 4 fires SE at shallower depth where
     // singular_depth is too low to judge singularity reliably. Bumping
