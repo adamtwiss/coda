@@ -16,7 +16,7 @@ Coda is a strong UCI chess engine, developed entirely through human-AI collabora
 
 ## Pre-built binaries
 
-As we get closer to a first proper release, we will shortly add pre-built binaries for all major platforms.
+Pre-built binaries with the embedded production network are available on the [releases page](https://github.com/adamtwiss/coda/releases) for Linux (x86-64-v2/v3 and aarch64, static musl), Windows (x86-64-v3) and macOS (Apple Silicon). SIMD kernels are selected at runtime, so each binary runs optimally across CPU generations; the v2 build is the compatibility floor for older x86-64 hardware. Releases are currently marked pre-release while the engine approaches 1.0.
 
 ## Build from Source
 
