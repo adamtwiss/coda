@@ -3091,7 +3091,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         // UCI info output
         let elapsed = info.start_time.elapsed().as_millis() as u64;
-        let global = info.global_nodes.load(Ordering::Relaxed);
+        // Exact node count (2026-07-06, sibling of the `go nodes` accounting
+        // fix): the global counter only updates at 4096-node flushes, so info
+        // lines reported nodes 0 / 4096 / 8192... at shallow depths — garbage
+        // for nodes-per-depth measurement. Add this thread's unflushed delta.
+        let global = info.global_nodes.load(Ordering::Relaxed)
+            + (info.nodes - info.last_flushed_nodes.get());
         let nps = if elapsed > 0 { global * 1000 / elapsed } else { 0 };
         let score_str = if is_mate_score(prev_score) {
             let mate_in = if prev_score > 0 {
