@@ -1837,20 +1837,27 @@ static LMR_TABLE_CAP: [[AtomicI32; 64]; 64] = {
     [ROW; 64]
 };
 
+/// Centi-ply fixed-point scale for the LMR reduction accumulator: reductions
+/// are carried in 1/100ths of a ply and FLOOR-rounded to integer plies once,
+/// at the end of the LMR block. floor(floor(100x)/100) == floor(x), so at
+/// default behaviour the integer plies are bit-identical to the old tables
+/// (fractional-LMR enabler, re-implementation of #2192 on the 2026-07 trunk).
+pub const LMR_SCALE: i32 = 100;
+
 pub fn init_lmr() {
     for depth in 1..64 {
         for moves in 1..64 {
-            // Quiet table: C from tunable (default 130 = 1.30)
+            // Quiet table: C from tunable (default 130 = 1.30). CENTI-PLY.
             if depth >= 3 && moves >= 3 {
                 let c = tp(&LMR_C_QUIET) as f64 / 100.0;
-                let r = ((depth as f64).ln() * (moves as f64).ln() / c) as i32;
-                LMR_TABLE[depth][moves].store(r.min((depth - 2) as i32), Ordering::Relaxed);
+                let r = (LMR_SCALE as f64 * (depth as f64).ln() * (moves as f64).ln() / c) as i32;
+                LMR_TABLE[depth][moves].store(r.min((depth - 2) as i32 * LMR_SCALE), Ordering::Relaxed);
             }
-            // Capture table: C from tunable (default 180 = 1.80)
+            // Capture table: C from tunable (default 180 = 1.80). CENTI-PLY.
             if depth >= 3 && moves >= 3 {
                 let c = tp(&LMR_C_CAP) as f64 / 100.0;
-                let r = ((depth as f64).ln() * (moves as f64).ln() / c) as i32;
-                LMR_TABLE_CAP[depth][moves].store(r.min((depth - 2) as i32), Ordering::Relaxed);
+                let r = (LMR_SCALE as f64 * (depth as f64).ln() * (moves as f64).ln() / c) as i32;
+                LMR_TABLE_CAP[depth][moves].store(r.min((depth - 2) as i32 * LMR_SCALE), Ordering::Relaxed);
             }
         }
     }
@@ -4768,7 +4775,8 @@ fn negamax(
         // Computed once and shared — no depth ceiling; at high depths lmr_d
         // collapses to 1, so thresholds naturally become permissive.
         let lmr_d = if move_count > 1 && depth >= 2 {
-            let r = lmr_reduction((depth as usize).min(63) as i32, (move_count as usize).min(63) as i32);
+            // Table is centi-ply; gates want integer plies (floor = old value).
+            let r = lmr_reduction((depth as usize).min(63) as i32, (move_count as usize).min(63) as i32) / LMR_SCALE;
             if r > 0 { (depth - r).max(1) } else { depth }
         } else {
             depth
@@ -5065,12 +5073,12 @@ fn negamax(
             && FEAT_LMR.load(Ordering::Relaxed) {
             let d = (depth as usize).min(63);
             let m = (move_count as usize).min(63);
-            reduction = lmr_reduction(d as i32, m as i32);
+            reduction = lmr_reduction(d as i32, m as i32); // CENTI-PLY from here to the floor below
 
-            if reduction > 0 {
+            if reduction >= LMR_SCALE {
                 // Reduce less at PV nodes where accuracy matters most
                 if beta - alpha > 1 {
-                    reduction -= 1;
+                    reduction -= LMR_SCALE;
                 }
 
                 // Reduce more at expected cut nodes. Coda historically applied a
@@ -5082,9 +5090,9 @@ fn negamax(
                 // H1 #2065 / e616393.)
                 if !is_pv {
                     reduction += if cut_node {
-                        tp(&LMR_CUTNODE_BUMP) + (tt_move == NO_MOVE) as i32
+                        (tp(&LMR_CUTNODE_BUMP) + (tt_move == NO_MOVE) as i32) * LMR_SCALE
                     } else {
-                        1
+                        LMR_SCALE
                     };
                 }
 
@@ -5093,16 +5101,16 @@ fn negamax(
                 // 0 (they break on the first fail-high before alpha rises), so it
                 // only sharpens late-move reduction at PV nodes where several
                 // improving moves have already been found.
-                reduction += alpha_raise_count * LMR_ALPHA_RAISE_10X.load(Ordering::Relaxed) / 10;
+                reduction += alpha_raise_count * LMR_ALPHA_RAISE_10X.load(Ordering::Relaxed) / 10 * LMR_SCALE;
 
                 // Reduce less when the position is improving
                 if improving {
-                    reduction -= 1;
+                    reduction -= LMR_SCALE;
                 }
 
                 // Reduce more when TT move is a capture
                 if tt_move_noisy {
-                    reduction += 1;
+                    reduction += LMR_SCALE;
                 }
 
                 // Reduce more when opponent has few non-pawn pieces (simpler position)
@@ -5110,23 +5118,23 @@ fn negamax(
                 let opp_non_pawn = board.colors[board.side_to_move as usize]
                     & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
                 if popcount(opp_non_pawn) < 3 {
-                    reduction += 1;
+                    reduction += LMR_SCALE;
                 }
 
                 // Reduce less when moving a piece away from a pawn-attacked square
                 if enemy_attacks & (1u64 << from) != 0 {
-                    reduction -= 1;
+                    reduction -= LMR_SCALE;
                 }
 
                 // Reduce less when move gives check (Obsidian/Alexandria/Berserk pattern)
                 if gives_check {
-                    reduction -= 1;
+                    reduction -= LMR_SCALE;
                 }
 
                 // Reduce less when position was previously a PV node (Alexandria/Obsidian/Seer pattern).
                 // Sticky: once a position is searched as PV, tt_pv stays set even at non-PV nodes.
                 if tt_pv {
-                    reduction -= 1;
+                    reduction -= LMR_SCALE;
                 }
 
                 // Continuous history adjustment: good history reduces less, bad more
@@ -5149,7 +5157,7 @@ fn negamax(
                     // fixed 2026-06-11).
                     hist_score += info.pawn_hist[ph_idx][gp][to as usize] as i32;
                 }
-                let hist_adj = hist_score / tp(&LMR_HIST_DIV);
+                let hist_adj = hist_score / tp(&LMR_HIST_DIV) * LMR_SCALE;
                 reduction -= hist_adj;
 
                 // Complexity-aware LMR: reduce less when correction history
@@ -5163,19 +5171,19 @@ fn negamax(
                 // inflating complexity in long-halfmove positions.
                 if scaled_eval > -INFINITY {
                     let complexity = (static_eval - scaled_eval).abs();
-                    reduction -= complexity / tp(&LMR_COMPLEXITY_DIV);
+                    reduction -= complexity / tp(&LMR_COMPLEXITY_DIV) * LMR_SCALE;
                 }
 
                 // Threat-density LMR: reduce less when multiple pieces are
                 // under pawn attack. Tactical positions need deeper search.
                 // Fixed-point divisor: stored × 10. Avoids tp10 swallowing
                 // sub-integer SPSA precision on this multiplicative use.
-                reduction -= threat_count * 10 / LMR_THREAT_DIV_10X.load(Ordering::Relaxed).max(1);
+                reduction -= threat_count * 10 / LMR_THREAT_DIV_10X.load(Ordering::Relaxed).max(1) * LMR_SCALE;
 
                 // King-pressure LMR modifier: reduce less when enemy has
                 // many attackers on our king zone. Parent-node signal reused
                 // from NMP/ProbCut gates — tactical king positions need depth.
-                reduction -= king_zone_pressure * 10 / LMR_KING_PRESSURE_DIV_10X.load(Ordering::Relaxed).max(1);
+                reduction -= king_zone_pressure * 10 / LMR_KING_PRESSURE_DIV_10X.load(Ordering::Relaxed).max(1) * LMR_SCALE;
 
                 // Clamp: never extend (negative), never reduce past depth 1.
                 // Note: `new_depth - 1` can be -1 when negative singular
@@ -5186,8 +5194,8 @@ fn negamax(
                 if reduction < 0 {
                     reduction = 0;
                 }
-                if reduction > new_depth - 1 {
-                    reduction = new_depth - 1;
+                if reduction > (new_depth - 1) * LMR_SCALE {
+                    reduction = (new_depth - 1) * LMR_SCALE;
                 }
                 if reduction < 0 {
                     reduction = 0;
@@ -5201,9 +5209,9 @@ fn negamax(
             if beta - alpha == 1 {
                 let d = (depth as usize).min(63);
                 let m = (move_count as usize).min(63);
-                reduction = lmr_cap_reduction(d as i32, m as i32);
+                reduction = lmr_cap_reduction(d as i32, m as i32); // CENTI-PLY
 
-                if reduction > 0 {
+                if reduction >= LMR_SCALE {
                     // Continuous capture history adjustment — replaced the
                     // prior step function (±1 at |capt_hist|>2000) with
                     // continuous `capt_hist / LMR_HIST_DIV_CAP` to mirror
@@ -5216,12 +5224,12 @@ fn negamax(
                     if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                         let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
                         let capt_hist_val = info.history.capture[go_piece(moved_piece)][to as usize][ct] as i32;
-                        reduction -= capt_hist_val / tp(&LMR_HIST_DIV_CAP);
+                        reduction -= capt_hist_val / tp(&LMR_HIST_DIV_CAP) * LMR_SCALE;
                     }
 
                     // Reduce less for captures that give check
                     if gives_check {
-                        reduction -= 1;
+                        reduction -= LMR_SCALE;
                     }
 
                     if reduction < 0 {
@@ -5229,8 +5237,8 @@ fn negamax(
                     }
                     // Never reduce past depth 1. Same `new_depth == 0` re-clamp
                     // as the quiet-LMR path above.
-                    if reduction > new_depth - 1 {
-                        reduction = new_depth - 1;
+                    if reduction > (new_depth - 1) * LMR_SCALE {
+                        reduction = (new_depth - 1) * LMR_SCALE;
                     }
                     if reduction < 0 {
                         reduction = 0;
@@ -5243,10 +5251,16 @@ fn negamax(
         // search is deep. Zero at STC (root_depth <= thresh); grows with how
         // deep the search reaches, so late moves at LTC are searched closer
         // to full depth. One formula, one tunable set (Adam directive).
-        if reduction > 0 {
-            reduction -= ((info.root_depth - tp(&LMR_ROOT_THRESH)).max(0) * tp(&LMR_ROOT_COEF)) / 100;
+        if reduction >= LMR_SCALE {
+            reduction -= ((info.root_depth - tp(&LMR_ROOT_THRESH)).max(0) * tp(&LMR_ROOT_COEF)) / 100 * LMR_SCALE;
             if reduction < 0 { reduction = 0; }
         }
+
+        // FLOOR once: centi-ply accumulator -> integer plies. Everything
+        // downstream (reductions[] stack for hindsight, doDeeper margin,
+        // lmr_depth) keeps integer semantics. floor(floor-composed terms)
+        // reproduces the old integer arithmetic bit-for-bit at defaults.
+        reduction /= LMR_SCALE;
 
         // Store reduction for child's hindsight gating
         info.reductions[ply_u] = reduction;
