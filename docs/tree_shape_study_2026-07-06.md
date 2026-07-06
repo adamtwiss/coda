@@ -64,3 +64,22 @@ without the compensating shape change at the other.
   first-move-cutoff rate + per-gate prune volumes by depth — the ordering-
   quality comparison proper.
 - Re-run this study after regime-track changes land (cheap: ~10 min).
+
+## Stage 1.5 — per-gate ablation (setoption sweep, 80 pos, depth 17)
+
+Same harness, Coda-only, suspects neutralized via UCI setoption:
+
+| Config | nodes @ d17 | tail EBF (d15-17) | verdict |
+|---|---|---|---|
+| base | 259,800 | 1.25-1.39 | — |
+| RFP_DEPTH=8 | 265,953 (+2%) | 1.36-1.46 | RFP depth EXONERATED (Adam's knee hypothesis tested: deep RFP fires too rarely to shape the tree) |
+| RFP_DEEP_KNEE=17 | 281,957 (+8%) | 1.35-1.49 | knee terms near-neutral |
+| LMR_C_QUIET=200 | 393,231 (+51%) | 1.40-1.55 | **THE deep-shape lever, by an order of magnitude** |
+
+The EBF-tail collapse is LMR's deep-reduction slope. But C_QUIET alone is
+the wrong fix: softening it also fattens the SHALLOW tree (+26% at d8)
+where we are already 30% denser than SF. Confirms audit F2's 2-DOF
+prescription: base offset (thin shallow/early) + flatter deep slope /
+moveCount rebate (preserve deep) — the fractional-LMR regime cluster, now
+with a measured target (tail EBF -> ~1.5, shallow density -> SF-ish) and a
+10-minute verification instrument (this sweep).
