@@ -4953,6 +4953,14 @@ fn negamax(
             continue;
         }
 
+        // Pre-make TT prefetch (Reckless #1085): issue the child-bucket fetch
+        // BEFORE build_dirty_piece + NNUE push + make_move + threat absorb, so
+        // ~all of that work overlaps the DRAM latency (vs the old post-make
+        // prefetch, which had only the short pre-probe window). key_after is an
+        // approximate hash (exact for the common cases; see board.rs) —
+        // prefetch-only; the real probe below uses the true post-make hash.
+        info.tt.prefetch(board.key_after(mv));
+
         // Build NNUE dirty piece info BEFORE make_move
         let dirty = if let Some(net) = info.nnue_net.as_deref() {
             build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt, net)
@@ -4971,9 +4979,6 @@ fn negamax(
         if info.threat_stack.active {
             info.threat_stack.absorb_deltas(board);
         }
-
-        // Prefetch TT bucket for the new position
-        info.tt.prefetch(board.hash);
 
         // Check if move gives check (opponent is now in check after make_move)
         let gives_check = board.in_check();

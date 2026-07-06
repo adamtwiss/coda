@@ -210,6 +210,42 @@ impl Board {
     }
 
     /// Move a piece on the board with hash update.
+    /// Approximate Zobrist key AFTER `mv`, computed WITHOUT mutating the board.
+    /// **For TT prefetch only** — a wrong key merely wastes a fetch; the real
+    /// probe/store after `make_move` always uses the true `self.hash`, so this
+    /// is never a correctness path. Exact for the common cases (quiet move,
+    /// capture, en passant, promotion + side flip); castling (moves a rook too)
+    /// and ep-square / castling-rights key deltas are skipped as rare — those
+    /// only cost an occasional wasted prefetch. Models Reckless `key_after`
+    /// (#1085 pre-make prefetch).
+    #[inline]
+    pub fn key_after(&self, mv: Move) -> u64 {
+        let from = move_from(mv);
+        let to = move_to(mv);
+        let flags = move_flags(mv);
+        let moved = self.piece_at(from);
+        if moved == NO_PIECE || flags == FLAG_CASTLE {
+            return self.hash;
+        }
+        let us = self.side_to_move;
+        let mut k = self.hash ^ side_key() ^ piece_key(moved, from);
+        if flags == FLAG_EN_PASSANT {
+            let cap_sq = if us == WHITE { to - 8 } else { to + 8 };
+            k ^= piece_key(make_piece(1 - us, PAWN), cap_sq);
+        } else {
+            let captured = self.piece_at(to);
+            if captured != NO_PIECE {
+                k ^= piece_key(captured, to);
+            }
+        }
+        let dest = if is_promotion(mv) {
+            make_piece(us, promotion_piece_type(mv))
+        } else {
+            moved
+        };
+        k ^ piece_key(dest, to)
+    }
+
     #[inline]
     fn move_piece(&mut self, color: Color, pt: u8, from: u8, to: u8) {
         let from_to = (1u64 << from) | (1u64 << to);
