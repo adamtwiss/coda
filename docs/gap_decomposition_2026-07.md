@@ -68,6 +68,45 @@ AFTER it. The SF ponder leg was re-run post-fix on 2026-07-06: −130.9 → −1
    mechanisms from the diagnosis doc: instant-reply latency (SF p25=3ms vs
    our 112ms) and hint-less bestmoves (4.6% vs 0.5%). Owner: Zeus.
 
+## Exhibit: fixed-10k-nodes Top-20 RR (2026-07-06) — the eval leaderboard
+
+Same top-20 pool as the TC round-robins, but every engine limited to
+nodes=10000 per move (no TM, no NPS). This isolates eval + QS + shallow
+ordering. 858 games/engine, CI ~±20:
+
+| # | Engine | Elo | | # | Engine | Elo |
+|---|--------|-----|-|---|--------|-----|
+| 1 | **Coda** | **+197** | | 11 | Hobbes | −1 |
+| 2 | Stockfish | +179 | | 12 | Stormphrax | −13 |
+| 3 | Reckless | +151 | | 13 | Alexandria | −14 |
+| 4 | Starzix | +106 | | 14 | Halogen | −55 |
+| 5 | PlentyChess | +86 | | 15 | Astra | −70 |
+| 6 | Viridithas | +74 | | 16 | Clover | −81 |
+| 7 | Cinder | +46 | | 17 | Berserk | −141 |
+| 8 | Obsidian | +41 | | 18 | Caissa | −144 |
+| 9 | Integral | +30 | | 19 | Rubichess | −176 |
+| 10 | Raphael | +17 | | 20 | Icarus | −246 |
+
+Readings (and caveats):
+- **Coda-vs-SF is a TIE, not a lead**: Coda's `go nodes` gate checks the
+  global counter at 4096-node granularity (search.rs ~1300), consuming
+  ~12.3k for a 10k limit (+23%, worth ~+15-30 here); SF/Reckless enforce
+  exactly (10001-10005, measured). The +18 point gap ≈ the artifact.
+  Defensible claim: **Coda's eval+QS is SF-tier and ahead of everything
+  else** (Coda > Reckless is significant: +46 at ±29 combined).
+- **The podium = the three threat-input NNUE engines** (Coda v9 threats,
+  SF FullThreats/SFNNv12+, Reckless): threat features let static eval see
+  tactics others need a ply of search for — maximal value at tiny budgets.
+  Correlation, not proof (next-tier archs unverified), but 3-for-3.
+- **CCRL-3600 speed/search-built engines collapse** (Berserk −141,
+  Rubichess −176, Caissa −144, Alexandria −14): their TC strength is
+  NPS/search-shaped. This table + the 100k fixed-node numbers are two ends
+  of one curve: Coda starts level-with-SF and SF pulls away as budget
+  grows — the cleanest visualization of where the remaining search gap
+  lives.
+- Fix-before-publishing note: a per-node limit check when max_nodes > 0
+  (5 lines) would make future fixed-node tests exact.
+
 ## Measurement caveats
 
 - Node counting may not be identical across engines (fixed-node legs).
