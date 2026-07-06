@@ -752,6 +752,17 @@ const CORR_HIST_GRAIN: i32 = 8;       // Scaled with LIMIT: 256/32000 ≈ 8/1024
 const CORR_HIST_MAX: i32 = 4;         // Scaled: 128/32000 ≈ 4/1024
 const CORR_HIST_LIMIT: i32 = 1024;    // Consensus (SF, Viridithas, Obsidian)
 
+// Corrhist fortress-drift guard (docs/corrhist_fortress_drift_2026-07-06.md).
+// In low-material locked/fortress positions (OCB, blocked pawns) corrhist
+// self-reinforces and rails to a phantom ±0.45 while the raw net is already
+// ~0 — the reference engines (SF/Reckless/Obsidian) all read these as 0.
+// Scale the APPLIED correction by piece count: full at/above MIN+SPAN pieces
+// (middlegames untouched), zero at/below MIN (dead-drawn endings). This
+// starves the rail without a magnitude clamp (±0.45 is a normal correction
+// size in live play, so it can't be separated by magnitude — only by regime).
+const CORR_MAT_DAMP_MIN: i32 = 6;     // <=6 pieces: correction fully off
+const CORR_MAT_DAMP_SPAN: i32 = 10;   // full correction reached at 16 pieces
+
 /// Search limits.
 #[derive(Clone)]
 pub struct SearchLimits {
@@ -1740,6 +1751,11 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
     // Weighted blend: pawn, whiteNP, blackNP, cont, transition (minor/major dropped 2026-05-19)
     let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
         + cont_corr * tp(&CORR_W_CONT) as i64 + trans_corr * tp(&CORR_W_TRANS) as i64) / tp(&CORR_HIST_DIV) as i64;
+    // Fortress-drift guard: damp the applied correction by piece count so the
+    // corrhist feedback loop can't rail to a phantom ±0.5 in low-material
+    // locked/fortress positions (see docs/corrhist_fortress_drift_2026-07-06.md).
+    let mat_damp = (popcount(board.occupied()) as i32 - CORR_MAT_DAMP_MIN).clamp(0, CORR_MAT_DAMP_SPAN);
+    let total_corr = total_corr * mat_damp as i64 / CORR_MAT_DAMP_SPAN as i64;
     let adjusted = raw_eval + (total_corr as i32) / tp(&CORR_HIST_GRAIN_T);
     // Keep the corrected static eval strictly inside the non-mate band so it
     // can never be read back as a mate by the MATE_IN_MAX_PLY guards. (Real
@@ -6577,6 +6593,75 @@ mod tests {
         assert_eq!(apply_halfmove_scale(-INFINITY, 50), -INFINITY);
         assert_eq!(apply_halfmove_scale(MATE_SCORE - 5, 99), MATE_SCORE - 5);
         assert_eq!(apply_halfmove_scale(-(MATE_SCORE - 5), 99), -(MATE_SCORE - 5));
+    }
+
+    /// Regression guard for docs/corrhist_fortress_drift_2026-07-06.md.
+    /// Correction history used to self-reinforce into a phantom ±0.45 in
+    /// low-material locked/fortress positions (opposite-coloured bishops,
+    /// blocked pawns) that Stockfish/Reckless/Obsidian all read as 0 — the
+    /// raw NNUE was fine (~0), it was corrhist railing in the low-signal
+    /// regime. The piece-count damping in `corrected_eval` fixes it. These
+    /// four positions (two from the games that surfaced the bug) must stay
+    /// near 0; a regression would blow them back out to ±0.45.
+    ///
+    /// Needs an NNUE net (the drift is a corrhist-on-NNUE effect; the PeSTO
+    /// fallback does not reproduce it), so it skips gracefully when no net is
+    /// present — honours `CODA_TEST_NET`, else `net.nnue`, else a `net-v*.nnue`.
+    #[test]
+    fn test_corrhist_fortress_no_drift() {
+        use crate::board::Board;
+        crate::init();
+
+        // Hermetic net selection: use the PRODUCTION net defined by net.txt
+        // (the basename of its URL — what `make net` downloads and what the
+        // build embeds), or a CODA_TEST_NET override. No random/first-match
+        // `.nnue` fallback: prod nets are hash-named (`net-<HASH>.nnue`, no
+        // generation prefix), so any filename heuristic would silently pick a
+        // stale net and make this a false guard. Skip if the prod net isn't
+        // present locally (run `make net`).
+        let net_path: Option<String> = std::env::var("CODA_TEST_NET").ok()
+            .filter(|p| std::path::Path::new(p).exists())
+            .or_else(|| {
+                let url = std::fs::read_to_string("net.txt").ok()?;
+                let name = url.trim().rsplit('/').next()?.trim().to_string();
+                (!name.is_empty() && std::path::Path::new(&name).exists()).then_some(name)
+            });
+        let net_path = match net_path {
+            Some(p) => p,
+            None => { eprintln!("Skipping fortress-drift test: no NNUE net found"); return; }
+        };
+
+        let mut info = SearchInfo::new(16);
+        info.silent = true;
+        if let Err(e) = info.load_nnue(&net_path) {
+            eprintln!("Skipping fortress-drift test: net load failed: {}", e);
+            return;
+        }
+
+        // (FEN, label) — all are dead draws; truth is ~0.
+        let fortresses = [
+            ("8/b7/7p/1k6/8/1B3K1P/8/8 w - - 2 54",    "blocked h3/h6 OCB (game aIosNgFS mv54)"),
+            ("8/8/7p/2b5/6B1/7P/5k2/2K5 w - - 18 62",  "blocked OCB (game aIosNgFS mv62)"),
+            ("8/k7/P2K4/8/5p2/P7/1b2B3/8 b - - 26 67", "7-man OCB down a pawn (game PYiXcgdg mv67)"),
+            ("8/k2K4/P7/P7/8/8/8/2b2B2 b - - 0 94",    "K+B+2P vs K+B fortress (game PYiXcgdg mv94)"),
+        ];
+        let limits = SearchLimits { depth: 16, infinite: true, ..SearchLimits::new() };
+        for (fen, label) in fortresses {
+            let mut board = Board::from_fen(fen);
+            info.clear_correction_history();   // fresh corrhist per position
+            info.history.clear();
+            info.tt.new_search();
+            info.nodes = 0;
+            info.last_flushed_nodes.set(0);
+            info.global_nodes.store(0, Ordering::Relaxed);
+            let _ = search(&mut board, &mut info, &limits);
+            let s = info.last_score;
+            assert!(s.abs() <= 25,
+                "corrhist fortress-drift regression: {} scored {} cp (want ~0, |s|<=25). \
+                 Correction history is re-inflating a dead-drawn/locked position — \
+                 see docs/corrhist_fortress_drift_2026-07-06.md",
+                label, s);
+        }
     }
 
     /// Singular extensions set `info.excluded_move[ply]` during verification
