@@ -18344,3 +18344,19 @@ mid-depth thinning cost more than the tail gain. Classic retune-on-branch
 signature (precedent: cont-hist malus flat→+6.5 after retune). One combined
 retune shot planned; if that fails the port thread closes and the 2-DOF
 deep-slope fix (our own, aimed at the measured pathology) proceeds.
+
+## 2026-07-06 — #2599 multi-v9-s1-both-pcmild-ms32 vs s1-both (raw endpoints): H0 at −27
+
+**−27.2 ±7.5, H0 in 2,486 games** ([-1.5,1.5] net-vs-net on main). Far too
+large for "pc-milder didn't transfer" (it measured +12 at S200) — this is
+failure-mode territory. Upload hashes verified correct on OB (F672FD89 /
+123B9A91), both nets bench sane. Disambiguation SPRT fired immediately:
+the SWA endpoints of the same two runs (DD61F661 vs 1F8A51E5, same bounds).
+If SWA-vs-SWA is also hugely negative → the pcmild-ms32 stage-1 RUN is bad
+(flag typo / data-dir / interaction of ms32000 with stage-1's alternate
+data distribution — note max-score 32000 admits the TB-rescored decisive
+band, a big distribution change for stage-1 data). If SWA-vs-SWA is near
+zero → the raw endpoint of that run is anomalous (oscillating tail) and
+the recipe verdict should be read from the SWA pair. Bench note: raw pair
+trees nearly identical (2.18M/2.17M) but SWA pair diverge 12%
+(2.23M/2.50M) — consistent with something unusual in one of the tails.
