@@ -157,9 +157,9 @@ Do not add tunables to the core set unless you are confident that they are not '
 
 **Exemptions:** TT move exempt from pruning. Promotions exempt from LMR.
 
-**History tables:** main [from_threatened][to_threatened][from][to] (4D threat-aware), capture [piece][to][victim], continuation [piece][to][piece][to] (4 plies: 1,2,4,6), pawn [pawnHash%8192][piece][to]. Linear bonus formula: clamp(0, HIST_BONUS_MAX, HIST_BONUS_MULT*depth - HIST_BONUS_OFFSET).
+**History tables:** main [from_threatened][to_threatened][from][to] (4D threat-aware), capture [piece][to][victim], continuation [piece][to][piece][to] (4 plies: 1,2,4,6), pawn [pawnHash&511][piece][to] (PAWN_HIST_SIZE=512). Linear bonus formula: clamp(0, HIST_BONUS_MAX, HIST_BONUS_MULT*depth - HIST_BONUS_OFFSET).
 
-**Correction history:** Multi-source static eval correction. Six source tables (pawn, white-NP, black-NP, minor, major, continuation) with five SPSA-tunable weights (the two NP tables share `CORR_W_NP`). Proportional gravity update.
+**Correction history:** Multi-source static eval correction. Five sources (pawn, white-NP, black-NP, continuation, transition/zobrist-delta) with four SPSA-tunable weights: CORR_W_PAWN, CORR_W_NP (shared by both NP tables), CORR_W_CONT, CORR_W_TRANS. (minor/major tables ablated to 0 and dropped 2026-05-19.) Proportional gravity update.
 
 **Time management:** 3-factor multiplicative model (Obsidian/Clarity). Node fraction (tracks per-root-move nodes), best-move stability (linear), score trend. Validated at LTC (40+0.4); TM is also high-leverage at STC (#1568 TM rework +135 self-play STC) — see §TM-class changes for the methodology.
 
