@@ -205,7 +205,7 @@ tunables!(
     // #2444 (1000 iters, 30+0 zero-inc): base 40->34.4, growth 100->94.3.
     (NO_INC_MTG_BASE, 34, 20, 80, 4.0, false),
     (NO_INC_MTG_GROWTH_PCT, 94, 0, 200, 10.0, false),
-    (LMR_HIST_DIV, 14279, 2000, 100000, 4900.0, true),
+    (LMR_HIST_DIV, 17364, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
     // continuous `hist_score / LMR_HIST_DIV`. Obsidian uses continuous
@@ -214,8 +214,8 @@ tunables!(
     // of quiet — single-source capt_hist needs smaller divisor for
     // equivalent reduction magnitude). Coda's quiet div is 7736; same
     // ratio gives ~4500. Defaulting 5000 as a starting point.
-    (LMR_HIST_DIV_CAP, 2069, 1000, 20000, 1500.0, true),
-    (LMR_C_QUIET, 145, 40, 300, 13.0, true),
+    (LMR_HIST_DIV_CAP, 2258, 1000, 20000, 1500.0, true),
+    (LMR_C_QUIET, 152, 40, 300, 13.0, true),
     (LMR_C_CAP, 173, 80, 350, 12.5, true),
     // Explicit cut-node LMR bump (P1.1 / #2065). Cut nodes reduce by
     // LMR_CUTNODE_BUMP (+1 more with no TT move); all-nodes keep +1. Default 2
@@ -227,17 +227,17 @@ tunables!(
     // after #2594/#2596 H0'd at full strength — our ln(d)·ln(m) base keeps
     // its move-count term (Reckless deleted theirs) so their constants
     // double-count; ranges run to 0 so SPSA can kill dead terms.
-    (LMR_WINBETA_CENTI, 50, 0, 250, 12.0, true),
-    (LMR_TTALPHA_CENTI, 22, 0, 150, 8.0, true),
+    (LMR_WINBETA_CENTI, 45, 0, 250, 12.0, true),
+    (LMR_TTALPHA_CENTI, 18, 0, 150, 8.0, true),
     (LMR_TTDEPTH_CENTI, 16, 0, 150, 8.0, true),
-    (LMR_EXPECT_MULT, 20, 0, 120, 6.0, true),
+    (LMR_EXPECT_MULT, 19, 0, 120, 6.0, true),
     // cutoff_count LMR terms (T1.2, docs/reckless_audit_2026-07-06.md).
     // Child ply failed high >2 times under this node -> reduce late moves
     // more (+extra at non-PV all-nodes). Defaults = Reckless's tuned
     // values reseeded at half (full: 112/39) — see battery note above.
     // Threshold >2 fixed (SF uses >3) — not a knob.
-    (LMR_CUTOFF_CNT_CENTI, 56, 0, 250, 12.0, true),
-    (LMR_CUTOFF_ALLNODE_CENTI, 20, 0, 150, 8.0, true),
+    (LMR_CUTOFF_CNT_CENTI, 54, 0, 250, 12.0, true),
+    (LMR_CUTOFF_ALLNODE_CENTI, 17, 0, 150, 8.0, true),
     // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv,
     // Reckless at >=5+ttPv. Coda's 4 fires SE at shallower depth where
     // singular_depth is too low to judge singularity reliably. Bumping
