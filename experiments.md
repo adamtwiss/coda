@@ -18124,9 +18124,14 @@ since Phase 13). Mechanism (30g vs SF, Zeus): instant rate 44.2%→40.4%
 (0-5-25, best 30g probe yet), 0 forfeits. Near-peer RR (Zeus, 500g/arm,
 Berserk/Obsidian/Alexandria/Cinder/Integral, ponder): bundle +30±14 vs
 main +25±12 → +5 (±~18) — positive lean, below resolution as expected.
-OB [-2,1] gate on the bundle submitted (bench-identical 2206079).
-Merge/park = Adam (TM-class); taking the bundle supersedes
-tm/ponder-faillow-ext + #2575.
+OB [-2,1] gate on the bundle = **#2580: H1 ✓ at +0.7±1.3, N=60k**
+(bench-identical 2206079). The 4th bench-identical ponder branch BROKE
+the -2..-3 drift pattern (#2575 formal H0 -2.9±2.2 N=21k) — the gates
+are noisy near-zero walks exactly as the P(H0|true 0)=27.5% analysis
+predicted; the layout-effect hypothesis is shelved unless the pattern
+re-emerges. Every instrument on the bundle points the same
+slightly-positive direction. Merge/park = Adam (TM-class); taking the
+bundle supersedes tm/ponder-faillow-ext + #2575.
 
 LESSON (mechanism-first vindicated 3x in one day): each variant LOOKED
 plausible in code; only the -debug spend-distribution parse showed v1/v2
