@@ -619,15 +619,28 @@ pub const PH_FL_MIN_DEPTH: i32 = 10;
 ///     the pondered conclusion destabilized), AND
 ///   - the elapsed window is not a double-ponderhit cascade artifact (see
 ///     MIN_PONDER_ELAPSED_FOR_INSTANT_MS).
+/// Stability-scaled soft threshold for the instant reply (percent of the
+/// intended soft the pondered elapsed must cover, indexed by the ponder
+/// search's best-move stability). SAME SHAPE as the dynamic-TM
+/// STABILITY_TABLE [1.71, 1.20, 0.90, 0.80, 0.75] — SF arms stopOnPonderhit
+/// against its instability-inflated optimum, so an unstable ponder (stab 0)
+/// must have covered 1.71x soft before it may instant-emit, while a settled
+/// one (4+) qualifies at 0.75x. Const, not a tunable (OB cannot ponder).
+pub const INSTANT_STAB_PCT: [u64; 5] = [171, 120, 90, 80, 75];
+
 #[inline]
 pub fn should_instant_reply(
     elapsed_ms: u64,
     intended_soft_ms: u64,
     ponder_completed_depth: i32,
     root_failing_low: bool,
+    ponder_stability: u64,
 ) -> bool {
+    let need = intended_soft_ms
+        .saturating_mul(INSTANT_STAB_PCT[(ponder_stability as usize).min(4)])
+        / 100;
     elapsed_ms >= MIN_PONDER_ELAPSED_FOR_INSTANT_MS
-        && elapsed_ms >= intended_soft_ms
+        && elapsed_ms >= need
         && ponder_completed_depth >= MIN_PONDER_DEPTH_FOR_INSTANT
         && !root_failing_low
 }
@@ -1001,6 +1014,13 @@ pub struct SearchInfo {
     /// search (main thread only writes; capped at PH_FL_MAX_EXTENSIONS).
     /// Plain field — never shared; helpers' copies stay 0 (silent-gated).
     pub ph_fl_extensions: u32,
+    /// Best-move stability of the (ponder) search (shared atomic; mirrors
+    /// tm_best_stable, which is tracked on EVERY iteration including pure
+    /// ponder). Read by the UCI thread at ponderhit: the instant-reply gate
+    /// scales its elapsed-vs-soft threshold by the SAME stability table the
+    /// dynamic TM uses (SF arms stopOnPonderhit against its instability-
+    /// inflated optimum — an unstable-but-deep ponder must NOT instant-emit).
+    pub ponder_stability: std::sync::Arc<AtomicU64>,
     pub sel_depth: i32,
     pub last_score: i32,
     /// Root side-to-move (was used for contempt; retained for potential future use)
@@ -1111,6 +1131,7 @@ impl SearchInfo {
             root_fail_low: std::sync::Arc::new(AtomicBool::new(false)),
             ponder_depth: std::sync::Arc::new(AtomicU64::new(0)),
             ph_fl_extensions: 0,
+            ponder_stability: std::sync::Arc::new(AtomicU64::new(0)),
             sel_depth: 0,
             last_score: 0,
             root_stm: WHITE,
@@ -2521,6 +2542,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // blocks the instant reply. Stale values from the PREVIOUS search must
     // never satisfy the gate (double-ponderhit guard).
     info.ponder_depth.store(0, std::sync::atomic::Ordering::Relaxed);
+    info.ponder_stability.store(0, std::sync::atomic::Ordering::Relaxed);
     info.root_fail_low.store(false, std::sync::atomic::Ordering::Relaxed);
     if !info.silent {
         info.ph_fl_active.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -2949,6 +2971,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         prev_score = score;
         info.last_score = score;
         info.ponder_depth.store(depth as u64, std::sync::atomic::Ordering::Relaxed);
+        info.ponder_stability.store(info.tm_best_stable.max(0) as u64, std::sync::atomic::Ordering::Relaxed);
 
         // Snapshot the completed iteration's pv_table[0] so a future
         // mid-iteration interrupt can restore consistency between best_move
@@ -6556,11 +6579,11 @@ mod tests {
         // and a maximal (stale) depth claim.
         for elapsed in 0..MIN_PONDER_ELAPSED_FOR_INSTANT_MS {
             assert!(
-                !should_instant_reply(elapsed, 0, 100, false),
+                !should_instant_reply(elapsed, 0, 100, false, 4),
                 "elapsed={}ms < {}ms must never instant-emit (soft=0, depth=100)",
                 elapsed, MIN_PONDER_ELAPSED_FOR_INSTANT_MS
             );
-            assert!(!should_instant_reply(elapsed, 1, i32::MAX, false));
+            assert!(!should_instant_reply(elapsed, 1, i32::MAX, false, 4));
         }
 
         // Big-increment scenario: at 60s+10s the intended soft is multiple
@@ -6570,15 +6593,15 @@ mod tests {
             compute_tm_budgets(60_000, 10_000, 0, 100, 20, true);
         assert!(soft >= 1000,
             "test premise: big-inc soft should be seconds, got {}ms", soft);
-        assert!(!should_instant_reply(1, soft, 64, false),
+        assert!(!should_instant_reply(1, soft, 64, false, 4),
             "1ms ponder with multi-second soft must not instant-emit");
 
         // Depth floor backstops degenerate tiny-soft cases even past the
         // structural elapsed floor.
-        assert!(!should_instant_reply(50, 20, MIN_PONDER_DEPTH_FOR_INSTANT - 1, false),
+        assert!(!should_instant_reply(50, 20, MIN_PONDER_DEPTH_FOR_INSTANT - 1, false, 4),
             "depth below MIN_PONDER_DEPTH_FOR_INSTANT must block instant reply");
         // Fresh-search reset state (depth=0) always blocks.
-        assert!(!should_instant_reply(5000, 20, 0, false));
+        assert!(!should_instant_reply(5000, 20, 0, false, 4));
     }
 
     /// P1 instant-reply gate — fires when the pondered time covers the soft
@@ -6587,14 +6610,29 @@ mod tests {
     #[test]
     fn ponder_instant_reply_fires_when_budget_covered() {
         // elapsed >= soft, depth >= floor, not failing low → instant.
-        assert!(should_instant_reply(5000, 3000, 15, false));
-        assert!(should_instant_reply(3000, 3000, MIN_PONDER_DEPTH_FOR_INSTANT, false));
+        assert!(should_instant_reply(5000, 3000, 15, false, 4));
+        assert!(should_instant_reply(3000, 3000, MIN_PONDER_DEPTH_FOR_INSTANT, false, 4));
         // Root failing low revokes the instant reply.
-        assert!(!should_instant_reply(5000, 3000, 15, true));
+        assert!(!should_instant_reply(5000, 3000, 15, true, 4));
         // Budget not yet covered → keep thinking.
-        assert!(!should_instant_reply(2999, 3000, 15, false));
+        assert!(!should_instant_reply(2249, 3000, 15, false, 4));
+    }
+
+    #[test]
+    fn test_instant_reply_stability_gate() {
+        // Unstable ponder (stab 0) needs 1.71x soft; settled (4+) needs 0.75x.
+        // elapsed exactly = soft qualifies only from stability >= 2 (0.90x).
+        assert!(!should_instant_reply(3000, 3000, 15, false, 0));
+        assert!(!should_instant_reply(3000, 3000, 15, false, 1));
+        assert!(should_instant_reply(3000, 3000, 15, false, 2));
+        assert!(should_instant_reply(3000, 3000, 15, false, 4));
+        // Unstable qualifies once elapsed covers the inflated threshold.
+        assert!(should_instant_reply(5130, 3000, 15, false, 0));
+        assert!(!should_instant_reply(5129, 3000, 15, false, 0));
+        // Stability index clamps at 4.
+        assert!(should_instant_reply(2250, 3000, 15, false, 9));
         // Depth floor.
-        assert!(!should_instant_reply(5000, 3000, MIN_PONDER_DEPTH_FOR_INSTANT - 1, false));
+        assert!(!should_instant_reply(5000, 3000, MIN_PONDER_DEPTH_FOR_INSTANT - 1, false, 4));
     }
 
     /// P3 — the Ponder-on +25% optimum bump: applied to opt only (hard/max/

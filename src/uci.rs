@@ -228,6 +228,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut ponderhit_isoft_flag = info.ponderhit_isoft.clone(); // FL-EXT v2: intended full soft
     let mut ponderhit_abs_flag = info.ponderhit_abs.clone(); // shared in-flight forfeit guard
     let mut ponder_depth_flag = info.ponder_depth.clone(); // ponder search's completed depth
+    let mut ponder_stab_flag = info.ponder_stability.clone(); // ponder search's best-move stability
     let mut root_fail_low_flag = info.root_fail_low.clone(); // root aspiration fail-low state
     // Separate flag set ONLY by external UCI "stop"/"ponderhit"/"quit" — distinct
     // from info.stop (which search_smp also sets internally when main search
@@ -349,6 +350,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         ponderhit_isoft_flag = info.ponderhit_isoft.clone();
                         ponderhit_abs_flag = info.ponderhit_abs.clone();
                         ponder_depth_flag = info.ponder_depth.clone();
+                        ponder_stab_flag = info.ponder_stability.clone();
                         root_fail_low_flag = info.root_fail_low.clone();
                     }
                 }
@@ -559,6 +561,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 // before the new ponder search stores a real depth reads 0
                 // here → instant reply structurally blocked.
                 ponder_depth_flag.store(0, Ordering::Relaxed);
+                ponder_stab_flag.store(0, Ordering::Relaxed);
                 root_fail_low_flag.store(false, Ordering::Relaxed);
                 // Clear the abandon-ponder suppress flag — this new search
                 // owns its bestmove emit. Set right before spawn so any value
@@ -589,6 +592,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 ponderhit_isoft_flag = search_info.ponderhit_isoft.clone();
                 ponderhit_abs_flag = search_info.ponderhit_abs.clone();
                 ponder_depth_flag = search_info.ponder_depth.clone();
+                ponder_stab_flag = search_info.ponder_stability.clone();
                 root_fail_low_flag = search_info.root_fail_low.clone();
                 let threads = num_threads;
                 let is_ponder_search = is_ponder;
@@ -975,13 +979,14 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         let ponder_depth =
                             ponder_depth_flag.load(Ordering::Relaxed) as i32;
                         let failing_low = root_fail_low_flag.load(Ordering::Relaxed);
+                        let ponder_stab = ponder_stab_flag.load(Ordering::Relaxed);
 
                         // Very low time (< 2s with no inc): instant stop.
                         if hard <= overhead && our_inc == 0 && our_time < 2000 {
                             external_stop.store(true, Ordering::SeqCst);
                             stop_flag.store(true, Ordering::SeqCst);
                         } else if crate::search::should_instant_reply(
-                            elapsed, soft, ponder_depth, failing_low)
+                            elapsed, soft, ponder_depth, failing_low, ponder_stab)
                         {
                             // P1 stopOnPonderhit (2026-07-05 ponder diagnosis;
                             // SF search.cpp:563-571 technique): the pondered
@@ -1133,6 +1138,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         ponderhit_isoft_flag = info.ponderhit_isoft.clone();
                         ponderhit_abs_flag = info.ponderhit_abs.clone();
                         ponder_depth_flag = info.ponder_depth.clone();
+                        ponder_stab_flag = info.ponder_stability.clone();
                         root_fail_low_flag = info.root_fail_low.clone();
                     }
                 }
