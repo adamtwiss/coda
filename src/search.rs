@@ -602,6 +602,25 @@ pub const MIN_PONDER_ELAPSED_FOR_INSTANT_MS: u64 = 10;
 /// enforcement floor).
 pub const MIN_POST_PONDERHIT_MS: u64 = 50;
 
+/// FL-EXT (2026-07-05, fail-low extension tail): hard-frame extension per
+/// root fail-low event in the post-ponderhit frame, in percent of the hard
+/// budget — the single step of the aspiration fail-low factor
+/// (1 + 0.34·min(2, fl), SF/Viridithas shape) applied to the post-hit
+/// deadlines. The 2026-07-05 ponder diagnosis measured SF spending >1s
+/// post-hit on 3.3% of moves (its fail-low re-thinks) vs our 0.0% — the P2
+/// cap clipped exactly those. Consts, DELIBERATELY NOT tunables: OB cannot
+/// ponder, SPSA would detune them on noise; sweep in a local ponder
+/// gauntlet only.
+pub const PH_FL_HARD_EXT_PCT: u64 = 34;
+/// Max fail-low deadline extensions per post-hit search (SF's min(2, fl)).
+pub const PH_FL_MAX_EXTENSIONS: u32 = 2;
+/// Minimum root depth for a during-post-hit fail-low to trigger a deadline
+/// extension. Shallow aspiration-window misses (d4-8) are routine noise and
+/// burned the whole extension budget within milliseconds in v1 (mechanism
+/// run 2026-07-05: events at now=2ms, tail still 0.0%); only a fail-low at
+/// a real search frontier signals genuine destabilization.
+pub const PH_FL_MIN_DEPTH: i32 = 10;
+
 /// stopOnPonderhit-class instant-reply decision (SF search.cpp:563-571
 /// pattern, evaluated at the ponderhit instead of during pondering — our
 /// clock doesn't tick while pondering, so the budgets the move would have
@@ -615,15 +634,28 @@ pub const MIN_POST_PONDERHIT_MS: u64 = 50;
 ///     the pondered conclusion destabilized), AND
 ///   - the elapsed window is not a double-ponderhit cascade artifact (see
 ///     MIN_PONDER_ELAPSED_FOR_INSTANT_MS).
+/// Stability-scaled soft threshold for the instant reply (percent of the
+/// intended soft the pondered elapsed must cover, indexed by the ponder
+/// search's best-move stability). SAME SHAPE as the dynamic-TM
+/// STABILITY_TABLE [1.71, 1.20, 0.90, 0.80, 0.75] — SF arms stopOnPonderhit
+/// against its instability-inflated optimum, so an unstable ponder (stab 0)
+/// must have covered 1.71x soft before it may instant-emit, while a settled
+/// one (4+) qualifies at 0.75x. Const, not a tunable (OB cannot ponder).
+pub const INSTANT_STAB_PCT: [u64; 5] = [171, 120, 90, 80, 75];
+
 #[inline]
 pub fn should_instant_reply(
     elapsed_ms: u64,
     intended_soft_ms: u64,
     ponder_completed_depth: i32,
     root_failing_low: bool,
+    ponder_stability: u64,
 ) -> bool {
+    let need = intended_soft_ms
+        .saturating_mul(INSTANT_STAB_PCT[(ponder_stability as usize).min(4)])
+        / 100;
     elapsed_ms >= MIN_PONDER_ELAPSED_FOR_INSTANT_MS
-        && elapsed_ms >= intended_soft_ms
+        && elapsed_ms >= need
         && ponder_completed_depth >= MIN_PONDER_DEPTH_FOR_INSTANT
         && !root_failing_low
 }
@@ -950,6 +982,21 @@ pub struct SearchInfo {
     /// soft so we still spend some time after a ponderhit even when the
     /// position is rock-solid (prevents instant-emit).
     pub ponderhit_floor: std::sync::Arc<AtomicU64>,
+    /// FL-EXT v2: the INTENDED FULL soft budget (duration ms, from-go-ponder
+    /// frame) this move would get on a plain `go`. Stored by the ponderhit
+    /// handler with the deadline group; read by the fail-low extension to
+    /// inflate the optimum SF-style (soft x (1 + 0.34 x min(2, fl))).
+    pub ponderhit_isoft: std::sync::Arc<AtomicU64>,
+    /// FL-EXT v3: MAIN thread's "deep root fail-low unresolved in the
+    /// post-hit frame" state. While true, should_stop suspends the
+    /// mid-iteration soft band (hard + abs still bind) — SF semantics: a
+    /// root fail-low revokes the optimum stop entirely; only maximum time
+    /// bounds the re-think (the >1s tail source; a soft multiple cannot
+    /// reach it: STC intended-soft x1.68 ~ 340ms). Written ONLY by the main
+    /// thread (helpers' aspiration state must not clobber it) but SHARED to
+    /// helpers so they ride along instead of tripping the shared stop at
+    /// the stale band.
+    pub ph_fl_active: std::sync::Arc<AtomicBool>,
     /// Time-management baseline: elapsed-ms at which the soft budget starts
     /// counting. 0 for normal `go` (TM starts at search start). Set to the
     /// elapsed-at-ponderhit value when post-ponderhit dynamic TM kicks in,
@@ -989,6 +1036,17 @@ pub struct SearchInfo {
     /// Completed search depth (shared atomic). Updated by search thread after
     /// each completed iteration. Read by UCI thread on ponderhit to scale budget.
     pub ponder_depth: std::sync::Arc<AtomicU64>,
+    /// FL-EXT: count of fail-low deadline extensions granted in THIS post-hit
+    /// search (main thread only writes; capped at PH_FL_MAX_EXTENSIONS).
+    /// Plain field — never shared; helpers' copies stay 0 (silent-gated).
+    pub ph_fl_extensions: u32,
+    /// Best-move stability of the (ponder) search (shared atomic; mirrors
+    /// tm_best_stable, which is tracked on EVERY iteration including pure
+    /// ponder). Read by the UCI thread at ponderhit: the instant-reply gate
+    /// scales its elapsed-vs-soft threshold by the SAME stability table the
+    /// dynamic TM uses (SF arms stopOnPonderhit against its instability-
+    /// inflated optimum — an unstable-but-deep ponder must NOT instant-emit).
+    pub ponder_stability: std::sync::Arc<AtomicU64>,
     pub sel_depth: i32,
     pub last_score: i32,
     /// Root side-to-move (was used for contempt; retained for potential future use)
@@ -1093,11 +1151,15 @@ impl SearchInfo {
             ponderhit_time: std::sync::Arc::new(AtomicU64::new(0)),
             ponderhit_soft: std::sync::Arc::new(AtomicU64::new(0)),
             ponderhit_floor: std::sync::Arc::new(AtomicU64::new(0)),
+            ponderhit_isoft: std::sync::Arc::new(AtomicU64::new(0)),
+            ph_fl_active: std::sync::Arc::new(AtomicBool::new(false)),
             tm_baseline: 0,
             abs_deadline: 0,
             ponderhit_abs: std::sync::Arc::new(AtomicU64::new(0)),
             root_fail_low: std::sync::Arc::new(AtomicBool::new(false)),
             ponder_depth: std::sync::Arc::new(AtomicU64::new(0)),
+            ph_fl_extensions: 0,
+            ponder_stability: std::sync::Arc::new(AtomicU64::new(0)),
             sel_depth: 0,
             last_score: 0,
             root_stm: WHITE,
@@ -1301,7 +1363,12 @@ impl SearchInfo {
                 // `soft + slice` = "elapsed exceeds soft by 2×" in the
                 // post-hit frame regardless of how long the ponder ran.
                 let ph_soft = self.ponderhit_soft.load(Ordering::Relaxed);
-                if ph_soft > 0 {
+                if ph_soft > 0 && !self.ph_fl_active.load(Ordering::Relaxed) {
+                    // FL-EXT v3: while the MAIN thread's root fail-low is
+                    // unresolved the soft band is suspended (SF: fail-low
+                    // revokes the optimum stop; only maximum time binds).
+                    // hard + grace below and the abs forfeit wall above
+                    // still bound the re-think — that IS the >1s tail.
                     let slice = self.ponderhit_floor.load(Ordering::Relaxed)
                         .max(MIN_POST_PONDERHIT_MS);
                     if elapsed >= ph_soft.saturating_add(slice) {
@@ -1810,6 +1877,8 @@ pub(crate) fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     helper.ponderhit_time = main.ponderhit_time.clone();
     helper.ponderhit_soft = main.ponderhit_soft.clone();
     helper.ponderhit_floor = main.ponderhit_floor.clone();
+    helper.ponderhit_isoft = main.ponderhit_isoft.clone();
+    helper.ph_fl_active = main.ph_fl_active.clone();
     // Share the in-flight post-ponderhit forfeit guard too (same rationale as
     // ponderhit_time). root_fail_low is deliberately NOT shared: it is the
     // MAIN thread's root aspiration state — a helper's own fail-lows must not
@@ -1880,6 +1949,8 @@ fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
     helper.ponderhit_time = main.ponderhit_time.clone();
     helper.ponderhit_soft = main.ponderhit_soft.clone();
     helper.ponderhit_floor = main.ponderhit_floor.clone();
+    helper.ponderhit_isoft = main.ponderhit_isoft.clone();
+    helper.ph_fl_active = main.ph_fl_active.clone();
     helper.ponderhit_abs = main.ponderhit_abs.clone(); // in-flight forfeit guard
     helper.global_nodes = main.global_nodes.clone();
     helper.thread_bmc = main.thread_bmc.clone(); // shared per-thread bmc array (SF cross-thread TM)
@@ -2516,7 +2587,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // blocks the instant reply. Stale values from the PREVIOUS search must
     // never satisfy the gate (double-ponderhit guard).
     info.ponder_depth.store(0, std::sync::atomic::Ordering::Relaxed);
+    info.ponder_stability.store(0, std::sync::atomic::Ordering::Relaxed);
     info.root_fail_low.store(false, std::sync::atomic::Ordering::Relaxed);
+    if !info.silent {
+        info.ph_fl_active.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    info.ph_fl_extensions = 0;
     info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
@@ -2782,6 +2858,57 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // below. Relaxed: independent bool gate, no dependent
                     // data (see field doc).
                     info.root_fail_low.store(true, std::sync::atomic::Ordering::Relaxed);
+                    // FL-EXT v2 during-post-hit half (2026-07-05): a root
+                    // fail-low at a REAL search frontier (depth floor below)
+                    // inflates the intended optimum SF-style and re-publishes
+                    // the post-hit soft deadline in the from-go-ponder frame:
+                    //   allowed(from go ponder) = intended_soft x (1 + 0.34 n)
+                    // Long ponders (elapsed already past the inflated
+                    // optimum) correctly get nothing -- SF stops promptly
+                    // there too; short-ponder deep fail-lows get the >1s
+                    // re-think tail (SF: 3.3% of post-hit moves; we had
+                    // 0.0%). Main thread only; at most PH_FL_MAX_EXTENSIONS
+                    // effective events (SF's min(2, fl)); every push
+                    // saturates at ponderhit_abs -- the forfeit wall never
+                    // moves.
+                    if !info.silent
+                        && info.ph_fl_extensions < PH_FL_MAX_EXTENSIONS
+                        && info.root_depth >= PH_FL_MIN_DEPTH
+                    {
+                        let ph_hard = info.ponderhit_time.load(std::sync::atomic::Ordering::Acquire);
+                        if ph_hard > 0 {
+                            // v3: suspend the soft band until this fail-low
+                            // resolves (cleared in the resolve branch below;
+                            // a mid-fail-low abort leaves it true harmlessly
+                            // — the search is ending anyway and the next
+                            // search resets it).
+                            info.ph_fl_active.store(true, std::sync::atomic::Ordering::Relaxed);
+                            let isoft = info.ponderhit_isoft.load(std::sync::atomic::Ordering::Relaxed);
+                            let abs = info.ponderhit_abs.load(std::sync::atomic::Ordering::Relaxed);
+                            let clamp_abs = |v: u64| if abs > 0 { v.min(abs) } else { v };
+                            let n = (info.ph_fl_extensions + 1) as u64;
+                            let inflated = isoft.saturating_mul(100 + PH_FL_HARD_EXT_PCT * n) / 100;
+                            let cur_soft = info.ponderhit_soft.load(std::sync::atomic::Ordering::Relaxed);
+                            let new_soft = clamp_abs(inflated.max(cur_soft));
+                            if new_soft > cur_soft {
+                                info.ph_fl_extensions += 1;
+                                let slice = info.ponderhit_floor.load(std::sync::atomic::Ordering::Relaxed)
+                                    .max(MIN_POST_PONDERHIT_MS);
+                                let new_hard = clamp_abs(ph_hard.max(new_soft.saturating_add(slice)));
+                                info.tm_max_time = info.tm_max_time
+                                    .max(new_hard.saturating_sub(info.tm_baseline));
+                                // A1 publish order: soft Relaxed first, hard
+                                // (the publish flag) Release last.
+                                info.ponderhit_soft.store(new_soft, std::sync::atomic::Ordering::Relaxed);
+                                info.ponderhit_time.store(new_hard, std::sync::atomic::Ordering::Release);
+                                if TM_DEBUG.load(std::sync::atomic::Ordering::Relaxed) {
+                                    eprintln!(
+                                        "PH_FL_EXT n={} depth={} isoft={}ms soft->{}ms hard->{}ms abs={}ms",
+                                        info.ph_fl_extensions, info.root_depth, isoft, new_soft, new_hard, abs);
+                                }
+                            }
+                        }
+                    }
                     // Fail low: contract beta aggressively toward alpha, widen alpha
                     beta = (3 * alpha + 5 * beta) / 8;
                     alpha = (result - delta).max(-INFINITY);
@@ -2799,6 +2926,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // flag true, which safely blocks instant replies until
                     // the next search resets it.
                     info.root_fail_low.store(false, std::sync::atomic::Ordering::Relaxed);
+                    if !info.silent {
+                        // FL-EXT v3: fail-low resolved — re-enable the
+                        // post-hit soft band (the v2-extended deadline now
+                        // applies at the next check).
+                        info.ph_fl_active.store(false, std::sync::atomic::Ordering::Relaxed);
+                    }
                     asp_result = result;
                     break;
                 }
@@ -2883,6 +3016,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         prev_score = score;
         info.last_score = score;
         info.ponder_depth.store(depth as u64, std::sync::atomic::Ordering::Relaxed);
+        info.ponder_stability.store(info.tm_best_stable.max(0) as u64, std::sync::atomic::Ordering::Relaxed);
 
         // Snapshot the completed iteration's pv_table[0] so a future
         // mid-iteration interrupt can restore consistency between best_move
@@ -6513,11 +6647,11 @@ mod tests {
         // and a maximal (stale) depth claim.
         for elapsed in 0..MIN_PONDER_ELAPSED_FOR_INSTANT_MS {
             assert!(
-                !should_instant_reply(elapsed, 0, 100, false),
+                !should_instant_reply(elapsed, 0, 100, false, 4),
                 "elapsed={}ms < {}ms must never instant-emit (soft=0, depth=100)",
                 elapsed, MIN_PONDER_ELAPSED_FOR_INSTANT_MS
             );
-            assert!(!should_instant_reply(elapsed, 1, i32::MAX, false));
+            assert!(!should_instant_reply(elapsed, 1, i32::MAX, false, 4));
         }
 
         // Big-increment scenario: at 60s+10s the intended soft is multiple
@@ -6527,15 +6661,15 @@ mod tests {
             compute_tm_budgets(60_000, 10_000, 0, 100, 20, true);
         assert!(soft >= 1000,
             "test premise: big-inc soft should be seconds, got {}ms", soft);
-        assert!(!should_instant_reply(1, soft, 64, false),
+        assert!(!should_instant_reply(1, soft, 64, false, 4),
             "1ms ponder with multi-second soft must not instant-emit");
 
         // Depth floor backstops degenerate tiny-soft cases even past the
         // structural elapsed floor.
-        assert!(!should_instant_reply(50, 20, MIN_PONDER_DEPTH_FOR_INSTANT - 1, false),
+        assert!(!should_instant_reply(50, 20, MIN_PONDER_DEPTH_FOR_INSTANT - 1, false, 4),
             "depth below MIN_PONDER_DEPTH_FOR_INSTANT must block instant reply");
         // Fresh-search reset state (depth=0) always blocks.
-        assert!(!should_instant_reply(5000, 20, 0, false));
+        assert!(!should_instant_reply(5000, 20, 0, false, 4));
     }
 
     /// P1 instant-reply gate — fires when the pondered time covers the soft
@@ -6544,14 +6678,29 @@ mod tests {
     #[test]
     fn ponder_instant_reply_fires_when_budget_covered() {
         // elapsed >= soft, depth >= floor, not failing low → instant.
-        assert!(should_instant_reply(5000, 3000, 15, false));
-        assert!(should_instant_reply(3000, 3000, MIN_PONDER_DEPTH_FOR_INSTANT, false));
+        assert!(should_instant_reply(5000, 3000, 15, false, 4));
+        assert!(should_instant_reply(3000, 3000, MIN_PONDER_DEPTH_FOR_INSTANT, false, 4));
         // Root failing low revokes the instant reply.
-        assert!(!should_instant_reply(5000, 3000, 15, true));
+        assert!(!should_instant_reply(5000, 3000, 15, true, 4));
         // Budget not yet covered → keep thinking.
-        assert!(!should_instant_reply(2999, 3000, 15, false));
+        assert!(!should_instant_reply(2249, 3000, 15, false, 4));
+    }
+
+    #[test]
+    fn test_instant_reply_stability_gate() {
+        // Unstable ponder (stab 0) needs 1.71x soft; settled (4+) needs 0.75x.
+        // elapsed exactly = soft qualifies only from stability >= 2 (0.90x).
+        assert!(!should_instant_reply(3000, 3000, 15, false, 0));
+        assert!(!should_instant_reply(3000, 3000, 15, false, 1));
+        assert!(should_instant_reply(3000, 3000, 15, false, 2));
+        assert!(should_instant_reply(3000, 3000, 15, false, 4));
+        // Unstable qualifies once elapsed covers the inflated threshold.
+        assert!(should_instant_reply(5130, 3000, 15, false, 0));
+        assert!(!should_instant_reply(5129, 3000, 15, false, 0));
+        // Stability index clamps at 4.
+        assert!(should_instant_reply(2250, 3000, 15, false, 9));
         // Depth floor.
-        assert!(!should_instant_reply(5000, 3000, MIN_PONDER_DEPTH_FOR_INSTANT - 1, false));
+        assert!(!should_instant_reply(5000, 3000, MIN_PONDER_DEPTH_FOR_INSTANT - 1, false, 4));
     }
 
     /// P3 — the Ponder-on +25% optimum bump: applied to opt only (hard/max/
