@@ -18494,3 +18494,15 @@ separate by magnitude (±0.45 is a normal live correction). Bench 2302849 →
 
 Note: the same corrhist-rail instability may exist in other low-signal regimes
 — candidate for future probing.
+
+**ranger-64k equal-S200 (#2609): H0 hard, −61.6 ±10.9 in 1.2k games.** Not
+a smooth batch tax: train loss only ~9% off the 16k twin, eval scale clean
+(RMS 284 vs 290) — the net is structurally damaged, not miscalibrated.
+Prime suspect (pre-registered at launch): warmup is denominated in SBs
+(positions), so at 64k the LR ramp ran 15,260 optimizer steps vs the 16k
+run's 61,040 — peak 1e-3 after 4× fewer, coarser steps (SF at 131k warms
+up for 50% of stage-1; this gave 5%). Early damage bakes in; the anneal
+recovers loss but not strength. Retry in flight: 64k + --warmup 40
+(step-matched ramp, 61k steps), single lever. If the retry still craters,
+next suspects: Lookahead k=6 (fixed in steps → 4× coarser pullback per
+position) and QAT×batch interaction.
