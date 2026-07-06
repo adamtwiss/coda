@@ -18469,3 +18469,28 @@ Wall-clock cost ~7% vs AdamW at 16k.
 
 Next: ranger-64k equal-S200 vs ranger-16k in flight (batch-enabler
 question); long-schedule confirmation before prod-recipe adoption.
+
+### 2026-07-06 — Corrhist fortress-drift fix: H0/non-regression, MERGED
+
+**#2608 fix/corrhist-fortress-drift: flat −0.38 @ 50k, `[-2,1]` STC → called
+non-regression, merged (600d8e4).** Correction history was self-reinforcing
+into a phantom ±0.45 in low-material locked/fortress positions (OCB, blocked
+pawns) where the raw net is ~0 and SF/Reckless/Obsidian all read 0 — surfaced
+by two lichess games (PYiXcgdg, aIosNgFS). Full diagnosis:
+`docs/corrhist_fortress_drift_2026-07-06.md`.
+
+**Root cause (search, NOT net):** static NNUE eval is ~0 (== SF static); search
+WITHOUT corrhist is 0 (== SF); corrhist ON manufactures the ±0.45. The gravity
+update's fixed point is the rail for any consistently-signed error, so a
+fortress's persistent micro-discrepancy maxes out every source. Ablation
+`NO_CORRECTION` → 0 on all four positions; zeroing any single source only flips
+the rail sign (systemic, not one table).
+
+**Fix:** damp the APPLIED correction by piece count (full ≥16 pieces, zero ≤6)
+— starves the rail in the low-signal regime, middlegames untouched. Can't
+separate by magnitude (±0.45 is a normal live correction). Bench 2302849 →
+2275719 (−1.2%, no retune). Guarded by `test_corrhist_fortress_no_drift`
+(hermetic: net from net.txt; verified fails-without-fix at 46, passes-with).
+
+Note: the same corrhist-rail instability may exist in other low-signal regimes
+— candidate for future probing.
