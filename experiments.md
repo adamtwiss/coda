@@ -18316,3 +18316,31 @@ over-spend/forfeit risk given the SF factor already banks the cross-thread info.
 **Correction to prior overnight note:** eval/optimism #2581 did NOT hold at +2.8 —
 the direct on/off SPRT settled ~+0.4 LLR→H0 at 56–60k games (the earlier +2.8 was
 an early-N read). Optimism Stage A is ~neutral; not pursuing Stage B.
+
+## 2026-07-06 — Reckless LMR correction-terms wave (T1.1 + T1.2): both H0 at converted defaults
+
+Context: fresh Reckless audit (`docs/reckless_audit_2026-07-06.md`) located
+Reckless's recent Elo in LMR correction terms. Both ports stacked on the
+fractional-LMR enabler branch (sub-ply terms need the centi-ply accumulator)
+and tested vs the enabler as base, isolating each addition.
+
+- **#2594 sf/lmr-corr-battery — H0, −2.0 ±2.1 (27.6k, [-1,2] STC).** Four
+  terms at Reckless's converted constants: is_win(beta)+100c,
+  tt_score<=alpha +45c, tt_depth<depth +32c, quiet expectation-gap
+  0.32c/cp. Bench −10.5% vs enabler base.
+- **#2596 sf/lmr-cutoff-count — H0, −3.2 ±2.8 (15.2k, [0,3] STC).**
+  SF/Reckless-consensus cutoff_count[ply+1]>2 → +112c (+39c all-node),
+  quiet+capture blocks. New per-ply state; bench −13.6% vs enabler base.
+- **Enabler itself (#2590 STC / #2591 LTC, [-2,1] non-regression):** still
+  running; STC +0.1 ±1.6 at 50k (LLR 0.84), LTC −1.1 ±3.1 at 11k.
+
+Triage (mechanism, not noise — both CIs exclude the H1 bound): (a)
+**double-counting** — Reckless DELETED its move-count term, so its correction
+constants carry load our ln(d)·ln(m) table already carries; stacked, they
+over-reduce (the −10..−14% bench thinning). (b) **EBF-vs-Elo split**: the
+battery stack lifted deep-tail EBF 1.32→1.43 (measured, study.fens d18) yet
+lost Elo — reductions moved to the right PLACE at the wrong MAGNITUDE;
+mid-depth thinning cost more than the tail gain. Classic retune-on-branch
+signature (precedent: cont-hist malus flat→+6.5 after retune). One combined
+retune shot planned; if that fails the port thread closes and the 2-DOF
+deep-slope fix (our own, aimed at the measured pathology) proceeds.
