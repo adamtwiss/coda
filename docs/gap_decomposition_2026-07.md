@@ -7,8 +7,8 @@ no-ponder unless stated. SF runs on titan, Reckless on atlas.
 
 **VINTAGE NOTE (critical for reading the ponder rows):** the SF study ran
 BEFORE the 2026-07-05 ponder P1-P4 fix (`def8081`); the Reckless study ran
-AFTER it. The SF ponder leg is being re-run (Adam, 2026-07-06) — its −131
-row below is expected to improve materially.
+AFTER it. The SF ponder leg was re-run post-fix on 2026-07-06: −130.9 → −100.0
+(both vintages shown in the table).
 
 ## The two maps
 
