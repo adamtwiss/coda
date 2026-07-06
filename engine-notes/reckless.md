@@ -8,39 +8,63 @@ Rating: #1 in local gauntlet (among non-SF)
 
 Last reviewed: 2026-03-29
 Last v9-refreshed: 2026-04-19
+Last search/ordering/TT refresh: **2026-07-06** (fresh `v0.10.0-dev` `22d7558`)
 
 ---
 
-## v9 Refresh (2026-04-19)
+## 2026-07-06 Search / Move-Ordering / TT Refresh (v0.10.0-dev)
 
-Coda has converged architecturally with Reckless since the original review:
-- **v9 architecture matches Reckless**: HalfKA PST + threats (66864) → pairwise → hidden layers → output
-- **Discovered-attack bonus** (Coda-unique, #502 landed +52 Elo) — leverages x-ray threat enumeration that Reckless doesn't compute
-- **LMP king-pressure NMP gate, ProbCut king-zone gate, LMR king-pressure, futility-defenses** — all landed as novel signal × context experiments (#466/#481/#482/#484)
-- **2b slider-iteration rewrite** (NPS, +10 Elo #478) — reduced threat-delta generation cost
-- **Target-feature AVX2 codegen win** (~+5% NPS) on same ISA as Reckless
+**Full detail + ranked candidate levers live in
+`docs/reckless_audit_2026-07-06.md`.** This is the summary; the sections
+below (§2 Search, §3 Move Ordering) carry **pre-v0.10.0 line numbers and are
+stale** — trust the audit doc for current mechanisms. NNUE/SIMD/SMP/Time
+sections were NOT re-reviewed this pass and remain ~v9-era.
 
-### What Coda still does worse/differently than Reckless
+The fresh pull is **121 commits ahead** of `~/chess/engines/Reckless`, ~40
+of them search/ordering/TT PRs. Reckless bakes SPSA-tuned constants inline
+as literals. Reckless's recent Elo delta concentrates in **LMR correction
+terms** and **history/ordering shaping**.
 
-- **First-move-cut rate**: Coda v9 72.2% vs estimate ~80-85% for Reckless. Same move-ordering code as v5 (which gets 82.3% with linear eval). Gap is the eval-surface-is-flatter tax.
-- **Attacker-type-stratified escape bonuses** — Reckless uses `[0, 8k, 8k, 14k, 20k, 0]` per moving-piece AND gates by `threatened[pt]` (the threat-class-specific bitboard: pawn/minor/rook). Coda only has pawn-attacker scaling. Tested unstratified; A1a+A1c with SPSA retune (#501) in flight.
-- **Onto-threatened penalty** — Reckless: `-8000 * threatened[pt].contains(to)`. Coda's unstratified version H0'd (#465); stratified+SEE-gated not yet tested.
-- **Offense bonus** — Reckless: `+6000 * offense[pt].contains(to)` — quiet moves that land on squares attacking enemy pieces *safely*. Uniquely Reckless; not in Obsidian, Plenty, or Coda. **Untested.**
-- **Rook into king-ring-ortho** — Reckless: `+5000 * (pt == Rook && king_ring_ortho.contains(to))`. Also Reckless-unique. Untested.
-- **NPS**: Reckless ~2× Coda on same hardware. Despite Coda's recent +5% from target_feature and +10% aggregate from 2b/target-feature/psq-fuse wins, the base const-generic/static-PARAMETERS refactor still outstanding (see `v9_nps_findings_2026-04-18.md`).
+**Top candidate levers for Coda** (ranked, see audit doc for mechanisms/gating):
+1. **LMR correction-term battery** — winning-beta (#1087), loose-alpha
+   `tt_score<=alpha` (#1044), `tt_depth<depth`, correct-expectation (#1022);
+   each a one-liner on existing state (verified absent in Coda's LMR).
+2. **`cutoff_count` propagation** — new stack state read in LMR/NMP;
+   confirmed still absent (`grep`=0), open since the Apr-25 pruning diff.
+3. **Threatened-TO ordering malus** — Coda has escape-FROM but not the
+   symmetric onto-attacked-square malus; all-threats one-liner first.
+4. **`key_after` pre-make TT prefetch** (#1085) — biggest tractable NPS
+   item; needs an incremental Zobrist-after-move on `Board` (none exists).
+5. history-in-quiet-SEE/LMP, index-decayed malus (#1038), #992 good-capture
+   cap, deep-node TT-cutoff relax, PV replacement protection, NMP-improving
+   + `estimated_score`.
 
-### What Coda does better than Reckless
+**Where Coda already leads (don't chase):** TT ARM/SMP correctness (Reckless
+is non-atomic/racy — do NOT regress toward its density model), huge-page
+alloc, near-miss TT cutoff, tiered negative extensions, transition
+corrhist, x-ray discovered-attack ordering, threat-aware 4D history +
+pawn-history-in-ordering (Reckless's #1088 is catch-up to what Coda already
+had).
 
-- **X-ray threat enumeration** — Reckless's threat features are direct-only. Coda's include x-ray (+110 Elo gain in training). Enables discovered-attack-bonus.
-- **4D threat-indexed history** — matches Reckless's structure but more granular via from_threatened+to_threatened.
-- **Correction history**: Coda has 5 sources (pawn, wNP, bNP, minor, major, cont) vs Reckless's 5 (no minor/major split). Marginal structural advantage.
+**Dead-ends (don't port):** history pruning (3× H0), optimism/contempt
+(shelved, eval-flywheel not a search knob), triple extensions (bench blew
+up).
 
-### Untested Reckless ideas worth flagging
+**CLAUDE.md staleness caught this pass** (flagged in the audit doc, left for
+Adam): pawn history is 512 buckets not `%8192`; corrhist "minor/major"
+sources were dropped 2026-05-18/19 (now pawn/wNP/bNP/cont/transition).
 
-1. **Offense bonus** — computation is non-trivial (needs per-piece-type "safe attacker" bitboards) but zero per-node cost once computed at node entry. Pre-search signal: pure move-ordering.
-2. **Rook king-ring-ortho** — cheap (1 magic lookup + mask). Specific enough that might be noise; could bundle with other king-ring ideas.
+<details>
+<summary>Superseded 2026-04-19 v9-refresh summary (kept for provenance)</summary>
 
-Both untested in Coda. Could be valuable especially given Coda's flatter eval needs more pre-search discrimination (see `move_ordering_understanding_2026-04-19.md`).
+Coda converged architecturally with Reckless (v9 = HalfKA PST + 66864
+threats → pairwise → hidden → output). Then-open items: attacker-type
+stratified escape bonuses, onto-threatened penalty, offense bonus, rook
+king-ring-ortho, ~2× NPS gap. Coda-ahead: x-ray threats (+110 Elo train),
+4D threat history. The escape/onto-threatened items are re-scored in the
+2026-07-06 audit; the corrhist "minor/major" advantage claimed here is
+**outdated** (those tables were dropped 2026-05).
+</details>
 
 ---
 
