@@ -18402,3 +18402,26 @@ to these imports:
 
 Lesson: Reckless's edge over Coda is NOT in move ordering. Pruning/TT levers
 (#5/#8/#9) tested separately (batch 2).
+
+**Bisect resolved (#2607 ms32-only: −26.9 ±8.7 → H0): MAX-SCORE 32000 owns
+the damage on the special stage-1 data, NOT the PC filter.** By subtraction
+(pcmild+ms32 −27.2 vs ms32-only −26.9), pc-milder is ≈ neutral on this
+data. Context from Adam: on T80, ms32000 is neutral by default and +5 with
+game adjudication OFF — so the rule is per-dataset, not global: the special
+data carries a much denser adjudicated/searched mate-band whose targets the
+net cannot predict from the position (no search at inference) → high-noise
+labels at poisonous density. On T80 that band is sparse and mostly
+naturally-reached (benign; beneficial when adjudication isn't truncating).
+
+**Recipe rule going forward: max-score policy is a PER-DATASET decision.**
+Special/synthetic stage data → cap at 10000; T80 bulk stages → 32000 fine.
+Also vindicates canonical-v1 val's fixed |score|<10000 (the yardstick
+never ingests the noisy band).
+
+**Method post-mortem (mine):** I mis-attributed twice from training curves —
+first blaming PC for the loss NOISE (it was ms32's unpredictable mate
+targets), then blaming PC's LEVEL shift for the Elo damage (the level shift
+was real but ~Elo-neutral). Neither train-level nor val-level predicted the
+Elo; the SPIKES did. On special data, label noise >> stream hardness as the
+strength predictor — and only the controlled bisect settled it. (Ordering
+stats/loss ≠ strength, again, in a new costume.)
