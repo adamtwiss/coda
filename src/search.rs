@@ -221,6 +221,14 @@ tunables!(
     // LMR_CUTNODE_BUMP (+1 more with no TT move); all-nodes keep +1. Default 2
     // is a halfway step toward SF's larger cut-node reduction; SPSA can push it.
     (LMR_CUTNODE_BUMP, 2, 1, 5, 0.4, true),
+    // Reckless LMR correction battery (T1.1, docs/reckless_audit_2026-07-06.md).
+    // Sub-ply centi-ply terms — need the fractional LMR accumulator to express.
+    // Defaults = Reckless's tuned 1024-scale values converted to centi
+    // (+1024→100, +464→45, +326→32, 418/128→41/128 per cp of alpha-eval gap).
+    (LMR_WINBETA_CENTI, 100, 0, 250, 12.0, true),
+    (LMR_TTALPHA_CENTI, 45, 0, 150, 8.0, true),
+    (LMR_TTDEPTH_CENTI, 32, 0, 150, 8.0, true),
+    (LMR_EXPECT_MULT, 41, 0, 120, 6.0, true),
     // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv,
     // Reckless at >=5+ttPv. Coda's 4 fires SE at shallower depth where
     // singular_depth is too low to judge singularity reliably. Bumping
@@ -5138,6 +5146,31 @@ fn negamax(
                     reduction -= LMR_SCALE;
                 }
 
+                // Reckless LMR correction battery (T1.1, audit 2026-07-06).
+                // (a) Winning beta: the window is already in the proven-win band,
+                //     move precision matters less — reduce more.
+                if is_win(beta) {
+                    reduction += tp(&LMR_WINBETA_CENTI);
+                }
+                if tt_hit && tt_entry.flag != TT_FLAG_NONE {
+                    let tt_score_node = score_from_tt(tt_entry.score, ply);
+                    // (b) TT already says this node can't beat alpha.
+                    if tt_score_node <= alpha {
+                        reduction += tp(&LMR_TTALPHA_CENTI);
+                    }
+                    // (c) TT guidance is shallower than the current search —
+                    //     weaker move-ordering confidence, reduce more.
+                    if (tt_entry.depth as i32) < depth {
+                        reduction += tp(&LMR_TTDEPTH_CENTI);
+                    }
+                }
+                // (d) Quiet expectation gap: eval far below alpha → this node is
+                //     underperforming its window, reduce late quiets more (and
+                //     slightly less when eval already exceeds alpha). Continuous,
+                //     ~0.32 centi/cp at default. static_eval is valid here (the
+                //     quiet-LMR block is gated on !in_check).
+                reduction += tp(&LMR_EXPECT_MULT) * (alpha - static_eval).clamp(-65, 91) / 128;
+
                 // Continuous history adjustment: good history reduces less, bad more
                 // Uses main history + ply-1 + ply-2 continuation history (consensus).
                 // Ply-2 weighted at half to avoid over-scaling the total.
@@ -5233,6 +5266,22 @@ fn negamax(
                     // Reduce less for captures that give check
                     if gives_check {
                         reduction -= LMR_SCALE;
+                    }
+
+                    // Reckless correction battery (a)-(c) — applied to noisy
+                    // moves too (Reckless computes them before its quiet/noisy
+                    // split). Same tunables as the quiet block.
+                    if is_win(beta) {
+                        reduction += tp(&LMR_WINBETA_CENTI);
+                    }
+                    if tt_hit && tt_entry.flag != TT_FLAG_NONE {
+                        let tt_score_node = score_from_tt(tt_entry.score, ply);
+                        if tt_score_node <= alpha {
+                            reduction += tp(&LMR_TTALPHA_CENTI);
+                        }
+                        if (tt_entry.depth as i32) < depth {
+                            reduction += tp(&LMR_TTDEPTH_CENTI);
+                        }
                     }
 
                     if reduction < 0 {
