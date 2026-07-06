@@ -225,6 +225,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
     let mut ponderhit_flag = info.ponderhit_time.clone(); // shared ponderhit hard deadline
     let mut ponderhit_soft_flag = info.ponderhit_soft.clone(); // shared ponderhit soft deadline
     let mut ponderhit_floor_flag = info.ponderhit_floor.clone(); // shared ponderhit min think
+    let mut ponderhit_isoft_flag = info.ponderhit_isoft.clone(); // FL-EXT v2: intended full soft
     let mut ponderhit_abs_flag = info.ponderhit_abs.clone(); // shared in-flight forfeit guard
     let mut ponder_depth_flag = info.ponder_depth.clone(); // ponder search's completed depth
     let mut root_fail_low_flag = info.root_fail_low.clone(); // root aspiration fail-low state
@@ -345,6 +346,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         ponderhit_flag = info.ponderhit_time.clone();
                         ponderhit_soft_flag = info.ponderhit_soft.clone();
                         ponderhit_floor_flag = info.ponderhit_floor.clone();
+                        ponderhit_isoft_flag = info.ponderhit_isoft.clone();
                         ponderhit_abs_flag = info.ponderhit_abs.clone();
                         ponder_depth_flag = info.ponder_depth.clone();
                         root_fail_low_flag = info.root_fail_low.clone();
@@ -546,6 +548,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 ponderhit_flag.store(0, Ordering::Release);
                 ponderhit_soft_flag.store(0, Ordering::Relaxed);
                 ponderhit_floor_flag.store(0, Ordering::Relaxed);
+                ponderhit_isoft_flag.store(0, Ordering::Relaxed);
                 ponderhit_abs_flag.store(0, Ordering::Relaxed);
                 // Clear the instant-reply gate inputs (P1) so a stale depth /
                 // fail-low state from the PREVIOUS search can never satisfy
@@ -583,6 +586,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 ponderhit_flag = search_info.ponderhit_time.clone();
                 ponderhit_soft_flag = search_info.ponderhit_soft.clone();
                 ponderhit_floor_flag = search_info.ponderhit_floor.clone();
+                ponderhit_isoft_flag = search_info.ponderhit_isoft.clone();
                 ponderhit_abs_flag = search_info.ponderhit_abs.clone();
                 ponder_depth_flag = search_info.ponder_depth.clone();
                 root_fail_low_flag = search_info.root_fail_low.clone();
@@ -1024,17 +1028,36 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                     / 100;
                                 let mut post_min = soft.saturating_sub(credited)
                                     .max(crate::search::MIN_POST_PONDERHIT_MS);
-                                // Root failing low at the hit with the soft
-                                // budget already spent: grant a re-think
-                                // slice of half the intended soft instead of
-                                // the 50ms floor (SF spends EXTRA time
-                                // exactly when the pondered conclusion
-                                // destabilized — a floored slice would emit
-                                // the destabilized move nearly instantly).
+                                // FL-EXT at-hit half (2026-07-05): arriving
+                                // at the hit failing low → grant the FULL
+                                // fresh soft (was soft/2) and extend the
+                                // post-hit hard frame by one fail-low factor
+                                // step (×1.34). SF spends EXTRA time exactly
+                                // when the pondered conclusion destabilized;
+                                // its post-hit tail is >1s on 3.3% of moves
+                                // while ours was 0.0% — clipped exactly by
+                                // this cap. ponderhit_abs (below) remains the
+                                // uncrossable forfeit wall (checked FIRST in
+                                // should_stop, so hard_eff may exceed it
+                                // harmlessly).
+                                let hard_eff = if failing_low {
+                                    hard.saturating_mul(
+                                        100 + crate::search::PH_FL_HARD_EXT_PCT) / 100
+                                } else {
+                                    hard
+                                };
                                 if failing_low {
-                                    post_min = post_min.max(soft / 2);
+                                    // SF frame: inflated optimum x1.34
+                                    // measured from go ponder, minus the
+                                    // pondered charge (NOT an unconditional
+                                    // full-soft regrant -- long ponders past
+                                    // the inflated optimum get the floor,
+                                    // matching SF stopping promptly there).
+                                    let inflated = soft.saturating_mul(
+                                        100 + crate::search::PH_FL_HARD_EXT_PCT) / 100;
+                                    post_min = post_min.max(inflated.saturating_sub(elapsed));
                                 }
-                                let post_min = post_min.min(hard.max(10));
+                                let post_min = post_min.min(hard_eff.max(10));
                                 // P2(b): absolute forfeit guard for the
                                 // in-flight post-hit search (loss55 class —
                                 // this path previously had NO abs deadline).
@@ -1045,7 +1068,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 let reserve = overhead + FORFEIT_MARGIN_MS;
                                 let abs = elapsed
                                     + our_time.saturating_sub(reserve).max(1);
-                                (elapsed + hard.max(10), elapsed + post_min, post_min, abs)
+                                (elapsed + hard_eff.max(10), elapsed + post_min, post_min, abs)
                             };
                             // A1 publish protocol (TM audit 2026-06-13, ARM
                             // standard): the deadline group is read by the
@@ -1064,6 +1087,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             // full 46% window when ponder finished early).
                             ponderhit_floor_flag.store(store_floor, Ordering::Relaxed);
                             ponderhit_soft_flag.store(soft_deadline, Ordering::Relaxed);
+                            ponderhit_isoft_flag.store(soft, Ordering::Relaxed);
                             ponderhit_abs_flag.store(abs_deadline, Ordering::Relaxed);
                             ponderhit_flag.store(deadline, Ordering::Release);
                         }
@@ -1106,6 +1130,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         ponderhit_flag = info.ponderhit_time.clone();
                         ponderhit_soft_flag = info.ponderhit_soft.clone();
                         ponderhit_floor_flag = info.ponderhit_floor.clone();
+                        ponderhit_isoft_flag = info.ponderhit_isoft.clone();
                         ponderhit_abs_flag = info.ponderhit_abs.clone();
                         ponder_depth_flag = info.ponder_depth.clone();
                         root_fail_low_flag = info.root_fail_low.clone();

@@ -42,6 +42,22 @@ after:
 Also check for stray `cutechess-cli` / `coda` / build jobs (`htop`, or
 `pgrep -a coda`) before starting.
 
+## Run RRs on YOUR OWN machine (Adam, 2026-07-05)
+
+Run local RRs/gauntlets on the machine your session lives on — do NOT farm
+them out to another dev host. Each dev box (Hercules/Atlas/Titan/Zeus) has
+its own resident Claude; cross-host runs trip over each other's workers,
+builds and measurements (and a remote host's Claude can't see your run when
+it plans its own). Remote execution is for things only that host has (e.g.
+a uArch-specific perf measurement) — and even then, coordinate around the
+resident agent and restore the worker state you found.
+
+Cross-compilation trap when you DO copy binaries between hosts: `make`
+builds `-march=native`; a Zen 5 (AVX-512) binary SIGILLs on a Zen 1/AVX2
+host (dumped core mid-gauntlet 2026-07-05). Always rebuild on the target
+host (`. ~/.cargo/env` first for non-interactive ssh; `touch src/main.rs`
+before cross-branch rebuilds — see the ob skill's silent-relink gotcha).
+
 ## Standard gauntlet / RR invocation
 
 ```bash
