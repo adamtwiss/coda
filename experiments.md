@@ -18450,3 +18450,22 @@ pruning/TT imports H0'd. Conclusion: Reckless's edge over Coda is NOT in
 portable micro-features — Coda's search (ordering/pruning/TT) is already
 well-tuned. The gap lives in the LMR correction-term battery (Hercules's
 T1.1/T1.2) and eval/net quality. Reckless lever-mining wound down.
+
+## 2026-07-06 — Ranger optimizer (B-track): H1 +2.8 at S200, 16k batch (#2605)
+
+**skip-ranger (2FBD56D7) vs skip-baseline-v3 (106FB311), [-1.5,1.5]: H1 at
++2.8** — identical recipe, `--optimiser ranger` (RAdam+Lookahead, ≈SF's
+rangerlite) the single delta, AdamW-parity hyperparams (b1 0.9, b2 0.999,
+decay 0.01, clip ±1.98, Lookahead a=0.5 k=6). Training curve showed the
+canonical Ranger signature: behind AdamW to ~SB20 (RAdam damping +
+Lookahead pullback), crossover, then better train AND val for the rest of
+the run, near-converging at the cosine floor. Notable: it won at S200
+DESPITE the step-poverty handicap penalizing exactly its early-phase
+sacrifice — the mid-run advantage window only grows with schedule length.
+Fork support: `--optimiser adamw|radam|ranger` (bullet 945a05c/266d9d3),
+including a Lookahead slow-init fidelity fix (zero-init slow buffer was
+halving all weights at step k=6; first sync now copies fast->slow).
+Wall-clock cost ~7% vs AdamW at 16k.
+
+Next: ranger-64k equal-S200 vs ranger-16k in flight (batch-enabler
+question); long-schedule confirmation before prod-recipe adoption.
