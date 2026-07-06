@@ -229,6 +229,13 @@ tunables!(
     (LMR_TTALPHA_CENTI, 45, 0, 150, 8.0, true),
     (LMR_TTDEPTH_CENTI, 32, 0, 150, 8.0, true),
     (LMR_EXPECT_MULT, 41, 0, 120, 6.0, true),
+    // cutoff_count LMR terms (T1.2, docs/reckless_audit_2026-07-06.md).
+    // Child ply failed high >2 times under this node -> reduce late moves
+    // more (+extra at non-PV all-nodes). Defaults = Reckless's tuned
+    // 1024-scale values converted to centi-ply (+1151->112, +400->39).
+    // Threshold >2 fixed (SF uses >3) — not a knob.
+    (LMR_CUTOFF_CNT_CENTI, 112, 0, 250, 12.0, true),
+    (LMR_CUTOFF_ALLNODE_CENTI, 39, 0, 150, 8.0, true),
     // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv,
     // Reckless at >=5+ttPv. Coda's 4 fires SE at shallower depth where
     // singular_depth is too low to judge singularity reliably. Bumping
@@ -1096,6 +1103,14 @@ pub struct SearchInfo {
     pub excluded_move: [Move; MAX_PLY + 1],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
     double_ext_count: [i32; MAX_PLY + 1],
+    /// Per-ply beta-cutoff counter (SF cutoffCnt / Reckless cutoff_count,
+    /// T1.2 docs/reckless_audit_2026-07-06.md). Incremented at the fail-high
+    /// site; each node clears its GRANDCHILD slot on entry so
+    /// `cutoff_count[ply+1]` reflects only fail-highs under this node's own
+    /// subtree. Read in LMR: a child ply that keeps failing high means
+    /// refutations come easy there — reduce late moves more. +4 padding
+    /// allows unconditional ply+2 indexing (Reckless pads +16).
+    cutoff_count: [i32; MAX_PLY + 4],
     /// Per-ply moved piece (go_piece index 1-12, 0=none). Set before make_move.
     /// Used for correct cont hist lookups at ply-2+ (avoids stale board.piece_at).
     moved_piece_stack: [u8; MAX_PLY + 1],
@@ -1193,6 +1208,7 @@ impl SearchInfo {
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
             double_ext_count: [0; MAX_PLY + 1],
+            cutoff_count: [0; MAX_PLY + 4],
             moved_piece_stack: [0; MAX_PLY + 1],
             moved_to_stack: [0; MAX_PLY + 1],
             pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
@@ -2521,6 +2537,7 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
+    info.cutoff_count = [0; MAX_PLY + 4];
     info.moved_to_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
@@ -2685,6 +2702,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
+    info.cutoff_count = [0; MAX_PLY + 4];
     info.moved_to_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
@@ -4179,6 +4197,11 @@ fn negamax(
         }
     }
 
+    // Clear the grandchild cutoff counter so the `cutoff_count[ply+1]`
+    // read in LMR reflects only fail-highs under THIS node's subtree
+    // (SF `(ss+2)->cutoffCnt = 0` / Reckless search.rs:488 pattern).
+    info.cutoff_count[ply_u + 2] = 0;
+
     // Eval instability: detect sharp eval swings from parent node
     let unstable = !in_check && ply >= 1 && ply_u >= 1
         && info.static_evals[ply_u - 1] > -INFINITY
@@ -5171,6 +5194,16 @@ fn negamax(
                 //     quiet-LMR block is gated on !in_check).
                 reduction += tp(&LMR_EXPECT_MULT) * (alpha - static_eval).clamp(-65, 91) / 128;
 
+                // cutoff_count (T1.2): the child ply keeps failing high under
+                // this node — refutations come easy down there, so late moves
+                // need less depth to refute. SF/Reckless consensus term.
+                if info.cutoff_count[ply_u + 1] > 2 {
+                    reduction += tp(&LMR_CUTOFF_CNT_CENTI);
+                    if !is_pv && !cut_node {
+                        reduction += tp(&LMR_CUTOFF_ALLNODE_CENTI);
+                    }
+                }
+
                 // Continuous history adjustment: good history reduces less, bad more
                 // Uses main history + ply-1 + ply-2 continuation history (consensus).
                 // Ply-2 weighted at half to avoid over-scaling the total.
@@ -5281,6 +5314,16 @@ fn negamax(
                         }
                         if (tt_entry.depth as i32) < depth {
                             reduction += tp(&LMR_TTDEPTH_CENTI);
+                        }
+                    }
+
+                    // cutoff_count (T1.2) — Reckless applies it before the
+                    // quiet/noisy split, so captures get it too. Same
+                    // tunables as the quiet block.
+                    if info.cutoff_count[ply_u + 1] > 2 {
+                        reduction += tp(&LMR_CUTOFF_CNT_CENTI);
+                        if !is_pv && !cut_node {
+                            reduction += tp(&LMR_CUTOFF_ALLNODE_CENTI);
                         }
                     }
 
@@ -5476,6 +5519,7 @@ fn negamax(
 
                 if alpha >= beta {
                     info.stats.beta_cutoffs += 1;
+                    info.cutoff_count[ply_u] += 1;
                     if move_count == 1 { info.stats.first_move_cutoffs += 1; }
                     info.stats.cutoff_movecount_sum += move_count as u64;
                     info.stats.cutoff_movecount_sq_sum += (move_count as u64) * (move_count as u64);
