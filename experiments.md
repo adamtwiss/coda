@@ -18506,3 +18506,10 @@ recovers loss but not strength. Retry in flight: 64k + --warmup 40
 (step-matched ramp, 61k steps), single lever. If the retry still craters,
 next suspects: Lookahead k=6 (fixed in steps → 4× coarser pullback per
 position) and QAT×batch interaction.
+
+## 2026-07-06 — #2585 searched-count-bonus: H1 +1.2, MERGED
+
+`bonus += bonus*(move_count-1)/256` at non-PV cutoff sites (SF wave-2
+port). +1.2 ±1.4, LLR 2.95 at 61k games ([-1,2] STC). The lone survivor
+of the SF wave-2 batch (draw-dither and iir-depth-ltc H0'd). Merged with
+Bench: 2297493 (post corrhist-fortress-fix main).
