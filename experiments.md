@@ -17449,6 +17449,110 @@ the P0 wave (+8-ish measurable + EGTB) + P1.1/1.8/1.11/1.12 + P1.4 (LTC) + P2.1
 + P2.4/2.5 + the NPS campaign. Interior search-review **closed** — remaining
 leverage is driver/root rearchitecture, TM/ponder, LTC-scaling, net retraining.
 
+## 2026-07-04→06 — External-search audit → SMP threading campaign + eval optimism
+
+Pivot from the (drained) interior search to the **driver/root + SMP** layer,
+per the standing gap-decomposition (Coda #3, beaten only by Reckless #2 and
+SF #1). Big wins here.
+
+### External/driver-search audit (docs/external_search_review_2026-07-04.md)
+6 parallel finders over the driver layer (ID loop, aspiration, root moves,
+Lazy-SMP, TT-across-iterations, PV/ponder). **Result: zero correctness bugs** —
+the layer is solid (TM audits + P0.5/P1.4 already swept it). The one "P2
+regression" finding (TT age-weight) was a **verified false alarm** (age-8 was
+SPRT-validated #842/#857 and merged 2026-04-29; the −70 the finder cited was
+pre-2026-04-01 unreliable-gauntlet data). Actionable residue: two probes below +
+the SMP thread-pool (F1) which became the campaign.
+
+### TT overwrite-margin 3 → 4 (external audit probe 1)
+| ID | TC | Result | Decision |
+|---:|---|---|---|
+| 2533 | STC `[-1.5,1.5]` | **+0.9 ±1.3, LLR 2.95, H1 ✓** (69k) | **MERGED.** Coda's same-key overwrite gate (`depth > slot_depth-3`) was strictest of all 4 peers (they use 4); matched consensus. Recovered from an early −3.7 →H0 — another don't-kill-losers case. |
+
+Aspiration window-jitter (probe 2 / SF `delta += threadIdx%8`): **#2553/#2572
++0.1 flat, dropped** — no measurable diversity gain on top of history diversity.
+
+### SMP persistent thread pool + history diversity — the headline win
+Replaced per-`go` helper spawn (fresh SearchInfo + ~13 MB alloc/helper/move)
+with a persistent parked-worker pool, then let workers keep+age their own
+history for Lazy-SMP diversity. All at **Threads=4, Hash=256** (multi-thread
+tests: cap T=4 for fleet scheduling, scale Hash to avoid hash-starvation —
+recorded in the ob skill).
+| ID | Stage | Result | Decision |
+|---:|---|---|---|
+| 2539 | Stage-1a (pool, pawn_hist **persisted**) | **−7.8, H0** (stopped 1k) | **BUG.** A reused worker accumulated pawn_hist unaged from its own divergent low-quality trajectory → toxic stale ordering → polluted shared TT. |
+| 2540 | Stage-1a fixed (clear pawn_hist per go) | ~flat, non-regression | Behavior-identical; superseded by Stage 2 (stopped). |
+| 2542 | **Stage 2 (persist+age history)** | **+6.6 ±3.4, LLR 2.95, H1 ✓** (10k) | **MERGED** (dcb3241). The diversity Coda threw away by rebuilding a fresh helper each move. Corrhist still copied from main (eval consistency); pawn_hist stays cleared (position-specific). T=1 byte-identical → bench-gate untouched. |
+
+**Diversity-batch follow-ons** (all Threads=4 Hash=256; net 0/3 kept):
+| ID | Change | Result | Decision |
+|---:|---|---|---|
+| 2552 | helper history age 3/5 (more aggressive) | −3.0 →H0 | **Rejected** — more helper divergence hurts; 4/5 (matching main) is right. |
+| 2554 | age pawn_hist instead of clearing | +0.2, →H0 | **Rejected** — aged pawn_hist ≈ cleared; keep it cleared. |
+| 2553/2572 | per-thread aspiration window jitter | +0.1 flat | **Dropped.** |
+
+Lesson banked: **persisting helper history is a Stage-2 lever that requires
+*aging* — an unaged accidental carry-over (the pawn_hist bug) actively hurts.**
+
+### Futility-before-SEE + production retune — retune-on-branch done RIGHT
+P2.2 reorder raw was +0.3/H0 (#2489). The saga:
+| ID | What | Result | Decision |
+|---:|---|---|---|
+| 2515 | quick `--core` STC retune (1000 iter, OLD net) | (analysis) | **Confounded + stale-net.** Cluster moved only modestly, big moves on loose knobs; prod net changed to E161C665 since. **Not applied** as-is. |
+| 2530 | reorder + #2515 quick values vs main | +2.8 H1 (STC) | **NOT merged** — confounded (retune-gain ≠ reorder-gain) + net-stale + quick-over-production. |
+| 2535 | untuned reorder alone, NEW net | +0.7–0.8 →H1 | Clean untuned baseline on E161C665 (trunk already optimal for it, so this is real reorder value). |
+| 2548 | **proper production retune** (2500 iter, **LTC** 40+0.4 Hash=256, prod net) | (77 params) | Futility/SEE cluster moved strongly on-target (FUT_PER_DEPTH −19%, FUT_THREATS +33%, SEE_QUIET −13%) — genuine retune-on-branch signal, no contamination. |
+| 2569 / 2570 | reorder + #2548 retune vs main | **+5.2 LTC / +2.95 STC, H1 ✓** | **MERGED** (1996fac). |
+
+**Lesson: the difference between a stale/quick STC tune (#2515, correctly not
+merged) and a clean LTC production tune on the current net (#2548) was ~5 Elo
+on the SAME feature.** Retune-on-branch is only valid tuned-on-the-deployed-net
+at the deployment regime.
+
+### Cross-thread TM factor (SF port) — the SMP TM lever
+Research: cross-thread TM is in **exactly the two engines above us** (SF #1,
+Reckless #2) and neither below (Obsidian/Berserk). Coda already tracked
+`tm_best_move_changes` but it was diagnostic-only (Phase 13). Ported SF's
+mechanism: helpers publish per-iteration root best-move changes into a
+**per-thread array** (not one hot atomic — scales to TCEC hundreds-of-threads
+without cache-line contention), main sums+normalizes and scales soft budget up
+on collective churn. Gated Threads>1 → T=1 byte-identical.
+| ID | TC | Result | Decision |
+|---:|---|---|---|
+| 2576 | T=4 Hash=256 `[0,3]` | **+3.2 ±2.2, LLR 2.95, H1 ✓** (24k) | **MERGED** (9168676). Absolute TM win (we match SF *scaling*; this is time allocation). Constants at raw defaults (base 1.0, SF mult) → TM-cluster retune could add more. |
+
+Design: docs/smp_thread_agreement_tm_design_2026-07-05.md.
+
+### SMP scaling measurement (Adam, local RR vs Reckless/SF)
+1/2/4-thread sweeps (10+0.1, wide ±19 CIs so directional-only): **Coda matches
+SF scaling** (flat, non-monotonic) but **loses ~8/doubling to Reckless**
+(monotonic). Deep-dive (docs — Reckless best_stats): the Reckless-specific
+mechanism SF lacks is a cross-thread **eval-optimism** term (shared `fetch_max`
+best-score frontier → saturating optimism nudge; aspiration window untouched, so
+diversity preserved). At TCEC's 100s of threads ~8/doubling compounds to ~50–60
+Elo — the highest-value SMP target if the (noisy) signal is real.
+
+### Eval optimism (SF/Reckless standard feature Coda lacks) — IN FLIGHT
+Coda has **no optimism term** (SF + Reckless both do). Prior attempts failed
+(#671 untuned −7.1; an earlier tuned version hit +3–7 but didn't stick). Ported
+the SF/Reckless shape (`OPTIMISM_K*avg/(|avg|+OPTIMISM_OFF)` folded into the
+material-scale blend), computed per-iteration in both loops.
+| ID | What | Result |
+|---:|---|---|
+| 2579 | focused SPSA on the 3 optimism constants | **params didn't move** (K 150→150.7) — magnitude-insensitive; NO gradient. |
+| 2581 | **direct SPRT** eval/optimism (K=150) vs main `[0,3]` | *running* — the actual verdict. |
+
+**Lesson (Adam caught it): a flat SPSA is NOT a test.** #2579 only showed the
+magnitude is insensitive; it never compared optimism-on vs -off. The direct
+SPRT #2581 is the real answer (prior: expect H0 given 3 failures, but let the
+SPRT decide — don't infer from a flat tune).
+
+### Campaign tally (merged, 2026-07-04→06)
+SMP pool+diversity **+6.6**, futility+LTC-retune **+5.2 LTC**, cross-thread-TM
+**+3.2**, TT margin **+0.9**, + P1.4/P2.1 from the audit. Threading is
+deployment-critical (lichess 4–8T, CCRL, **TCEC 100s of threads at ~500 MNps**),
+so these compound toward closing on Reckless/SF.
+
 ## 2026-07-03 — Train-vs-inference parity: full-surface verification (hypothesis CLOSED)
 
 Adam's preferred blindspot hypothesis was another C8-class train/inference
