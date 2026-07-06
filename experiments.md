@@ -18099,7 +18099,34 @@ Elo:
   non-regression, not a measured gain. Peer pool drew 84% at 10+0.1
   ponder — future TM RRs should consider the UHO book for decisives.
 - OB [-2,1] non-regression gate = **#2575** (bench-identical 2200903;
-  P(H0|true 0)=27.5% at these bounds). Merge = Adam (TM-class).
+  P(H0|true 0)=27.5% at these bounds). Resolved →H0 at −2.9±2.4 N=18.5k —
+  the THIRD bench-identical ponder branch to drift −2..−3 on OB (with
+  #2567 H0 −2.7 and #2571's −1.5..−4 wander) while local forensics (full
+  diff audit, solo NPS ±0.1% both uArchs, saturated 32-thread mixed A/B
+  +0.49%) find NO mechanism. Under true-0 each H0 is a ~27% event; three
+  in a row ≈ 2% — there may be a small real fleet-level cost to this
+  branch CLASS (binary-size/code-layout on heterogeneous KVM hosts is the
+  only unfalsified candidate) worth one dedicated investigation if the
+  pattern holds on a fourth.
+
+**Stability-gated instant reply + bundle (2026-07-06, tm/ponder-v2-bundle
+= current main + FL-EXT v3 + gate, 3504934).** Adam's independent
+measurement: ponder-specific deficit vs SF now ~16 Elo (100 w/ponder vs
+84 without; was ~50-60 pre-P1-P4); vs Reckless we're +50 BETTER with
+ponder. The gate chases the largest remaining chunk: instant-reply
+threshold scales by the ponder search's best-move stability
+(INSTANT_STAB_PCT [171,120,90,80,75] — mirrors the dynamic-TM
+STABILITY_TABLE; SF arms stopOnPonderhit against its
+instability-inflated optimum). ponder_stability published per iteration
+like ponder_depth (tm_best_stable already tracked during pure ponder
+since Phase 13). Mechanism (30g vs SF, Zeus): instant rate 44.2%→40.4%
+(redistributes unstable instants into re-thinks), p50 104ms, 0.417 score
+(0-5-25, best 30g probe yet), 0 forfeits. Near-peer RR (Zeus, 500g/arm,
+Berserk/Obsidian/Alexandria/Cinder/Integral, ponder): bundle +30±14 vs
+main +25±12 → +5 (±~18) — positive lean, below resolution as expected.
+OB [-2,1] gate on the bundle submitted (bench-identical 2206079).
+Merge/park = Adam (TM-class); taking the bundle supersedes
+tm/ponder-faillow-ext + #2575.
 
 LESSON (mechanism-first vindicated 3x in one day): each variant LOOKED
 plausible in code; only the -debug spend-distribution parse showed v1/v2
