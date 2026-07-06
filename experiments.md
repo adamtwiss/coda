@@ -18288,3 +18288,31 @@ subsumed/overlapping — both levers dilute the same over-represented density.)
 Elsewhere overnight (other agents): smp/cross-thread-tm H1 +3.2 merged;
 tm/ponder-v2-bundle H1 +0.7 merged; eval/optimism (#2581, Atlas) trending
 H1 +2.8; ldse / conthist-total-scaled-gravity / ponder-policy variants H0.
+
+### 2026-07-06 — SMP 65%-vote soft-stop: HARD H0 (structural, not tuning)
+
+**#2584 smp/soft-stop-vote: H0 −43.2 ±12 (N=808, stopped early).** Reckless-style
+distributed 65% vote-to-stop, built as a **SAFE-additive simplification**: vote
+threshold = `raw_soft × stability_mult` layered on top of main's soft/hard/abs cap
+(vote can only stop *earlier*). Locally clean (T=4 smoke + race stress, 0 panics).
+Failed −43 immediately.
+
+**Root cause (structural, un-tunable):** the simplified threshold used ONLY the
+stability factor. Main's real stop = `raw_soft × stability × fail-low × forced ×
+subtree × score-trend`; several of those are **>1 — they EXTEND time in exactly
+the critical positions**. The vote ignored them, guillotining the search at
+~0.75×raw_soft precisely when main had decided to search longer. Compounded by
+helpers cycling shallow offset iterations fast → `helper_stable` climbs quickly →
+helpers vote early and dominate the 65% consensus. This is why Reckless has EVERY
+thread compute its FULL soft-limit before voting; dropping the extension factors
+isn't a constant you can tune back — it's the mechanism.
+
+**Verdict: drop the vote.** The low-risk cross-thread signal (SF-style instability
+factor) is already merged (#cross-thread-tm, +3.2). The faithful Reckless vote
+(per-thread full TM, breaks the silent-helper invariant) is the big risky rewrite
+the design doc deferred to "only if it leaves measurable headroom" — not worth the
+over-spend/forfeit risk given the SF factor already banks the cross-thread info.
+
+**Correction to prior overnight note:** eval/optimism #2581 did NOT hold at +2.8 —
+the direct on/off SPRT settled ~+0.4 LLR→H0 at 56–60k games (the earlier +2.8 was
+an early-N read). Optimism Stage A is ~neutral; not pursuing Stage B.
