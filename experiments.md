@@ -18361,6 +18361,21 @@ the recipe verdict should be read from the SWA pair. Bench note: raw pair
 trees nearly identical (2.18M/2.17M) but SWA pair diverge 12%
 (2.23M/2.50M) — consistent with something unusual in one of the tails.
 
+**#2604 (SWA-twin disambiguation): H0, −21.4 ±6.6 at 3,072 games.** Both
+endpoints of the pcmild-ms32 stage-1 run are −21..−27 vs baseline →
+run-level damage confirmed, raw-endpoint-artifact ruled out. Eval-RMS
+check ruled out scale shift (354 vs 361 over the same 20k quiet
+positions). Training curves point at the PC filter, not max-score: the
+baseline trains far BELOW its own val (easy mass in the special data),
+while pcmild-ms32 trains ~1.7× higher, right at val, and much noisier —
+the removal fingerprint (admitting TB-band scores via ms32000 would
+LOWER train loss: saturated wrm targets are near-free). Val gap is real
+too (~8%: 0.00225 vs 0.00207). Adam's max-score-only bisect run is in
+flight; if PC confirmed, fix = re-knot pc-y* to the special data's score
+distribution (borrowed-filter-thresholds-must-rescale, again), NOT drop
+the filter. Zero-GPU check available: per-file wrap counts in the two
+training logs quantify the pass-rate collapse.
+
 ---
 
 ## Reckless-audit ordering imports — both H0 (2026-07-06)
