@@ -14,7 +14,7 @@ AFTER it. The SF ponder leg was re-run post-fix on 2026-07-06: −130.9 → −1
 
 | Leg | vs SF-dev | vs Reckless 0.10-dev | Reading |
 |---|---|---|---|
-| Fixed nodes 10k | **+4.6** | **+82.6** | Eval-dominated regime: Coda ≥ SF, ≫ Reckless |
+| Fixed nodes 10k | +4.6 (**overshoot-inflated**; honest ≈ −30..−45) | +82.6 (inflated; honest ≈ +30) | Eval-dominated regime: SF > [Reckless ≈ Coda] ≫ field. Overshoot worth ~50 at 10k, <8 at ≥20k (absolute 4096-boundary artifact) — bigger-budget rows stand |
 | Fixed nodes 20k | −51.3 | −8.1 | The reversal point for both |
 | Fixed nodes 50k | −58.5 | −29.0 | |
 | Fixed nodes 100k | **−78.9** | **−18.5** | Quality-per-node gap: SF huge & compounding; Reckless small |
@@ -33,11 +33,15 @@ AFTER it. The SF ponder leg was re-run post-fix on 2026-07-06: −130.9 → −1
 
 ## Synthesis (what lives where)
 
-1. **Eval: a Coda STRENGTH, not a gap.** At eval-dominated budgets (10k
-   nodes) Coda edges SF and crushes Reckless (+83). The old model "vs
-   Reckless is eval-refinement" is dead (memory corrected 2026-07-06). Do
-   not spend eval effort chasing either engine; spend it on absolute gains
-   (the skip-recipe program).
+1. **Eval: world #2-tier (tied with Reckless), ~40 behind SF at 10k.**
+   (Revised after exact node accounting — the "Coda edges SF" first read
+   was a +23%-budget artifact worth ~50 Elo at this TC.) The old model "vs
+   Reckless is eval-refinement" stays dead: we're at Reckless parity on
+   eval, and the vs-Reckless TC gap decomposes to TM/SMP/search instead.
+   vs SF, BOTH components are real: ~40 of eval+QS+shallow machinery even
+   at tiny budgets, growing to −60..−79 as their deep-search machinery
+   engages. Eval effort = absolute gains (skip-recipe program), not
+   chasing.
 2. **Search quality-per-node: the SF-specific mountain.** −79 @ 100k and
    compounding, vs only ~−20 to Reckless. SF converts thin plies best
    (their d12 beats our dense d12); Reckless wins with dense plies +
@@ -68,44 +72,37 @@ AFTER it. The SF ponder leg was re-run post-fix on 2026-07-06: −130.9 → −1
    mechanisms from the diagnosis doc: instant-reply latency (SF p25=3ms vs
    our 112ms) and hint-less bestmoves (4.6% vs 0.5%). Owner: Zeus.
 
-## Exhibit: fixed-10k-nodes Top-20 RR (2026-07-06) — the eval leaderboard
+## Exhibit: fixed-10k-nodes Top-20 RR — the eval leaderboard (FINAL, exact accounting)
 
-Same top-20 pool as the TC round-robins, but every engine limited to
-nodes=10000 per move (no TM, no NPS). This isolates eval + QS + shallow
-ordering. 858 games/engine, CI ~±20:
+nodes=10000/move, no TM/NPS; isolates eval + QS + shallow ordering. First run
+used the overshooting Coda (+23% nodes at this budget = +53 Elo measured
+field inflation, independently confirmed by a 2500-game self-play H2H of the
+exact-vs-overshoot binaries: -49.7 +-8.8). Table below = RERUN with exact
+`go nodes` enforcement (158bb00), 950 games/engine, CI ~+-18:
 
 | # | Engine | Elo | | # | Engine | Elo |
 |---|--------|-----|-|---|--------|-----|
-| 1 | **Coda** | **+197** | | 11 | Hobbes | −1 |
-| 2 | Stockfish | +179 | | 12 | Stormphrax | −13 |
-| 3 | Reckless | +151 | | 13 | Alexandria | −14 |
-| 4 | Starzix | +106 | | 14 | Halogen | −55 |
-| 5 | PlentyChess | +86 | | 15 | Astra | −70 |
-| 6 | Viridithas | +74 | | 16 | Clover | −81 |
-| 7 | Cinder | +46 | | 17 | Berserk | −141 |
-| 8 | Obsidian | +41 | | 18 | Caissa | −144 |
-| 9 | Integral | +30 | | 19 | Rubichess | −176 |
-| 10 | Raphael | +17 | | 20 | Icarus | −246 |
+| 1 | Stockfish | +181 | | 11 | Stormphrax | +6 |
+| 2 | Reckless | +147 | | 12 | Hobbes | +3 |
+| 3 | **Coda** | **+140** | | 13 | Alexandria | −29 |
+| 4 | Starzix | +92 | | 14 | Astra | −36 |
+| 5 | PlentyChess | +85 | | 15 | Halogen | −50 |
+| 6 | Viridithas | +83 | | 16 | Clover | −80 |
+| 7 | Cinder | +48 | | 17 | Berserk | −138 |
+| 8 | Obsidian | +37 | | 18 | Caissa | −147 |
+| 9 | Raphael | +37 | | 19 | Rubichess | −185 |
+| 10 | Integral | +29 | | 20 | Icarus | −257 |
 
-Readings (and caveats):
-- **Coda-vs-SF is a TIE, not a lead**: Coda's `go nodes` gate checks the
-  global counter at 4096-node granularity (search.rs ~1300), consuming
-  ~12.3k for a 10k limit (+23%, worth ~+15-30 here); SF/Reckless enforce
-  exactly (10001-10005, measured). The +18 point gap ≈ the artifact.
-  Defensible claim: **Coda's eval+QS is SF-tier and ahead of everything
-  else** (Coda > Reckless is significant: +46 at ±29 combined).
-- **The podium = the three threat-input NNUE engines** (Coda v9 threats,
-  SF FullThreats/SFNNv12+, Reckless): threat features let static eval see
-  tactics others need a ply of search for — maximal value at tiny budgets.
-  Correlation, not proof (next-tier archs unverified), but 3-for-3.
-- **CCRL-3600 speed/search-built engines collapse** (Berserk −141,
-  Rubichess −176, Caissa −144, Alexandria −14): their TC strength is
-  NPS/search-shaped. This table + the 100k fixed-node numbers are two ends
-  of one curve: Coda starts level-with-SF and SF pulls away as budget
-  grows — the cleanest visualization of where the remaining search gap
-  lives.
-- Fix-before-publishing note: a per-node limit check when max_nodes > 0
-  (5 lines) would make future fixed-node tests exact.
+Readings:
+- **Coda's eval+QS is Reckless-tier, statistically tied for world #2**
+  (147 vs 140, CIs overlap), ~50 clear of the next tier, ~40 behind SF.
+  The first run's "Coda #1 / edges SF" was the accounting artifact.
+- **SF leads even at eval-dominated budgets** — their eval+QS+shallow
+  machinery is ~40 ahead here, then the deep-search machinery widens it to
+  −60..−79 as budget grows. Both components are real; the deep one is bigger.
+- The podium = the three threat-input NNUE engines (correlation note stands).
+- Speed/search-built CCRL-3600 engines still collapse (Berserk −138,
+  Rubichess −185): their TC strength is not eval-carried.
 
 ## Measurement caveats
 
