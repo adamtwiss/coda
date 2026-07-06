@@ -24,7 +24,7 @@ so .tsv/.epd files work).
 import argparse, json, os, statistics, subprocess, sys
 
 
-def run_engine(path, fens, depth, hash_mb):
+def run_engine(path, fens, depth, hash_mb, options=()):
     """One persistent process; ucinewgame between positions (clean TT)."""
     p = subprocess.Popen([os.path.expanduser(path)], stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, text=True, bufsize=1)
@@ -38,6 +38,8 @@ def run_engine(path, fens, depth, hash_mb):
                 return line
     send("uci"); wait_for("uciok")
     send(f"setoption name Hash value {hash_mb}")
+    for name, val in options:
+        send(f"setoption name {name} value {val}")
     send("isready"); wait_for("readyok")
 
     results = []  # per position: {depth: (nodes, seldepth, time_ms)}
@@ -92,7 +94,7 @@ def main():
     ap.add_argument("--limit", type=int, default=150)
     ap.add_argument("--hash", type=int, default=256)
     ap.add_argument("--engine", action="append", required=True,
-                    help="NAME=PATH (repeatable)")
+                    help="NAME=PATH[,OPT=VAL,...] (repeatable; OPTs sent as setoption)")
     ap.add_argument("--csv", default=None)
     a = ap.parse_args()
 
@@ -108,12 +110,18 @@ def main():
             break
     print(f"{len(fens)} positions, depth {a.depth}, hash {a.hash}", file=sys.stderr)
 
-    engines = [e.split("=", 1) for e in a.engine]
+    engines = []
+    for e in a.engine:
+        name, rest = e.split("=", 1)
+        parts = rest.split(",")
+        opts = tuple(tuple(kv.split("=", 1)) for kv in parts[1:])
+        engines.append((name, parts[0], opts))
     curves = {}
-    for name, path in engines:
-        print(f"running {name} ({path})...", file=sys.stderr)
-        res = run_engine(path, fens, a.depth, a.hash)
+    for name, path, opts in engines:
+        print(f"running {name} ({path}) opts={opts}...", file=sys.stderr)
+        res = run_engine(path, fens, a.depth, a.hash, opts)
         curves[name] = median_curve(res, a.depth)
+    engines = [(n, p) for n, p, _ in engines]
 
     # cross-engine table
     depths = sorted(set().union(*[set(c) for c in curves.values()]))
