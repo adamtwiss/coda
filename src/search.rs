@@ -5101,7 +5101,8 @@ fn negamax(
                 // 0 (they break on the first fail-high before alpha rises), so it
                 // only sharpens late-move reduction at PV nodes where several
                 // improving moves have already been found.
-                reduction += alpha_raise_count * LMR_ALPHA_RAISE_10X.load(Ordering::Relaxed) / 10 * LMR_SCALE;
+                // CONTINUOUS (commit 2): x10 = /10 * LMR_SCALE without the floor.
+                reduction += alpha_raise_count * LMR_ALPHA_RAISE_10X.load(Ordering::Relaxed) * 10;
 
                 // Reduce less when the position is improving
                 if improving {
@@ -5157,7 +5158,9 @@ fn negamax(
                     // fixed 2026-06-11).
                     hist_score += info.pawn_hist[ph_idx][gp][to as usize] as i32;
                 }
-                let hist_adj = hist_score / tp(&LMR_HIST_DIV) * LMR_SCALE;
+                // CONTINUOUS: sub-ply history adjustment (a +8000 history at
+                // DIV=12000 now subtracts 0.67 ply instead of 0).
+                let hist_adj = hist_score * LMR_SCALE / tp(&LMR_HIST_DIV);
                 reduction -= hist_adj;
 
                 // Complexity-aware LMR: reduce less when correction history
@@ -5171,19 +5174,19 @@ fn negamax(
                 // inflating complexity in long-halfmove positions.
                 if scaled_eval > -INFINITY {
                     let complexity = (static_eval - scaled_eval).abs();
-                    reduction -= complexity / tp(&LMR_COMPLEXITY_DIV) * LMR_SCALE;
+                    reduction -= complexity * LMR_SCALE / tp(&LMR_COMPLEXITY_DIV); // CONTINUOUS
                 }
 
                 // Threat-density LMR: reduce less when multiple pieces are
                 // under pawn attack. Tactical positions need deeper search.
                 // Fixed-point divisor: stored × 10. Avoids tp10 swallowing
                 // sub-integer SPSA precision on this multiplicative use.
-                reduction -= threat_count * 10 / LMR_THREAT_DIV_10X.load(Ordering::Relaxed).max(1) * LMR_SCALE;
+                reduction -= threat_count * 10 * LMR_SCALE / LMR_THREAT_DIV_10X.load(Ordering::Relaxed).max(1); // CONTINUOUS
 
                 // King-pressure LMR modifier: reduce less when enemy has
                 // many attackers on our king zone. Parent-node signal reused
                 // from NMP/ProbCut gates — tactical king positions need depth.
-                reduction -= king_zone_pressure * 10 / LMR_KING_PRESSURE_DIV_10X.load(Ordering::Relaxed).max(1) * LMR_SCALE;
+                reduction -= king_zone_pressure * 10 * LMR_SCALE / LMR_KING_PRESSURE_DIV_10X.load(Ordering::Relaxed).max(1); // CONTINUOUS
 
                 // Clamp: never extend (negative), never reduce past depth 1.
                 // Note: `new_depth - 1` can be -1 when negative singular
@@ -5224,7 +5227,7 @@ fn negamax(
                     if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                         let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
                         let capt_hist_val = info.history.capture[go_piece(moved_piece)][to as usize][ct] as i32;
-                        reduction -= capt_hist_val / tp(&LMR_HIST_DIV_CAP) * LMR_SCALE;
+                        reduction -= capt_hist_val * LMR_SCALE / tp(&LMR_HIST_DIV_CAP); // CONTINUOUS
                     }
 
                     // Reduce less for captures that give check
@@ -5252,7 +5255,8 @@ fn negamax(
         // deep the search reaches, so late moves at LTC are searched closer
         // to full depth. One formula, one tunable set (Adam directive).
         if reduction >= LMR_SCALE {
-            reduction -= ((info.root_depth - tp(&LMR_ROOT_THRESH)).max(0) * tp(&LMR_ROOT_COEF)) / 100 * LMR_SCALE;
+            // CONTINUOUS: /100 * LMR_SCALE(=100) cancels exactly.
+            reduction -= (info.root_depth - tp(&LMR_ROOT_THRESH)).max(0) * tp(&LMR_ROOT_COEF);
             if reduction < 0 { reduction = 0; }
         }
 
