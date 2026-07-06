@@ -18425,3 +18425,28 @@ was real but ~Elo-neutral). Neither train-level nor val-level predicted the
 Elo; the SPIKES did. On special data, label noise >> stream hardness as the
 strength predictor — and only the controlled bisect settled it. (Ordering
 stats/loss ≠ strength, again, in a new costume.)
+
+## Reckless-audit pruning/TT levers (batch 2) — all H0 (2026-07-06)
+
+- **#5 history in quiet-SEE + LMP thresholds: H0 −2.1 ±2.4 (#2602).**
+  Default divisors over-relaxed; NOT retuned — fleet was running Hercules's
+  LMR work (higher priority) and the campaign pattern made the expectation
+  low. Coda's quiet pruning is already well-shaped (capture-SEE already
+  carries capt-hist; quiets don't want the same relaxation).
+- **#8 deep-node TT-cutoff guard relax: H0 (flat, #2601).** Reckless relaxes
+  the cut_node==score guard at depth>5. On Coda: cuts −11.9% nodes but
+  **Elo-neutral** — the extra deep cutoffs are, on net, neither winning nor
+  losing (the deep child-verify already catches the bad ones). A free node
+  reduction that buys no STC Elo. Dropped.
+- **#9 TT PV-entry replacement protection: H0 (#2600).** +2 plies survival
+  for tt_pv slots (Reckless pattern). Coda's replacement (margin 4 + EXACT
+  override + ×8 aging) is already well-balanced; the extra PV retention is
+  mildly negative. No tunable → dropped.
+
+**Campaign tally:** the Reckless v0.10.0-dev audit (docs/reckless_audit_
+2026-07-06.md) yielded exactly ONE win — the pre-make TT prefetch (#1085,
+merged, +9 Elo on the AVX2 fleet half). All 3 ordering imports + all 3
+pruning/TT imports H0'd. Conclusion: Reckless's edge over Coda is NOT in
+portable micro-features — Coda's search (ordering/pruning/TT) is already
+well-tuned. The gap lives in the LMR correction-term battery (Hercules's
+T1.1/T1.2) and eval/net quality. Reckless lever-mining wound down.
