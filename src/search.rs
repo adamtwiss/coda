@@ -1311,7 +1311,19 @@ impl SearchInfo {
         // made `go nodes N` overshoot by ~N*T at T threads. Check global
         // counter so all threads stop together; up to T*4096 unflushed nodes
         // of slack is acceptable.
-        if self.max_nodes > 0 && self.global_nodes.load(Ordering::Relaxed) >= self.max_nodes {
+        // Exact accounting (2026-07-06): include this thread's UNFLUSHED local
+        // delta, not just the 4096-granular global counter — the stale-global
+        // check made `go nodes N` overshoot by up to 4095 nodes (+23% at
+        // N=10000, measured vs SF/Reckless which enforce exactly; it inflated
+        // Coda's fixed-node RR results). Helpers still contribute at flush
+        // granularity (bounded T*4096 slack, documented above); the main
+        // thread — the one that matters at T=1 fixed-node testing — is now
+        // node-exact. Zero cost unless max_nodes > 0 (never set on OB).
+        if self.max_nodes > 0
+            && self.global_nodes.load(Ordering::Relaxed)
+                + (self.nodes - self.last_flushed_nodes.get())
+                >= self.max_nodes
+        {
             // Set the shared stop flag (like the time branches below) so
             // ancestors abort their epilogues instead of storing partial
             // best_score/best_move to the TT and firing fake history bonuses,
