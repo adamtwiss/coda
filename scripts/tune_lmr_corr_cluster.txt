@@ -1,8 +1,3 @@
-# LMR correction-terms cluster (sf/lmr-corr-combined, 2026-07-06).
-# The six Reckless-ported centi terms reseeded at HALF converted values
-# (#2594/#2596 H0'd at full strength — double-counting vs our ln·ln base),
-# ranges to 0 so SPSA can kill dead terms; plus the five established LMR
-# shape params they interact with. Format: NAME, int, default, min, max, c_end, r_end
 LMR_WINBETA_CENTI, int, 50, 0, 250, 12.0, 0.002
 LMR_TTALPHA_CENTI, int, 22, 0, 150, 8.0, 0.002
 LMR_TTDEPTH_CENTI, int, 16, 0, 150, 8.0, 0.002
