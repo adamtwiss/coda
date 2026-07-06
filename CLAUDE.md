@@ -384,8 +384,11 @@ candidate: the skip-recipe consolidation net if it takes prod and soaks clean.
 3. `.github/workflows/release.yml` fires: builds static embedded-net
    binaries — linux-x86-64-v2 + v3 (musl), linux-aarch64 (musl),
    windows-x86-64-v3, macos-aarch64 — smoke-benches each, and attaches
-   binaries + sha256s + generated notes to the GitHub release.
-4. Sanity: download one asset, check `id name` matches the tag.
+   binaries + sha256s to the GitHub release.
+4. Hand-write the release notes (`gh release edit vX.Y.Z --notes-file ...`);
+   auto-notes are disabled (per-matrix-job duplication + `*-nets` compare
+   base made them junk on v0.9.0). Mark pre-1.0 releases `--prerelease`.
+5. Sanity: download one asset, verify sha256 and `id name` matches the tag.
 
 Dry-run without tagging: `gh workflow run release.yml` builds the same
 matrix as workflow artifacts only (validated green 5/5 on 2026-07-05).
