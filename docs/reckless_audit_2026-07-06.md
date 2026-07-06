@@ -257,3 +257,18 @@ Next unclaimed non-LMR candidates (Fable queue): #7 (limit good captures to
 thresholds), #8/#9 (deep-node TT-cutoff relax / PV replacement protection),
 #10 (NMP improving term + `estimated_score`). Hold on anything touching the
 LMR reduction expression or `cutoff_count` — Hercules owns those.
+
+### Batch 2 (2026-07-06, fleet quiet) — pruning + TT levers
+
+| Lever | OB | Bench Δ vs main | Notes |
+|---|---|---|---|
+| #5 history in quiet-SEE + LMP thresholds | #2602 `[0,3]` | +2.7% | extends Coda's capture-SEE capt-hist pattern to quiets |
+| #8 deep-node TT-cutoff guard relax | #2601 `[0,3]` | **−11.9%** | big node cut — takes many more deep cutoffs; deep child-verify gates depth≥7 |
+| #9 TT PV-entry replacement protection | #2600 `[0,3]` | +4.1% | PV slots survive 2 extra plies |
+
+Ordering batch 1 both resolved →H0 (threat-to-malus, malus-index-decay) —
+Coda's move ordering is well-tuned and resistant to Reckless ordering
+imports; #992 (good-cap cap) abandoned pre-SPRT (fast-path bypass +
+category prior). Pivoted to pruning/TT (batch 2). #8's −12% node cut is
+the one to watch — a large tree-shape change that's either a real
+depth win or over-aggressive deep cutoffs.
