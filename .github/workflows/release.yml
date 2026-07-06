@@ -96,4 +96,8 @@ jobs:
           files: |
             ${{ env.BIN }}
             ${{ env.BIN }}.sha256
-          generate_release_notes: true
+          # NO generate_release_notes: each of the 5 matrix jobs would append
+          # the same auto-notes block (v0.9.0 shipped with 5 duplicates), and
+          # our compare-base is a *-nets tag so the content is junk anyway.
+          # Release notes are hand-written as part of the release ceremony
+          # (gh release edit vX.Y.Z --notes-file ...).
