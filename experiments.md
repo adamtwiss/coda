@@ -18360,3 +18360,30 @@ zero → the raw endpoint of that run is anomalous (oscillating tail) and
 the recipe verdict should be read from the SWA pair. Bench note: raw pair
 trees nearly identical (2.18M/2.17M) but SWA pair diverge 12%
 (2.23M/2.50M) — consistent with something unusual in one of the tails.
+
+---
+
+## Reckless-audit ordering imports — both H0 (2026-07-06)
+
+From `docs/reckless_audit_2026-07-06.md`. Two Reckless move-ordering ideas
+tested on Coda; both rejected — Coda's ordering is well-tuned and resistant
+to these imports:
+- **#3 threatened-TO ordering malus (SEE-gated, stratified): H0 −4.4 ±3.2
+  (#2593).** Penalize a quiet moving a minor/rook/queen onto an
+  enemy-attacked square that loses material by SEE. Coda's existing
+  escape-FROM bonus + SEE-quiet pruning already capture most of this signal;
+  the added malus over-demotes. (The 2026-05 unstratified flat version also
+  H0'd, #465 — this was the stratified+SEE-gated retry.)
+- **#1038 index-decayed quiet malus: ~flat/H0 (#2597, grinding at +0.2 after
+  −7 early).** Structural mismatch: Coda's quiet malus is ALREADY modulated
+  (NFH/sibling fail-high scaling), so stacking Reckless's index-decay
+  double-dilutes the penalty on later quiets. Not a mistuned constant —
+  dropped regardless of the marginal outcome.
+- **#992 (limit good captures to 3 when TT move is quiet): abandoned
+  pre-SPRT.** Coda's MovePicker `next()` fast-path bypasses the stage machine
+  during steady-state good-capture picking, so a correct impl needs a cost in
+  the hot `#[inline(always)]` path or a generation-time partial-select; not
+  worth it given the ordering-resistance pattern.
+
+Lesson: Reckless's edge over Coda is NOT in move ordering. Pruning/TT levers
+(#5/#8/#9) tested separately (batch 2).
