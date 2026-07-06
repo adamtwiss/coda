@@ -18241,3 +18241,50 @@ LESSON (mechanism-first vindicated 3x in one day): each variant LOOKED
 plausible in code; only the -debug spend-distribution parse showed v1/v2
 produced no tail at all. Never SPRT a TM shape change without the
 input-metric pass.
+
+---
+
+## Overnight harvest 2026-07-06: Tier-1 verdicts, recipe verdicts, noise floor
+
+**SF audit Tier-1 wave — final (5 probes, 2 banked, +2.6 merged):**
+- #2559 tt-child-verify: **H1 +1.4 ±1.1 (N=98.6k)** — MERGED (b0103e0).
+- #2560 faillow-prev-bonus: **H1 +1.2 ±0.9 (N=140k)** — MERGED (b8c1d7a).
+  First-ever history learning on the majority node class.
+- #2558 tt-cut-bonus-half: H0 +0.2 (112k) — genuinely ~zero, dropped (not
+  bundle-worthy).
+- #2557 improving-beta: H0 −0.6. #2561 followpv-iir: H0 −2.9 — the audit's
+  consensus #1 pick failed; protection without SF's aggression it guards is
+  pointless. Both dropped.
+- Wave verdict: matches the "no secret sauce" model — the conveyor banks
+  +1-2s where the mechanisms transfer; consensus-of-auditors ≠ transfer.
+
+**#2574 conthist-prune-v2: H0 −1.0 ±1.9 (N=33.7k)** — landed EXACTLY in the
+pre-registered retune zone (flat untuned + −12% tree). Far better than the
+old attempts (−7..−9 at similar N), consistent with the #2432 pollution fix
+mattering. Next: rebase onto the post-futility-tuned trunk (#2548 basin, per
+Adam's sequencing) and retune-on-branch before any verdict.
+
+**Reproducibility replicas (QAT-era noise floor): #2577 gpu3 −1.1 ±1.5 (60k),
+#2578 gpu4 −2.3 ±2.2 (28.7k)** vs the original skip-baseline. Same recipe,
+same seed, different hosts, weights NOT byte-identical (GPU FP divergence,
+gpu4 tree −3.9% at bench) — yet within 1-2 Elo. **Post-QAT run-to-run
+variance ~1-2 Elo confirmed** (Adam's anecdata validated).
+
+**Consequence — #2568 reinterpreted: the soft-ply wrap salt harm was REAL.**
+baseline-v2 (salted) finished **H0 −8.3 ±4.2** — ~4σ outside the now-measured
+1-2 Elo replica floor. The "stream-perturbation variance" hypothesis (mine)
+is dead; Adam's low-variance instinct was right. Salt default-off (fork
+342e0e6) vindicated as a correctness call, not just caution. Open mechanism
+question: WHY a rate-preserving redraw of the early-ply kept-subset costs
+~8 Elo — genuinely interesting, parked (--soft-ply-rotate exists for a
+controlled investigation if ever wanted).
+
+**Recipe composition verdicts: fs8 stacking SUBTRACTS from both PC variants.**
+#2562 pc-milder×fs8: H1 +5.79 ±3.50 — HALF of pc-milder solo (+12.2).
+#2555 pc-sf×fs8: H1 +1.6 ±1.9 — quarter of pc-sf tuned (+8.4).
+**Stage-1 consolidation spec: pc-milder ALONE.** (fs9's solo +3.6 is
+subsumed/overlapping — both levers dilute the same over-represented density.)
+
+Elsewhere overnight (other agents): smp/cross-thread-tm H1 +3.2 merged;
+tm/ponder-v2-bundle H1 +0.7 merged; eval/optimism (#2581, Atlas) trending
+H1 +2.8; ldse / conthist-total-scaled-gravity / ponder-policy variants H0.
