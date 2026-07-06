@@ -29,7 +29,7 @@ row below is expected to improve materially.
 | Fixed t/move | st=0.1 −102, st=0.2 −90 | (Reckless forfeits in st mode) | Coda TM ≈ SF-par |
 | Threads T2 | −94.9 (par −69, post-#2542) | −63.2 (par ~−55) | ~8-10 Elo/doubling relative SMP deficit, |
 | Threads T4 | −74.1 (par −60) | −75.3 | consistent vs BOTH opponents |
-| **Ponder** | −130.9 vs −83.8 no-ponder (**PRE-fix**) | **−4.6** vs −54.9 no-ponder (**POST-fix**) | P1-P4 measured at H2H scale: +50 vs Reckless |
+| **Ponder** | PRE-fix −130.9; **POST-fix rerun −100.0** (2026-07-06) vs −83.8 no-ponder | **−4.6** vs −54.9 no-ponder (POST-fix) | P1-P4 at H2H scale: +31 vs SF, +50 vs Reckless |
 
 ## Synthesis (what lives where)
 
@@ -58,10 +58,15 @@ row below is expected to improve materially.
    Owner: Atlas (SMP thread; includes implementing SF-style optimism,
    which SMP work needs — this also covers the search audit's Tier-3
    optimism item, previously #671 H0 untuned).
-5. **Ponder: fixed, and now a weapon.** P1-P4 took vs-Reckless from −55 to
-   −4.6 — **level at deployment conditions** (lichess is ponder-on),
-   matching live observation. Reckless's ponder is comparatively weak.
-   SF ponder rerun in flight (Adam); Zeus on the ponder follow-up.
+5. **Ponder: largely fixed; residual vs SF owned.** P1-P4 took vs-Reckless
+   from −55 to −4.6 (**level at deployment conditions** — lichess is
+   ponder-on, matching live observation) and vs-SF from −131 to −100
+   (rerun 2026-07-06). Ponder-quality ordering now: SF > Coda >> Reckless.
+   Residual ponder-delta vs SF ≈ 16 on the static −83.8 baseline — but the
+   rerun ran on a post-futility-merge Coda, so a FRESH no-ponder baseline
+   is needed to pin the true residual (plausibly ~16-22). Known remaining
+   mechanisms from the diagnosis doc: instant-reply latency (SF p25=3ms vs
+   our 112ms) and hint-less bestmoves (4.6% vs 0.5%). Owner: Zeus.
 
 ## Measurement caveats
 
@@ -76,6 +81,8 @@ row below is expected to improve materially.
 
 - Fixed-nodes sweep vs SF: after each search-wave lands (the audit's
   pre-registered verification).
-- SF ponder leg: post-P1-P4 (in flight 2026-07-06).
+- SF ponder leg: DONE 2026-07-06 (−100.0). Next: fresh no-ponder SF
+  baseline on current Coda to pin the residual ponder-delta; re-run again
+  after Zeus's follow-up.
 - Reckless 180+1: pending.
 - Threads legs: after Atlas's SMP work lands.
