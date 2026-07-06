@@ -396,7 +396,9 @@ Matrix stays small because Coda's SIMD is runtime-dispatched (75 detection
 sites); compile target only affects general codegen (x86-64-v2 = popcnt
 floor) and the one `avx512vnni` cfg (portable builds fall back to the
 AVX-512BW path — build from source with target-cpu=native for the last
-percent). Net-asset releases continue on their own `*-nets` tags; future
+percent). General codegen is NOT negligible though: v3 measured **+12.6%
+NPS over v2** on the v0.9.0 release binaries (identical bench nodes,
+Hercules, worker stopped) — keep shipping both. Net-asset releases continue on their own `*-nets` tags; future
 net buckets should avoid semver-shaped names.
 
 ## Key Gotchas
