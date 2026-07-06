@@ -38,9 +38,12 @@ AFTER it. The SF ponder leg was re-run post-fix on 2026-07-06: −130.9 → −1
    was a +23%-budget artifact worth ~50 Elo at this TC.) The old model "vs
    Reckless is eval-refinement" stays dead: we're at Reckless parity on
    eval, and the vs-Reckless TC gap decomposes to TM/SMP/search instead.
-   vs SF, BOTH components are real: ~40 of eval+QS+shallow machinery even
-   at tiny budgets, growing to −60..−79 as their deep-search machinery
-   engages. Eval effort = absolute gains (skip-recipe program), not
+   vs SF, BOTH components are real: ~40 of eval + shallow-search
+   efficiency at 10k nodes (d~9 — search already operating; NOT pure
+   eval), growing to −60..−79 as their deep-search machinery engages.
+   Elegant cross-read with fixed-depth: at equal DEPTH 8 Coda beats SF
+   +110 (dense plies, more nodes spent); at equal NODES SF leads (their
+   plies cheaper) — same phenomenon, two projections. Eval effort = absolute gains (skip-recipe program), not
    chasing.
 2. **Search quality-per-node: the SF-specific mountain.** −79 @ 100k and
    compounding, vs only ~−20 to Reckless. SF converts thin plies best
@@ -74,7 +77,10 @@ AFTER it. The SF ponder leg was re-run post-fix on 2026-07-06: −130.9 → −1
 
 ## Exhibit: fixed-10k-nodes Top-20 RR — the eval leaderboard (FINAL, exact accounting)
 
-nodes=10000/move, no TM/NPS; isolates eval + QS + shallow ordering. First run
+nodes=10000/move, no TM/NPS. NOT pure eval: 10k nodes reaches ~depth 9
+from startpos, so ordering/pruning/TT already operate — this measures
+eval + shallow-search efficiency ("whose 10k nodes buy more"). Pure-eval
+instrument would be a depth=1(+QS) ladder (not yet run). First run
 used the overshooting Coda (+23% nodes at this budget = +53 Elo measured
 field inflation, independently confirmed by a 2500-game self-play H2H of the
 exact-vs-overshoot binaries: -49.7 +-8.8). Table below = RERUN with exact
