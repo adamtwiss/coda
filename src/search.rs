@@ -5418,6 +5418,13 @@ fn negamax(
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         // Fixed-point divisor (stored × 10).
                         let mut bonus = raw_bonus + raw_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
+                        // SF searched-count scale (search.cpp:1911-1914, Jun-2026
+                        // patch; audit W2): the more moves were refuted before
+                        // this one cut, the more informative the cutoff — scale
+                        // the bonus up by moves-searched/256 at non-PV nodes.
+                        if !is_pv {
+                            bonus += bonus * (move_count - 1).max(0) / 256;
+                        }
                         // SF 645b636d: at non-PV nodes, amplify the cutoff move's
                         // bonus by the number of moves searched before it cut off
                         // (more competition survived = stronger signal). Best-move
@@ -5533,7 +5540,11 @@ fn negamax(
                         let raw_cap_bonus = capture_history_bonus(cap_bonus_depth);
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         // Fixed-point divisor (stored × 10).
-                        let cap_bonus = raw_cap_bonus + raw_cap_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
+                        let mut cap_bonus = raw_cap_bonus + raw_cap_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
+                        // SF searched-count scale (see quiet site above).
+                        if !is_pv {
+                            cap_bonus += cap_bonus * (move_count - 1).max(0) / 256;
+                        }
                         if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                             let cpt = if flags == FLAG_EN_PASSANT {
                                 captured_type(PAWN)
