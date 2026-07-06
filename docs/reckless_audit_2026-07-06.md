@@ -249,7 +249,7 @@ Coordinated split with Hercules to avoid double-work:
 | T1.1 LMR correction-term battery (#1087/#1044/#1022/tt_depth) | **Hercules** | in progress |
 | T1.2 `cutoff_count` propagation | **Hercules** | queued |
 | #3 threatened-TO ordering malus (SEE-gated, stratified) | Fable | OB #2593 `[0,3]` running |
-| #4 `key_after` pre-make TT prefetch | Fable | OB #2595 `[-2,1]` — **flat on Zeus** (Adam: explicit-prefetch timing has never paid off for us; kept running for the fleet uArch read only, low prior) |
+| #4 `key_after` pre-make TT prefetch | Fable | OB #2595 `[-2,1]` — **SURPRISE H1: +5.5 ±3.5 @ N=8.7k, LLR 2.6**. Flat on a clean single-process Zeus bench but a real fleet gain — the binary is NODE-IDENTICAL to main (bench 2302849=main), so it can only be speed. Reconciles via CONTENTION: the fleet runs ~6 concurrent games/worker with shared L3+bandwidth; hiding DRAM latency pays off there but not in a clean single-process bench. Same shape as the 2026-07 ponder saturated-A/B. **METHODOLOGY: measure NPS/memory changes under contention (concurrent games / saturated cores), not clean pinned bench — the clean bench has no bandwidth pressure and structurally under-reads prefetch/cache wins.** Merge candidate (Adam's call). |
 | #6 index-decayed quiet malus (#1038) | Fable | OB #2597 `[0,3]` running |
 
 Next unclaimed non-LMR candidates (Fable queue): #7 (limit good captures to
