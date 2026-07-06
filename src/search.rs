@@ -520,6 +520,9 @@ tunables!(
     // probe rescale a candidate net to prod's scale (e.g. 127 = dual-s200
     // RMS 254 -> baseline 323) to de-confound net-vs-net SPRTs. 100 = off.
     (EVAL_SCALE_PCT, 100, 50, 200, 5.0, false),
+    // Fail-low prior-countermove cont-hist bonus, % of history_bonus(depth)
+    // (SF fail-low history harvesting, simple core — audit 2026-07-05 T1#2).
+    (FAIL_LOW_PREV_BONUS_PCT, 60, 0, 150, 15.0, false),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
@@ -5577,6 +5580,48 @@ fn negamax(
 
         if FEAT_TT_STORE.load(Ordering::Relaxed) {
             info.tt.store(board.hash, depth, store_score, flag, best_move, raw_eval, tt_pv);
+        }
+    }
+
+    // Fail-low prior-countermove bonus (SF search.cpp:1523-1553, simple core;
+    // 2026-07-05 SF audit Tier 1 #2). When this node fails low with NO best
+    // move, the opponent's previous quiet move "worked" — credit it in the
+    // cont-hist context of our move before that, so the PARENT tries better
+    // siblings sooner. This is the majority node class in a big tree
+    // (all-nodes); Coda previously learned nothing from it (updates fired only
+    // on beta cutoffs + TT cutoffs). Indexing mirrors the TT-cutoff cont-hist
+    // malus site (moved_piece_stack, pre-move pieces — C8 audit #6 pattern).
+    // NOTE: SF's gate is `!bestMove`, which in SF means "no move raised alpha"
+    // (they assign bestMove only on alpha raises). Coda tracks a fail-soft
+    // best_move below alpha too, so the equivalent condition here is the
+    // fail-low bound itself, NOT best_move == NO_MOVE (which never holds).
+    if best_score <= alpha_orig
+        && info.excluded_move[ply_u] == NO_MOVE
+        && !info.stop.load(Ordering::Relaxed)
+        && ply_u >= 2
+    {
+        let stack_len = board.undo_stack.len();
+        if stack_len >= 2 {
+            let opp_undo = &board.undo_stack[stack_len - 1];
+            let our_undo = &board.undo_stack[stack_len - 2];
+            if opp_undo.mv != NO_MOVE && opp_undo.captured == NO_PIECE_TYPE
+                && our_undo.mv != NO_MOVE
+            {
+                let opp_gp = info.moved_piece_stack[ply_u - 1] as usize;
+                let our_gp = info.moved_piece_stack[ply_u - 2] as usize;
+                let opp_to = info.moved_to_stack[ply_u - 1] as usize;
+                let our_to = info.moved_to_stack[ply_u - 2] as usize;
+                if opp_gp > 0 && opp_gp < 13
+                    && our_gp > 0 && our_gp < 13
+                    && opp_to < 64 && our_to < 64
+                {
+                    let bonus = history_bonus(depth) * tp(&FAIL_LOW_PREV_BONUS_PCT) / 100;
+                    History::update_cont_history(
+                        &mut info.history.cont_hist[our_gp][our_to][opp_gp][opp_to],
+                        bonus,
+                    );
+                }
+            }
         }
     }
 
