@@ -2,14 +2,17 @@
 
 **Chess Optimised, Developed Agentically** — a UCI chess engine written in Rust.
 
-Coda is a strong chess engine written in Rust, it is 100% vibe-coded with Claude Code. Coda started off in late Jan 2026 as [GoChess](https://github.com/adamtwiss/gochess) (similarly vibe-coded) before being rewritten in Rust in late-March. I had written a few hobby engines in the past, and I wanted to see how far I could get with a new engine with the help of Claude.
+Coda is a strong UCI chess engine, 100% vibe-coded with Claude Code. It started in late January 2026 as [GoChess](https://github.com/adamtwiss/gochess) (similarly vibe-coded) before being rewritten in Rust in late March. I had written a few hobby engines in the past, and I wanted to see how far I could get with a new engine with the help of Claude.
 
 ## Features
 
-- **NNUE evaluation** - Coda evaluates with a from-scratch NNUE whose input layer combines HalfKA-style piece-square features (16 king buckets) with ~67k explicit threat and x-ray attack features — the network sees not just where pieces stand but what they attack — feeding a 1024-wide per-perspective accumulator with pairwise activation, then two small int8 hidden layers (32→32) with material-bucketed output heads. Networks are trained from scratch on mix of full set of LC0 data (100s of billions of positions) along with self-generated data with a customized Bullet trainer. Inference is fully incremental (lazy accumulator, Finny tables, incremental threat deltas) with runtime-dispatched AVX2/AVX-512-VNNI/NEON SIMD kernels.
-- **Full search** - alpha-beta with complete set of modern pruning features (NMP, LMR, RFP, singular extensions, etc.). Search supports pondering, and multi-threaded search with shared transposition table.
-- **Tablebases and opening books** - Syzygy endgame tablebase probing, and native support for polyglot opening books.
-- **Training data generation** - multi-threaded self-play datagen in SF binpack format.
+- **NNUE evaluation** — a from-scratch NNUE whose input layer combines HalfKA-style piece-square features (16 king buckets) with ~67k explicit threat and x-ray attack features — the network sees not just where pieces stand but what they attack — feeding a 1024-wide per-perspective accumulator with pairwise activation, then two small int8 hidden layers (32→32) with material-bucketed output heads. Networks are trained from scratch on a mix of the full LC0 dataset (hundreds of billions of positions) and self-generated data, using a customized Bullet trainer. Inference is fully incremental (lazy accumulator, Finny tables, incremental threat deltas) with runtime-dispatched AVX2/AVX-512-VNNI/NEON SIMD kernels.
+- **Search** — principal-variation alpha-beta with iterative deepening and aspiration windows, carrying the full modern battery: null-move pruning with verification, reverse futility (with a depth-aware knee), razoring, futility and late-move pruning, SEE pruning for quiets and captures, ProbCut, internal iterative reductions, late-move reductions shaped by history/complexity/threat signals, and singular extensions with double and negative variants. Repetition handling goes beyond the rules with cuckoo-table upcoming-cycle detection.
+- **Move ordering & history** — a staged move picker driven by an unusually rich history stack: threat-aware 4D main history, capture history, four-ply continuation history, and pawn-structure history, plus tactical ordering bonuses (threat escapes, discovered attacks, safe checks). A multi-source **correction history** (pawn / non-pawn / continuation / transition tables) continuously corrects the static eval from search feedback.
+- **Multi-threading & transposition table** — Lazy SMP over a lockless, XOR-verified transposition table (5-slot cache-line buckets, huge-page backed). Fully atomic with acquire/release ordering, so SMP is correct on ARM as well as x86 — Apple Silicon and ARM servers are first-class targets.
+- **Time management** — an adaptive multi-factor model (per-move node fraction, best-move stability, score trend) with full pondering support.
+- **Tablebases and opening books** — Syzygy endgame tablebase probing with a dedicated probe cache, and native Polyglot opening-book support.
+- **Training data generation** — multi-threaded self-play and material-imbalance datagen in SF binpack format, plus converters to and from Bullet checkpoint formats.
 
 ## Pre-built binaries
 
@@ -20,11 +23,11 @@ As we get closer to a first proper release, we will shortly add pre-built binari
 ```bash
 make                # Downloads the production network, and builds a binary with embedded NNUE net.
 ```
-All the above will build a 'coda' binary in the current directory. There is a pgo build option, but this currently regresses performance on most hardware, so please avoid using.
+This builds a `coda` binary in the current directory, targeting the native CPU. (A `make pgo` option exists but currently regresses performance on most modern hardware — avoid it.)
 
-Alternatively, you can build using cargo, but this won't embed an NNUE network.
+Alternatively, you can build with cargo, but this won't embed an NNUE network (pass one at runtime with `--nnue <file>` or the `NNUEFile` UCI option):
 ```
-cargo build --release  # Plain release build into target/releases
+cargo build --release  # Plain release build into target/release
 ```
 
 Requires Rust 1.70+
@@ -47,10 +50,14 @@ cargo install cargo-pgo
 | MoveOverhead | spin (0-5000) | 100 | Communication latency in ms |
 | Ponder | check | false | Enable pondering |
 | SyzygyPath | string | | Path to Syzygy tablebase files |
+| TBHash | spin (0-1024) | 16 | Tablebase probe cache size in MB |
+| SyzygyProbeDepth | spin (1-100) | 4 | Minimum depth for TB probes during search |
+
+The engine also exposes its ~130 search parameters as UCI options for SPSA tuning; these are not intended for end users.
 
 ## Strength
 
-Plays around 3000-3080 on lichess ([coda-bot](https://lichess.org/@/coda_bot) and [codabot](https://lichess.org/@/codabot)) where it is one of the strongest non-SF engines. In local testing competes with most engines ranked around 3500-3600 on CCRL. In local RR, STC testing it's a top-10 engine. So far most most performance tuning has been done for short time controls. Coda is still a young engine that is evolving fast, so bug-reports, testing and feedback are always welcome. 
+Plays around 3000-3080 on lichess ([coda_bot](https://lichess.org/@/coda_bot) and [codabot](https://lichess.org/@/codabot)), where it is one of the strongest non-Stockfish-derived engines. In local testing it competes with engines rated around 3500-3600 on CCRL, and in our local round-robin pool — which includes the strongest available C/C++/Rust engines — it places top-10 at short time controls. Most performance tuning so far has targeted short time controls. Coda is a young engine evolving fast, so bug reports, testing and feedback are always welcome.
 
 ## Credits
 
