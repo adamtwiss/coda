@@ -125,7 +125,7 @@ tunables!(
     // or use a quadratic/deepening margin so static eval does not keep
     // cheaply pruning d12+ nodes.
     (RFP_DEEP_KNEE_10X, 50, 40, 170, 20.0, true),
-    (RFP_DEEP_LINEAR, 44, 0, 200, 10.0, true),
+    (RFP_DEEP_LINEAR, 47, 0, 200, 10.0, true),
     (RFP_DEEP_QUAD_10X, 10, 0, 800, 50.0, true),
     // Razoring (re-added 2026-06-11, audit T2.6). Consensus band:
     // Obsidian 352/d<=5, Berserk 214/d<=5, Clover 145/d<=2, Integral
@@ -205,7 +205,7 @@ tunables!(
     // #2444 (1000 iters, 30+0 zero-inc): base 40->34.4, growth 100->94.3.
     (NO_INC_MTG_BASE, 34, 20, 80, 4.0, false),
     (NO_INC_MTG_GROWTH_PCT, 94, 0, 200, 10.0, false),
-    (LMR_HIST_DIV, 19843, 2000, 100000, 4900.0, true),
+    (LMR_HIST_DIV, 19517, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
     // continuous `hist_score / LMR_HIST_DIV`. Obsidian uses continuous
@@ -215,7 +215,7 @@ tunables!(
     // equivalent reduction magnitude). Coda's quiet div is 7736; same
     // ratio gives ~4500. Defaulting 5000 as a starting point.
     (LMR_HIST_DIV_CAP, 2623, 1000, 20000, 1500.0, true),
-    (LMR_C_QUIET, 149, 40, 300, 13.0, true),
+    (LMR_C_QUIET, 154, 40, 300, 13.0, true),
     (LMR_C_CAP, 178, 80, 350, 12.5, true),
     // 3-DOF LMR shape reform (Titan Track B + Zeus's shape-vs-shift point,
     // 2026-07-07). BASE shifts the curve's intercept (Berserk +0.23,
@@ -229,8 +229,8 @@ tunables!(
     // deep EBF per docs/ltc_regime_investigation_2026-07-07.md Q3).
     // Seeded at 700 to roughly preserve current shallow all-node
     // reduction at typical r (~250c, d8: +75c vs old flat +100c).
-    (LMR_BASE_CENTI, 20, 0, 120, 6.0, true),
-    (LMR_ALLNODE_DECAY_NUM, 700, 0, 1600, 80.0, true),
+    (LMR_BASE_CENTI, 21, 0, 120, 6.0, true),
+    (LMR_ALLNODE_DECAY_NUM, 662, 0, 1600, 80.0, true),
     // Explicit cut-node LMR bump (P1.1 / #2065). Cut nodes reduce by
     // LMR_CUTNODE_BUMP (+1 more with no TT move); all-nodes keep +1. Default 2
     // is a halfway step toward SF's larger cut-node reduction; SPSA can push it.
