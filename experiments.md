@@ -18513,3 +18513,24 @@ position) and QAT×batch interaction.
 port). +1.2 ±1.4, LLR 2.95 at 61k games ([-1,2] STC). The lone survivor
 of the SF wave-2 batch (draw-dither and iir-depth-ltc H0'd). Merged with
 Bench: 2297493 (post corrhist-fortress-fix main).
+
+## 2026-07-07 — atlas/lmr-base-offset H0s VOIDED (implementation bug); fixed retest fired
+
+Zeus's LTC review + branch archaeology: both atlas/lmr-base-offset
+branches added the LMR base INSIDE the float->int truncation
+(`(base + ln·ln/c) as i32`), so "0.20 plies" bumped only the ~20% of
+table cells sitting within 0.20 of an integer boundary — by a WHOLE ply
+— and left the rest untouched (0.50 version = a half-the-table whole-ply
+lottery). Their H0s tested a broken change and are void as evidence
+against the additive-base DOF, which has therefore never been validly
+tested. Branches archived as archive/atlas-lmr-base-offset{,-v2}-broken.
+
+Retests in flight: (a) isolated — sf/lmr-base-centi (BASE=20 exact centi
+post-conversion) vs sf/lmr-corr-combined, [0,3] STC; (b) joint —
+sf/lmr-shape-3dof adds the SF depth-decaying all-node inflation
+(r += r·NUM/(256d+285), the curve-SHAPE DOF Zeus identified as the
+mechanism behind SF's flat deep EBF) with an 11-param LTC cluster SPSA
+before any verdict SPRT. Lesson class: [[rebase-port-audit-for-dropped-lines]]
+adjacent — a sub-integer term ported onto integer arithmetic fails
+SILENTLY; grep for `as i32`/`/ LMR_SCALE` truncation whenever porting
+fractional-native mechanisms.
