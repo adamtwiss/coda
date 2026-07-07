@@ -689,37 +689,42 @@ Systematic approach for finding and fixing search feature issues. Each cycle com
   *because* of them) — this isn't an absolute ban on ever glancing at a
   weaker engine, just don't *build* a consensus on mid-table-or-below
   (the guidance exists because surveying weak engines for "should we"
-  kept going nowhere). Coda currently ranks #7 in our local top-20 RR —
-  **engines #1-6 are the primary reference set** (Stockfish, Reckless,
-  Obsidian, Berserk, PlentyChess, Alexandria). A "14-of-16 engines do X"
-  consensus that leans on mid-table engines carries little weight; weigh
-  agreement among the strongest, and treat near-peers (Cinder, Integral,
-  Viridithas) as corroboration only.
+  kept going nowhere). Coda currently ranks #4 in our local top-20 RR —
+  **the engines above us (Stockfish, Reckless, Obsidian) are the primary
+  reference set**, with the strong chasers (Berserk, PlentyChess,
+  Alexandria) as secondary evidence. A "14-of-16 engines do X" consensus
+  that leans on mid-table engines carries little weight; weigh agreement
+  among the strongest, and treat near-peers as corroboration only. Note
+  the corollary of being #4: most engines' choices are now weak evidence
+  for us — cross-engine consensus below the top-3 mostly tells us what
+  WE already do.
 
-**Current local RR (10+0.1, 950 games/engine, 2026-06-29, top-20 pool —
-includes every CCRL-top engine in C/C++/Rust)** — Elo relative to the
-pool, NOT absolute. Coda = #7 (+29), 6 Elo off the #5/#6 cluster; +11 vs
-~3 days earlier (rivals-RR stretches internal Elo ~2×):
+**Current local RR (10+0.1, T=1, ponder off, no EGTB, Hash=256,
+noob_4moves, 950 games/engine, 2026-07-07, top-20 pool)** — Elo relative
+to the pool, NOT absolute. **Coda = #4 (+44)** — v0.9.0, behind only
+SF/Reckless/Obsidian, 60 behind Reckless (the target gap, decomposed as
+TM ~30 + SMP + ~20 search, eval parity):
 
 | # | Engine | Elo | | # | Engine | Elo |
 |---|--------|-----|-|---|--------|-----|
-| 1 | Stockfish | +143 | | 11 | Viridithas | −9 |
-| 2 | Reckless | +120 | | 12 | Clover | −14 |
-| 3 | Obsidian | +72 | | 13 | Caissa | −33 |
-| 4 | Berserk | +46 | | 14 | Astra | −43 |
-| 5 | PlentyChess | +35 | | 15 | Stormphrax | −43 |
-| 6 | Alexandria | +35 | | 16 | Halogen | −48 |
-| **7** | **Coda** | **+29** | | 17 | Quanticade | −62 |
-| 8 | Cinder | +14 | | 18 | Starzix | −65 |
-| 9 | Integral | +13 | | 19 | Motor | −84 |
-| 10 | Hobbes | 0 | | 20 | Tarnished | −98 |
+| 1 | Stockfish | +145 | | 11 | Clover | −16 |
+| 2 | Reckless | +111 | | 12 | Rubichess | −23 |
+| 3 | Obsidian | +62 | | 13 | Viridithas | −23 |
+| **4** | **Coda** | **+44** | | 14 | Caissa | −34 |
+| 5 | Berserk | +29 | | 15 | Halogen | −42 |
+| 6 | Alexandria | +24 | | 16 | Raphael | −43 |
+| 7 | PlentyChess | +21 | | 17 | Astra | −50 |
+| 8 | Cinder | +11 | | 18 | Stormphrax | −57 |
+| 9 | Hobbes | −4 | | 19 | Starzix | −67 |
+| 10 | Integral | −5 | | 20 | Icarus | −72 |
 
-**Pool membership changed since the 2026-06-12 table — don't compare Elo
-across the two directly.** Cinder was added and Clarity dropped (a
-stronger pool — that swap alone took Coda ~27→18), and Viridithas was
-rebuilt on its latest threat-net code (likely climbed). Pool-relative Elo
-moves with membership and rivals' versions, so read rank + within-table
-gaps, not cross-table deltas.
+**Pool membership changed vs the 2026-06-29 table (Raphael, Rubichess,
+Icarus added; Quanticade, Motor, Tarnished dropped — a tougher pool) —
+don't compare Elo across tables.** Some opponent binaries are a few
+months old: the pool is a stable reference frame for OUR testing, not a
+rating list for the other engines. Pool-relative Elo moves with
+membership and rivals' versions, so read rank + within-table gaps, not
+cross-table deltas.
 
 For the narrow purpose of "what's the consensus, should we do X," weaker
 engines are correspondingly weaker evidence: weigh agreement among the
@@ -727,9 +732,9 @@ strongest engines and don't build a case on mid-table-or-below agreement
 alone. This is a statement about signal quality for our own decisions,
 not a judgement of the engines — every one is the product of real work.
 
-Reference engines for cross-engine review (strongest first, the #1-6
-set): Stockfish, Reckless (Rust), Obsidian, Berserk, PlentyChess,
-Alexandria.
+Reference engines for cross-engine review (strongest first): Stockfish,
+Reckless (Rust), Obsidian as primary; Berserk, PlentyChess, Alexandria
+as secondary.
 
 **Do NOT reference Ethereal.** Ethereal must not be cited, named, or used
 as a reference/testing opponent anywhere in this repo (code comments,

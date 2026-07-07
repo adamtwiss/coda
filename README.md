@@ -59,7 +59,40 @@ The engine also exposes its ~130 search parameters as UCI options for SPSA tunin
 
 ## Strength
 
-Plays around 3000-3080 on lichess ([coda_bot](https://lichess.org/@/coda_bot) and [codabot](https://lichess.org/@/codabot)), where it is one of the strongest non-Stockfish-derived engines. In local testing it competes with engines rated around 3500-3600 on CCRL, and in our local round-robin pool — which includes the strongest available C/C++/Rust engines — it places top-10 at short time controls. Most performance tuning so far has targeted short time controls. Coda is a young engine evolving fast, so bug reports, testing and feedback are always welcome.
+Plays around 3000-3080 on lichess ([coda_bot](https://lichess.org/@/coda_bot) and [codabot](https://lichess.org/@/codabot)), where it is one of the strongest non-Stockfish-derived engines. In local testing it competes with engines rated around 3500-3600 on CCRL: in our local round-robin against the strongest available open-source engines, Coda v0.9.0 places **4th of 20**, behind only Stockfish, Reckless and Obsidian.
+
+<details>
+<summary>Local round-robin — 950 games per engine (July 2026)</summary>
+
+```
+Rank Name                          Elo     +/-   Games   Score    Draw
+   1 Stockfish                     145      14     950   69.7%   54.7%
+   2 Reckless                      111      13     950   65.4%   60.9%
+   3 Obsidian                       62      13     950   58.8%   66.1%
+   4 Coda                           44      13     950   56.3%   65.6%
+   5 Berserk                        29      13     950   54.2%   66.5%
+   6 Alexandria                     24      13     950   53.4%   66.6%
+   7 PlentyChess                    21      13     950   53.1%   67.8%
+   8 Cinder                         11      12     950   51.6%   70.1%
+   9 Hobbes                         -4      12     950   49.4%   68.7%
+  10 Integral                       -5      13     950   49.3%   67.7%
+  11 Clover                        -16      13     950   47.6%   67.3%
+  12 Rubichess                     -23      12     950   46.6%   70.3%
+  13 Viridithas                    -23      13     950   46.6%   66.5%
+  14 Caissa                        -34      13     950   45.2%   65.3%
+  15 Halogen                       -42      14     950   44.1%   61.6%
+  16 Raphael                       -43      13     950   43.8%   62.5%
+  17 Astra                         -50      13     950   42.8%   62.5%
+  18 Stormphrax                    -57      13     950   41.9%   62.5%
+  19 Starzix                       -67      13     950   40.4%   61.7%
+  20 Icarus                        -72      14     950   39.7%   59.9%
+```
+
+Conditions: 10s+0.1s, 1 thread, ponder off, no tablebases, Hash=256MB, noob_4moves openings, on a 16C/32T AMD EPYC 7351P. Elo is relative to this pool (not CCRL-anchored). Some opponent binaries are a few months old — the pool is maintained as a stable reference frame for Coda's own testing, not as a rating list for the other engines, so please don't quote their placings from it.
+
+</details>
+
+Most performance tuning so far has targeted short time controls. Coda is a young engine evolving fast, so bug reports, testing and feedback are always welcome.
 
 ## Credits
 
