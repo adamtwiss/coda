@@ -18534,3 +18534,24 @@ before any verdict SPRT. Lesson class: [[rebase-port-audit-for-dropped-lines]]
 adjacent — a sub-integer term ported onto integer arithmetic fails
 SILENTLY; grep for `as i32`/`/ LMR_SCALE` truncation whenever porting
 fractional-native mechanisms.
+
+## 2026-07-07 — LMR deep-regime stack MERGED (+2.3 STC H1); wave resolutions
+
+**Merged to main (a518bb2, Bench 2414645):** fractional centi-ply LMR +
+six correction terms (half-Reckless, SPSA-calibrated) + cutoff_count +
+tune #2613 LTC core calibration. Verdicts: STC #2616 **H1 +2.3 ±1.8**;
+LTC #2617 +0.2@12k flat-positive (left running for the record); enabler
+non-regression #2590 H1 @ 139.7k. Scaffolding for sf/lmr-shape-3dof
+(BASE + all-node decay, LTC cluster SPSA in flight; d24 instrument shows
++18.7% deep nodes at the seed — the structural DOFs beat the value-tune
+ceiling of +0.6%).
+
+**Also merged: #2614 improving |= static_eval >= beta — H1 +1.3 ±1.4**
+(the [-1,2] one-liner class exemplar, SF T1.5).
+
+**Rejected:** #2615 followpv-iir-guard H0 −1.2 (T1.1 probe a; probe b
+deprioritized). #2619 lmr-base-centi ISOLATED H0 −2.7 — the additive
+base ALONE is negative even correctly implemented (it's a pure thinning
+knob; per the shape sweep its value can only be joint with the decay
+term — the 3dof tune arbitrates, ranges allow zeroing it). Atlas's
+original base-offset question now has a valid answer: not as a solo DOF.
