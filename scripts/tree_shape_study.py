@@ -78,11 +78,24 @@ def median_curve(results, depth):
     for d in range(2, depth + 1):
         nodes = [r[d][0] for r in results if d in r]
         selds = [r[d][1] for r in results if d in r and r[d][1] is not None]
+        times = [r[d][2] for r in results if d in r and r[d][2] is not None]
+        # Incremental per-position NPS at depth d: (nodes_d - nodes_{d-1}) /
+        # (time_d - time_{d-1}). Isolates the cost of THIS iteration's nodes,
+        # so an O(depth) per-node degradation shows as NPS falling with d.
+        inc_nps = []
+        for r in results:
+            if d in r and (d - 1) in r and r[d][2] is not None and r[d-1][2] is not None:
+                dn = r[d][0] - r[d-1][0]
+                dt = r[d][2] - r[d-1][2]
+                if dn > 0 and dt > 0:
+                    inc_nps.append(dn * 1000.0 / dt)
         if len(nodes) >= 5:
             out[d] = {
                 "n_pos": len(nodes),
                 "med_nodes": int(statistics.median(nodes)),
                 "med_seldepth": statistics.median(selds) if selds else None,
+                "med_time_ms": int(statistics.median(times)) if times else None,
+                "med_inc_nps": int(statistics.median(inc_nps)) if len(inc_nps) >= 5 else None,
             }
     return out
 
@@ -143,10 +156,11 @@ def main():
 
     if a.csv:
         with open(a.csv, "w") as f:
-            f.write("engine,depth,n_pos,med_nodes,med_seldepth\n")
+            f.write("engine,depth,n_pos,med_nodes,med_seldepth,med_time_ms,med_inc_nps\n")
             for name, _ in engines:
                 for d, c in sorted(curves[name].items()):
-                    f.write(f"{name},{d},{c['n_pos']},{c['med_nodes']},{c['med_seldepth']}\n")
+                    f.write(f"{name},{d},{c['n_pos']},{c['med_nodes']},{c['med_seldepth']},"
+                            f"{c.get('med_time_ms')},{c.get('med_inc_nps')}\n")
         print(f"\ncsv: {a.csv}", file=sys.stderr)
 
 
