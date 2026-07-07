@@ -124,14 +124,14 @@ tunables!(
     // depth regardless of TC. Consensus engines either cap RFP around d9-11
     // or use a quadratic/deepening margin so static eval does not keep
     // cheaply pruning d12+ nodes.
-    (RFP_DEEP_KNEE, 5, 4, 17, 2.0, true),
+    (RFP_DEEP_KNEE_10X, 50, 40, 170, 20.0, true),
     (RFP_DEEP_LINEAR, 44, 0, 200, 10.0, true),
-    (RFP_DEEP_QUAD, 1, 0, 80, 5.0, true),
+    (RFP_DEEP_QUAD_10X, 10, 0, 800, 50.0, true),
     // Razoring (re-added 2026-06-11, audit T2.6). Consensus band:
     // Obsidian 352/d<=5, Berserk 214/d<=5, Clover 145/d<=2, Integral
     // 393/d<=4, Stormphrax ~290/d<=4.
     (RAZOR_MULT, 277, 100, 500, 20.0, true),
-    (RAZOR_DEPTH, 4, 1, 8, 0.5, true),
+    (RAZOR_DEPTH_10X, 40, 10, 80, 5.0, true),
     // Futility margin widened after the pruning audit: 80/110 H1'd at STC
     // (#2018 +3.5) and was flat at LTC (#2019), with focused SPSA #2020
     // converging back to 81.5/109.0. Keep depth/threat gates unchanged.
@@ -220,7 +220,7 @@ tunables!(
     // Explicit cut-node LMR bump (P1.1 / #2065). Cut nodes reduce by
     // LMR_CUTNODE_BUMP (+1 more with no TT move); all-nodes keep +1. Default 2
     // is a halfway step toward SF's larger cut-node reduction; SPSA can push it.
-    (LMR_CUTNODE_BUMP, 2, 1, 5, 0.4, true),
+    (LMR_CUTNODE_BUMP_CENTI, 200, 100, 500, 40.0, true),
     // Reckless LMR correction battery (T1.1, docs/reckless_audit_2026-07-06.md).
     // Sub-ply centi-ply terms — need the fractional LMR accumulator to express.
     // Reseeded at HALF the Reckless-converted values (full: 100/45/32/41)
@@ -249,15 +249,15 @@ tunables!(
     // use LMP_BASE=3 with the same `(BASE + d²)/(2 - improving)` formula.
     // Coda's 9 is 3× consensus at d=1: allows 5-10 quiets vs SF's 2-4.
     // Bisecting 9 → 5 first.
-    (LMP_BASE, 4, 1, 15, 2.0, true),
-    (LMP_DEPTH, 8, 4, 20, 2.0, true),
+    (LMP_BASE_10X, 40, 10, 150, 20.0, true),
+    (LMP_DEPTH_10X, 80, 40, 200, 20.0, true),
     // Root-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
     // reduce LESS as the OVERALL search depth grows past LMR_ROOT_THRESH
     // (diminishing returns — at LTC the reduced re-search is cheap vs the
     // budget and a wrong reduction costs more). Inactive at STC by
     // construction -> STC-neutral. SPSA tunes both.
     (LMR_ROOT_THRESH, 15, 6, 30, 1.5, true),
-    (LMR_ROOT_COEF, 7, 0, 80, 4.0, true),
+    (LMR_ROOT_COEF_10X, 70, 0, 800, 40.0, true),
     (BAD_NOISY_MARGIN, 80, 30, 150, 6.0, true),
     (PROBCUT_MARGIN, 128, 80, 300, 11.0, true),
     // Consensus ProbCut shape (Stockfish/Reckless/Viridithas/Alexandria):
@@ -270,7 +270,7 @@ tunables!(
     // while #2022 rejected it at LTC. Add that conservative offset at
     // shallow root depths, then fade back to current main as root depth grows.
     (PROBCUT_ROOT_THRESH, 15, 8, 28, 1.5, true),
-    (PROBCUT_ROOT_FADE, 3, 1, 12, 1.0, true),
+    (PROBCUT_ROOT_FADE_10X, 30, 10, 120, 10.0, true),
     (PROBCUT_ROOT_MARGIN, 65, 0, 120, 8.0, true),
     (HINDSIGHT_THRESH, 196, 50, 400, 17.5, true),
     (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
@@ -305,7 +305,7 @@ tunables!(
     //
     // TT_DAMP_TT_WEIGHT: weight of tt_score in TT-LOWER non-PV cutoff score
     // dampening. Formula: (W*tt_score + beta) / (W+1). Old hardcoded W=3.
-    (TT_DAMP_TT_WEIGHT, 3, 1, 10, 0.5, false),
+    (TT_DAMP_TT_WEIGHT_10X, 30, 10, 100, 5.0, false),
     // PROBCUT_TT_DEPTH_SLACK: TT depth must be >= current depth - SLACK for
     // ProbCut-TT-noshot to consider the entry. Old hardcoded 3.
     (PROBCUT_TT_DEPTH_SLACK, 3, 0, 10, 0.5, false),
@@ -395,7 +395,7 @@ tunables!(
     // T2.4: CORR_HIST_ERR_MAX (±3cp input pre-clamp) replaced by output
     // scaling: bonus = err*(depth+1).min(W)/CORR_ERR_DIV, clamped at the
     // gravity cap only. Obsidian err*depth/8; SF err*depth*12/128.
-    (CORR_ERR_DIV, 6, 2, 64, 3.0, false),
+    (CORR_ERR_DIV_10X, 60, 20, 640, 30.0, false),
     // ESCAPE_BONUS_Q / _MINOR removed 2026-05-17: ablations #1256/#1255
     // H0 at [-3, 3]. Slightly load-bearing (central -0.6/-1.3 to ablate),
     // hardcoded at current SPSA values in movepicker.rs.
@@ -502,7 +502,7 @@ tunables!(
     // aggressive ProbCut activation.
     (PROBCUT_MIN_DEPTH_10X, 27, 10, 120, 15.0, true),     // was hardcoded 5 (ProbCut activation gate)
     (PROBCUT_ROOT_MIN_DEPTH_10X, 32, 0, 80, 8.0, true),
-    (SEE_CAP_DEPTH, 8, 3, 15, 1.5, true),         // was hardcoded 6 (SEE capture prune depth cap)
+    (SEE_CAP_DEPTH_10X, 80, 30, 150, 15.0, true),         // was hardcoded 6 (SEE capture prune depth cap)
     // Capture-SEE prune margin, SF-shaped (search.cpp): margin = depth*MULT +
     // capt_hist*HIST/1024, prune if SEE < -margin. Was sharing the hardcoded
     // SEE_MATERIAL_SCALE=215 (a QS-delta constant) with NO history term, giving
@@ -514,7 +514,7 @@ tunables!(
     // HIST 11 ≈ SF's 34/1024 rescaled for Coda's ±16384 capt-hist. Audit #3.
     (SEE_CAP_MULT, 94, 40, 250, 12.0, true),
     (SEE_CAP_HIST, 9, 0, 40, 2.0, true),
-    (BAD_NOISY_DEPTH, 8, 4, 15, 1.5, true),       // was hardcoded 4 (BNFP depth cap)
+    (BAD_NOISY_DEPTH_10X, 80, 40, 150, 15.0, true),       // was hardcoded 4 (BNFP depth cap)
     // Second pass — additional gates exposed for the feature-utility
     // audit tune. Widened ranges allow SPSA to reach disable-endpoint
     // values where appropriate (per feedback_spsa_as_feature_utility_diagnostic).
@@ -1810,7 +1810,7 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     // Reckless 142*depth*err/128, all clamped at the output only.
     let err = search_score - raw_eval;
     let weight = (depth + 1).min(tp(&CORR_UPDATE_WEIGHT_MAX));
-    let scaled_err = err * weight / tp(&CORR_ERR_DIV).max(1);
+    let scaled_err = err * weight * 10 / tp(&CORR_ERR_DIV_10X).max(10);
     // Pass raw stored value; consumer treats it as fixed-point (×10).
     let cap_div = CORR_BONUS_CAP_DIV_10X.load(Ordering::Relaxed);
     let stm = board.side_to_move as usize;
@@ -4077,8 +4077,8 @@ fn negamax(
                         && tt_entry.flag == TT_FLAG_LOWER
                         && !is_decisive(tt_score)
                     {
-                        let w = tp(&TT_DAMP_TT_WEIGHT);
-                        return (w * tt_score + beta) / (w + 1);
+                        let w10 = tp(&TT_DAMP_TT_WEIGHT_10X);
+                        return (w10 * tt_score + 10 * beta) / (w10 + 10);
                     }
                     // P3: downgrade stored mate if 50mr will fire before mate.
                     return downgrade_50mr_mate(tt_score, ply, board.halfmove);
@@ -4293,7 +4293,7 @@ fn negamax(
         // Runs before RFP (consensus order: razor -> RFP -> NMP).
         if !is_pv
             && ply > 0
-            && depth <= tp(&RAZOR_DEPTH)
+            && depth <= tp10(&RAZOR_DEPTH_10X)
             && alpha.abs() < 2000
             && info.excluded_move[ply_u] == NO_MOVE
             && static_eval + tp(&RAZOR_MULT) * depth <= alpha
@@ -4322,10 +4322,10 @@ fn negamax(
             // depth and how deep the overall search is, so deep RFP at LTC
             // demands much more confidence. One formula, one tunable set.
             margin += (depth * (info.root_depth - tp(&RFP_ROOT_THRESH)).max(0) * tp(&RFP_ROOT_COEF)) / 100;
-            let deep_extra = (depth - tp(&RFP_DEEP_KNEE)).max(0);
+            let deep_extra = (depth - tp10(&RFP_DEEP_KNEE_10X)).max(0);
             if deep_extra > 0 {
                 margin += deep_extra * tp(&RFP_DEEP_LINEAR)
-                    + deep_extra * deep_extra * tp(&RFP_DEEP_QUAD);
+                    + deep_extra * deep_extra * tp(&RFP_DEEP_QUAD_10X) / 10;
             }
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
@@ -4540,8 +4540,8 @@ fn negamax(
         - (improving as i32) * tp(&PROBCUT_MARGIN_IMP))
         .max(1);
     let probcut_root_over = (info.root_depth - tp(&PROBCUT_ROOT_THRESH)).max(0);
-    let probcut_fade_span = tp(&PROBCUT_ROOT_FADE).max(1);
-    let probcut_fade_num = (probcut_fade_span - probcut_root_over).clamp(0, probcut_fade_span);
+    let probcut_fade_span = tp(&PROBCUT_ROOT_FADE_10X).max(10);
+    let probcut_fade_num = (probcut_fade_span - 10 * probcut_root_over).clamp(0, probcut_fade_span);
     let probcut_beta = beta + probcut_margin
         + (tp(&PROBCUT_ROOT_MARGIN) * probcut_fade_num) / probcut_fade_span;
     let probcut_min_depth_10x = tp(&PROBCUT_MIN_DEPTH_10X)
@@ -4771,13 +4771,13 @@ fn negamax(
         // count-pruning riskier and kept LMP_BASE blunt. SF/Reckless/Berserk/
         // Obsidian all set skipQuiets before SEE/futility.
         // Formula: (LMP_BASE + depth²) / (2 - improving); check carve at depth<4.
-        if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
+        if ply > 0 && !in_check && depth >= 1 && depth <= tp10(&LMP_DEPTH_10X)
             && !is_cap && !is_promo
             && !is_loss(best_score)
             && beta < MATE_IN_MAX_PLY  // forced-win guard (Reckless 4a2efd5a): don't count-prune quiets while proving a win
             && FEAT_LMP.load(Ordering::Relaxed)
         {
-            let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
+            let lmp_limit = (tp10(&LMP_BASE_10X) + depth * depth) / (2 - improving as i32);
             // P2.5: gives_direct_check carve moved inside the movecount test — only
             // pay the check-detection call when the count prune would actually
             // fire (node-count identical).
@@ -4793,7 +4793,7 @@ fn negamax(
         // material. SF-shaped margin: base depth*MULT plus a capture-history
         // relaxation so historically-good captures (cutoff producers) survive a
         // lower base. Prune if SEE < -margin.
-        if is_cap && ply > 0 && !in_check && depth <= tp(&SEE_CAP_DEPTH)
+        if is_cap && ply > 0 && !in_check && depth <= tp10(&SEE_CAP_DEPTH_10X)
             && mv != tt_move && !is_loss(best_score)
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
@@ -5011,7 +5011,7 @@ fn negamax(
         // Bad noisy pruning: skip losing captures when eval is far below alpha.
         // Applied before MakeMove. Direct-check carve-out: don't prune moves
         // that give direct check (Reckless #630 +1.85 STC).
-        if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= tp(&BAD_NOISY_DEPTH) && mv != tt_move
+        if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= tp10(&BAD_NOISY_DEPTH_10X) && mv != tt_move
             && !is_promo && !is_loss(best_score)
             && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
             && !see_ge(board, mv, 0)
@@ -5123,7 +5123,7 @@ fn negamax(
                 // H1 #2065 / e616393.)
                 if !is_pv {
                     reduction += if cut_node {
-                        (tp(&LMR_CUTNODE_BUMP) + (tt_move == NO_MOVE) as i32) * LMR_SCALE
+                        tp(&LMR_CUTNODE_BUMP_CENTI) + ((tt_move == NO_MOVE) as i32) * LMR_SCALE
                     } else {
                         LMR_SCALE
                     };
@@ -5350,7 +5350,7 @@ fn negamax(
         // to full depth. One formula, one tunable set (Adam directive).
         if reduction >= LMR_SCALE {
             // CONTINUOUS: /100 * LMR_SCALE(=100) cancels exactly.
-            reduction -= (info.root_depth - tp(&LMR_ROOT_THRESH)).max(0) * tp(&LMR_ROOT_COEF);
+            reduction -= (info.root_depth - tp(&LMR_ROOT_THRESH)).max(0) * tp(&LMR_ROOT_COEF_10X) / 10;
             if reduction < 0 { reduction = 0; }
         }
 
