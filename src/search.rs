@@ -4464,6 +4464,16 @@ fn negamax(
         }
     }
 
+    // SF one-liner (audit T1.5): a static eval already at/above beta counts
+    // as improving for the whole move loop, even if it's worse than 2 plies
+    // ago — the node is beating its window. Placed after NMP/RFP (both read
+    // the plain 2-ply definition, matching SF's ordering); upgrades LMP's
+    // (2 - improving) divisor, ProbCut's margin and LMR's !improving bump
+    // for the remainder of the node.
+    if !in_check && static_eval >= beta {
+        improving = true;
+    }
+
     // IIR: moved after NMP so null search uses full depth, not IIR-reduced depth.
     // All 6 reference engines run NMP at full depth; IIR only applies to the moves loop.
     // Coda previously ran IIR before NMP, silently reducing null depth by 1 at cut nodes.
