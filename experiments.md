@@ -18555,3 +18555,18 @@ base ALONE is negative even correctly implemented (it's a pure thinning
 knob; per the shape sweep its value can only be joint with the decay
 term — the 3dof tune arbitrates, ranges allow zeroing it). Atlas's
 original base-offset question now has a valid answer: not as a solo DOF.
+
+## #8 TT-cutoff deep-relax: H0 +0.5 — DROP (wrong direction for LTC)
+
+reckless/tt-cutoff-deep-relax (#2601): relax the TT-cutoff node-type guard at
+depth>5 (Reckless pattern). **+0.5 ±0.8, N=201k, LLR −2.94, H0 ✗ @ [0,3] STC.**
+Precisely a tiny STC positive; H0. **Dropped**, and NOT for the STC magnitude —
+the change cuts −11.9% nodes by taking MORE deep TT cutoffs (thinner deep tree),
+which is the exact wrong direction for the confirmed LTC deep-hollowness weakness
+(docs/ltc_regime_investigation_2026-07-07.md: Coda's EBF collapses 1.7→1.3, deep
+tree already 30% thinner than SF at d24). STC-neutral, likely LTC-negative;
+retuning only relaxes further = more thinning. **Confirming datapoint for the LTC
+thesis:** a −12% deep-node change is STC-indistinguishable from zero even at 201k
+games — STC-SPSA has NO gradient against deep-tree thinning, which is precisely
+how the tunables floated to over-thin the deep tree. #8 is the STC-blindness in
+miniature.
