@@ -106,3 +106,17 @@ re-tune the cluster AT LTC (warm-start from #2603) before any closure;
 only LTC-clearly-negative closes the thread. Lesson for the 2-DOF
 follow-up: deep-slope parameters must be tuned with an LTC (or mixed-TC)
 objective from the start — STC tuning structurally deletes the tail.
+
+## Stage 4 (2026-07-07) — the 3-DOF shape reform bends the deep curve
+
+d24 frame, 60 positions (study.fens), pre-reform = sf/lmr-corr-combined
+post-#2613. The structural DOFs do what 83 LTC-tuned value params could
+not (+0.6%): **b20d700 (LMR_BASE_CENTI=20, LMR_ALLNODE_DECAY_NUM=700) =
++18.7% deep nodes at d24** (2.37M vs 2.00M), gain GROWING with depth
+(+4% d18 → +19% d24) — the decay-term signature. Corners: decay-only
++6%; base50/decay1100 over-thins (−5%). Approx SF reference ~2.47M
+(Titan's set): the default seed closes most of the −30% hollow-plies
+gap. Elo arbitration: LTC cluster SPSA (#2615-class) running on
+sf/lmr-shape-3dof; then cross-engine deployment-TC gauntlet + self-play
+non-regression. Void notice: atlas/lmr-base-offset H0s tested a broken
+(truncated) base — see experiments.md 2026-07-07.
