@@ -143,3 +143,64 @@ tune.
   extra draws).
 - RFP depth (Stage-1.5 ablation exonerated it).
 - Futility / quiet-SEE values (already LTC-retuned #2548).
+
+## Review of the in-flight LMR branches (2026-07-07) — the validation gap
+
+Reviewed the active LMR work (`sf/lmr-fractional-v2`, `sf/lmr-corr-combined`,
+`atlas/lmr-base-offset-v2`, `atlas/lmr-rootdepth-formula`, etc.). **The design is
+right and maps onto this doc's recommendations:** `sf/lmr-fractional-v2` is the
+centi-ply accumulator (LMR_SCALE=100, continuous sub-ply terms — Track B
+infrastructure); `atlas/lmr-base-offset-v2` adds `LMR_BASE_QUIET` and widens
+`LMR_C_QUIET`'s lower bound ("base frees C to rise"). Nothing is misdesigned.
+
+**But the Elo isn't landing, and I think the validation instrument is why.**
+Results so far: fractional-v2 **+0.2 H1 @ STC (#2590), −0.4 H0 @ LTC self-play
+(#2591)**; corr-combined +1.4 H1 @ STC (#2606). **All LMR tests are self-play
+SPRT.** That is very likely the wrong instrument for this specific gap:
+
+- The LTC deficit is **peer-relative** — Coda BEATS Viridithas/Integral at STC
+  but LOSES at LTC (established 2026-06-19 via cross-engine gauntlets, NOT
+  self-play). The thesis is that Coda's **eval edge** (#2, better than those
+  peers) fails to convert to a strategic edge at depth because the deep tree is
+  hollow.
+- **Self-play SPRT cannot see that.** Both sides of a self-play test have
+  IDENTICAL eval, so "our eval edge now expresses at depth" is symmetric and
+  cancels. A reshape whose whole benefit is "convert our eval advantage against a
+  weaker-eval opponent at depth" is self-play-neutral **by construction** — even
+  at LTC. This is the exact trap the ponder work hit (real gain, self-play-blind).
+- So **"improves tree shape but doesn't add Elo (self-play)" is the expected
+  signature of a real peer-relative win**, not evidence the reshape is worthless.
+
+### The decisive experiment (do this before more reshape iteration)
+Take the current best reshape (fractional + base, EBF-flattened) and run a
+**cross-engine LTC gauntlet vs Viridithas + Integral** — the 2026-06-19 harness,
+120+2, ponder-off, book off, ≥200 games/peer. Compare the −61/−32 peer gaps
+reshape-vs-main:
+- **Gap closes → the deep tree IS the lever.** Tune `{LMR_BASE, C_QUIET, C_CAP}`
+  to the empirical EBF target (below), ignore flat self-play SPRT, ship on the
+  peer-RR + non-regression self-play.
+- **Gap doesn't close → the deep tree is a red herring.** The LTC deficit is
+  eval-conversion / TM (the flat per-move TM fraction), and LMR reshape effort
+  should redirect. Either outcome is decisive and saves iteration.
+
+### Tune to the EBF target, not to self-play Elo
+The objective is the measured shape, not the (flat) self-play score: **tail EBF
+→ ~1.55, shallow density → SF-ish**, verified with the 10-min
+`scripts/tree_shape_study.py` + Stage-1.5 setoption sweep. Coda's EBF collapses
+1.7→1.3 and by d24 reaches depth with 30% fewer nodes than SF; SF holds ~1.55
+flat. Tuning `{BASE, C_QUIET, C_CAP}` jointly to that curve is a mechanism metric
+that self-play Elo can't provide.
+
+### Two specific gaps in the current branches
+1. **`LMR_BASE_QUIET` only works stacked on the fractional (centi-ply) branch.**
+   `(base + ln·ln/c) as i32` floors a 0.20-ply base to nothing on the integer
+   path — the base-offset must sit on top of fractional-v2 to do anything. Verify
+   they're combined before drawing conclusions from a base-offset-alone test.
+2. **Nobody has ported SF's depth-DECAYING all-node reduction inflation**
+   (`r += r·272/(256·depth+285)`). The base offset *shifts* the whole curve; the
+   depth-decay term changes its *shape* — more reduction shallow, less deep — and
+   is the specific mechanism holding SF's EBF flat. A shifted curve (base only)
+   won't flatten the way a shape change will. This is the missing DOF and the
+   most likely reason base+slope retuning alone reads flat. Reckless achieves the
+   same via `269·log2(depth)` (log2, not ln·ln) + the `−3417·|corr|` and
+   in-check/cutoff terms — a genuinely different base shape worth A/B-ing too.
