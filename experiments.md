@@ -18759,3 +18759,20 @@ our "w0.20 best" was measured on STRENGTH, never on the overscore metric.
 Plan: WDL sweep (0.20/0.30/0.40) read via net_report.py overscore metric
 (not strength) + corrective-data mix in parallel; both net_report reads,
 no RR. Capacity RULED OUT: architectures are near-identical (SF 1024x2->31->32->16, Coda 1024x2->32->32->16 — we are marginally WIDER at L1, +threat features). Same data + same capacity + different static eval => the cause is TRAINING RECIPE (WDL prime suspect), not size. All GPU4-independent.
+
+## 2026-07-08 — WDL is NOT the phantom-overscore lever (w20 vs w24, matched pair)
+
+multi-v9-s3-swa (w20/prod) vs multi-v9-w24-s3-swa (w24), identical recipe
+bar WDL. Biased screen (w20's 80 phantom FENs, regression-to-mean favours
+w24): +1.33 -> +1.23, only 10cp, still overscores (truth +0.47). Neutral
+net_report (30k): general eval IDENTICAL (Spearman .849/.848, mae
+68.9/69.1), w24 tail marginally WORSE (p99 360->375, max 842->975);
+blindspot overscore +44.2 -> +35.9 (~8cp), mae -1.0; wandering-bishop
+w24 worse (+122 vs +107). Conclusion: WDL 20->24 shaves ~8-10cp of an
+~86cp overscore at a hair of eval-quality cost; higher WDL trades quality
+for overscore, no free point. The phantom overscore is a ROBUST
+representational property, not a cp-vs-outcome calibration knob. Matches
+the earlier "corrective data ~10-20cp" — every cheap lever gives ~10-20cp
+of an 86cp gap. Remaining non-cheap causes (SF gets these right, matched
+arch+data): dual activation (SqrCReLU++CReLU vs our CReLU), PSQT output
+buckets (SF has, we don't), corrective data AT SCALE (1B corpus, GPU4).
