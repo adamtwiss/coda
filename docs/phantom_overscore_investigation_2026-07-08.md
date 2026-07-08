@@ -58,6 +58,35 @@ are structurally **opposite**:
 | Material | **dead level** (median +0; 81% level-or-down) | up +2 (83% ahead) |
 | OCB / fortress | 4% / rare | rare |
 
+**Corpus decomposition (2026-07-08, heldout overrate set, 7845 pos, vs
+LC0 truth) — TWO effects.** Signed static error (coda − LC0) bucketed by
+our material:
+
+| our material | n | mean overscore | median LC0 truth |
+|---|---|---|---|
+| down (≤−1) | 2728 (35%) | +45 | −257 |
+| level (0..+1) | 4301 (55%) | +31 | +41 |
+| up exch (+2/+3) | 747 (10%) | **+111** | +65 |
+| up piece+ (≥+4) | 69 | **+131** | +21 |
+
+1. **Pervasive optimism (~+30–45 cp) at *all* material levels** — we
+   overscore even when *down* material (+45, truth −257). This is the bulk
+   (90% level-or-down) and it is the mechanism behind the phantom *draws*
+   (level-material queens-on middlegames).
+2. **Material overvaluation in the up-material tail** — overscore triples
+   (+110–130 cp) when up an exchange/piece; ~⅓ of those are LC0 ≤ 0
+   (compensation blindness — we count the material, miss the
+   attack/initiative/passed pawns). Worst individual overscores, ~10% of
+   cases.
+
+Tested and NULL as the driver: threat-feature *count* (phantoms have
+*fewer* threats than matched controls, 49 vs 56); king-as-attacker
+threats (rare in middlegames); slider/bishop *mobility* (corr with error
+≈ 0; raw mobility ≠ the "wandering-bishop illusion", so bishop
+overvaluation isn't refuted, just not linear-in-mobility). The dominant
+effect is a **pervasive positive eval bias**, worst in complex/up-material
+positions — not a single clean hand-computable feature.
+
 The phantom class is **not** fortresses, opposite-coloured bishops, or
 endgame technique. It is complex, materially-level, queens-on middlegames
 where our eval hallucinates ~+1.5 out of nothing.
