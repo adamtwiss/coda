@@ -18570,3 +18570,22 @@ thesis:** a −12% deep-node change is STC-indistinguishable from zero even at 2
 games — STC-SPSA has NO gradient against deep-tree thinning, which is precisely
 how the tunables floated to over-thin the deep tree. #8 is the STC-blindness in
 miniature.
+
+## 2026-07-08 — overnight board: shape reform wins at LTC; migration merged; ranger batch closed
+
+- **sf/lmr-shape-3dof verdicts: LTC (#2624) H1 +2.3 ±1.7 at 37.5k;
+  STC (#2623) H0 −1.4 ±2.1.** The pre-registered deep-regime signature
+  exactly: BASE=21 centi + all-node decay 662 pays where deep trees exist
+  (40+0.4) and mildly costs at 10+0.1. First direct Elo win of the
+  LTC-scaling campaign. Merge decision = Adam's (one-TC-win tradeoff).
+- **refactor/tunable-10x-migration (#2625): H1 +5.7 ±3.4, MERGED
+  (3d2c6c0).** Bit-identical bench → the Elo is layout lottery; the
+  payload is SPSA grain.
+- **ranger-32k (#2626): H0 −19.2 ±6.4.** With AdamW-32k only mildly
+  negative, the batch damage is RANGER-SPECIFIC and ~linear in batch
+  (16k +2.8 / 32k −19 / 64k −60). Prime suspect: Lookahead k=6 counts
+  STEPS → positions-per-sync doubles with batch. Cheap probe available:
+  ranger-32k with k=3 (position-matched sync cadence). Until then:
+  Ranger adopted at 16k only.
+- Zeus's LTC retest of tt-cutoff-deep-relax (#2601): +0.5 at 201k, H0 at
+  [0,3] — consistent small-positive, not bankable at these bounds.
