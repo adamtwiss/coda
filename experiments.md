@@ -18757,4 +18757,4 @@ cp-vs-outcome-divergent positions, exactly what WDL calibrates). Note:
 our "w0.20 best" was measured on STRENGTH, never on the overscore metric.
 Plan: WDL sweep (0.20/0.30/0.40) read via net_report.py overscore metric
 (not strength) + corrective-data mix in parallel; both net_report reads,
-no RR. Capacity (L1=32 < SF) is the fallback lever. All GPU4-independent.
+no RR. Capacity RULED OUT: architectures are near-identical (SF 1024x2->31->32->16, Coda 1024x2->32->32->16 — we are marginally WIDER at L1, +threat features). Same data + same capacity + different static eval => the cause is TRAINING RECIPE (WDL prime suspect), not size. All GPU4-independent.
