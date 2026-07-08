@@ -302,3 +302,26 @@ mirror metric will show whether coda-rate keeps dropping with corrective
 volume or plateaus. The running gpu3 3-arm S200 test is a cheap preview
 (6 stale-old-net blindspot files, LC0-labelled — labels valid, positions
 are an older net's tail so directionally-not-perfectly-matched).
+
+## 12. Correction to §11's "modest ceiling" — self-sampling makes this the primary lever
+
+§11 read the symmetric *rate* (2.59 vs 2.36) as "modest ceiling / refinement."
+That understates it, and Adam pushed back correctly (2026-07-08): the rate is
+symmetric but the **game impact is asymmetric toward fixing OURS**, because of
+adversarial self-sampling. Our search preferentially steers into positions
+*we* mis-score, every game — so the fraction of *outcome-critical* positions
+affected is far above the 2.59% base rate (275 LTC drawn games trace to it).
+The damage is also *upstream*: the eval error makes us CHOOSE the phantom line
+over a genuinely better one moves earlier; fixing the eval stops us walking
+into the trap. "SF has it too" does not lower the value of fixing ours — ours
+is what our own search drags us into.
+
+**So this is the primary eval-side Elo lever, not a refinement.** Reframed
+plan: fix the mis-scoring at the cause via corrective over-exposure on the
+blindspot class (these positions are LEARNABLE — SF-static nails them on
+identical data — so the cause is under-exposure/under-training, and SF's much
+longer schedule is presumably why SF learned the class and we didn't). The
+running corrective experiment + the GPU4-scale harvest test whether over-
+exposure closes it; mirror metric (coda-rate ↓ without sf-rate ↑) is the
+cause-vs-symptom / generalization readout. Dynamic contempt is a separate
+lichess symptom-patch, NOT a fix for this bug.
