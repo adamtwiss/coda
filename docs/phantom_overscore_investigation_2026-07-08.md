@@ -212,3 +212,44 @@ phantom FENs we already have, no GPU4 needed.
 
 Scratch scripts on Hercules: `phantom_wide.py`, `corr_test.py`; phantom
 FEN set `phantom_fens.tsv`.
+
+## 10. Update (2026-07-08 eve) — learnable, not a floor; corrective test running
+
+**Key correction to §6-7's "near-floor" pessimism.** The blindspot harvest
+filter is `|coda_static − lc0_dynamic| > X` AND **SF-static also disagrees
+with Coda** (`coda_err − sf_err ≥ ~80`). The SF-*static* clause is
+load-bearing: it excludes tactical positions (static can't see, search
+can) and keeps only positions a good STATIC eval gets right — SF proves
+it by nailing them without search. So these are **learnable static-eval
+errors, not intrinsic difficulty and not tactics.** The ~208 mean|err|
+"floor" across our nets is therefore a coverage/training gap, not a
+capacity wall — corrective data CAN work with the right, directly-targeted
+positions.
+
+**Two corrective datasets, distinguished:**
+- **Blindspot harvest** (directly-targeted): T80 positions filtered by the
+  exact criterion above, native LC0 labels = correct corrective signal.
+  6 files (~10GB, jan-jun 2024, "150_80") on **gpu3:/workspace/blindspot**
+  (an earlier harvest survived; the ~1B full harvest is on offline GPU4).
+- **Stamped SF-vs-Coda** (proxy): Coda-vs-SF game positions, SF-labeled;
+  over-samples overscore-*adjacent* but the trainable half is SF's replies,
+  not the filtered error positions. Less directly targeted.
+
+**Running now (gpu3, S200, 4×T80, ms10000, seed 42, identical recipe):**
+3-arm matched test — `exp-base-4t80` / `exp-blindspot-4t80` (+6 blindspot
+files) / `exp-stamped-4t80` (+stamped). Readout: net_report blindspot
+mean|err| (headline) + wandering-bishop (independent gauge). Prior s1
+evidence: stamped helps WB, hurts broad blindspot — but s1 was undertrained
+special-data; this clean bake + the directly-targeted blindspot arm is the
+real test. If a corrective arm moves broad mean|err| without wrecking
+Spearman → the fix is validated and the GPU4 full harvest at scale is the
+path. Whichever way eval-metrics land, GAMES are the ultimate arbiter
+(does it convert phantom draws to wins).
+
+**Cross-net context (why no silver bullet):** across v8/v9/w24/dual/ranger/
+stamped/ms32, broad blindspot mean|err| is pinned ~208-227; nothing breaks
+below ~208. Wandering-bishop (independent) DOES move (18→34 correct) under
+corrective/dual/ms32. Interventions that cut directional overscore do it by
+FLATTENING (dual: overscore +22 but Spearman 0.785, mean|err| 215) not by
+getting positions right; only Ranger nudges mean|err| down (~4cp) at no
+quality cost. Depth helps modestly (s1 218 → prod-multistage 208).
