@@ -554,6 +554,13 @@ tunables!(
     // Fail-low prior-countermove cont-hist bonus, % of history_bonus(depth)
     // (SF fail-low history harvesting, simple core — audit 2026-07-05 T1#2).
     (FAIL_LOW_PREV_BONUS_PCT, 60, 0, 150, 15.0, false),
+    // Cross-MOVE score-trend TM coefficient (×1e-4). Folds the deterioration
+    // across MOVES (prev-`go` final score − current running score) into the
+    // score-trend multiplier, giving more time when the position has been
+    // worsening over the game horizon — the regime where LTC games are lost.
+    // Complements the within-search drop term (fixed 0.0025). Default matches
+    // that scale (25 → 0.0025). TM change: validate via local cross-engine RR.
+    (CROSS_MOVE_TREND, 25, 0, 150, 8.0, false),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
@@ -985,6 +992,12 @@ pub struct SearchInfo {
     /// Coda was missing (every other signal is search-progress-derived).
     tm_forced_state: ForcedState,
     tm_has_data: bool,
+    /// Best score of the PREVIOUS `go` (our-side-to-move, so consecutive
+    /// searches are sign-comparable). Persists across `go` commands and is
+    /// reset only on ucinewgame; sentinel `i32::MIN` means "no previous move".
+    /// Feeds the cross-MOVE score-trend TM term (game-horizon deterioration),
+    /// distinct from `tm_prev_score` which is within-search iteration trend.
+    pub(crate) tm_cross_prev_score: i32,
     soft_limit: u64,  // ms — can be extended/shortened dynamically
     hard_limit: u64,  // ms — absolute maximum
     /// Minimum think time per move: the increment we're about to gain, minus
@@ -1193,6 +1206,7 @@ impl SearchInfo {
             tm_asp_fail_low: 0,
             tm_asp_fail_high: 0,
             tm_has_data: false,
+            tm_cross_prev_score: i32::MIN,
             soft_limit: 0,
             hard_limit: 0,
             soft_floor: 0,
@@ -3482,7 +3496,22 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // test direction. Range [0.80, 1.45].
             let score_trend_multiplier = {
                 let drop = score_drop as f64;
-                (1.0 + 0.0025 * drop).clamp(0.80, 1.45)
+                // Cross-MOVE deterioration: prev-`go` final score − current
+                // running score (both our-side-to-move → sign-comparable).
+                // Positive = worsening across the game horizon; add time. Gated
+                // on a real previous move (sentinel) and non-mate scores, same
+                // as the within-search drop guard. Ceiling raised to 1.55 to
+                // give the combined term headroom in worsening positions.
+                let cross = if info.tm_cross_prev_score != i32::MIN
+                    && !is_mate_score(prev_score)
+                    && !is_mate_score(info.tm_cross_prev_score)
+                {
+                    (info.tm_cross_prev_score - prev_score) as f64
+                } else {
+                    0.0
+                };
+                (1.0 + 0.0025 * drop + (tp(&CROSS_MOVE_TREND) as f64 * 1e-4) * cross)
+                    .clamp(0.80, 1.55)
             };
 
             // Combined multiplier — Viridithas's 4 factors + score-trend.
@@ -3591,6 +3620,13 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 }
             }
         }
+    }
+
+    // Publish this move's final score for the NEXT `go`'s cross-move trend
+    // term. `info.last_score` holds the last completed iteration's score;
+    // sign-comparable across our consecutive moves (opponent moves between).
+    if info.completed_depth >= 1 {
+        info.tm_cross_prev_score = info.last_score;
     }
 
     // Don't stockpile: if the ID loop finished below the soft_floor (e.g. all
