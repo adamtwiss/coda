@@ -18734,3 +18734,27 @@ queen-middlegames, and deep search ADVERSARIALLY AMPLIFIES it to +1.5-2
 blind-spot amplified by (good) search, not a plumbing bug. Fix is
 net-side (corrective data / WDL / feature). Next: characterize the
 over-valued feature in the queens-on class (data-gap vs architecture-gap).
+
+## 2026-07-08 — phantom overscore localized to NET STATIC EVAL (not search)
+
+Static-vs-search 2x2 on 79 phantom FENs (queens-on level middlegames):
+| | Coda | SF | truth |
+|---|---|---|---|
+| static (no search) | +1.28 | +0.44 | — |
+| search | ~+1.00 | ~+0.40 | +0.48 (outcome) |
+
+**The overscore is the raw net's STATIC eval** (+1.28 vs SF +0.44, gap
++0.85 = matches true outcome ~+0.48). SEARCH does NOT amplify — it
+CORRECTS (1.28 -> 1.0). Kills both search hypotheses: corrhist (tested,
+refuted) AND TT/out-of-bounds (search moves the number the RIGHT way, no
+test needed). Earlier "search amplifies to +2" was a max-over-game-plies
+statistic artifact, not depth amplification.
+
+Same LC0 data as SF, yet SF static correct (+0.44) / ours hot (+1.28) on
+these exact positions -> representational/recipe difference, not data
+content. Prime suspect: WDL weight (ours 0.20 vs SF ~0.26; these are
+cp-vs-outcome-divergent positions, exactly what WDL calibrates). Note:
+our "w0.20 best" was measured on STRENGTH, never on the overscore metric.
+Plan: WDL sweep (0.20/0.30/0.40) read via net_report.py overscore metric
+(not strength) + corrective-data mix in parallel; both net_report reads,
+no RR. Capacity (L1=32 < SF) is the fallback lever. All GPU4-independent.
