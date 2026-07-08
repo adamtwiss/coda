@@ -6,6 +6,38 @@ Version: dev-16.15
 NNUE: (768x13 -> 1536)x2 -> 16 -> 32 -> 1x8 (pairwise mul, dual-activation L2, NNZ-sparse L1, Finny table)
 
 Last v9-refreshed: 2026-04-19
+Last fresh idea-mining pass: **2026-07-08** → see `docs/obsidian_audit_2026-07-08.md`
+
+---
+
+## 2026-07-08 Fresh idea-mining pass (summary — full detail in the audit doc)
+
+Three-agent fresh read (NNUE/eval, search/TM, ordering/history/TT) vs current
+Coda. Obsidian dev-16.15 unchanged since Sep 2025. The §Search/§Move-Ordering
+/§NNUE sections BELOW are the v9-era (Apr 2026) review — accurate but several
+"actionable" items are now ABSORBED into Coda; the audit doc supersedes for
+current-state candidates.
+
+**Net:** Obsidian is largely a leaner version of Coda, and on the LTC/deep-tree
+theme **Coda is ahead** (Coda has explicit deep-spine LMR protection — LMR_ROOT
++ depth-decaying all-node inflation — that Obsidian's pure `ln·ln` LMR lacks).
+Obsidian is NOT an eval seam (its edges are retrain/capacity: 1536 FT, 13 king
+buckets, active dual-L1-act) and NOT a TM-scaling reference (it also caps the
+per-move fraction flat at 2.5%).
+
+**Three verified-absent candidates worth a branch** (mechanism-named, not
+`obsidian/…`): (A) **eval-swing retroactive main-history** (EvalHist —
+opponent-move-quality from the eval swing; SF+Obsidian both, Coda only skims
+fail-lows into cont-hist); (B) **cont-hist `isCap` split** (index by
+parent-capture; structural, Coda-receptive class); (C) **cross-move TM score
+trend** (game-horizon deterioration, LTC-relevant). Aspiration `score²`-div
+(Coda 2.6× Obsidian's) is already in the Track-A LTC tune; the LMR flatter
+basin is Hercules's reshape domain.
+
+**Two agent false positives caught on cross-check** (do not re-chase):
+material/phase eval scaling is ALREADY present (`search.rs:1537`,
+`(22400+material)/32/1024`, non-pawn-only #813); the "move-into-threat penalty"
+is the Reckless threatened-TO malus already H0'd (#2593).
 
 ---
 
