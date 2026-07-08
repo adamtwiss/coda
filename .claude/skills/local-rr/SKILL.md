@@ -99,14 +99,24 @@ Recommended standard arguments (the block above):
   (this is the fallback when an OB net-vs-net Wrong-Benches across the fleet).
 - Max **2 Coda variants** in a single RR — more amplifies shared-eval bias
   (Coda-on-Coda contamination).
-- TM-class changes need **ponder-enabled** cross-engine RR. Enable it with the
-  bare **`ponder`** keyword on each `-engine` line, NOT `option.Ponder=true`:
-  `-engine name=dev cmd=./coda ponder`. cutechess reserves "Ponder" as a
-  self-managed option, so passing `option.Ponder=true` is *rejected* with
-  `Warning: <engine> doesn't have option Ponder` and the match silently runs
-  **without pondering** (verified 2026-07-02 — a whole ponder RR was wasted this
-  way; always grep the log for that warning and confirm it's absent before
-  trusting a ponder run). See CLAUDE.md §TM-class changes.
+- TM-class changes need **ponder-enabled** cross-engine RR. Both cutechess AND
+  the engine must be told to ponder — and the bare **`ponder`** keyword does
+  **both**: it makes cutechess send `go ponder` on the opponent's move AND makes
+  cutechess send `setoption name Ponder value true` to the engine itself. Put it
+  on each `-engine` line, or once on `-each` to cover all engines:
+  `-engine name=dev cmd=./coda ponder` / `-each proto=uci ponder tc=30+0.3`.
+  Do **NOT** also pass `option.Ponder=true` — cutechess reserves "Ponder" as a
+  self-managed option, so a manual `option.Ponder=true` is *rejected* with
+  `Warning: <engine> doesn't have option Ponder` (it does not enable pondering;
+  the `ponder` flag is what does). On `-each`, engines that don't advertise a
+  Ponder option (Obsidian/Alexandria/Integral) emit that warning harmlessly and
+  just play without pondering — filter it, don't chase it.
+  **Confirm pondering is actually live** (verified 2026-07-02 a whole ponder RR
+  ran without it): `-debug` is mis-parsed by cutechess-cli 1.4.0/Qt6 ("Empty
+  value for option -debug"), so instead check CPU — `ps -C <bin> -o comm,%cpu`
+  mid-game: with pondering ON, engine procs stay ~100% even on the opponent's
+  turn (none idle-waiting) and load climbs toward 2× the concurrency; without
+  it, ~half sit at 0%. See CLAUDE.md §TM-class changes.
 - Read results from the cutechess stdout score line / the PGN; parse per-move
   spend from PGN comments with `([0-9]+\.[0-9]+)s\b` (the FIRST decimal is the
   score, not the spend).

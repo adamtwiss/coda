@@ -25,7 +25,11 @@ acted-on-early-N noise, missed `/errors/` followups.
   floor) are inert under OB SPRT — only deployment (codabot lichess)
   exercises those paths. Use SPRT as a non-regression check for the
   non-ponder path; rely on deployment + cross-engine local RR for the
-  actual gain measurement.
+  actual gain measurement. To run that ponder-enabled RR (cutechess), see
+  the **local-rr** skill: enable pondering with the bare **`ponder`** engine
+  flag (on each `-engine` line or once on `-each`) — it tells cutechess AND
+  the engine; do NOT pass `option.Ponder=true` (cutechess reserves it and
+  rejects it). Confirm it's live via CPU (procs busy on the opponent's turn).
 - **Usernames** (different roles, filter by user to see who owns what):
   - `adam` — human
   - `claude` — Hercules (implementation/fleet)
