@@ -1,0 +1,169 @@
+# Phantom Overscore Investigation (2026-07-08)
+
+**Status: cause localized, mechanism open.** Coda draws games it "thinks"
+it is winning because the **network's static eval over-values a specific
+class of position** (materially-level, queens-on middlegames) by ~0.8–0.9
+pawns. Search, correction history, conversion technique, WDL calibration,
+capacity, and threat features are all **ruled out** as the cause. The open
+question — *why does the net over-value these positions* — is not yet
+answered.
+
+This doc consolidates the diagnostic chain so it survives for when we pick
+the "why" up (esp. once GPU4 / the 1B overscore corpus is back).
+
+---
+
+## 1. The symptom: an unbeatable engine that draws everything
+
+At long TC (60+1 local RR, 20-engine pool) Coda posted **30 draws in 30
+games** — literally nobody beat us, and we beat nobody, landing mid-table
+at 50%. The same signature shows on lichess (very high draw rate, rating
+bled by *unconverted* wins, not losses). Rank in an RR comes from farming
+the tail; an engine that draws everyone scores 50% regardless of how
+unbeatable it is, so "unbeaten, mid-table" is arithmetic, not paradox.
+
+The question this raised: are these draws **failures to convert real
+edges**, or something else?
+
+## 2. Phantom edges: we were never actually ahead
+
+**Test:** in drawn LTC games where Coda's own eval peaked ≥ +1.0, take the
+position at that peak and compare three evals — ours, the **opponent's**
+(from the same PGN), and **Stockfish as a fresh arbiter**.
+
+**Result (n=275 drawn LTC games, opponent; 60-game SF subsample):**
+
+| bucket | n | our peak (median) | opponent (median) | SF arbiter |
+|---|---|---|---|---|
+| **DRAWN**, we saw ≥ +1.0 | 275 | +1.45 | **+0.40** | ~refuted 86% |
+| **DRAWN**, we saw ≥ +1.5 | 129 | +2.12 | **+0.61** | — |
+| **WON**, we saw ≥ +1.0 (control) | 54 | +9.86 | **+5.66** | confirms |
+
+The won-games control is the clincher: **the arbiter's absolute eval
+tracks the game outcome, not our eval.** When we drew, the position really
+was level (~+0.4) at the exact moment we thought we were up; when we won,
+it really was winning (+5.66). Our eval said "ahead" in both. So the draws
+are **phantom edges** — positions we over-value, not edges we failed to
+convert. (Initial 9/9 hand-check, then widened to 275.)
+
+## 3. Structural signature: level queens-on middlegames
+
+Profiling the 275 phantom positions vs the 55 real-win positions — they
+are structurally **opposite**:
+
+| | Phantom draws (n=275) | Real wins (n=55) |
+|---|---|---|
+| Game phase | **middlegame** (median phase 50) | endgame (phase 13, 76%) |
+| Queens on board | **77%** | 30% |
+| Material | **dead level** (median +0; 81% level-or-down) | up +2 (83% ahead) |
+| OCB / fortress | 4% / rare | rare |
+
+The phantom class is **not** fortresses, opposite-coloured bishops, or
+endgame technique. It is complex, materially-level, queens-on middlegames
+where our eval hallucinates ~+1.5 out of nothing.
+
+## 4. Localization: it is the NET's STATIC eval, not search
+
+**Static-vs-search 2×2** on 79 phantom positions:
+
+| | Coda | SF | truth (outcome) |
+|---|---|---|---|
+| **static** (no search) | **+1.28** | +0.44 | — |
+| **search** (2 s) | ~+1.00 | ~+0.40 | +0.48 |
+
+The overscore is entirely in the **raw net's static eval** (+1.28 vs SF's
++0.44; the +0.84 gap matches the true ~+0.48 outcome). **Search does not
+amplify it — search *corrects* it** (pulls +1.28 down to +1.0). An earlier
+"search amplifies to +2" reading was an artifact of taking the *max over
+all game plies* (a survivorship statistic) rather than a typical value.
+
+Mechanism: the net statically over-values this position class by ~0.8–0.9
+pawns; a game's "peak" is simply where search reached the local maximum of
+that already-inflated eval → phantom edge → repetition draw.
+
+## 5. What we ruled out
+
+| Hypothesis | Test | Verdict |
+|---|---|---|
+| **Adjudication artifact** (our honest 0.00s trigger early draw adjudication) | Termination taxonomy of the 60+1 draws | **Ruled out** — our draws adjudicate at the *pool* rate (34–35%); mostly 3-fold repetition, in *longer*-than-average games. |
+| **Conversion / endgame technique** | won-vs-drawn arbiter control (§2) | **Ruled out** — we don't fail to convert; we were never ahead. |
+| **Correction-history feedback loop** (as in the fortress-drift bug) | `NO_CORRECTION` on/off, 80 phantom FENs, 2 s search | **Ruled out** — eval ON +0.96 vs OFF +1.02 (drop +0.02; 0/80 dropped >0.5). Corrhist was slightly *helping*. Opposite of the fortress case (where OFF → 0.00). Note the fortress fix's piece-count damping only guards low material, so these high-material positions were genuinely un-damped — yet corrhist still isn't the driver. |
+| **Search amplification / TT out-of-bounds** | static-vs-search 2×2 (§4) | **Ruled out** — search moves the number the *right* direction (down). No need to disable TT features. |
+| **WDL calibration** (ours 0.20 vs SF 0.26) | w20 (prod) vs w24 matched pair (`multi-v9-s3-swa` vs `multi-v9-w24-s3-swa`) | **Ruled out as *the* fix** — biased screen +1.33→+1.23 (10 cp, still overscores); neutral `net_report` general eval identical (Spearman .849/.848), w24 tail marginally *worse*; blindspot overscore +44.2→+35.9 (~8 cp). WDL shaves ~8–10 cp of an ~86 cp gap at a hair of eval-quality cost. It is a robust *representational* property, not a cp-vs-outcome calibration knob. |
+| **Capacity** (we assumed SF's net was bigger) | `docs/sfnnv13_architecture_review_2026-05-23.md` | **Ruled out — and the premise was false.** SF and Coda are near-identical in size; with Coda now at FT=1024 / L1=32 we *match* SF (FT 1024, first-dense 32, L2 32). No capacity gap. |
+| **Threat features being a Coda-unique bias** | same review doc | **Ruled out** — SF has FullThreats too (since SFNNv12, Feb 2026), yet SF does *not* overscore these positions. Threats are not the differentiator. |
+
+Data is also ~identical (both train on LC0 T80; Coda uses the full SF set
+for prod builds). So: **same data, matched architecture size, both have
+threats — yet we overscore these positions and SF does not.**
+
+## 6. What remains — candidate causes of the "why"
+
+The difference between our net and SF's on these positions is **not size,
+data, threats, WDL, corrhist, or search.** It is in the harder-to-change
+recipe/architecture details where we actually differ from SF
+(`sfnnv13_architecture_review`):
+
+- **Dual activation.** SF's first hidden layer uses `SqrCReLU(31) ++
+  CReLU(31)` (concat of squared-clipped and clipped); Coda uses a single
+  CReLU. The squared component changes how the net represents magnitude —
+  plausibly relevant to how sharply eval scales in complex positions.
+- **PSQT output buckets.** SF has 8 PSQT output buckets (a
+  material-bucketed PSQT term added to the NNUE output); Coda has none. A
+  material-anchored baseline is exactly what would keep eval from drifting
+  positive in *level-material* complex middlegames — the phantom class.
+  This is the most mechanistically-aligned untested lever.
+- **Corrective data at scale.** The 1B+ overscore corpus (filtered from
+  the ~200B SF set for our-eval-vs-SF/LC0 divergence, currently on the
+  offline GPU4). Prior small-scale corrective tests gave ~10–20 cp — same
+  order as every other cheap lever; scale is the untested variable.
+- **Other recipe:** MSE exponent 2.6 vs 2.5, eval scale ×600 vs ×400,
+  loss specifics (qp-asymmetry, in/out scaling/offset in SF's
+  threats.yaml), SWA/schedule details.
+
+**Every cheap lever tested gives ~10–20 cp of an ~86 cp gap.** No single
+knob fixes it; the fix (if data-side) likely needs scale and/or stacking,
+or (if arch-side) a structural change matching SF's dual-activation / PSQT.
+
+**Context — the noise floor.** SF *also* overscores a comparable *count*
+of positions vs LC0; some fraction of any net's overscore tail is
+irreducible label noise. But SF does *not* overscore *our* phantom
+positions (SF static +0.44 on them), so this class is specifically
+hard-for-Coda, not universally noisy — it is a real Coda-specific gap, not
+just the noise floor.
+
+## 7. Why it matters (value framing)
+
+The phantom overscore converts what should be **wins into draws**,
+concentrated against the weaker/equal field (the 30/30 RR wall, lichess
+drawishness) — real Elo, but field-facing, not the top-table gap. It does
+*not* cost much against SF/Reckless (those draw/lose regardless).
+Critically: **no search or tune Elo converts against the field while this
+stands**, because search operates correctly on a mis-calibrated eval — so
+this is a distinct net-research track, run in parallel with (not blocking)
+search work.
+
+## 8. Next diagnostic for the "why"
+
+To find *what* the net over-values (feature attribution), the cheap next
+step is a **feature/ablation decomposition on the phantom class**: does the
+static overscore correlate with a specific signal (threat-feature count,
+king-safety proxy, mobility, space) across positions? A coherent single
+driver → architecture/representation gap (points at dual-activation / PSQT
+/ a specific over-weighted feature); a diffuse driver → data-coverage gap
+(points at corrective data at scale). This is characterizable from the
+phantom FENs we already have, no GPU4 needed.
+
+## 9. Instruments built (reusable)
+
+- **Phantom-edge audit** — peak-eval vs opponent/SF-arbiter refutation
+  rate, stratified by outcome. The before/after metric for candidate nets.
+- **Structural profiler** — phase / material / OCB / queens / locked-pawn
+  signature of a position set.
+- **Static-vs-search split** — `coda eval-fens` (static) vs `go` (search)
+  vs SF, the net-vs-search localizer.
+- **`net_report.py`** — neutral overscore vs LC0 (signed overscore + p90/
+  p99/max tail) on a general binpack; the unbiased net-quality readout.
+
+Scratch scripts on Hercules: `phantom_wide.py`, `corr_test.py`; phantom
+FEN set `phantom_fens.tsv`.
