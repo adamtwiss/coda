@@ -211,3 +211,39 @@ brings Coda in line. Lower priority; structural, needs retune. Do after #1/#2.
 Source extractions (SF/Obsidian/Reckless/Berserk/Viri corrhist, verbatim
 formulas + citations) captured in this session's audit; fortress-drift
 background in `docs/corrhist_fortress_drift_2026-07-06.md`.
+
+## Empirical confirmation of Finding #1 (2026-07-08)
+
+Branch `zeus/corrhist-residual-baseline` adds the residual baseline as default,
+with `CORR_RAW_BASELINE=1` (old raw baseline) and `NO_MAT_DAMP=1` (disable the
+fortress material damp) as set-once env toggles for A/B.
+
+**Low-signal fortress (doc repro `8/8/7p/2b5/6B1/7P/5k2/2K5 w - - 18 62`, truth
+= 0, SF = 0), movetime 3s, `mat_damp` OFF:**
+
+| config | eval |
+|---|---|
+| RAW baseline (the bug) | **cp −49** |
+| RESIDUAL baseline (Finding #1) | **cp 0** |
+| NO_CORRECTION (ground truth) | cp 0 |
+
+→ The residual baseline alone drives the phantom to exactly 0 **without**
+`mat_damp` — confirming it is the root cause and **subsumes** the material-count
+band-aid.
+
+**Active high-material positions** (closed KID / French / Benoni / Stonewall /
+Closed-Sicilian): corrhist contribution (`eval − NO_CORRECTION`) is small
+(single-digit to ~20cp) under *both* raw and residual, and residual tracks raw
+within a few cp — i.e. **residual is non-regressive in normal play**; the rail
+only appears in genuine low-signal positions where search has nothing to refute
+the seed. (A dead *high-material* fortress was not reproduced in this quick
+screen — the "closed" test positions had real imbalances, not dead draws — so
+the rail pathology looks concentrated in low-signal / lower-material positions,
+which is also where `mat_damp` already helps.)
+
+**Conclusion:** Finding #1 is confirmed as the principled fix. Expected SPRT
+outcome is neutral-to-small-positive (a correctness / eval-quality win, like
+`mat_damp` was), not a large Elo jump. Implementation path: make residual the
+default (drop the env scaffolding), decide whether to also drop `mat_damp`,
+retune the corr/history cluster on-branch (raw-error tunables are miscalibrated
+for residuals), SPRT `[0,3]`.
