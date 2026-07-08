@@ -14402,8 +14402,9 @@ inverted-parabola fit of w15:0, w20:+9.7, w25:−1.2 puts the WDL optimum
 near **w20-w21**, lower end of the w20→w25 band, robust to w25's CI. SF
 runs w24, which is consistent with our pattern of "optimum rises with
 eval quality and capacity" ([[feedback_capacity_increases_need_information_increases]]):
-SF's larger net + SWA + data scale pushes their peak above ours, not in
-conflict with our finding.
+SF's SWA + data scale + recipe (higher WDL, dual-activation) pushes their
+peak above ours, not in conflict with our finding. (NOT a larger net — SF
+and Coda are near-identical in size; see docs/sfnnv13_architecture_review.)
 
 **Caveat (Fact):** these magnitudes are at early N and will compress.
 Don't bank the +9.7 or the parabola location until both land H1/H0.
