@@ -18709,3 +18709,28 @@ pipeline — exactly the right corrective data); contempt remains relevant
 only for the separate vs-weaker trade-down behavior on lichess.
 Instrument: scripts/phantom_edge_audit.py (peaks-vs-arbiter refutation
 rate) = the before/after metric for candidate nets.
+
+## 2026-07-08 — corrhist feedback-loop hypothesis REFUTED for middlegame phantoms
+
+Phase 0 structural profile of the 275 LTC phantom-draw positions (peak
+>=+1.0, opponent/SF ~0): they are QUEENS-ON, LEVEL-MATERIAL MIDDLEGAMES
+(median phase 50, 77% queens, median material +0, 81% level-or-down, 5%
+endgame, 4% OCB) — structurally opposite to real wins (phase 13, 76%
+endgame, +2 material). NOT fortress/OCB/technique class.
+
+Adam's hypothesis (corrhist self-reinforcing, as in the fortress-drift
+bug — plausible since the fortress fix's piece-count damping only guards
+LOW material, leaving these high-material positions un-damped): TESTED
+on 80 phantom FENs, 2s search, NO_CORRECTION on/off. **Refuted:**
+median eval ON +0.96 vs OFF +1.02 (drop +0.02, 0/80 dropped >0.5).
+Corrhist was slightly HELPING (pulling toward truth), not feeding a
+loop. Opposite of fortress (where OFF -> 0.00 exactly).
+
+Mechanism now complete: fresh 2s search gives ~+1.0 both configs vs
+opponent +0.47, but the ORIGINAL game (deep 60+1) peaked +1.5-2.3 on the
+same positions. So: raw net has an intrinsic ~+0.5 overscore on level
+queen-middlegames, and deep search ADVERSARIALLY AMPLIFIES it to +1.5-2
+(argmax of the overscore) -> phantom edges -> draws. It is an eval
+blind-spot amplified by (good) search, not a plumbing bug. Fix is
+net-side (corrective data / WDL / feature). Next: characterize the
+over-valued feature in the queens-on class (data-gap vs architecture-gap).
