@@ -18663,3 +18663,32 @@ step counts. Batch thread (32k/64k) CLOSED as structural; Ranger-16k
 RangerLookahead<S> is generic over the inner optimizer, small fork
 change). SF context: their rangerlite core is NOT plain RAdam (adds
 PNM + unit-norm), which is presumably why their core doesn't drag.
+
+## Obsidian idea-mining candidates A/B/C (2026-07-08)
+
+From `docs/obsidian_audit_2026-07-08.md` (Adam-commissioned fresh Obsidian
+look). Three verified-absent candidates implemented on `zeus/`-prefixed
+mechanism-named branches (base main 7345996), SPRTs run:
+
+- **A — eval-swing retroactive opponent-move-quality history (EvalHist)**
+  (`zeus/eval-swing-history`, bench 2083013). Bonus to the opponent's last
+  quiet move's MAIN history keyed on the eval swing it caused. New tunables
+  492/58/534. **SPRT #2631 `[0,3]` → H0 ✗** (−3.6, rejected). Coda's 4D
+  threat-aware main history + existing fail-low cont-hist harvesting already
+  capture most of that signal. Dropped.
+- **B — continuation-history parent-isCap split** (`zeus/conthist-iscap-split`,
+  bench 2260179, −12% nodes). cont_hist gains a leading `[parent_isCap]` dim;
+  per-ply `moved_cap_stack` threads the parent capture bit into MovePicker
+  sub-table selection + every read/update site. Structural (doubles the table
+  ~1.4→2.8MB/thread). **SPRT #2632 `[0,3]`** — trended H0 (+0.6, a true-small
+  positive that won't clear +3). Retune-on-branch candidate before dropping
+  (tunables calibrated for the un-split table).
+- **C — cross-MOVE score-trend TM term** (`zeus/tm-cross-move-trend`, bench
+  2569066 = main, TM-only). Carry the previous `go`'s final score across moves
+  (`tm_cross_prev_score`, reset on ucinewgame) and fold game-horizon
+  deterioration into the score-trend multiplier via `CROSS_MOVE_TREND`
+  (default 25; ceiling 1.45→1.55). **SPRT #2633 `[-2,1]` → H1 ✓** (+1.1 ±1.6,
+  44k, LLR 2.95). Non-ponder-path non-regression check only — OB undersells TM
+  and STC is the mechanism's weakest regime, so deployment (LTC+ponder) gain
+  should be ≥. **MERGED.** Follow-up: measure real gain via local ponder RR /
+  lichess A/B.
