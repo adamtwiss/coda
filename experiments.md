@@ -18605,3 +18605,34 @@ is NOT inherently broken. But their core adds positive-negative momentum
 + unit-norm step that Bullet's RAdam lacks. Next probe when GPU free:
 --optimiser radam at 32k (Lookahead removed) — splits our-Lookahead-impl
 vs RAdam-core as the batch-fragile piece.
+
+## Reckless-audit — final resolutions (2026-07-08)
+
+Closing the last open threads from the Reckless v0.10.0-dev audit
+(docs/reckless_audit_2026-07-06.md).
+
+- **#8 tt-cutoff deep-relax — LTC re-test H0, DROP confirmed.** Two tests, to
+  disambiguate an earlier mislabel: **#2601 = STC** (10+0.1): +0.5 ±0.8, 201k,
+  H0. **#2621 = the LTC re-test** (40+0.4 Hash256): **−0.9 ±1.7, 36k, LLR
+  −2.97, H0 ✗**. Story: I first dropped #8 arguing "thins the deep tree = wrong
+  LTC direction"; Adam corrected — *thinning isn't bad if it thins the right
+  things* (TT cutoffs on resolved subtrees are ~free, unlike LMR over-reduction
+  of unresolved lines). Re-tested at LTC on that basis. Verdict: genuinely
+  **Elo-neutral at BOTH TCs** (+0.5 STC / −0.9 LTC) — the −6.5% freed nodes do
+  NOT convert to Elo at LTC (the "faster→deeper" upside didn't materialise).
+  So DROP stands, but for the right reason (neutral, not harmful). Lesson
+  banked: don't infer LTC direction from a node-count delta — measure it.
+- **#1038 index-decayed quiet malus — formal H0** (#2597): −0.3 ±1.4, 58k, LLR
+  −2.98. Finally resolved (long grind at ~0). Confirms the batch-2 read:
+  structural mismatch with Coda's already-NFH-scaled malus. Dropped.
+- **#9 TT PV-replace-protect** (#2600) and **#5 hist-in-pruning** (#2602):
+  H0, logged 2026-07-06. No change.
+
+**Campaign closed.** Reckless-audit net: ONE merged win — the pre-make TT
+prefetch (#1085, +9 Elo on the AVX2 fleet half). All other portable levers
+(3 ordering + 3 pruning/TT, now incl. #8's LTC re-test) H0. Confirmed
+conclusion: Reckless's edge over Coda is NOT in transplantable
+ordering/pruning/TT micro-features — it's the LMR base shape (Hercules's
+reshape, since MERGED 33ac6da) and eval/net. Remaining untested Tier-3 audit
+items (eval-delta hist nudge, two-ply cont-corrhist, wall-pawn malus,
+capture-hist threat dim) are low-EV given the pattern; not pursued.
