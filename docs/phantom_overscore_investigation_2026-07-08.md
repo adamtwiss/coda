@@ -253,3 +253,52 @@ corrective/dual/ms32. Interventions that cut directional overscore do it by
 FLATTENING (dual: overscore +22 but Spearman 0.785, mean|err| 215) not by
 getting positions right; only Ranger nudges mean|err| down (~4cp) at no
 quality cost. Depth helps modestly (s1 218 → prod-multistage 208).
+
+## 11. Q3 ANSWERED (prior-Claude symmetric mirror) — near-symmetric, NOT a Coda defect
+
+**Corrects §5/§7's "Coda-specific gap" framing.** The blindspot filter only
+ever pointed at *our* errors (Coda ≥150 off, SF closer), so it *structurally
+cannot* show SF's own blind spots. The symmetric mirror scan (100k unbiased
+jun-2024 sample, calibrated per-net scales) counts both directions:
+
+| population | rate |
+|---|---|
+| Coda-specific (Coda ≥150 off, SF closer by 80) | **2.59%** |
+| SF-specific (SF ≥150 off, Coda closer by 80) | **2.36%** |
+| shared (both ≥150 off) | **8.57%** |
+| mean\|err\| | Coda 65.4 vs SF **65.0** |
+| p50/p90/p99 | 37/168/352 vs 37/165/353 |
+
+**SF has blind spots at essentially our rate.** Error distributions are
+indistinguishable at every quantile. Our idiosyncratic excess is ~10%
+relative (2.59 vs 2.36), not a structural defect; the biggest bucket is the
+*shared* 8.57% ("dynamics not statically fittable"), hitting both nets
+equally.
+
+**Why ours are visible and SF's aren't:** (a) we only harvest our own
+direction; (b) **adversarial self-sampling** — in games each engine's search
+steers into positions *it* overrates, so our tail surfaces in our games and
+SF's in SF's. Same mechanism as §4, now shown symmetric across engines.
+
+**Consequences for the whole investigation:**
+- **Ceiling is modest.** A perfect fix moves our idiosyncratic tail 2.59% →
+  ~2.36% (SF's floor); the shared 8.57% is common to all engines and likely
+  statically irreducible (needs search/dynamics). This is a *refinement*,
+  not the big Elo lever — SF has the same tail, so it is NOT why SF beats us.
+- **But self-sampling gives leverage.** Search lands us in our *own* tail, so
+  shrinking it reduces the positions our games reach — modest tail reduction,
+  possibly outsized game effect. Worth pursuing, calibrated as refinement.
+- **Corrective data can't teach wrong values** (labels are LC0 ground truth);
+  the only failure mode is dilution/redistribution.
+- **THE READOUT = the symmetric mirror metric**, not net_report alone: on a
+  candidate net, coda-rate ↓ toward ~2.0% *without* sf-rate rising = genuine
+  fix; both moving = redistribution. Cleaner cause-vs-symptom test than
+  general Spearman.
+- **The ~0.2pp asymmetry** is where WDL 0.26 + WRM might shave a little — a
+  refinement, not a root-cause hunt.
+
+Scale (Q2) remains the one open lever: the full ~436B harvest (GPU4) +
+mirror metric will show whether coda-rate keeps dropping with corrective
+volume or plateaus. The running gpu3 3-arm S200 test is a cheap preview
+(6 stale-old-net blindspot files, LC0-labelled — labels valid, positions
+are an older net's tail so directionally-not-perfectly-matched).
