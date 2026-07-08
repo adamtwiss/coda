@@ -18650,3 +18650,16 @@ shape reform's +2.3 LTC / −1.4 STC split, datagen fixed-nodes +17 swing
 vs SF17.1 (2511→2622, ~+50 true after accounting-fix costs), #2627
 reallocating pruning deep-ward with freed gradients. The tc-scaling
 ACTIVE thread moves to "closing — confirm at full LTC RR game count."
+
+## 2026-07-08 — optimizer decomposition: Lookahead is the win, RAdam the deadweight
+
+**#2643 radam-16k vs adamw-16k: H0 −11.5 ±5.0.** **#2642 radam-32k vs
+radam-16k: H0 −8.9 ±4.4.** With ranger-16k's +2.8 (#2605), the algebra:
+Lookahead ≈ +14 over the RAdam core; RAdam core ≈ −11 vs AdamW. Batch:
+RAdam alone −9 at 32k, Ranger −19 → BOTH components batch-fragile at our
+step counts. Batch thread (32k/64k) CLOSED as structural; Ranger-16k
++2.8 stands as the optimizer deliverable. Open probe: AdamW+Lookahead
+(untested combo — if Lookahead carries the value, it may beat Ranger;
+RangerLookahead<S> is generic over the inner optimizer, small fork
+change). SF context: their rangerlite core is NOT plain RAdam (adds
+PNM + unit-norm), which is presumably why their core doesn't drag.
