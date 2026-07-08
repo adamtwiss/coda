@@ -18589,3 +18589,19 @@ miniature.
   Ranger adopted at 16k only.
 - Zeus's LTC retest of tt-cutoff-deep-relax (#2601): +0.5 at 201k, H0 at
   [0,3] — consistent small-positive, not bankable at these bounds.
+
+**Shape reform MERGED (33ac6da)** on the LTC H1 per Adam's decision —
+deployment is the deep regime; STC's −1.4 is the measurement frame
+paying for the correction it caused. Values = exactly the SPRT-tested
+ints re-expressed on migrated grain (KNEE_10X 50, QUAD_10X 10,
+ROOT_COEF_10X 70, CUTNODE_CENTI 200). d24 instrument confirm running on
+merged trunk. Migration note: #2625's +5.7 point estimate is layout
+lottery + stopping-point bias on a bit-identical binary (NPS ±0.3%) —
+logged as "passed its gate," not a 5.7 gain.
+
+**SF rangerlite facts (batch thread):** Lookahead ACTIVE, k=5, α=0.5 at
+batch 131k, slow-init from current params — so k-in-steps at big batch
+is NOT inherently broken. But their core adds positive-negative momentum
++ unit-norm step that Bullet's RAdam lacks. Next probe when GPU free:
+--optimiser radam at 32k (Lookahead removed) — splits our-Lookahead-impl
+vs RAdam-core as the batch-fragile piece.
