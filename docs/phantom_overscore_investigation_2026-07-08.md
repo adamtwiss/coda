@@ -104,26 +104,42 @@ data, threats, WDL, corrhist, or search.** It is in the harder-to-change
 recipe/architecture details where we actually differ from SF
 (`sfnnv13_architecture_review`):
 
-- **Dual activation.** SF's first hidden layer uses `SqrCReLU(31) ++
-  CReLU(31)` (concat of squared-clipped and clipped); Coda uses a single
-  CReLU. The squared component changes how the net represents magnitude —
-  plausibly relevant to how sharply eval scales in complex positions.
-- **PSQT output buckets.** SF has 8 PSQT output buckets (a
-  material-bucketed PSQT term added to the NNUE output); Coda has none. A
-  material-anchored baseline is exactly what would keep eval from drifting
-  positive in *level-material* complex middlegames — the phantom class.
-  This is the most mechanistically-aligned untested lever.
+**PSQT output buckets & dual activation — TESTED (S800, 2026-06-16),
+regressed then, on the REVISIT list (not dead).** SF has both; Coda has
+neither. Matched-triplet S800 test (`project_psqt_dual_regress_s800`):
+- **PSQT** #2037 H0 −12.5. Decomposition: eval quality **matched**
+  baseline (Spearman-vs-LC0 0.884 vs 0.880) — the skip-connection did
+  **not** improve position ranking; it regressed only via a ~12% search
+  NPS tax. So on that recipe PSQT would **not** have fixed the phantom
+  overscore (it didn't move eval quality either way).
+- **Dual** #2036 H0 −27.9. Eval quality **degraded** (Spearman 0.863).
+- Combined #2043 H0 −104 (scale incompatibility, not additive).
+
+**BUT (Adam, 2026-06-30 + 2026-07-08): "don't re-propose" is too strong.**
+Those tests ran under a recipe now known-miscalibrated vs SF (ours mse
+**3.0** / wdl **0.20** vs SF's verified **~2.44 / 0.26**), and SF makes
+PSQT+dual work on a **near-identical architecture with similar data** — so
+the mechanism demonstrably transfers; one stale-recipe regression closes
+nothing. They are worth revisiting **under the current recipe**, with the
+caveat that PSQT specifically *matched* (didn't improve) eval quality when
+tested, so it's a weaker phantom-fix candidate than dual on that evidence.
+NB: PSQT inference was never merged to main (nets are v11 / branch-only),
+so a revisit needs that path rebuilt first.
+
 - **Corrective data at scale.** The 1B+ overscore corpus (filtered from
   the ~200B SF set for our-eval-vs-SF/LC0 divergence, currently on the
   offline GPU4). Prior small-scale corrective tests gave ~10–20 cp — same
   order as every other cheap lever; scale is the untested variable.
-- **Other recipe:** MSE exponent 2.6 vs 2.5, eval scale ×600 vs ×400,
-  loss specifics (qp-asymmetry, in/out scaling/offset in SF's
-  threats.yaml), SWA/schedule details.
+- **Other recipe (untested for phantom):** MSE exponent **ours 3.0 vs SF
+  ~2.44** (we weight large errors *more*), eval scale ×600 vs ×400, loss
+  specifics (qp-asymmetry, in/out scaling/offset in SF's threats.yaml),
+  SWA/schedule details.
 
-**Every cheap lever tested gives ~10–20 cp of an ~86 cp gap.** No single
-knob fixes it; the fix (if data-side) likely needs scale and/or stacking,
-or (if arch-side) a structural change matching SF's dual-activation / PSQT.
+**Every cheap lever tested gives ~10–20 cp of an ~86 cp gap** (WDL,
+small-scale corrective). PSQT/dual regressed on the *old* recipe. No knob
+tried so far fixes it; the live candidates are corrective data at scale,
+a PSQT/dual revisit under the current recipe, and the recipe axes
+(esp. MSE exponent) — none yet tested against the phantom metric.
 
 **Context — the noise floor.** SF *also* overscores a comparable *count*
 of positions vs LC0; some fraction of any net's overscore tail is
