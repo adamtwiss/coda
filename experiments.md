@@ -18636,3 +18636,17 @@ ordering/pruning/TT micro-features — it's the LMR base shape (Hercules's
 reshape, since MERGED 33ac6da) and eval/net. Remaining untested Tier-3 audit
 items (eval-delta hist nudge, two-ply cont-corrhist, wall-pawn malus,
 capture-hist threat dim) are low-EV given the pattern; not pursued.
+
+## 2026-07-08 — LTC-scaling gap CLOSING: local RR jumps ~10th → 4th at LTC
+
+Adam's fresh RRs on the current trunk (post shape-reform/LMR-stack/
+corrhist-fix/improving/searched-count week): **STC 950g: 3rd of 20**
+(above Obsidian; only SF/Reckless ahead). **LTC 130g/engine: 4th at +35
+±31** — previously ~10th at long TC. The named near-peers whose LTC wins
+defined the wound (Viridithas, Integral — ltc_regime_investigation) are
+now BEHIND us, as are Alexandria/PlentyChess/Berserk. Band at 130 games
+is 3rd–7th, but "not 10th" is decisive. Corroborating independents:
+shape reform's +2.3 LTC / −1.4 STC split, datagen fixed-nodes +17 swing
+vs SF17.1 (2511→2622, ~+50 true after accounting-fix costs), #2627
+reallocating pruning deep-ward with freed gradients. The tc-scaling
+ACTIVE thread moves to "closing — confirm at full LTC RR game count."
