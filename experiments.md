@@ -18692,3 +18692,20 @@ mechanism-named branches (base main 7345996), SPRTs run:
   and STC is the mechanism's weakest regime, so deployment (LTC+ponder) gain
   should be ≥. **MERGED.** Follow-up: measure real gain via local ponder RR /
   lichess A/B.
+## 2026-07-08 — phantom-edge finding: our 60+1 draw-wall is search-selected eval overscore (CONFIRMED)
+
+Adam's theory, arbiter-tested on the 60+1 RR draws: at EVERY Coda eval
+peak >= +1.0 in drawn games (9 cases, +1.0..+2.28), the opponent's
+contemporaneous eval was <= +0.57 and SF (3s arbiter) <= +0.43 —
+**9/9 refuted, zero real edges**. Mechanism: eval is excellent on
+average (best-in-pool Pearson) but search is an adversarial sampler —
+it maximizes toward the few-% overscore tail, so we chase false leads
+that end as repetition draws. Adjudication was separately exonerated
+(our draws adjudicate at pool rate). Consequences: conversion/technique
+hypothesis DEMOTED (nothing to convert); blindspot/overscore corrective
+training PROMOTED to top of training queue (datagen corpora = positions
+sampled from our own delusion distribution, SF-labeled by the stamping
+pipeline — exactly the right corrective data); contempt remains relevant
+only for the separate vs-weaker trade-down behavior on lichess.
+Instrument: scripts/phantom_edge_audit.py (peaks-vs-arbiter refutation
+rate) = the before/after metric for candidate nets.
