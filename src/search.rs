@@ -741,13 +741,6 @@ pub static FEAT_FH_BLEND: AtomicBool = AtomicBool::new(true); // gates fail-high
 pub static FEAT_IIR: AtomicBool = AtomicBool::new(true);
 pub static FEAT_HINDSIGHT: AtomicBool = AtomicBool::new(true); // confirmed: -18 Elo without (clean CPU retest)
 pub static FEAT_CORRECTION: AtomicBool = AtomicBool::new(true);
-// Corrhist audit 2026-07-08 finding #1: train the correction update against the
-// CORRECTED eval (residual), like SF/Obsidian/Reckless/Berserk/Viridithas, not
-// the raw eval. Default TRUE = new (residual) behavior. `CORR_RAW_BASELINE=1`
-// restores the old raw-baseline for A/B. `NO_MAT_DAMP=1` disables the fortress
-// material-count damp so residual-alone can be isolated.
-pub static CORR_RESIDUAL_BASELINE: AtomicBool = AtomicBool::new(true);
-pub static CORR_MAT_DAMP_ON: AtomicBool = AtomicBool::new(true);
 pub static FEAT_PVS: AtomicBool = AtomicBool::new(true);
 pub static FEAT_TT_CUTOFF: AtomicBool = AtomicBool::new(true);
 pub static FEAT_TT_NEARMISS: AtomicBool = AtomicBool::new(true);
@@ -1815,12 +1808,8 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
     // Fortress-drift guard: damp the applied correction by piece count so the
     // corrhist feedback loop can't rail to a phantom ±0.5 in low-material
     // locked/fortress positions (see docs/corrhist_fortress_drift_2026-07-06.md).
-    let total_corr = if CORR_MAT_DAMP_ON.load(Ordering::Relaxed) {
-        let mat_damp = (popcount(board.occupied()) as i32 - CORR_MAT_DAMP_MIN).clamp(0, CORR_MAT_DAMP_SPAN);
-        total_corr * mat_damp as i64 / CORR_MAT_DAMP_SPAN as i64
-    } else {
-        total_corr
-    };
+    let mat_damp = (popcount(board.occupied()) as i32 - CORR_MAT_DAMP_MIN).clamp(0, CORR_MAT_DAMP_SPAN);
+    let total_corr = total_corr * mat_damp as i64 / CORR_MAT_DAMP_SPAN as i64;
     let adjusted = raw_eval + (total_corr as i32) / tp(&CORR_HIST_GRAIN_T);
     // Keep the corrected static eval strictly inside the non-mate band so it
     // can never be read back as a mate by the MATE_IN_MAX_PLY guards. (Real
@@ -1984,8 +1973,6 @@ fn init_feature_flags() {
             if std::env::var("NO_IIR").is_ok() { FEAT_IIR.store(false, Ordering::Relaxed); }
             if std::env::var("NO_HINDSIGHT").is_ok() { FEAT_HINDSIGHT.store(false, Ordering::Relaxed); }
             if std::env::var("NO_CORRECTION").is_ok() { FEAT_CORRECTION.store(false, Ordering::Relaxed); }
-            if std::env::var("CORR_RAW_BASELINE").is_ok() { CORR_RESIDUAL_BASELINE.store(false, Ordering::Relaxed); }
-            if std::env::var("NO_MAT_DAMP").is_ok() { CORR_MAT_DAMP_ON.store(false, Ordering::Relaxed); }
             if std::env::var("NO_PVS").is_ok() { FEAT_PVS.store(false, Ordering::Relaxed); }
             if std::env::var("NO_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); }
             if std::env::var("NO_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS.store(false, Ordering::Relaxed); }
@@ -5903,19 +5890,14 @@ fn negamax(
         && scaled_eval > -(MATE_IN_MAX_PLY)
         && !info.stop.load(Ordering::Relaxed)
     {
-        // Train corrhist on the halfmove-scaled pre-correction value.
-        // `best_score` is in scaled-space (propagated up from scaled leaf
-        // evals), so the err term `best_score - scaled_eval` captures the
-        // positional miscalibration we want corrhist to learn — not the
-        // halfmove decay, which is already priced into best_score.
-        // Finding #1: residual baseline (corrected eval) by default; the raw
-        // `scaled_eval` is the old behavior, restorable via CORR_RAW_BASELINE=1.
-        let corr_baseline = if CORR_RESIDUAL_BASELINE.load(Ordering::Relaxed) {
-            static_eval
-        } else {
-            scaled_eval
-        };
-        update_correction_history(info, board, best_score, corr_baseline, depth);
+        // Corrhist audit 2026-07-08 finding #1: train the update against the
+        // CORRECTED eval (`static_eval`, the residual after correction), like
+        // SF/Obsidian/Reckless/Berserk/Viridithas — NOT the raw `scaled_eval`.
+        // Raw-training's gravity fixed point is the rail (magnitude-blind) and
+        // manufactured the fortress phantom eval; residual converges to the true
+        // correction and self-stabilises. Both in scaled-space so the err term
+        // isolates positional miscalibration, not halfmove decay.
+        update_correction_history(info, board, best_score, static_eval, depth);
     }
 
     // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes.
