@@ -18806,3 +18806,17 @@ C (cross-move score-trend TM, merged #2633) ponder RR at STC 10+0.1 vs a
 regression**, confirming SPRT #2633 (+1.1 self-play). The early negative lean
 (640g −25±45) was low-N noise that regressed to zero as N grew. TM ponder path
 non-regressed; RR wrapped, OB worker restarted.
+
+## corrhist before/after isolation cross-engine RR (2026-07-09)
+
+Cross-engine A/B isolating ONLY the correction-history residual fix: pre-corrhist
+main (13097d4, raw baseline + mat_damp) vs post-corrhist main (fc1a44c, residual
+baseline + retune, mat_damp dropped), + 4-engine field (Obsidian/Berserk/
+Alexandria/Integral), no ponder, conc16, STC 10+0.1, UHO, 4882 games.
+**after − before = +17 ±~15 Elo** (coda_after +17, coda_before −0; stable across
+the run: +19/+29/+25/+19/+17/+19/+16/+17). The residual corrhist fix is worth
+~+17 cross-engine despite SPRTing ~0 self-play (#2649 +0.1±1.6/51k) — clean
+confirmation that systematic, colour-symmetric eval-bias fixes CANCEL in
+self-play (both sides misjudge identically) but pay full value against a field
+that evaluates correctly. Methodological upshot: gate eval-quality/correctness
+fixes on cross-engine, not self-play SPRT alone (same carve-out as TM changes).
