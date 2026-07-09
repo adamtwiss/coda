@@ -294,9 +294,9 @@ tunables!(
     // to near-off. Counting searched-only, consensus is 3 (Obsidian/
     // Reckless) to ~"2 extra" (SF moveCount > 2).
     (QS_MAX_CAPTURES, 5, 2, 32, 2.0, false),
-    (CORR_W_PAWN, 281, 100, 600, 25.0, true),
+    (CORR_W_PAWN, 298, 100, 600, 25.0, true),
     // Floor lifted from 50 → 0 (audit 2026-05-20): pinned at 63, 4% from floor.
-    (CORR_W_NP, 89, 0, 400, 17.5, true),
+    (CORR_W_NP, 93, 0, 400, 17.5, true),
     // CORR_W_MINOR / CORR_W_MAJOR were dropped 2026-05-18 (ablated to 0
     // via #1318 H1; minor_key/major_key are strict subsets of
     // non_pawn_key, so the contributions were redundant with np_corr).
@@ -307,12 +307,12 @@ tunables!(
     // Floor on CORR_W_CONT lifted from 30 → 0 (audit 2026-05-19): SPSA
     // converged 33, ~1% from floor. Lifting allows finding true optimum
     // including disabling cont-corr if SPSA wants. Default unchanged.
-    (CORR_W_CONT, 108, 0, 400, 18.5, true),
+    (CORR_W_CONT, 104, 0, 400, 18.5, true),
     // Transition (zobrist-delta) correction weight (Cinder idea): correction
     // keyed by hash(ply-1) ^ hash(ply) — a hash of the last move IN CONTEXT
     // (from+to+captured+side), richer than cont_corr's [piece][to]. Captures
     // "this structural CHANGE tends to be mis-evaluated."
-    (CORR_W_TRANS, 59, 0, 400, 18.5, true),
+    (CORR_W_TRANS, 65, 0, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
     // Re-expose 4 hardcoded search constants (audit 2026-05-21).
     // All bench-neutral at current defaults.
@@ -397,19 +397,19 @@ tunables!(
     // into the first-searched slot. Margin on Coda's pawn=100 SEE scale:
     // a check that loses more than this by SEE gets no ordering bonus.
     (QUIET_CHECK_SEE_MARGIN, 79, 0, 300, 12.0, true),
-    (CORR_HIST_DIV, 851, 256, 4096, 192.0, true),
+    (CORR_HIST_DIV, 721, 256, 4096, 192.0, true),
     // 4 -> 16 with T2.4: the floor-pin at 4 was calibrated for the
     // sign-only (err-clamped) regime; consensus weights ~depth uncapped.
-    (CORR_UPDATE_WEIGHT_MAX, 16, 4, 48, 2.2, true),
+    (CORR_UPDATE_WEIGHT_MAX, 17, 4, 48, 2.2, true),
     // Was 32 (tp10→3). Now FIXED-POINT. Default 30 → eff 3.0 ≡ old behavior.
-    (CORR_BONUS_CAP_DIV_10X, 26, 10, 160, 15.0, false),
-    (CORR_HIST_GRAIN_T, 14, 1, 32, 1.55, false),
+    (CORR_BONUS_CAP_DIV_10X, 27, 10, 160, 15.0, false),
+    (CORR_HIST_GRAIN_T, 13, 1, 32, 1.55, false),
     // Floor lifted from 10 → 0 (audit 2026-05-19): SPSA converged 25, ~2%
     // from the floor. Lifting allows exploration of looser clamps.
     // T2.4: CORR_HIST_ERR_MAX (±3cp input pre-clamp) replaced by output
     // scaling: bonus = err*(depth+1).min(W)/CORR_ERR_DIV, clamped at the
     // gravity cap only. Obsidian err*depth/8; SF err*depth*12/128.
-    (CORR_ERR_DIV_10X, 60, 20, 640, 30.0, false),
+    (CORR_ERR_DIV_10X, 50, 20, 640, 30.0, false),
     // ESCAPE_BONUS_Q / _MINOR removed 2026-05-17: ablations #1256/#1255
     // H0 at [-3, 3]. Slightly load-bearing (central -0.6/-1.3 to ablate),
     // hardcoded at current SPSA values in movepicker.rs.
@@ -5890,12 +5890,14 @@ fn negamax(
         && scaled_eval > -(MATE_IN_MAX_PLY)
         && !info.stop.load(Ordering::Relaxed)
     {
-        // Train corrhist on the halfmove-scaled pre-correction value.
-        // `best_score` is in scaled-space (propagated up from scaled leaf
-        // evals), so the err term `best_score - scaled_eval` captures the
-        // positional miscalibration we want corrhist to learn — not the
-        // halfmove decay, which is already priced into best_score.
-        update_correction_history(info, board, best_score, scaled_eval, depth);
+        // Corrhist audit 2026-07-08 finding #1: train the update against the
+        // CORRECTED eval (`static_eval`, the residual after correction), like
+        // SF/Obsidian/Reckless/Berserk/Viridithas — NOT the raw `scaled_eval`.
+        // Raw-training's gravity fixed point is the rail (magnitude-blind) and
+        // manufactured the fortress phantom eval; residual converges to the true
+        // correction and self-stabilises. Both in scaled-space so the err term
+        // isolates positional miscalibration, not halfmove decay.
+        update_correction_history(info, board, best_score, static_eval, depth);
     }
 
     // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes.
