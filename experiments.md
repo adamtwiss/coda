@@ -18797,3 +18797,12 @@ e4df298 (bench 2518554); mat_damp kept as belt-and-suspenders. Follow-up
 candidates (docs/corrhist_audit §recommended): drop mat_damp now residual
 subsumes it (separate non-regression test); #2 |corr|-as-uncertainty in pruning;
 #5 2-ply/4-ply cont-corr.
+
+## C cross-move TM — ponder RR final (2026-07-09)
+
+C (cross-move score-trend TM, merged #2633) ponder RR at STC 10+0.1 vs a
+4-engine field (Obsidian/Berserk/Alexandria/Integral), before vs after bins:
+**after − before ≈ −7 ±11 over 10,022 games — neutral vs field, no x-engine
+regression**, confirming SPRT #2633 (+1.1 self-play). The early negative lean
+(640g −25±45) was low-N noise that regressed to zero as N grew. TM ponder path
+non-regressed; RR wrapped, OB worker restarted.
