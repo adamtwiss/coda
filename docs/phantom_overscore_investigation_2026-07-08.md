@@ -325,3 +325,105 @@ running corrective experiment + the GPU4-scale harvest test whether over-
 exposure closes it; mirror metric (coda-rate ↓ without sf-rate ↑) is the
 cause-vs-symptom / generalization readout. Dynamic contempt is a separate
 lichess symptom-patch, NOT a fix for this bug.
+
+## 13. Corrective-data result — blindspot data is STRENGTH-ADDITIVE (net_report was blind)
+
+**Headline (2026-07-09): the blindspot corrective data is a confirmed strength
+gain, and net_report completely missed it.** The small-scale net-vs-net SPRT
+resolved **H1: exp-blindspot-4t80 +4.3 ±3.1 over exp-base-4t80** (`[-1.5, 1.5]`,
+#2651). The stamped corpus is **neutral** (#2652 −0.9, heading H0). This is the
+single most important methodological result of the investigation: `net_report`
+static-eval accuracy said the blindspot arm was *neutral-to-worse* (see the table
+below — +3.9 WORSE on the heldout tail), yet the **strength** test says +4.3 H1.
+Static-eval-vs-LC0 is a proxy that does NOT predict strength
+(`feedback_bench_stats_dont_predict_net_quality`); only the SPRT does. Every
+"no gain" phrasing in earlier drafts of this section was reading the wrong
+instrument.
+
+**Why the divergence makes sense:** the blindspot data corrects *outcome-critical*
+mis-scores (positions our own search self-samples into — §12), which is a small,
+adversarially-selected slice. That barely moves an aggregate static-eval metric
+over 7845 heldout positions, but it changes game *results* against real opponents
+— exactly the symmetric-error / self-sampling asymmetry the whole investigation
+predicted. The static tail not moving while strength moves is *consistent with*,
+not contradictory to, the thesis.
+
+**Full-scale test running (#2658):** 11×T80 + all 44 blindspot files vs 11×T80
+base (S200, matched `6dd7c65` binary, gpu3/gpu4). net_report is again neutral
+(base-11 0.842 vs blindspot-full 0.841; heldout 209.3 vs 209.5) — *expected and
+uninformative* given the above. The SPRT is the readout. **Open question it
+answers:** does the increment hold against a *stronger* base? The 11-T80 base is
+better-fed than the 4-T80 one (general Spearman 0.839→0.842), so part of the
+small-scale +4.3 could have been blindspot data compensating for a data-starved
+base rather than teaching the phantom class. #2658 decides scale-vs-artifact.
+
+*(Historical net_report readout below — kept because the base-vs-blindspot
+static-eval NULL, contrasted with the +4.3 strength H1, is the whole lesson.)*
+
+
+Three S200 arms trained on gpu3, identical recipe (canonical SB200 paired-probe:
+kb10 hlcrelu factor warm30 w15 seed42, FT1024/L1=32/L2=32), differing only in the
+data mix. Baseline and blindspot arms converted (SWA snapshots) and run through
+`net_report.py --general-n 30000`; prod (`multi-v9-s3-swa`, a much deeper bake)
+included as a ceiling reference **only** — it is NOT an ablation control (bake
+length differs), so read base-vs-blindspot, not either-vs-prod.
+
+| net | Spearman | mean\|err\| (general) | **blindspot heldout mean\|err\|** | overscore-bias | wander net_pref | wander correct |
+|---|---|---|---|---|---|---|
+| exp-base (4×T80) | 0.839 | 71.5 | **207.2** | +36.7 | +104 | 24/119 |
+| exp-blindspot (4×T80 + 6 blindspot) | 0.841 | 70.3 | **211.1 (+3.9 WORSE)** | +40.7 | +106 | 27/119 |
+| exp-stamped (4×T80 + SF-vs-Coda real-label corpus) | 0.843 | 71.0 | **210.6 (+3.4 WORSE)** | +39.8 | **+80** | 27/119 |
+| multi-v9-s3 (deep prod, ref only) | 0.849 | 68.9 | 208.8 | +44.2 | +107 | 18/119 |
+
+**Read (static eval only): NEITHER corrective arm shrank the blindspot heldout
+tail at S200 — both moved it the wrong way (+3.9 blindspot, +3.4 stamped, on the
+7845-pos heldout set) and both nudged the overscore bias slightly more positive.**
+This holds across *two independent corrective-data sources* (harvested blindspot
+files AND the real-SF-label stamped corpus), so the static-eval null is not a
+one-arm fluke. General eval quality is a hair better on all three corrective arms
+(+0.002–0.004 Spearman) but that is within S200 training noise (SD ~5–12).
+**Whether any arm nonetheless gains *strength* is untested — see the scope
+warning; net-vs-net SPRT pending.**
+
+**One bright spot — stamped moves wandering-bishop:** the real-SF-label stamped
+arm is the only net that improves the bishop-sortie corpus (net_pref +80 vs
++104 base; 27/119 vs 24/119 correct). That is a *different* class from the
+phantom overscore tail (a specific positional/mobility pattern, not the
+level-material optimism bias), and n=119 is noisy — but it's a directional hint
+that the SF-label corpus teaches *something* real, just not the phantom tail.
+Worth remembering when we decide what the stamped corpus is actually good for.
+
+**Caveats before treating this as closing the direction:**
+- **Scale.** This is S200 (short) with only 6 blindspot files (~an older net's
+  tail, LC0-labelled — labels valid, positions directionally-not-perfectly
+  matched to the current net). The §11/§12 hypothesis is that the class is
+  learnable but *under-exposed*; if the fix needs SF-scale schedule + the full
+  ~436B GPU4 harvest, an S200/6-file preview is exactly where we'd expect it to
+  under-deliver. This is a preview, not the verdict.
+- **The heldout set is adversarial-to-Coda by construction** (|coda−lc0|≥150 AND
+  SF-closer-by-80), so it over-weights the hardest tail; a real fix has to move
+  *this* set, and it didn't here.
+- **Mirror metric still pending** — the cleaner cause-vs-symptom readout
+  (coda-rate ↓ without sf-rate ↑) is not in this table; it needs the symmetric
+  blindspot-rate run on these nets. That is the readout that decides
+  "genuine fix vs redistribution," and net_report alone can mislead.
+
+**Corrected takeaway (supersedes the "provisional negative" that stood here
+before the SPRT):** the static-eval table below shows the blindspot tail *not*
+moving — but that was the wrong instrument. The **strength** SPRT (#2651) says
+the blindspot data is **+4.3 H1 additive**; the stamped corpus is neutral
+(#2652). So directly-targeted **blindspot** corrective data DOES help at small
+scale — the earlier "not a small-data-fixable defect" reading was an artifact of
+trusting net_report. What remains open is purely **scale-vs-artifact** (#2658,
+full harvest vs stronger base), not "does it help at all."
+
+**Recipe signal for the GPU4-scale harvest:** blindspot-filter data
+(`|coda−lc0|>X AND SF-static-arbitrated-wrong`) is the additive one; the stamped
+(SF-vs-Coda real-label) corpus is not. Pour scale into the blindspot recipe.
+
+**Mirror metric (SF-arbitrated coda-rate vs sf-rate)** remains the cleaner
+cause-vs-symptom readout and is still unrun (needs SF static eval on the corpus).
+It is now *more* worth running, not less: with a confirmed strength gain, the
+mirror metric would tell us *whether the gain came from shrinking OUR tail
+without inflating SF's* (genuine fix) vs redistribution — the generalization
+question §11 posed.
