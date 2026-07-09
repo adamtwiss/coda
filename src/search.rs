@@ -790,16 +790,6 @@ const CORR_HIST_GRAIN: i32 = 8;       // Scaled with LIMIT: 256/32000 ≈ 8/1024
 const CORR_HIST_MAX: i32 = 4;         // Scaled: 128/32000 ≈ 4/1024
 const CORR_HIST_LIMIT: i32 = 1024;    // Consensus (SF, Viridithas, Obsidian)
 
-// Corrhist fortress-drift guard (docs/corrhist_fortress_drift_2026-07-06.md).
-// In low-material locked/fortress positions (OCB, blocked pawns) corrhist
-// self-reinforces and rails to a phantom ±0.45 while the raw net is already
-// ~0 — the reference engines (SF/Reckless/Obsidian) all read these as 0.
-// Scale the APPLIED correction by piece count: full at/above MIN+SPAN pieces
-// (middlegames untouched), zero at/below MIN (dead-drawn endings). This
-// starves the rail without a magnitude clamp (±0.45 is a normal correction
-// size in live play, so it can't be separated by magnitude — only by regime).
-const CORR_MAT_DAMP_MIN: i32 = 6;     // <=6 pieces: correction fully off
-const CORR_MAT_DAMP_SPAN: i32 = 10;   // full correction reached at 16 pieces
 
 /// Search limits.
 #[derive(Clone)]
@@ -1805,11 +1795,9 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
     // Weighted blend: pawn, whiteNP, blackNP, cont, transition (minor/major dropped 2026-05-19)
     let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
         + cont_corr * tp(&CORR_W_CONT) as i64 + trans_corr * tp(&CORR_W_TRANS) as i64) / tp(&CORR_HIST_DIV) as i64;
-    // Fortress-drift guard: damp the applied correction by piece count so the
-    // corrhist feedback loop can't rail to a phantom ±0.5 in low-material
-    // locked/fortress positions (see docs/corrhist_fortress_drift_2026-07-06.md).
-    let mat_damp = (popcount(board.occupied()) as i32 - CORR_MAT_DAMP_MIN).clamp(0, CORR_MAT_DAMP_SPAN);
-    let total_corr = total_corr * mat_damp as i64 / CORR_MAT_DAMP_SPAN as i64;
+    // mat_damp (piece-count fortress guard) removed 2026-07-09: the residual
+    // update baseline (finding #1) makes corrhist converge to the true (~0)
+    // correction in low-signal positions, so the material band-aid is redundant.
     let adjusted = raw_eval + (total_corr as i32) / tp(&CORR_HIST_GRAIN_T);
     // Keep the corrected static eval strictly inside the non-mate band so it
     // can never be read back as a mate by the MATE_IN_MAX_PLY guards. (Real
