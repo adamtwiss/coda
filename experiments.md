@@ -18776,3 +18776,24 @@ the earlier "corrective data ~10-20cp" — every cheap lever gives ~10-20cp
 of an 86cp gap. Remaining non-cheap causes (SF gets these right, matched
 arch+data): dual activation (SqrCReLU++CReLU vs our CReLU), PSQT output
 buckets (SF has, we don't), corrective data AT SCALE (1B corpus, GPU4).
+
+## corrhist residual update baseline — finding #1 MERGED (2026-07-09)
+
+From `docs/corrhist_audit_2026-07-08.md`. Root-cause fix: train the corrhist
+update against the CORRECTED eval (residual after correction), like all five
+reference engines (SF/Obsidian/Reckless/Berserk/Viridithas), instead of the raw
+eval. Raw-training's gravity fixed point is the rail (magnitude-blind) — the
+mechanism behind the fortress phantom-eval drift; residual converges to the true
+correction and self-stabilises (empirically: fortress FEN cp −49 → 0 on residual
+alone). Bundled a 9-param corrhist retune for the residual regime (#2648:
+CORR_HIST_DIV 851→721 apply-gain up, CORR_ERR_DIV 60→50 LR up, CORR_W_TRANS
+59→65 — the tuner moving in the theory-predicted directions confirmed the raw
+baseline was mistuning the *whole* corrhist subsystem, not just the fortress
+case). **SPRT #2649 (tuned) +0.1 ±1.6 at 51k, stopped as unambiguously neutral;
+untuned anchor #2647 H0.** A correctness / eval-quality fix (no phantom evals
+declining draws or misjudging fortress entry), not an Elo gain — the right bar
+was `[-2,1]` non-regression, which +0.1 ±1.6 clears overwhelmingly. Merged
+e4df298 (bench 2518554); mat_damp kept as belt-and-suspenders. Follow-up
+candidates (docs/corrhist_audit §recommended): drop mat_damp now residual
+subsumes it (separate non-regression test); #2 |corr|-as-uncertainty in pruning;
+#5 2-ply/4-ply cont-corr.
