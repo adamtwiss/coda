@@ -35,6 +35,7 @@ nothing fires yet.
 | H1 | **2-ply (+4-ply) continuation correction** | audit #5; deep-audit "two-ply cont-corrhist" + "paired 2-D continuation correction" (`docs/corrhist_deepaudit_2026-06-26.md`) | Coda's `cont_corr` is 1-ply flat `[piece][to]`; SF/Reckless/Viri use stacked (ss-2)+(ss-4). Zeus **deferred** it (needs a 4D table + `ply` threaded through `corrected_eval`/`correction_value`, ~5 call sites incl. qsearch + the corrhist unit tests kept green). Highest-value structural item — the residual baseline gives a richer cont-corr a cleaner signal to sharpen. |
 | H2 | **Minor-source correction re-add** | audit #6 | Coda dropped minor/major sources (2026-05-19) in favour of `trans`. SF keeps minor; Viri keeps minor+major. Peer-validated and more principled — the natural replacement experiment, especially paired with H3. |
 | H3 | **`trans_corr` ablation (`CORR_W_TRANS=0`)** | audit #4, `[-1.5,1.5]` | Coda-unique move-signature source (`hash ^ last.hash`), no peer precedent, most rail-exposed in shuffling positions. *Partly* probed by #2664 (moving `CORR_W_TRANS` −10%), but an explicit ablation against the fixed baseline is the clean read. If neutral/positive, drop it (fewer rails, less memory) — which then makes H2 the replacement. |
+| H4 | **Futility `\|corr\|` uncertainty term (`FUT_CORR_MULT`)** | audit #2; branch `zeus/corr-uncertainty-pruning` | **Prime candidate — arguably the most affected of all.** It scales pruning by `\|corr\|`, and (a) the residual fix **changed the `\|corr\|` distribution itself** (no more railing to ±LIMIT), and (b) its interaction params are the exact ones #2664 is moving hardest (`FUT_LMR_DEPTH` −14%, `FUT_PER_DEPTH` −5.7%). A **preliminary** SPRT is running now, but against **fixed-but-untuned** main — a preliminary read, not the definitive one (it *is* the gate-#2 confound). Re-validate against the retuned baseline regardless of how the preliminary lands. (NB the LMR + DEXT/singular `\|corr\|` terms already exist and are *parameter*-only, so #2664 subsumes those — futility is the one genuine structural gap.) |
 
 ## MEDIUM — structural, moderate interaction
 
@@ -44,14 +45,14 @@ nothing fires yet.
 | M2 | **king-in-non_pawn_key** | #2144 (H0, **bench-flip-confounded**) | a corrhist source-key change whose original H0 was already suspect (bench delta flipped +5% after later merges); a clean re-test against the fixed baseline is warranted on those grounds alone. |
 | M3 | **eval-delta hist nudge / wall-pawn malus** | deep-audit wave 3 (2026-06-26) | lower confidence; batch with H1 — same invalidated audit provenance. |
 
-## Already in flight / handled (do NOT re-list)
+## Truly handled — do NOT re-list
 
-- **Futility `|corr|` uncertainty term** (audit #2, `FUT_CORR_MULT`) — Zeus's
-  branch `zeus/corr-uncertainty-pruning`, SPRT `[0,3]` live. NB audit #2's
-  "Coda uses `|corr|` nowhere" claim was **corrected**: LMR
-  (`reduction -= complexity·LMR_SCALE/LMR_COMPLEXITY_DIV`) and DEXT/singular
-  (`dext_margin -= DEXT_MARGIN_CORR·corr_abs/128`) already use it; **futility was
-  the only genuine gap**.
+**Caveat (2026-07-09): "a test is in flight" ≠ "handled."** A corrhist test
+running now against **fixed-but-untuned** main is a *preliminary* read and still
+needs re-validation post-#2664 — that IS the gate-#2 confound. The futility
+`|corr|` term (`zeus/corr-uncertainty-pruning`) is such a case and has been moved
+to **H4** above, not here. Only the items below are genuinely settled:
+
 - **50MR corrhist-index bucketing** (audit #3, Reckless pattern) — Zeus
   **deferred**: residual likely cures the drift, so test **only if** a
   high-material *locked* repro still shows drift on the retuned baseline. Cheap
