@@ -247,3 +247,28 @@ outcome is neutral-to-small-positive (a correctness / eval-quality win, like
 default (drop the env scaffolding), decide whether to also drop `mat_damp`,
 retune the corr/history cluster on-branch (raw-error tunables are miscalibrated
 for residuals), SPRT `[0,3]`.
+
+## Correction (2026-07-09) — Finding #2 was partly wrong; #1 merged, #3 deferred
+
+Implementing the follow-ups surfaced an error in Finding **#2**: the claim
+"Coda uses |corr| nowhere in pruning" is **wrong**. Coda already applies the
+correction magnitude in **two** of the three sites:
+- **LMR** — `reduction -= complexity * LMR_SCALE / LMR_COMPLEXITY_DIV`, where
+  `complexity = |static_eval − scaled_eval|` (search.rs ~5305).
+- **DEXT / singular** — `dext_margin -= DEXT_MARGIN_CORR * corr_abs / 128`,
+  `corr_abs = correction_value().abs()` (search.rs ~4999).
+The reference extractions were correct; the synthesis was not. The **only**
+genuine gap was **futility**, now tested as `FUT_CORR_MULT` (branch
+`zeus/corr-uncertainty-pruning`, SPRT [0,3]).
+
+Status of the three follow-ups:
+1. **Drop mat_damp** — done, branch `zeus/corrhist-drop-matdamp`, SPRT [-2,1]
+   (residual subsumes it; fortress FEN reads 0 without it; bench −17%).
+2. **|corr|-as-uncertainty** — narrowed to the futility term only (LMR + DEXT
+   already present); branch `zeus/corr-uncertainty-pruning`, SPRT [0,3].
+3. **2-ply/4-ply cont-corr** — DEFERRED to a dedicated pass. Coda's cont-corr is
+   a 1-ply flat `[piece][to]` table keyed off `board.undo_stack`; matching the
+   references (pair-keyed continuation read at ply-2 and ply-4) requires a 4D
+   table + threading `ply` through `corrected_eval`/`correction_value` (5+ call
+   sites incl. qsearch and the corrhist unit tests, which must be kept green as
+   the safety net). Not a tail-of-session change.
