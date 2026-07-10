@@ -636,39 +636,60 @@ pub fn is_win(score: i32) -> bool {
     score >= TB_WIN - 200
 }
 
-/// Adjust mate and TB scores from TT retrieval (subtract ply). See
-/// `score_to_tt` for the threshold rationale.
+/// Adjust mate and TB scores from TT retrieval (subtract ply; see
+/// `score_to_tt` for the band-threshold rationale) AND downgrade
+/// potentially false decisive scores near the 50-move-rule cliff
+/// (SF `value_from_tt` / Reckless `score_from_tt` pattern).
+///
+/// A stored mate-in-N (or TB-win-in-N) is only reachable if N fits in
+/// the remaining 50mr budget `100 - halfmove`; otherwise the 50-move
+/// rule (or graph-history interaction) can claim the draw first and
+/// the stored bound is potentially false. The distance check runs on
+/// the STORED score — which encodes plies-to-mate/TB from THIS
+/// position — exactly as SF (`VALUE_MATE - v > 100 - r50c`,
+/// `VALUE_TB - v > 100 - r50c`) and Reckless
+/// (`Score::MATE - score > 100 - halfmove_clock`,
+/// `Score::TB_WIN - score > 100 - halfmove_clock`) do.
+///
+/// Downgrade targets keep Coda's P3 semantics: a false mate becomes a
+/// ply-anchored TB-level win signal (`TB_WIN - ply`, still inside the
+/// decisive band, so `is_decisive` guards keep filtering it); a false
+/// TB score drops just BELOW the decisive band (`TB_WIN - 201`, the
+/// highest non-decisive score — the analogue of SF/Reckless returning
+/// `TB_WIN_IN_MAX_PLY - 1`, the highest non-TB score).
+///
+/// Applied at EVERY TT read (not just cutoff returns), so window
+/// narrowing, singular ttScore, ProbCut gating, LMR TT hints, and QS
+/// eval refinement all see the sanitized value — matching SF /
+/// Reckless / PlentyChess placement. The TT STORE path
+/// (`score_to_tt`) is deliberately untouched: stored scores stay
+/// exact, only the interpretation at read time is clamped.
 #[inline]
-pub fn score_from_tt(score: i32, ply: i32) -> i32 {
+pub fn score_from_tt(score: i32, ply: i32, halfmove: u16) -> i32 {
+    let budget = 100 - halfmove as i32;
     if score > TB_WIN - 200 {
+        // Downgrade a potentially false mate score.
+        if score >= MATE_IN_MAX_PLY && MATE_SCORE - score > budget {
+            return TB_WIN - ply;
+        }
+        // Downgrade a potentially false TB score.
+        if TB_WIN - score > budget {
+            return TB_WIN - 201;
+        }
         score - ply
     } else if score < -(TB_WIN - 200) {
+        // Downgrade a potentially false mated score.
+        if score <= -MATE_IN_MAX_PLY && MATE_SCORE + score > budget {
+            return -TB_WIN + ply;
+        }
+        // Downgrade a potentially false TB loss.
+        if TB_WIN + score > budget {
+            return -(TB_WIN - 201);
+        }
         score + ply
     } else {
         score
     }
-}
-
-/// P3 50mr-threatened mate downgrade (Reckless pattern). A stored
-/// mate-in-N is only reachable if N <= 100 - halfmove; otherwise
-/// the 50-move rule claims the draw first. Return a TB-level win
-/// signal instead of a false mate.
-///
-/// **Apply only at cutoff return sites**, not at every TT-score
-/// read. Many downstream checks (`< MATE_IN_MAX_PLY`) filter out
-/// mate scores specifically; pushing a downgraded-mate through them
-/// changes the meaning of those filters and enables unintended
-/// extensions / cutoffs / refinements.
-#[inline]
-pub fn downgrade_50mr_mate(adjusted_score: i32, ply: i32, halfmove: u16) -> i32 {
-    let halfmove = halfmove as i32;
-    if adjusted_score > MATE_IN_MAX_PLY && MATE_SCORE - adjusted_score > 100 - halfmove {
-        return TB_WIN - ply;
-    }
-    if adjusted_score < -MATE_IN_MAX_PLY && MATE_SCORE + adjusted_score > 100 - halfmove {
-        return -TB_WIN + ply;
-    }
-    adjusted_score
 }
 
 #[cfg(test)]
