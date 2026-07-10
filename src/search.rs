@@ -1609,11 +1609,12 @@ fn tt_cutoff_child_disagrees(
         return false;
     }
     let child = info.tt.probe(board.hash);
+    let child_halfmove = board.halfmove; // 50mr clock of the CHILD position
     board.unmake_move();
     if !child.hit {
         return false; // no child evidence -> trust the cutoff (SF behaviour)
     }
-    let child_score = score_from_tt(child.score, ply + 1);
+    let child_score = score_from_tt(child.score, ply + 1, child_halfmove);
     if is_decisive(child_score) {
         return false; // skip mate-distance comparisons across plies
     }
@@ -3953,7 +3954,10 @@ fn negamax(
 
         if info.excluded_move[ply_u] == NO_MOVE && ply > 0 {
             let tt_depth = tt_entry.depth;
-            let tt_score = score_from_tt(tt_entry.score, ply);
+            // 50mr mate/TB downgrade now happens inside score_from_tt
+            // (SF/Reckless value_from_tt placement), so every consumer
+            // below sees the sanitized score.
+            let tt_score = score_from_tt(tt_entry.score, ply, board.halfmove);
 
             // P2 (halfmove-gated TT cutoff): TT scores are stored without halfmove
             // context. Near the 50-move cliff a cached mate-in-N may be unreachable,
@@ -4050,8 +4054,7 @@ fn negamax(
                             }
                         }
                     }
-                    // P3: downgrade stored mate if 50mr will fire before mate.
-                    return downgrade_50mr_mate(tt_score, ply, board.halfmove);
+                    return tt_score;
                 }
 
                 // Fall through: use TT bounds to narrow alpha/beta window at non-PV nodes.
@@ -4132,8 +4135,7 @@ fn negamax(
                         let w10 = tp(&TT_DAMP_TT_WEIGHT_10X);
                         return (w10 * tt_score + 10 * beta) / (w10 + 10);
                     }
-                    // P3: downgrade stored mate if 50mr will fire before mate.
-                    return downgrade_50mr_mate(tt_score, ply, board.halfmove);
+                    return tt_score;
                 }
             } else if tt_depth >= depth - 1
                 && beta - alpha_orig == 1
@@ -4600,7 +4602,7 @@ fn negamax(
         + (tp(&PROBCUT_ROOT_MIN_DEPTH_10X) * probcut_fade_num) / probcut_fade_span;
     let probcut_min_depth = (probcut_min_depth_10x + 5) / 10;
     let probcut_tt_noshot = if tt_hit && tt_entry.depth >= depth - tp(&PROBCUT_TT_DEPTH_SLACK) {
-        let adj_score = score_from_tt(tt_entry.score, ply);
+        let adj_score = score_from_tt(tt_entry.score, ply, board.halfmove);
         (tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT)
             && adj_score < probcut_beta
     } else {
@@ -4930,10 +4932,12 @@ fn negamax(
             && tt_entry.depth >= depth - tp(&SE_TT_DEPTH_SLACK)
             && FEAT_SINGULAR.load(Ordering::Relaxed)
         {
-            // Ply-only adjustment here — P3 downgrade deliberately not applied
-            // at SE: would cause over-extension on downgraded mate scores that
-            // pass the < MATE_IN_MAX_PLY check below.
-            let tt_score_local = score_from_tt(tt_entry.score, ply);
+            // 50mr downgrade applies here too (SF/Reckless: singular ttValue
+            // is value_from_tt output). A downgraded mate lands in the TB
+            // band and is still filtered by the !is_decisive gate below, so
+            // the old over-extension concern (downgraded scores sneaking past
+            // a mate-only < MATE_IN_MAX_PLY check) no longer applies.
+            let tt_score_local = score_from_tt(tt_entry.score, ply, board.halfmove);
 
             // Skip SE for mate scores (margin comparison meaningless)
             if !is_decisive(tt_score_local) {
@@ -5236,7 +5240,7 @@ fn negamax(
                     reduction += tp(&LMR_WINBETA_CENTI);
                 }
                 if tt_hit && tt_entry.flag != TT_FLAG_NONE {
-                    let tt_score_node = score_from_tt(tt_entry.score, ply);
+                    let tt_score_node = score_from_tt(tt_entry.score, ply, board.halfmove);
                     // (b) TT already says this node can't beat alpha.
                     if tt_score_node <= alpha {
                         reduction += tp(&LMR_TTALPHA_CENTI);
@@ -5368,7 +5372,7 @@ fn negamax(
                         reduction += tp(&LMR_WINBETA_CENTI);
                     }
                     if tt_hit && tt_entry.flag != TT_FLAG_NONE {
-                        let tt_score_node = score_from_tt(tt_entry.score, ply);
+                        let tt_score_node = score_from_tt(tt_entry.score, ply, board.halfmove);
                         if tt_score_node <= alpha {
                             reduction += tp(&LMR_TTALPHA_CENTI);
                         }
@@ -6038,22 +6042,23 @@ fn quiescence_with_depth(
     }
 
     if tt_hit && tt_entry.depth >= -1 {
-        let tt_score = score_from_tt(tt_entry.score, ply);
-        // P3: downgrade stored mate if 50mr will fire before mate.
-        let tt_ret = downgrade_50mr_mate(tt_score, ply, board.halfmove);
+        // 50mr mate/TB downgrade happens inside score_from_tt, so both the
+        // cutoff conditions and the returned value use the sanitized score
+        // (SF/Reckless: ttValue is value_from_tt output everywhere).
+        let tt_score = score_from_tt(tt_entry.score, ply, board.halfmove);
 
         // P2: skip QS TT cutoff near 50mr — stale bound unsafe
         let halfmove_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
         let qs_is_pv = beta - alpha > 1;
         match tt_entry.flag {
             TT_FLAG_EXACT => {
-                if !qs_is_pv && halfmove_ok { return tt_ret; }
+                if !qs_is_pv && halfmove_ok { return tt_score; }
             }
             TT_FLAG_LOWER => {
-                if !qs_is_pv && halfmove_ok && tt_score >= beta { return tt_ret; }
+                if !qs_is_pv && halfmove_ok && tt_score >= beta { return tt_score; }
             }
             TT_FLAG_UPPER => {
-                if !qs_is_pv && halfmove_ok && tt_score <= alpha { return tt_ret; }
+                if !qs_is_pv && halfmove_ok && tt_score <= alpha { return tt_score; }
             }
             _ => {}
         }
@@ -6227,11 +6232,12 @@ fn quiescence_with_depth(
     // stand_pat and triggers the `best_score >= beta` return below —
     // bypassing the gate that exists for exactly this case.
     if tt_hit && (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX) {
-        // Ply-only adjustment; refinement is explicitly for non-mate scores
-        // per the abs check below. P3 downgrade would turn a stored mate
-        // into a huge TB_WIN signal that passes the check and pollutes
-        // stand-pat.
-        let tt_score = score_from_tt(tt_entry.score, ply);
+        // 50mr downgrade applies here too. A downgraded mate becomes a
+        // TB-band value and is still filtered by !is_decisive below; a
+        // downgraded TB score becomes the highest non-decisive value and
+        // may refine stand-pat — same as SF/Reckless, whose eval
+        // refinement consumes value_from_tt output.
+        let tt_score = score_from_tt(tt_entry.score, ply, board.halfmove);
         if !is_decisive(tt_score)
             && ((tt_entry.flag == TT_FLAG_LOWER && tt_score > best_score)
                 || (tt_entry.flag == TT_FLAG_UPPER && tt_score < best_score)
