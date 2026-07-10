@@ -87,6 +87,21 @@ SDOT against an all-ones vector (self-contained, no loader changes);
 **follow-up NPS opt:** precompute per-neuron `128·Σ w` at load to drop
 the wsum dot. USDOT (i8mm) needs no correction — it does u8×i8 directly.
 
+### Step 1b — precompute the SDOT `128·Σw` correction — TESTED, DROPPED
+**Idea:** precompute `128·Σw` per neuron at load (in `l1_corr`) so the
+SDOT kernel drops the second per-chunk "ones" SDOT it uses to compute Σw
+on the fly, halving the SDOT count on dotprod-only cores.
+**Result (2026-07-10, RK3588 A76, branch `neon/dotprod-precompute-corr`,
+not merged): a ~2% REGRESSION** (6/6 interleaved runs slower; on-the-fly
+median ~237.8k vs precompute ~231.9k nps; node count identical 2381675,
+tests green). **Diagnosis: the x4 kernel is LOAD-bound, not SDOT-bound**
+— 5 loads/chunk (1 activation + 4 weights) dominate, and the "ones" SDOT
+pipelines for free on the A76's dual NEON issue, so halving SDOTs buys
+nothing while the extra `l1_corr` load + bounds-check costs a hair.
+Kept the simpler on-the-fly kernel on main. **Lesson: this L1 kernel is
+memory-bound on the A76 — future NPS must come from *fewer/better-laid-out
+loads* (Step 2), not fewer arithmetic ops.**
+
 ### Step 2 — column-major / L1=32-specialised NEON kernel
 **Gap:** x86 grew four L1=32 kernels (`DenseAvx512VnniL1_32`,
 `DenseAvxVnniL1_32`, `DenseAvx2L1_32{,X2}`) for the production shape.
@@ -94,9 +109,13 @@ NEON `select_l1_kernel` has one arm — `NeonX4` (row-major) — for all
 shapes.
 **Fix:** column-major L1=32 NEON kernel over the `l1_weights_sparse`
 layout to amortise input loads.
-**Decision:** **largely subsumed by Step 1** (dotprod already fuses the
-multiply-add). Do NOT pre-build — measure L1 hotness after Step 1 and
-only build if it's still hot. Pure NEON, fully testable on the RK3588.
+**Decision (updated 2026-07-10):** Step 1b showed the kernel is
+**load-bound on the A76**, so a layout that reduces/amortises loads is
+now the *only* remaining lever that could add NEON L1 NPS — this raises
+Step 2's priority from "likely skip" to "the thing to try if we want more
+mobile NPS." Still uncertain and more work (column-major over
+`l1_weights_sparse`, needs its own parity + bench). Not started. Pure
+NEON, fully testable on the RK3588.
 
 ### Step 4 (minor) — aarch64 TT prefetch — CLOSED (neutral, abandoned)
 **Gap was:** `TranspositionTable::prefetch` (tt.rs) only issued
@@ -160,7 +179,10 @@ Correctness would be parity-testable against the scalar oracle.
   win). Both ARM tiers now have a real NPS win from Step 1. Follow-up (a)
   done; (b) precompute correction and (c) Step 2 reassessment still open.
 - 2026-07-10: **Step 4 (TT prefetch) CLOSED — neutral on A76 and M5,
-  dropped.** See Step 4 section. Remaining live items: (b) precompute the
-  SDOT `128·Σw` correction (A76/Graviton2-class only; the M5's USDOT path
-  needs none); (c) Step 2 column-major L1=32 — likely skip (subsumed by
-  Step 1). Step 3 (splat) remains deferred.
+  dropped.** See Step 4 section.
+- 2026-07-10: **Step 1b (precompute SDOT correction) TESTED, DROPPED —
+  ~2% regression on A76** (kernel is load-bound, not SDOT-bound). See
+  Step 1b. Key takeaway: the NEON L1 kernel is memory-bound, so the only
+  remaining NPS lever is a load-reducing layout (Step 2), now bumped in
+  priority. Step 3 (splat) still deferred. **Shipped and standing: Step 1
+  (dotprod/i8mm), +30% A76 / +20% M5.**
