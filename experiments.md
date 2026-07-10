@@ -19147,3 +19147,46 @@ affordability gate — enforces the budget TM already chose, different failure
 mode from cutting budgets) and severity-gated fail-low counting. Both parked
 pending re-prioritization against the mid-band search-quality track (the
 bigger prize from the same day's decomposition).
+
+## TM probe wave P1-P4: 0/4 — single-knob SF-mimicry exhausted (2026-07-10)
+
+Four one-knob probes from the three-axis TM comparison vs SF source
+(budgeting / variation / selection — Adam's framework; SF timeman.cpp +
+search.cpp:490-556 read directly). All passed mechanism shape-gates; all
+failed both Elo frames (OB [0,3] STC self-play + local 1800-game
+differential RR vs {main-base, SF17, SF18} @ conc 32):
+
+| probe | branch | OB | local differential |
+|---|---|---|---|
+| P1 phase front-load (floor .22→.45, rate .045→.065) | tm-phase-frontload | #2694 H0 (−4.5) | **−31 ±17** (loses everywhere incl. H2H — probe also out-front-loaded SF itself, 0.36 vs 0.31 @ moves 1-5) |
+| P2 bmc instability @ T=1 (SF totBestMoveChanges, /2 decay) | tm-bmc-t1 | #2695 H0 (−3.7) | −19 ±17 |
+| P3 trend clamp floor .80→.60 (SF fallingEval floor .581) | tm-trend-floor | #2696 → H0 (−0.8 @ 21k) | −6 ±16 (flat) |
+| P4 soft-side iteration-affordability gate | tm-soft-iter-gate | #2697 H0 (−8.5) | −20 ±16 |
+
+With the earlier stability-tail (flat) and subtree re-center (−48), the
+season total is 0/6: every individually-SF-shaped TM knob is neutral or
+negative for Coda, in both self-play and cross-engine frames. Reading:
+Coda's TM (Phase-13 lineage, heavily tuned) is at a genuine local optimum
+FOR CODA'S SEARCH; SF's mechanisms are calibrated to SF's search and do
+not transplant piecewise.
+
+Empirical three-axis gap (Run C PGNs, 1000 games/engine, both engines
+measured identically): budgeting — SF front-loads (0.31s moves 1-5,
+monotone decline, on increment by move 35) vs Coda's hump (peak 0.29 at
+11-15, 2.5s banked at move 35); variation — within-bucket p90/med SF
+4.0/3.9/3.0 vs Coda 2.4/2.4/2.2, lag-1 autocorr SF +0.13/SF17 +0.06 vs
+Coda +0.18 (Coda: inertial, low-dispersion; SF: information-driven
+spikes); selection — same signal families, different direction-limits.
+
+Next (input-metrics-first, Adam's methodology): `tm-input-lab` branch =
+all four mechanisms behind UCI tunables at main-identical defaults
+(bench 2085296); sweep configs via cutechess options at ~6 min each
+against the SF variation profile (within-bucket 3.5-4.0, autocorr ~+0.05,
+0 forfeits), then ONE differential RR + SPRT on a profile-complete
+composition. If the full-profile match also loses cross-engine, that
+falsifies SF-profile-mimicry for Coda cleanly and the TM chapter closes
+with the movetime→TC gap re-attributed (part measurement confound — Coda
+overspends `go movetime` ~6%, worth ~5 of the 27 Elo — part rare
+high-leverage clock situations, part genuinely smaller than estimated).
+Dashboard: `tm_pattern_inspect.py --shape` (now incl. within-bucket
+dispersion + autocorrelation).
