@@ -39,13 +39,51 @@ def parse_games(path):
         if not body:
             continue
         spends = [float(m.group(1)) * 1000 for m in SPEND_RE.finditer(body.group(1))]
+        term = re.search(r'\[Termination "([^"]+)"\]', g)
+        result = re.search(r'\[Result "([^"]+)"\]', g)
         out.append({
             'white': w.group(1),
             'black': b.group(1),
             'w_spends': spends[0::2],
             'b_spends': spends[1::2],
+            'termination': term.group(1) if term else '',
+            'result': result.group(1) if result else '',
         })
     return out
+
+
+def shape_report(games):
+    """Pooled per-move spend distribution per engine: the TM 'spikiness'
+    metric (p90/median) plus time-forfeit counts. Diagnostic for the
+    spend-shape work (docs/tm_spikiness_experiment_2026-07-10.md):
+    Coda baseline ~2.6 vs SF consensus ~3.4-3.7 at STC. Elo gates
+    promotions — do not optimize this ratio for its own sake."""
+    spends = defaultdict(list)
+    n_games = defaultdict(int)
+    forfeits = defaultdict(int)
+    for g in games:
+        spends[g['white']].extend(g['w_spends'])
+        spends[g['black']].extend(g['b_spends'])
+        n_games[g['white']] += 1
+        n_games[g['black']] += 1
+        if 'time' in g['termination'].lower():
+            loser = g['black'] if g['result'] == '1-0' else \
+                    g['white'] if g['result'] == '0-1' else None
+            if loser:
+                forfeits[loser] += 1
+    print(f'  {"engine":<14}{"games":>6}{"moves":>8}{"mean":>8}{"med":>8}'
+          f'{"p75":>8}{"p90":>8}{"p95":>8}{"max":>8}{"p90/med":>9}{"tforf":>6}')
+    print('  ' + '-' * 91)
+    for eng in sorted(spends, key=lambda e: -n_games[e]):
+        s = sorted(spends[eng])
+        if not s:
+            continue
+        q = lambda p: s[min(len(s) - 1, int(len(s) * p))] / 1000
+        med = q(0.50)
+        ratio = q(0.90) / med if med > 0 else float('nan')
+        print(f'  {eng:<14}{n_games[eng]:>6}{len(s):>8}{sum(s)/len(s)/1000:>8.3f}'
+              f'{med:>8.3f}{q(0.75):>8.3f}{q(0.90):>8.3f}{q(0.95):>8.3f}'
+              f'{s[-1]/1000:>8.2f}{ratio:>9.2f}{forfeits[eng]:>6}')
 
 
 def analyze(games, variants, opponents, initial_ms, inc_ms):
@@ -81,11 +119,18 @@ def main():
     ap.add_argument('--opponents', default='', help='comma-separated opponent names (default: all non-variant)')
     ap.add_argument('--inc-ms', type=int, default=100, help='increment in ms (default 100 = 0.1s)')
     ap.add_argument('--initial-ms', type=int, default=60000, help='initial clock in ms (default 60000)')
+    ap.add_argument('--shape', action='store_true',
+                    help='print pooled spend-shape quantiles (p90/med spikiness metric) for ALL engines and exit')
     args = ap.parse_args()
 
     games = parse_games(args.pgn)
     if not games:
         print('No games parsed')
+        return
+
+    if args.shape:
+        print(f'Spend shape over {len(games)} games ({args.pgn}):')
+        shape_report(games)
         return
 
     # Auto-detect variants if not specified

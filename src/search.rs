@@ -902,6 +902,24 @@ pub enum ForcedState {
 }
 
 /// Search state for one thread.
+/// Stop-time snapshot of the Phase-13 dynamic-TM factor values, captured on
+/// the last iteration that evaluated the factor product. TMDebug-gated
+/// diagnostics only — never read by search logic. (TM spikiness Phase 0,
+/// docs/tm_spikiness_experiment_2026-07-10.md)
+#[derive(Default, Clone, Copy)]
+struct TmDbg {
+    stab: f64,
+    fail_low: f64,
+    forced: f64,
+    subtree: f64,
+    trend: f64,
+    /// Best-move node fraction feeding the subtree factor; -1 when not computed.
+    frac: f64,
+    /// Post-ceiling factor product applied to soft_limit.
+    product: f64,
+    adjusted_soft: u64,
+}
+
 pub struct SearchInfo {
     pub nodes: u64,
     /// Interior Syzygy WDL probe hits this search (main thread). Cosmetic —
@@ -1108,6 +1126,8 @@ pub struct SearchInfo {
     /// reach), giving a single tunable set that self-adapts STC<->LTC instead
     /// of two constant sets (Adam directive 2026-06-13).
     pub root_depth: i32,
+    /// TMDebug-only stop-time snapshot of the dynamic-TM factors (see TmDbg).
+    tm_dbg: TmDbg,
     /// Ply barrier for NMP verification: prevents NMP from re-triggering
     /// inside its own verification subtree (all peers: Reckless, Alexandria,
     /// Stormphrax use nmpMinPly / nmp_min_ply). Default 0 = no barrier. (audit B1)
@@ -1225,6 +1245,7 @@ impl SearchInfo {
             depth_nodes: [0; MAX_PLY + 1],
             completed_depth: 0,
             root_depth: 0,
+            tm_dbg: TmDbg::default(),
             nmp_min_ply: 0,
             static_evals: [0; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
@@ -2834,6 +2855,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.tm_asp_fail_high = 0;
     info.tm_forced_state = ForcedState::None;
     info.tm_has_data = false;
+    info.tm_dbg = TmDbg::default(); // else a factor-block-less move logs stale factors
     // Reset per-root-move node counts
     for v in info.root_move_nodes.iter_mut() { *v = 0; }
 
@@ -3552,6 +3574,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             //   nodes_fraction = best_move_nodes / total_nodes
             //   high fraction (>0.6): confident → reduce time
             //   low fraction (<0.3):  uncertain → increase time
+            let mut subtree_frac = -1.0f64; // diagnostic only; -1 = not computed
             let subtree_size_multiplier = if depth > 9 && best_move != NO_MOVE {
                 let bm_from = move_from(best_move) as usize;
                 let bm_to = move_to(best_move) as usize;
@@ -3559,6 +3582,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 let total = info.nodes;
                 if total > 0 {
                     let frac = best_nodes as f64 / total as f64;
+                    subtree_frac = frac;
                     (1.62 - frac) * 1.4
                 } else {
                     1.0  // default when no node data
@@ -3662,6 +3686,21 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // (the ONLY cap — no separate hard×0.5). Viridithas pattern.
             let adjusted_soft_raw = (info.soft_limit as f64 * multiplier) as u64;
             let adjusted_soft = adjusted_soft_raw.min(info.tm_max_time).max(1);
+            // Phase-0 instrumentation: snapshot the factor values in force.
+            // The last snapshot before the search stops is "the budget the
+            // move was played under" — read back by the TMDebug summary line.
+            if TM_DEBUG.load(Ordering::Relaxed) {
+                info.tm_dbg = TmDbg {
+                    stab: stability_multiplier,
+                    fail_low: failed_low_multiplier,
+                    forced: forced_move_multiplier,
+                    subtree: subtree_size_multiplier,
+                    trend: score_trend_multiplier,
+                    frac: subtree_frac,
+                    product: multiplier,
+                    adjusted_soft,
+                };
+            }
             // Compatibility aliases for downstream code that references
             // `scale` / `max_adjusted`. `scale` retained for TM_DIAG output.
             // Subtract tm_baseline so soft is measured from the TM-start
@@ -3796,12 +3835,22 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         let path = format!("/tmp/coda_tm_debug_{}.log", std::process::id());
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true).append(true).open(&path) {
+            // Overshoot: how far past the in-force soft budget the move
+            // actually ran (iteration-boundary quantization diagnostic).
+            // Only meaningful when the factor block ever ran (adjusted_soft>0).
+            let overshoot = if info.tm_dbg.adjusted_soft > 0 {
+                elapsed_since_tm as i64 - info.tm_dbg.adjusted_soft as i64
+            } else {
+                0
+            };
             let _ = writeln!(
                 f,
                 "tm-debug depth={} bestmove={} score={} \
                  elapsed={} elapsed_since_ph={} soft={} hard={} floor={} \
                  tm_baseline={} stab={} bmc={} asp_fl={} asp_fh={} forced={:?} \
-                 cross_prev={}",
+                 cross_prev={} \
+                 stabf={:.2} flf={:.2} forcedf={:.3} subf={:.2} subfrac={:.3} \
+                 trendf={:.2} mult={:.2} adjsoft={} overshoot={}",
                 info.completed_depth,
                 move_to_uci(best_move),
                 info.last_score,
@@ -3818,8 +3867,45 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 info.tm_forced_state,
                 if info.tm_cross_prev_score == i32::MIN { "none".to_string() }
                 else { info.tm_cross_prev_score.to_string() },
+                info.tm_dbg.stab,
+                info.tm_dbg.fail_low,
+                info.tm_dbg.forced,
+                info.tm_dbg.subtree,
+                info.tm_dbg.frac,
+                info.tm_dbg.trend,
+                info.tm_dbg.product,
+                info.tm_dbg.adjusted_soft,
+                overshoot,
             );
         }
+    }
+
+    // Final info line at search end: the per-iteration print above fires only
+    // at completed depths, so a mid-iteration stop (node limit, hard time)
+    // under-reported total nodes by up to a full iteration (~29% observed at
+    // `go nodes 15000`), corrupting any NPS/nodes-from-logs analysis. Emit the
+    // true totals once before returning (SF prints the same final update). No
+    // PV — GUIs keep the last full-line PV; only the counters need correcting.
+    if !info.silent && info.completed_depth > 0 {
+        let elapsed = info.start_time.elapsed().as_millis() as u64;
+        let global = info.global_nodes.load(Ordering::Relaxed)
+            + (info.nodes - info.last_flushed_nodes.get());
+        let nps = if elapsed > 0 { global * 1000 / elapsed } else { 0 };
+        let score_str = if is_mate_score(info.last_score) {
+            let mate_in = if info.last_score > 0 {
+                (MATE_SCORE - info.last_score + 1) / 2
+            } else {
+                -(MATE_SCORE + info.last_score + 1) / 2
+            };
+            format!("score mate {}", mate_in)
+        } else {
+            format!("score cp {}", info.last_score)
+        };
+        println!(
+            "info depth {} seldepth {} {} nodes {} nps {} time {} hashfull {} tbhits {}",
+            info.completed_depth, info.sel_depth, score_str,
+            global, nps, elapsed, info.tt.hashfull(), info.tb_hits
+        );
     }
 
     best_move
