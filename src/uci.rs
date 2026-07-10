@@ -984,6 +984,15 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
 
                         // Very low time (< 2s with no inc): instant stop.
                         if hard <= overhead && our_inc == 0 && our_time < 2000 {
+                            // C2 (persistent-state audit 2026-07-10): mark the
+                            // hit before stopping so the search's cross-move
+                            // publish gate sees this as a played game move —
+                            // ponderhit_time is the search's only hit signal
+                            // and this path previously left it 0. Stored
+                            // before the stop flags; a racing search that
+                            // still reads 0 just skips the publish, which is
+                            // benign (keeps the previous real move's score).
+                            ponderhit_flag.store(elapsed.max(1), Ordering::Release);
                             external_stop.store(true, Ordering::SeqCst);
                             stop_flag.store(true, Ordering::SeqCst);
                         } else if crate::search::should_instant_reply(
@@ -1007,6 +1016,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                     "PONDERHIT_INSTANT elapsed={}ms soft={}ms depth={}",
                                     elapsed, soft, ponder_depth);
                             }
+                            // C2: mark the hit for the cross-move publish
+                            // gate (see the very-low-time branch above).
+                            ponderhit_flag.store(elapsed.max(1), Ordering::Release);
                             external_stop.store(true, Ordering::SeqCst);
                             stop_flag.store(true, Ordering::SeqCst);
                         } else {
