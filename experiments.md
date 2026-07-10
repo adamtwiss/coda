@@ -18977,3 +18977,23 @@ hypothesis is stamped-as-STAGE-1-STEERING (mixed with DFRC/wrongIsRight/Farseer)
 where stamped-15k is quality-comparable to the existing 5000-node steering data and
 stage-2 LC0 reworks the fine eval — training now on gpu3 (multi-v9-s2-stampx4,
 prod recipe + stamped-x4 in stage1, vs prod E161C665 as control).
+
+## 2026-07-10 — Corrhist H2: minor-piece-key correction (SF-shape, king-inclusive) — H0, DROP
+
+H0/H1: does a minor-piece correction source keyed by knights+bishops+**kings**
+(both colors, mirroring SF's `minorPieceKey`) add Elo on the residual-corrhist
+base? Rationale for retesting a source ablated in #1318 (2026-05-18): the OLD
+`minor_key` was minors-only, a strict SUBSET of `non_pawn_key` → redundant with
+np_corr. The NEW key includes KINGS, which `non_pawn_key` excludes, so it can
+express king-position-conditioned correction np cannot; and it is now measured on
+the post-finding-#1 residual base (the old ablation predates that fix).
+Implementation: `board.minor_piece_key` Zobrist (incremental XOR + set_fen
+recompute + parity fuzzer), `minor_corr` source + `CORR_W_MINOR` tunable (untuned
+default 100). Branch `zeus/minor-piece-corr`, commit 2278870, bench 2106033 vs
+main 2085296 (+1.0%). **Untuned SPRT #2681 [0,3] H0 −3.1 ±2.8 (16.0k), LLR −2.96
+— mildly NEGATIVE, DROP.** Read: the king-inclusive key is far sparser (heavier
+table dilution / slower learning) and for its knight/bishop component still
+overlaps the np signal; the king-position increment doesn't pay for the added
+noise. King-conditioned eval bias, if it exists, isn't captured cheaply by a
+zobrist-keyed corrhist bucket. Not retuned (per H1 lesson: the corrhist cluster is
+#2664-calibrated; a branch retune chases noise). Branch not merged.
