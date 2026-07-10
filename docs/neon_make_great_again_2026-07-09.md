@@ -98,12 +98,28 @@ layout to amortise input loads.
 multiply-add). Do NOT pre-build — measure L1 hotness after Step 1 and
 only build if it's still hot. Pure NEON, fully testable on the RK3588.
 
-### Step 4 (minor) — aarch64 TT prefetch
-**Gap:** `TranspositionTable::prefetch` (tt.rs) only issues `_mm_prefetch`
-on x86_64 — aarch64 gets *no* TT prefetch. ARM has `PRFM PLDL1KEEP,[addr]`
-(emittable via inline asm, like the dot kernels). Small, self-contained,
-but a genuine behavioral (timing) change so it needs its own before/after
-NPS measurement — do NOT fold into a bit-identical merge. Low priority.
+### Step 4 (minor) — aarch64 TT prefetch — CLOSED (neutral, abandoned)
+**Gap was:** `TranspositionTable::prefetch` (tt.rs) only issued
+`_mm_prefetch` on x86_64 — aarch64 got no TT prefetch. ARM has
+`PRFM PLDL1KEEP,[addr]` (inline asm). Implemented on branch
+`neon/tt-prefetch`.
+**Conclusion (2026-07-10): dropped — measured NPS-neutral on BOTH the
+RK3588 A76 and a MacBook Air M5** (careful interleaved runs controlling
+for the M5's fanless throttling; node count unchanged, ~0 NPS delta on
+both). Two independent ARM cores agreeing on "no effect" is conclusive.
+Intel's win didn't transfer — the A76 and Apple Silicon both have deep
+OoO windows + strong hardware prefetchers that already hide the TT-probe
+miss. Not merged; do not revisit without a specific new ARM target that
+shows a TT-probe stall in a profile.
+
+**Gotcha logged:** the first pushed version of the branch was missing the
+actual PRFM code — the tt.rs edit had been `git stash`ed during
+baseline-binary building and never popped, so an initial M5 "1.43M
+highest-ever" reading was on a prefetch-LESS binary (pure turbo/thermal
+variance). Lesson: when building a baseline binary mid-change, commit
+first or verify the feature is present in the built binary; and always
+confirm node-count identity AND a real code diff before trusting a
+before/after.
 
 ### Step 3 — NEON threat-splat enumerator
 **Gap:** `threats_splat.rs` is `#![cfg(target_arch = "x86_64")]` end to
@@ -143,3 +159,8 @@ Correctness would be parity-testable against the scalar oracle.
   bottlenecked on the 4-vmlal path, so a smaller but still large relative
   win). Both ARM tiers now have a real NPS win from Step 1. Follow-up (a)
   done; (b) precompute correction and (c) Step 2 reassessment still open.
+- 2026-07-10: **Step 4 (TT prefetch) CLOSED — neutral on A76 and M5,
+  dropped.** See Step 4 section. Remaining live items: (b) precompute the
+  SDOT `128·Σw` correction (A76/Graviton2-class only; the M5's USDOT path
+  needs none); (c) Step 2 column-major L1=32 — likely skip (subsumed by
+  Step 1). Step 3 (splat) remains deferred.
