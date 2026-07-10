@@ -19096,3 +19096,22 @@ last *completed-iteration* nodes (−29% at `go nodes 15000`) — fixed in 90dad
 5. Side-finding: Coda overshoots `go movetime` (mean 0.213s on 0.2s, max 0.35s,
    1 forfeit in 1600 games; SF holds 0.200) — irrelevant on OB/lichess, mild
    bias against us on any movetime rig.
+
+## TM spikiness C-stability-tail: shape moved, Elo flat at STC (2026-07-10)
+
+First Phase-1 candidate from `docs/tm_spikiness_experiment_2026-07-10.md`
+(branch `tm-stability-tail`, c7eb553 pre-rebase): extend the TM stability
+decay table 5→10 entries (floor 0.75 → 0.60 by stab 9+). Motivation: Phase-0
+showed 75% of moves saturate the old index-4 floor.
+
+- Shape gate (60g vs SF17 @10+0.1 conc 8): fired as designed — Coda median
+  spend 0.180→0.160 (−11%), p90 unchanged 0.46, p90/med 2.56→2.88, 0 forfeits.
+- Differential RR (1800g conc 32, {c2, base, SF17, SF18}): **flat**. base −37
+  vs c2 −41 (±11); head-to-head +26 −26 =248; SF-pair splits incoherent
+  (better vs SF17, worse vs SF18). Differential −4 ±15.
+
+Verdict: releasing clock from long-stable moves does not, by itself, buy STC
+Elo — the freed time isn't being redirected anywhere useful (flf/subf still
+inflate routine moves; C1 subtree re-center is the redirect lever). Flat #1
+of 2 allowed before parking per protocol. Next: C1, then consider
+C1+stability-tail combo per the design's combination rule.
