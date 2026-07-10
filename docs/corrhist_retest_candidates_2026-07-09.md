@@ -116,3 +116,22 @@ just self-play — is high-value rather than busywork.
 - **#2116 corrhist-allnode** (fail-low training) — H1, **merged**; correct as-is.
 - **#1318 minor/major drop** — H1 on the *aliased* key; the re-test is F2/H2 (a
   new *correct* key), not a re-add of this.
+
+## Status / assignments (2026-07-10, post-#2664-merge)
+
+Retuned baseline is live (#2664 merged, +4.8 LTC). Re-tests fired against it:
+
+| item | status |
+|---|---|
+| **H1** 2-ply/4-ply cont-corr | **Zeus** — already prepped from his audit; he's starting it. (Hercules: hands off.) |
+| **H3** trans_corr ablation | **RESOLVED — keep.** Ablation #2670 −3.0 H0 (removing trans costs real Elo). |
+| **H4** futility \|corr\| | **~neutral.** #2671 +0.6 →H0 (sub-midpoint, won't H1). Non-reg, not merge-worthy alone. |
+| **H5** threat-bb source | **regresses untuned** (#2672 −3.5 H0). Adds a 6th source without a DIV rebalance → over-corrects; low prior (threats ~0 corr with eval error). Lean drop unless a CORR_W_THREAT_BB+DIV retune is wanted. |
+| **H6** prev-move | **flagged superseded** by H1 (overlaps cont/trans; its follow-up term is a cruder 2-ply cont). Not re-implemented. |
+| second-order-hist (Alice #8) | retune-on-branch #2673 done (LMR_HIST_DIV +16%); tuned SPRT #2674 in flight. |
+
+**Read so far:** the residual fix + #2664 got the corrhist subsystem into good
+shape — the re-tests mostly confirm it's well-calibrated (trans valuable, |corr|
+-futility ~neutral, threat-bb not additive). The one real structural lever left
+is **H1 (Zeus)**. H2 (minor-piece-key, needs a new board Zobrist) is the next
+structural candidate if H1 lands.
