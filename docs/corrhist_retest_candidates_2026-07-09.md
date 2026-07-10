@@ -147,7 +147,7 @@ Reviewed H7/M1/M2/M3/M4/M5/L1 against the well-calibrated post-#2664 baseline.
 
 | item | disposition |
 |---|---|
-| **M4** check-conditioned cont-corr | **Fold into H1.** It's an extra `[in_check]` dimension on the *paired* cont-corr (Reckless keys cont-corr on check). Add as an H1 follow-up *only if H1's base form lands* — don't gold-plate an unproven feature. |
+| **M4** check-conditioned cont-corr | **H0, DROP.** Implemented as the `[in_check]` outer dim on the H1 paired cont-corr (Reckless shape), keyed on the earlier move's node via a per-ply `in_check_stack`. Branch `zeus/contcorr-check` (965bae6), bench 2417743 vs main 2085296 (+15.9%). **SPRT #2688 [0,3] H0 −2.2 ±2.4 (20.2k), LLR −2.95** — mild regression. Sparse `in_check=true` bucket dilutes cont-corr. Part of the H2+M4 meta-pattern: table-*splitting* extensions lose on the well-fit residual base; only key-*enrichment* (H1) wins. Not merged. |
 | **M2** king-in-non_pawn_key | **RESOLVED via H2 — DROP.** H2's `minor_piece_key` includes kings, so #2681 is the clean read of "does king-conditioning a corr bucket help": H0 −3.1 ±2.8. King inclusion in a zobrist corr key is net-negative on the residual base; no separate re-test warranted. (Original #2144 H0 was bench-flip-confounded; this supersedes it.) |
 | **L1** collapse two-stage divide | **Worth it, low priority, `[-2,1]`.** Real precision loss (`/DIV` then `/GRAIN_T` truncates twice), but ~0 Elo (precision/clarity win) and it perturbs the just-tuned `DIV`/`GRAIN_T`. Do opportunistically, not while H1 is settling. |
 | **H7** bad-capture training | **Skip.** Against reference consensus — SF/most engines deliberately gate captures OUT of the corrhist update; the −0.4 H0 is consistent with that, baseline-independent. |
@@ -155,4 +155,12 @@ Reviewed H7/M1/M2/M3/M4/M5/L1 against the well-calibrated post-#2664 baseline.
 | **M3** eval-delta nudge / wall-pawn malus | **Skip.** Not correction history (main-hist/eval terms), vague, lowest confidence. |
 | **M5** update-during-SE | **Skip.** Audit lists Coda's not-updating-during-SE as "what Coda gets right" (matches refs); a re-test would just re-confirm the H0. |
 
-So Zeus's corrhist queue is: **H1** (WIN, merged 66c1699) → **H2 (+M2 bundled): H0 #2681, DROPPED** → **M4** (H1 extension: check-conditioned cont-corr, only if worth it) → **L1** (cleanup). H7/M1/M3/M5 dropped.
+So Zeus's corrhist queue resolved as: **H1** (WIN, merged 66c1699) → **H2 (+M2 bundled): H0 #2681, DROPPED** → **M4: H0 #2688, DROPPED** → **L1** (cleanup, byte-identical refactor, SPRT #2689 non-reg) → **H4** (fut-corr hardcoded, SPRT #2690 [-1,2]). H7/M1/M3/M5 dropped.
+
+**Corrhist campaign conclusion (2026-07-10):** on the residual-fixed base, the only
+structural win was H1 (paired cont-corr, key ENRICHMENT). Both table-SPLITTING
+extensions — H2 (minor-piece key incl. kings) and M4 (in_check conditioning) — went
+mildly negative: splitting halves data density on already-well-fit sources. L1 is a
+pure hygiene refactor (retire the collinear GRAIN_T knob), H4 a hardcoded futility
+|corr| term retested off the tunable. Future corrhist EV is in richer KEYS, not more
+sources or conditioning splits.

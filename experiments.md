@@ -19023,3 +19023,26 @@ age), ProbCut store shape (depth−3/LOWER/sticky ttPv = SF/Obsidian/Alexandria
 exact). Meta-lesson reinforced: field-consensus ≠ Coda-optimal in EITHER
 direction — the 0/6-divergent near-miss earns Elo, the 6/6-consensus QS-ttPv
 preservation loses it. SPRT the mechanism, don't port the consensus blindly.
+
+## 2026-07-10 — Corrhist M4: check-conditioned paired cont-corr — H0, DROP
+
+H0/H1: does adding an outer [in_check] dimension to the H1 paired cont-corr
+(Reckless ContinuationCorrectionHistory shape) add Elo? Keyed on the check
+status of the EARLIER (ply-off) move's originating node, threaded via a new
+per-ply in_check_stack (the current node is never in check at corrected_eval
+read time). Branch `zeus/contcorr-check`, commit 965bae6. Bench 2417743 vs main
+2085296 (+15.9%: the in_check=true bucket is sparse, so check-originated
+continuations get near-zero corrections -> weaker pruning -> bigger tree — itself
+a tell). **Untuned SPRT #2688 [0,3] H0 -2.2 ±2.4 (20.2k), LLR -2.95 — mild
+REGRESSION, DROP.** Prior standalone #2304 (-0.3) was on the old flat 1-ply form +
+pre-residual base; this is the clean read on the paired form + residual base and
+it's WORSE, not better. Not retuned (per H1 lesson). Branch not merged.
+
+**Meta-pattern (H2 + M4 together):** both corrhist table-SPLITTING extensions
+went mildly negative (H2 minor-key #2681 -3.1; M4 check-cond #2688 -2.2), for the
+same reason — splitting a corr table halves data density per bucket, and the
+residual-fixed sources are already well-fit, so the added conditioning dilutes
+more signal than the split resolves. H1 WON (+3.3) because it added move-pair
+SPECIFICITY (a genuinely richer key), not a conditioning split of an existing
+key. Takeaway: on the residual base, enrich the cont-corr KEY (more move context),
+don't SPLIT existing corr sources on position predicates (in_check, piece-subset).
