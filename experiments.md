@@ -19115,3 +19115,35 @@ Elo — the freed time isn't being redirected anywhere useful (flf/subf still
 inflate routine moves; C1 subtree re-center is the redirect lever). Flat #1
 of 2 allowed before parking per protocol. Next: C1, then consider
 C1+stability-tail combo per the design's combination rule.
+
+## TM subtree re-center (C1): -48 vs SF pair, self-play-BLIND — down-side track closed (2026-07-10)
+
+Branch `tm-subtree-recenter`: TM subtree-factor base 1.62 → 1.30 (neutral
+point frac 0.905 → 0.59), floor 0.55. Shape gate passed cleanly (median
+0.180→0.150, p90/med 2.56→2.93, 0 forfeits) — best shape movement of the
+Phase-1 candidates. Differential RR stopped decided at ~500 games/engine:
+
+- **Coda.c1 −63 vs Coda.base −15 (differential −48 ±21)** — clear regression.
+- **Pairwise: H2H Coda.c1 vs base EVEN (+13 −16 =153); the whole loss is
+  vs SF17 (−32 vs −10) and SF18 (−56 vs −23).**
+
+Two lessons, both durable:
+1. **Down-side TM spikiness levers are 0/2 and the track is closed**
+   (stability-tail flat, subtree re-center regressive). Cutting time on
+   moves where OUR search is confident is punished precisely by stronger
+   opponents — the subtree fraction measures self-agreement, not safety.
+   Viridithas's 1.62 "inflating" base is insurance, not a bug. The flat-
+   spend signature vs SF is (at least partly) a *consequence* of being
+   weaker per node, not a free Elo lever.
+2. **Self-play blindness, measured:** the same change is 0 in Coda-vs-Coda
+   and −40ish cross-engine. TM_SUBTREE_BASE_100 (kept as a tunable at the
+   behavior-identical 162 default) must NEVER enter an OB SPSA — self-play
+   tuning would walk it into the regression it cannot see. Cross-engine RR
+   is the only valid frame for this knob (reinforces the existing TM-not-in-
+   core-sweep rule with a quantified example).
+
+Remaining TM candidates from the design doc: C4' (soft-side next-iteration
+affordability gate — enforces the budget TM already chose, different failure
+mode from cutting budgets) and severity-gated fail-low counting. Both parked
+pending re-prioritization against the mid-band search-quality track (the
+bigger prize from the same day's decomposition).
