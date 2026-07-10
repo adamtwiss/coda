@@ -19046,3 +19046,53 @@ more signal than the split resolves. H1 WON (+3.3) because it added move-pair
 SPECIFICITY (a genuinely richer key), not a conditioning split of an existing
 key. Takeaway: on the residual base, enrich the cont-corr KEY (more move context),
 don't SPLIT existing corr sources on position predicates (in_check, piece-subset).
+## NPS/TM/search-quality decomposition vs SF ladder (2026-07-10, Atlas)
+
+Question (Adam): fixed-node RRs put Coda +47 in the SF14–SF18 pack while STC
+put it −31 — is the ~78 Elo swing NPS or active TM? Method: complete the
+condition triad — fixed NODES (no NPS, no TM) / fixed MOVETIME 0.2s (NPS, no
+TM) / real TC (both) — all Atlas, conc 32, Hash=512, noob_4moves, SF18 =
+dev-20260318-d173a065. Plus idle/contended NPS measurement and per-move spend
+shape from PGN clocks.
+
+**Node-accounting check first** (Adam flagged): Coda and SF count comparably
+(every node entry incl. qsearch). One real bug: final UCI info line reported
+last *completed-iteration* nodes (−29% at `go nodes 15000`) — fixed in 90dade3
+(print-only, bench unchanged 2381675). In-situ fixed-node time odds were only
+1.16× vs SF18 (contention compresses SF's NPS advantage: idle 1.70× → 32-way
+1.36× → in-game 1.16×), so the fixed-node frame was ~fair on this box.
+
+| Coda gap to → | SF17 | SF18 |
+|---|---|---|
+| fixed 15k nodes | +25 | −69 |
+| fixed 50k nodes | +5 | −64 |
+| fixed 150k nodes (1600 games) | −33 | −78 |
+| fixed 500k nodes (600 games, 90% draws) | −29 | −55 |
+| fixed 0.2s/move (1600 games) | −5 | −52 |
+| real STC 10+0.1 (1000 games/engine rerun) | −45 | −79 |
+
+**Conclusions:**
+1. **Active TM deficit ≈ 25–40 Elo vs SF is real** (movetime→TC delta: −52→−79
+   vs SF18, −5→−45 vs SF17). Mechanism signature: Coda's per-move spend is FLAT
+   — p90/med 2.6 vs 3.4–3.7 for every SF version, at STC and VSTC; 0 time
+   forfeits anywhere (over-safe). We overspend routine moves, underspend
+   critical ones. → TM spikiness experiment,
+   `docs/tm_spikiness_experiment_2026-07-10.md` (C1 subtree re-center is prime:
+   `(1.62−frac)·1.4` is neutral only at frac=0.905 → routine moves get 1.2–1.5×).
+2. **NPS is ~neutral under contended test conditions but platform-bimodal**:
+   idle Zen1 1.70× behind SF18 (408k vs 696k 1T), ahead of SF on Zen5/AVX-512
+   (Zeus). Separate track; only matters for uncontended old-AVX2 deployment.
+3. **Per-node search quality: eval carries us below ~50k nodes (+25 over SF17
+   at 15k); SF's search efficiency takes over in the mid-band (50k–150k,
+   depth ~14–20) — Coda−SF17 slides +25→−33 there, then raw Elo flattens at
+   500k (−29, Adam's diminishing-returns model). Caveat: decisive-game share
+   kept degrading (41%→19% of decisive games won vs SF17), so part of the
+   flattening is 90%-draw compression; UHO-at-fixed-nodes would separate.**
+   → Search-shape work should validate at fixed 150k nodes vs SF17, not STC.
+4. Historical note: the old 290-game STC ladder that motivated the question
+   had SF18 *below* SF17 (impossible per fixed-node + speed data) — 1000-game
+   rerun restores sanity (SF18 +65 > SF17 +31 > SF16 +23 > Coda −14 > SF15 −33).
+   Small-n STC ladders (<500 games/engine) are not decision-grade.
+5. Side-finding: Coda overshoots `go movetime` (mean 0.213s on 0.2s, max 0.35s,
+   1 forfeit in 1600 games; SF holds 0.200) — irrelevant on OB/lichess, mild
+   bias against us on any movetime rig.
