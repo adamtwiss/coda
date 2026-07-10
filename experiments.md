@@ -18905,3 +18905,28 @@ ponder investment is invisible to the primary test harness but worth ~+25 Elo of
 Reckless-gap at deployment. Gate ponder-sensitive changes on cross-engine
 ponder-on RR + lichess, not OB. (Same carve-out as the corrhist/self-play lesson:
 the harness is blind to a whole class of our strengths.)
+
+## Main retune #2664 MERGED + stamped-x4 beats baseline (2026-07-10, overnight)
+
+**#2664 retune merged.** LTC validation #2668 **+4.8 ±3.1, LLR 2.95, H1 ✓** at
+`[-2,1]` (40+0.4 Hash=256); STC #2666 faded +5.2→+1.0 (early-N noise; non-reg, as
+LTC-tuned values measure ~neutral at STC). Applied to main (0a012da, bench
+2381675) — the corrhist-downwind recalibration (~40 params, CORR_HIST_DIV / LMR
+history-consumption / NMP-LMP-RFP) is now the trunk baseline. +4.8 LTC is the real
+value; the STC fade was the measurement frame, not the tune.
+
+**Stamped-x4 > plain baseline: #2667 +1.4 ±1.8, LLR 2.96, H1 ✓** (net-vs-net,
+exp-stamped-x4 vs exp-base-4t80, matched 4×T80). Closes the loop from #2665 (x4 vs
+x1 +2.3): the scale-fixed SF-labelled stamped corpus is additive over *no* stamped
+data, not merely a recovery of the ×1 scale deficit. Transitive estimate was
+~base+0.8; direct is +1.4. The stamped/SF-distillation corpus is validated
+corrective data. (Strategic: OwenBot — SF-net + weak-search ≈ us, esp. Rapid —
+signposts a real net/eval gap to SF; stamped SF-label distillation is the lever to
+capture it, now proven additive.)
+
+**Overnight follow-up batch (on the retuned baseline):** fired second-order-hist
+re-test (#2669, [0,3]) and trans_corr ablation (H3, CORR_W_TRANS 63→0, #2670,
+[-1.5,1.5]). Skipped — conflict on search.rs with the 85-param tune + corrhist
+code, need manual rebase: threat-bb-corrhist (H5), prev-move-corrhist (H6),
+corr-uncertainty-pruning (H4). Not-yet-implemented: 2-ply cont-corr (H1),
+minor-piece-key (H2). See docs/corrhist_retest_candidates_2026-07-09.md.
