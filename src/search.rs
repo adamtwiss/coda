@@ -2361,12 +2361,12 @@ pub fn compute_tm_budgets(
     // grows from ~0.024 at fm=0 to 0.066 at fm=40+. Ratio ~0.36 → 1.0.
     //
     // Apply the same Reckless-style exponential here as a multiplier:
-    //   phase_mult = 0.36 + 0.64 × (1 - exp(-0.045 × fullmove))
-    //     fm=1:  0.39×
-    //     fm=5:  0.49×
-    //     fm=10: 0.59×
-    //     fm=20: 0.74×
-    //     fm=40: ~0.93×
+    //   phase_mult = 0.22 + 0.78 × (1 - exp(-0.045 × fullmove))   (Phase 13.3)
+    //     fm=1:  0.25×
+    //     fm=5:  0.38×
+    //     fm=10: 0.50×
+    //     fm=20: 0.68×
+    //     fm=40: ~0.87×
     // Skip when movestogo > 0 (movestogo path computes from explicit count).
     let opt_time = if movestogo > 0 {
         opt_time_base

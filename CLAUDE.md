@@ -89,19 +89,22 @@ src/
   tt.rs            Transposition table (5-slot buckets, XOR key verification)
   movepicker.rs    Staged move ordering, 4D history tables, continuation history
   search.rs        Negamax, pruning, LMR, correction history, cuckoo, pruning stats
+  thread_pool.rs   Persistent Lazy-SMP helper thread pool (reused across go commands)
   cuckoo.rs        Cuckoo cycle detection for proactive repetition avoidance
   tb.rs            Syzygy tablebase probing (via shakmaty-syzygy)
   tb_cache.rs      Lockless Zobrist-keyed WDL probe cache (UCI TBHash)
   nnue.rs          NNUE v5/v7/v9 inference, accumulator stack, Finny table, AVX2/AVX-512/VNNI SIMD
+  nnue_simd.rs     NNUE SIMD primitive abstractions (cfg(target_feature)-gated), L1-matmul restructure
   sparse_l1.rs     Sparse/dense int8 L1 matmul kernels (AVX2, AVX-VNNI, AVX-512 VNNI)
+  setwise.rs       Setwise (batched) attack generation — attacks for all pieces of one type at once
   threats.rs       Threat-feature enumeration + delta generation (v9)
   threat_accum.rs  Per-ply threat accumulator stack (v9)
+  threats_splat.rs AVX-512 byteboard-splat threat-delta enumeration (v9 threat pipeline)
   uci.rs           UCI protocol (position, go, stop, ponder, setoption)
   epd.rs           EPD test suite runner with SAN formatting
   book.rs          Polyglot opening book support
   polyglot_randoms.rs  Standard Polyglot Zobrist random table (781 entries)
-  datagen.rs       Multi-threaded training data generation (self-play, material removal)
-  binpack.rs       SF BINP binpack format writer (chain-compressed)
+  datagen.rs       Multi-threaded training data generation (self-play, material removal); writes SF BINP binpack via the sfbinpack crate
   bullet_convert.rs  Bullet quantised.bin → .nnue converter (v5/v7/v9)
   nnue_export.rs   .nnue → Bullet checkpoint converter (for transfer learning)
 Makefile           Build targets: make, make pgo, make openbench, make net
@@ -153,7 +156,7 @@ Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from dept
 
 Do not add tunables to the core set unless you are confident that they are not 'lose knobs' that have little elo impact. They will likely negatively impact SPSA effectiveness.
 
-**Move ordering:** TT move → good captures (MVV×16 + captHist) → quiets (main hist + contHist×3 + pawn hist + quiet check bonus) → bad captures.
+**Move ordering:** TT move → good captures (MVV×MVV_CAP_MULT + captHist) → quiets (main hist + contHist×3 + pawn hist + quiet check bonus) → bad captures.
 
 **Exemptions:** TT move exempt from pruning. Promotions exempt from LMR.
 
@@ -169,7 +172,7 @@ Do not add tunables to the core set unless you are confident that they are not '
 - 5-slot buckets, 64 bytes (cache-line aligned), AtomicU64/AtomicU32 for lockless Lazy SMP
 - XOR key verification: `key_xor = hash ^ data` (detects torn reads from concurrent writes)
 - 13-bit staticEval (±4095 cp range), 1-bit tt_pv flag (sticky PV marker for LMR)
-- Replacement: d > slotDepth-3 for same-gen key match; always replace if generation differs
+- Replacement: d > slotDepth-4 for same-gen key match (widened 3→4 in the 2026-07-04 external-search audit, matches SF/Reckless/Berserk depth+4); always replace if generation differs, or if the entry is exact
 - TT score dampening: (3*score+beta)/4 on non-PV TTLower cutoffs
 - TT near-miss: accept 1-ply-short entries with 80cp margin (else-if, not unconditional)
 - Fail-high blending: (score*depth+beta)/(depth+1) at non-PV, depth >= 3
@@ -207,16 +210,21 @@ Polyglot .bin format. Weighted random selection. Polyglot Zobrist hashing with s
 - `MoveOverhead` (spin, 0-5000, default 100) — communication latency in ms
 - `Ponder` (check, default false)
 - `SyzygyPath` (string) — path to Syzygy tablebase files
+- `TBHash` (spin, 0-1024, default 16) — WDL probe cache size in MB (see `tb_cache.rs`)
+- `SyzygyProbeDepth` (spin, 1-100, default 4) — min depth to probe tablebases
+- Debug/internal (not for normal play): `HiddenActivation` (combo screlu/crelu, default screlu) — NNUE hidden-layer activation override; `LoadAnyway` (check, default false) — load a net whose arch hash mismatches; `TMDebug` (check, default false) — emit time-management debug info; `PonderhitCreditPct` (spin, -1..100, default -1=off) — ponderhit time-credit tuning
+- Plus all `tunables!` search parameters, emitted as spin options for SPSA (not for manual use).
 
 ### Time Management (Phase 13 model, 2026-05-26 — see `compute_tm_budgets`)
 - Viridithas-style windows: max = 60% of clock (absolute single-move
   ceiling), hard = 46%, opt = 73% of (timeLeft/mtg + 94% inc) capped by
-  hard. Default mtg 24; no-inc sudden death uses mtg 40 with tighter
-  caps (max 15%, hard 10% of clock — flag-fall protection).
-- Phase multiplier on opt: 0.36 + 0.64·(1 − e^(−0.045·fullmove))
+  hard. Default mtg 24; no-inc sudden death uses NO_INC_MTG_BASE (default
+  34, SPSA-tuned from 40) — adaptive, grows with fullmove overrun — with
+  tighter caps (max 15%, hard 10% of clock — flag-fall protection).
+- Phase multiplier on opt: 0.22 + 0.78·(1 − e^(−0.045·fullmove))
   (Reckless pattern — spend less in the opening).
 - Dynamic factors on opt (the 3-factor model + extras): stability table
-  [2.50, 1.20, 0.90, 0.80, 0.75]; subtree/node-fraction multiplier;
+  [1.71, 1.20, 0.90, 0.80, 0.75]; subtree/node-fraction multiplier;
   score-trend drop term; aspiration fail-low factor 1 + 0.34·min(2, fl)
   (applies to opt AND hard); forced-move exclusion-search multipliers
   (×0.386 margin 400 @ d8, ×0.627 margin 170 @ d12).
@@ -292,8 +300,8 @@ When the scale changes, all search thresholds (RFP, futility, SEE, LMR) become
 miscalibrated. **Preferred fix is SPSA retune** — recalibrates all thresholds
 to the net's natural scale. EVAL_SCALE adjustment is a quick hack.
 
-To measure the scale of a candidate net: bench `coda eval` over 500 sampled
-positions and compute RMS; baseline is ~580 for prod-tuned nets. **Pairwise
+To measure the scale of a candidate net: bench `coda eval-dist` (or
+`eval-fens`) over 500 sampled positions and compute RMS; baseline is ~580 for prod-tuned nets. **Pairwise
 nets do NOT scale linearly with EVAL_SCALE** — large values overflow int8
 quantization. Always verify RMS empirically; never compute it as
 `400 * baseline / candidate`.

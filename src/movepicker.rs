@@ -958,7 +958,7 @@ fn mvv_lva(board: &Board, m: Move) -> i32 {
 
     let _attacker_pt = board.piece_type_at(from);
 
-    // MVV only (no LVA), multiplier SPSA-tunable (Obsidian/Alexandria/Berserk default 16)
+    // MVV only (no LVA), multiplier SPSA-tunable via MVV_CAP_MULT (current default 28)
     see_value(target_pt) * mult + promo_bonus
 }
 
