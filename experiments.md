@@ -18997,3 +18997,29 @@ overlaps the np signal; the king-position increment doesn't pay for the added
 noise. King-conditioned eval bias, if it exists, isn't captured cheaply by a
 zobrist-keyed corrhist bucket. Not retuned (per H1 lesson: the corrhist cluster is
 #2664-calibrated; a branch retune chases noise). Branch not merged.
+
+## 2026-07-10 — Persistent-state audit Tier-1 wave: C2 TM fix H1 (merged); TT cross-engine experiments
+
+Context: the corrhist raw-baseline win prompted a systematic hunt for the same
+bug class (persistent + self-updating + feedback + self-play-invisible) —
+candidate list + Tier-1 investigation results in
+`docs/persistent_state_audit_candidates_2026-07-10.md`. C1 (threat pipeline)
+came back CLEAN over 8.3M panic-armed verified evals; the detector + gap
+fuzzer are now permanent (`test/threat-verifier-coverage`, merged). C2 and the
+C3 cross-engine follow-ups were SPRT'd:
+
+| OB # | Branch | Bounds | Result | Verdict |
+|---|---|---|---|---|
+| 2683 | `fix/tm-cross-publish-gate` | [-2,1] | `+0.9 ±1.4`, 51.0k, LLR 2.96, **H1 ✓** | **MERGED.** C2 fix: `tm_cross_prev_score` was written by EVERY search (ponder searches on the *predicted* position, analysis go's) but consumed as "previous move's final score"; reproduced pinning Factor-5 at the 1.55 ceiling (+55% opt) on the move after a ponder miss. Publish now gated to played-move searches (P1 instant-reply + low-time stop paths now mark `ponderhit_time`); guards widened `is_mate_score`→`is_decisive` (TB scores slipped under). OB measures the inert path — deployment (lichess ponder, ~36% miss rate) carries the real gain. |
+| 2684 | `experiment/tt-near-miss-removal` | [-2,1] | `-4.1 ±2.8`, 16.2k, LLR -2.97, **H0 ✗** | **KEEP the near-miss feature — removal clearly regresses.** Notable: it is a genuine 0/6 field divergence (no reference accepts shallower entries with a score margin; the synthetic `±80` return re-enters the TT via parent stores), yet it earns real Elo in Coda. Logged as an INTENTIONAL divergence so future audits don't re-flag it. Removal was measured against near-miss-calibrated tunables (bench +22%), so part of the −4.1 is calibration, but the deficit is too large for retune-rescue (track record poor: P1.3/P1.7/P3.1). |
+| 2686 | `experiment/qs-ttpv-sticky` | [-1,2] | `-0.9 ±1.5`, 52.8k, LLR -2.98, **H0 ✗** | NOT merged. Field-unanimous mechanism (all 6 references preserve tt_pv through qsearch; Coda's QS stores strip it) but measures slightly negative here — the strip is at worst harmless for Coda. |
+| 2685 | `experiment/tt-damp-raw-return` | [-2,1] | in flight (~78k, `-0.2 ±1.3`) | 6/6 references return raw tt_score on LOWER cutoffs; Coda blends toward beta. Pending. |
+| 2687 | `experiment/tt-tb-50mr-downgrade` | [-2,1] | in flight (~93k, `+0.1 ±1.1`, LLR ~1.8-2.2) | Mate+TB-band 50mr downgrade moved into `score_from_tt` (every read sanitized, SF/Reckless shape); also fixed a ply double-count in the old check. Pending; trending H1. |
+
+Cross-engine verdicts that DROPPED suspicion (do not re-audit without new
+evidence): sticky `tt_pv` absorbing semantics (6/6 consensus, SF/Reckless
+stickier than us), generation-as-replacement-only (0/6 gate read-time trust on
+age), ProbCut store shape (depth−3/LOWER/sticky ttPv = SF/Obsidian/Alexandria
+exact). Meta-lesson reinforced: field-consensus ≠ Coda-optimal in EITHER
+direction — the 0/6-divergent near-miss earns Elo, the 6/6-consensus QS-ttPv
+preservation loses it. SPRT the mechanism, don't port the consensus blindly.
