@@ -139,3 +139,20 @@ Zobrist) is **Zeus's** next structural candidate, to be built and tested on the
 H1-retuned baseline once H1 lands. So Zeus owns the two remaining structural
 levers (H1, H2); Hercules's items (H3–H6, second-order-hist) are resolved or in
 flight.
+
+### Bottom-row (untouched) disposition — 2026-07-10 (Zeus)
+
+Reviewed H7/M1/M2/M3/M4/M5/L1 against the well-calibrated post-#2664 baseline.
+**Most fold into workstreams already owned, none needs a new independent track:**
+
+| item | disposition |
+|---|---|
+| **M4** check-conditioned cont-corr | **Fold into H1.** It's an extra `[in_check]` dimension on the *paired* cont-corr (Reckless keys cont-corr on check). Add as an H1 follow-up *only if H1's base form lands* — don't gold-plate an unproven feature. |
+| **M2** king-in-non_pawn_key | **Fold into H2.** Same question as H2 ("what pieces belong in a correction key"), same board-Zobrist machinery — bundle them. Its original #2144 H0 was **bench-flip-confounded** (invalid), so it earns a clean read anyway. Best Elo-EV of the leftovers. |
+| **L1** collapse two-stage divide | **Worth it, low priority, `[-2,1]`.** Real precision loss (`/DIV` then `/GRAIN_T` truncates twice), but ~0 Elo (precision/clarity win) and it perturbs the just-tuned `DIV`/`GRAIN_T`. Do opportunistically, not while H1 is settling. |
+| **H7** bad-capture training | **Skip.** Against reference consensus — SF/most engines deliberately gate captures OUT of the corrhist update; the −0.4 H0 is consistent with that, baseline-independent. |
+| **M1** multicut-corrhist | **Skip.** Rare path → tiny effect, poor SNR. |
+| **M3** eval-delta nudge / wall-pawn malus | **Skip.** Not correction history (main-hist/eval terms), vague, lowest confidence. |
+| **M5** update-during-SE | **Skip.** Audit lists Coda's not-updating-during-SE as "what Coda gets right" (matches refs); a re-test would just re-confirm the H0. |
+
+So Zeus's corrhist queue is: **H1** (in flight: untuned #2675 + retune #2676) → **H2 (+M2 bundled)** → **M4** (H1 extension, if H1 lands) → **L1** (cleanup). H7/M1/M3/M5 dropped.
