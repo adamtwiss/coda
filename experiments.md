@@ -18961,3 +18961,19 @@ archetype (flat-raw → +Elo-tuned) inverted here because the cluster was alread
 well-calibrated by the #2664 full LTC retune; a 9-param STC branch retune chased
 noise and drifted off #2664's optimum. Bank the untuned structural change; skip
 the retune.
+
+## Stamped-x4 as GENERAL-PURPOSE data — H0, closed (2026-07-10)
+
+**SPRT #2680: stamped-x4-11 vs base-11, net-vs-net S400, [-1.5,1.5]: -2.0 ±2.0,
+LLR -2.97, H0 ✗** (33.3k games). Adding scale-corrected stamped-x4 SF-labelled data
+to the general training pool is a mild REGRESSION vs the same recipe without it.
+Predicted by net_report: eval quality was a dead wash (Spearman 0.849 vs 0.847,
+mean|err| 69.0=69.0, WB +93 vs +94) — the SF-15k labels are shallower than the
+800-MCTS LC0 pool, so as general-purpose data they dilute good signal and add noise.
+
+Same shape as blindspot data (helped weak base, died strong base). **Both
+corrective-data-as-GENERAL-PURPOSE directions now closed.** The remaining live
+hypothesis is stamped-as-STAGE-1-STEERING (mixed with DFRC/wrongIsRight/Farseer),
+where stamped-15k is quality-comparable to the existing 5000-node steering data and
+stage-2 LC0 reworks the fine eval — training now on gpu3 (multi-v9-s2-stampx4,
+prod recipe + stamped-x4 in stage1, vs prod E161C665 as control).
