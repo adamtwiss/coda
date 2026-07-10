@@ -18820,3 +18820,58 @@ confirmation that systematic, colour-symmetric eval-bias fixes CANCEL in
 self-play (both sides misjudge identically) but pay full value against a field
 that evaluates correctly. Methodological upshot: gate eval-quality/correctness
 fixes on cross-engine, not self-play SPRT alone (same carve-out as TM changes).
+
+## Stamped corrective corpus — SF-label scale fix ✓ (2026-07-10)
+
+The SF-vs-Coda "stamped" corpus (SF-to-move positions keep SF's deep datagen
+eval; Coda-to-move sentinel-dropped) had tested **neutral** as corrective data
+(#2652). Root cause found: the **SF datagen labels are on a ~4× compressed scale
+vs the LC0 T80 labels** they were mixed with — on the same coda net, coda~SF
+regression slope 2.2 vs coda~LC0 slope 0.51 → SF ≈ 0.23× LC0. Bullet applies one
+global `--in-scaling`, so mixing raw SF (compressed) + LC0 (wide) labels =
+**scale-inconsistent supervision** (the net told "+300 (T80) and +70 (SF)" for
+equivalent positions). Coda tracks SF at 0.92 corr once scale is removed — labels
+are good, only the scale was wrong.
+
+Fix: new chain-safe tool `coda-binpack-rescale` (reads the binpack, ×N the
+non-sentinel scores, clamp ±9999, sentinels untouched; pos/mv/order preserved →
+writer re-derives identical chains). Rescaled the 2407+2385 stamped corpus ×4
+(590.85M SF labels scaled). Two S200 arms, 4×T80 + stamped, same recipe/binary,
+differing ONLY ×1 vs ×4. net_report looked identical (Spearman 0.840/0.839 — both
+trained on the same T80 majority) but **bench differed 32%** (x1 3.36M, x4 2.27M)
+— the net genuinely changed. **SPRT #2665 x4 vs x1 net-vs-net [-1.5,1.5]: +2.3
+±2.2, LLR 2.96, H1 ✓.** The scale fix turns the neutral corpus into a real gain;
+the stamped corpus is now a usable corrective dataset (reopens the stage-1
+corrective-data plan). (Also: the coda~SF cp-scale gap ~2× means raw coda-cp vs
+SF-cp phantom-overscore comparisons were partly scale, not pure error — see the
+phantom doc.)
+
+## IIR-PV + nmp-deep-gate — scaling ports came back flat (2026-07-10)
+
+Two xu-shawn/scaling-motivated changes, both **non-regression, no win**:
+- **IIR less aggressive on PV** (`search/iir-pv-less-aggressive`, xu-shawn #6
+  well-scaling archetype): STC #2653 +0.5 ±1.4 (sub-midpoint, won't H1);
+  **LTC #2661 −0.6 ±1.6 H0 ✗ → dropped.** Doesn't scale for us.
+- **NMP depth-relaxed eval gate** (`search/nmp-deep-eval-gate`): STC #2628 +0.8
+  ±0.7 (won't H1 at [0,3]); LTC #2657 +0.2 → drifting H0. Non-reg, no LTC win.
+  Downward bench but no gain to bank. Re-check against retuned main post-#2664.
+
+xu-shawn's "these scale" thesis did not reproduce for our ports — both hold at
+both TCs but deliver no clear gain.
+
+## Main --core retune #2664 applied + validating; corr-uncertainty preliminary (2026-07-10)
+
+**#2664** (2500-iter LTC `--core` production retune on main, banking the
+corrhist-residual + mat_damp-removal downwind recalibration) finished. ~40 params
+moved double digits (CORR_HIST_DIV, the LMR history-consumption cluster,
+NMP/LMP/RFP) — confirming main was materially under-tuned after the eval-behaviour
+change. Applied to `tune/apply-2664` (bench 2381675 vs main 2090755, +14%); **SPRT
+#2666 retuned-main vs main [0,3] validating.** If H1 → merge → clean baseline for
+the downstream cascade (second-order clean re-test, corrhist re-test list, nmp
+re-check).
+
+**Futility `|corr|` uncertainty term** (`zeus/corr-uncertainty-pruning`, audit #2
+last structural gap): #2655 +0.0 H0 — but **preliminary**, run against
+fixed-but-*untuned* main. It's H4 on `docs/corrhist_retest_candidates_2026-07-09.md`;
+re-validate against the #2664-retuned baseline before concluding (the `|corr|`
+distribution changed under residual AND #2664 moved its futility interaction params).
