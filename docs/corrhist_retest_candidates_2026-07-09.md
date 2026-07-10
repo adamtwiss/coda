@@ -123,7 +123,8 @@ Retuned baseline is live (#2664 merged, +4.8 LTC). Re-tests fired against it:
 
 | item | status |
 |---|---|
-| **H1** 2-ply/4-ply cont-corr | **Zeus** — already prepped from his audit; he's starting it. (Hercules: hands off.) |
+| **H1** 2-ply/4-ply cont-corr | **Zeus — FIRED.** Implemented: flat 1-ply `[piece][to]` → paired 4D `[prev_piece][prev_to][cur_piece][cur_to]`, indexed by the last move (ply-1), subtable at ply-2 AND ply-4, summed; `ply` threaded through `corrected_eval`/`correction_value`/`update_correction_history` (incl. qsearch, clamped); `moved_piece_stack` (go_piece 1-12) for the older-ply pieces. Fortress + corrhist unit tests green (203/0). **Untuned SPRT #2675 `[0,3]`** (dev 2085296 vs main 2381675, −12% nodes). Per the archetype, expect flat untuned → **focused corrhist-cluster retune-on-branch is the definitive test**, then re-SPRT (and read cross-engine, per the #2500 lesson). |
+| **H2** minor-piece-key corr | **Zeus** — queued: implement once H1 lands and test on the **H1-retuned** baseline. New feature (not a re-add): incremental `minor_piece_key` Zobrist on the board (knights+bishops, ±king per SF) with make/unmake + recompute-verify parity, then a `minor_corr` source (`CORR_W_MINOR`). MEDIUM conviction (3/6 refs keep a proper minor key; the #1318 H0 was a *broken* key aliased to `non_pawn_key`). |
 | **H3** trans_corr ablation | **RESOLVED — keep.** Ablation #2670 −3.0 H0 (removing trans costs real Elo). |
 | **H4** futility \|corr\| | **~neutral.** #2671 +0.6 →H0 (sub-midpoint, won't H1). Non-reg, not merge-worthy alone. |
 | **H5** threat-bb source | **regresses untuned** (#2672 −3.5 H0). Adds a 6th source without a DIV rebalance → over-corrects; low prior (threats ~0 corr with eval error). Lean drop unless a CORR_W_THREAT_BB+DIV retune is wanted. |
@@ -133,5 +134,8 @@ Retuned baseline is live (#2664 merged, +4.8 LTC). Re-tests fired against it:
 **Read so far:** the residual fix + #2664 got the corrhist subsystem into good
 shape — the re-tests mostly confirm it's well-calibrated (trans valuable, |corr|
 -futility ~neutral, threat-bb not additive). The one real structural lever left
-is **H1 (Zeus)**. H2 (minor-piece-key, needs a new board Zobrist) is the next
-structural candidate if H1 lands.
+is **H1 (Zeus — fired, #2675)**. **H2** (minor-piece-key, needs a new board
+Zobrist) is **Zeus's** next structural candidate, to be built and tested on the
+H1-retuned baseline once H1 lands. So Zeus owns the two remaining structural
+levers (H1, H2); Hercules's items (H3–H6, second-order-hist) are resolved or in
+flight.
