@@ -905,6 +905,176 @@ mod incremental_tests {
         }
     }
 
+    /// C1 gap-fuzzer (2026-07-10): the original fuzzer above is forward-only
+    /// (never pops/unmakes) and calls ensure_computed after EVERY move, so
+    /// every replay has gap == 1 and the pop/re-push and gap >= 2 replay
+    /// paths (update/update_dual spanning multiple plies, ancestors found
+    /// below stale popped entries) were never exercised. This one does a
+    /// random DFS walk: push+make+absorb, pop+unmake, and only verifies
+    /// (ensure_computed + scratch-enumeration compare) on a random subset
+    /// of steps, so gaps of 2..8+ plies and post-pop stale-entry reuse
+    /// occur constantly.
+    #[test]
+    fn fuzz_random_walk_with_pops_and_lazy_gaps() {
+        run_fuzz_walk_with_pops();
+    }
+
+    fn run_fuzz_walk_with_pops() {
+        crate::init();
+        let nf = num_threat_features();
+        let weights = make_weights(nf);
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "4k3/P6P/8/8/8/8/p6p/4K3 w - - 0 1",
+            // castling-heavy, kings near the e-file mirror boundary
+            "r3k2r/pppq1ppp/2n1pn2/3p4/3P4/2N1PN2/PPPQ1PPP/R3K2R w KQkq - 0 1",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *state = x;
+            x
+        }
+
+        // Scratch check: enumerate from scratch into a local buffer, compare.
+        fn verify(incr: &mut ThreatStack, board: &Board, weights: &[i8], nf: usize,
+                  tag: &str, seed: u32, step: usize, gap_hist: &mut [u64; 32]) {
+            // Record the replay gap this ensure_computed will take (per pov,
+            // record the max) BEFORE it runs, for coverage reporting.
+            for pov in [WHITE, BLACK] {
+                if !incr.current().accurate[pov as usize] {
+                    if let Some(anc) = incr.can_update(pov) {
+                        let g = (incr.index() - anc).min(31);
+                        gap_hist[g] += 1;
+                    } else {
+                        gap_hist[0] += 1; // full refresh bucket
+                    }
+                }
+            }
+            incr.ensure_computed(weights, nf, board);
+            let occ = board.colors[0] | board.colors[1];
+            for pov in [WHITE, BLACK] {
+                let ksq = (board.pieces[KING as usize] & board.colors[pov as usize])
+                    .trailing_zeros();
+                let mirrored = (ksq % 8) >= 4;
+                let mut check = vec![0i16; H];
+                crate::threats::enumerate_threats(
+                    &board.pieces, &board.colors, &board.mailbox,
+                    occ, pov, mirrored,
+                    |idx| {
+                        if idx < nf {
+                            let w = idx * H;
+                            for j in 0..H { check[j] += weights[w + j] as i16; }
+                        }
+                    },
+                );
+                let live = incr.values(pov);
+                if &check[..] != live {
+                    let mut first = None;
+                    for j in 0..H {
+                        if check[j] != live[j] { first = Some((j, live[j], check[j])); break; }
+                    }
+                    let (j, av, bv) = first.unwrap();
+                    panic!(
+                        "gap-fuzz divergence: {} seed={:#x} step={} pov={} fen=\"{}\" \
+                         ch{} incr={} scratch={} (stack index {})",
+                        tag, seed, step,
+                        if pov == WHITE { "W" } else { "B" },
+                        board.to_fen(), j, av, bv, incr.index(),
+                    );
+                }
+            }
+        }
+
+        const STEPS: usize = 400;
+        const WALKS_PER_FEN: usize = 8;
+        const MAX_DEPTH: usize = 24;
+        let mut gap_hist = [0u64; 32];
+
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for walk in 0..WALKS_PER_FEN {
+                let seed: u32 = 0xC0DA_C1u32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((walk as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::new();
+                board.set_fen(fen);
+                board.generate_threat_deltas = true;
+
+                let mut incr = ThreatStack::new(H);
+                incr.active = true;
+                incr.refresh(&weights, nf, &board, WHITE);
+                incr.refresh(&weights, nf, &board, BLACK);
+
+                // Track which made plies were null so we call the right unmake.
+                let mut null_stack: Vec<bool> = Vec::new();
+                let unmake_one = |board: &mut Board, incr: &mut ThreatStack,
+                                      null_stack: &mut Vec<bool>| {
+                    incr.pop();
+                    if null_stack.pop().unwrap() {
+                        board.unmake_null_move();
+                    } else {
+                        board.unmake_move();
+                    }
+                };
+                for step in 0..STEPS {
+                    let action = next_u32(&mut rng) % 100;
+                    let depth = null_stack.len();
+                    if action < 35 && depth > 0 {
+                        // ~35%: pop + unmake
+                        unmake_one(&mut board, &mut incr, &mut null_stack);
+                    } else if action >= 90 && depth < MAX_DEPTH && !board.in_check()
+                        && !null_stack.last().copied().unwrap_or(false)
+                    {
+                        // ~10%: null-move ply (search does this in NMP / RFP audit)
+                        incr.push(NO_MOVE, NO_PIECE_TYPE);
+                        board.make_null_move();
+                        null_stack.push(true);
+                    } else if depth < MAX_DEPTH {
+                        // ~55%: push + make + absorb
+                        let legal = generate_legal_moves(&board);
+                        if legal.len == 0 {
+                            if depth == 0 { break; }
+                            unmake_one(&mut board, &mut incr, &mut null_stack);
+                            continue;
+                        }
+                        let mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
+                        incr.push(NO_MOVE, NO_PIECE_TYPE);
+                        let ok = board.make_move(mv);
+                        assert!(ok, "gap-fuzz: legal move rejected");
+                        incr.absorb_deltas(&board);
+                        null_stack.push(false);
+                    } else {
+                        unmake_one(&mut board, &mut incr, &mut null_stack);
+                    }
+                    // Verify only on ~1/4 of steps so replay gaps build up.
+                    if next_u32(&mut rng) % 4 == 0 {
+                        verify(&mut incr, &board, &weights, nf,
+                               &format!("fen{} walk{}", fen_idx, walk), seed, step,
+                               &mut gap_hist);
+                    }
+                }
+                // Final verification at wherever the walk ended.
+                verify(&mut incr, &board, &weights, nf,
+                       &format!("fen{} walk{} (final)", fen_idx, walk), seed, STEPS,
+                       &mut gap_hist);
+            }
+        }
+        // Coverage: prove gaps >= 2 were actually exercised.
+        eprintln!("gap-fuzz replay-gap histogram (0 = full refresh): {:?}", &gap_hist[..12]);
+        let multi: u64 = gap_hist[2..].iter().sum();
+        assert!(multi > 100,
+            "gap-fuzz did not exercise replay gaps >= 2 (histogram {:?})", &gap_hist[..12]);
+    }
+
     /// The whole incremental suite (all curated scenarios + the fuzzer)
     /// with the AVX2 splat path FORCED via the thread-local
     /// SPLAT_TEST_FORCE. On this AVX-512 dev host the default dispatch
