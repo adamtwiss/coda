@@ -149,3 +149,42 @@ SPRT the tuned values `[0, 3]` before merge.
 - Baseline shape numbers and decomposition PGNs: Atlas
   `/tmp/claude-1001/.../scratchpad/run{B,A150,A500,C}*.{log,pgn}` (session
   2026-07-10); re-derive with tm_pattern_inspect.py if needed.
+
+## Phase 0 RESULTS (2026-07-10, 200 games vs SF17 @10+0.1 conc 8, 12,136 moves)
+
+**Q1 — subtree factor (C1): CONFIRMED.** The "confidence" factor inflates
+66% of all frac-computed moves (median subf 1.12, p90 1.72). Only 33% of
+moves reach the frac>0.905 deflate zone; the 0.70–0.905 band (32% of moves —
+high confidence!) still gets 1.0–1.29× inflation.
+
+**Q2 — stability floor (C2): CONFIRMED, stronger than designed.** 58% of
+moves stop at stability 10+, another 17% at 6–9 → ~75% of all moves saturate
+the table at index 4 and share the same 0.75 floor. A stab-15 dead recapture
+and a stab-4 position get identical treatment. Extend the decay tail through
+stab ~8–10 (toward 0.60), not just 2 extra entries.
+
+**Q3 — quantization (C4): borderline-GO, reshaped.** 56% of moves overshoot
+the in-force budget by >20% (28% by 20–50%, 17.5% by 50–100%, 10.7% by
+>100%); median overshoot among overshooters 29% (design gate was 40%).
+Key observation: the next-iteration affordability estimate (2× last iter)
+guards only the HARD limit — there is no soft-side "don't start an iteration
+that will blow past adjusted_soft" check. That one-sided gate is a cheaper
+C4 than mid-iteration aborts and directly attacks the >100% tail.
+
+**NEW — fail-low factor is not a precision signal (C3 DEMOTED).** flf
+p10/p50/p90 = 1.00/1.34/1.68: more than half of all searches hit ≥1
+aspiration fail-low, so the "hard move" extension fires on the majority of
+moves and inflates the median rather than the tail. Raising it (original C3)
+would flatten FURTHER. Either the aspiration windows are too narrow (check
+ASP_* calibration vs peers — separate diagnostic thread) or the fail-low
+counter needs a depth/severity gate before it deserves a bigger multiplier.
+
+**Factor medians (p10/p50/p90):** stabf 0.75/0.75/1.20 · flf 1.00/1.34/1.68 ·
+forcedf 0.63/1.00/1.00 · subf 0.91/1.11/1.72 · trendf 0.91/1.00/1.11 →
+product 0.66/1.17/2.56. The median MOVE runs at 1.17× soft despite the
+stability floor: flf and subf systematically cancel the stability discount.
+That is the flat-spend mechanism in one line.
+
+**Revised Phase-1 order: C2 (extend stability decay) → C1 (subtree
+re-center) → C4' (soft-side next-iteration gate) → C3 parked pending
+aspiration-window review.**
