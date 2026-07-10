@@ -182,16 +182,17 @@ tunables!(
     // lift BASE if beneficial. MULT starts at SF's 2.315.
     (TM_BMC_INSTAB_BASE, 1000, 900, 1500, 25.0, false),
     (TM_BMC_INSTAB_MULT, 2315, 500, 4000, 100.0, false),
-    // Subtree-factor base (C1, docs/tm_spikiness_experiment_2026-07-10.md).
-    // Factor = (BASE/100 - best_move_node_fraction) * 1.4, floor 0.55. The
-    // inherited Viridithas base 1.62 makes the factor neutral only at
-    // frac=0.905 — Phase-0 instrumentation (12k moves) showed it INFLATING
-    // 66% of moves (median 1.12x), including a third of moves in the
-    // high-confidence 0.70-0.905 band. 130 moves the neutral point to
-    // frac = 1.30 - 1/1.4 ~= 0.59, so confident moves (frac 0.6-0.9) shed
-    // time instead of gaining it while genuinely contested moves still gain.
-    // Not --core (TM tuned deliberately, never swept by STC core retune).
-    (TM_SUBTREE_BASE_100, 130, 100, 180, 4.0, false),
+    // Subtree-factor base (docs/tm_spikiness_experiment_2026-07-10.md).
+    // Factor = (BASE/100 - best_move_node_fraction) * 1.4, floor 0.55 (the
+    // floor cannot bind at the 1.62 default — frac would need to exceed 1.23
+    // — so default behavior is identical to the pre-tunable formula).
+    // Phase-0 showed the factor inflating 66% of moves (neutral only at
+    // frac=0.905), but the re-center probe (130) was −48 Elo differential vs
+    // SF17/SF18 while EVEN in Coda self-play: "our best move dominated our
+    // own search" is a bad confidence proxy against stronger opponents, and
+    // the up-bias is insurance. DO NOT put this in any OB SPSA — self-play
+    // cannot see the cross-engine cost; deliberate cross-engine RR only.
+    (TM_SUBTREE_BASE_100, 162, 100, 180, 4.0, false),
     // Low-inc absolute single-move ceiling (2026-06-22, overspend PART2).
     // inc_cover (PART1) caps the factor MULTIPLIER, so adjusted_soft stays
     // ~11% of clock — but a single deep iteration that starts just under
