@@ -51,6 +51,14 @@ struct Args {
     /// Log progress every N games
     #[arg(long, default_value_t = 5000)]
     progress_every: u64,
+    /// Multiply the SF-mover eval by this factor before writing. SF datagen cp is
+    /// ~0.23x the LC0 T80 label scale, so mixing raw SF labels into a T80-majority
+    /// Bullet run at one --in-scaling is scale-inconsistent supervision. Use ~4.0
+    /// to put SF labels on the T80/LC0 scale. Result clamps to ±9999 (stays a
+    /// trainable non-sentinel label — no positions drop; the decisive tail just
+    /// saturates). Default 1.0 = unchanged.
+    #[arg(long, default_value_t = 1.0)]
+    score_scale: f64,
 }
 
 /// shakmaty Move -> sfbinpack Move (king->rook castling, EP, promotion).
@@ -110,6 +118,7 @@ struct Stamper {
     white_res: Option<i16>,
     sf_player: String,
     sentinel: i16,
+    score_scale: f64,
     writer: CompressedTrainingDataEntryWriter<BufWriter<std::fs::File>>,
     pending: Option<(String, SfMove, u16, i16, bool)>, // fen, sfmove, ply, result, is_sf_mover
     pub games: u64,
@@ -169,7 +178,10 @@ impl Visitor for Stamper {
         // SF-mover keeps its parsed eval; Coda-mover gets the filtered sentinel
         // (no eval parse needed for the Coda half — it's discarded at train time).
         let score = if is_sf {
-            match parse_eval(comment.as_bytes()) { Some(c) => { self.kept += 1; c } None => return }
+            match parse_eval(comment.as_bytes()) {
+                Some(c) => { self.kept += 1; ((c as f64) * self.score_scale).round().clamp(-9999.0, 9999.0) as i32 }
+                None => return
+            }
         } else {
             self.stamped += 1;
             self.sentinel as i32
@@ -206,6 +218,7 @@ fn main() {
     let mut v = Stamper {
         pos: Chess::default(), white: String::new(), black: String::new(),
         white_res: None, sf_player: a.sf_player.clone(), sentinel: a.sentinel,
+        score_scale: a.score_scale,
         writer, pending: None,
         games: 0, positions: 0, stamped: 0, kept: 0,
         cur_sf: None,

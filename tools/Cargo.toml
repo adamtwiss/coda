@@ -18,6 +18,10 @@ path = "src/filterstats.rs"
 name = "coda-stamp"
 path = "src/stamp.rs"
 
+[[bin]]
+name = "coda-binpack-rescale"
+path = "src/rescale.rs"
+
 [dependencies]
 # Same external crates the engine uses for I/O — format compatibility comes from
 # sharing the `sfbinpack` crate, NOT from depending on the engine's code.
