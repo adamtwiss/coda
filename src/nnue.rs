@@ -2257,6 +2257,116 @@ unsafe fn neon_l1_int8_dot_sparse(packed: &[u8], weights: &[i8], nnz_indices: &[
     vaddvq_s32(vaddq_s32(sum0, sum1))
 }
 
+// ---------------------------------------------------------------------------
+// ARM dot-product L1 kernels (the NEON analogue of x86 VNNI / VPDPBUSD).
+//
+// The `vdotq_s32` / `vusdotq_s32` intrinsics are still unstable on stable
+// Rust (`stdarch_neon_dotprod` #117224, `stdarch_neon_i8mm` #117223), and
+// Coda is stable-only, so we emit the instructions via inline `asm!`. Both
+// are `pure, nomem, nostack` — register-only, output depends solely on the
+// inputs. Swap to the intrinsics when they stabilise.
+//
+// Kernels compute the SAME int32 accumulation as `neon_l1_int8_dot_x4`
+// (`vmlal` widening), so the network output is bit-identical — these are a
+// pure-NPS swap, never an eval change.
+// ---------------------------------------------------------------------------
+
+/// SDOT (dotprod): `acc[lane] += Σ_{4} a·b` for signed i8 inputs.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "dotprod")]
+#[inline]
+unsafe fn vsdot(acc: int32x4_t, a: int8x16_t, b: int8x16_t) -> int32x4_t {
+    let mut out = acc;
+    std::arch::asm!(
+        "sdot {o:v}.4s, {a:v}.16b, {b:v}.16b",
+        o = inout(vreg) out, a = in(vreg) a, b = in(vreg) b,
+        options(pure, nomem, nostack),
+    );
+    out
+}
+
+/// USDOT (i8mm): `acc[lane] += Σ_{4} a·b` for unsigned a (u8) × signed b (i8).
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "i8mm")]
+#[inline]
+unsafe fn vusdot(acc: int32x4_t, a: uint8x16_t, b: int8x16_t) -> int32x4_t {
+    let mut out = acc;
+    std::arch::asm!(
+        "usdot {o:v}.4s, {a:v}.16b, {b:v}.16b",
+        o = inout(vreg) out, a = in(vreg) a, b = in(vreg) b,
+        options(pure, nomem, nostack),
+    );
+    out
+}
+
+/// L1 int8 matmul x4 via i8mm USDOT. Packed activations are u8 [0,254],
+/// weights i8 — USDOT does u8×i8 directly, no sign correction. One dot
+/// instruction per 16-byte chunk per neuron replaces 4 widening MLALs.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "i8mm")]
+unsafe fn neon_l1_int8_dot_x4_i8mm(
+    packed: &[u8],
+    w0: &[i8], w1: &[i8], w2: &[i8], w3: &[i8],
+    h: usize,
+) -> [i32; 4] {
+    let mut s0 = vdupq_n_s32(0);
+    let mut s1 = vdupq_n_s32(0);
+    let mut s2 = vdupq_n_s32(0);
+    let mut s3 = vdupq_n_s32(0);
+    let mut i = 0;
+    while i < h {
+        let a = vld1q_u8(packed.as_ptr().add(i)); // loaded once, shared
+        s0 = vusdot(s0, a, vld1q_s8(w0.as_ptr().add(i)));
+        s1 = vusdot(s1, a, vld1q_s8(w1.as_ptr().add(i)));
+        s2 = vusdot(s2, a, vld1q_s8(w2.as_ptr().add(i)));
+        s3 = vusdot(s3, a, vld1q_s8(w3.as_ptr().add(i)));
+        i += 16;
+    }
+    [vaddvq_s32(s0), vaddvq_s32(s1), vaddvq_s32(s2), vaddvq_s32(s3)]
+}
+
+/// L1 int8 matmul x4 via dotprod SDOT (signed×signed). SDOT needs both
+/// operands signed, but activations are u8 [0,254]. Map `s = u XOR 0x80`
+/// (= `u − 128` in i8); then `Σ u·w = Σ s·w + 128·Σ w`. The `Σ s·w` term is
+/// one SDOT/neuron; the `128·Σ w` correction is a second SDOT of the weights
+/// against an all-ones vector (v1: computed on the fly, self-contained. A
+/// follow-up can precompute `128·Σ w` per neuron at load to drop it). The
+/// XOR of the activations is shared across all four neurons.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "dotprod")]
+unsafe fn neon_l1_int8_dot_x4_dotprod(
+    packed: &[u8],
+    w0: &[i8], w1: &[i8], w2: &[i8], w3: &[i8],
+    h: usize,
+) -> [i32; 4] {
+    let bias = vdupq_n_u8(0x80);
+    let ones = vdupq_n_s8(1);
+    let mut s0 = vdupq_n_s32(0); let mut c0 = vdupq_n_s32(0);
+    let mut s1 = vdupq_n_s32(0); let mut c1 = vdupq_n_s32(0);
+    let mut s2 = vdupq_n_s32(0); let mut c2 = vdupq_n_s32(0);
+    let mut s3 = vdupq_n_s32(0); let mut c3 = vdupq_n_s32(0);
+    let mut i = 0;
+    while i < h {
+        // s = (u XOR 0x80) as i8 = u - 128, shared across the four neurons.
+        let a = vreinterpretq_s8_u8(veorq_u8(vld1q_u8(packed.as_ptr().add(i)), bias));
+        let b0 = vld1q_s8(w0.as_ptr().add(i));
+        let b1 = vld1q_s8(w1.as_ptr().add(i));
+        let b2 = vld1q_s8(w2.as_ptr().add(i));
+        let b3 = vld1q_s8(w3.as_ptr().add(i));
+        s0 = vsdot(s0, a, b0); c0 = vsdot(c0, ones, b0);
+        s1 = vsdot(s1, a, b1); c1 = vsdot(c1, ones, b1);
+        s2 = vsdot(s2, a, b2); c2 = vsdot(c2, ones, b2);
+        s3 = vsdot(s3, a, b3); c3 = vsdot(c3, ones, b3);
+        i += 16;
+    }
+    [
+        vaddvq_s32(s0) + 128 * vaddvq_s32(c0),
+        vaddvq_s32(s1) + 128 * vaddvq_s32(c1),
+        vaddvq_s32(s2) + 128 * vaddvq_s32(c2),
+        vaddvq_s32(s3) + 128 * vaddvq_s32(c3),
+    ]
+}
+
 /// Detect AVX2 support at runtime.
 fn detect_avx2() -> bool {
     #[cfg(target_arch = "x86_64")]
@@ -2319,6 +2429,26 @@ fn detect_neon() -> bool {
     { false }
 }
 
+/// Detect ARM dotprod (SDOT/UDOT), ARMv8.2. Present on all Apple M-series,
+/// Graviton2+, and most modern ARM cores. Enables the fused int8 L1 dot —
+/// the NEON analogue of x86 VNNI.
+fn detect_dotprod() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    { std::arch::is_aarch64_feature_detected!("dotprod") }
+    #[cfg(not(target_arch = "aarch64"))]
+    { false }
+}
+
+/// Detect ARM i8mm (USDOT), ARMv8.6. Apple M2+, Graviton3+. Gives a direct
+/// unsigned×signed dot with no sign correction — cleaner and cheaper than
+/// the dotprod SDOT path (which needs the `128·Σw` fixup).
+fn detect_i8mm() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    { std::arch::is_aarch64_feature_detected!("i8mm") }
+    #[cfg(not(target_arch = "aarch64"))]
+    { false }
+}
+
 /// Global "load any net even on training/inference config mismatch" override.
 /// Set via the `--load-anyway` CLI flag or UCI option `LoadAnyway`. Refuses
 /// mismatches by default (noisy — crashes the engine startup) so mismatches
@@ -2377,7 +2507,11 @@ pub enum L1Kernel {
     DenseAvx2,
     /// AVX2 row-major 4-neuron dots.
     RowMajorAvx2,
-    /// NEON row-major 4-neuron dots.
+    /// NEON i8mm (USDOT) row-major 4-neuron dots (u8×i8 fused, no fixup).
+    NeonI8mmX4,
+    /// NEON dotprod (SDOT) row-major 4-neuron dots (sign-corrected u8×i8).
+    NeonDotprodX4,
+    /// NEON row-major 4-neuron dots (vmlal widening fallback).
     NeonX4,
     /// Scalar fallback (also the placeholder for non-pairwise nets,
     /// which never consult this enum).
@@ -2402,6 +2536,8 @@ fn select_l1_kernel(
     has_avx512_vnni: bool,
     has_avx_vnni: bool,
     has_neon: bool,
+    has_dotprod: bool,
+    has_i8mm: bool,
 ) -> L1Kernel {
     if !use_pairwise {
         return L1Kernel::Scalar;
@@ -2443,11 +2579,19 @@ fn select_l1_kernel(
     #[cfg(target_arch = "aarch64")]
     {
         if has_neon && pw.is_multiple_of(16) && have_8t {
+            // i8mm (USDOT, no fixup) > dotprod (SDOT + fixup) > vmlal.
+            if has_i8mm {
+                return L1Kernel::NeonI8mmX4;
+            }
+            if has_dotprod {
+                return L1Kernel::NeonDotprodX4;
+            }
             return L1Kernel::NeonX4;
         }
     }
     let _ = (l1, bucketed_hidden, pw, col_ok, have_8t, x2_safe,
-             has_avx2, has_avx512, has_avx512_vnni, has_avx_vnni, has_neon);
+             has_avx2, has_avx512, has_avx512_vnni, has_avx_vnni,
+             has_neon, has_dotprod, has_i8mm);
     L1Kernel::Scalar
 }
 
@@ -2894,6 +3038,8 @@ impl NNUENet {
         let has_avx512_vnni = detect_avx512_vnni();
         let has_avx_vnni = detect_avx_vnni();
         let has_neon = detect_neon();
+        let has_dotprod = detect_dotprod();
+        let has_i8mm = detect_i8mm();
         if has_avx512_vnni {
             println!("info string AVX-512 + VNNI detected — using VPDPBUSD int8 matmul");
         } else if has_avx512 {
@@ -2902,6 +3048,10 @@ impl NNUENet {
             println!("info string AVX2 + AVX-VNNI detected — using VPDPBUSD int8 matmul");
         } else if has_avx2 {
             println!("info string AVX2 SIMD detected — using vectorised NNUE inference");
+        } else if has_i8mm {
+            println!("info string NEON + i8mm detected — using USDOT int8 matmul");
+        } else if has_dotprod {
+            println!("info string NEON + dotprod detected — using SDOT int8 matmul");
         } else if has_neon {
             println!("info string NEON SIMD detected — using vectorised NNUE inference");
         }
@@ -2967,6 +3117,8 @@ impl NNUENet {
             has_avx512_vnni,
             has_avx_vnni,
             has_neon,
+            has_dotprod,
+            has_i8mm,
         );
 
         Ok(NNUENet {
@@ -3312,6 +3464,57 @@ impl NNUENet {
         // L1 matmul. Kernel choice is net/CPU-static and cached at load
         // (`select_l1_kernel`) — see the `L1Kernel` docs for why the
         // column-major arms exclude bucketed-hidden nets.
+        //
+        // The three NEON row-major arms differ only in the x4 dot kernel
+        // (`$x4`), so they share one macro to stay identical-by-construction.
+        // The <4-neuron tail always uses `neon_l1_int8_dot` (vmlal): it only
+        // runs when l1 % 4 != 0 (never for the prod l1=32 shape), and any
+        // kernel gives the same integer dot, so mixing is bit-safe.
+        #[cfg(target_arch = "aarch64")]
+        macro_rules! neon_x4_arm {
+            ($x4:path) => {{
+                seed_hidden32!();
+                let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
+                let ntm_base = l1_total * pw;
+                let mut i = 0;
+                while i + 4 <= l1 {
+                    let gi = l1_off + i;
+                    unsafe {
+                        let stm_results = $x4(
+                            &stm_pw[..pw],
+                            &self.l1_weights_8t[gi * pw..(gi + 1) * pw],
+                            &self.l1_weights_8t[(gi + 1) * pw..(gi + 2) * pw],
+                            &self.l1_weights_8t[(gi + 2) * pw..(gi + 3) * pw],
+                            &self.l1_weights_8t[(gi + 3) * pw..(gi + 4) * pw],
+                            pw,
+                        );
+                        let ntm_results = $x4(
+                            &ntm_pw[..pw],
+                            &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw],
+                            &self.l1_weights_8t[ntm_base + (gi + 1) * pw..ntm_base + (gi + 2) * pw],
+                            &self.l1_weights_8t[ntm_base + (gi + 2) * pw..ntm_base + (gi + 3) * pw],
+                            &self.l1_weights_8t[ntm_base + (gi + 3) * pw..ntm_base + (gi + 4) * pw],
+                            pw,
+                        );
+                        for k in 0..4 {
+                            hidden32[i + k] += stm_results[k] + ntm_results[k];
+                        }
+                    }
+                    i += 4;
+                }
+                // Tail (if l1 not divisible by 4) — vmlal single-neuron.
+                while i < l1 {
+                    let gi = l1_off + i;
+                    let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
+                    let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
+                    unsafe {
+                        hidden32[i] += neon_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
+                        hidden32[i] += neon_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
+                    }
+                    i += 1;
+                }
+            }};
+        }
         match self.l1_kernel {
             #[cfg(target_arch = "x86_64")]
             L1Kernel::DenseAvx512Vnni => {
@@ -3522,50 +3725,11 @@ impl NNUENet {
                 }
             }
             #[cfg(target_arch = "aarch64")]
-            L1Kernel::NeonX4 => {
-                seed_hidden32!();
-                let hidden32 = scratch_slice!(mut hidden32_ptr, l1);
-                let ntm_base = l1_total * pw;
-                // Multi-neuron: 4 neurons at once, loading each input chunk once
-                // and feeding all 4 accumulators (mirrors x86_64 simd_l1_int8_dot_x4).
-                let mut i = 0;
-                while i + 4 <= l1 {
-                    let gi = l1_off + i;
-                    unsafe {
-                        let stm_results = neon_l1_int8_dot_x4(
-                            &stm_pw[..pw],
-                            &self.l1_weights_8t[gi * pw..(gi + 1) * pw],
-                            &self.l1_weights_8t[(gi + 1) * pw..(gi + 2) * pw],
-                            &self.l1_weights_8t[(gi + 2) * pw..(gi + 3) * pw],
-                            &self.l1_weights_8t[(gi + 3) * pw..(gi + 4) * pw],
-                            pw,
-                        );
-                        let ntm_results = neon_l1_int8_dot_x4(
-                            &ntm_pw[..pw],
-                            &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw],
-                            &self.l1_weights_8t[ntm_base + (gi + 1) * pw..ntm_base + (gi + 2) * pw],
-                            &self.l1_weights_8t[ntm_base + (gi + 2) * pw..ntm_base + (gi + 3) * pw],
-                            &self.l1_weights_8t[ntm_base + (gi + 3) * pw..ntm_base + (gi + 4) * pw],
-                            pw,
-                        );
-                        for k in 0..4 {
-                            hidden32[i + k] += stm_results[k] + ntm_results[k];
-                        }
-                    }
-                    i += 4;
-                }
-                // Tail (if l1 not divisible by 4)
-                while i < l1 {
-                    let gi = l1_off + i;
-                    let stm_w = &self.l1_weights_8t[gi * pw..(gi + 1) * pw];
-                    let ntm_w = &self.l1_weights_8t[ntm_base + gi * pw..ntm_base + (gi + 1) * pw];
-                    unsafe {
-                        hidden32[i] += neon_l1_int8_dot(&stm_pw[..pw], stm_w, pw);
-                        hidden32[i] += neon_l1_int8_dot(&ntm_pw[..pw], ntm_w, pw);
-                    }
-                    i += 1;
-                }
-            }
+            L1Kernel::NeonI8mmX4 => { neon_x4_arm!(neon_l1_int8_dot_x4_i8mm); }
+            #[cfg(target_arch = "aarch64")]
+            L1Kernel::NeonDotprodX4 => { neon_x4_arm!(neon_l1_int8_dot_x4_dotprod); }
+            #[cfg(target_arch = "aarch64")]
+            L1Kernel::NeonX4 => { neon_x4_arm!(neon_l1_int8_dot_x4); }
             _ => {
                 // Scalar fallback — raw weights in [input][neuron] layout.
                 // Also reached for kernels of another arch (never selected
@@ -6846,6 +7010,97 @@ mod tests {
             }
         }
         eprintln!("fuzz_neon_l1_int8: {} cases passed", cases);
+    }
+
+    /// Fuzz the ARM dot-product L1 kernels (SDOT / USDOT) against the scalar
+    /// reference across the FULL u8 activation range [0, 254]. Unlike the
+    /// vmlal fuzz above (which stays in [0, 127]), this deliberately spans
+    /// activations >= 128 — the exact regime the SDOT sign-offset correction
+    /// (`u XOR 0x80` + `128·Σw`) must get right. Runtime-gated: the dotprod
+    /// path runs on any ARMv8.2+ core (e.g. the RK3588 dev box); the i8mm
+    /// path runs where USDOT exists (Apple M2+, Graviton3+) and is skipped
+    /// elsewhere — so between the RK3588 and an M-series Mac both tiers get
+    /// real numeric coverage.
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn fuzz_neon_dotprod_l1_matches_scalar() {
+        let has_dotprod = std::arch::is_aarch64_feature_detected!("dotprod");
+        let has_i8mm = std::arch::is_aarch64_feature_detected!("i8mm");
+        if !has_dotprod && !has_i8mm {
+            eprintln!("fuzz_neon_dotprod_l1: no dotprod/i8mm on this host — skipped");
+            return;
+        }
+        let mut cases = 0usize;
+        for &h in &[16usize, 32, 64, 128, 256, 384, 512] {
+            for density in [0u32, 10, 25, 50, 75, 89, 100] {
+                for seed in 0u64..30 {
+                    let mut r = rng(0xc0da_dd07_0000_0000 ^ (h as u64) << 40 ^ (density as u64) << 16 ^ seed);
+                    // FULL activation range [0, 254], zeroed with prob (1-density).
+                    let packed: Vec<u8> = (0..h)
+                        .map(|_| if (r() % 100) < density as u64 { (r() % 255) as u8 } else { 0 })
+                        .collect();
+                    let mk = |r: &mut dyn FnMut() -> u64| -> Vec<i8> {
+                        (0..h).map(|_| ((r() & 0xFF) as i8).clamp(-127, 127)).collect()
+                    };
+                    let w0 = mk(&mut r); let w1 = mk(&mut r);
+                    let w2 = mk(&mut r); let w3 = mk(&mut r);
+                    let want = [
+                        l1_int8_dot_scalar_ref(&packed, &w0, h),
+                        l1_int8_dot_scalar_ref(&packed, &w1, h),
+                        l1_int8_dot_scalar_ref(&packed, &w2, h),
+                        l1_int8_dot_scalar_ref(&packed, &w3, h),
+                    ];
+                    if has_dotprod {
+                        let got = unsafe { neon_l1_int8_dot_x4_dotprod(&packed, &w0, &w1, &w2, &w3, h) };
+                        assert_eq!(want, got,
+                            "neon_l1_int8_dot_x4_dotprod fuzz mismatch h={} density={} seed={}", h, density, seed);
+                    }
+                    if has_i8mm {
+                        let got = unsafe { neon_l1_int8_dot_x4_i8mm(&packed, &w0, &w1, &w2, &w3, h) };
+                        assert_eq!(want, got,
+                            "neon_l1_int8_dot_x4_i8mm fuzz mismatch h={} density={} seed={}", h, density, seed);
+                    }
+                    cases += 1;
+                }
+            }
+        }
+        eprintln!("fuzz_neon_dotprod_l1: {} cases passed (dotprod={}, i8mm={})",
+            cases, has_dotprod, has_i8mm);
+    }
+
+    /// Focused boundary check for the dot-product L1 kernels: activations
+    /// pinned to the values around the i8 sign flip (127/128/129) and the u8
+    /// max (254), against weights at their extremes (-128..127). These are
+    /// the cases the sign-offset correction is most likely to get wrong.
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_neon_dotprod_l1_boundaries() {
+        let has_dotprod = std::arch::is_aarch64_feature_detected!("dotprod");
+        let has_i8mm = std::arch::is_aarch64_feature_detected!("i8mm");
+        if !has_dotprod && !has_i8mm {
+            eprintln!("test_neon_dotprod_l1_boundaries: no dotprod/i8mm — skipped");
+            return;
+        }
+        let h = 64usize;
+        let avals = [0u8, 1, 127, 128, 129, 200, 254];
+        let wvals: [i8; 5] = [-128, -1, 0, 1, 127];
+        let packed: Vec<u8> = (0..h).map(|i| avals[i % avals.len()]).collect();
+        let mk = |off: usize| -> Vec<i8> { (0..h).map(|i| wvals[(i + off) % wvals.len()]).collect() };
+        let w0 = mk(0); let w1 = mk(1); let w2 = mk(2); let w3 = mk(3);
+        let want = [
+            l1_int8_dot_scalar_ref(&packed, &w0, h),
+            l1_int8_dot_scalar_ref(&packed, &w1, h),
+            l1_int8_dot_scalar_ref(&packed, &w2, h),
+            l1_int8_dot_scalar_ref(&packed, &w3, h),
+        ];
+        if has_dotprod {
+            let got = unsafe { neon_l1_int8_dot_x4_dotprod(&packed, &w0, &w1, &w2, &w3, h) };
+            assert_eq!(want, got, "neon_l1_int8_dot_x4_dotprod boundary mismatch");
+        }
+        if has_i8mm {
+            let got = unsafe { neon_l1_int8_dot_x4_i8mm(&packed, &w0, &w1, &w2, &w3, h) };
+            assert_eq!(want, got, "neon_l1_int8_dot_x4_i8mm boundary mismatch");
+        }
     }
 
     #[test]

@@ -512,14 +512,20 @@ impl TT {
     }
 
     /// Prefetch the bucket for a hash (hint to CPU cache).
+    /// NOTE: only x86_64 issues a prefetch today; aarch64 has no TT prefetch
+    /// yet (a `PRFM` path is a separate, measurable change — see the NEON
+    /// catch-up doc). Locals are scoped into the x86 block so ARM builds
+    /// stay warning-clean.
     #[inline]
     pub fn prefetch(&self, hash: u64) {
-        let idx = self.bucket_index(hash);
-        let ptr = &self.buckets[idx] as *const TTBucket;
         #[cfg(target_arch = "x86_64")]
         unsafe {
+            let idx = self.bucket_index(hash);
+            let ptr = &self.buckets[idx] as *const TTBucket;
             std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
         }
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = hash;
     }
 
     /// Estimate hashfull (permille of current-generation slots).
