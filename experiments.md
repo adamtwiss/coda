@@ -19190,3 +19190,36 @@ overspends `go movetime` ~6%, worth ~5 of the 27 Elo — part rare
 high-leverage clock situations, part genuinely smaller than estimated).
 Dashboard: `tm_pattern_inspect.py --shape` (now incl. within-bucket
 dispersion + autocorrelation).
+
+## TM input-lab: SF-profile composition FALSIFIED; gap re-attributed (2026-07-11)
+
+Input-metrics-first loop (Adam's methodology): `tm-input-lab` (all TM probe
+mechanisms as UCI options, main-identical defaults) + dashboard
+(`tm_pattern_inspect --shape`: within-bucket p90/med + lag-1 autocorr).
+Wave 1 (8 configs, ~6 min each) found a full SF-variation-profile match:
+`TM_BMC_T1_MULT=3500 TM_TREND_FLOOR_100=60 TM_SOFT_ITER_GATE_100=80` →
+within-bucket 4.75/4.11/2.31 (SF ~4.3-4.7/3.8-4.1/2.8-3.1), pooled median
+0.140 = SF's, autocorr +0.158→+0.087 (SF ~+0.03), 0 forfeits.
+
+Differential RR (1800g, {combo, base, SF17, SF18}): **combo −45 vs base −29
+→ −16 ±16. FALSIFIED.** Coda at SF's complete variation profile loses to
+Coda's own calibration. With 0/6 single-knob probes + this, the conclusion
+is structural: **the SF gap does not live in time-distribution SHAPE.**
+SF's spend pattern is downstream of its search-signal reliability;
+imitating the output without the signals misallocates.
+
+Gap re-attribution (correcting the day's opening estimate of 25-40):
+- ~5 Elo: Coda overspends `go movetime` ~6% (flattered the fixed-movetime leg).
+- ~8 Elo: movetime leg ran 0.2s/move vs STC-average ~0.28s; Coda's relative
+  strength falls with budget (fixed-node ladder), so part of the
+  movetime→TC drop is node-scaling, not TM.
+- Remainder: **~15-25 Elo true active-TM gap at STC ponder-off**, location
+  unknown but NOT distribution shape. Plus the separately-measured
+  **ponder-on component** (SF +25 further when ponder turns on, 2026-07-10
+  ponder-ON RR) — deployment frame, untouched by all of today's work.
+
+Next TM frontiers, in order: (A) ponder-on frame vs SF (paired on/off RRs
+at 30+0.5, then ponderhit/miss economics instrumentation); (B) Coda-optimal
+profile grid via the input lab (cheap background loop); (C) critical-clock
+situation mining from the 20k+ PGNs (localized TM failures invisible to
+pooled stats).
