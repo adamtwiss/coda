@@ -182,6 +182,16 @@ tunables!(
     // lift BASE if beneficial. MULT starts at SF's 2.315.
     (TM_BMC_INSTAB_BASE, 1000, 900, 1500, 25.0, false),
     (TM_BMC_INSTAB_MULT, 2315, 500, 4000, 100.0, false),
+    // Subtree-factor base (C1, docs/tm_spikiness_experiment_2026-07-10.md).
+    // Factor = (BASE/100 - best_move_node_fraction) * 1.4, floor 0.55. The
+    // inherited Viridithas base 1.62 makes the factor neutral only at
+    // frac=0.905 — Phase-0 instrumentation (12k moves) showed it INFLATING
+    // 66% of moves (median 1.12x), including a third of moves in the
+    // high-confidence 0.70-0.905 band. 130 moves the neutral point to
+    // frac = 1.30 - 1/1.4 ~= 0.59, so confident moves (frac 0.6-0.9) shed
+    // time instead of gaining it while genuinely contested moves still gain.
+    // Not --core (TM tuned deliberately, never swept by STC core retune).
+    (TM_SUBTREE_BASE_100, 130, 100, 180, 4.0, false),
     // Low-inc absolute single-move ceiling (2026-06-22, overspend PART2).
     // inc_cover (PART1) caps the factor MULTIPLIER, so adjusted_soft stays
     // ~11% of clock — but a single deep iteration that starts just under
@@ -3584,7 +3594,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 if total > 0 {
                     let frac = best_nodes as f64 / total as f64;
                     subtree_frac = frac;
-                    (1.62 - frac) * 1.4
+                    // C1: base tunable-ized and re-centered (see
+                    // TM_SUBTREE_BASE_100 in tunables!). Floor 0.55 bounds the
+                    // discount on total-consensus moves (frac -> 1).
+                    let base = tp(&TM_SUBTREE_BASE_100) as f64 / 100.0;
+                    ((base - frac) * 1.4).max(0.55)
                 } else {
                     1.0  // default when no node data
                 }
