@@ -18930,3 +18930,18 @@ re-test (#2669, [0,3]) and trans_corr ablation (H3, CORR_W_TRANS 63→0, #2670,
 code, need manual rebase: threat-bb-corrhist (H5), prev-move-corrhist (H6),
 corr-uncertainty-pruning (H4). Not-yet-implemented: 2-ply cont-corr (H1),
 minor-piece-key (H2). See docs/corrhist_retest_candidates_2026-07-09.md.
+
+## H1 paired cont-corr lands +3.3; second-order closed (2026-07-10)
+
+**H1 (Zeus, `zeus/paired-cont-corr`): +3.3 ±2.2, LLR 2.97, #2675 H1 ✓** — paired
+2-ply continuation correction (the headline of BOTH corrhist audits; Coda was the
+sole 6/6 flat-1-ply outlier). The top structural item on the re-test list delivered.
+(Routing win: prev-move/H6 was correctly skipped as superseded by this.)
+
+**Second-order gravity (Alice #8) — CLOSED, dropped.** Raw H0 both TCs (#2650
+−0.5 STC / #2656 −1.6 LTC), re-test vs retuned main #2669 −1.2 H0, then focused
+15-param history retune-on-branch #2673 (LMR_HIST_DIV +16%, HIST_BONUS_OFFSET −27%,
+CONT_HIST_MULT +27%) applied → **#2674 −2.6 H0 ✗**. The retune did NOT rescue it —
+mathematically-elegant 2nd-order-accurate gravity is genuinely neutral-to-negative
+for Coda's tree even fully recalibrated. Full fair shot given (raw + retune-on-branch,
+the cont-hist-malus archetype); it just doesn't transfer. Good data for Alice (coda#8).
