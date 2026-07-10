@@ -203,9 +203,12 @@ def main():
                   f"{col(r,'gen.p90','{:.0f}'):>5} {col(r,'gen.p99','{:.0f}'):>5} "
                   f"{col(r,'gen.mx','{:.0f}'):>6}")
 
-    print(f"\nB/C. BLINDSPOT eval error + long tail  (heldout overrate set, "
-          f"{rows[0]['bs']['n']} pos) — mean|err| is the headline; overscore is a "
-          f"directional-bias hint only (can mislead alone)")
+    print(f"\nB/C. BLINDSPOT metric — MISLEADING, do NOT read mean|err| as signal "
+          f"(heldout overrate set, {rows[0]['bs']['n']} pos).")
+    print(f"   The set is SELECTED on |coda-lc0|>=150, so it is enriched for LC0 LABEL "
+          f"NOISE: arbitration (2026-07-10) found coda closer to SF-deep than lc0 on 84%%.")
+    print(f"   So mean|err| here rewards reproducing LC0's ERRORS — a more accurate net "
+          f"scores WORSE. Judge tail eval quality with SF-deep, not this. (overscore = weak dir hint.)")
     h = (f"   {'net':<32} {'mean|err|':>10} {'vs.first':>9} "
          f"{'p90':>5} {'p99':>5} {'max':>6} {'overscore':>11}")
     print(h); print("   " + "-" * (len(h) - 3))

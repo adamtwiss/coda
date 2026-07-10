@@ -427,3 +427,47 @@ It is now *more* worth running, not less: with a confirmed strength gain, the
 mirror metric would tell us *whether the gain came from shrinking OUR tail
 without inflating SF's* (genuine fix) vs redistribution — the generalization
 question §11 posed.
+
+## 14. THE LOAD-BEARING LESSON — the blindspot metric is a FALSE metric
+
+**Read this first.** The "blindspot eval error" metric (`mean|err|` vs LC0 on the
+`heldout_overrate` set, `|coda−lc0|≥150`) that drove much of this investigation is
+not merely a weak proxy — it is **inverted**. Optimising it makes the net *worse*.
+
+**Why (the selection trap).** The set is *selected* on `|coda − lc0|` disagreement.
+When the oracle (LC0, an 800-node MCTS eval) is noisy, selecting on the disagreement
+*enriches the set for oracle noise* — you have selected on the noisy variable
+(regression-to-the-mean wearing a metric's clothes). Then measuring `mean|err|`
+*against that same oracle* rewards **reproducing LC0's mistakes**.
+
+**The proof (SF-deep arbitration, 2026-07-10).** On 400 sampled blindspot positions,
+with SF@1M-nodes as a clean truth proxy:
+- **coda's search is closer to SF-deep than LC0's label is on 84%** of them.
+- **LC0 is more extreme than SF-deep by >50cp on 76%** — its labels systematically
+  over-state on this tail. Median `|lc0−SFdeep|` = 162cp vs `|coda_search−SFdeep|` = 88cp.
+- Even on QUIET positions (87% of the set): median `|lc0−SFdeep|`=150 vs coda 75. It is
+  not tactical noise — LC0's labels are simply the outlier here.
+
+So on this set **LC0 is the outlier, not coda.** A *more accurate* net (closer to the
+truth) disagrees with LC0's noise *more* and therefore scores **worse** on the metric.
+It is not uncorrelated with eval quality on the tail — it is **anti-correlated**.
+
+**The same false premise killed the blindspot *data*, not just the metric.** The
+corrective-data harvest filtered *training* positions on the identical `|coda − lc0|`
+criterion — i.e. it selected LC0 noise — and we then judged the result with the metric
+built on the same selection. Both the dataset and the yardstick rested on one wrong
+assumption: *"LC0-disagreement = coda error."* The arbitration disproves it. That is why
+the blindspot corrective data HURT (§13), why net_report stayed flat, and why the SPRTs
+kept contradicting the static metric.
+
+**Scope.** Only the *selected*-tail metric is broken. The **general** Spearman/`mean|err|`
+(unselected quiet positions) is fine — there LC0's per-position noise averages out; it is
+the *selection* that concentrates it.
+
+**Constructive corollary.** To judge eval quality on hard positions, use a **clean, low-noise
+oracle (SF-deep), not LC0** — the arbitration harness. LC0 is a fine *aggregate training
+target*; it is a bad *judge* on a set you selected for disagreeing with it. This is exactly
+why the SF-labelled **stamped** corpus is the right shape (§13; x4 +2.3 / +1.4 vs baseline):
+distilling from a clean oracle, not mining disagreement with a noisy one. The `net_report`
+blindspot `mean|err|` column has been flagged MISLEADING (2026-07-10) so it is never read
+as signal again.
