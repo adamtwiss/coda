@@ -18875,3 +18875,33 @@ last structural gap): #2655 +0.0 H0 — but **preliminary**, run against
 fixed-but-*untuned* main. It's H4 on `docs/corrhist_retest_candidates_2026-07-09.md`;
 re-validate against the #2664-retuned baseline before concluding (the `|corr|`
 distribution changed under residual AND #2664 moved its futility interaction params).
+
+## Ponder-ON top-20 RR — Coda clear #2 tier behind only SF (2026-07-10)
+
+Full top-20 RR, **STC 10+0.1, T=1, ponder ON** (the closest frame to lichess
+deployment), 950 games/engine, complete:
+
+| # | Engine | Elo | | # | Engine | Elo |
+|---|--------|-----|-|---|--------|-----|
+| 1 | Stockfish | +167 | | 5 | Obsidian | +46 |
+| 2 | Reckless | +86 | | 6 | Caissa | +28 |
+| 3 | Berserk | +81 | | 7 | Viridithas | +21 |
+| **4** | **Coda** | **+77** | | 8 | Rubichess | +13 |
+
+**Coda #4 (+77) — a statistical three-way tie for #2** (Reckless 86 / Berserk 81
+/ Coda 77, all ±13), clear of Obsidian (46) and everything below, behind a lone
+Stockfish. Fully converged (+77 flat across the final ~100 games).
+
+**Ponder edge confirmed at pool scale.** Coda's gap to Reckless collapsed **34
+(ponder-off STC, post-corrhist July-9 RR) → 9 (ponder-on)** — turning ponder on
+closed ~25 Elo of the Reckless gap. Nuance from the reshuffle: **Coda out-ponders
+Reckless and Obsidian** (Obsidian was ~tied ponder-off, now 31 behind), but **SF
+and Berserk out-ponder Coda** (SF 142→167 pulls *away* as the best ponderer;
+Berserk 37→80 gains ~31 on Coda). So Coda is a strong-but-not-elite ponderer.
+
+**Methodological upshot:** OB/SPRT is ponder-*off* (fastchess doesn't exercise
+ponder), so it systematically *undersells* Coda's deployment position — our TM/
+ponder investment is invisible to the primary test harness but worth ~+25 Elo of
+Reckless-gap at deployment. Gate ponder-sensitive changes on cross-engine
+ponder-on RR + lichess, not OB. (Same carve-out as the corrhist/self-play lesson:
+the harness is blind to a whole class of our strengths.)
