@@ -371,7 +371,10 @@ candidate: the skip-recipe consolidation net if it takes prod and soaks clean.
 **Versioning scheme (single source of truth = Cargo.toml `version`):**
 - MINOR bump per release (1.1, 1.2, ...), PATCH for hotfix re-releases,
   MAJOR for era-class changes (rewrite, net-architecture generation).
-- Currently `0.9.0` (deliberate pre-1.0 signal); first release = `1.0.0`.
+- Currently `0.9.x`; `1.0.0` is a *confidence* milestone ("stable, proven"),
+  NOT the gate for being publicly testable. The `0.x` version *number* already
+  signals "pre-1.0, still climbing" to humans — that is the only pre-1.0 signal
+  we use.
 - `build.rs` stamps `CODA_VERSION` via `git describe` (engine tags only —
   `*-nets*` tags are EXCLUDED so net-asset buckets can never read as engine
   versions). UCI reports `id name Coda <version>`: clean `X.Y.Z` when built
@@ -387,7 +390,14 @@ candidate: the skip-recipe consolidation net if it takes prod and soaks clean.
    binaries + sha256s to the GitHub release.
 4. Hand-write the release notes (`gh release edit vX.Y.Z --notes-file ...`);
    auto-notes are disabled (per-matrix-job duplication + `*-nets` compare
-   base made them junk on v0.9.0). Mark pre-1.0 releases `--prerelease`.
+   base made them junk on v0.9.0). Do NOT use the GitHub `--prerelease` flag
+   for normal releases (0.x included) — that flag conventionally means "author
+   says not ready," and rating lists (CCRL) gate on it, so it silently blocks
+   the external coverage we want. Reserve `--prerelease` ONLY for genuine
+   release candidates (e.g. a `1.0.0-rc1` you explicitly don't want rated yet).
+   Decision 2026-07-10 (Adam), prompted by a CCRL tester asking when Coda
+   stops being pre-release: decouple the flag from the `0.x` number; `0.9.1`
+   ships as a normal, rateable release.
 5. Sanity: download one asset, verify sha256 and `id name` matches the tag.
 
 Dry-run without tagging: `gh workflow run release.yml` builds the same
