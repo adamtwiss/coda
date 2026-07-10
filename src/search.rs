@@ -1508,6 +1508,93 @@ impl SearchInfo {
                     let mm = VERIFY_MISMATCHES.load(std::sync::atomic::Ordering::Relaxed);
                     eprintln!("NNUE verify: {}/{} mismatches after 10000 evals", mm, n + 1);
                 }
+
+                // ---------------------------------------------------------------
+                // THREAT-ACCUMULATOR VERIFICATION (C1 diagnostic, 2026-07-10).
+                // The PSQ force_recompute above is blind to threat drift: it
+                // re-evaluates with the SAME (possibly desynced) threat_stack.
+                // Here we additionally recompute the threat features from
+                // scratch (full enumeration, same procedure as
+                // ThreatStack::refresh) into LOCAL buffers and compare against
+                // the live incremental accumulator for both perspectives.
+                // Strictly read-only w.r.t. the stack — nothing the search
+                // uses is perturbed. Opt-in via CODA_VERIFY_NNUE (this whole
+                // block); CODA_VERIFY_THREATS=panic upgrades mismatch to panic.
+                // ---------------------------------------------------------------
+                if self.threat_stack.active && net.has_threats {
+                    static THREAT_PANIC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    static THREAT_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                    static THREAT_MISMATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                    let do_panic = *THREAT_PANIC.get_or_init(|| {
+                        std::env::var("CODA_VERIFY_THREATS").as_deref() == Ok("panic")
+                    });
+                    let tn = THREAT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let h = net.hidden_size;
+                    let occ = board.colors[0] | board.colors[1];
+                    for pov in [WHITE, BLACK] {
+                        let ksq = (board.pieces[KING as usize] & board.colors[pov as usize])
+                            .trailing_zeros();
+                        let mirrored = (ksq % 8) >= 4;
+                        // Collect scratch feature indices (same 256 cap as refresh).
+                        let mut indices = [0usize; 256];
+                        let mut ni = 0usize;
+                        let mut overflow = false;
+                        crate::threats::enumerate_threats(
+                            &board.pieces, &board.colors, &board.mailbox,
+                            occ, pov, mirrored,
+                            |idx| {
+                                if idx < net.num_threat_features {
+                                    if ni < 256 { indices[ni] = idx; ni += 1; }
+                                    else { overflow = true; }
+                                }
+                            },
+                        );
+                        let mut check = [0i16; crate::threat_accum::MAX_FT_SIZE];
+                        crate::threats::add_weight_rows(
+                            &mut check[..h], &net.threat_weights, h, &indices[..ni]);
+                        let live = self.threat_stack.values(pov);
+                        if &check[..h] != live {
+                            let m = THREAT_MISMATCHES
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if m < 40 || do_panic {
+                                let mut nch = 0usize;
+                                let mut l1: i64 = 0;
+                                let mut firsts = String::new();
+                                for j in 0..h {
+                                    let d = live[j] as i64 - check[j] as i64;
+                                    if d != 0 {
+                                        if nch < 8 {
+                                            firsts.push_str(&format!(
+                                                " ch{}:{}(live)vs{}(scratch)", j, live[j], check[j]));
+                                        }
+                                        nch += 1;
+                                        l1 += d.abs();
+                                    }
+                                }
+                                eprintln!(
+                                    "THREAT MISMATCH n={} pov={} ply={} fen=\"{}\" hash={:016x} \
+                                     diff_channels={} l1={} scratch_feats={}{} overflow={}{}",
+                                    tn,
+                                    if pov == WHITE { "W" } else { "B" },
+                                    self.threat_stack.index(),
+                                    board.to_fen(), board.hash,
+                                    nch, l1, ni, firsts, overflow,
+                                    if do_panic { " [panic mode]" } else { "" },
+                                );
+                            }
+                            if do_panic {
+                                panic!("THREAT MISMATCH (CODA_VERIFY_THREATS=panic): fen={}",
+                                    board.to_fen());
+                            }
+                        }
+                    }
+                    // Periodic summary so long runs report even without mismatches.
+                    if tn == 9_999 || (tn > 0 && tn % 1_000_000 == 0) {
+                        let mm = THREAT_MISMATCHES.load(std::sync::atomic::Ordering::Relaxed);
+                        eprintln!("THREAT verify: {}/{} mismatches after {} verified evals",
+                            mm, tn + 1, tn + 1);
+                    }
+                }
                 s2 // use recomputed value when verifying
             } else {
                 s
