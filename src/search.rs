@@ -3584,12 +3584,15 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 // Cross-MOVE deterioration: prev-`go` final score − current
                 // running score (both our-side-to-move → sign-comparable).
                 // Positive = worsening across the game horizon; add time. Gated
-                // on a real previous move (sentinel) and non-mate scores, same
-                // as the within-search drop guard. Ceiling raised to 1.55 to
-                // give the combined term headroom in worsening positions.
+                // on a real previous move (sentinel) and non-decisive scores.
+                // is_decisive (not is_mate_score): TB scores (~28600-28800) sit
+                // below the mate band and would otherwise pin the factor at a
+                // clamp rail (C2, persistent-state audit 2026-07-10). Ceiling
+                // raised to 1.55 to give the combined term headroom in
+                // worsening positions.
                 let cross = if info.tm_cross_prev_score != i32::MIN
-                    && !is_mate_score(prev_score)
-                    && !is_mate_score(info.tm_cross_prev_score)
+                    && !is_decisive(prev_score)
+                    && !is_decisive(info.tm_cross_prev_score)
                 {
                     (info.tm_cross_prev_score - prev_score) as f64
                 } else {
@@ -3710,7 +3713,31 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // Publish this move's final score for the NEXT `go`'s cross-move trend
     // term. `info.last_score` holds the last completed iteration's score;
     // sign-comparable across our consecutive moves (opponent moves between).
-    if info.completed_depth >= 1 {
+    // Publish ONLY from searches that produced a played game move (C2,
+    // persistent-state audit 2026-07-10): a clock-managed search
+    // (soft_limit > 0, which includes a `go ponder` converted by ponderhit
+    // at the top of the ID loop), any search that saw a ponderhit
+    // (ponderhit_time is cleared by the UCI thread before every spawn and
+    // set only on a hit — covers a hit whose deadline expired before the
+    // next iteration could arm soft_limit), or the ponderhit fresh-search
+    // path (`go movetime` with a real clock attached, abs_clock > 0). A
+    // pondered-and-MISSED search scores a sibling position we never
+    // reached, and analysis `go`s (infinite / depth / nodes / bare
+    // movetime) score arbitrary positions — publishing those trends the
+    // next real move's budget against the wrong position, pinning the
+    // factor at a clamp rail (reproduced: +55% opt for the whole move).
+    // Not publishing keeps the PREVIOUS real move's score, which stays
+    // position-correct across a miss.
+    // Acquire pairs with the UCI thread's Release stores (P2 deadline trio
+    // and the P1/low-time instant-stop markers). A hit racing this load can
+    // read 0 and skip the publish — benign, see above.
+    let ponderhit_seen =
+        info.ponderhit_time.load(std::sync::atomic::Ordering::Acquire) > 0;
+    if info.completed_depth >= 1
+        && (info.soft_limit > 0
+            || ponderhit_seen
+            || (limits.movetime > 0 && limits.abs_clock > 0))
+    {
         info.tm_cross_prev_score = info.last_score;
     }
 
@@ -3773,7 +3800,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 f,
                 "tm-debug depth={} bestmove={} score={} \
                  elapsed={} elapsed_since_ph={} soft={} hard={} floor={} \
-                 tm_baseline={} stab={} bmc={} asp_fl={} asp_fh={} forced={:?}",
+                 tm_baseline={} stab={} bmc={} asp_fl={} asp_fh={} forced={:?} \
+                 cross_prev={}",
                 info.completed_depth,
                 move_to_uci(best_move),
                 info.last_score,
@@ -3788,6 +3816,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 info.tm_asp_fail_low,
                 info.tm_asp_fail_high,
                 info.tm_forced_state,
+                if info.tm_cross_prev_score == i32::MIN { "none".to_string() }
+                else { info.tm_cross_prev_score.to_string() },
             );
         }
     }
