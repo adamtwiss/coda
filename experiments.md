@@ -18945,3 +18945,19 @@ CONT_HIST_MULT +27%) applied → **#2674 −2.6 H0 ✗**. The retune did NOT res
 mathematically-elegant 2nd-order-accurate gravity is genuinely neutral-to-negative
 for Coda's tree even fully recalibrated. Full fair shot given (raw + retune-on-branch,
 the cont-hist-malus archetype); it just doesn't transfer. Good data for Alice (coda#8).
+
+## H1 paired 2-ply/4-ply continuation correction — WIN (2026-07-10)
+
+Corrhist audit F1/#5 (docs/corrhist_retest_candidates_2026-07-09.md). Replaced the
+flat 1-ply `cont_corr[piece][to]` (Coda was the sole 6/6 flat-1-ply outlier) with
+the reference paired form: 4D `[prev_piece][prev_to][cur_piece][cur_to]`, indexed
+by the last move (ply-1), subtable selected by the move at ply-2 AND ply-4,
+summed; `ply` threaded through corrected_eval/correction_value/update_correction_history
+(incl. qsearch). **Untuned SPRT #2675 H1 +3.3 ±2.2 (24.8k) — MERGE CANDIDATE, commit
+66c1699.** Focused corrhist-cluster retune-on-branch #2676 (CORR_W_CONT ~unchanged
+100→99.5; CORR_HIST_DIV 450→526, CORR_ERR_DIV 50→41, CORR_W_TRANS 63→70) then
+tuned SPRT #2677 **H0 −0.3 ±1.5 (58.8k) — the retune ERASED the win.** Lesson: the
+archetype (flat-raw → +Elo-tuned) inverted here because the cluster was already
+well-calibrated by the #2664 full LTC retune; a 9-param STC branch retune chased
+noise and drifted off #2664's optimum. Bank the untuned structural change; skip
+the retune.
