@@ -208,3 +208,125 @@ And the measurement lesson: eval-bias/persistent-state fixes **undersell in
 self-play** (+17±15 cross-engine vs ~0 self-play for the corrhist fix). C2 and
 C7 are additionally OB-invisible (ponder / Threads>1) — plan local cross-engine
 RRs and mechanism probes, not just SPRT.
+
+---
+
+# Tier-1 investigation results (2026-07-10, same day)
+
+Three parallel deep investigations on `origin/main` @ `a24466d`. Verdicts:
+
+## C1 — threat verifier blind spot: claims TRUE, live pipeline CLEAN; gap closed
+
+All three claims verified exactly as stated (verifier recomputed PSQ only and
+re-evaluated with the same threat stack; live threat parity check was
+debug-only/20-eval-capped/eprintln-only; fuzzer was forward-only with replay
+gap 1 everywhere).
+
+A detector was built (CODA_VERIFY_NNUE extended to recompute threat features
+from scratch, both perspectives, into local buffers; `CODA_VERIFY_THREATS=panic`
+escalates), validated by fault injection, and run with panic armed over
+**~8.3M evals** (bench d12 + d16, WAC 201@500ms, adversarial
+underpromotion/EP/castling/king-march/mirror-boundary searches): **zero
+mismatches**. Code audit of the two flagged mechanisms:
+
+- **push/absorb pairing — CLEAN.** Every threat push/make site absorbs
+  immediately after make on every control-flow path; null-move NO_MOVE
+  copy-forward is correct. One fragile no-push make/unmake window exists
+  (`tt_cutoff_child_disagrees`) — safe today because nothing evals inside it;
+  the detector would catch any future violation.
+- **mirror-span — PROVEN CORRECT.** `can_update` validates exactly the replay
+  span; any pov-king e-file crossing (incl. O-O-O; O-O correctly exempt)
+  forces refresh, so deriving `mirrored` from the final king square is valid
+  for every replayed ply. Per-perspective mirrors handled independently.
+
+A new fuzzer (`fuzz_random_walk_with_pops_and_lazy_gaps`) now exercises pops,
+null plies, and replay gaps up to 10 (2400+ gap>=2 events, coverage-asserted);
+full suite 202 passed. **Detector + fuzzer pushed as
+`test/threat-verifier-coverage` (bench-neutral 2085296, env-gated/test-only)**
+— recommend merging as permanent CI/diagnostic coverage. C1 verdict:
+**latent diagnostic gap, no live bug; gap permanently closed by the branch.**
+
+## C2 — tm_cross_prev_score pollution: CONFIRMED live deployment bug, reproduced
+
+All claims verified, plus two new findings:
+- **TB scores are unguarded**: the Factor-5 guard uses `is_mate_score`
+  (|s| >= 28872); TB scores (~28600-28800) slip under it. `is_decisive()`
+  exists for exactly this and is unused here.
+- **Book/TB-root moves skip search()** entirely, so the scalar goes stale by
+  multiple plies (same position-identity family).
+
+Empirical repro (worktree `wt-c2`, `scripts/c2_tm_cross_repro.py` preserved on
+this branch): after pondering a queen-hanging predicted reply (score +1210)
+and missing, the next real move's Factor-5 consumed +1210 instead of the true
+previous score +46 — **pinned at the 1.55 ceiling for the entire search
+(+55% opt budget)**. Analysis-`go` pollution reproduced identically.
+
+Severity: OB-invisible by construction (no ponder, no interleaved analysis,
+ucinewgame per game — CROSS_MOVE_TREND was tuned in a clean-scalar regime).
+On lichess (~36% miss rate) roughly one move in three trends against a
+sibling position, and the distortion correlates adversely (pondered score
+diverges most exactly when the opponent avoids the prediction). Overspend-
+biased (+55% cap vs -20% floor); opt-only, no forfeit vector.
+
+**Recommended fix shape** (not implemented; rebases cleanly under FL-EXT):
+1. Gate the *publish* — write `tm_cross_prev_score` only from clock-managed
+   real-game searches (skip never-hit ponder and analysis go's). This
+   preserves the true previous score across a miss (strictly better than
+   resetting). Matches SF's `previousScore` discipline.
+2. Widen both guards from `is_mate_score()` to `is_decisive()`.
+3. Optional: sentinel-reset on the book/TB-root `continue` paths.
+Validation per TM methodology: repro script above (mechanism), then
+ponder-on cross-engine RR; SPRT non-regression only.
+
+## C3 — TT dynamics cross-engine diff: tt_pv suspicion DROPPED; two new divergent suspects found
+
+Full 6-engine formula extraction (SF dev-20260402, Reckless 0.10-dev,
+Obsidian v16, Berserk 13, PlentyChess b-7.0.22, Alexandria 9). Ranked:
+
+1. **Near-miss margin cutoff — DIVERGENT, strongest finding.** 0/6 references
+   accept a shallower entry with a score margin; SF/Reckless/Obsidian demand
+   one ply MORE on the fail-high side. Coda returns `tt_score -+ 80` from a
+   depth-(d-1) entry and the parent stores the synthetic value as a
+   full-depth bound — a depth-laundering ratchet no reference permits.
+   Candidate: SPRT removing the near-miss branch (search.rs ~4139-4152).
+2. **TT-damp blended cutoff return — DIVERGENT.** 6/6 return raw `tt_score`
+   from the TT-cutoff path. The field's dampening lives at the fail-high
+   STORE site (SF/Reckless/Plenty store the dampened value; Coda stores raw
+   and dampens only the return at 5910-5918 — inverted placement).
+   Candidate: return raw on LOWER-cutoff; optionally move FH blend pre-store.
+3. **Mate/TB downgrade scope — DIVERGENT vs top-3.** The halfmove<90 cutoff
+   gate is consensus (Coda even stricter: gates QS too, field doesn't). But
+   SF/Reckless/Plenty downgrade at EVERY TT read (inside score_from_tt) and
+   cover the TB band (`TB_WIN - v > 100 - hmc`); Coda downgrades mate-band
+   only, at 3 return sites, so singular/ProbCut/window-narrowing consume
+   potentially-false TB scores. Candidate: extend downgrade_50mr_mate with
+   the TB clause + move into score_from_tt. (Note: the original C3 sub-claim
+   that near-miss/TT-damp returns miss the downgrade was WRONG — both are
+   !is_decisive-gated, mate scores can't reach them.)
+4. **Sticky tt_pv — CONSENSUS, suspicion dropped.** 6/6 absorbing, 0/6 decay;
+   SF/Reckless are stickier than Coda (fail-low parent propagation). Real
+   residual deltas: (a) Coda's QS stores hardcode tt_pv=false — the only
+   true->false lapse path in the survey (all six preserve the bit through
+   qsearch); (b) SF/Reckless/Plenty condition the LMR tt_pv credit on entry
+   quality (ttValue>alpha, ttDepth>=depth) where Coda's -1.00 ply is flat
+   (Obsidian/Berserk/Alexandria flat too — MIXED); (c) 5/6 give PV entries a
+   +2*pv-class store/replacement bonus; Coda and Berserk don't.
+5. **Generation semantics — CONSENSUS, dropped.** 0/6 gate read-time trust on
+   age; replacement-victim scoring only (Coda's depth-8*age matches
+   SF/Obsidian exactly).
+6. **ProbCut store — CONSENSUS, dropped.** depth-3/LOWER/sticky ttPv matches
+   SF/Obsidian/Alexandria exactly.
+
+## Consolidated next actions
+
+| # | Action | Class | Test |
+|---|--------|-------|------|
+| 1 | Merge `test/threat-verifier-coverage` | test/diagnostic, bench-neutral | no SPRT needed |
+| 2 | Fix tm_cross_prev_score publish gate + is_decisive | TM bug fix, ponder-class | repro + ponder RR + [-2,1] non-reg |
+| 3 | Remove TT near-miss margin branch | divergent-from-field simplification | SPRT (removal = [0,3] on the removal or [-2,1] as cleanup) |
+| 4 | Raw return on TT LOWER-cutoff (drop TT-damp) | divergent-from-field | SPRT |
+| 5 | TB-band 50mr downgrade in score_from_tt | correctness, top-3 pattern | [-2,1] |
+| 6 | QS stores: pass sticky tt_pv instead of false | one-liner, field-unanimous | [-1,2] candidate (complexity-free, validated mechanism) |
+| 7 | Condition LMR tt_pv credit on entry quality | MIXED-consensus enrichment | [0,3] + tune |
+
+Tier-2 candidates (C4-C7) not yet investigated.
