@@ -70,7 +70,7 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
     // Remove the initial attacker
     attackers &= occ;
 
-    // Pinned piece masks for each side (SEE audit S4: matches SF/Reckless/Obsidian).
+    // Pinned piece masks for each side (SEE audit S4: same approach as SF/Reckless/Obsidian).
     // A pinned piece cannot move off the pin ray, so it cannot legally recapture
     // on `to` unless `to` is on the same pin ray. Rather than compute ray membership,
     // we conservatively exclude ALL pinned pieces — this slightly under-estimates

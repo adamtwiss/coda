@@ -272,14 +272,14 @@ impl Board {
     ///   - K + B vs K + B with all bishops on the same color (no bishop
     ///     of opposite color exists, so neither side can mate)
     ///
-    /// Excluded (deliberately, matches Reckless/Viridithas):
+    /// Excluded (deliberately, as in Reckless/Viridithas):
     ///   - KNN vs K (technically drawn FIDE-wise but extremely rare; opponent
     ///     can blunder into mate). Engines that exclude this treat the position
     ///     conservatively — eval/search will reach 0 anyway via NNUE/TB.
     ///   - KBN vs K (winnable for the BN side; not a draw).
     ///
-    /// Matches Reckless `draw_by_material` (src/board.rs:236) and Viridithas
-    /// `has_insufficient_material`. Pattern is consensus among engines that
+    /// Follows the same rule as Reckless `draw_by_material` and Viridithas
+    /// `has_insufficient_material`. The rule is consensus among engines that
     /// implement IM-in-search (~half of the top engines do).
     #[inline]
     pub fn is_insufficient_material(&self) -> bool {

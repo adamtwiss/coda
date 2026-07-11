@@ -530,7 +530,7 @@ impl TT {
 
     /// Estimate hashfull (permille of current-generation slots).
     ///
-    /// Matches Stockfish/Reckless/SF-derived engines: only entries from the
+    /// Follows the Stockfish/Reckless convention: only entries from the
     /// current search generation count. Stale entries from prior searches
     /// are still resident but won't be re-probed cleanly, so excluding them
     /// gives an honest "useful TT pressure" signal for UCI display.

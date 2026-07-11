@@ -483,7 +483,7 @@ impl PiecePair {
 
     /// Returns the base index with ordering correction.
     /// If semi-excluded and attacking_sq < attacked_sq, returns negative (skip).
-    /// This keeps the pair where attacking_sq >= attacked_sq (matches Reckless).
+    /// This keeps the pair where attacking_sq >= attacked_sq (same tie-break as Reckless).
     const fn base(self, attacking_sq: u32, attacked_sq: u32) -> i32 {
         let below = ((attacking_sq as u8) < (attacked_sq as u8)) as u32;
         ((self.inner.wrapping_add(below << 30)) & 0x80FFFFFF) as i32
@@ -1103,7 +1103,7 @@ pub fn enumerate_threats_bullet_postfix_ref<F: FnMut(usize)>(
 /// Maximum threat deltas per ply.
 pub const MAX_THREAT_DELTAS: usize = 128;
 
-/// Packed threat delta (4 bytes, matching Reckless's ThreatDelta).
+/// Packed threat delta (4 bytes; same field order as Reckless's ThreatDelta).
 /// Layout: [attacker_cp:8][from_sq:8][victim_cp:8][to_sq:7][add:1]
 #[derive(Copy, Clone)]
 pub struct RawThreatDelta(u32);
@@ -1337,7 +1337,8 @@ fn skip_slider_sees() -> bool {
 }
 
 /// Core: compute all threat deltas for a piece on a square.
-/// Matches Reckless's push_threats_single exactly:
+/// Independent implementation; the three-step structure follows the same
+/// approach as Reckless's push_threats_single:
 /// 1. Threats FROM this piece to occupied squares
 /// 2. Sliders that see this square + x-ray targets behind it
 /// 3. Non-sliders (pawns, knights, kings) that attack this square

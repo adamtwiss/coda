@@ -120,7 +120,7 @@ use crate::board::Board;
 use crate::types::*;
 /// A heap-allocated vector of T guaranteed to be 64-byte (cache-line) aligned.
 /// Used for NNUE weight arrays so that AVX-512 ZMM loads (64 bytes) never straddle
-/// cache-line boundaries. Matches Reckless `Aligned<T>` / SF `alignas(64)`. (perf M2)
+/// cache-line boundaries. Same 64-byte alignment as Reckless `Aligned<T>` / SF `alignas(64)`. (perf M2)
 pub struct AlignedVec<T> {
     ptr: *mut T,
     len: usize,

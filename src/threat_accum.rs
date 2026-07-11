@@ -256,7 +256,7 @@ impl ThreatStack {
 
     /// Check if we can incrementally update this perspective by walking back.
     /// Returns Some(ancestor_index) or None (need full refresh).
-    /// Matches Reckless's can_update_threats.
+    /// Follows the same condition as Reckless's can_update_threats.
     #[inline]
     pub fn can_update(&self, pov: Color) -> Option<usize> {
         for i in (0..self.index).rev() {
@@ -413,7 +413,7 @@ impl ThreatStack {
     }
 
     /// Ensure both perspectives are computed for the current position.
-    /// Matches Reckless's evaluate() pattern.
+    /// Follows Reckless's evaluate() pattern.
     #[inline]
     pub fn ensure_computed(&mut self, net_weights: &[i8], num_features: usize,
                           board: &crate::board::Board) {
