@@ -19289,3 +19289,37 @@ Next: eval-convergence-at-budget measurement over the episode-starts
 (Coda + SF17 at 15k/50k/150k/500k, ~2h), which becomes the first
 candidate-facing search input metric; cross-family baseline pair; then
 the aspiration fail-low anomaly chase from the dashboard tier.
+
+## Eval-scale discovery → ASP_DELTA candidate (#2703) — input-metrics loop, first full pass (2026-07-11)
+
+Chain (all same-day, mostly existing data + minutes-scale probes):
+1. **Eval<->search consistency measured** (new UCI `eval` cmd, fd693b8):
+   |static−v14| and depth-ladder churn, coda/sf17/sf18 × {300 blindspot,
+   300 neutral}. Raw: Coda ~2× worse. **Correction: Coda's deep values
+   spread ~2× wider in cp on identical positions (sd 108 vs 54-58** —
+   calibration conventions differ; SF UCI cp ≈ 50% win at 100, ours ≈ 0.75
+   expected score at 100). σ-normalized + unit-free (sign flips,
+   σ-relative big-moves): **consistency ≈ SF17-parity, modestly behind
+   SF18 — the "search-unfriendly eval" theory in strong form is DEAD.**
+2. **But the scale fact generalizes**: any absolute-cp search constant
+   consensus-seeded from SF-scale engines is ~half-width in our σ units.
+   Prime suspect: ASP_DELTA = 11 (SF's value) → mechanically explains the
+   >50% aspiration fail rate (flf median 1.34, TM Phase-0).
+3. **Nodes-to-depth sweep** (UCI-only, 10 min): d12 bench-set nodes at
+   ASP_DELTA 11/16/22/30 = 2.31M / 2.13M (−8.1%) / 2.15M / 2.37M —
+   efficiency valley at 16-22 ≈ the predicted 1.5-2× rescale.
+4. **Fixed-150k differential gauge** (1800g): asp16 −21 vs base −24 =
+   **+3 ±13** lean. → **SPRT #2703** [0,3] STC, bench 2091013.
+5. If H1: campaign = σ-rescaling review of the absolute-cp margin cluster
+   (futility/RFP/probcut/singular) — a systematic 2× scale error across a
+   correlated cluster is exactly what per-knob SPSA is structurally bad at
+   escaping (ASP_DELTA sat at 11 with range to 30 through every tune).
+
+Also today (forced-line discriminator, 300-sample of blindspot class):
+**SNAP 44% / PARTIAL 10% / STUBBORN 46%** — at least ~half the class is
+search-owned (eval values the line once shown; search never examined it —
+Adam's over-pruning theory), at most ~half eval-owned (bounds: 6-ply/100k
+walks under-propagate deep points). Upstream steering-leak test: NULL
+(pre-episode moves price like controls; the leak is not per-move — see
+the navigability interpretation in the doc). Corpora banked: 1019
+episode-starts + 1779 strategic + contested set.
