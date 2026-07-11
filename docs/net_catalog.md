@@ -123,20 +123,6 @@ v0.3.0-nets release until 2026-04-26.
 | `2B42E458` | kb10 | `net-v9-768th16x32-kb10-w15-e200s200-creluHL.nnue` | experiment | CReLU on hidden layers. |
 | `269374CB` | kb10 | `net-v9-768th16x32-kb10-w15-e200s200-creluHL.nnue` | duplicate? | Same canonical name as `2B42E458`; different upload. Confirm content. |
 
-## v9 group-lasso probes (kb10, structural-sparsity experiments)
-
-Sweep results / decision-tree closure: see
-`docs/group_lasso_runbook_2026-04-24.md` (Pareto frontier confirmed
-at 1e-2; harder decay regresses) and `experiments.md` § "Group-lasso
-decay sweep — Probes #2 and #3".
-
-| Hash | File | Decay |
-|---|---|---|
-| `573854EF` | `net-v9-768th16x32-kb10-w15-e200s200-crelu-grouplasso-1e2.nnue` | 1e-2 (probe #1) |
-| `7E9AEDD2` | `net-v9-768th16x32-kb10-w15-e200s200-crelu-grouplasso-3e2.nnue` | 3e-2 (probe #2) |
-| `3D371C10` | `net-v9-768th16x32-kb10-w15-e200s200-crelu-grouplasso-5e2.nnue` | 5e-2 (probe #3) |
-| `12232F49` | `net-v9-768th16x32-reckless-w15-e200s200-warm30-l1e-6.nnue` | element-wise 1e-6 (pre-group-lasso) |
-
 ## v9 nets (ladder / WDL sweep, kb10)
 
 | Hash | File | Notes |
