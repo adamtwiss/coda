@@ -19246,3 +19246,46 @@ nodes vs SF17 (gauge calibrated 2026-07-10). TM assets banked: input-lab
 branch + dashboard (--shape), TMDebug factor instrumentation, the
 self-play-blindness lesson, movetime-overshoot fix candidate (small,
 also fixes the st-frame bias).
+
+## Horizon-lag metric + oracle validation — the search input-metrics land (2026-07-11)
+
+Built per the input-metrics program (search_gap_decomposition doc) with
+Adam's refinements: NOT blunder-hunting (SF wins by accumulating ~30cp
+horizon edges), 40cp-scale divergences, sustained >= 2 Coda moves (filters
+the trivial half-ply-lead alternation), attributed by who converged to
+whose earlier assessment. Tools: scripts/harvest_horizon.py,
+scripts/validate_oracle.py.
+
+**Lag-ratio results (existing fixed-node PGNs, zero fleet):**
+| matchup | episodes/game | SF_RIGHT : CODA_RIGHT |
+|---|---|---|
+| Coda vs SF18 @150k | ~2.4 | **8.35** |
+| Coda vs SF17 @150k | ~1.9 | **5.76** |
+| Coda vs SF14/15 @15k (we're +200) | ~2.6 | 1.43 |
+| SF17 vs SF18 @150k (SF17 seat) | ~0.35 | 1.64 |
+
+Discriminates correctly with opponent strength; SF17 does NOT lag SF18
+(their 45-Elo delta at 150k is eval-shaped — corroborates the threat-net
+slice) while Coda lags everything stronger — the ratio tracks specifically
+our deficit. Calibration debts: structural baseline >1 (opponent's eval is
+sampled a half-move fresher); SF-family kinship deflates SF-vs-SF episode
+counts (clean baseline needs a cross-family equal pair, e.g. Coda-Berserk
+@150k). Yield: 2712 lag-window candidates, 1019 episode-starts, 1779
+strategic-corpus positions (eval/v10 side).
+
+**Oracle validation (112 v1 sharp-flip candidates, two protocols):
+84% EXONERATED.** Deep-fresh (12M) vs Adam's explore-and-return (walk both
+disputed lines 3 plies WITHOUT clearing TT, return to root, re-price):
+zero CONFIRMED<->EXONERATED disagreements; explore-and-return matches at
+~1/4 cost -> standard oracle step. Only 10/112 confirmed >= 80cp mistakes.
+Implications: (a) shallow-SF labels are mostly transient opinions — Adam's
+lichess exoneration pattern quantified; (b) even sustained divergence
+windows contain mostly SOUND moves — the gap is accumulation, so the suite
+metrics must be continuous (bleed-rate cp-loss vs deep pricing) and
+eval-convergence-at-budget (nodes until Coda's eval reaches deep truth,
+measured on the 1019 episode-starts) rather than binary mistake-accuracy.
+
+Next: eval-convergence-at-budget measurement over the episode-starts
+(Coda + SF17 at 15k/50k/150k/500k, ~2h), which becomes the first
+candidate-facing search input metric; cross-family baseline pair; then
+the aspiration fail-low anomaly chase from the dashboard tier.
