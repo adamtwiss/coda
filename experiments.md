@@ -19367,3 +19367,36 @@ phase punishes energy added to it.
 higher peak LR for multi-v10, the place for it is a **from-scratch / stage-1**
 schedule with a full cosine, NOT a stage-3 re-warm. The SF observation is real but
 does not transfer to a late-stage melt.
+## Tree-shape comparison lands: Coda's tree is bottom-heavy and over-trusting (2026-07-11)
+
+Instrumented-SF build (~/chess/instr-stockfish, TREESTATS counters; agent-
+patched, live opponents untouched) + Coda treestats parity (0764c30, incl.
+eval-command staleness fix: post-search `eval` returned silently wrong
+values). Harness: scripts/treeshape.py — both engines × {300 blind, 300
+neutral} × 150k nodes.
+
+| (neutral set) | qs | d1-3 | d4-7 | d8-11 | d12-15 | asp/1M | lmr-rs/1M |
+|---|---|---|---|---|---|---|---|
+| Coda | 30% | 53% | 14% | 2.8% | 0.5% | 116 | 2.7k |
+| SF18 | 28% | 47% | 17% | 6.7% | 1.7% | 266 | 15k |
+
+Width d8-11: Coda 9.2 vs SF 12.6; d12-15: 8.2 vs 12.2. First-move-cut at
+d12+: Coda 0.96-0.99 vs SF 0.90-0.95. Blind set: same, amplified.
+
+**Diagnosis: SF keeps 2.5-4× more budget in depth-8+ subtrees, searches
+25-35% more moves per deep node, and re-verifies reduced moves at full
+depth 5× more often. Coda reduces-and-trusts; SF reduces-and-verifies.**
+Matches the 44% SNAP share (lines our eval could value, never examined)
+and locates the mid-band slide mechanically. Caveat: cross-engine depth
+accounting differs, but qs% parity + 2.4× d8+ gap >> accounting noise.
+Connects to the June repair-margin survey: Coda's doDeeper is the
+structural outlier (only engine scaling threshold with reduction).
+
+Sibling results same day: ASP_DELTA 16 **H0 #2703** (−1.2 ±2.0, 31k —
+nodes-to-depth can't price tree quality; narrow-window re-searches pay for
+themselves); margin-cluster ×1.5 gauge +5 ±14 → **SPRT #2707** pending
+(bench 2713983, +30% nodes).
+
+Next: deep-width/re-verification probe series (doDeeper restructure first),
+mechanism-gated by treestats (lmr-rs/1M and d8+ share must move toward SF),
+Elo-gated by the 150k gauge, merged via SPRT.
