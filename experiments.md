@@ -19223,3 +19223,26 @@ at 30+0.5, then ponderhit/miss economics instrumentation); (B) Coda-optimal
 profile grid via the input lab (cheap background loop); (C) critical-clock
 situation mining from the 20k+ PGNs (localized TM failures invisible to
 pooled stats).
+
+## TM ponder-off residual: ~0 within noise — attribution finalized (2026-07-11)
+
+Scaling-matched movetime leg (st=0.28 = Run-C STC average spend; 1600
+games/engine, conc 32): **Coda −66 vs SF18** (SF17 −52-equiv gap 54).
+Ladder: st=0.20 −52 → st=0.28 −66 → real STC −79/−73. The 0.20→0.28
+widening (~14) IS the node-scaling confound (Coda's relative strength falls
+with budget — same phenomenon as the fixed-node ladder, in the time domain).
+Residual TC-vs-matched-movetime: ~13 ±20, of which ~4 is Coda's ~6%
+movetime overspend flattering the st frame → **true active-TM gap vs SF18
+at STC ponder-off ≈ 10 ±20 — indistinguishable from zero at practical
+power.** Consistent with 0/9 TM interventions finding Elo today and with
+blunder-spend conditioning showing SF-like selection discrimination.
+
+**Final decomposition of the ~75-Elo STC gap to SF18-dev (ponder-off,
+Atlas conditions): per-node search quality ≈ −80 raw (mid-band 50k-150k
+worst; partially masked at TC by contention-compressed NPS), NPS ≈ neutral
+contended / bimodal by platform, active TM ≈ 0 ±20.** The catch-SF budget
+belongs to the mid-band search-quality track, validated at fixed 150k
+nodes vs SF17 (gauge calibrated 2026-07-10). TM assets banked: input-lab
+branch + dashboard (--shape), TMDebug factor instrumentation, the
+self-play-blindness lesson, movetime-overshoot fix candidate (small,
+also fixes the st-frame bias).
