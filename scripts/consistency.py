@@ -52,10 +52,13 @@ class Eng:
             cp_white = int(float(m.group(1)) * 100)
             return cp_white if white_to_move else -cp_white
         else:
+            # Coda prints the SF-compatible line: NNUE evaluation +X.XX (white side)
             self.send("isready")
             for l in self.wait("readyok"):
-                if 'eval cp' in l:
-                    return int(l.split('eval cp')[1].split()[0])
+                m = re.search(r'NNUE evaluation\s+([+-]?\d+\.\d+)', l)
+                if m:
+                    cp_white = int(float(m.group(1)) * 100)
+                    return cp_white if white_to_move else -cp_white
             return None
     def value_at_depth(self, fen, d):
         self.send(f"position fen {fen}")

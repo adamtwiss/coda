@@ -368,12 +368,38 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
             "position" => {
                 parse_position(&tokens, &mut board);
             }
-            "eval" => {
-                // Static NNUE eval of the current position, side-to-move cp.
-                // SF-`eval`-equivalent for the cross-engine eval<->search
-                // consistency measurement. Print-only diagnostic.
-                let e = info.static_eval_uci(&mut board);
-                println!("info string eval cp {} (side to move)", e);
+            "treestats" => {
+                // Tree-shape counter dump, same line format as the
+                // instrumented-SF build (~/chess/instr-stockfish). Counters
+                // reset per `go` (Coda convention) — dump after each search.
+                // Join a finished search first: `go` moves the SearchInfo
+                // into the search thread; without this we'd dump the UCI
+                // loop's stale copy (all zeros).
+                if let Some(handle) = search_handle.take() {
+                    if let Ok(returned_info) = handle.join() {
+                        info = returned_info;
+                    }
+                }
+                let s = &info.stats;
+                let fmt = |a: &[u64; 32]| a.iter().enumerate()
+                    .filter(|(_, v)| **v > 0)
+                    .map(|(i, v)| format!("{}:{}", i, v))
+                    .collect::<Vec<_>>().join(" ");
+                eprintln!("TREESTATS nodes_by_depth {}", fmt(&s.nodes_by_depth));
+                let widths = (1..32).filter(|&i| s.width_cnt_by_depth[i] > 0)
+                    .map(|i| format!("{}:{:.3}", i,
+                        s.width_sum_by_depth[i] as f64 / s.width_cnt_by_depth[i] as f64))
+                    .collect::<Vec<_>>().join(" ");
+                eprintln!("TREESTATS mean_width_by_depth {}", widths);
+                let fmc = (1..32).filter(|&i| s.cuts_by_depth[i] > 0)
+                    .map(|i| format!("{}:{:.3}", i,
+                        s.first_cuts_by_depth[i] as f64 / s.cuts_by_depth[i] as f64))
+                    .collect::<Vec<_>>().join(" ");
+                eprintln!("TREESTATS first_move_cut_rate {}", fmc);
+                eprintln!("TREESTATS researches asp_fail_low:{} asp_fail_high:{} lmr:{}",
+                    s.ts_asp_fail_low, s.ts_asp_fail_high, s.ts_lmr_research);
+                let total: u64 = s.nodes_by_depth.iter().sum();
+                eprintln!("TREESTATS totals nodes:{} qnodes:{}", total, s.qnodes);
             }
             "go" => {
                 // Wait for any pending search to finish first. If we're abandoning
@@ -1239,7 +1265,21 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 println!("Hash: {:016x}", board.hash);
             }
             "eval" => {
+                // Join a finished search first — `go` moves SearchInfo into
+                // the search thread; without the join we'd read a stale copy
+                // (same fix as `treestats`).
+                if let Some(handle) = search_handle.take() {
+                    if let Ok(returned_info) = handle.join() {
+                        info = returned_info;
+                    }
+                }
                 let score = if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
+                    // Staleness fix (2026-07-11): the accumulator holds
+                    // whatever position the last search left it at; applying
+                    // it to a different `position` gave silently-wrong evals
+                    // (measured: -2.47 clean vs -0.16 after a foreign
+                    // search, same FEN). Rebuild from the current board.
+                    acc.force_recompute(net, &board);
                     // Build a real ThreatStack for v9 nets — without this,
                     // forward_with_threats falls through and the threat
                     // half of the eval is silently zeroed (audit

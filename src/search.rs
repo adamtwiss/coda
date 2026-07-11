@@ -894,6 +894,20 @@ pub struct PruneStats {
     // Behavior-preserving: the RFP cutoff is returned regardless.
     pub rfp_audit_attempts: [u64; 24],
     pub rfp_audit_fp: [u64; 24],
+    // TREESTATS parity counters (tree-shape comparison vs the instrumented
+    // SF build, 2026-07-11; dumped by the UCI `treestats` command in the
+    // same line format as the instr-stockfish patch). Bucket 0 = qsearch;
+    // interior nodes bucket by ENTRY depth min(31) — same convention both
+    // sides so per-depth lines stay mutually consistent. Reset per `go`
+    // (Coda's existing stats convention; harness dumps after each go).
+    pub nodes_by_depth: [u64; 32],
+    pub cuts_by_depth: [u64; 32],
+    pub first_cuts_by_depth: [u64; 32],
+    pub width_sum_by_depth: [u64; 32],
+    pub width_cnt_by_depth: [u64; 32],
+    pub ts_lmr_research: u64,
+    pub ts_asp_fail_low: u64,
+    pub ts_asp_fail_high: u64,
 }
 
 /// Forced-move detection state (Viridithas pattern, set by `detect_forced_move`).
@@ -1509,28 +1523,6 @@ impl SearchInfo {
         for entry in self.pawn_hist.iter_mut() {
             *entry = [[0i16; 64]; 13];
         }
-    }
-
-    /// UCI `eval` command support: static NNUE eval of an arbitrary position,
-    /// with full accumulator + threat-stack setup from scratch (the search
-    /// path assumes these are maintained incrementally; a bare `position` +
-    /// `eval` has no such state). Mirrors SF's `eval` for the cross-engine
-    /// eval<->search consistency measurement (search input metrics,
-    /// docs/search_gap_decomposition_2026-07-11.md). Diagnostic only.
-    pub(crate) fn static_eval_uci(&mut self, board: &mut Board) -> i32 {
-        board.generate_threat_deltas =
-            self.nnue_net.as_ref().is_some_and(|n| n.has_threats);
-        if self.threat_stack.active {
-            self.threat_stack.reset();
-            if let Some(ref net) = self.nnue_net {
-                self.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, WHITE);
-                self.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, BLACK);
-            }
-        }
-        if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
-            acc.force_recompute(net, board);
-        }
-        self.eval(board)
     }
 
     /// Evaluate using NNUE if loaded, otherwise classical PeSTO.
@@ -3131,6 +3123,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
                 if result <= alpha {
                     info.tm_asp_fail_low = info.tm_asp_fail_low.saturating_add(1);
+                    info.stats.ts_asp_fail_low += 1;
                     // P1 (ponder instant-reply gate): root is failing low —
                     // publish it so a ponderhit arriving NOW does not
                     // instant-emit the destabilized pondered conclusion
@@ -3195,6 +3188,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     alpha = (result - delta).max(-INFINITY);
                 } else if result >= beta {
                     info.tm_asp_fail_high = info.tm_asp_fail_high.saturating_add(1);
+                    info.stats.ts_asp_fail_high += 1;
                     // Fail high: contract alpha toward beta, widen beta
                     alpha = (5 * alpha + 3 * beta) / 8;
                     beta = (result + delta).min(INFINITY);
@@ -4014,6 +4008,11 @@ fn negamax(
     if depth <= 0 {
         return quiescence(board, info, alpha, beta, ply);
     }
+
+    // TREESTATS: interior-node entry, bucketed by entry depth (captured once
+    // so cutoff/width counters below use the same bucket).
+    let ts_bucket = depth.min(31) as usize;
+    info.stats.nodes_by_depth[ts_bucket] += 1;
 
     // C8 audit LIKELY #3: reset reductions slot at node entry so NMP and
     // any other pre-move-loop child call reads "no prior reduction", not
@@ -5710,6 +5709,7 @@ fn negamax(
                 // re-search would duplicate the already-completed LMR search. Every
                 // reference engine guards with `if new_depth > lmr_depth`. (audit B2)
                 if new_depth > lmr_depth {
+                    info.stats.ts_lmr_research += 1;
                     lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
                 }
 
@@ -5825,6 +5825,8 @@ fn negamax(
                     info.stats.beta_cutoffs += 1;
                     info.cutoff_count[ply_u] += 1;
                     if move_count == 1 { info.stats.first_move_cutoffs += 1; }
+                    info.stats.cuts_by_depth[ts_bucket] += 1;
+                    if move_count == 1 { info.stats.first_cuts_by_depth[ts_bucket] += 1; }
                     info.stats.cutoff_movecount_sum += move_count as u64;
                     info.stats.cutoff_movecount_sq_sum += (move_count as u64) * (move_count as u64);
 
@@ -6013,6 +6015,13 @@ fn negamax(
     }
 
     // Check for checkmate or stalemate
+    // TREESTATS: node exit — width = moves actually searched at this node
+    // (includes cutoff breaks; nodes that pruned before the move loop appear
+    // in nodes_by_depth but not here, so 1 − width_cnt/nodes per bucket is
+    // the pre-move-loop exit rate, matching the SF-side convention).
+    info.stats.width_sum_by_depth[ts_bucket] += move_count as u64;
+    info.stats.width_cnt_by_depth[ts_bucket] += 1;
+
     if move_count == 0 {
         if info.excluded_move[ply_u] != NO_MOVE {
             // Singular verification: no alternative found, return alpha
@@ -6213,6 +6222,7 @@ fn quiescence_with_depth(
     qs_depth: i32,
 ) -> i32 {
     info.stats.qnodes += 1;
+    info.stats.nodes_by_depth[0] += 1; // TREESTATS: qsearch = bucket 0
 
     // Draw detection: repetition and 50-move rule. Contempt removed (#508).
     let draw_score = 0;
