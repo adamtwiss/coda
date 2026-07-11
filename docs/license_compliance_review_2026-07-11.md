@@ -9,9 +9,9 @@ this document records a review of Coda's code against a simple standard: while
 ideas and algorithms are generally not copyrightable, our *implementations* of
 them should be clean, licence-compatible and properly credited.
 
-Coda is developed by studying techniques from strong open-source engines and
-implementing them for Coda's own architecture, validated by testing; most of the
-codebase is independent implementation of shared ideas. This review focuses on
+During the development of Coda, we have studied techniques from strong
+open-source engines and implemented them for Coda's own architecture, validated
+by testing; most of the codebase is independent implementation of shared ideas. This review focuses on
 the places where third-party *code or data* was drawn in more closely than that
 standard allows, and the steps being taken to put them right.
 
