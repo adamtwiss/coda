@@ -1511,6 +1511,28 @@ impl SearchInfo {
         }
     }
 
+    /// UCI `eval` command support: static NNUE eval of an arbitrary position,
+    /// with full accumulator + threat-stack setup from scratch (the search
+    /// path assumes these are maintained incrementally; a bare `position` +
+    /// `eval` has no such state). Mirrors SF's `eval` for the cross-engine
+    /// eval<->search consistency measurement (search input metrics,
+    /// docs/search_gap_decomposition_2026-07-11.md). Diagnostic only.
+    pub(crate) fn static_eval_uci(&mut self, board: &mut Board) -> i32 {
+        board.generate_threat_deltas =
+            self.nnue_net.as_ref().is_some_and(|n| n.has_threats);
+        if self.threat_stack.active {
+            self.threat_stack.reset();
+            if let Some(ref net) = self.nnue_net {
+                self.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, WHITE);
+                self.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, BLACK);
+            }
+        }
+        if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
+            acc.force_recompute(net, board);
+        }
+        self.eval(board)
+    }
+
     /// Evaluate using NNUE if loaded, otherwise classical PeSTO.
     fn eval(&mut self, board: &Board) -> i32 {
         // Ensure threat accumulator is computed before eval

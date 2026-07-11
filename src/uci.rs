@@ -368,6 +368,13 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
             "position" => {
                 parse_position(&tokens, &mut board);
             }
+            "eval" => {
+                // Static NNUE eval of the current position, side-to-move cp.
+                // SF-`eval`-equivalent for the cross-engine eval<->search
+                // consistency measurement. Print-only diagnostic.
+                let e = info.static_eval_uci(&mut board);
+                println!("info string eval cp {} (side to move)", e);
+            }
             "go" => {
                 // Wait for any pending search to finish first. If we're abandoning
                 // a ponder (predicted opp move didn't happen), suppress its
