@@ -54,11 +54,6 @@ pub mod nnue_export;
 pub mod bullet_convert;
 mod cuckoo;
 pub mod threats;
-// AVX-512 splat threat-delta enumerator (Phase A). Always compiled (the
-// AVX-512 fns are target_feature-gated so they build everywhere), but only
-// dispatched behind CODA_SPLAT=1 + CPU checks in threats.rs — default
-// remains scalar and bench must be identical in both switch states.
-pub mod threats_splat;
 pub mod threat_accum;
 pub mod sparse_l1;
 pub mod nnue_simd;

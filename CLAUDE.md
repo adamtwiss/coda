@@ -84,7 +84,6 @@ src/
   sparse_l1.rs     Sparse/dense int8 L1 matmul kernels (AVX2, AVX-VNNI, AVX-512 VNNI)
   threats.rs       Threat-feature enumeration + delta generation (v9)
   threat_accum.rs  Per-ply threat accumulator stack (v9)
-  threats_splat.rs AVX-512 byteboard-splat threat-delta enumeration (v9 threat pipeline)
   uci.rs           UCI protocol (position, go, stop, ponder, setoption)
   epd.rs           EPD test suite runner with SAN formatting
   book.rs          Polyglot opening book support

@@ -1075,30 +1075,6 @@ mod incremental_tests {
             "gap-fuzz did not exercise replay gaps >= 2 (histogram {:?})", &gap_hist[..12]);
     }
 
-    /// The whole incremental suite (all curated scenarios + the fuzzer)
-    /// with the AVX2 splat path FORCED via the thread-local
-    /// SPLAT_TEST_FORCE. On this AVX-512 dev host the default dispatch
-    /// picks the AVX-512 splat, so without forcing, the AVX2 enumerator
-    /// would never be exercised end-to-end (make_move call sites,
-    /// occ_transit legs, king-crossing refresh interplay). The force is
-    /// thread-local and each test runs on its own thread, so this cannot
-    /// leak into other tests.
-    #[test]
-    #[cfg(target_arch = "x86_64")]
-    fn incremental_suite_forced_avx2() {
-        if !std::is_x86_feature_detected!("avx2") {
-            eprintln!("skipping: host lacks avx2");
-            return;
-        }
-        use crate::threats::{SplatPath, SPLAT_TEST_FORCE};
-        SPLAT_TEST_FORCE.with(|f| f.set(Some(SplatPath::Avx2)));
-        for (name, fen, moves) in SCENARIOS {
-            run_scenario(name, fen, moves);
-        }
-        run_fuzz_random_games();
-        SPLAT_TEST_FORCE.with(|f| f.set(None));
-    }
-
     /// Sanity: manual i16 value comparison across all 256 channels
     /// proves the weight pattern actually differs between features.
     #[test]
