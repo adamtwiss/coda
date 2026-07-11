@@ -19347,3 +19347,26 @@ DOUBLE-COUNTS → over-widens → prunes too few. There is no remaining futility
 gap on the retuned baseline; #2664 absorbed it. DROP. (Confirms the doc's
 "re-validate against the retuned baseline regardless of the preliminary" note — the
 +0.4 preliminary was a pre-retune artifact.)
+
+## 2026-07-11 — 2× peak-LR on the multi-v9 stage-3 refinement melt (net probe)
+
+**2×LR stage-3 net vs prod (net-vs-net, base branch `main`): SPRT #2704 H0
+−6.2 ±3.5 (10,368 games), LLR −3.04.** Motivated by a moderate prior that a higher
+peak LR might help (SF uses one). Doubling the *peak* LR on the **stage-3** melt of
+the multi-stage schedule is a clean, decisive regression — QAT keeps run-to-run
+variance low, so this is signal, not noise.
+
+Mechanism (category error in the prior): **SF's higher peak LR is a property of a
+from-scratch, single schedule** — one long cosine all the way down to a low final
+LR. **Stage 3 is not that**; it is the low-LR refinement tail that settles stage 2's
+weights into the basin stage 2 found. Re-warming stage 3 to 2× peak re-injects
+oscillation and knocks the weights out of that basin; unless the re-cosine fully
+re-converges to an equally-low final LR AND the extra SB is enough to re-settle, the
+net lands worse — which it did. Same law as [[project_v9_low_lr_tail_critical]] /
+"low final-LR is critical" / "a net stopped mid-cosine is much weaker": the settling
+phase punishes energy added to it.
+
+**Closed direction:** higher peak LR on a late refinement stage = no. If exploring
+higher peak LR for multi-v10, the place for it is a **from-scratch / stage-1**
+schedule with a full cosine, NOT a stage-3 re-warm. The SF observation is real but
+does not transfer to a late-stage melt.
