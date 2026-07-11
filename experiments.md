@@ -19323,3 +19323,27 @@ walks under-propagate deep points). Upstream steering-leak test: NULL
 (pre-episode moves price like controls; the leak is not per-move — see
 the navigability interpretation in the doc). Corpora banked: 1019
 episode-starts + 1779 strategic + contested set.
+
+## 2026-07-10 — Corrhist L1: collapse two-stage divide + H4: fut-corr hardcode
+
+**L1 (`zeus/corrhist-divide-collapse`, 2c1185e):** fold `(sum/DIV)/GRAIN_T` into a
+single `sum/DIV_new` (DIV 450→5850=450×13, retire GRAIN_T). The two knobs were
+mathematically COLLINEAR: `trunc(trunc(x/a)/b) == trunc(x/(a·b))` (both signs in
+Rust), so GRAIN_T added zero expressive power over DIV — bench byte-IDENTICAL to
+main (2085296). **SPRT #2689 [-2,1] H0 −1.0 ±1.2 (74k)** — but this is a
+same-binary no-op, so H0 is drift noise, NOT a regression. Neutral hygiene refactor
+(removes a redundant SPSA dimension). Mergeable regardless of the noisy SPRT.
+Lesson: for a PROVABLY behavior-identical change (identity + byte-identical bench),
+SKIP the SPRT (CLAUDE.md "no SPRT for cleanups with no behavioral change") — the
+tunable removal alone didn't warrant burning 74k games.
+
+**H4 (`zeus/fut-corr-hardcode`, 72bcae9):** widen quiet-futility by 0.33·|corr|,
+hardcoded (no tunable), retest of the corrhist-audit #2 idea. **SPRT #2690 [-1,2]
+H0 −3.2 ±2.6 (17.8k)** — mild REGRESSION, and WORSE than the tunable form (#2671
+finished +0.4 over 180k on the pre-#2664 base). Read: the #2664 full retune already
+recalibrated the futility params (FUT_BASE/PER_DEPTH/LMR_DEPTH) for the
+post-residual |corr| distribution, so an explicit |corr| widening on top now
+DOUBLE-COUNTS → over-widens → prunes too few. There is no remaining futility |corr|
+gap on the retuned baseline; #2664 absorbed it. DROP. (Confirms the doc's
+"re-validate against the retuned baseline regardless of the preliminary" note — the
++0.4 preliminary was a pre-retune artifact.)
