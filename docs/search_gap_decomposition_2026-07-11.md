@@ -2,14 +2,16 @@
 
 ## TL;DR
 
-The ~75-Elo STC gap to SF18-dev decomposes as: **per-node search quality ≈
-all of it**, NPS ≈ 0 (under contended test conditions; platform-bimodal in
-deployment), active TM ≈ 0 ±20, eval ≈ 0 or positive. The search-quality
-gap is **concentrated in the mid-band (~50k–150k nodes/move, depth ~14–20)**
-— which is where real games at STC/LTC/deployment TCs are actually decided.
-Proposed next: an **input-metrics layer for search** (decision suite +
-search-health dashboard) so ideas — including novel ones — iterate in
-minutes, with Elo tests reserved for candidates that move the metrics.
+The ~75-Elo STC gap to SF18-dev decomposes as: **per-node mid-band search
+quality is the dominant addressable term (~40-50)**, **eval ≈ 0 vs SF17 but
+~30 real & accessible vs SF18** (their threat-net — the v10 stack already
+targets it), **NPS ≈ parity on deployment hardware**, active TM ≈ 0 ±20.
+The search-quality gap is **concentrated in the mid-band (~50k–150k
+nodes/move, depth ~14–20)** — which is where real games at STC/LTC/
+deployment TCs are actually decided. Proposed next: an **input-metrics
+layer for search** (decision suite + search-health dashboard) so ideas —
+including novel ones — iterate in minutes, with Elo tests reserved for
+candidates that move the metrics.
 
 ## Evidence (all 2026-07-10/11, Atlas, conc 32, noob_4moves, Hash=512; SF18
 = dev-20260318-d173a065; full tables in experiments.md)
@@ -30,17 +32,30 @@ contention compresses SF's NPS advantage far more than ours).
 | fixed 0.28s/move (STC-matched) | — | −66 |
 | real STC 10+0.1 (1000 games/eng) | −45 | −79 |
 
-- **Eval is strong**: +25 over SF17 where search barely runs. Not the gap.
+- **Eval: ≈0 vs SF17, ~30 accessible vs SF18.** +25 over SF17 at 15k where
+  search barely runs — but −69 vs SF18 in the SAME frame. The two columns
+  diverge at low nodes because SF18's threat-net eval is stronger than ours
+  (SF added threat inputs 17→18, paying NPS for them). That ~30-Elo slice
+  is real, eval-shaped, and already targeted by the v10 stack — the SF17
+  framing must not quietly retire it. (Hercules review, 2026-07-11.)
 - **The slide +25 → −33 vs SF17 (15k→150k) is pure search quality** — NPS
-  and TM are excluded by construction. Raw Elo flattens by 500k
-  (diminishing returns + 90% draw compression), so the leverage is the
-  mid-band, not an ever-widening deep cliff.
-- **TM absolved at current power**: st=0.28 (−66) vs real TC (−79/−73),
-  minus Coda's ~6% movetime overspend flattering the st frame → residual
-  ≈ 10 ±20. Nine TM interventions (4 probes × 2 Elo frames + profile
-  composition) all H0/negative; blunder-spend conditioning is SF-like.
-  The st=0.20→0.28 widening (~14 Elo) is the node-scaling confound that
-  had been mis-read as "NPS + active TM".
+  and TM are excluded by construction. Raw Elo flattens by 500k, but the
+  500k point is 90%-draw compressed: "no deep cliff" is UNMEASURABLE there
+  (UHO-at-fixed-nodes would resolve it), not proven small. The measured
+  leverage is the mid-band.
+- **TM absolved at current power — on the MEASUREMENT, not the H0 count**:
+  st=0.28 (−66) vs real TC (−79/−73), minus Coda's ~6% movetime overspend
+  flattering the st frame → residual ≈ 10 ±20. The nine failed TM
+  interventions corroborate but are weaker evidence (OB self-play is
+  partly TM-blind — measured 2026-07-10, subtree factor). Blunder-spend
+  conditioning is SF-like. The st=0.20→0.28 widening (~14 Elo) is the
+  node-scaling confound that had been mis-read as "NPS + active TM".
+- **NPS: near-parity on deployment hardware — so the fixed-node frame ≈
+  the deployment frame.** On modern Ryzen with all cores stretched, Coda
+  is at parity-to-ahead of SF18 (<10% residual; SF paid NPS for threats).
+  The 1.7× idle deficit is a Zen-1-class artifact. This is what licenses
+  reading the fixed-node decomposition as deployment-relevant, and makes
+  the mid-band focus stronger than a hedged "platform-bimodal" implies.
 - **Ponder**: separate frame, parked by directive (2026-07-11). We are a
   strong ponderer (#2-tier); SF/Berserk extract ~17-28 more pool-relative
   Elo from it. Revisit after the ponder-off gap closes.
@@ -80,9 +95,37 @@ seconds-to-minutes per measurement.
 **Mid-band decision suite.** Harvest positions from our own games where
 the mid-band decision went wrong: from the 20k+ archived RR games (plus
 future ones), take positions where Coda-at-150k played move A, a deep
-reference verdict (SF-dev at 5M+ nodes, cached) says B, and the
-game/verdict margin is decisive (not a coin-flip position). Curate a few
-hundred. Then:
+reference verdict says B, and the margin is decisive. Curate a few hundred.
+
+**Oracle design** (layered, to keep labels honest):
+- Primary labeler: SF-dev at 2-5M nodes, pinned binary+budget, verdicts
+  cached per FEN. **Accept-set semantics**: "correct" = any move within
+  ~30cp of best; a position is only admitted if Coda's actual move was
+  ≥100cp worse (MultiPV=2 for the margin; `searchmoves` to price A). The
+  suite measures "avoided a quantified mistake", not "matched SF's move".
+- **Coda-deep triage**: run Coda at ~5M nodes on every candidate.
+  *Search-fixable* (Coda-deep finds an accept-set move) → the suite: the
+  knowledge is in OUR eval+deep search, the mid-band fails to surface it;
+  the target is our own deep behavior surfaced earlier. *Eval-limited*
+  (Coda-deep can't find it) → excluded from the search suite, banked as a
+  pre-filtered **eval-blindspot corpus** — which feeds exactly the ~30-Elo
+  threat-net/v10 slice from the decomposition above.
+- Corroboration: harvest only mistakes that were punished (mover lost from
+  a not-lost position); cross-check a ~50-position sample with an
+  architecturally different opinion (lc0) + eyeball.
+
+**CAVEAT (Hercules review): the suite is a faster mimicry gradient, not an
+escape from it.** Tier-1 truth is still "SF-dev@5M says so" — optimizing
+suite accuracy converges toward SF and caps there; a better-than-SF move
+that disagrees with the oracle scores WORSE. That is acceptable for the
+current goal (we are behind SF; closing works) and the Coda-deep triage
+softens it (the scored target is our own deep verdict) — but it does not
+reward EXCEEDING SF. The dashboard (mechanism anomalies) is what supports
+going past SF; if/when the goal becomes exceeding, the truth-source must
+become stronger than one SF search (deeper multi-engine consensus, game
+outcomes).
+
+Then:
 
 - **Suite accuracy @ N nodes** = P(engine finds B) at 15k/50k/150k/500k.
   One full sweep ≈ minutes. SF17/SF18 runs calibrate what "good" looks
