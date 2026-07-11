@@ -431,8 +431,6 @@ After every search-side merge cluster of ~+10 Elo:
 - CLAUDE.md §Improvement Portfolio — thread-selection heuristic
 - `experiments.md` — SPRT entries for #865/#866/#867/#868 (LMR carve-outs)
   and downstream multi-feature triple-ext / threat-aware-bundle attempts
-- `docs/cross_engine_comparison_2026-04-25.md` — pruning outliers vs
-  Reckless that motivate carve-out experiments
 - `docs/tt_hash_sensitivity_2026-04-27.md` — TT-pressure analysis behind
   the hash 64→512 finding
 

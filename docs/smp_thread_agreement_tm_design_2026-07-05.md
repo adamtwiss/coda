@@ -18,14 +18,15 @@ and scales its soft budget up by
 incremented whenever a root move becomes best, reset by main each iteration.
 More collective churn → more time. **No vote, no helper TM, one shared counter.**
 
-**Reckless (#2) — distributed 65% vote-to-stop.** *Every* thread runs its own
-full TM soft-limit each iteration and casts a **retractable** vote into a shared
-`AtomicUsize` (`search.rs:231-248`); when
-`votes ≥ (nThreads·65).div_ceil(100)` the global stop fires. Effort factor
-`nodes_factor = (2.7168 − 2.2669·bestMoveNodes/threadNodes).max(0.5630)` is
-per-thread. Hard deadline stays main-only. **Higher ceiling, but helpers stop
-being "silent" — they must each compute a soft-limit — a real departure from
-Coda's architecture.**
+**Reckless (#2) — distributed supermajority vote-to-stop.** *Every* thread runs
+its own full TM soft-limit each iteration and casts a **retractable** vote into a
+shared atomic counter; when a supermajority of threads have voted, the global
+stop fires. A per-thread effort factor scales the soft-limit down as the
+best-move node fraction rises. Hard deadline stays main-only. **Higher ceiling,
+but helpers stop being "silent" — they must each compute a soft-limit — a real
+departure from Coda's architecture.**
+
+> [Reckless (AGPLv3) formula/source removed in the 2026-07-11 licence review — we do not reproduce AGPL-licensed code. The mechanism is described in prose.]
 
 Obsidian and Berserk: main-only, no cross-thread signal — the same shape as
 Coda today.
@@ -50,7 +51,7 @@ Coda today.
 
 Port SF's mechanism, **not** Reckless's vote — it preserves silent helpers and
 main-only TM (one shared atomic, no helper TM, no new stop path), which is the
-low-risk change. Keep Reckless's 65% vote as a documented higher-ceiling
+low-risk change. Keep Reckless's supermajority vote as a documented higher-ceiling
 follow-up only if the SF port validates and we want more.
 
 ### The factor
@@ -124,12 +125,12 @@ allocation → game outcomes at T>1), unlike ponder. So:
 
 ## Higher-ceiling follow-up (only if the SF port wins)
 
-Reckless's **65% retractable vote-to-stop** is the more aggressive mechanism and
+Reckless's **supermajority retractable vote-to-stop** is the more aggressive mechanism and
 Reckless is our closest peer. It requires making helpers TM-aware (each computes
 its own soft-limit multiplier from its own `root_moves[0].nodes` + stability),
 which is a substantial architecture change (silent-helper invariant broken).
 Deferred: only worth it if the low-risk SF scaling validates AND leaves
-measurable headroom. Exact numbers recorded above for when/if we build it.
+measurable headroom. The mechanism is described above for when/if we build it.
 
 ## Effort / risk
 

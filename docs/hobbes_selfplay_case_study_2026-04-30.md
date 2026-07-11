@@ -109,7 +109,7 @@ Hobbes's per-iteration delta in the late-stage architecture-stable regime is **+
 
 - "No engine in the survey reports beating LC0/T80 by replacing it in a single step" → still true.
 - "Pure self-play replacement is universally negative" → false; Hobbes refutes it across 40+ iterations.
-- The actionable difference: **Recipe-F is now on the table** as a credible long-term path. Not for now, but for after the variance investigation lands and we've banked the +30-50 Elo of structural fixes in `cross_engine_comparison_2026-04-25.md`.
+- The actionable difference: **Recipe-F is now on the table** as a credible long-term path. Not for now, but for after the variance investigation lands and we've banked the +30-50 Elo of structural fixes available on T80 alone.
 
 ## Open questions
 
@@ -129,6 +129,5 @@ Hobbes's per-iteration delta in the late-stage architecture-stable regime is **+
 ## Companion docs
 
 - `selfplay_data_strategy_2026-04-30.md` — prior strategy doc; this doc adds the "multi-iteration bootstrap is viable" data point.
-- `cross_engine_comparison_2026-04-25.md` — Hobbes wasn't in the original 17-engine survey; should be added to the next survey.
 - `factoriser_design_2026-04-21.md` — Hobbes doesn't use factoriser; their progressive bootstrap doesn't need it.
 - `experiments.md` — source of truth for resolved Coda SPRTs.

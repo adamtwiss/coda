@@ -6140,10 +6140,10 @@ Queued behind feature work. Findings saved to memory:
 
 ## 2026-04-25 → 2026-04-26 session — Tier-1 cross-engine port wave + factor SB800 deployment
 
-### Cross-engine queue Tier-1 batch (per docs/cross_engine_comparison_2026-04-25.md)
+### Cross-engine queue Tier-1 batch
 
 8 of 10 Tier-1 items submitted; 7 H0, 1 still pending. Pattern strongly
-calibrates the doc's expected-Elo column DOWN by 50-70% on raw consensus
+calibrates the queue's expected-Elo column DOWN by 50-70% on raw consensus
 ports — but the H0s surface real structural diagnostics worth retuning
 or bisecting toward.
 
@@ -6241,8 +6241,8 @@ follow-ups in flight) and 6 SPSA tunes (1 applied, 4 running, 1 stopped).
 
 Driven by `docs/reckless_vs_coda_pruning_diff_2026-04-25.md` finding:
 Coda fires LMP **28× more often per Kn** than Reckless. Plan
-documented in `docs/lmp_reckless_alignment_plan_2026-04-26.md`. 7
-differences enumerated; phased A (independent surgical) → B
+enumerated 7
+differences; phased A (independent surgical) → B
 (structural threshold) → C (gate removals).
 
 | SPRT | Branch | Result | Outcome |
@@ -6283,7 +6283,7 @@ memory: `feedback_bench_via_make_not_cargo.md`.
 
 ### Cross-engine Tier 2/3 batch continued (2026-04-27)
 
-Three more small-win candidates from `docs/cross_engine_comparison_2026-04-25.md`,
+Three more small-win candidates from the cross-engine comparison,
 all [0, 3] bounds.
 
 | SPRT | Branch | Item | Status |
@@ -7500,7 +7500,7 @@ distinct cross-engine ports / safety gates queued in the
   added LMR reduction either targets nothing new or displaces
   signal we already had. Same shape as the
   `feedback_naive_ordering_ports_dont_transfer.md` pattern.
-- **Source ref:** `docs/cross_engine_comparison_2026-04-25.md`
+- **Source ref:** cross-engine comparison,
   Tier 2 #9 (parent-cutoff-count, expected +2 to +5). Tier-2 entry
   marked H0; LMR-only port is closed.
 
@@ -7520,7 +7520,7 @@ distinct cross-engine ports / safety gates queued in the
   full ProbCut already catches these cases. The −0.9 Elo is
   consistent with the new shortcut returning slightly less
   refined scores than the full ProbCut probe at marginal cost.
-- **Source ref:** `docs/cross_engine_comparison_2026-04-25.md`
+- **Source ref:** cross-engine comparison,
   Tier 2 #13 (sf-small-probcut, expected +2 to +5; "~zero NPS
   cost"). Tier-2 entry marked H0.
 
@@ -7781,8 +7781,7 @@ Bench: 966720.
 Phase 4 #2 of NPS leg plan. New `src/setwise.rs` (~150 lines) with
 scalar + AVX2 helpers for pawn / knight / bishop / rook attack-
 bitboard aggregation. Used in `attacks_by_color`. Approach inspired
-by Reckless PRs #909 + #914 (catalogued in
-`docs/reckless_commit_catalog_2026-05-01.md`); independent
+by Reckless PRs #909 + #914; independent
 reimplementation against Coda's bitboard / attacks modules.
 
 ### Mechanism
@@ -7883,8 +7882,7 @@ Bench: 966720.
 
 ## 2026-05-01 — Step A merged: SIMD primitive abstraction (bench-neutral)
 
-First step of the L1-matmul restructure laid out in
-`docs/nps_structural_findings_2026-05-01.md`. New `src/nnue_simd.rs`
+First step of the L1-matmul restructure. New `src/nnue_simd.rs`
 holds SIMD primitives at the granularity of single ops (`splat_i32`,
 `dpbusd`, `double_dpbusd`, `load_u8`/`load_i8`, `reduce_add_i32`)
 gated by `cfg(target_feature)` — same pattern as Reckless's
@@ -7945,7 +7943,7 @@ territory.
 
 ### Implications for the lever ranking
 
-`docs/nps_structural_findings_2026-05-01.md` Lever #1 ("+15-25% NPS
+The NPS-structural Lever #1 ("+15-25% NPS
 from sparse-first L1 matmul") is downgraded — sparsity-iteration
 isn't the lever. The realistic upper bound for the L1-matmul
 restructure family is now **~3-8% NPS** from inline-barrier removal
@@ -8053,7 +8051,7 @@ entry: see `feedback_net_vs_net_needs_median_or_anchor.md` (TODO).
 
 Three-commit bundle on `feature/acc-data-stack` driven by the
 per-callsite L1-miss decomposition added the same day. Background
-in `docs/nps_structural_findings_2026-05-01.md` (full investigation)
+in the same-day NPS investigation
 and `docs/coda_vs_reckless_nps_2026-04-23.md` (lever ranking).
 
 ### Investigation arc
@@ -18320,7 +18318,7 @@ an early-N read). Optimism Stage A is ~neutral; not pursuing Stage B.
 
 ## 2026-07-06 — Reckless LMR correction-terms wave (T1.1 + T1.2): both H0 at converted defaults
 
-Context: fresh Reckless audit (`docs/reckless_audit_2026-07-06.md`) located
+Context: a fresh Reckless audit located
 Reckless's recent Elo in LMR correction terms. Both ports stacked on the
 fractional-LMR enabler branch (sub-ply terms need the centi-ply accumulator)
 and tested vs the enabler as base, isolating each addition.
@@ -18381,7 +18379,7 @@ training logs quantify the pass-rate collapse.
 
 ## Reckless-audit ordering imports — both H0 (2026-07-06)
 
-From `docs/reckless_audit_2026-07-06.md`. Two Reckless move-ordering ideas
+From the Reckless audit. Two Reckless move-ordering ideas
 tested on Coda; both rejected — Coda's ordering is well-tuned and resistant
 to these imports:
 - **#3 threatened-TO ordering malus (SEE-gated, stratified): H0 −4.4 ±3.2
@@ -18609,8 +18607,7 @@ vs RAdam-core as the batch-fragile piece.
 
 ## Reckless-audit — final resolutions (2026-07-08)
 
-Closing the last open threads from the Reckless v0.10.0-dev audit
-(docs/reckless_audit_2026-07-06.md).
+Closing the last open threads from the Reckless v0.10.0-dev audit.
 
 - **#8 tt-cutoff deep-relax — LTC re-test H0, DROP confirmed.** Two tests, to
   disambiguate an earlier mislabel: **#2601 = STC** (10+0.1): +0.5 ±0.8, 201k,

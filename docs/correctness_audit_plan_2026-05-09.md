@@ -120,7 +120,9 @@ But the root cause is the **gate**:
 | Coda | `static_eval >= beta` (binary) |
 | SF | `staticEval >= beta - 16*depth - 53*improving + 378` |
 | Obsidian | equivalent shape with depth/improving margins |
-| Reckless | `>= beta + (-8*depth + 116*tt_pv - 106*improvement/1024 - 20*(cutoff_count<2) + 304).max(0)` |
+| Reckless | margin below beta scaled by depth, tt_pv, improvement, and cutoff-count (formula redacted) |
+
+> [Reckless (AGPLv3) formula/source removed in the 2026-07-11 licence review — we do not reproduce AGPL-licensed code. The mechanism is described in prose.]
 
 **Coda has the strictest gate of any engine compared.** SF/Obsidian
 explicitly allow NMP when eval is *below* beta by a depth-scaled margin

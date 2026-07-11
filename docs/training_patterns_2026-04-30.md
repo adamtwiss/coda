@@ -477,6 +477,5 @@ After multi-seed-averaged result vs multi-seed-averaged control:
 - `selfplay_data_strategy_2026-04-30.md` — data origin (T80 vs self-play vs hybrid).
 - `hobbes_selfplay_case_study_2026-04-30.md` — Hobbes's full bootstrap case.
 - `factoriser_design_2026-04-21.md` — orthogonal architectural tweak.
-- `cross_engine_comparison_2026-04-25.md` — search-side comparisons (no overlap with this doc's training scope).
 - `t80_data_analysis.md` — empirical T80 score / ply / position-type distribution; cited in §Opening eval-bound filter for the Lc0-calibration argument.
 - `experiments.md` — source of truth for resolved Coda training/SPRT results.

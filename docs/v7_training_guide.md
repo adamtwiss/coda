@@ -210,13 +210,12 @@ from x-ray s800. Stacking these should close another 80-140 Elo.
 
 ### Detailed Reckless Architecture Differences (2026-04-16)
 
-**King buckets**: Reckless uses 10 buckets with aggressive far-rank merging:
-```
-Rank 1: buckets 0,1,2,3 (4 file groups, mirrored)
-Rank 2: buckets 4,5,6,7 (4 file groups, mirrored)
-Rank 3: bucket 8 (one bucket)
-Ranks 4-8: bucket 9 (one bucket for ALL far ranks)
-```
+**King buckets**: Reckless uses 10 buckets with aggressive far-rank merging — fine
+per-file resolution on the near ranks (where the king usually sits) collapsing to a
+single coarse bucket across all far ranks.
+
+> [Reckless (AGPLv3) source excerpt removed in the 2026-07-11 licence review — we do not reproduce AGPL-licensed code. The mechanism is described in prose.]
+
 We use 16 uniform buckets = 60% more PSQ parameters, each getting less training data.
 At s400, this significantly hurts training quality.
 
@@ -225,13 +224,12 @@ We use SCReLU (clamp then square). Viridithas found SCReLU = +50% effective netw
 but Reckless achieves #2 CCRL with plain clipped ReLU. May train more stably or may
 not matter with narrow (16→32) hidden layers.
 
-**Output bucket mapping**: Reckless non-uniform (indexed by piece count 0-32):
-```
-0-8 pieces: bucket 0 (lumps all endgames)
-9-12: bucket 1 | 13-16: bucket 2 | 17-19: bucket 3
-20-22: bucket 4 | 23-25: bucket 5 | 26-28: bucket 6
-29-32: bucket 7 (full material)
-```
+**Output bucket mapping**: Reckless maps the 0-32 piece count non-uniformly onto 8
+buckets — lumping sparse endgames together and reserving finer resolution for the
+common higher-material counts.
+
+> [Reckless (AGPLv3) source excerpt removed in the 2026-07-11 licence review — we do not reproduce AGPL-licensed code. The mechanism is described in prose.]
+
 Our uniform `(count-2)/4` wastes bucket capacity on rare endgame piece counts.
 
 ### v9 Roadmap (updated 2026-04-17)

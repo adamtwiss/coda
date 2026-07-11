@@ -2,7 +2,7 @@
 
 Source: `~/chess/engines/Starzix/src/` (~6 KLOC, single-author Rust-style C++).
 Compared against Coda v9 reference points (`src/search.rs`, `src/movepicker.rs`,
-`src/nnue.rs`, `experiments.md`, `docs/cross_engine_comparison_2026-04-25.md`).
+`src/nnue.rs`, `experiments.md`).
 
 Starzix is small but disciplined: ~45 SPSA-tunable parameters, no killer
 backup, no counter-move, no LMP non-PV gating — relies on history quality and
@@ -121,8 +121,8 @@ are tactically very different.
 Effort: **small** — extend `capture` table to
 `[piece][to][captured][promo_type]` (5 slots: none/N/B/R/Q).
 Memory: 13×64×7 = 5824 i16s → 5824×5 = 29 KB. Magnitude:
-**+1 to +3**. STM axis is separately covered in
-`cross_engine_comparison_2026-04-25.md` Tier-1 #3 (queued).
+**+1 to +3**. STM axis is separately covered as a queued Tier-1
+cross-engine item.
 
 ---
 
@@ -319,8 +319,8 @@ Recommended next-steps in order:
    the existing 4D-history infrastructure that already pays large
    dividends.
 3. **Tier-1 #4** (promotion axis on capture history) — small, isolated,
-   queue alongside the open STM-on-main-history Tier-1 from
-   `cross_engine_comparison_2026-04-25.md`.
+   queue alongside the open STM-on-main-history Tier-1
+   cross-engine item.
 4. **Tier-1 #2** (d² razoring) — only if v9 #389 lands H1 or H0
    ambiguous; cheap variant.
 

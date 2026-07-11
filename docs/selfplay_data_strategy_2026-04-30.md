@@ -165,7 +165,6 @@ What it didn't tell us:
 
 ## Companion docs
 
-- `docs/cross_engine_comparison_2026-04-25.md` — the +30-60 Elo of structural fixes available on T80 alone.
 - `docs/research_threads_2026-04-24.md` — R1 (sparsity, λ tuning) and R4 (retune timing) interactions.
 - `docs/factoriser_design_2026-04-21.md` — wider-teacher relabel-net candidate architecture.
 - `experiments.md` — source of truth for resolved SPRTs.

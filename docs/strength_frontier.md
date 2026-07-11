@@ -157,8 +157,7 @@ raw-depth formulas, different history scaling). The outliers identify
 real miscalibration; the fix is SPSA-retune-on-branch, not value
 import. Holistic "force-more-pruning" biased-start full-sweeps have
 repeatedly found new equilibria worth +5-15 Elo where direct ports
-H0'd. See `experiments.md` for resolved specifics;
-`cross_engine_comparison_2026-04-25.md` for the live queue.
+H0'd. See `experiments.md` for resolved specifics.
 
 ## Priors this updates
 

@@ -270,17 +270,11 @@ substantially.
 ### What Reckless does differently
 
 1. **Module-level `#[cfg(target_feature)]` dispatch.** Each ISA is a
-   separate module, mutually-exclusive cfg-gated:
-   ```rust
-   mod simd {
-       #[cfg(target_feature = "avx512f")] mod avx512;
-       #[cfg(target_feature = "avx512f")] pub use avx512::*;
-       #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))] mod avx2;
-       #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))] pub use avx2::*;
-       #[cfg(all(target_feature = "neon", not(any(target_feature = "avx2", target_feature = "avx512f"))))] mod neon;
-       // ...
-   }
-   ```
+   separate module, mutually-exclusive cfg-gated at the module level so only
+   one ISA's source is compiled per build.
+
+   > [Reckless (AGPLv3) source excerpt removed in the 2026-07-11 licence review — we do not reproduce AGPL-licensed code. The mechanism is described in prose.]
+
    For a Zen 5 build (`target-cpu=native`), only the `avx512` module
    compiles. The `avx2` module's source isn't even visible to LLVM.
    Each binary has ONE SIMD implementation, not multiple.

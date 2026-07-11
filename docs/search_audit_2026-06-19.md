@@ -79,12 +79,12 @@ trained on positions where static eval was over-optimistic and every move
 failed below alpha. That's half the signal gone.
 
 SF and Reckless both update on fail-low when the error direction is consistent
-(eval was too high → fire with an upper-bound condition). Reckless gate:
-```rust
-if !(in_check || best_move.is_noisy()
-    || (bound == Upper && best_score >= eval)    // over-pessimistic error
-    || (bound == Lower && best_score <= eval))   // over-optimistic error OK
-```
+(eval was too high → fire with an upper-bound condition): the gate additionally
+fires on an upper-bound node whose best score still exceeds eval (over-pessimistic
+error) and skips the over-optimistic lower-bound case.
+
+> [Reckless (AGPLv3) source excerpt removed in the 2026-07-11 licence review — we do not reproduce AGPL-licensed code. The mechanism is described in prose.]
+
 Remove the `best_move != NO_MOVE` requirement and add an upper-bound arm.
 Estimated +2-4 Elo. Bounds: `[0, 3]`.
 

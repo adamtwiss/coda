@@ -1,5 +1,7 @@
 # Coda Threat-Feature Semantics — Correctness Contract for a SIMD Reimplementation
 
+> **Licence-review note (2026-07-11):** the SIMD this document describes was assessed as too closely modelled on Reckless (AGPLv3) and is being removed and re-implemented independently as part of the licence compliance review (see `docs/license_compliance_review_2026-07-11.md`). Retained for design history.
+
 Extracted 2026-07-04 from `main` @ ba6271c (plus branch commit 5096ac0 for the
 splat parity test). All line numbers are from the current working tree unless
 marked otherwise. An error in this document becomes silent eval corruption —
@@ -9,7 +11,6 @@ Primary sources:
 - `src/threats.rs` (2971 lines) — enumeration, index mapping, delta generation, apply kernels
 - `src/board.rs` `make_move` (lines 844–1003) — delta generation call sites
 - `src/threat_accum.rs` — the live consumer (ThreatStack)
-- `docs/byteboard_splat_scoping_2026-05-03.md` — prior port attempt; the x-ray blocker
 - `git show 5096ac0:src/threats_splat.rs` — abandoned AVX-512 splat + its parity test
 
 ---
@@ -33,8 +34,7 @@ A threat feature is identified by the 4-tuple
 Crucially, **the feature index does NOT distinguish direct from x-ray**
 (there is no x-ray flag). The same index means "WR@a1 threatens WB@c1"
 whether the attack is direct or through one blocker. This is the exact
-property that killed the Reckless byteboard-splat port
-(`docs/byteboard_splat_scoping_2026-05-03.md` lines 199–215): in Reckless the
+property that killed the Reckless byteboard-splat port: in Reckless the
 index means "directly attacks" only; in Coda a piece interposing between a
 slider and its target does NOT change the feature (it flips direct→x-ray,
 same index), so a Reckless-style enumerator double-counts in Coda's model.
@@ -74,9 +74,8 @@ threats.rs:763–817 (enumerate); the incremental analogues are sections 1b /
   set").
 - **The blocker may be ANY piece — own or enemy, any type.** No filtering of
   the blocker whatsoever (threats.rs:769–777 removes whatever occupies the
-  square). Example from the scoping doc: in the start position
-  `(WR@a1 → WB@c1)` through own knight `WN@b1` is an active feature
-  (byteboard_splat_scoping lines 199–203).
+  square). Example: in the start position
+  `(WR@a1 → WB@c1)` through own knight `WN@b1` is an active feature.
 - **The victim may be either color**, same pair-filter as direct threats.
 - The x-ray victim square always lies on the attacker's **empty-board** attack
   ray (needed for the index mapping, §1.5).
@@ -496,7 +495,9 @@ SPRT class is `[-2, 1]` NPS-only per CLAUDE.md).
 
 ### RawThreatDelta (threats.rs:1101–1126)
 
-Packed u32, 4 bytes, layout identical to Reckless's ThreatDelta:
+Packed u32, 4 bytes. Its layout was flagged in the 2026-07-11 licence review
+as too closely modelled on Reckless's ThreatDelta (AGPLv3) and is being
+re-derived independently:
 
 | bits | field |
 |---|---|
@@ -550,8 +551,8 @@ apply/dual) ≈ 3–6%.
 | 3 non-sliders | 4 table lookups (2 pawn dirs, knight, king) masked into one loop | |
 
 Calls per make_move: 2 (quiet) … 5 (promo-capture) — see §3.4 table.
-Generated volume: ~10.6 deltas per push-pair on bench
-(byteboard_splat_scoping lines 22–25); per-move generated histogram
+Generated volume: ~10.6 deltas per push-pair on bench;
+per-move generated histogram
 available via `--features profile-threats` (`apply_stats::report`,
 threats.rs:133–182; per-section cycle/emit/zero-emit counters in
 `thr_stats`, threats.rs:245–418 — sections instrumented as
@@ -572,27 +573,30 @@ Support tables from `bitboard.rs`: `ray_extension(from, blocker)` = squares
 strictly beyond `blocker` on the from→blocker ray, 0 if unaligned/edge
 (bitboard.rs:145–154, init at 156–170); `between(a, b)` excludes endpoints.
 Both require `init_bitboards()` — a prior splat-test failure mode was
-forgetting this (byteboard_splat_scoping lines 189–191).
+forgetting this.
 
 ### What the splat port established (do not re-learn)
 
 - Reckless's byteboard splat (RAY_PERMUTATIONS mailbox permute +
   closest_on_rays + compress-store) is enumeration-compatible ONLY with a
   direct-attack feature space. Coda's space adds x-ray features at the SAME
-  indices → a direct port double-counts (byteboard_splat_scoping lines
-  175–248, "Option B: custom SIMD enumerator matching Coda's semantics" is
-  the path this spec supports).
+  indices → a direct port double-counts ("Option B: custom SIMD enumerator
+  matching Coda's semantics" is the path this spec supports).
 - ~600 LoC of Coda-encoded tables/primitives exist at
   `5096ac0:src/threats_splat.rs`: RAY_PERMUTATIONS (piece-encoding-
-  independent, copied verbatim), RAY_ATTACKERS_MASK / RAY_SLIDERS_MASK,
+  independent; flagged in the 2026-07-11 licence review as too closely
+  modelled on Reckless (AGPLv3) and being re-derived independently),
+  RAY_ATTACKERS_MASK / RAY_SLIDERS_MASK,
   PIECE_TO_BIT_TABLE re-derived for Coda's colored_piece order,
   `mailbox_vector_avx512` bridging Coda's piece-type mailbox + white_bb into
   a colored-piece byte vector (+6 where NOT white; empty 6→12), and working
   `push_threats_on_change_avx512` / `push_threats_on_move_avx512` for the
   DIRECT-only subset. The missing SIMD pieces are exactly sections 1b, 2's
   Z-level, and 2b (second-hit-per-ray enumeration).
-- Coda's `RawThreatDelta` bit layout == Reckless's `ThreatDelta`, so a SIMD
-  enumerator can compress-store directly into the delta buffer.
+- Coda's `RawThreatDelta` bit layout was flagged in the 2026-07-11 licence
+  review as too closely modelled on Reckless's `ThreatDelta` (AGPLv3) and is
+  being re-derived independently; a SIMD enumerator can compress-store directly
+  into the delta buffer.
 - AVX-512 path needs VBMI(2) (`_mm512_permutexvar_epi8`,
   `_mm512_maskz_compress_epi8`) — Zen 4+/SPR+; AVX2 fallback is required for
   fleet coverage (Hercules/Atlas gained most from prior cache work).

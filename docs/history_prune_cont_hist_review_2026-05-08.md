@@ -164,8 +164,7 @@ Three independent compounding causes (rank ordered by likely leverage):
 **Experiment A1: replace `depth ≤ 3` with `lmrDepth ≤ 5`**
 - Modal peer choice (Berserk, Stormphrax). Roughly doubles the candidate
   pool. Coda's prior `improving && unstable` gate removal already opened
-  ~50% of candidates per `cross_engine_comparison_2026-04-25.md` item #10
-  — this completes the analogous broadening on the depth axis.
+  ~50% of candidates — this completes the analogous broadening on the depth axis.
 - File:line `src/search.rs:2771`. One-line change of `depth` → `lmr_d`.
 - Risk: fires too often → bad pruning. Mitigated by retune of HIST_PRUNE_MULT.
 

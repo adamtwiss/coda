@@ -73,16 +73,11 @@ Each threat feature represents: "piece P on square S attacks piece Q on square T
 Not all combinations are valid — a piece-pair interaction map filters which
 attacker×victim pairs are tracked.
 
-**Piece interaction map** (from Reckless):
-```
-                Victim: P  N  B  R  Q  K
-Attacker Pawn:         [✓  ✓  ✗  ✓  ✗  ✗]   3 targets
-Attacker Knight:       [✓  ✓  ✓  ✓  ✓  ✗]   5 targets
-Attacker Bishop:       [✓  ✓  ✓  ✓  ✗  ✗]   4 targets
-Attacker Rook:         [✓  ✓  ✓  ✓  ✗  ✗]   4 targets
-Attacker Queen:        [✓  ✓  ✓  ✓  ✓  ✗]   5 targets
-Attacker King:         [✓  ✓  ✓  ✓  ✗  ✗]   4 targets
-```
+**Piece interaction map** (following Reckless's filtering approach): each attacker
+piece type tracks threats against only a filtered subset of victim types, pruning
+pairs that never carry useful signal so the feature space stays compact.
+
+> [Reckless (AGPLv3) source excerpt removed in the 2026-07-11 licence review — we do not reproduce AGPL-licensed code. The mechanism is described in prose.]
 
 Targets are counted per side (friendly + enemy), giving PIECE_TARGET_COUNT = [6,10,8,8,10,8].
 

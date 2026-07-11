@@ -82,13 +82,11 @@ the expected band.
 
 ### P3. TT-score adjustment when 50mr threatens stored mate/TB (Reckless)
 
-**Mechanism.** `score_from_tt(score, ply, halfmove)`:
+**Mechanism.** In `score_from_tt`, when the stored score is a win whose mate
+distance exceeds the plies remaining before the 50-move draw, downgrade it to a
+generic TB-win instead of propagating an unreachable mate.
 
-```rust
-if is_win(score) && Score::MATE - score > 100 - halfmove {
-    return Score::TB_WIN_IN_MAX - 1;   // downgrade unreachable mate
-}
-```
+> [Reckless (AGPLv3) source excerpt removed in the 2026-07-11 licence review — we do not reproduce AGPL-licensed code. The mechanism is described in prose.]
 
 A stored "mate in N plies" is *only reachable* if `N <= 100 - halfmove`. Otherwise
 the 50-move rule claims the draw first. Reckless downgrades these to generic

@@ -1,7 +1,8 @@
 # Threat-pipeline Phase A: Coda-semantics SIMD threat enumerator (2026-07-04)
 
-**Decision (Adam, 2026-07-04): GO on Option B** from
-`docs/byteboard_splat_scoping_2026-05-03.md` — a custom SIMD threat-delta
+> **Licence-review note (2026-07-11):** the SIMD this document describes was assessed as too closely modelled on Reckless (AGPLv3) and is being removed and re-implemented independently as part of the licence compliance review (see `docs/license_compliance_review_2026-07-11.md`). Retained for design history.
+
+**Decision (Adam, 2026-07-04): GO on Option B** — a custom SIMD threat-delta
 enumerator that preserves Coda's x-ray threat semantics. Option C (retrain
 to Reckless's direct-only threat space) is **rejected permanently**: x-ray
 threats are worth 150+ Elo and are Coda's most powerful unique feature.
@@ -141,7 +142,9 @@ five-section logic are shared/identical; only three things change:
 - **64-byte ray gather without VBMI** — per-index-byte: bits 0–3 via
   `shuffle_epi8`, bit 4 (lane) and bit 5 (register) via `blendv` on
   `slli_epi64`-shifted index copies over `permute2x128`-duplicated
-  halves (technique modelled on Reckless's `vectorized/avx2.rs`).
+  halves (technique flagged in the 2026-07-11 licence review as too closely
+  modelled on Reckless's `vectorized/avx2.rs` (AGPLv3) and being re-derived
+  independently).
 - **Masks via movemask** — `cmpeq_epi8`+`movemask_epi8` per half glued
   into the same u64 ray-position masks the AVX-512 path uses; the u64
   section math is byte-for-byte common.

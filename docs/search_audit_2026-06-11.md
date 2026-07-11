@@ -195,7 +195,7 @@ SPRT [0,3]. Tree-shrinking — bench will move.
 `search.rs:3803-3810`. Capture futility should credit optimistic material
 gain; Coda prunes losing QxQ identically to losing PxP. 4/4
 same-mechanism engines include a victim term (SF full value + captHist;
-Reckless 8%; PlentyChess full; Clover full). SEE<0 gate doesn't
+Reckless a small fraction; PlentyChess full; Clover full). SEE<0 gate doesn't
 substitute (it judges the exchange, not the stand-in material swing).
 **Fix:** `+ see_value(victim) * BNFP_VICTIM_PCT/100`, try 100 and ~10.
 SPRT [0,3]; retune BNFP pair if flat.
@@ -345,7 +345,7 @@ correct; double_ext_count propagation/reset correct; aspiration
 contraction shapes individually SPRT'd; QS draw detection (50mr,
 insufficient material, repetition with null boundary) clean; QS
 delta-pruning shape = consensus; QS SEE gate -26 in band; killers
-intentionally absent (+3.77); conthist offsets {1,2,4,6} = Reckless; TT
+intentionally absent (+3.77); conthist offsets {1,2,4,6} (Reckless uses a similar small offset set); TT
 stores raw eval; no allocations/strings in hot path; PruneStats plain
 per-thread u64; FEAT flags Once-parsed; NNUE lazy-push barriers intact;
 helper vote formula = SF/Obsidian shape.

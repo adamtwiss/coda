@@ -148,8 +148,7 @@ Genuinely unexploited locality items (all bit-identical, cheap):
     experiment; measure there or don't bother.
 11. **Hot-feature frontloading is NOT implemented** (contrary to a stale
     task-list entry): loader reads threat rows in file order
-    (`nnue.rs:2620-2633`); the permutation was scoped
-    (`docs/byteboard_splat_scoping_2026-05-03.md:161-171`) and held. Tooling
+    (`nnue.rs:2620-2633`); the permutation was scoped and held. Tooling
     (activation counters, `threat_accum.rs:1368-1449`) exists. Second-order
     after hugepages.
 12. **Footprint trims** (~1-2 MiB/thread): the threat accumulator state is

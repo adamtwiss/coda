@@ -284,8 +284,8 @@ patterns and novel candidates below.
 - **`cut_node` propagation through negamax + cut-node-driven LMR/IIR**
   (Hobbes T1 #4): explicit `cut_node` boolean threaded through the recursion;
   drives extra LMR reduction at expected cut nodes and IIR. Already on the
-  cross-engine queue (see `docs/cross_engine_comparison_2026-04-25.md`) but
-  Hobbes confirms it's near-universal among strong engines. Est. +3-8 Elo.
+  cross-engine queue but Hobbes confirms it's near-universal among strong
+  engines. Est. +3-8 Elo.
   Coda has piecemeal cut-node logic; full propagation is the missing piece.
 - **PV-extra TT-cutoff depth gate** (Motor T1.1): require `tt_entry.depth
   >= depth + 2 * is_pv` for PV-node TT cutoffs. Trivial 1-line change.

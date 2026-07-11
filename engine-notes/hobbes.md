@@ -330,8 +330,7 @@ Mechanically the same shape, but Hobbes:
 - **Clamps eval−beta to a max** (1155) before dividing — caps the bonus.
 - Uses /1024 fixed-point, allowing very fine-grained SPSA on each weight.
 
-Coda's NMP cutoff rate is 30% vs Reckless 57% (per
-`docs/cross_engine_comparison_2026-04-25.md`). Worth verifying the eval-clamp
+Coda's NMP cutoff rate is 30% vs Reckless 57%. Worth verifying the eval-clamp
 is the missing piece. SPSA over the four-tunable formula.
 
 - **Expected**: +1 to +3 Elo (already-tuned regime).
@@ -545,7 +544,7 @@ porting opportunity.
 `evaluation.rs:147-177`. Refresh path processes 4 features at a time
 (`add4`, `sub4`) before the remainder loop. Coda's refresh path is
 per-feature (`recompute_threats_full` and PSQ refresh are scalar — already
-flagged in `docs/reckless_commit_catalog_2026-05-01.md` items #793, #792).
+flagged as Reckless-port items #793, #792).
 **Already on the NPS queue** for Reckless port — verifying Hobbes uses the
 same pattern strengthens the case.
 

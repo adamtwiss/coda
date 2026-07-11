@@ -5,8 +5,7 @@ landings (May 3, +6.6% on Atlas per the `nps_microbench_hostdata.md`
 fleet table). Targets the AVX-2-only fleet (Atlas + most OB workers +
 lichess host).
 
-Companion to `coda_vs_reckless_nps_2026-04-23.md` (decomposition framing)
-and `nps_structural_findings_2026-05-01.md` (Zeus structural findings).
+Companion to `coda_vs_reckless_nps_2026-04-23.md` (decomposition framing).
 
 ## Atlas spec recap
 
@@ -40,8 +39,7 @@ Branches: 1.28 B / 800K = 1605/eval (vs Reckless Zeus 137M / 800K = 171/eval = 9
 Branch miss rate: 0.71% (predictor is fine)
 ```
 
-The 9× branches/eval ratio is consistent with the
-`nps_structural_findings_2026-05-01.md` "10-arm dispatch tree +
+The 9× branches/eval ratio is consistent with the "10-arm dispatch tree +
 `#[target_feature]` inline barriers" analysis, not closed by anything
 since.
 
@@ -122,7 +120,7 @@ Lever ranking specific to the AVX-2 fleet, post-AccDataStack:
    share (72.75%) on this host class. Two sub-levers:
 
    - **a. Drop `#[target_feature]` from the function body.** Single
-     biggest unrealised lever per `nps_structural_findings_2026-05-01.md`.
+     biggest unrealised lever.
      Per-ISA build (`make avx2`/`make avx512vnni`) would let LLVM
      inline the SIMD primitives flat into the function and across the
      caller. Effort: medium (build matrix). Expected: 5-12% NPS on
@@ -159,8 +157,7 @@ Lever ranking specific to the AVX-2 fleet, post-AccDataStack:
   works correctly.
 - Eval-only TT writeback: already merged at +14.7 Elo (#713).
 - Direct-check LMP carve-out: already merged (+2.5 Elo, #708).
-- Sparse-first L1 matmul: tested at -4% bench on current density model
-  (`nps_structural_findings_2026-05-01.md` PM update 2026-05-01).
+- Sparse-first L1 matmul: tested at -4% bench on current density model.
 - Manual prefetch in apply loop: H0 (#719/#721) — HW prefetcher
   already optimal on current code.
 
@@ -193,13 +190,7 @@ cd ~/chess/engines/Reckless && echo "bench" | ./target/release/reckless
 ## Cross-references
 
 - `docs/coda_vs_reckless_nps_2026-04-23.md` — original decomposition (Zeus).
-- `docs/nps_structural_findings_2026-05-01.md` — Zeus L1-matmul-restructure
-  findings; concluded the sparse-first reframe was wrong, real lever is
-  inline-barrier removal.
 - `docs/nps_microbench_hostdata.md` — fleet table; Titan = Atlas spec.
-- `docs/reckless_commit_catalog_2026-05-01.md` — 199-commit walk; AVX-2-
-  applicable items still untried (e.g. byteboard-splat AVX-2 #45d9cc5a
-  +2.27 STC) but smaller share now that AccDataStack is in.
 
 ## Open questions
 

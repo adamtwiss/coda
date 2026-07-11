@@ -233,11 +233,11 @@ Not eval-cost, but evals-per-node lever. Top items from the comparison:
 | Item | Coda | Reckless | Reckless Elo |
 |---|---|---|---|
 | LMP direct-check carve-out | none | skips moves giving direct check | +2.84 STC / **+9.46 LTC** |
-| LMP adaptive improvement scaling | binary improving | continuous via `70*improvement/16/1024` | +3.92 STC / **+5.19 LTC** |
+| LMP adaptive improvement scaling | binary improving | continuous improvement scaling (Reckless AGPL formula/coefficients omitted — 2026-07-11 licence review) | +3.92 STC / **+5.19 LTC** |
 | NMP skip on valuable-piece TT capture | none | `tt_bound=Lower ∧ tt_move.is_capture() ∧ victim≥knight` | +3.43 STC / +3.67 LTC |
 | NMP cut_node-only gate | non-PV only | `cut_node` only | (gate effect, not measured alone) |
-| RFP depth cap | `depth≤7`, linear margin | no cap, `1165*d²/128 + 25d + 30` | (part of wider changes) |
-| SEE pruning: capture depth cap | `depth≤6`, margin `-198*d` linear | no cap, `-8d² - 36d` quadratic | +1.53 LTC (decouple) |
+| RFP depth cap | `depth≤7`, linear margin | no cap, quadratic margin (Reckless AGPL coefficients omitted — 2026-07-11 licence review) | (part of wider changes) |
+| SEE pruning: capture depth cap | `depth≤6`, margin `-198*d` linear | no cap, quadratic margin (Reckless AGPL coefficients omitted — 2026-07-11 licence review) | +1.53 LTC (decouple) |
 | Razoring | none | d=1-2 with `!tt_move.is_quiet()` gate | +1.10 to +3.64 STC |
 | Sibling singular extension propagation | none | `+1` to siblings of extended moves | +2.79 STC |
 | Bad-noisy futility depth gate | `depth≤4` | `depth<11` | (within #815 overhaul) |
@@ -716,16 +716,12 @@ for an ancestor (or `recompute_threats_if_needed` replays forward),
 each pointer dereference is potentially a different cache line.
 
 Reckless's layout (`Reckless/src/nnue/accumulator/psq.rs`,
-`threats.rs`):
-```rust
-pub struct PstEntry {
-    pub values: [[i16; L1_SIZE]; 2],  // inline, no heap
-    ...
-}
-pub struct PstStack {
-    stack: [PstEntry; MAX_PLY],  // inline, no heap
-}
-```
+`threats.rs`) stores the accumulator values as inline fixed-size arrays
+directly in each stack entry (no per-entry heap allocations), with the whole
+per-ply stack held as one inline array.
+
+> [Reckless (AGPLv3) source excerpt removed in the 2026-07-11 licence review — we do not reproduce AGPL-licensed code. The mechanism is described in prose.]
+
 Entire stack is one contiguous ~2 MB buffer. HW prefetcher can
 predict the access pattern. No pointer-chasing.
 
@@ -889,9 +885,7 @@ the decomposition.*
 The "Flatten `AccEntry` → inline arrays" lever (Revised lever
 ranking #1 above) landed as `feature/acc-data-stack`, but the
 mechanism was different from what this doc predicted. SPRT #921
-H1'd at **+6.77 Elo** in the structural-NPS class. Full writeup in
-`docs/nps_structural_findings_2026-05-01.md` "Update 2026-05-03"
-section; summary here.
+H1'd at **+6.77 Elo** in the structural-NPS class; summary follows.
 
 ### What actually drove the win
 
@@ -947,8 +941,7 @@ likely benefited from worker mix biased toward older uArchs
   contiguity. The actual win came from eliminated memset traffic
   on over-provisioned stack arrays — invisible without `perf
   annotate` per-symbol.
-- Magnitude: estimated "+10-25% NPS" for the lever (in the
-  `nps_structural_findings_2026-05-01.md` 2026-05-03 update).
+- Magnitude: estimated "+10-25% NPS" for the lever.
   Actual fleet-aggregate bench gain is +3-7% per host. SPRT
   delivered +6.77 Elo, larger than bench predicted but inside the
   band.
@@ -968,7 +961,7 @@ Items that survive after the cache-hygiene leg landed:
 4. **Step C-full** (`#[target_feature]` removal + dispatch
    consolidation) — addresses the 1.79× instruction-count gap,
    which the cache work doesn't touch.
-5. **Cache checking squares + retry LMP direct-check** (`reckless_commit_catalog_2026-05-01.md` #4) — search-side, +5 LTC Elo expected.
+5. **Cache checking squares + retry LMP direct-check** — search-side, +5 LTC Elo expected.
 6. **Eval-only TT writeback** — already landed (Coda #713,
    +14.7 Elo).
 7. **Hot-feature frontloading** — generic cache-hygiene, valid
@@ -986,7 +979,3 @@ Items that survive after the cache-hygiene leg landed:
   (companion rule from the Step C-cheap revert).
 - Track instructions/eval + cache-refs/eval as primary metrics
   alongside bench NPS.
-
-See `docs/nps_structural_findings_2026-05-01.md` "Update
-2026-05-03" for full investigation arc, per-callsite breakdown,
-and methodology lessons.

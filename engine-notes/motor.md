@@ -80,8 +80,8 @@ continuation. The threat key is
 pieces under threat, mixed by murmur3 to spread bits.
 
 Coda has 5 sources (pawn, NP×2, minor, major, continuation). We don't
-have a threat-keyed corrhist. This is the *Plenty-style* corrhist that
-`docs/cross_engine_comparison_2026-04-25.md` flagged as N-3 (+2 to +4
+have a threat-keyed corrhist. This is the *Plenty-style* corrhist previously
+flagged as a cross-engine N-3 item (+2 to +4
 Elo, "highest expected of corrhist-only items"), but Plenty puts threats
 in the *continuation* corrhist key; Motor's treatment is independent —
 its own table — and stacks alongside continuation rather than replacing

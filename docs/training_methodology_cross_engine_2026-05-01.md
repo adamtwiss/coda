@@ -236,7 +236,6 @@ Even with this survey, several Coda-relevant questions are unanswered:
 - `hobbes_selfplay_case_study_2026-04-30.md` — the deepest single-engine training case study.
 - `training_patterns_2026-04-30.md` — synthesis of patterns + SB200 screening protocol.
 - `selfplay_data_strategy_2026-04-30.md` — data origin (T80 vs self-play vs hybrid).
-- `cross_engine_comparison_2026-04-25.md` — search-side cross-engine comparison.
 - `factoriser_design_2026-04-21.md` — factoriser architecture context.
 - `experiments.md` — source of truth for resolved Coda SPRTs.
 
