@@ -1,5 +1,7 @@
 //! Static Exchange Evaluation (SEE).
 //! Determines if a capture sequence is winning/losing.
+//! The iterative swap-loop follows the standard SEE formulation (as used by
+//! Reckless and Stockfish); the pinned-piece handling is Coda's own.
 
 use crate::attacks::*;
 use crate::bitboard::*;

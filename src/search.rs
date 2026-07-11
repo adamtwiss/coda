@@ -6663,6 +6663,9 @@ fn quiescence_with_depth(
 /// convention (Reckless 46, Halogen 49, Stormphrax 50, Viridithas 50,
 /// Alexandria 51, Stockfish 51) rather than the historical 8 we used to
 /// ship with.
+/// The position set is based on Stockfish's benchmark positions (GPLv3, a
+/// licence compatible with Coda's), so bench and NPS compare cleanly against
+/// Stockfish.
 pub const BENCH_POSITIONS: &[&str] = &[
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
     "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 10",

@@ -15,7 +15,7 @@ Bounds: standing default `[0, 3]` per CLAUDE.md. Retune-on-branch strategy noted
 
 Cheapest implementations. Each is 3-8 lines. No new tunables required for the initial SPRT; can retune-on-branch if H1-adjacent.
 
-**E1 · TT-upper NMP skip** (Uralochka E1, `~/chess/engines/uralochka3/search.cpp` — pattern also in SF/Ethereal). Skip NMP when TT is UPPER-bound and stored score already fails low against beta. The TT is telling us "we already searched to some depth and got a fail-low against beta"; a null-move search's job is to argue the position is better than beta — the TT says the opposite. Coda's NMP gate at `src/search.rs:3830` has no TT-flag check.
+**E1 · TT-upper NMP skip** (Uralochka E1, `~/chess/engines/uralochka3/search.cpp` — pattern also in SF). Skip NMP when TT is UPPER-bound and stored score already fails low against beta. The TT is telling us "we already searched to some depth and got a fail-low against beta"; a null-move search's job is to argue the position is better than beta — the TT says the opposite. Coda's NMP gate at `src/search.rs:3830` has no TT-flag check.
 
 Sketch (single new predicate on line 3837):
 ```rust

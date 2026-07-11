@@ -4,7 +4,9 @@
 /// Each active threat on the board contributes one feature index into the threat
 /// accumulator. Feature indices are perspective-relative with king-file mirroring.
 ///
-/// Reference: Reckless engine (src/nnue/threats.rs) — same encoding pattern.
+/// Reference: threat-feature encoding after Stockfish's threat features; the
+/// interaction map and target counts below follow Stockfish's tables (the same
+/// approach is used by Reckless).
 /// Total features: ~66,864 (depends on piece-pair filtering).
 
 #[cfg(feature = "profile-threats")]

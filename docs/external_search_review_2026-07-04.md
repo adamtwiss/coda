@@ -9,7 +9,7 @@ UCI/ponder reporting.
 
 Method: 6 parallel finder agents, one per cluster, each deep-reading Coda's
 implementation and comparing against the strongest 6 engines (Stockfish,
-Reckless, Obsidian, Berserk, PlentyChess, Alexandria — Ethereal excluded),
+Reckless, Obsidian, Berserk, PlentyChess, Alexandria),
 checking `experiments.md` for priors. All findings below were **re-verified by
 hand** before inclusion — the finders read code well but their prior-checking
 was imperfect (see the false alarm in §TT).

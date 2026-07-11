@@ -24,7 +24,7 @@ stronger, or legacy-shape variants worth flagging.
   `0.27·eval + 0.73·beta` — a strong Hobbes-style beta blend.
 - **ProbCut** (`game.cpp:849-876`): `probcut_beta = beta+116`, reduction of
   PROBCUT_DEPTH (≈7). No SEE gate on candidates.
-- **Futility** (`game.cpp:967-978`, "as in Ethereal"): two tiers on lmr_depth.
+- **Futility** (`game.cpp:967-978`): two tiers on lmr_depth.
   Tier 1: `eval + fut ≤ alpha AND hist < ~11.7k/6.0k`. Tier 2 unconditional at
   `+FUT_MARGIN_2 (~160)`.
 - **LMP** (`game.cpp:963`): `d ≤ 8 && moves_all ≥ base + coef·d²/4.5`. **Also
@@ -80,7 +80,7 @@ NO horizontal mirror. Koivisto king-bucket table (`neural.cpp:39-52`).
 PSQT delta bonus (`neural.cpp:778-781`): `psqt = (to_move[HIDDEN+stage] −
 opponent[HIDDEN+stage])/2` added to network output — cheap material residual.
 
-Full Ethereal-style Texel-tuned classical eval (`evaluate.cpp:40-105`) is
+Full Texel-tuned classical eval (`evaluate.cpp:40-105`) is
 **compiled but disabled** (USE_NN flag). Historical relic.
 
 ## Notable / novel mechanisms
