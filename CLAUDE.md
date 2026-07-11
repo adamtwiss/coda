@@ -313,6 +313,14 @@ signal = ponder-enabled cross-engine RR at deployment-matched TC ratios (see the
 `local-rr` skill); (3) cross-check with an LTC `[0,3]` SPRT for non-regression, but
 don't gate merge on SPRT magnitude. Some TM gains still show up in STC SPRT.
 
+**Lichess is NOT a measurement instrument** (Adam, 2026-07-10): ~100 games/day,
+uncontrolled externals (network latency, opponent pool, concurrent code changes).
+Deployment can *surface* a problem (e.g. a forfeit-rate jump) but can never
+validate a fix or measure a gain. Every change — including deployment-only
+mechanisms like ponder TM — must have a local hermetic test: build the harness
+that reproduces the trigger locally (scripted UCI sessions, latency-injection
+wrappers, ponder RRs) rather than "watch lichess after redeploy".
+
 **Core rules:** one change per branch (never stack untested); wait for H0/H1 (don't
 stop on "looks good"); log every result to `experiments.md`; consider
 retune-on-branch for tree-shape-changing features.
