@@ -6782,6 +6782,8 @@ pub fn bench_pathology(depth: i32, node_threshold: u64, nnue_path: Option<&str>)
         info.nodes = 0;
         info.last_flushed_nodes.set(0);
         info.history.clear();
+        info.clear_pawn_hist();
+        info.clear_correction_history();
         info.tt.new_search();
         let start = std::time::Instant::now();
         let _mv = search(&mut board, &mut info, &limits);
@@ -6842,6 +6844,8 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         info.last_flushed_nodes.set(0);
         info.global_nodes.store(0, Ordering::Relaxed); // P2.8: reset per position — was cumulative, so every info line after #1 printed garbage NPS
         info.history.clear();
+        info.clear_pawn_hist();
+        info.clear_correction_history();
         info.tt.new_search();
 
         let _mv = search(&mut board, &mut info, &limits);

@@ -642,10 +642,13 @@ fn selfplay_worker(
     }
 
     for _ in 0..my_games {
+        info.history.clear();
+        info.clear_pawn_hist();
+        info.clear_correction_history();
+        info.tt.clear();
         let entries = play_one_game(&mut info, &mut rng, depth, blunder_rate, force_capture_rate);
         if !entries.is_empty()
             && tx.send(entries).is_err() { break; }
-        info.tt.clear();
         games_done.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -827,6 +830,9 @@ fn material_worker(
             if !is_valid_position(&modified) { continue; }
 
             let limits = SearchLimits { depth, ..SearchLimits::default() };
+            info.history.clear();
+            info.clear_pawn_hist();
+            info.clear_correction_history();
             info.tt.new_search();
             let best_move = search::search(&mut modified, &mut info, &limits);
             let score = info.last_score;

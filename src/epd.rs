@@ -209,6 +209,8 @@ pub fn run_epd(path: &str, time_per_pos: u64, max_positions: usize, nnue_path: O
         info.nodes = 0;
         info.stop.store(false, std::sync::atomic::Ordering::Relaxed);
         info.history.clear();
+        info.clear_pawn_hist();
+        info.clear_correction_history();
         info.tt.clear();
 
         let limits = SearchLimits {
