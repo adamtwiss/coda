@@ -1495,8 +1495,54 @@ fn parse_go(tokens: &[&str]) -> SearchLimits {
 /// whitespace tokenizer truncates at the first space. Path-valued options
 /// (SyzygyPath, BookFile, NNUEFile) must read this raw remainder instead of a
 /// single token, or a spaced path is silently cut off at the first space.
+///
+/// Some GUIs (e.g. Arena) additionally wrap a spaced path in double-quotes
+/// (`value "C:\Program Files\Syzygy"`). Strip a matched surrounding pair so
+/// the literal quotes don't become part of the path — this is why a spaced
+/// path can work from the console (typed unquoted) yet fail under a GUI.
 fn setoption_value(line: &str) -> Option<&str> {
-    line.find(" value ").map(|i| line[i + " value ".len()..].trim())
+    line.find(" value ").map(|i| {
+        let v = line[i + " value ".len()..].trim();
+        v.strip_prefix('"')
+            .and_then(|inner| inner.strip_suffix('"'))
+            .unwrap_or(v)
+    })
+}
+
+#[cfg(test)]
+mod setoption_value_tests {
+    use super::setoption_value;
+
+    #[test]
+    fn plain_spaced_path_preserved() {
+        assert_eq!(
+            setoption_value("setoption name SyzygyPath value C:\\Program Files\\Syzygy"),
+            Some("C:\\Program Files\\Syzygy")
+        );
+    }
+
+    #[test]
+    fn arena_double_quoted_path_stripped() {
+        assert_eq!(
+            setoption_value("setoption name SyzygyPath value \"C:\\Program Files\\Syzygy\""),
+            Some("C:\\Program Files\\Syzygy")
+        );
+    }
+
+    #[test]
+    fn unbalanced_quote_left_intact() {
+        // A lone leading quote is not a matched pair — leave it alone rather
+        // than corrupt a path that legitimately starts with one.
+        assert_eq!(
+            setoption_value("setoption name BookFile value \"book.bin"),
+            Some("\"book.bin")
+        );
+    }
+
+    #[test]
+    fn no_value_delimiter_is_none() {
+        assert_eq!(setoption_value("setoption name Ponder"), None);
+    }
 }
 
 fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize, line: &str) {
