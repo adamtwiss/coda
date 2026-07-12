@@ -642,10 +642,10 @@ fn selfplay_worker(
     }
 
     for _ in 0..my_games {
+        reset_selfplay_game_state(&mut info);
         let entries = play_one_game(&mut info, &mut rng, depth, blunder_rate, force_capture_rate);
         if !entries.is_empty()
             && tx.send(entries).is_err() { break; }
-        info.tt.clear();
         games_done.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -827,7 +827,7 @@ fn material_worker(
             if !is_valid_position(&modified) { continue; }
 
             let limits = SearchLimits { depth, ..SearchLimits::default() };
-            info.tt.new_search();
+            reset_material_position_state(&mut info);
             let best_move = search::search(&mut modified, &mut info, &limits);
             let score = info.last_score;
 
@@ -843,6 +843,16 @@ fn material_worker(
         if !batch.is_empty()
             && tx.send(batch).is_err() { return; }
     }
+}
+
+fn reset_selfplay_game_state(info: &mut SearchInfo) {
+    info.clear_persistent_histories();
+    info.tt.clear();
+}
+
+fn reset_material_position_state(info: &mut SearchInfo) {
+    info.clear_persistent_histories();
+    info.tt.new_search();
 }
 
 fn is_repetition(board: &Board) -> bool {
@@ -934,5 +944,41 @@ fn genfens(n: usize, seed: u64) {
         let _ = writeln!(out, "info string genfens {}", board.to_fen());
         let _ = out.flush();
         generated += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selfplay_game_reset_clears_persistent_histories_and_tt() {
+        let mut info = SearchInfo::new(1);
+        info.dirty_persistent_histories_for_test();
+
+        let hash = 0xfedc_ba98_7654_3210;
+        info.tt.store(hash, 1, 23, crate::tt::TT_FLAG_EXACT, NO_MOVE, 10, false);
+        assert!(info.tt.probe(hash).hit, "test setup must seed TT entry");
+
+        reset_selfplay_game_state(&mut info);
+
+        info.assert_persistent_histories_clear_for_test();
+        assert!(!info.tt.probe(hash).hit, "selfplay game reset must clear TT between games");
+    }
+
+    #[test]
+    fn material_position_reset_clears_persistent_histories_and_starts_new_tt_generation() {
+        let mut info = SearchInfo::new(1);
+        info.dirty_persistent_histories_for_test();
+        let gen_before = info.tt.current_generation();
+
+        reset_material_position_state(&mut info);
+
+        info.assert_persistent_histories_clear_for_test();
+        assert_eq!(
+            info.tt.current_generation(),
+            gen_before.wrapping_add(1),
+            "material position reset must start a fresh TT generation per independent position"
+        );
     }
 }

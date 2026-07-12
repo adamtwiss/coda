@@ -208,8 +208,7 @@ pub fn run_epd(path: &str, time_per_pos: u64, max_positions: usize, nnue_path: O
         let mut board = Board::from_fen(&pos.fen);
         info.nodes = 0;
         info.stop.store(false, std::sync::atomic::Ordering::Relaxed);
-        info.history.clear();
-        info.tt.clear();
+        reset_epd_position_state(&mut info);
 
         let limits = SearchLimits {
             movetime: time_per_pos,
@@ -268,4 +267,29 @@ pub fn run_epd(path: &str, time_per_pos: u64, max_positions: usize, nnue_path: O
         passed, passed + failed,
         100.0 * passed as f64 / (passed + failed) as f64);
     println!("Total time: {:.1}s", elapsed.as_secs_f64());
+}
+
+fn reset_epd_position_state(info: &mut SearchInfo) {
+    info.clear_persistent_histories();
+    info.tt.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn epd_position_reset_clears_persistent_histories_and_tt() {
+        let mut info = SearchInfo::new(1);
+        info.dirty_persistent_histories_for_test();
+
+        let hash = 0x1234_5678_9abc_def0;
+        info.tt.store(hash, 1, 23, crate::tt::TT_FLAG_EXACT, NO_MOVE, 10, false);
+        assert!(info.tt.probe(hash).hit, "test setup must seed TT entry");
+
+        reset_epd_position_state(&mut info);
+
+        info.assert_persistent_histories_clear_for_test();
+        assert!(!info.tt.probe(hash).hit, "EPD reset must clear TT between positions");
+    }
 }
