@@ -467,7 +467,14 @@ pub fn convert_v7(
     write_u32_le(&mut buf, NNUE_MAGIC);
     write_u32_le(&mut buf, version);
 
-    let write_extended_kb = kb_count != 16 || kb_layout == KbLayout::Reckless;
+    // Bit 5 of `flags` is overloaded: on the extended-KB path it carries
+    // hl_crelu; on the legacy 16-bucket path it carries the consensus-vs-uniform
+    // distinction. A 16-bucket (consensus/uniform) net that ALSO uses hl_crelu
+    // therefore has nowhere to store hl_crelu on the legacy path — it would be
+    // silently dropped and the net inferred as SCReLU-hidden (wrong activation,
+    // ~-100 Elo). Force the extended-KB header whenever hl_crelu is set so bit 5
+    // means hl_crelu and kb_layout moves into the extended bytes.
+    let write_extended_kb = kb_count != 16 || kb_layout == KbLayout::Reckless || hl_crelu;
 
     let mut flags = 0u8;
     if use_screlu { flags |= 1; }
