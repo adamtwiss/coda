@@ -19400,3 +19400,17 @@ themselves); margin-cluster ×1.5 gauge +5 ±14 → **SPRT #2707** pending
 Next: deep-width/re-verification probe series (doDeeper restructure first),
 mechanism-gated by treestats (lmr-rs/1M and d8+ share must move toward SF),
 Elo-gated by the 150k gauge, merged via SPRT.
+
+## Sigma-rescale theory CLOSED: 0/2 (2026-07-12)
+
+**#2707 margin-cluster x1.5: H0, emphatic** (−9.7 ±4.6, 5.9k games) —
+clear self-play regression. With ASP_DELTA #2703 H0 (−1.2 ±2.0, 31k), the
+"absolute-cp constants are half-width for our 2x eval spread" theory is
+dead on both tests. Post-mortem: margins are internal-consistency
+quantities — they compare eval DIFFERENCES within our own search, and
+SPSA calibrated them against our own eval distribution all along. The 2x
+cross-engine spread (calibration-convention difference vs SF's displayed
+cp) never implied a cage. The eval-scale FACT stands (relevant when
+porting absolute-cp constants from SF-scale engines: divide expectations
+by ~2 or expect SPSA to move them); the rescale LEVER does not exist.
+Cost of closure: one 10-min sweep, two 2h gauges, ~37k fleet games.
