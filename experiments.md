@@ -19414,3 +19414,20 @@ cp) never implied a cage. The eval-scale FACT stands (relevant when
 porting absolute-cp constants from SF-scale engines: divide expectations
 by ~2 or expect SPSA to move them); the rescale LEVER does not exist.
 Cost of closure: one 10-min sweep, two 2h gauges, ~37k fleet games.
+
+## 2026-07-12 — coda_bot bullet "regression": investigated, NO engine regression found — post-mortem
+
+Two-day investigation of coda_bot's ~70-point bullet decline since Jun 21
+(codabot gained over the same window). ~15 instruments across code eras, nets,
+T1-T16, STC/bullet, hash 128-2048, ponder on/off, Zen1 vs Zen5, plus lichess
+forensics and SF-refereed phantom analysis: **every axis shows monotone
+improvement Jun→now** (T1 +88; T4 field differential +66; T8-bullet-ponder
++45; netnew +37 over pre-Jun net vs weak field; phantom/fortress metrics
+improving era over era). Decline decomposes into opponent-pool dynamics (farm
+targets left/strengthened; 3000+ band = structural draw-fortress; same-opponent
+scores stable). The initially-reported forfeit increase is absent from rated
+bullet data. The "T4 flip" that briefly looked like a smoking gun was 40-game
+noise. Forecast registered: head (corrhist-residual + C2 + TB-band) deployed
+both bots 2026-07-11; if an unreachable engine-side cause was real+fixed,
+coda_bot turns up by ~Jul 16. Full detail, refuted-theories catalog, and
+meta-lessons: `docs/coda_bot_regression_postmortem_2026-07-12.md`.
