@@ -19431,3 +19431,31 @@ noise. Forecast registered: head (corrhist-residual + C2 + TB-band) deployed
 both bots 2026-07-11; if an unreachable engine-side cause was real+fixed,
 coda_bot turns up by ~Jul 16. Full detail, refuted-theories catalog, and
 meta-lessons: `docs/coda_bot_regression_postmortem_2026-07-12.md`.
+## Tree-shape probes P-A/P-B: STC-neutral; LTC pending (2026-07-12)
+
+**P-A doDeeper consensus form** (branch dodeeper-consensus, parked): failed
+the treestats mechanism gate — lmr-rs/1M and d8+ share unchanged. Lesson:
+doDeeper cannot CREATE re-searches (fires post-fail-high), only deepen
+them; the 5x re-search-rate gap is upstream in fail-high frequency. Cost
+of verdict: 5 minutes, zero games. Branch keeps the DO_DEEPER_MARGIN
+tunable for a future cluster.
+
+**P-B remaining-depth LMR tilt** (branch lmr-depth-tilt, bench 2411986 =
++15.7% nodes): gate marginal (d8+ share 2.8->3.1%; gate metric under-
+credits reduction levers — extra verification lands in children's shallow
+buckets; needs subtree attribution). Gauge +4 ±15. **SPRT #2718 STC: H0,
+true zero (−0.3 ±1.5, 57.6k).** **Tune #2717 (6-param LMR cluster, 1500
+iters): converged to start (all ±6.4%, tilt NOT zeroed)** — per
+retune-on-branch methodology, the feature does not shift the landscape;
+no hidden Elo behind recalibration. BUT: STC plays 15-40k nodes/move,
+BELOW the mid-band this targets; the 150k gauge leaned +4. Per
+STC-first-gating policy (LTC-aimed changes are not discarded on
+STC-flat): **LTC SPRT #2723 pending** — that verdict closes P-B either way.
+
+Campaign ledger so far: sigma-rescale 0/2 (closed), P-A gate-fail, P-B
+STC-zero. Pattern forming: piecewise nudges toward SF's tree shape don't
+pay, echoing the TM lesson — SF's shape may be a CONSEQUENCE of their
+eval-search fit rather than a portable cause. If #2723 H0s, next move is
+forensic, not another shape nudge: per-position tracing of the 59 SNAP
+positions (which named pruning mechanism discards the oracle line at
+150k) — converts "over-pruning somewhere" into mechanism counts.
