@@ -343,6 +343,9 @@ enum Commands {
         /// Sample rate (0.0 = keep all until count)
         #[arg(long, default_value_t = 0.0)]
         rate: f64,
+        /// Also emit the stored STM-POV label as a second tab column (fen<TAB>score)
+        #[arg(long, default_value_t = false)]
+        scores: bool,
     },
     /// Import a TSV of (fen, score) rows into an sfbinpack binpack for fine-tuning.
     /// Score = STM-POV cp (SF deep eval); WDL derived from score; mate-ish dropped.
@@ -1244,8 +1247,8 @@ fn main() {
             run_binpack_stats(&input);
         }
 
-        Some(Commands::SamplePositions { input, output, count, rate }) => {
-            run_sample_positions(&input, &output, count, rate);
+        Some(Commands::SamplePositions { input, output, count, rate, scores }) => {
+            run_sample_positions(&input, &output, count, rate, scores);
         }
 
         Some(Commands::ImportTsv { input, output, fen_col, score_col, max_abs, repeat }) => {
@@ -2386,7 +2389,7 @@ fn run_binpack_stats(input: &str) {
     }
 }
 
-fn run_sample_positions(input: &str, output: &str, n: usize, sample_rate: f64) {
+fn run_sample_positions(input: &str, output: &str, n: usize, sample_rate: f64, scores: bool) {
     use sfbinpack::CompressedTrainingDataEntryReader;
     use std::io::Write;
 
@@ -2423,7 +2426,11 @@ fn run_sample_positions(input: &str, output: &str, n: usize, sample_rate: f64) {
 
         if keep {
             let fen = entry.pos.fen().unwrap_or_default();
-            writeln!(out, "{}", fen).expect("write failed");
+            if scores {
+                writeln!(out, "{}\t{}", fen, entry.score).expect("write failed");
+            } else {
+                writeln!(out, "{}", fen).expect("write failed");
+            }
             count += 1;
             if count >= n { break; }
         }
