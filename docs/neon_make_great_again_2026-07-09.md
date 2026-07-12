@@ -24,6 +24,10 @@ below landed on x86 **after** that date with no NEON counterpart:
 | 2026-07-04 | `7bc1840` | Splat A: AVX-512 x-ray threat-delta enumerator | — |
 | 2026-07-04 | `9e5e7bf` | Splat B: AVX2 fallback for the splat enumerator | — |
 
+(The two Splat rows — the x86 SIMD threat-delta enumerator, `threats_splat.rs`
+— were **removed** in the 2026-07-11 licence remediation; x86 is back on the
+scalar enumerator. See Step 3.)
+
 ## What IS at parity (no action)
 
 FT / accumulator / activation / L2 / threat-apply are fully mirrored and
@@ -140,17 +144,18 @@ first or verify the feature is present in the built binary; and always
 confirm node-count identity AND a real code diff before trusting a
 before/after.
 
-### Step 3 — NEON threat-splat enumerator
-**Gap:** `threats_splat.rs` is `#![cfg(target_arch = "x86_64")]` end to
-end. The default-ON x-ray-aware threat-delta enumerator (+6.7% NPS on
-Zen 5) has no NEON path; aarch64 falls back to scalar
-`push_threats_for_piece`. Largest ARM-vs-x86 NPS divergence.
-**Blocker:** the AVX-512 path leans on VBMI2 compress-store for
-emission — **no equivalent on any ARM core, M5 included**. A NEON port
-needs a from-scratch mask-drain emission design.
-**Decision:** big effort, not justified while ARM carries no fleet-Elo.
-Defer; schedule deliberately if/when ARM deployment matters more.
-Correctness would be parity-testable against the scalar oracle.
+### Step 3 — NEON threat-splat enumerator — SUPERSEDED (x86 SIMD enumerator removed)
+**Status changed 2026-07-11:** the x86 SIMD threat-delta enumerator
+(`threats_splat.rs`) was **removed** in the licence remediation; x86 now
+runs the scalar `push_threats_for_piece` walk (a clean-room SIMD
+re-derivation is tracked separately, not in this doc). So there is no
+longer an x86 SIMD enumerator for a NEON port to mirror, and aarch64 is
+already on the same scalar path as x86 — the large ARM-vs-x86 divergence
+this step targeted is now closed by convergence, not by a NEON kernel.
+**Decision:** no NEON enumerator work. If the clean-room x86 SIMD
+enumerator lands and proves a worthwhile win, revisit a NEON counterpart
+then (parity-tested against the scalar oracle). Deferred, low priority
+(ARM carries no fleet-Elo).
 
 ## Progress log
 
@@ -184,5 +189,15 @@ Correctness would be parity-testable against the scalar oracle.
   ~2% regression on A76** (kernel is load-bound, not SDOT-bound). See
   Step 1b. Key takeaway: the NEON L1 kernel is memory-bound, so the only
   remaining NPS lever is a load-reducing layout (Step 2), now bumped in
-  priority. Step 3 (splat) still deferred. **Shipped and standing: Step 1
-  (dotprod/i8mm), +30% A76 / +20% M5.**
+  priority. Step 3 (splat) superseded (x86 SIMD enumerator removed).
+  **Shipped and standing: Step 1 (dotprod/i8mm), ~+30% NPS on both A76
+  and M5.**
+- 2026-07-11: **Step 3 superseded** — the x86 SIMD threat-splat
+  enumerator (`threats_splat.rs`) was removed in the licence remediation;
+  x86 + aarch64 now share the scalar `push_threats_for_piece`, so the
+  ARM-vs-x86 enumerator gap closed by convergence rather than a NEON port.
+  See Step 3.
+- 2026-07-12: **release-measurement pass for 0.9.1** — Step 1
+  (dotprod/i8mm L1) re-measured at **~+30% NPS on both** an Apple M5 and a
+  Cortex-A76 (the M5 came in higher than the initial +20% reading). This
+  is the figure used in the 0.9.1 release notes.
