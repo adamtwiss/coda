@@ -220,3 +220,81 @@ SF-refereed (depth 16-22) every position where Coda claimed sustained +2.0
 - Deployment-regime RR as a standing release gate (design in
   bot_regression_audit doc).
 - Tier-2 persistent-state candidates (C4-C7) from the Jul-10 audit.
+
+---
+
+# Addendum (2026-07-12, same day): Adam's challenge and the refined conclusion
+
+Adam challenged the pool-dynamics conclusion on a strong control: codabot never
+declined and out-rates coda_bot at blitz (3040 vs 3025) despite 2x+ slower
+hardware (~50-80 Elo at blitz timings). "The lichess environment changed"
+cannot explain a hardware-adjusted deficit concentrated on one account. The
+challenge drove four further instruments; the conclusion is refined, not
+reversed — and considerably sharpened.
+
+## New measurements
+
+1. **The decline is bullet-only.** Blitz perf-vs-expectation is flat on BOTH
+   accounts across the whole period (coda_bot +1.4 -> +0.3; codabot similar).
+   This kills generic pool-hardening AND simple depth-scaled defects (blitz
+   searches deeper than bullet).
+2. **Not TC-specific within bullet** (60+1 / 60+2 / 120+1 all declined
+   together on coda_bot; all flat-positive on codabot). NB an earlier parse
+   error ("'0+0' majority") mislabeled 60+1; the bots barely play no-inc at
+   all, killing the no-inc-TM-cluster hypothesis.
+3. **Per-move clock behavior never changed** (p10/p50/p90/p99 spend flat on
+   both accounts, all weeks) — no TM regression on real games. The end-clock
+   dip in the Jun-22/29 weeks is longer games (the grind-draw epidemic); the
+   Jul-06 end-clock jump (8s -> 25s median remaining) is the P1 instant-reply
+   policy visibly deployed and working.
+4. **SF referee over coda_bot's actual should-win lichess draws (sub-2950
+   opponents, 50/period, eval every 10 plies): 0 thrown wins in EITHER
+   period; 96-98% of these draws never reached even SF +1.** Nothing was
+   converted badly — the games were never winnable. Bot-pool ratings
+   drastically misprice draw-solidity: a "2850" that holds a 3050 engine to
+   a draw at will is not 2850 in expectation terms.
+5. **Draw-solid sub-2950 challengers in coda_bot's diet went 17 -> 40 games
+   pre/post** (pawny_bot 100% drawn, LegoTechnicControlPl 66%,
+   AggressiveStockfish 55%...); codabot's stayed 9 -> 10.
+
+## Refined conclusion
+
+coda_bot's bullet decline is a **rating-targeting equilibrium effect, priced
+in a pool whose ratings misprice draw-solidity**:
+
+- With accept-all challenges, the highest-rated bot on the pool is the most
+  profitable draw-farm target: a draw-solid lower-rated bot GAINS rating
+  every time it holds a draw against it, and holding is easiest at bullet
+  (least time to break a fortress; blitz depth breaks them — hence
+  bullet-only). coda_bot at its Jun-21 peak (~3090) was the top target;
+  codabot 50 points lower was not worth farming.
+- The resulting diet shift (draw rate 53% -> 80%; unwinnable "should-win"
+  draws; measured drawmeister influx) bleeds rating without ANY change in
+  play quality — consistent with every engine-side instrument showing
+  monotone improvement, the flat clock behavior, and the zero thrown wins.
+- The effect is self-equilibrating: as the rating falls, farming it pays
+  less. **Refined forecast: the recovery visible in the last days should
+  stall around ~3030-3060 (the equilibrium band, near codabot) rather than
+  return to ~3090 — UNLESS an engine change materially improves fortress-
+  breaking at bullet.** If the curve instead returns to peak after the
+  Jul-11 deploy, an engine-side component (corrhist-residual class) was real
+  after all and this addendum under-credits it.
+
+## Additional lessons
+
+- **The hardware-adjusted cross-account comparison was the strongest control
+  in the whole investigation** — and it came from Adam, not from the
+  instrument suite. Within-account analysis normalizes away exactly the
+  between-account signal.
+- **"Should-win" by Elo expectation is not "was winnable"**: referee the
+  actual trajectories before attributing conversion failure. The
+  fav-conversion "collapse" (78% -> 42%) measured opponent draw-solidity,
+  not engine conversion.
+- Bullet bot-pool ratings at 2800-3000 are contaminated by draw-farming
+  strategies; Elo-expectation deltas against them are systematically biased
+  for higher-rated engines.
+- Rating-decline triage order for bot accounts: (1) TC-class split
+  (bullet/blitz), (2) same-opponent paired scores, (3) clock-behavior
+  stability, (4) SF-refereed max-eval in the "lost" points games, (5) diet
+  composition. Steps 1-5 took ~2 hours total once the data was downloaded
+  and would have short-circuited a day of gauntlets.
