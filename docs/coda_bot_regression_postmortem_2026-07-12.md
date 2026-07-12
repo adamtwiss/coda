@@ -10,7 +10,9 @@ SF-refereed phantom analysis — found **no reproducible engine regression at
 any locally reachable operating point**. Every axis measured shows the engine
 improving monotonically June → July (~+90 Elo cross-engine at T1/STC, +45 to
 +76 differentials at T4/T8, phantom metrics improving era over era). The
-lichess decline decomposes into **opponent-pool dynamics** (farm targets left
+lichess decline decomposes into **opponent-pool dynamics** ("farm targets" —
+the reliably-beatable weaker opponents that a bot's rating income actually
+comes from, since ~50%-scoring fortress peers move its rating nowhere — left
 or strengthened, the 3000+ bullet band is a structural draw-fortress) plus,
 possibly, a deployment-only residual our instruments cannot reach.
 
