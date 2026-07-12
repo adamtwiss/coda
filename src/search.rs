@@ -6125,13 +6125,13 @@ fn negamax(
     // Previously gated on `best_score > alpha_orig` (fail-high only), which
     // never trained on fail-low (all-node) positions where static eval was
     // over-optimistic. SF and Reckless both update on fail-low when the error
-    // direction is consistent: bound==Upper && best_score < scaled_eval means
+    // direction is consistent: bound==Upper && best_score < static_eval means
     // eval predicted higher than any move achieved — train correction downward.
     // (audit S1)
     let corrhist_lower_ok = best_score > alpha_orig   // fail-high: lower bound
-        && !(best_score >= beta && best_score <= scaled_eval); // direction-consistent
+        && !(best_score >= beta && best_score <= static_eval); // direction-consistent
     let corrhist_upper_ok = best_score <= alpha_orig  // fail-low: upper bound
-        && best_score < scaled_eval;                   // eval was over-optimistic
+        && best_score < static_eval;                   // corrected eval was over-optimistic
     if !in_check
         && !best_move_noisy
         && info.excluded_move[ply_u] == NO_MOVE
