@@ -1153,6 +1153,13 @@ pub struct SearchInfo {
     pub root_depth: i32,
     /// TMDebug-only stop-time snapshot of the dynamic-TM factors (see TmDbg).
     tm_dbg: TmDbg,
+    /// SNAP forensics (CODA_TRACE_LINE env, 2026-07-12): zobrist hashes of
+    /// the positions along a target line from the root, and the line's moves.
+    /// Empty (= disabled, zero hot-path cost beyond one is_empty check) unless
+    /// the env var is set. When a search node's hash matches trace_hashes[ply],
+    /// hooks log which pruning gate discards trace_line_mv[ply], to stderr.
+    pub trace_hashes: Vec<u64>,
+    pub trace_line_mv: Vec<Move>,
     /// Ply barrier for NMP verification: prevents NMP from re-triggering
     /// inside its own verification subtree (all peers: Reckless, Alexandria,
     /// Stormphrax use nmpMinPly / nmp_min_ply). Default 0 = no barrier. (audit B1)
@@ -1271,6 +1278,8 @@ impl SearchInfo {
             completed_depth: 0,
             root_depth: 0,
             tm_dbg: TmDbg::default(),
+            trace_hashes: Vec::new(),
+            trace_line_mv: Vec::new(),
             nmp_min_ply: 0,
             static_evals: [0; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
@@ -2908,6 +2917,37 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.sel_depth = 0;
     info.root_stm = board.side_to_move;
 
+    // SNAP forensics: populate the traced line's per-ply hashes + moves from
+    // CODA_TRACE_LINE (space-separated UCI moves, interpreted from THIS root).
+    // One-shot per process (harness spawns a fresh engine per position).
+    if info.trace_hashes.is_empty() {
+        if let Ok(line) = std::env::var("CODA_TRACE_LINE") {
+            if !line.trim().is_empty() {
+                let mut wb = board.clone();
+                for tok in line.split_whitespace() {
+                    let legal = generate_legal_moves(&wb);
+                    let mut found = NO_MOVE;
+                    for i in 0..legal.len {
+                        let m = legal.get(i);
+                        if move_to_uci(m) == tok { found = m; break; }
+                    }
+                    if found == NO_MOVE {
+                        eprintln!("TRACE error: move {} not legal on line; tracing disabled", tok);
+                        info.trace_hashes.clear();
+                        info.trace_line_mv.clear();
+                        break;
+                    }
+                    info.trace_hashes.push(wb.hash);
+                    info.trace_line_mv.push(found);
+                    wb.make_move(found);
+                }
+                if !info.trace_hashes.is_empty() {
+                    eprintln!("TRACE armed: {} plies", info.trace_hashes.len());
+                }
+            }
+        }
+    }
+
     // Age history tables (×0.80) to preserve useful move ordering from prior searches.
     // Killers and counter-moves are cleared (position-specific).
     // T2.1: correction history PERSISTS across `go` (cleared on ucinewgame
@@ -4023,6 +4063,34 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     best_move
 }
 
+/// SNAP-forensics hooks (CODA_TRACE_LINE). `trace_gate!` fires when a node ON
+/// the traced line is about to discard the line's NEXT move via a named gate;
+/// `trace_node!` fires when an on-line node itself is cut before its move
+/// loop (or visited). Zero-cost when tracing is off (empty-vec check).
+macro_rules! trace_gate {
+    ($info:expr, $hash:expr, $ply:expr, $mv:expr, $gate:literal, $depth:expr, $mc:expr) => {
+        if !$info.trace_hashes.is_empty() {
+            let p = $ply as usize;
+            if p < $info.trace_hashes.len()
+                && $info.trace_hashes[p] == $hash
+                && $info.trace_line_mv[p] == $mv
+            {
+                eprintln!("TRACE gate={} ply={} depth={} mc={}", $gate, $ply, $depth, $mc);
+            }
+        }
+    };
+}
+macro_rules! trace_node {
+    ($info:expr, $hash:expr, $ply:expr, $what:literal, $depth:expr) => {
+        if !$info.trace_hashes.is_empty() {
+            let p = $ply as usize;
+            if p < $info.trace_hashes.len() && $info.trace_hashes[p] == $hash {
+                eprintln!("TRACE node={} ply={} depth={}", $what, $ply, $depth);
+            }
+        }
+    };
+}
+
 /// Negamax alpha-beta search.
 /// Main negamax search with all pruning, extensions, and reductions.
 fn negamax(
@@ -4093,6 +4161,7 @@ fn negamax(
     // so cutoff/width counters below use the same bucket).
     let ts_bucket = depth.min(31) as usize;
     info.stats.nodes_by_depth[ts_bucket] += 1;
+    trace_node!(info, board.hash, ply, "visit", depth);
 
     // C8 audit LIKELY #3: reset reductions slot at node entry so NMP and
     // any other pre-move-loop child call reads "no prior reduction", not
@@ -4707,6 +4776,7 @@ fn negamax(
             // eval is volatile. Mirrors unstable × ProbCut skip (#542 +6.7).
             if unstable { margin += margin / 3; }
             if static_eval - margin >= beta {
+                trace_node!(info, board.hash, ply, "rfp_cut", depth);
                 info.stats.rfp_cutoffs += 1;
                 // RFP_AUDIT (diagnostic): null-verify this static cutoff with
                 // the SAME R formula real NMP uses (sans post-capture +1), and
@@ -5134,6 +5204,7 @@ fn negamax(
         let is_promo = is_promotion(mv);
 
         if skip_quiets && !is_cap && !is_promo {
+            trace_gate!(info, board.hash, ply, mv, "skip_quiets", depth, move_count);
             continue;
         }
 
@@ -5155,6 +5226,7 @@ fn negamax(
             // pay the check-detection call when the count prune would actually
             // fire (node-count identical).
             if move_count > lmp_limit && (depth >= 4 || !board.gives_direct_check(mv)) {
+                trace_gate!(info, board.hash, ply, mv, "lmp", depth, move_count);
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
                 picker.skip_remaining_quiets();
@@ -5173,6 +5245,7 @@ fn negamax(
             let cap_ch = crate::movepicker::capt_hist_score_static(board, &info.history, mv);
             let cap_margin = (depth * tp(&SEE_CAP_MULT) + cap_ch * tp(&SEE_CAP_HIST) / 1024).max(0);
             if !see_ge(board, mv, -cap_margin) {
+                trace_gate!(info, board.hash, ply, mv, "see_cap", depth, move_count);
                 continue;
             }
         }
@@ -5206,6 +5279,7 @@ fn negamax(
             let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
             // Direct-check carve-out + strong-history exemption (Igel/Reckless #410).
             if futility_value <= alpha && main_hist < 12000 && !board.gives_direct_check(mv) {
+                trace_gate!(info, board.hash, ply, mv, "futility", depth, move_count);
                 info.stats.futility_prunes += 1;
                 skip_quiets = true;
                 picker.skip_remaining_quiets();
@@ -5224,6 +5298,7 @@ fn negamax(
         {
             let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
             if !see_ge(board, mv, see_quiet_threshold) {
+                trace_gate!(info, board.hash, ply, mv, "see_quiet", depth, move_count);
                 info.stats.see_prunes += 1;
                 continue;
             }
@@ -5392,6 +5467,7 @@ fn negamax(
             && !see_ge(board, mv, 0)
             && !board.gives_direct_check(mv)
         {
+            trace_gate!(info, board.hash, ply, mv, "bad_noisy", depth, move_count);
             continue;
         }
 
@@ -5401,6 +5477,7 @@ fn negamax(
         // prefetch, which had only the short pre-probe window). key_after is an
         // approximate hash (exact for the common cases; see board.rs) —
         // prefetch-only; the real probe below uses the true post-make hash.
+        trace_gate!(info, board.hash, ply, mv, "searched", depth, move_count);
         info.tt.prefetch(board.key_after(mv));
 
         // Build NNUE dirty piece info BEFORE make_move
@@ -5751,6 +5828,7 @@ fn negamax(
             info.stats.lmr_searches += 1;
 
             // LMR: reduced depth, zero window
+            trace_gate!(info, board.hash, ply, mv, "lmr_reduced", reduction, move_count);
             let lmr_depth = new_depth - reduction;
             let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
 
