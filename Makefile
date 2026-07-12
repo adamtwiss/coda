@@ -77,15 +77,29 @@ net:
 		echo "Warning: no net.txt found and no $(EVALFILE) present"; \
 	fi
 
-# Check Rust toolchain version
+# Check Rust toolchain version.
+# Version compare uses awk rather than `sort -V`: sort's version-sort flag is a
+# GNU coreutils extension absent from Git Bash / minimal Windows Unix shells,
+# where it silently mis-sorted and broke the check.
 check-rust:
 	@command -v cargo >/dev/null 2>&1 || { echo "Error: cargo not found. Install Rust from https://rustup.rs"; exit 1; }
 	@RUST_VERSION=$$(rustc --version | sed 's/rustc \([0-9]*\.[0-9]*\.[0-9]*\).*/\1/'); \
 	MIN="$(MIN_RUST_VERSION)"; \
-	if [ "$$(printf '%s\n' "$$MIN" "$$RUST_VERSION" | sort -V | head -n1)" != "$$MIN" ]; then \
-		echo "Error: Rust $$RUST_VERSION is too old. Need >= $$MIN. Run: rustup update"; \
-		exit 1; \
-	fi
+	awk -v min="$$MIN" -v cur="$$RUST_VERSION" ' \
+		function cmp(a,b) { \
+			split(a,A,"."); split(b,B,"."); \
+			for(i=1;i<=3;i++){ \
+				if(A[i]+0 < B[i]+0) return -1; \
+				if(A[i]+0 > B[i]+0) return 1; \
+			} \
+			return 0; \
+		} \
+		BEGIN { \
+			if(cmp(cur,min) < 0) { \
+				print "Error: Rust " cur " is too old. Need >= " min ". Run: rustup update"; \
+				exit 1; \
+			} \
+		}'
 
 clean:
 	cargo clean
