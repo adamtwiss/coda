@@ -19459,3 +19459,31 @@ eval-search fit rather than a portable cause. If #2723 H0s, next move is
 forensic, not another shape nudge: per-position tracing of the 59 SNAP
 positions (which named pruning mechanism discards the oracle line at
 150k) — converts "over-pruning somewhere" into mechanism counts.
+
+## Corrhist campaign — consolidated tally (for 0.9.1 release) (2026-07-12)
+
+Single place tying the correction-history campaign together (each piece is logged
+in detail across the 2026-07-08→10 sections above; this is the summary the 0.9.1
+release notes draw on). Root cause = corrhist audit **finding #1**
+(`docs/corrhist_audit_2026-07-08.md`): Coda trained the correction on the error
+against the **RAW** eval (`best_score − raw_eval`); all five reference engines
+train on the **corrected residual** (`best_score − correctedEval`). Raw-training
+has a fixed point at ±LIMIT independent of the true error (rails to a phantom
+correction); residual-training converges to the true correction.
+
+| # | change | commit / SPRT | gain | instrument |
+|---|--------|---------------|------|------------|
+| 1 | raw→residual training baseline (audit #1) | fc1a44c (post-13097d4) | **+17 ±15** | cross-engine RR (§corrhist before/after isolation, 2026-07-09) |
+| 2 | drop `mat_damp` material band-aid (redundant once residual) | #2654 | +1.3 | self-play SPRT |
+| 3 | post-fix `--core` LTC retune (downwind recalibration) | 0a012da / #2664, #2666 | +1.1 | self-play SPRT |
+| 4 | paired 2-/4-ply continuation correction (Coda was 1-ply) | 66c1699 / #2675 | +3.3 | self-play SPRT |
+
+**Combined ≈ +20 Elo.** The headline **+17 is cross-engine RR** — the correct
+instrument: the residual fix SPRTs ~0 in self-play (#2649 +0.1±1.6/51k) because a
+colour-symmetric eval-bias fix cancels when both sides share it, but pays full
+value against a field that evaluates correctly. The +1–3 increments are self-play
+SPRT and do bank there. Methodological upshot (already at line ~18818): gate
+eval-quality/correctness fixes on cross-engine RR, not self-play SPRT alone.
+Follow-on corrhist table-**splits** (H2 minor-piece-key, M4 check-conditioned)
+both H0'd on the residual base — the residual-fixed sources are already well-fit;
+enrich the cont-corr KEY, don't split the tables.
