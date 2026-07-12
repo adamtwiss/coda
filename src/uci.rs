@@ -1188,7 +1188,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         root_fail_low_flag = info.root_fail_low.clone();
                     }
                 }
-                parse_option(&tokens, &mut info, &mut num_threads);
+                parse_option(&tokens, &mut info, &mut num_threads, &line);
                 // Handle book options separately
                 let mut ni = 0; let mut vi = 0;
                 for i in 0..tokens.len() {
@@ -1199,7 +1199,13 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     match tokens[ni] {
                         "OwnBook" => { use_book = tokens[vi] == "true"; }
                         "SyzygyPath" => {
-                            let path = tokens[vi].to_string();
+                            // Read the raw remainder so spaced paths (e.g.
+                            // `C:\Program Files\Syzygy`) aren't truncated at
+                            // the first space; fall back to the single token.
+                            let path = setoption_value(&line)
+                                .filter(|p| !p.is_empty())
+                                .unwrap_or(tokens[vi])
+                                .to_string();
                             match crate::tb::SyzygyTB::new_with_cache(&path, tb_hash_mb) {
                                 Ok(tb) => {
                                     let tb_arc = std::sync::Arc::new(tb);
@@ -1228,7 +1234,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             }
                         }
                         "BookFile" => {
-                            match crate::book::OpeningBook::load(tokens[vi]) {
+                            let book_path = setoption_value(&line)
+                                .filter(|p| !p.is_empty())
+                                .unwrap_or(tokens[vi]);
+                            match crate::book::OpeningBook::load(book_path) {
                                 Ok(b) => opening_book = Some(b),
                                 Err(e) => eprintln!("info string Book load failed: {}", e),
                             }
@@ -1480,7 +1489,17 @@ fn parse_go(tokens: &[&str]) -> SearchLimits {
     limits
 }
 
-fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize) {
+/// Return the raw value of a `setoption name <id> value <x>` line: everything
+/// after the ` value ` delimiter, trimmed. UCI option values may contain
+/// spaces (e.g. Windows paths like `C:\Program Files\Syzygy`), which the
+/// whitespace tokenizer truncates at the first space. Path-valued options
+/// (SyzygyPath, BookFile, NNUEFile) must read this raw remainder instead of a
+/// single token, or a spaced path is silently cut off at the first space.
+fn setoption_value(line: &str) -> Option<&str> {
+    line.find(" value ").map(|i| line[i + " value ".len()..].trim())
+}
+
+fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize, line: &str) {
     // setoption name X value Y
     // Find "name" and "value" positions
     let mut name_idx = 0;
@@ -1501,6 +1520,8 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
             }
         }
         "NNUEFile" => {
+            // Raw remainder so spaced paths aren't truncated at the first space.
+            let value = setoption_value(line).filter(|p| !p.is_empty()).unwrap_or(value);
             match info.load_nnue(value) {
                 Ok(_) => {}
                 Err(e) => {
