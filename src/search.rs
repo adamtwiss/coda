@@ -1525,6 +1525,86 @@ impl SearchInfo {
         }
     }
 
+    pub fn clear_persistent_histories(&mut self) {
+        self.history.clear();
+        self.clear_pawn_hist();
+        self.clear_correction_history();
+    }
+
+    #[cfg(test)]
+    pub fn dirty_persistent_histories_for_test(&mut self) {
+        self.history.main[1][0][2][3] = 123;
+        self.history.capture[1][4][2] = -45;
+        self.history.cont_hist[1][4][2][5] = 67;
+        self.pawn_hist[3][1][7] = 89;
+        self.pawn_corr[WHITE as usize][5] = 101;
+        self.np_corr[BLACK as usize][WHITE as usize][6] = -202;
+        self.cont_corr[1][8][2][9] = 303;
+        self.trans_corr[BLACK as usize][10] = -404;
+    }
+
+    #[cfg(test)]
+    pub fn assert_persistent_histories_clear_for_test(&self) {
+        for a in self.history.main.iter() {
+            for b in a.iter() {
+                for c in b.iter() {
+                    for &v in c.iter() {
+                        assert_eq!(v, 0, "main history was not cleared");
+                    }
+                }
+            }
+        }
+        for a in self.history.capture.iter() {
+            for b in a.iter() {
+                for &v in b.iter() {
+                    assert_eq!(v, 0, "capture history was not cleared");
+                }
+            }
+        }
+        for a in self.history.cont_hist.iter() {
+            for b in a.iter() {
+                for c in b.iter() {
+                    for &v in c.iter() {
+                        assert_eq!(v, 0, "continuation history was not cleared");
+                    }
+                }
+            }
+        }
+        for a in self.pawn_hist.iter() {
+            for b in a.iter() {
+                for &v in b.iter() {
+                    assert_eq!(v, 0, "pawn history was not cleared");
+                }
+            }
+        }
+        for a in self.pawn_corr.iter() {
+            for &v in a.iter() {
+                assert_eq!(v, 0, "pawn correction history was not cleared");
+            }
+        }
+        for a in self.np_corr.iter() {
+            for b in a.iter() {
+                for &v in b.iter() {
+                    assert_eq!(v, 0, "non-pawn correction history was not cleared");
+                }
+            }
+        }
+        for a in self.cont_corr.iter() {
+            for b in a.iter() {
+                for c in b.iter() {
+                    for &v in c.iter() {
+                        assert_eq!(v, 0, "continuation correction history was not cleared");
+                    }
+                }
+            }
+        }
+        for a in self.trans_corr.iter() {
+            for &v in a.iter() {
+                assert_eq!(v, 0, "transition correction history was not cleared");
+            }
+        }
+    }
+
     /// Evaluate using NNUE if loaded, otherwise classical PeSTO.
     fn eval(&mut self, board: &Board) -> i32 {
         // Ensure threat accumulator is computed before eval
@@ -6781,10 +6861,7 @@ pub fn bench_pathology(depth: i32, node_threshold: u64, nnue_path: Option<&str>)
         let mut board = Board::from_fen(fen);
         info.nodes = 0;
         info.last_flushed_nodes.set(0);
-        info.history.clear();
-        info.clear_pawn_hist();
-        info.clear_correction_history();
-        info.tt.new_search();
+        reset_bench_position_state(&mut info);
         let start = std::time::Instant::now();
         let _mv = search(&mut board, &mut info, &limits);
         let elapsed = start.elapsed();
@@ -6843,10 +6920,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         info.nodes = 0;
         info.last_flushed_nodes.set(0);
         info.global_nodes.store(0, Ordering::Relaxed); // P2.8: reset per position — was cumulative, so every info line after #1 printed garbage NPS
-        info.history.clear();
-        info.clear_pawn_hist();
-        info.clear_correction_history();
-        info.tt.new_search();
+        reset_bench_position_state(&mut info);
 
         let _mv = search(&mut board, &mut info, &limits);
         total_nodes += info.nodes;
@@ -7019,9 +7093,40 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     total_nodes
 }
 
+fn reset_bench_position_state(info: &mut SearchInfo) {
+    info.clear_persistent_histories();
+    info.tt.new_search();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persistent_history_reset_clears_all_history_tables() {
+        let mut info = SearchInfo::new(1);
+        info.dirty_persistent_histories_for_test();
+
+        info.clear_persistent_histories();
+
+        info.assert_persistent_histories_clear_for_test();
+    }
+
+    #[test]
+    fn bench_position_reset_starts_each_fen_with_clean_histories() {
+        let mut info = SearchInfo::new(1);
+        info.dirty_persistent_histories_for_test();
+        let gen_before = info.tt.current_generation();
+
+        reset_bench_position_state(&mut info);
+
+        info.assert_persistent_histories_clear_for_test();
+        assert_eq!(
+            info.tt.current_generation(),
+            gen_before.wrapping_add(1),
+            "bench reset must start a fresh TT generation per FEN"
+        );
+    }
 
     /// 50-move eval scaling helper. Locks in both the formula (linear decay
     /// via `(200 - hm)/200`, so the eval is HALVED — not zeroed — at the
