@@ -476,7 +476,7 @@ impl TT {
             if recovered_upper == key_upper {
                 let flag_is_exact = flag == TT_FLAG_EXACT;
                 // Same-key overwrite gate. Margin 4 (`slot_depth - 4`) matches
-                // all four primary peers (SF/Reckless/Berserk `depth+4`); Coda's
+                // all four primary peers (SF/Berserk `depth+4`); Coda's
                 // prior margin 3 preserved deep same-key entries one ply harder
                 // than any reference. External-search audit 2026-07-04, probe 1.
                 if depth > slot_depth - 4 || gen != slot_gen || flag_is_exact {
@@ -530,7 +530,7 @@ impl TT {
 
     /// Estimate hashfull (permille of current-generation slots).
     ///
-    /// Follows the Stockfish/Reckless convention: only entries from the
+    /// Follows the Stockfish convention: only entries from the
     /// current search generation count. Stale entries from prior searches
     /// are still resident but won't be re-probed cleanly, so excluding them
     /// gives an honest "useful TT pressure" signal for UCI display.
@@ -538,7 +538,7 @@ impl TT {
     /// Pre-2026-05-15 this counted ANY non-empty slot, which caused
     /// hashfull to saturate at ~99% after a few moves of warm-TT play even
     /// when only ~3% of slots held current-gen entries (cross-engine
-    /// comparison with Reckless on Lichess 12+5 highlighted the gap).
+    /// comparison on Lichess 12+5 highlighted the gap).
     pub fn hashfull(&self) -> u32 {
         let sample = (self.mask + 1).min(1000);
         let current_gen = self.generation.load(Ordering::Relaxed);
@@ -609,7 +609,7 @@ pub fn is_mate_score(score: i32) -> bool {
 /// True for any decisive score: mate OR tablebase range. The widespread
 /// `|s| < MATE_IN_MAX_PLY` (= 28872) mate guards admit TB scores (TB_WIN =
 /// 28800, stored as TB_WIN - ply, sits below the mate band) — use this where
-/// TB scores must also be excluded (SF/Reckless/Stormphrax is_decisive;
+/// TB scores must also be excluded (SF/Stormphrax is_decisive;
 /// 2026-06-11 audit T2.3).
 #[inline]
 pub fn is_decisive(score: i32) -> bool {
@@ -628,7 +628,7 @@ pub fn is_loss(score: i32) -> bool {
 }
 
 /// True for a proven win for the side to move: mate-delivering OR a
-/// tablebase win. Mirror of `is_loss` (Reckless `is_win`); used by gates
+/// tablebase win. Mirror of `is_loss`; used by gates
 /// whose intent is "the outcome here is already decided in our favour, so
 /// precision matters less" (e.g. LMR winning-beta reduce-more).
 #[inline]
@@ -639,7 +639,7 @@ pub fn is_win(score: i32) -> bool {
 /// Adjust mate and TB scores from TT retrieval (subtract ply; see
 /// `score_to_tt` for the band-threshold rationale) AND downgrade
 /// potentially false decisive scores near the 50-move-rule cliff
-/// (SF `value_from_tt` / Reckless `score_from_tt` pattern).
+/// (SF `value_from_tt` pattern).
 ///
 /// A stored mate-in-N (or TB-win-in-N) is only reachable if N fits in
 /// the remaining 50mr budget `100 - halfmove`; otherwise the 50-move
@@ -647,21 +647,19 @@ pub fn is_win(score: i32) -> bool {
 /// the stored bound is potentially false. The distance check runs on
 /// the STORED score — which encodes plies-to-mate/TB from THIS
 /// position — exactly as SF (`VALUE_MATE - v > 100 - r50c`,
-/// `VALUE_TB - v > 100 - r50c`) and Reckless
-/// (`Score::MATE - score > 100 - halfmove_clock`,
-/// `Score::TB_WIN - score > 100 - halfmove_clock`) do.
+/// `VALUE_TB - v > 100 - r50c`) do.
 ///
 /// Downgrade targets keep Coda's P3 semantics: a false mate becomes a
 /// ply-anchored TB-level win signal (`TB_WIN - ply`, still inside the
 /// decisive band, so `is_decisive` guards keep filtering it); a false
 /// TB score drops just BELOW the decisive band (`TB_WIN - 201`, the
-/// highest non-decisive score — the analogue of SF/Reckless returning
+/// highest non-decisive score — the analogue of SF returning
 /// `TB_WIN_IN_MAX_PLY - 1`, the highest non-TB score).
 ///
 /// Applied at EVERY TT read (not just cutoff returns), so window
 /// narrowing, singular ttScore, ProbCut gating, LMR TT hints, and QS
 /// eval refinement all see the sanitized value — matching SF /
-/// Reckless / PlentyChess placement. The TT STORE path
+/// PlentyChess placement. The TT STORE path
 /// (`score_to_tt`) is deliberately untouched: stored scores stay
 /// exact, only the interpretation at read time is clamped.
 #[inline]

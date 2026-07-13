@@ -81,7 +81,7 @@ static mut ROOK_MAGICS: [MagicEntry; 64] = unsafe { std::mem::zeroed() };
 // which are equal per-square; init asserts this). The previous
 // `static mut Vec` paid a data-pointer indirection plus an un-elidable
 // bounds check on every slider lookup — the hottest primitive in the
-// engine. SF/Reckless/cozy-chess all use fixed static tables.
+// engine. SF/cozy-chess all use fixed static tables.
 const ATTACK_TABLE_SIZE: usize = 107_648;
 static mut ATTACK_TABLE: [Bitboard; ATTACK_TABLE_SIZE] = [0; ATTACK_TABLE_SIZE];
 

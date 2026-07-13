@@ -1,4 +1,4 @@
-//! L1 matmul kernels, input-chunk-major (Reckless dpbusd pattern).
+//! L1 matmul kernels, input-chunk-major (dpbusd pattern).
 //!
 //! **Production path is the DENSE kernels** (`dense_l1_avx2`,
 //! `dense_l1_avx512_vnni_l1_32`, etc.) — `select_l1_kernel` in `nnue.rs`
@@ -359,7 +359,7 @@ pub fn x2_fusion_safe(sparse_weights: &[i8], num_neurons: usize) -> bool {
 /// `dense_l1_avx2_l1_32` with the maddubs-pair ("double dpbusd") fusion:
 /// two input chunks per iteration, summing their VPMADDUBSW products with
 /// one VPADDW *before* a single shared VPMADDWD — halving the madd count
-/// (4/6 reference engines: Reckless `double_dpbusd`, Berserk
+/// (4/6 reference engines: Berserk
 /// `m256_add_dpbusd_epi32_x2`, PlentyChess, Alexandria; audit item B4).
 ///
 /// # Saturation precondition (why this kernel is gated)

@@ -1,7 +1,7 @@
 //! Static Exchange Evaluation (SEE).
 //! Determines if a capture sequence is winning/losing.
 //! The iterative swap-loop follows the standard SEE formulation (as used by
-//! Reckless and Stockfish); the pinned-piece handling is Coda's own.
+//! Stockfish); the pinned-piece handling is Coda's own.
 
 use crate::attacks::*;
 use crate::bitboard::*;
@@ -70,7 +70,7 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
     // Remove the initial attacker
     attackers &= occ;
 
-    // Pinned piece masks for each side (SEE audit S4: same approach as SF/Reckless/Obsidian).
+    // Pinned piece masks for each side (SEE audit S4: same approach as SF/Obsidian).
     // A pinned piece cannot move off the pin ray, so it cannot legally recapture
     // on `to` unless `to` is on the same pin ray. Rather than compute ray membership,
     // we conservatively exclude ALL pinned pieces — this slightly under-estimates
@@ -137,7 +137,7 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
         // FEN 3R2k1/4P3/3q4/3r4/8/8/8/6K1 b, Qd6xd8 returned +640 vs true
         // -460 (see test_see_inloop_promotion_*). No reference engine
         // special-cases this (SF position.cpp:1467 `swap = PawnValue -
-        // swap`; Reckless/Berserk plain attacker value).
+        // swap`; Berserk plain attacker value).
         balance = -balance - 1 - see_value(att_pt);
 
         if balance >= 0 {

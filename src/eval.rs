@@ -315,7 +315,7 @@ pub fn evaluate(board: &crate::board::Board) -> i32 {
 /// Material-only value of a piece type (midgame, for SEE).
 pub const fn see_value(pt: u8) -> i32 {
     // Values aligned with consensus from top engines (Berserk, Obsidian,
-    // Stormphrax, Viridithas). Old textbook values (100/320/330/500/900)
+    // Stormphrax). Old textbook values (100/320/330/500/900)
     // underestimated minor pieces by ~25% and rook/queen by ~20%.
     match pt {
         0 => 100,   // PAWN

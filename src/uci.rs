@@ -1304,8 +1304,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     crate::eval::evaluate(&board)
                 };
                 // Clean, parseable static-eval line (white POV, pawns) —
-                // matches the Stockfish/Reckless `eval` format so external
-                // tooling can extract all three engines uniformly. `score`
+                // matches the common `eval` output format so external
+                // tooling can parse it uniformly across engines. `score`
                 // is STM-POV cp; flip to white POV for the printed value.
                 let white_cp = if board.side_to_move == 0 { score } else { -score };
                 println!("NNUE evaluation       {:+.2} (white side)", white_cp as f32 / 100.0);

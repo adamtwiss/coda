@@ -120,7 +120,7 @@ use crate::board::Board;
 use crate::types::*;
 /// A heap-allocated vector of T guaranteed to be 64-byte (cache-line) aligned.
 /// Used for NNUE weight arrays so that AVX-512 ZMM loads (64 bytes) never straddle
-/// cache-line boundaries. Same 64-byte alignment as Reckless `Aligned<T>` / SF `alignas(64)`. (perf M2)
+/// cache-line boundaries. Same 64-byte alignment as SF `alignas(64)`. (perf M2)
 pub struct AlignedVec<T> {
     ptr: *mut T,
     len: usize,
@@ -464,7 +464,7 @@ pub fn output_bucket(piece_count: u32) -> usize {
 /// the previous code paid 3 passes over the full accumulator (1 fused
 /// copy+delta + 2 separate in-place passes = ~3 × 2h bytes of memory
 /// traffic). With this fused kernel, total traffic is 2h bytes (read src
-/// once, write dst once) regardless of delta count. Reckless-style pattern.
+/// once, write dst once) regardless of delta count.
 ///
 /// Register blocking with REGS=8 SIMD lanes processes 128 i16s per chunk,
 /// keeping the hot accumulator values in registers while all deltas are
@@ -553,9 +553,8 @@ unsafe fn simd_acc_fused_avx512(
     sub_rows: &[&[i16]],
     h: usize,
 ) {
-    // 24 AVX-512 registers × 32 i16 = 768 elements per chunk. Mirrors
-    // Reckless's REGISTERS=L1_SIZE/I16_LANES register-tiling pattern
-    // (commit 381ac2f3 +4.90 STC). Direct `add_i16` operations have low
+    // 24 AVX-512 registers × 32 i16 = 768 elements per chunk. A
+    // REGISTERS=L1_SIZE/I16_LANES register-tiling pattern. Direct `add_i16` operations have low
     // register pressure (no temp i8→i16 conversion like the threat-side
     // apply needs), so 24 ZMM accumulators + a few for src/dst pointers +
     // add_w/sub_w loads fit comfortably in AVX-512's 32-ZMM file.
@@ -670,7 +669,7 @@ unsafe fn simd_acc_fused_neon(
     }
 }
 
-/// Register-blocked batch apply for Finny table refresh (Reckless pattern).
+/// Register-blocked batch apply for Finny table refresh.
 /// Loads 8 SIMD registers from acc, applies ALL adds then ALL subs, stores once.
 /// Much faster than per-piece acc_add/acc_sub which loads/stores each time.
 #[cfg(target_arch = "x86_64")]
@@ -976,7 +975,7 @@ unsafe fn simd_pairwise_pack_plain(acc: &[i16], out: *mut u8, pw: usize) {
 }
 
 /// Pairwise pack with fused threat combine.
-/// Adds threat[i] to acc[i] before clamping (Reckless activate_ft pattern).
+/// Adds threat[i] to acc[i] before clamping.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn simd_pairwise_pack_threat(acc: &[i16], threat: *const i16, out: *mut u8, pw: usize) {
@@ -3211,8 +3210,7 @@ impl NNUENet {
     /// Dispatcher: routes to the plain pairwise path when there are no
     /// threat features (`stm_threat.is_empty()`), otherwise to
     /// `forward_with_l1_pairwise_threats`, which fuses the PSQ+threat
-    /// combine into the SIMD pairwise pack itself (Reckless `activate_ft`
-    /// pattern) instead of a separate combine pass.
+    /// combine into the SIMD pairwise pack itself instead of a separate combine pass.
     #[inline(always)]
     fn forward_with_l1_pairwise_fused(&self, stm_acc: &[i16], ntm_acc: &[i16],
         stm_threat: &[i16], ntm_threat: &[i16], bucket: usize) -> i32
@@ -3597,7 +3595,7 @@ impl NNUENet {
             }
             #[cfg(target_arch = "x86_64")]
             L1Kernel::DenseAvx2 => {
-                // Column-major (input-chunk-major) L1 matmul — Reckless's pattern.
+                // Column-major (input-chunk-major) L1 matmul.
                 // For each 4-byte input chunk, splat_i32 broadcast + maddubs/madd
                 // contributes to all L1 outputs simultaneously via 2 AVX2 registers.
                 // Replaces the row-major path that scanned the full input per
@@ -4719,7 +4717,7 @@ const ACC_STACK_PLIES: usize = 256;
 /// `hidden_size`. One Box<[i16]> backs all plies × both perspectives.
 /// Layout (row-major): `data[ply * 2 * hidden_size + persp * hidden_size + j]`.
 ///
-/// This mirrors Reckless's `Box<[PstAccumulator]>` of inline
+/// This mirrors a `Box<[PstAccumulator]>` of inline
 /// `Aligned<[[i16; L1_SIZE]; 2]>` — one contiguous allocation, sequential
 /// plies adjacent in memory, HW prefetcher predicts the access pattern.
 ///
@@ -4728,7 +4726,7 @@ const ACC_STACK_PLIES: usize = 256;
 /// `hidden_size = 768`, bloating each AccEntry to ~16 KB and making the
 /// per-ply walk drag in unused tail cache lines. Per-callsite L1-miss
 /// decomposition (2026-05-03) showed Coda's accumulator-update path had
-/// 95× more L1 misses than Reckless's; this restructure targets that
+/// 95× more L1 misses than the contiguous layout; this restructure targets that
 /// directly. Each perspective's data lives in its own slot of one
 /// contiguous Box, sized exactly to `hidden_size` — reading `white`
 /// no longer drags `black`, `threat_white`, `threat_black` cache lines
@@ -4942,7 +4940,7 @@ impl NNUEAccumulator {
             let entry = &mut self.stack[self.top];
             // Swap deltas from board into stack entry (avoids copy, board gets the old buffer)
             std::mem::swap(&mut entry.threat_deltas, &mut board.threat_deltas);
-            // Store move info for king mirror check (Reckless pattern)
+            // Store move info for king mirror check
             let undo_len = board.undo_stack.len();
             if undo_len > 0 {
                 let undo = &board.undo_stack[undo_len - 1];
@@ -5024,16 +5022,16 @@ impl NNUEAccumulator {
     /// Compute threat accumulator if not already done.
     /// Walks back to find nearest ancestor with computed threats, then replays
     /// forward applying per-ply deltas. Each ply's deltas were stored by
-    /// store_threat_deltas() after make_move. Matches Reckless's pattern.
+    /// store_threat_deltas() after make_move.
     pub fn recompute_threats_if_needed(&mut self, net: &NNUENet, board: &crate::board::Board) {
         if !net.has_threats { return; }
         if self.stack[self.top].threat_accurate[0] && self.stack[self.top].threat_accurate[1] { return; }
         let h = self.hidden_size;
 
         // Profile: 90.5% incremental (chain=1.1), 9.5% full recompute.
-        // Per-eval cost ~5µs weighted average (Reckless: ~2.5µs).
+        // Per-eval cost ~5µs weighted average.
 
-        // Walk back to find nearest ancestor with computed threats (Reckless pattern).
+        // Walk back to find nearest ancestor with computed threats.
         // Then verify the entire chain from ancestor to top has no king e-file crossings.
         let mut ancestor: Option<usize> = None;
         'walk: for i in (0..self.top).rev() {
@@ -5360,7 +5358,7 @@ impl NNUEAccumulator {
         // copy+per-delta-pass pattern which did N passes over the full
         // accumulator for an N-change move (capture = 3, castling = 4).
         //
-        // Reckless pattern: for each perspective, read parent once, apply
+        // For each perspective, read parent once, apply
         // all add/sub weight rows while the chunk is in registers, write
         // current once. Memory traffic is constant in N.
         let h = self.hidden_size;
@@ -5656,7 +5654,7 @@ impl NNUEAccumulator {
         let add_rows = scratch_slice!(add_rows_ptr, n_adds);
         let sub_rows = scratch_slice!(sub_rows_ptr, n_subs);
 
-        // Batch apply with register blocking (Reckless pattern)
+        // Batch apply with register blocking
         if n_adds > 0 || n_subs > 0 {
             finny_batch_apply(
                 net, &mut entry.acc[..h], &net.input_weights, h,
@@ -5700,9 +5698,7 @@ unsafe fn finny_batch_apply_avx512(
     // v9 hidden_size=768 in a SINGLE outer iteration. Each weight row is
     // read once per refresh instead of 3× under the previous REGS=8 /
     // CHUNK=256 tile. Same register-tiling pattern as `simd_acc_fused_avx512`
-    // (PSQ apply, REGS=8→24 +1.5 Elo H1 SPRT #926) and Reckless commit
-    // 381ac2f3 ("AVX-512 threat-update register tiling REGISTERS=full L1"
-    // +4.90 STC).
+    // (PSQ apply, REGS=8→24 +1.5 Elo H1 SPRT #926).
     //
     // Direct i16 add (no i8→i16 expansion temps) keeps register pressure
     // contained: even though the inner delta loop persists the 24 ZMM

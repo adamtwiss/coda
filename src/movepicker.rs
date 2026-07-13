@@ -4,7 +4,7 @@
 //!        including main/cont/pawn/etc.) -> bad captures.
 //!
 //! Killer/counter stages were removed — quiet ordering relies on history alone
-//! (SF/Reckless pattern, validated by SPRT commit e28c78a).
+//! (SF pattern, validated by SPRT commit e28c78a).
 //!
 //! Evasion order: TT move -> evasions (captures scored above quiets).
 //!
@@ -392,7 +392,7 @@ impl MovePicker {
             // enemy_attacks key as beta-cutoff WRITES. Previously hardcoded
             // to 0, which hashed into a different 4D history slot than the
             // writes — history written from in-check cutoffs was invisible
-            // to in-check reads. Reckless/SF keep reads and writes
+            // to in-check reads. SF keeps reads and writes
             // symmetric.
             threats,
             xray_blockers: 0, // evasions don't use discovered-attack bonus
@@ -653,7 +653,7 @@ impl MovePicker {
             }
 
             // Escape-capture bonus: bonus for moving a piece off a threatened
-            // square (Reckless pattern). All four (Q/R/B/N) now tunable.
+            // square. All four (Q/R/B/N) now tunable.
             if self.threats & (1u64 << from) != 0 && piece != NO_PIECE {
                 score += match pt {
                     4 => escape_bonus_q,
@@ -663,7 +663,7 @@ impl MovePicker {
                 };
             }
 
-            // Quiet check bonus: moves that give direct check (SF +16384, Viridithas +10000).
+            // Quiet check bonus: moves that give direct check (SF +16384).
             // SEE-gated like SF (movepick.cpp): a check that loses material by more
             // than QUIET_CHECK_SEE_MARGIN is a losing sac — don't order it first.
             if piece != NO_PIECE
@@ -686,9 +686,9 @@ impl MovePicker {
             // such signals per-node. SPRT tests whether the per-move NPS saving
             // pays for the lost ordering signal.)
 
-            // Reckless "offense bonus": quiet move that lands on a square
+            // "Offense bonus": quiet move that lands on a square
             // attacking an enemy non-pawn piece. +6000 flat. Not yet present
-            // in Coda; Reckless has it at ~+6000. Signal: does our piece on
+            // in Coda; consensus places it at ~+6000. Signal: does our piece on
             // `to` attack an enemy worth threatening?
             // Safety filter: skip if `to` is attacked by any lower-value enemy
             // piece (the capture back would be net negative for us).
@@ -1231,7 +1231,7 @@ impl QMovePicker {
                 // (MVV-only ×MVV_CAP_MULT + captHist, no LVA term). The old QS
                 // fork used `victim*10 - attacker` MVV-LVA, left behind when
                 // main search dropped LVA (65dac27); captHist's relative weight
-                // was ~1.6× higher here. Unified per Reckless/Stockfish, which
+                // was ~1.6× higher here. Unified per Stockfish, which
                 // use one capture scorer for both search and QS.
                 let mvv = mvv_lva(board, mv);
                 let capt_hist = capt_hist_score_static(board, history, mv);

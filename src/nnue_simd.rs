@@ -6,13 +6,13 @@
 //! (splat, dpbusd, reduce, etc.) so that higher-level kernels can be
 //! written once against a uniform API and inlined at compile time.
 //!
-//! Pattern modelled on Reckless's `nnue/simd/` module: each ISA gets
+//! Per-ISA SIMD module pattern: each ISA gets
 //! its own `cfg(target_feature)`-gated submodule, and the public API
 //! is the union re-exported from the highest-priority active ISA.
 //!
 //! Coda's build (`make`) uses `RUSTFLAGS=-Ctarget-cpu=native`, so each
 //! host compiles a binary with its own native features — the cfg gates
-//! resolve at compile time. This is the same model Reckless uses; the
+//! resolve at compile time. The
 //! existing `has_avx512` / `has_avx2` runtime flags in `nnue.rs` remain
 //! as belt-and-suspenders fall-through guards but no longer drive the
 //! primitive dispatch.

@@ -4,7 +4,7 @@
 //! allowing the search to treat such positions as draws before the
 //! repetition actually occurs. Eval-agnostic — transfers cleanly.
 //!
-//! Based on Stockfish's implementation. Used by SF, Berserk, Viridithas,
+//! Based on Stockfish's implementation. Used by SF, Berserk,
 //! Stormphrax, Halogen, PlentyChess.
 
 use crate::attacks::*;

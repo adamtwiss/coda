@@ -216,8 +216,8 @@ impl Board {
     /// is never a correctness path. Exact for the common cases (quiet move,
     /// capture, en passant, promotion + side flip); castling (moves a rook too)
     /// and ep-square / castling-rights key deltas are skipped as rare — those
-    /// only cost an occasional wasted prefetch. Models Reckless `key_after`
-    /// (#1085 pre-make prefetch).
+    /// only cost an occasional wasted prefetch. Models a `key_after`
+    /// (pre-make prefetch).
     #[inline]
     pub fn key_after(&self, mv: Move) -> u64 {
         let from = move_from(mv);
@@ -272,14 +272,14 @@ impl Board {
     ///   - K + B vs K + B with all bishops on the same color (no bishop
     ///     of opposite color exists, so neither side can mate)
     ///
-    /// Excluded (deliberately, as in Reckless/Viridithas):
+    /// Excluded (deliberately):
     ///   - KNN vs K (technically drawn FIDE-wise but extremely rare; opponent
     ///     can blunder into mate). Engines that exclude this treat the position
     ///     conservatively — eval/search will reach 0 anyway via NNUE/TB.
     ///   - KBN vs K (winnable for the BN side; not a draw).
     ///
-    /// Follows the same rule as Reckless `draw_by_material` and Viridithas
-    /// `has_insufficient_material`. The rule is consensus among engines that
+    /// Follows the same standard `draw_by_material` /
+    /// `has_insufficient_material` rule. The rule is consensus among engines that
     /// implement IM-in-search (~half of the top engines do).
     #[inline]
     pub fn is_insufficient_material(&self) -> bool {
@@ -381,7 +381,7 @@ impl Board {
         // Only hash ep_square if an enemy pawn can actually make the EP capture.
         // Without this guard, the same physical position reached with or without
         // a recent double-push would hash differently, breaking rep detection
-        // (Stockfish/Viridithas pattern).
+        // (Stockfish pattern).
         if self.ep_square != NO_SQUARE
             && ep_capture_available(&self.pieces, &self.colors, self.side_to_move, self.ep_square)
         {
@@ -469,7 +469,7 @@ impl Board {
         }
         // Sanitise castling rights against actual king/rook presence.
         // A FEN may declare rights for a rook that doesn't exist (corrupt
-        // input, Chess960-style mixed FENs). SF/Reckless do the same AND
+        // input, Chess960-style mixed FENs). SF does the same AND
         // at parse time so downstream movegen + is_pseudo_legal can assume
         // rights imply a rook on the corner. 2026-05-31 audit finding F.
         let wk_on_e1 = self.pieces[KING as usize] & self.colors[WHITE as usize] & (1u64 << 4) != 0;
@@ -568,8 +568,8 @@ impl Board {
     #[inline]
     pub fn attacks_by_color(&self, color: Color) -> Bitboard {
         // Setwise attack aggregation. Replaces the per-square magic-lookup
-        // loop that used to live here. See `src/setwise.rs` and the Reckless
-        // PR #909/#914 catalog entry. Verified bit-equivalent to the per-
+        // loop that used to live here. See `src/setwise.rs`.
+        // Verified bit-equivalent to the per-
         // square version via `setwise::tests::*_matches_per_square` and via
         // perft regression on standard positions.
         let c = color as usize;
@@ -1306,9 +1306,9 @@ mod tests {
         // KBB opposite-color vs K — can mate
         assert!(!Board::from_fen("4k3/8/8/8/8/8/8/2B1KB2 w - - 0 1").is_insufficient_material(),
             "KBB opposite-color vs K");
-        // KNN vs K — excluded from draw detection per Reckless pattern
+        // KNN vs K — excluded from draw detection
         assert!(!Board::from_fen("4k3/8/8/8/8/8/8/2N1KN2 w - - 0 1").is_insufficient_material(),
-            "KNN vs K (excluded per Reckless pattern)");
+            "KNN vs K (excluded from insufficient-material detection)");
 
         // 5+ pieces — too rich to call IM regardless of types
         assert!(!Board::from_fen("4kb2/8/8/8/8/8/8/3BKB2 w - - 0 1").is_insufficient_material(),

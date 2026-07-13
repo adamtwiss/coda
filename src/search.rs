@@ -274,11 +274,11 @@ tunables!(
     // LMR_CUTNODE_BUMP (+1 more with no TT move); all-nodes keep +1. Default 2
     // is a halfway step toward SF's larger cut-node reduction; SPSA can push it.
     (LMR_CUTNODE_BUMP_CENTI, 259, 100, 500, 40.0, true),
-    // Reckless LMR correction battery (T1.1, docs/reckless_audit_2026-07-06.md).
+    // LMR correction battery (T1.1, docs/reckless_audit_2026-07-06.md).
     // Sub-ply centi-ply terms — need the fractional LMR accumulator to express.
-    // Reseeded at HALF the Reckless-converted values (full: 100/45/32/41)
+    // Reseeded at HALF the converted values (full: 100/45/32/41)
     // after #2594/#2596 H0'd at full strength — our ln(d)·ln(m) base keeps
-    // its move-count term (Reckless deleted theirs) so their constants
+    // its move-count term (the source battery omits one) so those constants
     // double-count; ranges run to 0 so SPSA can kill dead terms.
     (LMR_WINBETA_CENTI, 32, 0, 250, 12.0, true),
     (LMR_TTALPHA_CENTI, 25, 0, 150, 8.0, true),
@@ -286,19 +286,18 @@ tunables!(
     (LMR_EXPECT_MULT, 25, 0, 120, 6.0, true),
     // cutoff_count LMR terms (T1.2, docs/reckless_audit_2026-07-06.md).
     // Child ply failed high >2 times under this node -> reduce late moves
-    // more (+extra at non-PV all-nodes). Defaults = Reckless's tuned
+    // more (+extra at non-PV all-nodes). Defaults = the source's tuned
     // values reseeded at half (full: 112/39) — see battery note above.
     // Threshold >2 fixed (SF uses >3) — not a knob.
     (LMR_CUTOFF_CNT_CENTI, 54, 0, 250, 12.0, true),
     (LMR_CUTOFF_ALLNODE_CENTI, 15, 0, 150, 8.0, true),
-    // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv,
-    // Reckless at >=5+ttPv. Coda's 4 fires SE at shallower depth where
+    // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv. Coda's 4 fires SE at shallower depth where
     // singular_depth is too low to judge singularity reliably. Bumping
     // 4 → 6 first; ttPv add deferred to a follow-up if H1.
     (SE_DEPTH_10X, 41, 40, 200, 20.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, false),
-    // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
+    // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian all
     // use LMP_BASE=3 with the same `(BASE + d²)/(2 - improving)` formula.
     // Coda's 9 is 3× consensus at d=1: allows 5-10 quiets vs SF's 2-4.
     // Bisecting 9 → 5 first.
@@ -313,7 +312,7 @@ tunables!(
     (LMR_ROOT_COEF_10X, 50, 0, 800, 40.0, true),
     (BAD_NOISY_MARGIN, 85, 30, 150, 6.0, true),
     (PROBCUT_MARGIN, 124, 80, 300, 11.0, true),
-    // Consensus ProbCut shape (Stockfish/Reckless/Viridithas/Alexandria):
+    // Consensus ProbCut shape (Stockfish/Alexandria):
     // improving positions can use a lower verification beta, while
     // non-improving nodes keep the safer base margin. Default 117-27=90cp
     // when improving, matching the promising low-margin STC signal.
@@ -330,8 +329,7 @@ tunables!(
     (QS_DELTA_MARGIN, 340, 100, 500, 20.0, true),
     // 24 -> 5 with the T2.10 counting fix: the old counter charged
     // delta/SEE-pruned moves against the budget, so SPSA detuned the cap
-    // to near-off. Counting searched-only, consensus is 3 (Obsidian/
-    // Reckless) to ~"2 extra" (SF moveCount > 2).
+    // to near-off. Counting searched-only, consensus is 3 (Obsidian) to ~"2 extra" (SF moveCount > 2).
     (QS_MAX_CAPTURES, 5, 2, 32, 2.0, false),
     (CORR_W_PAWN, 264, 100, 600, 25.0, true),
     // Floor lifted from 50 → 0 (audit 2026-05-20): pinned at 63, 4% from floor.
@@ -404,15 +402,15 @@ tunables!(
     // a move that cut off after more competition proved itself more strongly.
     // SF default divisor 256.
     (HIST_SIBLING_DIV, 247, 64, 1024, 40.0, true),
-    // Reckless-pattern PV/quiet/correction-aware DEXT margin.
-    // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
+    // PV/quiet/correction-aware DEXT margin.
+    // Matches SF (search.cpp:1153).
     //
     // dext_margin = DEXT_MARGIN_PV   * is_pv
     //             - DEXT_MARGIN_QUIET * is_tt_quiet
     //             - DEXT_MARGIN_CORR * |corr| / 128
     //             + DEXT_MARGIN_BASE
     //
-    // BASE term is Coda-specific: pure Reckless has dext_margin=-16 at
+    // BASE term is Coda-specific: without it, dext_margin=-16 at
     // non-PV quiet (always fires on singular), which exploded our bench
     // +67% at #804. BASE shifts the non-PV baseline to a positive
     // threshold so default is sane; SPSA explores the basin where
@@ -685,7 +683,7 @@ pub const MIN_POST_PONDERHIT_MS: u64 = 50;
 /// FL-EXT (2026-07-05, fail-low extension tail): hard-frame extension per
 /// root fail-low event in the post-ponderhit frame, in percent of the hard
 /// budget — the single step of the aspiration fail-low factor
-/// (1 + 0.34·min(2, fl), SF/Viridithas shape) applied to the post-hit
+/// (1 + 0.34·min(2, fl), SF shape) applied to the post-hit
 /// deadlines. The 2026-07-05 ponder diagnosis measured SF spending >1s
 /// post-hit on 3.3% of moves (its fail-low re-thinks) vs our 0.0% — the P2
 /// cap clipped exactly those. Consts, DELIBERATELY NOT tunables: OB cannot
@@ -827,7 +825,7 @@ pub fn enable_all_features() {
 const CORR_HIST_SIZE: usize = 16384;
 const CORR_HIST_GRAIN: i32 = 8;       // Scaled with LIMIT: 256/32000 ≈ 8/1024
 const CORR_HIST_MAX: i32 = 4;         // Scaled: 128/32000 ≈ 4/1024
-const CORR_HIST_LIMIT: i32 = 1024;    // Consensus (SF, Viridithas, Obsidian)
+const CORR_HIST_LIMIT: i32 = 1024;    // Consensus (SF, Obsidian)
 
 
 /// Search limits.
@@ -1042,7 +1040,7 @@ pub struct SearchInfo {
     /// Cumulative count of root best-move changes between iterations,
     /// reset at search start. Since Phase 13 this is DIAGNOSTIC-ONLY
     /// (TMDebug output) — the upward multiplier it used to drive was
-    /// dropped. Candidate for re-use as an SF/Reckless-style
+    /// dropped. Candidate for re-use as an SF-style
     /// within-iteration instability factor (TM audit 2026-06-13, B3).
     tm_best_move_changes: u32,
     /// Forced-move detection state. Set after an ID iteration
@@ -1188,7 +1186,7 @@ pub struct SearchInfo {
     pub trace_hashes: Vec<u64>,
     pub trace_line_mv: Vec<Move>,
     /// Ply barrier for NMP verification: prevents NMP from re-triggering
-    /// inside its own verification subtree (all peers: Reckless, Alexandria,
+    /// inside its own verification subtree (all peers: Alexandria,
     /// Stormphrax use nmpMinPly / nmp_min_ply). Default 0 = no barrier. (audit B1)
     pub nmp_min_ply: i32,
     /// Triangular PV table
@@ -1201,13 +1199,13 @@ pub struct SearchInfo {
     pub excluded_move: [Move; MAX_PLY + 1],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
     double_ext_count: [i32; MAX_PLY + 1],
-    /// Per-ply beta-cutoff counter (SF cutoffCnt / Reckless cutoff_count,
+    /// Per-ply beta-cutoff counter (SF cutoffCnt,
     /// T1.2 docs/reckless_audit_2026-07-06.md). Incremented at the fail-high
     /// site; each node clears its GRANDCHILD slot on entry so
     /// `cutoff_count[ply+1]` reflects only fail-highs under this node's own
     /// subtree. Read in LMR: a child ply that keeps failing high means
     /// refutations come easy there — reduce late moves more. +4 padding
-    /// allows unconditional ply+2 indexing (Reckless pads +16).
+    /// allows unconditional ply+2 indexing.
     cutoff_count: [i32; MAX_PLY + 4],
     /// Per-ply moved piece (go_piece index 1-12, 0=none). Set before make_move.
     /// Used for correct cont hist lookups at ply-2+ (avoids stale board.piece_at).
@@ -1453,7 +1451,7 @@ impl SearchInfo {
         // Exact accounting (2026-07-06): include this thread's UNFLUSHED local
         // delta, not just the 4096-granular global counter — the stale-global
         // check made `go nodes N` overshoot by up to 4095 nodes (+23% at
-        // N=10000, measured vs SF/Reckless which enforce exactly; it inflated
+        // N=10000, measured vs SF which enforces exactly; it inflated
         // Coda's fixed-node RR results). Helpers still contribute at flush
         // granularity (bounded T*4096 slack, documented above); the main
         // thread — the one that matters at T=1 fixed-node testing — is now
@@ -1811,7 +1809,7 @@ impl SearchInfo {
 /// `SearchInfo::eval`.
 ///
 /// Consensus form, shared by the entire reference set — SF `v - v*rule50/199`,
-/// Obsidian/Reckless/Berserk `(200 - hm)/200`, PlentyChess `(293 - rule50)/293`
+/// Obsidian/Berserk `(200 - hm)/200`, PlentyChess `(293 - rule50)/293`
 /// — which all HALVE (not zero) the eval at the 50-move cliff. The previous
 /// `(100 - hm)/100` was a 2× outlier that nulls a won eval to 0.00 at the
 /// cliff; Coda's own conversion study (docs/conversion_failure_study
@@ -1968,7 +1966,7 @@ pub fn build_dirty_piece(
 
 /// Paired continuation correction (H1, 2026-07-10). Index by the LAST move
 /// (ply-1) and select the subtable by the move at ply-2 AND ply-4, summing both
-/// — the SF/Reckless/Viridithas 2-D continuation form, replacing Coda's flat
+/// — the SF 2-D continuation form, replacing Coda's flat
 /// 1-ply `[piece][to]` (the sole 6/6 flat-1-ply outlier). Uses
 /// `moved_piece_stack`/`moved_to_stack` (go_piece 1-12) so the ply-2/ply-4
 /// pieces are read correctly — `board.piece_at` on an old destination would be
@@ -1994,7 +1992,7 @@ fn cont_corr_value(info: &SearchInfo, ply: usize) -> i64 {
 
 /// Compute the correction value alone (the centipawn delta corrhist would apply
 /// to raw eval). Used by SE-margin formulas to gate extension confidence on
-/// |correction| — extend less on uncertain (drifting) evals (Reckless pattern).
+/// |correction| — extend less on uncertain (drifting) evals.
 fn correction_value(info: &SearchInfo, board: &Board, ply: usize) -> i32 {
     let stm = board.side_to_move as usize;
     let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
@@ -2073,8 +2071,7 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     // only the resulting bonus (at the gravity cap, in update_corr_entry).
     // The old ±3cp err pre-clamp (CORR_HIST_ERR_MAX) made corrhist a
     // sign-only integrator — max update 21 vs cap ~341. No surveyed engine
-    // clamps the input error: SF err*depth*12/128, Obsidian err*depth/8,
-    // Reckless 142*depth*err/128, all clamped at the output only.
+    // clamps the input error: SF err*depth*12/128, Obsidian err*depth/8, all clamped at the output only.
     let err = search_score - raw_eval;
     let weight = (depth + 1).min(tp(&CORR_UPDATE_WEIGHT_MAX));
     let scaled_err = err * weight * 10 / tp(&CORR_ERR_DIV_10X).max(10);
@@ -2291,7 +2288,7 @@ pub(crate) fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     helper.tb_probe_depth = main.tb_probe_depth; // same probe-depth gate as main
 
     // Seed helpers with the main thread's accumulated, aged history.
-    // Cross-engine consensus (SF/Reckless/Obsidian/Alexandria/Viridithas/
+    // Cross-engine consensus (SF/Obsidian/Alexandria/
     // PlentyChess): helpers never start from zero — they either share
     // history with main lockless, persist it across `go` calls, or get
     // a copy. Coda spawns helpers per `go`, so we copy from main
@@ -2466,7 +2463,7 @@ pub fn compute_tm_budgets(
 ) -> (u64, u64, u64, u64) {
     // TM windows (2026-05-26 redesign): opt/hard/max model with a
     // multiplicative factor product — the structure common to modern engines
-    // (SF, Reckless, Obsidian, Hobbes, PlentyChess, Viridithas all run
+    // (SF, Obsidian, Hobbes, PlentyChess all run
     // variants of it). Coda's earlier TM was a different shape: 6 factors
     // compounding to ~30×, plus a separate hard×0.5 cap (Phase 10h). A
     // cross-engine audit (TM_DIAG, 2026-05-26) found that outlier structure
@@ -2505,7 +2502,7 @@ pub fn compute_tm_budgets(
     // forfeited on time.
     // Phase 10a (2026-05-24): lower base optimum at moderate-inc TCs from
     // 25 → 35. Cross-engine review (9 engines) found Coda's base optimum
-    // at moderate-inc is ~4.8% of remaining vs SF/Obsidian/Reckless ~2-3%.
+    // at moderate-inc is ~4.8% of remaining vs SF/Obsidian ~2-3%.
     // Lower base gives multiplicative factors more headroom to produce
     // sharp spikes without forfeiting (top engines spike to 4-5× p95/p50
     // partly because they're spiking off a lower baseline). No-inc path
@@ -2565,7 +2562,7 @@ pub fn compute_tm_budgets(
     // tightens as a game outlives it (move 80 still assumes "40 moves
     // left"). Diagnosed from real coda_bot Lichess losses (all "outoftime"
     // zero-inc bullet forfeits) and confirmed via local RR (Coda vs
-    // Reckless/Obsidian/Berserk/Alexandria, 30+0, no adjudication): 0/320
+    // Obsidian/Berserk/Alexandria, 30+0, no adjudication): 0/320
     // forfeits for the 4 peer engines vs 7/320 for Coda, all preceded by
     // 70-88% of the clock burned by move ~60 in games running 130-220+
     // plies. Once fullmove exceeds NO_INC_MTG_BASE, grow the divisor by
@@ -2602,7 +2599,7 @@ pub fn compute_tm_budgets(
         ((computed.min(max_time) * opt_window_pct / 100).min(hard_time)).max(1)
     };
 
-    // Phase 13.1 (2026-05-26): phase scaling (Reckless/Hobbes pattern).
+    // Phase 13.1 (2026-05-26): phase scaling (Hobbes pattern).
     //
     // First Phase 13 RR at 30+0.25 showed -35 Elo and 2× opening overspend
     // (median 42% vs Coda.main's 24%). Root cause: with stability=0 at search
@@ -2610,11 +2607,11 @@ pub fn compute_tm_budgets(
     // becomes 2.7s — across 10 opening moves that's 27s = entire 30+0.25
     // budget burnt in opening.
     //
-    // Top engines (Reckless, Hobbes, Viridithas's other formula) embed phase
+    // Top engines (Hobbes) embed phase
     // scaling in their base: `soft_scale = 0.024 + 0.042 × (1 - exp(-0.045 × fm))`
     // grows from ~0.024 at fm=0 to 0.066 at fm=40+. Ratio ~0.36 → 1.0.
     //
-    // Apply the same Reckless-style exponential here as a multiplier:
+    // Apply the same exponential here as a multiplier:
     //   phase_mult = 0.22 + 0.78 × (1 - exp(-0.045 × fullmove))   (Phase 13.3)
     //     fm=1:  0.25×
     //     fm=5:  0.38×
@@ -2793,8 +2790,7 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
 ///
 /// Previously this was a stripped-down `negamax(-INF, +INF)` per depth
 /// with no aspiration, no score carry, an empty history table, and a
-/// `thread_id % 2` depth offset. Cross-engine review (SF/Reckless/
-/// Obsidian/Alexandria/Viridithas/PlentyChess) showed every reference
+/// `thread_id % 2` depth offset. Cross-engine review (SF/Obsidian/Alexandria/PlentyChess) showed every reference
 /// engine runs full aspiration in helpers — aspiration-window variance
 /// + slight asynchrony IS the diversity mechanism, not depth offsets.
 /// Helpers with full windows search far more nodes per depth than they
@@ -3235,7 +3231,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         // Aspiration windows (skip for mate scores)
         if depth >= 4 && prev_score > -MATE_IN_MAX_PLY && prev_score < MATE_IN_MAX_PLY {
-            // Eval-dependent aspiration delta: wider for extreme scores (Reckless pattern)
+            // Eval-dependent aspiration delta: wider for extreme scores
             // Calm positions (avg~0): delta=13, winning (avg~500): delta=24, crushing (avg~1000): delta=55
             let avg = prev_score;
             let mut delta = tp(&ASP_DELTA) + (avg as i64 * avg as i64 / tp(&ASP_SCORE_DIV) as i64) as i32;
@@ -3563,8 +3559,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     info.tm_best_stable = 0;
                     // Phase 1: cumulative count of root best-move changes since
                     // search start. Drives an upward multiplier on tactically
-                    // unstable positions (Reckless `1 + changes/4`, Stockfish
-                    // `1.096 + 2.29 * totBestMoveChanges` patterns).
+                    // unstable positions (Stockfish
+                    // `1.096 + 2.29 * totBestMoveChanges` pattern).
                     info.tm_best_move_changes = info.tm_best_move_changes.saturating_add(1);
                     // Publish main's change into its own slot (thread 0) of the
                     // cross-thread bmc array (SF port). Read+reset in the TM block.
@@ -3773,11 +3769,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // `score_drop` (= tm_prev_score - prev_score, in cp; positive =
             // eval FELL this iteration) was already computed but discarded.
             // 5 of 10 surveyed top engines (SF fallingEval, Integral, Obsidian,
-            // PlentyChess, Reckless score_trend) feed it into the TM product:
+            // PlentyChess) feed it into the TM product:
             // give MORE time when the eval is falling (position worsening —
             // don't snap-move into trouble) and LESS when it's stable or
-            // improving (calm/winning — move on). Shaped after Reckless
-            // (clamp(0.8 + 0.05*(prev-cur))) but in cp units. CENTERED AT 1.0
+            // improving (calm/winning — move on). Shaped after a
+            // clamp(0.8 + 0.05*(prev-cur)) form but in cp units. CENTERED AT 1.0
             // when drop==0, so the flat-eval common case (most moves) leaves
             // the baseline allocation untouched and no retune is required to
             // test direction. Range [0.80, 1.45].
@@ -4173,7 +4169,7 @@ fn negamax(
     // calls) previously paid that whole preamble and then re-ran draw checks,
     // prefetch and a second TT probe inside quiescence, plus a duplicate
     // `info.nodes += 1` (~10% boundary node-count inflation that also leaked
-    // into the TM node-fraction signal). SF/Reckless dive to qsearch as the
+    // into the TM node-fraction signal). SF dives to qsearch as the
     // first thing in search(). Quiescence independently does nodes++, seldepth,
     // stop/time and draw checks, so nothing is lost. Two deliberate semantic
     // deltas (both SF-consistent): boundary nodes no longer get the interior
@@ -4335,7 +4331,7 @@ fn negamax(
         }
     }
 
-    // Cuckoo cycle detection: proactive repetition avoidance (Stockfish/Berserk/Viridithas)
+    // Cuckoo cycle detection: proactive repetition avoidance (Stockfish/Berserk)
     // If we're losing (alpha < 0) and a repetition can be forced, raise alpha to draw score.
     if ply > 0 && alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
         alpha = 0;
@@ -4369,7 +4365,7 @@ fn negamax(
         if info.excluded_move[ply_u] == NO_MOVE && ply > 0 {
             let tt_depth = tt_entry.depth;
             // 50mr mate/TB downgrade now happens inside score_from_tt
-            // (SF/Reckless value_from_tt placement), so every consumer
+            // (SF value_from_tt placement), so every consumer
             // below sees the sanitized score.
             let tt_score = score_from_tt(tt_entry.score, ply, board.halfmove);
 
@@ -4381,7 +4377,7 @@ fn negamax(
             // it only biases the search, while returning stale tt_score is unsafe.
             let halfmove_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
             // P1.8: require +1 ply of TT depth for a fail-high (LOWER) cutoff —
-            // SF/Reckless/Obsidian/PlentyChess all demand `depth > depth - (value
+            // SF/Obsidian/PlentyChess all demand `depth > depth - (value
             // <= beta)`, i.e. fail-lows accept at tt_depth>=depth but fail-highs
             // need tt_depth>=depth+1. Coda's symmetric `>= depth` is more
             // permissive on fail-highs than the top 3.
@@ -4615,9 +4611,9 @@ fn negamax(
             // so later visits of this position (from different move
             // orders or ID re-searches) skip the NNUE call.
             //
-            // Reckless pattern (`search.rs:425`). Phase-2 lever from
+            // Phase-2 lever from
             // `docs/coda_vs_reckless_nps_2026-04-23.md`: reduces
-            // evals/node (Coda 0.677 vs Reckless 0.520).
+            // evals/node (Coda 0.677).
             //
             // Safety:
             //   - Gated on `!tt_hit` so we never overwrite a real entry
@@ -4647,7 +4643,7 @@ fn negamax(
         // was set to -INFINITY (see the else branch below). Comparing
         // `static_eval > -INFINITY` trivialised to true, so improving fired
         // on every post-check comeback, inflating RFP/LMP/futility/LMR.
-        // SF/Viridithas fall back to ply-4 when ply-2 is unavailable; skip
+        // SF falls back to ply-4 when ply-2 is unavailable; skip
         // entirely when neither ply is usable.
         if ply >= 2 && ply_u >= 2 {
             let prev2 = info.static_evals[ply_u - 2];
@@ -4669,7 +4665,7 @@ fn negamax(
 
     // Clear the grandchild cutoff counter so the `cutoff_count[ply+1]`
     // read in LMR reflects only fail-highs under THIS node's subtree
-    // (SF `(ss+2)->cutoffCnt = 0` / Reckless search.rs:488 pattern).
+    // (SF `(ss+2)->cutoffCnt = 0` pattern).
     info.cutoff_count[ply_u + 2] = 0;
 
     // Eval instability: detect sharp eval swings from parent node
@@ -4748,7 +4744,7 @@ fn negamax(
     let king_zone = crate::attacks::king_attacks(our_king_sq as u32) | (1u64 << our_king_sq);
     let king_zone_pressure = popcount(enemy_attacks & king_zone) as i32;
 
-    // RFP moved BEFORE NMP (consensus order: SF/Reckless/Obsidian/Berserk all
+    // RFP moved BEFORE NMP (consensus order: SF/Obsidian/Berserk all
     // run the free static prune first; the null search only sees nodes static
     // pruning couldn't cut). Reorder alone tested neutral (#1882, -0.06 ±1.9),
     // but it removes the mechanism that killed shallow NMP in #1904 (NMP-first
@@ -4883,7 +4879,7 @@ fn negamax(
         && ply >= info.nmp_min_ply  // Ply barrier: verification subtree cannot re-trigger NMP (audit B1)
         && beta.abs() < MATE_IN_MAX_PLY  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
-        && cut_node  // Reckless gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
+        && cut_node  // cut-node gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
@@ -4938,8 +4934,7 @@ fn negamax(
             if depth >= tp10(&NMP_VERIFY_DEPTH_10X) {
                 info.stats.nmp_verify += 1;
                 // Set ply barrier so NMP cannot fire again inside the verification
-                // subtree. All peer engines do this (Reckless: nmp_min_ply = ply +
-                // 3*(depth-r)/4; Alexandria: nmpPlies = ply + (depth-R)*2/3).
+                // subtree. All peer engines do this (Alexandria: nmpPlies = ply + (depth-R)*2/3).
                 // Without this, NMP can verify itself, defeating zugzwang detection.
                 let old_nmp_min_ply = info.nmp_min_ply;
                 info.nmp_min_ply = ply + 3 * (depth - r) / 4;
@@ -4997,7 +4992,7 @@ fn negamax(
     // raised beta confirms the position is winning, prune the node.
     //
     // C8 audit LIKELY #7/#8: two fixes to this gate.
-    // - #8: add !is_pv — SF/Obsidian/Viridithas/Berserk all gate ProbCut to
+    // - #8: add !is_pv — SF/Obsidian/Berserk all gate ProbCut to
     //   non-PV. Pruning PV nodes on a raised-beta shallow search is too
     //   aggressive for a node whose score we need exactly.
     // - #7: the "TT says no chance" skip read `tt_entry.score` raw (no ply
@@ -5033,7 +5028,7 @@ fn negamax(
     {
         // SEE threshold: only consider captures that gain enough material
         let see_threshold = (probcut_beta - static_eval).max(0);
-        // Improving-conditioned ProbCut depth (SF d6483505 / Reckless 08f2cfa4) —
+        // Improving-conditioned ProbCut depth (SF d6483505) —
         // bundled near-miss; tuned with the LMP/ProbCut margin cluster.
         let pc_depth = depth - 4 - improving as i32;
         let pc_tt_move = if tt_move_noisy
@@ -5112,7 +5107,7 @@ fn negamax(
                 // scores — score was verified at probcut_beta = beta+margin,
                 // not beta. Decisive mate/TB scores are exact enough that
                 // margin subtraction corrupts their distance/range; SF avoids
-                // damped decisive ProbCut returns and Reckless returns them raw.
+                // damped decisive ProbCut returns.
                 info.tt.store(
                     board.hash, depth - 3, score_to_tt(score, ply),
                     TT_FLAG_LOWER, mv, raw_eval, tt_pv,
@@ -5197,7 +5192,7 @@ fn negamax(
     let mut n_captures_tried = 0usize;
 
     // Skip-quiets flag: once LMP fires, skip remaining quiets without
-    // re-running gates (Reckless pattern). Bisection found this produces
+    // re-running gates. Bisection found this produces
     // +22% bench (vs expected bench-neutral perf-only) — mechanism not
     // localised; SPRT'd anyway as a data point per Adam.
     let mut skip_quiets = false;
@@ -5238,13 +5233,13 @@ fn negamax(
         // depths, skip late quiet moves by movecount BEFORE SEE/futility filter
         // them. Running LMP last (the prior Coda order) meant its count check
         // only saw SEE/futility survivors — a pre-filtered residual that made
-        // count-pruning riskier and kept LMP_BASE blunt. SF/Reckless/Berserk/
+        // count-pruning riskier and kept LMP_BASE blunt. SF/Berserk/
         // Obsidian all set skipQuiets before SEE/futility.
         // Formula: (LMP_BASE + depth²) / (2 - improving); check carve at depth<4.
         if ply > 0 && !in_check && depth >= 1 && depth <= tp10(&LMP_DEPTH_10X)
             && !is_cap && !is_promo
             && !is_loss(best_score)
-            && beta < MATE_IN_MAX_PLY  // forced-win guard (Reckless 4a2efd5a): don't count-prune quiets while proving a win
+            && beta < MATE_IN_MAX_PLY  // forced-win guard: don't count-prune quiets while proving a win
             && FEAT_LMP.load(Ordering::Relaxed)
         {
             let lmp_limit = (tp10(&LMP_BASE_10X) + depth * depth) / (2 - improving as i32);
@@ -5303,7 +5298,7 @@ fn negamax(
             let hist_adj = main_hist / 128;
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
             let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
-            // Direct-check carve-out + strong-history exemption (Igel/Reckless #410).
+            // Direct-check carve-out + strong-history exemption (Igel #410).
             if futility_value <= alpha && main_hist < 12000 && !board.gives_direct_check(mv) {
                 trace_gate!(info, board.hash, ply, mv, "futility", depth, move_count);
                 info.stats.futility_prunes += 1;
@@ -5340,7 +5335,7 @@ fn negamax(
             && ply > 0
             && depth >= tp10(&SE_DEPTH_10X)
             // No !in_check gate: zero-engine-consensus carve-out removed
-            // (audit T2.12). None of SF/Reckless/Obsidian/Berserk/Stormphrax
+            // (audit T2.12). None of SF/Obsidian/Berserk/Stormphrax
             // gate SE on check; a deep in-check node's TT move (often the
             // single forced evasion — maximally singular) was never extended,
             // and got no multicut/negative-ext either. Mechanically safe:
@@ -5352,7 +5347,7 @@ fn negamax(
             && tt_entry.depth >= depth - tp(&SE_TT_DEPTH_SLACK)
             && FEAT_SINGULAR.load(Ordering::Relaxed)
         {
-            // 50mr downgrade applies here too (SF/Reckless: singular ttValue
+            // 50mr downgrade applies here too (SF: singular ttValue
             // is value_from_tt output). A downgraded mate lands in the TB
             // band and is still filtered by the !is_decisive gate below, so
             // the old over-extension concern (downgraded scores sneaking past
@@ -5388,8 +5383,8 @@ fn negamax(
                     // EXCEPT decisive scores: singular_score is fail-soft from a
                     // reduced (depth-1)/2 search with the TT move EXCLUDED — a
                     // mate/TB score from it is unproven at this node's depth and
-                    // would be TT-stored at full depth as LOWER. SF/Reckless
-                    // gate with !is_decisive and fall through; Obsidian/Berserk
+                    // would be TT-stored at full depth as LOWER. SF
+                    // gates with !is_decisive and fall through; Obsidian/Berserk
                     // return singularBeta. Per #761 (mate-clamp H0: suppressing
                     // multicut in mate shapes loses Elo), keep FIRING and fix
                     // only the returned value (audit T1.4).
@@ -5403,7 +5398,7 @@ fn negamax(
                 if singular_score < singular_beta {
                     // TT move is singular — no competitive alternatives.
                     //
-                    // Reckless/SF-pattern additive extensions with PV/quiet/
+                    // SF-pattern additive extensions with PV/quiet/
                     // correction-aware margins. PV nodes get LARGER margin
                     // (suppressed); quiet TT moves get SMALLER margin (easier);
                     // large |corrhist| REDUCES threshold (eval is uncertain →
@@ -5430,7 +5425,7 @@ fn negamax(
                     }
                 } else if tt_score_local >= beta {
                     // TT move fails high and alternatives competitive — strong reduce
-                    // Consensus: -3 non-PV (SF/Viridithas/Obsidian)
+                    // Consensus: -3 non-PV (SF/Obsidian)
                     singular_extension = -3;
                     info.stats.negative_ext += 1;
                 } else if cut_node {
@@ -5486,7 +5481,7 @@ fn negamax(
 
         // Bad noisy pruning: skip losing captures when eval is far below alpha.
         // Applied before MakeMove. Direct-check carve-out: don't prune moves
-        // that give direct check (Reckless #630 +1.85 STC).
+        // that give direct check.
         if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= tp10(&BAD_NOISY_DEPTH_10X) && mv != tt_move
             && !is_promo && !is_loss(best_score)
             && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
@@ -5497,7 +5492,7 @@ fn negamax(
             continue;
         }
 
-        // Pre-make TT prefetch (Reckless #1085): issue the child-bucket fetch
+        // Pre-make TT prefetch: issue the child-bucket fetch
         // BEFORE build_dirty_piece + NNUE push + make_move + threat absorb, so
         // ~all of that work overlaps the DRAM latency (vs the old post-make
         // prefetch, which had only the short pre-probe window). key_after is an
@@ -5655,7 +5650,7 @@ fn negamax(
                     reduction -= LMR_SCALE;
                 }
 
-                // Reckless LMR correction battery (T1.1, audit 2026-07-06).
+                // LMR correction battery (T1.1, audit 2026-07-06).
                 // (a) Winning beta: the window is already in the proven-win band,
                 //     move precision matters less — reduce more.
                 if is_win(beta) {
@@ -5682,7 +5677,7 @@ fn negamax(
 
                 // cutoff_count (T1.2): the child ply keeps failing high under
                 // this node — refutations come easy down there, so late moves
-                // need less depth to refute. SF/Reckless consensus term.
+                // need less depth to refute. SF consensus term.
                 if info.cutoff_count[ply_u + 1] > 2 {
                     reduction += tp(&LMR_CUTOFF_CNT_CENTI);
                     if !is_pv && !cut_node {
@@ -5787,8 +5782,8 @@ fn negamax(
                         reduction -= LMR_SCALE;
                     }
 
-                    // Reckless correction battery (a)-(c) — applied to noisy
-                    // moves too (Reckless computes them before its quiet/noisy
+                    // Correction battery (a)-(c) — applied to noisy
+                    // moves too (computed before the quiet/noisy
                     // split). Same tunables as the quiet block.
                     if is_win(beta) {
                         reduction += tp(&LMR_WINBETA_CENTI);
@@ -5803,7 +5798,7 @@ fn negamax(
                         }
                     }
 
-                    // cutoff_count (T1.2) — Reckless applies it before the
+                    // cutoff_count (T1.2) — applied before the
                     // quiet/noisy split, so captures get it too. Same
                     // tunables as the quiet block.
                     if info.cutoff_count[ply_u + 1] > 2 {
@@ -5884,7 +5879,7 @@ fn negamax(
 
                 // Mutate new_depth itself so the adjustment persists into the
                 // full-window PVS re-search below (SF/Obsidian/Alexandria/
-                // Stormphrax/Integral/Reckless all mutate newDepth; the old
+                // Stormphrax/Integral all mutate newDepth; the old
                 // inline form ran the PV re-search SHALLOWER than the
                 // zero-window search that justified it; audit T1.3).
                 new_depth += do_deeper_adj;
@@ -5925,7 +5920,7 @@ fn negamax(
                                 if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                                     // B1 (audit 2026-05-19): uniform bonus across offsets
                                     // {1,2,4,6}. Coda was unique in [bonus, b/2, b/2, b/2]
-                                    // shape; Reckless/Berserk/Alexandria/Stormphrax use
+                                    // shape; Berserk/Alexandria/Stormphrax use
                                     // uniform `bonus`. See docs/history_prune_cont_hist_
                                     // review_2026-05-08.md Experiment B1.
                                     let ch_b = nudge_bonus;
@@ -5964,8 +5959,7 @@ fn negamax(
             // non-PV node the first child's expected type is the negation of
             // this node's (all-node -> child is cut; cut-node -> first child is
             // all after the cutoff move) -> !cut_node. Matches SF (Step 18
-            // `!cutNode` for non-PV first move vs `search<PV>(... false)`) and
-            // Reckless (FDS `!cut_node` vs PVS `false`). Previously hardcoded
+            // `!cutNode` for non-PV first move vs `search<PV>(... false)`). Previously hardcoded
             // `false`, which mislabeled every non-PV first move as an all node
             // and disabled NMP/IIR/TT-cutoff node-type guards on that spine.
             let child_cut = if is_pv { false } else { !cut_node };
@@ -6171,7 +6165,7 @@ fn negamax(
 
 
                     // Unconditionally penalize all tried captures that didn't cause cutoff
-                    // (matching Stockfish/Obsidian/Viridithas — captures that fail should be
+                    // (matching Stockfish/Obsidian — captures that fail should be
                     // penalized regardless of whether the best move was quiet or tactical)
                     {
                         // numFailHighs multiplicative scaling — mirror the
@@ -6298,8 +6292,7 @@ fn negamax(
     // (best_score - raw_eval) is then dominated by material change, not the
     // positional-eval miscalibration correction history is trying to learn.
     // Training on noisy bestmoves pollutes the tables. Matches Stockfish
-    // (search.cpp:1495: `!(bestMove && pos.capture(bestMove))`) and Reckless
-    // (search.rs:1085: `|| best_move.is_noisy()`).
+    // (search.cpp:1495: `!(bestMove && pos.capture(bestMove))`).
     let best_move_noisy = best_move != NO_MOVE && {
         board.piece_type_at(move_to(best_move)) != NO_PIECE_TYPE
             || move_flags(best_move) == FLAG_EN_PASSANT
@@ -6308,7 +6301,7 @@ fn negamax(
     // Correction history update: train on BOTH directions of error.
     // Previously gated on `best_score > alpha_orig` (fail-high only), which
     // never trained on fail-low (all-node) positions where static eval was
-    // over-optimistic. SF and Reckless both update on fail-low when the error
+    // over-optimistic. SF updates on fail-low when the error
     // direction is consistent: bound==Upper && best_score < static_eval means
     // eval predicted higher than any move achieved — train correction downward.
     // (audit S1)
@@ -6327,7 +6320,7 @@ fn negamax(
     {
         // Corrhist audit 2026-07-08 finding #1: train the update against the
         // CORRECTED eval (`static_eval`, the residual after correction), like
-        // SF/Obsidian/Reckless/Berserk/Viridithas — NOT the raw `scaled_eval`.
+        // SF/Obsidian/Berserk — NOT the raw `scaled_eval`.
         // Raw-training's gravity fixed point is the rail (magnitude-blind) and
         // manufactured the fortress phantom eval; residual converges to the true
         // correction and self-stabilises. Both in scaled-space so the err term
@@ -6478,7 +6471,7 @@ fn quiescence_with_depth(
     if tt_hit && tt_entry.depth >= -1 {
         // 50mr mate/TB downgrade happens inside score_from_tt, so both the
         // cutoff conditions and the returned value use the sanitized score
-        // (SF/Reckless: ttValue is value_from_tt output everywhere).
+        // (SF: ttValue is value_from_tt output everywhere).
         let tt_score = score_from_tt(tt_entry.score, ply, board.halfmove);
 
         // P2: skip QS TT cutoff near 50mr — stale bound unsafe
@@ -6549,8 +6542,7 @@ fn quiescence_with_depth(
             // Skip quiet evasions once we have a non-losing score (audit
             // T2.10): SF searches quiet evasions only while still losing
             // (search.cpp:1681 `if (!capture) continue` inside !is_loss);
-            // Obsidian breaks after one quiet; Reckless gates skip_quiets
-            // the same way. Capture evasions always searched. The gate is
+            // Obsidian breaks after one quiet. Capture evasions always searched. The gate is
             // only satisfiable after at least one legal move scored, so
             // checkmate detection (move_count == 0) is unaffected.
             let ev_is_cap = board.piece_type_at(move_to(mv)) != NO_PIECE_TYPE
@@ -6616,7 +6608,7 @@ fn quiescence_with_depth(
         // Never EXACT: a QS score is an approximation (children are
         // captures-only subtrees), and EXACT entries satisfy unconditional
         // EXACT cutoffs and the stand-pat refinement at full confidence.
-        // SF/Reckless/Obsidian all store only LOWER/UPPER in QS
+        // SF/Obsidian all store only LOWER/UPPER in QS
         // (2026-06-11 audit T1.5).
         let store_score = score_to_tt(best_score, ply);
         let flag = if best_score >= beta {
@@ -6645,7 +6637,7 @@ fn quiescence_with_depth(
     };
     // Apply correction history to the QS stand-pat, mirroring negamax's
     // static-eval path (halfmove-scale THEN corrected_eval, line ~3361).
-    // Consensus QS audit (2026-06-23): all 6 reference engines (SF, Reckless,
+    // Consensus QS audit (2026-06-23): the reference engines (SF,
     // Berserk, Obsidian, PlentyChess, Alexandria) correct the QS stand-pat;
     // Coda was the sole outlier using the raw eval. The stand-pat feeds the
     // returned cutoff score, the best_score floor, AND the delta-prune base,
@@ -6669,7 +6661,7 @@ fn quiescence_with_depth(
         // 50mr downgrade applies here too. A downgraded mate becomes a
         // TB-band value and is still filtered by !is_decisive below; a
         // downgraded TB score becomes the highest non-decisive value and
-        // may refine stand-pat — same as SF/Reckless, whose eval
+        // may refine stand-pat — same as SF, whose eval
         // refinement consumes value_from_tt output.
         let tt_score = score_from_tt(tt_entry.score, ply, board.halfmove);
         if !is_decisive(tt_score)
@@ -6773,7 +6765,7 @@ fn quiescence_with_depth(
 
         // Skip bad captures (SEE below threshold)
         // Negative threshold allows slightly losing captures (e.g. BxN)
-        // Obsidian uses -32, Viridithas -141
+        // Obsidian uses -32
         if !see_ge(board, mv, tp(&QS_SEE_THRESHOLD)) {
             continue;
         }
@@ -6854,7 +6846,7 @@ fn quiescence_with_depth(
 /// elevated tree size on it, distorting bench aggregates and OB scale_nps).
 /// Used by `coda bench` and `coda eval-bench` so the prune-stats /
 /// move-ordering / NPS aggregates have N=48 sample size, matching the field
-/// convention (Reckless 46, Halogen 49, Stormphrax 50, Viridithas 50,
+/// convention (Halogen 49, Stormphrax 50,
 /// Alexandria 51, Stockfish 51) rather than the historical 8 we used to
 /// ship with.
 /// The position set is based on Stockfish's benchmark positions (GPLv3, a
@@ -7264,7 +7256,7 @@ mod tests {
     /// Regression guard for docs/corrhist_fortress_drift_2026-07-06.md.
     /// Correction history used to self-reinforce into a phantom ±0.45 in
     /// low-material locked/fortress positions (opposite-coloured bishops,
-    /// blocked pawns) that Stockfish/Reckless/Obsidian all read as 0 — the
+    /// blocked pawns) that Stockfish/Obsidian all read as 0 — the
     /// raw NNUE was fine (~0), it was corrhist railing in the low-signal
     /// regime. The piece-count damping in `corrected_eval` fixes it. These
     /// four positions (two from the games that surfaced the bug) must stay

@@ -1,4 +1,5 @@
-//! Threat accumulator stack (Reckless pattern).
+//! Threat accumulator stack — a standard lazy NNUE accumulator-stack (push a
+//! frame per move, materialise perspectives on demand).
 //!
 //! Separate from the PSQ accumulator. Each ply has:
 //! - Per-perspective i16 accumulator values (aligned)
@@ -163,7 +164,7 @@ impl ThreatStack {
     }
 
     /// Push: increment index, reset flags, clear deltas.
-    /// Called BEFORE make_move (mirrors Reckless's Network::push).
+    /// Called BEFORE make_move (standard accumulator-stack push).
     pub fn push(&mut self, mv: Move, moved_pt: u8) {
         self.index += 1;
         if self.index >= self.stack.len() {
@@ -256,7 +257,8 @@ impl ThreatStack {
 
     /// Check if we can incrementally update this perspective by walking back.
     /// Returns Some(ancestor_index) or None (need full refresh).
-    /// Follows the same condition as Reckless's can_update_threats.
+    /// The condition for whether threats can be refreshed incrementally from an
+    /// ancestor rather than fully recomputed.
     #[inline]
     pub fn can_update(&self, pov: Color) -> Option<usize> {
         for i in (0..self.index).rev() {
@@ -413,7 +415,7 @@ impl ThreatStack {
     }
 
     /// Ensure both perspectives are computed for the current position.
-    /// Follows Reckless's evaluate() pattern.
+    /// Standard lazy evaluate: ensure both perspectives are materialised.
     #[inline]
     pub fn ensure_computed(&mut self, net_weights: &[i8], num_features: usize,
                           board: &crate::board::Board) {
