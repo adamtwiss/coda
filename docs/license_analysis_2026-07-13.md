@@ -28,8 +28,10 @@ For a chess engine that means:
 - **Tuning constants and small functional tables** are facts dictated by their
   function. There are only so many ways to write a king-bucket table for a given
   symmetry, or a piece-value array like `[100, 300, 300, 500, 900]` — so they look
-  the same across many engines by necessity, not by copying (merger doctrine).
-  Individual numbers ("spend ~46% of the clock") carry no creative authorship.
+  the same across many engines by necessity, not by copying (merger doctrine). §2
+  documents this concretely: Coda's king-bucket grid appears *verbatim* in four
+  other independent engines (five including Coda). Individual numbers ("spend ~46%
+  of the clock") carry no creative authorship.
 
 Our test throughout: **was any expression copied, or only an idea / a functional
 constant — and under which license was the source at the time we referenced it?**
