@@ -352,10 +352,9 @@ const NNUE_MAGIC: u32 = 0x4E4E5545; // "NNUE" in LE
 // per-`NNUENet` fields populated at load time and never mutated after.
 // See `fix/smp-king-bucket-race`.
 
-/// Consensus king bucket layout: fine-near, coarse-far — the standard 16-bucket
-/// grid many engines independently converge on for a mirrored HalfKA net (the
-/// same table appears in e.g. Alexandria and Tarnished). "Consensus" because it
-/// is the common, shared choice, not a port of any one engine.
+/// Consensus king bucket layout: fine-near, coarse-far — a common 16-bucket
+/// pattern across many engines for a mirrored HalfKA net. "Consensus" reflects
+/// that it is the shared, standard choice, not a port of any one engine.
 /// Indexed by [mirrored_file (0-3)][rank (0-7)]
 const CONSENSUS_BUCKETS: [[usize; 8]; 4] = [
     [ 0,  4,  8,  8, 12, 12, 14, 14], // file a/h (mirrored file 0)

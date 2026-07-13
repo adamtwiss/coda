@@ -408,7 +408,7 @@ Each fix compounds — it shifts optimal params elsewhere, exposing the next wea
    repos (e.g. integral) as all-rights-reserved and avoid them. Verify a license
    via `gh api repos/<owner>/<repo> --jq .license.spdx_id` against the version you
    used, not today's upstream. Full findings + audit plan:
-   `docs/derivative_work_analysis_2026-07-13.md`. **Never reference Ethereal**
+   `docs/license_analysis_2026-07-13.md`. **Never reference Ethereal**
    anywhere in the repo (code, docs, experiments, commits, test data). Common structural
    traps: pruning after MakeMove (wastes make/unmake + NNUE push/pop, redundant with
    earlier pruning); raw depth for depth² scaling (far more aggressive than intended);

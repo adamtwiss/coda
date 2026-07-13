@@ -1,4 +1,4 @@
-# Derivative-work analysis and remediation (2026-07-13)
+# License analysis and remediation (2026-07-13)
 
 **Status:** engineering findings and Coda's good-faith view. This is not legal
 advice and not a final legal determination; it is our honest technical

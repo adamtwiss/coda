@@ -25,8 +25,8 @@ const NNUE_MAGIC: u32 = 0x4E4E5545; // "NNUE" LE
 /// King bucket layout identifier stored in the .nnue header.
 ///
 /// - `Uniform` (0): `mirrored_file × 4 + rank_pair`, 16 buckets. Default.
-/// - `Consensus` (1): the standard fine-near / coarse-far layout (as used by
-///   Alexandria (GPL-3.0) and other engines), 16 buckets.
+/// - `Consensus` (1): the standard fine-near / coarse-far layout, a common
+///   pattern across many engines, 16 buckets.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum KbLayout {
     Uniform = 0,
