@@ -19487,3 +19487,27 @@ eval-quality/correctness fixes on cross-engine RR, not self-play SPRT alone.
 Follow-on corrhist table-**splits** (H2 minor-piece-key, M4 check-conditioned)
 both H0'd on the residual base — the residual-fixed sources are already well-fit;
 enrich the cont-corr KEY, don't split the tables.
+## Overscore class certified: the long-running hypothesis confirmed, signed and sized (2026-07-13)
+
+Signed-error analysis over the convergence data (all episode-start
+positions are Coda-to-move, so sign is directly ours): **steered-into
+positions are overscored +30cp median at 150k (50% >30cp) vs neutral
+control median 0** — and the optimism persists to 500k on the class while
+washing out by 150k on neutrals. Self-refutation split: **SNAP subset
+(Coda's own deep search endorses the lower value — SF-independent verdict)
+overscores +58 median, 74% >30cp**; STUBBORN +57/66%. Full forced-line set
+(976 measured): 43% SNAP / 48% STUBBORN, replicating the 300-sample.
+Gate tracing: 84% of SNAP lines fully searched; named gates discard 1.5%
+— search exonerated; lines ~70% quiet at every ply (no non-eval ordering
+signal can select them).
+
+Mechanism: search maximizes our eval → walks toward its own optimism; SF's
+eval prices the same positions correctly → its search cooperates. Biases
+sized via neutral control (~2/3 of raw |error| is generic cross-family
+offset; class excess ~+16 mean/+31 med) and self-refuting membership
+(addresses the historical overscore-harvest selection-bias problem).
+Open: LC0 oracle referee; feature attribution; corpus-scale mining path.
+
+**Full write-up: docs/overscore_class_2026-07-13.md** (falsification
+ledger, forensic chain, bias controls, net-report metric proposal, next
+steps). Corpora + raw measurement TSVs promoted to testdata/horizon/.
