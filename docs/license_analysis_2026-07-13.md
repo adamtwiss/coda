@@ -111,8 +111,8 @@ Tarnished, and the fine-near/coarse-far approach is near-universal. Coda named i
 `CONSENSUS_BUCKETS` precisely because it is the common, shared choice. That its
 values coincide with Alexandria's `buckets[64]` is a textbook **merger** case — for
 a fixed symmetry there are only so many ways to write the table, so matching values
-are expected without copying — and Alexandria is in any case **GPL-3.0**
-(compatible, not AGPL). We corrected the comment to describe it as the standard
+are expected without copying — and both Alexandria and Tarnished are in any case
+**GPL-3.0** (compatible, not AGPL). We corrected the comment to describe it as the standard
 shared layout rather than implying a single source. No retrain is needed — the
 shipped net already uses it.
 
