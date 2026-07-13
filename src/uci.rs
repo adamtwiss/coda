@@ -1312,7 +1312,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
 
                 // Verbose dump (hashes, accumulator values) only on
                 // `eval debug` / `eval verbose` — keeps the default output
-                // clean. Nothing in scripts/tests parses these lines.
+                // clean; nothing downstream parses these lines.
                 let verbose = tokens.len() > 1 && (tokens[1] == "debug" || tokens[1] == "verbose");
                 if verbose {
                     println!("info string fen {}", board.to_fen());

@@ -372,7 +372,7 @@ enum Commands {
     /// Import a per-position game TSV (fen, uci, score, result, ply) into an
     /// sfbinpack binpack — every position, in game order, with actual move (for
     /// chain compression), actual WDL and ply, NO filtering (the loader filters).
-    /// Feed `scripts/pgn_to_game_tsv.py` output; input "-" reads stdin.
+    /// Feed a game-TSV export (one game per line, converted from PGN); input "-" reads stdin.
     ImportGameTsv {
         /// Input TSV ("-" for stdin); cols: fen, uci, score, result, ply (no header)
         #[arg(long, short = 'i')]
@@ -1187,7 +1187,7 @@ fn main() {
 
                 // PSQ (HalfKA) feature-index set for this POV, reckless kb10
                 // layout, for cross-implementation diffing against Bullet's
-                // ChessBucketsMirrored (scripts/psq_cross_differ.py). The
+                // ChessBucketsMirrored. The
                 // threat IDX gate above says nothing about this half of the
                 // input — it has its own mirror/bucket/perspective machinery.
                 let (kb_tab, km_tab) = nnue::compute_king_buckets(nnue::KbLayout::Reckless);
@@ -2525,7 +2525,7 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option
     }
 
     // Optional CSV: `fen,white_result,coda_eval_white_cp` per kept position,
-    // for the cross-engine eval-quality benchmark (scripts/eval_quality.py).
+    // for a cross-engine eval-quality benchmark.
     let mut csv_w = csv.as_ref().map(|p| {
         let f = std::fs::File::create(p).unwrap_or_else(|_| panic!("Failed to create CSV {}", p));
         let mut w = std::io::BufWriter::new(f);
