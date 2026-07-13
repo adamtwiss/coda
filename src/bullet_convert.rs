@@ -10,7 +10,7 @@
 //!
 //! King bucket count and layout are encoded into the .nnue header. Default
 //! 16 buckets is backwards compatible (no extended header needed). Non-16
-//! counts (e.g. Reckless 10) set flag bit 7 and emit two extra header bytes.
+//! counts set flag bit 7 and emit two extra header bytes.
 //! Plain-CReLU (v5) output has no extended-KB support at all — convert_v5
 //! rejects a non-default kb_count/kb_layout in that mode rather than
 //! silently dropping it.
@@ -25,14 +25,12 @@ const NNUE_MAGIC: u32 = 0x4E4E5545; // "NNUE" LE
 /// King bucket layout identifier stored in the .nnue header.
 ///
 /// - `Uniform` (0): `mirrored_file × 4 + rank_pair`, 16 buckets. Default.
-/// - `Consensus` (1): Alexandria/Viridithas fine-near / coarse-far, 16 buckets.
-/// - `Reckless` (2): per-file ranks 1-2, one bucket rank 3, one bucket
-///   ranks 4-8. 10 buckets. See Reckless/src/nnue.rs:71-80.
+/// - `Consensus` (1): the standard fine-near / coarse-far layout (as used by
+///   Alexandria (GPL-3.0) and other engines), 16 buckets.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum KbLayout {
     Uniform = 0,
     Consensus = 1,
-    Reckless = 2,
 }
 
 impl KbLayout {
@@ -40,15 +38,13 @@ impl KbLayout {
         match name {
             "uniform" => Ok(KbLayout::Uniform),
             "consensus" => Ok(KbLayout::Consensus),
-            "reckless" => Ok(KbLayout::Reckless),
-            other => Err(format!("unknown --kb-layout {other:?}; expected uniform | consensus | reckless")),
+            other => Err(format!("unknown --kb-layout {other:?}; expected uniform | consensus")),
         }
     }
 
     pub fn default_count(self) -> usize {
         match self {
             KbLayout::Uniform | KbLayout::Consensus => 16,
-            KbLayout::Reckless => 10,
         }
     }
 }
@@ -179,7 +175,7 @@ pub fn convert_v5(
     let version: u32 = if use_screlu || use_pairwise { 6 } else { 5 };
     write_u32_le(&mut buf, version);
 
-    let write_extended_kb = kb_count != 16 || kb_layout == KbLayout::Reckless;
+    let write_extended_kb = kb_count != 16;
 
     // Plain-CReLU (version 5) has no extended-KB header at all -- the v5
     // loader hardcodes the 16-bucket uniform layout (nnue.rs's version-5
@@ -474,7 +470,7 @@ pub fn convert_v7(
     // silently dropped and the net inferred as SCReLU-hidden (wrong activation,
     // ~-100 Elo). Force the extended-KB header whenever hl_crelu is set so bit 5
     // means hl_crelu and kb_layout moves into the extended bytes.
-    let write_extended_kb = kb_count != 16 || kb_layout == KbLayout::Reckless || hl_crelu;
+    let write_extended_kb = kb_count != 16 || hl_crelu;
 
     let mut flags = 0u8;
     if use_screlu { flags |= 1; }

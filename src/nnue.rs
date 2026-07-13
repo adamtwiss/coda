@@ -304,8 +304,9 @@ pub const NNUE_L1_BUF: usize = 64;
 pub const NNUE_L2_BUF: usize = 128;
 const NNUE_NUM_PIECE_TYPES: usize = 12;
 
-/// King bucket layout identifier. Mirrors `bullet_convert::KbLayout` so the
-/// values round-trip through the .nnue header byte.
+/// King bucket layout identifier; ids round-trip through the .nnue header byte.
+/// The converter (`bullet_convert::KbLayout`) creates only Uniform/Consensus;
+/// this loader retains the id `2` purely to detect and reject legacy kb10 nets.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum KbLayout {
     Uniform = 0,
@@ -351,7 +352,8 @@ const NNUE_MAGIC: u32 = 0x4E4E5545; // "NNUE" in LE
 // per-`NNUENet` fields populated at load time and never mutated after.
 // See `fix/smp-king-bucket-race`.
 
-/// Consensus king bucket layout: fine-near, coarse-far (Alexandria/Viridithas)
+/// Consensus king bucket layout: fine-near, coarse-far — the standard 16-bucket
+/// layout used across the field (matches Alexandria's `buckets[64]`, GPL-3.0).
 /// Indexed by [mirrored_file (0-3)][rank (0-7)]
 const CONSENSUS_BUCKETS: [[usize; 8]; 4] = [
     [ 0,  4,  8,  8, 12, 12, 14, 14], // file a/h (mirrored file 0)
