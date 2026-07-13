@@ -202,6 +202,12 @@ was removed.
 
 We are not limiting remediation to the externally-reported spots.
 
+**Phasing.** The immediate priority is restoring clean licence compliance —
+removing the AGPL-incompatible material so Coda stands cleanly as GPLv3. Once that
+is settled, we will make a further pass to check we are not inappropriately
+deriving anything from other (GPL-licensed) engines either — verifying attribution
+is correct and rewriting anything that followed another engine too closely.
+
 **Planned audits (beyond what was reported):**
 1. **Full pass against the AGPL-at-reference engines (Reckless).** Grep source and
    history for any code, constants, or table values that trace to Reckless, on the
