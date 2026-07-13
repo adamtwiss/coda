@@ -128,8 +128,8 @@ tunables!(
     (RFP_DEEP_LINEAR, 43, 0, 200, 10.0, true),
     (RFP_DEEP_QUAD_10X, 39, 0, 800, 50.0, true),
     // Razoring (re-added 2026-06-11, audit T2.6). Consensus band:
-    // Obsidian 352/d<=5, Berserk 214/d<=5, Clover 145/d<=2, Integral
-    // 393/d<=4, Stormphrax ~290/d<=4.
+    // Obsidian 352/d<=5, Berserk 214/d<=5, Clover 145/d<=2,
+    // Stormphrax ~290/d<=4.
     (RAZOR_MULT, 286, 100, 500, 20.0, true),
     (RAZOR_DEPTH_10X, 39, 10, 80, 5.0, true),
     // Futility margin widened after the pruning audit: 80/110 H1'd at STC
@@ -1763,7 +1763,7 @@ impl SearchInfo {
             evaluate(board)
         };
         // Material scaling: dampen eval in low-material endgames (SF/Stormphrax/
-        // Halogen/Integral pattern — non-pawn material only). Pawn-up endgames
+        // Halogen pattern — non-pawn material only). Pawn-up endgames
         // shouldn't get dampened toward zero; pawns retain decisive value at
         // low non-pawn material counts.
         // N=422, B=422, R=642, Q=1015
@@ -3768,7 +3768,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Factor 5: Score-trend multiplier (falling-eval). The signal
             // `score_drop` (= tm_prev_score - prev_score, in cp; positive =
             // eval FELL this iteration) was already computed but discarded.
-            // 5 of 10 surveyed top engines (SF fallingEval, Integral, Obsidian,
+            // 5 of 10 surveyed top engines (SF fallingEval, Obsidian,
             // PlentyChess) feed it into the TM product:
             // give MORE time when the eval is falling (position worsening —
             // don't snap-move into trouble) and LESS when it's stable or
@@ -5879,7 +5879,7 @@ fn negamax(
 
                 // Mutate new_depth itself so the adjustment persists into the
                 // full-window PVS re-search below (SF/Obsidian/Alexandria/
-                // Stormphrax/Integral all mutate newDepth; the old
+                // Stormphrax all mutate newDepth; the old
                 // inline form ran the PV re-search SHALLOWER than the
                 // zero-window search that justified it; audit T1.3).
                 new_depth += do_deeper_adj;
