@@ -465,28 +465,27 @@ const PIECE_TARGET_COUNT: [i32; 6] = [6, 10, 8, 8, 10, 8];
 /// Number of colored pieces (white P, white N, ..., black K).
 const NUM_COLORED_PIECES: usize = 12;
 
-/// Compact encoding of a piece-pair interaction.
-/// Bit layout: bits 0..23 = base index, bit 30 = semi-excluded, bit 31 = excluded.
-#[derive(Copy, Clone)]
-struct PiecePair {
-    inner: u32,
+/// Per (attacker, victim) colored-piece pair, precomputed by `init_threats`:
+/// `base` is the first feature index of that pair's (from, to) block, and the
+/// two flags decide whether a given occurrence contributes a feature at all.
+/// `tracked` is false for pairs the interaction map does not score. `symmetric`
+/// marks pairs whose attacker and victim share a piece type; those are scored
+/// once per unordered square pair, keeping the from >= to ordering (compared on
+/// physical squares so both perspectives agree).
+#[derive(Copy, Clone, Default)]
+struct ThreatPair {
+    base: i32,
+    tracked: bool,
+    symmetric: bool,
 }
 
-impl PiecePair {
-    const fn new(excluded: bool, semi_excluded: bool, base: i32) -> Self {
-        Self {
-            inner: (((semi_excluded && !excluded) as u32) << 30)
-                | ((excluded as u32) << 31)
-                | ((base & 0x3FFFFFFF) as u32),
-        }
-    }
-
-    /// Returns the base index with ordering correction.
-    /// If semi-excluded and attacking_sq < attacked_sq, returns negative (skip).
-    /// This keeps the pair where attacking_sq >= attacked_sq (same tie-break as Reckless).
-    const fn base(self, attacking_sq: u32, attacked_sq: u32) -> i32 {
-        let below = ((attacking_sq as u8) < (attacked_sq as u8)) as u32;
-        ((self.inner.wrapping_add(below << 30)) & 0x80FFFFFF) as i32
+impl ThreatPair {
+    /// True when this pair yields no feature for the given physical squares:
+    /// the pair is untracked, or it is symmetric and seen in the discarded
+    /// square order (we keep from >= to).
+    #[inline]
+    const fn skip(self, phys_from: u32, phys_to: u32) -> bool {
+        !self.tracked || (self.symmetric && (phys_from as u8) < (phys_to as u8))
     }
 }
 
@@ -503,10 +502,10 @@ impl PiecePair {
 // `crate::init()` before any helper thread reads from these tables. Violating
 // that invariant is undefined behaviour.
 struct ThreatTables {
-    piece_pair: [[PiecePair; NUM_COLORED_PIECES]; NUM_COLORED_PIECES],
-    piece_offset: [[i32; 64]; NUM_COLORED_PIECES],
-    attack_index: [[[u8; 64]; 64]; NUM_COLORED_PIECES],
-    total_threat_features: usize,
+    pairs: [[ThreatPair; NUM_COLORED_PIECES]; NUM_COLORED_PIECES],
+    from_offset: [[i32; 64]; NUM_COLORED_PIECES],
+    ray_rank: [[[u8; 64]; 64]; NUM_COLORED_PIECES],
+    num_features: usize,
 }
 
 static THREAT_TABLES: std::sync::OnceLock<ThreatTables> = std::sync::OnceLock::new();
@@ -529,7 +528,7 @@ fn get_threat_tables() -> &'static ThreatTables {
 
 /// Get the total threat feature count (call after init_threats).
 pub fn num_threat_features() -> usize {
-    get_threat_tables().total_threat_features
+    get_threat_tables().num_features
 }
 
 /// Colored piece index: 0=WP, 1=WN, 2=WB, 3=WR, 4=WQ, 5=WK, 6=BP, ..., 11=BK
@@ -586,77 +585,69 @@ pub fn piece_attacks_occ(piece_type: u8, color: Color, sq: u32, occ: Bitboard) -
 /// Initialise threat feature lookup tables. Must be called at startup
 /// before any helper search thread spawns.
 pub fn init_threats() {
-    // Build locally, then publish via OnceLock for Acquire/Release ordering.
-    let mut piece_pair = [[PiecePair { inner: 0 }; NUM_COLORED_PIECES]; NUM_COLORED_PIECES];
-    let mut piece_offset_lookup = [[0i32; 64]; NUM_COLORED_PIECES];
-    let mut attack_index = [[[0u8; 64]; 64]; NUM_COLORED_PIECES];
+    // Built locally, then published via OnceLock for Acquire/Release ordering.
+    let mut pairs = [[ThreatPair::default(); NUM_COLORED_PIECES]; NUM_COLORED_PIECES];
+    let mut from_offset = [[0i32; 64]; NUM_COLORED_PIECES];
+    let mut ray_rank = [[[0u8; 64]; 64]; NUM_COLORED_PIECES];
 
-    let mut offset: i32 = 0;
-    let mut piece_offset = [0i32; NUM_COLORED_PIECES];
-    let mut offset_table = [0i32; NUM_COLORED_PIECES];
+    // Per colored piece: `slots` = number of (from-square, attack-target)
+    // slots it can occupy; `block_base` = first feature index of the piece's
+    // block. Features are attacker-major; `from_offset[cp][sq]` accumulates the
+    // slot count for from-squares below `sq`.
+    let mut slots = [0i32; NUM_COLORED_PIECES];
+    let mut block_base = [0i32; NUM_COLORED_PIECES];
+    let mut next_base: i32 = 0;
 
-    // Build piece_offset_lookup: for each colored piece, for each square,
-    // how many attack squares exist below this square (cumulative count).
     for color in 0..2usize {
         for pt in 0..6usize {
             let cp = color * 6 + pt;
             let mut count: i32 = 0;
-
             for sq in 0..64u32 {
-                piece_offset_lookup[cp][sq as usize] = count;
-
-                // Pawns on ranks 1 and 8 have no attacks (can't exist there)
+                from_offset[cp][sq as usize] = count;
+                // Pawns never sit on ranks 1/8, so contribute no slots there.
                 if pt == 0 && !(8..56).contains(&sq) {
                     continue;
                 }
-
-                let attacks = piece_attacks_empty(cp, sq);
-                count += popcount(attacks) as i32;
+                count += popcount(piece_attacks_empty(cp, sq)) as i32;
             }
+            slots[cp] = count;
+            block_base[cp] = next_base;
+            next_base += PIECE_TARGET_COUNT[pt] * count;
+        }
+    }
+    let num_features = next_base as usize;
 
-            piece_offset[cp] = count;
-            offset_table[cp] = offset;
-            offset += PIECE_TARGET_COUNT[pt] * count;
+    // Per (attacker, victim) pair: block base + skip flags. Within an attacker
+    // block, features group by victim color, then by interaction-map slot, each
+    // group spanning `slots[attacker]` entries.
+    for att in 0..NUM_COLORED_PIECES {
+        let att_pt = piece_type_of(att);
+        let att_color = color_of(att);
+        for vic in 0..NUM_COLORED_PIECES {
+            let vic_pt = piece_type_of(vic);
+            let vic_color = color_of(vic);
+
+            let map = PIECE_INTERACTION_MAP[att_pt][vic_pt];
+            let tracked = map >= 0;
+            // Same piece-type pairs are symmetric — except same-color pawns.
+            let symmetric = att_pt == vic_pt && (att_color != vic_color || att_pt != 0);
+            // map is < 0 only for untracked pairs, whose base is never read.
+            let base = block_base[att]
+                + (vic_color as i32 * (PIECE_TARGET_COUNT[att_pt] / 2) + map.max(0))
+                    * slots[att];
+
+            pairs[att][vic] = ThreatPair { base, tracked, symmetric };
         }
     }
 
-    let total_threat_features = offset as usize;
-
-    // Build piece_pair: for each (attacker, victim) pair,
-    // compute the base index and exclusion flags.
-    for attacking_cp in 0..NUM_COLORED_PIECES {
-        let attacking_pt = piece_type_of(attacking_cp);
-        let attacking_color = color_of(attacking_cp);
-
-        for attacked_cp in 0..NUM_COLORED_PIECES {
-            let attacked_pt = piece_type_of(attacked_cp);
-            let attacked_color = color_of(attacked_cp);
-
-            let map = PIECE_INTERACTION_MAP[attacking_pt][attacked_pt];
-            let base = offset_table[attacking_cp]
-                + (attacked_color as i32 * (PIECE_TARGET_COUNT[attacking_pt] / 2) + map)
-                    * piece_offset[attacking_cp];
-
-            let enemy = attacking_color != attacked_color;
-            let semi_excluded = attacking_pt == attacked_pt
-                && (enemy || attacking_pt != 0); // pawn-pawn same color not semi-excluded
-            let excluded = map < 0;
-
-            piece_pair[attacking_cp][attacked_cp] =
-                PiecePair::new(excluded, semi_excluded, base);
-        }
-    }
-
-    // Build attack_index: for each piece and source square,
-    // the ray index of each target square within the attack set.
+    // Per attacker + from-square: rank of each to-square within the ray order
+    // (how many of the attacker's target squares precede it).
     for cp in 0..NUM_COLORED_PIECES {
         for from in 0..64u32 {
             let attacks = piece_attacks_empty(cp, from);
-
             for to in 0..64u32 {
-                let below_mask = if to > 0 { (1u64 << to) - 1 } else { 0 };
-                attack_index[cp][from as usize][to as usize] =
-                    popcount(below_mask & attacks) as u8;
+                let below = if to > 0 { (1u64 << to) - 1 } else { 0 };
+                ray_rank[cp][from as usize][to as usize] = popcount(below & attacks) as u8;
             }
         }
     }
@@ -664,13 +655,13 @@ pub fn init_threats() {
     // Publish — OnceLock provides Acquire/Release ordering so reader
     // threads see the fully-constructed value.
     let _ = THREAT_TABLES.set(ThreatTables {
-        piece_pair,
-        piece_offset: piece_offset_lookup,
-        attack_index,
-        total_threat_features,
+        pairs,
+        from_offset,
+        ray_rank,
+        num_features,
     });
 
-    eprintln!("Threat features initialised: {} total", offset);
+    eprintln!("Threat features initialised: {} total", num_features);
 }
 
 /// Compute a single threat feature index.
@@ -687,37 +678,28 @@ pub fn threat_index(
     mirrored: bool,
     pov: Color,
 ) -> i32 {
-    // Remap piece colors relative to POV
-    let attacking = if pov == BLACK {
-        (attacker_cp + 6) % 12
-    } else {
-        attacker_cp
-    };
-    let attacked = if pov == BLACK {
-        (victim_cp + 6) % 12
-    } else {
-        victim_cp
-    };
+    // Colored-piece indices are stored white-relative; remap to POV.
+    let attacker = if pov == BLACK { (attacker_cp + 6) % 12 } else { attacker_cp };
+    let victim = if pov == BLACK { (victim_cp + 6) % 12 } else { victim_cp };
 
     let tables = get_threat_tables();
-    let pair = tables.piece_pair[attacking][attacked];
-    // Semi-exclusion uses PHYSICAL squares to match Bullet training.
-    // Bullet decides once per pair using physical square ordering;
-    // both perspectives see the same decision. Previously we used
-    // perspective-flipped squares here, causing ~3-5% NTM feature
-    // mismatch vs training.
-    let base = pair.base(from, to);
-    if base < 0 {
-        return base; // excluded or semi-excluded pair
+    let pair = tables.pairs[attacker][victim];
+    // The symmetric-pair tie-break is decided on PHYSICAL squares (pre-flip) so
+    // both perspectives make the same choice — matching how the net was trained.
+    // (A perspective-flipped tie-break here previously caused a ~3-5% NTM
+    // feature mismatch vs training.)
+    if pair.skip(from, to) {
+        return -1;
     }
 
-    // Perspective flip for index computation only
+    // The perspective flip applies only to the square-indexed tables below.
     let flip = (7 * mirrored as u32) ^ (56 * pov as u32);
-    let from_f = from ^ flip;
-    let to_f = to ^ flip;
+    let from_f = (from ^ flip) as usize;
+    let to_f = (to ^ flip) as usize;
 
-    base + tables.piece_offset[attacking][from_f as usize]
-        + tables.attack_index[attacking][from_f as usize][to_f as usize] as i32
+    pair.base
+        + tables.from_offset[attacker][from_f]
+        + tables.ray_rank[attacker][from_f][to_f] as i32
 }
 
 /// Enumerate all threat features active in a position.
@@ -928,10 +910,9 @@ pub fn enumerate_threats_bullet_ref<F: FnMut(usize)>(
     }
 }
 
-/// Index computation with Bullet's bf-frame semi-exclusion. Reuses the
-/// existing `PIECE_PAIR_LOOKUP` / `PIECE_OFFSET_LOOKUP` /
-/// `ATTACK_INDEX_LOOKUP` tables; the only change is what squares feed
-/// `PiecePair::base`.
+/// Index computation with Bullet's board-frame symmetric-pair tie-break.
+/// Identical to `threat_index` except the tie-break is decided on the
+/// board-frame (bf) squares rather than physical ones.
 #[inline]
 fn threat_index_bullet_ref(
     attacker_cp: usize,
@@ -943,22 +924,22 @@ fn threat_index_bullet_ref(
     mirrored: bool,
     pov: Color,
 ) -> i32 {
-    let attacking = if pov == BLACK { (attacker_cp + 6) % 12 } else { attacker_cp };
-    let attacked = if pov == BLACK { (victim_cp + 6) % 12 } else { victim_cp };
+    let attacker = if pov == BLACK { (attacker_cp + 6) % 12 } else { attacker_cp };
+    let victim = if pov == BLACK { (victim_cp + 6) % 12 } else { victim_cp };
 
     let tables = get_threat_tables();
-    let pair = tables.piece_pair[attacking][attacked];
-    // The semi-excl decision is the one-and-only change vs Coda's
-    // current threat_index: use bf squares, not physical.
-    let base = pair.base(from_bf, to_bf);
-    if base < 0 {
-        return base;
+    let pair = tables.pairs[attacker][victim];
+    // The one difference vs threat_index: the symmetric tie-break uses the
+    // board-frame (bf) squares rather than the physical squares.
+    if pair.skip(from_bf, to_bf) {
+        return -1;
     }
     let flip = (7 * mirrored as u32) ^ (56 * pov as u32);
-    let from_f = from_phys ^ flip;
-    let to_f = to_phys ^ flip;
-    base + tables.piece_offset[attacking][from_f as usize]
-        + tables.attack_index[attacking][from_f as usize][to_f as usize] as i32
+    let from_f = (from_phys ^ flip) as usize;
+    let to_f = (to_phys ^ flip) as usize;
+    pair.base
+        + tables.from_offset[attacker][from_f]
+        + tables.ray_rank[attacker][from_f][to_f] as i32
 }
 
 /// Faithful port of post-C8fix-2 Bullet `map_features`
@@ -1855,14 +1836,13 @@ unsafe fn apply_threat_deltas_dual_body(
         let to = delta.to_sq() as u32;
         let add = delta.add();
 
-        let pair_w = tables.piece_pair[attacker][victim];
-        let base_w = pair_w.base(from, to);
-        if base_w >= 0 {
-            let from_w = from ^ flip_w;
-            let to_w = to ^ flip_w;
-            let idx_w = base_w
-                + tables.piece_offset[attacker][from_w as usize]
-                + tables.attack_index[attacker][from_w as usize][to_w as usize] as i32;
+        let pair_w = tables.pairs[attacker][victim];
+        if !pair_w.skip(from, to) {
+            let from_w = (from ^ flip_w) as usize;
+            let to_w = (to ^ flip_w) as usize;
+            let idx_w = pair_w.base
+                + tables.from_offset[attacker][from_w]
+                + tables.ray_rank[attacker][from_w][to_w] as i32;
             if (idx_w as usize) < num_threats {
                 if add {
                     unsafe { adds_w_ptr.add(n_adds_w).write(idx_w as usize); }
@@ -1876,14 +1856,13 @@ unsafe fn apply_threat_deltas_dual_body(
 
         let attacker_b = flipped_colored_piece(attacker);
         let victim_b = flipped_colored_piece(victim);
-        let pair_b = tables.piece_pair[attacker_b][victim_b];
-        let base_b = pair_b.base(from, to);
-        if base_b >= 0 {
-            let from_b = from ^ flip_b;
-            let to_b = to ^ flip_b;
-            let idx_b = base_b
-                + tables.piece_offset[attacker_b][from_b as usize]
-                + tables.attack_index[attacker_b][from_b as usize][to_b as usize] as i32;
+        let pair_b = tables.pairs[attacker_b][victim_b];
+        if !pair_b.skip(from, to) {
+            let from_b = (from ^ flip_b) as usize;
+            let to_b = (to ^ flip_b) as usize;
+            let idx_b = pair_b.base
+                + tables.from_offset[attacker_b][from_b]
+                + tables.ray_rank[attacker_b][from_b][to_b] as i32;
             if (idx_b as usize) < num_threats {
                 if add {
                     unsafe { adds_b_ptr.add(n_adds_b).write(idx_b as usize); }
