@@ -217,6 +217,33 @@ tunables!(
     // #2444 (1000 iters, 30+0 zero-inc): base 40->34.4, growth 100->94.3.
     (NO_INC_MTG_BASE, 34, 20, 80, 4.0, false),
     (NO_INC_MTG_GROWTH_PCT, 94, 0, 200, 10.0, false),
+    // TM window + factor constants (2026-07-13). These were previously
+    // hardcoded; several were initialised from Viridithas's published values
+    // when the opt/hard/max + factor-product structure was adopted (see the
+    // provenance note in compute_tm_budgets). Exposed here at their exact
+    // current values (fixed-point) so the defaults are behavior-identical, and
+    // so a Coda TM-cluster SPSA can make the operating point our own. ALL
+    // non-core: TM is high-leverage and deployment-critical, tuned deliberately
+    // and TC/ponder-matched, never swept by the routine --core retune (same
+    // rationale as the TM_* block above). TM constants are bench-invariant
+    // (bench is fixed-depth; TM budgets aren't consulted), so a TM tune never
+    // moves the bench.
+    (TM_MAX_BANK_1000, 600, 400, 750, 15.0, false),   // max_time = clock * N/1000
+    (TM_HARD_WINDOW_PCT, 46, 25, 65, 2.5, false),     // hard_time = clock * N/100
+    (TM_OPT_WINDOW_PCT, 73, 45, 95, 3.0, false),      // opt = computed * N/100
+    (TM_INC_FRAC_PCT, 94, 40, 100, 4.0, false),       // computed += inc * N/100
+    (TM_DEFAULT_MTG, 24, 14, 40, 1.5, false),         // sudden-death moves-to-go
+    (TM_STAB_0_100, 171, 100, 260, 8.0, false),       // stability table [0] * 1/100
+    (TM_STAB_1_100, 120, 80, 180, 5.0, false),        // stability table [1]
+    (TM_STAB_2_100, 90, 60, 130, 3.0, false),         // stability table [2]
+    (TM_STAB_3_100, 80, 50, 120, 3.0, false),         // stability table [3]
+    (TM_STAB_4_100, 75, 40, 110, 3.0, false),         // stability table [4+]
+    (TM_FAIL_LOW_BONUS_1000, 340, 100, 700, 20.0, false), // 1 + N/1000 * fail_lows
+    (TM_FORCED_STRONG_1000, 386, 150, 700, 20.0, false),  // strong-forced * N/1000
+    (TM_FORCED_WEAK_1000, 627, 300, 950, 25.0, false),    // weak-forced * N/1000
+    (TM_SUBTREE_MULT_100, 140, 90, 200, 4.0, false),      // (base-frac) * N/100
+    (TM_FORCED_MARGIN_WEAK, 170, 80, 320, 8.0, false),    // weak-forced cp margin
+    (TM_FORCED_MARGIN_STRONG, 400, 200, 620, 12.0, false),// strong-forced cp margin
     (LMR_HIST_DIV, 19357, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
@@ -2484,16 +2511,14 @@ pub fn compute_tm_budgets(
     // partly because they're spiking off a lower baseline). No-inc path
     // unchanged (moves_left=40 from earlier hotfix); movestogo path
     // unchanged (already uses the explicit movestogo count).
-    // Window fractions (provenance in the header). max_time is the single-move ceiling.
-    const MAX_BANK_USABLE_NUM: u64 = 600;
-    const MAX_BANK_USABLE_DEN: u64 = 1000;
-    const HARD_WINDOW_NUM: u64 = 46;
-    const HARD_WINDOW_DEN: u64 = 100;
-    const OPT_WINDOW_NUM: u64 = 73;
-    const OPT_WINDOW_DEN: u64 = 100;
-    const INC_FRAC_NUM: u64 = 94;
-    const INC_FRAC_DEN: u64 = 100;
-    const DEFAULT_MOVES_TO_GO: u64 = 24;
+    // Window fractions (provenance in the header). Read from the (non-core) TM
+    // tunables so a TM-cluster SPSA can move them; the defaults reproduce the
+    // prior hardcoded values exactly. max_time is the single-move ceiling.
+    let max_bank_1000 = tp(&TM_MAX_BANK_1000).max(1) as u64;
+    let hard_window_pct = tp(&TM_HARD_WINDOW_PCT).max(1) as u64;
+    let opt_window_pct = tp(&TM_OPT_WINDOW_PCT).max(1) as u64;
+    let inc_frac_pct = tp(&TM_INC_FRAC_PCT).max(0) as u64;
+    let default_moves_to_go = tp(&TM_DEFAULT_MTG).max(2) as u64;
 
     // No-inc sudden-death TCs need a tighter ceiling. The 60%/46% windows
     // are fine at moderate-inc (each spent ms gets refilled
@@ -2519,12 +2544,12 @@ pub fn compute_tm_budgets(
     let max_time = if no_inc_sd {
         (time_left * 15 / 100).max(1)
     } else {
-        (time_left * MAX_BANK_USABLE_NUM / MAX_BANK_USABLE_DEN).min(inc_hard_ceiling).max(1)
+        (time_left * max_bank_1000 / 1000).min(inc_hard_ceiling).max(1)
     };
     let hard_time = if no_inc_sd {
         (time_left * 10 / 100).min(max_time).max(1)
     } else {
-        (time_left * HARD_WINDOW_NUM / HARD_WINDOW_DEN).min(max_time).max(1)
+        (time_left * hard_window_pct / 100).min(max_time).max(1)
     };
 
     // No-inc sudden death needs a higher moves-left assumption than
@@ -2560,7 +2585,7 @@ pub fn compute_tm_budgets(
     let no_inc_growth_pct = tp(&NO_INC_MTG_GROWTH_PCT).max(0) as u64;
     let no_inc_effective_mtg = no_inc_mtg_base
         + (fullmove as u64).saturating_sub(no_inc_mtg_base) * no_inc_growth_pct / 100;
-    let mtg_divisor = if no_inc_sd { no_inc_effective_mtg.max(1) } else { DEFAULT_MOVES_TO_GO };
+    let mtg_divisor = if no_inc_sd { no_inc_effective_mtg.max(1) } else { default_moves_to_go };
 
     let opt_time_base = if movestogo > 0 {
         // Movestogo: divisor is clamped to [2, default_mtg]. TM audit
@@ -2568,13 +2593,13 @@ pub fn compute_tm_budgets(
         // sudden-death branch credits 94% of inc but this one didn't,
         // systematically under-allocating ~0.7*inc/move at movestogo+inc
         // TCs (CCRL-style). Same INC_FRAC weighting as the SD branch.
-        let divisor = (movestogo as u64).clamp(2, DEFAULT_MOVES_TO_GO);
-        let computed = time_left / divisor + our_inc * INC_FRAC_NUM / INC_FRAC_DEN;
-        (computed.min(max_time) * OPT_WINDOW_NUM / OPT_WINDOW_DEN).max(1)
+        let divisor = (movestogo as u64).clamp(2, default_moves_to_go);
+        let computed = time_left / divisor + our_inc * inc_frac_pct / 100;
+        (computed.min(max_time) * opt_window_pct / 100).max(1)
     } else {
         // Sudden death (or with inc). Add 94% of inc to base computed window.
-        let computed = time_left / mtg_divisor + our_inc * INC_FRAC_NUM / INC_FRAC_DEN;
-        ((computed.min(max_time) * OPT_WINDOW_NUM / OPT_WINDOW_DEN).min(hard_time)).max(1)
+        let computed = time_left / mtg_divisor + our_inc * inc_frac_pct / 100;
+        ((computed.min(max_time) * opt_window_pct / 100).min(hard_time)).max(1)
     };
 
     // Phase 13.1 (2026-05-26): phase scaling (Reckless/Hobbes pattern).
@@ -3613,9 +3638,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             && !info.should_stop()
             && !is_mate_score(prev_score)
         {
-            const FORCED_MARGIN_WEAK: i32 = 170;
-            const FORCED_MARGIN_STRONG: i32 = 400;
-            let margin = if depth >= 12 { FORCED_MARGIN_WEAK } else { FORCED_MARGIN_STRONG };
+            let forced_margin_weak = tp(&TM_FORCED_MARGIN_WEAK);
+            let forced_margin_strong = tp(&TM_FORCED_MARGIN_STRONG);
+            let margin = if depth >= 12 { forced_margin_weak } else { forced_margin_strong };
             let r_beta = (prev_score - margin).max(-MATE_SCORE + 1);
             // r_depth = (min(12, depth-1) - 1) / 2 — caps verification at depth 5.
             let r_depth = (depth.min(13) - 2) / 2;
@@ -3689,9 +3714,15 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // calibrated opening allocation. 1.71 matches Coda's prior
             // stability_factor ceiling; preserves variety in middlegame
             // (where stab=0 only briefly) while reducing opening spike.
-            const STABILITY_TABLE: [f64; 5] = [1.71, 1.20, 0.90, 0.80, 0.75];
+            let stability_table: [f64; 5] = [
+                tp(&TM_STAB_0_100) as f64 / 100.0,
+                tp(&TM_STAB_1_100) as f64 / 100.0,
+                tp(&TM_STAB_2_100) as f64 / 100.0,
+                tp(&TM_STAB_3_100) as f64 / 100.0,
+                tp(&TM_STAB_4_100) as f64 / 100.0,
+            ];
             let stability_idx = (info.tm_best_stable as usize).min(4);
-            let stability_multiplier = STABILITY_TABLE[stability_idx];
+            let stability_multiplier = stability_table[stability_idx];
 
             // Factor 2: Aspiration fail-low bonus.
             // Formula: 1.0 + 0.34 × min(2, count), range [1.00, 1.68]
@@ -3699,15 +3730,16 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             //   1 fail:  1.34×
             //   2+ fails: 1.68× (cap)
             // Captures the upward instability signal.
-            let failed_low_multiplier = 1.0 + 0.34 * (info.tm_asp_fail_low.min(2) as f64);
+            let failed_low_multiplier =
+                1.0 + (tp(&TM_FAIL_LOW_BONUS_1000) as f64 / 1000.0) * (info.tm_asp_fail_low.min(2) as f64);
 
             // Factor 3: Forced-move multiplier (position-intrinsic).
             //   Strong: 0.386× (alternative -400cp behind)
             //   Weak:   0.627× (alternative -170cp behind)
             //   None:   1.00×
             let forced_move_multiplier = match info.tm_forced_state {
-                ForcedState::Strong => 0.386,
-                ForcedState::Weak   => 0.627,
+                ForcedState::Strong => tp(&TM_FORCED_STRONG_1000) as f64 / 1000.0,
+                ForcedState::Weak   => tp(&TM_FORCED_WEAK_1000) as f64 / 1000.0,
                 ForcedState::None   => 1.0,
             };
 
@@ -3729,7 +3761,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // TM_SUBTREE_BASE_100 in tunables!). Floor 0.55 bounds the
                     // discount on total-consensus moves (frac -> 1).
                     let base = tp(&TM_SUBTREE_BASE_100) as f64 / 100.0;
-                    ((base - frac) * 1.4).max(0.55)
+                    ((base - frac) * (tp(&TM_SUBTREE_MULT_100) as f64 / 100.0)).max(0.55)
                 } else {
                     1.0  // default when no node data
                 }
@@ -3817,8 +3849,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 // (capped), ~0.24 at OB STC 10s+0.1s and ~0.4 at 600+10 (both
                 // ~uncapped). cmin at inc_cover->0, rising to cmax at
                 // inc_cover >= TM_INC_COVER_REF/100.
-                // 24 = DEFAULT_MOVES_TO_GO (the inc-path sudden-death mtg).
-                let base_move = (info.tm_time_left / 24).max(1);
+                // DEFAULT_MOVES_TO_GO (the inc-path sudden-death mtg).
+                let base_move = (info.tm_time_left / tp(&TM_DEFAULT_MTG).max(2) as u64).max(1);
                 let inc_cover = (info.tm_our_inc as f64) / (base_move as f64);
                 let ref_cover = (tp(&TM_INC_COVER_REF) as f64 / 100.0).max(0.001);
                 let inc_factor = (inc_cover / ref_cover).clamp(0.0, 1.0);
