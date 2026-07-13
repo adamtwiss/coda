@@ -2,6 +2,20 @@
 
 **Chess Optimised, Developed Agentically** — a UCI chess engine written in Rust.
 
+> ⚠️ **Licensing notice — please read before using or redistributing this code (2026-07-13).**
+>
+> Coda is *intended* to be licensed under **GPLv3**. However, following community
+> feedback that I largely accept, this repository currently contains some code and
+> constant values derived from **AGPLv3-licensed** engines (notably Reckless and
+> Viridithas), which is not compatible with cleanly licensing Coda under GPLv3.
+> This should not have made it in — that's my mistake, and fixing it is my priority.
+> I am keeping the repository public for transparency while I audit and remediate
+> it in the open.
+>
+> **Until that cleanup is complete, please do not rely on the GPLv3 license, and do
+> not redistribute or build derivative works from this code.** See the
+> [License](#license) section for detail; progress is visible in the commit history.
+
 Coda is a strong UCI chess engine, developed entirely through human-AI collaboration: every line of code was written by Claude Code, with direction, testing and review by a human. It started in late January 2026 as [GoChess](https://github.com/adamtwiss/gochess) (built the same way) before being rewritten in Rust in late March. I had written a few hobby engines in the past, and I wanted to see how far I could get with a new engine with the help of Claude.
 
 ## Features
@@ -100,13 +114,20 @@ Coda development has been made much easier by many other projects - most notably
 
 ## License
 
-**GPL-3.0-or-later** — see [LICENSE](LICENSE).
+**Intended license: GPL-3.0-or-later** — see [LICENSE](LICENSE).
 
-Coda was briefly labelled MIT in this repo's early days, which was likely
-accurate for the code as it stood then. Our dependencies have drifted since:
-after auditing them (July 2026) the engine now links several GPLv3 libraries
-(the shakmaty family for Syzygy tablebase probing and PGN handling, and
-sfbinpack), so binaries can only be distributed under GPL terms — and rather
-than carry a split notice, we think GPL is simply the better license for
-Coda: it matches the engine ecosystem we learn from and contribute back to.
-Thanks to Disservin for pointing out the mismatch.
+> ⚠️ **Remediation in progress (2026-07-13).** Community feedback — which I largely
+> accept — found that Coda currently contains some code and constant values derived
+> from **AGPLv3-licensed** engines (notably Reckless and Viridithas). AGPLv3 is a
+> stricter copyleft than GPLv3, so that material cannot be cleanly redistributed
+> under GPLv3, and it should not have got in — that's my mistake. I am auditing the
+> codebase and removing or independently reimplementing everything derived from
+> AGPL-licensed sources, out in the open. **Until that is complete, please do not
+> rely on the GPLv3 license above, and do not redistribute or build derivative works
+> from this code.**
+
+Coda also links several GPLv3 libraries (the shakmaty family for Syzygy tablebase
+probing and PGN handling, and sfbinpack), so binaries are in any case distributable
+only under GPL terms. Coda was briefly labelled MIT in this repo's early days; thanks
+to Disservin for flagging that mismatch, and to the wider community for the AGPL
+feedback that prompted this review.
