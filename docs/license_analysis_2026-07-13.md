@@ -259,17 +259,11 @@ We are not limiting remediation to the externally-reported spots.
 
 **Phasing.** The immediate priority is restoring clean licence *compliance* —
 removing the AGPL-incompatible material so Coda stands cleanly as GPLv3. A second
-pass then addresses **originality, not just compliance**: even where a resemblance
-is licence-compatible (e.g. GPL), we would rather Coda be genuinely its own engine
-than a close reimplementation of another's. That pass raises the bar from "is this
-copied *expression*?" to "is this genuinely *our own* design?" — rewriting anything
-that followed another engine too closely, even where the licence permits it, and
-confirming attribution is correct. This is the substantive answer to the
-"assembled from other engines" concern, which licence-compatibility alone does not
-address, and it matters to us independently of any legal obligation. (Any
-consolidated credits/acknowledgements come *after* that pass, so they reflect the
-ideas we genuinely adopted rather than close reimplementations we intend to
-rewrite.)
+pass then covers **originality, not just compliance**: even where a resemblance is
+licence-compatible (e.g. GPL), we want to find and tidy any specific spots where
+our implementation followed another engine too closely, and confirm attribution is
+correct. This is loose-ends tidying, not a "clone" concern — Coda is its own engine
+— but it matters to us independently of the licence.
 
 **Planned audits (beyond what was reported):**
 1. **Full pass against the AGPL-at-reference engines (Reckless).** Grep source and
