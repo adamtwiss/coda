@@ -24,7 +24,7 @@ For a chess engine that means:
 - **Source text** (the specific code, names, structure, comments) is protectable
   expression. Copying it is the thing to avoid. We did not do this.
 - **Search techniques and time-management algorithms** are ideas/procedures — not
-  protectable. Re-implementing them is exactly what copyright permits.
+  protectable. Re-implementing them is generally permitted.
 - **Tuning constants and small functional tables** are facts dictated by their
   function. There are only so many ways to write a king-bucket table for a given
   symmetry, or a piece-value array like `[100, 300, 300, 500, 900]` — so they look
@@ -49,7 +49,7 @@ today. This matters here:
 The vast majority of these citations are **attribution comments describing shared
 techniques**, not copied code. The audit's job is to separate the two.
 
-## 1. Time management (Viridithas — MIT at reference time)
+## 1. Time management (Viridithas)
 
 ### What we found
 Coda's TM uses an opt/hard/max window model with a multiplicative factor product
@@ -68,15 +68,16 @@ Viridithas `src/timemgmt.rs`:
   (window fractions, stability table, forced-move fractions, etc.). These are
   functional tuning facts.
 
-### The license point
+### The license point (narrow)
 When Coda studied Viridithas and set these constants (TM redesign 2026-05-26), and
 throughout our checkout (v19.0.1, 2026-06-20), **Viridithas was MIT-licensed**
-(Copyright 2022-2025 Cosmo Bobak). Viridithas relicensed to **AGPL-3.0 as of v21**
-on 2026-07-06 — *after* the versions we referenced. MIT is GPL-compatible and
-irrevocable for the versions released under it; the later AGPL relicense governs
-v21+ and does not reach back to the v19 we used. So **the TM is not an AGPL
-problem**: it is MIT-origin (compatible with our GPLv3), and even the borrowed
-values are most likely uncopyrightable functional facts.
+(Copyright 2022-2025 Cosmo Bobak). It relicensed to **AGPL-3.0 as of v21** on
+2026-07-06 — after the versions we referenced — and MIT stays in force for the
+versions released under it. This rebuts one specific claim only: the borrowing was
+**not an AGPL-copyleft violation**, because the source was MIT at the time. It does
+**not** mean the borrowing didn't happen or doesn't matter, and MIT is not a
+licence to pass someone else's design off as our own. We treat it as: not an AGPL
+problem — still something to attribute and to make our own.
 
 ### Also true
 Coda had its own TM before this (a different 6-factor shape); the 2026-05-26
@@ -91,21 +92,29 @@ structure", "verbatim from Viridithas". Those read as a *code* copy when the cod
 is a re-implementation and only some *constants* were shared, under MIT.
 
 ### Our view
-Coda's TM is **not a derivative work of Viridithas in the copyright sense** (no
-expression copied), and the constants that were shared came from **MIT-era
-Viridithas** — compatible with our license, requiring at most attribution. We are
-crediting Viridithas and, separately, retuning the constants on Coda so the
-operating point is our own regardless.
+What we took from Viridithas was real but bounded: the **high-level shape of the
+window/factor algorithm and a set of numeric tuning constants** — not source code,
+comment text, or the surrounding implementation. In our view that sits on the
+idea/fact side of the copyright line rather than being copied protectable
+expression — but we will not lean on that to claim more originality than we are
+owed. It was a deliberate borrowing, and the originality critique has a fair point.
+Our response is to **attribute Viridithas plainly** and to **retune the constants
+on Coda** so the operating point becomes ours, rather than to argue the label.
 
-## 2. King-bucket layout (Alexandria — GPL-3.0)
+## 2. King-bucket layout (`CONSENSUS_BUCKETS`)
 
-Coda's `CONSENSUS_BUCKETS` is byte-identical to Alexandria's `buckets[64]`.
-Alexandria is **GPL-3.0**, compatible with our GPL-3.0-or-later intent — not an
-AGPL problem. It is also the standard 16-bucket fine-near/coarse-far layout, and a
-square→bucket table for a fixed symmetry is a textbook **merger** case: there are
-only so many ways to write it, so matching values are expected without copying. We
-corrected the attribution comment to cite Alexandria (GPL-3.0). No retrain is
-needed — the shipped net already uses this GPL-compatible layout.
+Coda's `CONSENSUS_BUCKETS` is the standard 16-bucket king layout — a symmetric 8×8
+grid, fine-grained near the king and coarse far from it. This is the natural way to
+bucket king squares for a mirrored HalfKA net, and many engines have converged on
+the *exact* grid: the same table appears verbatim in at least Alexandria and
+Tarnished, and the fine-near/coarse-far approach is near-universal. Coda named it
+`CONSENSUS_BUCKETS` precisely because it is the common, shared choice. That its
+values coincide with Alexandria's `buckets[64]` is a textbook **merger** case — for
+a fixed symmetry there are only so many ways to write the table, so matching values
+are expected without copying — and Alexandria is in any case **GPL-3.0**
+(compatible, not AGPL). We corrected the comment to describe it as the standard
+shared layout rather than implying a single source. No retrain is needed — the
+shipped net already uses it.
 
 ## 3. Reckless (AGPL — genuinely, at reference time)
 
@@ -158,11 +167,18 @@ We are not limiting remediation to the externally-reported spots.
 
 ## Position
 
-We believe Coda is **not a derivative work of the AGPL engines in the copyright
-sense**: the remaining resemblances are to unprotected algorithms and functional
-constants, the Reckless-derived code has been removed, and the Viridithas material
-was taken under MIT (compatible), before that engine's later AGPL relicense. We are
-nonetheless auditing further and hardening our process in good faith.
+On the specific **AGPL** claim: the Reckless-derived code has been removed, and the
+Viridithas material was taken under MIT (before that engine's later AGPL relicense),
+so we do not believe Coda carries AGPL-incompatible code — and we are auditing to
+confirm it.
+
+On the broader **originality** question we are deliberately not going to overclaim.
+Coda did take a high-level algorithm outline and a set of constants from Viridithas
+(under MIT), and studied other engines closely. We do not think any *copied
+protectable expression* remains — but that is a narrower statement than "wholly
+original", and we would rather earn the originality than assert it: by attributing
+what we borrowed, making the borrowed constants our own, correcting the comments
+that oversold the borrowing, and auditing for anything else.
 
 *If any author believes specific protectable expression remains, we want to hear
 the specifics and will review and take appropriate steps to correct it.*

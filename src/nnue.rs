@@ -353,7 +353,9 @@ const NNUE_MAGIC: u32 = 0x4E4E5545; // "NNUE" in LE
 // See `fix/smp-king-bucket-race`.
 
 /// Consensus king bucket layout: fine-near, coarse-far — the standard 16-bucket
-/// layout used across the field (matches Alexandria's `buckets[64]`, GPL-3.0).
+/// grid many engines independently converge on for a mirrored HalfKA net (the
+/// same table appears in e.g. Alexandria and Tarnished). "Consensus" because it
+/// is the common, shared choice, not a port of any one engine.
 /// Indexed by [mirrored_file (0-3)][rank (0-7)]
 const CONSENSUS_BUCKETS: [[usize; 8]; 4] = [
     [ 0,  4,  8,  8, 12, 12, 14, 14], // file a/h (mirrored file 0)
