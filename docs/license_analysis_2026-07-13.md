@@ -11,7 +11,7 @@ authors involved.
 
 ## Why this exists
 
-After the 0.9.1 work, Andrew Grant publicly identified places where Coda
+In July 2026, Andrew Grant publicly identified places where Coda
 resembled other engines — principally **Reckless** and **Viridithas** — and
 questioned whether Coda is a derivative work assembled from other engines. Coda's
 intended license is GPL-3.0-or-later. We take both the licensing point and the
@@ -154,8 +154,8 @@ just flagged it:
   across many engines, rather than labelling it against any single source.
 - `a3c0914` — reworded all TM comments to match the code (re-implementation, not a
   port); bench-identical.
-- `7a278ab` — exposed the (MIT-origin) TM constants as non-core tunables so a Coda
-  SPSA can make the operating point our own; behavioral no-op at defaults.
+- `7a278ab` — exposed the (MIT-origin) TM constants as SPSA-tunable parameters so a
+  Coda tune can make the operating point our own; behavioral no-op at defaults.
 - `a209817` / this doc — the analysis and remediation record.
 - `275b86b` — README notice asking people not to rely on the license or
   redistribute until the cleanup is complete.
