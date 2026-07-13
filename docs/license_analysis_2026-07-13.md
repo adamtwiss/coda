@@ -26,7 +26,12 @@ functional facts** (17 U.S.C. §102(b); the merger and scènes-à-faire doctrine
 For a chess engine that means:
 
 - **Source text** (the specific code, names, structure, comments) is protectable
-  expression. Copying it is the thing to avoid. We did not do this.
+  expression — copying it is the thing to avoid. Our audit found instances where
+  it had happened (see §3–§4): a few small reproduced tables, some SIMD whose
+  independence we could not fully guarantee, and one ported index construction.
+  Erring on the side of caution, we removed or independently reimplemented each.
+  Elsewhere the resemblances are to algorithms and functional constants, not
+  copied source.
 - **Search techniques and time-management algorithms** are ideas/procedures — not
   protectable. Re-implementing them is generally permitted.
 - **Tuning constants and small functional tables** are facts dictated by their
@@ -132,10 +137,15 @@ layout (confirmed AGPL at 2026-05-31), so anything derived from it was a genuine
 incompatibility. We have already taken concrete action across several commits — not
 just flagged it:
 
-- **2026-07-11 (weekend licence pass):** removed/redacted reproduced AGPL-licensed
-  engine code per a licence review (`984b80b`); removed Reckless-influenced NNUE
-  SIMD in favour of scalar/independent code (`ad4fc74`, "phase 3"); and did an
-  attribution + reference-hygiene pass (`2baaf0c`, `c6c518b`).
+- **2026-07-11 (weekend licence pass, recorded in
+  `docs/license_compliance_review_2026-07-11.md`):** erring on the side of caution,
+  removed the SIMD optimisations whose independence from Reckless we could not fully
+  guarantee — the threat-feature path reverted to Coda's own **pre-existing** scalar
+  implementation (`ad4fc74`), and the setwise attack kernels were rewritten from
+  scratch as clean-room AVX2 (`eb92686`, asserted byte-identical to Coda's own
+  scalar oracle). Removed and redacted reproduced Reckless source from the research
+  docs (`984b80b`), and did an attribution + reference-hygiene pass (`2baaf0c`,
+  `c6c518b`). Cost ~3% NPS on affected x86 hosts, accepted for compliance.
 - **2026-07-13:** removed the Reckless kb10 king-bucket and output-bucket layout
   tables from `nnue.rs`, replacing them with graceful detect-and-reject of legacy
   kb10 nets (`275c443`); the prod net promoted the same day uses the consensus
@@ -143,10 +153,34 @@ just flagged it:
   Reckless surface — an unused enum variant, a CLI option, and a
   `See Reckless/src/nnue.rs` source pointer (`28a09dc`). The loader now keeps only a
   numeric id used to *detect and reject* legacy kb10 nets.
-- **In progress:** a per-item audit of the remaining "Reckless pattern" comments on
-  functional SIMD/data-layout techniques. These are idea attributions for
-  independently written code, not copied code; we are rewording any that overstate
-  the relationship (same treatment as the TM comments).
+- **Comments:** the remaining "Reckless pattern" attribution comments on functional
+  SIMD/data-layout techniques (idea attributions for independently written code, not
+  copied code) were reworded to describe the mechanism — the same treatment as the
+  TM comments (`4861dd0`, `68f8568`).
+
+## 4. Threat features (index construction — closely modelled, now reimplemented)
+
+This is the one place the audit found copied *expression* rather than a shared
+algorithm or functional data, so we call it out plainly. The threat-feature concept
+(piece P on square S attacks piece Q on square T) is shared with Stockfish and
+Reckless, and Coda's threat enumeration and accumulator code are Coda's own. But the
+threat feature-**index construction** in `threats.rs` was a close port of Reckless's
+(AGPL) `threat_index.rs`: a helper struct and its bit-packing were byte-identical,
+and the table construction followed it closely.
+
+We reimplemented that construction in Coda's own code (`c2cf119`), preserving the
+exact feature→index mapping — a functional interface the trained net and the Bullet
+training side both depend on, so no retrain. It is verified behavior-identical: the
+search benchmark is bit-identical and the threat fuzz tests pass. The interaction
+tables that define which piece-pairs are features follow Stockfish's (GPL) tables
+and remain; the internal delta encoding, which had matched Reckless's field order,
+was given Coda's own layout (`cd170a4`).
+
+The **Bullet training side** was audited the same way: its threat-index code was
+already independent (no shared bit-packing; the enumeration is Coda-matched), so only
+an over-attributing comment needed fixing, and a dead Reckless king-bucket layout
+table in a training example — unused since Coda stopped supporting that net format —
+was removed.
 
 ## What we changed (commits)
 - `28a09dc` — stripped remaining Reckless surface from the converter.
@@ -156,6 +190,10 @@ just flagged it:
   port); bench-identical.
 - `7a278ab` — exposed the (MIT-origin) TM constants as SPSA-tunable parameters so a
   Coda tune can make the operating point our own; behavioral no-op at defaults.
+- `c2cf119` — reimplemented the threat feature-index construction (§4) in Coda's
+  own expression, preserving the exact mapping; bench bit-identical.
+- `cd170a4` — gave the internal threat-delta encoding Coda's own bit layout.
+- `4861dd0` / `68f8568` — right-sized AGPL-engine attribution comments across `src/`.
 - `a209817` / this doc — the analysis and remediation record.
 - `275b86b` — README notice asking people not to rely on the license or
   redistribute until the cleanup is complete.
@@ -174,6 +212,10 @@ We are not limiting remediation to the externally-reported spots.
    hold no verbatim expression from any of them.
 3. **Review our own engine notes and research docs** (not just shipped source) for
    pasted snippets or material, the way we found the Reckless leftovers.
+4. **GoChess** (the predecessor engine Coda was rewritten from): the same pass — its
+   licence, and whether it contains any threats/NNUE or Reckless/Viridithas material.
+   It predates the threats feature and the Bullet-trained NNUE work, so we expect it
+   clean, but will confirm and record the result either way.
 
 **Defensive measures going forward (to be encoded in CLAUDE.md):**
 1. **Restrict the idea-reference set to GPL-3.0-compatible engines** and **exclude
@@ -191,16 +233,18 @@ We are not limiting remediation to the externally-reported spots.
 
 On the specific **AGPL** claim: the Reckless-derived code has been removed, and the
 Viridithas material was taken under MIT (before that engine's later AGPL relicense),
-so we do not believe Coda carries AGPL-incompatible code — and we are auditing to
-confirm it.
+so we no longer believe Coda carries AGPL-incompatible code — and we are continuing
+to audit to confirm this.
 
 On the broader **originality** question we are deliberately not going to overclaim.
 Coda did take a high-level algorithm outline and a set of constants from Viridithas
-(under MIT), and studied other engines closely. We do not think any *copied
-protectable expression* remains — but that is a narrower statement than "wholly
-original", and we would rather earn the originality than assert it: by attributing
-what we borrowed, making the borrowed constants our own, correcting the comments
-that oversold the borrowing, and auditing for anything else.
+(under MIT), and studied other engines closely; and where the audit surfaced copied
+expression — the reproduced tables and SIMD in the weekend pass, and the ported
+threat-index construction — we removed or independently reimplemented it. We do not
+think any *copied protectable expression* now remains, but that is a narrower (and
+audited) statement than "wholly original", and we would rather earn the originality
+than assert it: by attributing what we borrowed, making the borrowed constants our
+own, correcting the comments that oversold the borrowing, and continuing to audit.
 
 *If any author believes specific protectable expression remains, we want to hear
 the specifics and will review and take appropriate steps to correct it.*
