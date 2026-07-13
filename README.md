@@ -2,17 +2,23 @@
 
 **Chess Optimised, Developed Agentically** — a UCI chess engine written in Rust.
 
-> ⚠️ **Licensing notice — please read before using or redistributing this code (2026-07-13).**
+> ⚠️ **Licensing note (updated 2026-07-13).**
 >
-> Coda is *intended* to be licensed under **GPLv3**. However, following community
-> feedback that I largely accept, this repository currently contains some code and
-> constant values derived from **AGPLv3-licensed** engines (notably Reckless and
-> Viridithas), which is not compatible with cleanly licensing Coda under GPLv3.
-> This should not have made it in — that's my mistake, and fixing it is my priority.
-> I am keeping the repository public for transparency while I audit and remediate
-> it in the open.
+> Coda is *intended* to be licensed under **GPLv3**. Following community feedback
+> that I largely accept, a review found this repository had contained code that
+> reproduced, or was too closely modelled on, other engines' implementations. This
+> should not have made it in — that's my mistake, and fixing it is my priority. We
+> have audited and remediated it — removing or independently reimplementing the
+> affected code — openly, with the findings recorded in
+> [docs/license_analysis_2026-07-13.md](docs/license_analysis_2026-07-13.md).
 >
-> **Until that cleanup is complete, please do not rely on the GPLv3 license, and do
+> The material derived from **Reckless** (AGPLv3) has been removed or reimplemented.
+> The **Viridithas** material was time-management tuning constants taken when
+> Viridithas was **MIT-licensed** (it relicensed to AGPLv3 only later, as of v21),
+> which we are retuning to Coda's own values. We no longer believe the repository
+> carries AGPL-incompatible code, and are continuing to audit to confirm.
+>
+> **Until that audit is complete, please do not rely on the GPLv3 license, and do
 > not redistribute or build derivative works from this code.** See the
 > [License](#license) section for detail; progress is visible in the commit history.
 
@@ -116,15 +122,18 @@ Coda development has been made much easier by many other projects - most notably
 
 **Intended license: GPL-3.0-or-later** — see [LICENSE](LICENSE).
 
-> ⚠️ **Remediation in progress (2026-07-13).** Community feedback — which I largely
-> accept — found that Coda currently contains some code and constant values derived
-> from **AGPLv3-licensed** engines (notably Reckless and Viridithas). AGPLv3 is a
-> stricter copyleft than GPLv3, so that material cannot be cleanly redistributed
-> under GPLv3, and it should not have got in — that's my mistake. I am auditing the
-> codebase and removing or independently reimplementing everything derived from
-> AGPL-licensed sources, out in the open. **Until that is complete, please do not
-> rely on the GPLv3 license above, and do not redistribute or build derivative works
-> from this code.**
+> ⚠️ **Remediation (updated 2026-07-13).** Community feedback — which I largely
+> accept — found that Coda had contained code that reproduced, or was too closely
+> modelled on, other engines' implementations, including material derived from
+> **Reckless** (AGPLv3). That has been removed or independently reimplemented, out
+> in the open, with the findings recorded in
+> [docs/license_analysis_2026-07-13.md](docs/license_analysis_2026-07-13.md). The
+> **Viridithas** material was time-management tuning constants taken when Viridithas
+> was MIT-licensed (it relicensed to AGPLv3 only as of v21, after we referenced it),
+> which we are retuning to Coda's own values. We no longer believe the repository
+> carries AGPL-incompatible code, and are continuing to audit to confirm. **Until
+> that audit is complete, please do not rely on the GPLv3 license above, and do not
+> redistribute or build derivative works from this code.**
 
 Coda also links several GPLv3 libraries (the shakmaty family for Syzygy tablebase
 probing and PGN handling, and sfbinpack), so binaries are in any case distributable
