@@ -5,8 +5,7 @@
 /// accumulator. Feature indices are perspective-relative with king-file mirroring.
 ///
 /// Reference: threat-feature encoding after Stockfish's threat features; the
-/// interaction map and target counts below follow Stockfish's tables (the same
-/// approach is used by Reckless).
+/// interaction map and target counts below follow Stockfish's tables.
 /// Total features: ~66,864 (depends on piece-pair filtering).
 
 #[cfg(feature = "profile-threats")]
@@ -251,7 +250,7 @@ pub mod thr_stats {
     //!
     //! Tracks cycle deltas for each logical block inside the hot
     //! function, plus delta counts. Used to decide whether a
-    //! vectorised "direct only" port (Reckless-style) is worth
+    //! vectorised "direct only" variant is worth
     //! pursuing as a hybrid with our existing scalar x-ray code.
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1128,7 +1127,7 @@ pub fn push_threats_on_move(
     let white_bb = colors_bb[WHITE as usize];
     let cp = colored_piece(piece_color, piece_type);
     // Use occupancy with the moving piece removed from `from` but not yet at `to`
-    // This matches how Reckless handles it: occ ^ to_bb
+    // Transit occupancy for the moving piece: occ ^ to_bb
     let occ_transit = occ ^ (1u64 << to);
 
     // Remove threats from old square
@@ -1166,8 +1165,7 @@ fn skip_slider_sees() -> bool {
 }
 
 /// Core: compute all threat deltas for a piece on a square.
-/// Independent implementation; the three-step structure follows the same
-/// approach as Reckless's push_threats_single:
+/// Independent implementation; the three-step structure is:
 /// 1. Threats FROM this piece to occupied squares
 /// 2. Sliders that see this square + x-ray targets behind it
 /// 3. Non-sliders (pawns, knights, kings) that attack this square
@@ -1306,7 +1304,7 @@ fn push_threats_for_piece(
         own_xray_emits,
     );
 
-    // 2. Sliding pieces that see this square (Reckless pattern)
+    // 2. Sliding pieces that see this square
     // Compute rook/bishop attacks FROM this square to find which sliders can reach it
     #[cfg(feature = "profile-threats")]
     let s2_start = crate::threats::thr_stats::rdtsc();
@@ -1980,7 +1978,7 @@ unsafe fn apply_threat_indices(
 
 /// AVX2 SIMD: apply threat weight rows to accumulator using register tiling.
 /// Loads accumulator chunk into registers ONCE, applies ALL deltas while in
-/// registers, then stores ONCE. This is Reckless's pattern — 21× less memory
+/// registers, then stores ONCE — 21× less memory
 /// traffic than per-delta streaming.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
@@ -2088,8 +2086,8 @@ unsafe fn apply_deltas_avx2(
 ///
 /// Why this exists (2026-04-30): perf decomposition flagged
 /// `apply_threat_deltas` at 17.98% of cycles with no AVX-512 path.
-/// Reckless has dedicated AVX-512 threat code (`vectorized/avx512.rs`)
-/// and spends only 1.82% of cycles on the analogous `update_threats`.
+/// Faster engines have a dedicated AVX-512 threat path and spend only ~1.8%
+/// of cycles on the analogous update; this adds Coda's AVX-512 path.
 /// See `docs/coda_vs_reckless_nps_2026-04-23.md` Phase 2 result.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f", enable = "avx512bw")]
@@ -2108,8 +2106,8 @@ unsafe fn apply_deltas_avx512(
     let w_ptr = threat_weights.as_ptr();
 
     // 16 AVX-512 registers × 32 i16 = 512 elements per chunk — a partial
-    // step toward Reckless's REGISTERS=full L1 tile (commit 381ac2f3
-    // +4.90 STC). REGS=24 here regressed −4.4% on Zen 5 because the
+    // step toward a full-L1-tile register layout. REGS=24 here regressed
+    // −4.4% on Zen 5 because the
     // i8→i16 expansion (`_mm512_cvtepi8_epi16`) needs temporary registers,
     // and 24 + temps spilled past the 32 ZMM file. PSQ-side `simd_acc_fused_avx512`
     // uses REGS=24 because direct i16 add has no expansion.
@@ -2694,7 +2692,7 @@ mod tests {
     fn test_init_threats() {
         crate::init();
         let total = num_threat_features();
-        // Reckless has 66,864 — we should match
+        // the production threat-feature layout has 66,864 — we should match
         assert!(total > 60000, "Expected >60K threat features, got {}", total);
         assert!(total < 70000, "Expected <70K threat features, got {}", total);
         eprintln!("Total threat features: {}", total);
