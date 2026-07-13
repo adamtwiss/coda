@@ -1084,28 +1084,31 @@ pub fn enumerate_threats_bullet_postfix_ref<F: FnMut(usize)>(
 /// Maximum threat deltas per ply.
 pub const MAX_THREAT_DELTAS: usize = 128;
 
-/// Packed threat delta (4 bytes; same field order as Reckless's ThreatDelta).
-/// Layout: [attacker_cp:8][from_sq:8][victim_cp:8][to_sq:7][add:1]
+/// Packed threat delta. Purely internal to the incremental threat accumulator
+/// (built pre-move, consumed to add/sub feature rows) — never serialised, so the
+/// bit layout is Coda's own. The two colored pieces are 0..11 (4 bits each) and
+/// the two squares 0..63 (6 bits each), packed low-to-high with the add/sub flag
+/// on top: [attacker_cp:4][victim_cp:4][from_sq:6][to_sq:6][add:1].
 #[derive(Copy, Clone)]
 pub struct RawThreatDelta(u32);
 
 impl RawThreatDelta {
     #[inline(always)]
     pub const fn new(attacker_cp: u8, from_sq: u8, victim_cp: u8, to_sq: u8, add: bool) -> Self {
-        Self(attacker_cp as u32
-            | (from_sq as u32) << 8
-            | (victim_cp as u32) << 16
-            | ((to_sq as u32) & 0x7F) << 24
-            | if add { 1u32 << 31 } else { 0 })
+        Self((attacker_cp as u32 & 0xF)
+            | ((victim_cp as u32 & 0xF) << 4)
+            | ((from_sq as u32 & 0x3F) << 8)
+            | ((to_sq as u32 & 0x3F) << 14)
+            | ((add as u32) << 20))
     }
 
     pub const ZERO: Self = Self(0);
 
-    #[inline(always)] pub fn attacker_cp(self) -> u8 { self.0 as u8 }
-    #[inline(always)] pub fn from_sq(self) -> u8 { (self.0 >> 8) as u8 }
-    #[inline(always)] pub fn victim_cp(self) -> u8 { (self.0 >> 16) as u8 }
-    #[inline(always)] pub fn to_sq(self) -> u8 { ((self.0 >> 24) & 0x7F) as u8 }
-    #[inline(always)] pub fn add(self) -> bool { self.0 & (1 << 31) != 0 }
+    #[inline(always)] pub fn attacker_cp(self) -> u8 { (self.0 & 0xF) as u8 }
+    #[inline(always)] pub fn victim_cp(self) -> u8 { ((self.0 >> 4) & 0xF) as u8 }
+    #[inline(always)] pub fn from_sq(self) -> u8 { ((self.0 >> 8) & 0x3F) as u8 }
+    #[inline(always)] pub fn to_sq(self) -> u8 { ((self.0 >> 14) & 0x3F) as u8 }
+    #[inline(always)] pub fn add(self) -> bool { (self.0 >> 20) & 1 != 0 }
 }
 
 /// Compute raw threat deltas when a piece moves from `from` to `to`.
