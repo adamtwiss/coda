@@ -3,7 +3,11 @@
 **Status:** engineering findings and Coda's good-faith view. This is not legal
 advice and not a final legal determination; it is our honest technical
 assessment of what was borrowed, what was not, under which licenses, and what we
-changed. We welcome correction from the authors involved.
+changed. **It is a living document:** it reflects our understanding as of the date
+in the title, and we will update it as our audits continue or as new information
+comes to light — from our own review or from anyone else. Later revisions are us
+incorporating new facts, not shifting our position. We welcome correction from the
+authors involved.
 
 ## Why this exists
 
@@ -121,16 +125,28 @@ are expected without copying — and every engine we found carrying the exact gr
 shared layout rather than implying a single source. No retrain is needed — the
 shipped net already uses it.
 
-## 3. Reckless (AGPL — genuinely, at reference time)
+## 3. Reckless (AGPL at reference time — code already removed)
 
 Reckless *was* AGPL-3.0 when we referenced its kb10 king-bucket / output-bucket
-layout (confirmed AGPL at 2026-05-31), so this was a real incompatibility and the
-derived code was removed. The converter's remaining Reckless surface (an unused
-enum variant, a CLI option, a `See Reckless/src/nnue.rs` source pointer) was
-stripped; the loader retains only a numeric id used to *detect and reject* legacy
-kb10 nets. Several NNUE SIMD/data-layout comments still say "Reckless pattern" —
-these are idea attributions for re-implemented, functional tiling techniques, not
-copied code; we are auditing them per-item and rewording any that overstate.
+layout (confirmed AGPL at 2026-05-31), so anything derived from it was a genuine
+incompatibility. We have already taken concrete action across several commits — not
+just flagged it:
+
+- **2026-07-11 (weekend licence pass):** removed/redacted reproduced AGPL-licensed
+  engine code per a licence review (`984b80b`); removed Reckless-influenced NNUE
+  SIMD in favour of scalar/independent code (`ad4fc74`, "phase 3"); and did an
+  attribution + reference-hygiene pass (`2baaf0c`, `c6c518b`).
+- **2026-07-13:** removed the Reckless kb10 king-bucket and output-bucket layout
+  tables from `nnue.rs`, replacing them with graceful detect-and-reject of legacy
+  kb10 nets (`275c443`); the prod net promoted the same day uses the consensus
+  (non-Reckless) layout (`ed2c1ec`). This session then stripped the converter's last
+  Reckless surface — an unused enum variant, a CLI option, and a
+  `See Reckless/src/nnue.rs` source pointer (`28a09dc`). The loader now keeps only a
+  numeric id used to *detect and reject* legacy kb10 nets.
+- **In progress:** a per-item audit of the remaining "Reckless pattern" comments on
+  functional SIMD/data-layout techniques. These are idea attributions for
+  independently written code, not copied code; we are rewording any that overstate
+  the relationship (same treatment as the TM comments).
 
 ## What we changed (commits)
 - `28a09dc` — stripped remaining Reckless surface from the converter.
