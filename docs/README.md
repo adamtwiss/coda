@@ -28,7 +28,7 @@ Navigation by question. Most docs are dated; check timestamps before acting on t
 
 - [`tunable_anomalies_2026-04-19.md`](tunable_anomalies_2026-04-19.md) — 5-engine SPSA tunable comparison, 3 passes. Flagged anomalies (contempt, LMP), confirmed vs refuted via SPRT.
 - [`capture_ordering_crossengine_2026-04-20.md`](capture_ordering_crossengine_2026-04-20.md) — Capture-scoring deep dive across 9 engines (SF, Alexandria, Caissa, Halogen, Quanticade, Stormphrax, Reckless, RubiChess, Coda). Three SEE-threshold shapes, four captHist dimensions. Notes prior dynamic-SEE attempt and why it failed.
-- [`../engine-notes/`](../engine-notes/) — Per-engine technical reviews of open-source engines' public designs. Several hidden-layer engines (obsidian, viridithas, plentychess) have v9-Refresh sections as of 2026-04-19.
+- **Per-engine study notes** — *moved to a private research repository (2026-07-13).* These per-engine technical notes reproduced third-party engine source and are internal research aids, not part of Coda, so they don't belong in a public GPLv3 distribution. Rationale in `license_analysis_2026-07-13.md`.
 
 ## "How should v9 merge to main?"
 
