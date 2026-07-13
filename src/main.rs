@@ -506,8 +506,8 @@ enum Commands {
         /// Equivalent to --kb-layout consensus. Ignored if --kb-layout is set explicitly.
         #[arg(long)]
         consensus_buckets: bool,
-        /// King bucket layout: uniform | consensus | reckless.
-        /// Reckless implies kb-count 10; uniform/consensus default to 16.
+        /// King bucket layout: uniform | consensus.
+        /// Both default to kb-count 16.
         #[arg(long, default_value = "")]
         kb_layout: String,
         /// King bucket count. Overrides the default for the chosen kb-layout
@@ -1185,12 +1185,12 @@ fn main() {
                 idxs.dedup();
                 println!("IDX {}", idxs.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "));
 
-                // PSQ (HalfKA) feature-index set for this POV, reckless kb10
+                // PSQ (HalfKA) feature-index set for this POV, consensus kb
                 // layout, for cross-implementation diffing against Bullet's
                 // ChessBucketsMirrored. The
                 // threat IDX gate above says nothing about this half of the
                 // input — it has its own mirror/bucket/perspective machinery.
-                let (kb_tab, km_tab) = nnue::compute_king_buckets(nnue::KbLayout::Reckless);
+                let (kb_tab, km_tab) = nnue::compute_king_buckets(nnue::KbLayout::Consensus);
                 let mut psq: Vec<usize> = Vec::new();
                 for color in [types::WHITE, types::BLACK] {
                     for pt in 0..6u8 {
