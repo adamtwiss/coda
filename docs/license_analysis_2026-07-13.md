@@ -106,12 +106,15 @@ on Coda** so the operating point becomes ours, rather than to argue the label.
 Coda's `CONSENSUS_BUCKETS` is the standard 16-bucket king layout — a symmetric 8×8
 grid, fine-grained near the king and coarse far from it. This is the natural way to
 bucket king squares for a mirrored HalfKA net, and many engines have converged on
-the *exact* grid: the same table appears verbatim in at least Alexandria and
-Tarnished, and the fine-near/coarse-far approach is near-universal. Coda named it
+the *exact* grid. A scan of our local engine collection (2026-07-13) found the same
+table verbatim in at least **four** other engines — **Alexandria, Koivisto,
+Stormphrax, and Tarnished** (Stormphrax in the mirrored 4-wide form) — and the same
+fine-near/coarse-far principle with different granularity is near-universal (e.g.
+Obsidian uses a 13-bucket variant, Arasan a 9-bucket one). Coda named it
 `CONSENSUS_BUCKETS` precisely because it is the common, shared choice. That its
-values coincide with Alexandria's `buckets[64]` is a textbook **merger** case — for
-a fixed symmetry there are only so many ways to write the table, so matching values
-are expected without copying — and both Alexandria and Tarnished are in any case
+values coincide with those engines' tables is a textbook **merger** case — for
+a fixed symmetry there are only so many ways to write it, so matching values
+are expected without copying — and every engine we found carrying the exact grid is
 **GPL-3.0** (compatible, not AGPL). We corrected the comment to describe it as the standard
 shared layout rather than implying a single source. No retrain is needed — the
 shipped net already uses it.
