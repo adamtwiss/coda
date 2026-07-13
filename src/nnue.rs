@@ -287,8 +287,8 @@ pub const PSQ_INPUTS_PER_BUCKET: usize = 768;
 /// `net.num_king_buckets * PSQ_INPUTS_PER_BUCKET`.
 pub const NNUE_INPUT_SIZE: usize = 16 * PSQ_INPUTS_PER_BUCKET;
 pub const NNUE_OUTPUT_BUCKETS: usize = 8;
-/// Maximum king bucket count we allocate static tables for (covers all
-/// known layouts: uniform/consensus=16, Reckless=10).
+/// Maximum king bucket count we allocate static tables for
+/// (uniform/consensus = 16).
 pub const NNUE_MAX_KING_BUCKETS: usize = 16;
 /// Pairwise SIMD pack buffer size (bytes per perspective). Bounds the largest
 /// loadable net: pw = hidden_size/2 must be ≤ this, i.e. hidden_size ≤ 2×this.
@@ -360,21 +360,6 @@ const CONSENSUS_BUCKETS: [[usize; 8]; 4] = [
     [ 3,  7, 11, 11, 13, 13, 15, 15], // file d/e
 ];
 
-/// Reckless king bucket layout: 10 buckets. Per-file ranks 1-2 (4 + 4),
-/// one bucket rank 3, one bucket ranks 4-8. See Reckless/src/nnue.rs:71-80.
-/// Indexed by [sq] directly (already mirror-aware via Bullet-style [0,1,2,3,3,2,1,0]).
-#[rustfmt::skip]
-const RECKLESS_BUCKETS_FLAT: [usize; 64] = [
-    0, 1, 2, 3, 3, 2, 1, 0,
-    4, 5, 6, 7, 7, 6, 5, 4,
-    8, 8, 8, 8, 8, 8, 8, 8,
-    9, 9, 9, 9, 9, 9, 9, 9,
-    9, 9, 9, 9, 9, 9, 9, 9,
-    9, 9, 9, 9, 9, 9, 9, 9,
-    9, 9, 9, 9, 9, 9, 9, 9,
-    9, 9, 9, 9, 9, 9, 9, 9,
-];
-
 /// Pure function: given a KbLayout, returns the (king_bucket, king_mirror)
 /// tables populated for every square 0-63. Called once at net load time; the
 /// results are stored on NNUENet and never mutated after that.
@@ -384,8 +369,7 @@ pub fn compute_king_buckets(layout: KbLayout) -> ([usize; 64], [bool; 64]) {
     for sq in 0..64 {
         let file = sq % 8;
         let rank = sq / 8;
-        // File mirror applies to Uniform and Consensus; Reckless bakes the
-        // mirror into its flat table already (see RECKLESS_BUCKETS_FLAT).
+        // File mirror applies to Uniform and Consensus.
         let (mirrored_file, mirror) = if file >= 4 {
             (7 - file, true)
         } else {
@@ -394,7 +378,7 @@ pub fn compute_king_buckets(layout: KbLayout) -> ([usize; 64], [bool; 64]) {
         kb[sq] = match layout {
             KbLayout::Uniform   => mirrored_file * 4 + rank / 2,
             KbLayout::Consensus => CONSENSUS_BUCKETS[mirrored_file][rank],
-            KbLayout::Reckless  => RECKLESS_BUCKETS_FLAT[sq],
+            KbLayout::Reckless  => unreachable!("reckless-KB (kb10) nets are rejected at net load"),
         };
         km[sq] = mirror;
     }
@@ -2613,7 +2597,7 @@ pub struct NNUENet {
     /// this in the header; v9 and earlier default to true (legacy assumption
     /// since all pre-v10 threat nets were trained with --xray 1 / default).
     pub xray_trained: bool,
-    /// Number of king buckets in this net (10 for Reckless, 16 for others).
+    /// Number of king buckets in this net (16 for uniform/consensus).
     /// PSQ weight block is sized `num_king_buckets * 768 * hidden_size`.
     pub num_king_buckets: usize,
     /// King bucket layout identifier — drives which lookup tables are used.
@@ -2776,6 +2760,17 @@ impl NNUENet {
                     let layout_id = read_u8(reader)?;
                     kb_layout = KbLayout::from_id(layout_id)
                         .ok_or_else(|| format!("unknown kb_layout_id: {}", layout_id))?;
+                    // Reckless (kb10) layout is detected but no longer inferable:
+                    // its bucket table was removed in the 2026-07 licence review.
+                    // Reject cleanly rather than silently mis-infer (mirrors the
+                    // output-bucket bit-1 reject below).
+                    if kb_layout == KbLayout::Reckless {
+                        return Err(format!(
+                            "king-bucket layout 'reckless' (kb10, id {}) is no longer \
+                             supported by this build; re-export with a uniform/consensus layout",
+                            layout_id
+                        ));
+                    }
                     // Consistency check: layout's default count matches unless
                     // caller has intentionally overridden it (rare). The count
                     // may be larger than the layout default (extra, unused
@@ -7087,38 +7082,6 @@ mod tests {
         assert!(!km[0]);
     }
 
-    /// Verify the Reckless king bucket layout matches Reckless's
-    /// INPUT_BUCKETS_LAYOUT from `Reckless/src/nnue.rs:71-80` exactly.
-    /// Catches drift if either the flat table here or the derivation in
-    /// `compute_king_buckets` changes incompatibly.
-    #[test]
-    fn test_reckless_king_buckets() {
-        let (kb, km) = compute_king_buckets(KbLayout::Reckless);
-        #[rustfmt::skip]
-        const EXPECTED: [usize; 64] = [
-            0, 1, 2, 3, 3, 2, 1, 0,
-            4, 5, 6, 7, 7, 6, 5, 4,
-            8, 8, 8, 8, 8, 8, 8, 8,
-            9, 9, 9, 9, 9, 9, 9, 9,
-            9, 9, 9, 9, 9, 9, 9, 9,
-            9, 9, 9, 9, 9, 9, 9, 9,
-            9, 9, 9, 9, 9, 9, 9, 9,
-            9, 9, 9, 9, 9, 9, 9, 9,
-        ];
-        for sq in 0..64 {
-            assert_eq!(
-                kb[sq], EXPECTED[sq],
-                "reckless kb mismatch at sq={} got {} expected {}",
-                sq, kb[sq], EXPECTED[sq]
-            );
-        }
-        // Mirror flag still toggles on files e-h (Reckless's layout bakes
-        // mirror into bucket ids but the rest of inference still needs the
-        // mirror flag for feature indexing).
-        assert!(km[4]);   // e1
-        assert!(!km[0]);  // a1
-    }
-
     /// Regression test for the 2026-04-20 SMP race fix. Concurrently
     /// compute king-bucket tables on many threads for different layouts
     /// and verify no tearing / incorrect value. If KING_BUCKET were still
@@ -7129,11 +7092,7 @@ mod tests {
         use std::thread;
         let mut handles = vec![];
         for i in 0..8 {
-            let layout = match i % 3 {
-                0 => KbLayout::Uniform,
-                1 => KbLayout::Consensus,
-                _ => KbLayout::Reckless,
-            };
+            let layout = if i % 2 == 0 { KbLayout::Uniform } else { KbLayout::Consensus };
             handles.push(thread::spawn(move || {
                 for _ in 0..1000 {
                     let (kb, km) = compute_king_buckets(layout);
@@ -7147,11 +7106,7 @@ mod tests {
                         KbLayout::Consensus => {
                             assert_eq!(kb[0], 0);  // a1
                         }
-                        KbLayout::Reckless => {
-                            assert_eq!(kb[0], 0);
-                            assert_eq!(kb[7], 0);  // mirror on h-file
-                            assert_eq!(kb[24], 9);  // rank 4+
-                        }
+                        KbLayout::Reckless => unreachable!(),
                     }
                 }
             }));
