@@ -3,7 +3,18 @@
 Authoritative list of v9 nets, their OpenBench hashes, provenance, and status.
 Update this file when you promote a new production net or retire an old one.
 
-**Current v9 production:** `E161C665` — `net-E161C665.nnue`
+**Current v9 production:** `520C4DB4` — `net-520C4DB4.nnue`
+(source file `multi-v9.1-s3-swa.nnue`). Promoted **2026-07-13**.
+**multi-v9.1 stage-3, SWA tail** — the **de-recklessification** net: v9 arch with
+Coda's own **consensus (16-bucket) king layout**, replacing the reckless-KB (10-bucket)
+layout as part of the 0.9.1 licence-compliance work (reckless-KB inference code
+subsequently removed). Validation: cross-engine RR **3rd/20 (+62, +22 vs 0.9.0**,
+untuned); net-vs-net vs prior prod E161C665 **+5.5 STC (#2736 H1)** / **+13 LTC
+(#2737)**. Trunk retuned FOR this net: `--core` LTC tune **#2733** applied (74 params;
+the net swap's ~17% eval-scale shift detuned the pruning thresholds). SPRTs against
+trunk should now pass `--dev-network 520C4DB4 --base-network 520C4DB4`.
+
+**Previous v9 production:** `E161C665` — `net-E161C665.nnue`
 (source file `multi-v9-s3-swa.nnue`). Promoted **2026-07-04**.
 **multi-v9 stage-3, SWA tail, WDL 0.20** — first *multi-v9* prod (prior prods
 were multi-v8). Validation: **#2480** net-vs-net `[-1.5,1.5]` STC **+4.80** vs
