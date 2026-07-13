@@ -15,7 +15,7 @@
 > The material derived from **Reckless** (AGPLv3) has been removed or reimplemented.
 > The **Viridithas** material was time-management tuning constants taken when
 > Viridithas was **MIT-licensed** (it relicensed to AGPLv3 only later, as of v21),
-> which we are retuning to Coda's own values. We no longer believe the repository
+> which we have retuned to Coda's own values (via our own SPSA). We no longer believe the repository
 > carries AGPL-incompatible code, and are continuing to audit to confirm.
 >
 > **Until that audit is complete, please do not rely on the GPLv3 license, and do
@@ -130,7 +130,7 @@ Coda development has been made much easier by many other projects - most notably
 > [docs/license_analysis_2026-07-13.md](docs/license_analysis_2026-07-13.md). The
 > **Viridithas** material was time-management tuning constants taken when Viridithas
 > was MIT-licensed (it relicensed to AGPLv3 only as of v21, after we referenced it),
-> which we are retuning to Coda's own values. We no longer believe the repository
+> which we have retuned to Coda's own values (via our own SPSA). We no longer believe the repository
 > carries AGPL-incompatible code, and are continuing to audit to confirm. **Until
 > that audit is complete, please do not rely on the GPLv3 license above, and do not
 > redistribute or build derivative works from this code.**

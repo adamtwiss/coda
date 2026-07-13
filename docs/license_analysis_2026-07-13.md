@@ -109,8 +109,20 @@ comment text, or the surrounding implementation. In our view that sits on the
 idea/fact side of the copyright line rather than being copied protectable
 expression — but we will not lean on that to claim more originality than we are
 owed. It was a deliberate borrowing, and the originality critique has a fair point.
-Our response is to **attribute Viridithas plainly** and to **retune the constants
-on Coda** so the operating point becomes ours, rather than to argue the label.
+Our response was to **attribute Viridithas plainly** and to **retune the constants
+on Coda**, rather than to argue the label — which we have now done.
+
+### The retune, and what it shows
+We exposed all of these TM constants as tunable parameters and ran our own SPSA
+over them on Coda's own search and net (tune #2738, LTC 40+0.4). It converged to
+essentially the same values — ~40% bit-identical as integers, the rest within a few
+percent. That convergence is the informative part: a tuning constant sitting at a
+functional optimum is where any engine tuning for it ends up — the same reason
+piece values (a rook ~500–550) or LMR curve constants look alike across engines.
+The convergence shows these numbers are largely **scientific fact — a functional
+operating point — not creative or artistic expression that could be copied**. The
+constants are Coda's own tunable parameters, tuned and validated on Coda's own
+search and net.
 
 ## 2. King-bucket layout (`CONSENSUS_BUCKETS`)
 
@@ -168,13 +180,21 @@ threat feature-**index construction** in `threats.rs` was a close port of Reckle
 (AGPL) `threat_index.rs`: a helper struct and its bit-packing were byte-identical,
 and the table construction followed it closely.
 
-We reimplemented that construction in Coda's own code (`c2cf119`), preserving the
-exact feature→index mapping — a functional interface the trained net and the Bullet
-training side both depend on, so no retrain. It is verified behavior-identical: the
-search benchmark is bit-identical and the threat fuzz tests pass. The interaction
-tables that define which piece-pairs are features follow Stockfish's (GPL) tables
-and remain; the internal delta encoding, which had matched Reckless's field order,
-was given Coda's own layout (`cd170a4`).
+We reimplemented that construction in **Coda's own code** (`c2cf119`) — our own
+structures, naming and control flow, not one engine's code swapped for another's —
+preserving the exact feature→index *mapping*, which is a functional interface the
+trained net and the Bullet training side depend on (so no retrain). It is verified
+behavior-identical: the search benchmark is bit-identical and the threat fuzz tests
+pass.
+
+Two things sit apart from that rewrite. The **interaction map** — which
+attacker×victim piece-pairs are tracked as features — is a small functional table:
+a feature-set spec that defines the net's inputs, not creative expression. NNUE
+threat inputs of this shape are a technique shared across strong engines (Stockfish's
+`FullThreats`, Reckless, and others), and this map is a functional choice about which
+pairs carry signal; it stays as-is because it *is* the net's input definition.
+Separately, the internal delta encoding, which had matched Reckless's field order,
+was given Coda's own bit layout (`cd170a4`).
 
 The **Bullet training side** was audited the same way: its threat-index code was
 already independent (no shared bit-packing; the enumeration is Coda-matched), so only
@@ -198,6 +218,41 @@ was removed.
 - `275b86b` — README notice asking people not to rely on the license or
   redistribute until the cleanup is complete.
 
+## Repository structure
+
+Coda began as a one-person hobby project, and we originally kept everything in a
+single public repository — the engine, our per-engine study notes, research and
+analysis docs, data-processing tooling, and the AI-assistant skills — and continued
+that in the spirit of working in the open. Much of that internal material, though,
+is hard to publish cleanly under GPLv3: the per-engine study notes in particular
+reproduce substantial third-party engine source (across ~20 engines under various
+licences) — other people's copyrighted code, not ours to redistribute under our own
+licence — and the research docs and tooling carry similar entanglements.
+
+So we moved the internal research and tooling — engine study notes,
+research/analysis docs, the data-processing scripts, and the assistant skills — into
+a **separate private repository**, leaving the public repository as the engine plus
+these licensing docs. This is a licensing-hygiene and cleanliness step, done in the
+open (recorded here and in the commit history, without rewriting history): it
+removes the problem of redistributing others' code under our own licence, and keeps
+the public repository clean and easy for others to build on.
+
+## Git history
+
+The remediation removes the AGPL-incompatible and reproduced material from the
+current tree, but we have deliberately **not rewritten git history** — these are
+ordinary removals, and the material still exists in older commits. We chose that
+over erasure: while this audit is public, we would rather the whole process — what
+was there, and exactly how it was removed or reimplemented — stay visible and
+verifiable in the commit log than be quietly scrubbed. A history-cleaning pass
+(e.g. `git filter-repo`) is an option we may take later, once the audit has
+settled.
+
+To be explicit until then: **older commits still contain the material described
+here, so the git *history* is not GPLv3-clean.** The intended clean state is the
+current tree once remediation is complete, and the redistribution caution in the
+README applies to the history as well as the current tree.
+
 ## Audit scope and next steps
 
 We are not limiting remediation to the externally-reported spots.
@@ -212,7 +267,7 @@ is correct and rewriting anything that followed another engine too closely.
 1. **Full pass against the AGPL-at-reference engines (Reckless).** Grep source and
    history for any code, constants, or table values that trace to Reckless, on the
    same principle applied to the KB layout and the converter leftovers.
-2. **MIT engines (Viridithas post-v21, Hobbes, Caissa) and the unlicensed one
+2. **MIT engines (Viridithas pre-v21, Hobbes, Caissa) and the unlicensed one
    (integral).** MIT borrowings are compatible but need attribution; an unlicensed
    repo (integral) should be treated as all-rights-reserved and avoided. Confirm we
    hold no verbatim expression from any of them.

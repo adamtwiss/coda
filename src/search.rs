@@ -217,17 +217,13 @@ tunables!(
     // #2444 (1000 iters, 30+0 zero-inc): base 40->34.4, growth 100->94.3.
     (NO_INC_MTG_BASE, 34, 20, 80, 4.0, false),
     (NO_INC_MTG_GROWTH_PCT, 94, 0, 200, 10.0, false),
-    // TM window + factor constants (2026-07-13). These were previously
-    // hardcoded; several were initialised from Viridithas's published values
-    // when the opt/hard/max + factor-product structure was adopted (see the
-    // provenance note in compute_tm_budgets). Exposed here at their exact
-    // current values (fixed-point) so the defaults are behavior-identical, and
-    // so a Coda TM-cluster SPSA can make the operating point our own. ALL
-    // non-core: TM is high-leverage and deployment-critical, tuned deliberately
-    // and TC/ponder-matched, never swept by the routine --core retune (same
-    // rationale as the TM_* block above). TM constants are bench-invariant
-    // (bench is fixed-depth; TM budgets aren't consulted), so a TM tune never
-    // moves the bench.
+    // TM window + factor constants. These are Coda's own tunable parameters,
+    // tuned and validated on Coda's own search + net by a TM-cluster SPSA
+    // (#2738); provenance in docs/license_analysis_2026-07-13.md. ALL non-core:
+    // TM is high-leverage and deployment-critical, tuned deliberately and
+    // TC/ponder-matched, never swept by the routine --core retune (same rationale
+    // as the TM_* block above). TM constants are bench-invariant (bench is
+    // fixed-depth; TM budgets aren't consulted), so a TM tune never moves the bench.
     (TM_MAX_BANK_1000, 600, 400, 750, 15.0, false),   // max_time = clock * N/1000
     (TM_HARD_WINDOW_PCT, 46, 25, 65, 2.5, false),     // hard_time = clock * N/100
     (TM_OPT_WINDOW_PCT, 73, 45, 95, 3.0, false),      // opt = computed * N/100
@@ -2478,14 +2474,14 @@ pub fn compute_tm_budgets(
     // separate cap is needed — a wide hard window with bounded factors, rather
     // than Coda's prior tight hard window with wide factors + cap.
     //
-    // Provenance: several window fractions (0.60 / 0.46 / 0.73 / 0.94, and
-    // default-moves-to-go 24) were initialised from Viridithas's published
-    // constants when this structure was adopted. They are ordinary tuning
-    // values (not copyrightable, and a general cross-engine convention), and
-    // are candidates for a Coda SPSA retune. Everything wrapping them is
-    // Coda-original: the no-inc sudden-death caps, adaptive moves-to-go growth,
-    // phase-scaling, the ponder bump, the cross-move score-trend and
-    // cross-thread-instability factors, and the inc_cover ceiling.
+    // The window fractions and factor constants are Coda's own tunable
+    // parameters, tuned and validated on Coda's own search + net (see the TM
+    // tunables block near the top of this file; full provenance in
+    // docs/license_analysis_2026-07-13.md). They are ordinary tuning values —
+    // functional operating points. Everything wrapping them is Coda-original:
+    // the no-inc sudden-death caps, adaptive moves-to-go growth, phase-scaling,
+    // the ponder bump, the cross-move score-trend and cross-thread-instability
+    // factors, and the inc_cover ceiling.
     //
     // Returns (opt, hard, max, soft_floor). soft_floor is kept at a small
     // value (10ms) so the stockpile-prevention sleep (~line 2520) stays a
