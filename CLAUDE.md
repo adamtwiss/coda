@@ -394,11 +394,22 @@ Each fix compounds — it shifts optimal params elsewhere, exposing the next wea
 2. **Diagnose vs top engines** (sources in `/home/adam/chess/engines/`): learn the
    *idea* — exact formula, gating, position in the move loop (pre/post-MakeMove),
    depth variable (raw vs lmrDepth), whether it reuses the standard `see_ge`. Write
-   Coda's own version; don't copy code. **Weigh the strongest engines** — reference
-   set (strongest first): **Stockfish, Reckless, Obsidian** primary; Berserk,
-   PlentyChess, Alexandria secondary. Coda is top-5 in our local pool, so mid-table
-   consensus mostly tells us what we already do. **Never reference Ethereal** anywhere
-   in the repo (code, docs, experiments, commits, test data). Common structural
+   Coda's own version; **never copy code, comment text, or tuning constants** — even
+   from license-compatible engines: learn the *idea*, write our own expression.
+   **Weigh the strongest engines** — reference set (strongest first, GPL-3.0-
+   compatible only): **Stockfish, Obsidian** primary; Berserk, PlentyChess,
+   Alexandria secondary. Coda is top-5 in our local pool, so mid-table consensus
+   mostly tells us what we already do.
+   **Licensing hygiene (2026-07-13):** study ONLY GPL-3.0-compatible engines for
+   ideas. **Do NOT reference AGPL engines — Reckless, and Viridithas v21+**
+   (Viridithas relicensed AGPL 2026-07-06; v19/v20 were MIT) — AGPL copyleft is
+   incompatible with Coda's GPLv3 distribution. Permissive (MIT/BSD) engines
+   (e.g. Hobbes, Caissa) may be referenced *with attribution*; treat unlicensed
+   repos (e.g. integral) as all-rights-reserved and avoid them. Verify a license
+   via `gh api repos/<owner>/<repo> --jq .license.spdx_id` against the version you
+   used, not today's upstream. Full findings + audit plan:
+   `docs/derivative_work_analysis_2026-07-13.md`. **Never reference Ethereal**
+   anywhere in the repo (code, docs, experiments, commits, test data). Common structural
    traps: pruning after MakeMove (wastes make/unmake + NNUE push/pop, redundant with
    earlier pruning); raw depth for depth² scaling (far more aggressive than intended);
    a duplicate SEE instead of `see_ge`.
