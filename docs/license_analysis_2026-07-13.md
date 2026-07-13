@@ -128,8 +128,9 @@ these are idea attributions for re-implemented, functional tiling techniques, no
 copied code; we are auditing them per-item and rewording any that overstate.
 
 ## What we changed (commits)
-- `28a09dc` — stripped remaining Reckless surface from the converter; fixed the
-  KB attribution to Alexandria (GPL-3.0).
+- `28a09dc` — stripped remaining Reckless surface from the converter.
+- `b885c47` — corrected the KB-layout comment to describe it as a common pattern
+  across many engines, rather than labelling it against any single source.
 - `a3c0914` — reworded all TM comments to match the code (re-implementation, not a
   port); bench-identical.
 - `7a278ab` — exposed the (MIT-origin) TM constants as non-core tunables so a Coda
