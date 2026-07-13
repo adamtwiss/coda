@@ -270,7 +270,7 @@ tunables!(
     // LMR_CUTNODE_BUMP (+1 more with no TT move); all-nodes keep +1. Default 2
     // is a halfway step toward SF's larger cut-node reduction; SPSA can push it.
     (LMR_CUTNODE_BUMP_CENTI, 259, 100, 500, 40.0, true),
-    // LMR correction battery (T1.1, docs/reckless_audit_2026-07-06.md).
+    // LMR correction battery (T1.1).
     // Sub-ply centi-ply terms — need the fractional LMR accumulator to express.
     // Reseeded at HALF the converted values (full: 100/45/32/41)
     // after #2594/#2596 H0'd at full strength — our ln(d)·ln(m) base keeps
@@ -280,7 +280,7 @@ tunables!(
     (LMR_TTALPHA_CENTI, 25, 0, 150, 8.0, true),
     (LMR_TTDEPTH_CENTI, 9, 0, 150, 8.0, true),
     (LMR_EXPECT_MULT, 25, 0, 120, 6.0, true),
-    // cutoff_count LMR terms (T1.2, docs/reckless_audit_2026-07-06.md).
+    // cutoff_count LMR terms (T1.2).
     // Child ply failed high >2 times under this node -> reduce late moves
     // more (+extra at non-PV all-nodes). Defaults = the source's tuned
     // values reseeded at half (full: 112/39) — see battery note above.
@@ -990,7 +990,7 @@ pub struct SearchInfo {
     last_flushed_nodes: std::cell::Cell<u64>,
     pub silent: bool,  // suppress UCI output (for datagen)
     pub stats: PruneStats,
-    // Eval-path decomposition counters (see docs/coda_vs_reckless_nps_*.md).
+    // Eval-path decomposition counters.
     // `stats_tt_static_eval_hits` counts nodes where we used the TT's
     // cached static_eval and did NOT call NNUE. The NNUE counters live on
     // `nnue_acc` (full rebuilds vs incremental updates vs computed skips).
@@ -1195,8 +1195,7 @@ pub struct SearchInfo {
     pub excluded_move: [Move; MAX_PLY + 1],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
     double_ext_count: [i32; MAX_PLY + 1],
-    /// Per-ply beta-cutoff counter (SF cutoffCnt,
-    /// T1.2 docs/reckless_audit_2026-07-06.md). Incremented at the fail-high
+    /// Per-ply beta-cutoff counter (SF cutoffCnt, T1.2). Incremented at the fail-high
     /// site; each node clears its GRANDCHILD slot on entry so
     /// `cutoff_count[ply+1]` reflects only fail-highs under this node's own
     /// subtree. Read in LMR: a child ply that keeps failing high means
@@ -4607,8 +4606,7 @@ fn negamax(
             // so later visits of this position (from different move
             // orders or ID re-searches) skip the NNUE call.
             //
-            // Phase-2 lever from
-            // `docs/coda_vs_reckless_nps_2026-04-23.md`: reduces
+            // Phase-2 NPS lever: reduces
             // evals/node (Coda 0.677).
             //
             // Safety:
@@ -7142,8 +7140,8 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
             fp_total as f64 * 100.0 / audit_total as f64);
     }
 
-    // Eval-path decomposition — supports the "evals/node" investigation
-    // (see docs/coda_vs_reckless_nps_2026-04-23.md). Reports how search
+    // Eval-path decomposition — supports the "evals/node" investigation.
+    // Reports how search
     // splits its static-eval calls between full rebuilds, incremental
     // updates, already-computed skips, and TT-cached bypasses.
     if let Some(acc) = info.nnue_acc.as_ref() {

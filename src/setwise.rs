@@ -26,8 +26,8 @@
 //!
 //! Why setwise wins: replaces N magic-bitboard lookups (each touching the
 //! magic table cache lines for that piece type) with a small fixed number of
-//! shift+mask+or operations. Per `docs/coda_vs_reckless_nps_2026-04-23.md`
-//! Phase 2 perf data, Coda spends ~5% of cycles in `attackers_to` /
+//! shift+mask+or operations. Per our Phase-2 perf data, Coda spends ~5% of
+//! cycles in `attackers_to` /
 //! `attacks_by_color` / `piece_attacks_occ` / `pinned` patterns where the
 //! setwise approach applies.
 

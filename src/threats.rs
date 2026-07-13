@@ -1933,9 +1933,8 @@ unsafe fn apply_threat_indices(
     // separate copy_from_slice pass that used to precede apply_deltas_avx2.
     //
     // Dispatch order: AVX-512 (zmm, 32 i16 per reg) > AVX-2 (ymm, 16 i16
-    // per reg) > scalar. The AVX-512 path was added 2026-04-30 after the
-    // perf decomposition (`docs/coda_vs_reckless_nps_2026-04-23.md`)
-    // showed this function at 17.98% of cycles with no AVX-512 path.
+    // per reg) > scalar. The AVX-512 path was added 2026-04-30 after a perf
+    // decomposition showed this function at 17.98% of cycles with no AVX-512 path.
     #[cfg(target_arch = "x86_64")]
     {
         let tier = x86_simd_tier();
@@ -2088,7 +2087,6 @@ unsafe fn apply_deltas_avx2(
 /// `apply_threat_deltas` at 17.98% of cycles with no AVX-512 path.
 /// Faster engines have a dedicated AVX-512 threat path and spend only ~1.8%
 /// of cycles on the analogous update; this adds Coda's AVX-512 path.
-/// See `docs/coda_vs_reckless_nps_2026-04-23.md` Phase 2 result.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f", enable = "avx512bw")]
 unsafe fn apply_deltas_avx512(
