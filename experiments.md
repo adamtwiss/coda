@@ -19511,3 +19511,16 @@ Open: LC0 oracle referee; feature attribution; corpus-scale mining path.
 **Full write-up: docs/overscore_class_2026-07-13.md** (falsification
 ledger, forensic chain, bias controls, net-report metric proposal, next
 steps). Corpora + raw measurement TSVs promoted to testdata/horizon/.
+
+## Net-report metric, first assignment: 0.9.1 net improves the overscore class (2026-07-13)
+
+Re-scored the overscore corpus with the newly promoted prod net 520C4DB4
+(consensus-KB, SWA, s3 recipe) vs the old prod, same oracle labels:
+**blind-set signed median @150k +30 → +22, overscore>30cp 49.7% → 42.6%**
+(500k: +27 → +18), while the neutral control is unchanged (med 0 → 0,
+over 20.7% → 19.4%). The recipe change removed ~25-30% of the
+class-specific optimism with NO targeted data — the class is
+recipe-sensitive, the metric discriminates nets, and ~3/4 of the class
+remains as headroom for the targeted-data path. Caveat: corpus is
+old-net-harvested (regression metric); per-generation re-harvest per
+testdata/horizon/README.md. Details: docs/overscore_class_2026-07-13.md.
