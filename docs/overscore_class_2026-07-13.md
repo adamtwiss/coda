@@ -55,12 +55,22 @@ measured twice (TM campaign, search campaign).
    43% SNAP (Coda's own deep search, once walked down the critical line,
    agrees with truth — knowledge is in the net, statically invisible),
    48% STUBBORN, 9% partial.
-4. **Per-position gate tracing** (CODA_TRACE_LINE tracer, branch
-   `snap-forensics`): in 84% of SNAP positions the search **already
-   examines every ply of the critical line** — the failure is depth carried
-   along the line, not the line being cut. Lines are ~70% quiet moves at
-   every ply (129/196 mostly-quiet) — no non-eval ordering signal can
-   select them.
+4. **Per-position gate tracing** (CODA_TRACE_LINE tracer): in 84% of SNAP
+   positions the search **already examines every ply of the critical
+   line**. The complete exoneration arithmetic (v2 pass, raw events in
+   testdata/horizon/): named gates discard 3/196 (1.5%); **LMR reduction
+   on line moves: zero events across all positions** (ordering already
+   treats them as principal moves); depth carried to the line tail: median
+   12 vs root 16 (p25 9, p75 14) — near-ideal decay, sometimes extended.
+   Search ordering, reductions, gates, and depth delivery are ALL healthy
+   on this class. The forced-walk snap threshold (~d14-15 per line node vs
+   the d12 carried) shows the knowledge horizon sits only **~2-3 plies
+   beyond what search already delivers** — but exploiting that requires
+   knowing WHICH subtree to deepen, which is eval knowledge (the lines are
+   ~70% quiet at every ply; 129/196 mostly-quiet — no non-eval signal can
+   select them). This also explains mid-band localization: deeper root
+   searches resolve these specific positions while new just-beyond-horizon
+   ones replace them.
 5. **Signed error** (the confirmation of the overscore hypothesis):
 
 | set (Coda@150k vs V*) | signed median | overscore >30cp | underscore <−30cp |
