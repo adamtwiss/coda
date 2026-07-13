@@ -171,7 +171,8 @@ tunables!(
     // factor = BASE/1000 + MULT/1000 * (Σ per-thread bmc)/n_threads, applied
     // to the soft budget only at Threads>1. Defaults are SF's 1.088 / 2.315
     // (search.cpp:519); will want a focused TM-cluster retune-on-branch since
-    // Coda's TM is Viridithas-shaped. Fixed-point /1000 for the sub-integer
+    // Coda's TM uses the standard opt/hard/max + factor-product shape.
+    // Fixed-point /1000 for the sub-integer
     // precision these multiplicative constants need. Not --core (TM is tuned
     // deliberately, TC-matched, never swept by the STC core retune).
     // BASE defaults to 1000 (=1.0), NOT SF's 1088: SF's base is balanced
@@ -456,7 +457,7 @@ tunables!(
     // Was 68 (tp10→7). Now FIXED-POINT. Default 70 → eff 7.0 ≡ old behavior.
     (LMR_KING_PRESSURE_DIV_10X, 70, 20, 90, 15.0, true),
     // Reduce later moves more once this node has already raised alpha N times
-    // (Viridithas #431 alpha_raises). Fixed-point ×10: reduction += raises *
+    // (alpha_raises reduction, a known LMR refinement). Fixed-point ×10: reduction += raises *
     // VALUE/10. Only fires at PV nodes (cut nodes break on the first fail-high
     // before alpha is raised). Default 10 = +1.0 reduction per prior alpha-raise.
     (LMR_ALPHA_RAISE_10X, 5, 0, 40, 5.0, true),
@@ -910,7 +911,7 @@ pub struct PruneStats {
     pub ts_asp_fail_high: u64,
 }
 
-/// Forced-move detection state (Viridithas pattern, set by `detect_forced_move`).
+/// Forced-move detection state (set by `detect_forced_move`).
 /// Once a position is classified at the root, the result is sticky for the rest of
 /// the search — both the verification's TT pollution and the result itself are
 /// monotonic. `None` is the default; once `Weak` or `Strong` is observed, the TM
@@ -919,10 +920,10 @@ pub struct PruneStats {
 pub enum ForcedState {
     None,
     /// Best alternative was within `SLIGHTLY_FORCED_MARGIN` of TT score at depth ≥ 12.
-    /// Multiplier reduces soft by ~37% (Viridithas: 627/1000).
+    /// Multiplier reduces soft by ~37% (627/1000).
     Weak,
     /// Best alternative collapsed by ≥ `VERY_FORCED_MARGIN` at depth ≥ 8.
-    /// Multiplier reduces soft by ~61% (Viridithas: 386/1000).
+    /// Multiplier reduces soft by ~61% (386/1000).
     Strong,
 }
 
@@ -1003,7 +1004,7 @@ pub struct SearchInfo {
     /// Cumulative count of aspiration fail-lows in the current search.
     /// Reset at search start. Consumed by the Phase 13 fail-low factor
     /// `1.0 + 0.34 * min(2, asp_fail_low)` applied to both opt and hard
-    /// windows (Viridithas pattern). The Phase 9 thresholded mechanism
+    /// windows. The Phase 9 thresholded mechanism
     /// (TM_ASP_THRESHOLD/TM_ASP_MULT_10X) was removed with Phase 13.
     tm_asp_fail_low: u32,
     /// Cumulative count of aspiration fail-highs in the current search.
@@ -1017,7 +1018,7 @@ pub struct SearchInfo {
     /// dropped. Candidate for re-use as an SF/Reckless-style
     /// within-iteration instability factor (TM audit 2026-06-13, B3).
     tm_best_move_changes: u32,
-    /// Forced-move detection state (Viridithas pattern). Set after an ID iteration
+    /// Forced-move detection state. Set after an ID iteration
     /// at the root when `detect_forced_move` finds that excluding the current best
     /// move collapses the alternative score by a meaningful margin. Sticky once
     /// set — verification only fires while state == None and depth ≥ 8. Drives a
@@ -1046,10 +1047,9 @@ pub struct SearchInfo {
     /// the forced-move detector at our SPRT TC, costing ~3 Elo at STC for
     /// reasons orthogonal to the lichess no-inc fix.
     tm_no_inc: bool,
-    /// Phase 13 (2026-05-26, Viridithas-shape rewrite): the absolute max time
-    /// we will ever spend on a single move, computed as 60% of our_clock.
-    /// Replaces Phase 10h's hard×0.5 cap with Viridithas's max_bank_usable
-    /// pattern. Factors multiply soft up against this — no separate cap.
+    /// Absolute max time we will ever spend on a single move, computed as 60%
+    /// of our_clock (2026-05-26 redesign). Replaces Phase 10h's hard×0.5 cap
+    /// with a single max-bank ceiling; factors multiply soft up against this.
     tm_max_time: u64,
     /// Our increment (ms) for the current search — feeds the low-increment
     /// multiplier ceiling. 0 when there is no increment.
@@ -2437,40 +2437,36 @@ pub fn compute_tm_budgets(
     fullmove: u16,
     ponder_on: bool,
 ) -> (u64, u64, u64, u64) {
-    // Phase 13 (2026-05-26): Viridithas-shape TM windows.
+    // TM windows (2026-05-26 redesign): opt/hard/max model with a
+    // multiplicative factor product — the structure common to modern engines
+    // (SF, Reckless, Obsidian, Hobbes, PlentyChess, Viridithas all run
+    // variants of it). Coda's earlier TM was a different shape: 6 factors
+    // compounding to ~30×, plus a separate hard×0.5 cap (Phase 10h). A
+    // cross-engine audit (TM_DIAG, 2026-05-26) found that outlier structure
+    // clamped 65% of iterations to the cap, blocking legitimate 4-11× signals,
+    // so this rewrite moved to the standard decomposition:
     //
-    // Top-engine audit (2026-05-26) showed Coda's pre-Phase-13 TM was a
-    // structural outlier among ~10 modern engines:
-    //   - 6 multiplicative factors compounding to ~30× product (Viridithas: 4
-    //     factors, ~9.5× max; Hobbes: 3 factors, ~3.3× max; SF/Obsidian/Plenty:
-    //     0 factors, fully static)
-    //   - Separate hard×0.5 cap (Phase 10h) as band-aid for the factor overflow
-    //   - Hard window only ~9% of clock vs Viridithas's 46%
-    // The diagnostic (TM_DIAG, 2026-05-26) showed 65% of TM iterations clamped
-    // to the Phase 10h cap, blocking factors=4-11× legitimate signals.
+    //   max_time  = clock × 0.60 − overhead   (absolute single-move ceiling)
+    //   hard_time = clock × 0.46              (mid-search abort, clamped to max)
+    //   opt_time  = (clock/24 + inc × 0.94 − overhead) × 0.73, clamped to hard
     //
-    // Phase 13 ports Viridithas's TM window structure:
-    //   max_time = clock × 0.60 - overhead  (the only per-move ceiling)
-    //   hard_time = clock × 0.46            (mid-search abort, clamped to max)
-    //   opt_time = (clock/24 + inc × 0.94 - overhead) × 0.73, clamped to hard
+    // The dynamic-block factor multiplier scales opt UP toward hard/max, so no
+    // separate cap is needed — a wide hard window with bounded factors, rather
+    // than Coda's prior tight hard window with wide factors + cap.
     //
-    // The factor multiplier applied in the dynamic TM block scales opt UP
-    // (factors can hit ~9.5× max) toward hard/max — no separate cap needed.
-    // This is the structural difference: a wide hard window with tight
-    // factors, instead of Coda's tight hard window with wide factors + cap.
+    // Provenance: several window fractions (0.60 / 0.46 / 0.73 / 0.94, and
+    // default-moves-to-go 24) were initialised from Viridithas's published
+    // constants when this structure was adopted. They are ordinary tuning
+    // values (not copyrightable, and a general cross-engine convention), and
+    // are candidates for a Coda SPSA retune. Everything wrapping them is
+    // Coda-original: the no-inc sudden-death caps, adaptive moves-to-go growth,
+    // phase-scaling, the ponder bump, the cross-move score-trend and
+    // cross-thread-instability factors, and the inc_cover ceiling.
     //
-    // Constants verbatim from Viridithas (per-mille / per-hundred):
-    //   MAX_BANK_USABLE: 600 (60% of clock)
-    //   HARD_WINDOW_FRAC: 46 (46% of clock)
-    //   OPTIMAL_WINDOW_FRAC: 73 (73% of computed_window)
-    //   INCREMENT_FRAC: 94 (94% of inc added to computed_window)
-    //   DEFAULT_MOVES_TO_GO: 24 (sudden-death pacing assumption)
-    //
-    // Returns (opt, hard, max, soft_floor). soft_floor preserved at small
-    // value (10ms) — Viridithas has no separate floor, but Coda's stockpile-
-    // prevention sleep at line ~2520 still needs a non-zero value to be a
-    // no-op for movetime-limited searches. The Phase 13 factor multiplier
-    // can pull opt × multiplier well below any meaningful floor.
+    // Returns (opt, hard, max, soft_floor). soft_floor is kept at a small
+    // value (10ms) so the stockpile-prevention sleep (~line 2520) stays a
+    // no-op for movetime-limited searches; the factor multiplier can pull
+    // opt × multiplier well below any meaningful floor.
     let time_left = our_time.saturating_sub(overhead).max(1);
     // No-inc TCs require more conservative pacing. With inc, each move
     // costs only `inc` of net time (we regain inc per move). Without
@@ -2488,7 +2484,7 @@ pub fn compute_tm_budgets(
     // partly because they're spiking off a lower baseline). No-inc path
     // unchanged (moves_left=40 from earlier hotfix); movestogo path
     // unchanged (already uses the explicit movestogo count).
-    // Viridithas-style windows. max_time is the absolute single-move ceiling.
+    // Window fractions (provenance in the header). max_time is the single-move ceiling.
     const MAX_BANK_USABLE_NUM: u64 = 600;
     const MAX_BANK_USABLE_DEN: u64 = 1000;
     const HARD_WINDOW_NUM: u64 = 46;
@@ -2499,8 +2495,8 @@ pub fn compute_tm_budgets(
     const INC_FRAC_DEN: u64 = 100;
     const DEFAULT_MOVES_TO_GO: u64 = 24;
 
-    // No-inc sudden-death TCs need a tighter ceiling. Viridithas's verbatim
-    // 60%/46% windows are fine at moderate-inc (each spent ms gets refilled
+    // No-inc sudden-death TCs need a tighter ceiling. The 60%/46% windows
+    // are fine at moderate-inc (each spent ms gets refilled
     // by inc) but catastrophic at 3+0: lichess qiHdjT7k (2026-05-27) — at
     // move 6 with 166s clock, hard_time = 76s; a deep single iteration ran
     // to that ceiling, geometric-decayed to flag-fall by move 24.
@@ -2533,7 +2529,7 @@ pub fn compute_tm_budgets(
 
     // No-inc sudden death needs a higher moves-left assumption than
     // moderate-inc TCs: each spent ms is gone forever, and real 3+0 games
-    // run 40-80 moves. Phase 13's verbatim Viridithas constant (24) was
+    // run 40-80 moves. The default-moves-to-go 24 (sudden-death pacing) was
     // calibrated for inc TCs where the inc term dominates pacing — at
     // no-inc the 24 produces an opt that's high enough for the factor
     // multiplier (up to ~6.5×) to consistently blow past hard_time,
@@ -2631,7 +2627,7 @@ pub fn compute_tm_budgets(
 
     // soft_floor: preserved at a small value (10ms) for stockpile sleep
     // compatibility. The factor multiplier in dynamic TM block can pull
-    // soft well below this — Viridithas has no enforced floor.
+    // soft well below this; there is no other enforced floor.
     let soft_floor: u64 = 10;
 
     (opt_time, hard_time, max_time, soft_floor)
@@ -3563,7 +3559,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             0
         };
 
-        // Forced-move detection (Viridithas pattern). Once-per-search verification
+        // Forced-move detection. Once-per-search verification
         // that the chosen best move is meaningfully better than all alternatives.
         // Fires at depth boundaries 8+ (state == None), excludes best_move at root,
         // and runs a narrow-window search at reduced depth. If the alternative
@@ -3621,7 +3617,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             const FORCED_MARGIN_STRONG: i32 = 400;
             let margin = if depth >= 12 { FORCED_MARGIN_WEAK } else { FORCED_MARGIN_STRONG };
             let r_beta = (prev_score - margin).max(-MATE_SCORE + 1);
-            // Viridithas r_depth: (min(12, depth-1) - 1) / 2 — caps verification at depth 5.
+            // r_depth = (min(12, depth-1) - 1) / 2 — caps verification at depth 5.
             let r_depth = (depth.min(13) - 2) / 2;
 
             // Save PV state — the verification call at ply=0 will overwrite
@@ -3649,15 +3645,13 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
         }
 
-        // Phase 13 (2026-05-26): Viridithas-shape dynamic TM — 4 factors,
-        // no separate Phase-10h cap (max_time clamps directly).
-        //
-        // Factor product max ~9.5× (vs Coda's prior ~30×). Wider hard window
-        // (46% of clock from compute_tm_budgets) means factors can express
-        // real variety without overflowing. max_time (60% of clock) is the
-        // only single-move ceiling. See top-engine audit 2026-05-26 for
-        // rationale; cap-bind diagnostic (TM_DIAG) showed 65% of iterations
-        // clamped under prior structure.
+        // Dynamic TM (2026-05-26 redesign): a multiplicative factor product
+        // applied to the soft budget, clamped to max_time (no separate
+        // Phase-10h cap). A bounded product (~9.5× max vs Coda's prior ~30×)
+        // against a wider hard window (46% of clock from compute_tm_budgets)
+        // lets the factors express real variety without overflowing; max_time
+        // (60% of clock) is the only single-move ceiling. Coda adds two
+        // factors beyond the standard set (score-trend #5, cross-thread #6).
         if info.soft_limit > 0 && depth >= 4 && !info.should_stop() {
             // Mate early-emit: if we've found a forced mate and the best move
             // has held for at least one further iteration, stop deepening —
@@ -3677,17 +3671,17 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 break;
             }
             // Factor 1: Stability multiplier (table-indexed by stable count).
-            // Verbatim from Viridithas: [2.50, 1.20, 0.90, 0.80, 0.75]
+            // Stability table, indexed by consecutive-stable count [2.50, 1.20, 0.90, 0.80, 0.75]
             //   0 stable:  2.50× (uncertain, search more)
             //   1 stable:  1.20×
             //   2 stable:  0.90× (settling)
             //   3 stable:  0.80×
             //   4+ stable: 0.75× (confident, search less)
             // This single factor absorbs what Coda previously split across
-            // stability_factor (0.5-1.71) + bmc_factor (1.0-5.0) — Viridithas
-            // doesn't separately track best-move-changes.
+            // stability_factor (0.5-1.71) + bmc_factor (1.0-5.0) into a single
+            // table lookup.
             // Phase 13.2 (2026-05-26): lower stability_table[0] from 2.50 to 1.71.
-            // Phase 13.1 (Viridithas table 2.5 + phase scaling) still produced
+            // Phase 13.1 (initial table with [0]=2.5 + phase scaling) still produced
             // -41 Elo at 30+0.25 with opening overspend 37% (main: 21%).
             // The 2.5× initial multiplier was 1.46× more aggressive than
             // Coda's prior 1.71× stability_factor maximum. Even with phase
@@ -3699,7 +3693,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             let stability_idx = (info.tm_best_stable as usize).min(4);
             let stability_multiplier = STABILITY_TABLE[stability_idx];
 
-            // Factor 2: Aspiration fail-low bonus (Viridithas event accumulator).
+            // Factor 2: Aspiration fail-low bonus.
             // Formula: 1.0 + 0.34 × min(2, count), range [1.00, 1.68]
             //   0 fails: 1.00× (baseline)
             //   1 fail:  1.34×
@@ -3707,7 +3701,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Captures the upward instability signal.
             let failed_low_multiplier = 1.0 + 0.34 * (info.tm_asp_fail_low.min(2) as f64);
 
-            // Factor 3: Forced-move multiplier (Viridithas, position-intrinsic).
+            // Factor 3: Forced-move multiplier (position-intrinsic).
             //   Strong: 0.386× (alternative -400cp behind)
             //   Weak:   0.627× (alternative -170cp behind)
             //   None:   1.00×
@@ -3717,7 +3711,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 ForcedState::None   => 1.0,
             };
 
-            // Factor 4: Best-move subtree-size multiplier (Viridithas).
+            // Factor 4: Best-move subtree-size multiplier.
             // Formula: (1.62 - nodes_fraction) × 1.4, range ~[0.87, 2.27]
             //   nodes_fraction = best_move_nodes / total_nodes
             //   high fraction (>0.6): confident → reduce time
@@ -3778,7 +3772,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     .clamp(0.80, 1.55)
             };
 
-            // Combined multiplier — Viridithas's 4 factors + score-trend.
+            // Combined multiplier — the standard factors + score-trend + cross-thread.
             // Max product ~ 2.50 × 1.68 × 1.0 × 2.27 × 1.45 = 13.8×
             // Min product ~ 0.75 × 1.0  × 0.386 × 0.87 × 0.80 = 0.20×
             // Factor 6: cross-thread best-move instability (SF port, Threads>1
@@ -3835,7 +3829,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
 
             // Phase 13: adjusted_soft = soft × multiplier, clamped to max_time
-            // (the ONLY cap — no separate hard×0.5). Viridithas pattern.
+            // (the ONLY cap — no separate hard×0.5).
             let adjusted_soft_raw = (info.soft_limit as f64 * multiplier) as u64;
             let adjusted_soft = adjusted_soft_raw.min(info.tm_max_time).max(1);
             // Phase-0 instrumentation: snapshot the factor values in force.
@@ -5151,7 +5145,7 @@ fn negamax(
     let mut best_score = -INFINITY;
     let mut move_count = 0i32;
     // Count of how many moves at THIS node have raised alpha so far. Later
-    // moves reduce more proportionally (Viridithas #431 alpha_raises) — once
+    // moves reduce more proportionally (alpha_raises reduction) — once
     // improving moves are found, the rest are progressively less likely to beat
     // them. Only fires at PV nodes (cut nodes break on first fail-high).
     let mut alpha_raise_count = 0i32;
@@ -5588,7 +5582,7 @@ fn negamax(
                 }
 
                 // Reduce later moves more once this node has already raised
-                // alpha (Viridithas #431). Fixed-point ×10. At cut nodes this is
+                // alpha (alpha_raises reduction). Fixed-point ×10. At cut nodes this is
                 // 0 (they break on the first fail-high before alpha rises), so it
                 // only sharpens late-move reduction at PV nodes where several
                 // improving moves have already been found.
