@@ -52,7 +52,7 @@ today. This matters here:
 
 | License at reference time | Engines Coda cites | Implication for us |
 |---|---|---|
-| **AGPL-3.0** | **Reckless** (AGPL when we referenced its KB layout, 2026-05) | Incompatible with GPLv3 redistribution — any Reckless-derived code/constants must be removed or independently reimplemented. |
+| **AGPL-3.0** | **Reckless** (AGPL when we referenced its KB layout, 2026-05); **Icarus**, **Raphael**, **Tcheran** (studied more recently) | Incompatible with GPLv3 redistribution. Reckless-derived material was removed or reimplemented; for Icarus/Raphael/Tcheran our review found no derived code in Coda's source. |
 | **MIT** (permissive, GPL-compatible) | **Viridithas** (MIT through v20; relicensed to AGPL-3.0 **as of v21**, 2026-07-06 — after we referenced it), **Hobbes**, **Midnight** | GPL-compatible; obligation is attribution, not removal. |
 | **WTFPL** (public-domain-equivalent, GPL-compatible) | **Starzix** | GPL-compatible; effectively no restrictions beyond honesty. |
 | **GPL-3.0** (compatible) | Stockfish, Obsidian, Alexandria, Berserk, PlentyChess, Stormphrax, Clarity, Halogen, Seer, Cinder, Clover, Igel, Minic, Tucano, Weiss | Compatible with our GPLv3 intent. |
@@ -359,9 +359,16 @@ other areas. These are now largely complete:
    items 1–3 above, so we expect it to be largely unaffected, but will confirm and record
    the result either way.
 
+**Other AGPL engines reviewed (2026-07-14).** Community feedback (a GitHub issue)
+prompted a review of **Icarus** (AGPL): we confirmed there is no Icarus-derived code in
+Coda's source. We extended the same check to **Raphael** and **Tcheran** (also AGPL,
+studied more recently) — none contributed any shipped code. Where we had noted ideas
+from them, those experiments failed testing and were never merged. All three are now on
+our AGPL-exclude list.
+
 **Defensive measures going forward (to be encoded in CLAUDE.md):**
 1. **Restrict the idea-reference set to GPL-3.0-compatible engines** and **exclude
-   AGPL engines (Reckless, and Viridithas v21+) entirely** — their copyleft is
+   AGPL engines (Reckless, Viridithas v21+, Icarus, Raphael, Tcheran) entirely** — their copyleft is
    incompatible with our distribution. Permissive-licensed engines (MIT/BSD/WTFPL) may
    be referenced with attribution.
 2. **Ideas, never expression.** Reference engines are studied to learn the
