@@ -373,20 +373,25 @@ other areas. These are now largely complete:
 
 ## Position
 
-On the specific **AGPL** claim: the Reckless-derived code has been removed, and the
-Viridithas material was taken under MIT (before that engine's later AGPL relicense),
-so we no longer believe Coda carries AGPL-incompatible code — and we are continuing
-to audit to confirm this.
+Andrew Grant's original feedback had merit. He was right about several of his findings;
+our own follow-up audit then surfaced further material that was not clearly
+license-compatible, along with things we could do better. We are grateful to him for
+raising it.
 
-On the broader **originality** question we are deliberately not going to overclaim.
-Coda did take a high-level algorithm outline and a set of constants from Viridithas
-(under MIT), and studied other engines closely; and where the audit surfaced copied
-expression — the reproduced tables and SIMD in the weekend pass, and the ported
-threat-index construction — we removed or independently reimplemented it. We do not
-think any *copied protectable expression* now remains, but that is a narrower (and
-audited) statement than "wholly original", and we would rather earn the originality
-than assert it: by attributing what we drew on, re-tuning the constants we took to
-our own values, correcting the comments that oversold it, and continuing to audit.
+On the specific **AGPL** claim: the Reckless-derived code has now been removed or
+reimplemented, and the Viridithas material was under MIT when we referenced it (before
+that engine's later AGPL relicense), so we do not believe Coda carries
+AGPL-incompatible code.
+
+On the broader **originality** question: Coda has learned from the field and shares
+techniques and patterns with other strong engines — as most top engines do, drawing on
+a large body of shared, openly published ideas. A recurring finding of this audit was
+just how many of the techniques we use are common across the top engines. Where the
+audit did surface copied expression — in the NNUE threat-index construction and some
+SIMD optimisations, based on AGPL code — we removed or independently reimplemented it,
+and we do not believe any *copied protectable expression* now remains. We are
+comfortable that we have credited the ideas we drew from MIT- and GPL-licensed engines
+and that we are using them fairly.
 
 *If any author believes specific protectable expression remains, we want to hear
 the specifics and will review and take appropriate steps to correct it.*
