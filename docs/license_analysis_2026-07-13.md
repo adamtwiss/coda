@@ -2,7 +2,7 @@
 
 **Status:** engineering findings and Coda's good-faith view. This is not legal
 advice and not a final legal determination; it is our honest technical
-assessment of what was borrowed, what was not, under which licenses, and what we
+assessment of what we took from other engines, what we did not, under which licenses, and what we
 changed. **It is a living document:** it reflects our understanding as of the date
 in the title, and we will update it as our audits continue or as new information
 comes to light — from our own review or from anyone else. Later revisions are us
@@ -84,9 +84,9 @@ When Coda studied Viridithas and set these constants (TM redesign 2026-05-26), a
 throughout our checkout (v19.0.1, 2026-06-20), **Viridithas was MIT-licensed**
 (Copyright 2022-2025 Cosmo Bobak). It relicensed to **AGPL-3.0 as of v21** on
 2026-07-06 — after the versions we referenced — and MIT stays in force for the
-versions released under it. This rebuts one specific claim only: the borrowing was
+versions released under it. This rebuts one specific claim only: what we took was
 **not an AGPL-copyleft violation**, because the source was MIT at the time. It does
-**not** mean the borrowing didn't happen or doesn't matter, and MIT is not a
+**not** mean nothing was taken, or that it doesn't matter, and MIT is not a
 licence to pass someone else's design off as our own. We treat it as: not an AGPL
 problem — still something to attribute and to make our own.
 
@@ -98,7 +98,7 @@ roughly half the current TM code is Coda-original with its own test provenance
 cross-thread factors, inc_cover ceiling).
 
 ### What made it look worse than it was
-Coda's **own comments overstated the borrowing** — "ports Viridithas's TM window
+Coda's **own comments overstated what was taken** — "ports Viridithas's TM window
 structure", "verbatim from Viridithas". Those read as a *code* copy when the code
 is a re-implementation and only some *constants* were shared, under MIT.
 
@@ -108,7 +108,7 @@ window/factor algorithm and a set of numeric tuning constants** — not source c
 comment text, or the surrounding implementation. In our view that sits on the
 idea/fact side of the copyright line rather than being copied protectable
 expression — but we will not lean on that to claim more originality than we are
-owed. It was a deliberate borrowing, and the originality critique has a fair point.
+owed. It was deliberate, and the originality critique has a fair point.
 Our response was to **attribute Viridithas plainly** and to **retune the constants
 on Coda**, rather than to argue the label — which we have now done.
 
@@ -266,15 +266,22 @@ correct. This is loose-ends tidying, not a "clone" concern — Coda is its own e
 — but it matters to us independently of the licence.
 
 **Planned audits (beyond what was reported):**
-1. **Full pass against the AGPL-at-reference engines (Reckless).** Grep source and
-   history for any code, constants, or table values that trace to Reckless, on the
+1. **Full pass against the AGPL engines — Reckless, and Viridithas as of v21+.**
+   Reckless was AGPL when we referenced it; Viridithas relicensed to AGPL as of v21,
+   and we respect that choice by treating its v21+ source as off-limits. Grep source
+   and history for any code, constants, or table values that trace to either, on the
    same principle applied to the KB layout and the converter leftovers.
-2. **MIT engines (Viridithas pre-v21, Hobbes, Caissa) and the unlicensed one
-   (integral).** MIT borrowings are compatible but need attribution; an unlicensed
-   repo (integral) should be treated as all-rights-reserved and avoided. Confirm we
-   hold no verbatim expression from any of them.
-3. **Review our own engine notes and research docs** (not just shipped source) for
-   pasted snippets or material, the way we found the Reckless leftovers.
+2. **Permissively-licensed engines (Viridithas pre-v21, Hobbes, Caissa) and the
+   unlicensed one (integral).** MIT material is licence-compatible, and attribution
+   is all the licence strictly requires — but licence-permitted is not the same as
+   good faith within the engine community, and we hold ourselves to the latter:
+   clear attribution, and not presenting another author's design or constants as our
+   own. An unlicensed repo (integral) is treated as all-rights-reserved and avoided.
+   Confirm we hold no verbatim expression from any of them.
+3. **Internal research notes and docs.** These have been moved out of this public
+   repository into a private one, so they are no longer distributed under GPLv3 —
+   which removes the licensing exposure. The residual check is internal hygiene:
+   confirming no third-party snippet pasted into a note ever seeded shipped source.
 4. **GoChess** (the predecessor engine Coda was rewritten from): the same pass — its
    licence, and whether it contains any threats/NNUE or Reckless/Viridithas material.
    It predates the threats feature and the Bullet-trained NNUE work, so we expect it
@@ -306,8 +313,8 @@ expression — the reproduced tables and SIMD in the weekend pass, and the porte
 threat-index construction — we removed or independently reimplemented it. We do not
 think any *copied protectable expression* now remains, but that is a narrower (and
 audited) statement than "wholly original", and we would rather earn the originality
-than assert it: by attributing what we borrowed, making the borrowed constants our
-own, correcting the comments that oversold the borrowing, and continuing to audit.
+than assert it: by attributing what we drew on, re-tuning the constants we took to
+our own values, correcting the comments that oversold it, and continuing to audit.
 
 *If any author believes specific protectable expression remains, we want to hear
 the specifics and will review and take appropriate steps to correct it.*
