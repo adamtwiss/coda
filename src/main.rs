@@ -94,10 +94,6 @@ struct Cli {
     #[arg(long = "book", short = 'b')]
     book: Option<String>,
 
-    /// Use classical (PeSTO) eval instead of NNUE
-    #[arg(long = "classical")]
-    classical: bool,
-
     /// DIAGNOSTIC ONLY — load nets even when they mismatch Coda's inference
     /// configuration (e.g. net trained with --xray 0 while Coda always emits
     /// xrays). Default is refuse-to-load so mismatches can't silently degrade
@@ -594,7 +590,7 @@ fn main() {
             // UCI mode (default)
             let nnue_ref = cli.nnue.as_deref();
             let book_ref = cli.book.as_deref();
-            uci::uci_loop_with_nnue(nnue_ref, book_ref, cli.classical);
+            uci::uci_loop_with_nnue(nnue_ref, book_ref);
         }
 
         Some(Commands::Bench { depth, threads, set }) => {

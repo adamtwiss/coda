@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::bitboard::*;
 use crate::board::Board;
-use crate::eval::{evaluate, evaluate_nnue, see_value};
+use crate::eval::{evaluate_nnue, see_value};
 use crate::nnue::DirtyPiece;
 use crate::movegen::generate_legal_moves;
 use crate::movepicker::*;
@@ -1634,7 +1634,8 @@ impl SearchInfo {
         }
     }
 
-    /// Evaluate using NNUE if loaded, otherwise classical PeSTO.
+    /// Evaluate using NNUE. A net is required to run — shipped/bench builds
+    /// always embed one, so the no-net branch below is never hit in practice.
     fn eval(&mut self, board: &Board) -> i32 {
         // Ensure threat accumulator is computed before eval
         if self.threat_stack.active {
@@ -1755,7 +1756,8 @@ impl SearchInfo {
                 s
             }
         } else {
-            evaluate(board)
+            panic!("no NNUE net loaded — an NNUE net is required to evaluate; \
+                    build with `make` to embed a net or pass `--nnue <file>`");
         };
         // Material scaling: dampen eval in low-material endgames (SF/Stormphrax/
         // Halogen pattern — non-pawn material only). Pawn-up endgames
@@ -6985,11 +6987,9 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     if let Some(path) = nnue_path {
         if let Err(e) = info.load_nnue(path) {
             // An EXPLICIT net override that fails must be fatal: silently
-            // falling back (PeSTO or embedded net) produces a wrong bench /
-            // wrong ordering stats that look plausible — the ~1M NPS PeSTO
-            // numbers have been mistaken for real net stats twice
-            // (2026-06-12, 2026-06-14). Fallback is for the no-override
-            // auto-discovery path only.
+            // falling back to the embedded net produces a wrong bench / wrong
+            // ordering stats that look plausible. The override is honoured only
+            // when it loads; otherwise abort rather than mask the mistake.
             eprintln!("FATAL: failed to load NNUE '{}': {}", path, e);
             std::process::exit(2);
         }
@@ -7190,6 +7190,21 @@ fn reset_bench_position_state(info: &mut SearchInfo) {
     info.tt.new_search();
 }
 
+/// Test-only NNUE net locator. Since the PeSTO fallback was removed, any test
+/// that drives a real `search()` must load a net. Prefers `CODA_TEST_NET`, then
+/// the production net named by `net.txt` (what `make net` downloads). Returns
+/// `None` when no net is present locally so callers can skip gracefully.
+#[cfg(test)]
+pub(crate) fn test_net_path() -> Option<String> {
+    std::env::var("CODA_TEST_NET").ok()
+        .filter(|p| std::path::Path::new(p).exists())
+        .or_else(|| {
+            let url = std::fs::read_to_string("net.txt").ok()?;
+            let name = url.trim().rsplit('/').next()?.trim().to_string();
+            (!name.is_empty() && std::path::Path::new(&name).exists()).then_some(name)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7258,9 +7273,9 @@ mod tests {
     /// four positions (two from the games that surfaced the bug) must stay
     /// near 0; a regression would blow them back out to ±0.45.
     ///
-    /// Needs an NNUE net (the drift is a corrhist-on-NNUE effect; the PeSTO
-    /// fallback does not reproduce it), so it skips gracefully when no net is
-    /// present — honours `CODA_TEST_NET`, else `net.nnue`, else a `net-v*.nnue`.
+    /// Needs an NNUE net (the drift is a corrhist-on-NNUE effect), so it skips
+    /// gracefully when no net is present — honours `CODA_TEST_NET`, else
+    /// `net.nnue`, else a `net-v*.nnue`.
     #[test]
     fn test_corrhist_fortress_no_drift() {
         use crate::board::Board;
@@ -7273,14 +7288,7 @@ mod tests {
         // generation prefix), so any filename heuristic would silently pick a
         // stale net and make this a false guard. Skip if the prod net isn't
         // present locally (run `make net`).
-        let net_path: Option<String> = std::env::var("CODA_TEST_NET").ok()
-            .filter(|p| std::path::Path::new(p).exists())
-            .or_else(|| {
-                let url = std::fs::read_to_string("net.txt").ok()?;
-                let name = url.trim().rsplit('/').next()?.trim().to_string();
-                (!name.is_empty() && std::path::Path::new(&name).exists()).then_some(name)
-            });
-        let net_path = match net_path {
+        let net_path = match super::test_net_path() {
             Some(p) => p,
             None => { eprintln!("Skipping fortress-drift test: no NNUE net found"); return; }
         };
@@ -7331,8 +7339,16 @@ mod tests {
         use crate::board::Board;
 
         crate::init();
+        let net_path = match super::test_net_path() {
+            Some(p) => p,
+            None => { eprintln!("Skipping excluded-move test: no NNUE net found"); return; }
+        };
         let mut info = SearchInfo::new(16);
         info.silent = true;
+        if let Err(e) = info.load_nnue(&net_path) {
+            eprintln!("Skipping excluded-move test: net load failed: {}", e);
+            return;
+        }
 
         let mut board = Board::from_fen(
             "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");

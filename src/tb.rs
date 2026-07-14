@@ -414,10 +414,18 @@ mod tests {
             Some(tb) => tb,
             None => { eprintln!("Skipping TB test: no tablebases found"); return; }
         };
+        let net_path = match crate::search::test_net_path() {
+            Some(p) => p,
+            None => { eprintln!("Skipping TB test: no NNUE net found"); return; }
+        };
 
         let mut info = crate::search::SearchInfo::new(16);
         info.syzygy = Some(std::sync::Arc::new(tb));
         info.silent = true;
+        if let Err(e) = info.load_nnue(&net_path) {
+            eprintln!("Skipping TB test: net load failed: {}", e);
+            return;
+        }
 
         // Walk through the last several positions of the game so that TT,
         // history, and pv_table all accumulate state from "real" earlier

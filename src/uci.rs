@@ -218,7 +218,7 @@ pub(crate) fn tt_ponder_hint(tt: &crate::tt::TT, after_best: &Board) -> Move {
     NO_MOVE
 }
 
-pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, classical: bool) {
+pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
     let mut board = Board::startpos();
     let mut info = SearchInfo::new(64);
     let mut stop_flag = info.stop.clone(); // keep a handle to signal stop from UCI loop
@@ -271,14 +271,11 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
         }
     } else {
         let loaded = info.auto_discover_nnue();
-        if !loaded && !classical {
-            eprintln!("Error: No NNUE net found. Cannot play without NNUE.");
-            eprintln!("  Use: -nnue <path>, 'setoption name NNUEFile value <path>',");
-            eprintln!("       'make' to embed, or '--classical' for PeSTO eval.");
+        if !loaded {
+            eprintln!("Error: No NNUE net found. An NNUE net is required to run.");
+            eprintln!("  Use: --nnue <path>, 'setoption name NNUEFile value <path>',");
+            eprintln!("       or 'make' to build ./coda with an embedded net.");
             std::process::exit(1);
-        }
-        if !loaded && classical {
-            eprintln!("info string Classical (PeSTO) eval mode — no NNUE net loaded.");
         }
     }
 
@@ -560,9 +557,11 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     }
                     pondermiss_pending = false; // consumed
                 }
-                // Warn if no NNUE net is loaded
+                // An NNUE net is required to search — refuse cleanly if absent.
                 if info.nnue_net.is_none() {
-                    println!("info string WARNING: No NNUE net loaded! Playing with classical eval.");
+                    println!("info string ERROR: No NNUE net loaded! An NNUE net is required.");
+                    println!("bestmove 0000");
+                    continue;
                 }
 
                 // Move info into search thread, get it back when search finishes
@@ -1301,7 +1300,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     }
                     crate::eval::evaluate_nnue(&board, net, acc, &ts)
                 } else {
-                    crate::eval::evaluate(&board)
+                    println!("info string ERROR: No NNUE net loaded! An NNUE net is required.");
+                    continue;
                 };
                 // Clean, parseable static-eval line (white POV, pawns) —
                 // matches the common `eval` output format so external
@@ -1815,8 +1815,16 @@ mod tests {
     #[test]
     fn tt_ponder_hint_recovers_after_real_search() {
         init();
+        let net_path = match crate::search::test_net_path() {
+            Some(p) => p,
+            None => { eprintln!("Skipping ponder-hint test: no NNUE net found"); return; }
+        };
         let mut info = crate::search::SearchInfo::new(16);
         info.silent = true;
+        if let Err(e) = info.load_nnue(&net_path) {
+            eprintln!("Skipping ponder-hint test: net load failed: {}", e);
+            return;
+        }
         let mut board = Board::from_fen(
             "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
         let limits = crate::search::SearchLimits {
