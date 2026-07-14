@@ -132,8 +132,8 @@ impl History {
     }
 
     /// Update cont-hist with gravity factor derived from a combined "base"
-    /// score (typically cont_hist + main_hist / 2). Stormphrax T6 pattern
-    /// (history.h:120) — gravity uses the move's combined signal strength
+    /// score (typically cont_hist + main_hist / 2). A cont-hist blend
+    /// technique from Stormphrax — gravity uses the move's combined signal strength
     /// instead of just the cell's own value, so cont-hist can converge
     /// even when main_hist already encodes the move's quality.
     pub fn update_cont_history_with_base(entry: &mut i16, base: i32, bonus: i32) {
@@ -664,7 +664,7 @@ impl MovePicker {
             }
 
             // Quiet check bonus: moves that give direct check (SF +16384).
-            // SEE-gated like SF (movepick.cpp): a check that loses material by more
+            // SEE-gated like SF: a check that loses material by more
             // than QUIET_CHECK_SEE_MARGIN is a losing sac — don't order it first.
             if piece != NO_PIECE
                 && pt < 6 && self.checking_sqs[pt as usize] & (1u64 << to) != 0

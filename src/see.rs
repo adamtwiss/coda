@@ -136,8 +136,8 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
         // promoting side ~1100cp too pessimistic, flipping SEE verdicts:
         // FEN 3R2k1/4P3/3q4/3r4/8/8/8/6K1 b, Qd6xd8 returned +640 vs true
         // -460 (see test_see_inloop_promotion_*). No reference engine
-        // special-cases this (SF position.cpp:1467 `swap = PawnValue -
-        // swap`; Berserk plain attacker value).
+        // special-cases this (SF folds it into its swap update; Berserk
+        // uses the plain attacker value).
         balance = -balance - 1 - see_value(att_pt);
 
         if balance >= 0 {

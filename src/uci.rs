@@ -1032,7 +1032,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             elapsed, soft, ponder_depth, failing_low, ponder_stab)
                         {
                             // P1 stopOnPonderhit (2026-07-05 ponder diagnosis;
-                            // SF search.cpp:563-571 technique): the pondered
+                            // SF stopOnPonderhit technique): the pondered
                             // time already covers this move's soft budget and
                             // the ponder search is deep + settled — emit the
                             // pondered bestmove with ~zero additional own

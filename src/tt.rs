@@ -648,8 +648,7 @@ pub fn is_win(score: i32) -> bool {
 /// rule (or graph-history interaction) can claim the draw first and
 /// the stored bound is potentially false. The distance check runs on
 /// the STORED score — which encodes plies-to-mate/TB from THIS
-/// position — exactly as SF (`VALUE_MATE - v > 100 - r50c`,
-/// `VALUE_TB - v > 100 - r50c`) do.
+/// position — exactly as SF does for both mate and TB scores.
 ///
 /// Downgrade targets keep Coda's P3 semantics: a false mate becomes a
 /// ply-anchored TB-level win signal (`TB_WIN - ply`, still inside the

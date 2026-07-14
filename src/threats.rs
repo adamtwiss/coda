@@ -941,7 +941,7 @@ fn threat_index_bullet_ref(
         + tables.ray_rank[attacker][from_f][to_f] as i32
 }
 
-/// Faithful port of post-C8fix-2 Bullet `map_features`
+/// Byte-exact match of Bullet's post-C8fix-2 `map_features` (required for net interop)
 /// (`bullet/crates/bullet_lib/src/game/inputs/chess_threats.rs` lines 374-578,
 /// commit 62931d1 + a8e2c7d).
 ///

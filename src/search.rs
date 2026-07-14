@@ -167,10 +167,10 @@ tunables!(
     (TM_INC_COVER_REF, 20, 5, 60, 4.0, false),
     (TM_MULT_CEIL_MIN_10X, 15, 10, 40, 2.0, false),
     (TM_MULT_CEIL_MAX_10X, 130, 40, 140, 8.0, false),
-    // Cross-thread best-move-instability TM factor (SF port, 2026-07-05).
+    // Cross-thread best-move-instability TM factor (concept from SF, 2026-07-05).
     // factor = BASE/1000 + MULT/1000 * (Σ per-thread bmc)/n_threads, applied
     // to the soft budget only at Threads>1. Defaults are SF's 1.088 / 2.315
-    // (search.cpp:519); will want a focused TM-cluster retune-on-branch since
+    // instability shape; will want a focused TM-cluster retune-on-branch since
     // Coda's TM uses the standard opt/hard/max + factor-product shape.
     // Fixed-point /1000 for the sub-integer
     // precision these multiplicative constants need. Not --core (TM is tuned
@@ -287,7 +287,7 @@ tunables!(
     // Threshold >2 fixed (SF uses >3) — not a knob.
     (LMR_CUTOFF_CNT_CENTI, 54, 0, 250, 12.0, true),
     (LMR_CUTOFF_ALLNODE_CENTI, 15, 0, 150, 8.0, true),
-    // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv. Coda's 4 fires SE at shallower depth where
+    // 2026-05-09 cross-engine adjustment (Tier 5.1): SF gates SE at >=6+ttPv. Coda's 4 fires SE at shallower depth where
     // singular_depth is too low to judge singularity reliably. Bumping
     // 4 → 6 first; ttPv add deferred to a follow-up if H1.
     (SE_DEPTH_10X, 41, 40, 200, 20.0, true),
@@ -399,7 +399,7 @@ tunables!(
     // SF default divisor 256.
     (HIST_SIBLING_DIV, 247, 64, 1024, 40.0, true),
     // PV/quiet/correction-aware DEXT margin.
-    // Matches SF (search.cpp:1153).
+    // Matches SF's double-extension margin shape.
     //
     // dext_margin = DEXT_MARGIN_PV   * is_pv
     //             - DEXT_MARGIN_QUIET * is_tt_quiet
@@ -643,7 +643,7 @@ pub fn ponderhit_credit_pct() -> u64 {
 
 /// `Ponder` UCI option state. Set by the GUI (cutechess/lichess-bot set it
 /// when pondering is enabled). Gates the +25% optimum pre-funding in
-/// `compute_tm_budgets` (SF timeman.cpp:134 semantics — applied on EVERY
+/// `compute_tm_budgets` (SF ponder-optimum pre-funding semantics — applied on EVERY
 /// move when on; refunded on average by the instant replies of
 /// `should_instant_reply`). Default false → bit-identical no-ponder behavior.
 pub static PONDER_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -695,7 +695,7 @@ pub const PH_FL_MAX_EXTENSIONS: u32 = 2;
 /// a real search frontier signals genuine destabilization.
 pub const PH_FL_MIN_DEPTH: i32 = 10;
 
-/// stopOnPonderhit-class instant-reply decision (SF search.cpp:563-571
+/// stopOnPonderhit-class instant-reply decision (SF stopOnPonderhit
 /// pattern, evaluated at the ponderhit instead of during pondering — our
 /// clock doesn't tick while pondering, so the budgets the move would have
 /// are computable at either point and the handler already has all inputs).
@@ -703,7 +703,7 @@ pub const PH_FL_MIN_DEPTH: i32 = 10;
 ///   - the pondered time already covers the soft budget the move would have
 ///     been given (`elapsed >= intended_soft`), AND
 ///   - the ponder search completed a real search (depth floor), AND
-///   - the root is not currently failing low (SF search.cpp:411-418: a root
+///   - the root is not currently failing low (SF fail-low pattern: a root
 ///     fail-low revokes the instant reply — spend extra time exactly when
 ///     the pondered conclusion destabilized), AND
 ///   - the elapsed window is not a double-ponderhit cascade artifact (see
@@ -974,7 +974,7 @@ pub struct SearchInfo {
     /// TB-move hits are reported separately at their own info lines.
     pub tb_hits: u64,
     pub global_nodes: std::sync::Arc<AtomicU64>,  // aggregate nodes across SMP threads
-    /// Cross-thread best-move-changes, PER THREAD (SF port). Thread `i` writes
+    /// Cross-thread best-move-changes, PER THREAD (concept from SF). Thread `i` writes
     /// slot `i` on a root best-move change; main reads+sums+resets per ID
     /// iteration for the instability TM factor. A PER-THREAD array (not one
     /// shared counter) so hundreds of TCEC-scale threads don't contend a single
@@ -1138,7 +1138,7 @@ pub struct SearchInfo {
     /// Root aspiration fail-low state (shared atomic). Set true by the main
     /// ID loop when a root aspiration search fails low, cleared when the
     /// widening re-search resolves inside the window. Read by the UCI thread
-    /// at ponderhit to REVOKE the instant reply (SF search.cpp:411-418
+    /// at ponderhit to REVOKE the instant reply (SF fail-low
     /// pattern: spend extra time exactly when the pondered conclusion
     /// destabilized). Relaxed ordering is correct: an independent bool gate
     /// with no data-dependency on other shared state — a stale `true` blocks
@@ -1820,7 +1820,7 @@ fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
     score * (200 - hm) / 200
 }
 
-/// TT-cutoff child-consistency verification (SF search.cpp:873-892, ported
+/// TT-cutoff child-consistency verification (technique from SF, re-implemented
 /// via the 2026-07-05 SF search audit, Tier 1 #3). Before trusting a DEEP
 /// (depth >= 7) TT cutoff, make the TT move (board-only — no NNUE work),
 /// probe the child's TT entry, and unmake. Returns true (decline the cutoff,
@@ -2625,7 +2625,7 @@ pub fn compute_tm_budgets(
         ((opt_time_base as f64) * phase_mult.clamp(0.22, 1.0)) as u64
     };
     // P3 (2026-07-05, ponder diagnosis): +25% optimum when the Ponder UCI
-    // option is on — SF timeman.cpp:134-135 semantics. Pre-funding applied
+    // option is on — SF ponder-optimum pre-funding semantics. Pre-funding applied
     // on EVERY move when pondering is enabled: the average move is refunded
     // by the pondered time itself (full-charge model) and by the
     // stopOnPonderhit-style instant replies. Do NOT ship without those
@@ -2836,7 +2836,7 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     // when main sets the shared stop flag.
     let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
     let mut prev_score = 0i32;
-    // Cross-thread TM (SF port): track this helper's best-move changes between
+    // Cross-thread TM (concept from SF): track this helper's best-move changes between
     // completed iterations and publish into its own slot of the shared array.
     let mut prev_best = NO_MOVE;
     let bmc_slot = thread_id.min(info.thread_bmc.len() - 1);
@@ -3259,7 +3259,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // P1 (ponder instant-reply gate): root is failing low —
                     // publish it so a ponderhit arriving NOW does not
                     // instant-emit the destabilized pondered conclusion
-                    // (SF search.cpp:411-418: fail-low revokes
+                    // (SF pattern: fail-low revokes
                     // stopOnPonderhit). Cleared when the re-search resolves
                     // below. Relaxed: independent bool gate, no dependent
                     // data (see field doc).
@@ -3554,11 +3554,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     info.tm_best_stable = 0;
                     // Phase 1: cumulative count of root best-move changes since
                     // search start. Drives an upward multiplier on tactically
-                    // unstable positions (Stockfish
-                    // `1.096 + 2.29 * totBestMoveChanges` pattern).
+                    // unstable positions (Stockfish's best-move-instability
+                    // multiplier pattern).
                     info.tm_best_move_changes = info.tm_best_move_changes.saturating_add(1);
                     // Publish main's change into its own slot (thread 0) of the
-                    // cross-thread bmc array (SF port). Read+reset in the TM block.
+                    // cross-thread bmc array (concept from SF). Read+reset in the TM block.
                     info.thread_bmc[0].fetch_add(1, Ordering::Release);
                 }
             }
@@ -3798,7 +3798,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Combined multiplier — the standard factors + score-trend + cross-thread.
             // Max product ~ 2.50 × 1.68 × 1.0 × 2.27 × 1.45 = 13.8×
             // Min product ~ 0.75 × 1.0  × 0.386 × 0.87 × 0.80 = 0.20×
-            // Factor 6: cross-thread best-move instability (SF port, Threads>1
+            // Factor 6: cross-thread best-move instability (concept from SF, Threads>1
             // only). Sum this iteration's best-move changes across ALL threads,
             // normalize by thread count, and scale time UP when the pool is
             // collectively still churning — main may have momentarily settled
@@ -4395,8 +4395,8 @@ fn negamax(
                 // narrowing happens at line 2776+ after this check).
                 // 2026-05-31 audit finding B.
                 let tt_cut_is_pv = beta - alpha > 1;
-                // Child-consistency verification for DEEP cutoffs (SF
-                // search.cpp:873-892; 2026-07-05 audit Tier1 #3): at depth>=7,
+                // Child-consistency verification for DEEP cutoffs (concept
+                // from SF; 2026-07-05 audit Tier1 #3): at depth>=7,
                 // make the TT move, probe the child's entry, unmake; decline
                 // the cutoff when the child's (negated) value contradicts the
                 // cutoff direction — rejects stale/one-sided deep cutoffs.
@@ -4659,7 +4659,7 @@ fn negamax(
 
     // Clear the grandchild cutoff counter so the `cutoff_count[ply+1]`
     // read in LMR reflects only fail-highs under THIS node's subtree
-    // (SF `(ss+2)->cutoffCnt = 0` pattern).
+    // (grandchild cutoff-counter reset, technique from SF).
     info.cutoff_count[ply_u + 2] = 0;
 
     // Eval instability: detect sharp eval swings from parent node
@@ -4707,7 +4707,7 @@ fn negamax(
         }
     }
 
-    // Hindsight extension (Stormphrax search.cpp:749-752): mirror of the
+    // Hindsight extension (concept from Stormphrax): mirror of the
     // reduction. When parent reduced aggressively (>=3) but the combined
     // eval shows position has worsened (eval_sum <= 0), extend +1 ply to
     // find the threat we missed. Non-PV only (PV already searched fully).
@@ -5094,7 +5094,7 @@ fn negamax(
                 info.stats.probcut_cutoffs += 1;
                 // TT stores the RAW verified score (a tighter lower bound than
                 // the dampened value) and preserves the sticky PV flag — matches
-                // Stockfish search.cpp:994-995. Prior code stored `dampened` and
+                // Stockfish. Prior code stored `dampened` and
                 // hardcoded tt_pv=false, losing both pruning information on
                 // future probes and the PV stickiness used by LMR reduction
                 // decisions. Return value is still dampened for normal
@@ -5372,7 +5372,7 @@ fn negamax(
 
                 if singular_score >= singular_beta && singular_beta >= beta {
                     // Multi-cut: alternatives are also good enough — prune the whole node.
-                    // Return singular_score (SF pattern, search.cpp:1183) — tighter score
+                    // Return singular_score (SF pattern) — tighter score
                     // for downstream TT propagation than singular_beta floor.
                     // EXCEPT decisive scores: singular_score is fail-soft from a
                     // reduced (depth-1)/2 search with the TT move EXCLUDED — a
@@ -5850,7 +5850,7 @@ fn negamax(
             // The reduction applies to the reduced search ONLY: zero the slot
             // before any re-search so children of the (near-)full-depth
             // re-searches don't read a stale prior_reduction and mis-fire
-            // hindsight reduce/extend (SF `ss->reduction = 0` after the
+            // hindsight reduce/extend (SF zeroes its reduction slot after the
             // reduced search; Stormphrax identical; audit T1.2).
             info.reductions[ply_u] = 0;
 
@@ -5904,7 +5904,7 @@ fn negamax(
                     };
                     if nudge_bonus != 0 {
                         let gp_mv = go_piece(moved_piece);
-                        // T6: base = current cont_hist + main_hist / 2 (Stormphrax history.h:120).
+                        // T6: base = current cont_hist + main_hist / 2 (concept from Stormphrax).
                         let main_score_v = info.history.main_score(from, to, enemy_attacks);
                         let ch_offsets = [1usize, 2, 4, 6];
                         for &off in &ch_offsets {
@@ -6017,8 +6017,8 @@ fn negamax(
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         // Fixed-point divisor (stored × 10).
                         let mut bonus = raw_bonus + raw_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
-                        // SF searched-count scale (search.cpp:1911-1914, Jun-2026
-                        // patch; audit W2): the more moves were refuted before
+                        // SF searched-count scale (Jun-2026 SF patch; audit
+                        // W2): the more moves were refuted before
                         // this one cut, the more informative the cutoff — scale
                         // the bonus up by moves-searched/256 at non-PV nodes.
                         if !is_pv {
@@ -6047,7 +6047,7 @@ fn negamax(
                         // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
                         if moved_piece != NO_PIECE {
                             let gp_mv = go_piece(moved_piece);
-                            // T6: base = current cont_hist + main_hist / 2 (Stormphrax history.h:120).
+                            // T6: base = current cont_hist + main_hist / 2 (concept from Stormphrax).
                             let main_score_v = info.history.main_score(from, to, enemy_attacks);
                             let ch_offsets = [1usize, 2, 4, 6];
                             for &off in ch_offsets.iter() {
@@ -6238,7 +6238,7 @@ fn negamax(
         }
     }
 
-    // Fail-low prior-countermove bonus (SF search.cpp:1523-1553, simple core;
+    // Fail-low prior-countermove bonus (SF technique, simplified core;
     // 2026-07-05 SF audit Tier 1 #2). When this node fails low with NO best
     // move, the opponent's previous quiet move "worked" — credit it in the
     // cont-hist context of our move before that, so the PARENT tries better
@@ -6246,8 +6246,8 @@ fn negamax(
     // (all-nodes); Coda previously learned nothing from it (updates fired only
     // on beta cutoffs + TT cutoffs). Indexing mirrors the TT-cutoff cont-hist
     // malus site (moved_piece_stack, pre-move pieces — C8 audit #6 pattern).
-    // NOTE: SF's gate is `!bestMove`, which in SF means "no move raised alpha"
-    // (they assign bestMove only on alpha raises). Coda tracks a fail-soft
+    // NOTE: SF's gate fires only when no move raised alpha
+    // (they set their best-move only on alpha raises). Coda tracks a fail-soft
     // best_move below alpha too, so the equivalent condition here is the
     // fail-low bound itself, NOT best_move == NO_MOVE (which never holds).
     if best_score <= alpha_orig
@@ -6286,7 +6286,7 @@ fn negamax(
     // (best_score - raw_eval) is then dominated by material change, not the
     // positional-eval miscalibration correction history is trying to learn.
     // Training on noisy bestmoves pollutes the tables. Matches Stockfish
-    // (search.cpp:1495: `!(bestMove && pos.capture(bestMove))`).
+    // (skip the update when the best move is a capture/promotion).
     let best_move_noisy = best_move != NO_MOVE && {
         board.piece_type_at(move_to(best_move)) != NO_PIECE_TYPE
             || move_flags(best_move) == FLAG_EN_PASSANT
@@ -6345,12 +6345,14 @@ fn negamax(
 }
 
 /// History bonus: linear depth-based bonus for history updates.
-/// Consensus: SF min(1469, 155*d-93), Clarity min(1632, 276*d-119),
-/// Obsidian min(1400, 175*d-50). Our old depth² formula gave 25 at d=5
-/// vs SF's 682 — history values were 27× too small to influence ordering.
+/// Consensus shape across SF/Clarity/Obsidian: a clamped linear-in-depth
+/// bonus (min(MAX, MULT*d - OFFSET)), each engine with its own coefficients.
+/// Our old depth² formula gave values ~27× too small at low depth to
+/// influence move ordering.
 fn history_bonus(depth: i32) -> i32 {
-    // Offset shape — mirrors Stockfish's `155*d - 93` and our own
-    // capture-history's `MULT * d - BASE`. Clamped at 0 to avoid
+    // Offset shape — the consensus linear-in-depth bonus (SF/Clarity/Obsidian
+    // all use MULT*d - OFFSET) with Coda's own SPSA-tuned coefficients; same
+    // form as our capture-history's `MULT * d - BASE`. Clamped at 0 to avoid
     // negative bonuses at very shallow depth (which would corrupt
     // gravity updates) and at MAX to cap the late-depth plateau.
     (tp(&HIST_BONUS_MULT) * depth - tp(&HIST_BONUS_OFFSET)).clamp(0, tp(&HIST_BONUS_MAX))
@@ -6535,7 +6537,7 @@ fn quiescence_with_depth(
 
             // Skip quiet evasions once we have a non-losing score (audit
             // T2.10): SF searches quiet evasions only while still losing
-            // (search.cpp:1681 `if (!capture) continue` inside !is_loss);
+            // (it skips non-captures inside its !is_loss guard);
             // Obsidian breaks after one quiet. Capture evasions always searched. The gate is
             // only satisfiable after at least one legal move scored, so
             // checkmate detection (move_count == 0) is unaffected.
@@ -7529,7 +7531,7 @@ mod tests {
 
     /// P1 instant-reply gate — fires when the pondered time covers the soft
     /// budget, the ponder search is deep enough, and the root is settled;
-    /// a root fail-low revokes it (SF search.cpp:411-418 pattern).
+    /// a root fail-low revokes it (SF pattern).
     #[test]
     fn ponder_instant_reply_fires_when_budget_covered() {
         // elapsed >= soft, depth >= floor, not failing low → instant.
@@ -7607,9 +7609,9 @@ mod tests {
     /// Regression guard for the PV-print legality check (fix/pv-print-legality
     /// -guard, 2026-05-31). The pv_table can carry a STALE sibling-line move —
     /// e.g. a king move from a square the king occupied in a different branch.
-    /// The bug: game 132 (Coda vs Velvet, pooled RR) printed `g2f3` 66× while
-    /// the king was on h2, emitting cutechess "Illegal PV move" warnings (a
-    /// latent lichess forfeit class, cf. oeZ7KRUt 2026-04-26). The fix stops
+    /// The bug: a printed PV repeated `g2f3` while the king was on h2,
+    /// emitting cutechess "Illegal PV move" warnings (a latent lichess
+    /// forfeit class). The fix stops
     /// the printed PV at the first move that fails is_pseudo_legal + is_legal
     /// on the running pv_board. This test asserts that exact predicate: a move
     /// legal in a sibling position is rejected against the current one.
