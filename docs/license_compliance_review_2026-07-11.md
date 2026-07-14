@@ -2,6 +2,24 @@
 
 *2026-07-11*
 
+> **Status (2026-07-13): initial pass — superseded in part by the fuller audit.**
+> This was Coda's *first* licence-compliance pass. A fuller audit followed and is
+> recorded in [`license_analysis_2026-07-13.md`](license_analysis_2026-07-13.md),
+> which is the current, authoritative record. Read this document with two things in
+> mind:
+>
+> - **It was not exhaustive.** The fuller audit surfaced material this pass had
+>   missed — most significantly the NNUE threat feature-**index construction**, which
+>   turned out to be closely modelled on Reckless (AGPL) and has since been reimplemented
+>   in Coda's own code. The "Reviewed and clean" list below reflects what this first
+>   pass had checked, not a final all-clear.
+> - **The plan below has since been carried out.** The remediation phases here
+>   (clean-room SIMD, removing the Reckless bucket layouts, training a net on Coda's
+>   own layout) are complete; the future-tense wording reflects the 2026-07-11
+>   snapshot.
+>
+> We keep this document unedited as the record of the first pass.
+
 ## Purpose
 
 Prompted by community discussion of licensing in agentically-developed engines,

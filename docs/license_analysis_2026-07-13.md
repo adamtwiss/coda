@@ -28,7 +28,7 @@ For a chess engine that means:
 - **Source text** (the specific code, names, structure, comments) is protectable
   expression — copying it is the thing to avoid. Our audit found instances where
   it had happened (see §3–§4): a few small reproduced tables, some SIMD whose
-  independence we could not fully guarantee, and one ported index construction.
+  independence we could not fully guarantee, and one closely-modelled index construction.
   Erring on the side of caution, we removed or independently reimplemented each.
   Elsewhere the resemblances are to algorithms and functional constants, not
   copied source.
@@ -181,9 +181,9 @@ This is the one place the audit found copied *expression* rather than a shared
 algorithm or functional data, so we call it out plainly. The threat-feature concept
 (piece P on square S attacks piece Q on square T) is shared with Stockfish and
 Reckless, and Coda's threat enumeration and accumulator code are Coda's own. But the
-threat feature-**index construction** in `threats.rs` was a close port of Reckless's
-(AGPL) `threat_index.rs`: a helper struct and its bit-packing were byte-identical,
-and the table construction followed it closely.
+threat feature-**index construction** in `threats.rs` was closely modelled on
+Reckless's (AGPL) `threat_index.rs` — to the point that a helper struct and its
+bit-packing were byte-identical, and the table construction followed it closely.
 
 We reimplemented that construction in **Coda's own code** (`c2cf119`) — our own
 structures, naming and control flow, not one engine's code swapped for another's —
