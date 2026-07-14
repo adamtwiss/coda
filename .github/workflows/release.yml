@@ -101,3 +101,28 @@ jobs:
           # our compare-base is a *-nets tag so the content is junk anyway.
           # Release notes are hand-written as part of the release ceremony
           # (gh release edit vX.Y.Z --notes-file ...).
+
+  licenses:
+    # Third-party license bundle — regenerated fresh from the dependency tree
+    # and attached to the release. Coda links GPL-3.0 chess libraries and a set
+    # of permissive (MIT/Apache/Unlicense) crates; this reproduces their notices
+    # as those licenses require. Platform-independent, so it runs once (not per
+    # matrix entry).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate THIRD_PARTY_LICENSES.md
+        run: |
+          cargo install cargo-bundle-licenses --quiet
+          cargo bundle-licenses --format json --output /tmp/licenses.json
+          python3 .github/gen-third-party-licenses.py /tmp/licenses.json THIRD_PARTY_LICENSES.md
+      - name: Upload artifact (always — dry-run output)
+        uses: actions/upload-artifact@v4
+        with:
+          name: THIRD_PARTY_LICENSES.md
+          path: THIRD_PARTY_LICENSES.md
+      - name: Attach to release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: THIRD_PARTY_LICENSES.md

@@ -53,9 +53,9 @@ today. This matters here:
 | License at reference time | Engines Coda cites | Implication for us |
 |---|---|---|
 | **AGPL-3.0** | **Reckless** (AGPL when we referenced its KB layout, 2026-05) | Incompatible with GPLv3 redistribution — any Reckless-derived code/constants must be removed or independently reimplemented. |
-| **MIT** (permissive, GPL-compatible) | **Viridithas** (MIT through v19/v20; relicensed to AGPL-3.0 **as of v21**, 2026-07-06 — after we referenced it); **Hobbes**, **Caissa** | GPL-compatible; obligation is attribution, not removal. |
-| **No detected license** | **integral** | "All rights reserved" by default — treat as most restrictive; avoid. |
-| **GPL-3.0** (compatible) | Stockfish, Obsidian, Alexandria, Berserk, PlentyChess, Halogen, Stormphrax, Clarity, Clover, Astra, Koivisto, Winter, Minic | Compatible with our GPLv3 intent. |
+| **MIT** (permissive, GPL-compatible) | **Viridithas** (MIT through v20; relicensed to AGPL-3.0 **as of v21**, 2026-07-06 — after we referenced it), **Hobbes**, **Midnight** | GPL-compatible; obligation is attribution, not removal. |
+| **WTFPL** (public-domain-equivalent, GPL-compatible) | **Starzix** | GPL-compatible; effectively no restrictions beyond honesty. |
+| **GPL-3.0** (compatible) | Stockfish, Obsidian, Alexandria, Berserk, PlentyChess, Stormphrax, Clarity, Halogen, Seer, Cinder, Clover, Igel, Minic, Tucano, Weiss | Compatible with our GPLv3 intent. |
 
 The vast majority of these citations are **attribution comments describing shared
 techniques**, not copied code. The audit's job is to separate the two.
@@ -84,18 +84,21 @@ When Coda studied Viridithas and set these constants (TM redesign 2026-05-26), a
 throughout our checkout (v19.0.1, 2026-06-20), **Viridithas was MIT-licensed**
 (Copyright 2022-2025 Cosmo Bobak). It relicensed to **AGPL-3.0 as of v21** on
 2026-07-06 — after the versions we referenced — and MIT stays in force for the
-versions released under it. This rebuts one specific claim only: what we took was
-**not an AGPL-copyleft violation**, because the source was MIT at the time. It does
-**not** mean nothing was taken, or that it doesn't matter, and MIT is not a
-licence to pass someone else's design off as our own. We treat it as: not an AGPL
-problem — still something to attribute and to make our own.
+versions released under it. This rebuts the specific claim of an
+**AGPL-copyleft violation**, because the source was MIT at the time. It does
+**not** mean nothing was taken, or that it doesn't matter — and MIT is not a license
+to pass someone else's design off as our own. What MIT does require is clear
+attribution, which was already present and has now been further clarified; our use of
+those MIT-era versions is consistent with it.
 
 ### Also true
 Coda had its own TM before this (a different 6-factor shape); the 2026-05-26
-redesign moved to the standard decomposition after a cross-engine audit; and
-roughly half the current TM code is Coda-original with its own test provenance
-(no-inc caps, adaptive moves-to-go, phase-scaling, ponder bump, score-trend and
-cross-thread factors, inc_cover ceiling).
+redesign moved to the standard opt/hard/max window decomposition after a
+cross-engine audit. A substantial part of the current TM is Coda-original, with its
+own test provenance — no-inc caps, adaptive moves-to-go, phase-scaling, ponder bump,
+score-trend and cross-thread factors, inc_cover ceiling — with no counterpart in the
+engines we studied; the remainder is our own implementation of that standard
+window/factor decomposition.
 
 ### What made it look worse than it was
 Coda's **own comments overstated what was taken** — "ports Viridithas's TM window
@@ -109,8 +112,10 @@ comment text, or the surrounding implementation. In our view that sits on the
 idea/fact side of the copyright line rather than being copied protectable
 expression — but we will not lean on that to claim more originality than we are
 owed. It was deliberate, and the originality critique has a fair point.
-Our response was to **attribute Viridithas plainly** and to **retune the constants
-on Coda**, rather than to argue the label — which we have now done.
+Our response was to **attribute Viridithas plainly** — a clear reference, kept in the
+code, that this part of the TM follows Viridithas's approach — and to **retune the
+constants on Coda's own search and net** so the operating point is our own, rather than
+to argue the label.
 
 ### The retune, and what it shows
 We exposed all of these TM constants as tunable parameters and ran our own SPSA
@@ -120,9 +125,9 @@ percent. That convergence is the informative part: a tuning constant sitting at 
 functional optimum is where any engine tuning for it ends up — the same reason
 piece values (a rook ~500–550) or LMR curve constants look alike across engines.
 The convergence shows these numbers are largely **scientific fact — a functional
-operating point — not creative or artistic expression that could be copied**. The
-constants are Coda's own tunable parameters, tuned and validated on Coda's own
-search and net.
+operating point — not creative or artistic expression that could be copied**.
+Following the tune, the constants are now Coda's own values, tuned and validated on
+Coda's own search and net.
 
 ## 2. King-bucket layout (`CONSENSUS_BUCKETS`)
 
@@ -149,7 +154,7 @@ layout (confirmed AGPL at 2026-05-31), so anything derived from it was a genuine
 incompatibility. We have already taken concrete action across several commits — not
 just flagged it:
 
-- **2026-07-11 (weekend licence pass, recorded in
+- **2026-07-11 (weekend license pass, recorded in
   `docs/license_compliance_review_2026-07-11.md`):** erring on the side of caution,
   removed the SIMD optimisations whose independence from Reckless we could not fully
   guarantee — the threat-feature path reverted to Coda's own **pre-existing** scalar
@@ -202,6 +207,71 @@ an over-attributing comment needed fixing, and a dead Reckless king-bucket layou
 table in a training example — unused since Coda stopped supporting that net format —
 was removed.
 
+## 5. The other engines Coda references (originality, not licensing)
+
+In addition to the AGPL concerns above, we extended the audit to the other engines
+Coda references — variously GPL-, MIT-, and WTFPL-licensed, all compatible with Coda's
+GPLv3 distribution. For the engines Coda draws on most substantially we did a detailed,
+expression-level comparison against their source; the remaining references are lighter
+— a named technique, or a constant cited in a cross-engine comparison. All these
+licenses permit sharing a *technique* with credit, so this was not a compliance
+question — it was about originality and the community's norms around attribution.
+
+- **No material code overlap.** We found no evidence of copied code from any of these
+  engines — no lifted functions, transliterated files, or engine-unique constants.
+  Where Coda implements a shared technique, the code is our own: our own structure,
+  naming, and tuned parameters.
+- **Ideas and approaches learned from other engines, and credited.** Coda's search
+  uses well-known techniques, many of them common across the strong open-source
+  engines, and our source comments credit them.
+- **Some small formulas and gates are necessarily similar.** A handful of functional
+  formulas and pruning gates closely resemble those elsewhere; in several places we
+  note the convergent choice explicitly ("engine X uses 3, engine Y uses 2"). These
+  are functional facts rather than creative expression, and they generally recur
+  across several engines rather than tracing to one.
+- **Consistent with community norms.** In the places where Coda's code most resembles
+  another engine's, the same pattern is typically used by multiple engines. We believe
+  our usage is consistent with both these licenses and the community's conventions for
+  crediting shared ideas.
+
+The one substantive MIT relationship — the time-management constants Coda studied from
+Viridithas (MIT at the time) — is documented in §1. Overall we found Coda's use of
+these engines' ideas to be fully consistent with their licenses and appropriately
+credited; the detailed, engine-by-engine review is kept in our internal notes.
+
+The engines whose ideas and techniques we credit in Coda's own source — with thanks to
+their authors — are, under the **GPL**: Stockfish, Berserk, Obsidian, Alexandria,
+Stormphrax, Clarity, PlentyChess, Halogen, Seer, Cinder, Clover, Igel, Minic, Tucano
+and Weiss; under the **MIT** license: Viridithas (its MIT-licensed versions through v20,
+before its v21 relicense to AGPL; see §1), Hobbes and Midnight; and under the **WTFPL**:
+Starzix. (We have looked at more engines than this over time; these are the ones we
+actually cite as sources of ideas.)
+
+## Third-party library licenses
+
+Separate from the engine *ideas* credited in §5, Coda **links** a number of
+third-party Rust libraries — and those carry real license obligations (ideas don't;
+linked code does). We reviewed the full dependency tree: every dependency is under a
+GPL-compatible license, and none is AGPL. Specifically:
+
+- **GPL-3.0 libraries** — `shakmaty`, `shakmaty-syzygy` and `pgn-reader` (Syzygy
+  tablebase probing and PGN handling), and `sfbinpack` (training-data format). Because
+  Coda links these, the combined binary is conveyed under the GPL — which is Coda's own
+  license anyway (`LICENSE`) — and corresponding source is available from this
+  repository.
+- **Permissive libraries** — the remaining crates are MIT / Apache-2.0 / Unlicense /
+  Unicode-3.0 (e.g. `clap`, `libc`, `serde`, and the `shakmaty` family's dependencies).
+  These are GPL-compatible; their copyright and permission notices are reproduced in
+  [`THIRD_PARTY_LICENSES.md`](../THIRD_PARTY_LICENSES.md).
+- **No dependency is AGPL** or otherwise incompatible with GPLv3 distribution.
+
+What we were missing was an explicit third-party licenses file: the notices lived in
+each crate's own source but were not collected for our binary distributions. We have
+now added [`THIRD_PARTY_LICENSES.md`](../THIRD_PARTY_LICENSES.md), which reproduces
+every dependency's copyright and permission notice. It is regenerated from the
+dependency tree at release time (`cargo bundle-licenses`) and attached to each release,
+so binary downloads now carry the third-party notices alongside the binary.
+
 ## What we changed (commits)
 - `28a09dc` — stripped remaining Reckless surface from the converter.
 - `b885c47` — corrected the KB-layout comment to describe it as a common pattern
@@ -217,6 +287,12 @@ was removed.
 - `a209817` / this doc — the analysis and remediation record.
 - `275b86b` — README notice asking people not to rely on the license or
   redistribute until the cleanup is complete.
+- `f31463a` — reworded engine-reference comments to credit techniques as shared
+  conventions (concept-from-X, not port-of-X) and dropped stale/foreign source
+  line-number citations; comment-only.
+- **third-party licenses** — added `THIRD_PARTY_LICENSES.md` (the linked dependencies'
+  notices) and wired its regeneration into the release build (see "Third-party library
+  licenses").
 
 ## Repository structure
 
@@ -225,16 +301,16 @@ single public repository — the engine, our per-engine study notes, research an
 analysis docs, data-processing tooling, and the AI-assistant skills — and continued
 that in the spirit of working in the open. Much of that internal material, though,
 is hard to publish cleanly under GPLv3: the per-engine study notes in particular
-reproduce substantial third-party engine source (across ~20 engines under various
-licences) — other people's copyrighted code, not ours to redistribute under our own
-licence — and the research docs and tooling carry similar entanglements.
+contain snippets of code from multiple engines under several different licenses —
+other people's copyrighted code, not ours to redistribute under our own license — and
+the research docs and tooling carry similar entanglements.
 
 So we moved the internal research and tooling — engine study notes,
 research/analysis docs, the data-processing scripts, and the assistant skills — into
 a **separate private repository**, leaving the public repository as the engine plus
 these licensing docs. This is a licensing-hygiene and cleanliness step, done in the
 open (recorded here and in the commit history, without rewriting history): it
-removes the problem of redistributing others' code under our own licence, and keeps
+removes the problem of redistributing others' code under our own license, and keeps
 the public repository clean and easy for others to build on.
 
 ## Git history
@@ -253,45 +329,41 @@ here, so the git *history* is not GPLv3-clean.** The intended clean state is the
 current tree once remediation is complete, and the redistribution caution in the
 README applies to the history as well as the current tree.
 
-## Audit scope and next steps
+## Audit scope and status
 
 We are not limiting remediation to the externally-reported spots.
 
-**Phasing.** The immediate priority is restoring clean licence *compliance* —
+**Phasing.** The immediate priority is restoring clean license *compliance* —
 removing the AGPL-incompatible material so Coda stands cleanly as GPLv3. A second
-pass then covers **originality, not just compliance**: even where a resemblance is
-licence-compatible (e.g. GPL), we want to find and tidy any specific spots where
+pass covers **originality, not just compliance**: even where a resemblance is
+license-compatible (e.g. GPL), we wanted to find and tidy any specific spots where
 our implementation followed another engine too closely, and confirm attribution is
-correct. This is loose-ends tidying, not a "clone" concern — Coda is its own engine
-— but it matters to us independently of the licence.
+correct. We have now done this for the other engines Coda references — see §5.
 
-**Planned audits (beyond what was reported):**
-1. **Full pass against the AGPL engines — Reckless, and Viridithas as of v21+.**
-   Reckless was AGPL when we referenced it; Viridithas relicensed to AGPL as of v21,
-   and we respect that choice by treating its v21+ source as off-limits. Grep source
-   and history for any code, constants, or table values that trace to either, on the
-   same principle applied to the KB layout and the converter leftovers.
-2. **Permissively-licensed engines (Viridithas pre-v21, Hobbes, Caissa) and the
-   unlicensed one (integral).** MIT material is licence-compatible, and attribution
-   is all the licence strictly requires — but licence-permitted is not the same as
-   good faith within the engine community, and we hold ourselves to the latter:
-   clear attribution, and not presenting another author's design or constants as our
-   own. An unlicensed repo (integral) is treated as all-rights-reserved and avoided.
-   Confirm we hold no verbatim expression from any of them.
-3. **Internal research notes and docs.** These have been moved out of this public
-   repository into a private one, so they are no longer distributed under GPLv3 —
-   which removes the licensing exposure. The residual check is internal hygiene:
-   confirming no third-party snippet pasted into a note ever seeded shipped source.
-4. **GoChess** (the predecessor engine Coda was rewritten from): the same pass — its
-   licence, and whether it contains any threats/NNUE or Reckless/Viridithas material.
-   It predates the threats feature and the Bullet-trained NNUE work, so we expect it
-   clean, but will confirm and record the result either way.
+**Further audits.** Beyond the externally-reported spots we set out to check several
+other areas. These are now largely complete:
+
+1. **AGPL engines (Reckless; Viridithas v21+) — done.** The Reckless-derived code has
+   been removed or reimplemented (§3, §4), and our source review found nothing further
+   tracing to Reckless or to Viridithas's post-relicense (v21+) source. (Older git
+   history still contains the removed material — see "Git history".)
+2. **The other engines Coda references (GPL, MIT, WTFPL) — done.** Reviewed in §5: no
+   copied expression, and appropriately credited. Engines Coda does not reference — such
+   as the unlicensed *integral* — are simply not used as a source.
+3. **Internal research notes and docs — done.** Moved out of this public repository into
+   a private one (see "Repository structure"), which removes the exposure of
+   redistributing third-party source under our own license.
+4. **GoChess** (the predecessor engine Coda was rewritten from) — **still to do.**
+   GoChess is no longer actively developed — Coda superseded it — but we will run the
+   same kind of review there, for the same patterns. It predates the material covered in
+   items 1–3 above, so we expect it to be largely unaffected, but will confirm and record
+   the result either way.
 
 **Defensive measures going forward (to be encoded in CLAUDE.md):**
 1. **Restrict the idea-reference set to GPL-3.0-compatible engines** and **exclude
    AGPL engines (Reckless, and Viridithas v21+) entirely** — their copyleft is
-   incompatible with our distribution. Permissive-licensed engines (MIT/BSD) may be
-   referenced with attribution.
+   incompatible with our distribution. Permissive-licensed engines (MIT/BSD/WTFPL) may
+   be referenced with attribution.
 2. **Ideas, never expression.** Reference engines are studied to learn the
    *technique*; Coda's implementation is written independently, and no code, comment
    text, or tuning constant is copied — even from license-compatible engines.
