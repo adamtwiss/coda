@@ -224,19 +224,19 @@ tunables!(
     // TC/ponder-matched, never swept by the routine --core retune (same rationale
     // as the TM_* block above). TM constants are bench-invariant (bench is
     // fixed-depth; TM budgets aren't consulted), so a TM tune never moves the bench.
-    (TM_MAX_BANK_1000, 600, 400, 750, 15.0, false),   // max_time = clock * N/1000
-    (TM_HARD_WINDOW_PCT, 46, 25, 65, 2.5, false),     // hard_time = clock * N/100
+    (TM_MAX_BANK_1000, 599, 400, 750, 15.0, false),   // max_time = clock * N/1000
+    (TM_HARD_WINDOW_PCT, 47, 25, 65, 2.5, false),     // hard_time = clock * N/100
     (TM_OPT_WINDOW_PCT, 73, 45, 95, 3.0, false),      // opt = computed * N/100
-    (TM_INC_FRAC_PCT, 94, 40, 100, 4.0, false),       // computed += inc * N/100
+    (TM_INC_FRAC_PCT, 93, 40, 100, 4.0, false),       // computed += inc * N/100
     (TM_DEFAULT_MTG, 24, 14, 40, 1.5, false),         // sudden-death moves-to-go
-    (TM_STAB_0_100, 171, 100, 260, 8.0, false),       // stability table [0] * 1/100
-    (TM_STAB_1_100, 120, 80, 180, 5.0, false),        // stability table [1]
+    (TM_STAB_0_100, 175, 100, 260, 8.0, false),       // stability table [0] * 1/100
+    (TM_STAB_1_100, 122, 80, 180, 5.0, false),        // stability table [1]
     (TM_STAB_2_100, 90, 60, 130, 3.0, false),         // stability table [2]
     (TM_STAB_3_100, 80, 50, 120, 3.0, false),         // stability table [3]
-    (TM_STAB_4_100, 75, 40, 110, 3.0, false),         // stability table [4+]
-    (TM_FAIL_LOW_BONUS_1000, 340, 100, 700, 20.0, false), // 1 + N/1000 * fail_lows
-    (TM_FORCED_STRONG_1000, 386, 150, 700, 20.0, false),  // strong-forced * N/1000
-    (TM_FORCED_WEAK_1000, 627, 300, 950, 25.0, false),    // weak-forced * N/1000
+    (TM_STAB_4_100, 74, 40, 110, 3.0, false),         // stability table [4+]
+    (TM_FAIL_LOW_BONUS_1000, 350, 100, 700, 20.0, false), // 1 + N/1000 * fail_lows
+    (TM_FORCED_STRONG_1000, 381, 150, 700, 20.0, false),  // strong-forced * N/1000
+    (TM_FORCED_WEAK_1000, 631, 300, 950, 25.0, false),    // weak-forced * N/1000
     (TM_SUBTREE_MULT_100, 140, 90, 200, 4.0, false),      // (base-frac) * N/100
     (TM_FORCED_MARGIN_WEAK, 170, 80, 320, 8.0, false),    // weak-forced cp margin
     (TM_FORCED_MARGIN_STRONG, 400, 200, 620, 12.0, false),// strong-forced cp margin
