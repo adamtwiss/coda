@@ -494,10 +494,12 @@ impl TT {
                 return;
             }
 
-            // Track worst slot for replacement: depth - 8*age (matches SF's
-            // GENERATION_DELTA=8). Stale entries depreciate twice as fast as
-            // the previous `*4`, freeing slots for fresh shallow entries
-            // when TT pressure is high.
+            // Track worst slot for replacement: depth - 8*age. This
+            // depth-minus-8xage form is the same as Obsidian's replacement
+            // score (getDepth() - 8*getAgeDistance()) and SF's
+            // GENERATION_DELTA=8 — a convergent power-of-two coefficient.
+            // Stale entries depreciate twice as fast as the previous `*4`,
+            // freeing slots for fresh shallow entries when TT pressure is high.
             let age = gen.wrapping_sub(slot_gen) as i32;
             let slot_score = slot_depth - age * 8;
             if slot_score < replace_score {
