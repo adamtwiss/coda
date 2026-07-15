@@ -16,6 +16,7 @@ NET_URL := $(shell cat net.txt 2>/dev/null)
 # OB overrides this with an absolute path to the network file.
 EVALFILE := $(if $(NET_URL),$(notdir $(NET_URL)),net.nnue)
 MIN_RUST_VERSION := 1.70.0
+comma := ,
 
 # Platform detection
 ifeq ($(OS),Windows_NT)
@@ -32,9 +33,12 @@ export RUSTFLAGS := -Ctarget-cpu=native
 # Default: build with embedded NNUE net (downloads from net.txt if needed)
 # EVALFILE may be overridden by OpenBench with an absolute path to the network
 rule: check-rust net
-	CODA_EVALFILE=$(abspath $(EVALFILE)) cargo rustc --release --features embedded-net -- --emit link=$(NAME)
+	CODA_EVALFILE=$(abspath $(EVALFILE)) cargo rustc --release --features embedded-net$(if $(TUNE),$(comma)tune) -- --emit link=$(NAME)
 
-# Alias for OpenBench compatibility
+# OpenBench build — enables the `tune` feature so the SPSA tunable UCI options are
+# advertised (required for OpenBench SPSA to setoption them). Normal `make` and the
+# release build keep them hidden. Point OpenBench's Coda build command at `make openbench`.
+openbench: TUNE := 1
 openbench: rule
 
 # PGO build (profile-guided optimization).

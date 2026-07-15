@@ -323,7 +323,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 // default -1 = "unset" sentinel → full charge (100). See
                 // search::PONDERHIT_CREDIT_PCT (full-charge model 2026-07-05).
                 println!("option name PonderhitCreditPct type spin default -1 min -1 max 100");
-                // Tunable search parameters (for SPSA)
+                // Tunable search parameters (for SPSA) — only advertised in tuning
+                // builds (`make openbench` / `--features tune`); hidden in normal and
+                // release builds so end users see just the public options.
+                #[cfg(feature = "tune")]
                 for (name, _, default, min, max, _c_end, _is_core) in crate::search::tunable_params() {
                     println!("option name {} type spin default {} min {} max {}", name, default, min, max);
                 }
@@ -1652,7 +1655,10 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize,
             }
         }
         _ => {
-            // Check tunable search parameters
+            // Check tunable search parameters — only in tuning builds (see the `tune`
+            // feature). Normal builds don't advertise them, so fastchess/GUIs won't
+            // send them; a stray manual setoption is simply ignored here.
+            #[cfg(feature = "tune")]
             for (pname, param, _, min, max, _c_end, _is_core) in crate::search::tunable_params() {
                 if name == pname {
                     if let Ok(v) = value.parse::<i32>() {

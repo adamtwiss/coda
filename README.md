@@ -55,7 +55,7 @@ cargo install cargo-pgo
 | TBHash | spin (0-1024) | 16 | Tablebase probe cache size in MB |
 | SyzygyProbeDepth | spin (1-100) | 4 | Minimum depth for TB probes during search |
 
-The engine also exposes its ~130 search parameters as UCI options for SPSA tuning; these are not intended for end users.
+The engine has ~130 internal search parameters that can be exposed as UCI options for SPSA tuning, but these are **hidden by default** — release binaries and normal `make` builds show only the options above. Tuning builds (`make openbench`, or `cargo … --features tune`) advertise them; they are not intended for end users.
 
 ## Strength
 

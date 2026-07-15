@@ -28,6 +28,11 @@ clap = { version = "4.6.0", features = ["derive"] }
 
 [features]
 embedded-net = []
+# Advertise the SPSA `tunables!` params as UCI spin options (and accept setoption for
+# them). OFF by default so normal/release builds show only the public options; enabled
+# for OpenBench SPSA via `make openbench` (or `--features tune`). Behaviour-neutral —
+# gates UCI exposure only, not search — so bench is identical either way.
+tune = []
 # Optional .bz2 decompression for `import-pgn` (NOT default — keeps the OB/make
 # build free of the bzip2-sys C dependency). Build local data-prep with
 # `cargo build --release --features bz2`.
