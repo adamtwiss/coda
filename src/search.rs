@@ -604,7 +604,7 @@ pub static SE_TT_DEPTH_SLACK: AtomicI32 = AtomicI32::new(3);
 pub static MVV_CAP_MULT: AtomicI32 = AtomicI32::new(28);
 // Demote-batch 2 (2026-05-23): 5 more NONCORE_QUIET from cross-tune analysis
 // — all moved <20% under #1419 noise. Same rationale as batch 1.
-pub static SEE_MATERIAL_SCALE: AtomicI32 = AtomicI32::new(215);
+pub static SEE_MATERIAL_SCALE: AtomicI32 = AtomicI32::new(211);
 pub static QS_SEE_THRESHOLD: AtomicI32 = AtomicI32::new(-26);
 pub static CAP_HIST_BASE: AtomicI32 = AtomicI32::new(42);
 pub static LMR_COMPLEXITY_DIV: AtomicI32 = AtomicI32::new(152);
