@@ -317,12 +317,20 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 println!("option name SyzygyPath type string default <empty>");
                 println!("option name TBHash type spin default 16 min 0 max 1024");
                 println!("option name SyzygyProbeDepth type spin default 4 min 1 max 100");
-                println!("option name HiddenActivation type combo default screlu var screlu var crelu");
-                println!("option name LoadAnyway type check default false");
-                println!("option name TMDebug type check default false");
-                // default -1 = "unset" sentinel → full charge (100). See
-                // search::PONDERHIT_CREDIT_PCT (full-charge model 2026-07-05).
-                println!("option name PonderhitCreditPct type spin default -1 min -1 max 100");
+                // Internal/dev options — advertised only in tuning builds
+                // (`make openbench` / `--features tune`) so they don't clutter GUI
+                // option lists in normal/release builds. The `setoption` handlers
+                // for these stay live in ALL builds, so a developer can still set
+                // them directly by name without a special binary.
+                #[cfg(feature = "tune")]
+                {
+                    println!("option name HiddenActivation type combo default screlu var screlu var crelu");
+                    println!("option name LoadAnyway type check default false");
+                    println!("option name TMDebug type check default false");
+                    // default -1 = "unset" sentinel → full charge (100). See
+                    // search::PONDERHIT_CREDIT_PCT (full-charge model 2026-07-05).
+                    println!("option name PonderhitCreditPct type spin default -1 min -1 max 100");
+                }
                 // Tunable search parameters (for SPSA) — only advertised in tuning
                 // builds (`make openbench` / `--features tune`); hidden in normal and
                 // release builds so end users see just the public options.
