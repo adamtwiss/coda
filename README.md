@@ -18,7 +18,7 @@ Coda is a strong UCI chess engine, developed entirely through human-AI collabora
 
 Pre-built binaries with the embedded production network are available on the [releases page](https://github.com/adamtwiss/coda/releases) — Linux (x86-64 and aarch64, static musl), Windows and macOS (Apple Silicon). They work out of the box: no network file or configuration needed, and SHA-256 checksums are attached.
 
-Which x86-64 binary? Take **v3** on anything from roughly 2013 onwards (Haswell or newer / any Ryzen) — it's measurably faster (~12% NPS) than v2 thanks to the newer compiler baseline. Take **v2** only if v3 exits with an illegal-instruction error on your older hardware. NNUE SIMD kernels (AVX2/AVX-512-VNNI/NEON) are selected at runtime in both, so within one binary you always get the fastest evaluation path your CPU supports. Releases are marked pre-release while the engine approaches 1.0.
+Which x86-64 binary? Take **v3** on anything from roughly 2013 onwards (Haswell or newer / any Ryzen) — it's measurably faster (~12% NPS) than v2 thanks to the newer compiler baseline. Take **v2** only if v3 exits with an illegal-instruction error on your older hardware. NNUE SIMD kernels (AVX2/AVX-512-VNNI/NEON) are selected at runtime in both, so within one binary you always get the fastest evaluation path your CPU supports.
 
 ## Build from Source
 
