@@ -594,6 +594,13 @@ tunables!(
     // Complements the within-search drop term (fixed 0.0025). Default matches
     // that scale (25 → 0.0025). TM change: validate via local cross-engine RR.
     (CROSS_MOVE_TREND, 25, 0, 150, 8.0, false),
+    // Non-core: excluded from --core retunes, but kept on the SPSA surface. It
+    // was demoted (frozen) in batch 2 on a "noise-dominated, nothing to give"
+    // read; the 2026-07-15 focused single-param tune (2743) falsified that —
+    // 215->211 passed SPRT 2746 (H1, +0.72). Left non-core so it stays visible
+    // and re-tunable. NOTE for full sweeps: it retains loose-knob gradient
+    // noise, so exclude it from --no-core runs if it destabilises neighbours.
+    (SEE_MATERIAL_SCALE, 211, 30, 300, 13.5, false),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
@@ -602,9 +609,10 @@ tunables!(
 pub static FH_BLEND_OFFSET: AtomicI32 = AtomicI32::new(1);
 pub static SE_TT_DEPTH_SLACK: AtomicI32 = AtomicI32::new(3);
 pub static MVV_CAP_MULT: AtomicI32 = AtomicI32::new(28);
-// Demote-batch 2 (2026-05-23): 5 more NONCORE_QUIET from cross-tune analysis
+// Demote-batch 2 (2026-05-23): NONCORE_QUIET knobs from cross-tune analysis
 // — all moved <20% under #1419 noise. Same rationale as batch 1.
-pub static SEE_MATERIAL_SCALE: AtomicI32 = AtomicI32::new(211);
+// (SEE_MATERIAL_SCALE was un-demoted 2026-07-15 back to non-core after a focused
+// tune found real Elo in it — see the tunables! macro above.)
 pub static QS_SEE_THRESHOLD: AtomicI32 = AtomicI32::new(-26);
 pub static CAP_HIST_BASE: AtomicI32 = AtomicI32::new(42);
 pub static LMR_COMPLEXITY_DIV: AtomicI32 = AtomicI32::new(152);
