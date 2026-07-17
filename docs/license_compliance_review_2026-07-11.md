@@ -14,7 +14,7 @@
 >   in Coda's own code. The "Reviewed and clean" list below reflects what this first
 >   pass had checked, not a final all-clear.
 > - **The plan below has since been carried out.** The remediation phases here
->   (clean-room SIMD, removing the Reckless bucket layouts, training a net on Coda's
+>   (independently re-writing the SIMD in Coda's own code, removing the Reckless bucket layouts, training a net on Coda's
 >   own layout) are complete; the future-tense wording reflects the 2026-07-11
 >   snapshot.
 >

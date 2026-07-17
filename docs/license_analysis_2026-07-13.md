@@ -158,9 +158,9 @@ just flagged it:
   `docs/license_compliance_review_2026-07-11.md`):** erring on the side of caution,
   removed the SIMD optimisations whose independence from Reckless we could not fully
   guarantee — the threat-feature path reverted to Coda's own **pre-existing** scalar
-  implementation (`ad4fc74`), and the setwise attack kernels were rewritten from
-  scratch as clean-room AVX2 (`eb92686`, asserted byte-identical to Coda's own
-  scalar oracle). Removed and redacted reproduced Reckless source from the research
+  implementation (`ad4fc74`), and the setwise attack kernels were rewritten in
+  Coda's own code — a vectorisation of that scalar oracle plus the public-domain
+  Kogge-Stone fill (`eb92686`, asserted byte-identical to the scalar oracle). Removed and redacted reproduced Reckless source from the research
   docs (`984b80b`), and did an attribution + reference-hygiene pass (`2baaf0c`,
   `c6c518b`). Cost ~3% NPS on affected x86 hosts, accepted for compliance.
 - **2026-07-13:** removed the Reckless kb10 king-bucket and output-bucket layout
@@ -375,6 +375,16 @@ attributes to Stockfish, not to any of these engines), all written in Coda's
 independent code. We did **not** include **Viridithas** in this review: the
 Viridithas code Coda studied was under **MIT**, pre-dating that engine's v21 relicense to AGPL, so there
 is no AGPL-Viridithas source for Coda to have derived from.
+
+**On the "clean-room" wording (2026-07-17).** We had earlier described the SIMD
+re-write as "clean-room." Following feedback that a single agent both analysing the
+original and writing the replacement does not meet a strict clean-room (separate-teams)
+standard, we have reworded it to state plainly what was done: the AVX2 kernels are a
+vectorisation of Coda's own scalar code plus the public-domain Kogge-Stone algorithm.
+The load-bearing point does not depend on the process label — **the result contains no
+copied protectable expression, which we verified by direct comparison against the
+engines' published source.** Non-infringement turns on whether the output copies
+expression, not on what the process is called.
 
 **Defensive measures going forward (to be encoded in CLAUDE.md):**
 1. **Restrict the idea-reference set to GPL-3.0-compatible engines** and **exclude
