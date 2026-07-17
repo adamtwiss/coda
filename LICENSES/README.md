@@ -3,6 +3,8 @@
 This directory records the open-source chess engines Coda studied and credits as
 sources of code or ideas, grouped by license.
 
+A copy of the Open Database License v1 is attached, for the use of data provided by the Leela Chess Zero team, located here: https://storage.lczero.org/files/training_data
+
 ## AGPL-3.0
 
 Same copyleft as Coda's AGPL-3.0 license.
