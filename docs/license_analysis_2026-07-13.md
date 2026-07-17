@@ -366,6 +366,16 @@ studied more recently) — none contributed any shipped code. Where we had noted
 from them, those experiments failed testing and were never merged. All three are now on
 our AGPL-exclude list.
 
+**Direct source-code reviews (2026-07-17).** As a further step, we have now done
+direct source-code reviews of Coda's current source against the published source of
+**every AGPL engine in question — Reckless, Icarus, Raphael, and Tcheran**. We found
+**no copied protectable expression** in any case: the only overlaps are convergent Stockfish-lineage idioms and an
+interop-mandated encoding (the threat-feature index, which Coda's own code
+attributes to Stockfish, not to any of these engines), all written in Coda's
+independent code. We did **not** include **Viridithas** in this review: the
+Viridithas code Coda studied was under **MIT**, pre-dating that engine's v21 relicense to AGPL, so there
+is no AGPL-Viridithas source for Coda to have derived from.
+
 **Defensive measures going forward (to be encoded in CLAUDE.md):**
 1. **Restrict the idea-reference set to GPL-3.0-compatible engines** and **exclude
    AGPL engines (Reckless, Viridithas v21+, Icarus, Raphael, Tcheran) entirely** — their copyleft is
@@ -377,6 +387,11 @@ our AGPL-exclude list.
 3. **Attribute techniques as general/cross-engine conventions**, not as ports of a
    specific engine's change, and keep provenance notes accurate (neither
    overstating nor concealing).
+4. **No AGPL engine source retained on our machines.** We have removed the source
+   code of all AGPL-licensed reference engines from our development machines,
+   deleted our internal crib-notes covering them, and use only their official
+   **binary releases** for cross-engine testing (running a binary carries no
+   license obligation). This should prevent any future possibility of AGPL-licensed code entering Coda.
 
 ## Position
 
@@ -400,5 +415,9 @@ and we do not believe any *copied protectable expression* now remains. We are
 comfortable that we have credited the ideas we drew from MIT- and GPL-licensed engines
 and that we are using them fairly.
 
-*If any author believes specific protectable expression remains, we want to hear
-the specifics and will review and take appropriate steps to correct it.*
+*If any author — or anyone — believes specific protectable third-party expression
+remains in Coda, please tell us the specifics — ideally by opening a
+[GitHub issue](https://github.com/adamtwiss/coda/issues). We will review it promptly
+and take the appropriate corrective step — removing the code where a license
+requires it, or correcting the attribution where a permissive license allows reuse
+with credit.*
