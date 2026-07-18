@@ -292,7 +292,7 @@ tunables!(
     // 4 → 6 first; ttPv add deferred to a follow-up if H1.
     (SE_DEPTH_10X, 41, 40, 200, 20.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
-    (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, false),
+    (ASP_SCORE_DIV, 12000, 8000, 50000, 2100.0, false),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian all
     // use LMP_BASE=3 with the same `(BASE + d²)/(2 - improving)` formula.
     // Coda's 9 is 3× consensus at d=1: allows 5-10 quiets vs SF's 2-4.
