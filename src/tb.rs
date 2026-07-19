@@ -21,6 +21,19 @@ pub struct SyzygyTB {
     cache: TbCache,
 }
 
+/// Split a `SyzygyPath` value into individual directories using the
+/// platform PATH-list convention (`:` on Unix, `;` on Windows) — the same
+/// syntax as `$PATH` / `%PATH%`. Empty entries are dropped. Using the OS
+/// convention (via `std::env::split_paths`) is what makes a Windows drive
+/// letter safe: `C:\tb\6;D:\tb\7` splits on `;`, so the `:` after a drive
+/// letter is never mistaken for a separator. Quote-stripping of a GUI's
+/// surrounding quotes happens earlier, in `uci::setoption_value`.
+fn syzygy_dirs(path: &str) -> Vec<std::path::PathBuf> {
+    std::env::split_paths(path)
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect()
+}
+
 impl SyzygyTB {
     /// Initialize tablebases from a directory path. Uses the default
     /// cache size; call `with_cache_mb` to customise.
@@ -29,14 +42,42 @@ impl SyzygyTB {
     }
 
     /// Initialize tablebases with a specific cache size in MB (0 disables).
+    ///
+    /// `path` may list several directories using the platform PATH-list
+    /// convention — `:` on Unix, `;` on Windows, exactly like `$PATH` /
+    /// `%PATH%` — so e.g. 3-4-5-man, 6-man and 7-man tables can live on
+    /// separate disks. Each directory is added independently: one that
+    /// fails to load is warned about and skipped rather than aborting the
+    /// rest. Only if *no* directory loads is an error returned.
     pub fn new_with_cache(path: &str, cache_mb: usize) -> Result<Self, String> {
         let mut tb = Tablebase::new();
-        tb.add_directory(path).map_err(|e| format!("Syzygy init: {}", e))?;
+        let mut loaded = 0usize;
+        let mut last_err: Option<String> = None;
+        for dir in syzygy_dirs(path) {
+            match tb.add_directory(&dir) {
+                Ok(_) => loaded += 1,
+                Err(e) => {
+                    let msg = format!("{}: {}", dir.display(), e);
+                    eprintln!("info string Syzygy: skipping directory {}", msg);
+                    last_err = Some(msg);
+                }
+            }
+        }
+        if loaded == 0 {
+            return Err(format!(
+                "Syzygy init: no tablebase directory loaded from {:?}{}",
+                path,
+                last_err.map(|e| format!(" (last error: {})", e)).unwrap_or_default()
+            ));
+        }
 
         let max_pieces = tb.max_pieces();
         let cache = TbCache::new(cache_mb);
-        eprintln!("info string Syzygy tablebases loaded: {} pieces from {}, cache {} MB",
-                  max_pieces, path, cache.size_mb());
+        // Keep the single-directory line byte-identical to before (scripts
+        // grep it); only annotate the directory count when several loaded.
+        let dir_note = if loaded > 1 { format!(" ({} dirs)", loaded) } else { String::new() };
+        eprintln!("info string Syzygy tablebases loaded: {} pieces from {}{}, cache {} MB",
+                  max_pieces, path, dir_note, cache.size_mb());
 
         Ok(SyzygyTB { tb, max_pieces, cache })
     }
@@ -223,6 +264,67 @@ fn dtz_to_wdl_score(dtz: MaybeRounded<Dtz>, halfmove: i32) -> i32 {
         if cursed { -1 } else { -20000 }
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::syzygy_dirs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn single_path_is_one_directory() {
+        // Common case, platform-independent: no separator → one directory.
+        assert_eq!(syzygy_dirs("/tablebases"), vec![PathBuf::from("/tablebases")]);
+    }
+
+    #[test]
+    fn empty_string_yields_nothing() {
+        assert!(syzygy_dirs("").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn multiple_paths_split_on_colon() {
+        assert_eq!(
+            syzygy_dirs("/tb/3-4-5:/tb/6:/tb/7"),
+            vec![
+                PathBuf::from("/tb/3-4-5"),
+                PathBuf::from("/tb/6"),
+                PathBuf::from("/tb/7"),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spaces_are_part_of_the_name_not_separators() {
+        // A directory name may contain spaces; only the list separator
+        // splits. (Combined with uci::setoption_value stripping a GUI's
+        // surrounding quotes, this is what makes spaced paths work.)
+        assert_eq!(
+            syzygy_dirs("/my tables/6 man:/other tb"),
+            vec![PathBuf::from("/my tables/6 man"), PathBuf::from("/other tb")]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn empty_segments_are_dropped() {
+        assert_eq!(
+            syzygy_dirs("/tb/a::/tb/b"),
+            vec![PathBuf::from("/tb/a"), PathBuf::from("/tb/b")]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_splits_on_semicolon_preserving_drive_colon() {
+        // The `:` after a drive letter must NOT be read as a separator.
+        assert_eq!(
+            syzygy_dirs("C:\\tb\\6;D:\\tb\\7"),
+            vec![PathBuf::from("C:\\tb\\6"), PathBuf::from("D:\\tb\\7")]
+        );
     }
 }
 
