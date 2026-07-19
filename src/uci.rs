@@ -307,7 +307,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
             "uci" => {
                 println!("id name Coda {}", env!("CODA_VERSION"));
                 println!("id author Adam Twiss");
-                println!("option name Hash type spin default 64 min 1 max 4096");
+                println!("option name Hash type spin default 64 min 1 max 65536");
                 println!("option name Threads type spin default 1 min 1 max 256");
                 println!("option name NNUEFile type string default <empty>");
                 println!("option name OwnBook type check default true");
@@ -1573,7 +1573,7 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize,
     match name {
         "Hash" => {
             if let Ok(mb) = value.parse::<usize>() {
-                info.tt = std::sync::Arc::new(crate::tt::TT::new(mb.max(1).min(4096)));
+                info.tt = std::sync::Arc::new(crate::tt::TT::new(mb.max(1).min(65536)));
             }
         }
         "NNUEFile" => {

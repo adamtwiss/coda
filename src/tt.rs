@@ -163,18 +163,25 @@ impl AlignedBuckets {
     const HUGE_PAGE: usize = 2 * 1024 * 1024; // 2 MB
 
     fn new(len: usize) -> Self {
-        let bytes = len.checked_mul(std::mem::size_of::<TTBucket>()).expect("TT size overflow");
+        Self::try_new(len).expect("TT allocation failed for the minimum size")
+    }
+
+    /// Fallible constructor — returns None if the OS cannot satisfy the
+    /// allocation. `TT::new` uses this to retry at a smaller size instead of
+    /// aborting the process mid-game when Hash is set larger than RAM.
+    fn try_new(len: usize) -> Option<Self> {
+        let bytes = len.checked_mul(std::mem::size_of::<TTBucket>())?;
         // Layout/Hugetlb require size to be a multiple of 2 MB.
         let size = (bytes + Self::HUGE_PAGE - 1) & !(Self::HUGE_PAGE - 1);
 
         // Tier 1: explicit hugetlb mapping. Guaranteed real huge pages
-        // when the pool is configured; fails cleanly otherwise.
+        // when the pool is configured; fails cleanly otherwise (fall through).
         if let Some(ab) = Self::try_hugetlb(len, size) {
-            return ab;
+            return Some(ab);
         }
 
         // Tier 2/3: 2 MB-aligned heap allocation + THP hints.
-        Self::from_heap_with_thp(len, size)
+        Self::try_from_heap_with_thp(len, size)
     }
 
     fn try_hugetlb(len: usize, size: usize) -> Option<Self> {
@@ -202,15 +209,15 @@ impl AlignedBuckets {
         }
     }
 
-    fn from_heap_with_thp(len: usize, size: usize) -> Self {
+    fn try_from_heap_with_thp(len: usize, size: usize) -> Option<Self> {
         use std::alloc::{alloc_zeroed, Layout};
 
         let layout = Layout::from_size_align(size, Self::HUGE_PAGE).expect("TT layout");
         // SAFETY: size/align are valid (checked by Layout), allocation is
         // zero-init, we own the returned pointer until Drop.
         let raw = unsafe { alloc_zeroed(layout) };
-        let ptr = std::ptr::NonNull::new(raw as *mut TTBucket)
-            .unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
+        // None on OOM (do NOT abort) so the caller can retry at a smaller size.
+        let ptr = std::ptr::NonNull::new(raw as *mut TTBucket)?;
 
         // MADV_HUGEPAGE sets the `hg` VmFlag; MADV_COLLAPSE (kernel 6.1+)
         // synchronously promotes if the kernel is willing. Both return
@@ -235,11 +242,11 @@ impl AlignedBuckets {
             libc::madvise(raw_ptr, size, MADV_COLLAPSE);
         }
 
-        AlignedBuckets {
+        Some(AlignedBuckets {
             ptr,
             len,
             backing: AllocBacking::Heap { layout },
-        }
+        })
     }
 
     /// True if this instance is backed by an explicit hugetlb mapping.
@@ -329,27 +336,57 @@ impl TT {
         while size * 2 <= num_buckets_raw {
             size *= 2;
         }
-        let size = size.max(1);
+        let mut size = size.max(1);
 
         #[cfg(target_os = "linux")]
         let buckets = {
-            let ab = AlignedBuckets::new(size);
-            // Announce the path we took — helps confirm huge pages are
-            // actually in play without digging through /proc/<pid>/smaps.
+            // Graceful fallback: if the OS cannot satisfy the allocation (e.g.
+            // Hash set larger than physical RAM), halve and retry instead of
+            // aborting the process mid-game (which would forfeit).
+            let ab = loop {
+                if let Some(ab) = AlignedBuckets::try_new(size) {
+                    break ab;
+                }
+                let failed_mb = ((size * std::mem::size_of::<TTBucket>()) >> 20).max(1);
+                if size <= 1 {
+                    // Cannot even allocate one 64-byte bucket — the machine is
+                    // out of memory; expect-abort here is the honest failure.
+                    break AlignedBuckets::new(1);
+                }
+                size /= 2;
+                println!(
+                    "info string TT: {} MB allocation failed (OOM?) — retrying at {} MB",
+                    failed_mb,
+                    ((size * std::mem::size_of::<TTBucket>()) >> 20).max(1)
+                );
+            };
             let tier = if ab.is_hugetlb() { "explicit hugetlb (MAP_HUGETLB)" } else { "aligned heap + THP" };
-            let mb_alloc = (size * std::mem::size_of::<TTBucket>()) >> 20;
-            let _ = mb_alloc; // kept for potential future reporting
-            println!("info string TT {} MB via {} ({} buckets)", mb, tier, size);
+            println!(
+                "info string TT {} MB via {} ({} buckets)",
+                (size * std::mem::size_of::<TTBucket>()) >> 20,
+                tier,
+                size
+            );
             ab
         };
 
         #[cfg(not(target_os = "linux"))]
         let buckets = {
-            let mut v = Vec::with_capacity(size);
-            for _ in 0..size {
-                v.push(TTBucket::new_empty());
+            loop {
+                let mut v: Vec<TTBucket> = Vec::new();
+                if v.try_reserve_exact(size).is_ok() {
+                    for _ in 0..size {
+                        v.push(TTBucket::new_empty());
+                    }
+                    break v;
+                }
+                if size <= 1 {
+                    let mut v = Vec::new();
+                    v.push(TTBucket::new_empty());
+                    break v;
+                }
+                size /= 2;
             }
-            v
         };
 
         TT {
