@@ -1201,6 +1201,12 @@ pub struct SearchInfo {
     /// Triangular PV table
     pub pv_table: [[Move; MAX_PLY + 1]; MAX_PLY + 1],
     pub pv_len: [usize; MAX_PLY + 1],
+    /// MultiPV: number of top root lines to report (analysis only). Default 1.
+    pub multipv: usize,
+    /// Root moves banned from the current search (MultiPV secondary lines).
+    /// Empty except during a MultiPV>1 secondary search, so single-PV play is
+    /// byte-identical.
+    pub root_ban: Vec<Move>,
     static_evals: [i32; MAX_PLY + 1],
     /// LMR reduction applied at each ply (for hindsight reduction gating)
     reductions: [i32; MAX_PLY + 1],
@@ -1323,6 +1329,8 @@ impl SearchInfo {
             moved_to_stack: [0; MAX_PLY + 1],
             pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
             pv_len: [0; MAX_PLY + 1],
+            multipv: 1,
+            root_ban: Vec::new(),
             pawn_hist: alloc_zeroed_box(),
             pawn_corr: alloc_zeroed_box(),
             np_corr: alloc_zeroed_box(),
@@ -3541,13 +3549,69 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
         }
 
+        // MultiPV: primary line carries `multipv 1` only when MultiPV>1, so the
+        // default (MultiPV=1) line is byte-identical to before.
+        let mpv_tok = if info.multipv > 1 { "multipv 1 " } else { "" };
         if !info.silent {
             println!(
-                "info depth {} seldepth {} {} nodes {} nps {} time {} hashfull {} tbhits {} pv {}",
-                depth, info.sel_depth, score_str,
+                "info depth {} seldepth {} {}{} nodes {} nps {} time {} hashfull {} tbhits {} pv {}",
+                depth, info.sel_depth, mpv_tok, score_str,
                 global, nps, elapsed,
                 info.tt.hashfull(), info.tb_hits, pv_str
             );
+        }
+
+        // MultiPV secondary lines (analysis only). Save/restore the primary
+        // line's pv so the rest of this iteration's TM/ponder logic is
+        // unaffected, and the final bestmove stays the primary move.
+        if info.multipv > 1 && !info.silent && !info.should_stop() {
+            let saved_pv = info.pv_table[0];
+            let saved_len = info.pv_len[0];
+            info.root_ban.clear();
+            if saved_len > 0 {
+                info.root_ban.push(saved_pv[0]);
+            }
+            for pv_idx in 1..info.multipv {
+                if info.should_stop() {
+                    break;
+                }
+                let sc = negamax(board, info, -INFINITY, INFINITY, depth, 0, false);
+                if info.pv_len[0] == 0 {
+                    break;
+                }
+                // Build PV string from pv_table[0].
+                let mut line_pv = String::new();
+                for i in 0..info.pv_len[0] {
+                    if !line_pv.is_empty() {
+                        line_pv.push(' ');
+                    }
+                    line_pv.push_str(&move_to_uci(info.pv_table[0][i]));
+                }
+                let line_score = if is_mate_score(sc) {
+                    let mate_in = if sc > 0 {
+                        (MATE_SCORE - sc + 1) / 2
+                    } else {
+                        -(MATE_SCORE + sc + 1) / 2
+                    };
+                    format!("score mate {}", mate_in)
+                } else {
+                    format!("score cp {}", sc)
+                };
+                let s_elapsed = info.start_time.elapsed().as_millis() as u64;
+                let s_global = info.global_nodes.load(Ordering::Relaxed)
+                    + (info.nodes - info.last_flushed_nodes.get());
+                let s_nps = if s_elapsed > 0 { s_global * 1000 / s_elapsed } else { 0 };
+                println!(
+                    "info depth {} seldepth {} multipv {} {} nodes {} nps {} time {} hashfull {} tbhits {} pv {}",
+                    depth, info.sel_depth, pv_idx + 1, line_score,
+                    s_global, s_nps, s_elapsed, info.tt.hashfull(), info.tb_hits, line_pv
+                );
+                let next = info.pv_table[0][0];
+                info.root_ban.push(next);
+            }
+            info.root_ban.clear();
+            info.pv_table[0] = saved_pv;
+            info.pv_len[0] = saved_len;
         }
 
         // Track best-move stability and score trend on every iteration so
@@ -5212,6 +5276,13 @@ fn negamax(
 
         // Skip excluded move (singular extension verification search)
         if mv == info.excluded_move[ply_u] {
+            continue;
+        }
+
+        // MultiPV: at the root, skip moves already assigned to a higher PV
+        // line. root_ban is empty except during MultiPV>1 secondary searches,
+        // so single-PV play is byte-identical.
+        if ply_u == 0 && !info.root_ban.is_empty() && info.root_ban.iter().any(|&m| m == mv) {
             continue;
         }
 
