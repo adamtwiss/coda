@@ -601,6 +601,11 @@ tunables!(
     // and re-tunable. NOTE for full sweeps: it retains loose-knob gradient
     // noise, so exclude it from --no-core runs if it destabilises neighbours.
     (SEE_MATERIAL_SCALE, 211, 30, 300, 13.5, false),
+    // Endgame eval-scaling base: eval *= (MAT_SCALE_BASE + non_pawn_material) / 32768.
+    // Lower base = more aggressive damp of the net's output in low-material
+    // endgames (the net-leaf endgame-overrate lever, gauntlet 2026-07-19). Default
+    // 22400 = prior hardcoded value (bench-neutral). Non-core / experimental.
+    (MAT_SCALE_BASE, 22400, 14000, 30000, 1000.0, false),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
@@ -1792,7 +1797,7 @@ impl SearchInfo {
         // correction — hence SPRT #610 showed −8 Elo at 1000 games before
         // we caught this. The fix is structural: keep TT storage
         // halfmove-independent, apply scale freshly on read.
-        score * (22400 + material) / 32 / 1024
+        score * (tp(&MAT_SCALE_BASE) + material) / 32 / 1024
     }
 
     #[inline]
