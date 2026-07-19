@@ -99,6 +99,18 @@ unsafe fn attack_entry(index: usize) -> Bitboard {
 #[cfg(target_arch = "x86_64")]
 static mut USE_PEXT: bool = false;
 
+/// Whether the runtime selected hardware PEXT (fast) over magic-multiply table
+/// lookup. Valid after `init_attacks()`; surfaced by the ISA banner so a slow
+/// host can be diagnosed (e.g. microcoded-PEXT fallback to magic).
+#[cfg(target_arch = "x86_64")]
+pub fn using_pext() -> bool {
+    unsafe { USE_PEXT }
+}
+#[cfg(not(target_arch = "x86_64"))]
+pub fn using_pext() -> bool {
+    false
+}
+
 #[inline(always)]
 pub fn bishop_attacks(sq: u32, occ: Bitboard) -> Bitboard {
     unsafe {

@@ -547,6 +547,47 @@ enum Commands {
     },
 }
 
+/// One-line ISA / build diagnostic. Answers "why is NPS low on this host?":
+/// reports whether this is a DEBUG (unoptimized) build and which SIMD kernels
+/// the CPU will select at runtime. A scalar/debug build shows `eval=SCALAR` or
+/// `[DEBUG…]`. Printed to stderr at startup (visible in GUI/CCRL engine logs,
+/// safe for the UCI stdout protocol) and to stdout at the top of `bench`.
+fn isa_banner() -> String {
+    let profile = if cfg!(debug_assertions) {
+        "DEBUG unoptimized ~5-10x slow!"
+    } else {
+        "release"
+    };
+    #[cfg(target_arch = "x86_64")]
+    {
+        let avx2 = std::is_x86_feature_detected!("avx2");
+        let avx512f = std::is_x86_feature_detected!("avx512f");
+        let avx512bw = std::is_x86_feature_detected!("avx512bw");
+        let avx512vnni = std::is_x86_feature_detected!("avx512vnni");
+        let avxvnni = std::is_x86_feature_detected!("avxvnni");
+        let bmi2 = std::is_x86_feature_detected!("bmi2");
+        let eval = if avx512f && avx512bw {
+            "avx512"
+        } else if avx2 {
+            "avx2"
+        } else {
+            "SCALAR"
+        };
+        let movegen = if attacks::using_pext() { "pext" } else { "magic" };
+        format!(
+            "Coda ISA [{profile}] eval={eval} movegen={movegen} \
+cpu[avx2={avx2} avx512f={avx512f} avx512bw={avx512bw} avx512vnni={avx512vnni} avxvnni={avxvnni} bmi2={bmi2}] \
+build-floor[avx2={a2} avx512f={a5}]",
+            a2 = cfg!(target_feature = "avx2"),
+            a5 = cfg!(target_feature = "avx512f"),
+        )
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        format!("Coda ISA [{profile}] (non-x86_64 arch)")
+    }
+}
+
 fn main() {
     // Restore default SIGPIPE behavior so writes to a closed stdout
     // (e.g. cutechess killed the engine mid-search/mid-print between
@@ -580,6 +621,11 @@ fn main() {
 
     let cli = Cli::parse();
 
+    // ISA/build banner to stderr — visible in GUI/CCRL engine logs without
+    // touching the UCI stdout protocol. The one-line answer to "why is NPS low
+    // on this host?" (debug build, or scalar SIMD fallback).
+    eprintln!("{}", isa_banner());
+
     if cli.load_anyway {
         crate::nnue::LOAD_ANYWAY.store(true, std::sync::atomic::Ordering::Relaxed);
         eprintln!("WARNING: --load-anyway set; training/inference mismatches will NOT refuse load");
@@ -594,6 +640,7 @@ fn main() {
         }
 
         Some(Commands::Bench { depth, threads, set }) => {
+            println!("{}", isa_banner());
             let nnue_path = cli.nnue.as_deref();
             // Apply per-invocation tunable overrides (--set NAME=VALUE).
             let mut lmr_c_changed = false;
