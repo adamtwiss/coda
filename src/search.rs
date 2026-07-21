@@ -2923,6 +2923,71 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     best_move
 }
 
+/// Build the UCI PV string from `info.pv_table[0]`, extended via the TT when the
+/// stored line is shorter than `target_depth`. Mirrors the per-iteration PV
+/// extraction in the ID loop EXACTLY (same legality guard — printing an illegal
+/// PV move is a critical bug, see the ID-loop comment). Stops at the first move
+/// not legal in the walked position and at threefold repetition. Used for the
+/// final search-end info line so the LAST line a GUI sees carries a full,
+/// bestmove-consistent PV (some broadcast parsers, e.g. CCRL, show the PV from
+/// the latest info line, so a PV-less final line displayed as a short/empty PV).
+fn build_pv_string(info: &SearchInfo, board: &Board, target_depth: i32) -> String {
+    let mut pv_str = String::new();
+    let mut seen_hashes: Vec<u64> = board.undo_stack.iter().map(|u| u.hash).collect();
+    seen_hashes.push(board.hash);
+    let mut pv_board = board.clone();
+    let mut pv_moves = 0usize;
+
+    let pv_len = info.pv_len[0].min(MAX_PLY);
+    for i in 0..pv_len {
+        let pv_mv = info.pv_table[0][i];
+        if pv_mv == NO_MOVE
+            || !crate::movepicker::is_pseudo_legal(&pv_board, pv_mv)
+            || !pv_board.is_legal(pv_mv, pv_board.pinned(), pv_board.checkers())
+        {
+            break;
+        }
+        pv_board.make_move(pv_mv);
+        if seen_hashes.iter().filter(|&&h| h == pv_board.hash).count() >= 2 { break; }
+        seen_hashes.push(pv_board.hash);
+        if !pv_str.is_empty() { pv_str.push(' '); }
+        pv_str.push_str(&move_to_uci(pv_mv));
+        pv_moves += 1;
+    }
+
+    if pv_moves < target_depth as usize {
+        while pv_moves < target_depth as usize + 5 {
+            if seen_hashes.iter().filter(|&&h| h == pv_board.hash).count() >= 2 { break; }
+            if pv_board.halfmove >= 100 { break; }
+            seen_hashes.push(pv_board.hash);
+
+            let pv_tt = info.tt.probe(pv_board.hash);
+            if !pv_tt.hit || pv_tt.best_move == NO_MOVE { break; }
+            let pv_from = move_from(pv_tt.best_move);
+            let pv_to = move_to(pv_tt.best_move);
+            let pv_flags = move_flags(pv_tt.best_move);
+            let pv_legal = generate_legal_moves(&pv_board);
+            let mut found = NO_MOVE;
+            for i in 0..pv_legal.len {
+                let m = pv_legal.get(i);
+                if move_from(m) == pv_from && move_to(m) == pv_to
+                    && (!is_promotion(pv_tt.best_move) || move_flags(m) == pv_flags)
+                {
+                    found = m;
+                    break;
+                }
+            }
+            if found == NO_MOVE { break; }
+            if !pv_str.is_empty() { pv_str.push(' '); }
+            pv_str.push_str(&move_to_uci(found));
+            pv_board.make_move(found);
+            pv_moves += 1;
+        }
+    }
+
+    pv_str
+}
+
 /// Run iterative deepening search.
 pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -> Move {
     init_feature_flags();
@@ -4132,8 +4197,16 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // at completed depths, so a mid-iteration stop (node limit, hard time)
     // under-reported total nodes by up to a full iteration (~29% observed at
     // `go nodes 15000`), corrupting any NPS/nodes-from-logs analysis. Emit the
-    // true totals once before returning (SF prints the same final update). No
-    // PV — GUIs keep the last full-line PV; only the counters need correcting.
+    // true totals once before returning (SF prints the same final update).
+    //
+    // INCLUDE THE PV (2026-07-21): previously this line was emitted WITHOUT a pv,
+    // on the assumption that GUIs keep the last full-line PV. Broadcast parsers
+    // that render the PV from the *latest* info line (CCRL) then showed a short /
+    // empty PV on the played move — optically bad. Re-emit the current
+    // (bestmove-consistent) PV so the last line is always complete. pv_table[0]
+    // here holds the adopted final line (deepest completed, or the banked
+    // partial on a mid-iteration abort); build_pv_string applies the same
+    // legality guard as the per-iteration print.
     if !info.silent && info.completed_depth > 0 {
         let elapsed = info.start_time.elapsed().as_millis() as u64;
         let global = info.global_nodes.load(Ordering::Relaxed)
@@ -4149,11 +4222,20 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         } else {
             format!("score cp {}", info.last_score)
         };
-        println!(
-            "info depth {} seldepth {} {} nodes {} nps {} time {} hashfull {} tbhits {}",
-            info.completed_depth, info.sel_depth, score_str,
-            global, nps, elapsed, info.tt.hashfull(), info.tb_hits
-        );
+        let pv_str = build_pv_string(info, board, info.completed_depth);
+        if pv_str.is_empty() {
+            println!(
+                "info depth {} seldepth {} {} nodes {} nps {} time {} hashfull {} tbhits {}",
+                info.completed_depth, info.sel_depth, score_str,
+                global, nps, elapsed, info.tt.hashfull(), info.tb_hits
+            );
+        } else {
+            println!(
+                "info depth {} seldepth {} {} nodes {} nps {} time {} hashfull {} tbhits {} pv {}",
+                info.completed_depth, info.sel_depth, score_str,
+                global, nps, elapsed, info.tt.hashfull(), info.tb_hits, pv_str
+            );
+        }
     }
 
     best_move
