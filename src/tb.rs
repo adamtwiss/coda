@@ -3,11 +3,14 @@
 //! WDL probes at interior nodes (requires halfmove == 0).
 //! DTZ probes at root for best tablebase move.
 
-use shakmaty::{Chess, FromSetup, CastlingMode, Position};
-use shakmaty::fen::Fen;
+use shakmaty::{Chess, FromSetup, CastlingMode, Position, Setup, Role,
+               Color as ShColor, Square as ShSquare, Piece as ShPiece,
+               Board as ShBoard, Bitboard as ShBitboard};
+use core::num::NonZeroU32;
 use shakmaty_syzygy::{Tablebase, AmbiguousWdl, Dtz, MaybeRounded};
 
 use crate::board::Board;
+use crate::types::{PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, WHITE, BLACK, NO_SQUARE};
 use crate::tb_cache::TbCache;
 
 /// Default cache size in MB. CCRL convention allows engines one
@@ -50,7 +53,13 @@ impl SyzygyTB {
     /// fails to load is warned about and skipped rather than aborting the
     /// rest. Only if *no* directory loads is an error returned.
     pub fn new_with_cache(path: &str, cache_mb: usize) -> Result<Self, String> {
-        let mut tb = Tablebase::new();
+        // mmap the tablebase files (vs the default OsFilesystem, which does a
+        // read_at SYSCALL per compressed symbol during decompression — dozens
+        // per probe, ~175-900us/probe even warm). mmap turns those into direct
+        // memory reads. SAFETY: the .rtbw/.rtbz files are treated as immutable
+        // for the process lifetime (standard for every engine that mmaps TBs);
+        // modifying them underneath a running search would be UB.
+        let mut tb = unsafe { Tablebase::with_mmap_filesystem() };
         let mut loaded = 0usize;
         let mut last_err: Option<String> = None;
         for dir in syzygy_dirs(path) {
@@ -226,7 +235,60 @@ impl SyzygyTB {
 }
 
 /// Convert our Board to a shakmaty Chess position via FEN.
+/// Convert Coda's Board to a shakmaty Chess position DIRECTLY from the bitboards.
+/// Replaces the previous FEN string round-trip (`board.to_fen()` -> parse), which
+/// dominated TB-probe cost and collapsed endgame NPS ~7x (a format+parse per node
+/// in ≤6-man endgames). Castling is always empty — every caller (probe_wdl,
+/// probe_root, probe_root_pv) gates on `board.castling == 0` first. EP is passed
+/// unconditionally when set, matching `to_fen` exactly, so shakmaty's from_setup
+/// validation produces an identical position (verified in board_to_shakmaty_matches).
 fn board_to_shakmaty(board: &Board) -> Option<Chess> {
+    let mut sb = ShBoard::empty();
+    for pt in [PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING] {
+        let role = match pt {
+            PAWN => Role::Pawn,
+            KNIGHT => Role::Knight,
+            BISHOP => Role::Bishop,
+            ROOK => Role::Rook,
+            QUEEN => Role::Queen,
+            _ => Role::King,
+        };
+        for c in [WHITE, BLACK] {
+            // NB: Coda WHITE=0 but shakmaty White=1 — the colour enums are inverted.
+            let color = if c == WHITE { ShColor::White } else { ShColor::Black };
+            let mut bb = board.pieces[pt as usize] & board.colors[c as usize];
+            while bb != 0 {
+                let sq = bb.trailing_zeros();
+                sb.set_piece_at(ShSquare::new(sq), ShPiece { color, role });
+                bb &= bb - 1;
+            }
+        }
+    }
+    let turn = if board.side_to_move == WHITE { ShColor::White } else { ShColor::Black };
+    let ep_square = if board.ep_square != NO_SQUARE {
+        Some(ShSquare::new(board.ep_square as u32))
+    } else {
+        None
+    };
+    let setup = Setup {
+        board: sb,
+        promoted: ShBitboard::EMPTY,
+        pockets: None,
+        turn,
+        castling_rights: ShBitboard::EMPTY,
+        ep_square,
+        remaining_checks: None,
+        halfmoves: board.halfmove as u32,
+        fullmoves: NonZeroU32::new((board.fullmove as u32).max(1)).unwrap(),
+    };
+    Chess::from_setup(setup, CastlingMode::Standard).ok()
+}
+
+/// Reference implementation via a FEN string round-trip (the pre-2026-07-22 path).
+/// Retained only to verify the direct conversion above stays bit-for-bit identical.
+#[cfg(test)]
+fn board_to_shakmaty_fen(board: &Board) -> Option<Chess> {
+    use shakmaty::fen::Fen;
     let fen_str = board.to_fen();
     let fen: Fen = fen_str.parse().ok()?;
     Chess::from_setup(fen.into_setup(), CastlingMode::Standard).ok()
@@ -333,6 +395,33 @@ mod tests {
     use super::*;
     use crate::board::Board;
     use std::path::Path;
+
+    /// The direct bitboard->shakmaty conversion must be bit-for-bit identical to
+    /// the old FEN round-trip on every position we'd ever probe (else a wrong TB
+    /// result = a wrong endgame move). Covers a spread of endgames incl. EP,
+    /// promotions-adjacent, and both side-to-move — all castling-free (probes gate
+    /// on castling==0). Compares the resulting shakmaty Chess positions directly.
+    #[test]
+    fn board_to_shakmaty_matches_fen() {
+        let fens = [
+            "8/8/4k3/5p2/8/4K3/3R4/5r2 w - - 0 1",       // KRPvKR
+            "8/8/8/8/4k3/8/1R6/4K3 w - - 0 1",           // KRvK (legal, no check)
+            "8/8/4k3/8/3K4/8/4P3/8 w - - 0 1",           // KPvK
+            "8/5k2/8/8/3K4/8/6R1/5b2 b - - 0 1",         // 4-man, black to move
+            "8/2p5/3k4/8/2P5/8/3K4/8 w - - 0 1",         // pawns, white
+            "4k3/8/8/2Pp4/8/8/8/4K3 w - d6 0 1",         // EP square set (c5xd6)
+            "8/8/8/8/8/4k3/4p3/4K3 b - - 0 1",           // black pawn near promo
+            "K7/P7/k7/8/8/8/8/8 w - - 5 40",             // high halfmove/fullmove
+            "8/8/8/3k4/8/3K4/8/8 w - - 99 200",          // near 50-move cliff
+        ];
+        for f in fens {
+            let b = Board::from_fen(f);
+            let direct = board_to_shakmaty(&b);
+            let via_fen = board_to_shakmaty_fen(&b);
+            assert_eq!(direct, via_fen, "conversion mismatch for {f}");
+            assert!(direct.is_some(), "direct conversion returned None for {f}");
+        }
+    }
 
     fn tb_path() -> Option<String> {
         // Check common tablebase locations (lichess deploy: /tablebases;
