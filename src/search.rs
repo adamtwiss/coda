@@ -1712,8 +1712,12 @@ impl SearchInfo {
                         let ksq = (board.pieces[KING as usize] & board.colors[pov as usize])
                             .trailing_zeros();
                         let mirrored = (ksq % 8) >= 4;
-                        // Collect scratch feature indices (same 256 cap as refresh).
-                        let mut indices = [0usize; 256];
+                        // Collect scratch feature indices with the SAME bound as
+                        // refresh (MAX_ACTIVE_THREAT_FEATURES) so the verifier can
+                        // never be blind to a refresh truncation — a prior shared
+                        // 256 cap made both sides truncate identically and agree.
+                        let mut indices =
+                            [0usize; crate::threat_accum::MAX_ACTIVE_THREAT_FEATURES];
                         let mut ni = 0usize;
                         let mut overflow = false;
                         crate::threats::enumerate_threats(
@@ -1721,8 +1725,9 @@ impl SearchInfo {
                             occ, pov, mirrored,
                             |idx| {
                                 if idx < net.num_threat_features {
-                                    if ni < 256 { indices[ni] = idx; ni += 1; }
-                                    else { overflow = true; }
+                                    if ni < crate::threat_accum::MAX_ACTIVE_THREAT_FEATURES {
+                                        indices[ni] = idx; ni += 1;
+                                    } else { overflow = true; }
                                 }
                             },
                         );
