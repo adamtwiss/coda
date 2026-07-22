@@ -4669,10 +4669,19 @@ fn negamax(
                             info.pv_len[ply_u] = 0;
                         }
 
-                        // History bonus for TT cutoff: reinforce move ordering
+                        // History bonus for TT cutoff: reinforce move ordering.
+                        // Promotions are NOISY here (audit 2026-07-22) — this site
+                        // previously classified non-capture promotions as quiet,
+                        // asymmetric with tt_move_noisy (2026-05-31 finding D fixed
+                        // that site only), so promo cutoffs wrote main-history
+                        // bonuses into from/to cells that genuine quiets read.
+                        // Promos are ordered in the capture stage (MVV promo bonus
+                        // + capt-hist empty slot), so the capture branch below is
+                        // the one the read side actually consults.
                         let tt_piece = board.piece_at(move_from(tt_move));
                         let tt_is_cap = board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
-                            || move_flags(tt_move) == FLAG_EN_PASSANT;
+                            || move_flags(tt_move) == FLAG_EN_PASSANT
+                            || is_promotion(tt_move);
                         if !tt_is_cap && tt_piece != NO_PIECE {
                             let bonus = history_bonus(depth);
                             History::update_history(
@@ -5721,10 +5730,19 @@ fn negamax(
         }
 
         // Track captures for capture history penalty on beta cutoff
-        // Store piece/to/captured for history updates after search
-        if is_cap && n_captures_tried < 32
-            && moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
-                let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
+        // Store piece/to/captured for history updates after search.
+        // Non-capture promotions tracked with ct=0 (empty slot) — they train
+        // capture history now (audit 2026-07-22), so they must also be
+        // malus-eligible or the empty slot only ever inflates.
+        if (is_cap || is_promo) && n_captures_tried < 32
+            && moved_piece != NO_PIECE {
+                let ct = if flags == FLAG_EN_PASSANT {
+                    captured_type(PAWN)
+                } else if captured_pt != NO_PIECE_TYPE {
+                    captured_type(captured_pt)
+                } else {
+                    0
+                };
                 captures_tried[n_captures_tried] = (go_piece(moved_piece) as u8, to, ct as u8);
                 n_captures_tried += 1;
             }
@@ -6176,7 +6194,14 @@ fn negamax(
                     info.stats.cutoff_movecount_sq_sum += (move_count as u64) * (move_count as u64);
 
                     // Beta cutoff - update history for quiet moves.
-                    if !is_cap {
+                    // !is_promo (audit 2026-07-22): non-capture promotions took
+                    // the quiet branch here, writing main/cont/pawn-history
+                    // bonuses for a move the picker orders in the CAPTURE stage
+                    // — pure pollution of cells genuine quiets read (quiets_tried
+                    // already excluded promos). They now take the capture branch
+                    // and train the capt-hist empty slot the read side uses (SF
+                    // capture_stage semantics).
+                    if !is_cap && !is_promo {
                         // Depth-boost on big fail-high. BONUS_BOOST_AT trigger
                         // removed 2026-05-17 (ablation #1277 H0). Two remaining
                         // triggers (Stormphrax: cutoff beat static eval;
@@ -6317,11 +6342,17 @@ fn negamax(
                         if !is_pv {
                             cap_bonus += cap_bonus * (move_count - 1).max(0) / 256;
                         }
-                        if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
+                        // captured_pt == NO_PIECE_TYPE here means a non-capture
+                        // promotion (the only non-capture route into this branch):
+                        // train slot 0 ("empty") — the slot capt_hist_score_static
+                        // reads when ordering non-capture promos.
+                        if moved_piece != NO_PIECE {
                             let cpt = if flags == FLAG_EN_PASSANT {
                                 captured_type(PAWN)
-                            } else {
+                            } else if captured_pt != NO_PIECE_TYPE {
                                 captured_type(captured_pt)
+                            } else {
+                                0
                             };
                             History::update_cont_history(
                                 &mut info.history.capture[go_piece(moved_piece)][to as usize][cpt],
@@ -6344,7 +6375,9 @@ fn negamax(
                         let raw_cap_malus = capture_history_malus(depth);
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         let cap_malus = raw_cap_malus + raw_cap_malus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
-                        let cap_count = if is_cap { n_captures_tried.saturating_sub(1) } else { n_captures_tried };
+                        // is_promo joins is_cap: a promo cutoff move is now the
+                        // last captures_tried entry and must not malus itself.
+                        let cap_count = if is_cap || is_promo { n_captures_tried.saturating_sub(1) } else { n_captures_tried };
                         for i in 0..cap_count {
                             let (cp, ct, cv) = captures_tried[i];
                             History::update_cont_history(
