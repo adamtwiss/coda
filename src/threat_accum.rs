@@ -20,6 +20,13 @@ const MAX_PLY: usize = 256;
 /// Production v9 uses 768; FT=1024 architecture probes need 1024.
 /// Sized as a power of two to keep SIMD chunk paths well-tiled.
 pub const MAX_FT_SIZE: usize = 1024;
+/// Max active threat features collected by `refresh` (and the runtime verifier)
+/// in one position. Measured max over bench is ~70 (avg ~7), so 1024 is ~14x
+/// headroom — the truncation guard below is effectively unreachable. Both the
+/// refresh collector AND the verifier scratch use this SAME bound so the
+/// verifier can never be blind to a refresh truncation (a prior 256 cap on
+/// both silently agreed on a truncated accumulator).
+pub const MAX_ACTIVE_THREAT_FEATURES: usize = 1024;
 
 /// Fixed-capacity array (no heap, like ArrayVec but simpler).
 /// Tracks overflow so callers can force full recompute instead of
@@ -215,17 +222,20 @@ impl ThreatStack {
         // Collect feature indices, then apply with SIMD. MaybeUninit skips the
         // 2 KB zero-init per refresh — `indices[..n_indices]` is fully written
         // by enumerate_threats below; consumers only read that prefix.
-        let mut indices_storage = std::mem::MaybeUninit::<[usize; 256]>::uninit();
+        let mut indices_storage =
+            std::mem::MaybeUninit::<[usize; MAX_ACTIVE_THREAT_FEATURES]>::uninit();
         let indices_ptr = scratch_ptr!(indices_storage, usize);
         let mut n_indices = 0usize;
         // C8 audit LIKELY #18: track whether the enumerator produced more
-        // features than the buffer can hold. Previously excess features
-        // were silently dropped and `accurate[p]` was still set to true,
-        // so subsequent incremental deltas compounded on a corrupted
-        // baseline. Mark the entry inaccurate if overflow detected; the
-        // caller's `ensure_computed` → `can_update` path will then force
-        // a full refresh next time this perspective is read (falling back
-        // to the slower path, but with correct values).
+        // features than the buffer can hold. Excess features would be dropped
+        // and only `accurate[p]=false` (so children re-refresh) — but THIS
+        // node's eval would still consume the truncated accumulator. With the
+        // buffer at MAX_ACTIVE_THREAT_FEATURES (1024, ~14x the measured max of
+        // 70) this is unreachable; the guard remains as defense-in-depth and
+        // the debug_assert below makes any future breach loud instead of
+        // silently wrong. Note: a full refresh does NOT self-correct a
+        // truncation — the "next full path" is this same refresh — so the cap
+        // must simply be large enough never to trip.
         let mut overflowed = false;
 
         crate::threats::enumerate_threats(
@@ -233,7 +243,7 @@ impl ThreatStack {
             occ, pov, mirrored,
             |feat_idx| {
                 if feat_idx < num_features {
-                    if n_indices < 256 {
+                    if n_indices < MAX_ACTIVE_THREAT_FEATURES {
                         unsafe { indices_ptr.add(n_indices).write(feat_idx); }
                         n_indices += 1;
                     } else {
@@ -241,6 +251,11 @@ impl ThreatStack {
                     }
                 }
             },
+        );
+        debug_assert!(
+            !overflowed,
+            "threat refresh exceeded MAX_ACTIVE_THREAT_FEATURES ({}) — raise the cap",
+            MAX_ACTIVE_THREAT_FEATURES
         );
 
         #[cfg(feature = "profile-threats")]
