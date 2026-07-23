@@ -807,6 +807,7 @@ mod incremental_tests {
     /// regression.
     #[test]
     fn fuzz_random_games() {
+        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         run_fuzz_random_games();
     }
 
@@ -933,15 +934,18 @@ mod incremental_tests {
     /// occur constantly.
     #[test]
     fn fuzz_random_walk_with_pops_and_lazy_gaps() {
+        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         run_fuzz_walk_with_pops();
     }
 
     // BUG HUNT: same make/unmake consistency walk but with X-ray emission OFF
-    // (os-noxray regime). Global EMIT_XRAY is process-wide, so this must run
-    // single-threaded / in isolation. If it diverges, the x-ray-OFF incremental
-    // delta path is inconsistent with full-recompute — the suspected os-noxray bug.
+    // (os-noxray regime). Global EMIT_XRAY is process-wide, so this holds
+    // XRAY_TEST_LOCK across the whole flag-flip window — otherwise a concurrent
+    // x-ray-ON test reads the flipped flag and fails spuriously. If it diverges,
+    // the x-ray-OFF incremental delta path is inconsistent with full-recompute.
     #[test]
     fn fuzz_random_walk_xray_off() {
+        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::threats::set_emit_xray(false);
         run_fuzz_walk_with_pops();
         crate::threats::set_emit_xray(true);

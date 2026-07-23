@@ -29,6 +29,17 @@ pub fn emit_xray() -> bool {
     EMIT_XRAY.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Test-only serialization guard for the process-global `EMIT_XRAY`.
+/// `cargo test` runs tests concurrently; any test that *mutates* `EMIT_XRAY`
+/// (the x-ray-OFF fuzzers) and any test that *depends* on its default value
+/// (threat enumeration/consistency tests) MUST hold this lock for their whole
+/// body, or the mutator's window corrupts a concurrent reader (spurious
+/// failures — see the x-ray-off test-isolation fix). Acquire with
+/// `.lock().unwrap_or_else(|e| e.into_inner())` so a genuinely-failing test's
+/// poison doesn't cascade into unrelated panics.
+#[cfg(test)]
+pub(crate) static XRAY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(feature = "profile-threats")]
 pub mod apply_stats {
     //! apply_threat_deltas delta-count histogram.
@@ -2926,6 +2937,7 @@ mod tests {
     /// refresh. These targeted tests pin the specific cull boundary.
     #[test]
     fn test_z_finding_cull_endgame_no_z() {
+        let _xray = XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         // KP endgame: two kings, one pawn. No sliders means Z-finding
         // doesn't even enter the slider loop, but this exercises the
@@ -2954,6 +2966,7 @@ mod tests {
 
     #[test]
     fn test_z_finding_cull_has_z_chain() {
+        let _xray = XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
         // A position with a genuine slider → square → Y → Z chain:
         //   R on a1, pawn on a4 (Y), pawn on a6 (Z), enumerate on a2 (square).
