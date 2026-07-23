@@ -3157,17 +3157,13 @@ impl NNUENet {
                 self.hidden_size, crate::threat_accum::MAX_FT_SIZE,
             ));
         }
-        // Coda inference always emits xray threat features. A net trained
-        // with --xray 0 has weight rows for the same indices trained only
-        // on direct-attack signal; at inference, xray emissions would
-        // multiply through those (mis-calibrated-distribution) weights
-        // and degrade eval. Refuse to load by default.
-        if !self.xray_trained && !LOAD_ANYWAY.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err("net was trained without xray features (--xray 0), but Coda \
-                 inference always emits them — inference/training mismatch \
-                 would corrupt eval. Pass --load-anyway (CLI) or set UCI option \
-                 LoadAnyway=true to load for diagnostic purposes only.".to_string());
-        }
+        // X-ray emission is GATED on the net's xray_trained flag
+        // (threats::emit_xray, set here). A net trained with --xray 0 thus has
+        // its inference skip X-ray to match training — no mismatch, and the
+        // X-ray generation cost is reclaimed. (LOAD_ANYWAY retained as a CLI/UCI
+        // escape but no longer needed for no-xray nets.)
+        let _ = LOAD_ANYWAY.load(std::sync::atomic::Ordering::Relaxed);
+        crate::threats::set_emit_xray(self.xray_trained);
         Ok(())
     }
 
