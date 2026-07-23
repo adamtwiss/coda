@@ -96,7 +96,29 @@ Most performance tuning so far has targeted short time controls. Coda is a young
 
 ## Credits
 
-Coda development has been made much easier by many other projects - most notably the [OpenBench](https://github.com/andygrant/openbench) distributed engine-testing framework, the [Bullet](https://github.com/jw1912/bullet) NNUE trainer and [LC0 training data](https://github.com/LeelaChessZero/lczero-training). We're grateful to the authors/maintainers of these projects along with the wider chess community.
+Coda's development has been made much easier by many other open projects — most notably the [OpenBench](https://github.com/andygrant/openbench) distributed engine-testing framework, the [Bullet](https://github.com/jw1912/bullet) NNUE trainer, and the [LC0](https://github.com/LeelaChessZero) project. We're grateful to their authors and maintainers, and to the wider chess community.
+
+### Training data
+
+Coda's networks are trained on openly-licensed data:
+
+- **The bulk of the training data is [LC0](https://lczero.org) self-play data** — the LCZero project's publicly-released engine self-play games, made available by the LCZero team under the **Open Database License (ODbL-1.0)**, with individual records under the Database Contents License (DBCL-1.0). Per that license:
+
+  > This collection of training data for Leela Chess Zero is made available under the Open Database License: http://opendatacommons.org/licenses/odbl/1.0/ . Any rights in individual contents of the database are licensed under the Database Contents License: http://opendatacommons.org/licenses/dbcl/1.0/
+
+  A network trained on this data is a "Produced Work" under ODbL. We distribute only trained networks, never the datasets themselves — so ODbL's share-alike terms, which attach to redistributing the *database*, do not extend to Coda's code or nets; the obligation is attribution, given here.
+
+- We also use some **CC0 1.0 (public-domain)** data published by Joost VandeVondele on Kaggle (https://www.kaggle.com/joostvandevondele/datasets).
+
+### Engines we learned from
+
+Coda is an independent implementation, but like every modern engine it builds on a large body of openly-published ideas. We're grateful to the authors of the engines whose techniques we studied and credit — in our source comments and in the [license analysis](docs/license_analysis_2026-07-13.md):
+
+- **GPL-3.0:** Stockfish, Berserk, Obsidian, Alexandria, Stormphrax, Clarity, PlentyChess, Halogen, Seer, Cinder, Clover, Igel, Minic, Tucano, Weiss.
+- **MIT:** Viridithas (its MIT-licensed versions, through v20), Hobbes, Midnight.
+- **WTFPL:** Starzix.
+
+These are credited for *ideas and techniques* — Coda's implementation is its own code. We initialised some time-management tuning constants from MIT-licensed Viridithas (now SPSA-tuned on Coda's own search); its MIT notice is in [`NOTICES.md`](NOTICES.md).
 
 ## License
 
