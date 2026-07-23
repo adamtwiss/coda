@@ -4882,7 +4882,8 @@ fn negamax(
         }
     }
 
-    // Hindsight extension (concept from Stormphrax): mirror of the
+    // Hindsight extension (a common cross-engine pattern — Stockfish,
+    // Alexandria, Halogen, Stormphrax): mirror of the
     // reduction. When parent reduced aggressively (>=3) but the combined
     // eval shows position has worsened (eval_sum <= 0), extend +1 ply to
     // find the threat we missed. Non-PV only (PV already searched fully).
