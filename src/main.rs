@@ -433,6 +433,18 @@ enum Commands {
         #[arg(long, short = 'o', default_value = "-")]
         output: String,
     },
+    /// Count material-class frequency + per-class label (score) distribution
+    /// across a binpack. Read-only. Diagnoses endgame-class coverage vs
+    /// mislabeling in training data (undersampled -> low count; mislabeled ->
+    /// high mean|score| on a drawish class).
+    BinpackMaterial {
+        /// Input .binpack path
+        #[arg(long, short = 'i')]
+        input: String,
+        /// Max positions to scan (0 = whole file)
+        #[arg(long, default_value_t = 0)]
+        max: usize,
+    },
     /// Dump threat features for a FEN position (for cross-checking with Bullet)
     DumpThreats {
         /// FEN string
@@ -1311,6 +1323,10 @@ fn main() {
 
         Some(Commands::EvalFens { input, output }) => {
             run_eval_fens(&input, &output, &cli.nnue);
+        }
+
+        Some(Commands::BinpackMaterial { input, max }) => {
+            run_binpack_material(&input, max);
         }
 
         Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, xray_trained }) => {
@@ -2534,6 +2550,100 @@ fn run_eval_fens(input: &str, output: &str, nnue_path: &Option<String>) {
     }
     out.flush().unwrap();
     eprintln!("eval-fens: {} positions evaluated", n);
+}
+
+/// Classify a position's material signature from the FEN piece-placement
+/// field, splitting bishop endings into opposite- vs same-coloured. Focused on
+/// the drawish minor-piece endgame classes (OCB+pawns etc.).
+fn classify_material(fen: &str) -> &'static str {
+    let placement = fen.split(' ').next().unwrap_or("");
+    let mut cnt = [0i32; 128];
+    let (mut rank, mut file) = (7i32, 0i32);
+    let (mut wb_light, mut wb_dark, mut bb_light, mut bb_dark) = (0i32, 0i32, 0i32, 0i32);
+    for ch in placement.chars() {
+        match ch {
+            '/' => { rank -= 1; file = 0; }
+            '1'..='8' => { file += ch as i32 - '0' as i32; }
+            _ => {
+                let sq_light = (rank + file) % 2 == 1; // a1 (0,0)=dark
+                match ch {
+                    'B' => { if sq_light { wb_light += 1 } else { wb_dark += 1 } }
+                    'b' => { if sq_light { bb_light += 1 } else { bb_dark += 1 } }
+                    _ => {}
+                }
+                if (ch as usize) < 128 { cnt[ch as usize] += 1; }
+                file += 1;
+            }
+        }
+    }
+    let g = |c: char| cnt[c as usize];
+    let (wp, bp) = (g('P'), g('p'));
+    let (wn, wb, wr, wq) = (g('N'), g('B'), g('R'), g('Q'));
+    let (bn, bb, br, bq) = (g('n'), g('b'), g('r'), g('q'));
+    let (w_minor, b_minor) = (wn + wb, bn + bb);
+    if wq > 0 || bq > 0 { return "Q-endgame"; }
+    if wr > 0 || br > 0 {
+        return if w_minor == 0 && b_minor == 0 { "rook-ending" } else { "rook+minor" };
+    }
+    if w_minor == 0 && b_minor == 0 {
+        return if wp > 0 || bp > 0 { "pawns-only" } else { "KvK" };
+    }
+    // No rooks/queens, at least one minor -> minor endgame family.
+    if wb == 1 && bb == 1 && wn == 0 && bn == 0 {
+        let w_light = wb_light == 1;
+        let b_light = bb_light == 1;
+        let _ = (wb_dark, bb_dark);
+        return if w_light != b_light { "OCB+pawns" } else { "SCB+pawns" };
+    }
+    if w_minor + b_minor == 1 { return "single-minor+pawns"; }
+    if wb == 0 && bb == 0 { return "knight(s)+pawns"; }
+    "minor-mix+pawns"
+}
+
+/// Read-only material-class histogram + per-class label distribution over a
+/// binpack. See the BinpackMaterial command doc.
+fn run_binpack_material(input: &str, max: usize) {
+    use sfbinpack::CompressedTrainingDataEntryReader;
+    use std::collections::HashMap;
+
+    let file = std::fs::File::open(input).unwrap_or_else(|_| panic!("Failed to open {}", input));
+    let mut reader = CompressedTrainingDataEntryReader::new(file)
+        .unwrap_or_else(|_| panic!("Failed to parse binpack {}", input));
+
+    let mut count: HashMap<&'static str, u64> = HashMap::new();
+    let mut abs_sum: HashMap<&'static str, i64> = HashMap::new();
+    let mut dec150: HashMap<&'static str, u64> = HashMap::new();
+    let mut dec300: HashMap<&'static str, u64> = HashMap::new();
+    let mut total: u64 = 0;
+    let mut kept: u64 = 0;
+
+    while reader.has_next() && (max == 0 || kept < max as u64) {
+        let entry = reader.next();
+        total += 1;
+        if entry.pos.is_checked(entry.pos.side_to_move()) { continue; }
+        if entry.score.unsigned_abs() > 10000 { continue; }
+        let fen = match entry.pos.fen() { Ok(f) => f, Err(_) => continue };
+        kept += 1;
+        let cls = classify_material(&fen);
+        let s = (entry.score as i64).abs();
+        *count.entry(cls).or_insert(0) += 1;
+        *abs_sum.entry(cls).or_insert(0) += s;
+        if s > 150 { *dec150.entry(cls).or_insert(0) += 1; }
+        if s > 300 { *dec300.entry(cls).or_insert(0) += 1; }
+    }
+
+    let mut classes: Vec<(&'static str, u64)> = count.iter().map(|(k, v)| (*k, *v)).collect();
+    classes.sort_by(|a, b| b.1.cmp(&a.1));
+    println!("binpack: {}", input);
+    println!("scanned {} kept {} (skipped in-check/extreme)", total, kept);
+    println!("{:<20} {:>12} {:>7} {:>10} {:>9} {:>9}", "class", "count", "pct", "mean|scr|", "%>150cp", "%>300cp");
+    for (cls, c) in &classes {
+        let mean = *abs_sum.get(cls).unwrap_or(&0) as f64 / *c as f64;
+        let d150 = 100.0 * *dec150.get(cls).unwrap_or(&0) as f64 / *c as f64;
+        let d300 = 100.0 * *dec300.get(cls).unwrap_or(&0) as f64 / *c as f64;
+        let pct = 100.0 * *c as f64 / kept.max(1) as f64;
+        println!("{:<20} {:>12} {:>6.2}% {:>10.0} {:>8.1}% {:>8.1}%", cls, c, pct, mean, d150, d300);
+    }
 }
 
 fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option<String>,
