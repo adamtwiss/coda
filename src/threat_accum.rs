@@ -936,6 +936,17 @@ mod incremental_tests {
         run_fuzz_walk_with_pops();
     }
 
+    // BUG HUNT: same make/unmake consistency walk but with X-ray emission OFF
+    // (os-noxray regime). Global EMIT_XRAY is process-wide, so this must run
+    // single-threaded / in isolation. If it diverges, the x-ray-OFF incremental
+    // delta path is inconsistent with full-recompute — the suspected os-noxray bug.
+    #[test]
+    fn fuzz_random_walk_xray_off() {
+        crate::threats::set_emit_xray(false);
+        run_fuzz_walk_with_pops();
+        crate::threats::set_emit_xray(true);
+    }
+
     fn run_fuzz_walk_with_pops() {
         crate::init();
         let nf = num_threat_features();

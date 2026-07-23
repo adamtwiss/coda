@@ -1416,6 +1416,33 @@ fn push_threats_for_piece(
                     }
                 }
             }
+        } else if !emit_xray() {
+            // X-ray OFF: the slider's direct attack on the first piece past
+            // `square` (Y) is blocked/unblocked as `square` appears/vanishes.
+            // With x-ray ON that direct feature is PRESERVED as an x-ray to the
+            // same index (Y "unchanged", handled by the block above). With x-ray
+            // OFF there is no x-ray to preserve it, so the Y-level direct feature
+            // must be removed/added here. The old x-ray-only gating skipped this,
+            // leaving the incremental accumulator over-counting Y for --xray 0
+            // nets — good static eval (full recompute) but broken search play.
+            // Regression: fuzz_random_walk_xray_off.
+            let y_candidates = crate::bitboard::ray_extension(slider_sq, square) & occ;
+            if y_candidates != 0 {
+                let y_sq = if slider_sq < square {
+                    y_candidates.trailing_zeros()
+                } else {
+                    63 - y_candidates.leading_zeros()
+                };
+                let ypt = mailbox[y_sq as usize];
+                if ypt < 6 {
+                    let ycolor = if white_bb & (1u64 << y_sq) != 0 { WHITE } else { BLACK };
+                    deltas.push(RawThreatDelta::new(
+                        slider_cp as u8, slider_sq as u8,
+                        colored_piece(ycolor, ypt) as u8, y_sq as u8,
+                        !add,
+                    ));
+                }
+            }
         }
 
         // The slider itself attacks/no longer attacks this square
