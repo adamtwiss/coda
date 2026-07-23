@@ -454,8 +454,8 @@ use crate::attacks::*;
 use crate::bitboard::*;
 use crate::types::*;
 
-/// Cached x86 SIMD tier for the threat-apply dispatch: 2 = AVX-512
-/// (f+bw), 1 = AVX2, 0 = scalar. `is_x86_feature_detected!` caches each
+/// Cached x86 SIMD tier for threat kernels: 2 = AVX-512 (f+bw), 1 = AVX2,
+/// 0 = scalar. `is_x86_feature_detected!` caches each
 /// feature in its own atomic, but the old dispatch paid THREE checks per
 /// call (two always-false AVX-512 probes before the AVX2 arm) on AVX2-only
 /// hosts, on functions called 1-2× per push plus per replay ply. One
@@ -534,6 +534,12 @@ impl ThreatPair {
 // that invariant is undefined behaviour.
 struct ThreatTables {
     pairs: [[ThreatPair; NUM_COLORED_PIECES]; NUM_COLORED_PIECES],
+    // Gather-friendly copies used only by the direct-threat SIMD kernels.
+    // An untracked pair has base -1. The four-byte padding permits an
+    // unaligned i32 gather at every byte-indexed ray-rank entry, including 63.
+    simd_pair_base: [[i32; NUM_COLORED_PIECES]; NUM_COLORED_PIECES],
+    simd_pair_symmetric: [[i32; NUM_COLORED_PIECES]; NUM_COLORED_PIECES],
+    simd_ray_rank: [[[u8; 68]; 64]; NUM_COLORED_PIECES],
     from_offset: [[i32; 64]; NUM_COLORED_PIECES],
     ray_rank: [[[u8; 64]; 64]; NUM_COLORED_PIECES],
     num_features: usize,
@@ -618,6 +624,9 @@ pub fn piece_attacks_occ(piece_type: u8, color: Color, sq: u32, occ: Bitboard) -
 pub fn init_threats() {
     // Built locally, then published via OnceLock for Acquire/Release ordering.
     let mut pairs = [[ThreatPair::default(); NUM_COLORED_PIECES]; NUM_COLORED_PIECES];
+    let mut simd_pair_base = [[-1i32; NUM_COLORED_PIECES]; NUM_COLORED_PIECES];
+    let mut simd_pair_symmetric = [[0i32; NUM_COLORED_PIECES]; NUM_COLORED_PIECES];
+    let mut simd_ray_rank = [[[0u8; 68]; 64]; NUM_COLORED_PIECES];
     let mut from_offset = [[0i32; 64]; NUM_COLORED_PIECES];
     let mut ray_rank = [[[0u8; 64]; 64]; NUM_COLORED_PIECES];
 
@@ -668,6 +677,10 @@ pub fn init_threats() {
                     * slots[att];
 
             pairs[att][vic] = ThreatPair { base, tracked, symmetric };
+            if tracked {
+                simd_pair_base[att][vic] = base;
+            }
+            simd_pair_symmetric[att][vic] = symmetric as i32;
         }
     }
 
@@ -679,6 +692,8 @@ pub fn init_threats() {
             for to in 0..64u32 {
                 let below = if to > 0 { (1u64 << to) - 1 } else { 0 };
                 ray_rank[cp][from as usize][to as usize] = popcount(below & attacks) as u8;
+                simd_ray_rank[cp][from as usize][to as usize] =
+                    ray_rank[cp][from as usize][to as usize];
             }
         }
     }
@@ -687,6 +702,9 @@ pub fn init_threats() {
     // threads see the fully-constructed value.
     let _ = THREAT_TABLES.set(ThreatTables {
         pairs,
+        simd_pair_base,
+        simd_pair_symmetric,
+        simd_ray_rank,
         from_offset,
         ray_rank,
         num_features,
@@ -733,9 +751,255 @@ pub fn threat_index(
         + tables.ray_rank[attacker][from_f][to_f] as i32
 }
 
-/// Enumerate all threat features active in a position.
-/// Calls `callback(feature_index)` for each active threat.
-pub fn enumerate_threats<F: FnMut(usize)>(
+/// Direct occupied victims of one attacker. Sliding attacks stop at the first
+/// occupied square in each of eight directions, and leapers have at most eight
+/// destinations, so one attacker always fits one batch.
+#[derive(Copy, Clone)]
+struct DirectVictimBatch {
+    to: [i32; 8],
+    victim_cp: [i32; 8],
+    len: usize,
+}
+
+#[inline(always)]
+fn collect_direct_victims(
+    mut attacked_occ: Bitboard,
+    mailbox: &[u8; 64],
+    white_bb: Bitboard,
+) -> DirectVictimBatch {
+    let mut batch = DirectVictimBatch {
+        to: [0; 8],
+        victim_cp: [0; 8],
+        len: 0,
+    };
+    while attacked_occ != 0 {
+        let target_sq = attacked_occ.trailing_zeros();
+        attacked_occ &= attacked_occ - 1;
+        let victim_pt = mailbox[target_sq as usize];
+        if victim_pt >= 6 {
+            continue;
+        }
+        debug_assert!(batch.len < 8);
+        let victim_color = if white_bb & (1u64 << target_sq) != 0 { WHITE } else { BLACK };
+        batch.to[batch.len] = target_sq as i32;
+        batch.victim_cp[batch.len] = colored_piece(victim_color, victim_pt) as i32;
+        batch.len += 1;
+    }
+    batch
+}
+
+#[inline(always)]
+fn emit_direct_indices_scalar<F: FnMut(usize)>(
+    batch: &DirectVictimBatch,
+    attacker_cp: usize,
+    from: u32,
+    mirrored: bool,
+    pov: Color,
+    callback: &mut F,
+) {
+    for lane in 0..batch.len {
+        let idx = threat_index(
+            attacker_cp,
+            from,
+            batch.victim_cp[lane] as usize,
+            batch.to[lane] as u32,
+            mirrored,
+            pov,
+        );
+        if idx >= 0 {
+            callback(idx as usize);
+        }
+    }
+}
+
+#[inline(always)]
+fn emit_direct_indices<F: FnMut(usize)>(
+    batch: &DirectVictimBatch,
+    attacker_cp: usize,
+    from: u32,
+    mirrored: bool,
+    pov: Color,
+    callback: &mut F,
+) {
+    if batch.len == 0 {
+        return;
+    }
+    if batch.len < 4 {
+        emit_direct_indices_scalar(batch, attacker_cp, from, mirrored, pov, callback);
+        return;
+    }
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx512f",
+        target_feature = "avx512bw"
+    ))]
+    unsafe {
+        emit_direct_indices_avx512(batch, attacker_cp, from, mirrored, pov, callback);
+        return;
+    }
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(all(target_feature = "avx512f", target_feature = "avx512bw"))
+    ))]
+    unsafe {
+        emit_direct_indices_avx2(batch, attacker_cp, from, mirrored, pov, callback);
+        return;
+    }
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    unsafe {
+        match x86_simd_tier() {
+            2 => emit_direct_indices_avx512(
+                batch, attacker_cp, from, mirrored, pov, callback,
+            ),
+            1 => emit_direct_indices_avx2(batch, attacker_cp, from, mirrored, pov, callback),
+            _ => emit_direct_indices_scalar(batch, attacker_cp, from, mirrored, pov, callback),
+        }
+        return;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    emit_direct_indices_scalar(batch, attacker_cp, from, mirrored, pov, callback);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn emit_direct_indices_avx2<F: FnMut(usize)>(
+    batch: &DirectVictimBatch,
+    attacker_cp: usize,
+    from: u32,
+    mirrored: bool,
+    pov: Color,
+    callback: &mut F,
+) {
+    use std::arch::x86_64::*;
+
+    let attacker = if pov == BLACK { flipped_colored_piece(attacker_cp) } else { attacker_cp };
+    let flip = (7 * mirrored as u32) ^ (56 * pov as u32);
+    let from_f = (from ^ flip) as usize;
+    let tables = get_threat_tables();
+
+    let to = _mm256_loadu_si256(batch.to.as_ptr() as *const __m256i);
+    let physical_victims =
+        _mm256_loadu_si256(batch.victim_cp.as_ptr() as *const __m256i);
+    let victims = if pov == BLACK {
+        let added = _mm256_add_epi32(physical_victims, _mm256_set1_epi32(6));
+        let wraps = _mm256_cmpgt_epi32(added, _mm256_set1_epi32(11));
+        _mm256_blendv_epi8(
+            added,
+            _mm256_sub_epi32(added, _mm256_set1_epi32(12)),
+            wraps,
+        )
+    } else {
+        physical_victims
+    };
+    let pair_base = _mm256_i32gather_epi32(tables.simd_pair_base[attacker].as_ptr(), victims, 4);
+    let symmetric =
+        _mm256_i32gather_epi32(tables.simd_pair_symmetric[attacker].as_ptr(), victims, 4);
+    let to_f = _mm256_xor_si256(to, _mm256_set1_epi32(flip as i32));
+    let ranks = _mm256_and_si256(
+        _mm256_i32gather_epi32(
+            tables.simd_ray_rank[attacker][from_f].as_ptr() as *const i32,
+            to_f,
+            1,
+        ),
+        _mm256_set1_epi32(0xff),
+    );
+    let indices = _mm256_add_epi32(
+        _mm256_add_epi32(pair_base, _mm256_set1_epi32(tables.from_offset[attacker][from_f])),
+        ranks,
+    );
+
+    let tracked = _mm256_cmpgt_epi32(pair_base, _mm256_set1_epi32(-1));
+    let physical_order = _mm256_cmpgt_epi32(_mm256_set1_epi32(from as i32 + 1), to);
+    let symmetric_ok = _mm256_or_si256(
+        _mm256_cmpeq_epi32(symmetric, _mm256_setzero_si256()),
+        physical_order,
+    );
+    let valid = _mm256_and_si256(tracked, symmetric_ok);
+    let lane_mask = (1u32 << batch.len) - 1;
+    let mut mask = (_mm256_movemask_ps(_mm256_castsi256_ps(valid)) as u32) & lane_mask;
+    let mut values = [0i32; 8];
+    _mm256_storeu_si256(values.as_mut_ptr() as *mut __m256i, indices);
+    while mask != 0 {
+        let lane = mask.trailing_zeros() as usize;
+        mask &= mask - 1;
+        callback(values[lane] as usize);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f", enable = "avx512bw")]
+unsafe fn emit_direct_indices_avx512<F: FnMut(usize)>(
+    batch: &DirectVictimBatch,
+    attacker_cp: usize,
+    from: u32,
+    mirrored: bool,
+    pov: Color,
+    callback: &mut F,
+) {
+    use std::arch::x86_64::*;
+
+    let attacker = if pov == BLACK { flipped_colored_piece(attacker_cp) } else { attacker_cp };
+    let flip = (7 * mirrored as u32) ^ (56 * pov as u32);
+    let from_f = (from ^ flip) as usize;
+    let tables = get_threat_tables();
+    let lanes = (1u16 << batch.len) - 1;
+
+    let to = _mm512_maskz_loadu_epi32(lanes, batch.to.as_ptr());
+    let physical_victims = _mm512_maskz_loadu_epi32(lanes, batch.victim_cp.as_ptr());
+    let victims = if pov == BLACK {
+        let added = _mm512_add_epi32(physical_victims, _mm512_set1_epi32(6));
+        let wraps = _mm512_cmpgt_epi32_mask(added, _mm512_set1_epi32(11));
+        _mm512_mask_sub_epi32(added, wraps, added, _mm512_set1_epi32(12))
+    } else {
+        physical_victims
+    };
+    let pair_base = _mm512_mask_i32gather_epi32(
+        _mm512_set1_epi32(-1),
+        lanes,
+        victims,
+        tables.simd_pair_base[attacker].as_ptr(),
+        4,
+    );
+    let symmetric = _mm512_mask_i32gather_epi32(
+        _mm512_setzero_si512(),
+        lanes,
+        victims,
+        tables.simd_pair_symmetric[attacker].as_ptr(),
+        4,
+    );
+    let to_f = _mm512_xor_si512(to, _mm512_set1_epi32(flip as i32));
+    let ranks = _mm512_and_si512(
+        _mm512_mask_i32gather_epi32(
+            _mm512_setzero_si512(),
+            lanes,
+            to_f,
+            tables.simd_ray_rank[attacker][from_f].as_ptr() as *const i32,
+            1,
+        ),
+        _mm512_set1_epi32(0xff),
+    );
+    let indices = _mm512_add_epi32(
+        _mm512_add_epi32(pair_base, _mm512_set1_epi32(tables.from_offset[attacker][from_f])),
+        ranks,
+    );
+    let tracked = _mm512_cmpgt_epi32_mask(pair_base, _mm512_set1_epi32(-1));
+    let nonsymmetric = _mm512_cmpeq_epi32_mask(symmetric, _mm512_setzero_si512());
+    let physical_order =
+        _mm512_cmplt_epi32_mask(to, _mm512_set1_epi32(from as i32 + 1));
+    let mut mask = lanes & tracked & (nonsymmetric | physical_order);
+    let mut values = [0i32; 16];
+    _mm512_storeu_si512(values.as_mut_ptr() as *mut _, indices);
+    while mask != 0 {
+        let lane = mask.trailing_zeros() as usize;
+        mask &= mask - 1;
+        callback(values[lane] as usize);
+    }
+}
+
+/// Shared full-position walk. `SIMD_DIRECT` changes only the direct occupied
+/// victim primitive; the x-ray oracle below is deliberately common.
+fn enumerate_threats_impl<F: FnMut(usize), const SIMD_DIRECT: bool>(
     pieces_bb: &[Bitboard; 6],  // by piece type
     colors_bb: &[Bitboard; 2],  // by color
     mailbox: &[u8; 64],         // square → piece type (NO_PIECE_TYPE for empty)
@@ -759,20 +1023,11 @@ pub fn enumerate_threats<F: FnMut(usize)>(
                 let attacks = piece_attacks_occ(pt, color, sq, occ);
 
                 // Find attacked occupied squares (direct threats)
-                let mut attacked_occ = attacks & occ;
-                while attacked_occ != 0 {
-                    let target_sq = attacked_occ.trailing_zeros();
-                    attacked_occ &= attacked_occ - 1;
-
-                    let victim_pt = mailbox[target_sq as usize];
-                    if victim_pt >= 6 { continue; }
-                    let victim_color = if white_bb & (1u64 << target_sq) != 0 { WHITE } else { BLACK };
-                    let victim_cp = colored_piece(victim_color, victim_pt);
-
-                    let idx = threat_index(cp, sq, victim_cp, target_sq, mirrored, pov);
-                    if idx >= 0 {
-                        callback(idx as usize);
-                    }
+                let batch = collect_direct_victims(attacks & occ, mailbox, white_bb);
+                if SIMD_DIRECT {
+                    emit_direct_indices(&batch, cp, sq, mirrored, pov, &mut callback);
+                } else {
+                    emit_direct_indices_scalar(&batch, cp, sq, mirrored, pov, &mut callback);
                 }
 
                 // X-ray threats: for sliders, find the second piece on each ray
@@ -834,6 +1089,39 @@ pub fn enumerate_threats<F: FnMut(usize)>(
             }
         }
     }
+}
+
+/// Enumerate all active threat features, using the runtime-selected direct
+/// victim SIMD kernel and the scalar x-ray walk.
+pub fn enumerate_threats<F: FnMut(usize)>(
+    pieces_bb: &[Bitboard; 6],
+    colors_bb: &[Bitboard; 2],
+    mailbox: &[u8; 64],
+    occ: Bitboard,
+    pov: Color,
+    mirrored: bool,
+    callback: F,
+) {
+    enumerate_threats_impl::<F, true>(
+        pieces_bb, colors_bb, mailbox, occ, pov, mirrored, callback,
+    );
+}
+
+/// Scalar reference oracle for differential tests and non-x86 validation.
+/// This intentionally shares only the position/x-ray walk with the production
+/// path; direct feature membership and indices go through `threat_index`.
+pub fn enumerate_threats_scalar<F: FnMut(usize)>(
+    pieces_bb: &[Bitboard; 6],
+    colors_bb: &[Bitboard; 2],
+    mailbox: &[u8; 64],
+    occ: Bitboard,
+    pov: Color,
+    mirrored: bool,
+    callback: F,
+) {
+    enumerate_threats_impl::<F, false>(
+        pieces_bb, colors_bb, mailbox, occ, pov, mirrored, callback,
+    );
 }
 
 /// HISTORICAL reference — the **pre-C8-fix** Bullet enumeration (bf-frame
@@ -1143,6 +1431,162 @@ impl RawThreatDelta {
     #[inline(always)] pub fn add(self) -> bool { (self.0 >> 20) & 1 != 0 }
 }
 
+#[inline(always)]
+fn push_direct_deltas_scalar(
+    deltas: &mut Vec<RawThreatDelta>,
+    batch: &DirectVictimBatch,
+    attacker_cp: usize,
+    from: u32,
+    add: bool,
+) {
+    for lane in 0..batch.len {
+        deltas.push(RawThreatDelta::new(
+            attacker_cp as u8,
+            from as u8,
+            batch.victim_cp[lane] as u8,
+            batch.to[lane] as u8,
+            add,
+        ));
+    }
+}
+
+#[inline(always)]
+fn push_direct_deltas_from_bitboard_scalar(
+    deltas: &mut Vec<RawThreatDelta>,
+    mut attacked_occ: Bitboard,
+    mailbox: &[u8; 64],
+    white_bb: Bitboard,
+    attacker_cp: usize,
+    from: u32,
+    add: bool,
+) {
+    while attacked_occ != 0 {
+        let target_sq = attacked_occ.trailing_zeros();
+        attacked_occ &= attacked_occ - 1;
+        let victim_pt = mailbox[target_sq as usize];
+        if victim_pt >= 6 {
+            continue;
+        }
+        let victim_color = if white_bb & (1u64 << target_sq) != 0 {
+            WHITE
+        } else {
+            BLACK
+        };
+        deltas.push(RawThreatDelta::new(
+            attacker_cp as u8,
+            from as u8,
+            colored_piece(victim_color, victim_pt) as u8,
+            target_sq as u8,
+            add,
+        ));
+    }
+}
+
+#[inline(always)]
+fn push_direct_deltas(
+    deltas: &mut Vec<RawThreatDelta>,
+    batch: &DirectVictimBatch,
+    attacker_cp: usize,
+    from: u32,
+    add: bool,
+) {
+    if batch.len == 0 {
+        return;
+    }
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx512f",
+        target_feature = "avx512bw"
+    ))]
+    unsafe {
+        push_direct_deltas_avx512(deltas, batch, attacker_cp, from, add);
+        return;
+    }
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(all(target_feature = "avx512f", target_feature = "avx512bw"))
+    ))]
+    unsafe {
+        push_direct_deltas_avx2(deltas, batch, attacker_cp, from, add);
+        return;
+    }
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    unsafe {
+        match x86_simd_tier() {
+            2 => push_direct_deltas_avx512(deltas, batch, attacker_cp, from, add),
+            1 => push_direct_deltas_avx2(deltas, batch, attacker_cp, from, add),
+            _ => push_direct_deltas_scalar(deltas, batch, attacker_cp, from, add),
+        }
+        return;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    push_direct_deltas_scalar(deltas, batch, attacker_cp, from, add);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn push_direct_deltas_avx2(
+    deltas: &mut Vec<RawThreatDelta>,
+    batch: &DirectVictimBatch,
+    attacker_cp: usize,
+    from: u32,
+    add: bool,
+) {
+    use std::arch::x86_64::*;
+
+    let to = _mm256_loadu_si256(batch.to.as_ptr() as *const __m256i);
+    let victims = _mm256_loadu_si256(batch.victim_cp.as_ptr() as *const __m256i);
+    let fixed = (attacker_cp as i32)
+        | ((from as i32) << 8)
+        | ((add as i32) << 20);
+    let packed = _mm256_or_si256(
+        _mm256_set1_epi32(fixed),
+        _mm256_or_si256(
+            _mm256_slli_epi32(victims, 4),
+            _mm256_slli_epi32(to, 14),
+        ),
+    );
+
+    // Reserve a full vector so the wide store is always inside the allocation;
+    // only the live prefix becomes part of the Vec.
+    deltas.reserve(8);
+    let old_len = deltas.len();
+    _mm256_storeu_si256(deltas.as_mut_ptr().add(old_len) as *mut __m256i, packed);
+    deltas.set_len(old_len + batch.len);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f", enable = "avx512bw")]
+unsafe fn push_direct_deltas_avx512(
+    deltas: &mut Vec<RawThreatDelta>,
+    batch: &DirectVictimBatch,
+    attacker_cp: usize,
+    from: u32,
+    add: bool,
+) {
+    use std::arch::x86_64::*;
+
+    let lanes = (1u16 << batch.len) - 1;
+    let to = _mm512_maskz_loadu_epi32(lanes, batch.to.as_ptr());
+    let victims = _mm512_maskz_loadu_epi32(lanes, batch.victim_cp.as_ptr());
+    let fixed = (attacker_cp as i32)
+        | ((from as i32) << 8)
+        | ((add as i32) << 20);
+    let packed = _mm512_or_si512(
+        _mm512_set1_epi32(fixed),
+        _mm512_or_si512(
+            _mm512_slli_epi32(victims, 4),
+            _mm512_slli_epi32(to, 14),
+        ),
+    );
+
+    deltas.reserve(16);
+    let old_len = deltas.len();
+    _mm512_storeu_si512(deltas.as_mut_ptr().add(old_len) as *mut _, packed);
+    deltas.set_len(old_len + batch.len);
+}
+
 /// Compute raw threat deltas when a piece moves from `from` to `to`.
 /// Must be called BEFORE the move is applied on the board (board still has old state).
 /// `occ_without_dest` = occupancy with `from` removed but `to` not yet occupied.
@@ -1227,14 +1671,17 @@ fn push_threats_for_piece(
     let s1_deltas_before = deltas.len() as u64;
 
     let my_attacks = piece_attacks_occ(piece_type, piece_color, square, occ);
-    let mut attacked_occ = my_attacks & occ;
-    while attacked_occ != 0 {
-        let target_sq = attacked_occ.trailing_zeros();
-        attacked_occ &= attacked_occ - 1;
-        let victim_pt = mailbox[target_sq as usize];
-        if victim_pt >= 6 { continue; }
-        let victim_color = if white_bb & (1u64 << target_sq) != 0 { WHITE } else { BLACK };
-        deltas.push(RawThreatDelta::new(cp as u8, square as u8, colored_piece(victim_color, victim_pt) as u8, target_sq as u8, add));
+    let attacked_occ = my_attacks & occ;
+    // Search positions average only 1.36 direct victims per call. Scalar
+    // bit-scanning wins for those sparse batches; SIMD amortizes its setup on
+    // the denser tail. The full enumerator still oracle-checks every width.
+    if attacked_occ.count_ones() >= 4 {
+        let batch = collect_direct_victims(attacked_occ, mailbox, white_bb);
+        push_direct_deltas(deltas, &batch, cp, square, add);
+    } else {
+        push_direct_deltas_from_bitboard_scalar(
+            deltas, attacked_occ, mailbox, white_bb, cp, square, add,
+        );
     }
 
     #[cfg(feature = "profile-threats")]
@@ -2771,6 +3218,86 @@ mod tests {
         let idx_black = threat_index(wn, 18, bp, 35, false, BLACK);
         assert!(idx_black >= 0, "Should be valid from black POV too");
         assert_ne!(idx, idx_black, "Different POV should give different index");
+    }
+
+    #[test]
+    fn test_simd_enumerator_matches_scalar_oracle() {
+        let _xray = XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::init();
+
+        // Deterministic synthetic corpus. Legality is immaterial to the
+        // enumerator, while arbitrary piece density exercises substantially
+        // more victim combinations than ordinary legal positions.
+        let mut state = 0xc0da_7e57_51d0_2026u64;
+        for case in 0..4096 {
+            let mut pieces = [0u64; 6];
+            let mut colors = [0u64; 2];
+            let mut mailbox = [NO_PIECE_TYPE; 64];
+            for sq in 0..64 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                if state & 7 < 3 {
+                    let pt = ((state >> 8) % 6) as usize;
+                    let color = ((state >> 16) & 1) as usize;
+                    let bit = 1u64 << sq;
+                    pieces[pt] |= bit;
+                    colors[color] |= bit;
+                    mailbox[sq] = pt as u8;
+                }
+            }
+            let occ = colors[WHITE as usize] | colors[BLACK as usize];
+
+            for pov in [WHITE, BLACK] {
+                for mirrored in [false, true] {
+                    let mut scalar = Vec::new();
+                    enumerate_threats_scalar(
+                        &pieces, &colors, &mailbox, occ, pov, mirrored,
+                        |idx| scalar.push(idx),
+                    );
+                    let mut optimized = Vec::new();
+                    enumerate_threats(
+                        &pieces, &colors, &mailbox, occ, pov, mirrored,
+                        |idx| optimized.push(idx),
+                    );
+                    assert_eq!(
+                        optimized, scalar,
+                        "direct enumerator mismatch: case={case} pov={pov} mirrored={mirrored}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_simd_direct_delta_packing_matches_scalar() {
+        crate::init();
+        for len in 1..=8 {
+            for attacker in 0..NUM_COLORED_PIECES {
+                for add in [false, true] {
+                    let mut batch = DirectVictimBatch {
+                        to: [0; 8],
+                        victim_cp: [0; 8],
+                        len,
+                    };
+                    for lane in 0..len {
+                        batch.to[lane] = ((lane * 9 + attacker * 3) & 63) as i32;
+                        batch.victim_cp[lane] =
+                            ((lane * 5 + attacker + len) % NUM_COLORED_PIECES) as i32;
+                    }
+                    let from = ((attacker * 7 + len) & 63) as u32;
+                    let mut scalar = Vec::new();
+                    push_direct_deltas_scalar(&mut scalar, &batch, attacker, from, add);
+                    let mut optimized = Vec::new();
+                    push_direct_deltas(&mut optimized, &batch, attacker, from, add);
+                    assert_eq!(optimized.len(), scalar.len());
+                    assert!(
+                        optimized.iter().zip(&scalar).all(|(a, b)| a.0 == b.0),
+                        "delta packing mismatch: len={len} attacker={attacker} add={add}",
+                    );
+                }
+            }
+        }
     }
 
     #[test]
