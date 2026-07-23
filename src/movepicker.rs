@@ -1526,3 +1526,146 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod pseudo_legal_fuzz {
+    use super::*;
+    use crate::board::Board;
+    use crate::movegen::{generate_captures, generate_legal_moves, generate_quiets};
+
+    /// Differential fuzz: is_pseudo_legal(m) must agree EXACTLY with
+    /// membership in the generated pseudo-legal set (captures + quiets),
+    /// for every one of the 64*64*7 encodable moves, across random-playout
+    /// positions. The two failure directions are both real bugs:
+    ///   is_pl=true, not generated  -> TT-collision hole (corrupt move could
+    ///                                 reach make_move — the 320-Elo class)
+    ///   generated, is_pl=false     -> engine rejects its own legit TT move
+    ///                                 (ordering loss, IIR misfire)
+    /// Deterministic (fixed-seed xorshift); ~1.4k positions, ~40M probes.
+    #[test]
+    fn fuzz_pseudo_legal_differential() {
+        crate::init();
+        let mut st: u64 = 0x9E3779B97F4A7C15;
+        let mut rnd = move || {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            st
+        };
+        let flags_all: [u16; 7] = [0, FLAG_EN_PASSANT, FLAG_CASTLE,
+            FLAG_PROMOTE_N, FLAG_PROMOTE_B, FLAG_PROMOTE_R, FLAG_PROMOTE_Q];
+        let (mut positions, mut probes): (u64, u64) = (0, 0);
+        for _game in 0..100 {
+            let mut board = Board::startpos();
+            for ply in 0..120 {
+                let legal = generate_legal_moves(&board);
+                if legal.len == 0 || board.halfmove >= 100 {
+                    break;
+                }
+                let mv = legal.get((rnd() as usize) % legal.len);
+                board.make_move(mv);
+                if ply % 3 != 0 {
+                    continue;
+                }
+                positions += 1;
+                let mut set = std::collections::HashSet::new();
+                let caps = generate_captures(&board);
+                for i in 0..caps.len {
+                    set.insert(caps.get(i));
+                }
+                let quiets = generate_quiets(&board);
+                for i in 0..quiets.len {
+                    set.insert(quiets.get(i));
+                }
+                for from in 0..64u8 {
+                    for to in 0..64u8 {
+                        if from == to {
+                            continue;
+                        }
+                        for &fl in flags_all.iter() {
+                            let m = crate::types::make_move(from, to, fl);
+                            let a = is_pseudo_legal(&board, m);
+                            let b = set.contains(&m);
+                            probes += 1;
+                            if a != b {
+                                panic!(
+                                    "PSEUDO-LEGAL MISMATCH fen='{}' mv={} flags={} is_pseudo_legal={} generated={}",
+                                    board.to_fen(), move_to_uci(m), fl, a, b
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("pseudo-legal differential clean: {} positions, {} probes", positions, probes);
+    }
+}
+
+#[cfg(test)]
+mod pseudo_legal_fuzz_debug {
+    use crate::board::Board;
+    use crate::movegen::generate_legal_moves;
+    use crate::types::*;
+
+    #[test]
+    fn debug_playout_invariant() {
+        crate::init();
+        let mut st: u64 = 0x9E3779B97F4A7C15;
+        let mut rnd = move || {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            st
+        };
+        for game in 0..40 {
+            let mut board = Board::startpos();
+            let mut hist: Vec<String> = Vec::new();
+            for _ply in 0..120 {
+                let legal = generate_legal_moves(&board);
+                if legal.len == 0 || board.halfmove >= 100 {
+                    break;
+                }
+                let mv = legal.get((rnd() as usize) % legal.len);
+                let fen_before = board.to_fen();
+                let ok = board.make_move(mv);
+                hist.push(move_to_uci(mv));
+                assert!(ok, "make_move rejected a LEGAL move {} at '{}' (game {})",
+                    move_to_uci(mv), fen_before, game);
+                // Invariant: the side that just moved must not have left its
+                // own king capturable (enemy king attacked while WE are to move).
+                let them = flip_color(board.side_to_move); // the side that just moved
+                let their_king = board.king_sq(them);
+                let occ = board.occupied();
+                if board.attackers_to(their_king as u32, occ)
+                    & board.colors[board.side_to_move as usize] != 0
+                {
+                    panic!(
+                        "ILLEGAL STATE game {} after {} (from '{}'):\n  now '{}'\n  moves: {}",
+                        game, move_to_uci(mv), fen_before, board.to_fen(), hist.join(" ")
+                    );
+                }
+            }
+        }
+        eprintln!("playout invariant clean");
+    }
+}
+
+#[cfg(test)]
+mod attackers_probe {
+    use crate::board::Board;
+    use crate::types::*;
+
+    #[test]
+    fn probe_pawn_attack_on_rank8() {
+        crate::init();
+        // White pawn d7, black king e8: e8 MUST be attacked by white.
+        let b = Board::from_fen("rnbqkbnr/3P4/P5p1/1P3pP1/4pP1p/2p1P2P/8/RbBQKBNR w KQkq - 0 20");
+        let occ = b.occupied();
+        let atk = b.attackers_to(60, occ); // e8 = 60
+        eprintln!("attackers_to(e8) = {:#018x}, white mask = {:#018x}", atk, b.colors[WHITE as usize]);
+        eprintln!("white attackers of e8: {:#018x}", atk & b.colors[WHITE as usize]);
+        assert!(atk & b.colors[WHITE as usize] & (1u64 << 51) != 0,
+            "d7 white pawn (sq 51) must attack e8");
+    }
+}
