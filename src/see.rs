@@ -1,7 +1,9 @@
 //! Static Exchange Evaluation (SEE).
 //! Determines if a capture sequence is winning/losing.
 //! The iterative swap-loop follows the standard SEE formulation (as used by
-//! Stockfish); the pinned-piece handling is Coda's own.
+//! Stockfish), as does the pinned-piece handling (exclude pinned recapturers
+//! only while their pinner is still on the board). Unlike SF, Coda evaluates
+//! promotions and en passant exactly instead of returning a flat 0.
 
 use crate::attacks::*;
 use crate::bitboard::*;
@@ -54,8 +56,12 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
         return true;
     }
 
-    // Iterative SEE — remove initial attacker from occupied
-    let mut occ = board.occupied() ^ (1u64 << from);
+    // Iterative SEE — remove initial attacker from occupied.
+    // `to` is cleared too (SF: "xoring to is important for pinned piece logic"):
+    // when the captured piece IS a pinner, the pin dissolves and the formerly
+    // pinned defender may recapture. Cleared with & ! (not ^) because `to` is
+    // empty for EP and for quiet/non-capture promotions.
+    let mut occ = (board.occupied() & !(1u64 << to)) ^ (1u64 << from);
     // For EP, also remove the captured pawn (on same file as to, same rank as from)
     if flags == FLAG_EN_PASSANT {
         let ep_victim_sq = (to & 7) | (from & !7); // file of to, rank of from
@@ -71,42 +77,49 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
     attackers &= occ;
 
     // Pinned piece masks for each side (SEE audit S4: same approach as SF/Obsidian).
-    // A pinned piece cannot move off the pin ray, so it cannot legally recapture
-    // on `to` unless `to` is on the same pin ray. Rather than compute ray membership,
-    // we conservatively exclude ALL pinned pieces — this slightly under-estimates
-    // the exchange value (may classify some winning exchanges as equal/losing) but
-    // is correct in the other direction (never over-estimates, never prunes wrongly).
-    let pinned_w = {
-        let ksq = board.king_sq(WHITE) as u32;
+    // A pinned piece cannot move off the pin ray, so it usually cannot legally
+    // recapture on `to`. Like SF, we do NOT test pin-ray membership and exclude
+    // ALL pinned pieces of the side to move. That approximation cuts both ways:
+    // excluding one of OUR recapturers under-estimates the exchange, excluding
+    // one of THEIRS (when `to` happens to sit on its pin ray) over-estimates it
+    // — see `see_pin_still_applies_while_pinner_alive`. Both are accepted.
+    // The one case we do handle exactly is a captured pinner (below).
+    // Returns (pinned pieces of `us`, the enemy slider squares doing the pinning).
+    let pin_info = |us: Color| -> (Bitboard, Bitboard) {
+        let them = flip_color(us);
+        let ksq = board.king_sq(us) as u32;
         let occ_all = board.occupied();
-        let their_diag = (board.pieces[BISHOP as usize] | board.pieces[QUEEN as usize]) & board.colors[BLACK as usize];
-        let their_orth = (board.pieces[ROOK as usize] | board.pieces[QUEEN as usize]) & board.colors[BLACK as usize];
-        let mut pinned = 0u64;
+        let their_diag = (board.pieces[BISHOP as usize] | board.pieces[QUEEN as usize]) & board.colors[them as usize];
+        let their_orth = (board.pieces[ROOK as usize] | board.pieces[QUEEN as usize]) & board.colors[them as usize];
+        let (mut pinned, mut pinners) = (0u64, 0u64);
         let mut p = bishop_attacks(ksq, 0) & their_diag;
-        while p != 0 { let sq = pop_lsb(&mut p); let b = crate::bitboard::between(ksq, sq) & occ_all; if popcount(b) == 1 && b & board.colors[WHITE as usize] != 0 { pinned |= b; } }
+        while p != 0 { let sq = pop_lsb(&mut p); let b = crate::bitboard::between(ksq, sq) & occ_all; if popcount(b) == 1 && b & board.colors[us as usize] != 0 { pinned |= b; pinners |= 1u64 << sq; } }
         let mut p = rook_attacks(ksq, 0) & their_orth;
-        while p != 0 { let sq = pop_lsb(&mut p); let b = crate::bitboard::between(ksq, sq) & occ_all; if popcount(b) == 1 && b & board.colors[WHITE as usize] != 0 { pinned |= b; } }
-        pinned
+        while p != 0 { let sq = pop_lsb(&mut p); let b = crate::bitboard::between(ksq, sq) & occ_all; if popcount(b) == 1 && b & board.colors[us as usize] != 0 { pinned |= b; pinners |= 1u64 << sq; } }
+        (pinned, pinners)
     };
-    let pinned_b = {
-        let ksq = board.king_sq(BLACK) as u32;
-        let occ_all = board.occupied();
-        let their_diag = (board.pieces[BISHOP as usize] | board.pieces[QUEEN as usize]) & board.colors[WHITE as usize];
-        let their_orth = (board.pieces[ROOK as usize] | board.pieces[QUEEN as usize]) & board.colors[WHITE as usize];
-        let mut pinned = 0u64;
-        let mut p = bishop_attacks(ksq, 0) & their_diag;
-        while p != 0 { let sq = pop_lsb(&mut p); let b = crate::bitboard::between(ksq, sq) & occ_all; if popcount(b) == 1 && b & board.colors[BLACK as usize] != 0 { pinned |= b; } }
-        let mut p = rook_attacks(ksq, 0) & their_orth;
-        while p != 0 { let sq = pop_lsb(&mut p); let b = crate::bitboard::between(ksq, sq) & occ_all; if popcount(b) == 1 && b & board.colors[BLACK as usize] != 0 { pinned |= b; } }
-        pinned
-    };
+    let (pinned_w, pinners_b) = pin_info(WHITE);
+    let (pinned_b, pinners_w) = pin_info(BLACK);
     let pinned = [pinned_w, pinned_b];
+    // pinners[c] = sliders of colour c that pin an enemy piece.
+    let pinners = [pinners_w, pinners_b];
 
     loop {
-        // Exclude pinned pieces from recapturing (they cannot legally move off the pin ray).
-        let stm_attackers = attackers & board.colors[stm as usize] & !pinned[stm as usize];
+        let mut stm_attackers = attackers & board.colors[stm as usize];
         if stm_attackers == 0 {
             break;
+        }
+        // Exclude pinned pieces from recapturing (they cannot legally move off
+        // the pin ray) — but ONLY while the pinner is still on the board. Once
+        // the pinner has been captured (including as the very first capture,
+        // which is why `to` was cleared from `occ`), the pin is gone and the
+        // piece is free to recapture. Same rule as SF's
+        // `if (pinners(~stm) & occupied) stmAttackers &= ~blockers_for_king(stm)`.
+        if pinners[flip_color(stm) as usize] & occ != 0 {
+            stm_attackers &= !pinned[stm as usize];
+            if stm_attackers == 0 {
+                break;
+            }
         }
 
         // Find least valuable attacker
@@ -529,5 +542,53 @@ mod see_assertive_tests {
                 assert!(!see_ge(&b, mv, actual + 1), "see_ge(SEE+1) must be false");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod see_pin_tests {
+    use super::*;
+    use crate::board::Board;
+    use crate::movegen::generate_legal_moves;
+
+    fn init() { crate::init(); }
+
+    fn find_move(b: &Board, from: u8, to: u8) -> Move {
+        let moves = generate_legal_moves(b);
+        for i in 0..moves.len {
+            let mv = moves.get(i);
+            if move_from(mv) == from && move_to(mv) == to { return mv; }
+        }
+        panic!("no legal move {} -> {}", from, to);
+    }
+
+    /// Capturing the PINNER dissolves the pin, so the formerly pinned piece
+    /// is free to recapture on the pinner's square (which is always on the pin
+    /// ray). Rb8xb5 takes the bishop that pins the c6 pawn against Ke8; after
+    /// Nc3xb5, cxb5 is legal.
+    ///   B(420) - R(640) + N(420) = +200
+    /// The pre-fix code held the c6 pawn pinned for the whole exchange and
+    /// returned -220 — a good capture classified as losing at every SEE
+    /// threshold in use (ordering, QS, SEE prunes, ProbCut).
+    #[test]
+    fn see_pin_lifted_when_pinner_is_captured() {
+        init();
+        let b = Board::from_fen("1r2k3/8/2p5/1B6/8/2N5/8/4K3 b - - 0 1");
+        let mv = find_move(&b, 57, 33); // b8 -> b5
+        assert_eq!(see_value_of(&b, mv), 200);
+        assert!(see_ge(&b, mv, 0));
+    }
+
+    /// The pin restriction must still apply while the pinner is alive:
+    /// black Rd5 is pinned by Rd1 against Kd8 and is NOT the piece being
+    /// captured, so it is excluded from the exchange on d4.
+    /// (Coda, like SF, does not test pin-ray membership, so this is an
+    /// accepted over-estimate: the true value is -320.)
+    #[test]
+    fn see_pin_still_applies_while_pinner_alive() {
+        init();
+        let b = Board::from_fen("3k4/8/8/3r4/3p4/5N2/8/3RK3 w - - 0 1");
+        let mv = find_move(&b, 21, 27); // f3 -> d4
+        assert_eq!(see_value_of(&b, mv), 100);
     }
 }
