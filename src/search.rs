@@ -5278,8 +5278,13 @@ fn negamax(
                 // not beta. Decisive mate/TB scores are exact enough that
                 // margin subtraction corrupts their distance/range; SF avoids
                 // damped decisive ProbCut returns.
+                // Stored depth = verification depth + 1 (the ProbCut move
+                // itself). SF/Obsidian/Plenty all keep this invariant; the
+                // old `depth - 3` overstated verification by 1 ply whenever
+                // `improving` reduced pc_depth, and stored -1/0 for the
+                // qsearch-only shallow case (SF stores 1 there).
                 info.tt.store(
-                    board.hash, depth - 3, score_to_tt(score, ply),
+                    board.hash, pc_depth.max(0) + 1, score_to_tt(score, ply),
                     TT_FLAG_LOWER, mv, raw_eval, tt_pv,
                 );
                 if is_decisive(score) {
