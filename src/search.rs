@@ -3664,14 +3664,14 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 if info.pv_len[0] == 0 {
                     break;
                 }
-                // Build PV string from pv_table[0].
-                let mut line_pv = String::new();
-                for i in 0..info.pv_len[0] {
-                    if !line_pv.is_empty() {
-                        line_pv.push(' ');
-                    }
-                    line_pv.push_str(&move_to_uci(info.pv_table[0][i]));
-                }
+                // Build PV string from pv_table[0] via the SHARED guarded
+                // helper. This site previously joined pv_table[0] verbatim with
+                // no legality walk — the only PV emission in the engine without
+                // one. Dormant at the default MultiPV=1 (this loop is
+                // `1..info.multipv`), but a live illegal-PV emitter for anyone
+                // running MultiPV>1. Printing an illegal PV move is a critical
+                // bug, so the logic is shared, not re-derived.
+                let line_pv = build_pv_string(info, board, depth);
                 let line_score = if is_mate_score(sc) {
                     let mate_in = if sc > 0 {
                         (MATE_SCORE - sc + 1) / 2

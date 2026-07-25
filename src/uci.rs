@@ -476,12 +476,56 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                             if wdl >= 19000 && !tb_pv.is_empty() {
                                 tb_pv[0] = pick_winning_tb_move(&board, &tb_pv[0], tb);
                             }
+                            // CRITICAL: both tiebreaks above REPLACE tb_pv[0]
+                            // with a different move, but tb_pv[1..] is still the
+                            // reply chain probe_root_pv built for the ORIGINAL
+                            // move. After a substitution that tail belongs to a
+                            // line we are no longer playing and is generally
+                            // ILLEGAL in the position actually reached. Only
+                            // tb_pv[0] was validated below, so the stale tail was
+                            // being joined and printed verbatim — cutechess
+                            // "Illegal PV move" (observed 2026-07-25 in the first
+                            // TB-enabled local RR; always at index >= 1, never 0,
+                            // which is the signature of exactly this). Same class
+                            // as the lichess forfeit risk guarded elsewhere.
+                            // probe_root_pv itself is fine and unit-tested
+                            // (tb.rs probe_root_pv_only_legal_moves) — the
+                            // corruption is introduced here, after that boundary.
+                            //
+                            // Walk the chain and truncate at the first move that
+                            // is not legal in the position reached, mirroring the
+                            // search PV guard in build_pv_string.
+                            {
+                                let mut walk = board.clone();
+                                let mut keep = 0usize;
+                                for u in tb_pv.iter() {
+                                    match parse_uci_move(&walk, u) {
+                                        Some(mv)
+                                            if walk.is_legal(
+                                                mv,
+                                                walk.pinned(),
+                                                walk.checkers(),
+                                            ) =>
+                                        {
+                                            walk.make_move(mv);
+                                            keep += 1;
+                                        }
+                                        _ => break,
+                                    }
+                                }
+                                tb_pv.truncate(keep);
+                            }
                             // Validate the FIRST move of the walked PV — if
                             // TB returns an illegal "king capture" in a mate
                             // position we want to fall through to search.
+                            // (tb_pv may now be EMPTY after the truncation above,
+                            // so the [0] index must stay guarded — an empty chain
+                            // leaves tb_valid false and falls through to search.)
                             let legal = crate::movegen::generate_legal_moves(&board);
                             let mut tb_valid = false;
-                            if let Some(parsed) = parse_uci_move(&board, &tb_pv[0]) {
+                            if let Some(parsed) =
+                                tb_pv.first().and_then(|m| parse_uci_move(&board, m))
+                            {
                                 for i in 0..legal.len {
                                     if move_from(legal.get(i)) == move_from(parsed)
                                         && move_to(legal.get(i)) == move_to(parsed) {
